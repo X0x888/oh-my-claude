@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+HOOK_JSON="$(cat)"
+. "${SCRIPT_DIR}/common.sh"
+
+SESSION_ID="$(json_get '.session_id')"
+
+if [[ -z "${SESSION_ID}" ]]; then
+  exit 0
+fi
+
+ensure_session_dir
+
+if ! is_ultrawork_mode; then
+  exit 0
+fi
+
+command_text="$(json_get '.tool_input.command')"
+if [[ -z "${command_text}" ]]; then
+  exit 0
+fi
+
+if grep -Eiq '(^|[[:space:]])(npm|pnpm|yarn|bun|cargo|go|pytest|python|uv|ruff|mypy|eslint|tsc|vitest|jest|phpunit|rspec|gradle|xcodebuild|swift|make|just)([[:space:]].*)?(test|tests|check|lint|typecheck|build)|\b(pytest|vitest|jest|cargo test|go test|swift test|swift build|ruff check|mypy|eslint|tsc|typecheck|phpunit|rspec|gradle test|xcodebuild test)\b' <<<"${command_text}"; then
+  write_state_batch \
+    "last_verify_ts" "$(now_epoch)" \
+    "last_verify_cmd" "${command_text}" \
+    "stop_guard_blocks" "0" \
+    "session_handoff_blocks" "0" \
+    "stall_counter" "0"
+fi
