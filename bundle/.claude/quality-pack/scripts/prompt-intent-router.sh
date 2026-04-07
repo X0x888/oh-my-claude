@@ -17,9 +17,7 @@ ensure_session_dir
 
 previous_objective="$(read_state "current_objective")"
 previous_domain="$(read_state "task_domain")"
-previous_workflow_mode="$(workflow_mode)"
 previous_last_assistant="$(read_state "last_assistant_message")"
-previous_task_intent="$(read_state "task_intent")"
 TASK_INTENT="$(classify_task_intent "${PROMPT_TEXT}")"
 
 write_state_batch \

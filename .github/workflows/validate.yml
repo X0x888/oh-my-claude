@@ -22,7 +22,7 @@ jobs:
 
       - name: Run shellcheck
         run: |
-          find bundle/ -name '*.sh' -print0 | xargs -0 shellcheck
+          find bundle/ -name '*.sh' -print0 | xargs -0 shellcheck -x
 
       - name: Validate JSON files
         run: |

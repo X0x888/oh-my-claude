@@ -1,0 +1,8 @@
+# Source paths resolve at $HOME runtime, not at lint time.
+# shellcheck cannot follow them, and that is expected.
+disable=SC1091
+
+# HOOK_JSON and SCRIPT_DIR are set in each hook script and consumed
+# by functions in the sourced common.sh. shellcheck cannot trace
+# usage across sourced files, so it reports them as unused.
+disable=SC2034
