@@ -24,3 +24,5 @@ bash verify.sh
 - All bash scripts must use `set -euo pipefail`.
 - Hook scripts must source `common.sh` and exit 0 on missing `SESSION_ID`.
 - State is JSON in `session_state.json`, accessed via `read_state` / `write_state`.
+- Prefer readable code over micro-optimizations. When quality and speed conflict, choose quality.
+- Do not break existing install paths, config merges, or hook interfaces for performance gains.
