@@ -306,6 +306,10 @@ is_imperative_request() {
   # "I need/want you to..." patterns
   elif [[ "${text}" =~ ^[[:space:]]*i[[:space:]]+(need|want)[[:space:]]+(you[[:space:]]+to|to)[[:space:]] ]]; then
     result=0
+  # Bare imperative: starts with unambiguous action verb, no trailing question mark
+  # Excludes: check, test, help, review — too ambiguous as bare starts
+  elif [[ ! "${text}" =~ \?[[:space:]]*$ ]] && [[ "${text}" =~ ^[[:space:]]*(fix|implement|add|create|build|update|refactor|debug|deploy|write|make|change|modify|remove|delete|move|rename|install|configure|run|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|connect|push|pull|merge|commit|start|stop|enable|disable|open|close|set[[:space:]]+up|proceed)[[:space:]] ]]; then
+    result=0
   fi
 
   if [[ "${nocasematch_was_set}" -eq 0 ]]; then shopt -u nocasematch; fi

@@ -179,6 +179,14 @@ if grep -Eiq '(^|[^[:alnum:]_-])ultrathink([^[:alnum:]_-]|$)' <<<"${PROMPT_TEXT}
   context_parts+=("ULTRATHINK MODE ACTIVE — deeper investigation required. Favor verification over abstraction: check claims against real code, run tests, read actual files rather than reasoning about what they probably contain. Before acting: consider what could go wrong and verify your assumptions are grounded. After results: ask whether you found concrete evidence or just formed an opinion — if the latter, investigate further. When you encounter ambiguity, read the source rather than reason about it. This mode is for hard problems where unverified assumptions produce wrong answers.")
 fi
 
+# Guard exhaustion warning from previous response
+guard_exhausted="$(read_state "guard_exhausted")"
+if [[ -n "${guard_exhausted}" ]]; then
+  guard_detail="$(read_state "guard_exhausted_detail")"
+  context_parts+=("WARNING — PREVIOUS RESPONSE INCOMPLETE: The stop guard was exhausted after 2 blocks. Missing quality gates: ${guard_detail}. Before starting new work, verify and review the previous changes if they haven't been checked yet. Briefly tell the user about this gap.")
+  write_state_batch "guard_exhausted" "" "guard_exhausted_detail" ""
+fi
+
 if [[ "${#context_parts[@]}" -eq 0 ]]; then
   exit 0
 fi

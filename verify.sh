@@ -96,6 +96,8 @@ required_paths=(
   "${CLAUDE_HOME}/skills/autowork/scripts/record-subagent-summary.sh"
   "${CLAUDE_HOME}/skills/autowork/SKILL.md"
   "${CLAUDE_HOME}/skills/ulw/SKILL.md"
+  "${CLAUDE_HOME}/skills/ulw-status/SKILL.md"
+  "${CLAUDE_HOME}/skills/autowork/scripts/show-status.sh"
   "${CLAUDE_HOME}/agents/quality-planner.md"
   "${CLAUDE_HOME}/agents/quality-reviewer.md"
   "${CLAUDE_HOME}/agents/writing-architect.md"
@@ -160,6 +162,7 @@ hook_scripts=(
   "${CLAUDE_HOME}/skills/autowork/scripts/record-verification.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/reflect-after-agent.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/stop-guard.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/show-status.sh"
 )
 
 for script in "${hook_scripts[@]}"; do

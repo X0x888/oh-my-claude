@@ -116,6 +116,9 @@ fi
 
 if [[ "${guard_blocks}" -ge 2 ]]; then
   rm -f "${STATE_ROOT}/.ulw_active"
+  write_state_batch \
+    "guard_exhausted" "$(now_epoch)" \
+    "guard_exhausted_detail" "review=${missing_review},verify=${missing_verify}"
   exit 0
 fi
 
