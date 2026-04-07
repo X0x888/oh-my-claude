@@ -71,7 +71,7 @@ render_prior_specialist_summaries() {
   tail -n 6 "${summaries_file}" | while IFS= read -r line; do
     [[ -z "${line}" ]] && continue
     jq -r 'select(.agent_type and .message) |
-      "- \(.agent_type): \(.message | gsub("[\\r\\n]+"; " ") | .[:220])"
+      "- \(.agent_type): \(.message | gsub("[\\r\\n]+"; " ") | .[:400])"
     ' <<<"${line}" 2>/dev/null || true
   done
 }

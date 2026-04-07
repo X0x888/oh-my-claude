@@ -38,7 +38,7 @@ if [[ -f "${summaries_file}" ]]; then
     agent_type="$(jq -r '.agent_type // empty' <<<"${latest_summary}")"
     message="$(jq -r '.message // empty | gsub("[\\r\\n]+"; " ")' <<<"${latest_summary}")"
     if [[ -n "${agent_type}" && -n "${message}" ]]; then
-      finding_context=" The ${agent_type} agent reported: $(truncate_chars 400 "${message}")."
+      finding_context=" The ${agent_type} agent reported: $(truncate_chars 1000 "${message}")."
     fi
   fi
 fi
