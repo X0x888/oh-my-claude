@@ -460,7 +460,10 @@ if [[ "${BYPASS_PERMISSIONS}" == "true" ]]; then
   printf '  Permissions:   bypass-permissions mode enabled\n'
 fi
 if [[ -f "${CLAUDE_HOME}/oh-my-claude.conf" ]]; then
-  printf '  Model tier:    %s\n' "$(grep -E '^model_tier=' "${CLAUDE_HOME}/oh-my-claude.conf" | cut -d= -f2)"
+  _tier="$(grep -E '^model_tier=' "${CLAUDE_HOME}/oh-my-claude.conf" | cut -d= -f2)" || true
+  if [[ -n "${_tier}" ]]; then
+    printf '  Model tier:    %s\n' "${_tier}"
+  fi
 fi
 printf '\n'
 printf 'Next steps:\n'

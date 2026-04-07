@@ -282,7 +282,7 @@ if [[ -f "${conf_path}" ]]; then
   if [[ -n "${active_tier:-}" ]]; then
     pass "Active model tier: ${active_tier}"
   else
-    warn "Config file exists but model_tier key is missing"
+    pass "No model tier set (using default: balanced)"
   fi
 else
   pass "No config file (using default: balanced)"
