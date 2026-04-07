@@ -11,6 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Find the most recent session directory (excluding dotfiles like .ulw_active)
 latest_session=""
 if [[ -d "${STATE_ROOT}" ]]; then
+  # shellcheck disable=SC2010  # filenames are controlled session IDs, no special chars
   latest_session="$(ls -t "${STATE_ROOT}" 2>/dev/null | grep -v '^\.' | head -1 || true)"
 fi
 
