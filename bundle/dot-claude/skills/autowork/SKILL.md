@@ -25,6 +25,7 @@ $ARGUMENTS
     - When launching parallel Explore agents, give each a distinct scope with explicit non-overlap boundaries.
     - Do NOT deliver the final structured report until all exploration agents have returned.
     - Verify the most impactful claims against actual code before including them.
+    - Cover multiple layers: code correctness, user-facing copy/messaging, build/config/deployment, and external dependencies (URLs, legal pages, metadata).
 7. Do not stop if the review or verification loop is still missing.
 8. Do not split unfinished work into "wave 1 done, wave 2 next" or similar handoff language unless the user explicitly asked for a checkpoint. Keep going until done.
 
