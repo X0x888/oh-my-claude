@@ -69,10 +69,9 @@ render_prior_specialist_summaries() {
 
   tail -n 6 "${summaries_file}" | while IFS= read -r line; do
     [[ -z "${line}" ]] && continue
-    agent_type="$(jq -r '.agent_type // empty' <<<"${line}")"
-    message="$(jq -r '.message // empty | gsub("[\\r\\n]+"; " ")' <<<"${line}")"
-    [[ -z "${agent_type}" || -z "${message}" ]] && continue
-    printf -- '- %s: %s\n' "${agent_type}" "$(truncate_chars 220 "${message}")"
+    jq -r 'select(.agent_type and .message) |
+      "- \(.agent_type): \(.message | gsub("[\\r\\n]+"; " ") | .[:220])"
+    ' <<<"${line}" 2>/dev/null || true
   done
 }
 
@@ -103,6 +102,9 @@ if grep -Eiq '(^|[^[:alnum:]_-])(ultrawork|ulw|autowork|sisyphus)([^[:alnum:]_-]
 
   write_state "workflow_mode" "ultrawork"
   write_state "task_domain" "${TASK_DOMAIN}"
+
+  # Sentinel for fast-path exit in PostToolUse hooks (zero-cost check)
+  touch "${STATE_ROOT}/.ulw_active"
 
   if [[ "${continuation_prompt}" -eq 1 ]]; then
     context_parts+=("Ultrawork continuation mode is active for this session. Continue the prior task instead of treating the literal word 'continue' or 'resume' as a new objective. In your first user-facing response, start with the bold phrase **Ultrawork continuation active.** then briefly state what is already done, what remains, and the next concrete action. Reuse finished work, preserve the existing task domain, and only re-dispatch branches that were interrupted or are still missing.")
@@ -150,7 +152,6 @@ if grep -Eiq '(^|[^[:alnum:]_-])(ultrawork|ulw|autowork|sisyphus)([^[:alnum:]_-]
   fi
 
   if [[ "${session_management_prompt}" -eq 0 && "${advisory_prompt}" -eq 0 && "${checkpoint_prompt}" -eq 0 ]]; then
-    context_parts+=("THINKING DIRECTIVE: Plan before each significant action and reflect after each result — proportional to the task's complexity. Do not chain tool calls without interleaved reasoning — mechanical sequences produce shallow work. Before acting: reason about what you expect and why. After results: reflect on whether the outcome matched expectations. When stuck: think harder, not faster — hypothesize, gather evidence, then act. Track progress with tasks on non-trivial work. Prioritize technical accuracy over validating beliefs.")
     case "${TASK_DOMAIN}" in
       coding)
         context_parts+=("Detected likely task domain: coding. For non-trivial work use quality-planner or prometheus first, use quality-researcher for local repo wiring, librarian for official docs and reference implementations, metis to pressure-test risky plans, oracle when stuck or debugging deeply, specialist engineering agents when relevant. Make changes incrementally — one logical change, verify it, then proceed. Test rigorously after edits — failing to test is the #1 failure mode. Run quality-reviewer before stopping. Never write placeholder stubs or sycophantic comments.")

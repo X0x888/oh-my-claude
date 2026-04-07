@@ -51,10 +51,11 @@ if [[ -n "${resume_state_dir}" ]]; then
     done
   fi
 
-  # JSONL and log files remain separate — always copy
+  # JSONL, log, and plan files remain separate — always copy
   copy_state_if_present "${resume_state_dir}" "subagent_summaries.jsonl"
   copy_state_if_present "${resume_state_dir}" "recent_prompts.jsonl"
   copy_state_if_present "${resume_state_dir}" "edited_files.log"
+  copy_state_if_present "${resume_state_dir}" "current_plan.md"
 
   write_state "resume_source_session_id" "${resume_source_id}"
 fi
@@ -76,10 +77,9 @@ render_subagent_summaries() {
 
   tail -n 6 "${summaries_file}" | while IFS= read -r line; do
     [[ -z "${line}" ]] && continue
-    agent_type="$(jq -r '.agent_type // empty' <<<"${line}")"
-    message="$(jq -r '.message // empty | gsub("[\\r\\n]+"; " ")' <<<"${line}")"
-    [[ -z "${agent_type}" || -z "${message}" ]] && continue
-    printf -- '- %s: %s\n' "${agent_type}" "$(truncate_chars 220 "${message}")"
+    jq -r 'select(.agent_type and .message) |
+      "- \(.agent_type): \(.message | gsub("[\\r\\n]+"; " ") | .[:220])"
+    ' <<<"${line}" 2>/dev/null || true
   done
 }
 
@@ -115,8 +115,15 @@ if [[ -n "${specialist_context}" ]]; then
   context_parts+=("Recent specialist conclusions:\n${specialist_context}")
 fi
 
+plan_file="$(session_file "current_plan.md")"
+if [[ -f "${plan_file}" ]]; then
+  plan_summary="$(head -c 2000 "${plan_file}")"
+  if [[ -n "${plan_summary}" ]]; then
+    context_parts+=("Preserved plan from prior session:\n${plan_summary}")
+  fi
+fi
+
 if [[ "${workflow_mode_value}" == "ultrawork" ]]; then
-  context_parts+=("THINKING DIRECTIVE: Plan before each significant action and reflect after each result — proportional to the task's complexity. Do not chain tool calls without interleaved reasoning — mechanical sequences produce shallow work. Before acting: reason about what you expect and why. After results: reflect on whether the outcome matched expectations. When stuck: think harder, not faster — hypothesize, gather evidence, then act. Track progress with tasks on non-trivial work. Prioritize technical accuracy over validating beliefs.")
   case "${task_domain_value}" in
     coding)
       context_parts+=("Active task domain: coding. Make changes incrementally — one logical change, verify it, then proceed. Test rigorously after edits. Run quality-reviewer before stopping.")

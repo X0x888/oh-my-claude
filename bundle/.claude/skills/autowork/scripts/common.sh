@@ -120,7 +120,7 @@ now_epoch() {
 
 is_maintenance_prompt() {
   local text="$1"
-  grep -Eq '^[[:space:]]*/(compact|clear|resume|memory|hooks|config|help|permissions|model|doctor|status)([[:space:]]|$)' <<<"${text}"
+  [[ "${text}" =~ ^[[:space:]]*/(compact|clear|resume|memory|hooks|config|help|permissions|model|doctor|status)([[:space:]]|$) ]]
 }
 
 truncate_chars() {
@@ -180,11 +180,21 @@ normalize_task_prompt() {
 is_continuation_request() {
   local text="$1"
   local normalized
+  local nocasematch_was_set=0
 
   normalized="$(normalize_task_prompt "${text}")"
   normalized="$(trim_whitespace "${normalized}")"
 
-  grep -Eiq '^[[:space:]]*((continue|resume)([[:space:]]+(the[[:space:]]+previous[[:space:]]+task|from[[:space:]]+where[[:space:]]+you[[:space:]]+left[[:space:]]+off|where[[:space:]]+you[[:space:]]+left[[:space:]]+off))?|carry[[:space:]]+on|keep[[:space:]]+going|pick[[:space:]]+(it|this)[[:space:]]+back[[:space:]]+up|pick[[:space:]]+up[[:space:]]+where[[:space:]]+you[[:space:]]+left[[:space:]]+off)([[:space:][:punct:]].*)?$' <<<"${normalized}"
+  if shopt -q nocasematch; then nocasematch_was_set=1; fi
+  shopt -s nocasematch
+
+  local result=1
+  if [[ "${normalized}" =~ ^[[:space:]]*((continue|resume)([[:space:]]+(the[[:space:]]+previous[[:space:]]+task|from[[:space:]]+where[[:space:]]+you[[:space:]]+left[[:space:]]+off|where[[:space:]]+you[[:space:]]+left[[:space:]]+off))?|carry[[:space:]]+on|keep[[:space:]]+going|pick[[:space:]]+(it|this)[[:space:]]+back[[:space:]]+up|pick[[:space:]]+up[[:space:]]+where[[:space:]]+you[[:space:]]+left[[:space:]]+off)([[:space:][:punct:]].*)?$ ]]; then
+    result=0
+  fi
+
+  if [[ "${nocasematch_was_set}" -eq 0 ]]; then shopt -u nocasematch; fi
+  return "${result}"
 }
 
 extract_continuation_directive() {
@@ -277,28 +287,29 @@ is_advisory_request() {
 
 is_imperative_request() {
   local text="$1"
+  local nocasematch_was_set=0
+
+  if shopt -q nocasematch; then nocasematch_was_set=1; fi
+  shopt -s nocasematch
+
+  local result=1
 
   # "Can/Could/Would you [verb]..." — polite imperatives
-  if grep -Eiq '^[[:space:]]*(can|could|would)[[:space:]]+you[[:space:]]+(please[[:space:]]+)?(fix|implement|add|create|build|update|refactor|debug|deploy|test|write|make|set[[:space:]]+up|change|modify|remove|delete|move|rename|install|configure|check|run|help|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|connect|push|pull|merge|commit|review|start|stop|enable|disable|open|close)' <<<"${text}"; then
-    return 0
-  fi
-
+  if [[ "${text}" =~ ^[[:space:]]*(can|could|would)[[:space:]]+you[[:space:]]+(please[[:space:]]+)?(fix|implement|add|create|build|update|refactor|debug|deploy|test|write|make|set[[:space:]]+up|change|modify|remove|delete|move|rename|install|configure|check|run|help|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|connect|push|pull|merge|commit|review|start|stop|enable|disable|open|close) ]]; then
+    result=0
   # "Please [verb]..." patterns
-  if grep -Eiq '^[[:space:]]*(please)[[:space:]]+(fix|implement|add|create|build|update|refactor|debug|deploy|test|write|make|change|modify|remove|delete|move|rename|install|configure|check|run|help|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|proceed|go)' <<<"${text}"; then
-    return 0
-  fi
-
+  elif [[ "${text}" =~ ^[[:space:]]*(please)[[:space:]]+(fix|implement|add|create|build|update|refactor|debug|deploy|test|write|make|change|modify|remove|delete|move|rename|install|configure|check|run|help|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|proceed|go) ]]; then
+    result=0
   # "Go ahead and..." patterns
-  if grep -Eiq '^[[:space:]]*go[[:space:]]+ahead' <<<"${text}"; then
-    return 0
-  fi
-
+  elif [[ "${text}" =~ ^[[:space:]]*go[[:space:]]+ahead ]]; then
+    result=0
   # "I need/want you to..." patterns
-  if grep -Eiq '^[[:space:]]*i[[:space:]]+(need|want)[[:space:]]+(you[[:space:]]+to|to)[[:space:]]' <<<"${text}"; then
-    return 0
+  elif [[ "${text}" =~ ^[[:space:]]*i[[:space:]]+(need|want)[[:space:]]+(you[[:space:]]+to|to)[[:space:]] ]]; then
+    result=0
   fi
 
-  return 1
+  if [[ "${nocasematch_was_set}" -eq 0 ]]; then shopt -u nocasematch; fi
+  return "${result}"
 }
 
 # --- end P0 ---
@@ -325,8 +336,23 @@ infer_domain() {
   local research_score
   local operations_score
 
-  coding_score=$(count_keyword_matches '\b(bugs?|fix(es|ed|ing)?|debug(ging)?|refactor(ing)?|implement(ation|ed|ing)?|repos?(itory)?|function|class(es)?|component|endpoints?|apis?|schema|database|quer(y|ies)|migration|tests?|build|lint(ing)?|compile|tsc|typescript|javascript|python|swift|xcode|react|next\.?js|css|html|scripts?|config(uration)?|hooks?|webhooks?|codebase|source.?code|deploy(ed|ing|ment)?|ci/?cd|docker|container|server|backend|frontend|fullstack)\b' "${text}")
-  coding_score=${coding_score:-0}
+  local coding_strong
+  coding_strong=$(count_keyword_matches '\b(bugs?|fix(es|ed|ing)?|debug(ging)?|refactor(ing)?|implement(ation|ed|ing)?|repos?(itory)?|function|class(es)?|component|endpoints?|apis?|schema|database|quer(y|ies)|migration|lint(ing)?|compile|tsc|typescript|javascript|python|swift|xcode|react|next\.?js|css|html|webhooks?|codebase|source.?code|ci/?cd|docker|container|backend|frontend|fullstack)\b' "${text}")
+  coding_strong=${coding_strong:-0}
+
+  local coding_weak
+  coding_weak=$(count_keyword_matches '\b(tests?|build|scripts?|config(uration)?|hooks?|deploy(ed|ing|ment)?|server)\b' "${text}")
+  coding_weak=${coding_weak:-0}
+
+  # Weak coding keywords only count when a strong signal is present,
+  # OR when 3+ weak signals cluster together (multiple weak = strong).
+  if [[ "${coding_strong}" -gt 0 ]]; then
+    coding_score=$((coding_strong + coding_weak))
+  elif [[ "${coding_weak}" -ge 3 ]]; then
+    coding_score="${coding_weak}"
+  else
+    coding_score=0
+  fi
 
   writing_score=$(count_keyword_matches '\b(paper|draft(ing)?|essay|article|report|proposal|email|memo|letter|statement|abstract|introduction|conclusion|outline|rewrite|polish(ing)?|paragraph|manuscript|cover.?letter|sop|personal.?statement|blog|post)\b' "${text}")
   writing_score=${writing_score:-0}

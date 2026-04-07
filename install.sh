@@ -33,15 +33,19 @@ BACKUP_DIR="${CLAUDE_HOME}/backups/oh-my-claude-${STAMP}"
 # ---------------------------------------------------------------------------
 
 BYPASS_PERMISSIONS=false
+EXCLUDE_IOS=false
 
 for arg in "$@"; do
   case "${arg}" in
     --bypass-permissions)
       BYPASS_PERMISSIONS=true
       ;;
+    --no-ios)
+      EXCLUDE_IOS=true
+      ;;
     *)
       printf 'Unknown argument: %s\n' "${arg}" >&2
-      printf 'Usage: bash install.sh [--bypass-permissions]\n' >&2
+      printf 'Usage: bash install.sh [--bypass-permissions] [--no-ios]\n' >&2
       exit 1
       ;;
   esac
@@ -314,6 +318,16 @@ backup_existing_targets
 
 # Step 2 — Copy bundle into ~/.claude/.
 rsync -a --exclude='.DS_Store' "${BUNDLE_CLAUDE}/" "${CLAUDE_HOME}/"
+
+# Remove iOS agents if --no-ios was specified.
+if [[ "${EXCLUDE_IOS}" == "true" ]]; then
+  for ios_agent in "${CLAUDE_HOME}/agents/ios-"*.md; do
+    if [[ -f "${ios_agent}" ]]; then
+      rm "${ios_agent}"
+      printf '  Excluded: %s\n' "$(basename "${ios_agent}")"
+    fi
+  done
+fi
 
 # Ensure quality-pack state directory exists (not in the bundle).
 mkdir -p "${CLAUDE_HOME}/quality-pack/state"

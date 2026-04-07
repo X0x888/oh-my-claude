@@ -22,6 +22,8 @@ if [[ -n "${last_assistant_message}" ]]; then
 fi
 
 if ! is_ultrawork_mode; then
+  # Clean up sentinel when a non-ULW session ends
+  rm -f "${STATE_ROOT}/.ulw_active"
   exit 0
 fi
 
@@ -108,10 +110,12 @@ else
 fi
 
 if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 ]]; then
+  rm -f "${STATE_ROOT}/.ulw_active"
   exit 0
 fi
 
 if [[ "${guard_blocks}" -ge 2 ]]; then
+  rm -f "${STATE_ROOT}/.ulw_active"
   exit 0
 fi
 

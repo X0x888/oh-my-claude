@@ -2,6 +2,9 @@
 
 set -euo pipefail
 
+# Fast-path: skip if ULW was never activated in this environment
+[[ -f "${HOME}/.claude/quality-pack/state/.ulw_active" ]] || exit 0
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOOK_JSON="$(cat)"
 . "${SCRIPT_DIR}/common.sh"

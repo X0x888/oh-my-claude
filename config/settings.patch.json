@@ -115,6 +115,24 @@
         ]
       },
       {
+        "matcher": "quality-planner",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/skills/autowork/scripts/record-plan.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "prometheus",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/skills/autowork/scripts/record-plan.sh"
+          }
+        ]
+      },
+      {
         "matcher": "quality-reviewer",
         "hooks": [
           {

@@ -2,8 +2,6 @@
 
 - `/autowork <task>` is the main workflow. Use it for end-to-end implementation, debugging, migrations, refactors, and other non-trivial work where autonomy matters.
 - `/ulw <task>` is a short alias for `/autowork <task>`.
-- `/ultrawork <task>` is the explicit long-form alias for the same workflow.
-- `/sisyphus <task>` is a compatibility alias for the same maximum-autonomy workflow.
 - `/plan-hard <task>` creates a decision-complete plan without editing files.
 - `/review-hard [focus]` performs a findings-first review of the current worktree or a focused area.
 - `/research-hard <topic>` gathers targeted repository, tool, or API context before implementation.

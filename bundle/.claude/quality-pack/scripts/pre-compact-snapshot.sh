@@ -75,9 +75,12 @@ render_recent_prompts() {
     return
   fi
 
-  jq -r '.text | gsub("[\\r\\n]+"; " ")' "${prompts_file}" 2>/dev/null | tail -n 3 | while IFS= read -r line; do
+  tail -n 3 "${prompts_file}" | while IFS= read -r line; do
     [[ -z "${line}" ]] && continue
-    printf -- '- %s\n' "$(truncate_chars 260 "${line}")"
+    local text
+    text="$(jq -r '.text | gsub("[\\r\\n]+"; " ")' <<<"${line}" 2>/dev/null || true)"
+    [[ -z "${text}" ]] && continue
+    printf -- '- %s\n' "$(truncate_chars 260 "${text}")"
   done
 }
 
@@ -105,10 +108,9 @@ render_subagent_summaries() {
 
   tail -n 6 "${summaries_file}" | while IFS= read -r line; do
     [[ -z "${line}" ]] && continue
-    agent_type="$(jq -r '.agent_type // empty' <<<"${line}")"
-    message="$(jq -r '.message // empty | gsub("[\\r\\n]+"; " ")' <<<"${line}")"
-    [[ -z "${agent_type}" || -z "${message}" ]] && continue
-    printf -- '- %s: %s\n' "${agent_type}" "$(truncate_chars 260 "${message}")"
+    jq -r 'select(.agent_type and .message) |
+      "- \(.agent_type): \(.message | gsub("[\\r\\n]+"; " ") | .[:260])"
+    ' <<<"${line}" 2>/dev/null || true
   done
 }
 
@@ -140,7 +142,7 @@ render_subagent_summaries() {
   fi
 
   if [[ -n "${last_assistant_message_value}" ]]; then
-    printf '\n## Last Assistant State Before Compact\n%s\n' "${last_assistant_message_value}"
+    printf '\n## Last Assistant State Before Compact\n%s\n' "$(truncate_chars 2000 "${last_assistant_message_value}")"
   fi
 
   recent_prompts_rendered="$(render_recent_prompts)"
@@ -151,6 +153,14 @@ render_subagent_summaries() {
   subagent_rendered="$(render_subagent_summaries)"
   if [[ -n "${subagent_rendered}" ]]; then
     printf '\n## Recent Specialist Conclusions\n%s\n' "${subagent_rendered}"
+  fi
+
+  plan_file="$(session_file "current_plan.md")"
+  if [[ -f "${plan_file}" ]]; then
+    plan_content="$(head -c 3000 "${plan_file}")"
+    if [[ -n "${plan_content}" ]]; then
+      printf '\n## Active Plan\n%s\n' "${plan_content}"
+    fi
   fi
 
   edited_files_rendered="$(render_edited_files)"
