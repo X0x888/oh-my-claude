@@ -103,13 +103,35 @@ case "${task_domain}" in
     ;;
 esac
 
+# Check if verification ran but the tests actually failed
+verify_failed=0
+if [[ "${missing_verify}" -eq 0 ]]; then
+  case "${task_domain}" in
+    coding|mixed)
+      verify_outcome="$(read_state "last_verify_outcome")"
+      if [[ "${verify_outcome}" == "failed" ]]; then
+        verify_failed=1
+      fi
+      ;;
+  esac
+fi
+
+# Check if review ran but findings were not addressed (no edits after review)
+review_unremediated=0
+if [[ "${missing_review}" -eq 0 ]]; then
+  review_had_findings="$(read_state "review_had_findings")"
+  if [[ "${review_had_findings}" == "true" && -n "${last_review_ts}" && "${last_edit_ts}" -lt "${last_review_ts}" ]]; then
+    review_unremediated=1
+  fi
+fi
+
 if [[ "${task_domain}" == "writing" || "${task_domain}" == "research" || "${task_domain}" == "operations" || "${task_domain}" == "general" ]]; then
   reason="Autowork guard: the deliverable changed but the final quality loop is incomplete."
 else
   reason="Autowork guard: edits were made but the final quality loop is incomplete."
 fi
 
-if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 ]]; then
+if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed}" -eq 0 && "${review_unremediated}" -eq 0 ]]; then
   rm -f "${STATE_ROOT}/.ulw_active"
   exit 0
 fi
@@ -118,22 +140,43 @@ if [[ "${guard_blocks}" -ge 2 ]]; then
   rm -f "${STATE_ROOT}/.ulw_active"
   write_state_batch \
     "guard_exhausted" "$(now_epoch)" \
-    "guard_exhausted_detail" "review=${missing_review},verify=${missing_verify}"
+    "guard_exhausted_detail" "review=${missing_review},verify=${missing_verify},verify_failed=${verify_failed},unremediated=${review_unremediated}"
   exit 0
 fi
 
 write_state "stop_guard_blocks" "$((guard_blocks + 1))"
 
-if [[ "${missing_review}" -eq 1 && "${missing_verify}" -eq 1 ]]; then
-  reason="${reason} Continue working: run the smallest meaningful validation available, then delegate to quality-reviewer, address its highest-signal findings, and only then stop. If reliable automation is impossible, explain the exact blocker and residual risk."
-elif [[ "${missing_review}" -eq 1 ]]; then
+# Build action messages from individual conditions
+verify_action=""
+review_action=""
+
+if [[ "${missing_verify}" -eq 1 ]]; then
+  verify_action="run the smallest meaningful validation available"
+elif [[ "${verify_failed}" -eq 1 ]]; then
+  verify_action="the last verification command failed — fix the underlying issues and re-run verification"
+fi
+
+if [[ "${missing_review}" -eq 1 ]]; then
   if [[ "${task_domain}" == "writing" || "${task_domain}" == "research" || "${task_domain}" == "operations" || "${task_domain}" == "general" ]]; then
-    reason="${reason} Continue working: delegate to editor-critic or another relevant reviewer, address any high-signal findings, and only then stop."
+    review_action="delegate to editor-critic or another relevant reviewer and address any high-signal findings"
   else
-    reason="${reason} Continue working: delegate to quality-reviewer, address any high-signal findings, and only then stop."
+    review_action="delegate to quality-reviewer and address its highest-signal findings"
   fi
-else
-  reason="${reason} Continue working: run the smallest meaningful validation available before stopping. If reliable automation is impossible, explain the exact blocker and residual risk."
+elif [[ "${review_unremediated}" -eq 1 ]]; then
+  review_action="the reviewer flagged issues that were not addressed — fix them or explain why they do not apply"
+fi
+
+if [[ -n "${verify_action}" && -n "${review_action}" ]]; then
+  reason="${reason} Continue working: ${verify_action}, then ${review_action}, and only then stop."
+elif [[ -n "${verify_action}" ]]; then
+  reason="${reason} Continue working: ${verify_action} before stopping. If reliable automation is impossible, explain the exact blocker and residual risk."
+elif [[ -n "${review_action}" ]]; then
+  reason="${reason} Continue working: ${review_action}, and only then stop."
+fi
+
+# Warn on penultimate block that the guard will exhaust next time
+if [[ "${guard_blocks}" -ge 1 ]]; then
+  reason="${reason} NOTE: this is the final guard block — the next stop attempt will be allowed regardless of quality gate status."
 fi
 
 jq -nc --arg reason "${reason}" '{"decision":"block","reason":$reason}'

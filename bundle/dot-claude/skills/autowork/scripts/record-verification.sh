@@ -27,9 +27,28 @@ if [[ -z "${command_text}" ]]; then
 fi
 
 if grep -Eiq '(^|[[:space:]])(npm|pnpm|yarn|bun|cargo|go|pytest|python|uv|ruff|mypy|eslint|tsc|vitest|jest|phpunit|rspec|gradle|xcodebuild|swift|make|just)([[:space:]].*)?(test|tests|check|lint|typecheck|build)|\b(pytest|vitest|jest|cargo test|go test|swift test|swift build|ruff check|mypy|eslint|tsc|typecheck|phpunit|rspec|gradle test|xcodebuild test)\b' <<<"${command_text}"; then
+
+  # Detect test outcome from tool response (field may be tool_response or tool_result)
+  tool_output="$(json_get '.tool_response' 2>/dev/null || true)"
+  if [[ -z "${tool_output}" ]]; then
+    tool_output="$(json_get '.tool_result' 2>/dev/null || true)"
+  fi
+
+  verify_outcome="passed"
+  if [[ -n "${tool_output}" ]]; then
+    # Case-sensitive: uppercase framework indicators (FAIL, FAILED, ERROR, FAILURES)
+    # Case-sensitive: Rust compiler errors (error[E0308])
+    # Case-insensitive: count patterns ("3 failed", "2 failures") and exit codes
+    if printf '%s' "${tool_output}" | grep -Eq '\b(FAIL(ED)?|ERROR(S)?|FAILURE(S)?)\b|error\[E[0-9]' \
+      || printf '%s' "${tool_output}" | grep -Eiq 'exit (code|status)[: ]*[1-9]|[1-9][0-9]* (failed|failing|failures?|errors?)'; then
+      verify_outcome="failed"
+    fi
+  fi
+
   write_state_batch \
     "last_verify_ts" "$(now_epoch)" \
     "last_verify_cmd" "${command_text}" \
+    "last_verify_outcome" "${verify_outcome}" \
     "stop_guard_blocks" "0" \
     "session_handoff_blocks" "0" \
     "stall_counter" "0"

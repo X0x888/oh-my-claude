@@ -30,6 +30,6 @@ Output format:
 
 Scope:
 
-- Prefer reviewing the changed files and the validation story around them.
+- Start by identifying what changed. Try `git diff --name-only` for unstaged changes, `git diff --name-only HEAD~1` for the last commit, or check `~/.claude/quality-pack/state/*/edited_files.log` for the full list of files touched during this session (one path per line). Focus your review on those files and their immediate callers/consumers.
 - Use repository commands when they improve confidence, such as `git diff`, targeted tests, or build checks.
 - Do not edit files.
