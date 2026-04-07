@@ -49,18 +49,28 @@ Keep PRs focused. One logical change per PR.
 Before submitting a pull request:
 
 ```bash
+# Syntax + lint
 bash -n bundle/dot-claude/**/*.sh
 shellcheck bundle/dot-claude/**/*.sh
+
+# Installation verification
 bash verify.sh
+
+# Unit / integration tests
+bash tests/test-intent-classification.sh
+bash tests/test-quality-gates.sh
+bash tests/test-stall-detection.sh
+bash tests/test-e2e-hook-sequence.sh
 ```
 
-All three must pass cleanly.
+All checks must pass cleanly.
 
 ## Adding Agents
 
 1. Create a new file in `bundle/dot-claude/agents/` with a descriptive, hyphen-separated name.
 2. Define the agent's role, capabilities, and constraints.
 3. Use `disallowedTools` to set permission boundaries appropriate to the agent's role.
+4. If the agent handles a specific domain, ensure `infer_domain()` in `common.sh` can route to it.
 
 ## Adding Skills
 
@@ -73,9 +83,21 @@ All three must pass cleanly.
 1. Place the script in the appropriate directory:
    - Lifecycle hooks: `bundle/dot-claude/quality-pack/scripts/`
    - Autowork hooks: `bundle/dot-claude/skills/autowork/scripts/`
-2. Source `common.sh` for shared utilities.
-3. Exit 0 when `SESSION_ID` is missing or empty.
-4. Register the hook in `config/settings.patch.json`.
+2. Begin with `set -euo pipefail`.
+3. Source `common.sh` for shared utilities.
+4. Exit 0 when `SESSION_ID` is missing or empty.
+5. Register the hook in `config/settings.patch.json`.
+
+## Documentation Maintenance
+
+When you add, remove, or rename agents, skills, scripts, or directories, update these files:
+
+- **CLAUDE.md** -- key directories, key files, testing
+- **AGENTS.md** -- architecture diagram, component descriptions
+- **README.md** -- repository structure, features, counts
+- **CONTRIBUTING.md** -- testing and component-addition sections
+
+Keeping counts and directory listings accurate prevents drift between code and docs.
 
 ## Code of Conduct
 

@@ -126,9 +126,41 @@ For the full architecture, see [docs/architecture.md](docs/architecture.md).
 
 ---
 
-## Repository layout note
+## Repository structure
 
-The bundle directory is named `bundle/dot-claude/` in the repository rather than `bundle/.claude/`. This is intentional: Claude Code's permission system treats any path containing `.claude/` as sensitive configuration, which triggers permission prompts on every edit during development. The install script copies `bundle/dot-claude/` into `~/.claude/` on the user's machine, so the installed layout is unchanged. This is a common pattern in distributable config projects (oh-my-zsh, chezmoi, etc.). Please don't rename it back.
+```
+oh-my-claude/
+├── install.sh / uninstall.sh / verify.sh   # Install, remove, and verify
+├── bundle/dot-claude/                       # Installs to ~/.claude/
+│   ├── agents/          (22 agents)         # Specialist agent definitions
+│   ├── skills/          (11 skills)         # Skill definitions + autowork hooks
+│   ├── quality-pack/                        # Lifecycle hooks + memory files
+│   ├── output-styles/                       # Output format templates
+│   └── statusline.py                        # Custom statusline widget
+├── config/settings.patch.json               # Merged into user settings on install
+├── tests/               (4 test scripts)    # Intent, quality gates, stall, e2e
+└── docs/                                    # Architecture, customization, FAQ, prompts
+```
+
+> **Why `dot-claude` instead of `.claude`?** Claude Code's permission system treats paths containing `.claude/` as sensitive, triggering prompts on every edit during development. The installer copies `bundle/dot-claude/` into `~/.claude/` on your machine. This is the same pattern used by oh-my-zsh, chezmoi, etc.
+
+### Available skills
+
+Skills are invoked as slash commands or routed automatically by the intent classifier.
+
+| Skill | Command | Purpose |
+|-------|---------|---------|
+| autowork | `/autowork <task>` | Maximum-autonomy professional workflow |
+| ulw | `/ulw <task>` | Alias for autowork |
+| plan-hard | `/plan-hard <task>` | Decision-complete planning without edits |
+| review-hard | `/review-hard [focus]` | Findings-first code review |
+| research-hard | `/research-hard <topic>` | Targeted context gathering |
+| prometheus | `/prometheus <goal>` | Interview-first planning for ambiguous work |
+| metis | `/metis <plan>` | Stress-test plans for hidden risks |
+| oracle | `/oracle <issue>` | Deep debugging second opinion |
+| librarian | `/librarian <topic>` | Official docs and reference research |
+| atlas | `/atlas [focus]` | Bootstrap or refresh repo instruction files |
+| ulw-status | `/ulw-status` | Show current session state (debugging) |
 
 ## Power-user setup
 
@@ -140,9 +172,33 @@ bash install.sh --bypass-permissions
 
 This skips all Claude Code permission prompts, letting the harness run without interruption. The quality gates still apply -- bypass-permissions affects Claude Code's built-in confirmations, not the harness's review and verification requirements. Use this if you trust the harness and want uninterrupted flow.
 
+Other install options:
+
+```bash
+bash install.sh --no-ios          # Skip iOS-specific agents
+bash uninstall.sh                 # Cleanly remove the harness
+```
+
+## Testing
+
+The harness includes both a post-install verifier and dedicated test scripts:
+
+```bash
+bash verify.sh                              # Installation integrity check
+bash tests/test-intent-classification.sh    # Intent routing logic
+bash tests/test-quality-gates.sh            # Stop guard enforcement
+bash tests/test-stall-detection.sh          # Loop detection
+bash tests/test-e2e-hook-sequence.sh        # End-to-end hook sequence
+```
+
 ## Customization
 
-The harness is designed to be extended. Agent definitions, quality gate thresholds, domain routing rules, and specialist chains can all be modified to match your workflow. See [docs/customization.md](docs/customization.md) for details on what's configurable and how to change it safely.
+The harness is designed to be extended. Agent definitions, quality gate thresholds, domain routing rules, and specialist chains can all be modified to match your workflow.
+
+- [Architecture](docs/architecture.md) -- system design and component interaction
+- [Customization](docs/customization.md) -- what's configurable and how to change it safely
+- [FAQ](docs/faq.md) -- common questions and troubleshooting
+- [Prompts](docs/prompts.md) -- prompt reference and routing details
 
 ## Contributing
 

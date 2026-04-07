@@ -9,20 +9,37 @@ oh-my-claude is a cognitive quality harness for Claude Code. It provides bash ho
 ## Architecture
 
 ```
-bundle/dot-claude/
-  agents/                   # 22 specialist agent definitions (.md)
-  output-styles/            # Output format templates
-  quality-pack/
-    memory/                 # Core, skills, and compact memory files
-    scripts/                # Hook scripts (prompt routing, compaction, session lifecycle)
-  skills/                   # Skill definitions, each in <name>/SKILL.md
-    autowork/scripts/       # Shared hook scripts and utilities
-      common.sh             # Shared functions (state, JSON, classification)
-  statusline.py             # Custom statusline with context tracking
-  CLAUDE.md                 # Installed user-facing CLAUDE.md
+oh-my-claude/
+  install.sh                  # Merge-safe installer (--bypass-permissions, --no-ios)
+  uninstall.sh                # Clean removal
+  verify.sh                   # Post-install integrity checker
 
-config/
-  settings.patch.json       # Settings merged into user's settings.json
+  bundle/dot-claude/          # Installs to ~/.claude/
+    agents/                   # 22 specialist agent definitions (.md)
+    output-styles/            # Output format templates
+    quality-pack/
+      memory/                 # Core, skills, and compact memory files
+      scripts/                # 5 lifecycle hook scripts (prompt routing, compaction, session)
+    skills/                   # 11 skill definitions, each in <name>/SKILL.md
+      autowork/scripts/       # 10 autowork hook scripts and utilities
+        common.sh             # Shared functions (state, JSON, classification)
+    statusline.py             # Custom statusline with context tracking
+    CLAUDE.md                 # Installed user-facing CLAUDE.md
+
+  config/
+    settings.patch.json       # Settings merged into user's settings.json
+
+  tests/                      # Bash test scripts
+    test-e2e-hook-sequence.sh
+    test-intent-classification.sh
+    test-quality-gates.sh
+    test-stall-detection.sh
+
+  docs/                       # Extended documentation
+    architecture.md
+    customization.md
+    faq.md
+    prompts.md
 ```
 
 ### Key Components
@@ -71,6 +88,12 @@ shellcheck bundle/dot-claude/**/*.sh
 
 # Integration verification
 bash verify.sh
+
+# Unit / integration tests
+bash tests/test-intent-classification.sh
+bash tests/test-quality-gates.sh
+bash tests/test-stall-detection.sh
+bash tests/test-e2e-hook-sequence.sh
 ```
 
 ## Protected Design Decisions
@@ -85,6 +108,17 @@ Do not change these without discussion in a GitHub issue:
 
 4. **40% threshold for mixed domain classification**: When no single domain exceeds 40% of signal weight, the task is classified as "mixed" and routed to a generalist agent. Changing this threshold affects routing accuracy across all intents.
 
+## Documentation Maintenance
+
+When you add, remove, or rename agents, skills, scripts, or directories, update these files to reflect the change:
+
+- **CLAUDE.md** -- key directories, key files, and testing sections
+- **AGENTS.md** -- architecture diagram and component descriptions
+- **README.md** -- repository structure, feature descriptions, and counts
+- **CONTRIBUTING.md** -- testing and component-addition sections
+
+Counts (agents, skills, scripts) and directory listings go stale fast. Keep them accurate.
+
 ## Adding New Components
 
 ### Adding an Agent
@@ -92,7 +126,7 @@ Do not change these without discussion in a GitHub issue:
 1. Create `bundle/dot-claude/agents/<agent-name>.md`.
 2. Define the agent's role, capabilities, and constraints.
 3. Specify `disallowedTools` to enforce permission boundaries appropriate to the role.
-4. If the agent handles a specific domain, ensure `classify_task_domain()` in `common.sh` can route to it.
+4. If the agent handles a specific domain, ensure `infer_domain()` in `common.sh` can route to it.
 
 ### Adding a Skill
 
