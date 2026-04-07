@@ -117,6 +117,33 @@ assert_intent "continuation" "do the rest"
 assert_intent "continuation" "next, but skip the tests"
 assert_intent "continuation" "go on, focus on the API layer"
 
+# --- Directive extraction (tests extract_continuation_directive) ---
+printf '\nDirective extraction:\n'
+
+assert_directive() {
+  local input="$1"
+  local expected="$2"
+  local actual
+  actual="$(extract_continuation_directive "${input}")"
+  if [[ "${actual}" == "${expected}" ]]; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: extract_continuation_directive "%s"\n    expected="%s" actual="%s"\n' "${input}" "${expected}" "${actual}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
+assert_directive "continue" ""
+assert_directive "carry on, focus on the API layer" "focus on the API layer"
+assert_directive "keep going but skip tests" "but skip tests"
+assert_directive "pick it back up, do the remaining tasks" "do the remaining tasks"
+assert_directive "pick up where you left off" ""
+assert_directive "next, but skip the tests" "but skip the tests"
+assert_directive "go on, focus on the API layer" "focus on the API layer"
+assert_directive "proceed" ""
+assert_directive "finish the rest" ""
+assert_directive "do the remaining work, starting with auth" "starting with auth"
+
 printf '\n=== Results: %d passed, %d failed ===\n' "${pass}" "${fail}"
 if [[ "${fail}" -gt 0 ]]; then
   exit 1

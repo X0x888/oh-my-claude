@@ -136,10 +136,10 @@ sweep_stale_sessions() {
     fi
   fi
 
-  # Sweep directories older than 7 days (exclude dotfiles like .ulw_active)
+  # Sweep directories older than 7 days (exclude dotfiles like .ulw_active, .last_sweep)
   if [[ -d "${STATE_ROOT}" ]]; then
     find "${STATE_ROOT}" -maxdepth 1 -type d -mtime +7 \
-      ! -name '.' ! -name '..' ! -path "${STATE_ROOT}" \
+      ! -name '.' ! -name '..' ! -name '.*' ! -path "${STATE_ROOT}" \
       -exec rm -rf {} + 2>/dev/null || true
   fi
 
@@ -248,7 +248,7 @@ extract_continuation_directive() {
       remainder="${BASH_REMATCH[2]}"
     fi
   elif [[ "${normalized}" =~ ^(carry[[:space:]]+on|keep[[:space:]]+going|pick[[:space:]]+(it|this)[[:space:]]+back[[:space:]]+up|pick[[:space:]]+up[[:space:]]+where[[:space:]]+you[[:space:]]+left[[:space:]]+off)[[:space:]]*(.*)$ ]]; then
-    remainder="${BASH_REMATCH[4]}"
+    remainder="${BASH_REMATCH[3]}"
   elif [[ "${normalized}" =~ ^(next|go[[:space:]]+on|proceed|finish[[:space:]]+the[[:space:]]+rest|do[[:space:]]+the[[:space:]]+(remaining[[:space:]]+(work|items|tasks)|rest))[[:space:]]*(.*)$ ]]; then
     remainder="${BASH_REMATCH[4]}"
   fi
