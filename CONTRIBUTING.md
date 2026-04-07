@@ -49,8 +49,8 @@ Keep PRs focused. One logical change per PR.
 Before submitting a pull request:
 
 ```bash
-bash -n bundle/.claude/**/*.sh
-shellcheck bundle/.claude/**/*.sh
+bash -n bundle/dot-claude/**/*.sh
+shellcheck bundle/dot-claude/**/*.sh
 bash verify.sh
 ```
 
@@ -58,21 +58,21 @@ All three must pass cleanly.
 
 ## Adding Agents
 
-1. Create a new file in `bundle/.claude/agents/` with a descriptive, hyphen-separated name.
+1. Create a new file in `bundle/dot-claude/agents/` with a descriptive, hyphen-separated name.
 2. Define the agent's role, capabilities, and constraints.
 3. Use `disallowedTools` to set permission boundaries appropriate to the agent's role.
 
 ## Adding Skills
 
-1. Create a directory `bundle/.claude/skills/<skill-name>/`.
+1. Create a directory `bundle/dot-claude/skills/<skill-name>/`.
 2. Add a `SKILL.md` file defining trigger conditions and instructions.
 3. If the skill requires scripts, place them in a `scripts/` subdirectory.
 
 ## Adding Hook Scripts
 
 1. Place the script in the appropriate directory:
-   - Lifecycle hooks: `bundle/.claude/quality-pack/scripts/`
-   - Autowork hooks: `bundle/.claude/skills/autowork/scripts/`
+   - Lifecycle hooks: `bundle/dot-claude/quality-pack/scripts/`
+   - Autowork hooks: `bundle/dot-claude/skills/autowork/scripts/`
 2. Source `common.sh` for shared utilities.
 3. Exit 0 when `SESSION_ID` is missing or empty.
 4. Register the hook in `config/settings.patch.json`.

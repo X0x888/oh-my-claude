@@ -9,6 +9,7 @@
 # Usage:
 #   bash install.sh                    # standard install
 #   bash install.sh --bypass-permissions  # also enable bypass-permissions mode
+#   bash install.sh --uninstall          # remove oh-my-claude (delegates to uninstall.sh)
 #
 # Requires: rsync, and either python3 or jq for JSON merging.
 
@@ -21,7 +22,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TARGET_HOME="${TARGET_HOME:-$HOME}"
 CLAUDE_HOME="${TARGET_HOME}/.claude"
-BUNDLE_CLAUDE="${SCRIPT_DIR}/bundle/.claude"
+BUNDLE_CLAUDE="${SCRIPT_DIR}/bundle/dot-claude"
 BUNDLE_GHOSTTY="${SCRIPT_DIR}/config/ghostty"
 GHOSTTY_HOME="${TARGET_HOME}/.config/ghostty"
 SETTINGS_PATCH="${SCRIPT_DIR}/config/settings.patch.json"
@@ -35,6 +36,12 @@ BACKUP_DIR="${CLAUDE_HOME}/backups/oh-my-claude-${STAMP}"
 BYPASS_PERMISSIONS=false
 EXCLUDE_IOS=false
 
+# Handle --uninstall early (mutually exclusive with install flags).
+if [[ "${1:-}" == "--uninstall" ]]; then
+  shift
+  exec bash "${SCRIPT_DIR}/uninstall.sh" "$@"
+fi
+
 for arg in "$@"; do
   case "${arg}" in
     --bypass-permissions)
@@ -45,7 +52,7 @@ for arg in "$@"; do
       ;;
     *)
       printf 'Unknown argument: %s\n' "${arg}" >&2
-      printf 'Usage: bash install.sh [--bypass-permissions] [--no-ios]\n' >&2
+      printf 'Usage: bash install.sh [--bypass-permissions] [--no-ios] [--uninstall]\n' >&2
       exit 1
       ;;
   esac

@@ -9,7 +9,7 @@ oh-my-claude is a cognitive quality harness for Claude Code. It provides bash ho
 ## Architecture
 
 ```
-bundle/.claude/
+bundle/dot-claude/
   agents/                   # 22 specialist agent definitions (.md)
   output-styles/            # Output format templates
   quality-pack/
@@ -54,7 +54,7 @@ Session state is stored as JSON in `$HOME/.claude/quality-pack/state/<session_id
 
 ### Agents
 
-- Each agent is a single `.md` file in `bundle/.claude/agents/`.
+- Each agent is a single `.md` file in `bundle/dot-claude/agents/`.
 - Agents use `disallowedTools` to enforce permission boundaries (e.g., a reviewer agent cannot edit files).
 - Agent names should be descriptive and hyphen-separated.
 
@@ -64,10 +64,10 @@ Run these before submitting changes:
 
 ```bash
 # Syntax validation
-bash -n bundle/.claude/**/*.sh
+bash -n bundle/dot-claude/**/*.sh
 
 # Linting
-shellcheck bundle/.claude/**/*.sh
+shellcheck bundle/dot-claude/**/*.sh
 
 # Integration verification
 bash verify.sh
@@ -89,22 +89,22 @@ Do not change these without discussion in a GitHub issue:
 
 ### Adding an Agent
 
-1. Create `bundle/.claude/agents/<agent-name>.md`.
+1. Create `bundle/dot-claude/agents/<agent-name>.md`.
 2. Define the agent's role, capabilities, and constraints.
 3. Specify `disallowedTools` to enforce permission boundaries appropriate to the role.
 4. If the agent handles a specific domain, ensure `classify_task_domain()` in `common.sh` can route to it.
 
 ### Adding a Skill
 
-1. Create `bundle/.claude/skills/<skill-name>/SKILL.md`.
+1. Create `bundle/dot-claude/skills/<skill-name>/SKILL.md`.
 2. Define trigger conditions, instructions, and any required scripts.
-3. If the skill needs hook scripts, place them in `bundle/.claude/skills/<skill-name>/scripts/`.
+3. If the skill needs hook scripts, place them in `bundle/dot-claude/skills/<skill-name>/scripts/`.
 
 ### Adding a Hook Script
 
 1. Place the script in the appropriate directory:
-   - Lifecycle hooks: `bundle/.claude/quality-pack/scripts/`
-   - Autowork hooks: `bundle/.claude/skills/autowork/scripts/`
+   - Lifecycle hooks: `bundle/dot-claude/quality-pack/scripts/`
+   - Autowork hooks: `bundle/dot-claude/skills/autowork/scripts/`
 2. Begin with `set -euo pipefail`.
 3. Source `common.sh`: `. "${HOME}/.claude/skills/autowork/scripts/common.sh"`
 4. Exit 0 on missing `SESSION_ID`.

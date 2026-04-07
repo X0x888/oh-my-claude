@@ -4,17 +4,17 @@ Cognitive quality harness for Claude Code -- bash hooks, specialist agents, and 
 
 ## Key Directories
 
-- `bundle/.claude/agents/` -- 22 specialist agent definitions with permission boundaries
-- `bundle/.claude/quality-pack/scripts/` -- lifecycle hook scripts (prompt routing, compaction, session management)
-- `bundle/.claude/skills/` -- skill definitions and autowork hook scripts
-- `bundle/.claude/skills/autowork/scripts/common.sh` -- shared utility library (state, JSON, classification)
+- `bundle/dot-claude/agents/` -- 22 specialist agent definitions with permission boundaries
+- `bundle/dot-claude/quality-pack/scripts/` -- lifecycle hook scripts (prompt routing, compaction, session management)
+- `bundle/dot-claude/skills/` -- skill definitions and autowork hook scripts
+- `bundle/dot-claude/skills/autowork/scripts/common.sh` -- shared utility library (state, JSON, classification)
 - `config/settings.patch.json` -- settings merged into user config on install
 
 ## Testing
 
 ```bash
-bash -n bundle/.claude/**/*.sh
-shellcheck bundle/.claude/**/*.sh
+bash -n bundle/dot-claude/**/*.sh
+shellcheck bundle/dot-claude/**/*.sh
 bash verify.sh
 ```
 

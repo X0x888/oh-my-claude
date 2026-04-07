@@ -58,7 +58,7 @@ Pre- and post-compact hooks snapshot the working state when Claude Code compacts
 
 ### Zero dependencies
 
-No npm. No TypeScript. No Node.js runtime. No plugin framework. The entire harness is bash scripts and jq. It works anywhere Claude Code runs, installs in seconds, and leaves no footprint beyond the `.claude/` directory.
+No npm. No TypeScript. No Node.js runtime. No plugin framework. The entire harness is bash scripts and jq. It works anywhere Claude Code runs, installs in seconds, and leaves no footprint beyond the `~/.claude/` directory.
 
 ---
 
@@ -125,6 +125,10 @@ For the full architecture, see [docs/architecture.md](docs/architecture.md).
 | **Architecture** | Monolithic | Plugin/orchestration | Harness hooks |
 
 ---
+
+## Repository layout note
+
+The bundle directory is named `bundle/dot-claude/` in the repository rather than `bundle/.claude/`. This is intentional: Claude Code's permission system treats any path containing `.claude/` as sensitive configuration, which triggers permission prompts on every edit during development. The install script copies `bundle/dot-claude/` into `~/.claude/` on the user's machine, so the installed layout is unchanged. This is a common pattern in distributable config projects (oh-my-zsh, chezmoi, etc.). Please don't rename it back.
 
 ## Power-user setup
 
