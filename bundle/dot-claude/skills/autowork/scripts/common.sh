@@ -118,6 +118,36 @@ now_epoch() {
   date +%s
 }
 
+# --- State directory TTL sweep ---
+# Deletes session state dirs older than 7 days. Runs at most once per day,
+# gated by a marker file timestamp.
+
+sweep_stale_sessions() {
+  local marker="${STATE_ROOT}/.last_sweep"
+  local now
+  now="$(date +%s)"
+
+  # Skip if swept within the last 24 hours
+  if [[ -f "${marker}" ]]; then
+    local last_sweep
+    last_sweep="$(cat "${marker}" 2>/dev/null || echo 0)"
+    if [[ $(( now - last_sweep )) -lt 86400 ]]; then
+      return
+    fi
+  fi
+
+  # Sweep directories older than 7 days (exclude dotfiles like .ulw_active)
+  if [[ -d "${STATE_ROOT}" ]]; then
+    find "${STATE_ROOT}" -maxdepth 1 -type d -mtime +7 \
+      ! -name '.' ! -name '..' ! -path "${STATE_ROOT}" \
+      -exec rm -rf {} + 2>/dev/null || true
+  fi
+
+  printf '%s\n' "${now}" > "${marker}"
+}
+
+# --- end TTL sweep ---
+
 is_maintenance_prompt() {
   local text="$1"
   [[ "${text}" =~ ^[[:space:]]*/(compact|clear|resume|memory|hooks|config|help|permissions|model|doctor|status)([[:space:]]|$) ]]
@@ -189,7 +219,7 @@ is_continuation_request() {
   shopt -s nocasematch
 
   local result=1
-  if [[ "${normalized}" =~ ^[[:space:]]*((continue|resume)([[:space:]]+(the[[:space:]]+previous[[:space:]]+task|from[[:space:]]+where[[:space:]]+you[[:space:]]+left[[:space:]]+off|where[[:space:]]+you[[:space:]]+left[[:space:]]+off))?|carry[[:space:]]+on|keep[[:space:]]+going|pick[[:space:]]+(it|this)[[:space:]]+back[[:space:]]+up|pick[[:space:]]+up[[:space:]]+where[[:space:]]+you[[:space:]]+left[[:space:]]+off)([[:space:][:punct:]].*)?$ ]]; then
+  if [[ "${normalized}" =~ ^[[:space:]]*((continue|resume)([[:space:]]+(the[[:space:]]+previous[[:space:]]+task|from[[:space:]]+where[[:space:]]+you[[:space:]]+left[[:space:]]+off|where[[:space:]]+you[[:space:]]+left[[:space:]]+off))?|carry[[:space:]]+on|keep[[:space:]]+going|pick[[:space:]]+(it|this)[[:space:]]+back[[:space:]]+up|pick[[:space:]]+up[[:space:]]+where[[:space:]]+you[[:space:]]+left[[:space:]]+off|next|go[[:space:]]+on|proceed|finish[[:space:]]+the[[:space:]]+rest|do[[:space:]]+the[[:space:]]+(remaining[[:space:]]+(work|items|tasks)|rest))([[:space:][:punct:]].*)?$ ]]; then
     result=0
   fi
 
@@ -218,6 +248,8 @@ extract_continuation_directive() {
       remainder="${BASH_REMATCH[2]}"
     fi
   elif [[ "${normalized}" =~ ^(carry[[:space:]]+on|keep[[:space:]]+going|pick[[:space:]]+(it|this)[[:space:]]+back[[:space:]]+up|pick[[:space:]]+up[[:space:]]+where[[:space:]]+you[[:space:]]+left[[:space:]]+off)[[:space:]]*(.*)$ ]]; then
+    remainder="${BASH_REMATCH[4]}"
+  elif [[ "${normalized}" =~ ^(next|go[[:space:]]+on|proceed|finish[[:space:]]+the[[:space:]]+rest|do[[:space:]]+the[[:space:]]+(remaining[[:space:]]+(work|items|tasks)|rest))[[:space:]]*(.*)$ ]]; then
     remainder="${BASH_REMATCH[4]}"
   fi
 

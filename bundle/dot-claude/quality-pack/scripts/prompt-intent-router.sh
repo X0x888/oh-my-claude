@@ -14,6 +14,7 @@ if [[ -z "${SESSION_ID}" || -z "${PROMPT_TEXT}" ]]; then
 fi
 
 ensure_session_dir
+sweep_stale_sessions
 
 previous_objective="$(read_state "current_objective")"
 previous_domain="$(read_state "task_domain")"

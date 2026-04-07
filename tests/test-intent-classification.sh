@@ -106,6 +106,17 @@ assert_intent "continuation" "continue"
 assert_intent "continuation" "keep going"
 assert_intent "continuation" "pick it back up"
 
+# --- Terse continuation phrases ---
+printf '\nTerse continuation phrases:\n'
+assert_intent "continuation" "next"
+assert_intent "continuation" "go on"
+assert_intent "continuation" "proceed"
+assert_intent "continuation" "finish the rest"
+assert_intent "continuation" "do the remaining work"
+assert_intent "continuation" "do the rest"
+assert_intent "continuation" "next, but skip the tests"
+assert_intent "continuation" "go on, focus on the API layer"
+
 printf '\n=== Results: %d passed, %d failed ===\n' "${pass}" "${fail}"
 if [[ "${fail}" -gt 0 ]]; then
   exit 1
