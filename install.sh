@@ -289,6 +289,24 @@ append_if_missing() {
 }
 
 # ---------------------------------------------------------------------------
+# Configuration file helpers
+# ---------------------------------------------------------------------------
+
+# Set a key=value pair in oh-my-claude.conf (creates or updates).
+set_conf() {
+  local conf_path="${CLAUDE_HOME}/oh-my-claude.conf"
+  local key="$1"
+  local value="$2"
+
+  if [[ -f "${conf_path}" ]]; then
+    local tmp="${conf_path}.tmp"
+    grep -v "^${key}=" "${conf_path}" > "${tmp}" 2>/dev/null || true
+    mv "${tmp}" "${conf_path}"
+  fi
+  printf '%s=%s\n' "${key}" "${value}" >> "${conf_path}"
+}
+
+# ---------------------------------------------------------------------------
 # Apply model tier to installed agent definitions
 # ---------------------------------------------------------------------------
 
@@ -307,7 +325,7 @@ apply_model_tier() {
   fi
 
   # Persist the tier for future installs.
-  printf 'model_tier=%s\n' "${tier}" > "${conf_path}"
+  set_conf "model_tier" "${tier}"
 
   # balanced = bundle defaults, nothing to rewrite.
   if [[ "${tier}" == "balanced" ]]; then
@@ -403,6 +421,9 @@ fi
 
 # Step 2b — Apply model tier (rewrite agent model assignments if needed).
 apply_model_tier
+
+# Step 2c — Save repo path for easy updates.
+set_conf "repo_path" "${SCRIPT_DIR}"
 
 # Ensure quality-pack state directory exists (not in the bundle).
 mkdir -p "${CLAUDE_HOME}/quality-pack/state"

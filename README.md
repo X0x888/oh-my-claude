@@ -80,6 +80,18 @@ Try it out:
 
 The `/ulw` command activates the full workflow: intent classification, domain routing, specialist agents, quality gates, and verification. It works for any domain, not just code. You can also type `ulw` without the slash -- both forms work identically.
 
+## Quick start (AI-assisted)
+
+Already in Claude Code? Paste one of these prompts directly.
+
+**First-time install:**
+
+> Clone https://github.com/X0x888/oh-my-claude.git into ~/repos/ and run its install.sh. Ask me which model tier I want (quality for all-Opus, balanced for the default mix, or economy for all-Sonnet) and whether I want bypass-permissions mode. Run verify.sh after installing and report the results.
+
+**Update an existing install:**
+
+> Update my oh-my-claude installation. The repo path is saved in ~/.claude/oh-my-claude.conf under repo_path. Pull the latest changes, re-run install.sh, then run verify.sh and tell me what changed.
+
 ## Usage examples
 
 **Coding**
