@@ -270,6 +270,39 @@ fi
 
 printf '\n'
 
+# ---------------------------------------------------------------------------
+# 7. Model tier configuration (informational)
+# ---------------------------------------------------------------------------
+
+printf '7. Model tier\n'
+
+conf_path="${CLAUDE_HOME}/oh-my-claude.conf"
+if [[ -f "${conf_path}" ]]; then
+  active_tier="$(grep -E '^model_tier=' "${conf_path}" 2>/dev/null | head -1 | cut -d= -f2)" || true
+  if [[ -n "${active_tier:-}" ]]; then
+    pass "Active model tier: ${active_tier}"
+  else
+    warn "Config file exists but model_tier key is missing"
+  fi
+else
+  pass "No config file (using default: balanced)"
+fi
+
+# Count current agent model assignments.
+opus_count=0
+sonnet_count=0
+for agent_file in "${CLAUDE_HOME}/agents/"*.md; do
+  [[ -f "${agent_file}" ]] || continue
+  if grep -qE '^model: opus$' "${agent_file}"; then
+    opus_count=$((opus_count + 1))
+  elif grep -qE '^model: sonnet$' "${agent_file}"; then
+    sonnet_count=$((sonnet_count + 1))
+  fi
+done
+printf '  [info] Agent models: %d opus, %d sonnet\n' "${opus_count}" "${sonnet_count}"
+
+printf '\n'
+
 # ===========================================================================
 # Result
 # ===========================================================================

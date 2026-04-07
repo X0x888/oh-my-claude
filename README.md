@@ -175,8 +175,10 @@ This skips all Claude Code permission prompts, letting the harness run without i
 Other install options:
 
 ```bash
-bash install.sh --no-ios          # Skip iOS-specific agents
-bash uninstall.sh                 # Cleanly remove the harness
+bash install.sh --no-ios                # Skip iOS-specific agents
+bash install.sh --model-tier=economy    # All agents use Sonnet (cheaper)
+bash install.sh --model-tier=quality    # All agents use Opus (max quality)
+bash uninstall.sh                       # Cleanly remove the harness
 ```
 
 ## Testing

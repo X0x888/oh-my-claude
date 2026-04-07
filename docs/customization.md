@@ -24,6 +24,47 @@ bash install.sh --bypass-permissions
 
 ---
 
+## Model Tiers
+
+oh-my-claude assigns each specialist agent a model (`opus` or `sonnet`) in its definition file. The default split uses Opus for complex reasoning agents (planning, review, debugging) and Sonnet for faster execution agents (frontend, backend, research).
+
+You can override this split at install time with the `--model-tier` flag:
+
+```bash
+bash install.sh --model-tier=quality    # all agents use Opus
+bash install.sh --model-tier=balanced   # default split (Opus for planning/review, Sonnet for execution)
+bash install.sh --model-tier=economy    # all agents use Sonnet
+```
+
+| Tier | Opus agents | Sonnet agents | Best for |
+|---|---|---|---|
+| `quality` | All 22 | 0 | Users with high usage limits who prioritize quality over cost |
+| `balanced` | 9 (planning, review, debugging, writing, operations) | 13 (execution, research, domain specialists) | Most users (default) |
+| `economy` | 0 | All 22 | Users on tighter plans or budget-conscious API usage |
+
+### How it works
+
+The chosen tier is saved to `~/.claude/oh-my-claude.conf`. On subsequent installs, the tier is automatically re-applied unless you pass a different `--model-tier` flag. The flag always takes precedence over the saved value.
+
+For `balanced`, the bundle defaults are used as-is. For `quality` and `economy`, the installer rewrites the `model:` line in each agent's frontmatter after copying the bundle files.
+
+### Per-agent overrides
+
+If you need finer control than the three presets, edit individual agent files after installation:
+
+```bash
+# Change a specific agent to use Opus
+tmp=$(mktemp) && sed 's/^model: sonnet$/model: opus/' ~/.claude/agents/librarian.md > "$tmp" && mv "$tmp" ~/.claude/agents/librarian.md
+```
+
+Per-agent edits are overwritten on the next install. To preserve them, either re-apply manually after each install, or change the agent definition in your local clone of the repository before installing.
+
+### Thinking effort
+
+Agent-level thinking effort (extended thinking budget) is not currently configurable. The `effortLevel` setting in `settings.json` affects only the main thread. This is a Claude Code platform limitation -- when Claude Code adds agent-level thinking control, the tier system can be extended to support it.
+
+---
+
 ## Adding Your Own Agents
 
 Agent definitions live in `~/.claude/agents/`. Each agent is a single markdown file with YAML frontmatter.
@@ -215,3 +256,118 @@ To modify the theme:
 3. Re-run `bash install.sh` to copy the updated theme, or edit the installed copy directly at `~/.config/ghostty/themes/`.
 
 The config snippet (`config/ghostty/config.snippet.ini`) sets the active theme and any terminal-level settings. If you use a different terminal emulator, this component can be ignored.
+
+---
+
+## Updating oh-my-claude
+
+To update to a newer version, pull the latest changes and re-run the installer:
+
+```bash
+cd /path/to/oh-my-claude
+git pull
+bash install.sh
+```
+
+Use the same flags you used on the original install (e.g., `--bypass-permissions`, `--model-tier=economy`). The model tier is persisted in `~/.claude/oh-my-claude.conf` and re-applied automatically, so you only need to pass `--model-tier` again if you want to change it.
+
+### What happens on update
+
+1. **Backup**: Every file that will be overwritten is copied to `~/.claude/backups/oh-my-claude-{TIMESTAMP}/`.
+2. **Overwrite**: All agents, skills, hook scripts, output styles, statusline, and quality-pack memory files are replaced from the bundle via `rsync`.
+3. **Merge**: `settings.json` is merged (user additions preserved, harness hooks updated).
+4. **Re-apply**: Model tier is re-applied from `oh-my-claude.conf` if present.
+5. **Verify**: Run `bash verify.sh` to confirm the update succeeded.
+
+### What survives an update
+
+- `settings.json` user additions (custom hooks, custom settings) -- merged, not overwritten.
+- `~/.claude/oh-my-claude.conf` -- not in the bundle, never touched by rsync.
+- Custom agent files you created (not shipped in the bundle) -- rsync adds files but does not delete extras.
+- Custom skill directories you created -- same reason.
+
+### What gets overwritten
+
+All files that exist in the `bundle/dot-claude/` directory, including: agent definitions, skill definitions, hook scripts, `common.sh`, quality-pack memory files (`core.md`, `skills.md`, `compact.md`), `statusline.py`, output styles, and `CLAUDE.md`.
+
+If you customized any bundled file, your changes are lost on update. The backup directory contains the previous version for manual recovery.
+
+---
+
+## Rollback and Recovery
+
+Every install creates a timestamped backup at `~/.claude/backups/oh-my-claude-{TIMESTAMP}/`. This directory mirrors the structure of `~/.claude/` and contains every file that was overwritten, plus a copy of `settings.json`.
+
+### Restore a single file
+
+```bash
+# Find the most recent backup
+ls -t ~/.claude/backups/ | head -1
+
+# Copy the file back
+cp ~/.claude/backups/oh-my-claude-20260407-143000/agents/quality-planner.md ~/.claude/agents/quality-planner.md
+```
+
+### Full rollback
+
+```bash
+# Find the backup to restore from
+BACKUP=~/.claude/backups/oh-my-claude-20260407-143000
+
+# Copy everything back (preserves your current settings.json merge)
+rsync -a "$BACKUP/" ~/.claude/ --exclude=settings.json
+
+# Or include settings.json if you want the pre-update version
+rsync -a "$BACKUP/" ~/.claude/
+```
+
+This restores backed-up files but does not remove files added by the new version. If the update introduced new agents or scripts, those will remain alongside the restored files.
+
+### Recover settings.json
+
+The backup always includes the pre-install `settings.json`:
+
+```bash
+cp ~/.claude/backups/oh-my-claude-20260407-143000/settings.json ~/.claude/settings.json
+```
+
+---
+
+## Configuration Safety
+
+Not all customizations carry the same risk. This matrix classifies files by how safe they are to edit and whether changes survive updates.
+
+| Category | Files | Risk | Survives update? |
+|---|---|---|---|
+| **Safe, persistent** | `settings.json` (user-added hooks/settings) | Low | Yes (merged) |
+| **Safe, persistent** | `oh-my-claude.conf` | Low | Yes (not in bundle) |
+| **Safe, persistent** | Custom agents you create in `~/.claude/agents/` | Low | Yes (not in bundle) |
+| **Safe, persistent** | Custom skills you create in `~/.claude/skills/` | Low | Yes (not in bundle) |
+| **Safe, overwritten** | Agent `.md` files (model, maxTurns) | Low | No (re-apply or use `--model-tier`) |
+| **Moderate, overwritten** | `quality-pack/memory/core.md` | Medium | No |
+| **Moderate, overwritten** | `output-styles/opencode-compact.md` | Medium | No |
+| **Moderate, overwritten** | `statusline.py` | Medium | No |
+| **High risk, overwritten** | `skills/autowork/scripts/stop-guard.sh` | High | No |
+| **High risk, overwritten** | `skills/autowork/scripts/common.sh` | High | No |
+| **High risk, overwritten** | Other hook scripts in `skills/autowork/scripts/` | High | No |
+
+**Rule of thumb**: If a file ships in `bundle/dot-claude/`, it will be overwritten on the next install. Prefer out-of-bundle customization (creating new agents, new skills, adding to `settings.json`) over modifying bundled files.
+
+### AI-assisted configuration
+
+You can ask Claude (or another AI assistant) to modify harness configuration. Some changes are safe; others can break the quality gate system.
+
+**Safe for AI to edit:**
+- `settings.json` -- adding custom hooks, changing `outputStyle` or `effortLevel`.
+- `oh-my-claude.conf` -- changing model tier.
+- Creating new agent files in `~/.claude/agents/`.
+- Creating new skill directories in `~/.claude/skills/`.
+- `quality-pack/memory/core.md` -- adjusting cognitive defaults, relaxing rules.
+
+**Risky for AI to edit (understand before changing):**
+- `stop-guard.sh` -- modifying quality gate logic can disable enforcement.
+- `common.sh` -- changes affect all hooks (intent classification, domain scoring, state management).
+- `prompt-intent-router.sh` -- changing intent routing can break the workflow loop.
+- Intent classification order in `common.sh` -- the check order is a [protected design decision](architecture.md).
+
+If you ask an AI agent to modify hook scripts, review the changes carefully before starting a new session. A broken hook script can cause silent failures (the harness stops enforcing without any visible error).

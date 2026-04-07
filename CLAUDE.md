@@ -15,7 +15,7 @@ Cognitive quality harness for Claude Code -- bash hooks, specialist agents, and 
 
 ## Key Files
 
-- `install.sh` -- merge-safe installer (supports `--bypass-permissions`, `--no-ios`)
+- `install.sh` -- merge-safe installer (supports `--bypass-permissions`, `--no-ios`, `--model-tier`)
 - `uninstall.sh` -- clean removal of installed harness
 - `verify.sh` -- post-install integrity checker (paths, JSON, hooks, syntax)
 - `bundle/dot-claude/statusline.py` -- custom Claude Code statusline widget

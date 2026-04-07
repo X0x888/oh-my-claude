@@ -10,7 +10,7 @@ oh-my-claude is a cognitive quality harness for Claude Code. It provides bash ho
 
 ```
 oh-my-claude/
-  install.sh                  # Merge-safe installer (--bypass-permissions, --no-ios)
+  install.sh                  # Merge-safe installer (--bypass-permissions, --no-ios, --model-tier)
   uninstall.sh                # Clean removal
   verify.sh                   # Post-install integrity checker
 
@@ -74,6 +74,7 @@ Session state is stored as JSON in `$HOME/.claude/quality-pack/state/<session_id
 - Each agent is a single `.md` file in `bundle/dot-claude/agents/`.
 - Agents use `disallowedTools` to enforce permission boundaries (e.g., a reviewer agent cannot edit files).
 - Agent names should be descriptive and hyphen-separated.
+- Agent `model:` assignments (`opus` or `sonnet`) are set in the bundle but can be overridden at install time via `--model-tier`. The installer rewrites the `model:` line after copying. When adding a new agent, assign `model: opus` for complex reasoning tasks or `model: sonnet` for faster execution tasks. See [customization.md](docs/customization.md#model-tiers) for details.
 
 ## Testing
 

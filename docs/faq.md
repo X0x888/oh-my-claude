@@ -44,6 +44,26 @@ Every prompt is classified into one of five intent categories before Claude acts
 
 Edit `infer_domain()` in `~/.claude/skills/autowork/scripts/common.sh`. Add a new keyword-count variable (e.g., `devops_score`), define its regex pattern, and add it to the max-score comparison logic. Then add a corresponding `case` branch in `prompt-intent-router.sh` (inside the domain-specific specialist hints section) to define what context gets injected when that domain is detected. Finally, update the stop guard's domain-specific logic if the new domain should require verification.
 
+### How do I update oh-my-claude?
+
+Pull the latest changes from the repository and re-run the installer: `cd /path/to/oh-my-claude && git pull && bash install.sh`. Use the same flags as your original install. Your model tier preference is saved in `~/.claude/oh-my-claude.conf` and re-applied automatically. See [customization.md](customization.md#updating-oh-my-claude) for full details.
+
+### Will updating overwrite my changes?
+
+Yes, for any file that ships in the `bundle/dot-claude/` directory. This includes all agent definitions, skill definitions, hook scripts, quality-pack memory files, statusline, and output styles. Your `settings.json` is merged (user additions preserved), and custom agents/skills you created outside the bundle are not touched. Every install creates a timestamped backup at `~/.claude/backups/oh-my-claude-{TIMESTAMP}/` so you can recover overwritten files. See the [configuration safety matrix](customization.md#configuration-safety) for details on what survives.
+
+### How do I change which model agents use?
+
+Use the `--model-tier` flag: `bash install.sh --model-tier=economy` (all Sonnet), `--model-tier=quality` (all Opus), or `--model-tier=balanced` (default split). The choice is saved and re-applied on future installs. For per-agent control, edit individual agent files in `~/.claude/agents/` after installation. See [customization.md](customization.md#model-tiers) for details.
+
+### Can I ask Claude to modify the harness?
+
+Yes, with care. It is safe to ask an AI agent to edit `settings.json`, `oh-my-claude.conf`, create new agents, create new skills, or adjust `core.md`. It is risky to have it modify hook scripts (`stop-guard.sh`, `common.sh`, `prompt-intent-router.sh`) because a broken hook silently disables quality enforcement. If you do ask for hook script changes, review them carefully. See [configuration safety](customization.md#configuration-safety) for the full risk matrix.
+
+### How do I recover from a bad install or update?
+
+Every install creates a backup at `~/.claude/backups/oh-my-claude-{TIMESTAMP}/`. To restore a single file: `cp ~/.claude/backups/oh-my-claude-{TIMESTAMP}/path/to/file ~/.claude/path/to/file`. For a full rollback: `rsync -a ~/.claude/backups/oh-my-claude-{TIMESTAMP}/ ~/.claude/`. To completely remove oh-my-claude: `bash uninstall.sh`.
+
 ### Does this work on Linux?
 
 Yes. The harness is pure bash and jq with no platform-specific dependencies. It runs anywhere Claude Code runs. The only macOS-specific component is the Ghostty terminal theme, which is optional and can be ignored on systems using other terminal emulators. The `statusline.py` script uses standard Python 3 with no external packages.

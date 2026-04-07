@@ -9,6 +9,7 @@
 # Usage:
 #   bash install.sh                    # standard install
 #   bash install.sh --bypass-permissions  # also enable bypass-permissions mode
+#   bash install.sh --model-tier=economy  # all agents use Sonnet (cheaper)
 #   bash install.sh --uninstall          # remove oh-my-claude (delegates to uninstall.sh)
 #
 # Requires: rsync, and either python3 or jq for JSON merging.
@@ -35,6 +36,7 @@ BACKUP_DIR="${CLAUDE_HOME}/backups/oh-my-claude-${STAMP}"
 
 BYPASS_PERMISSIONS=false
 EXCLUDE_IOS=false
+MODEL_TIER=""
 
 # Handle --uninstall early (mutually exclusive with install flags).
 if [[ "${1:-}" == "--uninstall" ]]; then
@@ -50,13 +52,26 @@ for arg in "$@"; do
     --no-ios)
       EXCLUDE_IOS=true
       ;;
+    --model-tier=*)
+      MODEL_TIER="${arg#*=}"
+      ;;
+    --model-tier)
+      printf 'Missing value for --model-tier. Usage: --model-tier=quality|balanced|economy\n' >&2
+      exit 1
+      ;;
     *)
       printf 'Unknown argument: %s\n' "${arg}" >&2
-      printf 'Usage: bash install.sh [--bypass-permissions] [--no-ios] [--uninstall]\n' >&2
+      printf 'Usage: bash install.sh [--bypass-permissions] [--no-ios] [--model-tier=TIER] [--uninstall]\n' >&2
       exit 1
       ;;
   esac
 done
+
+# Validate --model-tier value if provided.
+if [[ -n "${MODEL_TIER}" ]] && [[ "${MODEL_TIER}" != "quality" && "${MODEL_TIER}" != "balanced" && "${MODEL_TIER}" != "economy" ]]; then
+  printf 'Invalid model tier: %s. Must be quality, balanced, or economy.\n' "${MODEL_TIER}" >&2
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -274,6 +289,56 @@ append_if_missing() {
 }
 
 # ---------------------------------------------------------------------------
+# Apply model tier to installed agent definitions
+# ---------------------------------------------------------------------------
+
+apply_model_tier() {
+  local conf_path="${CLAUDE_HOME}/oh-my-claude.conf"
+  local tier="${MODEL_TIER}"
+
+  # If no flag was passed, read from config file.
+  if [[ -z "${tier}" && -f "${conf_path}" ]]; then
+    tier="$(grep -E '^model_tier=' "${conf_path}" 2>/dev/null | head -1 | cut -d= -f2)" || true
+  fi
+
+  # If still empty, the user never opted in — use bundle defaults silently.
+  if [[ -z "${tier}" ]]; then
+    return
+  fi
+
+  # Persist the tier for future installs.
+  printf 'model_tier=%s\n' "${tier}" > "${conf_path}"
+
+  # balanced = bundle defaults, nothing to rewrite.
+  if [[ "${tier}" == "balanced" ]]; then
+    printf '  Model tier:    balanced (default — opus for planning/review, sonnet for execution)\n'
+    return
+  fi
+
+  local from to
+  if [[ "${tier}" == "quality" ]]; then
+    from="sonnet"
+    to="opus"
+  else
+    from="opus"
+    to="sonnet"
+  fi
+
+  local changed=0
+  for agent_file in "${CLAUDE_HOME}/agents/"*.md; do
+    [[ -f "${agent_file}" ]] || continue
+    if grep -qE "^model: ${from}$" "${agent_file}"; then
+      local tmp="${agent_file}.tmp"
+      sed "s/^model: ${from}$/model: ${to}/" "${agent_file}" > "${tmp}"
+      mv "${tmp}" "${agent_file}"
+      changed=$((changed + 1))
+    fi
+  done
+
+  printf '  Model tier:    %s (all agents → %s, %d changed)\n' "${tier}" "${to}" "${changed}"
+}
+
+# ---------------------------------------------------------------------------
 # Install Ghostty theme and config snippet
 # ---------------------------------------------------------------------------
 
@@ -336,6 +401,9 @@ if [[ "${EXCLUDE_IOS}" == "true" ]]; then
   done
 fi
 
+# Step 2b — Apply model tier (rewrite agent model assignments if needed).
+apply_model_tier
+
 # Ensure quality-pack state directory exists (not in the bundle).
 mkdir -p "${CLAUDE_HOME}/quality-pack/state"
 
@@ -369,6 +437,9 @@ if [[ -d "${BUNDLE_GHOSTTY}" ]]; then
 fi
 if [[ "${BYPASS_PERMISSIONS}" == "true" ]]; then
   printf '  Permissions:   bypass-permissions mode enabled\n'
+fi
+if [[ -f "${CLAUDE_HOME}/oh-my-claude.conf" ]]; then
+  printf '  Model tier:    %s\n' "$(grep -E '^model_tier=' "${CLAUDE_HOME}/oh-my-claude.conf" | cut -d= -f2)"
 fi
 printf '\n'
 printf 'Next steps:\n'

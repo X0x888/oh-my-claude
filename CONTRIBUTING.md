@@ -70,7 +70,8 @@ All checks must pass cleanly.
 1. Create a new file in `bundle/dot-claude/agents/` with a descriptive, hyphen-separated name.
 2. Define the agent's role, capabilities, and constraints.
 3. Use `disallowedTools` to set permission boundaries appropriate to the agent's role.
-4. If the agent handles a specific domain, ensure `infer_domain()` in `common.sh` can route to it.
+4. Set `model: opus` for complex reasoning tasks or `model: sonnet` for faster execution. The `--model-tier` install flag can override these defaults (see [customization.md](docs/customization.md#model-tiers)).
+5. If the agent handles a specific domain, ensure `infer_domain()` in `common.sh` can route to it.
 
 ## Adding Skills
 
