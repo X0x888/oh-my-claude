@@ -26,7 +26,7 @@ die() { printf 'Error: %s\n' "$1" >&2; exit 1; }
 get_conf() {
   local key="$1"
   [[ -f "${CONF_PATH}" ]] || return 1
-  grep -E "^${key}=" "${CONF_PATH}" 2>/dev/null | head -1 | cut -d= -f2
+  grep -E "^${key}=" "${CONF_PATH}" 2>/dev/null | head -1 | cut -d= -f2-
 }
 
 # ---------------------------------------------------------------------------

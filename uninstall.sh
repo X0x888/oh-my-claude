@@ -91,6 +91,7 @@ AGENT_FILES=(
 STANDALONE_FILES=(
   "${CLAUDE_HOME}/output-styles/opencode-compact.md"
   "${CLAUDE_HOME}/statusline.py"
+  "${CLAUDE_HOME}/switch-tier.sh"
   "${CLAUDE_HOME}/oh-my-claude.conf"
 )
 

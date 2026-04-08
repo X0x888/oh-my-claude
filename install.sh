@@ -271,6 +271,9 @@ ensure_executable_bits() {
   if [[ -d "${CLAUDE_HOME}/skills/autowork/scripts" ]]; then
     find "${CLAUDE_HOME}/skills/autowork/scripts" -type f -name '*.sh' -exec chmod +x {} +
   fi
+  if [[ -f "${CLAUDE_HOME}/switch-tier.sh" ]]; then
+    chmod +x "${CLAUDE_HOME}/switch-tier.sh"
+  fi
 }
 
 # ---------------------------------------------------------------------------
