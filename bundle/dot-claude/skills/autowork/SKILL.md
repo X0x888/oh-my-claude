@@ -43,5 +43,5 @@ $ARGUMENTS
 - Before considering code complete, re-read changed files to catch errors the reviewer would find.
 - Never write placeholder stubs, sycophantic comments, or comments that restate the code.
 - When you cannot verify something reliably, state the exact gap and residual risk.
-- After a quality-reviewer or editor-critic runs and findings are addressed, restate the key deliverable summary (e.g., the ranked recommendations, execution order, or final answer) so the user does not have to scroll past the review output to find it.
+- After any quality-gate interruption (stop-guard block, advisory guard, excellence guard) or reviewer pass, restate the key deliverable summary (e.g., the ranked recommendations, execution order, or final answer) at the end of your response so the user does not have to scroll up to find it.
 - Treat the quality reviewer as a defect gate, not the finish line. You are responsible for completeness and excellence — the reviewer catches what you missed, but you should have delivered a complete result before it runs.

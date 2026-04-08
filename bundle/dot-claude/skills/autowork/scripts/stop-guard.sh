@@ -53,7 +53,7 @@ if ! is_execution_intent_value "${task_intent}"; then
 
       if [[ -z "${advisory_verify_ts}" && -z "${verify_ts}" ]] && [[ "${advisory_guard_blocks}" -lt 1 ]]; then
         write_state "advisory_guard_blocks" "$((advisory_guard_blocks + 1))"
-        jq -nc --arg reason "Autowork guard: this is an advisory task over a codebase, but no code inspection or build/test verification was detected. Before finalizing your response, read or search the actual codebase to ground your recommendations in evidence. If you have already inspected code via other means, explain the verification you performed." '{"decision":"block","reason":$reason}'
+        jq -nc --arg reason "Autowork guard: this is an advisory task over a codebase, but no code inspection or build/test verification was detected. Before finalizing your response, read or search the actual codebase to ground your recommendations in evidence. If you have already inspected code via other means, briefly list the files inspected and restate your key recommendation at the end." '{"decision":"block","reason":$reason}'
         exit 0
       fi
     fi
@@ -147,7 +147,7 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
     && [[ -z "${last_excellence_review_ts}" || "${last_excellence_review_ts}" -lt "${last_edit_ts}" ]] \
     && [[ "${excellence_guard_triggered}" != "1" ]]; then
     write_state "excellence_guard_triggered" "1"
-    jq -nc --arg reason "Autowork guard: standard review and verification passed, but this is a complex task (${unique_edited_count} files edited). Before finalizing, run excellence-reviewer for a fresh-eyes holistic evaluation — completeness against the original objective, unknown unknowns, and what a veteran would add. If you have already done a thorough self-assessment and are confident the deliverable is complete and excellent, explain your reasoning and stop." '{"decision":"block","reason":$reason}'
+    jq -nc --arg reason "Autowork guard: standard review and verification passed, but this is a complex task (${unique_edited_count} files edited). Before finalizing, run excellence-reviewer for a fresh-eyes holistic evaluation — completeness against the original objective, unknown unknowns, and what a veteran would add. If you have already done a thorough self-assessment and are confident the deliverable is complete and excellent, explain your reasoning and stop. After the excellence review, restate your key deliverable summary at the end of your response." '{"decision":"block","reason":$reason}'
     exit 0
   fi
 
@@ -200,5 +200,7 @@ fi
 if [[ "${guard_blocks}" -ge 2 ]]; then
   reason="${reason} NOTE: this is the final guard block — the next stop attempt will be allowed regardless of quality gate status."
 fi
+
+reason="${reason} After completing these steps, restate your key deliverable summary at the end of your response."
 
 jq -nc --arg reason "${reason}" '{"decision":"block","reason":$reason}'
