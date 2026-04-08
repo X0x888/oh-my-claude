@@ -410,6 +410,81 @@ assert_empty "seq-I: full cycle allows stop" "${output}"
 teardown_test
 
 
+# -------------------------------------------------------
+# Prompt routing tests
+# -------------------------------------------------------
+printf '\nPrompt routing:\n'
+
+ROUTER="${REPO_ROOT}/bundle/dot-claude/quality-pack/scripts/prompt-intent-router.sh"
+
+setup_prompt_router() {
+  # prompt-intent-router.sh sources common.sh from HOME path
+  mkdir -p "${TEST_HOME}/.claude/skills/autowork/scripts"
+  ln -sf "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh" \
+    "${TEST_HOME}/.claude/skills/autowork/scripts/common.sh"
+}
+
+sim_prompt() {
+  local sid="$1"
+  local prompt="$2"
+  run_hook "${ROUTER}" \
+    "$(jq -nc --arg s "${sid}" --arg p "${prompt}" '{session_id:$s,prompt:$p}')"
+}
+
+
+# -------------------------------------------------------
+# Sequence J: Sticky gate — non-keyword prompt with active ULW session
+# -------------------------------------------------------
+setup_test
+setup_prompt_router
+init_session "sj"
+output="$(sim_prompt "sj" "yes please continue with the implementation")"
+
+assert_contains "seq-J: sticky gate injects context" "Ultrawork" "${output}"
+assert_contains "seq-J: has additionalContext" "additionalContext" "${output}"
+teardown_test
+
+
+# -------------------------------------------------------
+# Sequence K: No sticky gate — non-keyword prompt without ULW session
+# -------------------------------------------------------
+setup_test
+setup_prompt_router
+sid="sk"
+state_dir="${TEST_HOME}/.claude/quality-pack/state/${sid}"
+mkdir -p "${state_dir}"
+jq -nc '{task_intent:"execution",current_objective:"test"}' > "${state_dir}/session_state.json"
+output="$(sim_prompt "${sid}" "yes please continue with the implementation")"
+
+assert_empty "seq-K: no context without ULW" "${output}"
+teardown_test
+
+
+# -------------------------------------------------------
+# Sequence L: Bash test commands recorded as verification
+# -------------------------------------------------------
+setup_test
+init_session "sl"
+sim_verify "sl" "bash tests/test-quality-gates.sh" "=== Results: 10 passed, 0 failed ==="
+
+assert_not_empty "seq-L: bash test recorded" "$(read_st "sl" "last_verify_ts")"
+assert_eq "seq-L: outcome passed" "passed" "$(read_st "sl" "last_verify_outcome")"
+assert_eq "seq-L: command recorded" "bash tests/test-quality-gates.sh" "$(read_st "sl" "last_verify_cmd")"
+teardown_test
+
+
+# -------------------------------------------------------
+# Sequence M: shellcheck recorded as verification
+# -------------------------------------------------------
+setup_test
+init_session "sm"
+sim_verify "sm" "shellcheck bundle/dot-claude/skills/autowork/scripts/common.sh" ""
+
+assert_not_empty "seq-M: shellcheck recorded" "$(read_st "sm" "last_verify_ts")"
+assert_eq "seq-M: outcome passed" "passed" "$(read_st "sm" "last_verify_outcome")"
+teardown_test
+
+
 printf '\n=== Results: %d passed, %d failed ===\n' "${pass}" "${fail}"
 if [[ "${fail}" -gt 0 ]]; then
   exit 1

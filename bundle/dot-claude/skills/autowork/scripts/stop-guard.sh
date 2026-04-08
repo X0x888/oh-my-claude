@@ -132,6 +132,9 @@ else
 fi
 
 if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed}" -eq 0 && "${review_unremediated}" -eq 0 ]]; then
+  # Remove fast-path sentinel; workflow_mode in session_state.json is
+  # intentionally preserved so the prompt-intent-router's sticky gate
+  # continues injecting specialist routing for the rest of this session.
   rm -f "${STATE_ROOT}/.ulw_active"
   exit 0
 fi

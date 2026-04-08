@@ -26,7 +26,7 @@ if [[ -z "${command_text}" ]]; then
   exit 0
 fi
 
-if grep -Eiq '(^|[[:space:]])(npm|pnpm|yarn|bun|cargo|go|pytest|python|uv|ruff|mypy|eslint|tsc|vitest|jest|phpunit|rspec|gradle|xcodebuild|swift|make|just)([[:space:]].*)?(test|tests|check|lint|typecheck|build)|\b(pytest|vitest|jest|cargo test|go test|swift test|swift build|ruff check|mypy|eslint|tsc|typecheck|phpunit|rspec|gradle test|xcodebuild test)\b' <<<"${command_text}"; then
+if grep -Eiq '(^|[[:space:]])(npm|pnpm|yarn|bun|cargo|go|pytest|python|uv|ruff|mypy|eslint|tsc|vitest|jest|phpunit|rspec|gradle|xcodebuild|swift|make|just|bash)([[:space:]].*)?(test|tests|check|lint|typecheck|build)|\b(pytest|vitest|jest|cargo test|go test|swift test|swift build|ruff check|mypy|eslint|tsc|typecheck|phpunit|rspec|gradle test|xcodebuild test|shellcheck|bash -n)\b' <<<"${command_text}"; then
 
   # Detect test outcome from tool response (field may be tool_response or tool_result)
   tool_output="$(json_get '.tool_response' 2>/dev/null || true)"
