@@ -11,7 +11,7 @@ Initial public release.
 - Cognitive quality harness with hard stop gates to enforce thinking before acting.
 - Intent classification state machine covering 5 intents and 6 domains.
 - Multi-domain routing for coding, writing, research, operations, and mixed workloads.
-- 22 specialist agents with permission boundaries enforced via disallowedTools.
+- 23 specialist agents with permission boundaries enforced via disallowedTools.
 - Session continuity across compaction via pre-compact snapshots and post-compact handoff.
 - Merge-safe installer with automatic backup of existing configuration.
 - OpenCode Compact output style for concise, structured responses.

@@ -28,6 +28,9 @@ $ARGUMENTS
     - Cover multiple layers: code correctness, user-facing copy/messaging, build/config/deployment, and external dependencies (URLs, legal pages, metadata).
 7. Do not stop if the review or verification loop is still missing.
 8. Do not split unfinished work into "wave 1 done, wave 2 next" or similar handoff language unless the user explicitly asked for a checkpoint. Keep going until done.
+9. Before stopping, verify that every explicit and reasonably implied part of the user's request has been addressed. A working but minimal implementation is incomplete work. Compare your deliverable against the original objective and ask: "would a senior practitioner in this domain ship this, or would they keep going?"
+10. Think about what a veteran would deliver beyond the literal request. Surface unknown unknowns — features, edge cases, error handling, validation, configuration, and polish that distinguish excellent work from passing work. The quality bar is "would ship proudly," not "does it run."
+11. For complex tasks (multi-file changes, new features, cross-cutting refactors), after the standard `quality-reviewer` pass, consider running `excellence-reviewer` for a fresh-eyes holistic evaluation of the full deliverable — completeness, unknown unknowns, and polish opportunities that defect-focused review misses. Skip it for simple single-file fixes, config tweaks, docs-only edits, and trivial changes where the quality-reviewer's completeness section is sufficient.
 
 ## Execution style
 
@@ -40,3 +43,4 @@ $ARGUMENTS
 - Never write placeholder stubs, sycophantic comments, or comments that restate the code.
 - When you cannot verify something reliably, state the exact gap and residual risk.
 - After a quality-reviewer or editor-critic runs and findings are addressed, restate the key deliverable summary (e.g., the ranked recommendations, execution order, or final answer) so the user does not have to scroll past the review output to find it.
+- Treat the quality reviewer as a defect gate, not the finish line. You are responsible for completeness and excellence — the reviewer catches what you missed, but you should have delivered a complete result before it runs.

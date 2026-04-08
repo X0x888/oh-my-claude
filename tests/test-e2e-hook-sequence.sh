@@ -304,7 +304,7 @@ teardown_test
 
 
 # -------------------------------------------------------
-# Sequence E: Guard exhaustion — 3 stop attempts
+# Sequence E: Guard exhaustion — 4 stop attempts (limit=3)
 # -------------------------------------------------------
 setup_test
 init_session "se"
@@ -316,16 +316,22 @@ assert_contains "seq-E: first stop blocked" '"decision":"block"' "${out1}"
 blocks1="$(read_st "se" "stop_guard_blocks")"
 assert_eq "seq-E: guard_blocks=1" "1" "${blocks1}"
 
-# Second stop: blocked with penultimate warning
+# Second stop: blocked, no penultimate warning yet
 out2="$(sim_stop "se")"
 assert_contains "seq-E: second stop blocked" '"decision":"block"' "${out2}"
-assert_contains "seq-E: penultimate warning" "final guard block" "${out2}"
 blocks2="$(read_st "se" "stop_guard_blocks")"
 assert_eq "seq-E: guard_blocks=2" "2" "${blocks2}"
 
-# Third stop: exhausted, allowed
+# Third stop: blocked with penultimate warning
 out3="$(sim_stop "se")"
-assert_empty "seq-E: third stop allowed (exhausted)" "${out3}"
+assert_contains "seq-E: third stop blocked" '"decision":"block"' "${out3}"
+assert_contains "seq-E: penultimate warning" "final guard block" "${out3}"
+blocks3="$(read_st "se" "stop_guard_blocks")"
+assert_eq "seq-E: guard_blocks=3" "3" "${blocks3}"
+
+# Fourth stop: exhausted, allowed
+out4="$(sim_stop "se")"
+assert_empty "seq-E: fourth stop allowed (exhausted)" "${out4}"
 assert_not_empty "seq-E: guard_exhausted set" "$(read_st "se" "guard_exhausted")"
 detail="$(read_st "se" "guard_exhausted_detail")"
 assert_contains "seq-E: exhaustion detail has review" "review=" "${detail}"

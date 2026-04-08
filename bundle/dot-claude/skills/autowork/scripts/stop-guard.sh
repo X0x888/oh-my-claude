@@ -136,7 +136,7 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
   exit 0
 fi
 
-if [[ "${guard_blocks}" -ge 2 ]]; then
+if [[ "${guard_blocks}" -ge 3 ]]; then
   rm -f "${STATE_ROOT}/.ulw_active"
   write_state_batch \
     "guard_exhausted" "$(now_epoch)" \
@@ -158,12 +158,12 @@ fi
 
 if [[ "${missing_review}" -eq 1 ]]; then
   if [[ "${task_domain}" == "writing" || "${task_domain}" == "research" || "${task_domain}" == "operations" || "${task_domain}" == "general" ]]; then
-    review_action="delegate to editor-critic or another relevant reviewer and address any high-signal findings"
+    review_action="delegate to editor-critic or another relevant reviewer and address any high-signal findings — the reviewer must evaluate not just quality issues but completeness: does this deliver everything the user asked for?"
   else
-    review_action="delegate to quality-reviewer and address its highest-signal findings"
+    review_action="delegate to quality-reviewer and address its highest-signal findings — the reviewer must evaluate not just bugs but completeness: does the implementation cover the full scope of the original task? What is missing or only partially implemented?"
   fi
 elif [[ "${review_unremediated}" -eq 1 ]]; then
-  review_action="the reviewer flagged issues that were not addressed — fix them or explain why they do not apply"
+  review_action="the reviewer flagged issues that were not addressed — fix them or explain why they do not apply, then re-evaluate whether the deliverable is complete"
 fi
 
 if [[ -n "${verify_action}" && -n "${review_action}" ]]; then
@@ -175,7 +175,7 @@ elif [[ -n "${review_action}" ]]; then
 fi
 
 # Warn on penultimate block that the guard will exhaust next time
-if [[ "${guard_blocks}" -ge 1 ]]; then
+if [[ "${guard_blocks}" -ge 2 ]]; then
   reason="${reason} NOTE: this is the final guard block — the next stop attempt will be allowed regardless of quality gate status."
 fi
 

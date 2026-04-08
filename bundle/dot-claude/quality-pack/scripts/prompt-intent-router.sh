@@ -155,7 +155,7 @@ if grep -Eiq '(^|[^[:alnum:]_-])(ultrawork|ulw|autowork|sisyphus)([^[:alnum:]_-]
   if [[ "${session_management_prompt}" -eq 0 && "${advisory_prompt}" -eq 0 && "${checkpoint_prompt}" -eq 0 ]]; then
     case "${TASK_DOMAIN}" in
       coding)
-        context_parts+=("Detected likely task domain: coding. For non-trivial work use quality-planner or prometheus first, use quality-researcher for local repo wiring, librarian for official docs and reference implementations, metis to pressure-test risky plans, oracle when stuck or debugging deeply, specialist engineering agents when relevant. Make changes incrementally — one logical change, verify it, then proceed. Test rigorously after edits — failing to test is the #1 failure mode. Run quality-reviewer before stopping. Never write placeholder stubs or sycophantic comments.")
+        context_parts+=("Detected likely task domain: coding. For non-trivial work use quality-planner or prometheus first, use quality-researcher for local repo wiring, librarian for official docs and reference implementations, metis to pressure-test risky plans, oracle when stuck or debugging deeply, specialist engineering agents when relevant. Make changes incrementally — one logical change, verify it, then proceed. Test rigorously after edits — failing to test is the #1 failure mode. Run quality-reviewer before stopping. For complex or multi-file tasks, also run excellence-reviewer after defects are addressed for a fresh-eyes completeness and polish evaluation. Never write placeholder stubs or sycophantic comments.")
         ;;
       writing)
         context_parts+=("Detected likely task domain: writing. Clarify audience, purpose, format, tone, and constraints early. Use writing-architect for structure when needed, librarian for factual support, draft-writer for the draft, editor-critic before finalizing. Do not invent facts, citations, or quotations — mark uncertain details explicitly. Think about the reader's perspective and what they need to take away.")
@@ -184,7 +184,7 @@ fi
 guard_exhausted="$(read_state "guard_exhausted")"
 if [[ -n "${guard_exhausted}" ]]; then
   guard_detail="$(read_state "guard_exhausted_detail")"
-  context_parts+=("WARNING — PREVIOUS RESPONSE INCOMPLETE: The stop guard was exhausted after 2 blocks. Missing quality gates: ${guard_detail}. Before starting new work, verify and review the previous changes if they haven't been checked yet. Briefly tell the user about this gap.")
+  context_parts+=("WARNING — PREVIOUS RESPONSE INCOMPLETE: The stop guard was exhausted after 3 blocks. Missing quality gates: ${guard_detail}. Before starting new work, verify and review the previous changes if they haven't been checked yet. Briefly tell the user about this gap.")
   write_state_batch "guard_exhausted" "" "guard_exhausted_detail" ""
 fi
 

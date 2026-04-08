@@ -22,7 +22,7 @@ Yes. The output style is configured in `~/.claude/settings.json` under the `outp
 
 ### How do I disable a specific quality gate?
 
-Edit `~/.claude/skills/autowork/scripts/stop-guard.sh`. Each gate is an independent conditional block. To disable one, either set its block cap to `0` (e.g., change `-lt 2` to `-lt 0`) or remove the block entirely. To disable all quality gates at once, clear the Stop hook array in `~/.claude/settings.json`: `"Stop": []`.
+Edit `~/.claude/skills/autowork/scripts/stop-guard.sh`. Each gate is an independent conditional block. To disable one, either set its block cap to `0` (e.g., change `-ge 3` to `-ge 0`) or remove the block entirely. To disable all quality gates at once, clear the Stop hook array in `~/.claude/settings.json`: `"Stop": []`.
 
 ### What does "ultrathink" do?
 

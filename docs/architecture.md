@@ -43,7 +43,7 @@ oh-my-claude is a harness that wraps Claude Code's lifecycle events with bash ho
 
 1. **Advisory inspection gate**: If the task is advisory over a codebase (coding or mixed domain) and no code inspection (`last_advisory_verify_ts`) or build/test verification (`last_verify_ts`) was detected, blocks the stop. Cap: 1 block.
 2. **Session handoff gate**: If the last assistant message contains deferral language ("ready for a new session", "next wave", "next phase") and the user did not request a checkpoint, blocks the stop. Cap: 2 blocks.
-3. **Review/verification gate**: If files were edited (`last_edit_ts` set) but review (`last_review_ts`) or verification (`last_verify_ts`) are missing or stale (timestamp earlier than last edit), blocks the stop. Review is checked for all domains; verification is only checked for coding and mixed. Cap: 2 blocks.
+3. **Review/verification gate**: If files were edited (`last_edit_ts` set) but review (`last_review_ts`) or verification (`last_verify_ts`) are missing or stale (timestamp earlier than last edit), blocks the stop. Review is checked for all domains; verification is only checked for coding and mixed. Cap: 3 blocks.
 
 The block caps prevent infinite loops. After the cap, Claude is allowed to stop even if gates are unsatisfied.
 

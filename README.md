@@ -33,7 +33,7 @@ The result: Claude classifies your intent before acting, routes work to speciali
 
 ### Hard quality gates
 
-Stop event blocking prevents Claude from finishing until testing and review are done. Wrote code but didn't run the tests? Blocked. Made edits but skipped the reviewer? Blocked. Deferred work to a "future session" without a checkpoint? Blocked. A 2-block-per-session cap prevents infinite loops -- if Claude can't satisfy the gates, it surfaces the gap instead of spinning.
+Stop event blocking prevents Claude from finishing until testing and review are done. Wrote code but didn't run the tests? Blocked. Made edits but skipped the reviewer? Blocked. Deferred work to a "future session" without a checkpoint? Blocked. A 3-block-per-session cap prevents infinite loops -- if Claude can't satisfy the gates, it surfaces the gap instead of spinning.
 
 ### Intent classification
 
@@ -54,7 +54,7 @@ Pre- and post-compact hooks snapshot the working state when Claude Code compacts
 
 ### Permissioned agents
 
-22 specialist agents, each with `disallowedTools` enforced. Agents can read, search, analyze, and plan -- but they cannot edit files. The main thread owns all mutations. This means agents provide high-quality analysis without unsupervised writes, and the main thread remains the single source of truth for code changes.
+23 specialist agents, each with `disallowedTools` enforced. Agents can read, search, analyze, and plan -- but they cannot edit files. The main thread owns all mutations. This means agents provide high-quality analysis without unsupervised writes, and the main thread remains the single source of truth for code changes.
 
 ### Zero dependencies
 
@@ -144,7 +144,7 @@ For the full architecture, see [docs/architecture.md](docs/architecture.md).
 oh-my-claude/
 ├── install.sh / uninstall.sh / verify.sh   # Install, remove, and verify
 ├── bundle/dot-claude/                       # Installs to ~/.claude/
-│   ├── agents/          (22 agents)         # Specialist agent definitions
+│   ├── agents/          (23 agents)         # Specialist agent definitions
 │   ├── skills/          (11 skills)         # Skill definitions + autowork hooks
 │   ├── quality-pack/                        # Lifecycle hooks + memory files
 │   ├── output-styles/                       # Output format templates

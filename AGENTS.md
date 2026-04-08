@@ -15,7 +15,7 @@ oh-my-claude/
   verify.sh                   # Post-install integrity checker
 
   bundle/dot-claude/          # Installs to ~/.claude/
-    agents/                   # 22 specialist agent definitions (.md)
+    agents/                   # 23 specialist agent definitions (.md)
     output-styles/            # Output format templates
     quality-pack/
       memory/                 # Core, skills, and compact memory files
@@ -103,7 +103,7 @@ Do not change these without discussion in a GitHub issue:
 
 1. **Intent classification order in `classify_task_intent()`**: Imperative intents are matched before advisory intents. This ensures explicit action requests are never misclassified as advice-seeking.
 
-2. **Stop guard block limits**: Hard-capped at 2 per session. This prevents runaway execution while still allowing one retry after a warning.
+2. **Stop guard block limits**: Hard-capped at 3 per session. This prevents runaway execution while allowing two retries after a warning, giving enough cycles for completeness-focused review and remediation.
 
 3. **Agent permission boundaries via `disallowedTools`**: Each agent's `.md` file specifies which tools it cannot use. This is the primary security boundary -- do not weaken an agent's restrictions without a clear justification.
 

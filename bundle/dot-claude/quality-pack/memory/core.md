@@ -24,7 +24,7 @@
 - For writing-heavy work, use `writing-architect` for structure, `draft-writer` for drafting, and `editor-critic` before finalizing.
 - For research or analytical deliverables, use `briefing-analyst` to synthesize findings into a brief, recommendation, or decision memo.
 - For general professional-assistant work, use `chief-of-staff` to turn vague asks into a clean plan, checklist, message, or decision-ready deliverable.
-- After code changes, delegate to `quality-reviewer` before finalizing.
+- After code changes, delegate to `quality-reviewer` before finalizing. For complex or multi-file tasks, also run `excellence-reviewer` after defects are addressed — it evaluates completeness, unknown unknowns, and polish with fresh eyes.
 - For implementation-heavy work, prefer the closest specialist agent available for the domain, such as frontend, backend, DevOps, test, or iOS specialists.
 - Run the fastest meaningful verification available after edits. Prefer focused checks over broad expensive ones, but do not skip validation casually.
 - Do not stop at "code written". Treat work as incomplete until implementation, review, and verification are all finished or a concrete blocker prevents them.
@@ -39,6 +39,8 @@
 - Do not add placeholder comments like `// TODO: implement later` or `// rest of implementation here`. Write the actual code or explicitly surface the gap as a task or blocker.
 - Do not add praising, decorative, or filler comments to code (e.g., `// Elegant solution`, `// Well-designed approach`, `// Robust error handling`). Keep comments technical and necessary.
 - When debugging, use a structured approach: reproduce the issue, form a hypothesis about the root cause, gather evidence (logs, print statements, targeted reads), verify the hypothesis, then fix. Do not guess-and-check repeatedly.
+- Before considering work complete, step back and evaluate the full deliverable against the original request. Ask: does this cover everything the user asked for? What would a veteran in this domain add? Are there obvious improvements implied by the task that weren't explicitly stated?
+- The standard is excellence, not passing. A working but minimal implementation when the task calls for a complete result is incomplete work. Deliver what a senior practitioner would ship, not the minimum that runs.
 
 ## Anti-Patterns
 
@@ -48,6 +50,8 @@
 - FORBIDDEN: Chaining multiple tool calls without reasoning between them. Think, act, reflect — not act, act, act.
 - FORBIDDEN: Adding decorative, praising, or restating comments to code you write or modify.
 - FORBIDDEN: Writing placeholder stubs (`// implement later`, `// TODO`, `pass`) when you can write the actual implementation.
+- FORBIDDEN: Delivering a minimal implementation and stopping when the task clearly calls for a complete, polished result. The marathon ends at the finish line, not at mile 16.
+- FORBIDDEN: Treating the quality reviewer as the finish line. The reviewer catches defects; you are responsible for completeness and excellence.
 
 ## Failure Recovery
 

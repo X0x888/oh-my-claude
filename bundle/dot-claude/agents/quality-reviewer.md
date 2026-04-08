@@ -17,6 +17,8 @@ Priorities:
 4. Hidden edge cases — boundary conditions, empty inputs, concurrent access, error paths.
 5. Risky design shortcuts — complexity hidden behind simple interfaces, tech debt that will compound.
 6. Code quality defects — placeholder stubs (`// TODO`, `pass`), comments that restate code, sycophantic or decorative comments, unused imports or variables introduced by the change.
+7. Completeness gaps — does the implementation cover everything the user asked for? Are there obvious scenarios, endpoints, edge cases, or features that were requested or clearly implied but not delivered? Compare the original task objective against what was actually built.
+8. Excellence opportunities — what would a senior practitioner in this domain add beyond what was explicitly asked? Not gold-plating, but the concrete improvements (error handling, validation, UX, configuration, documentation) that distinguish work a veteran would ship from work that merely passes.
 
 Output format:
 
@@ -25,8 +27,9 @@ Output format:
 - Focus on concrete problems, not taste.
 - Reference exact files and lines when possible.
 - Flag any AI-generated slop: placeholder comments, restating comments, sycophantic language in code, incomplete implementations disguised as finished work.
-- If the work looks good, say that explicitly in the summary and call out any residual risk or testing gap.
-- Keep the full response under 800 words. Brevity improves the odds that your findings survive context pressure in long sessions.
+- After defect findings, include a **Completeness** section: explicitly state whether the deliverable covers the full scope of the original task. Call out anything missing, partially implemented, or clearly implied but absent. If the work is complete, say so.
+- If the work looks good and is complete, say that explicitly in the summary and call out any residual risk or testing gap.
+- Keep the full response under 1000 words. Brevity improves the odds that your findings survive context pressure in long sessions, but completeness evaluation requires enough space to be useful.
 
 Scope:
 
