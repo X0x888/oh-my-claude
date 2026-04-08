@@ -208,8 +208,8 @@ To add new defaults, append new sections or bullet points. To relax a rule, remo
 
 The statusline is a Python script (`~/.claude/statusline.py`) that renders a two-line status bar showing:
 
-- **Line 1**: Model name, working directory, git branch (with dirty indicator), active output style.
-- **Line 2**: Context window usage bar (color-coded: green < 70%, yellow 70-89%, red >= 90%), usage percentage, session cost, session duration.
+- **Line 1**: Model name, working directory, ULW mode indicator (when active), git branch (with dirty indicator), active output style.
+- **Line 2**: Context window usage bar (color-coded: green < 70%, yellow 70-89%, red >= 90%), usage percentage, input/output token counts, session cost (with `*` when ULW active to signal subagent costs are excluded), session duration. Conditionally appends: rate limit usage (`RL:%`), prompt cache hit ratio (`C:%`), and API latency ratio (`API:%`) when data is available.
 
 ### Customizing the display
 
@@ -217,7 +217,7 @@ Edit `statusline.py` directly. The `main()` function assembles two lines from pa
 
 - To change colors, modify the ANSI constants at the top of the file (`CYAN`, `YELLOW`, `GREEN`, etc.).
 - To change the bar width, modify the `width` parameter in `make_bar()` (default: 18 characters).
-- To add or remove fields, edit the `line_one_parts` or `line_two` assembly in `main()`.
+- To add or remove fields, edit the `line_one_parts` or `line_two_parts` assembly in `main()`.
 - To change the context threshold colors, edit `bar_color()` (defaults: green < 70%, yellow 70-89%, red >= 90%).
 
 The statusline is registered in `~/.claude/settings.json` under `statusLine`:

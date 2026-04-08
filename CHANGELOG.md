@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- Statusline: rate limit usage indicator (`RL:%`) with color-coded thresholds.
+- Statusline: cost qualifier (`*`) when ULW active to signal subagent costs are excluded.
+- Statusline: prompt cache hit ratio (`C:%`) from cache-eligible token breakdown.
+- Statusline: API latency indicator (`API:%`) showing API wait time as percentage of wall clock.
+
 ## [1.0.0] - 2026-04-06
 
 Initial public release.

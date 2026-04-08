@@ -18,6 +18,7 @@ YELLOW = "\033[33m"
 BLUE = "\033[34m"
 GREEN = "\033[32m"
 RED = "\033[31m"
+MAGENTA = "\033[35m"
 
 
 def color(text, code):
@@ -126,9 +127,6 @@ def git_info(cwd):
     return payload
 
 
-MAGENTA = "\033[35m"
-
-
 def ulw_info():
     """Check if ULW mode is active and return the domain, or None."""
     state_root = os.path.join(os.path.expanduser("~"), ".claude", "quality-pack", "state")
@@ -183,19 +181,43 @@ def main():
     total_in = safe_get(data, "context_window", "total_input_tokens", default=0)
     total_out = safe_get(data, "context_window", "total_output_tokens", default=0)
 
+    # Cost: mark with * when ULW active — subagent costs are not included
+    cost_str = format_cost(total_cost)
+    cost_text = (color(cost_str, YELLOW) + color("*", DIM)) if ulw_domain else color(cost_str, YELLOW)
+
     usage_color = bar_color(pct)
-    line_two = "  ".join(
-        [
-            color(make_bar(pct), usage_color),
-            color(f"{pct:>3}% ctx", usage_color),
-            color(f"{format_tokens(total_in)}\u2191 {format_tokens(total_out)}\u2193", WHITE),
-            color(format_cost(total_cost), YELLOW),
-            color(format_duration(total_duration_ms), BLUE),
-        ]
-    )
+    line_two_parts = [
+        color(make_bar(pct), usage_color),
+        color(f"{pct:>3}% ctx", usage_color),
+        color(f"{format_tokens(total_in)}\u2191 {format_tokens(total_out)}\u2193", WHITE),
+        cost_text,
+        color(format_duration(total_duration_ms), BLUE),
+    ]
+
+    rl_pct_raw = safe_get(data, "rate_limits", "five_hour", "used_percentage", default=None)
+    if rl_pct_raw is not None:
+        try:
+            rl_pct = int(float(rl_pct_raw))
+            line_two_parts.append(color(f"RL:{rl_pct}%", bar_color(rl_pct)))
+        except (ValueError, TypeError):
+            pass
+
+    # Denominator is cache-eligible tokens only (created + read), not total input
+    cache_create = int(safe_get(data, "context_window", "current_usage", "cache_creation_input_tokens", default=0) or 0)
+    cache_read = int(safe_get(data, "context_window", "current_usage", "cache_read_input_tokens", default=0) or 0)
+    cache_total = cache_create + cache_read
+    if cache_total > 0:
+        cache_pct = int((cache_read / cache_total) * 100)
+        line_two_parts.append(color(f"C:{cache_pct}%", f"{DIM}{WHITE}"))
+
+    api_duration_ms = int(safe_get(data, "cost", "total_api_duration_ms", default=0) or 0)
+    wall_duration_ms = int(total_duration_ms or 0)
+    if wall_duration_ms > 0 and api_duration_ms > 0:
+        api_pct = min(int((api_duration_ms / wall_duration_ms) * 100), 100)
+        line_two_parts.append(color(f"API:{api_pct}%", f"{DIM}{WHITE}"))
 
     print("  ".join(line_one_parts))
-    print(line_two)
+    print("  ".join(line_two_parts))
 
 
 if __name__ == "__main__":
