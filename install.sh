@@ -12,7 +12,7 @@
 #   bash install.sh --model-tier=economy  # all agents use Sonnet (cheaper)
 #   bash install.sh --uninstall          # remove oh-my-claude (delegates to uninstall.sh)
 #
-# Requires: rsync, jq, and either python3 or jq for JSON merging.
+# Requires: rsync, jq. Uses python3 for JSON merging when available, falls back to jq.
 
 set -euo pipefail
 
@@ -395,7 +395,7 @@ need_cmd rsync
 
 if ! command -v jq >/dev/null 2>&1; then
   printf 'jq is required for runtime hook scripts but was not found.\n' >&2
-  printf 'Install it with:  brew install jq\n' >&2
+  printf 'Install it with your package manager (e.g. brew install jq, apt install jq).\n' >&2
   exit 1
 fi
 
