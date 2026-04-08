@@ -33,7 +33,7 @@ The result: Claude classifies your intent before acting, routes work to speciali
 
 ### Hard quality gates
 
-Stop event blocking prevents Claude from finishing until testing and review are done. Wrote code but didn't run the tests? Blocked. Made edits but skipped the reviewer? Blocked. Deferred work to a "future session" without a checkpoint? Blocked. A 3-block-per-session cap prevents infinite loops -- if Claude can't satisfy the gates, it surfaces the gap instead of spinning.
+Stop event blocking prevents Claude from finishing until testing and review are done. Wrote code but didn't run the tests? Blocked. Made edits but skipped the reviewer? Blocked. Deferred work to a "future session" without a checkpoint? Blocked. Edited 3+ files but skipped the excellence review? Blocked. Caps on each gate prevent infinite loops -- if Claude can't satisfy the gates, it surfaces the gap instead of spinning.
 
 ### Intent classification
 

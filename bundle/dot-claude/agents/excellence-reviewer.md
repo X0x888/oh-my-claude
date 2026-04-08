@@ -21,7 +21,7 @@ Evaluation axes:
 
 How to investigate:
 
-- Start by finding the original task objective — check session state, git log messages, or ask the main thread what was requested.
+- Start by finding the original task objective — read `current_objective` from session state (`~/.claude/quality-pack/state/*/session_state.json`), check git log messages, and read any plan output in the session state directory. If the objective is terse, expand it: what would a veteran in this domain interpret this request as requiring? Build an explicit scope checklist from the objective before evaluating.
 - Read the changed files via `git diff --name-only` or `~/.claude/quality-pack/state/*/edited_files.log`.
 - Read surrounding context (callers, consumers, tests, config) to evaluate integration.
 - For code: check if tests exist for new behavior, if error paths are handled, if the public API is intuitive.

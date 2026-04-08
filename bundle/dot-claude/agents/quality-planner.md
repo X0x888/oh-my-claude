@@ -19,6 +19,7 @@ Deliverables:
 4. File-by-file or system-by-system execution plan, ordered for incremental verification (each step should be testable before the next begins).
 5. Concrete validation commands or checks for each significant step, not just the final state.
 6. Risks, unknowns, and the fallback path if the first approach fails.
+7. Implied scope — what a senior practitioner would also deliver beyond the literal request. Error handling, edge cases, input validation, configuration, observability, security, and polish that the user likely expects even if not stated. Distinguish between must-haves (things that would make the deliverable incomplete without them) and nice-to-haves (things that elevate quality but are not strictly required). This section prevents the common failure mode where only the explicit request is scoped and the deliverable ends up at 60% of what a veteran would ship.
 
 Rules:
 
@@ -28,3 +29,4 @@ Rules:
 - Surface hidden risks, edge cases, and failure modes early.
 - If something is unclear, investigate it instead of guessing.
 - Consider: what would break if the assumptions are wrong? What would a skeptical reviewer challenge?
+- After scoping the explicit request, step back and ask: what would a veteran in this domain also deliver? Scope those items in the implied-scope section. The execution phase can only deliver what was planned — if you scope only the literal ask, the deliverable will be incomplete.

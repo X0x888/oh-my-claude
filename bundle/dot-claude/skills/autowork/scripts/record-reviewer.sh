@@ -5,6 +5,8 @@ set -euo pipefail
 # Fast-path: skip if ULW was never activated in this environment
 [[ -f "${HOME}/.claude/quality-pack/state/.ulw_active" ]] || exit 0
 
+REVIEWER_TYPE="${1:-standard}"
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOOK_JSON="$(cat)"
 . "${SCRIPT_DIR}/common.sh"
@@ -43,3 +45,7 @@ write_state_batch \
   "review_had_findings" "${has_findings}" \
   "stop_guard_blocks" "0" \
   "session_handoff_blocks" "0"
+
+if [[ "${REVIEWER_TYPE}" == "excellence" ]]; then
+  write_state "last_excellence_review_ts" "$(now_epoch)"
+fi

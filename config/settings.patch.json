@@ -173,7 +173,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "$HOME/.claude/skills/autowork/scripts/record-reviewer.sh"
+            "command": "$HOME/.claude/skills/autowork/scripts/record-reviewer.sh excellence"
           }
         ]
       }

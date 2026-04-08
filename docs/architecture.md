@@ -39,11 +39,12 @@ oh-my-claude is a harness that wraps Claude Code's lifecycle events with bash ho
 7. If the prompt contains `ultrathink`, appends a deeper investigation directive.
 8. Emits the assembled context via `hookSpecificOutput.additionalContext`.
 
-**`skills/autowork/scripts/stop-guard.sh`** (~133 lines) -- **Stop hook**. Hard quality gate that can block Claude from stopping. Three independent checks:
+**`skills/autowork/scripts/stop-guard.sh`** -- **Stop hook**. Hard quality gate that can block Claude from stopping. Four independent checks:
 
 1. **Advisory inspection gate**: If the task is advisory over a codebase (coding or mixed domain) and no code inspection (`last_advisory_verify_ts`) or build/test verification (`last_verify_ts`) was detected, blocks the stop. Cap: 1 block.
 2. **Session handoff gate**: If the last assistant message contains deferral language ("ready for a new session", "next wave", "next phase") and the user did not request a checkpoint, blocks the stop. Cap: 2 blocks.
 3. **Review/verification gate**: If files were edited (`last_edit_ts` set) but review (`last_review_ts`) or verification (`last_verify_ts`) are missing or stale (timestamp earlier than last edit), blocks the stop. Review is checked for all domains; verification is only checked for coding and mixed. Cap: 3 blocks.
+4. **Excellence gate**: After all standard gates pass, if the session has 3+ unique edited files and no `last_excellence_review_ts` has been recorded (or it is stale), blocks the stop once to request a fresh-eyes holistic evaluation via `excellence-reviewer`. Cap: 1 block (controlled by `excellence_guard_triggered` flag).
 
 The block caps prevent infinite loops. After the cap, Claude is allowed to stop even if gates are unsatisfied.
 
@@ -55,7 +56,7 @@ The block caps prevent infinite loops. After the cap, Claude is allowed to stop 
 
 **`skills/autowork/scripts/reflect-after-agent.sh`** -- **PostToolUse hook** for Agent. After an agent returns, injects a reflection prompt telling Claude to verify the agent's highest-impact claims against actual code before relying on them. For advisory tasks, additionally warns not to deliver the final report until all exploration agents have returned.
 
-**`skills/autowork/scripts/record-reviewer.sh`** -- **SubagentStop hook** for quality-reviewer and editor-critic agents. Records `last_review_ts` and resets stop guard counters when a reviewer agent completes.
+**`skills/autowork/scripts/record-reviewer.sh`** -- **SubagentStop hook** for quality-reviewer, editor-critic, and excellence-reviewer agents. Records `last_review_ts` and resets stop guard counters when a reviewer agent completes. When called with the `excellence` argument (configured for the excellence-reviewer matcher), additionally records `last_excellence_review_ts` to satisfy the excellence gate.
 
 **`skills/autowork/scripts/record-subagent-summary.sh`** -- **SubagentStop hook** (all agents). Appends the agent's type and last assistant message to `subagent_summaries.jsonl` (capped at 16 entries).
 

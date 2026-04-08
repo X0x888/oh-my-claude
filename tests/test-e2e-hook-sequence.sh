@@ -75,6 +75,14 @@ sim_review() {
       '{session_id:$s,last_assistant_message:$m}')"
 }
 
+sim_excellence_review() {
+  local sid="$1"
+  local msg="${2:-Verdict: The deliverable is complete and excellent.}"
+  printf '%s' "$(jq -nc --arg s "${sid}" --arg m "${msg}" \
+    '{session_id:$s,last_assistant_message:$m}')" \
+    | bash "${HOOK_DIR}/record-reviewer.sh" excellence 2>/dev/null || true
+}
+
 sim_stop() {
   local sid="$1"
   local msg="${2:-Here is the completed work.}"
@@ -482,6 +490,115 @@ sim_verify "sm" "shellcheck bundle/dot-claude/skills/autowork/scripts/common.sh"
 
 assert_not_empty "seq-M: shellcheck recorded" "$(read_st "sm" "last_verify_ts")"
 assert_eq "seq-M: outcome passed" "passed" "$(read_st "sm" "last_verify_outcome")"
+teardown_test
+
+
+# -------------------------------------------------------
+# Excellence gate tests
+# -------------------------------------------------------
+printf '\nExcellence gate:\n'
+
+
+# -------------------------------------------------------
+# Sequence N: Excellence reviewer records excellence timestamp
+# -------------------------------------------------------
+setup_test
+init_session "sn"
+sim_excellence_review "sn" "Verdict: Complete and excellent work."
+
+assert_not_empty "seq-N: last_review_ts set" "$(read_st "sn" "last_review_ts")"
+assert_not_empty "seq-N: last_excellence_review_ts set" "$(read_st "sn" "last_excellence_review_ts")"
+teardown_test
+
+
+# -------------------------------------------------------
+# Sequence O: Standard review does NOT set excellence timestamp
+# -------------------------------------------------------
+setup_test
+init_session "so"
+sim_review "so" "Summary: Code looks good."
+
+assert_not_empty "seq-O: last_review_ts set" "$(read_st "so" "last_review_ts")"
+assert_empty "seq-O: no excellence_review_ts" "$(read_st "so" "last_excellence_review_ts")"
+teardown_test
+
+
+# -------------------------------------------------------
+# Sequence P: Excellence gate blocks on multi-file task (3+ files)
+# -------------------------------------------------------
+setup_test
+init_session "sp"
+sim_edit "sp" "/src/a.ts"
+sim_edit "sp" "/src/b.ts"
+sim_edit "sp" "/src/c.ts"
+sim_verify "sp" "npm test" "Tests: 10 passed"
+sim_review "sp" "Summary: Looks good. No issues."
+output="$(sim_stop "sp")"
+
+assert_contains "seq-P: excellence gate blocks" '"decision":"block"' "${output}"
+assert_contains "seq-P: mentions excellence-reviewer" "excellence-reviewer" "${output}"
+assert_contains "seq-P: mentions file count" "3 files edited" "${output}"
+assert_eq "seq-P: excellence_guard_triggered" "1" "$(read_st "sp" "excellence_guard_triggered")"
+teardown_test
+
+
+# -------------------------------------------------------
+# Sequence Q: No excellence gate on single-file task
+# -------------------------------------------------------
+setup_test
+init_session "sq"
+sim_edit "sq" "/src/single.ts"
+sim_verify "sq" "npm test" "Tests: 5 passed"
+sim_review "sq" "Summary: Code looks clean."
+output="$(sim_stop "sq")"
+
+assert_empty "seq-Q: single-file allows stop" "${output}"
+teardown_test
+
+
+# -------------------------------------------------------
+# Sequence R: Excellence gate fires only once
+# -------------------------------------------------------
+setup_test
+init_session "sr"
+sim_edit "sr" "/src/a.ts"
+sim_edit "sr" "/src/b.ts"
+sim_edit "sr" "/src/c.ts"
+sim_verify "sr" "npm test" "Tests: 10 passed"
+sim_review "sr" "Summary: No issues."
+
+# First stop: blocks for excellence
+out1="$(sim_stop "sr")"
+assert_contains "seq-R: first stop blocks for excellence" '"decision":"block"' "${out1}"
+
+# Second stop: excellence_guard_triggered=1, skips excellence check, allows through
+out2="$(sim_stop "sr")"
+assert_empty "seq-R: second stop allowed (gate already triggered)" "${out2}"
+teardown_test
+
+
+# -------------------------------------------------------
+# Sequence S: Excellence gate satisfied by running excellence reviewer
+# -------------------------------------------------------
+setup_test
+init_session "ss"
+sim_edit "ss" "/src/a.ts"
+sim_edit "ss" "/src/b.ts"
+sim_edit "ss" "/src/c.ts"
+sim_verify "ss" "npm test" "Tests: 10 passed"
+sim_review "ss" "Summary: No issues."
+
+# First stop: blocks for excellence
+out1="$(sim_stop "ss")"
+assert_contains "seq-S: blocks for excellence" '"decision":"block"' "${out1}"
+
+# Run excellence review
+sim_excellence_review "ss" "Verdict: Complete and excellent."
+
+# Stop: should allow through (excellence review recorded)
+out2="$(sim_stop "ss")"
+assert_empty "seq-S: stop allowed after excellence review" "${out2}"
+assert_not_empty "seq-S: excellence_review_ts set" "$(read_st "ss" "last_excellence_review_ts")"
 teardown_test
 
 

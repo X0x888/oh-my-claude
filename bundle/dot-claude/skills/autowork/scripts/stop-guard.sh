@@ -132,6 +132,25 @@ else
 fi
 
 if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed}" -eq 0 && "${review_unremediated}" -eq 0 ]]; then
+  # All standard gates passed. Check if excellence review is warranted
+  # for complex multi-file tasks.
+  edited_files_log="$(session_file "edited_files.log")"
+  unique_edited_count=0
+  if [[ -f "${edited_files_log}" ]]; then
+    unique_edited_count="$(sort -u "${edited_files_log}" | wc -l | tr -d '[:space:]')"
+  fi
+
+  last_excellence_review_ts="$(read_state "last_excellence_review_ts")"
+  excellence_guard_triggered="$(read_state "excellence_guard_triggered")"
+
+  if [[ "${unique_edited_count}" -ge 3 ]] \
+    && [[ -z "${last_excellence_review_ts}" || "${last_excellence_review_ts}" -lt "${last_edit_ts}" ]] \
+    && [[ "${excellence_guard_triggered}" != "1" ]]; then
+    write_state "excellence_guard_triggered" "1"
+    jq -nc --arg reason "Autowork guard: standard review and verification passed, but this is a complex task (${unique_edited_count} files edited). Before finalizing, run excellence-reviewer for a fresh-eyes holistic evaluation — completeness against the original objective, unknown unknowns, and what a veteran would add. If you have already done a thorough self-assessment and are confident the deliverable is complete and excellent, explain your reasoning and stop." '{"decision":"block","reason":$reason}'
+    exit 0
+  fi
+
   # Remove fast-path sentinel; workflow_mode in session_state.json is
   # intentionally preserved so the prompt-intent-router's sticky gate
   # continues injecting specialist routing for the rest of this session.
@@ -161,9 +180,9 @@ fi
 
 if [[ "${missing_review}" -eq 1 ]]; then
   if [[ "${task_domain}" == "writing" || "${task_domain}" == "research" || "${task_domain}" == "operations" || "${task_domain}" == "general" ]]; then
-    review_action="delegate to editor-critic or another relevant reviewer and address any high-signal findings — the reviewer must evaluate not just quality issues but completeness: does this deliver everything the user asked for?"
+    review_action="FIRST self-assess: enumerate every component of the original request and mark each as delivered, partial, or missing — continue implementing anything not fully delivered. THEN delegate to editor-critic or another relevant reviewer and address any high-signal findings — the reviewer must evaluate not just quality issues but completeness: does this deliver everything the user asked for?"
   else
-    review_action="delegate to quality-reviewer and address its highest-signal findings — the reviewer must evaluate not just bugs but completeness: does the implementation cover the full scope of the original task? What is missing or only partially implemented?"
+    review_action="FIRST self-assess: enumerate every component of the original request and mark each as delivered, partial, or missing — continue implementing anything not fully delivered. THEN delegate to quality-reviewer and address its highest-signal findings — the reviewer must evaluate not just bugs but completeness: does the implementation cover the full scope of the original task?"
   fi
 elif [[ "${review_unremediated}" -eq 1 ]]; then
   review_action="the reviewer flagged issues that were not addressed — fix them or explain why they do not apply, then re-evaluate whether the deliverable is complete"

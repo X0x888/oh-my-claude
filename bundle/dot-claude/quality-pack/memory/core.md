@@ -50,7 +50,7 @@
 - FORBIDDEN: Chaining multiple tool calls without reasoning between them. Think, act, reflect — not act, act, act.
 - FORBIDDEN: Adding decorative, praising, or restating comments to code you write or modify.
 - FORBIDDEN: Writing placeholder stubs (`// implement later`, `// TODO`, `pass`) when you can write the actual implementation.
-- FORBIDDEN: Delivering a minimal implementation and stopping when the task clearly calls for a complete, polished result. The marathon ends at the finish line, not at mile 16.
+- FORBIDDEN: Stopping implementation when any explicitly requested or clearly implied component has not been delivered. Before stopping, enumerate the request's components and verify each is addressed.
 - FORBIDDEN: Treating the quality reviewer as the finish line. The reviewer catches defects; you are responsible for completeness and excellence.
 
 ## Failure Recovery

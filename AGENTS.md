@@ -103,7 +103,7 @@ Do not change these without discussion in a GitHub issue:
 
 1. **Intent classification order in `classify_task_intent()`**: Imperative intents are matched before advisory intents. This ensures explicit action requests are never misclassified as advice-seeking.
 
-2. **Stop guard block limits**: Hard-capped at 3 per session. This prevents runaway execution while allowing two retries after a warning, giving enough cycles for completeness-focused review and remediation.
+2. **Stop guard block limits**: Review/verification gate is hard-capped at 3 blocks per session. The excellence gate (for multi-file tasks) is capped at 1 block, controlled by a separate `excellence_guard_triggered` flag. These caps prevent runaway execution while giving enough cycles for completeness-focused review and remediation.
 
 3. **Agent permission boundaries via `disallowedTools`**: Each agent's `.md` file specifies which tools it cannot use. This is the primary security boundary -- do not weaken an agent's restrictions without a clear justification.
 
