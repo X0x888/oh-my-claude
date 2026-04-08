@@ -15,6 +15,7 @@ Cognitive quality harness for Claude Code -- bash hooks, specialist agents, and 
 
 ## Key Files
 
+- `VERSION` -- canonical version source of truth (single line, e.g. `1.0.0`)
 - `install.sh` -- merge-safe installer (supports `--bypass-permissions`, `--no-ios`, `--model-tier`)
 - `uninstall.sh` -- clean removal of installed harness
 - `verify.sh` -- post-install integrity checker (paths, JSON, hooks, syntax)
@@ -47,3 +48,4 @@ bash tests/test-e2e-hook-sequence.sh
 - Prefer readable code over micro-optimizations. When quality and speed conflict, choose quality.
 - Do not break existing install paths, config merges, or hook interfaces for performance gains.
 - When adding, removing, or renaming agents, skills, scripts, or directories, update README.md, CLAUDE.md, AGENTS.md, and CONTRIBUTING.md to reflect the change. Stale docs are worse than no docs.
+- When bumping the version, update `VERSION`, the README badge, and add a CHANGELOG entry. Tag the release commit with `vX.Y.Z`.

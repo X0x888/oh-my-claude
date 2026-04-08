@@ -31,6 +31,20 @@ STAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP_DIR="${CLAUDE_HOME}/backups/oh-my-claude-${STAMP}"
 
 # ---------------------------------------------------------------------------
+# Version (read from VERSION file, fallback to CHANGELOG.md)
+# ---------------------------------------------------------------------------
+
+OMC_VERSION="unknown"
+if [[ -f "${SCRIPT_DIR}/VERSION" ]]; then
+  OMC_VERSION="$(tr -d '[:space:]' < "${SCRIPT_DIR}/VERSION")"
+elif [[ -f "${SCRIPT_DIR}/CHANGELOG.md" ]]; then
+  ver_line="$(grep -m1 -E '^##\s+\[?v?[0-9]' "${SCRIPT_DIR}/CHANGELOG.md" 2>/dev/null || true)"
+  if [[ -n "${ver_line}" ]]; then
+    OMC_VERSION="$(printf '%s' "${ver_line}" | sed 's/^##[[:space:]]*//' | sed 's/^\[//' | sed 's/].*//' | sed 's/^v//' | sed 's/[[:space:]].*//')"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # Flags
 # ---------------------------------------------------------------------------
 
@@ -431,8 +445,9 @@ fi
 # Step 2b — Apply model tier (rewrite agent model assignments if needed).
 apply_model_tier
 
-# Step 2c — Save repo path for easy updates.
+# Step 2c — Save repo path and installed version for easy updates.
 set_conf "repo_path" "${SCRIPT_DIR}"
+set_conf "installed_version" "${OMC_VERSION}"
 
 # Ensure quality-pack state directory exists (not in the bundle).
 mkdir -p "${CLAUDE_HOME}/quality-pack/state"
@@ -460,6 +475,7 @@ ensure_executable_bits
 printf '\n'
 printf '=== oh-my-claude install complete ===\n'
 printf '\n'
+printf '  Version:       %s\n' "${OMC_VERSION}"
 printf '  Destination:   %s\n' "${CLAUDE_HOME}"
 printf '  Backup:        %s\n' "${BACKUP_DIR}"
 if [[ -d "${BUNDLE_GHOSTTY}" ]]; then

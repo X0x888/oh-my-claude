@@ -49,15 +49,14 @@ warn() {
 
 omc_version="unknown"
 
-# Try CHANGELOG.md first, then VERSION file.
-if [[ -f "${SCRIPT_DIR}/CHANGELOG.md" ]]; then
-  # Extract the first version heading (e.g., "## 1.0.0" or "## v1.0.0").
-  ver_line="$(grep -m1 -E '^##\s+v?[0-9]' "${SCRIPT_DIR}/CHANGELOG.md" 2>/dev/null || true)"
-  if [[ -n "${ver_line}" ]]; then
-    omc_version="$(printf '%s' "${ver_line}" | sed 's/^##[[:space:]]*//' | sed 's/[[:space:]].*//')"
-  fi
-elif [[ -f "${SCRIPT_DIR}/VERSION" ]]; then
+# Try VERSION file first (canonical), then CHANGELOG.md as fallback.
+if [[ -f "${SCRIPT_DIR}/VERSION" ]]; then
   omc_version="$(tr -d '[:space:]' < "${SCRIPT_DIR}/VERSION")"
+elif [[ -f "${SCRIPT_DIR}/CHANGELOG.md" ]]; then
+  ver_line="$(grep -m1 -E '^##\s+\[?v?[0-9]' "${SCRIPT_DIR}/CHANGELOG.md" 2>/dev/null || true)"
+  if [[ -n "${ver_line}" ]]; then
+    omc_version="$(printf '%s' "${ver_line}" | sed 's/^##[[:space:]]*//' | sed 's/^\[//' | sed 's/].*//' | sed 's/^v//' | sed 's/[[:space:]].*//')"
+  fi
 fi
 
 # ===========================================================================

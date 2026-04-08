@@ -127,6 +127,19 @@ def git_info(cwd):
     return payload
 
 
+def installed_version():
+    """Read installed_version from oh-my-claude.conf, or None."""
+    conf_path = os.path.join(os.path.expanduser("~"), ".claude", "oh-my-claude.conf")
+    try:
+        with open(conf_path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("installed_version="):
+                    return line.split("=", 1)[1].strip()
+    except (FileNotFoundError, OSError):
+        pass
+    return None
+
+
 def ulw_info():
     """Check if ULW mode is active and return the domain, or None."""
     state_root = os.path.join(os.path.expanduser("~"), ".claude", "quality-pack", "state")
@@ -167,6 +180,7 @@ def main():
     branch_text = f"git:{branch}{'*' if dirty else ''}" if branch else ""
 
     ulw_domain = ulw_info()
+    omc_version = installed_version()
 
     line_one_parts = [
         color(f"[{model_name}]", CYAN),
@@ -177,6 +191,8 @@ def main():
     if branch_text:
         line_one_parts.append(color(branch_text, YELLOW))
     line_one_parts.append(color(f"style:{style_name}", f"{DIM}{BLUE}"))
+    if omc_version:
+        line_one_parts.append(color(f"v{omc_version}", f"{DIM}{WHITE}"))
 
     total_in = safe_get(data, "context_window", "total_input_tokens", default=0)
     total_out = safe_get(data, "context_window", "total_output_tokens", default=0)
