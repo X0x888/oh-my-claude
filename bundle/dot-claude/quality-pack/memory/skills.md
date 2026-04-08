@@ -10,4 +10,7 @@
 - `/oracle <issue>` provides a deep debugging or architecture second opinion when the right path is unclear.
 - `/librarian <topic>` gathers official docs, external APIs, reference implementations, and concrete source material.
 - `/atlas [focus]` bootstraps or refreshes concise project-specific instruction files for the current repository.
+- `/ulw-status` shows the current ULW session state -- workflow mode, domain, counters, and flags (debugging).
+- `/ulw-off` deactivates ultrawork mode mid-session without ending the conversation.
+- `/skills` lists all available skills with descriptions and a decision guide.
 - The `ulw` family should auto-detect whether a task is coding, writing, research, operations, mixed, or general work, then choose the correct specialists instead of forcing a coding workflow onto everything.

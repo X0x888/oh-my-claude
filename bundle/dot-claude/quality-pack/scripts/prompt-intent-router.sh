@@ -10,6 +10,7 @@ SESSION_ID="$(json_get '.session_id')"
 PROMPT_TEXT="$(json_get '.prompt')"
 
 if [[ -z "${SESSION_ID}" || -z "${PROMPT_TEXT}" ]]; then
+  log_hook "prompt-intent-router" "skip: no session or prompt"
   exit 0
 fi
 
@@ -107,6 +108,8 @@ if grep -Eiq '(^|[^[:alnum:]_-])(ultrawork|ulw|autowork|sisyphus)([^[:alnum:]_-]
 
   # Sentinel for fast-path exit in PostToolUse hooks (zero-cost check)
   touch "${STATE_ROOT}/.ulw_active"
+
+  log_hook "prompt-intent-router" "ulw=on domain=${TASK_DOMAIN} intent=${TASK_INTENT}"
 
   if [[ "${continuation_prompt}" -eq 1 ]]; then
     context_parts+=("Ultrawork continuation mode is active for this session. Continue the prior task instead of treating the literal word 'continue' or 'resume' as a new objective. In your first user-facing response, start with the bold phrase **Ultrawork continuation active.** then briefly state what is already done, what remains, and the next concrete action. Reuse finished work, preserve the existing task domain, and only re-dispatch branches that were interrupted or are still missing.")

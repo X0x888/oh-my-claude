@@ -145,7 +145,7 @@ oh-my-claude/
 ├── install.sh / uninstall.sh / verify.sh   # Install, remove, and verify
 ├── bundle/dot-claude/                       # Installs to ~/.claude/
 │   ├── agents/          (23 agents)         # Specialist agent definitions
-│   ├── skills/          (11 skills)         # Skill definitions + autowork hooks
+│   ├── skills/          (13 skills)         # Skill definitions + autowork hooks
 │   ├── quality-pack/                        # Lifecycle hooks + memory files
 │   ├── output-styles/                       # Output format templates
 │   └── statusline.py                        # Custom statusline widget
@@ -172,7 +172,9 @@ Skills are invoked as slash commands or routed automatically by the intent class
 | oracle | `/oracle <issue>` | Deep debugging second opinion |
 | librarian | `/librarian <topic>` | Official docs and reference research |
 | atlas | `/atlas [focus]` | Bootstrap or refresh repo instruction files |
+| ulw-off | `/ulw-off` | Deactivate ultrawork mode mid-session |
 | ulw-status | `/ulw-status` | Show current session state (debugging) |
+| skills | `/skills` | List all available skills with usage guide |
 
 ## Power-user setup
 

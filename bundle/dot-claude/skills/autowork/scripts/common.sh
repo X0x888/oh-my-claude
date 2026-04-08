@@ -4,6 +4,35 @@ set -euo pipefail
 
 STATE_ROOT="${HOME}/.claude/quality-pack/state"
 STATE_JSON="session_state.json"
+HOOK_LOG="${STATE_ROOT}/hooks.log"
+
+# Optional hook execution logging. Enable via oh-my-claude.conf: hook_debug=true
+_hook_debug_enabled=""
+_hook_debug_checked=0
+
+is_hook_debug() {
+  if [[ "${_hook_debug_checked}" -eq 0 ]]; then
+    _hook_debug_checked=1
+    local conf="${HOME}/.claude/oh-my-claude.conf"
+    if [[ "${HOOK_DEBUG:-}" == "1" ]]; then
+      _hook_debug_enabled=1
+    elif [[ -f "${conf}" ]]; then
+      _hook_debug_enabled="$(grep -E '^hook_debug=true$' "${conf}" >/dev/null 2>&1 && echo 1 || echo "")"
+    fi
+  fi
+  [[ -n "${_hook_debug_enabled}" ]]
+}
+
+log_hook() {
+  if is_hook_debug; then
+    local hook_name="${1:-unknown}"
+    local detail="${2:-}"
+    local ts
+    ts="$(date '+%Y-%m-%d %H:%M:%S')"
+    mkdir -p "${STATE_ROOT}"
+    printf '%s  %s  %s\n' "${ts}" "${hook_name}" "${detail}" >>"${HOOK_LOG}"
+  fi
+}
 
 read_hook_json() {
   cat

@@ -26,7 +26,18 @@ if [[ -z "${command_text}" ]]; then
   exit 0
 fi
 
-if grep -Eiq '(^|[[:space:]])(npm|pnpm|yarn|bun|cargo|go|pytest|python|uv|ruff|mypy|eslint|tsc|vitest|jest|phpunit|rspec|gradle|xcodebuild|swift|make|just|bash)([[:space:]].*)?(test|tests|check|lint|typecheck|build)|\b(pytest|vitest|jest|cargo test|go test|swift test|swift build|ruff check|mypy|eslint|tsc|typecheck|phpunit|rspec|gradle test|xcodebuild test|shellcheck|bash -n)\b' <<<"${command_text}"; then
+custom_patterns=""
+conf_file="${HOME}/.claude/oh-my-claude.conf"
+if [[ -f "${conf_file}" ]]; then
+  custom_patterns="$(grep -E '^custom_verify_patterns=' "${conf_file}" | head -1 | cut -d= -f2-)" || true
+fi
+
+builtin_pattern='(^|[[:space:]])(npm|pnpm|yarn|bun|cargo|go|pytest|python|uv|ruff|mypy|eslint|tsc|vitest|jest|phpunit|rspec|gradle|xcodebuild|swift|make|just|bash)([[:space:]].*)?(test|tests|check|lint|typecheck|build)|\b(pytest|vitest|jest|cargo test|go test|swift test|swift build|ruff check|mypy|eslint|tsc|typecheck|phpunit|rspec|gradle test|xcodebuild test|shellcheck|bash -n)\b'
+if [[ -n "${custom_patterns}" ]]; then
+  builtin_pattern="${builtin_pattern}|${custom_patterns}"
+fi
+
+if grep -Eiq "${builtin_pattern}" <<<"${command_text}" 2>/dev/null; then
 
   # Detect test outcome from tool response (field may be tool_response or tool_result)
   tool_output="$(json_get '.tool_response' 2>/dev/null || true)"
@@ -52,4 +63,5 @@ if grep -Eiq '(^|[[:space:]])(npm|pnpm|yarn|bun|cargo|go|pytest|python|uv|ruff|m
     "stop_guard_blocks" "0" \
     "session_handoff_blocks" "0" \
     "stall_counter" "0"
+  log_hook "record-verification" "cmd=${command_text} outcome=${verify_outcome}"
 fi

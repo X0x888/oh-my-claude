@@ -35,4 +35,5 @@ write_state_batch \
   "stall_counter" "0"
 if [[ -n "${edited_path}" ]]; then
   printf '%s\n' "${edited_path}" >>"$(session_file "edited_files.log")"
+  log_hook "mark-edit" "file=${edited_path}"
 fi

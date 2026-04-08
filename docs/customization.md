@@ -46,13 +46,13 @@ bash ~/.claude/switch-tier.sh economy    # switch to all-Sonnet
 bash ~/.claude/switch-tier.sh            # show current tier
 ```
 
-The script reads the saved repo path from `oh-my-claude.conf` and re-runs the full installer with the new tier. Backups are created as usual.
+For quality and economy tiers, the script updates agent `model:` lines in-place via sed -- no full reinstall, no backup cycle. For the balanced tier, it restores bundle defaults from the saved repo path. The tier choice is persisted to `oh-my-claude.conf`.
 
 | Tier | Opus agents | Sonnet agents | Best for |
 |---|---|---|---|
-| `quality` | All 22 | 0 | Users with high usage limits who prioritize quality over cost |
+| `quality` | All 23 | 0 | Users with high usage limits who prioritize quality over cost |
 | `balanced` | 9 (planning, review, debugging, writing, operations) | 13 (execution, research, domain specialists) | Most users (default) |
-| `economy` | 0 | All 22 | Users on tighter plans or budget-conscious API usage |
+| `economy` | 0 | All 23 | Users on tighter plans or budget-conscious API usage |
 
 ### How it works
 

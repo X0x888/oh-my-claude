@@ -1,5 +1,33 @@
 # FAQ
 
+### Which skill should I use?
+
+Use this decision tree:
+
+1. **"I need to get real work done."** → `/ulw <task>` (or `/autowork`). This is the default for any non-trivial task — coding, writing, research, or operations. It handles intent classification, domain routing, specialist agents, and quality gates automatically.
+
+2. **"I need a plan before I start coding."**
+   - Goal is clear and scoped → `/plan-hard <task>` — produces a decision-complete plan without editing files.
+   - Goal is broad, vague, or ambiguous → `/prometheus <goal>` — runs an interview-first clarification process before planning.
+
+3. **"I have a plan and want to check it for risks."** → `/metis <plan>` — stress-tests for hidden assumptions, missing constraints, and weak validation.
+
+4. **"I need to understand existing code or context."** → `/research-hard <topic>` — gathers repo context, API wiring, and integration points.
+
+5. **"I need official docs or external references."** → `/librarian <topic>` — fetches authoritative documentation, third-party API references, and concrete examples.
+
+6. **"I'm stuck debugging or can't decide between approaches."** → `/oracle <issue>` — provides a deep debugging or architecture second opinion.
+
+7. **"I want a code review."** → `/review-hard [focus]` — findings-first review of the current worktree or a specific area.
+
+8. **"I'm setting up a new repo for Claude Code."** → `/atlas [focus]` — bootstraps or refreshes CLAUDE.md / .claude/rules.
+
+9. **"I want to see what's happening."** → `/ulw-status` (session state) or `/skills` (list all skills).
+
+10. **"I want to turn off ultrawork mode."** → `/ulw-off` — deactivates quality gates and domain routing for the rest of the session.
+
+**Rule of thumb:** If you're unsure, start with `/ulw`. It auto-detects the domain and routes to the right specialists.
+
 ### What's the difference between /ulw and just typing ulw?
 
 Both work. The prompt-intent-router checks for the keyword `ulw` (along with `autowork`, `ultrawork`, and `sisyphus`) anywhere in the prompt text using a case-insensitive regex match. The leading slash is a Claude Code skill invocation convention, but the harness activates on the keyword itself regardless of whether the slash is present.
@@ -63,7 +91,7 @@ bash ~/.claude/switch-tier.sh economy    # all Sonnet
 bash ~/.claude/switch-tier.sh            # show current tier
 ```
 
-This reads your saved repo path and re-runs the installer with the new tier. You can also run the installer directly: `bash install.sh --model-tier=economy`. The choice is saved and re-applied on future installs. For per-agent control, edit individual agent files in `~/.claude/agents/` after installation. See [customization.md](customization.md#model-tiers) for details.
+For the quality and economy tiers, the script updates agent files in-place without re-running the full installer. For the balanced tier, it restores bundle defaults from the repo. The choice is saved to `oh-my-claude.conf` and re-applied on future installs. For per-agent control, edit individual agent files in `~/.claude/agents/` after installation. See [customization.md](customization.md#model-tiers) for details.
 
 ### Can I ask Claude to modify the harness?
 
@@ -72,6 +100,30 @@ Yes, with care. It is safe to ask an AI agent to edit `settings.json`, `oh-my-cl
 ### How do I recover from a bad install or update?
 
 Every install creates a backup at `~/.claude/backups/oh-my-claude-{TIMESTAMP}/`. To restore a single file: `cp ~/.claude/backups/oh-my-claude-{TIMESTAMP}/path/to/file ~/.claude/path/to/file`. For a full rollback: `rsync -a ~/.claude/backups/oh-my-claude-{TIMESTAMP}/ ~/.claude/`. To completely remove oh-my-claude: `bash uninstall.sh`.
+
+### My custom test command isn't recognized as verification
+
+The stop guard recognizes common test commands (`npm test`, `pytest`, `cargo test`, etc.) by pattern matching. If you use a custom test command like `bash run-tests.sh` or `./check.sh`, add your pattern to `~/.claude/oh-my-claude.conf`:
+
+```
+custom_verify_patterns=\b(run-tests\.sh|check\.sh)\b
+```
+
+The value is an extended regex appended to the built-in pattern with `|`. Multiple patterns can be combined: `\b(run-tests\.sh)\b|\b(make check)\b`.
+
+### How do I debug hook execution?
+
+Enable hook logging by adding `hook_debug=true` to `~/.claude/oh-my-claude.conf`:
+
+```
+hook_debug=true
+```
+
+Or set the environment variable `HOOK_DEBUG=1` before launching Claude Code. When enabled, hooks write timestamped entries to `~/.claude/quality-pack/state/hooks.log`. Entries show which hook fired, the classified intent/domain, and guard decisions.
+
+### How do I deactivate ultrawork mode mid-session?
+
+Run `/ulw-off`. This clears the workflow state and removes the ULW sentinel. Quality gates stop firing and domain routing turns off. The conversation continues normally -- only the ultrawork enforcement layer is disabled.
 
 ### Does this work on Linux?
 

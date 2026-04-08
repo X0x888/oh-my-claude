@@ -20,8 +20,8 @@ oh-my-claude/
     quality-pack/
       memory/                 # Core, skills, and compact memory files
       scripts/                # 5 lifecycle hook scripts (prompt routing, compaction, session)
-    skills/                   # 11 skill definitions, each in <name>/SKILL.md
-      autowork/scripts/       # 10 autowork hook scripts and utilities
+    skills/                   # 13 skill definitions, each in <name>/SKILL.md
+      autowork/scripts/       # 11 autowork hook scripts and utilities
         common.sh             # Shared functions (state, JSON, classification)
     statusline.py             # Custom statusline with context tracking
     CLAUDE.md                 # Installed user-facing CLAUDE.md

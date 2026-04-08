@@ -56,22 +56,76 @@ case "${TIER}" in
 esac
 
 # ---------------------------------------------------------------------------
-# Locate repo via saved config
+# Locate repo for balanced tier (needs bundle defaults)
 # ---------------------------------------------------------------------------
 
 REPO_PATH="$(get_conf repo_path 2>/dev/null || true)"
+AGENTS_DIR="${CLAUDE_HOME}/agents"
 
-if [[ -z "${REPO_PATH}" ]]; then
-  die "No repo_path found in ${CONF_PATH}. Re-run the full installer from the oh-my-claude repository."
-fi
-
-if [[ ! -f "${REPO_PATH}/install.sh" ]]; then
-  die "install.sh not found at ${REPO_PATH}/install.sh. Has the repository moved? Re-run the full installer from the new location."
+if [[ ! -d "${AGENTS_DIR}" ]]; then
+  die "No agents directory at ${AGENTS_DIR}. Run the full installer first."
 fi
 
 # ---------------------------------------------------------------------------
-# Delegate to installer
+# Persist tier choice
+# ---------------------------------------------------------------------------
+
+set_conf() {
+  local key="$1" value="$2"
+  if [[ -f "${CONF_PATH}" ]]; then
+    local tmp="${CONF_PATH}.tmp"
+    grep -v "^${key}=" "${CONF_PATH}" > "${tmp}" 2>/dev/null || true
+    mv "${tmp}" "${CONF_PATH}"
+  fi
+  printf '%s=%s\n' "${key}" "${value}" >> "${CONF_PATH}"
+}
+
+# ---------------------------------------------------------------------------
+# Apply tier
 # ---------------------------------------------------------------------------
 
 printf 'Switching to model tier: %s\n' "${TIER}"
-exec bash "${REPO_PATH}/install.sh" --model-tier="${TIER}"
+
+changed=0
+
+if [[ "${TIER}" == "balanced" ]]; then
+  # Restore bundle defaults by reading model: lines from the repo copy
+  if [[ -z "${REPO_PATH}" || ! -d "${REPO_PATH}/bundle/dot-claude/agents" ]]; then
+    die "Cannot switch to balanced: repo not found at '${REPO_PATH}'. Re-run the full installer to set balanced defaults."
+  fi
+  for bundle_file in "${REPO_PATH}/bundle/dot-claude/agents/"*.md; do
+    [[ -f "${bundle_file}" ]] || continue
+    agent_name="$(basename "${bundle_file}")"
+    installed_file="${AGENTS_DIR}/${agent_name}"
+    [[ -f "${installed_file}" ]] || continue
+
+    bundle_model="$(grep -E '^model: ' "${bundle_file}" | head -1)" || true
+    installed_model="$(grep -E '^model: ' "${installed_file}" | head -1)" || true
+
+    if [[ -n "${bundle_model}" && "${bundle_model}" != "${installed_model}" ]]; then
+      tmp="${installed_file}.tmp"
+      sed "s/^model: .*$/${bundle_model}/" "${installed_file}" > "${tmp}"
+      mv "${tmp}" "${installed_file}"
+      changed=$((changed + 1))
+    fi
+  done
+else
+  if [[ "${TIER}" == "quality" ]]; then
+    from="sonnet"; to="opus"
+  else
+    from="opus"; to="sonnet"
+  fi
+
+  for agent_file in "${AGENTS_DIR}/"*.md; do
+    [[ -f "${agent_file}" ]] || continue
+    if grep -qE "^model: ${from}$" "${agent_file}"; then
+      tmp="${agent_file}.tmp"
+      sed "s/^model: ${from}$/model: ${to}/" "${agent_file}" > "${tmp}"
+      mv "${tmp}" "${agent_file}"
+      changed=$((changed + 1))
+    fi
+  done
+fi
+
+set_conf "model_tier" "${TIER}"
+printf 'Done. %d agent(s) updated to %s tier.\n' "${changed}" "${TIER}"

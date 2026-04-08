@@ -53,7 +53,7 @@ if ! is_execution_intent_value "${task_intent}"; then
 
       if [[ -z "${advisory_verify_ts}" && -z "${verify_ts}" ]] && [[ "${advisory_guard_blocks}" -lt 1 ]]; then
         write_state "advisory_guard_blocks" "$((advisory_guard_blocks + 1))"
-        jq -nc --arg reason "Autowork guard: this is an advisory task over a codebase, but no code inspection or build/test verification was detected. Before finalizing your response, read or search the actual codebase to ground your recommendations in evidence. If you have already inspected code via other means, briefly list the files inspected and restate your key recommendation at the end." '{"decision":"block","reason":$reason}'
+        jq -nc --arg reason "[Advisory gate \u00b7 1/1] Autowork guard: this is an advisory task over a codebase, but no code inspection or build/test verification was detected. Before finalizing your response, read or search the actual codebase to ground your recommendations in evidence. If you have already inspected code via other means, briefly list the files inspected and restate your key recommendation at the end." '{"decision":"block","reason":$reason}'
         exit 0
       fi
     fi
@@ -69,7 +69,7 @@ if [[ -n "${last_assistant_message}" ]] \
   && ! is_checkpoint_request "${current_objective}"; then
   if [[ "${session_handoff_blocks}" -lt 2 ]]; then
     write_state "session_handoff_blocks" "$((session_handoff_blocks + 1))"
-    jq -nc --arg reason "Autowork guard: your last response explicitly deferred remaining work to a future session. In ultrawork mode, do not stop with 'next wave', 'next phase', or 'ready for a new session' language unless the user explicitly asked for a checkpoint. Continue the remaining work now. If you genuinely must pause, explain the hard blocker or ask the user whether they want a checkpoint." '{"decision":"block","reason":$reason}'
+    jq -nc --arg reason "[Session-handoff gate \u00b7 $((session_handoff_blocks + 1))/2] Autowork guard: your last response explicitly deferred remaining work to a future session. In ultrawork mode, do not stop with 'next wave', 'next phase', or 'ready for a new session' language unless the user explicitly asked for a checkpoint. Continue the remaining work now. If you genuinely must pause, explain the hard blocker or ask the user whether they want a checkpoint." '{"decision":"block","reason":$reason}'
     exit 0
   fi
 fi
@@ -126,9 +126,9 @@ if [[ "${missing_review}" -eq 0 ]]; then
 fi
 
 if [[ "${task_domain}" == "writing" || "${task_domain}" == "research" || "${task_domain}" == "operations" || "${task_domain}" == "general" ]]; then
-  reason="Autowork guard: the deliverable changed but the final quality loop is incomplete."
+  reason="[Quality gate \u00b7 $((guard_blocks + 1))/3] Autowork guard: the deliverable changed but the final quality loop is incomplete."
 else
-  reason="Autowork guard: edits were made but the final quality loop is incomplete."
+  reason="[Quality gate \u00b7 $((guard_blocks + 1))/3] Autowork guard: edits were made but the final quality loop is incomplete."
 fi
 
 if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed}" -eq 0 && "${review_unremediated}" -eq 0 ]]; then
@@ -147,7 +147,7 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
     && [[ -z "${last_excellence_review_ts}" || "${last_excellence_review_ts}" -lt "${last_edit_ts}" ]] \
     && [[ "${excellence_guard_triggered}" != "1" ]]; then
     write_state "excellence_guard_triggered" "1"
-    jq -nc --arg reason "Autowork guard: standard review and verification passed, but this is a complex task (${unique_edited_count} files edited). Before finalizing, run excellence-reviewer for a fresh-eyes holistic evaluation — completeness against the original objective, unknown unknowns, and what a veteran would add. If you have already done a thorough self-assessment and are confident the deliverable is complete and excellent, explain your reasoning and stop. After the excellence review, restate your key deliverable summary at the end of your response." '{"decision":"block","reason":$reason}'
+    jq -nc --arg reason "[Excellence gate \u00b7 1/1] Autowork guard: standard review and verification passed, but this is a complex task (${unique_edited_count} files edited). Before finalizing, run excellence-reviewer for a fresh-eyes holistic evaluation — completeness against the original objective, unknown unknowns, and what a veteran would add. If you have already done a thorough self-assessment and are confident the deliverable is complete and excellent, explain your reasoning and stop. After the excellence review, restate your key deliverable summary at the end of your response." '{"decision":"block","reason":$reason}'
     exit 0
   fi
 
@@ -155,6 +155,7 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
   # intentionally preserved so the prompt-intent-router's sticky gate
   # continues injecting specialist routing for the rest of this session.
   rm -f "${STATE_ROOT}/.ulw_active"
+  log_hook "stop-guard" "pass: all gates satisfied"
   exit 0
 fi
 
@@ -163,6 +164,7 @@ if [[ "${guard_blocks}" -ge 3 ]]; then
   write_state_batch \
     "guard_exhausted" "$(now_epoch)" \
     "guard_exhausted_detail" "review=${missing_review},verify=${missing_verify},verify_failed=${verify_failed},unremediated=${review_unremediated}"
+  log_hook "stop-guard" "exhausted after 3 blocks: review=${missing_review} verify=${missing_verify} failed=${verify_failed} unremediated=${review_unremediated}"
   exit 0
 fi
 

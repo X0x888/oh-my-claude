@@ -126,6 +126,31 @@ def git_info(cwd):
     return payload
 
 
+MAGENTA = "\033[35m"
+
+
+def ulw_info():
+    """Check if ULW mode is active and return the domain, or None."""
+    state_root = os.path.join(os.path.expanduser("~"), ".claude", "quality-pack", "state")
+    sentinel = os.path.join(state_root, ".ulw_active")
+    if not os.path.isfile(sentinel):
+        return None
+    try:
+        entries = [
+            e for e in os.listdir(state_root)
+            if not e.startswith(".") and os.path.isdir(os.path.join(state_root, e))
+        ]
+        if not entries:
+            return "active"
+        entries.sort(key=lambda e: os.path.getmtime(os.path.join(state_root, e)), reverse=True)
+        state_file = os.path.join(state_root, entries[0], "session_state.json")
+        with open(state_file, "r", encoding="utf-8") as fh:
+            state = json.load(fh)
+        return state.get("task_domain") or "active"
+    except (OSError, json.JSONDecodeError, IndexError):
+        return "active"
+
+
 def main():
     raw = sys.stdin.read().strip()
     data = json.loads(raw) if raw else {}
@@ -143,10 +168,14 @@ def main():
     dirty = git.get("dirty", False)
     branch_text = f"git:{branch}{'*' if dirty else ''}" if branch else ""
 
+    ulw_domain = ulw_info()
+
     line_one_parts = [
         color(f"[{model_name}]", CYAN),
         color(dir_name, f"{BOLD}{WHITE}"),
     ]
+    if ulw_domain:
+        line_one_parts.append(color(f"[ULW:{ulw_domain}]", f"{BOLD}{MAGENTA}"))
     if branch_text:
         line_one_parts.append(color(branch_text, YELLOW))
     line_one_parts.append(color(f"style:{style_name}", f"{DIM}{BLUE}"))
