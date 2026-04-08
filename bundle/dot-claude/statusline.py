@@ -50,6 +50,15 @@ def format_cost(total_cost):
     return f"${float(total_cost or 0.0):.2f}"
 
 
+def format_tokens(count):
+    count = max(int(count or 0), 0)
+    if count >= 999_950:
+        return f"{count / 1_000_000:.1f}M"
+    if count >= 1_000:
+        return f"{count / 1_000:.1f}k"
+    return str(count)
+
+
 def bar_color(pct):
     if pct >= 90:
         return RED
@@ -142,11 +151,15 @@ def main():
         line_one_parts.append(color(branch_text, YELLOW))
     line_one_parts.append(color(f"style:{style_name}", f"{DIM}{BLUE}"))
 
+    total_in = safe_get(data, "context_window", "total_input_tokens", default=0)
+    total_out = safe_get(data, "context_window", "total_output_tokens", default=0)
+
     usage_color = bar_color(pct)
     line_two = "  ".join(
         [
             color(make_bar(pct), usage_color),
             color(f"{pct:>3}% ctx", usage_color),
+            color(f"{format_tokens(total_in)}\u2191 {format_tokens(total_out)}\u2193", WHITE),
             color(format_cost(total_cost), YELLOW),
             color(format_duration(total_duration_ms), BLUE),
         ]
