@@ -54,7 +54,16 @@ Yes, for any file that ships in the `bundle/dot-claude/` directory. This include
 
 ### How do I change which model agents use?
 
-Use the `--model-tier` flag: `bash install.sh --model-tier=economy` (all Sonnet), `--model-tier=quality` (all Opus), or `--model-tier=balanced` (default split). The choice is saved and re-applied on future installs. For per-agent control, edit individual agent files in `~/.claude/agents/` after installation. See [customization.md](customization.md#model-tiers) for details.
+The fastest way is the convenience script installed at `~/.claude/switch-tier.sh`:
+
+```bash
+bash ~/.claude/switch-tier.sh quality    # all Opus
+bash ~/.claude/switch-tier.sh balanced   # default split
+bash ~/.claude/switch-tier.sh economy    # all Sonnet
+bash ~/.claude/switch-tier.sh            # show current tier
+```
+
+This reads your saved repo path and re-runs the installer with the new tier. You can also run the installer directly: `bash install.sh --model-tier=economy`. The choice is saved and re-applied on future installs. For per-agent control, edit individual agent files in `~/.claude/agents/` after installation. See [customization.md](customization.md#model-tiers) for details.
 
 ### Can I ask Claude to modify the harness?
 

@@ -36,6 +36,18 @@ bash install.sh --model-tier=balanced   # default split (Opus for planning/revie
 bash install.sh --model-tier=economy    # all agents use Sonnet
 ```
 
+### Switching tiers after installation
+
+A convenience script is installed at `~/.claude/switch-tier.sh` so you can switch tiers from anywhere without navigating to the repository:
+
+```bash
+bash ~/.claude/switch-tier.sh quality    # switch to all-Opus
+bash ~/.claude/switch-tier.sh economy    # switch to all-Sonnet
+bash ~/.claude/switch-tier.sh            # show current tier
+```
+
+The script reads the saved repo path from `oh-my-claude.conf` and re-runs the full installer with the new tier. Backups are created as usual.
+
 | Tier | Opus agents | Sonnet agents | Best for |
 |---|---|---|---|
 | `quality` | All 22 | 0 | Users with high usage limits who prioritize quality over cost |

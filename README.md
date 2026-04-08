@@ -190,6 +190,7 @@ Other install options:
 bash install.sh --no-ios                # Skip iOS-specific agents
 bash install.sh --model-tier=economy    # All agents use Sonnet (cheaper)
 bash install.sh --model-tier=quality    # All agents use Opus (max quality)
+bash ~/.claude/switch-tier.sh economy   # Switch tier post-install (from anywhere)
 bash uninstall.sh                       # Cleanly remove the harness
 ```
 
