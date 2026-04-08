@@ -149,6 +149,33 @@
             "command": "$HOME/.claude/skills/autowork/scripts/record-reviewer.sh"
           }
         ]
+      },
+      {
+        "matcher": "superpowers:code-reviewer",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/skills/autowork/scripts/record-reviewer.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "feature-dev:code-reviewer",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/skills/autowork/scripts/record-reviewer.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "excellence-reviewer",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/skills/autowork/scripts/record-reviewer.sh"
+          }
+        ]
       }
     ],
     "Stop": [
