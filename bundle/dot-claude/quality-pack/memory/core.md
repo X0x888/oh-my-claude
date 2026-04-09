@@ -33,7 +33,7 @@
 
 ## Code & Deliverable Quality
 
-- Test rigorously after changes. Failing to verify is the single most common failure mode. Run existing tests after edits, and add targeted new tests for new or changed behavior.
+- Test rigorously after changes. Failing to verify is the single most common failure mode. Run existing tests after edits, and add targeted new tests for new or changed behavior. New features and bug fixes are not complete without test coverage — use judgment on whether writing tests first clarifies the design or writing them after fits better, but shipping untested new behavior is incomplete work.
 - Before considering code complete, re-read the changed files and verify they do what was intended. Catch copy-paste errors, off-by-one mistakes, and stale references before the reviewer does.
 - Never write comments that merely restate the code. Comments explain why, not what.
 - Do not add placeholder comments like `// TODO: implement later` or `// rest of implementation here`. Write the actual code or explicitly surface the gap as a task or blocker.
