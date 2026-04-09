@@ -46,5 +46,11 @@ jobs:
       - name: Run end-to-end hook sequence tests
         run: bash tests/test-e2e-hook-sequence.sh
 
+      - name: Run common utilities tests
+        run: bash tests/test-common-utilities.sh
+
       - name: Run settings merge tests
         run: bash tests/test-settings-merge.sh
+
+      - name: Run statusline tests
+        run: python3 -m unittest tests.test_statusline -v

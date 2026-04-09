@@ -602,6 +602,32 @@ assert_not_empty "seq-S: excellence_review_ts set" "$(read_st "ss" "last_excelle
 teardown_test
 
 
+# -------------------------------------------------------
+# Sequence T: Excellence review must not overwrite review_had_findings
+# Regression test: if a standard review sets review_had_findings=false,
+# a subsequent excellence review must not clobber it to true.
+# -------------------------------------------------------
+setup_test
+init_session "st"
+sim_edit "st" "/src/a.ts"
+sim_edit "st" "/src/b.ts"
+sim_edit "st" "/src/c.ts"
+sim_verify "st" "npm test" "Tests: 5 passed"
+# Standard review: clean (sets review_had_findings=false)
+sim_review "st" "Summary: No issues found. Code looks clean."
+assert_eq "seq-T: standard review clean" "false" "$(read_st "st" "review_had_findings")"
+
+# Excellence review: must NOT overwrite review_had_findings
+sim_excellence_review "st" "Verdict: Complete and excellent."
+assert_eq "seq-T: excellence preserves review_had_findings" "false" "$(read_st "st" "review_had_findings")"
+assert_not_empty "seq-T: excellence_review_ts set" "$(read_st "st" "last_excellence_review_ts")"
+
+# Stop: should allow through (no unremediated findings)
+out="$(sim_stop "st")"
+assert_empty "seq-T: stop allowed" "${out}"
+teardown_test
+
+
 printf '\n=== Results: %d passed, %d failed ===\n' "${pass}" "${fail}"
 if [[ "${fail}" -gt 0 ]]; then
   exit 1

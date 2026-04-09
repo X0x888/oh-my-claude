@@ -34,10 +34,6 @@ log_hook() {
   fi
 }
 
-read_hook_json() {
-  cat
-}
-
 json_get() {
   local query="$1"
   jq -r "${query} // empty" <<<"${HOOK_JSON}"

@@ -208,6 +208,8 @@ bash tests/test-quality-gates.sh            # Stop guard enforcement
 bash tests/test-stall-detection.sh          # Loop detection
 bash tests/test-e2e-hook-sequence.sh        # End-to-end hook sequence
 bash tests/test-settings-merge.sh           # Install settings merge logic
+bash tests/test-common-utilities.sh         # Shared utility functions
+python3 -m unittest tests.test_statusline   # Statusline widget
 ```
 
 ## Customization

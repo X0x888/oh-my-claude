@@ -96,6 +96,8 @@ bash tests/test-quality-gates.sh
 bash tests/test-stall-detection.sh
 bash tests/test-e2e-hook-sequence.sh
 bash tests/test-settings-merge.sh
+bash tests/test-common-utilities.sh
+python3 -m unittest tests.test_statusline -v
 ```
 
 ## Protected Design Decisions
