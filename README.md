@@ -151,7 +151,7 @@ oh-my-claude/
 │   ├── output-styles/                       # Output format templates
 │   └── statusline.py                        # Custom statusline widget
 ├── config/settings.patch.json               # Merged into user settings on install
-├── tests/               (4 test scripts)    # Intent, quality gates, stall, e2e
+├── tests/               (8 test scripts)    # Intent, quality gates, stall, resume, e2e
 └── docs/                                    # Architecture, customization, FAQ, prompts
 ```
 
@@ -209,6 +209,7 @@ bash tests/test-stall-detection.sh          # Loop detection
 bash tests/test-e2e-hook-sequence.sh        # End-to-end hook sequence
 bash tests/test-settings-merge.sh           # Install settings merge logic
 bash tests/test-common-utilities.sh         # Shared utility functions
+bash tests/test-session-resume.sh           # Session resume cycle
 python3 -m unittest tests.test_statusline   # Statusline widget
 ```
 

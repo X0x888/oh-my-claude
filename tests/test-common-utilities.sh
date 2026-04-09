@@ -311,6 +311,128 @@ assert_exit "bare imperative: no" "1" \
   is_advisory_request "fix the authentication bug"
 
 # ===========================================================================
+# load_conf — configurable thresholds
+# ===========================================================================
+printf 'load_conf:\n'
+
+# Test 1: defaults when no conf file exists
+_omc_conf_loaded=0
+OMC_STALL_THRESHOLD=12
+OMC_EXCELLENCE_FILE_COUNT=3
+OMC_STATE_TTL_DAYS=7
+load_conf
+assert_eq "default stall_threshold" "12" "${OMC_STALL_THRESHOLD}"
+assert_eq "default excellence_file_count" "3" "${OMC_EXCELLENCE_FILE_COUNT}"
+assert_eq "default state_ttl_days" "7" "${OMC_STATE_TTL_DAYS}"
+
+# Test 2: conf file overrides specific values
+FAKE_HOME_DIR="$(mktemp -d)"
+conf_file="${FAKE_HOME_DIR}/.claude/oh-my-claude.conf"
+mkdir -p "${FAKE_HOME_DIR}/.claude"
+cat > "${conf_file}" <<'CONF'
+# Test configuration
+model_tier=balanced
+stall_threshold=20
+excellence_file_count=5
+state_ttl_days=14
+hook_debug=true
+CONF
+
+# Reset loader state, sentinels, and HOME, then reload
+_omc_conf_loaded=0
+_omc_env_stall=""
+_omc_env_excellence=""
+_omc_env_ttl=""
+OMC_STALL_THRESHOLD=12
+OMC_EXCELLENCE_FILE_COUNT=3
+OMC_STATE_TTL_DAYS=7
+OLD_HOME="${HOME}"
+HOME="${FAKE_HOME_DIR}"
+load_conf
+HOME="${OLD_HOME}"
+
+assert_eq "conf stall_threshold=20" "20" "${OMC_STALL_THRESHOLD}"
+assert_eq "conf excellence_file_count=5" "5" "${OMC_EXCELLENCE_FILE_COUNT}"
+assert_eq "conf state_ttl_days=14" "14" "${OMC_STATE_TTL_DAYS}"
+
+# Test 3: partial conf only overrides specified keys
+_omc_conf_loaded=0
+_omc_env_stall=""
+_omc_env_excellence=""
+_omc_env_ttl=""
+OMC_STALL_THRESHOLD=12
+OMC_EXCELLENCE_FILE_COUNT=3
+OMC_STATE_TTL_DAYS=7
+cat > "${conf_file}" <<'CONF'
+stall_threshold=8
+CONF
+HOME="${FAKE_HOME_DIR}"
+load_conf
+HOME="${OLD_HOME}"
+
+assert_eq "partial conf stall_threshold=8" "8" "${OMC_STALL_THRESHOLD}"
+assert_eq "partial conf excellence_file_count unchanged" "3" "${OMC_EXCELLENCE_FILE_COUNT}"
+assert_eq "partial conf state_ttl_days unchanged" "7" "${OMC_STATE_TTL_DAYS}"
+
+# Test 4: env var overrides take precedence over defaults (no conf)
+_omc_conf_loaded=0
+rm -f "${conf_file}"
+OMC_STALL_THRESHOLD=25
+OMC_EXCELLENCE_FILE_COUNT=10
+OMC_STATE_TTL_DAYS=30
+HOME="${FAKE_HOME_DIR}"
+load_conf
+HOME="${OLD_HOME}"
+
+assert_eq "env override stall_threshold" "25" "${OMC_STALL_THRESHOLD}"
+assert_eq "env override excellence_file_count" "10" "${OMC_EXCELLENCE_FILE_COUNT}"
+assert_eq "env override state_ttl_days" "30" "${OMC_STATE_TTL_DAYS}"
+
+# Test 5: env var wins over conf file (env > conf > default)
+cat > "${conf_file}" <<'CONF'
+stall_threshold=99
+excellence_file_count=99
+state_ttl_days=99
+CONF
+_omc_conf_loaded=0
+_omc_env_stall="25"
+_omc_env_excellence="10"
+_omc_env_ttl="30"
+OMC_STALL_THRESHOLD=25
+OMC_EXCELLENCE_FILE_COUNT=10
+OMC_STATE_TTL_DAYS=30
+HOME="${FAKE_HOME_DIR}"
+load_conf
+HOME="${OLD_HOME}"
+
+assert_eq "env beats conf stall_threshold" "25" "${OMC_STALL_THRESHOLD}"
+assert_eq "env beats conf excellence_file_count" "10" "${OMC_EXCELLENCE_FILE_COUNT}"
+assert_eq "env beats conf state_ttl_days" "30" "${OMC_STATE_TTL_DAYS}"
+
+# Test 6: non-numeric and zero conf values are ignored
+cat > "${conf_file}" <<'CONF'
+stall_threshold=high
+excellence_file_count=0
+state_ttl_days=-5
+CONF
+_omc_conf_loaded=0
+_omc_env_stall=""
+_omc_env_excellence=""
+_omc_env_ttl=""
+OMC_STALL_THRESHOLD=12
+OMC_EXCELLENCE_FILE_COUNT=3
+OMC_STATE_TTL_DAYS=7
+HOME="${FAKE_HOME_DIR}"
+load_conf
+HOME="${OLD_HOME}"
+
+assert_eq "non-numeric stall_threshold ignored" "12" "${OMC_STALL_THRESHOLD}"
+assert_eq "zero excellence_file_count ignored" "3" "${OMC_EXCELLENCE_FILE_COUNT}"
+assert_eq "negative state_ttl_days ignored" "7" "${OMC_STATE_TTL_DAYS}"
+
+rm -rf "${FAKE_HOME_DIR}"
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 

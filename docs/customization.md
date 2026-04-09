@@ -161,6 +161,26 @@ To disable all quality gates, remove the Stop hook entry from `~/.claude/setting
 
 The stop guard already skips the verification check for writing, research, operations, and general domains. It only requires `last_verify_ts` for coding and mixed tasks. To change which domains require verification, edit the `case` statement on lines ~93-102 of `stop-guard.sh`.
 
+### Configurable thresholds
+
+Three key thresholds can be tuned via `~/.claude/oh-my-claude.conf` without editing hook scripts:
+
+| Key | Default | What it controls |
+|-----|---------|-----------------|
+| `stall_threshold` | `12` | Consecutive Read/Grep calls before stall detection fires |
+| `excellence_file_count` | `3` | Unique edited files that trigger the excellence review gate |
+| `state_ttl_days` | `7` | Days before stale session state directories are swept |
+
+Example `~/.claude/oh-my-claude.conf`:
+
+```
+stall_threshold=20
+excellence_file_count=5
+state_ttl_days=14
+```
+
+Values can also be overridden via environment variables (`OMC_STALL_THRESHOLD`, `OMC_EXCELLENCE_FILE_COUNT`, `OMC_STATE_TTL_DAYS`). Environment variables take precedence over the conf file, and both override the built-in defaults.
+
 ---
 
 ## Domain Keywords

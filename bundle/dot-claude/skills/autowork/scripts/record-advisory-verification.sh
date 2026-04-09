@@ -64,11 +64,11 @@ write_state "stall_counter" "${stall_counter}"
 
 # Track file path for unique-path analysis (skip internal paths)
 if [[ -n "${target_path}" && "${is_internal_path}" -eq 0 ]]; then
-  append_limited_state "stall_paths.log" "${target_path}" "12"
+  append_limited_state "stall_paths.log" "${target_path}" "${OMC_STALL_THRESHOLD}"
 fi
 
 # Analyze at threshold
-if [[ "${stall_counter}" -ge 12 ]]; then
+if [[ "${stall_counter}" -ge "${OMC_STALL_THRESHOLD}" ]]; then
   unique_paths=0
   paths_file="$(session_file "stall_paths.log")"
   if [[ -f "${paths_file}" ]]; then
@@ -84,18 +84,18 @@ if [[ "${stall_counter}" -ge 12 ]]; then
     :
   elif [[ "${unique_paths}" -lt 4 ]]; then
     # Spinning on same files — strong warning
-    jq -nc --arg unique "${unique_paths}" '{
+    jq -nc --arg unique "${unique_paths}" --arg threshold "${OMC_STALL_THRESHOLD}" '{
       hookSpecificOutput: {
         hookEventName: "PostToolUse",
-        additionalContext: ("STALL DETECTED: 12+ consecutive Read/Grep calls touching only " + $unique + " unique files. You are re-reading the same files without making progress. Take a concrete action: edit a file, run a command, delegate to a specialist, or explain to the user what is blocking you.")
+        additionalContext: ("STALL DETECTED: " + $threshold + "+ consecutive Read/Grep calls touching only " + $unique + " unique files. You are re-reading the same files without making progress. Take a concrete action: edit a file, run a command, delegate to a specialist, or explain to the user what is blocking you.")
       }
     }'
   else
     # Moderate exploration (4-7 unique files) — lighter nudge
-    jq -nc --arg unique "${unique_paths}" '{
+    jq -nc --arg unique "${unique_paths}" --arg threshold "${OMC_STALL_THRESHOLD}" '{
       hookSpecificOutput: {
         hookEventName: "PostToolUse",
-        additionalContext: ("EXPLORATION CHECK: 12+ consecutive Read/Grep calls across " + $unique + " unique files without editing, testing, or delegating. If you are gathering context, briefly state what you have found and what you still need. If you have enough context, take action.")
+        additionalContext: ("EXPLORATION CHECK: " + $threshold + "+ consecutive Read/Grep calls across " + $unique + " unique files without editing, testing, or delegating. If you are gathering context, briefly state what you have found and what you still need. If you have enough context, take action.")
       }
     }'
   fi

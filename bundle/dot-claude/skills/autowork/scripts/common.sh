@@ -2,9 +2,53 @@
 
 set -euo pipefail
 
-STATE_ROOT="${HOME}/.claude/quality-pack/state"
+STATE_ROOT="${STATE_ROOT:-${HOME}/.claude/quality-pack/state}"
 STATE_JSON="session_state.json"
 HOOK_LOG="${STATE_ROOT}/hooks.log"
+
+# --- Configurable thresholds (tunable via oh-my-claude.conf) ---
+# Precedence: env var > conf file > built-in default.
+# Track which vars were set via env before applying defaults.
+_omc_env_stall="${OMC_STALL_THRESHOLD:-}"
+_omc_env_excellence="${OMC_EXCELLENCE_FILE_COUNT:-}"
+_omc_env_ttl="${OMC_STATE_TTL_DAYS:-}"
+
+OMC_STALL_THRESHOLD="${OMC_STALL_THRESHOLD:-12}"
+OMC_EXCELLENCE_FILE_COUNT="${OMC_EXCELLENCE_FILE_COUNT:-3}"
+OMC_STATE_TTL_DAYS="${OMC_STATE_TTL_DAYS:-7}"
+
+_omc_conf_loaded=0
+
+load_conf() {
+  if [[ "${_omc_conf_loaded}" -eq 1 ]]; then return; fi
+  _omc_conf_loaded=1
+
+  local conf="${HOME}/.claude/oh-my-claude.conf"
+  [[ -f "${conf}" ]] || return 0
+
+  local line key value
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ "${line}" =~ ^[[:space:]]*# ]] && continue
+    [[ -z "${line}" ]] && continue
+    [[ "${line}" != *=* ]] && continue
+
+    key="${line%%=*}"
+    value="${line#*=}"
+
+    # Only override if: value is a positive integer (>0) AND no env override was set.
+    case "${key}" in
+      stall_threshold)
+        [[ -z "${_omc_env_stall}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_STALL_THRESHOLD="${value}" || true ;;
+      excellence_file_count)
+        [[ -z "${_omc_env_excellence}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_EXCELLENCE_FILE_COUNT="${value}" || true ;;
+      state_ttl_days)
+        [[ -z "${_omc_env_ttl}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_STATE_TTL_DAYS="${value}" || true ;;
+    esac
+  done < "${conf}"
+}
+
+# Load conf at source time so all scripts get configured values.
+load_conf
 
 # Optional hook execution logging. Enable via oh-my-claude.conf: hook_debug=true
 _hook_debug_enabled=""
@@ -144,8 +188,8 @@ now_epoch() {
 }
 
 # --- State directory TTL sweep ---
-# Deletes session state dirs older than 7 days. Runs at most once per day,
-# gated by a marker file timestamp.
+# Deletes session state dirs older than OMC_STATE_TTL_DAYS (default 7).
+# Runs at most once per day, gated by a marker file timestamp.
 
 sweep_stale_sessions() {
   local marker="${STATE_ROOT}/.last_sweep"
@@ -161,9 +205,9 @@ sweep_stale_sessions() {
     fi
   fi
 
-  # Sweep directories older than 7 days (exclude dotfiles like .ulw_active, .last_sweep)
+  # Sweep directories older than configured TTL (exclude dotfiles like .ulw_active, .last_sweep)
   if [[ -d "${STATE_ROOT}" ]]; then
-    find "${STATE_ROOT}" -maxdepth 1 -type d -mtime +7 \
+    find "${STATE_ROOT}" -maxdepth 1 -type d -mtime +"${OMC_STATE_TTL_DAYS}" \
       ! -name '.' ! -name '..' ! -name '.*' ! -path "${STATE_ROOT}" \
       -exec rm -rf {} + 2>/dev/null || true
   fi
@@ -397,9 +441,28 @@ infer_domain() {
   local research_score
   local operations_score
 
+  # --- Bigram matching: compound phrases that disambiguate domain ---
+  # Action + coding-object → strong coding signal
+  local coding_bigrams
+  coding_bigrams=$(count_keyword_matches '\b(writ(e|ing)|add(ing)?|creat(e|ing)|run(ning)?|fix(ing)?|updat(e|ing))\s+((unit|integration|e2e|end.to.end|acceptance)\s+)?(tests?|test\s*suites?|specs?|code|functions?|class(es)?|components?|endpoints?|modules?|handlers?|middleware|routes?|migrations?|schemas?)\b' "${text}")
+  coding_bigrams=${coding_bigrams:-0}
+
+  # Action + writing-object → writing signal
+  local writing_bigrams
+  writing_bigrams=$(count_keyword_matches '\b(writ(e|ing)|draft(ing)?|compos(e|ing)|author(ing)?)\s+(papers?|essays?|reports?|emails?|memos?|articles?|letters?|proposals?|manuscripts?|blogs?\s*posts?)\b' "${text}")
+  writing_bigrams=${writing_bigrams:-0}
+
+  # --- Negative keywords: subtract false positives ---
+  # "report" after bug/error/test/crash → coding context, not writing
+  # "post" in HTTP context → not writing
+  local writing_negatives
+  writing_negatives=$(count_keyword_matches '\b(bug|error|test|crash|status|coverage)\s+reports?\b|\bpost\s+(requests?|endpoints?|methods?|routes?|data)\b' "${text}")
+  writing_negatives=${writing_negatives:-0}
+
+  # --- Unigram scoring ---
   local coding_strong
   coding_strong=$(count_keyword_matches '\b(bugs?|fix(es|ed|ing)?|debug(ging)?|refactor(ing)?|implement(ation|ed|ing)?|repos?(itory)?|function|class(es)?|component|endpoints?|apis?|schema|database|quer(y|ies)|migration|lint(ing)?|compile|tsc|typescript|javascript|python|swift|xcode|react|next\.?js|css|html|webhooks?|codebase|source.?code|ci/?cd|docker|container|backend|frontend|fullstack)\b' "${text}")
-  coding_strong=${coding_strong:-0}
+  coding_strong=$(( ${coding_strong:-0} + coding_bigrams ))
 
   local coding_weak
   coding_weak=$(count_keyword_matches '\b(tests?|build|scripts?|config(uration)?|hooks?|deploy(ed|ing|ment)?|server)\b' "${text}")
@@ -416,7 +479,8 @@ infer_domain() {
   fi
 
   writing_score=$(count_keyword_matches '\b(paper|draft(ing)?|essay|article|report|proposal|email|memo|letter|statement|abstract|introduction|conclusion|outline|rewrite|polish(ing)?|paragraph|manuscript|cover.?letter|sop|personal.?statement|blog|post)\b' "${text}")
-  writing_score=${writing_score:-0}
+  writing_score=$(( ${writing_score:-0} + writing_bigrams - writing_negatives ))
+  if [[ "${writing_score}" -lt 0 ]]; then writing_score=0; fi
 
   research_score=$(count_keyword_matches '\b(research(ing)?|investigate|investigation|analy(sis|ze|zing)|compare|comparison|survey|literature|sources|citations?|references?|benchmark(ing)?|brief(ing)?|recommendation|summarize|summary|pros.?and.?cons|tradeoffs?|audit(ing)?|assess(ment|ing)?|evaluat(e|ion|ing)|inspect(ion|ing)?)\b' "${text}")
   research_score=${research_score:-0}

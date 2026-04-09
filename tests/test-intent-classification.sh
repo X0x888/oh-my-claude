@@ -144,6 +144,91 @@ assert_directive "proceed" ""
 assert_directive "finish the rest" ""
 assert_directive "do the remaining work, starting with auth" "starting with auth"
 
+# ====================================================================
+# Domain Classification Tests (infer_domain)
+# ====================================================================
+
+assert_domain() {
+  local expected="$1"
+  local input="$2"
+  local actual
+  actual="$(infer_domain "${input}")"
+  if [[ "${actual}" == "${expected}" ]]; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: infer_domain "%s"\n    expected=%s actual=%s\n' "${input}" "${expected}" "${actual}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
+printf '\n=== Domain Classification Tests ===\n\n'
+
+# --- Coding: strong unigram signals ---
+printf 'Coding (strong signals):\n'
+assert_domain "coding" "Fix the login bug in the auth module"
+assert_domain "coding" "Refactor the database query layer"
+assert_domain "coding" "Implement the new API endpoint"
+assert_domain "coding" "Debug the failing React component"
+assert_domain "coding" "Add a migration for the users schema"
+
+# --- Coding: bigram disambiguation ---
+printf '\nCoding (bigram signals):\n'
+assert_domain "coding" "Write tests for the login flow"
+assert_domain "coding" "Write unit tests"
+assert_domain "coding" "Add tests for the new feature"
+assert_domain "coding" "Create tests for edge cases"
+assert_domain "coding" "Write code to handle retries"
+assert_domain "coding" "Add a new endpoint for user profiles"
+assert_domain "coding" "Create a handler for webhook events"
+assert_domain "coding" "Update the migration to add an index"
+assert_domain "coding" "Run tests and fix any failures"
+
+# --- Writing: strong signals ---
+printf '\nWriting (strong signals):\n'
+assert_domain "writing" "Draft the quarterly report for leadership"
+assert_domain "writing" "Write a personal statement for grad school"
+assert_domain "writing" "Polish the abstract and introduction"
+assert_domain "writing" "Rewrite the proposal to be more concise"
+
+# --- Writing: bigram signals ---
+printf '\nWriting (bigram signals):\n'
+assert_domain "writing" "Write a paper about distributed systems"
+assert_domain "writing" "Draft an email to the client about the delay"
+assert_domain "writing" "Compose a memo for the team meeting"
+assert_domain "writing" "Write an article about AI trends"
+
+# --- Writing: negative keywords should NOT inflate writing ---
+printf '\nWriting negatives (false positive prevention):\n'
+assert_domain "coding" "Fix the bug report endpoint"
+assert_domain "coding" "Fix the bug report submission endpoint"
+assert_domain "coding" "Fix the POST endpoint for user creation"
+
+# --- Research ---
+printf '\nResearch:\n'
+assert_domain "research" "Research the best caching strategies"
+assert_domain "research" "Compare Redis vs Memcached and summarize tradeoffs"
+assert_domain "research" "Investigate why latency spiked last Tuesday"
+assert_domain "research" "Evaluate options for the new logging framework"
+assert_domain "research" "Audit the current security posture"
+
+# --- Operations ---
+printf '\nOperations:\n'
+assert_domain "operations" "Create a project plan for the Q3 launch"
+assert_domain "operations" "Set up the meeting agenda for Monday"
+assert_domain "operations" "Build a checklist for the release process"
+assert_domain "operations" "Prioritize the roadmap items for next sprint"
+
+# --- Mixed: coding + secondary domain both significant ---
+printf '\nMixed:\n'
+assert_domain "mixed" "Implement the caching layer and write a report on performance improvements"
+assert_domain "mixed" "Refactor the API and summarize the architecture changes"
+
+# --- General: no strong signals ---
+printf '\nGeneral:\n'
+assert_domain "general" "Help me with this"
+assert_domain "general" "What do you think?"
+assert_domain "general" "Tell me about the weather"
+
 printf '\n=== Results: %d passed, %d failed ===\n' "${pass}" "${fail}"
 if [[ "${fail}" -gt 0 ]]; then
   exit 1

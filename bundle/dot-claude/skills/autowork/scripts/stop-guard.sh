@@ -143,7 +143,7 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
   last_excellence_review_ts="$(read_state "last_excellence_review_ts")"
   excellence_guard_triggered="$(read_state "excellence_guard_triggered")"
 
-  if [[ "${unique_edited_count}" -ge 3 ]] \
+  if [[ "${unique_edited_count}" -ge "${OMC_EXCELLENCE_FILE_COUNT}" ]] \
     && [[ -z "${last_excellence_review_ts}" || "${last_excellence_review_ts}" -lt "${last_edit_ts}" ]] \
     && [[ "${excellence_guard_triggered}" != "1" ]]; then
     write_state "excellence_guard_triggered" "1"

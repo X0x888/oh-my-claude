@@ -44,7 +44,7 @@ oh-my-claude is a harness that wraps Claude Code's lifecycle events with bash ho
 1. **Advisory inspection gate**: If the task is advisory over a codebase (coding or mixed domain) and no code inspection (`last_advisory_verify_ts`) or build/test verification (`last_verify_ts`) was detected, blocks the stop. Cap: 1 block.
 2. **Session handoff gate**: If the last assistant message contains deferral language ("ready for a new session", "next wave", "next phase") and the user did not request a checkpoint, blocks the stop. Cap: 2 blocks.
 3. **Review/verification gate**: If files were edited (`last_edit_ts` set) but review (`last_review_ts`) or verification (`last_verify_ts`) are missing or stale (timestamp earlier than last edit), blocks the stop. Review is checked for all domains; verification is only checked for coding and mixed. Cap: 3 blocks.
-4. **Excellence gate**: After all standard gates pass, if the session has 3+ unique edited files and no `last_excellence_review_ts` has been recorded (or it is stale), blocks the stop once to request a fresh-eyes holistic evaluation via `excellence-reviewer`. Cap: 1 block (controlled by `excellence_guard_triggered` flag).
+4. **Excellence gate**: After all standard gates pass, if the session has `excellence_file_count`+ unique edited files (default 3, configurable via `oh-my-claude.conf`) and no `last_excellence_review_ts` has been recorded (or it is stale), blocks the stop once to request a fresh-eyes holistic evaluation via `excellence-reviewer`. Cap: 1 block (controlled by `excellence_guard_triggered` flag).
 
 The block caps prevent infinite loops. After the cap, Claude is allowed to stop even if gates are unsatisfied.
 
@@ -52,7 +52,7 @@ The block caps prevent infinite loops. After the cap, Claude is allowed to stop 
 
 **`skills/autowork/scripts/record-verification.sh`** -- **PostToolUse hook** for Bash. Checks if the command matches a test/build/lint pattern (npm test, cargo test, pytest, vitest, eslint, tsc, etc.). If so, records `last_verify_ts` and the command text, and resets guard counters.
 
-**`skills/autowork/scripts/record-advisory-verification.sh`** -- **PostToolUse hook** for Grep and Read. During advisory tasks, records `last_advisory_verify_ts` when a non-internal file is read or searched. Also implements stall detection: increments a counter on each Read/Grep call, and at 12 consecutive calls without an edit, test, or agent delegation, injects a stall-check nudge.
+**`skills/autowork/scripts/record-advisory-verification.sh`** -- **PostToolUse hook** for Grep and Read. During advisory tasks, records `last_advisory_verify_ts` when a non-internal file is read or searched. Also implements stall detection: increments a counter on each Read/Grep call, and at `stall_threshold` consecutive calls (default 12, configurable via `oh-my-claude.conf`) without an edit, test, or agent delegation, injects a stall-check nudge.
 
 **`skills/autowork/scripts/reflect-after-agent.sh`** -- **PostToolUse hook** for Agent. After an agent returns, injects a reflection prompt telling Claude to verify the agent's highest-impact claims against actual code before relying on them. For advisory tasks, additionally warns not to deliver the final report until all exploration agents have returned.
 
@@ -104,7 +104,7 @@ Claude processes with injected context
   |     Detects test/build/lint commands, records last_verify_ts
   |
   |-- [PostToolUse: Grep/Read] record-advisory-verification.sh
-  |     Tracks code inspection, detects stalls (12+ reads without progress)
+  |     Tracks code inspection, detects stalls (configurable threshold, default 12)
   |
   |-- [PostToolUse: Agent] reflect-after-agent.sh
   |     Injects reflection prompt, warns about premature synthesis
