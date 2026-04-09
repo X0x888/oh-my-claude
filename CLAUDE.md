@@ -10,7 +10,7 @@ Cognitive quality harness for Claude Code -- bash hooks, specialist agents, and 
 - `bundle/dot-claude/skills/autowork/scripts/` -- 11 autowork hook scripts including `common.sh` (shared utility library)
 - `bundle/dot-claude/output-styles/` -- output format templates
 - `config/settings.patch.json` -- settings merged into user config on install
-- `tests/` -- 4 bash test scripts (e2e hook sequence, intent classification, quality gates, stall detection)
+- `tests/` -- 5 bash test scripts (e2e hook sequence, intent classification, quality gates, stall detection, settings merge)
 - `docs/` -- architecture, customization, FAQ, and prompt reference docs
 
 ## Key Files
@@ -37,6 +37,7 @@ bash tests/test-intent-classification.sh
 bash tests/test-quality-gates.sh
 bash tests/test-stall-detection.sh
 bash tests/test-e2e-hook-sequence.sh
+bash tests/test-settings-merge.sh
 ```
 
 ## Rules

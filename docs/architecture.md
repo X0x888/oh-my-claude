@@ -12,7 +12,7 @@ oh-my-claude is a harness that wraps Claude Code's lifecycle events with bash ho
 
 ### Shared Library
 
-**`skills/autowork/scripts/common.sh`** (~426 lines) -- Every hook script sources this file. It provides:
+**`skills/autowork/scripts/common.sh`** (~516 lines) -- Every hook script sources this file. It provides:
 
 - **JSON state management**: `write_state(key, value)`, `read_state(key)`, `write_state_batch(k1, v1, k2, v2, ...)` for atomic multi-key updates. All operations use jq with atomic temp-file-then-mv writes to prevent corruption.
 - **Intent classification**: `classify_task_intent(text)` -- returns one of 5 categories (see classification order below). Delegates to `is_continuation_request`, `is_checkpoint_request`, `is_session_management_request`, `is_imperative_request`, and `is_advisory_request`.
@@ -122,7 +122,8 @@ Claude attempts to stop
 [Stop hook] stop-guard.sh
   |-- Check 1: Advisory over codebase without code inspection? -> Block (max 1)
   |-- Check 2: Deferral language without user-requested checkpoint? -> Block (max 2)
-  |-- Check 3: Edits without review or verification? -> Block (max 2)
+  |-- Check 3: Edits without review or verification? -> Block (max 3)
+  |-- Check 4: 3+ files edited without excellence review? -> Block (max 1)
   |-- All checks pass or caps reached -> Allow stop
   |
   v
@@ -171,9 +172,15 @@ Session state is stored at:
 | `last_user_prompt` | Raw text of the last user prompt |
 | `last_user_prompt_ts` | Epoch timestamp of the above |
 | `last_meta_request` | Normalized text of the last advisory/session-mgmt/checkpoint prompt |
-| `stop_guard_blocks` | Number of times the review/verify gate has blocked (cap: 2) |
+| `last_verify_outcome` | Result of the last verification: `passed` or `failed` |
+| `last_excellence_review_ts` | Epoch timestamp of the last excellence-reviewer completion |
+| `review_had_findings` | Whether the last review reported actionable findings (`true`/`false`) |
+| `stop_guard_blocks` | Number of times the review/verify gate has blocked (cap: 3) |
 | `session_handoff_blocks` | Number of times the deferral gate has blocked (cap: 2) |
 | `advisory_guard_blocks` | Number of times the advisory inspection gate has blocked (cap: 1) |
+| `excellence_guard_triggered` | Whether the excellence gate has already fired this session (`1` or empty) |
+| `guard_exhausted` | Epoch timestamp when guard caps were reached and stop was allowed |
+| `guard_exhausted_detail` | Diagnostic string showing which gates were still unsatisfied at exhaustion |
 | `stall_counter` | Consecutive Read/Grep calls without a progress action |
 | `resume_source_session_id` | Session ID of the session this one was resumed from |
 | `last_compact_trigger` | What triggered the last compaction |

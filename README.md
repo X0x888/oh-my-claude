@@ -207,6 +207,7 @@ bash tests/test-intent-classification.sh    # Intent routing logic
 bash tests/test-quality-gates.sh            # Stop guard enforcement
 bash tests/test-stall-detection.sh          # Loop detection
 bash tests/test-e2e-hook-sequence.sh        # End-to-end hook sequence
+bash tests/test-settings-merge.sh           # Install settings merge logic
 ```
 
 ## Customization

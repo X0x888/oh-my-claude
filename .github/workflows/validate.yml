@@ -27,3 +27,24 @@ jobs:
       - name: Validate JSON files
         run: |
           find . -name '*.json' -not -path './.git/*' -print0 | xargs -0 -n1 python3 -m json.tool --no-ensure-ascii > /dev/null
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run intent classification tests
+        run: bash tests/test-intent-classification.sh
+
+      - name: Run quality gate tests
+        run: bash tests/test-quality-gates.sh
+
+      - name: Run stall detection tests
+        run: bash tests/test-stall-detection.sh
+
+      - name: Run end-to-end hook sequence tests
+        run: bash tests/test-e2e-hook-sequence.sh
+
+      - name: Run settings merge tests
+        run: bash tests/test-settings-merge.sh
