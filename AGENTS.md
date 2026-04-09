@@ -29,11 +29,15 @@ oh-my-claude/
   config/
     settings.patch.json       # Settings merged into user's settings.json
 
-  tests/                      # Bash test scripts
+  tests/                      # Test scripts
+    test-common-utilities.sh
     test-e2e-hook-sequence.sh
     test-intent-classification.sh
     test-quality-gates.sh
+    test-session-resume.sh
+    test-settings-merge.sh
     test-stall-detection.sh
+    test_statusline.py
 
   docs/                       # Extended documentation
     architecture.md
@@ -97,6 +101,7 @@ bash tests/test-stall-detection.sh
 bash tests/test-e2e-hook-sequence.sh
 bash tests/test-settings-merge.sh
 bash tests/test-common-utilities.sh
+bash tests/test-session-resume.sh
 python3 -m unittest tests.test_statusline -v
 ```
 

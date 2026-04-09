@@ -93,6 +93,8 @@ required_paths=(
   "${CLAUDE_HOME}/skills/autowork/scripts/common.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/record-reviewer.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/record-subagent-summary.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/record-plan.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/ulw-deactivate.sh"
   "${CLAUDE_HOME}/skills/autowork/SKILL.md"
   "${CLAUDE_HOME}/skills/ulw/SKILL.md"
   "${CLAUDE_HOME}/skills/ulw-status/SKILL.md"
@@ -162,6 +164,8 @@ hook_scripts=(
   "${CLAUDE_HOME}/skills/autowork/scripts/reflect-after-agent.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/stop-guard.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/show-status.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/record-plan.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/ulw-deactivate.sh"
 )
 
 for script in "${hook_scripts[@]}"; do
@@ -199,6 +203,8 @@ else
     "PreCompact:pre-compact-snapshot.sh"
     "PostCompact:post-compact-summary.sh"
     "SubagentStop:record-subagent-summary.sh"
+    "SubagentStop:record-plan.sh"
+    "SubagentStop:record-reviewer.sh"
     "Stop:stop-guard.sh"
   )
 

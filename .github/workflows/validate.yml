@@ -52,5 +52,8 @@ jobs:
       - name: Run settings merge tests
         run: bash tests/test-settings-merge.sh
 
+      - name: Run session resume tests
+        run: bash tests/test-session-resume.sh
+
       - name: Run statusline tests
         run: python3 -m unittest tests.test_statusline -v

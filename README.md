@@ -2,7 +2,7 @@
 
 **What if Claude Code couldn't cut corners?**
 
-[![Version](https://img.shields.io/badge/Version-1.0.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-1.1.0-blue.svg)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Shell](https://img.shields.io/badge/Shell-bash-green.svg)]()
 [![Dependencies](https://img.shields.io/badge/Dependencies-none-brightgreen.svg)]()
@@ -44,7 +44,7 @@ A bash state machine classifies every prompt into one of 5 intent categories -- 
 
 oh-my-claude is not a coding tool that happens to accept prose. Each domain has its own specialist chain:
 
-- **Coding** -- planner, researcher, specialist developers (frontend, backend, fullstack, iOS, DevOps, test), reviewer
+- **Coding** -- quality-planner for scoping, quality-researcher for context, specialist developers (frontend, backend, fullstack, iOS, DevOps, test), quality-reviewer and excellence-reviewer for verification
 - **Writing** -- writing-architect for structure, draft-writer for content, editor-critic for polish
 - **Research** -- librarian for source gathering, briefing-analyst for synthesis, metis for stress-testing conclusions
 - **Operations** -- chief-of-staff turns vague asks into structured deliverables, action plans, and decision memos
