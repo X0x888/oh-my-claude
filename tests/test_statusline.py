@@ -321,5 +321,39 @@ class TestMainIntegration(unittest.TestCase):
         self.assertIn("95%", result.stdout)
 
 
+class TestRunGit(unittest.TestCase):
+    def test_timeout_returns_failed_result(self):
+        """run_git returns a non-zero CompletedProcess when subprocess times out."""
+        original_run = subprocess.run
+
+        def mock_run(*args, **kwargs):
+            raise subprocess.TimeoutExpired(cmd=args[0], timeout=2)
+
+        subprocess.run = mock_run
+        try:
+            result = sl.run_git("/tmp", "status")
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(result.stdout, "")
+        finally:
+            subprocess.run = original_run
+
+    def test_timeout_parameter_is_set(self):
+        """run_git passes a timeout to subprocess.run."""
+        captured = {}
+        original_run = subprocess.run
+
+        def spy_run(*args, **kwargs):
+            captured.update(kwargs)
+            return subprocess.CompletedProcess(args=args[0], returncode=0, stdout="")
+
+        subprocess.run = spy_run
+        try:
+            sl.run_git("/tmp", "status")
+            self.assertIn("timeout", captured)
+            self.assertEqual(captured["timeout"], 2)
+        finally:
+            subprocess.run = original_run
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -98,13 +98,19 @@ def write_cache(path, payload):
 
 
 def run_git(cwd, *args):
-    return subprocess.run(
-        ["git", "-C", cwd, *args],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
-        check=False,
-    )
+    try:
+        return subprocess.run(
+            ["git", "-C", cwd, *args],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+            timeout=2,
+        )
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            args=["git", "-C", cwd, *args], returncode=1, stdout=""
+        )
 
 
 def git_info(cwd):
