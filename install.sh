@@ -162,7 +162,9 @@ def script_basename(command):
     return first.rsplit("/", 1)[-1]
 
 def signature(entry):
-    matcher = entry.get("matcher", "")
+    # Coalesce both missing and explicit-None matchers to "" so this
+    # matches jq's `.matcher // ""` behavior and preserves cross-impl parity.
+    matcher = entry.get("matcher") or ""
     hook_sigs = tuple(
         (hook.get("type", ""), script_basename(hook.get("command", "")))
         for hook in entry.get("hooks", [])
@@ -219,12 +221,16 @@ merge_settings_jq() {
     # base version instead of being appended.
     def script_basename:
       . as $cmd
-      | ($cmd | split(" ") | map(select(length > 0))) as $toks
+      # Split on any whitespace (space or tab) to match python `.split()`
+      # behavior and preserve cross-impl parity on tab-separated commands.
+      | ($cmd | [splits("[ \\t]+")] | map(select(length > 0))) as $toks
       | (if ($toks | length) == 0 then ""
          elif $toks[0] == "bash" and ($toks | length) > 1 then $toks[1]
          else $toks[0]
          end)
-      | split("/") | .[-1];
+      # Coalesce null to "" so empty-command inputs produce "", matching
+      # python `rsplit("/", 1)[-1]` behavior on the empty string.
+      | (split("/") | .[-1] // "");
     def entry_sig:
       {
         matcher: (.matcher // ""),
