@@ -27,5 +27,6 @@ Return:
 2. What the main thread should change in the plan
 3. The minimum validation needed to make the plan credible
 4. Whether the plan is ready to execute
+5. **End with exactly one line on its own, unindented, as the final line of your response**: `VERDICT: CLEAN` when the plan is ready to execute without changes, or `VERDICT: BLOCK (N)` where N is the count of blocking issues that must be resolved before execution. Do not emit `BLOCK (0)` — use `CLEAN` instead. The stop-guard reads this line to tick the `stress_test` dimension.
 
 Do not edit files.

@@ -27,13 +27,63 @@ if [[ -n "${edited_path}" ]] && is_internal_claude_path "${edited_path}"; then
   exit 0
 fi
 
-write_state_batch \
-  "last_edit_ts" "$(now_epoch)" \
-  "stop_guard_blocks" "0" \
-  "session_handoff_blocks" "0" \
-  "advisory_guard_blocks" "0" \
-  "stall_counter" "0"
+# Classify the edit: doc or code. Doc edits maintain a separate clock
+# so that CHANGELOG/README tweaks don't re-trigger code verification or
+# code-review gates. Code edits reset code-oriented dimensions; doc
+# edits only reset the prose dimension. The classification happens
+# once here so the stop-hook doesn't need to re-scan edited_files.log
+# every time the agent attempts to stop.
+
+now="$(now_epoch)"
+is_doc=0
+if [[ -n "${edited_path}" ]] && is_doc_path "${edited_path}"; then
+  is_doc=1
+fi
+
+# last_edit_ts is still updated for every edit (doc or code) to preserve
+# backward compatibility with the legacy review_unremediated path and
+# any pre-dimension-gate tests / consumers.
+if [[ "${is_doc}" -eq 1 ]]; then
+  write_state_batch \
+    "last_edit_ts" "${now}" \
+    "last_doc_edit_ts" "${now}" \
+    "stop_guard_blocks" "0" \
+    "session_handoff_blocks" "0" \
+    "advisory_guard_blocks" "0" \
+    "stall_counter" "0"
+else
+  write_state_batch \
+    "last_edit_ts" "${now}" \
+    "last_code_edit_ts" "${now}" \
+    "stop_guard_blocks" "0" \
+    "session_handoff_blocks" "0" \
+    "advisory_guard_blocks" "0" \
+    "stall_counter" "0"
+fi
+
 if [[ -n "${edited_path}" ]]; then
-  printf '%s\n' "${edited_path}" >>"$(session_file "edited_files.log")"
-  log_hook "mark-edit" "file=${edited_path}"
+  log_path="$(session_file "edited_files.log")"
+  # Update the unique-edit counters only if this path hasn't been
+  # recorded before. This keeps code_edit_count / doc_edit_count in
+  # sync with `sort -u edited_files.log | wc -l` without requiring the
+  # stop-hook to re-run that pipeline.
+  seen_before=0
+  if [[ -f "${log_path}" ]] && grep -Fxq -- "${edited_path}" "${log_path}"; then
+    seen_before=1
+  fi
+  printf '%s\n' "${edited_path}" >>"${log_path}"
+
+  if [[ "${seen_before}" -eq 0 ]]; then
+    if [[ "${is_doc}" -eq 1 ]]; then
+      doc_count="$(read_state "doc_edit_count")"
+      doc_count="${doc_count:-0}"
+      write_state "doc_edit_count" "$((doc_count + 1))"
+    else
+      code_count="$(read_state "code_edit_count")"
+      code_count="${code_count:-0}"
+      write_state "code_edit_count" "$((code_count + 1))"
+    fi
+  fi
+
+  log_hook "mark-edit" "file=${edited_path} is_doc=${is_doc}"
 fi

@@ -35,5 +35,6 @@ Output format:
 - **Fresh-eyes findings**: up to 5 concrete observations ordered by impact. These are not bugs — they are gaps, missing pieces, and elevation opportunities.
 - **Recommended actions**: 1-3 specific, actionable next steps the main thread should take before finalizing. If the work is genuinely complete and excellent, say that clearly.
 - Keep the full response under 1200 words.
+- **End with exactly one line on its own, unindented, as the final line of your response**: `VERDICT: SHIP` when the deliverable is complete and ready to finalize, or `VERDICT: FINDINGS (N)` where N is the count of non-trivial gaps that should be addressed before finalizing. Do not emit `FINDINGS (0)` — use `SHIP` instead. The stop-guard reads this line to tick the `completeness` dimension.
 
 Do not edit files.

@@ -12,10 +12,14 @@ HOOK_LOG="${STATE_ROOT}/hooks.log"
 _omc_env_stall="${OMC_STALL_THRESHOLD:-}"
 _omc_env_excellence="${OMC_EXCELLENCE_FILE_COUNT:-}"
 _omc_env_ttl="${OMC_STATE_TTL_DAYS:-}"
+_omc_env_dimgate="${OMC_DIMENSION_GATE_FILE_COUNT:-}"
+_omc_env_traceability="${OMC_TRACEABILITY_FILE_COUNT:-}"
 
 OMC_STALL_THRESHOLD="${OMC_STALL_THRESHOLD:-12}"
 OMC_EXCELLENCE_FILE_COUNT="${OMC_EXCELLENCE_FILE_COUNT:-3}"
 OMC_STATE_TTL_DAYS="${OMC_STATE_TTL_DAYS:-7}"
+OMC_DIMENSION_GATE_FILE_COUNT="${OMC_DIMENSION_GATE_FILE_COUNT:-3}"
+OMC_TRACEABILITY_FILE_COUNT="${OMC_TRACEABILITY_FILE_COUNT:-6}"
 
 _omc_conf_loaded=0
 
@@ -43,6 +47,10 @@ load_conf() {
         [[ -z "${_omc_env_excellence}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_EXCELLENCE_FILE_COUNT="${value}" || true ;;
       state_ttl_days)
         [[ -z "${_omc_env_ttl}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_STATE_TTL_DAYS="${value}" || true ;;
+      dimension_gate_file_count)
+        [[ -z "${_omc_env_dimgate}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_DIMENSION_GATE_FILE_COUNT="${value}" || true ;;
+      traceability_file_count)
+        [[ -z "${_omc_env_traceability}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_TRACEABILITY_FILE_COUNT="${value}" || true ;;
     esac
   done < "${conf}"
 }
@@ -182,6 +190,71 @@ read_state() {
 }
 
 # --- end P2 ---
+
+# --- Portable state lock (mkdir primitive, BSD/GNU stat compat) ---
+#
+# Wraps a function call with a mutex held against the session's state
+# directory. Uses mkdir as the atomic lock primitive (portable across
+# macOS and Linux — flock is non-standard on BSD). A stale-lock timeout
+# prevents a crashed hook from holding the lock forever: if the lockdir
+# is older than OMC_STATE_LOCK_STALE_SECS (default 5), force-release it.
+#
+# Usage: with_state_lock my_function arg1 arg2 ...
+#
+# Returns the wrapped function's exit status, or 1 if the lock cannot
+# be acquired within OMC_STATE_LOCK_MAX_ATTEMPTS polls (default 200).
+
+OMC_STATE_LOCK_STALE_SECS="${OMC_STATE_LOCK_STALE_SECS:-5}"
+OMC_STATE_LOCK_MAX_ATTEMPTS="${OMC_STATE_LOCK_MAX_ATTEMPTS:-200}"
+
+_lock_mtime() {
+  # Echoes mtime epoch of $1, or 0 on error. Tries BSD stat -f, then GNU stat -c.
+  local target="$1"
+  local ts
+  ts="$(stat -f %m "${target}" 2>/dev/null)" || ts=""
+  if [[ -z "${ts}" ]]; then
+    ts="$(stat -c %Y "${target}" 2>/dev/null)" || ts="0"
+  fi
+  printf '%s' "${ts:-0}"
+}
+
+with_state_lock() {
+  local lockdir
+  lockdir="$(session_file ".state.lock")"
+  local attempts=0
+
+  while true; do
+    if mkdir "${lockdir}" 2>/dev/null; then
+      break
+    fi
+    attempts=$((attempts + 1))
+
+    # Stale-lock recovery: if the dir has been held too long, force-release.
+    if [[ -d "${lockdir}" ]]; then
+      local now
+      now="$(date +%s)"
+      local held_since
+      held_since="$(_lock_mtime "${lockdir}")"
+      if [[ "${held_since}" -gt 0 ]] \
+          && [[ $(( now - held_since )) -gt "${OMC_STATE_LOCK_STALE_SECS}" ]]; then
+        rmdir "${lockdir}" 2>/dev/null || true
+        continue
+      fi
+    fi
+
+    if [[ "${attempts}" -ge "${OMC_STATE_LOCK_MAX_ATTEMPTS}" ]]; then
+      return 1
+    fi
+    sleep 0.05 2>/dev/null || sleep 1
+  done
+
+  local rc=0
+  "$@" || rc=$?
+  rmdir "${lockdir}" 2>/dev/null || true
+  return "${rc}"
+}
+
+# --- end state lock ---
 
 now_epoch() {
   date +%s
@@ -364,6 +437,222 @@ is_internal_claude_path() {
       ;;
   esac
 }
+
+# --- Doc vs code edit classification ---
+#
+# is_doc_path returns 0 if the given path is a documentation artifact
+# (markdown, CHANGELOG, README, anything under a docs/ path component).
+# The dimension gate routes doc-only edits to editor-critic rather than
+# quality-reviewer, preventing CHANGELOG tweaks from re-opening the
+# full code-review loop.
+#
+# Rules:
+#   - Extensions match case-insensitively: md, mdx, txt, rst, adoc, markdown
+#   - Basename patterns match well-known doc files (lowercased):
+#     changelog*, release*, readme*, authors*, contributing*,
+#     license*, notice*, copying*
+#   - Path component docs/ or doc/ (not substring: src/docs-examples/foo.ts
+#     is NOT a doc; /project/docs/foo.ts IS)
+
+is_doc_path() {
+  local path="$1"
+  [[ -z "${path}" ]] && return 1
+
+  # Lowercase basename for case-insensitive matching
+  local base="${path##*/}"
+  local base_lc
+  base_lc="$(printf '%s' "${base}" | tr '[:upper:]' '[:lower:]')"
+
+  case "${base_lc}" in
+    *.md|*.mdx|*.txt|*.rst|*.adoc|*.markdown) return 0 ;;
+    changelog*|release*|readme*|authors*|contributing*|license*|notice*|copying*) return 0 ;;
+  esac
+
+  # Path-component docs/ or doc/ — require slash boundary, not substring
+  case "/${path}/" in
+    */docs/*|*/doc/*) return 0 ;;
+  esac
+
+  return 1
+}
+
+# --- Dimension tracking helpers ---
+#
+# Dimensions are stored as individual state keys of the form
+# `dim_<name>_ts` holding the epoch at which the reviewer ticked them.
+# Validity is determined by comparing that epoch to the relevant edit
+# clock (last_code_edit_ts for code dims, last_doc_edit_ts for prose).
+# This gives implicit invalidation — no mark-edit clearing needed.
+#
+# The canonical dimension set:
+#   bug_hunt     — quality-reviewer (code correctness, regressions, edge cases)
+#   code_quality — quality-reviewer (conventions, dead code, comments)
+#   stress_test  — metis (hidden assumptions, unsafe paths)
+#   prose        — editor-critic (doc clarity, accuracy, tone)
+#   completeness — excellence-reviewer (fresh-eyes holistic review)
+#   traceability — briefing-analyst (deferrals, decisions, synthesis)
+
+_dim_key() {
+  printf 'dim_%s_ts' "$1"
+}
+
+tick_dimension() {
+  # Records a dimension tick under the state lock to prevent lost updates
+  # when multiple reviewer SubagentStop hooks fire concurrently.
+  local dim="$1"
+  local ts="${2:-$(now_epoch)}"
+  local key
+  key="$(_dim_key "${dim}")"
+  with_state_lock write_state "${key}" "${ts}"
+}
+
+is_dimension_valid() {
+  # Returns 0 if the dimension was ticked at or after the most recent
+  # edit of the relevant type. For 'prose', compare to last_doc_edit_ts;
+  # all other dimensions compare to last_code_edit_ts (then last_edit_ts
+  # as a legacy fallback for resumed sessions).
+  #
+  # Uses >= (not >) so same-second tick-after-edit sequences count as
+  # valid. The production semantics are: "reviewer that ran at time T
+  # saw the edit at time T", which is the natural interpretation. In
+  # tests, this lets single-second sequences work without sleep calls.
+  # Post-tick edits in strict ordering (edit clearly after tick) still
+  # invalidate because the edit clock advances at least one second.
+  local dim="$1"
+  local tick_ts
+  tick_ts="$(read_state "$(_dim_key "${dim}")")"
+  [[ -z "${tick_ts}" ]] && return 1
+
+  local relevant_edit_ts
+  if [[ "${dim}" == "prose" ]]; then
+    relevant_edit_ts="$(read_state "last_doc_edit_ts")"
+  else
+    relevant_edit_ts="$(read_state "last_code_edit_ts")"
+    [[ -z "${relevant_edit_ts}" ]] && relevant_edit_ts="$(read_state "last_edit_ts")"
+  fi
+
+  # No relevant edit recorded: tick is valid by default.
+  [[ -z "${relevant_edit_ts}" ]] && return 0
+
+  [[ "${tick_ts}" -ge "${relevant_edit_ts}" ]]
+}
+
+reviewer_for_dimension() {
+  case "$1" in
+    bug_hunt|code_quality) printf 'quality-reviewer' ;;
+    stress_test)           printf 'metis' ;;
+    prose)                 printf 'editor-critic' ;;
+    completeness)          printf 'excellence-reviewer' ;;
+    traceability)          printf 'briefing-analyst' ;;
+    *)                     printf 'quality-reviewer' ;;
+  esac
+}
+
+describe_dimension() {
+  case "$1" in
+    bug_hunt)     printf 'bug hunt (correctness, regressions, edge cases)' ;;
+    code_quality) printf 'code quality (conventions, dead code, comments)' ;;
+    stress_test)  printf 'stress-test (hidden assumptions, unsafe paths)' ;;
+    prose)        printf 'prose review (doc clarity, accuracy, tone)' ;;
+    completeness) printf 'completeness (fresh-eyes holistic review)' ;;
+    traceability) printf 'traceability (deferrals, decisions, synthesis)' ;;
+    *)            printf '%s' "$1" ;;
+  esac
+}
+
+# Computes the set of required dimensions for the current session based
+# on the edit counters (maintained by mark-edit.sh at write time — no
+# O(N) re-classification at stop time). Echoes a csv. Empty string
+# means no dimension requirement (legacy path for simple tasks).
+#
+# Thresholds:
+#   unique_count < OMC_DIMENSION_GATE_FILE_COUNT → empty (simple task)
+#   Otherwise:                                   → bug_hunt,code_quality,stress_test,completeness
+#   If doc_count > 0 or task_domain=writing:     → append prose
+#   If unique_count >= OMC_TRACEABILITY_FILE_COUNT → append traceability
+
+get_required_dimensions() {
+  local code_count doc_count unique_count
+  code_count="$(read_state "code_edit_count")"
+  doc_count="$(read_state "doc_edit_count")"
+  code_count="${code_count:-0}"
+  doc_count="${doc_count:-0}"
+  unique_count=$((code_count + doc_count))
+
+  # Legacy fallback: if the counters are not populated (resumed session
+  # from pre-dimension-gate state), derive counts AND classification
+  # from edited_files.log by scanning each unique path. Without this
+  # classification, a resumed doc-only session would route to the code
+  # dimension set.
+  if [[ "${unique_count}" -eq 0 ]]; then
+    local edited_log
+    edited_log="$(session_file "edited_files.log")"
+    if [[ -f "${edited_log}" ]]; then
+      local _path
+      while IFS= read -r _path; do
+        [[ -z "${_path}" ]] && continue
+        unique_count=$((unique_count + 1))
+        if is_doc_path "${_path}"; then
+          doc_count=$((doc_count + 1))
+        else
+          code_count=$((code_count + 1))
+        fi
+      done < <(sort -u "${edited_log}")
+    fi
+  fi
+
+  if [[ "${unique_count}" -lt "${OMC_DIMENSION_GATE_FILE_COUNT}" ]]; then
+    printf ''
+    return
+  fi
+
+  local dims=""
+  if [[ "${code_count}" -gt 0 ]] || [[ "${unique_count}" -gt 0 && "${doc_count}" -eq 0 ]]; then
+    dims="bug_hunt,code_quality,stress_test,completeness"
+  fi
+
+  local td
+  td="$(task_domain)"
+  if [[ "${doc_count}" -gt 0 ]] || [[ "${td}" == "writing" ]]; then
+    if [[ -n "${dims}" ]]; then
+      dims="${dims},prose"
+    else
+      dims="prose,completeness"
+    fi
+  fi
+
+  if [[ "${unique_count}" -ge "${OMC_TRACEABILITY_FILE_COUNT}" ]]; then
+    if [[ -n "${dims}" ]]; then
+      dims="${dims},traceability"
+    else
+      dims="traceability"
+    fi
+  fi
+
+  printf '%s' "${dims}"
+}
+
+# Echoes a csv of dimensions that are NOT currently valid (missing or
+# invalidated by post-tick edits). Empty string means all required
+# dimensions are satisfied.
+missing_dimensions() {
+  local required="$1"
+  local missing=""
+  local tok
+  for tok in ${required//,/ }; do
+    [[ -z "${tok}" ]] && continue
+    if ! is_dimension_valid "${tok}"; then
+      if [[ -n "${missing}" ]]; then
+        missing="${missing},${tok}"
+      else
+        missing="${tok}"
+      fi
+    fi
+  done
+  printf '%s' "${missing}"
+}
+
+# --- end dimension helpers ---
 
 is_checkpoint_request() {
   local text="$1"

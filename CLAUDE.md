@@ -49,7 +49,15 @@ python3 -m unittest tests.test_statusline -v
 - All bash scripts must use `set -euo pipefail`.
 - Hook scripts must source `common.sh` and exit 0 on missing `SESSION_ID`.
 - State is JSON in `session_state.json`, accessed via `read_state` / `write_state`.
+- Multi-step state updates that are subject to concurrent SubagentStop hooks (e.g. dimension ticks) must go through `with_state_lock` to prevent lost updates.
 - Prefer readable code over micro-optimizations. When quality and speed conflict, choose quality.
 - Do not break existing install paths, config merges, or hook interfaces for performance gains.
 - When adding, removing, or renaming agents, skills, scripts, or directories, update README.md, CLAUDE.md, AGENTS.md, and CONTRIBUTING.md to reflect the change. Stale docs are worse than no docs.
 - When bumping the version, update `VERSION`, the README badge, and add a CHANGELOG entry. Tag the release commit with `vX.Y.Z`.
+- When adding a new reviewer-style agent:
+  1. Wire it in `config/settings.patch.json` under `SubagentStop` with a reviewer-type argument (`standard|excellence|prose|stress_test|traceability`).
+  2. Add the `VERDICT:` contract line to its output format section in `bundle/dot-claude/agents/<name>.md`.
+  3. Update the dimension mapping table in `AGENTS.md`.
+  4. Add a matcher-name assertion in `tests/test-settings-merge.sh`.
+  5. Add a simulator function and at least one sequence test in `tests/test-e2e-hook-sequence.sh`.
+  6. Update the `SubagentStop` count assertions in `tests/test-settings-merge.sh`.

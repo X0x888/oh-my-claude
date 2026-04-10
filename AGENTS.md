@@ -78,6 +78,31 @@ Session state is stored as JSON in `$HOME/.claude/quality-pack/state/<session_id
 - Each agent is a single `.md` file in `bundle/dot-claude/agents/`.
 - Agents use `disallowedTools` to enforce permission boundaries (e.g., a reviewer agent cannot edit files).
 - Agent names should be descriptive and hyphen-separated.
+
+#### Reviewer VERDICT contract
+
+Reviewer-style agents (`quality-reviewer`, `editor-critic`, `excellence-reviewer`, `metis`, `briefing-analyst`) must end their output with exactly one line:
+
+- `VERDICT: CLEAN` or `VERDICT: SHIP` — no actionable findings, dimension ticks
+- `VERDICT: FINDINGS (N)` or `VERDICT: BLOCK (N)` — N blocking findings, dimension does NOT tick
+
+`N=0` should be rendered as `CLEAN`/`SHIP`, never `FINDINGS (0)` — though the parser accepts and re-maps it to clean for safety. The stop-guard's `record-reviewer.sh` hook reads this line to determine whether to tick the reviewer's dimension. Agents that forget the verdict line fall back to a legacy phrase-based detector, but the structured contract is preferred because it removes ambiguity.
+
+#### Dimension mapping
+
+The prescribed reviewer sequence (Check 4 of stop-guard) enforces distinct dimensions per reviewer on complex tasks:
+
+| Reviewer | Dimension(s) ticked |
+|---|---|
+| `quality-reviewer` | `bug_hunt`, `code_quality` |
+| `metis` | `stress_test` |
+| `excellence-reviewer` | `completeness` (plus resets legacy `last_excellence_review_ts`) |
+| `editor-critic` | `prose` (only dimension that responds to doc edits) |
+| `briefing-analyst` | `traceability` (only required at `traceability_file_count`+ files, default 6) |
+
+Each dimension ticks via `tick_dimension <name>` in `common.sh`, which wraps `write_state` in `with_state_lock` to prevent concurrent-tick races. Dimensions are validated via timestamp comparison against the relevant edit clock (`last_code_edit_ts` for most, `last_doc_edit_ts` for `prose`), so a post-tick edit implicitly invalidates the dimension without needing an explicit clear.
+
+When adding a new reviewer-style agent that should participate in the prescribed sequence, wire it in `config/settings.patch.json` under `SubagentStop` with the reviewer-type argument: `$HOME/.claude/skills/autowork/scripts/record-reviewer.sh <type>` where `<type>` is `standard`, `excellence`, `prose`, `stress_test`, or `traceability`. Update this table and the reviewer's agent file to document the new dimension mapping.
 - Agent `model:` assignments (`opus` or `sonnet`) are set in the bundle but can be overridden at install time via `--model-tier`. The installer rewrites the `model:` line after copying. When adding a new agent, assign `model: opus` for complex reasoning tasks or `model: sonnet` for faster execution tasks. See [customization.md](docs/customization.md#model-tiers) for details.
 
 ## Testing

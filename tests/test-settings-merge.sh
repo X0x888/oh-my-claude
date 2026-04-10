@@ -131,7 +131,7 @@ for impl in "${implementations[@]}"; do
   assert_json_count "${impl}: fresh — PostToolUse hooks" \
     "${work}/settings.json" '.hooks.PostToolUse' "4"
   assert_json_count "${impl}: fresh — SubagentStop hooks" \
-    "${work}/settings.json" '.hooks.SubagentStop' "8"
+    "${work}/settings.json" '.hooks.SubagentStop' "10"
   assert_json_count "${impl}: fresh — PreCompact hooks" \
     "${work}/settings.json" '.hooks.PreCompact' "1"
   assert_json_count "${impl}: fresh — PostCompact hooks" \
@@ -152,10 +152,24 @@ for impl in "${implementations[@]}"; do
 
   assert_json_count "${impl}: idempotent — SessionStart hooks still 2" \
     "${work}/settings.json" '.hooks.SessionStart' "2"
-  assert_json_count "${impl}: idempotent — SubagentStop hooks still 8" \
-    "${work}/settings.json" '.hooks.SubagentStop' "8"
+  assert_json_count "${impl}: idempotent — SubagentStop hooks still 10" \
+    "${work}/settings.json" '.hooks.SubagentStop' "10"
   assert_json_count "${impl}: idempotent — PostToolUse hooks still 4" \
     "${work}/settings.json" '.hooks.PostToolUse' "4"
+
+  # Verify the new dimension-tracker matchers are present
+  assert_json_eq "${impl}: fresh — metis matcher wired" \
+    "${work}/settings.json" \
+    '[.hooks.SubagentStop[] | select(.matcher == "metis") | .hooks[0].command] | .[0] | tostring | contains("record-reviewer.sh stress_test")' \
+    "true"
+  assert_json_eq "${impl}: fresh — briefing-analyst matcher wired" \
+    "${work}/settings.json" \
+    '[.hooks.SubagentStop[] | select(.matcher == "briefing-analyst") | .hooks[0].command] | .[0] | tostring | contains("record-reviewer.sh traceability")' \
+    "true"
+  assert_json_eq "${impl}: fresh — editor-critic uses prose arg" \
+    "${work}/settings.json" \
+    '[.hooks.SubagentStop[] | select(.matcher == "editor-critic") | .hooks[0].command] | .[0] | tostring | contains("record-reviewer.sh prose")' \
+    "true"
 
   # -----------------------------------------------------------------------
   # Test 3: Bypass-permissions mode

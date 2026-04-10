@@ -77,10 +77,45 @@ sim_review() {
 
 sim_excellence_review() {
   local sid="$1"
-  local msg="${2:-Verdict: The deliverable is complete and excellent.}"
+  local msg="${2:-Verdict: The deliverable is complete and excellent.
+VERDICT: SHIP}"
   printf '%s' "$(jq -nc --arg s "${sid}" --arg m "${msg}" \
     '{session_id:$s,last_assistant_message:$m}')" \
     | bash "${HOOK_DIR}/record-reviewer.sh" excellence 2>/dev/null || true
+}
+
+sim_metis() {
+  local sid="$1"
+  local msg="${2:-Plan is ready to execute.
+VERDICT: CLEAN}"
+  printf '%s' "$(jq -nc --arg s "${sid}" --arg m "${msg}" \
+    '{session_id:$s,last_assistant_message:$m}')" \
+    | bash "${HOOK_DIR}/record-reviewer.sh" stress_test 2>/dev/null || true
+}
+
+sim_briefing_analyst() {
+  local sid="$1"
+  local msg="${2:-Brief is decision-ready.
+VERDICT: CLEAN}"
+  printf '%s' "$(jq -nc --arg s "${sid}" --arg m "${msg}" \
+    '{session_id:$s,last_assistant_message:$m}')" \
+    | bash "${HOOK_DIR}/record-reviewer.sh" traceability 2>/dev/null || true
+}
+
+sim_editor_critic() {
+  local sid="$1"
+  local msg="${2:-Draft is solid.
+VERDICT: CLEAN}"
+  printf '%s' "$(jq -nc --arg s "${sid}" --arg m "${msg}" \
+    '{session_id:$s,last_assistant_message:$m}')" \
+    | bash "${HOOK_DIR}/record-reviewer.sh" prose 2>/dev/null || true
+}
+
+sim_edit_doc() {
+  local sid="$1"
+  local fp="${2:-/docs/README.md}"
+  run_hook "${HOOK_DIR}/mark-edit.sh" \
+    "$(jq -nc --arg s "${sid}" --arg f "${fp}" '{session_id:$s,tool_input:{file_path:$f}}')"
 }
 
 sim_stop() {
@@ -525,9 +560,13 @@ teardown_test
 
 # -------------------------------------------------------
 # Sequence P: Excellence gate blocks on multi-file task (3+ files)
+# Note: seq-P/R/S/T disable the dimension gate via
+# OMC_DIMENSION_GATE_FILE_COUNT=10 to isolate excellence-gate behavior.
+# The dimension gate has its own dedicated tests (seq-U and friends).
 # -------------------------------------------------------
 setup_test
 init_session "sp"
+export OMC_DIMENSION_GATE_FILE_COUNT=10
 sim_edit "sp" "/src/a.ts"
 sim_edit "sp" "/src/b.ts"
 sim_edit "sp" "/src/c.ts"
@@ -539,6 +578,7 @@ assert_contains "seq-P: excellence gate blocks" '"decision":"block"' "${output}"
 assert_contains "seq-P: mentions excellence-reviewer" "excellence-reviewer" "${output}"
 assert_contains "seq-P: mentions file count" "3 files edited" "${output}"
 assert_eq "seq-P: excellence_guard_triggered" "1" "$(read_st "sp" "excellence_guard_triggered")"
+unset OMC_DIMENSION_GATE_FILE_COUNT
 teardown_test
 
 
@@ -561,6 +601,7 @@ teardown_test
 # -------------------------------------------------------
 setup_test
 init_session "sr"
+export OMC_DIMENSION_GATE_FILE_COUNT=10
 sim_edit "sr" "/src/a.ts"
 sim_edit "sr" "/src/b.ts"
 sim_edit "sr" "/src/c.ts"
@@ -574,6 +615,7 @@ assert_contains "seq-R: first stop blocks for excellence" '"decision":"block"' "
 # Second stop: excellence_guard_triggered=1, skips excellence check, allows through
 out2="$(sim_stop "sr")"
 assert_empty "seq-R: second stop allowed (gate already triggered)" "${out2}"
+unset OMC_DIMENSION_GATE_FILE_COUNT
 teardown_test
 
 
@@ -582,6 +624,7 @@ teardown_test
 # -------------------------------------------------------
 setup_test
 init_session "ss"
+export OMC_DIMENSION_GATE_FILE_COUNT=10
 sim_edit "ss" "/src/a.ts"
 sim_edit "ss" "/src/b.ts"
 sim_edit "ss" "/src/c.ts"
@@ -599,6 +642,7 @@ sim_excellence_review "ss" "Verdict: Complete and excellent."
 out2="$(sim_stop "ss")"
 assert_empty "seq-S: stop allowed after excellence review" "${out2}"
 assert_not_empty "seq-S: excellence_review_ts set" "$(read_st "ss" "last_excellence_review_ts")"
+unset OMC_DIMENSION_GATE_FILE_COUNT
 teardown_test
 
 
@@ -609,6 +653,7 @@ teardown_test
 # -------------------------------------------------------
 setup_test
 init_session "st"
+export OMC_DIMENSION_GATE_FILE_COUNT=10
 sim_edit "st" "/src/a.ts"
 sim_edit "st" "/src/b.ts"
 sim_edit "st" "/src/c.ts"
@@ -625,6 +670,368 @@ assert_not_empty "seq-T: excellence_review_ts set" "$(read_st "st" "last_excelle
 # Stop: should allow through (no unremediated findings)
 out="$(sim_stop "st")"
 assert_empty "seq-T: stop allowed" "${out}"
+unset OMC_DIMENSION_GATE_FILE_COUNT
+teardown_test
+
+
+# -------------------------------------------------------
+# VERDICT parsing tests (Fix #4)
+# -------------------------------------------------------
+printf '\nVERDICT parsing:\n'
+
+
+# Sequence V1: VERDICT: CLEAN is authoritative (no findings)
+setup_test
+init_session "sv1"
+sim_review "sv1" "Found several concerns that suggest a bug in the handler.
+
+VERDICT: CLEAN"
+assert_eq "seq-V1: VERDICT CLEAN authoritative" "false" "$(read_st "sv1" "review_had_findings")"
+teardown_test
+
+# Sequence V2: VERDICT: FINDINGS is authoritative (has findings)
+setup_test
+init_session "sv2"
+sim_review "sv2" "Summary: Code looks clean. No significant issues.
+
+VERDICT: FINDINGS (3)"
+assert_eq "seq-V2: VERDICT FINDINGS authoritative" "true" "$(read_st "sv2" "review_had_findings")"
+teardown_test
+
+# Sequence V3: VERDICT: FINDINGS (0) treated as CLEAN
+setup_test
+init_session "sv3"
+sim_review "sv3" "Reviewed. Nothing to fix.
+VERDICT: FINDINGS (0)"
+assert_eq "seq-V3: FINDINGS (0) = clean" "false" "$(read_st "sv3" "review_had_findings")"
+teardown_test
+
+# Sequence V4: No VERDICT line falls back to legacy regex (clean)
+setup_test
+init_session "sv4"
+sim_review "sv4" "Summary: The code looks good. No significant issues found."
+assert_eq "seq-V4: fallback detects clean" "false" "$(read_st "sv4" "review_had_findings")"
+teardown_test
+
+# Sequence V5: No VERDICT line falls back to legacy regex (findings)
+setup_test
+init_session "sv5"
+sim_review "sv5" "Summary: Found 3 issues. 1. Missing null check."
+assert_eq "seq-V5: fallback detects findings" "true" "$(read_st "sv5" "review_had_findings")"
+teardown_test
+
+# Sequence V6: Last VERDICT line wins (agent revises mid-message)
+setup_test
+init_session "sv6"
+sim_review "sv6" "Initial scan looked clean.
+VERDICT: CLEAN
+Actually, on closer inspection:
+VERDICT: FINDINGS (1)"
+assert_eq "seq-V6: last VERDICT wins" "true" "$(read_st "sv6" "review_had_findings")"
+teardown_test
+
+
+# -------------------------------------------------------
+# Doc-vs-code routing tests (Fix #3)
+# -------------------------------------------------------
+printf '\nDoc-vs-code routing:\n'
+
+
+# Sequence W1: Code edit sets last_code_edit_ts, not last_doc_edit_ts
+setup_test
+init_session "sw1"
+sim_edit "sw1" "/src/foo.ts"
+assert_not_empty "seq-W1: last_code_edit_ts set" "$(read_st "sw1" "last_code_edit_ts")"
+assert_empty "seq-W1: last_doc_edit_ts unset" "$(read_st "sw1" "last_doc_edit_ts")"
+assert_eq "seq-W1: code_edit_count=1" "1" "$(read_st "sw1" "code_edit_count")"
+teardown_test
+
+# Sequence W2: Doc edit sets last_doc_edit_ts, not last_code_edit_ts
+setup_test
+init_session "sw2"
+sim_edit_doc "sw2" "/docs/README.md"
+assert_not_empty "seq-W2: last_doc_edit_ts set" "$(read_st "sw2" "last_doc_edit_ts")"
+assert_empty "seq-W2: last_code_edit_ts unset" "$(read_st "sw2" "last_code_edit_ts")"
+assert_eq "seq-W2: doc_edit_count=1" "1" "$(read_st "sw2" "doc_edit_count")"
+teardown_test
+
+# Sequence W3: Doc-only edits don't require verification
+setup_test
+init_session "sw3"
+export OMC_DIMENSION_GATE_FILE_COUNT=10
+sim_edit_doc "sw3" "/docs/a.md"
+# Doc edits route to editor-critic for review, not quality-reviewer
+sim_editor_critic "sw3" "Doc updated.
+VERDICT: CLEAN"
+# No sim_verify — doc-only edit should not require it
+output="$(sim_stop "sw3")"
+assert_empty "seq-W3: doc-only edit skips verify gate" "${output}"
+unset OMC_DIMENSION_GATE_FILE_COUNT
+teardown_test
+
+# Sequence W4: Code edit after review still requires re-review
+setup_test
+init_session "sw4"
+sim_edit "sw4" "/src/a.ts"
+sim_verify "sw4" "npm test" "Tests: 5 passed"
+sim_review "sw4" "Clean.
+VERDICT: CLEAN"
+sleep 1
+sim_edit "sw4" "/src/b.ts"
+output="$(sim_stop "sw4")"
+assert_contains "seq-W4: code edit after review blocks" '"decision":"block"' "${output}"
+assert_contains "seq-W4: mentions quality-reviewer" "quality-reviewer" "${output}"
+teardown_test
+
+# Sequence W5: Doc edit after code review does not require code re-review
+setup_test
+init_session "sw5"
+sim_edit "sw5" "/src/a.ts"
+sim_verify "sw5" "npm test" "Tests: 5 passed"
+sim_review "sw5" "Clean.
+VERDICT: CLEAN"
+sleep 1
+sim_edit_doc "sw5" "/docs/notes.md"
+output="$(sim_stop "sw5")"
+# Should still block (missing doc review), but for editor-critic not quality-reviewer
+assert_contains "seq-W5: doc edit after code review blocks" '"decision":"block"' "${output}"
+assert_contains "seq-W5: routes to editor-critic" "editor-critic" "${output}"
+teardown_test
+
+
+# -------------------------------------------------------
+# Dimension tracker tests (Option C: prescribed sequence)
+# -------------------------------------------------------
+printf '\nDimension tracker:\n'
+
+
+# Sequence U1: Full Sugar-Tracker-style complex-task flow = stop allowed
+setup_test
+init_session "su1"
+# 3 code files triggers dimension gate at default threshold
+sim_edit "su1" "/src/a.ts"
+sim_edit "su1" "/src/b.ts"
+sim_edit "su1" "/src/c.ts"
+sim_verify "su1" "npm test" "Tests: 10 passed"
+sim_review "su1" "Clean.
+VERDICT: CLEAN"
+
+# After quality-reviewer, standard gate passes but dimension gate blocks for metis
+out1="$(sim_stop "su1")"
+assert_contains "seq-U1: block 1 for missing metis" '"decision":"block"' "${out1}"
+assert_contains "seq-U1: names metis" "metis" "${out1}"
+assert_contains "seq-U1: names stress_test" "stress_test" "${out1}"
+
+sim_metis "su1"
+
+# Now blocks for excellence
+out2="$(sim_stop "su1")"
+assert_contains "seq-U1: block 2 for missing excellence" '"decision":"block"' "${out2}"
+assert_contains "seq-U1: names excellence-reviewer" "excellence-reviewer" "${out2}"
+
+sim_excellence_review "su1"
+
+# All dimensions ticked, stop allowed
+out3="$(sim_stop "su1")"
+assert_empty "seq-U1: stop allowed after all dims ticked" "${out3}"
+assert_not_empty "seq-U1: dim bug_hunt set" "$(read_st "su1" "dim_bug_hunt_ts")"
+assert_not_empty "seq-U1: dim stress_test set" "$(read_st "su1" "dim_stress_test_ts")"
+assert_not_empty "seq-U1: dim completeness set" "$(read_st "su1" "dim_completeness_ts")"
+teardown_test
+
+# Sequence U2: Complex task with doc edit requires editor-critic too
+setup_test
+init_session "su2"
+sim_edit "su2" "/src/a.ts"
+sim_edit "su2" "/src/b.ts"
+sim_edit_doc "su2" "/CHANGELOG.md"
+sim_verify "su2" "npm test" "Tests: 10 passed"
+sim_review "su2" "Clean.
+VERDICT: CLEAN"
+sim_metis "su2"
+sim_excellence_review "su2"
+
+# Dimension gate should now require prose (editor-critic)
+out="$(sim_stop "su2")"
+assert_contains "seq-U2: block for prose dimension" '"decision":"block"' "${out}"
+assert_contains "seq-U2: names editor-critic" "editor-critic" "${out}"
+
+sim_editor_critic "su2"
+out2="$(sim_stop "su2")"
+assert_empty "seq-U2: stop allowed after editor-critic" "${out2}"
+teardown_test
+
+# Sequence U3: Very complex task (6+ files) requires briefing-analyst for traceability
+setup_test
+init_session "su3"
+sim_edit "su3" "/src/a.ts"
+sim_edit "su3" "/src/b.ts"
+sim_edit "su3" "/src/c.ts"
+sim_edit "su3" "/src/d.ts"
+sim_edit "su3" "/src/e.ts"
+sim_edit "su3" "/src/f.ts"
+sim_verify "su3" "npm test" "Tests: 10 passed"
+sim_review "su3" "Clean.
+VERDICT: CLEAN"
+sim_metis "su3"
+sim_excellence_review "su3"
+
+# Dimension gate requires traceability at 6+ files
+out="$(sim_stop "su3")"
+assert_contains "seq-U3: block for traceability" '"decision":"block"' "${out}"
+assert_contains "seq-U3: names briefing-analyst" "briefing-analyst" "${out}"
+
+sim_briefing_analyst "su3"
+out2="$(sim_stop "su3")"
+assert_empty "seq-U3: stop allowed after briefing-analyst" "${out2}"
+teardown_test
+
+# Sequence U4: Simple task (below threshold) bypasses dimension gate
+setup_test
+init_session "su4"
+sim_edit "su4" "/src/single.ts"
+sim_verify "su4" "npm test" "Tests: 5 passed"
+sim_review "su4" "Clean.
+VERDICT: CLEAN"
+output="$(sim_stop "su4")"
+assert_empty "seq-U4: single-file bypass dimension gate" "${output}"
+teardown_test
+
+# Sequence U5: Post-tick code edit invalidates code dimensions (timestamp-based)
+setup_test
+init_session "su5"
+sim_edit "su5" "/src/a.ts"
+sim_edit "su5" "/src/b.ts"
+sim_edit "su5" "/src/c.ts"
+sim_verify "su5" "npm test" "Tests: 10 passed"
+sim_review "su5" "Clean.
+VERDICT: CLEAN"
+sim_metis "su5"
+sim_excellence_review "su5"
+
+# All dims ticked; now edit another code file — dimensions should be invalidated
+# by the timestamp-based comparison (no explicit clearing needed)
+sleep 1
+sim_edit "su5" "/src/d.ts"
+
+# Stop should block — last_code_edit_ts > dim_bug_hunt_ts etc.
+output="$(sim_stop "su5")"
+assert_contains "seq-U5: post-edit re-blocks" '"decision":"block"' "${output}"
+teardown_test
+
+# Sequence U6: Doc edit does NOT invalidate code dimensions
+setup_test
+init_session "su6"
+sim_edit "su6" "/src/a.ts"
+sim_edit "su6" "/src/b.ts"
+sim_edit "su6" "/src/c.ts"
+sim_verify "su6" "npm test" "Tests: 10 passed"
+sim_review "su6" "Clean.
+VERDICT: CLEAN"
+sim_metis "su6"
+sim_excellence_review "su6"
+sleep 1
+# Doc edit: should only invalidate prose (which wasn't ticked yet anyway,
+# so now prose becomes required)
+sim_edit_doc "su6" "/docs/a.md"
+
+output="$(sim_stop "su6")"
+# Should block for prose only, not for bug_hunt/code_quality/etc
+assert_contains "seq-U6: doc edit blocks for prose" '"decision":"block"' "${output}"
+assert_contains "seq-U6: names editor-critic" "editor-critic" "${output}"
+# Should NOT name metis again — stress_test dimension is still valid
+if [[ "${output}" == *"run \`metis\`"* ]]; then
+  printf '  FAIL: seq-U6: should not re-require metis (stress_test still valid)\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+teardown_test
+
+# Sequence U7: Dimension gate exhaustion at 3 blocks
+setup_test
+init_session "su7"
+sim_edit "su7" "/src/a.ts"
+sim_edit "su7" "/src/b.ts"
+sim_edit "su7" "/src/c.ts"
+sim_verify "su7" "npm test" "Tests: 10 passed"
+sim_review "su7" "Clean.
+VERDICT: CLEAN"
+
+# 3 dimension-gate blocks without running metis
+out1="$(sim_stop "su7")"
+assert_contains "seq-U7: block 1" '"decision":"block"' "${out1}"
+out2="$(sim_stop "su7")"
+assert_contains "seq-U7: block 2" '"decision":"block"' "${out2}"
+out3="$(sim_stop "su7")"
+assert_contains "seq-U7: block 3" '"decision":"block"' "${out3}"
+assert_contains "seq-U7: final warning" "final dimension-gate block" "${out3}"
+
+# 4th stop: exhausted, allow (falls through to excellence gate which fires once)
+out4="$(sim_stop "su7")"
+# The excellence gate fires at block 4 because dim gate exhausted
+# Either excellence gate blocks, or it allows. Verify dimension exhaustion was recorded.
+exhausted_detail="$(read_st "su7" "guard_exhausted_detail")"
+assert_contains "seq-U7: exhaustion recorded" "dimensions_missing" "${exhausted_detail}"
+teardown_test
+
+
+# -------------------------------------------------------
+# Concise repeat-block message tests (Fix #6)
+# -------------------------------------------------------
+printf '\nConcise repeat messages:\n'
+
+
+# Sequence AA: Block 1 verbose, block 2 concise
+setup_test
+init_session "saa"
+sim_edit "saa" "/src/foo.ts"
+# No review, no verify → keeps blocking on missing_review
+
+out1="$(sim_stop "saa")"
+assert_contains "seq-AA: block 1 is verbose" "FIRST self-assess" "${out1}"
+
+out2="$(sim_stop "saa")"
+# Block 2 must NOT contain the self-assess boilerplate
+if [[ "${out2}" == *"FIRST self-assess"* ]]; then
+  printf '  FAIL: seq-AA: block 2 should drop FIRST self-assess text\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+assert_contains "seq-AA: block 2 concise form" "Still missing" "${out2}"
+assert_contains "seq-AA: block 2 preserves quality-reviewer" "quality-reviewer" "${out2}"
+
+out3="$(sim_stop "saa")"
+assert_contains "seq-AA: block 3 still concise" "Still missing" "${out3}"
+assert_contains "seq-AA: block 3 final warning" "final guard block" "${out3}"
+teardown_test
+
+
+# -------------------------------------------------------
+# Resumed-session grace test
+# -------------------------------------------------------
+printf '\nResumed-session grace:\n'
+
+# Sequence BB: Resumed session with complex history gets one free stop
+setup_test
+sid="sbb"
+state_dir="${TEST_HOME}/.claude/quality-pack/state/${sid}"
+mkdir -p "${state_dir}"
+# Simulate a resumed session: code_edit_count >= threshold, no dim ticks,
+# resume_source_session_id is set.
+jq -nc --arg ts "$(date +%s)" \
+  '{workflow_mode:"ultrawork",task_domain:"coding",task_intent:"execution",
+    current_objective:"resumed task",last_user_prompt_ts:$ts,
+    last_edit_ts:$ts,last_code_edit_ts:$ts,last_verify_ts:$ts,
+    last_verify_outcome:"passed",last_review_ts:$ts,review_had_findings:"false",
+    code_edit_count:"5",resume_source_session_id:"prev-session-abc"}' \
+  > "${state_dir}/session_state.json"
+
+# First stop on resumed session: dimension gate should grant grace
+out1="$(sim_stop "sbb")"
+assert_empty "seq-BB: resumed session first stop allowed" "${out1}"
+assert_eq "seq-BB: grace marked used" "1" "$(read_st "sbb" "dimension_resume_grace_used")"
 teardown_test
 
 

@@ -27,5 +27,6 @@ Output format:
 4. Prefer concrete rewrite guidance over vague taste judgments.
 5. If the draft is solid, say that explicitly in the summary and call out the remaining risks or polish opportunities.
 6. Keep the full response under 800 words. Brevity improves the odds that your findings survive context pressure in long sessions.
+7. **End with exactly one line on its own, unindented, as the final line of your response**: `VERDICT: CLEAN` when the draft is decision-ready, or `VERDICT: FINDINGS (N)` where N is the count of top-priority issues that must be addressed before finalizing. Do not emit `FINDINGS (0)` — use `CLEAN` instead. The stop-guard reads this line to tick the `prose` dimension.
 
 Do not edit files.

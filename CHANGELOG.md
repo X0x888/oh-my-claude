@@ -4,6 +4,36 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+**Prescribed reviewer sequence (Option C dimension gate):**
+- Dimension tracker: complex tasks now have a prescribed review sequence where each reviewer covers a distinct dimension (`bug_hunt`, `code_quality`, `stress_test`, `completeness`, `prose`, `traceability`). The stop-hook names the specific next reviewer to run, removing the "which reviewer do I dispatch next" guessing game that pre-fix sessions struggled with.
+- `metis` and `briefing-analyst` wired to `record-reviewer.sh` as dimension-tickers (stress_test and traceability respectively). Previously these agents ran without updating any review state.
+- `VERDICT:` contract on reviewer agents: each of `quality-reviewer`, `editor-critic`, `excellence-reviewer`, `metis`, `briefing-analyst` now ends with a `VERDICT: CLEAN|SHIP|FINDINGS|BLOCK (N)` line. The stop-guard reads this verdict to determine whether dimensions were ticked cleanly; `VERDICT: FINDINGS (0)` is treated as CLEAN. Legacy phrase-based regex preserved as fallback.
+- Doc-vs-code edit routing: `mark-edit.sh` classifies each edit via `is_doc_path` (extensions `.md`/`.mdx`/`.txt`/`.rst`/`.adoc`, well-known basenames, `docs/` path component) and maintains separate `last_code_edit_ts` / `last_doc_edit_ts` clocks. `stop-guard.sh` routes doc-only edits to `editor-critic` instead of `quality-reviewer`, and skips the verification gate for doc-only sessions. Legacy `last_edit_ts` is still written on every edit for backward compatibility.
+- `with_state_lock`: portable mkdir-primitive mutex with BSD/GNU `stat` compatibility and 5-second stale-lock recovery. Wraps `tick_dimension` to prevent lost-update races when multiple reviewer SubagentStop hooks fire concurrently.
+- `OMC_DIMENSION_GATE_FILE_COUNT` (default 3) and `OMC_TRACEABILITY_FILE_COUNT` (default 6) thresholds, independent of `OMC_EXCELLENCE_FILE_COUNT`. Configurable via env var, `oh-my-claude.conf`, or defaults. Setting `OMC_DIMENSION_GATE_FILE_COUNT` to a high value disables the dimension gate entirely.
+- Resumed-session grace: sessions resumed from pre-dimension-gate state get one free stop before the dimension gate enforces the prescribed sequence, preventing mid-task resumes from being force-marched through the full review chain.
+- Concise repeat-block messages: block 1 of the stop-guard preserves the verbose "FIRST self-assess" prompt (demonstrably valuable on first pass); blocks 2–3 switch to a `Still missing: X. Next: Y.` form that names only what's un-ticked and the single next action, reducing the summary-inflation pressure observed in pre-fix long sessions.
+
+### Changed
+
+- `record-reviewer.sh` now accepts a reviewer-type argument (`standard|excellence|prose|stress_test|traceability`) to determine which dimensions to tick. Default `standard` preserves the pre-fix behavior for existing wired matchers (quality-reviewer, superpowers/feature-dev code-reviewer, excellence-reviewer). The `editor-critic` matcher was updated to pass `prose`.
+- `stop-guard.sh` adds a new Check 4 (Dimension gate) between the existing review/verify gate (Check 3) and the excellence gate (renumbered Check 5). Dimension gate has its own `dimension_guard_blocks` counter (cap 3) that exhausts to `guard_exhausted_detail=dimensions_missing=...` and falls through to the excellence gate rather than bypassing all remaining checks.
+- `missing_verify` in stop-guard now keys off `last_code_edit_ts` (not `last_edit_ts`) so doc-only edits after a successful code verification do not re-trigger `npm test`.
+
+### Fixed
+
+- **Review loop pathology on complex tasks.** Pre-fix sessions could get stuck in long review loops because `metis` and `briefing-analyst` were not wired into the stop-guard, the block cap reset on every wired review, and doc edits re-triggered the code-review gate. The dimension gate replaces the guesswork with a prescribed sequence that preserves every catch.
+- `get_required_dimensions` legacy fallback (for resumed sessions from pre-dimension-gate state) now classifies each path in `edited_files.log` via `is_doc_path` rather than counting blindly. A resumed doc-only session previously would have routed through the code dimension set.
+
+### Testing
+
+- `test-common-utilities.sh` (now 158 tests): added coverage for `is_doc_path` (extensions, basenames, path components, negatives), `reviewer_for_dimension` mapping, `tick_dimension` / `is_dimension_valid` (including same-second and post-edit invalidation), `missing_dimensions`, `get_required_dimensions` (counters + legacy fallback with log classification), `with_state_lock` (acquire/release, exit propagation, stale recovery).
+- `test-e2e-hook-sequence.sh` (now 116 tests): added coverage for VERDICT parsing (CLEAN / FINDINGS / FINDINGS(0) / last-match-wins / legacy fallback), doc-vs-code routing (separate clocks, doc-only skip verify, code edit after review, doc edit routes to editor-critic), dimension tracker (full Sugar-Tracker-style flow, doc-edit mixed scenario, 6+ file traceability, below-threshold bypass, post-tick code invalidation, doc-edit partial invalidation, exhaustion), concise repeat messages, resumed-session grace.
+- `test-settings-merge.sh` (now 68 tests): updated SubagentStop count from 8 to 10; added name assertions for `metis`, `briefing-analyst`, and `editor-critic` matcher commands.
+- Zero regressions across all 8 test suites (582 tests total, all passing).
+
 ## [1.1.0] - 2026-04-09
 
 ### Added

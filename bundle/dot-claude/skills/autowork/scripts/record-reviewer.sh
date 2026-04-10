@@ -5,6 +5,20 @@ set -euo pipefail
 # Fast-path: skip if ULW was never activated in this environment
 [[ -f "${HOME}/.claude/quality-pack/state/.ulw_active" ]] || exit 0
 
+# REVIEWER_TYPE controls which dimension (if any) this reviewer ticks.
+# Values:
+#   standard     — quality-reviewer, superpowers/feature-dev code-reviewer
+#                  → ticks bug_hunt, code_quality on clean reviews
+#   excellence   — excellence-reviewer
+#                  → ticks completeness (bug_hunt stays owned by quality-reviewer)
+#                  → also sets last_excellence_review_ts
+#                  → does NOT overwrite review_had_findings (independent gate)
+#   prose        — editor-critic
+#                  → ticks prose, sets last_doc_review_ts
+#   stress_test  — metis
+#                  → ticks stress_test
+#   traceability — briefing-analyst
+#                  → ticks traceability
 REVIEWER_TYPE="${1:-standard}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -23,24 +37,56 @@ if ! is_ultrawork_mode; then
   exit 0
 fi
 
-if [[ "${REVIEWER_TYPE}" == "excellence" ]]; then
-  # Excellence reviews update last_review_ts and their own timestamp, but must
-  # not overwrite review_had_findings from the standard review — the excellence
-  # gate is independent of the remediation gate.
-  write_state_batch \
-    "last_review_ts" "$(now_epoch)" \
-    "last_excellence_review_ts" "$(now_epoch)" \
-    "stop_guard_blocks" "0" \
-    "session_handoff_blocks" "0"
-else
-  # Detect whether the reviewer reported actionable findings.
-  # Conservative: assume findings unless the summary explicitly says clean.
-  review_message="$(json_get '.last_assistant_message')"
+review_message="$(json_get '.last_assistant_message')"
+
+# --- VERDICT parsing (structured contract with regex fallback) ---
+#
+# Reviewers emit a final line of the form `VERDICT: CLEAN|SHIP|FINDINGS|BLOCK`
+# (optionally with a trailing count like `FINDINGS (2)`). When present, the
+# VERDICT line is authoritative. If absent, fall through to the legacy
+# phrase-based regex so older reviewer configurations still work.
+#
+# The VERDICT line must be the LAST `VERDICT:` line in the message and must
+# not be a quoted excerpt (leading `>` or whitespace indentation rules it out,
+# matching the convention that agents emit it as their final unindented line).
+# `VERDICT: FINDINGS (0)` is treated as CLEAN — zero findings is clean work.
+
+verdict_token=""
+if [[ -n "${review_message}" ]]; then
+  verdict_line="$(printf '%s\n' "${review_message}" \
+    | grep -E '^VERDICT:[[:space:]]*(CLEAN|SHIP|FINDINGS|BLOCK)\b' \
+    | tail -n 1 || true)"
+  if [[ -n "${verdict_line}" ]]; then
+    verdict_token="$(printf '%s' "${verdict_line}" \
+      | grep -Eio '(CLEAN|SHIP|FINDINGS|BLOCK)' \
+      | head -n 1 \
+      | tr '[:lower:]' '[:upper:]' || true)"
+    # Handle the `FINDINGS (0)` edge case as clean.
+    if [[ "${verdict_token}" == "FINDINGS" ]] \
+        && printf '%s' "${verdict_line}" | grep -Eq '\(\s*0\s*\)|\(\s*none\s*\)'; then
+      verdict_token="CLEAN"
+    fi
+  fi
+fi
+
+has_findings=""
+case "${verdict_token}" in
+  CLEAN|SHIP)
+    has_findings="false" ;;
+  FINDINGS|BLOCK)
+    has_findings="true" ;;
+  *)
+    has_findings="" ;;  # no VERDICT line → fall through to legacy regex
+esac
+
+if [[ -z "${has_findings}" ]]; then
+  # Legacy phrase-based detection. Conservative: assume findings unless the
+  # summary explicitly says clean. Preserves the exact behavior tested by
+  # tests/test-quality-gates.sh §"Review findings detection".
   has_findings="true"
   if [[ -n "${review_message}" ]]; then
     if printf '%s' "${review_message}" \
       | grep -Eiq '\b(no (significant |major |critical |high.severity )?issues|looks (good|clean|solid)|well[- ]implemented|no findings|no defects|passes review|code is correct)\b'; then
-      # Tentatively clean, but override if qualifiers point to actual findings
       if printf '%s' "${review_message}" \
         | grep -Eiq '\b(but|however|though|although)\b.*\b(issue|concern|finding|problem|bug|regression|defect|risk)\b'; then
         has_findings="true"
@@ -49,10 +95,50 @@ else
       fi
     fi
   fi
+fi
 
+# --- State writes and dimension ticking ---
+
+now_ts="$(now_epoch)"
+
+if [[ "${REVIEWER_TYPE}" == "excellence" ]]; then
+  # Excellence reviews update last_review_ts and their own timestamp, but must
+  # not overwrite review_had_findings from the standard review — the excellence
+  # gate is independent of the remediation gate.
   write_state_batch \
-    "last_review_ts" "$(now_epoch)" \
+    "last_review_ts" "${now_ts}" \
+    "last_excellence_review_ts" "${now_ts}" \
+    "stop_guard_blocks" "0" \
+    "session_handoff_blocks" "0" \
+    "dimension_guard_blocks" "0"
+  if [[ "${has_findings}" == "false" ]]; then
+    tick_dimension "completeness" "${now_ts}"
+  fi
+else
+  write_state_batch \
+    "last_review_ts" "${now_ts}" \
     "review_had_findings" "${has_findings}" \
     "stop_guard_blocks" "0" \
-    "session_handoff_blocks" "0"
+    "session_handoff_blocks" "0" \
+    "dimension_guard_blocks" "0"
+
+  if [[ "${REVIEWER_TYPE}" == "prose" ]]; then
+    # Editor-critic ticks prose only. Also record a doc-review timestamp so
+    # stop-guard can tell whether the doc side of the session is satisfied
+    # independently of the code side.
+    write_state "last_doc_review_ts" "${now_ts}"
+    if [[ "${has_findings}" == "false" ]]; then
+      tick_dimension "prose" "${now_ts}"
+    fi
+  elif [[ "${has_findings}" == "false" ]]; then
+    case "${REVIEWER_TYPE}" in
+      stress_test)
+        tick_dimension "stress_test" "${now_ts}" ;;
+      traceability)
+        tick_dimension "traceability" "${now_ts}" ;;
+      standard|*)
+        tick_dimension "bug_hunt" "${now_ts}"
+        tick_dimension "code_quality" "${now_ts}" ;;
+    esac
+  fi
 fi

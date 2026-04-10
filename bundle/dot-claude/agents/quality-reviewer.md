@@ -30,6 +30,7 @@ Output format:
 - After defect findings, include a **Completeness** section: explicitly state whether the deliverable covers the full scope of the original task. Call out anything missing, partially implemented, or clearly implied but absent. If the work is complete, say so.
 - If the work looks good and is complete, say that explicitly in the summary and call out any residual risk or testing gap.
 - Keep the full response under 1000 words. Brevity improves the odds that your findings survive context pressure in long sessions, but completeness evaluation requires enough space to be useful.
+- **End with exactly one line on its own, unindented, as the final line of your response**: `VERDICT: CLEAN` when there are no actionable findings, or `VERDICT: FINDINGS (N)` where N is the count of top-priority findings that must be addressed before finalizing. Do not emit `FINDINGS (0)` — use `CLEAN` instead. The stop-guard reads this line to tick the `bug_hunt` and `code_quality` dimensions; a missing or ambiguous verdict falls back to legacy phrase detection.
 
 Scope:
 

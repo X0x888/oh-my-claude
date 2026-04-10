@@ -433,6 +433,239 @@ assert_eq "negative state_ttl_days ignored" "7" "${OMC_STATE_TTL_DAYS}"
 rm -rf "${FAKE_HOME_DIR}"
 
 # ===========================================================================
+# is_doc_path
+# ===========================================================================
+printf '\nis_doc_path:\n'
+
+assert_doc() {
+  local path="$1"
+  if is_doc_path "${path}"; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: expected doc: %s\n' "${path}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
+assert_not_doc() {
+  local path="$1"
+  if is_doc_path "${path}"; then
+    printf '  FAIL: expected NOT doc: %s\n' "${path}" >&2
+    fail=$((fail + 1))
+  else
+    pass=$((pass + 1))
+  fi
+}
+
+# Extensions
+assert_doc "/path/to/README.md"
+assert_doc "/path/to/file.markdown"
+assert_doc "/path/to/guide.mdx"
+assert_doc "/path/to/notes.rst"
+assert_doc "/path/to/spec.adoc"
+assert_doc "/path/to/plain.txt"
+
+# Well-known basenames (case insensitive)
+assert_doc "CHANGELOG"
+assert_doc "changelog"
+assert_doc "CHANGELOG.txt"
+assert_doc "README"
+assert_doc "readme"
+assert_doc "RELEASE"
+assert_doc "release.md"
+assert_doc "CONTRIBUTING"
+assert_doc "LICENSE"
+assert_doc "NOTICE"
+assert_doc "COPYING"
+assert_doc "AUTHORS"
+
+# Path-component docs/ and doc/
+assert_doc "docs/architecture.md"
+assert_doc "/repo/docs/guide.html"
+assert_doc "doc/api.html"
+assert_doc "/project/doc/notes"
+
+# Negative cases
+assert_not_doc "/src/foo.ts"
+assert_not_doc "/src/docs-examples/foo.ts"  # substring not component
+assert_not_doc "/bin/mydoc"                  # no extension, not known basename
+assert_not_doc "bundle/dot-claude/skills/autowork/scripts/common.sh"
+assert_not_doc "config/settings.patch.json"
+assert_not_doc ""
+
+# ===========================================================================
+# Dimension helpers
+# ===========================================================================
+printf '\nDimension helpers:\n'
+
+# reviewer_for_dimension
+assert_eq "reviewer_for_dimension bug_hunt" "quality-reviewer" "$(reviewer_for_dimension bug_hunt)"
+assert_eq "reviewer_for_dimension code_quality" "quality-reviewer" "$(reviewer_for_dimension code_quality)"
+assert_eq "reviewer_for_dimension stress_test" "metis" "$(reviewer_for_dimension stress_test)"
+assert_eq "reviewer_for_dimension prose" "editor-critic" "$(reviewer_for_dimension prose)"
+assert_eq "reviewer_for_dimension completeness" "excellence-reviewer" "$(reviewer_for_dimension completeness)"
+assert_eq "reviewer_for_dimension traceability" "briefing-analyst" "$(reviewer_for_dimension traceability)"
+assert_eq "reviewer_for_dimension unknown fallback" "quality-reviewer" "$(reviewer_for_dimension foo_bar)"
+
+# _dim_key
+assert_eq "_dim_key bug_hunt" "dim_bug_hunt_ts" "$(_dim_key bug_hunt)"
+assert_eq "_dim_key traceability" "dim_traceability_ts" "$(_dim_key traceability)"
+
+# Fresh session for tick/read tests
+reset_dim_state() {
+  rm -f "$(session_file "${STATE_JSON}")"
+  printf '{}\n' > "$(session_file "${STATE_JSON}")"
+}
+
+# tick_dimension stores value, is_dimension_valid reads it back
+reset_dim_state
+write_state "last_code_edit_ts" "1000"
+tick_dimension "bug_hunt" "1500"
+assert_eq "tick_dimension stores ts" "1500" "$(read_state "dim_bug_hunt_ts")"
+if is_dimension_valid "bug_hunt"; then pass=$((pass + 1)); else
+  printf '  FAIL: is_dimension_valid bug_hunt (1500 > 1000)\n' >&2
+  fail=$((fail + 1))
+fi
+
+# After a later code edit, the tick becomes stale
+write_state "last_code_edit_ts" "2000"
+if is_dimension_valid "bug_hunt"; then
+  printf '  FAIL: is_dimension_valid bug_hunt should be stale after edit\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+
+# prose dimension keys off last_doc_edit_ts separately
+reset_dim_state
+write_state "last_doc_edit_ts" "1000"
+write_state "last_code_edit_ts" "2000"  # code edit happened later
+tick_dimension "prose" "1500"
+if is_dimension_valid "prose"; then pass=$((pass + 1)); else
+  printf '  FAIL: prose should be valid (1500 > last_doc_edit_ts 1000); code edit at 2000 does not invalidate prose\n' >&2
+  fail=$((fail + 1))
+fi
+
+# code dimensions are still invalidated by the code edit at 2000
+tick_dimension "code_quality" "1500"
+if is_dimension_valid "code_quality"; then
+  printf '  FAIL: code_quality should be stale (1500 < last_code_edit_ts 2000)\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+
+# missing_dimensions returns csv of invalid dims
+reset_dim_state
+write_state "last_code_edit_ts" "1000"
+tick_dimension "bug_hunt" "1500"
+tick_dimension "code_quality" "1500"
+# stress_test and completeness are missing
+missing="$(missing_dimensions "bug_hunt,code_quality,stress_test,completeness")"
+assert_eq "missing_dimensions subset" "stress_test,completeness" "${missing}"
+
+missing="$(missing_dimensions "bug_hunt,code_quality")"
+assert_eq "missing_dimensions all ticked = empty" "" "${missing}"
+
+missing="$(missing_dimensions "")"
+assert_eq "missing_dimensions empty required = empty" "" "${missing}"
+
+# get_required_dimensions honors thresholds
+reset_dim_state
+write_state "code_edit_count" "1"
+dims="$(get_required_dimensions)"
+assert_eq "get_required_dimensions 1 file < threshold 3 = empty" "" "${dims}"
+
+reset_dim_state
+write_state "code_edit_count" "3"
+dims="$(get_required_dimensions)"
+assert_eq "get_required_dimensions 3 code files = full code set" "bug_hunt,code_quality,stress_test,completeness" "${dims}"
+
+reset_dim_state
+write_state "code_edit_count" "2"
+write_state "doc_edit_count" "1"
+dims="$(get_required_dimensions)"
+assert_eq "get_required_dimensions code+doc = code set + prose" "bug_hunt,code_quality,stress_test,completeness,prose" "${dims}"
+
+reset_dim_state
+write_state "code_edit_count" "6"
+dims="$(get_required_dimensions)"
+assert_eq "get_required_dimensions 6 files = code set + traceability" "bug_hunt,code_quality,stress_test,completeness,traceability" "${dims}"
+
+reset_dim_state
+write_state "doc_edit_count" "3"
+dims="$(get_required_dimensions)"
+assert_eq "get_required_dimensions 3 docs only = prose + completeness" "prose,completeness" "${dims}"
+
+# Legacy fallback: resumed session with counters cleared but log rehydrated.
+# Must classify log contents, not just count them.
+reset_dim_state
+edited_log="$(session_file "edited_files.log")"
+cat > "${edited_log}" <<'LOG'
+/project/docs/a.md
+/project/docs/b.md
+/project/README.md
+LOG
+dims="$(get_required_dimensions)"
+assert_eq "get_required_dimensions fallback: resumed doc-only" "prose,completeness" "${dims}"
+
+reset_dim_state
+cat > "${edited_log}" <<'LOG'
+/project/src/a.ts
+/project/src/b.ts
+/project/src/c.ts
+LOG
+dims="$(get_required_dimensions)"
+assert_eq "get_required_dimensions fallback: resumed code-only" "bug_hunt,code_quality,stress_test,completeness" "${dims}"
+
+reset_dim_state
+cat > "${edited_log}" <<'LOG'
+/project/src/a.ts
+/project/src/b.ts
+/project/docs/c.md
+LOG
+dims="$(get_required_dimensions)"
+assert_eq "get_required_dimensions fallback: resumed mixed" "bug_hunt,code_quality,stress_test,completeness,prose" "${dims}"
+
+rm -f "${edited_log}"
+
+# ===========================================================================
+# with_state_lock
+# ===========================================================================
+printf '\nwith_state_lock:\n'
+
+# Basic acquire/release
+noop() { return 0; }
+if with_state_lock noop; then pass=$((pass + 1)); else
+  printf '  FAIL: with_state_lock noop should succeed\n' >&2
+  fail=$((fail + 1))
+fi
+
+# Lock dir is released after call
+lockdir="$(session_file ".state.lock")"
+if [[ ! -d "${lockdir}" ]]; then pass=$((pass + 1)); else
+  printf '  FAIL: lockdir should be released after call\n' >&2
+  fail=$((fail + 1))
+fi
+
+# Wrapped function's exit code propagates
+returns_seven() { return 7; }
+rc=0
+with_state_lock returns_seven || rc=$?
+assert_eq "with_state_lock propagates non-zero exit" "7" "${rc}"
+
+# Stale-lock recovery: pre-create the lock dir with an old mtime
+mkdir -p "${lockdir}"
+# Touch to ~10 seconds ago
+past_ts=$(( $(date +%s) - 10 ))
+touch -t "$(date -r "${past_ts}" +%Y%m%d%H%M.%S 2>/dev/null || date -d "@${past_ts}" +%Y%m%d%H%M.%S 2>/dev/null)" "${lockdir}" 2>/dev/null || true
+# with_state_lock should force-release and succeed
+if with_state_lock noop; then pass=$((pass + 1)); else
+  printf '  FAIL: with_state_lock should recover from stale lock\n' >&2
+  fail=$((fail + 1))
+fi
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 

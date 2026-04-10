@@ -39,16 +39,32 @@ oh-my-claude is a harness that wraps Claude Code's lifecycle events with bash ho
 7. If the prompt contains `ultrathink`, appends a deeper investigation directive.
 8. Emits the assembled context via `hookSpecificOutput.additionalContext`.
 
-**`skills/autowork/scripts/stop-guard.sh`** -- **Stop hook**. Hard quality gate that can block Claude from stopping. Four independent checks:
+**`skills/autowork/scripts/stop-guard.sh`** -- **Stop hook**. Hard quality gate that can block Claude from stopping. Five independent checks:
 
 1. **Advisory inspection gate**: If the task is advisory over a codebase (coding or mixed domain) and no code inspection (`last_advisory_verify_ts`) or build/test verification (`last_verify_ts`) was detected, blocks the stop. Cap: 1 block.
 2. **Session handoff gate**: If the last assistant message contains deferral language ("ready for a new session", "next wave", "next phase") and the user did not request a checkpoint, blocks the stop. Cap: 2 blocks.
-3. **Review/verification gate**: If files were edited (`last_edit_ts` set) but review (`last_review_ts`) or verification (`last_verify_ts`) are missing or stale (timestamp earlier than last edit), blocks the stop. Review is checked for all domains; verification is only checked for coding and mixed. Cap: 3 blocks.
-4. **Excellence gate**: After all standard gates pass, if the session has `excellence_file_count`+ unique edited files (default 3, configurable via `oh-my-claude.conf`) and no `last_excellence_review_ts` has been recorded (or it is stale), blocks the stop once to request a fresh-eyes holistic evaluation via `excellence-reviewer`. Cap: 1 block (controlled by `excellence_guard_triggered` flag).
+3. **Review/verification gate**: If files were edited (`last_code_edit_ts` / `last_doc_edit_ts` set, or legacy `last_edit_ts` for resumed sessions) but review (`last_review_ts` for code, `last_doc_review_ts` for docs) or verification (`last_verify_ts`) are missing or stale, blocks the stop. Doc-only edits route to `editor-critic` instead of `quality-reviewer` and skip the verification requirement. Verification is only checked for coding and mixed domains. Cap: 3 blocks. Block 1 uses the full verbose "FIRST self-assess" message; blocks 2+ use a concise "Still missing: X. Next: Y." form that names only un-ticked items.
+4. **Dimension gate**: After the standard review/verify gate passes, a prescribed review sequence is enforced on complex tasks via per-dimension ticks. On each block, the gate message names the specific next reviewer to run rather than making the agent guess.
+
+    - **Trigger**: session has `dimension_gate_file_count`+ unique edited files (default 3, configurable). Below the threshold, the gate is inert.
+    - **Required dimensions** (computed from the edit mix):
+        - Any code files → `bug_hunt`, `code_quality`, `stress_test`, `completeness`
+        - Any doc files → add `prose`
+        - At least `traceability_file_count`+ files (default 6) → add `traceability`
+    - **Dimension ownership** (one reviewer per dimension; see `AGENTS.md` §"Dimension mapping"):
+        - `quality-reviewer` → `bug_hunt`, `code_quality`
+        - `metis` → `stress_test`
+        - `excellence-reviewer` → `completeness`
+        - `editor-critic` → `prose`
+        - `briefing-analyst` → `traceability`
+    - **Validity**: each tick is timestamped (`dim_<name>_ts`) and considered valid only if the tick epoch is ≥ the relevant edit clock (`last_code_edit_ts` for most dimensions, `last_doc_edit_ts` for `prose`). A post-tick edit implicitly invalidates the dimension without needing explicit clearing.
+    - **Resumed sessions**: sessions resumed from pre-dimension-gate state get one free stop (`dimension_resume_grace_used`) before the gate starts enforcing.
+    - **Cap**: 3 blocks (`dimension_guard_blocks`). Exhaustion records `dimensions_missing=...` in `guard_exhausted_detail` and falls through to the excellence gate rather than bypassing all checks.
+5. **Excellence gate**: After all earlier gates pass, if the session has `excellence_file_count`+ unique edited files and no `last_excellence_review_ts` has been recorded (or it is stale), blocks the stop once to request a fresh-eyes holistic evaluation via `excellence-reviewer`. Cap: 1 block (controlled by `excellence_guard_triggered` flag).
 
 The block caps prevent infinite loops. After the cap, Claude is allowed to stop even if gates are unsatisfied.
 
-**`skills/autowork/scripts/mark-edit.sh`** -- **PostToolUse hook** for Edit, Write, and MultiEdit. Records `last_edit_ts`, resets all guard block counters and the stall counter. Excludes internal Claude paths (projects, state, tasks, todos, transcripts, debug) from tracking. Logs edited file paths to `edited_files.log`.
+**`skills/autowork/scripts/mark-edit.sh`** -- **PostToolUse hook** for Edit, Write, and MultiEdit. Records `last_edit_ts` on every edit (backward compat) and also classifies the path via `is_doc_path`: code edits bump `last_code_edit_ts`, doc edits bump `last_doc_edit_ts`. Maintains cached `code_edit_count` / `doc_edit_count` counters (incremented only on first-time paths via `grep -Fxq` dedup). Resets all guard block counters and the stall counter. Excludes internal Claude paths (projects, state, tasks, todos, transcripts, debug) from tracking. Logs edited file paths to `edited_files.log`.
 
 **`skills/autowork/scripts/record-verification.sh`** -- **PostToolUse hook** for Bash. Checks if the command matches a test/build/lint pattern (npm test, cargo test, pytest, vitest, eslint, tsc, etc.). If so, records `last_verify_ts` and the command text, and resets guard counters.
 
@@ -56,7 +72,7 @@ The block caps prevent infinite loops. After the cap, Claude is allowed to stop 
 
 **`skills/autowork/scripts/reflect-after-agent.sh`** -- **PostToolUse hook** for Agent. After an agent returns, injects a reflection prompt telling Claude to verify the agent's highest-impact claims against actual code before relying on them. For advisory tasks, additionally warns not to deliver the final report until all exploration agents have returned.
 
-**`skills/autowork/scripts/record-reviewer.sh`** -- **SubagentStop hook** for quality-reviewer, editor-critic, and excellence-reviewer agents. Records `last_review_ts` and resets stop guard counters when a reviewer agent completes. When called with the `excellence` argument (configured for the excellence-reviewer matcher), additionally records `last_excellence_review_ts` to satisfy the excellence gate.
+**`skills/autowork/scripts/record-reviewer.sh`** -- **SubagentStop hook** for reviewer and analysis agents (`quality-reviewer`, `editor-critic`, `excellence-reviewer`, `metis`, `briefing-analyst`, plus `superpowers:code-reviewer` / `feature-dev:code-reviewer`). Accepts a reviewer-type argument (`standard|excellence|prose|stress_test|traceability`) that determines which dimensions to tick. Parses a `VERDICT: CLEAN|SHIP|FINDINGS|BLOCK` line from the agent's last message (last match wins via `tail -n 1`, `FINDINGS (0)` treated as CLEAN), falling back to a legacy phrase-based regex when the VERDICT line is absent. Records `last_review_ts`, resets stop guard counters, and on clean reviews calls `tick_dimension` to mark the relevant dimension(s) valid. The excellence path additionally records `last_excellence_review_ts` and preserves `review_had_findings` from the standard review.
 
 **`skills/autowork/scripts/record-subagent-summary.sh`** -- **SubagentStop hook** (all agents). Appends the agent's type and last assistant message to `subagent_summaries.jsonl` (capped at 16 entries).
 
@@ -112,8 +128,8 @@ Claude processes with injected context
   |-- [SubagentStop] record-subagent-summary.sh
   |     Logs agent conclusions to subagent_summaries.jsonl
   |
-  |-- [SubagentStop: quality-reviewer/editor-critic] record-reviewer.sh
-  |     Records last_review_ts
+  |-- [SubagentStop: quality-reviewer/editor-critic/metis/briefing-analyst/excellence-reviewer] record-reviewer.sh
+  |     Parses VERDICT line, records last_review_ts, ticks dimension(s)
   |
   v
 Claude attempts to stop
@@ -122,8 +138,9 @@ Claude attempts to stop
 [Stop hook] stop-guard.sh
   |-- Check 1: Advisory over codebase without code inspection? -> Block (max 1)
   |-- Check 2: Deferral language without user-requested checkpoint? -> Block (max 2)
-  |-- Check 3: Edits without review or verification? -> Block (max 3)
-  |-- Check 4: 3+ files edited without excellence review? -> Block (max 1)
+  |-- Check 3: Edits without review or verification (code/doc clocks)? -> Block (max 3)
+  |-- Check 4: Prescribed dimensions missing on complex task? -> Block (max 3)
+  |-- Check 5: 3+ files edited without excellence review? -> Block (max 1)
   |-- All checks pass or caps reached -> Allow stop
   |
   v
@@ -162,10 +179,15 @@ Session state is stored at:
 | `task_domain` | Classified domain: coding, writing, research, operations, mixed, general |
 | `task_intent` | Classified intent: execution, continuation, advisory, checkpoint, session_management |
 | `workflow_mode` | Active mode (currently: `ultrawork` or empty) |
-| `last_edit_ts` | Epoch timestamp of the last file edit |
+| `last_edit_ts` | Epoch timestamp of the last file edit (any type — backward compat) |
+| `last_code_edit_ts` | Epoch timestamp of the last code edit (non-doc path) |
+| `last_doc_edit_ts` | Epoch timestamp of the last doc edit (matched by `is_doc_path`) |
+| `code_edit_count` | Cached count of unique code files edited this session |
+| `doc_edit_count` | Cached count of unique doc files edited this session |
 | `last_verify_ts` | Epoch timestamp of the last test/build/lint verification |
 | `last_verify_cmd` | The verification command that was run |
-| `last_review_ts` | Epoch timestamp of the last reviewer agent completion |
+| `last_review_ts` | Epoch timestamp of the last reviewer agent completion (any code-side reviewer) |
+| `last_doc_review_ts` | Epoch timestamp of the last editor-critic (prose) completion |
 | `last_advisory_verify_ts` | Epoch timestamp of the last code inspection during advisory tasks |
 | `last_assistant_message` | Claude's last response (captured at stop hook entry) |
 | `last_assistant_message_ts` | Epoch timestamp of the above |
@@ -175,7 +197,15 @@ Session state is stored at:
 | `last_verify_outcome` | Result of the last verification: `passed` or `failed` |
 | `last_excellence_review_ts` | Epoch timestamp of the last excellence-reviewer completion |
 | `review_had_findings` | Whether the last review reported actionable findings (`true`/`false`) |
+| `dim_bug_hunt_ts` | Epoch when `bug_hunt` dimension was last ticked |
+| `dim_code_quality_ts` | Epoch when `code_quality` dimension was last ticked |
+| `dim_stress_test_ts` | Epoch when `stress_test` dimension was last ticked |
+| `dim_prose_ts` | Epoch when `prose` dimension was last ticked |
+| `dim_completeness_ts` | Epoch when `completeness` dimension was last ticked |
+| `dim_traceability_ts` | Epoch when `traceability` dimension was last ticked |
 | `stop_guard_blocks` | Number of times the review/verify gate has blocked (cap: 3) |
+| `dimension_guard_blocks` | Number of times the dimension gate has blocked (cap: 3) |
+| `dimension_resume_grace_used` | Whether the one-shot resumed-session dimension-gate grace has been used (`1` or empty) |
 | `session_handoff_blocks` | Number of times the deferral gate has blocked (cap: 2) |
 | `advisory_guard_blocks` | Number of times the advisory inspection gate has blocked (cap: 1) |
 | `excellence_guard_triggered` | Whether the excellence gate has already fired this session (`1` or empty) |
