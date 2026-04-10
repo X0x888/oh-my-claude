@@ -263,6 +263,118 @@ JSON
     fail=$((fail + 1))
   fi
 
+  # -----------------------------------------------------------------------
+  # Test 7: Upgrade-merge regression — same matcher, different command.
+  # Regression test for a bug where upgrading from an older install with
+  # pre-existing SubagentStop matchers (e.g. editor-critic pointing to
+  # record-reviewer.sh without args) would APPEND the new version (with
+  # args) instead of REPLACING, producing duplicate entries that fire
+  # incorrect dimension ticks. Signature must treat same-matcher + same
+  # script basename as the same entry regardless of trailing arguments.
+  # -----------------------------------------------------------------------
+  work="${TEST_DIR}/${impl}-upgrade"
+  mkdir -p "${work}"
+  cat > "${work}/settings.json" <<'JSON'
+{
+  "hooks": {
+    "SubagentStop": [
+      {
+        "matcher": "editor-critic",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/skills/autowork/scripts/record-reviewer.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "excellence-reviewer",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/skills/autowork/scripts/record-reviewer.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
+JSON
+
+  run_merge "${impl}" "${work}/settings.json" "${SETTINGS_PATCH}" "false"
+
+  # After merge, SubagentStop should have exactly 10 entries (no duplicates).
+  assert_json_count "${impl}: upgrade — no duplicate editor-critic/excellence-reviewer" \
+    "${work}/settings.json" '.hooks.SubagentStop' "10"
+
+  # The editor-critic matcher should appear exactly ONCE, with the new 'prose' arg.
+  assert_json_eq "${impl}: upgrade — editor-critic count is 1" \
+    "${work}/settings.json" \
+    '[.hooks.SubagentStop[] | select(.matcher == "editor-critic")] | length' \
+    "1"
+  assert_json_eq "${impl}: upgrade — editor-critic command uses prose arg" \
+    "${work}/settings.json" \
+    '[.hooks.SubagentStop[] | select(.matcher == "editor-critic") | .hooks[0].command] | .[0] | tostring | contains("record-reviewer.sh prose")' \
+    "true"
+
+  # The excellence-reviewer matcher should appear exactly ONCE, with the new 'excellence' arg.
+  assert_json_eq "${impl}: upgrade — excellence-reviewer count is 1" \
+    "${work}/settings.json" \
+    '[.hooks.SubagentStop[] | select(.matcher == "excellence-reviewer")] | length' \
+    "1"
+  assert_json_eq "${impl}: upgrade — excellence-reviewer command uses excellence arg" \
+    "${work}/settings.json" \
+    '[.hooks.SubagentStop[] | select(.matcher == "excellence-reviewer") | .hooks[0].command] | .[0] | tostring | contains("record-reviewer.sh excellence")' \
+    "true"
+
+  # metis and briefing-analyst should be present (fresh additions, no duplicate conflict).
+  assert_json_eq "${impl}: upgrade — metis matcher present" \
+    "${work}/settings.json" \
+    '[.hooks.SubagentStop[] | select(.matcher == "metis")] | length' \
+    "1"
+  assert_json_eq "${impl}: upgrade — briefing-analyst matcher present" \
+    "${work}/settings.json" \
+    '[.hooks.SubagentStop[] | select(.matcher == "briefing-analyst")] | length' \
+    "1"
+
+  # -----------------------------------------------------------------------
+  # Test 8: Customization preservation — a user matcher with the same name
+  # but pointing to a DIFFERENT script should NOT be clobbered by the
+  # upgrade-merge logic (different script_basename → different signature).
+  # -----------------------------------------------------------------------
+  work="${TEST_DIR}/${impl}-user-custom"
+  mkdir -p "${work}"
+  cat > "${work}/settings.json" <<'JSON'
+{
+  "hooks": {
+    "SubagentStop": [
+      {
+        "matcher": "quality-reviewer",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/my-custom-hook.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
+JSON
+
+  run_merge "${impl}" "${work}/settings.json" "${SETTINGS_PATCH}" "false"
+
+  # Both the user's custom quality-reviewer matcher AND our record-reviewer.sh
+  # version should be preserved (different scripts → different signatures).
+  assert_json_eq "${impl}: custom — user's custom script preserved" \
+    "${work}/settings.json" \
+    '[.hooks.SubagentStop[] | select(.matcher == "quality-reviewer") | .hooks[0].command] | any(tostring | contains("my-custom-hook.sh"))' \
+    "true"
+  assert_json_eq "${impl}: custom — our record-reviewer.sh also present" \
+    "${work}/settings.json" \
+    '[.hooks.SubagentStop[] | select(.matcher == "quality-reviewer") | .hooks[0].command] | any(tostring | contains("record-reviewer.sh"))' \
+    "true"
+
   printf '  %s implementation done.\n' "${impl}"
 done
 

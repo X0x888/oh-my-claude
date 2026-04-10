@@ -147,10 +147,24 @@ else:
 # Merge hooks by signature (idempotent)
 hooks = settings.setdefault("hooks", {})
 
+def script_basename(command):
+    """Extract the script basename from a hook command, stripping any
+    'bash ' prefix and trailing arguments. Used so that upgrades where
+    only a trailing argument changed (e.g. record-reviewer.sh adding a
+    ' prose' suffix) are detected as the same entry and the patch
+    version replaces the base version instead of being appended."""
+    tokens = command.strip().split()
+    if not tokens:
+        return ""
+    first = tokens[0]
+    if first == "bash" and len(tokens) > 1:
+        first = tokens[1]
+    return first.rsplit("/", 1)[-1]
+
 def signature(entry):
     matcher = entry.get("matcher", "")
     hook_sigs = tuple(
-        (hook.get("type", ""), hook.get("command", ""))
+        (hook.get("type", ""), script_basename(hook.get("command", "")))
         for hook in entry.get("hooks", [])
     )
     return (matcher, hook_sigs)
@@ -198,16 +212,37 @@ merge_settings_jq() {
   fi
 
   jq -s '
+    # Extract the script basename from a hook command. Strips leading
+    # "bash " prefix and trailing arguments so that upgrades where only
+    # a trailing argument changed (e.g. record-reviewer.sh → record-reviewer.sh prose)
+    # are detected as the same entry and the patch version replaces the
+    # base version instead of being appended.
+    def script_basename:
+      . as $cmd
+      | ($cmd | split(" ") | map(select(length > 0))) as $toks
+      | (if ($toks | length) == 0 then ""
+         elif $toks[0] == "bash" and ($toks | length) > 1 then $toks[1]
+         else $toks[0]
+         end)
+      | split("/") | .[-1];
     def entry_sig:
       {
         matcher: (.matcher // ""),
-        hooks: [(.hooks // [])[] | {type: (.type // ""), command: (.command // "")}]
+        hooks: [(.hooks // [])[] | {type: (.type // ""), command: ((.command // "") | script_basename)}]
       };
     def merge_hooks($base; $patch):
       reduce ($patch | to_entries[]) as $item ($base;
         .[$item.key] = (
-          ((.[ $item.key ] // []) + $item.value)
-          | unique_by(entry_sig)
+          # Concatenate base and patch entries, then unique by signature.
+          # Since later entries override earlier ones in unique_by, the
+          # patch version wins when both exist with the same signature.
+          (reduce ($item.value[]) as $new_entry ((.[ $item.key ] // []);
+            . as $existing
+            | (map(entry_sig) | index($new_entry | entry_sig)) as $idx
+            | if $idx == null then $existing + [$new_entry]
+              else ($existing | .[$idx] = $new_entry)
+              end
+          ))
         )
       );
     .[0] as $base
