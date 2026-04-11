@@ -163,6 +163,16 @@ assert_extraction "$(printf 'Primary task:\n\nDo X')" "Do X"
 # Leading /ulw inside task body is preserved (classify path handles stripping)
 assert_extraction "$(printf 'Primary task:\n\n/ulw Do X\n\nFollow the `/autowork` operating rules.')" "/ulw Do X"
 
+# Mid-sentence false-positive guard: the marker must be line-anchored.
+# "Hello. The docs say Primary task: should be something." is not a skill body
+# and must NOT trigger extraction (regression: previously extracted wrongly).
+assert_extraction "Hello. The docs say Primary task: should be something. Please plan the migration." ""
+
+# Specific pathological case that flipped classification from execution → advisory
+# before the line-anchor fix: a user prompt starting with an imperative, then
+# mentioning "Primary task:" mid-sentence.
+assert_intent "execution" "Please fix the login bug. Primary task: do the rollout."
+
 # --- /ulw-in-advice-wrapper regression (v1.2.1 item #4) ---
 printf '\n/ulw in advice-wrapper regression:\n'
 

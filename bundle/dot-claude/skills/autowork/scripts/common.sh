@@ -357,12 +357,20 @@ normalize_task_prompt() {
 # misfires because embedded quoted content in the task body can trip SM/advisory
 # regexes. This helper returns just the user's task body (between the two
 # markers), or exit 1 if the primary-task marker isn't present.
+#
+# The "Primary task:" marker must be line-anchored (preceded by a newline or at
+# the very start of the text). Real skill bodies always put the marker on its
+# own line; a mid-sentence mention like "the docs say Primary task: should..."
+# would otherwise false-positive and extract the wrong slice of the prompt.
 extract_skill_primary_task() {
   local text="$1"
   local head_marker='Primary task:'
   local tail_marker='Follow the `/autowork`'
 
-  [[ "${text}" == *"${head_marker}"* ]] || return 1
+  # Line-anchored marker check: either at the start of text, or after a newline.
+  if [[ "${text}" != "${head_marker}"* ]] && [[ "${text}" != *$'\n'"${head_marker}"* ]]; then
+    return 1
+  fi
 
   local after="${text#*"${head_marker}"}"
   local body="${after%%"${tail_marker}"*}"
