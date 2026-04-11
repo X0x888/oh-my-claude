@@ -144,8 +144,13 @@ else:
     # the user may have set them independently.
     pass
 
-# Merge hooks by signature (idempotent)
-hooks = settings.setdefault("hooks", {})
+# Merge hooks by signature (idempotent). Uses null-safe accessors so
+# an explicit null at `hooks`, `<event>`, `matcher`, `command`, or
+# `hooks[].hooks` in base settings never crashes Python — preserving
+# parity with jq's `// default` coalesce behavior.
+if settings.get("hooks") is None:
+    settings["hooks"] = {}
+hooks = settings["hooks"]
 
 def script_basename(command):
     """Extract the script basename from a hook command, stripping any
@@ -153,7 +158,7 @@ def script_basename(command):
     only a trailing argument changed (e.g. record-reviewer.sh adding a
     ' prose' suffix) are detected as the same entry and the patch
     version replaces the base version instead of being appended."""
-    tokens = command.strip().split()
+    tokens = (command or "").strip().split()
     if not tokens:
         return ""
     first = tokens[0]
@@ -161,28 +166,159 @@ def script_basename(command):
         first = tokens[1]
     return first.rsplit("/", 1)[-1]
 
-def signature(entry):
-    # Coalesce both missing and explicit-None matchers to "" so this
-    # matches jq's `.matcher // ""` behavior and preserves cross-impl parity.
-    matcher = entry.get("matcher") or ""
-    hook_sigs = tuple(
-        (hook.get("type", ""), script_basename(hook.get("command", "")))
-        for hook in entry.get("hooks", [])
-    )
-    return (matcher, hook_sigs)
+def entry_hooks(entry):
+    # Filter out non-dict hook entries (explicit `null`, arrays, scalars)
+    # so malformed settings.json input never crashes basename extraction
+    # or deduplication. Matches jq's `select(type == "object")` filter.
+    return [h for h in (entry.get("hooks") or []) if isinstance(h, dict)]
 
-for event, patch_entries in patch.get("hooks", {}).items():
-    existing_entries = hooks.setdefault(event, [])
-    index = {}
-    for i, existing in enumerate(existing_entries):
-        if isinstance(existing, dict):
-            index[signature(existing)] = i
-    for entry in patch_entries:
-        sig = signature(entry)
-        if sig in index:
-            existing_entries[index[sig]] = entry
-        else:
-            existing_entries.append(entry)
+def entry_basenames(entry):
+    return [script_basename(hook.get("command")) for hook in entry_hooks(entry)]
+
+def entry_matcher(entry):
+    # Coalesce missing, explicit-None, and any falsy matcher to "". Matches
+    # jq's `.matcher // ""` behavior so empty-matcher patch entries (the
+    # record-subagent-summary.sh entry) can be identified identically.
+    return entry.get("matcher") or ""
+
+def dedupe_entry_hooks(entry):
+    """Return a copy of `entry` with hooks collapsed by script basename,
+    later occurrence wins. Closes a parity divergence where Python's
+    `frozenset` treated duplicate-basename hooks as one signature but
+    jq's list-sort compare saw them as distinct, and a dedup hole in
+    Phase 2's hook-level merge where stale duplicates survived a patch."""
+    seen = {}
+    for hook in entry_hooks(entry):
+        seen[script_basename(hook.get("command"))] = hook
+    new_entry = dict(entry)
+    new_entry["hooks"] = list(seen.values())
+    return new_entry
+
+def normalize_base_entries(entries):
+    """Pre-normalize base entries before the three-phase merge loop:
+
+    1. Within each dict entry, dedupe hooks by script basename
+       (later-wins). Preserves the insertion order of each distinct
+       basename's first occurrence.
+    2. Collapse multiple same-matcher entries whose basename sets
+       overlap into a single canonical entry. The first such entry
+       becomes the canonical target; subsequent overlapping entries
+       have their hooks merged in (replacing matching basenames,
+       appending new ones). Entries with disjoint basenames remain
+       separate to preserve intentional user customization (Test 8).
+
+    Closes metis finding #1: a migration path where an older buggy
+    installer left two `editor-critic` entries in base settings would,
+    under the bare three-phase loop, have Phase 1 match only the first
+    entry and leave the second with a stale record-reviewer.sh — still
+    firing twice per SubagentStop. Normalizing the base first eliminates
+    the pre-existing duplication so the three-phase loop always operates
+    on a canonical base."""
+    result = []
+    for raw in entries:
+        if not isinstance(raw, dict):
+            result.append(raw)
+            continue
+        entry = dedupe_entry_hooks(raw)
+        m = entry_matcher(entry)
+        e_basenames = frozenset(entry_basenames(entry))
+        merged_into = None
+        for i, r in enumerate(result):
+            if not isinstance(r, dict):
+                continue
+            if entry_matcher(r) != m:
+                continue
+            if frozenset(entry_basenames(r)) & e_basenames:
+                merged_into = i
+                break
+        if merged_into is None:
+            result.append(entry)
+            continue
+        # target is a reference into result; mutating target["hooks"]
+        # below updates the result entry in place. Safe because
+        # dedupe_entry_hooks returned a shallow copy of each base entry,
+        # so the caller's original hooks[event] list is never mutated.
+        target = result[merged_into]
+        target_hooks = list(entry_hooks(target))
+        basename_to_index = {}
+        for j, h in enumerate(target_hooks):
+            basename_to_index[script_basename(h.get("command"))] = j
+        for hook in entry_hooks(entry):
+            b = script_basename(hook.get("command"))
+            if b in basename_to_index:
+                target_hooks[basename_to_index[b]] = hook
+            else:
+                basename_to_index[b] = len(target_hooks)
+                target_hooks.append(hook)
+        target["hooks"] = target_hooks
+    return result
+
+for event, patch_entries in (patch.get("hooks") or {}).items():
+    if hooks.get(event) is None:
+        hooks[event] = []
+    # Normalize base first so the three-phase loop operates on a
+    # canonical, dedup-free base.
+    existing_entries = normalize_base_entries(hooks[event])
+    hooks[event] = existing_entries
+
+    for patch_entry in patch_entries or []:
+        if not isinstance(patch_entry, dict):
+            existing_entries.append(patch_entry)
+            continue
+
+        p_matcher = entry_matcher(patch_entry)
+        p_basenames = entry_basenames(patch_entry)
+        p_basename_set = frozenset(p_basenames)
+
+        # Phase 1: exact match on (matcher, basename set) — fast path for
+        # fresh installs and idempotent re-merges. Replaces whole entry.
+        exact_idx = None
+        for i, existing in enumerate(existing_entries):
+            if not isinstance(existing, dict):
+                continue
+            if entry_matcher(existing) != p_matcher:
+                continue
+            if frozenset(entry_basenames(existing)) == p_basename_set:
+                exact_idx = i
+                break
+        if exact_idx is not None:
+            existing_entries[exact_idx] = patch_entry
+            continue
+
+        # Phase 2: same matcher + non-empty basename intersection. Merge
+        # at the hook level: patch hooks replace base hooks that share a
+        # basename; new basenames are appended to the first overlapping
+        # base entry. This closes the multi-hook matcher collision where
+        # a base entry with two hooks and a patch entry with one hook
+        # would otherwise signature-differ and both survive, causing
+        # duplicate fires of the shared script.
+        overlap_idx = None
+        for i, existing in enumerate(existing_entries):
+            if not isinstance(existing, dict):
+                continue
+            if entry_matcher(existing) != p_matcher:
+                continue
+            if frozenset(entry_basenames(existing)) & p_basename_set:
+                overlap_idx = i
+                break
+        if overlap_idx is not None:
+            target = existing_entries[overlap_idx]
+            merged_hooks = list(entry_hooks(target))
+            basename_to_index = {}
+            for i, hook in enumerate(merged_hooks):
+                basename_to_index[script_basename(hook.get("command"))] = i
+            for patch_hook in entry_hooks(patch_entry):
+                b = script_basename(patch_hook.get("command"))
+                if b in basename_to_index:
+                    merged_hooks[basename_to_index[b]] = patch_hook
+                else:
+                    basename_to_index[b] = len(merged_hooks)
+                    merged_hooks.append(patch_hook)
+            target["hooks"] = merged_hooks
+            continue
+
+        # Phase 3: disjoint matcher/basenames — append as a new entry.
+        existing_entries.append(patch_entry)
 
 settings_path.parent.mkdir(parents=True, exist_ok=True)
 with settings_path.open("w") as f:
@@ -221,9 +357,13 @@ merge_settings_jq() {
     # base version instead of being appended.
     def script_basename:
       . as $cmd
-      # Split on any whitespace (space or tab) to match python `.split()`
-      # behavior and preserve cross-impl parity on tab-separated commands.
-      | ($cmd | [splits("[ \\t]+")] | map(select(length > 0))) as $toks
+      # Split on any whitespace run — space, tab, CR, LF, FF, VT — to
+      # match Python `.split()` behavior (which splits on any whitespace
+      # including newlines). A narrower `[ \\t]+` would diverge from
+      # Python for pathological commands containing embedded newlines,
+      # because Python would split on `\n` and jq would not, producing
+      # different basename grouping keys and different merge outcomes.
+      | ($cmd | [splits("[ \\t\\r\\n\\f\\v]+")] | map(select(length > 0))) as $toks
       | (if ($toks | length) == 0 then ""
          elif $toks[0] == "bash" and ($toks | length) > 1 then $toks[1]
          else $toks[0]
@@ -231,25 +371,113 @@ merge_settings_jq() {
       # Coalesce null to "" so empty-command inputs produce "", matching
       # python `rsplit("/", 1)[-1]` behavior on the empty string.
       | (split("/") | .[-1] // "");
-    def entry_sig:
-      {
-        matcher: (.matcher // ""),
-        hooks: [(.hooks // [])[] | {type: (.type // ""), command: ((.command // "") | script_basename)}]
-      };
+    def entry_basenames:
+      [(.hooks // [])[] | select(type == "object") | (.command // "") | script_basename];
+    def entry_matcher:
+      (.matcher // "");
+    # Set equality via unique list compare (order- and dup-independent).
+    def sets_equal($a; $b):
+      ($a | unique) == ($b | unique);
+    # Non-empty set intersection (any element of $a appears in $b).
+    def sets_overlap($a; $b):
+      any($a[]; . as $x | ($b | index($x)) != null);
+    # Dedupe an entry''s hooks by script basename, later occurrence wins.
+    # Preserves the position of each basename''s most recent occurrence.
+    # Non-object hooks (explicit null, arrays, scalars) are filtered out
+    # to match the Python `isinstance(h, dict)` guard.
+    def dedupe_entry_hooks:
+      .hooks = (
+        reduce ((.hooks // [])[] | select(type == "object")) as $h ([];
+          ($h.command // "" | script_basename) as $b
+          | [range(0; length) as $i
+             | select((.[$i].command // "" | script_basename) == $b)
+             | $i] as $matches
+          | if ($matches | length) > 0 then
+              .[$matches[0]] = $h
+            else
+              . + [$h]
+            end
+        )
+      );
+    # Hook-level merge: input is a base entry, $patch_hooks is an array
+    # of patch hook objects. Returns the base entry with hooks updated —
+    # patch hooks replace base hooks sharing a basename, new basenames
+    # are appended. Closes the multi-hook matcher collision bug. Non-
+    # object patch hooks are filtered out for parity with Python.
+    def merge_hook_level($patch_hooks):
+      .hooks = (
+        reduce ($patch_hooks[] | select(type == "object")) as $p_hook ((.hooks // []);
+          ($p_hook.command // "" | script_basename) as $p_base
+          | [range(0; length) as $i
+             | select((.[$i].command // "" | script_basename) == $p_base)
+             | $i] as $matches
+          | if ($matches | length) > 0 then
+              .[$matches[0]] = $p_hook
+            else
+              . + [$p_hook]
+            end
+        )
+      );
+    # Normalize base entries before the three-phase merge loop:
+    # 1. Dedupe within each entry''s hooks by script basename (later wins).
+    # 2. Collapse multiple same-matcher entries whose basename sets
+    #    overlap into a single canonical entry. Disjoint same-matcher
+    #    entries are left separate (preserves intentional user customization).
+    # Closes metis finding #1 (migration path where an older buggy
+    # installer left duplicate same-matcher entries in base settings).
+    def normalize_base_entries:
+      reduce .[] as $raw ([];
+        if ($raw | type) != "object" then
+          . + [$raw]
+        else
+          ($raw | dedupe_entry_hooks) as $entry
+          | ($entry | entry_matcher) as $m
+          | ($entry | entry_basenames) as $e_basenames
+          | [range(0; length) as $i
+             | select((.[$i] | type) == "object")
+             | select((.[$i] | entry_matcher) == $m)
+             | select(sets_overlap((.[$i] | entry_basenames); $e_basenames))
+             | $i] as $matches
+          | if ($matches | length) == 0 then
+              . + [$entry]
+            else
+              .[$matches[0]] |= merge_hook_level($entry.hooks // [])
+            end
+        end
+      );
+    # Merge a list of patch entries into a base entries array using the
+    # three-phase algorithm: exact match → overlap → append.
+    def merge_entries($patch_entries):
+      reduce $patch_entries[] as $p_entry (.;
+        ($p_entry | entry_matcher) as $p_matcher
+        | ($p_entry | entry_basenames) as $p_basenames
+        # Phase 1: exact match on (matcher, basename set).
+        | [range(0; length) as $i
+           | select((.[$i] | type) == "object")
+           | select((.[$i] | entry_matcher) == $p_matcher)
+           | select(sets_equal((.[$i] | entry_basenames); $p_basenames))
+           | $i] as $exact
+        | if ($exact | length) > 0 then
+            .[$exact[0]] = $p_entry
+          else
+            # Phase 2: same matcher + non-empty basename intersection →
+            # hook-level merge on the first overlapping base entry.
+            [range(0; length) as $i
+             | select((.[$i] | type) == "object")
+             | select((.[$i] | entry_matcher) == $p_matcher)
+             | select(sets_overlap((.[$i] | entry_basenames); $p_basenames))
+             | $i] as $overlap
+            | if ($overlap | length) > 0 then
+                .[$overlap[0]] |= merge_hook_level($p_entry.hooks // [])
+              else
+                # Phase 3: disjoint → append as a new entry.
+                . + [$p_entry]
+              end
+          end
+      );
     def merge_hooks($base; $patch):
       reduce ($patch | to_entries[]) as $item ($base;
-        .[$item.key] = (
-          # Concatenate base and patch entries, then unique by signature.
-          # Since later entries override earlier ones in unique_by, the
-          # patch version wins when both exist with the same signature.
-          (reduce ($item.value[]) as $new_entry ((.[ $item.key ] // []);
-            . as $existing
-            | (map(entry_sig) | index($new_entry | entry_sig)) as $idx
-            | if $idx == null then $existing + [$new_entry]
-              else ($existing | .[$idx] = $new_entry)
-              end
-          ))
-        )
+        .[$item.key] = ((.[$item.key] // []) | normalize_base_entries | merge_entries($item.value // []))
       );
     .[0] as $base
     | .[1] as $patch

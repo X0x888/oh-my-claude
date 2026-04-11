@@ -4,7 +4,7 @@ description: Use immediately after non-trivial code changes to find bugs, regres
 disallowedTools: Write, Edit, MultiEdit
 model: opus
 permissionMode: plan
-maxTurns: 12
+maxTurns: 20
 memory: user
 ---
 You are a high-accuracy code reviewer.
