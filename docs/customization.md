@@ -105,6 +105,10 @@ Key settings:
 - **`disallowedTools`**: Comma-separated list of tools the agent cannot use. For read-only agents (reviewers, analysts, researchers), set `Write, Edit, MultiEdit` to prevent unsupervised file mutations. The main thread retains exclusive write access.
 - **`model`**: Which model the agent uses. Set to `opus` for complex reasoning, `sonnet` for faster/cheaper operations.
 - **`maxTurns`**: Maximum number of tool-use turns before the agent must return. Prevents runaway agents.
+
+  **Subagent-side budget, not parent-side.** Every subagent's output is hard-truncated to 1000 characters before it reaches the parent session -- see `skills/autowork/scripts/reflect-after-agent.sh:41`, which calls `truncate_chars 1000 "${message}"` when building the `finding_context` injection. The `maxTurns` cap only governs how many tool calls a subagent can make during its own investigation; a higher cap does *not* expand the amount of subagent output that lands in the parent conversation. In other words, raising `maxTurns` costs subagent compute time and API spend but has **zero parent-context cost**. The 1.1.0 rationale for lowering reviewer caps ("to limit context bloat") did not hold once this boundary was accounted for.
+
+  **Rule of thumb for new agents:** size `maxTurns` to the agent's investigative scope, not to a parent-context budget. Deep investigators (reviewers that read every changed file, debuggers tracing multi-file bugs, researchers surveying a codebase) warrant 25-30+. Quick extractors and single-question helpers can stay at 12-18. When in doubt, err high -- truncated reviews are expensive in rework, and the injection boundary makes a larger subagent budget cheap in context.
 - **`permissionMode`**: Set to `plan` for read-only agents so they skip permission prompts for non-destructive operations.
 
 ---

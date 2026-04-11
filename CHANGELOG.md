@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Docs
+
+- **Documented the injection-truncated `maxTurns` principle** in `docs/customization.md` at the `maxTurns` bullet. Previously this architectural insight lived only in CHANGELOG release notes (1.2.0, 1.2.1) — future contributors adding new agents or tuning existing caps had to read release history to discover it. The extended bullet now covers (1) the ground-truth citation (`skills/autowork/scripts/reflect-after-agent.sh:41` calls `truncate_chars 1000` when building `finding_context`), (2) the implication (raising `maxTurns` costs subagent compute/API spend but has zero parent-context cost), and (3) a rule of thumb (size `maxTurns` to investigative scope, not parent-context budget; deep investigators 25-30+, quick extractors 12-18, err high when uncertain).
+
 ### Fixed
 
 - **Intent-gate misclassification of `/ulw`-in-advice-wrapper prompts.** When a `/ulw` slash command was invoked with a task body that quoted previous-session feedback (containing phrases like `This session's opening prompt` + `worth fixing`), the embedded SM/advisory keywords deep in the prompt tripped `is_session_management_request` / `is_advisory_request` and mis-routed an obvious execution request as session-management or advisory. Live failing example: the v1.2.1 release session's own opening prompt, where the classifier flagged `Please carefully evaluate these comments and then carry on: <embedded /ulw blocks>` as session-management. Three layered fixes in `bundle/dot-claude/skills/autowork/scripts/common.sh`:
