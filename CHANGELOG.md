@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-04-11
+
 ### Added
 
 **Prescribed reviewer sequence (Option C dimension gate):**
@@ -37,6 +39,7 @@ All notable changes to this project will be documented in this file.
 - **`quality-reviewer` truncation on complex reviews.** Review sessions were hitting the agent's `maxTurns: 12` cap mid-investigation (observed as "Done (~19 tool uses · ~50s)" on cross-file reviews). The 12-turn cap was introduced in 1.1.0 "to limit context bloat", but reviewer output flows back through `reflect-after-agent.sh` which already hard-truncates the injection at 1000 chars via `truncate_chars 1000` — internal tool-use budget has no effect on parent-session context bloat. Raised `quality-reviewer` `maxTurns` from 12 to 20, matching `metis: 20` (similar investigative profile). `editor-critic` left at 12 because prose reviews use fewer tool calls and no truncation was observed there.
 - **Top-level key null-coalesce parity in settings merger.** Python `setdefault("outputStyle", ...)` and `setdefault("effortLevel", ...)` only guard against missing keys and leave a present-but-null value unchanged, diverging from jq's `// default` behavior which coalesces null to the patch default. A user with `{"outputStyle": null}` in `settings.json` would get different settings depending on whether `python3` was available. Fixed by switching both keys to an explicit `if settings.get(key) is None` guard, matching jq's coalesce semantics. Found by excellence-reviewer post the initial merger commit.
 - **`uninstall.sh clean_settings_python` null-crash parity.** The uninstaller had a symmetric null-safety bug class to the one closed in install.sh: `settings["hooks"] == None` crashed on `.keys()`, `hook["command"] == None` crashed on `pat in None` (TypeError), and null entries/hooks inside a valid event crashed list iteration. `clean_settings_jq` also silently dropped events whose filtered valid-entries list was empty due to a missing non-object passthrough. Both impls are now null-safe via the same `isinstance(h, dict)` / `select(type == "object")` patterns used in `install.sh`, and null entries/hooks are preserved in both paths rather than diverging on filter behavior. New `tests/test-uninstall-merge.sh` covers the fix with 36 assertions including an 8-fixture cross-impl structural diff.
+- **`statusline.py` hangs on slow git subprocess calls.** The statusline widget would freeze indefinitely when `git` subprocess calls blocked (e.g., a stale lock file held by a stalled process in the parent repo), locking up the Claude Code UI around it. `run_git()` now wraps `subprocess.run` with `timeout=2` and catches `TimeoutExpired`, falling back to a neutral empty-stdout `CompletedProcess(returncode=1)` so downstream consumers see a normal failed-git result instead of hanging. New regression coverage in `test_statusline.py`.
 
 ### Testing
 
