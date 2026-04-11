@@ -916,6 +916,40 @@ if [[ ${#implementations[@]} -eq 2 ]]; then
     }
   }'
 
+  # Disjoint same-matcher entries — two editor-critic entries with
+  # completely disjoint basename sets must NOT be collapsed by
+  # normalize_base_entries. This is the Test 8 customization-
+  # preservation invariant as exercised through the new pre-pass.
+  # Both impls should preserve both entries as separate.
+  cross_structural_assert "disjoint-same-matcher" '{
+    "hooks": {
+      "SubagentStop": [
+        {
+          "matcher": "editor-critic",
+          "hooks": [
+            {"type": "command", "command": "$HOME/.claude/user-alpha.sh"}
+          ]
+        },
+        {
+          "matcher": "editor-critic",
+          "hooks": [
+            {"type": "command", "command": "$HOME/.claude/user-beta.sh"}
+          ]
+        }
+      ]
+    }
+  }'
+
+  # Null top-level keys — explicit null on outputStyle/effortLevel must
+  # be coalesced to the patch default by both impls. Previously Python
+  # used `setdefault` which only guards missing keys, leaving explicit
+  # null unchanged while jq coalesced via `//`. Fixed by switching
+  # Python to `.get(key) is None` guard.
+  cross_structural_assert "null-top-level-keys" '{
+    "outputStyle": null,
+    "effortLevel": null
+  }'
+
   printf '  Cross-implementation tests done.\n'
 fi
 

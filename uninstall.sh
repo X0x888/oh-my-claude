@@ -262,34 +262,52 @@ with settings_path.open() as f:
     settings = json.load(f)
 
 # ---- Remove hooks whose commands reference oh-my-claude paths ----
-# Patterns that identify oh-my-claude hooks.
+# Patterns that identify oh-my-claude hooks. Null-safe accessors via
+# `.get() or default` match jq's `// default` coalesce so explicit
+# `null` at hooks/<event>/entry/hooks[]/command positions doesn't
+# crash Python while jq handles them gracefully (parity with the
+# install.sh settings merger fixes).
 omc_patterns = [
     "quality-pack/scripts",
     "autowork/scripts",
 ]
 
 def is_omc_hook_entry(entry):
-    """Return True if all hooks in this entry reference oh-my-claude."""
-    hooks = entry.get("hooks", [])
+    """Return True if all hooks in this entry reference oh-my-claude.
+
+    Non-dict entries (explicit null, scalars) are treated as non-OMC
+    and preserved. Non-dict hooks inside a valid entry are filtered
+    out before the all() check; a valid entry consisting entirely of
+    filtered-out hooks becomes an empty-hooks case and is preserved."""
+    if not isinstance(entry, dict):
+        return False
+    hooks = [h for h in (entry.get("hooks") or []) if isinstance(h, dict)]
     if not hooks:
         return False
     return all(
-        any(pat in hook.get("command", "") for pat in omc_patterns)
+        any(pat in (hook.get("command") or "") for pat in omc_patterns)
         for hook in hooks
     )
 
-if "hooks" in settings:
-    for event in list(settings["hooks"].keys()):
-        entries = settings["hooks"][event]
-        settings["hooks"][event] = [
+settings_hooks = settings.get("hooks") or {}
+if settings_hooks:
+    for event in list(settings_hooks.keys()):
+        entries = settings_hooks.get(event) or []
+        settings_hooks[event] = [
             e for e in entries if not is_omc_hook_entry(e)
         ]
         # Remove the event key entirely if no entries remain.
-        if not settings["hooks"][event]:
-            del settings["hooks"][event]
+        if not settings_hooks[event]:
+            del settings_hooks[event]
     # Remove hooks key if empty.
-    if not settings["hooks"]:
-        del settings["hooks"]
+    if not settings_hooks:
+        settings.pop("hooks", None)
+    else:
+        settings["hooks"] = settings_hooks
+elif "hooks" in settings:
+    # hooks was present but null/empty — drop the key for parity with
+    # jq's `if (.hooks | length) == 0 then del(.hooks) else . end`.
+    settings.pop("hooks", None)
 
 # ---- Remove oh-my-claude settings keys (only if they match our values) ----
 
@@ -328,14 +346,22 @@ clean_settings_jq() {
 
   jq '
     # Remove hooks whose commands reference oh-my-claude paths.
+    # Non-object entries (explicit null, scalars) are passed through
+    # unchanged to match the Python path, which treats them as
+    # non-OMC and preserves them. Non-object hooks inside a valid
+    # entry are filtered from the OMC-detection check so malformed
+    # hook arrays never crash the inner contains probe. This matches
+    # install.sh parity fixes for null-hook edge cases.
     .hooks = (
       (.hooks // {}) | to_entries | map(
         .value = [
-          .value[] |
+          (.value // [])[] |
           select(
-            [.hooks[]?.command // "" |
-              (contains("quality-pack/scripts") or contains("autowork/scripts"))
-            ] | all | not
+            (type != "object") or (
+              [(.hooks // [])[] | select(type == "object") | .command // "" |
+                (contains("quality-pack/scripts") or contains("autowork/scripts"))
+              ] | length > 0 and all | not
+            )
           )
         ]
       ) | map(select(.value | length > 0)) | from_entries

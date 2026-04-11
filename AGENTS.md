@@ -37,6 +37,7 @@ oh-my-claude/
     test-session-resume.sh
     test-settings-merge.sh
     test-stall-detection.sh
+    test-uninstall-merge.sh
     test_statusline.py
 
   docs/                       # Extended documentation
@@ -125,6 +126,7 @@ bash tests/test-quality-gates.sh
 bash tests/test-stall-detection.sh
 bash tests/test-e2e-hook-sequence.sh
 bash tests/test-settings-merge.sh
+bash tests/test-uninstall-merge.sh
 bash tests/test-common-utilities.sh
 bash tests/test-session-resume.sh
 python3 -m unittest tests.test_statusline -v

@@ -126,10 +126,19 @@ else:
 with patch_path.open() as f:
     patch = json.load(f)
 
-# Copy top-level keys from patch
+# Copy top-level keys from patch. outputStyle and effortLevel are
+# preserved if the user has set them, but we explicitly guard against
+# present-but-null values here rather than using setdefault, because
+# setdefault only fills missing keys — it leaves an explicit `null`
+# unchanged, diverging from jq's `// default` semantics. Without this
+# guard, a user with `{"outputStyle": null}` in settings.json would
+# end up with the null persisting under python but getting coerced
+# to the patch value under jq.
 settings["statusLine"] = patch["statusLine"]
-settings.setdefault("outputStyle", patch["outputStyle"])
-settings.setdefault("effortLevel", patch["effortLevel"])
+if settings.get("outputStyle") is None:
+    settings["outputStyle"] = patch["outputStyle"]
+if settings.get("effortLevel") is None:
+    settings["effortLevel"] = patch["effortLevel"]
 settings["spinnerTipsEnabled"] = patch["spinnerTipsEnabled"]
 settings["spinnerVerbs"] = patch["spinnerVerbs"]
 
