@@ -52,6 +52,9 @@ jobs:
       - name: Run settings merge tests
         run: bash tests/test-settings-merge.sh
 
+      - name: Run uninstall merge tests
+        run: bash tests/test-uninstall-merge.sh
+
       - name: Run session resume tests
         run: bash tests/test-session-resume.sh
 

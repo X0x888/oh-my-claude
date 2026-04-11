@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Testing
+
+- `tests/test-uninstall-merge.sh` wired into `.github/workflows/validate.yml` immediately after `test-settings-merge.sh`. The uninstall null-safety suite was added in 1.2.0 (36 assertions covering `clean_settings_python` / `clean_settings_jq` parity and an 8-fixture cross-impl structural diff) but was never added to the CI job — a future regression in `uninstall.sh`'s null-safety logic would have escaped CI until a developer noticed the uninstall crash in production. Closes the 1.2.0 CI gap.
+
 ## [1.2.0] - 2026-04-11
 
 ### Added
