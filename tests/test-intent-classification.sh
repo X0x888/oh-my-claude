@@ -87,14 +87,14 @@ assert_imperative "Please fix the flaky test"
 assert_imperative "Go ahead and deploy it"
 assert_imperative "I need you to refactor this module"
 
-# --- Adverb-imperatives (v1.2.1: "Please carefully evaluate" pattern) ---
+# --- Adverb-imperatives (v1.2.2: "Please carefully evaluate" pattern) ---
 printf '\nAdverb imperatives:\n'
 assert_imperative "Please carefully evaluate the options"
 assert_imperative "Please quickly fix the login bug"
 assert_imperative "Please thoroughly audit the permissions"
 assert_imperative "Please absolutely refactor this"
 
-# --- New imperative verbs (v1.2.1: evaluate/plan/audit/etc.) ---
+# --- New imperative verbs (v1.2.2: evaluate/plan/audit/etc.) ---
 printf '\nNew imperative verbs (polite/please forms):\n'
 assert_imperative "Please evaluate the three options"
 assert_imperative "Please plan the migration"
@@ -131,7 +131,7 @@ assert_intent "continuation" "continue"
 assert_intent "continuation" "keep going"
 assert_intent "continuation" "pick it back up"
 
-# --- Skill-body extraction (v1.2.1: extract_skill_primary_task) ---
+# --- Skill-body extraction (v1.2.2: extract_skill_primary_task) ---
 printf '\nSkill body extraction:\n'
 
 assert_extraction() {
@@ -173,7 +173,7 @@ assert_extraction "Hello. The docs say Primary task: should be something. Please
 # mentioning "Primary task:" mid-sentence.
 assert_intent "execution" "Please fix the login bug. Primary task: do the rollout."
 
-# --- /ulw-in-advice-wrapper regression (v1.2.1 item #4) ---
+# --- /ulw-in-advice-wrapper regression (v1.2.2 item #4) ---
 printf '\n/ulw in advice-wrapper regression:\n'
 
 # Regression: a /ulw skill-body expansion whose quoted task contains
