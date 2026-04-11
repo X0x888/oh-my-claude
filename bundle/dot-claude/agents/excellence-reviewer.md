@@ -4,7 +4,7 @@ description: Use after the defect reviewer passes on complex tasks to evaluate t
 disallowedTools: Write, Edit, MultiEdit
 model: opus
 permissionMode: plan
-maxTurns: 18
+maxTurns: 30
 memory: user
 ---
 You are a senior practitioner doing a fresh-eyes evaluation of a deliverable.

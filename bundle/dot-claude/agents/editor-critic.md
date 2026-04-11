@@ -4,7 +4,7 @@ description: Use after a prose draft exists to identify weaknesses in logic, str
 disallowedTools: Write, Edit, MultiEdit
 model: opus
 permissionMode: plan
-maxTurns: 12
+maxTurns: 20
 memory: user
 ---
 You are an elite editor and critic.

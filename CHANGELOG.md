@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **Reviewer `maxTurns` raised** based on live truncation evidence from the v1.2.0 session. Because reviewer output is already hard-truncated to 1000 chars by `reflect-after-agent.sh` before injection into the parent context, the `maxTurns` cap affects only the subagent's own investigation budget — raising it has zero parent-context cost. The 1.1.0 rationale for lowering these caps ("to limit context bloat") does not hold once the injection-side truncation is factored in.
+  - `quality-reviewer`: 20 → 30. Evidence: truncated mid-polish-check at the new 20 cap on a 10-file review during the v1.2.0 session. 30 provides 50% headroom above the observed 10-file ceiling.
+  - `excellence-reviewer`: 18 → 30. Evidence: truncated at 18 on a 4-file merger review during the v1.2.0 session. Matches `quality-reviewer` investigative profile (reads all changed files + callers + tests + compares against the original objective); no defensible asymmetry between the two.
+  - `editor-critic`: 12 → 20. No direct truncation evidence in the v1.2.0 session, but the pre-raise 12 cap was already below the weakest observed code-review ceiling. Prose review can require extensive reading and Grep passes across multi-chapter documents or for style patterns, and there is no defensible rationale for a lower investigative ceiling than other reviewers. 20 establishes parity with the floor of the raised caps.
+  - `metis` (20) and `briefing-analyst` (20) left unchanged — no truncation observed in v1.2.0 session data. Will be revisited if future sessions produce evidence.
+
 ### Testing
 
 - `tests/test-uninstall-merge.sh` wired into `.github/workflows/validate.yml` immediately after `test-settings-merge.sh`. The uninstall null-safety suite was added in 1.2.0 (36 assertions covering `clean_settings_python` / `clean_settings_jq` parity and an 8-fixture cross-impl structural diff) but was never added to the CI job — a future regression in `uninstall.sh`'s null-safety logic would have escaped CI until a developer noticed the uninstall crash in production. Closes the 1.2.0 CI gap.
