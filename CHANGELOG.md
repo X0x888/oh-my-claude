@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-04-11
+
 ### Changed
 
 - **Reviewer `maxTurns` raised** based on live truncation evidence from the v1.2.0 session. Because reviewer output is already hard-truncated to 1000 chars by `reflect-after-agent.sh` before injection into the parent context, the `maxTurns` cap affects only the subagent's own investigation budget — raising it has zero parent-context cost. The 1.1.0 rationale for lowering these caps ("to limit context bloat") does not hold once the injection-side truncation is factored in.
