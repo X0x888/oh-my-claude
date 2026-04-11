@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Intent-gate misclassification of `/ulw`-in-advice-wrapper prompts.** When a `/ulw` slash command was invoked with a task body that quoted previous-session feedback (containing phrases like `This session's opening prompt` + `worth fixing`), the embedded SM/advisory keywords deep in the prompt tripped `is_session_management_request` / `is_advisory_request` and mis-routed an obvious execution request as session-management or advisory. Live failing example: the v1.2.1 release session's own opening prompt, where the classifier flagged `Please carefully evaluate these comments and then carry on: <embedded /ulw blocks>` as session-management. Three layered fixes in `bundle/dot-claude/skills/autowork/scripts/common.sh`:
+  1. **`extract_skill_primary_task`** helper pulls the user's task body out of `/ulw` skill-body expansions (between `Primary task:` and `Follow the \`/autowork\``), so classification operates on the actual task instead of the skill wrapper. Called at the top of `classify_task_intent`.
+  2. **`is_session_management_request` imperative override + first-400-char scope.** If the prompt already matches `is_imperative_request` (an explicit top-of-prompt directive), SM returns false — embedded SM keywords can't override a clear imperative. As a secondary guard, the session-keyword regex now only scans the first 400 chars of the prompt; real SM queries state their framing near the top, so embedded/quoted content later in the prompt (e.g., a pasted `/ulw` block referencing "this session") no longer trips routing.
+  3. **Imperative detection broadened** with `evaluate`, `plan`, `audit`, `investigate`, `research`, `analyze`/`analyse`, `assess`, `execute`, `document`, `extend`, `raise` across polite (`Can/Could/Would you X`) and `Please X` forms, plus an optional `[a-z]+ly` adverb between `please` and the verb so `Please carefully evaluate` and `Please thoroughly audit` match. `evaluate`/`plan`/`research` are *only* in the polite/please forms, not bare-imperative — they can be nouns ("Research indicates..."), so bare-verb-start classification would false-positive.
+
+### Testing
+
+- `test-intent-classification.sh` grown from 60 to 126 assertions. New blocks:
+  - `Adverb imperatives` (4 cases) — `Please carefully/quickly/thoroughly/absolutely <verb>`.
+  - `New imperative verbs (polite/please forms)` (15 cases) — each added verb in both `Please X` and `Can/Could/Would you X` form.
+  - `Skill body extraction` (4 cases) — direct `extract_skill_primary_task` coverage: no-marker, full expansion, missing-tail, leading-`/ulw`-preserved.
+  - `/ulw in advice-wrapper regression` (2 cases) — the exact failing prompt shape (skill-body + embedded item #4) and a plain-text variant.
+  - `Genuine SM queries (no imperative front)` (2 cases) — ensures the imperative override doesn't over-fire; real SM queries like `Is it better to continue in a new session?` and `Do you think we should compact this session or push through?` still classify as `session_management`.
+
 ## [1.2.1] - 2026-04-11
 
 ### Changed

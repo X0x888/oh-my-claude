@@ -87,6 +87,31 @@ assert_imperative "Please fix the flaky test"
 assert_imperative "Go ahead and deploy it"
 assert_imperative "I need you to refactor this module"
 
+# --- Adverb-imperatives (v1.2.1: "Please carefully evaluate" pattern) ---
+printf '\nAdverb imperatives:\n'
+assert_imperative "Please carefully evaluate the options"
+assert_imperative "Please quickly fix the login bug"
+assert_imperative "Please thoroughly audit the permissions"
+assert_imperative "Please absolutely refactor this"
+
+# --- New imperative verbs (v1.2.1: evaluate/plan/audit/etc.) ---
+printf '\nNew imperative verbs (polite/please forms):\n'
+assert_imperative "Please evaluate the three options"
+assert_imperative "Please plan the migration"
+assert_imperative "Please audit the agent permissions"
+assert_imperative "Please investigate the memory leak"
+assert_imperative "Please research Redis vs Memcached"
+assert_imperative "Please analyze the query performance"
+assert_imperative "Please assess the impact of the change"
+assert_imperative "Please execute the rollout plan"
+assert_imperative "Please document the new API"
+assert_imperative "Please extend the test suite"
+assert_imperative "Please raise the retry limit"
+assert_imperative "Can you evaluate the options?"
+assert_imperative "Could you plan the rollout?"
+assert_imperative "Would you investigate the issue?"
+assert_imperative "Can you audit the permissions?"
+
 # --- Ambiguous verb starts classify as execution (fallthrough, not imperative) ---
 printf '\nAmbiguous verbs (execution via fallthrough):\n'
 assert_intent "execution" "Check if this approach makes sense"
@@ -105,6 +130,78 @@ assert_intent "advisory" "Is it better to use a queue?"
 assert_intent "continuation" "continue"
 assert_intent "continuation" "keep going"
 assert_intent "continuation" "pick it back up"
+
+# --- Skill-body extraction (v1.2.1: extract_skill_primary_task) ---
+printf '\nSkill body extraction:\n'
+
+assert_extraction() {
+  local input="$1"
+  local expected="$2"
+  local actual
+  if actual="$(extract_skill_primary_task "${input}")"; then
+    :
+  else
+    actual=""
+  fi
+  if [[ "${actual}" == "${expected}" ]]; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: extract_skill_primary_task\n    input=%q\n    expected=%q\n    actual=%q\n' "${input}" "${expected}" "${actual}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
+# No marker → empty (and exit 1 surfaced as empty)
+assert_extraction "plain text with no marker" ""
+
+# Full skill expansion → extracts task body
+assert_extraction "$(printf 'Base directory: /x\n\n# ULW\n\nPrimary task:\n\nDo the thing\n\nFollow the `/autowork` operating rules.')" "Do the thing"
+
+# Missing tail marker → returns remainder after head marker
+assert_extraction "$(printf 'Primary task:\n\nDo X')" "Do X"
+
+# Leading /ulw inside task body is preserved (classify path handles stripping)
+assert_extraction "$(printf 'Primary task:\n\n/ulw Do X\n\nFollow the `/autowork` operating rules.')" "/ulw Do X"
+
+# --- /ulw-in-advice-wrapper regression (v1.2.1 item #4) ---
+printf '\n/ulw in advice-wrapper regression:\n'
+
+# Regression: a /ulw skill-body expansion whose quoted task contains
+# "this session's" + "worth" must still classify as execution, not SM or advisory.
+# This is the exact shape of the prompt that misclassified in v1.2.0.
+ULW_ADVICE_WRAPPER="$(cat <<'PROMPT_EOF'
+Base directory for this skill: /Users/xxxcoding/.claude/skills/ulw
+
+# ULW
+
+Short alias for `/autowork`. Runs the identical maximum-autonomy workflow.
+
+Primary task:
+
+/ulw Please evaluate, plan and implement all items in these comments: "  Next session (ranked)
+
+  1. Cut v1.2.1 patch release
+
+  Bottom line: [Unreleased] now has meaningful content. Per the CLAUDE.md
+  release checklist, cut a patch. Low risk, procedural, ~10 minutes.
+
+  4. Intent gate misclassification investigation
+
+  Bottom line: This session's opening prompt ("Please carefully evaluate these comments and then carry on" + embedded /ulw blocks with concrete /ulw subject-verb commands) was classified as session-management advice, not execution by the intent gate. Worth fixing."
+
+Follow the `/autowork` operating rules and thinking requirements exactly.
+PROMPT_EOF
+)"
+assert_intent "execution" "${ULW_ADVICE_WRAPPER}"
+
+# Plain-text version of the same pattern (no skill body wrapper)
+PLAIN_ADVICE_WRAPPER='Please carefully evaluate these comments and then carry on: "1. Cut release. 4. This session'"'"'s prompt was misclassified. Worth fixing."'
+assert_intent "execution" "${PLAIN_ADVICE_WRAPPER}"
+
+# Genuine SM queries must still classify correctly (imperative override must not over-fire)
+printf '\nGenuine SM queries (no imperative front):\n'
+assert_intent "session_management" "Is it better to continue in a new session?"
+assert_intent "session_management" "Do you think we should compact this session or push through?"
 
 # --- Terse continuation phrases ---
 printf '\nTerse continuation phrases:\n'

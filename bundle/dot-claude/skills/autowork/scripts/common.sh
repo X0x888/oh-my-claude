@@ -349,6 +349,30 @@ normalize_task_prompt() {
   printf '%s' "${text}"
 }
 
+# Extract the user's task body from a /ulw or /autowork skill-body expansion.
+# When the CLI expands a slash command like `/ulw <task>`, the hook sees the full
+# skill body starting with "Base directory for this skill: ..." followed by
+# "Primary task:" and the user's actual task, then a trailing "Follow the
+# `/autowork` operating rules" instruction. Classifying the full expansion
+# misfires because embedded quoted content in the task body can trip SM/advisory
+# regexes. This helper returns just the user's task body (between the two
+# markers), or exit 1 if the primary-task marker isn't present.
+extract_skill_primary_task() {
+  local text="$1"
+  local head_marker='Primary task:'
+  local tail_marker='Follow the `/autowork`'
+
+  [[ "${text}" == *"${head_marker}"* ]] || return 1
+
+  local after="${text#*"${head_marker}"}"
+  local body="${after%%"${tail_marker}"*}"
+
+  body="$(trim_whitespace "${body}")"
+  [[ -n "${body}" ]] || return 1
+
+  printf '%s' "${body}"
+}
+
 is_continuation_request() {
   local text="$1"
   local normalized
@@ -663,7 +687,20 @@ is_checkpoint_request() {
 is_session_management_request() {
   local text="$1"
 
-  grep -Eiq '\b(new session|fresh session|same session|this session|continue here|continue in this session|stop here|pause here|resume later|pick up later|context budget|context window|context limit|usage limit|token limit|limit hit|compaction|compact)\b' <<<"${text}" \
+  # An explicit imperative at the top of the prompt beats any embedded SM
+  # keywords. Without this, a prompt like "Please evaluate ..." whose quoted
+  # body contains "this session's" + "worth fixing" gets misrouted to SM.
+  if is_imperative_request "${text}"; then
+    return 1
+  fi
+
+  # Scope the session-keyword scan to the first 400 chars. Real SM queries
+  # state their framing near the top; embedded/quoted content later in the
+  # prompt (e.g., /ulw command bodies that reference "this session") should
+  # not force SM routing.
+  local head="${text:0:400}"
+
+  grep -Eiq '\b(new session|fresh session|same session|this session|continue here|continue in this session|stop here|pause here|resume later|pick up later|context budget|context window|context limit|usage limit|token limit|limit hit|compaction|compact)\b' <<<"${head}" \
     && grep -Eiq '(^[[:space:]]*(should|would|could|can|is|do|what|which|why)\b|\?|better\b|recommend\b|worth\b|prefer\b|advice\b|suggest\b)' <<<"${text}"
 }
 
@@ -685,10 +722,10 @@ is_imperative_request() {
   local result=1
 
   # "Can/Could/Would you [verb]..." — polite imperatives
-  if [[ "${text}" =~ ^[[:space:]]*(can|could|would)[[:space:]]+you[[:space:]]+(please[[:space:]]+)?(fix|implement|add|create|build|update|refactor|debug|deploy|test|write|make|set[[:space:]]+up|change|modify|remove|delete|move|rename|install|configure|check|run|help|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|connect|push|pull|merge|commit|review|start|stop|enable|disable|open|close) ]]; then
+  if [[ "${text}" =~ ^[[:space:]]*(can|could|would)[[:space:]]+you[[:space:]]+(please[[:space:]]+)?(fix|implement|add|create|build|update|refactor|debug|deploy|test|write|make|set[[:space:]]+up|change|modify|remove|delete|move|rename|install|configure|check|run|help|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|connect|push|pull|merge|commit|review|start|stop|enable|disable|open|close|evaluate|plan|audit|investigate|research|analyze|analyse|assess|execute|document|extend|raise) ]]; then
     result=0
-  # "Please [verb]..." patterns
-  elif [[ "${text}" =~ ^[[:space:]]*(please)[[:space:]]+(fix|implement|add|create|build|update|refactor|debug|deploy|test|write|make|change|modify|remove|delete|move|rename|install|configure|check|run|help|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|proceed|go) ]]; then
+  # "Please [adverb?] [verb]..." patterns — single optional -ly adverb between please and verb
+  elif [[ "${text}" =~ ^[[:space:]]*(please)[[:space:]]+([a-z]+ly[[:space:]]+)?(fix|implement|add|create|build|update|refactor|debug|deploy|test|write|make|change|modify|remove|delete|move|rename|install|configure|check|run|help|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|proceed|go|evaluate|plan|audit|investigate|research|analyze|analyse|assess|execute|document|extend|raise) ]]; then
     result=0
   # "Go ahead and..." patterns
   elif [[ "${text}" =~ ^[[:space:]]*go[[:space:]]+ahead ]]; then
@@ -697,8 +734,9 @@ is_imperative_request() {
   elif [[ "${text}" =~ ^[[:space:]]*i[[:space:]]+(need|want)[[:space:]]+(you[[:space:]]+to|to)[[:space:]] ]]; then
     result=0
   # Bare imperative: starts with unambiguous action verb, no trailing question mark
-  # Excludes: check, test, help, review — too ambiguous as bare starts
-  elif [[ ! "${text}" =~ \?[[:space:]]*$ ]] && [[ "${text}" =~ ^[[:space:]]*(fix|implement|add|create|build|update|refactor|debug|deploy|write|make|change|modify|remove|delete|move|rename|install|configure|run|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|connect|push|pull|merge|commit|start|stop|enable|disable|open|close|set[[:space:]]+up|proceed)[[:space:]] ]]; then
+  # Excludes: check, test, help, review, plan, research, evaluate — too ambiguous as bare starts
+  # (evaluate/plan/research can be nouns; kept to polite/please forms only)
+  elif [[ ! "${text}" =~ \?[[:space:]]*$ ]] && [[ "${text}" =~ ^[[:space:]]*(fix|implement|add|create|build|update|refactor|debug|deploy|write|make|change|modify|remove|delete|move|rename|install|configure|run|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|connect|push|pull|merge|commit|start|stop|enable|disable|open|close|set[[:space:]]+up|proceed|audit|investigate|analyze|analyse|execute|document|extend|raise)[[:space:]] ]]; then
     result=0
   fi
 
@@ -827,6 +865,15 @@ infer_domain() {
 classify_task_intent() {
   local text="$1"
   local normalized
+
+  # If the prompt is a /ulw or /autowork skill-body expansion, classify on the
+  # user's task body rather than the skill header. Without this, embedded SM
+  # or advisory keywords in a quoted task body (e.g., a /ulw command pasting a
+  # previous session's feedback) can mis-route an obvious execution request.
+  local task_body
+  if task_body="$(extract_skill_primary_task "${text}")"; then
+    text="${task_body}"
+  fi
 
   normalized="$(normalize_task_prompt "${text}")"
   normalized="$(trim_whitespace "${normalized}")"
