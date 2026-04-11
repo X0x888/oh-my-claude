@@ -4,7 +4,7 @@ description: Use when work depends on official docs, third-party APIs, framework
 disallowedTools: Write, Edit, MultiEdit
 model: sonnet
 permissionMode: plan
-maxTurns: 20
+maxTurns: 30
 memory: user
 ---
 You are Librarian, the external-source and reference-implementation specialist.

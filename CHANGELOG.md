@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **Non-reviewer investigative agent `maxTurns` audit.** Extends the v1.2.1 reviewer-floor raise to every subagent returning through `reflect-after-agent.sh:41`, where the 1000-char injection truncation makes subagent-side cap raises zero-cost for parent context. Five agents raised to 30 on deep-investigator parity; three agents left unchanged with rationale.
+  - `quality-researcher`: 18 → 30. Deep codebase investigator — reads conventions, API usage, wiring points, commands, relevant files. Current 18 was the lowest of the 8 non-reviewer investigatives and below the new 20 floor entirely. Profile matches the reviewer "read every file + trace callers" investigation pattern that established the 30 floor in 1.2.1.
+  - `librarian`: 20 → 30. External docs + source-of-truth reference gathering can legitimately span many pages of official docs, multiple primary sources, and repo-local integration points. Distinguishing repo-local facts from external facts (deliverable #2) requires cross-reference work. Parity with the 1.2.1 reviewer floor.
+  - `quality-planner`: 20 → 30. Decision-complete plans require learning facts from the codebase/docs, proposing 2+ candidate approaches with tradeoffs, and specifying a file-by-file or system-by-system execution plan with per-step validation. The "implied scope" deliverable (what a senior practitioner would also deliver) requires deep investigation to spot gaps. Deep investigator profile.
+  - `oracle`: 24 → 30. "High-judgment debugger and architecture consultant." The entire job description is deep investigation — diagnose root causes, compare technical options, surface hidden assumptions. Already above the 20 floor but not at the deep-investigator floor. 30 establishes parity.
+  - `prometheus`: 24 → 30. Interview-first planning that "inspects the codebase and current constraints before asking questions" and turns vague goals into concrete acceptance criteria. Profile matches `quality-planner` (another deep planner raised to 30 in this audit).
+  - `chief-of-staff` (20) left unchanged — no evidence, structuring/distilling work for professional-assistant deliverables (plans, checklists, agendas, response drafts) does not typically require deep codebase investigation. Already at the 20 floor. Will be revisited if future sessions produce truncation evidence.
+  - `writing-architect` (20) left unchanged — no evidence, outline/structure/thesis work is primarily reasoning rather than investigation, and reference gathering is delegated to `librarian`. Already at the 20 floor. Revisit on future evidence.
+  - `draft-writer` (24) left unchanged — no evidence, drafting is generation rather than investigation. Structure and research are delegated upstream to `writing-architect` and `librarian`; this agent is the terminal prose generator. Already above the 20 floor. Revisit on future evidence.
+
 ### Docs
 
 - **Documented the injection-truncated `maxTurns` principle** in `docs/customization.md` at the `maxTurns` bullet. Previously this architectural insight lived only in CHANGELOG release notes (1.2.0, 1.2.1) — future contributors adding new agents or tuning existing caps had to read release history to discover it. The extended bullet now covers (1) the ground-truth citation (`skills/autowork/scripts/reflect-after-agent.sh:41` calls `truncate_chars 1000` when building `finding_context`), (2) the implication (raising `maxTurns` costs subagent compute/API spend but has zero parent-context cost), and (3) a rule of thumb (size `maxTurns` to investigative scope, not parent-context budget; deep investigators 25-30+, quick extractors 12-18, err high when uncertain).

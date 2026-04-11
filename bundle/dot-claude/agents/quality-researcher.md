@@ -4,7 +4,7 @@ description: Use when implementation depends on discovering repository conventio
 disallowedTools: Write, Edit, MultiEdit
 model: sonnet
 permissionMode: plan
-maxTurns: 18
+maxTurns: 30
 memory: user
 ---
 You are a targeted research specialist.

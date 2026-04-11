@@ -4,7 +4,7 @@ description: Use at the start of any non-trivial implementation, debugging, refa
 disallowedTools: Write, Edit, MultiEdit
 model: opus
 permissionMode: plan
-maxTurns: 20
+maxTurns: 30
 memory: user
 ---
 You are a planning specialist for Claude Code.

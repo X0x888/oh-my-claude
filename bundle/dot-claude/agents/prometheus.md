@@ -4,7 +4,7 @@ description: Use when the user provides a broad goal, vague feature request, or 
 disallowedTools: Write, Edit, MultiEdit
 model: opus
 permissionMode: plan
-maxTurns: 24
+maxTurns: 30
 memory: user
 ---
 You are Prometheus, an interview-first planning specialist.
