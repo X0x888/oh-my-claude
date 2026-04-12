@@ -92,7 +92,7 @@ All checks must pass cleanly.
 2. Begin with `set -euo pipefail`.
 3. Source `common.sh` for shared utilities.
 4. Exit 0 when `SESSION_ID` is missing or empty.
-5. Register the hook in `config/settings.patch.json`.
+5. Register the hook in `config/settings.patch.json` under the appropriate event (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PreCompact`, `PostCompact`, `SubagentStop`, or `Stop`).
 
 ## Documentation Maintenance
 

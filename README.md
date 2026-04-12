@@ -63,7 +63,7 @@ oh-my-claude is not a coding tool that happens to accept prose. Each domain has 
 
 ### Session continuity
 
-Pre- and post-compact hooks snapshot the working state when Claude Code compacts a session. Objectives, domain classification, accepted decisions, specialist conclusions, and task progress all survive compaction. When the session resumes, context is rehydrated -- not reconstructed from scratch.
+Pre- and post-compact hooks snapshot the working state when Claude Code compacts a session. Objectives, domain classification, accepted decisions, specialist conclusions, in-flight specialist dispatches, pending review obligations, and task progress all survive compaction. When the session resumes, context is rehydrated -- not reconstructed from scratch.
 
 ### Permissioned agents
 

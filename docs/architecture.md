@@ -74,7 +74,9 @@ The block caps prevent infinite loops. After the cap, Claude is allowed to stop 
 
 **`skills/autowork/scripts/record-reviewer.sh`** -- **SubagentStop hook** for reviewer and analysis agents (`quality-reviewer`, `editor-critic`, `excellence-reviewer`, `metis`, `briefing-analyst`, plus `superpowers:code-reviewer` / `feature-dev:code-reviewer`). Accepts a reviewer-type argument (`standard|excellence|prose|stress_test|traceability`) that determines which dimensions to tick. Parses a `VERDICT: CLEAN|SHIP|FINDINGS|BLOCK` line from the agent's last message (last match wins via `tail -n 1`, `FINDINGS (0)` treated as CLEAN), falling back to a legacy phrase-based regex when the VERDICT line is absent. Records `last_review_ts`, resets stop guard counters, and on clean reviews calls `tick_dimension` to mark the relevant dimension(s) valid. The excellence path additionally records `last_excellence_review_ts` and preserves `review_had_findings` from the standard review.
 
-**`skills/autowork/scripts/record-subagent-summary.sh`** -- **SubagentStop hook** (all agents). Appends the agent's type and last assistant message to `subagent_summaries.jsonl` (capped at 16 entries).
+**`skills/autowork/scripts/record-pending-agent.sh`** -- **PreToolUse hook** for Agent. Records every agent dispatch to `pending_agents.jsonl` (capped at 32 entries) under the state lock. Used by `pre-compact-snapshot.sh` to render a "Pending Specialists (In Flight)" section, and by `session-start-compact-handoff.sh` to emit a re-dispatch directive on compact resume. Entries are removed by `record-subagent-summary.sh` on `SubagentStop` (FIFO-oldest match by `agent_type`).
+
+**`skills/autowork/scripts/record-subagent-summary.sh`** -- **SubagentStop hook** (all agents). Appends the agent's type and last assistant message to `subagent_summaries.jsonl` (capped at 16 entries). Also removes the FIFO-oldest matching entry from `pending_agents.jsonl` via a line-by-line parser that tolerates malformed JSONL lines.
 
 **`quality-pack/scripts/pre-compact-snapshot.sh`** -- **PreCompact hook**. Snapshots the current working state to `precompact_snapshot.md`: session ID, working directory, workflow mode, domain, intent, objective, last assistant message, recent prompts, specialist conclusions, edited files, and review/verification status.
 
@@ -112,6 +114,9 @@ User prompt
   |
   v
 Claude processes with injected context
+  |
+  |-- [PreToolUse: Agent] record-pending-agent.sh
+  |     Records agent dispatch to pending_agents.jsonl for compact tracking
   |
   |-- [PostToolUse: Edit/Write/MultiEdit] mark-edit.sh
   |     Records last_edit_ts, resets guard counters
@@ -165,6 +170,7 @@ Session state is stored at:
   session_state.json        # Primary key-value state (JSON object)
   recent_prompts.jsonl      # Last 12 user prompts with timestamps
   subagent_summaries.jsonl  # Last 16 agent conclusions
+  pending_agents.jsonl      # Currently in-flight agent dispatches (managed by record-pending-agent.sh / record-subagent-summary.sh)
   edited_files.log          # Paths of edited files
   precompact_snapshot.md    # Snapshot created before compaction
   compact_handoff.md        # Combined handoff document

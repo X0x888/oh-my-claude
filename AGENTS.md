@@ -49,7 +49,7 @@ oh-my-claude/
 
 ### Key Components
 
-- **Hook scripts** (`quality-pack/scripts/`, `autowork/scripts/`): Bash scripts triggered by Claude Code lifecycle events (prompt entry, compaction, session start). They route intents, manage state, and enforce quality gates.
+- **Hook scripts** (`quality-pack/scripts/`, `autowork/scripts/`): Bash scripts triggered by Claude Code lifecycle events (prompt entry, pre-tool-use, tool completion, compaction, session start). They route intents, manage state, and enforce quality gates.
 - **common.sh** (`autowork/scripts/common.sh`): Shared utility library. Provides JSON state management (`read_state`, `write_state`, `write_state_batch`), session directory helpers, intent classification (`classify_task_intent`), and domain routing.
 - **Agent definitions** (`agents/*.md`): Markdown files defining specialist agents with role descriptions, capabilities, and `disallowedTools` for permission boundaries.
 - **Skills** (`skills/<name>/SKILL.md`): Self-contained skill definitions invoked by slash commands or automatic routing.
@@ -178,4 +178,4 @@ Counts (agents, skills, scripts) and directory listings go stale fast. Keep them
 2. Begin with `set -euo pipefail`.
 3. Source `common.sh`: `. "${HOME}/.claude/skills/autowork/scripts/common.sh"`
 4. Exit 0 on missing `SESSION_ID`.
-5. Register the hook in `config/settings.patch.json` under the appropriate event.
+5. Register the hook in `config/settings.patch.json` under the appropriate event (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PreCompact`, `PostCompact`, `SubagentStop`, or `Stop`).
