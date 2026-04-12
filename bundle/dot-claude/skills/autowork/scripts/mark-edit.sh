@@ -67,23 +67,35 @@ if [[ -n "${edited_path}" ]]; then
   # recorded before. This keeps code_edit_count / doc_edit_count in
   # sync with `sort -u edited_files.log | wc -l` without requiring the
   # stop-hook to re-run that pipeline.
-  seen_before=0
-  if [[ -f "${log_path}" ]] && grep -Fxq -- "${edited_path}" "${log_path}"; then
-    seen_before=1
-  fi
-  printf '%s\n' "${edited_path}" >>"${log_path}"
-
-  if [[ "${seen_before}" -eq 0 ]]; then
-    if [[ "${is_doc}" -eq 1 ]]; then
-      doc_count="$(read_state "doc_edit_count")"
-      doc_count="${doc_count:-0}"
-      write_state "doc_edit_count" "$((doc_count + 1))"
-    else
-      code_count="$(read_state "code_edit_count")"
-      code_count="${code_count:-0}"
-      write_state "code_edit_count" "$((code_count + 1))"
+  #
+  # The dedup check + counter increment is wrapped in with_state_lock
+  # to prevent lost updates when concurrent PostToolUse hooks fire
+  # simultaneously (e.g., parallel agent panels completing near-
+  # simultaneously). Without the lock, two concurrent invocations can
+  # both read the same count and write count+1, losing an increment
+  # and potentially preventing the dimension gate from activating.
+  _increment_edit_counter() {
+    local _seen=0
+    if [[ -f "${log_path}" ]] && grep -Fxq -- "${edited_path}" "${log_path}"; then
+      _seen=1
     fi
-  fi
+    printf '%s\n' "${edited_path}" >>"${log_path}"
+
+    if [[ "${_seen}" -eq 0 ]]; then
+      if [[ "${is_doc}" -eq 1 ]]; then
+        local _doc_count
+        _doc_count="$(read_state "doc_edit_count")"
+        _doc_count="${_doc_count:-0}"
+        write_state "doc_edit_count" "$((_doc_count + 1))"
+      else
+        local _code_count
+        _code_count="$(read_state "code_edit_count")"
+        _code_count="${_code_count:-0}"
+        write_state "code_edit_count" "$((_code_count + 1))"
+      fi
+    fi
+  }
+  with_state_lock _increment_edit_counter
 
   log_hook "mark-edit" "file=${edited_path} is_doc=${is_doc}"
 fi

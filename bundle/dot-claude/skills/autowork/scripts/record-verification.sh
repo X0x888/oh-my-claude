@@ -32,9 +32,18 @@ if [[ -f "${conf_file}" ]]; then
   custom_patterns="$(grep -E '^custom_verify_patterns=' "${conf_file}" | head -1 | cut -d= -f2-)" || true
 fi
 
-builtin_pattern='(^|[[:space:]])(npm|pnpm|yarn|bun|cargo|go|pytest|python|uv|ruff|mypy|eslint|tsc|vitest|jest|phpunit|rspec|gradle|xcodebuild|swift|make|just|bash)([[:space:]].*)?(test|tests|check|lint|typecheck|build)|\b(pytest|vitest|jest|cargo test|go test|swift test|swift build|ruff check|mypy|eslint|tsc|typecheck|phpunit|rspec|gradle test|xcodebuild test|shellcheck|bash -n)\b'
+builtin_pattern='(^|[[:space:]])(npm|pnpm|yarn|bun|cargo|go|pytest|python|uv|ruff|mypy|eslint|tsc|vitest|jest|phpunit|rspec|gradle|xcodebuild|swift|make|just|bash|docker|terraform|ansible|helm|kubectl|mvn|maven|dotnet|mix|elixir|ruby|bundle|rake|zig|deno|nix)([[:space:]].*)?(test|tests|check|lint|typecheck|build|validate|verify|plan|apply)|\b(pytest|vitest|jest|cargo test|go test|swift test|swift build|ruff check|mypy|eslint|tsc|typecheck|phpunit|rspec|gradle test|xcodebuild test|shellcheck|bash -n|docker build|docker compose build|terraform plan|terraform validate|ansible-lint|helm lint|mvn test|mvn verify|dotnet test|mix test|bundle exec rspec|rake test|zig build|deno test|nix build)\b'
 if [[ -n "${custom_patterns}" ]]; then
-  builtin_pattern="${builtin_pattern}|${custom_patterns}"
+  # Validate the custom pattern syntax before concatenating. grep -E
+  # returns exit 2 for invalid regex (vs 1 for "no match"). We test
+  # against a dummy string to distinguish syntax errors from no-match.
+  _custom_rc=0
+  printf 'test' | grep -Eq "${custom_patterns}" 2>/dev/null || _custom_rc=$?
+  if [[ "${_custom_rc}" -eq 2 ]]; then
+    log_hook "record-verification" "invalid custom_verify_patterns syntax, ignoring"
+  else
+    builtin_pattern="${builtin_pattern}|${custom_patterns}"
+  fi
 fi
 
 if grep -Eiq "${builtin_pattern}" <<<"${command_text}" 2>/dev/null; then

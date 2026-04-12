@@ -26,8 +26,14 @@ if [[ "${tool_name}" != "Agent" ]]; then
   exit 0
 fi
 
-# P4: reset stall counter on agent delegation (progress action)
-write_state "stall_counter" "0"
+# P4: Halve stall counter on agent delegation rather than full reset.
+# Full reset allowed Claude to cycle Read-Agent-Read-Agent indefinitely
+# without triggering stall detection. Halving credits the agent dispatch
+# as partial progress while still allowing the counter to accumulate if
+# the agent calls are not productive.
+stall_counter="$(read_state "stall_counter")"
+stall_counter="${stall_counter:-0}"
+write_state "stall_counter" "$(( stall_counter / 2 ))"
 
 # P3: extract latest subagent findings for specific context injection
 finding_context=""

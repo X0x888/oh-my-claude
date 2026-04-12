@@ -147,6 +147,45 @@ else
   fail=$((fail + 1))
 fi
 
+# --- Test: agent delegation halves counter (not full reset) ---
+printf '\nAgent delegation halving:\n'
+
+write_state "stall_counter" "10"
+# Simulate what reflect-after-agent.sh does: halve instead of reset
+stall_counter="$(read_state "stall_counter")"
+stall_counter="${stall_counter:-0}"
+write_state "stall_counter" "$(( stall_counter / 2 ))"
+
+result="$(read_state "stall_counter")"
+assert_eq "counter halved from 10 to 5" "5" "${result}"
+
+# Second halving
+stall_counter="$(read_state "stall_counter")"
+write_state "stall_counter" "$(( stall_counter / 2 ))"
+result="$(read_state "stall_counter")"
+assert_eq "counter halved from 5 to 2" "2" "${result}"
+
+# Halving from 1 goes to 0
+write_state "stall_counter" "1"
+stall_counter="$(read_state "stall_counter")"
+write_state "stall_counter" "$(( stall_counter / 2 ))"
+result="$(read_state "stall_counter")"
+assert_eq "counter halved from 1 to 0" "0" "${result}"
+
+# Halving from 0 stays at 0
+write_state "stall_counter" "0"
+stall_counter="$(read_state "stall_counter")"
+write_state "stall_counter" "$(( stall_counter / 2 ))"
+result="$(read_state "stall_counter")"
+assert_eq "counter stays 0 when already 0" "0" "${result}"
+
+# Counter at threshold minus 1 should survive one halving
+write_state "stall_counter" "11"
+stall_counter="$(read_state "stall_counter")"
+write_state "stall_counter" "$(( stall_counter / 2 ))"
+result="$(read_state "stall_counter")"
+assert_eq "11 halved to 5 (below threshold)" "5" "${result}"
+
 printf '\n=== Results: %d passed, %d failed ===\n' "${pass}" "${fail}"
 if [[ "${fail}" -gt 0 ]]; then
   exit 1

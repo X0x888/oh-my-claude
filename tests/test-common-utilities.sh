@@ -666,6 +666,62 @@ if with_state_lock noop; then pass=$((pass + 1)); else
 fi
 
 # ===========================================================================
+# validate_session_id
+# ===========================================================================
+printf '\nvalidate_session_id:\n'
+
+assert_exit "accept UUID" 0 validate_session_id "01234567-89ab-cdef-0123-456789abcdef"
+assert_exit "accept short id" 0 validate_session_id "sh"
+assert_exit "accept single char" 0 validate_session_id "a"
+assert_exit "accept alphanumeric" 0 validate_session_id "test-session-123"
+assert_exit "accept underscores" 0 validate_session_id "test_session_123"
+assert_exit "accept dots" 0 validate_session_id "test.session"
+assert_exit "reject empty" 1 validate_session_id ""
+assert_exit "reject slash" 1 validate_session_id "../../etc/passwd"
+assert_exit "reject dot-dot" 1 validate_session_id "foo..bar"
+assert_exit "reject spaces" 1 validate_session_id "foo bar"
+assert_exit "reject newlines" 1 validate_session_id "foo
+bar"
+assert_exit "reject backtick" 1 validate_session_id 'foo`id`'
+assert_exit "reject dollar" 1 validate_session_id 'foo$HOME'
+
+# ===========================================================================
+# _ensure_valid_state (state corruption recovery)
+# ===========================================================================
+printf '\n_ensure_valid_state:\n'
+
+# Set up a fresh session for corruption tests
+_corruption_sid="corruption-test"
+_orig_sid="${SESSION_ID}"
+SESSION_ID="${_corruption_sid}"
+ensure_session_dir
+
+# Test 1: missing state file gets created
+_state_validated=0  # reset per-process cache for test isolation
+rm -f "$(session_file "${STATE_JSON}")"
+_ensure_valid_state
+_state_file="$(session_file "${STATE_JSON}")"
+assert_eq "creates missing state file" "true" "$(if [[ -f "${_state_file}" ]]; then echo true; else echo false; fi)"
+assert_eq "created file is valid JSON" "0" "$(jq empty "${_state_file}" 2>/dev/null && echo 0 || echo 1)"
+
+# Test 2: corrupt state gets archived and reset
+_state_validated=0  # reset per-process cache for test isolation
+printf 'NOT VALID JSON{{{' > "${_state_file}"
+_ensure_valid_state
+assert_eq "corrupt state recovered to valid JSON" "0" "$(jq empty "${_state_file}" 2>/dev/null && echo 0 || echo 1)"
+_archive_count="$(ls "$(session_file "")"session_state.json.corrupt.* 2>/dev/null | wc -l | tr -d '[:space:]')"
+assert_eq "corrupt file was archived" "true" "$(if [[ "${_archive_count}" -gt 0 ]]; then echo true; else echo false; fi)"
+
+# Test 3: valid state file is left alone
+_state_validated=0  # reset per-process cache for test isolation
+write_state "test_key" "test_value"
+_state_validated=0  # reset again to force re-validation
+_ensure_valid_state
+assert_eq "valid state preserved" "test_value" "$(read_state "test_key")"
+
+SESSION_ID="${_orig_sid}"
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 

@@ -205,6 +205,7 @@ if grep -Eiq '(^|[^[:alnum:]_-])(ultrawork|ulw|autowork|sisyphus)([^[:alnum:]_-]
     fi
   else
     context_parts+=("Ultrawork mode is active for this session. In your first user-facing response, start with the bold phrase **Ultrawork mode active.** as the opening line for visual distinction, then state the classified domain and first action you will take. Classify the task as coding, writing, research, operations, mixed, or general, then adapt the workflow to that domain. Use the strongest specialist path available, keep momentum high, and do not stop early. Do not segment unfinished work into 'wave 1 done, wave 2 next' or 'ready for a new session' unless the user explicitly asked for a checkpoint.")
+    context_parts+=("Detected intent: ${TASK_INTENT}. Detected domain: ${TASK_DOMAIN}. Surface these classifications in your first response so the user can verify routing is correct — e.g., '**Domain:** coding | **Intent:** execution'. If the user corrects the classification, adjust immediately.")
   fi
 
   if [[ "${session_management_prompt}" -eq 0 && "${advisory_prompt}" -eq 0 && "${checkpoint_prompt}" -eq 0 ]]; then
@@ -253,7 +254,29 @@ fi
 guard_exhausted="$(read_state "guard_exhausted")"
 if [[ -n "${guard_exhausted}" ]]; then
   guard_detail="$(read_state "guard_exhausted_detail")"
-  context_parts+=("WARNING — PREVIOUS RESPONSE INCOMPLETE: The stop guard was exhausted after 3 blocks. Missing quality gates: ${guard_detail}. Before starting new work, verify and review the previous changes if they haven't been checked yet. Briefly tell the user about this gap.")
+  # Translate raw state variable names into human-readable descriptions
+  # so the injected warning is legible to both Claude and the user reading
+  # the transcript. E.g., "review=1,verify=1" → "code review, verification".
+  human_detail=""
+  if [[ "${guard_detail}" == *"review=1"* ]]; then
+    human_detail="${human_detail:+${human_detail}, }code review"
+  fi
+  if [[ "${guard_detail}" == *"verify=1"* ]]; then
+    human_detail="${human_detail:+${human_detail}, }test verification"
+  fi
+  if [[ "${guard_detail}" == *"verify_failed=1"* ]]; then
+    human_detail="${human_detail:+${human_detail}, }failing tests"
+  fi
+  if [[ "${guard_detail}" == *"unremediated=1"* ]]; then
+    human_detail="${human_detail:+${human_detail}, }unaddressed review findings"
+  fi
+  if [[ "${guard_detail}" == *"dimensions_missing="* ]]; then
+    dims_part="${guard_detail##*dimensions_missing=}"
+    dims_part="${dims_part%%,*}"
+    human_detail="${human_detail:+${human_detail}, }reviewer dimensions (${dims_part})"
+  fi
+  human_detail="${human_detail:-${guard_detail}}"
+  context_parts+=("WARNING — PREVIOUS RESPONSE INCOMPLETE: The stop guard was exhausted after 3 blocks. Missing quality gates: ${human_detail}. Before starting new work, verify and review the previous changes if they haven't been checked yet. Briefly tell the user about this gap.")
   write_state_batch "guard_exhausted" "" "guard_exhausted_detail" ""
 fi
 

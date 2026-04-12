@@ -38,19 +38,49 @@ jq -r '
   "",
   "--- Timestamps ---",
   "Last user prompt:  \(.last_user_prompt_ts // "never")",
-  "Last edit:         \(.last_edit_ts // "never")",
+  "Last edit (code):  \(.last_code_edit_ts // .last_edit_ts // "never")",
+  "Last edit (doc):   \(.last_doc_edit_ts // "never")",
   "Last verify:       \(.last_verify_ts // "never")",
   "Last review:       \(.last_review_ts // "never")",
+  "Last doc review:   \(.last_doc_review_ts // "never")",
+  "",
+  "--- Quality Status ---",
+  "Verification:      \(
+    if (.last_code_edit_ts // .last_edit_ts // "") == "" then "no edits"
+    elif (.last_verify_ts // "") == "" then "PENDING"
+    elif ((.last_verify_ts // "0") | tonumber) >= ((.last_code_edit_ts // .last_edit_ts // "0") | tonumber) then
+      if (.last_verify_outcome // "passed") == "failed" then "FAILED" else "passed" end
+    else "PENDING" end
+  )",
+  "Code review:       \(
+    if (.last_code_edit_ts // .last_edit_ts // "") == "" then "no edits"
+    elif (.last_review_ts // "") == "" then "PENDING"
+    elif ((.last_review_ts // "0") | tonumber) >= ((.last_code_edit_ts // .last_edit_ts // "0") | tonumber) then
+      if (.review_had_findings // "false") == "true" then "findings flagged" else "satisfied" end
+    else "PENDING" end
+  )",
+  "Doc review:        \(
+    if (.last_doc_edit_ts // "") == "" then "n/a"
+    elif (.last_doc_review_ts // "") == "" then "PENDING"
+    elif ((.last_doc_review_ts // "0") | tonumber) >= ((.last_doc_edit_ts // "0") | tonumber) then "satisfied"
+    else "PENDING" end
+  )",
   "",
   "--- Counters ---",
   "Stop guard blocks: \(.stop_guard_blocks // "0")",
+  "Dimension blocks:  \(.dimension_guard_blocks // "0")",
   "Session handoffs:  \(.session_handoff_blocks // "0")",
   "Stall counter:     \(.stall_counter // "0")",
   "Advisory guards:   \(.advisory_guard_blocks // "0")",
   "",
   "--- Flags ---",
   "Has plan:          \(.has_plan // "false")",
+  "Excellence gate:   \(if (.excellence_guard_triggered // "") == "1" then "triggered" else "not triggered" end)",
   "Guard exhausted:   \(if (.guard_exhausted // "") != "" then "YES (\(.guard_exhausted_detail // "unknown"))" else "no" end)",
+  "",
+  "--- Edit Counts ---",
+  "Code files edited: \(.code_edit_count // "0")",
+  "Doc files edited:  \(.doc_edit_count // "0")",
   "",
   "--- Compact Continuity ---",
   "Last compact trigger:      \(.last_compact_trigger // "never")",
@@ -69,6 +99,25 @@ else
   pending_count="0"
 fi
 printf 'Pending specialists:       %s\n' "${pending_count}"
+
+# Show dimension status if dimensions are active
+dim_output="$(jq -r '
+  [
+    ["bug_hunt",     .dim_bug_hunt_ts],
+    ["code_quality", .dim_code_quality_ts],
+    ["stress_test",  .dim_stress_test_ts],
+    ["completeness", .dim_completeness_ts],
+    ["prose",        .dim_prose_ts],
+    ["traceability", .dim_traceability_ts]
+  ] | map(select(.[1] != null and .[1] != "")) |
+  if length > 0 then
+    [.[] | "\(.[0]): ticked @ \(.[1])"] | join("\n")
+  else empty end
+' "${state_file}" 2>/dev/null || true)"
+if [[ -n "${dim_output}" ]]; then
+  printf '\n--- Dimension Ticks ---\n'
+  printf '%s\n' "${dim_output}"
+fi
 
 # Show edited files if any
 edits_file="${STATE_ROOT}/${latest_session}/edited_files.log"

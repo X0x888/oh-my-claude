@@ -83,6 +83,17 @@ log_hook() {
     ts="$(date '+%Y-%m-%d %H:%M:%S')"
     mkdir -p "${STATE_ROOT}"
     printf '%s  %s  %s\n' "${ts}" "${hook_name}" "${detail}" >>"${HOOK_LOG}"
+
+    # Rotate hooks.log to prevent unbounded growth when debug mode is
+    # left on. Truncate to 1500 lines when exceeding 2000.
+    local _line_count
+    _line_count="$(wc -l < "${HOOK_LOG}" 2>/dev/null || echo 0)"
+    _line_count="${_line_count##* }"
+    if [[ "${_line_count}" -gt 2000 ]]; then
+      local _temp
+      _temp="$(mktemp "${HOOK_LOG}.XXXXXX")"
+      tail -n 1500 "${HOOK_LOG}" >"${_temp}" 2>/dev/null && mv "${_temp}" "${HOOK_LOG}" || rm -f "${_temp}"
+    fi
   fi
 }
 
@@ -91,7 +102,22 @@ json_get() {
   jq -r "${query} // empty" <<<"${HOOK_JSON}"
 }
 
+# --- Session ID validation ---
+# SESSION_ID comes from Claude Code's hook JSON. Validate it as a safe
+# filesystem identifier (alphanumeric, hyphens, underscores, dots, 1-128
+# chars) to prevent path traversal via session_file(). Rejects slashes,
+# null bytes, and the ".." sequence. Claude Code uses UUIDs, but we
+# accept shorter IDs for test compatibility.
+validate_session_id() {
+  local id="$1"
+  [[ "${id}" =~ ^[a-zA-Z0-9_.-]{1,128}$ ]] && [[ "${id}" != *".."* ]]
+}
+
 ensure_session_dir() {
+  if ! validate_session_id "${SESSION_ID}"; then
+    log_hook "common" "invalid session_id format, skipping: ${SESSION_ID:0:40}"
+    exit 0
+  fi
   mkdir -p "${STATE_ROOT}/${SESSION_ID}"
 }
 
@@ -101,6 +127,42 @@ session_file() {
 
 # --- P2: JSON-backed state ---
 
+# Validate and recover state file. If the state file exists but is not
+# valid JSON, archive the corrupt file and reset to empty object. This
+# prevents the cascade where corrupt state → all read_state returns
+# empty → stop-guard silently bypasses all quality gates.
+#
+# Cached per-process: the validation runs once per hook invocation (each
+# hook is a fresh bash process). Subsequent write_state/write_state_batch
+# calls in the same process skip the jq validation — they trust their own
+# writes from this process, which went through jq already.
+_state_validated=0
+
+_ensure_valid_state() {
+  if [[ "${_state_validated}" -eq 1 ]]; then
+    return
+  fi
+
+  local state_file
+  state_file="$(session_file "${STATE_JSON}")"
+
+  if [[ ! -f "${state_file}" ]]; then
+    printf '{}\n' >"${state_file}"
+    _state_validated=1
+    return
+  fi
+
+  if ! jq empty "${state_file}" 2>/dev/null; then
+    local archive
+    archive="$(session_file "${STATE_JSON}.corrupt.$(date +%s)")"
+    mv "${state_file}" "${archive}" 2>/dev/null || true
+    printf '{}\n' >"${state_file}"
+    log_hook "common" "corrupt state detected and archived: ${archive}"
+  fi
+
+  _state_validated=1
+}
+
 write_state() {
   local key="$1"
   local value="$2"
@@ -109,9 +171,7 @@ write_state() {
   local temp_file
   temp_file="$(mktemp "${state_file}.XXXXXX")"
 
-  if [[ ! -f "${state_file}" ]]; then
-    printf '{}\n' >"${state_file}"
-  fi
+  _ensure_valid_state
 
   jq --arg k "${key}" --arg v "${value}" '.[$k] = $v' "${state_file}" >"${temp_file}" \
     && mv "${temp_file}" "${state_file}" \
@@ -129,9 +189,7 @@ write_state_batch() {
   local temp_file
   temp_file="$(mktemp "${state_file}.XXXXXX")"
 
-  if [[ ! -f "${state_file}" ]]; then
-    printf '{}\n' >"${state_file}"
-  fi
+  _ensure_valid_state
 
   local jq_filter="."
   local args=()
@@ -163,7 +221,7 @@ append_limited_state() {
   local temp
 
   target="$(session_file "${key}")"
-  temp="${target}.tmp"
+  temp="$(mktemp "${target}.XXXXXX")"
 
   printf '%s\n' "${value}" >>"${target}"
   tail -n "${max_lines}" "${target}" >"${temp}" 2>/dev/null || cp "${target}" "${temp}"
