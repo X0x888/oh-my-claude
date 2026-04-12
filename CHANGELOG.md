@@ -20,13 +20,30 @@ All notable changes to this project will be documented in this file.
 
 - **Auto-detection under ULW** — `is_council_evaluation_request()` in `common.sh` detects broad whole-project evaluation prompts ("evaluate my project", "what should I improve", "find blind spots", "comprehensive review") and injects council guidance automatically when ultrawork mode is active. No need to invoke `/council` explicitly.
 
-- **Intent classification tests** — 49 new test cases for council detection: 30 positive cases (whole-project evaluation patterns, holistic qualifiers, improvement questions, blind spot patterns, evaluate-and-plan) and 19 negative cases (focused requests, narrowing qualifiers scoping to specific artifacts like "in this function" or "in this PR").
+- **Intent classification tests** — 76 new test cases for council detection: 35 positive cases (whole-project evaluation, holistic qualifiers, improvement questions, blind spots, evaluate-and-plan, plural forms, improvements-to-project) and 41 negative cases (focused requests, narrowing qualifiers, post-noun compounds, subsystem scoping, scoped improve targets, architectural concept narrowing).
 
 ### Changed
 
 - Agent count: 23 → 29 (6 new role-lens agents)
 - Skill count: 13 → 14 (new `/council` skill)
 - `prompt-intent-router.sh` injects `COUNCIL EVALUATION DETECTED` guidance block for matching prompts under ULW execution mode
+- `uninstall.sh` updated with all 29 agents (was missing `excellence-reviewer.md`) and all 14 skill directories (was missing `skills`, `ulw-off`, `ulw-status`, `council`)
+- `verify.sh` adds `council/SKILL.md` to `required_paths`
+
+### Hardened
+
+- **Pattern 1 post-noun guard**: "evaluate my project manager" no longer triggers council. Project-level words followed by compound-noun indicators (manager, plan, structure, team, etc.) are rejected.
+- **`_has_narrow_scope()` helper**: Extracted common narrowing guard into a 4-tier helper function used by patterns 3, 4, and 5:
+  - Tier A: preposition + demonstrative + artifact ("in this function")
+  - Tier B: bare demonstrative + artifact ("this function")
+  - Tier C: preposition + subsystem concept without demonstrative ("in error handling", "about architecture")
+  - Tier D: PR abbreviation exact-match ("in this PR")
+- **Pattern 5 "improvements to" guard**: "plan for improvements to the login flow" correctly rejected — `improvements to [anything]` is inherently scoped.
+- **Expanded artifact list**: Added architectural concepts (architecture, design, handling, layer, logic, workflow, pipeline, infrastructure, deployment, etc.) and VCS terms (commit, branch, migration).
+- **PR abbreviation safety**: Replaced `pr` with `pull.?requests?` in the `\w*`-suffixed artifact list to prevent matching "project". Added Tier D exact-match `prs?\b` for the abbreviation.
+- **Plural support**: Pattern 1 now matches "evaluate my projects" and "assess our products".
+- **`_has_scoped_improve_target()` helper**: Pattern 5 now detects scoped "improve" targets: "review and improve the tests" (scoped) vs "review and improve" (broad). Exempts project-level words: "plan for improvements to the project" correctly triggers council.
+- **Extended compound-noun list**: Added documentation, dependencies, configuration, roadmap, backlog, strategy, design, review to the Pattern 1 rejection list.
 
 ## [1.2.3] - 2026-04-12
 

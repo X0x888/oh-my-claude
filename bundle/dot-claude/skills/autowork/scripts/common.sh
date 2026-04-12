@@ -926,37 +926,98 @@ is_execution_intent_value() {
 # or use holistic qualifiers, or ask "what should I improve" type questions.
 # Does NOT match focused requests like "evaluate this function" or "review this PR."
 
+# Helper for is_council_evaluation_request: detects narrowing qualifiers that
+# scope a request to a specific code artifact or subsystem concept, signaling
+# the request is focused rather than whole-project.
+# Three tiers:
+#   A: [preposition] [demonstrative] [artifact] — "in this function", "to the handler"
+#   B: [this|that] [artifact] — "this function", "that endpoint" (no preposition)
+#   C: [preposition] [subsystem concept] — "in error handling", "about architecture"
+#      (no demonstrative needed for well-known subsystem scoping)
+_has_narrow_scope() {
+  local text="$1"
+
+  # Tier A + B: preposition+demonstrative+artifact, or bare this/that+artifact
+  # Note: "pr" replaced with "pull.?requests?" to avoid matching "project" via pr\w*
+  grep -Eiq '(\b(to|in|from|about|with)\s+(this|the|that|my)|\b(this|that))\s+(function|method|class|module|component|endpoint|file|handler|test|route|flow|section|line|block|hook|script|page|view|query|model|schema|table|api|service|controller|middleware|error|auth|database|config|pull.?requests?|commit|branch|migration|architecture|design|handling|layer|logic|workflow|pipeline|infrastructure|deployment|navigation|layout|rendering|setup)\w*\b' <<<"${text}" \
+    && return 0
+
+  # Tier C: preposition + subsystem concept (no demonstrative required)
+  # Catches "in error handling", "about authentication", "from architecture"
+  grep -Eiq '\b(to|in|from|about|with)\s+(error|auth|api|security|data|cache|session|payment|frontend|backend|infrastructure|architecture|performance|reliability|deployment|navigation|rendering|logging|caching|routing|networking|authentication|authorization|observability|monitoring|testing|validation|serialization|scheduling)\w*\b' <<<"${text}" \
+    && return 0
+
+  # Tier D: Short abbreviations (too short for the \w*-suffixed artifact list)
+  # "this PR", "in this PR", "that PR" — exact word match to avoid matching "project"
+  grep -Eiq '(\b(to|in|from|about|with)\s+(this|the|that|my)|\b(this|that))\s+prs?\b' <<<"${text}" \
+    && return 0
+
+  return 1
+}
+
+# Helper for Pattern 5: detects when "improve" or "improvements" targets a specific
+# area rather than the whole project.
+# - "improvements to [non-project-word]" → scoped ("to the login flow")
+# - "improvements to the project/codebase" → NOT scoped (whole-project target)
+# - "review and improve the [non-project-word]" → scoped ("improve the tests")
+# - "review and improve" (no object) → NOT scoped (broad intent)
+_has_scoped_improve_target() {
+  local text="$1"
+
+  # "improvements to [word]" where [word] is NOT a project-level noun
+  if grep -Eiq '\bimprovements?\s+to\s+' <<<"${text}" \
+     && ! grep -Eiq '\bimprovements?\s+to\s+(the\s+|my\s+|our\s+)?(projects?|codebase|code.?base|app(lication)?|products?|repo(sitory)?|software|system|whole|entire)\b' <<<"${text}"; then
+    return 0
+  fi
+
+  # "improve [the|my] [non-project-word]" — direct object after improve
+  if grep -Eiq '\bimprove\s+(the|my|our|this|that)\s+\w' <<<"${text}" \
+     && ! grep -Eiq '\bimprove\s+(the|my|our|this|that)\s+(projects?|codebase|code.?base|app(lication)?|products?|repo(sitory)?|software|system|whole|entire)\b' <<<"${text}"; then
+    return 0
+  fi
+
+  # "improve [subsystem-concept]" — bare noun without determiner
+  grep -Eiq '\bimprove\s+(error|auth|api|security|data|cache|session|payment|frontend|backend|infrastructure|architecture|performance|reliability|deployment|navigation|rendering|logging|caching|routing|networking|authentication|authorization|observability|monitoring|testing|validation)\w*\b' <<<"${text}" \
+    && return 0
+
+  return 1
+}
+
 is_council_evaluation_request() {
   local text="$1"
 
-  # "[evaluate|assess|audit|review] [my|the|this|our] [entire|whole]? [project|codebase|app|product|repo]"
-  grep -Eiq '(evaluat|assess|audit|review|inspect|analyz)\w*\s+(my|the|this|our|entire|whole|full)\s+((entire|whole|full|complete)\s+)?(project|codebase|code.?base|app(lication)?|product|repo(sitory)?|software|system)\b' <<<"${text}" \
-    && return 0
+  # Pattern 1: "[evaluate|assess|audit|review] [my|the|this|our] [entire|whole]? [project|codebase|app|product|repo]"
+  # Guarded: reject if the project-level word is part of a compound noun
+  # (e.g., "project manager", "project plan", "product team")
+  if grep -Eiq '(evaluat|assess|audit|review|inspect|analyz)\w*\s+(my|the|this|our|entire|whole|full)\s+((entire|whole|full|complete)\s+)?(projects?|codebase|code.?base|app(lication)?|products?|repo(sitory)?|software|system)\b' <<<"${text}" \
+     && ! grep -Eiq '\b(project|product)\s+(manager|management|plan|planning|structure|timeline|scope|lead|owner|director|description|proposal|requirements?|specification|charter|budget|schedule|board|team|files?|folders?|documentation|dependencies|configuration|roadmap|backlog|strategy|design|review)\b' <<<"${text}"; then
+    return 0
+  fi
 
-  # "[full|holistic|comprehensive] [review|evaluation|assessment]"
+  # Pattern 2: "[full|holistic|comprehensive] [review|evaluation|assessment]"
   grep -Eiq '\b(full|holistic|comprehensive|complete|whole|broad|overall)\s+(project\s+)?(review|evaluation|assessment|audit|analysis)\b' <<<"${text}" \
     && return 0
 
-  # "what [should I improve | needs improvement | am I missing]"
-  # Guarded: reject if a narrowing qualifier scopes to a specific code artifact
-  # (e.g., "what should I improve in this function" is focused, not a council request)
+  # Pattern 3: "what [should I improve | needs improvement | am I missing]"
   if grep -Eiq '\bwhat\s+(should\s+(i|we)\s+improve|needs?\s+(to\s+be\s+)?(improv|fix|chang)|am\s+i\s+miss|are\s+(we|the)\s+miss|could\s+(be\s+)?(improv|better))' <<<"${text}" \
-     && ! grep -Eiq '(\b(in|from|about|with)\s+(this|the|that|my)|\b(this|that))\s+(function|method|class|module|component|endpoint|file|handler|test|route|flow|section|line|block|hook|script|page|view|query|model|schema|table|api|service|controller|middleware|error|auth|database|config|pr|commit|branch|migration)\w*\b' <<<"${text}"; then
+     && ! _has_narrow_scope "${text}"; then
     return 0
   fi
 
-  # "[find|surface|identify] [blind spots|gaps|weaknesses|what is missing]"
-  # Constrained: "what.*missing" narrowed to "what is/are missing" to prevent greedy match
-  # Guarded: same narrowing qualifier check as above
+  # Pattern 4: "[find|surface|identify] [blind spots|gaps|weaknesses|what is missing]"
   if grep -Eiq '\b(find|surface|identify|spot|uncover)\s+(blind\s+spots?|gaps?|weaknesses?|what\s+(is|are)\s+missing)\b' <<<"${text}" \
-     && ! grep -Eiq '\b(in|from|about|with)\s+(this|the|that|my)\s+(function|method|class|module|component|endpoint|file|handler|test|route|flow|section|line|block|hook|script|page|view|query|model|schema|table|api|service|controller|middleware|error|auth|database|config)\w*\b' <<<"${text}"; then
+     && ! _has_narrow_scope "${text}"; then
     return 0
   fi
 
-  # "evaluate and plan" / "plan for improvements" / "review and improve"
-  # Guarded: same narrowing qualifier check as patterns 3 and 4
+  # Pattern 5: "evaluate and plan" / "plan for improvements" / "review and improve"
+  # Three sub-guards:
+  #   a) _has_narrow_scope — rejects scoping to specific artifacts/subsystems
+  #   b) "improvements to [non-project-word]" — "improvements to the login" is scoped
+  #   c) "review/improve" with a direct object that's not a project-level word — scoped
   if grep -Eiq '\b(plan\s+for\s+improvements?|evaluat\w*.*and\s+(then\s+)?plan|review.*and\s+improve|evaluat\w*.*improv)\b' <<<"${text}" \
-     && ! grep -Eiq '(\b(in|from|about|with)\s+(this|the|that|my)|\b(this|that))\s+(function|method|class|module|component|endpoint|file|handler|test|route|flow|section|line|block|hook|script|page|view|query|model|schema|table|api|service|controller|middleware|error|auth|database|config|pr|commit|branch|migration)\w*\b' <<<"${text}"; then
+     && ! _has_narrow_scope "${text}" \
+     && ! _has_scoped_improve_target "${text}"; then
     return 0
   fi
 

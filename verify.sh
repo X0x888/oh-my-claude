@@ -104,6 +104,7 @@ required_paths=(
   "${CLAUDE_HOME}/agents/quality-reviewer.md"
   "${CLAUDE_HOME}/agents/writing-architect.md"
   "${CLAUDE_HOME}/agents/prometheus.md"
+  "${CLAUDE_HOME}/skills/council/SKILL.md"
 )
 
 for path in "${required_paths[@]}"; do

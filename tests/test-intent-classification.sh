@@ -404,6 +404,23 @@ assert_council "evaluate the project and then plan"
 assert_council "plan for improvements"
 
 # --- Negative: should NOT detect as council evaluation ---
+printf '\nCouncil positives (plural and compound edge cases):\n'
+assert_council "evaluate my projects"
+assert_council "assess our products"
+
+printf '\nCouncil negatives (Pattern 1: post-noun compounds):\n'
+assert_not_council "evaluate my project manager"
+assert_not_council "evaluate my project manager's performance"
+assert_not_council "review my project plan"
+assert_not_council "audit the project structure"
+assert_not_council "evaluate my product team"
+assert_not_council "evaluate my project documentation"
+assert_not_council "evaluate my product roadmap"
+assert_not_council "evaluate my product backlog"
+assert_not_council "evaluate my project dependencies"
+assert_not_council "evaluate my project configuration"
+assert_not_council "evaluate my product strategy"
+
 printf '\nCouncil negatives (narrowing qualifiers — scoped to specific artifacts):\n'
 assert_not_council "what should I improve in this function"
 assert_not_council "find what is missing in the tests"
@@ -413,6 +430,26 @@ assert_not_council "what needs to be fixed in the database query"
 assert_not_council "what should I improve in this PR"
 assert_not_council "what should I improve in this commit"
 assert_not_council "review and improve this function"
+
+printf '\nCouncil negatives (Pattern 5: scoped improve targets):\n'
+assert_not_council "plan for improvements to the login flow"
+assert_not_council "plan for improvements to the database layer"
+assert_not_council "plan for improvements to the API"
+assert_not_council "review and improve the tests"
+assert_not_council "review and improve the error handling"
+assert_not_council "review and improve authentication"
+
+printf '\nCouncil positives (Pattern 5: improvements to project-level targets):\n'
+assert_council "plan for improvements to the project"
+assert_council "plan for improvements to the codebase"
+assert_council "plan for improvements to the application"
+
+printf '\nCouncil negatives (architectural/subsystem narrowing):\n'
+assert_not_council "what am I missing in error handling"
+assert_not_council "what am I missing from the architecture"
+assert_not_council "what should I improve about authentication"
+assert_not_council "find gaps in security testing"
+assert_not_council "identify blind spots in the API design"
 
 printf '\nCouncil negatives (focused requests):\n'
 assert_not_council "fix this bug"
