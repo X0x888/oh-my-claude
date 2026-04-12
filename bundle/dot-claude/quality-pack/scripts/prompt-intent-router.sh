@@ -228,6 +228,20 @@ if grep -Eiq '(^|[^[:alnum:]_-])(ultrawork|ulw|autowork|sisyphus)([^[:alnum:]_-]
         context_parts+=("Detected likely task domain: general. The task did not match coding, writing, research, or operations keywords — classify it yourself before proceeding. Ask: what is the deliverable? Is it code, prose, a decision, a plan, or something else? Then choose the specialist path that fits. If the task involves a repository, treat it as coding. If it involves producing a document, treat it as writing. If it involves gathering information, treat it as research. Do not default to code-oriented repo exploration unless the task truly requires it.")
         ;;
     esac
+
+    # Council evaluation detection: broad whole-project evaluation requests
+    # get additional guidance to dispatch multi-role perspective lenses.
+    if is_council_evaluation_request "${PROMPT_TEXT}"; then
+      context_parts+=("COUNCIL EVALUATION DETECTED: This is a broad project evaluation request. Use the /council protocol to dispatch multi-role expert perspectives:
+1. Inspect the project to determine its type, maturity, and tech stack.
+2. Select 3-6 relevant role-lenses from: product-lens, design-lens, security-lens, data-lens, sre-lens, growth-lens. Use the selection guide in the council skill to decide which lenses fit this project.
+3. Dispatch ALL selected lenses in parallel using the Agent tool in a single message. Each gets the project context and its evaluation mandate.
+4. Wait for ALL lenses to return before synthesizing — do NOT begin synthesis early.
+5. Synthesize findings: deduplicate, rank by severity x breadth, attribute to perspectives, separate quick wins from strategic work.
+6. Present a unified Project Council Assessment with: critical findings, high-impact improvements, strategic recommendations, cross-perspective tensions, and quick wins.
+Challenge the project — the value is in what is missing or wrong, not in what is already good.")
+      log_hook "prompt-intent-router" "council evaluation detected"
+    fi
   fi
 fi
 

@@ -17,6 +17,7 @@ oh-my-claude is a harness that wraps Claude Code's lifecycle events with bash ho
 - **JSON state management**: `write_state(key, value)`, `read_state(key)`, `write_state_batch(k1, v1, k2, v2, ...)` for atomic multi-key updates. All operations use jq with atomic temp-file-then-mv writes to prevent corruption.
 - **Intent classification**: `classify_task_intent(text)` -- returns one of 5 categories (see classification order below). Delegates to `is_continuation_request`, `is_checkpoint_request`, `is_session_management_request`, `is_imperative_request`, and `is_advisory_request`.
 - **Domain scoring**: `infer_domain(text)` -- scores prompt text against keyword lists for 6 domains (coding, writing, research, operations, mixed, general). Uses `count_keyword_matches` with grep to count occurrences. Highest score wins. "Mixed" requires coding involvement with a second domain scoring at least 40% of the primary.
+- **Council evaluation detection**: `is_council_evaluation_request(text)` -- detects broad whole-project evaluation requests that benefit from multi-role perspective dispatch. Uses 5 pattern families with narrowing qualifier guards to avoid false-positives on focused requests.
 - **Prompt normalization**: `normalize_task_prompt(text)` -- strips `/ulw`, `autowork`, `ultrawork`, `sisyphus`, and `ultrathink` prefixes.
 - **Continuation detection**: `is_continuation_request(text)` -- matches "continue", "resume", "carry on", "keep going", "pick it back up", etc.
 - **Helpers**: `truncate_chars(limit, text)`, `trim_whitespace(text)`, `now_epoch`, `is_internal_claude_path(path)`, `is_maintenance_prompt(text)`, `has_unfinished_session_handoff(text)`, `is_execution_intent_value(intent)`.
@@ -36,6 +37,7 @@ oh-my-claude is a harness that wraps Claude Code's lifecycle events with bash ho
    - Recent specialist conclusions from `subagent_summaries.jsonl`.
    - Thinking directive (plan/reflect requirements).
    - Domain-specific specialist hints (coding, writing, research, operations, mixed, general).
+   - Council evaluation guidance (for broad whole-project evaluation requests detected by `is_council_evaluation_request`).
 7. If the prompt contains `ultrathink`, appends a deeper investigation directive.
 8. Emits the assembled context via `hookSpecificOutput.additionalContext`.
 
@@ -110,6 +112,7 @@ User prompt
   |     - Domain-specific specialist hints
   |     - Prior specialist conclusions (for continuations)
   |     - Ultrathink directive (if keyword present)
+  |     - Council evaluation guidance (if broad project evaluation detected)
   |-- Inject via hookSpecificOutput.additionalContext
   |
   v

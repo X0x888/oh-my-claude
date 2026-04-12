@@ -336,6 +336,97 @@ assert_domain "general" "Help me with this"
 assert_domain "general" "What do you think?"
 assert_domain "general" "Tell me about the weather"
 
+# =============================================================
+# Council evaluation detection
+# =============================================================
+
+assert_council() {
+  local input="$1"
+  if is_council_evaluation_request "${input}"; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL (expected council): "%s"\n' "${input}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
+assert_not_council() {
+  local input="$1"
+  if ! is_council_evaluation_request "${input}"; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL (unexpected council): "%s"\n' "${input}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
+printf '\n=== Council Evaluation Detection Tests ===\n'
+
+# --- Positive: should detect as council evaluation ---
+printf '\nCouncil positives (whole-project evaluation):\n'
+assert_council "evaluate my project"
+assert_council "Evaluate the project and plan for improvements"
+assert_council "please evaluate my project"
+assert_council "assess our codebase"
+assert_council "review my application"
+assert_council "audit this project"
+assert_council "evaluate this codebase"
+assert_council "Can you review our entire product?"
+assert_council "analyze the whole project"
+assert_council "inspect my repo"
+
+printf '\nCouncil positives (holistic qualifiers):\n'
+assert_council "do a full project review"
+assert_council "comprehensive evaluation"
+assert_council "holistic review of the codebase"
+assert_council "complete assessment"
+assert_council "broad project analysis"
+assert_council "overall project audit"
+
+printf '\nCouncil positives (improvement questions):\n'
+assert_council "what should I improve"
+assert_council "what should we improve"
+assert_council "what needs improvement"
+assert_council "what needs to be fixed"
+assert_council "what am I missing"
+assert_council "what could be improved"
+assert_council "what could be better"
+
+printf '\nCouncil positives (blind spot patterns):\n'
+assert_council "find blind spots in my project"
+assert_council "identify gaps in the codebase"
+assert_council "surface weaknesses"
+assert_council "find what is missing"
+
+printf '\nCouncil positives (evaluate and plan):\n'
+assert_council "evaluate and plan for improvements"
+assert_council "evaluate the project and then plan"
+assert_council "plan for improvements"
+
+# --- Negative: should NOT detect as council evaluation ---
+printf '\nCouncil negatives (narrowing qualifiers — scoped to specific artifacts):\n'
+assert_not_council "what should I improve in this function"
+assert_not_council "find what is missing in the tests"
+assert_not_council "what am I missing in my error handling"
+assert_not_council "identify what config option is missing from the docs"
+assert_not_council "what needs to be fixed in the database query"
+assert_not_council "what should I improve in this PR"
+assert_not_council "what should I improve in this commit"
+assert_not_council "review and improve this function"
+
+printf '\nCouncil negatives (focused requests):\n'
+assert_not_council "fix this bug"
+assert_not_council "implement the login page"
+assert_not_council "add error handling to the upload endpoint"
+assert_not_council "review this PR"
+assert_not_council "debug the authentication flow"
+assert_not_council "write tests for the user model"
+assert_not_council "refactor the database module"
+assert_not_council "what does this function do"
+assert_not_council "explain the architecture"
+assert_not_council "how does the caching work"
+assert_not_council "should I use Redis or Memcached"
+
 printf '\n=== Results: %d passed, %d failed ===\n' "${pass}" "${fail}"
 if [[ "${fail}" -gt 0 ]]; then
   exit 1

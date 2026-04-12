@@ -2,7 +2,7 @@
 
 **What if Claude Code couldn't cut corners?**
 
-[![Version](https://img.shields.io/badge/Version-1.2.3-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-1.3.0-blue.svg)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Shell](https://img.shields.io/badge/Shell-bash-green.svg)]()
 [![Dependencies](https://img.shields.io/badge/Dependencies-none-brightgreen.svg)]()
@@ -67,7 +67,11 @@ Pre- and post-compact hooks snapshot the working state when Claude Code compacts
 
 ### Permissioned agents
 
-23 specialist agents, each with `disallowedTools` enforced. Agents can read, search, analyze, and plan -- but they cannot edit files. The main thread owns all mutations. This means agents provide high-quality analysis without unsupervised writes, and the main thread remains the single source of truth for code changes.
+29 specialist agents, each with `disallowedTools` enforced. Agents can read, search, analyze, and plan -- but they cannot edit files. The main thread owns all mutations. This means agents provide high-quality analysis without unsupervised writes, and the main thread remains the single source of truth for code changes.
+
+### Project Council
+
+The `/council` skill dispatches a multi-role evaluation panel that inspects your project from the perspectives a full product team would bring: Product Manager, UX Designer, Security Engineer, Data/Analytics Lead, SRE, and Growth Lead. Each role-lens agent evaluates independently with a non-overlapping mandate, and findings are synthesized into a single prioritized assessment. The system auto-detects broad evaluation prompts like "evaluate my project" under `/ulw` and triggers the council flow automatically. Solo developers get the cross-functional perspective that a full team provides through daily friction -- without the team.
 
 ### Zero dependencies
 
@@ -127,6 +131,12 @@ ulw draft a project proposal for an AI-assisted research workflow
 ulw turn these meeting notes into an action plan and follow-up email
 ```
 
+**Project evaluation**
+```
+/council
+/ulw evaluate my project and plan for improvements
+```
+
 ---
 
 ## How it works
@@ -157,8 +167,8 @@ For the full architecture, see [docs/architecture.md](docs/architecture.md).
 oh-my-claude/
 ├── install.sh / uninstall.sh / verify.sh   # Install, remove, and verify
 ├── bundle/dot-claude/                       # Installs to ~/.claude/
-│   ├── agents/          (23 agents)         # Specialist agent definitions
-│   ├── skills/          (13 skills)         # Skill definitions + autowork hooks
+│   ├── agents/          (29 agents)         # Specialist agent definitions
+│   ├── skills/          (14 skills)         # Skill definitions + autowork hooks
 │   ├── quality-pack/                        # Lifecycle hooks + memory files
 │   ├── output-styles/                       # Output format templates
 │   └── statusline.py                        # Custom statusline widget
@@ -187,6 +197,7 @@ Skills are invoked as slash commands or routed automatically by the intent class
 | atlas | `/atlas [focus]` | Bootstrap or refresh repo instruction files |
 | ulw-off | `/ulw-off` | Deactivate ultrawork mode mid-session |
 | ulw-status | `/ulw-status` | Show current session state (debugging) |
+| council | `/council [focus]` | Multi-role project evaluation (PM, design, security, data, SRE, growth) |
 | skills | `/skills` | List all available skills with usage guide |
 
 ## Power-user setup

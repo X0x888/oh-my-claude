@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.0] - 2026-04-12
+
+### Added
+
+**Project Council: multi-role evaluation panel.** A solo developer now gets the cross-functional perspective that a full product team provides through daily friction -- without the team.
+
+- **6 role-lens agents** -- read-only evaluation specialists, each with a sharp non-overlapping mandate:
+  - `product-lens` — PM perspective: user needs, feature gaps, prioritization, user journey, competitive context
+  - `design-lens` — UX Designer perspective: information architecture, onboarding, accessibility, error states, interaction consistency
+  - `security-lens` — Security Engineer perspective: threat model, attack surface, auth/authz, data handling, dependency risks
+  - `data-lens` — Data/Analytics perspective: instrumentation coverage, data model quality, measurement strategy, analytics readiness
+  - `sre-lens` — SRE perspective: reliability, observability, error handling, scaling readiness, deployment/rollback
+  - `growth-lens` — Growth Lead perspective: onboarding friction, activation metrics, retention hooks, messaging quality, distribution readiness
+
+- **`/council` skill** — orchestration skill that inspects the project, selects 3-6 relevant lenses based on project type, dispatches them in parallel, waits for all to return, and synthesizes findings into a single prioritized assessment with critical findings, high-impact improvements, strategic recommendations, cross-perspective tensions, and quick wins.
+
+- **Auto-detection under ULW** — `is_council_evaluation_request()` in `common.sh` detects broad whole-project evaluation prompts ("evaluate my project", "what should I improve", "find blind spots", "comprehensive review") and injects council guidance automatically when ultrawork mode is active. No need to invoke `/council` explicitly.
+
+- **Intent classification tests** — 49 new test cases for council detection: 30 positive cases (whole-project evaluation patterns, holistic qualifiers, improvement questions, blind spot patterns, evaluate-and-plan) and 19 negative cases (focused requests, narrowing qualifiers scoping to specific artifacts like "in this function" or "in this PR").
+
+### Changed
+
+- Agent count: 23 → 29 (6 new role-lens agents)
+- Skill count: 13 → 14 (new `/council` skill)
+- `prompt-intent-router.sh` injects `COUNCIL EVALUATION DETECTED` guidance block for matching prompts under ULW execution mode
+
 ## [1.2.3] - 2026-04-12
 
 ### Added

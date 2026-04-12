@@ -918,3 +918,49 @@ is_execution_intent_value() {
       ;;
   esac
 }
+
+# --- P2: Council evaluation detection ---
+# Detects broad whole-project evaluation requests that benefit from
+# multi-role perspective dispatch (product, design, security, data, SRE, growth).
+# Intentionally strict: must reference the project/codebase/app as a whole,
+# or use holistic qualifiers, or ask "what should I improve" type questions.
+# Does NOT match focused requests like "evaluate this function" or "review this PR."
+
+is_council_evaluation_request() {
+  local text="$1"
+
+  # "[evaluate|assess|audit|review] [my|the|this|our] [entire|whole]? [project|codebase|app|product|repo]"
+  grep -Eiq '(evaluat|assess|audit|review|inspect|analyz)\w*\s+(my|the|this|our|entire|whole|full)\s+((entire|whole|full|complete)\s+)?(project|codebase|code.?base|app(lication)?|product|repo(sitory)?|software|system)\b' <<<"${text}" \
+    && return 0
+
+  # "[full|holistic|comprehensive] [review|evaluation|assessment]"
+  grep -Eiq '\b(full|holistic|comprehensive|complete|whole|broad|overall)\s+(project\s+)?(review|evaluation|assessment|audit|analysis)\b' <<<"${text}" \
+    && return 0
+
+  # "what [should I improve | needs improvement | am I missing]"
+  # Guarded: reject if a narrowing qualifier scopes to a specific code artifact
+  # (e.g., "what should I improve in this function" is focused, not a council request)
+  if grep -Eiq '\bwhat\s+(should\s+(i|we)\s+improve|needs?\s+(to\s+be\s+)?(improv|fix|chang)|am\s+i\s+miss|are\s+(we|the)\s+miss|could\s+(be\s+)?(improv|better))' <<<"${text}" \
+     && ! grep -Eiq '(\b(in|from|about|with)\s+(this|the|that|my)|\b(this|that))\s+(function|method|class|module|component|endpoint|file|handler|test|route|flow|section|line|block|hook|script|page|view|query|model|schema|table|api|service|controller|middleware|error|auth|database|config|pr|commit|branch|migration)\w*\b' <<<"${text}"; then
+    return 0
+  fi
+
+  # "[find|surface|identify] [blind spots|gaps|weaknesses|what is missing]"
+  # Constrained: "what.*missing" narrowed to "what is/are missing" to prevent greedy match
+  # Guarded: same narrowing qualifier check as above
+  if grep -Eiq '\b(find|surface|identify|spot|uncover)\s+(blind\s+spots?|gaps?|weaknesses?|what\s+(is|are)\s+missing)\b' <<<"${text}" \
+     && ! grep -Eiq '\b(in|from|about|with)\s+(this|the|that|my)\s+(function|method|class|module|component|endpoint|file|handler|test|route|flow|section|line|block|hook|script|page|view|query|model|schema|table|api|service|controller|middleware|error|auth|database|config)\w*\b' <<<"${text}"; then
+    return 0
+  fi
+
+  # "evaluate and plan" / "plan for improvements" / "review and improve"
+  # Guarded: same narrowing qualifier check as patterns 3 and 4
+  if grep -Eiq '\b(plan\s+for\s+improvements?|evaluat\w*.*and\s+(then\s+)?plan|review.*and\s+improve|evaluat\w*.*improv)\b' <<<"${text}" \
+     && ! grep -Eiq '(\b(in|from|about|with)\s+(this|the|that|my)|\b(this|that))\s+(function|method|class|module|component|endpoint|file|handler|test|route|flow|section|line|block|hook|script|page|view|query|model|schema|table|api|service|controller|middleware|error|auth|database|config|pr|commit|branch|migration)\w*\b' <<<"${text}"; then
+    return 0
+  fi
+
+  return 1
+}
+
+# --- end P2 ---

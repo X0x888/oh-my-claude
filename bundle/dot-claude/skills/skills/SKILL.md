@@ -18,6 +18,7 @@ Display this table to the user:
 | **oracle** | `/oracle <issue>` | Debugging is hard, root cause is unclear, or you need a second opinion on tradeoffs |
 | **librarian** | `/librarian <topic>` | You need official docs, third-party API references, or concrete external examples |
 | **atlas** | `/atlas [focus]` | Bootstrap or refresh CLAUDE.md / .claude/rules for a repository |
+| **council** | `/council [focus]` | Multi-role project evaluation — dispatches PM, design, security, data, SRE, and growth perspectives |
 | **ulw-status** | `/ulw-status` | Inspect current session state — mode, domain, counters, flags (debugging) |
 | **ulw-off** | `/ulw-off` | Deactivate ultrawork mode mid-session without ending the conversation |
 | **skills** | `/skills` | Show this list |
@@ -27,6 +28,7 @@ Display this table to the user:
 - **Starting real work?** Use `/ulw` (or `/autowork`).
 - **Need a plan first?** Use `/plan-hard`. If the goal is vague, use `/prometheus` instead.
 - **Want to validate a plan?** Use `/metis`.
+- **Want a multi-role project evaluation?** Use `/council`. Also auto-triggers under `/ulw` for broad prompts like "evaluate my project."
 - **Stuck debugging?** Use `/oracle`.
 - **Need docs or references?** Use `/librarian`.
 - **Want a code review?** Use `/review-hard`.
