@@ -215,6 +215,29 @@ Session state is stored at:
 | `resume_source_session_id` | Session ID of the session this one was resumed from |
 | `last_compact_trigger` | What triggered the last compaction |
 | `last_compact_request_ts` | When the last compaction was requested |
+| `last_compact_rehydrate_ts` | When the post-compact SessionStart hook last read the handoff |
+| `last_compact_summary` | Native compact summary captured from `PostCompact` |
+| `last_compact_summary_ts` | When the native compact summary was captured |
+| `just_compacted` | `1` if a PostCompact just fired and the next `UserPromptSubmit` should bias toward continuation; single-use, cleared on first read |
+| `just_compacted_ts` | Epoch when `just_compacted` was set; 15-minute staleness window |
+| `review_pending_at_compact` | `1` if a quality review was pending when the last compact fired; drives the "MUST run quality-reviewer" directive in the compact-resume injection |
+| `compact_race_count` | Number of back-to-back compactions where the prior snapshot had not yet been consumed (diagnostic telemetry) |
+
+---
+
+## Compaction Continuity
+
+When Claude Code compacts a session — either automatically when the context budget is approaching the limit, or manually via `/compact` — the harness runs three hooks to preserve working state:
+
+1. **`PreCompact`** → `pre-compact-snapshot.sh`: writes `precompact_snapshot.md` with objective, domain, intent, last assistant message, recent prompts, active plan, edited files, review/verify status, pending specialists, and a `review_pending_at_compact` flag. Back-to-back compactions archive an unconsumed prior snapshot as `precompact_snapshot.<mtime>.md` (retained up to 5 files).
+
+2. **`PostCompact`** → `post-compact-summary.sh`: reads Claude Code's `.compact_summary` field (or emits a fallback when empty), combines it with the snapshot into `compact_handoff.md`, and sets a `just_compacted` flag so the next `UserPromptSubmit` can bias classification toward continuation. `HOOK_DEBUG=true` dumps the raw hook JSON to `compact_debug.log` for schema diagnosis.
+
+3. **`SessionStart` (source=compact)** → `session-start-compact-handoff.sh`: injects the handoff document via `additionalContext`, with a directive stack that re-asserts ultrawork mode, lists any in-flight specialist dispatches for re-dispatch, and enforces pending-review requirements.
+
+Pending specialist tracking uses a new `PreToolUse` hook (`record-pending-agent.sh`) matched on the `Agent` tool. Every dispatch appends to `pending_agents.jsonl`; every `SubagentStop` removes the FIFO-oldest entry matching the `subagent_type`. This is a per-type counter — same-type concurrent dispatches cannot be distinguished, but the count remains accurate.
+
+On `/ulw-off`, `ulw-deactivate.sh` clears the compact-continuity flags and deletes `pending_agents.jsonl` so stale state from a deactivated session cannot bleed into a later compact resume.
 
 ---
 

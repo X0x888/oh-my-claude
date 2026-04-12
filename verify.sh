@@ -93,6 +93,7 @@ required_paths=(
   "${CLAUDE_HOME}/skills/autowork/scripts/common.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/record-reviewer.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/record-subagent-summary.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/record-pending-agent.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/record-plan.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/ulw-deactivate.sh"
   "${CLAUDE_HOME}/skills/autowork/SKILL.md"
@@ -160,6 +161,7 @@ hook_scripts=(
   "${CLAUDE_HOME}/skills/autowork/scripts/record-advisory-verification.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/record-reviewer.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/record-subagent-summary.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/record-pending-agent.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/record-verification.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/reflect-after-agent.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/stop-guard.sh"
@@ -196,6 +198,7 @@ else
     "SessionStart:session-start-resume-handoff.sh"
     "SessionStart:session-start-compact-handoff.sh"
     "UserPromptSubmit:prompt-intent-router.sh"
+    "PreToolUse:record-pending-agent.sh"
     "PostToolUse:mark-edit.sh"
     "PostToolUse:record-verification.sh"
     "PostToolUse:reflect-after-agent.sh"
@@ -208,13 +211,32 @@ else
     "Stop:stop-guard.sh"
   )
 
-  settings_content="$(cat "${CLAUDE_HOME}/settings.json")"
-
+  # Scoped check: require the command fragment to appear under the correct
+  # event key, not just anywhere in settings.json. The previous substring
+  # grep would have passed even if a hook script had been wired under the
+  # wrong event (e.g. record-pending-agent.sh moved from PreToolUse to
+  # PostToolUse). A jq-scoped query catches that class of regression.
   for entry in "${required_hooks[@]}"; do
     event="${entry%%:*}"
     fragment="${entry##*:}"
-    # Check that the command fragment appears under the correct event key.
-    if printf '%s' "${settings_content}" | grep -q "${fragment}"; then
+
+    hook_found="false"
+    if command -v jq >/dev/null 2>&1; then
+      hook_found="$(jq -r --arg ev "${event}" --arg frag "${fragment}" '
+        (.hooks[$ev] // [])
+        | map(.hooks // [])
+        | flatten
+        | map(.command // "")
+        | any(contains($frag))
+      ' "${CLAUDE_HOME}/settings.json" 2>/dev/null || printf 'false')"
+    else
+      # Fallback: plain substring match when jq is not available.
+      if grep -q "${fragment}" "${CLAUDE_HOME}/settings.json" 2>/dev/null; then
+        hook_found="true"
+      fi
+    fi
+
+    if [[ "${hook_found}" == "true" ]]; then
       pass "Hook: ${event} -> ${fragment}"
     else
       fail "Missing hook: ${event} -> ${fragment}"

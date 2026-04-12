@@ -50,8 +50,25 @@ jq -r '
   "",
   "--- Flags ---",
   "Has plan:          \(.has_plan // "false")",
-  "Guard exhausted:   \(if (.guard_exhausted // "") != "" then "YES (\(.guard_exhausted_detail // "unknown"))" else "no" end)"
+  "Guard exhausted:   \(if (.guard_exhausted // "") != "" then "YES (\(.guard_exhausted_detail // "unknown"))" else "no" end)",
+  "",
+  "--- Compact Continuity ---",
+  "Last compact trigger:      \(.last_compact_trigger // "never")",
+  "Last compact request ts:   \(.last_compact_request_ts // "never")",
+  "Last compact rehydrate ts: \(.last_compact_rehydrate_ts // "never")",
+  "Compact race count:        \(.compact_race_count // "0")",
+  "Review pending at compact: \(if (.review_pending_at_compact // "") == "1" then "YES" else "no" end)",
+  "Just-compacted flag:       \(if (.just_compacted // "") == "1" then "set (age: \(.just_compacted_ts // "?"))" else "clear" end)"
 ' "${state_file}"
+
+# Pending specialist count (jsonl file is separate from session_state.json)
+pending_file="${STATE_ROOT}/${latest_session}/pending_agents.jsonl"
+if [[ -f "${pending_file}" ]]; then
+  pending_count="$(wc -l <"${pending_file}" 2>/dev/null | tr -d '[:space:]')"
+else
+  pending_count="0"
+fi
+printf 'Pending specialists:       %s\n' "${pending_count}"
 
 # Show edited files if any
 edits_file="${STATE_ROOT}/${latest_session}/edited_files.log"

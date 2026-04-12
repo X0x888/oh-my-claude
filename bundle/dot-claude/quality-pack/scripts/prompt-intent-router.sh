@@ -20,6 +20,27 @@ sweep_stale_sessions
 previous_objective="$(read_state "current_objective")"
 previous_domain="$(read_state "task_domain")"
 previous_last_assistant="$(read_state "last_assistant_message")"
+
+# Gap 2 — post-compact intent bias. When the very first UserPromptSubmit
+# fires after a PostCompact hook, we treat the previous objective as
+# canonical unless the user's prompt is a clearly unrelated execution task.
+# Rationale: the native compact summary + injected handoff can make the
+# main thread misread short ambiguous prompts ("continue", "next", "status")
+# as fresh work. The flag decays after one prompt, or after 15 minutes of
+# staleness, whichever comes first.
+post_compact_bias=0
+just_compacted_value="$(read_state "just_compacted")"
+just_compacted_ts_value="$(read_state "just_compacted_ts")"
+if [[ "${just_compacted_value}" == "1" ]] && [[ -n "${just_compacted_ts_value}" ]]; then
+  compact_age=$(( $(now_epoch) - just_compacted_ts_value ))
+  if (( compact_age >= 0 )) && (( compact_age < 900 )); then
+    post_compact_bias=1
+    log_hook "prompt-intent-router" "post-compact bias active (age=${compact_age}s)"
+  fi
+  # Always clear on first read — single-use flag.
+  write_state_batch "just_compacted" "" "just_compacted_ts" ""
+fi
+
 TASK_INTENT="$(classify_task_intent "${PROMPT_TEXT}")"
 
 write_state_batch \
@@ -43,10 +64,40 @@ if ! is_maintenance_prompt "${PROMPT_TEXT}"; then
   elif [[ "${TASK_INTENT}" == "advisory" || "${TASK_INTENT}" == "session_management" || "${TASK_INTENT}" == "checkpoint" ]] \
     && [[ -n "${previous_objective}" ]]; then
     write_state "current_objective" "${previous_objective}"
+  elif [[ "${post_compact_bias}" -eq 1 ]] && [[ -n "${previous_objective}" ]]; then
+    # Gap 2 — post-compact bias: if the user did not clearly start a new
+    # execution task, keep the preserved objective from before the compact.
+    # "Clearly new" is detected by: an imperative/action prompt that does
+    # not match a continuation keyword. Advisory/meta prompts are already
+    # handled above, and continuation prompts are handled one branch up,
+    # so landing here means TASK_INTENT=execution. We still defer to the
+    # preserved objective unless the normalized body is substantial and
+    # obviously a fresh task (length > 40 chars AND not starting with a
+    # reference to the preserved work).
+    if [[ -z "${normalized_objective}" ]] || [[ "${#normalized_objective}" -lt 40 ]]; then
+      write_state "current_objective" "${previous_objective}"
+      log_hook "prompt-intent-router" "post-compact bias: preserved objective (short/empty prompt)"
+    else
+      write_state "current_objective" "${normalized_objective}"
+    fi
   elif [[ -n "${normalized_objective}" ]]; then
     write_state "current_objective" "${normalized_objective}"
   else
     write_state "current_objective" "${PROMPT_TEXT}"
+  fi
+fi
+
+# Gap 4c — clear review_pending_at_compact after the first post-compact
+# prompt. The session-start-compact-handoff.sh has already injected the
+# "MUST run reviewer" directive at this point, so the flag has served its
+# purpose. Leaving it set would re-inject on every subsequent prompt.
+# The stop-guard still enforces the underlying review requirement via its
+# own edit/review-clock comparison — this flag only controlled the
+# compact-boundary directive injection.
+if [[ "${post_compact_bias}" -eq 1 ]]; then
+  existing_review_flag="$(read_state "review_pending_at_compact")"
+  if [[ -n "${existing_review_flag}" ]]; then
+    write_state "review_pending_at_compact" ""
   fi
 fi
 

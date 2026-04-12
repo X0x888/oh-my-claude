@@ -128,6 +128,8 @@ for impl in "${implementations[@]}"; do
     "${work}/settings.json" '.hooks.SessionStart' "2"
   assert_json_count "${impl}: fresh — UserPromptSubmit hooks" \
     "${work}/settings.json" '.hooks.UserPromptSubmit' "1"
+  assert_json_count "${impl}: fresh — PreToolUse hooks" \
+    "${work}/settings.json" '.hooks.PreToolUse' "1"
   assert_json_count "${impl}: fresh — PostToolUse hooks" \
     "${work}/settings.json" '.hooks.PostToolUse' "4"
   assert_json_count "${impl}: fresh — SubagentStop hooks" \
@@ -138,6 +140,12 @@ for impl in "${implementations[@]}"; do
     "${work}/settings.json" '.hooks.PostCompact' "1"
   assert_json_count "${impl}: fresh — Stop hooks" \
     "${work}/settings.json" '.hooks.Stop' "1"
+
+  # PreToolUse must wire the Agent matcher to record-pending-agent.sh
+  assert_json_eq "${impl}: fresh — PreToolUse Agent matcher wired" \
+    "${work}/settings.json" \
+    '[.hooks.PreToolUse[] | select(.matcher == "Agent") | .hooks[0].command] | .[0] | tostring | contains("record-pending-agent.sh")' \
+    "true"
 
   # No bypass keys should be set
   assert_json_eq "${impl}: fresh — no defaultMode" \
@@ -156,6 +164,8 @@ for impl in "${implementations[@]}"; do
     "${work}/settings.json" '.hooks.SubagentStop' "10"
   assert_json_count "${impl}: idempotent — PostToolUse hooks still 4" \
     "${work}/settings.json" '.hooks.PostToolUse' "4"
+  assert_json_count "${impl}: idempotent — PreToolUse hooks still 1" \
+    "${work}/settings.json" '.hooks.PreToolUse' "1"
 
   # Verify the new dimension-tracker matchers are present
   assert_json_eq "${impl}: fresh — metis matcher wired" \
@@ -734,7 +744,7 @@ if [[ ${#implementations[@]} -eq 2 ]]; then
   run_merge "jq" "${work_jq}/settings.json" "${SETTINGS_PATCH}" "false"
 
   # Compare hook counts (structural equivalence — key ordering may differ)
-  for event in SessionStart UserPromptSubmit PostToolUse PreCompact PostCompact SubagentStop Stop; do
+  for event in SessionStart UserPromptSubmit PreToolUse PostToolUse PreCompact PostCompact SubagentStop Stop; do
     py_count="$(jq ".hooks.${event} | length" "${work_py}/settings.json" 2>/dev/null || echo "-1")"
     jq_count="$(jq ".hooks.${event} | length" "${work_jq}/settings.json" 2>/dev/null || echo "-1")"
     assert_eq "cross: ${event} hook count matches" "${py_count}" "${jq_count}"

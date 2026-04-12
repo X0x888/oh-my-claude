@@ -1035,6 +1035,330 @@ assert_eq "seq-BB: grace marked used" "1" "$(read_st "sbb" "dimension_resume_gra
 teardown_test
 
 
+# -------------------------------------------------------
+# Compaction hardening (gaps 1–7)
+# -------------------------------------------------------
+printf '\nCompaction hardening:\n'
+
+QUALITY_PACK_DIR="${REPO_ROOT}/bundle/dot-claude/quality-pack/scripts"
+
+# quality-pack scripts source common.sh via ${HOME}/.claude/... — mirror
+# the symlink pattern established in setup_prompt_router so the test sandbox
+# can execute them without a real install.
+setup_compact_tests() {
+  mkdir -p "${TEST_HOME}/.claude/skills/autowork/scripts"
+  ln -sf "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh" \
+    "${TEST_HOME}/.claude/skills/autowork/scripts/common.sh"
+}
+
+sim_pre_agent_dispatch() {
+  local sid="$1" subagent_type="$2" description="${3:-sample task}"
+  run_hook "${HOOK_DIR}/record-pending-agent.sh" \
+    "$(jq -nc --arg s "${sid}" --arg sa "${subagent_type}" --arg d "${description}" \
+      '{session_id:$s,tool_name:"Agent",tool_input:{subagent_type:$sa,description:$d,prompt:"do a thing"}}')"
+}
+
+sim_pre_compact() {
+  local sid="$1" trigger="${2:-auto}"
+  run_hook "${QUALITY_PACK_DIR}/pre-compact-snapshot.sh" \
+    "$(jq -nc --arg s "${sid}" --arg t "${trigger}" \
+      '{session_id:$s,trigger:$t,custom_instructions:"",cwd:"/tmp",transcript_path:"/tmp/t.jsonl",hook_event_name:"PreCompact"}')"
+}
+
+sim_post_compact() {
+  local sid="$1" trigger="${2:-auto}"
+  # Use ${3-default} (not ${3:-default}) so an explicit empty string is
+  # preserved — Gap 6 test needs to pass compact_summary="".
+  local summary="${3-Native compact summary body}"
+  run_hook "${QUALITY_PACK_DIR}/post-compact-summary.sh" \
+    "$(jq -nc --arg s "${sid}" --arg t "${trigger}" --arg cs "${summary}" \
+      '{session_id:$s,trigger:$t,compact_summary:$cs,cwd:"/tmp",transcript_path:"/tmp/t.jsonl",hook_event_name:"PostCompact"}')"
+}
+
+sim_session_start_compact() {
+  local sid="$1"
+  run_hook "${QUALITY_PACK_DIR}/session-start-compact-handoff.sh" \
+    "$(jq -nc --arg s "${sid}" \
+      '{session_id:$s,source:"compact",cwd:"/tmp",transcript_path:"/tmp/t.jsonl",hook_event_name:"SessionStart"}')"
+}
+
+sim_user_prompt() {
+  local sid="$1" text="${2:-continue}"
+  run_hook "${QUALITY_PACK_DIR}/prompt-intent-router.sh" \
+    "$(jq -nc --arg s "${sid}" --arg p "${text}" '{session_id:$s,prompt:$p}')"
+}
+
+# -------------------------------------------------------
+# Gap 1: ULW affirmation on post-compact session start
+# -------------------------------------------------------
+setup_test
+setup_compact_tests
+init_session "cg1" "coding"
+sim_pre_compact "cg1"
+sim_post_compact "cg1" "auto" "Summary body"
+out_g1="$(sim_session_start_compact "cg1")"
+assert_contains "gap1: injection mentions ultrawork still active" "Ultrawork mode is still active post-compact" "${out_g1}"
+assert_contains "gap1: injection mentions domain" "coding" "${out_g1}"
+teardown_test
+
+# -------------------------------------------------------
+# Gap 2: post-compact intent bias preserves short prompts as continuation
+# -------------------------------------------------------
+setup_test
+setup_compact_tests
+init_session "cg2" "coding"
+# Seed a non-trivial previous objective
+state_dir="${TEST_HOME}/.claude/quality-pack/state/cg2"
+jq --arg o "Refactor the authentication middleware to support session refresh" \
+  '. + {current_objective:$o}' "${state_dir}/session_state.json" > "${state_dir}/session_state.json.tmp" \
+  && mv "${state_dir}/session_state.json.tmp" "${state_dir}/session_state.json"
+sim_pre_compact "cg2"
+sim_post_compact "cg2" "auto" "Summary"
+# Flag should be set
+assert_eq "gap2: just_compacted set by post-compact" "1" "$(read_st "cg2" "just_compacted")"
+# Short follow-up prompt should preserve the prior objective
+sim_user_prompt "cg2" "status" >/dev/null
+post_obj="$(read_st "cg2" "current_objective")"
+assert_contains "gap2: objective preserved after short prompt" "Refactor the authentication middleware" "${post_obj}"
+# Flag should have decayed
+assert_empty "gap2: just_compacted cleared after use" "$(read_st "cg2" "just_compacted")"
+teardown_test
+
+# -------------------------------------------------------
+# Gap 3: pending-agent tracking — dispatch, snapshot, clear
+# -------------------------------------------------------
+setup_test
+setup_compact_tests
+init_session "cg3" "coding"
+sim_pre_agent_dispatch "cg3" "quality-researcher" "check repo conventions"
+sim_pre_agent_dispatch "cg3" "librarian" "verify API docs"
+pending_file="${TEST_HOME}/.claude/quality-pack/state/cg3/pending_agents.jsonl"
+if [[ -f "${pending_file}" ]] && [[ "$(wc -l <"${pending_file}")" -eq 2 ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: gap3: pending_agents.jsonl should have 2 entries\n' >&2
+  fail=$((fail + 1))
+fi
+# Snapshot should list both pending agents
+sim_pre_compact "cg3"
+snapshot="$(cat "${TEST_HOME}/.claude/quality-pack/state/cg3/precompact_snapshot.md" 2>/dev/null || echo "")"
+assert_contains "gap3: snapshot lists quality-researcher" "quality-researcher" "${snapshot}"
+assert_contains "gap3: snapshot lists librarian" "librarian" "${snapshot}"
+assert_contains "gap3: snapshot section header" "Pending Specialists" "${snapshot}"
+# SubagentStop for librarian should remove exactly one librarian entry
+run_hook "${HOOK_DIR}/record-subagent-summary.sh" \
+  "$(jq -nc --arg s "cg3" '{session_id:$s,agent_type:"librarian",last_assistant_message:"Done."}')"
+if [[ -f "${pending_file}" ]] && [[ "$(wc -l <"${pending_file}")" -eq 1 ]] \
+  && grep -q "quality-researcher" "${pending_file}" \
+  && ! grep -q "librarian" "${pending_file}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: gap3: librarian entry should be removed, quality-researcher should remain\n    contents: %s\n' "$(cat "${pending_file}" 2>/dev/null)" >&2
+  fail=$((fail + 1))
+fi
+# Post-compact session start should emit re-dispatch directive
+sim_post_compact "cg3" "auto" "Summary"
+out_g3="$(sim_session_start_compact "cg3")"
+assert_contains "gap3: handoff mentions interrupted dispatches" "Interrupted specialist dispatches" "${out_g3}"
+teardown_test
+
+# -------------------------------------------------------
+# Gap 3 robustness: malformed JSONL line must not freeze the pending queue.
+# Regression for quality-reviewer critical #1: a prior implementation used
+# `jq --slurp` which aborted with exit 5 on the first non-JSONL line,
+# silently leaving the pending queue untouched forever.
+# -------------------------------------------------------
+setup_test
+setup_compact_tests
+init_session "cg3c" "coding"
+sim_pre_agent_dispatch "cg3c" "quality-researcher" "real dispatch"
+pending_file_c="${TEST_HOME}/.claude/quality-pack/state/cg3c/pending_agents.jsonl"
+# Inject a garbage line between valid entries to simulate filesystem
+# corruption or a tool-noise artifact.
+printf 'this is not json at all\n' >> "${pending_file_c}"
+sim_pre_agent_dispatch "cg3c" "librarian" "second dispatch"
+# SubagentStop for quality-researcher should still remove the matching entry.
+run_hook "${HOOK_DIR}/record-subagent-summary.sh" \
+  "$(jq -nc --arg s "cg3c" '{session_id:$s,agent_type:"quality-researcher",last_assistant_message:"Done."}')"
+if grep -q "quality-researcher" "${pending_file_c}"; then
+  printf '  FAIL: gap3-robust: quality-researcher entry should have been removed\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+# The garbage line and the librarian entry should both still be present.
+if grep -q "this is not json" "${pending_file_c}" && grep -q "librarian" "${pending_file_c}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: gap3-robust: garbage line or librarian entry lost\n    contents: %s\n' "$(cat "${pending_file_c}" 2>/dev/null)" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# -------------------------------------------------------
+# Gap 3 edge case: FIFO-oldest removal for same-type concurrent dispatches
+# -------------------------------------------------------
+setup_test
+setup_compact_tests
+init_session "cg3b" "coding"
+sim_pre_agent_dispatch "cg3b" "quality-researcher" "first dispatch"
+sim_pre_agent_dispatch "cg3b" "quality-researcher" "second dispatch"
+run_hook "${HOOK_DIR}/record-subagent-summary.sh" \
+  "$(jq -nc --arg s "cg3b" '{session_id:$s,agent_type:"quality-researcher",last_assistant_message:"Done."}')"
+pending_file_b="${TEST_HOME}/.claude/quality-pack/state/cg3b/pending_agents.jsonl"
+# The "first dispatch" (oldest FIFO entry) should be removed
+if [[ -f "${pending_file_b}" ]] \
+  && [[ "$(wc -l <"${pending_file_b}")" -eq 1 ]] \
+  && grep -q "second dispatch" "${pending_file_b}" \
+  && ! grep -q "first dispatch" "${pending_file_b}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: gap3: FIFO-oldest removal did not keep newest entry\n    contents: %s\n' "$(cat "${pending_file_b}" 2>/dev/null)" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# -------------------------------------------------------
+# Gap 4: pending-review enforcement across compact
+# -------------------------------------------------------
+setup_test
+setup_compact_tests
+init_session "cg4" "coding"
+sim_edit "cg4" "/src/auth.ts"
+# No review happens
+sim_pre_compact "cg4"
+assert_eq "gap4: review_pending_at_compact set" "1" "$(read_st "cg4" "review_pending_at_compact")"
+sim_post_compact "cg4" "auto" "Summary"
+out_g4="$(sim_session_start_compact "cg4")"
+assert_contains "gap4: injection demands reviewer" "MUST run quality-reviewer" "${out_g4}"
+# First post-compact prompt should clear the flag
+sim_user_prompt "cg4" "status" >/dev/null
+assert_empty "gap4: flag cleared after first post-compact prompt" "$(read_st "cg4" "review_pending_at_compact")"
+teardown_test
+
+# -------------------------------------------------------
+# Gap 4 negative: no edits means no pending-review flag
+# -------------------------------------------------------
+setup_test
+setup_compact_tests
+init_session "cg4b" "coding"
+sim_pre_compact "cg4b"
+assert_empty "gap4b: no edits → no review_pending_at_compact flag" "$(read_st "cg4b" "review_pending_at_compact")"
+teardown_test
+
+# -------------------------------------------------------
+# Gap 5: atomic batch write on pre-compact — all compact-adjacent state
+# keys land together, so a concurrent SubagentStop cannot interleave a
+# stale value between the trigger write and the request-timestamp write.
+# -------------------------------------------------------
+setup_test
+setup_compact_tests
+init_session "cg5" "coding"
+sim_pre_compact "cg5" "manual"
+assert_eq "gap5: trigger written by pre-compact" "manual" "$(read_st "cg5" "last_compact_trigger")"
+assert_not_empty "gap5: request ts written by pre-compact" "$(read_st "cg5" "last_compact_request_ts")"
+sim_post_compact "cg5" "manual" "Summary"
+assert_eq "gap5: post-compact preserves trigger" "manual" "$(read_st "cg5" "last_compact_trigger")"
+assert_eq "gap5: post-compact sets just_compacted" "1" "$(read_st "cg5" "just_compacted")"
+teardown_test
+
+# -------------------------------------------------------
+# Gap 2 staleness: just_compacted flag with ts older than 15min decays
+# to non-bias behavior on the next UserPromptSubmit.
+# -------------------------------------------------------
+setup_test
+setup_compact_tests
+init_session "cg2stale" "coding"
+# Manually seed state with an old just_compacted timestamp (30 min in past)
+state_dir="${TEST_HOME}/.claude/quality-pack/state/cg2stale"
+stale_ts=$(( $(date +%s) - 1800 ))
+jq --arg o "Prior objective from before the pause" --arg sts "${stale_ts}" \
+  '. + {current_objective:$o,just_compacted:"1",just_compacted_ts:$sts}' \
+  "${state_dir}/session_state.json" > "${state_dir}/session_state.json.tmp" \
+  && mv "${state_dir}/session_state.json.tmp" "${state_dir}/session_state.json"
+# Trigger a prompt — the stale bias should NOT fire, so a clearly-new
+# imperative should become the new objective.
+sim_user_prompt "cg2stale" "implement a totally new feature unrelated to earlier work please" >/dev/null
+new_obj="$(read_st "cg2stale" "current_objective")"
+# With bias off, the router's normalized-objective branch takes over and
+# stores the user's new prompt verbatim.
+assert_contains "gap2-stale: stale flag ignored, new objective accepted" "implement a totally new feature" "${new_obj}"
+# Flag should still be cleared regardless (single-use)
+assert_empty "gap2-stale: stale flag cleared after read" "$(read_st "cg2stale" "just_compacted")"
+teardown_test
+
+# -------------------------------------------------------
+# Gap 6: empty compact_summary handled gracefully
+# -------------------------------------------------------
+setup_test
+setup_compact_tests
+init_session "cg6" "coding"
+sim_pre_compact "cg6"
+sim_post_compact "cg6" "auto" ""
+handoff="$(cat "${TEST_HOME}/.claude/quality-pack/state/cg6/compact_handoff.md" 2>/dev/null || echo "")"
+assert_contains "gap6: empty summary gets fallback literal" "compact summary not provided by runtime" "${handoff}"
+teardown_test
+
+# -------------------------------------------------------
+# ulw-off cleans up compact continuity state
+# Regression for excellence-reviewer #1: `review_pending_at_compact` and
+# related flags must not leak across a `/ulw-off` deactivation.
+# -------------------------------------------------------
+setup_test
+setup_compact_tests
+init_session "culw" "coding"
+sim_edit "culw" "/src/leak.ts"
+sim_pre_agent_dispatch "culw" "quality-researcher" "leaked dispatch"
+sim_pre_compact "culw"
+# Confirm pre-compact did set the flags we want to clear
+assert_eq "ulw-off: review flag set before deactivate" "1" "$(read_st "culw" "review_pending_at_compact")"
+pending_before="${TEST_HOME}/.claude/quality-pack/state/culw/pending_agents.jsonl"
+[[ -f "${pending_before}" ]] && pass=$((pass + 1)) || { printf '  FAIL: ulw-off: pending file should exist before deactivate\n' >&2; fail=$((fail + 1)); }
+# Run deactivation
+run_hook "${HOOK_DIR}/ulw-deactivate.sh" '{}' >/dev/null
+# All the flags should be cleared
+assert_empty "ulw-off: workflow_mode cleared" "$(read_st "culw" "workflow_mode")"
+assert_empty "ulw-off: review_pending_at_compact cleared" "$(read_st "culw" "review_pending_at_compact")"
+assert_empty "ulw-off: just_compacted cleared" "$(read_st "culw" "just_compacted")"
+assert_empty "ulw-off: compact_race_count cleared" "$(read_st "culw" "compact_race_count")"
+# pending_agents.jsonl should be deleted
+if [[ -f "${pending_before}" ]]; then
+  printf '  FAIL: ulw-off: pending_agents.jsonl should have been deleted\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+teardown_test
+
+# -------------------------------------------------------
+# Gap 7: back-to-back compactions archive prior snapshot
+# -------------------------------------------------------
+setup_test
+setup_compact_tests
+init_session "cg7" "coding"
+sim_pre_compact "cg7"
+# Touch the prior snapshot to ensure its mtime is at or before "now", then
+# trigger a second pre-compact without a SessionStart compact consume step.
+sleep 1 2>/dev/null || true
+sim_pre_compact "cg7"
+# An archive file should exist
+archives="$(find "${TEST_HOME}/.claude/quality-pack/state/cg7" -maxdepth 1 -name 'precompact_snapshot.*.md' 2>/dev/null)"
+if [[ -n "${archives}" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: gap7: archive file should exist after back-to-back compact\n' >&2
+  fail=$((fail + 1))
+fi
+race_count="$(read_st "cg7" "compact_race_count")"
+if [[ "${race_count}" -ge "1" ]] 2>/dev/null; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: gap7: compact_race_count should be >= 1 (got %s)\n' "${race_count}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+
 printf '\n=== Results: %d passed, %d failed ===\n' "${pass}" "${fail}"
 if [[ "${fail}" -gt 0 ]]; then
   exit 1

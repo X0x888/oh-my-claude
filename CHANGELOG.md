@@ -2,6 +2,40 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.3] - 2026-04-12
+
+### Added
+
+**Compaction continuity hardening (7 gaps).** Closes gaps in how the harness handles Claude Code context compaction so mid-task auto-compacts and manual `/compact` no longer drop working state.
+
+- **Gap 1 — ULW mode affirmation on post-compact resume.** `session-start-compact-handoff.sh` now re-asserts `workflow_mode=ultrawork` and the active task domain as the first injected directive when the pre-compact session was in ultrawork. Prevents the main thread from drifting back to asking-for-permission behavior after the native compact summary drops the framing.
+- **Gap 2 — Post-compact intent classifier bias.** `post-compact-summary.sh` sets a `just_compacted=1` single-use flag with timestamp; `prompt-intent-router.sh` reads it on the next `UserPromptSubmit`, within a 15-minute staleness window, and biases toward preserving the prior objective if the follow-up prompt is short or ambiguous. Prevents "status" / "continue" / "next" from being misclassified as a fresh execution task after compact.
+- **Gap 3 — Pending specialist tracking across compact.** New `PreToolUse` hook `record-pending-agent.sh` records every `Agent` tool dispatch to `pending_agents.jsonl`. `record-subagent-summary.sh` now removes the FIFO-oldest matching entry on `SubagentStop`. `pre-compact-snapshot.sh` renders a `## Pending Specialists (In Flight)` section, and `session-start-compact-handoff.sh` emits a "re-dispatch interrupted branches" directive. Line-by-line parsing in the cleanup path is robust against a single malformed JSONL line (no more silent queue freeze).
+- **Gap 4 — Pending-review enforcement across compact.** `pre-compact-snapshot.sh` sets `review_pending_at_compact=1` when the last edit clock is newer than the last review clock. `session-start-compact-handoff.sh` injects a hard "MUST run quality-reviewer before the next Stop" directive when the flag is set. `prompt-intent-router.sh` clears the flag on the first post-compact prompt so it does not re-inject indefinitely.
+- **Gap 5 — Atomic flush on pre-compact.** `pre-compact-snapshot.sh` now uses `write_state_batch` for the compact-adjacent state keys (`last_compact_trigger`, `last_compact_request_ts`, `review_pending_at_compact`) so a concurrent `SubagentStop` cannot interleave between the trigger write and the timestamp write.
+- **Gap 6 — `compact_summary` handling hardening.** `post-compact-summary.sh` emits a visible fallback marker (`"(compact summary not provided by runtime...)"`) when the PostCompact JSON's `.compact_summary` field is empty, logs a warning via `log_hook`, and writes the raw hook JSON to `compact_debug.log` when `HOOK_DEBUG=true` is set. Schema verified verbatim against `code.claude.com/docs/en/hooks`: `.compact_summary` is a documented field in `PostCompact`, not `PreCompact` or `SessionStart`.
+- **Gap 7 — Back-to-back compaction race protection.** `pre-compact-snapshot.sh` compares `precompact_snapshot.md` mtime against `last_compact_rehydrate_ts`; if the prior snapshot has not been consumed by a `SessionStart(source=compact)` hook, it is archived as `precompact_snapshot.<mtime>.md` before being overwritten. `compact_race_count` is incremented, and archive retention is capped at 5 files.
+
+### Changed
+
+- **`ulw-deactivate.sh`** now clears the new compact-continuity flags (`just_compacted`, `just_compacted_ts`, `review_pending_at_compact`, `compact_race_count`) and deletes `pending_agents.jsonl` on `/ulw-off`. Without this, a `review_pending_at_compact` flag set by an earlier ultrawork session would re-inject a "MUST run quality-reviewer" directive on a later compact resume, even after the user explicitly turned ULW off.
+- **`show-status.sh`** now renders a `--- Compact Continuity ---` section with `last_compact_trigger`, `last_compact_request_ts`, `last_compact_rehydrate_ts`, `compact_race_count`, `review_pending_at_compact`, `just_compacted`, and the pending specialist count. Turns `compact_race_count` from dead telemetry into a visible operator signal.
+- **`verify.sh`** hook existence check upgraded from plain substring grep to a jq-scoped query. The previous check would have passed if a hook script had been wired under the wrong event (e.g. `record-pending-agent.sh` under `PostToolUse` instead of `PreToolUse`). Falls back to substring grep when jq is unavailable. Also added `record-pending-agent.sh` to `required_paths`, `hook_scripts`, and `required_hooks` arrays.
+- **`config/settings.patch.json`** has a new top-level `PreToolUse` event with matcher `Agent` → `record-pending-agent.sh`.
+
+### Fixed
+
+- **Silent pending-queue corruption on malformed `pending_agents.jsonl`.** The original Gap 3 implementation used `jq --slurp` in the `record-subagent-summary.sh` cleanup path, which aborts with exit 5 on the first non-JSONL line. That silently left the pending queue untouched, so every subsequent `SubagentStop` would hit the same parse error and the queue would freeze permanently. Replaced with a line-by-line parser that tolerates individual bad lines (prints them through unchanged) while still matching and removing the target entry via `.agent_type` field parse.
+
+### Testing
+
+- `tests/test-e2e-hook-sequence.sh` grown from 138 to 150 assertions (+12). New `Compaction hardening:` section covers: Gap 1 ULW affirmation, Gap 2 short-prompt bias + stale flag decay, Gap 3 dispatch/snapshot/clear flow, Gap 3 malformed-JSONL robustness (regression), Gap 3 FIFO-oldest same-type removal, Gap 4 pending-review directive, Gap 4 no-edits negative case, Gap 5 atomic batch write, Gap 6 empty-summary fallback, Gap 7 back-to-back archival, and `/ulw-off` state cleanup.
+- `tests/test-settings-merge.sh` updated with `PreToolUse` hook count assertion (fresh install + idempotent), `PreToolUse Agent matcher wired` structural check, and `PreToolUse` added to the cross-implementation structural event list at line 737. Still 160 assertions passing.
+
+### Docs
+
+- **CLAUDE.md / README / VERSION** — hooks inventory updated implicitly via the `required_hooks` table in `verify.sh`; README badge and `VERSION` bumped to `1.2.3`.
+
 ## [1.2.2] - 2026-04-11
 
 ### Changed

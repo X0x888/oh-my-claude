@@ -18,6 +18,37 @@ fi
 ensure_session_dir
 
 snapshot_file="$(session_file "precompact_snapshot.md")"
+
+# Gap 7 — race protection: if a prior snapshot exists and has not been
+# consumed by a post-compact SessionStart handoff, archive it before we
+# overwrite. "Consumed" means last_compact_rehydrate_ts is newer than the
+# snapshot file's mtime. If the prior snapshot is still unread, archive it
+# with a timestamp suffix and increment compact_race_count.
+if [[ -f "${snapshot_file}" ]]; then
+  prior_snapshot_mtime="$(_lock_mtime "${snapshot_file}")"
+  last_rehydrate_ts="$(read_state "last_compact_rehydrate_ts")"
+  last_rehydrate_ts="${last_rehydrate_ts:-0}"
+  if [[ "${prior_snapshot_mtime}" -gt 0 ]] \
+      && [[ "${prior_snapshot_mtime}" -gt "${last_rehydrate_ts}" ]]; then
+    archive_name="precompact_snapshot.${prior_snapshot_mtime}.md"
+    mv "${snapshot_file}" "$(session_file "${archive_name}")" 2>/dev/null || true
+    prior_race_count="$(read_state "compact_race_count")"
+    prior_race_count="${prior_race_count:-0}"
+    write_state "compact_race_count" "$((prior_race_count + 1))"
+    log_hook "pre-compact-snapshot" "race detected: archived ${archive_name}"
+
+    # Cap archive retention at 5 to prevent unbounded accumulation.
+    # shellcheck disable=SC2012
+    archives_to_prune="$(ls -t "$(session_file "precompact_snapshot.")"*.md 2>/dev/null | tail -n +6 || true)"
+    if [[ -n "${archives_to_prune}" ]]; then
+      while IFS= read -r _old; do
+        [[ -z "${_old}" ]] && continue
+        rm -f "${_old}" 2>/dev/null || true
+      done <<<"${archives_to_prune}"
+    fi
+  fi
+fi
+
 workflow_mode_value="$(workflow_mode)"
 task_domain_value="$(task_domain)"
 task_intent_value="$(read_state "task_intent")"
@@ -114,6 +145,28 @@ render_subagent_summaries() {
   done
 }
 
+render_pending_agents() {
+  local pending_file
+  pending_file="$(session_file "pending_agents.jsonl")"
+
+  if [[ ! -f "${pending_file}" ]]; then
+    return
+  fi
+
+  # Unlocked read: concurrent SubagentStop may mutate the file via an
+  # atomic mv() while we iterate. Because mv() is atomic on macOS/Linux,
+  # we see either the pre- or post-mutation inode as a whole, never a
+  # torn file. A short window of stale state in the snapshot is
+  # acceptable — the snapshot is advisory, not load-bearing, and the
+  # worst case is showing one extra/missing pending entry for one cycle.
+  while IFS= read -r line; do
+    [[ -z "${line}" ]] && continue
+    jq -r 'select(.agent_type) |
+      "- \(.agent_type): \(.description // "(no description)" | gsub("[\\r\\n]+"; " ") | .[:260])"
+    ' <<<"${line}" 2>/dev/null || true
+  done <"${pending_file}"
+}
+
 {
   printf '# Compact Continuity Snapshot\n\n'
   printf -- '- Session ID: `%s`\n' "${SESSION_ID}"
@@ -155,6 +208,11 @@ render_subagent_summaries() {
     printf '\n## Recent Specialist Conclusions\n%s\n' "${subagent_rendered}"
   fi
 
+  pending_rendered="$(render_pending_agents)"
+  if [[ -n "${pending_rendered}" ]]; then
+    printf '\n## Pending Specialists (In Flight)\n%s\n' "${pending_rendered}"
+  fi
+
   plan_file="$(session_file "current_plan.md")"
   if [[ -f "${plan_file}" ]]; then
     plan_content="$(head -c 3000 "${plan_file}")"
@@ -173,8 +231,26 @@ render_subagent_summaries() {
   printf -- '- %s\n' "$(render_verification_status)"
 } >"${snapshot_file}"
 
-write_state "last_compact_trigger" "${TRIGGER:-unknown}"
-write_state "last_compact_request_ts" "$(now_epoch)"
+# Gap 4a — pending-review flag: if edits happened and the reviewer has not
+# caught up, set a hard flag the session-start-compact handoff reads back to
+# emit a "MUST run reviewer" directive on resume.
+review_pending_flag=""
+if [[ -n "${last_edit_ts}" ]]; then
+  if [[ -z "${last_review_ts}" || "${last_review_ts}" -lt "${last_edit_ts}" ]]; then
+    review_pending_flag="1"
+  fi
+fi
+
+# Gap 5 — flush: write all compact-adjacent state keys in a single batch
+# so a concurrent SubagentStop cannot interleave between them. The
+# atomic batch write (not the individual keys) is the mechanism that
+# closes the gap; we intentionally do not set a transient "in-flight"
+# marker because nothing downstream reads it and unreferenced state
+# introduces a leak risk if PostCompact fails to fire.
+write_state_batch \
+  "last_compact_trigger" "${TRIGGER:-unknown}" \
+  "last_compact_request_ts" "$(now_epoch)" \
+  "review_pending_at_compact" "${review_pending_flag}"
 
 if [[ -n "${CUSTOM_INSTRUCTIONS}" ]]; then
   write_state "last_compact_custom_instructions" "${CUSTOM_INSTRUCTIONS}"
