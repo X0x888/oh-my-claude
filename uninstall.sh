@@ -58,6 +58,7 @@ SKILL_DIRS=(
   "${CLAUDE_HOME}/skills/research-hard"
   "${CLAUDE_HOME}/skills/review-hard"
   "${CLAUDE_HOME}/skills/skills"
+  "${CLAUDE_HOME}/skills/ulw-demo"
   "${CLAUDE_HOME}/skills/ulw-off"
   "${CLAUDE_HOME}/skills/ulw-status"
 )
@@ -177,6 +178,7 @@ done
 
 printf '\nThe following will NOT be removed:\n'
 printf '  - CLAUDE.md (may contain user content)\n'
+printf '  - omc-user/ (user customizations)\n'
 printf '  - Backup directories under %s/backups/\n' "${CLAUDE_HOME}"
 printf '  - Other hooks or settings not installed by oh-my-claude\n'
 printf '\n'

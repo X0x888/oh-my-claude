@@ -730,6 +730,19 @@ set_conf "installed_version" "${OMC_VERSION}"
 # Ensure quality-pack state directory exists (not in the bundle).
 mkdir -p "${CLAUDE_HOME}/quality-pack/state"
 
+# Step 2d — Create user-override directory (never overwritten by rsync).
+# Files in omc-user/ survive updates. The template is only seeded on first
+# install; subsequent installs leave the directory untouched.
+OMC_USER_DIR="${CLAUDE_HOME}/omc-user"
+OMC_USER_TEMPLATE="${SCRIPT_DIR}/bundle/omc-user-template"
+if [[ ! -d "${OMC_USER_DIR}" ]]; then
+  mkdir -p "${OMC_USER_DIR}"
+  if [[ -d "${OMC_USER_TEMPLATE}" ]]; then
+    rsync -a "${OMC_USER_TEMPLATE}/" "${OMC_USER_DIR}/"
+    printf '  Created user-override directory: %s\n' "${OMC_USER_DIR}"
+  fi
+fi
+
 # Step 3 — Install Ghostty theme/config (no-op if bundle has none).
 install_ghostty
 

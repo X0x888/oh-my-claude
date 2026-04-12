@@ -19,12 +19,14 @@ Display this table to the user:
 | **librarian** | `/librarian <topic>` | You need official docs, third-party API references, or concrete external examples |
 | **atlas** | `/atlas [focus]` | Bootstrap or refresh CLAUDE.md / .claude/rules for a repository |
 | **council** | `/council [focus]` | Multi-role project evaluation — dispatches PM, design, security, data, SRE, and growth perspectives |
+| **ulw-demo** | `/ulw-demo` | Guided onboarding — see the quality gates fire on a demo task |
 | **ulw-status** | `/ulw-status` | Inspect current session state — mode, domain, counters, flags (debugging) |
 | **ulw-off** | `/ulw-off` | Deactivate ultrawork mode mid-session without ending the conversation |
 | **skills** | `/skills` | Show this list |
 
 ## Decision guide
 
+- **Just installed?** Use `/ulw-demo` to see the quality gates in action.
 - **Starting real work?** Use `/ulw` (or `/autowork`).
 - **Need a plan first?** Use `/plan-hard`. If the goal is vague, use `/prometheus` instead.
 - **Want to validate a plan?** Use `/metis`.

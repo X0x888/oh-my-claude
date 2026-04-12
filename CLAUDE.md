@@ -6,7 +6,7 @@ Cognitive quality harness for Claude Code -- bash hooks, specialist agents, and 
 
 - `bundle/dot-claude/agents/` -- 29 specialist agent definitions with permission boundaries
 - `bundle/dot-claude/quality-pack/scripts/` -- 5 lifecycle hook scripts (prompt routing, compaction, session management)
-- `bundle/dot-claude/skills/` -- 14 skill definitions, each in `<name>/SKILL.md`
+- `bundle/dot-claude/skills/` -- 15 skill definitions, each in `<name>/SKILL.md`
 - `bundle/dot-claude/skills/autowork/scripts/` -- 12 autowork hook scripts including `common.sh` (shared utility library)
 - `bundle/dot-claude/output-styles/` -- output format templates
 - `config/settings.patch.json` -- settings merged into user config on install

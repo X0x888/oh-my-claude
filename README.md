@@ -2,7 +2,7 @@
 
 **What if Claude Code couldn't cut corners?**
 
-[![Version](https://img.shields.io/badge/Version-1.3.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-1.3.1-blue.svg)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Shell](https://img.shields.io/badge/Shell-bash-green.svg)]()
 [![Dependencies](https://img.shields.io/badge/Dependencies-none-brightgreen.svg)]()
@@ -89,7 +89,15 @@ bash install.sh
 bash verify.sh
 ```
 
-Try it out:
+See it in action:
+
+```
+/ulw-demo
+```
+
+This guided walkthrough creates a demo file, triggers the quality gates, and explains what happened at each step. You'll see the stop-guard block a premature completion, then watch the verification and review loop complete.
+
+Or jump straight into real work:
 
 ```
 /ulw fix the failing test and add regression coverage
@@ -168,7 +176,7 @@ oh-my-claude/
 ├── install.sh / uninstall.sh / verify.sh   # Install, remove, and verify
 ├── bundle/dot-claude/                       # Installs to ~/.claude/
 │   ├── agents/          (29 agents)         # Specialist agent definitions
-│   ├── skills/          (14 skills)         # Skill definitions + autowork hooks
+│   ├── skills/          (15 skills)         # Skill definitions + autowork hooks
 │   ├── quality-pack/                        # Lifecycle hooks + memory files
 │   ├── output-styles/                       # Output format templates
 │   └── statusline.py                        # Custom statusline widget

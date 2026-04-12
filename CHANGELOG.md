@@ -2,6 +2,37 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.1] - 2026-04-12
+
+### Security
+
+- **Session ID validation** — `validate_session_id()` in `common.sh` rejects path traversal characters (slashes, `..`, spaces, backticks) before any filesystem operation. Prevents crafted session IDs from writing state outside the state directory.
+- **`append_limited_state` race fix** — replaced fixed `.tmp` suffix with `mktemp` to prevent silent JSONL corruption when concurrent hooks fire simultaneously.
+- **Custom verification pattern validation** — `record-verification.sh` now checks `grep` exit code 2 (invalid regex) before concatenating user-supplied patterns from `oh-my-claude.conf`.
+
+### Fixed
+
+- **State corruption recovery** — `_ensure_valid_state()` detects corrupt `session_state.json`, archives the corrupt file, and resets to `{}`. Prevents the cascade where corrupt JSON silently disables all quality gates.
+- **Edit-count race condition** — `mark-edit.sh` now wraps the dedup check and counter increment in `with_state_lock` to prevent lost updates when concurrent PostToolUse hooks fire.
+- **Guard exhaustion dimension parsing** — fixed `dims_part` truncation that dropped all dimensions after the first comma (e.g., showed only "stress_test" instead of "stress_test, completeness, prose").
+- **Stall detection evasion** — agent dispatch now halves the stall counter instead of resetting to 0, preventing Read-Agent-Read-Agent cycles from evading detection.
+
+### Added
+
+- **Intent classification visibility** — first ULW response now surfaces the detected intent and domain (e.g., "Domain: coding | Intent: execution") so users can verify routing.
+- **Human-readable guard exhaustion messages** — raw state variable names (`review=1,verify=1`) translated to readable descriptions ("code review, test verification").
+- **Enhanced `/ulw-status`** — new Quality Status section (verification/review as "PENDING"/"passed"/"FAILED"), dimension block counters, edit counts, dimension tick timestamps.
+- **28 new verification patterns** — docker, terraform, ansible, helm, kubectl, mvn, maven, dotnet, mix, elixir, ruby, bundle, rake, zig, deno, nix, plus action verbs: validate, verify, plan, apply.
+- **Git operation domain keywords** — commit, push, merge, rebase, branch, cherry-pick, stash, tag as weak coding signals in `infer_domain()`.
+- **hooks.log rotation** — capped at 2000 lines, truncates to 1500 to prevent unbounded growth when debug mode is left enabled.
+- **User-override layer** — `~/.claude/omc-user/` directory for customizations that survive `install.sh` updates. Files in `omc-user/memory/` are loaded after bundle defaults via `@`-references.
+- **`/ulw-demo` onboarding skill** — guided first-run experience that walks a new user through a quality gate cycle.
+- 27 new tests: session ID validation, state corruption recovery, stall-counter halving, git keyword classification.
+
+### Changed
+
+- Skill count: 14 → 15 (new `/ulw-demo` skill)
+
 ## [1.3.0] - 2026-04-12
 
 ### Added

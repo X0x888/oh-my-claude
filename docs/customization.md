@@ -77,6 +77,30 @@ Agent-level thinking effort (extended thinking budget) is not currently configur
 
 ---
 
+## User-Override Layer
+
+Files in `~/.claude/omc-user/` are **never overwritten** by `install.sh`. Use this directory for customizations that should survive updates.
+
+The default template is `~/.claude/omc-user/overrides.md`, which is loaded after the bundle defaults via the `@` reference in `CLAUDE.md`. Anything you put here takes effect in every session.
+
+### What to put in overrides.md
+
+- **Custom anti-patterns**: `FORBIDDEN: [your rule]`
+- **Relaxed rules**: `Override: when working on prototypes, skip the excellence-reviewer gate`
+- **Domain-specific guidance**: `When working on [your project type], always [your preference]`
+- **Specialist preferences**: `Prefer oracle over metis for debugging in this codebase`
+
+### What NOT to put here
+
+- Threshold tuning (stall detection, file counts) — use `~/.claude/oh-my-claude.conf` instead
+- Model tier changes — use `bash ~/.claude/switch-tier.sh <tier>` instead
+
+### The override is additive
+
+`overrides.md` is loaded **after** the bundle's `core.md`, `skills.md`, and `compact.md`. Your rules supplement the defaults; they don't replace them. To override a specific default rule, explicitly state the override in your file.
+
+---
+
 ## Adding Your Own Agents
 
 Agent definitions live in `~/.claude/agents/`. Each agent is a single markdown file with YAML frontmatter.
