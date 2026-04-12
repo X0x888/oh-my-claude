@@ -731,8 +731,9 @@ set_conf "installed_version" "${OMC_VERSION}"
 mkdir -p "${CLAUDE_HOME}/quality-pack/state"
 
 # Step 2d — Create user-override directory (never overwritten by rsync).
-# Files in omc-user/ survive updates. The template is only seeded on first
-# install; subsequent installs leave the directory untouched.
+# Files in omc-user/ survive updates. Existing user content is preserved.
+# The template is seeded on first install; subsequent installs only ensure
+# overrides.md exists (the bundle CLAUDE.md @-references it unconditionally).
 OMC_USER_DIR="${CLAUDE_HOME}/omc-user"
 OMC_USER_TEMPLATE="${SCRIPT_DIR}/bundle/omc-user-template"
 if [[ ! -d "${OMC_USER_DIR}" ]]; then
@@ -740,6 +741,14 @@ if [[ ! -d "${OMC_USER_DIR}" ]]; then
   if [[ -d "${OMC_USER_TEMPLATE}" ]]; then
     rsync -a "${OMC_USER_TEMPLATE}/" "${OMC_USER_DIR}/"
     printf '  Created user-override directory: %s\n' "${OMC_USER_DIR}"
+  fi
+elif [[ ! -f "${OMC_USER_DIR}/overrides.md" ]]; then
+  # Ensure overrides.md exists even if user deleted it or upgraded from
+  # a version that didn't create it — the @-reference in CLAUDE.md needs it.
+  if [[ -f "${OMC_USER_TEMPLATE}/overrides.md" ]]; then
+    cp "${OMC_USER_TEMPLATE}/overrides.md" "${OMC_USER_DIR}/overrides.md"
+  else
+    printf '# User Overrides\n' > "${OMC_USER_DIR}/overrides.md"
   fi
 fi
 
