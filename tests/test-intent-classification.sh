@@ -464,6 +464,16 @@ assert_not_council "explain the architecture"
 assert_not_council "how does the caching work"
 assert_not_council "should I use Redis or Memcached"
 
+# --- Git operations as weak coding signals ---
+printf '\nDomain: git operations as coding context:\n'
+
+# Git keywords alone are weak — need 3+ to trigger coding
+assert_domain "coding" "commit all changes and push to the remote branch"
+assert_domain "coding" "merge the feature branch, rebase onto main, then push"
+assert_domain "coding" "cherry-pick the fix commit and tag the release"
+# Single git keyword is not enough alone
+assert_domain "general" "commit this"
+
 printf '\n=== Results: %d passed, %d failed ===\n' "${pass}" "${fail}"
 if [[ "${fail}" -gt 0 ]]; then
   exit 1

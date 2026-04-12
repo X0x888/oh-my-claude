@@ -858,7 +858,7 @@ infer_domain() {
   coding_strong=$(( ${coding_strong:-0} + coding_bigrams ))
 
   local coding_weak
-  coding_weak=$(count_keyword_matches '\b(tests?|build|scripts?|config(uration)?|hooks?|deploy(ed|ing|ment)?|server)\b' "${text}")
+  coding_weak=$(count_keyword_matches '\b(tests?|build|scripts?|config(uration)?|hooks?|deploy(ed|ing|ment)?|server|commit(s|ted|ting)?|push(ed|ing)?|merge[dr]?|rebase[dr]?|branch(es|ed|ing)?|cherry.?pick|stash(ed|ing)?|tag(ged|ging)?)\b' "${text}")
   coding_weak=${coding_weak:-0}
 
   # Weak coding keywords only count when a strong signal is present,

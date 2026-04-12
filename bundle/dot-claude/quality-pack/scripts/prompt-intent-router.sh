@@ -272,7 +272,9 @@ if [[ -n "${guard_exhausted}" ]]; then
   fi
   if [[ "${guard_detail}" == *"dimensions_missing="* ]]; then
     dims_part="${guard_detail##*dimensions_missing=}"
-    dims_part="${dims_part%%,*}"
+    # Replace commas with ", " for readability; the dimensions_missing
+    # value is always the sole content of guard_detail when present.
+    dims_part="${dims_part//,/, }"
     human_detail="${human_detail:+${human_detail}, }reviewer dimensions (${dims_part})"
   fi
   human_detail="${human_detail:-${guard_detail}}"
