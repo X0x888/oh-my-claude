@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.0] - 2026-04-14
+
+### Added
+
+- **Concurrent hook safety** — `with_state_lock_batch()` convenience wrapper in `common.sh` for atomic multi-key state writes. All write paths in `record-reviewer.sh`, `reflect-after-agent.sh`, `record-plan.sh`, `record-advisory-verification.sh`, and `record-verification.sh` now wrapped in proper locks.
+- **Verification confidence scoring** — `score_verification_confidence()` and `detect_project_test_command()` in `common.sh`. Records confidence level (0-100) and method used. Stop guard now names specific test commands in block messages (e.g., "npm test" instead of generic "verification").
+- **Project-context-aware domain inference** — `detect_project_profile()` scans for package.json, Cargo.toml, go.mod, etc. to build a project profile. `infer_domain()` uses profile as tiebreaker (+2 coding, +1 docs) without overriding the protected 40% mixed threshold.
+- **Quality scorecard on guard exhaustion** — `build_quality_scorecard()` generates a human-readable scorecard with ✓/✗/– marks for all quality dimensions. Configurable via `guard_exhaustion_mode` in `oh-my-claude.conf` (warn/strict/release, default: warn).
+- **Dynamic dimension ordering** — `order_dimensions_by_risk()` prioritizes missing dimensions by risk (stress_test→bug_hunt→code_quality→design_quality→prose→completeness→traceability). UI-heavy projects boost design_quality priority.
+- **Smarter stall detection** — `compute_stall_threshold()` scales with file count and plan presence. `compute_progress_score()` (0-100) based on edits/verify/review/dims. High-progress sessions get softer "EXPLORATION CHECK" instead of "STALL DETECTED".
+- **Compaction continuity improvements** — pre-compact snapshot now includes structured quality dimension status, verification confidence, and guard state. Post-compact handoff injects dimension status (completed/pending) to prevent redundant reviewer dispatch.
+- **Agent performance tracking** — cross-session `agent-metrics.json` tracks invocation counts, clean/findings verdicts, and rolling confidence averages per reviewer type. Visible in `/ulw-status`.
+- **Cross-session defect learning** — `defect-patterns.json` tracks defect category frequencies (missing_test, null_check, edge_case, etc.) with recent examples. Top patterns injected into prompts to prime the model for historically frequent defect categories.
+- **Enhanced `/ulw-status`** — now shows dimension verdicts (CLEAN/FINDINGS), verification confidence, project profile, guard configuration, and cross-session agent metrics.
+- **Dimension verdict tracking** — `dim_<name>_verdict` state keys (CLEAN/FINDINGS) written by `record-reviewer.sh` for all reviewer types, enabling clean-sweep detection and enriched scorecards.
+- **Progress score on penultimate block** — quality gate blocks 2+ show a progress score to help the model understand how close it is to completion.
+
 ## [1.3.1] - 2026-04-12
 
 ### Security

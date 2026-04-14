@@ -75,6 +75,28 @@ if [[ "${review_pending_at_compact}" == "1" ]]; then
   context_parts+=("IMPORTANT: A quality review was pending before the compact boundary. You MUST run quality-reviewer (or editor-critic for doc-only edits) before the next stop — the stop guard will block you otherwise. Do not treat the compact as a reset on the review loop.")
 fi
 
+# Quality dimension continuity: remind the model which dimensions are
+# done and which are still needed, so post-compact work doesn't re-run
+# already-completed reviewers.
+required_dims_val="$(get_required_dimensions 2>/dev/null || true)"
+if [[ -n "${required_dims_val}" ]]; then
+  missing_dims_val="$(missing_dimensions "${required_dims_val}" 2>/dev/null || true)"
+  done_dims_val=""
+  for _dtok in ${required_dims_val//,/ }; do
+    _dtick="$(read_state "$(_dim_key "${_dtok}")")"
+    if [[ -n "${_dtick}" ]]; then
+      done_dims_val="${done_dims_val:+${done_dims_val}, }${_dtok}"
+    fi
+  done
+  if [[ -n "${done_dims_val}" || -n "${missing_dims_val}" ]]; then
+    dim_directive="Quality dimension status:"
+    [[ -n "${done_dims_val}" ]] && dim_directive="${dim_directive} Completed: ${done_dims_val}."
+    [[ -n "${missing_dims_val}" ]] && dim_directive="${dim_directive} Still needed: ${missing_dims_val}."
+    dim_directive="${dim_directive} Do not re-run reviewers for completed dimensions."
+    context_parts+=("${dim_directive}")
+  fi
+fi
+
 # Join parts with blank lines between, then append the preserved state.
 context_text="$(printf '%s\n\n' "${context_parts[@]}")"
 context_text="${context_text}${snapshot_text}"

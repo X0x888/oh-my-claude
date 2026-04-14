@@ -14,12 +14,15 @@ _omc_env_excellence="${OMC_EXCELLENCE_FILE_COUNT:-}"
 _omc_env_ttl="${OMC_STATE_TTL_DAYS:-}"
 _omc_env_dimgate="${OMC_DIMENSION_GATE_FILE_COUNT:-}"
 _omc_env_traceability="${OMC_TRACEABILITY_FILE_COUNT:-}"
+_omc_env_exhaustion="${OMC_GUARD_EXHAUSTION_MODE:-}"
 
 OMC_STALL_THRESHOLD="${OMC_STALL_THRESHOLD:-12}"
 OMC_EXCELLENCE_FILE_COUNT="${OMC_EXCELLENCE_FILE_COUNT:-3}"
 OMC_STATE_TTL_DAYS="${OMC_STATE_TTL_DAYS:-7}"
 OMC_DIMENSION_GATE_FILE_COUNT="${OMC_DIMENSION_GATE_FILE_COUNT:-3}"
 OMC_TRACEABILITY_FILE_COUNT="${OMC_TRACEABILITY_FILE_COUNT:-6}"
+# Guard exhaustion mode: release (default, silent), warn (release + scorecard), strict (never release)
+OMC_GUARD_EXHAUSTION_MODE="${OMC_GUARD_EXHAUSTION_MODE:-warn}"
 
 _omc_conf_loaded=0
 
@@ -51,6 +54,8 @@ load_conf() {
         [[ -z "${_omc_env_dimgate}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_DIMENSION_GATE_FILE_COUNT="${value}" || true ;;
       traceability_file_count)
         [[ -z "${_omc_env_traceability}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_TRACEABILITY_FILE_COUNT="${value}" || true ;;
+      guard_exhaustion_mode)
+        [[ -z "${_omc_env_exhaustion}" && "${value}" =~ ^(release|warn|strict)$ ]] && OMC_GUARD_EXHAUSTION_MODE="${value}" || true ;;
     esac
   done < "${conf}"
 }
@@ -320,6 +325,12 @@ with_state_lock() {
   "$@" || rc=$?
   rmdir "${lockdir}" 2>/dev/null || true
   return "${rc}"
+}
+
+# Convenience wrapper: atomic write_state_batch inside with_state_lock.
+# Usage: with_state_lock_batch k1 v1 k2 v2 ...
+with_state_lock_batch() {
+  with_state_lock write_state_batch "$@"
 }
 
 # --- end state lock ---
@@ -792,7 +803,715 @@ missing_dimensions() {
   printf '%s' "${missing}"
 }
 
+# order_dimensions_by_risk: Reorder a comma-separated list of dimensions
+# so higher-risk dimensions come first. Returns reordered csv on stdout.
+# Priority ordering:
+#   1. stress_test (security/edge-case bugs are highest risk)
+#   2. bug_hunt (logic bugs)
+#   3. code_quality (code health)
+#   4. design_quality (UI correctness)
+#   5. prose (documentation)
+#   6. completeness (holistic review)
+#   7. traceability (cross-cutting, lowest risk)
+# Within each priority level, the order is stable.
+order_dimensions_by_risk() {
+  local dims="$1"
+  local project_profile="${2:-}"
+  local ordered=""
+
+  # Define priority tiers. If project has UI, promote design_quality.
+  local priority_order="stress_test,bug_hunt,code_quality"
+  if [[ -n "${project_profile}" ]] && project_profile_has "ui" "${project_profile}"; then
+    priority_order="${priority_order},design_quality"
+  fi
+  priority_order="${priority_order},prose,completeness"
+  if [[ -n "${project_profile}" ]] && ! project_profile_has "ui" "${project_profile}"; then
+    priority_order="${priority_order},design_quality"
+  fi
+  priority_order="${priority_order},traceability"
+
+  # Select only dims that are in the input list, preserving priority order
+  local d
+  for d in ${priority_order//,/ }; do
+    if [[ ",${dims}," == *",${d},"* ]]; then
+      ordered="${ordered:+${ordered},}${d}"
+    fi
+  done
+
+  # Append any dims not in our priority list (future-proof)
+  for d in ${dims//,/ }; do
+    if [[ ",${ordered}," != *",${d},"* ]]; then
+      ordered="${ordered:+${ordered},}${d}"
+    fi
+  done
+
+  printf '%s' "${ordered}"
+}
+
+# check_clean_sweep: Check if ALL previously-ticked dimensions had CLEAN
+# verdicts. Returns 0 (true) if all were clean, 1 otherwise.
+# Used for fast-path: if all completed dims were clean, remaining low-risk
+# dims can be deferred (logged as skipped in the scorecard).
+check_clean_sweep() {
+  local required_dims="$1"
+  local _dim _verdict _tick_ts
+  local any_ticked=0
+  local any_findings=0
+
+  for _dim in ${required_dims//,/ }; do
+    _tick_ts="$(read_state "$(_dim_key "${_dim}")")"
+    if [[ -n "${_tick_ts}" ]]; then
+      any_ticked=1
+      _verdict="$(read_state "dim_${_dim}_verdict")"
+      if [[ "${_verdict}" == "FINDINGS" ]]; then
+        any_findings=1
+        break
+      fi
+    fi
+  done
+
+  # Clean sweep requires at least one dimension ticked and no findings
+  [[ "${any_ticked}" -eq 1 && "${any_findings}" -eq 0 ]]
+}
+
 # --- end dimension helpers ---
+
+# --- Verification confidence helpers ---
+
+# detect_project_test_command: Inspect project files to discover the canonical
+# test command. Returns the command string on stdout or empty if not detected.
+# Looks at package.json, Makefile, Cargo.toml, pyproject.toml, etc.
+detect_project_test_command() {
+  local project_dir="${1:-.}"
+  local test_cmd=""
+
+  # package.json → npm/pnpm/yarn test
+  if [[ -f "${project_dir}/package.json" ]]; then
+    local scripts_test
+    scripts_test="$(jq -r '.scripts.test // empty' "${project_dir}/package.json" 2>/dev/null || true)"
+    if [[ -n "${scripts_test}" && "${scripts_test}" != "echo \"Error: no test specified\" && exit 1" ]]; then
+      # Detect package manager
+      if [[ -f "${project_dir}/pnpm-lock.yaml" ]]; then
+        test_cmd="pnpm test"
+      elif [[ -f "${project_dir}/yarn.lock" ]]; then
+        test_cmd="yarn test"
+      elif [[ -f "${project_dir}/bun.lockb" ]]; then
+        test_cmd="bun test"
+      else
+        test_cmd="npm test"
+      fi
+    fi
+  fi
+
+  # Cargo.toml → cargo test
+  if [[ -z "${test_cmd}" && -f "${project_dir}/Cargo.toml" ]]; then
+    test_cmd="cargo test"
+  fi
+
+  # go.mod → go test ./...
+  if [[ -z "${test_cmd}" && -f "${project_dir}/go.mod" ]]; then
+    test_cmd="go test ./..."
+  fi
+
+  # pyproject.toml or setup.py → pytest
+  if [[ -z "${test_cmd}" ]]; then
+    if [[ -f "${project_dir}/pyproject.toml" ]] || [[ -f "${project_dir}/setup.py" ]]; then
+      if [[ -f "${project_dir}/pyproject.toml" ]] \
+        && grep -q 'pytest' "${project_dir}/pyproject.toml" 2>/dev/null; then
+        test_cmd="pytest"
+      elif command -v pytest &>/dev/null || [[ -f "${project_dir}/pytest.ini" ]] \
+        || [[ -f "${project_dir}/setup.cfg" ]]; then
+        test_cmd="pytest"
+      fi
+    fi
+  fi
+
+  # Makefile with test target
+  if [[ -z "${test_cmd}" && -f "${project_dir}/Makefile" ]]; then
+    if grep -qE '^test[[:space:]]*:' "${project_dir}/Makefile" 2>/dev/null; then
+      test_cmd="make test"
+    fi
+  fi
+
+  # mix.exs → mix test
+  if [[ -z "${test_cmd}" && -f "${project_dir}/mix.exs" ]]; then
+    test_cmd="mix test"
+  fi
+
+  # Gemfile → bundle exec rspec or rake test
+  if [[ -z "${test_cmd}" && -f "${project_dir}/Gemfile" ]]; then
+    if [[ -d "${project_dir}/spec" ]]; then
+      test_cmd="bundle exec rspec"
+    else
+      test_cmd="rake test"
+    fi
+  fi
+
+  printf '%s' "${test_cmd}"
+}
+
+# score_verification_confidence: Score how confident we are that a command
+# actually exercised project-relevant verification. Returns a value 0-100
+# on stdout. Scoring factors:
+#   - Exact match with project test command: +40
+#   - Contains known test framework keyword: +30
+#   - Output contains assertion/test count: +20
+#   - Output indicates pass/fail (not ambiguous): +10
+score_verification_confidence() {
+  local cmd="${1:-}"
+  local output="${2:-}"
+  local project_test_cmd="${3:-}"
+  local score=0
+
+  [[ -z "${cmd}" ]] && { printf '0'; return; }
+
+  # Factor 1: Exact/prefix match with detected project test command
+  if [[ -n "${project_test_cmd}" ]]; then
+    # Normalize: strip leading whitespace and env vars
+    local norm_cmd norm_ptc
+    norm_cmd="$(printf '%s' "${cmd}" | sed 's/^[[:space:]]*//' | sed 's/^[A-Z_]*=[^ ]* //')"
+    norm_ptc="$(printf '%s' "${project_test_cmd}" | sed 's/^[[:space:]]*//')"
+    if [[ "${norm_cmd}" == "${norm_ptc}"* ]] || [[ "${norm_cmd}" == *"${norm_ptc}"* ]]; then
+      score=$((score + 40))
+    fi
+  fi
+
+  # Factor 2: Known test framework keywords in the command
+  if printf '%s' "${cmd}" | grep -Eiq '\b(pytest|vitest|jest|mocha|cargo test|go test|npm test|pnpm test|yarn test|bun test|rspec|phpunit|xcodebuild test|swift test|mix test|gradle test|mvn test|dotnet test|rake test|deno test|shellcheck|bash -n)\b'; then
+    score=$((score + 30))
+  fi
+
+  # Factor 3: Output contains test counts (e.g. "42 passed", "Tests: 10")
+  if [[ -n "${output}" ]]; then
+    if printf '%s' "${output}" | grep -Eiq '[0-9]+ (passed|tests?|specs?|assertions?|examples?|ok)\b|Tests:[[:space:]]*[0-9]+|test result:'; then
+      score=$((score + 20))
+    fi
+  fi
+
+  # Factor 4: Clear pass/fail outcome in output
+  if [[ -n "${output}" ]]; then
+    if printf '%s' "${output}" | grep -Eiq '\b(PASS(ED)?|FAIL(ED)?|SUCCESS|OK|ALL.*PASSED|0 failures)\b|exit (code|status)[: ]*[0-9]'; then
+      score=$((score + 10))
+    fi
+  fi
+
+  printf '%s' "${score}"
+}
+
+# --- end verification helpers ---
+
+# --- Stall detection helpers ---
+
+# compute_stall_threshold: Scale the stall threshold based on task complexity.
+# A simple 1-file edit should stall at the default (12 reads), while a large
+# multi-file task gets more leeway (up to 2x the base threshold).
+# Returns integer threshold on stdout.
+compute_stall_threshold() {
+  local base_threshold="${OMC_STALL_THRESHOLD}"
+  local edited_count="${1:-0}"
+  local has_plan="${2:-false}"
+
+  # Plans legitimately require more exploration
+  local plan_bonus=0
+  if [[ "${has_plan}" == "true" ]]; then
+    plan_bonus=4
+  fi
+
+  # Scale by complexity: 1-2 files=base, 3-5=+4, 6+=+8
+  local complexity_bonus=0
+  if [[ "${edited_count}" -ge 6 ]]; then
+    complexity_bonus=8
+  elif [[ "${edited_count}" -ge 3 ]]; then
+    complexity_bonus=4
+  fi
+
+  printf '%s' "$(( base_threshold + plan_bonus + complexity_bonus ))"
+}
+
+# compute_progress_score: Compute a 0-100 progress score for the current session.
+# Considers edits made, verifications run, reviews completed, and dimensions ticked.
+# Higher scores mean more progress — used to soften stall messages when real work
+# is being done alongside exploration.
+compute_progress_score() {
+  local score=0
+
+  local last_edit_ts last_verify_ts last_review_ts
+  last_edit_ts="$(read_state "last_edit_ts")"
+  last_verify_ts="$(read_state "last_verify_ts")"
+  last_review_ts="$(read_state "last_review_ts")"
+
+  # Edit count from log
+  local edited_count=0
+  local edited_log
+  edited_log="$(session_file "edited_files.log")"
+  if [[ -f "${edited_log}" ]]; then
+    edited_count="$(sort -u "${edited_log}" | wc -l | tr -d '[:space:]')"
+  fi
+  edited_count="${edited_count:-0}"
+
+  # Points for edits (up to 30)
+  if [[ "${edited_count}" -ge 5 ]]; then
+    score=$((score + 30))
+  elif [[ "${edited_count}" -ge 1 ]]; then
+    score=$((score + edited_count * 6))
+  fi
+
+  # Points for verification (up to 20)
+  if [[ -n "${last_verify_ts}" ]]; then
+    score=$((score + 20))
+  fi
+
+  # Points for review (up to 20)
+  if [[ -n "${last_review_ts}" ]]; then
+    score=$((score + 20))
+  fi
+
+  # Points for plan (10)
+  local has_plan
+  has_plan="$(read_state "has_plan")"
+  if [[ "${has_plan}" == "true" ]]; then
+    score=$((score + 10))
+  fi
+
+  # Points for dimension ticks (up to 20)
+  local dim_ticks=0
+  local _dim
+  for _dim in bug_hunt code_quality stress_test completeness prose traceability design_quality; do
+    local _ts
+    _ts="$(read_state "$(_dim_key "${_dim}")")"
+    if [[ -n "${_ts}" ]]; then
+      dim_ticks=$((dim_ticks + 1))
+    fi
+  done
+  if [[ "${dim_ticks}" -ge 4 ]]; then
+    score=$((score + 20))
+  elif [[ "${dim_ticks}" -ge 1 ]]; then
+    score=$((score + dim_ticks * 5))
+  fi
+
+  # Cap at 100
+  if [[ "${score}" -gt 100 ]]; then
+    score=100
+  fi
+
+  printf '%s' "${score}"
+}
+
+# --- end stall detection helpers ---
+
+# --- Quality scorecard ---
+
+# build_quality_scorecard: Build a human-readable quality scorecard summarizing
+# the current quality gate status. Returns a multi-line string on stdout.
+# Used when guards exhaust to give visibility into what was completed vs skipped.
+build_quality_scorecard() {
+  local sc=""
+  local check_mark="✓"
+  local cross_mark="✗"
+  local dash_mark="–"
+
+  # Verification status
+  local last_verify_ts last_verify_outcome last_verify_cmd verify_confidence
+  last_verify_ts="$(read_state "last_verify_ts")"
+  last_verify_outcome="$(read_state "last_verify_outcome")"
+  last_verify_cmd="$(read_state "last_verify_cmd")"
+  verify_confidence="$(read_state "last_verify_confidence")"
+
+  if [[ -n "${last_verify_ts}" ]]; then
+    if [[ "${last_verify_outcome}" == "passed" ]]; then
+      sc="${sc}${check_mark} Verification: passed"
+      if [[ -n "${last_verify_cmd}" ]]; then
+        sc="${sc} (${last_verify_cmd})"
+      fi
+      if [[ -n "${verify_confidence}" && "${verify_confidence}" -lt 50 ]]; then
+        sc="${sc} [low confidence: ${verify_confidence}%]"
+      fi
+    else
+      sc="${sc}${cross_mark} Verification: FAILED"
+      [[ -n "${last_verify_cmd}" ]] && sc="${sc} (${last_verify_cmd})"
+    fi
+  else
+    sc="${sc}${cross_mark} Verification: not run"
+  fi
+  sc="${sc}\n"
+
+  # Review status
+  local last_review_ts review_had_findings
+  last_review_ts="$(read_state "last_review_ts")"
+  review_had_findings="$(read_state "review_had_findings")"
+
+  if [[ -n "${last_review_ts}" ]]; then
+    if [[ "${review_had_findings}" == "true" ]]; then
+      sc="${sc}${cross_mark} Code review: findings reported"
+    else
+      sc="${sc}${check_mark} Code review: clean"
+    fi
+  else
+    sc="${sc}${cross_mark} Code review: not run"
+  fi
+  sc="${sc}\n"
+
+  # Dimension status
+  local required_dims
+  required_dims="$(get_required_dimensions 2>/dev/null || true)"
+  if [[ -n "${required_dims}" ]]; then
+    local _dim _dim_ts _dim_label
+    for _dim in ${required_dims//,/ }; do
+      _dim_ts="$(read_state "$(_dim_key "${_dim}")")"
+      _dim_label="$(describe_dimension "${_dim}" 2>/dev/null || printf '%s' "${_dim}")"
+      if [[ -n "${_dim_ts}" ]]; then
+        sc="${sc}${check_mark} ${_dim_label}\n"
+      else
+        sc="${sc}${dash_mark} ${_dim_label}: skipped\n"
+      fi
+    done
+  fi
+
+  # Excellence review
+  local last_excellence_ts
+  last_excellence_ts="$(read_state "last_excellence_review_ts")"
+  if [[ -n "${last_excellence_ts}" ]]; then
+    sc="${sc}${check_mark} Excellence review: done\n"
+  fi
+
+  printf '%b' "${sc}"
+}
+
+# --- end quality scorecard ---
+
+# --- Agent performance metrics (cross-session) ---
+# Stored in ~/.claude/quality-pack/agent-metrics.json
+# Structure: { "agent_name": { "invocations": N, "clean_verdicts": N,
+#   "finding_verdicts": N, "last_used_ts": N, "avg_confidence": N } }
+
+_AGENT_METRICS_FILE="${HOME}/.claude/quality-pack/agent-metrics.json"
+_AGENT_METRICS_LOCK="${HOME}/.claude/quality-pack/.agent-metrics.lock"
+
+# with_metrics_lock: Run a command under the agent metrics file lock.
+with_metrics_lock() {
+  local max_attempts=100
+  local attempt=0
+  while ! mkdir "${_AGENT_METRICS_LOCK}" 2>/dev/null; do
+    attempt=$((attempt + 1))
+    if [[ "${attempt}" -ge "${max_attempts}" ]]; then
+      # Stale lock recovery
+      rm -rf "${_AGENT_METRICS_LOCK}" 2>/dev/null || true
+      mkdir "${_AGENT_METRICS_LOCK}" 2>/dev/null || true
+      break
+    fi
+    sleep 0.05
+  done
+  "$@"
+  local rc=$?
+  rm -rf "${_AGENT_METRICS_LOCK}" 2>/dev/null || true
+  return "${rc}"
+}
+
+# record_agent_metric: Record an agent invocation outcome.
+# Usage: record_agent_metric <agent_name> <verdict> [confidence]
+# verdict: "clean" or "findings"
+record_agent_metric() {
+  local agent_name="$1"
+  local verdict="$2"
+  local confidence="${3:-0}"
+
+  [[ -z "${agent_name}" ]] && return 0
+
+  _do_record_metric() {
+    local metrics_file="${_AGENT_METRICS_FILE}"
+    local now_ts
+    now_ts="$(now_epoch)"
+
+    # Initialize if missing
+    if [[ ! -f "${metrics_file}" ]]; then
+      printf '{}' > "${metrics_file}"
+    fi
+
+    local current
+    current="$(jq -c --arg a "${agent_name}" '.[$a] // {invocations:0, clean_verdicts:0, finding_verdicts:0, last_used_ts:0, avg_confidence:0}' "${metrics_file}" 2>/dev/null || printf '{"invocations":0,"clean_verdicts":0,"finding_verdicts":0,"last_used_ts":0,"avg_confidence":0}')"
+
+    local invocations clean_v finding_v avg_conf
+    invocations="$(jq -r '.invocations' <<<"${current}")"
+    clean_v="$(jq -r '.clean_verdicts' <<<"${current}")"
+    finding_v="$(jq -r '.finding_verdicts' <<<"${current}")"
+    avg_conf="$(jq -r '.avg_confidence' <<<"${current}")"
+
+    invocations=$((invocations + 1))
+    if [[ "${verdict}" == "clean" ]]; then
+      clean_v=$((clean_v + 1))
+    else
+      finding_v=$((finding_v + 1))
+    fi
+
+    # Rolling average confidence
+    if [[ "${confidence}" -gt 0 && "${invocations}" -gt 0 ]]; then
+      avg_conf="$(( (avg_conf * (invocations - 1) + confidence) / invocations ))"
+    fi
+
+    local tmp_file="${metrics_file}.tmp.$$"
+    jq --arg a "${agent_name}" \
+       --argjson inv "${invocations}" \
+       --argjson cv "${clean_v}" \
+       --argjson fv "${finding_v}" \
+       --argjson ts "${now_ts}" \
+       --argjson ac "${avg_conf}" \
+       '.[$a] = {invocations:$inv, clean_verdicts:$cv, finding_verdicts:$fv, last_used_ts:$ts, avg_confidence:$ac}' \
+       "${metrics_file}" > "${tmp_file}" 2>/dev/null && mv "${tmp_file}" "${metrics_file}" || rm -f "${tmp_file}"
+  }
+
+  with_metrics_lock _do_record_metric
+}
+
+# read_agent_metric: Read metrics for a specific agent.
+# Returns JSON object on stdout, empty if no data.
+read_agent_metric() {
+  local agent_name="$1"
+  [[ -f "${_AGENT_METRICS_FILE}" ]] || return 0
+  jq -c --arg a "${agent_name}" '.[$a] // empty' "${_AGENT_METRICS_FILE}" 2>/dev/null || true
+}
+
+# get_all_agent_metrics: Return all agent metrics as JSON.
+get_all_agent_metrics() {
+  [[ -f "${_AGENT_METRICS_FILE}" ]] || { printf '{}'; return; }
+  cat "${_AGENT_METRICS_FILE}" 2>/dev/null || printf '{}'
+}
+
+# --- end agent metrics ---
+
+# --- Cross-session learning: defect pattern tracking ---
+# Stored in ~/.claude/quality-pack/defect-patterns.json
+# Structure: { "category": { "count": N, "last_seen_ts": N, "examples": ["desc1", ...] } }
+# Categories: missing_test, type_error, null_check, edge_case, race_condition,
+#   api_contract, error_handling, security, performance, docs_stale, style
+
+_DEFECT_PATTERNS_FILE="${HOME}/.claude/quality-pack/defect-patterns.json"
+
+# classify_finding_category: Classify a finding description into a defect category.
+# Usage: classify_finding_category "description text"
+# Returns: category string on stdout
+classify_finding_category() {
+  local desc
+  desc="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+  [[ -z "${desc}" ]] && { printf 'unknown'; return; }
+
+  # Order matters — most specific first
+  if printf '%s' "${desc}" | grep -Eq 'race|concurrent|deadlock|lock|atomic'; then
+    printf 'race_condition'
+  elif printf '%s' "${desc}" | grep -Eq 'test|spec|assert|coverage|untested'; then
+    printf 'missing_test'
+  elif printf '%s' "${desc}" | grep -Eq 'type|typescript|type.?error|cast|coercion|NaN'; then
+    printf 'type_error'
+  elif printf '%s' "${desc}" | grep -Eq 'null|undefined|nil|none|optional|empty|falsy'; then
+    printf 'null_check'
+  elif printf '%s' "${desc}" | grep -Eq 'edge|boundary|overflow|underflow|off.by|corner|limit'; then
+    printf 'edge_case'
+  elif printf '%s' "${desc}" | grep -Eq 'api|contract|schema|interface|endpoint|payload|response'; then
+    printf 'api_contract'
+  elif printf '%s' "${desc}" | grep -Eq 'error|exception|catch|throw|reject|fail|panic|abort'; then
+    printf 'error_handling'
+  elif printf '%s' "${desc}" | grep -Eq 'secur|auth|inject|xss|csrf|sanitiz|escap|vuln|credential|token'; then
+    printf 'security'
+  elif printf '%s' "${desc}" | grep -Eq 'perf|slow|memory|leak|cache|optimi|latency|O\(n'; then
+    printf 'performance'
+  elif printf '%s' "${desc}" | grep -Eq 'doc|readme|comment|stale|outdated|changelog'; then
+    printf 'docs_stale'
+  elif printf '%s' "${desc}" | grep -Eq 'style|format|lint|naming|convention|indent'; then
+    printf 'style'
+  else
+    printf 'unknown'
+  fi
+}
+
+# record_defect_pattern: Record a defect pattern for cross-session learning.
+# Usage: record_defect_pattern <category> [example_description]
+record_defect_pattern() {
+  local category="${1:-unknown}"
+  local example="${2:-}"
+
+  _do_record_defect() {
+    local pf="${_DEFECT_PATTERNS_FILE}"
+    local now_ts
+    now_ts="$(now_epoch)"
+
+    if [[ ! -f "${pf}" ]]; then
+      mkdir -p "$(dirname "${pf}")"
+      printf '{}' > "${pf}"
+    fi
+
+    local current
+    current="$(jq -c --arg c "${category}" '.[$c] // {count:0, last_seen_ts:0, examples:[]}' "${pf}" 2>/dev/null || printf '{"count":0,"last_seen_ts":0,"examples":[]}')"
+
+    local count
+    count="$(jq -r '.count' <<<"${current}")"
+    count=$((count + 1))
+
+    local tmp_file="${pf}.tmp.$$"
+    if [[ -n "${example}" ]]; then
+      # Keep at most 5 recent examples per category
+      jq --arg c "${category}" \
+         --argjson cnt "${count}" \
+         --argjson ts "${now_ts}" \
+         --arg ex "${example}" \
+         '.[$c] = (.[$c] // {count:0,last_seen_ts:0,examples:[]}) |
+          .[$c].count = $cnt |
+          .[$c].last_seen_ts = $ts |
+          .[$c].examples = ((.[$c].examples + [$ex]) | .[-5:])' \
+         "${pf}" > "${tmp_file}" 2>/dev/null && mv "${tmp_file}" "${pf}" || rm -f "${tmp_file}"
+    else
+      jq --arg c "${category}" \
+         --argjson cnt "${count}" \
+         --argjson ts "${now_ts}" \
+         '.[$c] = (.[$c] // {count:0,last_seen_ts:0,examples:[]}) |
+          .[$c].count = $cnt |
+          .[$c].last_seen_ts = $ts' \
+         "${pf}" > "${tmp_file}" 2>/dev/null && mv "${tmp_file}" "${pf}" || rm -f "${tmp_file}"
+    fi
+  }
+
+  with_metrics_lock _do_record_defect
+}
+
+# get_top_defect_patterns: Return the top N defect categories by frequency.
+# Usage: get_top_defect_patterns [n] — defaults to 3
+# Returns: newline-separated "category (count)" strings on stdout
+get_top_defect_patterns() {
+  local n="${1:-3}"
+  [[ -f "${_DEFECT_PATTERNS_FILE}" ]] || return 0
+  jq -r --argjson n "${n}" '
+    to_entries |
+    sort_by(-.value.count) |
+    .[0:$n] |
+    .[] | "\(.key) (\(.value.count))"
+  ' "${_DEFECT_PATTERNS_FILE}" 2>/dev/null || true
+}
+
+# get_defect_watch_list: Return a compact watch-list string for injection
+# into prompts. E.g. "Watch for: missing_test(12), null_check(8), edge_case(5)"
+get_defect_watch_list() {
+  local n="${1:-3}"
+  [[ -f "${_DEFECT_PATTERNS_FILE}" ]] || return 0
+  local list
+  list="$(jq -r --argjson n "${n}" '
+    to_entries |
+    sort_by(-.value.count) |
+    .[0:$n] |
+    map("\(.key)(\(.value.count))") |
+    join(", ")
+  ' "${_DEFECT_PATTERNS_FILE}" 2>/dev/null || true)"
+  [[ -n "${list}" ]] && printf 'Watch for: %s' "${list}" || true
+}
+
+# --- end cross-session learning ---
+
+# --- Project profile detection ---
+
+# detect_project_profile: Scan the project directory for stack indicators.
+# Returns a comma-separated list of stack tags on stdout, e.g.:
+#   "node,typescript,react,tailwind"
+# Used to boost domain scoring and inform dimension ordering.
+# Result is cached in session state as "project_profile".
+detect_project_profile() {
+  local project_dir="${1:-.}"
+  local tags=""
+
+  _add_tag() { tags="${tags:+${tags},}$1"; }
+
+  # Node.js ecosystem
+  [[ -f "${project_dir}/package.json" ]] && _add_tag "node"
+  [[ -f "${project_dir}/tsconfig.json" ]] && _add_tag "typescript"
+  [[ -f "${project_dir}/bun.lockb" ]] && _add_tag "bun"
+
+  # Frontend frameworks (check package.json dependencies)
+  if [[ -f "${project_dir}/package.json" ]]; then
+    local deps
+    deps="$(jq -r '(.dependencies // {}) + (.devDependencies // {}) | keys[]' "${project_dir}/package.json" 2>/dev/null || true)"
+    if [[ -n "${deps}" ]]; then
+      printf '%s' "${deps}" | grep -q '^react$' && _add_tag "react"
+      printf '%s' "${deps}" | grep -q '^vue$' && _add_tag "vue"
+      printf '%s' "${deps}" | grep -q '^svelte$' && _add_tag "svelte"
+      printf '%s' "${deps}" | grep -q '^next$' && _add_tag "next"
+      printf '%s' "${deps}" | grep -q '^nuxt$' && _add_tag "nuxt"
+      printf '%s' "${deps}" | grep -q '^tailwindcss$' && _add_tag "tailwind"
+      printf '%s' "${deps}" | grep -qE '^(vitest|jest|mocha)$' && _add_tag "js-test"
+    fi
+  fi
+
+  # Python ecosystem
+  [[ -f "${project_dir}/pyproject.toml" ]] && _add_tag "python"
+  [[ -f "${project_dir}/setup.py" ]] && _add_tag "python"
+  [[ -f "${project_dir}/requirements.txt" ]] && _add_tag "python"
+
+  # Rust
+  [[ -f "${project_dir}/Cargo.toml" ]] && _add_tag "rust"
+
+  # Go
+  [[ -f "${project_dir}/go.mod" ]] && _add_tag "go"
+
+  # Ruby
+  [[ -f "${project_dir}/Gemfile" ]] && _add_tag "ruby"
+
+  # Elixir
+  [[ -f "${project_dir}/mix.exs" ]] && _add_tag "elixir"
+
+  # Swift / iOS
+  if ls "${project_dir}"/*.xcodeproj &>/dev/null 2>&1 || ls "${project_dir}"/*.xcworkspace &>/dev/null 2>&1 \
+    || [[ -f "${project_dir}/Package.swift" ]]; then
+    _add_tag "swift"
+  fi
+
+  # Docker / Infrastructure
+  [[ -f "${project_dir}/Dockerfile" ]] || [[ -f "${project_dir}/docker-compose.yml" ]] \
+    || [[ -f "${project_dir}/docker-compose.yaml" ]] && _add_tag "docker"
+  [[ -d "${project_dir}/terraform" ]] || [[ -f "${project_dir}/main.tf" ]] && _add_tag "terraform"
+  [[ -f "${project_dir}/ansible.cfg" ]] || [[ -d "${project_dir}/playbooks" ]] && _add_tag "ansible"
+
+  # Shell-heavy projects
+  local sh_count=0
+  sh_count="$(find "${project_dir}" -maxdepth 2 -name '*.sh' -type f 2>/dev/null | wc -l | tr -d '[:space:]')"
+  [[ "${sh_count}" -ge 3 ]] && _add_tag "shell"
+
+  # Documentation-heavy (README, docs/)
+  [[ -d "${project_dir}/docs" ]] && _add_tag "docs"
+
+  # UI presence indicators
+  if [[ -d "${project_dir}/src/components" ]] \
+    || [[ -d "${project_dir}/app/components" ]] \
+    || [[ -d "${project_dir}/components" ]] \
+    || ls "${project_dir}"/src/**/*.css &>/dev/null 2>&1 \
+    || ls "${project_dir}"/src/**/*.scss &>/dev/null 2>&1; then
+    _add_tag "ui"
+  fi
+
+  printf '%s' "${tags}"
+}
+
+# get_project_profile: Cached wrapper around detect_project_profile.
+# Reads from session state first; if missing, detects and caches.
+get_project_profile() {
+  local cached
+  cached="$(read_state "project_profile" 2>/dev/null || true)"
+  if [[ -n "${cached}" ]]; then
+    printf '%s' "${cached}"
+    return
+  fi
+
+  local profile
+  profile="$(detect_project_profile "." 2>/dev/null || true)"
+  if [[ -n "${profile}" ]]; then
+    write_state "project_profile" "${profile}"
+  fi
+  printf '%s' "${profile}"
+}
+
+# project_profile_has: Check if a project profile contains a specific tag.
+# Usage: project_profile_has "react" "$profile" && ...
+project_profile_has() {
+  local tag="$1"
+  local profile="${2:-}"
+  [[ ",${profile}," == *",${tag},"* ]]
+}
+
+# --- end project profile ---
 
 is_checkpoint_request() {
   local text="$1"
@@ -909,6 +1628,7 @@ is_ui_request() {
 
 infer_domain() {
   local text="$1"
+  local project_profile="${2:-}"
 
   local coding_score
   local writing_score
@@ -989,6 +1709,26 @@ infer_domain() {
 
   operations_score=$(count_keyword_matches '\b(plan(ning)?|roadmap|timeline|agenda|meeting|follow[- ]?up|checklist|prioriti(es|se|ze)|project.?plan|travel.?plan|itinerary|reply(ing)?|respond(ing)?|application|submission)\b' "${text}")
   operations_score=${operations_score:-0}
+
+  # Project profile boost: when a project has known stack indicators,
+  # add a small bonus to coding (if the project is code-heavy) or writing
+  # (if docs-heavy). This acts as a tiebreaker, not a dominant signal.
+  if [[ -n "${project_profile}" ]]; then
+    local _tag
+    local code_boost=0
+    for _tag in node typescript python rust go ruby elixir swift react vue svelte next bun shell; do
+      if project_profile_has "${_tag}" "${project_profile}"; then
+        code_boost=$((code_boost + 1))
+      fi
+    done
+    # Cap boost at 2 to prevent project-type from overriding clear intent
+    if [[ "${code_boost}" -gt 2 ]]; then code_boost=2; fi
+    coding_score=$((coding_score + code_boost))
+
+    if project_profile_has "docs" "${project_profile}"; then
+      writing_score=$((writing_score + 1))
+    fi
+  fi
 
   local max_score=0
   local primary_domain="general"

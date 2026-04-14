@@ -22,7 +22,7 @@ plan_file="$(session_file "current_plan.md")"
   printf '%s\n' "${LAST_ASSISTANT_MESSAGE}"
 } >"${plan_file}"
 
-write_state_batch \
+with_state_lock_batch \
   "has_plan" "true" \
   "plan_agent" "${AGENT_TYPE:-planner}" \
   "plan_ts" "$(now_epoch)"

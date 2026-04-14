@@ -31,9 +31,14 @@ fi
 # without triggering stall detection. Halving credits the agent dispatch
 # as partial progress while still allowing the counter to accumulate if
 # the agent calls are not productive.
-stall_counter="$(read_state "stall_counter")"
-stall_counter="${stall_counter:-0}"
-write_state "stall_counter" "$(( stall_counter / 2 ))"
+# Wrapped in state lock to prevent concurrent agent returns from racing.
+_halve_stall_counter() {
+  local stall_counter
+  stall_counter="$(read_state "stall_counter")"
+  stall_counter="${stall_counter:-0}"
+  write_state "stall_counter" "$(( stall_counter / 2 ))"
+}
+with_state_lock _halve_stall_counter
 
 # P3: extract latest subagent findings for specific context injection
 finding_context=""

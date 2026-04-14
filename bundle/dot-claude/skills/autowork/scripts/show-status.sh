@@ -103,20 +103,58 @@ printf 'Pending specialists:       %s\n' "${pending_count}"
 # Show dimension status if dimensions are active
 dim_output="$(jq -r '
   [
-    ["bug_hunt",     .dim_bug_hunt_ts],
-    ["code_quality", .dim_code_quality_ts],
-    ["stress_test",  .dim_stress_test_ts],
-    ["completeness", .dim_completeness_ts],
-    ["prose",        .dim_prose_ts],
-    ["traceability", .dim_traceability_ts]
+    ["bug_hunt",       .dim_bug_hunt_ts,       .dim_bug_hunt_verdict],
+    ["code_quality",   .dim_code_quality_ts,    .dim_code_quality_verdict],
+    ["stress_test",    .dim_stress_test_ts,     .dim_stress_test_verdict],
+    ["completeness",   .dim_completeness_ts,    .dim_completeness_verdict],
+    ["prose",          .dim_prose_ts,           .dim_prose_verdict],
+    ["traceability",   .dim_traceability_ts,    .dim_traceability_verdict],
+    ["design_quality", .dim_design_quality_ts,  .dim_design_quality_verdict]
   ] | map(select(.[1] != null and .[1] != "")) |
   if length > 0 then
-    [.[] | "\(.[0]): ticked @ \(.[1])"] | join("\n")
+    [.[] | "\(.[0]): ticked @ \(.[1])\(if .[2] then " [\(.[2])]" else "" end)"] | join("\n")
   else empty end
 ' "${state_file}" 2>/dev/null || true)"
 if [[ -n "${dim_output}" ]]; then
   printf '\n--- Dimension Ticks ---\n'
   printf '%s\n' "${dim_output}"
+fi
+
+# Show verification confidence if available
+verify_conf="$(jq -r '.last_verify_confidence // empty' "${state_file}" 2>/dev/null || true)"
+if [[ -n "${verify_conf}" ]]; then
+  verify_method="$(jq -r '.last_verify_method // "unknown"' "${state_file}" 2>/dev/null || true)"
+  printf '\n--- Verification Confidence ---\n'
+  printf 'Confidence: %s/100  Method: %s\n' "${verify_conf}" "${verify_method}"
+fi
+
+# Show project profile if cached
+profile_val="$(jq -r '.project_profile // empty' "${state_file}" 2>/dev/null || true)"
+if [[ -n "${profile_val}" ]]; then
+  printf '\n--- Project Profile ---\n'
+  printf '%s\n' "${profile_val}"
+fi
+
+# Show guard exhaustion mode
+exhaust_mode="$(jq -r '.guard_exhaustion_mode // empty' "${state_file}" 2>/dev/null || true)"
+if [[ -n "${exhaust_mode}" ]]; then
+  printf '\n--- Guard Configuration ---\n'
+  printf 'Exhaustion mode: %s\n' "${exhaust_mode}"
+fi
+
+# Show agent performance metrics (cross-session)
+metrics_file="${HOME}/.claude/quality-pack/agent-metrics.json"
+if [[ -f "${metrics_file}" ]]; then
+  metrics_output="$(jq -r '
+    to_entries | sort_by(-.value.invocations) |
+    if length > 0 then
+      [.[] | "\(.key): \(.value.invocations) runs, \(.value.clean_verdicts) clean, \(.value.finding_verdicts) findings"] | join("\n")
+    else empty end
+  ' "${metrics_file}" 2>/dev/null || true)"
+  if [[ -n "${metrics_output}" ]]; then
+    printf '\n--- Agent Metrics (cross-session) ---\n'
+    printf '%s\n' "${metrics_output}"
+  fi
 fi
 
 # Show edited files if any

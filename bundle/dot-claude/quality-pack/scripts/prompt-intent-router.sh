@@ -136,22 +136,25 @@ if grep -Eiq '(^|[^[:alnum:]_-])(ultrawork|ulw|autowork|sisyphus)([^[:alnum:]_-]
   session_management_prompt=0
   checkpoint_prompt=0
 
+  # Detect project profile for domain scoring boost
+  _project_profile="$(get_project_profile 2>/dev/null || true)"
+
   if is_continuation_request "${PROMPT_TEXT}" && [[ -n "${previous_objective}" ]]; then
     continuation_prompt=1
     continuation_directive="$(extract_continuation_directive "${PROMPT_TEXT}")"
-    TASK_DOMAIN="${previous_domain:-$(infer_domain "${previous_objective}")}"
+    TASK_DOMAIN="${previous_domain:-$(infer_domain "${previous_objective}" "${_project_profile}")}"
     write_state "current_objective" "${previous_objective}"
   elif [[ "${TASK_INTENT}" == "session_management" ]]; then
     session_management_prompt=1
-    TASK_DOMAIN="${previous_domain:-$(infer_domain "${PROMPT_TEXT}")}"
+    TASK_DOMAIN="${previous_domain:-$(infer_domain "${PROMPT_TEXT}" "${_project_profile}")}"
   elif [[ "${TASK_INTENT}" == "advisory" ]]; then
     advisory_prompt=1
-    TASK_DOMAIN="${previous_domain:-$(infer_domain "${PROMPT_TEXT}")}"
+    TASK_DOMAIN="${previous_domain:-$(infer_domain "${PROMPT_TEXT}" "${_project_profile}")}"
   elif [[ "${TASK_INTENT}" == "checkpoint" ]]; then
     checkpoint_prompt=1
-    TASK_DOMAIN="${previous_domain:-$(infer_domain "${PROMPT_TEXT}")}"
+    TASK_DOMAIN="${previous_domain:-$(infer_domain "${PROMPT_TEXT}" "${_project_profile}")}"
   else
-    TASK_DOMAIN="$(infer_domain "${PROMPT_TEXT}")"
+    TASK_DOMAIN="$(infer_domain "${PROMPT_TEXT}" "${_project_profile}")"
   fi
 
   write_state "workflow_mode" "ultrawork"
@@ -292,6 +295,15 @@ if [[ -n "${guard_exhausted}" ]]; then
   human_detail="${human_detail:-${guard_detail}}"
   context_parts+=("WARNING — PREVIOUS RESPONSE INCOMPLETE: The stop guard was exhausted after 3 blocks. Missing quality gates: ${human_detail}. Before starting new work, verify and review the previous changes if they haven't been checked yet. Briefly tell the user about this gap.")
   write_state_batch "guard_exhausted" "" "guard_exhausted_detail" ""
+fi
+
+# Cross-session learning: inject defect watch list when context is being built
+# so the model is primed to look for historically frequent defect categories.
+if [[ "${TASK_INTENT}" == "imperative" ]]; then
+  defect_watch="$(get_defect_watch_list 3 2>/dev/null || true)"
+  if [[ -n "${defect_watch}" ]]; then
+    context_parts+=("Historical defect patterns from prior sessions — ${defect_watch}. Pay extra attention to these categories during implementation and review.")
+  fi
 fi
 
 if [[ "${#context_parts[@]}" -eq 0 ]]; then

@@ -200,6 +200,12 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
   if [[ -n "${required_dims}" ]]; then
     missing_dims="$(missing_dimensions "${required_dims}")"
 
+    # Reorder missing dims by risk priority
+    if [[ -n "${missing_dims}" ]]; then
+      _profile="$(get_project_profile 2>/dev/null || true)"
+      missing_dims="$(order_dimensions_by_risk "${missing_dims}" "${_profile}")"
+    fi
+
     if [[ -n "${missing_dims}" ]]; then
       # Resumed-session first-stop grace: skip the dimension gate once
       # when no dimensions have been ticked yet in this resumed session.
@@ -233,11 +239,27 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
           jq -nc --arg reason "${dim_reason}" '{"decision":"block","reason":$reason}'
           exit 0
         else
-          # Exhaustion: allow stop but record why for diagnostics.
+          # Dimension gate exhaustion: handle based on mode
           write_state_batch \
             "guard_exhausted" "$(now_epoch)" \
             "guard_exhausted_detail" "dimensions_missing=${missing_dims}"
           log_hook "stop-guard" "dimension gate exhausted after 3 blocks: missing=${missing_dims}"
+
+          case "${OMC_GUARD_EXHAUSTION_MODE}" in
+            strict)
+              dim_reason="[Dimension gate · STRICT MODE] Guard exhaustion reached but strict mode prevents release. Missing: ${missing_dims}. Address remaining dimensions or switch guard_exhaustion_mode=warn."
+              jq -nc --arg reason "${dim_reason}" '{"decision":"block","reason":$reason}'
+              exit 0
+              ;;
+            warn)
+              scorecard="$(build_quality_scorecard)"
+              log_hook "stop-guard" "dimension gate exhausted (warn mode): emitting scorecard"
+              # Fall through — allow stop but inject scorecard on Stop event
+              ;;
+            *)
+              # release — silent, fall through
+              ;;
+          esac
         fi
       fi
     fi
@@ -276,12 +298,38 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
 fi
 
 if [[ "${guard_blocks}" -ge 3 ]]; then
-  rm -f "${STATE_ROOT}/.ulw_active"
+  scorecard="$(build_quality_scorecard)"
   write_state_batch \
     "guard_exhausted" "$(now_epoch)" \
     "guard_exhausted_detail" "review=${missing_review},verify=${missing_verify},verify_failed=${verify_failed},unremediated=${review_unremediated}"
   log_hook "stop-guard" "exhausted after 3 blocks: review=${missing_review} verify=${missing_verify} failed=${verify_failed} unremediated=${review_unremediated}"
-  exit 0
+
+  # Cross-session learning: record guard exhaustion as a pattern
+  record_defect_pattern "guard_exhaustion" "review=${missing_review},verify=${missing_verify},failed=${verify_failed}" &
+
+  case "${OMC_GUARD_EXHAUSTION_MODE}" in
+    strict)
+      # Never release — keep blocking with scorecard
+      jq -nc --arg reason "[Quality gate · STRICT MODE] Guard exhaustion reached but strict mode prevents release. Quality scorecard:\n${scorecard}\nAddress the remaining items or switch to guard_exhaustion_mode=warn in oh-my-claude.conf." '{"decision":"block","reason":$reason}'
+      exit 0
+      ;;
+    warn)
+      # Release but inject scorecard as context
+      rm -f "${STATE_ROOT}/.ulw_active"
+      jq -nc --arg sc "QUALITY SCORECARD (guard exhausted after 3 blocks):\n${scorecard}\nThe quality gate released without full completion. Review the scorecard above and note any gaps in your final summary." '{
+        hookSpecificOutput: {
+          hookEventName: "Stop",
+          additionalContext: $sc
+        }
+      }'
+      exit 0
+      ;;
+    *)
+      # release (default legacy behavior) — silent release
+      rm -f "${STATE_ROOT}/.ulw_active"
+      exit 0
+      ;;
+  esac
 fi
 
 write_state "stop_guard_blocks" "$((guard_blocks + 1))"
@@ -312,10 +360,22 @@ fi
 verify_action=""
 review_action=""
 
+# If we know the project test command, name it in the verification action.
+project_test_cmd="$(read_state "project_test_cmd")"
+
 if [[ "${missing_verify}" -eq 1 ]]; then
-  verify_action="run the smallest meaningful validation available"
+  if [[ -n "${project_test_cmd}" ]]; then
+    verify_action="run \`${project_test_cmd}\` (detected project test command) to validate"
+  else
+    verify_action="run the smallest meaningful validation available"
+  fi
 elif [[ "${verify_failed}" -eq 1 ]]; then
-  verify_action="the last verification command failed — fix the underlying issues and re-run verification"
+  last_verify_cmd="$(read_state "last_verify_cmd")"
+  if [[ -n "${last_verify_cmd}" ]]; then
+    verify_action="the last verification (\`${last_verify_cmd}\`) failed — fix the underlying issues and re-run"
+  else
+    verify_action="the last verification command failed — fix the underlying issues and re-run verification"
+  fi
 fi
 
 if [[ "${guard_blocks}" -eq 0 ]]; then
@@ -372,7 +432,9 @@ else
   reason="${reason} Still missing: ${missing_items}. Next: ${next_action}."
 
   if [[ "${guard_blocks}" -ge 2 ]]; then
-    reason="${reason} NOTE: this is the final guard block — the next stop attempt will be allowed regardless of quality gate status."
+    # Penultimate block: add progress scorecard for visibility
+    progress_score="$(compute_progress_score)"
+    reason="${reason} NOTE: this is the final guard block — the next stop attempt will be allowed regardless of quality gate status. Progress score: ${progress_score}/100."
   fi
 fi
 

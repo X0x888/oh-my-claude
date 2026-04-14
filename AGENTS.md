@@ -50,7 +50,7 @@ oh-my-claude/
 ### Key Components
 
 - **Hook scripts** (`quality-pack/scripts/`, `autowork/scripts/`): Bash scripts triggered by Claude Code lifecycle events (prompt entry, pre-tool-use, tool completion, compaction, session start). They route intents, manage state, and enforce quality gates.
-- **common.sh** (`autowork/scripts/common.sh`): Shared utility library. Provides JSON state management (`read_state`, `write_state`, `write_state_batch`), session directory helpers, intent classification (`classify_task_intent`), and domain routing.
+- **common.sh** (`autowork/scripts/common.sh`): Shared utility library. Provides JSON state management (`read_state`, `write_state`, `write_state_batch`), session directory helpers, intent classification (`classify_task_intent`), domain routing, project profile detection (`detect_project_profile`), verification confidence scoring (`score_verification_confidence`), quality scorecard generation (`build_quality_scorecard`), stall detection helpers (`compute_stall_threshold`, `compute_progress_score`), dimension risk ordering (`order_dimensions_by_risk`), cross-session agent metrics (`record_agent_metric`), and defect pattern tracking (`record_defect_pattern`, `get_defect_watch_list`).
 - **Agent definitions** (`agents/*.md`): Markdown files defining specialist agents with role descriptions, capabilities, and `disallowedTools` for permission boundaries.
 - **Skills** (`skills/<name>/SKILL.md`): Self-contained skill definitions invoked by slash commands or automatic routing.
 - **Settings patch** (`config/settings.patch.json`): JSON configuration merged into the user's Claude Code settings during installation.
@@ -58,6 +58,10 @@ oh-my-claude/
 ### State Management
 
 Session state is stored as JSON in `$HOME/.claude/quality-pack/state/<session_id>/session_state.json`. All state reads and writes go through `read_state` and `write_state` / `write_state_batch` in `common.sh`.
+
+Cross-session data is stored alongside the state directory:
+- `$HOME/.claude/quality-pack/agent-metrics.json` — agent invocation counts, clean/findings verdicts, rolling confidence averages. Accessed via `record_agent_metric()` / `read_agent_metric()`.
+- `$HOME/.claude/quality-pack/defect-patterns.json` — defect category frequencies and recent examples. Accessed via `record_defect_pattern()` / `get_top_defect_patterns()` / `get_defect_watch_list()`. Injected into prompts to prime the model for historically frequent defect categories.
 
 ## Conventions
 

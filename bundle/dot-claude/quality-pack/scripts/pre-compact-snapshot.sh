@@ -229,6 +229,38 @@ render_pending_agents() {
   printf '\n## Completion State\n'
   printf -- '- %s\n' "$(render_review_status)"
   printf -- '- %s\n' "$(render_verification_status)"
+
+  # Structured quality checkpoint for post-compact continuity
+  required_dims_val="$(get_required_dimensions 2>/dev/null || true)"
+  if [[ -n "${required_dims_val}" ]]; then
+    printf '\n## Quality Dimensions\n'
+    for _dim_tok in ${required_dims_val//,/ }; do
+      _dim_tick="$(read_state "$(_dim_key "${_dim_tok}")")"
+      _dim_verd="$(read_state "dim_${_dim_tok}_verdict")"
+      _dim_desc="$(describe_dimension "${_dim_tok}" 2>/dev/null || printf '%s' "${_dim_tok}")"
+      if [[ -n "${_dim_tick}" ]]; then
+        printf -- '- ✓ %s: %s\n' "${_dim_desc}" "${_dim_verd:-ticked}"
+      else
+        printf -- '- ○ %s: pending\n' "${_dim_desc}"
+      fi
+    done
+  fi
+
+  # Verification confidence
+  verify_confidence_val="$(read_state "last_verify_confidence")"
+  if [[ -n "${verify_confidence_val}" ]]; then
+    printf '\n## Verification Confidence: %s%%\n' "${verify_confidence_val}"
+  fi
+
+  # Guard state
+  guard_blocks_val="$(read_state "stop_guard_blocks")"
+  dim_blocks_val="$(read_state "dimension_guard_blocks")"
+  if [[ -n "${guard_blocks_val}" && "${guard_blocks_val}" -gt 0 ]] \
+    || [[ -n "${dim_blocks_val}" && "${dim_blocks_val}" -gt 0 ]]; then
+    printf '\n## Guard State\n'
+    [[ -n "${guard_blocks_val}" && "${guard_blocks_val}" -gt 0 ]] && printf -- '- Quality gate blocks used: %s/3\n' "${guard_blocks_val}"
+    [[ -n "${dim_blocks_val}" && "${dim_blocks_val}" -gt 0 ]] && printf -- '- Dimension gate blocks used: %s/3\n' "${dim_blocks_val}"
+  fi
 } >"${snapshot_file}"
 
 # Gap 4a — pending-review flag: if edits happened and the reviewer has not

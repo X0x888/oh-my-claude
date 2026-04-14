@@ -332,7 +332,8 @@ sim_review "sb" "Summary: Code looks good."
 output="$(sim_stop "sb")"
 
 assert_contains "seq-B: blocked" '"decision":"block"' "${output}"
-assert_contains "seq-B: verify failed message" "verification command failed" "${output}"
+assert_contains "seq-B: verify failed message" "failed" "${output}"
+assert_contains "seq-B: verify failed names cmd" "npm test" "${output}"
 teardown_test
 
 
@@ -398,9 +399,9 @@ assert_contains "seq-E: penultimate warning" "final guard block" "${out3}"
 blocks3="$(read_st "se" "stop_guard_blocks")"
 assert_eq "seq-E: guard_blocks=3" "3" "${blocks3}"
 
-# Fourth stop: exhausted, allowed
+# Fourth stop: exhausted, released with scorecard (warn mode is default)
 out4="$(sim_stop "se")"
-assert_empty "seq-E: fourth stop allowed (exhausted)" "${out4}"
+assert_contains "seq-E: fourth stop exhausted scorecard" "QUALITY SCORECARD" "${out4}"
 assert_not_empty "seq-E: guard_exhausted set" "$(read_st "se" "guard_exhausted")"
 detail="$(read_st "se" "guard_exhausted_detail")"
 assert_contains "seq-E: exhaustion detail has review" "review=" "${detail}"

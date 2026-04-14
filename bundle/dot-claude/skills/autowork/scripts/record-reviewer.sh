@@ -107,17 +107,21 @@ if [[ "${REVIEWER_TYPE}" == "excellence" ]]; then
   # Excellence reviews update last_review_ts and their own timestamp, but must
   # not overwrite review_had_findings from the standard review — the excellence
   # gate is independent of the remediation gate.
-  write_state_batch \
+  with_state_lock_batch \
     "last_review_ts" "${now_ts}" \
     "last_excellence_review_ts" "${now_ts}" \
     "stop_guard_blocks" "0" \
     "session_handoff_blocks" "0" \
     "dimension_guard_blocks" "0"
+  # tick_dimension acquires its own lock — call OUTSIDE the batch lock.
   if [[ "${has_findings}" == "false" ]]; then
     tick_dimension "completeness" "${now_ts}"
+    write_state "dim_completeness_verdict" "CLEAN"
+  else
+    write_state "dim_completeness_verdict" "FINDINGS"
   fi
 else
-  write_state_batch \
+  with_state_lock_batch \
     "last_review_ts" "${now_ts}" \
     "review_had_findings" "${has_findings}" \
     "stop_guard_blocks" "0" \
@@ -128,21 +132,67 @@ else
     # Editor-critic ticks prose only. Also record a doc-review timestamp so
     # stop-guard can tell whether the doc side of the session is satisfied
     # independently of the code side.
-    write_state "last_doc_review_ts" "${now_ts}"
+    with_state_lock write_state "last_doc_review_ts" "${now_ts}"
     if [[ "${has_findings}" == "false" ]]; then
       tick_dimension "prose" "${now_ts}"
+      write_state "dim_prose_verdict" "CLEAN"
+    else
+      write_state "dim_prose_verdict" "FINDINGS"
     fi
   elif [[ "${has_findings}" == "false" ]]; then
     case "${REVIEWER_TYPE}" in
       stress_test)
-        tick_dimension "stress_test" "${now_ts}" ;;
+        tick_dimension "stress_test" "${now_ts}"
+        write_state "dim_stress_test_verdict" "CLEAN" ;;
       traceability)
-        tick_dimension "traceability" "${now_ts}" ;;
+        tick_dimension "traceability" "${now_ts}"
+        write_state "dim_traceability_verdict" "CLEAN" ;;
       design_quality)
-        tick_dimension "design_quality" "${now_ts}" ;;
+        tick_dimension "design_quality" "${now_ts}"
+        write_state "dim_design_quality_verdict" "CLEAN" ;;
       standard|*)
         tick_dimension "bug_hunt" "${now_ts}"
-        tick_dimension "code_quality" "${now_ts}" ;;
+        tick_dimension "code_quality" "${now_ts}"
+        write_state "dim_bug_hunt_verdict" "CLEAN"
+        write_state "dim_code_quality_verdict" "CLEAN" ;;
     esac
+  else
+    case "${REVIEWER_TYPE}" in
+      stress_test)
+        write_state "dim_stress_test_verdict" "FINDINGS" ;;
+      traceability)
+        write_state "dim_traceability_verdict" "FINDINGS" ;;
+      design_quality)
+        write_state "dim_design_quality_verdict" "FINDINGS" ;;
+      standard|*)
+        write_state "dim_bug_hunt_verdict" "FINDINGS"
+        write_state "dim_code_quality_verdict" "FINDINGS" ;;
+    esac
+  fi
+fi
+
+# --- Agent performance metric recording ---
+metric_verdict="findings"
+[[ "${has_findings}" == "false" ]] && metric_verdict="clean"
+record_agent_metric "${REVIEWER_TYPE}" "${metric_verdict}" &
+
+# --- Cross-session defect pattern recording ---
+# When findings are detected, extract a summary line and classify the defect.
+if [[ "${has_findings}" == "true" && -n "${review_message}" ]]; then
+  # Try to extract the first finding line after VERDICT or a numbered finding
+  finding_sample="$(printf '%s\n' "${review_message}" \
+    | grep -Eim 1 '^\s*(1[\.\):]|[-*]\s+(bug|issue|finding|problem|concern|defect|risk|error|missing))' \
+    | head -c 200 || true)"
+  # Fallback: use the first substantial line before VERDICT
+  if [[ -z "${finding_sample}" ]]; then
+    finding_sample="$(printf '%s\n' "${review_message}" \
+      | grep -Eiv '^(VERDICT:|$|\s*#)' \
+      | head -n 3 \
+      | tr '\n' ' ' \
+      | head -c 200 || true)"
+  fi
+  if [[ -n "${finding_sample}" ]]; then
+    defect_cat="$(classify_finding_category "${finding_sample}")"
+    record_defect_pattern "${defect_cat}" "${finding_sample}" &
   fi
 fi
