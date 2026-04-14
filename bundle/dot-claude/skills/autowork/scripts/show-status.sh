@@ -166,10 +166,14 @@ fi
 # Show defect patterns (cross-session)
 defect_file="${HOME}/.claude/quality-pack/defect-patterns.json"
 if [[ -f "${defect_file}" ]]; then
-  defect_output="$(jq -r '
-    to_entries | sort_by(-.value.count) |
+  _ensure_valid_defect_patterns
+  cutoff_ts="$(( $(now_epoch) - 90 * 86400 ))"
+  defect_output="$(jq -r --argjson cutoff "${cutoff_ts}" '
+    to_entries |
+    map(select(.value.last_seen_ts > $cutoff)) |
+    sort_by(-.value.count) |
     if length > 0 then
-      [.[] | "\(.key): \(.value.count) occurrences (last example: \(.value.examples[-1] // "n/a" | .[0:60]))"] | join("\n")
+      [.[] | "\(.key): \(.value.count) occurrences (last example: \((.value.examples // [])[-1] // "n/a" | .[0:60]))"] | join("\n")
     else empty end
   ' "${defect_file}" 2>/dev/null || true)"
   if [[ -n "${defect_output}" ]]; then

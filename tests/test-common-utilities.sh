@@ -977,6 +977,60 @@ assert_eq "database design: not design_issues" \
   "unknown" \
   "$(classify_finding_category "the database design needs a migration")"
 
+# Design-reviewer rubric phrases (from design-reviewer.md anti-patterns)
+assert_eq "rubric: feature cards symmetrical row" \
+  "design_issues" \
+  "$(classify_finding_category "three feature cards in a symmetrical row")"
+
+assert_eq "rubric: no typographic treatment" \
+  "design_issues" \
+  "$(classify_finding_category "Inter with no typographic treatment")"
+
+assert_eq "rubric: uniform section padding" \
+  "design_issues" \
+  "$(classify_finding_category "uniform section padding with identical spacing")"
+
+assert_eq "rubric: no visual signature" \
+  "design_issues" \
+  "$(classify_finding_category "no distinctive visual signature in the design")"
+
+assert_eq "rubric: perfectly symmetrical NOT performance" \
+  "design_issues" \
+  "$(classify_finding_category "perfectly symmetrical layouts with no visual tension")"
+
+assert_eq "rubric: stock illustration" \
+  "design_issues" \
+  "$(classify_finding_category "stock-illustration-style decorative elements")"
+
+assert_eq "rubric: framework default colors" \
+  "design_issues" \
+  "$(classify_finding_category "framework default colors with no customization")"
+
+assert_eq "rubric: hero with CTA" \
+  "design_issues" \
+  "$(classify_finding_category "centered hero section with CTA button over gradient")"
+
+assert_eq "rubric: templated look" \
+  "design_issues" \
+  "$(classify_finding_category "the whole page reads as templated")"
+
+assert_eq "go template: not design_issues" \
+  "unknown" \
+  "$(classify_finding_category "use a Go template for rendering")"
+
+assert_eq "django template: not design_issues" \
+  "unknown" \
+  "$(classify_finding_category "django template tag is broken")"
+
+# Performance false-positive guard
+assert_eq "performance: real perf issue" \
+  "performance" \
+  "$(classify_finding_category "perf regression in hot path")"
+
+assert_eq "performance: performance word" \
+  "performance" \
+  "$(classify_finding_category "performance degradation after migration")"
+
 assert_eq "docs stale" \
   "docs_stale" \
   "$(classify_finding_category "README is outdated and references removed functions")"
@@ -1106,7 +1160,7 @@ _DEFECT_PATTERNS_FILE="${_ORIG_DEFECT_FILE}"
 _DEFECT_PATTERNS_LOCK="${_ORIG_DEFECT_LOCK}"
 
 # ===========================================================================
-# _ensure_valid_defect_patterns
+# _ensure_valid_defect_patterns (with archive and read-path recovery)
 # ===========================================================================
 printf '\n_ensure_valid_defect_patterns:\n'
 
@@ -1115,25 +1169,47 @@ _DEFECT_PATTERNS_FILE="${TEST_DEFECT_DIR2}/defect-patterns.json"
 _DEFECT_PATTERNS_LOCK="${TEST_DEFECT_DIR2}/.defect-patterns.lock"
 
 # Test 1: non-existent file is a no-op
+_defect_patterns_validated=0
 _ensure_valid_defect_patterns
 assert_exit "no file: no-op" "1" test -f "${_DEFECT_PATTERNS_FILE}"
 
 # Test 2: valid file left alone
 mkdir -p "${TEST_DEFECT_DIR2}"
 printf '{"test":{"count":1,"last_seen_ts":100,"examples":[]}}' > "${_DEFECT_PATTERNS_FILE}"
+_defect_patterns_validated=0
 _ensure_valid_defect_patterns
 val="$(jq -r '.test.count' "${_DEFECT_PATTERNS_FILE}" 2>/dev/null)"
 assert_eq "valid file preserved" "1" "${val}"
 
-# Test 3: corrupted file gets reset
+# Test 3: corrupted file gets archived and reset
 printf 'not json at all{{{' > "${_DEFECT_PATTERNS_FILE}"
+_defect_patterns_validated=0
 _ensure_valid_defect_patterns
 val="$(jq -r 'type' "${_DEFECT_PATTERNS_FILE}" 2>/dev/null)"
 assert_eq "corrupted file reset to object" "object" "${val}"
 
+# Verify archive was created
+archive_count="$(find "${TEST_DEFECT_DIR2}" -name '*.corrupt.*' 2>/dev/null | wc -l | tr -d '[:space:]')"
+assert_eq "corrupt archive created" "1" "${archive_count}"
+
+# Test 4: read-path recovery — get_defect_watch_list heals corrupt file
+printf '{"valid":{"count":3,"last_seen_ts":9999999999,"examples":["test"]}}' > "${_DEFECT_PATTERNS_FILE}"
+_defect_patterns_validated=0
+watch="$(get_defect_watch_list 1)"
+assert_contains "read-path: watch list works after valid data" "valid" "${watch}"
+
+# Now corrupt it and verify read-path heals
+printf 'CORRUPT DATA' > "${_DEFECT_PATTERNS_FILE}"
+_defect_patterns_validated=0
+watch="$(get_defect_watch_list 1)"
+# After healing, file should be valid JSON (empty object, so no watch list)
+val="$(jq -r 'type' "${_DEFECT_PATTERNS_FILE}" 2>/dev/null)"
+assert_eq "read-path: corrupt file healed" "object" "${val}"
+
 rm -rf "${TEST_DEFECT_DIR2}"
 _DEFECT_PATTERNS_FILE="${_ORIG_DEFECT_FILE}"
 _DEFECT_PATTERNS_LOCK="${_ORIG_DEFECT_LOCK}"
+_defect_patterns_validated=0
 
 # ===========================================================================
 # build_quality_scorecard

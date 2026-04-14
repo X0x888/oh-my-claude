@@ -53,7 +53,8 @@ if [[ -f "${summaries_file}" ]]; then
 
       # P5: Enrich reviewer reflections with historical defect patterns so
       # the main thread cross-references findings against recurring patterns.
-      if printf '%s' "${agent_type}" | grep -Eiq 'review|critic|metis'; then
+      # Explicit list: all reviewer-contract agents from AGENTS.md.
+      if printf '%s' "${agent_type}" | grep -Eiq 'review|critic|metis|briefing.analyst|oracle'; then
         defect_watch="$(get_defect_watch_list 3 2>/dev/null || true)"
         if [[ -n "${defect_watch}" ]]; then
           finding_context="${finding_context} Historical patterns: ${defect_watch}. Cross-reference reviewer findings against these — recurring patterns deserve permanent fixes, not patches."

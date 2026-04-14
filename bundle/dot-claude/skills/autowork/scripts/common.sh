@@ -1381,12 +1381,19 @@ with_defect_lock() {
 }
 
 # _ensure_valid_defect_patterns: Validate and recover the defect-patterns file.
-# If the file exists but is not valid JSON, reset it to empty object.
+# If the file exists but is not valid JSON, archive it and reset to empty object.
+# Uses a per-process cache to avoid re-validating on every call.
+_defect_patterns_validated=0
+
 _ensure_valid_defect_patterns() {
+  [[ "${_defect_patterns_validated}" -eq 1 ]] && return 0
+  _defect_patterns_validated=1
   [[ -f "${_DEFECT_PATTERNS_FILE}" ]] || return 0
   if ! jq empty "${_DEFECT_PATTERNS_FILE}" 2>/dev/null; then
-    log_hook "common" "defect-patterns.json corrupted — resetting to empty"
+    local archive="${_DEFECT_PATTERNS_FILE}.corrupt.$(date +%s)"
+    cp "${_DEFECT_PATTERNS_FILE}" "${archive}" 2>/dev/null || true
     printf '{}' > "${_DEFECT_PATTERNS_FILE}"
+    log_hook "common" "defect-patterns.json was corrupt, archived to ${archive}, reset to {}"
   fi
 }
 
@@ -1415,9 +1422,9 @@ classify_finding_category() {
     printf 'error_handling'
   elif printf '%s' "${desc}" | grep -Eq 'secur|auth|inject|xss|csrf|sanitiz|escap|vuln|credential|token'; then
     printf 'security'
-  elif printf '%s' "${desc}" | grep -Eq 'perf|slow|memory|leak|cache|optimi|latency|O\(n'; then
+  elif printf '%s' "${desc}" | grep -Eq 'perform|\bperf\b|slow|memory|leak|cache|optimi|latency|O\(n'; then
     printf 'performance'
-  elif printf '%s' "${desc}" | grep -Eq 'visual.?design|design.?quality|gradient|palette|generic.*ui|cookie.cutter|typography|aesthetic|spacing.*layout|color.*scheme|design.?system|design.?token'; then
+  elif printf '%s' "${desc}" | grep -Eq 'visual.?design|design.?quality|gradient|palette|generic.*ui|cookie.cutter|typograph|aesthetic|spacing.*layout|color.*scheme|design.?system|design.?token|symmetrical|\btemplated\b|feature.?cards|identical.?cards|uniform.*padding|uniform.*spacing|visual.*signature|hero.*cta|cta.*hero|framework.*default|stock.?illustrat|saas.*landing'; then
     printf 'design_issues'
   elif printf '%s' "${desc}" | grep -Eq 'accessib|a11y|aria|alt.text|screen.reader|keyboard.nav|contrast.ratio|wcag|focus.ring|tab.order'; then
     printf 'accessibility'
@@ -1488,6 +1495,7 @@ record_defect_pattern() {
 get_top_defect_patterns() {
   local n="${1:-3}"
   [[ -f "${_DEFECT_PATTERNS_FILE}" ]] || return 0
+  _ensure_valid_defect_patterns
   local cutoff_ts
   cutoff_ts="$(( $(now_epoch) - 90 * 86400 ))"
   jq -r --argjson n "${n}" --argjson cutoff "${cutoff_ts}" '
@@ -1507,6 +1515,7 @@ get_top_defect_patterns() {
 get_defect_watch_list() {
   local n="${1:-3}"
   [[ -f "${_DEFECT_PATTERNS_FILE}" ]] || return 0
+  _ensure_valid_defect_patterns
   local list
   list="$(jq -r --argjson n "${n}" --argjson cutoff "$(( $(now_epoch) - 90 * 86400 ))" '
     to_entries |
@@ -1779,7 +1788,7 @@ infer_domain() {
   coding_bigrams=$((coding_bigrams + form_bigrams))
 
   local motion_bigrams
-  motion_bigrams=$(count_keyword_matches '\b(add(ing)?|create|creat(e|ing)|build(ing)?|make|implement(ing)?|update(ing)?)\s+(subtle\s+|micro\s+)?animations?\s+(to|for|on|in)\s+(the\s+|a\s+|an\s+|this\s+|that\s+|my\s+|our\s+)?(\w+\s+){0,2}(heroes?|nav(igation|bar)?|sidebars?|buttons?|cards?|modals?|menus?|tabs?|panels?|pages?|screens?|components?|sections?)\b' "${text}")
+  motion_bigrams=$(count_keyword_matches '\b(add(ing)?|create|creat(e|ing)|build(ing)?|make|implement(ing)?|update(ing)?)\s+(a\s+|an\s+|the\s+|some\s+|subtle\s+|micro\s+)?animations?\s+(to|for|on|in)\s+(the\s+|a\s+|an\s+|this\s+|that\s+|my\s+|our\s+)?(\w+\s+){0,2}(heroes?|nav(igation|bar)?|sidebars?|buttons?|cards?|modals?|menus?|tabs?|panels?|pages?|screens?|components?|sections?)\b' "${text}")
   motion_bigrams=${motion_bigrams:-0}
   coding_bigrams=$((coding_bigrams + motion_bigrams))
 

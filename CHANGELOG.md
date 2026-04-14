@@ -8,16 +8,19 @@ All notable changes to this project will be documented in this file.
 
 - **Cross-session watch-list injection was dead code** — `prompt-intent-router.sh` checked `TASK_INTENT == "imperative"` but `classify_task_intent()` returns `"execution"`. Defect patterns were tracked but never surfaced to the model. Fixed to use `is_execution_intent_value()`.
 - **Guard exhaustion polluted defect patterns** — `record_defect_pattern "guard_exhaustion"` calls in `stop-guard.sh` recorded operational events as code defects, producing noise in the watch-list. Removed.
-- **Design findings classified as "unknown"** — added `design_issues` and `accessibility` categories to `classify_finding_category()` so design-reviewer and accessibility findings are properly tracked across sessions.
+- **Design findings classified as "unknown"** — added `design_issues` and `accessibility` categories to `classify_finding_category()` so design-reviewer and accessibility findings are properly tracked across sessions. Expanded `design_issues` regex with actual design-reviewer rubric vocabulary (symmetrical layouts, uniform padding, feature cards, framework defaults, etc.).
+- **Performance regex matched "perfectly" as "perf"** — tightened to `perform|\bperf\b` so "perfectly symmetrical layouts" is correctly classified as `design_issues`, not `performance`.
+- **Domain scorer motion regex out of sync with `is_ui_request()`** — the `infer_domain()` motion bigrams regex did not support articles ("add an animation"). Synced with `is_ui_request()` so domain classification matches the routing helper.
 - **Defect patterns and agent metrics shared a lock** — separated into `_DEFECT_PATTERNS_LOCK` / `with_defect_lock()` to eliminate unnecessary contention.
+- **Reviewer reflection enrichment missed `briefing-analyst`** — the substring heuristic only matched `review|critic|metis`. Added `briefing.analyst|oracle` so all reviewer-contract agents get historical pattern injection.
 
 ### Added
 
 - **Actionable watch-list injection** — `get_defect_watch_list()` now includes concrete examples from past findings (e.g. `missing_test ×12 (e.g. "no tests for parser")`), not just category names and counts. Stale patterns (>90 days) are filtered out.
 - **Reviewer reflection enriched with historical patterns** — `reflect-after-agent.sh` injects the defect watch-list when a reviewer returns, so the main thread cross-references findings against recurring patterns.
-- **Defect patterns file validation** — `_ensure_valid_defect_patterns()` detects and resets corrupted `defect-patterns.json`, matching the recovery behavior of `_ensure_valid_state()`.
-- **Defect patterns in `/ulw-status`** — cross-session defect patterns now displayed with occurrence counts and last example.
-- **Test coverage for cross-session learning** — 67 new test assertions covering `classify_finding_category`, `is_ui_path`, `is_ui_request`, `record_defect_pattern`, `get_defect_watch_list`, `_ensure_valid_defect_patterns`, and `build_quality_scorecard`.
+- **Defect patterns file validation on read and write paths** — `_ensure_valid_defect_patterns()` detects corrupted `defect-patterns.json`, archives the corrupt file, and resets to `{}`. Called from both write (`record_defect_pattern`) and read (`get_defect_watch_list`, `get_top_defect_patterns`, `/ulw-status`) paths with a per-process cache to avoid redundant checks.
+- **Defect patterns in `/ulw-status`** — cross-session defect patterns now displayed with occurrence counts, last example, and 90-day staleness filtering.
+- **Test coverage for cross-session learning** — 83 new test assertions covering `classify_finding_category` (including design-reviewer rubric phrases), `is_ui_path`, `is_ui_request`, `record_defect_pattern`, `get_defect_watch_list`, `_ensure_valid_defect_patterns` (including archive creation and read-path recovery), `build_quality_scorecard`, and domain scoring for animation article variants.
 
 ## [1.4.0] - 2026-04-14
 
