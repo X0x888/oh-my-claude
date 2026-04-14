@@ -111,9 +111,25 @@ VERDICT: CLEAN}"
     | bash "${HOOK_DIR}/record-reviewer.sh" prose 2>/dev/null || true
 }
 
+sim_design_reviewer() {
+  local sid="$1"
+  local msg="${2:-Visual design is distinctive and intentional.
+VERDICT: CLEAN}"
+  printf '%s' "$(jq -nc --arg s "${sid}" --arg m "${msg}" \
+    '{session_id:$s,last_assistant_message:$m}')" \
+    | bash "${HOOK_DIR}/record-reviewer.sh" design_quality 2>/dev/null || true
+}
+
 sim_edit_doc() {
   local sid="$1"
   local fp="${2:-/docs/README.md}"
+  run_hook "${HOOK_DIR}/mark-edit.sh" \
+    "$(jq -nc --arg s "${sid}" --arg f "${fp}" '{session_id:$s,tool_input:{file_path:$f}}')"
+}
+
+sim_edit_ui() {
+  local sid="$1"
+  local fp="${2:-/src/components/Button.tsx}"
   run_hook "${HOOK_DIR}/mark-edit.sh" \
     "$(jq -nc --arg s "${sid}" --arg f "${fp}" '{session_id:$s,tool_input:{file_path:$f}}')"
 }
@@ -973,6 +989,56 @@ out4="$(sim_stop "su7")"
 # Either excellence gate blocks, or it allows. Verify dimension exhaustion was recorded.
 exhausted_detail="$(read_st "su7" "guard_exhausted_detail")"
 assert_contains "seq-U7: exhaustion recorded" "dimensions_missing" "${exhausted_detail}"
+teardown_test
+
+# Sequence U8: UI file edits require design_quality dimension
+setup_test
+init_session "su8"
+sim_edit_ui "su8" "/src/components/Button.tsx"
+sim_edit_ui "su8" "/src/pages/Home.tsx"
+sim_edit "su8" "/src/utils.ts"
+sim_verify "su8" "npm test" "Tests: 10 passed"
+sim_review "su8" "Clean.
+VERDICT: CLEAN"
+# quality-reviewer ticks bug_hunt + code_quality, but stress_test, completeness,
+# and design_quality are still required. Stop should be blocked.
+out1="$(sim_stop "su8")"
+assert_contains "seq-U8: dimension gate blocks" '"decision":"block"' "${out1}"
+assert_contains "seq-U8: design_quality in missing dims" "design_quality" "${out1}"
+
+# Run metis — ticks stress_test
+sim_metis "su8"
+
+# Run design-reviewer — should tick design_quality
+sim_design_reviewer "su8"
+
+# Run excellence-reviewer — ticks completeness
+sim_excellence_review "su8"
+
+# Now stop should succeed (all dimensions ticked)
+out2="$(sim_stop "su8")"
+assert_empty "seq-U8: stop allowed after design review" "${out2}"
+
+# Verify ui_edit_count was tracked
+assert_eq "seq-U8: ui_edit_count=2" "2" "$(read_st "su8" "ui_edit_count")"
+assert_eq "seq-U8: code_edit_count=3" "3" "$(read_st "su8" "code_edit_count")"
+teardown_test
+
+# Sequence U9: Non-UI code edits do NOT require design_quality
+setup_test
+init_session "su9"
+sim_edit "su9" "/src/a.ts"
+sim_edit "su9" "/src/b.ts"
+sim_edit "su9" "/src/c.ts"
+sim_verify "su9" "npm test" "Tests: 10 passed"
+sim_review "su9" "Clean.
+VERDICT: CLEAN"
+sim_metis "su9"
+sim_excellence_review "su9"
+# No design-reviewer needed — no UI files edited
+out="$(sim_stop "su9")"
+assert_empty "seq-U9: no design gate for non-UI edits" "${out}"
+assert_eq "seq-U9: ui_edit_count=0" "" "$(read_st "su9" "ui_edit_count")"
 teardown_test
 
 

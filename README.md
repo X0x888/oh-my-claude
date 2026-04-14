@@ -41,6 +41,7 @@ Stop event blocking prevents Claude from finishing until testing and review are 
 On complex tasks (3+ edited files by default), the stop-hook stops guessing which reviewer to run next and prescribes the sequence. Each reviewer owns one distinct dimension:
 
 - `quality-reviewer` — bug hunt, code quality
+- `design-reviewer` — design quality (auto-activates when UI files edited)
 - `metis` — stress-test hidden assumptions
 - `excellence-reviewer` — completeness against the original objective
 - `editor-critic` — doc clarity and accuracy
@@ -67,7 +68,7 @@ Pre- and post-compact hooks snapshot the working state when Claude Code compacts
 
 ### Permissioned agents
 
-29 specialist agents, each with `disallowedTools` enforced. Agents can read, search, analyze, and plan -- but they cannot edit files. The main thread owns all mutations. This means agents provide high-quality analysis without unsupervised writes, and the main thread remains the single source of truth for code changes.
+30 specialist agents, each with `disallowedTools` enforced. Agents can read, search, analyze, and plan -- but they cannot edit files. The main thread owns all mutations. This means agents provide high-quality analysis without unsupervised writes, and the main thread remains the single source of truth for code changes.
 
 ### Project Council
 
@@ -175,8 +176,8 @@ For the full architecture, see [docs/architecture.md](docs/architecture.md).
 oh-my-claude/
 ├── install.sh / uninstall.sh / verify.sh   # Install, remove, and verify
 ├── bundle/dot-claude/                       # Installs to ~/.claude/
-│   ├── agents/          (29 agents)         # Specialist agent definitions
-│   ├── skills/          (15 skills)         # Skill definitions + autowork hooks
+│   ├── agents/          (30 agents)         # Specialist agent definitions
+│   ├── skills/          (16 skills)         # Skill definitions + autowork hooks
 │   ├── quality-pack/                        # Lifecycle hooks + memory files
 │   ├── output-styles/                       # Output format templates
 │   └── statusline.py                        # Custom statusline widget

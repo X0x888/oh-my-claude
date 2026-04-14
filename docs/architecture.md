@@ -51,12 +51,14 @@ oh-my-claude is a harness that wraps Claude Code's lifecycle events with bash ho
     - **Trigger**: session has `dimension_gate_file_count`+ unique edited files (default 3, configurable). Below the threshold, the gate is inert.
     - **Required dimensions** (computed from the edit mix):
         - Any code files → `bug_hunt`, `code_quality`, `stress_test`, `completeness`
+        - Any UI files (`.tsx`, `.jsx`, `.vue`, `.svelte`, `.astro`, `.css`, `.scss`, `.sass`, `.less`, `.styl`, `.html`, `.htm`) → add `design_quality`
         - Any doc files → add `prose`
         - At least `traceability_file_count`+ files (default 6) → add `traceability`
     - **Dimension ownership** (one reviewer per dimension; see `AGENTS.md` §"Dimension mapping"):
         - `quality-reviewer` → `bug_hunt`, `code_quality`
         - `metis` → `stress_test`
         - `excellence-reviewer` → `completeness`
+        - `design-reviewer` → `design_quality`
         - `editor-critic` → `prose`
         - `briefing-analyst` → `traceability`
     - **Validity**: each tick is timestamped (`dim_<name>_ts`) and considered valid only if the tick epoch is ≥ the relevant edit clock (`last_code_edit_ts` for most dimensions, `last_doc_edit_ts` for `prose`). A post-tick edit implicitly invalidates the dimension without needing explicit clearing.
@@ -74,7 +76,7 @@ The block caps prevent infinite loops. After the cap, Claude is allowed to stop 
 
 **`skills/autowork/scripts/reflect-after-agent.sh`** -- **PostToolUse hook** for Agent. After an agent returns, injects a reflection prompt telling Claude to verify the agent's highest-impact claims against actual code before relying on them. For advisory tasks, additionally warns not to deliver the final report until all exploration agents have returned.
 
-**`skills/autowork/scripts/record-reviewer.sh`** -- **SubagentStop hook** for reviewer and analysis agents (`quality-reviewer`, `editor-critic`, `excellence-reviewer`, `metis`, `briefing-analyst`, plus `superpowers:code-reviewer` / `feature-dev:code-reviewer`). Accepts a reviewer-type argument (`standard|excellence|prose|stress_test|traceability`) that determines which dimensions to tick. Parses a `VERDICT: CLEAN|SHIP|FINDINGS|BLOCK` line from the agent's last message (last match wins via `tail -n 1`, `FINDINGS (0)` treated as CLEAN), falling back to a legacy phrase-based regex when the VERDICT line is absent. Records `last_review_ts`, resets stop guard counters, and on clean reviews calls `tick_dimension` to mark the relevant dimension(s) valid. The excellence path additionally records `last_excellence_review_ts` and preserves `review_had_findings` from the standard review.
+**`skills/autowork/scripts/record-reviewer.sh`** -- **SubagentStop hook** for reviewer and analysis agents (`quality-reviewer`, `editor-critic`, `excellence-reviewer`, `metis`, `briefing-analyst`, `design-reviewer`, plus `superpowers:code-reviewer` / `feature-dev:code-reviewer`). Accepts a reviewer-type argument (`standard|excellence|prose|stress_test|traceability|design_quality`) that determines which dimensions to tick. Parses a `VERDICT: CLEAN|SHIP|FINDINGS|BLOCK` line from the agent's last message (last match wins via `tail -n 1`, `FINDINGS (0)` treated as CLEAN), falling back to a legacy phrase-based regex when the VERDICT line is absent. Records `last_review_ts`, resets stop guard counters, and on clean reviews calls `tick_dimension` to mark the relevant dimension(s) valid. The excellence path additionally records `last_excellence_review_ts` and preserves `review_had_findings` from the standard review.
 
 **`skills/autowork/scripts/record-pending-agent.sh`** -- **PreToolUse hook** for Agent. Records every agent dispatch to `pending_agents.jsonl` (capped at 32 entries) under the state lock. Used by `pre-compact-snapshot.sh` to render a "Pending Specialists (In Flight)" section, and by `session-start-compact-handoff.sh` to emit a re-dispatch directive on compact resume. Entries are removed by `record-subagent-summary.sh` on `SubagentStop` (FIFO-oldest match by `agent_type`).
 
@@ -136,7 +138,7 @@ Claude processes with injected context
   |-- [SubagentStop] record-subagent-summary.sh
   |     Logs agent conclusions to subagent_summaries.jsonl
   |
-  |-- [SubagentStop: quality-reviewer/editor-critic/metis/briefing-analyst/excellence-reviewer] record-reviewer.sh
+  |-- [SubagentStop: quality-reviewer/editor-critic/metis/briefing-analyst/excellence-reviewer/design-reviewer] record-reviewer.sh
   |     Parses VERDICT line, records last_review_ts, ticks dimension(s)
   |
   v
@@ -212,6 +214,8 @@ Session state is stored at:
 | `dim_prose_ts` | Epoch when `prose` dimension was last ticked |
 | `dim_completeness_ts` | Epoch when `completeness` dimension was last ticked |
 | `dim_traceability_ts` | Epoch when `traceability` dimension was last ticked |
+| `dim_design_quality_ts` | Epoch when `design_quality` dimension was last ticked |
+| `ui_edit_count` | Number of unique UI files (`.tsx`, `.jsx`, `.vue`, `.css`, etc.) edited — subset of `code_edit_count` |
 | `stop_guard_blocks` | Number of times the review/verify gate has blocked (cap: 3) |
 | `dimension_guard_blocks` | Number of times the dimension gate has blocked (cap: 3) |
 | `dimension_resume_grace_used` | Whether the one-shot resumed-session dimension-gate grace has been used (`1` or empty) |

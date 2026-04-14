@@ -92,6 +92,14 @@ if [[ -n "${edited_path}" ]]; then
         _code_count="$(read_state "code_edit_count")"
         _code_count="${_code_count:-0}"
         write_state "code_edit_count" "$((_code_count + 1))"
+        # Track UI file edits separately for the design_quality dimension.
+        # UI is a subset of code — both counters increment.
+        if is_ui_path "${edited_path}"; then
+          local _ui_count
+          _ui_count="$(read_state "ui_edit_count")"
+          _ui_count="${_ui_count:-0}"
+          write_state "ui_edit_count" "$((_ui_count + 1))"
+        fi
       fi
     fi
   }

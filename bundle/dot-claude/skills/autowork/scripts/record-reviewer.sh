@@ -7,18 +7,20 @@ set -euo pipefail
 
 # REVIEWER_TYPE controls which dimension (if any) this reviewer ticks.
 # Values:
-#   standard     — quality-reviewer, superpowers/feature-dev code-reviewer
-#                  → ticks bug_hunt, code_quality on clean reviews
-#   excellence   — excellence-reviewer
-#                  → ticks completeness (bug_hunt stays owned by quality-reviewer)
-#                  → also sets last_excellence_review_ts
-#                  → does NOT overwrite review_had_findings (independent gate)
-#   prose        — editor-critic
-#                  → ticks prose, sets last_doc_review_ts
-#   stress_test  — metis
-#                  → ticks stress_test
-#   traceability — briefing-analyst
-#                  → ticks traceability
+#   standard       — quality-reviewer, superpowers/feature-dev code-reviewer
+#                    → ticks bug_hunt, code_quality on clean reviews
+#   excellence     — excellence-reviewer
+#                    → ticks completeness (bug_hunt stays owned by quality-reviewer)
+#                    → also sets last_excellence_review_ts
+#                    → does NOT overwrite review_had_findings (independent gate)
+#   prose          — editor-critic
+#                    → ticks prose, sets last_doc_review_ts
+#   stress_test    — metis
+#                    → ticks stress_test
+#   traceability   — briefing-analyst
+#                    → ticks traceability
+#   design_quality — design-reviewer
+#                    → ticks design_quality
 REVIEWER_TYPE="${1:-standard}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -136,6 +138,8 @@ else
         tick_dimension "stress_test" "${now_ts}" ;;
       traceability)
         tick_dimension "traceability" "${now_ts}" ;;
+      design_quality)
+        tick_dimension "design_quality" "${now_ts}" ;;
       standard|*)
         tick_dimension "bug_hunt" "${now_ts}"
         tick_dimension "code_quality" "${now_ts}" ;;

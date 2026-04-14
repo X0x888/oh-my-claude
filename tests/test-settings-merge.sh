@@ -133,7 +133,7 @@ for impl in "${implementations[@]}"; do
   assert_json_count "${impl}: fresh — PostToolUse hooks" \
     "${work}/settings.json" '.hooks.PostToolUse' "4"
   assert_json_count "${impl}: fresh — SubagentStop hooks" \
-    "${work}/settings.json" '.hooks.SubagentStop' "10"
+    "${work}/settings.json" '.hooks.SubagentStop' "11"
   assert_json_count "${impl}: fresh — PreCompact hooks" \
     "${work}/settings.json" '.hooks.PreCompact' "1"
   assert_json_count "${impl}: fresh — PostCompact hooks" \
@@ -160,8 +160,8 @@ for impl in "${implementations[@]}"; do
 
   assert_json_count "${impl}: idempotent — SessionStart hooks still 2" \
     "${work}/settings.json" '.hooks.SessionStart' "2"
-  assert_json_count "${impl}: idempotent — SubagentStop hooks still 10" \
-    "${work}/settings.json" '.hooks.SubagentStop' "10"
+  assert_json_count "${impl}: idempotent — SubagentStop hooks still 11" \
+    "${work}/settings.json" '.hooks.SubagentStop' "11"
   assert_json_count "${impl}: idempotent — PostToolUse hooks still 4" \
     "${work}/settings.json" '.hooks.PostToolUse' "4"
   assert_json_count "${impl}: idempotent — PreToolUse hooks still 1" \
@@ -179,6 +179,10 @@ for impl in "${implementations[@]}"; do
   assert_json_eq "${impl}: fresh — editor-critic uses prose arg" \
     "${work}/settings.json" \
     '[.hooks.SubagentStop[] | select(.matcher == "editor-critic") | .hooks[0].command] | .[0] | tostring | contains("record-reviewer.sh prose")' \
+    "true"
+  assert_json_eq "${impl}: fresh — design-reviewer matcher wired" \
+    "${work}/settings.json" \
+    '[.hooks.SubagentStop[] | select(.matcher == "design-reviewer") | .hooks[0].command] | .[0] | tostring | contains("record-reviewer.sh design_quality")' \
     "true"
 
   # -----------------------------------------------------------------------
@@ -313,9 +317,9 @@ JSON
 
   run_merge "${impl}" "${work}/settings.json" "${SETTINGS_PATCH}" "false"
 
-  # After merge, SubagentStop should have exactly 10 entries (no duplicates).
+  # After merge, SubagentStop should have exactly 11 entries (no duplicates).
   assert_json_count "${impl}: upgrade — no duplicate editor-critic/excellence-reviewer" \
-    "${work}/settings.json" '.hooks.SubagentStop' "10"
+    "${work}/settings.json" '.hooks.SubagentStop' "11"
 
   # The editor-critic matcher should appear exactly ONCE, with the new 'prose' arg.
   assert_json_eq "${impl}: upgrade — editor-critic count is 1" \
@@ -345,6 +349,10 @@ JSON
   assert_json_eq "${impl}: upgrade — briefing-analyst matcher present" \
     "${work}/settings.json" \
     '[.hooks.SubagentStop[] | select(.matcher == "briefing-analyst")] | length' \
+    "1"
+  assert_json_eq "${impl}: upgrade — design-reviewer matcher present" \
+    "${work}/settings.json" \
+    '[.hooks.SubagentStop[] | select(.matcher == "design-reviewer")] | length' \
     "1"
 
   # -----------------------------------------------------------------------
@@ -424,10 +432,10 @@ JSON
 
   run_merge "${impl}" "${work}/settings.json" "${SETTINGS_PATCH}" "false"
 
-  # After merge, SubagentStop should have exactly 10 entries — same as
+  # After merge, SubagentStop should have exactly 11 entries — same as
   # a fresh install. No duplicate editor-critic entry survives.
-  assert_json_count "${impl}: multi-hook — SubagentStop count is 10" \
-    "${work}/settings.json" '.hooks.SubagentStop' "10"
+  assert_json_count "${impl}: multi-hook — SubagentStop count is 11" \
+    "${work}/settings.json" '.hooks.SubagentStop' "11"
 
   # editor-critic appears exactly ONCE in the merged entries.
   assert_json_eq "${impl}: multi-hook — editor-critic count is 1" \
@@ -466,8 +474,8 @@ JSON
 
   # Idempotency under the new algorithm: re-merging must not re-duplicate.
   run_merge "${impl}" "${work}/settings.json" "${SETTINGS_PATCH}" "false"
-  assert_json_count "${impl}: multi-hook — idempotent SubagentStop still 10" \
-    "${work}/settings.json" '.hooks.SubagentStop' "10"
+  assert_json_count "${impl}: multi-hook — idempotent SubagentStop still 11" \
+    "${work}/settings.json" '.hooks.SubagentStop' "11"
   assert_json_eq "${impl}: multi-hook — idempotent editor-critic still 1" \
     "${work}/settings.json" \
     '[.hooks.SubagentStop[] | select(.matcher == "editor-critic")] | length' \
@@ -555,16 +563,16 @@ JSON
     "true"
 
   # SubagentStop total is 10 (consolidated to the fresh install count).
-  assert_json_count "${impl}: multi-base — SubagentStop count is 10" \
-    "${work}/settings.json" '.hooks.SubagentStop' "10"
+  assert_json_count "${impl}: multi-base — SubagentStop count is 11" \
+    "${work}/settings.json" '.hooks.SubagentStop' "11"
 
   # Idempotency: re-merging must preserve the consolidated state and
   # not re-introduce duplicates. The normalize_base_entries pre-pass
   # is the regression target — it must be a no-op on an already-
   # normalized base.
   run_merge "${impl}" "${work}/settings.json" "${SETTINGS_PATCH}" "false"
-  assert_json_count "${impl}: multi-base — idempotent SubagentStop still 10" \
-    "${work}/settings.json" '.hooks.SubagentStop' "10"
+  assert_json_count "${impl}: multi-base — idempotent SubagentStop still 11" \
+    "${work}/settings.json" '.hooks.SubagentStop' "11"
   assert_json_eq "${impl}: multi-base — idempotent editor-critic still 1" \
     "${work}/settings.json" \
     '[.hooks.SubagentStop[] | select(.matcher == "editor-critic")] | length' \
@@ -586,15 +594,15 @@ JSON
   mkdir -p "${work}"
   printf '%s\n' '{"hooks": null}' > "${work}/settings.json"
   run_merge "${impl}" "${work}/settings.json" "${SETTINGS_PATCH}" "false"
-  assert_json_count "${impl}: null-hooks — SubagentStop count is 10" \
-    "${work}/settings.json" '.hooks.SubagentStop' "10"
+  assert_json_count "${impl}: null-hooks — SubagentStop count is 11" \
+    "${work}/settings.json" '.hooks.SubagentStop' "11"
 
   work="${TEST_DIR}/${impl}-null-event"
   mkdir -p "${work}"
   printf '%s\n' '{"hooks": {"SubagentStop": null}}' > "${work}/settings.json"
   run_merge "${impl}" "${work}/settings.json" "${SETTINGS_PATCH}" "false"
-  assert_json_count "${impl}: null-event — SubagentStop count is 10" \
-    "${work}/settings.json" '.hooks.SubagentStop' "10"
+  assert_json_count "${impl}: null-event — SubagentStop count is 11" \
+    "${work}/settings.json" '.hooks.SubagentStop' "11"
 
   work="${TEST_DIR}/${impl}-null-matcher"
   mkdir -p "${work}"
@@ -679,7 +687,7 @@ JSON
   # The null hook is filtered out, leaving an empty-hooks entry. The
   # patch''s editor-critic entry is appended alongside.
   assert_json_count "${impl}: null-hook — SubagentStop total" \
-    "${work}/settings.json" '.hooks.SubagentStop' "11"
+    "${work}/settings.json" '.hooks.SubagentStop' "12"
   assert_json_eq "${impl}: null-hook — record-reviewer.sh prose present" \
     "${work}/settings.json" \
     '[.hooks.SubagentStop[] | select(.matcher == "editor-critic") | .hooks[] | .command] | any(tostring | contains("record-reviewer.sh prose"))' \
@@ -697,9 +705,9 @@ JSON
   run_merge "${impl}" "${work}/settings.json" "${SETTINGS_PATCH}" "false"
   # A null entry in the event array is preserved as-is (non-dict entries
   # are passed through in normalize_base_entries), but the patch still
-  # installs its 10 entries alongside.
+  # installs its 11 entries alongside.
   assert_json_count "${impl}: null-entry — SubagentStop total" \
-    "${work}/settings.json" '.hooks.SubagentStop' "11"
+    "${work}/settings.json" '.hooks.SubagentStop' "12"
 
   work="${TEST_DIR}/${impl}-mixed-null-and-valid-hooks"
   mkdir -p "${work}"

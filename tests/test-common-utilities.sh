@@ -494,6 +494,67 @@ assert_not_doc "config/settings.patch.json"
 assert_not_doc ""
 
 # ===========================================================================
+# is_ui_path
+# ===========================================================================
+printf '\nis_ui_path:\n'
+
+assert_ui() {
+  local path="$1"
+  if is_ui_path "${path}"; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: expected UI: %s\n' "${path}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
+assert_not_ui() {
+  local path="$1"
+  if is_ui_path "${path}"; then
+    printf '  FAIL: expected NOT UI: %s\n' "${path}" >&2
+    fail=$((fail + 1))
+  else
+    pass=$((pass + 1))
+  fi
+}
+
+# Component files
+assert_ui "/src/components/Button.tsx"
+assert_ui "/src/pages/Home.jsx"
+assert_ui "/src/App.vue"
+assert_ui "/src/Counter.svelte"
+assert_ui "/src/pages/index.astro"
+
+# Stylesheets
+assert_ui "/src/styles/main.css"
+assert_ui "/src/styles/theme.scss"
+assert_ui "/src/styles/vars.sass"
+assert_ui "/src/styles/base.less"
+assert_ui "/src/styles/mixins.styl"
+
+# HTML
+assert_ui "/public/index.html"
+assert_ui "/templates/page.htm"
+
+# Case insensitivity
+assert_ui "/src/App.TSX"
+assert_ui "/src/style.CSS"
+
+# Double extensions (e.g., test files)
+assert_ui "/src/Button.test.tsx"
+assert_ui "/src/Button.stories.jsx"
+
+# Negative cases
+assert_not_ui "/src/utils.ts"
+assert_not_ui "/src/server.js"
+assert_not_ui "/config/webpack.config.js"
+assert_not_ui "/package.json"
+assert_not_ui "README.md"
+assert_not_ui "/src/api/handler.py"
+assert_not_ui ""
+assert_not_ui "/src/styles/index.ts"  # TS is not UI even in styles dir
+
+# ===========================================================================
 # Dimension helpers
 # ===========================================================================
 printf '\nDimension helpers:\n'
@@ -505,6 +566,7 @@ assert_eq "reviewer_for_dimension stress_test" "metis" "$(reviewer_for_dimension
 assert_eq "reviewer_for_dimension prose" "editor-critic" "$(reviewer_for_dimension prose)"
 assert_eq "reviewer_for_dimension completeness" "excellence-reviewer" "$(reviewer_for_dimension completeness)"
 assert_eq "reviewer_for_dimension traceability" "briefing-analyst" "$(reviewer_for_dimension traceability)"
+assert_eq "reviewer_for_dimension design_quality" "design-reviewer" "$(reviewer_for_dimension design_quality)"
 assert_eq "reviewer_for_dimension unknown fallback" "quality-reviewer" "$(reviewer_for_dimension foo_bar)"
 
 # _dim_key

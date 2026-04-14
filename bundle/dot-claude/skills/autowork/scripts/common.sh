@@ -566,6 +566,30 @@ is_doc_path() {
   return 1
 }
 
+# is_ui_path — returns 0 for files that produce visible UI output.
+#   - Component files: tsx, jsx, vue, svelte, astro
+#   - Stylesheets: css, scss, sass, less, styl
+#   - Markup: html, htm
+# UI paths are a subset of code paths (not docs). A file can be both
+# "code" (for code_edit_count) and "ui" (for ui_edit_count).
+
+is_ui_path() {
+  local path="$1"
+  [[ -z "${path}" ]] && return 1
+
+  local base="${path##*/}"
+  local base_lc
+  base_lc="$(printf '%s' "${base}" | tr '[:upper:]' '[:lower:]')"
+
+  case "${base_lc}" in
+    *.tsx|*.jsx|*.vue|*.svelte|*.astro) return 0 ;;
+    *.css|*.scss|*.sass|*.less|*.styl) return 0 ;;
+    *.html|*.htm) return 0 ;;
+  esac
+
+  return 1
+}
+
 # --- Dimension tracking helpers ---
 #
 # Dimensions are stored as individual state keys of the form
@@ -575,12 +599,13 @@ is_doc_path() {
 # This gives implicit invalidation — no mark-edit clearing needed.
 #
 # The canonical dimension set:
-#   bug_hunt     — quality-reviewer (code correctness, regressions, edge cases)
-#   code_quality — quality-reviewer (conventions, dead code, comments)
-#   stress_test  — metis (hidden assumptions, unsafe paths)
-#   prose        — editor-critic (doc clarity, accuracy, tone)
-#   completeness — excellence-reviewer (fresh-eyes holistic review)
-#   traceability — briefing-analyst (deferrals, decisions, synthesis)
+#   bug_hunt       — quality-reviewer (code correctness, regressions, edge cases)
+#   code_quality   — quality-reviewer (conventions, dead code, comments)
+#   stress_test    — metis (hidden assumptions, unsafe paths)
+#   prose          — editor-critic (doc clarity, accuracy, tone)
+#   completeness   — excellence-reviewer (fresh-eyes holistic review)
+#   traceability   — briefing-analyst (deferrals, decisions, synthesis)
+#   design_quality — design-reviewer (visual craft, distinctiveness, anti-generic)
 
 _dim_key() {
   printf 'dim_%s_ts' "$1"
@@ -634,19 +659,21 @@ reviewer_for_dimension() {
     prose)                 printf 'editor-critic' ;;
     completeness)          printf 'excellence-reviewer' ;;
     traceability)          printf 'briefing-analyst' ;;
+    design_quality)        printf 'design-reviewer' ;;
     *)                     printf 'quality-reviewer' ;;
   esac
 }
 
 describe_dimension() {
   case "$1" in
-    bug_hunt)     printf 'bug hunt (correctness, regressions, edge cases)' ;;
-    code_quality) printf 'code quality (conventions, dead code, comments)' ;;
-    stress_test)  printf 'stress-test (hidden assumptions, unsafe paths)' ;;
-    prose)        printf 'prose review (doc clarity, accuracy, tone)' ;;
-    completeness) printf 'completeness (fresh-eyes holistic review)' ;;
-    traceability) printf 'traceability (deferrals, decisions, synthesis)' ;;
-    *)            printf '%s' "$1" ;;
+    bug_hunt)        printf 'bug hunt (correctness, regressions, edge cases)' ;;
+    code_quality)    printf 'code quality (conventions, dead code, comments)' ;;
+    stress_test)     printf 'stress-test (hidden assumptions, unsafe paths)' ;;
+    prose)           printf 'prose review (doc clarity, accuracy, tone)' ;;
+    completeness)    printf 'completeness (fresh-eyes holistic review)' ;;
+    traceability)    printf 'traceability (deferrals, decisions, synthesis)' ;;
+    design_quality)  printf 'design quality (visual craft, distinctiveness, anti-generic)' ;;
+    *)               printf '%s' "$1" ;;
   esac
 }
 
@@ -659,14 +686,17 @@ describe_dimension() {
 #   unique_count < OMC_DIMENSION_GATE_FILE_COUNT → empty (simple task)
 #   Otherwise:                                   → bug_hunt,code_quality,stress_test,completeness
 #   If doc_count > 0 or task_domain=writing:     → append prose
+#   If ui_count > 0:                             → append design_quality
 #   If unique_count >= OMC_TRACEABILITY_FILE_COUNT → append traceability
 
 get_required_dimensions() {
-  local code_count doc_count unique_count
+  local code_count doc_count ui_count unique_count
   code_count="$(read_state "code_edit_count")"
   doc_count="$(read_state "doc_edit_count")"
+  ui_count="$(read_state "ui_edit_count")"
   code_count="${code_count:-0}"
   doc_count="${doc_count:-0}"
+  ui_count="${ui_count:-0}"
   unique_count=$((code_count + doc_count))
 
   # Legacy fallback: if the counters are not populated (resumed session
@@ -686,6 +716,9 @@ get_required_dimensions() {
           doc_count=$((doc_count + 1))
         else
           code_count=$((code_count + 1))
+          if is_ui_path "${_path}"; then
+            ui_count=$((ui_count + 1))
+          fi
         fi
       done < <(sort -u "${edited_log}")
     fi
@@ -709,6 +742,13 @@ get_required_dimensions() {
     else
       dims="prose,completeness"
     fi
+  fi
+
+  # design_quality: appended when UI files (tsx, jsx, vue, css, etc.) were
+  # edited. Since UI is a subset of code (both counters increment), dims
+  # will always be non-empty when ui_count > 0.
+  if [[ "${ui_count}" -gt 0 && -n "${dims}" ]]; then
+    dims="${dims},design_quality"
   fi
 
   if [[ "${unique_count}" -ge "${OMC_TRACEABILITY_FILE_COUNT}" ]]; then
@@ -788,10 +828,10 @@ is_imperative_request() {
   local result=1
 
   # "Can/Could/Would you [verb]..." — polite imperatives
-  if [[ "${text}" =~ ^[[:space:]]*(can|could|would)[[:space:]]+you[[:space:]]+(please[[:space:]]+)?(fix|implement|add|create|build|update|refactor|debug|deploy|test|write|make|set[[:space:]]+up|change|modify|remove|delete|move|rename|install|configure|check|run|help|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|connect|push|pull|merge|commit|review|start|stop|enable|disable|open|close|evaluate|plan|audit|investigate|research|analyze|analyse|assess|execute|document|extend|raise) ]]; then
+  if [[ "${text}" =~ ^[[:space:]]*(can|could|would)[[:space:]]+you[[:space:]]+(please[[:space:]]+)?(fix|implement|add|create|build|update|refactor|debug|deploy|test|write|make|set[[:space:]]+up|change|modify|remove|delete|move|rename|install|configure|check|run|help|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|connect|push|pull|merge|commit|review|start|stop|enable|disable|open|close|evaluate|plan|audit|investigate|research|analyze|analyse|assess|execute|document|extend|raise|design|style|redesign) ]]; then
     result=0
   # "Please [adverb?] [verb]..." patterns — single optional -ly adverb between please and verb
-  elif [[ "${text}" =~ ^[[:space:]]*(please)[[:space:]]+([a-z]+ly[[:space:]]+)?(fix|implement|add|create|build|update|refactor|debug|deploy|test|write|make|change|modify|remove|delete|move|rename|install|configure|check|run|help|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|proceed|go|evaluate|plan|audit|investigate|research|analyze|analyse|assess|execute|document|extend|raise) ]]; then
+  elif [[ "${text}" =~ ^[[:space:]]*(please)[[:space:]]+([a-z]+ly[[:space:]]+)?(fix|implement|add|create|build|update|refactor|debug|deploy|test|write|make|change|modify|remove|delete|move|rename|install|configure|check|run|help|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|proceed|go|evaluate|plan|audit|investigate|research|analyze|analyse|assess|execute|document|extend|raise|design|style|redesign) ]]; then
     result=0
   # "Go ahead and..." patterns
   elif [[ "${text}" =~ ^[[:space:]]*go[[:space:]]+ahead ]]; then
@@ -802,7 +842,8 @@ is_imperative_request() {
   # Bare imperative: starts with unambiguous action verb, no trailing question mark
   # Excludes: check, test, help, review, plan, research, evaluate — too ambiguous as bare starts
   # (evaluate/plan/research can be nouns; kept to polite/please forms only)
-  elif [[ ! "${text}" =~ \?[[:space:]]*$ ]] && [[ "${text}" =~ ^[[:space:]]*(fix|implement|add|create|build|update|refactor|debug|deploy|write|make|change|modify|remove|delete|move|rename|install|configure|run|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|connect|push|pull|merge|commit|start|stop|enable|disable|open|close|set[[:space:]]+up|proceed|audit|investigate|analyze|analyse|execute|document|extend|raise)[[:space:]] ]]; then
+  # Excludes: check, test, help, review, plan, research, evaluate, design, style — too ambiguous as bare starts
+  elif [[ ! "${text}" =~ \?[[:space:]]*$ ]] && [[ "${text}" =~ ^[[:space:]]*(fix|implement|add|create|build|update|refactor|debug|deploy|write|make|change|modify|remove|delete|move|rename|install|configure|run|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|connect|push|pull|merge|commit|start|stop|enable|disable|open|close|set[[:space:]]+up|proceed|audit|investigate|analyze|analyse|execute|document|extend|raise|redesign)[[:space:]] ]]; then
     result=0
   fi
 
@@ -840,6 +881,12 @@ infer_domain() {
   coding_bigrams=$(count_keyword_matches '\b(writ(e|ing)|add(ing)?|creat(e|ing)|run(ning)?|fix(ing)?|updat(e|ing))\s+((unit|integration|e2e|end.to.end|acceptance)\s+)?(tests?|test\s*suites?|specs?|code|functions?|class(es)?|components?|endpoints?|modules?|handlers?|middleware|routes?|migrations?|schemas?)\b' "${text}")
   coding_bigrams=${coding_bigrams:-0}
 
+  # Design/style + UI-object → coding signal (not general)
+  local design_bigrams
+  design_bigrams=$(count_keyword_matches '\b(design(ing)?|style|styl(e|ing)|redesign(ing)?|restyle|theme)\s+(a\s+|the\s+|my\s+|our\s+)?(pages?|forms?|buttons?|cards?|modals?|dropdowns?|nav(igation|bar)?|sidebars?|headers?|footers?|heros?|layouts?|components?|interfaces?|screens?|dashboards?|landing.?pages?|sections?|menus?|tabs?|panels?)\b' "${text}")
+  design_bigrams=${design_bigrams:-0}
+  coding_bigrams=$((coding_bigrams + design_bigrams))
+
   # Action + writing-object → writing signal
   local writing_bigrams
   writing_bigrams=$(count_keyword_matches '\b(writ(e|ing)|draft(ing)?|compos(e|ing)|author(ing)?)\s+(papers?|essays?|reports?|emails?|memos?|articles?|letters?|proposals?|manuscripts?|blogs?\s*posts?)\b' "${text}")
@@ -854,7 +901,7 @@ infer_domain() {
 
   # --- Unigram scoring ---
   local coding_strong
-  coding_strong=$(count_keyword_matches '\b(bugs?|fix(es|ed|ing)?|debug(ging)?|refactor(ing)?|implement(ation|ed|ing)?|repos?(itory)?|function|class(es)?|component|endpoints?|apis?|schema|database|quer(y|ies)|migration|lint(ing)?|compile|tsc|typescript|javascript|python|swift|xcode|react|next\.?js|css|html|webhooks?|codebase|source.?code|ci/?cd|docker|container|backend|frontend|fullstack)\b' "${text}")
+  coding_strong=$(count_keyword_matches '\b(bugs?|fix(es|ed|ing)?|debug(ging)?|refactor(ing)?|implement(ation|ed|ing)?|repos?(itory)?|function|class(es)?|component|endpoints?|apis?|schema|database|quer(y|ies)|migration|lint(ing)?|compile|tsc|typescript|javascript|python|swift|xcode|react|next\.?js|css|html|webhooks?|codebase|source.?code|ci/?cd|docker|container|backend|frontend|fullstack|tailwind|vue(\.?js)?|angular|svelte|ui|ux|layout|landing.?page|dashboard|responsive|animation)\b' "${text}")
   coding_strong=$(( ${coding_strong:-0} + coding_bigrams ))
 
   local coding_weak

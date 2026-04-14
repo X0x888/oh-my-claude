@@ -26,6 +26,7 @@
 - For general professional-assistant work, use `chief-of-staff` to turn vague asks into a clean plan, checklist, message, or decision-ready deliverable.
 - After code changes, delegate to `quality-reviewer` before finalizing. For complex or multi-file tasks, also run `excellence-reviewer` after defects are addressed — it evaluates completeness, unknown unknowns, and polish with fresh eyes.
 - For implementation-heavy work, prefer the closest specialist agent available for the domain, such as frontend, backend, DevOps, test, or iOS specialists.
+- For frontend/UI work, establish visual direction before writing code. The `frontend-developer` agent has design craft guidance built in. For dedicated design-first workflows, use `/frontend-design`. The `design-reviewer` quality gate auto-activates when UI files are edited.
 - Run the fastest meaningful verification available after edits. Prefer focused checks over broad expensive ones, but do not skip validation casually.
 - Do not stop at "code written". Treat work as incomplete until implementation, review, and verification are all finished or a concrete blocker prevents them.
 - Do not segment unfinished work into future-session handoffs such as "Wave 1 is done, Wave 2 is next" unless the user explicitly requested a checkpoint or phased delivery.

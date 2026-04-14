@@ -4,9 +4,9 @@ Cognitive quality harness for Claude Code -- bash hooks, specialist agents, and 
 
 ## Key Directories
 
-- `bundle/dot-claude/agents/` -- 29 specialist agent definitions with permission boundaries
+- `bundle/dot-claude/agents/` -- 30 specialist agent definitions with permission boundaries
 - `bundle/dot-claude/quality-pack/scripts/` -- 5 lifecycle hook scripts (prompt routing, compaction, session management)
-- `bundle/dot-claude/skills/` -- 15 skill definitions, each in `<name>/SKILL.md`
+- `bundle/dot-claude/skills/` -- 16 skill definitions, each in `<name>/SKILL.md`
 - `bundle/dot-claude/skills/autowork/scripts/` -- 12 autowork hook scripts including `common.sh` (shared utility library)
 - `bundle/dot-claude/output-styles/` -- output format templates
 - `config/settings.patch.json` -- settings merged into user config on install
@@ -56,7 +56,7 @@ python3 -m unittest tests.test_statusline -v
 - When adding, removing, or renaming agents, skills, scripts, or directories, update README.md, CLAUDE.md, AGENTS.md, and CONTRIBUTING.md to reflect the change. Stale docs are worse than no docs.
 - When bumping the version, update `VERSION`, the README badge, and add a CHANGELOG entry. Tag the release commit with `vX.Y.Z`.
 - When adding a new reviewer-style agent:
-  1. Wire it in `config/settings.patch.json` under `SubagentStop` with a reviewer-type argument (`standard|excellence|prose|stress_test|traceability`).
+  1. Wire it in `config/settings.patch.json` under `SubagentStop` with a reviewer-type argument (`standard|excellence|prose|stress_test|traceability|design_quality`).
   2. Add the `VERDICT:` contract line to its output format section in `bundle/dot-claude/agents/<name>.md`.
   3. Update the dimension mapping table in `AGENTS.md`.
   4. Add a matcher-name assertion in `tests/test-settings-merge.sh`.
