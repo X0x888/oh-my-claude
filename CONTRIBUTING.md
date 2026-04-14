@@ -105,6 +105,26 @@ When you add, remove, or rename agents, skills, scripts, or directories, update 
 
 Keeping counts and directory listings accurate prevents drift between code and docs.
 
+## Release Process
+
+When bumping the version (changing `VERSION`), follow these steps in order. Replace `X.Y.Z` with the actual version number in all commands.
+
+1. Update `VERSION` with the new version number (e.g. `1.4.1`).
+2. Update the README.md badge: `[![Version](https://img.shields.io/badge/Version-X.Y.Z-blue.svg)]`.
+3. Add a CHANGELOG.md entry under `## [X.Y.Z] - YYYY-MM-DD` with Added/Fixed/Changed sections.
+4. Commit with a descriptive message summarizing the release.
+5. **Tag the release commit**: `git tag vX.Y.Z` — this is mandatory, not optional.
+6. Push commits and tags: `git push && git push --tags`.
+7. Create a GitHub release from the tag:
+   ```bash
+   VER=$(cat VERSION)
+   awk "/^## \\[$VER\\]/{found=1;next} /^## \\[/{if(found)exit} found" CHANGELOG.md \
+     | gh release create "v$VER" --title "v$VER" --notes-file -
+   ```
+   If `gh` is unavailable, create the release manually via GitHub's web UI.
+
+A version bump without a corresponding git tag breaks the release history. Every `VERSION` change must have a matching `vX.Y.Z` tag on the commit that introduced it.
+
 ## Code of Conduct
 
 - Be respectful in all interactions.

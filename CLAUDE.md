@@ -56,7 +56,15 @@ python3 -m unittest tests.test_statusline -v
 - Prefer readable code over micro-optimizations. When quality and speed conflict, choose quality.
 - Do not break existing install paths, config merges, or hook interfaces for performance gains.
 - When adding, removing, or renaming agents, skills, scripts, or directories, update README.md, CLAUDE.md, AGENTS.md, and CONTRIBUTING.md to reflect the change. Stale docs are worse than no docs.
-- When bumping the version, update `VERSION`, the README badge, and add a CHANGELOG entry. Tag the release commit with `vX.Y.Z`.
+- When bumping the version, follow the full release checklist (replace `X.Y.Z` with the actual version in all commands):
+  1. Update `VERSION` with the new version number.
+  2. Update the README.md version badge to match.
+  3. Add a CHANGELOG.md entry under `## [X.Y.Z] - YYYY-MM-DD`.
+  4. Commit with a descriptive message summarizing the release.
+  5. Tag the release commit: `git tag vX.Y.Z`.
+  6. Push commits and tags: `git push && git push --tags`.
+  7. Create a GitHub release: `VER=$(cat VERSION) && awk "/^## \\[$VER\\]/{found=1;next} /^## \\[/{if(found)exit} found" CHANGELOG.md | gh release create "v$VER" --title "v$VER" --notes-file -`. If `gh` is unavailable, create the release manually via GitHub's web UI.
+  8. Never skip tagging — a version bump without a tag breaks the release history.
 - When adding a new reviewer-style agent:
   1. Wire it in `config/settings.patch.json` under `SubagentStop` with a reviewer-type argument (`standard|excellence|prose|stress_test|traceability|design_quality`).
   2. Add the `VERDICT:` contract line to its output format section in `bundle/dot-claude/agents/<name>.md`.
