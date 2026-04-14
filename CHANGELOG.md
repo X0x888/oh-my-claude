@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.1] - 2026-04-14
+
+### Fixed
+
+- **Cross-session watch-list injection was dead code** — `prompt-intent-router.sh` checked `TASK_INTENT == "imperative"` but `classify_task_intent()` returns `"execution"`. Defect patterns were tracked but never surfaced to the model. Fixed to use `is_execution_intent_value()`.
+- **Guard exhaustion polluted defect patterns** — `record_defect_pattern "guard_exhaustion"` calls in `stop-guard.sh` recorded operational events as code defects, producing noise in the watch-list. Removed.
+- **Design findings classified as "unknown"** — added `design_issues` and `accessibility` categories to `classify_finding_category()` so design-reviewer and accessibility findings are properly tracked across sessions.
+- **Defect patterns and agent metrics shared a lock** — separated into `_DEFECT_PATTERNS_LOCK` / `with_defect_lock()` to eliminate unnecessary contention.
+
+### Added
+
+- **Actionable watch-list injection** — `get_defect_watch_list()` now includes concrete examples from past findings (e.g. `missing_test ×12 (e.g. "no tests for parser")`), not just category names and counts. Stale patterns (>90 days) are filtered out.
+- **Reviewer reflection enriched with historical patterns** — `reflect-after-agent.sh` injects the defect watch-list when a reviewer returns, so the main thread cross-references findings against recurring patterns.
+- **Defect patterns file validation** — `_ensure_valid_defect_patterns()` detects and resets corrupted `defect-patterns.json`, matching the recovery behavior of `_ensure_valid_state()`.
+- **Defect patterns in `/ulw-status`** — cross-session defect patterns now displayed with occurrence counts and last example.
+- **Test coverage for cross-session learning** — 67 new test assertions covering `classify_finding_category`, `is_ui_path`, `is_ui_request`, `record_defect_pattern`, `get_defect_watch_list`, `_ensure_valid_defect_patterns`, and `build_quality_scorecard`.
+
 ## [1.4.0] - 2026-04-14
 
 ### Added

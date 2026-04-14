@@ -163,6 +163,21 @@ if [[ -f "${metrics_file}" ]]; then
   fi
 fi
 
+# Show defect patterns (cross-session)
+defect_file="${HOME}/.claude/quality-pack/defect-patterns.json"
+if [[ -f "${defect_file}" ]]; then
+  defect_output="$(jq -r '
+    to_entries | sort_by(-.value.count) |
+    if length > 0 then
+      [.[] | "\(.key): \(.value.count) occurrences (last example: \(.value.examples[-1] // "n/a" | .[0:60]))"] | join("\n")
+    else empty end
+  ' "${defect_file}" 2>/dev/null || true)"
+  if [[ -n "${defect_output}" ]]; then
+    printf '\n--- Defect Patterns (cross-session) ---\n'
+    printf '%s\n' "${defect_output}"
+  fi
+fi
+
 # Show edited files if any
 edits_file="${STATE_ROOT}/${latest_session}/edited_files.log"
 if [[ -f "${edits_file}" ]]; then

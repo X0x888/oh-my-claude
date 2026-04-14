@@ -913,6 +913,267 @@ assert_eq "valid state preserved" "test_value" "$(read_state "test_key")"
 SESSION_ID="${_orig_sid}"
 
 # ===========================================================================
+# classify_finding_category
+# ===========================================================================
+printf '\nclassify_finding_category:\n'
+
+assert_eq "race condition" \
+  "race_condition" \
+  "$(classify_finding_category "potential race condition in concurrent map access")"
+
+assert_eq "deadlock" \
+  "race_condition" \
+  "$(classify_finding_category "possible deadlock between lock A and lock B")"
+
+assert_eq "missing test" \
+  "missing_test" \
+  "$(classify_finding_category "no unit tests for the new parser module")"
+
+assert_eq "test coverage" \
+  "missing_test" \
+  "$(classify_finding_category "coverage is below threshold for utils.ts")"
+
+assert_eq "type error" \
+  "type_error" \
+  "$(classify_finding_category "TypeScript type error: cannot assign string to number")"
+
+assert_eq "null check" \
+  "null_check" \
+  "$(classify_finding_category "optional chaining not used — response.data could be undefined")"
+
+assert_eq "edge case" \
+  "edge_case" \
+  "$(classify_finding_category "boundary check: off-by-one in array indexing")"
+
+assert_eq "API contract" \
+  "api_contract" \
+  "$(classify_finding_category "API endpoint returns wrong payload schema")"
+
+assert_eq "error handling" \
+  "error_handling" \
+  "$(classify_finding_category "uncaught exception in the promise chain")"
+
+assert_eq "security" \
+  "security" \
+  "$(classify_finding_category "user input not sanitized before SQL query")"
+
+assert_eq "performance" \
+  "performance" \
+  "$(classify_finding_category "O(n^2) loop causes slow rendering on large datasets")"
+
+assert_eq "design issues" \
+  "design_issues" \
+  "$(classify_finding_category "generic gradient background with default color palette")"
+
+assert_eq "design visual" \
+  "design_issues" \
+  "$(classify_finding_category "visual design lacks typography hierarchy")"
+
+assert_eq "design aesthetic" \
+  "design_issues" \
+  "$(classify_finding_category "cookie-cutter aesthetic with default spacing")"
+
+assert_eq "database design: not design_issues" \
+  "unknown" \
+  "$(classify_finding_category "the database design needs a migration")"
+
+assert_eq "docs stale" \
+  "docs_stale" \
+  "$(classify_finding_category "README is outdated and references removed functions")"
+
+assert_eq "style" \
+  "style" \
+  "$(classify_finding_category "inconsistent naming convention: camelCase vs snake_case")"
+
+assert_eq "accessibility aria" \
+  "accessibility" \
+  "$(classify_finding_category "missing aria labels on interactive buttons")"
+
+assert_eq "accessibility wcag" \
+  "accessibility" \
+  "$(classify_finding_category "low contrast ratio does not meet wcag AA")"
+
+assert_eq "unknown fallback" \
+  "unknown" \
+  "$(classify_finding_category "something completely unrelated to any category")"
+
+assert_eq "empty input" \
+  "unknown" \
+  "$(classify_finding_category "")"
+
+# ===========================================================================
+# is_ui_path
+# ===========================================================================
+printf '\nis_ui_path:\n'
+
+assert_exit "tsx file" "0" is_ui_path "/src/components/Button.tsx"
+assert_exit "jsx file" "0" is_ui_path "/src/App.jsx"
+assert_exit "vue file" "0" is_ui_path "/components/Header.vue"
+assert_exit "svelte file" "0" is_ui_path "/routes/Page.svelte"
+assert_exit "css file" "0" is_ui_path "/styles/main.css"
+assert_exit "scss file" "0" is_ui_path "/styles/theme.scss"
+assert_exit "html file" "0" is_ui_path "/public/index.html"
+assert_exit "astro file" "0" is_ui_path "/pages/index.astro"
+assert_exit "ts file: not UI" "1" is_ui_path "/src/utils/parser.ts"
+assert_exit "py file: not UI" "1" is_ui_path "/server/app.py"
+assert_exit "go file: not UI" "1" is_ui_path "/cmd/main.go"
+assert_exit "json file: not UI" "1" is_ui_path "/config/settings.json"
+assert_exit "sh file: not UI" "1" is_ui_path "/scripts/build.sh"
+assert_exit "empty: not UI" "1" is_ui_path ""
+
+# ===========================================================================
+# is_ui_request
+# ===========================================================================
+printf '\nis_ui_request:\n'
+
+assert_exit "build a login form" "0" is_ui_request "build a login form"
+assert_exit "create a dashboard page" "0" is_ui_request "create a dashboard page"
+assert_exit "add a modal component" "0" is_ui_request "add a modal component"
+assert_exit "style the navigation bar" "0" is_ui_request "style the navigation bar"
+assert_exit "implement a dropdown menu" "0" is_ui_request "implement a dropdown menu"
+assert_exit "add animation to the cards" "0" is_ui_request "add animation to the cards"
+assert_exit "add an animation to the card" "0" is_ui_request "add an animation to the card"
+assert_exit "fix the CSS layout" "0" is_ui_request "fix the CSS layout"
+assert_exit "backend API: not UI" "1" is_ui_request "implement the REST API endpoint"
+assert_exit "database query: not UI" "1" is_ui_request "optimize the database query"
+assert_exit "fix the auth middleware: not UI" "1" is_ui_request "fix the auth middleware"
+
+# ===========================================================================
+# record_defect_pattern and get_defect_watch_list
+# ===========================================================================
+printf '\nrecord_defect_pattern / get_defect_watch_list:\n'
+
+# Use an isolated defect patterns file for testing
+_ORIG_DEFECT_FILE="${_DEFECT_PATTERNS_FILE}"
+_ORIG_DEFECT_LOCK="${_DEFECT_PATTERNS_LOCK}"
+TEST_DEFECT_DIR="$(mktemp -d)"
+_DEFECT_PATTERNS_FILE="${TEST_DEFECT_DIR}/defect-patterns.json"
+_DEFECT_PATTERNS_LOCK="${TEST_DEFECT_DIR}/.defect-patterns.lock"
+
+# Test 1: recording creates the file and stores category
+record_defect_pattern "missing_test" "no tests for parser"
+assert_exit "defect file created" "0" test -f "${_DEFECT_PATTERNS_FILE}"
+
+count="$(jq -r '.missing_test.count' "${_DEFECT_PATTERNS_FILE}" 2>/dev/null)"
+assert_eq "missing_test count=1" "1" "${count}"
+
+example="$(jq -r '.missing_test.examples[0]' "${_DEFECT_PATTERNS_FILE}" 2>/dev/null)"
+assert_eq "missing_test example stored" "no tests for parser" "${example}"
+
+# Test 2: recording increments count and appends examples
+record_defect_pattern "missing_test" "no coverage for auth module"
+count="$(jq -r '.missing_test.count' "${_DEFECT_PATTERNS_FILE}" 2>/dev/null)"
+assert_eq "missing_test count=2" "2" "${count}"
+
+num_examples="$(jq -r '.missing_test.examples | length' "${_DEFECT_PATTERNS_FILE}" 2>/dev/null)"
+assert_eq "missing_test 2 examples" "2" "${num_examples}"
+
+# Test 3: different categories are tracked independently
+record_defect_pattern "null_check" "optional chaining missing"
+record_defect_pattern "null_check" "null dereference in handler"
+record_defect_pattern "null_check" "undefined access on response"
+
+mt_count="$(jq -r '.missing_test.count' "${_DEFECT_PATTERNS_FILE}" 2>/dev/null)"
+nc_count="$(jq -r '.null_check.count' "${_DEFECT_PATTERNS_FILE}" 2>/dev/null)"
+assert_eq "missing_test still 2" "2" "${mt_count}"
+assert_eq "null_check count=3" "3" "${nc_count}"
+
+# Test 4: get_defect_watch_list returns formatted output
+watch="$(get_defect_watch_list 2)"
+assert_contains "watch list has null_check" "null_check" "${watch}"
+assert_contains "watch list has missing_test" "missing_test" "${watch}"
+assert_contains "watch list starts with Watch for:" "Watch for:" "${watch}"
+assert_contains "watch list includes example" 'e.g.' "${watch}"
+
+# Test 5: get_top_defect_patterns returns top N
+top="$(get_top_defect_patterns 1)"
+assert_contains "top pattern is null_check (highest count)" "null_check" "${top}"
+
+# Test 6: examples capped at 5
+for i in 1 2 3 4 5 6 7; do
+  record_defect_pattern "edge_case" "edge case example ${i}"
+done
+num_examples="$(jq -r '.edge_case.examples | length' "${_DEFECT_PATTERNS_FILE}" 2>/dev/null)"
+assert_eq "examples capped at 5" "5" "${num_examples}"
+
+# Verify most recent example is last
+last_example="$(jq -r '.edge_case.examples[-1]' "${_DEFECT_PATTERNS_FILE}" 2>/dev/null)"
+assert_eq "most recent example is last" "edge case example 7" "${last_example}"
+
+# Cleanup
+rm -rf "${TEST_DEFECT_DIR}"
+_DEFECT_PATTERNS_FILE="${_ORIG_DEFECT_FILE}"
+_DEFECT_PATTERNS_LOCK="${_ORIG_DEFECT_LOCK}"
+
+# ===========================================================================
+# _ensure_valid_defect_patterns
+# ===========================================================================
+printf '\n_ensure_valid_defect_patterns:\n'
+
+TEST_DEFECT_DIR2="$(mktemp -d)"
+_DEFECT_PATTERNS_FILE="${TEST_DEFECT_DIR2}/defect-patterns.json"
+_DEFECT_PATTERNS_LOCK="${TEST_DEFECT_DIR2}/.defect-patterns.lock"
+
+# Test 1: non-existent file is a no-op
+_ensure_valid_defect_patterns
+assert_exit "no file: no-op" "1" test -f "${_DEFECT_PATTERNS_FILE}"
+
+# Test 2: valid file left alone
+mkdir -p "${TEST_DEFECT_DIR2}"
+printf '{"test":{"count":1,"last_seen_ts":100,"examples":[]}}' > "${_DEFECT_PATTERNS_FILE}"
+_ensure_valid_defect_patterns
+val="$(jq -r '.test.count' "${_DEFECT_PATTERNS_FILE}" 2>/dev/null)"
+assert_eq "valid file preserved" "1" "${val}"
+
+# Test 3: corrupted file gets reset
+printf 'not json at all{{{' > "${_DEFECT_PATTERNS_FILE}"
+_ensure_valid_defect_patterns
+val="$(jq -r 'type' "${_DEFECT_PATTERNS_FILE}" 2>/dev/null)"
+assert_eq "corrupted file reset to object" "object" "${val}"
+
+rm -rf "${TEST_DEFECT_DIR2}"
+_DEFECT_PATTERNS_FILE="${_ORIG_DEFECT_FILE}"
+_DEFECT_PATTERNS_LOCK="${_ORIG_DEFECT_LOCK}"
+
+# ===========================================================================
+# build_quality_scorecard
+# ===========================================================================
+printf '\nbuild_quality_scorecard:\n'
+
+# Save and isolate session state
+_orig_sid2="${SESSION_ID}"
+SESSION_ID="test-scorecard-$$"
+mkdir -p "${STATE_ROOT}/${SESSION_ID}"
+printf '{}' > "${STATE_ROOT}/${SESSION_ID}/session_state.json"
+
+# Test 1: empty state shows not-run marks
+sc="$(build_quality_scorecard)"
+assert_contains "verification not run" "Verification: not run" "${sc}"
+assert_contains "code review not run" "Code review: not run" "${sc}"
+
+# Test 2: after verification passes
+write_state "last_verify_ts" "$(now_epoch)"
+write_state "last_verify_outcome" "passed"
+write_state "last_verify_cmd" "npm test"
+write_state "last_verify_confidence" "85"
+sc="$(build_quality_scorecard)"
+assert_contains "verification passed" "Verification: passed" "${sc}"
+assert_contains "verify cmd shown" "npm test" "${sc}"
+
+# Test 3: after review with findings
+write_state "last_review_ts" "$(now_epoch)"
+write_state "review_had_findings" "true"
+sc="$(build_quality_scorecard)"
+assert_contains "review findings" "Code review: findings reported" "${sc}"
+
+# Test 4: clean review
+write_state "review_had_findings" "false"
+sc="$(build_quality_scorecard)"
+assert_contains "review clean" "Code review: clean" "${sc}"
+
+SESSION_ID="${_orig_sid2}"
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 

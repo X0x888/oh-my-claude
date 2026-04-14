@@ -299,7 +299,7 @@ fi
 
 # Cross-session learning: inject defect watch list when context is being built
 # so the model is primed to look for historically frequent defect categories.
-if [[ "${TASK_INTENT}" == "imperative" ]]; then
+if is_execution_intent_value "${TASK_INTENT}"; then
   defect_watch="$(get_defect_watch_list 3 2>/dev/null || true)"
   if [[ -n "${defect_watch}" ]]; then
     context_parts+=("Historical defect patterns from prior sessions — ${defect_watch}. Pay extra attention to these categories during implementation and review.")

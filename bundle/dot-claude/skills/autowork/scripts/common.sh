@@ -1358,6 +1358,37 @@ get_all_agent_metrics() {
 #   api_contract, error_handling, security, performance, docs_stale, style
 
 _DEFECT_PATTERNS_FILE="${HOME}/.claude/quality-pack/defect-patterns.json"
+_DEFECT_PATTERNS_LOCK="${HOME}/.claude/quality-pack/.defect-patterns.lock"
+
+# with_defect_lock: Run a command under the defect patterns file lock.
+# Separate from with_metrics_lock to avoid unnecessary contention.
+with_defect_lock() {
+  local max_attempts=100
+  local attempt=0
+  while ! mkdir "${_DEFECT_PATTERNS_LOCK}" 2>/dev/null; do
+    attempt=$((attempt + 1))
+    if [[ "${attempt}" -ge "${max_attempts}" ]]; then
+      rm -rf "${_DEFECT_PATTERNS_LOCK}" 2>/dev/null || true
+      mkdir "${_DEFECT_PATTERNS_LOCK}" 2>/dev/null || true
+      break
+    fi
+    sleep 0.05
+  done
+  "$@"
+  local rc=$?
+  rm -rf "${_DEFECT_PATTERNS_LOCK}" 2>/dev/null || true
+  return "${rc}"
+}
+
+# _ensure_valid_defect_patterns: Validate and recover the defect-patterns file.
+# If the file exists but is not valid JSON, reset it to empty object.
+_ensure_valid_defect_patterns() {
+  [[ -f "${_DEFECT_PATTERNS_FILE}" ]] || return 0
+  if ! jq empty "${_DEFECT_PATTERNS_FILE}" 2>/dev/null; then
+    log_hook "common" "defect-patterns.json corrupted — resetting to empty"
+    printf '{}' > "${_DEFECT_PATTERNS_FILE}"
+  fi
+}
 
 # classify_finding_category: Classify a finding description into a defect category.
 # Usage: classify_finding_category "description text"
@@ -1386,6 +1417,10 @@ classify_finding_category() {
     printf 'security'
   elif printf '%s' "${desc}" | grep -Eq 'perf|slow|memory|leak|cache|optimi|latency|O\(n'; then
     printf 'performance'
+  elif printf '%s' "${desc}" | grep -Eq 'visual.?design|design.?quality|gradient|palette|generic.*ui|cookie.cutter|typography|aesthetic|spacing.*layout|color.*scheme|design.?system|design.?token'; then
+    printf 'design_issues'
+  elif printf '%s' "${desc}" | grep -Eq 'accessib|a11y|aria|alt.text|screen.reader|keyboard.nav|contrast.ratio|wcag|focus.ring|tab.order'; then
+    printf 'accessibility'
   elif printf '%s' "${desc}" | grep -Eq 'doc|readme|comment|stale|outdated|changelog'; then
     printf 'docs_stale'
   elif printf '%s' "${desc}" | grep -Eq 'style|format|lint|naming|convention|indent'; then
@@ -1409,6 +1444,8 @@ record_defect_pattern() {
     if [[ ! -f "${pf}" ]]; then
       mkdir -p "$(dirname "${pf}")"
       printf '{}' > "${pf}"
+    else
+      _ensure_valid_defect_patterns
     fi
 
     local current
@@ -1441,35 +1478,49 @@ record_defect_pattern() {
     fi
   }
 
-  with_metrics_lock _do_record_defect
+  with_defect_lock _do_record_defect
 }
 
-# get_top_defect_patterns: Return the top N defect categories by frequency.
+# get_top_defect_patterns: Return the top N defect categories by frequency,
+# filtered to patterns seen within the last 90 days.
 # Usage: get_top_defect_patterns [n] — defaults to 3
 # Returns: newline-separated "category (count)" strings on stdout
 get_top_defect_patterns() {
   local n="${1:-3}"
   [[ -f "${_DEFECT_PATTERNS_FILE}" ]] || return 0
-  jq -r --argjson n "${n}" '
+  local cutoff_ts
+  cutoff_ts="$(( $(now_epoch) - 90 * 86400 ))"
+  jq -r --argjson n "${n}" --argjson cutoff "${cutoff_ts}" '
     to_entries |
+    map(select(.value.last_seen_ts > $cutoff)) |
     sort_by(-.value.count) |
     .[0:$n] |
     .[] | "\(.key) (\(.value.count))"
   ' "${_DEFECT_PATTERNS_FILE}" 2>/dev/null || true
 }
 
-# get_defect_watch_list: Return a compact watch-list string for injection
-# into prompts. E.g. "Watch for: missing_test(12), null_check(8), edge_case(5)"
+# get_defect_watch_list: Return an actionable watch-list string for injection
+# into prompts. Includes concrete examples from past findings so the model
+# understands WHAT to watch for, not just abstract category names.
+# Filters out patterns not seen in the last 90 days.
+# Usage: get_defect_watch_list [n] — defaults to 3
 get_defect_watch_list() {
   local n="${1:-3}"
   [[ -f "${_DEFECT_PATTERNS_FILE}" ]] || return 0
   local list
-  list="$(jq -r --argjson n "${n}" '
+  list="$(jq -r --argjson n "${n}" --argjson cutoff "$(( $(now_epoch) - 90 * 86400 ))" '
     to_entries |
+    map(select(.value.last_seen_ts > $cutoff)) |
     sort_by(-.value.count) |
     .[0:$n] |
-    map("\(.key)(\(.value.count))") |
-    join(", ")
+    map(
+      .key + " ×" + (.value.count | tostring) +
+      if ((.value.examples // []) | length) > 0
+      then " (e.g. \"" + ((.value.examples // [])[-1] | .[0:80]) + "\")"
+      else ""
+      end
+    ) |
+    join("; ")
   ' "${_DEFECT_PATTERNS_FILE}" 2>/dev/null || true)"
   [[ -n "${list}" ]] && printf 'Watch for: %s' "${list}" || true
 }
@@ -1685,7 +1736,7 @@ is_ui_request() {
   structural_ui_actions='\b(build(ing)?|create|creat(e|ing)|add(ing)?|make|implement(ing)?|update(ing)?|fix(ing)?|refactor(ing)?)\s+(a\s+|an\s+|the\s+|this\s+|that\s+|these\s+|those\s+|my\s+|our\s+)?(\w+\s+){0,2}(landing.?pages?|home.?pages?|pages?|dashboards?|screens?|modals?|dialogs?|drawers?|heroes?|nav(igation|bar)?|sidebars?|headers?|footers?|menus?|tabs?|panels?|layouts?|components?|empty.?states?|tables?|charts?|filters?|accordions?|wizards?|steppers?|banners?)\b'
   qualified_form_actions='\b(build(ing)?|create|creat(e|ing)|add(ing)?|make|implement(ing)?|update(ing)?|fix(ing)?|refactor(ing)?)\s+(a\s+|an\s+|the\s+|this\s+|that\s+|these\s+|those\s+|my\s+|our\s+)?(login|signup|sign[- ]?up|sign[- ]?in|checkout|contact|search|settings|profile|feedback|payment|registration|onboarding|responsive)\s+forms?\b'
   visual_ui_actions='\b(design(ing)?|style|styl(e|ing)|redesign(ing)?|restyle|theme)\s+(a\s+|an\s+|the\s+|this\s+|that\s+|these\s+|those\s+|my\s+|our\s+)?(\w+\s+){0,2}(landing.?pages?|home.?pages?|pages?|forms?|buttons?|cards?|modals?|dialogs?|drawers?|dropdowns?|nav(igation|bar)?|sidebars?|headers?|footers?|heroes?|layouts?|components?|interfaces?|screens?|dashboards?|sections?|menus?|tabs?|panels?|empty.?states?|tables?|charts?|filters?|banners?|tooltips?|toasts?)\b'
-  motion_ui_actions='\b(add(ing)?|create|creat(e|ing)|build(ing)?|make|implement(ing)?|update(ing)?)\s+(subtle\s+|micro\s+)?animations?\s+(to|for|on|in)\s+(the\s+|a\s+|an\s+|this\s+|that\s+|my\s+|our\s+)?(\w+\s+){0,2}(heroes?|nav(igation|bar)?|sidebars?|buttons?|cards?|modals?|menus?|tabs?|panels?|pages?|screens?|components?|sections?)\b'
+  motion_ui_actions='\b(add(ing)?|create|creat(e|ing)|build(ing)?|make|implement(ing)?|update(ing)?)\s+(a\s+|an\s+|the\s+|some\s+|subtle\s+|micro\s+)?animations?\s+(to|for|on|in)\s+(the\s+|a\s+|an\s+|this\s+|that\s+|my\s+|our\s+)?(\w+\s+){0,2}(heroes?|nav(igation|bar)?|sidebars?|buttons?|cards?|modals?|menus?|tabs?|panels?|pages?|screens?|components?|sections?)\b'
   explicit_ui_terms='\b(landing.?page|modal|navbar|sidebar|tailwind|ui|ux)\b'
 
   if grep -Eiq "${structural_ui_actions}" <<<"${text}" \

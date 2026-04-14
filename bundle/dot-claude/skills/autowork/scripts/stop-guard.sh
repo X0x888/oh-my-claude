@@ -258,7 +258,6 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
             "guard_exhausted" "$(now_epoch)" \
             "guard_exhausted_detail" "dimensions_missing=${missing_dims}"
           log_hook "stop-guard" "dimension gate exhausted after 3 blocks: missing=${missing_dims}"
-          record_defect_pattern "guard_exhaustion" "dimensions_missing=${missing_dims}" &
           scorecard="$(build_quality_scorecard)"
 
           case "${OMC_GUARD_EXHAUSTION_MODE}" in
@@ -323,9 +322,6 @@ if [[ "${guard_blocks}" -ge 3 ]]; then
     "guard_exhausted" "$(now_epoch)" \
     "guard_exhausted_detail" "review=${missing_review},verify=${missing_verify},verify_failed=${verify_failed},unremediated=${review_unremediated}"
   log_hook "stop-guard" "exhausted after 3 blocks: review=${missing_review} verify=${missing_verify} failed=${verify_failed} unremediated=${review_unremediated}"
-
-  # Cross-session learning: record guard exhaustion as a pattern
-  record_defect_pattern "guard_exhaustion" "review=${missing_review},verify=${missing_verify},failed=${verify_failed}" &
 
   case "${OMC_GUARD_EXHAUSTION_MODE}" in
     strict)
