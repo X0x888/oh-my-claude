@@ -24,6 +24,7 @@ if [[ -n "${TRANSCRIPT_PATH}" ]]; then
 fi
 
 if [[ -n "${resume_source_id}" ]] \
+  && validate_session_id "${resume_source_id}" \
   && [[ "${resume_source_id}" != "${SESSION_ID}" ]] \
   && [[ -d "${STATE_ROOT}/${resume_source_id}" ]]; then
   resume_state_dir="${STATE_ROOT}/${resume_source_id}"

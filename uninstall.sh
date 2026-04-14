@@ -62,6 +62,7 @@ SKILL_DIRS=(
   "${CLAUDE_HOME}/skills/ulw-off"
   "${CLAUDE_HOME}/skills/ulw-skip"
   "${CLAUDE_HOME}/skills/ulw-status"
+  "${CLAUDE_HOME}/skills/frontend-design"
 )
 
 # Quality pack (scripts, memory, state, README).
@@ -98,6 +99,7 @@ AGENT_FILES=(
   "${CLAUDE_HOME}/agents/sre-lens.md"
   "${CLAUDE_HOME}/agents/test-automation-engineer.md"
   "${CLAUDE_HOME}/agents/writing-architect.md"
+  "${CLAUDE_HOME}/agents/design-reviewer.md"
 )
 
 # Standalone files.

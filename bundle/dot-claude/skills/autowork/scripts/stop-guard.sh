@@ -290,7 +290,28 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
           next_dim="${missing_dims%%,*}"
           next_reviewer="$(reviewer_for_dimension "${next_dim}")"
           next_description="$(describe_dimension "${next_dim}")"
-          dim_reason="[Review coverage \u00b7 $((dim_blocks + 1))/3] Autowork guard: complex task requires prescribed review coverage. Missing reviews: ${_missing_descriptions}. Next step: run \`${next_reviewer}\` to cover ${next_description}. Each reviewer owns a distinct review area — do not substitute or reorder. After the reviewer returns, address any findings, then retry stop. After completing this, restate your key deliverable summary at the end of your response."
+
+          # Build a progress checklist so the block message shows where
+          # the session stands, not just what is missing. This transforms
+          # "you are blocked again" into visible progress.
+          _total_dims=0
+          _done_dims=0
+          _checklist=""
+          for _rd in ${required_dims//,/ }; do
+            _total_dims=$((_total_dims + 1))
+            _rd_desc="$(describe_dimension "${_rd}")"
+            _rd_reviewer="$(reviewer_for_dimension "${_rd}")"
+            if is_dimension_valid "${_rd}"; then
+              _done_dims=$((_done_dims + 1))
+              _checklist="${_checklist}\n  [done] ${_rd_desc}"
+            elif [[ "${_rd}" == "${next_dim}" ]]; then
+              _checklist="${_checklist}\n  [NEXT] ${_rd_desc} -> run \`${_rd_reviewer}\`"
+            else
+              _checklist="${_checklist}\n  [    ] ${_rd_desc}"
+            fi
+          done
+
+          dim_reason="[Review coverage \u00b7 $((dim_blocks + 1))/3 \u00b7 ${_done_dims}/${_total_dims} dimensions] Autowork guard: complex task requires prescribed review coverage. Progress:${_checklist}\nNext step: run \`${next_reviewer}\` to cover ${next_description}. Each reviewer owns a distinct review area \u2014 do not substitute or reorder. After the reviewer returns, address any findings, then retry stop. After completing this, restate your key deliverable summary at the end of your response."
           if [[ "${dim_blocks}" -ge 2 ]]; then
             dim_reason="${dim_reason} NOTE: this is the final review-coverage block — the next stop attempt will bypass this check."
           fi
@@ -300,7 +321,8 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
           # Review coverage gate exhaustion: handle based on mode
           with_state_lock_batch \
             "guard_exhausted" "$(now_epoch)" \
-            "guard_exhausted_detail" "dimensions_missing=${missing_dims}"
+            "guard_exhausted_detail" "dimensions_missing=${missing_dims}" \
+            "session_outcome" "exhausted"
           log_hook "stop-guard" "review coverage gate exhausted after 3 blocks: missing=${missing_dims}"
           scorecard="$(build_quality_scorecard)"
 
@@ -355,6 +377,10 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
   fi
   fi # end gate_level full|standard (excellence gate)
 
+  # Record session outcome for cross-session analytics. "completed" means
+  # all quality gates were satisfied — the harness's strongest signal.
+  # Uses locked write for consistency with the exhaustion paths.
+  with_state_lock write_state "session_outcome" "completed"
   # Remove fast-path sentinel; workflow_mode in session_state.json is
   # intentionally preserved so the prompt-intent-router's sticky gate
   # continues injecting specialist routing for the rest of this session.
@@ -367,7 +393,8 @@ if [[ "${guard_blocks}" -ge 3 ]]; then
   scorecard="$(build_quality_scorecard)"
   with_state_lock_batch \
     "guard_exhausted" "$(now_epoch)" \
-    "guard_exhausted_detail" "review=${missing_review},verify=${missing_verify},verify_failed=${verify_failed},unremediated=${review_unremediated},low_confidence=${verify_low_confidence}"
+    "guard_exhausted_detail" "review=${missing_review},verify=${missing_verify},verify_failed=${verify_failed},unremediated=${review_unremediated},low_confidence=${verify_low_confidence}" \
+    "session_outcome" "exhausted"
   log_hook "stop-guard" "exhausted after 3 blocks: review=${missing_review} verify=${missing_verify} failed=${verify_failed} unremediated=${review_unremediated} low_conf=${verify_low_confidence}"
 
   case "${OMC_GUARD_EXHAUSTION_MODE}" in

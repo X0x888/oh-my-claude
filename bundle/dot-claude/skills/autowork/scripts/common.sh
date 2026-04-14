@@ -6,6 +6,11 @@ STATE_ROOT="${STATE_ROOT:-${HOME}/.claude/quality-pack/state}"
 STATE_JSON="session_state.json"
 HOOK_LOG="${STATE_ROOT}/hooks.log"
 
+# Restrict file permissions for all state files, temp files, and logs.
+# Session state contains user prompts and assistant messages — keep
+# them owner-readable only, especially on shared systems.
+umask 077
+
 # Guard: jq is required for all hook operations. If missing, exit gracefully
 # so hooks don't break Claude Code's operation.
 if ! command -v jq >/dev/null 2>&1; then
@@ -32,7 +37,7 @@ OMC_STATE_TTL_DAYS="${OMC_STATE_TTL_DAYS:-7}"
 OMC_DIMENSION_GATE_FILE_COUNT="${OMC_DIMENSION_GATE_FILE_COUNT:-3}"
 OMC_TRACEABILITY_FILE_COUNT="${OMC_TRACEABILITY_FILE_COUNT:-6}"
 # Guard exhaustion mode: scorecard (default, legacy: warn), block (legacy: strict), silent (legacy: release)
-OMC_GUARD_EXHAUSTION_MODE="${OMC_GUARD_EXHAUSTION_MODE:-warn}"
+OMC_GUARD_EXHAUSTION_MODE="${OMC_GUARD_EXHAUSTION_MODE:-scorecard}"
 # Minimum verification confidence (0-100) to satisfy the verify gate.
 # Default 40: blocks lint-only checks (shellcheck=30, bash -n=30) while
 # accepting project test suites (npm test=70+) and framework runs (jest=50+).
@@ -447,7 +452,8 @@ sweep_stale_sessions() {
               guard_blocks: ((.stop_guard_blocks // "0") | tonumber),
               dim_blocks: ((.dimension_guard_blocks // "0") | tonumber),
               exhausted: (if .guard_exhausted then true else false end),
-              dispatches: ((.subagent_dispatch_count // "0") | tonumber)
+              dispatches: ((.subagent_dispatch_count // "0") | tonumber),
+              outcome: (.session_outcome // "abandoned")
             }
           ' "${_sweep_state}" >> "${summary_file}" 2>/dev/null || true
         fi
@@ -1506,33 +1512,39 @@ _AGENT_METRICS_FILE="${HOME}/.claude/quality-pack/agent-metrics.json"
 _AGENT_METRICS_LOCK="${HOME}/.claude/quality-pack/.agent-metrics.lock"
 
 # with_metrics_lock: Run a command under the agent metrics file lock.
+# Uses time-based stale-lock recovery (same pattern as with_state_lock)
+# and fails closed (returns 1 without executing) on lock exhaustion.
 with_metrics_lock() {
-  local max_attempts=100
-  local attempt=0
-  local acquired=0
-  while ! mkdir "${_AGENT_METRICS_LOCK}" 2>/dev/null; do
-    attempt=$((attempt + 1))
-    if [[ "${attempt}" -ge "${max_attempts}" ]]; then
-      # Stale lock recovery — remove and re-acquire
-      rmdir "${_AGENT_METRICS_LOCK}" 2>/dev/null || true
-      if mkdir "${_AGENT_METRICS_LOCK}" 2>/dev/null; then
-        acquired=1
-      fi
+  local lockdir="${_AGENT_METRICS_LOCK}"
+  local attempts=0
+
+  while true; do
+    if mkdir "${lockdir}" 2>/dev/null; then
       break
     fi
-    sleep 0.05
+    attempts=$((attempts + 1))
+
+    if [[ -d "${lockdir}" ]]; then
+      local now held_since
+      now="$(date +%s)"
+      held_since="$(_lock_mtime "${lockdir}")"
+      if [[ "${held_since}" -gt 0 ]] \
+          && [[ $(( now - held_since )) -gt "${OMC_STATE_LOCK_STALE_SECS}" ]]; then
+        rmdir "${lockdir}" 2>/dev/null || true
+        continue
+      fi
+    fi
+
+    if [[ "${attempts}" -ge "${OMC_STATE_LOCK_MAX_ATTEMPTS}" ]]; then
+      log_hook "with_metrics_lock" "WARNING: lock not acquired after ${OMC_STATE_LOCK_MAX_ATTEMPTS} attempts"
+      return 1
+    fi
+    sleep 0.05 2>/dev/null || sleep 1
   done
-  if [[ "${acquired}" -eq 0 && "${attempt}" -lt "${max_attempts}" ]]; then
-    acquired=1
-  fi
-  if [[ "${acquired}" -eq 0 ]]; then
-    log_hook "with_metrics_lock" "WARNING: lock not acquired after ${max_attempts} attempts, proceeding unprotected"
-  fi
-  "$@"
-  local rc=$?
-  if [[ "${acquired}" -eq 1 ]]; then
-    rmdir "${_AGENT_METRICS_LOCK}" 2>/dev/null || true
-  fi
+
+  local rc=0
+  "$@" || rc=$?
+  rmdir "${lockdir}" 2>/dev/null || true
   return "${rc}"
 }
 
@@ -1601,7 +1613,7 @@ record_agent_metric() {
     fi
   }
 
-  with_metrics_lock _do_record_metric
+  with_metrics_lock _do_record_metric || true
 }
 
 # read_agent_metric: Read metrics for a specific agent.
@@ -1631,32 +1643,38 @@ _DEFECT_PATTERNS_LOCK="${HOME}/.claude/quality-pack/.defect-patterns.lock"
 
 # with_defect_lock: Run a command under the defect patterns file lock.
 # Separate from with_metrics_lock to avoid unnecessary contention.
+# Uses time-based stale-lock recovery and fails closed on exhaustion.
 with_defect_lock() {
-  local max_attempts=100
-  local attempt=0
-  local acquired=0
-  while ! mkdir "${_DEFECT_PATTERNS_LOCK}" 2>/dev/null; do
-    attempt=$((attempt + 1))
-    if [[ "${attempt}" -ge "${max_attempts}" ]]; then
-      rmdir "${_DEFECT_PATTERNS_LOCK}" 2>/dev/null || true
-      if mkdir "${_DEFECT_PATTERNS_LOCK}" 2>/dev/null; then
-        acquired=1
-      fi
+  local lockdir="${_DEFECT_PATTERNS_LOCK}"
+  local attempts=0
+
+  while true; do
+    if mkdir "${lockdir}" 2>/dev/null; then
       break
     fi
-    sleep 0.05
+    attempts=$((attempts + 1))
+
+    if [[ -d "${lockdir}" ]]; then
+      local now held_since
+      now="$(date +%s)"
+      held_since="$(_lock_mtime "${lockdir}")"
+      if [[ "${held_since}" -gt 0 ]] \
+          && [[ $(( now - held_since )) -gt "${OMC_STATE_LOCK_STALE_SECS}" ]]; then
+        rmdir "${lockdir}" 2>/dev/null || true
+        continue
+      fi
+    fi
+
+    if [[ "${attempts}" -ge "${OMC_STATE_LOCK_MAX_ATTEMPTS}" ]]; then
+      log_hook "with_defect_lock" "WARNING: lock not acquired after ${OMC_STATE_LOCK_MAX_ATTEMPTS} attempts"
+      return 1
+    fi
+    sleep 0.05 2>/dev/null || sleep 1
   done
-  if [[ "${acquired}" -eq 0 && "${attempt}" -lt "${max_attempts}" ]]; then
-    acquired=1
-  fi
-  if [[ "${acquired}" -eq 0 ]]; then
-    log_hook "with_defect_lock" "WARNING: lock not acquired after ${max_attempts} attempts, proceeding unprotected"
-  fi
-  "$@"
-  local rc=$?
-  if [[ "${acquired}" -eq 1 ]]; then
-    rmdir "${_DEFECT_PATTERNS_LOCK}" 2>/dev/null || true
-  fi
+
+  local rc=0
+  "$@" || rc=$?
+  rmdir "${lockdir}" 2>/dev/null || true
   return "${rc}"
 }
 
@@ -1780,7 +1798,7 @@ record_defect_pattern() {
     fi
   }
 
-  with_defect_lock _do_record_defect
+  with_defect_lock _do_record_defect || true
 }
 
 # get_top_defect_patterns: Return the top N defect categories by frequency,
