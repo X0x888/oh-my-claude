@@ -170,7 +170,10 @@ def ulw_info():
 
 def main():
     raw = sys.stdin.read().strip()
-    data = json.loads(raw) if raw else {}
+    try:
+        data = json.loads(raw) if raw else {}
+    except (json.JSONDecodeError, ValueError):
+        data = {}
 
     cwd = safe_get(data, "workspace", "current_dir") or safe_get(data, "cwd") or os.getcwd()
     dir_name = os.path.basename(cwd.rstrip(os.sep)) or cwd

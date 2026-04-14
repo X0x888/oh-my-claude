@@ -302,6 +302,18 @@ class TestMainIntegration(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0)
 
+    def test_malformed_json_input(self):
+        result = subprocess.run(
+            [sys.executable, STATUSLINE_PATH],
+            input="not valid json {{{",
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        self.assertEqual(result.returncode, 0)
+        lines = result.stdout.strip().split("\n")
+        self.assertEqual(len(lines), 2)
+
     def test_zero_context(self):
         data = {
             "context_window": {"used_percentage": 0},

@@ -1269,7 +1269,7 @@ with_metrics_lock() {
     attempt=$((attempt + 1))
     if [[ "${attempt}" -ge "${max_attempts}" ]]; then
       # Stale lock recovery — remove and re-acquire
-      rm -rf "${_AGENT_METRICS_LOCK}" 2>/dev/null || true
+      rmdir "${_AGENT_METRICS_LOCK}" 2>/dev/null || true
       if mkdir "${_AGENT_METRICS_LOCK}" 2>/dev/null; then
         acquired=1
       fi
@@ -1280,10 +1280,13 @@ with_metrics_lock() {
   if [[ "${acquired}" -eq 0 && "${attempt}" -lt "${max_attempts}" ]]; then
     acquired=1
   fi
+  if [[ "${acquired}" -eq 0 ]]; then
+    log_hook "with_metrics_lock" "WARNING: lock not acquired after ${max_attempts} attempts, proceeding unprotected"
+  fi
   "$@"
   local rc=$?
   if [[ "${acquired}" -eq 1 ]]; then
-    rm -rf "${_AGENT_METRICS_LOCK}" 2>/dev/null || true
+    rmdir "${_AGENT_METRICS_LOCK}" 2>/dev/null || true
   fi
   return "${rc}"
 }
@@ -1295,6 +1298,8 @@ record_agent_metric() {
   local agent_name="$1"
   local verdict="$2"
   local confidence="${3:-0}"
+  # Sanitize confidence input (may be float or non-numeric)
+  confidence="${confidence%%.*}"; confidence="${confidence//[!0-9]/}"; confidence="${confidence:-0}"
 
   [[ -z "${agent_name}" ]] && return 0
 
@@ -1335,7 +1340,8 @@ record_agent_metric() {
       avg_conf="$(( (avg_conf * (invocations - 1) + confidence) / invocations ))"
     fi
 
-    local tmp_file="${metrics_file}.tmp.$$"
+    local tmp_file
+    tmp_file="$(mktemp "${metrics_file}.XXXXXX")"
     jq --arg a "${agent_name}" \
        --argjson inv "${invocations}" \
        --argjson cv "${clean_v}" \
@@ -1386,7 +1392,7 @@ with_defect_lock() {
   while ! mkdir "${_DEFECT_PATTERNS_LOCK}" 2>/dev/null; do
     attempt=$((attempt + 1))
     if [[ "${attempt}" -ge "${max_attempts}" ]]; then
-      rm -rf "${_DEFECT_PATTERNS_LOCK}" 2>/dev/null || true
+      rmdir "${_DEFECT_PATTERNS_LOCK}" 2>/dev/null || true
       if mkdir "${_DEFECT_PATTERNS_LOCK}" 2>/dev/null; then
         acquired=1
       fi
@@ -1397,10 +1403,13 @@ with_defect_lock() {
   if [[ "${acquired}" -eq 0 && "${attempt}" -lt "${max_attempts}" ]]; then
     acquired=1
   fi
+  if [[ "${acquired}" -eq 0 ]]; then
+    log_hook "with_defect_lock" "WARNING: lock not acquired after ${max_attempts} attempts, proceeding unprotected"
+  fi
   "$@"
   local rc=$?
   if [[ "${acquired}" -eq 1 ]]; then
-    rm -rf "${_DEFECT_PATTERNS_LOCK}" 2>/dev/null || true
+    rmdir "${_DEFECT_PATTERNS_LOCK}" 2>/dev/null || true
   fi
   return "${rc}"
 }
@@ -1488,7 +1497,8 @@ record_defect_pattern() {
     count="$(jq -r '.count' <<<"${current}")"
     count=$((count + 1))
 
-    local tmp_file="${pf}.tmp.$$"
+    local tmp_file
+    tmp_file="$(mktemp "${pf}.XXXXXX")"
     if [[ -n "${example}" ]]; then
       # Keep at most 5 recent examples per category
       jq --arg c "${category}" \
