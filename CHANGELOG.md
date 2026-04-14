@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.0] - 2026-04-14
+
+### Added
+
+- **MCP tool verification recognition** — quality gates now recognize browser-based MCP tools (Playwright `browser_snapshot`, `browser_take_screenshot`, `browser_console_messages`, `browser_network_requests`, `browser_evaluate`, `browser_run_code`, and computer-use `screenshot`) as valid verification alongside Bash commands. Base confidence scores are deliberately below the default threshold (40) so passive observations cannot clear the gate alone — verification only passes when output carries assertion/pass-fail signals or when recent edits include UI files (+20 context bonus).
+- **MCP failure detection** — `detect_mcp_verification_outcome()` detects failures from MCP tool output: HTTP 401/403/404/500+, JS error types (`TypeError`, `ReferenceError`, etc.), `Error:` prefix patterns, CORS errors, network timeouts, and error page indicators.
+- **UI-context-aware scoring** — `record-verification.sh` scans `edited_files.log` for UI file paths (via `is_ui_path()`) and passes a `has_ui_context` flag to `score_mcp_verification_confidence()`. Editing `.tsx`, `.jsx`, `.vue`, `.css`, `.html` etc. enables the +20 context bonus for browser verification.
+- **`custom_verify_mcp_tools` config** — pipe-separated glob patterns for additional MCP tools that count as verification. Configurable via `oh-my-claude.conf` or `OMC_CUSTOM_VERIFY_MCP_TOOLS` env var. Custom tools also require a matching PostToolUse hook entry in `settings.json`.
+- **PostToolUse hook matcher for MCP tools** — new entry in `settings.patch.json` matching Playwright browser observation tools and `mcp__computer-use__screenshot`.
+- **E2e hook tests for MCP verification** — 8 new test sequences in `test-e2e-hook-sequence.sh` covering MCP state recording, failure detection, UI context bonus, passive blocking, computer-use, and `browser_run_code`.
+- **Low-confidence gate in test helper** — `run_stop_guard_check()` in `test-quality-gates.sh` now replicates the `verify_low_confidence` gate from the real stop-guard for accurate integration testing.
+
+### Changed
+
+- **Verification confidence scoring** — MCP tool base scores: `browser_dom_check`=25, `browser_visual_check`=20, `browser_console_check`=30, `browser_network_check`=30, `browser_eval_check`=35, `visual_check`=15. All below the default threshold of 40, requiring output signals or UI context to pass.
+- **`record-verification.sh` dual-path architecture** — now handles both Bash commands (existing) and MCP tool names. Backward-compatible: empty `tool_name` falls through to Bash path.
+
 ## [1.5.0] - 2026-04-14
 
 ### Added
