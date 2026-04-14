@@ -1183,6 +1183,7 @@ readonly MCP_VERIFY_SCREENSHOT='*playwright*__browser_take_screenshot'
 readonly MCP_VERIFY_CONSOLE='*playwright*__browser_console_messages'
 readonly MCP_VERIFY_NETWORK='*playwright*__browser_network_requests'
 readonly MCP_VERIFY_EVALUATE='*playwright*__browser_evaluate'
+readonly MCP_VERIFY_RUN_CODE='*playwright*__browser_run_code'
 readonly MCP_VERIFY_CU_SCREENSHOT='mcp__computer-use__screenshot'
 
 # classify_mcp_verification_tool: Given a tool_name, return a verification
@@ -1212,6 +1213,7 @@ classify_mcp_verification_tool() {
     ${MCP_VERIFY_CONSOLE})      printf 'browser_console_check' ;;
     ${MCP_VERIFY_NETWORK})      printf 'browser_network_check' ;;
     ${MCP_VERIFY_EVALUATE})     printf 'browser_eval_check' ;;
+    ${MCP_VERIFY_RUN_CODE})     printf 'browser_eval_check' ;;
     ${MCP_VERIFY_CU_SCREENSHOT}) printf 'visual_check' ;;
     *) printf '' ;;
   esac

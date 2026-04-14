@@ -350,6 +350,10 @@ assert_eq "playwright evaluate = browser_eval_check" \
   "browser_eval_check" \
   "$(classify_mcp_verification_tool "mcp__plugin_playwright_playwright__browser_evaluate")"
 
+assert_eq "playwright run_code = browser_eval_check" \
+  "browser_eval_check" \
+  "$(classify_mcp_verification_tool "mcp__plugin_playwright_playwright__browser_run_code")"
+
 assert_eq "computer-use screenshot = visual_check" \
   "visual_check" \
   "$(classify_mcp_verification_tool "mcp__computer-use__screenshot")"

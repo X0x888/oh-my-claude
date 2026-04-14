@@ -70,7 +70,16 @@ sim_verify() {
   local res="${3:-}"
   run_hook "${HOOK_DIR}/record-verification.sh" \
     "$(jq -nc --arg s "${sid}" --arg c "${cmd}" --arg r "${res}" \
-      '{session_id:$s,tool_input:{command:$c},tool_response:$r}')"
+      '{session_id:$s,tool_name:"Bash",tool_input:{command:$c},tool_response:$r}')"
+}
+
+sim_mcp_verify() {
+  local sid="$1"
+  local tool_name="${2:-mcp__plugin_playwright_playwright__browser_snapshot}"
+  local res="${3:-}"
+  run_hook "${HOOK_DIR}/record-verification.sh" \
+    "$(jq -nc --arg s "${sid}" --arg t "${tool_name}" --arg r "${res}" \
+      '{session_id:$s,tool_name:$t,tool_input:{},tool_response:$r}')"
 }
 
 sim_review() {
@@ -1163,6 +1172,85 @@ assert_contains "seq-LC: mentions low confidence" "low confidence" "${out}"
 sim_verify "slc" "npm test" "Tests: 10 passed, 0 failed"
 out2="$(sim_stop "slc")"
 assert_empty "seq-LC: real verification satisfies gate" "${out2}"
+teardown_test
+
+
+# -------------------------------------------------------
+# MCP verification e2e tests
+# -------------------------------------------------------
+printf '\nMCP verification (e2e):\n'
+
+# Test MCP-V1: browser_snapshot records verification state
+setup_test
+init_session "smv1"
+sim_mcp_verify "smv1" "mcp__plugin_playwright_playwright__browser_snapshot" "DOM content: Welcome to dashboard"
+assert_not_empty "mcp-v1: last_verify_ts set" "$(read_st "smv1" "last_verify_ts")"
+assert_eq "mcp-v1: outcome is passed" "passed" "$(read_st "smv1" "last_verify_outcome")"
+assert_eq "mcp-v1: tool name recorded" "mcp__plugin_playwright_playwright__browser_snapshot" "$(read_st "smv1" "last_verify_cmd")"
+assert_not_empty "mcp-v1: confidence recorded" "$(read_st "smv1" "last_verify_confidence")"
+assert_eq "mcp-v1: method is mcp type" "mcp_browser_dom_check" "$(read_st "smv1" "last_verify_method")"
+teardown_test
+
+# Test MCP-V2: console_messages with error detects failure
+setup_test
+init_session "smv2"
+sim_mcp_verify "smv2" "mcp__plugin_playwright_playwright__browser_console_messages" "TypeError: Cannot read properties of null"
+assert_eq "mcp-v2: console error = failed" "failed" "$(read_st "smv2" "last_verify_outcome")"
+assert_eq "mcp-v2: method" "mcp_browser_console_check" "$(read_st "smv2" "last_verify_method")"
+teardown_test
+
+# Test MCP-V3: network_requests with 401 detects failure
+setup_test
+init_session "smv3"
+sim_mcp_verify "smv3" "mcp__plugin_playwright_playwright__browser_network_requests" "GET /api/me — 401 Unauthorized"
+assert_eq "mcp-v3: 401 = failed" "failed" "$(read_st "smv3" "last_verify_outcome")"
+teardown_test
+
+# Test MCP-V4: empty snapshot = passed (but low confidence, gate blocks)
+setup_test
+init_session "smv4"
+sim_mcp_verify "smv4" "mcp__plugin_playwright_playwright__browser_snapshot" ""
+assert_eq "mcp-v4: empty output = passed" "passed" "$(read_st "smv4" "last_verify_outcome")"
+# Without UI context, base confidence should be 25 (below threshold)
+assert_eq "mcp-v4: low confidence" "25" "$(read_st "smv4" "last_verify_confidence")"
+teardown_test
+
+# Test MCP-V5: MCP verification with UI edit context in full sequence
+setup_test
+init_session "smv5"
+sim_edit "smv5" "/src/App.tsx"
+sim_mcp_verify "smv5" "mcp__plugin_playwright_playwright__browser_snapshot" "DOM content: Counter: 0"
+# With UI edit, confidence should be 45 (25 base + 20 UI bonus)
+assert_eq "mcp-v5: UI context boosts confidence" "45" "$(read_st "smv5" "last_verify_confidence")"
+sim_review "smv5" "Summary: The code looks good. No issues found."
+out="$(sim_stop "smv5")"
+assert_empty "mcp-v5: full MCP cycle allows stop" "${out}"
+teardown_test
+
+# Test MCP-V6: passive MCP without UI edit blocks at stop
+setup_test
+init_session "smv6"
+sim_edit "smv6" "/src/utils.ts"
+sim_mcp_verify "smv6" "mcp__plugin_playwright_playwright__browser_snapshot" ""
+sim_review "smv6" "Summary: The code looks good. No issues found."
+out="$(sim_stop "smv6")"
+assert_not_empty "mcp-v6: passive MCP on non-UI file blocks" "${out}"
+assert_contains "mcp-v6: mentions low confidence" "low confidence" "${out}"
+teardown_test
+
+# Test MCP-V7: computer-use screenshot records as visual_check
+setup_test
+init_session "smv7"
+sim_mcp_verify "smv7" "mcp__computer-use__screenshot" "Screenshot captured"
+assert_eq "mcp-v7: method" "mcp_visual_check" "$(read_st "smv7" "last_verify_method")"
+assert_eq "mcp-v7: outcome passed" "passed" "$(read_st "smv7" "last_verify_outcome")"
+teardown_test
+
+# Test MCP-V8: browser_run_code classified same as evaluate
+setup_test
+init_session "smv8"
+sim_mcp_verify "smv8" "mcp__plugin_playwright_playwright__browser_run_code" "42"
+assert_eq "mcp-v8: run_code = eval method" "mcp_browser_eval_check" "$(read_st "smv8" "last_verify_method")"
 teardown_test
 
 
