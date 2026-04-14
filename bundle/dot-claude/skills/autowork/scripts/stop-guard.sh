@@ -46,6 +46,17 @@ if [[ "${stop_hook_active}" == "true" ]]; then
   exit 0
 fi
 
+# --- Gate skip check (/ulw-skip) ---
+# If the user registered a gate skip, honor it once and clear the flag.
+gate_skip_reason="$(read_state "gate_skip_reason")"
+if [[ -n "${gate_skip_reason}" ]]; then
+  with_state_lock_batch "gate_skip_reason" "" "gate_skip_ts" ""
+  record_gate_skip "${gate_skip_reason}" &
+  log_hook "stop-guard" "gate skip honored: ${gate_skip_reason}"
+  rm -f "${STATE_ROOT}/.ulw_active"
+  exit 0
+fi
+
 current_objective="$(read_state "current_objective")"
 task_intent="$(read_state "task_intent")"
 last_user_prompt_ts="$(read_state "last_user_prompt_ts")"
@@ -176,6 +187,21 @@ if [[ "${missing_verify}" -eq 0 ]]; then
   esac
 fi
 
+# Low-confidence verification: if verification ran but confidence is below
+# threshold, treat it as insufficient. A `bash -n file.sh` (confidence ~30)
+# should not satisfy the same gate as `npm test` (confidence 70+).
+verify_low_confidence=0
+if [[ "${missing_verify}" -eq 0 && "${verify_failed}" -eq 0 ]]; then
+  case "${task_domain}" in
+    coding|mixed)
+      last_verify_confidence="$(read_state "last_verify_confidence")"
+      if [[ -n "${last_verify_confidence}" && "${last_verify_confidence}" =~ ^[0-9]+$ && "${last_verify_confidence}" -lt "${OMC_VERIFY_CONFIDENCE_THRESHOLD}" ]]; then
+        verify_low_confidence=1
+      fi
+      ;;
+  esac
+fi
+
 # Check if review ran but findings were not addressed (no edits after review).
 # Use the effective edit clock — last_code_edit_ts (preferred) falling back
 # to last_edit_ts so legacy sessions keep behaving correctly.
@@ -194,22 +220,17 @@ else
   reason="[Quality gate \u00b7 $((guard_blocks + 1))/3] Autowork guard: edits were made but the final quality loop is incomplete."
 fi
 
-if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed}" -eq 0 && "${review_unremediated}" -eq 0 ]]; then
-  # --- Dimension gate (Check 4) ---
+if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed}" -eq 0 && "${verify_low_confidence}" -eq 0 && "${review_unremediated}" -eq 0 ]]; then
+  # --- Review coverage gate (Check 4, formerly "Dimension gate") ---
   #
   # Standard gates passed. For complex tasks (unique edit count above
   # the dimension-gate threshold), require the prescribed reviewer
-  # sequence: quality-reviewer → metis → excellence-reviewer → (editor-critic
-  # if docs were touched) → briefing-analyst (if very complex). Each
-  # dimension is ticked by its specific reviewer; the gate blocks with
-  # a message naming the specific next reviewer to run, removing the
-  # "which reviewer do I dispatch next" guessing game.
+  # sequence. Each reviewer owns a distinct review dimension; the gate
+  # blocks with a message naming the specific next reviewer to run.
   #
-  # Resumed sessions from pre-fix state get one free pass: if
-  # resume_source_session_id is set and no dimensions are ticked yet,
-  # allow the first stop. This prevents a session resumed mid-way from
-  # being force-marched through the full sequence.
+  # Only active when gate_level=full. basic and standard skip this gate.
 
+  if [[ "${OMC_GATE_LEVEL}" == "full" ]]; then
   required_dims="$(get_required_dimensions)"
   if [[ -n "${required_dims}" ]]; then
     missing_dims="$(missing_dimensions "${required_dims}")"
@@ -221,8 +242,15 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
     fi
 
     if [[ -n "${missing_dims}" ]]; then
-      # Resumed-session first-stop grace: skip the dimension gate once
-      # when no dimensions have been ticked yet in this resumed session.
+      # Build human-readable descriptions for the missing reviews
+      _missing_descriptions=""
+      for _md in ${missing_dims//,/ }; do
+        _desc="$(describe_dimension "${_md}")"
+        _missing_descriptions="${_missing_descriptions:+${_missing_descriptions}, }${_desc}"
+      done
+
+      # Resumed-session first-stop grace: skip the review coverage gate
+      # once when no dimensions have been ticked yet in this resumed session.
       resume_src="$(read_state "resume_source_session_id")"
       dim_grace_used="$(read_state "dimension_resume_grace_used")"
       any_dim_ticked=0
@@ -236,7 +264,7 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
 
       if [[ -n "${resume_src}" && "${any_dim_ticked}" -eq 0 && "${dim_grace_used}" != "1" ]]; then
         write_state "dimension_resume_grace_used" "1"
-        log_hook "stop-guard" "dimension gate: resumed-session grace granted"
+        log_hook "stop-guard" "review coverage gate: resumed-session grace granted"
       else
         dim_blocks="$(read_state "dimension_guard_blocks")"
         dim_blocks="${dim_blocks:-0}"
@@ -246,31 +274,31 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
           next_dim="${missing_dims%%,*}"
           next_reviewer="$(reviewer_for_dimension "${next_dim}")"
           next_description="$(describe_dimension "${next_dim}")"
-          dim_reason="[Dimension gate \u00b7 $((dim_blocks + 1))/3] Autowork guard: complex task requires prescribed review coverage. Missing dimensions: ${missing_dims}. Next step: run \`${next_reviewer}\` to cover ${next_description}. Each reviewer owns a distinct dimension — do not substitute or reorder. After the reviewer returns, address any findings, then retry stop. After completing this, restate your key deliverable summary at the end of your response."
+          dim_reason="[Review coverage \u00b7 $((dim_blocks + 1))/3] Autowork guard: complex task requires prescribed review coverage. Missing reviews: ${_missing_descriptions}. Next step: run \`${next_reviewer}\` to cover ${next_description}. Each reviewer owns a distinct review area — do not substitute or reorder. After the reviewer returns, address any findings, then retry stop. After completing this, restate your key deliverable summary at the end of your response."
           if [[ "${dim_blocks}" -ge 2 ]]; then
-            dim_reason="${dim_reason} NOTE: this is the final dimension-gate block — the next stop attempt will bypass this check."
+            dim_reason="${dim_reason} NOTE: this is the final review-coverage block — the next stop attempt will bypass this check."
           fi
           jq -nc --arg reason "${dim_reason}" '{"decision":"block","reason":$reason}'
           exit 0
         else
-          # Dimension gate exhaustion: handle based on mode
+          # Review coverage gate exhaustion: handle based on mode
           with_state_lock_batch \
             "guard_exhausted" "$(now_epoch)" \
             "guard_exhausted_detail" "dimensions_missing=${missing_dims}"
-          log_hook "stop-guard" "dimension gate exhausted after 3 blocks: missing=${missing_dims}"
+          log_hook "stop-guard" "review coverage gate exhausted after 3 blocks: missing=${missing_dims}"
           scorecard="$(build_quality_scorecard)"
 
           case "${OMC_GUARD_EXHAUSTION_MODE}" in
-            strict)
-              dim_reason="[Dimension gate · STRICT MODE] Guard exhaustion reached but strict mode prevents release. QUALITY SCORECARD:\n${scorecard}\nMissing: ${missing_dims}. Address the remaining dimensions or switch to guard_exhaustion_mode=warn."
+            block)
+              dim_reason="[Review coverage · BLOCK MODE] Guard exhaustion reached but block mode prevents release. QUALITY SCORECARD:\n${scorecard}\nMissing: ${_missing_descriptions}. Address the remaining reviews or switch to guard_exhaustion_mode=scorecard."
               jq -nc --arg reason "${dim_reason}" '{"decision":"block","reason":$reason}'
               exit 0
               ;;
-            warn)
-              log_hook "stop-guard" "dimension gate exhausted (warn mode): emitting scorecard"
+            scorecard)
+              log_hook "stop-guard" "review coverage gate exhausted (scorecard mode): emitting scorecard"
               emit_scorecard_stop_context \
-                "QUALITY SCORECARD (dimension gate exhausted after 3 blocks):" \
-                "The dimension gate released without full completion. Review the scorecard above and note the remaining review coverage gaps in your final summary." \
+                "QUALITY SCORECARD (review coverage gate exhausted after 3 blocks):" \
+                "The review coverage gate released without full completion. Review the scorecard above and note the remaining coverage gaps in your final summary." \
                 "${scorecard}"
               exit 0
               ;;
@@ -283,14 +311,16 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
       fi
     fi
   fi
+  fi # end gate_level=full (review coverage gate)
 
   # --- Excellence gate (Check 5) ---
   #
-  # Legacy excellence gate is retained for backward compatibility and
-  # operates on the legacy last_edit_ts comparison. On complex tasks
-  # that already satisfied the dimension gate (which ticks completeness
-  # via excellence-reviewer), this check is a no-op because
-  # last_excellence_review_ts will be current.
+  # Active when gate_level is full or standard. Requires excellence-reviewer
+  # for complex tasks (3+ files edited). On tasks that already satisfied
+  # the review coverage gate (which ticks completeness via excellence-reviewer),
+  # this check is a no-op because last_excellence_review_ts will be current.
+
+  if [[ "${OMC_GATE_LEVEL}" == "full" || "${OMC_GATE_LEVEL}" == "standard" ]]; then
   edited_files_log="$(session_file "edited_files.log")"
   unique_edited_count=0
   if [[ -f "${edited_files_log}" ]]; then
@@ -307,6 +337,7 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
     jq -nc --arg reason "[Excellence gate \u00b7 1/1] Autowork guard: standard review and verification passed, but this is a complex task (${unique_edited_count} files edited). Before finalizing, run excellence-reviewer for a fresh-eyes holistic evaluation — completeness against the original objective, unknown unknowns, and what a veteran would add. If you have already done a thorough self-assessment and are confident the deliverable is complete and excellent, explain your reasoning and stop. After the excellence review, restate your key deliverable summary at the end of your response." '{"decision":"block","reason":$reason}'
     exit 0
   fi
+  fi # end gate_level full|standard (excellence gate)
 
   # Remove fast-path sentinel; workflow_mode in session_state.json is
   # intentionally preserved so the prompt-intent-router's sticky gate
@@ -320,16 +351,16 @@ if [[ "${guard_blocks}" -ge 3 ]]; then
   scorecard="$(build_quality_scorecard)"
   with_state_lock_batch \
     "guard_exhausted" "$(now_epoch)" \
-    "guard_exhausted_detail" "review=${missing_review},verify=${missing_verify},verify_failed=${verify_failed},unremediated=${review_unremediated}"
-  log_hook "stop-guard" "exhausted after 3 blocks: review=${missing_review} verify=${missing_verify} failed=${verify_failed} unremediated=${review_unremediated}"
+    "guard_exhausted_detail" "review=${missing_review},verify=${missing_verify},verify_failed=${verify_failed},unremediated=${review_unremediated},low_confidence=${verify_low_confidence}"
+  log_hook "stop-guard" "exhausted after 3 blocks: review=${missing_review} verify=${missing_verify} failed=${verify_failed} unremediated=${review_unremediated} low_conf=${verify_low_confidence}"
 
   case "${OMC_GUARD_EXHAUSTION_MODE}" in
-    strict)
+    block)
       # Never release — keep blocking with scorecard
-      jq -nc --arg reason "[Quality gate · STRICT MODE] Guard exhaustion reached but strict mode prevents release. QUALITY SCORECARD:\n${scorecard}\nAddress the remaining items or switch to guard_exhaustion_mode=warn in oh-my-claude.conf." '{"decision":"block","reason":$reason}'
+      jq -nc --arg reason "[Quality gate · BLOCK MODE] Guard exhaustion reached but block mode prevents release. QUALITY SCORECARD:\n${scorecard}\nAddress the remaining items or switch to guard_exhaustion_mode=scorecard in oh-my-claude.conf." '{"decision":"block","reason":$reason}'
       exit 0
       ;;
-    warn)
+    scorecard)
       # Release but inject scorecard as context
       emit_scorecard_stop_context \
         "QUALITY SCORECARD (guard exhausted after 3 blocks):" \
@@ -338,7 +369,7 @@ if [[ "${guard_blocks}" -ge 3 ]]; then
       exit 0
       ;;
     *)
-      # release (default legacy behavior) — silent release
+      # silent (default legacy behavior) — silent release
       rm -f "${STATE_ROOT}/.ulw_active"
       exit 0
       ;;
@@ -389,6 +420,13 @@ elif [[ "${verify_failed}" -eq 1 ]]; then
   else
     verify_action="the last verification command failed — fix the underlying issues and re-run verification"
   fi
+elif [[ "${verify_low_confidence}" -eq 1 ]]; then
+  last_verify_cmd="$(read_state "last_verify_cmd")"
+  if [[ -n "${project_test_cmd}" ]]; then
+    verify_action="the last verification (\`${last_verify_cmd:-unknown}\`) had low confidence (${last_verify_confidence}/100, threshold: ${OMC_VERIFY_CONFIDENCE_THRESHOLD}) — run the project test suite (\`${project_test_cmd}\`) for proper validation"
+  else
+    verify_action="the last verification had low confidence (${last_verify_confidence}/100) — run a more comprehensive test command (e.g., the project's test suite) instead of a single-file check"
+  fi
 fi
 
 if [[ "${guard_blocks}" -eq 0 ]]; then
@@ -430,12 +468,17 @@ else
   if [[ "${verify_failed}" -eq 1 ]]; then
     missing_items="${missing_items:+${missing_items}, }failed validation (fix and re-run)"
   fi
+  if [[ "${verify_low_confidence}" -eq 1 ]]; then
+    missing_items="${missing_items:+${missing_items}, }low-confidence validation (run project test suite)"
+  fi
 
   next_action=""
   if [[ "${missing_verify}" -eq 1 ]]; then
     next_action="run the smallest meaningful validation, then delegate ${review_target_label}"
   elif [[ "${verify_failed}" -eq 1 ]]; then
     next_action="fix the failing tests and re-run validation"
+  elif [[ "${verify_low_confidence}" -eq 1 ]]; then
+    next_action="run the project's test suite for proper validation (current confidence: ${last_verify_confidence}/100)"
   elif [[ "${missing_review}" -eq 1 ]]; then
     next_action="delegate ${review_target_label}"
   elif [[ "${review_unremediated}" -eq 1 ]]; then

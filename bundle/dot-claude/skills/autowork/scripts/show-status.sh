@@ -146,13 +146,29 @@ fi
 
 # Show guard exhaustion mode
 printf '\n--- Guard Configuration ---\n'
-printf 'Exhaustion mode: %s\n' "${OMC_GUARD_EXHAUSTION_MODE}"
+printf 'Exhaustion mode:     %s\n' "${OMC_GUARD_EXHAUSTION_MODE}"
+printf 'Gate level:          %s\n' "${OMC_GATE_LEVEL}"
+printf 'Verify confidence:   %s (threshold: %s)\n' \
+  "$(jq -r '.last_verify_confidence // "n/a"' "${state_file}" 2>/dev/null || echo "n/a")" \
+  "${OMC_VERIFY_CONFIDENCE_THRESHOLD}"
+
+# Session timing
+session_start="$(jq -r '.session_start_ts // empty' "${state_file}" 2>/dev/null || true)"
+if [[ -n "${session_start}" ]]; then
+  session_age=$(( $(date +%s) - session_start ))
+  printf 'Session age:         %dm %ds\n' "$((session_age / 60))" "$((session_age % 60))"
+fi
+
+# Subagent dispatch count
+dispatch_count="$(jq -r '.subagent_dispatch_count // "0"' "${state_file}" 2>/dev/null || echo "0")"
+printf 'Subagent dispatches: %s\n' "${dispatch_count}"
 
 # Show agent performance metrics (cross-session)
 metrics_file="${HOME}/.claude/quality-pack/agent-metrics.json"
 if [[ -f "${metrics_file}" ]]; then
   metrics_output="$(jq -r '
-    to_entries | sort_by(-.value.invocations) |
+    to_entries | map(select(.key | startswith("_") | not)) | map(select(.value | type == "object")) |
+    sort_by(-.value.invocations) |
     if length > 0 then
       [.[] | "\(.key): \(.value.invocations) runs, \(.value.clean_verdicts) clean, \(.value.finding_verdicts) findings"] | join("\n")
     else empty end
@@ -170,6 +186,8 @@ if [[ -f "${defect_file}" ]]; then
   cutoff_ts="$(( $(now_epoch) - 90 * 86400 ))"
   defect_output="$(jq -r --argjson cutoff "${cutoff_ts}" '
     to_entries |
+    map(select(.key | startswith("_") | not)) |
+    map(select(.value | type == "object")) |
     map(select(.value.last_seen_ts > $cutoff)) |
     sort_by(-.value.count) |
     if length > 0 then

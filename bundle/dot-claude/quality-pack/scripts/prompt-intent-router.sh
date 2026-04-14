@@ -160,6 +160,12 @@ if grep -Eiq '(^|[^[:alnum:]_-])(ultrawork|ulw|autowork|sisyphus)([^[:alnum:]_-]
   write_state "workflow_mode" "ultrawork"
   write_state "task_domain" "${TASK_DOMAIN}"
 
+  # Record session start time (only on first ULW activation, not every prompt)
+  existing_start_ts="$(read_state "session_start_ts")"
+  if [[ -z "${existing_start_ts}" ]]; then
+    write_state "session_start_ts" "$(now_epoch)"
+  fi
+
   # Sentinel for fast-path exit in PostToolUse hooks (zero-cost check)
   touch "${STATE_ROOT}/.ulw_active"
 
@@ -217,13 +223,13 @@ if grep -Eiq '(^|[^[:alnum:]_-])(ultrawork|ulw|autowork|sisyphus)([^[:alnum:]_-]
         context_parts+=("Detected likely task domain: coding. For non-trivial work use quality-planner or prometheus first — the planner should scope both explicit requirements and implied scope (what a veteran would also deliver). Use quality-researcher for local repo wiring, librarian for official docs and reference implementations, metis to pressure-test risky plans, oracle when stuck or debugging deeply, specialist engineering agents when relevant. Make changes incrementally — one logical change, verify it, then proceed. Test rigorously after edits — failing to test is the #1 failure mode. Before invoking the reviewer, self-assess: enumerate every component of the request and verify each is delivered. Run quality-reviewer before stopping. For complex or multi-file tasks, also run excellence-reviewer after defects are addressed for a fresh-eyes completeness and polish evaluation. Never write placeholder stubs or sycophantic comments.")
         ;;
       writing)
-        context_parts+=("Detected likely task domain: writing. Clarify audience, purpose, format, tone, and constraints early. Use writing-architect for structure when needed, librarian for factual support, draft-writer for the draft, editor-critic before finalizing. Do not invent facts, citations, or quotations — mark uncertain details explicitly. Think about the reader's perspective and what they need to take away.")
+        context_parts+=("Detected likely task domain: writing. Detect the document type early: formal (paper, report, proposal), informal (email, blog, memo), creative (essay, narrative), technical (docs, API reference), or professional (cover letter, SOP, statement). Route the specialist chain accordingly — formal documents benefit from writing-architect for structure; creative work needs less scaffolding. Clarify audience, purpose, format, tone, and constraints early. Use writing-architect for structure when needed, librarian for factual support, draft-writer for the draft, editor-critic before finalizing. Do not invent facts, citations, or quotations — mark uncertain details explicitly. For verification: check structural completeness against the stated purpose, cross-reference factual claims against sources, and use available prose linting tools (markdownlint, vale, textlint) when the output format supports them.")
         ;;
       research)
-        context_parts+=("Detected likely task domain: research or analysis. Use librarian for authoritative sources, briefing-analyst to synthesize findings, metis to challenge weak conclusions, editor-critic for prose-heavy deliverables. Prioritize source quality, separate evidence from inference, make uncertainty explicit, and optimize for decision usefulness.")
+        context_parts+=("Detected likely task domain: research or analysis. Use librarian for authoritative sources, briefing-analyst to synthesize findings, metis to challenge weak conclusions, editor-critic for prose-heavy deliverables. Score source quality: primary sources and official documentation rank highest, peer-reviewed publications next, then established journalism, then community content. When multiple sources conflict, present the conflict rather than choosing arbitrarily. Flag unsourced claims. Prioritize source quality, separate evidence from inference, make uncertainty explicit, and optimize for decision usefulness.")
         ;;
       operations)
-        context_parts+=("Detected likely task domain: operations or professional-assistant work. Use chief-of-staff to structure the deliverable, surface missing constraints, and turn the request into a clean plan, message, checklist, or action-oriented output. If substantial writing is required, pair that with draft-writer and editor-critic.")
+        context_parts+=("Detected likely task domain: operations or professional-assistant work. Use chief-of-staff to structure the deliverable, surface missing constraints, and turn the request into a clean plan, message, checklist, or action-oriented output. Detect deliverable type: if the task implies a checklist, plan, schedule, decision matrix, or action-item tracker, structure the output accordingly. Every action item should have an owner (even if 'user'), a deadline (even if 'as soon as possible'), and a clear done-condition. If substantial writing is required, pair that with draft-writer and editor-critic.")
         ;;
       mixed)
         context_parts+=("Detected likely task domain: mixed. Split the work into coding and non-coding streams. Use the engineering specialists for code work and the writing, research, or operations specialists for the non-code deliverables. Keep the branches coordinated but do not collapse everything into one generic workflow.")
@@ -284,6 +290,9 @@ if [[ -n "${guard_exhausted}" ]]; then
   fi
   if [[ "${guard_detail}" == *"unremediated=1"* ]]; then
     human_detail="${human_detail:+${human_detail}, }unaddressed review findings"
+  fi
+  if [[ "${guard_detail}" == *"low_confidence=1"* ]]; then
+    human_detail="${human_detail:+${human_detail}, }low-confidence verification"
   fi
   if [[ "${guard_detail}" == *"dimensions_missing="* ]]; then
     dims_part="${guard_detail##*dimensions_missing=}"

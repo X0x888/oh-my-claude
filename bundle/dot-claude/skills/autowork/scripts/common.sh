@@ -6,6 +6,13 @@ STATE_ROOT="${STATE_ROOT:-${HOME}/.claude/quality-pack/state}"
 STATE_JSON="session_state.json"
 HOOK_LOG="${STATE_ROOT}/hooks.log"
 
+# Guard: jq is required for all hook operations. If missing, exit gracefully
+# so hooks don't break Claude Code's operation.
+if ! command -v jq >/dev/null 2>&1; then
+  printf 'oh-my-claude: jq is required but not found in PATH. Hooks disabled.\n' >&2
+  exit 0
+fi
+
 # --- Configurable thresholds (tunable via oh-my-claude.conf) ---
 # Precedence: env var > conf file > built-in default.
 # Track which vars were set via env before applying defaults.
@@ -15,22 +22,27 @@ _omc_env_ttl="${OMC_STATE_TTL_DAYS:-}"
 _omc_env_dimgate="${OMC_DIMENSION_GATE_FILE_COUNT:-}"
 _omc_env_traceability="${OMC_TRACEABILITY_FILE_COUNT:-}"
 _omc_env_exhaustion="${OMC_GUARD_EXHAUSTION_MODE:-}"
+_omc_env_verify_conf="${OMC_VERIFY_CONFIDENCE_THRESHOLD:-}"
+_omc_env_gate_level="${OMC_GATE_LEVEL:-}"
 
 OMC_STALL_THRESHOLD="${OMC_STALL_THRESHOLD:-12}"
 OMC_EXCELLENCE_FILE_COUNT="${OMC_EXCELLENCE_FILE_COUNT:-3}"
 OMC_STATE_TTL_DAYS="${OMC_STATE_TTL_DAYS:-7}"
 OMC_DIMENSION_GATE_FILE_COUNT="${OMC_DIMENSION_GATE_FILE_COUNT:-3}"
 OMC_TRACEABILITY_FILE_COUNT="${OMC_TRACEABILITY_FILE_COUNT:-6}"
-# Guard exhaustion mode: release (default, silent), warn (release + scorecard), strict (never release)
+# Guard exhaustion mode: scorecard (default, legacy: warn), block (legacy: strict), silent (legacy: release)
 OMC_GUARD_EXHAUSTION_MODE="${OMC_GUARD_EXHAUSTION_MODE:-warn}"
+# Minimum verification confidence (0-100) to satisfy the verify gate
+OMC_VERIFY_CONFIDENCE_THRESHOLD="${OMC_VERIFY_CONFIDENCE_THRESHOLD:-30}"
+# Gate level: basic (quality gate only), standard (+ excellence), full (+ dimensions)
+OMC_GATE_LEVEL="${OMC_GATE_LEVEL:-full}"
 
 _omc_conf_loaded=0
 
-load_conf() {
-  if [[ "${_omc_conf_loaded}" -eq 1 ]]; then return; fi
-  _omc_conf_loaded=1
-
-  local conf="${HOME}/.claude/oh-my-claude.conf"
+# Parse a single conf file, applying values that pass validation.
+# Env vars always take precedence (checked via _omc_env_* guards).
+_parse_conf_file() {
+  local conf="$1"
   [[ -f "${conf}" ]] || return 0
 
   local line key value
@@ -42,7 +54,6 @@ load_conf() {
     key="${line%%=*}"
     value="${line#*=}"
 
-    # Only override if: value is a positive integer (>0) AND no env override was set.
     case "${key}" in
       stall_threshold)
         [[ -z "${_omc_env_stall}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_STALL_THRESHOLD="${value}" || true ;;
@@ -55,13 +66,47 @@ load_conf() {
       traceability_file_count)
         [[ -z "${_omc_env_traceability}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_TRACEABILITY_FILE_COUNT="${value}" || true ;;
       guard_exhaustion_mode)
-        [[ -z "${_omc_env_exhaustion}" && "${value}" =~ ^(release|warn|strict)$ ]] && OMC_GUARD_EXHAUSTION_MODE="${value}" || true ;;
+        [[ -z "${_omc_env_exhaustion}" && "${value}" =~ ^(release|warn|strict|silent|scorecard|block)$ ]] && OMC_GUARD_EXHAUSTION_MODE="${value}" || true ;;
+      verify_confidence_threshold)
+        [[ -z "${_omc_env_verify_conf}" && "${value}" =~ ^[0-9]+$ && "${value}" -le 100 ]] && OMC_VERIFY_CONFIDENCE_THRESHOLD="${value}" || true ;;
+      gate_level)
+        [[ -z "${_omc_env_gate_level}" && "${value}" =~ ^(basic|standard|full)$ ]] && OMC_GATE_LEVEL="${value}" || true ;;
     esac
   done < "${conf}"
 }
 
+load_conf() {
+  if [[ "${_omc_conf_loaded}" -eq 1 ]]; then return; fi
+  _omc_conf_loaded=1
+
+  # Layer 1: User-level config
+  _parse_conf_file "${HOME}/.claude/oh-my-claude.conf"
+
+  # Layer 2: Project-level config (overrides user-level).
+  # Walk up from $PWD looking for .claude/oh-my-claude.conf, capped at 10
+  # levels. Skip $HOME to avoid double-reading the user conf.
+  local _dir="${PWD}"
+  local _depth=0
+  while [[ "${_dir}" != "/" && "${_depth}" -lt 10 ]]; do
+    if [[ "${_dir}" != "${HOME}" && -f "${_dir}/.claude/oh-my-claude.conf" ]]; then
+      _parse_conf_file "${_dir}/.claude/oh-my-claude.conf"
+      break
+    fi
+    _dir="$(dirname "${_dir}")"
+    _depth=$((_depth + 1))
+  done
+}
+
 # Load conf at source time so all scripts get configured values.
 load_conf
+
+# Normalize legacy exhaustion mode names to new canonical names.
+# Accepts both old (release/warn/strict) and new (silent/scorecard/block).
+case "${OMC_GUARD_EXHAUSTION_MODE}" in
+  release) OMC_GUARD_EXHAUSTION_MODE="silent" ;;
+  warn)    OMC_GUARD_EXHAUSTION_MODE="scorecard" ;;
+  strict)  OMC_GUARD_EXHAUSTION_MODE="block" ;;
+esac
 
 # Optional hook execution logging. Enable via oh-my-claude.conf: hook_debug=true
 _hook_debug_enabled=""
@@ -128,6 +173,7 @@ ensure_session_dir() {
     exit 0
   fi
   mkdir -p "${STATE_ROOT}/${SESSION_ID}"
+  chmod 700 "${STATE_ROOT}/${SESSION_ID}" 2>/dev/null || true
 }
 
 session_file() {
@@ -357,11 +403,59 @@ sweep_stale_sessions() {
     fi
   fi
 
-  # Sweep directories older than configured TTL (exclude dotfiles like .ulw_active, .last_sweep)
+  # Pre-sweep aggregation: capture a summary line per session before deletion.
+  # This preserves longitudinal data for quality analysis.
+  local summary_file="${HOME}/.claude/quality-pack/session_summary.jsonl"
+
   if [[ -d "${STATE_ROOT}" ]]; then
     find "${STATE_ROOT}" -maxdepth 1 -type d -mtime +"${OMC_STATE_TTL_DAYS}" \
       ! -name '.' ! -name '..' ! -name '.*' ! -path "${STATE_ROOT}" \
-      -exec rm -rf {} + 2>/dev/null || true
+      -print 2>/dev/null | while IFS= read -r _sweep_dir; do
+        local _sweep_state="${_sweep_dir}/session_state.json"
+        if [[ -f "${_sweep_state}" ]]; then
+          local _sweep_sid _sweep_ec=0
+          _sweep_sid="$(basename "${_sweep_dir}")"
+          local _sweep_edits="${_sweep_dir}/edited_files.log"
+          [[ -f "${_sweep_edits}" ]] && _sweep_ec="$(sort -u "${_sweep_edits}" | wc -l | tr -d '[:space:]')"
+          jq -c --arg sid "${_sweep_sid}" --argjson ec "${_sweep_ec:-0}" '
+            {
+              session_id: $sid,
+              start_ts: (.session_start_ts // .last_user_prompt_ts // null),
+              end_ts: (.last_edit_ts // .last_review_ts // null),
+              domain: (.task_domain // "unknown"),
+              intent: (.task_intent // "unknown"),
+              edit_count: $ec,
+              code_edits: ((.code_edit_count // "0") | tonumber),
+              doc_edits: ((.doc_edit_count // "0") | tonumber),
+              verified: (if .last_verify_ts then true else false end),
+              verify_outcome: (.last_verify_outcome // null),
+              verify_confidence: ((.last_verify_confidence // "0") | tonumber),
+              reviewed: (if .last_review_ts then true else false end),
+              guard_blocks: ((.stop_guard_blocks // "0") | tonumber),
+              dim_blocks: ((.dimension_guard_blocks // "0") | tonumber),
+              exhausted: (if .guard_exhausted then true else false end),
+              dispatches: ((.subagent_dispatch_count // "0") | tonumber)
+            }
+          ' "${_sweep_state}" >> "${summary_file}" 2>/dev/null || true
+        fi
+        rm -rf "${_sweep_dir}" 2>/dev/null || true
+      done
+
+    # Cap session_summary.jsonl at 500 lines
+    if [[ -f "${summary_file}" ]]; then
+      local _sum_lines
+      _sum_lines="$(wc -l < "${summary_file}" 2>/dev/null || echo 0)"
+      _sum_lines="${_sum_lines##* }"
+      if [[ "${_sum_lines}" -gt 500 ]]; then
+        local _sum_temp
+        _sum_temp="$(mktemp "${summary_file}.XXXXXX")"
+        if tail -n 400 "${summary_file}" > "${_sum_temp}" 2>/dev/null; then
+          mv "${_sum_temp}" "${summary_file}"
+        else
+          rm -f "${_sum_temp}"
+        fi
+      fi
+    fi
   fi
 
   printf '%s\n' "${now}" > "${marker}"
@@ -1348,7 +1442,8 @@ record_agent_metric() {
        --argjson fv "${finding_v}" \
        --argjson ts "${now_ts}" \
        --argjson ac "${avg_conf}" \
-       '.[$a] = {invocations:$inv, clean_verdicts:$cv, finding_verdicts:$fv, last_used_ts:$ts, avg_confidence:$ac}' \
+       --arg pid "$(_omc_project_id 2>/dev/null || echo "unknown")" \
+       '.[$a] = {invocations:$inv, clean_verdicts:$cv, finding_verdicts:$fv, last_used_ts:$ts, avg_confidence:$ac, last_project_id:$pid} | ._schema_version = 2' \
        "${metrics_file}" > "${tmp_file}" 2>/dev/null
     if ! mv "${tmp_file}" "${metrics_file}" 2>/dev/null; then
       rm -f "${tmp_file}"
@@ -1440,20 +1535,22 @@ classify_finding_category() {
   desc="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
   [[ -z "${desc}" ]] && { printf 'unknown'; return; }
 
-  # Order matters — most specific first
-  if printf '%s' "${desc}" | grep -Eq 'race|concurrent|deadlock|lock|atomic'; then
+  # Order matters — most specific first. Word boundaries (\b) prevent
+  # collision on common words (e.g., "atomic" in "atomic CSS", "error" in
+  # any finding description).
+  if printf '%s' "${desc}" | grep -Eq '\b(race.?condition|concurrent|deadlock|mutex|data.?race)\b'; then
     printf 'race_condition'
-  elif printf '%s' "${desc}" | grep -Eq 'test|spec|assert|coverage|untested'; then
+  elif printf '%s' "${desc}" | grep -Eq '\b(missing.?test|no.?test|untested|test.?coverage|add.?test|no.*(unit|integration)?\s*tests?)\b|\b(tests?|spec|assert|coverage)\b'; then
     printf 'missing_test'
-  elif printf '%s' "${desc}" | grep -Eq 'type|typescript|type.?error|cast|coercion|NaN'; then
+  elif printf '%s' "${desc}" | grep -Eq '\btype.?error\b|typescript|cast|coercion|\bNaN\b|type.?mismatch'; then
     printf 'type_error'
-  elif printf '%s' "${desc}" | grep -Eq 'null|undefined|nil|none|optional|empty|falsy'; then
+  elif printf '%s' "${desc}" | grep -Eq '\b(null|undefined|nil)\b.*(check|guard|safe|handle)|null.?pointer|optional.?chain'; then
     printf 'null_check'
-  elif printf '%s' "${desc}" | grep -Eq 'edge|boundary|overflow|underflow|off.by|corner|limit'; then
+  elif printf '%s' "${desc}" | grep -Eq '\b(edge.?case|boundary|overflow|underflow|off.by|corner.?case)\b'; then
     printf 'edge_case'
-  elif printf '%s' "${desc}" | grep -Eq 'api|contract|schema|interface|endpoint|payload|response'; then
+  elif printf '%s' "${desc}" | grep -Eq '\b(api|contract|schema|endpoint|payload|response).*(mismatch|break|invalid|missing)\b|\bapi\b.*\b(contract|schema)\b'; then
     printf 'api_contract'
-  elif printf '%s' "${desc}" | grep -Eq 'error|exception|catch|throw|reject|fail|panic|abort'; then
+  elif printf '%s' "${desc}" | grep -Eq '\b(unhandled|uncaught|missing).*(error|exception)\b|error.?handling|catch.*(missing|empty)|panic|abort'; then
     printf 'error_handling'
   elif printf '%s' "${desc}" | grep -Eq 'secur|auth|inject|xss|csrf|sanitiz|escap|vuln|credential|token'; then
     printf 'security'
@@ -1501,14 +1598,19 @@ record_defect_pattern() {
     tmp_file="$(mktemp "${pf}.XXXXXX")"
     if [[ -n "${example}" ]]; then
       # Keep at most 5 recent examples per category
+      local _pid
+      _pid="$(_omc_project_id 2>/dev/null || echo "unknown")"
       jq --arg c "${category}" \
          --argjson cnt "${count}" \
          --argjson ts "${now_ts}" \
          --arg ex "${example}" \
+         --arg pid "${_pid}" \
          '.[$c] = (.[$c] // {count:0,last_seen_ts:0,examples:[]}) |
           .[$c].count = $cnt |
           .[$c].last_seen_ts = $ts |
-          .[$c].examples = ((.[$c].examples + [$ex]) | .[-5:])' \
+          .[$c].last_project_id = $pid |
+          .[$c].examples = ((.[$c].examples + [$ex]) | .[-5:]) |
+          ._schema_version = 2' \
          "${pf}" > "${tmp_file}" 2>/dev/null
       if ! mv "${tmp_file}" "${pf}" 2>/dev/null; then
         rm -f "${tmp_file}"
@@ -1542,6 +1644,8 @@ get_top_defect_patterns() {
   cutoff_ts="$(( $(now_epoch) - 90 * 86400 ))"
   jq -r --argjson n "${n}" --argjson cutoff "${cutoff_ts}" '
     to_entries |
+    map(select(.key | startswith("_") | not)) |
+    map(select(.value | type == "object")) |
     map(select(.value.last_seen_ts > $cutoff)) |
     sort_by(-.value.count) |
     .[0:$n] |
@@ -1561,6 +1665,8 @@ get_defect_watch_list() {
   local list
   list="$(jq -r --argjson n "${n}" --argjson cutoff "$(( $(now_epoch) - 90 * 86400 ))" '
     to_entries |
+    map(select(.key | startswith("_") | not)) |
+    map(select(.value | type == "object")) |
     map(select(.value.last_seen_ts > $cutoff)) |
     sort_by(-.value.count) |
     .[0:$n] |
@@ -1577,6 +1683,49 @@ get_defect_watch_list() {
 }
 
 # --- end cross-session learning ---
+
+# --- Gate skip tracking ---
+#
+# Records gate skips to a JSONL file for threshold tuning analysis.
+# Called in the background from stop-guard.sh when a /ulw-skip is honored.
+
+record_gate_skip() {
+  local reason="${1:-}"
+  local skip_file="${HOME}/.claude/quality-pack/gate-skips.jsonl"
+  mkdir -p "$(dirname "${skip_file}")"
+  local ts
+  ts="$(now_epoch)"
+  local pid
+  pid="$(_omc_project_id 2>/dev/null || echo "unknown")"
+  jq -nc --arg reason "${reason}" --argjson ts "${ts}" --arg project "${pid}" \
+    '{ts:$ts,reason:$reason,project:$project}' >> "${skip_file}" 2>/dev/null || true
+  # Cap at 200 lines
+  local _lines
+  _lines="$(wc -l < "${skip_file}" 2>/dev/null || echo 0)"
+  _lines="${_lines##* }"
+  if [[ "${_lines}" -gt 200 ]]; then
+    local _temp
+    _temp="$(mktemp "${skip_file}.XXXXXX")"
+    if tail -n 150 "${skip_file}" > "${_temp}" 2>/dev/null; then
+      mv "${_temp}" "${skip_file}"
+    else
+      rm -f "${_temp}"
+    fi
+  fi
+}
+
+# --- end gate skip tracking ---
+
+# --- Project identity ---
+#
+# Generates a short hash of $PWD for use in cross-session data stores.
+# Allows filtering cross-session metrics by project without storing full paths.
+
+_omc_project_id() {
+  printf '%s' "${PWD}" | shasum -a 256 2>/dev/null | cut -c1-12
+}
+
+# --- end project identity ---
 
 # --- Project profile detection ---
 
@@ -1855,6 +2004,24 @@ infer_domain() {
   writing_topic_bigrams=${writing_topic_bigrams:-0}
   writing_bigrams=$((writing_bigrams + writing_topic_bigrams))
 
+  # Action + research-object → research signal
+  local research_bigrams
+  research_bigrams=$(count_keyword_matches '\b(investigate|research|compare|analy[zs]e|evaluat(e|ing))\s+(why|how|whether|alternatives?|options?|approaches?|strategies?|tools?|frameworks?|solutions?|vendors?|platforms?)\b' "${text}")
+  research_bigrams=${research_bigrams:-0}
+  local research_topic_bigrams
+  research_topic_bigrams=$(count_keyword_matches '\b(find|gather|collect)\s+(data|evidence|sources|information|references?)\s+(on|about|for|regarding)\b' "${text}")
+  research_topic_bigrams=${research_topic_bigrams:-0}
+  research_bigrams=$((research_bigrams + research_topic_bigrams))
+
+  # Action + operations-object → operations signal
+  local operations_bigrams
+  operations_bigrams=$(count_keyword_matches '\b(plan|create|build|draft|prepare|make)\s+(a\s+|an\s+|the\s+|my\s+|our\s+)?(project\s+plan|roadmap|timeline|agenda|checklist|action.?plan|schedule|rollout|migration\s+plan|deployment\s+plan|release\s+plan|sprint\s+plan|backlog|kanban|standup|retro)\b' "${text}")
+  operations_bigrams=${operations_bigrams:-0}
+  local operations_action_bigrams
+  operations_action_bigrams=$(count_keyword_matches '\b(turn|convert|transform)\s+.{0,30}\s+(into|to)\s+(a\s+|an\s+)?(action.?plan|checklist|task.?list|follow.?up|decision|memo)\b' "${text}")
+  operations_action_bigrams=${operations_action_bigrams:-0}
+  operations_bigrams=$((operations_bigrams + operations_action_bigrams))
+
   # --- Negative keywords: subtract false positives ---
   # "report" after bug/error/test/crash → coding context, not writing
   # "post" in HTTP context → not writing
@@ -1886,10 +2053,10 @@ infer_domain() {
   if [[ "${writing_score}" -lt 0 ]]; then writing_score=0; fi
 
   research_score=$(count_keyword_matches '\b(research(ing)?|investigate|investigation|analy(sis|ze|zing)|compare|comparison|survey|literature|sources|citations?|references?|benchmark(ing)?|brief(ing)?|recommendations?|summarize|summary|pros.?and.?cons|tradeoffs?|audit(ing)?|assess(ment|ing)?|evaluat(e|ion|ing)|inspect(ion|ing)?)\b' "${text}")
-  research_score=${research_score:-0}
+  research_score=$(( ${research_score:-0} + research_bigrams ))
 
   operations_score=$(count_keyword_matches '\b(plan(ning)?|roadmap|timeline|agenda|meeting|follow[- ]?up|checklist|prioriti(es|se|ze)|project.?plan|travel.?plan|itinerary|reply(ing)?|respond(ing)?|application|submission)\b' "${text}")
-  operations_score=${operations_score:-0}
+  operations_score=$(( ${operations_score:-0} + operations_bigrams ))
 
   # Project profile boost: when a project has known stack indicators,
   # add a small bonus to coding (if the project is code-heavy) or writing

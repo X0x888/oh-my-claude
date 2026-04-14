@@ -8,8 +8,7 @@ Display this table to the user:
 
 | Skill | Command | When to use |
 |-------|---------|-------------|
-| **autowork** | `/autowork <task>` | Any non-trivial task needing full autonomy — coding, writing, research, ops |
-| **ulw** | `/ulw <task>` | Same as autowork (short alias) |
+| **ulw** | `/ulw <task>` | Any non-trivial task needing full autonomy — coding, writing, research, ops |
 | **plan-hard** | `/plan-hard <task>` | You need a detailed plan *before* editing — scope decisions, architecture, sequencing |
 | **review-hard** | `/review-hard [focus]` | Review existing code or a worktree diff for bugs, quality, and missed requirements |
 | **research-hard** | `/research-hard <topic>` | Gather repo context, API details, or integration points before implementation |
@@ -21,13 +20,14 @@ Display this table to the user:
 | **council** | `/council [focus]` | Multi-role project evaluation — dispatches PM, design, security, data, SRE, and growth perspectives |
 | **ulw-demo** | `/ulw-demo` | Guided onboarding — see the quality gates fire on a demo task |
 | **ulw-status** | `/ulw-status` | Inspect current session state — mode, domain, counters, flags (debugging) |
+| **ulw-skip** | `/ulw-skip <reason>` | Skip the current quality gate block once — use when a gate is blocking but you're confident |
 | **ulw-off** | `/ulw-off` | Deactivate ultrawork mode mid-session without ending the conversation |
 | **skills** | `/skills` | Show this list |
 
 ## Decision guide
 
 - **Just installed?** Use `/ulw-demo` to see the quality gates in action.
-- **Starting real work?** Use `/ulw` (or `/autowork`).
+- **Starting real work?** Use `/ulw` (aliases: `/autowork`, `/ultrawork` also work).
 - **Need a plan first?** Use `/plan-hard`. If the goal is vague, use `/prometheus` instead.
 - **Want to validate a plan?** Use `/metis`.
 - **Want a multi-role project evaluation?** Use `/council`. Also auto-triggers under `/ulw` for broad prompts like "evaluate my project."
@@ -35,4 +35,7 @@ Display this table to the user:
 - **Need docs or references?** Use `/librarian`.
 - **Want a code review?** Use `/review-hard`.
 - **Need repo context before building?** Use `/research-hard`.
+- **Gate blocking but you're confident?** Use `/ulw-skip <reason>` to pass once.
 - **Setting up a new repo?** Use `/atlas`.
+
+> **Note:** Specialist agents activate automatically based on your task. You don't need to learn agent names — just describe what you want to accomplish.

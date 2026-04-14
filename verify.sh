@@ -106,6 +106,7 @@ required_paths=(
   "${CLAUDE_HOME}/agents/prometheus.md"
   "${CLAUDE_HOME}/skills/council/SKILL.md"
   "${CLAUDE_HOME}/skills/ulw-demo/SKILL.md"
+  "${CLAUDE_HOME}/skills/ulw-skip/SKILL.md"
 )
 
 for path in "${required_paths[@]}"; do
@@ -349,6 +350,9 @@ fi
 
 printf 'oh-my-claude verification passed.\n'
 printf '\n'
-printf 'Suggested first tests:\n'
-printf '  /ulw debug the failing auth callback and add regression coverage\n'
-printf '  /ultrawork Please draft a concise project proposal for an AI-assisted research workflow.\n'
+printf 'What next?\n'
+printf '  /ulw-demo                               -- see quality gates in action (recommended first step)\n'
+printf '  /ulw fix the failing auth callback       -- start real work with full quality enforcement\n'
+printf '\n'
+printf 'Tip: Specialist agents activate automatically based on your task.\n'
+printf '     You don'"'"'t need to learn agent names — just describe what you want to accomplish.\n'

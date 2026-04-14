@@ -6,7 +6,7 @@ Cognitive quality harness for Claude Code -- bash hooks, specialist agents, and 
 
 - `bundle/dot-claude/agents/` -- 30 specialist agent definitions with permission boundaries
 - `bundle/dot-claude/quality-pack/scripts/` -- 5 lifecycle hook scripts (prompt routing, compaction, session management)
-- `bundle/dot-claude/skills/` -- 16 skill definitions, each in `<name>/SKILL.md`
+- `bundle/dot-claude/skills/` -- 17 skill definitions, each in `<name>/SKILL.md`
 - `bundle/dot-claude/skills/autowork/scripts/` -- 12 autowork hook scripts including `common.sh` (shared utility library)
 - `bundle/dot-claude/output-styles/` -- output format templates
 - `config/settings.patch.json` -- settings merged into user config on install
@@ -52,7 +52,10 @@ python3 -m unittest tests.test_statusline -v
 - State is JSON in `session_state.json`, accessed via `read_state` / `write_state`.
 - Multi-step state updates that are subject to concurrent SubagentStop hooks (e.g. dimension ticks) must go through `with_state_lock` to prevent lost updates. Use `with_state_lock_batch` for multi-key atomic writes.
 - Cross-session data (agent metrics, defect patterns) lives in `~/.claude/quality-pack/` as JSON files with their own lock mechanisms. Never store cross-session data inside session directories.
-- Guard exhaustion mode (`guard_exhaustion_mode` in `oh-my-claude.conf`) controls behavior when quality gates are exhausted: `warn` (default) emits a scorecard, `strict` keeps blocking, `release` silently releases.
+- Guard exhaustion mode (`guard_exhaustion_mode` in `oh-my-claude.conf`) controls behavior when quality gates are exhausted: `scorecard` (default, legacy name: `warn`) emits a scorecard then releases, `block` (legacy: `strict`) keeps blocking, `silent` (legacy: `release`) silently releases. Both old and new names are accepted.
+- Gate level (`gate_level` in `oh-my-claude.conf`) controls enforcement depth: `full` (default) enables all gates including review coverage and excellence, `standard` enables quality + excellence gates, `basic` enables only the quality gate.
+- Verification confidence threshold (`verify_confidence_threshold` in `oh-my-claude.conf`, default 30) sets the minimum confidence score (0-100) for verification to satisfy the quality gate. Low-confidence verifications (e.g., `bash -n` syntax check) are treated as insufficient.
+- Per-project configuration: `load_conf()` reads `$HOME/.claude/oh-my-claude.conf` (user-level), then walks up from `$PWD` looking for `.claude/oh-my-claude.conf` (project-level overrides). Env vars always take precedence over both.
 - Prefer readable code over micro-optimizations. When quality and speed conflict, choose quality.
 - Do not break existing install paths, config merges, or hook interfaces for performance gains.
 - When adding, removing, or renaming agents, skills, scripts, or directories, update README.md, CLAUDE.md, AGENTS.md, and CONTRIBUTING.md to reflect the change. Stale docs are worse than no docs.

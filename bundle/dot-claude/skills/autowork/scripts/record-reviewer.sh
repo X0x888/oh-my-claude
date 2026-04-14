@@ -168,8 +168,12 @@ fi
 
 # --- Agent performance metric recording ---
 metric_verdict="findings"
-[[ "${has_findings}" == "false" ]] && metric_verdict="clean"
-record_agent_metric "${REVIEWER_TYPE}" "${metric_verdict}" &
+metric_confidence=60
+if [[ "${has_findings}" == "false" ]]; then
+  metric_verdict="clean"
+  metric_confidence=80
+fi
+record_agent_metric "${REVIEWER_TYPE}" "${metric_verdict}" "${metric_confidence}" &
 
 # --- Cross-session defect pattern recording ---
 # When findings are detected, extract a summary line and classify the defect.

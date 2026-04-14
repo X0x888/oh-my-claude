@@ -9,6 +9,31 @@
 
 A cognitive quality harness for Claude Code. Bash hooks, skills, and specialist agents that enforce thinking, testing, and review as structural requirements -- not suggestions.
 
+> **Specialist agents activate automatically based on your task.** You don't need to learn agent names -- just describe what you want to accomplish, and `/ulw` handles the rest.
+
+---
+
+## Quick start
+
+```bash
+git clone https://github.com/X0x888/oh-my-claude.git
+cd oh-my-claude
+bash install.sh
+# Restart Claude Code, then:
+bash verify.sh
+```
+
+**First time?** Run `/ulw-demo` to see the quality gates in action before starting real work.
+
+Then jump into real work:
+
+```
+/ulw fix the failing test and add regression coverage
+```
+
+<!-- Demo: replace with asciinema recording or GIF when available -->
+<!-- ![oh-my-claude demo](docs/demo.gif) -->
+
 ---
 
 ## The problem
@@ -80,33 +105,7 @@ No npm. No TypeScript. No Node.js runtime. No plugin framework. The entire harne
 
 ---
 
-## Quick start
-
-```bash
-git clone https://github.com/X0x888/oh-my-claude.git
-cd oh-my-claude
-bash install.sh
-# Restart Claude Code, then:
-bash verify.sh
-```
-
-See it in action:
-
-```
-/ulw-demo
-```
-
-This guided walkthrough creates a demo file, triggers the quality gates, and explains what happened at each step. You'll see the stop-guard block a premature completion, then watch the verification and review loop complete.
-
-Or jump straight into real work:
-
-```
-/ulw fix the failing test and add regression coverage
-```
-
-The `/ulw` command activates the full workflow: intent classification, domain routing, specialist agents, quality gates, and verification. It works for any domain, not just code. You can also type `ulw` without the slash -- both forms work identically.
-
-## Quick start (AI-assisted)
+## AI-assisted install
 
 Already in Claude Code? Paste one of these prompts directly.
 
@@ -194,8 +193,7 @@ Skills are invoked as slash commands or routed automatically by the intent class
 
 | Skill | Command | Purpose |
 |-------|---------|---------|
-| autowork | `/autowork <task>` | Maximum-autonomy professional workflow |
-| ulw | `/ulw <task>` | Alias for autowork |
+| ulw | `/ulw <task>` | Maximum-autonomy professional workflow |
 | plan-hard | `/plan-hard <task>` | Decision-complete planning without edits |
 | review-hard | `/review-hard [focus]` | Findings-first code review |
 | research-hard | `/research-hard <topic>` | Targeted context gathering |
@@ -204,10 +202,13 @@ Skills are invoked as slash commands or routed automatically by the intent class
 | oracle | `/oracle <issue>` | Deep debugging second opinion |
 | librarian | `/librarian <topic>` | Official docs and reference research |
 | atlas | `/atlas [focus]` | Bootstrap or refresh repo instruction files |
-| ulw-off | `/ulw-off` | Deactivate ultrawork mode mid-session |
-| ulw-status | `/ulw-status` | Show current session state (debugging) |
 | council | `/council [focus]` | Multi-role project evaluation (PM, design, security, data, SRE, growth) |
+| ulw-skip | `/ulw-skip <reason>` | Skip current quality gate block once |
+| ulw-status | `/ulw-status` | Show current session state (debugging) |
+| ulw-off | `/ulw-off` | Deactivate ultrawork mode mid-session |
 | skills | `/skills` | List all available skills with usage guide |
+
+> Aliases `/autowork`, `/ultrawork`, and `sisyphus` also trigger the ulw workflow.
 
 ## Power-user setup
 

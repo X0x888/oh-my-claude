@@ -421,7 +421,7 @@ assert_contains "seq-E: penultimate warning" "final guard block" "${out3}"
 blocks3="$(read_st "se" "stop_guard_blocks")"
 assert_eq "seq-E: guard_blocks=3" "3" "${blocks3}"
 
-# Fourth stop: exhausted, released with scorecard (warn mode is default)
+# Fourth stop: exhausted, released with scorecard (scorecard mode is default)
 out4="$(sim_stop "se")"
 assert_contains "seq-E: fourth stop exhausted scorecard" "QUALITY SCORECARD" "${out4}"
 assert_not_empty "seq-E: guard_exhausted set" "$(read_st "se" "guard_exhausted")"
@@ -892,7 +892,7 @@ VERDICT: CLEAN"
 out1="$(sim_stop "su1")"
 assert_contains "seq-U1: block 1 for missing metis" '"decision":"block"' "${out1}"
 assert_contains "seq-U1: names metis" "metis" "${out1}"
-assert_contains "seq-U1: names stress_test" "stress_test" "${out1}"
+assert_contains "seq-U1: names stress-test" "stress-test" "${out1}"
 
 sim_metis "su1"
 
@@ -1037,17 +1037,17 @@ out2="$(sim_stop "su7")"
 assert_contains "seq-U7: block 2" '"decision":"block"' "${out2}"
 out3="$(sim_stop "su7")"
 assert_contains "seq-U7: block 3" '"decision":"block"' "${out3}"
-assert_contains "seq-U7: final warning" "final dimension-gate block" "${out3}"
+assert_contains "seq-U7: final warning" "final review-coverage block" "${out3}"
 
-# 4th stop: exhausted in warn mode, released with scorecard
-out4="$(sim_stop_mode "su7" "warn")"
-assert_contains "seq-U7: warn release emits scorecard" "QUALITY SCORECARD" "${out4}"
-assert_not_contains "seq-U7: warn release is not a block" '"decision":"block"' "${out4}"
+# 4th stop: exhausted in scorecard mode, released with scorecard
+out4="$(sim_stop_mode "su7" "scorecard")"
+assert_contains "seq-U7: scorecard release emits scorecard" "QUALITY SCORECARD" "${out4}"
+assert_not_contains "seq-U7: scorecard release is not a block" '"decision":"block"' "${out4}"
 exhausted_detail="$(read_st "su7" "guard_exhausted_detail")"
 assert_contains "seq-U7: exhaustion recorded" "dimensions_missing" "${exhausted_detail}"
 teardown_test
 
-# Sequence U7B: Dimension gate exhaustion in strict mode keeps blocking
+# Sequence U7B: Review coverage gate exhaustion in block mode keeps blocking
 setup_test
 init_session "su7b"
 sim_edit "su7b" "/src/a.ts"
@@ -1056,13 +1056,13 @@ sim_edit "su7b" "/src/c.ts"
 sim_verify "su7b" "npm test" "Tests: 10 passed"
 sim_review "su7b" "Clean.
 VERDICT: CLEAN"
-sim_stop_mode "su7b" "strict" >/dev/null
-sim_stop_mode "su7b" "strict" >/dev/null
-sim_stop_mode "su7b" "strict" >/dev/null
-out4="$(sim_stop_mode "su7b" "strict")"
-assert_contains "seq-U7B: strict mode blocks" '"decision":"block"' "${out4}"
-assert_contains "seq-U7B: strict mode named" "STRICT MODE" "${out4}"
-assert_contains "seq-U7B: strict mode includes scorecard" "QUALITY SCORECARD" "${out4}"
+sim_stop_mode "su7b" "block" >/dev/null
+sim_stop_mode "su7b" "block" >/dev/null
+sim_stop_mode "su7b" "block" >/dev/null
+out4="$(sim_stop_mode "su7b" "block")"
+assert_contains "seq-U7B: block mode blocks" '"decision":"block"' "${out4}"
+assert_contains "seq-U7B: block mode named" "BLOCK MODE" "${out4}"
+assert_contains "seq-U7B: block mode includes scorecard" "QUALITY SCORECARD" "${out4}"
 teardown_test
 
 # Sequence U8: UI file edits require design_quality dimension
@@ -1078,7 +1078,7 @@ VERDICT: CLEAN"
 # and design_quality are still required. Stop should be blocked.
 out1="$(sim_stop "su8")"
 assert_contains "seq-U8: dimension gate blocks" '"decision":"block"' "${out1}"
-assert_contains "seq-U8: design_quality in missing dims" "design_quality" "${out1}"
+assert_contains "seq-U8: design quality in missing reviews" "design quality" "${out1}"
 
 # Run metis — ticks stress_test
 sim_metis "su8"
@@ -1127,10 +1127,10 @@ sim_edit "sstatus" "/src/foo.ts"
 sim_verify "sstatus" "npm test" "Tests: 10 passed"
 sim_review "sstatus" "A regression risk remains.
 VERDICT: FINDINGS (1)"
-status_out="$(sim_status_mode "strict")"
+status_out="$(sim_status_mode "block")"
 assert_contains "status: verification confidence shown" "Verification Confidence" "${status_out}"
 assert_not_contains "status: verification method is no longer unknown" "Method: unknown" "${status_out}"
-assert_contains "status: guard configuration shown" "Exhaustion mode: strict" "${status_out}"
+assert_contains "status: guard configuration shown" "Exhaustion mode:" "${status_out}"
 assert_contains "status: findings-only dimensions shown" "bug_hunt: findings reported" "${status_out}"
 teardown_test
 

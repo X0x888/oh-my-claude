@@ -146,6 +146,26 @@ def installed_version():
     return None
 
 
+def harness_health():
+    """Check if the harness is actively intercepting hooks.
+
+    Returns 'active' if the sentinel or hooks.log was touched in the
+    last 5 minutes, None otherwise.
+    """
+    state_root = os.path.join(os.path.expanduser("~"), ".claude", "quality-pack", "state")
+    for candidate in [
+        os.path.join(state_root, ".ulw_active"),
+        os.path.join(state_root, "hooks.log"),
+    ]:
+        try:
+            age = time.time() - os.path.getmtime(candidate)
+            if age < 300:
+                return "active"
+        except (FileNotFoundError, OSError):
+            continue
+    return None
+
+
 def ulw_info():
     """Check if ULW mode is active and return the domain, or None."""
     state_root = os.path.join(os.path.expanduser("~"), ".claude", "quality-pack", "state")
@@ -197,6 +217,8 @@ def main():
     ]
     if ulw_domain:
         line_one_parts.append(color(f"[ULW:{ulw_domain}]", f"{BOLD}{MAGENTA}"))
+    elif harness_health() == "active":
+        line_one_parts.append(color("[H:ok]", f"{DIM}{GREEN}"))
     if branch_text:
         line_one_parts.append(color(branch_text, YELLOW))
     line_one_parts.append(color(f"style:{style_name}", f"{DIM}{BLUE}"))
