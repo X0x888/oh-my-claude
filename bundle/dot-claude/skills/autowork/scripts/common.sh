@@ -1702,11 +1702,19 @@ with_skips_lock() {
   while true; do
     if mkdir "${lockdir}" 2>/dev/null; then break; fi
     attempts=$((attempts + 1))
-    if [[ "${attempts}" -ge 100 ]]; then
-      # Force-release after ~5s of polling
-      rmdir "${lockdir}" 2>/dev/null || true
-      mkdir "${lockdir}" 2>/dev/null || return 1
-      break
+    # Time-based stale-lock recovery (same pattern as with_state_lock)
+    if [[ -d "${lockdir}" ]]; then
+      local _now _held
+      _now="$(date +%s)"
+      _held="$(_lock_mtime "${lockdir}")"
+      if [[ "${_held}" -gt 0 ]] \
+          && [[ $(( _now - _held )) -gt "${OMC_STATE_LOCK_STALE_SECS}" ]]; then
+        rmdir "${lockdir}" 2>/dev/null || true
+        continue
+      fi
+    fi
+    if [[ "${attempts}" -ge "${OMC_STATE_LOCK_MAX_ATTEMPTS}" ]]; then
+      return 1
     fi
     sleep 0.05 2>/dev/null || sleep 1
   done
