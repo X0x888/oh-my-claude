@@ -7,7 +7,7 @@ Cognitive quality harness for Claude Code -- bash hooks, specialist agents, and 
 - `bundle/dot-claude/agents/` -- 30 specialist agent definitions with permission boundaries
 - `bundle/dot-claude/quality-pack/scripts/` -- 5 lifecycle hook scripts (prompt routing, compaction, session management)
 - `bundle/dot-claude/skills/` -- 17 skill definitions, each in `<name>/SKILL.md`
-- `bundle/dot-claude/skills/autowork/scripts/` -- 12 autowork hook scripts including `common.sh` (shared utility library)
+- `bundle/dot-claude/skills/autowork/scripts/` -- 13 autowork hook scripts including `common.sh` (shared utility library)
 - `bundle/dot-claude/output-styles/` -- output format templates
 - `config/settings.patch.json` -- settings merged into user config on install
 - `tests/` -- 9 test scripts (e2e hook sequence, intent classification, quality gates, stall detection, settings merge, uninstall merge, common utilities, session resume, statusline)
@@ -54,7 +54,7 @@ python3 -m unittest tests.test_statusline -v
 - Cross-session data (agent metrics, defect patterns) lives in `~/.claude/quality-pack/` as JSON files with their own lock mechanisms. Never store cross-session data inside session directories.
 - Guard exhaustion mode (`guard_exhaustion_mode` in `oh-my-claude.conf`) controls behavior when quality gates are exhausted: `scorecard` (default, legacy name: `warn`) emits a scorecard then releases, `block` (legacy: `strict`) keeps blocking, `silent` (legacy: `release`) silently releases. Both old and new names are accepted.
 - Gate level (`gate_level` in `oh-my-claude.conf`) controls enforcement depth: `full` (default) enables all gates including review coverage and excellence, `standard` enables quality + excellence gates, `basic` enables only the quality gate.
-- Verification confidence threshold (`verify_confidence_threshold` in `oh-my-claude.conf`, default 30) sets the minimum confidence score (0-100) for verification to satisfy the quality gate. Low-confidence verifications (e.g., `bash -n` syntax check) are treated as insufficient.
+- Verification confidence threshold (`verify_confidence_threshold` in `oh-my-claude.conf`, default 40) sets the minimum confidence score (0-100) for verification to satisfy the quality gate. Lint-only checks like `shellcheck` (score 30) and `bash -n` (score 30) are blocked at the default threshold; project test suites (score 70+) and framework runs with output signals (score 50+) pass.
 - Per-project configuration: `load_conf()` reads `$HOME/.claude/oh-my-claude.conf` (user-level), then walks up from `$PWD` looking for `.claude/oh-my-claude.conf` (project-level overrides). Env vars always take precedence over both.
 - Prefer readable code over micro-optimizations. When quality and speed conflict, choose quality.
 - Do not break existing install paths, config merges, or hook interfaces for performance gains.

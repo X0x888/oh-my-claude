@@ -1136,6 +1136,37 @@ teardown_test
 
 
 # -------------------------------------------------------
+# Low-confidence verification regression test
+# -------------------------------------------------------
+printf '\nLow-confidence verification:\n'
+
+# Sequence LC: shellcheck-only verification (confidence=30) should NOT
+# satisfy the verify gate at default threshold (40). The user must run
+# a real test suite.
+setup_test
+init_session "slc"
+sim_edit "slc" "/src/app.ts"
+
+# Verify with shellcheck — scores 30 (framework keyword only, no output signals)
+sim_verify "slc" "shellcheck src/app.ts" ""
+
+# Review passes
+sim_review "slc" "Looks clean.
+VERDICT: CLEAN"
+
+# Stop should block because confidence (30) < threshold (40)
+out="$(sim_stop "slc")"
+assert_contains "seq-LC: low-confidence blocks" '"decision":"block"' "${out}"
+assert_contains "seq-LC: mentions low confidence" "low confidence" "${out}"
+
+# Now run npm test (scores 70+ with output) — should satisfy
+sim_verify "slc" "npm test" "Tests: 10 passed, 0 failed"
+out2="$(sim_stop "slc")"
+assert_empty "seq-LC: real verification satisfies gate" "${out2}"
+teardown_test
+
+
+# -------------------------------------------------------
 # Concise repeat-block message tests (Fix #6)
 # -------------------------------------------------------
 printf '\nConcise repeat messages:\n'

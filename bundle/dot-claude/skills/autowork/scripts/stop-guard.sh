@@ -47,14 +47,30 @@ if [[ "${stop_hook_active}" == "true" ]]; then
 fi
 
 # --- Gate skip check (/ulw-skip) ---
-# If the user registered a gate skip, honor it once and clear the flag.
+# If the user registered a gate skip, honor it if the edit clock has not
+# advanced since registration (new edits invalidate the skip). This prevents
+# a user from registering a skip, making more edits, and bypassing gates
+# on the new work.
 gate_skip_reason="$(read_state "gate_skip_reason")"
 if [[ -n "${gate_skip_reason}" ]]; then
-  with_state_lock_batch "gate_skip_reason" "" "gate_skip_ts" ""
-  record_gate_skip "${gate_skip_reason}" &
-  log_hook "stop-guard" "gate skip honored: ${gate_skip_reason}"
-  rm -f "${STATE_ROOT}/.ulw_active"
-  exit 0
+  gate_skip_edit_ts="$(read_state "gate_skip_edit_ts")"
+  current_edit_ts_for_skip="$(read_state "last_edit_ts")"
+  gate_skip_edit_ts="${gate_skip_edit_ts:-0}"
+  current_edit_ts_for_skip="${current_edit_ts_for_skip:-0}"
+
+  # Clear the skip flag regardless (single-use)
+  with_state_lock_batch "gate_skip_reason" "" "gate_skip_ts" "" "gate_skip_edit_ts" ""
+
+  if [[ "${current_edit_ts_for_skip}" -le "${gate_skip_edit_ts}" ]]; then
+    # Edit clock unchanged — skip is valid
+    record_gate_skip "${gate_skip_reason}" &
+    log_hook "stop-guard" "gate skip honored: ${gate_skip_reason}"
+    rm -f "${STATE_ROOT}/.ulw_active"
+    exit 0
+  else
+    log_hook "stop-guard" "gate skip invalidated: edits occurred after registration (skip_edit_ts=${gate_skip_edit_ts}, current=${current_edit_ts_for_skip})"
+    # Fall through to normal gate logic
+  fi
 fi
 
 current_objective="$(read_state "current_objective")"

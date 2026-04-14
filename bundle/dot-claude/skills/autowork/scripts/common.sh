@@ -32,8 +32,10 @@ OMC_DIMENSION_GATE_FILE_COUNT="${OMC_DIMENSION_GATE_FILE_COUNT:-3}"
 OMC_TRACEABILITY_FILE_COUNT="${OMC_TRACEABILITY_FILE_COUNT:-6}"
 # Guard exhaustion mode: scorecard (default, legacy: warn), block (legacy: strict), silent (legacy: release)
 OMC_GUARD_EXHAUSTION_MODE="${OMC_GUARD_EXHAUSTION_MODE:-warn}"
-# Minimum verification confidence (0-100) to satisfy the verify gate
-OMC_VERIFY_CONFIDENCE_THRESHOLD="${OMC_VERIFY_CONFIDENCE_THRESHOLD:-30}"
+# Minimum verification confidence (0-100) to satisfy the verify gate.
+# Default 40: blocks lint-only checks (shellcheck=30, bash -n=30) while
+# accepting project test suites (npm test=70+) and framework runs (jest=50+).
+OMC_VERIFY_CONFIDENCE_THRESHOLD="${OMC_VERIFY_CONFIDENCE_THRESHOLD:-40}"
 # Gate level: basic (quality gate only), standard (+ excellence), full (+ dimensions)
 OMC_GATE_LEVEL="${OMC_GATE_LEVEL:-full}"
 
@@ -405,6 +407,8 @@ sweep_stale_sessions() {
 
   # Pre-sweep aggregation: capture a summary line per session before deletion.
   # This preserves longitudinal data for quality analysis.
+  # No lock needed: sweep is gated by the daily marker file, so only one
+  # process runs it at a time. Concurrent writes are structurally impossible.
   local summary_file="${HOME}/.claude/quality-pack/session_summary.jsonl"
 
   if [[ -d "${STATE_ROOT}" ]]; then
@@ -1689,29 +1693,57 @@ get_defect_watch_list() {
 # Records gate skips to a JSONL file for threshold tuning analysis.
 # Called in the background from stop-guard.sh when a /ulw-skip is honored.
 
+_GATE_SKIPS_FILE="${HOME}/.claude/quality-pack/gate-skips.jsonl"
+_GATE_SKIPS_LOCK="${HOME}/.claude/quality-pack/.gate-skips.lock"
+
+with_skips_lock() {
+  local lockdir="${_GATE_SKIPS_LOCK}"
+  local attempts=0
+  while true; do
+    if mkdir "${lockdir}" 2>/dev/null; then break; fi
+    attempts=$((attempts + 1))
+    if [[ "${attempts}" -ge 100 ]]; then
+      # Force-release after ~5s of polling
+      rmdir "${lockdir}" 2>/dev/null || true
+      mkdir "${lockdir}" 2>/dev/null || return 1
+      break
+    fi
+    sleep 0.05 2>/dev/null || sleep 1
+  done
+  local rc=0
+  "$@" || rc=$?
+  rmdir "${lockdir}" 2>/dev/null || true
+  return "${rc}"
+}
+
 record_gate_skip() {
   local reason="${1:-}"
-  local skip_file="${HOME}/.claude/quality-pack/gate-skips.jsonl"
-  mkdir -p "$(dirname "${skip_file}")"
-  local ts
-  ts="$(now_epoch)"
-  local pid
-  pid="$(_omc_project_id 2>/dev/null || echo "unknown")"
-  jq -nc --arg reason "${reason}" --argjson ts "${ts}" --arg project "${pid}" \
-    '{ts:$ts,reason:$reason,project:$project}' >> "${skip_file}" 2>/dev/null || true
-  # Cap at 200 lines
-  local _lines
-  _lines="$(wc -l < "${skip_file}" 2>/dev/null || echo 0)"
-  _lines="${_lines##* }"
-  if [[ "${_lines}" -gt 200 ]]; then
-    local _temp
-    _temp="$(mktemp "${skip_file}.XXXXXX")"
-    if tail -n 150 "${skip_file}" > "${_temp}" 2>/dev/null; then
-      mv "${_temp}" "${skip_file}"
-    else
-      rm -f "${_temp}"
+
+  _do_record_skip() {
+    local skip_file="${_GATE_SKIPS_FILE}"
+    mkdir -p "$(dirname "${skip_file}")"
+    local ts
+    ts="$(now_epoch)"
+    local pid
+    pid="$(_omc_project_id 2>/dev/null || echo "unknown")"
+    jq -nc --arg reason "${reason}" --argjson ts "${ts}" --arg project "${pid}" \
+      '{ts:$ts,reason:$reason,project:$project}' >> "${skip_file}" 2>/dev/null || true
+    # Cap at 200 lines
+    local _lines
+    _lines="$(wc -l < "${skip_file}" 2>/dev/null || echo 0)"
+    _lines="${_lines##* }"
+    if [[ "${_lines}" -gt 200 ]]; then
+      local _temp
+      _temp="$(mktemp "${skip_file}.XXXXXX")"
+      if tail -n 150 "${skip_file}" > "${_temp}" 2>/dev/null; then
+        mv "${_temp}" "${skip_file}"
+      else
+        rm -f "${_temp}"
+      fi
     fi
-  fi
+  }
+
+  with_skips_lock _do_record_skip
 }
 
 # --- end gate skip tracking ---
