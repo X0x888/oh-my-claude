@@ -70,7 +70,7 @@ The block caps prevent infinite loops. After the cap, Claude is allowed to stop 
 
 **`skills/autowork/scripts/mark-edit.sh`** -- **PostToolUse hook** for Edit, Write, and MultiEdit. Records `last_edit_ts` on every edit (backward compat) and also classifies the path via `is_doc_path`: code edits bump `last_code_edit_ts`, doc edits bump `last_doc_edit_ts`. Maintains cached `code_edit_count` / `doc_edit_count` counters (incremented only on first-time paths via `grep -Fxq` dedup). Resets all guard block counters and the stall counter. Excludes internal Claude paths (projects, state, tasks, todos, transcripts, debug) from tracking. Logs edited file paths to `edited_files.log`.
 
-**`skills/autowork/scripts/record-verification.sh`** -- **PostToolUse hook** for Bash. Checks if the command matches a test/build/lint pattern (npm test, cargo test, pytest, vitest, eslint, tsc, etc.). If so, records `last_verify_ts` and the command text, and resets guard counters.
+**`skills/autowork/scripts/record-verification.sh`** -- **PostToolUse hook** for Bash and MCP verification tools (Playwright browser_snapshot/take_screenshot/console_messages/network_requests/evaluate, computer-use screenshot). For Bash tools, checks if the command matches a test/build/lint pattern (npm test, cargo test, pytest, vitest, eslint, tsc, etc.). For MCP tools, classifies the tool name via `classify_mcp_verification_tool` and detects pass/fail via `detect_mcp_verification_outcome`. Records `last_verify_ts`, confidence score, and method, and resets guard counters. MCP verification base scores are below the default confidence threshold (40) — passive observations only pass the gate when output carries assertion/pass-fail signals or when recent edits include UI files (which adds a context bonus).
 
 **`skills/autowork/scripts/record-advisory-verification.sh`** -- **PostToolUse hook** for Grep and Read. During advisory tasks, records `last_advisory_verify_ts` when a non-internal file is read or searched. Also implements stall detection: increments a counter on each Read/Grep call, and at `stall_threshold` consecutive calls (default 12, configurable via `oh-my-claude.conf`) without an edit, test, or agent delegation, injects a stall-check nudge.
 
@@ -128,6 +128,9 @@ Claude processes with injected context
   |
   |-- [PostToolUse: Bash] record-verification.sh
   |     Detects test/build/lint commands, records last_verify_ts
+  |
+  |-- [PostToolUse: MCP verification tools] record-verification.sh
+  |     Detects Playwright/computer-use verification, records last_verify_ts
   |
   |-- [PostToolUse: Grep/Read] record-advisory-verification.sh
   |     Tracks code inspection, detects stalls (configurable threshold, default 12)

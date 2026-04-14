@@ -200,6 +200,8 @@ Five key thresholds can be tuned via `~/.claude/oh-my-claude.conf` without editi
 | `dimension_gate_file_count` | `3` | Unique edited files that trigger the prescribed-sequence dimension gate. Set to a high value (e.g. 100) to effectively disable the dimension gate. |
 | `traceability_file_count` | `6` | Unique edited files above which the dimension gate additionally requires `briefing-analyst` for traceability. |
 | `state_ttl_days` | `7` | Days before stale session state directories are swept |
+| `verify_confidence_threshold` | `40` | Minimum verification confidence (0-100) to pass the quality gate |
+| `custom_verify_mcp_tools` | _(empty)_ | Pipe-separated glob patterns for additional MCP tools that count as verification (e.g. `mcp__my_cypress__*`). Also requires a matching PostToolUse hook entry in `settings.json`. |
 
 Example `~/.claude/oh-my-claude.conf`:
 
@@ -209,9 +211,10 @@ excellence_file_count=5
 dimension_gate_file_count=5
 traceability_file_count=10
 state_ttl_days=14
+verify_confidence_threshold=40
 ```
 
-Values can also be overridden via environment variables (`OMC_STALL_THRESHOLD`, `OMC_EXCELLENCE_FILE_COUNT`, `OMC_DIMENSION_GATE_FILE_COUNT`, `OMC_TRACEABILITY_FILE_COUNT`, `OMC_STATE_TTL_DAYS`). Environment variables take precedence over the conf file, and both override the built-in defaults.
+Values can also be overridden via environment variables (`OMC_STALL_THRESHOLD`, `OMC_EXCELLENCE_FILE_COUNT`, `OMC_DIMENSION_GATE_FILE_COUNT`, `OMC_TRACEABILITY_FILE_COUNT`, `OMC_STATE_TTL_DAYS`, `OMC_VERIFY_CONFIDENCE_THRESHOLD`, `OMC_CUSTOM_VERIFY_MCP_TOOLS`). Environment variables take precedence over the conf file, and both override the built-in defaults.
 
 ---
 

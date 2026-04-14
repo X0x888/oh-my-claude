@@ -131,7 +131,7 @@ for impl in "${implementations[@]}"; do
   assert_json_count "${impl}: fresh — PreToolUse hooks" \
     "${work}/settings.json" '.hooks.PreToolUse' "1"
   assert_json_count "${impl}: fresh — PostToolUse hooks" \
-    "${work}/settings.json" '.hooks.PostToolUse' "4"
+    "${work}/settings.json" '.hooks.PostToolUse' "5"
   assert_json_count "${impl}: fresh — SubagentStop hooks" \
     "${work}/settings.json" '.hooks.SubagentStop' "11"
   assert_json_count "${impl}: fresh — PreCompact hooks" \
@@ -162,8 +162,8 @@ for impl in "${implementations[@]}"; do
     "${work}/settings.json" '.hooks.SessionStart' "2"
   assert_json_count "${impl}: idempotent — SubagentStop hooks still 11" \
     "${work}/settings.json" '.hooks.SubagentStop' "11"
-  assert_json_count "${impl}: idempotent — PostToolUse hooks still 4" \
-    "${work}/settings.json" '.hooks.PostToolUse' "4"
+  assert_json_count "${impl}: idempotent — PostToolUse hooks still 5" \
+    "${work}/settings.json" '.hooks.PostToolUse' "5"
   assert_json_count "${impl}: idempotent — PreToolUse hooks still 1" \
     "${work}/settings.json" '.hooks.PreToolUse' "1"
 

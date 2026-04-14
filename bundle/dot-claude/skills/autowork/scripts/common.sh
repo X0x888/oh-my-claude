@@ -24,6 +24,7 @@ _omc_env_traceability="${OMC_TRACEABILITY_FILE_COUNT:-}"
 _omc_env_exhaustion="${OMC_GUARD_EXHAUSTION_MODE:-}"
 _omc_env_verify_conf="${OMC_VERIFY_CONFIDENCE_THRESHOLD:-}"
 _omc_env_gate_level="${OMC_GATE_LEVEL:-}"
+_omc_env_verify_mcp="${OMC_CUSTOM_VERIFY_MCP_TOOLS:-}"
 
 OMC_STALL_THRESHOLD="${OMC_STALL_THRESHOLD:-12}"
 OMC_EXCELLENCE_FILE_COUNT="${OMC_EXCELLENCE_FILE_COUNT:-3}"
@@ -38,6 +39,12 @@ OMC_GUARD_EXHAUSTION_MODE="${OMC_GUARD_EXHAUSTION_MODE:-warn}"
 OMC_VERIFY_CONFIDENCE_THRESHOLD="${OMC_VERIFY_CONFIDENCE_THRESHOLD:-40}"
 # Gate level: basic (quality gate only), standard (+ excellence), full (+ dimensions)
 OMC_GATE_LEVEL="${OMC_GATE_LEVEL:-full}"
+# Pipe-separated glob patterns for additional MCP tools that count as verification.
+# Example: mcp__my_cypress__*|mcp__custom_api_tester__*
+# NOTE: Custom MCP tools also require a matching PostToolUse hook entry in
+# settings.json to trigger record-verification.sh. The builtin matcher only
+# covers Playwright and computer-use tools.
+OMC_CUSTOM_VERIFY_MCP_TOOLS="${OMC_CUSTOM_VERIFY_MCP_TOOLS:-}"
 
 _omc_conf_loaded=0
 
@@ -73,6 +80,8 @@ _parse_conf_file() {
         [[ -z "${_omc_env_verify_conf}" && "${value}" =~ ^[0-9]+$ && "${value}" -le 100 ]] && OMC_VERIFY_CONFIDENCE_THRESHOLD="${value}" || true ;;
       gate_level)
         [[ -z "${_omc_env_gate_level}" && "${value}" =~ ^(basic|standard|full)$ ]] && OMC_GATE_LEVEL="${value}" || true ;;
+      custom_verify_mcp_tools)
+        [[ -z "${_omc_env_verify_mcp}" && -n "${value}" ]] && OMC_CUSTOM_VERIFY_MCP_TOOLS="${value}" || true ;;
     esac
   done < "${conf}"
 }
@@ -1162,6 +1171,142 @@ score_verification_confidence() {
   fi
 
   printf '%s' "${score}"
+}
+
+# --- MCP verification helpers ---
+
+# Builtin MCP tool names recognized as verification. Matches against the full
+# tool_name from the hook JSON (e.g. mcp__plugin_playwright_playwright__browser_snapshot).
+# Pattern uses bash glob-style matching via case statements, not regex.
+readonly MCP_VERIFY_SNAPSHOT='*playwright*__browser_snapshot'
+readonly MCP_VERIFY_SCREENSHOT='*playwright*__browser_take_screenshot'
+readonly MCP_VERIFY_CONSOLE='*playwright*__browser_console_messages'
+readonly MCP_VERIFY_NETWORK='*playwright*__browser_network_requests'
+readonly MCP_VERIFY_EVALUATE='*playwright*__browser_evaluate'
+readonly MCP_VERIFY_CU_SCREENSHOT='mcp__computer-use__screenshot'
+
+# classify_mcp_verification_tool: Given a tool_name, return a verification
+# category string if the tool is verification-grade, or empty string if not.
+classify_mcp_verification_tool() {
+  local tool_name="${1:-}"
+  [[ -n "${tool_name}" ]] || return 0
+
+  # Check custom MCP verification tools from config
+  if [[ -n "${OMC_CUSTOM_VERIFY_MCP_TOOLS}" ]]; then
+    local custom_mcp_tools="${OMC_CUSTOM_VERIFY_MCP_TOOLS}"
+    # custom_verify_mcp_tools is a pipe-separated list of glob patterns
+    local _old_IFS="${IFS}"
+    IFS='|'
+    for pattern in ${custom_mcp_tools}; do
+      # shellcheck disable=SC2254
+      case "${tool_name}" in ${pattern}) IFS="${_old_IFS}"; printf 'custom_mcp_tool'; return 0 ;; esac
+    done
+    IFS="${_old_IFS}"
+  fi
+
+  # Builtin classifications (patterns are globs — expansion is intentional)
+  # shellcheck disable=SC2254
+  case "${tool_name}" in
+    ${MCP_VERIFY_SNAPSHOT})     printf 'browser_dom_check' ;;
+    ${MCP_VERIFY_SCREENSHOT})   printf 'browser_visual_check' ;;
+    ${MCP_VERIFY_CONSOLE})      printf 'browser_console_check' ;;
+    ${MCP_VERIFY_NETWORK})      printf 'browser_network_check' ;;
+    ${MCP_VERIFY_EVALUATE})     printf 'browser_eval_check' ;;
+    ${MCP_VERIFY_CU_SCREENSHOT}) printf 'visual_check' ;;
+    *) printf '' ;;
+  esac
+}
+
+# score_mcp_verification_confidence: Score how confident we are that an MCP
+# tool call constitutes meaningful verification. Returns 0-100 on stdout.
+#
+# Base scores are deliberately below the default threshold (40) so that a
+# single passive observation (e.g. an empty browser_snapshot) cannot clear
+# the verify gate on its own. Passing the gate requires either:
+#   - Output that carries assertion/pass-fail signals (+15/+10 bonuses), OR
+#   - A UI-edit context bonus (+20) when recent edits were to UI files.
+#
+# Args: verify_type, output, has_ui_context ("true"/"false")
+score_mcp_verification_confidence() {
+  local verify_type="${1:-}"
+  local output="${2:-}"
+  local has_ui_context="${3:-false}"
+  local score=0
+
+  # Base scores — all below default threshold of 40
+  case "${verify_type}" in
+    browser_dom_check)     score=25 ;;  # DOM snapshot — passive observation
+    browser_visual_check)  score=20 ;;  # Screenshot — most passive
+    browser_console_check) score=30 ;;  # Console errors — targeted check
+    browser_network_check) score=30 ;;  # Network requests — targeted check
+    browser_eval_check)    score=35 ;;  # JS evaluation — closest to assertions
+    visual_check)          score=15 ;;  # Computer-use screenshot — least targeted
+    custom_mcp_tool)       score=35 ;;  # User-configured — some trust
+    *)                     score=10 ;;
+  esac
+
+  # UI-context bonus: if recent edits include UI files, browser-based
+  # verification becomes meaningfully more relevant.
+  if [[ "${has_ui_context}" == "true" ]]; then
+    score=$((score + 20))
+  fi
+
+  # Bonus: output contains assertion-like content or test counts
+  if [[ -n "${output}" ]]; then
+    if printf '%s' "${output}" | grep -Eiq '[0-9]+ (passed|tests?|errors?|warnings?)\b'; then
+      score=$((score + 15))
+    fi
+    if printf '%s' "${output}" | grep -Eiq '\b(PASS(ED)?|SUCCESS|OK|no errors|0 errors)\b'; then
+      score=$((score + 10))
+    fi
+  fi
+
+  # Cap at 100
+  [[ "${score}" -gt 100 ]] && score=100
+  printf '%s' "${score}"
+}
+
+# detect_mcp_verification_outcome: Detect pass/fail from MCP tool output.
+# Returns "passed" or "failed" on stdout.
+detect_mcp_verification_outcome() {
+  local output="${1:-}"
+  local verify_type="${2:-}"
+
+  # Default: passed (MCP observation tools don't inherently "fail")
+  [[ -n "${output}" ]] || { printf 'passed'; return; }
+
+  # Check for explicit error signals in output
+  case "${verify_type}" in
+    browser_console_check)
+      # Console messages: look for JS error types, uncaught exceptions, and
+      # generic "Error:" prefix (common in console.error output).
+      if printf '%s' "${output}" | grep -Eq '\b(TypeError|ReferenceError|SyntaxError|RangeError|URIError|EvalError|uncaught|Uncaught)\b|^Error:|[[:space:]]Error:'; then
+        printf 'failed'; return
+      fi
+      ;;
+    browser_network_check)
+      # Network: look for failed HTTP statuses and connection errors.
+      # Uses "timed? out" instead of bare "timeout" to avoid matching config values.
+      if printf '%s' "${output}" | grep -Eiq '\b(401|403|404|500|502|503|failed|timed? out|CORS|ERR_|Unauthorized|Forbidden)\b'; then
+        printf 'failed'; return
+      fi
+      ;;
+    browser_eval_check)
+      # JS evaluation: look for specific error types, assertion failures, and
+      # generic "Error:" prefix (thrown errors stringify as "Error: message").
+      if printf '%s' "${output}" | grep -Eq '\b(AssertionError|TypeError|ReferenceError|SyntaxError|RangeError)\b|Uncaught|FAIL|^Error:|[[:space:]]Error:'; then
+        printf 'failed'; return
+      fi
+      ;;
+    *)
+      # DOM snapshots and screenshots: check for error page indicators
+      if printf '%s' "${output}" | grep -Eiq '\b(500 Internal Server Error|404 Not Found|Application Error|Something went wrong)\b'; then
+        printf 'failed'; return
+      fi
+      ;;
+  esac
+
+  printf 'passed'
 }
 
 # --- end verification helpers ---

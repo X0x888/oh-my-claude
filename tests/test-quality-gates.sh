@@ -67,7 +67,7 @@ reset_state() {
 # This replicates the core gate logic without needing stdin JSON.
 run_stop_guard_check() {
   local last_edit_ts last_review_ts last_verify_ts task_domain
-  local missing_review=0 missing_verify=0 verify_failed=0 review_unremediated=0
+  local missing_review=0 missing_verify=0 verify_failed=0 verify_low_confidence=0 review_unremediated=0
 
   last_edit_ts="$(read_state "last_edit_ts")"
   last_review_ts="$(read_state "last_review_ts")"
@@ -92,7 +92,7 @@ run_stop_guard_check() {
       ;;
   esac
 
-  # New gate: verify ran but failed
+  # Gate: verify ran but failed
   if [[ "${missing_verify}" -eq 0 ]]; then
     case "${task_domain}" in
       coding|mixed)
@@ -105,7 +105,20 @@ run_stop_guard_check() {
     esac
   fi
 
-  # New gate: review ran but findings not addressed
+  # Gate: verify ran but confidence below threshold
+  if [[ "${missing_verify}" -eq 0 && "${verify_failed}" -eq 0 ]]; then
+    case "${task_domain}" in
+      coding|mixed)
+        local last_verify_confidence
+        last_verify_confidence="$(read_state "last_verify_confidence")"
+        if [[ -n "${last_verify_confidence}" && "${last_verify_confidence}" =~ ^[0-9]+$ && "${last_verify_confidence}" -lt "${OMC_VERIFY_CONFIDENCE_THRESHOLD}" ]]; then
+          verify_low_confidence=1
+        fi
+        ;;
+    esac
+  fi
+
+  # Gate: review ran but findings not addressed
   if [[ "${missing_review}" -eq 0 ]]; then
     local review_had_findings
     review_had_findings="$(read_state "review_had_findings")"
@@ -114,11 +127,11 @@ run_stop_guard_check() {
     fi
   fi
 
-  if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed}" -eq 0 && "${review_unremediated}" -eq 0 ]]; then
+  if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed}" -eq 0 && "${verify_low_confidence}" -eq 0 && "${review_unremediated}" -eq 0 ]]; then
     printf 'allow:all_clear'
   else
-    printf 'block:review=%d,verify=%d,verify_failed=%d,unremediated=%d' \
-      "${missing_review}" "${missing_verify}" "${verify_failed}" "${review_unremediated}"
+    printf 'block:review=%d,verify=%d,verify_failed=%d,low_confidence=%d,unremediated=%d' \
+      "${missing_review}" "${missing_verify}" "${verify_failed}" "${verify_low_confidence}" "${review_unremediated}"
   fi
 }
 
@@ -310,6 +323,270 @@ assert_eq "exit code 0" "passed" "$(is_failure "Process exited with exit code 0"
 assert_eq "success" "passed" "$(is_failure "Build succeeded in 2.3s")"
 assert_eq "clean output" "passed" "$(is_failure "✓ All tests passed")"
 assert_eq "empty output" "passed" "$(is_failure "")"
+
+
+# -------------------------------------------------------
+# Section 6: MCP verification tool classification
+# -------------------------------------------------------
+printf '\nMCP verification tool classification:\n'
+
+assert_eq "playwright snapshot = browser_dom_check" \
+  "browser_dom_check" \
+  "$(classify_mcp_verification_tool "mcp__plugin_playwright_playwright__browser_snapshot")"
+
+assert_eq "playwright screenshot = browser_visual_check" \
+  "browser_visual_check" \
+  "$(classify_mcp_verification_tool "mcp__plugin_playwright_playwright__browser_take_screenshot")"
+
+assert_eq "playwright console = browser_console_check" \
+  "browser_console_check" \
+  "$(classify_mcp_verification_tool "mcp__plugin_playwright_playwright__browser_console_messages")"
+
+assert_eq "playwright network = browser_network_check" \
+  "browser_network_check" \
+  "$(classify_mcp_verification_tool "mcp__plugin_playwright_playwright__browser_network_requests")"
+
+assert_eq "playwright evaluate = browser_eval_check" \
+  "browser_eval_check" \
+  "$(classify_mcp_verification_tool "mcp__plugin_playwright_playwright__browser_evaluate")"
+
+assert_eq "computer-use screenshot = visual_check" \
+  "visual_check" \
+  "$(classify_mcp_verification_tool "mcp__computer-use__screenshot")"
+
+assert_eq "playwright click = not verification" \
+  "" \
+  "$(classify_mcp_verification_tool "mcp__plugin_playwright_playwright__browser_click")"
+
+assert_eq "playwright navigate = not verification" \
+  "" \
+  "$(classify_mcp_verification_tool "mcp__plugin_playwright_playwright__browser_navigate")"
+
+assert_eq "playwright fill_form = not verification" \
+  "" \
+  "$(classify_mcp_verification_tool "mcp__plugin_playwright_playwright__browser_fill_form")"
+
+assert_eq "unrelated MCP tool = not verification" \
+  "" \
+  "$(classify_mcp_verification_tool "mcp__plugin_context7_context7__resolve-library-id")"
+
+assert_eq "empty tool name = not verification" \
+  "" \
+  "$(classify_mcp_verification_tool "")"
+
+# Custom MCP tools via config
+OMC_CUSTOM_VERIFY_MCP_TOOLS="mcp__my_cypress__*|mcp__api_tester__check*"
+assert_eq "custom MCP tool matches glob" \
+  "custom_mcp_tool" \
+  "$(classify_mcp_verification_tool "mcp__my_cypress__run_test")"
+assert_eq "custom MCP tool partial match" \
+  "custom_mcp_tool" \
+  "$(classify_mcp_verification_tool "mcp__api_tester__check_endpoint")"
+assert_eq "custom MCP tool non-match" \
+  "" \
+  "$(classify_mcp_verification_tool "mcp__api_tester__setup")"
+OMC_CUSTOM_VERIFY_MCP_TOOLS=""
+
+
+# -------------------------------------------------------
+# Section 7: MCP verification confidence scoring
+# -------------------------------------------------------
+printf '\nMCP verification confidence scoring:\n'
+
+# --- Base scores (no UI context, no output) — all below threshold ---
+assert_eq "snapshot base = 25 (below threshold)" \
+  "25" \
+  "$(score_mcp_verification_confidence "browser_dom_check" "")"
+
+assert_eq "screenshot base = 20 (below threshold)" \
+  "20" \
+  "$(score_mcp_verification_confidence "browser_visual_check" "")"
+
+assert_eq "console base = 30 (below threshold)" \
+  "30" \
+  "$(score_mcp_verification_confidence "browser_console_check" "")"
+
+assert_eq "network base = 30 (below threshold)" \
+  "30" \
+  "$(score_mcp_verification_confidence "browser_network_check" "")"
+
+assert_eq "eval base = 35 (below threshold)" \
+  "35" \
+  "$(score_mcp_verification_confidence "browser_eval_check" "")"
+
+assert_eq "computer-use base = 15 (below threshold)" \
+  "15" \
+  "$(score_mcp_verification_confidence "visual_check" "")"
+
+assert_eq "custom MCP base = 35 (below threshold)" \
+  "35" \
+  "$(score_mcp_verification_confidence "custom_mcp_tool" "")"
+
+# --- All passive calls blocked at default threshold ---
+assert_eq "passive snapshot blocked" \
+  "false" \
+  "$([[ "$(score_mcp_verification_confidence "browser_dom_check" "")" -ge "${OMC_VERIFY_CONFIDENCE_THRESHOLD}" ]] && printf true || printf false)"
+
+assert_eq "passive screenshot blocked" \
+  "false" \
+  "$([[ "$(score_mcp_verification_confidence "browser_visual_check" "")" -ge "${OMC_VERIFY_CONFIDENCE_THRESHOLD}" ]] && printf true || printf false)"
+
+assert_eq "passive console blocked" \
+  "false" \
+  "$([[ "$(score_mcp_verification_confidence "browser_console_check" "")" -ge "${OMC_VERIFY_CONFIDENCE_THRESHOLD}" ]] && printf true || printf false)"
+
+# --- UI context bonus brings observation tools above threshold ---
+assert_eq "snapshot + UI context = 45 (passes)" \
+  "45" \
+  "$(score_mcp_verification_confidence "browser_dom_check" "" "true")"
+
+assert_eq "screenshot + UI context = 40 (passes)" \
+  "40" \
+  "$(score_mcp_verification_confidence "browser_visual_check" "" "true")"
+
+assert_eq "console + UI context = 50 (passes)" \
+  "50" \
+  "$(score_mcp_verification_confidence "browser_console_check" "" "true")"
+
+assert_eq "computer-use + UI context = 35 (still blocked)" \
+  "false" \
+  "$([[ "$(score_mcp_verification_confidence "visual_check" "" "true")" -ge "${OMC_VERIFY_CONFIDENCE_THRESHOLD}" ]] && printf true || printf false)"
+
+# --- Output bonuses can also push above threshold without UI context ---
+assert_eq "snapshot + test counts = 40 (passes)" \
+  "40" \
+  "$(score_mcp_verification_confidence "browser_dom_check" "Ran 10 tests total")"
+
+assert_eq "snapshot + counts + outcome = 50" \
+  "50" \
+  "$(score_mcp_verification_confidence "browser_dom_check" "10 tests passed. SUCCESS")"
+
+assert_eq "eval + counts + UI = 70" \
+  "70" \
+  "$(score_mcp_verification_confidence "browser_eval_check" "Ran 10 tests total" "true")"
+
+
+# -------------------------------------------------------
+# Section 8: MCP verification outcome detection
+# -------------------------------------------------------
+printf '\nMCP verification outcome detection:\n'
+
+assert_eq "empty output = passed" \
+  "passed" \
+  "$(detect_mcp_verification_outcome "" "browser_dom_check")"
+
+assert_eq "console with TypeError = failed" \
+  "failed" \
+  "$(detect_mcp_verification_outcome "TypeError: Cannot read property 'foo'" "browser_console_check")"
+
+assert_eq "console with uncaught = failed" \
+  "failed" \
+  "$(detect_mcp_verification_outcome "Uncaught ReferenceError: x is not defined" "browser_console_check")"
+
+assert_eq "console clean = passed" \
+  "passed" \
+  "$(detect_mcp_verification_outcome "Page loaded successfully, 3 log entries" "browser_console_check")"
+
+assert_eq "console informational error mention = passed (not false positive)" \
+  "passed" \
+  "$(detect_mcp_verification_outcome "Cleared previous error state" "browser_console_check")"
+
+assert_eq "console with Error: prefix = failed" \
+  "failed" \
+  "$(detect_mcp_verification_outcome "Error: something broke" "browser_console_check")"
+
+assert_eq "console with inline Error: = failed" \
+  "failed" \
+  "$(detect_mcp_verification_outcome "console.error Error: connection lost" "browser_console_check")"
+
+assert_eq "network with 404 = failed" \
+  "failed" \
+  "$(detect_mcp_verification_outcome "GET /api/data — 404 Not Found" "browser_network_check")"
+
+assert_eq "network with 401 = failed" \
+  "failed" \
+  "$(detect_mcp_verification_outcome "GET /api/me — 401 Unauthorized" "browser_network_check")"
+
+assert_eq "network with 403 = failed" \
+  "failed" \
+  "$(detect_mcp_verification_outcome "POST /admin — 403 Forbidden" "browser_network_check")"
+
+assert_eq "network clean = passed" \
+  "passed" \
+  "$(detect_mcp_verification_outcome "GET /api/data — 200 OK" "browser_network_check")"
+
+assert_eq "network timeout config = passed (not false positive)" \
+  "passed" \
+  "$(detect_mcp_verification_outcome "GET /api/data — 200 OK, timeout: 30000ms" "browser_network_check")"
+
+assert_eq "network timed out = failed" \
+  "failed" \
+  "$(detect_mcp_verification_outcome "GET /api/data — timed out after 30s" "browser_network_check")"
+
+assert_eq "snapshot with error page = failed" \
+  "failed" \
+  "$(detect_mcp_verification_outcome "500 Internal Server Error" "browser_dom_check")"
+
+assert_eq "snapshot clean = passed" \
+  "passed" \
+  "$(detect_mcp_verification_outcome "Welcome to the dashboard" "browser_dom_check")"
+
+assert_eq "eval with assertion error = failed" \
+  "failed" \
+  "$(detect_mcp_verification_outcome "AssertionError: expected true to be false" "browser_eval_check")"
+
+assert_eq "eval with TypeError = failed" \
+  "failed" \
+  "$(detect_mcp_verification_outcome "TypeError: undefined is not a function" "browser_eval_check")"
+
+assert_eq "eval clean = passed" \
+  "passed" \
+  "$(detect_mcp_verification_outcome "42" "browser_eval_check")"
+
+assert_eq "eval returning false = passed (not false positive)" \
+  "passed" \
+  "$(detect_mcp_verification_outcome '{"visible": false}' "browser_eval_check")"
+
+assert_eq "eval with 'Error' in text = passed (not false positive)" \
+  "passed" \
+  "$(detect_mcp_verification_outcome "No Errors Found in scan" "browser_eval_check")"
+
+assert_eq "eval with Error: prefix = failed" \
+  "failed" \
+  "$(detect_mcp_verification_outcome "Error: something broke" "browser_eval_check")"
+
+
+# -------------------------------------------------------
+# Section 9: MCP verification integrates with stop-guard
+# -------------------------------------------------------
+printf '\nMCP verification + stop-guard integration:\n'
+
+# MCP verification with UI context (confidence 45) clears the gate
+reset_state
+write_state_batch "workflow_mode" "ultrawork" "task_domain" "coding" \
+  "last_edit_ts" "1000" "last_verify_ts" "1001" "last_verify_outcome" "passed" \
+  "last_verify_confidence" "45" "last_verify_method" "mcp_browser_dom_check" \
+  "last_review_ts" "1002" "review_had_findings" "false"
+result="$(run_stop_guard_check)"
+assert_eq "MCP verification (UI context) clears gates" "allow:all_clear" "${result}"
+
+# MCP verification with failure should block regardless of confidence
+reset_state
+write_state_batch "workflow_mode" "ultrawork" "task_domain" "coding" \
+  "last_edit_ts" "1000" "last_verify_ts" "1001" "last_verify_outcome" "failed" \
+  "last_verify_confidence" "45" "last_verify_method" "mcp_browser_dom_check" \
+  "last_review_ts" "1002" "review_had_findings" "false"
+result="$(run_stop_guard_check)"
+assert_contains "MCP verification failure blocks" "verify_failed=1" "${result}"
+
+# Passive MCP verification without UI context (confidence 25) should be low-confidence blocked
+reset_state
+write_state_batch "workflow_mode" "ultrawork" "task_domain" "coding" \
+  "last_edit_ts" "1000" "last_verify_ts" "1001" "last_verify_outcome" "passed" \
+  "last_verify_confidence" "25" "last_verify_method" "mcp_browser_dom_check" \
+  "last_review_ts" "1002" "review_had_findings" "false"
+result="$(run_stop_guard_check)"
+assert_not_contains "passive MCP does not clear verify" "allow:all_clear" "${result}"
 
 
 printf '\n=== Results: %d passed, %d failed ===\n' "${pass}" "${fail}"

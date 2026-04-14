@@ -78,6 +78,15 @@
         ]
       },
       {
+        "matcher": "mcp__.*__(browser_snapshot|browser_take_screenshot|browser_console_messages|browser_network_requests|browser_evaluate)|mcp__computer-use__screenshot",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/skills/autowork/scripts/record-verification.sh"
+          }
+        ]
+      },
+      {
         "matcher": "Agent",
         "hooks": [
           {
