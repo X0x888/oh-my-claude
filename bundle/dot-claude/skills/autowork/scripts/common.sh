@@ -1264,19 +1264,27 @@ _AGENT_METRICS_LOCK="${HOME}/.claude/quality-pack/.agent-metrics.lock"
 with_metrics_lock() {
   local max_attempts=100
   local attempt=0
+  local acquired=0
   while ! mkdir "${_AGENT_METRICS_LOCK}" 2>/dev/null; do
     attempt=$((attempt + 1))
     if [[ "${attempt}" -ge "${max_attempts}" ]]; then
-      # Stale lock recovery
+      # Stale lock recovery — remove and re-acquire
       rm -rf "${_AGENT_METRICS_LOCK}" 2>/dev/null || true
-      mkdir "${_AGENT_METRICS_LOCK}" 2>/dev/null || true
+      if mkdir "${_AGENT_METRICS_LOCK}" 2>/dev/null; then
+        acquired=1
+      fi
       break
     fi
     sleep 0.05
   done
+  if [[ "${acquired}" -eq 0 && "${attempt}" -lt "${max_attempts}" ]]; then
+    acquired=1
+  fi
   "$@"
   local rc=$?
-  rm -rf "${_AGENT_METRICS_LOCK}" 2>/dev/null || true
+  if [[ "${acquired}" -eq 1 ]]; then
+    rm -rf "${_AGENT_METRICS_LOCK}" 2>/dev/null || true
+  fi
   return "${rc}"
 }
 
@@ -1309,6 +1317,12 @@ record_agent_metric() {
     finding_v="$(jq -r '.finding_verdicts' <<<"${current}")"
     avg_conf="$(jq -r '.avg_confidence' <<<"${current}")"
 
+    # Sanitize to integers (jq may return floats or null)
+    invocations="${invocations%%.*}"; invocations="${invocations//[!0-9]/}"; invocations="${invocations:-0}"
+    clean_v="${clean_v%%.*}"; clean_v="${clean_v//[!0-9]/}"; clean_v="${clean_v:-0}"
+    finding_v="${finding_v%%.*}"; finding_v="${finding_v//[!0-9]/}"; finding_v="${finding_v:-0}"
+    avg_conf="${avg_conf%%.*}"; avg_conf="${avg_conf//[!0-9]/}"; avg_conf="${avg_conf:-0}"
+
     invocations=$((invocations + 1))
     if [[ "${verdict}" == "clean" ]]; then
       clean_v=$((clean_v + 1))
@@ -1329,7 +1343,10 @@ record_agent_metric() {
        --argjson ts "${now_ts}" \
        --argjson ac "${avg_conf}" \
        '.[$a] = {invocations:$inv, clean_verdicts:$cv, finding_verdicts:$fv, last_used_ts:$ts, avg_confidence:$ac}' \
-       "${metrics_file}" > "${tmp_file}" 2>/dev/null && mv "${tmp_file}" "${metrics_file}" || rm -f "${tmp_file}"
+       "${metrics_file}" > "${tmp_file}" 2>/dev/null
+    if ! mv "${tmp_file}" "${metrics_file}" 2>/dev/null; then
+      rm -f "${tmp_file}"
+    fi
   }
 
   with_metrics_lock _do_record_metric
@@ -1365,18 +1382,26 @@ _DEFECT_PATTERNS_LOCK="${HOME}/.claude/quality-pack/.defect-patterns.lock"
 with_defect_lock() {
   local max_attempts=100
   local attempt=0
+  local acquired=0
   while ! mkdir "${_DEFECT_PATTERNS_LOCK}" 2>/dev/null; do
     attempt=$((attempt + 1))
     if [[ "${attempt}" -ge "${max_attempts}" ]]; then
       rm -rf "${_DEFECT_PATTERNS_LOCK}" 2>/dev/null || true
-      mkdir "${_DEFECT_PATTERNS_LOCK}" 2>/dev/null || true
+      if mkdir "${_DEFECT_PATTERNS_LOCK}" 2>/dev/null; then
+        acquired=1
+      fi
       break
     fi
     sleep 0.05
   done
+  if [[ "${acquired}" -eq 0 && "${attempt}" -lt "${max_attempts}" ]]; then
+    acquired=1
+  fi
   "$@"
   local rc=$?
-  rm -rf "${_DEFECT_PATTERNS_LOCK}" 2>/dev/null || true
+  if [[ "${acquired}" -eq 1 ]]; then
+    rm -rf "${_DEFECT_PATTERNS_LOCK}" 2>/dev/null || true
+  fi
   return "${rc}"
 }
 
@@ -1390,7 +1415,8 @@ _ensure_valid_defect_patterns() {
   _defect_patterns_validated=1
   [[ -f "${_DEFECT_PATTERNS_FILE}" ]] || return 0
   if ! jq empty "${_DEFECT_PATTERNS_FILE}" 2>/dev/null; then
-    local archive="${_DEFECT_PATTERNS_FILE}.corrupt.$(date +%s)"
+    local archive
+    archive="${_DEFECT_PATTERNS_FILE}.corrupt.$(date +%s)"
     cp "${_DEFECT_PATTERNS_FILE}" "${archive}" 2>/dev/null || true
     printf '{}' > "${_DEFECT_PATTERNS_FILE}"
     log_hook "common" "defect-patterns.json was corrupt, archived to ${archive}, reset to {}"
@@ -1473,7 +1499,10 @@ record_defect_pattern() {
           .[$c].count = $cnt |
           .[$c].last_seen_ts = $ts |
           .[$c].examples = ((.[$c].examples + [$ex]) | .[-5:])' \
-         "${pf}" > "${tmp_file}" 2>/dev/null && mv "${tmp_file}" "${pf}" || rm -f "${tmp_file}"
+         "${pf}" > "${tmp_file}" 2>/dev/null
+      if ! mv "${tmp_file}" "${pf}" 2>/dev/null; then
+        rm -f "${tmp_file}"
+      fi
     else
       jq --arg c "${category}" \
          --argjson cnt "${count}" \
@@ -1481,7 +1510,10 @@ record_defect_pattern() {
          '.[$c] = (.[$c] // {count:0,last_seen_ts:0,examples:[]}) |
           .[$c].count = $cnt |
           .[$c].last_seen_ts = $ts' \
-         "${pf}" > "${tmp_file}" 2>/dev/null && mv "${tmp_file}" "${pf}" || rm -f "${tmp_file}"
+         "${pf}" > "${tmp_file}" 2>/dev/null
+      if ! mv "${tmp_file}" "${pf}" 2>/dev/null; then
+        rm -f "${tmp_file}"
+      fi
     fi
   }
 
@@ -1593,10 +1625,16 @@ detect_project_profile() {
   fi
 
   # Docker / Infrastructure
-  [[ -f "${project_dir}/Dockerfile" ]] || [[ -f "${project_dir}/docker-compose.yml" ]] \
-    || [[ -f "${project_dir}/docker-compose.yaml" ]] && _add_tag "docker"
-  [[ -d "${project_dir}/terraform" ]] || [[ -f "${project_dir}/main.tf" ]] && _add_tag "terraform"
-  [[ -f "${project_dir}/ansible.cfg" ]] || [[ -d "${project_dir}/playbooks" ]] && _add_tag "ansible"
+  if [[ -f "${project_dir}/Dockerfile" ]] || [[ -f "${project_dir}/docker-compose.yml" ]] \
+    || [[ -f "${project_dir}/docker-compose.yaml" ]]; then
+    _add_tag "docker"
+  fi
+  if [[ -d "${project_dir}/terraform" ]] || [[ -f "${project_dir}/main.tf" ]]; then
+    _add_tag "terraform"
+  fi
+  if [[ -f "${project_dir}/ansible.cfg" ]] || [[ -d "${project_dir}/playbooks" ]]; then
+    _add_tag "ansible"
+  fi
 
   # Shell-heavy projects
   local sh_count=0

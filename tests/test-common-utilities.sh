@@ -820,6 +820,83 @@ assert_eq "detect_project_profile node/react/ui/docs" \
   "$(detect_project_profile "${profile_dir}")"
 rm -rf "${profile_dir}"
 
+# Regression: operator precedence — first alternative must trigger tag
+profile_dir2="$(mktemp -d)"
+touch "${profile_dir2}/Dockerfile"
+assert_contains "detect_project_profile Dockerfile-only tags docker" \
+  "docker" \
+  "$(detect_project_profile "${profile_dir2}" 2>/dev/null)"
+rm -rf "${profile_dir2}"
+
+profile_dir3="$(mktemp -d)"
+mkdir -p "${profile_dir3}/terraform"
+assert_contains "detect_project_profile terraform-dir-only tags terraform" \
+  "terraform" \
+  "$(detect_project_profile "${profile_dir3}" 2>/dev/null)"
+rm -rf "${profile_dir3}"
+
+profile_dir4="$(mktemp -d)"
+touch "${profile_dir4}/ansible.cfg"
+assert_contains "detect_project_profile ansible.cfg-only tags ansible" \
+  "ansible" \
+  "$(detect_project_profile "${profile_dir4}" 2>/dev/null)"
+rm -rf "${profile_dir4}"
+
+profile_dir5="$(mktemp -d)"
+touch "${profile_dir5}/docker-compose.yml"
+assert_contains "detect_project_profile docker-compose.yml-only tags docker" \
+  "docker" \
+  "$(detect_project_profile "${profile_dir5}" 2>/dev/null)"
+rm -rf "${profile_dir5}"
+
+profile_dir6="$(mktemp -d)"
+touch "${profile_dir6}/main.tf"
+assert_contains "detect_project_profile main.tf-only tags terraform" \
+  "terraform" \
+  "$(detect_project_profile "${profile_dir6}" 2>/dev/null)"
+rm -rf "${profile_dir6}"
+
+profile_dir7="$(mktemp -d)"
+mkdir -p "${profile_dir7}/playbooks"
+assert_contains "detect_project_profile playbooks-dir-only tags ansible" \
+  "ansible" \
+  "$(detect_project_profile "${profile_dir7}" 2>/dev/null)"
+rm -rf "${profile_dir7}"
+
+# ===========================================================================
+# record_agent_metric and integer sanitization
+# ===========================================================================
+printf '\nrecord_agent_metric:\n'
+
+_ORIG_METRICS_FILE="${_AGENT_METRICS_FILE}"
+TEST_METRICS_DIR="$(mktemp -d)"
+_AGENT_METRICS_FILE="${TEST_METRICS_DIR}/agent-metrics.json"
+_AGENT_METRICS_LOCK="${TEST_METRICS_DIR}/.agent-metrics.lock"
+printf '{}' > "${_AGENT_METRICS_FILE}"
+
+# Basic recording
+record_agent_metric "test-reviewer" "clean" 80
+metric="$(cat "${_AGENT_METRICS_FILE}")"
+assert_eq "record_agent_metric invocations" "1" "$(jq -r '.["test-reviewer"].invocations' <<<"${metric}")"
+assert_eq "record_agent_metric clean_verdicts" "1" "$(jq -r '.["test-reviewer"].clean_verdicts' <<<"${metric}")"
+assert_eq "record_agent_metric avg_confidence" "80" "$(jq -r '.["test-reviewer"].avg_confidence' <<<"${metric}")"
+
+# Second recording with findings
+record_agent_metric "test-reviewer" "findings" 60
+metric="$(cat "${_AGENT_METRICS_FILE}")"
+assert_eq "record_agent_metric second invocation" "2" "$(jq -r '.["test-reviewer"].invocations' <<<"${metric}")"
+assert_eq "record_agent_metric finding_verdicts" "1" "$(jq -r '.["test-reviewer"].finding_verdicts' <<<"${metric}")"
+
+# Regression: float/null values in existing metrics should not crash
+printf '{"float-agent":{"invocations":3.7,"clean_verdicts":2.5,"finding_verdicts":1.2,"last_used_ts":100,"avg_confidence":4.5}}' > "${_AGENT_METRICS_FILE}"
+record_agent_metric "float-agent" "clean" 50
+metric="$(cat "${_AGENT_METRICS_FILE}")"
+inv="$(jq -r '.["float-agent"].invocations' <<<"${metric}")"
+assert_eq "record_agent_metric survives float values" "4" "${inv}"
+
+rm -rf "${TEST_METRICS_DIR}"
+_AGENT_METRICS_FILE="${_ORIG_METRICS_FILE}"
+
 # ===========================================================================
 # with_state_lock
 # ===========================================================================
