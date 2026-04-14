@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.2] - 2026-04-14
+
+### Fixed
+
+- **`detect_project_profile` operator precedence** — `[[ A ]] || [[ B ]] && cmd` only fired `cmd` on the last alternative due to bash `&&`/`||` grouping. Docker tag required `docker-compose.yaml` specifically; Dockerfile-only and docker-compose.yml-only projects were untagged. Same bug on terraform and ansible lines. Converted all three to `if/then/fi`.
+- **Silent data loss in agent metrics and defect pattern writes** — three `jq ... > tmp && mv tmp target || rm -f tmp` chains would silently delete new data if `mv` failed (e.g. full disk). Converted to explicit `if ! mv; then rm; fi`.
+- **Integer arithmetic crash on float/null values** — `record_agent_metric` used raw jq output in bash `$((...))`. Floats like `3.7` or `null` from corrupted JSON killed the hook under `set -e`. Added sanitization to truncate floats and default non-numeric values to 0.
+- **Lock functions ran commands without holding the lock** — after stale lock recovery in `with_metrics_lock` / `with_defect_lock`, the command could execute unlocked if another process grabbed the lock in the gap. Added `acquired` flag tracking; lock is only released when actually held.
+- **SC2155 return-value masking** — `local archive="$(...)"` in `_ensure_valid_defect_patterns` masked the exit code of the command substitution. Split declaration and assignment.
+- **Lock release used the same `&&`/`||` anti-pattern** — caught by quality-reviewer: the initial lock fix used `[[ acquired ]] && rm ... || true`, which is the same precedence bug as fix #1. Converted to `if/then/fi`.
+
+### Added
+
+- **Regression tests for all six fixes** — 12 new assertions: `detect_project_profile` with Dockerfile-only, docker-compose.yml-only, terraform-dir-only, main.tf-only, ansible.cfg-only, playbooks-dir-only; `record_agent_metric` basic recording, second invocation, and float-value survival.
+
 ## [1.4.1] - 2026-04-14
 
 ### Fixed
