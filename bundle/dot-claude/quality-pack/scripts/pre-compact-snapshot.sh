@@ -89,7 +89,7 @@ render_verification_status() {
 
   if [[ -n "${last_verify_ts}" && "${last_verify_ts}" -ge "${last_edit_ts}" ]]; then
     if [[ -n "${last_verify_cmd_value}" ]]; then
-      printf 'Verified after the latest edits with `%s`.\n' "${last_verify_cmd_value}"
+      printf "Verified after the latest edits with \`%s\`.\n" "${last_verify_cmd_value}"
     else
       printf '%s\n' "Verification completed after the latest edits."
     fi
@@ -169,17 +169,17 @@ render_pending_agents() {
 
 {
   printf '# Compact Continuity Snapshot\n\n'
-  printf -- '- Session ID: `%s`\n' "${SESSION_ID}"
-  printf -- '- Working directory: `%s`\n' "${SESSION_CWD}"
-  printf -- '- Compact trigger: `%s`\n' "${TRIGGER:-unknown}"
+  printf -- "- Session ID: \`%s\`\n" "${SESSION_ID}"
+  printf -- "- Working directory: \`%s\`\n" "${SESSION_CWD}"
+  printf -- "- Compact trigger: \`%s\`\n" "${TRIGGER:-unknown}"
   if [[ -n "${workflow_mode_value}" ]]; then
-    printf -- '- Workflow mode: `%s`\n' "${workflow_mode_value}"
+    printf -- "- Workflow mode: \`%s\`\n" "${workflow_mode_value}"
   fi
   if [[ -n "${task_domain_value}" ]]; then
-    printf -- '- Detected task domain: `%s`\n' "${task_domain_value}"
+    printf -- "- Detected task domain: \`%s\`\n" "${task_domain_value}"
   fi
   if [[ -n "${task_intent_value}" ]]; then
-    printf -- '- Detected prompt intent: `%s`\n' "${task_intent_value}"
+    printf -- "- Detected prompt intent: \`%s\`\n" "${task_intent_value}"
   fi
 
   if [[ -n "${current_objective_value}" ]]; then

@@ -92,7 +92,11 @@ log_hook() {
     if [[ "${_line_count}" -gt 2000 ]]; then
       local _temp
       _temp="$(mktemp "${HOOK_LOG}.XXXXXX")"
-      tail -n 1500 "${HOOK_LOG}" >"${_temp}" 2>/dev/null && mv "${_temp}" "${HOOK_LOG}" || rm -f "${_temp}"
+      if tail -n 1500 "${HOOK_LOG}" >"${_temp}" 2>/dev/null; then
+        mv "${_temp}" "${HOOK_LOG}"
+      else
+        rm -f "${_temp}"
+      fi
     fi
   fi
 }
@@ -173,9 +177,12 @@ write_state() {
 
   _ensure_valid_state
 
-  jq --arg k "${key}" --arg v "${value}" '.[$k] = $v' "${state_file}" >"${temp_file}" \
-    && mv "${temp_file}" "${state_file}" \
-    || rm -f "${temp_file}"
+  if jq --arg k "${key}" --arg v "${value}" '.[$k] = $v' "${state_file}" >"${temp_file}"; then
+    mv "${temp_file}" "${state_file}"
+  else
+    rm -f "${temp_file}"
+    return 1
+  fi
 }
 
 write_state_batch() {
@@ -202,9 +209,12 @@ write_state_batch() {
     idx=$((idx + 1))
   done
 
-  jq "${args[@]}" "${jq_filter}" "${state_file}" >"${temp_file}" \
-    && mv "${temp_file}" "${state_file}" \
-    || rm -f "${temp_file}"
+  if jq "${args[@]}" "${jq_filter}" "${state_file}" >"${temp_file}"; then
+    mv "${temp_file}" "${state_file}"
+  else
+    rm -f "${temp_file}"
+    return 1
+  fi
 }
 
 append_state() {
@@ -423,7 +433,7 @@ normalize_task_prompt() {
 extract_skill_primary_task() {
   local text="$1"
   local head_marker='Primary task:'
-  local tail_marker='Follow the `/autowork`'
+  local tail_marker="Follow the \`/autowork\`"
 
   # Line-anchored marker check: either at the start of text, or after a newline.
   if [[ "${text}" != "${head_marker}"* ]] && [[ "${text}" != *$'\n'"${head_marker}"* ]]; then
@@ -867,6 +877,36 @@ count_keyword_matches() {
   { grep -oEi "${pattern}" <<<"${text}" 2>/dev/null || true; } | wc -l | tr -d '[:space:]'
 }
 
+is_ui_request() {
+  local text="$1"
+  [[ -z "${text}" ]] && return 1
+
+  # Split UI detection from domain scoring. The router needs to spot common
+  # frontend asks ("create a login page", "style an empty state") without
+  # turning design-analysis or writing prompts into coding work.
+  local structural_ui_actions
+  local qualified_form_actions
+  local visual_ui_actions
+  local motion_ui_actions
+  local explicit_ui_terms
+
+  structural_ui_actions='\b(build(ing)?|create|creat(e|ing)|add(ing)?|make|implement(ing)?|update(ing)?|fix(ing)?|refactor(ing)?)\s+(a\s+|an\s+|the\s+|this\s+|that\s+|these\s+|those\s+|my\s+|our\s+)?(\w+\s+){0,2}(landing.?pages?|home.?pages?|pages?|dashboards?|screens?|modals?|dialogs?|drawers?|heroes?|nav(igation|bar)?|sidebars?|headers?|footers?|menus?|tabs?|panels?|layouts?|components?|empty.?states?|tables?|charts?|filters?|accordions?|wizards?|steppers?|banners?)\b'
+  qualified_form_actions='\b(build(ing)?|create|creat(e|ing)|add(ing)?|make|implement(ing)?|update(ing)?|fix(ing)?|refactor(ing)?)\s+(a\s+|an\s+|the\s+|this\s+|that\s+|these\s+|those\s+|my\s+|our\s+)?(login|signup|sign[- ]?up|sign[- ]?in|checkout|contact|search|settings|profile|feedback|payment|registration|onboarding|responsive)\s+forms?\b'
+  visual_ui_actions='\b(design(ing)?|style|styl(e|ing)|redesign(ing)?|restyle|theme)\s+(a\s+|an\s+|the\s+|this\s+|that\s+|these\s+|those\s+|my\s+|our\s+)?(\w+\s+){0,2}(landing.?pages?|home.?pages?|pages?|forms?|buttons?|cards?|modals?|dialogs?|drawers?|dropdowns?|nav(igation|bar)?|sidebars?|headers?|footers?|heroes?|layouts?|components?|interfaces?|screens?|dashboards?|sections?|menus?|tabs?|panels?|empty.?states?|tables?|charts?|filters?|banners?|tooltips?|toasts?)\b'
+  motion_ui_actions='\b(add(ing)?|create|creat(e|ing)|build(ing)?|make|implement(ing)?|update(ing)?)\s+(subtle\s+|micro\s+)?animations?\s+(to|for|on|in)\s+(the\s+|a\s+|an\s+|this\s+|that\s+|my\s+|our\s+)?(\w+\s+){0,2}(heroes?|nav(igation|bar)?|sidebars?|buttons?|cards?|modals?|menus?|tabs?|panels?|pages?|screens?|components?|sections?)\b'
+  explicit_ui_terms='\b(landing.?page|modal|navbar|sidebar|tailwind|ui|ux)\b'
+
+  if grep -Eiq "${structural_ui_actions}" <<<"${text}" \
+    || grep -Eiq "${qualified_form_actions}" <<<"${text}" \
+    || grep -Eiq "${visual_ui_actions}" <<<"${text}" \
+    || grep -Eiq "${motion_ui_actions}" <<<"${text}" \
+    || grep -Eiq "${explicit_ui_terms}" <<<"${text}"; then
+    return 0
+  fi
+
+  return 1
+}
+
 infer_domain() {
   local text="$1"
 
@@ -881,9 +921,27 @@ infer_domain() {
   coding_bigrams=$(count_keyword_matches '\b(writ(e|ing)|add(ing)?|creat(e|ing)|run(ning)?|fix(ing)?|updat(e|ing))\s+((unit|integration|e2e|end.to.end|acceptance)\s+)?(tests?|test\s*suites?|specs?|code|functions?|class(es)?|components?|endpoints?|modules?|handlers?|middleware|routes?|migrations?|schemas?)\b' "${text}")
   coding_bigrams=${coding_bigrams:-0}
 
+  # Action + user-facing UI-object → coding signal.
+  local ui_bigrams
+  ui_bigrams=$(count_keyword_matches '\b(build(ing)?|create|creat(e|ing)|add(ing)?|make|implement(ing)?|update(ing)?|fix(ing)?|refactor(ing)?)\s+(a\s+|an\s+|the\s+|this\s+|that\s+|these\s+|those\s+|my\s+|our\s+)?(\w+\s+){0,2}(landing.?pages?|home.?pages?|pages?|dashboards?|screens?|modals?|dialogs?|drawers?|heroes?|nav(igation|bar)?|sidebars?|headers?|footers?|menus?|tabs?|panels?|layouts?|components?|empty.?states?|tables?|charts?|filters?|accordions?|wizards?|steppers?|banners?)\b' "${text}")
+  ui_bigrams=${ui_bigrams:-0}
+  coding_bigrams=$((coding_bigrams + ui_bigrams))
+
+  # Form-building prompts are common UI work, but "form" alone is too
+  # ambiguous, so require a UI-ish qualifier.
+  local form_bigrams
+  form_bigrams=$(count_keyword_matches '\b(build(ing)?|create|creat(e|ing)|add(ing)?|make|implement(ing)?|update(ing)?|fix(ing)?|refactor(ing)?)\s+(a\s+|an\s+|the\s+|this\s+|that\s+|these\s+|those\s+|my\s+|our\s+)?(login|signup|sign[- ]?up|sign[- ]?in|checkout|contact|search|settings|profile|feedback|payment|registration|onboarding|responsive)\s+forms?\b' "${text}")
+  form_bigrams=${form_bigrams:-0}
+  coding_bigrams=$((coding_bigrams + form_bigrams))
+
+  local motion_bigrams
+  motion_bigrams=$(count_keyword_matches '\b(add(ing)?|create|creat(e|ing)|build(ing)?|make|implement(ing)?|update(ing)?)\s+(subtle\s+|micro\s+)?animations?\s+(to|for|on|in)\s+(the\s+|a\s+|an\s+|this\s+|that\s+|my\s+|our\s+)?(\w+\s+){0,2}(heroes?|nav(igation|bar)?|sidebars?|buttons?|cards?|modals?|menus?|tabs?|panels?|pages?|screens?|components?|sections?)\b' "${text}")
+  motion_bigrams=${motion_bigrams:-0}
+  coding_bigrams=$((coding_bigrams + motion_bigrams))
+
   # Design/style + UI-object → coding signal (not general)
   local design_bigrams
-  design_bigrams=$(count_keyword_matches '\b(design(ing)?|style|styl(e|ing)|redesign(ing)?|restyle|theme)\s+(a\s+|the\s+|my\s+|our\s+)?(\w+\s+){0,2}(pages?|forms?|buttons?|cards?|modals?|dropdowns?|nav(igation|bar)?|sidebars?|headers?|footers?|heros?|layouts?|components?|interfaces?|screens?|dashboards?|landing.?pages?|sections?|menus?|tabs?|panels?)\b' "${text}")
+  design_bigrams=$(count_keyword_matches '\b(design(ing)?|style|styl(e|ing)|redesign(ing)?|restyle|theme)\s+(a\s+|an\s+|the\s+|this\s+|that\s+|these\s+|those\s+|my\s+|our\s+)?(\w+\s+){0,2}(pages?|forms?|buttons?|cards?|modals?|dialogs?|drawers?|dropdowns?|nav(igation|bar)?|sidebars?|headers?|footers?|heroes?|layouts?|components?|interfaces?|screens?|dashboards?|landing.?pages?|sections?|menus?|tabs?|panels?|empty.?states?|tables?|charts?|filters?)\b' "${text}")
   design_bigrams=${design_bigrams:-0}
   coding_bigrams=$((coding_bigrams + design_bigrams))
 
@@ -891,6 +949,10 @@ infer_domain() {
   local writing_bigrams
   writing_bigrams=$(count_keyword_matches '\b(writ(e|ing)|draft(ing)?|compos(e|ing)|author(ing)?)\s+(papers?|essays?|reports?|emails?|memos?|articles?|letters?|proposals?|manuscripts?|blogs?\s*posts?)\b' "${text}")
   writing_bigrams=${writing_bigrams:-0}
+  local writing_topic_bigrams
+  writing_topic_bigrams=$(count_keyword_matches '\b(writ(e|ing)|draft(ing)?|compos(e|ing)|author(ing)?)\s+(about|on)\b' "${text}")
+  writing_topic_bigrams=${writing_topic_bigrams:-0}
+  writing_bigrams=$((writing_bigrams + writing_topic_bigrams))
 
   # --- Negative keywords: subtract false positives ---
   # "report" after bug/error/test/crash → coding context, not writing
@@ -901,7 +963,7 @@ infer_domain() {
 
   # --- Unigram scoring ---
   local coding_strong
-  coding_strong=$(count_keyword_matches '\b(bugs?|fix(es|ed|ing)?|debug(ging)?|refactor(ing)?|implement(ation|ed|ing)?|repos?(itory)?|function|class(es)?|component|endpoints?|apis?|schema|database|quer(y|ies)|migration|lint(ing)?|compile|tsc|typescript|javascript|python|swift|xcode|react|next\.?js|css|html|webhooks?|codebase|source.?code|ci/?cd|docker|container|backend|frontend|fullstack|tailwind|vue(\.?js)?|angular|svelte|ui|ux|layout|landing.?page|dashboard|responsive|animation)\b' "${text}")
+  coding_strong=$(count_keyword_matches '\b(bugs?|fix(es|ed|ing)?|debug(ging)?|refactor(ing)?|implement(ation|ed|ing)?|repos?(itory)?|function|class(es)?|component|endpoints?|apis?|schema|database|quer(y|ies)|migration|lint(ing)?|compile|tsc|typescript|javascript|python|swift|xcode|react|next\.?js|css|html|webhooks?|codebase|source.?code|ci/?cd|docker|container|backend|frontend|fullstack|tailwind|vue(\.?js)?|angular|svelte)\b' "${text}")
   coding_strong=$(( ${coding_strong:-0} + coding_bigrams ))
 
   local coding_weak
@@ -922,7 +984,7 @@ infer_domain() {
   writing_score=$(( ${writing_score:-0} + writing_bigrams - writing_negatives ))
   if [[ "${writing_score}" -lt 0 ]]; then writing_score=0; fi
 
-  research_score=$(count_keyword_matches '\b(research(ing)?|investigate|investigation|analy(sis|ze|zing)|compare|comparison|survey|literature|sources|citations?|references?|benchmark(ing)?|brief(ing)?|recommendation|summarize|summary|pros.?and.?cons|tradeoffs?|audit(ing)?|assess(ment|ing)?|evaluat(e|ion|ing)|inspect(ion|ing)?)\b' "${text}")
+  research_score=$(count_keyword_matches '\b(research(ing)?|investigate|investigation|analy(sis|ze|zing)|compare|comparison|survey|literature|sources|citations?|references?|benchmark(ing)?|brief(ing)?|recommendations?|summarize|summary|pros.?and.?cons|tradeoffs?|audit(ing)?|assess(ment|ing)?|evaluat(e|ion|ing)|inspect(ion|ing)?)\b' "${text}")
   research_score=${research_score:-0}
 
   operations_score=$(count_keyword_matches '\b(plan(ning)?|roadmap|timeline|agenda|meeting|follow[- ]?up|checklist|prioriti(es|se|ze)|project.?plan|travel.?plan|itinerary|reply(ing)?|respond(ing)?|application|submission)\b' "${text}")

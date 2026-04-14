@@ -90,8 +90,8 @@ for impl in "${implementations[@]}"; do
   printf '{}' > "${SETTINGS}"
   merge_settings_python "${SETTINGS}" "${SETTINGS_PATCH}" "false"
   # Confirm the install landed
-  assert_json_eq "${impl}: fresh install — SubagentStop count is 10" \
-    "${SETTINGS}" '.hooks.SubagentStop | length' "10"
+  assert_json_eq "${impl}: fresh install — SubagentStop count is 11" \
+    "${SETTINGS}" '.hooks.SubagentStop | length' "11"
 
   run_clean "${impl}" "${SETTINGS}"
   assert_json_eq "${impl}: valid uninstall — hooks removed" \

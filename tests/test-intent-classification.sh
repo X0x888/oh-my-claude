@@ -315,6 +315,7 @@ assert_domain "writing" "Write a paper about distributed systems"
 assert_domain "writing" "Draft an email to the client about the delay"
 assert_domain "writing" "Compose a memo for the team meeting"
 assert_domain "writing" "Write an article about AI trends"
+assert_domain "writing" "Write about animation in film"
 
 # --- Writing: negative keywords should NOT inflate writing ---
 printf '\nWriting negatives (false positive prevention):\n'
@@ -329,6 +330,10 @@ assert_domain "research" "Compare Redis vs Memcached and summarize tradeoffs"
 assert_domain "research" "Investigate why latency spiked last Tuesday"
 assert_domain "research" "Evaluate options for the new logging framework"
 assert_domain "research" "Audit the current security posture"
+assert_domain "research" "Research responsive design principles"
+assert_domain "research" "Analyze dashboard adoption trends"
+assert_domain "research" "Provide UX recommendations for mobile onboarding"
+assert_domain "research" "Evaluate layout options for the homepage"
 
 # --- Operations ---
 printf '\nOperations:\n'
@@ -351,6 +356,13 @@ assert_domain "coding" "Style the login form with Tailwind"
 assert_domain "coding" "Add animation to the hero section"
 assert_domain "coding" "Create a Vue component for the settings page"
 assert_domain "coding" "Build a responsive layout for the admin panel"
+assert_domain "coding" "Create a login page for onboarding"
+assert_domain "coding" "Build a pricing page for the marketing site"
+assert_domain "coding" "Create a modal for the settings flow"
+assert_domain "coding" "Build a settings page for the dashboard"
+assert_domain "coding" "Can you design an onboarding screen?"
+assert_domain "coding" "Please style an empty state"
+assert_domain "coding" "Make the header responsive"
 
 # --- Coding: design+UI bigram signals ---
 printf '\nCoding (design bigram signals):\n'

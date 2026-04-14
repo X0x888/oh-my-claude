@@ -555,6 +555,49 @@ assert_not_ui ""
 assert_not_ui "/src/styles/index.ts"  # TS is not UI even in styles dir
 
 # ===========================================================================
+# is_ui_request
+# ===========================================================================
+printf '\nis_ui_request:\n'
+
+assert_ui_request() {
+  local text="$1"
+  if is_ui_request "${text}"; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: expected UI request: %s\n' "${text}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
+assert_not_ui_request() {
+  local text="$1"
+  if is_ui_request "${text}"; then
+    printf '  FAIL: expected NOT UI request: %s\n' "${text}" >&2
+    fail=$((fail + 1))
+  else
+    pass=$((pass + 1))
+  fi
+}
+
+# Common UI prompts
+assert_ui_request "Create a login page for onboarding"
+assert_ui_request "Build a pricing page for the marketing site"
+assert_ui_request "Please style an empty state"
+assert_ui_request "Can you design an onboarding screen?"
+assert_ui_request "Build a responsive form"
+assert_ui_request "Redesign our navbar"
+assert_ui_request "Create a dashboard with charts and filters"
+assert_ui_request "Add animation to the hero section"
+
+# Negative cases
+assert_not_ui_request "Implement the REST API form parser"
+assert_not_ui_request "Add CSS loading to webpack"
+assert_not_ui_request "Research responsive design principles"
+assert_not_ui_request "Analyze dashboard adoption trends"
+assert_not_ui_request "Write about animation in film"
+assert_not_ui_request ""
+
+# ===========================================================================
 # Dimension helpers
 # ===========================================================================
 printf '\nDimension helpers:\n'

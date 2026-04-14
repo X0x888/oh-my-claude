@@ -164,6 +164,16 @@ assert_contains() {
   fi
 }
 
+assert_not_contains() {
+  local label="$1" needle="$2" haystack="$3"
+  if [[ "${haystack}" == *"${needle}"* ]]; then
+    printf '  FAIL: %s\n    expected NOT to contain: %s\n    actual: %s\n' "${label}" "${needle}" "${haystack}" >&2
+    fail=$((fail + 1))
+  else
+    pass=$((pass + 1))
+  fi
+}
+
 assert_empty() {
   local label="$1" actual="$2"
   if [[ -z "${actual}" ]]; then
@@ -516,6 +526,29 @@ jq -nc '{task_intent:"execution",current_objective:"test"}' > "${state_dir}/sess
 output="$(sim_prompt "${sid}" "yes please continue with the implementation")"
 
 assert_empty "seq-K: no context without ULW" "${output}"
+teardown_test
+
+# -------------------------------------------------------
+# Sequence K2: Ordinary UI prompts inject design context
+# -------------------------------------------------------
+setup_test
+setup_prompt_router
+init_session "sk2"
+output="$(sim_prompt "sk2" "Create a login page for onboarding")"
+
+assert_contains "seq-K2: UI context injected" "UI/design work detected" "${output}"
+assert_contains "seq-K2: design gate mentioned" "design-reviewer quality gate" "${output}"
+teardown_test
+
+# -------------------------------------------------------
+# Sequence K3: Ambiguous backend prompts do not inject UI context
+# -------------------------------------------------------
+setup_test
+setup_prompt_router
+init_session "sk3"
+output="$(sim_prompt "sk3" "Implement the REST API form parser and add CSS loading to webpack")"
+
+assert_not_contains "seq-K3: no UI context on backend prompt" "UI/design work detected" "${output}"
 teardown_test
 
 
