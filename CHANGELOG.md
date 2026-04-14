@@ -2,6 +2,40 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.0] - 2026-04-14
+
+### Added
+
+- **`/ulw-skip <reason>` command** — single-use gate bypass with logged reason. Registers a skip via `ulw-skip-register.sh` using `with_state_lock_batch`. Records `gate_skip_edit_ts` at registration time; stop-guard validates the edit clock hasn't advanced since registration (new edits automatically invalidate stale skips). Skip reasons logged to `gate-skips.jsonl` with file-level locking for cross-session threshold tuning analysis.
+- **Verification confidence gate** — stop-guard now checks `last_verify_confidence` against `OMC_VERIFY_CONFIDENCE_THRESHOLD` (default 40). Lint-only checks like `shellcheck` (score 30) and `bash -n` (score 30) are blocked; project test suites (70+) and framework runs with output signals (50+) pass. Configurable via `oh-my-claude.conf`.
+- **Per-project configuration** — `load_conf()` refactored into `_parse_conf_file()` + directory walk-up from `$PWD` looking for `.claude/oh-my-claude.conf`. Project-level values override user-level; env vars override both. Walk capped at 10 levels, skips `$HOME` to avoid double-read.
+- **Gate level control** — new `gate_level` config (basic/standard/full). `basic` enables only the quality gate, `standard` adds the excellence gate, `full` (default) enables all gates including review coverage.
+- **Pre-sweep session aggregation** — before TTL sweep destroys session data, one summary line per session is written to `session_summary.jsonl` with domain, intent, edit counts, verification confidence, guard blocks, and dispatch count. Enables longitudinal quality analysis.
+- **Subagent dispatch counting** — `record-pending-agent.sh` increments `subagent_dispatch_count` in session state. Displayed in `/ulw-status` for cost visibility.
+- **Project identity** — `_omc_project_id()` hashes `$PWD` for cross-session data filtering. Added to agent metrics (`last_project_id`) and defect patterns.
+- **Schema versioning** — cross-session stores (`agent-metrics.json`, `defect-patterns.json`) now include `_schema_version=2`. All jq consumers filter `_`-prefixed metadata keys via `map(select(.key | startswith("_") | not))`.
+- **Runtime health indicator** — `statusline.py` shows `[H:ok]` when the harness is actively intercepting hooks (sentinel or hooks.log touched within 5 minutes) but ULW mode is not displaying.
+- **Session start timestamp** — `session_start_ts` recorded on first ULW activation. Enables session duration computation in `/ulw-status`.
+- **`jq` runtime guard** — `common.sh` exits gracefully with a message if `jq` is missing, preventing silent hook failures.
+- **Security hardening** — `chmod 700` on session directories in `ensure_session_dir()`.
+- **Non-coding domain improvements** — writing domain: document-type detection guidance, prose-tool verification patterns (`markdownlint`, `vale`, `textlint`, `alex`, `write-good`). Research domain: source-quality scoring guidance. Operations domain: action-item structure guidance with owner/deadline/done-condition. All three domains gained bigram scoring patterns for stronger classification.
+- **E2e regression test** for low-confidence verification path (shellcheck at threshold 40).
+
+### Changed
+
+- **`/ulw` is now the canonical command name** — `autowork` removed from skills table and demoted to "also works" alias. Decision guide and memory files updated.
+- **Gate messages use human-readable vocabulary** — `[Dimension gate]` → `[Review coverage]`; raw identifiers like `stress_test` replaced with `describe_dimension()` output (e.g., "stress-test (hidden assumptions, unsafe paths)").
+- **Guard exhaustion modes renamed** — `release` → `silent`, `warn` → `scorecard`, `strict` → `block`. Old names accepted via normalization for backward compatibility.
+- **README restructured** — Quick Start moved above feature highlights for faster activation. Agent auto-dispatch note added. Demo placeholder for future asciinema recording.
+- **Post-install messaging** — `verify.sh` recommends `/ulw-demo` as primary next step with "you don't need to learn agent names" note.
+- **`record_agent_metric` now passes actual confidence** — clean verdicts get 80, findings get 60 (previously defaulted to 0, making `avg_confidence` converge to zero).
+- **Defect classifier hardened** — word boundaries added to collision-prone patterns. "error" no longer matches everything; "null_check" requires compound context; "missing_test" catches "no unit tests" phrasing.
+
+### Fixed
+
+- **`avg_confidence` was always zero** — `record-reviewer.sh` called `record_agent_metric` with only 2 args; the 3rd (confidence) defaulted to 0. Now passes 80/60 based on verdict.
+- **Cross-session jq consumers crashed on `_schema_version` key** — `to_entries` produced `{key:"_schema_version", value:2}` where `.value.last_seen_ts` on a number caused silent jq errors. All `to_entries` consumers now filter `_`-prefixed keys and non-object values.
+
 ## [1.4.2] - 2026-04-14
 
 ### Fixed
