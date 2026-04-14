@@ -230,6 +230,15 @@ if grep -Eiq '(^|[^[:alnum:]_-])(ultrawork|ulw|autowork|sisyphus)([^[:alnum:]_-]
         ;;
     esac
 
+    # UI/design-aware coding: when the prompt signals frontend/UI work,
+    # augment the coding hint with design-quality guidance so the main thread
+    # establishes visual direction and knows about the design-reviewer gate.
+    if [[ "${TASK_DOMAIN}" == "coding" || "${TASK_DOMAIN}" == "mixed" ]] \
+        && grep -Eiq '\b(landing.?page|dashboard|ui|ux|layout|form|page|screen|component|interface|button|modal|card|hero|navbar|sidebar|header|footer|responsive|animation|styling|tailwind|css|html|design\s+(a|the|my|our))\b' <<<"${PROMPT_TEXT}"; then
+      context_parts+=("UI/design work detected. For tasks that produce user-facing interfaces: establish a visual direction (color palette, typography, spacing, layout approach) before writing code — do not rely on framework defaults. The frontend-developer agent has design craft guidance built in. The design-reviewer quality gate auto-activates when UI files (.tsx, .jsx, .vue, .css, .html) are edited and will block stop until visual quality passes. Avoid generic AI patterns: default blue palettes, centered-hero-with-CTA, three identical feature cards, uniform spacing. The /frontend-design skill is available for dedicated design-first workflows.")
+      log_hook "prompt-intent-router" "UI/design context injected"
+    fi
+
     # Council evaluation detection: broad whole-project evaluation requests
     # get additional guidance to dispatch multi-role perspective lenses.
     if is_council_evaluation_request "${PROMPT_TEXT}"; then

@@ -62,6 +62,18 @@ assert_imperative "Optimize the query performance"
 assert_imperative "Merge the feature branch"
 assert_imperative "Rewrite the parser to handle edge cases"
 assert_imperative "Set up the CI pipeline"
+assert_imperative "Redesign the navigation component"
+
+# --- Design/style: polite forms are imperative, bare forms are NOT ---
+# "design" and "style" are noun/verb ambiguous (like "plan", "review"),
+# so bare forms are excluded to prevent false positives.
+assert_not_imperative "Design patterns cause problems in large codebases"
+assert_not_imperative "Design is important for user retention"
+assert_not_imperative "Style changes are needed in the header"
+assert_imperative "Can you design a checkout flow?"
+assert_imperative "Please design the login page"
+assert_imperative "Could you style the navigation menu?"
+assert_imperative "Please style the button components"
 
 # --- Questions should not be imperative ---
 printf '\nQuestions should not be imperative:\n'
@@ -329,6 +341,23 @@ assert_domain "operations" "Prioritize the roadmap items for next sprint"
 printf '\nMixed:\n'
 assert_domain "mixed" "Implement the caching layer and write a report on performance improvements"
 assert_domain "mixed" "Refactor the API and summarize the architecture changes"
+
+# --- Coding: design/UI signals ---
+printf '\nCoding (design/UI signals):\n'
+assert_domain "coding" "Build a landing page for our SaaS product"
+assert_domain "coding" "Create a dashboard with charts and filters"
+assert_domain "coding" "Build a responsive navigation component"
+assert_domain "coding" "Style the login form with Tailwind"
+assert_domain "coding" "Add animation to the hero section"
+assert_domain "coding" "Create a Vue component for the settings page"
+assert_domain "coding" "Build a responsive layout for the admin panel"
+
+# --- Coding: design+UI bigram signals ---
+printf '\nCoding (design bigram signals):\n'
+assert_domain "coding" "Design a checkout form with validation"
+assert_domain "coding" "Design the landing page for our app"
+assert_domain "coding" "Style the card components for the dashboard"
+assert_domain "coding" "Redesign the navigation sidebar"
 
 # --- General: no strong signals ---
 printf '\nGeneral:\n'

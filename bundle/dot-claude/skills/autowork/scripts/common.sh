@@ -883,7 +883,7 @@ infer_domain() {
 
   # Design/style + UI-object → coding signal (not general)
   local design_bigrams
-  design_bigrams=$(count_keyword_matches '\b(design(ing)?|style|styl(e|ing)|redesign(ing)?|restyle|theme)\s+(a\s+|the\s+|my\s+|our\s+)?(pages?|forms?|buttons?|cards?|modals?|dropdowns?|nav(igation|bar)?|sidebars?|headers?|footers?|heros?|layouts?|components?|interfaces?|screens?|dashboards?|landing.?pages?|sections?|menus?|tabs?|panels?)\b' "${text}")
+  design_bigrams=$(count_keyword_matches '\b(design(ing)?|style|styl(e|ing)|redesign(ing)?|restyle|theme)\s+(a\s+|the\s+|my\s+|our\s+)?(\w+\s+){0,2}(pages?|forms?|buttons?|cards?|modals?|dropdowns?|nav(igation|bar)?|sidebars?|headers?|footers?|heros?|layouts?|components?|interfaces?|screens?|dashboards?|landing.?pages?|sections?|menus?|tabs?|panels?)\b' "${text}")
   design_bigrams=${design_bigrams:-0}
   coding_bigrams=$((coding_bigrams + design_bigrams))
 

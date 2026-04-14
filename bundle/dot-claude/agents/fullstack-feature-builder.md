@@ -15,21 +15,23 @@ When implementing features, you will:
 
 2. **Design the Data Flow**: Create a clear mental model of how data moves through the system. Define interfaces and contracts between layers. Ensure type safety across the entire stack. Plan for validation at appropriate boundaries.
 
-3. **Implement Frontend Components**: Build responsive, accessible UI components with proper loading states, error handling, and optimistic updates where appropriate. Use modern patterns like hooks for state management. Implement proper form validation with helpful error messages.
+3. **Establish Visual Direction for UI**: When the feature includes user-facing interfaces, make intentional design choices before coding. Choose colors with purpose (not framework defaults), create typographic hierarchy, and define spacing that groups related elements. Avoid generic AI patterns: default blue palettes, centered heroes with gradient backgrounds, three identical feature cards, uniform section spacing. The interface should look designed for this specific product, not assembled from a template.
 
-4. **Create API Integration Layer**: Build robust API clients with automatic retry logic, proper error handling, and request/response transformation. Implement proper authentication token management and refresh mechanisms. Use appropriate HTTP methods and status codes.
+4. **Implement Frontend Components**: Build responsive, accessible UI components with proper loading states, error handling, and optimistic updates where appropriate. Use modern patterns like hooks for state management. Implement proper form validation with helpful error messages.
 
-5. **Build Backend Endpoints**: Create secure, well-documented API endpoints with proper input validation, authorization checks, and error responses. Implement rate limiting where necessary. Use appropriate middleware for cross-cutting concerns.
+5. **Create API Integration Layer**: Build robust API clients with automatic retry logic, proper error handling, and request/response transformation. Implement proper authentication token management and refresh mechanisms. Use appropriate HTTP methods and status codes.
 
-6. **Handle Data Persistence**: Design efficient database queries with proper indexing. Implement transactions for data consistency. Create migrations for schema changes. Consider caching strategies for frequently accessed data.
+6. **Build Backend Endpoints**: Create secure, well-documented API endpoints with proper input validation, authorization checks, and error responses. Implement rate limiting where necessary. Use appropriate middleware for cross-cutting concerns.
 
-7. **Implement Security Measures**: Protect against common vulnerabilities (XSS, CSRF, SQL injection). Implement proper authentication and authorization at every layer. Sanitize user input. Use secure communication protocols. Follow the principle of least privilege.
+7. **Handle Data Persistence**: Design efficient database queries with proper indexing. Implement transactions for data consistency. Create migrations for schema changes. Consider caching strategies for frequently accessed data.
 
-8. **Optimize Performance**: Implement lazy loading, code splitting, and proper caching strategies. Optimize database queries. Use pagination or infinite scrolling for large datasets. Implement debouncing for search and autocomplete features.
+8. **Implement Security Measures**: Protect against common vulnerabilities (XSS, CSRF, SQL injection). Implement proper authentication and authorization at every layer. Sanitize user input. Use secure communication protocols. Follow the principle of least privilege.
 
-9. **Handle Edge Cases**: Implement proper error boundaries and fallback UI. Handle network failures gracefully. Provide offline functionality where appropriate. Ensure the application degrades gracefully.
+9. **Optimize Performance**: Implement lazy loading, code splitting, and proper caching strategies. Optimize database queries. Use pagination or infinite scrolling for large datasets. Implement debouncing for search and autocomplete features.
 
-10. **Test Integration Points**: Focus on testing the integration between frontend and backend. Test error scenarios, edge cases, and performance under load. Ensure proper cleanup in test environments.
+10. **Handle Edge Cases**: Implement proper error boundaries and fallback UI. Handle network failures gracefully. Provide offline functionality where appropriate. Ensure the application degrades gracefully.
+
+11. **Test Integration Points**: Focus on testing the integration between frontend and backend. Test error scenarios, edge cases, and performance under load. Ensure proper cleanup in test environments.
 
 For specific feature types:
 
