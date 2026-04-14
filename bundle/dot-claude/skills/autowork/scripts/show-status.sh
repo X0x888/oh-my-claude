@@ -27,6 +27,8 @@ if [[ ! -f "${state_file}" ]]; then
   exit 0
 fi
 
+SESSION_ID="${latest_session}"
+
 printf '=== ULW Session Status ===\n'
 printf 'Session: %s\n\n' "${latest_session}"
 
@@ -101,23 +103,30 @@ fi
 printf 'Pending specialists:       %s\n' "${pending_count}"
 
 # Show dimension status if dimensions are active
-dim_output="$(jq -r '
-  [
-    ["bug_hunt",       .dim_bug_hunt_ts,       .dim_bug_hunt_verdict],
-    ["code_quality",   .dim_code_quality_ts,    .dim_code_quality_verdict],
-    ["stress_test",    .dim_stress_test_ts,     .dim_stress_test_verdict],
-    ["completeness",   .dim_completeness_ts,    .dim_completeness_verdict],
-    ["prose",          .dim_prose_ts,           .dim_prose_verdict],
-    ["traceability",   .dim_traceability_ts,    .dim_traceability_verdict],
-    ["design_quality", .dim_design_quality_ts,  .dim_design_quality_verdict]
-  ] | map(select(.[1] != null and .[1] != "")) |
-  if length > 0 then
-    [.[] | "\(.[0]): ticked @ \(.[1])\(if .[2] then " [\(.[2])]" else "" end)"] | join("\n")
-  else empty end
-' "${state_file}" 2>/dev/null || true)"
+dim_output=""
+for dim in bug_hunt code_quality stress_test completeness prose traceability design_quality; do
+  dim_ts="$(read_state "$(_dim_key "${dim}")")"
+  dim_verdict="$(read_state "dim_${dim}_verdict")"
+  [[ -n "${dim_ts}" || -n "${dim_verdict}" ]] || continue
+
+  if [[ -n "${dim_ts}" ]]; then
+    if is_dimension_valid "${dim}"; then
+      dim_line="${dim}: ticked @ ${dim_ts}"
+    else
+      dim_line="${dim}: stale @ ${dim_ts}"
+    fi
+    [[ -n "${dim_verdict}" ]] && dim_line="${dim_line} [${dim_verdict}]"
+  elif [[ "${dim_verdict}" == "FINDINGS" ]]; then
+    dim_line="${dim}: findings reported"
+  else
+    dim_line="${dim}: ${dim_verdict}"
+  fi
+
+  dim_output="${dim_output}${dim_line}\n"
+done
 if [[ -n "${dim_output}" ]]; then
   printf '\n--- Dimension Ticks ---\n'
-  printf '%s\n' "${dim_output}"
+  printf '%b' "${dim_output}"
 fi
 
 # Show verification confidence if available
@@ -128,19 +137,16 @@ if [[ -n "${verify_conf}" ]]; then
   printf 'Confidence: %s/100  Method: %s\n' "${verify_conf}" "${verify_method}"
 fi
 
-# Show project profile if cached
-profile_val="$(jq -r '.project_profile // empty' "${state_file}" 2>/dev/null || true)"
+# Show project profile (cached or detected on demand)
+profile_val="$(get_project_profile 2>/dev/null || true)"
 if [[ -n "${profile_val}" ]]; then
   printf '\n--- Project Profile ---\n'
   printf '%s\n' "${profile_val}"
 fi
 
 # Show guard exhaustion mode
-exhaust_mode="$(jq -r '.guard_exhaustion_mode // empty' "${state_file}" 2>/dev/null || true)"
-if [[ -n "${exhaust_mode}" ]]; then
-  printf '\n--- Guard Configuration ---\n'
-  printf 'Exhaustion mode: %s\n' "${exhaust_mode}"
-fi
+printf '\n--- Guard Configuration ---\n'
+printf 'Exhaustion mode: %s\n' "${OMC_GUARD_EXHAUSTION_MODE}"
 
 # Show agent performance metrics (cross-session)
 metrics_file="${HOME}/.claude/quality-pack/agent-metrics.json"

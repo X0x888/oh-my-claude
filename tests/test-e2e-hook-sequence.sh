@@ -20,7 +20,13 @@ setup_test() {
 
 teardown_test() {
   export HOME="${ORIG_HOME}"
-  rm -rf "${TEST_HOME}"
+  local attempt
+  for attempt in 1 2 3 4 5; do
+    rm -rf "${TEST_HOME}" 2>/dev/null || true
+    [[ ! -e "${TEST_HOME}" ]] && return
+    sleep 0.05
+  done
+  rm -rf "${TEST_HOME}" 2>/dev/null || true
 }
 
 # Initialize session with ULW mode active
@@ -142,6 +148,20 @@ sim_stop() {
       '{session_id:$s,last_assistant_message:$m}')"
 }
 
+sim_stop_mode() {
+  local sid="$1"
+  local mode="$2"
+  local msg="${3:-Here is the completed work.}"
+  printf '%s' "$(jq -nc --arg s "${sid}" --arg m "${msg}" \
+    '{session_id:$s,last_assistant_message:$m}')" \
+    | env OMC_GUARD_EXHAUSTION_MODE="${mode}" bash "${HOOK_DIR}/stop-guard.sh" 2>/dev/null || true
+}
+
+sim_status_mode() {
+  local mode="$1"
+  env OMC_GUARD_EXHAUSTION_MODE="${mode}" bash "${HOOK_DIR}/show-status.sh" 2>/dev/null || true
+}
+
 # --- Assertions ---
 
 assert_eq() {
@@ -231,6 +251,8 @@ sim_verify "s2" "npm test" "Tests: 10 passed, 0 failed"
 assert_not_empty "verify(pass): last_verify_ts set" "$(read_st "s2" "last_verify_ts")"
 assert_eq "verify(pass): outcome is passed" "passed" "$(read_st "s2" "last_verify_outcome")"
 assert_eq "verify(pass): command recorded" "npm test" "$(read_st "s2" "last_verify_cmd")"
+assert_not_empty "verify(pass): confidence recorded" "$(read_st "s2" "last_verify_confidence")"
+assert_not_empty "verify(pass): method recorded" "$(read_st "s2" "last_verify_method")"
 teardown_test
 
 
@@ -1017,12 +1039,30 @@ out3="$(sim_stop "su7")"
 assert_contains "seq-U7: block 3" '"decision":"block"' "${out3}"
 assert_contains "seq-U7: final warning" "final dimension-gate block" "${out3}"
 
-# 4th stop: exhausted, allow (falls through to excellence gate which fires once)
-out4="$(sim_stop "su7")"
-# The excellence gate fires at block 4 because dim gate exhausted
-# Either excellence gate blocks, or it allows. Verify dimension exhaustion was recorded.
+# 4th stop: exhausted in warn mode, released with scorecard
+out4="$(sim_stop_mode "su7" "warn")"
+assert_contains "seq-U7: warn release emits scorecard" "QUALITY SCORECARD" "${out4}"
+assert_not_contains "seq-U7: warn release is not a block" '"decision":"block"' "${out4}"
 exhausted_detail="$(read_st "su7" "guard_exhausted_detail")"
 assert_contains "seq-U7: exhaustion recorded" "dimensions_missing" "${exhausted_detail}"
+teardown_test
+
+# Sequence U7B: Dimension gate exhaustion in strict mode keeps blocking
+setup_test
+init_session "su7b"
+sim_edit "su7b" "/src/a.ts"
+sim_edit "su7b" "/src/b.ts"
+sim_edit "su7b" "/src/c.ts"
+sim_verify "su7b" "npm test" "Tests: 10 passed"
+sim_review "su7b" "Clean.
+VERDICT: CLEAN"
+sim_stop_mode "su7b" "strict" >/dev/null
+sim_stop_mode "su7b" "strict" >/dev/null
+sim_stop_mode "su7b" "strict" >/dev/null
+out4="$(sim_stop_mode "su7b" "strict")"
+assert_contains "seq-U7B: strict mode blocks" '"decision":"block"' "${out4}"
+assert_contains "seq-U7B: strict mode named" "STRICT MODE" "${out4}"
+assert_contains "seq-U7B: strict mode includes scorecard" "QUALITY SCORECARD" "${out4}"
 teardown_test
 
 # Sequence U8: UI file edits require design_quality dimension
@@ -1073,6 +1113,25 @@ sim_excellence_review "su9"
 out="$(sim_stop "su9")"
 assert_empty "seq-U9: no design gate for non-UI edits" "${out}"
 assert_eq "seq-U9: ui_edit_count=0" "" "$(read_st "su9" "ui_edit_count")"
+teardown_test
+
+
+# -------------------------------------------------------
+# Status surface
+# -------------------------------------------------------
+printf '\nStatus surface:\n'
+
+setup_test
+init_session "sstatus"
+sim_edit "sstatus" "/src/foo.ts"
+sim_verify "sstatus" "npm test" "Tests: 10 passed"
+sim_review "sstatus" "A regression risk remains.
+VERDICT: FINDINGS (1)"
+status_out="$(sim_status_mode "strict")"
+assert_contains "status: verification confidence shown" "Verification Confidence" "${status_out}"
+assert_not_contains "status: verification method is no longer unknown" "Method: unknown" "${status_out}"
+assert_contains "status: guard configuration shown" "Exhaustion mode: strict" "${status_out}"
+assert_contains "status: findings-only dimensions shown" "bug_hunt: findings reported" "${status_out}"
 teardown_test
 
 

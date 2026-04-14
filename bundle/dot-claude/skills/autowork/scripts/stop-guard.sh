@@ -14,6 +14,20 @@ fi
 
 ensure_session_dir
 
+emit_scorecard_stop_context() {
+  local header="$1"
+  local footer="$2"
+  local scorecard="$3"
+
+  rm -f "${STATE_ROOT}/.ulw_active"
+  jq -nc --arg sc "${header}\n${scorecard}\n${footer}" '{
+    hookSpecificOutput: {
+      hookEventName: "Stop",
+      additionalContext: $sc
+    }
+  }'
+}
+
 last_assistant_message="$(json_get '.last_assistant_message')"
 if [[ -n "${last_assistant_message}" ]]; then
   write_state_batch \
@@ -240,24 +254,30 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
           exit 0
         else
           # Dimension gate exhaustion: handle based on mode
-          write_state_batch \
+          with_state_lock_batch \
             "guard_exhausted" "$(now_epoch)" \
             "guard_exhausted_detail" "dimensions_missing=${missing_dims}"
           log_hook "stop-guard" "dimension gate exhausted after 3 blocks: missing=${missing_dims}"
+          record_defect_pattern "guard_exhaustion" "dimensions_missing=${missing_dims}" &
+          scorecard="$(build_quality_scorecard)"
 
           case "${OMC_GUARD_EXHAUSTION_MODE}" in
             strict)
-              dim_reason="[Dimension gate · STRICT MODE] Guard exhaustion reached but strict mode prevents release. Missing: ${missing_dims}. Address remaining dimensions or switch guard_exhaustion_mode=warn."
+              dim_reason="[Dimension gate · STRICT MODE] Guard exhaustion reached but strict mode prevents release. QUALITY SCORECARD:\n${scorecard}\nMissing: ${missing_dims}. Address the remaining dimensions or switch to guard_exhaustion_mode=warn."
               jq -nc --arg reason "${dim_reason}" '{"decision":"block","reason":$reason}'
               exit 0
               ;;
             warn)
-              scorecard="$(build_quality_scorecard)"
               log_hook "stop-guard" "dimension gate exhausted (warn mode): emitting scorecard"
-              # Fall through — allow stop but inject scorecard on Stop event
+              emit_scorecard_stop_context \
+                "QUALITY SCORECARD (dimension gate exhausted after 3 blocks):" \
+                "The dimension gate released without full completion. Review the scorecard above and note the remaining review coverage gaps in your final summary." \
+                "${scorecard}"
+              exit 0
               ;;
             *)
-              # release — silent, fall through
+              rm -f "${STATE_ROOT}/.ulw_active"
+              exit 0
               ;;
           esac
         fi
@@ -299,7 +319,7 @@ fi
 
 if [[ "${guard_blocks}" -ge 3 ]]; then
   scorecard="$(build_quality_scorecard)"
-  write_state_batch \
+  with_state_lock_batch \
     "guard_exhausted" "$(now_epoch)" \
     "guard_exhausted_detail" "review=${missing_review},verify=${missing_verify},verify_failed=${verify_failed},unremediated=${review_unremediated}"
   log_hook "stop-guard" "exhausted after 3 blocks: review=${missing_review} verify=${missing_verify} failed=${verify_failed} unremediated=${review_unremediated}"
@@ -310,18 +330,15 @@ if [[ "${guard_blocks}" -ge 3 ]]; then
   case "${OMC_GUARD_EXHAUSTION_MODE}" in
     strict)
       # Never release — keep blocking with scorecard
-      jq -nc --arg reason "[Quality gate · STRICT MODE] Guard exhaustion reached but strict mode prevents release. Quality scorecard:\n${scorecard}\nAddress the remaining items or switch to guard_exhaustion_mode=warn in oh-my-claude.conf." '{"decision":"block","reason":$reason}'
+      jq -nc --arg reason "[Quality gate · STRICT MODE] Guard exhaustion reached but strict mode prevents release. QUALITY SCORECARD:\n${scorecard}\nAddress the remaining items or switch to guard_exhaustion_mode=warn in oh-my-claude.conf." '{"decision":"block","reason":$reason}'
       exit 0
       ;;
     warn)
       # Release but inject scorecard as context
-      rm -f "${STATE_ROOT}/.ulw_active"
-      jq -nc --arg sc "QUALITY SCORECARD (guard exhausted after 3 blocks):\n${scorecard}\nThe quality gate released without full completion. Review the scorecard above and note any gaps in your final summary." '{
-        hookSpecificOutput: {
-          hookEventName: "Stop",
-          additionalContext: $sc
-        }
-      }'
+      emit_scorecard_stop_context \
+        "QUALITY SCORECARD (guard exhausted after 3 blocks):" \
+        "The quality gate released without full completion. Review the scorecard above and note any gaps in your final summary." \
+        "${scorecard}"
       exit 0
       ;;
     *)

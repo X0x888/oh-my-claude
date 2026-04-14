@@ -642,6 +642,37 @@ tick_dimension() {
   with_state_lock write_state "${key}" "${ts}"
 }
 
+tick_dimensions_with_verdict() {
+  local verdict="$1"
+  local ts="${2:-$(now_epoch)}"
+  shift 2
+
+  [[ "$#" -gt 0 ]] || return 0
+
+  local args=()
+  local dim
+  for dim in "$@"; do
+    args+=("$(_dim_key "${dim}")" "${ts}" "dim_${dim}_verdict" "${verdict}")
+  done
+
+  with_state_lock_batch "${args[@]}"
+}
+
+set_dimension_verdicts() {
+  local verdict="$1"
+  shift
+
+  [[ "$#" -gt 0 ]] || return 0
+
+  local args=()
+  local dim
+  for dim in "$@"; do
+    args+=("dim_${dim}_verdict" "${verdict}")
+  done
+
+  with_state_lock_batch "${args[@]}"
+}
+
 is_dimension_valid() {
   # Returns 0 if the dimension was ticked at or after the most recent
   # edit of the relevant type. For 'prose', compare to last_doc_edit_ts;
@@ -950,6 +981,53 @@ detect_project_test_command() {
   printf '%s' "${test_cmd}"
 }
 
+verification_matches_project_test_command() {
+  local cmd="${1:-}"
+  local project_test_cmd="${2:-}"
+
+  [[ -n "${cmd}" && -n "${project_test_cmd}" ]] || return 1
+
+  local norm_cmd norm_ptc
+  norm_cmd="$(printf '%s' "${cmd}" | sed 's/^[[:space:]]*//' | sed 's/^[A-Z_][A-Z0-9_]*=[^ ]* //')"
+  norm_ptc="$(printf '%s' "${project_test_cmd}" | sed 's/^[[:space:]]*//')"
+
+  [[ "${norm_cmd}" == "${norm_ptc}"* ]] || [[ "${norm_cmd}" == *"${norm_ptc}"* ]]
+}
+
+verification_has_framework_keyword() {
+  local cmd="${1:-}"
+  [[ -n "${cmd}" ]] || return 1
+  printf '%s' "${cmd}" | grep -Eiq '\b(pytest|vitest|jest|mocha|cargo test|go test|npm test|pnpm test|yarn test|bun test|rspec|phpunit|xcodebuild test|swift test|mix test|gradle test|mvn test|dotnet test|rake test|deno test|shellcheck|bash -n)\b'
+}
+
+verification_output_has_counts() {
+  local output="${1:-}"
+  [[ -n "${output}" ]] || return 1
+  printf '%s' "${output}" | grep -Eiq '[0-9]+ (passed|tests?|specs?|assertions?|examples?|ok)\b|Tests:[[:space:]]*[0-9]+|test result:'
+}
+
+verification_output_has_clear_outcome() {
+  local output="${1:-}"
+  [[ -n "${output}" ]] || return 1
+  printf '%s' "${output}" | grep -Eiq '\b(PASS(ED)?|FAIL(ED)?|SUCCESS|OK|ALL.*PASSED|0 failures)\b|exit (code|status)[: ]*[0-9]'
+}
+
+detect_verification_method() {
+  local cmd="${1:-}"
+  local output="${2:-}"
+  local project_test_cmd="${3:-}"
+
+  if verification_matches_project_test_command "${cmd}" "${project_test_cmd}"; then
+    printf 'project_test_command'
+  elif verification_has_framework_keyword "${cmd}"; then
+    printf 'framework_keyword'
+  elif verification_output_has_counts "${output}" || verification_output_has_clear_outcome "${output}"; then
+    printf 'output_signal'
+  else
+    printf 'builtin_verification'
+  fi
+}
+
 # score_verification_confidence: Score how confident we are that a command
 # actually exercised project-relevant verification. Returns a value 0-100
 # on stdout. Scoring factors:
@@ -966,33 +1044,23 @@ score_verification_confidence() {
   [[ -z "${cmd}" ]] && { printf '0'; return; }
 
   # Factor 1: Exact/prefix match with detected project test command
-  if [[ -n "${project_test_cmd}" ]]; then
-    # Normalize: strip leading whitespace and env vars
-    local norm_cmd norm_ptc
-    norm_cmd="$(printf '%s' "${cmd}" | sed 's/^[[:space:]]*//' | sed 's/^[A-Z_]*=[^ ]* //')"
-    norm_ptc="$(printf '%s' "${project_test_cmd}" | sed 's/^[[:space:]]*//')"
-    if [[ "${norm_cmd}" == "${norm_ptc}"* ]] || [[ "${norm_cmd}" == *"${norm_ptc}"* ]]; then
-      score=$((score + 40))
-    fi
+  if verification_matches_project_test_command "${cmd}" "${project_test_cmd}"; then
+    score=$((score + 40))
   fi
 
   # Factor 2: Known test framework keywords in the command
-  if printf '%s' "${cmd}" | grep -Eiq '\b(pytest|vitest|jest|mocha|cargo test|go test|npm test|pnpm test|yarn test|bun test|rspec|phpunit|xcodebuild test|swift test|mix test|gradle test|mvn test|dotnet test|rake test|deno test|shellcheck|bash -n)\b'; then
+  if verification_has_framework_keyword "${cmd}"; then
     score=$((score + 30))
   fi
 
   # Factor 3: Output contains test counts (e.g. "42 passed", "Tests: 10")
-  if [[ -n "${output}" ]]; then
-    if printf '%s' "${output}" | grep -Eiq '[0-9]+ (passed|tests?|specs?|assertions?|examples?|ok)\b|Tests:[[:space:]]*[0-9]+|test result:'; then
-      score=$((score + 20))
-    fi
+  if verification_output_has_counts "${output}"; then
+    score=$((score + 20))
   fi
 
   # Factor 4: Clear pass/fail outcome in output
-  if [[ -n "${output}" ]]; then
-    if printf '%s' "${output}" | grep -Eiq '\b(PASS(ED)?|FAIL(ED)?|SUCCESS|OK|ALL.*PASSED|0 failures)\b|exit (code|status)[: ]*[0-9]'; then
-      score=$((score + 10))
-    fi
+  if verification_output_has_clear_outcome "${output}"; then
+    score=$((score + 10))
   fi
 
   printf '%s' "${score}"
@@ -1155,12 +1223,17 @@ build_quality_scorecard() {
   local required_dims
   required_dims="$(get_required_dimensions 2>/dev/null || true)"
   if [[ -n "${required_dims}" ]]; then
-    local _dim _dim_ts _dim_label
+    local _dim _dim_ts _dim_label _dim_verdict
     for _dim in ${required_dims//,/ }; do
       _dim_ts="$(read_state "$(_dim_key "${_dim}")")"
+      _dim_verdict="$(read_state "dim_${_dim}_verdict")"
       _dim_label="$(describe_dimension "${_dim}" 2>/dev/null || printf '%s' "${_dim}")"
-      if [[ -n "${_dim_ts}" ]]; then
+      if is_dimension_valid "${_dim}"; then
         sc="${sc}${check_mark} ${_dim_label}\n"
+      elif [[ "${_dim_verdict}" == "FINDINGS" ]]; then
+        sc="${sc}${cross_mark} ${_dim_label}: findings reported\n"
+      elif [[ -n "${_dim_ts}" ]]; then
+        sc="${sc}${cross_mark} ${_dim_label}: stale after subsequent edits\n"
       else
         sc="${sc}${dash_mark} ${_dim_label}: skipped\n"
       fi
@@ -1498,7 +1571,7 @@ get_project_profile() {
   local profile
   profile="$(detect_project_profile "." 2>/dev/null || true)"
   if [[ -n "${profile}" ]]; then
-    write_state "project_profile" "${profile}"
+    with_state_lock write_state "project_profile" "${profile}"
   fi
   printf '%s' "${profile}"
 }

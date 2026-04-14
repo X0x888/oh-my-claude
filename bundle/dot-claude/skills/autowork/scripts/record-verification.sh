@@ -69,21 +69,20 @@ if grep -Eiq "${builtin_pattern}" <<<"${command_text}" 2>/dev/null; then
   project_test_cmd="$(read_state "project_test_cmd" 2>/dev/null || true)"
   if [[ -z "${project_test_cmd}" ]]; then
     project_test_cmd="$(detect_project_test_command "." 2>/dev/null || true)"
-    if [[ -n "${project_test_cmd}" ]]; then
-      write_state "project_test_cmd" "${project_test_cmd}"
-    fi
   fi
 
   verify_confidence="$(score_verification_confidence "${command_text}" "${tool_output}" "${project_test_cmd}")"
+  verify_method="$(detect_verification_method "${command_text}" "${tool_output}" "${project_test_cmd}")"
 
   with_state_lock_batch \
     "last_verify_ts" "$(now_epoch)" \
     "last_verify_cmd" "${command_text}" \
     "last_verify_outcome" "${verify_outcome}" \
     "last_verify_confidence" "${verify_confidence}" \
+    "last_verify_method" "${verify_method}" \
     "project_test_cmd" "${project_test_cmd}" \
     "stop_guard_blocks" "0" \
     "session_handoff_blocks" "0" \
     "stall_counter" "0"
-  log_hook "record-verification" "cmd=${command_text} outcome=${verify_outcome} confidence=${verify_confidence}"
+  log_hook "record-verification" "cmd=${command_text} outcome=${verify_outcome} confidence=${verify_confidence} method=${verify_method}"
 fi

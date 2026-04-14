@@ -238,8 +238,12 @@ render_pending_agents() {
       _dim_tick="$(read_state "$(_dim_key "${_dim_tok}")")"
       _dim_verd="$(read_state "dim_${_dim_tok}_verdict")"
       _dim_desc="$(describe_dimension "${_dim_tok}" 2>/dev/null || printf '%s' "${_dim_tok}")"
-      if [[ -n "${_dim_tick}" ]]; then
+      if is_dimension_valid "${_dim_tok}"; then
         printf -- '- ✓ %s: %s\n' "${_dim_desc}" "${_dim_verd:-ticked}"
+      elif [[ "${_dim_verd}" == "FINDINGS" ]]; then
+        printf -- '- ✗ %s: findings reported\n' "${_dim_desc}"
+      elif [[ -n "${_dim_tick}" ]]; then
+        printf -- '- ✗ %s: stale after subsequent edits\n' "${_dim_desc}"
       else
         printf -- '- ○ %s: pending\n' "${_dim_desc}"
       fi

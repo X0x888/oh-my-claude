@@ -34,6 +34,18 @@ assert_eq() {
   fi
 }
 
+assert_contains() {
+  local label="$1"
+  local needle="$2"
+  local haystack="$3"
+  if [[ "${haystack}" == *"${needle}"* ]]; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: %s\n    expected to contain=%s\n    actual=%s\n' "${label}" "${needle}" "${haystack}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
 assert_exit() {
   local label="$1"
   local expected_code="$2"
@@ -733,6 +745,80 @@ dims="$(get_required_dimensions)"
 assert_eq "get_required_dimensions fallback: resumed mixed" "bug_hunt,code_quality,stress_test,completeness,prose" "${dims}"
 
 rm -f "${edited_log}"
+
+# order_dimensions_by_risk respects project profile
+ordered="$(order_dimensions_by_risk "traceability,design_quality,prose" "node,react,ui")"
+assert_eq "order_dimensions_by_risk ui promotes design_quality" "design_quality,prose,traceability" "${ordered}"
+
+ordered="$(order_dimensions_by_risk "traceability,design_quality,prose" "shell,docs")"
+assert_eq "order_dimensions_by_risk non-ui leaves prose ahead of design" "prose,design_quality,traceability" "${ordered}"
+
+# ===========================================================================
+# Verification helpers
+# ===========================================================================
+printf '\nVerification helpers:\n'
+
+assert_eq "detect_verification_method project test command" \
+  "project_test_command" \
+  "$(detect_verification_method "npm test -- --runInBand" "PASS auth\nTests: 10 passed" "npm test")"
+
+assert_eq "detect_verification_method framework keyword" \
+  "framework_keyword" \
+  "$(detect_verification_method "pytest -q" "12 passed" "")"
+
+assert_eq "detect_verification_method output signal" \
+  "output_signal" \
+  "$(detect_verification_method "./validate.sh" "test result: ok. 5 passed" "")"
+
+assert_eq "score_verification_confidence all signals = 100" \
+  "100" \
+  "$(score_verification_confidence "npm test -- --runInBand" "PASS auth\nTests: 10 passed, 0 failed" "npm test")"
+
+assert_eq "score_verification_confidence command keyword only = 30" \
+  "30" \
+  "$(score_verification_confidence "shellcheck script.sh" "" "")"
+
+# ===========================================================================
+# Quality scorecard
+# ===========================================================================
+printf '\nQuality scorecard:\n'
+
+reset_dim_state
+write_state "code_edit_count" "3"
+write_state "last_code_edit_ts" "100"
+write_state "last_review_ts" "120"
+write_state "review_had_findings" "false"
+write_state "last_verify_ts" "130"
+write_state "last_verify_outcome" "passed"
+write_state "last_verify_cmd" "npm test"
+write_state "last_verify_confidence" "60"
+with_state_lock_batch \
+  "dim_code_quality_ts" "150" \
+  "dim_code_quality_verdict" "CLEAN" \
+  "dim_stress_test_ts" "90" \
+  "dim_stress_test_verdict" "CLEAN" \
+  "dim_bug_hunt_verdict" "FINDINGS"
+scorecard="$(build_quality_scorecard)"
+assert_contains "scorecard reports findings verdict" "bug hunt (correctness, regressions, edge cases): findings reported" "${scorecard}"
+assert_contains "scorecard reports stale dimension" "stress-test (hidden assumptions, unsafe paths): stale after subsequent edits" "${scorecard}"
+assert_contains "scorecard reports clean dimension" "code quality (conventions, dead code, comments)" "${scorecard}"
+assert_contains "scorecard reports skipped dimension" "completeness (fresh-eyes holistic review): skipped" "${scorecard}"
+
+# ===========================================================================
+# Project profile detection
+# ===========================================================================
+printf '\nProject profile detection:\n'
+
+profile_dir="$(mktemp -d)"
+mkdir -p "${profile_dir}/src/components" "${profile_dir}/docs"
+cat > "${profile_dir}/package.json" <<'JSON'
+{"dependencies":{"react":"18.0.0"}}
+JSON
+touch "${profile_dir}/tsconfig.json"
+assert_eq "detect_project_profile node/react/ui/docs" \
+  "node,typescript,react,docs,ui" \
+  "$(detect_project_profile "${profile_dir}")"
+rm -rf "${profile_dir}"
 
 # ===========================================================================
 # with_state_lock
