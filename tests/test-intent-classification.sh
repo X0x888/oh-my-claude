@@ -44,6 +44,46 @@ assert_not_imperative() {
   fi
 }
 
+assert_checkpoint() {
+  local input="$1"
+  if is_checkpoint_request "${input}"; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: is_checkpoint_request should match: "%s"\n' "${input}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
+assert_not_checkpoint() {
+  local input="$1"
+  if ! is_checkpoint_request "${input}"; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: is_checkpoint_request should NOT match: "%s"\n' "${input}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
+assert_advisory() {
+  local input="$1"
+  if is_advisory_request "${input}"; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: is_advisory_request should match: "%s"\n' "${input}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
+assert_not_advisory() {
+  local input="$1"
+  if ! is_advisory_request "${input}"; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: is_advisory_request should NOT match: "%s"\n' "${input}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
 printf '=== Intent Classification Tests ===\n\n'
 
 # --- Bare imperatives (should be execution) ---
@@ -63,6 +103,63 @@ assert_imperative "Merge the feature branch"
 assert_imperative "Rewrite the parser to handle edge cases"
 assert_imperative "Set up the CI pipeline"
 assert_imperative "Redesign the navigation component"
+
+# --- New bare imperative verbs (v1.3.0) ---
+printf '\nNew bare imperatives:\n'
+assert_imperative "Treat warnings as errors"
+assert_imperative "Diagnose the memory leak"
+assert_imperative "Prioritize the critical bugs"
+assert_imperative "Preserve the existing API contract"
+assert_imperative "Ensure all tests pass before merging"
+assert_imperative "Perform the database migration"
+assert_imperative "Prepare the release candidate"
+assert_imperative "Verify the deployment is healthy"
+assert_imperative "Validate the user input"
+assert_imperative "Generate the config from the template"
+assert_imperative "Apply the patch to the production branch"
+assert_imperative "Revert the last commit"
+assert_imperative "Simplify the error handling logic"
+assert_imperative "Extract the helper into a shared module"
+assert_imperative "Replace the logger with Winston"
+assert_imperative "Upgrade to Node 20"
+assert_imperative "Scaffold the new service"
+assert_imperative "Swap Redis for Memcached"
+assert_imperative "Split the module into smaller files"
+assert_imperative "Inline the utility function"
+assert_imperative "Expose the health endpoint"
+assert_imperative "Wire up the event handler"
+assert_imperative "Bootstrap the project structure"
+assert_imperative "Downgrade the dependency to a stable version"
+
+# --- New polite-only verbs (bare form should NOT match) ---
+printf '\nPolite-only new verbs (bare should NOT match):\n'
+assert_not_imperative "Complete list of features to implement"
+assert_not_imperative "Address line parsing is broken"
+assert_not_imperative "Clean code principles should guide this"
+assert_not_imperative "Hook into the existing middleware"
+assert_not_imperative "Determine the best approach"
+assert_not_imperative "Identify the bottleneck in the pipeline"
+assert_not_imperative "Examine the build output carefully"
+assert_not_imperative "Inspect the container logs"
+assert_not_imperative "Scan for vulnerabilities in dependencies"
+assert_not_imperative "Explore the codebase for patterns"
+assert_not_imperative "Establish coding conventions"
+assert_not_imperative "Conduct a security review"
+
+# --- But polite forms of those verbs SHOULD match ---
+printf '\nPolite forms of new verbs:\n'
+assert_imperative "Can you complete the migration?"
+assert_imperative "Please address the review comments"
+assert_imperative "Could you clean up the temp files?"
+assert_imperative "Can you determine the root cause?"
+assert_imperative "Please identify the performance bottleneck"
+assert_imperative "Would you examine the failing tests?"
+assert_imperative "Can you inspect the build output?"
+assert_imperative "Please scan for security vulnerabilities"
+assert_imperative "Could you explore the data model?"
+assert_imperative "Can you establish the CI pipeline?"
+assert_imperative "Please conduct a thorough audit"
+assert_imperative "Can you hook up the event handler?"
 
 # --- Design/style: polite forms are imperative, bare forms are NOT ---
 # "design" and "style" are noun/verb ambiguous (like "plan", "review"),
@@ -264,6 +361,127 @@ assert_directive "finish the rest" ""
 assert_directive "do the remaining work, starting with auth" "starting with auth"
 
 # ====================================================================
+# Checkpoint Classification Tests (is_checkpoint_request)
+# ====================================================================
+
+printf '\n=== Checkpoint Classification Tests ===\n\n'
+
+# --- True positives: genuine checkpoint requests ---
+printf 'Checkpoint true positives:\n'
+assert_checkpoint "checkpoint"
+assert_checkpoint "pause here"
+assert_checkpoint "stop for now"
+assert_checkpoint "that's enough for now"
+assert_checkpoint "wrap up for now"
+assert_checkpoint "done for now"
+assert_checkpoint "park it for now"
+assert_checkpoint "hold for now"
+assert_checkpoint "one wave at a time"
+assert_checkpoint "one phase at a time"
+assert_checkpoint "wave 1 only"
+assert_checkpoint "phase 2 only"
+assert_checkpoint "first wave only"
+assert_checkpoint "first phase only"
+assert_checkpoint "just wave 3"
+assert_checkpoint "just phase 1"
+assert_not_checkpoint "for now let's move on"
+assert_not_checkpoint "just the API for now"
+assert_checkpoint "stop here"
+assert_checkpoint "let's stop here"
+
+# --- Continuation/resume at prompt boundaries ---
+printf '\nCheckpoint boundary-scoped keywords:\n'
+assert_checkpoint "continue later with the rest"
+assert_checkpoint "pick up later from here"
+assert_checkpoint "resume later when context is fresh"
+
+# --- False positives: should NOT be checkpoint ---
+printf '\nCheckpoint false positives:\n'
+assert_not_checkpoint "leave it unchanged for now and focus on the critical path"
+assert_not_checkpoint "good enough for now, keep building the auth module"
+assert_not_checkpoint "skip validation for now and focus on the core logic"
+assert_not_checkpoint "remain unchanged for now"
+assert_not_checkpoint "for this session, focus on the API layer"
+assert_not_checkpoint "scope this for this session to the API"
+assert_not_checkpoint "Fix the login bug and leave the CSS unchanged for now, the priority is auth"
+assert_not_checkpoint "The config is fine for now but the tests need work"
+
+# --- Imperative guard: imperative start overrides checkpoint ---
+printf '\nCheckpoint imperative guard:\n'
+assert_not_checkpoint "Fix the header bug, then stop for now"
+assert_not_checkpoint "Implement the feature, we can continue later"
+assert_not_checkpoint "Deploy the update and pause for now"
+assert_not_checkpoint "Please fix the bug and stop for now"
+
+# --- "for now" at start-of-text: scope qualifier, not checkpoint ---
+printf '\nCheckpoint for-now scope qualifier:\n'
+assert_not_checkpoint "for now, fix the bug in auth"
+assert_not_checkpoint "for now just focus on the tests"
+assert_not_checkpoint "for now, implement the API"
+
+# --- "stop here" / "pause here" consistency (Phase 1 — always checkpoint) ---
+printf '\nCheckpoint stop/pause here consistency:\n'
+assert_checkpoint "please stop here"
+assert_checkpoint "please pause here"
+assert_checkpoint "Fix the bug, then stop here"
+assert_checkpoint "Fix the bug, then pause here"
+assert_checkpoint "Can you stop here for today"
+
+# --- "patch" as imperative verb ---
+printf '\nPatch as imperative:\n'
+assert_imperative "patch the vulnerability in the auth module"
+assert_imperative "Can you patch this issue?"
+assert_imperative "Please patch the security hole"
+
+# ====================================================================
+# Advisory Classification Tests (is_advisory_request)
+# ====================================================================
+
+printf '\n=== Advisory Classification Tests ===\n\n'
+
+# --- True positives: genuine advisory requests ---
+printf 'Advisory true positives:\n'
+assert_advisory "Should we refactor this module?"
+assert_advisory "What's the best approach for caching?"
+assert_advisory "Is it worth fixing the legacy code?"
+assert_advisory "Would it be better to use a queue?"
+assert_advisory "Do you think we should migrate?"
+assert_advisory "I'd like your recommendation on the architecture"
+assert_advisory "What are the tradeoffs of using GraphQL?"
+assert_advisory "Can you suggest an alternative approach?"
+assert_advisory "I prefer TypeScript — is that reasonable?"
+assert_advisory "Would you suggest that we refactor first?"
+assert_advisory "What are the pros and cons of microservices?"
+
+# --- False positives: should NOT be advisory ---
+printf '\nAdvisory false positives:\n'
+assert_not_advisory "make it better for real users"
+assert_not_advisory "a better approach would reduce latency"
+assert_not_advisory "net worth calculator implementation"
+assert_not_advisory "implement the auto-suggest feature"
+
+# ====================================================================
+# Integration Regression Tests
+# ====================================================================
+
+printf '\n=== Integration Regression Tests ===\n\n'
+
+# The original user prompt that triggered the v1.2.x regression:
+# "unchanged for now" was misclassified as checkpoint
+REGRESSION_PROMPT='Treat this as a long-haul audit and improvement engagement for this Chrome extension, not a quick review. Evaluate the extension end-to-end using both the live extension and the codebase. Work holistically across architecture, code quality, performance, reliability, security/privacy, ship readiness, and user experience. Pay close attention to extension-specific concerns such as permissions and host permissions, Manifest V3 architecture, service worker behavior, content scripts, background logic, message passing, storage/state handling, cross-page behavior, failure modes, and Chrome Web Store readiness. Work in repeated passes: diagnose deeply, improve the highest-value issues, validate, review, reassess, and continue iterating. Do not stop at the first decent implementation. Keep going until additional work would mostly be low-value polish, unnecessary churn, or high regression risk. Preserve the extension intent. Avoid unnecessary rewrites. Prioritize changes that make it materially more reliable, safer to ship, easier to maintain, and better for real users. When something important should remain unchanged for now, say so explicitly and explain why.'
+assert_intent "execution" "${REGRESSION_PROMPT}"
+
+# URL with question mark should not trigger advisory when imperative
+assert_intent "execution" "Fix the endpoint /api/users?page=1 that returns 500"
+
+# Scope qualifiers with "for now" in execution prompts
+assert_intent "execution" "Refactor the auth module, leave the UI unchanged for now"
+
+# Advisory with council-eligible scope
+assert_intent "advisory" "Should I do a comprehensive review of the whole codebase?"
+assert_intent "advisory" "What should I improve in this project?"
+
+# ====================================================================
 # Domain Classification Tests (infer_domain)
 # ====================================================================
 
@@ -419,6 +637,16 @@ assert_council "Can you review our entire product?"
 assert_council "analyze the whole project"
 assert_council "inspect my repo"
 
+printf '\nCouncil positives (new project-level nouns):\n'
+assert_council "evaluate my Chrome extension end to end"
+assert_council "audit the website for accessibility"
+assert_council "review this library for security issues"
+assert_council "assess our platform for scalability"
+assert_council "evaluate this package for production readiness"
+assert_council "review the plugin for compatibility"
+assert_council "audit this framework for best practices"
+assert_council "evaluate my site for performance"
+
 printf '\nCouncil positives (holistic qualifiers):\n'
 assert_council "do a full project review"
 assert_council "comprehensive evaluation"
@@ -464,6 +692,14 @@ assert_not_council "evaluate my product backlog"
 assert_not_council "evaluate my project dependencies"
 assert_not_council "evaluate my project configuration"
 assert_not_council "evaluate my product strategy"
+
+printf '\nCouncil negatives (new noun compound exclusions):\n'
+assert_not_council "evaluate my extension manager"
+assert_not_council "review the package registry"
+assert_not_council "audit the plugin marketplace"
+assert_not_council "evaluate the site map"
+assert_not_council "review the platform version"
+assert_not_council "evaluate the framework manifest"
 
 printf '\nCouncil negatives (narrowing qualifiers — scoped to specific artifacts):\n'
 assert_not_council "what should I improve in this function"

@@ -203,10 +203,9 @@ if grep -Eiq '(^|[^[:alnum:]_-])(ultrawork|ulw|autowork|sisyphus)([^[:alnum:]_-]
     if [[ -n "${previous_domain}" ]]; then
       context_parts+=("Underlying active task domain: ${previous_domain}")
     fi
-    effective_domain="${TASK_DOMAIN:-${previous_domain:-}}"
-    if [[ "${effective_domain}" == "coding" || "${effective_domain}" == "mixed" ]]; then
-      context_parts+=("ADVISORY OVER CODE: This is an advisory task that targets a codebase. Build and test the project before forming recommendations. When launching parallel Explore agents, give each a distinct non-overlapping scope. Do NOT deliver the final structured report until all exploration agents have returned — deliver status updates while waiting, but hold the synthesis. Verify the highest-impact claims against actual code. Cover multiple layers: code correctness, user-facing copy/messaging, build/config/deployment, and external dependencies.")
-    fi
+    # Note: ADVISORY OVER CODE guidance is deferred — it will be injected below
+    # only if council evaluation is NOT detected (council dispatch is a superset
+    # of advisory's "inspect before recommending" requirement).
   elif [[ "${checkpoint_prompt}" -eq 1 ]]; then
     context_parts+=("Ultrawork intent gate classified this prompt as a checkpoint or pause request. Preserve the active objective, provide a sharp checkpoint, state what is done and what remains, and stop cleanly without forcing full completion in this turn.")
     if [[ -n "${previous_objective}" ]]; then
@@ -217,7 +216,7 @@ if grep -Eiq '(^|[^[:alnum:]_-])(ultrawork|ulw|autowork|sisyphus)([^[:alnum:]_-]
     context_parts+=("Detected intent: ${TASK_INTENT}. Detected domain: ${TASK_DOMAIN}. Surface these classifications in your first response so the user can verify routing is correct — e.g., '**Domain:** coding | **Intent:** execution'. If the user corrects the classification, adjust immediately.")
   fi
 
-  if [[ "${session_management_prompt}" -eq 0 && "${advisory_prompt}" -eq 0 && "${checkpoint_prompt}" -eq 0 ]]; then
+  if [[ "${session_management_prompt}" -eq 0 && "${checkpoint_prompt}" -eq 0 ]]; then
     case "${TASK_DOMAIN}" in
       coding)
         context_parts+=("Detected likely task domain: coding. For non-trivial work use quality-planner or prometheus first — the planner should scope both explicit requirements and implied scope (what a veteran would also deliver). Use quality-researcher for local repo wiring, librarian for official docs and reference implementations, metis to pressure-test risky plans, oracle when stuck or debugging deeply, specialist engineering agents when relevant. Make changes incrementally — one logical change, verify it, then proceed. Test rigorously after edits — failing to test is the #1 failure mode. Before invoking the reviewer, self-assess: enumerate every component of the request and verify each is delivered. Run quality-reviewer before stopping. For complex or multi-file tasks, also run excellence-reviewer after defects are addressed for a fresh-eyes completeness and polish evaluation. Never write placeholder stubs or sycophantic comments.")
@@ -263,6 +262,14 @@ if grep -Eiq '(^|[^[:alnum:]_-])(ultrawork|ulw|autowork|sisyphus)([^[:alnum:]_-]
 6. Present a unified Project Council Assessment with: critical findings, high-impact improvements, strategic recommendations, cross-perspective tensions, and quick wins.
 Challenge the project — the value is in what is missing or wrong, not in what is already good.")
       log_hook "prompt-intent-router" "council evaluation detected"
+    elif [[ "${advisory_prompt}" -eq 1 ]]; then
+      # Advisory prompt that did NOT trigger council → inject code-grounding guidance.
+      # Council dispatch is a superset of "inspect before recommending", so this only
+      # fires for non-council advisory prompts over code.
+      effective_domain="${TASK_DOMAIN:-${previous_domain:-}}"
+      if [[ "${effective_domain}" == "coding" || "${effective_domain}" == "mixed" ]]; then
+        context_parts+=("ADVISORY OVER CODE: This is an advisory task that targets a codebase. Build and test the project before forming recommendations. When launching parallel Explore agents, give each a distinct non-overlapping scope. Do NOT deliver the final structured report until all exploration agents have returned — deliver status updates while waiting, but hold the synthesis. Verify the highest-impact claims against actual code. Cover multiple layers: code correctness, user-facing copy/messaging, build/config/deployment, and external dependencies.")
+      fi
     fi
   fi
 fi

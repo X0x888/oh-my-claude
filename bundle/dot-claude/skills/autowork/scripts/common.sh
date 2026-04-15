@@ -2051,7 +2051,61 @@ project_profile_has() {
 is_checkpoint_request() {
   local text="$1"
 
-  grep -Eiq '\b(checkpoint|pause here|stop here|for now|continue later|pick up later|resume later|for this session|one wave at a time|one phase at a time|wave [0-9]+ only|phase [0-9]+ only|first wave only|first phase only|just wave [0-9]+|just phase [0-9]+)\b' <<<"${text}"
+  # ── Phase 1: position-independent unambiguous signals ──
+  # These fire BEFORE the imperative guard because they are always checkpoint,
+  # even when embedded after an imperative verb (e.g., "Fix the bug, then
+  # stop here"). "stop here" and "pause here" are explicit session-control
+  # directives — the user IS asking to stop regardless of context.
+  grep -Eiq '\b(checkpoint|pause here|stop here|let.s stop here|one wave at a time|one phase at a time|wave [0-9]+ only|phase [0-9]+ only|first wave only|first phase only|just wave [0-9]+|just phase [0-9]+)\b' <<<"${text}" \
+    && return 0
+
+  # ── Phase 2: start-of-text checkpoint phrases ──
+  # Fire before the imperative guard because "stop for now" is checkpoint
+  # even though "stop" is also an imperative verb.
+  if [[ "${text}" =~ ^[[:space:]]*(stop|pause|hold)[[:space:]]+(for[[:space:]]+now) ]]; then
+    return 0
+  fi
+  # Specific stop/pause compound phrases at start of text
+  if grep -Eiq '^[[:space:]]*(that.s enough|that.s all|that.s good|wrap up|leave it|park it|park this)\s+for\s+now\b' <<<"${text}"; then
+    return 0
+  fi
+  # "let's stop here" at start (also caught by Phase 1, but explicit for clarity)
+  if grep -Eiq '^[[:space:]]*(let.s stop here|let.s pause here)\b' <<<"${text}"; then
+    return 0
+  fi
+
+  # ── Phase 3: imperative guard ──
+  # An explicit imperative at the top of the prompt beats any remaining
+  # embedded checkpoint keywords. Without this, "Fix X … unchanged for now"
+  # is wrongly routed to checkpoint instead of execution.
+  if is_imperative_request "${text}"; then
+    return 1
+  fi
+
+  # ── Phase 4: end-of-text checkpoint signals ──
+  # Only fire for non-imperative prompts (guard already filtered above).
+  # Require stop/pause verb context before "for now" to avoid matching
+  # scope-qualifiers like "remain unchanged for now".
+  if grep -Eiq '\b(stop|pause|done|halt|hold)\s+for\s+now[.!]?[[:space:]]*$' <<<"${text}"; then
+    return 0
+  fi
+  if grep -Eiq '\b(that.s enough|that.s all|that.s good|wrap up|leave it|park it)\s+for\s+now[.!]?[[:space:]]*$' <<<"${text}"; then
+    return 0
+  fi
+
+  # ── Phase 5: boundary-scoped ambiguous keywords ──
+  # Scope to first/last 200 chars to prevent embedded occurrences from triggering.
+  local head="${text:0:200}"
+  local tail="${text: -200}"
+  if grep -Eiq '\b(continue later|pick up later|resume later)\b' <<<"${head}${tail}"; then
+    return 0
+  fi
+
+  # Note: "for this session" removed — already covered by
+  # is_session_management_request with stronger guards (imperative guard +
+  # dual-gate + 400-char head scope).
+
+  return 1
 }
 
 is_session_management_request() {
@@ -2071,13 +2125,22 @@ is_session_management_request() {
   local head="${text:0:400}"
 
   grep -Eiq '\b(new session|fresh session|same session|this session|continue here|continue in this session|stop here|pause here|resume later|pick up later|context budget|context window|context limit|usage limit|token limit|limit hit|compaction|compact)\b' <<<"${head}" \
-    && grep -Eiq '(^[[:space:]]*(should|would|could|can|is|do|what|which|why)\b|\?|better\b|recommend\b|worth\b|prefer\b|advice\b|suggest\b)' <<<"${text}"
+    && grep -Eiq '(^[[:space:]]*(should|would|could|can|is|do|what|which|why)\b|\?|better\b|recommend\w*|prefer\b|advice\b|\bworth\s+(it|doing|trying|fixing|changing|considering|exploring|investigating|the\s+effort|a\s+)|\b(suggest\s+(we|you|i|they|an?|the|that|instead)|suggestion|suggestions|suggested|suggesting)\b)' <<<"${text}"
+  # Note: SM intentionally keeps standalone "better" — the dual-gate (SM keyword
+  # AND advisory framing) makes it safe here. "Is it better to start a new
+  # session?" needs both "new session" + "better" to match. The standalone
+  # advisory pattern removed "better" because it lacks this dual-gate protection.
 }
 
 is_advisory_request() {
   local text="$1"
 
-  grep -Eiq '(^[[:space:]]*(should|would|could|can|is|do|what|which|why)\b|\?|better\b|recommend\b|worth\b|prefer\b|advice\b|suggest\b|tradeoff\b|tradeoffs\b|pros and cons\b|should we\b|would it be better\b|is it better\b|do you think\b)' <<<"${text}"
+  # Line-start question words and specific advisory phrases are strong signals.
+  # Standalone "better" removed — too broad ("better for real users" is comparative,
+  # not advisory). Covered by specific patterns: "would it be better", "is it better".
+  # "worth" tightened — "net worth calculator" is not advisory. Require gerund/object.
+  # "suggest" tightened — "auto-suggest feature" is not advisory. Require advisory framing.
+  grep -Eiq '(^[[:space:]]*(should|would|could|can|is|do|what|which|why)\b|\?|recommend\w*|prefer\b|advice\b|tradeoff\b|tradeoffs\b|pros and cons\b|should we\b|would it be better\b|is it better\b|do you think\b|\bworth\s+(it|doing|trying|fixing|changing|considering|exploring|investigating|the\s+effort|a\s+)|\b(suggest\s+(we|you|i|they|an?|the|that|instead)|suggestion|suggestions|suggested|suggesting)\b)' <<<"${text}"
 }
 
 # --- P0: Imperative detection (checked before advisory in classify_task_intent) ---
@@ -2092,10 +2155,10 @@ is_imperative_request() {
   local result=1
 
   # "Can/Could/Would you [verb]..." — polite imperatives
-  if [[ "${text}" =~ ^[[:space:]]*(can|could|would)[[:space:]]+you[[:space:]]+(please[[:space:]]+)?(fix|implement|add|create|build|update|refactor|debug|deploy|test|write|make|set[[:space:]]+up|change|modify|remove|delete|move|rename|install|configure|check|run|help|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|connect|push|pull|merge|commit|review|start|stop|enable|disable|open|close|evaluate|plan|audit|investigate|research|analyze|analyse|assess|execute|document|extend|raise|design|style|redesign) ]]; then
+  if [[ "${text}" =~ ^[[:space:]]*(can|could|would)[[:space:]]+you[[:space:]]+(please[[:space:]]+)?(fix|implement|add|create|build|update|refactor|debug|deploy|test|write|make|set[[:space:]]+up|change|modify|remove|delete|move|rename|install|configure|check|run|help|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|connect|push|pull|merge|commit|review|start|stop|enable|disable|open|close|evaluate|plan|audit|investigate|research|analyze|analyse|assess|execute|document|extend|raise|design|style|redesign|treat|diagnose|prioritize|preserve|ensure|perform|prepare|verify|validate|generate|apply|revert|simplify|extract|replace|upgrade|scaffold|swap|split|inline|expose|wire|bootstrap|downgrade|patch|determine|identify|examine|inspect|scan|explore|establish|conduct|complete|address|clean|hook) ]]; then
     result=0
   # "Please [adverb?] [verb]..." patterns — single optional -ly adverb between please and verb
-  elif [[ "${text}" =~ ^[[:space:]]*(please)[[:space:]]+([a-z]+ly[[:space:]]+)?(fix|implement|add|create|build|update|refactor|debug|deploy|test|write|make|change|modify|remove|delete|move|rename|install|configure|check|run|help|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|proceed|go|evaluate|plan|audit|investigate|research|analyze|analyse|assess|execute|document|extend|raise|design|style|redesign) ]]; then
+  elif [[ "${text}" =~ ^[[:space:]]*(please)[[:space:]]+([a-z]+ly[[:space:]]+)?(fix|implement|add|create|build|update|refactor|debug|deploy|test|write|make|change|modify|remove|delete|move|rename|install|configure|check|run|help|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|proceed|go|evaluate|plan|audit|investigate|research|analyze|analyse|assess|execute|document|extend|raise|design|style|redesign|treat|diagnose|prioritize|preserve|ensure|perform|prepare|verify|validate|generate|apply|revert|simplify|extract|replace|upgrade|scaffold|swap|split|inline|expose|wire|bootstrap|downgrade|patch|determine|identify|examine|inspect|scan|explore|establish|conduct|complete|address|clean|hook) ]]; then
     result=0
   # "Go ahead and..." patterns
   elif [[ "${text}" =~ ^[[:space:]]*go[[:space:]]+ahead ]]; then
@@ -2104,10 +2167,11 @@ is_imperative_request() {
   elif [[ "${text}" =~ ^[[:space:]]*i[[:space:]]+(need|want)[[:space:]]+(you[[:space:]]+to|to)[[:space:]] ]]; then
     result=0
   # Bare imperative: starts with unambiguous action verb, no trailing question mark
-  # Excludes: check, test, help, review, plan, research, evaluate — too ambiguous as bare starts
-  # (evaluate/plan/research can be nouns; kept to polite/please forms only)
   # Excludes: check, test, help, review, plan, research, evaluate, design, style — too ambiguous as bare starts
-  elif [[ ! "${text}" =~ \?[[:space:]]*$ ]] && [[ "${text}" =~ ^[[:space:]]*(fix|implement|add|create|build|update|refactor|debug|deploy|write|make|change|modify|remove|delete|move|rename|install|configure|run|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|connect|push|pull|merge|commit|start|stop|enable|disable|open|close|set[[:space:]]+up|proceed|audit|investigate|analyze|analyse|execute|document|extend|raise|redesign)[[:space:]] ]]; then
+  # (evaluate/plan/research can be nouns; design/style are adjective-like)
+  # Also polite-only: complete, address, clean, hook, determine, identify, examine,
+  # inspect, scan, explore, establish, conduct — noun/adjective-ambiguous at prompt start
+  elif [[ ! "${text}" =~ \?[[:space:]]*$ ]] && [[ "${text}" =~ ^[[:space:]]*(fix|implement|add|create|build|update|refactor|debug|deploy|write|make|change|modify|remove|delete|move|rename|install|configure|run|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|connect|push|pull|merge|commit|start|stop|enable|disable|open|close|set[[:space:]]+up|proceed|audit|investigate|analyze|analyse|execute|document|extend|raise|redesign|treat|diagnose|prioritize|preserve|ensure|perform|prepare|verify|validate|generate|apply|revert|simplify|extract|replace|upgrade|scaffold|swap|split|inline|expose|wire|bootstrap|downgrade|patch)[[:space:]] ]]; then
     result=0
   fi
 
@@ -2426,13 +2490,13 @@ _has_scoped_improve_target() {
 
   # "improvements to [word]" where [word] is NOT a project-level noun
   if grep -Eiq '\bimprovements?\s+to\s+' <<<"${text}" \
-     && ! grep -Eiq '\bimprovements?\s+to\s+(the\s+|my\s+|our\s+)?(projects?|codebase|code.?base|app(lication)?|products?|repo(sitory)?|software|system|whole|entire)\b' <<<"${text}"; then
+     && ! grep -Eiq '\bimprovements?\s+to\s+(the\s+|my\s+|our\s+)?(projects?|codebase|code.?base|app(lication)?|products?|repo(sitory)?|software|system|extensions?|sites?|websites?|platforms?|librar(y|ies)|packages?|plugins?|frameworks?|whole|entire)\b' <<<"${text}"; then
     return 0
   fi
 
   # "improve [the|my] [non-project-word]" — direct object after improve
   if grep -Eiq '\bimprove\s+(the|my|our|this|that)\s+\w' <<<"${text}" \
-     && ! grep -Eiq '\bimprove\s+(the|my|our|this|that)\s+(projects?|codebase|code.?base|app(lication)?|products?|repo(sitory)?|software|system|whole|entire)\b' <<<"${text}"; then
+     && ! grep -Eiq '\bimprove\s+(the|my|our|this|that)\s+(projects?|codebase|code.?base|app(lication)?|products?|repo(sitory)?|software|system|extensions?|sites?|websites?|platforms?|librar(y|ies)|packages?|plugins?|frameworks?|whole|entire)\b' <<<"${text}"; then
     return 0
   fi
 
@@ -2446,11 +2510,12 @@ _has_scoped_improve_target() {
 is_council_evaluation_request() {
   local text="$1"
 
-  # Pattern 1: "[evaluate|assess|audit|review] [my|the|this|our] [entire|whole]? [project|codebase|app|product|repo]"
+  # Pattern 1: "[evaluate|assess|audit|review] [my|the|this|our] [entire|whole]? [project|codebase|app|product|repo|extension|site|...]"
   # Guarded: reject if the project-level word is part of a compound noun
-  # (e.g., "project manager", "project plan", "product team")
-  if grep -Eiq '(evaluat|assess|audit|review|inspect|analyz)\w*\s+(my|the|this|our|entire|whole|full)\s+((entire|whole|full|complete)\s+)?(projects?|codebase|code.?base|app(lication)?|products?|repo(sitory)?|software|system)\b' <<<"${text}" \
-     && ! grep -Eiq '\b(project|product)\s+(manager|management|plan|planning|structure|timeline|scope|lead|owner|director|description|proposal|requirements?|specification|charter|budget|schedule|board|team|files?|folders?|documentation|dependencies|configuration|roadmap|backlog|strategy|design|review)\b' <<<"${text}"; then
+  # (e.g., "project manager", "project plan", "product team", "extension manager")
+  if grep -Eiq '(evaluat|assess|audit|review|inspect|analyz)\w*\s+(my|the|this|our|entire|whole|full)\s+((\w+\s+){0,2})?(projects?|codebase|code.?base|app(lication)?|products?|repo(sitory)?|software|system|extensions?|sites?|websites?|platforms?|librar(y|ies)|packages?|plugins?|frameworks?)\b' <<<"${text}" \
+     && ! grep -Eiq '\b(project|product)\s+(manager|management|plan|planning|structure|timeline|scope|lead|owner|director|description|proposal|requirements?|specification|charter|budget|schedule|board|team|files?|folders?|documentation|dependencies|configuration|roadmap|backlog|strategy|design|review)\b' <<<"${text}" \
+     && ! grep -Eiq '\b(extension|package|plugin|site|platform|framework|library)\s+(manager|management|registry|store|marketplace|directory|map|version|settings|manifest)\b' <<<"${text}"; then
     return 0
   fi
 
