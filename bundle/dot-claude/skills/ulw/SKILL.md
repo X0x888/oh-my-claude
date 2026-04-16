@@ -7,10 +7,10 @@ model: opus
 ---
 # ULW
 
-Short alias for `/autowork`. Runs the identical maximum-autonomy workflow.
+`/ulw` is a short alias for `/autowork`. The operating rules and execution style live in the autowork skill; the first-response opener and domain-specific routing are injected by the UserPromptSubmit hook at runtime. Do not restate the autowork rules or the hook-injected framing in this file.
 
 Primary task:
 
 $ARGUMENTS
 
-Follow the `/autowork` operating rules and thinking requirements exactly. In your first response, open with `**Ultrawork mode active.**` in bold, then state the classified domain and first action you will take.
+Apply the autowork rules to the task above.

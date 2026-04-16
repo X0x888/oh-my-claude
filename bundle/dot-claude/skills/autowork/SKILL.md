@@ -17,7 +17,7 @@ $ARGUMENTS
 
 1. Classify prompt intent: execution, continuation, advisory, session-management, or checkpoint. Advisory and session-management prompts should be answered directly without forcing implementation.
 2. Classify task domain: coding, writing, research, operations, mixed, or general. The prompt-intent-router hook injects domain-specific specialist guidance automatically.
-3. Make concrete progress before asking questions. Only pause for external blockers, irreversible decisions, or genuine ambiguity.
+3. Make concrete progress before asking questions. The five-case pause list lives in `core.md` under "Workflow" — do not restate or paraphrase it here. Anything not listed there is yours to decide: pick, note the choice, proceed.
 4. After edits or material changes, run the strongest meaningful verification for the domain.
 5. Before finalizing, run the appropriate review path: `quality-reviewer` for code, `editor-critic` for prose, `metis` or `briefing-analyst` for analysis.
 6. For advisory tasks over codebases (reviews, audits, assessments):
@@ -36,7 +36,12 @@ $ARGUMENTS
 ## Execution style
 
 - Be decisive. The user's request IS the permission.
-- In the first response, open with `**Ultrawork mode active.**` in bold for visual distinction, followed by the classified domain and first action.
+- First-response framing is dictated by the UserPromptSubmit hook based on the classified intent:
+    - `execution` → open with `**Ultrawork mode active.**` followed by a `**Domain:** … | **Intent:** …` line.
+    - `continuation` → open with `**Ultrawork continuation active.**` plus a brief "what's done / what remains / next action".
+    - `advisory`, `session-management`, `checkpoint` → skip the opener entirely; answer directly.
+
+    Follow the hook-injected framing for the current prompt. Never substitute a different opener.
 - Keep user updates short and progress-oriented.
 - Make small, testable, incremental changes — especially for code. Verify each change before moving on.
 - Test rigorously. Run existing tests after edits. Add targeted tests for new behavior.
@@ -44,4 +49,16 @@ $ARGUMENTS
 - Never write placeholder stubs, sycophantic comments, or comments that restate the code.
 - When you cannot verify something reliably, state the exact gap and residual risk.
 - After any quality-gate interruption (stop-guard block, advisory guard, excellence guard) or reviewer pass, restate the key deliverable summary (e.g., the ranked recommendations, execution order, or final answer) at the end of your response so the user does not have to scroll up to find it.
-- Treat the quality reviewer as a defect gate, not the finish line. You are responsible for completeness and excellence — the reviewer catches what you missed, but you should have delivered a complete result before it runs.
+- Treat the quality reviewer as a defect gate, not the finish line. You are responsible for completeness and excellence — the reviewer catches what you missed, but you should have delivered a complete result before it runs. (The "show your work on reviewer findings" requirement lives in `core.md`.)
+
+## Final-mile delivery checklist
+
+Before treating the task as done, confirm:
+
+1. Every explicit request item is delivered. Every reasonably implied item is delivered or explicitly declined with a reason.
+2. New or changed behavior is covered by a test (new test added, existing test updated, or — only when a test is genuinely impossible — a concrete reason recorded).
+3. The strongest meaningful verification for the domain has run and passed. Lint-only checks do not satisfy this for code tasks.
+4. The changed files have been re-read with fresh eyes (or by `quality-reviewer` / `excellence-reviewer` for complex tasks) and any findings are shown in auditable form.
+5. The final user-facing response restates the key deliverable — ranked recommendations, the final answer, file-and-behavior summary — so the user does not have to scroll.
+
+If any row is not satisfied, keep working before stopping.

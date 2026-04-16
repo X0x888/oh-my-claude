@@ -544,28 +544,41 @@ normalize_task_prompt() {
 # Extract the user's task body from a /ulw or /autowork skill-body expansion.
 # When the CLI expands a slash command like `/ulw <task>`, the hook sees the full
 # skill body starting with "Base directory for this skill: ..." followed by
-# "Primary task:" and the user's actual task, then a trailing "Follow the
-# `/autowork` operating rules" instruction. Classifying the full expansion
-# misfires because embedded quoted content in the task body can trip SM/advisory
-# regexes. This helper returns just the user's task body (between the two
-# markers), or exit 1 if the primary-task marker isn't present.
+# "Primary task:" and the user's actual task, then a trailing skill-footer
+# instruction. Classifying the full expansion misfires because embedded quoted
+# content in the task body can trip SM/advisory regexes. This helper returns
+# just the user's task body (between the head marker and the first known
+# skill-footer), or exit 1 if the primary-task marker isn't present.
 #
 # The "Primary task:" marker must be line-anchored (preceded by a newline or at
 # the very start of the text). Real skill bodies always put the marker on its
 # own line; a mid-sentence mention like "the docs say Primary task: should..."
 # would otherwise false-positive and extract the wrong slice of the prompt.
+#
+# Tail-marker list must cover every known ulw/autowork skill footer. Each
+# marker is matched with a leading newline so a user task body that quotes the
+# footer phrase mid-sentence does not get truncated prematurely. When the ulw
+# or autowork SKILL.md footer text changes, add the new literal here so
+# extraction stays aligned with the rendered skill body.
 extract_skill_primary_task() {
   local text="$1"
   local head_marker='Primary task:'
-  local tail_marker="Follow the \`/autowork\`"
+  local tail_markers=(
+    "Follow the \`/autowork\`"
+    "Apply the autowork rules to the task above."
+  )
 
   # Line-anchored marker check: either at the start of text, or after a newline.
   if [[ "${text}" != "${head_marker}"* ]] && [[ "${text}" != *$'\n'"${head_marker}"* ]]; then
     return 1
   fi
 
-  local after="${text#*"${head_marker}"}"
-  local body="${after%%"${tail_marker}"*}"
+  local body="${text#*"${head_marker}"}"
+  local tm anchored
+  for tm in "${tail_markers[@]}"; do
+    anchored=$'\n'"${tm}"
+    body="${body%%"${anchored}"*}"
+  done
 
   body="$(trim_whitespace "${body}")"
   [[ -n "${body}" ]] || return 1

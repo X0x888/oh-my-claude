@@ -219,7 +219,22 @@ if grep -Eiq '(^|[^[:alnum:]_-])(ultrawork|ulw|autowork|sisyphus)([^[:alnum:]_-]
   if [[ "${session_management_prompt}" -eq 0 && "${checkpoint_prompt}" -eq 0 ]]; then
     case "${TASK_DOMAIN}" in
       coding)
-        context_parts+=("Detected likely task domain: coding. For non-trivial work use quality-planner or prometheus first — the planner should scope both explicit requirements and implied scope (what a veteran would also deliver). Use quality-researcher for local repo wiring, librarian for official docs and reference implementations, metis to pressure-test risky plans, oracle when stuck or debugging deeply, specialist engineering agents when relevant. Make changes incrementally — one logical change, verify it, then proceed. Test rigorously after edits — failing to test is the #1 failure mode. Before invoking the reviewer, self-assess: enumerate every component of the request and verify each is delivered. Run quality-reviewer before stopping. For complex or multi-file tasks, also run excellence-reviewer after defects are addressed for a fresh-eyes completeness and polish evaluation. Never write placeholder stubs or sycophantic comments.")
+        context_parts+=("Detected likely task domain: coding.
+Route by task shape:
+- broad or underspecified work → prometheus for interview-first scoping
+- non-trivial but specified work → quality-planner to scope explicit and implied requirements
+- local repo conventions or APIs unclear → quality-researcher
+- library, framework, or external API usage → librarian for official docs and reference implementations (or the context7 MCP when that plugin is installed) to confirm current syntax before writing code that calls it
+- risky plan → metis to pressure-test hidden assumptions
+- hard debugging or architecture uncertainty → oracle
+- domain-specific execution → the closest specialist engineering agent
+Discipline:
+- Make changes incrementally — one logical change, verify it, then proceed.
+- Test rigorously after edits — failing to test is the #1 failure mode.
+- Before invoking the reviewer, self-assess: enumerate every component of the request and verify each is delivered.
+- Run quality-reviewer before stopping. For complex or multi-file tasks, also run excellence-reviewer after defects are addressed for a fresh-eyes completeness and polish evaluation.
+- Never write placeholder stubs or sycophantic comments.
+- Never call an unfamiliar or version-sensitive library/API from memory — confirm the surface in current docs first.")
         ;;
       writing)
         context_parts+=("Detected likely task domain: writing. Detect the document type early: formal (paper, report, proposal), informal (email, blog, memo), creative (essay, narrative), technical (docs, API reference), or professional (cover letter, SOP, statement). Route the specialist chain accordingly — formal documents benefit from writing-architect for structure; creative work needs less scaffolding. Clarify audience, purpose, format, tone, and constraints early. Use writing-architect for structure when needed, librarian for factual support, draft-writer for the draft, editor-critic before finalizing. Do not invent facts, citations, or quotations — mark uncertain details explicitly. For verification: check structural completeness against the stated purpose, cross-reference factual claims against sources, and use available prose linting tools (markdownlint, vale, textlint) when the output format supports them.")

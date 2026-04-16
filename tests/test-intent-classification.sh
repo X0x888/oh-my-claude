@@ -272,6 +272,22 @@ assert_extraction "$(printf 'Primary task:\n\nDo X')" "Do X"
 # Leading /ulw inside task body is preserved (classify path handles stripping)
 assert_extraction "$(printf 'Primary task:\n\n/ulw Do X\n\nFollow the `/autowork` operating rules.')" "/ulw Do X"
 
+# New ulw/SKILL.md footer: "Apply the autowork rules to the task above." must
+# be stripped by extraction so the classifier sees only the user's task body.
+assert_extraction "$(printf 'Base directory: /x\n\n# ULW\n\nPrimary task:\n\nDo the thing\n\nApply the autowork rules to the task above.')" "Do the thing"
+
+# Both legacy and current tails in one body (unlikely but must still extract cleanly).
+assert_extraction "$(printf 'Primary task:\n\nDo the thing\n\nFollow the `/autowork` operating rules.\nApply the autowork rules to the task above.')" "Do the thing"
+
+# Tail-phrase appearing inside the user's task body must NOT truncate the
+# extraction. The footer phrase is only stripped when it appears as a footer
+# (line-anchored). Regression guard: a task that quotes the footer phrase
+# mid-sentence should be preserved intact.
+assert_extraction "$(printf 'Primary task:\n\nFix the line that says Apply the autowork rules to the task above. in SKILL.md\n\nApply the autowork rules to the task above.')" "Fix the line that says Apply the autowork rules to the task above. in SKILL.md"
+
+# Same guard for the legacy footer phrase.
+assert_extraction "$(printf 'Primary task:\n\nRewrite the sentence: Follow the `/autowork` operating rules everywhere.\n\nFollow the `/autowork` operating rules.')" "Rewrite the sentence: Follow the \`/autowork\` operating rules everywhere."
+
 # Mid-sentence false-positive guard: the marker must be line-anchored.
 # "Hello. The docs say Primary task: should be something." is not a skill body
 # and must NOT trigger extraction (regression: previously extracted wrongly).
