@@ -142,7 +142,7 @@ cd /path/to/oh-my-claude
 diff -rq bundle/dot-claude ~/.claude 2>/dev/null | grep -v "^Only in /Users" | head
 ```
 
-Files listed as `differ` mean the live harness and the bundled release diverge — typically because you pulled but didn't re-install. Another symptom: `bash verify.sh` reports an older `Version:` than `cat VERSION`. The statusline also flags this: when the bundle falls behind the source repo, a yellow `↑v<repo-version>` appears next to the dim installed-version tag on line 1. Fix: `git pull && bash install.sh`. Your `settings.json` merges, `omc-user/overrides.md`, and custom agents/skills outside the bundle are preserved; bundled files get overwritten and a timestamped backup is created under `~/.claude/backups/`. Suppress the indicator with `installation_drift_check=false` in `~/.claude/oh-my-claude.conf` (or the matching `OMC_INSTALLATION_DRIFT_CHECK=false` env var).
+Files listed as `differ` mean the live harness and the bundled release diverge — typically because you pulled but didn't re-install. Another symptom: `bash verify.sh` reports an older `Version:` than `cat VERSION`. The statusline also flags this: when the bundle falls behind the source repo, a yellow `↑v<repo-version>` appears next to the dim installed-version tag. Fix: `git pull && bash install.sh`. Your `settings.json` merges, `omc-user/overrides.md`, and custom agents/skills outside the bundle are preserved; bundled files get overwritten and a timestamped backup is created under `~/.claude/backups/`. Suppress the indicator with `installation_drift_check=false` in `~/.claude/oh-my-claude.conf` (or `OMC_INSTALLATION_DRIFT_CHECK=false`).
 
 ### The "historical defect patterns" watch list shows inflated counts from older sessions — can I reset it?
 

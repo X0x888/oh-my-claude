@@ -181,9 +181,10 @@ def installation_drift(installed):
 
     For dotted-int versions, the indicator only fires when the repo is
     strictly newer than the bundle — so a user bisecting on an older tag
-    locally does not see a misleading "upgrade available" arrow. For
-    non-numeric versions (e.g. pre-release tags), falls back to plain
-    inequality so the signal still surfaces.
+    locally does not see a misleading "upgrade available" arrow. If
+    either side fails dotted-int parsing (e.g. a pre-release tag like
+    `1.7.0-rc1`), falls back to plain string inequality so the signal
+    still surfaces.
 
     Silently returns None when the check is disabled, when there is no
     installed version, when `repo_path` is unset, or when the VERSION

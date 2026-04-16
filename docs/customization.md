@@ -191,7 +191,7 @@ The stop guard already skips the verification check for writing, research, opera
 
 ### Configurable thresholds
 
-Five key thresholds can be tuned via `~/.claude/oh-my-claude.conf` without editing hook scripts:
+Several configurable thresholds can be tuned via `~/.claude/oh-my-claude.conf` without editing hook scripts:
 
 | Key | Default | What it controls |
 |-----|---------|-----------------|
@@ -202,7 +202,7 @@ Five key thresholds can be tuned via `~/.claude/oh-my-claude.conf` without editi
 | `state_ttl_days` | `7` | Days before stale session state directories are swept |
 | `verify_confidence_threshold` | `40` | Minimum verification confidence (0-100) to pass the quality gate |
 | `custom_verify_mcp_tools` | _(empty)_ | Pipe-separated glob patterns for additional MCP tools that count as verification (e.g. `mcp__my_cypress__*`). Also requires a matching PostToolUse hook entry in `settings.json`. |
-| `installation_drift_check` | `true` | When `true`, the statusline appends a yellow `↑v<repo>` segment whenever the bundled `installed_version` differs from `${repo_path}/VERSION`. Surfaces the "I pulled but forgot to re-run `install.sh`" case. Local-only check; no network. Set to `false` to suppress the indicator. |
+| `installation_drift_check` | `true` | When `true`, the statusline appends a yellow `↑v<repo>` segment whenever `${repo_path}/VERSION` is newer than the bundled `installed_version` (semver-aware; deliberate downgrades do not trigger). Surfaces the "I pulled but forgot to re-run `install.sh`" case. Requires `repo_path` to be present in the conf — `install.sh` writes it on every install. Local-only check; no network. Set to `false` to suppress the indicator. |
 
 Example `~/.claude/oh-my-claude.conf`:
 
