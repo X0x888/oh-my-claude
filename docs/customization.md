@@ -202,6 +202,7 @@ Five key thresholds can be tuned via `~/.claude/oh-my-claude.conf` without editi
 | `state_ttl_days` | `7` | Days before stale session state directories are swept |
 | `verify_confidence_threshold` | `40` | Minimum verification confidence (0-100) to pass the quality gate |
 | `custom_verify_mcp_tools` | _(empty)_ | Pipe-separated glob patterns for additional MCP tools that count as verification (e.g. `mcp__my_cypress__*`). Also requires a matching PostToolUse hook entry in `settings.json`. |
+| `installation_drift_check` | `true` | When `true`, the statusline appends a yellow `↑v<repo>` segment whenever the bundled `installed_version` differs from `${repo_path}/VERSION`. Surfaces the "I pulled but forgot to re-run `install.sh`" case. Local-only check; no network. Set to `false` to suppress the indicator. |
 
 Example `~/.claude/oh-my-claude.conf`:
 
@@ -212,9 +213,10 @@ dimension_gate_file_count=5
 traceability_file_count=10
 state_ttl_days=14
 verify_confidence_threshold=40
+installation_drift_check=true
 ```
 
-Values can also be overridden via environment variables (`OMC_STALL_THRESHOLD`, `OMC_EXCELLENCE_FILE_COUNT`, `OMC_DIMENSION_GATE_FILE_COUNT`, `OMC_TRACEABILITY_FILE_COUNT`, `OMC_STATE_TTL_DAYS`, `OMC_VERIFY_CONFIDENCE_THRESHOLD`, `OMC_CUSTOM_VERIFY_MCP_TOOLS`). Environment variables take precedence over the conf file, and both override the built-in defaults.
+Values can also be overridden via environment variables (`OMC_STALL_THRESHOLD`, `OMC_EXCELLENCE_FILE_COUNT`, `OMC_DIMENSION_GATE_FILE_COUNT`, `OMC_TRACEABILITY_FILE_COUNT`, `OMC_STATE_TTL_DAYS`, `OMC_VERIFY_CONFIDENCE_THRESHOLD`, `OMC_CUSTOM_VERIFY_MCP_TOOLS`, `OMC_INSTALLATION_DRIFT_CHECK`). Environment variables take precedence over the conf file, and both override the built-in defaults.
 
 ---
 

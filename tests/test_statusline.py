@@ -235,6 +235,238 @@ class TestInstalledVersion(unittest.TestCase):
             os.path.expanduser = orig
 
 
+class TestInstallationDrift(unittest.TestCase):
+    """Local stale-install detection: bundle version vs. source repo VERSION."""
+
+    def _write_conf(self, claude_dir, **kv):
+        os.makedirs(claude_dir, exist_ok=True)
+        conf = os.path.join(claude_dir, "oh-my-claude.conf")
+        with open(conf, "w") as f:
+            f.write("# header comment\n\n")
+            for k, v in kv.items():
+                f.write(f"{k}={v}\n")
+
+    def _write_version(self, repo_dir, version):
+        os.makedirs(repo_dir, exist_ok=True)
+        with open(os.path.join(repo_dir, "VERSION"), "w") as f:
+            f.write(version + "\n")
+
+    def _patched_expanduser(self, tmpdir):
+        return lambda p: p.replace("~", tmpdir)
+
+    def test_no_installed_version_returns_none(self):
+        self.assertIsNone(sl.installation_drift(None))
+        self.assertIsNone(sl.installation_drift(""))
+
+    def test_match_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = os.path.join(tmpdir, ".claude")
+            repo_dir = os.path.join(tmpdir, "repo")
+            self._write_conf(claude_dir, repo_path=repo_dir, installed_version="1.5.0")
+            self._write_version(repo_dir, "1.5.0")
+            orig = os.path.expanduser
+            os.path.expanduser = self._patched_expanduser(tmpdir)
+            try:
+                self.assertIsNone(sl.installation_drift("1.5.0"))
+            finally:
+                os.path.expanduser = orig
+
+    def test_mismatch_returns_repo_version(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = os.path.join(tmpdir, ".claude")
+            repo_dir = os.path.join(tmpdir, "repo")
+            self._write_conf(claude_dir, repo_path=repo_dir, installed_version="1.5.0")
+            self._write_version(repo_dir, "1.6.0")
+            orig = os.path.expanduser
+            os.path.expanduser = self._patched_expanduser(tmpdir)
+            try:
+                self.assertEqual(sl.installation_drift("1.5.0"), "1.6.0")
+            finally:
+                os.path.expanduser = orig
+
+    def test_disabled_via_conf_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = os.path.join(tmpdir, ".claude")
+            repo_dir = os.path.join(tmpdir, "repo")
+            self._write_conf(
+                claude_dir,
+                repo_path=repo_dir,
+                installed_version="1.5.0",
+                installation_drift_check="false",
+            )
+            self._write_version(repo_dir, "1.6.0")
+            orig = os.path.expanduser
+            os.path.expanduser = self._patched_expanduser(tmpdir)
+            try:
+                self.assertIsNone(sl.installation_drift("1.5.0"))
+            finally:
+                os.path.expanduser = orig
+
+    def test_disabled_via_env_var_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = os.path.join(tmpdir, ".claude")
+            repo_dir = os.path.join(tmpdir, "repo")
+            self._write_conf(claude_dir, repo_path=repo_dir, installed_version="1.5.0")
+            self._write_version(repo_dir, "1.6.0")
+            orig_expand = os.path.expanduser
+            os.path.expanduser = self._patched_expanduser(tmpdir)
+            os.environ["OMC_INSTALLATION_DRIFT_CHECK"] = "false"
+            try:
+                self.assertIsNone(sl.installation_drift("1.5.0"))
+            finally:
+                os.path.expanduser = orig_expand
+                del os.environ["OMC_INSTALLATION_DRIFT_CHECK"]
+
+    def test_disable_accepts_other_falsy_variants(self):
+        for variant in ("0", "off", "no", "FALSE"):
+            with self.subTest(variant=variant):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    claude_dir = os.path.join(tmpdir, ".claude")
+                    repo_dir = os.path.join(tmpdir, "repo")
+                    self._write_conf(
+                        claude_dir,
+                        repo_path=repo_dir,
+                        installed_version="1.5.0",
+                        installation_drift_check=variant,
+                    )
+                    self._write_version(repo_dir, "1.6.0")
+                    orig = os.path.expanduser
+                    os.path.expanduser = self._patched_expanduser(tmpdir)
+                    try:
+                        self.assertIsNone(sl.installation_drift("1.5.0"))
+                    finally:
+                        os.path.expanduser = orig
+
+    def test_downgrade_does_not_render_arrow(self):
+        """Bisecting an older tag locally must not produce a misleading arrow."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = os.path.join(tmpdir, ".claude")
+            repo_dir = os.path.join(tmpdir, "repo")
+            self._write_conf(claude_dir, repo_path=repo_dir, installed_version="1.7.0")
+            self._write_version(repo_dir, "1.5.0")
+            orig = os.path.expanduser
+            os.path.expanduser = self._patched_expanduser(tmpdir)
+            try:
+                self.assertIsNone(sl.installation_drift("1.7.0"))
+            finally:
+                os.path.expanduser = orig
+
+    def test_multiline_version_uses_first_line(self):
+        """A VERSION file with trailing build metadata must not break rendering."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = os.path.join(tmpdir, ".claude")
+            repo_dir = os.path.join(tmpdir, "repo")
+            self._write_conf(claude_dir, repo_path=repo_dir, installed_version="1.5.0")
+            os.makedirs(repo_dir)
+            with open(os.path.join(repo_dir, "VERSION"), "w") as f:
+                f.write("1.7.0\nbuild-metadata-line\n")
+            orig = os.path.expanduser
+            os.path.expanduser = self._patched_expanduser(tmpdir)
+            try:
+                result = sl.installation_drift("1.5.0")
+                self.assertEqual(result, "1.7.0")
+                self.assertNotIn("\n", result)
+            finally:
+                os.path.expanduser = orig
+
+    def test_non_semver_falls_back_to_inequality(self):
+        """When versions can't be parsed numerically, plain neq still triggers."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = os.path.join(tmpdir, ".claude")
+            repo_dir = os.path.join(tmpdir, "repo")
+            self._write_conf(claude_dir, repo_path=repo_dir, installed_version="1.7.0-rc1")
+            self._write_version(repo_dir, "1.7.0-rc2")
+            orig = os.path.expanduser
+            os.path.expanduser = self._patched_expanduser(tmpdir)
+            try:
+                self.assertEqual(sl.installation_drift("1.7.0-rc1"), "1.7.0-rc2")
+            finally:
+                os.path.expanduser = orig
+
+    def test_missing_repo_path_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = os.path.join(tmpdir, ".claude")
+            self._write_conf(claude_dir, installed_version="1.5.0")
+            orig = os.path.expanduser
+            os.path.expanduser = self._patched_expanduser(tmpdir)
+            try:
+                self.assertIsNone(sl.installation_drift("1.5.0"))
+            finally:
+                os.path.expanduser = orig
+
+    def test_missing_version_file_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = os.path.join(tmpdir, ".claude")
+            repo_dir = os.path.join(tmpdir, "moved-away")
+            self._write_conf(claude_dir, repo_path=repo_dir, installed_version="1.5.0")
+            # Note: repo_dir intentionally not created — simulates moved/removed clone.
+            orig = os.path.expanduser
+            os.path.expanduser = self._patched_expanduser(tmpdir)
+            try:
+                self.assertIsNone(sl.installation_drift("1.5.0"))
+            finally:
+                os.path.expanduser = orig
+
+    def test_empty_version_file_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = os.path.join(tmpdir, ".claude")
+            repo_dir = os.path.join(tmpdir, "repo")
+            self._write_conf(claude_dir, repo_path=repo_dir, installed_version="1.5.0")
+            os.makedirs(repo_dir)
+            with open(os.path.join(repo_dir, "VERSION"), "w") as f:
+                f.write("\n")
+            orig = os.path.expanduser
+            os.path.expanduser = self._patched_expanduser(tmpdir)
+            try:
+                self.assertIsNone(sl.installation_drift("1.5.0"))
+            finally:
+                os.path.expanduser = orig
+
+    def test_render_includes_drift_arrow(self):
+        """End-to-end: a stale install renders the upgrade arrow on line 1."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = os.path.join(tmpdir, ".claude")
+            repo_dir = os.path.join(tmpdir, "repo")
+            self._write_conf(claude_dir, repo_path=repo_dir, installed_version="1.5.0")
+            self._write_version(repo_dir, "1.7.0")
+            env = dict(os.environ)
+            env["HOME"] = tmpdir
+            result = subprocess.run(
+                [sys.executable, STATUSLINE_PATH],
+                input="{}",
+                capture_output=True,
+                text=True,
+                timeout=5,
+                env=env,
+            )
+            self.assertEqual(result.returncode, 0)
+            line_one = result.stdout.split("\n")[0]
+            self.assertIn("v1.5.0", line_one)
+            self.assertIn("\u2191v1.7.0", line_one)
+
+    def test_render_omits_arrow_when_in_sync(self):
+        """End-to-end: matching versions render no upgrade arrow."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = os.path.join(tmpdir, ".claude")
+            repo_dir = os.path.join(tmpdir, "repo")
+            self._write_conf(claude_dir, repo_path=repo_dir, installed_version="1.7.0")
+            self._write_version(repo_dir, "1.7.0")
+            env = dict(os.environ)
+            env["HOME"] = tmpdir
+            result = subprocess.run(
+                [sys.executable, STATUSLINE_PATH],
+                input="{}",
+                capture_output=True,
+                text=True,
+                timeout=5,
+                env=env,
+            )
+            self.assertEqual(result.returncode, 0)
+            line_one = result.stdout.split("\n")[0]
+            self.assertIn("v1.7.0", line_one)
+            self.assertNotIn("\u2191", line_one)
+
+
 class TestMainIntegration(unittest.TestCase):
     """Test the full statusline by running the script as a subprocess."""
 

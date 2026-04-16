@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Stale-install indicator on the statusline** — when `${repo_path}/VERSION` is newer than the bundle's recorded `installed_version`, the statusline appends a yellow `↑v<repo>` next to the dim `v<installed>` tag. Surfaces the "I pulled but forgot to re-run `install.sh`" case. Local-only — zero network calls. Comparison is semver-aware so a deliberate downgrade (e.g. local bisect) does not trigger; non-numeric versions fall back to plain inequality. Disable via `installation_drift_check=false` in `oh-my-claude.conf` or `OMC_INSTALLATION_DRIFT_CHECK=false`. Covered in `docs/customization.md`, `docs/faq.md`, and the README Updating section.
+
 ## [1.7.0] - 2026-04-16
 
 ### Added

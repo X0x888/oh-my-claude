@@ -133,17 +133,86 @@ def git_info(cwd):
     return payload
 
 
-def installed_version():
-    """Read installed_version from oh-my-claude.conf, or None."""
+def _read_conf():
+    """Read key=value pairs from ~/.claude/oh-my-claude.conf into a dict.
+
+    Last write wins on duplicate keys, matching the `set_conf` semantics
+    in install.sh (which strips prior occurrences before appending). Blank
+    lines and `#` comments are ignored. Returns an empty dict on missing
+    or unreadable files.
+    """
     conf_path = os.path.join(os.path.expanduser("~"), ".claude", "oh-my-claude.conf")
+    result = {}
     try:
         with open(conf_path, "r", encoding="utf-8") as fh:
             for line in fh:
-                if line.startswith("installed_version="):
-                    return line.split("=", 1)[1].strip()
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                result[key.strip()] = value.strip()
     except (FileNotFoundError, OSError):
         pass
-    return None
+    return result
+
+
+def installed_version():
+    """Read installed_version from oh-my-claude.conf, or None."""
+    return _read_conf().get("installed_version") or None
+
+
+def _parse_version(value):
+    """Parse a dotted-int version (e.g. "1.7.0") into a tuple, or None."""
+    if not value:
+        return None
+    try:
+        return tuple(int(part) for part in value.split("."))
+    except (ValueError, AttributeError):
+        return None
+
+
+def installation_drift(installed):
+    """Return the repo VERSION when the source repo is ahead of the bundle.
+
+    The repo path is recorded by `install.sh` as `repo_path` in
+    `~/.claude/oh-my-claude.conf`. Drift is detected by reading the first
+    line of `${repo_path}/VERSION` and comparing it against the installed
+    bundle's recorded version.
+
+    For dotted-int versions, the indicator only fires when the repo is
+    strictly newer than the bundle — so a user bisecting on an older tag
+    locally does not see a misleading "upgrade available" arrow. For
+    non-numeric versions (e.g. pre-release tags), falls back to plain
+    inequality so the signal still surfaces.
+
+    Silently returns None when the check is disabled, when there is no
+    installed version, when `repo_path` is unset, or when the VERSION
+    file is missing/unreadable (e.g. the clone was moved). Disable via
+    `installation_drift_check=false` in the conf or
+    `OMC_INSTALLATION_DRIFT_CHECK=false`.
+    """
+    if not installed:
+        return None
+    conf = _read_conf()
+    flag = os.environ.get("OMC_INSTALLATION_DRIFT_CHECK", conf.get("installation_drift_check", "true"))
+    if flag.strip().lower() in {"false", "0", "no", "off"}:
+        return None
+    repo_path = conf.get("repo_path")
+    if not repo_path:
+        return None
+    try:
+        with open(os.path.join(repo_path, "VERSION"), "r", encoding="utf-8") as fh:
+            upstream = fh.readline().strip()
+    except (FileNotFoundError, OSError):
+        return None
+    if not upstream or upstream == installed:
+        return None
+    upstream_parsed = _parse_version(upstream)
+    installed_parsed = _parse_version(installed)
+    if upstream_parsed is not None and installed_parsed is not None:
+        if upstream_parsed <= installed_parsed:
+            return None
+    return upstream
 
 
 def harness_health():
@@ -210,6 +279,7 @@ def main():
 
     ulw_domain = ulw_info()
     omc_version = installed_version()
+    omc_drift = installation_drift(omc_version)
 
     line_one_parts = [
         color(f"[{model_name}]", CYAN),
@@ -224,6 +294,8 @@ def main():
     line_one_parts.append(color(f"style:{style_name}", f"{DIM}{BLUE}"))
     if omc_version:
         line_one_parts.append(color(f"v{omc_version}", f"{DIM}{WHITE}"))
+        if omc_drift:
+            line_one_parts.append(color(f"\u2191v{omc_drift}", YELLOW))
 
     total_in = safe_get(data, "context_window", "total_input_tokens", default=0)
     total_out = safe_get(data, "context_window", "total_output_tokens", default=0)
