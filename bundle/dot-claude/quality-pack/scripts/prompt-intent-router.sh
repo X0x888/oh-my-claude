@@ -221,8 +221,8 @@ if grep -Eiq '(^|[^[:alnum:]_-])(ultrawork|ulw|autowork|sisyphus)([^[:alnum:]_-]
       context_parts+=("Preserved active objective in the background: ${previous_objective}")
     fi
   else
-    context_parts+=("Ultrawork mode is active for this session. In your first user-facing response, start with the bold phrase **Ultrawork mode active.** as the opening line for visual distinction, then state the classified domain and first action you will take. Classify the task as coding, writing, research, operations, mixed, or general, then adapt the workflow to that domain. Use the strongest specialist path available, keep momentum high, and do not stop early. Do not segment unfinished work into 'wave 1 done, wave 2 next' or 'ready for a new session' unless the user explicitly asked for a checkpoint.")
-    context_parts+=("Detected intent: ${display_intent}. Detected domain: ${TASK_DOMAIN}. Surface these classifications in your first response so the user can verify routing is correct — e.g., '**Domain:** ${TASK_DOMAIN} | **Intent:** ${display_intent}'. If the user corrects the classification, adjust immediately.")
+    context_parts+=("Ultrawork mode is active for this session. In your first user-facing response, start with the bold phrase **Ultrawork mode active.** as the opening line for visual distinction. Use the strongest specialist path available, keep momentum high, and do not stop early. Do not segment unfinished work into 'wave 1 done, wave 2 next' or 'ready for a new session' unless the user explicitly asked for a checkpoint.")
+    context_parts+=("Detected intent: ${display_intent}. Detected domain: ${TASK_DOMAIN}. Surface the classification right after the opener — '**Domain:** ${TASK_DOMAIN} | **Intent:** ${display_intent}' — followed by the first action you will take, so the user can verify routing is correct. If the user corrects the classification, adjust immediately.")
   fi
 
   if [[ "${session_management_prompt}" -eq 0 && "${checkpoint_prompt}" -eq 0 ]]; then
