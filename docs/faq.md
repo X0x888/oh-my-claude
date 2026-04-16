@@ -135,9 +135,10 @@ The agent hit context exhaustion mid-generation. Claude Code sub-agents have the
 
 ### My live harness seems behind the latest release — how do I tell, and how do I fix it?
 
-The installer does not auto-upgrade. After pulling the repo you must re-run `bash install.sh` to sync `~/.claude/` with the new bundle. Quick diagnostic:
+The installer does not auto-upgrade. After pulling the repo you must re-run `bash install.sh` to sync `~/.claude/` with the new bundle. Quick diagnostic (run from the repo root):
 
 ```bash
+cd /path/to/oh-my-claude
 diff -rq bundle/dot-claude ~/.claude 2>/dev/null | grep -v "^Only in /Users" | head
 ```
 
@@ -145,7 +146,7 @@ Files listed as `differ` mean the live harness and the bundled release diverge �
 
 ### The "historical defect patterns" watch list shows inflated counts from older sessions — can I reset it?
 
-Yes. Cross-session defect telemetry lives at `~/.claude/quality-pack/defect-patterns.json`. Older versions of `record-reviewer.sh` inflated categories like `missing_test`, `unknown`, and `security` by classifying reviewer narration prose instead of structured findings (fixed in v1.7.0). If the injected watch list still shows those old counts, you can reset without losing session state:
+Yes. Cross-session defect telemetry lives at `~/.claude/quality-pack/defect-patterns.json`. Older versions of `record-reviewer.sh` inflated categories like `missing_test`, `unknown`, and `security` by classifying reviewer narration prose instead of structured findings — see the *Fixed* section of the [CHANGELOG](../CHANGELOG.md) for the specific release that narrowed the classifier. If the injected watch list still shows those old counts, you can reset without losing session state:
 
 ```bash
 rm -f ~/.claude/quality-pack/defect-patterns.json

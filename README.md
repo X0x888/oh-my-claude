@@ -31,7 +31,7 @@ Then jump into real work:
 /ulw fix the failing test and add regression coverage
 ```
 
-**Already installed?** Pull + re-install to pick up new releases — `install.sh` overwrites the bundled hooks, agents, skills, and memory files in `~/.claude/` but preserves your `settings.json` merges, `omc-user/overrides.md`, and custom agents:
+**Already installed?** Pull + re-install to pick up new releases — `install.sh` overwrites the bundled hooks, agents, skills, and memory files in `~/.claude/` but preserves your `settings.json` merges, `omc-user/overrides.md`, and any custom agents or skills whose names are outside the bundle (a user-created `oracle.md` *would* get overwritten because `oracle.md` is bundled; `my-reviewer.md` would not):
 
 ```bash
 cd /path/to/oh-my-claude
