@@ -201,7 +201,7 @@ Session state is stored at:
 | `last_verify_ts` | Epoch timestamp of the last test/build/lint verification |
 | `last_verify_cmd` | The verification command that was run |
 | `last_verify_confidence` | Integer 0-100 score of the last verification (lint-only ≈ 30, framework runs ≈ 50+, project test suites ≈ 70+); compared against `OMC_VERIFY_CONFIDENCE_THRESHOLD` by stop-guard |
-| `last_verify_method` | Source classification of the last verification: `bash` for Bash-command checks, `mcp` for Playwright/computer-use observations |
+| `last_verify_method` | Classification of the last verification signal. Bash-command checks resolve to one of `project_test_command`, `framework_keyword`, `output_signal`, or `builtin_verification` (see `detect_verification_method` in `common.sh`). MCP observations resolve to `mcp_<check_type>` (e.g. `mcp_browser_visual_check`, `mcp_browser_console_check`). |
 | `last_review_ts` | Epoch timestamp of the last reviewer agent completion (any code-side reviewer) |
 | `last_doc_review_ts` | Epoch timestamp of the last editor-critic (prose) completion |
 | `last_advisory_verify_ts` | Epoch timestamp of the last code inspection during advisory tasks |
