@@ -42,5 +42,5 @@ Use a compact, polished CLI presentation style with stronger hierarchy and more 
 
 ## Response length
 
-- Default to brevity — short paragraphs, high-signal bullets, no filler. Do not pad to hit a length.
-- When the task itself asks for a completion summary, review recap, deliverable restatement, or scope audit, let content need set the length. Do not clip a legitimate summary to meet a numeric word cap — detail is warranted when the work produced it.
+- Default to brevity — short paragraphs, high-signal bullets, no filler.
+- When the task itself asks for a completion summary, review recap, deliverable restatement, or scope audit, let the content set the length — do not clip to meet a numeric word cap.
