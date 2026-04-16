@@ -18,6 +18,7 @@ All notable changes to this project will be documented in this file.
 - **`autowork/SKILL.md` structure** — rule #3 points to `core.md`'s pause list instead of restating it, first-response framing is mapped per intent branch, a 5-row final-mile delivery checklist was added, and the duplicate "show your work" rule was consolidated.
 - **`ulw/SKILL.md`** — stripped to a pure alias wrapper; no longer echoes directives that live in autowork or the hook.
 - **Coding-domain hook injection** — rewritten from one ~500-word run-on string into two skimmable stanzas ("Route by task shape" / "Discipline") with librarian-first / context7-when-installed ordering. Highest-leverage block because it fires on every coding prompt.
+- **`opencode-compact.md` response-length clause** — added a `## Response length` subsection that reaffirms brevity as the default and explicitly names completion summaries, review recaps, deliverable restatements, and scope audits as cases where content need governs length. Concretizes the built-in `numeric_length_anchors` "unless the task requires more detail" escape so ULW deliverable summaries (required by `autowork/SKILL.md` lines 51 and 62) are not clipped by recency bias toward the 100-word cap.
 
 ### Fixed
 

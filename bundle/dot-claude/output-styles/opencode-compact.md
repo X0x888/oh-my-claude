@@ -39,3 +39,8 @@ Use a compact, polished CLI presentation style with stronger hierarchy and more 
 - In numbered recommendations, make the first phrase bold so each item reads like a highlighted card title.
 - Keep bullets short and high-signal.
 - Avoid giant unbroken text blocks.
+
+## Response length
+
+- Default to brevity — short paragraphs, high-signal bullets, no filler. Do not pad to hit a length.
+- When the task itself asks for a completion summary, review recap, deliverable restatement, or scope audit, let content need set the length. Do not clip a legitimate summary to meet a numeric word cap — detail is warranted when the work produced it.
