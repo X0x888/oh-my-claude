@@ -7,26 +7,48 @@ All notable changes to this project will be documented in this file.
 ### Added
 
 - **`quality-pack/memory/auto-memory.md`** — new canonical memory file documenting the session-stop and compact-boundary memory-sweep behavior. Loaded for every user via the bundle CLAUDE.md import chain. Replaces a user-override-level rule that was previously ad-hoc per install.
-- **`**Domain:** … | **Intent:** …` classification line on non-execution hook branches** — continuation, advisory, session-management, and checkpoint injections now surface the same classification format as the execution branch so users can verify routing regardless of which branch fired. Intent display is normalized (underscore → hyphen) via a shared `display_intent` helper.
+- **Classification line on non-execution hook branches** — continuation, advisory, session-management, and checkpoint injections now surface `**Domain:** … | **Intent:** …` the same way the execution branch does, so users can verify routing regardless of which branch fired. Intent display is normalized (underscore → hyphen) via a shared `display_intent` helper.
 - **`compact.md` memory sweep section** — instructs Claude to capture auto-memory candidates at compact boundaries, the highest-cost moment for session forgetting. Cross-references `auto-memory.md`.
 - **`docs/prompts.md` autonomy section** — user-facing documentation of the 5-case pause list Claude uses in ulw mode, with a pointer to `core.md` as the canonical source.
-- **Regression tests for defect-classifier extraction** — `test-e2e-hook-sequence.sh` tests 7b and 7c cover the narration-prose-must-not-record and structured-finding-still-records paths.
+- **`session_outcome` state key** — stop-guard records whether the session `completed` (all gates satisfied), was `exhausted` (guard caps reached), or went `abandoned` (TTL-swept without a completed stop). Value is carried into `session_summary.jsonl` for cross-session analytics. Documented in `docs/architecture.md`.
+- **Dimension progress checklist in review-coverage block messages** — when the gate blocks on complex tasks, the block message now shows per-dimension status as `[done]` / `[NEXT] <dim> -> run <reviewer>` / `[    ]` with an `N/M dimensions` counter so the agent knows exactly what's left instead of guessing the next reviewer.
+- **Council evaluation detection widened** — `is_council_evaluation_request` now accepts project-level nouns (extension, site, website, platform, library, package, plugin, framework) with compound-noun exclusions, and Pattern 1 qualifier allows up to 2 intervening adjectives (e.g. "my Chrome extension"). Advisory prompts that trigger council detection receive the council dispatch protocol instead of the narrower "advisory over code" guidance, since council is a superset.
+- **Regression tests** — `test-e2e-hook-sequence.sh` tests 7b and 7c cover the defect-classifier narration-prose-must-not-record and structured-finding-still-records paths; `test-intent-classification.sh` gains 128 new test cases across checkpoint, advisory, imperative, council, and regression sections, plus 4 new tests for footer extraction across legacy/new tail markers and mid-sentence footer-phrase preservation.
 
 ### Changed
 
 - **ULW prompt surface hardening** — `core.md` now has a concrete 5-case pause enumeration (replacing the vague "external blocker / irreversible / ambiguity" form), a first-class `FORBIDDEN` rule against using third-party library SDKs / framework APIs / HTTP endpoints / version-sensitive CLI flags from memory (with an exempt list for ubiquitous POSIX tools), a "show your work on reviewer findings" rule, an anti-gold-plating calibration test, and a clarified parallel-vs-sequential tool-call anti-pattern.
 - **`autowork/SKILL.md` structure** — rule #3 points to `core.md`'s pause list instead of restating it, first-response framing is mapped per intent branch, a 5-row final-mile delivery checklist was added, and the duplicate "show your work" rule was consolidated.
 - **`ulw/SKILL.md`** — stripped to a pure alias wrapper; no longer echoes directives that live in autowork or the hook.
-- **Coding-domain hook injection** — rewritten from one ~500-word run-on string into two skimmable stanzas ("Route by task shape" / "Discipline") with librarian-first / context7-when-installed ordering. Highest-leverage block because it fires on every coding prompt.
+- **Coding-domain hook injection rewritten** — split from one ~500-word run-on string into two skimmable stanzas ("Route by task shape" / "Discipline") with librarian-first / context7-when-installed ordering.
 - **`opencode-compact.md` response-length clause** — new `## Response length` subsection concretizing the `numeric_length_anchors` "unless the task requires more detail" escape, so ULW summary deliverables are not clipped by the 100-word cap.
+- **Intent classifier pipeline rewrite** — `is_checkpoint_request` restructured into a 5-phase architecture (position-independent unambiguous signals → start-of-text phrases → imperative guard → end-of-text patterns with stop-verb context → boundary-scoped ambiguous keywords); `is_imperative_request` gained 38 previously-missing verbs (26 bare, 12 polite-only); `is_advisory_request` tightened standalone `better`, `worth`, `suggest`, `recommend` to require context or derivational form; `is_session_management_request` synced to match. Fixes a misclassification class where audit-style execution prompts were being tagged as checkpoint requests.
+- **Guard exhaustion default** — default `OMC_GUARD_EXHAUSTION_MODE` changed from legacy `warn` to canonical `scorecard`. Legacy names are aliased (`warn → scorecard`, `release → silent`, `strict → block`) so explicit user configs continue to work unchanged. See migration note below.
 
 ### Fixed
 
+- **Lock correctness across cross-session stores** — `with_metrics_lock` and `with_defect_lock` unified to use the same time-based stale-lock recovery and `acquired`-flag release pattern as `with_state_lock`/`with_skips_lock`. Both now fail closed on exhaustion (return 1 without running the command) instead of proceeding unprotected, closing a race where parallel hook invocations could corrupt `agent-metrics.json` or `defect-patterns.json`. Recording functions gained `|| true` guards so lock exhaustion does not kill the caller under `set -e`.
+- **`umask 077` on hook-written files** — `common.sh` now restricts owner-only permissions on all session state, temp files, and logs. Session state contains raw user prompts and assistant messages; this reduces exposure on shared systems.
+- **`validate_session_id` called in resume handler** — defense in depth against path traversal when copying state between session directories. Rejects slashes, null bytes, `..`, and non-`[a-zA-Z0-9_.-]{1,128}` session IDs.
+- **Uninstall coverage** — `uninstall.sh` now removes `agents/design-reviewer.md` and the `skills/frontend-design/` directory (both shipped in v1.3.0 / v1.3.x but previously leaked on uninstall). `verify.sh` now includes `skills/frontend-design/SKILL.md` and `quality-pack/memory/auto-memory.md` in its required-paths check.
 - **Defect-classifier narration noise** — `record-reviewer.sh` no longer falls back to extracting reviewer narration prose when the primary structured-finding regex doesn't match. Previously, intro sentences like "I have a clear picture now. Let me compile my findings…" were being classified by incidental word matches (`test`, `security`), inflating `unknown`, `missing_test`, and `security` defect counts in cross-session telemetry. The primary regex was widened to accept H3/H4 heading-style findings, numbered items with optional bold, bold-labeled bullets, and a broader set of issue keywords.
+- **Footer-extraction regression guard** — `extract_skill_primary_task` accepts both the legacy and new ulw skill footers, and each tail marker is line-anchored (`\n` + marker) so a user task body that quotes the footer phrase mid-sentence is preserved intact instead of being truncated.
 
 ### Migration notes for existing users
 
-If you have the old `## Auto-memory on session wrap-up` section in your personal `~/.claude/omc-user/overrides.md` (from a prior hand-authored setup), you can safely delete that section — the rule now loads canonically from `auto-memory.md`. Your file is not overwritten by `install.sh`, so no automatic migration happens; the duplicate is idempotent (the rule is the same content twice) but adds prompt noise. Replace the whole section with the minimal stub shown in the current `bundle/omc-user-template/overrides.md`.
+**Stale auto-memory section in `omc-user/overrides.md`.** If you have the old `## Auto-memory on session wrap-up` section in your personal `~/.claude/omc-user/overrides.md` (from a hand-authored setup), you can safely delete that section — the rule now loads canonically from `auto-memory.md`. Your file is not overwritten by `install.sh`, so no automatic migration happens; the duplicate is idempotent but adds prompt noise. Replace that section with the minimal stub:
+
+```markdown
+# User Overrides
+
+This file is loaded after oh-my-claude's built-in defaults and is never overwritten by `install.sh`. Add your custom rules, preferences, and behavioral tweaks here.
+
+## Examples
+
+Uncomment and modify any of these to customize your workflow:
+```
+
+**Default `OMC_GUARD_EXHAUSTION_MODE` changed from `warn` to `scorecard`.** These are aliases for the same mode, and `scorecard` is the documented canonical name. If your `oh-my-claude.conf` or environment explicitly sets `guard_exhaustion_mode=warn` / `OMC_GUARD_EXHAUSTION_MODE=warn`, nothing changes — legacy names are still accepted. If you rely on the default, gate exhaustion now emits a quality scorecard rather than a bare warning; this is the documented behavior. No action required unless you prefer `silent` (release without output) or `block` (never release).
 
 ## [1.6.0] - 2026-04-14
 

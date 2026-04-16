@@ -200,6 +200,8 @@ Session state is stored at:
 | `doc_edit_count` | Cached count of unique doc files edited this session |
 | `last_verify_ts` | Epoch timestamp of the last test/build/lint verification |
 | `last_verify_cmd` | The verification command that was run |
+| `last_verify_confidence` | Integer 0-100 score of the last verification (lint-only ≈ 30, framework runs ≈ 50+, project test suites ≈ 70+); compared against `OMC_VERIFY_CONFIDENCE_THRESHOLD` by stop-guard |
+| `last_verify_method` | Source classification of the last verification: `bash` for Bash-command checks, `mcp` for Playwright/computer-use observations |
 | `last_review_ts` | Epoch timestamp of the last reviewer agent completion (any code-side reviewer) |
 | `last_doc_review_ts` | Epoch timestamp of the last editor-critic (prose) completion |
 | `last_advisory_verify_ts` | Epoch timestamp of the last code inspection during advisory tasks |
@@ -227,6 +229,11 @@ Session state is stored at:
 | `excellence_guard_triggered` | Whether the excellence gate has already fired this session (`1` or empty) |
 | `guard_exhausted` | Epoch timestamp when guard caps were reached and stop was allowed |
 | `guard_exhausted_detail` | Diagnostic string showing which gates were still unsatisfied at exhaustion |
+| `session_outcome` | How the session ended: `completed` (all gates satisfied), `exhausted` (guard caps reached), or `abandoned` (TTL-swept without a completed stop). Carried into `session_summary.jsonl` for cross-session analytics. |
+| `session_start_ts` | Epoch timestamp of the first ULW activation in the session; enables session-duration reporting in `/ulw-status` |
+| `subagent_dispatch_count` | Count of Agent tool calls dispatched this session (each `PreToolUse: Agent` increments it); surfaced in `/ulw-status` for cost visibility |
+| `gate_skip_ts` | Epoch timestamp when `/ulw-skip` was last invoked (set by `ulw-skip-register.sh`) |
+| `gate_skip_edit_ts` | Edit clock captured at `/ulw-skip` registration time; stop-guard invalidates the skip if `last_edit_ts` has advanced past this value |
 | `stall_counter` | Consecutive Read/Grep calls without a progress action |
 | `resume_source_session_id` | Session ID of the session this one was resumed from |
 | `last_compact_trigger` | What triggered the last compaction |
