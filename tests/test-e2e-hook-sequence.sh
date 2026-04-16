@@ -322,6 +322,67 @@ teardown_test
 
 
 # -------------------------------------------------------
+# Test 7b: Narration-style findings must NOT pollute defect-pattern tracker.
+# Regression test for the narration-fallback noise bug — reviewer prose like
+# "Let me compile my findings…" used to match the old permissive fallback and
+# record bogus defects classified as "unknown" or "security" (via incidental
+# word matches). The hardened extraction regex should skip such prose; the
+# verdict-level metric is all that should register.
+# -------------------------------------------------------
+setup_test
+init_session "s7b"
+# Purge any prior defect patterns so the count starts at a known state
+defect_file="${TEST_HOME}/.claude/quality-pack/defect-patterns.json"
+rm -f "${defect_file}"
+sim_review "s7b" "I have a clear picture now. Let me compile my findings after careful analysis.
+The tests appear well-structured and the security posture is acceptable.
+VERDICT: FINDINGS (2)"
+# Wait briefly for any backgrounded record_defect_pattern to complete.
+# record-reviewer.sh backgrounds the write, so we give it time before asserting.
+sleep 0.5
+
+assert_eq "narration(v): review_had_findings still captured via VERDICT" "true" "$(read_st "s7b" "review_had_findings")"
+
+if [[ -f "${defect_file}" ]]; then
+  defect_total="$(jq -r '[.[] | select(type=="object") | .count] | add // 0' "${defect_file}" 2>/dev/null || printf '0')"
+else
+  defect_total=0
+fi
+assert_eq "narration(v): no defect pattern recorded from narration-only prose" "0" "${defect_total}"
+teardown_test
+
+
+# -------------------------------------------------------
+# Test 7c: Structured numbered finding still records a defect pattern
+# (complement to 7b — confirms the tightened regex hasn't broken the
+# legitimate path).
+# -------------------------------------------------------
+setup_test
+init_session "s7c"
+defect_file="${TEST_HOME}/.claude/quality-pack/defect-patterns.json"
+rm -f "${defect_file}"
+sim_review "s7c" "1. Missing null check in auth handler — race on session token.
+2. Untested error path in retry logic.
+VERDICT: FINDINGS (2)"
+sleep 0.5
+
+assert_eq "structured(n): review_had_findings true" "true" "$(read_st "s7c" "review_had_findings")"
+
+if [[ -f "${defect_file}" ]]; then
+  defect_total="$(jq -r '[.[] | select(type=="object") | .count] | add // 0' "${defect_file}" 2>/dev/null || printf '0')"
+else
+  defect_total=0
+fi
+# Exactly one pattern entry should have been recorded (one sample per review)
+if [[ "${defect_total}" -ge 1 ]]; then
+  assert_eq "structured(n): defect pattern recorded from numbered finding" "1" "1"
+else
+  assert_eq "structured(n): defect pattern recorded from numbered finding" "1" "${defect_total}"
+fi
+teardown_test
+
+
+# -------------------------------------------------------
 # Test 8: Non-test commands skip verification recording
 # -------------------------------------------------------
 setup_test

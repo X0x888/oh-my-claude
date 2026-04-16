@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- **`quality-pack/memory/auto-memory.md`** — new canonical memory file documenting the session-stop and compact-boundary memory-sweep behavior. Loaded for every user via the bundle CLAUDE.md import chain. Replaces a user-override-level rule that was previously ad-hoc per install.
+- **`**Domain:** … | **Intent:** …` classification line on non-execution hook branches** — continuation, advisory, session-management, and checkpoint injections now surface the same classification format as the execution branch so users can verify routing regardless of which branch fired. Intent display is normalized (underscore → hyphen) via a shared `display_intent` helper.
+- **`compact.md` memory sweep section** — instructs Claude to capture auto-memory candidates at compact boundaries, the highest-cost moment for session forgetting. Cross-references `auto-memory.md`.
+- **`docs/prompts.md` autonomy section** — user-facing documentation of the 5-case pause list Claude uses in ulw mode, with a pointer to `core.md` as the canonical source.
+- **Regression tests for defect-classifier extraction** — `test-e2e-hook-sequence.sh` tests 7b and 7c cover the narration-prose-must-not-record and structured-finding-still-records paths.
+
+### Changed
+
+- **ULW prompt surface hardening** — `core.md` now has a concrete 5-case pause enumeration (replacing the vague "external blocker / irreversible / ambiguity" form), a first-class `FORBIDDEN` rule against using third-party library SDKs / framework APIs / HTTP endpoints / version-sensitive CLI flags from memory (with an exempt list for ubiquitous POSIX tools), a "show your work on reviewer findings" rule, an anti-gold-plating calibration test, and a clarified parallel-vs-sequential tool-call anti-pattern.
+- **`autowork/SKILL.md` structure** — rule #3 points to `core.md`'s pause list instead of restating it, first-response framing is mapped per intent branch, a 5-row final-mile delivery checklist was added, and the duplicate "show your work" rule was consolidated.
+- **`ulw/SKILL.md`** — stripped to a pure alias wrapper; no longer echoes directives that live in autowork or the hook.
+- **Coding-domain hook injection** — rewritten from one ~500-word run-on string into two skimmable stanzas ("Route by task shape" / "Discipline") with librarian-first / context7-when-installed ordering. Highest-leverage block because it fires on every coding prompt.
+
+### Fixed
+
+- **Defect-classifier narration noise** — `record-reviewer.sh` no longer falls back to extracting reviewer narration prose when the primary structured-finding regex doesn't match. Previously, intro sentences like "I have a clear picture now. Let me compile my findings…" were being classified by incidental word matches (`test`, `security`), inflating `unknown`, `missing_test`, and `security` defect counts in cross-session telemetry. The primary regex was widened to accept H3/H4 heading-style findings, numbered items with optional bold, bold-labeled bullets, and a broader set of issue keywords.
+
+### Migration notes for existing users
+
+If you have the old `## Auto-memory on session wrap-up` section in your personal `~/.claude/omc-user/overrides.md` (from a prior hand-authored setup), you can safely delete that section — the rule now loads canonically from `auto-memory.md`. Your file is not overwritten by `install.sh`, so no automatic migration happens; the duplicate is idempotent (the rule is the same content twice) but adds prompt noise. Replace the whole section with the minimal stub shown in the current `bundle/omc-user-template/overrides.md`.
+
 ## [1.6.0] - 2026-04-14
 
 ### Added

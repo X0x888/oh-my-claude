@@ -171,8 +171,14 @@ if grep -Eiq '(^|[^[:alnum:]_-])(ultrawork|ulw|autowork|sisyphus)([^[:alnum:]_-]
 
   log_hook "prompt-intent-router" "ulw=on domain=${TASK_DOMAIN} intent=${TASK_INTENT}"
 
+  # Display form of TASK_INTENT: state-layer uses underscores (session_management),
+  # but the user-visible classification line reads better with hyphens. Normalize
+  # once here so all branches render consistently.
+  display_intent="${TASK_INTENT//_/-}"
+
   if [[ "${continuation_prompt}" -eq 1 ]]; then
     context_parts+=("Ultrawork continuation mode is active for this session. Continue the prior task instead of treating the literal word 'continue' or 'resume' as a new objective. In your first user-facing response, start with the bold phrase **Ultrawork continuation active.** then briefly state what is already done, what remains, and the next concrete action. Reuse finished work, preserve the existing task domain, and only re-dispatch branches that were interrupted or are still missing.")
+    context_parts+=("Surface the classification after the opener — e.g., '**Domain:** ${TASK_DOMAIN} | **Intent:** ${display_intent}' — so the user can verify routing is correct.")
     context_parts+=("Preserved objective: ${previous_objective}")
 
     if [[ -n "${previous_last_assistant}" ]]; then
@@ -189,6 +195,7 @@ if grep -Eiq '(^|[^[:alnum:]_-])(ultrawork|ulw|autowork|sisyphus)([^[:alnum:]_-]
     fi
   elif [[ "${session_management_prompt}" -eq 1 ]]; then
     context_parts+=("Ultrawork intent gate classified this prompt as session-management advice, not execution. Answer the user's question directly. Preserve the active objective instead of treating this prompt as a new task. Do not start implementing more work unless the user explicitly asks you to continue now. If you recommend a fresh session, checkpoint, or pause, explain why cleanly and stop without triggering deferral-style execution pressure.")
+    context_parts+=("Lead your response with the classification line — e.g., '**Domain:** ${TASK_DOMAIN} | **Intent:** ${display_intent}' — before answering, so the user can verify routing is correct.")
     if [[ -n "${previous_objective}" ]]; then
       context_parts+=("Preserved active objective in the background: ${previous_objective}")
     fi
@@ -197,6 +204,7 @@ if grep -Eiq '(^|[^[:alnum:]_-])(ultrawork|ulw|autowork|sisyphus)([^[:alnum:]_-]
     fi
   elif [[ "${advisory_prompt}" -eq 1 ]]; then
     context_parts+=("Ultrawork intent gate classified this prompt as advisory or decision support, not direct execution. Answer the question directly, use the current task state as context if relevant, and do not force implementation unless the user explicitly asks for it.")
+    context_parts+=("Lead your response with the classification line — e.g., '**Domain:** ${TASK_DOMAIN} | **Intent:** ${display_intent}' — before answering, so the user can verify routing is correct.")
     if [[ -n "${previous_objective}" ]]; then
       context_parts+=("Preserved active objective in the background: ${previous_objective}")
     fi
@@ -208,12 +216,13 @@ if grep -Eiq '(^|[^[:alnum:]_-])(ultrawork|ulw|autowork|sisyphus)([^[:alnum:]_-]
     # of advisory's "inspect before recommending" requirement).
   elif [[ "${checkpoint_prompt}" -eq 1 ]]; then
     context_parts+=("Ultrawork intent gate classified this prompt as a checkpoint or pause request. Preserve the active objective, provide a sharp checkpoint, state what is done and what remains, and stop cleanly without forcing full completion in this turn.")
+    context_parts+=("Lead your response with the classification line — e.g., '**Domain:** ${TASK_DOMAIN} | **Intent:** ${display_intent}' — before the checkpoint, so the user can verify routing is correct.")
     if [[ -n "${previous_objective}" ]]; then
       context_parts+=("Preserved active objective in the background: ${previous_objective}")
     fi
   else
     context_parts+=("Ultrawork mode is active for this session. In your first user-facing response, start with the bold phrase **Ultrawork mode active.** as the opening line for visual distinction, then state the classified domain and first action you will take. Classify the task as coding, writing, research, operations, mixed, or general, then adapt the workflow to that domain. Use the strongest specialist path available, keep momentum high, and do not stop early. Do not segment unfinished work into 'wave 1 done, wave 2 next' or 'ready for a new session' unless the user explicitly asked for a checkpoint.")
-    context_parts+=("Detected intent: ${TASK_INTENT}. Detected domain: ${TASK_DOMAIN}. Surface these classifications in your first response so the user can verify routing is correct — e.g., '**Domain:** coding | **Intent:** execution'. If the user corrects the classification, adjust immediately.")
+    context_parts+=("Detected intent: ${display_intent}. Detected domain: ${TASK_DOMAIN}. Surface these classifications in your first response so the user can verify routing is correct — e.g., '**Domain:** ${TASK_DOMAIN} | **Intent:** ${display_intent}'. If the user corrects the classification, adjust immediately.")
   fi
 
   if [[ "${session_management_prompt}" -eq 0 && "${checkpoint_prompt}" -eq 0 ]]; then

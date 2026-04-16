@@ -176,20 +176,25 @@ fi
 record_agent_metric "${REVIEWER_TYPE}" "${metric_verdict}" "${metric_confidence}" &
 
 # --- Cross-session defect pattern recording ---
-# When findings are detected, extract a summary line and classify the defect.
+# When findings are detected, extract a *structured* finding bullet and
+# classify the defect category. Extraction is strict by design: reviewer
+# narration prose (e.g. "I have a clear picture now. Let me compile…") has
+# historically polluted the defect tracker by matching on incidental words
+# like "test" or "security" that appear in intro sentences. If we cannot
+# find a structured finding line we skip classification entirely — the
+# verdict-level metric (recorded above) still captures that findings
+# happened. Noise-free cross-session signal beats volume.
 if [[ "${has_findings}" == "true" && -n "${review_message}" ]]; then
-  # Try to extract the first finding line after VERDICT or a numbered finding
+  # Structural finding markers accepted:
+  #   - numbered items: "1.", "1)", "1:", or "**1." with optional bold
+  #   - bulleted items whose content starts with a bold label like "- **X**"
+  #   - bulleted items keyed on an issue keyword near the marker
+  #   - H3/H4 headings that name a finding (e.g. "### Finding 1:" or "#### Bug:").
+  #     H2 is excluded: reviewers commonly use "## Findings" as a section divider,
+  #     which is narration, not a specific finding. H3/H4 is typically per-item.
   finding_sample="$(printf '%s\n' "${review_message}" \
-    | grep -Eim 1 '^\s*(1[\.\):]|[-*]\s+(bug|issue|finding|problem|concern|defect|risk|error|missing))' \
+    | grep -Eim 1 '^[[:space:]]*(\*\*[[:space:]]*)?[0-9]+[[:space:]]*[\.\):]|^[[:space:]]*[-*][[:space:]]+\*\*|^[[:space:]]*[-*][[:space:]]+(bug|issue|finding|problem|concern|defect|risk|error|missing|vulnerab|uncaught|untested|fail|broken|unhandled)|^[[:space:]]*#{3,4}[[:space:]]+(finding|issue|bug|problem|concern|defect|risk)\b' \
     | head -c 200 || true)"
-  # Fallback: use the first substantial line before VERDICT
-  if [[ -z "${finding_sample}" ]]; then
-    finding_sample="$(printf '%s\n' "${review_message}" \
-      | grep -Eiv '^(VERDICT:|$|\s*#)' \
-      | head -n 3 \
-      | tr '\n' ' ' \
-      | head -c 200 || true)"
-  fi
   if [[ -n "${finding_sample}" ]]; then
     defect_cat="$(classify_finding_category "${finding_sample}")"
     record_defect_pattern "${defect_cat}" "${finding_sample}" &

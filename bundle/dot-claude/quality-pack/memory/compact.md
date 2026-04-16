@@ -19,3 +19,15 @@ When Claude Code compacts a session, preserve the working state instead of produ
 - Keep the summary concise but operational: someone continuing the task should know exactly where to resume.
 - If something is uncertain, label it as uncertain instead of flattening it into a fact.
 - Do not lose user preferences, tone requirements, or audience requirements if they still affect the output.
+
+## Memory Sweep Before Compact
+
+A compact is the highest-cost moment for forgetting: a long session is about to lose granularity. Before the compact completes, scan the session for cross-session auto-memory candidates and write them to `memory/` files alongside the in-session preservation above. The auto-memory rule in `auto-memory.md` names the triggers and file conventions; this file reminds you that compact boundaries are one of two moments to apply that rule — the other is session stop.
+
+Prioritize writing when the session contained any of:
+- A confirmed or corrected workflow preference the user articulated (candidate for `feedback_*.md`).
+- A revealed project constraint, stakeholder, or deadline not derivable from code (candidate for `project_*.md`).
+- An external system reference (Linear, Grafana, Slack channel, doc URL) that future sessions should look at (candidate for `reference_*.md`).
+- A user-role or tooling detail that will shape future collaboration (candidate for `user_*.md`).
+
+If nothing in the session meets the memory-save threshold, skip the write. The goal is durable signal, not universal logging.

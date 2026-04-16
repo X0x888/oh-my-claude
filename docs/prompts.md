@@ -4,6 +4,20 @@ Prompts can be prefixed with `/ulw`, `ulw`, `/autowork`, or `/ultrawork` to acti
 
 Add `ultrathink` to any prompt to force deeper investigation -- verification over abstraction, reading source over reasoning about it.
 
+## Autonomy behavior
+
+In ulw mode Claude defaults to action and only pauses for one of five specific cases:
+
+1. **Credentials or external accounts.** Credentials, payment, account access, or an external-account action is required.
+2. **Destructive data loss.** The next step would delete or overwrite user data in a non-recoverable way.
+3. **Product-taste or policy judgment.** A decision only the user can make — pricing, brand voice, data-retention policy, release-note attribution.
+4. **Unfamiliar in-progress state.** The repository contains untracked files, unpushed branches, or stashes whose intent cannot be recovered.
+5. **Credible-approach split.** Two credible approaches exist and choosing wrong would cost significant rework.
+
+Any decision outside these five — library choice inside a plausible set, refactor scope, test framework — is made autonomously, stated briefly, and executed. If you want Claude to ask more, add `checkpoint` or `ask before X` to the prompt.
+
+The canonical, always-loaded source for this list is `bundle/dot-claude/quality-pack/memory/core.md` ("Workflow" section). If that file and this section drift, `core.md` wins.
+
 ---
 
 ## Coding
