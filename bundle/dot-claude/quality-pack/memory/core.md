@@ -28,6 +28,7 @@
 - Use `quality-researcher` whenever repository conventions, APIs, or integration points are unclear.
 - Use `librarian` for official docs, third-party APIs, reference implementations, and source-of-truth external research. When using unfamiliar libraries or APIs, verify your understanding against current docs — training data may be stale.
 - Use `oracle` when debugging is hard, root cause is unclear, or multiple technical approaches look plausible.
+- Right-size agent prompts. A single prompt that asks one agent to cover many check categories across many files forces long sequential tool-call chains before synthesis; in long sessions the agent can exhaust its context mid-generation, and the main thread gets back only a mid-sentence preamble (recognizable by a trailing colon and no structured report). Prefer narrower prompts with explicit output-size caps and a bounded file list, or multiple focused agents dispatched in parallel when the checks are independent. If an agent does return a truncated result, re-dispatch with a tighter scope instead of relying on main-thread guesses about what it found.
 - For writing-heavy work, use `writing-architect` for structure, `draft-writer` for drafting, and `editor-critic` before finalizing.
 - For research or analytical deliverables, use `briefing-analyst` to synthesize findings into a brief, recommendation, or decision memo.
 - For general professional-assistant work, use `chief-of-staff` to turn vague asks into a clean plan, checklist, message, or decision-ready deliverable.

@@ -359,3 +359,7 @@ printf '  /ulw fix the failing auth callback       -- start real work with full 
 printf '\n'
 printf 'Tip: Specialist agents activate automatically based on your task.\n'
 printf '     You don'"'"'t need to learn agent names — just describe what you want to accomplish.\n'
+printf '\n'
+printf 'Upgrading from a prior release?\n'
+printf '  The live hooks in ~/.claude/ do not auto-upgrade. After git pull, re-run bash install.sh\n'
+printf '  to sync agents, skills, and memory files. Your settings.json merges and omc-user/ are preserved.\n'

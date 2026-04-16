@@ -31,6 +31,15 @@ Then jump into real work:
 /ulw fix the failing test and add regression coverage
 ```
 
+**Already installed?** Pull + re-install to pick up new releases — `install.sh` overwrites the bundled hooks, agents, skills, and memory files in `~/.claude/` but preserves your `settings.json` merges, `omc-user/overrides.md`, and custom agents:
+
+```bash
+cd /path/to/oh-my-claude
+git pull && bash install.sh
+```
+
+Your model tier preference is saved in `~/.claude/oh-my-claude.conf` and re-applied automatically. See the FAQ entries [*How do I update oh-my-claude?*](docs/faq.md#how-do-i-update-oh-my-claude) and [*Will updating overwrite my changes?*](docs/faq.md#will-updating-overwrite-my-changes) for the full safety matrix.
+
 <!-- Demo: replace with asciinema recording or GIF when available -->
 <!-- ![oh-my-claude demo](docs/demo.gif) -->
 

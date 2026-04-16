@@ -128,3 +128,27 @@ Run `/ulw-off`. This clears the workflow state and removes the ULW sentinel. Qua
 ### Does this work on Linux?
 
 Yes. The harness is pure bash and jq with no platform-specific dependencies. It runs anywhere Claude Code runs. The only macOS-specific component is the Ghostty terminal theme, which is optional and can be ignored on systems using other terminal emulators. The `statusline.py` script uses standard Python 3 with no external packages.
+
+### A subagent returned only a few words ending in a colon, with no structured report — what happened?
+
+The agent hit context exhaustion mid-generation. Claude Code sub-agents have their own context budget; when a prompt asks a single agent to cover many check categories across many files, the agent can run 30–40+ tool calls before trying to compose its final report, and there may not be enough headroom left to finish. The tool result "leaks" the last partial text block — usually ending with a trailing colon because the model was about to start its next sentence. Re-dispatch with a narrower scope: a specific file list, an explicit output-size cap (e.g. "respond in ≤250 words"), and a structured output template. This is covered by the *Right-size agent prompts* rule in `core.md`; the main thread should not try to infer findings from a truncated preamble.
+
+### My live harness seems behind the latest release — how do I tell, and how do I fix it?
+
+The installer does not auto-upgrade. After pulling the repo you must re-run `bash install.sh` to sync `~/.claude/` with the new bundle. Quick diagnostic:
+
+```bash
+diff -rq bundle/dot-claude ~/.claude 2>/dev/null | grep -v "^Only in /Users" | head
+```
+
+Files listed as `differ` mean the live harness and the bundled release diverge — typically because you pulled but didn't re-install. Another symptom: `bash verify.sh` reports an older `Version:` than `cat VERSION`. Fix: `git pull && bash install.sh`. Your `settings.json` merges, `omc-user/overrides.md`, and custom agents/skills outside the bundle are preserved; bundled files get overwritten and a timestamped backup is created under `~/.claude/backups/`.
+
+### The "historical defect patterns" watch list shows inflated counts from older sessions — can I reset it?
+
+Yes. Cross-session defect telemetry lives at `~/.claude/quality-pack/defect-patterns.json`. Older versions of `record-reviewer.sh` inflated categories like `missing_test`, `unknown`, and `security` by classifying reviewer narration prose instead of structured findings (fixed in v1.7.0). If the injected watch list still shows those old counts, you can reset without losing session state:
+
+```bash
+rm -f ~/.claude/quality-pack/defect-patterns.json
+```
+
+Same pattern for agent performance telemetry: `rm -f ~/.claude/quality-pack/agent-metrics.json`. Both files are rebuilt from scratch on the next session that triggers a write. Session state (`~/.claude/quality-pack/state/`) is independent and is not touched by this reset.
