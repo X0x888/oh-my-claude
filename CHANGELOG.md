@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-04-16
+
 ### Added
 
 - **`quality-pack/memory/auto-memory.md`** — new canonical memory file documenting the session-stop and compact-boundary memory-sweep behavior. Loaded for every user via the bundle CLAUDE.md import chain. Replaces a user-override-level rule that was previously ad-hoc per install.
