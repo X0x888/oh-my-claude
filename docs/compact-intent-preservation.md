@@ -1,6 +1,6 @@
 # Compact-Boundary Intent Preservation
 
-**Status:** Shipped in `[Unreleased]` (target release `1.7.1`).
+**Status:** Shipped in `1.7.1`.
 
 **Owner:** Incident-driven post-mortem — written after the 2026-04-17 advisory-compact regression.
 
