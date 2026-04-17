@@ -226,6 +226,7 @@ Session state is stored at:
 | `dimension_resume_grace_used` | Whether the one-shot resumed-session dimension-gate grace has been used (`1` or empty) |
 | `session_handoff_blocks` | Number of times the deferral gate has blocked (cap: 2) |
 | `advisory_guard_blocks` | Number of times the advisory inspection gate has blocked (cap: 1) |
+| `pretool_intent_blocks` | Number of times the `pretool-intent-guard.sh` PreToolUse hook denied a destructive git/gh command because `task_intent` was `advisory`, `session_management`, or `checkpoint` (counter, no cap) |
 | `excellence_guard_triggered` | Whether the excellence gate has already fired this session (`1` or empty) |
 | `guard_exhausted` | Epoch timestamp when guard caps were reached and stop was allowed |
 | `guard_exhausted_detail` | Diagnostic string showing which gates were still unsatisfied at exhaustion |

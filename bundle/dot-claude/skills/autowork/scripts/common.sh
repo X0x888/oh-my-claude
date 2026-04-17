@@ -30,6 +30,7 @@ _omc_env_exhaustion="${OMC_GUARD_EXHAUSTION_MODE:-}"
 _omc_env_verify_conf="${OMC_VERIFY_CONFIDENCE_THRESHOLD:-}"
 _omc_env_gate_level="${OMC_GATE_LEVEL:-}"
 _omc_env_verify_mcp="${OMC_CUSTOM_VERIFY_MCP_TOOLS:-}"
+_omc_env_pretool_intent="${OMC_PRETOOL_INTENT_GUARD:-}"
 
 OMC_STALL_THRESHOLD="${OMC_STALL_THRESHOLD:-12}"
 OMC_EXCELLENCE_FILE_COUNT="${OMC_EXCELLENCE_FILE_COUNT:-3}"
@@ -50,6 +51,12 @@ OMC_GATE_LEVEL="${OMC_GATE_LEVEL:-full}"
 # settings.json to trigger record-verification.sh. The builtin matcher only
 # covers Playwright and computer-use tools.
 OMC_CUSTOM_VERIFY_MCP_TOOLS="${OMC_CUSTOM_VERIFY_MCP_TOOLS:-}"
+# PreToolUse intent guard: when `true` (default), the guard denies destructive
+# git/gh operations while task_intent is advisory/session-management/checkpoint.
+# Set to `false` to disable enforcement and rely on the directive layer alone
+# (e.g. for users who prefer the model to make its own judgement calls and
+# accept the risk of the 2026-04-17-class incident).
+OMC_PRETOOL_INTENT_GUARD="${OMC_PRETOOL_INTENT_GUARD:-true}"
 
 _omc_conf_loaded=0
 
@@ -87,6 +94,8 @@ _parse_conf_file() {
         [[ -z "${_omc_env_gate_level}" && "${value}" =~ ^(basic|standard|full)$ ]] && OMC_GATE_LEVEL="${value}" || true ;;
       custom_verify_mcp_tools)
         [[ -z "${_omc_env_verify_mcp}" && -n "${value}" ]] && OMC_CUSTOM_VERIFY_MCP_TOOLS="${value}" || true ;;
+      pretool_intent_guard)
+        [[ -z "${_omc_env_pretool_intent}" && "${value}" =~ ^(true|false)$ ]] && OMC_PRETOOL_INTENT_GUARD="${value}" || true ;;
     esac
   done < "${conf}"
 }

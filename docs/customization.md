@@ -203,6 +203,7 @@ Several configurable thresholds can be tuned via `~/.claude/oh-my-claude.conf` w
 | `verify_confidence_threshold` | `40` | Minimum verification confidence (0-100) to pass the quality gate |
 | `custom_verify_mcp_tools` | _(empty)_ | Pipe-separated glob patterns for additional MCP tools that count as verification (e.g. `mcp__my_cypress__*`). Also requires a matching PostToolUse hook entry in `settings.json`. |
 | `installation_drift_check` | `true` | When `true`, the statusline appends a yellow `↑v<repo>` segment whenever `${repo_path}/VERSION` is newer than the bundled `installed_version` (semver-aware; deliberate downgrades do not trigger). Surfaces the "I pulled but forgot to re-run `install.sh`" case. Requires `repo_path` to be present in the conf — `install.sh` writes it on every install. Local-only check; no network. Set to `false` to suppress the indicator. |
+| `pretool_intent_guard` | `true` | When `true`, the PreToolUse `pretool-intent-guard.sh` hook denies destructive git/gh commands (commit, push, revert, reset --hard, rebase, branch -D, gh pr create, etc.) while `task_intent` is `advisory`, `session_management`, or `checkpoint`. Closes the 2026-04-17 regression where an advisory prompt followed by a compact could result in unauthorized commits. Set to `false` to disable enforcement and rely on the directive layer alone (e.g. if the classifier's advisory detection over-fires in your workflow). See `docs/compact-intent-preservation.md`. |
 
 Example `~/.claude/oh-my-claude.conf`:
 
@@ -216,7 +217,7 @@ verify_confidence_threshold=40
 installation_drift_check=true
 ```
 
-Values can also be overridden via environment variables (`OMC_STALL_THRESHOLD`, `OMC_EXCELLENCE_FILE_COUNT`, `OMC_DIMENSION_GATE_FILE_COUNT`, `OMC_TRACEABILITY_FILE_COUNT`, `OMC_STATE_TTL_DAYS`, `OMC_VERIFY_CONFIDENCE_THRESHOLD`, `OMC_CUSTOM_VERIFY_MCP_TOOLS`, `OMC_INSTALLATION_DRIFT_CHECK`). Environment variables take precedence over the conf file, and both override the built-in defaults.
+Values can also be overridden via environment variables (`OMC_STALL_THRESHOLD`, `OMC_EXCELLENCE_FILE_COUNT`, `OMC_DIMENSION_GATE_FILE_COUNT`, `OMC_TRACEABILITY_FILE_COUNT`, `OMC_STATE_TTL_DAYS`, `OMC_VERIFY_CONFIDENCE_THRESHOLD`, `OMC_CUSTOM_VERIFY_MCP_TOOLS`, `OMC_INSTALLATION_DRIFT_CHECK`, `OMC_PRETOOL_INTENT_GUARD`). Environment variables take precedence over the conf file, and both override the built-in defaults.
 
 ---
 

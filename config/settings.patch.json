@@ -56,6 +56,15 @@
             "command": "$HOME/.claude/skills/autowork/scripts/record-pending-agent.sh"
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/skills/autowork/scripts/pretool-intent-guard.sh"
+          }
+        ]
       }
     ],
     "PostToolUse": [

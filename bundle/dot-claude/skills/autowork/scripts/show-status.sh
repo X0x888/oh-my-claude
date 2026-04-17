@@ -74,6 +74,7 @@ jq -r '
   "Session handoffs:  \(.session_handoff_blocks // "0")",
   "Stall counter:     \(.stall_counter // "0")",
   "Advisory guards:   \(.advisory_guard_blocks // "0")",
+  "PreTool intent blocks: \(.pretool_intent_blocks // "0")",
   "",
   "--- Flags ---",
   "Has plan:          \(.has_plan // "false")",

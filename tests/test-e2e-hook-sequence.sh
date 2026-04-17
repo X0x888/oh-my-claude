@@ -1670,6 +1670,339 @@ fi
 teardown_test
 
 # -------------------------------------------------------
+# Gap 8 (advisory-intent-preservation across compact + pretool-intent-guard):
+# When the pre-compact prompt was non-execution, the compact handoff must emit
+# an advisory-guard directive INSTEAD of the "keep momentum high" ULW directive,
+# and a PreToolUse Bash guard must block destructive git/gh ops. This is the
+# regression suite for the 2026-04-17 incident where a compact boundary lost
+# advisory intent and Claude pushed unauthorized commits to a sibling repo.
+# See feedback_advisory_means_no_edits memory for the originating incident.
+# -------------------------------------------------------
+
+# Helper: seed a state key on an already-initialized session. Intent-scoped
+# compact tests need to flip task_intent away from the init_session default
+# ("execution") before triggering the compact hooks.
+set_intent() {
+  local sid="$1" intent="$2" meta="${3:-}"
+  local state_dir="${TEST_HOME}/.claude/quality-pack/state/${sid}"
+  jq --arg i "${intent}" --arg m "${meta}" \
+    '. + {task_intent:$i} + (if $m != "" then {last_meta_request:$m} else {} end)' \
+    "${state_dir}/session_state.json" > "${state_dir}/session_state.json.tmp" \
+    && mv "${state_dir}/session_state.json.tmp" "${state_dir}/session_state.json"
+}
+
+# Helper: invoke the PreToolUse intent guard with a Bash command.
+sim_pretool_bash() {
+  local sid="$1" cmd="$2"
+  run_hook "${HOOK_DIR}/pretool-intent-guard.sh" \
+    "$(jq -nc --arg s "${sid}" --arg c "${cmd}" \
+      '{session_id:$s,tool_name:"Bash",tool_input:{command:$c},hook_event_name:"PreToolUse"}')"
+}
+
+# Gap 8a: advisory intent → compact → resume emits advisory guard + inlines meta_request
+setup_test
+setup_compact_tests
+init_session "cg8a" "mixed"
+set_intent "cg8a" "advisory" "what do you think of the landing page copy and CI setup?"
+sim_pre_compact "cg8a"
+sim_post_compact "cg8a" "auto" "Summary"
+out_g8a="$(sim_session_start_compact "cg8a")"
+assert_contains "gap8a: advisory intent triggers guard directive" "PRE-COMPACT INTENT WAS 'advisory'" "${out_g8a}"
+assert_contains "gap8a: directive names forbidden ops" "Do NOT commit, push" "${out_g8a}"
+assert_contains "gap8a: directive names authorization words" "'go ahead', 'implement', 'do it'" "${out_g8a}"
+assert_contains "gap8a: meta_request inlined" "landing page copy and CI setup" "${out_g8a}"
+# Guard directive must REPLACE the "keep momentum high" line, not supplement it.
+if grep -q "keep momentum high" <<<"${out_g8a}"; then
+  printf '  FAIL: gap8a: advisory intent should suppress the ULW momentum directive\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+teardown_test
+
+# Gap 8b: session_management intent also triggers guard directive
+setup_test
+setup_compact_tests
+init_session "cg8b" "coding"
+set_intent "cg8b" "session_management" "should we start a new session or keep going?"
+sim_pre_compact "cg8b"
+sim_post_compact "cg8b" "auto" "Summary"
+out_g8b="$(sim_session_start_compact "cg8b")"
+assert_contains "gap8b: session_management triggers guard" "PRE-COMPACT INTENT WAS 'session-management'" "${out_g8b}"
+teardown_test
+
+# Gap 8c: checkpoint intent also triggers guard directive
+setup_test
+setup_compact_tests
+init_session "cg8c" "coding"
+set_intent "cg8c" "checkpoint" "give me a checkpoint of what's done"
+sim_pre_compact "cg8c"
+sim_post_compact "cg8c" "auto" "Summary"
+out_g8c="$(sim_session_start_compact "cg8c")"
+assert_contains "gap8c: checkpoint triggers guard" "PRE-COMPACT INTENT WAS 'checkpoint'" "${out_g8c}"
+teardown_test
+
+# Gap 8d: execution intent (regression) still gets the momentum directive,
+# not the guard. Explicit negative test — if this ever flips, ULW continuation
+# is broken.
+setup_test
+setup_compact_tests
+init_session "cg8d" "coding"
+# init_session already sets task_intent=execution
+sim_pre_compact "cg8d"
+sim_post_compact "cg8d" "auto" "Summary"
+out_g8d="$(sim_session_start_compact "cg8d")"
+assert_contains "gap8d: execution intent gets momentum directive" "keep momentum high" "${out_g8d}"
+if grep -q "PRE-COMPACT INTENT WAS" <<<"${out_g8d}"; then
+  printf '  FAIL: gap8d: execution intent must NOT get the advisory guard directive\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+teardown_test
+
+# Gap 8e: PreToolUse guard BLOCKS git commit when intent is advisory
+setup_test
+setup_compact_tests
+init_session "cg8e" "coding"
+set_intent "cg8e" "advisory"
+out_g8e="$(sim_pretool_bash "cg8e" "cd /tmp/somerepo && git commit -m 'fix typo'")"
+assert_contains "gap8e: advisory + git commit → deny" "\"permissionDecision\":\"deny\"" "${out_g8e}"
+assert_contains "gap8e: deny reason names the intent" "classified as 'advisory'" "${out_g8e}"
+assert_eq "gap8e: block counter increments" "1" "$(read_st "cg8e" "pretool_intent_blocks")"
+teardown_test
+
+# Gap 8f: PreToolUse guard ALLOWS git status (read-only) under advisory
+setup_test
+setup_compact_tests
+init_session "cg8f" "coding"
+set_intent "cg8f" "advisory"
+out_g8f="$(sim_pretool_bash "cg8f" "git status")"
+if [[ -z "${out_g8f}" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: gap8f: git status must be allowed (got: %s)\n' "${out_g8f}" >&2
+  fail=$((fail + 1))
+fi
+# Counter must not have incremented
+counter="$(read_st "cg8f" "pretool_intent_blocks")"
+if [[ -z "${counter}" ]] || [[ "${counter}" == "0" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: gap8f: block counter should be 0 for read-only ops (got: %s)\n' "${counter}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# Gap 8g: PreToolUse guard ALLOWS git commit when intent is execution
+# Regression: this is the common case — never block under execution intent.
+setup_test
+setup_compact_tests
+init_session "cg8g" "coding"
+# intent=execution from init_session
+out_g8g="$(sim_pretool_bash "cg8g" "git commit -m 'implement feature'")"
+if [[ -z "${out_g8g}" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: gap8g: execution + git commit should pass through (got: %s)\n' "${out_g8g}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# Gap 8h: PreToolUse guard blocks gh pr create under advisory
+setup_test
+setup_compact_tests
+init_session "cg8h" "coding"
+set_intent "cg8h" "advisory"
+out_g8h="$(sim_pretool_bash "cg8h" "gh pr create --title 'new feature' --body 'adds X'")"
+assert_contains "gap8h: advisory + gh pr create → deny" "\"permissionDecision\":\"deny\"" "${out_g8h}"
+teardown_test
+
+# Gap 8i: PreToolUse guard blocks a range of destructive git subcommands.
+# One test per subcommand to catch regex regressions on specific patterns.
+# Includes absolute-path bypasses (`/usr/bin/git`), plumbing verbs, branch
+# rewriting, force-delete — expanded per quality-reviewer findings 1 and 2.
+setup_test
+setup_compact_tests
+init_session "cg8i" "coding"
+set_intent "cg8i" "advisory"
+for cmd in \
+  "git push origin main" \
+  "git push --force-with-lease" \
+  "git push --delete origin feature" \
+  "git revert HEAD~1" \
+  "git reset --hard HEAD~5" \
+  "git rebase -i main" \
+  "git cherry-pick abc123" \
+  "git tag v1.0.0" \
+  "git merge feature-branch" \
+  "git am < patch.txt" \
+  "git apply patch.txt" \
+  "git branch -D old-feature" \
+  "git branch --force main abc123" \
+  "git switch -C main" \
+  "git switch feature --force" \
+  "git checkout -B main" \
+  "git checkout --force main" \
+  "git clean -fd" \
+  "git update-ref refs/heads/main abc123" \
+  "git symbolic-ref HEAD refs/heads/other" \
+  "git filter-branch --tree-filter 'rm foo'" \
+  "git replace abc123 def456" \
+  "/usr/bin/git commit -m 'absolute path bypass attempt'" \
+  "sudo git push origin main" \
+  "cd /tmp/repo && git commit -m x" \
+  "gh release create v1.0.0 --generate-notes" \
+  "gh issue close 42" \
+  "gh pr merge 123 --squash"; do
+  out="$(sim_pretool_bash "cg8i" "${cmd}")"
+  if grep -q "\"permissionDecision\":\"deny\"" <<<"${out}"; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: gap8i: advisory + %s should be blocked (got: %s)\n' "${cmd}" "${out}" >&2
+    fail=$((fail + 1))
+  fi
+done
+teardown_test
+
+# Gap 8m: Kill-switch honored — OMC_PRETOOL_INTENT_GUARD=false disables the guard.
+# Excellence-reviewer finding #1: every comparable gate has a customization knob;
+# this is the escape hatch for users whose workflow trips the classifier.
+setup_test
+setup_compact_tests
+init_session "cg8m" "coding"
+set_intent "cg8m" "advisory"
+out_g8m="$(OMC_PRETOOL_INTENT_GUARD=false sim_pretool_bash "cg8m" "git commit -m 'should pass'")"
+if [[ -z "${out_g8m}" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: gap8m: OMC_PRETOOL_INTENT_GUARD=false should disable guard (got: %s)\n' "${out_g8m}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# Gap 8n: Release path — after the guard blocks, a fresh execution-framed
+# UserPromptSubmit must reclassify task_intent to execution and let the next
+# git commit through. This validates the recovery UX described in the denial
+# message. Excellence-reviewer flagged this as an untested transition.
+setup_test
+setup_compact_tests
+init_session "cg8n" "coding"
+set_intent "cg8n" "advisory"
+out_denied="$(sim_pretool_bash "cg8n" "git commit -m 'blocked'")"
+assert_contains "gap8n: first commit under advisory is blocked" "\"permissionDecision\":\"deny\"" "${out_denied}"
+# User replies with a clearly imperative prompt; the router reclassifies intent.
+sim_user_prompt "cg8n" "implement the fix and commit it" >/dev/null
+assert_eq "gap8n: intent reclassified to execution" "execution" "$(read_st "cg8n" "task_intent")"
+out_allowed="$(sim_pretool_bash "cg8n" "git commit -m 'now allowed'")"
+if [[ -z "${out_allowed}" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: gap8n: commit should pass after execution-framed reprompt (got: %s)\n' "${out_allowed}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# Gap 8o: ulw-deactivate clears pretool_intent_blocks. Excellence-reviewer
+# finding #3: the counter was being left behind on /ulw-off, leaking data
+# into subsequent sessions.
+setup_test
+setup_compact_tests
+init_session "cg8o" "coding"
+set_intent "cg8o" "advisory"
+sim_pretool_bash "cg8o" "git commit -m 'seed the counter'" >/dev/null
+assert_eq "gap8o: counter seeded" "1" "$(read_st "cg8o" "pretool_intent_blocks")"
+# Deactivate — must clear the counter
+run_hook "${HOOK_DIR}/ulw-deactivate.sh" '{}' >/dev/null
+assert_empty "gap8o: counter cleared by ulw-deactivate" "$(read_st "cg8o" "pretool_intent_blocks")"
+teardown_test
+
+# Gap 8l: PreToolUse guard allow-list edges — commands that look destructive
+# but are read-only or local-reversible must pass through. Regression for
+# reviewer finding #5: word-boundary regex drift could create false positives
+# that silently block legitimate inspection work.
+setup_test
+setup_compact_tests
+init_session "cg8l" "coding"
+set_intent "cg8l" "advisory"
+for cmd in \
+  "git status" \
+  "git log --oneline -20" \
+  "git diff HEAD~1" \
+  "git show abc123" \
+  "git branch" \
+  "git branch --list" \
+  "git branch newbranch" \
+  "git switch -c newbranch" \
+  "git checkout -b newbranch" \
+  "git checkout main" \
+  "git merge-base HEAD main" \
+  "git commit-tree abc123" \
+  "git diff-tree HEAD" \
+  "git stash push -m 'wip'" \
+  "git stash pop" \
+  "git fetch origin" \
+  "git reset HEAD~1" \
+  "git reset --soft HEAD~1" \
+  "git reset --mixed HEAD~1" \
+  "echo 'hello world'" \
+  "ls -la" \
+  "cat file.txt" \
+  "my-git-tool commit" \
+  "grep 'git commit' README.md" \
+  "git log --grep='reset --hard'"; do
+  out="$(sim_pretool_bash "cg8l" "${cmd}")"
+  if [[ -z "${out}" ]]; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: gap8l: read-only cmd [%s] should pass through but got: %s\n' "${cmd}" "${out}" >&2
+    fail=$((fail + 1))
+  fi
+done
+# Block counter must still be zero after only allow-list commands ran
+counter_l="$(read_st "cg8l" "pretool_intent_blocks")"
+if [[ -z "${counter_l}" ]] || [[ "${counter_l}" == "0" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: gap8l: block counter should be 0 after allow-list ops (got: %s)\n' "${counter_l}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# Gap 8j: PreToolUse guard bails without ULW sentinel (regression for
+# fast-path exit). Removing the .ulw_active file must make the hook a no-op.
+setup_test
+setup_compact_tests
+init_session "cg8j" "coding"
+set_intent "cg8j" "advisory"
+rm -f "${TEST_HOME}/.claude/quality-pack/state/.ulw_active"
+out_g8j="$(sim_pretool_bash "cg8j" "git commit -m 'x'")"
+if [[ -z "${out_g8j}" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: gap8j: no ULW sentinel → guard must exit 0 silently (got: %s)\n' "${out_g8j}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# Gap 8k: PreToolUse guard allows non-Bash tools unconditionally.
+# The hook is wired only on Bash, but it also bails on tool_name mismatch
+# as defense-in-depth; confirm that path works.
+setup_test
+setup_compact_tests
+init_session "cg8k" "coding"
+set_intent "cg8k" "advisory"
+out_g8k="$(run_hook "${HOOK_DIR}/pretool-intent-guard.sh" \
+  "$(jq -nc --arg s "cg8k" '{session_id:$s,tool_name:"Edit",tool_input:{file_path:"/tmp/x",old_string:"a",new_string:"b"},hook_event_name:"PreToolUse"}')")"
+if [[ -z "${out_g8k}" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: gap8k: non-Bash tool must pass through (got: %s)\n' "${out_g8k}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# -------------------------------------------------------
 # Gap 7: back-to-back compactions archive prior snapshot
 # -------------------------------------------------------
 setup_test

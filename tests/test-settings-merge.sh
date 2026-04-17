@@ -129,7 +129,7 @@ for impl in "${implementations[@]}"; do
   assert_json_count "${impl}: fresh — UserPromptSubmit hooks" \
     "${work}/settings.json" '.hooks.UserPromptSubmit' "1"
   assert_json_count "${impl}: fresh — PreToolUse hooks" \
-    "${work}/settings.json" '.hooks.PreToolUse' "1"
+    "${work}/settings.json" '.hooks.PreToolUse' "2"
   assert_json_count "${impl}: fresh — PostToolUse hooks" \
     "${work}/settings.json" '.hooks.PostToolUse' "5"
   assert_json_count "${impl}: fresh — SubagentStop hooks" \
@@ -145,6 +145,15 @@ for impl in "${implementations[@]}"; do
   assert_json_eq "${impl}: fresh — PreToolUse Agent matcher wired" \
     "${work}/settings.json" \
     '[.hooks.PreToolUse[] | select(.matcher == "Agent") | .hooks[0].command] | .[0] | tostring | contains("record-pending-agent.sh")' \
+    "true"
+
+  # PreToolUse must wire the Bash matcher to pretool-intent-guard.sh
+  # This is the enforcement backstop for advisory/session-management/checkpoint
+  # intent — blocks destructive git ops when the classifier says the user
+  # asked for an opinion, not for changes.
+  assert_json_eq "${impl}: fresh — PreToolUse Bash matcher wired" \
+    "${work}/settings.json" \
+    '[.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[0].command] | .[0] | tostring | contains("pretool-intent-guard.sh")' \
     "true"
 
   # No bypass keys should be set
@@ -164,8 +173,8 @@ for impl in "${implementations[@]}"; do
     "${work}/settings.json" '.hooks.SubagentStop' "11"
   assert_json_count "${impl}: idempotent — PostToolUse hooks still 5" \
     "${work}/settings.json" '.hooks.PostToolUse' "5"
-  assert_json_count "${impl}: idempotent — PreToolUse hooks still 1" \
-    "${work}/settings.json" '.hooks.PreToolUse' "1"
+  assert_json_count "${impl}: idempotent — PreToolUse hooks still 2" \
+    "${work}/settings.json" '.hooks.PreToolUse' "2"
 
   # Verify the new dimension-tracker matchers are present
   assert_json_eq "${impl}: fresh — metis matcher wired" \

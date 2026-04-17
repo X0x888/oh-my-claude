@@ -39,16 +39,46 @@ context_parts=()
 # Gap 1 — ULW mode affirmation. If the session was in ultrawork before the
 # compact, the native summary may drop that framing; re-assert it explicitly
 # so the main thread does not drift back to asking-for-permission behavior.
+#
+# BUT — intent-aware branching: if the pre-compact prompt was non-execution
+# (advisory, session_management, checkpoint), the "keep momentum high" framing
+# is actively harmful because it encourages the model to start implementing
+# changes the user never authorized. In that case we REPLACE the momentum
+# directive with an intent guard that re-asserts the advisory/meta stance.
+# Historical context: feedback_advisory_means_no_edits memory records the
+# incident where a compact boundary lost advisory intent and Claude pushed
+# unauthorized commits to a sibling repo. This branch closes that gap.
 workflow_mode_value="$(workflow_mode)"
 task_domain_value="$(task_domain)"
-if [[ "${workflow_mode_value}" == "ultrawork" ]]; then
-  ulw_directive="Ultrawork mode is still active post-compact."
-  if [[ -n "${task_domain_value}" ]]; then
-    ulw_directive="${ulw_directive} Active task domain: ${task_domain_value}."
-  fi
-  ulw_directive="${ulw_directive} Do not drift back to asking-for-permission behavior, do not restart classification from scratch, and do not treat this compact boundary as a fresh session. Preserve the active objective and keep momentum high."
-  context_parts+=("${ulw_directive}")
-fi
+task_intent_value="$(read_state "task_intent")"
+last_meta_request_value="$(read_state "last_meta_request")"
+
+case "${task_intent_value}" in
+  advisory|session_management|checkpoint)
+    intent_label="${task_intent_value//_/-}"
+    guard_directive="IMPORTANT — PRE-COMPACT INTENT WAS '${intent_label}', NOT EXECUTION."
+    guard_directive="${guard_directive} Before the compact, the user's prompt was classified as ${intent_label} — an opinion/assessment/checkpoint request, not a request for changes."
+    guard_directive="${guard_directive} Do NOT commit, push, revert, reset, rebase, amend, cherry-pick, or otherwise modify any repository after this boundary."
+    guard_directive="${guard_directive} Deliver the ${intent_label} response the user asked for. If you believe changes are warranted, list them as recommendations with file paths and enough detail to execute, then wait for explicit authorization ('go ahead', 'implement', 'do it') before touching files."
+    guard_directive="${guard_directive} This rule applies especially to sibling/companion repos where other AI agents may be active."
+    guard_directive="${guard_directive} A PreToolUse guard will block destructive git commands while this intent is active — do not try to work around it by editing git internals or using alternate tools."
+    if [[ -n "${last_meta_request_value}" ]]; then
+      guard_directive="${guard_directive}"$'\n\n'"Original ${intent_label} question: $(truncate_chars 500 "${last_meta_request_value}")"
+    fi
+    context_parts+=("${guard_directive}")
+    log_hook "session-start-compact-handoff" "intent=${task_intent_value} emitted advisory-guard directive"
+    ;;
+  *)
+    if [[ "${workflow_mode_value}" == "ultrawork" ]]; then
+      ulw_directive="Ultrawork mode is still active post-compact."
+      if [[ -n "${task_domain_value}" ]]; then
+        ulw_directive="${ulw_directive} Active task domain: ${task_domain_value}."
+      fi
+      ulw_directive="${ulw_directive} Do not drift back to asking-for-permission behavior, do not restart classification from scratch, and do not treat this compact boundary as a fresh session. Preserve the active objective and keep momentum high."
+      context_parts+=("${ulw_directive}")
+    fi
+    ;;
+esac
 
 # Base continuation directive (always emitted).
 context_parts+=("A compaction just occurred. Continue from the preserved state below instead of restarting the task. Use the native compact summary plus this live handoff to keep continuity high. Do not fall back to a broad recap unless the user asks for one.")
