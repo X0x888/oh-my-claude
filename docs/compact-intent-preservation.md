@@ -52,6 +52,12 @@ Coverage:
 
 The anchor accepts optional path prefixes so `/usr/bin/git commit` and `sudo git push` are caught. Case-sensitive matching is intentional — `-D` (force-delete) must not collapse to `-d` (safe-delete) under a lowercase transform.
 
+**Flag normalization.** A post-review pass found that the `git <verb>` regex required the verb adjacent to `git`, so configured-override forms like `git -c commit.gpgsign=false commit`, `git --no-pager commit`, and `git --git-dir=/path commit` slipped through. The guard now runs each command through `_normalize_git_flags` — a single-sed strip of top-level flags between `git`/`gh` and the verb — before matching. The separate-arg branch names the complete set of flags git(1) documents as accepting a space-separated argument (`-c`, `-C`, `--git-dir`, `--work-tree`, `--exec-path`, `--namespace`, `--super-prefix`, `--config-env`, `--attr-source`); without the explicit list, the fallback single-token branch would consume the flag but leave its following value token in place, sitting between `git` and the verb and defeating the match (e.g. `git --git-dir /tmp/repo commit` would normalize to `git /tmp/repo commit`). The single-token branch handles the `=value` forms of the same flags along with all bare flags (`--no-pager`, `-X`, etc.). Regression coverage lives in gap 8p.
+
+**Allow-list.** Another post-review pass found that the original regex also blocked *recovery* and *read-only* invocations that share a verb with a destructive op: `git rebase --abort|--continue|--skip|--quit`, `git merge --abort`, `git push --dry-run|-n`, `git commit --dry-run`, `git tag -l|--list`. These are exactly the commands a model under advisory intent needs when a prior interactive operation left the working tree in a half-applied state. The guard now checks an allow-list (`_cmd_is_allowed_variant`) before the destructive match and lets these through. Regression coverage lives in gap 8q.
+
+**Compound-command correctness.** Commands are split on `&&`, `||`, `;`, and `|`; each segment is evaluated independently. This keeps `git rebase --abort && git push --force` denying on the push (rather than short-circuiting on the allow-listed rebase), and lets `git rebase --abort && git status` pass as the safe compound it is. Regression coverage lives in gap 8r.
+
 Read-only ops (`status`, `log`, `diff`, `show`, `branch` list form, `merge-base`, `commit-tree`, `diff-tree`, `fetch`, `stash push|pop|apply`) pass through. Execution intent passes through for all ops. The counter (`pretool_intent_blocks`) is wrapped in `with_state_lock` to survive parallel tool_use blocks in one assistant turn.
 
 ### Configurability
@@ -76,7 +82,7 @@ Oracle's framing: the model already ignored one directive in this incident. Dire
 
 ## 7. Regression tests
 
-`tests/test-e2e-hook-sequence.sh` gaps 8a–8l cover:
+`tests/test-e2e-hook-sequence.sh` gaps 8a–8r cover:
 
 - Directive emission for each non-execution intent, with `last_meta_request` inlined.
 - Directive suppression: execution intent still gets the momentum directive, no guard text.
@@ -87,11 +93,14 @@ Oracle's framing: the model already ignored one directive in this incident. Dire
 - Non-Bash tool → hook passes through.
 - Kill-switch respected: `OMC_PRETOOL_INTENT_GUARD=false` → guard exits 0.
 - Post-compact release path: after the guard blocks, a fresh execution-framed `UserPromptSubmit` reclassifies intent and unblocks subsequent commits.
+- Flag-injection bypass closure (gap 8p): `git -c user.email=x commit`, `git --no-pager commit`, `git --git-dir=/path commit`, `git -C /tmp commit`, stacked `-c` forms, absolute-path plus flag, and `sudo git -c …` all block.
+- Allow-list correctness (gap 8q): recovery forms (`--abort|--continue|--skip|--quit` on rebase/merge/cherry-pick/revert/am), dry-run forms (`push --dry-run`, `push -n`, `commit --dry-run`), and list forms (`tag -l`, `tag --list`) pass through without incrementing the counter.
+- Compound correctness (gap 8r): allow-variant chained with a destructive op still denies on the destructive segment (`git rebase --abort && git push --force`, `git tag --list && git -c ... commit`, `echo foo | git commit -F -`), and a compound of two safe segments stays allowed.
 
 ## 8. References
 
 - `bundle/dot-claude/quality-pack/scripts/session-start-compact-handoff.sh` — Layer 1
 - `bundle/dot-claude/skills/autowork/scripts/pretool-intent-guard.sh` — Layer 2
 - `bundle/dot-claude/skills/autowork/scripts/common.sh` — `OMC_PRETOOL_INTENT_GUARD` conf loader
-- `tests/test-e2e-hook-sequence.sh` — regression coverage (gaps 8a–8l)
+- `tests/test-e2e-hook-sequence.sh` — regression coverage (gaps 8a–8r)
 - `feedback_advisory_means_no_edits` memory — originating user preference the fix encodes

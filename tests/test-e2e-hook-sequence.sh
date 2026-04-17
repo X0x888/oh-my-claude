@@ -2002,6 +2002,115 @@ else
 fi
 teardown_test
 
+# Gap 8p: guard blocks destructive commands even when git top-level flags
+# sit between `git` and the verb. Reviewer finding: the original regex
+# required the verb adjacent to `git`, so `git -c user.email=x commit`,
+# `git --no-pager commit`, and `git --git-dir=/path commit` all slipped
+# through — exactly the "work around by config override" escape hatch the
+# guard is supposed to close. Each case covers one flag shape.
+setup_test
+setup_compact_tests
+init_session "cg8p" "coding"
+set_intent "cg8p" "advisory"
+for cmd in \
+  "git -c user.email=x commit -m 'bypass attempt'" \
+  "git -c commit.gpgsign=false commit" \
+  "git --no-pager commit" \
+  "git --git-dir=/tmp/repo commit" \
+  "git --git-dir /tmp/repo commit" \
+  "git --work-tree /tmp commit" \
+  "git --exec-path /usr/libexec/git-core commit" \
+  "git --namespace foo commit" \
+  "git --super-prefix sub/ commit" \
+  "git --config-env foo=BAR commit" \
+  "git --attr-source HEAD commit" \
+  "git --attr-source=HEAD commit" \
+  "git -C /tmp/repo commit -m x" \
+  "git -c foo=bar -c baz=qux push origin main" \
+  "/usr/bin/git --no-pager commit" \
+  "sudo git -c user.email=x commit" \
+  "git -c commit.gpgsign=false -c tag.gpgsign=false tag v9.9.9" \
+  "git --no-pager --git-dir /tmp push"; do
+  out="$(sim_pretool_bash "cg8p" "${cmd}")"
+  if grep -q "\"permissionDecision\":\"deny\"" <<<"${out}"; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: gap8p: flag-injection bypass [%s] must be blocked (got: %s)\n' "${cmd}" "${out}" >&2
+    fail=$((fail + 1))
+  fi
+done
+teardown_test
+
+# Gap 8q: guard allow-list — recovery flags and dry-run/list variants of
+# otherwise-destructive verbs must pass through. Reviewer finding: the
+# original regex blocked `git rebase --abort` and `git push --dry-run`,
+# making it impossible for the model to recover from a merge/rebase
+# conflict or report what a push would do while under advisory intent.
+setup_test
+setup_compact_tests
+init_session "cg8q" "coding"
+set_intent "cg8q" "advisory"
+for cmd in \
+  "git rebase --abort" \
+  "git rebase --continue" \
+  "git rebase --skip" \
+  "git rebase --quit" \
+  "git merge --abort" \
+  "git merge --continue" \
+  "git cherry-pick --abort" \
+  "git cherry-pick --continue" \
+  "git revert --abort" \
+  "git am --abort" \
+  "git push --dry-run origin main" \
+  "git push -n" \
+  "git commit --dry-run" \
+  "git tag -l" \
+  "git tag --list" \
+  "git tag --list 'v1.*'"; do
+  out="$(sim_pretool_bash "cg8q" "${cmd}")"
+  if [[ -z "${out}" ]]; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: gap8q: allow-list [%s] must pass through (got: %s)\n' "${cmd}" "${out}" >&2
+    fail=$((fail + 1))
+  fi
+done
+# Block counter must still be zero after only allow-list commands
+counter_q="$(read_st "cg8q" "pretool_intent_blocks")"
+if [[ -z "${counter_q}" ]] || [[ "${counter_q}" == "0" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: gap8q: counter must stay 0 after allow-list ops (got: %s)\n' "${counter_q}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# Gap 8r: compound-command correctness — an allowed segment chained with a
+# destructive segment must still deny on the destructive segment. Regression
+# guard: the allow-list must not short-circuit the whole line.
+setup_test
+setup_compact_tests
+init_session "cg8r" "coding"
+set_intent "cg8r" "advisory"
+# Allow-variant + destructive via && → DENY
+out_r1="$(sim_pretool_bash "cg8r" "git rebase --abort && git push --force")"
+assert_contains "gap8r: rebase --abort && push --force still blocks" "\"permissionDecision\":\"deny\"" "${out_r1}"
+# Allow-variant + flag-injection bypass via && → DENY
+out_r2="$(sim_pretool_bash "cg8r" "git tag --list && git -c user.email=x commit")"
+assert_contains "gap8r: tag --list && -c commit still blocks" "\"permissionDecision\":\"deny\"" "${out_r2}"
+# Destructive via pipe → DENY (`|` also splits)
+out_r3="$(sim_pretool_bash "cg8r" "echo foo | git commit -F -")"
+assert_contains "gap8r: destructive after pipe still blocks" "\"permissionDecision\":\"deny\"" "${out_r3}"
+# Compound where both segments are safe → ALLOW (no false deny on mixed-safe compound)
+out_r4="$(sim_pretool_bash "cg8r" "git rebase --abort && git status")"
+if [[ -z "${out_r4}" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: gap8r: recovery && status must ALLOW (got: %s)\n' "${out_r4}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
 # -------------------------------------------------------
 # Gap 7: back-to-back compactions archive prior snapshot
 # -------------------------------------------------------

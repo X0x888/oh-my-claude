@@ -63,6 +63,18 @@ fi
 # fails because the character preceding `m` in `my-git-tool` is whitespace
 # and `my-` is not a path segment (has no trailing `/`).
 #
+# Before matching, `_normalize_git_flags` strips top-level options like
+# `-c foo=bar`, `-C /path`, `--no-pager`, and `--git-dir=/x` from between
+# `git` (or `gh`) and the verb, so `git -c user.email=x commit` is matched
+# as `git commit`. Without this, the configured-override bypass was real:
+# `git -c commit.gpgsign=false commit` slipped through because the regex
+# required the verb adjacent to `git`.
+#
+# Compound commands are split on `&&`/`||`/`;`/`|` and each segment is
+# evaluated independently, so a recovery invocation chained with a
+# destructive one (`git rebase --abort && git push --force`) still blocks
+# on the destructive segment.
+#
 # Note: this guard is best-effort. A determined bypass (Python subprocess
 # invoking git, editing `.git/` directly) cannot be caught by command-line
 # pattern matching. The directive injected at the compact handoff and the
@@ -85,11 +97,65 @@ fi
 #   git clean -f|-fd
 #   gh pr|release|issue create|merge|edit|close|delete|reopen|comment
 #
+# Allowed variants (read-only / recovery modes of the above verbs):
+#   git (rebase|merge|cherry-pick|revert|am) --abort|--continue|--skip|--quit
+#   git (push|commit) --dry-run|-n
+#   git tag -l|--list
+#
 # NOT covered (read-only or local-only reversible):
 #   git status / log / diff / show / branch (list form) / remote (without -v)
 #   git stash push|pop|apply (local, reversible)
 #   git merge-base / commit-tree / diff-tree (plumbing reads)
 #   git fetch without --prune
+
+# Anchor: start-of-string or [space ; & | ( ] followed by optional path prefix.
+# ([^[:space:]]*/)? matches zero-or-more non-space chars ending in `/`, so:
+#   - bare `git`                   → matches (zero-length path)
+#   - `/usr/bin/git`               → matches (path = `/usr/bin/`)
+#   - `./git`                      → matches (path = `./`)
+#   - `my-git`                     → does NOT match (no trailing `/` after `my-`)
+readonly _GUARD_PRE='(^|[[:space:];&|(])([^[:space:]]*/)?'
+
+# Strip git/gh top-level flags between the binary and the verb, so the
+# destructive/allow-list regexes see a canonical `git <verb>` form.
+#
+# Two flag shapes are handled:
+#   (a) Flags that accept a space-separated argument: `-c name=value`,
+#       `-C path`, `--git-dir <path>`, `--work-tree <path>`, `--exec-path
+#       <path>`, `--namespace <name>`, `--super-prefix <path>`,
+#       `--config-env <name>=<envvar>`, `--attr-source <tree-ish>`. This is
+#       the complete set of git(1) top-level options that take a separate-
+#       token argument per the `git --help` usage line. Without the explicit
+#       list here, the single-token branch would consume the flag but leave
+#       the separate-token argument in place — that argument would then sit
+#       between `git` and the verb, defeating the destructive regex (e.g.
+#       `git --git-dir /tmp/repo commit` normalizes to `git /tmp/repo
+#       commit`, which the guard's `git commit` pattern no longer matches).
+#   (b) Single-token flags: `--foo`, `--foo=bar`, bare `-X`, `--no-pager`.
+#       These are consumed in one unit by the `-[^[:space:]]+` branch, so
+#       `--git-dir=/tmp/repo` (the `=` form of the same flag) is handled
+#       here without needing the explicit list.
+#
+# Anchored by the same `_GUARD_PRE` prefix so absolute-path and wrapper-
+# prefix forms (`/usr/bin/git`, `sudo git`, `env git`) normalize correctly.
+_normalize_git_flags() {
+  sed -E 's/(^|[[:space:];&|(])(([^[:space:]]*\/)?(git|gh))(([[:space:]]+(-c|-C|--git-dir|--work-tree|--exec-path|--namespace|--super-prefix|--config-env|--attr-source)[[:space:]]+[^[:space:]]+)|([[:space:]]+-[^[:space:]]+))+/\1\2/g' <<<"$1"
+}
+
+# Recovery and read-only variants of verbs that are otherwise destructive.
+# Runs on already-normalized input so `git -c foo=bar rebase --abort` (which
+# normalizes to `git rebase --abort`) is recognized as a recovery op.
+_cmd_is_allowed_variant() {
+  local cmd="$1"
+  # `--abort|--continue|--skip|--quit` on a mid-operation verb.
+  if grep -Eq "${_GUARD_PRE}git[[:space:]]+(rebase|merge|cherry-pick|revert|am)[[:space:]]+.*(--abort|--continue|--skip|--quit)([[:space:]]|$)" <<<"${cmd}"; then return 0; fi
+  # `--dry-run|-n` on push/commit reports intent without mutation.
+  if grep -Eq "${_GUARD_PRE}git[[:space:]]+(push|commit)[[:space:]]+.*(--dry-run|-n)([[:space:]]|$)" <<<"${cmd}"; then return 0; fi
+  # List-only tag invocation.
+  if grep -Eq "${_GUARD_PRE}git[[:space:]]+tag[[:space:]]+(-l|--list)([[:space:]]|$)" <<<"${cmd}"; then return 0; fi
+  return 1
+}
+
 _cmd_matches_destructive() {
   local cmd="$1"
   # Case-sensitive matching is intentional: git CLI flags like `-D` (force-delete
@@ -101,51 +167,57 @@ _cmd_matches_destructive() {
   # the flag-case regression.
   local lc="${cmd}"
 
-  # Anchor: start-of-string or [space ; & | ( ] followed by optional path prefix.
-  # ([^[:space:]]*/)? matches zero-or-more non-space chars ending in `/`, so:
-  #   - bare `git`                   → matches (zero-length path)
-  #   - `/usr/bin/git`               → matches (path = `/usr/bin/`)
-  #   - `./git`                      → matches (path = `./`)
-  #   - `my-git`                     → does NOT match (no trailing `/` after `my-`)
-  local _pre='(^|[[:space:];&|(])([^[:space:]]*/)?'
-
   # Porcelain: direct local/remote state mutation.
-  if grep -Eq "${_pre}git[[:space:]]+commit([[:space:]]|$)" <<<"${lc}"; then return 0; fi
-  if grep -Eq "${_pre}git[[:space:]]+push([[:space:]]|$)" <<<"${lc}"; then return 0; fi
-  if grep -Eq "${_pre}git[[:space:]]+revert([[:space:]]|$)" <<<"${lc}"; then return 0; fi
-  if grep -Eq "${_pre}git[[:space:]]+reset[[:space:]]+--hard" <<<"${lc}"; then return 0; fi
-  if grep -Eq "${_pre}git[[:space:]]+rebase([[:space:]]|$)" <<<"${lc}"; then return 0; fi
-  if grep -Eq "${_pre}git[[:space:]]+cherry-pick([[:space:]]|$)" <<<"${lc}"; then return 0; fi
-  if grep -Eq "${_pre}git[[:space:]]+tag([[:space:]]|$)" <<<"${lc}"; then return 0; fi
-  if grep -Eq "${_pre}git[[:space:]]+merge([[:space:]]|$)" <<<"${lc}"; then return 0; fi
-  if grep -Eq "${_pre}git[[:space:]]+am([[:space:]]|$)" <<<"${lc}"; then return 0; fi
-  if grep -Eq "${_pre}git[[:space:]]+apply([[:space:]]|$)" <<<"${lc}"; then return 0; fi
+  if grep -Eq "${_GUARD_PRE}git[[:space:]]+commit([[:space:]]|$)" <<<"${lc}"; then return 0; fi
+  if grep -Eq "${_GUARD_PRE}git[[:space:]]+push([[:space:]]|$)" <<<"${lc}"; then return 0; fi
+  if grep -Eq "${_GUARD_PRE}git[[:space:]]+revert([[:space:]]|$)" <<<"${lc}"; then return 0; fi
+  if grep -Eq "${_GUARD_PRE}git[[:space:]]+reset[[:space:]]+--hard" <<<"${lc}"; then return 0; fi
+  if grep -Eq "${_GUARD_PRE}git[[:space:]]+rebase([[:space:]]|$)" <<<"${lc}"; then return 0; fi
+  if grep -Eq "${_GUARD_PRE}git[[:space:]]+cherry-pick([[:space:]]|$)" <<<"${lc}"; then return 0; fi
+  if grep -Eq "${_GUARD_PRE}git[[:space:]]+tag([[:space:]]|$)" <<<"${lc}"; then return 0; fi
+  if grep -Eq "${_GUARD_PRE}git[[:space:]]+merge([[:space:]]|$)" <<<"${lc}"; then return 0; fi
+  if grep -Eq "${_GUARD_PRE}git[[:space:]]+am([[:space:]]|$)" <<<"${lc}"; then return 0; fi
+  if grep -Eq "${_GUARD_PRE}git[[:space:]]+apply([[:space:]]|$)" <<<"${lc}"; then return 0; fi
 
   # Branch/ref rewriting — only destructive flag forms, so `git branch` (list)
   # and `git branch newfeature` (create only) are allowed. Catches `-D`, `-M`,
   # `-C`, `--delete`, `--force`. False positive only if a branch literally
   # named `-D` or `--force` is passed as an argument — both are impossible
   # because git rejects them.
-  if grep -Eq "${_pre}git[[:space:]]+branch[[:space:]]+.*(-D|-M|-C|--delete|--force)" <<<"${lc}"; then return 0; fi
+  if grep -Eq "${_GUARD_PRE}git[[:space:]]+branch[[:space:]]+.*(-D|-M|-C|--delete|--force)" <<<"${lc}"; then return 0; fi
   # `git switch -C` or `--force` moves/overwrites; `-c` alone is safe.
-  if grep -Eq "${_pre}git[[:space:]]+switch[[:space:]]+.*(-C|--force)" <<<"${lc}"; then return 0; fi
+  if grep -Eq "${_GUARD_PRE}git[[:space:]]+switch[[:space:]]+.*(-C|--force)" <<<"${lc}"; then return 0; fi
   # `git checkout -B` or `--force` moves/overwrites; `-b` alone is safe.
-  if grep -Eq "${_pre}git[[:space:]]+checkout[[:space:]]+.*(-B|--force)" <<<"${lc}"; then return 0; fi
+  if grep -Eq "${_GUARD_PRE}git[[:space:]]+checkout[[:space:]]+.*(-B|--force)" <<<"${lc}"; then return 0; fi
   # `git clean -f` removes untracked files (destructive).
-  if grep -Eq "${_pre}git[[:space:]]+clean[[:space:]]+.*(-f|--force)" <<<"${lc}"; then return 0; fi
+  if grep -Eq "${_GUARD_PRE}git[[:space:]]+clean[[:space:]]+.*(-f|--force)" <<<"${lc}"; then return 0; fi
 
   # Plumbing: directly rewrites refs/objects. These are the "work around
   # by using plumbing" escape hatches the directive warns against.
-  if grep -Eq "${_pre}git[[:space:]]+(update-ref|symbolic-ref|fast-import|filter-branch|replace)([[:space:]]|$)" <<<"${lc}"; then return 0; fi
+  if grep -Eq "${_GUARD_PRE}git[[:space:]]+(update-ref|symbolic-ref|fast-import|filter-branch|replace)([[:space:]]|$)" <<<"${lc}"; then return 0; fi
 
   # gh CLI: publishes state to GitHub.
-  if grep -Eq "${_pre}gh[[:space:]]+(pr|release)[[:space:]]+(create|merge|edit|close|comment|delete|reopen)([[:space:]]|$)" <<<"${lc}"; then return 0; fi
-  if grep -Eq "${_pre}gh[[:space:]]+issue[[:space:]]+(create|edit|close|comment|delete|reopen)([[:space:]]|$)" <<<"${lc}"; then return 0; fi
+  if grep -Eq "${_GUARD_PRE}gh[[:space:]]+(pr|release)[[:space:]]+(create|merge|edit|close|comment|delete|reopen)([[:space:]]|$)" <<<"${lc}"; then return 0; fi
+  if grep -Eq "${_GUARD_PRE}gh[[:space:]]+issue[[:space:]]+(create|edit|close|comment|delete|reopen)([[:space:]]|$)" <<<"${lc}"; then return 0; fi
 
   return 1
 }
 
-if ! _cmd_matches_destructive "${command_str}"; then
+# Walk compound-shell segments independently. The canonical example is
+# `git rebase --abort && git push --force`: the first segment is an allowed
+# recovery op, the second is destructive. A whole-line check would either
+# miss the push or over-block the rebase; splitting keeps both decisions honest.
+normalized_cmd="$(_normalize_git_flags "${command_str}")"
+denied_segment=""
+while IFS= read -r _seg; do
+  [[ -z "${_seg// }" ]] && continue
+  if _cmd_matches_destructive "${_seg}" && ! _cmd_is_allowed_variant "${_seg}"; then
+    denied_segment="${_seg}"
+    break
+  fi
+done < <(sed -E 's/(&&|\|\||;|\|)/\n/g' <<<"${normalized_cmd}")
+
+if [[ -z "${denied_segment}" ]]; then
   exit 0
 fi
 
