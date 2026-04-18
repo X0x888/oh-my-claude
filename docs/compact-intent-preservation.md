@@ -97,7 +97,22 @@ Oracle's framing: the model already ignored one directive in this incident. Dire
 - Allow-list correctness (gap 8q): recovery forms (`--abort|--continue|--skip|--quit` on rebase/merge/cherry-pick/revert/am), dry-run forms (`push --dry-run`, `push -n`, `commit --dry-run`), and list forms (`tag -l`, `tag --list`) pass through without incrementing the counter.
 - Compound correctness (gap 8r): allow-variant chained with a destructive op still denies on the destructive segment (`git rebase --abort && git push --force`, `git tag --list && git -c ... commit`, `echo foo | git commit -F -`), and a compound of two safe segments stays allowed.
 
-## 8. References
+## 8. Known coverage gaps
+
+The PreTool guard is a command-line pattern matcher, not a shell parser. Three boundary forms are **not covered** and are documented here rather than silently blessed:
+
+- **Embedded newlines in a single command.** Compound-command splitting in `_normalize_git_flags` operates on `&&`, `||`, `;`, and `|` — not on literal `\n` inside an argument. A single invocation like `bash -c $'git status\ngit push'` passes through as one segment; only the first verb (`git status`) is seen, and the second verb hides inside the quoted-string argument. Adding `\n` to the split set would misread heredoc bodies and multi-line shell fragments that are not intended as command sequences, so the guard errs toward the semantics real shells use and accepts the edge case.
+- **Process substitution.** `sh <(echo 'git commit')` and `eval "$(cat some-script.sh)"` run a child shell against input we do not see. The destructive verb lives inside the nested command substitution, not in the visible argv.
+- **Language-runtime wrappers.** Any invocation that runs git through another language (Python's `subprocess`, Node child-process APIs, Ruby `system`, direct writes to `.git/refs/`) executes git behavior without ever naming the `git` binary on the command line. No argv-level guard can catch these.
+
+None of these are credible real-world bypasses — models that Claude Code actually dispatches do not compose heredoc-wrapped git invocations spontaneously, and a deliberate bypass is already outside the directive layer's threat model. The gaps exist because narrowing them would cost more than it saves:
+
+- Splitting on newlines would over-match legitimate multi-line heredocs, breaking the release checklist's `git commit -m "$(cat <<'EOF' … EOF)"` pattern.
+- Parsing through `$(...)` and `<(...)` requires a real shell parser; the guard would cease to be a single-sed hook and would instead need a bash/zsh AST walker.
+
+If you are hardening the guard for a compliance-driven threat model, the correct next layer is not to widen the regex — it is to (a) tighten the intent classifier so advisory prompts with edit-adjacent language do not fall into `advisory` incorrectly, and (b) add a post-action audit (e.g. a git `post-commit` hook) that alerts on unexpected commits during advisory-classified sessions. Both are out of scope for this post-mortem.
+
+## 9. References
 
 - `bundle/dot-claude/quality-pack/scripts/session-start-compact-handoff.sh` — Layer 1
 - `bundle/dot-claude/skills/autowork/scripts/pretool-intent-guard.sh` — Layer 2

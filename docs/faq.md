@@ -144,6 +144,37 @@ diff -rq bundle/dot-claude ~/.claude 2>/dev/null | grep -v "^Only in /Users" | h
 
 Files listed as `differ` mean the live harness and the bundled release diverge — typically because you pulled but didn't re-install. Another symptom: `bash verify.sh` reports an older `Version:` than `cat VERSION`. The statusline also flags this: when the bundle falls behind the source repo, a yellow `↑v<repo-version>` appears next to the dim installed-version tag. Fix: `git pull && bash install.sh`. Your `settings.json` merges, `omc-user/overrides.md`, and custom agents/skills outside the bundle are preserved; bundled files get overwritten and a timestamped backup is created under `~/.claude/backups/`. Suppress the indicator with `installation_drift_check=false` in `~/.claude/oh-my-claude.conf` (or `OMC_INSTALLATION_DRIFT_CHECK=false`).
 
+### How do I see what the last install actually changed?
+
+Every install `touch`es `~/.claude/.install-stamp`, giving you a reliable reference for post-install diffing:
+
+```bash
+# Files modified or added since the last install:
+find ~/.claude -newer ~/.claude/.install-stamp -type f 2>/dev/null
+# Bundled files that predate the last install (likely orphans or customizations):
+find ~/.claude -type f ! -newer ~/.claude/.install-stamp 2>/dev/null | head
+```
+
+The stamp is separate from `~/.claude/quality-pack/state/installed-manifest.txt` — the manifest records which files the bundle shipped, the stamp records *when* they landed. If the installer detected orphan files from a prior release, the post-install summary lists them under an `Orphans:` section; clean up manually or run `bash uninstall.sh && bash install.sh` for a full reset. Note: mtime granularity is 1 second on most filesystems, so two installs executed within the same second will share a stamp mtime.
+
+### Why does Claude write files to ~/.claude/projects/*/memory/ after a session?
+
+oh-my-claude's `auto-memory` rule tells Claude to proactively save durable, cross-session signal after substantial work — preferences the user articulated, project constraints not derivable from code, references to external systems (Linear, Grafana, Slack channels). These land in `~/.claude/projects/<project-id>/memory/` as plain Markdown with a small `MEMORY.md` index. The next session loads that memory automatically, so you do not have to re-explain context.
+
+The rule fires when a session shipped commits, resolved a critical finding, completed a feature or migration, made an architectural decision, or deliberately deferred work. Trivial turns (a one-word confirmation, a single-file fix without design content) do not trigger memory writes.
+
+If you prefer Claude **not** write memory automatically — e.g. on a shared machine, during a recorded demo, for a throwaway prototype, or because you audit memory contents manually — there are three scoped opt-outs:
+
+- **Per-session, imperative.** Tell Claude "do not save anything to memory this session." The rule runs in-context, so an in-conversation override takes effect immediately and does not require restarting.
+- **Per-project, durable.** Add an `overrides.md` entry in your project's `.claude/` directory (if you keep one) stating `Override: auto-memory rule is disabled in this project.` Claude loads per-project rules after the global ones, so this wins by precedence.
+- **Machine-wide, durable.** Add the override to `~/.claude/omc-user/overrides.md`:
+  ```markdown
+  Override: auto-memory rule is disabled on this machine. Do not write to ~/.claude/projects/*/memory/ unless the user explicitly requests it.
+  ```
+  `omc-user/overrides.md` is never overwritten by `install.sh`, so this survives updates. Do **not** try to opt out by deleting the `@~/.claude/quality-pack/memory/auto-memory.md` line from `~/.claude/CLAUDE.md` — `install.sh` re-adds it on the next install because `CLAUDE.md` is part of the bundle.
+
+Inspect, edit, or delete memory files at any time — the directory is yours. `MEMORY.md` is the index; remove a line there to hide an entry from future sessions without deleting the underlying file.
+
 ### The "historical defect patterns" watch list shows inflated counts from older sessions — can I reset it?
 
 Yes. Cross-session defect telemetry lives at `~/.claude/quality-pack/defect-patterns.json`. Older versions of `record-reviewer.sh` inflated categories like `missing_test`, `unknown`, and `security` by classifying reviewer narration prose instead of structured findings — see the *Fixed* section of the [CHANGELOG](../CHANGELOG.md) for the specific release that narrowed the classifier. If the injected watch list still shows those old counts, you can reset without losing session state:

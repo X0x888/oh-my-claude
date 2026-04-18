@@ -356,6 +356,10 @@ fi
 
 printf 'oh-my-claude verification passed.\n'
 printf '\n'
+printf '\033[1mIf you upgraded an existing install, restart Claude Code now to load the new hooks.\033[0m\n'
+printf '  Already-running sessions keep the previous hook bindings until restart — the\n'
+printf '  verify run above only confirms the on-disk install, not the live hook wiring.\n'
+printf '\n'
 printf 'What next?\n'
 printf '  /ulw-demo                               -- see quality gates in action (recommended first step)\n'
 printf '  /ulw fix the failing auth callback       -- start real work with full quality enforcement\n'

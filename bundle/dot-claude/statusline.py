@@ -172,25 +172,32 @@ def _parse_version(value):
 
 
 def installation_drift(installed):
-    """Return the repo VERSION when the source repo is ahead of the bundle.
+    """Return a drift descriptor when the source repo is ahead of the bundle.
 
-    The repo path is recorded by `install.sh` as `repo_path` in
-    `~/.claude/oh-my-claude.conf`. Drift is detected by reading the first
-    line of `${repo_path}/VERSION` and comparing it against the installed
-    bundle's recorded version.
+    Two drift forms are reported:
 
-    For dotted-int versions, the indicator only fires when the repo is
-    strictly newer than the bundle — so a user bisecting on an older tag
-    locally does not see a misleading "upgrade available" arrow. If
-    either side fails dotted-int parsing (e.g. a pre-release tag like
-    `1.7.0-rc1`), falls back to plain string inequality so the signal
-    still surfaces.
+    1. **Tag-ahead:** the repo's `VERSION` file is strictly newer than the
+       installed bundle. Returns `{"version": "<repo-version>"}`.
+    2. **Commits-ahead at same tag:** the repo's `VERSION` matches the
+       installed bundle, but the repo's HEAD is ahead of the SHA recorded
+       at install time (`installed_sha` in the conf). Closes the gap
+       where a user pulls two unreleased commits onto a tagged release
+       and the indicator would otherwise report "in sync" while the
+       local install actually lags the working tree. Returns
+       `{"version": "<repo-version>", "commits": N}`.
+
+    For dotted-int versions, the tag-ahead indicator only fires when the
+    repo is strictly newer — so a user bisecting on an older tag locally
+    does not see a misleading "upgrade available" arrow. If either side
+    fails dotted-int parsing (e.g. a pre-release tag like `1.7.0-rc1`),
+    falls back to plain string inequality.
 
     Silently returns None when the check is disabled, when there is no
-    installed version, when `repo_path` is unset, or when the VERSION
-    file is missing/unreadable (e.g. the clone was moved). Disable via
-    `installation_drift_check=false` in the conf or
-    `OMC_INSTALLATION_DRIFT_CHECK=false`.
+    installed version, when `repo_path` is unset, when the VERSION file
+    is missing/unreadable (e.g. the clone was moved), or when the
+    commit-distance probe fails (non-git repo, missing SHA, rewritten
+    history). Disable via `installation_drift_check=false` in the conf
+    or `OMC_INSTALLATION_DRIFT_CHECK=false`.
     """
     if not installed:
         return None
@@ -206,33 +213,117 @@ def installation_drift(installed):
             upstream = fh.readline().strip()
     except (FileNotFoundError, OSError):
         return None
-    if not upstream or upstream == installed:
+    if not upstream:
         return None
-    upstream_parsed = _parse_version(upstream)
-    installed_parsed = _parse_version(installed)
-    if upstream_parsed is not None and installed_parsed is not None:
-        if upstream_parsed <= installed_parsed:
-            return None
-    return upstream
+
+    # Tag-ahead branch: VERSION file is newer than installed_version.
+    if upstream != installed:
+        upstream_parsed = _parse_version(upstream)
+        installed_parsed = _parse_version(installed)
+        if upstream_parsed is not None and installed_parsed is not None:
+            if upstream_parsed <= installed_parsed:
+                return None
+        return {"version": upstream}
+
+    # Commits-ahead branch: VERSION matches, but HEAD may be ahead of the
+    # SHA captured at install time. Reading `installed_sha` from the conf
+    # rather than tag comparison catches the "pulled two unreleased
+    # commits but didn't re-install" case the tag check by design misses.
+    installed_sha = conf.get("installed_sha")
+    if not installed_sha:
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "-C", repo_path, "rev-list", "--count", f"{installed_sha}..HEAD"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+            timeout=2,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        # installed_sha is unreachable from HEAD (history rewritten,
+        # branch force-pushed, SHA from a deleted branch). We earlier
+        # returned a `(+?)` marker here to "signal uncertainty," but in
+        # practice that produces a persistent noisy indicator on the
+        # repo where oh-my-claude itself is developed — any rebase of
+        # main orphans the installed_sha and the statusline reports
+        # `↑v… (+?)` until the user re-runs install. Returning None
+        # aligns with the other fail-closed branches: no drift shown
+        # when the comparator cannot produce a trustworthy answer. The
+        # tag-ahead branch above still surfaces drift for the common
+        # "user forgot to re-install after bumping VERSION" case.
+        return None
+    raw = (result.stdout or "").strip()
+    try:
+        count = int(raw or "0")
+    except ValueError:
+        return None
+    if count > 0:
+        return {"version": upstream, "commits": count}
+    return None
 
 
 def harness_health():
-    """Check if the harness is actively intercepting hooks.
+    """Return 'active' when the most recent session has recent state writes.
 
-    Returns 'active' if the sentinel or hooks.log was touched in the
-    last 5 minutes, None otherwise.
+    Tightened from the earlier "sentinel-or-hooks.log touched in 5 min"
+    heuristic. `hooks.log` is a single global file touched by *any* hook
+    in *any* session (including stale reviews or pre-compact writes from
+    projects unrelated to the current conversation). Using it as the
+    activity signal produced false-positive `[H:ok]` displays when a
+    dormant session's tail-end hook had fired minutes ago.
+
+    The refined check walks into the newest session directory under
+    `STATE_ROOT` and looks at `session_state.json`'s mtime. State writes
+    happen per-hook-invocation within an active session, so a recent
+    mtime is a real "this install is being used right now" signal. A
+    stale `hooks.log` from yesterday no longer lights the indicator.
+
+    Returns None when no sessions exist, the newest session's state is
+    older than 5 minutes, or the state directory cannot be read.
     """
     state_root = os.path.join(os.path.expanduser("~"), ".claude", "quality-pack", "state")
-    for candidate in [
-        os.path.join(state_root, ".ulw_active"),
-        os.path.join(state_root, "hooks.log"),
-    ]:
+    if not os.path.isdir(state_root):
+        return None
+
+    try:
+        entries = [
+            name for name in os.listdir(state_root)
+            if not name.startswith(".") and os.path.isdir(os.path.join(state_root, name))
+        ]
+    except OSError:
+        return None
+
+    if not entries:
+        return None
+
+    now = time.time()
+    # Sort by directory mtime so we inspect the newest session first. A
+    # stale newest means every older session is older still, so we bail
+    # without further I/O once the freshest session fails the window.
+    try:
+        entries.sort(
+            key=lambda name: os.path.getmtime(os.path.join(state_root, name)),
+            reverse=True,
+        )
+    except OSError:
+        return None
+
+    for name in entries:
+        state_file = os.path.join(state_root, name, "session_state.json")
         try:
-            age = time.time() - os.path.getmtime(candidate)
-            if age < 300:
-                return "active"
+            age = now - os.path.getmtime(state_file)
         except (FileNotFoundError, OSError):
+            # This session never wrote state (partial bootstrap, test
+            # fixture). Fall through to the next newest session rather
+            # than treating a missing file as a negative signal.
             continue
+        if age < 300:
+            return "active"
+        return None
     return None
 
 
@@ -295,7 +386,21 @@ def main():
     line_one_parts.append(color(f"style:{style_name}", f"{DIM}{BLUE}"))
     if omc_version:
         line_one_parts.append(color(f"v{omc_version}", f"{DIM}{WHITE}"))
-        if omc_drift:
+        if isinstance(omc_drift, dict):
+            drift_label = f"\u2191v{omc_drift.get('version', '?')}"
+            commits = omc_drift.get("commits")
+            if commits is not None:
+                # `commits="?"` is the explicit "comparator failed"
+                # marker set by installation_drift when `installed_sha`
+                # is unreachable from HEAD. Showing (+?) surfaces the
+                # uncertainty instead of silently hiding the signal.
+                drift_label += f" (+{commits})"
+            line_one_parts.append(color(drift_label, YELLOW))
+        elif omc_drift:
+            # Defensive: an older installation_drift impl may return a
+            # bare string. Preserve backward-compatible rendering so an
+            # in-place statusline.py update before a full reinstall does
+            # not crash on a legacy return shape.
             line_one_parts.append(color(f"\u2191v{omc_drift}", YELLOW))
 
     total_in = safe_get(data, "context_window", "total_input_tokens", default=0)

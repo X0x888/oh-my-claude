@@ -2111,6 +2111,71 @@ else
 fi
 teardown_test
 
+# Gap 8s: verbose-first / terse-repeat denial reason. First block emits the
+# full 9-line coaching text; subsequent blocks in the same session compress
+# to a 2-line reminder so heavy blocking does not flood the conversation.
+# Mirrors the stop-guard block-1-verbose / block-2+-terse pattern.
+setup_test
+setup_compact_tests
+init_session "cg8s" "coding"
+set_intent "cg8s" "advisory"
+
+out_s1="$(sim_pretool_bash "cg8s" "git commit -m test")"
+# First block should contain the full coaching text — specifically the
+# "What to do instead:" label and the enumerated (a) (b) (c) list. The
+# terse form omits these.
+assert_contains "gap8s: first block blocks" "\"permissionDecision\":\"deny\"" "${out_s1}"
+assert_contains "gap8s: first block is verbose (What to do instead:)" "What to do instead:" "${out_s1}"
+assert_contains "gap8s: first block lists options (a)" "(a) Deliver" "${out_s1}"
+assert_contains "gap8s: first block lists options (c)" "(c) If you believe" "${out_s1}"
+
+counter_s1="$(read_st "cg8s" "pretool_intent_blocks")"
+if [[ "${counter_s1}" == "1" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: gap8s: after first block, pretool_intent_blocks should be 1 (got: %s)\n' "${counter_s1}" >&2
+  fail=$((fail + 1))
+fi
+
+out_s2="$(sim_pretool_bash "cg8s" "git push origin main")"
+# Second block should still deny...
+assert_contains "gap8s: second block blocks" "\"permissionDecision\":\"deny\"" "${out_s2}"
+# ...but should NOT contain the verbose coaching text.
+if ! printf '%s' "${out_s2}" | grep -q "What to do instead:"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: gap8s: second block must be terse (unexpected verbose "What to do instead:")\n' >&2
+  fail=$((fail + 1))
+fi
+if ! printf '%s' "${out_s2}" | grep -q "(a) Deliver"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: gap8s: second block must be terse (unexpected "(a) Deliver")\n' >&2
+  fail=$((fail + 1))
+fi
+# ...and should include a block-count marker so the user sees repeats.
+assert_contains "gap8s: second block names block number" "block #2" "${out_s2}"
+
+counter_s2="$(read_st "cg8s" "pretool_intent_blocks")"
+if [[ "${counter_s2}" == "2" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: gap8s: after second block, pretool_intent_blocks should be 2 (got: %s)\n' "${counter_s2}" >&2
+  fail=$((fail + 1))
+fi
+
+# Third block also terse, with "block #3"
+out_s3="$(sim_pretool_bash "cg8s" "git reset --hard HEAD~1")"
+assert_contains "gap8s: third block blocks" "\"permissionDecision\":\"deny\"" "${out_s3}"
+assert_contains "gap8s: third block names block number" "block #3" "${out_s3}"
+if ! printf '%s' "${out_s3}" | grep -q "What to do instead:"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: gap8s: third block must be terse (unexpected verbose text)\n' >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
 # -------------------------------------------------------
 # Gap 7: back-to-back compactions archive prior snapshot
 # -------------------------------------------------------

@@ -723,12 +723,78 @@ fi
 # Step 2b — Apply model tier (rewrite agent model assignments if needed).
 apply_model_tier
 
-# Step 2c — Save repo path and installed version for easy updates.
+# Step 2c — Save repo path, installed version, and installed SHA for
+# easy updates. The SHA lets the stale-install indicator detect a
+# commits-ahead state even when VERSION hasn't been bumped (e.g. the
+# repo has unreleased commits on main past the last tag). Silently
+# clears installed_sha when the install source is not a git worktree
+# (tarball, extracted zip) so a prior worktree install's SHA does not
+# linger as a false comparator.
 set_conf "repo_path" "${SCRIPT_DIR}"
 set_conf "installed_version" "${OMC_VERSION}"
 
+installed_sha=""
+if command -v git >/dev/null 2>&1 && [[ -d "${SCRIPT_DIR}/.git" ]]; then
+  installed_sha="$(git -C "${SCRIPT_DIR}" rev-parse HEAD 2>/dev/null || true)"
+fi
+if [[ -n "${installed_sha}" ]]; then
+  set_conf "installed_sha" "${installed_sha}"
+else
+  # Source is not a git worktree (tarball, extracted zip) — remove any
+  # stale installed_sha left from a previous worktree-based install so
+  # the statusline's commit-distance probe fails closed (returns None)
+  # instead of reading an orphaned SHA and producing a misleading
+  # `(+?)` marker against the next worktree this repo path maps to.
+  _conf_path="${CLAUDE_HOME}/oh-my-claude.conf"
+  if [[ -f "${_conf_path}" ]] && grep -q '^installed_sha=' "${_conf_path}"; then
+    _tmp="${_conf_path}.tmp"
+    grep -v '^installed_sha=' "${_conf_path}" > "${_tmp}" 2>/dev/null || true
+    mv "${_tmp}" "${_conf_path}"
+  fi
+fi
+
 # Ensure quality-pack state directory exists (not in the bundle).
 mkdir -p "${CLAUDE_HOME}/quality-pack/state"
+
+# Step 2c-manifest — Orphan detection via bundle-file manifest.
+# rsync -a without --delete leaves files from prior releases sitting in
+# ~/.claude/ if the new bundle removed them (e.g. a renamed script). The
+# manifest snapshot compares what was in the previous install against
+# what's in the new bundle and warns about files that no longer ship so
+# the user can decide whether to keep, delete, or clean-reinstall.
+MANIFEST_PATH="${CLAUDE_HOME}/quality-pack/state/installed-manifest.txt"
+NEW_MANIFEST_TMP="$(mktemp)"
+# Collect bundle's relative file list from the new source, sorted. Used
+# both to diff against the previous manifest (orphan detection) and to
+# persist as the new manifest for the next install cycle.
+#
+# Locale discipline matters here: `comm -23` requires identically-sorted
+# inputs, but `sort` (and `comm`) honor LC_COLLATE. A user who installs
+# under `LC_ALL=en_US.UTF-8` and later re-installs under `LC_ALL=C`
+# would see every mixed-case filename mis-ordered relative to the
+# on-disk manifest, producing spurious orphan warnings. Pinning both
+# the manifest build AND the comm comparison to `LC_ALL=C` gives a
+# stable byte-order key that matches across install runs regardless of
+# the user's environment.
+(cd "${BUNDLE_CLAUDE}" && find . -type f ! -name '.DS_Store' 2>/dev/null | sed 's|^\./||' | LC_ALL=C sort) > "${NEW_MANIFEST_TMP}"
+
+orphan_count=0
+orphan_list=""
+if [[ -f "${MANIFEST_PATH}" ]]; then
+  # `comm -23 OLD NEW` prints lines in OLD that are not in NEW — i.e.
+  # files that shipped in a prior release but are no longer in the new
+  # bundle. We only warn when the orphan file still exists on disk; a
+  # user may have already cleaned it up manually.
+  while IFS= read -r orphan_rel; do
+    [[ -z "${orphan_rel}" ]] && continue
+    if [[ -f "${CLAUDE_HOME}/${orphan_rel}" ]]; then
+      orphan_count=$((orphan_count + 1))
+      orphan_list="${orphan_list}    ${orphan_rel}"$'\n'
+    fi
+  done < <(LC_ALL=C comm -23 "${MANIFEST_PATH}" "${NEW_MANIFEST_TMP}")
+fi
+
+mv "${NEW_MANIFEST_TMP}" "${MANIFEST_PATH}"
 
 # Step 2d — Create user-override directory (never overwritten by rsync).
 # Files in omc-user/ survive updates. Existing user content is preserved.
@@ -768,6 +834,14 @@ fi
 # Step 5 — Set executable bits on scripts.
 ensure_executable_bits
 
+# Step 6 — Install stamp. Gives users a reliable "what changed in this
+# install" reference (find ~/.claude -newer ~/.claude/.install-stamp).
+# rsync -a preserves the bundle's mtimes rather than setting them to now,
+# so without an explicit stamp no tooling can distinguish "touched by this
+# install" from "cloned at this time". Uses `touch` with no flags so both
+# BSD (macOS) and GNU (Linux) touch behave identically (-d is a GNU-ism).
+touch "${CLAUDE_HOME}/.install-stamp"
+
 # ===========================================================================
 # Summary
 # ===========================================================================
@@ -776,6 +850,9 @@ printf '\n'
 printf '=== oh-my-claude install complete ===\n'
 printf '\n'
 printf '  Version:       %s\n' "${OMC_VERSION}"
+if [[ -n "${installed_sha}" ]]; then
+  printf '  Commit:        %s\n' "${installed_sha:0:12}"
+fi
 printf '  Destination:   %s\n' "${CLAUDE_HOME}"
 printf '  Backup:        %s\n' "${BACKUP_DIR}"
 if [[ -d "${BUNDLE_GHOSTTY}" ]]; then
@@ -790,9 +867,23 @@ if [[ -f "${CLAUDE_HOME}/oh-my-claude.conf" ]]; then
     printf '  Model tier:    %s\n' "${_tier}"
   fi
 fi
+
+# Orphan warning: surface files that were in a prior bundle but removed
+# in this release. These linger in ~/.claude/ because rsync -a has no
+# --delete flag (removing --delete would wipe user-created files too).
+if [[ "${orphan_count}" -gt 0 ]]; then
+  printf '\n'
+  printf '  Orphans:       %d file(s) from a prior release remain in %s\n' "${orphan_count}" "${CLAUDE_HOME}"
+  printf '                 (rsync preserves them; the new bundle no longer ships them):\n'
+  printf '%s' "${orphan_list}"
+  printf '                 Review and delete manually, or run:\n'
+  printf '                   bash %s/uninstall.sh && bash %s/install.sh\n' "${SCRIPT_DIR}" "${SCRIPT_DIR}"
+fi
+
 printf '\n'
 printf 'Next steps:\n'
-printf '  1. Restart Claude Code (or open a new session).\n'
+printf '  1. \033[1mRestart Claude Code\033[0m (or open a new session) to load the new hooks.\n'
+printf '     Already-running sessions keep the previous hook bindings until restart.\n'
 printf '  2. Run: bash %s/verify.sh\n' "${SCRIPT_DIR}"
 printf '\n'
 

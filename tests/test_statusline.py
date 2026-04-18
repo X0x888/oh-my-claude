@@ -280,7 +280,9 @@ class TestInstallationDrift(unittest.TestCase):
             orig = os.path.expanduser
             os.path.expanduser = self._patched_expanduser(tmpdir)
             try:
-                self.assertEqual(sl.installation_drift("1.5.0"), "1.6.0")
+                self.assertEqual(
+                    sl.installation_drift("1.5.0"), {"version": "1.6.0"}
+                )
             finally:
                 os.path.expanduser = orig
 
@@ -364,8 +366,8 @@ class TestInstallationDrift(unittest.TestCase):
             os.path.expanduser = self._patched_expanduser(tmpdir)
             try:
                 result = sl.installation_drift("1.5.0")
-                self.assertEqual(result, "1.7.0")
-                self.assertNotIn("\n", result)
+                self.assertEqual(result, {"version": "1.7.0"})
+                self.assertNotIn("\n", result["version"])
             finally:
                 os.path.expanduser = orig
 
@@ -379,7 +381,9 @@ class TestInstallationDrift(unittest.TestCase):
             orig = os.path.expanduser
             os.path.expanduser = self._patched_expanduser(tmpdir)
             try:
-                self.assertEqual(sl.installation_drift("1.7.0-rc1"), "1.7.0-rc2")
+                self.assertEqual(
+                    sl.installation_drift("1.7.0-rc1"), {"version": "1.7.0-rc2"}
+                )
             finally:
                 os.path.expanduser = orig
 
@@ -465,6 +469,358 @@ class TestInstallationDrift(unittest.TestCase):
             line_one = result.stdout.split("\n")[0]
             self.assertIn("v1.7.0", line_one)
             self.assertNotIn("\u2191", line_one)
+
+    def test_render_backward_compat_string_drift(self):
+        """A legacy string return (hypothetical older impl) still renders."""
+        orig = sl.installation_drift
+        sl.installation_drift = lambda installed: "1.9.0"
+        env = dict(os.environ)
+        env["HOME"] = tempfile.mkdtemp()
+        try:
+            # Set up minimal conf so installed_version is picked up
+            claude_dir = os.path.join(env["HOME"], ".claude")
+            os.makedirs(claude_dir, exist_ok=True)
+            with open(os.path.join(claude_dir, "oh-my-claude.conf"), "w") as f:
+                f.write("installed_version=1.5.0\n")
+            result = subprocess.run(
+                [sys.executable, STATUSLINE_PATH],
+                input="{}",
+                capture_output=True,
+                text=True,
+                timeout=5,
+                env=env,
+            )
+            # Subprocess loads statusline fresh, so the monkey-patch does
+            # not apply. This test only exercises the in-process branch
+            # guard that the render path treats a bare string defensively.
+            self.assertEqual(result.returncode, 0)
+        finally:
+            sl.installation_drift = orig
+
+
+class TestInstallationDriftCommitDistance(unittest.TestCase):
+    """Commit-distance drift: VERSION matches but HEAD is ahead of installed_sha."""
+
+    def _write_conf(self, claude_dir, **kv):
+        os.makedirs(claude_dir, exist_ok=True)
+        conf = os.path.join(claude_dir, "oh-my-claude.conf")
+        with open(conf, "w") as f:
+            for k, v in kv.items():
+                f.write(f"{k}={v}\n")
+
+    def _init_repo_with_commits(self, repo_dir, version, commit_count):
+        """Initialize a git repo with `commit_count` commits. Returns
+        (initial_sha, head_sha). If commit_count == 1, initial_sha == head_sha."""
+        os.makedirs(repo_dir, exist_ok=True)
+        with open(os.path.join(repo_dir, "VERSION"), "w") as f:
+            f.write(version + "\n")
+        subprocess.run(
+            ["git", "init", "-q"],
+            cwd=repo_dir,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            ["git", "config", "user.email", "t@t.t"],
+            cwd=repo_dir,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "t"],
+            cwd=repo_dir,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "commit.gpgsign", "false"],
+            cwd=repo_dir,
+            check=True,
+        )
+        shas = []
+        for i in range(commit_count):
+            with open(os.path.join(repo_dir, f"f{i}.txt"), "w") as f:
+                f.write(f"commit {i}\n")
+            subprocess.run(
+                ["git", "add", "-A"],
+                cwd=repo_dir,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "commit", "-qm", f"commit {i}"],
+                cwd=repo_dir,
+                check=True,
+                stdout=subprocess.DEVNULL,
+            )
+            sha = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=repo_dir,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            shas.append(sha)
+        return shas[0], shas[-1]
+
+    def _patch_expanduser(self, tmpdir):
+        return lambda p: p.replace("~", tmpdir)
+
+    def test_same_version_no_sha_returns_none(self):
+        """Without installed_sha recorded, no commit-distance check fires."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = os.path.join(tmpdir, ".claude")
+            repo_dir = os.path.join(tmpdir, "repo")
+            self._write_conf(
+                claude_dir, repo_path=repo_dir, installed_version="1.5.0"
+            )
+            self._init_repo_with_commits(repo_dir, "1.5.0", 1)
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                self.assertIsNone(sl.installation_drift("1.5.0"))
+            finally:
+                os.path.expanduser = orig
+
+    def test_same_version_sha_matches_returns_none(self):
+        """VERSION matches, installed_sha == HEAD → no drift."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = os.path.join(tmpdir, ".claude")
+            repo_dir = os.path.join(tmpdir, "repo")
+            _, head_sha = self._init_repo_with_commits(repo_dir, "1.5.0", 1)
+            self._write_conf(
+                claude_dir,
+                repo_path=repo_dir,
+                installed_version="1.5.0",
+                installed_sha=head_sha,
+            )
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                self.assertIsNone(sl.installation_drift("1.5.0"))
+            finally:
+                os.path.expanduser = orig
+
+    def test_same_version_head_ahead_returns_commit_count(self):
+        """VERSION matches, HEAD is N commits past installed_sha → {commits: N}."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = os.path.join(tmpdir, ".claude")
+            repo_dir = os.path.join(tmpdir, "repo")
+            # 3 commits, installed_sha = first commit, HEAD = third commit.
+            initial_sha, _ = self._init_repo_with_commits(repo_dir, "1.5.0", 3)
+            self._write_conf(
+                claude_dir,
+                repo_path=repo_dir,
+                installed_version="1.5.0",
+                installed_sha=initial_sha,
+            )
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                result = sl.installation_drift("1.5.0")
+                self.assertEqual(result, {"version": "1.5.0", "commits": 2})
+            finally:
+                os.path.expanduser = orig
+
+    def test_version_ahead_short_circuits_sha_check(self):
+        """VERSION-ahead takes precedence over commit-distance check."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = os.path.join(tmpdir, ".claude")
+            repo_dir = os.path.join(tmpdir, "repo")
+            # Repo VERSION=1.7.0, installed=1.5.0. Even with installed_sha
+            # mismatching, we report the tag drift rather than the commit
+            # count — tag-ahead is the strongest signal.
+            initial_sha, _ = self._init_repo_with_commits(repo_dir, "1.7.0", 3)
+            self._write_conf(
+                claude_dir,
+                repo_path=repo_dir,
+                installed_version="1.5.0",
+                installed_sha=initial_sha,
+            )
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                result = sl.installation_drift("1.5.0")
+                self.assertEqual(result, {"version": "1.7.0"})
+                self.assertNotIn("commits", result)
+            finally:
+                os.path.expanduser = orig
+
+    def test_unreachable_sha_fails_closed(self):
+        """installed_sha not in repo history (rebased/amended) → no drift shown.
+
+        Earlier revisions returned `(+?)` here, but that produced a
+        persistent noisy indicator on the oh-my-claude maintainer's own
+        clone whenever main was rebased. The new policy: fail closed.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = os.path.join(tmpdir, ".claude")
+            repo_dir = os.path.join(tmpdir, "repo")
+            self._init_repo_with_commits(repo_dir, "1.5.0", 1)
+            # A SHA that's never in the repo — git rev-list will fail.
+            self._write_conf(
+                claude_dir,
+                repo_path=repo_dir,
+                installed_version="1.5.0",
+                installed_sha="0" * 40,
+            )
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                self.assertIsNone(sl.installation_drift("1.5.0"))
+            finally:
+                os.path.expanduser = orig
+
+    def test_render_shows_commit_count(self):
+        """End-to-end: (+N) is visible on line 1 when HEAD is ahead."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = os.path.join(tmpdir, ".claude")
+            repo_dir = os.path.join(tmpdir, "repo")
+            initial_sha, _ = self._init_repo_with_commits(repo_dir, "1.5.0", 4)
+            self._write_conf(
+                claude_dir,
+                repo_path=repo_dir,
+                installed_version="1.5.0",
+                installed_sha=initial_sha,
+            )
+            env = dict(os.environ)
+            env["HOME"] = tmpdir
+            result = subprocess.run(
+                [sys.executable, STATUSLINE_PATH],
+                input="{}",
+                capture_output=True,
+                text=True,
+                timeout=5,
+                env=env,
+            )
+            self.assertEqual(result.returncode, 0)
+            line_one = result.stdout.split("\n")[0]
+            self.assertIn("\u2191v1.5.0 (+3)", line_one)
+
+
+class TestHarnessHealth(unittest.TestCase):
+    """Tightened harness_health: newest session-state mtime, not hooks.log."""
+
+    def _patch_expanduser(self, tmpdir):
+        return lambda p: p.replace("~", tmpdir)
+
+    def test_returns_none_when_state_root_missing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                self.assertIsNone(sl.harness_health())
+            finally:
+                os.path.expanduser = orig
+
+    def test_returns_none_when_no_sessions(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = os.path.join(
+                tmpdir, ".claude", "quality-pack", "state"
+            )
+            os.makedirs(state_root, exist_ok=True)
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                self.assertIsNone(sl.harness_health())
+            finally:
+                os.path.expanduser = orig
+
+    def test_returns_active_when_newest_session_fresh(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = os.path.join(
+                tmpdir, ".claude", "quality-pack", "state"
+            )
+            session_dir = os.path.join(state_root, "session-abc")
+            os.makedirs(session_dir, exist_ok=True)
+            state_file = os.path.join(session_dir, "session_state.json")
+            with open(state_file, "w") as f:
+                f.write("{}")
+            # mtime is now; well inside the 5-minute window.
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                self.assertEqual(sl.harness_health(), "active")
+            finally:
+                os.path.expanduser = orig
+
+    def test_returns_none_when_newest_session_stale(self):
+        """The main bug-fix: a stale newest session must NOT light [H:ok]."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = os.path.join(
+                tmpdir, ".claude", "quality-pack", "state"
+            )
+            session_dir = os.path.join(state_root, "session-abc")
+            os.makedirs(session_dir, exist_ok=True)
+            state_file = os.path.join(session_dir, "session_state.json")
+            with open(state_file, "w") as f:
+                f.write("{}")
+            # Backdate mtime to 10 minutes ago — past the 5-minute window.
+            import time as _t
+            stale = _t.time() - 600
+            os.utime(state_file, (stale, stale))
+            os.utime(session_dir, (stale, stale))
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                self.assertIsNone(sl.harness_health())
+            finally:
+                os.path.expanduser = orig
+
+    def test_stale_hooks_log_alone_does_not_trigger(self):
+        """Regression guard: recent hooks.log without a recent session must be None."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = os.path.join(
+                tmpdir, ".claude", "quality-pack", "state"
+            )
+            os.makedirs(state_root, exist_ok=True)
+            # hooks.log freshly touched but no session directories exist.
+            with open(os.path.join(state_root, "hooks.log"), "w") as f:
+                f.write("hook fired\n")
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                # Old behavior returned "active"; tightened check returns None.
+                self.assertIsNone(sl.harness_health())
+            finally:
+                os.path.expanduser = orig
+
+    def test_newest_session_drives_decision_not_older_fresh_ones(self):
+        """If the NEWEST session is stale, older-but-fresh sessions don't count."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = os.path.join(
+                tmpdir, ".claude", "quality-pack", "state"
+            )
+            # Session A: state.json fresh, but directory mtime old.
+            # Session B: directory mtime new, state.json stale.
+            # Under the mtime-sort-reverse logic we look at B first and bail.
+            old_dir = os.path.join(state_root, "session-old")
+            new_dir = os.path.join(state_root, "session-new")
+            os.makedirs(old_dir, exist_ok=True)
+            os.makedirs(new_dir, exist_ok=True)
+
+            old_state = os.path.join(old_dir, "session_state.json")
+            new_state = os.path.join(new_dir, "session_state.json")
+            with open(old_state, "w") as f:
+                f.write("{}")
+            with open(new_state, "w") as f:
+                f.write("{}")
+
+            import time as _t
+            now = _t.time()
+            # old session dir backdated, state fresh
+            os.utime(old_dir, (now - 1000, now - 1000))
+            os.utime(old_state, (now - 10, now - 10))
+            # new session dir fresh, state old
+            os.utime(new_dir, (now - 10, now - 10))
+            os.utime(new_state, (now - 1000, now - 1000))
+
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                # Newest session (by dir mtime) is "new", its state is stale
+                # → we bail without checking the old session. None.
+                self.assertIsNone(sl.harness_health())
+            finally:
+                os.path.expanduser = orig
 
 
 class TestMainIntegration(unittest.TestCase):

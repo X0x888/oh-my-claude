@@ -223,22 +223,35 @@ fi
 
 intent_label="${task_intent//_/-}"
 
-# Record the block for show-status visibility. Uses a new state key
+# Record the block for show-status visibility AND return the post-
+# increment value so the verbose-vs-terse decision below can use a
+# value observed *inside* the lock. Uses a new state key
 # (pretool_intent_blocks) so it does not collide with advisory_guard_blocks,
-# which tracks the separate advisory-inspection-gate in stop-guard.
-# Wrapped in with_state_lock to prevent lost increments when the model
-# issues multiple tool_use blocks in one assistant turn (parallel Bash).
+# which tracks the separate advisory-inspection gate in stop-guard.
+# A prior revision read the counter a second time *outside* the lock to
+# pick the reason tone, which allowed a parallel tool_use block to
+# observe another hook's increment and silently downgrade the first-
+# ever verbose coaching block to terse. Emitting the new value from
+# inside the locked function and capturing it via `$(...)` closes that
+# race — the caller sees exactly the counter value that this hook wrote.
 _increment_pretool_blocks() {
   local _c
   _c="$(read_state "pretool_intent_blocks")"
   _c="${_c:-0}"
-  write_state "pretool_intent_blocks" "$((_c + 1))"
+  _c=$((_c + 1))
+  write_state "pretool_intent_blocks" "${_c}"
+  printf '%s' "${_c}"
 }
-with_state_lock _increment_pretool_blocks || true
+block_count="$(with_state_lock _increment_pretool_blocks)" || block_count=""
+# Safety net: an exhausted lock returns empty/rc=1. Treat as first
+# block so the user still gets the verbose coaching text rather than a
+# silently-degraded terse message attributed to a phantom earlier block.
+block_count="${block_count:-1}"
 
-log_hook "pretool-intent-guard" "blocked: intent=${task_intent} cmd=$(truncate_chars 80 "${command_str}")"
+log_hook "pretool-intent-guard" "blocked: intent=${task_intent} block=${block_count} cmd=$(truncate_chars 80 "${command_str}")"
 
-reason="Blocked: the active prompt was classified as '${intent_label}' (not execution). Destructive git/gh operations (commit, push, revert, reset --hard, rebase, cherry-pick, tag, merge, branch -D, switch -C, checkout -B, clean -f, update-ref, filter-branch, gh pr/release/issue create/merge/edit/close) require explicit execution authorization.
+if [[ "${block_count}" -le 1 ]]; then
+  reason="Blocked: the active prompt was classified as '${intent_label}' (not execution). Destructive git/gh operations (commit, push, revert, reset --hard, rebase, cherry-pick, tag, merge, branch -D, switch -C, checkout -B, clean -f, update-ref, filter-branch, gh pr/release/issue create/merge/edit/close) require explicit execution authorization.
 
 What to do instead:
   (a) Deliver the ${intent_label} response the user asked for — assessment, recommendation, or checkpoint.
@@ -248,6 +261,10 @@ What to do instead:
 Do not attempt to work around this guard by using alternative commands (plumbing git verbs, absolute paths, filesystem edits to .git/, or invoking git through another language runtime) — the spirit of the rule is 'no unauthorized modifications to any repo', not 'only the surface forms listed'.
 
 Attempted command: $(truncate_chars 200 "${command_str}")"
+else
+  reason="Blocked (${intent_label}, block #${block_count}): destructive git/gh operations still require explicit execution authorization. Deliver the assessment/recommendation the user asked for. A fresh imperative prompt ('implement X', 'fix Y') will reclassify intent and unblock edits.
+Attempted: $(truncate_chars 200 "${command_str}")"
+fi
 
 jq -nc --arg reason "${reason}" '{
   hookSpecificOutput: {

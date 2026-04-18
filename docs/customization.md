@@ -219,6 +219,30 @@ installation_drift_check=true
 
 Values can also be overridden via environment variables (`OMC_STALL_THRESHOLD`, `OMC_EXCELLENCE_FILE_COUNT`, `OMC_DIMENSION_GATE_FILE_COUNT`, `OMC_TRACEABILITY_FILE_COUNT`, `OMC_STATE_TTL_DAYS`, `OMC_VERIFY_CONFIDENCE_THRESHOLD`, `OMC_CUSTOM_VERIFY_MCP_TOOLS`, `OMC_INSTALLATION_DRIFT_CHECK`, `OMC_PRETOOL_INTENT_GUARD`). Environment variables take precedence over the conf file, and both override the built-in defaults.
 
+### Recipe: shell-only / lint-as-tests projects
+
+For projects where the primary automated check is a linter — pure-bash utilities, config-only repositories, spec-only documentation packages — the default `verify_confidence_threshold=40` can block legitimate stop attempts because `bash -n` and `shellcheck` score `30`. Rather than lowering the threshold globally (which weakens verification for every project), use per-project configuration to scope the override:
+
+```bash
+# From inside the project root:
+mkdir -p .claude
+cat > .claude/oh-my-claude.conf <<'EOF'
+# Pure-bash project — lint IS the test. Relax the verification floor
+# from 40 to 30 so shellcheck and bash -n can satisfy the quality gate.
+verify_confidence_threshold=30
+EOF
+```
+
+The harness walks up from `$PWD` looking for `.claude/oh-my-claude.conf`, so this override applies only when Claude Code is invoked from this project. The user-level `~/.claude/oh-my-claude.conf` keeps the `40` default for every other repo, and the existing `custom_verify_patterns` mechanism still lets you register project-specific test wrappers:
+
+```
+# Also in .claude/oh-my-claude.conf — name a wrapper script so the gate
+# can recognize it as a higher-confidence project test command.
+custom_verify_patterns=\b(run-tests\.sh|check\.sh)\b
+```
+
+If you later add an actual test suite, drop the threshold override and let the higher-confidence verification path satisfy the default gate.
+
 ---
 
 ## Domain Keywords

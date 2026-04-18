@@ -185,6 +185,18 @@ Session state is stored at:
   internal_edits.log        # Edits to internal Claude paths (excluded from tracking)
 ```
 
+### Install-time artifacts
+
+Separate from session state, `install.sh` writes four install-time artifacts that persist across sessions and feed the statusline's stale-install indicator:
+
+| Path | Purpose |
+|---|---|
+| `~/.claude/oh-my-claude.conf` → `repo_path` | Absolute path of the source repo `install.sh` was run from; read by the statusline to compare bundle vs. repo `VERSION`. |
+| `~/.claude/oh-my-claude.conf` → `installed_version` | First line of `VERSION` at install time. Compared against `${repo_path}/VERSION` to detect tag-ahead drift. |
+| `~/.claude/oh-my-claude.conf` → `installed_sha` | Full 40-char `git rev-parse HEAD` of the source repo at install time. Compared against HEAD via `git rev-list --count installed_sha..HEAD` to detect commits-ahead drift when VERSION matches. Omitted entirely (key removed from conf) when the install source is not a git worktree. |
+| `~/.claude/quality-pack/state/installed-manifest.txt` | Sorted (LC_ALL=C) relative-path list of every file in the bundle at install time. Compared against the new bundle on the next install via `comm -23` to detect orphan files (present in prior release, removed from current bundle). `rsync -a` does not remove them — the warning tells the user to clean up manually. |
+| `~/.claude/.install-stamp` | Empty file `touch`ed on every install. Reliable reference for "what changed since the last install" — e.g. `find ~/.claude -newer ~/.claude/.install-stamp -type f` (subject to 1-second filesystem mtime granularity). |
+
 ### State keys in `session_state.json`
 
 | Key | Purpose |
