@@ -1327,6 +1327,240 @@ assert_contains "review clean" "Code review: clean" "${sc}"
 SESSION_ID="${_orig_sid2}"
 
 # ===========================================================================
+# detect_project_test_command — new tiers (justfile, Taskfile, bash tests/)
+# ===========================================================================
+printf '\ndetect_project_test_command (new tiers):\n'
+
+# Justfile with test recipe
+_tp_just="$(mktemp -d)"
+printf 'default:\n\techo hi\ntest:\n\techo testing\n' > "${_tp_just}/justfile"
+assert_eq "justfile with test recipe -> just test" \
+  "just test" \
+  "$(detect_project_test_command "${_tp_just}")"
+rm -rf "${_tp_just}"
+
+# Justfile without test recipe
+_tp_just2="$(mktemp -d)"
+printf 'default:\n\techo hi\n' > "${_tp_just2}/justfile"
+assert_eq "justfile without test recipe -> empty" \
+  "" \
+  "$(detect_project_test_command "${_tp_just2}")"
+rm -rf "${_tp_just2}"
+
+# Taskfile.yml with test task
+_tp_task="$(mktemp -d)"
+cat > "${_tp_task}/Taskfile.yml" <<'TASKYAML'
+version: '3'
+tasks:
+  test:
+    cmds:
+      - echo testing
+TASKYAML
+assert_eq "Taskfile.yml with test task -> task test" \
+  "task test" \
+  "$(detect_project_test_command "${_tp_task}")"
+rm -rf "${_tp_task}"
+
+# Taskfile false-positive guard: `test:` inside vars:/deps: must NOT match.
+# Reviewer finding HIGH #3.
+_tp_task_vars="$(mktemp -d)"
+cat > "${_tp_task_vars}/Taskfile.yml" <<'TASKYAML'
+version: '3'
+vars:
+  test: false
+tasks:
+  build:
+    cmds:
+      - go build ./...
+TASKYAML
+assert_eq "Taskfile with vars:test (no test task) -> empty" \
+  "" \
+  "$(detect_project_test_command "${_tp_task_vars}")"
+rm -rf "${_tp_task_vars}"
+
+_tp_task_deps="$(mktemp -d)"
+cat > "${_tp_task_deps}/Taskfile.yml" <<'TASKYAML'
+version: '3'
+tasks:
+  build:
+    deps:
+      - test
+    cmds:
+      - go build ./...
+TASKYAML
+assert_eq "Taskfile with deps mentioning test (no test task) -> empty" \
+  "" \
+  "$(detect_project_test_command "${_tp_task_deps}")"
+rm -rf "${_tp_task_deps}"
+
+# Bash-project orchestrator at repo root
+_tp_bash1="$(mktemp -d)"
+touch "${_tp_bash1}/run-tests.sh"
+assert_eq "repo-root run-tests.sh -> bash run-tests.sh" \
+  "bash run-tests.sh" \
+  "$(detect_project_test_command "${_tp_bash1}")"
+rm -rf "${_tp_bash1}"
+
+# Bash-project orchestrator inside tests/
+_tp_bash2="$(mktemp -d)"
+mkdir -p "${_tp_bash2}/tests"
+touch "${_tp_bash2}/tests/run-all.sh"
+assert_eq "tests/run-all.sh -> bash tests/run-all.sh" \
+  "bash tests/run-all.sh" \
+  "$(detect_project_test_command "${_tp_bash2}")"
+rm -rf "${_tp_bash2}"
+
+# tests/test-*.sh alphabetical fallback
+_tp_bash3="$(mktemp -d)"
+mkdir -p "${_tp_bash3}/tests"
+touch "${_tp_bash3}/tests/test-zebra.sh" "${_tp_bash3}/tests/test-alpha.sh"
+assert_eq "tests/test-*.sh -> alphabetically first" \
+  "bash tests/test-alpha.sh" \
+  "$(detect_project_test_command "${_tp_bash3}")"
+rm -rf "${_tp_bash3}"
+
+# Language manifests still take precedence over bash fallback
+_tp_pkg="$(mktemp -d)"
+mkdir -p "${_tp_pkg}/tests"
+touch "${_tp_pkg}/tests/test-alpha.sh"
+cat > "${_tp_pkg}/package.json" <<'PKG'
+{"scripts": {"test": "jest"}}
+PKG
+assert_eq "package.json beats tests/ fallback" \
+  "npm test" \
+  "$(detect_project_test_command "${_tp_pkg}")"
+rm -rf "${_tp_pkg}"
+
+# ===========================================================================
+# verification_matches_project_test_command — bash-family match
+# ===========================================================================
+printf '\nverification_matches_project_test_command (bash family):\n'
+
+assert_exit "same file matches" 0 \
+  verification_matches_project_test_command \
+    "bash tests/test-alpha.sh" "bash tests/test-alpha.sh"
+
+assert_exit "different file in same tests/ dir matches" 0 \
+  verification_matches_project_test_command \
+    "bash tests/test-beta.sh" "bash tests/test-alpha.sh"
+
+assert_exit "unrelated bash script does not match" 1 \
+  verification_matches_project_test_command \
+    "bash scripts/foo.sh" "bash tests/test-alpha.sh"
+
+assert_exit "different directory does not match" 1 \
+  verification_matches_project_test_command \
+    "bash other/foo.sh" "bash tests/test-alpha.sh"
+
+# Regex-injection guard: a `.` in the ptc dir must not let unrelated
+# dir names match via regex interpretation. Reviewer finding HIGH #2.
+assert_exit "dot in ptc dir does not over-match" 1 \
+  verification_matches_project_test_command \
+    "bash txsts/other.sh" "bash t.sts/foo.sh"
+
+# Literal dot match still works (same ptc dir, different file).
+assert_exit "literal dot match still matches sibling" 0 \
+  verification_matches_project_test_command \
+    "bash t.sts/bar.sh" "bash t.sts/foo.sh"
+
+# Path-traversal dir is rejected when cmds differ.
+assert_exit "path-traversal ptc with different cmd is rejected" 1 \
+  verification_matches_project_test_command \
+    "bash other/x.sh" "bash tests/../other/y.sh"
+
+# ===========================================================================
+# Classifier telemetry
+# ===========================================================================
+printf '\nClassifier telemetry:\n'
+
+_tel_sid="classifier-tel-$$"
+_orig_sid3="${SESSION_ID}"
+SESSION_ID="${_tel_sid}"
+mkdir -p "${STATE_ROOT}/${SESSION_ID}"
+printf '{}' > "${STATE_ROOT}/${SESSION_ID}/session_state.json"
+
+# Helper: count misfire rows, always returning a single integer.
+# grep -c exits 1 on no-match but still prints "0", so chaining `|| printf 0`
+# double-emits. Wrapping in a subshell that catches the exit code is the
+# cleanest pattern that works under `set -e`.
+_count_misfires() {
+  local f="$1"
+  local n
+  if [[ ! -f "${f}" ]]; then
+    printf '0'
+    return
+  fi
+  n="$(grep -c '"misfire":true' "${f}" 2>/dev/null || true)"
+  printf '%s' "${n:-0}"
+}
+
+# Record an advisory row
+record_classifier_telemetry "advisory" "coding" "what do you think?" "0"
+_tel_file="${STATE_ROOT}/${SESSION_ID}/classifier_telemetry.jsonl"
+assert_eq "telemetry file created" "1" "$([[ -f "${_tel_file}" ]] && echo 1 || echo 0)"
+
+# Simulate a PreTool block and detection
+write_state "pretool_intent_blocks" "1"
+detect_classifier_misfire "do it" "1"
+
+# Should have logged a misfire row
+assert_eq "misfire recorded" "1" "$(_count_misfires "${_tel_file}")"
+assert_contains "affirmation reason captured" \
+  "affirmation" \
+  "$(grep '"misfire":true' "${_tel_file}" 2>/dev/null || true)"
+
+# Negation should NOT log a misfire
+rm -f "${_tel_file}"
+record_classifier_telemetry "advisory" "coding" "should I do X?" "0"
+write_state "pretool_intent_blocks" "2"
+detect_classifier_misfire "no thanks" "2"
+assert_eq "negation does not log misfire" "0" "$(_count_misfires "${_tel_file}")"
+
+# No PreTool block increment → no misfire
+rm -f "${_tel_file}"
+record_classifier_telemetry "advisory" "coding" "what do you think?" "5"
+detect_classifier_misfire "do it" "5"
+assert_eq "no block increment = no misfire" "0" "$(_count_misfires "${_tel_file}")"
+
+# Execution intent followed by execution — no false positive
+rm -f "${_tel_file}"
+record_classifier_telemetry "execution" "coding" "implement X" "0"
+write_state "pretool_intent_blocks" "1"
+detect_classifier_misfire "also do Y" "1"
+assert_eq "prior execution intent = no misfire" "0" "$(_count_misfires "${_tel_file}")"
+
+# Stale prior row — excellence-reviewer finding: if prior_ts is > 15min
+# old, the block count delta is likely from a session the user has
+# abandoned. Do not log as misfire.
+rm -f "${_tel_file}"
+_fake_ts="$(( $(now_epoch) - 1000 ))"
+# Hand-craft a stale telemetry row
+printf '{"ts":"%s","intent":"advisory","domain":"coding","prompt":"old","pretool_blocks_observed":0}\n' \
+  "${_fake_ts}" > "${_tel_file}"
+write_state "pretool_intent_blocks" "1"
+detect_classifier_misfire "do it" "1"
+assert_eq "stale prior row (>15min) does not log misfire" \
+  "0" "$(_count_misfires "${_tel_file}")"
+
+# Opt-out: classifier_telemetry=off disables recording and detection.
+rm -f "${_tel_file}"
+_saved_tel="${OMC_CLASSIFIER_TELEMETRY}"
+OMC_CLASSIFIER_TELEMETRY="off"
+record_classifier_telemetry "advisory" "coding" "should I?" "0"
+assert_eq "opt-out: no file created when OMC_CLASSIFIER_TELEMETRY=off" \
+  "0" "$([[ -f "${_tel_file}" ]] && echo 1 || echo 0)"
+# Detection is also a no-op under opt-out (even if file exists from before).
+printf '{"ts":"%s","intent":"advisory","domain":"coding","prompt":"x","pretool_blocks_observed":0}\n' \
+  "$(now_epoch)" > "${_tel_file}"
+write_state "pretool_intent_blocks" "1"
+detect_classifier_misfire "do it" "1"
+assert_eq "opt-out: detect_classifier_misfire is a no-op" \
+  "0" "$(_count_misfires "${_tel_file}")"
+OMC_CLASSIFIER_TELEMETRY="${_saved_tel}"
+
+SESSION_ID="${_orig_sid3}"
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 

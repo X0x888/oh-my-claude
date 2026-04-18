@@ -51,6 +51,7 @@ fi
 BYPASS_PERMISSIONS=false
 EXCLUDE_IOS=false
 MODEL_TIER=""
+INSTALL_GIT_HOOKS=false
 
 # Handle --uninstall early (mutually exclusive with install flags).
 if [[ "${1:-}" == "--uninstall" ]]; then
@@ -73,9 +74,12 @@ for arg in "$@"; do
       printf 'Missing value for --model-tier. Usage: --model-tier=quality|balanced|economy\n' >&2
       exit 1
       ;;
+    --git-hooks)
+      INSTALL_GIT_HOOKS=true
+      ;;
     *)
       printf 'Unknown argument: %s\n' "${arg}" >&2
-      printf 'Usage: bash install.sh [--bypass-permissions] [--no-ios] [--model-tier=TIER] [--uninstall]\n' >&2
+      printf 'Usage: bash install.sh [--bypass-permissions] [--no-ios] [--model-tier=TIER] [--git-hooks] [--uninstall]\n' >&2
       exit 1
       ;;
   esac
@@ -569,6 +573,139 @@ ensure_executable_bits() {
 }
 
 # ---------------------------------------------------------------------------
+# Install the opt-in post-merge git hook
+# ---------------------------------------------------------------------------
+#
+# A git pull on the oh-my-claude source repo updates the bundle but doesn't
+# sync the changes to `~/.claude/`. Users who forget to re-run `install.sh`
+# end up running a stale installed harness against a newer source, which
+# defeats the stale-install indicator and produces subtle drift.
+#
+# Enabling `--git-hooks` writes `.git/hooks/post-merge` in the oh-my-claude
+# source checkout. After every merge (which includes `git pull`), the hook
+# compares `installed-manifest.txt` against the current bundle and prompts
+# the user to re-install if any files differ. The prompt is non-blocking and
+# honored via `OMC_AUTO_INSTALL=1` for CI or confident users.
+install_git_hooks() {
+  local source_repo="${SCRIPT_DIR}"
+
+  if ! command -v git >/dev/null 2>&1; then
+    printf '  Git hooks:     skipped (git not found)\n'
+    return
+  fi
+  if [[ ! -d "${source_repo}/.git" ]]; then
+    printf '  Git hooks:     skipped (%s is not a git worktree)\n' "${source_repo}"
+    return
+  fi
+
+  local hooks_dir="${source_repo}/.git/hooks"
+  local hook_path="${hooks_dir}/post-merge"
+
+  # If something is already at post-merge that isn't ours, do not overwrite
+  # — the user may have a custom hook. Refuse and tell them.
+  if [[ -e "${hook_path}" ]] && ! grep -q '# oh-my-claude post-merge auto-sync' "${hook_path}" 2>/dev/null; then
+    printf '  Git hooks:     skipped (existing %s is not an oh-my-claude hook)\n' "${hook_path}"
+    printf '                 Move or delete it, then re-run with --git-hooks to install.\n'
+    return
+  fi
+
+  mkdir -p "${hooks_dir}"
+  cat > "${hook_path}" <<'HOOK'
+#!/usr/bin/env bash
+# oh-my-claude post-merge auto-sync
+#
+# Compares this repo's bundle against the installed manifest at
+# ~/.claude/quality-pack/state/installed-manifest.txt. If any bundle file
+# differs from what was installed last time, prompts the user to re-run
+# install.sh. Set OMC_AUTO_INSTALL=1 to skip the prompt and install
+# automatically (useful for CI / trusted environments).
+#
+# Non-blocking: a skipped install simply means the user runs `bash
+# install.sh` when they're ready. The hook never aborts the git operation.
+
+set -euo pipefail
+
+# Locate the repo root. The post-merge hook runs inside .git/hooks/, so
+# git rev-parse gives us the actual worktree.
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+[[ -n "${repo_root}" ]] || exit 0
+
+bundle_dir="${repo_root}/bundle/dot-claude"
+installer="${repo_root}/install.sh"
+manifest="${HOME}/.claude/quality-pack/state/installed-manifest.txt"
+
+# Abort cleanly if the repo doesn't have the expected oh-my-claude layout.
+[[ -f "${installer}" && -d "${bundle_dir}" ]] || exit 0
+
+# No manifest yet → user hasn't installed from this checkout. Don't prompt.
+[[ -f "${manifest}" ]] || exit 0
+
+# Build the current bundle file list with the same ordering the installer uses.
+current_tmp="$(mktemp)"
+trap 'rm -f "${current_tmp}"' EXIT
+(cd "${bundle_dir}" && find . -type f ! -name '.DS_Store' 2>/dev/null | sed 's|^\./||' | LC_ALL=C sort) > "${current_tmp}"
+
+# Fast check: if the set of files changed at all, warn.
+added_or_removed=0
+if ! LC_ALL=C diff -q "${manifest}" "${current_tmp}" >/dev/null 2>&1; then
+  added_or_removed=1
+fi
+
+# Also check content changes: any file newer than the install stamp means
+# the bundle was modified since we last installed.
+stamp="${HOME}/.claude/.install-stamp"
+content_changed=0
+if [[ -f "${stamp}" ]]; then
+  if find "${bundle_dir}" -type f -newer "${stamp}" -print -quit 2>/dev/null | grep -q .; then
+    content_changed=1
+  fi
+fi
+
+if [[ "${added_or_removed}" -eq 0 && "${content_changed}" -eq 0 ]]; then
+  exit 0
+fi
+
+printf '\n'
+printf '\033[1;33m[oh-my-claude]\033[0m Bundle changes detected after merge.\n'
+if [[ "${added_or_removed}" -eq 1 ]]; then
+  printf '  - File set changed (additions or removals).\n'
+fi
+if [[ "${content_changed}" -eq 1 ]]; then
+  printf '  - One or more bundle files newer than last install.\n'
+fi
+
+if [[ "${OMC_AUTO_INSTALL:-0}" == "1" ]]; then
+  printf '  OMC_AUTO_INSTALL=1 — running installer now...\n'
+  bash "${installer}"
+  exit 0
+fi
+
+printf '\n  Re-run the installer to sync these changes into ~/.claude/:\n'
+printf '    bash %s\n' "${installer}"
+printf '\n  Set OMC_AUTO_INSTALL=1 to run the installer automatically from this hook.\n'
+printf '\n'
+HOOK
+  chmod +x "${hook_path}"
+  printf '  Git hooks:     installed post-merge auto-sync at %s\n' "${hook_path}"
+}
+
+# ---------------------------------------------------------------------------
+# Remove the post-merge hook (called when --git-hooks is NOT set and a
+# stale oh-my-claude-authored hook already exists, so users can opt out
+# by re-running install without the flag).
+# ---------------------------------------------------------------------------
+remove_git_hooks_if_ours() {
+  local hook_path="${SCRIPT_DIR}/.git/hooks/post-merge"
+  [[ -f "${hook_path}" ]] || return
+  if grep -q '# oh-my-claude post-merge auto-sync' "${hook_path}" 2>/dev/null; then
+    # Leave it in place silently — users who explicitly installed it once
+    # would be surprised if a subsequent install removed it. Toggling off
+    # is a manual step (delete the hook file).
+    :
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Append a line to a file if not already present
 # ---------------------------------------------------------------------------
 
@@ -841,6 +978,11 @@ ensure_executable_bits
 # install" from "cloned at this time". Uses `touch` with no flags so both
 # BSD (macOS) and GNU (Linux) touch behave identically (-d is a GNU-ism).
 touch "${CLAUDE_HOME}/.install-stamp"
+
+# Step 7 — Optional: install the post-merge git hook in the source checkout.
+if [[ "${INSTALL_GIT_HOOKS}" == "true" ]]; then
+  install_git_hooks
+fi
 
 # ===========================================================================
 # Summary

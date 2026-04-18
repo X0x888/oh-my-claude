@@ -459,8 +459,11 @@ sim_edit "sd" "/src/fixed.ts"
 output="$(sim_stop "sd")"
 
 assert_contains "seq-D: blocked" '"decision":"block"' "${output}"
-# After second edit, both review and verify are stale
-assert_contains "seq-D: needs validation" "validation" "${output}"
+# After second edit, both review and verify are stale. The message uses the
+# `validat` stem ("to validate" when project_test_cmd is detected on demand;
+# "validation" otherwise) — assert on the stem so the test tracks both
+# phrasings without requiring a specific copy.
+assert_contains "seq-D: needs validation" "validat" "${output}"
 assert_contains "seq-D: needs reviewer" "quality-reviewer" "${output}"
 teardown_test
 

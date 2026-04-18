@@ -175,14 +175,24 @@ Session state is stored at:
 
 ```
 ~/.claude/quality-pack/state/<SESSION_ID>/
-  session_state.json        # Primary key-value state (JSON object)
-  recent_prompts.jsonl      # Last 12 user prompts with timestamps
-  subagent_summaries.jsonl  # Last 16 agent conclusions
-  pending_agents.jsonl      # Currently in-flight agent dispatches (managed by record-pending-agent.sh / record-subagent-summary.sh)
-  edited_files.log          # Paths of edited files
-  precompact_snapshot.md    # Snapshot created before compaction
-  compact_handoff.md        # Combined handoff document
-  internal_edits.log        # Edits to internal Claude paths (excluded from tracking)
+  session_state.json           # Primary key-value state (JSON object)
+  recent_prompts.jsonl         # Last 12 user prompts with timestamps
+  subagent_summaries.jsonl     # Last 16 agent conclusions
+  pending_agents.jsonl         # Currently in-flight agent dispatches (managed by record-pending-agent.sh / record-subagent-summary.sh)
+  edited_files.log             # Paths of edited files
+  classifier_telemetry.jsonl   # Per-turn classification rows + misfire annotations (capped at 100 rows)
+  precompact_snapshot.md       # Snapshot created before compaction
+  compact_handoff.md           # Combined handoff document
+  internal_edits.log           # Edits to internal Claude paths (excluded from tracking)
+```
+
+Cross-session ledgers (in `~/.claude/quality-pack/`, not per-session):
+
+```
+session_summary.jsonl          # One summary row per TTL-swept session (cap: 500)
+classifier_misfires.jsonl      # Aggregated misfire rows tagged with session id (cap: 1000)
+defect-patterns.json           # Historical defect-category counters
+agent-metrics.json             # Invocations / clean / findings per agent type
 ```
 
 ### Install-time artifacts

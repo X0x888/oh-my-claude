@@ -108,6 +108,7 @@ STANDALONE_FILES=(
   "${CLAUDE_HOME}/statusline.py"
   "${CLAUDE_HOME}/switch-tier.sh"
   "${CLAUDE_HOME}/oh-my-claude.conf"
+  "${CLAUDE_HOME}/.install-stamp"
 )
 
 # ---------------------------------------------------------------------------
@@ -208,6 +209,24 @@ fi
 # ---------------------------------------------------------------------------
 
 removed=()
+
+# Remove the oh-my-claude-authored post-merge git hook, if the installer
+# wrote one. We find the source repo via `repo_path` in oh-my-claude.conf
+# (written by install.sh), then remove `<repo>/.git/hooks/post-merge`
+# only if it carries the oh-my-claude signature. A foreign hook stays
+# untouched. Must happen BEFORE oh-my-claude.conf itself is removed from
+# STANDALONE_FILES below, otherwise repo_path is lost.
+conf_path="${CLAUDE_HOME}/oh-my-claude.conf"
+if [[ -f "${conf_path}" ]]; then
+  _repo_path="$(grep -E '^repo_path=' "${conf_path}" 2>/dev/null | head -1 | cut -d= -f2-)" || _repo_path=""
+  if [[ -n "${_repo_path}" ]]; then
+    _hook_path="${_repo_path}/.git/hooks/post-merge"
+    if [[ -f "${_hook_path}" ]] && grep -q '# oh-my-claude post-merge auto-sync' "${_hook_path}" 2>/dev/null; then
+      rm -f "${_hook_path}"
+      removed+=("Removed git hook: ${_hook_path}")
+    fi
+  fi
+fi
 
 for dir in "${SKILL_DIRS[@]}"; do
   if [[ -d "${dir}" ]]; then

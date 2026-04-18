@@ -8,6 +8,38 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Note: this is a diagnostic script, not a hook — no SESSION_ID guard needed.
 # It discovers the latest session itself rather than operating on the current one.
 
+# --- Argument parsing ---
+# `--summary` prints a compact one-shot recap: session duration, edit/verify/
+# block counts, reviewer verdicts, commits, classifier misfires, outcome.
+# Intended for end-of-session review so invisible quality signals (e.g.
+# "3 PreTool blocks, all corrections-not-defects") become visible.
+SUMMARY_MODE=0
+CLASSIFIER_MODE=0
+for arg in "$@"; do
+  case "${arg}" in
+    --summary|-s)
+      SUMMARY_MODE=1
+      ;;
+    --classifier|-c)
+      CLASSIFIER_MODE=1
+      ;;
+    --help|-h)
+      printf 'Usage: show-status.sh [--summary | --classifier]\n'
+      printf '\n'
+      printf '  (no flag)      Full diagnostic status (default).\n'
+      printf '  --summary      Compact end-of-session recap.\n'
+      printf '  --classifier   Intent-classifier telemetry for this session\n'
+      printf '                 plus cross-session misfire patterns.\n'
+      exit 0
+      ;;
+    *)
+      printf 'Unknown argument: %s\n' "${arg}" >&2
+      printf 'Usage: show-status.sh [--summary | --classifier]\n' >&2
+      exit 1
+      ;;
+  esac
+done
+
 # Find the most recent session directory (excluding dotfiles like .ulw_active)
 latest_session=""
 if [[ -d "${STATE_ROOT}" ]]; then
@@ -28,6 +60,193 @@ if [[ ! -f "${state_file}" ]]; then
 fi
 
 SESSION_ID="${latest_session}"
+
+# ---------------------------------------------------------------------------
+# Summary mode — compact recap
+# ---------------------------------------------------------------------------
+if [[ "${SUMMARY_MODE}" -eq 1 ]]; then
+  # Session duration
+  start_ts="$(jq -r '.session_start_ts // empty' "${state_file}" 2>/dev/null || true)"
+  now_ts="$(now_epoch)"
+  if [[ -n "${start_ts}" ]]; then
+    age=$(( now_ts - start_ts ))
+    hours=$(( age / 3600 ))
+    minutes=$(( (age % 3600) / 60 ))
+    if [[ "${hours}" -gt 0 ]]; then
+      age_human="${hours}h ${minutes}m"
+    else
+      age_human="${minutes}m"
+    fi
+  else
+    age_human="unknown"
+  fi
+
+  # Edit counts
+  code_edits="$(jq -r '.code_edit_count // "0"' "${state_file}" 2>/dev/null || echo "0")"
+  doc_edits="$(jq -r '.doc_edit_count // "0"' "${state_file}" 2>/dev/null || echo "0")"
+
+  # Unique files touched (from edited_files.log if present)
+  unique_files=0
+  edits_file="${STATE_ROOT}/${latest_session}/edited_files.log"
+  if [[ -f "${edits_file}" ]]; then
+    unique_files="$(sort -u "${edits_file}" 2>/dev/null | wc -l | tr -d '[:space:]')"
+  fi
+
+  # Guard blocks (all categories) — the "invisible friction" signal
+  stop_blocks="$(jq -r '.stop_guard_blocks // "0"' "${state_file}" 2>/dev/null || echo "0")"
+  dim_blocks="$(jq -r '.dimension_guard_blocks // "0"' "${state_file}" 2>/dev/null || echo "0")"
+  handoff_blocks="$(jq -r '.session_handoff_blocks // "0"' "${state_file}" 2>/dev/null || echo "0")"
+  advisory_blocks="$(jq -r '.advisory_guard_blocks // "0"' "${state_file}" 2>/dev/null || echo "0")"
+  pretool_blocks="$(jq -r '.pretool_intent_blocks // "0"' "${state_file}" 2>/dev/null || echo "0")"
+
+  # Classifier misfires — how many of those blocks the post-classifier
+  # heuristic judged as false-positives (prior advisory classification
+  # followed by an execution-intent prompt, etc.).
+  #
+  # `grep -c` with no matches on a non-empty file prints "0" AND exits 1.
+  # The naive `$(grep -c ... || echo 0)` concatenates "0\n0\n", which then
+  # breaks `-gt 0` with `bash: [[: 0\n0: syntax error`. Pipe through
+  # `tail -n1` inside a grouped command so we always get a single value.
+  misfire_count=0
+  telemetry_file="${STATE_ROOT}/${latest_session}/classifier_telemetry.jsonl"
+  if [[ -f "${telemetry_file}" ]]; then
+    misfire_count="$({ grep -c '"misfire":true' "${telemetry_file}" 2>/dev/null || true; } | tail -n1)"
+    misfire_count="${misfire_count:-0}"
+  fi
+
+  # Reviewer verdicts by dimension
+  verdicts_line=""
+  for dim in bug_hunt code_quality stress_test completeness prose traceability design_quality; do
+    verdict="$(read_state "dim_${dim}_verdict" 2>/dev/null || true)"
+    [[ -z "${verdict}" ]] && continue
+    # Shorten verdict to fit on one line: CLEAN → clean, FINDINGS(N) as-is
+    verdicts_line="${verdicts_line:+${verdicts_line} · }${dim}:${verdict}"
+  done
+
+  # Verification status
+  verify_status="none"
+  verify_conf="$(jq -r '.last_verify_confidence // empty' "${state_file}" 2>/dev/null || true)"
+  verify_outcome="$(jq -r '.last_verify_outcome // empty' "${state_file}" 2>/dev/null || true)"
+  if [[ -n "${verify_outcome}" ]]; then
+    verify_status="${verify_outcome}"
+    if [[ -n "${verify_conf}" ]]; then
+      verify_status="${verify_status} (${verify_conf}/100)"
+    fi
+  fi
+
+  # Commits made during this session (based on session_start_ts)
+  commits_line="n/a"
+  if [[ -n "${start_ts}" ]] && command -v git >/dev/null 2>&1 && git rev-parse --git-dir >/dev/null 2>&1; then
+    # Use --since with epoch timestamp. git accepts "@<epoch>" as a valid
+    # timestamp since git 1.7.7 — same form as git log --since="@1234567890".
+    commits_count="$(git log --since="@${start_ts}" --oneline 2>/dev/null | wc -l | tr -d '[:space:]' || echo 0)"
+    if [[ "${commits_count}" -gt 0 ]]; then
+      # Show most recent commit subjects (up to 3)
+      commit_subjects="$(git log --since="@${start_ts}" --pretty=format:'%s' 2>/dev/null | head -3 | tr '\n' '|' | sed 's/|$//' | sed 's/|/ · /g' || true)"
+      if [[ -n "${commit_subjects}" ]]; then
+        commits_line="${commits_count} (${commit_subjects})"
+      else
+        commits_line="${commits_count}"
+      fi
+    else
+      commits_line="0"
+    fi
+  fi
+
+  # Subagent dispatches
+  dispatches="$(jq -r '.subagent_dispatch_count // "0"' "${state_file}" 2>/dev/null || echo "0")"
+
+  # Session outcome — the harness's own self-reported exit state
+  outcome="$(jq -r '.session_outcome // "in-progress"' "${state_file}" 2>/dev/null || echo "in-progress")"
+
+  # Current state.flags
+  domain="$(jq -r '.task_domain // "unset"' "${state_file}" 2>/dev/null || echo "unset")"
+  intent="$(jq -r '.task_intent // "unset"' "${state_file}" 2>/dev/null || echo "unset")"
+
+  printf '=== ULW Session Summary ===\n'
+  printf 'Session:    %s · %s · domain=%s · intent=%s\n' "${latest_session}" "${age_human}" "${domain}" "${intent}"
+  printf 'Work:       %s unique files · %s code edits · %s doc edits · %s dispatches\n' \
+    "${unique_files}" "${code_edits}" "${doc_edits}" "${dispatches}"
+  printf 'Verify:     %s\n' "${verify_status}"
+  if [[ -n "${verdicts_line}" ]]; then
+    printf 'Reviews:    %s\n' "${verdicts_line}"
+  else
+    printf 'Reviews:    none recorded\n'
+  fi
+
+  # Guard activity — only show when non-zero to keep summary tight
+  blocks_parts=""
+  [[ "${stop_blocks}" -ne 0 ]]     && blocks_parts="${blocks_parts:+${blocks_parts} · }stop=${stop_blocks}"
+  [[ "${dim_blocks}" -ne 0 ]]      && blocks_parts="${blocks_parts:+${blocks_parts} · }coverage=${dim_blocks}"
+  [[ "${handoff_blocks}" -ne 0 ]]  && blocks_parts="${blocks_parts:+${blocks_parts} · }handoff=${handoff_blocks}"
+  [[ "${advisory_blocks}" -ne 0 ]] && blocks_parts="${blocks_parts:+${blocks_parts} · }advisory=${advisory_blocks}"
+  [[ "${pretool_blocks}" -ne 0 ]]  && blocks_parts="${blocks_parts:+${blocks_parts} · }pretool=${pretool_blocks}"
+  if [[ -n "${blocks_parts}" ]]; then
+    if [[ "${misfire_count}" -gt 0 ]]; then
+      printf 'Blocks:     %s · classifier misfires=%s (see classifier_telemetry.jsonl)\n' "${blocks_parts}" "${misfire_count}"
+    else
+      printf 'Blocks:     %s\n' "${blocks_parts}"
+    fi
+  else
+    printf 'Blocks:     none\n'
+  fi
+
+  printf 'Commits:    %s\n' "${commits_line}"
+  printf 'Outcome:    %s\n' "${outcome}"
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Classifier mode — inspect intent-classifier telemetry
+# ---------------------------------------------------------------------------
+if [[ "${CLASSIFIER_MODE}" -eq 1 ]]; then
+  telemetry_file="${STATE_ROOT}/${latest_session}/classifier_telemetry.jsonl"
+
+  printf '=== Classifier Telemetry (current session) ===\n'
+  if [[ ! -f "${telemetry_file}" ]]; then
+    printf '(No telemetry recorded for session %s yet.)\n\n' "${latest_session}"
+  else
+    # Same `grep -c || echo 0` pitfall as above — see comment on line 110.
+    total_rows="$({ wc -l < "${telemetry_file}" 2>/dev/null || true; } | tail -n1 | tr -d '[:space:]')"
+    total_rows="${total_rows:-0}"
+    misfire_rows="$({ grep -c '"misfire":true' "${telemetry_file}" 2>/dev/null || true; } | tail -n1)"
+    misfire_rows="${misfire_rows:-0}"
+    prompt_rows=$(( total_rows - misfire_rows ))
+
+    printf 'Rows: %s prompts · %s misfires\n\n' "${prompt_rows}" "${misfire_rows}"
+
+    printf -- '--- Classifications (last 10) ---\n'
+    tail -n 10 "${telemetry_file}" 2>/dev/null | \
+      jq -r 'select(.misfire != true) |
+        "  [\(.intent // "?")/\(.domain // "?")] \(.prompt // "")"' 2>/dev/null || true
+
+    if [[ "${misfire_rows}" -gt 0 ]]; then
+      printf '\n--- Misfires detected ---\n'
+      jq -r 'select(.misfire == true) |
+        "  prior=\(.prior_intent // "?") reason=\(.reason // "?") blocks=\(.pretool_blocks_in_window // 0)"' \
+        "${telemetry_file}" 2>/dev/null || true
+    fi
+  fi
+
+  # Cross-session misfire ledger
+  cross_file="${HOME}/.claude/quality-pack/classifier_misfires.jsonl"
+  if [[ -f "${cross_file}" ]]; then
+    cross_total="$(wc -l < "${cross_file}" 2>/dev/null || echo 0)"
+    cross_total="${cross_total##* }"
+    printf '\n=== Classifier Misfires (cross-session) ===\n'
+    printf 'Total recorded misfires: %s\n\n' "${cross_total}"
+    printf -- '--- By prior intent ---\n'
+    jq -r '.prior_intent // "unknown"' "${cross_file}" 2>/dev/null | \
+      sort | uniq -c | sort -rn | sed 's/^/  /'
+    printf '\n--- By reason ---\n'
+    jq -r '.reason // "unknown"' "${cross_file}" 2>/dev/null | \
+      sort | uniq -c | sort -rn | sed 's/^/  /'
+    printf '\nSee %s for raw rows.\n' "${cross_file}"
+  else
+    printf '\n(No cross-session misfire ledger yet — it is populated during session sweeps.)\n'
+  fi
+  exit 0
+fi
 
 printf '=== ULW Session Status ===\n'
 printf 'Session: %s\n\n' "${latest_session}"

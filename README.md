@@ -213,7 +213,7 @@ Skills are invoked as slash commands or routed automatically by the intent class
 | atlas | `/atlas [focus]` | Bootstrap or refresh repo instruction files |
 | council | `/council [focus]` | Multi-role project evaluation (PM, design, security, data, SRE, growth) |
 | ulw-skip | `/ulw-skip <reason>` | Skip current quality gate block once |
-| ulw-status | `/ulw-status` | Show current session state (debugging) |
+| ulw-status | `/ulw-status` | Show current session state (debugging). `summary` / `classifier` arguments swap modes. |
 | ulw-off | `/ulw-off` | Deactivate ultrawork mode mid-session |
 | skills | `/skills` | List all available skills with usage guide |
 
@@ -235,9 +235,16 @@ Other install options:
 bash install.sh --no-ios                # Skip iOS-specific agents
 bash install.sh --model-tier=economy    # All agents use Sonnet (cheaper)
 bash install.sh --model-tier=quality    # All agents use Opus (max quality)
+bash install.sh --git-hooks             # Install .git/hooks/post-merge auto-sync prompt
 bash ~/.claude/switch-tier.sh economy   # Switch tier post-install (from anywhere)
 bash uninstall.sh                       # Cleanly remove the harness
 ```
+
+`--git-hooks` installs a `post-merge` hook inside this repo's `.git/hooks/`
+that detects when `git pull` brings in bundle changes and reminds you to
+re-run `install.sh`. Set `OMC_AUTO_INSTALL=1` when merging to run the
+installer automatically. The hook never overwrites a pre-existing non-
+oh-my-claude `post-merge` hook.
 
 ## Testing
 

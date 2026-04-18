@@ -31,6 +31,7 @@ _omc_env_verify_conf="${OMC_VERIFY_CONFIDENCE_THRESHOLD:-}"
 _omc_env_gate_level="${OMC_GATE_LEVEL:-}"
 _omc_env_verify_mcp="${OMC_CUSTOM_VERIFY_MCP_TOOLS:-}"
 _omc_env_pretool_intent="${OMC_PRETOOL_INTENT_GUARD:-}"
+_omc_env_classifier_tel="${OMC_CLASSIFIER_TELEMETRY:-}"
 
 OMC_STALL_THRESHOLD="${OMC_STALL_THRESHOLD:-12}"
 OMC_EXCELLENCE_FILE_COUNT="${OMC_EXCELLENCE_FILE_COUNT:-3}"
@@ -57,6 +58,14 @@ OMC_CUSTOM_VERIFY_MCP_TOOLS="${OMC_CUSTOM_VERIFY_MCP_TOOLS:-}"
 # (e.g. for users who prefer the model to make its own judgement calls and
 # accept the risk of the 2026-04-17-class incident).
 OMC_PRETOOL_INTENT_GUARD="${OMC_PRETOOL_INTENT_GUARD:-true}"
+# Classifier telemetry capture: when `on` (default), every UserPromptSubmit
+# records a row to `<session>/classifier_telemetry.jsonl` and the follow-up
+# prompt's hook may annotate misfire rows. The prompt preview (first 200
+# chars) is captured. Set to `off` to disable all recording — useful for
+# shared machines, regulated codebases, or any context where writing user
+# prompt previews to disk is unwanted. Cross-session aggregation at TTL
+# sweep also becomes a no-op because per-session files won't exist.
+OMC_CLASSIFIER_TELEMETRY="${OMC_CLASSIFIER_TELEMETRY:-on}"
 
 _omc_conf_loaded=0
 
@@ -96,6 +105,8 @@ _parse_conf_file() {
         [[ -z "${_omc_env_verify_mcp}" && -n "${value}" ]] && OMC_CUSTOM_VERIFY_MCP_TOOLS="${value}" || true ;;
       pretool_intent_guard)
         [[ -z "${_omc_env_pretool_intent}" && "${value}" =~ ^(true|false)$ ]] && OMC_PRETOOL_INTENT_GUARD="${value}" || true ;;
+      classifier_telemetry)
+        [[ -z "${_omc_env_classifier_tel}" && "${value}" =~ ^(on|off)$ ]] && OMC_CLASSIFIER_TELEMETRY="${value}" || true ;;
     esac
   done < "${conf}"
 }
@@ -433,6 +444,7 @@ sweep_stale_sessions() {
   # No lock needed: sweep is gated by the daily marker file, so only one
   # process runs it at a time. Concurrent writes are structurally impossible.
   local summary_file="${HOME}/.claude/quality-pack/session_summary.jsonl"
+  local misfires_file="${HOME}/.claude/quality-pack/classifier_misfires.jsonl"
 
   if [[ -d "${STATE_ROOT}" ]]; then
     find "${STATE_ROOT}" -maxdepth 1 -type d -mtime +"${OMC_STATE_TTL_DAYS}" \
@@ -465,9 +477,35 @@ sweep_stale_sessions() {
               outcome: (.session_outcome // "abandoned")
             }
           ' "${_sweep_state}" >> "${summary_file}" 2>/dev/null || true
+
+          # Classifier telemetry: append this session's misfire rows to the
+          # cross-session ledger. Tagged with session id so post-hoc
+          # analysis can group by session, intent, reason, etc.
+          local _sweep_telemetry="${_sweep_dir}/classifier_telemetry.jsonl"
+          if [[ -f "${_sweep_telemetry}" ]]; then
+            grep '"misfire":true' "${_sweep_telemetry}" 2>/dev/null | \
+              jq -c --arg sid "${_sweep_sid}" '. + {session_id: $sid}' 2>/dev/null >> "${misfires_file}" || true
+          fi
         fi
         rm -rf "${_sweep_dir}" 2>/dev/null || true
       done
+
+    # Cap classifier_misfires.jsonl at 1000 lines (much smaller than
+    # session_summary because each session produces only 0-few misfire rows).
+    if [[ -f "${misfires_file}" ]]; then
+      local _mis_lines
+      _mis_lines="$(wc -l < "${misfires_file}" 2>/dev/null || echo 0)"
+      _mis_lines="${_mis_lines##* }"
+      if [[ "${_mis_lines}" -gt 1000 ]]; then
+        local _mis_temp
+        _mis_temp="$(mktemp "${misfires_file}.XXXXXX")"
+        if tail -n 800 "${misfires_file}" > "${_mis_temp}" 2>/dev/null; then
+          mv "${_mis_temp}" "${misfires_file}"
+        else
+          rm -f "${_mis_temp}"
+        fi
+      fi
+    fi
 
     # Cap session_summary.jsonl at 500 lines
     if [[ -f "${summary_file}" ]]; then
@@ -1113,6 +1151,113 @@ detect_project_test_command() {
     fi
   fi
 
+  # justfile with test recipe → just test
+  if [[ -z "${test_cmd}" ]]; then
+    local _justfile=""
+    for _cand in justfile Justfile .justfile; do
+      if [[ -f "${project_dir}/${_cand}" ]]; then
+        _justfile="${project_dir}/${_cand}"
+        break
+      fi
+    done
+    if [[ -n "${_justfile}" ]] && grep -qE '^test[[:space:]]*:' "${_justfile}" 2>/dev/null; then
+      test_cmd="just test"
+    fi
+  fi
+
+  # Taskfile.yml with test task → task test. We match the Go-Task v3
+  # canonical layout — `tasks:` at column 0 followed by an indented
+  # `test:` key — instead of loose "any test: line" because a Taskfile
+  # can reference `test:` inside `vars:`, `env:`, `requires:`, `deps:`,
+  # etc. A loose match would return `task test` for projects whose
+  # actual test task has a different name, producing confusing
+  # "task: task 'test' not found" errors during stop-guard UX.
+  if [[ -z "${test_cmd}" ]]; then
+    local _taskfile=""
+    for _cand in Taskfile.yml Taskfile.yaml taskfile.yml taskfile.yaml; do
+      if [[ -f "${project_dir}/${_cand}" ]]; then
+        _taskfile="${project_dir}/${_cand}"
+        break
+      fi
+    done
+    if [[ -n "${_taskfile}" ]]; then
+      # awk walks the file once: enter the `tasks:` block on a
+      # zero-indent `tasks:` line, leave it when a new zero-indent key
+      # appears, and inside the block accept an indented `test:` key
+      # whose indentation is strictly greater than `tasks:`. Exits 0
+      # on find, 1 otherwise.
+      if awk '
+        /^tasks:[[:space:]]*$/ { in_tasks = 1; next }
+        /^[^[:space:]]/ { in_tasks = 0 }
+        in_tasks && /^[[:space:]]+test[[:space:]]*:/ { found = 1; exit }
+        END { exit found ? 0 : 1 }
+      ' "${_taskfile}" 2>/dev/null; then
+        test_cmd="task test"
+      fi
+    fi
+  fi
+
+  # Pure-bash projects: look for test orchestrators or a tests/ directory
+  # that contains shell test scripts. This tier catches harness-style repos
+  # (oh-my-claude itself, dotfiles projects, other pure-shell tooling) where
+  # no language manifest exists but a conventional test layout does.
+  #
+  # Detection precedence:
+  #   1. Explicit orchestrator in repo root or scripts/:
+  #        run-tests.sh, run_tests.sh, test.sh, tests.sh, run-all.sh
+  #   2. Explicit orchestrator inside tests/:
+  #        run.sh, runner.sh, run-all.sh, all.sh
+  #   3. Alphabetically-first tests/test-*.sh / tests/test_*.sh / tests/*_test.sh
+  #      as a concrete starting point. Users running a different test file
+  #      from the same directory still score above threshold via the
+  #      framework-keyword rule in verification_has_framework_keyword (which
+  #      recognizes `bash tests/...sh` as a test framework signal).
+  #
+  # We never emit `bash tests/test-*.sh` with a literal glob — the shell
+  # wouldn't run all files, only the first arg. Emitting a concrete file
+  # keeps the advice copy-pasteable.
+  if [[ -z "${test_cmd}" ]]; then
+    local _orchestrator=""
+    for _cand in \
+        "${project_dir}/run-tests.sh" \
+        "${project_dir}/run_tests.sh" \
+        "${project_dir}/test.sh" \
+        "${project_dir}/tests.sh" \
+        "${project_dir}/run-all.sh" \
+        "${project_dir}/scripts/test.sh" \
+        "${project_dir}/scripts/run-tests.sh" \
+        "${project_dir}/scripts/run_tests.sh" \
+        "${project_dir}/tests/run.sh" \
+        "${project_dir}/tests/runner.sh" \
+        "${project_dir}/tests/run-all.sh" \
+        "${project_dir}/tests/run_all.sh" \
+        "${project_dir}/tests/all.sh"; do
+      if [[ -f "${_cand}" ]]; then
+        _orchestrator="${_cand#"${project_dir}/"}"
+        break
+      fi
+    done
+    if [[ -n "${_orchestrator}" ]]; then
+      test_cmd="bash ${_orchestrator}"
+    fi
+  fi
+
+  if [[ -z "${test_cmd}" && -d "${project_dir}/tests" ]]; then
+    # Alphabetically-first shell test file under tests/. Sort in C locale
+    # so the selection is deterministic across environments (same failure
+    # mode as the install manifest comparator — sort key differs under
+    # different LC_COLLATE).
+    local _first_test
+    _first_test="$(
+      LC_ALL=C find "${project_dir}/tests" -maxdepth 1 -type f \
+        \( -name 'test-*.sh' -o -name 'test_*.sh' -o -name '*_test.sh' \) \
+        2>/dev/null | LC_ALL=C sort | head -n 1 || true
+    )"
+    if [[ -n "${_first_test}" ]]; then
+      test_cmd="bash ${_first_test#"${project_dir}/"}"
+    fi
+  fi
+
   printf '%s' "${test_cmd}"
 }
 
@@ -1126,7 +1271,59 @@ verification_matches_project_test_command() {
   norm_cmd="$(printf '%s' "${cmd}" | sed 's/^[[:space:]]*//' | sed 's/^[A-Z_][A-Z0-9_]*=[^ ]* //')"
   norm_ptc="$(printf '%s' "${project_test_cmd}" | sed 's/^[[:space:]]*//')"
 
-  [[ "${norm_cmd}" == "${norm_ptc}"* ]] || [[ "${norm_cmd}" == *"${norm_ptc}"* ]]
+  # Direct prefix/substring match first — covers the common case.
+  if [[ "${norm_cmd}" == "${norm_ptc}"* ]] || [[ "${norm_cmd}" == *"${norm_ptc}"* ]]; then
+    return 0
+  fi
+
+  # Bash-project family match: when the detected project_test_cmd is a
+  # concrete `bash tests/<file>.sh` invocation, a user running *any* other
+  # `bash tests/<file>.sh` from the same directory is exercising the same
+  # test family and should get the +40 project-test bonus. Without this,
+  # pure-bash projects (where our detector picks the alphabetically first
+  # file) would lose the bonus whenever the user runs a different test
+  # file, even though they are demonstrably running the project's test
+  # suite. Narrow to the exact `bash <dir>/<file>.sh` shape:
+  #
+  #   - Reject captured `_dir` containing `..` (path traversal) or any
+  #     regex metacharacter we don't intend to interpret literally.
+  #   - Escape the captured dir's regex metachars (`.`, `[`, `*`, `^`,
+  #     `$`, `+`, `?`, `(`, `)`, `|`, `\`, `/`) before interpolating into
+  #     the second regex, so e.g. a ptc of `bash t.sts/foo.sh` does not
+  #     also match `bash txsts/other.sh`.
+  #   - Require the user's cmd's directory to contain no `/` beyond the
+  #     captured prefix, so `bash tests/nested/foo.sh` still matches
+  #     `bash tests/foo.sh` (same root) but not `bash other/x.sh`.
+  if [[ "${norm_ptc}" =~ ^bash[[:space:]]+([^[:space:]]+/)[^[:space:]]*\.sh$ ]]; then
+    local _dir="${BASH_REMATCH[1]}"
+    # Path-traversal guard: ../ segments in the ptc are either a
+    # misconfigured project root or a malicious input (detection comes
+    # from filesystem probing, so the former is more likely, but either
+    # way we don't want to over-credit).
+    if [[ "${_dir}" == *"../"* ]] || [[ "${_dir}" == "../"* ]]; then
+      return 1
+    fi
+    # Any unusual metachar in a directory name is so uncommon in real
+    # project layouts that we reject rather than try to escape. Without
+    # this, a ptc like `bash t.sts/foo.sh` would over-match `bash
+    # txsts/other.sh` because `.` in a bash regex matches any character.
+    # The only metachar we've observed in real test dir names is `.`,
+    # which we escape below (bash pattern and ERE agree on `\.`); any
+    # other metachar falls through to `return 1` (no bonus), which is
+    # the safe default — the user's cmd still scores via the framework-
+    # keyword rule.
+    case "${_dir}" in
+      *[!A-Za-z0-9._/\ -]*) return 1 ;;
+    esac
+    # Escape `.` using bash parameter expansion — portable across
+    # BSD/GNU sed variants, no subshell, no shell-metachar hazards.
+    local _dir_esc="${_dir//./\\.}"
+    if [[ "${norm_cmd}" =~ ^bash[[:space:]]+${_dir_esc}[^[:space:]]*\.sh($|[[:space:]]) ]]; then
+      return 0
+    fi
+  fi
+
+  return 1
 }
 
 verification_has_framework_keyword() {
@@ -2501,6 +2698,183 @@ classify_task_intent() {
   else
     printf '%s\n' "execution"
   fi
+}
+
+# --- Classifier telemetry ---
+#
+# Record every prompt classification to a per-session JSONL so classifier
+# misfires can be detected across time. Each record is:
+#   {ts, prompt_preview, intent, domain, pretool_blocks_observed}
+#
+# `pretool_blocks_observed` snapshots the pretool_intent_blocks counter at
+# classification time. The NEXT prompt compares this against the current
+# counter — if it incremented, the user attempted a destructive op and was
+# blocked, which (when combined with the next prompt being execution-shaped)
+# is strong evidence the classifier should have said "execution" the first
+# time.
+#
+# Misfire detection happens in the router itself — this helper just writes
+# the row.
+record_classifier_telemetry() {
+  local intent="$1"
+  local domain="$2"
+  local prompt_preview="$3"
+  local blocks_before="$4"
+
+  [[ -n "${SESSION_ID:-}" ]] || return 0
+  # Opt-out: users who don't want prompt previews written to disk can set
+  # classifier_telemetry=off in oh-my-claude.conf (or OMC_CLASSIFIER_TELEMETRY=off).
+  [[ "${OMC_CLASSIFIER_TELEMETRY}" == "on" ]] || return 0
+  local file
+  file="$(session_file "classifier_telemetry.jsonl")"
+  local record
+  record="$(jq -nc \
+    --arg ts "$(now_epoch)" \
+    --arg intent "${intent}" \
+    --arg domain "${domain}" \
+    --arg prompt "$(truncate_chars 200 "${prompt_preview}")" \
+    --argjson blocks "$(printf '%d' "${blocks_before:-0}")" \
+    '{
+      ts: $ts,
+      intent: $intent,
+      domain: $domain,
+      prompt: $prompt,
+      pretool_blocks_observed: $blocks
+    }')"
+  printf '%s\n' "${record}" >> "${file}"
+
+  # Cap at 100 rows per session to keep the file small under heavy use.
+  local line_count
+  line_count="$(wc -l < "${file}" 2>/dev/null || echo 0)"
+  line_count="${line_count##* }"
+  if [[ "${line_count}" -gt 100 ]]; then
+    tail -n 100 "${file}" > "${file}.tmp" && mv "${file}.tmp" "${file}"
+  fi
+}
+
+# detect_classifier_misfire: look at the most recent telemetry row and the
+# current (prompt, current_blocks) tuple. If the prior classification looks
+# like a false-negative on execution, append a "misfire" annotation row.
+#
+# Counter semantics: `pretool_intent_blocks` is cumulative across the
+# session — prompt-intent-router resets `stop_guard_blocks`,
+# `session_handoff_blocks`, `advisory_guard_blocks`, and `stall_counter`
+# on every UserPromptSubmit, but NOT `pretool_intent_blocks`. That's
+# deliberate: the misfire detector needs a monotonic clock so it can
+# compute a *delta* between the snapshot taken at classification time
+# and the current value. If we reset the counter each turn, every block
+# would look like "incremented by 1 since last turn" and we'd lose the
+# ability to distinguish "block fired in this turn" from "no block
+# fired in this turn."
+#
+# Signals:
+#   (a) Prior intent was non-execution (advisory|session_management|checkpoint)
+#       AND pretool_intent_blocks delta > 0 in the window → user's
+#       prior turn attempted a destructive op and got blocked. High-
+#       confidence misfire.
+#   (b) Prior intent was non-execution AND current prompt is a bare affirm
+#       (yes/do it/proceed/go ahead/yes please) AND a pretool block fired
+#       in the window → user is confirming the prior intent was execution.
+#
+# The misfire annotation is a separate line (not an in-place update) so the
+# telemetry file stays append-only — easier to diff, easier to audit, no
+# write-race with concurrent hooks.
+detect_classifier_misfire() {
+  local current_prompt="$1"
+  local current_blocks="$2"
+
+  [[ -n "${SESSION_ID:-}" ]] || return 0
+  # Respect the classifier_telemetry opt-out. Detection reads the file
+  # that record_classifier_telemetry writes, so if recording is off the
+  # detector has nothing to work with either.
+  [[ "${OMC_CLASSIFIER_TELEMETRY}" == "on" ]] || return 0
+  local file
+  file="$(session_file "classifier_telemetry.jsonl")"
+  [[ -f "${file}" ]] || return 0
+
+  # Read the most recent non-misfire row.
+  local prior_row
+  prior_row="$(grep -v '"misfire":' "${file}" 2>/dev/null | tail -n 1 || true)"
+  [[ -n "${prior_row}" ]] || return 0
+
+  local prior_intent prior_blocks prior_ts
+  prior_intent="$(jq -r '.intent // empty' <<<"${prior_row}" 2>/dev/null || true)"
+  prior_blocks="$(jq -r '.pretool_blocks_observed // 0' <<<"${prior_row}" 2>/dev/null || echo 0)"
+  prior_ts="$(jq -r '.ts // empty' <<<"${prior_row}" 2>/dev/null || true)"
+
+  # Skip if prior was already execution/continuation — nothing to correct.
+  case "${prior_intent}" in
+    advisory|session_management|checkpoint) ;;
+    *) return 0 ;;
+  esac
+
+  # Staleness guard: if the prior row is more than 15 minutes old, the
+  # user likely walked away and came back — any pretool_intent_blocks
+  # delta we see may reflect a block that fired long before this prompt
+  # and is no longer the "prior attempt" the current prompt is responding
+  # to. 900 seconds mirrors the post-compact-bias decay window used by
+  # prompt-intent-router so the two staleness signals stay in sync.
+  if [[ -n "${prior_ts}" ]] && [[ "${prior_ts}" =~ ^[0-9]+$ ]]; then
+    local age_seconds=$(( $(now_epoch) - prior_ts ))
+    if [[ "${age_seconds}" -ge 900 ]]; then
+      log_hook "classifier-telemetry" "suppressing misfire: prior row is ${age_seconds}s old (>900s)"
+      return 0
+    fi
+  fi
+
+  local blocks_increment=$(( current_blocks - prior_blocks ))
+  if [[ "${blocks_increment}" -le 0 ]]; then
+    # No PreTool blocks fired in the prior window — no evidence of misfire.
+    return 0
+  fi
+
+  local trimmed
+  trimmed="$(trim_whitespace "${current_prompt}")"
+
+  # Negation filter: if the user's current prompt explicitly walks back
+  # the prior attempt ("no", "don't", "stop", "cancel", "abort", "never
+  # mind", "actually no", "that was wrong"), the block was correct —
+  # the prior intent really was advisory, and the user is affirming
+  # that now. Do not log as a misfire.
+  if printf '%s' "${trimmed}" \
+      | grep -Eiq '^(no(pe)?|don.?t|do[[:space:]]+not|stop|cancel|abort|wait|hold[[:space:]]+on|never[[:space:]]+mind|nevermind|actually[[:space:]]+no|that.?s[[:space:]]+wrong|that[[:space:]]+was[[:space:]]+wrong)([[:space:][:punct:]]|$)'; then
+    log_hook "classifier-telemetry" "suppressing misfire: current prompt negates prior attempt"
+    return 0
+  fi
+
+  # Signal (a) always applies when blocks fired in a non-execution window.
+  # Signal (b) is a bonus: affirmation-shaped current prompt tightens the
+  # inference. Either way, we log the misfire because the block itself is
+  # evidence the user tried to execute.
+  local reason="prior_non_execution_plus_pretool_block"
+  # Affirmation detection: short prompts that confirm the prior intent was
+  # execution. Matches bare words ("yes"), common combinations ("yes do
+  # it", "yeah please"), and verbs-of-assent ("proceed", "go ahead").
+  # Length-bounded to 60 chars so a long re-explanation doesn't get
+  # mistaken for an affirmation.
+  if [[ "${#trimmed}" -le 60 ]] \
+      && printf '%s' "${trimmed}" \
+      | grep -Eiq "^([[:space:]]*(yes|yep|yeah|sure|ok(ay)?|y)([[:space:][:punct:]]+(please|sir|ma'?am|do|it|go|ahead|run|proceed|commit|push|tag|ship|please[[:space:]]+do))*|do[[:space:]]+it|proceed|go[[:space:]]+ahead|go[[:space:]]+for[[:space:]]+it|please[[:space:]]+do|confirm(ed)?|run[[:space:]]+it|ship[[:space:]]+it)[[:space:].!]*$"; then
+    reason="prior_non_execution_plus_affirmation_and_pretool_block"
+  fi
+
+  local record
+  record="$(jq -nc \
+    --arg ts "$(now_epoch)" \
+    --arg prior_ts "${prior_ts}" \
+    --arg prior_intent "${prior_intent}" \
+    --arg reason "${reason}" \
+    --argjson blocks "${blocks_increment}" \
+    '{
+      misfire: true,
+      ts: $ts,
+      prior_ts: $prior_ts,
+      prior_intent: $prior_intent,
+      reason: $reason,
+      pretool_blocks_in_window: $blocks
+    }')"
+  printf '%s\n' "${record}" >> "${file}"
+  log_hook "classifier-telemetry" "misfire detected: prior=${prior_intent} reason=${reason}"
 }
 
 is_execution_intent_value() {

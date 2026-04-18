@@ -43,6 +43,14 @@ fi
 
 TASK_INTENT="$(classify_task_intent "${PROMPT_TEXT}")"
 
+# Classifier telemetry — capture this turn's classification and let the
+# misfire detector judge the PRIOR turn based on accumulated evidence.
+# Detection must happen before writes that reset pretool_intent_blocks or
+# advisory_guard_blocks so the snapshot reflects the window just closed.
+current_pretool_blocks="$(read_state "pretool_intent_blocks" 2>/dev/null || true)"
+current_pretool_blocks="${current_pretool_blocks:-0}"
+detect_classifier_misfire "${PROMPT_TEXT}" "${current_pretool_blocks}" || true
+
 write_state_batch \
   "stop_guard_blocks" "0" \
   "session_handoff_blocks" "0" \
@@ -165,6 +173,14 @@ if grep -Eiq '(^|[^[:alnum:]_-])(ultrawork|ulw|autowork|sisyphus)([^[:alnum:]_-]
   if [[ -z "${existing_start_ts}" ]]; then
     write_state "session_start_ts" "$(now_epoch)"
   fi
+
+  # Classifier telemetry — now that TASK_DOMAIN is known, record the row.
+  # Outside-ULW sessions also skip this (no state bookkeeping there).
+  record_classifier_telemetry \
+    "${TASK_INTENT}" \
+    "${TASK_DOMAIN}" \
+    "${PROMPT_TEXT}" \
+    "${current_pretool_blocks}" || true
 
   # Sentinel for fast-path exit in PostToolUse hooks (zero-cost check)
   touch "${STATE_ROOT}/.ulw_active"

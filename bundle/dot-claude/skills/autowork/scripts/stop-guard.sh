@@ -448,7 +448,16 @@ verify_action=""
 review_action=""
 
 # If we know the project test command, name it in the verification action.
+# Fall back to on-demand detection when state is empty — this happens on
+# the first missing_verify block, before any verification has run to
+# populate `project_test_cmd` in record-verification.sh.
 project_test_cmd="$(read_state "project_test_cmd")"
+if [[ -z "${project_test_cmd}" ]]; then
+  project_test_cmd="$(detect_project_test_command "." 2>/dev/null || true)"
+  if [[ -n "${project_test_cmd}" ]]; then
+    write_state "project_test_cmd" "${project_test_cmd}"
+  fi
+fi
 
 if [[ "${missing_verify}" -eq 1 ]]; then
   if [[ -n "${project_test_cmd}" ]]; then
@@ -498,6 +507,12 @@ if [[ "${guard_blocks}" -eq 0 ]]; then
 else
   # Blocks 2+: concise form. Lists what's still missing and the single
   # next action, without the summary-reinflating self-assess boilerplate.
+  #
+  # UX win (#3): name the detected project_test_cmd in concise messages
+  # too, not just in the verbose block-1 path. Without this, a user who
+  # ignored the block-1 hint sees increasingly vague prompts — the
+  # opposite of what they need. The exact-command hint is the one
+  # concrete action that unblocks them, so we repeat it every block.
   missing_items=""
   if [[ "${missing_review}" -eq 1 ]]; then
     missing_items="${missing_items:+${missing_items}, }review (${review_target_label})"
@@ -512,16 +527,28 @@ else
     missing_items="${missing_items:+${missing_items}, }failed validation (fix and re-run)"
   fi
   if [[ "${verify_low_confidence}" -eq 1 ]]; then
-    missing_items="${missing_items:+${missing_items}, }low-confidence validation (run project test suite)"
+    if [[ -n "${project_test_cmd}" ]]; then
+      missing_items="${missing_items:+${missing_items}, }low-confidence validation (run \`${project_test_cmd}\`)"
+    else
+      missing_items="${missing_items:+${missing_items}, }low-confidence validation (run project test suite)"
+    fi
   fi
 
   next_action=""
   if [[ "${missing_verify}" -eq 1 ]]; then
-    next_action="run the smallest meaningful validation, then delegate ${review_target_label}"
+    if [[ -n "${project_test_cmd}" ]]; then
+      next_action="run \`${project_test_cmd}\` (detected project test command), then delegate ${review_target_label}"
+    else
+      next_action="run the smallest meaningful validation, then delegate ${review_target_label}"
+    fi
   elif [[ "${verify_failed}" -eq 1 ]]; then
     next_action="fix the failing tests and re-run validation"
   elif [[ "${verify_low_confidence}" -eq 1 ]]; then
-    next_action="run the project's test suite for proper validation (current confidence: ${last_verify_confidence}/100)"
+    if [[ -n "${project_test_cmd}" ]]; then
+      next_action="run \`${project_test_cmd}\` (detected project test command) for proper validation (current confidence: ${last_verify_confidence}/100)"
+    else
+      next_action="run the project's test suite for proper validation (current confidence: ${last_verify_confidence}/100)"
+    fi
   elif [[ "${missing_review}" -eq 1 ]]; then
     next_action="delegate ${review_target_label}"
   elif [[ "${review_unremediated}" -eq 1 ]]; then
