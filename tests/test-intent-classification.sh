@@ -770,6 +770,119 @@ assert_domain "coding" "cherry-pick the fix commit and tag the release"
 # Single git keyword is not enough alone
 assert_domain "general" "commit this"
 
+# --- Tail-position imperative: mixed-intent prompts (added in 1.8.1) ---
+# Prompts that open advisory ("evaluate X") but close with an explicit
+# release-action ask ("then commit/push/tag") must classify as execution.
+# Regression guard for the 1.8.0 session where the classifier tagged a
+# comprehensive evaluate+commit+release prompt as advisory and PreTool
+# blocked the user's own release checklist.
+printf '\nTail-position imperative (mixed advisory + execution):\n'
+
+# The actual failing prompt shape (abbreviated)
+assert_imperative "Please comprehensively evaluate each point. After all these. Commit the changes. Do a proper version bump and tag and release."
+assert_imperative "Review my branch. Then push to origin and tag v2.0."
+assert_imperative "Evaluate the plan. Now commit the changes."
+assert_imperative "Assess the options. Finally, release v3.0 to production."
+assert_imperative "Look over this. Also, commit the staged files."
+assert_imperative "Think through the design. Afterwards, deploy to staging and merge the branch."
+assert_imperative "Evaluate these points. Next, commit all changes."
+
+# End-to-end classification parity
+assert_intent "execution" "Please carefully evaluate each point. After all these. Commit the changes. Do a proper version bump and tag and release."
+assert_intent "execution" "What do you think of the plan? Now commit the staged files."
+
+# Negatives: past-tense and noun uses must NOT trigger
+printf '\nTail-position imperative negatives (noun/past-tense):\n'
+assert_not_imperative "We pushed yesterday. The push date is set."
+assert_not_imperative "The commit message is too terse. The push date slipped."
+assert_not_imperative "Tell me about the recent commit history."
+assert_not_imperative "What is the push cadence? I want to understand release engineering."
+assert_not_imperative "Review the merge request. Explain the tag strategy."
+
+# --- Shell test script as framework keyword (added in 1.8.1) ---
+# verification_has_framework_keyword must recognize `bash tests/*.sh` and
+# similar shell-test invocations so pure-bash projects score above the
+# default 40 confidence threshold without having to configure a project
+# test command.
+printf '\nShell test script recognition in framework_keyword:\n'
+assert_shell_test_match() {
+  local cmd="$1"
+  if verification_has_framework_keyword "${cmd}"; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: verification_has_framework_keyword should match: "%s"\n' "${cmd}" >&2
+    fail=$((fail + 1))
+  fi
+}
+assert_shell_test_nomatch() {
+  local cmd="$1"
+  if ! verification_has_framework_keyword "${cmd}"; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: verification_has_framework_keyword should NOT match: "%s"\n' "${cmd}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
+assert_shell_test_match "bash tests/test-install-artifacts.sh"
+assert_shell_test_match "bash tests/test-e2e-hook-sequence.sh"
+assert_shell_test_match "bash test-helper.sh"
+assert_shell_test_match "bash test_runner.sh"
+assert_shell_test_match "./tests/runner.sh"
+assert_shell_test_match "./test-foo.sh"
+assert_shell_test_match "bash /abs/path/tests/foo.sh"
+assert_shell_test_match "sh tests/bar.sh"
+assert_shell_test_match "bash foo_test.sh"
+
+# Must NOT match: non-test scripts, read-only ops, non-.sh files
+assert_shell_test_nomatch "bash example.sh"
+assert_shell_test_nomatch "bash testing.sh"
+assert_shell_test_nomatch "bash testdata.sh"
+assert_shell_test_nomatch "cat tests/foo.sh"
+assert_shell_test_nomatch "bash tests/data.json"
+assert_shell_test_nomatch "ls tests/"
+assert_shell_test_nomatch "bash script.sh"
+
+# End-to-end scoring: my failing case should now clear the 40 threshold
+test_score="$(score_verification_confidence "bash tests/test-install-artifacts.sh" "=== Results: 20 passed, 0 failed ===" "")"
+if [[ "${test_score}" -ge 40 ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: shell test score should be >= 40 (got: %s)\n' "${test_score}" >&2
+  fail=$((fail + 1))
+fi
+
+# --- Reviewer-found false-positives in shell-test recognition ---
+# `tests?/` without a word boundary false-positived on any directory name
+# whose tail happened to end in "tests" or "test". These must NOT match.
+printf '\nShell test negatives (reviewer found false-positives):\n'
+assert_shell_test_nomatch "bash contests/foo.sh"
+assert_shell_test_nomatch "bash latests/foo.sh"
+assert_shell_test_nomatch "bash greatestsmod/foo.sh"
+assert_shell_test_nomatch "bash latest-contest.sh"
+assert_shell_test_nomatch "bash contest_foo.sh"
+
+# --- Release-action polite imperatives (single-clause Please/Can-you forms) ---
+# Single-clause polite asks like "Please push the changes to main." or
+# "Can you tag v2.0?" were classified advisory pre-1.8.1 because the
+# tail-imperative branch required a sentence boundary and the Please/
+# Can-you branches did not list release-action verbs. Added in 1.8.1.
+printf '\nRelease-action polite imperatives:\n'
+assert_imperative "Please push the changes to main."
+assert_imperative "Please commit these and tag v2.0."
+assert_imperative "Please tag v2.0."
+assert_imperative "Please release to staging."
+assert_imperative "Please ship the build to production."
+assert_imperative "Please publish the package."
+assert_imperative "Please merge the PR."
+assert_imperative "Could you tag v2.0 and push?"
+assert_imperative "Can you publish the release notes?"
+assert_imperative "Would you please ship this to staging?"
+
+# Polite asks with non-release verbs still work (regression guard)
+assert_imperative "Please fix the bug"
+assert_imperative "Could you implement the login page"
+
 printf '\n=== Results: %d passed, %d failed ===\n' "${pass}" "${fail}"
 if [[ "${fail}" -gt 0 ]]; then
   exit 1

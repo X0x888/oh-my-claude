@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.8.1] - 2026-04-18
+
+### Fixed
+
+- **Mixed-intent release prompts route as execution, not advisory** — the classifier previously scored prompts by their *head* only, so a release prompt phrased per the CLAUDE.md checklist ("Please comprehensively evaluate each point… after all these, commit the changes and tag and release.") was tagged `advisory` because of the `Please … evaluate` opening. The PreTool guard then blocked the user's own explicit commit/tag/push sequence — ironically, the CLAUDE.md release checklist prescribes this exact phrasing pattern. `is_imperative_request` now has a tail-position branch that matches a sentence-boundary (`.`, `,`, `?`, `\n`) followed by an optional transition word (`then|now|finally|lastly|also|afterwards|next`) followed by a narrow destructive-execution verb (`commit|push|tag|release|deploy|merge|ship|publish`) followed by an object marker (`the|a|an|all|these|this|that|those|to|origin|upstream|v<N>|it|them|changes|and`). The verb list is deliberately narrow — verbs that are unambiguously authoritative-execution when used imperatively. Past-tense mentions (`we pushed yesterday`), noun uses (`the commit message`, `the push date`), and ambiguous safer verbs (`run`, `make`) are not matched. Originating incident: the v1.8.0 release session where the original developer-note prompt was misclassified and the user had to send a fresh imperative follow-up to authorize the release.
+- **Shell-native project test scripts satisfy the verification-confidence gate** — `verification_has_framework_keyword` now recognizes shell-script invocations whose path or filename marks them as test scripts: `(bash|sh|./) … (tests?/|\btest[-_]|_test\b) … .sh`. Matches `bash tests/test-foo.sh`, `bash test-runner.sh`, `./test_helper.sh`, `bash path/to/tests/x.sh`. Without this, pure-bash projects (like oh-my-claude itself) that have no `package.json` / `Cargo.toml` / etc. to advertise a canonical test command scored 30 on their own test runs — below the default threshold of 40 — even when the test output printed `Results: N passed`. The v1.8.0 release session hit this ironically in its own stop-guard: `bash tests/test-install-artifacts.sh` with 20 assertions passed was rejected as low-confidence. `bash example.sh`, `cat tests/foo.sh`, and non-`.sh` invocations are correctly not matched (narrowed by `.sh` terminus, bash/sh/`./` prefix, and word-boundary `test` to exclude `testing`/`testdata`).
+
+### Testing
+
+- `tests/test-intent-classification.sh` grown from 374 to 422 assertions (+48). New *Tail-position imperative (mixed advisory + execution)* section covers the original failing prompt shape, transition-word forms (`Then push`, `Now commit`, `Finally release`, `Also commit`, `Afterwards deploy and merge`, `Next commit`), end-to-end `classify_task_intent` parity, and past-tense / noun-use negatives. New *Shell test script recognition in framework_keyword* section covers 9 positive forms (`bash tests/*.sh`, `bash test-*.sh`, `bash test_*.sh`, `./tests/*.sh`, `./test-*.sh`, absolute-path forms, `sh tests/*.sh`, `bash *_test.sh`) and 7 original negatives plus 5 reviewer-found false-positive negatives (`bash contests/foo.sh`, `bash latests/foo.sh`, `bash greatestsmod/foo.sh`, `bash latest-contest.sh`, `bash contest_foo.sh`), plus end-to-end `score_verification_confidence` assertion that the v1.8.0-failing case now scores ≥ 40. New *Release-action polite imperatives* section covers 10 positive forms (`Please push/commit/tag/release/ship/publish/merge …`, `Could you tag … and push?`, `Can you publish …?`, `Would you please ship …?`).
+- **Zero regressions:** 1,524 total tests passing (all 10 suites).
+
+### Review refinements
+
+The quality-reviewer agent flagged two false-positive / false-negative edges after the initial 1.8.1 fix:
+
+- **`tests?/` without word boundary false-positived on `contests/`, `latests/`, `greatestsmod/` substrings.** Tightened the shell-test regex from `(tests?/|\btest[-_]|_test\b)` to `(\btests?/|\btest[-_]|_test\b)`. The `\b` before `tests?/` forces a non-word→word transition so `/tests/` (slash → word) and ` tests/` (space → word) match but `contests/` (n → t) does not. Added 5 negative regression tests.
+- **Single-clause polite asks like `Please push the changes.` or `Could you tag v2.0?` were not caught by `is_imperative_request`.** The tail-imperative branch requires a sentence boundary, and the Please/Can-you branches did not list release-action verbs. Added `commit|push|tag|release|ship|publish|merge` to both branches so single-clause polite asks now classify imperative directly, without having to rely on the default-execution fallback in `classify_task_intent`. Added 12 positive regression tests.
+
 ## [1.8.0] - 2026-04-18
 
 ### Added

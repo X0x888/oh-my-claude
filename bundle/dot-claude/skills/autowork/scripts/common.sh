@@ -1132,7 +1132,31 @@ verification_matches_project_test_command() {
 verification_has_framework_keyword() {
   local cmd="${1:-}"
   [[ -n "${cmd}" ]] || return 1
-  printf '%s' "${cmd}" | grep -Eiq '\b(pytest|vitest|jest|mocha|cargo test|go test|npm test|pnpm test|yarn test|bun test|rspec|phpunit|xcodebuild test|swift test|mix test|gradle test|mvn test|dotnet test|rake test|deno test|shellcheck|bash -n)\b'
+  if printf '%s' "${cmd}" | grep -Eiq '\b(pytest|vitest|jest|mocha|cargo test|go test|npm test|pnpm test|yarn test|bun test|rspec|phpunit|xcodebuild test|swift test|mix test|gradle test|mvn test|dotnet test|rake test|deno test|shellcheck|bash -n)\b'; then
+    return 0
+  fi
+  # Shell-native project test scripts — closes the shell-only confidence
+  # gap where a project's own bash test runner (e.g.
+  # `bash tests/test-install-artifacts.sh`) scored the same as a bare
+  # `bash -n`, starving the quality gate of trustworthy signal on
+  # harness-style repos. Matches two shapes:
+  #   (a) a `tests/` or `test/` directory segment followed by a `.sh`
+  #       file — the dominant convention ("bash tests/test-x.sh",
+  #       "./tests/runner.sh", "/abs/path/tests/foo.sh").
+  #   (b) a filename that itself names it as a test script — `test-x.sh`,
+  #       `test_x.sh`, `x_test.sh`, `tests.sh` — invoked via bash/sh
+  #       or a relative path.
+  # Narrow by design: requires `.sh` terminus (so `bash tests/data.json`
+  # is not a test), and requires a bash/sh/./ prefix so `cat tests/x.sh`
+  # isn't mistaken for a test run. Word boundaries on `test` prevent
+  # matches on `testing`, `testdata`, etc.
+  # Word-boundary `\btests?/` is critical: without it, `bash contests/foo.sh`,
+  # `bash latests/foo.sh`, `bash greatestsmod/foo.sh` all false-positive
+  # because `tests/` appears as a substring inside a non-test directory
+  # name. `\b` requires a non-word→word transition before `t`, which is
+  # satisfied by `/tests/` (slash → word) and ` tests/` (space → word) but
+  # not by `contests/` (n → t). Applies to `test[-_]` and `_test` already.
+  printf '%s' "${cmd}" | grep -Eiq '(^|[[:space:]]|;|&|\||\()(bash|sh|\./)[[:space:]]*[^[:space:]]*(\btests?/|\btest[-_]|_test\b)[^[:space:]]*\.sh\b'
 }
 
 verification_output_has_counts() {
@@ -2177,10 +2201,15 @@ is_imperative_request() {
   local result=1
 
   # "Can/Could/Would you [verb]..." — polite imperatives
-  if [[ "${text}" =~ ^[[:space:]]*(can|could|would)[[:space:]]+you[[:space:]]+(please[[:space:]]+)?(fix|implement|add|create|build|update|refactor|debug|deploy|test|write|make|set[[:space:]]+up|change|modify|remove|delete|move|rename|install|configure|check|run|help|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|connect|push|pull|merge|commit|review|start|stop|enable|disable|open|close|evaluate|plan|audit|investigate|research|analyze|analyse|assess|execute|document|extend|raise|design|style|redesign|treat|diagnose|prioritize|preserve|ensure|perform|prepare|verify|validate|generate|apply|revert|simplify|extract|replace|upgrade|scaffold|swap|split|inline|expose|wire|bootstrap|downgrade|patch|determine|identify|examine|inspect|scan|explore|establish|conduct|complete|address|clean|hook) ]]; then
+  if [[ "${text}" =~ ^[[:space:]]*(can|could|would)[[:space:]]+you[[:space:]]+(please[[:space:]]+)?(fix|implement|add|create|build|update|refactor|debug|deploy|test|write|make|set[[:space:]]+up|change|modify|remove|delete|move|rename|install|configure|check|run|help|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|connect|push|pull|merge|commit|tag|release|ship|publish|review|start|stop|enable|disable|open|close|evaluate|plan|audit|investigate|research|analyze|analyse|assess|execute|document|extend|raise|design|style|redesign|treat|diagnose|prioritize|preserve|ensure|perform|prepare|verify|validate|generate|apply|revert|simplify|extract|replace|upgrade|scaffold|swap|split|inline|expose|wire|bootstrap|downgrade|patch|determine|identify|examine|inspect|scan|explore|establish|conduct|complete|address|clean|hook) ]]; then
     result=0
   # "Please [adverb?] [verb]..." patterns — single optional -ly adverb between please and verb
-  elif [[ "${text}" =~ ^[[:space:]]*(please)[[:space:]]+([a-z]+ly[[:space:]]+)?(fix|implement|add|create|build|update|refactor|debug|deploy|test|write|make|change|modify|remove|delete|move|rename|install|configure|check|run|help|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|proceed|go|evaluate|plan|audit|investigate|research|analyze|analyse|assess|execute|document|extend|raise|design|style|redesign|treat|diagnose|prioritize|preserve|ensure|perform|prepare|verify|validate|generate|apply|revert|simplify|extract|replace|upgrade|scaffold|swap|split|inline|expose|wire|bootstrap|downgrade|patch|determine|identify|examine|inspect|scan|explore|establish|conduct|complete|address|clean|hook) ]]; then
+  # Release-action verbs (commit|push|tag|release|ship|publish|merge) added
+  # in 1.8.1 so single-clause polite asks like "Please push the changes to
+  # main." or "Please tag v2.0." route as execution instead of falling
+  # through to the default. Mirrors the tail-imperative branch's narrow
+  # destructive-verb list.
+  elif [[ "${text}" =~ ^[[:space:]]*(please)[[:space:]]+([a-z]+ly[[:space:]]+)?(fix|implement|add|create|build|update|refactor|debug|deploy|test|write|make|change|modify|remove|delete|move|rename|install|configure|check|run|help|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|commit|push|merge|tag|release|ship|publish|proceed|go|evaluate|plan|audit|investigate|research|analyze|analyse|assess|execute|document|extend|raise|design|style|redesign|treat|diagnose|prioritize|preserve|ensure|perform|prepare|verify|validate|generate|apply|revert|simplify|extract|replace|upgrade|scaffold|swap|split|inline|expose|wire|bootstrap|downgrade|patch|determine|identify|examine|inspect|scan|explore|establish|conduct|complete|address|clean|hook) ]]; then
     result=0
   # "Go ahead and..." patterns
   elif [[ "${text}" =~ ^[[:space:]]*go[[:space:]]+ahead ]]; then
@@ -2194,6 +2223,28 @@ is_imperative_request() {
   # Also polite-only: complete, address, clean, hook, determine, identify, examine,
   # inspect, scan, explore, establish, conduct — noun/adjective-ambiguous at prompt start
   elif [[ ! "${text}" =~ \?[[:space:]]*$ ]] && [[ "${text}" =~ ^[[:space:]]*(fix|implement|add|create|build|update|refactor|debug|deploy|write|make|change|modify|remove|delete|move|rename|install|configure|run|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|connect|push|pull|merge|commit|start|stop|enable|disable|open|close|set[[:space:]]+up|proceed|audit|investigate|analyze|analyse|execute|document|extend|raise|redesign|treat|diagnose|prioritize|preserve|ensure|perform|prepare|verify|validate|generate|apply|revert|simplify|extract|replace|upgrade|scaffold|swap|split|inline|expose|wire|bootstrap|downgrade|patch)[[:space:]] ]]; then
+    result=0
+  # Tail-position imperative: a prompt that opens with advisory/evaluation
+  # framing but closes with an explicit release-action ask. The CLAUDE.md
+  # release checklist prescribes this exact pattern ("comprehensively
+  # evaluate each point; after all these, commit the changes and tag").
+  # Without this branch, the head-anchored patterns above fail, advisory
+  # wins, and PreTool blocks the user's own explicitly-requested commit.
+  #
+  # Narrow by design:
+  #   - Requires a sentence boundary (`. `, `, `, `\n`) before the verb so
+  #     past-tense mentions ("we pushed yesterday") don't match.
+  #   - Requires an object marker after the verb (article/demonstrative/
+  #     preposition/tag-shaped literal) so noun uses ("push date", "the
+  #     commit message") don't match.
+  #   - Allows optional transition words ("then", "now", "finally", "also",
+  #     "afterwards") between the boundary and the verb so "Review the
+  #     branch. Then push to origin." is caught without having to enumerate
+  #     every possible conjunction.
+  #   - Only fires on verbs that are genuinely destructive-execution when
+  #     used imperatively: commit/push/tag/release/deploy/merge/ship/publish.
+  #     Safer verbs (run/make/create) stay head-anchored.
+  elif [[ "${text}" =~ (\.|,|\?|$'\n')[[:space:]]+(then|now|finally|lastly|also|afterwards?|next)?[[:space:]]*,?[[:space:]]*(commit|push|tag|release|deploy|merge|ship|publish)[[:space:]]+(the|a|an|all|these|this|that|those|to[[:space:]]|origin[[:space:]]|upstream[[:space:]]+|v[0-9]|it[[:space:]]|them[[:space:]]+|changes?[[:space:]]|and[[:space:]]) ]]; then
     result=0
   fi
 
