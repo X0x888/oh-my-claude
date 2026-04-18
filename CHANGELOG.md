@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Serendipity Rule in `core.md`** — new bullet in the gold-plating section tells Claude to fix verified adjacent defects discovered mid-task when they live on the same code path and the fix is bounded (no separate investigation or new test scaffolding); otherwise the defect goes to a `project_*.md` memory **and** is named in the session summary as a deferred risk, so verified known defects are not buried in memory-only bookkeeping. The existing "no future-session handoffs" rule now cross-references it. Originating case: an iOS session deferred a verified cursor-jitter guard in the same post-frame window as a just-fixed text-loss bug — prior rules only addressed *additions* (gold-plating), not adjacent-defect triage.
+- **Reviewer coverage of the Serendipity Rule** — `quality-reviewer.md` gains priority #9 and `excellence-reviewer.md` gains axis #5. Both flag should-have-fixed deferrals that meet the full three-condition test from `core.md` (verified + same code path + bounded fix with no separate investigation or new test scaffolding), and both flag verified-but-deferred defects that were dropped into a memory without being surfaced in the session summary. Unverified/theoretical/cross-module deferrals remain correctly deferred.
+
 ## [1.7.1] - 2026-04-17
 
 ### Added

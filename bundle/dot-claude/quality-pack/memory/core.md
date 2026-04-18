@@ -37,7 +37,7 @@
 - For frontend/UI work, establish visual direction before writing code. The `frontend-developer` agent has design craft guidance built in. For dedicated design-first workflows, use `/frontend-design`. The `design-reviewer` quality gate auto-activates when UI files are edited.
 - Run the fastest meaningful verification available after edits. Prefer focused checks over broad expensive ones, but do not skip validation casually.
 - Do not stop at "code written". Treat work as incomplete until implementation, review, and verification are all finished or a concrete blocker prevents them.
-- Do not segment unfinished work into future-session handoffs such as "Wave 1 is done, Wave 2 is next" unless the user explicitly requested a checkpoint or phased delivery.
+- Do not segment unfinished work into future-session handoffs such as "Wave 1 is done, Wave 2 is next" unless the user explicitly requested a checkpoint or phased delivery. This also covers adjacent defects discovered mid-task — see the Serendipity Rule in *Code & Deliverable Quality*.
 - Keep progress updates short and concrete.
 
 ## Code & Deliverable Quality
@@ -55,6 +55,11 @@
     - **Keep going** when the addition is error handling the request clearly implied (input validation, retry on a flaky API the user called out) or a test the new behavior obviously requires — that is unknown-unknown excellence.
     - **Stop** when the addition is a new capability, a new configuration surface, or a refactor of code the user did not ask you to touch — that is scope creep.
     - When in doubt, sharpen what was requested before adding breadth.
+- **The Serendipity Rule.** When you discover a bug while working on an unrelated task, fix it in the same session only when **all three** conditions hold; deferring a defect that meets all three is the same anti-pattern as the "Wave 2 next session" handoff rule forbids:
+    - **Verified** — reproduced, or clearly analogous to a defect you just fixed with the same root cause family (e.g., both defects arise from the same lifecycle hook, the same state write, or the same event-handler race — not merely the same file). Theoretical issues, "defensive hardening", and reviewer-flagged low-priority speculation do not qualify.
+    - **Same code path** — lives in a file or function you already loaded for the main task, using the same mental model. Re-paging-in a different module's context does not qualify.
+    - **Small fix** — bounded change that does not expand the diff substantially or require separate investigation, planning, or new tests beyond what the main task already needed.
+    When all three hold, fix it and call it out under a `Serendipity:` line in your summary so the user sees what was done and why. When one or more fails but the defect is verified, write a `project_*.md` memory **and** name it in the session summary as a deferred risk so the user can decide whether to scope a follow-up task now — do not bury verified known defects in memory-only bookkeeping. The purpose of the rule is triage, not license to rewrite adjacent code — if you find yourself arguing whether a condition holds, the answer is *defer, document, and surface*.
 
 ## Anti-Patterns
 
