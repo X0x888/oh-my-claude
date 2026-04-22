@@ -113,13 +113,26 @@ The value is an extended regex appended to the built-in pattern with `|`. Multip
 
 ### How do I debug hook execution?
 
-Enable hook logging by adding `hook_debug=true` to `~/.claude/oh-my-claude.conf`:
+Anomaly entries — state corruption, invalid session IDs, lock-exhaustion warnings — are always written to `~/.claude/quality-pack/state/hooks.log` tagged `[anomaly]`. Grep for them first: `grep '\[anomaly\]' ~/.claude/quality-pack/state/hooks.log`.
+
+For the verbose per-hook trace (which hook fired, classified intent/domain, guard decisions), enable `[debug]` logging by adding `hook_debug=true` to `~/.claude/oh-my-claude.conf`:
 
 ```
 hook_debug=true
 ```
 
-Or set the environment variable `HOOK_DEBUG=1` before launching Claude Code. When enabled, hooks write timestamped entries to `~/.claude/quality-pack/state/hooks.log`. Entries show which hook fired, the classified intent/domain, and guard decisions.
+Or set the environment variable `HOOK_DEBUG=1` before launching Claude Code. Both tags share the same file and the same 2000/1500 rotation — debug noise cannot evict anomaly records.
+
+### How do I report a bug?
+
+Run `bash ~/.claude/omc-repro.sh` to package the most recent session's state into a shareable tarball. The script writes `~/omc-repro-<session-id>-<timestamp>.tar.gz` containing `session_state.json`, `classifier_telemetry.jsonl`, `recent_prompts.jsonl`, edited-file logs, subagent summaries, the last 200 lines of `hooks.log`, and a manifest with versions and hook-log tag counts. Every user-prompt / assistant-message field is truncated to 80 chars before bundling (override with `OMC_REPRO_REDACT_CHARS`). Useful variants:
+
+```
+bash ~/.claude/omc-repro.sh --list          # list recent sessions newest-first
+bash ~/.claude/omc-repro.sh <session-id>    # bundle a specific session
+```
+
+Extract and review with `tar -xzf ~/omc-repro-*.tar.gz -C /tmp` before sharing if you have additional privacy concerns. Attach the tarball to your bug report.
 
 ### How do I deactivate ultrawork mode mid-session?
 

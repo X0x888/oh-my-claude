@@ -16,6 +16,7 @@ Display this table to the user:
 | **metis** | `/metis <plan>` | You have a draft plan or approach and want to stress-test it for hidden risks |
 | **oracle** | `/oracle <issue>` | Debugging is hard, root cause is unclear, or you need a second opinion on tradeoffs |
 | **librarian** | `/librarian <topic>` | You need official docs, third-party API references, or concrete external examples |
+| **frontend-design** | `/frontend-design <task>` | Distinctive, design-first frontend work — establishes palette, typography, layout before writing code |
 | **atlas** | `/atlas [focus]` | Bootstrap or refresh CLAUDE.md / .claude/rules for a repository |
 | **council** | `/council [focus]` | Multi-role project evaluation — dispatches PM, design, security, data, SRE, and growth perspectives |
 | **ulw-demo** | `/ulw-demo` | Guided onboarding — see the quality gates fire on a demo task |

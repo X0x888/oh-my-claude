@@ -59,6 +59,7 @@ python3 -m unittest tests.test_statusline -v
 - Prefer readable code over micro-optimizations. When quality and speed conflict, choose quality.
 - Do not break existing install paths, config merges, or hook interfaces for performance gains.
 - When adding, removing, or renaming agents, skills, scripts, or directories, update README.md, CLAUDE.md, AGENTS.md, and CONTRIBUTING.md to reflect the change. Stale docs are worse than no docs.
+- When adding or removing a user-invocable skill, update all three skill lists in lockstep: `README.md` (skill table), `bundle/dot-claude/skills/skills/SKILL.md` (user-facing index), and `bundle/dot-claude/quality-pack/memory/skills.md` (in-session memory). Missing entries cause either a discoverability gap (user can't find the skill) or a memory gap (Claude doesn't know to suggest it).
 - When adding or removing a skill directory or agent file, update both `verify.sh` (`required_paths`) AND `uninstall.sh` (`SKILL_DIRS` / `AGENT_FILES`) in the same commit. These two lists must stay parallel — otherwise uninstall leaks files or verify silently passes a broken install.
 - When bumping the version, follow the full release checklist (replace `X.Y.Z` with the actual version in all commands):
   1. **Pre-flight CHANGELOG audit.** Run `git log --oneline vPREV..HEAD` and confirm every commit has a matching CHANGELOG `[Unreleased]` bullet. Silent drop (a large commit's changes missing from the changelog) is the common failure mode. Also skim `docs/architecture.md` state-key table for new keys introduced in the window.

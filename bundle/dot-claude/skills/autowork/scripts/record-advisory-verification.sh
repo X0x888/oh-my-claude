@@ -46,8 +46,12 @@ if [[ -n "${target_path}" ]]; then
 fi
 
 # Advisory verification tracking (advisory intent only)
+# Wrapped in with_state_lock to serialize against concurrent state writes
+# from parallel PostToolUse / SubagentStop hooks that share the session
+# state file. Without the lock, this write can be lost when a sibling
+# hook's write_state_batch races the temp-file rename.
 if [[ "${task_intent}" == "advisory" && -n "${target_path}" && "${is_internal_path}" -eq 0 ]]; then
-  write_state "last_advisory_verify_ts" "$(now_epoch)"
+  with_state_lock write_state "last_advisory_verify_ts" "$(now_epoch)"
 fi
 
 # P4: Stall detection — track call count and unique file paths
@@ -93,7 +97,9 @@ if [[ "${stall_counter}" -ge "${effective_threshold}" ]]; then
   fi
   unique_paths="${unique_paths:-0}"
 
-  write_state "stall_counter" "0"
+  # Reset under lock — races with the concurrent _increment_stall_counter
+  # path (which is itself already locked) otherwise drop the reset.
+  with_state_lock write_state "stall_counter" "0"
   : > "${paths_file}" 2>/dev/null || true
 
   # Compute progress score for context-aware messaging

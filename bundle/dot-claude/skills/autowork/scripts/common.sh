@@ -144,7 +144,24 @@ case "${OMC_GUARD_EXHAUSTION_MODE}" in
   strict)  OMC_GUARD_EXHAUSTION_MODE="block" ;;
 esac
 
-# Optional hook execution logging. Enable via oh-my-claude.conf: hook_debug=true
+# Hook logging — two channels, one file (${HOOK_LOG}).
+#
+#   log_anomaly  — always on. Use for rare warnings: state corruption,
+#                  lock exhaustion, invalid session ids, schema drift.
+#                  These are the events worth seeing in a bug report
+#                  without asking the user to opt into a debug mode.
+#                  Tagged `[anomaly]`.
+#
+#   log_hook     — debug-gated (hook_debug=true in oh-my-claude.conf
+#                  or HOOK_DEBUG=1 env). Use for verbose per-hook
+#                  traces ("mark-edit file=x is_doc=0"). Noisy in a
+#                  long session, which is why it stays opt-in.
+#                  Tagged `[debug]`.
+#
+# Both channels share the same rotation: truncate to 1500 lines once
+# the log exceeds 2000, so the default-on anomaly channel cannot grow
+# unbounded even on a machine where something misbehaves every session.
+# Grep `[anomaly]` to see only warnings; `[debug]` for verbose traces.
 _hook_debug_enabled=""
 _hook_debug_checked=0
 
@@ -161,29 +178,36 @@ is_hook_debug() {
   [[ -n "${_hook_debug_enabled}" ]]
 }
 
+_write_hook_log() {
+  local tag="$1"
+  local hook_name="${2:-unknown}"
+  local detail="${3:-}"
+  local ts
+  ts="$(date '+%Y-%m-%d %H:%M:%S')"
+  mkdir -p "${STATE_ROOT}" 2>/dev/null || return 0
+  printf '%s  [%s]  %s  %s\n' "${ts}" "${tag}" "${hook_name}" "${detail}" >>"${HOOK_LOG}" 2>/dev/null || return 0
+
+  local _line_count
+  _line_count="$(wc -l < "${HOOK_LOG}" 2>/dev/null || echo 0)"
+  _line_count="${_line_count##* }"
+  if [[ "${_line_count}" -gt 2000 ]]; then
+    local _temp
+    _temp="$(mktemp "${HOOK_LOG}.XXXXXX" 2>/dev/null)" || return 0
+    if tail -n 1500 "${HOOK_LOG}" >"${_temp}" 2>/dev/null; then
+      mv "${_temp}" "${HOOK_LOG}" 2>/dev/null || rm -f "${_temp}"
+    else
+      rm -f "${_temp}"
+    fi
+  fi
+}
+
+log_anomaly() {
+  _write_hook_log "anomaly" "$@"
+}
+
 log_hook() {
   if is_hook_debug; then
-    local hook_name="${1:-unknown}"
-    local detail="${2:-}"
-    local ts
-    ts="$(date '+%Y-%m-%d %H:%M:%S')"
-    mkdir -p "${STATE_ROOT}"
-    printf '%s  %s  %s\n' "${ts}" "${hook_name}" "${detail}" >>"${HOOK_LOG}"
-
-    # Rotate hooks.log to prevent unbounded growth when debug mode is
-    # left on. Truncate to 1500 lines when exceeding 2000.
-    local _line_count
-    _line_count="$(wc -l < "${HOOK_LOG}" 2>/dev/null || echo 0)"
-    _line_count="${_line_count##* }"
-    if [[ "${_line_count}" -gt 2000 ]]; then
-      local _temp
-      _temp="$(mktemp "${HOOK_LOG}.XXXXXX")"
-      if tail -n 1500 "${HOOK_LOG}" >"${_temp}" 2>/dev/null; then
-        mv "${_temp}" "${HOOK_LOG}"
-      else
-        rm -f "${_temp}"
-      fi
-    fi
+    _write_hook_log "debug" "$@"
   fi
 }
 
@@ -205,7 +229,7 @@ validate_session_id() {
 
 ensure_session_dir() {
   if ! validate_session_id "${SESSION_ID}"; then
-    log_hook "common" "invalid session_id format, skipping: ${SESSION_ID:0:40}"
+    log_anomaly "common" "invalid session_id format, skipping: ${SESSION_ID:0:40}"
     exit 0
   fi
   mkdir -p "${STATE_ROOT}/${SESSION_ID}"
@@ -248,7 +272,7 @@ _ensure_valid_state() {
     archive="$(session_file "${STATE_JSON}.corrupt.$(date +%s)")"
     mv "${state_file}" "${archive}" 2>/dev/null || true
     printf '{}\n' >"${state_file}"
-    log_hook "common" "corrupt state detected and archived: ${archive}"
+    log_anomaly "common" "corrupt state detected and archived: ${archive}"
   fi
 
   _state_validated=1
@@ -1751,8 +1775,8 @@ build_quality_scorecard() {
 # Structure: { "agent_name": { "invocations": N, "clean_verdicts": N,
 #   "finding_verdicts": N, "last_used_ts": N, "avg_confidence": N } }
 
-_AGENT_METRICS_FILE="${HOME}/.claude/quality-pack/agent-metrics.json"
-_AGENT_METRICS_LOCK="${HOME}/.claude/quality-pack/.agent-metrics.lock"
+_AGENT_METRICS_FILE="${_AGENT_METRICS_FILE:-${HOME}/.claude/quality-pack/agent-metrics.json}"
+_AGENT_METRICS_LOCK="${_AGENT_METRICS_LOCK:-${HOME}/.claude/quality-pack/.agent-metrics.lock}"
 
 # with_metrics_lock: Run a command under the agent metrics file lock.
 # Uses time-based stale-lock recovery (same pattern as with_state_lock)
@@ -1779,7 +1803,7 @@ with_metrics_lock() {
     fi
 
     if [[ "${attempts}" -ge "${OMC_STATE_LOCK_MAX_ATTEMPTS}" ]]; then
-      log_hook "with_metrics_lock" "WARNING: lock not acquired after ${OMC_STATE_LOCK_MAX_ATTEMPTS} attempts"
+      log_anomaly "with_metrics_lock" "lock not acquired after ${OMC_STATE_LOCK_MAX_ATTEMPTS} attempts"
       return 1
     fi
     sleep 0.05 2>/dev/null || sleep 1
@@ -1881,8 +1905,8 @@ get_all_agent_metrics() {
 # Categories: missing_test, type_error, null_check, edge_case, race_condition,
 #   api_contract, error_handling, security, performance, docs_stale, style
 
-_DEFECT_PATTERNS_FILE="${HOME}/.claude/quality-pack/defect-patterns.json"
-_DEFECT_PATTERNS_LOCK="${HOME}/.claude/quality-pack/.defect-patterns.lock"
+_DEFECT_PATTERNS_FILE="${_DEFECT_PATTERNS_FILE:-${HOME}/.claude/quality-pack/defect-patterns.json}"
+_DEFECT_PATTERNS_LOCK="${_DEFECT_PATTERNS_LOCK:-${HOME}/.claude/quality-pack/.defect-patterns.lock}"
 
 # with_defect_lock: Run a command under the defect patterns file lock.
 # Separate from with_metrics_lock to avoid unnecessary contention.
@@ -1909,7 +1933,7 @@ with_defect_lock() {
     fi
 
     if [[ "${attempts}" -ge "${OMC_STATE_LOCK_MAX_ATTEMPTS}" ]]; then
-      log_hook "with_defect_lock" "WARNING: lock not acquired after ${OMC_STATE_LOCK_MAX_ATTEMPTS} attempts"
+      log_anomaly "with_defect_lock" "lock not acquired after ${OMC_STATE_LOCK_MAX_ATTEMPTS} attempts"
       return 1
     fi
     sleep 0.05 2>/dev/null || sleep 1
@@ -1935,7 +1959,7 @@ _ensure_valid_defect_patterns() {
     archive="${_DEFECT_PATTERNS_FILE}.corrupt.$(date +%s)"
     cp "${_DEFECT_PATTERNS_FILE}" "${archive}" 2>/dev/null || true
     printf '{}' > "${_DEFECT_PATTERNS_FILE}"
-    log_hook "common" "defect-patterns.json was corrupt, archived to ${archive}, reset to {}"
+    log_anomaly "common" "defect-patterns.json was corrupt, archived to ${archive}, reset to {}"
   fi
 }
 

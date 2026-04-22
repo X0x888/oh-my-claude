@@ -76,6 +76,7 @@ required_paths=(
   "${CLAUDE_HOME}/settings.json"
   "${CLAUDE_HOME}/CLAUDE.md"
   "${CLAUDE_HOME}/statusline.py"
+  "${CLAUDE_HOME}/omc-repro.sh"
   "${CLAUDE_HOME}/output-styles/opencode-compact.md"
   "${CLAUDE_HOME}/quality-pack/scripts/prompt-intent-router.sh"
   "${CLAUDE_HOME}/quality-pack/scripts/session-start-resume-handoff.sh"

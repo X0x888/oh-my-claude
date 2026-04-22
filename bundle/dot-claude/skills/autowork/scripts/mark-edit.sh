@@ -43,8 +43,14 @@ fi
 # last_edit_ts is still updated for every edit (doc or code) to preserve
 # backward compatibility with the legacy review_unremediated path and
 # any pre-dimension-gate tests / consumers.
+#
+# Wrapped in with_state_lock_batch to serialize against concurrent
+# SubagentStop reviewer writes (record-reviewer.sh), which share the
+# stop_guard_blocks / session_handoff_blocks keys. Without the lock,
+# a reviewer batch racing with this batch could lose updates to
+# dimension_guard_blocks and the edit-timestamp clocks.
 if [[ "${is_doc}" -eq 1 ]]; then
-  write_state_batch \
+  with_state_lock_batch \
     "last_edit_ts" "${now}" \
     "last_doc_edit_ts" "${now}" \
     "stop_guard_blocks" "0" \
@@ -52,7 +58,7 @@ if [[ "${is_doc}" -eq 1 ]]; then
     "advisory_guard_blocks" "0" \
     "stall_counter" "0"
 else
-  write_state_batch \
+  with_state_lock_batch \
     "last_edit_ts" "${now}" \
     "last_code_edit_ts" "${now}" \
     "stop_guard_blocks" "0" \

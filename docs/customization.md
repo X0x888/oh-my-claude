@@ -77,6 +77,37 @@ Agent-level thinking effort (extended thinking budget) is not currently configur
 
 ---
 
+## Other install flags
+
+**`--git-hooks`** — writes `.git/hooks/post-merge` into the source checkout so that every `git pull` (or any other merge) checks whether the bundle has drifted from the last install. When drift is detected, the hook prints a yellow `[oh-my-claude] Bundle changes detected after merge.` banner and prints the installer command. The hook is non-blocking — it never aborts the underlying git operation. Set `OMC_AUTO_INSTALL=1` in your environment to have the hook re-run `install.sh` automatically (useful for CI / trusted environments). `install.sh` never overwrites a pre-existing non-oh-my-claude hook at the same path; a foreign hook keeps the slot. `uninstall.sh` removes the hook only if it carries the `# oh-my-claude post-merge auto-sync` signature.
+
+```bash
+bash install.sh --git-hooks              # one-time opt-in during install
+```
+
+**`--no-ios`** — skip the 5 iOS-specific specialist agents (`ios-core-engineer`, `ios-ui-developer`, `ios-deployment-specialist`, `ios-ecosystem-integrator`, `frontend-developer`'s iOS overlap) during install. Saves ~15 KB in `~/.claude/agents/` and reduces `/agents` picker noise if you don't ship iOS.
+
+```bash
+bash install.sh --no-ios
+```
+
+---
+
+## Bug reports with omc-repro
+
+`~/.claude/omc-repro.sh` packages a session's state into a shareable tarball. User-prompt and assistant-message fields (`last_user_prompt`, `last_assistant_message`, `current_objective`, `last_meta_request` in session state; `prompt_preview` in classifier telemetry; `text` in recent_prompts) are truncated to 80 chars before bundling. Override with `OMC_REPRO_REDACT_CHARS`:
+
+```bash
+bash ~/.claude/omc-repro.sh                            # bundle the latest session
+bash ~/.claude/omc-repro.sh --list                     # list recent sessions
+bash ~/.claude/omc-repro.sh <session-id>               # bundle a specific session
+OMC_REPRO_REDACT_CHARS=200 bash ~/.claude/omc-repro.sh # keep more context
+```
+
+The script never falls back to unredacted copies on jq failure — a corrupt row is dropped rather than leaked. Always review the bundle (`tar -xzf ~/omc-repro-*.tar.gz -C /tmp`) before sharing if you have additional privacy concerns.
+
+---
+
 ## User-Override Layer
 
 Files in `~/.claude/omc-user/` are **never overwritten** by `install.sh`. Use this directory for customizations that should survive updates.
@@ -218,7 +249,7 @@ verify_confidence_threshold=40
 installation_drift_check=true
 ```
 
-Values can also be overridden via environment variables (`OMC_STALL_THRESHOLD`, `OMC_EXCELLENCE_FILE_COUNT`, `OMC_DIMENSION_GATE_FILE_COUNT`, `OMC_TRACEABILITY_FILE_COUNT`, `OMC_STATE_TTL_DAYS`, `OMC_VERIFY_CONFIDENCE_THRESHOLD`, `OMC_CUSTOM_VERIFY_MCP_TOOLS`, `OMC_INSTALLATION_DRIFT_CHECK`, `OMC_PRETOOL_INTENT_GUARD`). Environment variables take precedence over the conf file, and both override the built-in defaults.
+Values can also be overridden via environment variables (`OMC_STALL_THRESHOLD`, `OMC_EXCELLENCE_FILE_COUNT`, `OMC_DIMENSION_GATE_FILE_COUNT`, `OMC_TRACEABILITY_FILE_COUNT`, `OMC_STATE_TTL_DAYS`, `OMC_VERIFY_CONFIDENCE_THRESHOLD`, `OMC_CUSTOM_VERIFY_MCP_TOOLS`, `OMC_INSTALLATION_DRIFT_CHECK`, `OMC_PRETOOL_INTENT_GUARD`). Environment variables take precedence over the conf file, and both override the built-in defaults. `OMC_REPRO_REDACT_CHARS` (default `80`) is env-only and controls the truncation length applied by `~/.claude/omc-repro.sh`.
 
 ### Recipe: shell-only / lint-as-tests projects
 

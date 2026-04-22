@@ -10,6 +10,7 @@
 - `/librarian <topic>` gathers official docs, external APIs, reference implementations, and concrete source material.
 - `/frontend-design <task>` creates distinctive, design-first frontend interfaces. Establishes visual direction (palette, typography, spacing, layout, visual signature) before writing code. Use when visual craft matters.
 - `/atlas [focus]` bootstraps or refreshes concise project-specific instruction files for the current repository.
+- `/council [focus]` dispatches a multi-role project-evaluation panel (PM, design, security, data, SRE, growth). Also auto-triggers under `/ulw` when the prompt asks for a broad project assessment.
 - `/ulw-demo` runs a guided onboarding walkthrough that triggers real quality gates on a demo file so new users can see the harness in action.
 - `/ulw-status` shows the current ULW session state -- workflow mode, domain, counters, and flags (debugging).
 - `/ulw-skip <reason>` skips the current quality gate block once with a logged reason. Use when a gate is blocking but you're confident the work is complete.

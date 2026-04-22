@@ -2,7 +2,7 @@
 
 **What if Claude Code couldn't cut corners?**
 
-[![Version](https://img.shields.io/badge/Version-1.8.1-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-1.9.0-blue.svg)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Shell](https://img.shields.io/badge/Shell-bash-green.svg)]()
 [![Dependencies](https://img.shields.io/badge/Dependencies-none-brightgreen.svg)]()
@@ -18,10 +18,13 @@ A cognitive quality harness for Claude Code. Bash hooks, skills, and specialist 
 ```bash
 git clone https://github.com/X0x888/oh-my-claude.git
 cd oh-my-claude
-bash install.sh
+bash install.sh --bypass-permissions   # recommended for power users
+# Or: bash install.sh                  # standard install — permission prompts kept
 # Restart Claude Code, then:
 bash verify.sh
 ```
+
+`--bypass-permissions` turns off Claude Code's built-in "allow this tool?" prompts so `/ulw` can run uninterrupted. Quality gates still apply — this flag only affects Claude Code's confirmations, not the harness's reviewers or verification. Leave it off if you'd rather approve each tool invocation.
 
 **First time?** Run `/ulw-demo` to see the quality gates in action before starting real work.
 
@@ -210,8 +213,10 @@ Skills are invoked as slash commands or routed automatically by the intent class
 | metis | `/metis <plan>` | Stress-test plans for hidden risks |
 | oracle | `/oracle <issue>` | Deep debugging second opinion |
 | librarian | `/librarian <topic>` | Official docs and reference research |
+| frontend-design | `/frontend-design <task>` | Distinctive design-first frontend work |
 | atlas | `/atlas [focus]` | Bootstrap or refresh repo instruction files |
 | council | `/council [focus]` | Multi-role project evaluation (PM, design, security, data, SRE, growth) |
+| ulw-demo | `/ulw-demo` | Guided onboarding walkthrough with real quality gates |
 | ulw-skip | `/ulw-skip <reason>` | Skip current quality gate block once |
 | ulw-status | `/ulw-status` | Show current session state (debugging). `summary` / `classifier` arguments swap modes. |
 | ulw-off | `/ulw-off` | Deactivate ultrawork mode mid-session |

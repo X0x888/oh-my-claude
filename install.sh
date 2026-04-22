@@ -838,6 +838,26 @@ if [[ ! -f "${SETTINGS_PATCH}" ]]; then
   exit 1
 fi
 
+# Up-front notice about --bypass-permissions. Shown BEFORE any filesystem
+# changes so users who wanted maximum-autonomy mode can Ctrl-C and re-run
+# with the flag rather than discover the option only in the post-install
+# tip. The old placement (banner after install completed) meant power users
+# ran the installer twice on their first day — once to "see what happens,"
+# and once with the flag. Surface the choice before commitment instead.
+#
+# Only printed on interactive terminals (TTY stdin) — curl-pipe-bash and
+# CI runs have no interactive cancel and would see a misleading "press
+# Ctrl-C now" message from a stream they can't intercept anyway.
+if [[ "${BYPASS_PERMISSIONS}" != "true" ]] && [[ "${CI:-}" != "1" ]] && [[ -t 0 ]]; then
+  printf '\n'
+  printf '  \033[1mTip:\033[0m For maximum autonomy (no permission prompts for trusted tools),\n'
+  printf '       cancel now (Ctrl-C) and re-run with: \033[1mbash install.sh --bypass-permissions\033[0m\n'
+  printf '       Quality gates still apply — this only affects Claude Code prompts.\n'
+  printf '       Proceeding in 2s with standard permissions...\n'
+  printf '\n'
+  sleep 2
+fi
+
 printf 'Installing oh-my-claude into %s ...\n' "${CLAUDE_HOME}"
 
 # Step 1 — Create directories and back up existing files.
