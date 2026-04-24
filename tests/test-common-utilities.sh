@@ -421,6 +421,51 @@ assert_eq "env beats conf stall_threshold" "25" "${OMC_STALL_THRESHOLD}"
 assert_eq "env beats conf excellence_file_count" "10" "${OMC_EXCELLENCE_FILE_COUNT}"
 assert_eq "env beats conf state_ttl_days" "30" "${OMC_STATE_TTL_DAYS}"
 
+# Test 6: council_deep_default flag (off by default, on/off accepted, env wins)
+_omc_conf_loaded=0
+_omc_env_council_deep_default=""
+OMC_COUNCIL_DEEP_DEFAULT="off"
+rm -f "${conf_file}"
+HOME="${FAKE_HOME_DIR}"
+load_conf
+HOME="${OLD_HOME}"
+assert_eq "council_deep_default default off" "off" "${OMC_COUNCIL_DEEP_DEFAULT}"
+
+cat > "${conf_file}" <<'CONF'
+council_deep_default=on
+CONF
+_omc_conf_loaded=0
+_omc_env_council_deep_default=""
+OMC_COUNCIL_DEEP_DEFAULT="off"
+HOME="${FAKE_HOME_DIR}"
+load_conf
+HOME="${OLD_HOME}"
+assert_eq "council_deep_default conf=on" "on" "${OMC_COUNCIL_DEEP_DEFAULT}"
+
+# Invalid value rejected
+cat > "${conf_file}" <<'CONF'
+council_deep_default=yes
+CONF
+_omc_conf_loaded=0
+_omc_env_council_deep_default=""
+OMC_COUNCIL_DEEP_DEFAULT="off"
+HOME="${FAKE_HOME_DIR}"
+load_conf
+HOME="${OLD_HOME}"
+assert_eq "council_deep_default invalid=yes rejected" "off" "${OMC_COUNCIL_DEEP_DEFAULT}"
+
+# Env beats conf
+cat > "${conf_file}" <<'CONF'
+council_deep_default=on
+CONF
+_omc_conf_loaded=0
+_omc_env_council_deep_default="off"
+OMC_COUNCIL_DEEP_DEFAULT="off"
+HOME="${FAKE_HOME_DIR}"
+load_conf
+HOME="${OLD_HOME}"
+assert_eq "env council_deep_default beats conf" "off" "${OMC_COUNCIL_DEEP_DEFAULT}"
+
 # Test 6: non-numeric and zero conf values are ignored
 cat > "${conf_file}" <<'CONF'
 stall_threshold=high

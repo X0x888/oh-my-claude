@@ -293,15 +293,23 @@ Discipline:
     # Council evaluation detection: broad whole-project evaluation requests
     # get additional guidance to dispatch multi-role perspective lenses.
     if is_council_evaluation_request "${PROMPT_TEXT}"; then
+      _council_deep_hint=""
+      _council_phase7_hint=""
+      if [[ "${OMC_COUNCIL_DEEP_DEFAULT}" == "on" ]] \
+          || [[ "${PROMPT_TEXT}" =~ (^|[^[:alnum:]_-])--deep([^[:alnum:]_-]|$) ]]; then
+        _council_deep_hint=" Use --deep mode: pass \`model: \"opus\"\` to each Agent dispatch call to escalate the lens model from sonnet to opus, and extend each lens's instruction with: 'This is a deep-mode evaluation. Take more turns to investigate suspicious findings. Read source files carefully rather than relying on directory structure inference. Report uncertainty explicitly when evidence is thin.'"
+      fi
+      _council_phase7_hint="
+7. Verify the top of the stack: pick the 2-3 highest-impact findings and re-dispatch \`oracle\` per finding to verify each claim against the actual code before presenting. Mark each as ✓ verified, ◑ refined, or ✗ demoted/dropped. Cap at 3."
       context_parts+=("COUNCIL EVALUATION DETECTED: This is a broad project evaluation request. Use the /council protocol to dispatch multi-role expert perspectives:
 1. Inspect the project to determine its type, maturity, and tech stack.
 2. Select 3-6 relevant role-lenses from: product-lens, design-lens, security-lens, data-lens, sre-lens, growth-lens. Use the selection guide in the council skill to decide which lenses fit this project.
-3. Dispatch ALL selected lenses in parallel using the Agent tool in a single message. Each gets the project context and its evaluation mandate.
+3. Dispatch ALL selected lenses in parallel using the Agent tool in a single message. Each gets the project context and its evaluation mandate.${_council_deep_hint}
 4. Wait for ALL lenses to return before synthesizing — do NOT begin synthesis early.
-5. Synthesize findings: deduplicate, rank by severity x breadth, attribute to perspectives, separate quick wins from strategic work.
-6. Present a unified Project Council Assessment with: critical findings, high-impact improvements, strategic recommendations, cross-perspective tensions, and quick wins.
+5. Synthesize findings: deduplicate, rank by severity x breadth, attribute to perspectives, separate quick wins from strategic work. Reject findings that lack file/line evidence.
+6. Present a unified Project Council Assessment with: critical findings, high-impact improvements, strategic recommendations, cross-perspective tensions, and quick wins.${_council_phase7_hint}
 Challenge the project — the value is in what is missing or wrong, not in what is already good.")
-      log_hook "prompt-intent-router" "council evaluation detected"
+      log_hook "prompt-intent-router" "council evaluation detected${_council_deep_hint:+ (deep)}"
     elif [[ "${advisory_prompt}" -eq 1 ]]; then
       # Advisory prompt that did NOT trigger council → inject code-grounding guidance.
       # Council dispatch is a superset of "inspect before recommending", so this only

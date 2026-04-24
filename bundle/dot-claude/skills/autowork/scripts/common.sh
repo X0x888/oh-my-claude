@@ -33,6 +33,7 @@ _omc_env_verify_mcp="${OMC_CUSTOM_VERIFY_MCP_TOOLS:-}"
 _omc_env_pretool_intent="${OMC_PRETOOL_INTENT_GUARD:-}"
 _omc_env_classifier_tel="${OMC_CLASSIFIER_TELEMETRY:-}"
 _omc_env_discovered_scope="${OMC_DISCOVERED_SCOPE:-}"
+_omc_env_council_deep_default="${OMC_COUNCIL_DEEP_DEFAULT:-}"
 
 OMC_STALL_THRESHOLD="${OMC_STALL_THRESHOLD:-12}"
 OMC_EXCELLENCE_FILE_COUNT="${OMC_EXCELLENCE_FILE_COUNT:-3}"
@@ -75,6 +76,16 @@ OMC_CLASSIFIER_TELEMETRY="${OMC_CLASSIFIER_TELEMETRY:-on}"
 # (kill switch) — useful when heuristic extraction proves noisy on a
 # specific project's prose style.
 OMC_DISCOVERED_SCOPE="${OMC_DISCOVERED_SCOPE:-on}"
+# Council deep-default: when `on`, auto-triggered council dispatches (via the
+# prompt-intent-router's `is_council_evaluation_request` detection) inherit
+# the equivalent of `/council --deep` — lens dispatches get `model: "opus"`
+# instead of the default `sonnet`. Default is `off` because opus per-lens is
+# meaningfully more expensive; quality-first users on `model_tier=quality`
+# are the typical opt-in. Explicit `/council --deep` invocations are
+# unaffected by this flag (they always escalate). Direct `/council` without
+# `--deep` also remains unchanged — only the AUTO-detected dispatch path
+# (broad project-evaluation prompts under /ulw) is affected.
+OMC_COUNCIL_DEEP_DEFAULT="${OMC_COUNCIL_DEEP_DEFAULT:-off}"
 
 _omc_conf_loaded=0
 
@@ -118,6 +129,8 @@ _parse_conf_file() {
         [[ -z "${_omc_env_classifier_tel}" && "${value}" =~ ^(on|off)$ ]] && OMC_CLASSIFIER_TELEMETRY="${value}" || true ;;
       discovered_scope)
         [[ -z "${_omc_env_discovered_scope}" && "${value}" =~ ^(on|off)$ ]] && OMC_DISCOVERED_SCOPE="${value}" || true ;;
+      council_deep_default)
+        [[ -z "${_omc_env_council_deep_default}" && "${value}" =~ ^(on|off)$ ]] && OMC_COUNCIL_DEEP_DEFAULT="${value}" || true ;;
     esac
   done < "${conf}"
 }

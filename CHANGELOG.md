@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.10.2] - 2026-04-24
+
+Quality-first follow-on to 1.10.0/1.10.1: `/ulw`-triggered councils can now inherit `--deep` automatically.
+
+### Added
+
+- **`council_deep_default` conf key (default `off`).** Quality-first users on `model_tier=quality` (or anyone willing to pay for opus-grade lens reasoning on every auto-triggered council) can set `council_deep_default=on` in `~/.claude/oh-my-claude.conf` (env: `OMC_COUNCIL_DEEP_DEFAULT`). When on, the prompt-intent-router's auto-dispatch path (broad project-evaluation prompts that match `is_council_evaluation_request`) extends its injected guidance with: pass `model: "opus"` to each Agent dispatch + the deep-mode instruction extension. Explicit `/council --deep` invocations are unaffected (they always escalate); explicit `/council` without `--deep` is also unaffected (only the auto-detected dispatch path changes).
+- **Inline `--deep` propagation through `/ulw`.** When the user types `/ulw evaluate the project --deep` (or any prompt containing `--deep` as a standalone token AND triggering council auto-detection), the router now propagates the `--deep` intent into the council dispatch guidance regardless of the conf flag. Closes the gap where `--deep` was visible to the main thread but not surfaced to the auto-triggered council.
+- **Phase 7 verification surfaced in auto-triggered councils.** The router-injected council protocol now includes a Step 7: re-verify the top 2-3 highest-impact findings via focused `oracle` dispatches before presenting. Previously this was only documented in the `/council` skill itself; auto-triggered councils that bypassed reading the skill missed the verification phase. The router and skill are now in sync.
+- **Synthesis evidence-rejection in auto-triggered councils.** Step 5 of the injected guidance now explicitly says "Reject findings that lack file/line evidence." Mirrors the rule already present in the council skill's synthesis section.
+
+### Testing
+
+- 4 new assertions in `tests/test-common-utilities.sh` covering `council_deep_default` default-off, conf-on, invalid-value rejection, and env-beats-conf precedence.
+
 ## [1.10.1] - 2026-04-24
 
 Hotfix release for four prompt-hygiene defects caught in a post-1.10.0 review pass. All four affect agent/skill prompt structure rather than executable code, so no test changes were needed; verify.sh and the existing 13 bash test scripts + 82 python tests all continue to pass.
