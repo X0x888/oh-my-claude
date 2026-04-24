@@ -243,8 +243,9 @@ assert_intent "continuation" "pick it back up"
 # --- ULW activation trigger (is_ulw_trigger) ---
 # Covers the word-boundary regex that decides whether a UserPromptSubmit
 # should flip the session into ultrawork mode. Regression guard for the
-# v1.9.2 fix where `/ulw-demo` failed to activate because `-` was treated
-# as an intra-word character and excluded the keyword boundary.
+# fix where `/ulw-demo` failed to activate because `-` sat inside the
+# keyword boundary class and the bare `ulw` keyword could not match
+# across the `-` to the rest of `ulw-demo`.
 printf '\nULW trigger detection:\n'
 
 assert_ulw_trigger() {
@@ -276,7 +277,7 @@ assert_ulw_trigger "/ulw do something"
 assert_ulw_trigger "Please ulw everything"
 assert_ulw_trigger "ULW fix the bug"
 
-# ulw-demo skill invocation (v1.9.2 regression)
+# ulw-demo skill invocation (the original regression trigger)
 assert_ulw_trigger "ulw-demo"
 assert_ulw_trigger "/ulw-demo"
 assert_ulw_trigger "run ulw-demo now"
