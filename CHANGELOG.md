@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.9.2] - 2026-04-24
+
 ### Fixed
 
 - **`/ulw-demo` skill could not activate ULW mode.** The ULW activation regex in `prompt-intent-router.sh:139` used `(^|[^[:alnum:]_-])(ultrawork|ulw|autowork|sisyphus)([^[:alnum:]_-]|$)` — with `-` included in the boundary exclusion class to prevent false positives on compound tokens like `preulwalar`. But that same exclusion meant `/ulw-demo` failed the right-boundary check (the `-` after `ulw` is in the set), so the router silently took the non-ULW path. Every downstream PostToolUse / Stop hook short-circuits when `is_ultrawork_mode` is false, so the entire demo fired zero gates despite the skill's explicit promise that "this demo MUST trigger real quality gates." Symptom was reproducible by invoking `/ulw-demo` from a fresh session: edits were made, `[Quality gate]` never fired, stop succeeded on the first try. Fix adds `ulw-demo` as an explicit alternative and extracts the regex into `common.sh::is_ulw_trigger` so it can be unit-tested. **Debug note for future regressions:** hook-script changes take effect only on a fresh Claude Code session — `UserPromptSubmit`, `PostToolUse`, and `Stop` bindings are loaded at session start, so an in-flight session keeps the old regex even after `install.sh` re-syncs the bundle. If `/ulw-demo` still appears broken after a fix, restart Claude Code before investigating further.
@@ -19,6 +21,7 @@ All notable changes to this project will be documented in this file.
 ### Documentation
 
 - **`/ulw-demo` SKILL.md gains chapter-marker banners** — each of the 6 demo beats (`INTRO`, `EDIT`, `STOP-GUARD`, `VERIFY`, `REVIEW`, `SHIP`) now prints a `━━━ BEAT N/6 · LABEL ━━━` banner to the transcript. Designed as visible chapter markers for README GIF recordings so a viewer can pick up the flow without narration. Also added a fallback tip: if the stop-guard does not fire on Beat 3, the demo instructs the user to run `/ulw <anything>` first to flip the session into ultrawork mode.
+- **Demo GIF added to README** — `docs/ulw-demo.gif` (2.8 MB, 800×418, 5 fps) replaces the commented-out placeholder. PII-redacted via 400 px top crop (removes terminal prompt with username/hostname), palette-optimized with gifsicle. Shows the full `/ulw-demo` flow: BEAT banners, edit tracking, stop-guard block, verification, reviewer catch, fix, and ship.
 
 ## [1.9.1] - 2026-04-24
 

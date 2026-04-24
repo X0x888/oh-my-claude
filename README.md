@@ -2,7 +2,7 @@
 
 **What if Claude Code couldn't cut corners?**
 
-[![Version](https://img.shields.io/badge/Version-1.9.1-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-1.9.2-blue.svg)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Shell](https://img.shields.io/badge/Shell-bash-green.svg)]()
 [![Dependencies](https://img.shields.io/badge/Dependencies-none-brightgreen.svg)]()
@@ -43,8 +43,7 @@ git pull && bash install.sh
 
 Your model tier preference is saved in `~/.claude/oh-my-claude.conf` and re-applied automatically. When the source repo is ahead of the installed bundle, the statusline shows a yellow `↑v<version>` arrow — re-run `install.sh` to sync. See the FAQ entries [*How do I update oh-my-claude?*](docs/faq.md#how-do-i-update-oh-my-claude) and [*Will updating overwrite my changes?*](docs/faq.md#will-updating-overwrite-my-changes) for the full safety matrix.
 
-<!-- Demo: replace with asciinema recording or GIF when available -->
-<!-- ![oh-my-claude demo](docs/demo.gif) -->
+![oh-my-claude /ulw-demo — quality gates in action](docs/ulw-demo.gif)
 
 ---
 
