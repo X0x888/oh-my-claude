@@ -13,7 +13,7 @@ $ARGUMENTS
 
 ## Argument flags
 
-- `--deep` — Escalate all dispatched lenses to `model: opus` for deeper reasoning. Default is the lenses' built-in `model: sonnet`. Use when the project is high-stakes, the user explicitly asked for a thorough audit, or a previous shallow pass missed something. Cost is meaningfully higher (each lens runs on opus instead of sonnet); reserve for cases where depth is the bottleneck. Detection: if `$ARGUMENTS` contains `--deep` as a standalone token, set DEEP_MODE for the rest of this protocol.
+- `--deep` — Escalate all dispatched lenses to `model: opus` for deeper reasoning. Default is the lenses' built-in `model: sonnet`. Use when the project is high-stakes, the user explicitly asked for a thorough audit, or a previous shallow pass missed something. Cost is meaningfully higher (each lens runs on opus instead of sonnet); reserve for cases where depth is the bottleneck. Detection: if `$ARGUMENTS` contains `--deep` as a whitespace-separated standalone token (e.g. `/council security --deep`, including at the end of the args), set DEEP_MODE for the rest of this protocol. Variants like `--deep=true`, `-deep`, or `-d` are NOT recognized — use the bare `--deep` flag.
 
 ## Agentic protocol (load-bearing — re-read after any compaction)
 
@@ -21,7 +21,7 @@ Before any dispatch, anchor on these rules so they survive context pressure:
 
 1. **Ground every finding in evidence.** A finding without a file path, line number, or concrete observed behavior is opinion, not output. Lens agents are instructed to do this; if a returned lens skipped citations, name the gap in the synthesis instead of repeating the unsupported claim.
 2. **Do not synthesize on partial returns.** If any dispatched lens has not returned, report what is in flight and continue waiting. Synthesis on a partial set silently biases the final assessment toward whichever lens responded fastest.
-3. **Verify the top of the stack before presenting.** The top 2-3 findings drive the user's actions. Re-verify each one against the actual code before they ship in the final assessment (Phase 7 below). Surface-level lens claims that fail verification are noise, not signal.
+3. **Verify the top of the stack before presenting.** The top 2-3 findings drive the user's actions. Re-verify each one against the actual code before they ship in the final assessment (Step 6 below). Surface-level lens claims that fail verification are noise, not signal.
 4. **Preserve tensions, do not synthesize them.** When two lenses contradict, surface both in the "Cross-Perspective Tensions" section. A clean synthesis that hides a real disagreement is worse than no synthesis.
 5. **The five-priority rule.** A project with 47 findings needs 5 priorities, not 47 equal-weight items. If the synthesis emerges with more than 5 critical findings, you have under-prioritized — pick the top 5 by impact x reach.
 
@@ -79,9 +79,9 @@ After all lenses return, synthesize their findings:
 4. **Separate quick wins from strategic work** — Some findings are afternoon fixes; others are multi-week initiatives.
 5. **Reject lens findings that lack evidence.** If a lens flagged "X is a problem" with no file/line/behavior citation, you cannot cleanly include it. Either drop it or name it as "lens raised this concern but did not cite evidence — needs separate investigation."
 
-### 6. Verify top findings (Phase 7 of execution, named here for ordering)
+### 6. Verify top findings
 
-Before presenting the final assessment, the top 2-3 highest-impact findings drive the user's most consequential actions. Surface-level lens output is not enough on findings that load-bearing. Verify each one with a focused dispatch:
+Before presenting the final assessment, the top 2-3 highest-impact findings drive the user's most consequential actions. Surface-level lens output is not enough on findings that are load-bearing. Verify each one with a focused dispatch:
 
 1. **Pick the top 2-3 findings** by `impact_x_reach`. Skip anything that is already obviously verified by clear file/line citations the lens provided. Skip anything where the user said "advisory only — don't act."
 2. **Dispatch `oracle` per finding** (or, if all top findings are in one domain like security, dispatch the relevant lens once more with a deepening prompt — but `oracle` is the default because it is opus-grade and not bound to a single perspective). Each dispatch must include:
@@ -112,7 +112,7 @@ Deliver the unified assessment in this format:
 ### Critical Findings (address first)
 [Findings with high severity — security vulnerabilities, data loss risks, broken core flows]
 Each finding: what it is, which lens found it, why it matters, concrete fix.
-Mark verification status: ✓ verified (Phase 7), ◑ refined, or ✗ demoted/dropped during verification.
+Mark verification status: ✓ verified (Step 6), ◑ refined, or ✗ demoted/dropped during verification.
 
 ### High-Impact Improvements
 [Findings that significantly improve the product but aren't emergencies]

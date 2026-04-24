@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.10.1] - 2026-04-24
+
+Hotfix release for four prompt-hygiene defects caught in a post-1.10.0 review pass. All four affect agent/skill prompt structure rather than executable code, so no test changes were needed; verify.sh and the existing 13 bash test scripts + 82 python tests all continue to pass.
+
+### Fixed
+
+- **`briefing-analyst.md` VERDICT-line contract violation.** The Wave 2 "Tension preservation" section was placed *after* the Return list's final item — which contains the directive "End with exactly one line on its own, unindented, as the final line of your response: `VERDICT: ...`". The stop-guard reads the last line of agent output to tick the `traceability` dimension; an agent following the prompt sequentially would emit prose after the VERDICT line, breaking the dimension tick. Moved the Tension-preservation block above the Return list so the VERDICT directive is once again the final instruction. Same class of bug 1.10.0's prompt-edit pass was meant to prevent — caught one in the review.
+- **`/council` Step 6 / Phase 7 naming collision.** The verification step was added as `### 6. Verify top findings (Phase 7 of execution, named here for ordering)`, then cross-referenced as "Phase 7 below" elsewhere — forcing an LLM under context pressure to resolve two different names for the same step. Renamed everywhere to consistent "Step 6". The skill's job is to survive compaction; naming collisions undercut that.
+- **Typo in `/council` Step 6 copy.** "findings that load-bearing" → "findings that are load-bearing".
+- **`/council --deep` argument-form ambiguity.** The original spec said "if `$ARGUMENTS` contains `--deep` as a standalone token, set DEEP_MODE" but did not specify what counts as standalone. A user typing `--deep=true` or `-deep` would silently get sonnet despite expecting opus. Added explicit guidance: only the bare `--deep` flag (whitespace-separated, anywhere in args) is recognized; variants are not.
+
 ## [1.10.0] - 2026-04-24
 
 Council depth, completeness, and cognitive-scaffolding pass. The headline change is a new completeness gate that closes the "shipped 25 / deferred 8 / silently skipped 15" anti-pattern surfaced by an in-session council audit. Beyond that: every council lens, deep-thinking agent (`metis`, `oracle`, `briefing-analyst`), and the `excellence-reviewer` now state their limits explicitly; `metis` and `excellence-reviewer` apply a triple-check rule (recurrence × generativity × exclusivity) before flagging a finding as load-bearing; `/council` adds a Phase 7 verification pass that re-checks the top 2-3 findings via `oracle` before presenting; and `/council --deep` opt-in escalates lenses to opus for high-stakes audits. All shipped together because they are interlocking improvements to the same surface: how findings are discovered, validated, and prevented from being silently dropped.
