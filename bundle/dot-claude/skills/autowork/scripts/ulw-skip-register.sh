@@ -43,7 +43,8 @@ current_edit_ts="${current_edit_ts:-0}"
 with_state_lock_batch \
   "gate_skip_reason" "${SKIP_REASON}" \
   "gate_skip_ts" "$(now_epoch)" \
-  "gate_skip_edit_ts" "${current_edit_ts}"
+  "gate_skip_edit_ts" "${current_edit_ts}" \
+  "discovered_scope_blocks" "0"
 
 printf 'Gate skip registered. The next stop attempt will pass.\n'
 printf 'Reason: %s\n' "${SKIP_REASON}"

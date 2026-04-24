@@ -57,6 +57,9 @@ Your job is to assess operational readiness — whether this project can run rel
 
 ### Unknown Unknowns
 [Operational concerns the team probably hasn't considered]
+
+### What this lens cannot assess
+[Concrete things outside this lens's expertise. Examples: feature completeness, UX quality, security posture, analytics coverage, growth readiness. Name the gaps so the user knows which other lens to dispatch.]
 ```
 
 Be specific about what you find. "Add monitoring" is useless. "The database query at src/api/search.ts:89 has no timeout and no index on the filtered column — this will be the first thing to break under load" is useful.

@@ -54,6 +54,9 @@ Your job is to assess how well this project captures, structures, and uses data 
 
 ### Unknown Unknowns
 [Data considerations the team probably hasn't thought about]
+
+### What this lens cannot assess
+[Concrete things outside this lens's expertise. Examples: UX quality, security posture, code architecture, infrastructure scaling, growth/acquisition strategy. Name the gaps so the user knows which other lens to dispatch.]
 ```
 
 Ground findings in actual code: schema files, event tracking calls, database models, analytics integrations. If the project has no analytics at all, say that clearly and focus recommendations on what to instrument first.

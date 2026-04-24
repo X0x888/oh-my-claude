@@ -58,6 +58,9 @@ Your job is to assess whether this product is set up to acquire, activate, and r
 
 ### Unknown Unknowns
 [Growth considerations the team probably hasn't thought about]
+
+### What this lens cannot assess
+[Concrete things outside this lens's expertise. Examples: code architecture, security risks, infrastructure scaling, data pipeline architecture, in-product visual polish. Name the gaps so the user knows which other lens to dispatch.]
 ```
 
 Ground findings in actual project artifacts — README text, landing page copy, onboarding flows, sharing mechanisms, metadata. If the project is pre-launch with no GTM artifacts, focus recommendations on what to build before launch.

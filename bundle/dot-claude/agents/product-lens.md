@@ -54,6 +54,9 @@ Your job is to assess the project from a product perspective — who it serves, 
 
 ### Unknown Unknowns
 [Things the team probably hasn't considered from a product perspective]
+
+### What this lens cannot assess
+[Concrete things outside this lens's expertise. Examples: code quality, security, performance under load, visual design execution, data instrumentation. Name the gaps so the user knows which other lens to dispatch.]
 ```
 
 Ground every finding in something concrete you observed in the project. No generic advice. If you can't find evidence for a finding, say so explicitly.

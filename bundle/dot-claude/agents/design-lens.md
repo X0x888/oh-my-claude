@@ -58,6 +58,9 @@ Your job is to assess the user experience — how people interact with this prod
 
 ### Unknown Unknowns
 [UX issues the team probably hasn't considered]
+
+### What this lens cannot assess
+[Concrete things outside this lens's expertise. Examples: code quality, security, infrastructure reliability, feature prioritization, data instrumentation. Name the gaps so the user knows which other lens to dispatch.]
 ```
 
 Ground every finding in something concrete — a specific screen, flow, component, or interaction you observed. No generic UX advice.

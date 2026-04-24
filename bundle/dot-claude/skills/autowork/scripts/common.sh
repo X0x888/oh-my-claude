@@ -32,6 +32,7 @@ _omc_env_gate_level="${OMC_GATE_LEVEL:-}"
 _omc_env_verify_mcp="${OMC_CUSTOM_VERIFY_MCP_TOOLS:-}"
 _omc_env_pretool_intent="${OMC_PRETOOL_INTENT_GUARD:-}"
 _omc_env_classifier_tel="${OMC_CLASSIFIER_TELEMETRY:-}"
+_omc_env_discovered_scope="${OMC_DISCOVERED_SCOPE:-}"
 
 OMC_STALL_THRESHOLD="${OMC_STALL_THRESHOLD:-12}"
 OMC_EXCELLENCE_FILE_COUNT="${OMC_EXCELLENCE_FILE_COUNT:-3}"
@@ -66,6 +67,14 @@ OMC_PRETOOL_INTENT_GUARD="${OMC_PRETOOL_INTENT_GUARD:-true}"
 # prompt previews to disk is unwanted. Cross-session aggregation at TTL
 # sweep also becomes a no-op because per-session files won't exist.
 OMC_CLASSIFIER_TELEMETRY="${OMC_CLASSIFIER_TELEMETRY:-on}"
+# Discovered-scope tracking: when `on` (default), advisory specialists
+# (council lenses, metis, briefing-analyst) have their findings extracted
+# and recorded to `<session>/discovered_scope.jsonl`. Stop-guard then
+# blocks a session that captured findings but stops without addressing
+# or deferring each one. Set to `off` to disable both capture and gate
+# (kill switch) — useful when heuristic extraction proves noisy on a
+# specific project's prose style.
+OMC_DISCOVERED_SCOPE="${OMC_DISCOVERED_SCOPE:-on}"
 
 _omc_conf_loaded=0
 
@@ -107,6 +116,8 @@ _parse_conf_file() {
         [[ -z "${_omc_env_pretool_intent}" && "${value}" =~ ^(true|false)$ ]] && OMC_PRETOOL_INTENT_GUARD="${value}" || true ;;
       classifier_telemetry)
         [[ -z "${_omc_env_classifier_tel}" && "${value}" =~ ^(on|off)$ ]] && OMC_CLASSIFIER_TELEMETRY="${value}" || true ;;
+      discovered_scope)
+        [[ -z "${_omc_env_discovered_scope}" && "${value}" =~ ^(on|off)$ ]] && OMC_DISCOVERED_SCOPE="${value}" || true ;;
     esac
   done < "${conf}"
 }
@@ -3034,3 +3045,386 @@ is_council_evaluation_request() {
 }
 
 # --- end P2 ---
+
+# --- Discovered-scope tracking ---
+#
+# Captures findings emitted by advisory specialists (council lenses, metis,
+# briefing-analyst) into a per-session JSONL file. The stop-guard reads the
+# pending count to detect the "shipped 25 / deferred 8 / silently skipped 15"
+# anti-pattern documented in the v1.10.0 council-completeness audit.
+#
+# State surface: <session>/discovered_scope.jsonl (one JSON object per line)
+#   { id, source, summary, severity, status, reason, ts }
+# Lifecycle: written by record-subagent-summary.sh on SubagentStop for
+# whitelisted agents, read by stop-guard.sh on session stop, consumed by
+# excellence-reviewer.md as a completeness checklist axis.
+#
+# Failure mode: heuristic extraction MUST fail open. A noisy parse that
+# captures nothing is preferable to a blocked stop. All entry points wrap
+# parsing in `|| true` and log_anomaly only on lock exhaustion.
+
+# Whitelist of agent names whose output is parsed for findings. Excludes
+# excellence-reviewer / quality-reviewer (those are verifiers, not
+# discoverers — their findings already have dedicated dimensions).
+discovered_scope_capture_targets() {
+  printf '%s\n' \
+    "metis" \
+    "briefing-analyst" \
+    "security-lens" \
+    "data-lens" \
+    "product-lens" \
+    "growth-lens" \
+    "sre-lens" \
+    "design-lens"
+}
+
+_severity_from_bullet() {
+  local s="$1"
+  if grep -Eiq '\b(critical|high|p0|severe|blocker)\b' <<<"${s}"; then
+    printf 'high'
+  elif grep -Eiq '\b(medium|p1|moderate|important)\b' <<<"${s}"; then
+    printf 'medium'
+  else
+    printf 'low'
+  fi
+}
+
+_finding_id() {
+  local source_name="$1"
+  local summary="$2"
+  if command -v shasum >/dev/null 2>&1; then
+    printf '%s|%s' "${source_name}" "${summary}" \
+      | shasum -a 256 2>/dev/null \
+      | awk '{print substr($1,1,12)}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    printf '%s|%s' "${source_name}" "${summary}" \
+      | sha256sum 2>/dev/null \
+      | awk '{print substr($1,1,12)}'
+  else
+    # Fallback: deterministic hex based on cksum (much weaker but stable).
+    printf '%s|%s' "${source_name}" "${summary}" \
+      | cksum 2>/dev/null \
+      | awk '{printf "%012x", $1}'
+  fi
+}
+
+# extract_discovered_findings <agent_name> <message>
+# Emits one JSONL row per detected bullet on stdout.
+# Heuristic:
+#   1. Strip fenced code blocks.
+#   2. Walk markdown headings; when a heading matches a known anchor
+#      (findings, risks, concerns, recommendations, unknowns, action items),
+#      capture subsequent top-level numbered list items until the next
+#      heading.
+#   3. If anchored search yields nothing AND the body has >=3 top-level
+#      numbered items, capture all of them as fallback.
+# Cap output at 10 bullets per single capture.
+extract_discovered_findings() {
+  local agent_name="$1"
+  local message="$2"
+  [[ -z "${message}" ]] && return 0
+
+  local now_ts cleaned bullets
+  now_ts="$(now_epoch)"
+
+  cleaned="$(printf '%s\n' "${message}" | awk '
+    /^```/ { in_code = !in_code; next }
+    !in_code { print }
+  ')"
+
+  # Anchor headings: case-insensitive match by lowercasing the line.
+  # IGNORECASE=1 is GNU-awk-only and a silent no-op on BSD awk (macOS), so
+  # tolower() is the portable approach. target_re is intentionally a single
+  # alternation rather than nested groups — easier to extend.
+  bullets="$(printf '%s\n' "${cleaned}" | awk '
+    BEGIN {
+      in_target = 0
+      target_re = "(findings|concerns|issues|risks|recommendations|unknowns?|action[[:space:]]+items|blockers|gaps|opportunities|critical[[:space:]]+findings|unknown[[:space:]]+unknowns)"
+    }
+    /^#+[[:space:]]/ {
+      if (tolower($0) ~ target_re) { in_target = 1 } else { in_target = 0 }
+      next
+    }
+    # Capture both numbered (1. / 1) / 1:) AND dash/star/plus markers under
+    # anchor headings. Specialists vary in convention — recall over precision
+    # when an explicit Findings/Risks/Concerns heading is in scope.
+    in_target && /^[[:space:]]*[0-9]+[.):]/ {
+      sub(/^[[:space:]]*[0-9]+[.):]+[[:space:]]*/, "")
+      print
+      next
+    }
+    in_target && /^[[:space:]]*[-*+][[:space:]]/ {
+      sub(/^[[:space:]]*[-*+][[:space:]]+/, "")
+      print
+    }
+  ' || true)"
+
+  if [[ -z "${bullets}" ]]; then
+    # Fallback: capture top-level numbered list when no anchor heading exists
+    # AND the message body suggests findings. Without the keyword gate the
+    # extractor would capture step-by-step instructions, plan milestones,
+    # and reference lists as if they were findings, producing false-positive
+    # gate blocks on legitimate completion summaries.
+    if grep -Eiq '\b(findings?|concerns?|issues?|risks?|problems?|bugs?|defects?|gaps?|vulnerabilit|recommendations?|severity|blocker|critical|should[[:space:]]+(fix|address|consider))\b' <<<"${cleaned}"; then
+      local fallback_count
+      fallback_count="$(printf '%s\n' "${cleaned}" \
+        | grep -cE '^[[:space:]]*[0-9]+[.):][[:space:]]' 2>/dev/null \
+        || true)"
+      fallback_count="${fallback_count:-0}"
+      if [[ "${fallback_count}" -ge 3 ]]; then
+        bullets="$(printf '%s\n' "${cleaned}" | awk '
+          /^#+[[:space:]]/ { next }
+          /^[[:space:]]*[0-9]+[.):]/ {
+            sub(/^[[:space:]]*[0-9]+[.):]+[[:space:]]*/, "")
+            print
+          }
+        ' || true)"
+      fi
+    fi
+  fi
+
+  [[ -z "${bullets}" ]] && return 0
+
+  local capped
+  capped="$(printf '%s\n' "${bullets}" | head -n 10)"
+
+  local line summary severity id
+  while IFS= read -r line; do
+    [[ -z "${line}" ]] && continue
+    summary="$(printf '%s' "${line}" | tr -s '[:space:]' ' ' | sed 's/^ *//;s/ *$//')"
+    summary="${summary:0:240}"
+    [[ -z "${summary}" ]] && continue
+
+    severity="$(_severity_from_bullet "${summary}")"
+    id="$(_finding_id "${agent_name}" "${summary}")"
+    [[ -z "${id}" ]] && continue
+
+    jq -nc \
+      --arg id "${id}" \
+      --arg src "${agent_name}" \
+      --arg sum "${summary}" \
+      --arg sev "${severity}" \
+      --arg ts "${now_ts}" \
+      '{id:$id, source:$src, summary:$sum, severity:$sev, status:"pending", reason:"", ts:$ts}' \
+      2>/dev/null || continue
+  done <<<"${capped}"
+}
+
+# with_scope_lock: serialize writes to discovered_scope.jsonl per session.
+# Same mkdir + stale-recovery pattern as with_metrics_lock / with_state_lock.
+with_scope_lock() {
+  if [[ -z "${SESSION_ID:-}" ]]; then
+    return 1
+  fi
+  local lockdir
+  lockdir="$(session_file ".scope.lock")"
+  local attempts=0
+
+  while true; do
+    if mkdir "${lockdir}" 2>/dev/null; then
+      break
+    fi
+    attempts=$((attempts + 1))
+    if [[ -d "${lockdir}" ]]; then
+      local now held_since
+      now="$(date +%s)"
+      held_since="$(_lock_mtime "${lockdir}")"
+      if [[ "${held_since}" -gt 0 ]] \
+          && [[ $(( now - held_since )) -gt "${OMC_STATE_LOCK_STALE_SECS}" ]]; then
+        rmdir "${lockdir}" 2>/dev/null || true
+        continue
+      fi
+    fi
+    if [[ "${attempts}" -ge "${OMC_STATE_LOCK_MAX_ATTEMPTS}" ]]; then
+      log_anomaly "with_scope_lock" "lock not acquired after ${OMC_STATE_LOCK_MAX_ATTEMPTS} attempts"
+      return 1
+    fi
+    sleep 0.05 2>/dev/null || sleep 1
+  done
+
+  local rc=0
+  "$@" || rc=$?
+  rmdir "${lockdir}" 2>/dev/null || true
+  return "${rc}"
+}
+
+# append_discovered_scope <agent_name> <jsonl_rows>
+# Dedupes by id against existing rows, appends new ones, caps total at 200.
+append_discovered_scope() {
+  local agent_name="$1"
+  local rows="$2"
+  [[ -z "${rows}" ]] && return 0
+  [[ -z "${SESSION_ID:-}" ]] && return 0
+
+  _do_append_scope() {
+    local file existing_ids
+    file="$(session_file "discovered_scope.jsonl")"
+
+    # Invariant: existing_ids is always "|id1|id2|..." with both leading
+    # and trailing pipes, so the substring check `*"|${id}|"*` matches.
+    # An empty initial set must be "|", not "" — otherwise the first add
+    # leaves the string as "id|" with no leading pipe and within-batch
+    # duplicates slip through dedup.
+    existing_ids="|"
+    if [[ -f "${file}" ]]; then
+      existing_ids="|$(jq -r '.id // empty' "${file}" 2>/dev/null | tr '\n' '|' || true)"
+    fi
+
+    local row row_id
+    while IFS= read -r row; do
+      [[ -z "${row}" ]] && continue
+      row_id="$(jq -r '.id // empty' <<<"${row}" 2>/dev/null || true)"
+      [[ -z "${row_id}" ]] && continue
+      if [[ "${existing_ids}" != *"|${row_id}|"* ]]; then
+        printf '%s\n' "${row}" >> "${file}"
+        existing_ids="${existing_ids}${row_id}|"
+      fi
+    done <<<"${rows}"
+
+    if [[ -f "${file}" ]]; then
+      local total
+      total="$(wc -l < "${file}" 2>/dev/null | tr -d '[:space:]' || echo 0)"
+      total="${total:-0}"
+      if [[ "${total}" -gt 200 ]]; then
+        local trimmed
+        trimmed="$(mktemp "${file}.XXXXXX")"
+        tail -n 200 "${file}" > "${trimmed}" 2>/dev/null \
+          && mv "${trimmed}" "${file}" 2>/dev/null \
+          || rm -f "${trimmed}"
+      fi
+    fi
+  }
+
+  with_scope_lock _do_append_scope || true
+}
+
+# read_scope_count_by_status <status>
+# Per-line counter that tolerates malformed JSONL rows. A single bad line
+# would cause `jq -s` slurp to fail entirely, silently disabling the gate.
+# Per-line parsing skips bad rows individually.
+read_scope_count_by_status() {
+  local target_status="$1"
+  [[ -z "${target_status}" ]] && { printf '0'; return; }
+  [[ -z "${SESSION_ID:-}" ]] && { printf '0'; return; }
+  local file count line
+  file="$(session_file "discovered_scope.jsonl")"
+  [[ -f "${file}" ]] || { printf '0'; return; }
+  count=0
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ -z "${line}" ]] && continue
+    if jq -e --arg s "${target_status}" '.status == $s' <<<"${line}" >/dev/null 2>&1; then
+      count=$((count + 1))
+    fi
+  done < "${file}"
+  printf '%s' "${count}"
+}
+
+read_pending_scope_count() {
+  read_scope_count_by_status "pending"
+}
+
+read_total_scope_count() {
+  [[ -z "${SESSION_ID:-}" ]] && { printf '0'; return; }
+  local file count
+  file="$(session_file "discovered_scope.jsonl")"
+  [[ -f "${file}" ]] || { printf '0'; return; }
+  count="$(wc -l < "${file}" 2>/dev/null | tr -d '[:space:]' || echo 0)"
+  printf '%s' "${count:-0}"
+}
+
+# build_discovered_scope_scorecard [max_lines]
+# Returns up to max_lines (default 8) pending findings, severity-ordered
+# (high > medium > low). Empty stdout if none.
+# Filters parseable pending lines first, then slurps for sorting — keeps
+# the gate functional even when a single row is corrupted.
+build_discovered_scope_scorecard() {
+  [[ -z "${SESSION_ID:-}" ]] && return 0
+  local file max_lines line filtered
+  file="$(session_file "discovered_scope.jsonl")"
+  [[ -f "${file}" ]] || return 0
+  max_lines="${1:-8}"
+
+  filtered=""
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ -z "${line}" ]] && continue
+    if jq -e '.status == "pending"' <<<"${line}" >/dev/null 2>&1; then
+      filtered="${filtered}${line}
+"
+    fi
+  done < "${file}"
+
+  [[ -z "${filtered}" ]] && return 0
+
+  printf '%s' "${filtered}" | jq -s -r --argjson max "${max_lines}" '
+    sort_by(if .severity == "high" then 0 elif .severity == "medium" then 1 else 2 end) |
+    .[0:$max] |
+    map("- [\(.id[0:8])] \(.severity) · \(.source) · \(.summary[0:80])") |
+    .[]
+  ' 2>/dev/null || true
+}
+
+# update_scope_status <id_prefix> <status> [reason]
+# Updates the row whose id starts with id_prefix. Refuses to update if the
+# prefix is shorter than 6 chars or matches multiple rows (logs an anomaly
+# instead) — silent wrong-row updates are worse than no update.
+update_scope_status() {
+  local id_prefix="$1"
+  local new_status="$2"
+  local new_reason="${3:-}"
+  [[ -z "${id_prefix}" || -z "${new_status}" ]] && return 0
+  [[ -z "${SESSION_ID:-}" ]] && return 0
+
+  if [[ "${#id_prefix}" -lt 6 ]]; then
+    log_anomaly "update_scope_status" "rejected id_prefix too short: ${id_prefix} (min 6 chars)"
+    return 1
+  fi
+
+  _do_update_scope() {
+    local file
+    file="$(session_file "discovered_scope.jsonl")"
+    [[ -f "${file}" ]] || return 0
+
+    # Pre-scan: refuse on ambiguity. Per-line parse so a malformed row
+    # doesn't corrupt the count.
+    local match_count=0 line row_id
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+      [[ -z "${line}" ]] && continue
+      row_id="$(jq -r '.id // empty' <<<"${line}" 2>/dev/null || true)"
+      if [[ -n "${row_id}" && "${row_id}" == "${id_prefix}"* ]]; then
+        match_count=$((match_count + 1))
+      fi
+    done < "${file}"
+
+    if [[ "${match_count}" -gt 1 ]]; then
+      log_anomaly "update_scope_status" "ambiguous prefix ${id_prefix} matched ${match_count} rows; no update applied"
+      return 0
+    fi
+    if [[ "${match_count}" -eq 0 ]]; then
+      return 0
+    fi
+
+    local tmp matched=0 obj
+    tmp="$(mktemp "${file}.XXXXXX")"
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+      [[ -z "${line}" ]] && continue
+      obj="${line}"
+      if [[ "${matched}" -eq 0 ]]; then
+        row_id="$(jq -r '.id // empty' <<<"${line}" 2>/dev/null || true)"
+        if [[ -n "${row_id}" && "${row_id}" == "${id_prefix}"* ]]; then
+          obj="$(jq -c \
+            --arg s "${new_status}" \
+            --arg r "${new_reason}" \
+            '.status = $s | .reason = $r' <<<"${line}" 2>/dev/null || printf '%s' "${line}")"
+          matched=1
+        fi
+      fi
+      printf '%s\n' "${obj}" >> "${tmp}"
+    done < "${file}"
+
+    mv "${tmp}" "${file}" 2>/dev/null || rm -f "${tmp}"
+  }
+
+  with_scope_lock _do_update_scope || true
+}
+
+# --- end discovered-scope tracking ---

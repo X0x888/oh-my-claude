@@ -21,6 +21,34 @@ append_limited_state \
   "$(jq -nc --arg ts "$(now_epoch)" --arg agent_type "${AGENT_TYPE}" --arg message "${LAST_ASSISTANT_MESSAGE}" '{ts:$ts,agent_type:$agent_type,message:$message}')" \
   "16"
 
+# Discovered-scope capture: when a whitelisted advisory specialist returns,
+# extract its findings to discovered_scope.jsonl so stop-guard can detect
+# silent skips. Only fires in ULW mode + when feature flag is on. Failure
+# in extraction is non-fatal (extractor returns empty on weird output).
+if [[ "${OMC_DISCOVERED_SCOPE}" == "on" ]] && is_ultrawork_mode; then
+  _agent_short="${AGENT_TYPE##*:}"
+  while IFS= read -r _tgt; do
+    if [[ "${AGENT_TYPE}" == "${_tgt}" ]] || [[ "${_agent_short}" == "${_tgt}" ]]; then
+      _scope_rows="$(extract_discovered_findings "${_agent_short}" "${LAST_ASSISTANT_MESSAGE}" 2>/dev/null || true)"
+      if [[ -n "${_scope_rows}" ]]; then
+        append_discovered_scope "${_agent_short}" "${_scope_rows}" &
+      else
+        # Silent-disarm telemetry: a substantial advisory response that
+        # extracts zero findings is suspicious — the specialist may have
+        # changed prose style (dropped a `### Findings` heading, switched
+        # to prose-only output, etc.) in a way that silently disables the
+        # gate. Logging here lets the user see the issue instead of
+        # discovering it weeks later when a council surfaces problems
+        # that never get gated.
+        if [[ "${#LAST_ASSISTANT_MESSAGE}" -gt 800 ]]; then
+          log_anomaly "discovered_scope_capture" "${_agent_short} returned ${#LAST_ASSISTANT_MESSAGE} chars but extractor caught zero findings"
+        fi
+      fi
+      break
+    fi
+  done < <(discovered_scope_capture_targets)
+fi
+
 # Clear the matching pending-agent entry so the pre-compact snapshot does not
 # show completed dispatches as still in flight. We remove the FIFO-oldest
 # match by subagent_type: SubagentStop does not carry a per-dispatch id, so

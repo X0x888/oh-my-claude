@@ -2,7 +2,7 @@
 
 **What if Claude Code couldn't cut corners?**
 
-[![Version](https://img.shields.io/badge/Version-1.9.2-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-1.10.0-blue.svg)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Shell](https://img.shields.io/badge/Shell-bash-green.svg)]()
 [![Dependencies](https://img.shields.io/badge/Dependencies-none-brightgreen.svg)]()
@@ -214,7 +214,7 @@ Skills are invoked as slash commands or routed automatically by the intent class
 | librarian | `/librarian <topic>` | Official docs and reference research |
 | frontend-design | `/frontend-design <task>` | Distinctive design-first frontend work |
 | atlas | `/atlas [focus]` | Bootstrap or refresh repo instruction files |
-| council | `/council [focus]` | Multi-role project evaluation (PM, design, security, data, SRE, growth) |
+| council | `/council [focus] [--deep]` | Multi-role project evaluation with verification of top findings. `--deep` escalates lenses to opus. |
 | ulw-demo | `/ulw-demo` | Guided onboarding walkthrough with real quality gates |
 | ulw-skip | `/ulw-skip <reason>` | Skip current quality gate block once |
 | ulw-status | `/ulw-status` | Show current session state (debugging). `summary` / `classifier` arguments swap modes. |

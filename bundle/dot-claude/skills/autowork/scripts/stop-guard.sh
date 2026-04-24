@@ -115,6 +115,32 @@ if [[ -n "${last_assistant_message}" ]] \
   fi
 fi
 
+# Discovered-scope gate: when advisory specialists (council lenses, metis,
+# briefing-analyst) emit findings during this session, the model must
+# explicitly account for each one before stopping \u2014 either ship the fix,
+# defer with a stated reason, or call it out as known follow-up risk.
+# Silent skipping is the failure mode this gate catches.
+if [[ "${OMC_DISCOVERED_SCOPE}" == "on" ]] \
+  && is_execution_intent_value "${task_intent}"; then
+  scope_file="$(session_file "discovered_scope.jsonl")"
+  if [[ -f "${scope_file}" ]]; then
+    pending_count="$(read_pending_scope_count)"
+    discovered_scope_blocks="$(read_state "discovered_scope_blocks")"
+    discovered_scope_blocks="${discovered_scope_blocks:-0}"
+    if [[ "${pending_count}" -gt 0 && "${discovered_scope_blocks}" -lt 2 ]]; then
+      write_state "discovered_scope_blocks" "$((discovered_scope_blocks + 1))"
+      scorecard="$(build_discovered_scope_scorecard 8 || true)"
+      jq -nc \
+        --arg reason "[Discovered-scope gate \u00b7 $((discovered_scope_blocks + 1))/2] ${pending_count} finding(s) from advisory specialists were captured this session but not addressed in your final summary. Top pending findings (severity-ranked):
+${scorecard}
+
+For each pending item, do one of: (a) ship the fix and reference the file/line in your summary, (b) explicitly defer with a one-line reason ('deferred: requires separate investigation' / 'deferred: out of scope per user'), or (c) call it out as a known follow-up risk. Silent skipping is the anti-pattern this gate exists to catch. After updating the summary, retry stop. To bypass once, run /ulw-skip with a reason." \
+        '{"decision":"block","reason":$reason}'
+      exit 0
+    fi
+  fi
+fi
+
 if [[ -z "${last_edit_ts}" ]]; then
   exit 0
 fi

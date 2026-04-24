@@ -58,6 +58,9 @@ Your job is to assess the security posture — what's exposed, what's protected,
 
 ### Unknown Unknowns
 [Security considerations the team probably hasn't thought about]
+
+### What this lens cannot assess
+[Concrete things outside this lens's expertise that the user must NOT rely on this output for. Examples: feature completeness (PM lens), UX quality (design lens), code-quality refactoring (engineering review), runtime performance under load (SRE lens). Name the gaps so the user knows which other lens or specialist to dispatch.]
 ```
 
 Be specific. Reference file paths, line numbers, actual code patterns. "You should validate input" is useless. "The /api/upload endpoint at src/routes/upload.ts:47 accepts file content without size limits or type validation" is useful.

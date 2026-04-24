@@ -18,7 +18,7 @@ Display this table to the user:
 | **librarian** | `/librarian <topic>` | You need official docs, third-party API references, or concrete external examples |
 | **frontend-design** | `/frontend-design <task>` | Distinctive, design-first frontend work — establishes palette, typography, layout before writing code |
 | **atlas** | `/atlas [focus]` | Bootstrap or refresh CLAUDE.md / .claude/rules for a repository |
-| **council** | `/council [focus]` | Multi-role project evaluation — dispatches PM, design, security, data, SRE, and growth perspectives |
+| **council** | `/council [focus] [--deep]` | Multi-role project evaluation — dispatches PM, design, security, data, SRE, and growth perspectives, then verifies the top 2-3 findings via `oracle`. `--deep` escalates lenses to opus for high-stakes audits. |
 | **ulw-demo** | `/ulw-demo` | Guided onboarding — see the quality gates fire on a demo task |
 | **ulw-status** | `/ulw-status` | Inspect current session state — mode, domain, counters, flags (debugging) |
 | **ulw-skip** | `/ulw-skip <reason>` | Skip the current quality gate block once — use when a gate is blocking but you're confident |

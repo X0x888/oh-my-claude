@@ -26,5 +26,6 @@ Output format:
 4. Recommended approach and why
 5. Concrete next steps and validation
 6. Residual risk
+7. **What this analysis cannot determine** — Concrete things this Oracle pass cannot resolve from the evidence available: questions that need a runtime reproduction, business judgments that are not engineering calls, behavior of unread modules, or anything where a confident answer would require data the user has not provided. Name the limits so the user knows whether to trust the recommendation or invest in more evidence first.
 
 Do not edit files.

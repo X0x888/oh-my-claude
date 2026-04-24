@@ -98,6 +98,7 @@ if [[ "${SUMMARY_MODE}" -eq 1 ]]; then
   handoff_blocks="$(jq -r '.session_handoff_blocks // "0"' "${state_file}" 2>/dev/null || echo "0")"
   advisory_blocks="$(jq -r '.advisory_guard_blocks // "0"' "${state_file}" 2>/dev/null || echo "0")"
   pretool_blocks="$(jq -r '.pretool_intent_blocks // "0"' "${state_file}" 2>/dev/null || echo "0")"
+  scope_blocks="$(jq -r '.discovered_scope_blocks // "0"' "${state_file}" 2>/dev/null || echo "0")"
 
   # Classifier misfires — how many of those blocks the post-classifier
   # heuristic judged as false-positives (prior advisory classification
@@ -181,6 +182,7 @@ if [[ "${SUMMARY_MODE}" -eq 1 ]]; then
   [[ "${handoff_blocks}" -ne 0 ]]  && blocks_parts="${blocks_parts:+${blocks_parts} · }handoff=${handoff_blocks}"
   [[ "${advisory_blocks}" -ne 0 ]] && blocks_parts="${blocks_parts:+${blocks_parts} · }advisory=${advisory_blocks}"
   [[ "${pretool_blocks}" -ne 0 ]]  && blocks_parts="${blocks_parts:+${blocks_parts} · }pretool=${pretool_blocks}"
+  [[ "${scope_blocks}" -ne 0 ]]    && blocks_parts="${blocks_parts:+${blocks_parts} · }scope=${scope_blocks}"
   if [[ -n "${blocks_parts}" ]]; then
     if [[ "${misfire_count}" -gt 0 ]]; then
       printf 'Blocks:     %s · classifier misfires=%s (see classifier_telemetry.jsonl)\n' "${blocks_parts}" "${misfire_count}"
@@ -291,6 +293,7 @@ jq -r '
   "Stop guard blocks: \(.stop_guard_blocks // "0")",
   "Dimension blocks:  \(.dimension_guard_blocks // "0")",
   "Session handoffs:  \(.session_handoff_blocks // "0")",
+  "Discovered-scope:  \(.discovered_scope_blocks // "0")",
   "Stall counter:     \(.stall_counter // "0")",
   "",
   "--- Intent Guards ---",
@@ -323,6 +326,17 @@ else
   pending_count="0"
 fi
 printf 'Pending specialists:       %s\n' "${pending_count}"
+
+# Discovered-scope findings (advisory specialist findings captured this session)
+scope_file="${STATE_ROOT}/${latest_session}/discovered_scope.jsonl"
+if [[ -f "${scope_file}" ]]; then
+  scope_total="$(read_total_scope_count)"
+  scope_pending="$(read_scope_count_by_status "pending")"
+  scope_shipped="$(read_scope_count_by_status "shipped")"
+  scope_deferred="$(read_scope_count_by_status "deferred")"
+  printf 'Discovered findings:       %s total · %s pending · %s shipped · %s deferred\n' \
+    "${scope_total:-0}" "${scope_pending:-0}" "${scope_shipped:-0}" "${scope_deferred:-0}"
+fi
 
 # Show dimension status if dimensions are active
 dim_output=""
