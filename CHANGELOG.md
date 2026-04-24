@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`/ulw-demo` skill could not activate ULW mode.** The ULW activation regex in `prompt-intent-router.sh:139` used `(^|[^[:alnum:]_-])(ultrawork|ulw|autowork|sisyphus)([^[:alnum:]_-]|$)` — with `-` included in the boundary exclusion class to prevent false positives on compound tokens like `preulwalar`. But that same exclusion meant `/ulw-demo` failed the right-boundary check (the `-` after `ulw` is in the set), so the router silently took the non-ULW path. Every downstream PostToolUse / Stop hook short-circuits when `is_ultrawork_mode` is false, so the entire demo fired zero gates despite the skill's explicit promise that "this demo MUST trigger real quality gates." Symptom was reproducible by invoking `/ulw-demo` from a fresh session: edits were made, `[Quality gate]` never fired, stop succeeded on the first try. Fix adds `ulw-demo` as an explicit alternative and extracts the regex into `common.sh::is_ulw_trigger` so it can be unit-tested.
+
+### Added
+
+- **`is_ulw_trigger` helper in `common.sh`** — single source of truth for the "does this prompt trip ULW mode" predicate. Previously the regex was inlined at `prompt-intent-router.sh:139` with no test coverage. Now lives alongside `is_ultrawork_mode` and `workflow_mode` as a composable helper the test suite can call directly.
+
+### Testing
+
+- **New "ULW trigger detection" block in `tests/test-intent-classification.sh`** — 18 assertions covering canonical keywords (`ulw`, `ultrawork`, `autowork`, `sisyphus`, `/ulw`, case-insensitive `ULW`), the `/ulw-demo` regression case (bare, with leading `/`, mid-sentence), substring false-positive guards (`ulwtastic`, `preulwalar`, `culwate`, `ultraworking`, `autoworks`), and compound hyphen edges (`ulw-demos` must not match, `ulw-demo-fork` must not match). Total suite grows from 423 to 441 assertions.
+
+### Documentation
+
+- **`/ulw-demo` SKILL.md gains chapter-marker banners** — each of the 6 demo beats (`INTRO`, `EDIT`, `STOP-GUARD`, `VERIFY`, `REVIEW`, `SHIP`) now prints a `━━━ BEAT N/6 · LABEL ━━━` banner to the transcript. Designed as visible chapter markers for README GIF recordings so a viewer can pick up the flow without narration. Also added a fallback tip: if the stop-guard does not fire on Beat 3, the demo instructs the user to run `/ulw <anything>` first to flip the session into ultrawork mode.
+
 ## [1.9.1] - 2026-04-24
 
 Hotfix release for two defects caught in post-1.9.0 upgrade notes.

@@ -136,7 +136,7 @@ render_prior_specialist_summaries() {
   done
 }
 
-if grep -Eiq '(^|[^[:alnum:]_-])(ultrawork|ulw|autowork|sisyphus)([^[:alnum:]_-]|$)' <<<"${PROMPT_TEXT}" \
+if is_ulw_trigger "${PROMPT_TEXT}" \
    || [[ "$(read_state 'workflow_mode')" == "ultrawork" ]]; then
   continuation_prompt=0
   continuation_directive=""

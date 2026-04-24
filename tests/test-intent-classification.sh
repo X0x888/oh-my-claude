@@ -240,6 +240,60 @@ assert_intent "continuation" "continue"
 assert_intent "continuation" "keep going"
 assert_intent "continuation" "pick it back up"
 
+# --- ULW activation trigger (is_ulw_trigger) ---
+# Covers the word-boundary regex that decides whether a UserPromptSubmit
+# should flip the session into ultrawork mode. Regression guard for the
+# v1.9.2 fix where `/ulw-demo` failed to activate because `-` was treated
+# as an intra-word character and excluded the keyword boundary.
+printf '\nULW trigger detection:\n'
+
+assert_ulw_trigger() {
+  local input="$1"
+  if is_ulw_trigger "${input}"; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: is_ulw_trigger should match: "%s"\n' "${input}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
+assert_not_ulw_trigger() {
+  local input="$1"
+  if ! is_ulw_trigger "${input}"; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: is_ulw_trigger should NOT match: "%s"\n' "${input}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
+# Canonical triggers
+assert_ulw_trigger "ulw fix the bug"
+assert_ulw_trigger "ultrawork run the migration"
+assert_ulw_trigger "autowork this task"
+assert_ulw_trigger "sisyphus: keep going"
+assert_ulw_trigger "/ulw do something"
+assert_ulw_trigger "Please ulw everything"
+assert_ulw_trigger "ULW fix the bug"
+
+# ulw-demo skill invocation (v1.9.2 regression)
+assert_ulw_trigger "ulw-demo"
+assert_ulw_trigger "/ulw-demo"
+assert_ulw_trigger "run ulw-demo now"
+assert_ulw_trigger "I want to see ulw-demo working"
+
+# Substring false-positives must NOT trigger
+assert_not_ulw_trigger "ulwtastic release"
+assert_not_ulw_trigger "preulwalar thinking"
+assert_not_ulw_trigger "culwate this"
+assert_not_ulw_trigger "ultraworking hours"
+assert_not_ulw_trigger "autoworks fine"
+assert_not_ulw_trigger "just a regular prompt"
+
+# Boundary edge cases: suffixes and compounds must NOT trigger
+assert_not_ulw_trigger "ulw-demos"        # trailing 's' breaks match
+assert_not_ulw_trigger "ulw-demo-fork"    # compound hyphen after keyword
+
 # --- Skill-body extraction (v1.2.2: extract_skill_primary_task) ---
 printf '\nSkill body extraction:\n'
 

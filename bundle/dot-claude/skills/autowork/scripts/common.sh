@@ -718,6 +718,19 @@ workflow_mode() {
   read_state "workflow_mode"
 }
 
+# Return 0 if the prompt text contains a ULW activation trigger.
+#
+# The boundary class [^[:alnum:]_-] around each keyword prevents false
+# positives on compound tokens like "ulwtastic" or "preulwalar". Because
+# `-` is in that class, the bare `ulw` keyword cannot match `/ulw-demo`
+# on its own — the `-` after `ulw` fails the right-boundary check — so
+# `ulw-demo` is listed as its own alternative. Ordering within the
+# alternation is not load-bearing for correctness.
+is_ulw_trigger() {
+  local prompt="$1"
+  grep -Eiq '(^|[^[:alnum:]_-])(ulw-demo|ultrawork|ulw|autowork|sisyphus)([^[:alnum:]_-]|$)' <<<"${prompt}"
+}
+
 is_ultrawork_mode() {
   [[ "$(workflow_mode)" == "ultrawork" ]]
 }
