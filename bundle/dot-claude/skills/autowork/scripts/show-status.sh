@@ -218,7 +218,7 @@ if [[ "${CLASSIFIER_MODE}" -eq 1 ]]; then
     printf -- '--- Classifications (last 10) ---\n'
     tail -n 10 "${telemetry_file}" 2>/dev/null | \
       jq -r 'select(.misfire != true) |
-        "  [\(.intent // "?")/\(.domain // "?")] \(.prompt // "")"' 2>/dev/null || true
+        "  [\(.intent // "?")/\(.domain // "?")] \(.prompt_preview // .prompt // "")"' 2>/dev/null || true
 
     if [[ "${misfire_rows}" -gt 0 ]]; then
       printf '\n--- Misfires detected ---\n'

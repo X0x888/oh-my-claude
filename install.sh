@@ -848,7 +848,10 @@ fi
 # Only printed on interactive terminals (TTY stdin) — curl-pipe-bash and
 # CI runs have no interactive cancel and would see a misleading "press
 # Ctrl-C now" message from a stream they can't intercept anyway.
-if [[ "${BYPASS_PERMISSIONS}" != "true" ]] && [[ "${CI:-}" != "1" ]] && [[ -t 0 ]]; then
+# CI detection: `-z "${CI:-}"` catches `CI=true` (GitHub Actions, GitLab,
+# CircleCI, Travis, Buildkite), `CI=1` (custom runners), and anything else
+# truthy. The prior `!= "1"` check was dead — no mainstream CI sets CI=1.
+if [[ "${BYPASS_PERMISSIONS}" != "true" ]] && [[ -z "${CI:-}" ]] && [[ -t 0 ]]; then
   printf '\n'
   printf '  \033[1mTip:\033[0m For maximum autonomy (no permission prompts for trusted tools),\n'
   printf '       cancel now (Ctrl-C) and re-run with: \033[1mbash install.sh --bypass-permissions\033[0m\n'

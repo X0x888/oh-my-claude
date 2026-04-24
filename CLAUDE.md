@@ -10,7 +10,7 @@ Cognitive quality harness for Claude Code -- bash hooks, specialist agents, and 
 - `bundle/dot-claude/skills/autowork/scripts/` -- 13 autowork hook scripts including `common.sh` (shared utility library)
 - `bundle/dot-claude/output-styles/` -- output format templates
 - `config/settings.patch.json` -- settings merged into user config on install
-- `tests/` -- 9 test scripts (e2e hook sequence, intent classification, quality gates, stall detection, settings merge, uninstall merge, common utilities, session resume, statusline)
+- `tests/` -- 13 test scripts (e2e hook sequence, intent classification, quality gates, stall detection, settings merge, uninstall merge, common utilities, session resume, statusline, concurrency, install artifacts, post-merge hook, repro redaction)
 - `docs/` -- architecture, customization, FAQ, and prompt reference docs
 
 ## Key Files
@@ -41,6 +41,10 @@ bash tests/test-settings-merge.sh
 bash tests/test-uninstall-merge.sh
 bash tests/test-common-utilities.sh
 bash tests/test-session-resume.sh
+bash tests/test-concurrency.sh
+bash tests/test-install-artifacts.sh
+bash tests/test-post-merge-hook.sh
+bash tests/test-repro-redaction.sh
 python3 -m unittest tests.test_statusline -v
 ```
 

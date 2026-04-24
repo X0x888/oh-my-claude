@@ -65,6 +65,10 @@ bash tests/test-settings-merge.sh
 bash tests/test-uninstall-merge.sh
 bash tests/test-common-utilities.sh
 bash tests/test-session-resume.sh
+bash tests/test-concurrency.sh
+bash tests/test-install-artifacts.sh
+bash tests/test-post-merge-hook.sh
+bash tests/test-repro-redaction.sh
 python3 -m unittest tests.test_statusline -v
 ```
 

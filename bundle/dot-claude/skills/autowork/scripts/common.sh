@@ -2756,13 +2756,13 @@ record_classifier_telemetry() {
     --arg ts "$(now_epoch)" \
     --arg intent "${intent}" \
     --arg domain "${domain}" \
-    --arg prompt "$(truncate_chars 200 "${prompt_preview}")" \
+    --arg prompt_preview "$(truncate_chars 200 "${prompt_preview}")" \
     --argjson blocks "$(printf '%d' "${blocks_before:-0}")" \
     '{
       ts: $ts,
       intent: $intent,
       domain: $domain,
-      prompt: $prompt,
+      prompt_preview: $prompt_preview,
       pretool_blocks_observed: $blocks
     }')"
   printf '%s\n' "${record}" >> "${file}"

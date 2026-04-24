@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.9.1] - 2026-04-24
+
+Hotfix release for two defects caught in post-1.9.0 upgrade notes.
+
+### Fixed
+
+- **`omc-repro.sh` classifier-telemetry privacy leak.** The 1.9.0 writer in `record_classifier_telemetry` (`common.sh`) wrote the truncated prompt under JSON key `prompt`, but the redactor in `omc-repro.sh` targeted `prompt_preview`. Because `redact_jsonl_field`'s jq filter uses `has($field)` as a guard, the mismatch silently passed every telemetry row through unredacted — leaking the full 200-char prompt snippets into bug-report bundles despite the advertised redaction contract at `omc-repro.sh:12`, `:25`, and `:275`. Same class of bug 1.9.0 already fixed for `session_state.json` and `recent_prompts.jsonl`; one file slipped the net. The writer key is now `prompt_preview`, matching the header docstring at `common.sh:2731` and the redactor target. `show-status.sh --classifier` reader prefers `.prompt_preview` with a `.prompt` fallback so in-flight session files written under the old key stay readable for the remainder of their lifetime (100-row cap makes this self-healing within a session).
+- **Dead CI-detection gate in `install.sh`.** Line 851's interactive-tip guard checked `[[ "${CI:-}" != "1" ]]`, but GitHub Actions, GitLab CI, CircleCI, Travis, and Buildkite all export `CI=true` — none set `CI=1`. The check never fired in any mainstream CI; the adjacent `[[ -t 0 ]]` TTY guard was doing all the work. Changed to `[[ -z "${CI:-}" ]]`, which catches `CI=true` (standard), `CI=1` (legacy/custom), and any other truthy value a runner might set.
+
+### Testing
+
+- `tests/test-repro-redaction.sh` **new** — end-to-end regression for the privacy contract. Writes a 200-char prompt via the real `record_classifier_telemetry`, runs the real `omc-repro.sh` against the fixture session, extracts the tarball, and asserts the bundled `prompt_preview` is exactly 80 chars (`REDACT_CHARS` default). 10 assertions. Verified it fails 3 assertions against the 1.9.0 code (writer key wrong + bundled length wrong) and passes cleanly after the field-name alignment — the test is a true regression test, not a tautology.
+
+### Documentation
+
+- **Test-list drift cleanup.** The "9 test scripts" count in `CLAUDE.md` and `README.md` was stale from pre-1.9.0 — 1.9.0 added `test-concurrency.sh`, `test-install-artifacts.sh`, and `test-post-merge-hook.sh` without updating the count or the per-file listings in `AGENTS.md` / `CONTRIBUTING.md` / `README.md` run-these-tests blocks. Updated all four docs in lockstep to the correct count (13 including the new `test-repro-redaction.sh`) with consistent per-file enumeration. This is the exact drift pattern the project's "add-to-all-four-docs-in-lockstep" rule was written to prevent.
+
 ## [1.9.0] - 2026-04-22
 
 ### Added

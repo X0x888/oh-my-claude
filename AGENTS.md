@@ -31,9 +31,13 @@ oh-my-claude/
 
   tests/                      # Test scripts
     test-common-utilities.sh
+    test-concurrency.sh
     test-e2e-hook-sequence.sh
+    test-install-artifacts.sh
     test-intent-classification.sh
+    test-post-merge-hook.sh
     test-quality-gates.sh
+    test-repro-redaction.sh
     test-session-resume.sh
     test-settings-merge.sh
     test-stall-detection.sh
@@ -130,6 +134,10 @@ bash tests/test-intent-classification.sh
 bash tests/test-quality-gates.sh
 bash tests/test-stall-detection.sh
 bash tests/test-e2e-hook-sequence.sh
+bash tests/test-concurrency.sh
+bash tests/test-install-artifacts.sh
+bash tests/test-post-merge-hook.sh
+bash tests/test-repro-redaction.sh
 bash tests/test-settings-merge.sh
 bash tests/test-uninstall-merge.sh
 bash tests/test-common-utilities.sh
