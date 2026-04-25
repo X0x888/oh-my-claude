@@ -2157,7 +2157,7 @@ else
   fail=$((fail + 1))
 fi
 # ...and should include a block-count marker so the user sees repeats.
-assert_contains "gap8s: second block names block number" "block #2" "${out_s2}"
+assert_contains "gap8s: second block surfaces gate counter" "block 2" "${out_s2}"
 
 counter_s2="$(read_st "cg8s" "pretool_intent_blocks")"
 if [[ "${counter_s2}" == "2" ]]; then
@@ -2167,10 +2167,10 @@ else
   fail=$((fail + 1))
 fi
 
-# Third block also terse, with "block #3"
+# Third block also terse, with "block 3"
 out_s3="$(sim_pretool_bash "cg8s" "git reset --hard HEAD~1")"
 assert_contains "gap8s: third block blocks" "\"permissionDecision\":\"deny\"" "${out_s3}"
-assert_contains "gap8s: third block names block number" "block #3" "${out_s3}"
+assert_contains "gap8s: third block surfaces gate counter" "block 3" "${out_s3}"
 if ! printf '%s' "${out_s3}" | grep -q "What to do instead:"; then
   pass=$((pass + 1))
 else

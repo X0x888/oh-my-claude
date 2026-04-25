@@ -203,27 +203,34 @@ oh-my-claude/
 
 Skills are invoked as slash commands or routed automatically by the intent classifier.
 
-| Skill | Command | Purpose |
-|-------|---------|---------|
+| Skill (mnemonic) | Command | Purpose |
+|---|---|---|
+| **Run a task** | | |
 | ulw | `/ulw <task>` | Maximum-autonomy professional workflow |
-| plan-hard | `/plan-hard <task>` | Decision-complete planning without edits |
-| review-hard | `/review-hard [focus]` | Findings-first code review |
-| research-hard | `/research-hard <topic>` | Targeted context gathering |
-| prometheus | `/prometheus <goal>` | Interview-first planning for ambiguous work |
-| metis | `/metis <plan>` | Stress-test plans for hidden risks |
-| oracle | `/oracle <issue>` | Deep debugging second opinion |
-| librarian | `/librarian <topic>` | Official docs and reference research |
-| frontend-design | `/frontend-design <task>` | Distinctive design-first frontend work |
-| atlas | `/atlas [focus]` | Bootstrap or refresh repo instruction files |
-| council | `/council [focus] [--deep]` | Multi-role project evaluation with top-finding verification, then **Phase 8** wave-by-wave execution when fixes are requested ("implement all", "exhaustive", "fix everything"). `--deep` escalates lenses to opus. |
-| ulw-demo | `/ulw-demo` | Guided onboarding walkthrough with real quality gates |
-| ulw-skip | `/ulw-skip <reason>` | Skip current quality gate block once |
-| ulw-status | `/ulw-status` | Show current session state and Council Phase 8 wave-plan progress (debugging). `summary` / `classifier` arguments swap modes. |
-| ulw-report | `/ulw-report [last\|week\|month\|all]` | Markdown digest of cross-session activity — sessions, gate fires, top reviewers, classifier misfires, Serendipity catches, finding/wave outcomes |
-| ulw-off | `/ulw-off` | Deactivate ultrawork mode mid-session |
-| skills | `/skills` | List all available skills with usage guide |
+| **Think before acting** | | |
+| plan-hard *(plan)* | `/plan-hard <task>` | Decision-complete planning without edits |
+| prometheus *(interview)* | `/prometheus <goal>` | Interview-first planning for ambiguous work |
+| metis *(stress-test)* | `/metis <plan>` | Pressure-test a plan for hidden risks |
+| oracle *(second opinion)* | `/oracle <issue>` | Deep debugging or architecture second opinion |
+| librarian *(docs lookup)* | `/librarian <topic>` | Official docs and reference research |
+| **Review & evaluate** | | |
+| review-hard *(review)* | `/review-hard [focus]` | Findings-first code review |
+| research-hard *(research)* | `/research-hard <topic>` | Targeted context gathering |
+| council *(evaluation panel)* | `/council [focus] [--deep]` | Multi-role project evaluation with top-finding verification, then **Phase 8** wave-by-wave execution when fixes are requested ("implement all", "exhaustive", "fix everything"). `--deep` escalates lenses to opus. |
+| **Build** | | |
+| frontend-design *(visual craft)* | `/frontend-design <task>` | Distinctive design-first frontend work |
+| atlas *(repo bootstrap)* | `/atlas [focus]` | Bootstrap or refresh repo instruction files |
+| **Workflow control** (mid-session) | | |
+| ulw-demo *(onboarding)* | `/ulw-demo` | Guided walkthrough with real quality gates |
+| ulw-status *(diagnostics)* | `/ulw-status` | Show current session state and Council Phase 8 wave-plan progress. `summary` / `classifier` arguments swap modes. |
+| ulw-report *(retrospective)* | `/ulw-report [last\|week\|month\|all]` | Markdown digest of cross-session activity — sessions, gate fires, top reviewers, classifier misfires, Serendipity catches, finding/wave outcomes |
+| ulw-skip *(skip a gate)* | `/ulw-skip <reason>` | Skip current quality gate block once |
+| ulw-off *(deactivate)* | `/ulw-off` | Deactivate ultrawork mode mid-session |
+| skills *(this list)* | `/skills` | List all available skills with usage guide |
 
-> Aliases `/autowork`, `/ultrawork`, and `sisyphus` also trigger the ulw workflow.
+> The mythology-named skills (atlas, metis, oracle, prometheus, librarian) carry one-word mnemonics — see [`docs/glossary.md`](docs/glossary.md) for the rationale behind each name.
+>
+> `/ulw` also responds to the aliases `/autowork` and `/ultrawork` (preferred) plus `sisyphus` (legacy). Use `/ulw` in new prompts; the aliases stay for muscle memory.
 
 ## Power-user setup
 

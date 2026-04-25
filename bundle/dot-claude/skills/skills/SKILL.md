@@ -41,3 +41,5 @@ Display this table to the user:
 - **Setting up a new repo?** Use `/atlas`.
 
 > **Note:** Specialist agents activate automatically based on your task. You don't need to learn agent names — just describe what you want to accomplish.
+
+> **What's with the names?** The mythology-themed skills (atlas, metis, oracle, prometheus, librarian) carry one-word mnemonics in `docs/glossary.md`. Search that page for the verb you want (plan, review, debug, look up docs) to find the matching skill.

@@ -251,7 +251,7 @@ block_count="${block_count:-1}"
 log_hook "pretool-intent-guard" "blocked: intent=${task_intent} block=${block_count} cmd=$(truncate_chars 80 "${command_str}")"
 
 if [[ "${block_count}" -le 1 ]]; then
-  reason="Blocked: the active prompt was classified as '${intent_label}' (not execution). Destructive git/gh operations (commit, push, revert, reset --hard, rebase, cherry-pick, tag, merge, branch -D, switch -C, checkout -B, clean -f, update-ref, filter-branch, gh pr/release/issue create/merge/edit/close) require explicit execution authorization.
+  reason="[PreTool gate · ${intent_label} · block 1] The active prompt was classified as '${intent_label}', not execution. Destructive git/gh operations (commit, push, revert, reset --hard, rebase, cherry-pick, tag, merge, branch -D, switch -C, checkout -B, clean -f, update-ref, filter-branch, gh pr/release/issue create/merge/edit/close) require explicit execution authorization.
 
 What to do instead:
   (a) Deliver the ${intent_label} response the user asked for — assessment, recommendation, or checkpoint.
@@ -262,7 +262,7 @@ Do not attempt to work around this guard by using alternative commands (plumbing
 
 Attempted command: $(truncate_chars 200 "${command_str}")"
 else
-  reason="Blocked (${intent_label}, block #${block_count}): destructive git/gh operations still require explicit execution authorization. Deliver the assessment/recommendation the user asked for. A fresh imperative prompt ('implement X', 'fix Y') will reclassify intent and unblock edits.
+  reason="[PreTool gate · ${intent_label} · block ${block_count}] Destructive git/gh operations still require explicit execution authorization. Deliver the assessment/recommendation the user asked for. A fresh imperative prompt ('implement X', 'fix Y') will reclassify intent and unblock edits.
 Attempted: $(truncate_chars 200 "${command_str}")"
 fi
 
