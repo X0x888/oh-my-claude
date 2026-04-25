@@ -121,6 +121,10 @@ Pre- and post-compact hooks snapshot the working state when Claude Code compacts
 
 The `/council` skill dispatches a multi-role evaluation panel that inspects your project from the perspectives a full product team would bring: Product Manager, UX Designer, Security Engineer, Data/Analytics Lead, SRE, and Growth Lead. Each role-lens agent evaluates independently with a non-overlapping mandate, and findings are synthesized into a single prioritized assessment. The system auto-detects broad evaluation prompts like "evaluate my project" under `/ulw` and triggers the council flow automatically. Solo developers get the cross-functional perspective that a full team provides through daily friction -- without the team.
 
+### Distinctive UI by default
+
+Type `/ulw build me a landing page for X` and the harness automatically drives a 9-section Design Contract — Visual Theme, Color Palette with hex values, Typography Rules, Component Stylings with hover/focus states, Layout Principles with explicit spacing scale, Depth & Elevation, Do's and Don'ts, Responsive Behavior, and an Agent Prompt Guide — before any code is written. Inspired by [VoltAgent/awesome-design-md](https://github.com/VoltAgent/awesome-design-md), the contract forces commitment to specifics rather than vague aesthetic claims, with 15 brand-archetype priors (Linear, Stripe, Vercel, Notion, Apple, Airbnb, Spotify, Tesla, Figma, Discord, Raycast, Anthropic, Webflow, Mintlify, Supabase) framed as anti-anchors so the agent picks a coherent point of departure and then commits to what it will do *differently*. Scope-aware: a "build a page" prompt gets the full contract; a "fix the button padding" prompt preserves existing tokens. The `design-reviewer` quality gate auto-activates on UI file edits and grades against the contract — or against any `DESIGN.md` you've placed at the project root. To opt out for backend/internal work, include `no design polish` or `functional only` in your prompt.
+
 ### Zero dependencies
 
 No npm. No TypeScript. No Node.js runtime. No plugin framework. The entire harness is bash scripts and jq. It works anywhere Claude Code runs, installs in seconds, and leaves no footprint beyond the `~/.claude/` directory.
@@ -302,6 +306,7 @@ bash tests/test-verification-lib.sh         # Extracted lib/verification.sh modu
 bash tests/test-agent-verdict-contract.sh   # Universal VERDICT contract regression net (all 30 agents)
 bash tests/test-gate-events.sh              # Per-event outcome attribution (gate_events.jsonl helper + wiring)
 bash tests/test-discover-session.sh         # Cross-project session-discovery cwd filter (record-finding-list / show-status)
+bash tests/test-design-contract.sh          # 9-section Design Contract regression net (UI agents + skill + router)
 python3 -m unittest tests.test_statusline   # Statusline widget
 ```
 

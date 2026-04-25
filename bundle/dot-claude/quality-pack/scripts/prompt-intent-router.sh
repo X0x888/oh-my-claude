@@ -297,10 +297,26 @@ Discipline:
     # Use the shared detector rather than a raw grep: it needs to catch common
     # asks like "create a login page" while staying away from backend prompts
     # with ambiguous words like "form parser" or "CSS loading".
-    if [[ "${TASK_DOMAIN}" == "coding" || "${TASK_DOMAIN}" == "mixed" ]] \
+    #
+    # Opt-out tokens suppress the full design ritual when the user has
+    # explicitly said they want minimal/functional output. These are checked
+    # before the UI hint fires so the user can override the heuristic without
+    # restarting the session. Mitigates false positives from prompts like
+    # "the API returns a modal config object" or "add a ui_metadata field"
+    # where `is_ui_request` would match `modal` / `ui` but the intent is
+    # backend-only.
+    ui_design_opt_out=0
+    if grep -Eiq '(no design polish|functional only|backend only|skip design|skip the design|bare.?minimum ui|minimal ui|no ui polish|no visual polish)' <<<"${PROMPT_TEXT}"; then
+      ui_design_opt_out=1
+    fi
+
+    if [[ "${ui_design_opt_out}" -eq 0 ]] \
+        && { [[ "${TASK_DOMAIN}" == "coding" || "${TASK_DOMAIN}" == "mixed" ]]; } \
         && is_ui_request "${PROMPT_TEXT}"; then
-      context_parts+=("UI/design work detected. For tasks that produce user-facing interfaces: establish a visual direction (color palette, typography, spacing, layout approach) before writing code — do not rely on framework defaults. The frontend-developer agent has design craft guidance built in. The design-reviewer quality gate auto-activates when UI files (.tsx, .jsx, .vue, .css, .html) are edited and will block stop until visual quality passes. Avoid generic AI patterns: default blue palettes, centered-hero-with-CTA, three identical feature cards, uniform spacing. The /frontend-design skill is available for dedicated design-first workflows.")
-      log_hook "prompt-intent-router" "UI/design context injected"
+      context_parts+=("UI/design work detected. Before writing UI code, establish a visual direction using the **9-section Design Contract**: (1) Visual Theme & Atmosphere, (2) Color Palette & Roles, (3) Typography Rules, (4) Component Stylings, (5) Layout Principles, (6) Depth & Elevation, (7) Do's and Don'ts, (8) Responsive Behavior, (9) Agent Prompt Guide. Apply scope tiering: Tier A (build a page/screen/dashboard) → full contract; Tier B (style/theme an existing surface) → palette + typography + visual signature only; Tier C (fix/refactor) → preserve existing tokens, do not redesign. Pick a closest brand archetype as point of departure (the frontend-developer agent carries the curated list of 15), then commit to at least three things you will do *differently* to avoid cloning. If \`DESIGN.md\` exists at project root, read it first and treat its commitments as a prior; if absent, emit your contract inline under a \`## Design Contract\` heading and offer the user persistence — **never auto-write or overwrite files at the project root**. The design-reviewer quality gate auto-activates when UI files (.tsx, .jsx, .vue, .css, .html) are edited and grades against the contract (or DESIGN.md if present). Avoid generic AI patterns: default blue palettes, centered-hero-with-CTA, three identical feature cards, uniform spacing. The /frontend-design skill is available for dedicated design-first workflows. To suppress this guidance, include 'no design polish' or 'functional only' in your prompt.")
+      log_hook "prompt-intent-router" "UI/design context injected (9-section contract)"
+    elif [[ "${ui_design_opt_out}" -eq 1 ]]; then
+      log_hook "prompt-intent-router" "UI/design opt-out detected — skipping contract injection"
     fi
 
     # Council evaluation detection: broad whole-project evaluation requests

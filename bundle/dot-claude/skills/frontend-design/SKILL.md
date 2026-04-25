@@ -15,19 +15,53 @@ $ARGUMENTS
 
 ## Design-first workflow
 
-Before writing any code, establish a visual direction by making explicit decisions about:
+Before writing any code, complete a **9-section Design Contract** — the canonical Stitch `DESIGN.md` schema (reference library: github.com/VoltAgent/awesome-design-md, 65k+ stars). The 9 sections force commitment to specifics rather than vague aesthetic claims.
 
-1. **Color palette** — Choose 3-5 colors with intention. Derive from the brand, domain, or emotional register. Never use framework defaults. State the palette and rationale before coding.
+**Scope-aware enforcement** — match the contract depth to the work, mirroring the `frontend-developer` agent's tier rules so user-invoked and auto-dispatched paths agree:
 
-2. **Typography** — Choose a typeface pairing (display + body) or a single typeface with clear weight/size hierarchy. Define font sizes, weights, and line-heights for headings, body, captions, and labels. Even with system fonts, create a typographic system.
+- **Tier A — build a page/screen/dashboard/feature**: complete all 9 sections.
+- **Tier B — style or theme an existing surface**: commit to sections 2 (Color Palette), 3 (Typography), and a Visual Signature line. Skip the rest.
+- **Tier C — fix or refactor an existing interface**: read and preserve existing tokens; do not redesign.
 
-3. **Spacing scale** — Define a spacing system (e.g., 4/8/12/16/24/32/48/64/96). Use it consistently but vary section density — not every section needs the same padding.
+1. **Visual Theme & Atmosphere** — name the mood (calm/aggressive/premium/playful/utilitarian/editorial), density (sparse/balanced/dense), and one-sentence design philosophy. Concrete example, not adjectives only.
 
-4. **Layout approach** — Decide the layout strategy: asymmetric grid, editorial layout, full-bleed sections with contained content, sidebar+main, etc. Avoid defaulting to centered-content-in-a-container for everything.
+2. **Color Palette & Roles** — specific hex values for each semantic role: `background`, `surface`, `surface-elevated`, `text-primary`, `text-secondary`, `accent`, `accent-secondary`, `border`, `border-strong`. Add `success`, `warning`, `danger` if the UI surfaces state. Never "Tailwind blue-500."
 
-5. **Visual signature** — Define one distinctive element that makes this interface recognizable. Examples: a bold accent color used sparingly, an unusual card treatment (e.g., thick left border instead of drop shadow), an asymmetric hero layout, a distinctive navigation style, a specific illustration or icon style.
+3. **Typography Rules** — display family + body family (or a single family with weight axis used deliberately). Full hierarchy table covering h1/h2/h3/body/caption/label with size, weight, line-height, and tracking specified.
 
-State these five decisions explicitly before writing implementation code.
+4. **Component Stylings** — buttons (default/hover/active/disabled/focus), inputs, cards, modals, navigation. Specify radius, shadow, transition curve and duration. Hover/focus states are not optional.
+
+5. **Layout Principles** — explicit spacing scale (e.g., 4/8/12/16/24/32/48/64/96), grid strategy, max-width, whitespace philosophy. Vary section density — uniform padding reads as templated.
+
+6. **Depth & Elevation** — shadow stack (3-5 distinct levels with concrete values), surface hierarchy, rules for when to use elevation vs. border-only separation.
+
+7. **Do's and Don'ts** — guardrails specific to *this* project; banned framework defaults you'd otherwise produce by reflex.
+
+8. **Responsive Behavior** — breakpoints, touch-target minimums (44×44px on mobile), what collapses, what stays, what reflows.
+
+9. **Agent Prompt Guide** — a quick color/typography reference block at the bottom for future LLM passes (e.g., "accent reserved for primary actions and active state only; never use for decoration").
+
+State all 9 sections explicitly before writing any implementation code.
+
+## Brand-archetype priors
+
+Use as a *point of departure*, not a destination. Pick the closest archetype, then commit to at least three specific things you will do *differently* to avoid producing a clone. If none fit, name one you are explicitly *rejecting* and explain why — anti-anchoring forces differentiation.
+
+- **Linear** — ultra-minimal monochrome, electric purple accent, tight-tracking sans
+- **Stripe** — premium-technical, signature purple gradients on white, weight-300 elegance
+- **Vercel** — black-and-white precision, Geist sans, rare neon accent
+- **Notion** — warm-serif minimalism, off-white + ink, serif display + sans pairing
+- **Apple** — premium whitespace, neutrals, SF Pro at scale
+- **Airbnb** — warm coral on cream, Cereal sans, generous radii
+- **Spotify** — vibrant green on near-black, Circular tight, dense cards
+- **Tesla** — radical subtraction, all-black + red accent, wide grotesk display
+- **Figma** — playful vivid color-block UI on white, multi-color brand mark
+- **Discord** — blurple on dark, rounded everything, friendly
+- **Raycast** — dark-first, magenta-to-orange gradient, monospace command-bar
+- **Anthropic** — warm cream + clay, Tiempos serif display, restrained
+- **Webflow** — rich blue on white, generous editorial layouts
+- **Mintlify** — clean white, green-accented, reading-optimized typography
+- **Supabase** — dark emerald, code-first dark theme
 
 ## Anti-patterns (ban these)
 
@@ -53,6 +87,12 @@ These mark output as AI-generated. Do not produce them:
 - Micro-interactions that feel physical — hover states that shift position, transitions that ease naturally, focus indicators that are part of the design
 - Content-appropriate styling — a developer tool should feel different from a wellness app which should feel different from a financial dashboard
 - Real or realistic content in demos — never "Lorem ipsum" or "Feature 1, Feature 2, Feature 3"
+
+## DESIGN.md awareness
+
+- **If `DESIGN.md` exists at the project root**, read it first and treat its commitments as the **prior**. Refine in place rather than starting from scratch. Diverging from it intentionally is allowed; state the reason in your contract.
+- **If `DESIGN.md` does not exist**, emit your full 9-section contract inline at the top of your response under a `## Design Contract` heading. Then offer the user the option to persist it: "Want me to save this as `DESIGN.md` at the project root for future sessions?" — wait for explicit confirmation. **Never auto-write or auto-create files at the project root**; that decision belongs to the user.
+- **If a `DESIGN.md` exists and you are refining it**, never overwrite blindly — read the file, edit in place section-by-section, and surface a summary of what you changed.
 
 ## Implementation
 

@@ -24,12 +24,43 @@ When developing frontend solutions, you will:
 2. **Choose Optimal Approach**: Select the most appropriate tools and patterns based on the project context. Consider existing codebase patterns, team preferences, and long-term maintainability.
 
 3. **Establish Visual Direction**: Before writing UI code, define the visual personality of the interface. Do not rely on framework defaults — every interface deserves intentional design decisions.
-   - **Color**: Choose a palette with purpose. Derive colors from the brand, content domain, or emotional register — not from Tailwind's default blue-500. Use color theory (complementary, split-complementary, analogous) to create palettes that feel cohesive and distinctive.
-   - **Typography**: Create clear hierarchy through font weight, size, and spacing. Pair a display treatment with a body treatment. Even with system fonts, use letter-spacing, line-height, and weight variation to create visual levels that feel designed.
-   - **Spacing and rhythm**: Define a spacing scale that creates visual grouping and breathing room. Vary section heights and densities — monotonous uniform spacing reads as templated. Let key elements breathe; cluster related items tightly.
-   - **Visual signature**: Include at least one element that makes the interface recognizable — a distinctive border treatment, an unusual card shape, an asymmetric layout, a bold color accent, subtle texture, or a non-standard navigation pattern.
-   - **Micro-interactions**: Plan hover states that feel tactile, transitions that guide the eye, and loading states that maintain engagement. Motion should feel intentional and physical, not decorative.
-   - **Anti-patterns to avoid**: These mark output as AI-generated — centered text over a gradient hero, three identical feature cards in a row, default blue/purple color schemes, Inter/system font with no typographic treatment, perfectly symmetrical layouts with no visual tension, generic stock-photo-style illustrations.
+
+   **Scope-aware enforcement** — apply discipline proportional to the work:
+   - **Tier A — build a page/screen/dashboard/landing/feature**: complete the full 9-section Design Contract below before code.
+   - **Tier B — style or theme an existing surface**: commit to sections 2 (Color Palette), 3 (Typography), and a Visual Signature line. Skip the rest.
+   - **Tier C — fix or refactor an existing interface**: read and preserve existing tokens. Do not redesign. Do not invoke the full contract.
+
+   **The 9-section Design Contract** (canonical Stitch DESIGN.md schema; reference library at github.com/VoltAgent/awesome-design-md):
+   1. **Visual Theme & Atmosphere** — name the mood (calm/aggressive/premium/playful/utilitarian/editorial), density (sparse/balanced/dense), and one-sentence design philosophy.
+   2. **Color Palette & Roles** — commit to specific hex values with semantic roles: `background`, `surface`, `surface-elevated`, `text-primary`, `text-secondary`, `accent`, `accent-secondary`, `border`, `border-strong`. Never "Tailwind blue."
+   3. **Typography Rules** — display family + body family (or single family with weight axis), full hierarchy table (size/weight/line-height/tracking for h1/h2/h3/body/caption/label).
+   4. **Component Stylings** — buttons (default/hover/active/disabled/focus), inputs, cards, modals, navigation. Specify radius, shadow, transition curve.
+   5. **Layout Principles** — explicit spacing scale (e.g., 4/8/12/16/24/32/48/64/96), grid strategy, max-width, whitespace philosophy. Vary section density — uniform padding reads as templated.
+   6. **Depth & Elevation** — shadow stack (3-5 levels), surface hierarchy, when to use elevation vs. border-only separation.
+   7. **Do's and Don'ts** — surface-specific guardrails for this project; explicitly ban the framework defaults you'd otherwise produce.
+   8. **Responsive Behavior** — breakpoints, touch-target minimums, what collapses, what stays.
+   9. **Agent Prompt Guide** — quick color/typography reference for future LLM passes (e.g., "accent reserved for primary actions and active state only").
+
+   **Brand-archetype priors** — use as a *point of departure*, not a destination. Pick the closest archetype, then commit to at least three specific things you will do *differently* to avoid producing a clone. If none fit, name one you are explicitly *rejecting* and explain why — anti-anchoring forces differentiation.
+   - Linear — ultra-minimal monochrome, electric purple accent, tight-tracking sans
+   - Stripe — premium-technical, signature purple gradients on white, weight-300 elegance
+   - Vercel — black-and-white precision, Geist sans, rare neon accent
+   - Notion — warm-serif minimalism, off-white + ink, serif display + sans pairing
+   - Apple — premium whitespace, neutrals, SF Pro at scale
+   - Airbnb — warm coral on cream, Cereal sans, generous radii
+   - Spotify — vibrant green on near-black, Circular tight, dense cards
+   - Tesla — radical subtraction, all-black + red accent, wide grotesk display
+   - Figma — playful vivid color-block UI on white, multi-color brand mark
+   - Discord — blurple on dark, rounded everything, friendly
+   - Raycast — dark-first, magenta-to-orange gradient, monospace command-bar
+   - Anthropic — warm cream + clay, Tiempos serif display, restrained
+   - Webflow — rich blue on white, generous editorial layouts
+   - Mintlify — clean white, green-accented, reading-optimized typography
+   - Supabase — dark emerald, code-first dark theme
+
+   **DESIGN.md awareness** — if `DESIGN.md` exists at the project root, read it first and treat its commitments as a **prior**, not a contract; deviations are intentional only if you state why. If absent, emit your full 9-section contract inline under a `## Design Contract` heading in your response so the user can copy it into `DESIGN.md` for session-to-session continuity. **Never auto-create or overwrite files at the project root** — that decision belongs to the user.
+
+   **Anti-patterns to avoid** — these mark output as AI-generated: centered text over a gradient hero, three identical feature cards in a row, default blue/purple color schemes, Inter/system font with no typographic treatment, perfectly symmetrical layouts with no visual tension, generic stock-photo-style illustrations, uniform `py-16` everywhere.
 
 4. **Write Clean Code**:
    - Use functional components with hooks in React

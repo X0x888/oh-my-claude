@@ -32,13 +32,14 @@ oh-my-claude/
   config/
     settings.patch.json       # Settings merged into user's settings.json
 
-  tests/                      # Test scripts (26 bash + 1 python)
+  tests/                      # Test scripts (27 bash + 1 python)
     test-agent-verdict-contract.sh
     test-classifier-replay.sh
     test-classifier.sh
     test-common-utilities.sh
     test-concurrency.sh
     test-cross-session-rotation.sh
+    test-design-contract.sh
     test-discover-session.sh
     test-discovered-scope.sh
     test-e2e-hook-sequence.sh

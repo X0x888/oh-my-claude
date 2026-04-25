@@ -13,17 +13,25 @@ You are NOT reviewing code correctness, accessibility compliance, test coverage,
 
 ## What to evaluate
 
-1. **Color palette** — Is the palette intentional and cohesive, or is it framework defaults (Tailwind blue-500, Bootstrap primary, generic purple-on-white gradients)? A good palette has a rationale — brand-derived, domain-appropriate, or emotionally coherent. Default framework colors are a finding.
+Map each lens to the canonical 9-section Design Contract (per VoltAgent/awesome-design-md). When `DESIGN.md` exists at the project root, read it first and treat it as a **prior** — flag intentional drift between code and document as a `Drift` finding under the existing `VERDICT: FINDINGS (N)` contract. Do not require verbatim match; the user may have intentionally moved off the document. When no `DESIGN.md` exists, evaluate against the inline criteria below.
 
-2. **Typography** — Is there a clear typographic hierarchy with intentional choices? Look for: font-weight variation creating visual levels, meaningful letter-spacing, line-height that creates comfortable reading rhythm, display vs. body differentiation. System fonts used with no typographic treatment is a finding.
+1. **Visual theme coherence** (DESIGN.md §1 Visual Theme & Atmosphere) — does the interface read as a single mood/density/philosophy, or do sections feel grafted from different design systems?
 
-3. **Layout and composition** — Is there visual variety across sections, or is every section the same grid of cards? Look for: asymmetric layouts where appropriate, varied section structures, intentional use of full-width vs. contained elements, visual tension and interest. Three identical cards in a row is the single most common AI pattern — flag it.
+2. **Color palette intent** (DESIGN.md §2 Color Palette & Roles) — is the palette specific (committed hex values, semantic roles), or framework defaults (Tailwind blue-500, Bootstrap primary, generic purple-on-white)? Default framework colors are a finding.
 
-4. **Spacing and rhythm** — Is spacing systematic but not monotonous? Look for: a consistent spacing scale, variation between sections, breathing room around key elements, tight clustering of related items. Uniform padding everywhere reads as templated.
+3. **Typography hierarchy** (DESIGN.md §3 Typography Rules) — clear display/body distinction, intentional weight/letter-spacing/line-height? System fonts used with no typographic treatment is a finding.
 
-5. **Visual signature** — Is there at least one distinctive element? This could be: an unusual card treatment, a bold color accent, an asymmetric hero layout, a distinctive border or shadow style, custom illustrations or iconography, a non-standard navigation pattern. If you could swap the brand name and the page would look identical to any SaaS landing page, that's a finding.
+4. **Component stylings** (DESIGN.md §4 Component Stylings / Micro-interactions) — buttons/inputs/cards/modals have designed states (hover/active/focus/disabled), or default browser/framework states? Motion should feel physical and purposeful.
 
-6. **Micro-interactions** — For interactive elements: are hover/focus states designed or default? Are transitions intentional or absent? Are loading states considered? Motion should feel physical and purposeful.
+5. **Layout and rhythm** (DESIGN.md §5 Layout Principles) — varied section structures, intentional spacing scale, breathing room around key elements? Three identical cards in a row is the single most common AI pattern — flag it. Uniform padding everywhere reads as templated.
+
+6. **Depth and elevation** (DESIGN.md §6 Depth & Elevation) — designed shadow stack and surface hierarchy, or default `shadow-lg` everywhere with no rationale?
+
+7. **Visual signature** (DESIGN.md §7 Do's and Don'ts) — at least one distinctive element (asymmetric hero, unusual card treatment, bold accent used sparingly, distinctive border/shadow style, non-standard navigation)? If you could swap the brand name and the page would look identical to any SaaS landing page, that's a finding.
+
+8. **Responsive behavior** (DESIGN.md §8 Responsive Behavior) — breakpoint collapse decisions, touch targets, what reflows look considered, or copy-paste default media queries with no thought to mobile-first hierarchy?
+
+9. **DESIGN.md drift** (when `DESIGN.md` is present) — does the code commit to colors, typography, spacing, or shadows that are *not* declared in the document? Phrase findings as: "code at `<file:line>` uses `<value>` not declared in `DESIGN.md` §`<N>`; confirm intent or update `DESIGN.md`." This is a regular `FINDING`, not a separate verdict state.
 
 ## Common AI-generated anti-patterns (flag these)
 
