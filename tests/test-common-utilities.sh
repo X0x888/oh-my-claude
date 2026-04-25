@@ -422,6 +422,13 @@ assert_eq "env beats conf excellence_file_count" "10" "${OMC_EXCELLENCE_FILE_COU
 assert_eq "env beats conf state_ttl_days" "30" "${OMC_STATE_TTL_DAYS}"
 
 # Test 6: council_deep_default flag (off by default, on/off accepted, env wins)
+# The load_conf walk-up from $PWD can find the REAL user conf (e.g.,
+# ~/.claude/oh-my-claude.conf) even when HOME is faked. Isolate by
+# cd'ing to the fake HOME dir during these tests so the walk-up starts
+# from a path with no .claude/oh-my-claude.conf in its ancestry.
+OLD_PWD_CONF="${PWD}"
+cd "${FAKE_HOME_DIR}"
+
 _omc_conf_loaded=0
 _omc_env_council_deep_default=""
 OMC_COUNCIL_DEEP_DEFAULT="off"
@@ -465,6 +472,8 @@ HOME="${FAKE_HOME_DIR}"
 load_conf
 HOME="${OLD_HOME}"
 assert_eq "env council_deep_default beats conf" "off" "${OMC_COUNCIL_DEEP_DEFAULT}"
+
+cd "${OLD_PWD_CONF}"
 
 # Test 6: non-numeric and zero conf values are ignored
 cat > "${conf_file}" <<'CONF'
