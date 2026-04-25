@@ -42,7 +42,15 @@ usage:
 fields:
   fix             (required) — one-line description of what was fixed
   original_task   (optional) — the task that was being worked on
-  conditions      (optional) — pipe/comma-separated: verified|same-path|bounded
+  conditions      (optional) — pipe/comma-separated subset of:
+                      verified   — reproduced or analogous to a defect just
+                                   fixed with the same root-cause family
+                      same-path  — lives in a file/function already loaded
+                                   for the main task; same mental model
+                      bounded    — does not expand the diff substantially or
+                                   require separate investigation/planning/tests
+                  All three must hold for the Serendipity Rule to fire (see
+                  ~/.claude/quality-pack/memory/core.md → "The Serendipity Rule").
   commit          (optional) — short commit SHA if the fix shipped in a commit
 USAGE
   exit 2

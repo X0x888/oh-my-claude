@@ -60,7 +60,14 @@
     - **Verified** — reproduced, or clearly analogous to a defect you just fixed with the same root cause family (e.g., both defects arise from the same lifecycle hook, the same state write, or the same event-handler race — not merely the same file). Theoretical issues, "defensive hardening", and reviewer-flagged low-priority speculation do not qualify.
     - **Same code path** — lives in a file or function you already loaded for the main task, using the same mental model. Re-paging-in a different module's context does not qualify.
     - **Bounded fix** — does not expand the diff substantially or require separate investigation, planning, or new tests beyond what the main task already needed.
-    - **When all three hold:** fix it and call it out under a `Serendipity:` line in your summary so the user sees what was done and why.
+    - **When all three hold:** fix it AND call it out under a `Serendipity:` line in your summary so the user sees what was done and why. Also log the application via `record-serendipity.sh` so the rule's effectiveness can be audited across sessions:
+
+        ```bash
+        echo '{"fix":"<short>","original_task":"<current task>","conditions":"verified|same-path|bounded","commit":"<sha-if-shipped>"}' \
+          | ~/.claude/skills/autowork/scripts/record-serendipity.sh
+        ```
+
+        The script writes per-session and cross-session JSONL plus state counters surfaced in `/ulw-status`. Without this call, the rule's analytics never accrue and the project can't tell whether the rule is being applied or quietly ignored.
     - **When one+ fails but the defect is verified:** write a `project_*.md` memory **and** name it in the session summary as a deferred risk so the user can decide whether to scope a follow-up task — do not bury verified known defects in memory-only bookkeeping.
     - **Guardrail:** the rule is triage, not license to rewrite adjacent code. If you find yourself arguing whether a condition holds, the answer is *defer, document, and surface*.
 

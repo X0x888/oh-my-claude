@@ -186,16 +186,19 @@ mkdir -p "${REPRO_DIR}"
 # Copy non-sensitive session files directly (no prompt text in these).
 # findings.json and discovered_scope.jsonl carry council/advisory-specialist
 # output (severity, surface area, summaries) — derived from model output and
-# project state, not from user prompts. They are included so that bug
-# reports about Phase 8 / discovered-scope behavior arrive with the wave
-# plan and findings list the maintainer needs to reproduce the issue.
+# project state, not from user prompts. serendipity_log.jsonl carries
+# fix descriptions and commit SHAs from record-serendipity.sh. They are
+# included so that bug reports about Phase 8 / discovered-scope /
+# Serendipity analytics arrive with the wave plan, findings list, and
+# rule-application log the maintainer needs to reproduce the issue.
 for name in \
     edited_files.log \
     stall_paths.log \
     pending_agents.jsonl \
     subagent_summaries.jsonl \
     discovered_scope.jsonl \
-    findings.json; do
+    findings.json \
+    serendipity_log.jsonl; do
   if [[ -f "${SESSION_DIR}/${name}" ]]; then
     cp "${SESSION_DIR}/${name}" "${REPRO_DIR}/${name}"
   fi
