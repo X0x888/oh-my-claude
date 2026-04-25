@@ -2,7 +2,7 @@
 
 **What if Claude Code couldn't cut corners?**
 
-[![Version](https://img.shields.io/badge/Version-1.10.2-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-1.11.0-blue.svg)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Shell](https://img.shields.io/badge/Shell-bash-green.svg)]()
 [![Dependencies](https://img.shields.io/badge/Dependencies-none-brightgreen.svg)]()
@@ -192,7 +192,7 @@ oh-my-claude/
 │   ├── output-styles/                       # Output format templates
 │   └── statusline.py                        # Custom statusline widget
 ├── config/settings.patch.json               # Merged into user settings on install
-├── tests/               (13 test scripts)   # Intent, quality gates, stall, resume, e2e, install/uninstall merge, concurrency, post-merge, repro redaction
+├── tests/               (15 test scripts)   # Intent, quality gates, stall, resume, e2e, install/uninstall merge, concurrency, post-merge, repro redaction, discovered-scope, finding-list
 └── docs/                                    # Architecture, customization, FAQ, prompts
 ```
 
@@ -268,6 +268,8 @@ bash tests/test-concurrency.sh              # Lock primitive stress test
 bash tests/test-install-artifacts.sh        # Installed-file artifact assertions
 bash tests/test-post-merge-hook.sh          # --git-hooks post-merge drift detection
 bash tests/test-repro-redaction.sh          # omc-repro.sh privacy contract regression
+bash tests/test-discovered-scope.sh         # Discovered-scope capture + wave-aware gate
+bash tests/test-finding-list.sh             # Council Phase 8 findings.json artifact
 python3 -m unittest tests.test_statusline   # Statusline widget
 ```
 

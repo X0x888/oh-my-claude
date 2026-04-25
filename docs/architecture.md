@@ -182,6 +182,7 @@ Session state is stored at:
   edited_files.log             # Paths of edited files
   classifier_telemetry.jsonl   # Per-turn classification rows + misfire annotations (capped at 100 rows)
   discovered_scope.jsonl       # Findings captured from advisory specialists (council lenses, metis, briefing-analyst); capped at 200 rows
+  findings.json                # Council Phase 8 master finding list (model-managed via record-finding-list.sh); waves[] declares the active wave plan
   precompact_snapshot.md       # Snapshot created before compaction
   compact_handoff.md           # Combined handoff document
   internal_edits.log           # Edits to internal Claude paths (excluded from tracking)
@@ -250,7 +251,7 @@ Separate from session state, `install.sh` writes four install-time artifacts tha
 | `session_handoff_blocks` | Number of times the deferral gate has blocked (cap: 2) |
 | `advisory_guard_blocks` | Number of times the advisory inspection gate has blocked (cap: 1) |
 | `pretool_intent_blocks` | Number of times the `pretool-intent-guard.sh` PreToolUse hook denied a destructive git/gh command because `task_intent` was `advisory`, `session_management`, or `checkpoint` (counter, no cap) |
-| `discovered_scope_blocks` | Number of times the discovered-scope gate has blocked a stop because pending findings from advisory specialists were not addressed (cap: 2). Reset by `/ulw-skip`. |
+| `discovered_scope_blocks` | Number of times the discovered-scope gate has blocked a stop because pending findings from advisory specialists were not addressed (cap: 2 by default; raised to `wave_total + 1` when a council Phase 8 wave plan is active in `findings.json` so the gate stays useful across multiple legitimate wave-by-wave commits). Reset by `/ulw-skip`. |
 | `excellence_guard_triggered` | Whether the excellence gate has already fired this session (`1` or empty) |
 | `guard_exhausted` | Epoch timestamp when guard caps were reached and stop was allowed |
 | `guard_exhausted_detail` | Diagnostic string showing which gates were still unsatisfied at exhaustion |

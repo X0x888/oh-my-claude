@@ -112,6 +112,7 @@ required_paths=(
   "${CLAUDE_HOME}/skills/ulw-skip/SKILL.md"
   "${CLAUDE_HOME}/skills/frontend-design/SKILL.md"
   "${CLAUDE_HOME}/skills/autowork/scripts/ulw-skip-register.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/record-finding-list.sh"
 )
 
 for path in "${required_paths[@]}"; do

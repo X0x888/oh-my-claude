@@ -3441,3 +3441,61 @@ update_scope_status() {
 }
 
 # --- end discovered-scope tracking ---
+
+# --- Wave plan tracking ---
+#
+# Reads the master finding list (`<session>/findings.json`) created by
+# `record-finding-list.sh` during council Phase 8. The discovered-scope
+# gate uses these helpers to raise its block cap when the model is
+# legitimately working through a multi-wave implementation — without
+# this, the gate releases after 2 blocks even if 30 findings remain
+# pending across 5 planned waves.
+#
+# Failure mode: missing findings.json or malformed JSON returns 0,
+# which preserves legacy 2-block behavior. Never throws.
+
+read_active_wave_total() {
+  [[ -z "${SESSION_ID:-}" ]] && { printf '0'; return 0; }
+  local file
+  file="$(session_file "findings.json")"
+  [[ -f "${file}" ]] || { printf '0'; return 0; }
+  jq -r '(.waves // []) | length' "${file}" 2>/dev/null || printf '0'
+}
+
+read_active_waves_completed() {
+  [[ -z "${SESSION_ID:-}" ]] && { printf '0'; return 0; }
+  local file
+  file="$(session_file "findings.json")"
+  [[ -f "${file}" ]] || { printf '0'; return 0; }
+  jq -r '[(.waves // [])[] | select(.status == "completed")] | length' "${file}" 2>/dev/null || printf '0'
+}
+
+# --- end wave plan tracking ---
+
+# --- Session discovery for manually-invoked scripts ---
+#
+# Manually-invoked autowork scripts (record-finding-list.sh, show-status.sh)
+# do not have a hook JSON to read SESSION_ID from. They must discover the
+# active session by inspecting STATE_ROOT directly.
+#
+# Critical: filter for directories. STATE_ROOT also contains flat files
+# (hooks.log, installed-manifest.txt) which would otherwise be picked by
+# a naive `ls -t | head -1` and cause downstream bugs (mkdir -p collisions
+# in record-finding-list.sh, "no state file" warnings in show-status.sh).
+#
+# Returns the session ID (basename of newest dir) or empty string if no
+# session directory exists. Never throws; STATE_ROOT-missing is silent.
+
+discover_latest_session() {
+  local d newest=""
+  [[ -d "${STATE_ROOT}" ]] || { printf ''; return 0; }
+  shopt -s nullglob
+  local dirs=("${STATE_ROOT}"/*/)
+  shopt -u nullglob
+  for d in "${dirs[@]}"; do
+    [[ -z "${newest}" || "${d}" -nt "${newest}" ]] && newest="${d}"
+  done
+  [[ -n "${newest}" ]] && basename "${newest}" || printf ''
+}
+
+# --- end session discovery ---

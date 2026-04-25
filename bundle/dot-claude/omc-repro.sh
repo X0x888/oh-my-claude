@@ -14,6 +14,8 @@
 #   - edited_files.log (if present)
 #   - subagent_summaries.jsonl (if present)
 #   - pending_agents.jsonl (if present)
+#   - discovered_scope.jsonl (council Phase 8 advisory-specialist findings; if present)
+#   - findings.json (council Phase 8 master finding list and wave plan; if present)
 #   - hooks.log (last 200 lines only, to keep the bundle small)
 #   - manifest.txt (oh-my-claude version, OS, shell, jq version, file list)
 #
@@ -182,11 +184,18 @@ REPRO_DIR="${STAGING}/${REPRO_NAME}"
 mkdir -p "${REPRO_DIR}"
 
 # Copy non-sensitive session files directly (no prompt text in these).
+# findings.json and discovered_scope.jsonl carry council/advisory-specialist
+# output (severity, surface area, summaries) — derived from model output and
+# project state, not from user prompts. They are included so that bug
+# reports about Phase 8 / discovered-scope behavior arrive with the wave
+# plan and findings list the maintainer needs to reproduce the issue.
 for name in \
     edited_files.log \
     stall_paths.log \
     pending_agents.jsonl \
-    subagent_summaries.jsonl; do
+    subagent_summaries.jsonl \
+    discovered_scope.jsonl \
+    findings.json; do
   if [[ -f "${SESSION_DIR}/${name}" ]]; then
     cp "${SESSION_DIR}/${name}" "${REPRO_DIR}/${name}"
   fi

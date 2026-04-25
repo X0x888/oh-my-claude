@@ -295,21 +295,26 @@ Discipline:
     if is_council_evaluation_request "${PROMPT_TEXT}"; then
       _council_deep_hint=""
       _council_phase7_hint=""
+      _council_phase8_hint=""
       if [[ "${OMC_COUNCIL_DEEP_DEFAULT}" == "on" ]] \
           || [[ "${PROMPT_TEXT}" =~ (^|[^[:alnum:]_-])--deep([^[:alnum:]_-]|$) ]]; then
         _council_deep_hint=" Use --deep mode: pass \`model: \"opus\"\` to each Agent dispatch call to escalate the lens model from sonnet to opus, and extend each lens's instruction with: 'This is a deep-mode evaluation. Take more turns to investigate suspicious findings. Read source files carefully rather than relying on directory structure inference. Report uncertainty explicitly when evidence is thin.'"
       fi
       _council_phase7_hint="
 7. Verify the top of the stack: pick the 2-3 highest-impact findings and re-dispatch \`oracle\` per finding to verify each claim against the actual code before presenting. Mark each as ✓ verified, ◑ refined, or ✗ demoted/dropped. Cap at 3."
+      if is_execution_intent_value "${TASK_INTENT}"; then
+        _council_phase8_hint="
+8. Execute the assessment (Phase 8). Step 7's presentation is NOT the finish line for this prompt — the user asked for implementation. **Resume check first:** run \`record-finding-list.sh counts\` — if a wave plan already exists with pending findings, do NOT re-bootstrap (init refuses by default; --force would clobber progress). Re-enter at the in-progress wave instead. **Otherwise bootstrap** the master finding list with stable IDs (F-001, F-002, ...): \`echo '[{\"id\":\"F-001\",\"summary\":\"...\",\"severity\":\"critical\",\"surface\":\"...\",\"effort\":\"S\"}, ...]' | record-finding-list.sh init\` (script auto-discovers the active session). Then \`record-finding-list.sh assign-wave <idx> <total> <surface> F-xxx F-yyy ...\` per wave, and \`record-finding-list.sh status F-xxx shipped <commit-sha> '<notes>'\` after each fix. **If a wave reveals a new finding** that was missed, append it via \`record-finding-list.sh add-finding <<< '{\"id\":\"F-NNN\",\"summary\":\"...\",\"severity\":\"...\",\"surface\":\"...\"}'\` and assign-wave it; do NOT silently fix outside the master list. Group findings into 5–10-finding waves by surface area, and execute each wave fully (quality-planner → implementation specialist → quality-reviewer on the wave's diff → excellence-reviewer for the wave's surface → verification → per-wave commit titled 'Wave N/M: <surface> (F-xxx, ...)'). Do NOT clip scope to the five-priority headline (that rule is presentation-only); do NOT collapse waves into one mega-commit; do NOT defer waves to a future session. If the prompt did NOT explicitly authorize exhaustive implementation (no 'implement all' / 'exhaustive' / 'every item' / 'address each one' / 'fix everything' tokens), surface the wave plan first and apply the Scope explosion pause case from core.md. Full Phase 8 protocol is in the council skill definition. Final summary: run \`record-finding-list.sh summary\` for the markdown finding-status table."
+      fi
       context_parts+=("COUNCIL EVALUATION DETECTED: This is a broad project evaluation request. Use the /council protocol to dispatch multi-role expert perspectives:
 1. Inspect the project to determine its type, maturity, and tech stack.
 2. Select 3-6 relevant role-lenses from: product-lens, design-lens, security-lens, data-lens, sre-lens, growth-lens. Use the selection guide in the council skill to decide which lenses fit this project.
 3. Dispatch ALL selected lenses in parallel using the Agent tool in a single message. Each gets the project context and its evaluation mandate.${_council_deep_hint}
 4. Wait for ALL lenses to return before synthesizing — do NOT begin synthesis early.
 5. Synthesize findings: deduplicate, rank by severity x breadth, attribute to perspectives, separate quick wins from strategic work. Reject findings that lack file/line evidence.
-6. Present a unified Project Council Assessment with: critical findings, high-impact improvements, strategic recommendations, cross-perspective tensions, and quick wins.${_council_phase7_hint}
+6. Present a unified Project Council Assessment with: critical findings, high-impact improvements, strategic recommendations, cross-perspective tensions, and quick wins.${_council_phase7_hint}${_council_phase8_hint}
 Challenge the project — the value is in what is missing or wrong, not in what is already good.")
-      log_hook "prompt-intent-router" "council evaluation detected${_council_deep_hint:+ (deep)}"
+      log_hook "prompt-intent-router" "council evaluation detected${_council_deep_hint:+ (deep)}${_council_phase8_hint:+ (execute)}"
     elif [[ "${advisory_prompt}" -eq 1 ]]; then
       # Advisory prompt that did NOT trigger council → inject code-grounding guidance.
       # Council dispatch is a superset of "inspect before recommending", so this only

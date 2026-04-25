@@ -23,7 +23,7 @@ Before any dispatch, anchor on these rules so they survive context pressure:
 2. **Do not synthesize on partial returns.** If any dispatched lens has not returned, report what is in flight and continue waiting. Synthesis on a partial set silently biases the final assessment toward whichever lens responded fastest.
 3. **Verify the top of the stack before presenting.** The top 2-3 findings drive the user's actions. Re-verify each one against the actual code before they ship in the final assessment (Step 6 below). Surface-level lens claims that fail verification are noise, not signal.
 4. **Preserve tensions, do not synthesize them.** When two lenses contradict, surface both in the "Cross-Perspective Tensions" section. A clean synthesis that hides a real disagreement is worse than no synthesis.
-5. **The five-priority rule.** A project with 47 findings needs 5 priorities, not 47 equal-weight items. If the synthesis emerges with more than 5 critical findings, you have under-prioritized — pick the top 5 by impact x reach.
+5. **The five-priority rule governs presentation, not execution scope.** A project with 47 findings needs 5 priorities at the top of the assessment, not 47 equal-weight items. If the synthesis emerges with more than 5 critical findings, you have under-prioritized the *headline* — pick the top 5 by impact x reach. **However**, when the user requests exhaustive implementation ("implement all", "exhaustive", "fix everything"), all findings flow into the Phase 8 wave plan; the five-priority rank only determines wave ordering. Do not silently clip scope to 5 — clipping is the failure mode this rule's most-common misreading produces.
 
 ## Protocol
 
@@ -133,6 +133,44 @@ Bulleted, actionable, specific
 ### What's Working Well
 [Genuine strengths worth preserving — brief, not a praise section]
 ```
+
+### 8. Execute (when implementation was requested)
+
+Step 7 ends with a presentation. Council ends there only if the user asked for advisory output ("just analyze", "report only", "advisory only"). If the user's prompt asked for implementation/fixes (markers: "implement", "implement all", "fix all", "ship", "address each one", "improve [area]", "make X impeccable", "exhaustive"), bridge from assessment to execution with this protocol — do not stop after Step 7.
+
+1. **Build the master finding list.** Collect every finding from Steps 5/6 with stable IDs (`F-001`, `F-002`, …), severity (critical/high/medium/low), surface area (e.g., `auth/login`, `checkout/payment`, `cli/error-output`), and a rough effort estimate (S/M/L). The five-priority rule clipped the *headline* — execution restores the full set. Persist via `record-finding-list.sh` (writes `<session>/findings.json`); the master list is the source of truth for completion tracking.
+
+2. **Group into waves.** Cluster findings by surface area or dependency, not arbitrary chunks. A wave should be coherent (one feature, one screen, one subsystem) so a single per-wave commit makes sense. Aim for 5–10 findings per wave. Order waves by criticality first, then by dependency (don't fix a UI surface in wave 1 that depends on a backend fix in wave 3).
+
+3. **Surface the wave plan.** Show wave count, per-wave surface area, per-wave finding IDs, and total effort. If the prompt explicitly authorized exhaustive implementation ("implement all", "exhaustive", "every item", "fix everything", "address each one", "ship it all"), proceed without confirmation. Otherwise apply the *Scope explosion without pre-authorization* pause case from `core.md` — surface the plan and ask whether to address top N, all N, or a different scope.
+
+4. **Execute waves sequentially — full cycle per wave.** For each wave N of M:
+    1. Dispatch `quality-planner` for the wave's findings (decision-complete plan for the wave's scope only — not the whole project).
+    2. Implement using the appropriate domain specialist agent(s).
+    3. Dispatch `quality-reviewer` on the wave's diff (small enough for real per-line signal — this is the upside of waves over single-shot).
+    4. Dispatch `excellence-reviewer` for the wave's surface area. When the prompt mentioned "impeccable", "enterprise grade", "polished", or similar, extend the dispatch prompt with an explicit enterprise-polish checklist for the reviewer to evaluate against: error states (network failures, validation failures, server errors), empty states (no data, first-run, search-no-results), loading states (skeletons, spinners, optimistic UI), copywriting (tone consistency, clear error messages, no AI-isms like "I'll help you with that"), accessibility (keyboard navigation, screen-reader labels, focus management, color contrast WCAG AA), edge cases (long strings, special characters, slow networks, offline), transitions and motion (respects `prefers-reduced-motion`, no jank), and surface-specific polish (dark mode if relevant, RTL if relevant, responsive breakpoints). Pass this checklist as part of the prompt — `excellence-reviewer` does not have a built-in `enterprise-polish` mode; the framing lives at the dispatch site so the reviewer evaluates against the same bar the user implicitly set.
+    5. Run the strongest meaningful verification for the wave's domain.
+    6. Commit with title `Wave N/M: <surface> (F-xxx, F-yyy, ...)` and a body listing each finding ID and what changed.
+    7. Update each finding's status in `findings.json` (✓ shipped / ⚠ deferred / ✗ rejected) with commit SHA and any notes.
+    8. **If a wave reveals a new finding** (review uncovered something the council missed, or implementation surfaced an adjacent defect that meets the Serendipity Rule), append it to the master list with `record-finding-list.sh add-finding <<< '{"id":"F-NNN","summary":"...","severity":"...","surface":"..."}'` and either fold it into the current wave (if same surface, bounded fix) or assign it to a new follow-on wave with `assign-wave`. Do NOT silently fix it without recording — that breaks the per-finding traceability the protocol exists to provide.
+
+5. **Final summary after all waves.** Present:
+    - Master finding-list table: every ID → status with commit SHA or deferral reason.
+    - Aggregate verification results across waves.
+    - Cross-wave concerns surfaced (regressions, conflicts, follow-ups).
+    - The `Serendipity:` line for any adjacent fixes per `core.md` rules.
+
+**Resuming a Phase 8 session.** If a session compacts or crashes mid-wave, `findings.json` survives on disk. On resume, do NOT call `record-finding-list.sh init` again — that refuses by default but `--force` would clobber the wave plan and lose every shipped/commit-tracked finding. Instead: run `record-finding-list.sh counts` and `show` to see where execution stands, identify the in-progress wave (`status="in_progress"`), and re-enter at step 4 of that wave. Findings already marked `shipped` are done; pending findings in the in-progress wave still need work.
+
+**Phase 8 is skipped** when the user said "advisory only", "just analyze", "don't act yet", "report only", or similar — in those cases, end at Step 7's presentation.
+
+**Anti-patterns Phase 8 exists to prevent:**
+- **Single-shot mega-implementation** — 30 findings in one giant diff; reviewer chokes, real defects slip through.
+- **Five-priority clipping** — "council headline said top 5, I'll only ship those" misreads the rank as scope. The rank is for presentation; execution covers all findings unless the user said otherwise.
+- **Cross-session handoff after wave 1** — "I'll do wave 2 next session" violates the segmentation rule in `core.md`. Waves are in-session structure, not cross-session phasing.
+- **One mega-commit with no per-finding traceability** — kills bisectability, code review, and rollback.
+- **Re-init clobbering on resume** — calling `init` on an already-populated wave plan and losing progress. Use `counts` first; `init --force` only when actually starting over.
+- **Silent discover-during-execution** — fixing a newly-surfaced defect without recording it in the master list. If it qualifies under Serendipity, it qualifies for an `add-finding` entry too.
 
 ## Execution style
 

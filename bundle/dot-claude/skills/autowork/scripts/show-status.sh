@@ -40,12 +40,8 @@ for arg in "$@"; do
   esac
 done
 
-# Find the most recent session directory (excluding dotfiles like .ulw_active)
-latest_session=""
-if [[ -d "${STATE_ROOT}" ]]; then
-  # shellcheck disable=SC2010  # filenames are controlled session IDs, no special chars
-  latest_session="$(ls -t "${STATE_ROOT}" 2>/dev/null | grep -v '^\.' | head -1 || true)"
-fi
+# Find the most recent session directory via shared helper in common.sh.
+latest_session="$(discover_latest_session)"
 
 if [[ -z "${latest_session}" ]]; then
   printf 'No active ULW session found.\n'
@@ -336,6 +332,24 @@ if [[ -f "${scope_file}" ]]; then
   scope_deferred="$(read_scope_count_by_status "deferred")"
   printf 'Discovered findings:       %s total · %s pending · %s shipped · %s deferred\n' \
     "${scope_total:-0}" "${scope_pending:-0}" "${scope_shipped:-0}" "${scope_deferred:-0}"
+fi
+
+# Council Phase 8 wave plan (when active)
+findings_file="${STATE_ROOT}/${latest_session}/findings.json"
+if [[ -f "${findings_file}" ]]; then
+  wave_total="$(jq -r '(.waves // []) | length' "${findings_file}" 2>/dev/null || echo 0)"
+  if [[ "${wave_total:-0}" -gt 0 ]]; then
+    waves_done="$(jq -r '[(.waves // [])[] | select(.status == "completed")] | length' "${findings_file}" 2>/dev/null || echo 0)"
+    waves_in_prog="$(jq -r '[(.waves // [])[] | select(.status == "in_progress")] | length' "${findings_file}" 2>/dev/null || echo 0)"
+    f_total="$(jq -r '.findings | length' "${findings_file}" 2>/dev/null || echo 0)"
+    f_shipped="$(jq -r '[.findings[] | select(.status == "shipped")] | length' "${findings_file}" 2>/dev/null || echo 0)"
+    f_pending="$(jq -r '[.findings[] | select(.status == "pending")] | length' "${findings_file}" 2>/dev/null || echo 0)"
+    current_surface="$(jq -r 'first((.waves // [])[] | select(.status == "in_progress") | .surface) // first((.waves // [])[] | select(.status == "pending") | .surface) // "—"' "${findings_file}" 2>/dev/null)"
+    printf 'Wave plan:                 %s/%s completed · %s in-progress · current surface: %s\n' \
+      "${waves_done:-0}" "${wave_total}" "${waves_in_prog:-0}" "${current_surface:-—}"
+    printf 'Wave findings:             %s total · %s shipped · %s pending\n' \
+      "${f_total:-0}" "${f_shipped:-0}" "${f_pending:-0}"
+  fi
 fi
 
 # Show dimension status if dimensions are active

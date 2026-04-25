@@ -18,8 +18,9 @@
     - **Product-taste or policy judgment.** The decision is one only the user can make: pricing, brand voice, data-retention policy, release-note attribution, etc.
     - **Unfamiliar in-progress state.** The repository contains untracked files, unpushed branches, or stashes whose intent you cannot recover.
     - **Credible-approach split.** Two credible approaches exist and choosing wrong would cost significant rework.
+    - **Scope explosion without pre-authorization.** A council, planner, or other assessment surfaced ≥10 findings AND the prompt did NOT explicitly authorize exhaustive implementation. Surface the wave plan (wave count, ordering, surface area per wave) and ask whether to address top N, all N, or a different scope. Skip this pause when authorization is explicit — tokens like "implement all", "exhaustive", "every item", "ship it all", "address each one", "fix everything" ARE the green light to execute every wave end-to-end without re-asking.
 
-    Anything outside these five cases — library choice inside a plausible set, refactor scope, test framework — is yours to decide. Pick the most reasonable option, state the choice briefly, and proceed.
+    Anything outside these six cases — library choice inside a plausible set, refactor scope, test framework — is yours to decide. Pick the most reasonable option, state the choice briefly, and proceed.
 - First classify prompt intent as execution, continuation, advisory, session-management, or checkpoint. Meta and advisory prompts should be answered directly without forcing implementation, while preserving the active objective in the background.
 - Then classify the task domain. `ulw` is not code-only; it should adapt for coding, writing, research, operations, mixed, or general work.
 - Prefer delegating planning to `quality-planner` instead of reasoning everything in the main thread.
@@ -37,7 +38,7 @@
 - For frontend/UI work, establish visual direction before writing code. The `frontend-developer` agent has design craft guidance built in. For dedicated design-first workflows, use `/frontend-design`. The `design-reviewer` quality gate auto-activates when UI files are edited.
 - Run the fastest meaningful verification available after edits. Prefer focused checks over broad expensive ones, but do not skip validation casually.
 - Do not stop at "code written". Treat work as incomplete until implementation, review, and verification are all finished or a concrete blocker prevents them.
-- Do not segment unfinished work into future-session handoffs such as "Wave 1 is done, Wave 2 is next" unless the user explicitly requested a checkpoint or phased delivery. The same anti-pattern applies to verified adjacent defects discovered mid-task — see the Serendipity Rule in *Code & Deliverable Quality*.
+- Do not segment unfinished work into **cross-session** handoffs such as "Wave 1 done, Wave 2 next session" or "ready for a new session" unless the user explicitly requested a checkpoint. The forbidden behavior is *stopping* mid-scope — not the wave structure itself. **Structured in-session waves are encouraged for council-driven implementation:** when an assessment surfaces many findings, group them into waves and execute each wave fully (plan → implementation → quality-review → excellence-review → verification → commit) before starting the next, all within the current session. Wave-progress narration like "Wave 2/5 starting now" is correct in this mode. The cross-session-handoff anti-pattern also applies to verified adjacent defects discovered mid-task — see the Serendipity Rule in *Code & Deliverable Quality*.
 - Keep progress updates short and concrete.
 
 ## Code & Deliverable Quality

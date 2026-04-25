@@ -60,6 +60,7 @@ assert_not_contains() {
 
 reset_scope() {
   rm -f "$(session_file "discovered_scope.jsonl")"
+  rm -f "$(session_file "findings.json")"
   rm -f "$(session_file "${STATE_JSON}")"
   printf '{}\n' > "$(session_file "${STATE_JSON}")"
 }
@@ -67,8 +68,11 @@ reset_scope() {
 # ----------------------------------------------------------------------
 # Inline simulation of the discovered-scope stop-guard gate.
 # Mirrors the block in stop-guard.sh — keep in sync if that gate changes.
-# Returns one of: block:<n>/2, allow:no_pending, allow:cap_reached,
+# Returns one of: block:<n>/<cap>, allow:no_pending, allow:cap_reached,
 # allow:flag_off, allow:non_execution, allow:no_file
+#
+# Mirrors stop-guard.sh wave-aware cap: when findings.json declares N waves,
+# cap = N+1; otherwise cap = 2.
 # ----------------------------------------------------------------------
 run_scope_gate() {
   local task_intent="$1"
@@ -83,19 +87,44 @@ run_scope_gate() {
   if [[ ! -f "${scope_file}" ]]; then
     printf 'allow:no_file'; return
   fi
-  local pending blocks
+  local pending blocks wave_total cap
   pending="$(read_pending_scope_count)"
   blocks="$(read_state "discovered_scope_blocks")"
   blocks="${blocks:-0}"
-  if [[ "${pending}" -gt 0 && "${blocks}" -lt 2 ]]; then
+  wave_total="$(read_active_wave_total)"
+  if [[ "${wave_total}" -gt 0 ]]; then
+    cap=$((wave_total + 1))
+  else
+    cap=2
+  fi
+  if [[ "${pending}" -gt 0 && "${blocks}" -lt "${cap}" ]]; then
     write_state "discovered_scope_blocks" "$((blocks + 1))"
-    printf 'block:%s/2' "$((blocks + 1))"
+    printf 'block:%s/%s' "$((blocks + 1))" "${cap}"
     return
   fi
   if [[ "${pending}" -gt 0 ]]; then
     printf 'allow:cap_reached'; return
   fi
   printf 'allow:no_pending'
+}
+
+# Helper: write a minimal findings.json with N waves so tests can simulate
+# an active wave plan without invoking record-finding-list.sh.
+fake_wave_plan() {
+  local n="$1"
+  local waves_json findings_json
+  waves_json="$(seq 1 "${n}" | jq -R -s '
+    split("\n") | map(select(length>0)) | map({
+      index: tonumber, total: '"${n}"', surface: ("wave-"+.),
+      finding_ids: [], status: "pending", commit_sha: "", ts: 0
+    })')"
+  findings_json="$(jq -nc --argjson waves "${waves_json}" \
+    '{version:1, created_ts:0, updated_ts:0, findings:[], waves:$waves}')"
+  printf '%s\n' "${findings_json}" > "$(session_file "findings.json")"
+}
+
+clear_wave_plan() {
+  rm -f "$(session_file "findings.json")"
 }
 
 # Test fixtures
@@ -455,6 +484,64 @@ if [[ -f "${file}" ]]; then
   final_count="$(wc -l < "${file}" | tr -d '[:space:]')"
 fi
 assert_eq "200-row cap enforced" "200" "${final_count}"
+
+# ----------------------------------------------------------------------
+printf 'Test 20: wave plan raises cap from 2 to N+1\n'
+reset_scope
+clear_wave_plan
+# Seed pending findings
+rows="$(extract_discovered_findings "metis" "${METIS_OUTPUT}")"
+append_discovered_scope "metis" "${rows}"
+# Without wave plan: cap=2
+verdict="$(run_scope_gate "execution")"
+assert_eq "no wave plan: first block cap=2" "block:1/2" "${verdict}"
+verdict="$(run_scope_gate "execution")"
+assert_eq "no wave plan: second block cap=2" "block:2/2" "${verdict}"
+verdict="$(run_scope_gate "execution")"
+assert_eq "no wave plan: third invocation releases" "allow:cap_reached" "${verdict}"
+
+# Reset and seed a 5-wave plan
+reset_scope
+append_discovered_scope "metis" "${rows}"
+fake_wave_plan 5
+# With 5 waves: cap=6
+for i in 1 2 3 4 5 6; do
+  verdict="$(run_scope_gate "execution")"
+  assert_eq "5-wave plan: block ${i}/6" "block:${i}/6" "${verdict}"
+done
+verdict="$(run_scope_gate "execution")"
+assert_eq "5-wave plan: 7th invocation releases" "allow:cap_reached" "${verdict}"
+
+# ----------------------------------------------------------------------
+printf 'Test 21: read_active_wave_total returns 0 when findings.json missing\n'
+clear_wave_plan
+total="$(read_active_wave_total)"
+assert_eq "no findings.json → 0" "0" "${total}"
+
+fake_wave_plan 3
+total="$(read_active_wave_total)"
+assert_eq "3-wave plan → 3" "3" "${total}"
+
+# ----------------------------------------------------------------------
+printf 'Test 22: malformed findings.json fails open (returns 0)\n'
+clear_wave_plan
+printf 'not valid json {{{' > "$(session_file "findings.json")"
+total="$(read_active_wave_total)"
+assert_eq "malformed json → 0" "0" "${total}"
+
+# ----------------------------------------------------------------------
+printf 'Test 23: read_active_waves_completed counts completed waves\n'
+clear_wave_plan
+fake_wave_plan 3
+done_count="$(read_active_waves_completed)"
+assert_eq "fresh plan → 0 completed" "0" "${done_count}"
+
+# Mark wave 1 completed
+findings_file="$(session_file "findings.json")"
+jq '.waves = (.waves | map(if .index == 1 then .status = "completed" else . end))' \
+  "${findings_file}" > "${findings_file}.tmp" && mv "${findings_file}.tmp" "${findings_file}"
+done_count="$(read_active_waves_completed)"
+assert_eq "wave 1 completed → 1" "1" "${done_count}"
 
 printf '\n=== Discovered-Scope Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]
