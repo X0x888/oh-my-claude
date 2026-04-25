@@ -15,7 +15,7 @@ oh-my-claude/
   verify.sh                   # Post-install integrity checker
 
   bundle/dot-claude/          # Installs to ~/.claude/
-    agents/                   # 30 specialist agent definitions (.md)
+    agents/                   # 31 specialist agent definitions (.md)
     output-styles/            # Output format templates
     quality-pack/
       memory/                 # Core, skills, and compact memory files
@@ -125,12 +125,12 @@ Reviewer-style agents (`quality-reviewer`, `editor-critic`, `excellence-reviewer
 
 #### Universal VERDICT contract (v1.14.0)
 
-In v1.14.0 the VERDICT contract was extended to all 30 agents so the final-line outcome is structured and uniform across roles. The 6 reviewer-class agents above remain unchanged (their `CLEAN`/`SHIP`/`FINDINGS`/`BLOCK` vocabulary is still what `record-reviewer.sh` parses). The 24 other agents gained role-appropriate tokens; planners are read by `record-plan.sh` (which now sets `plan_verdict` state) and the rest are forward-looking — read by humans today, available to future hooks.
+In v1.14.0 the VERDICT contract was extended to all 30 agents so the final-line outcome is structured and uniform across roles. The 6 reviewer-class agents above remain unchanged (their `CLEAN`/`SHIP`/`FINDINGS`/`BLOCK` vocabulary is still what `record-reviewer.sh` parses). v1.15.0 adds `visual-craft-lens` (lens-class) bringing the total to 31. The 25 non-reviewer agents gained role-appropriate tokens; planners are read by `record-plan.sh` (which now sets `plan_verdict` state) and the rest are forward-looking — read by humans today, available to future hooks.
 
 | Role | Agents | Vocabulary | Meaning | Consumer today |
 |---|---|---|---|---|
 | Reviewer / critic | (see "Reviewer VERDICT contract" above) | `CLEAN` / `SHIP` / `FINDINGS (N)` / `BLOCK (N)` | No findings → ticks dimension; N findings → blocks until addressed. | `record-reviewer.sh` |
-| Lens evaluator | `data-lens`, `design-lens`, `growth-lens`, `product-lens`, `security-lens`, `sre-lens` | `CLEAN` / `FINDINGS (N)` | Lens raised N priority findings (or none). | None — informational. The discovered-scope ledger is fed separately by `extract_discovered_findings()` parsing `### Findings`-style headings in the lens body, not by this verdict line. |
+| Lens evaluator | `data-lens`, `design-lens`, `growth-lens`, `product-lens`, `security-lens`, `sre-lens`, `visual-craft-lens` | `CLEAN` / `FINDINGS (N)` | Lens raised N priority findings (or none). | None — informational. The discovered-scope ledger is fed separately by `extract_discovered_findings()` parsing `### Findings`-style headings in the lens body, not by this verdict line. |
 | Planner | `prometheus`, `quality-planner` | `PLAN_READY` / `NEEDS_CLARIFICATION` / `BLOCKED` | Plan is decision-complete, needs user input, or blocked. | `record-plan.sh` writes `plan_verdict` to session state. |
 | Researcher | `librarian`, `quality-researcher` | `REPORT_READY` / `INSUFFICIENT_SOURCES` | Research is grounded, or sources are insufficient and the main thread should expect uncertainty. | None — informational. |
 | Debugger / architect | `oracle` | `RESOLVED` / `HYPOTHESIS` / `NEEDS_EVIDENCE` | Root cause identified, best guess offered, or more data needed. | None — informational. |
@@ -138,7 +138,7 @@ In v1.14.0 the VERDICT contract was extended to all 30 agents so the final-line 
 | Writer | `draft-writer`, `writing-architect` | `DELIVERED` / `NEEDS_INPUT` / `NEEDS_RESEARCH` | Draft/structure is ready, awaiting decision, or needs factual research. | None — informational. |
 | Implementer | `backend-api-developer`, `devops-infrastructure-engineer`, `frontend-developer`, `fullstack-feature-builder`, `ios-core-engineer`, `ios-deployment-specialist`, `ios-ecosystem-integrator`, `ios-ui-developer`, `test-automation-engineer` | `SHIP` / `INCOMPLETE` / `BLOCKED` | Implementation is complete and verified, partial, or blocked on a hard prerequisite. | None — informational. |
 
-Total: 6 reviewer-class + 6 lens + 2 planner + 2 researcher + 1 debugger + 2 operations + 2 writer + 9 implementer = **30 agents**. The contract-presence regression net is `tests/test-agent-verdict-contract.sh` — when adding a new agent or role, extend that test's `role_of_agent()` and `allowed_tokens_of_role()` cases in lockstep with this table.
+Total: 6 reviewer-class + 7 lens + 2 planner + 2 researcher + 1 debugger + 2 operations + 2 writer + 9 implementer = **31 agents** (as of v1.15.0). The contract-presence regression net is `tests/test-agent-verdict-contract.sh` — when adding a new agent or role, extend that test's `role_of_agent()` and `allowed_tokens_of_role()` cases in lockstep with this table.
 
 When wiring a new VERDICT vocabulary into a hook consumer, extend the parser regex in `record-reviewer.sh` (or add a new parser as `record-plan.sh` did for `plan_verdict`). Until then, the informational rows above emit the verdict for human readability and forward compatibility — the gate's behavior is unchanged for those agents.
 
@@ -161,7 +161,7 @@ When adding a new reviewer-style agent that should participate in the prescribed
 
 #### Discovered-scope capture (advisory specialists)
 
-Separately from the reviewer dimensions above, the universal SubagentStop hook (`record-subagent-summary.sh`) captures findings from **advisory specialists** into a per-session `discovered_scope.jsonl`. Whitelist: `metis`, `briefing-analyst`, and the six council lenses (`security-lens`, `data-lens`, `product-lens`, `growth-lens`, `sre-lens`, `design-lens`). Verifier agents (`quality-reviewer`, `excellence-reviewer`, `editor-critic`, `design-reviewer`) are intentionally excluded — their findings already feed dedicated dimensions. The capture wiring uses no per-agent matcher (Approach A in the plan), so adding a new advisory specialist requires only updating `discovered_scope_capture_targets()` in `common.sh`. The downstream stop-guard reads pending count and blocks (cap: 2) when execution intent is active.
+Separately from the reviewer dimensions above, the universal SubagentStop hook (`record-subagent-summary.sh`) captures findings from **advisory specialists** into a per-session `discovered_scope.jsonl`. Whitelist: `metis`, `briefing-analyst`, and the seven council lenses (`security-lens`, `data-lens`, `product-lens`, `growth-lens`, `sre-lens`, `design-lens`, `visual-craft-lens`). Verifier agents (`quality-reviewer`, `excellence-reviewer`, `editor-critic`, `design-reviewer`) are intentionally excluded — their findings already feed dedicated dimensions. The capture wiring uses no per-agent matcher (Approach A in the plan), so adding a new advisory specialist requires only updating `discovered_scope_capture_targets()` in `common.sh`. The downstream stop-guard reads pending count and blocks (cap: 2) when execution intent is active.
 
 **Dual-pipeline participation.** `metis` and `briefing-analyst` participate in **both** the reviewer-dimension pipeline (via `record-reviewer.sh stress_test` / `traceability` matchers) and the discovered-scope ledger (via the universal summary hook). These are independent surfaces: the reviewer pipeline ticks dimensions for the stop-guard's coverage gate; the discovered-scope ledger feeds the completeness gate. They do not deduplicate — when adding or modifying these specialists, update both surfaces deliberately. The same applies to any future advisory specialist that also acts as a verifier.
 

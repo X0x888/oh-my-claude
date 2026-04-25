@@ -99,6 +99,7 @@ AGENT_FILES=(
   "${CLAUDE_HOME}/agents/security-lens.md"
   "${CLAUDE_HOME}/agents/sre-lens.md"
   "${CLAUDE_HOME}/agents/test-automation-engineer.md"
+  "${CLAUDE_HOME}/agents/visual-craft-lens.md"
   "${CLAUDE_HOME}/agents/writing-architect.md"
   "${CLAUDE_HOME}/agents/design-reviewer.md"
 )

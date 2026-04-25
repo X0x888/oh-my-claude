@@ -2,7 +2,7 @@
 
 **What if Claude Code couldn't cut corners?**
 
-[![Version](https://img.shields.io/badge/Version-1.14.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-1.15.0-blue.svg)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Shell](https://img.shields.io/badge/Shell-bash-green.svg)]()
 [![Dependencies](https://img.shields.io/badge/Dependencies-none-brightgreen.svg)]()
@@ -115,7 +115,7 @@ Pre- and post-compact hooks snapshot the working state when Claude Code compacts
 
 ### Permissioned agents
 
-30 specialist agents, each with `disallowedTools` enforced. Agents can read, search, analyze, and plan -- but they cannot edit files. The main thread owns all mutations. This means agents provide high-quality analysis without unsupervised writes, and the main thread remains the single source of truth for code changes.
+31 specialist agents, each with `disallowedTools` enforced. Agents can read, search, analyze, and plan -- but they cannot edit files. The main thread owns all mutations. This means agents provide high-quality analysis without unsupervised writes, and the main thread remains the single source of truth for code changes.
 
 ### Project Council
 
@@ -201,7 +201,7 @@ For the full architecture, see [docs/architecture.md](docs/architecture.md).
 oh-my-claude/
 ├── install.sh / uninstall.sh / verify.sh   # Install, remove, and verify
 ├── bundle/dot-claude/                       # Installs to ~/.claude/
-│   ├── agents/          (30 agents)         # Specialist agent definitions
+│   ├── agents/          (31 agents)         # Specialist agent definitions
 │   ├── skills/          (18 skills)         # Skill definitions + autowork hooks
 │   ├── quality-pack/                        # Lifecycle hooks + memory files
 │   ├── output-styles/                       # Output format templates
@@ -303,7 +303,7 @@ bash tests/test-show-report.sh              # /ulw-report skill backend (cross-s
 bash tests/test-install-remote.sh           # curl-pipe-bash bootstrapper (install-remote.sh)
 bash tests/test-phase8-integration.sh       # Council Phase 8 wave-cap wiring (record-finding-list ↔ stop-guard)
 bash tests/test-verification-lib.sh         # Extracted lib/verification.sh module (symbol presence + smoke)
-bash tests/test-agent-verdict-contract.sh   # Universal VERDICT contract regression net (all 30 agents)
+bash tests/test-agent-verdict-contract.sh   # Universal VERDICT contract regression net (all 31 agents)
 bash tests/test-gate-events.sh              # Per-event outcome attribution (gate_events.jsonl helper + wiring)
 bash tests/test-discover-session.sh         # Cross-project session-discovery cwd filter (record-finding-list / show-status)
 bash tests/test-design-contract.sh          # 9-section Design Contract regression net (UI agents + skill + router)

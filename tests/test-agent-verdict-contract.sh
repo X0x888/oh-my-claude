@@ -8,7 +8,7 @@
 #
 # Without this test, the next agent added to the bundle could silently
 # regress the contract — verify.sh's path-existence check cannot detect
-# a contract drift, and only 6 of 30 agents have any consumer parsing
+# a contract drift, and only 6 of 31 agents have any consumer parsing
 # (record-reviewer.sh) that would catch the drift in a behavioral test.
 #
 # Mirrors the symbol-presence pattern of tests/test-classifier.sh and
@@ -41,7 +41,7 @@ role_of_agent() {
   case "$1" in
     quality-reviewer|editor-critic|excellence-reviewer|metis|briefing-analyst|design-reviewer)
       printf 'reviewer' ;;
-    data-lens|design-lens|growth-lens|product-lens|security-lens|sre-lens)
+    data-lens|design-lens|growth-lens|product-lens|security-lens|sre-lens|visual-craft-lens)
       printf 'lens' ;;
     prometheus|quality-planner)
       printf 'planner' ;;
@@ -96,7 +96,7 @@ shopt -s nullglob
 agent_files=("${AGENTS_DIR}"/*.md)
 shopt -u nullglob
 agent_count="${#agent_files[@]}"
-assert_eq "30 agent files present" "30" "${agent_count}"
+assert_eq "31 agent files present" "31" "${agent_count}"
 
 for f in "${agent_files[@]}"; do
   agent_name="$(basename "${f}" .md)"

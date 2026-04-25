@@ -43,13 +43,14 @@ Choose 3-6 relevant role-lenses based on what you discovered. Use this guide:
 | Lens | When to include | When to skip |
 |------|----------------|--------------|
 | `product-lens` | Any user-facing software, developer tools with adoption goals | Pure infrastructure, internal scripts |
-| `design-lens` | Web apps, mobile apps, desktop apps, CLIs with interactive UX | Libraries, APIs, backend services, infrastructure |
+| `design-lens` | Web apps, mobile apps, desktop apps, CLIs with interactive UX (UX flow / IA / onboarding / accessibility / error states) | Libraries, APIs, backend services, infrastructure |
+| `visual-craft-lens` | Projects with a visible UI surface where visual design quality matters — landing pages, dashboards, native iOS/macOS apps, polished CLIs/TUIs (palette intent, typography hierarchy, depth/elevation, visual signature, generic-AI-pattern detection, archetype anti-cloning) | Pure backend/API/infra without a UI surface; internal tools where visual polish is non-goal |
 | `security-lens` | Anything with auth, user data, external APIs, network exposure | Static sites with no data, read-only tools |
 | `data-lens` | Products needing analytics, data-driven decisions, ML features | Early prototypes, pure infrastructure, CLI utilities |
 | `sre-lens` | Production services, APIs, infrastructure, anything that runs 24/7 | Client-only apps, libraries, documentation |
 | `growth-lens` | Consumer products, SaaS, marketplaces, open-source with adoption goals | Internal tools, infrastructure, scripts |
 
-**Minimum 3 lenses, maximum 6.** If fewer than 3 are relevant, include product-lens and security-lens by default — they apply to almost everything.
+**Minimum 3 lenses, maximum 7.** If fewer than 3 are relevant, include product-lens and security-lens by default — they apply to almost everything. **`design-lens` and `visual-craft-lens` are disjoint by design** (UX flow vs. visual craft) — dispatch both for projects where both surfaces matter; they will not duplicate findings.
 
 ### 3. Dispatch
 

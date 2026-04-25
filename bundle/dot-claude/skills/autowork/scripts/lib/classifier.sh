@@ -107,29 +107,151 @@ is_ui_request() {
   [[ -z "${text}" ]] && return 1
 
   # Split UI detection from domain scoring. The router needs to spot common
-  # frontend asks ("create a login page", "style an empty state") without
-  # turning design-analysis or writing prompts into coding work.
+  # frontend asks ("create a login page", "style an empty state", "polish
+  # my dashboard") without turning design-analysis or writing prompts into
+  # coding work.
+  #
+  # Polish-class verbs (polish/refine/improve/enhance/elevate/perfect/
+  # beautify/tighten/sharpen) are intentionally **noun-gated** by the same
+  # UI-noun list as structural verbs. This means "polish my essay",
+  # "improve my draft", "refine my paragraph" do NOT match — those nouns
+  # aren't in the UI noun list. Only "polish my landing page", "refine my
+  # dashboard", etc. trip detection. See classifier writing-keyword list
+  # at line ~227 for the writing-domain side; the noun gate is the
+  # disambiguator.
   local structural_ui_actions
   local qualified_form_actions
   local visual_ui_actions
   local motion_ui_actions
+  local polish_ui_actions
   local explicit_ui_terms
 
   structural_ui_actions='\b(build(ing)?|create|creat(e|ing)|add(ing)?|make|implement(ing)?|update(ing)?|fix(ing)?|refactor(ing)?)\s+(a\s+|an\s+|the\s+|this\s+|that\s+|these\s+|those\s+|my\s+|our\s+)?(\w+\s+){0,2}(landing.?pages?|home.?pages?|pages?|dashboards?|screens?|modals?|dialogs?|drawers?|heroes?|nav(igation|bar)?|sidebars?|headers?|footers?|menus?|tabs?|panels?|layouts?|components?|empty.?states?|tables?|charts?|filters?|accordions?|wizards?|steppers?|banners?)\b'
   qualified_form_actions='\b(build(ing)?|create|creat(e|ing)|add(ing)?|make|implement(ing)?|update(ing)?|fix(ing)?|refactor(ing)?)\s+(a\s+|an\s+|the\s+|this\s+|that\s+|these\s+|those\s+|my\s+|our\s+)?(login|signup|sign[- ]?up|sign[- ]?in|checkout|contact|search|settings|profile|feedback|payment|registration|onboarding|responsive)\s+forms?\b'
   visual_ui_actions='\b(design(ing)?|style|styl(e|ing)|redesign(ing)?|restyle|theme)\s+(a\s+|an\s+|the\s+|this\s+|that\s+|these\s+|those\s+|my\s+|our\s+)?(\w+\s+){0,2}(landing.?pages?|home.?pages?|pages?|forms?|buttons?|cards?|modals?|dialogs?|drawers?|dropdowns?|nav(igation|bar)?|sidebars?|headers?|footers?|heroes?|layouts?|components?|interfaces?|screens?|dashboards?|sections?|menus?|tabs?|panels?|empty.?states?|tables?|charts?|filters?|banners?|tooltips?|toasts?)\b'
   motion_ui_actions='\b(add(ing)?|create|creat(e|ing)|build(ing)?|make|implement(ing)?|update(ing)?)\s+(a\s+|an\s+|the\s+|some\s+|subtle\s+|micro\s+)?animations?\s+(to|for|on|in)\s+(the\s+|a\s+|an\s+|this\s+|that\s+|my\s+|our\s+)?(\w+\s+){0,2}(heroes?|nav(igation|bar)?|sidebars?|buttons?|cards?|modals?|menus?|tabs?|panels?|pages?|screens?|components?|sections?)\b'
+  polish_ui_actions='\b(polish(ing)?|refin(e|es|ed|ing)|improv(e|es|ed|ing)|enhanc(e|es|ed|ing)|elevat(e|es|ed|ing)|perfect(s|ed|ing)?|tighten(ing)?|sharpen(ing)?|beautif(y|ies|ied|ying)|level\s+up|make\s+(it|this|that|them|the)\s+(beautiful|premium|distinctive|sharper|tighter|nicer|better|polished|nicer\s+looking|more\s+(polished|distinctive|premium)))\s+(a\s+|an\s+|the\s+|this\s+|that\s+|these\s+|those\s+|my\s+|our\s+)?(\w+\s+){0,2}(landing.?pages?|home.?pages?|pages?|dashboards?|screens?|modals?|dialogs?|drawers?|heroes?|nav(igation|bar)?|sidebars?|headers?|footers?|menus?|tabs?|panels?|layouts?|components?|empty.?states?|tables?|charts?|filters?|interfaces?|sections?|forms?|buttons?|cards?|tooltips?|toasts?|banners?|wizards?|steppers?|onboarding|app|apps|ios\s+app|iphone\s+app|ipad\s+app|mac\s+app|macos\s+app|web\s+app|websites?|sites?|uis?|product|design)\b'
   explicit_ui_terms='\b(landing.?page|modal|navbar|sidebar|tailwind|ui|ux)\b'
 
   if grep -Eiq "${structural_ui_actions}" <<<"${text}" \
     || grep -Eiq "${qualified_form_actions}" <<<"${text}" \
     || grep -Eiq "${visual_ui_actions}" <<<"${text}" \
     || grep -Eiq "${motion_ui_actions}" <<<"${text}" \
+    || grep -Eiq "${polish_ui_actions}" <<<"${text}" \
     || grep -Eiq "${explicit_ui_terms}" <<<"${text}"; then
     return 0
   fi
 
   return 1
+}
+
+# infer_ui_intent — return the UI verb-class for tier mapping.
+# Output is one of: build | style | polish | fix | none.
+# The router uses this to inject the right tier guidance:
+#   build  → Tier A (full 9-section contract)
+#   style  → Tier B  (palette + typography + visual signature only)
+#   polish → Tier B+ (palette + typography + signature + component states + density rhythm; NOT preserve)
+#   fix    → Tier C  (preserve existing tokens; do not redesign)
+#   none   → no UI work detected
+# Order matters: build/redesign verbs win when both build and polish
+# verbs co-occur (e.g., "build a polished landing page" → build, not polish).
+infer_ui_intent() {
+  local text="$1"
+  [[ -z "${text}" ]] && { printf 'none'; return; }
+
+  # Tier A — greenfield/redesign verbs
+  if grep -Eiq '\b(build(ing)?|creat(e|ing)|add(ing)?|implement(ing)?|redesign(ing)?|design(ing)?|make\s+(a|an|the|my|our)?\s*(new|fresh)?)\s+' <<<"${text}"; then
+    printf 'build'; return
+  fi
+  # Tier B — surface theming
+  if grep -Eiq '\b(style|styl(e|ing)|restyle|theme(d|ing)?)\s+(a\s+|an\s+|the\s+|this\s+|that\s+|my\s+|our\s+)' <<<"${text}"; then
+    printf 'style'; return
+  fi
+  # Tier B+ — polish-class refinement (must not be Tier C "fix")
+  if grep -Eiq '\b(polish(ing)?|refin(e|es|ed|ing)|improv(e|es|ed|ing)|enhanc(e|es|ed|ing)|elevat(e|es|ed|ing)|perfect(s|ed|ing)?|tighten(ing)?|sharpen(ing)?|beautif(y|ies|ied|ying)|level\s+up|make\s+(it|this|that|them|the)\s+(beautiful|premium|distinctive|sharper|tighter|nicer|better|polished))\s+' <<<"${text}"; then
+    printf 'polish'; return
+  fi
+  # Tier C — preservation
+  if grep -Eiq '\b(fix(ing)?|refactor(ing)?|clean\s+up|debug(ging)?)\s+' <<<"${text}"; then
+    printf 'fix'; return
+  fi
+  printf 'none'
+}
+
+# infer_ui_platform — detect target UI platform from prompt + project profile.
+# Output is one of: web | ios | macos | cli | unknown.
+# Precedence (most-specific wins): cli > macos > ios > web.
+# Project profile fallback only consulted when prompt has no platform signal.
+# Web is the default for ambiguous UI prompts (highest base rate).
+infer_ui_platform() {
+  local text="$1"
+  local profile="${2:-}"
+  [[ -z "${text}" ]] && { printf 'unknown'; return; }
+
+  # CLI/TUI signals (most specific)
+  if grep -Eiq '\b(cli|tui|terminal\s+(app|ui|interface)|command.?line\s+(app|tool|interface)|argv|stdout|stderr|argparse|clap|cobra|click\s+(library|cli)|cobra\s+cli|charm\.sh|bubbletea|bubble\s+tea|lipgloss|lip\s+gloss|gum\s+cli|ratatui|ANSI\s+(color|escape)|exit\s+code|man\s+page|--help\s+output|fzf|ripgrep|btop|lazygit|helix\s+editor|fish\s+shell|starship\s+prompt)\b' <<<"${text}"; then
+    printf 'cli'; return
+  fi
+  # macOS signals (more specific than iOS)
+  if grep -Eiq '\b(macOS\s+app|Mac\s+app|menu.?bar\s+app|AppKit|Mac\s+Catalyst|NSWindow|NSToolbar|NSSplitView|NSStatusItem|NSViewController|NSApplication)\b' <<<"${text}"; then
+    printf 'macos'; return
+  fi
+  # iOS signals — also catch standalone "iOS"/"iPhone"/"iPad" tokens since
+  # users say "an app for iOS" / "iPhone app" / "iPad-only" without always
+  # writing "iOS app" as a consecutive phrase. False-positive risk: a web
+  # prompt mentioning "iOS-style design" routes to iOS — acceptable; the
+  # platform mention is itself a strong intent signal.
+  if grep -Eiq '\b(iOS|iPhone|iPad|SwiftUI|UIKit|App\s+Store|TestFlight|HIG|SF\s+Symbols|Dynamic\s+Type|Liquid\s+Glass|UITabBar|UIViewController|UINavigationController)\b' <<<"${text}"; then
+    printf 'ios'; return
+  fi
+  # Project-profile fallback when prompt is platform-silent
+  case "${profile}" in
+    ios|macos|cli) printf '%s' "${profile}"; return ;;
+  esac
+  # Web signals
+  if grep -Eiq '\b(landing.?page|website|web\s+app|browser|tailwind|next\.?js|vite|react|vue|svelte|astro|nuxt|sveltekit|remix|HTML|CSS|html\s+page|web\s+page)\b' <<<"${text}"; then
+    printf 'web'; return
+  fi
+  # Default to web — highest base rate when is_ui_request matched but no
+  # platform signal is present. Caller can override with prompt clarity.
+  printf 'web'
+}
+
+# infer_ui_domain — detect product domain from prompt content.
+# Output is one of: fintech | wellness | creative | devtool | editorial |
+# education | enterprise | consumer | unknown.
+# Domain affinity drives archetype selection (fintech → Stripe/Linear/
+# Mercury, wellness → Calm/Headspace, creative → Figma/Arc, devtool →
+# Linear/Raycast/Vercel, etc.). Order matters — most-specific domain wins.
+infer_ui_domain() {
+  local text="$1"
+  [[ -z "${text}" ]] && { printf 'unknown'; return; }
+
+  if grep -Eiq '\b(payment|invoice|wallet|bank(ing)?|crypto|trading|stripe|plaid|fintech|finance|investment|portfolio\s+(management|tracking)|accounting|budgeting|expense|payroll|tax\s+(filing|prep))\b' <<<"${text}"; then
+    printf 'fintech'; return
+  fi
+  if grep -Eiq '\b(meditation|mindful(ness)?|therap(y|ist)|wellness|fitness|sleep|workout|yoga|breathing|nutrition|mental\s+health|self.?care|calm|headspace)\b' <<<"${text}"; then
+    printf 'wellness'; return
+  fi
+  if grep -Eiq '\b(portfolio|gallery|artist|photo(grapher|graphy)?|videograph(y|er)|design\s+tool|canvas|illustration|creative\s+(agency|studio)|music\s+(app|player)|audio|sound\s+app)\b' <<<"${text}"; then
+    printf 'creative'; return
+  fi
+  if grep -Eiq '\b(developer\s+tool|dev\s+tool|api\s+(client|console)|admin\s+(panel|dashboard)|monitoring|observability|debug(ging)?\s+tool|log\s+viewer|cli\s+tool|sdk|framework|library\s+for\s+developers)\b' <<<"${text}"; then
+    printf 'devtool'; return
+  fi
+  if grep -Eiq '\b(blog|magazine|news\s+(app|site)|publication|reading\s+app|essay\s+platform|journal(ism)?|editorial|long.?form|article\s+(app|reader))\b' <<<"${text}"; then
+    printf 'editorial'; return
+  fi
+  if grep -Eiq '\b(course|learning\s+(app|platform)|education(al)?\s+(app|tool)|tutor(ial|ing)?|classroom|student\s+(app|tool)|teacher\s+(app|dashboard)|kids\s+(app|game)|child(ren)?(\s+(app|game))?|study\s+(app|tool)|quiz\s+app|flashcard)\b' <<<"${text}"; then
+    printf 'education'; return
+  fi
+  if grep -Eiq '\b(crm|erp|saas\s+platform|b2b|workflow\s+(tool|app)|approval\s+(flow|system)|compliance\s+(tool|dashboard)|audit\s+log|vendor\s+(portal|management)|enterprise\s+(app|portal)|admin\s+console|reporting\s+suite)\b' <<<"${text}"; then
+    printf 'enterprise'; return
+  fi
+  if grep -Eiq '\b(social\s+(app|network)|messaging\s+app|marketplace|booking\s+(app|platform)|community\s+app|feed\s+app|chat\s+app|forum|consumer\s+app|shopping\s+app|e.?commerce|store(front)?|product\s+catalog)\b' <<<"${text}"; then
+    printf 'consumer'; return
+  fi
+  printf 'unknown'
 }
 
 infer_domain() {

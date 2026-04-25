@@ -313,8 +313,58 @@ Discipline:
     if [[ "${ui_design_opt_out}" -eq 0 ]] \
         && { [[ "${TASK_DOMAIN}" == "coding" || "${TASK_DOMAIN}" == "mixed" ]]; } \
         && is_ui_request "${PROMPT_TEXT}"; then
-      context_parts+=("UI/design work detected. Before writing UI code, establish a visual direction using the **9-section Design Contract**: (1) Visual Theme & Atmosphere, (2) Color Palette & Roles, (3) Typography Rules, (4) Component Stylings, (5) Layout Principles, (6) Depth & Elevation, (7) Do's and Don'ts, (8) Responsive Behavior, (9) Agent Prompt Guide. Apply scope tiering: Tier A (build a page/screen/dashboard) → full contract; Tier B (style/theme an existing surface) → palette + typography + visual signature only; Tier C (fix/refactor) → preserve existing tokens, do not redesign. Pick a closest brand archetype as point of departure (the frontend-developer agent carries the curated list of 15), then commit to at least three things you will do *differently* to avoid cloning. If \`DESIGN.md\` exists at project root, read it first and treat its commitments as a prior; if absent, emit your contract inline under a \`## Design Contract\` heading and offer the user persistence — **never auto-write or overwrite files at the project root**. The design-reviewer quality gate auto-activates when UI files (.tsx, .jsx, .vue, .css, .html) are edited and grades against the contract (or DESIGN.md if present). Avoid generic AI patterns: default blue palettes, centered-hero-with-CTA, three identical feature cards, uniform spacing. The /frontend-design skill is available for dedicated design-first workflows. To suppress this guidance, include 'no design polish' or 'functional only' in your prompt.")
-      log_hook "prompt-intent-router" "UI/design context injected (9-section contract)"
+
+      # Detect UI platform, intent, and domain. These compose to produce the
+      # right context-aware hint: Tier-mapped guidance, platform-specific
+      # contract anchor, domain archetype family suggestion. All three
+      # detectors degrade to safe defaults when signals are weak.
+      ui_platform="$(infer_ui_platform "${PROMPT_TEXT}" "${_project_profile}")"
+      ui_intent="$(infer_ui_intent "${PROMPT_TEXT}")"
+      ui_domain="$(infer_ui_domain "${PROMPT_TEXT}")"
+
+      # Tier hint per intent — Tier B+ (NEW) is the polish-class refinement
+      # that avoids the "polish→Tier C preserve" bug.
+      case "${ui_intent}" in
+        build) ui_tier_hint="Tier A (full 9-section contract — greenfield/redesign)" ;;
+        style) ui_tier_hint="Tier B (palette + typography + visual signature only — surface theming)" ;;
+        polish) ui_tier_hint="Tier B+ (palette + typography + signature + component states + density rhythm — refine, do NOT preserve tokens)" ;;
+        fix) ui_tier_hint="Tier C (preserve existing tokens; do not redesign — a fix prompt should not re-emit the contract)" ;;
+        *) ui_tier_hint="Tier A (default — full contract until intent is clear)" ;;
+      esac
+
+      # Platform-specific block — each platform has its own contract surface
+      # and its own routing destination (which agent owns the work).
+      case "${ui_platform}" in
+        ios)
+          ui_platform_block="**Platform: iOS / Apple native.** Route through the \`ios-ui-developer\` agent which carries the iOS-specific 9-section contract (HIG iOS 26 — Hierarchy/Harmony/Consistency, SF Symbols 7 with custom symbols, Dynamic Type up to AX5, custom accent over \`.systemBlue\`, Materials/Liquid Glass for depth, haptics for primary actions). Archetype priors: Things 3, Halide, Mercury Weather, Bear, Linear iOS, Tot, Reeder, Day One, Telegram, Cash App. Anti-patterns to avoid: \`.systemBlue\` everywhere, stock tab bar with default SF Symbols, no Dynamic Type, no Liquid Glass on iOS 26+, drop-shadow depth instead of materials."
+          ;;
+        macos)
+          ui_platform_block="**Platform: macOS / Apple native.** Route through the \`ios-ui-developer\` agent (Apple-platforms scope covers macOS) plus consider AppKit/Catalyst patterns: NSSplitView sidebar+inspector, NSToolbar with customizable items, NSMenu, vibrancy materials, full keyboard-first nav, menu-bar app patterns where applicable. Anti-patterns: iOS-port aesthetics on Mac (touch-sized targets, no menu bar), web-style buttons instead of native push buttons, missing keyboard shortcuts."
+          ;;
+        cli)
+          ui_platform_block="**Platform: CLI / TUI.** Apply CLI design discipline (per clig.dev guidelines): human-first output with \`--json\` / \`--plain\` for machines; respect \`NO_COLOR\` environment variable and disable color when stdout is not a TTY; errors are teaching moments (\"Can't write to file.txt — try \`chmod +w file.txt\`\") not stack-trace dumps; \`--help\` is scannable with examples first; semantic exit codes; \`-\` for stdin support; print state changes; never emit rainbow ANSI confetti. For TUI: charm.sh stack archetypes (Bubble Tea + Lip Gloss for Go, ratatui for Rust); reference points lazygit, fzf, ripgrep, bat, btop, helix, fish, starship. Color used as signal not decoration. Monospace hierarchy: bold for emphasis, dim for secondary, color for state."
+          ;;
+        web|*)
+          ui_platform_block="**Platform: web.** Route through the \`frontend-developer\` agent which carries the web 9-section contract + 15 brand archetypes (Linear, Stripe, Vercel, Notion, Apple, Airbnb, Spotify, Tesla, Figma, Discord, Raycast, Anthropic, Webflow, Mintlify, Supabase). Anti-patterns to avoid: default Tailwind blue, centered-hero-with-CTA, three identical feature cards, Inter with no typographic styling, uniform \`py-16\` everywhere, blue-to-purple gradient backgrounds, stock-illustration SVGs, \"Get Started\"/\"Learn More\" as the only CTA copy."
+          ;;
+      esac
+
+      # Domain hint — recommend archetype family that fits the product's
+      # category. Caller is told to differentiate from the recommended set.
+      case "${ui_domain}" in
+        fintech) ui_domain_hint="**Domain: fintech.** Archetype affinity: Stripe (precision + premium gradients), Linear (sharp restraint), Mercury (gradient-as-data), Cash App (monumental numerics), Robinhood (single-accent green). Convey trust + clarity; avoid gimmicks." ;;
+        wellness) ui_domain_hint="**Domain: wellness.** Archetype affinity: Calm, Headspace, Apple Health, Sleep Cycle, Mercury Weather. Convey calm + breathing room; warm palettes, gradient atmospherics, restraint over density." ;;
+        creative) ui_domain_hint="**Domain: creative.** Archetype affinity: Figma, Arc, Linear, Things 3, Bear. Convey craft + expressive moments; let one visual signature carry weight." ;;
+        devtool) ui_domain_hint="**Domain: developer tool.** Archetype affinity: Linear, Raycast, Vercel, Supabase, GitHub. Convey precision + density; monochrome with one accent; monospace prominence acceptable." ;;
+        editorial) ui_domain_hint="**Domain: editorial.** Archetype affinity: NYT, Medium, Anthropic, Reeder, Bear. Convey reading rhythm + restraint; serif display + generous line-height; chrome that defers to content." ;;
+        education) ui_domain_hint="**Domain: education.** Archetype affinity: Notion (warm clarity), Things 3 (delight), Day One (approachability). Convey clarity + warmth; avoid corporate stiffness; bright accents acceptable when restrained." ;;
+        enterprise) ui_domain_hint="**Domain: enterprise / B2B.** Archetype affinity: Linear, Stripe, IBM Carbon, Atlassian. Convey reliability + density without sterility; functional palette + tight typography." ;;
+        consumer) ui_domain_hint="**Domain: consumer.** Archetype affinity: Airbnb (warm coral), Spotify (vibrant green on dark), Notion, Discord (friendly blurple). Convey approachability + delight; richer color OK; rounded over angular." ;;
+        *) ui_domain_hint="**Domain: unspecified.** No archetype family pre-selected — use prompt context to pick the closest archetype, then commit to three things you will do *differently* to avoid cloning." ;;
+      esac
+
+      context_parts+=("UI/design work detected — context-aware design routing engaged. Before writing UI code, establish a visual direction using the **9-section Design Contract** ((1) Visual Theme & Atmosphere, (2) Color Palette & Roles, (3) Typography Rules, (4) Component Stylings, (5) Layout Principles, (6) Depth & Elevation, (7) Do's and Don'ts, (8) Responsive Behavior, (9) Agent Prompt Guide). Apply ${ui_tier_hint}. ${ui_platform_block} ${ui_domain_hint} Pick the closest brand archetype as point of departure, then commit to at least three specific things you will do *differently* to avoid cloning — anti-anchoring forces differentiation. **Cross-generation discipline:** never converge on common AI choices (Space Grotesk, Inter at default weight, Tailwind blue-500/indigo-500, centered-hero+CTA, three uniform feature cards, gradient-mesh backgrounds, default blue→purple) — vary palette, typography, and structural pattern across sessions. If \`DESIGN.md\` exists at project root, read it first and treat its commitments as a prior; if absent, emit your contract inline under a \`## Design Contract\` heading and offer the user persistence — **never auto-write or overwrite files at the project root**. The design-reviewer quality gate auto-activates when UI files (.tsx, .jsx, .vue, .css, .html) are edited and grades against the contract (or DESIGN.md if present). The /frontend-design skill is available for dedicated design-first workflows. To suppress this guidance, include 'no design polish' or 'functional only' in your prompt.")
+      log_hook "prompt-intent-router" "UI/design context injected (platform=${ui_platform} intent=${ui_intent} domain=${ui_domain})"
     elif [[ "${ui_design_opt_out}" -eq 1 ]]; then
       log_hook "prompt-intent-router" "UI/design opt-out detected — skipping contract injection"
     fi

@@ -4,7 +4,7 @@ Cognitive quality harness for Claude Code -- bash hooks, specialist agents, and 
 
 ## Key Directories
 
-- `bundle/dot-claude/agents/` -- 30 specialist agent definitions with permission boundaries
+- `bundle/dot-claude/agents/` -- 31 specialist agent definitions with permission boundaries
 - `bundle/dot-claude/quality-pack/scripts/` -- 5 lifecycle hook scripts (prompt routing, compaction, session management)
 - `bundle/dot-claude/skills/` -- 18 skill definitions, each in `<name>/SKILL.md`
 - `bundle/dot-claude/skills/autowork/scripts/` -- 16 autowork hook scripts including `common.sh` (shared utility library), `record-finding-list.sh` (council Phase 8 master finding list), and `record-serendipity.sh` (Serendipity Rule analytics); state I/O extracted to `lib/state-io.sh`, the prompt classifier extracted to `lib/classifier.sh`, and the verification subsystem extracted to `lib/verification.sh`, all sourced by `common.sh`

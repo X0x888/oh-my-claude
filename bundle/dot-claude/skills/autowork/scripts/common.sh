@@ -2303,7 +2303,8 @@ discovered_scope_capture_targets() {
     "product-lens" \
     "growth-lens" \
     "sre-lens" \
-    "design-lens"
+    "design-lens" \
+    "visual-craft-lens"
 }
 
 _severity_from_bullet() {

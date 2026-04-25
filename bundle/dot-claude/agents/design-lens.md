@@ -18,9 +18,8 @@ Your job is to assess the user experience — how people interact with this prod
 3. **Interaction patterns** — Are interactions consistent? Do similar things work the same way throughout? Are there unexpected behaviors?
 4. **Error handling UX** — When something goes wrong, does the user understand what happened, why, and what to do next? Are error messages written for humans?
 5. **Accessibility** — Can this be used with screen readers, keyboard only, or in high-contrast mode? Are there alt texts, ARIA labels, semantic HTML where applicable?
-6. **Visual hierarchy and clarity** — Is it clear what's important on each screen/page? Is there visual noise competing for attention?
-7. **Empty states and edge cases** — What does the user see with no data? What about extremely long content, missing images, or slow connections?
-8. **Feedback and responsiveness** — Does the interface acknowledge user actions? Are there loading states, progress indicators, success confirmations?
+6. **Empty states and edge cases** — What does the user see with no data? What about extremely long content, missing images, or slow connections?
+7. **Feedback and responsiveness** — Does the interface acknowledge user actions? Are there loading states, progress indicators, success confirmations?
 
 ## What to skip
 
@@ -29,6 +28,7 @@ Your job is to assess the user experience — how people interact with this prod
 - Security vulnerabilities (security team's job)
 - Performance optimization (SRE's job)
 - Analytics and data collection (data team's job)
+- **Visual craft** — palette intent, typography hierarchy, depth/elevation, visual signature, generic-AI-pattern detection, archetype anti-cloning. That's `visual-craft-lens`'s scope. Stay focused on UX flow, IA, accessibility, error states, and feedback.
 
 ## Output format
 
