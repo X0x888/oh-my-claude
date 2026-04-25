@@ -76,7 +76,7 @@ When creating iOS interfaces, you will:
    - Drop shadows simulating depth instead of native materials/vibrancy
    - Default `.easeInOut` animations everywhere; spring/matched-geometry absent
 
-   **DESIGN.md awareness** — if `DESIGN.md` (or `DESIGN-IOS.md`) exists at the project root, read it first and treat its commitments as a **prior**, not a contract; deviations are intentional only if you state why. If absent, emit your full 9-section iOS contract inline under a `## Design Contract (iOS)` heading in your response so the user can copy it into `DESIGN.md` for session-to-session continuity. **Never auto-create or overwrite files at the project root** — that decision belongs to the user.
+   **DESIGN.md awareness** — if `DESIGN.md` (or `DESIGN-IOS.md`) exists at the project root, read it first and treat its commitments as a **prior**, not a contract; deviations are intentional only if you state why. If absent, emit your full 9-section iOS contract inline under a `## Design Contract (iOS)` heading in your response so the user can copy it into `DESIGN.md` for session-to-session continuity. **The harness automatically captures this inline block** to a session-scoped file, and subsequent `design-reviewer` and `visual-craft-lens` passes will grade your code against it as a drift prior — so commit to specifics that you intend to honor. **Never auto-create or overwrite files at the project root** — that decision belongs to the user.
 
    State all 9 sections (Tier A) or the relevant subset (Tier B / B+) explicitly before writing implementation code.
 

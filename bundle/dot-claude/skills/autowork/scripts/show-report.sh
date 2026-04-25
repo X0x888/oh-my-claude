@@ -26,6 +26,7 @@ SUMMARY_FILE="${QP_ROOT}/session_summary.jsonl"
 SERENDIPITY_FILE="${QP_ROOT}/serendipity-log.jsonl"
 MISFIRES_FILE="${QP_ROOT}/classifier_misfires.jsonl"
 GATE_EVENTS_FILE="${QP_ROOT}/gate_events.jsonl"
+ARCHETYPES_FILE="${QP_ROOT}/used-archetypes.jsonl"
 AGENT_METRICS_FILE="${QP_ROOT}/agent-metrics.json"
 DEFECT_PATTERNS_FILE="${QP_ROOT}/defect-patterns.json"
 
@@ -137,6 +138,29 @@ else
   printf '| Still pending at sweep | %s |\n' "${pending}"
   printf '| Waves planned | %s |\n' "${waves_total}"
   printf '| Waves completed | %s |\n' "${waves_completed}"
+  printf '\n'
+fi
+
+# ----------------------------------------------------------------------
+# Section 2b: Design archetype variation (cross-session anti-anchoring audit)
+printf '## Design archetype variation\n\n'
+archetype_rows="$(filter_by_window "${ARCHETYPES_FILE}" '.ts')"
+if [[ -z "${archetype_rows}" ]]; then
+  printf '_No design archetypes recorded in window — UI work absent or no contracts emitted._\n\n'
+else
+  arche_count="$(printf '%s\n' "${archetype_rows}" | grep -c .)"
+  unique_arches="$(printf '%s\n' "${archetype_rows}" | jq -r '.archetype // empty' | sort -u | grep -c . || true)"
+  unique_projects="$(printf '%s\n' "${archetype_rows}" | jq -r '.project_key // empty' | sort -u | grep -c . || true)"
+  printf '%s archetype emission%s across %s unique archetype%s and %s project%s.\n\n' \
+    "${arche_count}" "$([[ "${arche_count}" -eq 1 ]] && echo "" || echo "s")" \
+    "${unique_arches}" "$([[ "${unique_arches}" -eq 1 ]] && echo "" || echo "s")" \
+    "${unique_projects}" "$([[ "${unique_projects}" -eq 1 ]] && echo "" || echo "s")"
+  printf 'Top archetypes (by total emissions, newest 5):\n\n'
+  printf '%s\n' "${archetype_rows}" | jq -r '.archetype // "unknown"' \
+    | sort | uniq -c | sort -rn | head -5 \
+    | while read -r n arche; do
+        printf -- '- `%s` × %s\n' "${arche}" "${n}"
+      done
   printf '\n'
 fi
 

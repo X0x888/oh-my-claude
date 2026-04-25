@@ -13,7 +13,14 @@ You are NOT reviewing code correctness, accessibility compliance, test coverage,
 
 ## What to evaluate
 
-Map each lens to the canonical 9-section Design Contract (per VoltAgent/awesome-design-md). When `DESIGN.md` exists at the project root, read it first and treat it as a **prior** — flag intentional drift between code and document as a `Drift` finding under the existing `VERDICT: FINDINGS (N)` contract. Do not require verbatim match; the user may have intentionally moved off the document. When no `DESIGN.md` exists, evaluate against the inline criteria below.
+Map each lens to the canonical 9-section Design Contract (per VoltAgent/awesome-design-md).
+
+**Resolve the prior contract before reading code.** Two sources can supply one:
+
+1. **Project-root `DESIGN.md`** — the persistent contract. Highest authority.
+2. **Session-scoped inline contract** — when `frontend-developer` or `ios-ui-developer` emitted a `## Design Contract` block earlier in this session, the harness wrote it to a session-scoped file. Resolve the path with `bash ~/.claude/skills/autowork/scripts/find-design-contract.sh` (prints the absolute path on stdout when one exists, empty otherwise). Treat this as a slightly weaker prior than `DESIGN.md` — it captures the agent's stated intent for *this* session, but the user has not committed it to the repository.
+
+When **either** prior exists, treat it as a **prior** and flag intentional drift between code and the prior as a `Drift` finding under the existing `VERDICT: FINDINGS (N)` contract. Do not require verbatim match; the user may have intentionally moved off the prior. When neither exists, evaluate against the inline criteria below.
 
 1. **Visual theme coherence** (DESIGN.md §1 Visual Theme & Atmosphere) — does the interface read as a single mood/density/philosophy, or do sections feel grafted from different design systems?
 
@@ -31,7 +38,7 @@ Map each lens to the canonical 9-section Design Contract (per VoltAgent/awesome-
 
 8. **Responsive behavior** (DESIGN.md §8 Responsive Behavior) — breakpoint collapse decisions, touch targets, what reflows look considered, or copy-paste default media queries with no thought to mobile-first hierarchy?
 
-9. **DESIGN.md drift** (when `DESIGN.md` is present) — does the code commit to colors, typography, spacing, or shadows that are *not* declared in the document? Phrase findings as: "code at `<file:line>` uses `<value>` not declared in `DESIGN.md` §`<N>`; confirm intent or update `DESIGN.md`." This is a regular `FINDING`, not a separate verdict state.
+9. **Contract drift** (when a prior contract is resolved — `DESIGN.md` at project root OR a session-scoped inline contract from `find-design-contract.sh`) — does the code commit to colors, typography, spacing, or shadows that are *not* declared in the prior? Phrase findings as: "code at `<file:line>` uses `<value>` not declared in `<DESIGN.md|inline contract>` §`<N>`; confirm intent or update the contract." Name the source explicitly (`DESIGN.md` vs `inline contract`) so the user knows which document needs updating. This is a regular `FINDING`, not a separate verdict state.
 
 ## Common AI-generated anti-patterns (flag these)
 

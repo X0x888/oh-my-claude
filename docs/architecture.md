@@ -185,6 +185,7 @@ Session state is stored at:
   discovered_scope.jsonl       # Findings captured from advisory specialists (council lenses, metis, briefing-analyst); capped at 200 rows
   findings.json                # Council Phase 8 master finding list (model-managed via record-finding-list.sh); waves[] declares the active wave plan
   gate_events.jsonl            # Per-event outcome attribution rows (gate fires + finding-status changes); capped at OMC_GATE_EVENTS_PER_SESSION_MAX, default 500. Added v1.14.0.
+  design_contract.md           # Inline 9-section Design Contract captured from frontend-developer / ios-ui-developer SubagentStop, with agent/ts/cwd frontmatter. Read by design-reviewer / visual-craft-lens via find-design-contract.sh when no project-root DESIGN.md exists. Latest emission wins (the user may iterate). Added post-v1.15.0.
   precompact_snapshot.md       # Snapshot created before compaction
   compact_handoff.md           # Combined handoff document
   internal_edits.log           # Edits to internal Claude paths (excluded from tracking)
@@ -198,11 +199,12 @@ classifier_misfires.jsonl      # Aggregated misfire rows tagged with session id 
 serendipity-log.jsonl          # Serendipity Rule applications across sessions (cap: 2000/1500)
 gate-skips.jsonl               # /ulw-skip honored events for threshold tuning (cap: 200/150)
 gate_events.jsonl              # Per-event outcome rows aggregated from per-session gate_events.jsonl (cap: 10000/8000). Added v1.14.0.
+used-archetypes.jsonl          # Cross-session archetype priors keyed by `_omc_project_key` (git-remote-first, cwd fallback); written by record-archetype.sh on UI-specialist SubagentStop, read by `recent_archetypes_for_project` to feed the router's anti-anchoring advisory (cap: 500/400). Added post-v1.15.0.
 defect-patterns.json           # Historical defect-category counters
 agent-metrics.json             # Invocations / clean / findings per agent type
 ```
 
-All five JSONL caps go through `_cap_cross_session_jsonl` in `common.sh`; the format `cap/retain` shows the trigger threshold and post-truncation tail size.
+All six JSONL caps go through `_cap_cross_session_jsonl` in `common.sh`; the format `cap/retain` shows the trigger threshold and post-truncation tail size.
 
 `session_summary.jsonl` row schema (canonical writer: `sweep_stale_sessions` in `common.sh`):
 
@@ -269,6 +271,9 @@ Separate from session state, `install.sh` writes four install-time artifacts tha
 | `dim_traceability_ts` | Epoch when `traceability` dimension was last ticked |
 | `dim_design_quality_ts` | Epoch when `design_quality` dimension was last ticked |
 | `ui_edit_count` | Number of unique UI files (`.tsx`, `.jsx`, `.vue`, `.css`, etc.) edited — subset of `code_edit_count` |
+| `ui_platform` | Platform classification of the most recent UI prompt (`web` / `ios` / `macos` / `cli` / `unknown`); written by `prompt-intent-router.sh` when a UI request fires the design hint, consumed by `record-subagent-summary.sh` to attribute archetype rows correctly. |
+| `ui_intent` | UI-intent classification of the most recent UI prompt (`build` / `style` / `polish` / `fix` / `none`); written alongside `ui_platform`. |
+| `ui_domain` | Product-domain classification of the most recent UI prompt (`fintech` / `wellness` / `creative` / `devtool` / `editorial` / `education` / `enterprise` / `consumer` / `unknown`); written alongside `ui_platform`. |
 | `stop_guard_blocks` | Number of times the review/verify gate has blocked (cap: 3) |
 | `dimension_guard_blocks` | Number of times the dimension gate has blocked (cap: 3) |
 | `dimension_resume_grace_used` | Whether the one-shot resumed-session dimension-gate grace has been used (`1` or empty) |

@@ -21,6 +21,41 @@ append_limited_state \
   "$(jq -nc --arg ts "$(now_epoch)" --arg agent_type "${AGENT_TYPE}" --arg message "${LAST_ASSISTANT_MESSAGE}" '{ts:$ts,agent_type:$agent_type,message:$message}')" \
   "16"
 
+# Inline design-contract capture: when a UI specialist emits its 9-section
+# Design Contract block inline, persist it to <session>/design_contract.md
+# so design-reviewer / visual-craft-lens can read it and grade drift even
+# when no project-root DESIGN.md exists. Closes the v1.14.x / v1.15.0
+# deferred "drift lens for inline contracts" gap. Failure is non-fatal
+# (extractor returns empty when no block is present, write is best-effort).
+#
+# Same hook also feeds cross-session archetype memory: every named
+# archetype prior in the contract gets logged so the next session in
+# this project can warn the agent against repeating the same anchor.
+if is_design_contract_emitter "${AGENT_TYPE}"; then
+  _contract_block="$(extract_inline_design_contract "${LAST_ASSISTANT_MESSAGE}" 2>/dev/null || true)"
+  if [[ -n "${_contract_block}" ]]; then
+    _emitter_short="${AGENT_TYPE##*:}"
+    write_session_design_contract "${_emitter_short}" "${_contract_block}" 2>/dev/null || true
+
+    # Archetype memory: each known archetype mentioned in the contract
+    # is recorded as a prior for the current project. Background to
+    # avoid blocking the SubagentStop return; failure is non-fatal.
+    _archetypes="$(extract_design_archetype "${_contract_block}" 2>/dev/null || true)"
+    if [[ -n "${_archetypes}" ]]; then
+      _platform_state="$(read_state "ui_platform" 2>/dev/null || true)"
+      _domain_state="$(read_state "ui_domain" 2>/dev/null || true)"
+      _arche_payload="$(printf '%s\n' "${_archetypes}" \
+        | jq -Rc --arg plat "${_platform_state}" --arg dom "${_domain_state}" --arg ag "${_emitter_short}" \
+            'select(length > 0) | {archetype: ., platform: $plat, domain: $dom, agent: $ag}' \
+        2>/dev/null || true)"
+      if [[ -n "${_arche_payload}" ]]; then
+        printf '%s\n' "${_arche_payload}" \
+          | "${SCRIPT_DIR}/record-archetype.sh" >/dev/null 2>&1 &
+      fi
+    fi
+  fi
+fi
+
 # Discovered-scope capture: when a whitelisted advisory specialist returns,
 # extract its findings to discovered_scope.jsonl so stop-guard can detect
 # silent skips. Only fires in ULW mode + when feature flag is on. Failure

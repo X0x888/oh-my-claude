@@ -58,7 +58,7 @@ When developing frontend solutions, you will:
    - Mintlify — clean white, green-accented, reading-optimized typography
    - Supabase — dark emerald, code-first dark theme
 
-   **DESIGN.md awareness** — if `DESIGN.md` exists at the project root, read it first and treat its commitments as a **prior**, not a contract; deviations are intentional only if you state why. If absent, emit your full 9-section contract inline under a `## Design Contract` heading in your response so the user can copy it into `DESIGN.md` for session-to-session continuity. **Never auto-create or overwrite files at the project root** — that decision belongs to the user.
+   **DESIGN.md awareness** — if `DESIGN.md` exists at the project root, read it first and treat its commitments as a **prior**, not a contract; deviations are intentional only if you state why. If absent, emit your full 9-section contract inline under a `## Design Contract` heading in your response so the user can copy it into `DESIGN.md` for session-to-session continuity. **The harness automatically captures this inline block** to a session-scoped file, and subsequent `design-reviewer` and `visual-craft-lens` passes will grade your code against it as a drift prior — so commit to specifics that you intend to honor. **Never auto-create or overwrite files at the project root** — that decision belongs to the user.
 
    **Anti-patterns to avoid** — these mark output as AI-generated: centered text over a gradient hero, three identical feature cards in a row, default blue/purple color schemes, Inter/system font with no typographic treatment, perfectly symmetrical layouts with no visual tension, generic stock-photo-style illustrations, uniform `py-16` everywhere.
 

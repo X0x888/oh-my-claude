@@ -7,10 +7,10 @@ Cognitive quality harness for Claude Code -- bash hooks, specialist agents, and 
 - `bundle/dot-claude/agents/` -- 31 specialist agent definitions with permission boundaries
 - `bundle/dot-claude/quality-pack/scripts/` -- 5 lifecycle hook scripts (prompt routing, compaction, session management)
 - `bundle/dot-claude/skills/` -- 18 skill definitions, each in `<name>/SKILL.md`
-- `bundle/dot-claude/skills/autowork/scripts/` -- 16 autowork hook scripts including `common.sh` (shared utility library), `record-finding-list.sh` (council Phase 8 master finding list), and `record-serendipity.sh` (Serendipity Rule analytics); state I/O extracted to `lib/state-io.sh`, the prompt classifier extracted to `lib/classifier.sh`, and the verification subsystem extracted to `lib/verification.sh`, all sourced by `common.sh`
+- `bundle/dot-claude/skills/autowork/scripts/` -- 19 autowork hook scripts including `common.sh` (shared utility library), `record-finding-list.sh` (council Phase 8 master finding list), `record-serendipity.sh` (Serendipity Rule analytics), `record-archetype.sh` (cross-session archetype memory), and `find-design-contract.sh` (resolves the active session's inline-emitted Design Contract for design-reviewer / visual-craft-lens); state I/O extracted to `lib/state-io.sh`, the prompt classifier extracted to `lib/classifier.sh`, and the verification subsystem extracted to `lib/verification.sh`, all sourced by `common.sh`
 - `bundle/dot-claude/output-styles/` -- output format templates
 - `config/settings.patch.json` -- settings merged into user config on install
-- `tests/` -- 28 test scripts (e2e hook sequence, intent classification, quality gates, stall detection, settings merge, uninstall merge, common utilities, session resume, statusline, concurrency, install artifacts, post-merge hook, repro redaction, discovered-scope, finding-list, state-io, classifier-replay, serendipity-log, cross-session-rotation, classifier, show-report, install-remote, phase8-integration, verification-lib, agent-verdict-contract, gate-events, discover-session, design-contract)
+- `tests/` -- 30 test scripts (e2e hook sequence, intent classification, quality gates, stall detection, settings merge, uninstall merge, common utilities, session resume, statusline, concurrency, install artifacts, post-merge hook, repro redaction, discovered-scope, finding-list, state-io, classifier-replay, serendipity-log, cross-session-rotation, classifier, show-report, install-remote, phase8-integration, verification-lib, agent-verdict-contract, gate-events, discover-session, design-contract, inline-design-contract, archetype-memory)
 - `tools/` -- Developer-only tools (`replay-classifier-telemetry.sh` and `classifier-fixtures/regression.jsonl`); not installed into `~/.claude/`
 - `docs/` -- architecture, customization, FAQ, and prompt reference docs
 
@@ -62,6 +62,8 @@ bash tests/test-agent-verdict-contract.sh
 bash tests/test-gate-events.sh
 bash tests/test-discover-session.sh
 bash tests/test-design-contract.sh
+bash tests/test-inline-design-contract.sh
+bash tests/test-archetype-memory.sh
 python3 -m unittest tests.test_statusline -v
 ```
 
@@ -73,6 +75,8 @@ python3 -m unittest tests.test_statusline -v
 - State is JSON in `session_state.json`, accessed via `read_state` / `write_state`.
 - Multi-step state updates that are subject to concurrent SubagentStop hooks (e.g. dimension ticks) must go through `with_state_lock` to prevent lost updates. Use `with_state_lock_batch` for multi-key atomic writes.
 - Cross-session data (agent metrics, defect patterns) lives in `~/.claude/quality-pack/` as JSON files with their own lock mechanisms. Never store cross-session data inside session directories.
+- Cross-session project identity uses `_omc_project_key` (git-remote-first, cwd-hash fallback) — survives worktrees and clones at different paths. Use `_omc_project_id` (cwd-only) only when the cwd-divergence is the actual signal you want (e.g., per-directory gate-skip counts). For "is this the same upstream project?" semantics — archetype memory, etc. — prefer `_omc_project_key`.
+- Inline design contracts emitted by `frontend-developer` / `ios-ui-developer` are captured at SubagentStop into `<session>/design_contract.md` (markdown, not JSON). The `design-reviewer` and `visual-craft-lens` agents resolve this prior via `find-design-contract.sh` when no project-root `DESIGN.md` exists.
 - Guard exhaustion mode (`guard_exhaustion_mode` in `oh-my-claude.conf`) controls behavior when quality gates are exhausted: `scorecard` (default, legacy name: `warn`) emits a scorecard then releases, `block` (legacy: `strict`) keeps blocking, `silent` (legacy: `release`) silently releases. Both old and new names are accepted.
 - Gate level (`gate_level` in `oh-my-claude.conf`) controls enforcement depth: `full` (default) enables all gates including review coverage and excellence, `standard` enables quality + excellence gates, `basic` enables only the quality gate.
 - Verification confidence threshold (`verify_confidence_threshold` in `oh-my-claude.conf`, default 40) sets the minimum confidence score (0-100) for verification to satisfy the quality gate. Lint-only checks like `shellcheck` (score 30) and `bash -n` (score 30) are blocked at the default threshold; project test suites (score 70+) and framework runs with output signals (score 50+) pass. MCP verification tools (Playwright, computer-use) have base scores below threshold (15-35); they only pass when output carries assertion signals or when recent edits include UI files (+20 context bonus).

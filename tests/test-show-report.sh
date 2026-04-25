@@ -66,6 +66,7 @@ assert_eq "empty-state exit code" "0" "${rc}"
 assert_contains "header window label" "last 7 days" "${out}"
 assert_contains "no sessions message" "No session_summary rows" "${out}"
 assert_contains "no serendipity message" "No Serendipity Rule applications" "${out}"
+assert_contains "no archetypes message" "No design archetypes recorded" "${out}"
 assert_contains "no misfires message" "No classifier misfires" "${out}"
 assert_contains "no reviewer message" "No reviewer activity" "${out}"
 assert_contains "no defects message" "No defect patterns" "${out}"
@@ -114,6 +115,20 @@ EOF
 out="$(run_report week)"
 assert_contains "serendipity count" "2 catches" "${out}"
 assert_contains "serendipity fix line" "Fix typo in comment" "${out}"
+
+# ----------------------------------------------------------------------
+printf 'Test 7b: archetype variation aggregation\n'
+cat > "${QP}/used-archetypes.jsonl" <<EOF
+{"ts":"${NOW}","session":"s1","project_key":"pk_alpha","archetype":"Stripe","platform":"web","domain":"fintech","agent":"frontend-developer"}
+{"ts":"$((NOW - 1000))","session":"s1","project_key":"pk_alpha","archetype":"Linear","platform":"web","domain":"devtool","agent":"frontend-developer"}
+{"ts":"$((NOW - 2000))","session":"s2","project_key":"pk_beta","archetype":"Stripe","platform":"web","domain":"fintech","agent":"frontend-developer"}
+EOF
+out="$(run_report week)"
+assert_contains "archetype emission count" "3 archetype emissions" "${out}"
+assert_contains "archetype unique count" "2 unique archetypes" "${out}"
+assert_contains "archetype project count" "2 projects" "${out}"
+assert_contains "archetype histogram entry: Stripe x2" "\`Stripe\` × 2" "${out}"
+assert_contains "archetype histogram entry: Linear x1" "\`Linear\` × 1" "${out}"
 
 # ----------------------------------------------------------------------
 printf 'Test 8: classifier misfires aggregation\n'

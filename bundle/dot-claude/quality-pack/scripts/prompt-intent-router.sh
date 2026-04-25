@@ -363,8 +363,31 @@ Discipline:
         *) ui_domain_hint="**Domain: unspecified.** No archetype family pre-selected — use prompt context to pick the closest archetype, then commit to three things you will do *differently* to avoid cloning." ;;
       esac
 
-      context_parts+=("UI/design work detected — context-aware design routing engaged. Before writing UI code, establish a visual direction using the **9-section Design Contract** ((1) Visual Theme & Atmosphere, (2) Color Palette & Roles, (3) Typography Rules, (4) Component Stylings, (5) Layout Principles, (6) Depth & Elevation, (7) Do's and Don'ts, (8) Responsive Behavior, (9) Agent Prompt Guide). Apply ${ui_tier_hint}. ${ui_platform_block} ${ui_domain_hint} Pick the closest brand archetype as point of departure, then commit to at least three specific things you will do *differently* to avoid cloning — anti-anchoring forces differentiation. **Cross-generation discipline:** never converge on common AI choices (Space Grotesk, Inter at default weight, Tailwind blue-500/indigo-500, centered-hero+CTA, three uniform feature cards, gradient-mesh backgrounds, default blue→purple) — vary palette, typography, and structural pattern across sessions. If \`DESIGN.md\` exists at project root, read it first and treat its commitments as a prior; if absent, emit your contract inline under a \`## Design Contract\` heading and offer the user persistence — **never auto-write or overwrite files at the project root**. The design-reviewer quality gate auto-activates when UI files (.tsx, .jsx, .vue, .css, .html) are edited and grades against the contract (or DESIGN.md if present). The /frontend-design skill is available for dedicated design-first workflows. To suppress this guidance, include 'no design polish' or 'functional only' in your prompt.")
-      log_hook "prompt-intent-router" "UI/design context injected (platform=${ui_platform} intent=${ui_intent} domain=${ui_domain})"
+      # Persist platform/domain to state so SubagentStop can attribute
+      # downstream archetype-record rows correctly when the contract is
+      # captured.
+      with_state_lock_batch \
+        "ui_platform" "${ui_platform}" \
+        "ui_domain" "${ui_domain}" \
+        "ui_intent" "${ui_intent}" 2>/dev/null || true
+
+      # Cross-session archetype memory: when the same project has
+      # ≥2 prior archetype anchors, advise picking a different one this
+      # session to prevent the harness from converging on the same
+      # archetype across sessions in the same project. Closes v1.15.0
+      # metis F7 deferred item.
+      ui_archetype_advisory=""
+      _prior_archetypes="$(recent_archetypes_for_project 5 2>/dev/null || true)"
+      if [[ -n "${_prior_archetypes}" ]]; then
+        _prior_count="$(printf '%s\n' "${_prior_archetypes}" | grep -c .)"
+        if [[ "${_prior_count}" -ge 2 ]]; then
+          _prior_csv="$(printf '%s' "${_prior_archetypes}" | tr '\n' ',' | sed 's/,$//' | sed 's/,/, /g')"
+          ui_archetype_advisory=" **Prior archetypes in this project (${_prior_count}):** ${_prior_csv}. Pick a *different* archetype this session — repeating any of those above defeats the cross-session variation discipline. If the closest fit really is one of those priors, name a deliberately distinct anchor for ≥2 of the contract's 9 sections (e.g. typography from a different source, color discipline from another)."
+        fi
+      fi
+
+      context_parts+=("UI/design work detected — context-aware design routing engaged. Before writing UI code, establish a visual direction using the **9-section Design Contract** ((1) Visual Theme & Atmosphere, (2) Color Palette & Roles, (3) Typography Rules, (4) Component Stylings, (5) Layout Principles, (6) Depth & Elevation, (7) Do's and Don'ts, (8) Responsive Behavior, (9) Agent Prompt Guide). Apply ${ui_tier_hint}. ${ui_platform_block} ${ui_domain_hint} Pick the closest brand archetype as point of departure, then commit to at least three specific things you will do *differently* to avoid cloning — anti-anchoring forces differentiation.${ui_archetype_advisory} **Cross-generation discipline:** never converge on common AI choices (Space Grotesk, Inter at default weight, Tailwind blue-500/indigo-500, centered-hero+CTA, three uniform feature cards, gradient-mesh backgrounds, default blue→purple) — vary palette, typography, and structural pattern across sessions. If \`DESIGN.md\` exists at project root, read it first and treat its commitments as a prior; if absent, emit your contract inline under a \`## Design Contract\` heading and offer the user persistence — **never auto-write or overwrite files at the project root**. The design-reviewer quality gate auto-activates when UI files (.tsx, .jsx, .vue, .css, .html) are edited and grades against the contract (or DESIGN.md if present). The /frontend-design skill is available for dedicated design-first workflows. To suppress this guidance, include 'no design polish' or 'functional only' in your prompt.")
+      log_hook "prompt-intent-router" "UI/design context injected (platform=${ui_platform} intent=${ui_intent} domain=${ui_domain}${ui_archetype_advisory:+ priors=${_prior_count}})"
     elif [[ "${ui_design_opt_out}" -eq 1 ]]; then
       log_hook "prompt-intent-router" "UI/design opt-out detected — skipping contract injection"
     fi

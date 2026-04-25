@@ -15,7 +15,14 @@ This lens is intentionally disjoint from `design-lens` (which covers user experi
 
 ## Evaluation scope
 
-Map your evaluation to the canonical 9-section Design Contract (per VoltAgent/awesome-design-md), plus a conditional DESIGN.md drift check when the document exists at project root. Nine evaluation lenses (1-9 below) cover the contract surface; the 10th (DESIGN.md drift) is a separate conditional check, not a 10th contract section. When `DESIGN.md` is present, read it first and treat it as a **prior** — flag intentional drift between code and document as a `Drift` finding, do not require verbatim match.
+Map your evaluation to the canonical 9-section Design Contract (per VoltAgent/awesome-design-md), plus a conditional **contract drift** check when a prior contract exists. Nine evaluation lenses (1-9 below) cover the contract surface; the 10th (contract drift) is a separate conditional check, not a 10th contract section.
+
+**Resolve the prior contract before reading code.** Two sources can supply one:
+
+1. **Project-root `DESIGN.md`** — the persistent contract. Highest authority.
+2. **Session-scoped inline contract** — when `frontend-developer` or `ios-ui-developer` emitted a `## Design Contract` block earlier in this session, the harness wrote it to a session-scoped file. Resolve the path with `bash ~/.claude/skills/autowork/scripts/find-design-contract.sh` (prints the absolute path on stdout when one exists, empty otherwise). Slightly weaker prior than `DESIGN.md` but captures the agent's stated intent for *this* session.
+
+When **either** prior is present, read it first and treat it as a **prior** — flag intentional drift between code and the prior as a `Drift` finding, do not require verbatim match.
 
 1. **Visual theme coherence** — does the interface read as a single mood/density/philosophy, or do sections feel grafted from different design systems? Name the mood you observe (calm/aggressive/premium/playful/utilitarian/editorial) — if you can't, that's a finding.
 
@@ -35,7 +42,7 @@ Map your evaluation to the canonical 9-section Design Contract (per VoltAgent/aw
 
 9. **Archetype anti-cloning** — does the design read as a clone of one specific reference (Linear, Stripe, Vercel, Things 3, etc.) or has it differentiated? Identify the closest archetype the design pattern-matches to, then judge whether at least three things are done *differently* from that archetype. A confident clone is a finding — the harness's anti-anchoring directive exists for a reason.
 
-**+ DESIGN.md drift check** (conditional, fires only when `DESIGN.md` is present at project root) — does the code commit to colors, typography, spacing, or shadows that are *not* declared in the document? Phrase as: "code at `<file:line>` uses `<value>` not declared in `DESIGN.md` §`<N>`; confirm intent or update `DESIGN.md`." Treated as a regular `FINDING`, not a separate verdict state. Not a 10th contract section — a runtime check that supplements the nine lenses above.
+**+ Contract drift check** (conditional, fires when a prior contract is resolved — `DESIGN.md` at project root OR a session-scoped inline contract from `find-design-contract.sh`) — does the code commit to colors, typography, spacing, or shadows that are *not* declared in the prior? Phrase as: "code at `<file:line>` uses `<value>` not declared in `<DESIGN.md|inline contract>` §`<N>`; confirm intent or update the contract." Name the source explicitly (`DESIGN.md` vs `inline contract`) so the user knows which document needs updating. Treated as a regular `FINDING`, not a separate verdict state. Not a 10th contract section — a runtime check that supplements the nine lenses above.
 
 ## What to skip
 

@@ -119,6 +119,8 @@ required_paths=(
   "${CLAUDE_HOME}/skills/frontend-design/SKILL.md"
   "${CLAUDE_HOME}/skills/autowork/scripts/ulw-skip-register.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/record-finding-list.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/find-design-contract.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/record-archetype.sh"
 )
 
 for path in "${required_paths[@]}"; do
@@ -184,6 +186,8 @@ hook_scripts=(
   "${CLAUDE_HOME}/skills/autowork/scripts/show-status.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/record-plan.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/ulw-deactivate.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/find-design-contract.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/record-archetype.sh"
 )
 
 for script in "${hook_scripts[@]}"; do

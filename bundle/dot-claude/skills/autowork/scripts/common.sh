@@ -458,6 +458,7 @@ sweep_stale_sessions() {
     _cap_cross_session_jsonl "${summary_file}" 500 400
     _cap_cross_session_jsonl "${HOME}/.claude/quality-pack/serendipity-log.jsonl" 2000 1500
     _cap_cross_session_jsonl "${HOME}/.claude/quality-pack/gate_events.jsonl" 10000 8000
+    _cap_cross_session_jsonl "${HOME}/.claude/quality-pack/used-archetypes.jsonl" 500 400
   fi
 
   printf '%s\n' "${now}" > "${marker}"
@@ -1937,6 +1938,76 @@ _omc_project_id() {
   printf '%s' "${PWD}" | shasum -a 256 2>/dev/null | cut -c1-12
 }
 
+# _omc_project_key
+# Stable cross-session identifier for the current project, preferring the
+# git remote (worktree-stable, survives clones at different paths) and
+# falling back to _omc_project_id (PWD hash) when no git remote is
+# available. The remote URL is normalized — scheme/auth stripped, SCP
+# form folded into URL form, trailing `.git` removed, lowercased — so
+# `https://github.com/Foo/Bar.git` and `git@github.com:foo/bar.git`
+# resolve to the same key.
+#
+# Closes the v1.14.0 Serendipity finding's adjacent risk: cwd-hashed
+# project keys diverge across worktrees (`~/repo/main` vs
+# `~/repo/worktrees/feature-x`) for the same upstream project.
+_omc_project_key() {
+  if command -v git >/dev/null 2>&1; then
+    local remote_url
+    remote_url="$(git config --get remote.origin.url 2>/dev/null || true)"
+    if [[ -n "${remote_url}" ]]; then
+      local norm="${remote_url}"
+      if [[ "${norm}" =~ ^[a-zA-Z][a-zA-Z+.-]*:// ]]; then
+        # URL form: scheme://[user[:pass]@]host[:port]/path. Strip
+        # scheme + auth, then collapse `:PORT/` and `:PORT$` so
+        # `ssh://git@host:2222/path` and `git@host:path` reduce to
+        # the same `host/path` after the SCP branch's `:` → `/` fold.
+        norm="$(printf '%s' "${norm}" | sed -E 's|^[a-zA-Z][a-zA-Z+.-]*://([^/@]*@)?||; s|:[0-9]+(/\|$)|\1|')"
+      else
+        # SCP form: user@host:path → host/path
+        norm="$(printf '%s' "${norm}" | sed -E 's|^[^@]+@||; s|:|/|')"
+      fi
+      norm="$(printf '%s' "${norm}" | sed -E 's|\.git/?$||; s|/+$||' | tr '[:upper:]' '[:lower:]')"
+      printf '%s' "${norm}" | shasum -a 256 2>/dev/null | cut -c1-12
+      return 0
+    fi
+  fi
+  _omc_project_id
+}
+
+# recent_archetypes_for_project [N]
+# Emits the up-to-N most-recent unique archetype names that have been
+# used in the current project (per `_omc_project_key`), newest first,
+# one per line. Default N=5. Empty output when the log is missing, the
+# project has no priors, or jq/awk fail.
+#
+# Used by prompt-intent-router.sh to inject an anti-anchoring advisory
+# ("you've used Stripe and Linear in this project — pick differently")
+# when the design router fires and the same project already has
+# archetype priors.
+recent_archetypes_for_project() {
+  local n="${1:-5}"
+  local log="${HOME}/.claude/quality-pack/used-archetypes.jsonl"
+  [[ -f "${log}" ]] || return 0
+  local key
+  key="$(_omc_project_key 2>/dev/null || true)"
+  [[ -z "${key}" ]] && return 0
+
+  jq -r --arg k "${key}" 'select(.project_key == $k) | .archetype // empty' "${log}" 2>/dev/null \
+    | awk -v n="${n}" '
+        NF { rows[NR] = $0; total = NR }
+        END {
+          seen_count = 0
+          for (i = total; i >= 1 && seen_count < n; i--) {
+            if (!(rows[i] in seen)) {
+              seen[rows[i]] = 1
+              print rows[i]
+              seen_count++
+            }
+          }
+        }
+      '
+}
+
 # --- end project identity ---
 
 # --- Project profile detection ---
@@ -2438,6 +2509,151 @@ extract_discovered_findings() {
       2>/dev/null || continue
   done <<<"${capped}"
 }
+
+# --- Inline design-contract capture ---
+#
+# When a UI specialist (frontend-developer, ios-ui-developer) emits its
+# 9-section Design Contract inline under a `## Design Contract` heading,
+# capture the block to `<session>/design_contract.md` so design-reviewer
+# and visual-craft-lens can read it and grade drift even when no
+# project-root DESIGN.md exists. Closes the v1.14.x / v1.15.0 deferred
+# "drift lens for inline-emitted contracts" gap.
+
+# is_design_contract_emitter <agent_name>
+# Returns 0 (true) when the agent is a UI specialist that emits a Design
+# Contract block. Match short-form (frontend-developer) AND any plugin-
+# namespaced form (e.g. plugin:foo:frontend-developer).
+is_design_contract_emitter() {
+  local agent="$1"
+  [[ -z "${agent}" ]] && return 1
+  local short="${agent##*:}"
+  case "${short}" in
+    frontend-developer|ios-ui-developer) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# extract_inline_design_contract <message>
+# Emits the inline Design Contract block on stdout, or empty if not
+# present. Matches `## Design Contract`, `## Design Contract (iOS)`,
+# `## Design Contract: web`, `## Design Contract — macOS`, etc. The
+# heading match accepts any non-word character after "Contract" (space,
+# colon, em-dash, paren, EOL, etc.) so common punctuation variants do
+# not silently fall through to the no-block path.
+#
+# Captures from the heading until the next H2 (`## `) at the OUTERMOST
+# level — H2-looking lines INSIDE fenced code blocks (` ```…``` `) do
+# not terminate capture, since contracts often embed component-code or
+# markdown examples in §4 (Component Stylings). H3+ (`### Section`)
+# stays inside the block.
+extract_inline_design_contract() {
+  local message="$1"
+  [[ -z "${message}" ]] && return 0
+  printf '%s\n' "${message}" | awk '
+    BEGIN { capture = 0; in_fence = 0 }
+    /^[[:space:]]*```/ {
+      if (capture) {
+        in_fence = !in_fence
+        print
+        next
+      }
+    }
+    /^## Design Contract([^[:alnum:]_]|$)/ {
+      if (!in_fence) {
+        capture = 1
+        in_fence = 0
+        print
+        next
+      }
+    }
+    capture && !in_fence && /^## / { capture = 0 }
+    capture { print }
+  '
+}
+
+# extract_design_archetype <contract_text>
+# Emits archetype names on stdout (one per line, deduped, in match
+# order) when the contract names known archetype priors. Pattern: match
+# against the canonical archetype set listed in prompt-intent-router.sh.
+# Empty output when no known archetype is named (e.g. user wrote a
+# custom direction with no archetype anchor).
+#
+# Order matters — multi-word archetypes are checked first and stripped
+# from the working copy before single-word checks. Without longest-
+# first + strip, "Linear" greedy-matches inside "Linear iOS" /
+# "Linear Mac" and "Mercury" inside "Mercury Weather", polluting the
+# cross-session memory with archetypes the user never named.
+extract_design_archetype() {
+  local contract="$1"
+  [[ -z "${contract}" ]] && return 0
+  # Canonical archetype list — multi-word entries (longest-shadow risk)
+  # FIRST so they consume their own text before single-word shadows
+  # (Mercury, Linear, Bear, …) run.
+  local known_archetypes=(
+    # Multi-word, longest-first.
+    "Things 3 Mac" "Day One Mac" "Notion Mac" "Linear Mac" "Bear Mac"
+    "Reeder Mac" "Raycast Mac" "Tot Mac" "Linear iOS"
+    "Mercury Weather" "Apple Health" "Sleep Cycle" "IBM Carbon"
+    "Cash App" "Day One" "CleanShot X" "Things 3" "NetNewsWire"
+    # Single-word — alphabetized within source category.
+    # web (15)
+    "Linear" "Stripe" "Vercel" "Notion" "Apple" "Airbnb" "Spotify"
+    "Tesla" "Figma" "Discord" "Raycast" "Anthropic" "Webflow"
+    "Mintlify" "Supabase"
+    # ios extras (single-word remainder)
+    "Halide" "Bear" "Tot" "Reeder" "Telegram" "Robinhood"
+    # macos extras (single-word remainder)
+    "Tower" "Bartender"
+    # cli/tui
+    "lazygit" "fzf" "ripgrep" "bat" "btop" "helix" "fish" "starship"
+    # domain extras (single-word remainder)
+    "Mercury" "Calm" "Headspace" "Arc" "GitHub" "NYT" "Medium"
+    "Atlassian"
+  )
+  local working_copy="${contract}"
+  local arche placeholder
+  for arche in "${known_archetypes[@]}"; do
+    # Word-boundary match via fixed-string grep with -w. Suppress
+    # grep exit-1 on no match.
+    if grep -Fqw -- "${arche}" <<<"${working_copy}" 2>/dev/null; then
+      printf '%s\n' "${arche}"
+      # Strip the matched substring(s) so shorter shadows don't
+      # double-match. Replace with a placeholder of equal token shape
+      # to preserve word boundaries on adjacent matches.
+      placeholder="$(printf '%s' "${arche}" | sed 's/[A-Za-z0-9]/_/g')"
+      working_copy="${working_copy//${arche}/${placeholder}}"
+    fi
+  done
+}
+
+# write_session_design_contract <agent_name> <contract_text>
+# Writes the contract to `<session>/design_contract.md` with a small
+# frontmatter header. Atomic via temp+mv. Overwrites prior emissions
+# (latest contract wins — the user may iterate on the design within a
+# session). Caller must have run ensure_session_dir first.
+write_session_design_contract() {
+  local agent="$1"
+  local contract="$2"
+  [[ -z "${contract}" ]] && return 0
+  [[ -z "${SESSION_ID:-}" ]] && return 0
+
+  local target tmp
+  target="$(session_file "design_contract.md")"
+  tmp="$(mktemp "${target}.XXXXXX")" || return 1
+
+  {
+    printf -- '---\n'
+    printf 'agent: %s\n' "${agent}"
+    printf 'ts: %s\n' "$(now_epoch)"
+    printf 'cwd: %s\n' "${PWD:-}"
+    printf -- '---\n'
+    printf '%s\n' "${contract}"
+  } >"${tmp}"
+
+  mv "${tmp}" "${target}"
+}
+
+# --- end inline design-contract capture ---
 
 # with_scope_lock: serialize writes to discovered_scope.jsonl per session.
 # Same mkdir + stale-recovery pattern as with_metrics_lock / with_state_lock.
