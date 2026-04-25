@@ -2,7 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [1.11.1] - 2026-04-25
+
+Stabilization release following v1.11.0 (Council Phase 8). Closes the doc-drift gap that left Phase 8 invisible in the user-facing skill table and customization guide, plugs test gaps in the wave-aware discovered-scope cap and the finding-list lock, lands a deferred `auto_memory` conf key for shared machines / regulated codebases, and trims nine specialist agent descriptions that had grown unmanageable.
 
 ### Added
 
@@ -11,6 +13,10 @@ All notable changes to this project will be documented in this file.
 ### Changed
 
 - **Nine specialist agent descriptions trimmed.** `frontend-developer`, `backend-api-developer`, `devops-infrastructure-engineer`, `fullstack-feature-builder`, `test-automation-engineer`, `ios-core-engineer`, `ios-ui-developer`, `ios-deployment-specialist`, and `ios-ecosystem-integrator` carried multi-block `<example>` XML inside their YAML `description:` field — visually unmanageable (~3× longer than peer agents like `prometheus`/`oracle`) and harder to scan in the `/agents` picker. Each is now a single 1–2 sentence purpose statement covering scope and key technologies. Body content (role description, capabilities, guidelines) is unchanged. Discoverability improvement, not a parsing fix — the prior YAML still parsed correctly because escaped newlines and angle brackets inside a quoted string are valid YAML.
+
+### Fixed (post-review)
+
+- **`compact.md` auto_memory opt-out is now enforced, not informational.** The first-pass auto_memory implementation embedded the executable `is_auto_memory_enabled` check in `auto-memory.md` but wrote only a cross-reference note in `compact.md` ("applies here too"). On long sessions, the compact-time memory sweep would still write memory even when `auto_memory=off`, defeating the opt-out's purpose. `compact.md` now embeds the same `bash -c '. .../common.sh; is_auto_memory_enabled' || skip` one-liner so the flag is honored at both wrap-up AND compact moments. Surfaced by the v1.11.1 quality-reviewer pass.
 
 ### Documentation
 
