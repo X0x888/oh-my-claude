@@ -34,6 +34,7 @@ _omc_env_pretool_intent="${OMC_PRETOOL_INTENT_GUARD:-}"
 _omc_env_classifier_tel="${OMC_CLASSIFIER_TELEMETRY:-}"
 _omc_env_discovered_scope="${OMC_DISCOVERED_SCOPE:-}"
 _omc_env_council_deep_default="${OMC_COUNCIL_DEEP_DEFAULT:-}"
+_omc_env_auto_memory="${OMC_AUTO_MEMORY:-}"
 
 OMC_STALL_THRESHOLD="${OMC_STALL_THRESHOLD:-12}"
 OMC_EXCELLENCE_FILE_COUNT="${OMC_EXCELLENCE_FILE_COUNT:-3}"
@@ -86,6 +87,13 @@ OMC_DISCOVERED_SCOPE="${OMC_DISCOVERED_SCOPE:-on}"
 # `--deep` also remains unchanged — only the AUTO-detected dispatch path
 # (broad project-evaluation prompts under /ulw) is affected.
 OMC_COUNCIL_DEEP_DEFAULT="${OMC_COUNCIL_DEEP_DEFAULT:-off}"
+# Auto-memory wrap-up: when `on` (default), the auto-memory.md and
+# compact.md memory-sweep rules write project_*/feedback_*/user_*/
+# reference_*.md files at session-stop and pre-compact moments. Set to
+# `off` for shared machines, regulated codebases, or projects where
+# session memory should not accrue across runs. Explicit user requests
+# ("remember that...") still apply regardless of this flag.
+OMC_AUTO_MEMORY="${OMC_AUTO_MEMORY:-on}"
 
 _omc_conf_loaded=0
 
@@ -131,6 +139,8 @@ _parse_conf_file() {
         [[ -z "${_omc_env_discovered_scope}" && "${value}" =~ ^(on|off)$ ]] && OMC_DISCOVERED_SCOPE="${value}" || true ;;
       council_deep_default)
         [[ -z "${_omc_env_council_deep_default}" && "${value}" =~ ^(on|off)$ ]] && OMC_COUNCIL_DEEP_DEFAULT="${value}" || true ;;
+      auto_memory)
+        [[ -z "${_omc_env_auto_memory}" && "${value}" =~ ^(on|off)$ ]] && OMC_AUTO_MEMORY="${value}" || true ;;
     esac
   done < "${conf}"
 }
@@ -167,6 +177,13 @@ case "${OMC_GUARD_EXHAUSTION_MODE}" in
   warn)    OMC_GUARD_EXHAUSTION_MODE="scorecard" ;;
   strict)  OMC_GUARD_EXHAUSTION_MODE="block" ;;
 esac
+
+# Returns 0 (true) when auto-memory is enabled, 1 (false) when explicitly
+# disabled via conf. The auto-memory.md and compact.md rules use this to
+# decide whether to write memory at session-stop and pre-compact moments.
+is_auto_memory_enabled() {
+  [[ "${OMC_AUTO_MEMORY:-on}" != "off" ]]
+}
 
 # Hook logging — two channels, one file (${HOOK_LOG}).
 #

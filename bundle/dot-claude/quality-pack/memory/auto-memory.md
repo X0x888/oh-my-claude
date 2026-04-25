@@ -1,5 +1,13 @@
 # Auto-Memory on Session Wrap-Up
 
+**Project opt-out.** If `~/.claude/oh-my-claude.conf` (user-level) or `.claude/oh-my-claude.conf` (project-level, walked up from CWD) sets `auto_memory=off`, skip both this rule AND the compact-time memory sweep in `compact.md` for the session. Quick check before applying the rule:
+
+```bash
+bash -c '. "${HOME}/.claude/skills/autowork/scripts/common.sh"; is_auto_memory_enabled' || echo "auto_memory=off — skip"
+```
+
+Use the opt-out for shared machines, regulated codebases, or projects where session memory should not accrue across runs. Explicit user requests ("remember that...", "save this as a memory") still apply regardless of the flag.
+
 After any substantial implementation session (multi-step coding, council/lens evaluations, debugging campaigns, anything that moves the project's state in a way the next session would benefit from knowing), proactively update auto-memory before stopping. Do this without being asked.
 
 What "substantial" looks like in practice:

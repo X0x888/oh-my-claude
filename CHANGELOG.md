@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **`auto_memory` conf key (default `on`).** New per-project / per-user opt-out for the auto-memory wrap-up rule (`memory/auto-memory.md`) and compact-time memory sweep (`memory/compact.md`). Set `auto_memory=off` in `~/.claude/oh-my-claude.conf` (user-level) or `<repo>/.claude/oh-my-claude.conf` (project-level, walked up from CWD) to suppress automatic `project_*.md` / `feedback_*.md` / `user_*.md` / `reference_*.md` writes at session-stop and pre-compact moments. Explicit user requests ("remember that...", "save this as memory") still apply regardless. Same conf precedence as other oh-my-claude tunables: env (`OMC_AUTO_MEMORY`) > project > user > default. Use this on shared machines, regulated codebases, or projects where session memory should not accrue across runs. Closes a deferred item from the v1.8.0 cycle. New `is_auto_memory_enabled()` helper in `common.sh` exposes the resolved value to instruction text — the auto-memory.md and compact.md rules now embed a one-liner that calls it before applying.
+
 ### Documentation
 
 - **README skill table now surfaces Council Phase 8 and wave-plan visibility.** The 1.11.0 headline feature was invisible from the README — the `council` row described evaluation only, and the `ulw-status` row didn't mention the wave-plan progress display. Both rows now call out Phase 8 / wave-by-wave execution and the wave-plan progress surface respectively.

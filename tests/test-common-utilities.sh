@@ -473,6 +473,55 @@ load_conf
 HOME="${OLD_HOME}"
 assert_eq "env council_deep_default beats conf" "off" "${OMC_COUNCIL_DEEP_DEFAULT}"
 
+# Test 6b: auto_memory flag (on by default, on/off accepted, env wins)
+# Same isolation pattern as council_deep_default — fake HOME so the
+# walk-up doesn't hit the real user conf.
+_omc_conf_loaded=0
+_omc_env_auto_memory=""
+OMC_AUTO_MEMORY="on"
+rm -f "${conf_file}"
+HOME="${FAKE_HOME_DIR}"
+load_conf
+HOME="${OLD_HOME}"
+assert_eq "auto_memory default on" "on" "${OMC_AUTO_MEMORY}"
+assert_eq "is_auto_memory_enabled true at default" "0" "$(is_auto_memory_enabled && echo 0 || echo 1)"
+
+cat > "${conf_file}" <<'CONF'
+auto_memory=off
+CONF
+_omc_conf_loaded=0
+_omc_env_auto_memory=""
+OMC_AUTO_MEMORY="on"
+HOME="${FAKE_HOME_DIR}"
+load_conf
+HOME="${OLD_HOME}"
+assert_eq "auto_memory conf=off" "off" "${OMC_AUTO_MEMORY}"
+assert_eq "is_auto_memory_enabled false when off" "1" "$(is_auto_memory_enabled && echo 0 || echo 1)"
+
+# Invalid value rejected (default preserved)
+cat > "${conf_file}" <<'CONF'
+auto_memory=disabled
+CONF
+_omc_conf_loaded=0
+_omc_env_auto_memory=""
+OMC_AUTO_MEMORY="on"
+HOME="${FAKE_HOME_DIR}"
+load_conf
+HOME="${OLD_HOME}"
+assert_eq "auto_memory invalid=disabled rejected" "on" "${OMC_AUTO_MEMORY}"
+
+# Env beats conf
+cat > "${conf_file}" <<'CONF'
+auto_memory=off
+CONF
+_omc_conf_loaded=0
+_omc_env_auto_memory="on"
+OMC_AUTO_MEMORY="on"
+HOME="${FAKE_HOME_DIR}"
+load_conf
+HOME="${OLD_HOME}"
+assert_eq "env auto_memory beats conf" "on" "${OMC_AUTO_MEMORY}"
+
 cd "${OLD_PWD_CONF}"
 
 # Test 6: non-numeric and zero conf values are ignored
