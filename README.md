@@ -192,7 +192,7 @@ oh-my-claude/
 │   ├── output-styles/                       # Output format templates
 │   └── statusline.py                        # Custom statusline widget
 ├── config/settings.patch.json               # Merged into user settings on install
-├── tests/               (15 test scripts)   # Intent, quality gates, stall, resume, e2e, install/uninstall merge, concurrency, post-merge, repro redaction, discovered-scope, finding-list
+├── tests/               (14 bash + 1 py)    # Intent, quality gates, stall, resume, e2e, install/uninstall merge, concurrency, post-merge, repro redaction, discovered-scope, finding-list, statusline
 └── docs/                                    # Architecture, customization, FAQ, prompts
 ```
 
