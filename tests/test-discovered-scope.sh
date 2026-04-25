@@ -543,5 +543,63 @@ jq '.waves = (.waves | map(if .index == 1 then .status = "completed" else . end)
 done_count="$(read_active_waves_completed)"
 assert_eq "wave 1 completed → 1" "1" "${done_count}"
 
+# ----------------------------------------------------------------------
+printf 'Test 24: wave plan with 1 wave → cap=2 (smallest valid plan)\n'
+# Boundary: cap matches no-plan numerically (2) but via the wave-aware
+# code path. Catches off-by-one in the formula `cap = wave_total + 1`.
+reset_scope
+fake_wave_plan 1
+append_discovered_scope "metis" "${rows}"
+verdict="$(run_scope_gate "execution")"
+assert_eq "1-wave plan: first block cap=2" "block:1/2" "${verdict}"
+verdict="$(run_scope_gate "execution")"
+assert_eq "1-wave plan: second block cap=2" "block:2/2" "${verdict}"
+verdict="$(run_scope_gate "execution")"
+assert_eq "1-wave plan: third invocation releases" "allow:cap_reached" "${verdict}"
+
+# ----------------------------------------------------------------------
+printf 'Test 25: wave plan with 10 waves → cap=11 (large plan stays useful)\n'
+# High-end boundary: cap formula must scale linearly without truncation.
+reset_scope
+fake_wave_plan 10
+append_discovered_scope "metis" "${rows}"
+for i in $(seq 1 11); do
+  verdict="$(run_scope_gate "execution")"
+  assert_eq "10-wave plan: block ${i}/11" "block:${i}/11" "${verdict}"
+done
+verdict="$(run_scope_gate "execution")"
+assert_eq "10-wave plan: 12th invocation releases" "allow:cap_reached" "${verdict}"
+
+# ----------------------------------------------------------------------
+printf 'Test 26: read_active_waves_completed counts non-contiguous completions\n'
+# Verifies the helper counts by status field, not by position. A plan with
+# waves 1, 2, 4 marked completed (skipping 3) must report 3.
+clear_wave_plan
+fake_wave_plan 5
+findings_file="$(session_file "findings.json")"
+jq '.waves = (.waves | map(if .index == 1 or .index == 2 or .index == 4 then .status = "completed" else . end))' \
+  "${findings_file}" > "${findings_file}.tmp" && mv "${findings_file}.tmp" "${findings_file}"
+done_count="$(read_active_waves_completed)"
+assert_eq "non-contiguous: 3 of 5 completed → 3" "3" "${done_count}"
+
+# wave_total reflects declared total, not completed count
+total_after="$(read_active_wave_total)"
+assert_eq "wave_total unchanged by completion status" "5" "${total_after}"
+
+# ----------------------------------------------------------------------
+printf 'Test 27: cap formula uses wave_total, not waves_remaining\n'
+# When some waves are already complete, the cap must still be wave_total+1
+# (not (remaining+1)). Documents the design intent: discovered_scope_blocks
+# is incremented per stop attempt, not per completed wave, so the cap is a
+# function of the plan size, not progress.
+reset_scope
+fake_wave_plan 5
+findings_file="$(session_file "findings.json")"
+jq '.waves = (.waves | map(if .index <= 3 then .status = "completed" else . end))' \
+  "${findings_file}" > "${findings_file}.tmp" && mv "${findings_file}.tmp" "${findings_file}"
+append_discovered_scope "metis" "${rows}"
+verdict="$(run_scope_gate "execution")"
+assert_eq "3 of 5 waves done: cap still 6" "block:1/6" "${verdict}"
+
 printf '\n=== Discovered-Scope Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]

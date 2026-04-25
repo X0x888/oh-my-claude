@@ -269,5 +269,89 @@ printf 'Test 25: add-finding rejects empty stdin\n'
 output="$(echo "" | "${SCRIPT}" add-finding 2>&1 || echo CAUGHT)"
 assert_contains "empty add-finding rejected" "empty stdin" "${output}"
 
+# ----------------------------------------------------------------------
+printf 'Test 26: high-concurrency stress (12 simultaneous status updates)\n'
+# Test 17 covered 3 concurrent ops; this stress-tests the file-lock under
+# 12 simultaneous status updates targeting distinct findings. All updates
+# must land — no lost writes — and the JSON must remain valid after the
+# storm. Catches lock-acquisition timeout regressions and any orphaned
+# `.lock` directories on the hot path.
+init_json='['
+for i in $(seq 1 12); do
+  id_padded="$(printf '%03d' "${i}")"
+  init_json="${init_json}{\"id\":\"F-S${id_padded}\",\"summary\":\"stress ${i}\",\"severity\":\"low\",\"surface\":\"x\"}"
+  if [[ "${i}" -lt 12 ]]; then init_json="${init_json},"; fi
+done
+init_json="${init_json}]"
+echo "${init_json}" | "${SCRIPT}" init --force >/dev/null
+
+# Spawn 12 concurrent status updates and collect pids.
+pids=()
+for i in $(seq 1 12); do
+  id_padded="$(printf '%03d' "${i}")"
+  "${SCRIPT}" status "F-S${id_padded}" "shipped" "sha-${i}" "stress-${i}" &
+  pids+=($!)
+done
+for pid in "${pids[@]}"; do
+  wait "${pid}"
+done
+
+assert_eq "stress: post-concurrent JSON valid" "yes" \
+  "$(jq empty "${findings_path}" 2>/dev/null && echo yes || echo no)"
+
+shipped_count="$(jq '[.findings[] | select(.status=="shipped")] | length' "${findings_path}")"
+assert_eq "stress: all 12 status updates landed" "12" "${shipped_count}"
+
+sha_count="$(jq '[.findings[] | select(.commit_sha != "" and .commit_sha != null)] | length' "${findings_path}")"
+assert_eq "stress: all 12 commit_shas persisted" "12" "${sha_count}"
+
+assert_eq "stress: lock dir removed" "no" \
+  "$([[ -d "${findings_path}.lock" ]] && echo yes || echo no)"
+
+# ----------------------------------------------------------------------
+printf 'Test 27: mixed-op concurrency (status + assign-wave + add-finding + wave-status)\n'
+# Real-world Phase 8 wave execution interleaves status updates (per
+# finding shipped), wave-status (per wave commit), and add-finding (when
+# a wave reveals a new finding). This stress test runs all four op types
+# concurrently and asserts the final document is consistent: the 3 initial
+# findings persisted, all 3 add-finding rows landed, the wave was assigned,
+# and the lock cleaned up.
+echo '[
+  {"id":"F-M001","summary":"mix1","severity":"low","surface":"a"},
+  {"id":"F-M002","summary":"mix2","severity":"low","surface":"b"},
+  {"id":"F-M003","summary":"mix3","severity":"low","surface":"c"}
+]' | "${SCRIPT}" init --force >/dev/null
+
+pids=()
+"${SCRIPT}" status F-M001 shipped m1sha "ship1" & pids+=($!)
+"${SCRIPT}" status F-M002 shipped m2sha "ship2" & pids+=($!)
+"${SCRIPT}" status F-M003 shipped m3sha "ship3" & pids+=($!)
+"${SCRIPT}" assign-wave 1 1 "mix-surface" F-M001 F-M002 F-M003 & pids+=($!)
+"${SCRIPT}" add-finding <<<'{"id":"F-M004","summary":"mid-flight A","severity":"low","surface":"d"}' & pids+=($!)
+"${SCRIPT}" add-finding <<<'{"id":"F-M005","summary":"mid-flight B","severity":"low","surface":"e"}' & pids+=($!)
+"${SCRIPT}" add-finding <<<'{"id":"F-M006","summary":"mid-flight C","severity":"low","surface":"f"}' & pids+=($!)
+"${SCRIPT}" wave-status 1 in_progress "" & pids+=($!)
+for pid in "${pids[@]}"; do
+  wait "${pid}"
+done
+
+assert_eq "mix-stress: post JSON valid" "yes" \
+  "$(jq empty "${findings_path}" 2>/dev/null && echo yes || echo no)"
+
+total="$(jq '.findings | length' "${findings_path}")"
+assert_eq "mix-stress: 6 findings (3 initial + 3 added)" "6" "${total}"
+
+# All 3 added findings present with default pending status
+added_pending="$(jq '[.findings[] | select(.id == "F-M004" or .id == "F-M005" or .id == "F-M006") | select(.status == "pending")] | length' "${findings_path}")"
+assert_eq "mix-stress: 3 added findings present and pending" "3" "${added_pending}"
+
+# Wave landed (assign-wave is idempotent if it ran multiple times, but here it ran once)
+wave_count="$(jq '.waves | length' "${findings_path}")"
+assert_eq "mix-stress: wave landed" "1" "${wave_count}"
+
+# Lock cleaned up
+assert_eq "mix-stress: lock dir removed" "no" \
+  "$([[ -d "${findings_path}.lock" ]] && echo yes || echo no)"
+
 printf '\n=== Finding-List Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]
