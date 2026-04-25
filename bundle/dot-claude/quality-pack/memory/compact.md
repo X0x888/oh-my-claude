@@ -24,7 +24,13 @@ When Claude Code compacts a session, preserve the working state instead of produ
 
 A compact is the highest-cost moment for forgetting: a long session is about to lose granularity. Before the compact completes, scan the session for cross-session auto-memory candidates and write them to `memory/` files alongside the in-session preservation above. The auto-memory rule in `auto-memory.md` names the triggers and file conventions; this file reminds you that compact boundaries are one of two moments to apply that rule — the other is session stop.
 
-**Opt-out applies here too.** The `auto_memory=off` opt-out documented at the top of `auto-memory.md` suppresses this compact-time sweep as well. Same conf precedence (env > project > user); same explicit-request override.
+**Opt-out applies here too.** The `auto_memory=off` opt-out documented at the top of `auto-memory.md` suppresses this compact-time sweep as well. Same conf precedence (env > project > user); same explicit-request override. Run the same one-liner before applying this rule:
+
+```bash
+bash -c '. "${HOME}/.claude/skills/autowork/scripts/common.sh"; is_auto_memory_enabled' || echo "auto_memory=off — skip"
+```
+
+If the helper returns the skip message, do not write memory at compact time.
 
 Prioritize writing when the session contained any of:
 - A confirmed or corrected workflow preference the user articulated (candidate for `feedback_*.md`).
