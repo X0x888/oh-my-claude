@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Documentation
+
+- **README skill table now surfaces Council Phase 8 and wave-plan visibility.** The 1.11.0 headline feature was invisible from the README — the `council` row described evaluation only, and the `ulw-status` row didn't mention the wave-plan progress display. Both rows now call out Phase 8 / wave-by-wave execution and the wave-plan progress surface respectively.
+- **docs/customization.md tunables table gains four missing conf keys**: `gate_level` (`full`|`standard`|`basic`), `guard_exhaustion_mode` (`scorecard`|`block`|`silent` plus legacy aliases), `discovered_scope` (with the `N+1` cap-raise note for active wave plans), and `council_deep_default`. All four were documented in `CLAUDE.md` but absent from the user-facing tuning surface, so users couldn't discover or tune them without reading source.
+- **`--no-ios` description corrected** from "5 iOS-specific specialist agents" to "4". The flag removes `~/.claude/agents/ios-*.md` files (4 files); the prior text padded the count with `frontend-developer`, which is not removed and is not iOS-specific.
+- **AGENTS.md test-script listings now include `test-discovered-scope.sh` and `test-finding-list.sh`** in both the architecture diagram and the testing-commands block. Both tests existed since 1.10.0 and 1.11.0 respectively but the listing had not been updated. Surfaced under the Serendipity Rule during the v1.11.1 doc-drift sweep.
+
 ## [1.11.0] - 2026-04-25
 
 Council-to-execution bridge. The longstanding gap between "council surfaced 30 findings" and "now ship them all with rigor" is now closed — `/council` has a Phase 8 (Execution Plan) that runs wave-by-wave with full plan/review/excellence/verify/commit per wave instead of collapsing into a single-shot mega-implementation that exhausts context and clips scope to the five-priority headline.

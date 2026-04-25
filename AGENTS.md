@@ -29,10 +29,12 @@ oh-my-claude/
   config/
     settings.patch.json       # Settings merged into user's settings.json
 
-  tests/                      # Test scripts
+  tests/                      # Test scripts (14 bash + 1 python)
     test-common-utilities.sh
     test-concurrency.sh
+    test-discovered-scope.sh
     test-e2e-hook-sequence.sh
+    test-finding-list.sh
     test-install-artifacts.sh
     test-intent-classification.sh
     test-post-merge-hook.sh
@@ -150,6 +152,8 @@ bash tests/test-settings-merge.sh
 bash tests/test-uninstall-merge.sh
 bash tests/test-common-utilities.sh
 bash tests/test-session-resume.sh
+bash tests/test-discovered-scope.sh
+bash tests/test-finding-list.sh
 python3 -m unittest tests.test_statusline -v
 ```
 

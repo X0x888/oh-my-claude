@@ -214,10 +214,10 @@ Skills are invoked as slash commands or routed automatically by the intent class
 | librarian | `/librarian <topic>` | Official docs and reference research |
 | frontend-design | `/frontend-design <task>` | Distinctive design-first frontend work |
 | atlas | `/atlas [focus]` | Bootstrap or refresh repo instruction files |
-| council | `/council [focus] [--deep]` | Multi-role project evaluation with verification of top findings. `--deep` escalates lenses to opus. |
+| council | `/council [focus] [--deep]` | Multi-role project evaluation with top-finding verification, then **Phase 8** wave-by-wave execution when fixes are requested ("implement all", "exhaustive", "fix everything"). `--deep` escalates lenses to opus. |
 | ulw-demo | `/ulw-demo` | Guided onboarding walkthrough with real quality gates |
 | ulw-skip | `/ulw-skip <reason>` | Skip current quality gate block once |
-| ulw-status | `/ulw-status` | Show current session state (debugging). `summary` / `classifier` arguments swap modes. |
+| ulw-status | `/ulw-status` | Show current session state and Council Phase 8 wave-plan progress (debugging). `summary` / `classifier` arguments swap modes. |
 | ulw-off | `/ulw-off` | Deactivate ultrawork mode mid-session |
 | skills | `/skills` | List all available skills with usage guide |
 
