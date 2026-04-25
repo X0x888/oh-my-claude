@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # state-io.sh — State I/O subsystem for oh-my-claude.
 #
 # Sourced by common.sh AFTER STATE_ROOT, STATE_JSON, validate_session_id,
