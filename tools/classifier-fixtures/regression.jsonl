@@ -1,0 +1,18 @@
+{"prompt_preview":"/ulw fix the failing test and add regression coverage","intent":"execution","domain":"coding","note":"canonical execution+coding /ulw prompt"}
+{"prompt_preview":"/ulw debug why settings saves but shows stale data until refresh","intent":"execution","domain":"coding","note":"debug verb under /ulw"}
+{"prompt_preview":"/ulw draft a project proposal for an AI-assisted research workflow","intent":"execution","domain":"writing","note":"writing-domain execution"}
+{"prompt_preview":"/ulw compare server-session auth vs JWT and recommend one","intent":"advisory","domain":"research","note":"compare+recommend reads as advisory despite /ulw prefix; documented behavior, possibly worth re-examining"}
+{"prompt_preview":"/ulw turn these meeting notes into an action plan and follow-up email","intent":"execution","domain":"operations","note":"operations-domain transform task"}
+{"prompt_preview":"/ulw evaluate my project and plan for improvements","intent":"execution","domain":"research","note":"council auto-trigger; classifier currently scores domain=research (evaluate dominates); future evolve to mixed would update this fixture"}
+{"prompt_preview":"At this stage, what should be done to further improve this project?","intent":"advisory","domain":"general","note":"open advisory question; classifier returns general because no strong domain signal"}
+{"prompt_preview":"What's a good approach for handling this race condition?","intent":"advisory","domain":"general","note":"race condition is coding-flavored but classifier currently returns general; suspected under-detection"}
+{"prompt_preview":"continue with the auth migration","intent":"continuation","domain":"coding","note":"resume signal — `continue` verb"}
+{"prompt_preview":"keep going","intent":"continuation","domain":"general","note":"minimal continuation cue"}
+{"prompt_preview":"let's pause here for now","intent":"checkpoint","domain":"general","note":"explicit checkpoint phrase"}
+{"prompt_preview":"stop","intent":"execution","domain":"general","note":"bare imperative classified as execution; canonical session-management would expect 'session_management' — suspected misclassification, captured for stability"}
+{"prompt_preview":"can you check on the status of the deploy","intent":"execution","domain":"general","note":"polite question form classified as execution; suspected misclassification, captured for stability"}
+{"prompt_preview":"please push the changes and tag the release","intent":"execution","domain":"general","note":"v1.8.1 mixed-intent fix made this execution; domain is general because release verbs lack strong domain signal"}
+{"prompt_preview":"evaluate the migration plan and then commit it","intent":"execution","domain":"mixed","note":"mixed-intent execution per v1.8.1 fix; domain mixed because evaluate (research) + commit (operations)"}
+{"prompt_preview":"what do you think about the current architecture?","intent":"advisory","domain":"general","note":"opinion-seeking; advisory-means-no-edits memory still applies"}
+{"prompt_preview":"sisyphus turn this into a memo","intent":"execution","domain":"writing","note":"sisyphus alias activates ULW; writing domain"}
+{"prompt_preview":"ulw refactor the lock primitives in common.sh","intent":"execution","domain":"coding","note":"ulw alias without slash; coding"}

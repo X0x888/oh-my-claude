@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Classifier-telemetry feedback loop.** New developer tool `tools/replay-classifier-telemetry.sh` replays captured prompts against the current `classify_task_intent` / `infer_domain` and flags drift. Closes the v1.9.0 telemetry loop: `classifier_telemetry.jsonl` accumulates whether anyone reads it; this tool turns the data into a regression net. Modes: `--fixtures FILE` (default: `tools/classifier-fixtures/regression.jsonl`) for CI; `--live` for replaying against your own `~/.claude/quality-pack/state/*/classifier_telemetry.jsonl`. Exit code 0 = no drift, 1 = at least one row drifted, 2 = usage error. New CI test `tests/test-classifier-replay.sh` (15 assertions) wraps the tool — it asserts the curated fixtures are stable, exercises drift detection with an intentionally-mismatched row, validates the `--help` surface, and checks forward-compat with non-object rows. Initial fixtures (18 rows) cover the canonical execution / advisory / continuation / checkpoint / session-management cases plus mixed-intent and ULW-alias edge cases. Several rows have notes flagging suspected misclassifications captured for stability — future classifier improvements that fix them will trip the regression suite as expected, prompting an intentional fixture update.
+
 ### Changed
 
 - **State I/O subsystem extracted to `lib/state-io.sh`.** First slice of the planned `common.sh` decomposition. The state-I/O block (≈210 lines: `ensure_session_dir`, `session_file`, `read_state`, `write_state`, `write_state_batch`, `append_state`, `append_limited_state`, `with_state_lock`, `with_state_lock_batch`, `_ensure_valid_state` recovery, `_lock_mtime` BSD/GNU stat compat) moved out of `common.sh` into `bundle/dot-claude/skills/autowork/scripts/lib/state-io.sh`. `common.sh` now sources the lib after `validate_session_id` and `log_anomaly` are defined. **No behavior change** — every existing test passes unchanged.

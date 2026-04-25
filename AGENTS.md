@@ -43,10 +43,16 @@ oh-my-claude/
     test-repro-redaction.sh
     test-session-resume.sh
     test-settings-merge.sh
+    test-classifier-replay.sh
     test-stall-detection.sh
     test-state-io.sh
     test-uninstall-merge.sh
     test_statusline.py
+
+  tools/                      # Developer tools (not installed)
+    replay-classifier-telemetry.sh
+    classifier-fixtures/
+      regression.jsonl
 
   docs/                       # Extended documentation
     architecture.md
@@ -158,6 +164,7 @@ bash tests/test-session-resume.sh
 bash tests/test-discovered-scope.sh
 bash tests/test-finding-list.sh
 bash tests/test-state-io.sh
+bash tests/test-classifier-replay.sh
 python3 -m unittest tests.test_statusline -v
 ```
 
