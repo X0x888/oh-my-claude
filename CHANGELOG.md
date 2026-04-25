@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-04-25
+
+First-cycle technical-debt-and-analytics close-out following v1.11.1. Three independent waves: extract the state-I/O subsystem out of the growing `common.sh` monolith into a focused `lib/state-io.sh` module (no behavior change); close the v1.9.0 telemetry data loop with a curated-fixture replay tool that detects classifier drift on every PR; and close the v1.8.0 deferred Serendipity Rule analytics by adding a `record-serendipity.sh` helper that logs each rule application to per-session and cross-session JSONL plus state counters surfaced in `/ulw-status`.
+
 ### Added
 
 - **Serendipity Rule analytics (`record-serendipity.sh`).** New autowork helper closes the loop on whether the Serendipity Rule (verified-adjacent-defects-fixed-in-session, from `core.md`) is being applied or silently ignored. Each rule application logs a JSON record to `<session>/serendipity_log.jsonl` (per-session) and `~/.claude/quality-pack/serendipity-log.jsonl` (cross-session aggregate), and increments three new state keys: `serendipity_count`, `last_serendipity_ts`, `last_serendipity_fix`. Counter and last-fix description surface in `/ulw-status` full mode under `--- Counters ---`. Concurrent invocations preserve all writes via the existing `with_state_lock` primitive (8-op stress test in `tests/test-serendipity-log.sh`). Hook-style guard exits 0 on missing `SESSION_ID`; missing or malformed input exits 2 without partial writes. The Serendipity Rule in `core.md` now points to the helper with a one-liner invocation, so the logging path is discoverable from inside the rule itself. Closes a deferred item from v1.8.0 (Serendipity analytics target ~2026-04-30, landed early).
