@@ -15,16 +15,27 @@ A cognitive quality harness for Claude Code. Bash hooks, skills, and specialist 
 
 ## Quick start
 
+Two paths — pick whichever fits how you usually install dev tools.
+
+**One-liner** (no clone, clones for you under `~/.local/share/oh-my-claude`):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/X0x888/oh-my-claude/main/install-remote.sh | bash
+# Restart Claude Code, then:
+bash ~/.local/share/oh-my-claude/verify.sh
+```
+
+**Manual clone** (audit before installing):
+
 ```bash
 git clone https://github.com/X0x888/oh-my-claude.git
 cd oh-my-claude
-bash install.sh --bypass-permissions   # recommended for power users
-# Or: bash install.sh                  # standard install — permission prompts kept
+bash install.sh
 # Restart Claude Code, then:
 bash verify.sh
 ```
 
-`--bypass-permissions` turns off Claude Code's built-in "allow this tool?" prompts so `/ulw` can run uninterrupted. Quality gates still apply — this flag only affects Claude Code's confirmations, not the harness's reviewers or verification. Leave it off if you'd rather approve each tool invocation.
+That installs the full harness with Claude Code's permission prompts kept on — every tool invocation still asks for your approval. Once you've seen the harness work and decide you trust it, the optional `--bypass-permissions` flag (covered under [Power-user setup](#power-user-setup) below) lets `/ulw` run without those prompts. The harness's quality gates apply either way.
 
 **First time?** Run `/ulw-demo` to see the quality gates in action before starting real work.
 
@@ -192,7 +203,7 @@ oh-my-claude/
 │   ├── output-styles/                       # Output format templates
 │   └── statusline.py                        # Custom statusline widget
 ├── config/settings.patch.json               # Merged into user settings on install
-├── tests/               (20 bash + 1 py)    # Intent, quality gates, stall, resume, e2e, install/uninstall merge, concurrency, post-merge, repro redaction, discovered-scope, finding-list, state-io, classifier-replay, serendipity-log, cross-session-rotation, classifier, show-report, statusline
+├── tests/               (21 bash + 1 py)    # Intent, quality gates, stall, resume, e2e, install/uninstall merge, concurrency, post-merge, repro redaction, discovered-scope, finding-list, state-io, classifier-replay, serendipity-log, cross-session-rotation, classifier, show-report, install-remote, statusline
 ├── tools/                                    # Developer-only tools (replay-classifier-telemetry.sh, classifier-fixtures/)
 └── docs/                                    # Architecture, customization, FAQ, prompts
 ```
@@ -234,13 +245,13 @@ Skills are invoked as slash commands or routed automatically by the intent class
 
 ## Power-user setup
 
-For maximum autonomy, install with permission bypass:
+Once you've run `/ulw-demo`, watched the quality gates fire, and decided you trust the harness, you can remove Claude Code's per-tool approval prompts:
 
 ```bash
 bash install.sh --bypass-permissions
 ```
 
-This skips all Claude Code permission prompts, letting the harness run without interruption. The quality gates still apply -- bypass-permissions affects Claude Code's built-in confirmations, not the harness's review and verification requirements. Use this if you trust the harness and want uninterrupted flow.
+This is opt-in. It skips Claude Code's built-in "allow this tool?" prompts so `/ulw` runs without interruption. The harness's quality gates (verification, reviewer dispatch, stop-guard) keep working — those are independent of Claude Code's confirmation layer. Switch back at any time by re-running `bash install.sh` without the flag.
 
 Other install options:
 
@@ -285,6 +296,7 @@ bash tests/test-classifier-replay.sh        # Classifier regression replay again
 bash tests/test-serendipity-log.sh          # Serendipity Rule analytics logging
 bash tests/test-cross-session-rotation.sh   # Cross-session JSONL aggregate cap helper
 bash tests/test-show-report.sh              # /ulw-report skill backend (cross-session digest)
+bash tests/test-install-remote.sh           # curl-pipe-bash bootstrapper (install-remote.sh)
 python3 -m unittest tests.test_statusline   # Statusline widget
 ```
 
@@ -296,6 +308,8 @@ The harness is designed to be extended. Agent definitions, quality gate threshol
 - [Customization](docs/customization.md) -- what's configurable and how to change it safely
 - [FAQ](docs/faq.md) -- common questions and troubleshooting
 - [Prompts](docs/prompts.md) -- prompt reference and routing details
+- [Glossary](docs/glossary.md) -- decoder ring for the mythology-named skills and internal terms
+- [Showcase](docs/showcase.md) -- real-world transcripts where the gates caught a bug or stalled completion (community-contributed)
 
 ## Contributing
 

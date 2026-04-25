@@ -853,12 +853,10 @@ fi
 # truthy. The prior `!= "1"` check was dead — no mainstream CI sets CI=1.
 if [[ "${BYPASS_PERMISSIONS}" != "true" ]] && [[ -z "${CI:-}" ]] && [[ -t 0 ]]; then
   printf '\n'
-  printf '  \033[1mTip:\033[0m For maximum autonomy (no permission prompts for trusted tools),\n'
-  printf '       cancel now (Ctrl-C) and re-run with: \033[1mbash install.sh --bypass-permissions\033[0m\n'
-  printf '       Quality gates still apply — this only affects Claude Code prompts.\n'
-  printf '       Proceeding in 2s with standard permissions...\n'
+  printf '  Installing with Claude Code permission prompts kept on. Once you trust\n'
+  printf '  the harness, --bypass-permissions removes those prompts (quality gates\n'
+  printf '  always apply). Continuing...\n'
   printf '\n'
-  sleep 2
 fi
 
 printf 'Installing oh-my-claude into %s ...\n' "${CLAUDE_HOME}"
@@ -1053,5 +1051,6 @@ printf '  2. Run: bash %s/verify.sh\n' "${SCRIPT_DIR}"
 printf '\n'
 
 if [[ "${BYPASS_PERMISSIONS}" != "true" ]]; then
-  printf 'Tip: For maximum autonomy, re-run with: bash install.sh --bypass-permissions\n'
+  printf 'Optional: once you have run /ulw-demo and trust the harness,\n'
+  printf '  bash install.sh --bypass-permissions  # removes Claude Code permission prompts (quality gates still apply)\n'
 fi
