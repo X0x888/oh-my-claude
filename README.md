@@ -192,7 +192,7 @@ oh-my-claude/
 │   ├── output-styles/                       # Output format templates
 │   └── statusline.py                        # Custom statusline widget
 ├── config/settings.patch.json               # Merged into user settings on install
-├── tests/               (16 bash + 1 py)    # Intent, quality gates, stall, resume, e2e, install/uninstall merge, concurrency, post-merge, repro redaction, discovered-scope, finding-list, state-io, classifier-replay, statusline
+├── tests/               (17 bash + 1 py)    # Intent, quality gates, stall, resume, e2e, install/uninstall merge, concurrency, post-merge, repro redaction, discovered-scope, finding-list, state-io, classifier-replay, serendipity-log, statusline
 ├── tools/                                    # Developer-only tools (replay-classifier-telemetry.sh, classifier-fixtures/)
 └── docs/                                    # Architecture, customization, FAQ, prompts
 ```
@@ -273,6 +273,7 @@ bash tests/test-discovered-scope.sh         # Discovered-scope capture + wave-aw
 bash tests/test-finding-list.sh             # Council Phase 8 findings.json artifact
 bash tests/test-state-io.sh                 # Extracted lib/state-io.sh module
 bash tests/test-classifier-replay.sh        # Classifier regression replay against curated fixtures
+bash tests/test-serendipity-log.sh          # Serendipity Rule analytics logging
 python3 -m unittest tests.test_statusline   # Statusline widget
 ```
 

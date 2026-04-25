@@ -290,6 +290,7 @@ jq -r '
   "Dimension blocks:  \(.dimension_guard_blocks // "0")",
   "Session handoffs:  \(.session_handoff_blocks // "0")",
   "Discovered-scope:  \(.discovered_scope_blocks // "0")",
+  "Serendipity fires: \(.serendipity_count // "0")\(if (.last_serendipity_fix // "") != "" then " (last: \(.last_serendipity_fix))" else "" end)",
   "Stall counter:     \(.stall_counter // "0")",
   "",
   "--- Intent Guards ---",
