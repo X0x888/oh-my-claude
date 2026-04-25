@@ -297,6 +297,8 @@ bash tests/test-serendipity-log.sh          # Serendipity Rule analytics logging
 bash tests/test-cross-session-rotation.sh   # Cross-session JSONL aggregate cap helper
 bash tests/test-show-report.sh              # /ulw-report skill backend (cross-session digest)
 bash tests/test-install-remote.sh           # curl-pipe-bash bootstrapper (install-remote.sh)
+bash tests/test-phase8-integration.sh       # Council Phase 8 wave-cap wiring (record-finding-list ↔ stop-guard)
+bash tests/test-verification-lib.sh         # Extracted lib/verification.sh module (symbol presence + smoke)
 python3 -m unittest tests.test_statusline   # Statusline widget
 ```
 

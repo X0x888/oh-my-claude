@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **Verification subsystem extracted to `lib/verification.sh`.** The 9 verification functions and 7 `MCP_VERIFY_*` readonly constants previously inlined in `common.sh:1199-1498` (~300 lines) now live in `bundle/dot-claude/skills/autowork/scripts/lib/verification.sh`, sourced from `common.sh` immediately after `lib/state-io.sh` (no inter-lib dependency — pure functions over command text, output, and `OMC_CUSTOM_VERIFY_MCP_TOOLS`). Mirrors the v1.12.0 state-io extract and v1.13.0 classifier extract patterns. `common.sh` drops 2,893 → 2,596 lines (-10.3%); test surface unchanged (existing callers in `record-verification.sh`, `test-common-utilities.sh`, `test-quality-gates.sh`, `test-intent-classification.sh` see no behavior change). New `tests/test-verification-lib.sh` (40 assertions, 11 cases) provides the symbol-presence regression net for the lib boundary that `verify.sh`'s path-existence check cannot detect on its own. `verify.sh` `required_paths` updated. Rationale: continues the lib/ decomposition pattern; preserves `common.sh` shrinkage trajectory; keeps verification scoring testable in isolation.
+
+### Added
+
+- **`tests/test-phase8-integration.sh` — closes the v1.13.0 wave-cap integration gap.** New test (18 assertions, 4 scenarios) exercises the contract that binds `record-finding-list.sh` and `stop-guard.sh`: when findings.json declares N waves, the discovered-scope gate's block cap rises from the legacy default of 2 to wave_total+1. Both halves were tested in isolation (`test-finding-list.sh`, `test-discovered-scope.sh` inline-simulation), but no test wired the real scripts end-to-end against a real findings.json and a real discovered_scope.jsonl. Scenarios: (1) no wave plan → cap=2, block-twice-then-release; (2) 4-wave plan → cap=5, with `Wave plan: X/4 waves completed` text advancing as `wave-status completed` is called; (3) `pending=0` releases the gate even with an active wave plan; (4) `wave_total` directly drives the announced cap. Closes the deferred-from-v1.13 risk recorded in `project_record_finding_stop_guard_test_gap.md`.
+
 ## [1.13.0] - 2026-04-25
 
 Five-wave council Phase 8 plan closing the post-v1.12.0 advisory evaluation. Theme: "make the harness visible to the human" — convert existing telemetry into a user-readable surface, harden reliability, clean up `common.sh`, polish UX/copy, and reduce install friction. 1,666 → 1,829 test assertions (+10%); 18 → 21 bash test files; `common.sh` 3,329 → 2,846 lines (−14%); 1 new skill (`/ulw-report`); 1 new top-level script (`install-remote.sh`); 2 new docs (`glossary.md`, `showcase.md`).

@@ -96,6 +96,7 @@ required_paths=(
   "${CLAUDE_HOME}/skills/autowork/scripts/common.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/lib/state-io.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/lib/classifier.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/lib/verification.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/record-serendipity.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/record-reviewer.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/record-subagent-summary.sh"

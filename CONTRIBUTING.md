@@ -78,6 +78,8 @@ bash tests/test-cross-session-rotation.sh
 bash tests/test-classifier.sh
 bash tests/test-show-report.sh
 bash tests/test-install-remote.sh
+bash tests/test-phase8-integration.sh
+bash tests/test-verification-lib.sh
 python3 -m unittest tests.test_statusline -v
 ```
 

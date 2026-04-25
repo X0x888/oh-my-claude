@@ -58,5 +58,11 @@ jobs:
       - name: Run session resume tests
         run: bash tests/test-session-resume.sh
 
+      - name: Run verification lib tests
+        run: bash tests/test-verification-lib.sh
+
+      - name: Run Phase 8 integration tests
+        run: bash tests/test-phase8-integration.sh
+
       - name: Run statusline tests
         run: python3 -m unittest tests.test_statusline -v

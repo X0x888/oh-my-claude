@@ -7,10 +7,10 @@ Cognitive quality harness for Claude Code -- bash hooks, specialist agents, and 
 - `bundle/dot-claude/agents/` -- 30 specialist agent definitions with permission boundaries
 - `bundle/dot-claude/quality-pack/scripts/` -- 5 lifecycle hook scripts (prompt routing, compaction, session management)
 - `bundle/dot-claude/skills/` -- 18 skill definitions, each in `<name>/SKILL.md`
-- `bundle/dot-claude/skills/autowork/scripts/` -- 16 autowork hook scripts including `common.sh` (shared utility library), `record-finding-list.sh` (council Phase 8 master finding list), and `record-serendipity.sh` (Serendipity Rule analytics); state I/O extracted to `lib/state-io.sh` and the prompt classifier extracted to `lib/classifier.sh`, both sourced by `common.sh`
+- `bundle/dot-claude/skills/autowork/scripts/` -- 16 autowork hook scripts including `common.sh` (shared utility library), `record-finding-list.sh` (council Phase 8 master finding list), and `record-serendipity.sh` (Serendipity Rule analytics); state I/O extracted to `lib/state-io.sh`, the prompt classifier extracted to `lib/classifier.sh`, and the verification subsystem extracted to `lib/verification.sh`, all sourced by `common.sh`
 - `bundle/dot-claude/output-styles/` -- output format templates
 - `config/settings.patch.json` -- settings merged into user config on install
-- `tests/` -- 22 test scripts (e2e hook sequence, intent classification, quality gates, stall detection, settings merge, uninstall merge, common utilities, session resume, statusline, concurrency, install artifacts, post-merge hook, repro redaction, discovered-scope, finding-list, state-io, classifier-replay, serendipity-log, cross-session-rotation, classifier, show-report, install-remote)
+- `tests/` -- 24 test scripts (e2e hook sequence, intent classification, quality gates, stall detection, settings merge, uninstall merge, common utilities, session resume, statusline, concurrency, install artifacts, post-merge hook, repro redaction, discovered-scope, finding-list, state-io, classifier-replay, serendipity-log, cross-session-rotation, classifier, show-report, install-remote, phase8-integration, verification-lib)
 - `tools/` -- Developer-only tools (`replay-classifier-telemetry.sh` and `classifier-fixtures/regression.jsonl`); not installed into `~/.claude/`
 - `docs/` -- architecture, customization, FAQ, and prompt reference docs
 
@@ -56,6 +56,8 @@ bash tests/test-cross-session-rotation.sh
 bash tests/test-classifier.sh
 bash tests/test-show-report.sh
 bash tests/test-install-remote.sh
+bash tests/test-phase8-integration.sh
+bash tests/test-verification-lib.sh
 python3 -m unittest tests.test_statusline -v
 ```
 
