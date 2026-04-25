@@ -2080,7 +2080,19 @@ for cmd in \
   "git commit --dry-run" \
   "git tag -l" \
   "git tag --list" \
-  "git tag --list 'v1.*'"; do
+  "git tag --list 'v1.*'" \
+  "git tag --sort=-creatordate" \
+  "git tag --sort -creatordate" \
+  "git tag --contains HEAD" \
+  "git tag --no-contains HEAD" \
+  "git tag --points-at v1.13.0" \
+  "git tag --merged main" \
+  "git tag --no-merged main" \
+  "git tag -n5" \
+  "git tag -n" \
+  "git tag --column" \
+  "git tag --format='%(refname)'" \
+  "git tag -i 'v1.*'"; do
   out="$(sim_pretool_bash "cg8q" "${cmd}")"
   if [[ -z "${out}" ]]; then
     pass=$((pass + 1))

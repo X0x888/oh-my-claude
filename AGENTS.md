@@ -32,28 +32,33 @@ oh-my-claude/
   config/
     settings.patch.json       # Settings merged into user's settings.json
 
-  tests/                      # Test scripts (17 bash + 1 python)
+  tests/                      # Test scripts (26 bash + 1 python)
+    test-agent-verdict-contract.sh
+    test-classifier-replay.sh
+    test-classifier.sh
     test-common-utilities.sh
     test-concurrency.sh
+    test-cross-session-rotation.sh
+    test-discover-session.sh
     test-discovered-scope.sh
     test-e2e-hook-sequence.sh
     test-finding-list.sh
+    test-gate-events.sh
     test-install-artifacts.sh
+    test-install-remote.sh
     test-intent-classification.sh
+    test-phase8-integration.sh
     test-post-merge-hook.sh
     test-quality-gates.sh
     test-repro-redaction.sh
+    test-serendipity-log.sh
     test-session-resume.sh
     test-settings-merge.sh
-    test-classifier.sh
-    test-classifier-replay.sh
-    test-cross-session-rotation.sh
-    test-install-remote.sh
-    test-serendipity-log.sh
     test-show-report.sh
     test-stall-detection.sh
     test-state-io.sh
     test-uninstall-merge.sh
+    test-verification-lib.sh
     test_statusline.py
 
   tools/                      # Developer tools (not installed)

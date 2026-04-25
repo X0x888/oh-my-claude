@@ -2702,15 +2702,43 @@ read_active_waves_completed() {
 # session directory exists. Never throws; STATE_ROOT-missing is silent.
 
 discover_latest_session() {
-  local d newest=""
+  local d newest_match="" newest_any=""
   [[ -d "${STATE_ROOT}" ]] || { printf ''; return 0; }
   shopt -s nullglob
   local dirs=("${STATE_ROOT}"/*/)
   shopt -u nullglob
+  # Bash 3.2 (macOS default) treats `${dirs[@]}` on an empty array as
+  # an unbound variable under `set -u`. Guard explicitly so we exit
+  # cleanly when STATE_ROOT is empty.
+  if [[ "${#dirs[@]}" -eq 0 ]]; then
+    printf ''
+    return 0
+  fi
+  # Prefer the newest session whose stored `cwd` matches the current
+  # working directory — closes the cross-project session leak where
+  # two concurrent sessions for different repos race on mtime and the
+  # script discovery picks whichever was touched most recently. Fall
+  # back to plain newest-mtime when no session matches the current cwd
+  # (preserves the legacy behavior for sessions that predate the cwd
+  # field, and for callers running outside any tracked project root).
+  local current_cwd="${PWD:-}"
   for d in "${dirs[@]}"; do
-    [[ -z "${newest}" || "${d}" -nt "${newest}" ]] && newest="${d}"
+    [[ -z "${newest_any}" || "${d}" -nt "${newest_any}" ]] && newest_any="${d}"
+    if [[ -n "${current_cwd}" ]]; then
+      local stored_cwd
+      stored_cwd="$(jq -r '.cwd // empty' "${d}/${STATE_JSON}" 2>/dev/null || true)"
+      if [[ -n "${stored_cwd}" && "${stored_cwd}" == "${current_cwd}" ]]; then
+        [[ -z "${newest_match}" || "${d}" -nt "${newest_match}" ]] && newest_match="${d}"
+      fi
+    fi
   done
-  [[ -n "${newest}" ]] && basename "${newest}" || printf ''
+  if [[ -n "${newest_match}" ]]; then
+    basename "${newest_match}"
+  elif [[ -n "${newest_any}" ]]; then
+    basename "${newest_any}"
+  else
+    printf ''
+  fi
 }
 
 # --- end session discovery ---

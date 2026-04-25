@@ -70,5 +70,8 @@ jobs:
       - name: Run gate events tests
         run: bash tests/test-gate-events.sh
 
+      - name: Run discover-session tests
+        run: bash tests/test-discover-session.sh
+
       - name: Run statusline tests
         run: python3 -m unittest tests.test_statusline -v

@@ -17,19 +17,19 @@ Two minutes is the budget per entry. If a transcript can't be summarized in that
 
 ## Entries
 
-> **This page is a placeholder.** No community submissions have landed yet. The format below shows what an entry will look like once the first submissions arrive — until then, the most concrete thing you can do is run `/ulw-demo` yourself and feel the gates fire on a synthetic file.
+> The entry below is a **synthetic seed** so you can see the format in context. Real community submissions go above it under `## Entries` — replace or push this seed down as the page fills up.
 
-### Example shape (synthetic, for illustration only)
+### v1.14 — Phase 8 wave-cap regression caught in vitro before in vivo *(synthetic seed)*
 
-> **Setup.** Node/Express repo. User asked: `/ulw add a /me endpoint that returns the current user`.
+> **Setup.** This very repo (`oh-my-claude`). The author was running a v1.14 quality wave that, among other things, extracted a verification subsystem to `lib/verification.sh`. As a deferred-from-v1.13 follow-up, the wave also needed to close an integration gap: `record-finding-list.sh` and `stop-guard.sh` had each been tested in isolation, but the contract that binds them — `wave_total` from `findings.json` raises the discovered-scope gate's block cap from 2 to `wave_total + 1` — had no integration test.
 >
-> **Block.** `[Quality gate · 1/3] The deliverable changed but the final quality loop is incomplete.`
+> **Block.** `[Discovered-scope gate · 1/5] 4 finding(s) from advisory specialists were captured this session but not addressed in your final summary. Wave plan: 0/4 waves completed.`
 >
-> **Resolution.** Claude had written the route but skipped the test for the unauthenticated 401 path. The block surfaced a missing test; Claude added a Jest case and re-ran. The reviewer then flagged that the route was missing CORS headers under the existing project convention. Both addressed in one follow-up commit.
+> **Resolution.** A new `tests/test-phase8-integration.sh` (18 assertions, 4 scenarios) was added that wires both halves end-to-end against a real `findings.json` and a real `discovered_scope.jsonl`. The first run flagged that the JSON-encoded middle-dot character (`·` baked into `stop-guard.sh`'s reason text) needed a literal-escape substitution for stable assertions. The second run flagged that the `Wave plan: X/N waves completed` text advanced correctly only after `wave-status completed` was called, not on `wave-status in_progress`. Both edge cases now have explicit assertions.
 >
-> **Counterfactual.** Without the gate, the deliverable would have shipped with a passing happy-path test and a missing 401 case — exactly the regression class the project's CI suite was added to catch.
+> **Counterfactual.** Without the integration test, a future refactor of `read_active_wave_total` or `read_active_waves_completed` could have silently broken the cap formula — the unit tests would still pass, but the gate would either over-block (cap stuck at 2) or under-block (cap unbounded). The deferred-risk note was already in memory; the wave plan turned it into a regression net.
 
-This is the rhythm we want for real entries: short, concrete, falsifiable.
+Format we want for real entries (cribbed from the seed above): short, concrete, falsifiable. If your transcript can't be summarized in two minutes of reading, it's too long.
 
 ## Contributing your own
 

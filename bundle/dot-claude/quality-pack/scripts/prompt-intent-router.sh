@@ -174,6 +174,19 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
     write_state "session_start_ts" "$(now_epoch)"
   fi
 
+  # Record the working directory at first ULW activation so
+  # `discover_latest_session` (used by command-line scripts that lack
+  # hook JSON) can prefer the session whose cwd matches the current
+  # process, instead of grabbing the newest-by-mtime session — which
+  # leaks across concurrent projects when two sessions race on touch.
+  existing_cwd="$(read_state "cwd")"
+  if [[ -z "${existing_cwd}" ]]; then
+    SESSION_CWD="$(json_get '.cwd')"
+    if [[ -n "${SESSION_CWD}" ]]; then
+      write_state "cwd" "${SESSION_CWD}"
+    fi
+  fi
+
   # Classifier telemetry — now that TASK_DOMAIN is known, record the row.
   # Outside-ULW sessions also skip this (no state bookkeeping there).
   record_classifier_telemetry \

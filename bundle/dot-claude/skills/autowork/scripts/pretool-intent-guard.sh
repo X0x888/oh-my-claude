@@ -151,8 +151,16 @@ _cmd_is_allowed_variant() {
   if grep -Eq "${_GUARD_PRE}git[[:space:]]+(rebase|merge|cherry-pick|revert|am)[[:space:]]+.*(--abort|--continue|--skip|--quit)([[:space:]]|$)" <<<"${cmd}"; then return 0; fi
   # `--dry-run|-n` on push/commit reports intent without mutation.
   if grep -Eq "${_GUARD_PRE}git[[:space:]]+(push|commit)[[:space:]]+.*(--dry-run|-n)([[:space:]]|$)" <<<"${cmd}"; then return 0; fi
-  # List-only tag invocation.
-  if grep -Eq "${_GUARD_PRE}git[[:space:]]+tag[[:space:]]+(-l|--list)([[:space:]]|$)" <<<"${cmd}"; then return 0; fi
+  # Read-only `git tag` invocations. The CLI is positional: presence of
+  # `<tagname>` without flags is the create form; presence of any of
+  # these flags is a list/inspect form. We accept the broader set so
+  # advisory-mode prompts can audit tags (e.g., `git tag --sort=-creatordate`,
+  # `git tag --contains HEAD`, `git tag --points-at v1.13.0`, `git tag -n5`)
+  # without bouncing off the destructive-verb gate. The narrower
+  # original (`-l|--list` only) caused real friction during the v1.14
+  # advisory pass — the inspection commands had to be replaced with
+  # `ls .git/refs/tags/` plumbing as a workaround.
+  if grep -Eq "${_GUARD_PRE}git[[:space:]]+tag([[:space:]]+[^[:space:]]+)*[[:space:]]+(-l|--list|--sort|--contains|--no-contains|--points-at|--merged|--no-merged|-n[0-9]*|--column|--no-column|--format|-i|--ignore-case)([[:space:]=]|$)" <<<"${cmd}"; then return 0; fi
   return 1
 }
 
