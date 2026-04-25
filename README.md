@@ -300,6 +300,7 @@ bash tests/test-install-remote.sh           # curl-pipe-bash bootstrapper (insta
 bash tests/test-phase8-integration.sh       # Council Phase 8 wave-cap wiring (record-finding-list ↔ stop-guard)
 bash tests/test-verification-lib.sh         # Extracted lib/verification.sh module (symbol presence + smoke)
 bash tests/test-agent-verdict-contract.sh   # Universal VERDICT contract regression net (all 30 agents)
+bash tests/test-gate-events.sh              # Per-event outcome attribution (gate_events.jsonl helper + wiring)
 python3 -m unittest tests.test_statusline   # Statusline widget
 ```
 

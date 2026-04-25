@@ -266,6 +266,11 @@ else
 Attempted: $(truncate_chars 200 "${command_str}")"
 fi
 
+record_gate_event "pretool-intent" "block" \
+  "block_count=${block_count}" \
+  "intent=${task_intent}" \
+  "denied_segment=$(truncate_chars 120 "${denied_segment}")"
+
 jq -nc --arg reason "${reason}" '{
   hookSpecificOutput: {
     hookEventName: "PreToolUse",

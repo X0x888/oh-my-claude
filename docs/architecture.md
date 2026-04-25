@@ -184,6 +184,7 @@ Session state is stored at:
   classifier_telemetry.jsonl   # Per-turn classification rows + misfire annotations (capped at 100 rows)
   discovered_scope.jsonl       # Findings captured from advisory specialists (council lenses, metis, briefing-analyst); capped at 200 rows
   findings.json                # Council Phase 8 master finding list (model-managed via record-finding-list.sh); waves[] declares the active wave plan
+  gate_events.jsonl            # Per-event outcome attribution rows (gate fires + finding-status changes); capped at OMC_GATE_EVENTS_PER_SESSION_MAX, default 500. Added v1.14.0.
   precompact_snapshot.md       # Snapshot created before compaction
   compact_handoff.md           # Combined handoff document
   internal_edits.log           # Edits to internal Claude paths (excluded from tracking)
@@ -196,11 +197,12 @@ session_summary.jsonl          # One summary row per TTL-swept session (cap: 500
 classifier_misfires.jsonl      # Aggregated misfire rows tagged with session id (cap: 1000/800)
 serendipity-log.jsonl          # Serendipity Rule applications across sessions (cap: 2000/1500)
 gate-skips.jsonl               # /ulw-skip honored events for threshold tuning (cap: 200/150)
+gate_events.jsonl              # Per-event outcome rows aggregated from per-session gate_events.jsonl (cap: 10000/8000). Added v1.14.0.
 defect-patterns.json           # Historical defect-category counters
 agent-metrics.json             # Invocations / clean / findings per agent type
 ```
 
-All four JSONL caps go through `_cap_cross_session_jsonl` in `common.sh`; the format `cap/retain` shows the trigger threshold and post-truncation tail size.
+All five JSONL caps go through `_cap_cross_session_jsonl` in `common.sh`; the format `cap/retain` shows the trigger threshold and post-truncation tail size.
 
 `session_summary.jsonl` row schema (canonical writer: `sweep_stale_sessions` in `common.sh`):
 

@@ -25,6 +25,7 @@ QP_ROOT="${HOME}/.claude/quality-pack"
 SUMMARY_FILE="${QP_ROOT}/session_summary.jsonl"
 SERENDIPITY_FILE="${QP_ROOT}/serendipity-log.jsonl"
 MISFIRES_FILE="${QP_ROOT}/classifier_misfires.jsonl"
+GATE_EVENTS_FILE="${QP_ROOT}/gate_events.jsonl"
 AGENT_METRICS_FILE="${QP_ROOT}/agent-metrics.json"
 DEFECT_PATTERNS_FILE="${QP_ROOT}/defect-patterns.json"
 
@@ -166,6 +167,39 @@ else
     printf -- '- `%s` × %s\n' "${reason}" "${n}"
   done
   printf '\n'
+fi
+
+# ----------------------------------------------------------------------
+# Section 4b: Gate event outcomes (per-event attribution, v1.14.0)
+printf '## Gate event outcomes\n\n'
+gate_event_rows="$(filter_by_window "${GATE_EVENTS_FILE}" '.ts')"
+if [[ -z "${gate_event_rows}" ]]; then
+  printf '_No gate events recorded in window. Per-event telemetry is new in v1.14.0; populates as sessions sweep._\n\n'
+else
+  printf 'Per-event outcome attribution — every gate fire and finding-status change in the window.\n\n'
+  printf '| Gate | Blocks | Status changes |\n'
+  printf '|---|---:|---:|\n'
+  # Note: prior revision had a "Releases" column, but no caller emits a
+  # `release` event today (forward-compat scaffolding). Dropped to keep
+  # the rendered table honest until a release-event emitter lands.
+  # Counts use `wc -l` over jq output — `grep -c . || echo 0` produced a
+  # literal "0\n0" string when grep matched nothing AND emitted 0,
+  # which broke the markdown table for every realistic dataset.
+  printf '%s\n' "${gate_event_rows}" \
+    | jq -r '.gate' \
+    | sort -u \
+    | while IFS= read -r _gate; do
+        [[ -z "${_gate}" ]] && continue
+        _block_count="$(printf '%s\n' "${gate_event_rows}" | jq -c --arg g "${_gate}" 'select(.gate == $g and .event == "block")' | wc -l | tr -d '[:space:]')"
+        _status_count="$(printf '%s\n' "${gate_event_rows}" | jq -c --arg g "${_gate}" 'select(.gate == $g and (.event == "finding-status-change" or .event == "wave-status-change"))' | wc -l | tr -d '[:space:]')"
+        printf '| `%s` | %s | %s |\n' "${_gate}" "${_block_count}" "${_status_count}"
+      done
+  printf '\n'
+  total_blocks_pe="$(printf '%s\n' "${gate_event_rows}" | jq -c 'select(.event == "block")' | wc -l | tr -d '[:space:]')"
+  total_status_changes="$(printf '%s\n' "${gate_event_rows}" | jq -c 'select(.event == "finding-status-change" or .event == "wave-status-change")' | wc -l | tr -d '[:space:]')"
+  shipped_changes="$(printf '%s\n' "${gate_event_rows}" | jq -c 'select(.event == "finding-status-change" and .details.finding_status == "shipped")' | wc -l | tr -d '[:space:]')"
+  printf '_Total: %s gate blocks, %s status changes (%s findings shipped)._\n\n' \
+    "${total_blocks_pe}" "${total_status_changes}" "${shipped_changes}"
 fi
 
 # ----------------------------------------------------------------------

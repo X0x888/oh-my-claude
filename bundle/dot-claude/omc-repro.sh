@@ -16,6 +16,7 @@
 #   - pending_agents.jsonl (if present)
 #   - discovered_scope.jsonl (council Phase 8 advisory-specialist findings; if present)
 #   - findings.json (council Phase 8 master finding list and wave plan; if present)
+#   - gate_events.jsonl (per-event outcome attribution rows; if present, added v1.14.0)
 #   - hooks.log (last 200 lines only, to keep the bundle small)
 #   - manifest.txt (oh-my-claude version, OS, shell, jq version, file list)
 #
@@ -187,10 +188,13 @@ mkdir -p "${REPRO_DIR}"
 # findings.json and discovered_scope.jsonl carry council/advisory-specialist
 # output (severity, surface area, summaries) — derived from model output and
 # project state, not from user prompts. serendipity_log.jsonl carries
-# fix descriptions and commit SHAs from record-serendipity.sh. They are
-# included so that bug reports about Phase 8 / discovered-scope /
-# Serendipity analytics arrive with the wave plan, findings list, and
-# rule-application log the maintainer needs to reproduce the issue.
+# fix descriptions and commit SHAs from record-serendipity.sh.
+# gate_events.jsonl carries per-event outcome rows (gate-name, event-type,
+# block counts, finding-status changes) — derived from gate emissions and
+# state writes, no prompt content. They are included so that bug reports
+# about Phase 8 / discovered-scope / Serendipity analytics / gate-fire
+# attribution arrive with the wave plan, findings list, rule-application
+# log, and per-event ledger the maintainer needs to reproduce the issue.
 for name in \
     edited_files.log \
     stall_paths.log \
@@ -198,6 +202,7 @@ for name in \
     subagent_summaries.jsonl \
     discovered_scope.jsonl \
     findings.json \
+    gate_events.jsonl \
     serendipity_log.jsonl; do
   if [[ -f "${SESSION_DIR}/${name}" ]]; then
     cp "${SESSION_DIR}/${name}" "${REPRO_DIR}/${name}"

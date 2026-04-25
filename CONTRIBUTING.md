@@ -81,6 +81,7 @@ bash tests/test-install-remote.sh
 bash tests/test-phase8-integration.sh
 bash tests/test-verification-lib.sh
 bash tests/test-agent-verdict-contract.sh
+bash tests/test-gate-events.sh
 python3 -m unittest tests.test_statusline -v
 ```
 

@@ -434,17 +434,30 @@ sweep_stale_sessions() {
             grep '"misfire":true' "${_sweep_telemetry}" 2>/dev/null | \
               jq -c --arg sid "${_sweep_sid}" '. + {session_id: $sid}' 2>/dev/null >> "${misfires_file}" || true
           fi
+
+          # Gate events: append this session's per-event outcome rows to
+          # the cross-session ledger so /ulw-report can answer "did this
+          # gate-fire actually catch a real bug?" at the per-event grain.
+          # Tagged with session id for grouping.
+          local _sweep_gate_events="${_sweep_dir}/gate_events.jsonl"
+          local _gate_events_file="${HOME}/.claude/quality-pack/gate_events.jsonl"
+          if [[ -f "${_sweep_gate_events}" ]]; then
+            jq -c --arg sid "${_sweep_sid}" '. + {session_id: $sid}' \
+              "${_sweep_gate_events}" 2>/dev/null >> "${_gate_events_file}" || true
+          fi
         fi
         rm -rf "${_sweep_dir}" 2>/dev/null || true
       done
 
     # Cross-session JSONL caps. Each session produces 0-few misfire rows;
     # session_summary gets one row per swept session; serendipity-log accrues
-    # whenever the Serendipity Rule fires (rare). Caps are sized to the
-    # respective row-rate and an O(years) horizon.
+    # whenever the Serendipity Rule fires (rare); gate_events accrues at
+    # ~10-50 rows per session so the cap is sized higher. Caps are sized
+    # to the respective row-rate and an O(years) horizon.
     _cap_cross_session_jsonl "${misfires_file}" 1000 800
     _cap_cross_session_jsonl "${summary_file}" 500 400
     _cap_cross_session_jsonl "${HOME}/.claude/quality-pack/serendipity-log.jsonl" 2000 1500
+    _cap_cross_session_jsonl "${HOME}/.claude/quality-pack/gate_events.jsonl" 10000 8000
   fi
 
   printf '%s\n' "${now}" > "${marker}"
@@ -1804,6 +1817,116 @@ record_gate_skip() {
 }
 
 # --- end gate skip tracking ---
+
+# --- Gate event tracking (per-event outcome attribution) ---
+#
+# Per-session JSONL of every gate fire and finding-status change. Lets
+# `/ulw-report` answer "did this gate-fire actually catch a real bug?"
+# at the per-event grain instead of the per-session aggregate that
+# session_summary.jsonl captures. Schema:
+#
+#   {ts, gate, event, block_count, block_cap, details}
+#
+# Where `event` is one of:
+#   - "block"                  — gate emitted a decision:block JSON
+#   - "finding-status-change"  — record-finding-list.sh status updated a finding
+#   - "wave-status-change"     — record-finding-list.sh wave-status updated a wave
+#
+# Reserved-for-future tokens that no caller emits today (emitter sites
+# would extend this list): "release" (gate cap reached, fall-through),
+# "skip" (/ulw-skip honored bypass).
+#
+# `block_count` and `block_cap` are conditional — present only on `block`
+# events; status-change events omit them by design (no block to count).
+# When present they are JSON numbers, not strings.
+#
+# `details` is a JSON object for gate-specific context. Values are typed
+# best-effort: keys whose value matches `^[0-9]+$` round-trip as JSON
+# numbers (via --argjson); other values are JSON strings (via --arg).
+# Per-gate `details` shape (current emitters):
+#   discovered-scope: pending_count, wave_total, waves_completed (numbers)
+#   advisory: (none)
+#   session-handoff: (none)
+#   review-coverage: missing_dims, next_reviewer (strings); done_dims, total_dims (numbers)
+#   excellence: edited_count (number)
+#   quality: missing_review, missing_verify, verify_failed,
+#            verify_low_confidence, review_unremediated (numbers)
+#   pretool-intent: intent (string), block_count (number), denied_segment (string)
+#   finding-status: finding_id, finding_status, commit_sha (strings)
+#   wave-status: wave_idx (number), wave_status, commit_sha (strings)
+#
+# The cross-session sweep in sweep_stale_sessions copies these rows to a
+# global ledger for trend reporting; per-session cap is
+# OMC_GATE_EVENTS_PER_SESSION_MAX (default 500) to prevent runaway logs
+# in pathological sessions.
+#
+# Failure mode: never throws. Missing SESSION_ID, missing jq, broken
+# session dir → silent no-op. The gate's primary path (block-or-release)
+# must not depend on telemetry succeeding.
+
+record_gate_event() {
+  local gate="${1:-}"
+  local event="${2:-}"
+  shift 2 || true
+
+  [[ -z "${gate}" || -z "${event}" ]] && return 0
+  [[ -z "${SESSION_ID:-}" ]] && return 0
+
+  # Remaining args are key=value pairs. Recognized top-level keys:
+  # block_count, block_cap. Everything else lands under .details.
+  # Values that parse as non-negative integers are passed via --argjson
+  # so they round-trip as JSON numbers, not strings — keeping numeric
+  # aggregations like `map(.details.pending_count) | add` honest. Any
+  # value that does not match `^[0-9]+$` falls back to --arg (string).
+  local block_count="" block_cap=""
+  local details_args=()
+  local kv key value
+  for kv in "$@"; do
+    key="${kv%%=*}"
+    value="${kv#*=}"
+    case "${key}" in
+      block_count) block_count="${value}" ;;
+      block_cap)   block_cap="${value}"   ;;
+      *)
+        if [[ "${value}" =~ ^[0-9]+$ ]]; then
+          details_args+=(--argjson "${key}" "${value}")
+        else
+          details_args+=(--arg "${key}" "${value}")
+        fi
+        ;;
+    esac
+  done
+
+  # Build .details — only include if at least one detail key was passed.
+  local details_json='{}'
+  if [[ "${#details_args[@]}" -gt 0 ]]; then
+    # Build object dynamically: jq -n with --arg / --argjson pairs and a
+    # $ARGS.named reduction. Bash 3.2-compatible. ARGS.named merges both
+    # --arg (string) and --argjson (parsed JSON) keys.
+    local jq_filter='$ARGS.named'
+    details_json="$(jq -nc "${details_args[@]}" "${jq_filter}" 2>/dev/null || printf '{}')"
+  fi
+
+  local row
+  row="$(jq -nc \
+    --argjson ts "$(now_epoch)" \
+    --arg gate "${gate}" \
+    --arg event "${event}" \
+    --arg block_count "${block_count}" \
+    --arg block_cap "${block_cap}" \
+    --argjson details "${details_json}" \
+    '{ts:$ts,gate:$gate,event:$event} +
+     (if $block_count != "" then {block_count:($block_count|tonumber? // 0)} else {} end) +
+     (if $block_cap != "" then {block_cap:($block_cap|tonumber? // 0)} else {} end) +
+     {details:$details}' 2>/dev/null)"
+
+  [[ -z "${row}" ]] && return 0
+
+  local cap="${OMC_GATE_EVENTS_PER_SESSION_MAX:-500}"
+  append_limited_state "gate_events.jsonl" "${row}" "${cap}" 2>/dev/null || true
+}
+
+# --- end gate event tracking ---
 
 # --- Project identity ---
 #

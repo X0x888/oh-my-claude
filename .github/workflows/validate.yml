@@ -67,5 +67,8 @@ jobs:
       - name: Run agent VERDICT contract tests
         run: bash tests/test-agent-verdict-contract.sh
 
+      - name: Run gate events tests
+        run: bash tests/test-gate-events.sh
+
       - name: Run statusline tests
         run: python3 -m unittest tests.test_statusline -v

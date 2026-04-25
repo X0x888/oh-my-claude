@@ -81,13 +81,14 @@ assert_eq "last row preserved" '{"row":250}' "${last_row}"
 
 # ----------------------------------------------------------------------
 printf 'Test 7: every cross-session JSONL cap goes through the helper\n'
-# 1 def + 4 call sites (misfires, summary, serendipity-log, gate-skips) = 5 total.
-# If a future contributor open-codes a 5th cap site instead of calling the
-# helper, this fails — same anti-pattern the helper was created to prevent.
+# 1 def + 5 call sites (misfires, summary, serendipity-log, gate-skips,
+# gate_events) = 6 total. If a future contributor open-codes a 6th cap
+# site instead of calling the helper, this fails — same anti-pattern
+# the helper was created to prevent.
 # Strip leading whitespace + comment lines so doc references don't inflate.
 miscall_count="$(grep -vE '^\s*#' "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh" \
   | grep -c '_cap_cross_session_jsonl' || true)"
-assert_eq "expected 5 mentions in common.sh (1 def + 4 callers)" "5" "${miscall_count}"
+assert_eq "expected 6 mentions in common.sh (1 def + 5 callers)" "6" "${miscall_count}"
 
 # Also assert the open-coded idiom is fully retired: no more "tail -n N > tmp ; mv tmp file"
 # blocks targeting cross-session JSONLs.

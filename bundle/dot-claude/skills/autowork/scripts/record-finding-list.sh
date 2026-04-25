@@ -238,6 +238,10 @@ case "${cmd}" in
         else . end
       ))')"
     _atomic_write "${updated}"
+    record_gate_event "finding-status" "finding-status-change" \
+      "finding_id=${id}" \
+      "finding_status=${status}" \
+      "commit_sha=${commit_sha}"
     printf 'F=%s status=%s\n' "${id}" "${status}"
     ;;
 
@@ -299,6 +303,10 @@ case "${cmd}" in
         else . end
       ))')"
     _atomic_write "${updated}"
+    record_gate_event "wave-status" "wave-status-change" \
+      "wave_idx=${wave_idx}" \
+      "wave_status=${wstatus}" \
+      "commit_sha=${commit_sha}"
     printf 'wave=%s status=%s\n' "${wave_idx}" "${wstatus}"
     ;;
 

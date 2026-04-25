@@ -94,6 +94,7 @@ if ! is_execution_intent_value "${task_intent}"; then
 
       if [[ -z "${advisory_verify_ts}" && -z "${verify_ts}" ]] && [[ "${advisory_guard_blocks}" -lt 1 ]]; then
         write_state "advisory_guard_blocks" "$((advisory_guard_blocks + 1))"
+        record_gate_event "advisory" "block" "block_count=1" "block_cap=1"
         jq -nc --arg reason "[Advisory gate \u00b7 1/1] this is an advisory task over a codebase, but no code inspection or build/test verification was detected. Before finalizing your response, read or search the actual codebase to ground your recommendations in evidence. If you have already inspected code via other means, briefly list the files inspected and restate your key recommendation at the end." '{"decision":"block","reason":$reason}'
         exit 0
       fi
@@ -110,6 +111,8 @@ if [[ -n "${last_assistant_message}" ]] \
   && ! is_checkpoint_request "${current_objective}"; then
   if [[ "${session_handoff_blocks}" -lt 2 ]]; then
     write_state "session_handoff_blocks" "$((session_handoff_blocks + 1))"
+    record_gate_event "session-handoff" "block" \
+      "block_count=$((session_handoff_blocks + 1))" "block_cap=2"
     jq -nc --arg reason "[Session-handoff gate \u00b7 $((session_handoff_blocks + 1))/2] your last response explicitly deferred remaining work to a future session. In ultrawork mode, do not stop with 'next wave', 'next phase', or 'ready for a new session' language unless the user explicitly asked for a checkpoint. Continue the remaining work now. If you genuinely must pause, explain the hard blocker or ask the user whether they want a checkpoint." '{"decision":"block","reason":$reason}'
     exit 0
   fi
@@ -147,6 +150,12 @@ if [[ "${OMC_DISCOVERED_SCOPE}" == "on" ]] \
         waves_completed="$(read_active_waves_completed)"
         wave_progress=" Wave plan: ${waves_completed}/${wave_total} waves completed."
       fi
+      record_gate_event "discovered-scope" "block" \
+        "block_count=$((discovered_scope_blocks + 1))" \
+        "block_cap=${scope_block_cap}" \
+        "pending_count=${pending_count}" \
+        "wave_total=${wave_total}" \
+        "waves_completed=${waves_completed:-0}"
       jq -nc \
         --arg reason "[Discovered-scope gate \u00b7 $((discovered_scope_blocks + 1))/${scope_block_cap}] ${pending_count} finding(s) from advisory specialists were captured this session but not addressed in your final summary.${wave_progress} Top pending findings (severity-ranked):
 ${scorecard}
@@ -358,6 +367,11 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
           if [[ "${dim_blocks}" -ge 2 ]]; then
             dim_reason="${dim_reason} NOTE: this is the final review-coverage block — the next stop attempt will bypass this check."
           fi
+          record_gate_event "review-coverage" "block" \
+            "block_count=$((dim_blocks + 1))" "block_cap=3" \
+            "missing_dims=${missing_dims}" \
+            "next_reviewer=${next_reviewer}" \
+            "done_dims=${_done_dims}" "total_dims=${_total_dims}"
           jq -nc --arg reason "${dim_reason}" '{"decision":"block","reason":$reason}'
           exit 0
         else
@@ -415,6 +429,8 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
     && [[ -z "${last_excellence_review_ts}" || "${last_excellence_review_ts}" -lt "${last_edit_ts}" ]] \
     && [[ "${excellence_guard_triggered}" != "1" ]]; then
     write_state "excellence_guard_triggered" "1"
+    record_gate_event "excellence" "block" "block_count=1" "block_cap=1" \
+      "edited_count=${unique_edited_count}"
     jq -nc --arg reason "[Excellence gate \u00b7 1/1] standard review and verification passed, but this is a complex task (${unique_edited_count} files edited). Before finalizing, run excellence-reviewer for a fresh-eyes holistic evaluation — completeness against the original objective, unknown unknowns, and what a veteran would add. If you have already done a thorough self-assessment and are confident the deliverable is complete and excellent, explain your reasoning and stop. After the excellence review, restate your key deliverable summary at the end of your response." '{"decision":"block","reason":$reason}'
     exit 0
   fi
@@ -607,4 +623,11 @@ else
   fi
 fi
 
+record_gate_event "quality" "block" \
+  "block_count=$((guard_blocks + 1))" "block_cap=3" \
+  "missing_review=${missing_review}" \
+  "missing_verify=${missing_verify}" \
+  "verify_failed=${verify_failed}" \
+  "verify_low_confidence=${verify_low_confidence}" \
+  "review_unremediated=${review_unremediated}"
 jq -nc --arg reason "${reason}" '{"decision":"block","reason":$reason}'
