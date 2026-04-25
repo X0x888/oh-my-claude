@@ -274,6 +274,7 @@ bash tests/test-finding-list.sh             # Council Phase 8 findings.json arti
 bash tests/test-state-io.sh                 # Extracted lib/state-io.sh module
 bash tests/test-classifier-replay.sh        # Classifier regression replay against curated fixtures
 bash tests/test-serendipity-log.sh          # Serendipity Rule analytics logging
+bash tests/test-cross-session-rotation.sh   # Cross-session JSONL aggregate cap helper
 python3 -m unittest tests.test_statusline   # Statusline widget
 ```
 

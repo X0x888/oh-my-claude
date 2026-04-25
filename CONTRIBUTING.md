@@ -74,6 +74,7 @@ bash tests/test-finding-list.sh
 bash tests/test-state-io.sh
 bash tests/test-classifier-replay.sh
 bash tests/test-serendipity-log.sh
+bash tests/test-cross-session-rotation.sh
 python3 -m unittest tests.test_statusline -v
 ```
 

@@ -310,6 +310,34 @@ now_epoch() {
 # Deletes session state dirs older than OMC_STATE_TTL_DAYS (default 7).
 # Runs at most once per day, gated by a marker file timestamp.
 
+# _cap_cross_session_jsonl <file> <cap> <retain>
+# Caps a cross-session JSONL aggregate. No-op when the file is missing or
+# at/below cap. On overflow, truncates to the last <retain> lines via
+# atomic rename; on tail failure, leaves the original untouched.
+#
+# Concurrency: the cap itself is single-writer — every call site runs
+# inside sweep_stale_sessions, which is gated by a daily marker file, so
+# two cap operations cannot overlap. Writers to the underlying file
+# (e.g. record-serendipity.sh) append unlocked, relying on POSIX line
+# atomicity. The tail+mv window is the one race that exists: an in-flight
+# append landing between tail and mv would be silently dropped. Cap fires
+# at most once per 24h after overflow, so the realistic loss is ≤ one
+# analytics row per cap-fire — acceptable for this data class.
+_cap_cross_session_jsonl() {
+  local file="$1" cap="$2" retain="$3"
+  [[ -f "${file}" ]] || return 0
+  local lines temp
+  lines="$(wc -l < "${file}" 2>/dev/null || echo 0)"
+  lines="${lines##* }"
+  [[ "${lines}" -le "${cap}" ]] && return 0
+  temp="$(mktemp "${file}.XXXXXX")" || return 0
+  if tail -n "${retain}" "${file}" > "${temp}" 2>/dev/null; then
+    mv "${temp}" "${file}"
+  else
+    rm -f "${temp}"
+  fi
+}
+
 sweep_stale_sessions() {
   local marker="${STATE_ROOT}/.last_sweep"
   local now
@@ -375,38 +403,13 @@ sweep_stale_sessions() {
         rm -rf "${_sweep_dir}" 2>/dev/null || true
       done
 
-    # Cap classifier_misfires.jsonl at 1000 lines (much smaller than
-    # session_summary because each session produces only 0-few misfire rows).
-    if [[ -f "${misfires_file}" ]]; then
-      local _mis_lines
-      _mis_lines="$(wc -l < "${misfires_file}" 2>/dev/null || echo 0)"
-      _mis_lines="${_mis_lines##* }"
-      if [[ "${_mis_lines}" -gt 1000 ]]; then
-        local _mis_temp
-        _mis_temp="$(mktemp "${misfires_file}.XXXXXX")"
-        if tail -n 800 "${misfires_file}" > "${_mis_temp}" 2>/dev/null; then
-          mv "${_mis_temp}" "${misfires_file}"
-        else
-          rm -f "${_mis_temp}"
-        fi
-      fi
-    fi
-
-    # Cap session_summary.jsonl at 500 lines
-    if [[ -f "${summary_file}" ]]; then
-      local _sum_lines
-      _sum_lines="$(wc -l < "${summary_file}" 2>/dev/null || echo 0)"
-      _sum_lines="${_sum_lines##* }"
-      if [[ "${_sum_lines}" -gt 500 ]]; then
-        local _sum_temp
-        _sum_temp="$(mktemp "${summary_file}.XXXXXX")"
-        if tail -n 400 "${summary_file}" > "${_sum_temp}" 2>/dev/null; then
-          mv "${_sum_temp}" "${summary_file}"
-        else
-          rm -f "${_sum_temp}"
-        fi
-      fi
-    fi
+    # Cross-session JSONL caps. Each session produces 0-few misfire rows;
+    # session_summary gets one row per swept session; serendipity-log accrues
+    # whenever the Serendipity Rule fires (rare). Caps are sized to the
+    # respective row-rate and an O(years) horizon.
+    _cap_cross_session_jsonl "${misfires_file}" 1000 800
+    _cap_cross_session_jsonl "${summary_file}" 500 400
+    _cap_cross_session_jsonl "${HOME}/.claude/quality-pack/serendipity-log.jsonl" 2000 1500
   fi
 
   printf '%s\n' "${now}" > "${marker}"
@@ -2042,19 +2045,7 @@ record_gate_skip() {
     pid="$(_omc_project_id 2>/dev/null || echo "unknown")"
     jq -nc --arg reason "${reason}" --argjson ts "${ts}" --arg project "${pid}" \
       '{ts:$ts,reason:$reason,project:$project}' >> "${skip_file}" 2>/dev/null || true
-    # Cap at 200 lines
-    local _lines
-    _lines="$(wc -l < "${skip_file}" 2>/dev/null || echo 0)"
-    _lines="${_lines##* }"
-    if [[ "${_lines}" -gt 200 ]]; then
-      local _temp
-      _temp="$(mktemp "${skip_file}.XXXXXX")"
-      if tail -n 150 "${skip_file}" > "${_temp}" 2>/dev/null; then
-        mv "${_temp}" "${skip_file}"
-      else
-        rm -f "${_temp}"
-      fi
-    fi
+    _cap_cross_session_jsonl "${skip_file}" 200 150
   }
 
   with_skips_lock _do_record_skip
