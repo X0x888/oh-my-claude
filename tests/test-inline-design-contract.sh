@@ -233,6 +233,53 @@ Not a contract — a survey of options.
 plural_result="$(extract_inline_design_contract "${plural_msg}")"
 assert_eq "plural 'Contracts' does NOT spurious-match" "" "${plural_result}"
 
+# Regression: a heading like "## Design Contract overview" — natural
+# prose section about contracts — must NOT match. The original loose
+# regex "any non-word char after Contract" included space, so a section
+# titled `## Design Contract overview` was misclassified as the contract.
+# The tightened regex requires either EOL or a punctuation suffix from
+# the small allowlist `[(:—–-]`.
+overview_msg='## Design Contract overview
+
+This is a section ABOUT design contracts, not THE contract.
+
+### Sub
+
+Body.
+'
+overview_result="$(extract_inline_design_contract "${overview_msg}")"
+assert_eq "'Contract overview' suffix rejected (precision)" "" "${overview_result}"
+
+examples_msg='## Design Contract Examples From Other Projects
+
+For reference.
+'
+examples_result="$(extract_inline_design_contract "${examples_msg}")"
+assert_eq "'Contract Examples' suffix rejected (precision)" "" "${examples_result}"
+
+# Regression: re-emission within a single agent message — when the
+# agent emits a first-attempt contract, gets pushback, then emits a
+# revised contract in the same response, the LAST one must win and
+# the first must be discarded entirely. The original implementation
+# concatenated both blocks (capture flag stuck on across the second
+# heading).
+reemit_msg='## Design Contract
+
+First attempt — reject this and the user pushed back.
+
+## Other section
+
+Discussion.
+
+## Design Contract
+
+Revised — keep this. Different palette and typography.
+'
+reemit_result="$(extract_inline_design_contract "${reemit_msg}")"
+assert_contains "re-emission: revised contract present" "Revised — keep this" "${reemit_result}"
+assert_not_contains "re-emission: first attempt discarded (last wins)" "First attempt" "${reemit_result}"
+assert_not_contains "re-emission: intermediate H2 not in result" "Other section" "${reemit_result}"
+
 # ---------------------------------------------------------------------------
 # extract_design_archetype
 # ---------------------------------------------------------------------------

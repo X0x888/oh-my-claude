@@ -2535,39 +2535,59 @@ is_design_contract_emitter() {
 
 # extract_inline_design_contract <message>
 # Emits the inline Design Contract block on stdout, or empty if not
-# present. Matches `## Design Contract`, `## Design Contract (iOS)`,
-# `## Design Contract: web`, `## Design Contract — macOS`, etc. The
-# heading match accepts any non-word character after "Contract" (space,
-# colon, em-dash, paren, EOL, etc.) so common punctuation variants do
-# not silently fall through to the no-block path.
+# present. Matches the canonical headings:
+#   ## Design Contract
+#   ## Design Contract (iOS)
+#   ## Design Contract: web
+#   ## Design Contract — iOS
+#   ## Design Contract - iOS
+# The heading-end check requires either EOL (with optional whitespace)
+# OR a punctuation suffix from a small allowlist `[(:—–-]` — this
+# excludes natural-prose section titles like `## Design Contract
+# overview` or `## Design Contracts We Considered` that previously
+# spurious-matched the looser "any non-word char" regex.
 #
 # Captures from the heading until the next H2 (`## `) at the OUTERMOST
 # level — H2-looking lines INSIDE fenced code blocks (` ```…``` `) do
 # not terminate capture, since contracts often embed component-code or
 # markdown examples in §4 (Component Stylings). H3+ (`### Section`)
 # stays inside the block.
+#
+# Re-emission: when a single agent message contains MORE THAN ONE
+# `## Design Contract` heading (e.g. the agent emitted a first attempt
+# then revised), the LAST one wins — earlier blocks are discarded.
+# This matches the per-session "latest contract wins" rule documented
+# on `write_session_design_contract`.
 extract_inline_design_contract() {
   local message="$1"
   [[ -z "${message}" ]] && return 0
   printf '%s\n' "${message}" | awk '
-    BEGIN { capture = 0; in_fence = 0 }
+    BEGIN { capture = 0; in_fence = 0; buffer = "" }
     /^[[:space:]]*```/ {
       if (capture) {
         in_fence = !in_fence
-        print
+        buffer = buffer $0 "\n"
         next
       }
     }
-    /^## Design Contract([^[:alnum:]_]|$)/ {
+    /^## Design Contract([[:space:]]*[(:—–-]|[[:space:]]*$)/ {
       if (!in_fence) {
+        # Reset buffer — last contract heading in the message wins.
         capture = 1
         in_fence = 0
-        print
+        buffer = $0 "\n"
         next
       }
     }
-    capture && !in_fence && /^## / { capture = 0 }
-    capture { print }
+    capture && !in_fence && /^## / {
+      capture = 0
+    }
+    capture {
+      buffer = buffer $0 "\n"
+    }
+    END {
+      printf "%s", buffer
+    }
   '
 }
 
@@ -2631,6 +2651,15 @@ extract_design_archetype() {
 # frontmatter header. Atomic via temp+mv. Overwrites prior emissions
 # (latest contract wins — the user may iterate on the design within a
 # session). Caller must have run ensure_session_dir first.
+#
+# Concurrency: write is atomic per file (mktemp + mv) but NOT
+# serialized across concurrent emitters. If two `frontend-developer`
+# SubagentStop hooks fire concurrently (e.g. parallel sub-tasks via
+# the Task tool), the last-mv wins — the same "latest contract wins"
+# semantics as sequential iteration. Intentional: the user model is
+# sequential design refinement, and a global lock here would introduce
+# a write-stall on every UI-specialist completion. Do not add a lock
+# without re-evaluating that tradeoff.
 write_session_design_contract() {
   local agent="$1"
   local contract="$2"

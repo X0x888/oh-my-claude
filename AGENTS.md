@@ -107,6 +107,7 @@ Cross-session data is stored alongside the state directory:
 - All state is JSON, stored in `session_state.json` per session.
 - Use `write_state_batch` for atomic multi-key updates.
 - Use `read_state` for reads; it returns empty string for missing keys.
+- The canonical state-key dictionary lives in `docs/architecture.md` → "State keys in `session_state.json`". When adding a new state key, update that table in the same commit.
 
 ### Agents
 
