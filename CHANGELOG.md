@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.13.0] - 2026-04-25
+
+Five-wave council Phase 8 plan closing the post-v1.12.0 advisory evaluation. Theme: "make the harness visible to the human" — convert existing telemetry into a user-readable surface, harden reliability, clean up `common.sh`, polish UX/copy, and reduce install friction. 1,666 → 1,829 test assertions (+10%); 18 → 21 bash test files; `common.sh` 3,329 → 2,846 lines (−14%); 1 new skill (`/ulw-report`); 1 new top-level script (`install-remote.sh`); 2 new docs (`glossary.md`, `showcase.md`).
+
 ### Added
 
 - **`install-remote.sh` — curl-pipe-bash bootstrapper.** New top-level script that lets users install oh-my-claude with a single command from a fresh terminal — no clone, no working directory expectation. Resolves prereqs (`git`, `bash`, `jq`, `rsync`) before any filesystem changes, clones (or updates) the source repo to `~/.local/share/oh-my-claude` (override via `OMC_SRC_DIR`), then hands off to `install.sh` with all pass-through args. Re-running updates the clone in place; if the user has local changes or has switched branches, the bootstrapper preserves them rather than resetting. Safety guards: a mkdir-based lock under `${OMC_SRC_DIR}.bootstrap.lock` rejects parallel runs (no two `curl | bash` invocations can race a `git clone`/`git fetch`/`git reset` sequence on the same path); a loud `warning:` banner fires when `OMC_REPO_URL` is overridden from the project default (closes the most obvious abuse path on a curl-pipe entry point); fresh clones default to `--depth=1` for first-impression speed (full history fetched only when `OMC_REF` differs from `main`, e.g. for tag/SHA testing). New `tests/test-install-remote.sh` (17 assertions across 11 cases) exercises prereq failure, fresh clone, update path, dirty-tree preservation, parallel-run lock rejection, lock release after success, custom-URL warning, and missing-installer error using a local bare-git "remote" — no network calls.
