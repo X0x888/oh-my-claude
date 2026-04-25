@@ -106,6 +106,8 @@ required_paths=(
   "${CLAUDE_HOME}/skills/ulw/SKILL.md"
   "${CLAUDE_HOME}/skills/ulw-status/SKILL.md"
   "${CLAUDE_HOME}/skills/autowork/scripts/show-status.sh"
+  "${CLAUDE_HOME}/skills/ulw-report/SKILL.md"
+  "${CLAUDE_HOME}/skills/autowork/scripts/show-report.sh"
   "${CLAUDE_HOME}/agents/quality-planner.md"
   "${CLAUDE_HOME}/agents/quality-reviewer.md"
   "${CLAUDE_HOME}/agents/writing-architect.md"

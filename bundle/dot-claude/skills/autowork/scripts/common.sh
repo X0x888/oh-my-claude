@@ -371,7 +371,35 @@ sweep_stale_sessions() {
           _sweep_sid="$(basename "${_sweep_dir}")"
           local _sweep_edits="${_sweep_dir}/edited_files.log"
           [[ -f "${_sweep_edits}" ]] && _sweep_ec="$(sort -u "${_sweep_edits}" | wc -l | tr -d '[:space:]')"
-          jq -c --arg sid "${_sweep_sid}" --argjson ec "${_sweep_ec:-0}" '
+
+          # Outcome attribution (added in v1.13.0): joins session-state counters
+          # with the per-session findings.json so /ulw-report can answer
+          # "did the gates that fired actually lead to fixes?" without
+          # walking individual session dirs (already deleted by the sweep).
+          local _sweep_findings_file="${_sweep_dir}/findings.json"
+          local _sweep_findings_block='null'
+          local _sweep_waves_block='null'
+          if [[ -f "${_sweep_findings_file}" ]]; then
+            _sweep_findings_block="$(jq -c '
+              (.findings // []) | {
+                total: length,
+                shipped:     ([.[] | select(.status=="shipped")]     | length),
+                deferred:    ([.[] | select(.status=="deferred")]    | length),
+                rejected:    ([.[] | select(.status=="rejected")]    | length),
+                in_progress: ([.[] | select(.status=="in_progress")] | length),
+                pending:     ([.[] | select(.status=="pending")]     | length)
+              }
+            ' "${_sweep_findings_file}" 2>/dev/null || echo 'null')"
+            _sweep_waves_block="$(jq -c '
+              (.waves // []) | {
+                total:     length,
+                completed: ([.[] | select(.status=="completed")] | length)
+              }
+            ' "${_sweep_findings_file}" 2>/dev/null || echo 'null')"
+          fi
+          jq -c --arg sid "${_sweep_sid}" --argjson ec "${_sweep_ec:-0}" \
+            --argjson findings "${_sweep_findings_block}" \
+            --argjson waves "${_sweep_waves_block}" '
             {
               session_id: $sid,
               start_ts: (.session_start_ts // .last_user_prompt_ts // null),
@@ -389,7 +417,11 @@ sweep_stale_sessions() {
               dim_blocks: ((.dimension_guard_blocks // "0") | tonumber),
               exhausted: (if .guard_exhausted then true else false end),
               dispatches: ((.subagent_dispatch_count // "0") | tonumber),
-              outcome: (.session_outcome // "abandoned")
+              outcome: (.session_outcome // "abandoned"),
+              skip_count: ((.skip_count // "0") | tonumber),
+              serendipity_count: ((.serendipity_count // "0") | tonumber),
+              findings: $findings,
+              waves: $waves
             }
           ' "${_sweep_state}" >> "${summary_file}" 2>/dev/null || true
 
@@ -2051,6 +2083,21 @@ record_gate_skip() {
   }
 
   with_skips_lock _do_record_skip
+
+  # Per-session skip counter — enables outcome attribution in session_summary.jsonl
+  # without re-deriving the count from gate-skips.jsonl (which lacks session_id
+  # by design — projects can be shared across sessions). Locks are independent:
+  # _do_record_skip uses with_skips_lock; this update uses with_state_lock and
+  # never nests inside the skips lock, so deadlock is impossible.
+  if [[ -n "${SESSION_ID:-}" ]]; then
+    _bump_skip_count() {
+      local current
+      current="$(read_state "skip_count")"
+      current="${current:-0}"
+      write_state "skip_count" "$((current + 1))"
+    }
+    with_state_lock _bump_skip_count
+  fi
 }
 
 # --- end gate skip tracking ---

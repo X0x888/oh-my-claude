@@ -191,11 +191,32 @@ Session state is stored at:
 Cross-session ledgers (in `~/.claude/quality-pack/`, not per-session):
 
 ```
-session_summary.jsonl          # One summary row per TTL-swept session (cap: 500)
-classifier_misfires.jsonl      # Aggregated misfire rows tagged with session id (cap: 1000)
+session_summary.jsonl          # One summary row per TTL-swept session (cap: 500/400)
+classifier_misfires.jsonl      # Aggregated misfire rows tagged with session id (cap: 1000/800)
+serendipity-log.jsonl          # Serendipity Rule applications across sessions (cap: 2000/1500)
+gate-skips.jsonl               # /ulw-skip honored events for threshold tuning (cap: 200/150)
 defect-patterns.json           # Historical defect-category counters
 agent-metrics.json             # Invocations / clean / findings per agent type
 ```
+
+All four JSONL caps go through `_cap_cross_session_jsonl` in `common.sh`; the format `cap/retain` shows the trigger threshold and post-truncation tail size.
+
+`session_summary.jsonl` row schema (canonical writer: `sweep_stale_sessions` in `common.sh`):
+
+| Field | Type | Source |
+|---|---|---|
+| `session_id` | string | session directory name |
+| `start_ts`, `end_ts` | string (epoch) | `session_state.json` |
+| `domain`, `intent` | string | classifier output stored in state |
+| `edit_count`, `code_edits`, `doc_edits` | int | `edited_files.log` + state counters |
+| `verified`, `verify_outcome`, `verify_confidence` | bool / string / int | `record-verification.sh` writes |
+| `reviewed`, `dispatches` | bool / int | `record-reviewer.sh` and dispatch counter |
+| `guard_blocks`, `dim_blocks`, `exhausted` | int / int / bool | `stop-guard.sh` counters |
+| `outcome` | enum | `completed` \| `exhausted` \| `abandoned` |
+| `skip_count` | int | `record_gate_skip` (added v1.13.0) |
+| `serendipity_count` | int | `record-serendipity.sh` (added v1.13.0) |
+| `findings` | object \| null | rolled up from per-session `findings.json` at sweep time (added v1.13.0): `{total, shipped, deferred, rejected, in_progress, pending}` |
+| `waves` | object \| null | rolled up from per-session `findings.json` at sweep time (added v1.13.0): `{total, completed}` |
 
 ### Install-time artifacts
 

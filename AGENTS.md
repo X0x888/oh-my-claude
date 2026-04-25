@@ -20,7 +20,7 @@ oh-my-claude/
     quality-pack/
       memory/                 # Core, skills, and compact memory files
       scripts/                # 5 lifecycle hook scripts (prompt routing, compaction, session)
-    skills/                   # 17 skill definitions, each in <name>/SKILL.md
+    skills/                   # 18 skill definitions, each in <name>/SKILL.md
       autowork/scripts/       # 16 autowork hook scripts and utilities
         common.sh             # Shared functions (JSON, classification, scope)
         lib/state-io.sh       # Extracted state I/O subsystem; sourced by common.sh
@@ -48,6 +48,7 @@ oh-my-claude/
     test-classifier-replay.sh
     test-cross-session-rotation.sh
     test-serendipity-log.sh
+    test-show-report.sh
     test-stall-detection.sh
     test-state-io.sh
     test-uninstall-merge.sh
@@ -173,6 +174,7 @@ bash tests/test-classifier-replay.sh
 bash tests/test-serendipity-log.sh
 bash tests/test-cross-session-rotation.sh
 bash tests/test-classifier.sh
+bash tests/test-show-report.sh
 python3 -m unittest tests.test_statusline -v
 ```
 

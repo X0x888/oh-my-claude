@@ -60,6 +60,7 @@ SKILL_DIRS=(
   "${CLAUDE_HOME}/skills/skills"
   "${CLAUDE_HOME}/skills/ulw-demo"
   "${CLAUDE_HOME}/skills/ulw-off"
+  "${CLAUDE_HOME}/skills/ulw-report"
   "${CLAUDE_HOME}/skills/ulw-skip"
   "${CLAUDE_HOME}/skills/ulw-status"
   "${CLAUDE_HOME}/skills/frontend-design"

@@ -187,12 +187,12 @@ oh-my-claude/
 ├── install.sh / uninstall.sh / verify.sh   # Install, remove, and verify
 ├── bundle/dot-claude/                       # Installs to ~/.claude/
 │   ├── agents/          (30 agents)         # Specialist agent definitions
-│   ├── skills/          (17 skills)         # Skill definitions + autowork hooks
+│   ├── skills/          (18 skills)         # Skill definitions + autowork hooks
 │   ├── quality-pack/                        # Lifecycle hooks + memory files
 │   ├── output-styles/                       # Output format templates
 │   └── statusline.py                        # Custom statusline widget
 ├── config/settings.patch.json               # Merged into user settings on install
-├── tests/               (19 bash + 1 py)    # Intent, quality gates, stall, resume, e2e, install/uninstall merge, concurrency, post-merge, repro redaction, discovered-scope, finding-list, state-io, classifier-replay, serendipity-log, cross-session-rotation, classifier, statusline
+├── tests/               (20 bash + 1 py)    # Intent, quality gates, stall, resume, e2e, install/uninstall merge, concurrency, post-merge, repro redaction, discovered-scope, finding-list, state-io, classifier-replay, serendipity-log, cross-session-rotation, classifier, show-report, statusline
 ├── tools/                                    # Developer-only tools (replay-classifier-telemetry.sh, classifier-fixtures/)
 └── docs/                                    # Architecture, customization, FAQ, prompts
 ```
@@ -219,6 +219,7 @@ Skills are invoked as slash commands or routed automatically by the intent class
 | ulw-demo | `/ulw-demo` | Guided onboarding walkthrough with real quality gates |
 | ulw-skip | `/ulw-skip <reason>` | Skip current quality gate block once |
 | ulw-status | `/ulw-status` | Show current session state and Council Phase 8 wave-plan progress (debugging). `summary` / `classifier` arguments swap modes. |
+| ulw-report | `/ulw-report [last\|week\|month\|all]` | Markdown digest of cross-session activity — sessions, gate fires, top reviewers, classifier misfires, Serendipity catches, finding/wave outcomes |
 | ulw-off | `/ulw-off` | Deactivate ultrawork mode mid-session |
 | skills | `/skills` | List all available skills with usage guide |
 
@@ -276,6 +277,7 @@ bash tests/test-classifier.sh               # Extracted lib/classifier.sh module
 bash tests/test-classifier-replay.sh        # Classifier regression replay against curated fixtures
 bash tests/test-serendipity-log.sh          # Serendipity Rule analytics logging
 bash tests/test-cross-session-rotation.sh   # Cross-session JSONL aggregate cap helper
+bash tests/test-show-report.sh              # /ulw-report skill backend (cross-session digest)
 python3 -m unittest tests.test_statusline   # Statusline widget
 ```
 

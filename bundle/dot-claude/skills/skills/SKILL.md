@@ -21,6 +21,7 @@ Display this table to the user:
 | **council** | `/council [focus] [--deep]` | Multi-role project evaluation — dispatches PM, design, security, data, SRE, and growth perspectives, then verifies the top 2-3 findings via `oracle`. `--deep` escalates lenses to opus for high-stakes audits. |
 | **ulw-demo** | `/ulw-demo` | Guided onboarding — see the quality gates fire on a demo task |
 | **ulw-status** | `/ulw-status` | Inspect current session state — mode, domain, counters, flags (debugging) |
+| **ulw-report** | `/ulw-report [last\|week\|month\|all]` | Markdown digest of cross-session activity — sessions, gate fires, reviewers, misfires, Serendipity catches, finding/wave outcomes |
 | **ulw-skip** | `/ulw-skip <reason>` | Skip the current quality gate block once — use when a gate is blocking but you're confident |
 | **ulw-off** | `/ulw-off` | Deactivate ultrawork mode mid-session without ending the conversation |
 | **skills** | `/skills` | Show this list |
