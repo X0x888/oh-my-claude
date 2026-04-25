@@ -71,6 +71,7 @@ bash tests/test-post-merge-hook.sh
 bash tests/test-repro-redaction.sh
 bash tests/test-discovered-scope.sh
 bash tests/test-finding-list.sh
+bash tests/test-state-io.sh
 python3 -m unittest tests.test_statusline -v
 ```
 

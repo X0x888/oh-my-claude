@@ -7,10 +7,10 @@ Cognitive quality harness for Claude Code -- bash hooks, specialist agents, and 
 - `bundle/dot-claude/agents/` -- 30 specialist agent definitions with permission boundaries
 - `bundle/dot-claude/quality-pack/scripts/` -- 5 lifecycle hook scripts (prompt routing, compaction, session management)
 - `bundle/dot-claude/skills/` -- 17 skill definitions, each in `<name>/SKILL.md`
-- `bundle/dot-claude/skills/autowork/scripts/` -- 15 autowork hook scripts including `common.sh` (shared utility library) and `record-finding-list.sh` (council Phase 8 master finding list)
+- `bundle/dot-claude/skills/autowork/scripts/` -- 15 autowork hook scripts including `common.sh` (shared utility library) and `record-finding-list.sh` (council Phase 8 master finding list); state I/O extracted to `lib/state-io.sh` and sourced by `common.sh`
 - `bundle/dot-claude/output-styles/` -- output format templates
 - `config/settings.patch.json` -- settings merged into user config on install
-- `tests/` -- 15 test scripts (e2e hook sequence, intent classification, quality gates, stall detection, settings merge, uninstall merge, common utilities, session resume, statusline, concurrency, install artifacts, post-merge hook, repro redaction, discovered-scope, finding-list)
+- `tests/` -- 16 test scripts (e2e hook sequence, intent classification, quality gates, stall detection, settings merge, uninstall merge, common utilities, session resume, statusline, concurrency, install artifacts, post-merge hook, repro redaction, discovered-scope, finding-list, state-io)
 - `docs/` -- architecture, customization, FAQ, and prompt reference docs
 
 ## Key Files
@@ -47,6 +47,7 @@ bash tests/test-post-merge-hook.sh
 bash tests/test-repro-redaction.sh
 bash tests/test-discovered-scope.sh
 bash tests/test-finding-list.sh
+bash tests/test-state-io.sh
 python3 -m unittest tests.test_statusline -v
 ```
 

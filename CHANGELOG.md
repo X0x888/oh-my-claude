@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- **State I/O subsystem extracted to `lib/state-io.sh`.** First slice of the planned `common.sh` decomposition. The state-I/O block (≈210 lines: `ensure_session_dir`, `session_file`, `read_state`, `write_state`, `write_state_batch`, `append_state`, `append_limited_state`, `with_state_lock`, `with_state_lock_batch`, `_ensure_valid_state` recovery, `_lock_mtime` BSD/GNU stat compat) moved out of `common.sh` into `bundle/dot-claude/skills/autowork/scripts/lib/state-io.sh`. `common.sh` now sources the lib after `validate_session_id` and `log_anomaly` are defined. **No behavior change** — every existing test passes unchanged.
+- **Symlink-aware sourcing.** `common.sh` now resolves its own path through a portable readlink loop before sourcing the lib. This works whether `common.sh` is installed normally (rsync recursion handles `lib/` automatically), symlinked from a test HOME (e.g. `tests/test-e2e-hook-sequence.sh`), or symlinked to a user's custom location. Without this, the test harness — which symlinks just `common.sh` — would lose the `lib/` reference. Compatible with BSD `readlink` (macOS) and GNU `readlink` (Linux); no `realpath` dependency.
+
+### Added
+
+- **`tests/test-state-io.sh`** — focused regression suite for the extracted module. 26 assertions across 12 test cases: missing-key reads, write/read round-trip, jq `--arg` escaping for shell-special characters, `write_state_batch` atomic multi-key, odd-arg rejection without partial mutation, plain-file read fallback, corrupt-JSON recovery via `_ensure_valid_state` (including archive-file creation), `with_state_lock` serialization under 5 concurrent writers, stale-lock recovery, `with_state_lock_batch` one-shot atomicity, `append_limited_state` truncation, and `session_file` path shape. `verify.sh` required-paths list, AGENTS.md / CONTRIBUTING.md / CLAUDE.md / README.md test listings all updated in lockstep.
+
 ## [1.11.1] - 2026-04-25
 
 Stabilization release following v1.11.0 (Council Phase 8). Closes the doc-drift gap that left Phase 8 invisible in the user-facing skill table and customization guide, plugs test gaps in the wave-aware discovered-scope cap and the finding-list lock, lands a deferred `auto_memory` conf key for shared machines / regulated codebases, and trims nine specialist agent descriptions that had grown unmanageable.

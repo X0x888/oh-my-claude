@@ -22,7 +22,8 @@ oh-my-claude/
       scripts/                # 5 lifecycle hook scripts (prompt routing, compaction, session)
     skills/                   # 17 skill definitions, each in <name>/SKILL.md
       autowork/scripts/       # 15 autowork hook scripts and utilities
-        common.sh             # Shared functions (state, JSON, classification)
+        common.sh             # Shared functions (JSON, classification, scope)
+        lib/state-io.sh       # Extracted state I/O subsystem; sourced by common.sh
     statusline.py             # Custom statusline with context tracking
     CLAUDE.md                 # Installed user-facing CLAUDE.md
 
@@ -43,6 +44,7 @@ oh-my-claude/
     test-session-resume.sh
     test-settings-merge.sh
     test-stall-detection.sh
+    test-state-io.sh
     test-uninstall-merge.sh
     test_statusline.py
 
@@ -56,7 +58,8 @@ oh-my-claude/
 ### Key Components
 
 - **Hook scripts** (`quality-pack/scripts/`, `autowork/scripts/`): Bash scripts triggered by Claude Code lifecycle events (prompt entry, pre-tool-use, tool completion, compaction, session start). They route intents, manage state, and enforce quality gates.
-- **common.sh** (`autowork/scripts/common.sh`): Shared utility library. Provides JSON state management (`read_state`, `write_state`, `write_state_batch`), session directory helpers, intent classification (`classify_task_intent`), domain routing, project profile detection (`detect_project_profile`), verification confidence scoring (`score_verification_confidence`), quality scorecard generation (`build_quality_scorecard`), stall detection helpers (`compute_stall_threshold`, `compute_progress_score`), dimension risk ordering (`order_dimensions_by_risk`), cross-session agent metrics (`record_agent_metric`), and defect pattern tracking (`record_defect_pattern`, `get_defect_watch_list`).
+- **common.sh** (`autowork/scripts/common.sh`): Shared utility library. Sources `lib/state-io.sh` for the state I/O subsystem (`read_state`, `write_state`, `write_state_batch`, `with_state_lock`, `with_state_lock_batch`, `ensure_session_dir`, `session_file`, `append_state`, `append_limited_state`). Provides intent classification (`classify_task_intent`), domain routing, project profile detection (`detect_project_profile`), verification confidence scoring (`score_verification_confidence`), quality scorecard generation (`build_quality_scorecard`), stall detection helpers (`compute_stall_threshold`, `compute_progress_score`), dimension risk ordering (`order_dimensions_by_risk`), cross-session agent metrics (`record_agent_metric`), and defect pattern tracking (`record_defect_pattern`, `get_defect_watch_list`).
+- **lib/state-io.sh** (`autowork/scripts/lib/state-io.sh`): Extracted state I/O module. Sourced by `common.sh` after `validate_session_id` and `log_anomaly` are defined. The lib uses portable readlink resolution so it works whether `common.sh` is installed normally, symlinked into a test HOME, or symlinked to a custom location.
 - **Agent definitions** (`agents/*.md`): Markdown files defining specialist agents with role descriptions, capabilities, and `disallowedTools` for permission boundaries.
 - **Skills** (`skills/<name>/SKILL.md`): Self-contained skill definitions invoked by slash commands or automatic routing.
 - **Settings patch** (`config/settings.patch.json`): JSON configuration merged into the user's Claude Code settings during installation.
@@ -154,6 +157,7 @@ bash tests/test-common-utilities.sh
 bash tests/test-session-resume.sh
 bash tests/test-discovered-scope.sh
 bash tests/test-finding-list.sh
+bash tests/test-state-io.sh
 python3 -m unittest tests.test_statusline -v
 ```
 

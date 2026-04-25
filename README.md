@@ -192,7 +192,7 @@ oh-my-claude/
 │   ├── output-styles/                       # Output format templates
 │   └── statusline.py                        # Custom statusline widget
 ├── config/settings.patch.json               # Merged into user settings on install
-├── tests/               (14 bash + 1 py)    # Intent, quality gates, stall, resume, e2e, install/uninstall merge, concurrency, post-merge, repro redaction, discovered-scope, finding-list, statusline
+├── tests/               (15 bash + 1 py)    # Intent, quality gates, stall, resume, e2e, install/uninstall merge, concurrency, post-merge, repro redaction, discovered-scope, finding-list, state-io, statusline
 └── docs/                                    # Architecture, customization, FAQ, prompts
 ```
 
@@ -270,6 +270,7 @@ bash tests/test-post-merge-hook.sh          # --git-hooks post-merge drift detec
 bash tests/test-repro-redaction.sh          # omc-repro.sh privacy contract regression
 bash tests/test-discovered-scope.sh         # Discovered-scope capture + wave-aware gate
 bash tests/test-finding-list.sh             # Council Phase 8 findings.json artifact
+bash tests/test-state-io.sh                 # Extracted lib/state-io.sh module
 python3 -m unittest tests.test_statusline   # Statusline widget
 ```
 
