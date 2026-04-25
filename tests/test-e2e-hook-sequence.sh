@@ -99,6 +99,17 @@ VERDICT: SHIP}"
     | bash "${HOOK_DIR}/record-reviewer.sh" excellence 2>/dev/null || true
 }
 
+sim_planner() {
+  local sid="$1"
+  local agent_type="${2:-quality-planner}"
+  local msg="${3:-Plan covers all branches.
+
+VERDICT: PLAN_READY}"
+  printf '%s' "$(jq -nc --arg s "${sid}" --arg m "${msg}" --arg a "${agent_type}" \
+    '{session_id:$s,last_assistant_message:$m,agent_type:$a}')" \
+    | bash "${HOOK_DIR}/record-plan.sh" 2>/dev/null || true
+}
+
 sim_metis() {
   local sid="$1"
   local msg="${2:-Plan is ready to execute.
@@ -2205,6 +2216,50 @@ else
   printf '  FAIL: gap7: compact_race_count should be >= 1 (got %s)\n' "${race_count}" >&2
   fail=$((fail + 1))
 fi
+teardown_test
+
+
+# -------------------------------------------------------
+# Planner VERDICT contract (v1.14.0): record-plan.sh
+# parses VERDICT: PLAN_READY|NEEDS_CLARIFICATION|BLOCKED
+# and writes plan_verdict to session state.
+# -------------------------------------------------------
+printf '\nPlanner VERDICT contract:\n'
+
+setup_test
+init_session "pv1"
+sim_planner "pv1" "quality-planner" "Plan covers auth, API, schema.
+
+VERDICT: PLAN_READY"
+assert_eq "planner(PLAN_READY): plan_verdict set" "PLAN_READY" "$(read_st "pv1" "plan_verdict")"
+assert_eq "planner(PLAN_READY): has_plan true" "true" "$(read_st "pv1" "has_plan")"
+assert_eq "planner(PLAN_READY): plan_agent recorded" "quality-planner" "$(read_st "pv1" "plan_agent")"
+teardown_test
+
+setup_test
+init_session "pv2"
+sim_planner "pv2" "prometheus" "Need user input on rate-limit policy.
+
+VERDICT: NEEDS_CLARIFICATION"
+assert_eq "planner(NEEDS_CLARIFICATION): plan_verdict set" "NEEDS_CLARIFICATION" "$(read_st "pv2" "plan_verdict")"
+assert_eq "planner(NEEDS_CLARIFICATION): has_plan still true" "true" "$(read_st "pv2" "has_plan")"
+teardown_test
+
+setup_test
+init_session "pv3"
+sim_planner "pv3" "quality-planner" "Cannot plan without database schema decision.
+
+VERDICT: BLOCKED"
+assert_eq "planner(BLOCKED): plan_verdict set" "BLOCKED" "$(read_st "pv3" "plan_verdict")"
+teardown_test
+
+setup_test
+init_session "pv4"
+# No VERDICT line: backward-compat default = PLAN_READY
+sim_planner "pv4" "quality-planner" "Step 1. Implement.
+Step 2. Test."
+assert_eq "planner(no VERDICT): plan_verdict defaults to PLAN_READY" "PLAN_READY" "$(read_st "pv4" "plan_verdict")"
+assert_eq "planner(no VERDICT): has_plan still true (legacy compat)" "true" "$(read_st "pv4" "has_plan")"
 teardown_test
 
 

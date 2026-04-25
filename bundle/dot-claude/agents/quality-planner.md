@@ -30,3 +30,5 @@ Rules:
 - If something is unclear, investigate it instead of guessing.
 - Consider: what would break if the assumptions are wrong? What would a skeptical reviewer challenge?
 - After scoping the explicit request, step back and ask: what would a veteran in this domain also deliver? Scope those items in the implied-scope section. The execution phase can only deliver what was planned — if you scope only the literal ask, the deliverable will be incomplete.
+
+End with exactly one line on its own, unindented, as the final line of your response: `VERDICT: PLAN_READY` when the plan is decision-complete and execution can begin, `VERDICT: NEEDS_CLARIFICATION` when explicit user input is required before planning continues, or `VERDICT: BLOCKED` when a hard constraint or missing precondition prevents planning. The hook reads this line to track plan-readiness state.

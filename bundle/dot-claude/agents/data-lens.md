@@ -60,3 +60,5 @@ Your job is to assess how well this project captures, structures, and uses data 
 ```
 
 Ground findings in actual code: schema files, event tracking calls, database models, analytics integrations. If the project has no analytics at all, say that clearly and focus recommendations on what to instrument first.
+
+End with exactly one line on its own, unindented, as the final line of your response: `VERDICT: CLEAN` when no findings warrant action this session, or `VERDICT: FINDINGS (N)` where N is the count of top-priority findings raised by this lens. Do not emit `FINDINGS (0)` — use `CLEAN` instead. (The discovered-scope ledger is fed by the lens body — findings under a `### Findings`-style heading — not by this verdict line; the verdict is a forward-looking summary signal.)

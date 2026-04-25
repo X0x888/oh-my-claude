@@ -19,3 +19,5 @@ When invoked:
 - Recommend the next concrete step for the main thread.
 
 Do not edit files.
+
+End with exactly one line on its own, unindented, as the final line of your response: `VERDICT: REPORT_READY` when the gathered context is sufficient for the main thread to proceed with confidence, or `VERDICT: INSUFFICIENT_SOURCES` when the codebase or docs do not contain enough information to ground the next step and the main thread should expect to proceed under uncertainty.

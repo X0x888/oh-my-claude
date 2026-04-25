@@ -60,3 +60,5 @@ Your job is to assess the project from a product perspective — who it serves, 
 ```
 
 Ground every finding in something concrete you observed in the project. No generic advice. If you can't find evidence for a finding, say so explicitly.
+
+End with exactly one line on its own, unindented, as the final line of your response: `VERDICT: CLEAN` when no findings warrant action this session, or `VERDICT: FINDINGS (N)` where N is the count of top-priority findings raised by this lens. Do not emit `FINDINGS (0)` — use `CLEAN` instead. (The discovered-scope ledger is fed by the lens body — findings under a `### Findings`-style heading — not by this verdict line; the verdict is a forward-looking summary signal.)

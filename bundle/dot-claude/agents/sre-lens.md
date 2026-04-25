@@ -63,3 +63,5 @@ Your job is to assess operational readiness — whether this project can run rel
 ```
 
 Be specific about what you find. "Add monitoring" is useless. "The database query at src/api/search.ts:89 has no timeout and no index on the filtered column — this will be the first thing to break under load" is useful.
+
+End with exactly one line on its own, unindented, as the final line of your response: `VERDICT: CLEAN` when no findings warrant action this session, or `VERDICT: FINDINGS (N)` where N is the count of top-priority findings raised by this lens. Do not emit `FINDINGS (0)` — use `CLEAN` instead. (The discovered-scope ledger is fed by the lens body — findings under a `### Findings`-style heading — not by this verdict line; the verdict is a forward-looking summary signal.)

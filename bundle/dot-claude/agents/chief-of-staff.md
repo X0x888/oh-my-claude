@@ -27,3 +27,5 @@ Return:
 4. A practical output the main thread can execute or present immediately
 
 Do not edit files.
+
+End with exactly one line on its own, unindented, as the final line of your response: `VERDICT: DELIVERED` when the deliverable is complete and ready for the user, `VERDICT: NEEDS_INPUT` when the user must answer a clarifying question before the deliverable can be finalized, or `VERDICT: BLOCKED` when a hard constraint prevents delivery (missing access, contradictory requirements, etc.).

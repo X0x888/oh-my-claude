@@ -6,6 +6,15 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **VERDICT contract uniform across all 30 agents.** v1.13.0 audit found that only 6 of 30 agents emitted the structured `VERDICT:` final-line contract. v1.14.0 closes the gap with a role-appropriate vocabulary per agent, plus a regression test (`tests/test-agent-verdict-contract.sh`, 392 assertions) that prevents future contract drift. The reviewer-class vocabulary in `record-reviewer.sh` is unchanged. Planner verdicts are now consumed by `record-plan.sh` (writes `plan_verdict` to session state, defaulting to `PLAN_READY` when absent for backward compatibility); other new tokens are forward-looking — read by humans today, available to future hooks. Per-role vocabularies:
+    - **Lens agents** (`data-lens`, `design-lens`, `growth-lens`, `product-lens`, `security-lens`, `sre-lens`): `CLEAN | FINDINGS (N)`. The discovered-scope ledger is fed by the lens body's `### Findings` heading anchors, not this verdict.
+    - **Planners** (`prometheus`, `quality-planner`): `PLAN_READY | NEEDS_CLARIFICATION | BLOCKED`. Consumed by `record-plan.sh`.
+    - **Researchers** (`librarian`, `quality-researcher`): `REPORT_READY | INSUFFICIENT_SOURCES`.
+    - **Debugger/architect** (`oracle`): `RESOLVED | HYPOTHESIS | NEEDS_EVIDENCE`.
+    - **Operations** (`atlas`, `chief-of-staff`): `DELIVERED | NEEDS_INPUT | BLOCKED`.
+    - **Writers** (`draft-writer`, `writing-architect`): `DELIVERED | NEEDS_INPUT | NEEDS_RESEARCH`.
+    - **Implementers** (frontend/backend/devops/fullstack + 4 iOS agents + test-automation, 9 total): `SHIP | INCOMPLETE | BLOCKED`.
+    Documented in `AGENTS.md` → "Universal VERDICT contract (v1.14.0)" with a per-role consumer column.
 - **Verification subsystem extracted to `lib/verification.sh`.** The 9 verification functions and 7 `MCP_VERIFY_*` readonly constants previously inlined in `common.sh:1199-1498` (~300 lines) now live in `bundle/dot-claude/skills/autowork/scripts/lib/verification.sh`, sourced from `common.sh` immediately after `lib/state-io.sh` (no inter-lib dependency — pure functions over command text, output, and `OMC_CUSTOM_VERIFY_MCP_TOOLS`). Mirrors the v1.12.0 state-io extract and v1.13.0 classifier extract patterns. `common.sh` drops 2,893 → 2,596 lines (-10.3%); test surface unchanged (existing callers in `record-verification.sh`, `test-common-utilities.sh`, `test-quality-gates.sh`, `test-intent-classification.sh` see no behavior change). New `tests/test-verification-lib.sh` (40 assertions, 11 cases) provides the symbol-presence regression net for the lib boundary that `verify.sh`'s path-existence check cannot detect on its own. `verify.sh` `required_paths` updated. Rationale: continues the lib/ decomposition pattern; preserves `common.sh` shrinkage trajectory; keeps verification scoring testable in isolation.
 
 ### Added

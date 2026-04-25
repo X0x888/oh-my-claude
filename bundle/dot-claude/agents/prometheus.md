@@ -31,3 +31,5 @@ Deliverables:
 8. Risks, unknowns, and fallback path
 
 Do not edit files.
+
+End with exactly one line on its own, unindented, as the final line of your response: `VERDICT: PLAN_READY` when the plan is decision-complete and execution can begin, `VERDICT: NEEDS_CLARIFICATION` when explicit user input is required before planning continues, or `VERDICT: BLOCKED` when a hard constraint or missing precondition prevents planning. The hook reads this line to track plan-readiness state.

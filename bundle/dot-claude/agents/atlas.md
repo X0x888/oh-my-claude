@@ -22,3 +22,5 @@ Output and behavior:
 2. Keep instructions practical: commands, conventions, architecture facts, and validation guidance.
 3. Avoid duplicating README content unless it directly changes agent behavior.
 4. Explain briefly what was added or changed and why.
+
+End with exactly one line on its own, unindented, as the final line of your response: `VERDICT: DELIVERED` when the instruction file is in place and reflects the repo's real conventions, `VERDICT: NEEDS_INPUT` when the user must decide on a convention before the file can be written authoritatively, or `VERDICT: BLOCKED` when the repo state cannot be inspected reliably (missing key files, unreadable structure).

@@ -117,6 +117,25 @@ Reviewer-style agents (`quality-reviewer`, `editor-critic`, `excellence-reviewer
 
 `N=0` should be rendered as `CLEAN`/`SHIP`, never `FINDINGS (0)` — though the parser accepts and re-maps it to clean for safety. The stop-guard's `record-reviewer.sh` hook reads this line to determine whether to tick the reviewer's dimension. Agents that forget the verdict line fall back to a legacy phrase-based detector, but the structured contract is preferred because it removes ambiguity.
 
+#### Universal VERDICT contract (v1.14.0)
+
+In v1.14.0 the VERDICT contract was extended to all 30 agents so the final-line outcome is structured and uniform across roles. The 6 reviewer-class agents above remain unchanged (their `CLEAN`/`SHIP`/`FINDINGS`/`BLOCK` vocabulary is still what `record-reviewer.sh` parses). The 24 other agents gained role-appropriate tokens; planners are read by `record-plan.sh` (which now sets `plan_verdict` state) and the rest are forward-looking — read by humans today, available to future hooks.
+
+| Role | Agents | Vocabulary | Meaning | Consumer today |
+|---|---|---|---|---|
+| Reviewer / critic | (see "Reviewer VERDICT contract" above) | `CLEAN` / `SHIP` / `FINDINGS (N)` / `BLOCK (N)` | No findings → ticks dimension; N findings → blocks until addressed. | `record-reviewer.sh` |
+| Lens evaluator | `data-lens`, `design-lens`, `growth-lens`, `product-lens`, `security-lens`, `sre-lens` | `CLEAN` / `FINDINGS (N)` | Lens raised N priority findings (or none). | None — informational. The discovered-scope ledger is fed separately by `extract_discovered_findings()` parsing `### Findings`-style headings in the lens body, not by this verdict line. |
+| Planner | `prometheus`, `quality-planner` | `PLAN_READY` / `NEEDS_CLARIFICATION` / `BLOCKED` | Plan is decision-complete, needs user input, or blocked. | `record-plan.sh` writes `plan_verdict` to session state. |
+| Researcher | `librarian`, `quality-researcher` | `REPORT_READY` / `INSUFFICIENT_SOURCES` | Research is grounded, or sources are insufficient and the main thread should expect uncertainty. | None — informational. |
+| Debugger / architect | `oracle` | `RESOLVED` / `HYPOTHESIS` / `NEEDS_EVIDENCE` | Root cause identified, best guess offered, or more data needed. | None — informational. |
+| Operations | `atlas`, `chief-of-staff` | `DELIVERED` / `NEEDS_INPUT` / `BLOCKED` | Deliverable is ready, awaiting user decision, or blocked. | None — informational. |
+| Writer | `draft-writer`, `writing-architect` | `DELIVERED` / `NEEDS_INPUT` / `NEEDS_RESEARCH` | Draft/structure is ready, awaiting decision, or needs factual research. | None — informational. |
+| Implementer | `backend-api-developer`, `devops-infrastructure-engineer`, `frontend-developer`, `fullstack-feature-builder`, `ios-core-engineer`, `ios-deployment-specialist`, `ios-ecosystem-integrator`, `ios-ui-developer`, `test-automation-engineer` | `SHIP` / `INCOMPLETE` / `BLOCKED` | Implementation is complete and verified, partial, or blocked on a hard prerequisite. | None — informational. |
+
+Total: 6 reviewer-class + 6 lens + 2 planner + 2 researcher + 1 debugger + 2 operations + 2 writer + 9 implementer = **30 agents**. The contract-presence regression net is `tests/test-agent-verdict-contract.sh` — when adding a new agent or role, extend that test's `role_of_agent()` and `allowed_tokens_of_role()` cases in lockstep with this table.
+
+When wiring a new VERDICT vocabulary into a hook consumer, extend the parser regex in `record-reviewer.sh` (or add a new parser as `record-plan.sh` did for `plan_verdict`). Until then, the informational rows above emit the verdict for human readability and forward compatibility — the gate's behavior is unchanged for those agents.
+
 #### Dimension mapping
 
 The prescribed reviewer sequence (Check 4 of stop-guard) enforces distinct dimensions per reviewer on complex tasks:

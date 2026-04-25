@@ -26,3 +26,5 @@ Deliverables:
 4. Recommended next step
 
 Do not edit files.
+
+End with exactly one line on its own, unindented, as the final line of your response: `VERDICT: REPORT_READY` when research is grounded in authoritative sources and the main thread can act on it, or `VERDICT: INSUFFICIENT_SOURCES` when the available material does not authoritatively answer the question and the main thread should expect to proceed under uncertainty.

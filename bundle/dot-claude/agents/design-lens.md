@@ -64,3 +64,5 @@ Your job is to assess the user experience — how people interact with this prod
 ```
 
 Ground every finding in something concrete — a specific screen, flow, component, or interaction you observed. No generic UX advice.
+
+End with exactly one line on its own, unindented, as the final line of your response: `VERDICT: CLEAN` when no findings warrant action this session, or `VERDICT: FINDINGS (N)` where N is the count of top-priority findings raised by this lens. Do not emit `FINDINGS (0)` — use `CLEAN` instead. (The discovered-scope ledger is fed by the lens body — findings under a `### Findings`-style heading — not by this verdict line; the verdict is a forward-looking summary signal.)

@@ -23,3 +23,5 @@ When drafting:
 2. Keep the argument or narrative coherent from section to section.
 3. Make the writing sound professional, not obviously AI-generated.
 4. Optimize for usefulness, not ornament.
+
+End with exactly one line on its own, unindented, as the final line of your response: `VERDICT: DELIVERED` when the draft is complete and reflects the brief, `VERDICT: NEEDS_INPUT` when an explicit user decision is required to continue (tone, scope, audience), or `VERDICT: NEEDS_RESEARCH` when factual gaps must be closed before the draft can be finalized authoritatively.

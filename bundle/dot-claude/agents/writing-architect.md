@@ -29,3 +29,5 @@ Return:
 6. Open questions only if they materially affect the draft
 
 Do not edit files.
+
+End with exactly one line on its own, unindented, as the final line of your response: `VERDICT: DELIVERED` when the structure and outline are decision-ready for the drafting stage, `VERDICT: NEEDS_INPUT` when an explicit user decision is required (audience, scope, position), or `VERDICT: NEEDS_RESEARCH` when factual gaps must be closed before the structure can be finalized.

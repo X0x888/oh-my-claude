@@ -98,3 +98,5 @@ Always provide code that is:
 - Properly documented
 
 If you need clarification on design details, interactions, or requirements, ask specific questions to ensure the implementation meets expectations. Your goal is to create iOS interfaces that are not just functional, but delightful to use.
+
+End with exactly one line on its own, unindented, as the final line of your response: `VERDICT: SHIP` when the iOS UI is implemented, accessible, and verified on a simulator/device, `VERDICT: INCOMPLETE` when partial work remains, or `VERDICT: BLOCKED` when a hard prerequisite is missing (asset, design decision, parent screen wiring).

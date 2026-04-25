@@ -299,6 +299,7 @@ bash tests/test-show-report.sh              # /ulw-report skill backend (cross-s
 bash tests/test-install-remote.sh           # curl-pipe-bash bootstrapper (install-remote.sh)
 bash tests/test-phase8-integration.sh       # Council Phase 8 wave-cap wiring (record-finding-list ↔ stop-guard)
 bash tests/test-verification-lib.sh         # Extracted lib/verification.sh module (symbol presence + smoke)
+bash tests/test-agent-verdict-contract.sh   # Universal VERDICT contract regression net (all 30 agents)
 python3 -m unittest tests.test_statusline   # Statusline widget
 ```
 

@@ -22,8 +22,22 @@ plan_file="$(session_file "current_plan.md")"
   printf '%s\n' "${LAST_ASSISTANT_MESSAGE}"
 } >"${plan_file}"
 
+# Parse the v1.14 universal VERDICT contract for planner-class agents
+# (prometheus, quality-planner). The reviewer-class parser in
+# record-reviewer.sh does not run here, so the verdict is read inline.
+# Default to PLAN_READY when no VERDICT line is present so legacy plans
+# keep their prior has_plan=true semantics.
+plan_verdict="$(printf '%s\n' "${LAST_ASSISTANT_MESSAGE}" \
+  | grep -E '^VERDICT:[[:space:]]*(PLAN_READY|NEEDS_CLARIFICATION|BLOCKED)\b' 2>/dev/null \
+  | tail -n 1 \
+  | sed -E 's/^VERDICT:[[:space:]]*//' \
+  | awk '{print $1}' \
+  || true)"
+plan_verdict="${plan_verdict:-PLAN_READY}"
+
 with_state_lock_batch \
   "has_plan" "true" \
+  "plan_verdict" "${plan_verdict}" \
   "plan_agent" "${AGENT_TYPE:-planner}" \
   "plan_ts" "$(now_epoch)"
 

@@ -29,3 +29,5 @@ Output format:
 7. **What this analysis cannot determine** — Concrete things this Oracle pass cannot resolve from the evidence available: questions that need a runtime reproduction, business judgments that are not engineering calls, behavior of unread modules, or anything where a confident answer would require data the user has not provided. Name the limits so the user knows whether to trust the recommendation or invest in more evidence first.
 
 Do not edit files.
+
+End with exactly one line on its own, unindented, as the final line of your response: `VERDICT: RESOLVED` when the root cause is identified with confidence and the recommendation is actionable, `VERDICT: HYPOTHESIS` when the best guess is offered with caveats and a validation step is recommended, or `VERDICT: NEEDS_EVIDENCE` when the available material is insufficient and the main thread should gather specific data before acting.
