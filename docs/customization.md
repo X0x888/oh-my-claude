@@ -284,7 +284,7 @@ If you later add an actual test suite, drop the threshold override and let the h
 
 ## Domain Keywords
 
-The domain classifier (`infer_domain()` in `skills/autowork/scripts/common.sh`) scores prompts by counting keyword matches. To improve classification for your workflow, add keywords to the relevant pattern.
+The domain classifier (`infer_domain()` in `skills/autowork/scripts/lib/classifier.sh`) scores prompts by counting keyword matches. To improve classification for your workflow, add keywords to the relevant pattern.
 
 Each domain's keywords are defined as a regex pattern passed to `count_keyword_matches`. For example, the coding keywords:
 
@@ -294,8 +294,8 @@ coding_score=$(count_keyword_matches '\b(bugs?|fix|debug|refactor|implement|...)
 
 To add a keyword:
 
-1. Open `~/.claude/skills/autowork/scripts/common.sh`.
-2. Find the `infer_domain()` function (around line 320).
+1. Open `~/.claude/skills/autowork/scripts/lib/classifier.sh` (the classifier subsystem; sourced by `common.sh`).
+2. Find the `infer_domain()` function (search for `infer_domain()` to avoid line-number drift).
 3. Add your keyword to the appropriate domain's regex pattern, separated by `|`.
 4. Keywords are matched case-insensitively. Use `\b` word boundaries to avoid partial matches.
 

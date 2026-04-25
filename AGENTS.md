@@ -24,6 +24,7 @@ oh-my-claude/
       autowork/scripts/       # 16 autowork hook scripts and utilities
         common.sh             # Shared functions (JSON, classification, scope)
         lib/state-io.sh       # Extracted state I/O subsystem; sourced by common.sh
+        lib/classifier.sh     # Extracted prompt classifier (P0 + P1 + telemetry); sourced by common.sh
     statusline.py             # Custom statusline with context tracking
     CLAUDE.md                 # Installed user-facing CLAUDE.md
 
@@ -43,6 +44,7 @@ oh-my-claude/
     test-repro-redaction.sh
     test-session-resume.sh
     test-settings-merge.sh
+    test-classifier.sh
     test-classifier-replay.sh
     test-cross-session-rotation.sh
     test-serendipity-log.sh
@@ -66,8 +68,9 @@ oh-my-claude/
 ### Key Components
 
 - **Hook scripts** (`quality-pack/scripts/`, `autowork/scripts/`): Bash scripts triggered by Claude Code lifecycle events (prompt entry, pre-tool-use, tool completion, compaction, session start). They route intents, manage state, and enforce quality gates.
-- **common.sh** (`autowork/scripts/common.sh`): Shared utility library. Sources `lib/state-io.sh` for the state I/O subsystem (`read_state`, `write_state`, `write_state_batch`, `with_state_lock`, `with_state_lock_batch`, `ensure_session_dir`, `session_file`, `append_state`, `append_limited_state`). Provides intent classification (`classify_task_intent`), domain routing, project profile detection (`detect_project_profile`), verification confidence scoring (`score_verification_confidence`), quality scorecard generation (`build_quality_scorecard`), stall detection helpers (`compute_stall_threshold`, `compute_progress_score`), dimension risk ordering (`order_dimensions_by_risk`), cross-session agent metrics (`record_agent_metric`), and defect pattern tracking (`record_defect_pattern`, `get_defect_watch_list`).
+- **common.sh** (`autowork/scripts/common.sh`): Shared utility library. Sources `lib/state-io.sh` for the state I/O subsystem (`read_state`, `write_state`, `write_state_batch`, `with_state_lock`, `with_state_lock_batch`, `ensure_session_dir`, `session_file`, `append_state`, `append_limited_state`) and `lib/classifier.sh` for prompt classification (`is_imperative_request`, `count_keyword_matches`, `is_ui_request`, `infer_domain`, `classify_task_intent`, `record_classifier_telemetry`, `detect_classifier_misfire`, `is_execution_intent_value`). Continues to provide domain routing, project profile detection (`detect_project_profile`), verification confidence scoring (`score_verification_confidence`), quality scorecard generation (`build_quality_scorecard`), stall detection helpers (`compute_stall_threshold`, `compute_progress_score`), dimension risk ordering (`order_dimensions_by_risk`), cross-session agent metrics (`record_agent_metric`), defect pattern tracking (`record_defect_pattern`, `get_defect_watch_list`), and the `_cap_cross_session_jsonl` aggregate-rotation helper.
 - **lib/state-io.sh** (`autowork/scripts/lib/state-io.sh`): Extracted state I/O module. Sourced by `common.sh` after `validate_session_id` and `log_anomaly` are defined. The lib uses portable readlink resolution so it works whether `common.sh` is installed normally, symlinked into a test HOME, or symlinked to a custom location.
+- **lib/classifier.sh** (`autowork/scripts/lib/classifier.sh`): Extracted prompt classification subsystem (~500 lines). Sourced by `common.sh` after every classifier dependency (`project_profile_has`, `is_advisory_request`, `normalize_task_prompt`, etc.) is defined. Behavior identical to the prior in-place definitions; this module exists for clearer ownership and to give the regression suite (`test-intent-classification.sh`, `test-classifier-replay.sh`) a single file of truth for future tuning.
 - **Agent definitions** (`agents/*.md`): Markdown files defining specialist agents with role descriptions, capabilities, and `disallowedTools` for permission boundaries.
 - **Skills** (`skills/<name>/SKILL.md`): Self-contained skill definitions invoked by slash commands or automatic routing.
 - **Settings patch** (`config/settings.patch.json`): JSON configuration merged into the user's Claude Code settings during installation.
@@ -169,6 +172,7 @@ bash tests/test-state-io.sh
 bash tests/test-classifier-replay.sh
 bash tests/test-serendipity-log.sh
 bash tests/test-cross-session-rotation.sh
+bash tests/test-classifier.sh
 python3 -m unittest tests.test_statusline -v
 ```
 
