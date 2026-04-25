@@ -281,13 +281,18 @@ validate_session_id() {
 # and GNU readlink (Linux) without depending on `realpath`.
 _omc_resolve_path() {
   local p="$1"
-  while [[ -L "${p}" ]]; do
+  local i=0
+  # Cap at 16 hops as a defense-in-depth bound against circular symlinks
+  # (e.g. a → b → a). Real-world install layouts never hit this; the bound
+  # exists so a malformed symlink can't cause a hook to spin indefinitely.
+  while [[ -L "${p}" && "${i}" -lt 16 ]]; do
     local target
     target="$(readlink "${p}")"
     case "${target}" in
       /*) p="${target}" ;;
       *)  p="$(cd "$(dirname "${p}")" && pwd)/${target}" ;;
     esac
+    i=$((i + 1))
   done
   printf '%s\n' "${p}"
 }

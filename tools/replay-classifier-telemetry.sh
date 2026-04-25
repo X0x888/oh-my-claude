@@ -32,7 +32,14 @@ verbose=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --live)     mode="live"; shift ;;
-    --fixtures) mode="fixtures"; shift; [[ $# -gt 0 ]] && { fixtures_file="$1"; shift; } ;;
+    --fixtures)
+      mode="fixtures"; shift
+      if [[ $# -eq 0 ]]; then
+        printf 'replay-classifier-telemetry: --fixtures requires a FILE argument\n' >&2
+        exit 2
+      fi
+      fixtures_file="$1"; shift
+      ;;
     --verbose|-v) verbose=1; shift ;;
     -h|--help)
       cat <<USAGE
@@ -139,7 +146,8 @@ if [[ "${mode}" == "live" ]]; then
   if [[ "${#files[@]}" -eq 0 ]]; then
     printf 'replay-classifier-telemetry: no live telemetry files found under %s\n' \
       "${HOME}/.claude/quality-pack/state" >&2
-    exit 0
+    printf 'Hint: this is a usage condition, not a passing run. Run a session under /ulw to populate telemetry, then retry --live.\n' >&2
+    exit 2
   fi
   for f in "${files[@]}"; do
     run_replay_file "${f}"

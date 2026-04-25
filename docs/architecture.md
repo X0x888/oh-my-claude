@@ -252,6 +252,9 @@ Separate from session state, `install.sh` writes four install-time artifacts tha
 | `advisory_guard_blocks` | Number of times the advisory inspection gate has blocked (cap: 1) |
 | `pretool_intent_blocks` | Number of times the `pretool-intent-guard.sh` PreToolUse hook denied a destructive git/gh command because `task_intent` was `advisory`, `session_management`, or `checkpoint` (counter, no cap) |
 | `discovered_scope_blocks` | Number of times the discovered-scope gate has blocked a stop because pending findings from advisory specialists were not addressed (cap: 2 by default; raised to `wave_total + 1` when a council Phase 8 wave plan is active in `findings.json` so the gate stays useful across multiple legitimate wave-by-wave commits). Reset by `/ulw-skip`. |
+| `serendipity_count` | Number of times `record-serendipity.sh` has logged a Serendipity Rule application this session. Surfaced in `/ulw-status` full mode. |
+| `last_serendipity_ts` | Epoch of the most recent Serendipity Rule application, written by `record-serendipity.sh`. |
+| `last_serendipity_fix` | Short description of the most recent Serendipity Rule application — appended to the `Serendipity fires:` row in `/ulw-status`. |
 | `excellence_guard_triggered` | Whether the excellence gate has already fired this session (`1` or empty) |
 | `guard_exhausted` | Epoch timestamp when guard caps were reached and stop was allowed |
 | `guard_exhausted_detail` | Diagnostic string showing which gates were still unsatisfied at exhaustion |

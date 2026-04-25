@@ -21,7 +21,7 @@ oh-my-claude/
       memory/                 # Core, skills, and compact memory files
       scripts/                # 5 lifecycle hook scripts (prompt routing, compaction, session)
     skills/                   # 17 skill definitions, each in <name>/SKILL.md
-      autowork/scripts/       # 15 autowork hook scripts and utilities
+      autowork/scripts/       # 16 autowork hook scripts and utilities
         common.sh             # Shared functions (JSON, classification, scope)
         lib/state-io.sh       # Extracted state I/O subsystem; sourced by common.sh
     statusline.py             # Custom statusline with context tracking
@@ -30,7 +30,7 @@ oh-my-claude/
   config/
     settings.patch.json       # Settings merged into user's settings.json
 
-  tests/                      # Test scripts (14 bash + 1 python)
+  tests/                      # Test scripts (17 bash + 1 python)
     test-common-utilities.sh
     test-concurrency.sh
     test-discovered-scope.sh
