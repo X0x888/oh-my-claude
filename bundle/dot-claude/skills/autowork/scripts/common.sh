@@ -2248,6 +2248,113 @@ detect_project_profile() {
   printf '%s' "${tags}"
 }
 
+# classify_project_maturity: Emit a coarse maturity tag for the current
+# project so advisory framing branches on whether the project is brand
+# new vs. polish-saturated. The tag is informational only — it does not
+# gate features, just biases framing. A polish-saturated project gets
+# "what's the next strategic move?" rather than a ship-readiness checklist.
+#
+# Heuristic combines three signals (each cheap to compute and stable):
+#   1. git commit count           — strongest single signal of project age
+#   2. test file count            — proxy for engineering investment
+#   3. MEMORY.md line count       — proxy for cross-session memory depth
+#                                   (auto-memory rule appends one entry per
+#                                   substantial session, so depth ≈ prior
+#                                   session count)
+#
+# Returns one of:
+#   prototype        — < 30 commits or no signals
+#   shipping         — 30–199 commits
+#   mature           — 200+ commits AND 100+ tests
+#   polish-saturated — 300+ commits AND 300+ tests AND 10+ MEMORY.md lines
+#   unknown          — not a git repo or git unavailable
+#
+# Thresholds are heuristic and tuned to bias framing usefully without
+# false-positive on small starter repos. Fine-grained dial-in can come
+# later — this is meant as a coarse signal, not a precise classifier.
+classify_project_maturity() {
+  local project_dir="${1:-.}"
+  local commits=0 tests=0 memory_lines=0
+
+  # Git commit count — the strongest single signal of project age.
+  if command -v git >/dev/null 2>&1 \
+      && git -C "${project_dir}" rev-parse --git-dir >/dev/null 2>&1; then
+    commits="$(git -C "${project_dir}" rev-list --count HEAD 2>/dev/null || echo 0)"
+  fi
+
+  # Test file count — sum across common test directories and naming
+  # patterns. Bounded by directory existence so we don't scan whole-repo.
+  local d count
+  for d in "${project_dir}/tests" "${project_dir}/test" "${project_dir}/__tests__" \
+           "${project_dir}/spec" "${project_dir}/Tests"; do
+    [[ -d "${d}" ]] || continue
+    count="$(find "${d}" -type f \( \
+        -name 'test_*.py' -o -name '*_test.py' \
+        -o -name '*.test.*' -o -name '*.spec.*' \
+        -o -name 'test-*.sh' -o -name 'test_*.sh' \
+        -o -name '*Tests.swift' -o -name '*Test.kt' \
+        -o -name '*Test.java' -o -name '*_test.go' \
+      \) 2>/dev/null | wc -l | tr -d '[:space:]')"
+    tests=$((tests + count))
+  done
+
+  # MEMORY.md line count — proxy for cross-session memory depth. Path
+  # encoding follows Claude Code's convention: cwd → cwd with `/` → `-`.
+  local pwd_abs
+  pwd_abs="$(cd "${project_dir}" 2>/dev/null && pwd || printf '')"
+  if [[ -n "${pwd_abs}" ]]; then
+    local encoded_cwd
+    encoded_cwd="$(printf '%s' "${pwd_abs}" | tr '/' '-')"
+    local memory_file="${HOME}/.claude/projects/${encoded_cwd}/memory/MEMORY.md"
+    if [[ -f "${memory_file}" ]]; then
+      memory_lines="$(wc -l < "${memory_file}" 2>/dev/null | tr -d '[:space:]' || printf '0')"
+    fi
+  fi
+
+  # Classification thresholds. Combine signals so a single outlier
+  # dimension doesn't push a project up too aggressively (e.g. a
+  # 5-commit prototype with 200 generated test stubs should NOT tag mature).
+  if [[ "${commits}" -ge 300 && "${tests}" -ge 300 && "${memory_lines}" -ge 10 ]]; then
+    printf 'polish-saturated'
+  elif [[ "${commits}" -ge 200 && "${tests}" -ge 100 ]]; then
+    printf 'mature'
+  elif [[ "${commits}" -ge 30 ]]; then
+    printf 'shipping'
+  elif [[ "${commits}" -gt 0 ]]; then
+    printf 'prototype'
+  else
+    printf 'unknown'
+  fi
+}
+
+# get_project_maturity: Cached wrapper around classify_project_maturity.
+# Reads from session state first; if missing, classifies and caches.
+# Like get_project_profile, the maturity is a property of the project
+# (not the prompt), so once-per-session is the right cache granularity.
+#
+# Cache lifetime is intentionally session-bound — maturity changes
+# slowly relative to a single session, so re-computing every prompt
+# would burn CPU without changing behavior in practice. If a long
+# session lands enough commits/tests to push a project across a
+# threshold (e.g. prototype → shipping), the new tag picks up next
+# session. Users debugging "why is my prototype tag stuck" should
+# look here first.
+get_project_maturity() {
+  local cached
+  cached="$(read_state "project_maturity" 2>/dev/null || true)"
+  if [[ -n "${cached}" ]]; then
+    printf '%s' "${cached}"
+    return
+  fi
+
+  local maturity
+  maturity="$(classify_project_maturity "." 2>/dev/null || true)"
+  if [[ -n "${maturity}" ]]; then
+    with_state_lock write_state "project_maturity" "${maturity}"
+  fi
+  printf '%s' "${maturity}"
+}
+
 # get_project_profile: Cached wrapper around detect_project_profile.
 # Reads from session state first; if missing, detects and caches.
 get_project_profile() {

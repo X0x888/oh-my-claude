@@ -1127,6 +1127,142 @@ assert_contains "detect_project_profile Mac Catalyst (Package.swift) tags swift-
 rm -rf "${profile_dir_catalyst2}"
 
 # ===========================================================================
+# v1.18.0 — Project maturity classification
+# ===========================================================================
+printf '\nProject maturity classification (v1.18.0):\n'
+
+# Helper: build a fake git repo with N synthetic commits.
+_make_repo_with_commits() {
+  local dir="$1" commits="$2"
+  git -C "${dir}" init -q
+  git -C "${dir}" config user.email "test@example.com"
+  git -C "${dir}" config user.name "Test"
+  git -C "${dir}" config commit.gpgsign false
+  local i
+  for ((i = 0; i < commits; i++)); do
+    printf 'commit %d\n' "${i}" > "${dir}/file.txt"
+    git -C "${dir}" add file.txt
+    git -C "${dir}" commit -q -m "commit ${i}" --no-verify --no-gpg-sign
+  done
+}
+
+# Empty / non-git directory → unknown
+maturity_dir_unknown="$(mktemp -d)"
+maturity="$(classify_project_maturity "${maturity_dir_unknown}" 2>/dev/null)"
+assert_eq "classify_project_maturity non-git → unknown" "unknown" "${maturity}"
+rm -rf "${maturity_dir_unknown}"
+
+# Tiny repo (1 commit) → prototype
+maturity_dir_proto="$(mktemp -d)"
+_make_repo_with_commits "${maturity_dir_proto}" 1
+maturity="$(classify_project_maturity "${maturity_dir_proto}" 2>/dev/null)"
+assert_eq "classify_project_maturity 1 commit → prototype" "prototype" "${maturity}"
+rm -rf "${maturity_dir_proto}"
+
+# Mid-range repo (40 commits) → shipping
+maturity_dir_ship="$(mktemp -d)"
+_make_repo_with_commits "${maturity_dir_ship}" 40
+maturity="$(classify_project_maturity "${maturity_dir_ship}" 2>/dev/null)"
+assert_eq "classify_project_maturity 40 commits → shipping" "shipping" "${maturity}"
+rm -rf "${maturity_dir_ship}"
+
+# Mature: 200+ commits + 100+ tests
+maturity_dir_mature="$(mktemp -d)"
+_make_repo_with_commits "${maturity_dir_mature}" 200
+mkdir -p "${maturity_dir_mature}/tests"
+for i in $(seq 1 105); do
+  touch "${maturity_dir_mature}/tests/test-${i}.sh"
+done
+maturity="$(classify_project_maturity "${maturity_dir_mature}" 2>/dev/null)"
+assert_eq "classify_project_maturity 200 commits + 105 tests → mature" "mature" "${maturity}"
+rm -rf "${maturity_dir_mature}"
+
+# Polish-saturated requires ALL of: 300 commits + 300 tests + 10 MEMORY.md
+# lines. Test only the commits/tests dimensions here; the memory dimension
+# is hard to fake without polluting ~/.claude/projects. Instead assert that
+# 300 commits + 300 tests + no memory file → mature (NOT polish-saturated).
+maturity_dir_almost="$(mktemp -d)"
+_make_repo_with_commits "${maturity_dir_almost}" 300
+mkdir -p "${maturity_dir_almost}/tests"
+for i in $(seq 1 305); do
+  touch "${maturity_dir_almost}/tests/test-${i}.sh"
+done
+maturity="$(classify_project_maturity "${maturity_dir_almost}" 2>/dev/null)"
+assert_eq "classify_project_maturity 300/300/no-memory → mature (not polish-saturated)" \
+  "mature" "${maturity}"
+rm -rf "${maturity_dir_almost}"
+
+# Outlier guard: 5 commits + 200 test files → still prototype, NOT mature.
+# Combined-signal threshold prevents test-stub spam from inflating maturity.
+maturity_dir_outlier="$(mktemp -d)"
+_make_repo_with_commits "${maturity_dir_outlier}" 5
+mkdir -p "${maturity_dir_outlier}/tests"
+for i in $(seq 1 200); do
+  touch "${maturity_dir_outlier}/tests/test-${i}.sh"
+done
+maturity="$(classify_project_maturity "${maturity_dir_outlier}" 2>/dev/null)"
+assert_eq "classify_project_maturity 5 commits + 200 tests → prototype (outlier guard)" \
+  "prototype" "${maturity}"
+rm -rf "${maturity_dir_outlier}"
+
+# Function symbol presence — both classify and cached wrapper must exist.
+if declare -F classify_project_maturity >/dev/null; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: classify_project_maturity not defined\n' >&2
+  fail=$((fail + 1))
+fi
+if declare -F get_project_maturity >/dev/null; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: get_project_maturity not defined\n' >&2
+  fail=$((fail + 1))
+fi
+
+# Empty git repo (init but no commits) → unknown. Verifies that
+# `git rev-list --count HEAD` returning non-zero (no HEAD ref yet) is
+# silenced and falls through correctly. Reviewer F4.
+maturity_dir_empty_git="$(mktemp -d)"
+git -C "${maturity_dir_empty_git}" init -q 2>/dev/null
+git -C "${maturity_dir_empty_git}" config commit.gpgsign false 2>/dev/null
+maturity="$(classify_project_maturity "${maturity_dir_empty_git}" 2>/dev/null)"
+assert_eq "classify_project_maturity empty git repo (no commits) → unknown" \
+  "unknown" "${maturity}"
+rm -rf "${maturity_dir_empty_git}"
+
+# polish-saturated true-branch: 300 commits + 300 tests + 11 MEMORY.md
+# lines. Stubs $HOME to a temp dir so we don't pollute the real
+# ~/.claude/projects. Reviewer F3 — without this, the polish-saturated
+# branch is reachable in code but never exercised in tests, so a
+# regression in the threshold expression would stay green.
+maturity_dir_polish="$(mktemp -d)"
+_make_repo_with_commits "${maturity_dir_polish}" 300
+mkdir -p "${maturity_dir_polish}/tests"
+for i in $(seq 1 305); do
+  touch "${maturity_dir_polish}/tests/test-${i}.sh"
+done
+maturity_fake_home="$(mktemp -d)"
+maturity_encoded_cwd="$(printf '%s' "${maturity_dir_polish}" | tr '/' '-')"
+mkdir -p "${maturity_fake_home}/.claude/projects/${maturity_encoded_cwd}/memory"
+for i in $(seq 1 11); do
+  printf -- '- entry %d\n' "${i}" >> \
+    "${maturity_fake_home}/.claude/projects/${maturity_encoded_cwd}/memory/MEMORY.md"
+done
+maturity="$(HOME="${maturity_fake_home}" classify_project_maturity "${maturity_dir_polish}" 2>/dev/null)"
+assert_eq "classify_project_maturity 300/300/11-mem → polish-saturated" \
+  "polish-saturated" "${maturity}"
+# Boundary: same project with only 9 MEMORY.md lines stays at mature
+truncate -s 0 "${maturity_fake_home}/.claude/projects/${maturity_encoded_cwd}/memory/MEMORY.md"
+for i in $(seq 1 9); do
+  printf -- '- entry %d\n' "${i}" >> \
+    "${maturity_fake_home}/.claude/projects/${maturity_encoded_cwd}/memory/MEMORY.md"
+done
+maturity="$(HOME="${maturity_fake_home}" classify_project_maturity "${maturity_dir_polish}" 2>/dev/null)"
+assert_eq "classify_project_maturity 300/300/9-mem → mature (memory under threshold)" \
+  "mature" "${maturity}"
+rm -rf "${maturity_dir_polish}" "${maturity_fake_home}"
+
+# ===========================================================================
 # record_agent_metric and integer sanitization
 # ===========================================================================
 printf '\nrecord_agent_metric:\n'

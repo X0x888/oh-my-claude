@@ -255,6 +255,35 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
   fi
 
   if [[ "${session_management_prompt}" -eq 0 && "${checkpoint_prompt}" -eq 0 ]]; then
+    # Project-maturity prior — informational tag biasing advisory framing.
+    # Fires once per session (cached) for active modes only. Skipped on
+    # session-management and checkpoint prompts since maturity-flavored
+    # framing on `/ulw-status` is just noise. The maturity tag changes
+    # the implicit default of "what does the user want right now?" — a
+    # brand-new prototype gets shipping advice, a polish-saturated
+    # project gets strategic / soul / signature advice. Without this
+    # signal the harness defaults to engineering pragmatism (ship-
+    # readiness) on every project, including ones where that framing is
+    # wrong.
+    _project_maturity="$(get_project_maturity 2>/dev/null || true)"
+    case "${_project_maturity}" in
+      polish-saturated)
+        context_parts+=("**Project maturity:** polish-saturated — long-running project with deep tests and cross-session memory. The user is not asking for a ship-readiness checklist; they are asking 'what's the next strategic move?'. Bias advisory framing toward soul, signature, voice, negative-space, AI-as-experience, first-five-minutes, and excellence-bar concerns rather than feature-completeness or engineering-pragmatism framings. The ship bar is high — match it. Specifically: when asked open-ended 'what's next' / 'evaluate' / 'review' questions, lead with strategic moves and excellence concerns; only surface ship-readiness items when they are genuine blockers.")
+        ;;
+      mature)
+        context_parts+=("**Project maturity:** mature — established project with substantial test coverage. Bias advisory framing toward balancing new work with regression risk. New behavior must come with tests; refactors should be incremental and well-bounded. Avoid suggestions that imply 'rewrite this' unless the user has already signaled appetite for it.")
+        ;;
+      shipping)
+        context_parts+=("**Project maturity:** shipping — early-to-mid project, beyond prototype but not yet polish-saturated. Standard ship-readiness framing applies; verify before claiming complete. New behavior should come with tests, but don't over-architect.")
+        ;;
+      prototype)
+        context_parts+=("**Project maturity:** prototype — new repo, < 30 commits. Focus on shipping a working slice; do not over-architect or demand exhaustive test coverage for code that may pivot. Suggestions should bias toward concrete forward motion over polish.")
+        ;;
+      unknown|"")
+        :  # No git repo or git unavailable — skip the maturity hint
+        ;;
+    esac
+
     case "${TASK_DOMAIN}" in
       coding)
         context_parts+=("Detected likely task domain: coding.

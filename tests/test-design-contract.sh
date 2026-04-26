@@ -526,6 +526,17 @@ assert_grep "router: domain hint for devtool" "devtool" "${ROUTER}"
 assert_grep "router: Tier B+ marker for polish" "Tier B\\+" "${ROUTER}"
 assert_grep "router: cross-generation discipline" "Cross-generation" "${ROUTER}"
 
+# --- v1.18.0: project-maturity prior in router -------------------------
+# The maturity tag biases advisory framing (polish-saturated → strategic
+# moves; prototype → ship-the-slice). Assert all four maturity branches
+# are wired in the router and use get_project_maturity for caching.
+assert_grep "router: maturity branch polish-saturated" "polish-saturated" "${ROUTER}"
+assert_grep "router: maturity branch mature" "Project maturity:.* mature" "${ROUTER}"
+assert_grep "router: maturity branch shipping" "Project maturity:.* shipping" "${ROUTER}"
+assert_grep "router: maturity branch prototype" "Project maturity:.* prototype" "${ROUTER}"
+assert_grep "router: invokes get_project_maturity for caching" "get_project_maturity" "${ROUTER}"
+assert_grep "router: polish-saturated reframes 'what is next'" "what's the next strategic move" "${ROUTER}"
+
 # --- Summary ------------------------------------------------------------
 total=$((pass + fail))
 printf '\ntest-design-contract: %d/%d passed\n' "${pass}" "${total}"
