@@ -6,11 +6,11 @@ Cognitive quality harness for Claude Code -- bash hooks, specialist agents, and 
 
 - `bundle/dot-claude/agents/` -- 31 specialist agent definitions with permission boundaries
 - `bundle/dot-claude/quality-pack/scripts/` -- 5 lifecycle hook scripts (prompt routing, compaction, session management)
-- `bundle/dot-claude/skills/` -- 18 skill definitions, each in `<name>/SKILL.md`
-- `bundle/dot-claude/skills/autowork/scripts/` -- 19 autowork hook scripts including `common.sh` (shared utility library), `record-finding-list.sh` (council Phase 8 master finding list), `record-serendipity.sh` (Serendipity Rule analytics), `record-archetype.sh` (cross-session archetype memory), and `find-design-contract.sh` (resolves the active session's inline-emitted Design Contract for design-reviewer / visual-craft-lens); state I/O extracted to `lib/state-io.sh`, the prompt classifier extracted to `lib/classifier.sh`, and the verification subsystem extracted to `lib/verification.sh`, all sourced by `common.sh`
+- `bundle/dot-claude/skills/` -- 19 skill definitions, each in `<name>/SKILL.md`
+- `bundle/dot-claude/skills/autowork/scripts/` -- 20 autowork hook scripts including `common.sh` (shared utility library), `record-finding-list.sh` (council Phase 8 master finding list), `record-serendipity.sh` (Serendipity Rule analytics), `record-archetype.sh` (cross-session archetype memory), `find-design-contract.sh` (resolves the active session's inline-emitted Design Contract for design-reviewer / visual-craft-lens), and `mark-deferred.sh` (backs the `/mark-deferred` skill — bulk-defers pending discovered_scope rows with a one-line reason); state I/O extracted to `lib/state-io.sh`, the prompt classifier extracted to `lib/classifier.sh`, and the verification subsystem extracted to `lib/verification.sh`, all sourced by `common.sh`
 - `bundle/dot-claude/output-styles/` -- output format templates
 - `config/settings.patch.json` -- settings merged into user config on install
-- `tests/` -- 30 test scripts (e2e hook sequence, intent classification, quality gates, stall detection, settings merge, uninstall merge, common utilities, session resume, statusline, concurrency, install artifacts, post-merge hook, repro redaction, discovered-scope, finding-list, state-io, classifier-replay, serendipity-log, cross-session-rotation, classifier, show-report, install-remote, phase8-integration, verification-lib, agent-verdict-contract, gate-events, discover-session, design-contract, inline-design-contract, archetype-memory)
+- `tests/` -- 32 test scripts (e2e hook sequence, intent classification, quality gates, stall detection, settings merge, uninstall merge, common utilities, session resume, statusline, concurrency, cross-session-lock, install artifacts, post-merge hook, repro redaction, discovered-scope, finding-list, mark-deferred, state-io, classifier-replay, serendipity-log, cross-session-rotation, classifier, show-report, install-remote, phase8-integration, verification-lib, agent-verdict-contract, gate-events, discover-session, design-contract, inline-design-contract, archetype-memory)
 - `tools/` -- Developer-only tools (`replay-classifier-telemetry.sh` and `classifier-fixtures/regression.jsonl`); not installed into `~/.claude/`
 - `docs/` -- architecture, customization, FAQ, and prompt reference docs
 
@@ -64,6 +64,8 @@ bash tests/test-discover-session.sh
 bash tests/test-design-contract.sh
 bash tests/test-inline-design-contract.sh
 bash tests/test-archetype-memory.sh
+bash tests/test-cross-session-lock.sh
+bash tests/test-mark-deferred.sh
 python3 -m unittest tests.test_statusline -v
 ```
 

@@ -202,12 +202,12 @@ oh-my-claude/
 ├── install.sh / uninstall.sh / verify.sh   # Install, remove, and verify
 ├── bundle/dot-claude/                       # Installs to ~/.claude/
 │   ├── agents/          (31 agents)         # Specialist agent definitions
-│   ├── skills/          (18 skills)         # Skill definitions + autowork hooks
+│   ├── skills/          (19 skills)         # Skill definitions + autowork hooks
 │   ├── quality-pack/                        # Lifecycle hooks + memory files
 │   ├── output-styles/                       # Output format templates
 │   └── statusline.py                        # Custom statusline widget
 ├── config/settings.patch.json               # Merged into user settings on install
-├── tests/               (21 bash + 1 py)    # Intent, quality gates, stall, resume, e2e, install/uninstall merge, concurrency, post-merge, repro redaction, discovered-scope, finding-list, state-io, classifier-replay, serendipity-log, cross-session-rotation, classifier, show-report, install-remote, statusline
+├── tests/               (31 bash + 1 py)    # Intent, quality gates, stall, resume, e2e, install/uninstall merge, concurrency, cross-session-lock, post-merge, repro redaction, discovered-scope, finding-list, mark-deferred, state-io, classifier-replay, serendipity-log, cross-session-rotation, classifier, show-report, install-remote, phase8-integration, verification-lib, agent-verdict-contract, gate-events, discover-session, design-contract, inline-design-contract, archetype-memory, statusline
 ├── tools/                                    # Developer-only tools (replay-classifier-telemetry.sh, classifier-fixtures/)
 └── docs/                                    # Architecture, customization, FAQ, prompts
 ```
@@ -240,6 +240,7 @@ Skills are invoked as slash commands or routed automatically by the intent class
 | ulw-status *(diagnostics)* | `/ulw-status` | Show current session state and Council Phase 8 wave-plan progress. `summary` / `classifier` arguments swap modes. |
 | ulw-report *(retrospective)* | `/ulw-report [last\|week\|month\|all]` | Markdown digest of cross-session activity — sessions, gate fires, top reviewers, classifier misfires, Serendipity catches, finding/wave outcomes |
 | ulw-skip *(skip a gate)* | `/ulw-skip <reason>` | Skip current quality gate block once |
+| mark-deferred *(triage findings)* | `/mark-deferred <reason>` | Bulk-defer pending discovered-scope findings with a one-line reason — pass the gate without silent skipping |
 | ulw-off *(deactivate)* | `/ulw-off` | Deactivate ultrawork mode mid-session |
 | skills *(this list)* | `/skills` | List all available skills with usage guide |
 

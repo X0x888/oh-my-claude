@@ -15,6 +15,7 @@
 - `/ulw-status` shows the current ULW session state -- workflow mode, domain, counters, and flags (debugging).
 - `/ulw-report [last|week|month|all]` renders a markdown digest of cross-session activity — sessions, gate fires, top reviewers, classifier misfires, Serendipity catches, and finding/wave outcomes. Default window is the last 7 days. Use to answer "is this harness actually working for me?".
 - `/ulw-skip <reason>` skips the current quality gate block once with a logged reason. Use when a gate is blocking but you're confident the work is complete.
+- `/mark-deferred <reason>` bulk-defers every pending discovered-scope finding in the current session with the given reason. Use when the discovered-scope gate flags advisory-specialist findings you have consciously decided not to ship in this session — keeps the deferral structured (and auditable in `/ulw-report`) rather than silently skipping.
 - `/ulw-off` deactivates ultrawork mode mid-session without ending the conversation.
 - `/skills` lists all available skills with descriptions and a decision guide.
 - The `ulw` family auto-detects whether a task is coding, writing, research, operations, mixed, or general work, then chooses the correct specialists. Specialist agents activate automatically — you don't need to learn agent names.

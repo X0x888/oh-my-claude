@@ -93,11 +93,17 @@ printf '%s\n' "${record}" >> "${session_log}"
 # Cross-session aggregate. Tolerate write failure (e.g. read-only HOME)
 # rather than aborting — the per-session log already captured the event,
 # and aborting here would leave the state counter unincremented and
-# diverged from the per-session log.
+# diverged from the per-session log. The append is wrapped in
+# with_cross_session_log_lock so concurrent SubagentStop hooks across
+# sessions cannot interleave bytes mid-row in the shared cross-session
+# aggregate.
 cross_log="${HOME}/.claude/quality-pack/serendipity-log.jsonl"
 mkdir -p "$(dirname "${cross_log}")" 2>/dev/null || true
-{ printf '%s\n' "${record}" >> "${cross_log}"; } 2>/dev/null || \
-  log_anomaly "record-serendipity" "cross-session log write failed: ${cross_log}"
+_do_serendipity_append() {
+  { printf '%s\n' "${record}" >> "${cross_log}"; } 2>/dev/null || \
+    log_anomaly "record-serendipity" "cross-session log write failed: ${cross_log}"
+}
+with_cross_session_log_lock "${cross_log}" _do_serendipity_append || true
 
 # Update session counters under lock so concurrent SubagentStops
 # don't race on the read-modify-write.

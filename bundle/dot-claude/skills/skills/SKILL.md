@@ -23,6 +23,7 @@ Display this table to the user:
 | **ulw-status** | `/ulw-status` | Inspect current session state — mode, domain, counters, flags (debugging) |
 | **ulw-report** | `/ulw-report [last\|week\|month\|all]` | Markdown digest of cross-session activity — sessions, gate fires, reviewers, misfires, Serendipity catches, finding/wave outcomes |
 | **ulw-skip** | `/ulw-skip <reason>` | Skip the current quality gate block once — use when a gate is blocking but you're confident |
+| **mark-deferred** | `/mark-deferred <reason>` | Bulk-defer pending discovered-scope findings with a one-line reason — pass the gate without silent skipping |
 | **ulw-off** | `/ulw-off` | Deactivate ultrawork mode mid-session without ending the conversation |
 | **skills** | `/skills` | Show this list |
 
@@ -38,6 +39,7 @@ Display this table to the user:
 - **Want a code review?** Use `/review-hard`.
 - **Need repo context before building?** Use `/research-hard`.
 - **Gate blocking but you're confident?** Use `/ulw-skip <reason>` to pass once.
+- **Discovered-scope gate flagging findings you've consciously deferred?** Use `/mark-deferred <reason>` to bulk-defer all pending advisory findings with a recorded reason — keeps `/ulw-report` audits accurate.
 - **Setting up a new repo?** Use `/atlas`.
 
 > **Note:** Specialist agents activate automatically based on your task. You don't need to learn agent names — just describe what you want to accomplish.

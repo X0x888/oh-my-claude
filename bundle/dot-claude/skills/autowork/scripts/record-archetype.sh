@@ -87,9 +87,14 @@ while IFS= read -r line || [[ -n "${line}" ]]; do
   # Cross-session aggregate. Tolerate write failure (read-only HOME,
   # disk full, etc.) — the archetype record is advisory, not load-
   # bearing. Aborting would cause the SubagentStop hook to fail and
-  # break unrelated downstream consumers.
-  { printf '%s\n' "${record}" >> "${cross_log}"; } 2>/dev/null || \
-    log_anomaly "record-archetype" "cross-session log write failed: ${cross_log}"
+  # break unrelated downstream consumers. The append is wrapped in
+  # with_cross_session_log_lock so concurrent SubagentStop hooks across
+  # sessions in the same project cannot interleave bytes mid-row.
+  _do_archetype_append() {
+    { printf '%s\n' "${record}" >> "${cross_log}"; } 2>/dev/null || \
+      log_anomaly "record-archetype" "cross-session log write failed: ${cross_log}"
+  }
+  with_cross_session_log_lock "${cross_log}" _do_archetype_append || true
   written=$((written + 1))
 done
 

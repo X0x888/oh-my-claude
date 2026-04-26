@@ -1784,6 +1784,57 @@ with_skips_lock() {
   return "${rc}"
 }
 
+# with_cross_session_log_lock <log_path> <fn> [args...]
+# Serialize writes to an arbitrary cross-session JSONL file. Lock dir is
+# derived from the log path (<log_path>.lock) so distinct logs never
+# contend with each other and the same lock site can serve any
+# cross-session writer (used-archetypes.jsonl, serendipity-log.jsonl, …).
+# Same mkdir + stale-recovery semantics as with_skips_lock; only the
+# lock target is parameterized.
+#
+# Bare `printf >> file` is POSIX-atomic per write(2) only when the
+# payload fits in the platform's PIPE_BUF (4 KB on Linux/macOS). JSONL
+# rows from these writers are well under that, so single-row interleaves
+# rarely tear bytes; the failure mode is two writers seeing the same
+# pre-write file size and both deciding to append, which the kernel
+# usually serializes via O_APPEND. The lock is here so the next refactor
+# (rotation, batching, multi-line writes) doesn't silently regress
+# correctness.
+with_cross_session_log_lock() {
+  local log_path="${1:-}"
+  shift || true
+  if [[ -z "${log_path}" ]]; then
+    log_anomaly "with_cross_session_log_lock" "missing log_path argument"
+    return 1
+  fi
+  local lockdir="${log_path}.lock"
+  mkdir -p "$(dirname "${lockdir}")" 2>/dev/null || true
+  local attempts=0
+  while true; do
+    if mkdir "${lockdir}" 2>/dev/null; then break; fi
+    attempts=$((attempts + 1))
+    if [[ -d "${lockdir}" ]]; then
+      local _now _held
+      _now="$(date +%s)"
+      _held="$(_lock_mtime "${lockdir}")"
+      if [[ "${_held}" -gt 0 ]] \
+          && [[ $(( _now - _held )) -gt "${OMC_STATE_LOCK_STALE_SECS}" ]]; then
+        rmdir "${lockdir}" 2>/dev/null || true
+        continue
+      fi
+    fi
+    if [[ "${attempts}" -ge "${OMC_STATE_LOCK_MAX_ATTEMPTS}" ]]; then
+      log_anomaly "with_cross_session_log_lock" "lock not acquired after ${OMC_STATE_LOCK_MAX_ATTEMPTS} attempts: ${log_path}"
+      return 1
+    fi
+    sleep 0.05 2>/dev/null || sleep 1
+  done
+  local rc=0
+  "$@" || rc=$?
+  rmdir "${lockdir}" 2>/dev/null || true
+  return "${rc}"
+}
+
 record_gate_skip() {
   local reason="${1:-}"
 
