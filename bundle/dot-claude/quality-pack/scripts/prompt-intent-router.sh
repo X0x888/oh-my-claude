@@ -426,11 +426,28 @@ Discipline:
     # get additional guidance to dispatch multi-role perspective lenses.
     if is_council_evaluation_request "${PROMPT_TEXT}"; then
       _council_deep_hint=""
+      _council_polish_hint=""
       _council_phase7_hint=""
       _council_phase8_hint=""
+      # Flag detection regex requires whitespace boundaries on both
+      # sides (or string start/end) so variants like `--deep=true`,
+      # `--deeper`, `--deepish` are NOT recognized — matches the SKILL.md
+      # contract that bare-token form is the only accepted shape.
+      # The previous `[^[:alnum:]_-]` boundary leaked `=` through (since
+      # `=` is none of alnum/underscore/hyphen) and matched `--deep=true`.
       if [[ "${OMC_COUNCIL_DEEP_DEFAULT}" == "on" ]] \
-          || [[ "${PROMPT_TEXT}" =~ (^|[^[:alnum:]_-])--deep([^[:alnum:]_-]|$) ]]; then
+          || [[ "${PROMPT_TEXT}" =~ (^|[[:space:]])--deep([[:space:]]|$) ]]; then
         _council_deep_hint=" Use --deep mode: pass \`model: \"opus\"\` to each Agent dispatch call to escalate the lens model from sonnet to opus, and extend each lens's instruction with: 'This is a deep-mode evaluation. Take more turns to investigate suspicious findings. Read source files carefully rather than relying on directory structure inference. Report uncertainty explicitly when evidence is thin.'"
+      fi
+      # --polish flag — narrows the lens roster to taste/excellence
+      # concerns and extends dispatch with a Jobs-grade evaluation
+      # rubric. Auto-activates on polish-saturated projects (the
+      # standard ship-readiness audit is the wrong lens for a project
+      # that's already past those gates). Composes with --deep — both
+      # flags can apply to the same dispatch.
+      if [[ "${PROMPT_TEXT}" =~ (^|[[:space:]])--polish([[:space:]]|$) ]] \
+          || [[ "${_project_maturity}" == "polish-saturated" ]]; then
+        _council_polish_hint=" **--polish mode active** (auto-activated on polish-saturated projects, or explicit --polish flag): narrow the lens roster to \`visual-craft-lens\` + \`product-lens\` + \`design-lens\` (skip security/data/sre/growth unless the user named them explicitly — those audits are the wrong tool for a polish-saturated project that has already passed them). Pass \`model: \"opus\"\` to each Agent dispatch (escalate the lens model). Extend each lens's instruction with the Jobs-grade rubric: **soul** (does this feel like a single hand designed it, or a kit assembled?), **signature** (one specific visual or interaction the user would recognize across products), **voice** (copy + tone consistency at every micro-surface — empty states, errors, settings, onboarding — without AI-isms like 'I'll help you with that' / 'something went wrong' / 'try again'), **negative space** (does the chrome defer to the content?), **first-five-minutes** (what is the experience for a brand-new user opening this for the first time? where does the wow moment land, or does it not?), **AI-as-experience** (does the AI behavior feel like a product feature with its own voice, or a wrapped API call?), **no-cloning discipline** (commit to ≥3 specific things you'd do differently from the closest archetype). Report findings against this rubric explicitly — do not collapse it into a generic 'design quality' verdict."
       fi
       _council_phase7_hint="
 7. Verify the top of the stack: pick the 2-3 highest-impact findings and re-dispatch \`oracle\` per finding to verify each claim against the actual code before presenting. Mark each as ✓ verified, ◑ refined, or ✗ demoted/dropped. Cap at 3."
@@ -440,13 +457,13 @@ Discipline:
       fi
       context_parts+=("COUNCIL EVALUATION DETECTED: This is a broad project evaluation request. Use the /council protocol to dispatch multi-role expert perspectives:
 1. Inspect the project to determine its type, maturity, and tech stack.
-2. Select 3-6 relevant role-lenses from: product-lens, design-lens, security-lens, data-lens, sre-lens, growth-lens. Use the selection guide in the council skill to decide which lenses fit this project.
-3. Dispatch ALL selected lenses in parallel using the Agent tool in a single message. Each gets the project context and its evaluation mandate.${_council_deep_hint}
+2. Select 3-6 relevant role-lenses from: product-lens, design-lens, visual-craft-lens, security-lens, data-lens, sre-lens, growth-lens. Use the selection guide in the council skill to decide which lenses fit this project. design-lens and visual-craft-lens are disjoint by design (UX flow vs. visual craft) — dispatch both for projects where both surfaces matter.
+3. Dispatch ALL selected lenses in parallel using the Agent tool in a single message. Each gets the project context and its evaluation mandate.${_council_deep_hint}${_council_polish_hint}
 4. Wait for ALL lenses to return before synthesizing — do NOT begin synthesis early.
 5. Synthesize findings: deduplicate, rank by severity x breadth, attribute to perspectives, separate quick wins from strategic work. Reject findings that lack file/line evidence.
 6. Present a unified Project Council Assessment with: critical findings, high-impact improvements, strategic recommendations, cross-perspective tensions, and quick wins.${_council_phase7_hint}${_council_phase8_hint}
 Challenge the project — the value is in what is missing or wrong, not in what is already good.")
-      log_hook "prompt-intent-router" "council evaluation detected${_council_deep_hint:+ (deep)}${_council_phase8_hint:+ (execute)}"
+      log_hook "prompt-intent-router" "council evaluation detected${_council_deep_hint:+ (deep)}${_council_polish_hint:+ (polish)}${_council_phase8_hint:+ (execute)}"
     elif [[ "${advisory_prompt}" -eq 1 ]]; then
       # Advisory prompt that did NOT trigger council → inject code-grounding guidance.
       # Council dispatch is a superset of "inspect before recommending", so this only

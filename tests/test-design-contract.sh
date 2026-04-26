@@ -64,6 +64,16 @@ assert_grep_count_at_least() {
   fi
 }
 
+assert_eq() {
+  local label="$1" expected="$2" actual="$3"
+  if [[ "${actual}" == "${expected}" ]]; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: %s\n    expected=%q actual=%q\n' "${label}" "${expected}" "${actual}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
 assert_last_nonblank_line() {
   local label="$1" expected_pattern="$2" file="$3"
   local actual
@@ -536,6 +546,98 @@ assert_grep "router: maturity branch shipping" "Project maturity:.* shipping" "$
 assert_grep "router: maturity branch prototype" "Project maturity:.* prototype" "${ROUTER}"
 assert_grep "router: invokes get_project_maturity for caching" "get_project_maturity" "${ROUTER}"
 assert_grep "router: polish-saturated reframes 'what is next'" "what's the next strategic move" "${ROUTER}"
+
+# --- v1.18.0: /council --polish flag in router -------------------------
+# --polish narrows the lens roster to taste/excellence concerns and
+# extends dispatch with the Jobs-grade rubric. Auto-activates when the
+# project-maturity prior emits polish-saturated, OR fires on explicit
+# --polish flag in the prompt. Composes with --deep.
+assert_grep "router: --polish flag detection" "\\-\\-polish" "${ROUTER}"
+assert_grep "router: --polish auto-activates on polish-saturated maturity" \
+  "_project_maturity.*polish-saturated" "${ROUTER}"
+assert_grep "router: polish hint emits to council protocol" "_council_polish_hint" "${ROUTER}"
+# Jobs-grade rubric markers — every dimension named in the dispatch ext
+assert_grep "router: polish rubric: soul" "soul" "${ROUTER}"
+assert_grep "router: polish rubric: signature" "signature" "${ROUTER}"
+assert_grep "router: polish rubric: voice" "voice" "${ROUTER}"
+assert_grep "router: polish rubric: negative space" "negative space" "${ROUTER}"
+assert_grep "router: polish rubric: first-five-minutes" "first-five-minutes" "${ROUTER}"
+assert_grep "router: polish rubric: AI-as-experience" "AI-as-experience" "${ROUTER}"
+assert_grep "router: polish rubric: no-cloning discipline" "no-cloning discipline" "${ROUTER}"
+# Lens narrowing — the polish hint should narrow to visual-craft + product + design
+assert_grep "router: polish narrows to visual-craft-lens" "visual-craft-lens.*product-lens" "${ROUTER}"
+# log_hook records polish detection alongside deep
+assert_grep "router: log_hook records polish detection" "polish" "${ROUTER}"
+
+# Serendipity fix: visual-craft-lens now appears in the auto-injected
+# council step 2 lens list (was previously missing despite being in
+# council/SKILL.md — the lens existed but was invisible to auto-council).
+assert_grep "router: council step 2 lists visual-craft-lens" \
+  "Select 3-6 relevant role-lenses.*visual-craft-lens" "${ROUTER}"
+
+# --- /council SKILL.md documents --polish ----------------------------
+COUNCIL_SKILL="${REPO_ROOT}/bundle/dot-claude/skills/council/SKILL.md"
+assert_grep "council SKILL.md: --polish flag documented" "\\-\\-polish" "${COUNCIL_SKILL}"
+assert_grep "council SKILL.md: --polish auto-activation" "polish-saturated" "${COUNCIL_SKILL}"
+assert_grep "council SKILL.md: --polish narrows lens roster" \
+  "visual-craft-lens.*product-lens.*design-lens" "${COUNCIL_SKILL}"
+
+# --- v1.18.0: behavioral regex tests for --deep / --polish flags ------
+# Reviewer F1 — the previous `[^[:alnum:]_-]` boundary leaked `=`
+# through, so `--polish=true` matched despite SKILL.md saying variants
+# are not recognized. Tightened to whitespace-boundary; lock the
+# variant-rejection contract so future drift is caught.
+_run_flag_regex() {
+  # $1: prompt text, $2: flag name (deep|polish)
+  local prompt="$1" flag="$2"
+  if [[ "${prompt}" =~ (^|[[:space:]])--"${flag}"([[:space:]]|$) ]]; then
+    printf 'match'
+  else
+    printf 'no-match'
+  fi
+}
+
+# --deep matches valid forms
+assert_eq "--deep regex: bare token mid-prompt" "match" \
+  "$(_run_flag_regex '/council --deep' deep)"
+assert_eq "--deep regex: bare token at start" "match" \
+  "$(_run_flag_regex '--deep /council' deep)"
+assert_eq "--deep regex: bare token at end" "match" \
+  "$(_run_flag_regex '/council security --deep' deep)"
+assert_eq "--deep regex: bare token between flags" "match" \
+  "$(_run_flag_regex '/council --deep --polish' deep)"
+
+# --deep REJECTS variants
+assert_eq "--deep regex: rejects --deep=true" "no-match" \
+  "$(_run_flag_regex '/council --deep=true' deep)"
+assert_eq "--deep regex: rejects --deeper" "no-match" \
+  "$(_run_flag_regex '/council --deeper' deep)"
+assert_eq "--deep regex: rejects --deepish" "no-match" \
+  "$(_run_flag_regex '/council --deepish' deep)"
+assert_eq "--deep regex: rejects -deep (single dash)" "no-match" \
+  "$(_run_flag_regex '/council -deep' deep)"
+
+# --polish matches valid forms
+assert_eq "--polish regex: bare token mid-prompt" "match" \
+  "$(_run_flag_regex '/council --polish' polish)"
+assert_eq "--polish regex: bare token at end" "match" \
+  "$(_run_flag_regex '/council security --polish' polish)"
+assert_eq "--polish regex: bare token between flags" "match" \
+  "$(_run_flag_regex '/council --deep --polish' polish)"
+
+# --polish REJECTS variants
+assert_eq "--polish regex: rejects --polish=true" "no-match" \
+  "$(_run_flag_regex '/council --polish=true' polish)"
+assert_eq "--polish regex: rejects --polishing" "no-match" \
+  "$(_run_flag_regex '/council --polishing' polish)"
+assert_eq "--polish regex: rejects -polish (single dash)" "no-match" \
+  "$(_run_flag_regex '/council -polish' polish)"
+
+# Both regexes in source must use the tightened boundary
+assert_grep "router: --deep regex uses whitespace boundary" \
+  "(\\^|\\[\\[:space:\\]\\])--deep" "${ROUTER}"
+assert_grep "router: --polish regex uses whitespace boundary" \
+  "(\\^|\\[\\[:space:\\]\\])--polish" "${ROUTER}"
 
 # --- Summary ------------------------------------------------------------
 total=$((pass + fail))
