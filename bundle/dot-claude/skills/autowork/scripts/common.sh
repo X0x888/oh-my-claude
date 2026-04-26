@@ -2094,6 +2094,65 @@ recent_archetypes_for_project() {
 
 # --- Project profile detection ---
 
+# _detect_swift_target_platform: Scan a Swift project for AppKit/UIKit imports
+# and macOS-only SwiftUI markers to disambiguate iOS vs macOS targets.
+# Returns "ios", "macos", or empty string when target cannot be determined.
+# Bounded by --include='*.swift' so the scan stops quickly on huge projects;
+# excludes common build/dependency dirs that would slow the scan and emit
+# noise from vendored code. Empty result means the caller should default to
+# iOS (higher base rate for Swift apps).
+_detect_swift_target_platform() {
+  local project_dir="$1"
+  local exclude_args=(
+    --exclude-dir='.git' --exclude-dir='.build' --exclude-dir='build'
+    --exclude-dir='node_modules' --exclude-dir='Pods' --exclude-dir='Carthage'
+    --exclude-dir='DerivedData'
+  )
+
+  # Mac Catalyst override — a Catalyst target imports UIKit but ships on
+  # macOS, so the import scan alone would tag it as swift-ios. Detect via
+  # Info.plist's UIApplicationSupportsMacCatalyst key or Package.swift's
+  # .macCatalyst platform declaration before falling through to imports.
+  if grep -rlE 'UIApplicationSupportsMacCatalyst' \
+      --include='*.plist' "${exclude_args[@]}" "${project_dir}" 2>/dev/null \
+      | head -1 | grep -q .; then
+    log_anomaly "swift_target=macos reason=catalyst_plist" 2>/dev/null || true
+    printf 'macos'; return
+  fi
+  if [[ -f "${project_dir}/Package.swift" ]] \
+      && grep -qE '\.macCatalyst\b' "${project_dir}/Package.swift" 2>/dev/null; then
+    log_anomaly "swift_target=macos reason=catalyst_package_swift" 2>/dev/null || true
+    printf 'macos'; return
+  fi
+
+  # Multi-target precedence: AppKit/Cocoa wins over UIKit when both are
+  # present (a project with separate Mac/iOS targets routes to macOS so
+  # macOS-specific guidance is surfaced; iOS guidance is the safer fallback
+  # for the iOS target). The ordering is load-bearing — see test fixture.
+  if grep -rlE '^[[:space:]]*import[[:space:]]+(AppKit|Cocoa)\b' \
+      --include='*.swift' "${exclude_args[@]}" "${project_dir}" 2>/dev/null \
+      | head -1 | grep -q .; then
+    log_anomaly "swift_target=macos reason=appkit_import" 2>/dev/null || true
+    printf 'macos'; return
+  fi
+  if grep -rlE '^[[:space:]]*import[[:space:]]+UIKit\b' \
+      --include='*.swift' "${exclude_args[@]}" "${project_dir}" 2>/dev/null \
+      | head -1 | grep -q .; then
+    log_anomaly "swift_target=ios reason=uikit_import" 2>/dev/null || true
+    printf 'ios'; return
+  fi
+  # Pure-SwiftUI project — no UIKit/AppKit/Cocoa imports. Check for
+  # macOS-only API markers; pure SwiftUI projects with these are macOS.
+  if grep -rlE '\bMenuBarExtra\b|\bNSHostingView\b|\bNSApplicationDelegate\b' \
+      --include='*.swift' "${exclude_args[@]}" "${project_dir}" 2>/dev/null \
+      | head -1 | grep -q .; then
+    log_anomaly "swift_target=macos reason=swiftui_macos_marker" 2>/dev/null || true
+    printf 'macos'; return
+  fi
+  # Empty: caller defaults to iOS.
+  log_anomaly "swift_target=unknown reason=no_signals" 2>/dev/null || true
+}
+
 # detect_project_profile: Scan the project directory for stack indicators.
 # Returns a comma-separated list of stack tags on stdout, e.g.:
 #   "node,typescript,react,tailwind"
@@ -2142,10 +2201,19 @@ detect_project_profile() {
   # Elixir
   [[ -f "${project_dir}/mix.exs" ]] && _add_tag "elixir"
 
-  # Swift / iOS
+  # Swift / iOS / macOS — emit a "swift" tag for any Swift project, plus a
+  # "swift-ios" or "swift-macos" subtype when the target platform can be
+  # determined from imports. The subtype is the load-bearing signal for
+  # UI routing: without it, infer_ui_platform's profile fallback could not
+  # distinguish iOS from macOS Swift projects and defaulted to web.
   if ls "${project_dir}"/*.xcodeproj &>/dev/null 2>&1 || ls "${project_dir}"/*.xcworkspace &>/dev/null 2>&1 \
     || [[ -f "${project_dir}/Package.swift" ]]; then
     _add_tag "swift"
+    local _swift_target
+    _swift_target="$(_detect_swift_target_platform "${project_dir}" 2>/dev/null || true)"
+    if [[ -n "${_swift_target}" ]]; then
+      _add_tag "swift-${_swift_target}"
+    fi
   fi
 
   # Docker / Infrastructure

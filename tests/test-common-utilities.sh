@@ -966,6 +966,166 @@ assert_contains "detect_project_profile playbooks-dir-only tags ansible" \
   "$(detect_project_profile "${profile_dir7}" 2>/dev/null)"
 rm -rf "${profile_dir7}"
 
+# v1.18.0 — Swift target-platform subtype tagging. A bare Swift project
+# (Package.swift / *.xcodeproj) emits the "swift" tag plus a "swift-ios"
+# or "swift-macos" subtype based on imports in *.swift files. This is the
+# load-bearing signal for infer_ui_platform's profile fallback so a
+# macOS SwiftUI app does not default-route to web archetypes.
+profile_dir_swift_macos="$(mktemp -d)"
+touch "${profile_dir_swift_macos}/Package.swift"
+mkdir -p "${profile_dir_swift_macos}/Sources/App"
+cat > "${profile_dir_swift_macos}/Sources/App/main.swift" <<'SWIFT'
+import AppKit
+import SwiftUI
+
+@main
+struct MyMacApp: App {
+    var body: some Scene {
+        WindowGroup { ContentView() }
+    }
+}
+SWIFT
+profile_swift_macos="$(detect_project_profile "${profile_dir_swift_macos}" 2>/dev/null)"
+assert_contains "detect_project_profile macOS Swift app tags swift" \
+  "swift" "${profile_swift_macos}"
+assert_contains "detect_project_profile macOS Swift app tags swift-macos" \
+  "swift-macos" "${profile_swift_macos}"
+rm -rf "${profile_dir_swift_macos}"
+
+profile_dir_swift_ios="$(mktemp -d)"
+touch "${profile_dir_swift_ios}/Package.swift"
+mkdir -p "${profile_dir_swift_ios}/Sources/App"
+cat > "${profile_dir_swift_ios}/Sources/App/main.swift" <<'SWIFT'
+import UIKit
+import SwiftUI
+
+@main
+struct MyIOSApp: App {
+    var body: some Scene { WindowGroup { ContentView() } }
+}
+SWIFT
+profile_swift_ios="$(detect_project_profile "${profile_dir_swift_ios}" 2>/dev/null)"
+assert_contains "detect_project_profile iOS Swift app tags swift" \
+  "swift" "${profile_swift_ios}"
+assert_contains "detect_project_profile iOS Swift app tags swift-ios" \
+  "swift-ios" "${profile_swift_ios}"
+rm -rf "${profile_dir_swift_ios}"
+
+# Pure-SwiftUI macOS project (no UIKit/AppKit imports, but uses MenuBarExtra)
+profile_dir_swift_pure_macos="$(mktemp -d)"
+touch "${profile_dir_swift_pure_macos}/Package.swift"
+mkdir -p "${profile_dir_swift_pure_macos}/Sources/App"
+cat > "${profile_dir_swift_pure_macos}/Sources/App/main.swift" <<'SWIFT'
+import SwiftUI
+
+@main
+struct MenuBarApp: App {
+    var body: some Scene {
+        MenuBarExtra("Tack", systemImage: "circle.fill") { ContentView() }
+    }
+}
+SWIFT
+profile_swift_pure_macos="$(detect_project_profile "${profile_dir_swift_pure_macos}" 2>/dev/null)"
+assert_contains "detect_project_profile pure-SwiftUI macOS app tags swift-macos" \
+  "swift-macos" "${profile_swift_pure_macos}"
+rm -rf "${profile_dir_swift_pure_macos}"
+
+# Bare Swift project (no source files yet) emits only "swift" — no subtype
+profile_dir_swift_bare="$(mktemp -d)"
+touch "${profile_dir_swift_bare}/Package.swift"
+profile_swift_bare="$(detect_project_profile "${profile_dir_swift_bare}" 2>/dev/null)"
+assert_contains "detect_project_profile bare Swift project tags swift" \
+  "swift" "${profile_swift_bare}"
+# A bare project should NOT have a swift-{ios,macos} tag — caller falls back
+if [[ "${profile_swift_bare}" == *"swift-ios"* || "${profile_swift_bare}" == *"swift-macos"* ]]; then
+  printf '  FAIL: bare Swift project unexpectedly emitted subtype tag (got %q)\n' \
+    "${profile_swift_bare}" >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+rm -rf "${profile_dir_swift_bare}"
+
+# Multi-target Swift project (both AppKit and UIKit sources) tags as
+# swift-macos. AppKit wins because the macOS routing block carries
+# macOS-specific guidance and Catalyst-style patterns; iOS-only routing
+# would lose those signals. Lock the precedence so a future refactor
+# can't silently flip the ordering. (Quality-reviewer F2, v1.18.0.)
+profile_dir_swift_multi="$(mktemp -d)"
+touch "${profile_dir_swift_multi}/Package.swift"
+mkdir -p "${profile_dir_swift_multi}/Sources/Mac" "${profile_dir_swift_multi}/Sources/iOS"
+cat > "${profile_dir_swift_multi}/Sources/Mac/MacView.swift" <<'SWIFT'
+import AppKit
+class MacView: NSView {}
+SWIFT
+cat > "${profile_dir_swift_multi}/Sources/iOS/IOSView.swift" <<'SWIFT'
+import UIKit
+class IOSView: UIView {}
+SWIFT
+profile_swift_multi="$(detect_project_profile "${profile_dir_swift_multi}" 2>/dev/null)"
+assert_contains "detect_project_profile multi-target Swift (AppKit+UIKit) tags swift-macos" \
+  "swift-macos" "${profile_swift_multi}"
+# Only one subtype tag should be emitted — never both swift-macos AND swift-ios
+if [[ "${profile_swift_multi}" == *"swift-ios"* ]]; then
+  printf '  FAIL: multi-target Swift project tagged BOTH swift-macos and swift-ios (got %q)\n' \
+    "${profile_swift_multi}" >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+rm -rf "${profile_dir_swift_multi}"
+
+# Mac Catalyst — Info.plist with UIApplicationSupportsMacCatalyst routes
+# to swift-macos despite UIKit imports. Catalyst ships on macOS even
+# though its API surface is UIKit. (Serendipity fix during Wave 1 review.)
+profile_dir_catalyst="$(mktemp -d)"
+touch "${profile_dir_catalyst}/Package.swift"
+mkdir -p "${profile_dir_catalyst}/Sources/App"
+cat > "${profile_dir_catalyst}/Sources/App/AppDelegate.swift" <<'SWIFT'
+import UIKit
+class AppDelegate: UIResponder, UIApplicationDelegate {}
+SWIFT
+cat > "${profile_dir_catalyst}/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+    <key>UIApplicationSupportsMacCatalyst</key>
+    <true/>
+</dict>
+</plist>
+PLIST
+profile_catalyst="$(detect_project_profile "${profile_dir_catalyst}" 2>/dev/null)"
+assert_contains "detect_project_profile Mac Catalyst (Info.plist) tags swift-macos despite UIKit" \
+  "swift-macos" "${profile_catalyst}"
+if [[ "${profile_catalyst}" == *"swift-ios"* ]]; then
+  printf '  FAIL: Catalyst project tagged swift-ios (Info.plist override missed)\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+rm -rf "${profile_dir_catalyst}"
+
+# Mac Catalyst — Package.swift with .macCatalyst platform routes to swift-macos
+profile_dir_catalyst2="$(mktemp -d)"
+cat > "${profile_dir_catalyst2}/Package.swift" <<'SWIFT'
+// swift-tools-version:5.5
+import PackageDescription
+let package = Package(
+    name: "MyApp",
+    platforms: [.iOS(.v15), .macCatalyst(.v15)],
+    targets: [.executableTarget(name: "App", path: "Sources/App")]
+)
+SWIFT
+mkdir -p "${profile_dir_catalyst2}/Sources/App"
+cat > "${profile_dir_catalyst2}/Sources/App/main.swift" <<'SWIFT'
+import UIKit
+@main struct App {}
+SWIFT
+profile_catalyst2="$(detect_project_profile "${profile_dir_catalyst2}" 2>/dev/null)"
+assert_contains "detect_project_profile Mac Catalyst (Package.swift) tags swift-macos" \
+  "swift-macos" "${profile_catalyst2}"
+rm -rf "${profile_dir_catalyst2}"
+
 # ===========================================================================
 # record_agent_metric and integer sanitization
 # ===========================================================================

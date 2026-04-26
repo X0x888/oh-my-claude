@@ -158,7 +158,7 @@ if [[ "${OMC_DISCOVERED_SCOPE}" == "on" ]] \
         "pending_count=${pending_count}" \
         "wave_total=${wave_total}" \
         "waves_completed=${waves_completed:-0}"
-      scope_recovery="$(format_gate_recovery_line "ship/defer/call-out each pending finding individually in your summary, OR run /mark-deferred <reason> to bulk-defer all pending. To bypass once with reason, run /ulw-skip.")"
+      scope_recovery="$(format_gate_recovery_line "ship/defer/call-out each pending finding individually in your summary, OR run /mark-deferred <reason> to bulk-defer all pending. If you fixed a verified adjacent defect on the same code path during this work, log it via ~/.claude/skills/autowork/scripts/record-serendipity.sh per the Serendipity Rule (core.md). To bypass once with reason, run /ulw-skip.")"
       jq -nc \
         --arg reason "[Discovered-scope gate \u00b7 $((discovered_scope_blocks + 1))/${scope_block_cap}] ${pending_count} finding(s) from advisory specialists were captured this session but not addressed in your final summary.${wave_progress} Top pending findings (severity-ranked):
 ${scorecard}

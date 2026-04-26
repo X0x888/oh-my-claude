@@ -192,22 +192,42 @@ infer_ui_platform() {
   if grep -Eiq '\b(cli|tui|terminal\s+(app|ui|interface)|command.?line\s+(app|tool|interface)|argv|stdout|stderr|argparse|clap|cobra|click\s+(library|cli)|cobra\s+cli|charm\.sh|bubbletea|bubble\s+tea|lipgloss|lip\s+gloss|gum\s+cli|ratatui|ANSI\s+(color|escape)|exit\s+code|man\s+page|--help\s+output|fzf|ripgrep|btop|lazygit|helix\s+editor|fish\s+shell|starship\s+prompt)\b' <<<"${text}"; then
     printf 'cli'; return
   fi
-  # macOS signals (more specific than iOS)
-  if grep -Eiq '\b(macOS\s+app|Mac\s+app|menu.?bar\s+app|AppKit|Mac\s+Catalyst|NSWindow|NSToolbar|NSSplitView|NSStatusItem|NSViewController|NSApplication)\b' <<<"${text}"; then
+  # macOS signals (more specific than iOS) — includes macOS-only SwiftUI
+  # markers (MenuBarExtra, NSHostingView) and AppKit/Cocoa imports. Bare
+  # SwiftUI/Swift signals are NOT here because SwiftUI is cross-platform;
+  # macOS routing requires a macOS-specific marker.
+  if grep -Eiq '\b(macOS\s+app|Mac\s+app|menu.?bar\s+app|MenuBarExtra|AppKit|Cocoa|Mac\s+Catalyst|NSWindow|NSToolbar|NSSplitView|NSStatusItem|NSViewController|NSApplication|NSHostingView|NSApplicationDelegate)\b' <<<"${text}"; then
     printf 'macos'; return
   fi
   # iOS signals — also catch standalone "iOS"/"iPhone"/"iPad" tokens since
   # users say "an app for iOS" / "iPhone app" / "iPad-only" without always
   # writing "iOS app" as a consecutive phrase. False-positive risk: a web
   # prompt mentioning "iOS-style design" routes to iOS — acceptable; the
-  # platform mention is itself a strong intent signal.
-  if grep -Eiq '\b(iOS|iPhone|iPad|SwiftUI|UIKit|App\s+Store|TestFlight|HIG|SF\s+Symbols|Dynamic\s+Type|Liquid\s+Glass|UITabBar|UIViewController|UINavigationController)\b' <<<"${text}"; then
+  # platform mention is itself a strong intent signal. Bare "SwiftUI" is
+  # intentionally NOT a signal here — SwiftUI runs on macOS too. The
+  # macOS regex above catches macOS-specific SwiftUI markers; the
+  # swift-ios / swift-macos profile subtype disambiguates the rest.
+  if grep -Eiq '\b(iOS|iPhone|iPad|UIKit|App\s+Store|TestFlight|HIG|SF\s+Symbols|Dynamic\s+Type|Liquid\s+Glass|UITabBar|UIViewController|UINavigationController)\b' <<<"${text}"; then
     printf 'ios'; return
   fi
-  # Project-profile fallback when prompt is platform-silent
-  case "${profile}" in
-    ios|macos|cli) printf '%s' "${profile}"; return ;;
-  esac
+  # Project-profile fallback when prompt is platform-silent. Profiles are
+  # comma-separated tag lists from detect_project_profile (e.g.
+  # "swift,swift-macos,docs"). Order: cli > macos > ios — most specific
+  # subtype wins. Bare "swift" without a target subtype defaults to iOS
+  # since iOS has the higher base rate for Swift apps; the routing is
+  # still "Apple native" rather than the previous web default.
+  if [[ ",${profile}," == *",cli,"* ]]; then
+    printf 'cli'; return
+  fi
+  if [[ ",${profile}," == *",macos,"* || ",${profile}," == *",swift-macos,"* ]]; then
+    printf 'macos'; return
+  fi
+  if [[ ",${profile}," == *",ios,"* || ",${profile}," == *",swift-ios,"* ]]; then
+    printf 'ios'; return
+  fi
+  if [[ ",${profile}," == *",swift,"* ]]; then
+    printf 'ios'; return
+  fi
   # Web signals
   if grep -Eiq '\b(landing.?page|website|web\s+app|browser|tailwind|next\.?js|vite|react|vue|svelte|astro|nuxt|sveltekit|remix|HTML|CSS|html\s+page|web\s+page)\b' <<<"${text}"; then
     printf 'web'; return

@@ -272,7 +272,8 @@ Discipline:
 - Before invoking the reviewer, self-assess: enumerate every component of the request and verify each is delivered.
 - Run quality-reviewer before stopping. For complex or multi-file tasks, also run excellence-reviewer after defects are addressed for a fresh-eyes completeness and polish evaluation.
 - Never write placeholder stubs or sycophantic comments.
-- Never call an unfamiliar or version-sensitive library/API from memory — confirm the surface in current docs first.")
+- Never call an unfamiliar or version-sensitive library/API from memory — confirm the surface in current docs first.
+- When you discover a verified adjacent defect on the same code path with a bounded fix, the Serendipity Rule (core.md) requires fixing it in-session AND logging it via \`~/.claude/skills/autowork/scripts/record-serendipity.sh\` so the rule's effectiveness can be audited. Watch for adjacent defects during edits — that's when the rule is most likely to apply.")
         ;;
       writing)
         context_parts+=("Detected likely task domain: writing. Detect the document type early: formal (paper, report, proposal), informal (email, blog, memo), creative (essay, narrative), technical (docs, API reference), or professional (cover letter, SOP, statement). Route the specialist chain accordingly — formal documents benefit from writing-architect for structure; creative work needs less scaffolding. Clarify audience, purpose, format, tone, and constraints early. Use writing-architect for structure when needed, librarian for factual support, draft-writer for the draft, editor-critic before finalizing. Do not invent facts, citations, or quotations — mark uncertain details explicitly. For verification: check structural completeness against the stated purpose, cross-reference factual claims against sources, and use available prose linting tools (markdownlint, vale, textlint) when the output format supports them.")

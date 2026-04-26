@@ -439,6 +439,55 @@ else
   fail=$((fail + 1))
 fi
 
+# v1.18.0 — profile-fallback for platform-silent prompts in Swift projects.
+# Before this fix, "polish my dashboard" + swift profile fell through to
+# web because the case statement only matched bare "ios|macos|cli". The
+# regression hit macOS SwiftUI apps mid-session (Linear/Stripe archetypes
+# where Things 3 / Mercury would belong).
+plat="$(infer_ui_platform "polish my dashboard" "swift,swift-macos,docs")"
+if [[ "${plat}" == "macos" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: infer_ui_platform("polish my dashboard", swift-macos profile) returned %q, expected "macos"\n' "${plat}" >&2
+  fail=$((fail + 1))
+fi
+plat="$(infer_ui_platform "polish my dashboard" "swift,swift-ios")"
+if [[ "${plat}" == "ios" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: infer_ui_platform("polish my dashboard", swift-ios profile) returned %q, expected "ios"\n' "${plat}" >&2
+  fail=$((fail + 1))
+fi
+# Bare "swift" tag (no subtype) defaults to iOS — Apple-native routing
+# rather than the previous web-archetype default. Better wrong than worse.
+plat="$(infer_ui_platform "polish my dashboard" "swift")"
+if [[ "${plat}" == "ios" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: infer_ui_platform("polish my dashboard", bare swift profile) returned %q, expected "ios"\n' "${plat}" >&2
+  fail=$((fail + 1))
+fi
+# v1.18.0 — bare "SwiftUI" is platform-ambiguous (works on both iOS and
+# macOS). Without macOS markers in the profile, the iOS regex no longer
+# fires on it and detection falls through. With swift-macos profile, the
+# fallback routes to macOS — closing the macOS SwiftUI misroute.
+plat="$(infer_ui_platform "polish the SwiftUI dashboard" "swift,swift-macos")"
+if [[ "${plat}" == "macos" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: infer_ui_platform("SwiftUI dashboard" + swift-macos) returned %q, expected "macos"\n' "${plat}" >&2
+  fail=$((fail + 1))
+fi
+# macOS-only SwiftUI marker (MenuBarExtra) routes to macos directly via
+# the regex — no profile needed.
+plat="$(infer_ui_platform "build a MenuBarExtra app" "")"
+if [[ "${plat}" == "macos" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: infer_ui_platform("MenuBarExtra app") returned %q, expected "macos"\n' "${plat}" >&2
+  fail=$((fail + 1))
+fi
+
 # Domain detection.
 dom="$(infer_ui_domain "build a payment dashboard")"
 if [[ "${dom}" == "fintech" ]]; then

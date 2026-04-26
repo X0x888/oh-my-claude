@@ -601,5 +601,35 @@ append_discovered_scope "metis" "${rows}"
 verdict="$(run_scope_gate "execution")"
 assert_eq "3 of 5 waves done: cap still 6" "block:1/6" "${verdict}"
 
+# ----------------------------------------------------------------------
+printf 'Test 28: gate recovery text mentions record-serendipity.sh\n'
+# v1.18.0 — the discovered-scope gate's recovery line names every
+# affordance the model can invoke at the moment of need: /mark-deferred
+# for bulk deferral, /ulw-skip for one-shot bypass, AND record-serendipity.sh
+# for adjacent-defect logging. The Serendipity Rule was previously only in
+# static memory (core.md), invisible at the gate firing — this assertion
+# locks the surfacing in place so the rule can't drift back to invisible.
+gate_script="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/stop-guard.sh"
+gate_text="$(cat "${gate_script}")"
+assert_contains "stop-guard recovery line names /mark-deferred" \
+  "/mark-deferred" "${gate_text}"
+assert_contains "stop-guard recovery line names /ulw-skip" \
+  "/ulw-skip" "${gate_text}"
+assert_contains "stop-guard recovery line names record-serendipity.sh" \
+  "record-serendipity.sh" "${gate_text}"
+
+# ----------------------------------------------------------------------
+printf 'Test 29: prompt-intent-router coding-domain block names Serendipity Rule\n'
+# The router's coding-domain context block is the proactive surface — it
+# fires on every coding-execution prompt and tells the model to watch for
+# adjacent defects. Without it, the rule lives only in static memory and
+# in the post-hoc gate text, never in the working context at edit time.
+router_script="${REPO_ROOT}/bundle/dot-claude/quality-pack/scripts/prompt-intent-router.sh"
+router_text="$(cat "${router_script}")"
+assert_contains "router coding block names Serendipity Rule" \
+  "Serendipity Rule" "${router_text}"
+assert_contains "router coding block names record-serendipity.sh" \
+  "record-serendipity.sh" "${router_text}"
+
 printf '\n=== Discovered-Scope Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]
