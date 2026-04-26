@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.16.0] - 2026-04-26
+
 Closes both v1.15.0-deferred design items: the drift lens for inline-emitted contracts and cross-session archetype memory. Two waves landed end-to-end in one session, then a quality-reviewer + excellence-reviewer pass surfaced six post-implementation defects/gaps that were folded into the same release. Total test surface 28 → 30 bash + 1 python; +~125 new assertions (~2,288 → ~2,413). The third deferred item (end-to-end smoke-test of the design surface on real fintech-iOS / CLI prompts) remains user-driven — only the user can run `/ulw build me a fintech iOS app` in a real fixture project and judge the visual output, since automated assertion of "world-class" is brittle and the harness cannot drive Claude Code recursively.
 
 ### Added
@@ -70,6 +72,15 @@ A maintainability + UX audit on the v1.15.0 surface flagged three small, verifie
 - **`tests/test-mark-deferred.sh` exports `STATE_ROOT` BEFORE sourcing `common.sh`** so a future refactor adding source-time I/O against `STATE_ROOT` cannot silently touch the user's real state from the test process.
 - **`tests/test-mark-deferred.sh` tmp-leak assertion now sweeps every session under `${STATE_ROOT}`** instead of only the last-edited session — so a leak in any earlier test block surfaces.
 - **`tests/test-mark-deferred.sh` Test 9 explicitly re-exports `SESSION_ID`** before calling `read_pending_scope_count` to make the cross-test dependency contract visible (rather than implicit on whichever session was set most recently).
+
+#### Quality-reviewer third pass: lock-helper contract tests
+
+The post-fix sanity-check pass returned `PASS / CLEAN` on the patch but flagged two missing-test gaps in the new `with_cross_session_log_lock` helper. Both touch invariants the writer refactors explicitly rely on (`record-archetype.sh:97` and `record-serendipity.sh:106` use `|| log_anomaly … || true` — that suffix is meaningful only if the helper actually propagates inner-fn rc), and the project has a recurring `missing_test ×133` defect-pattern signal that says these gaps deserve fixing rather than deferral.
+
+- **`tests/test-cross-session-lock.sh` Test 6: rc-propagation.** Defines `_failer() { return 7; }`, calls `with_cross_session_log_lock "${LOG}" _failer`, asserts the caller receives rc=7. Also asserts the lock dir is cleaned up even when the inner fn fails — a leak there would block subsequent writers until stale-recovery threshold elapses. Locks the helper's `local rc=0; "$@" || rc=$?; rmdir …; return "${rc}"` contract in.
+- **`tests/test-cross-session-lock.sh` Test 7: held-lock max-attempts.** Forces `OMC_STATE_LOCK_MAX_ATTEMPTS=2` and `OMC_STATE_LOCK_STALE_SECS=600` (high enough that the test exercises the held-not-stale path, not the stale-recovery path Test 4 already covers), holds the lock by hand, asserts the contending caller returns `rc=1` promptly AND that the inner function did NOT run. Restores both env vars on exit so the suite stays hermetic.
+- Test surface +4 assertions in `test-cross-session-lock.sh`: 10 → 14. Total Tier 1 patch contribution: 29 → 31 bash + 1 python suites; assertions ~2,413 → ~2,452.
+- F3 from the same review (negligible: `local transformed` re-declared per-iteration in `mark-deferred.sh`) deliberately skipped per gold-plating watch — purely stylistic, no correctness or perf signal.
 
 ## [1.15.0] - 2026-04-25
 
