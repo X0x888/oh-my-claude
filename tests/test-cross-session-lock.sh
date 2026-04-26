@@ -233,6 +233,79 @@ else
 fi
 
 # ===========================================================================
+# Test 6: rc-propagation. The helper claims `local rc=0; "$@" || rc=$?; …
+# return "${rc}"`. That contract is what the writer refactors rely on with
+# their `|| log_anomaly … || true` suffix — a regression that quietly turns
+# this into `return 0` would silently swallow disk-full / read-only-HOME
+# failures and never emit log_anomaly. Lock that contract in.
+# ===========================================================================
+printf 'with_cross_session_log_lock propagates inner rc:\n'
+
+RC_LOG="${TEST_ROOT}/rc-propagation.jsonl"
+# shellcheck disable=SC2329 # invoked indirectly via with_cross_session_log_lock
+_failer() { return 7; }
+set +e
+with_cross_session_log_lock "${RC_LOG}" _failer
+inner_rc=$?
+set -e
+assert_eq "non-zero inner rc propagates to caller" "7" "${inner_rc}"
+# And the lock dir must still be cleaned up even when the inner fn fails —
+# a leaked lock here would block subsequent writers until stale-recovery.
+if [[ -d "${RC_LOG}.lock" ]]; then
+  printf '  FAIL: lock dir leaked after inner-fn failure\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+
+# ===========================================================================
+# Test 7: held-lock max-attempts path. Test 4 covered stale-lock recovery,
+# but the non-stale (genuinely-held) path is its own contract: after
+# OMC_STATE_LOCK_MAX_ATTEMPTS failures, return 1 and emit log_anomaly. With
+# max_attempts forced to 2, hold the lock from a backgrounded sleeper and
+# verify the contending caller exits non-zero promptly. The sleeper is
+# torn down via the EXIT trap so the test cleanup remains hermetic.
+# ===========================================================================
+printf 'held-lock max-attempts returns non-zero:\n'
+
+HELD_LOG="${TEST_ROOT}/held.jsonl"
+# Acquire the lock by hand so the sleeper holds the dir but exits cleanly
+# (we control the rmdir; the sleeper just owns wall-clock time).
+mkdir -p "$(dirname "${HELD_LOG}")"
+mkdir "${HELD_LOG}.lock"
+# Backdate slightly but stay well under the stale threshold so this test
+# exercises the held-not-stale path, not the stale-recovery path.
+touch "${HELD_LOG}.lock"
+
+# shellcheck disable=SC2329 # invoked indirectly via with_cross_session_log_lock
+_held_writer() { printf '{"x":1}\n' >> "${HELD_LOG}"; }
+# Force the helper to give up fast. Also keep stale threshold high so we
+# don't accidentally hit the recovery path.
+prev_max="${OMC_STATE_LOCK_MAX_ATTEMPTS:-}"
+prev_stale="${OMC_STATE_LOCK_STALE_SECS:-}"
+export OMC_STATE_LOCK_MAX_ATTEMPTS=2
+export OMC_STATE_LOCK_STALE_SECS=600
+set +e
+with_cross_session_log_lock "${HELD_LOG}" _held_writer
+held_rc=$?
+set -e
+# Restore original env (best-effort).
+if [[ -n "${prev_max}" ]]; then export OMC_STATE_LOCK_MAX_ATTEMPTS="${prev_max}"; else unset OMC_STATE_LOCK_MAX_ATTEMPTS; fi
+if [[ -n "${prev_stale}" ]]; then export OMC_STATE_LOCK_STALE_SECS="${prev_stale}"; else unset OMC_STATE_LOCK_STALE_SECS; fi
+
+assert_eq "contending caller returns non-zero when lock is held" "1" "${held_rc}"
+# Inner function must NOT have run.
+if [[ -f "${HELD_LOG}" ]]; then
+  printf '  FAIL: inner fn ran despite contention (HELD_LOG should not exist)\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+
+# Release the held lock so cleanup is clean.
+rmdir "${HELD_LOG}.lock" 2>/dev/null || true
+
+# ===========================================================================
 # Result
 # ===========================================================================
 printf '\nResults: pass=%d fail=%d\n' "${pass}" "${fail}"
