@@ -107,15 +107,24 @@ if ! is_execution_intent_value "${task_intent}"; then
   fi
 fi
 
-if [[ -n "${last_assistant_message}" ]] \
+# /ulw-pause carve-out: when the assistant declared a legitimate user-
+# decision pause this turn (taste, policy, credible-approach split),
+# the session-handoff gate must NOT fire. The pause flag is set by
+# bundle/dot-claude/skills/autowork/scripts/ulw-pause.sh and cleared
+# automatically at the next user prompt by prompt-intent-router.sh.
+# This is the only structured "I'm legitimately paused, not stalling"
+# signal in the harness \u2014 see /ulw-pause SKILL.md for usage.
+ulw_pause_active="$(read_state "ulw_pause_active" 2>/dev/null || true)"
+if [[ "${ulw_pause_active}" != "1" ]] \
+  && [[ -n "${last_assistant_message}" ]] \
   && has_unfinished_session_handoff "${last_assistant_message}" \
   && ! is_checkpoint_request "${current_objective}"; then
   if [[ "${session_handoff_blocks}" -lt 2 ]]; then
     write_state "session_handoff_blocks" "$((session_handoff_blocks + 1))"
     record_gate_event "session-handoff" "block" \
       "block_count=$((session_handoff_blocks + 1))" "block_cap=2"
-    handoff_recovery="$(format_gate_recovery_line "continue the deferred work now in this session, OR ask the user explicitly whether they want a checkpoint. To bypass once with reason, run /ulw-skip.")"
-    jq -nc --arg reason "[Session-handoff gate \u00b7 $((session_handoff_blocks + 1))/2] your last response explicitly deferred remaining work to a future session. In ultrawork mode, do not stop with 'next wave', 'next phase', or 'ready for a new session' language unless the user explicitly asked for a checkpoint. Continue the remaining work now. If you genuinely must pause, explain the hard blocker or ask the user whether they want a checkpoint.${handoff_recovery}" '{"decision":"block","reason":$reason}'
+    handoff_recovery="$(format_gate_recovery_line "continue the deferred work now in this session, OR ask the user explicitly whether they want a checkpoint. If you are pausing because the user must decide something you cannot decide autonomously, run /ulw-pause <reason> instead \u2014 that signals a legitimate pause without tripping this gate. To bypass once with reason, run /ulw-skip.")"
+    jq -nc --arg reason "[Session-handoff gate \u00b7 $((session_handoff_blocks + 1))/2] your last response explicitly deferred remaining work to a future session. In ultrawork mode, do not stop with 'next wave', 'next phase', or 'ready for a new session' language unless the user explicitly asked for a checkpoint. Continue the remaining work now. If you genuinely must pause for user input, explain the hard blocker or run /ulw-pause <reason>; if you want to checkpoint, ask the user whether they want a checkpoint.${handoff_recovery}" '{"decision":"block","reason":$reason}'
     exit 0
   fi
 fi

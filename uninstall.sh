@@ -64,6 +64,7 @@ SKILL_DIRS=(
   "${CLAUDE_HOME}/skills/ulw-skip"
   "${CLAUDE_HOME}/skills/ulw-status"
   "${CLAUDE_HOME}/skills/mark-deferred"
+  "${CLAUDE_HOME}/skills/ulw-pause"
   "${CLAUDE_HOME}/skills/frontend-design"
 )
 

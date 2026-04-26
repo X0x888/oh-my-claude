@@ -241,6 +241,7 @@ Skills are invoked as slash commands or routed automatically by the intent class
 | ulw-report *(retrospective)* | `/ulw-report [last\|week\|month\|all]` | Markdown digest of cross-session activity — sessions, gate fires, top reviewers, classifier misfires, Serendipity catches, finding/wave outcomes |
 | ulw-skip *(skip a gate)* | `/ulw-skip <reason>` | Skip current quality gate block once |
 | mark-deferred *(triage findings)* | `/mark-deferred <reason>` | Bulk-defer pending discovered-scope findings with a one-line reason — pass the gate without silent skipping |
+| ulw-pause *(user-decision pause)* | `/ulw-pause <reason>` | Declare a legitimate user-decision pause without tripping the session-handoff gate. Cap 2/session |
 | ulw-off *(deactivate)* | `/ulw-off` | Deactivate ultrawork mode mid-session |
 | skills *(this list)* | `/skills` | List all available skills with usage guide |
 

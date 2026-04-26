@@ -59,7 +59,8 @@ write_state_batch \
   "task_intent" "${TASK_INTENT}" \
   "last_user_prompt" "${PROMPT_TEXT}" \
   "last_user_prompt_ts" "$(now_epoch)" \
-  "stall_counter" "0"
+  "stall_counter" "0" \
+  "ulw_pause_active" ""
 append_limited_state \
   "recent_prompts.jsonl" \
   "$(jq -nc --arg ts "$(now_epoch)" --arg text "${PROMPT_TEXT}" '{ts:$ts,text:$text}')" \
