@@ -245,15 +245,21 @@ else
     | while IFS= read -r _gate; do
         [[ -z "${_gate}" ]] && continue
         _block_count="$(printf '%s\n' "${gate_event_rows}" | jq -c --arg g "${_gate}" 'select(.gate == $g and .event == "block")' | wc -l | tr -d '[:space:]')"
-        _status_count="$(printf '%s\n' "${gate_event_rows}" | jq -c --arg g "${_gate}" 'select(.gate == $g and (.event == "finding-status-change" or .event == "wave-status-change"))' | wc -l | tr -d '[:space:]')"
+        _status_count="$(printf '%s\n' "${gate_event_rows}" | jq -c --arg g "${_gate}" 'select(.gate == $g and (.event == "finding-status-change" or .event == "wave-status-change" or .event == "user-decision-marked"))' | wc -l | tr -d '[:space:]')"
         printf '| `%s` | %s | %s |\n' "${_gate}" "${_block_count}" "${_status_count}"
       done
   printf '\n'
   total_blocks_pe="$(printf '%s\n' "${gate_event_rows}" | jq -c 'select(.event == "block")' | wc -l | tr -d '[:space:]')"
-  total_status_changes="$(printf '%s\n' "${gate_event_rows}" | jq -c 'select(.event == "finding-status-change" or .event == "wave-status-change")' | wc -l | tr -d '[:space:]')"
+  total_status_changes="$(printf '%s\n' "${gate_event_rows}" | jq -c 'select(.event == "finding-status-change" or .event == "wave-status-change" or .event == "user-decision-marked")' | wc -l | tr -d '[:space:]')"
   shipped_changes="$(printf '%s\n' "${gate_event_rows}" | jq -c 'select(.event == "finding-status-change" and .details.finding_status == "shipped")' | wc -l | tr -d '[:space:]')"
-  printf '_Total: %s gate blocks, %s status changes (%s findings shipped)._\n\n' \
-    "${total_blocks_pe}" "${total_status_changes}" "${shipped_changes}"
+  user_decision_marks="$(printf '%s\n' "${gate_event_rows}" | jq -c 'select(.event == "user-decision-marked")' | wc -l | tr -d '[:space:]')"
+  if [[ "${user_decision_marks}" -gt 0 ]]; then
+    printf '_Total: %s gate blocks, %s status changes (%s findings shipped, %s user-decision marks)._\n\n' \
+      "${total_blocks_pe}" "${total_status_changes}" "${shipped_changes}" "${user_decision_marks}"
+  else
+    printf '_Total: %s gate blocks, %s status changes (%s findings shipped)._\n\n' \
+      "${total_blocks_pe}" "${total_status_changes}" "${shipped_changes}"
+  fi
 fi
 
 # ----------------------------------------------------------------------

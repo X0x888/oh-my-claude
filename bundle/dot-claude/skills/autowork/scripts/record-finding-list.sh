@@ -20,6 +20,11 @@
 #   record-finding-list.sh assign-wave <wave_idx> <wave_total> <surface> <id> [<id>...]
 #   record-finding-list.sh wave-status <wave_idx> <status> [<commit_sha>]
 #                                          # status: pending | in_progress | completed
+#   record-finding-list.sh mark-user-decision <id> <reason>
+#                                          # Flag a finding as requiring user judgment
+#                                          # (taste, policy, credible-approach split)
+#                                          # so Phase 8 wave executor pauses on it
+#                                          # rather than choosing autonomously.
 #   record-finding-list.sh show            # print current findings.json (pretty)
 #   record-finding-list.sh summary         # markdown summary table for final report
 #   record-finding-list.sh counts          # one-line counts (total/shipped/deferred/etc.)
@@ -38,13 +43,23 @@
 #       { "id": "F-001", "summary": "...", "severity": "critical|high|medium|low",
 #         "surface": "auth/login", "effort": "S|M|L", "lens": "security-lens",
 #         "wave": <int|null>, "status": "pending|in_progress|shipped|deferred|rejected",
-#         "commit_sha": "...", "notes": "...", "ts": <epoch> }
+#         "commit_sha": "...", "notes": "...", "ts": <epoch>,
+#         "requires_user_decision": <bool>, "decision_reason": "..." }
 #     ],
 #     "waves": [
 #       { "index": 1, "total": 5, "surface": "auth", "finding_ids": ["F-001","F-002"],
 #         "status": "pending|in_progress|completed", "commit_sha": "...", "ts": <epoch> }
 #     ]
 #   }
+#
+# requires_user_decision (v1.18.0):
+#   Findings that involve taste, policy, brand voice, or a credible-approach
+#   split (two reasonable paths where choosing wrong costs significant
+#   rework) should be marked with requires_user_decision=true and a
+#   non-empty decision_reason. Phase 8 wave executor pauses on these
+#   instead of choosing autonomously — the rule mirrors core.md's pause
+#   cases. Backwards compatible: defaults to false; existing finding
+#   schemas without the field continue to work.
 
 set -euo pipefail
 
@@ -147,13 +162,19 @@ case "${cmd}" in
       findings_json="$(printf '%s' "${input}" | jq '.findings // []')"
     fi
     # Stamp ts/status defaults so downstream queries never see undefined fields.
+    # requires_user_decision defaults to false (most findings are model-
+    # executable); decision_reason defaults to empty string. Both are
+    # backwards compatible — existing init payloads without these fields
+    # continue to work.
     normalized="$(printf '%s' "${findings_json}" | jq --argjson ts "$(_now)" \
       '[.[] | . + {
         ts: (.ts // $ts),
         status: (.status // "pending"),
         wave: (.wave // null),
         commit_sha: (.commit_sha // ""),
-        notes: (.notes // "")
+        notes: (.notes // ""),
+        requires_user_decision: (.requires_user_decision // false),
+        decision_reason: (.decision_reason // "")
       }]')"
     _acquire_lock
     new_doc="$(jq -n \
@@ -192,7 +213,9 @@ case "${cmd}" in
         status: (.status // "pending"),
         wave: (.wave // null),
         commit_sha: (.commit_sha // ""),
-        notes: (.notes // "")
+        notes: (.notes // ""),
+        requires_user_decision: (.requires_user_decision // false),
+        decision_reason: (.decision_reason // "")
       }')"
     updated="$(printf '%s' "${current}" | jq \
       --argjson finding "${normalized}" \
@@ -310,6 +333,67 @@ case "${cmd}" in
     printf 'wave=%s status=%s\n' "${wave_idx}" "${wstatus}"
     ;;
 
+  mark-user-decision)
+    id="${1:-}"; reason="${2:-}"
+    if [[ -z "${id}" || -z "${reason}" ]]; then
+      printf 'usage: record-finding-list mark-user-decision <id> <reason>\n' >&2
+      printf '  Reason must be non-empty (taste, policy, credible-approach split).\n' >&2
+      exit 1
+    fi
+    # Reject newlines in reason — they break the markdown bullet rendering
+    # in `summary`'s "Awaiting user decision" section. Single-line reasons
+    # only; if the user needs more detail they should put it in `notes`.
+    if [[ "${reason}" == *$'\n'* ]]; then
+      printf 'record-finding-list mark-user-decision: reason cannot contain newlines\n' >&2
+      printf '  Use single-line reason; put detail in `notes` if needed.\n' >&2
+      exit 1
+    fi
+    _ensure_file
+    _acquire_lock
+    current="$(cat "${FINDINGS_FILE}")"
+    # Refuse if id does not exist — silent no-op would mask typos.
+    if ! printf '%s' "${current}" | jq -e --arg id "${id}" \
+        '[.findings[] | select(.id == $id)] | length > 0' >/dev/null 2>&1; then
+      printf 'record-finding-list mark-user-decision: id %s not found\n' "${id}" >&2
+      exit 1
+    fi
+    # Reject if the finding is already in a terminal status. mark-user-
+    # decision is for actionable findings only — flagging shipped /
+    # deferred / rejected findings creates confusing UX where past-tense
+    # rows look identical to actionable ones in the summary table. If the
+    # user needs to record retrospective context, use `status` with a notes
+    # field instead.
+    current_status="$(printf '%s' "${current}" | jq -r --arg id "${id}" \
+      '.findings[] | select(.id == $id) | .status')"
+    case "${current_status}" in
+      shipped|deferred|rejected)
+        printf 'record-finding-list mark-user-decision: F=%s already %s; mark-user-decision is for actionable findings only\n' \
+          "${id}" "${current_status}" >&2
+        printf '  Use `status` to update notes if you need to record retrospective context.\n' >&2
+        exit 1
+        ;;
+    esac
+    updated="$(printf '%s' "${current}" | jq \
+      --arg id "${id}" \
+      --arg reason "${reason}" \
+      --argjson ts "$(_now)" '
+      .updated_ts = $ts |
+      .findings = (.findings | map(
+        if .id == $id then
+          . + {
+            requires_user_decision: true,
+            decision_reason: $reason,
+            ts: $ts
+          }
+        else . end
+      ))')"
+    _atomic_write "${updated}"
+    record_gate_event "finding-status" "user-decision-marked" \
+      "finding_id=${id}" \
+      "decision_reason=${reason}"
+    printf 'F=%s requires_user_decision=true reason=%q\n' "${id}" "${reason}"
+    ;;
+
   show)
     if [[ ! -f "${FINDINGS_FILE}" ]]; then
       # shellcheck disable=SC2016
@@ -321,7 +405,7 @@ case "${cmd}" in
 
   counts)
     if [[ ! -f "${FINDINGS_FILE}" ]]; then
-      printf 'total=0 shipped=0 deferred=0 rejected=0 in_progress=0 pending=0\n'
+      printf 'total=0 shipped=0 deferred=0 rejected=0 in_progress=0 pending=0 user_decision=0\n'
       exit 0
     fi
     total="$(jq '.findings|length' "${FINDINGS_FILE}")"
@@ -330,8 +414,12 @@ case "${cmd}" in
     rejected="$(jq '[.findings[]|select(.status=="rejected")]|length' "${FINDINGS_FILE}")"
     in_progress="$(jq '[.findings[]|select(.status=="in_progress")]|length' "${FINDINGS_FILE}")"
     pending="$(jq '[.findings[]|select(.status=="pending")]|length' "${FINDINGS_FILE}")"
-    printf 'total=%s shipped=%s deferred=%s rejected=%s in_progress=%s pending=%s\n' \
-      "${total}" "${shipped}" "${deferred}" "${rejected}" "${in_progress}" "${pending}"
+    # user_decision counts findings still awaiting user input (pending or
+    # in_progress). Once a finding is shipped/deferred/rejected, the
+    # user-decision flag is informational history, not actionable status.
+    user_decision="$(jq '[.findings[]|select((.requires_user_decision // false) == true and (.status=="pending" or .status=="in_progress"))]|length' "${FINDINGS_FILE}")"
+    printf 'total=%s shipped=%s deferred=%s rejected=%s in_progress=%s pending=%s user_decision=%s\n' \
+      "${total}" "${shipped}" "${deferred}" "${rejected}" "${in_progress}" "${pending}" "${user_decision}"
     ;;
 
   summary)
@@ -340,11 +428,15 @@ case "${cmd}" in
       exit 0
     fi
     {
-      printf '| ID | Severity | Surface | Status | Commit | Notes |\n'
-      printf '|----|----------|---------|--------|--------|-------|\n'
+      printf '| ID | Severity | Surface | Decision | Status | Commit | Notes |\n'
+      printf '|----|----------|---------|----------|--------|--------|-------|\n'
       jq -r '
         .findings | sort_by(.id)[] |
         "| \(.id) | \(.severity // "—") | \(.surface // "—") | \(
+          if (.requires_user_decision // false) == true then "USER-DECISION"
+          else "—"
+          end
+        ) | \(
           if .status == "shipped" then "✓ shipped"
           elif .status == "deferred" then "⚠ deferred"
           elif .status == "rejected" then "✗ rejected"
@@ -360,9 +452,27 @@ case "${cmd}" in
       rejected="$(jq '[.findings[]|select(.status=="rejected")]|length' "${FINDINGS_FILE}")"
       in_progress="$(jq '[.findings[]|select(.status=="in_progress")]|length' "${FINDINGS_FILE}")"
       pending="$(jq '[.findings[]|select(.status=="pending")]|length' "${FINDINGS_FILE}")"
-      printf '**Counts:** total=%s · shipped=%s · deferred=%s · rejected=%s · in-progress=%s · pending=%s\n' \
-        "${total}" "${shipped}" "${deferred}" "${rejected}" "${in_progress}" "${pending}"
+      user_decision="$(jq '[.findings[]|select((.requires_user_decision // false) == true and (.status=="pending" or .status=="in_progress"))]|length' "${FINDINGS_FILE}")"
+      printf '**Counts:** total=%s · shipped=%s · deferred=%s · rejected=%s · in-progress=%s · pending=%s · awaiting-user-decision=%s\n' \
+        "${total}" "${shipped}" "${deferred}" "${rejected}" "${in_progress}" "${pending}" "${user_decision}"
       printf '\n'
+      # When findings need user input, surface them inline so the final
+      # summary makes the user-decision queue obvious without forcing
+      # the reader to scan the table for USER-DECISION cells. Reason
+      # and summary are flattened to a single line via gsub on newlines
+      # (defense-in-depth — mark-user-decision rejects newlines in input,
+      # but bare init payloads can still emit multi-line strings) and
+      # pipes are escaped in case the field is later promoted to a
+      # table column.
+      if [[ "${user_decision}" -gt 0 ]]; then
+        printf '**Awaiting user decision:**\n\n'
+        jq -r '
+          def safe: (. // "—") | gsub("\n"; " ") | gsub("\\|"; "\\|");
+          .findings[] | select((.requires_user_decision // false) == true and (.status=="pending" or .status=="in_progress")) |
+          "- **\(.id)** (\(.surface | safe)): \(.summary | safe)\n  Reason: \(.decision_reason | safe)"
+        ' "${FINDINGS_FILE}"
+        printf '\n'
+      fi
     }
     ;;
 

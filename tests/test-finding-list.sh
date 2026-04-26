@@ -143,7 +143,7 @@ assert_contains "summary has counts footer" "**Counts:**" "${summary_out}"
 printf 'Test 11: empty findings file → counts=0\n'
 rm -f "${findings_path}"
 counts_out="$("${SCRIPT}" counts)"
-assert_eq "no file → all zeros" "total=0 shipped=0 deferred=0 rejected=0 in_progress=0 pending=0" "${counts_out}"
+assert_eq "no file → all zeros" "total=0 shipped=0 deferred=0 rejected=0 in_progress=0 pending=0 user_decision=0" "${counts_out}"
 
 # ----------------------------------------------------------------------
 printf 'Test 12: notes with pipe character is escaped in markdown table\n'
@@ -352,6 +352,164 @@ assert_eq "mix-stress: wave landed" "1" "${wave_count}"
 # Lock cleaned up
 assert_eq "mix-stress: lock dir removed" "no" \
   "$([[ -d "${findings_path}.lock" ]] && echo yes || echo no)"
+
+# ----------------------------------------------------------------------
+# v1.18.0 — requires_user_decision schema field + mark-user-decision cmd.
+# ----------------------------------------------------------------------
+printf '\n=== v1.18.0: user-decision annotation ===\n'
+
+# Reset and init with one finding marked at init-time, another not.
+echo '[
+  {"id":"F-D001","summary":"taste call","severity":"medium","surface":"copy",
+   "requires_user_decision":true,"decision_reason":"brand voice"},
+  {"id":"F-D002","summary":"clear bug","severity":"high","surface":"auth"}
+]' | "${SCRIPT}" init --force >/dev/null
+
+# Init-time field preserved on F-D001
+flag1="$(jq -r '.findings[]|select(.id=="F-D001")|.requires_user_decision' "${findings_path}")"
+assert_eq "init: F-D001 requires_user_decision=true preserved" "true" "${flag1}"
+reason1="$(jq -r '.findings[]|select(.id=="F-D001")|.decision_reason' "${findings_path}")"
+assert_eq "init: F-D001 decision_reason preserved" "brand voice" "${reason1}"
+
+# Default false for F-D002 (not specified at init)
+flag2="$(jq -r '.findings[]|select(.id=="F-D002")|.requires_user_decision' "${findings_path}")"
+assert_eq "init: F-D002 default requires_user_decision=false" "false" "${flag2}"
+reason2="$(jq -r '.findings[]|select(.id=="F-D002")|.decision_reason' "${findings_path}")"
+assert_eq "init: F-D002 default decision_reason=empty" "" "${reason2}"
+
+# add-finding default false
+"${SCRIPT}" add-finding <<<'{"id":"F-D003","summary":"another bug","severity":"low","surface":"docs"}' >/dev/null
+flag3="$(jq -r '.findings[]|select(.id=="F-D003")|.requires_user_decision' "${findings_path}")"
+assert_eq "add-finding: F-D003 default requires_user_decision=false" "false" "${flag3}"
+
+# add-finding with requires_user_decision=true
+"${SCRIPT}" add-finding <<<'{"id":"F-D004","summary":"pricing call","severity":"medium","surface":"billing","requires_user_decision":true,"decision_reason":"pricing tier"}' >/dev/null
+flag4="$(jq -r '.findings[]|select(.id=="F-D004")|.requires_user_decision' "${findings_path}")"
+assert_eq "add-finding: F-D004 requires_user_decision=true preserved" "true" "${flag4}"
+
+# mark-user-decision command flips the flag and sets reason
+"${SCRIPT}" mark-user-decision F-D003 "feature scope" >/dev/null
+flag3_after="$(jq -r '.findings[]|select(.id=="F-D003")|.requires_user_decision' "${findings_path}")"
+assert_eq "mark-user-decision: F-D003 flag flipped to true" "true" "${flag3_after}"
+reason3_after="$(jq -r '.findings[]|select(.id=="F-D003")|.decision_reason' "${findings_path}")"
+assert_eq "mark-user-decision: F-D003 reason set" "feature scope" "${reason3_after}"
+
+# mark-user-decision rejects empty reason
+if "${SCRIPT}" mark-user-decision F-D002 "" >/dev/null 2>&1; then
+  printf '  FAIL: mark-user-decision should reject empty reason\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+
+# mark-user-decision rejects unknown id (no silent no-op for typos)
+if "${SCRIPT}" mark-user-decision F-NOSUCH "reason" >/dev/null 2>&1; then
+  printf '  FAIL: mark-user-decision should reject unknown id\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+
+# counts includes user_decision count for pending+in_progress flagged findings
+counts_out="$("${SCRIPT}" counts)"
+assert_contains "counts: includes user_decision field" "user_decision=" "${counts_out}"
+# F-D001, F-D003 (after mark), F-D004 are flagged AND pending → 3
+assert_contains "counts: user_decision=3 for three flagged-pending findings" \
+  "user_decision=3" "${counts_out}"
+
+# Once a flagged finding is shipped, it leaves the user_decision count
+"${SCRIPT}" status F-D001 shipped abc1234 "user picked option B" >/dev/null
+counts_out2="$("${SCRIPT}" counts)"
+assert_contains "counts: user_decision drops to 2 after F-D001 shipped" \
+  "user_decision=2" "${counts_out2}"
+
+# summary surfaces USER-DECISION column AND inline awaiting-decision section
+summary_out="$("${SCRIPT}" summary)"
+assert_contains "summary: Decision column header present" "Decision" "${summary_out}"
+assert_contains "summary: USER-DECISION marker on flagged row" "USER-DECISION" "${summary_out}"
+assert_contains "summary: awaiting-user-decision in counts line" \
+  "awaiting-user-decision=2" "${summary_out}"
+assert_contains "summary: 'Awaiting user decision' section emitted" \
+  "Awaiting user decision" "${summary_out}"
+assert_contains "summary: F-D003 reason surfaced" "feature scope" "${summary_out}"
+
+# summary section is suppressed when no flagged-pending findings remain
+"${SCRIPT}" status F-D003 shipped def5678 "shipped" >/dev/null
+"${SCRIPT}" status F-D004 shipped ghi9012 "shipped" >/dev/null
+summary_clean="$("${SCRIPT}" summary)"
+if [[ "${summary_clean}" == *"Awaiting user decision"* ]]; then
+  printf '  FAIL: summary should NOT emit "Awaiting user decision" when count=0\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+# But the table-row Decision column still shows historical USER-DECISION marker
+assert_contains "summary: USER-DECISION marker still in table even after ship" \
+  "USER-DECISION" "${summary_clean}"
+
+# Help text includes mark-user-decision command
+help_out="$("${SCRIPT}" --help 2>&1)"
+assert_contains "help: mark-user-decision documented" \
+  "mark-user-decision" "${help_out}"
+
+# Reviewer F1: mark-user-decision rejects newlines in reason — they
+# break the markdown bullet rendering in summary's awaiting section.
+echo '[{"id":"F-NL01","summary":"newline test","severity":"low","surface":"x"}]' | "${SCRIPT}" init --force >/dev/null
+multiline_reason="$(printf 'line1\nline2')"
+if "${SCRIPT}" mark-user-decision F-NL01 "${multiline_reason}" >/dev/null 2>&1; then
+  printf '  FAIL: mark-user-decision should reject reason with embedded newline\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+# Confirm the flag was NOT flipped — the rejection must precede the write
+flag_after_reject="$(jq -r '.findings[]|select(.id=="F-NL01")|.requires_user_decision' "${findings_path}")"
+assert_eq "mark-user-decision newline rejection: flag stayed false" \
+  "false" "${flag_after_reject}"
+
+# Reviewer F1 (defense in depth): summary `Awaiting user decision` bullet
+# survives a multi-line decision_reason set via init payload (since
+# mark-user-decision rejects newlines but init payloads may include them).
+echo '[
+  {"id":"F-NL02","summary":"init multi-line","severity":"low","surface":"x",
+   "requires_user_decision":true,"decision_reason":"line1\nline2"}
+]' | "${SCRIPT}" init --force >/dev/null
+sum_multiline="$("${SCRIPT}" summary)"
+# Bullet should contain the reason with newline flattened to space (no orphan line)
+assert_contains "summary: multi-line decision_reason flattened to single line" \
+  "Reason: line1 line2" "${sum_multiline}"
+
+# Reviewer F4: mark-user-decision rejects on terminal status (shipped/
+# deferred/rejected). Marking a past-tense finding creates confusing UX
+# where shipped rows look identical to actionable ones in the table.
+echo '[
+  {"id":"F-T01","summary":"already shipped","severity":"low","surface":"x"},
+  {"id":"F-T02","summary":"already deferred","severity":"low","surface":"y"},
+  {"id":"F-T03","summary":"already rejected","severity":"low","surface":"z"}
+]' | "${SCRIPT}" init --force >/dev/null
+"${SCRIPT}" status F-T01 shipped abc1234 "" >/dev/null
+"${SCRIPT}" status F-T02 deferred "" "out of scope" >/dev/null
+"${SCRIPT}" status F-T03 rejected "" "not reproducible" >/dev/null
+
+for terminal_id in F-T01 F-T02 F-T03; do
+  if "${SCRIPT}" mark-user-decision "${terminal_id}" "test reason" >/dev/null 2>&1; then
+    printf '  FAIL: mark-user-decision should reject %s (terminal status)\n' "${terminal_id}" >&2
+    fail=$((fail + 1))
+  else
+    pass=$((pass + 1))
+  fi
+  # Confirm the flag is still false (rejection precedes write)
+  fl="$(jq -r --arg id "${terminal_id}" '.findings[]|select(.id==$id)|.requires_user_decision' "${findings_path}")"
+  assert_eq "mark-user-decision rejected on ${terminal_id}: flag stayed false" \
+    "false" "${fl}"
+done
+
+# But mark-user-decision still works on pending and in_progress findings
+"${SCRIPT}" add-finding <<<'{"id":"F-T04","summary":"pending finding","severity":"low","surface":"x"}' >/dev/null
+"${SCRIPT}" status F-T04 in_progress >/dev/null
+"${SCRIPT}" mark-user-decision F-T04 "non-terminal" >/dev/null 2>&1
+flag_t04="$(jq -r '.findings[]|select(.id=="F-T04")|.requires_user_decision' "${findings_path}")"
+assert_eq "mark-user-decision succeeds on in_progress finding" "true" "${flag_t04}"
 
 printf '\n=== Finding-List Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]

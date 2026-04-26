@@ -248,5 +248,35 @@ fi
 assert_contains "clean line surfaces when nothing trips" "No clear patterns to call out" "${out}"
 
 # ----------------------------------------------------------------------
+printf 'Test 17: v1.18.0 — user-decision-marked events visible in totals\n'
+# Reviewer-found gap: the new user-decision-marked event was filtered
+# out by show-report.sh's status-change selector. Synthesize the
+# cross-session gate_events.jsonl that show-report reads and assert
+# user-decision marks are counted in the per-gate row + totals.
+rm -f "${QP}/session_summary.jsonl"
+NOW="$(date +%s)"
+cat > "${QP}/gate_events.jsonl" <<EOF
+{"ts":${NOW},"session":"test-ud-session","gate":"finding-status","event":"finding-status-change","details":{"finding_id":"F-001","finding_status":"shipped","commit_sha":"abc"}}
+{"ts":${NOW},"session":"test-ud-session","gate":"finding-status","event":"user-decision-marked","details":{"finding_id":"F-002","decision_reason":"brand voice"}}
+{"ts":${NOW},"session":"test-ud-session","gate":"finding-status","event":"user-decision-marked","details":{"finding_id":"F-003","decision_reason":"pricing"}}
+{"ts":${NOW},"session":"test-ud-session","gate":"wave-status","event":"wave-status-change","details":{"wave_idx":1,"wave_status":"completed"}}
+EOF
+# Need a session_summary entry so show-report does not bail to empty-state
+cat > "${QP}/session_summary.jsonl" <<EOF
+{"session_id":"test-ud-session","start_ts":${NOW},"end_ts":${NOW},"domain":"coding","intent":"execution","edit_count":3,"verified":true,"reviewed":true,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":1,"outcome":"shipped","skip_count":0,"serendipity_count":0}
+EOF
+out="$(run_report week)"
+# Per-gate count column for finding-status: 1 status-change + 2 user-decision = 3 events
+assert_contains "show-report: per-gate finding-status count includes user-decision marks" \
+  "| \`finding-status\` | 0 | 3 |" "${out}"
+# Totals line: 4 status changes (3 finding-status + 1 wave-status), 2 user-decision marks
+assert_contains "show-report: totals line includes user-decision marks suffix" \
+  "2 user-decision marks" "${out}"
+assert_contains "show-report: totals report 4 status changes" \
+  "4 status changes" "${out}"
+rm -f "${QP}/gate_events.jsonl"
+rm -f "${QP}/session_summary.jsonl"
+
+# ----------------------------------------------------------------------
 printf '\n=== Show-Report Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]] || exit 1
