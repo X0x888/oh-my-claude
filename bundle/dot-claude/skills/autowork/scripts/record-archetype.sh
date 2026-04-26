@@ -90,7 +90,30 @@ while IFS= read -r line || [[ -n "${line}" ]]; do
   # break unrelated downstream consumers. The append is wrapped in
   # with_cross_session_log_lock so concurrent SubagentStop hooks across
   # sessions in the same project cannot interleave bytes mid-row.
+  #
+  # v1.17.0: same-session dedup. A UI specialist may emit the same
+  # archetype multiple times within a single session (initial pass +
+  # revision iterations), and recording every emission would inflate
+  # the "you've used this archetype N times" prior-count signal in
+  # /ulw-report's "Design archetype variation" section. We dedup on
+  # (archetype, project_key, session_id) — cross-session re-emissions
+  # are still recorded because those represent genuinely separate
+  # applications of the archetype. The check runs inside the lock so
+  # two concurrent invocations for the same session cannot both miss
+  # and both append.
   _do_archetype_append() {
+    if [[ -f "${cross_log}" ]]; then
+      local _existing
+      _existing="$(jq -r --arg arch "${archetype}" \
+                          --arg pkey "${project_key}" \
+                          --arg sess "${SESSION_ID}" \
+        'select(.archetype == $arch and .project_key == $pkey and .session == $sess) | .archetype' \
+        "${cross_log}" 2>/dev/null | head -1)"
+      if [[ -n "${_existing}" ]]; then
+        # Already recorded for (archetype + project + session) — skip.
+        return 0
+      fi
+    fi
     { printf '%s\n' "${record}" >> "${cross_log}"; } 2>/dev/null || \
       log_anomaly "record-archetype" "cross-session log write failed: ${cross_log}"
   }

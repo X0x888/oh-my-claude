@@ -1313,6 +1313,37 @@ compute_progress_score() {
 
 # --- end stall detection helpers ---
 
+# --- Gate recovery line ---
+#
+# format_gate_recovery_line: emit a standardized "→ Next: <action>"
+# recovery hint that gate-block messages append to their reason strings.
+# Keeps the Unicode arrow + label shape consistent across all gates so
+# users see one canonical "what to do next" cue regardless of which
+# gate fired. Empty input returns nothing (no-op safe).
+#
+# Why standardize: gate-block messages historically buried the unblock
+# action inside long prose. Some gates already had implicit next-step
+# language ("Next step: run X" in review-coverage; "Still missing: ...
+# Next: Y" in the quality gate); others left the user to infer the path
+# forward from prose alone (advisory, session-handoff, discovered-scope,
+# excellence). The helper lets every gate close with the same line
+# shape, so a user skimming a block message can find the recovery in
+# one place every time.
+#
+# Usage:
+#   recovery="$(format_gate_recovery_line "read the affected code, then re-summarize")"
+#   jq -nc --arg reason "${prose}${recovery}" ...
+#
+# The literal `→` (U+2192) is embedded directly — jq --arg is binary
+# safe and the rendered output uses the exact glyph.
+format_gate_recovery_line() {
+  local action="${1:-}"
+  [[ -z "${action}" ]] && return 0
+  printf '\n→ Next: %s' "${action}"
+}
+
+# --- end gate recovery line ---
+
 # --- Quality scorecard ---
 
 # build_quality_scorecard: Build a human-readable quality scorecard summarizing

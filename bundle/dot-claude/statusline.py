@@ -349,6 +349,82 @@ def ulw_info():
         return "active"
 
 
+def gate_summary():
+    """Count block events in the latest session's gate_events.jsonl.
+
+    Returns a string like ``g:3 f:2`` when the latest session has 3 gate
+    blocks and 2 finding resolutions (shipped/deferred/rejected); returns
+    just ``g:3`` when no findings closed, or ``f:2`` when blocks are
+    zero. Returns None when the file is missing, empty, or unreadable —
+    the statusline omits the token entirely when there is no signal.
+
+    Block events are the harness's "I caught something" signal.
+    Finding-status-change events with a non-pending status are the
+    "I closed the loop" signal. Surfacing both at a glance answers "is
+    the harness actually doing anything for me?" without forcing the
+    user to run /ulw-report. ``g:`` is gates, ``f:`` is findings (NOT
+    "reviews" — reviewer invocations are a separate signal not surfaced
+    here, see /ulw-report's reviewer activity table for that).
+    """
+    state_root = os.path.join(os.path.expanduser("~"), ".claude", "quality-pack", "state")
+    if not os.path.isdir(state_root):
+        return None
+
+    try:
+        entries = [
+            e for e in os.listdir(state_root)
+            if not e.startswith(".") and os.path.isdir(os.path.join(state_root, e))
+        ]
+    except OSError:
+        return None
+    if not entries:
+        return None
+
+    try:
+        entries.sort(
+            key=lambda e: os.path.getmtime(os.path.join(state_root, e)),
+            reverse=True,
+        )
+    except OSError:
+        return None
+
+    events_file = os.path.join(state_root, entries[0], "gate_events.jsonl")
+    blocks = 0
+    resolutions = 0
+    try:
+        with open(events_file, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                event = row.get("event")
+                if event == "block":
+                    blocks += 1
+                elif event == "finding-status-change":
+                    # A status change that closes a finding (anything
+                    # away from `pending`) counts as a resolution. The
+                    # router writes shipped / deferred / rejected.
+                    status = (row.get("details") or {}).get("finding_status", "")
+                    if status and status != "pending":
+                        resolutions += 1
+    except (FileNotFoundError, OSError):
+        return None
+
+    if blocks == 0 and resolutions == 0:
+        return None
+
+    parts = []
+    if blocks > 0:
+        parts.append(f"g:{blocks}")
+    if resolutions > 0:
+        parts.append(f"f:{resolutions}")
+    return " ".join(parts)
+
+
 def main():
     raw = sys.stdin.read().strip()
     try:
@@ -381,6 +457,15 @@ def main():
         line_one_parts.append(color(f"[ULW:{ulw_domain}]", f"{BOLD}{MAGENTA}"))
     elif harness_health() == "active":
         line_one_parts.append(color("[H:ok]", f"{DIM}{GREEN}"))
+
+    # v1.17.0: surface gate-fire / finding-resolution counts at-a-glance
+    # so the user can tell whether the harness is actively intervening
+    # this session without running /ulw-report. Only renders when there
+    # IS signal — silent when the session has been clean.
+    gate_text = gate_summary()
+    if gate_text:
+        line_one_parts.append(color(f"[{gate_text}]", f"{DIM}{YELLOW}"))
+
     if branch_text:
         line_one_parts.append(color(branch_text, YELLOW))
     line_one_parts.append(color(f"style:{style_name}", f"{DIM}{BLUE}"))

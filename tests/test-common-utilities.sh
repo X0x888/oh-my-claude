@@ -1664,6 +1664,45 @@ OMC_CLASSIFIER_TELEMETRY="${_saved_tel}"
 SESSION_ID="${_orig_sid3}"
 
 # ===========================================================================
+# format_gate_recovery_line (v1.17.0)
+# ===========================================================================
+printf '\nformat_gate_recovery_line: standardized recovery hint for gate blocks:\n'
+
+# Empty input → no output (no-op safe).
+assert_eq "empty action → empty output" "" "$(format_gate_recovery_line "")"
+
+# Action surfaces with the canonical "→ Next: <action>" shape, prefixed
+# by a newline so it can be appended directly to a multi-line reason.
+out="$(format_gate_recovery_line "run /ulw-skip with a reason")"
+assert_eq "non-empty action → newline + arrow + Next: + action" \
+  $'\n→ Next: run /ulw-skip with a reason' \
+  "${out}"
+
+# The exact arrow is U+2192 — the renderer should emit one canonical
+# glyph, not a faux-ASCII "->" which would break visual scanning across
+# gates.
+arrow_count=$(printf '%s' "${out}" | grep -cF '→' || true)
+assert_eq "→ glyph present exactly once" "1" "${arrow_count}"
+
+# All four gate sites in stop-guard.sh must be calling the helper —
+# regression guard for the v1.17.0 standardization. Without this, a
+# future contributor hand-rolling a new gate-block message could miss
+# the recovery line and the inconsistency would only surface to users
+# at gate-fire time.
+guard_file="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/stop-guard.sh"
+recovery_call_count=$(grep -c 'format_gate_recovery_line "' "${guard_file}" || true)
+# 5 sites: advisory, session-handoff, discovered-scope, excellence, quality.
+# (review-coverage emits its own narrative format with embedded "Next step:"
+# language that's gate-specific — not routed through the helper by design.)
+if [[ "${recovery_call_count}" -ge 5 ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: stop-guard.sh has %s format_gate_recovery_line calls; expected >= 5\n' \
+    "${recovery_call_count}" >&2
+  fail=$((fail + 1))
+fi
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 

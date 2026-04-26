@@ -295,16 +295,36 @@ recent_cap="$(recent_archetypes_for_project 2)"
 recent_cap_lines="$(printf '%s\n' "${recent_cap}" | grep -c .)"
 assert_eq "cap at N=2" "2" "${recent_cap_lines}"
 
-# Dedup: write Stripe again, then it should jump to newest and only
-# appear once in the result.
+# v1.17.0: same-session dedup at write site. A re-emission of the same
+# archetype within the same session must NOT add a new row — the
+# /ulw-report "archetype variation" histogram counts file rows, so
+# unfettered re-emissions would inflate the prior-count signal and
+# weaken the cross-session anti-anchoring discipline. Cross-session
+# re-emissions are still recorded (covered below).
+prelock_lines="$(wc -l <"${cross_log}" | tr -d ' ')"
 HOME="${TEST_HOME}" SESSION_ID="${SESSION_ID}" \
   bash "${RECORD_SCRIPT}" >/dev/null 2>&1 <<<'{"archetype":"Stripe","platform":"web","domain":"fintech","agent":"frontend-developer"}'
+postlock_lines="$(wc -l <"${cross_log}" | tr -d ' ')"
+assert_eq "same-session re-emit does NOT add a row" "${prelock_lines}" "${postlock_lines}"
 
+# read-side dedup is untouched — Stripe still appears exactly once.
 recent_dedup="$(recent_archetypes_for_project 5)"
 dedup_count="$(printf '%s\n' "${recent_dedup}" | grep -cw 'Stripe')"
 assert_eq "Stripe deduped (still 1 row in output)" "1" "${dedup_count}"
-new_first="$(printf '%s\n' "${recent_dedup}" | head -1)"
-assert_eq "Stripe re-emission → newest" "Stripe" "${new_first}"
+
+# Cross-session re-emit: a different SESSION_ID emitting Stripe in the
+# same project SHOULD add a new row (genuinely separate application).
+HOME="${TEST_HOME}" SESSION_ID="archetype-test-session-2" \
+  bash "${RECORD_SCRIPT}" >/dev/null 2>&1 <<<'{"archetype":"Stripe","platform":"web","domain":"fintech","agent":"frontend-developer"}'
+crosssession_lines="$(wc -l <"${cross_log}" | tr -d ' ')"
+expected_after_cross=$(( postlock_lines + 1 ))
+assert_eq "cross-session re-emit DOES add a row" "${expected_after_cross}" "${crosssession_lines}"
+
+# After the cross-session emission, Stripe is the most recent emission
+# for this project_key, so it floats to the head of the read-side list.
+recent_after_cross="$(recent_archetypes_for_project 5)"
+new_first="$(printf '%s\n' "${recent_after_cross}" | head -1)"
+assert_eq "cross-session Stripe re-emit → newest" "Stripe" "${new_first}"
 
 # Project filtering: write rows from a DIFFERENT project's git remote;
 # they must not appear in the current project's recent list.

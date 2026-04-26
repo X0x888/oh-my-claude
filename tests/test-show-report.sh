@@ -172,5 +172,81 @@ assert_contains "defect histogram present" "missing_test" "${out}"
 assert_contains "defect count" "× 12" "${out}"
 
 # ----------------------------------------------------------------------
+printf 'Test 11: empty dataset renders the v1.17.0 "no patterns" line\n'
+# Wipe the test fixtures so the report runs against a clean quality-pack;
+# heuristics should report cleanly with no warnings.
+rm -rf "${QP}"/*
+out="$(run_report week)"
+assert_contains "interpretation header present" "Patterns to consider" "${out}"
+assert_contains "clean-state interpretation copy" "No clear patterns to call out" "${out}"
+# Sanity: heuristic warnings must not appear on an empty dataset.
+if [[ "${out}" == *"High gate-fire density"* ]]; then
+  printf '  FAIL: empty dataset triggered high-gate heuristic\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+
+# ----------------------------------------------------------------------
+printf 'Test 12: high-gate-density heuristic fires when blocks/session ≥ 2.1\n'
+NOW="$(date +%s)"
+cat > "${QP}/session_summary.jsonl" <<EOF
+{"session_id":"s1","start_ts":${NOW},"end_ts":${NOW},"domain":"coding","intent":"execution","edit_count":3,"verified":true,"reviewed":true,"guard_blocks":3,"dim_blocks":0,"exhausted":false,"dispatches":1,"outcome":"shipped","skip_count":0,"serendipity_count":0}
+{"session_id":"s2","start_ts":$((NOW - 1800)),"end_ts":$((NOW - 900)),"domain":"coding","intent":"execution","edit_count":3,"verified":true,"reviewed":true,"guard_blocks":3,"dim_blocks":0,"exhausted":false,"dispatches":1,"outcome":"shipped","skip_count":0,"serendipity_count":0}
+EOF
+out="$(run_report week)"
+assert_contains "high gate-fire density heuristic fires" "High gate-fire density" "${out}"
+
+# ----------------------------------------------------------------------
+printf 'Test 13: skip-rate heuristic fires when skips/blocks >= 40%%\n'
+NOW="$(date +%s)"
+cat > "${QP}/session_summary.jsonl" <<EOF
+{"session_id":"s1","start_ts":${NOW},"end_ts":${NOW},"domain":"coding","intent":"execution","edit_count":3,"verified":true,"reviewed":true,"guard_blocks":2,"dim_blocks":0,"exhausted":false,"dispatches":1,"outcome":"shipped","skip_count":1,"serendipity_count":0}
+EOF
+out="$(run_report week)"
+assert_contains "high skip-rate heuristic fires" "High skip rate" "${out}"
+
+# ----------------------------------------------------------------------
+printf 'Test 14: serendipity heuristic fires whenever count > 0\n'
+NOW="$(date +%s)"
+cat > "${QP}/session_summary.jsonl" <<EOF
+{"session_id":"s1","start_ts":${NOW},"end_ts":${NOW},"domain":"coding","intent":"execution","edit_count":3,"verified":true,"reviewed":true,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":1,"outcome":"shipped","skip_count":0,"serendipity_count":2}
+EOF
+out="$(run_report week)"
+assert_contains "serendipity heuristic fires" "Serendipity caught 2 adjacent" "${out}"
+
+# ----------------------------------------------------------------------
+printf 'Test 15: archetype convergence heuristic fires when one arch ≥ 3 and unique < 4\n'
+NOW="$(date +%s)"
+rm -f "${QP}/session_summary.jsonl"
+cat > "${QP}/used-archetypes.jsonl" <<EOF
+{"ts":"${NOW}","session":"s1","project_key":"abc","archetype":"Stripe","platform":"web","domain":"fintech","agent":"frontend-developer"}
+{"ts":"${NOW}","session":"s2","project_key":"abc","archetype":"Stripe","platform":"web","domain":"fintech","agent":"frontend-developer"}
+{"ts":"${NOW}","session":"s3","project_key":"abc","archetype":"Stripe","platform":"web","domain":"fintech","agent":"frontend-developer"}
+{"ts":"${NOW}","session":"s4","project_key":"abc","archetype":"Linear","platform":"web","domain":"devtool","agent":"frontend-developer"}
+EOF
+out="$(run_report week)"
+assert_contains "archetype convergence heuristic fires" "Archetype convergence" "${out}"
+
+# ----------------------------------------------------------------------
+printf 'Test 16: heuristics suppress when thresholds NOT met\n'
+NOW="$(date +%s)"
+rm -f "${QP}/used-archetypes.jsonl"
+cat > "${QP}/session_summary.jsonl" <<EOF
+{"session_id":"s1","start_ts":${NOW},"end_ts":${NOW},"domain":"coding","intent":"execution","edit_count":3,"verified":true,"reviewed":true,"guard_blocks":1,"dim_blocks":0,"exhausted":false,"dispatches":1,"outcome":"shipped","skip_count":0,"serendipity_count":0}
+{"session_id":"s2","start_ts":$((NOW - 1800)),"end_ts":$((NOW - 900)),"domain":"coding","intent":"execution","edit_count":3,"verified":true,"reviewed":true,"guard_blocks":1,"dim_blocks":0,"exhausted":false,"dispatches":1,"outcome":"shipped","skip_count":0,"serendipity_count":0}
+EOF
+out="$(run_report week)"
+# 2 blocks across 2 sessions = 1.0/session, below the 2.1 threshold.
+if [[ "${out}" == *"High gate-fire density"* ]]; then
+  printf '  FAIL: heuristic mis-fired on 1.0 blocks/session\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+# No skips, no serendipity, no archetypes → none of those heuristics either.
+assert_contains "clean line surfaces when nothing trips" "No clear patterns to call out" "${out}"
+
+# ----------------------------------------------------------------------
 printf '\n=== Show-Report Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]] || exit 1

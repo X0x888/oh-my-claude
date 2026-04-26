@@ -16,3 +16,5 @@
 {"prompt_preview":"what do you think about the current architecture?","intent":"advisory","domain":"general","note":"opinion-seeking; advisory-means-no-edits memory still applies"}
 {"prompt_preview":"sisyphus turn this into a memo","intent":"execution","domain":"writing","note":"sisyphus alias activates ULW; writing domain"}
 {"prompt_preview":"ulw refactor the lock primitives in common.sh","intent":"execution","domain":"coding","note":"ulw alias without slash; coding"}
+{"prompt_preview":"draft the memo and prepare the agenda for next week","intent":"execution","domain":"mixed","note":"v1.17.0 non-coding mixed: writing (draft+memo bigram + memo unigram) ≥ 2 AND operations (prepare+agenda bigram + agenda unigram) ≥ 2 → mixed via the new floor=2 rule"}
+{"prompt_preview":"compose a recap of the Q3 review for the leadership update","intent":"execution","domain":"writing","note":"v1.17.0 broader writing_bigrams catches operations-shaped deliverables (recap, update) as writing; no operations leg here → stays writing"}

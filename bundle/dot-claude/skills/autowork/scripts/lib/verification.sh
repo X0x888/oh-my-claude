@@ -242,7 +242,12 @@ classify_mcp_verification_tool() {
 # single passive observation (e.g. an empty browser_snapshot) cannot clear
 # the verify gate on its own. Passing the gate requires either:
 #   - Output that carries assertion/pass-fail signals (+15/+10 bonuses), OR
-#   - A UI-edit context bonus (+20) when recent edits were to UI files.
+#   - A UI-edit context bonus when recent edits were to UI files. The
+#     bonus is +20 for *targeted* checks (DOM/console/network/eval) and
+#     capped at +10 for *purely passive* observations (visual screenshots
+#     of either browser or computer-use), so a passive screenshot in a
+#     UI-edit session does NOT silently clear the gate at the default
+#     threshold of 40 without an assertion-bearing signal.
 #
 # Args: verify_type, output, has_ui_context ("true"/"false")
 score_mcp_verification_confidence() {
@@ -264,9 +269,20 @@ score_mcp_verification_confidence() {
   esac
 
   # UI-context bonus: if recent edits include UI files, browser-based
-  # verification becomes meaningfully more relevant.
+  # verification becomes meaningfully more relevant. Targeted checks
+  # (DOM/console/network/eval) earn the full +20; purely passive
+  # screenshots earn only +10 so they cannot clear the default
+  # threshold (40) on context alone — an assertion-bearing signal in
+  # the output is still required.
   if [[ "${has_ui_context}" == "true" ]]; then
-    score=$((score + 20))
+    case "${verify_type}" in
+      browser_visual_check|visual_check)
+        score=$((score + 10))
+        ;;
+      *)
+        score=$((score + 20))
+        ;;
+    esac
   fi
 
   # Bonus: output contains assertion-like content or test counts

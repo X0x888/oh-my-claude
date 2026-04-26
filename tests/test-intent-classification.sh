@@ -636,6 +636,42 @@ printf '\nMixed:\n'
 assert_domain "mixed" "Implement the caching layer and write a report on performance improvements"
 assert_domain "mixed" "Refactor the API and summarize the architecture changes"
 
+# --- Mixed: non-coding pairs (v1.17.0). Both domains must score ≥2 to
+# avoid misclassifying a single dominant domain with a small tangential
+# mention (e.g., "draft a project proposal for an AI-assisted research
+# workflow" — research is the topic, not a separate work stream).
+printf '\nMixed (non-coding pairs, v1.17.0):\n'
+assert_domain "mixed" "Draft the memo and prepare the agenda for next week"
+assert_domain "mixed" "Research the alternatives and write the recommendation memo"
+
+# Boundary: writing prompts with operations-shaped DELIVERABLES (v1.17.0
+# broadened writing_bigrams to allow articles + recap/memo/follow-up
+# style nouns). A standalone writing prompt with no operations leg
+# stays writing — the deliverable noun does NOT cause the prompt to
+# leak into operations.
+printf '\nWriting (broader bigrams: articles + operations-shaped deliverables, v1.17.0):\n'
+assert_domain "writing" "Write the follow-up email to the customer about the delay"
+assert_domain "writing" "Compose a recap of the Q3 review for the leadership update"
+assert_domain "writing" "Draft a brief on the performance numbers for the board"
+
+# Boundary: writing-dominant with secondary topic mention stays writing
+# (operations/research mention is the topic, not separate work).
+assert_domain "writing" "Draft a project proposal for an AI-assisted research workflow"
+
+# Boundary preservation: non-coding pairs that score 1+1 must NOT mix.
+# The v1.17.0 mixed_floor=2 rule for non-coding pairs is intentional — it
+# preserves the pre-v1.17.0 single-domain behavior for low-confidence
+# secondary signals. Pre-v1.17.0 mixed required `coding_score > 0` so
+# these prompts were never mixed; v1.17.0 keeps that behavior with the
+# floor while opening the door to higher-confidence non-coding pairs.
+printf '\nMixed floor preservation (non-coding pairs at score=1 each must NOT mix):\n'
+# "Brainstorm options and write the announcement" — research(brainstorm? no
+# unigram match) + writing(announcement? not in unigrams) + write+announcement
+# bigram (+1 to writing) = w=1, r=0. Doesn't mix; deterministic primary.
+# Use a more concrete shape: keep one each at score 1, both unigram-only.
+assert_domain "research" "Investigate the timeline"
+assert_domain "operations" "Plan the meeting"
+
 # --- Coding: design/UI signals ---
 printf '\nCoding (design/UI signals):\n'
 assert_domain "coding" "Build a landing page for our SaaS product"

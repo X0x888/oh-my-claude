@@ -180,6 +180,42 @@ got="$(score_mcp_verification_confidence 'browser_eval_check' \
 assert_eq "browser_eval_check + counts + outcome + UI" "80" "${got}"
 
 # ----------------------------------------------------------------------
+printf 'Test 8b: passive types cannot clear default threshold (40) on UI context alone\n'
+# Passive observation types (visual screenshots) get a capped UI bonus
+# (+10 instead of +20), so an empty-output passive call in a UI-edit
+# session lands BELOW the default threshold and still requires an
+# assertion-bearing signal. The intent is documented at the head of
+# score_mcp_verification_confidence.
+
+# browser_visual_check (20) + UI ctx (+10 capped) = 30 — below threshold (40)
+got="$(score_mcp_verification_confidence 'browser_visual_check' '' 'true')"
+assert_eq "browser_visual_check + UI ctx → 30 (capped)" "30" "${got}"
+
+# visual_check (computer-use screenshot, 15) + UI ctx (+10 capped) = 25 — below threshold
+got="$(score_mcp_verification_confidence 'visual_check' '' 'true')"
+assert_eq "visual_check + UI ctx → 25 (capped)" "25" "${got}"
+
+# browser_visual_check + UI ctx + assertion-bearing output:
+# 20 (base) + 10 (capped UI ctx) + 15 (counts) + 10 (outcome) = 55 — above threshold
+got="$(score_mcp_verification_confidence 'browser_visual_check' \
+        '3 tests passed' 'true')"
+assert_eq "browser_visual_check + UI ctx + assertions → 55" "55" "${got}"
+
+# Targeted checks still get the full +20 — DOM/console/network/eval unchanged
+got="$(score_mcp_verification_confidence 'browser_console_check' '' 'true')"
+assert_eq "browser_console_check + UI ctx → 50 (full bonus)" "50" "${got}"
+
+got="$(score_mcp_verification_confidence 'browser_network_check' '' 'true')"
+assert_eq "browser_network_check + UI ctx → 50 (full bonus)" "50" "${got}"
+
+# No-UI-context: passive types unchanged — base scores only
+got="$(score_mcp_verification_confidence 'browser_visual_check' '' 'false')"
+assert_eq "browser_visual_check no UI ctx → 20" "20" "${got}"
+
+got="$(score_mcp_verification_confidence 'visual_check' '' 'false')"
+assert_eq "visual_check no UI ctx → 15" "15" "${got}"
+
+# ----------------------------------------------------------------------
 printf 'Test 9: smoke — classify_mcp_verification_tool buckets are correct\n'
 got="$(classify_mcp_verification_tool 'mcp__plugin_playwright_playwright__browser_snapshot')"
 assert_eq "playwright snapshot → browser_dom_check" "browser_dom_check" "${got}"

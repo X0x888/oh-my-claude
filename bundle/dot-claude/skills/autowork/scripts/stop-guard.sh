@@ -95,7 +95,8 @@ if ! is_execution_intent_value "${task_intent}"; then
       if [[ -z "${advisory_verify_ts}" && -z "${verify_ts}" ]] && [[ "${advisory_guard_blocks}" -lt 1 ]]; then
         write_state "advisory_guard_blocks" "$((advisory_guard_blocks + 1))"
         record_gate_event "advisory" "block" "block_count=1" "block_cap=1"
-        jq -nc --arg reason "[Advisory gate \u00b7 1/1] this is an advisory task over a codebase, but no code inspection or build/test verification was detected. Before finalizing your response, read or search the actual codebase to ground your recommendations in evidence. If you have already inspected code via other means, briefly list the files inspected and restate your key recommendation at the end." '{"decision":"block","reason":$reason}'
+        advisory_recovery="$(format_gate_recovery_line "read or search the affected code (Read/Grep/Glob), then re-issue your summary citing files inspected. To bypass once with reason, run /ulw-skip.")"
+        jq -nc --arg reason "[Advisory gate \u00b7 1/1] this is an advisory task over a codebase, but no code inspection or build/test verification was detected. Before finalizing your response, read or search the actual codebase to ground your recommendations in evidence. If you have already inspected code via other means, briefly list the files inspected and restate your key recommendation at the end.${advisory_recovery}" '{"decision":"block","reason":$reason}'
         exit 0
       fi
     fi
@@ -113,7 +114,8 @@ if [[ -n "${last_assistant_message}" ]] \
     write_state "session_handoff_blocks" "$((session_handoff_blocks + 1))"
     record_gate_event "session-handoff" "block" \
       "block_count=$((session_handoff_blocks + 1))" "block_cap=2"
-    jq -nc --arg reason "[Session-handoff gate \u00b7 $((session_handoff_blocks + 1))/2] your last response explicitly deferred remaining work to a future session. In ultrawork mode, do not stop with 'next wave', 'next phase', or 'ready for a new session' language unless the user explicitly asked for a checkpoint. Continue the remaining work now. If you genuinely must pause, explain the hard blocker or ask the user whether they want a checkpoint." '{"decision":"block","reason":$reason}'
+    handoff_recovery="$(format_gate_recovery_line "continue the deferred work now in this session, OR ask the user explicitly whether they want a checkpoint. To bypass once with reason, run /ulw-skip.")"
+    jq -nc --arg reason "[Session-handoff gate \u00b7 $((session_handoff_blocks + 1))/2] your last response explicitly deferred remaining work to a future session. In ultrawork mode, do not stop with 'next wave', 'next phase', or 'ready for a new session' language unless the user explicitly asked for a checkpoint. Continue the remaining work now. If you genuinely must pause, explain the hard blocker or ask the user whether they want a checkpoint.${handoff_recovery}" '{"decision":"block","reason":$reason}'
     exit 0
   fi
 fi
@@ -156,11 +158,12 @@ if [[ "${OMC_DISCOVERED_SCOPE}" == "on" ]] \
         "pending_count=${pending_count}" \
         "wave_total=${wave_total}" \
         "waves_completed=${waves_completed:-0}"
+      scope_recovery="$(format_gate_recovery_line "ship/defer/call-out each pending finding individually in your summary, OR run /mark-deferred <reason> to bulk-defer all pending. To bypass once with reason, run /ulw-skip.")"
       jq -nc \
         --arg reason "[Discovered-scope gate \u00b7 $((discovered_scope_blocks + 1))/${scope_block_cap}] ${pending_count} finding(s) from advisory specialists were captured this session but not addressed in your final summary.${wave_progress} Top pending findings (severity-ranked):
 ${scorecard}
 
-For each pending item, do one of: (a) ship the fix and reference the file/line in your summary, (b) explicitly defer with a one-line reason ('deferred: requires separate investigation' / 'deferred: out of scope per user'), or (c) call it out as a known follow-up risk. Silent skipping is the anti-pattern this gate exists to catch. After updating the summary, retry stop. To bypass once, run /ulw-skip with a reason." \
+For each pending item, do one of: (a) ship the fix and reference the file/line in your summary, (b) explicitly defer with a one-line reason ('deferred: requires separate investigation' / 'deferred: out of scope per user'), or (c) call it out as a known follow-up risk. Silent skipping is the anti-pattern this gate exists to catch.${scope_recovery}" \
         '{"decision":"block","reason":$reason}'
       exit 0
     fi
@@ -431,7 +434,8 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
     write_state "excellence_guard_triggered" "1"
     record_gate_event "excellence" "block" "block_count=1" "block_cap=1" \
       "edited_count=${unique_edited_count}"
-    jq -nc --arg reason "[Excellence gate \u00b7 1/1] standard review and verification passed, but this is a complex task (${unique_edited_count} files edited). Before finalizing, run excellence-reviewer for a fresh-eyes holistic evaluation — completeness against the original objective, unknown unknowns, and what a veteran would add. If you have already done a thorough self-assessment and are confident the deliverable is complete and excellent, explain your reasoning and stop. After the excellence review, restate your key deliverable summary at the end of your response." '{"decision":"block","reason":$reason}'
+    excellence_recovery="$(format_gate_recovery_line "dispatch the excellence-reviewer agent on the wave diff, then restate your deliverable summary. To bypass once with reason (e.g., already self-audited), run /ulw-skip.")"
+    jq -nc --arg reason "[Excellence gate \u00b7 1/1] standard review and verification passed, but this is a complex task (${unique_edited_count} files edited). Before finalizing, run excellence-reviewer for a fresh-eyes holistic evaluation — completeness against the original objective, unknown unknowns, and what a veteran would add. If you have already done a thorough self-assessment and are confident the deliverable is complete and excellent, explain your reasoning and stop. After the excellence review, restate your key deliverable summary at the end of your response.${excellence_recovery}" '{"decision":"block","reason":$reason}'
     exit 0
   fi
   fi # end gate_level full|standard (excellence gate)
@@ -614,7 +618,7 @@ else
     next_action="address the flagged findings or explain why they do not apply"
   fi
 
-  reason="${reason} Still missing: ${missing_items}. Next: ${next_action}."
+  reason="${reason} Still missing: ${missing_items}.$(format_gate_recovery_line "${next_action}")"
 
   if [[ "${guard_blocks}" -ge 2 ]]; then
     # Penultimate block: add progress scorecard for visibility

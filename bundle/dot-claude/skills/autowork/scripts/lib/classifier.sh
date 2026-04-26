@@ -293,9 +293,19 @@ infer_domain() {
   design_bigrams=${design_bigrams:-0}
   coding_bigrams=$((coding_bigrams + design_bigrams))
 
-  # Action + writing-object → writing signal
+  # Action + writing-object → writing signal. v1.17.0 broadens the
+  # pattern to allow optional article words ("a", "the", "my") and
+  # 0-2 intermediary words between verb and deliverable, AND extends
+  # the deliverable noun list to include operations-shaped artifacts
+  # (follow-ups, recaps, briefs, action items, etc.) — these are
+  # concrete written deliverables even when the noun also has an
+  # operations connotation. Closes the gap where a prompt like "plan
+  # the sprint and write the follow-up" scored zero on the writing leg
+  # because "follow-up" was operations-only and "draft a memo" missed
+  # because the previous pattern required no article between verb and
+  # noun.
   local writing_bigrams
-  writing_bigrams=$(count_keyword_matches '\b(writ(e|ing)|draft(ing)?|compos(e|ing)|author(ing)?)\s+(papers?|essays?|reports?|emails?|memos?|articles?|letters?|proposals?|manuscripts?|blogs?\s*posts?)\b' "${text}")
+  writing_bigrams=$(count_keyword_matches '\b(writ(e|ing)|draft(ing)?|compos(e|ing)|author(ing)?|prepar(e|ing))\s+(a\s+|an\s+|the\s+|my\s+|our\s+|this\s+|that\s+|some\s+)?(\w+\s+){0,2}(papers?|essays?|reports?|emails?|memos?|articles?|letters?|proposals?|manuscripts?|blogs?\s*posts?|follow.?ups?|briefs?|responses?|repl(y|ies)|recaps?|summar(y|ies)|status.?updates?|action.?items?|action.?plans?|checklists?|notes?|minutes|updates?|messages?|posts?|wrap.?ups?|read.?outs?)\b' "${text}")
   writing_bigrams=${writing_bigrams:-0}
   local writing_topic_bigrams
   writing_topic_bigrams=$(count_keyword_matches '\b(writ(e|ing)|draft(ing)?|compos(e|ing)|author(ing)?)\s+(about|on)\b' "${text}")
@@ -401,21 +411,43 @@ infer_domain() {
     return
   fi
 
-  # Mixed: requires coding involvement with a second significant domain
-  if [[ "${coding_score}" -gt 0 ]]; then
-    local second_max=0
-    if [[ "${primary_domain}" == "coding" ]]; then
-      for s in "${writing_score}" "${research_score}" "${operations_score}"; do
-        [[ "${s}" -gt "${second_max}" ]] && second_max="${s}"
-      done
-    else
-      second_max="${coding_score}"
+  # Mixed-detection: two domains both clearly present at ≥ 40% ratio.
+  #
+  # Two regimes, with intentionally different floors:
+  #   - Coding involvement (any coding_score > 0) keeps the lower
+  #     historical bar — a single coding signal paired with a single
+  #     writing/research/operations signal is enough. This preserves
+  #     pre-v1.17.0 behavior so coding-adjacent prompts still split
+  #     into coding + non-coding streams.
+  #   - Pure non-coding pairs (operations + writing, research + writing,
+  #     etc.) require BOTH domains to score at least 2. This avoids
+  #     misclassifying a writing-dominant prompt that incidentally
+  #     mentions a research/operations word ("draft a proposal for an
+  #     AI-assisted research workflow") as mixed when the secondary
+  #     domain is just topic flavor, not a separate work stream.
+  local second_max=0
+  for s in "${coding_score}" "${writing_score}" "${research_score}" "${operations_score}"; do
+    if [[ "${s}" -ne "${max_score}" && "${s}" -gt "${second_max}" ]]; then
+      second_max="${s}"
     fi
-    if [[ "${second_max}" -gt 0 && "${max_score}" -gt 0 ]] \
-      && [[ "$(( second_max * 100 / max_score ))" -ge 40 ]]; then
-      printf '%s\n' "mixed"
-      return
-    fi
+  done
+  # Tie at the top — two or more domains at the same max — is mixed.
+  local _tie_count=0
+  for s in "${coding_score}" "${writing_score}" "${research_score}" "${operations_score}"; do
+    [[ "${s}" -eq "${max_score}" ]] && _tie_count=$((_tie_count + 1))
+  done
+  if [[ "${_tie_count}" -ge 2 ]]; then
+    second_max="${max_score}"
+  fi
+
+  local mixed_floor=1
+  if [[ "${coding_score}" -eq 0 ]]; then
+    mixed_floor=2
+  fi
+  if [[ "${second_max}" -ge "${mixed_floor}" && "${max_score}" -ge "${mixed_floor}" ]] \
+    && [[ "$(( second_max * 100 / max_score ))" -ge 40 ]]; then
+    printf '%s\n' "mixed"
+    return
   fi
 
   printf '%s\n' "${primary_domain}"

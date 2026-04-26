@@ -823,6 +823,177 @@ class TestHarnessHealth(unittest.TestCase):
                 os.path.expanduser = orig
 
 
+class TestGateSummary(unittest.TestCase):
+    """v1.17.0 gate-event summary token: surfaces gate fires + finding
+    resolutions for the latest session at-a-glance."""
+
+    def _patch_expanduser(self, tmpdir):
+        return lambda p: p.replace("~", tmpdir)
+
+    def _make_state_root(self, tmpdir):
+        state_root = os.path.join(
+            tmpdir, ".claude", "quality-pack", "state"
+        )
+        os.makedirs(state_root, exist_ok=True)
+        return state_root
+
+    def _write_events(self, session_dir, rows):
+        """Write JSONL gate events to <session_dir>/gate_events.jsonl."""
+        os.makedirs(session_dir, exist_ok=True)
+        path = os.path.join(session_dir, "gate_events.jsonl")
+        with open(path, "w") as fh:
+            for row in rows:
+                fh.write(json.dumps(row) + "\n")
+
+    def test_returns_none_when_state_root_missing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                self.assertIsNone(sl.gate_summary())
+            finally:
+                os.path.expanduser = orig
+
+    def test_returns_none_when_no_sessions(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._make_state_root(tmpdir)
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                self.assertIsNone(sl.gate_summary())
+            finally:
+                os.path.expanduser = orig
+
+    def test_returns_none_when_events_file_missing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = self._make_state_root(tmpdir)
+            os.makedirs(os.path.join(state_root, "session-abc"))
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                self.assertIsNone(sl.gate_summary())
+            finally:
+                os.path.expanduser = orig
+
+    def test_returns_none_when_no_blocks_or_resolutions(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = self._make_state_root(tmpdir)
+            session_dir = os.path.join(state_root, "session-abc")
+            # Only finding-status-change rows with status=pending — those
+            # do NOT count as resolutions.
+            self._write_events(session_dir, [
+                {"event": "finding-status-change",
+                 "details": {"finding_status": "pending"}},
+            ])
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                self.assertIsNone(sl.gate_summary())
+            finally:
+                os.path.expanduser = orig
+
+    def test_blocks_only_render_g_token(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = self._make_state_root(tmpdir)
+            session_dir = os.path.join(state_root, "session-abc")
+            self._write_events(session_dir, [
+                {"event": "block", "gate": "advisory"},
+                {"event": "block", "gate": "discovered-scope"},
+                {"event": "block", "gate": "quality"},
+            ])
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                self.assertEqual(sl.gate_summary(), "g:3")
+            finally:
+                os.path.expanduser = orig
+
+    def test_resolutions_only_render_f_token(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = self._make_state_root(tmpdir)
+            session_dir = os.path.join(state_root, "session-abc")
+            self._write_events(session_dir, [
+                {"event": "finding-status-change",
+                 "details": {"finding_status": "shipped"}},
+                {"event": "finding-status-change",
+                 "details": {"finding_status": "deferred"}},
+            ])
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                self.assertEqual(sl.gate_summary(), "f:2")
+            finally:
+                os.path.expanduser = orig
+
+    def test_both_blocks_and_resolutions(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = self._make_state_root(tmpdir)
+            session_dir = os.path.join(state_root, "session-abc")
+            self._write_events(session_dir, [
+                {"event": "block", "gate": "advisory"},
+                {"event": "block", "gate": "quality"},
+                {"event": "finding-status-change",
+                 "details": {"finding_status": "shipped"}},
+                # pending status MUST NOT count as a resolution
+                {"event": "finding-status-change",
+                 "details": {"finding_status": "pending"}},
+                # event we don't recognize is ignored
+                {"event": "wave-status-change",
+                 "details": {"wave_status": "complete"}},
+            ])
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                self.assertEqual(sl.gate_summary(), "g:2 f:1")
+            finally:
+                os.path.expanduser = orig
+
+    def test_picks_newest_session(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = self._make_state_root(tmpdir)
+            old_dir = os.path.join(state_root, "session-old")
+            new_dir = os.path.join(state_root, "session-new")
+            self._write_events(old_dir, [
+                {"event": "block", "gate": "advisory"},
+                {"event": "block", "gate": "quality"},
+                {"event": "block", "gate": "excellence"},
+            ])
+            self._write_events(new_dir, [
+                {"event": "block", "gate": "advisory"},
+            ])
+            import time as _t
+            now = _t.time()
+            os.utime(old_dir, (now - 1000, now - 1000))
+            os.utime(new_dir, (now, now))
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                # Newest session has 1 block, NOT 3.
+                self.assertEqual(sl.gate_summary(), "g:1")
+            finally:
+                os.path.expanduser = orig
+
+    def test_tolerates_malformed_jsonl(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = self._make_state_root(tmpdir)
+            session_dir = os.path.join(state_root, "session-abc")
+            os.makedirs(session_dir, exist_ok=True)
+            path = os.path.join(session_dir, "gate_events.jsonl")
+            # Mix of valid + invalid + blank rows; valid rows still count.
+            with open(path, "w") as fh:
+                fh.write(json.dumps({"event": "block", "gate": "advisory"}) + "\n")
+                fh.write("not-json garbage\n")
+                fh.write("\n")
+                fh.write(json.dumps({"event": "block", "gate": "quality"}) + "\n")
+                fh.write("{partial\n")
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                self.assertEqual(sl.gate_summary(), "g:2")
+            finally:
+                os.path.expanduser = orig
+
+
 class TestMainIntegration(unittest.TestCase):
     """Test the full statusline by running the script as a subprocess."""
 

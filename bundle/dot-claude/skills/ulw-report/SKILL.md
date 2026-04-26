@@ -19,8 +19,14 @@ Run the report:
 bash ~/.claude/skills/autowork/scripts/show-report.sh ${ARGUMENTS:-week}
 ```
 
-Display the output as-is. Do not summarize, paraphrase, or add interpretation
-above what the script already prints — the report is the deliverable.
+Display the output as-is. The report ends with a `## Patterns to consider`
+section that surfaces 2–3 actionable interpretations from the data
+(high gate-fire density, skip rate, classifier misfires, archetype
+convergence, reviewer find rate); when no thresholds trip, the section
+emits a clean "no patterns to call out" line. The interpretations are
+heuristic, not assertions — treat them as starting points the user can
+accept, refine, or ignore. Do not paraphrase or re-summarize above the
+script's output — the report itself is the deliverable.
 
 The report joins data from `~/.claude/quality-pack/`:
 - `session_summary.jsonl` — per-session outcome rows (gates fired, skips, serendipity, finding/wave outcomes)

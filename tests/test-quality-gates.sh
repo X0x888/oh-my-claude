@@ -439,20 +439,36 @@ assert_eq "passive console blocked" \
   "false" \
   "$([[ "$(score_mcp_verification_confidence "browser_console_check" "")" -ge "${OMC_VERIFY_CONFIDENCE_THRESHOLD}" ]] && printf true || printf false)"
 
-# --- UI context bonus brings observation tools above threshold ---
+# --- UI context bonus brings TARGETED observation tools above threshold ---
+# Targeted checks (DOM/console/network/eval) earn the full +20 bonus.
+# Purely passive screenshots (browser_visual_check, visual_check) earn
+# only +10 so they cannot clear the threshold on UI context alone — an
+# assertion-bearing signal in the output is still required. This is the
+# v1.17.0 tightening of the scoring described at the top of
+# score_mcp_verification_confidence.
 assert_eq "snapshot + UI context = 45 (passes)" \
   "45" \
   "$(score_mcp_verification_confidence "browser_dom_check" "" "true")"
 
-assert_eq "screenshot + UI context = 40 (passes)" \
-  "40" \
+# v1.17.0: visual screenshots cap UI bonus at +10 — 20 + 10 = 30 < threshold
+assert_eq "browser_visual_check + UI context = 30 (still blocked, capped)" \
+  "30" \
   "$(score_mcp_verification_confidence "browser_visual_check" "" "true")"
+
+assert_eq "browser_visual_check + UI ctx below threshold (capped)" \
+  "false" \
+  "$([[ "$(score_mcp_verification_confidence "browser_visual_check" "" "true")" -ge "${OMC_VERIFY_CONFIDENCE_THRESHOLD}" ]] && printf true || printf false)"
 
 assert_eq "console + UI context = 50 (passes)" \
   "50" \
   "$(score_mcp_verification_confidence "browser_console_check" "" "true")"
 
-assert_eq "computer-use + UI context = 35 (still blocked)" \
+# v1.17.0: visual_check (computer-use) caps UI bonus at +10 — 15 + 10 = 25 < threshold
+assert_eq "computer-use + UI context = 25 (still blocked, capped)" \
+  "25" \
+  "$(score_mcp_verification_confidence "visual_check" "" "true")"
+
+assert_eq "computer-use + UI context below threshold (capped)" \
   "false" \
   "$([[ "$(score_mcp_verification_confidence "visual_check" "" "true")" -ge "${OMC_VERIFY_CONFIDENCE_THRESHOLD}" ]] && printf true || printf false)"
 
