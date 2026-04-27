@@ -787,6 +787,64 @@ printf '\nCouncil positives (plural and compound edge cases):\n'
 assert_council "evaluate my projects"
 assert_council "assess our products"
 
+printf '\nCouncil positives (Pattern 1 noun broadening — feature/capability/surface/subsystem):\n'
+assert_council "evaluate this feature"
+assert_council "audit the agent memory wall feature"
+assert_council "review the auth capability"
+assert_council "assess the API surface"
+assert_council "evaluate the auth subsystem"
+
+printf '\nCouncil positives (Pattern 6 — implementation-bar markers):\n'
+assert_council "make this feature impeccable to use"
+assert_council "make the application production-ready"
+assert_council "make the project polished"
+assert_council "make the codebase world-class"
+assert_council "make the platform enterprise grade"
+assert_council "make the product flawless"
+assert_council "make my app prod-ready"
+assert_council "make our backend production grade"
+assert_council "make it impeccable"
+assert_council "make this product world class"
+
+printf '\nCouncil positives (Pattern 3 loosened — intermediary words before "improve"):\n'
+assert_council "what should we do next to further improve the project"
+assert_council "what should we do next to improve our codebase"
+assert_council "what should I focus on tomorrow to improve our app"
+assert_council "what should we tackle to improve the platform"
+
+printf '\nCouncil negatives (Pattern 6 narrow scope still filtered):\n'
+assert_not_council "make this function impeccable"
+assert_not_council "make this method polished"
+assert_not_council "make sure to keep going"
+assert_not_council "I will make a final review of this PR"
+
+printf '\nCouncil negatives (Pattern 6 — make sure / templating / artifact targets):\n'
+assert_not_council "make sure the api is production-ready before shipping"
+assert_not_council "make sure the docs are polished"
+assert_not_council "make certain the tests are excellent"
+assert_not_council "make a perfect commit message"
+assert_not_council "make an excellent README"
+assert_not_council "lets make a polished PR description"
+assert_not_council "make my PR description perfect"
+assert_not_council "make the commit message impeccable"
+assert_not_council "make the docstring polished"
+
+printf '\nCouncil negatives (Pattern 3 loosened — narrow scope still filtered):\n'
+assert_not_council "what should we do next to improve this function"
+assert_not_council "what should I do to improve in the database query"
+
+printf '\nCouncil negatives (new Pattern 1 noun compound exclusions):\n'
+assert_not_council "evaluate the feature flag"
+assert_not_council "review the feature toggle"
+assert_not_council "audit the feature request"
+assert_not_council "evaluate the capability matrix"
+assert_not_council "review the feature spec"
+assert_not_council "evaluate the feature plan"
+assert_not_council "audit the feature documentation"
+assert_not_council "review the feature description"
+assert_not_council "evaluate the subsystem boundary"
+assert_not_council "review the surface area"
+
 printf '\nCouncil negatives (Pattern 1: post-noun compounds):\n'
 assert_not_council "evaluate my project manager"
 assert_not_council "evaluate my project manager's performance"

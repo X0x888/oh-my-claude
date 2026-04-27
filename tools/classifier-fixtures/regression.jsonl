@@ -18,3 +18,8 @@
 {"prompt_preview":"ulw refactor the lock primitives in common.sh","intent":"execution","domain":"coding","note":"ulw alias without slash; coding"}
 {"prompt_preview":"draft the memo and prepare the agenda for next week","intent":"execution","domain":"mixed","note":"v1.17.0 non-coding mixed: writing (draft+memo bigram + memo unigram) ≥ 2 AND operations (prepare+agenda bigram + agenda unigram) ≥ 2 → mixed via the new floor=2 rule"}
 {"prompt_preview":"compose a recap of the Q3 review for the leadership update","intent":"execution","domain":"writing","note":"v1.17.0 broader writing_bigrams catches operations-shaped deliverables (recap, update) as writing; no operations leg here → stays writing"}
+{"prompt_preview":"/ulw make this feature impeccable to use","intent":"execution","domain":"general","note":"Pattern 6 — implementation-bar marker; council fires upstream"}
+{"prompt_preview":"/ulw make the application production-ready","intent":"execution","domain":"operations","note":"Pattern 6 — production-ready (hyphenated); domain operations because release/plan/prepare scoring dominates"}
+{"prompt_preview":"/ulw make this function impeccable","intent":"execution","domain":"coding","note":"Pattern 6 negative — Tier B narrow scope filters council fire"}
+{"prompt_preview":"/ulw make sure the api is production-ready before shipping","intent":"execution","domain":"coding","note":"Pattern 6 negative — make sure | template ask, not council"}
+{"prompt_preview":"/ulw what should we do next to further improve the project","intent":"advisory","domain":"general","note":"Pattern 3 loosened — multi-word bridge between we and improve triggers COUNCIL detection (independent axis); bare question form → intent advisory"}

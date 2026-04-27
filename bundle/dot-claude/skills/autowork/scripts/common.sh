@@ -2652,12 +2652,17 @@ _has_scoped_improve_target() {
 is_council_evaluation_request() {
   local text="$1"
 
-  # Pattern 1: "[evaluate|assess|audit|review] [my|the|this|our] [entire|whole]? [project|codebase|app|product|repo|extension|site|...]"
+  # Pattern 1: "[evaluate|assess|audit|review] [my|the|this|our] [entire|whole]? [project|codebase|app|product|repo|extension|site|feature|capability|...]"
   # Guarded: reject if the project-level word is part of a compound noun
   # (e.g., "project manager", "project plan", "product team", "extension manager")
-  if grep -Eiq '(evaluat|assess|audit|review|inspect|analyz)\w*\s+(my|the|this|our|entire|whole|full)\s+((\w+\s+){0,2})?(projects?|codebase|code.?base|app(lication)?|products?|repo(sitory)?|software|system|extensions?|sites?|websites?|platforms?|librar(y|ies)|packages?|plugins?|frameworks?)\b' <<<"${text}" \
+  # Noun list extended with `features?|capabilit(y|ies)|surfaces?|subsystems?` —
+  # high-level scopes. Words like `module|component|flow|area` are intentionally
+  # absent: they live in `_has_narrow_scope` Tier B as narrow-scope markers, so
+  # adding them here would flip "evaluate this module" / "improve the flow" tests.
+  if grep -Eiq '(evaluat|assess|audit|review|inspect|analyz)\w*\s+(my|the|this|our|entire|whole|full)\s+((\w+\s+){0,3})?(projects?|codebase|code.?base|app(lication)?|products?|repo(sitory)?|software|system|extensions?|sites?|websites?|platforms?|librar(y|ies)|packages?|plugins?|frameworks?|features?|capabilit(y|ies)|surfaces?|subsystems?)\b' <<<"${text}" \
      && ! grep -Eiq '\b(project|product)\s+(manager|management|plan|planning|structure|timeline|scope|lead|owner|director|description|proposal|requirements?|specification|charter|budget|schedule|board|team|files?|folders?|documentation|dependencies|configuration|roadmap|backlog|strategy|design|review)\b' <<<"${text}" \
-     && ! grep -Eiq '\b(extension|package|plugin|site|platform|framework|library)\s+(manager|management|registry|store|marketplace|directory|map|version|settings|manifest)\b' <<<"${text}"; then
+     && ! grep -Eiq '\b(extension|package|plugin|site|platform|framework|library)\s+(manager|management|registry|store|marketplace|directory|map|version|settings|manifest)\b' <<<"${text}" \
+     && ! grep -Eiq '\b(feature|capability|subsystem|surface)\s+(manager|management|flag|flags|toggle|toggles|request|requests|map|matrix|spec|specs|specification|specifications|plan|plans|description|descriptions|documentation|area|areas|boundary|boundaries)\b' <<<"${text}"; then
     return 0
   fi
 
@@ -2666,7 +2671,13 @@ is_council_evaluation_request() {
     && return 0
 
   # Pattern 3: "what [should I improve | needs improvement | am I missing]"
-  if grep -Eiq '\bwhat\s+(should\s+(i|we)\s+improve|needs?\s+(to\s+be\s+)?(improv|fix|chang)|am\s+i\s+miss|are\s+(we|the)\s+miss|could\s+(be\s+)?(improv|better))' <<<"${text}" \
+  # The "should I/we improve" sub-pattern allows up to 8 intermediary words
+  # between the pronoun and "improve" so natural phrasings like "what should
+  # we do next to further improve <X>" or "what should I focus on tomorrow
+  # to improve <X>" match. Without this, the single-space `\s+` previously
+  # required `improve` to be the literal next token, which missed common
+  # real-user phrasings (see council/SKILL.md product-evaluation prompts).
+  if grep -Eiq '\bwhat\s+(should\s+(i|we)(\s+\w+){0,8}\s+improve|needs?\s+(to\s+be\s+)?(improv|fix|chang)|am\s+i\s+miss|are\s+(we|the)\s+miss|could\s+(be\s+)?(improv|better))' <<<"${text}" \
      && ! _has_narrow_scope "${text}"; then
     return 0
   fi
@@ -2685,6 +2696,27 @@ is_council_evaluation_request() {
   if grep -Eiq '\b(plan\s+for\s+improvements?|evaluat\w*.*and\s+(then\s+)?plan|review.*and\s+improve|evaluat\w*.*improv)\b' <<<"${text}" \
      && ! _has_narrow_scope "${text}" \
      && ! _has_scoped_improve_target "${text}"; then
+    return 0
+  fi
+
+  # Pattern 6: implementation-bar marker — "make [my|the|this|our|these|all] X
+  # impeccable / production-ready / world-class / polished / enterprise-grade /
+  # flawless / perfect / excellent". These phrases imply whole-project quality
+  # elevation; council/SKILL.md:143 already lists "make X impeccable" as a
+  # Phase 8 entry marker, but without this pattern, the phrase did not trigger
+  # council dispatch upstream.
+  #
+  # Determiner is required (my/the/this/our/these/all) so copular phrasings
+  # ("make sure …", "make a perfect commit message", "make an excellent
+  # README") do NOT match — those are templating instructions, not project-
+  # level quality asks. _has_narrow_scope still filters Tier-B narrow targets
+  # ("this function", "this method"). The (sure|certain) negative guard
+  # below is belt-and-suspenders for the "make sure X is …" idiom which
+  # technically matches the article "the" but should never trigger council.
+  if grep -Eiq '\bmake\s+(my|the|this|our|these|all|it)\s+(\w+([[:space:]]+\w+){0,3}\s+)?(impeccable|perfect|world.?class|production.?ready|prod.?ready|production.?grade|polished|enterprise.?grade|excellent|flawless)\b' <<<"${text}" \
+     && ! grep -Eiq '\bmake\s+(sure|certain)\b' <<<"${text}" \
+     && ! grep -Eiq '\b(commit\s+message|pr\s+description|readme|changelog|docstring|comment|test\s+name|variable\s+name)\b' <<<"${text}" \
+     && ! _has_narrow_scope "${text}"; then
     return 0
   fi
 
