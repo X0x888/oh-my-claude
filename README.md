@@ -11,50 +11,72 @@ A cognitive quality harness for Claude Code. Bash hooks, skills, and specialist 
 
 > **Specialist agents activate automatically based on your task.** You don't need to learn agent names -- just describe what you want to accomplish, and `/ulw` handles the rest.
 
+![oh-my-claude /ulw-demo — quality gates in action](docs/ulw-demo.gif)
+
+*Two minutes of `/ulw-demo` showing the quality gates fire on a real edit — see [Quick start](#quick-start) below to install and try it yourself.*
+
+## What you get
+
+- **Hard quality gates that actually block.** Claude can't mark a task done until tests, review, and verification are complete — no more "I've made the changes" with broken code or skipped review.
+- **Domain routing across coding, writing, research, ops.** Each domain gets its own specialist chain. Not just a coding tool that accepts prose.
+- **Session continuity through compaction.** Objectives, decisions, and review state survive context compaction — you don't lose the plot mid-task.
+
 ---
 
 ## Quick start
 
-Two paths — pick whichever fits how you usually install dev tools.
-
-**One-liner** (no clone, clones for you under `~/.local/share/oh-my-claude`):
+Requires `jq` and `rsync`. macOS: `brew install jq` (`rsync` is preinstalled). Debian/Ubuntu: `apt install jq rsync`. `install.sh` hard-fails if `jq` is missing.
 
 ```bash
+# One-liner (clones to ~/.local/share/oh-my-claude for you):
 curl -fsSL https://raw.githubusercontent.com/X0x888/oh-my-claude/main/install-remote.sh | bash
-# Restart Claude Code, then:
-bash ~/.local/share/oh-my-claude/verify.sh
+
+# OR manual clone (audit before installing):
+git clone https://github.com/X0x888/oh-my-claude.git ~/.local/share/oh-my-claude
+bash ~/.local/share/oh-my-claude/install.sh
 ```
 
-**Manual clone** (audit before installing):
+After install:
+
+1. **Restart Claude Code.** Required — hooks only load at session start, so `/ulw` silently no-ops in your current session until you restart.
+2. **Verify**: `bash ~/.local/share/oh-my-claude/verify.sh`
+3. **Try it**: `/ulw-demo` — a guided walkthrough (under 2 minutes) that fires the quality gates on a real edit so you see them work.
+4. **Real work**: `/ulw fix the failing test and add regression coverage` (or anything, in any domain).
+
+Both install paths keep Claude Code's permission prompts on; once you trust the harness, [`--bypass-permissions`](#power-user-setup) removes them. Quality gates apply either way.
+
+Already in Claude Code and want to skip the manual steps? See [AI-assisted install](#ai-assisted-install) below.
+
+## AI-assisted install
+
+Already in Claude Code? Paste one of these prompts directly. Each is self-contained, but the canonical step-by-step lives in the cloned repo's [`AGENTS.md` § "Agent Install Protocol"](AGENTS.md#agent-install-protocol--installing-or-updating-oh-my-claude) — the prompts point there so the README and the protocol don't drift.
+
+**First-time install:**
+
+> Install oh-my-claude. Do these in order:
+> 1. Clone `https://github.com/X0x888/oh-my-claude.git` into `~/.local/share/oh-my-claude` (canonical path — matches the curl-pipe-bash bootstrapper).
+> 2. Read `~/.local/share/oh-my-claude/AGENTS.md` § "Agent Install Protocol" and follow it end-to-end.
+> 3. Use `--model-tier=balanced` (don't ask me).
+> 4. After `verify.sh` passes, quote its "What next?" footer back to me verbatim — do not paraphrase.
+> 5. Tell me explicitly to restart Claude Code and run `/ulw-demo` in the new session. Hooks won't fire in this current session.
+
+**Update an existing install:**
+
+> Update oh-my-claude. Read `repo_path=` from `~/.claude/oh-my-claude.conf`, then follow `<repo_path>/AGENTS.md` § "Agent Install Protocol" → Step 2 (Update). After running `install.sh` and `verify.sh`, list the commits the pull brought in and tell me whether to restart Claude Code (only if the bundle changed).
+
+## Updating an existing install
 
 ```bash
-git clone https://github.com/X0x888/oh-my-claude.git
-cd oh-my-claude
-bash install.sh
-# Restart Claude Code, then:
+cd ~/.local/share/oh-my-claude     # or your repo_path from ~/.claude/oh-my-claude.conf
+git pull && bash install.sh
 bash verify.sh
 ```
 
-That installs the full harness with Claude Code's permission prompts kept on — every tool invocation still asks for your approval. Once you've seen the harness work and decide you trust it, the optional `--bypass-permissions` flag (covered under [Power-user setup](#power-user-setup) below) lets `/ulw` run without those prompts. The harness's quality gates apply either way.
+Restart Claude Code if any bundle file changed; the `verify.sh` summary lists orphans if files were removed.
 
-**First time?** Run `/ulw-demo` to see the quality gates in action before starting real work.
+Your `--model-tier` preference persists in `~/.claude/oh-my-claude.conf` and re-applies automatically. The statusline shows a yellow `↑v<version>` arrow when the source repo is ahead of the installed bundle — re-run `install.sh` to sync.
 
-Then jump into real work:
-
-```
-/ulw fix the failing test and add regression coverage
-```
-
-**Already installed?** Pull + re-install to pick up new releases — `install.sh` overwrites the bundled hooks, agents, skills, and memory files in `~/.claude/` but preserves your `settings.json` merges, `omc-user/overrides.md`, and any custom agents or skills whose names are outside the bundle (a user-created `oracle.md` *would* get overwritten because `oracle.md` is bundled; `my-reviewer.md` would not):
-
-```bash
-cd /path/to/oh-my-claude
-git pull && bash install.sh
-```
-
-Your model tier preference is saved in `~/.claude/oh-my-claude.conf` and re-applied automatically. When the source repo is ahead of the installed bundle, the statusline shows a yellow `↑v<version>` arrow — re-run `install.sh` to sync. See the FAQ entries [*How do I update oh-my-claude?*](docs/faq.md#how-do-i-update-oh-my-claude) and [*Will updating overwrite my changes?*](docs/faq.md#will-updating-overwrite-my-changes) for the full safety matrix.
-
-![oh-my-claude /ulw-demo — quality gates in action](docs/ulw-demo.gif)
+`install.sh` overwrites bundled files but preserves `settings.json` merges, `omc-user/overrides.md`, and custom agents or skills whose names are outside the bundle. See FAQ: [*How do I update?*](docs/faq.md#how-do-i-update-oh-my-claude) and [*Will updating overwrite my changes?*](docs/faq.md#will-updating-overwrite-my-changes) for the full safety matrix.
 
 ---
 
@@ -128,25 +150,6 @@ Type `/ulw build me a landing page for X` and the harness automatically drives a
 ### Zero dependencies
 
 No npm. No TypeScript. No Node.js runtime. No plugin framework. The entire harness is bash scripts and jq. It works anywhere Claude Code runs, installs in seconds, and leaves no footprint beyond the `~/.claude/` directory.
-
----
-
-## AI-assisted install
-
-Already in Claude Code? Paste one of these prompts directly. Each is self-contained, but the canonical step-by-step lives in the cloned repo's [`AGENTS.md` § "Agent Install Protocol"](AGENTS.md#agent-install-protocol--installing-or-updating-oh-my-claude) — the prompts point there so the README and the protocol don't drift.
-
-**First-time install:**
-
-> Install oh-my-claude. Do these in order:
-> 1. Clone `https://github.com/X0x888/oh-my-claude.git` into `~/.local/share/oh-my-claude` (canonical path — matches the curl-pipe-bash bootstrapper).
-> 2. Read `~/.local/share/oh-my-claude/AGENTS.md` § "Agent Install Protocol" and follow it end-to-end.
-> 3. Use `--model-tier=balanced` (don't ask me).
-> 4. After `verify.sh` passes, quote its "What next?" footer back to me verbatim — do not paraphrase.
-> 5. Tell me explicitly to restart Claude Code and run `/ulw-demo` in the new session. Hooks won't fire in this current session.
-
-**Update an existing install:**
-
-> Update oh-my-claude. Read `repo_path=` from `~/.claude/oh-my-claude.conf`, then follow `<repo_path>/AGENTS.md` § "Agent Install Protocol" → Step 2 (Update). After running `install.sh` and `verify.sh`, list the commits the pull brought in and tell me whether to restart Claude Code (only if the bundle changed).
 
 ## Usage examples
 
