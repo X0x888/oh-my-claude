@@ -34,11 +34,11 @@ Apply each lens in order. Stop early if the design is sound; the goal is to find
    - A leaky abstraction — the consumer must know about the implementation
 
 3. **Simpler model.** Is there a fundamentally simpler abstraction that solves the same problem?
-   - A switch where a registry is being introduced
-   - A function where a class is being introduced
-   - A flat table where a graph is being introduced
-   - In-memory cache where a queue is being introduced
-   - "Just call the API directly" where a wrapper is being introduced
+   - A registry being introduced where a switch covers the cases
+   - A class being introduced where a function would do
+   - A graph being introduced where a flat table would do
+   - A queue being introduced where an in-memory cache would do
+   - A wrapper being introduced where calling the API directly would suffice
 
 4. **Codebase pattern fit.** Does this design match how the rest of the system is built?
    - Introducing a new pattern in isolation when the codebase has an established convention
@@ -48,7 +48,7 @@ Apply each lens in order. Stop early if the design is sound; the goal is to find
 
 ## Triple-check before flagging a load-bearing finding
 
-A finding is "load-bearing" if acting on it would require restructuring the design. Before treating any such finding as load-bearing, confirm all three:
+Without this rule, abstraction critique becomes generic refactor advice — every codebase has *some* inheritance you could call composition, *some* request-response you could call event-driven. The triple-check separates real structural mismatches from taste preferences. A finding is "load-bearing" if acting on it would require restructuring the design. Before treating any such finding as load-bearing, confirm all three:
 
 1. **Recurrence** — The structural mismatch shows up in at least two places, or generates predictable problems beyond the immediate diff. A one-off awkwardness is a defect, not a load-bearing pattern.
 2. **Generativity** — The finding predicts a specific decision the main thread should make differently. "Use composition over inheritance" alone is not generative; "the inheritance hierarchy at module §3 forces consumers to know X, which the request at §5 demonstrates is leaky — switch to a registry of strategies" is.

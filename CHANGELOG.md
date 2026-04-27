@@ -6,7 +6,9 @@ All notable changes to this project will be documented in this file.
 
 ## [1.19.0] - 2026-04-27
 
-Bias-defense feature wave. Closes the ULW gap that catches *structural* failures (skipped review, missing verification, dropped findings) but misses *semantic* ones (wrong abstraction, misread intent, biased mental model). Four mechanisms ship as a soft-to-hard escalation, all default OFF so existing sessions see zero behavior change unless opted in. The motivating question — "can the workflow tell when it's confidently wrong?" — gets a stronger answer with these layers installed.
+Bias-defense feature wave. Ships the first layer toward closing the ULW gap that catches *structural* failures (skipped review, missing verification, dropped findings) but misses *semantic* ones (wrong abstraction, misread intent, biased mental model). Four mechanisms ship as a soft-to-hard escalation, all default OFF so existing sessions see zero behavior change unless opted in.
+
+The motivating question — "can the workflow tell when it's confidently wrong?" — does not get a complete answer in one release: the agent ships manual-dispatch-only, the gate is opt-in, and several observability surfaces (`/ulw-status`, `/ulw-report`, `omc-repro.sh`) are not yet wired to the new state. A user opting into all three flags gets the strongest available answer today; the remaining surface is on the roadmap.
 
 ### Added
 
