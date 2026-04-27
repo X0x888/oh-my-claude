@@ -326,7 +326,12 @@ Route by task shape:
 - library, framework, or external API usage → librarian for official docs and reference implementations (or the context7 MCP when that plugin is installed) to confirm current syntax before writing code that calls it
 - risky plan → metis to pressure-test hidden assumptions
 - hard debugging or architecture uncertainty → oracle
-- domain-specific execution → the closest specialist engineering agent
+- backend services, REST/GraphQL APIs, database schemas, migrations, auth, queues, caching, search → backend-api-developer
+- infrastructure, CI/CD, Docker, Kubernetes, Terraform, deployment, observability → devops-infrastructure-engineer
+- test strategy, coverage gaps, flaky tests, test architecture, fuzzing, performance tests → test-automation-engineer
+- features spanning frontend + backend (auth flows, payments, real-time, file upload, search, notifications) → fullstack-feature-builder
+- Apple platforms (Swift, SwiftUI, Xcode) → ios-ui-developer (screens & animations), ios-core-engineer (data, networking, lifecycle), ios-deployment-specialist (TestFlight & App Store), ios-ecosystem-integrator (HealthKit, WidgetKit, StoreKit, etc.)
+- the framing or paradigm fit feels off — 'is this the right shape of solution?' → abstraction-critic (distinct from metis on plan edge cases and oracle on debugging)
 Discipline:
 - Make changes incrementally — one logical change, verify it, then proceed.
 - Test rigorously after edits — failing to test is the #1 failure mode.

@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Router-suggested engineering specialists in the coding-domain hint.** `prompt-intent-router.sh` now names `backend-api-developer`, `devops-infrastructure-engineer`, `test-automation-engineer`, `fullstack-feature-builder`, the four `ios-*` lanes (`ios-ui-developer`, `ios-core-engineer`, `ios-deployment-specialist`, `ios-ecosystem-integrator`), and `abstraction-critic` in the routing table. Discoverable under `/ulw` without typing a slash command. Replaces the previous generic catch-all so orphan engineering specialists follow the same auto-suggest pattern that already worked for `oracle` / `metis` / `librarian`. 20 assertions / 4 cases in `tests/test-specialist-routing.sh`.
+- **README "Auto-routed vs. manual escape hatches" subsection.** New 6-row table near the skills table clarifying which specialists auto-suggest themselves under `/ulw` (router-suggested + hook-fired + auto-dispatched on prompt pattern) versus which slash commands are escape hatches for standalone use (`/ulw-skip`, `/mark-deferred`, `/ulw-pause`, etc.). Targets the friction concern that users have to memorize `/oracle`, `/metis`, `/librarian` to get full quality — most reasoning specialists were already router-suggested; the table names which engineering specialists now join them and which slash commands stay manual by design.
+
+### Tests
+
+- **`tests/test-specialist-routing.sh`** locks the orphan-specialist names into the coding-domain hint and asserts non-leakage into the writing-domain branch. Brings the test suite to 39 bash + 1 python.
+- **CONTRIBUTING.md test list synced** — was 14 entries stale; now matches `CLAUDE.md` and the canonical 39-test set.
+
 ## [1.20.0] - 2026-04-27
 
 Memory hygiene + onboarding/UX polish wave. Tightens the auto-memory rule so it stops accruing per-release snapshots that duplicate `CHANGELOG.md` and `git log`; ships a `/memory-audit` skill for triage; adds a session-start drift hint when memory is older than 30 days; consolidates 18 historical per-release memory files into a single `project_release_history.md` rollup; surfaces memory health in `/ulw-status`. Folds in the post-v1.19.0 onboarding overhaul (AI-Agent Install Protocol, README restructure, post-install UX polish, editor-critic prose pass) since the themes co-evolve.

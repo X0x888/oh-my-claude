@@ -83,6 +83,19 @@ bash tests/test-verification-lib.sh
 bash tests/test-agent-verdict-contract.sh
 bash tests/test-gate-events.sh
 bash tests/test-discover-session.sh
+bash tests/test-design-contract.sh
+bash tests/test-inline-design-contract.sh
+bash tests/test-archetype-memory.sh
+bash tests/test-cross-session-lock.sh
+bash tests/test-mark-deferred.sh
+bash tests/test-ulw-pause.sh
+bash tests/test-bias-defense-classifier.sh
+bash tests/test-bias-defense-directives.sh
+bash tests/test-metis-on-plan-gate.sh
+bash tests/test-auto-memory-skip.sh
+bash tests/test-memory-audit.sh
+bash tests/test-memory-drift-hint.sh
+bash tests/test-specialist-routing.sh
 python3 -m unittest tests.test_statusline -v
 ```
 

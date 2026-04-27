@@ -242,7 +242,7 @@ oh-my-claude/
 │   ├── output-styles/                       # Output format templates
 │   └── statusline.py                        # Custom statusline widget
 ├── config/settings.patch.json               # Merged into user settings on install
-├── tests/               (35 bash + 1 py)    # See AGENTS.md / CONTRIBUTING.md for full list
+├── tests/               (39 bash + 1 py)    # See AGENTS.md / CONTRIBUTING.md for full list
 ├── tools/                                    # Developer-only tools (not installed)
 └── docs/                                    # Architecture, customization, FAQ, prompts
 ```
@@ -286,6 +286,21 @@ Skills are invoked as slash commands or routed automatically by the intent class
 > The mythology-named skills (atlas, metis, oracle, prometheus, librarian) carry one-word mnemonics — see [`docs/glossary.md`](docs/glossary.md) for the rationale behind each name.
 >
 > `/ulw` also responds to the aliases `/autowork` and `/ultrawork` (preferred) plus `sisyphus` (legacy). Use `/ulw` in new prompts; the aliases stay for muscle memory.
+
+### Auto-routed vs. manual escape hatches
+
+**You don't have to learn the slash commands.** Here's what runs without you typing anything:
+
+| Tier | Mechanism | What you get |
+|---|---|---|
+| **Hook-fired (mandatory)** | Fires automatically — you can't bypass it | `quality-reviewer` before stop, `excellence-reviewer` on complex tasks, `design-reviewer` when UI files are edited |
+| **Router-suggested (reasoning)** under `/ulw` | Injected as a directive when prompt signals match | `prometheus`, `quality-planner`, `quality-researcher`, `librarian`, `metis`, `oracle` |
+| **Router-suggested (engineering)** under `/ulw` | Same mechanism — extended to engineering specialists in this release | `backend-api-developer`, `devops-infrastructure-engineer`, `test-automation-engineer`, `fullstack-feature-builder`, `ios-ui-developer`, `ios-core-engineer`, `ios-deployment-specialist`, `ios-ecosystem-integrator`, `abstraction-critic` |
+| **Auto-dispatched on prompt pattern** | An entire workflow (multi-agent + gates) fires when the router detects the pattern | `/council` for broad project-evaluation prompts, the 9-section Design Contract on UI work |
+| **Manual control/diagnostic** *(by design)* | You declare intent — auto-firing would be wrong | `/ulw-skip`, `/ulw-pause`, `/mark-deferred`, `/ulw-status`, `/ulw-report`, `/ulw-off`, `/skills` |
+| **Manual setup/audit** | One-time or occasional | `/atlas`, `/memory-audit`, `/ulw-demo` |
+
+Most quality-boosting specialists are auto-suggested by the prompt-intent-router under `/ulw` based on prompt signals — `/ulw fix the auth bug` automatically nudges toward `oracle` for hard debugging, `librarian` for unfamiliar APIs, `quality-reviewer` before stop, and so on. You don't have to type `/oracle` to get Oracle — the slash command is the standalone escape hatch, not the only path in.
 
 ## Power-user setup
 
@@ -350,6 +365,7 @@ bash tests/test-metis-on-plan-gate.sh       # Metis-on-plan stop-guard gate (Che
 bash tests/test-gate-events.sh              # Per-event outcome attribution (gate_events.jsonl helper + wiring)
 bash tests/test-discover-session.sh         # Cross-project session-discovery cwd filter (record-finding-list / show-status)
 bash tests/test-design-contract.sh          # 9-section Design Contract regression net (UI agents + skill + router)
+bash tests/test-specialist-routing.sh       # Engineering-specialist routing in coding-domain hint (orphan-specialist regression net)
 python3 -m unittest tests.test_statusline   # Statusline widget
 ```
 
