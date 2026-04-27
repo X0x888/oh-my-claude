@@ -253,6 +253,37 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
   else
     context_parts+=("Ultrawork mode is active for this session. In your first user-facing response, start with the bold phrase **Ultrawork mode active.** as the opening line for visual distinction. Use the strongest specialist path available, keep momentum high, and do not stop early. Do not segment unfinished work into 'wave 1 done, wave 2 next' or 'ready for a new session' unless the user explicitly asked for a checkpoint.")
     context_parts+=("Detected intent: ${display_intent}. Detected domain: ${TASK_DOMAIN}. Surface the classification right after the opener — '**Domain:** ${TASK_DOMAIN} | **Intent:** ${display_intent}' — followed by the first action you will take, so the user can verify routing is correct. If the user corrects the classification, adjust immediately.")
+
+    # --- Bias-defense directives (v1.19.0, default-off) ---
+    #
+    # Two opt-in injections that target the bias-blindness gap (model
+    # risks confidently solving the wrong problem because the prompt
+    # was short or product-shaped and the model never paused to verify
+    # intent). Both fire only on fresh execution prompts — the four
+    # earlier branches (continuation, session-management, advisory,
+    # checkpoint) skip this block entirely.
+    #
+    # Mutually exclusive on the same turn: prometheus-suggest is the
+    # heavier intervention (recommends an interview-first sub-agent),
+    # so when it fires the intent-verify is suppressed to avoid
+    # double-friction. Both are conf-gated and default OFF; a user
+    # who flips one or both gets the directive injected here, and the
+    # model then has discretion to skip when the goal is unambiguous
+    # in context.
+    _bias_directive_emitted=0
+    if [[ "${OMC_PROMETHEUS_SUGGEST:-off}" == "on" ]] \
+        && is_product_shaped_request "${PROMPT_TEXT}" \
+        && is_ambiguous_execution_request "${PROMPT_TEXT}"; then
+      context_parts+=("AMBIGUOUS PRODUCT-SHAPED PROMPT: this request looks short and product-shaped (build/create/design + app/dashboard/feature/onboarding/etc.) without a specific code anchor. Before editing, consider running /prometheus to interview-first scope the goal, audience, success criteria, and constraints. If the scope is already clear from prior context or you have already clarified with the user, proceed. The directive exists to catch the failure mode where the model commits to a particular product shape on incomplete information and ships the wrong thing.")
+      _bias_directive_emitted=1
+      log_hook "prompt-intent-router" "bias-defense: prometheus-suggest fired"
+    fi
+    if [[ "${OMC_INTENT_VERIFY_DIRECTIVE:-off}" == "on" ]] \
+        && [[ "${_bias_directive_emitted}" -eq 0 ]] \
+        && is_ambiguous_execution_request "${PROMPT_TEXT}"; then
+      context_parts+=("INTENT VERIFICATION: this prompt is short and unanchored (no file path, line ref, function name, or backtick-fenced identifier). Before your first edit, restate the user's goal in 1-2 sentences and ask the user to confirm or correct. If the goal is unambiguous from the prompt or the user has already confirmed in a prior turn, skip the pause and proceed. The directive exists to catch the failure mode where the model confidently solves the wrong problem because the request had multiple plausible interpretations.")
+      log_hook "prompt-intent-router" "bias-defense: intent-verify fired"
+    fi
   fi
 
   if [[ "${session_management_prompt}" -eq 0 && "${checkpoint_prompt}" -eq 0 ]]; then
