@@ -527,6 +527,25 @@ if grep -Eiq '(^|[^[:alnum:]_-])ultrathink([^[:alnum:]_-]|$)' <<<"${PROMPT_TEXT}
   context_parts+=("ULTRATHINK MODE ACTIVE — deeper investigation required. Favor verification over abstraction: check claims against real code, run tests, read actual files rather than reasoning about what they probably contain. Before acting: consider what could go wrong and verify your assumptions are grounded. After results: ask whether you found concrete evidence or just formed an opinion — if the latter, investigate further. When you encounter ambiguity, read the source rather than reason about it. This mode is for hard problems where unverified assumptions produce wrong answers.")
 fi
 
+# Auto-memory skip directive (v1.20.0). The auto-memory wrap-up rule
+# (auto-memory.md) and compact-time memory sweep (compact.md) target
+# execution / continuation / checkpoint turns where work moved forward.
+# Advisory and session-management turns produce evaluation, not durable
+# signal worth keeping across sessions — writing project_*.md from those
+# turns is the dominant noise pattern the rule rewrite is designed to
+# eliminate. Inject a SKIP directive so the model treats those turns as
+# memory-quiet by default.
+#
+# Fires regardless of ULW state — auto-memory.md / compact.md load via
+# @-import in every session, so the skip directive must reach the model
+# in every session too. Suppressed when auto_memory=off (no rule to
+# skip) and when intent is execution / continuation / checkpoint
+# (those turns are the rule's intended audience).
+if [[ "${TASK_INTENT}" == "advisory" || "${TASK_INTENT}" == "session_management" ]] \
+    && is_auto_memory_enabled 2>/dev/null; then
+  context_parts+=("AUTO-MEMORY SKIP: this turn is classified as ${TASK_INTENT//_/-}. The session-stop and compact-time auto-memory rules in auto-memory.md and compact.md target execution/continuation/checkpoint turns where work moved forward. Skip both passes this turn unless the user explicitly asks you to remember something. Advisory and session-management turns produce evaluation, not durable signal worth keeping across sessions.")
+fi
+
 # Guard exhaustion warning from previous response
 guard_exhausted="$(read_state "guard_exhausted")"
 if [[ -n "${guard_exhausted}" ]]; then

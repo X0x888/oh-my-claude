@@ -39,3 +39,5 @@ Prioritize writing when the session contained any of:
 - A user-role or tooling detail that will shape future collaboration (candidate for `user_*.md`).
 
 If nothing in the session meets the memory-save threshold, skip the write. The goal is durable signal, not universal logging.
+
+The "Reject these patterns" list in `auto-memory.md` applies to compact-time writes too — do not snapshot release/shipped/recap-shaped state into a `project_*.md` at compact time. CHANGELOG and git log already carry that.
