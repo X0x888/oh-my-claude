@@ -810,3 +810,75 @@ is_execution_intent_value() {
       ;;
   esac
 }
+
+# is_exhaustive_authorization_request — true when the prompt explicitly
+# authorizes exhaustive implementation of the surfaced scope. Used by the
+# council Phase 8 path: when this returns 0, the model should proceed
+# through all waves end-to-end without re-asking; the Scope-explosion
+# pause case from core.md does NOT apply.
+#
+# Vocabulary unified with core.md ("Scope explosion without pre-
+# authorization") and council/SKILL.md (Phase 8 entry markers + exhaustive-
+# auth markers). Real-user authorization phrases historically missed the
+# narrow token list ("implement all" / "exhaustive" / "fix everything" /
+# "ship it all" / "every item" / "address each one"); this helper expands
+# coverage to natural phrasings the user actually writes.
+#
+# Pure string predicate — no state, no logging. Composes with the
+# council-detection helpers; the caller is responsible for routing.
+is_exhaustive_authorization_request() {
+  local text="$1"
+  [[ -z "${text}" ]] && return 1
+
+  # Tier 1 — canonical exhaustive markers (the historical list).
+  # `exhaustive(ly)?` not `exhaustively?` — the latter parses as "exhaustivel
+  # + optional y", which would miss the bare "exhaustive" form.
+  if grep -Eiq '\b(implement\s+all|exhaustive(ly)?|thorough(ly)?|fix\s+everything|ship\s+it\s+all|address\s+each\s+one|every\s+(item|finding|wave|gap)|every\s+one\s+of\s+them)\b' <<<"${text}"; then
+    return 0
+  fi
+
+  # Tier 2 — "do all <object>" idiom (the user's "do all waves" phrasing).
+  if grep -Eiq '\bdo\s+all\s+(of\s+(it|them|the\s+\w+)|the\s+\w+|waves?|gaps?|findings?|items?|tasks?)\b' <<<"${text}"; then
+    return 0
+  fi
+
+  # Tier 3 — "continue all <stuff>" idiom (the user's "continue all
+  # identified gaps in waves" phrasing). Allow short bridge between
+  # "all" and the object so adjectives like "identified" / "remaining"
+  # / "outstanding" don't break the match.
+  if grep -Eiq '\bcontinue\s+all\s+(\w+\s+){0,3}(gaps?|findings?|waves?|items?|tasks?|of\s+them)\b' <<<"${text}"; then
+    return 0
+  fi
+
+  # Tier 4 — action verb + "all/every" + scope-unit object.
+  if grep -Eiq '\b(complete|finish|tackle|cover|address|ship|fix|implement|resolve|handle|close)\s+(all|every)\s+(\w+\s+){0,3}(waves?|gaps?|findings?|items?|of\s+them|of\s+it)\b' <<<"${text}"; then
+    return 0
+  fi
+
+  # Tier 5 — "make X impeccable" implementation-bar markers (Pattern 6
+  # vocabulary from is_council_evaluation_request). These phrases imply
+  # the user wants the bar set high — proceed without scope-clipping.
+  # Mirrors Pattern 6's filters so semantics stay identical, including
+  # the _has_narrow_scope guard so "make this function impeccable" stays
+  # narrow (the user is authorizing exhaustive work on a narrow target,
+  # which is NOT the whole-project authorization the Phase 8 path uses).
+  if grep -Eiq '\bmake\s+(my|the|this|our|these|all|it)\s+(\w+([[:space:]]+\w+){0,3}\s+)?(impeccable|perfect|world.?class|production.?ready|prod.?ready|production.?grade|polished|enterprise.?grade|excellent|flawless)\b' <<<"${text}" \
+     && ! grep -Eiq '\bmake\s+(sure|certain)\b' <<<"${text}" \
+     && ! grep -Eiq '\b(commit\s+message|pr\s+description|readme|changelog|docstring|comment|test\s+name|variable\s+name)\b' <<<"${text}" \
+     && ! _has_narrow_scope "${text}"; then
+    return 0
+  fi
+
+  # Tier 6 — binary-quality framing ("0 or 1", "no middle states") — the
+  # user's vocabulary for "ship it all the way, no half-finished work".
+  if grep -Eiq '\b(either\s+)?0\s+or\s+1\b|\bmiddle\s+states?\s+are\s+(basically\s+)?0\b|\bno\s+middle\s+ground\b' <<<"${text}"; then
+    return 0
+  fi
+
+  # Tier 7 — tail-position "ship it all" variants (land/merge/deliver).
+  if grep -Eiq '\b(ship|land|merge|deliver|push)\s+(them|it)\s+all\b' <<<"${text}"; then
+    return 0
+  fi
+
+  return 1
+}

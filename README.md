@@ -268,7 +268,7 @@ Skills are invoked as slash commands or routed automatically by the intent class
 | **Review & evaluate** | | |
 | review-hard *(review)* | `/review-hard [focus]` | Findings-first code review |
 | research-hard *(research)* | `/research-hard <topic>` | Targeted context gathering |
-| council *(evaluation panel)* | `/council [focus] [--deep]` | Multi-role project evaluation with top-finding verification, then **Phase 8** wave-by-wave execution when fixes are requested ("implement all", "exhaustive", "fix everything"). `--deep` escalates lenses to opus. |
+| council *(evaluation panel)* | `/council [focus] [--deep]` | Multi-role project evaluation with top-finding verification, then **Phase 8** wave-by-wave execution when fixes are requested. Recognizes natural authorization vocabulary ("do all", "make X impeccable", "0 or 1", "fix everything", "implement all", etc. — full canonical list in `bundle/dot-claude/skills/council/SKILL.md` Step 8). `--deep` escalates lenses to opus. |
 | **Build** | | |
 | frontend-design *(visual craft)* | `/frontend-design <task>` | Distinctive design-first frontend work |
 | atlas *(repo bootstrap)* | `/atlas [focus]` | Bootstrap or refresh repo instruction files |

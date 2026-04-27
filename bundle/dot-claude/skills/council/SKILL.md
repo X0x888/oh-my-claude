@@ -25,7 +25,7 @@ Before any dispatch, anchor on these rules so they survive context pressure:
 2. **Do not synthesize on partial returns.** If any dispatched lens has not returned, report what is in flight and continue waiting. Synthesis on a partial set silently biases the final assessment toward whichever lens responded fastest.
 3. **Verify the top of the stack before presenting.** The top 2-3 findings drive the user's actions. Re-verify each one against the actual code before they ship in the final assessment (Step 6 below). Surface-level lens claims that fail verification are noise, not signal.
 4. **Preserve tensions, do not synthesize them.** When two lenses contradict, surface both in the "Cross-Perspective Tensions" section. A clean synthesis that hides a real disagreement is worse than no synthesis.
-5. **The five-priority rule governs presentation, not execution scope.** A project with 47 findings needs 5 priorities at the top of the assessment, not 47 equal-weight items. If the synthesis emerges with more than 5 critical findings, you have under-prioritized the *headline* — pick the top 5 by impact x reach. **However**, when the user requests exhaustive implementation ("implement all", "exhaustive", "fix everything"), all findings flow into the Phase 8 wave plan; the five-priority rank only determines wave ordering. Do not silently clip scope to 5 — clipping is the failure mode this rule's most-common misreading produces.
+5. **The five-priority rule governs presentation, not execution scope.** A project with 47 findings needs 5 priorities at the top of the assessment, not 47 equal-weight items. If the synthesis emerges with more than 5 critical findings, you have under-prioritized the *headline* — pick the top 5 by impact x reach. **However**, when the user requests exhaustive implementation (canonical exhaustive-authorization vocabulary — see *Phase 8 entry markers* below), all findings flow into the Phase 8 wave plan; the five-priority rank only determines wave ordering. Do not silently clip scope to 5 — clipping is the failure mode this rule's most-common misreading produces.
 
 ## Protocol
 
@@ -140,13 +140,25 @@ Bulleted, actionable, specific
 
 ### 8. Execute (when implementation was requested)
 
-Step 7 ends with a presentation. Council ends there only if the user asked for advisory output ("just analyze", "report only", "advisory only"). If the user's prompt asked for implementation/fixes (markers: "implement", "implement all", "fix all", "ship", "address each one", "improve [area]", "make X impeccable", "exhaustive"), bridge from assessment to execution with this protocol — do not stop after Step 7.
+Step 7 ends with a presentation. Council ends there only if the user asked for advisory output ("just analyze", "report only", "advisory only"). If the user's prompt asked for implementation/fixes (any **Phase 8 entry marker** — see canonical list below), bridge from assessment to execution with this protocol — do not stop after Step 7.
+
+**Phase 8 entry markers** (single source of truth — these phrases enter Phase 8 AND grant exhaustive authorization, so the wave executor proceeds without re-asking):
+
+- *Imperative scope:* `implement all`, `implement`, `fix all`, `fix everything`, `ship`, `ship it all`, `ship them all`, `address each one`, `address all`, `every item`, `every finding`, `every gap`, `every wave`, `cover all`, `complete all`, `tackle all`
+- *Continuation scope:* `do all` (waves|gaps|findings|of them|of it), `continue all` (gaps|findings|waves|of them)
+- *Quality bar:* `make X impeccable`, `make X perfect`, `make X world-class`, `make X production-ready`, `make X polished`, `make X enterprise-grade`, `make X excellent`, `make X flawless`
+- *Binary-quality framing:* `0 or 1`, `either 0 or 1`, `middle states are 0`, `no middle ground`
+- *Catch-alls:* `exhaustive`, `exhaustively`, `thorough`, `thoroughly`
+
+A bash predicate that mirrors this list — `is_exhaustive_authorization_request()` in `lib/classifier.sh` — is wired into the prompt-intent-router so the model receives an explicit "EXHAUSTIVE AUTHORIZATION DETECTED" directive when any of these phrases is present.
 
 1. **Build the master finding list.** Collect every finding from Steps 5/6 with stable IDs (`F-001`, `F-002`, …), severity (critical/high/medium/low), surface area (e.g., `auth/login`, `checkout/payment`, `cli/error-output`), and a rough effort estimate (S/M/L). The five-priority rule clipped the *headline* — execution restores the full set. Persist via `record-finding-list.sh` (writes `<session>/findings.json`); the master list is the source of truth for completion tracking.
 
 2. **Group into waves.** Cluster findings by surface area or dependency, not arbitrary chunks. A wave should be coherent (one feature, one screen, one subsystem) so a single per-wave commit makes sense. Aim for 5–10 findings per wave. Order waves by criticality first, then by dependency (don't fix a UI surface in wave 1 that depends on a backend fix in wave 3).
 
-3. **Surface the wave plan.** Show wave count, per-wave surface area, per-wave finding IDs, and total effort. If the prompt explicitly authorized exhaustive implementation ("implement all", "exhaustive", "every item", "fix everything", "address each one", "ship it all"), proceed without confirmation. Otherwise apply the *Scope explosion without pre-authorization* pause case from `core.md` — surface the plan and ask whether to address top N, all N, or a different scope.
+3. **Surface the wave plan.** Show wave count, per-wave surface area, per-wave finding IDs, and total effort. If the prompt explicitly authorized exhaustive implementation (any **Phase 8 entry marker** above — single source of truth at the top of Step 8), proceed without confirmation. Otherwise apply the *Scope explosion without pre-authorization* pause case from `core.md` — surface the plan and ask whether to address top N, all N, or a different scope.
+
+   **Wave grouping is a structural constraint, not advice.** Aim for 5–10 findings per wave by surface area. If your plan emerges with avg <3 findings per wave on a master list of ≥5 findings, that is over-segmentation — merge adjacent surfaces until each wave is substantive. Single-finding waves are acceptable only when (a) the master list itself has <5 findings, or (b) one finding is critical enough to own its own wave (rare — name the reason in the wave commit body). The harness records wave shape via `record-finding-list.sh assign-wave` and a wave-shape advisory fires on under-segmented plans (see `record-finding-list.sh assign-wave` warnings and the wave-shape gate in `stop-guard.sh`).
 
 4. **Execute waves sequentially — full cycle per wave.** For each wave N of M:
     1. Dispatch `quality-planner` for the wave's findings (decision-complete plan for the wave's scope only — not the whole project).

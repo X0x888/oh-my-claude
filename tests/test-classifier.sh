@@ -40,10 +40,11 @@ assert_eq() {
 }
 
 # ----------------------------------------------------------------------
-printf 'Test 1: lib/classifier.sh exports the eight contracted functions\n'
+printf 'Test 1: lib/classifier.sh exports the contracted functions\n'
 for fn in is_imperative_request count_keyword_matches is_ui_request \
           infer_domain classify_task_intent record_classifier_telemetry \
-          detect_classifier_misfire is_execution_intent_value; do
+          detect_classifier_misfire is_execution_intent_value \
+          is_exhaustive_authorization_request; do
   assert_function_defined "${fn}"
 done
 
@@ -123,6 +124,79 @@ is_execution_intent_value execution && pass=$((pass + 1)) || { printf '  FAIL: e
 is_execution_intent_value continuation && pass=$((pass + 1)) || { printf '  FAIL: continuation should be true\n' >&2; fail=$((fail + 1)); }
 ! is_execution_intent_value advisory && pass=$((pass + 1)) || { printf '  FAIL: advisory should be false\n' >&2; fail=$((fail + 1)); }
 ! is_execution_intent_value checkpoint && pass=$((pass + 1)) || { printf '  FAIL: checkpoint should be false\n' >&2; fail=$((fail + 1)); }
+
+# ----------------------------------------------------------------------
+printf 'Test 8: is_exhaustive_authorization_request — vocabulary coverage\n'
+
+assert_auth() {
+  local label="$1" prompt="$2"
+  if is_exhaustive_authorization_request "${prompt}"; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: %s — should authorize: %q\n' "${label}" "${prompt}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
+assert_no_auth() {
+  local label="$1" prompt="$2"
+  if ! is_exhaustive_authorization_request "${prompt}"; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: %s — should NOT authorize: %q\n' "${label}" "${prompt}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
+# Tier 1 — canonical exhaustive markers
+assert_auth "implement all" "implement all the findings from the council"
+assert_auth "exhaustive"    "evaluate the project and produce an exhaustive plan"
+assert_auth "fix everything" "review and fix everything the lens flagged"
+assert_auth "ship it all"   "address the issues then ship it all"
+assert_auth "address each one" "go through and address each one in turn"
+assert_auth "every item"    "cover every item the council surfaced"
+assert_auth "every finding" "ship every finding before stopping"
+
+# Tier 2 — "do all <object>" (the user's "do all waves" phrasing)
+assert_auth "do all waves"     "Continue all identified gaps in Waves. Do all waves."
+assert_auth "do all gaps"      "do all gaps surfaced this session"
+assert_auth "do all of them"   "we should do all of them in this run"
+
+# Tier 3 — "continue all <stuff>" (the user's "continue all identified gaps" phrasing)
+assert_auth "continue all gaps"     "Continue all identified gaps in Waves"
+assert_auth "continue all findings" "continue all remaining findings"
+
+# Tier 4 — action verb + all/every + scope-unit
+assert_auth "complete all waves"  "we need to complete all waves before stopping"
+assert_auth "tackle every finding" "tackle every finding the lens surfaced"
+assert_auth "close all gaps"       "close all gaps from the audit"
+
+# Tier 5 — "make X impeccable" implementation-bar markers
+assert_auth "make X impeccable" "Make this feature impeccable to use"
+assert_auth "make X production-ready" "make the application production-ready"
+assert_auth "make X world-class"      "make our platform world-class"
+assert_auth "make X polished"         "make the project polished"
+
+# Tier 6 — binary-quality framing (user's "0 or 1" phrasing)
+assert_auth "0 or 1"           "As a product, it is either 0 or 1"
+assert_auth "either 0 or 1"    "Either 0 or 1 — middle states are basically 0"
+assert_auth "no middle ground" "No middle ground — ship it complete"
+
+# Tier 7 — tail-position "ship/land/merge it all"
+assert_auth "ship them all" "review the PRs then ship them all"
+assert_auth "land it all"   "merge the branches and land it all"
+
+# Negatives — non-authorization shapes that must NOT trigger
+assert_no_auth "make sure"          "make sure the api is production-ready before shipping"
+assert_no_auth "make a perfect"     "make a perfect commit message for this PR"
+assert_no_auth "narrow scope"       "fix this one bug in the auth module"
+assert_no_auth "single finding"     "address this finding from the security review"
+assert_no_auth "advisory"           "what should we do next about the auth module"
+assert_no_auth "make this function" "make this function impeccable"
+assert_no_auth "templating"         "make the docstring polished and the readme excellent"
+
+# The user's verbatim prompt body — load-bearing fixture
+assert_auth "user verbatim prompt body" "At this stage, what should we do next to further improve the agent memory wall feature? Remember, think what Steve Jobs would do. Make this feature impeccable to use. As a product, it is either 0 or 1. Middle states are basically 0. Continue all identified gaps in Waves. Do all waves."
 
 # ----------------------------------------------------------------------
 printf '\n=== Classifier Lib Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
