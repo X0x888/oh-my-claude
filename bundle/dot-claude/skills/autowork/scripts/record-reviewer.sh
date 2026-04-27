@@ -129,6 +129,13 @@ else
   if [[ "${REVIEWER_TYPE}" == "prose" ]]; then
     batch_args+=("last_doc_review_ts" "${now_ts}")
   fi
+  if [[ "${REVIEWER_TYPE}" == "stress_test" ]]; then
+    # last_metis_review_ts is the top-level timestamp consumed by the
+    # v1.19.0 metis-on-plan stop-guard gate. The dimension tick below
+    # records the verdict for completeness scoring; the timestamp lets
+    # stop-guard tell whether metis ran *after* the current plan_ts.
+    batch_args+=("last_metis_review_ts" "${now_ts}")
+  fi
   with_state_lock_batch \
     "${batch_args[@]}"
 

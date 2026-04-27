@@ -449,6 +449,54 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
   fi
   fi # end gate_level full|standard (excellence gate)
 
+  # --- Metis-on-plan gate (Check 6, v1.19.0) ---
+  #
+  # Active when OMC_METIS_ON_PLAN_GATE=on AND record-plan.sh marked the
+  # last plan as complex (plan_complexity_high=1). Blocks Stop until
+  # metis has run a stress-test review on the current plan, catching
+  # the bias-blindness case where the main thread proceeds confidently
+  # from a complex plan that no second-opinion agent has audited.
+  #
+  # Independent of OMC_GATE_LEVEL — opt-in users get this gate even on
+  # basic level, since the whole point is to catch a class of error the
+  # standard gates miss. record-plan.sh resets metis_gate_blocks on
+  # every fresh plan, so the cap=1 semantic is "block once per plan
+  # cycle", not "block once per session".
+  if [[ "${OMC_METIS_ON_PLAN_GATE}" == "on" ]]; then
+    plan_complexity_high="$(read_state "plan_complexity_high")"
+    has_plan="$(read_state "has_plan")"
+    plan_ts="$(read_state "plan_ts")"
+    last_metis_review_ts="$(read_state "last_metis_review_ts")"
+    metis_gate_blocks="$(read_state "metis_gate_blocks")"
+    metis_gate_blocks="${metis_gate_blocks:-0}"
+
+    # Treat equality as stale (`<=`, not `<`): if both timestamps fall
+    # in the same second, the metis review either preceded the plan or
+    # was racing it — neither qualifies as a real stress-test of the
+    # current plan. Strictly fresh metis runs land at plan_ts + N where
+    # N >= 1s (a real review takes much longer than that).
+    metis_stale_or_missing=0
+    if [[ -z "${last_metis_review_ts}" ]]; then
+      metis_stale_or_missing=1
+    elif [[ -n "${plan_ts}" ]] && (( last_metis_review_ts <= plan_ts )); then
+      metis_stale_or_missing=1
+    fi
+
+    if [[ "${plan_complexity_high}" == "1" ]] \
+        && [[ "${has_plan}" == "true" ]] \
+        && [[ "${metis_stale_or_missing}" -eq 1 ]] \
+        && (( metis_gate_blocks < 1 )); then
+      plan_complexity_signals="$(read_state "plan_complexity_signals")"
+      write_state "metis_gate_blocks" "$((metis_gate_blocks + 1))"
+      record_gate_event "metis-on-plan" "block" \
+        "block_count=1" "block_cap=1" \
+        "complexity_signals=${plan_complexity_signals}"
+      metis_recovery="$(format_gate_recovery_line "dispatch the metis agent on the current plan to stress-test for hidden assumptions, missing constraints, and weak validation. To bypass once with reason (e.g., simple greenfield plan), run /ulw-skip.")"
+      jq -nc --arg reason "[Metis-on-plan gate · 1/1] the current plan was flagged high-complexity (${plan_complexity_signals}) but no metis stress-test review has run since the plan was recorded. The bias-defense layer requires a fresh-eyes pressure test before execution to catch wrong-abstraction or missing-constraint risks the main thread may have committed to. After metis returns, restate your deliverable summary at the end of your response.${metis_recovery}" '{"decision":"block","reason":$reason}'
+      exit 0
+    fi
+  fi
+
   # Record session outcome for cross-session analytics. "completed" means
   # all quality gates were satisfied — the harness's strongest signal.
   # Uses locked write for consistency with the exhaustion paths.

@@ -119,7 +119,8 @@ with_state_lock_batch \
   "plan_agent" "${AGENT_TYPE:-planner}" \
   "plan_ts" "$(now_epoch)" \
   "plan_complexity_high" "${_plan_complexity_high}" \
-  "plan_complexity_signals" "${_plan_complexity_signals}"
+  "plan_complexity_signals" "${_plan_complexity_signals}" \
+  "metis_gate_blocks" ""
 
 # Soft notice — emitted whenever the plan trips the high-complexity
 # threshold, regardless of conf. Tied to `_plan_complexity_high` rather
