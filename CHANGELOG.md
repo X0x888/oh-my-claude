@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.18.1] - 2026-04-26
+
+Same-session hardening folded in after the v1.18.0 final completeness review surfaced five gaps. The release shipped the A–G scope correctly but leaked the *coherence* theme — three observable surfaces (`/ulw-status`, `/ulw-report`, the auto-`--polish` activation) cached/emitted the new state but never rendered it. v1.18.1 closes those plus a doc-count drift and the `/ulw-pause` cap-recovery copy.
+
+### Fixed
+
+- **README.md skill + test count drift.** README's directory-tree section listed "(19 skills)" + "(31 bash + 1 py)" with no `ulw-pause` entry, while CLAUDE.md and AGENTS.md correctly synced to 20 / 32. Same drift class v1.16.0 had to patch — the lockstep rule needs a test net (deferred to a follow-up wave).
+
+### Changed
+
+- **`/ulw-status` now surfaces project maturity + `/ulw-pause` state.** Adds `Project maturity: <tag>` to the top section and a new `--- Pause State (v1.18.0) ---` section showing `Pause active`, `Pause count: N/2`, and `Last pause reason`. Without this, the cached state was inspectable only via raw JSON, which defeats the diagnostic purpose of `/ulw-status`.
+- **`/ulw-report` now has a user-decision queue section.** New `## User-decision queue` section aggregates `user-decision-marked` events from `gate_events.jsonl` AND scans cross-session `findings.json` files for currently-pending `requires_user_decision: true` rows. Surfaces a markdown table of `Session | Finding | Surface | Reason` for the live queue. Closes the v1.18.0 CHANGELOG promise that "/ulw-report can audit the queue" — the data was being captured but never rendered.
+- **`/ulw-pause` cap-recovery copy lists three concrete options.** Previous copy ("Either resume the work in this session or ask the user explicitly whether to checkpoint") created a UX dead-end since the cap-reached path didn't actually allow either to bypass the session-handoff gate. New copy enumerates: (1) resume in session (cap is per-session; next prompt resets), (2) ask the user about checkpointing intentionally, (3) `/ulw-skip <reason>` as the one-shot escape valve. 3 new test assertions in `tests/test-ulw-pause.sh` lock the contract.
+- **Auto-`--polish` activation now self-announces.** Previously, when a polish-saturated maturity tag silently auto-activated `--polish` mode (narrowing 7 council lenses to 3), there was no signal in the user's terminal that their default lens roster had been narrowed by a heuristic rather than by their explicit flag. The polish hint now distinguishes `_polish_explicit` vs `_polish_auto` and prefixes the dispatch instruction with `(origin: auto-activated by polish-saturated project-maturity prior — surface this in your opening response so the user knows their default lens roster was narrowed)`. Surprising silent behavior is the worst kind of UX; the announcement closes that.
+
 ## [1.18.0] - 2026-04-26
 
 Workflow-coherence wave from a Tack-session retrospective. The user passed along a thoughtful note from a prior Claude run that named six harness gaps: macOS SwiftUI misroute, Serendipity rule invisibility at gate-fire time, missing project-maturity prior, missing taste/excellence council lens, missing user-decision annotation in finding lists, and no structured affordance for legitimate user-decision pauses. v1.18.0 ships the bug fixes plus the four design adds as five focused waves, each with quality-reviewer + (where applicable) excellence-reviewer passes folded back in. Total bash test surface 31 → 32 + 1 python; ~110 new assertions land. All 32 suites green.

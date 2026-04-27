@@ -2,7 +2,7 @@
 
 **What if Claude Code couldn't cut corners?**
 
-[![Version](https://img.shields.io/badge/Version-1.18.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-1.18.1-blue.svg)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Shell](https://img.shields.io/badge/Shell-bash-green.svg)]()
 [![Dependencies](https://img.shields.io/badge/Dependencies-none-brightgreen.svg)]()
@@ -202,12 +202,12 @@ oh-my-claude/
 ├── install.sh / uninstall.sh / verify.sh   # Install, remove, and verify
 ├── bundle/dot-claude/                       # Installs to ~/.claude/
 │   ├── agents/          (31 agents)         # Specialist agent definitions
-│   ├── skills/          (19 skills)         # Skill definitions + autowork hooks
+│   ├── skills/          (20 skills)         # Skill definitions + autowork hooks
 │   ├── quality-pack/                        # Lifecycle hooks + memory files
 │   ├── output-styles/                       # Output format templates
 │   └── statusline.py                        # Custom statusline widget
 ├── config/settings.patch.json               # Merged into user settings on install
-├── tests/               (31 bash + 1 py)    # Intent, quality gates, stall, resume, e2e, install/uninstall merge, concurrency, cross-session-lock, post-merge, repro redaction, discovered-scope, finding-list, mark-deferred, state-io, classifier-replay, serendipity-log, cross-session-rotation, classifier, show-report, install-remote, phase8-integration, verification-lib, agent-verdict-contract, gate-events, discover-session, design-contract, inline-design-contract, archetype-memory, statusline
+├── tests/               (32 bash + 1 py)    # Intent, quality gates, stall, resume, e2e, install/uninstall merge, concurrency, cross-session-lock, post-merge, repro redaction, discovered-scope, finding-list, mark-deferred, state-io, classifier-replay, serendipity-log, cross-session-rotation, classifier, show-report, install-remote, phase8-integration, verification-lib, agent-verdict-contract, gate-events, discover-session, design-contract, inline-design-contract, archetype-memory, ulw-pause, statusline
 ├── tools/                                    # Developer-only tools (replay-classifier-telemetry.sh, classifier-fixtures/)
 └── docs/                                    # Architecture, customization, FAQ, prompts
 ```

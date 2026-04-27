@@ -263,6 +263,60 @@ else
 fi
 
 # ----------------------------------------------------------------------
+# Section 4c: User-decision queue (v1.18.0)
+# Aggregate user-decision-marked events from gate_events + scan
+# discovered findings.json files for findings still flagged
+# requires_user_decision=true and pending. The queue is the surface
+# the user wants for "what decisions are waiting on me?".
+printf '## User-decision queue\n\n'
+ud_rows="$(printf '%s\n' "${gate_event_rows}" | jq -c \
+    'select(.event == "user-decision-marked")' 2>/dev/null || true)"
+ud_total=0
+if [[ -n "${ud_rows}" ]]; then
+  ud_total="$(printf '%s\n' "${ud_rows}" | wc -l | tr -d '[:space:]')"
+fi
+# Walk per-session findings.json files for currently-pending USER-DECISION
+# rows (the live queue, not historical marks).
+state_root_for_decisions="${HOME}/.claude/quality-pack/state"
+pending_ud_count=0
+pending_ud_rows=""
+if [[ -d "${state_root_for_decisions}" ]]; then
+  while IFS= read -r findings_path; do
+    [[ -f "${findings_path}" ]] || continue
+    session_id_for_row="$(basename "$(dirname "${findings_path}")")"
+    rows="$(jq -c --arg sid "${session_id_for_row}" \
+      '.findings[]
+        | select((.requires_user_decision // false) == true
+                 and (.status == "pending" or .status == "in_progress"))
+        | { sid: $sid, id: .id, surface: (.surface // "—"),
+            summary: (.summary // "—" | gsub("\\|"; "\\|") | gsub("\n"; " ")),
+            reason: (.decision_reason // "—" | gsub("\\|"; "\\|") | gsub("\n"; " ")) }' \
+      "${findings_path}" 2>/dev/null || true)"
+    if [[ -n "${rows}" ]]; then
+      pending_ud_rows="${pending_ud_rows:+${pending_ud_rows}$'\n'}${rows}"
+    fi
+  done < <(find "${state_root_for_decisions}" -name 'findings.json' -type f 2>/dev/null)
+  if [[ -n "${pending_ud_rows}" ]]; then
+    pending_ud_count="$(printf '%s\n' "${pending_ud_rows}" | wc -l | tr -d '[:space:]')"
+  fi
+fi
+
+if [[ "${ud_total}" -eq 0 && "${pending_ud_count}" -eq 0 ]]; then
+  printf '_No user-decision findings in window. Findings flagged with `requires_user_decision: true` (council Phase 5 / `mark-user-decision`) and `/ulw-pause` events appear here._\n\n'
+else
+  printf '%d historical mark(s); %d currently awaiting input.\n\n' \
+    "${ud_total}" "${pending_ud_count}"
+  if [[ "${pending_ud_count}" -gt 0 ]]; then
+    printf '**Awaiting input now:**\n\n'
+    printf '| Session | Finding | Surface | Reason |\n'
+    printf '|---|---|---|---|\n'
+    printf '%s\n' "${pending_ud_rows}" | jq -r \
+      '"| \(.sid[0:8]) | \(.id) | \(.surface) | \(.reason) |"'
+    printf '\n'
+  fi
+fi
+
+# ----------------------------------------------------------------------
 # Section 5: Reviewer activity (top by invocations)
 printf '## Reviewer activity\n\n'
 if [[ -f "${AGENT_METRICS_FILE}" ]]; then

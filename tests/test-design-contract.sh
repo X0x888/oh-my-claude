@@ -639,6 +639,15 @@ assert_grep "router: --deep regex uses whitespace boundary" \
 assert_grep "router: --polish regex uses whitespace boundary" \
   "(\\^|\\[\\[:space:\\]\\])--polish" "${ROUTER}"
 
+# v1.18.x — auto-activation must self-announce so the user sees that
+# their default lens roster was narrowed by maturity heuristics rather
+# than by an explicit flag they typed. Without this, /council on a
+# polish-saturated project silently drops 4 lenses, which is surprising.
+assert_grep "router: auto-polish self-announces origin" \
+  "auto-activated by polish-saturated" "${ROUTER}"
+assert_grep "router: tracks _polish_explicit / _polish_auto separately" \
+  "_polish_explicit" "${ROUTER}"
+
 # --- Summary ------------------------------------------------------------
 total=$((pass + fail))
 printf '\ntest-design-contract: %d/%d passed\n' "${pass}" "${total}"

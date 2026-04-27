@@ -59,8 +59,14 @@ current_count="${current_count:-0}"
 
 if [[ "${current_count}" -ge "${PAUSE_CAP}" ]]; then
   printf 'ulw-pause: pause cap reached (%d/%d).\n' "${current_count}" "${PAUSE_CAP}" >&2
-  printf '  At this point a stop is a session handoff, not a pause. Either resume the\n' >&2
-  printf '  work in this session or ask the user explicitly whether to checkpoint.\n' >&2
+  printf '  At this point a stop is structurally a session handoff, not a pause.\n' >&2
+  printf '  Options:\n' >&2
+  printf '    1. Resume the work in this session (the pause cap is per-session;\n' >&2
+  printf '       the next user prompt resets it).\n' >&2
+  printf '    2. Ask the user explicitly whether to checkpoint — they may want\n' >&2
+  printf '       to wrap up the session intentionally.\n' >&2
+  printf '    3. If a gate is genuinely blocking and the work is complete, run\n' >&2
+  printf '       /ulw-skip <reason> as the one-shot escape valve.\n' >&2
   exit 3
 fi
 

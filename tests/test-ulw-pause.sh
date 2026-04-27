@@ -154,6 +154,12 @@ rc=$?
 set -e
 assert_eq "third pause exit code 3 (cap reached)" "3" "${rc}"
 assert_contains "cap message" "pause cap reached" "${out}"
+# v1.18.x — cap-recovery copy now lists three concrete options including
+# /ulw-skip as the escape valve. Without this, the cap creates a UX
+# dead-end where the user has no path forward.
+assert_contains "cap copy: option 1 resume" "Resume the work" "${out}"
+assert_contains "cap copy: option 2 ask checkpoint" "checkpoint" "${out}"
+assert_contains "cap copy: option 3 names /ulw-skip escape valve" "/ulw-skip" "${out}"
 # Count must NOT have incremented
 assert_eq "ulw_pause_count stays at 2 after cap" "2" "$(read_state_field 'ulw_pause_count')"
 # Reason from prior pause preserved (not overwritten)
@@ -226,6 +232,41 @@ README_MD="${REPO_ROOT}/README.md"
 assert_contains "memory/skills.md mentions /ulw-pause" "/ulw-pause" "$(cat "${SKILLS_MEM}")"
 assert_contains "skills/SKILL.md lists /ulw-pause" "/ulw-pause" "$(cat "${SKILLS_INDEX}")"
 assert_contains "README.md lists /ulw-pause" "/ulw-pause" "$(cat "${README_MD}")"
+
+# ---------------------------------------------------------------------
+printf 'Test 14: show-status surfaces maturity + pause state (v1.18.x F2)\n'
+# Reviewer-found gap: /ulw-status cached the new state fields but never
+# rendered them. Ship-the-data-without-the-surface anti-pattern.
+SHOW_STATUS="${HOOK_DIR}/show-status.sh"
+status_text="$(cat "${SHOW_STATUS}")"
+assert_contains "show-status reads project_maturity field" \
+  "project_maturity" "${status_text}"
+assert_contains "show-status reads ulw_pause_active field" \
+  "ulw_pause_active" "${status_text}"
+assert_contains "show-status reads ulw_pause_count field" \
+  "ulw_pause_count" "${status_text}"
+assert_contains "show-status reads ulw_pause_reason field" \
+  "ulw_pause_reason" "${status_text}"
+assert_contains "show-status renders Project maturity row" \
+  "Project maturity:" "${status_text}"
+assert_contains "show-status renders Pause State section" \
+  "Pause State" "${status_text}"
+
+# ---------------------------------------------------------------------
+printf 'Test 15: show-report has user-decision queue section (v1.18.x F3)\n'
+# Reviewer-found gap: Wave 4 emitted user-decision-marked events
+# specifically so /ulw-report could audit the queue, but show-report
+# never grew the surface.
+SHOW_REPORT="${HOOK_DIR}/show-report.sh"
+report_text="$(cat "${SHOW_REPORT}")"
+assert_contains "show-report has user-decision queue heading" \
+  "## User-decision queue" "${report_text}"
+assert_contains "show-report scans findings.json for pending USER-DECISION" \
+  "requires_user_decision" "${report_text}"
+assert_contains "show-report renders 'Awaiting input now' subsection" \
+  "Awaiting input now" "${report_text}"
+assert_contains "show-report empty-state names mark-user-decision affordance" \
+  "mark-user-decision" "${report_text}"
 
 printf '\n=== ULW-Pause Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]] || exit 1

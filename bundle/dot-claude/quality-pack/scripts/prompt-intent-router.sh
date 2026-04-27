@@ -445,10 +445,25 @@ Discipline:
       # rubric. Auto-activates on polish-saturated projects (the
       # standard ship-readiness audit is the wrong lens for a project
       # that's already past those gates). Composes with --deep — both
-      # flags can apply to the same dispatch.
-      if [[ "${PROMPT_TEXT}" =~ (^|[[:space:]])--polish([[:space:]]|$) ]] \
-          || [[ "${_project_maturity}" == "polish-saturated" ]]; then
-        _council_polish_hint=" **--polish mode active** (auto-activated on polish-saturated projects, or explicit --polish flag): narrow the lens roster to \`visual-craft-lens\` + \`product-lens\` + \`design-lens\` (skip security/data/sre/growth unless the user named them explicitly — those audits are the wrong tool for a polish-saturated project that has already passed them). Pass \`model: \"opus\"\` to each Agent dispatch (escalate the lens model). Extend each lens's instruction with the Jobs-grade rubric: **soul** (does this feel like a single hand designed it, or a kit assembled?), **signature** (one specific visual or interaction the user would recognize across products), **voice** (copy + tone consistency at every micro-surface — empty states, errors, settings, onboarding — without AI-isms like 'I'll help you with that' / 'something went wrong' / 'try again'), **negative space** (does the chrome defer to the content?), **first-five-minutes** (what is the experience for a brand-new user opening this for the first time? where does the wow moment land, or does it not?), **AI-as-experience** (does the AI behavior feel like a product feature with its own voice, or a wrapped API call?), **no-cloning discipline** (commit to ≥3 specific things you'd do differently from the closest archetype). Report findings against this rubric explicitly — do not collapse it into a generic 'design quality' verdict."
+      # flags can apply to the same dispatch. When auto-activated by
+      # the maturity prior, the announcement clause prefixes the hint
+      # so the user sees in their first response that the lens roster
+      # was narrowed automatically rather than by their explicit flag.
+      _polish_explicit=0
+      _polish_auto=0
+      if [[ "${PROMPT_TEXT}" =~ (^|[[:space:]])--polish([[:space:]]|$) ]]; then
+        _polish_explicit=1
+      fi
+      if [[ "${_project_maturity}" == "polish-saturated" ]]; then
+        _polish_auto=1
+      fi
+      if [[ "${_polish_explicit}" -eq 1 || "${_polish_auto}" -eq 1 ]]; then
+        if [[ "${_polish_explicit}" -eq 1 ]]; then
+          _polish_origin="explicit --polish flag"
+        else
+          _polish_origin="auto-activated by polish-saturated project-maturity prior — surface this in your opening response so the user knows their default lens roster was narrowed"
+        fi
+        _council_polish_hint=" **--polish mode active** (origin: ${_polish_origin}): narrow the lens roster to \`visual-craft-lens\` + \`product-lens\` + \`design-lens\` (skip security/data/sre/growth unless the user named them explicitly — those audits are the wrong tool for a polish-saturated project that has already passed them). Pass \`model: \"opus\"\` to each Agent dispatch (escalate the lens model). Extend each lens's instruction with the Jobs-grade rubric: **soul** (does this feel like a single hand designed it, or a kit assembled?), **signature** (one specific visual or interaction the user would recognize across products), **voice** (copy + tone consistency at every micro-surface — empty states, errors, settings, onboarding — without AI-isms like 'I'll help you with that' / 'something went wrong' / 'try again'), **negative space** (does the chrome defer to the content?), **first-five-minutes** (what is the experience for a brand-new user opening this for the first time? where does the wow moment land, or does it not?), **AI-as-experience** (does the AI behavior feel like a product feature with its own voice, or a wrapped API call?), **no-cloning discipline** (commit to ≥3 specific things you'd do differently from the closest archetype). Report findings against this rubric explicitly — do not collapse it into a generic 'design quality' verdict."
       fi
       _council_phase7_hint="
 7. Verify the top of the stack: pick the 2-3 highest-impact findings and re-dispatch \`oracle\` per finding to verify each claim against the actual code before presenting. Mark each as ✓ verified, ◑ refined, or ✗ demoted/dropped. Cap at 3."
