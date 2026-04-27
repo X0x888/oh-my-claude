@@ -119,6 +119,7 @@ required_paths=(
   "${CLAUDE_HOME}/skills/ulw-skip/SKILL.md"
   "${CLAUDE_HOME}/skills/mark-deferred/SKILL.md"
   "${CLAUDE_HOME}/skills/ulw-pause/SKILL.md"
+  "${CLAUDE_HOME}/skills/memory-audit/SKILL.md"
   "${CLAUDE_HOME}/skills/frontend-design/SKILL.md"
   "${CLAUDE_HOME}/skills/autowork/scripts/ulw-skip-register.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/record-finding-list.sh"
@@ -126,6 +127,7 @@ required_paths=(
   "${CLAUDE_HOME}/skills/autowork/scripts/record-archetype.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/mark-deferred.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/ulw-pause.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/audit-memory.sh"
 )
 
 for path in "${required_paths[@]}"; do

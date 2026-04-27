@@ -6,11 +6,11 @@ Cognitive quality harness for Claude Code -- bash hooks, specialist agents, and 
 
 - `bundle/dot-claude/agents/` -- 32 specialist agent definitions with permission boundaries
 - `bundle/dot-claude/quality-pack/scripts/` -- 5 lifecycle hook scripts (prompt routing, compaction, session management)
-- `bundle/dot-claude/skills/` -- 20 skill definitions, each in `<name>/SKILL.md`
-- `bundle/dot-claude/skills/autowork/scripts/` -- 21 autowork hook scripts including `common.sh` (shared utility library), `record-finding-list.sh` (council Phase 8 master finding list), `record-serendipity.sh` (Serendipity Rule analytics), `record-archetype.sh` (cross-session archetype memory), `find-design-contract.sh` (resolves the active session's inline-emitted Design Contract for design-reviewer / visual-craft-lens), `mark-deferred.sh` (backs the `/mark-deferred` skill — bulk-defers pending discovered_scope rows with a one-line reason), and `ulw-pause.sh` (backs the `/ulw-pause` skill — declares a legitimate user-decision pause without tripping the session-handoff gate); state I/O extracted to `lib/state-io.sh`, the prompt classifier extracted to `lib/classifier.sh`, and the verification subsystem extracted to `lib/verification.sh`, all sourced by `common.sh`
+- `bundle/dot-claude/skills/` -- 21 skill definitions, each in `<name>/SKILL.md`
+- `bundle/dot-claude/skills/autowork/scripts/` -- 22 autowork hook scripts including `common.sh` (shared utility library), `record-finding-list.sh` (council Phase 8 master finding list), `record-serendipity.sh` (Serendipity Rule analytics), `record-archetype.sh` (cross-session archetype memory), `find-design-contract.sh` (resolves the active session's inline-emitted Design Contract for design-reviewer / visual-craft-lens), `mark-deferred.sh` (backs the `/mark-deferred` skill — bulk-defers pending discovered_scope rows with a one-line reason), `ulw-pause.sh` (backs the `/ulw-pause` skill — declares a legitimate user-decision pause without tripping the session-handoff gate), and `audit-memory.sh` (backs the `/memory-audit` skill — classifies user-scope MEMORY.md entries and proposes rollup moves, read-only); state I/O extracted to `lib/state-io.sh`, the prompt classifier extracted to `lib/classifier.sh`, and the verification subsystem extracted to `lib/verification.sh`, all sourced by `common.sh`
 - `bundle/dot-claude/output-styles/` -- output format templates
 - `config/settings.patch.json` -- settings merged into user config on install
-- `tests/` -- 35 bash + 1 python test scripts (e2e hook sequence, intent classification, quality gates, stall detection, settings merge, uninstall merge, common utilities, session resume, concurrency, cross-session-lock, install artifacts, post-merge hook, repro redaction, discovered-scope, finding-list, mark-deferred, state-io, classifier-replay, serendipity-log, cross-session-rotation, classifier, show-report, install-remote, phase8-integration, verification-lib, agent-verdict-contract, gate-events, discover-session, design-contract, inline-design-contract, archetype-memory, ulw-pause, bias-defense-classifier, bias-defense-directives, metis-on-plan-gate, plus python `test_statusline.py`)
+- `tests/` -- 37 bash + 1 python test scripts (e2e hook sequence, intent classification, quality gates, stall detection, settings merge, uninstall merge, common utilities, session resume, concurrency, cross-session-lock, install artifacts, post-merge hook, repro redaction, discovered-scope, finding-list, mark-deferred, state-io, classifier-replay, serendipity-log, cross-session-rotation, classifier, show-report, install-remote, phase8-integration, verification-lib, agent-verdict-contract, gate-events, discover-session, design-contract, inline-design-contract, archetype-memory, ulw-pause, bias-defense-classifier, bias-defense-directives, metis-on-plan-gate, auto-memory-skip, memory-audit, plus python `test_statusline.py`)
 - `tools/` -- Developer-only tools (`replay-classifier-telemetry.sh` and `classifier-fixtures/regression.jsonl`); not installed into `~/.claude/`
 - `docs/` -- architecture, customization, FAQ, and prompt reference docs
 
@@ -70,6 +70,8 @@ bash tests/test-ulw-pause.sh
 bash tests/test-bias-defense-classifier.sh
 bash tests/test-bias-defense-directives.sh
 bash tests/test-metis-on-plan-gate.sh
+bash tests/test-auto-memory-skip.sh
+bash tests/test-memory-audit.sh
 python3 -m unittest tests.test_statusline -v
 ```
 
