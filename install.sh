@@ -853,9 +853,9 @@ fi
 # truthy. The prior `!= "1"` check was dead — no mainstream CI sets CI=1.
 if [[ "${BYPASS_PERMISSIONS}" != "true" ]] && [[ -z "${CI:-}" ]] && [[ -t 0 ]]; then
   printf '\n'
-  printf '  Installing with Claude Code permission prompts kept on. Once you trust\n'
-  printf '  the harness, --bypass-permissions removes those prompts (quality gates\n'
-  printf '  always apply). Continuing...\n'
+  printf "  Installing with Claude Code's per-tool permission prompts on by default.\n"
+  printf "  Once you've run /ulw-demo and trust the harness, --bypass-permissions removes\n"
+  printf "  the prompts. Quality gates apply either way.\n"
   printf '\n'
 fi
 
@@ -1044,13 +1044,17 @@ if [[ "${orphan_count}" -gt 0 ]]; then
 fi
 
 printf '\n'
-printf 'Next steps:\n'
-printf '  1. \033[1mRestart Claude Code\033[0m (or open a new session) to load the new hooks.\n'
-printf '     Already-running sessions keep the previous hook bindings until restart.\n'
-printf '  2. Run: bash %s/verify.sh\n' "${SCRIPT_DIR}"
+printf '\033[1mRestart Claude Code now (or open a new session).\033[0m Required — hooks load at\n'
+printf '  session start; already-running sessions keep the previous wiring, so /ulw will\n'
+printf '  silently no-op until you restart.\n'
+printf '\n'
+printf 'Then:\n'
+printf '  1. Verify the install:  bash %s/verify.sh\n' "${SCRIPT_DIR}"
+printf '  2. See gates fire:      /ulw-demo  (under 2 minutes — guided walkthrough)\n'
+printf '  3. Real work:           /ulw fix the failing test and add regression coverage\n'
 printf '\n'
 
 if [[ "${BYPASS_PERMISSIONS}" != "true" ]]; then
-  printf 'Optional: once you have run /ulw-demo and trust the harness,\n'
-  printf '  bash install.sh --bypass-permissions  # removes Claude Code permission prompts (quality gates still apply)\n'
+  printf 'Once /ulw-demo confirms the harness is firing, re-run with --bypass-permissions\n'
+  printf "to skip Claude Code's per-tool prompts. Quality gates apply either way.\n"
 fi

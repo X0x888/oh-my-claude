@@ -81,12 +81,10 @@ Fix any findings the reviewer flags, then deliver the final summary. The stop-gu
 
 ### Step 7: Explain what happened
 
-After the demo completes, give the user a brief summary:
-- **Edit tracking**: every file edit is recorded with timestamps
-- **Stop-guard**: blocks completion until verification and review are done
-- **Verification gate**: requires running tests/lints after code changes
-- **Review gate**: requires a specialist reviewer before finalizing
-- **Gate caps**: if a gate blocks 3 times, it releases (safety valve)
+Brief recap — keep it tight; the user just felt the gates work, so don't over-explain:
+
+- The stop-guard blocked you until verification and review were done. That's what blocks every `/ulw` task.
+- Each gate has a cap (3 blocks). If Claude can't satisfy one, it surfaces the gap instead of spinning forever.
 
 Then tell them: "This is what `/ulw` does on every real task. The gates fire automatically — you never need to think about them."
 
