@@ -688,6 +688,116 @@ detect_classifier_misfire() {
   log_hook "classifier-telemetry" "misfire detected: prior=${prior_intent} reason=${reason}"
 }
 
+# --- Bias-defense prompt-shape classifiers (v1.19.0) ---
+#
+# These helpers complement the intent + domain classification with prompt
+# SHAPE: is the request clearly anchored to specific code (line refs, file
+# paths, function names) or is it short and product-shaped enough that the
+# model is at risk of confidently solving the wrong problem?
+#
+# Used by the bias-defense layer in prompt-intent-router.sh to inject the
+# prometheus-suggest and intent-verify directives. Both helpers are pure
+# string predicates — they do not consult task_intent. Callers verify
+# execution-intent separately so the helpers compose cleanly.
+
+# _has_code_anchor — true when the prompt contains a specific code
+# anchor: file path with known extension, `:LINE` ref, function-call
+# syntax, multi-component path, backtick-fenced span, or PascalCase
+# error/exception class. Shared disqualifier between
+# is_product_shaped_request and is_ambiguous_execution_request to keep
+# the two helpers in sync.
+_has_code_anchor() {
+  local text="$1"
+  # File extensions, line refs, function calls — case-insensitive
+  # because extensions are typically lowercase but function names vary.
+  if grep -Eiq '[a-zA-Z_/.-]+\.(ts|tsx|js|jsx|py|sh|md|json|swift|go|rs|rb|java|css|html|yaml|yml|toml|c|cpp|h)\b|:[0-9]+\b|\b[a-z][a-zA-Z0-9_]*\(\)' <<<"${text}"; then
+    return 0
+  fi
+  # Multi-component paths (extensionless), e.g. `src/utils/auth`,
+  # `bundle/dot-claude/skills`. Two or more `/`-joined identifiers is a
+  # strong signal of a specific filesystem reference.
+  if grep -Eiq '\b[a-zA-Z_][a-zA-Z0-9_-]*/[a-zA-Z_][a-zA-Z0-9_/-]*\b' <<<"${text}"; then
+    return 0
+  fi
+  # Backtick-fenced spans — `foo`, `bar.baz`, etc. — Markdown-flavored
+  # code references that anchor the prompt to specific identifiers.
+  if grep -Eq '`[^`]+`' <<<"${text}"; then
+    return 0
+  fi
+  # Error / exception class names. Case-sensitive (`grep -E`, not `-Ei`)
+  # so generic English "error message" does not trigger; only PascalCase
+  # identifiers like `ValidationError` qualify.
+  if grep -Eq '[A-Za-z]+Error\b|[A-Za-z]+Exception\b|\bTraceback\b' <<<"${text}"; then
+    return 0
+  fi
+  return 1
+}
+
+# is_product_shaped_request — true when the prompt looks like a product
+# or feature greenfield ask (build a tracker app, create a dashboard,
+# design an onboarding flow), as opposed to a targeted code change.
+# Used to suggest /prometheus interview-first scoping before the model
+# commits to a particular product shape.
+is_product_shaped_request() {
+  local text="$1"
+  [[ -z "${text}" ]] && return 1
+
+  # Disqualifier 1: any concrete code anchor → not greenfield.
+  if _has_code_anchor "${text}"; then
+    return 1
+  fi
+
+  # Disqualifier 2: targeted-change keywords. Even if a build-class verb
+  # appears, a prompt mentioning fix/bug/hotfix/issue/etc. is targeting
+  # existing code rather than asking for a new product. This neutralizes
+  # over-matching cases like "ship a fix to the auth service".
+  if grep -Eiq '\b(fix(es|ed|ing)?|bug|bugs|hotfix|patch(es|ed|ing)?|defect|defects|issue|issues|fault|faults|tweak(s|ed|ing)?)\b' <<<"${text}"; then
+    return 1
+  fi
+
+  # Product-shape signal: a build-class verb followed (within ~40 chars)
+  # by an article (a|an|the|my|our|new|some|another) and a product-shape
+  # noun. The article requirement disambiguates from sentence-fragment
+  # patterns like "make extension changes" where the noun is a target,
+  # not a thing being built.
+  local product_pattern
+  product_pattern='\b(build(ing)?|creat(e|ing)|design(ing)?|make|making|implement(ing)?|launch(ing)?|ship(ping)?|prototype|spin\s+up|stand\s+up)\b[[:space:]]+([a-z]+\s+){0,2}(a|an|the|my|our|new|some|another)\b[^.]{0,40}\b(app|apps|application|mvp|product|tool|platform|dashboards?|sites?|websites?|landing.?pages?|feature|features|prototype|widget|extension|cli\s+tool|chatbot|saas|service|flow|flows|onboarding|wizard|integration|webapp|game|games)\b'
+
+  grep -Eiq "${product_pattern}" <<<"${text}"
+}
+
+# is_ambiguous_execution_request — true when the prompt is short enough
+# and unanchored enough that the model is at risk of confidently
+# misinterpreting the goal. Used to inject an intent-verification
+# directive (restate the goal and pause for confirmation before the
+# first edit).
+#
+# The caller is responsible for checking task_intent. This helper only
+# evaluates prompt shape, not intent — that keeps it cheap and lets it
+# compose with is_product_shaped_request without double-checking.
+is_ambiguous_execution_request() {
+  local text="$1"
+  [[ -z "${text}" ]] && return 1
+
+  # Length window: 15 ≤ len ≤ 200. Below 15 the prompt is likely a
+  # control word ("yes", "proceed") that the router already routes via
+  # the continuation branch. Above 200 the prompt is detailed enough
+  # that the user has presumably stated the goal explicitly.
+  local len="${#text}"
+  if (( len < 15 )) || (( len > 200 )); then
+    return 1
+  fi
+
+  # Any concrete code anchor disqualifies — file paths, line refs,
+  # function calls, multi-component paths, backtick-fenced spans, error
+  # class names. See _has_code_anchor for the full list.
+  if _has_code_anchor "${text}"; then
+    return 1
+  fi
+
+  return 0
+}
+
 is_execution_intent_value() {
   local intent="$1"
 

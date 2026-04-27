@@ -35,6 +35,9 @@ _omc_env_classifier_tel="${OMC_CLASSIFIER_TELEMETRY:-}"
 _omc_env_discovered_scope="${OMC_DISCOVERED_SCOPE:-}"
 _omc_env_council_deep_default="${OMC_COUNCIL_DEEP_DEFAULT:-}"
 _omc_env_auto_memory="${OMC_AUTO_MEMORY:-}"
+_omc_env_metis_on_plan_gate="${OMC_METIS_ON_PLAN_GATE:-}"
+_omc_env_prometheus_suggest="${OMC_PROMETHEUS_SUGGEST:-}"
+_omc_env_intent_verify_directive="${OMC_INTENT_VERIFY_DIRECTIVE:-}"
 
 OMC_STALL_THRESHOLD="${OMC_STALL_THRESHOLD:-12}"
 OMC_EXCELLENCE_FILE_COUNT="${OMC_EXCELLENCE_FILE_COUNT:-3}"
@@ -94,6 +97,34 @@ OMC_COUNCIL_DEEP_DEFAULT="${OMC_COUNCIL_DEEP_DEFAULT:-off}"
 # session memory should not accrue across runs. Explicit user requests
 # ("remember that...") still apply regardless of this flag.
 OMC_AUTO_MEMORY="${OMC_AUTO_MEMORY:-on}"
+# Bias-defense layer (v1.19.0): three opt-in mechanisms that target the
+# bias-blindness gap (model confidently solves the wrong problem). All
+# three default OFF so existing sessions see zero behavior change unless
+# the user opts in. Together they form a soft-to-hard escalation:
+# directives at prompt time → state writes at plan time → hard gate at
+# stop time.
+#
+# metis_on_plan_gate: when `on`, stop-guard blocks Stop on a complex
+# plan (≥5 steps, ≥3 files, ≥2 waves, or migration/refactor/schema/
+# breaking keyword paired with non-trivial scope) until metis has run a
+# stress-test review. Default off because the existing soft notice in
+# record-plan.sh is sufficient for most users; opt in when you want the
+# gate to enforce.
+OMC_METIS_ON_PLAN_GATE="${OMC_METIS_ON_PLAN_GATE:-off}"
+# prometheus_suggest: when `on`, the prompt-intent-router injects a
+# directive recommending /prometheus when an execution prompt is short
+# AND product-shaped (build/create/design + app/dashboard/feature, with
+# no specific code anchors). Suggestion-only; never blocks. Default off
+# to avoid false-positive grief on prompts the user knew they wanted
+# to drive directly.
+OMC_PROMETHEUS_SUGGEST="${OMC_PROMETHEUS_SUGGEST:-off}"
+# intent_verify_directive: when `on`, the prompt-intent-router injects
+# a directive telling the model to restate the user's goal in 1-2
+# sentences and ask for confirmation before its first edit, when the
+# prompt is short and unanchored. Lighter than prometheus — single
+# confirmation step, not interview. Default off; suppressed when
+# prometheus_suggest already fired on the same turn (no double-friction).
+OMC_INTENT_VERIFY_DIRECTIVE="${OMC_INTENT_VERIFY_DIRECTIVE:-off}"
 
 _omc_conf_loaded=0
 
@@ -141,6 +172,12 @@ _parse_conf_file() {
         [[ -z "${_omc_env_council_deep_default}" && "${value}" =~ ^(on|off)$ ]] && OMC_COUNCIL_DEEP_DEFAULT="${value}" || true ;;
       auto_memory)
         [[ -z "${_omc_env_auto_memory}" && "${value}" =~ ^(on|off)$ ]] && OMC_AUTO_MEMORY="${value}" || true ;;
+      metis_on_plan_gate)
+        [[ -z "${_omc_env_metis_on_plan_gate}" && "${value}" =~ ^(on|off)$ ]] && OMC_METIS_ON_PLAN_GATE="${value}" || true ;;
+      prometheus_suggest)
+        [[ -z "${_omc_env_prometheus_suggest}" && "${value}" =~ ^(on|off)$ ]] && OMC_PROMETHEUS_SUGGEST="${value}" || true ;;
+      intent_verify_directive)
+        [[ -z "${_omc_env_intent_verify_directive}" && "${value}" =~ ^(on|off)$ ]] && OMC_INTENT_VERIFY_DIRECTIVE="${value}" || true ;;
     esac
   done < "${conf}"
 }
