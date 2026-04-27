@@ -1723,7 +1723,22 @@ sim_post_compact "cg8a" "auto" "Summary"
 out_g8a="$(sim_session_start_compact "cg8a")"
 assert_contains "gap8a: advisory intent triggers guard directive" "PRE-COMPACT INTENT WAS 'advisory'" "${out_g8a}"
 assert_contains "gap8a: directive names forbidden ops" "Do NOT commit, push" "${out_g8a}"
-assert_contains "gap8a: directive names authorization words" "'go ahead', 'implement', 'do it'" "${out_g8a}"
+# v1.21.0: Layer 1 directive was rewritten to drop the "wait for explicit
+# authorization ('go ahead', 'implement', 'do it')" phrasing — the same
+# permission-asking pattern the gate's reason text shed. Now asserts the
+# new corrective shape (concrete-imperative template + FORBIDDEN cite).
+assert_contains "gap8a: directive provides 'reply with:' imperative template" "reply with: implement the fix" "${out_g8a}"
+assert_contains "gap8a: directive cites core.md FORBIDDEN" "FORBIDDEN" "${out_g8a}"
+# Negative: directive must NOT contain the disturbing one-word-affirmation
+# pattern. Same forbidden substrings as the pretool gate's reason text.
+for forbidden_phrase in "say yes" "single yes" "reauthorize" "confirm with yes"; do
+  if grep -qiF -- "${forbidden_phrase}" <<<"${out_g8a}"; then
+    printf '  FAIL: gap8a: Layer 1 directive contains forbidden phrase: %s\n' "${forbidden_phrase}" >&2
+    fail=$((fail + 1))
+  else
+    pass=$((pass + 1))
+  fi
+done
 assert_contains "gap8a: meta_request inlined" "landing page copy and CI setup" "${out_g8a}"
 # Guard directive must REPLACE the "keep momentum high" line, not supplement it.
 if grep -q "keep momentum high" <<<"${out_g8a}"; then
@@ -2148,12 +2163,16 @@ set_intent "cg8s" "advisory"
 
 out_s1="$(sim_pretool_bash "cg8s" "git commit -m test")"
 # First block should contain the full coaching text — specifically the
-# "What to do instead:" label and the enumerated (a) (b) (c) list. The
-# terse form omits these.
+# "What to do:" / "What NOT to do" labels and the enumerated (a) (b)
+# list with the corrective-imperative guidance. The terse form omits these.
+# (Reason wording was hardened in v1.21.0 to drop the "ask the user to
+# confirm execution intent" phrasing — the source of the "single yes
+# reauthorizes commit" anti-pattern; see test-pretool-intent-guard.sh.)
 assert_contains "gap8s: first block blocks" "\"permissionDecision\":\"deny\"" "${out_s1}"
-assert_contains "gap8s: first block is verbose (What to do instead:)" "What to do instead:" "${out_s1}"
+assert_contains "gap8s: first block is verbose (What to do:)" "What to do:" "${out_s1}"
 assert_contains "gap8s: first block lists options (a)" "(a) Deliver" "${out_s1}"
-assert_contains "gap8s: first block lists options (c)" "(c) If you believe" "${out_s1}"
+assert_contains "gap8s: first block has 'What NOT to do' section" "What NOT to do" "${out_s1}"
+assert_contains "gap8s: first block proposes concrete imperative" "concrete imperative" "${out_s1}"
 
 counter_s1="$(read_st "cg8s" "pretool_intent_blocks")"
 if [[ "${counter_s1}" == "1" ]]; then
@@ -2167,10 +2186,10 @@ out_s2="$(sim_pretool_bash "cg8s" "git push origin main")"
 # Second block should still deny...
 assert_contains "gap8s: second block blocks" "\"permissionDecision\":\"deny\"" "${out_s2}"
 # ...but should NOT contain the verbose coaching text.
-if ! printf '%s' "${out_s2}" | grep -q "What to do instead:"; then
+if ! printf '%s' "${out_s2}" | grep -q "What to do:"; then
   pass=$((pass + 1))
 else
-  printf '  FAIL: gap8s: second block must be terse (unexpected verbose "What to do instead:")\n' >&2
+  printf '  FAIL: gap8s: second block must be terse (unexpected verbose "What to do:")\n' >&2
   fail=$((fail + 1))
 fi
 if ! printf '%s' "${out_s2}" | grep -q "(a) Deliver"; then
@@ -2194,7 +2213,7 @@ fi
 out_s3="$(sim_pretool_bash "cg8s" "git reset --hard HEAD~1")"
 assert_contains "gap8s: third block blocks" "\"permissionDecision\":\"deny\"" "${out_s3}"
 assert_contains "gap8s: third block surfaces gate counter" "block 3" "${out_s3}"
-if ! printf '%s' "${out_s3}" | grep -q "What to do instead:"; then
+if ! printf '%s' "${out_s3}" | grep -q "What to do:"; then
   pass=$((pass + 1))
 else
   printf '  FAIL: gap8s: third block must be terse (unexpected verbose text)\n' >&2

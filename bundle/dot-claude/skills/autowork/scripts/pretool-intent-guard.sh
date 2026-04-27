@@ -229,6 +229,137 @@ if [[ -z "${denied_segment}" ]]; then
   exit 0
 fi
 
+# Wave-execution exception. When a council Phase 8 wave plan is active
+# (findings.json has at least one wave with status `pending` or
+# `in_progress`), the user has already authorized exhaustive wave
+# execution. A subsequent system-injected UserPromptSubmit frame
+# (scheduled wakeup, /loop tick, post-compact handoff, SessionStart
+# resume) can flip task_intent to advisory because the frame text isn't
+# imperative — but the persisted wave plan IS the user's standing
+# authorization, and per-wave confirmation is the exact "Should I
+# proceed?" anti-pattern core.md forbids. Short-circuit to allow and
+# record the override for audit; if the user actually wants to abort,
+# they mark waves rejected/completed via record-finding-list, not by
+# leaving stale advisory intent in place.
+#
+# Scope: the override applies ONLY to `git commit` — the canonical per-
+# wave operation in Phase 8 (commits titled `Wave N/M: <surface>`).
+# Other destructive ops (push, tag, rebase, reset --hard, branch -D,
+# force-push, plumbing rewrites) still require fresh execution intent
+# — the wave plan authorizes per-wave commits, not arbitrary repo
+# manipulation. This keeps the gate's real purpose intact while
+# removing the disturbing UX where the model invents a "single yes
+# reauthorizes commit" gate to break out of the misclassification.
+_wave_execution_active() {
+  local findings_file
+  findings_file="$(session_file "findings.json")"
+  [[ -f "${findings_file}" ]] || return 1
+
+  # Freshness gate. If the wave plan has not been touched in
+  # OMC_WAVE_OVERRIDE_TTL_SECONDS (default 1800 = 30 minutes), the user
+  # has likely moved on or abandoned the plan without explicitly marking
+  # waves completed/rejected. Without this gate, a stale findings.json
+  # in the same session dir would leak the override across unrelated
+  # later work — the exact "broad authorization that lingers past
+  # intent" risk the gate is supposed to prevent. 1800s is wider than
+  # the 900s post-compact-bias / classifier-misfire staleness windows
+  # because per-wave cycles (plan + impl + review + verify + commit)
+  # legitimately span 10+ minutes; tighter would create false negatives
+  # during normal Phase 8 execution. Read the timestamp before the
+  # waves[] inspection so a malformed/zero ts disqualifies the override
+  # — fail-closed when the plan's freshness cannot be established.
+  local updated_ts now_ts age max_age
+  updated_ts="$(jq -r '.updated_ts // 0' "${findings_file}" 2>/dev/null || printf '0')"
+  [[ "${updated_ts}" =~ ^[0-9]+$ ]] || return 1
+  now_ts="$(date +%s)"
+  age=$((now_ts - updated_ts))
+  max_age="${OMC_WAVE_OVERRIDE_TTL_SECONDS:-1800}"
+  # TTL=0 is a documented kill-switch: the override never fires regardless
+  # of age. Without this special-case, the natural `age > 0` comparison
+  # leaves a one-second window where a same-second wave-status write
+  # (age=0) would still trigger the override — strictly contradicting the
+  # CHANGELOG's "set wave_override_ttl_seconds=0 to disable entirely"
+  # claim.
+  if [[ "${max_age}" -eq 0 ]] || [[ "${age}" -gt "${max_age}" ]]; then
+    return 1
+  fi
+
+  jq -e '
+    [(.waves // [])[] | select(.status == "in_progress" or .status == "pending")]
+    | length > 0
+  ' "${findings_file}" >/dev/null 2>&1
+}
+
+_is_git_commit_segment() {
+  # Reuses the same _GUARD_PRE prefix as the destructive matcher so
+  # absolute-path forms (`/usr/bin/git commit`) and wrapper invocations
+  # (`sudo git commit`) are recognized identically. Operates on the
+  # already-normalized denied_segment so flag-injection bypass forms
+  # (`git -c foo=bar commit`) also normalize to `git commit`.
+  grep -Eq "${_GUARD_PRE}git[[:space:]]+commit([[:space:]]|$)" <<<"$1"
+}
+
+# Override eligibility check. The destructive-matcher loop above stops
+# at the first destructive segment, so `denied_segment` alone cannot
+# tell us about subsequent segments — and a compound like `git commit
+# && git push --force` would otherwise pass the override on the commit
+# segment while smuggling a force-push past the gate. Re-walk all
+# segments and confirm that EVERY destructive non-allowed segment is a
+# `git commit`. Any other destructive op disqualifies the override.
+#
+# Load-bearing invariant: this function operates on input that has
+# already been processed by `_normalize_git_flags` (the call site passes
+# `${normalized_cmd}`). Per-segment normalization is NOT redone here,
+# because the original loop at line 218 normalizes the whole string
+# once before splitting. Future refactors that change the normalize-
+# then-split order MUST normalize each segment individually before
+# calling `_is_git_commit_segment`, or flag-injection forms like
+# `git -c foo=bar commit && git -c bar=baz push --force` will leak.
+_wave_override_command_safe() {
+  local cmd_normalized="$1"
+  local _seg
+  while IFS= read -r _seg; do
+    [[ -z "${_seg// }" ]] && continue
+    if _cmd_matches_destructive "${_seg}" && ! _cmd_is_allowed_variant "${_seg}"; then
+      if ! _is_git_commit_segment "${_seg}"; then
+        return 1
+      fi
+    fi
+  done < <(sed -E 's/(&&|\|\||;|\|)/\n/g' <<<"${cmd_normalized}")
+  return 0
+}
+
+if _wave_execution_active && _wave_override_command_safe "${normalized_cmd}"; then
+  # Extract the active wave's metadata for the gate-event details so
+  # /ulw-report can attribute each override to a specific wave (which
+  # surface it authorized, position in the plan). Without this, the
+  # event records only intent + denied_segment and the cross-session
+  # report shows aggregate counts with no link back to the wave that
+  # justified the override. Pull the *first* in_progress-or-pending
+  # wave; that's the wave the per-wave commit is most likely targeting.
+  # Defaults are empty strings (jq `// ""`) so a missing/legacy plan
+  # shape never crashes the override path.
+  _wave_meta_file="$(session_file "findings.json")"
+  _wave_index="$(jq -r '
+    [(.waves // [])[] | select(.status == "in_progress" or .status == "pending")][0].index // ""
+  ' "${_wave_meta_file}" 2>/dev/null || printf '')"
+  _wave_total="$(jq -r '
+    [(.waves // [])[] | select(.status == "in_progress" or .status == "pending")][0].total // ""
+  ' "${_wave_meta_file}" 2>/dev/null || printf '')"
+  _wave_surface="$(jq -r '
+    [(.waves // [])[] | select(.status == "in_progress" or .status == "pending")][0].surface // ""
+  ' "${_wave_meta_file}" 2>/dev/null || printf '')"
+  log_hook "pretool-intent-guard" \
+    "wave-active override: intent=${task_intent} wave=${_wave_index}/${_wave_total} cmd=$(truncate_chars 80 "${command_str}")"
+  record_gate_event "pretool-intent" "wave_override" \
+    "intent=${task_intent}" \
+    "wave_index=${_wave_index}" \
+    "wave_total=${_wave_total}" \
+    "wave_surface=$(truncate_chars 60 "${_wave_surface}")" \
+    "denied_segment=$(truncate_chars 120 "${denied_segment}")"
+  exit 0
+fi
+
 intent_label="${task_intent//_/-}"
 
 # Record the block for show-status visibility AND return the post-
@@ -261,16 +392,22 @@ log_hook "pretool-intent-guard" "blocked: intent=${task_intent} block=${block_co
 if [[ "${block_count}" -le 1 ]]; then
   reason="[PreTool gate · ${intent_label} · block 1] The active prompt was classified as '${intent_label}', not execution. Destructive git/gh operations (commit, push, revert, reset --hard, rebase, cherry-pick, tag, merge, branch -D, switch -C, checkout -B, clean -f, update-ref, filter-branch, gh pr/release/issue create/merge/edit/close) require explicit execution authorization.
 
-What to do instead:
+What to do:
   (a) Deliver the ${intent_label} response the user asked for — assessment, recommendation, or checkpoint.
-  (b) If changes are warranted, list them as recommendations and wait for the user to reply with explicit authorization framing (an imperative prompt like 'implement X' or 'fix Y' — a fresh UserPromptSubmit that the classifier will reclassify as execution).
-  (c) If you believe this is a misclassification, say so in your response and ask the user to confirm execution intent before retrying.
+  (b) If changes are warranted, list them as concrete recommendations with file paths and rationale; let the user respond at their pace.
 
-Do not attempt to work around this guard by using alternative commands (plumbing git verbs, absolute paths, filesystem edits to .git/, or invoking git through another language runtime) — the spirit of the rule is 'no unauthorized modifications to any repo', not 'only the surface forms listed'.
+What NOT to do — these patterns violate core.md ('FORBIDDEN: Asking \"Should I proceed?\" or \"Would you like me to…\" when the user has already requested the work; the request IS the permission'):
+  - Do not phrase the next message as a permission prompt of any shape.
+  - Do not ask the user for a one-word affirmation (any \"yes / go / proceed / continue\" gate) to retry a destructive op.
+  - Do not invent a manual permission gate that the harness's own classifier resolves on the next imperative prompt.
+
+If you believe this block is a misclassification (for example, a system-injected resume or wakeup frame interrupted mid-wave execution), state that plainly in your response and propose a concrete imperative the user can paste back verbatim — for example: 'To unblock, reply with: implement wave 3' or 'reply with: ship the commit on <branch>'. The next imperative prompt is the authorization signal — do not manufacture one.
+
+Do not work around this guard by using alternative commands (plumbing git verbs, absolute paths, filesystem edits to .git/, or invoking git through another language runtime) — the spirit of the rule is 'no unauthorized modifications to any repo', not 'only the surface forms listed'.
 
 Attempted command: $(truncate_chars 200 "${command_str}")"
 else
-  reason="[PreTool gate · ${intent_label} · block ${block_count}] Destructive git/gh operations still require explicit execution authorization. Deliver the assessment/recommendation the user asked for. A fresh imperative prompt ('implement X', 'fix Y') will reclassify intent and unblock edits.
+  reason="[PreTool gate · ${intent_label} · block ${block_count}] Destructive git/gh operations still require explicit execution authorization. Deliver the ${intent_label} response the user asked for. If you believe this is a misclassification, propose a concrete imperative the user can paste back verbatim ('reply with: implement wave N') — do not solicit a one-word confirmation.
 Attempted: $(truncate_chars 200 "${command_str}")"
 fi
 

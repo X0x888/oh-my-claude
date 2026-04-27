@@ -266,14 +266,39 @@ cat > "${QP}/session_summary.jsonl" <<EOF
 {"session_id":"test-ud-session","start_ts":${NOW},"end_ts":${NOW},"domain":"coding","intent":"execution","edit_count":3,"verified":true,"reviewed":true,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":1,"outcome":"shipped","skip_count":0,"serendipity_count":0}
 EOF
 out="$(run_report week)"
-# Per-gate count column for finding-status: 1 status-change + 2 user-decision = 3 events
+# Per-gate count column for finding-status: 0 blocks, 0 wave_override,
+# 1 status-change + 2 user-decision = 3 events. The "Overrides" column
+# was added in v1.21.0 between Blocks and Status changes to surface
+# `wave_override` events from the pretool-intent-guard wave-active
+# exception; non-pretool gates always show 0 in that column.
 assert_contains "show-report: per-gate finding-status count includes user-decision marks" \
-  "| \`finding-status\` | 0 | 3 |" "${out}"
+  "| \`finding-status\` | 0 | 0 | 3 |" "${out}"
 # Totals line: 4 status changes (3 finding-status + 1 wave-status), 2 user-decision marks
 assert_contains "show-report: totals line includes user-decision marks suffix" \
   "2 user-decision marks" "${out}"
 assert_contains "show-report: totals report 4 status changes" \
   "4 status changes" "${out}"
+rm -f "${QP}/gate_events.jsonl"
+rm -f "${QP}/session_summary.jsonl"
+
+# ----------------------------------------------------------------------
+printf 'Test 18: v1.21.0 — wave_override events surface in per-gate Overrides column + totals line\n'
+NOW="$(date +%s)"
+cat > "${QP}/gate_events.jsonl" <<EOF
+{"ts":${NOW},"session":"test-wo-session","gate":"pretool-intent","event":"block","details":{"intent":"advisory"}}
+{"ts":${NOW},"session":"test-wo-session","gate":"pretool-intent","event":"wave_override","details":{"intent":"advisory","denied_segment":"git commit -m wave"}}
+{"ts":${NOW},"session":"test-wo-session","gate":"pretool-intent","event":"wave_override","details":{"intent":"session_management","denied_segment":"git commit"}}
+EOF
+cat > "${QP}/session_summary.jsonl" <<EOF
+{"session_id":"test-wo-session","start_ts":${NOW},"end_ts":${NOW},"domain":"coding","intent":"execution","edit_count":3,"verified":true,"reviewed":true,"guard_blocks":1,"dim_blocks":0,"exhausted":false,"dispatches":1,"outcome":"shipped","skip_count":0,"serendipity_count":0}
+EOF
+out="$(run_report week)"
+# Per-gate row for pretool-intent: 1 block, 2 wave_override, 0 status-changes
+assert_contains "show-report: per-gate pretool-intent row includes wave_override count" \
+  "| \`pretool-intent\` | 1 | 2 | 0 |" "${out}"
+# Totals line includes the override count
+assert_contains "show-report: totals line surfaces wave-override allow(s)" \
+  "2 wave-override allow" "${out}"
 rm -f "${QP}/gate_events.jsonl"
 rm -f "${QP}/session_summary.jsonl"
 

@@ -38,6 +38,7 @@ _omc_env_auto_memory="${OMC_AUTO_MEMORY:-}"
 _omc_env_metis_on_plan_gate="${OMC_METIS_ON_PLAN_GATE:-}"
 _omc_env_prometheus_suggest="${OMC_PROMETHEUS_SUGGEST:-}"
 _omc_env_intent_verify_directive="${OMC_INTENT_VERIFY_DIRECTIVE:-}"
+_omc_env_wave_override_ttl="${OMC_WAVE_OVERRIDE_TTL_SECONDS:-}"
 
 OMC_STALL_THRESHOLD="${OMC_STALL_THRESHOLD:-12}"
 OMC_EXCELLENCE_FILE_COUNT="${OMC_EXCELLENCE_FILE_COUNT:-3}"
@@ -64,6 +65,15 @@ OMC_CUSTOM_VERIFY_MCP_TOOLS="${OMC_CUSTOM_VERIFY_MCP_TOOLS:-}"
 # (e.g. for users who prefer the model to make its own judgement calls and
 # accept the risk of the 2026-04-17-class incident).
 OMC_PRETOOL_INTENT_GUARD="${OMC_PRETOOL_INTENT_GUARD:-true}"
+# Wave-execution override TTL (seconds): freshness window for the
+# `pretool-intent-guard.sh` wave-active exception. When a council Phase 8
+# wave plan is active and its `updated_ts` is within this many seconds,
+# the gate allows `git commit` even under non-execution intent. Stale
+# plans (older than the TTL) do NOT trigger the override, so abandoned
+# plans cannot leak per-wave authorization into unrelated later work.
+# Default 1800s = 30 minutes; raise if your wave cycles legitimately
+# exceed this between commits, lower to tighten.
+OMC_WAVE_OVERRIDE_TTL_SECONDS="${OMC_WAVE_OVERRIDE_TTL_SECONDS:-1800}"
 # Classifier telemetry capture: when `on` (default), every UserPromptSubmit
 # records a row to `<session>/classifier_telemetry.jsonl` and the follow-up
 # prompt's hook may annotate misfire rows. The prompt preview (first 200
@@ -178,6 +188,8 @@ _parse_conf_file() {
         [[ -z "${_omc_env_prometheus_suggest}" && "${value}" =~ ^(on|off)$ ]] && OMC_PROMETHEUS_SUGGEST="${value}" || true ;;
       intent_verify_directive)
         [[ -z "${_omc_env_intent_verify_directive}" && "${value}" =~ ^(on|off)$ ]] && OMC_INTENT_VERIFY_DIRECTIVE="${value}" || true ;;
+      wave_override_ttl_seconds)
+        [[ -z "${_omc_env_wave_override_ttl}" && "${value}" =~ ^[0-9]+$ ]] && OMC_WAVE_OVERRIDE_TTL_SECONDS="${value}" || true ;;
     esac
   done < "${conf}"
 }

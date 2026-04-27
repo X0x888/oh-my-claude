@@ -88,6 +88,7 @@ bash tests/test-inline-design-contract.sh
 bash tests/test-archetype-memory.sh
 bash tests/test-cross-session-lock.sh
 bash tests/test-mark-deferred.sh
+bash tests/test-pretool-intent-guard.sh
 bash tests/test-ulw-pause.sh
 bash tests/test-bias-defense-classifier.sh
 bash tests/test-bias-defense-directives.sh
