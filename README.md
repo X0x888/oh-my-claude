@@ -133,15 +133,20 @@ No npm. No TypeScript. No Node.js runtime. No plugin framework. The entire harne
 
 ## AI-assisted install
 
-Already in Claude Code? Paste one of these prompts directly.
+Already in Claude Code? Paste one of these prompts directly. Each is self-contained, but the canonical step-by-step lives in the cloned repo's [`AGENTS.md` § "Agent Install Protocol"](AGENTS.md#agent-install-protocol--installing-or-updating-oh-my-claude) — the prompts point there so the README and the protocol don't drift.
 
 **First-time install:**
 
-> Clone https://github.com/X0x888/oh-my-claude.git into ~/repos/ and run its install.sh. Ask me which model tier I want (quality for all-Opus, balanced for the default mix, or economy for all-Sonnet) and whether I want bypass-permissions mode. Run verify.sh after installing and report the results.
+> Install oh-my-claude. Do these in order:
+> 1. Clone `https://github.com/X0x888/oh-my-claude.git` into `~/.local/share/oh-my-claude` (canonical path — matches the curl-pipe-bash bootstrapper).
+> 2. Read `~/.local/share/oh-my-claude/AGENTS.md` § "Agent Install Protocol" and follow it end-to-end.
+> 3. Use `--model-tier=balanced` (don't ask me).
+> 4. After `verify.sh` passes, quote its "What next?" footer back to me verbatim — do not paraphrase.
+> 5. Tell me explicitly to restart Claude Code and run `/ulw-demo` in the new session. Hooks won't fire in this current session.
 
 **Update an existing install:**
 
-> Update my oh-my-claude installation. The repo path is saved in ~/.claude/oh-my-claude.conf under repo_path. Pull the latest changes, re-run install.sh, then run verify.sh and tell me what changed.
+> Update oh-my-claude. Read `repo_path=` from `~/.claude/oh-my-claude.conf`, then follow `<repo_path>/AGENTS.md` § "Agent Install Protocol" → Step 2 (Update). After running `install.sh` and `verify.sh`, list the commits the pull brought in and tell me whether to restart Claude Code (only if the bundle changed).
 
 ## Usage examples
 

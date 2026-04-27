@@ -1,10 +1,126 @@
 # AGENTS.md
 
-Instructions for AI agents working on the oh-my-claude repository.
+This file has two audiences. Read the section that applies to you and skip the rest.
+
+- **AI agent installing or updating oh-my-claude for a user.** Follow the [Agent Install Protocol](#agent-install-protocol--installing-or-updating-oh-my-claude) below. The protocol is the canonical source of truth for the install flow; the README's "AI-assisted install" prompts point here.
+- **AI agent contributing to the oh-my-claude codebase** (adding agents/skills/hooks, fixing bugs, doing reviews). Skip to [Project Context](#project-context) for architecture, conventions, state-management rules, and protected design decisions.
+
+---
+
+## Agent Install Protocol — installing or updating oh-my-claude
+
+When the user asks you to install, update, set up, or "add" oh-my-claude, follow these steps in order. Skipping a step usually produces a half-installed harness — hooks not loaded (Step 3), wrong clone path that breaks future updates (Step 1.1), or a missed `/ulw-demo` handoff (Step 4) that leaves the user with no felt-it moment.
+
+### Step 0 — Preflight: detect existing installs
+
+Read `~/.claude/oh-my-claude.conf` (a `key=value` file written by `install.sh`). Relevant keys:
+
+- `installed_version=X.Y.Z` — present if the harness is currently installed.
+- `repo_path=/abs/path` — the source repo path the last install was run from.
+- `installed_sha=<git-sha>` — the source commit at last install (absent if installed from a non-git source).
+- `model_tier=quality|balanced|economy` — user's chosen tier (absent = default `balanced`).
+
+Branch on the conf state. (`installed_sha=` may be absent when the harness was installed from a tarball or `git archive` — in that case, fall back to comparing `installed_version=` against the latest tag and skip the SHA check.)
+
+| Conf state | User asked for | Action |
+|---|---|---|
+| Conf missing, or conf present but `installed_version=` absent | install / "set up" | Go to **Step 1 — Fresh install**. |
+| `installed_version=` present | install / "set up" | Confirm intent: "you already have v$X — reinstall in place, or did you mean update?" If reinstall: skip the clone in Step 1.1 and run `bash "$repo_path/install.sh"` directly. If update: go to **Step 2**. |
+| `installed_version=` present | update / "upgrade" / "pull latest" | Go to **Step 2 — Update**. |
+| Already-current check (after `git -C "$repo_path" fetch origin`): `installed_version=` matches latest tag AND `installed_sha=` matches `git -C "$repo_path" rev-parse origin/main` | install or update | **Tell the user the harness is already current.** Print version and last-install timestamp. Use `stat -f %Sm ~/.claude/.install-stamp` on macOS or `stat -c %y ~/.claude/.install-stamp` on Linux — pick by `uname -s` (`Darwin` → BSD form, anything else → GNU form), or try one and fall back. Recommend `/ulw-demo` if they haven't seen the gates fire. |
+
+The already-current branch needs `repo_path` and a fresh `git fetch` before the comparison resolves — Step 0 is read-only on the conf, so this branch only completes after the agent has cd'd into `$repo_path` (start of Step 2).
+
+### Step 1 — Fresh install
+
+1. **Clone to the canonical location.** Use `~/.local/share/oh-my-claude` — this matches the curl-pipe-bash bootstrapper (`install-remote.sh`), so future updates work the same way no matter how the user originally installed:
+   ```bash
+   git clone https://github.com/X0x888/oh-my-claude.git ~/.local/share/oh-my-claude
+   ```
+   If `~/.local/share/oh-my-claude` already exists, detect what's there before overwriting:
+   ```bash
+   git -C ~/.local/share/oh-my-claude config --get remote.origin.url 2>/dev/null
+   ```
+   If the URL matches `X0x888/oh-my-claude`, treat it as an existing clone — skip clone and continue to step 3 (or run `git pull` first). If it returns a different URL or empty, stop and ask the user — do not overwrite a sibling repo.
+
+2. **One question, only if useful.** Default to model tier `balanced` unless the user has already expressed a preference. Don't ask if they shrug or are unfamiliar — just use the default. Suggested phrasing if you do ask:
+
+   > Default model tier is `balanced` (Opus for planning/review, Sonnet for execution). Want all-Opus (`quality`) or all-Sonnet (`economy`) instead?
+
+   **Do NOT ask about `--bypass-permissions`.** The installer prints a notice about it; the user can opt in later via `bash install.sh --bypass-permissions` once they trust the harness. Asking up-front adds friction without value.
+
+3. **Run the installer.**
+   ```bash
+   bash ~/.local/share/oh-my-claude/install.sh
+   ```
+   Add `--model-tier=quality` or `--model-tier=economy` only if the user picked a non-default tier.
+
+4. **Run verify.**
+   ```bash
+   bash ~/.local/share/oh-my-claude/verify.sh
+   ```
+   Confirm `Errors: 0`. If errors > 0, surface them and recommend re-running `install.sh`.
+
+5. Continue to **Step 3 — Restart instruction** (mandatory).
+
+### Step 2 — Update an existing install
+
+1. Read `repo_path=` from `~/.claude/oh-my-claude.conf`. Capture `installed_sha=` first too — you'll need its old value for the changelog summary.
+2. Pull and re-install:
+   ```bash
+   git -C "$repo_path" pull
+   bash "$repo_path/install.sh"
+   ```
+   `install.sh` reads `model_tier=` from conf and re-applies it automatically — no flag needed.
+3. Verify:
+   ```bash
+   bash "$repo_path/verify.sh"
+   ```
+4. Summarize what the pull brought in:
+   ```bash
+   git -C "$repo_path" log --oneline "$prior_installed_sha"..HEAD
+   ```
+   (Use the value of `installed_sha=` you captured *before* running `install.sh` — the installer overwrites it.)
+5. Continue to **Step 3 — Restart instruction** (only if any bundle file changed; `verify.sh` prints an `Orphans:` block if files were removed).
+
+### Step 3 — Tell the user to restart Claude Code
+
+This is the single highest-leverage instruction in the protocol. Claude Code loads hooks at session start; an already-running session keeps its previous wiring until restart. Skip this step and the user types `/ulw <task>` in their current session, sees no behavioral change, and concludes the install is broken.
+
+After install — and after any update that changed bundle files — **explicitly tell the user**:
+
+> Restart Claude Code (or open a new session) before testing. Already-running sessions keep the previous hook wiring, so `/ulw` will silently no-op until you restart.
+
+If the user is in the same Claude Code session that ran the install, they must start a new session before any harness behavior becomes observable.
+
+### Step 4 — Hand off with the verify "What next?" footer
+
+`verify.sh` prints a "What next?" footer with the recommended first prompts. **Quote it verbatim** in your response — do not paraphrase, do not summarize. The `/ulw-demo` line in that footer is what converts "tool installed" into "tool felt and understood"; paraphrasing tends to drop it.
+
+The footer looks like:
+
+```
+What next?
+  /ulw-demo                               -- see quality gates in action (recommended first step)
+  /ulw fix the failing test and add regression coverage
+                                          -- start real work with full quality enforcement
+```
+
+### Step 5 — Brief the user (only if they pasted the install prompt without prior context)
+
+If the user pasted "install oh-my-claude" with no surrounding conversation, they may not know what they just installed. Add a two-sentence summary:
+
+> oh-my-claude is a cognitive quality harness for Claude Code. After you restart, `/ulw <task>` runs any non-trivial work through specialist agents and quality gates that block until testing and review are done — it works for coding, writing, research, and operations. Run `/ulw-demo` first to feel how the gates fire on a quick walkthrough (under 2 minutes).
+
+The next section is for repo contributors only.
+
+---
 
 ## Project Context
 
-oh-my-claude is a cognitive quality harness for Claude Code. It provides bash hooks, skills, and specialist agents that enforce thinking, testing, and review during AI-assisted development. The system is pure bash with zero npm dependencies.
+> If you're helping a user install or update, the [Agent Install Protocol](#agent-install-protocol--installing-or-updating-oh-my-claude) above is what you want, not this section.
+
+oh-my-claude is a cognitive quality harness for Claude Code. It provides bash hooks, skills, and specialist agents that enforce thinking, testing, and review across coding, writing, research, and operations work. The system is pure bash with zero npm dependencies.
 
 ## Architecture
 
@@ -32,35 +148,7 @@ oh-my-claude/
   config/
     settings.patch.json       # Settings merged into user's settings.json
 
-  tests/                      # Test scripts (32 bash + 1 python)
-    test-agent-verdict-contract.sh
-    test-classifier-replay.sh
-    test-classifier.sh
-    test-common-utilities.sh
-    test-concurrency.sh
-    test-cross-session-rotation.sh
-    test-design-contract.sh
-    test-discover-session.sh
-    test-discovered-scope.sh
-    test-e2e-hook-sequence.sh
-    test-finding-list.sh
-    test-gate-events.sh
-    test-install-artifacts.sh
-    test-install-remote.sh
-    test-intent-classification.sh
-    test-phase8-integration.sh
-    test-post-merge-hook.sh
-    test-quality-gates.sh
-    test-repro-redaction.sh
-    test-serendipity-log.sh
-    test-session-resume.sh
-    test-settings-merge.sh
-    test-show-report.sh
-    test-stall-detection.sh
-    test-state-io.sh
-    test-uninstall-merge.sh
-    test-verification-lib.sh
-    test_statusline.py
+  tests/                      # 35 bash + 1 python test scripts; CLAUDE.md "Testing" lists each one
 
   tools/                      # Developer tools (not installed)
     replay-classifier-telemetry.sh
