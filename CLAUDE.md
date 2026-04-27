@@ -103,14 +103,19 @@ python3 -m unittest tests.test_statusline -v
 - When adding or removing a skill directory or agent file, update both `verify.sh` (`required_paths`) AND `uninstall.sh` (`SKILL_DIRS` / `AGENT_FILES`) in the same commit. These two lists must stay parallel — otherwise uninstall leaks files or verify silently passes a broken install.
 - When bumping the version, follow the full release checklist (replace `X.Y.Z` with the actual version in all commands):
   1. **Pre-flight CHANGELOG audit.** Run `git log --oneline vPREV..HEAD` and confirm every commit has a matching CHANGELOG `[Unreleased]` bullet. Silent drop (a large commit's changes missing from the changelog) is the common failure mode. Also skim `docs/architecture.md` state-key table for new keys introduced in the window.
-  2. Update `VERSION` with the new version number.
-  3. Update the README.md version badge to match.
-  4. Promote the `[Unreleased]` heading in `CHANGELOG.md` to `## [X.Y.Z] - YYYY-MM-DD` (keep `[Unreleased]` above it as an empty placeholder for the next cycle if desired).
-  5. Commit with a descriptive message summarizing the release.
-  6. Tag the release commit: `git tag vX.Y.Z`.
-  7. Push commits and tags: `git push && git push --tags`.
-  8. Create a GitHub release: `VER=$(cat VERSION) && awk "/^## \\[$VER\\]/{found=1;next} /^## \\[/{if(found)exit} found" CHANGELOG.md | gh release create "v$VER" --title "v$VER" --notes-file -`. If `gh` is unavailable, create the release manually via GitHub's web UI.
-  9. Never skip tagging — a version bump without a tag breaks the release history.
+  2. **Pre-flight CI parity check.** Run the exact commands `.github/workflows/validate.yml` runs locally — shellcheck warnings count as failures in CI, so a warning-clean local lint avoids a post-push CI red. The two CI-fatal commands are:
+     - `find bundle/ -name '*.sh' -print0 | xargs -0 shellcheck -x --severity=warning`
+     - `find . -name '*.json' -not -path './.git/*' -print0 | xargs -0 -n1 python3 -m json.tool --no-ensure-ascii > /dev/null`
+     Plus the CI test list (`test-intent-classification`, `test-quality-gates`, `test-stall-detection`, `test-e2e-hook-sequence`, `test-common-utilities`, `test-settings-merge`, `test-uninstall-merge`, `test-session-resume`, `test-verification-lib`, `test-phase8-integration`, `test-agent-verdict-contract`, `test-gate-events`, `test-discover-session`, `test_statusline`). Fix any warning/test failure before tagging — a CI red on a tagged release is the visible failure mode.
+  3. Update `VERSION` with the new version number.
+  4. Update the README.md version badge to match.
+  5. Promote the `[Unreleased]` heading in `CHANGELOG.md` to `## [X.Y.Z] - YYYY-MM-DD` (keep `[Unreleased]` above it as an empty placeholder for the next cycle if desired).
+  6. Commit with a descriptive message summarizing the release.
+  7. Tag the release commit: `git tag vX.Y.Z`.
+  8. Push commits and tags: `git push && git push --tags`.
+  9. Create a GitHub release: `VER=$(cat VERSION) && awk "/^## \\[$VER\\]/{found=1;next} /^## \\[/{if(found)exit} found" CHANGELOG.md | gh release create "v$VER" --title "v$VER" --notes-file -`. If `gh` is unavailable, create the release manually via GitHub's web UI.
+  10. **Post-flight CI verification.** Watch the just-pushed run via `gh run watch --exit-status $(gh run list --branch main --limit 1 --json databaseId -q '.[0].databaseId')` (blocks until the run completes; non-zero exit on failure). Treat the release as **incomplete** until the run is green. If it fails, fix the issue and either re-run via `gh run rerun <id>` or push a hotfix commit; do not declare the release shipped while CI on the tagged commit is red.
+  11. Never skip tagging — a version bump without a tag breaks the release history.
 - When adding a new reviewer-style agent:
   1. Wire it in `config/settings.patch.json` under `SubagentStop` with a reviewer-type argument (`standard|excellence|prose|stress_test|traceability|design_quality`).
   2. Add the `VERDICT:` contract line to its output format section in `bundle/dot-claude/agents/<name>.md`.

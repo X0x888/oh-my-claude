@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **CI shellcheck regression on `main` (SC2038 in `bundle/dot-claude/skills/autowork/scripts/show-status.sh:348`).** The Memory Health block's oldest-mtime helper used `find … | xargs -I {} stat -f '%m %N' {}` without NUL-delimited handoff — clean on alphanumeric memory filenames in practice but fatal under CI's `shellcheck --severity=warning` gate. Switched to `find … -print0 | xargs -0 stat -f '%m %N'`; BSD `stat` (macOS) and the GNU `-printf` fallback (Linux) both keep working unchanged. Caused 4 consecutive red CI runs since v1.20.0 (`4df1595` onward); the v1.21.0 tag was pushed before the breakage was fixed.
+
+### Changed
+
+- **Release checklist in `CLAUDE.md` now includes pre-flight CI parity + post-flight CI verification steps.** Step 2 runs the exact `shellcheck`/JSON-validate commands `.github/workflows/validate.yml` runs (warnings are CI-fatal — locally clean today does not mean CI-green tomorrow if the lint version drifts). Step 10 watches the just-pushed run via `gh run watch --exit-status` and treats the release as **incomplete** until the run is green. Closes the failure mode that produced the v1.21.0-on-red-CI state.
+
 ## [1.21.0] - 2026-04-27
 
 ### Fixed

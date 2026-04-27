@@ -345,9 +345,14 @@ if is_auto_memory_enabled 2>/dev/null; then
     _mem_oldest_iso="-"
     if [[ "${_mem_total}" -gt 0 ]]; then
       # Oldest mtime in YYYY-MM-DD form; cross-platform stat -f / -c shim.
+      # NUL-delimited handoff (-print0 / xargs -0) keeps non-alphanumeric
+      # memory filenames safe and is the SC2038-clean form. BSD stat
+      # (macOS) accepts multiple file args, so dropping `-I {}` lets
+      # xargs batch them into one invocation. The GNU-find fallback
+      # (`-printf`) does not pipe through xargs, so it is unaffected.
       _mem_oldest_path="$(find "${_mem_dir}" -maxdepth 1 -type f -name '*.md' \
-        -not -name 'MEMORY.md' 2>/dev/null \
-        | xargs -I {} stat -f '%m %N' {} 2>/dev/null \
+        -not -name 'MEMORY.md' -print0 2>/dev/null \
+        | xargs -0 stat -f '%m %N' 2>/dev/null \
         || find "${_mem_dir}" -maxdepth 1 -type f -name '*.md' \
           -not -name 'MEMORY.md' -printf '%T@ %p\n' 2>/dev/null \
         || true)"
