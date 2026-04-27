@@ -546,6 +546,22 @@ if [[ "${TASK_INTENT}" == "advisory" || "${TASK_INTENT}" == "session_management"
   context_parts+=("AUTO-MEMORY SKIP: this turn is classified as ${TASK_INTENT//_/-}. The session-stop and compact-time auto-memory rules in auto-memory.md and compact.md target execution/continuation/checkpoint turns where work moved forward. Skip both passes this turn unless the user explicitly asks you to remember something. Advisory and session-management turns produce evaluation, not durable signal worth keeping across sessions.")
 fi
 
+# Memory drift hint (v1.20.0). When the user-scope auto-memory dir
+# contains files older than 30 days, surface a one-line nudge at session
+# start so the model treats stale memory as drift-prone — verify named
+# files / flags / versions against current code before relying on them.
+# One-shot per session, guarded by `memory_drift_hint_emitted` state
+# flag. The hint points at /memory-audit for triage. Suppressed by the
+# helper itself when auto_memory=off, when the memory dir is absent, or
+# when no stale files exist.
+if [[ -z "$(read_state "memory_drift_hint_emitted")" ]]; then
+  drift_msg="$(check_memory_drift 2>/dev/null || true)"
+  if [[ -n "${drift_msg}" ]]; then
+    context_parts+=("${drift_msg}")
+    write_state "memory_drift_hint_emitted" "1"
+  fi
+fi
+
 # Guard exhaustion warning from previous response
 guard_exhausted="$(read_state "guard_exhausted")"
 if [[ -n "${guard_exhausted}" ]]; then

@@ -285,6 +285,7 @@ Separate from session state, `install.sh` writes four install-time artifacts tha
 | `last_serendipity_ts` | Epoch of the most recent Serendipity Rule application, written by `record-serendipity.sh`. |
 | `last_serendipity_fix` | Short description of the most recent Serendipity Rule application — appended to the `Serendipity fires:` row in `/ulw-status`. |
 | `excellence_guard_triggered` | Whether the excellence gate has already fired this session (`1` or empty) |
+| `memory_drift_hint_emitted` | `1` after `prompt-intent-router.sh` injects the v1.20.0 memory-drift hint at session start; one-shot per session — second and later prompts do NOT re-emit |
 | `guard_exhausted` | Epoch timestamp when guard caps were reached and stop was allowed |
 | `guard_exhausted_detail` | Diagnostic string showing which gates were still unsatisfied at exhaustion |
 | `session_outcome` | How the session ended: `completed` (all gates satisfied), `exhausted` (guard caps reached), or `abandoned` (TTL-swept without a completed stop). Carried into `session_summary.jsonl` for cross-session analytics. |

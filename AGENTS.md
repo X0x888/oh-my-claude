@@ -148,7 +148,7 @@ oh-my-claude/
   config/
     settings.patch.json       # Settings merged into user's settings.json
 
-  tests/                      # 37 bash + 1 python test scripts; CLAUDE.md "Testing" lists each one
+  tests/                      # 38 bash + 1 python test scripts; CLAUDE.md "Testing" lists each one
 
   tools/                      # Developer tools (not installed)
     replay-classifier-telemetry.sh

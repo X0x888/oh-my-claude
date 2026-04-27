@@ -222,6 +222,48 @@ is_auto_memory_enabled() {
   [[ "${OMC_AUTO_MEMORY:-on}" != "off" ]]
 }
 
+# Returns the *conventional* directory where the current cwd's
+# user-scope auto-memory would live, following Claude Code's project-
+# memory path convention (cwd → cwd with `/` → `-`). Empty stdout when
+# cwd is unavailable. Does NOT check `is_auto_memory_enabled` — callers
+# that should respect the opt-out must gate themselves before calling.
+# Does NOT check whether the directory exists on disk.
+omc_memory_dir_for_cwd() {
+  local pwd_abs encoded_cwd
+  pwd_abs="$(pwd 2>/dev/null || true)"
+  [[ -z "${pwd_abs}" ]] && return 0
+  encoded_cwd="$(printf '%s' "${pwd_abs}" | tr '/' '-')"
+  printf '%s' "${HOME}/.claude/projects/${encoded_cwd}/memory"
+}
+
+# Memory drift detector — prints a one-line hint when the user-scope
+# auto-memory directory contains files older than 30 days. Stays silent
+# (empty stdout) when:
+#   - auto_memory=off (no rule to nudge against);
+#   - the memory dir does not exist (no rot to flag);
+#   - all files are within the 30-day window.
+#
+# The hint is consumed by prompt-intent-router.sh as a context_parts
+# injection at the start of a session and guarded by the
+# `memory_drift_hint_emitted` state flag so it fires once per session.
+# Used by Wave 3 of the v1.20.0 auto-memory tightening.
+check_memory_drift() {
+  is_auto_memory_enabled || return 0
+  local memory_dir
+  memory_dir="$(omc_memory_dir_for_cwd)"
+  [[ -z "${memory_dir}" ]] && return 0
+  [[ -d "${memory_dir}" ]] || return 0
+  local stale_count
+  stale_count="$(find "${memory_dir}" -maxdepth 1 -type f -name '*.md' \
+    -not -name 'MEMORY.md' -mtime +30 2>/dev/null \
+    | wc -l | tr -d '[:space:]')"
+  [[ -z "${stale_count}" ]] && stale_count=0
+  if (( stale_count > 0 )); then
+    printf 'MEMORY DRIFT HINT: %d memory file(s) in this project are older than 30 days. Verify any named files, flags, or claims against the current code before relying on them. Run /memory-audit to triage and consolidate.' \
+      "${stale_count}"
+  fi
+}
+
 # Hook logging — two channels, one file (${HOOK_LOG}).
 #
 #   log_anomaly  — always on. Use for rare warnings: state corruption,
