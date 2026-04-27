@@ -359,8 +359,11 @@ fi
 # Rollup hint when version snapshots cluster.
 if [[ "${archival}" -ge 5 ]]; then
   printf '\n### Rollup recommendation\n\n'
-  printf 'You have %d archival entries. If most are `project_v*_shipped.md` files, consolidate them into a single `project_release_history.md` summarizing per-release rationale and deferred risks. Then archive the originals using the suggested moves above. The v1.20.0 auto-memory rule (auto-memory.md → "Reject these patterns") forbids creating new release snapshots; consolidating the existing ones brings the directory in line with the rule.\n' \
-    "${archival}"
+  printf 'You have %d archival entries. If most are `project_v*_shipped.md` files, the recommended sequence is:\n\n' "${archival}"
+  printf '1. **Write `project_release_history.md` first.** Read each archival file, extract the *non-derivable* signal (decision rationale, deferred risks, lessons that won''t appear in `git log` / `CHANGELOG.md`), and consolidate into one per-release summary. CHANGELOG and git tags are authoritative for version/SHA/test-count details — do not duplicate them.\n'
+  printf '2. **Then run the suggested moves above** to archive the originals into `_archive/`. The moves only relocate the files; they do *not* extract content. Running them before step 1 leaves you with archived source material and no rollup.\n'
+  printf '3. **Update `MEMORY.md`** by replacing the per-version index rows with a single one-line entry pointing at the new rollup file.\n\n'
+  printf 'The v1.20.0 auto-memory rule (auto-memory.md → "Reject these patterns") forbids creating new `project_v*_shipped.md` files going forward; consolidating the existing ones brings the directory in line with the rule.\n'
 fi
 
 exit 0

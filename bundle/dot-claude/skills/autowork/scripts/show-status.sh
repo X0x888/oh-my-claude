@@ -330,6 +330,49 @@ else
 fi
 printf 'Pending specialists:       %s\n' "${pending_count}"
 
+# Memory health — surfaces auto-memory dir state so users can see drift
+# trends rather than discover them via the session-start hint. Reads the
+# project memory dir resolved via Claude Code's cwd-encoding convention
+# (cwd → cwd with `/` → `-`). Skipped when auto_memory=off (no signal
+# worth surfacing) or when the dir does not exist (fresh user).
+if is_auto_memory_enabled 2>/dev/null; then
+  _mem_dir="$(omc_memory_dir_for_cwd)"
+  if [[ -n "${_mem_dir}" && -d "${_mem_dir}" ]]; then
+    _mem_total="$(find "${_mem_dir}" -maxdepth 1 -type f -name '*.md' \
+      -not -name 'MEMORY.md' 2>/dev/null | wc -l | tr -d '[:space:]')"
+    _mem_stale="$(find "${_mem_dir}" -maxdepth 1 -type f -name '*.md' \
+      -not -name 'MEMORY.md' -mtime +30 2>/dev/null | wc -l | tr -d '[:space:]')"
+    _mem_oldest_iso="-"
+    if [[ "${_mem_total}" -gt 0 ]]; then
+      # Oldest mtime in YYYY-MM-DD form; cross-platform stat -f / -c shim.
+      _mem_oldest_path="$(find "${_mem_dir}" -maxdepth 1 -type f -name '*.md' \
+        -not -name 'MEMORY.md' 2>/dev/null \
+        | xargs -I {} stat -f '%m %N' {} 2>/dev/null \
+        || find "${_mem_dir}" -maxdepth 1 -type f -name '*.md' \
+          -not -name 'MEMORY.md' -printf '%T@ %p\n' 2>/dev/null \
+        || true)"
+      if [[ -n "${_mem_oldest_path}" ]]; then
+        _mem_oldest_iso="$(printf '%s\n' "${_mem_oldest_path}" \
+          | sort -n | head -1 | awk '{print $1}' \
+          | xargs -I {} date -r {} +%Y-%m-%d 2>/dev/null \
+          || printf '?')"
+      fi
+    fi
+    _mem_hint_emitted="$(jq -r '.memory_drift_hint_emitted // ""' \
+      "${state_file}" 2>/dev/null || true)"
+    printf '\n--- Memory Health ---\n'
+    printf 'Memory dir:                %s\n' "${_mem_dir}"
+    printf 'Total entries:             %s (oldest: %s)\n' "${_mem_total}" "${_mem_oldest_iso}"
+    if [[ "${_mem_stale}" -gt 0 ]]; then
+      printf 'Stale (>30d):              %s — run /memory-audit to triage\n' "${_mem_stale}"
+    else
+      printf 'Stale (>30d):              0 — directory is fresh\n'
+    fi
+    printf 'Drift hint emitted (this session): %s\n' \
+      "$( [[ "${_mem_hint_emitted}" == "1" ]] && printf 'yes' || printf 'no' )"
+  fi
+fi
+
 # Discovered-scope findings (advisory specialist findings captured this session)
 scope_file="${STATE_ROOT}/${latest_session}/discovered_scope.jsonl"
 if [[ -f "${scope_file}" ]]; then

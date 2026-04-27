@@ -4,6 +4,50 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.20.0] - 2026-04-27
+
+Memory hygiene + onboarding/UX polish wave. Tightens the auto-memory rule so it stops accruing per-release snapshots that duplicate `CHANGELOG.md` and `git log`; ships a `/memory-audit` skill for triage; adds a session-start drift hint when memory is older than 30 days; consolidates 18 historical per-release memory files into a single `project_release_history.md` rollup; surfaces memory health in `/ulw-status`. Folds in the post-v1.19.0 onboarding overhaul (AI-Agent Install Protocol, README restructure, post-install UX polish, editor-critic prose pass) since the themes co-evolve.
+
+The release answers the question "will memory negatively impact the ULW workflow?" with five coordinated mitigations: forbid the dominant noise pattern, gate writes by intent, classify what already exists, surface drift to the user, and roll up the historical residue. Live install stays stale until the user re-runs `install.sh`.
+
+### Added
+
+- **`/memory-audit` skill (Wave 2 of v1.20.0).** Read-only classifier of the user-scope auto-memory directory. Walks `MEMORY.md`, classifies every entry as load-bearing / archival / superseded / drifted, prints shell-quoted `mv` commands the user can copy, and recommends a `project_release_history.md` rollup when archival entries cluster. Read-only by design — never moves or deletes files. Backed by `bundle/dot-claude/skills/autowork/scripts/audit-memory.sh` (44 assertions / 19 cases in `tests/test-memory-audit.sh`).
+- **Session-start memory drift hint (Wave 3 of v1.20.0).** New `check_memory_drift` helper in `common.sh` counts memory files older than 30 days; `prompt-intent-router.sh` injects a one-line hint into the model's context once per session via the new `memory_drift_hint_emitted` state flag, pointing at `/memory-audit` for triage. Suppressed when `auto_memory=off`, when the memory directory is absent, or when all files are within the 30-day window. 12 assertions / 7 cases in `tests/test-memory-drift-hint.sh`.
+- **Memory Health section in `/ulw-status` full mode.** `show-status.sh` now renders `Total entries`, `Stale (>30d)`, `Drift hint emitted (this session)`, and the resolved memory directory so users can see drift trends without waiting for the session-start hint to fire. Closes the v1.18.1-style observability gap where a detector ships without a dashboard surface.
+- **`omc_memory_dir_for_cwd` helper in `common.sh`.** Resolves the conventional user-scope memory dir for the current cwd via Claude Code's `tr '/' '-'` encoding. Sourced by both `check_memory_drift` and the new `/ulw-status` Memory Health section. Documented as path-only — does NOT check `auto_memory`; callers must gate themselves.
+- **AI-Agent Install Protocol (post-v1.19.0 Wave 1).** Authoritative install path for AI agents bootstrapping into a new machine, with explicit reproducibility guarantees and a canonical clone path of `~/.local/share/oh-my-claude`. Carried into v1.20.0 alongside the README restructure and post-install UX polish (post-v1.19.0 Waves 2–4).
+
+### Changed
+
+- **`auto-memory.md` rejects `project_v*_shipped.md` and other derivable patterns (Wave 1 of v1.20.0).** New "Reject these patterns" section forbids release snapshots, "what I just did" recaps, test-count snapshots, and architecture inventories — all are derivable from `git log` / `CHANGELOG.md` / source. Sharpens the positive criterion: only write `project_*.md` for non-derivable signal (decision rationale, deferred risks with deadline, stakeholder reasons, post-mortem insight). New "Applies to:" clause names the intent classes the rule targets so the runtime SKIP directive has a referent.
+- **`prompt-intent-router.sh` injects an `AUTO-MEMORY SKIP` directive on advisory and session-management turns (Wave 1 of v1.20.0).** Hoisted outside the ULW block so it fires in every session — the `auto-memory.md` and `compact.md` rules load via `@`-import in every session, so the skip directive must reach the model in every session too. Suppressed when `is_auto_memory_enabled` returns false. 14 assertions / 9 cases in `tests/test-auto-memory-skip.sh`.
+- **`compact.md` cross-references the new "Reject these patterns" list.** Compact-time memory writes follow the same rule as session-stop writes.
+- **`/memory-audit` rollup recommendation explicitly orders archive vs. rollup.** The skill now states that the suggested `mv` commands only relocate the files; the user must write `project_release_history.md` from the contents *first* before running them. Avoids the UX confusion where a user reads the rollup recommendation and runs the suggested moves expecting them to do the consolidation.
+- **README top-page restructure + body-pass + post-install UX (post-v1.19.0 Waves 2–4).** Reorders the landing page to lead with what the harness does, why it matters, and how to install. Adds discoverability surfaces (skill table, decision guide). Polishes the post-install verification messaging and `verify.sh` output.
+- **Editor-critic prose pass (post-v1.19.0).** Prose tightening across user-facing surfaces.
+
+### Tests
+
+- 14 + 44 + 12 = **70 new assertions** across three new test files: `test-auto-memory-skip.sh`, `test-memory-audit.sh`, `test-memory-drift-hint.sh`.
+- Bash test surface 35 → **38**; Python test surface unchanged at 1.
+- Skill count 20 → **21** (`memory-audit` added). Autowork script count 21 → **22** (`audit-memory.sh` added). Agent count unchanged at 32.
+
+### Memory hygiene
+
+- **One-time rollup of 18 historical per-release memory files (Wave 4 of v1.20.0).** Consolidated `project_v1_7_0_shipped.md` through `project_v1_17_0_shipped.md`, plus `project_compact_intent_fix.md` (v1.7.1 hotfix), and the four superseded entries (`project_record_finding_stop_guard_test_gap.md`, `project_verdict_contract_coverage.md`, `project_design_contract_landed.md`, `project_tier_1_shipped.md`) into a single `project_release_history.md` carrying only the non-derivable signal (decision rationale, deferred risks, post-mortem lessons). The 18 originals are preserved in `_archive/` under the user's memory directory rather than deleted, so the history is recoverable. `CHANGELOG.md` at the project root is the authoritative record of what shipped per release going forward.
+
+### Configuration
+
+No new conf keys in v1.20.0. The existing `auto_memory` flag (added in v1.11.1) gates the new SKIP directive, the drift hint helper, and the `/ulw-status` Memory Health section.
+
+### Deferred to v1.20.1+
+
+- End-to-end cross-session test for the drift → fix → re-evaluate loop.
+- Reject-pattern misfire telemetry — log when a session-stop write matches a forbidden pattern so `/ulw-report` can audit prose-rule compliance.
+- `omc-repro.sh` memory-dir snapshot — include `MEMORY.md` head in the support bundle.
+- Hook-level pre-rejection of `project_v*_shipped.md` filenames at write time (belt-and-suspenders for the prose rule).
+
 ## [1.19.0] - 2026-04-27
 
 Bias-defense feature wave. Ships the first layer toward closing the ULW gap that catches *structural* failures (skipped review, missing verification, dropped findings) but misses *semantic* ones (wrong abstraction, misread intent, biased mental model). Four mechanisms ship as a soft-to-hard escalation, all default OFF so existing sessions see zero behavior change unless opted in.
