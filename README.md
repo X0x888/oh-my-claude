@@ -7,9 +7,11 @@
 [![Shell](https://img.shields.io/badge/Shell-bash-green.svg)]()
 [![Dependencies](https://img.shields.io/badge/Dependencies-none-brightgreen.svg)]()
 
-A cognitive quality harness for Claude Code. Bash hooks, skills, and specialist agents that enforce thinking, testing, and review as structural requirements -- not suggestions.
+**Jump to:** [Install](#quick-start) · [AI-assisted install](#ai-assisted-install) · [What you get](#what-you-get) · [Feature highlights](#feature-highlights) · [Skills](#available-skills) · [Troubleshooting](#troubleshooting) · [FAQ](docs/faq.md)
 
-> **Specialist agents activate automatically based on your task.** You don't need to learn agent names -- just describe what you want to accomplish, and `/ulw` handles the rest.
+A cognitive quality harness for Claude Code -- bash hooks, skills, and specialist agents that enforce thinking, testing, and review as structural requirements, not suggestions.
+
+> **Type `/ulw <task>` to activate.** The harness classifies your prompt, routes the work to specialist agents (different chain per domain — coding, writing, research, ops), and runs quality gates that block until testing and review are done. You don't need to learn agent names.
 
 ![oh-my-claude /ulw-demo — quality gates in action](docs/ulw-demo.gif)
 
@@ -45,6 +47,8 @@ After install:
 
 Both install paths keep Claude Code's permission prompts on; once you trust the harness, [`--bypass-permissions`](#power-user-setup) removes them. Quality gates apply either way.
 
+Reversible: `bash ~/.local/share/oh-my-claude/uninstall.sh` removes everything cleanly (timestamped backups stay under `~/.claude/backups/`).
+
 Already in Claude Code and want to skip the manual steps? See [AI-assisted install](#ai-assisted-install) below.
 
 ## AI-assisted install
@@ -78,6 +82,23 @@ Your `--model-tier` preference persists in `~/.claude/oh-my-claude.conf` and re-
 
 `install.sh` overwrites bundled files but preserves `settings.json` merges, `omc-user/overrides.md`, and custom agents or skills whose names are outside the bundle. See FAQ: [*How do I update?*](docs/faq.md#how-do-i-update-oh-my-claude) and [*Will updating overwrite my changes?*](docs/faq.md#will-updating-overwrite-my-changes) for the full safety matrix.
 
+Reversible: `bash ~/.local/share/oh-my-claude/uninstall.sh` removes everything cleanly. Backups of pre-install settings live at `~/.claude/backups/oh-my-claude-<timestamp>/`.
+
+## Troubleshooting
+
+The first 60 seconds of common failure modes:
+
+| Symptom | First check |
+|---|---|
+| `install.sh` exits with `jq: command not found` | Install `jq` first (`brew install jq` on macOS, `apt install jq` on Debian/Ubuntu) and re-run `install.sh`. |
+| `verify.sh` reports errors | Re-run `bash install.sh`, then `verify.sh` again. Most failures are stale install or missing `jq`/`rsync`. |
+| `/ulw` does nothing in your current session | You skipped the **restart Claude Code** step. Already-running sessions keep the previous hook wiring — open a new session. |
+| `/ulw-demo` doesn't block at Step 3 | Install is stale (re-run `bash install.sh`) or `/ulw-off` was called earlier in the session. |
+| Hooks fire but no behavior changes | Same root cause as the "current session" row above — restart needed. |
+| Yellow `↑v<version>` arrow in the statusline | Source repo is ahead of the installed bundle. Run `git pull && bash install.sh` from the source repo to sync. |
+
+For deeper issues, see [FAQ](docs/faq.md) — anomaly logs, config recovery, and per-gate disabling are documented there.
+
 ---
 
 ## The problem
@@ -103,11 +124,11 @@ The result: Claude classifies your intent before acting, routes work to speciali
 
 ### Hard quality gates
 
-Stop event blocking prevents Claude from finishing until testing and review are done. Wrote code but didn't run the tests? Blocked. Made edits but skipped the reviewer? Blocked. Deferred work to a "future session" without a checkpoint? Blocked. Edited 3+ files but skipped the excellence review? Blocked. Caps on each gate prevent infinite loops -- if Claude can't satisfy the gates, it surfaces the gap instead of spinning.
+**Claude can't mark a task done until verification + review are complete.** Skip tests, skip the reviewer, defer work to a "future session" without a checkpoint, or edit 3+ files without an excellence review — each is a hard stop, not a warning. Caps on each gate prevent infinite loops: if Claude can't satisfy them, it surfaces the gap instead of spinning.
 
 ### Prescribed reviewer sequence
 
-On complex tasks (3+ edited files by default), the stop-hook stops guessing which reviewer to run next and prescribes the sequence. Each reviewer owns one distinct dimension:
+**On complex tasks (3+ edited files), the stop-hook prescribes the next reviewer instead of guessing.** Each reviewer owns one distinct dimension:
 
 - `quality-reviewer` — bug hunt, code quality
 - `design-reviewer` — design quality (auto-activates when UI files edited)
@@ -120,11 +141,11 @@ Each gate block message names the specific next reviewer. A `VERDICT: CLEAN|SHIP
 
 ### Intent classification
 
-A bash state machine classifies every prompt into one of 5 intent categories -- execution, continuation, advisory, checkpoint, or session-management -- crossed with 6 domain types: coding, writing, research, operations, mixed, and general. Claude knows *what you're asking* and *what domain you're in* before it takes a single action. Advisory questions get answered directly; execution prompts get the full specialist pipeline.
+**Every prompt is classified by intent and domain before Claude acts on it.** Five intent categories (execution, continuation, advisory, checkpoint, session-management) crossed with six domains (coding, writing, research, operations, mixed, general). Advisory questions get answered directly; execution prompts get the full specialist pipeline.
 
 ### Multi-domain routing
 
-oh-my-claude is not a coding tool that happens to accept prose. Each domain has its own specialist chain:
+**Each domain has its own specialist chain — not a coding tool that happens to accept prose.**
 
 - **Coding** -- quality-planner for scoping, quality-researcher for context, specialist developers (frontend, backend, fullstack, iOS, DevOps, test), quality-reviewer and excellence-reviewer for verification
 - **Writing** -- writing-architect for structure, draft-writer for content, editor-critic for polish
@@ -133,23 +154,25 @@ oh-my-claude is not a coding tool that happens to accept prose. Each domain has 
 
 ### Session continuity
 
-Pre- and post-compact hooks snapshot the working state when Claude Code compacts a session. Objectives, domain classification, accepted decisions, specialist conclusions, in-flight specialist dispatches, pending review obligations, and task progress all survive compaction. When the session resumes, context is rehydrated -- not reconstructed from scratch.
+**Objectives, decisions, and review state survive context compaction — you don't lose the plot mid-task.** Pre- and post-compact hooks snapshot the working state. Domain classification, accepted decisions, specialist conclusions, in-flight dispatches, and pending review obligations all carry over. When the session resumes, context is rehydrated — not reconstructed from scratch.
 
 ### Permissioned agents
 
-32 specialist agents, each with `disallowedTools` enforced. Agents can read, search, analyze, and plan -- but they cannot edit files. The main thread owns all mutations. This means agents provide high-quality analysis without unsupervised writes, and the main thread remains the single source of truth for code changes.
+**32 specialist agents — none can edit files; the main thread owns all mutations.** Each agent's `disallowedTools` is enforced at dispatch. Agents read, search, analyze, and plan; the main thread executes any changes they recommend. This keeps the main thread as the single source of truth and prevents unsupervised writes from agents operating on incomplete context.
 
 ### Project Council
 
-The `/council` skill dispatches a multi-role evaluation panel that inspects your project from the perspectives a full product team would bring: Product Manager, UX Designer, Security Engineer, Data/Analytics Lead, SRE, and Growth Lead. Each role-lens agent evaluates independently with a non-overlapping mandate, and findings are synthesized into a single prioritized assessment. The system auto-detects broad evaluation prompts like "evaluate my project" under `/ulw` and triggers the council flow automatically. Solo developers get the cross-functional perspective that a full team provides through daily friction -- without the team.
+**Solo developers get the cross-functional perspective of a full product team — without the team.** The `/council` skill dispatches a multi-role evaluation panel: Product Manager, UX Designer, Security Engineer, Data/Analytics Lead, SRE, Growth Lead. Each role-lens agent evaluates independently with a non-overlapping mandate, and findings are synthesized into a single prioritized assessment. The system auto-detects broad evaluation prompts like "evaluate my project" under `/ulw` and triggers the council flow automatically.
 
 ### Distinctive UI by default
 
-Type `/ulw build me a landing page for X` and the harness automatically drives a 9-section Design Contract — Visual Theme, Color Palette with hex values, Typography Rules, Component Stylings with hover/focus states, Layout Principles with explicit spacing scale, Depth & Elevation, Do's and Don'ts, Responsive Behavior, and an Agent Prompt Guide — before any code is written. Inspired by [VoltAgent/awesome-design-md](https://github.com/VoltAgent/awesome-design-md), the contract forces commitment to specifics rather than vague aesthetic claims, with 15 brand-archetype priors (Linear, Stripe, Vercel, Notion, Apple, Airbnb, Spotify, Tesla, Figma, Discord, Raycast, Anthropic, Webflow, Mintlify, Supabase) framed as anti-anchors so the agent picks a coherent point of departure and then commits to what it will do *differently*. Scope-aware: a "build a page" prompt gets the full contract; a "fix the button padding" prompt preserves existing tokens. **Inline emission is captured automatically** — the contract block the agent emits is persisted to a session-scoped file so `design-reviewer` and `visual-craft-lens` can grade drift on subsequent edits even when no `DESIGN.md` exists at the project root. **Cross-session archetype memory** prevents the harness from repeating the same anchor (e.g., Stripe twice) on the same project across sessions; when ≥2 priors are detected for the project's git-remote-keyed identity, the router advises picking a different archetype. To opt out for backend/internal work, include `no design polish` or `functional only` in your prompt.
+**Ask for a landing page or any UI work and you get a 9-section Design Contract — palette with hex values, typography rules, component states, layout, depth, do's & don'ts — before any code is written.** Concrete commitments instead of generic shadcn-default aesthetics. Scope-aware: a "build a page" prompt gets the full contract; a "fix the button padding" prompt preserves existing tokens. Skip with `no design polish` for backend/internal work.
+
+15 brand archetypes (Linear, Stripe, Vercel, Notion, Apple, Airbnb, Spotify, Tesla, Figma, Discord, Raycast, Anthropic, Webflow, Mintlify, Supabase) are framed as *anti-anchors* — the agent picks a coherent starting point and commits to what it will do *differently*. Cross-session archetype memory prevents the same anchor from being picked twice on the same project. Inline contract emission lets `design-reviewer` and `visual-craft-lens` grade drift even when no `DESIGN.md` exists at the project root. Inspired by [VoltAgent/awesome-design-md](https://github.com/VoltAgent/awesome-design-md).
 
 ### Zero dependencies
 
-No npm. No TypeScript. No Node.js runtime. No plugin framework. The entire harness is bash scripts and jq. It works anywhere Claude Code runs, installs in seconds, and leaves no footprint beyond the `~/.claude/` directory.
+**No npm. No TypeScript. No Node.js runtime. No plugin framework.** The entire harness is bash scripts and `jq`. It works anywhere Claude Code runs, installs in seconds, and leaves no footprint beyond the `~/.claude/` directory.
 
 ## Usage examples
 
@@ -191,15 +214,19 @@ For the full architecture, see [docs/architecture.md](docs/architecture.md).
 
 ## Comparison
 
-| | Vanilla Claude Code | oh-my-claudecode | oh-my-claude |
-|---|---|---|---|
-| **Quality enforcement** | None | None | Hard stop gates |
-| **Intent classification** | None | None | 5-category state machine |
-| **Domain coverage** | Code-only | Code-focused | Coding, writing, research, ops |
-| **Dependencies** | -- | Node.js, TypeScript | bash + jq |
-| **Agent safety** | Unrestricted | Varies | disallowedTools enforced |
-| **Session continuity** | Lost on compaction | Varies | Pre/post-compact hooks |
-| **Architecture** | Monolithic | Plugin/orchestration | Harness hooks |
+How oh-my-claude differs from vanilla Claude Code:
+
+| | Vanilla Claude Code | oh-my-claude |
+|---|---|---|
+| **Quality enforcement** | None | Hard stop gates |
+| **Intent classification** | None | 5-category state machine |
+| **Domain coverage** | Code-focused | Coding, writing, research, ops |
+| **Dependencies** | -- | bash + jq |
+| **Agent safety** | Unrestricted | `disallowedTools` enforced |
+| **Session continuity** | Lost on compaction | Pre/post-compact hooks |
+| **Architecture** | Monolithic | Harness hooks |
+
+> Sometimes confused with `oh-my-claudecode`, which is a separate Node.js/TypeScript plugin framework for Claude Code. See [FAQ](docs/faq.md#how-is-this-different-from-oh-my-claudecode) for the structural differences.
 
 ---
 
@@ -215,12 +242,14 @@ oh-my-claude/
 │   ├── output-styles/                       # Output format templates
 │   └── statusline.py                        # Custom statusline widget
 ├── config/settings.patch.json               # Merged into user settings on install
-├── tests/               (35 bash + 1 py)    # Intent, quality gates, stall, resume, e2e, install/uninstall merge, concurrency, cross-session-lock, post-merge, repro redaction, discovered-scope, finding-list, mark-deferred, state-io, classifier-replay, serendipity-log, cross-session-rotation, classifier, show-report, install-remote, phase8-integration, verification-lib, agent-verdict-contract, gate-events, discover-session, design-contract, inline-design-contract, archetype-memory, ulw-pause, bias-defense-classifier, bias-defense-directives, metis-on-plan-gate, statusline
-├── tools/                                    # Developer-only tools (replay-classifier-telemetry.sh, classifier-fixtures/)
+├── tests/               (35 bash + 1 py)    # See AGENTS.md / CONTRIBUTING.md for full list
+├── tools/                                    # Developer-only tools (not installed)
 └── docs/                                    # Architecture, customization, FAQ, prompts
 ```
 
-> **Why `dot-claude` instead of `.claude`?** Claude Code's permission system treats paths containing `.claude/` as sensitive, triggering prompts on every edit during development. The installer copies `bundle/dot-claude/` into `~/.claude/` on your machine. This is the same pattern used by oh-my-zsh, chezmoi, etc.
+For repo-internal architecture and contribution conventions, see [AGENTS.md](AGENTS.md) (architecture, state I/O, agent VERDICT contract) and [CONTRIBUTING.md](CONTRIBUTING.md) (testing, release process).
+
+> **Why `dot-claude` instead of `.claude`?** Claude Code's permission system treats paths containing `.claude/` as sensitive, triggering prompts on every edit during development. The installer copies `bundle/dot-claude/` into `~/.claude/` on your machine. Same pattern as oh-my-zsh, chezmoi, etc.
 
 ### Available skills
 
