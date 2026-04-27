@@ -8,7 +8,7 @@
 #
 # Without this test, the next agent added to the bundle could silently
 # regress the contract — verify.sh's path-existence check cannot detect
-# a contract drift, and only 6 of 31 agents have any consumer parsing
+# a contract drift, and only 6 of 32 agents have any consumer parsing
 # (record-reviewer.sh) that would catch the drift in a behavioral test.
 #
 # Mirrors the symbol-presence pattern of tests/test-classifier.sh and
@@ -39,7 +39,7 @@ assert_eq() {
 # match AGENTS.md → "Universal VERDICT contract (v1.14.0)" table.
 role_of_agent() {
   case "$1" in
-    quality-reviewer|editor-critic|excellence-reviewer|metis|briefing-analyst|design-reviewer)
+    quality-reviewer|editor-critic|excellence-reviewer|metis|briefing-analyst|design-reviewer|abstraction-critic)
       printf 'reviewer' ;;
     data-lens|design-lens|growth-lens|product-lens|security-lens|sre-lens|visual-craft-lens)
       printf 'lens' ;;
@@ -96,7 +96,7 @@ shopt -s nullglob
 agent_files=("${AGENTS_DIR}"/*.md)
 shopt -u nullglob
 agent_count="${#agent_files[@]}"
-assert_eq "31 agent files present" "31" "${agent_count}"
+assert_eq "32 agent files present" "32" "${agent_count}"
 
 for f in "${agent_files[@]}"; do
   agent_name="$(basename "${f}" .md)"

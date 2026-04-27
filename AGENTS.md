@@ -15,7 +15,7 @@ oh-my-claude/
   verify.sh                   # Post-install integrity checker
 
   bundle/dot-claude/          # Installs to ~/.claude/
-    agents/                   # 31 specialist agent definitions (.md)
+    agents/                   # 32 specialist agent definitions (.md)
     output-styles/            # Output format templates
     quality-pack/
       memory/                 # Core, skills, and compact memory files
@@ -117,7 +117,7 @@ Cross-session data is stored alongside the state directory:
 
 #### Reviewer VERDICT contract
 
-Reviewer-style agents (`quality-reviewer`, `editor-critic`, `excellence-reviewer`, `metis`, `briefing-analyst`, `design-reviewer`) must end their output with exactly one line:
+Reviewer-style agents (`quality-reviewer`, `editor-critic`, `excellence-reviewer`, `metis`, `briefing-analyst`, `design-reviewer`, `abstraction-critic`) must end their output with exactly one line:
 
 - `VERDICT: CLEAN` or `VERDICT: SHIP` — no actionable findings, dimension ticks
 - `VERDICT: FINDINGS (N)` or `VERDICT: BLOCK (N)` — N blocking findings, dimension does NOT tick
@@ -126,7 +126,7 @@ Reviewer-style agents (`quality-reviewer`, `editor-critic`, `excellence-reviewer
 
 #### Universal VERDICT contract (v1.14.0)
 
-In v1.14.0 the VERDICT contract was extended to all 30 agents so the final-line outcome is structured and uniform across roles. The 6 reviewer-class agents above remain unchanged (their `CLEAN`/`SHIP`/`FINDINGS`/`BLOCK` vocabulary is still what `record-reviewer.sh` parses). v1.15.0 adds `visual-craft-lens` (lens-class) bringing the total to 31. The 25 non-reviewer agents gained role-appropriate tokens; planners are read by `record-plan.sh` (which now sets `plan_verdict` state) and the rest are forward-looking — read by humans today, available to future hooks.
+In v1.14.0 the VERDICT contract was extended to all 30 agents so the final-line outcome is structured and uniform across roles. The 6 reviewer-class agents above remain unchanged (their `CLEAN`/`SHIP`/`FINDINGS`/`BLOCK` vocabulary is still what `record-reviewer.sh` parses). v1.15.0 adds `visual-craft-lens` (lens-class) bringing the total to 31. v1.19.0 adds `abstraction-critic` (reviewer-class, manual-dispatch only) bringing the total to 32. The 25 non-reviewer agents gained role-appropriate tokens; planners are read by `record-plan.sh` (which now sets `plan_verdict` state) and the rest are forward-looking — read by humans today, available to future hooks.
 
 | Role | Agents | Vocabulary | Meaning | Consumer today |
 |---|---|---|---|---|
@@ -139,7 +139,7 @@ In v1.14.0 the VERDICT contract was extended to all 30 agents so the final-line 
 | Writer | `draft-writer`, `writing-architect` | `DELIVERED` / `NEEDS_INPUT` / `NEEDS_RESEARCH` | Draft/structure is ready, awaiting decision, or needs factual research. | None — informational. |
 | Implementer | `backend-api-developer`, `devops-infrastructure-engineer`, `frontend-developer`, `fullstack-feature-builder`, `ios-core-engineer`, `ios-deployment-specialist`, `ios-ecosystem-integrator`, `ios-ui-developer`, `test-automation-engineer` | `SHIP` / `INCOMPLETE` / `BLOCKED` | Implementation is complete and verified, partial, or blocked on a hard prerequisite. | None — informational. |
 
-Total: 6 reviewer-class + 7 lens + 2 planner + 2 researcher + 1 debugger + 2 operations + 2 writer + 9 implementer = **31 agents** (as of v1.15.0). The contract-presence regression net is `tests/test-agent-verdict-contract.sh` — when adding a new agent or role, extend that test's `role_of_agent()` and `allowed_tokens_of_role()` cases in lockstep with this table.
+Total: 7 reviewer-class + 7 lens + 2 planner + 2 researcher + 1 debugger + 2 operations + 2 writer + 9 implementer = **32 agents** (as of v1.19.0). The contract-presence regression net is `tests/test-agent-verdict-contract.sh` — when adding a new agent or role, extend that test's `role_of_agent()` and `allowed_tokens_of_role()` cases in lockstep with this table.
 
 When wiring a new VERDICT vocabulary into a hook consumer, extend the parser regex in `record-reviewer.sh` (or add a new parser as `record-plan.sh` did for `plan_verdict`). Until then, the informational rows above emit the verdict for human readability and forward compatibility — the gate's behavior is unchanged for those agents.
 
@@ -155,6 +155,7 @@ The prescribed reviewer sequence (Check 4 of stop-guard) enforces distinct dimen
 | `editor-critic` | `prose` (only dimension that responds to doc edits) |
 | `briefing-analyst` | `traceability` (only required at `traceability_file_count`+ files, default 6) |
 | `design-reviewer` | `design_quality` (only required when UI files edited: `.tsx`, `.jsx`, `.vue`, `.svelte`, `.astro`, `.css`, `.scss`, `.sass`, `.less`, `.styl`, `.html`, `.htm`) |
+| `abstraction-critic` | None (manual-dispatch only as of v1.19.0; not wired to a stop-guard dimension) |
 
 Each dimension ticks via `tick_dimension <name>` in `common.sh`, which wraps `write_state` in `with_state_lock` to prevent concurrent-tick races. Dimensions are validated via timestamp comparison against the relevant edit clock (`last_code_edit_ts` for most, `last_doc_edit_ts` for `prose`), so a post-tick edit implicitly invalidates the dimension without needing an explicit clear.
 

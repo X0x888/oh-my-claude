@@ -4,6 +4,38 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.19.0] - 2026-04-27
+
+Bias-defense feature wave. Closes the ULW gap that catches *structural* failures (skipped review, missing verification, dropped findings) but misses *semantic* ones (wrong abstraction, misread intent, biased mental model). Four mechanisms ship as a soft-to-hard escalation, all default OFF so existing sessions see zero behavior change unless opted in. The motivating question — "can the workflow tell when it's confidently wrong?" — gets a stronger answer with these layers installed.
+
+### Added
+
+- **Prompt-shape classifiers (Wave 1).** Two new helpers in `lib/classifier.sh`: `is_product_shaped_request` (true on greenfield/feature asks like "build a tracker app") and `is_ambiguous_execution_request` (true on short, unanchored execution prompts where the model risks confidently misreading the goal). Shared `_has_code_anchor` disqualifier covers file extensions, `:LINE` refs, function-call syntax, multi-component paths, backtick spans, and PascalCase Error/Exception class names. The article + targeted-change-keyword filters block over-matches like "ship a fix to the auth service".
+- **Plan-complexity extraction (Wave 1).** `record-plan.sh` now persists `plan_complexity_high` (1 or "") and `plan_complexity_signals` (CSV: steps, files, waves, keywords) to session state. Four orthogonal complexity legs trigger high: ≥5 numbered steps, ≥3 unique file refs, ≥2 `Wave N/M` headers, or a risky keyword (migration/refactor/schema/breaking/cross-cutting) paired with non-trivial scope. Soft notice now fires on the unified high signal instead of just the steps/files inequality.
+- **prometheus-suggest directive (Wave 2).** When `OMC_PROMETHEUS_SUGGEST=on` AND a fresh execution prompt is product-shaped AND ambiguous, the prompt-intent-router injects a directive recommending `/prometheus` interview-first scoping before the model commits to a particular product shape. Suppresses intent-verify on the same turn to avoid double-friction.
+- **intent-verify directive (Wave 2).** When `OMC_INTENT_VERIFY_DIRECTIVE=on` AND a fresh execution prompt is short and unanchored, the router injects a directive telling the model to restate the user's goal in 1-2 sentences and pause for confirmation before its first edit. Lighter than prometheus — single confirmation step. Both directives are mutually exclusive, fire only on fresh execution prompts (continuation/SM/advisory/checkpoint branches skip), and embed an explicit "skip when unambiguous" hedge so the model retains discretion.
+- **Metis-on-plan stop-guard gate (Wave 3, Check 6).** When `OMC_METIS_ON_PLAN_GATE=on` AND `plan_complexity_high=1` AND metis has not run since the plan was recorded, stop-guard blocks Stop until metis stress-tests the plan. Independent of `OMC_GATE_LEVEL` — opt-in users get the gate even on basic level. Block cap = 1 per plan cycle (record-plan.sh resets the counter on every fresh plan), so a model that re-plans gets a fresh chance to run metis. Equality (`last_metis_review_ts == plan_ts`) is treated as stale because real metis reviews land at `plan_ts + N` where N is much larger than 1s. The gate inherits `/ulw-skip` behavior from the global skip path. `record-reviewer.sh` writes `last_metis_review_ts` when `REVIEWER_TYPE=stress_test` so stop-guard can compare timestamps.
+- **`abstraction-critic` agent (Wave 4).** New reviewer-class agent in `bundle/dot-claude/agents/abstraction-critic.md`. Lens is structural — "is this the right shape of solution?" — distinct from `quality-reviewer` (defects), `excellence-reviewer` (completeness), `metis` (plan edge cases), and `oracle` (debug second opinion). Four lenses: paradigm fit (queue vs stream, OOP vs FP, inheritance vs composition), boundary placement, simpler-model check, and codebase-pattern fit. Includes a triple-check rule (recurrence, generativity, exclusivity) ported from metis to prevent the critique from devolving into generic "you should refactor" prose. Manual dispatch only — auto-dispatch wiring is deferred to a future wave per the bias-defense spec. VERDICT vocabulary: `CLEAN` / `FINDINGS (N)` / `BLOCK (N)` (reviewer role).
+
+### Configuration
+
+Three new opt-in conf keys in `oh-my-claude.conf`, all default `off`:
+
+- `metis_on_plan_gate=off|on` — Wave 3 hard gate enforcement.
+- `prometheus_suggest=off|on` — Wave 2 directive injection.
+- `intent_verify_directive=off|on` — Wave 2 directive injection.
+
+Env vars (`OMC_METIS_ON_PLAN_GATE`, `OMC_PROMETHEUS_SUGGEST`, `OMC_INTENT_VERIFY_DIRECTIVE`) take precedence over conf-file values, matching existing precedence semantics.
+
+### Fixed
+
+- **Soft plan-complexity notice scope drift.** Pre-1.19 the SubagentStop notice fired only on `step_count > 5 || file_count > 3`, missing wave-count and keyword legs. Now tied to `plan_complexity_high` so all four legs surface a notice consistently.
+- **`grep -c | echo 0` double-output footgun.** `record-plan.sh` and the new complexity helpers use `grep | wc -l` instead, avoiding the case where `grep -c` emits "0" on no-match AND the `|| echo 0` fallback emits another, breaking arithmetic with `((: 0\n0`.
+
+### Tests
+
+Three new bash test files (~86 assertions): `tests/test-bias-defense-classifier.sh` (53 — classifier helpers, plan-complexity legs, conf parsing, env precedence), `tests/test-bias-defense-directives.sh` (20 — default-off, both flags, suppression, advisory/SM/checkpoint/continuation skip-paths), `tests/test-metis-on-plan-gate.sh` (19 — gate OFF, gate ON, simple plan, fresh metis, stale metis, equality, cap reached, /ulw-skip bypass, persistence, reset on new plan, basic-level enforcement, full lifecycle). Total bash test surface 32 → 35; ~50 cross-suite regression tests still green. Agent count 31 → 32 (added `abstraction-critic`); `test-agent-verdict-contract.sh` updated in lockstep.
+
 ## [1.18.1] - 2026-04-26
 
 Same-session hardening folded in after the v1.18.0 final completeness review surfaced five gaps. The release shipped the A–G scope correctly but leaked the *coherence* theme — three observable surfaces (`/ulw-status`, `/ulw-report`, the auto-`--polish` activation) cached/emitted the new state but never rendered it. v1.18.1 closes those plus a doc-count drift and the `/ulw-pause` cap-recovery copy.

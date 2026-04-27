@@ -73,6 +73,7 @@ QP_DIR="${CLAUDE_HOME}/quality-pack"
 
 # Agent files installed by oh-my-claude.
 AGENT_FILES=(
+  "${CLAUDE_HOME}/agents/abstraction-critic.md"
   "${CLAUDE_HOME}/agents/atlas.md"
   "${CLAUDE_HOME}/agents/backend-api-developer.md"
   "${CLAUDE_HOME}/agents/briefing-analyst.md"

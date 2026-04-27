@@ -25,9 +25,13 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # is_ambiguous_execution_request) instead of whatever is installed.
 _test_home="$(mktemp -d -t bias-defense-home-XXXXXX)"
 _test_state_root="${_test_home}/state"
-mkdir -p "${_test_home}/.claude" "${_test_state_root}"
+mkdir -p "${_test_home}/.claude/quality-pack" "${_test_state_root}"
 ln -s "${REPO_ROOT}/bundle/dot-claude/skills" "${_test_home}/.claude/skills"
-ln -s "${REPO_ROOT}/bundle/dot-claude/quality-pack" "${_test_home}/.claude/quality-pack"
+# Symlink only the read-only subdirs (scripts, memory) so cross-session
+# telemetry files (agent-metrics.json, gate-skips.jsonl) write into the
+# per-test home rather than leaking into the dev tree.
+ln -s "${REPO_ROOT}/bundle/dot-claude/quality-pack/scripts" "${_test_home}/.claude/quality-pack/scripts"
+ln -s "${REPO_ROOT}/bundle/dot-claude/quality-pack/memory" "${_test_home}/.claude/quality-pack/memory"
 
 ORIG_HOME="${HOME}"
 export HOME="${_test_home}"

@@ -113,6 +113,7 @@ required_paths=(
   "${CLAUDE_HOME}/agents/quality-reviewer.md"
   "${CLAUDE_HOME}/agents/writing-architect.md"
   "${CLAUDE_HOME}/agents/prometheus.md"
+  "${CLAUDE_HOME}/agents/abstraction-critic.md"
   "${CLAUDE_HOME}/skills/council/SKILL.md"
   "${CLAUDE_HOME}/skills/ulw-demo/SKILL.md"
   "${CLAUDE_HOME}/skills/ulw-skip/SKILL.md"
