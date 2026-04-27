@@ -41,6 +41,15 @@ The release answers the question "will memory negatively impact the ULW workflow
 
 No new conf keys in v1.20.0. The existing `auto_memory` flag (added in v1.11.1) gates the new SKIP directive, the drift hint helper, and the `/ulw-status` Memory Health section.
 
+### Migration notes for existing users
+
+`bash install.sh` overlays the harness in `~/.claude/{agents,skills,quality-pack,...}` and **never touches user-scope memory directories** at `~/.claude/projects/<key>/memory/`. Concretely:
+
+- **Existing `project_v*_shipped.md` files stay where they are.** They are not deleted, moved, renamed, or rewritten by the install. The new "Reject these patterns" rule in `auto-memory.md` only governs *future* writes — Claude is told to stop creating new release-snapshot memories from this point forward.
+- **The drift hint will likely fire on first session after upgrade** if any memory file is older than 30 days. It is a one-line nudge in the model's context, not a destructive action. To silence it permanently, set `auto_memory=off` in `~/.claude/oh-my-claude.conf`.
+- **`/memory-audit` is the suggested triage path.** It is read-only — the script never moves or deletes any file. It prints a classification table and shell-quoted `mv` suggestions you can copy-paste yourself if you want to consolidate. The full sequence (write `project_release_history.md` first, then run the suggested moves, then update `MEMORY.md`) is printed at the bottom of the audit output when 5+ archival entries cluster.
+- **Doing nothing is a valid choice.** The accumulated files do not break anything, do not slow the harness measurably (~7 KB per session for `MEMORY.md`), and remain readable. The drift hint and `/ulw-status` Memory Health section will continue to flag them, but the only consequence is informational pressure to triage when you have time.
+
 ### Deferred to v1.20.1+
 
 - End-to-end cross-session test for the drift → fix → re-evaluate loop.
