@@ -28,6 +28,7 @@
 #   record-finding-list.sh show            # print current findings.json (pretty)
 #   record-finding-list.sh summary         # markdown summary table for final report
 #   record-finding-list.sh counts          # one-line counts (total/shipped/deferred/etc.)
+#   record-finding-list.sh status-line     # human-readable progress line (in-session use)
 #
 # Resuming a session: if findings.json already exists with a non-empty
 # waves[] array, run `counts` first to see where execution stands; do NOT
@@ -441,6 +442,46 @@ case "${cmd}" in
       exit 0
     fi
     jq . "${FINDINGS_FILE}"
+    ;;
+
+  status-line)
+    # Single human-readable status line for in-session progress visibility.
+    # Format: "Findings: <shipped>/<total> shipped · <waves_completed>/<wave_total> waves · <pending> pending [· avg <N>/wave]"
+    # The avg/wave suffix appears only when a wave plan is active. Trailing
+    # warnings ("⚠ under-segmented") are appended when the predicate matches.
+    if [[ ! -f "${FINDINGS_FILE}" ]]; then
+      printf 'Findings: no plan yet (run record-finding-list.sh init to start)\n'
+      exit 0
+    fi
+    total="$(jq '.findings|length' "${FINDINGS_FILE}")"
+    shipped="$(jq '[.findings[]|select(.status=="shipped")]|length' "${FINDINGS_FILE}")"
+    pending="$(jq '[.findings[]|select(.status=="pending")]|length' "${FINDINGS_FILE}")"
+    in_progress="$(jq '[.findings[]|select(.status=="in_progress")]|length' "${FINDINGS_FILE}")"
+    deferred="$(jq '[.findings[]|select(.status=="deferred")]|length' "${FINDINGS_FILE}")"
+    wave_total="$(jq '(.waves // []) | length' "${FINDINGS_FILE}")"
+    waves_completed="$(jq '[(.waves // [])[] | select(.status == "completed")] | length' "${FINDINGS_FILE}")"
+    line="Findings: ${shipped}/${total} shipped"
+    if [[ "${in_progress}" -gt 0 ]]; then
+      line+=" · ${in_progress} in-progress"
+    fi
+    if [[ "${pending}" -gt 0 ]]; then
+      line+=" · ${pending} pending"
+    fi
+    if [[ "${deferred}" -gt 0 ]]; then
+      line+=" · ${deferred} deferred"
+    fi
+    if [[ "${wave_total}" -gt 0 ]]; then
+      line+=" · ${waves_completed}/${wave_total} waves"
+      if [[ "${total}" -ge 5 ]] && [[ "${wave_total}" -gt 1 ]]; then
+        avg=$((total / wave_total))
+        line+=" (avg ${avg}/wave"
+        if (( total < 3 * wave_total )); then
+          line+=" ⚠ under-segmented"
+        fi
+        line+=")"
+      fi
+    fi
+    printf '%s\n' "${line}"
     ;;
 
   counts)

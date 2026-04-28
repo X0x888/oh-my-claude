@@ -192,6 +192,15 @@ if [[ "${SUMMARY_MODE}" -eq 1 ]]; then
   fi
 
   printf 'Commits:    %s\n' "${commits_line}"
+
+  # Wave plan health (F-019): single-line summary when a Phase 8 plan is
+  # active. Calls the dedicated status-line helper to keep formatting
+  # consistent with the in-session resume hint.
+  _wave_status_line="$("${HOME}/.claude/skills/autowork/scripts/record-finding-list.sh" status-line 2>/dev/null || true)"
+  if [[ -n "${_wave_status_line}" ]] && [[ "${_wave_status_line}" != *"no plan yet"* ]]; then
+    printf 'Wave plan:  %s\n' "${_wave_status_line#Findings: }"
+  fi
+
   printf 'Outcome:    %s\n' "${outcome}"
   exit 0
 fi

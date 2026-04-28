@@ -269,6 +269,52 @@ else
 fi
 
 # ----------------------------------------------------------------------
+# Section 4d: Wave-shape distribution (v1.22.0 — F-019)
+# Aggregates wave-plan gate events emitted by record-finding-list.sh
+# assign-wave so users can answer "are my recent wave plans actually
+# meeting the 5-10 findings/wave bar?" without grep'ing JSON.
+printf '## Wave-shape distribution\n\n'
+wave_assigned_rows="$(printf '%s\n' "${gate_event_rows}" | jq -c \
+    'select(.event == "wave-assigned")' 2>/dev/null || true)"
+narrow_warning_rows="$(printf '%s\n' "${gate_event_rows}" | jq -c \
+    'select(.event == "narrow-wave-warning")' 2>/dev/null || true)"
+wave_shape_block_rows="$(printf '%s\n' "${gate_event_rows}" | jq -c \
+    'select(.gate == "wave-shape" and .event == "block")' 2>/dev/null || true)"
+if [[ -z "${wave_assigned_rows}" ]]; then
+  printf '_No wave assignments recorded in window — Council Phase 8 not used or telemetry not yet swept._\n\n'
+else
+  total_waves_assigned="$(printf '%s\n' "${wave_assigned_rows}" | grep -c .)"
+  narrow_count="$(printf '%s\n' "${narrow_warning_rows}" | grep -c . || true)"
+  block_count="$(printf '%s\n' "${wave_shape_block_rows}" | grep -c . || true)"
+  # Median findings-per-wave: extract finding_count from each wave-assigned
+  # row, sort, pick middle. Fail-open on empty.
+  median_per_wave="$(printf '%s\n' "${wave_assigned_rows}" \
+    | jq -r '.details.finding_count // empty' \
+    | sort -n \
+    | awk 'NR==1{first=$1} {a[NR]=$1} END{if(NR==0){print "n/a"} else {print a[int((NR+1)/2)]}}')"
+  printf '| Metric | Value |\n|---|---|\n'
+  printf '| Waves assigned (window) | %s |\n' "${total_waves_assigned}"
+  printf '| Median findings/wave | %s |\n' "${median_per_wave}"
+  printf '| Narrow-wave warnings (advisory) | %s |\n' "${narrow_count}"
+  printf '| Wave-shape gate blocks | %s |\n' "${block_count}"
+  printf '\n'
+  if [[ "${narrow_count}" -gt 0 ]] || [[ "${block_count}" -gt 0 ]]; then
+    printf '**Recent under-segmented waves:**\n\n'
+    printf '%s\n' "${narrow_warning_rows}" \
+      | jq -r --slurp 'sort_by(.ts) | reverse | .[0:5][] |
+        "- wave \(.details.wave_idx)/\(.details.wave_total) (surface: \(.details.surface // "—"), \(.details.finding_count) finding\(if .details.finding_count == 1 then "" else "s" end), avg \(.details.avg_per_wave // "—")/wave)"' \
+      2>/dev/null || true
+    printf '\n'
+  fi
+  if [[ "${total_waves_assigned}" -gt 5 ]] && [[ "${narrow_count}" -gt 0 ]]; then
+    narrow_ratio_pct=$((narrow_count * 100 / total_waves_assigned))
+    if [[ "${narrow_ratio_pct}" -ge 30 ]]; then
+      printf '_⚠ **%s%% of waves were under-segmented**. The canonical Phase 8 bar is 5-10 findings/wave; consistent narrow-wave warnings suggest the model is over-segmenting. Review your prompt patterns or consider tightening `is_wave_plan_under_segmented` thresholds._\n\n' "${narrow_ratio_pct}"
+    fi
+  fi
+fi
+
+# ----------------------------------------------------------------------
 # Section 4c: User-decision queue (v1.18.0)
 # Aggregate user-decision-marked events from gate_events + scan
 # discovered findings.json files for findings still flagged

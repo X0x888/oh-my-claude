@@ -511,5 +511,66 @@ done
 flag_t04="$(jq -r '.findings[]|select(.id=="F-T04")|.requires_user_decision' "${findings_path}")"
 assert_eq "mark-user-decision succeeds on in_progress finding" "true" "${flag_t04}"
 
+# ----------------------------------------------------------------------
+printf '\n=== status-line subcommand (F-017) ===\n'
+
+# Empty/missing
+rm -f "${findings_path}"
+status_line="$("${SCRIPT}" status-line)"
+assert_contains "no plan reports 'no plan yet'" "no plan yet" "${status_line}"
+
+# Build a substantive plan: 6 findings across 2 waves of 3
+echo '[
+  {"id":"F-S01","summary":"a","severity":"high","surface":"a"},
+  {"id":"F-S02","summary":"b","severity":"high","surface":"a"},
+  {"id":"F-S03","summary":"c","severity":"high","surface":"a"},
+  {"id":"F-S04","summary":"d","severity":"high","surface":"b"},
+  {"id":"F-S05","summary":"e","severity":"high","surface":"b"},
+  {"id":"F-S06","summary":"f","severity":"high","surface":"b"}
+]' | "${SCRIPT}" init >/dev/null
+"${SCRIPT}" assign-wave 1 2 "surface-a" F-S01 F-S02 F-S03 >/dev/null 2>&1
+"${SCRIPT}" assign-wave 2 2 "surface-b" F-S04 F-S05 F-S06 >/dev/null 2>&1
+
+status_line="$("${SCRIPT}" status-line)"
+assert_contains "0 shipped initially" "0/6 shipped" "${status_line}"
+assert_contains "6 pending initially" "6 pending" "${status_line}"
+assert_contains "0/2 waves initially" "0/2 waves" "${status_line}"
+assert_contains "avg shows when wave plan active" "avg 3/wave" "${status_line}"
+# Substantive plan should NOT have under-segmented warning
+assert_not_contains_helper() {
+  local label="$1" needle="$2" haystack="$3"
+  if [[ "${haystack}" != *"${needle}"* ]]; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: %s\n    expected NOT to contain: %s\n    actual: %s\n' "${label}" "${needle}" "${haystack}" >&2
+    fail=$((fail + 1))
+  fi
+}
+assert_not_contains_helper "no warning on substantive plan" "under-segmented" "${status_line}"
+
+# Ship a couple findings to verify shipped count tracks
+"${SCRIPT}" status F-S01 shipped abc1234 >/dev/null
+"${SCRIPT}" status F-S02 shipped abc1234 >/dev/null
+status_line="$("${SCRIPT}" status-line)"
+assert_contains "shipped count updates" "2/6 shipped" "${status_line}"
+assert_contains "pending decreases" "4 pending" "${status_line}"
+
+# Build an under-segmented plan: 5 findings × 5 waves of 1 each
+rm -f "${findings_path}"
+echo '[
+  {"id":"F-N01","summary":"a","severity":"high","surface":"a"},
+  {"id":"F-N02","summary":"b","severity":"high","surface":"b"},
+  {"id":"F-N03","summary":"c","severity":"high","surface":"c"},
+  {"id":"F-N04","summary":"d","severity":"high","surface":"d"},
+  {"id":"F-N05","summary":"e","severity":"high","surface":"e"}
+]' | "${SCRIPT}" init >/dev/null
+for i in 1 2 3 4 5; do
+  "${SCRIPT}" assign-wave "${i}" 5 "surface-${i}" "F-N0${i}" >/dev/null 2>&1
+done
+
+status_line="$("${SCRIPT}" status-line)"
+assert_contains "5x1 plan flagged under-segmented" "under-segmented" "${status_line}"
+assert_contains "avg=1 reported" "avg 1/wave" "${status_line}"
+
 printf '\n=== Finding-List Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]
