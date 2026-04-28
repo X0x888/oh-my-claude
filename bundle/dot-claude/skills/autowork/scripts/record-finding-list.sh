@@ -183,6 +183,16 @@ case "${cmd}" in
       '{version:1, created_ts:$ts, updated_ts:$ts, findings:$findings, waves:[]}')"
     _atomic_write "${new_doc}"
     count="$(jq 'length' <<<"${normalized}")"
+    # Fresh plan = fresh gate budget. The wave-shape gate's cap=1 design
+    # is "once per wave plan", not "once per session" — without this
+    # reset, a session that pivots to a new findings list (e.g., after
+    # a long pause and a new objective) would carry the prior plan's
+    # exhausted block forward, silently disabling the gate on the new
+    # plan. write_state is sourced from common.sh and is a no-op when
+    # SESSION_ID is unset (e.g., test harness).
+    if [[ -n "${SESSION_ID:-}" ]]; then
+      write_state "wave_shape_blocks" "" 2>/dev/null || true
+    fi
     printf 'Initialized %s with %s findings.\n' "${FINDINGS_FILE}" "${count}"
     ;;
 
@@ -275,6 +285,7 @@ case "${cmd}" in
       exit 1
     fi
     ids_json="$(printf '%s\n' "$@" | jq -R . | jq -s .)"
+    finding_count="$#"
     _ensure_file
     _acquire_lock
     current="$(cat "${FINDINGS_FILE}")"
@@ -294,6 +305,35 @@ case "${cmd}" in
       ) |
       .waves |= sort_by(.index)')"
     _atomic_write "${updated}"
+    # F-011 — emit gate event for cross-session telemetry. /ulw-report
+    # aggregates these into a wave-shape distribution panel.
+    record_gate_event "wave-plan" "wave-assigned" \
+      "wave_idx=${wave_idx}" \
+      "wave_total=${wave_total}" \
+      "surface=${surface}" \
+      "finding_count=${finding_count}"
+    # F-012 — narrow-wave advisory. Fires when a freshly-assigned wave
+    # has <3 findings AND the master list has ≥5 findings AND there are
+    # ≥2 waves planned. Single-finding waves on small lists are
+    # legitimate; the warning targets the over-segmentation pattern that
+    # produced the v1.21.0 5×1-wave UX regression.
+    if [[ "${finding_count}" -lt 3 ]]; then
+      total_findings="$(jq -r '(.findings // []) | length' "${FINDINGS_FILE}" 2>/dev/null || printf '0')"
+      if [[ "${total_findings}" =~ ^[0-9]+$ ]] && [[ "${total_findings}" -ge 5 ]] && [[ "${wave_total}" -gt 1 ]]; then
+        avg=$((total_findings / wave_total))
+        printf 'record-finding-list assign-wave: WARNING — wave %s/%s has %s finding(s) (< 3)\n' \
+          "${wave_idx}" "${wave_total}" "${finding_count}" >&2
+        printf '  master list has %s findings across %s waves (avg %s/wave; canonical bar is 5-10/wave per council/SKILL.md Step 8)\n' \
+          "${total_findings}" "${wave_total}" "${avg}" >&2
+        printf '  if this is intentional (one critical finding owns its own wave), name the reason in the wave commit body\n' >&2
+        record_gate_event "wave-plan" "narrow-wave-warning" \
+          "wave_idx=${wave_idx}" \
+          "wave_total=${wave_total}" \
+          "finding_count=${finding_count}" \
+          "total_findings=${total_findings}" \
+          "avg_per_wave=${avg}"
+      fi
+    fi
     printf 'wave=%s/%s surface=%s ids=%s\n' "${wave_idx}" "${wave_total}" "${surface}" "$*"
     ;;
 

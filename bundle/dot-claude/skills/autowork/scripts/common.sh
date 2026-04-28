@@ -3311,6 +3311,57 @@ read_active_waves_completed() {
   jq -r '[(.waves // [])[] | select(.status == "completed")] | length' "${file}" 2>/dev/null || printf '0'
 }
 
+# read_total_findings_count — total finding count in findings.json.
+# Used by the wave-shape predicate and the gate's block message.
+# Returns "0" on missing file or malformed JSON (fail-open).
+read_total_findings_count() {
+  [[ -z "${SESSION_ID:-}" ]] && { printf '0'; return 0; }
+  local file
+  file="$(session_file "findings.json")"
+  [[ -f "${file}" ]] || { printf '0'; return 0; }
+  jq -r '(.findings // []) | length' "${file}" 2>/dev/null || printf '0'
+}
+
+# is_wave_plan_under_segmented — predicate matching the Phase 8 anti-pattern
+# documented in council/SKILL.md Step 8: avg <3 findings/wave on a master
+# list of ≥5 findings, with at least 2 waves planned. Single-finding-per-
+# wave plans on small finding lists (<5) are NOT flagged because the rule
+# allows them; same for trivial 1-wave plans.
+#
+# Used by:
+#   stop-guard.sh — fires the wave-shape gate (block once)
+#   stop-guard.sh — disables the discovered-scope cap-raise when true
+#                   (closes the polarity bug where narrow plans got MORE
+#                   permission to stop early per wave)
+#   record-finding-list.sh assign-wave — emits a narrow-wave warning
+#                                        when a freshly-assigned wave
+#                                        contributes to under-segmentation
+#
+# Returns 0 (under-segmented) when the plan has ≥5 findings AND ≥2 waves
+# AND avg <3 findings/wave. Otherwise 1.
+is_wave_plan_under_segmented() {
+  local total waves
+  total="$(read_total_findings_count)"
+  waves="$(read_active_wave_total)"
+
+  # Missing or malformed → not under-segmented (fail-open).
+  if ! [[ "${total}" =~ ^[0-9]+$ ]] || ! [[ "${waves}" =~ ^[0-9]+$ ]]; then
+    return 1
+  fi
+
+  # Trivial plans (≤1 wave) or small finding lists (<5) are exempt — the
+  # Phase 8 rule explicitly permits single-wave grouping on small lists.
+  if [[ "${waves}" -le 1 ]] || [[ "${total}" -lt 5 ]]; then
+    return 1
+  fi
+
+  # Strict average <3: fail when total < 3*waves (integer arithmetic).
+  if (( total < 3 * waves )); then
+    return 0
+  fi
+  return 1
+}
+
 # --- end wave plan tracking ---
 
 # --- Session discovery for manually-invoked scripts ---

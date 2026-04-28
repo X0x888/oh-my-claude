@@ -129,6 +129,40 @@ if [[ "${ulw_pause_active}" != "1" ]] \
   fi
 fi
 
+# Wave-shape gate (F-013): block once when the active wave plan is
+# under-segmented per the canonical Phase 8 rule (avg <3 findings/wave
+# on a master list of \u22655 findings AND \u22652 waves planned). This catches
+# the over-segmentation pattern that produced the v1.21.0 5\u00d71-wave UX
+# regression where the model atomized findings into single-finding waves
+# and stopped after a polish-grade quality cycle on each one.
+#
+# Cap = 1. The model gets one chance to reconcile the plan: either
+# re-issue assign-wave with merged surfaces, or explicitly accept the
+# plan with /ulw-skip <reason> if a single-finding wave is genuinely
+# load-bearing for that surface. Fires AFTER session-handoff (already
+# checked above) but BEFORE discovered-scope so the structural plan
+# error is surfaced before the model races through fixes.
+if [[ "${OMC_DISCOVERED_SCOPE}" == "on" ]] \
+  && is_execution_intent_value "${task_intent}" \
+  && is_wave_plan_under_segmented; then
+  wave_shape_blocks="$(read_state "wave_shape_blocks")"
+  wave_shape_blocks="${wave_shape_blocks:-0}"
+  if [[ "${wave_shape_blocks}" -lt 1 ]]; then
+    write_state "wave_shape_blocks" "$((wave_shape_blocks + 1))"
+    _ws_total="$(read_total_findings_count)"
+    _ws_waves="$(read_active_wave_total)"
+    _ws_avg=$((_ws_total / _ws_waves))
+    record_gate_event "wave-shape" "block" \
+      "block_count=1" "block_cap=1" \
+      "total_findings=${_ws_total}" \
+      "wave_total=${_ws_waves}" \
+      "avg_per_wave=${_ws_avg}"
+    wave_shape_recovery="$(format_gate_recovery_line "merge adjacent wave surfaces so the plan reaches avg \u22653 findings/wave (5-10/wave is the canonical target; 3 is the minimum). Re-issue \`record-finding-list.sh assign-wave\` with the merged plan \u2014 note that re-issuing assign-wave alone won't re-arm this gate, so reconcile in one pass. To bypass once with reason \u2014 e.g., 'each finding owns a genuinely separate critical surface' \u2014 run /ulw-skip.")"
+    jq -nc --arg reason "[Wave-shape gate \u00b7 1/1] the active wave plan is under-segmented: ${_ws_total} findings across ${_ws_waves} waves (avg ${_ws_avg}/wave; the canonical Phase 8 rule in council/SKILL.md Step 8 is 5-10 findings/wave with \u22653 as the hard floor). Single-finding waves are acceptable only when (a) the master list itself has <5 findings, or (b) one finding is critical enough to own its own wave (rare \u2014 name the reason). Reconcile the plan before proceeding through the wave cycle.${wave_shape_recovery}" '{"decision":"block","reason":$reason}'
+    exit 0
+  fi
+fi
+
 # Discovered-scope gate: when advisory specialists (council lenses, metis,
 # briefing-analyst) emit findings during this session, the model must
 # explicitly account for each one before stopping \u2014 either ship the fix,
@@ -142,12 +176,20 @@ if [[ "${OMC_DISCOVERED_SCOPE}" == "on" ]] \
     discovered_scope_blocks="$(read_state "discovered_scope_blocks")"
     discovered_scope_blocks="${discovered_scope_blocks:-0}"
     # Cap normally fixed at 2 (block twice, then release with scorecard).
-    # When a wave plan is active (Phase 8 of /council recorded findings.json
-    # with N waves), raise the cap to N+1 so the gate stays useful across
-    # multiple legitimate wave-by-wave commits instead of silently releasing
-    # after wave 2 with 20+ findings still pending.
+    # When a SUBSTANTIVE wave plan is active (Phase 8 of /council recorded
+    # findings.json with N waves AND the plan is NOT under-segmented),
+    # raise the cap to N+1 so the gate stays useful across multiple
+    # legitimate wave-by-wave commits instead of silently releasing after
+    # wave 2 with 20+ findings still pending.
+    #
+    # F-014 polarity fix: under-segmented plans (avg <3 findings/wave on
+    # a master list of >=5 findings) do NOT raise the cap. Closes the
+    # bug where 5x1-finding wave plans got cap=6 and released after the
+    # 5th narrow wave even though the canonical bar wasn't met. The
+    # wave-shape gate above is the front-line defense; the cap polarity
+    # is the backstop for plans that bypass it via /ulw-skip.
     wave_total="$(read_active_wave_total)"
-    if [[ "${wave_total}" -gt 0 ]]; then
+    if [[ "${wave_total}" -gt 0 ]] && ! is_wave_plan_under_segmented; then
       scope_block_cap=$((wave_total + 1))
     else
       scope_block_cap=2

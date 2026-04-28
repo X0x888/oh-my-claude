@@ -64,6 +64,9 @@ jobs:
       - name: Run Phase 8 integration tests
         run: bash tests/test-phase8-integration.sh
 
+      - name: Run wave-shape tests
+        run: bash tests/test-wave-shape.sh
+
       - name: Run agent VERDICT contract tests
         run: bash tests/test-agent-verdict-contract.sh
 

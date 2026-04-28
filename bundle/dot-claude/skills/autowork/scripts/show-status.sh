@@ -95,6 +95,7 @@ if [[ "${SUMMARY_MODE}" -eq 1 ]]; then
   advisory_blocks="$(jq -r '.advisory_guard_blocks // "0"' "${state_file}" 2>/dev/null || echo "0")"
   pretool_blocks="$(jq -r '.pretool_intent_blocks // "0"' "${state_file}" 2>/dev/null || echo "0")"
   scope_blocks="$(jq -r '.discovered_scope_blocks // "0"' "${state_file}" 2>/dev/null || echo "0")"
+  wave_shape_blocks="$(jq -r '.wave_shape_blocks // "0"' "${state_file}" 2>/dev/null || echo "0")"
 
   # Classifier misfires — how many of those blocks the post-classifier
   # heuristic judged as false-positives (prior advisory classification
@@ -179,6 +180,7 @@ if [[ "${SUMMARY_MODE}" -eq 1 ]]; then
   [[ "${advisory_blocks}" -ne 0 ]] && blocks_parts="${blocks_parts:+${blocks_parts} · }advisory=${advisory_blocks}"
   [[ "${pretool_blocks}" -ne 0 ]]  && blocks_parts="${blocks_parts:+${blocks_parts} · }pretool=${pretool_blocks}"
   [[ "${scope_blocks}" -ne 0 ]]    && blocks_parts="${blocks_parts:+${blocks_parts} · }scope=${scope_blocks}"
+  [[ "${wave_shape_blocks}" -ne 0 ]] && blocks_parts="${blocks_parts:+${blocks_parts} · }wave-shape=${wave_shape_blocks}"
   if [[ -n "${blocks_parts}" ]]; then
     if [[ "${misfire_count}" -gt 0 ]]; then
       printf 'Blocks:     %s · classifier misfires=%s (see classifier_telemetry.jsonl)\n' "${blocks_parts}" "${misfire_count}"
@@ -296,6 +298,7 @@ jq -r '
   "Dimension blocks:  \(.dimension_guard_blocks // "0")",
   "Session handoffs:  \(.session_handoff_blocks // "0")",
   "Discovered-scope:  \(.discovered_scope_blocks // "0")",
+  "Wave-shape blocks: \(.wave_shape_blocks // "0")",
   "Serendipity fires: \(.serendipity_count // "0")\(if (.last_serendipity_fix // "") != "" then " (last: \(.last_serendipity_fix))" else "" end)",
   "Stall counter:     \(.stall_counter // "0")",
   "",
