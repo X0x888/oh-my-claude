@@ -243,6 +243,16 @@
           }
         ]
       }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $HOME/.claude/quality-pack/scripts/stop-failure-handler.sh"
+          }
+        ]
+      }
     ]
   }
 }

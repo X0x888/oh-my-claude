@@ -425,6 +425,69 @@ def gate_summary():
     return " ".join(parts)
 
 
+def persist_rate_limit_status(data):
+    # Side-effect: stash rate-limit reset windows into a per-session sidecar so
+    # the StopFailure hook can build a resume_request when Claude Code
+    # terminates on a rate cap. The hook payload doesn't carry rate_limits, so
+    # the statusLine path is the only place this data is reachable. Silent
+    # no-op when fields are absent (raw API-key sessions, no session_id, etc.)
+    # — never raise.
+    rate_limits = safe_get(data, "rate_limits")
+    if not isinstance(rate_limits, dict):
+        return
+    session_id = safe_get(data, "session_id")
+    if not session_id or not isinstance(session_id, str):
+        return
+
+    windows = {}
+    for name in ("five_hour", "seven_day"):
+        block = rate_limits.get(name)
+        if not isinstance(block, dict):
+            continue
+        entry = {}
+        used = block.get("used_percentage")
+        if isinstance(used, (int, float)):
+            entry["used_percentage"] = used
+        resets = block.get("resets_at")
+        if isinstance(resets, (int, float)) and resets > 0:
+            entry["resets_at_ts"] = int(resets)
+        if entry:
+            windows[name] = entry
+
+    if not windows:
+        return
+
+    state_root = os.environ.get("STATE_ROOT") or os.path.join(
+        os.path.expanduser("~"), ".claude", "quality-pack", "state"
+    )
+    session_dir = os.path.join(state_root, session_id)
+    if not os.path.isdir(session_dir):
+        # Don't create the dir — bash hooks own session-dir lifecycle. If it
+        # doesn't exist yet, the hook hasn't fired; skip and try next refresh.
+        return
+
+    payload = dict(windows)
+    payload["captured_at_ts"] = int(time.time())
+
+    target = os.path.join(session_dir, "rate_limit_status.json")
+    try:
+        fd, tmp_path = tempfile.mkstemp(
+            prefix=".rate_limit_status.", suffix=".tmp", dir=session_dir
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle)
+            os.replace(tmp_path, target)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+    except OSError:
+        return
+
+
 def main():
     raw = sys.stdin.read().strip()
     try:
@@ -511,6 +574,8 @@ def main():
             line_two_parts.append(color(f"RL:{rl_pct}%", bar_color(rl_pct)))
         except (ValueError, TypeError):
             pass
+
+    persist_rate_limit_status(data)
 
     # Denominator is cache-eligible tokens only (created + read), not total input
     cache_create = int(safe_get(data, "context_window", "current_usage", "cache_creation_input_tokens", default=0) or 0)

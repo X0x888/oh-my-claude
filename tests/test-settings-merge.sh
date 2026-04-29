@@ -140,6 +140,12 @@ for impl in "${implementations[@]}"; do
     "${work}/settings.json" '.hooks.PostCompact' "1"
   assert_json_count "${impl}: fresh — Stop hooks" \
     "${work}/settings.json" '.hooks.Stop' "1"
+  assert_json_count "${impl}: fresh — StopFailure hooks" \
+    "${work}/settings.json" '.hooks.StopFailure' "1"
+  assert_json_eq "${impl}: fresh — StopFailure wires stop-failure-handler.sh" \
+    "${work}/settings.json" \
+    '[.hooks.StopFailure[] | .hooks[0].command] | .[0] | tostring | contains("stop-failure-handler.sh")' \
+    "true"
 
   # PreToolUse must wire the Agent matcher to record-pending-agent.sh
   assert_json_eq "${impl}: fresh — PreToolUse Agent matcher wired" \
@@ -175,6 +181,8 @@ for impl in "${implementations[@]}"; do
     "${work}/settings.json" '.hooks.PostToolUse' "5"
   assert_json_count "${impl}: idempotent — PreToolUse hooks still 2" \
     "${work}/settings.json" '.hooks.PreToolUse' "2"
+  assert_json_count "${impl}: idempotent — StopFailure hooks still 1" \
+    "${work}/settings.json" '.hooks.StopFailure' "1"
 
   # Verify the new dimension-tracker matchers are present
   assert_json_eq "${impl}: fresh — metis matcher wired" \

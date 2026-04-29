@@ -135,7 +135,7 @@ oh-my-claude/
     output-styles/            # Output format templates
     quality-pack/
       memory/                 # Core, skills, and compact memory files
-      scripts/                # 5 lifecycle hook scripts (prompt routing, compaction, session)
+      scripts/                # 6 lifecycle hook scripts (prompt routing, compaction, session, stop-failure)
     skills/                   # 21 skill definitions, each in <name>/SKILL.md
       autowork/scripts/       # 22 autowork hook scripts and utilities
         common.sh             # Shared functions (JSON, classification, scope)
@@ -148,7 +148,7 @@ oh-my-claude/
   config/
     settings.patch.json       # Settings merged into user's settings.json
 
-  tests/                      # 40 bash + 1 python test scripts; CLAUDE.md "Testing" lists each one
+  tests/                      # 42 bash + 1 python test scripts; CLAUDE.md "Testing" lists each one
 
   tools/                      # Developer tools (not installed)
     replay-classifier-telemetry.sh

@@ -39,6 +39,7 @@ _omc_env_metis_on_plan_gate="${OMC_METIS_ON_PLAN_GATE:-}"
 _omc_env_prometheus_suggest="${OMC_PROMETHEUS_SUGGEST:-}"
 _omc_env_intent_verify_directive="${OMC_INTENT_VERIFY_DIRECTIVE:-}"
 _omc_env_wave_override_ttl="${OMC_WAVE_OVERRIDE_TTL_SECONDS:-}"
+_omc_env_stop_failure_capture="${OMC_STOP_FAILURE_CAPTURE:-}"
 
 OMC_STALL_THRESHOLD="${OMC_STALL_THRESHOLD:-12}"
 OMC_EXCELLENCE_FILE_COUNT="${OMC_EXCELLENCE_FILE_COUNT:-3}"
@@ -190,6 +191,8 @@ _parse_conf_file() {
         [[ -z "${_omc_env_intent_verify_directive}" && "${value}" =~ ^(on|off)$ ]] && OMC_INTENT_VERIFY_DIRECTIVE="${value}" || true ;;
       wave_override_ttl_seconds)
         [[ -z "${_omc_env_wave_override_ttl}" && "${value}" =~ ^[0-9]+$ ]] && OMC_WAVE_OVERRIDE_TTL_SECONDS="${value}" || true ;;
+      stop_failure_capture)
+        [[ -z "${_omc_env_stop_failure_capture}" && "${value}" =~ ^(on|off)$ ]] && OMC_STOP_FAILURE_CAPTURE="${value}" || true ;;
     esac
   done < "${conf}"
 }
@@ -232,6 +235,15 @@ esac
 # decide whether to write memory at session-stop and pre-compact moments.
 is_auto_memory_enabled() {
   [[ "${OMC_AUTO_MEMORY:-on}" != "off" ]]
+}
+
+# Returns 0 (true) when StopFailure capture is enabled, 1 (false) when
+# disabled. The hook records `original_objective` and `last_user_prompt`
+# verbatim into resume_request.json, so shared-machine and regulated-
+# codebase users may want to suppress it. Default on; mirrors the
+# auto_memory and classifier_telemetry opt-out shape.
+is_stop_failure_capture_enabled() {
+  [[ "${OMC_STOP_FAILURE_CAPTURE:-on}" != "off" ]]
 }
 
 # Returns the *conventional* directory where the current cwd's

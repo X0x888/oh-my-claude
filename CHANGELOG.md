@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Long-running-agent harness — Wave A: rate-limit data substrate.** `statusline.py` now reads `rate_limits.{five_hour,seven_day}.resets_at` from the Claude Code statusLine payload and writes them to a per-session sidecar `<session>/rate_limit_status.json` (silent no-op on raw API-key sessions where the field is absent). A new `StopFailure` hook (`bundle/dot-claude/quality-pack/scripts/stop-failure-handler.sh`) fires on every fatal-stop matcher (`rate_limit`, `authentication_failed`, `billing_error`, `invalid_request`, `server_error`, `max_output_tokens`, `unknown`); on fire it composes `<session>/resume_request.json` with the original objective, last user prompt, the earliest known reset epoch, the active model id, a `schema_version: 1` marker, a `resume_attempts: 0` counter, and a snapshot of the rate-limit windows — forward-compat fields the future Wave 3 watchdog needs to round-trip without a schema migration on already-on-disk artifacts. Gate-events row is written through the canonical `record_gate_event` helper (gate=`stop-failure`, event=`stop-failure-captured`) so it inherits the per-session 500-row cap. No behavior change to the live system — this is pure substrate. Future waves will consume `resume_request.json` to drive watchdog-driven auto-resume after rate-limit windows. Wired in `config/settings.patch.json` under a new `StopFailure` event; verify.sh checks the new path + hook registration; CI runs `tests/test-stop-failure-handler.sh` (62 assertions across 11 scenarios including the 7-matcher parametric loop and the conf opt-out) plus 9 new Python unit tests in `tests/test_statusline.py::TestPersistRateLimitStatus`. Privacy opt-out: set `stop_failure_capture=off` in `oh-my-claude.conf` (or `OMC_STOP_FAILURE_CAPTURE=off` in env) to suppress the capture on shared-machine / regulated-codebase setups — same shape as the existing `auto_memory=off` / `classifier_telemetry=off` toggles.
+
 ## [1.22.0] - 2026-04-28
 
 ### Fixed

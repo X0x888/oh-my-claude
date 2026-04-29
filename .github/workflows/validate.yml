@@ -76,5 +76,8 @@ jobs:
       - name: Run discover-session tests
         run: bash tests/test-discover-session.sh
 
+      - name: Run stop-failure handler tests
+        run: bash tests/test-stop-failure-handler.sh
+
       - name: Run statusline tests
         run: python3 -m unittest tests.test_statusline -v

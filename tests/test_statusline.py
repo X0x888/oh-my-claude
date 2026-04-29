@@ -1092,6 +1092,164 @@ class TestMainIntegration(unittest.TestCase):
         self.assertIn("95%", result.stdout)
 
 
+class TestPersistRateLimitStatus(unittest.TestCase):
+    """Verify the sidecar write that pre-stages rate-limit data for the
+    StopFailure hook (Wave A of long-running-agent harness)."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.state_root = os.path.join(self.tmpdir, "state")
+        os.makedirs(self.state_root)
+        self._orig_state_root = os.environ.get("STATE_ROOT")
+        os.environ["STATE_ROOT"] = self.state_root
+
+    def tearDown(self):
+        if self._orig_state_root is None:
+            os.environ.pop("STATE_ROOT", None)
+        else:
+            os.environ["STATE_ROOT"] = self._orig_state_root
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _session_dir(self, sid):
+        d = os.path.join(self.state_root, sid)
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _sidecar_path(self, sid):
+        return os.path.join(self.state_root, sid, "rate_limit_status.json")
+
+    def test_writes_both_windows(self):
+        sid = "sess-both"
+        self._session_dir(sid)
+        data = {
+            "session_id": sid,
+            "rate_limits": {
+                "five_hour": {"used_percentage": 85, "resets_at": 1738425600},
+                "seven_day": {"used_percentage": 42, "resets_at": 1738857600},
+            },
+        }
+        sl.persist_rate_limit_status(data)
+        with open(self._sidecar_path(sid)) as f:
+            payload = json.load(f)
+        self.assertEqual(payload["five_hour"]["resets_at_ts"], 1738425600)
+        self.assertEqual(payload["five_hour"]["used_percentage"], 85)
+        self.assertEqual(payload["seven_day"]["resets_at_ts"], 1738857600)
+        self.assertEqual(payload["seven_day"]["used_percentage"], 42)
+        self.assertIn("captured_at_ts", payload)
+
+    def test_silent_when_rate_limits_absent(self):
+        sid = "sess-norl"
+        self._session_dir(sid)
+        sl.persist_rate_limit_status({"session_id": sid})
+        self.assertFalse(os.path.exists(self._sidecar_path(sid)))
+
+    def test_silent_when_session_id_absent(self):
+        sl.persist_rate_limit_status(
+            {"rate_limits": {"five_hour": {"resets_at": 1738425600}}}
+        )
+        # No session_id → can't pick a target. State root must stay empty.
+        self.assertEqual(os.listdir(self.state_root), [])
+
+    def test_silent_when_session_dir_missing(self):
+        # session_id present but the bash hook hasn't created the dir yet —
+        # we don't pre-create it; just skip.
+        sl.persist_rate_limit_status({
+            "session_id": "sess-no-dir",
+            "rate_limits": {"five_hour": {"resets_at": 1738425600}},
+        })
+        self.assertFalse(os.path.exists(self._sidecar_path("sess-no-dir")))
+
+    def test_writes_only_present_window(self):
+        sid = "sess-only-7d"
+        self._session_dir(sid)
+        data = {
+            "session_id": sid,
+            "rate_limits": {
+                "seven_day": {"used_percentage": 15, "resets_at": 1738900000},
+            },
+        }
+        sl.persist_rate_limit_status(data)
+        with open(self._sidecar_path(sid)) as f:
+            payload = json.load(f)
+        self.assertIn("seven_day", payload)
+        self.assertNotIn("five_hour", payload)
+
+    def test_skips_window_without_useful_fields(self):
+        # Window dict exists but resets_at and used_percentage are missing —
+        # nothing to record, no sidecar written.
+        sid = "sess-empty-window"
+        self._session_dir(sid)
+        data = {
+            "session_id": sid,
+            "rate_limits": {"five_hour": {}},
+        }
+        sl.persist_rate_limit_status(data)
+        self.assertFalse(os.path.exists(self._sidecar_path(sid)))
+
+    def test_does_not_raise_on_garbage(self):
+        # Non-dict rate_limits, non-string session_id, etc. must not raise.
+        for bogus in (
+            {"session_id": sid_garbage, "rate_limits": rl_garbage}
+            for sid_garbage in (None, 42, ["a"])
+            for rl_garbage in (None, "string", 7, [])
+        ):
+            try:
+                sl.persist_rate_limit_status(bogus)
+            except Exception as exc:
+                self.fail(
+                    f"persist_rate_limit_status raised on {bogus!r}: {exc}"
+                )
+
+    def test_atomic_overwrite(self):
+        # Subsequent calls overwrite atomically; old payload is replaced
+        # cleanly without leaving a .tmp file behind.
+        sid = "sess-overwrite"
+        sd = self._session_dir(sid)
+        data1 = {
+            "session_id": sid,
+            "rate_limits": {"five_hour": {"resets_at": 100}},
+        }
+        data2 = {
+            "session_id": sid,
+            "rate_limits": {"five_hour": {"resets_at": 200}},
+        }
+        sl.persist_rate_limit_status(data1)
+        sl.persist_rate_limit_status(data2)
+        with open(self._sidecar_path(sid)) as f:
+            payload = json.load(f)
+        self.assertEqual(payload["five_hour"]["resets_at_ts"], 200)
+        # No leaked tmp files.
+        leftovers = [n for n in os.listdir(sd) if n.startswith(".rate_limit_status.")]
+        self.assertEqual(leftovers, [])
+
+    def test_falls_back_to_home_state_root_when_env_unset(self):
+        # When STATE_ROOT is not in env, persist_rate_limit_status must fall
+        # back to ~/.claude/quality-pack/state. Patch expanduser so '~'
+        # resolves into the test tmpdir; the function should compose the
+        # canonical path and find the session dir there.
+        os.environ.pop("STATE_ROOT", None)
+        sid = "sess-home-fallback"
+        fallback_session_dir = os.path.join(
+            self.tmpdir, ".claude", "quality-pack", "state", sid
+        )
+        os.makedirs(fallback_session_dir)
+        orig_expanduser = os.path.expanduser
+        os.path.expanduser = lambda p: p.replace("~", self.tmpdir)
+        try:
+            sl.persist_rate_limit_status({
+                "session_id": sid,
+                "rate_limits": {"five_hour": {"resets_at": 1738425600}},
+            })
+            sidecar = os.path.join(fallback_session_dir, "rate_limit_status.json")
+            self.assertTrue(os.path.isfile(sidecar))
+            with open(sidecar) as f:
+                payload = json.load(f)
+            self.assertEqual(payload["five_hour"]["resets_at_ts"], 1738425600)
+        finally:
+            os.path.expanduser = orig_expanduser
+
+
 class TestRunGit(unittest.TestCase):
     def test_timeout_returns_failed_result(self):
         """run_git returns a non-zero CompletedProcess when subprocess times out."""

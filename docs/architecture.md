@@ -91,6 +91,8 @@ The block caps prevent infinite loops. After the cap, Claude is allowed to stop 
 
 **`quality-pack/scripts/session-start-compact-handoff.sh`** -- **SessionStart hook** (compact). Reads the pre-compact snapshot, injects it with a continuation directive and thinking requirements.
 
+**`quality-pack/scripts/stop-failure-handler.sh`** -- **StopFailure hook**. Captures the moment Claude Code terminates the session due to a rate cap, billing failure, auth failure, or other fatal stop. Dispatched for any matcher (`rate_limit`, `authentication_failed`, `billing_error`, `invalid_request`, `server_error`, `max_output_tokens`, `unknown`). Reads the `rate_limit_status.json` sidecar that `statusline.py` writes during the session (the StopFailure payload itself does not carry rate-limits) and persists `resume_request.json` with the original objective, last user prompt, matcher, the earliest known reset epoch, and a snapshot of the rate-limit windows. Hook output is documented as ignored by Claude Code at this event — this script is purely for side-effect persistence so a future watchdog (or the next session-resume) can act on the stop without losing context. Also appends a `stop-failure-captured` row to `gate_events.jsonl` for `/ulw-report` visibility.
+
 ### Cognitive Defaults
 
 **`quality-pack/memory/core.md`** -- Loaded into every session via CLAUDE.md. Defines thinking quality standards (reason before acting, diagnose before fixing, track progress), workflow rules (classify intent, classify domain, route to specialists, test after changes, review before stopping), code quality rules (no placeholder stubs, no restating comments), anti-patterns (forbidden behaviors like asking "should I proceed?"), and failure recovery (stop retrying after 3 failures, switch approach or delegate to oracle).
@@ -189,6 +191,8 @@ Session state is stored at:
   precompact_snapshot.md       # Snapshot created before compaction
   compact_handoff.md           # Combined handoff document
   internal_edits.log           # Edits to internal Claude paths (excluded from tracking)
+  rate_limit_status.json       # Rate-limit windows pre-staged by statusline.py: {five_hour, seven_day}.{used_percentage, resets_at_ts}. Pro/Max sessions only; absent on raw API-key sessions. Read by stop-failure-handler.sh on StopFailure.
+  resume_request.json          # Written by stop-failure-handler.sh when Claude Code emits StopFailure: {rate_limited, matcher, original_objective, last_user_prompt, resets_at_ts, rate_limit_snapshot, ...}. Substrate for future watchdog-driven auto-resume; not yet consumed.
 ```
 
 Cross-session ledgers (in `~/.claude/quality-pack/`, not per-session):
