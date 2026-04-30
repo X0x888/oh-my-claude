@@ -83,10 +83,20 @@ platform() {
 # Homebrew + system bins. Required because Claude Code's binary may
 # live at ~/.local/bin/claude (npm global) or ~/.nvm/versions/.../bin
 # (nvm) — neither is on launchd's default PATH.
+#
+# The login-shell probe is wrapped in `timeout 5` when available so a
+# misconfigured rc file (network-fetch on shell init, asdf-plugin
+# refresh, slow brew shellenv, etc.) cannot hang the watchdog
+# installer indefinitely. On systems without `timeout` the bare probe
+# runs and the user can Ctrl-C if it stalls.
 resolved_path() {
   local from_shell=""
   if [[ -n "${SHELL:-}" ]] && [[ -x "${SHELL}" ]]; then
-    from_shell="$("${SHELL}" -ilc 'printf %s "${PATH}"' 2>/dev/null || true)"
+    if command -v timeout >/dev/null 2>&1; then
+      from_shell="$(timeout 5 "${SHELL}" -ilc 'printf %s "${PATH}"' 2>/dev/null || true)"
+    else
+      from_shell="$("${SHELL}" -ilc 'printf %s "${PATH}"' 2>/dev/null || true)"
+    fi
   fi
   if [[ -n "${from_shell}" ]]; then
     printf '%s' "${from_shell}"
