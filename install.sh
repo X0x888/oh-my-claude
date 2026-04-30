@@ -1053,8 +1053,10 @@ printf '  silently no-op until you restart.\n'
 printf '\n'
 printf 'Then:\n'
 printf '  1. Verify the install:  bash %s/verify.sh\n' "${SCRIPT_DIR}"
-printf '  2. See gates fire:      /ulw-demo  (under 2 minutes — guided walkthrough)\n'
-printf '  3. Real work:           /ulw fix the failing test and add regression coverage\n'
+printf '  2. Configure:           /omc-config  (multi-choice walkthrough — pick a profile\n'
+printf '                          or fine-tune individual flags; auto-detects setup vs update)\n'
+printf '  3. See gates fire:      /ulw-demo  (under 2 minutes — guided walkthrough)\n'
+printf '  4. Real work:           /ulw fix the failing test and add regression coverage\n'
 printf '\n'
 
 if [[ "${BYPASS_PERMISSIONS}" != "true" ]]; then

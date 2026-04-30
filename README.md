@@ -42,8 +42,9 @@ After install:
 
 1. **Restart Claude Code.** Required — hooks only load at session start, so `/ulw` silently no-ops in your current session until you restart.
 2. **Verify**: `bash ~/.local/share/oh-my-claude/verify.sh`
-3. **Try it**: `/ulw-demo` — a guided walkthrough (under 2 minutes) that fires the quality gates on a real edit so you see them work.
-4. **Real work**: `/ulw fix the failing test and add regression coverage` (or anything, in any domain).
+3. **Configure (recommended)**: type `/omc-config` *inside Claude Code* (not your terminal) — a multi-choice walkthrough that picks a profile (Maximum Quality + Automation, Balanced, Minimal) or walks you through default-off flags so you can opt into the ones you didn't know existed. Auto-detects first-time setup vs upgrade. Skip if you trust the install-time defaults.
+4. **Try it**: `/ulw-demo` — a guided walkthrough (under 2 minutes) that fires the quality gates on a real edit so you see them work.
+5. **Real work**: `/ulw fix the failing test and add regression coverage` (or anything, in any domain).
 
 Both install paths keep Claude Code's permission prompts on; once you trust the harness, [`--bypass-permissions`](#power-user-setup) removes them. Quality gates apply either way.
 
@@ -272,6 +273,8 @@ Skills are invoked as slash commands or routed automatically by the intent class
 | **Build** | | |
 | frontend-design *(visual craft)* | `/frontend-design <task>` | Distinctive design-first frontend work |
 | atlas *(repo bootstrap)* | `/atlas [focus]` | Bootstrap or refresh repo instruction files |
+| **Configure** | | |
+| omc-config *(setup walkthrough)* | `/omc-config [setup\|update\|change]` | Multi-choice walkthrough for `oh-my-claude.conf` flags. Auto-detects first-time setup vs upgrade vs ad-hoc change. Picks a profile (Maximum Quality + Automation / Balanced / Minimal) or fine-tunes individual flags — no typing required. Triggered by phrases like "help me install", "configure oh-my-claude", "update my settings". |
 | **Workflow control** (mid-session) | | |
 | ulw-demo *(onboarding)* | `/ulw-demo` | Guided walkthrough with real quality gates |
 | ulw-status *(diagnostics)* | `/ulw-status` | Show current session state and Council Phase 8 wave-plan progress. `summary` / `classifier` arguments swap modes. |
@@ -299,7 +302,7 @@ Skills are invoked as slash commands or routed automatically by the intent class
 | **Router-suggested (engineering)** under `/ulw` | Same mechanism — extended to engineering specialists in this release | `backend-api-developer`, `devops-infrastructure-engineer`, `test-automation-engineer`, `fullstack-feature-builder`, `ios-ui-developer`, `ios-core-engineer`, `ios-deployment-specialist`, `ios-ecosystem-integrator`, `abstraction-critic` |
 | **Auto-dispatched on prompt pattern** | An entire workflow (multi-agent + gates) fires when the router detects the pattern | `/council` for broad project-evaluation prompts, the 9-section Design Contract on UI work |
 | **Manual control/diagnostic** *(by design)* | You declare intent — auto-firing would be wrong | `/ulw-skip`, `/ulw-pause`, `/mark-deferred`, `/ulw-status`, `/ulw-report`, `/ulw-off`, `/skills` |
-| **Manual setup/audit** | One-time or occasional | `/atlas`, `/memory-audit`, `/ulw-demo` |
+| **Manual setup/audit** | One-time or occasional | `/atlas`, `/memory-audit`, `/ulw-demo`, `/omc-config` |
 
 Most quality-boosting specialists are auto-suggested by the prompt-intent-router under `/ulw` based on prompt signals — `/ulw fix the auth bug` automatically nudges toward `oracle` for hard debugging, `librarian` for unfamiliar APIs, `quality-reviewer` before stop, and so on. You don't have to type `/oracle` to get Oracle — the slash command is the standalone escape hatch, not the only path in.
 
@@ -368,6 +371,7 @@ bash tests/test-discover-session.sh         # Cross-project session-discovery cw
 bash tests/test-design-contract.sh          # 9-section Design Contract regression net (UI agents + skill + router)
 bash tests/test-specialist-routing.sh       # Engineering-specialist routing in coding-domain hint (orphan-specialist regression net)
 bash tests/test-stop-failure-handler.sh     # StopFailure hook captures rate_limit / auth / billing fatal-stop signals into resume_request.json
+bash tests/test-omc-config.sh               # /omc-config skill backend (mode detection, atomic conf writes, presets, validation)
 python3 -m unittest tests.test_statusline   # Statusline widget
 ```
 

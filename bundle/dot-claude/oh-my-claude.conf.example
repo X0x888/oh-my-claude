@@ -1,0 +1,212 @@
+# oh-my-claude.conf — example template
+#
+# This file documents every runtime flag oh-my-claude understands. Copy it
+# to one of:
+#
+#   ~/.claude/oh-my-claude.conf        (user-wide — applies to every project)
+#   <project>/.claude/oh-my-claude.conf (project-only — overrides user-wide)
+#
+# Then uncomment the lines you want to change. Lines starting with `#` are
+# ignored. Anything not set takes the documented default.
+#
+# Precedence (highest first):
+#   env var > project conf > user conf > built-in default
+#
+# So `OMC_AUTO_MEMORY=off claude` always wins, no matter what the conf says.
+#
+# Tip: for a guided multi-choice walkthrough, run /omc-config inside Claude
+# Code. It edits this file for you (atomic writes, validation), recommends
+# defaults aligned with the project's intended posture, and hands off to
+# install-resume-watchdog.sh / switch-tier.sh when those are needed.
+
+# ---------------------------------------------------------------------------
+# Quality gates — what blocks Stop and how strictly.
+# ---------------------------------------------------------------------------
+
+# Gate enforcement depth.
+#   basic     — quality gate only (least friction).
+#   standard  — quality + excellence gates.
+#   full      — adds dimension/traceability gates on complex tasks. (Default.)
+# Env: OMC_GATE_LEVEL.
+#gate_level=full
+
+# Behavior when a gate's block-cap is reached.
+#   silent    — silently release; gate stops blocking. (Legacy: release.)
+#   scorecard — emit a scorecard summarizing what was missed, then release.
+#               (Default. Legacy: warn.)
+#   block     — keep blocking — strictest posture. (Legacy: strict.)
+# Env: OMC_GUARD_EXHAUSTION_MODE.
+#guard_exhaustion_mode=scorecard
+
+# Minimum verification confidence (0–100) to satisfy the verify gate.
+# Default 40 blocks lint-only checks (shellcheck=30, bash -n=30) while
+# accepting project test suites (npm test=70+) and framework runs (jest=50+).
+# Env: OMC_VERIFY_CONFIDENCE_THRESHOLD.
+#verify_confidence_threshold=40
+
+# Capture advisory specialists' findings (council lenses, metis,
+# briefing-analyst) and gate Stop until each is shipped or deferred.
+#   on  — capture + gate. (Default.)
+#   off — kill switch; useful when heuristic extraction is noisy on a
+#         specific project's prose style.
+# Env: OMC_DISCOVERED_SCOPE.
+#discovered_scope=on
+
+# Block destructive git/gh ops (push, force-push, branch -D, reset --hard,
+# rebase, gh pr create, etc.) while task_intent is advisory / session-
+# management / checkpoint. Defense against the 2026-04-17-class incident.
+#   true  — block (default).
+#   false — directive layer only; user accepts the risk.
+# Env: OMC_PRETOOL_INTENT_GUARD.
+#pretool_intent_guard=true
+
+# Wave-plan freshness window (seconds) for the pretool guard's wave
+# exception. When a council Phase 8 plan is active and updated within this
+# window, `git commit` is allowed even under non-execution intent. Default
+# 1800s = 30 min. Stale plans never grant the exception.
+# Env: OMC_WAVE_OVERRIDE_TTL_SECONDS.
+#wave_override_ttl_seconds=1800
+
+# Internal gate tuning. Most users never touch these.
+#stall_threshold=12              # consecutive Read/Grep before stall fires
+#excellence_file_count=3         # edited files that trigger excellence-reviewer
+#dimension_gate_file_count=3     # edited files that trigger dimension gate
+#traceability_file_count=6       # edited files that require briefing-analyst
+
+# Pipe-separated glob patterns of MCP tools that count as verification.
+# Example: mcp__cypress__*|mcp__custom_api_tester__*
+# Built-in matchers cover Playwright + computer-use; this widens the set.
+# Env: OMC_CUSTOM_VERIFY_MCP_TOOLS.
+#custom_verify_mcp_tools=
+
+# ---------------------------------------------------------------------------
+# Bias-defense — opt-in directives that catch "confident wrong" failures.
+# All three default OFF. Toggle on for high-stakes work or after a few
+# misroutes; explicit opt-in matches the "first-do-no-harm" stance.
+# ---------------------------------------------------------------------------
+
+# Block Stop on a complex plan (≥5 steps, ≥3 files, ≥2 waves, or migration/
+# refactor/schema/breaking keyword paired with non-trivial scope) until
+# metis has run a stress-test review. Default off.
+# Env: OMC_METIS_ON_PLAN_GATE.
+#metis_on_plan_gate=off
+
+# Inject a directive recommending /prometheus when a short, unanchored,
+# product-shaped prompt arrives (build/create/design + app/dashboard/
+# feature, no code anchors). Suggestion only — never blocks. Default off.
+# Env: OMC_PROMETHEUS_SUGGEST.
+#prometheus_suggest=off
+
+# Inject a directive telling the model to restate the goal in 1–2 sentences
+# and ask for confirmation before its first edit, when the prompt is short
+# and unanchored. Lighter than prometheus. Suppressed when prometheus_suggest
+# already fires on the same turn. Default off.
+# Env: OMC_INTENT_VERIFY_DIRECTIVE.
+#intent_verify_directive=off
+
+# Statusline shows a yellow `↑v<version>` arrow when the source repo is
+# ahead of the installed bundle. Useful nudge to re-run install.sh after
+# `git pull`. Default true.
+# Env: OMC_INSTALLATION_DRIFT_CHECK.
+#installation_drift_check=true
+
+# ---------------------------------------------------------------------------
+# Memory & telemetry — what gets persisted across sessions.
+# ---------------------------------------------------------------------------
+
+# Cross-session auto-memory writes (project_*.md, feedback_*.md,
+# user_*.md, reference_*.md) at session-stop and pre-compact. Default on.
+# Set to off for shared machines, regulated codebases, or any context
+# where session memory should not accrue. Explicit user requests
+# ("remember that…") still apply regardless.
+# Env: OMC_AUTO_MEMORY.
+#auto_memory=on
+
+# Per-turn classifier telemetry — every UserPromptSubmit records intent +
+# domain + a 200-char prompt preview to per-session
+# `classifier_telemetry.jsonl`. Cross-session aggregate feeds /ulw-report's
+# misfire panel. Default on. Set to off for shared machines / regulated
+# codebases (no prompt previews on disk).
+# Env: OMC_CLASSIFIER_TELEMETRY.
+#classifier_telemetry=on
+
+# ---------------------------------------------------------------------------
+# Cost & model tier.
+# ---------------------------------------------------------------------------
+
+# Model tier applied to all 32 specialist agents.
+#   quality  — all agents use Opus (highest quality, highest cost).
+#   balanced — Opus for planning/review, Sonnet for execution. (Default.)
+#   economy  — all agents use Sonnet (lowest cost).
+#
+# Note: this flag is set by `bash install.sh --model-tier=<tier>` and by
+# `bash ~/.claude/switch-tier.sh <tier>`. /omc-config also writes it. The
+# value here only takes effect on agent files when the tier-switching
+# script runs — editing this line by hand will not rewrite agent files.
+#model_tier=balanced
+
+# Auto-triggered council dispatches inherit `--deep` semantics — every
+# lens uses opus instead of sonnet. Default off; meaningfully more
+# expensive per run. Explicit `/council --deep` always escalates
+# regardless. Quality-first users on `model_tier=quality` are the
+# typical opt-in.
+# Env: OMC_COUNCIL_DEEP_DEFAULT.
+#council_deep_default=off
+
+# ---------------------------------------------------------------------------
+# Auto-resume harness — recover after Claude Code's rate-limit kill.
+# Three layers: substrate (capture), SessionStart hint (surface), watchdog
+# (auto-relaunch).
+# ---------------------------------------------------------------------------
+
+# Substrate. Capture original_objective + last_user_prompt + reset epoch
+# into <session>/resume_request.json on every fatal Stop (rate_limit,
+# authentication_failed, billing_error, etc.). Default on; opt out for
+# shared machines / regulated codebases. Disabling here ALSO disables
+# the SessionStart hint and the watchdog (they have nothing to act on).
+# Env: OMC_STOP_FAILURE_CAPTURE.
+#stop_failure_capture=on
+
+# Days a `resume_request.json` stays claimable by the SessionStart hint
+# and the watchdog. Older artifacts are silently skipped. Default 7 — long
+# enough for the 7-day rate-limit window plus slack, short enough that a
+# crashed-and-forgotten resume from last month won't surprise the user.
+# Env: OMC_RESUME_REQUEST_TTL_DAYS.
+#resume_request_ttl_days=7
+
+# Headless watchdog daemon — the autonomous part. When a rate-limit window
+# clears, atomically claims an unclaimed `resume_request.json` and launches
+# `claude --resume <session> '<original prompt>'` in a detached `tmux`
+# session. Default off; opt-in is meaningful behavior change.
+#
+# Setting this flag alone does NOT register the scheduler. Run:
+#   bash ~/.claude/install-resume-watchdog.sh
+# to register the LaunchAgent (macOS) or systemd user-timer (Linux).
+# /omc-config can do this for you.
+# Env: OMC_RESUME_WATCHDOG.
+#resume_watchdog=off
+
+# Per-artifact cooldown (seconds) between watchdog launch attempts.
+# Combined with the 3-attempt cap, this caps total retry effort at ~30
+# minutes per artifact before the watchdog gives up. Default 600 = 10 min.
+# Env: OMC_RESUME_WATCHDOG_COOLDOWN_SECS.
+#resume_watchdog_cooldown_secs=600
+
+# ---------------------------------------------------------------------------
+# Cleanup.
+# ---------------------------------------------------------------------------
+
+# Days before stale per-session state directories are swept. Default 7.
+# State carries the session's classifier telemetry, gate events, finding
+# list, and resume artifacts — sweeping is what keeps `~/.claude/quality-
+# pack/state/` from growing without bound on long-running setups.
+# Env: OMC_STATE_TTL_DAYS.
+#state_ttl_days=7
+
+# ---------------------------------------------------------------------------
+# Metadata (set by install.sh — do not edit by hand)
+# ---------------------------------------------------------------------------
+# repo_path=...           # absolute path to the source repo
+# installed_version=...   # version captured by the last install
+# installed_sha=...       # source-repo HEAD at last install (git only)
+# omc_config_completed=...# ISO timestamp written by /omc-config at first run

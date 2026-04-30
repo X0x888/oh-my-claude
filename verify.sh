@@ -137,6 +137,9 @@ required_paths=(
   "${CLAUDE_HOME}/skills/autowork/scripts/audit-memory.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/claim-resume-request.sh"
   "${CLAUDE_HOME}/skills/ulw-resume/SKILL.md"
+  "${CLAUDE_HOME}/skills/omc-config/SKILL.md"
+  "${CLAUDE_HOME}/skills/autowork/scripts/omc-config.sh"
+  "${CLAUDE_HOME}/oh-my-claude.conf.example"
 )
 
 for path in "${required_paths[@]}"; do
@@ -394,6 +397,7 @@ printf '  sessions keep the previous hook wiring. Verify above only confirms the
 printf '  install, not the live hook activation.\n'
 printf '\n'
 printf 'What next?\n'
+printf '  /omc-config                                          -- inspect/change settings (auto-detects mode)\n'
 printf '  /ulw-demo                                            -- see quality gates fire (recommended first step)\n'
 printf '  /ulw fix the failing test and add regression coverage  -- start real work\n'
 printf '\n'
@@ -403,3 +407,4 @@ printf '\n'
 printf 'Upgrading from a prior release?\n'
 printf '  The live hooks in ~/.claude/ do not auto-upgrade. After git pull, re-run bash install.sh\n'
 printf '  to sync agents, skills, and memory files. settings.json merges and omc-user/ are preserved.\n'
+printf '  Run /omc-config afterwards to review your current settings — see CHANGELOG.md for the new-flag list.\n'

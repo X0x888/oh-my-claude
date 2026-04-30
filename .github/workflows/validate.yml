@@ -88,5 +88,8 @@ jobs:
       - name: Run resume-watchdog tests
         run: bash tests/test-resume-watchdog.sh
 
+      - name: Run omc-config tests
+        run: bash tests/test-omc-config.sh
+
       - name: Run statusline tests
         run: python3 -m unittest tests.test_statusline -v

@@ -19,6 +19,7 @@ Display this table to the user:
 | **frontend-design** | `/frontend-design <task>` | Distinctive, design-first frontend work — establishes palette, typography, layout before writing code |
 | **atlas** | `/atlas [focus]` | Bootstrap or refresh CLAUDE.md / .claude/rules for a repository |
 | **council** | `/council [focus] [--deep]` | Multi-role project evaluation — dispatches PM, design, security, data, SRE, and growth perspectives, then verifies the top 2-3 findings via `oracle`. `--deep` escalates lenses to opus for high-stakes audits. |
+| **omc-config** | `/omc-config [setup\|update\|change]` | Guided multi-choice walkthrough for `oh-my-claude.conf` flags — pick a profile (Maximum Quality + Automation / Balanced / Minimal) or fine-tune individual flags. Auto-detects first-time setup vs upgrade vs ad-hoc change. |
 | **ulw-demo** | `/ulw-demo` | Guided onboarding — see the quality gates fire on a demo task |
 | **ulw-status** | `/ulw-status` | Inspect current session state — mode, domain, counters, flags (debugging) |
 | **ulw-report** | `/ulw-report [last\|week\|month\|all]` | Markdown digest of cross-session activity — sessions, gate fires, reviewers, misfires, Serendipity catches, finding/wave outcomes |
@@ -32,7 +33,8 @@ Display this table to the user:
 
 ## Decision guide
 
-- **Just installed?** Use `/ulw-demo` to see the quality gates in action.
+- **Just installed?** Run `/omc-config` for the guided multi-choice configuration walkthrough, then `/ulw-demo` to see the quality gates in action.
+- **Already installed and want to inspect or change settings?** Use `/omc-config` (auto-detects mode).
 - **Starting real work?** Use `/ulw` (aliases: `/autowork`, `/ultrawork` also work).
 - **Need a plan first?** Use `/plan-hard`. If the goal is vague, use `/prometheus` instead.
 - **Want to validate a plan?** Use `/metis`.

@@ -101,6 +101,7 @@ The footer looks like:
 
 ```
 What next?
+  /omc-config                             -- inspect/change settings (auto-detects mode)
   /ulw-demo                               -- see quality gates in action (recommended first step)
   /ulw fix the failing test and add regression coverage
                                           -- start real work with full quality enforcement
@@ -136,8 +137,8 @@ oh-my-claude/
     quality-pack/
       memory/                 # Core, skills, and compact memory files
       scripts/                # 8 lifecycle scripts (prompt routing, compaction, session, stop-failure, resume-hint, resume-watchdog)
-    skills/                   # 21 skill definitions, each in <name>/SKILL.md
-      autowork/scripts/       # 22 autowork hook scripts and utilities
+    skills/                   # 23 skill definitions, each in <name>/SKILL.md
+      autowork/scripts/       # 23 autowork hook scripts and utilities
         common.sh             # Shared functions (JSON, classification, scope)
         lib/state-io.sh       # Extracted state I/O subsystem; sourced by common.sh
         lib/classifier.sh     # Extracted prompt classifier (P0 + P1 + telemetry); sourced by common.sh
@@ -148,7 +149,7 @@ oh-my-claude/
   config/
     settings.patch.json       # Settings merged into user's settings.json
 
-  tests/                      # 42 bash + 1 python test scripts; CLAUDE.md "Testing" lists each one
+  tests/                      # 43 bash + 1 python test scripts; CLAUDE.md "Testing" lists each one
 
   tools/                      # Developer tools (not installed)
     replay-classifier-telemetry.sh

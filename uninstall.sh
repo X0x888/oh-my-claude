@@ -68,6 +68,7 @@ SKILL_DIRS=(
   "${CLAUDE_HOME}/skills/ulw-resume"
   "${CLAUDE_HOME}/skills/memory-audit"
   "${CLAUDE_HOME}/skills/frontend-design"
+  "${CLAUDE_HOME}/skills/omc-config"
 )
 
 # Quality pack (scripts, memory, state, README).
@@ -116,6 +117,7 @@ STANDALONE_FILES=(
   "${CLAUDE_HOME}/switch-tier.sh"
   "${CLAUDE_HOME}/omc-repro.sh"
   "${CLAUDE_HOME}/oh-my-claude.conf"
+  "${CLAUDE_HOME}/oh-my-claude.conf.example"
   "${CLAUDE_HOME}/.install-stamp"
   "${CLAUDE_HOME}/install-resume-watchdog.sh"
 )
