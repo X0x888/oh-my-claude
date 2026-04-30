@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.23.0] - 2026-04-30
+
 ### Added
 
 - **Statusline: rate-limit reset countdown + 7-day window display.** Closes the gap where Claude Code surfaces `rate_limits.{five_hour,seven_day}.{used_percentage,resets_at}` in the statusLine payload AND `statusline.py` already captures both into `<session>/rate_limit_status.json` for `stop-failure-handler.sh`, but only the 5-hour percentage was ever rendered to the user. The 7-day usage was invisible and "when will I get my budget back?" required `/ulw-report` or grepping the sidecar.
