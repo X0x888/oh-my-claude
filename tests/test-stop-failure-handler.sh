@@ -375,6 +375,47 @@ fi
 teardown_test
 
 # ---------------------------------------------------------------------------
+# Test 13 (Wave 3): origin_session_id + origin_chain_depth propagation.
+# When session_state has origin_session_id and origin_chain_depth set
+# (because session-start-resume-handoff.sh detected this is a resumed
+# session with a parent artifact), the new resume_request.json must
+# carry them forward — that's what the watchdog's chain-depth cap
+# accumulates against.
+# ---------------------------------------------------------------------------
+setup_test
+init_session "sess-chain" "Chain test." "/ulw chain" ""
+# Stamp origin_session_id and origin_chain_depth into state, simulating
+# the resume-handoff hook running when this session was launched by
+# `claude --resume <prior-session>`.
+state_dir="${TEST_HOME}/.claude/quality-pack/state/sess-chain"
+tmp="${state_dir}/session_state.json.tmp"
+jq '. + {origin_session_id: "sess-zero", origin_chain_depth: "2"}' \
+  "${state_dir}/session_state.json" > "${tmp}" && mv -f "${tmp}" "${state_dir}/session_state.json"
+run_handler "$(jq -nc \
+  --arg sid "sess-chain" \
+  '{session_id:$sid, matcher:"rate_limit", hook_event_name:"StopFailure"}')"
+target="$(resume_path sess-chain)"
+assert_eq "chain: origin_session_id propagated" "sess-zero" \
+  "$(jq -r '.origin_session_id' "${target}")"
+assert_eq "chain: origin_chain_depth propagated" "2" \
+  "$(jq -r '.origin_chain_depth' "${target}")"
+teardown_test
+
+# Test 14 (Wave 3): origin defaults — first session in any chain gets
+# origin_session_id == its own session_id and origin_chain_depth == 0.
+setup_test
+init_session "sess-first" "First in chain." "/ulw first" ""
+run_handler "$(jq -nc \
+  --arg sid "sess-first" \
+  '{session_id:$sid, matcher:"rate_limit", hook_event_name:"StopFailure"}')"
+target="$(resume_path sess-first)"
+assert_eq "first-in-chain: origin_session_id defaults to self" "sess-first" \
+  "$(jq -r '.origin_session_id' "${target}")"
+assert_eq "first-in-chain: origin_chain_depth defaults to 0" "0" \
+  "$(jq -r '.origin_chain_depth' "${target}")"
+teardown_test
+
+# ---------------------------------------------------------------------------
 # Result
 # ---------------------------------------------------------------------------
 

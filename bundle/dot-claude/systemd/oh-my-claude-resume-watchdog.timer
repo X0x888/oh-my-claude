@@ -1,0 +1,17 @@
+[Unit]
+Description=oh-my-claude resume watchdog (every 2 minutes)
+Documentation=https://github.com/X0x888/oh-my-claude
+Requires=oh-my-claude-resume-watchdog.service
+
+[Timer]
+# Run 30s after boot/timer-start (lets desktop/keyring settle).
+OnBootSec=30s
+# Then every 120s.
+OnUnitActiveSec=120s
+# If the system was suspended or the timer missed a fire, run once on
+# resume so the user doesn't have to wait two minutes.
+Persistent=true
+Unit=oh-my-claude-resume-watchdog.service
+
+[Install]
+WantedBy=timers.target

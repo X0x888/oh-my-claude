@@ -382,6 +382,24 @@ The harness is designed to be extended. Agent definitions, quality gate threshol
 - [Glossary](docs/glossary.md) -- decoder ring for the mythology-named skills and internal terms
 - [Showcase](docs/showcase.md) -- real-world transcripts where the gates caught a bug or stalled completion (community-contributed)
 
+## Auto-resume after a Claude Code rate-limit kill
+
+When Claude Code's 5-hour or 7-day rate-limit window expires mid-task, the session terminates with a `StopFailure`. By default the harness now captures the moment via three layers, so the work picks up "as if it were not interrupted" once the cap clears:
+
+1. **Substrate (always on, privacy-aware)**. The `StopFailure` hook persists `~/.claude/quality-pack/state/<session>/resume_request.json` carrying the original objective, last user prompt, matcher, reset epoch, and project key. Set `stop_failure_capture=off` in `~/.claude/oh-my-claude.conf` to opt out of the capture (shared machines / regulated codebases).
+2. **SessionStart hint (always on)**. The next time you open Claude Code in that project, a SessionStart hook surfaces the unclaimed artifact's objective and reset timing as `additionalContext`. Either invoke `/ulw-resume` to atomically claim and replay the original prompt, or `/ulw-resume --dismiss` to silence the hint without resuming.
+3. **Headless watchdog (opt-in)**. A LaunchAgent (macOS), systemd user-timer (Linux), or cron entry runs every ~2 minutes. When a rate-limit window clears it atomically claims the artifact, then launches `claude --resume <session_id> '<original prompt>'` in a detached `tmux` session named `omc-resume-<sid>` rooted at the original cwd. Attach with `tmux attach -t omc-resume-<sid>`.
+
+Activate the watchdog:
+
+```bash
+bash ~/.claude/install-resume-watchdog.sh
+```
+
+The installer detects your platform, registers the scheduler, sets `resume_watchdog=on`, and runs a dry-tick to confirm health. Tail the log at `~/.claude/quality-pack/state/.watchdog-logs/resume-watchdog.log` (macOS) or `journalctl --user -u oh-my-claude-resume-watchdog.service -f` (Linux).
+
+When `tmux` is not available the watchdog falls back to an OS notification — you click the alert, open Claude Code, and run `/ulw-resume` manually. To uninstall the watchdog: `bash ~/.claude/install-resume-watchdog.sh --uninstall [--reset-conf]`.
+
 ## Contributing
 
 Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on submitting changes, the review process, and how to test modifications to the harness locally.

@@ -117,6 +117,17 @@ STANDALONE_FILES=(
   "${CLAUDE_HOME}/omc-repro.sh"
   "${CLAUDE_HOME}/oh-my-claude.conf"
   "${CLAUDE_HOME}/.install-stamp"
+  "${CLAUDE_HOME}/install-resume-watchdog.sh"
+)
+
+# Wave 3 resume-watchdog scheduler templates. Removed wholesale during
+# uninstall; the user-installed LaunchAgent / systemd unit / cron entry
+# is removed via `install-resume-watchdog.sh --uninstall` separately
+# (uninstall.sh prints a reminder before removing the bundle so a user
+# with a live watchdog gets a clean shutdown path).
+WATCHDOG_DIRS=(
+  "${CLAUDE_HOME}/launchd"
+  "${CLAUDE_HOME}/systemd"
 )
 
 # ---------------------------------------------------------------------------
@@ -167,6 +178,12 @@ done
 if [[ -d "${QP_DIR}" ]]; then
   items_to_remove+=("  [dir]  ${QP_DIR}")
 fi
+
+for wdir in "${WATCHDOG_DIRS[@]}"; do
+  if [[ -d "${wdir}" ]]; then
+    items_to_remove+=("  [dir]  ${wdir}")
+  fi
+done
 
 for f in "${AGENT_FILES[@]}"; do
   if [[ -f "${f}" ]]; then
@@ -240,6 +257,13 @@ for dir in "${SKILL_DIRS[@]}"; do
   if [[ -d "${dir}" ]]; then
     rm -rf "${dir}"
     removed+=("Removed directory: ${dir}")
+  fi
+done
+
+for wdir in "${WATCHDOG_DIRS[@]}"; do
+  if [[ -d "${wdir}" ]]; then
+    rm -rf "${wdir}"
+    removed+=("Removed directory: ${wdir}")
   fi
 done
 

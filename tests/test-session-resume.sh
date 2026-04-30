@@ -322,6 +322,43 @@ assert_eq "Wave1: per-artifact hint key cleared" "" "${hint_per_art}"
 assert_contains "Wave1: current_objective preserved through clear" "Phase 8 wave plan in flight" "${state_after}"
 assert_contains "Wave1: workflow_mode preserved through clear" "ultrawork" "${state_after}"
 
+# ------------------------------------------------------------------
+# Test 8 (Wave 3): chain-depth propagation during resume-handoff.
+# When the source session's resume_request.json carries origin_session_id
+# and origin_chain_depth, the handoff hook must propagate them to the
+# new session's state (incrementing depth by 1) so the next StopFailure
+# in the chain can stamp them onto its new artifact, and the watchdog's
+# cumulative cap can refuse a runaway resume loop.
+# ------------------------------------------------------------------
+printf '\nWave 3 — chain-depth state propagation:\n'
+
+chain_source="chain-source-800"
+chain_target="chain-target-801"
+chain_source_dir="${TEST_STATE_ROOT}/${chain_source}"
+mkdir -p "${chain_source_dir}"
+cat > "${chain_source_dir}/session_state.json" <<'STATEJSON'
+{"workflow_mode": "ultrawork", "task_domain": "coding", "current_objective": "chain depth"}
+STATEJSON
+# Source artifact has origin = sess-zero, depth = 1.
+cat > "${chain_source_dir}/resume_request.json" <<'JSON'
+{
+  "schema_version": 1, "session_id": "chain-source-800",
+  "rate_limited": true, "matcher": "rate_limit",
+  "original_objective": "Chain test.", "last_user_prompt": "/ulw foo",
+  "captured_at_ts": 1700000000, "resets_at_ts": 1700000060,
+  "origin_session_id": "sess-zero", "origin_chain_depth": 1,
+  "resume_attempts": 0, "resumed_at_ts": null
+}
+JSON
+
+run_resume "{\"session_id\":\"${chain_target}\",\"source\":\"resume\",\"transcript_path\":\"/transcripts/${chain_source}.jsonl\"}"
+
+target_state="${TEST_STATE_ROOT}/${chain_target}/session_state.json"
+chain_origin="$(jq -r '.origin_session_id // empty' "${target_state}")"
+chain_depth="$(jq -r '.origin_chain_depth // empty' "${target_state}")"
+assert_eq "Wave3: origin_session_id propagated" "sess-zero" "${chain_origin}"
+assert_eq "Wave3: origin_chain_depth incremented to 2" "2" "${chain_depth}"
+
 printf '\n=== Results: %d passed, %d failed ===\n' "${pass}" "${fail}"
 if [[ "${fail}" -gt 0 ]]; then
   exit 1

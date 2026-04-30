@@ -95,6 +95,20 @@ if [[ -n "${record_cwd}" && -d "${record_cwd}" ]]; then
   project_key="$(cd "${record_cwd}" 2>/dev/null && _omc_project_key 2>/dev/null || true)"
 fi
 
+# Wave 3 chain-depth propagation. When session-start-resume-handoff
+# wrote `origin_session_id` + `origin_chain_depth` into state (because
+# this session was launched by `claude --resume`), forward them onto
+# the new resume_request.json so the watchdog's 3-attempt cap
+# accumulates across the chain. The first session in any chain has
+# no origin_session_id in state — fall back to the current
+# SESSION_ID so the producer always emits a self-consistent record.
+origin_session_id="$(read_state "origin_session_id")"
+[[ -z "${origin_session_id}" ]] && origin_session_id="${SESSION_ID}"
+origin_chain_depth="$(read_state "origin_chain_depth")"
+origin_chain_depth="${origin_chain_depth%%.*}"
+origin_chain_depth="${origin_chain_depth//[!0-9]/}"
+origin_chain_depth="${origin_chain_depth:-0}"
+
 # Atomic write: build the JSON via jq into a tmp file, then mv into place.
 target_file="$(session_file "resume_request.json")"
 tmp_file="${target_file}.tmp.$$"
@@ -119,6 +133,8 @@ if ! jq -n \
   --arg captured "${captured_at_ts}" \
   --arg model_id "${model_id:-}" \
   --arg project_key "${project_key:-}" \
+  --arg origin_session_id "${origin_session_id:-}" \
+  --argjson origin_chain_depth "${origin_chain_depth}" \
   --argjson rl_sidecar "${rl_sidecar_json}" \
   '{
     schema_version: 1,
@@ -128,6 +144,8 @@ if ! jq -n \
     session_id: $session_id,
     cwd: $cwd,
     project_key: (if $project_key == "" then null else $project_key end),
+    origin_session_id: (if $origin_session_id == "" then $session_id else $origin_session_id end),
+    origin_chain_depth: $origin_chain_depth,
     transcript_path: $transcript,
     original_objective: $objective,
     last_user_prompt: $last_prompt,

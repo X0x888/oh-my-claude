@@ -90,6 +90,26 @@ if [[ -n "${resume_state_dir}" ]]; then
   fi
 
   write_state "resume_source_session_id" "${resume_source_id}"
+
+  # Wave 3 chain-depth propagation: when the resumed session is itself
+  # killed by a rate-limit StopFailure, the new resume_request.json
+  # needs to carry forward origin_session_id (the FIRST session in the
+  # chain) + origin_chain_depth (incremented by 1) so the watchdog's
+  # 3-attempt cap can refuse a runaway resume loop. Without this, every
+  # rate-limited link in the chain writes resume_attempts:0 and the cap
+  # resets indefinitely.
+  source_resume_artifact="${resume_state_dir}/resume_request.json"
+  if [[ -f "${source_resume_artifact}" ]] && jq -e . "${source_resume_artifact}" >/dev/null 2>&1; then
+    parent_origin_sid="$(jq -r '(.origin_session_id // .session_id // "")' "${source_resume_artifact}" 2>/dev/null || true)"
+    parent_chain_depth="$(jq -r '((.origin_chain_depth // 0) | tonumber? // 0)' "${source_resume_artifact}" 2>/dev/null || echo 0)"
+    parent_chain_depth="${parent_chain_depth%%.*}"
+    parent_chain_depth="${parent_chain_depth//[!0-9]/}"
+    parent_chain_depth="${parent_chain_depth:-0}"
+    if [[ -n "${parent_origin_sid}" ]]; then
+      write_state "origin_session_id" "${parent_origin_sid}"
+    fi
+    write_state "origin_chain_depth" "$(( parent_chain_depth + 1 ))"
+  fi
 fi
 
 current_objective_value="$(read_state "current_objective")"

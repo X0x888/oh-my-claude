@@ -570,6 +570,9 @@ ensure_executable_bits() {
   if [[ -f "${CLAUDE_HOME}/switch-tier.sh" ]]; then
     chmod +x "${CLAUDE_HOME}/switch-tier.sh"
   fi
+  if [[ -f "${CLAUDE_HOME}/install-resume-watchdog.sh" ]]; then
+    chmod +x "${CLAUDE_HOME}/install-resume-watchdog.sh"
+  fi
 }
 
 # ---------------------------------------------------------------------------

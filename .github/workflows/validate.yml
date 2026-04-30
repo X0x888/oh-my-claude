@@ -85,5 +85,8 @@ jobs:
       - name: Run claim-resume-request tests
         run: bash tests/test-claim-resume-request.sh
 
+      - name: Run resume-watchdog tests
+        run: bash tests/test-resume-watchdog.sh
+
       - name: Run statusline tests
         run: python3 -m unittest tests.test_statusline -v

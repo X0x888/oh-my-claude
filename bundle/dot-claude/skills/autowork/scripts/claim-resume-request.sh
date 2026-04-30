@@ -273,12 +273,21 @@ do_claim() {
       fi
       ;;
     watchdog)
-      # Watchdog launch: allow retries but bail when chain depth is
-      # exceeded. Cap is conservative (3 cumulative attempts) to prevent
-      # a stuck loop when each launched session itself rate-limits.
+      # Watchdog launch: allow retries but bail when the CUMULATIVE
+      # chain-depth + per-artifact attempts exceed the cap. The 3-attempt
+      # cap (was per-artifact in Wave 3 v1) is now origin_chain_depth +
+      # current_attempts so a watchdog-launched session that itself
+      # rate-limits cannot reset the counter to 0 by writing a new
+      # artifact. origin_chain_depth is propagated by
+      # session-start-resume-handoff.sh + stop-failure-handler.sh.
       # Dismissed artifacts are also blocked — the user explicitly
       # rejected this resume.
-      if [[ "${current_attempts}" -ge 3 ]] \
+      local chain_depth
+      chain_depth="$(jq -r '((.origin_chain_depth // 0) | tonumber? // 0)' "${target_path}" 2>/dev/null || echo 0)"
+      chain_depth="${chain_depth%%.*}"
+      chain_depth="${chain_depth//[!0-9]/}"
+      chain_depth="${chain_depth:-0}"
+      if [[ "$(( chain_depth + current_attempts ))" -ge 3 ]] \
          || [[ "${current_dismissed}" != "null" ]]; then
         return 1
       fi

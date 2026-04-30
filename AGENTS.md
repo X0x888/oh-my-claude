@@ -135,7 +135,7 @@ oh-my-claude/
     output-styles/            # Output format templates
     quality-pack/
       memory/                 # Core, skills, and compact memory files
-      scripts/                # 7 lifecycle hook scripts (prompt routing, compaction, session, stop-failure, resume-hint)
+      scripts/                # 8 lifecycle scripts (prompt routing, compaction, session, stop-failure, resume-hint, resume-watchdog)
     skills/                   # 21 skill definitions, each in <name>/SKILL.md
       autowork/scripts/       # 22 autowork hook scripts and utilities
         common.sh             # Shared functions (JSON, classification, scope)

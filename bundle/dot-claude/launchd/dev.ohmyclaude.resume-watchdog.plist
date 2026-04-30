@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+oh-my-claude resume watchdog (macOS LaunchAgent).
+
+Polls the resume-watchdog.sh script every 120 seconds to detect
+unclaimed `resume_request.json` artifacts whose rate-limit windows
+have cleared, and launches `claude --resume` in detached tmux
+sessions.
+
+Default: NOT loaded. Activate via `bundle/dot-claude/install-resume-watchdog.sh`
+(or manually via `launchctl bootstrap gui/$UID ~/Library/LaunchAgents/dev.ohmyclaude.resume-watchdog.plist`).
+
+The plist installer rewrites the placeholder __OMC_HOME__ and
+__OMC_LOG_DIR__ tokens before loading.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>dev.ohmyclaude.resume-watchdog</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__OMC_HOME__/quality-pack/scripts/resume-watchdog.sh</string>
+  </array>
+
+  <!-- Poll cadence: every 120 seconds. The watchdog is stateless and
+       cheap — a tick with nothing claimable exits in <100ms. -->
+  <key>StartInterval</key>
+  <integer>120</integer>
+
+  <!-- Run at LaunchAgent load time so the user doesn't wait 2 minutes
+       for the first tick after enabling. -->
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- Inherit the user's PATH so `claude` and `tmux` resolve. The
+       installer can override this with the user's actual PATH if the
+       defaults don't include common install locations. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>HOME</key>
+    <string>__OMC_USER_HOME__</string>
+  </dict>
+
+  <!-- Hard cap: even if the script hangs, kill it after 60s so the
+       LaunchAgent slot is freed for the next tick. -->
+  <key>ExitTimeOut</key>
+  <integer>60</integer>
+
+  <!-- Stdout / stderr land in a log file the user can tail to debug.
+       The installer creates the log directory before loading. -->
+  <key>StandardOutPath</key>
+  <string>__OMC_LOG_DIR__/resume-watchdog.log</string>
+  <key>StandardErrorPath</key>
+  <string>__OMC_LOG_DIR__/resume-watchdog.err</string>
+
+  <!-- Don't keep the daemon alive — each tick is a one-shot. -->
+  <key>KeepAlive</key>
+  <false/>
+
+  <!-- Lower priority so the watchdog never preempts active work. -->
+  <key>Nice</key>
+  <integer>10</integer>
+</dict>
+</plist>

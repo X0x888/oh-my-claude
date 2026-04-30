@@ -1,0 +1,20 @@
+[Unit]
+Description=oh-my-claude resume watchdog (Wave 3 of the auto-resume harness)
+Documentation=https://github.com/X0x888/oh-my-claude
+# This is a one-shot — the .timer schedules it; do not keep it running.
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash __OMC_HOME__/quality-pack/scripts/resume-watchdog.sh
+# 60s hard timeout — the watchdog should never exceed this; if it
+# hangs, kill it so the timer can fire again on schedule.
+TimeoutStartSec=60s
+Nice=10
+
+# Inherit the user's PATH so `claude` and `tmux` resolve. systemd's
+# user-bus typically inherits these, but explicit is safer.
+Environment="PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="HOME=__OMC_USER_HOME__"
+
+[Install]
+WantedBy=default.target

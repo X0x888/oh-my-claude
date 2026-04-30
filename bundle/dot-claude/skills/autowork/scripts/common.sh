@@ -41,6 +41,8 @@ _omc_env_intent_verify_directive="${OMC_INTENT_VERIFY_DIRECTIVE:-}"
 _omc_env_wave_override_ttl="${OMC_WAVE_OVERRIDE_TTL_SECONDS:-}"
 _omc_env_stop_failure_capture="${OMC_STOP_FAILURE_CAPTURE:-}"
 _omc_env_resume_request_ttl="${OMC_RESUME_REQUEST_TTL_DAYS:-}"
+_omc_env_resume_watchdog="${OMC_RESUME_WATCHDOG:-}"
+_omc_env_resume_watchdog_cooldown="${OMC_RESUME_WATCHDOG_COOLDOWN_SECS:-}"
 
 OMC_STALL_THRESHOLD="${OMC_STALL_THRESHOLD:-12}"
 OMC_EXCELLENCE_FILE_COUNT="${OMC_EXCELLENCE_FILE_COUNT:-3}"
@@ -145,6 +147,22 @@ OMC_INTENT_VERIFY_DIRECTIVE="${OMC_INTENT_VERIFY_DIRECTIVE:-off}"
 # buffer, short enough that a crashed-and-forgotten resume from last month
 # does not surprise the user when they re-open Claude Code in the project.
 OMC_RESUME_REQUEST_TTL_DAYS="${OMC_RESUME_REQUEST_TTL_DAYS:-7}"
+# Wave 3 — headless resume watchdog. Default OFF — the daemon launches
+# `claude --resume` on the user's behalf when a rate-limit window
+# clears, which is meaningful behavior change requiring opt-in. Enable
+# via `resume_watchdog=on` in oh-my-claude.conf or env
+# OMC_RESUME_WATCHDOG=on, then run install-resume-watchdog.sh to
+# register the LaunchAgent (macOS) / systemd user-timer (Linux) /
+# cron one-liner (fallback). Privacy: also gated by
+# is_stop_failure_capture_enabled — if the producer is disabled, the
+# watchdog has nothing to do.
+OMC_RESUME_WATCHDOG="${OMC_RESUME_WATCHDOG:-off}"
+# Per-artifact cooldown between watchdog launch attempts. Default 600s
+# (10min): long enough for `claude --resume` to either succeed or
+# definitively fail; short enough to retry within a typical rate-limit
+# window. Combined with the helper's 3-attempt cap, this caps total
+# retry effort at ~30 minutes per artifact before surrendering.
+OMC_RESUME_WATCHDOG_COOLDOWN_SECS="${OMC_RESUME_WATCHDOG_COOLDOWN_SECS:-600}"
 
 _omc_conf_loaded=0
 
@@ -204,6 +222,10 @@ _parse_conf_file() {
         [[ -z "${_omc_env_stop_failure_capture}" && "${value}" =~ ^(on|off)$ ]] && OMC_STOP_FAILURE_CAPTURE="${value}" || true ;;
       resume_request_ttl_days)
         [[ -z "${_omc_env_resume_request_ttl}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_RESUME_REQUEST_TTL_DAYS="${value}" || true ;;
+      resume_watchdog)
+        [[ -z "${_omc_env_resume_watchdog}" && "${value}" =~ ^(on|off)$ ]] && OMC_RESUME_WATCHDOG="${value}" || true ;;
+      resume_watchdog_cooldown_secs)
+        [[ -z "${_omc_env_resume_watchdog_cooldown}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_RESUME_WATCHDOG_COOLDOWN_SECS="${value}" || true ;;
     esac
   done < "${conf}"
 }
@@ -255,6 +277,16 @@ is_auto_memory_enabled() {
 # auto_memory and classifier_telemetry opt-out shape.
 is_stop_failure_capture_enabled() {
   [[ "${OMC_STOP_FAILURE_CAPTURE:-on}" != "off" ]]
+}
+
+# Returns 0 (true) when the resume watchdog is opted in, 1 (false)
+# otherwise. Default off — the watchdog launches `claude --resume`
+# on the user's behalf, which is meaningful behavior change. Enable
+# via `resume_watchdog=on` in oh-my-claude.conf or env
+# OMC_RESUME_WATCHDOG=on, then run install-resume-watchdog.sh to
+# register the platform-specific scheduler.
+is_resume_watchdog_enabled() {
+  [[ "${OMC_RESUME_WATCHDOG:-off}" == "on" ]]
 }
 
 # find_claimable_resume_requests
