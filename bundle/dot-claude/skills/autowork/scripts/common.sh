@@ -40,6 +40,7 @@ _omc_env_prometheus_suggest="${OMC_PROMETHEUS_SUGGEST:-}"
 _omc_env_intent_verify_directive="${OMC_INTENT_VERIFY_DIRECTIVE:-}"
 _omc_env_wave_override_ttl="${OMC_WAVE_OVERRIDE_TTL_SECONDS:-}"
 _omc_env_stop_failure_capture="${OMC_STOP_FAILURE_CAPTURE:-}"
+_omc_env_resume_request_ttl="${OMC_RESUME_REQUEST_TTL_DAYS:-}"
 
 OMC_STALL_THRESHOLD="${OMC_STALL_THRESHOLD:-12}"
 OMC_EXCELLENCE_FILE_COUNT="${OMC_EXCELLENCE_FILE_COUNT:-3}"
@@ -136,6 +137,14 @@ OMC_PROMETHEUS_SUGGEST="${OMC_PROMETHEUS_SUGGEST:-off}"
 # confirmation step, not interview. Default off; suppressed when
 # prometheus_suggest already fired on the same turn (no double-friction).
 OMC_INTENT_VERIFY_DIRECTIVE="${OMC_INTENT_VERIFY_DIRECTIVE:-off}"
+# Resume-request artifact lifetime: max age (days) for a `resume_request.json`
+# to still be considered claimable. Older artifacts are treated as stale and
+# silently ignored by the SessionStart resume hint and the watchdog. The
+# parent state directory is itself swept by the OMC_STATE_TTL_DAYS sweep.
+# Default 7 days — long enough for a 7-day rate-limit window plus a slack
+# buffer, short enough that a crashed-and-forgotten resume from last month
+# does not surprise the user when they re-open Claude Code in the project.
+OMC_RESUME_REQUEST_TTL_DAYS="${OMC_RESUME_REQUEST_TTL_DAYS:-7}"
 
 _omc_conf_loaded=0
 
@@ -193,6 +202,8 @@ _parse_conf_file() {
         [[ -z "${_omc_env_wave_override_ttl}" && "${value}" =~ ^[0-9]+$ ]] && OMC_WAVE_OVERRIDE_TTL_SECONDS="${value}" || true ;;
       stop_failure_capture)
         [[ -z "${_omc_env_stop_failure_capture}" && "${value}" =~ ^(on|off)$ ]] && OMC_STOP_FAILURE_CAPTURE="${value}" || true ;;
+      resume_request_ttl_days)
+        [[ -z "${_omc_env_resume_request_ttl}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_RESUME_REQUEST_TTL_DAYS="${value}" || true ;;
     esac
   done < "${conf}"
 }
@@ -244,6 +255,101 @@ is_auto_memory_enabled() {
 # auto_memory and classifier_telemetry opt-out shape.
 is_stop_failure_capture_enabled() {
   [[ "${OMC_STOP_FAILURE_CAPTURE:-on}" != "off" ]]
+}
+
+# find_claimable_resume_requests
+#
+# Walks STATE_ROOT/*/resume_request.json and emits a JSONL stream on stdout,
+# one row per CLAIMABLE artifact, sorted by captured_at_ts descending (newest
+# first). Each row is augmented with two synthesized fields the caller will
+# need but the on-disk artifact does not store directly:
+#
+#   .path  — absolute path to the resume_request.json
+#   .age_seconds — current_epoch - captured_at_ts (>= 0)
+#
+# An artifact is "claimable" when ALL of the following hold:
+#   1. The parent directory name passes validate_session_id (rejects flat
+#      files like hooks.log and any path-traversal shenanigans).
+#   2. The JSON parses (.schema_version is present).
+#   3. .resumed_at_ts is null/absent (not yet claimed).
+#   4. .resume_attempts is 0 or absent (no prior attempt; Wave 3 watchdog
+#      will revisit this for retries via a separate code path).
+#   5. .captured_at_ts is within OMC_RESUME_REQUEST_TTL_DAYS (default 7d).
+#   6. Either .resets_at_ts is null/absent (raw-API session — no rate-limit
+#      window data, treated as informational), OR .resets_at_ts <= now
+#      (rate cap has cleared).
+#
+# Caller responsibilities:
+#   - Honor is_stop_failure_capture_enabled at the call site (this helper
+#     intentionally does not gate on the flag — Wave 1 hook checks before
+#     calling, watchdog checks before calling, /ulw-resume skill checks too).
+#   - Filter by cwd if needed (rows include .cwd unchanged from artifact).
+#
+# Returns 0 with empty stdout when nothing matches. Never errors. Bash 3.2-safe.
+find_claimable_resume_requests() {
+  [[ -d "${STATE_ROOT}" ]] || return 0
+
+  local ttl_days="${OMC_RESUME_REQUEST_TTL_DAYS:-7}"
+  local now_ts
+  now_ts="$(now_epoch)"
+  local cutoff_ts=$(( now_ts - ttl_days * 86400 ))
+
+  shopt -s nullglob
+  local dirs=("${STATE_ROOT}"/*/)
+  shopt -u nullglob
+  if [[ "${#dirs[@]}" -eq 0 ]]; then
+    return 0
+  fi
+
+  local raw_rows=""
+  local d sid artifact
+  for d in "${dirs[@]}"; do
+    sid="$(basename "${d}")"
+    validate_session_id "${sid}" || continue
+    artifact="${d%/}/resume_request.json"
+    [[ -f "${artifact}" ]] || continue
+    jq -e . "${artifact}" >/dev/null 2>&1 || continue
+
+    local row
+    row="$(jq -c \
+      --argjson now "${now_ts}" \
+      --argjson cutoff "${cutoff_ts}" \
+      --arg path "${artifact}" \
+      '
+      # Coerce numeric fields defensively — older artifacts or test
+      # fixtures may have surprising types. tonumber? returns empty
+      # on failure rather than throwing, and `// 0` then defaults.
+      def as_num: (tonumber? // 0);
+      ((.captured_at_ts // 0) | as_num) as $captured_at
+      | ((.resets_at_ts // null) | if . == null then null else (as_num) end) as $resets_at
+      | ((.resume_attempts // 0) | as_num) as $attempts
+      | select(
+          (.schema_version // 0) > 0
+          and (.resumed_at_ts // null) == null
+          and $attempts == 0
+          and $captured_at >= $cutoff
+          and (
+            $resets_at == null
+            or $resets_at <= $now
+          )
+        )
+      | . + {
+          path: $path,
+          age_seconds: ($now - $captured_at),
+          captured_at_ts: $captured_at,
+          resets_at_ts: $resets_at,
+          resume_attempts: $attempts,
+          project_key: (.project_key // null)
+        }
+      ' "${artifact}" 2>/dev/null || true)"
+    [[ -z "${row}" ]] && continue
+    raw_rows+="${row}"$'\n'
+  done
+
+  [[ -z "${raw_rows}" ]] && return 0
+
+  # Sort by captured_at_ts desc using jq (-s slurp).
+  printf '%s' "${raw_rows}" | jq -s -c 'sort_by(-(.captured_at_ts // 0)) | .[]' 2>/dev/null || true
 }
 
 # Returns the *conventional* directory where the current cwd's

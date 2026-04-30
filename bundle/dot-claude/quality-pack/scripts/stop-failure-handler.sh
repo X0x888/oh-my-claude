@@ -84,6 +84,17 @@ captured_at_ts="$(now_epoch)"
 state_cwd="$(read_state "cwd")"
 record_cwd="${HOOK_CWD:-${state_cwd}}"
 
+# Capture the project key (git-remote-first, cwd-hash fallback) so the
+# Wave 1 SessionStart resume hint can match the artifact to the correct
+# project even when the user resumes from a different worktree or clone
+# path. Computed in a subshell so the cd does not affect the rest of
+# the hook; failure is silently tolerated (returns empty) — same shape
+# as the model_id fallback.
+project_key=""
+if [[ -n "${record_cwd}" && -d "${record_cwd}" ]]; then
+  project_key="$(cd "${record_cwd}" 2>/dev/null && _omc_project_key 2>/dev/null || true)"
+fi
+
 # Atomic write: build the JSON via jq into a tmp file, then mv into place.
 target_file="$(session_file "resume_request.json")"
 tmp_file="${target_file}.tmp.$$"
@@ -107,6 +118,7 @@ if ! jq -n \
   --arg resets_at "${resets_at_ts:-}" \
   --arg captured "${captured_at_ts}" \
   --arg model_id "${model_id:-}" \
+  --arg project_key "${project_key:-}" \
   --argjson rl_sidecar "${rl_sidecar_json}" \
   '{
     schema_version: 1,
@@ -115,6 +127,7 @@ if ! jq -n \
     hook_event_name: $event,
     session_id: $session_id,
     cwd: $cwd,
+    project_key: (if $project_key == "" then null else $project_key end),
     transcript_path: $transcript,
     original_objective: $objective,
     last_user_prompt: $last_prompt,

@@ -125,7 +125,11 @@ for impl in "${implementations[@]}"; do
 
   # Hooks should be present for all registered events
   assert_json_count "${impl}: fresh — SessionStart hooks" \
-    "${work}/settings.json" '.hooks.SessionStart' "2"
+    "${work}/settings.json" '.hooks.SessionStart' "3"
+  assert_json_eq "${impl}: fresh — SessionStart wires session-start-resume-hint.sh" \
+    "${work}/settings.json" \
+    '[.hooks.SessionStart[] | .hooks[0].command] | any(. | tostring | contains("session-start-resume-hint.sh"))' \
+    "true"
   assert_json_count "${impl}: fresh — UserPromptSubmit hooks" \
     "${work}/settings.json" '.hooks.UserPromptSubmit' "1"
   assert_json_count "${impl}: fresh — PreToolUse hooks" \
@@ -173,8 +177,8 @@ for impl in "${implementations[@]}"; do
   # -----------------------------------------------------------------------
   run_merge "${impl}" "${work}/settings.json" "${SETTINGS_PATCH}" "false"
 
-  assert_json_count "${impl}: idempotent — SessionStart hooks still 2" \
-    "${work}/settings.json" '.hooks.SessionStart' "2"
+  assert_json_count "${impl}: idempotent — SessionStart hooks still 3" \
+    "${work}/settings.json" '.hooks.SessionStart' "3"
   assert_json_count "${impl}: idempotent — SubagentStop hooks still 11" \
     "${work}/settings.json" '.hooks.SubagentStop' "11"
   assert_json_count "${impl}: idempotent — PostToolUse hooks still 5" \

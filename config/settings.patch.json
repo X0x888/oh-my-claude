@@ -35,6 +35,14 @@
             "command": "bash $HOME/.claude/quality-pack/scripts/session-start-compact-handoff.sh"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $HOME/.claude/quality-pack/scripts/session-start-resume-hint.sh"
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [

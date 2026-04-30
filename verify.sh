@@ -81,6 +81,7 @@ required_paths=(
   "${CLAUDE_HOME}/quality-pack/scripts/prompt-intent-router.sh"
   "${CLAUDE_HOME}/quality-pack/scripts/session-start-resume-handoff.sh"
   "${CLAUDE_HOME}/quality-pack/scripts/session-start-compact-handoff.sh"
+  "${CLAUDE_HOME}/quality-pack/scripts/session-start-resume-hint.sh"
   "${CLAUDE_HOME}/quality-pack/scripts/pre-compact-snapshot.sh"
   "${CLAUDE_HOME}/quality-pack/scripts/post-compact-summary.sh"
   "${CLAUDE_HOME}/quality-pack/scripts/stop-failure-handler.sh"
@@ -181,6 +182,7 @@ hook_scripts=(
   "${CLAUDE_HOME}/quality-pack/scripts/prompt-intent-router.sh"
   "${CLAUDE_HOME}/quality-pack/scripts/session-start-resume-handoff.sh"
   "${CLAUDE_HOME}/quality-pack/scripts/session-start-compact-handoff.sh"
+  "${CLAUDE_HOME}/quality-pack/scripts/session-start-resume-hint.sh"
   "${CLAUDE_HOME}/quality-pack/scripts/stop-failure-handler.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/common.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/mark-edit.sh"
@@ -226,6 +228,7 @@ else
   required_hooks=(
     "SessionStart:session-start-resume-handoff.sh"
     "SessionStart:session-start-compact-handoff.sh"
+    "SessionStart:session-start-resume-hint.sh"
     "UserPromptSubmit:prompt-intent-router.sh"
     "PreToolUse:record-pending-agent.sh"
     "PreToolUse:pretool-intent-guard.sh"

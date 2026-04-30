@@ -262,6 +262,66 @@ output="$(resume_output)"
 context="$(jq -r '.hookSpecificOutput.additionalContext // empty' <<<"${output}")"
 assert_contains "self-resume has preamble" "resumed Claude Code session" "${context}"
 
+# ------------------------------------------------------------------
+# Test 7 (Wave 1 — Phase 8 continuity carry-over). The handoff hook now
+# copies findings.json, gate_events.jsonl, and discovered_scope.jsonl
+# to the new session so a council Phase 8 wave plan and its event
+# history survive a `--resume` round-trip. It also strips any stale
+# `resume_hint_emitted*` keys carried over from the source session so
+# the SessionStart resume-hint hook is not silently short-circuited.
+# ------------------------------------------------------------------
+printf '\nWave 1 — Phase 8 carry-over + stale-hint-flag clearing:\n'
+
+p8_source="phase8-source-700"
+p8_target="phase8-target-701"
+p8_source_dir="${TEST_STATE_ROOT}/${p8_source}"
+mkdir -p "${p8_source_dir}"
+
+# Copy session_state.json with stale hint flags (both legacy and per-artifact).
+cat > "${p8_source_dir}/session_state.json" <<'STATEJSON'
+{
+  "workflow_mode": "ultrawork",
+  "task_domain": "coding",
+  "current_objective": "Phase 8 wave plan in flight",
+  "resume_hint_emitted": "1",
+  "resume_hint_emitted_old_artifact_sid": "1"
+}
+STATEJSON
+
+# Phase 8 master finding list.
+cat > "${p8_source_dir}/findings.json" <<'JSON'
+{
+  "schema_version": 1,
+  "findings": [{"id":"F-001","title":"hint","status":"shipped"}],
+  "waves": [{"idx":1,"total":2,"status":"shipped"},{"idx":2,"total":2,"status":"pending"}]
+}
+JSON
+
+# Gate-event history.
+printf '{"ts":1,"gate":"discovered-scope","event":"block","details":{"pending_count":3}}\n' \
+  > "${p8_source_dir}/gate_events.jsonl"
+# Discovered-scope ledger.
+printf '{"id":"DS-1","status":"deferred","reason":"out of scope"}\n' \
+  > "${p8_source_dir}/discovered_scope.jsonl"
+
+run_resume "{\"session_id\":\"${p8_target}\",\"source\":\"resume\",\"transcript_path\":\"/transcripts/${p8_source}.jsonl\"}"
+
+p8_target_dir="${TEST_STATE_ROOT}/${p8_target}"
+assert_file_exists "Wave1: findings.json copied" "${p8_target_dir}/findings.json"
+assert_file_exists "Wave1: gate_events.jsonl copied" "${p8_target_dir}/gate_events.jsonl"
+assert_file_exists "Wave1: discovered_scope.jsonl copied" "${p8_target_dir}/discovered_scope.jsonl"
+
+# Both stale `resume_hint_emitted*` keys must be stripped after handoff.
+state_after="$(cat "${p8_target_dir}/session_state.json")"
+hint_legacy="$(jq -r '.resume_hint_emitted // ""' <<<"${state_after}")"
+hint_per_art="$(jq -r '.resume_hint_emitted_old_artifact_sid // ""' <<<"${state_after}")"
+assert_eq "Wave1: legacy resume_hint_emitted cleared" "" "${hint_legacy}"
+assert_eq "Wave1: per-artifact hint key cleared" "" "${hint_per_art}"
+
+# But the rest of the state (objective, workflow_mode) must remain intact.
+assert_contains "Wave1: current_objective preserved through clear" "Phase 8 wave plan in flight" "${state_after}"
+assert_contains "Wave1: workflow_mode preserved through clear" "ultrawork" "${state_after}"
+
 printf '\n=== Results: %d passed, %d failed ===\n' "${pass}" "${fail}"
 if [[ "${fail}" -gt 0 ]]; then
   exit 1

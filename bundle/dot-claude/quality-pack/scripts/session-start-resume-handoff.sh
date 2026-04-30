@@ -57,6 +57,37 @@ if [[ -n "${resume_state_dir}" ]]; then
   copy_state_if_present "${resume_state_dir}" "recent_prompts.jsonl"
   copy_state_if_present "${resume_state_dir}" "edited_files.log"
   copy_state_if_present "${resume_state_dir}" "current_plan.md"
+  # The next three files preserve council Phase 8 mid-wave state across a
+  # `--resume` round-trip so a rate-limit kill does not silently lose
+  # shipped/pending/deferred ledgers and gate-event history. The resumed
+  # session continues appending to the copied files; the original
+  # session is dormant from this point forward (single-writer ownership
+  # transfers atomically at copy time). Without this carry-over a Phase
+  # 8 wave plan would silently restart and the discovered-scope gate
+  # would dis-block falsely.
+  copy_state_if_present "${resume_state_dir}" "findings.json"
+  copy_state_if_present "${resume_state_dir}" "gate_events.jsonl"
+  copy_state_if_present "${resume_state_dir}" "discovered_scope.jsonl"
+
+  # Defense-in-depth for the SessionStart resume-hint hook: clear any
+  # `resume_hint_emitted*` flags carried over from the source session.
+  # The hint hook uses per-artifact keys (`resume_hint_emitted_<sid>`)
+  # in the new world, but a stale legacy `resume_hint_emitted` key from
+  # a pre-Wave-1 source session would otherwise short-circuit the hook
+  # in the new session. The clear is cheap and keeps the hint hook's
+  # single-source-of-truth idempotency contract intact.
+  if jq -e 'has("resume_hint_emitted") or
+            (to_entries | map(select(.key | startswith("resume_hint_emitted_"))) | length > 0)' \
+       "$(session_file "${STATE_JSON}")" >/dev/null 2>&1; then
+    state_file="$(session_file "${STATE_JSON}")"
+    tmp="${state_file}.tmp.$$"
+    if jq 'with_entries(select(.key | startswith("resume_hint_emitted") | not))' \
+        "${state_file}" >"${tmp}" 2>/dev/null; then
+      mv -f "${tmp}" "${state_file}"
+    else
+      rm -f "${tmp}" 2>/dev/null || true
+    fi
+  fi
 
   write_state "resume_source_session_id" "${resume_source_id}"
 fi

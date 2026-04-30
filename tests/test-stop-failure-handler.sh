@@ -119,6 +119,12 @@ assert_eq "rate_limit: schema_version=1" "1" "$(jq -r '.schema_version' "${targe
 assert_eq "rate_limit: resume_attempts=0" "0" "$(jq -r '.resume_attempts' "${target}")"
 assert_eq "rate_limit: model_id present (null when not recorded)" "null" \
   "$(jq -r '.model_id' "${target}")"
+# Wave 1 added project_key (additive forward-compat) — must be present
+# even when null (cwd does not exist in the test fixture's filesystem,
+# so _omc_project_key is not invoked → field is null, not absent).
+assert_eq "rate_limit: project_key key present" "true" "$(jq 'has("project_key")' "${target}")"
+assert_eq "rate_limit: project_key=null when cwd does not exist" "null" \
+  "$(jq -r '.project_key' "${target}")"
 
 teardown_test
 
@@ -334,6 +340,38 @@ printf 'stop_failure_capture=off\n' > "${project_conf_dir}/oh-my-claude.conf"
   printf '%s' "$(jq -nc --arg sid "sess-optout-conf" '{session_id:$sid, matcher:"rate_limit"}')" \
   | bash "${HANDLER}" 2>/dev/null || true )
 assert_file_absent "opt-out via conf: no resume_request.json" "$(resume_path sess-optout-conf)"
+teardown_test
+
+# ---------------------------------------------------------------------------
+# Test 12: Wave 1 addition — project_key captured from a real cwd with a
+# git remote. Verifies the additive forward-compat field that Wave 1's
+# SessionStart resume hint uses for project-key match scope.
+# ---------------------------------------------------------------------------
+setup_test
+real_cwd="${TEST_HOME}/realproj"
+mkdir -p "${real_cwd}"
+(
+  cd "${real_cwd}" || exit 1
+  git init -q -b main 2>/dev/null
+  git config user.email test@example.com
+  git config user.name test
+  git remote add origin https://github.com/example/proj.git
+) >/dev/null 2>&1
+init_session "sess-pk" "Ship Wave 1." "/ulw foo." ""
+run_handler "$(jq -nc \
+  --arg sid "sess-pk" \
+  --arg cwd "${real_cwd}" \
+  '{session_id:$sid, matcher:"rate_limit", hook_event_name:"StopFailure", cwd:$cwd}')"
+target="$(resume_path sess-pk)"
+assert_file_exists "project_key: resume_request.json written" "${target}"
+captured_pk="$(jq -r '.project_key' "${target}")"
+# 12-char lowercase hex string per _omc_project_key (`shasum -a 256 | cut -c1-12`).
+if [[ "${captured_pk}" =~ ^[0-9a-f]{12}$ ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: project_key matches expected 12-hex shape\n    actual=%s\n' "${captured_pk}" >&2
+  fail=$((fail + 1))
+fi
 teardown_test
 
 # ---------------------------------------------------------------------------
