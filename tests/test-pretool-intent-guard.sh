@@ -107,6 +107,17 @@ seed_findings() {
   }' > "${state_dir}/findings.json"
 }
 
+# Seed the recent_prompts.jsonl file with a single prompt entry. The
+# Wave 2 prompt-text trust override reads `tail -n 1` of this file as
+# the most recent user prompt and decides whether the prompt text
+# unambiguously authorizes the destructive verb being attempted.
+seed_recent_prompt() {
+  local sid="$1" text="$2"
+  local state_dir="${TEST_HOME}/.claude/quality-pack/state/${sid}"
+  jq -nc --arg ts "$(date +%s)" --arg t "${text}" \
+    '{ts: $ts, text: $t}' > "${state_dir}/recent_prompts.jsonl"
+}
+
 run_guard() {
   local sid="$1" cmd="$2" tool="${3:-Bash}"
   local payload
@@ -627,6 +638,228 @@ assert_eq "T22: row carries wave_total=4" \
 assert_eq "T22: row carries wave_surface=checkout" \
   "checkout" \
   "$(jq -r '.details.wave_surface // ""' <<<"${last_row}")"
+teardown_test
+
+# ----------------------------------------------------------------------
+# Wave 2 (v1.23.0) — prompt-text trust override tests.
+#
+# When the classifier mis-routes a prompt as advisory (an inevitable
+# long-tail of natural-language imperative shapes that the regex
+# layer cannot fully cover), but the raw user prompt unambiguously
+# authorizes the destructive verb being attempted, the prompt itself
+# IS the authorization. This override is defense-in-depth that closes
+# the "reply with: ship the commit" UX failure observed in session
+# cf10ddd2 (commit cff1ee5) where the user explicitly wrote "Implement
+# and then commit as needed." but the classifier said advisory and the
+# guard blocked the user's own authorized commit.
+#
+# Safety: requires (a) the raw prompt passes is_imperative_request, AND
+# (b) every destructive non-allowed segment has its verb mentioned in
+# the prompt with an imperative-tail object marker (or at end-of-prompt).
+# A compound `git commit && git push --force` only passes when BOTH
+# verbs are authorized.
+
+# ----------------------------------------------------------------------
+# T23 (the user's actual offending prompt): advisory + prompt that
+# explicitly authorizes commit → override fires.
+setup_test
+init_session "t23" "advisory"
+seed_recent_prompt "t23" \
+  "/ulw can the status line be further enhanced for better ux? For instance, adding the information when will the limits be reset. Implement and then commit as needed."
+out_t23="$(run_guard "t23" "git commit -m 'wave 1 of statusline UX'")"
+assert_eq "T23: prompt-text override allows the user's verbatim authorized commit" \
+  "" "${out_t23}"
+teardown_test
+
+# ----------------------------------------------------------------------
+# T24 (noun-only mention): advisory + prompt where `commit` appears
+# only as a noun ("review the commit hooks") → no override, must deny.
+# This is the load-bearing safety check — a discussion prompt that
+# happens to mention `commit` as a noun must NOT be misread as
+# authorization.
+setup_test
+init_session "t24" "advisory"
+seed_recent_prompt "t24" "review the commit hooks for quality and explain commit-message conventions"
+out_t24="$(run_guard "t24" "git commit -m 'unauthorized'")"
+if denied "${out_t24}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T24: noun-only mention of commit must NOT trigger override (got: %s)\n' "${out_t24}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# ----------------------------------------------------------------------
+# T25 (polite imperative): advisory + prompt "Please commit the
+# changes." → override fires. The polite "Please <verb> ..." form is
+# the canonical phrasing the existing is_imperative_request branch
+# handles, and the prompt-text override should accept it as
+# authorization for `git commit`.
+setup_test
+init_session "t25" "advisory"
+seed_recent_prompt "t25" "Please commit the changes."
+out_t25="$(run_guard "t25" "git commit -m 'staged work'")"
+assert_eq "T25: polite imperative prompt fires override" "" "${out_t25}"
+teardown_test
+
+# ----------------------------------------------------------------------
+# T25b (safety rail — bare destructive word does NOT trigger override):
+# advisory + prompt is just "commit" with no surrounding imperative
+# context → is_imperative_request returns false (no verb head, no
+# imperative tail), so the override's safety rail (a) refuses to fire.
+# Note: in real flow, the classifier defaults intent to execution for
+# bare ambiguous prompts (see classifier.sh:536), so this exact path
+# rarely fires in practice. The test exists to lock the safety rail
+# behavior — a stale advisory intent + bare destructive verb prompt
+# must NOT slip past the gate via the override.
+setup_test
+init_session "t25b" "advisory"
+seed_recent_prompt "t25b" "commit"
+out_t25b="$(run_guard "t25b" "git commit -m 'manipulated state'")"
+if denied "${out_t25b}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T25b: bare destructive word + advisory must NOT trigger override (got: %s)\n' "${out_t25b}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# ----------------------------------------------------------------------
+# T26 (compound — both verbs authorized): advisory + prompt authorizes
+# both commit AND push → override fires for `git commit && git push`.
+setup_test
+init_session "t26" "advisory"
+seed_recent_prompt "t26" "Apply the fix and commit when tests pass, then push to origin"
+out_t26="$(run_guard "t26" "git commit -m wave && git push origin main")"
+assert_eq "T26: compound with both verbs authorized passes override" "" "${out_t26}"
+teardown_test
+
+# ----------------------------------------------------------------------
+# T27 (compound — only one verb authorized, smuggle attempt): advisory
+# + prompt only authorizes `commit` → compound `git commit && git push
+# --force` must DENY. Prevents the shape where an authorized commit is
+# used to smuggle an unauthorized force-push past the gate.
+setup_test
+init_session "t27" "advisory"
+seed_recent_prompt "t27" "Implement and commit as needed."
+out_t27="$(run_guard "t27" "git commit -m wave && git push --force origin main")"
+if denied "${out_t27}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T27: compound with only one authorized verb must deny (got: %s)\n' "${out_t27}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# ----------------------------------------------------------------------
+# T28 (missing recent_prompts.jsonl): advisory + no prompt log → no
+# override (cannot authorize without the source). Must deny.
+setup_test
+init_session "t28" "advisory"
+# Deliberately do NOT call seed_recent_prompt.
+out_t28="$(run_guard "t28" "git commit -m 'no prompt source'")"
+if denied "${out_t28}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T28: missing recent_prompts.jsonl must NOT permit override (got: %s)\n' "${out_t28}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# ----------------------------------------------------------------------
+# T29 (kill switch): OMC_PROMPT_TEXT_OVERRIDE=off disables the override
+# entirely, even when the prompt would clearly authorize. Symmetric to
+# the OMC_PRETOOL_INTENT_GUARD kill switch.
+setup_test
+init_session "t29" "advisory"
+seed_recent_prompt "t29" "Implement and commit as needed"
+out_t29="$(OMC_PROMPT_TEXT_OVERRIDE=off run_guard "t29" "git commit -m 'x'")"
+if denied "${out_t29}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T29: OMC_PROMPT_TEXT_OVERRIDE=off must disable override (got: %s)\n' "${out_t29}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# ----------------------------------------------------------------------
+# T30 (telemetry): when the override fires, gate_events.jsonl carries
+# event=prompt_text_override with the denied_segment + prompt_preview
+# fields enriched. /ulw-report uses this to attribute each override to
+# the user's exact authorizing prompt for cross-session audit.
+setup_test
+init_session "t30" "advisory"
+seed_recent_prompt "t30" "Implement and commit as needed."
+_=$(run_guard "t30" "git commit -m 'wave A'")
+gate_events_file="${TEST_HOME}/.claude/quality-pack/state/t30/gate_events.jsonl"
+last_row="$(tail -1 "${gate_events_file}" 2>/dev/null || printf '{}')"
+assert_eq "T30: gate row event is prompt_text_override" \
+  "prompt_text_override" \
+  "$(jq -r '.event // ""' <<<"${last_row}")"
+assert_eq "T30: gate row gate is pretool-intent" \
+  "pretool-intent" \
+  "$(jq -r '.gate // ""' <<<"${last_row}")"
+prompt_preview="$(jq -r '.details.prompt_preview // ""' <<<"${last_row}")"
+if [[ "${prompt_preview}" == *"Implement and commit"* ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T30: gate row missing prompt_preview substring (got: %s)\n' "${prompt_preview}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# ----------------------------------------------------------------------
+# T31 (verb-mismatch): prompt authorizes `push` but command attempts
+# `git tag` → must deny. The verb in the prompt and the verb in the
+# command must align — authorizing one destructive op does not authorize
+# others. Closes the "any imperative authorizes any destructive verb"
+# misread of the override.
+setup_test
+init_session "t31" "advisory"
+seed_recent_prompt "t31" "push the changes to origin when ready"
+out_t31="$(run_guard "t31" "git tag v9.9.9")"
+if denied "${out_t31}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T31: prompt authorizing push must NOT authorize tag (got: %s)\n' "${out_t31}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# ----------------------------------------------------------------------
+# T32 (wave-active takes precedence): advisory + active wave plan +
+# prompt that authorizes commit → wave-active fires first (its gate
+# event is wave_override, not prompt_text_override). The two paths are
+# evaluated in order; wave-active is preferred because it carries
+# tighter audit metadata.
+setup_test
+init_session "t32" "advisory"
+seed_findings "t32" '[
+  {"index":1,"total":2,"surface":"auth","finding_ids":["F-001"],"status":"in_progress","commit_sha":""}
+]'
+seed_recent_prompt "t32" "Implement and commit as needed"
+_=$(run_guard "t32" "git commit -m 'Wave 1/2: auth (F-001)'")
+gate_events_file="${TEST_HOME}/.claude/quality-pack/state/t32/gate_events.jsonl"
+last_row="$(tail -1 "${gate_events_file}" 2>/dev/null || printf '{}')"
+assert_eq "T32: wave-active takes precedence over prompt-text" \
+  "wave_override" \
+  "$(jq -r '.event // ""' <<<"${last_row}")"
+teardown_test
+
+# ----------------------------------------------------------------------
+# T33 (negative imperative — past tense): advisory + prompt is past-
+# tense ("we tested and committed yesterday") → not imperative, no
+# override, must deny. Locks in the is_imperative_request safety rail.
+setup_test
+init_session "t33" "advisory"
+seed_recent_prompt "t33" "we tested the change and committed yesterday but the build failed"
+out_t33="$(run_guard "t33" "git commit -m 'redo'")"
+if denied "${out_t33}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T33: past-tense narrative must NOT trigger override (got: %s)\n' "${out_t33}" >&2
+  fail=$((fail + 1))
+fi
 teardown_test
 
 # ----------------------------------------------------------------------

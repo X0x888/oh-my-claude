@@ -329,6 +329,131 @@ _wave_override_command_safe() {
   return 0
 }
 
+# Prompt-text trust override (v1.23.0). When the classifier mis-routes
+# a prompt as advisory but the raw user prompt unambiguously authorizes
+# the destructive verb being attempted, the prompt itself IS the
+# authorization — Wave 1's classifier widening should catch most cases,
+# this layer is the defense-in-depth that closes the long-tail of
+# imperative-tail prompt shapes the regex doesn't yet recognize.
+#
+# Safety rails:
+#   (a) The prompt must pass `is_imperative_request` — noun-only
+#       mentions like "review the commit hooks" don't fire the override
+#       because that prompt isn't imperative.
+#   (b) Every destructive non-allowed segment must have its verb
+#       mentioned in the prompt with an imperative-tail object marker
+#       (article/preposition/temporal/sentence-terminator) or at
+#       end-of-prompt. A compound `git commit && git push --force` only
+#       passes when BOTH `commit` AND `push` are authorized in the
+#       prompt — the all-segments-authorized rule mirrors
+#       _wave_override_command_safe.
+#   (c) The override reads `recent_prompts.jsonl` (the same source the
+#       router uses) and considers only the most recent user prompt.
+#       Prior prompts in the session log are NOT consulted — a stale
+#       authorization from an earlier prompt cannot leak into a later
+#       advisory turn.
+#
+# Maps the executed git/gh verb back to the imperative verb the prompt
+# would say. Same table the destructive matcher uses, in the same
+# order, so a future verb addition only needs one site update.
+_extract_destructive_verb_from_segment() {
+  local seg="$1"
+  if grep -Eq "${_GUARD_PRE}git[[:space:]]+commit([[:space:]]|$)"      <<<"${seg}"; then printf 'commit';      return; fi
+  if grep -Eq "${_GUARD_PRE}git[[:space:]]+push([[:space:]]|$)"        <<<"${seg}"; then printf 'push';        return; fi
+  if grep -Eq "${_GUARD_PRE}git[[:space:]]+revert([[:space:]]|$)"      <<<"${seg}"; then printf 'revert';      return; fi
+  if grep -Eq "${_GUARD_PRE}git[[:space:]]+reset[[:space:]]+--hard"    <<<"${seg}"; then printf 'reset';       return; fi
+  if grep -Eq "${_GUARD_PRE}git[[:space:]]+rebase([[:space:]]|$)"      <<<"${seg}"; then printf 'rebase';      return; fi
+  if grep -Eq "${_GUARD_PRE}git[[:space:]]+cherry-pick([[:space:]]|$)" <<<"${seg}"; then printf 'cherry-pick'; return; fi
+  if grep -Eq "${_GUARD_PRE}git[[:space:]]+tag([[:space:]]|$)"         <<<"${seg}"; then printf 'tag';         return; fi
+  if grep -Eq "${_GUARD_PRE}git[[:space:]]+merge([[:space:]]|$)"       <<<"${seg}"; then printf 'merge';       return; fi
+  if grep -Eq "${_GUARD_PRE}gh[[:space:]]+(pr|release|issue)[[:space:]]+(create|merge|edit|close|comment|delete|reopen)" <<<"${seg}"; then
+    # gh ops authorize via "open"/"create"/"publish"/"release"/"ship" — return
+    # a sentinel that _verb_appears_in_imperative_position checks against
+    # this verb-class instead of a single literal.
+    printf 'gh-publish'
+    return
+  fi
+  printf ''
+}
+
+# Read the most recent user prompt text from recent_prompts.jsonl.
+# Returns empty string when the file is absent or unreadable.
+_read_most_recent_prompt() {
+  local file
+  file="$(session_file "recent_prompts.jsonl")"
+  [[ -f "${file}" ]] || return 0
+  tail -n 1 "${file}" 2>/dev/null | jq -r '.text // ""' 2>/dev/null || true
+}
+
+# Verify the destructive verb appears in an imperative-tail position
+# within the prompt — followed by an object marker (article|preposition|
+# temporal|conjunction) OR at end-of-prompt with optional sentence-
+# terminating punctuation. Rejects noun usages like "the commit message"
+# (followed by `message`, not in the marker list) and "commit-message
+# style" (the `-` in front of `commit` fails the prefix anchor).
+_verb_appears_in_imperative_position() {
+  local text="$1"
+  local verb="$2"
+  [[ -z "${text}" || -z "${verb}" ]] && return 1
+
+  local nocase_was_set=0
+  if shopt -q nocasematch; then nocase_was_set=1; else shopt -s nocasematch; fi
+  local result=1
+
+  if [[ "${verb}" == "gh-publish" ]]; then
+    # gh publish-class verbs: any of open|create|publish|release|ship in
+    # the prompt with an object marker authorizes any destructive gh
+    # pr/release/issue create-class op. Narrower than "any imperative"
+    # because those verbs can be advisory in product-shaped prompts.
+    if [[ "${text}" =~ (^|[^a-z-])(open|create|publish|release|ship|merge|close|edit)[[:space:]]+(a|an|the|this|these|that|those|new|pr|prs|pull[[:space:]]+request|release|issue|issues|tag|comment|it|them) ]]; then
+      result=0
+    fi
+  else
+    # Object-marker tail OR end-of-prompt match. The `(^|[^a-z-])` prefix
+    # anchors so `commit` matches at word boundary but NOT inside
+    # `commit-message` or `precommit`. The trailing alternation accepts
+    # imperative-tail object markers, end-of-prompt, or sentence-end
+    # punctuation. Also accepts the standalone bare verb (e.g., the
+    # user-typed "commit" follow-up that appeared in session cf10ddd2
+    # right after the misclassified first prompt).
+    local pat="(^|[^a-z-])${verb}([[:space:]]+(the|a|an|all|these|this|that|those|to|origin|upstream|v[0-9]|it|them|changes?|and|when|if|as|onto|main|master)|[[:space:]]*[.,;!?]?[[:space:]]*$)"
+    if [[ "${text}" =~ ${pat} ]]; then
+      result=0
+    fi
+  fi
+
+  if [[ "${nocase_was_set}" -eq 0 ]]; then shopt -u nocasematch; fi
+  return "${result}"
+}
+
+# Re-run the (post-Wave-1) classifier against the raw prompt and verify
+# every destructive non-allowed segment in the command is authorized by
+# the prompt text. Returns 0 (authorize) only when both halves agree.
+_prompt_text_authorizes_command() {
+  local cmd_normalized="$1"
+  local prompt
+  prompt="$(_read_most_recent_prompt)"
+  [[ -n "${prompt}" ]] || return 1
+
+  # The prompt must register as imperative — noun-only mentions of a
+  # destructive verb (e.g., "explain commit hooks", "review the merge
+  # request") never trigger the override.
+  is_imperative_request "${prompt}" || return 1
+
+  local _seg verb
+  while IFS= read -r _seg; do
+    [[ -z "${_seg// }" ]] && continue
+    if _cmd_matches_destructive "${_seg}" && ! _cmd_is_allowed_variant "${_seg}"; then
+      verb="$(_extract_destructive_verb_from_segment "${_seg}")"
+      [[ -n "${verb}" ]] || return 1
+      if ! _verb_appears_in_imperative_position "${prompt}" "${verb}"; then
+        return 1
+      fi
+    fi
+  done < <(sed -E 's/(&&|\|\||;|\|)/\n/g' <<<"${cmd_normalized}")
+  return 0
+}
+
 if _wave_execution_active && _wave_override_command_safe "${normalized_cmd}"; then
   # Extract the active wave's metadata for the gate-event details so
   # /ulw-report can attribute each override to a specific wave (which
@@ -357,6 +482,24 @@ if _wave_execution_active && _wave_override_command_safe "${normalized_cmd}"; th
     "wave_total=${_wave_total}" \
     "wave_surface=$(truncate_chars 60 "${_wave_surface}")" \
     "denied_segment=$(truncate_chars 120 "${denied_segment}")"
+  exit 0
+fi
+
+# Prompt-text trust override (v1.23.0). Evaluated after the wave-active
+# override so the wave-specific path still takes precedence when both
+# would apply (the wave override has tighter audit metadata). When the
+# wave path doesn't fire, the prompt-text path is the next line of
+# defense — it converts the user's explicit imperative into authorization
+# even if the classifier said advisory.
+if [[ "${OMC_PROMPT_TEXT_OVERRIDE:-on}" == "on" ]] \
+    && _prompt_text_authorizes_command "${normalized_cmd}"; then
+  _pt_prompt_preview="$(_read_most_recent_prompt | tr '\n' ' ')"
+  log_hook "pretool-intent-guard" \
+    "prompt-text override: intent=${task_intent} cmd=$(truncate_chars 80 "${command_str}")"
+  record_gate_event "pretool-intent" "prompt_text_override" \
+    "intent=${task_intent}" \
+    "denied_segment=$(truncate_chars 120 "${denied_segment}")" \
+    "prompt_preview=$(truncate_chars 120 "${_pt_prompt_preview}")"
   exit 0
 fi
 
