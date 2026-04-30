@@ -639,6 +639,209 @@ assert_contains "T18: 'line one' present" "line one" "${calls}"
 assert_contains "T18: 'line two' present" "line two" "${calls}"
 teardown_test
 
+# ---------------------------------------------------------------------------
+# T19: tmux launch fails after successful claim → claim is REVERTED so the
+# next tick re-evaluates from clean slate. Without revert, last_attempt_ts
+# blocks retry for cooldown_secs (default 600s) — silent black hole.
+# ---------------------------------------------------------------------------
+print_test_header "T19: tmux-launch-failed reverts the claim"
+setup_test
+install_mock claude 0
+# tmux mock that succeeds on `has-session` (returns 0 = "session exists")
+# so the watchdog hits the `tmux has-session` short-circuit at line 122,
+# returns code 4, and triggers the revert path. T22 below covers the
+# more realistic "new-session itself exits non-zero" failure mode
+# (TMUX_TMPDIR unwritable / disk full) — the two together exercise both
+# launch_in_tmux failure shapes the F-002 fix targets. T19 also asserts
+# the marker (`tmux-launch-reverted`) and zero-baseline contract; T20
+# covers the prior-preservation contract on top.
+cat > "${MOCK_BIN}/tmux" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${MOCK_BIN}/tmux.calls"
+case "$1" in
+  has-session) exit 0 ;;        # session "exists" → launch_in_tmux returns 4
+  *) exit 0 ;;
+esac
+MOCK
+# Re-write the mock with the right MOCK_BIN expansion (heredoc above is
+# single-quoted to preserve $1).
+sed -i.bak "s|\${MOCK_BIN}|${MOCK_BIN}|g" "${MOCK_BIN}/tmux" && rm -f "${MOCK_BIN}/tmux.bak"
+chmod +x "${MOCK_BIN}/tmux"
+target="$(make_request "sess-19" "${TEST_HOME}" "Revert test." "/ulw revert")"
+mkdir -p "${TEST_HOME}/.claude/quality-pack/state/active-sess"
+SESSION_ID=active-sess bash "${WATCHDOG}" >/dev/null 2>&1
+# After revert: resumed_at_ts must be null/empty, resume_attempts must be 0
+# (back to pre-claim state), last_attempt_outcome must be the marker.
+assert_eq "T19: resumed_at_ts reverted to null" "" "$(read_field "${target}" resumed_at_ts)"
+assert_eq "T19: resume_attempts reverted to 0" "0" "$(read_field "${target}" resume_attempts)"
+assert_eq "T19: outcome marker = tmux-launch-reverted" "tmux-launch-reverted" \
+  "$(read_field "${target}" last_attempt_outcome)"
+events_file="${TEST_HOME}/.claude/quality-pack/state/active-sess/gate_events.jsonl"
+events="$(cat "${events_file}" 2>/dev/null || echo '')"
+assert_contains "T19: tmux-launch-failed-reverted gate event" \
+  "tmux-launch-failed-reverted" "${events}"
+teardown_test
+
+# ---------------------------------------------------------------------------
+# T20: revert preserves a prior last_attempt_ts (when artifact had a
+# previous failed attempt before the current cycle). Demonstrates the
+# revert restores PRIOR state, not always-zero state.
+# ---------------------------------------------------------------------------
+print_test_header "T20: revert restores prior last_attempt_ts"
+setup_test
+install_mock claude 0
+cat > "${MOCK_BIN}/tmux" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${MOCK_BIN}/tmux.calls"
+case "$1" in
+  has-session) exit 0 ;;
+  *) exit 0 ;;
+esac
+MOCK
+sed -i.bak "s|\${MOCK_BIN}|${MOCK_BIN}|g" "${MOCK_BIN}/tmux" && rm -f "${MOCK_BIN}/tmux.bak"
+chmod +x "${MOCK_BIN}/tmux"
+target="$(make_request "sess-20" "${TEST_HOME}" "Prior attempt test." "/ulw retry")"
+# Pre-stamp an old last_attempt_ts (older than cooldown so retry isn't
+# blocked) and a non-zero attempts count, simulating a prior cycle.
+prior_ts=$(( $(date +%s) - 3600 ))
+tmp="${target}.tmp"
+jq --argjson t "${prior_ts}" '. + {last_attempt_ts: $t, resume_attempts: 1}' \
+  "${target}" > "${tmp}" && mv -f "${tmp}" "${target}"
+bash "${WATCHDOG}" >/dev/null 2>&1
+assert_eq "T20: last_attempt_ts restored to prior value" "${prior_ts}" \
+  "$(read_field "${target}" last_attempt_ts)"
+assert_eq "T20: resume_attempts restored to 1" "1" \
+  "$(read_field "${target}" resume_attempts)"
+teardown_test
+
+# ---------------------------------------------------------------------------
+# T21: pure-bash slug truncation handles non-ASCII sids without slicing
+# mid-byte. Regression for the `head -c 24` byte-truncation polish.
+# ---------------------------------------------------------------------------
+print_test_header "T21: tmux session-name slug bounded + sanitized"
+setup_test
+install_tmux_mock
+install_mock claude 0
+# A long sid with disallowed `:` and `.` chars that tmux rejects in
+# session names. Expected slug: tr replaces them with `_`, then the
+# pure-bash `${var:0:24}` slicing caps the length at 24 ASCII chars.
+# validate_session_id accepts [a-zA-Z0-9_.-]{1,128}, but tmux session
+# names disallow `.` — so a sid with `.` is the realistic case where
+# sanitization actually fires. 32-char sid means the slug must also
+# truncate to 24.
+long_sid="sess.aaaaa.bb.cc-extra-long-tail"
+make_request "${long_sid}" "${TEST_HOME}" "Slug test." "/ulw foo" > /dev/null
+bash "${WATCHDOG}" >/dev/null 2>&1
+calls="$(mock_calls tmux)"
+# Extract the slug from `new-session -d -s omc-resume-<slug>`.
+slug="$(printf '%s' "${calls}" | sed -n 's/.*-s omc-resume-\([^ ]*\) -c.*/\1/p' | head -n 1)"
+slug_len="${#slug}"
+assert_eq "T21: slug length capped at 24" "24" "${slug_len}"
+# `.` in the sid must be sanitized to `_` (tmux forbids them).
+case "${slug}" in
+  *.*)
+    printf '  FAIL: T21: slug retains tmux-forbidden `.`: %s\n' "${slug}" >&2
+    fail=$((fail + 1)) ;;
+  *)
+    pass=$((pass + 1)) ;;
+esac
+# Every remaining char must be from the allowed set.
+case "${slug}" in
+  *[!a-zA-Z0-9_-]*)
+    printf '  FAIL: T21: slug contains forbidden chars: %s\n' "${slug}" >&2
+    fail=$((fail + 1)) ;;
+  *)
+    pass=$((pass + 1)) ;;
+esac
+teardown_test
+
+# ---------------------------------------------------------------------------
+# T22: tmux `new-session` itself fails (e.g. TMUX_TMPDIR unwritable, disk
+# full, signal trap during start) — the more realistic failure mode the
+# F-002 fix targets. has-session returns 1 (no existing session) so the
+# watchdog proceeds into new-session, which then fails. Revert must fire.
+# ---------------------------------------------------------------------------
+print_test_header "T22: new-session failure also triggers revert"
+setup_test
+install_mock claude 0
+cat > "${MOCK_BIN}/tmux" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${MOCK_BIN}/tmux.calls"
+case "$1" in
+  has-session) exit 1 ;;        # no existing session — proceed to new-session
+  new-session) exit 2 ;;        # new-session fails → launch_in_tmux returns 2
+  *) exit 0 ;;
+esac
+MOCK
+sed -i.bak "s|\${MOCK_BIN}|${MOCK_BIN}|g" "${MOCK_BIN}/tmux" && rm -f "${MOCK_BIN}/tmux.bak"
+chmod +x "${MOCK_BIN}/tmux"
+target="$(make_request "sess-22" "${TEST_HOME}" "New-session fails." "/ulw retry")"
+mkdir -p "${TEST_HOME}/.claude/quality-pack/state/active-sess"
+SESSION_ID=active-sess bash "${WATCHDOG}" >/dev/null 2>&1
+assert_eq "T22: resumed_at_ts reverted to null" "" "$(read_field "${target}" resumed_at_ts)"
+assert_eq "T22: resume_attempts reverted to 0" "0" "$(read_field "${target}" resume_attempts)"
+assert_eq "T22: outcome marker = tmux-launch-reverted" "tmux-launch-reverted" \
+  "$(read_field "${target}" last_attempt_outcome)"
+events_file="${TEST_HOME}/.claude/quality-pack/state/active-sess/gate_events.jsonl"
+events="$(cat "${events_file}" 2>/dev/null || echo '')"
+assert_contains "T22: tmux-launch-failed-reverted gate event" \
+  "tmux-launch-failed-reverted" "${events}"
+# Confirm new-session WAS invoked (we want the new-session failure path,
+# not the has-session short-circuit T19 covers).
+calls="$(mock_calls tmux)"
+assert_contains "T22: tmux new-session was invoked" "new-session" "${calls}"
+teardown_test
+
+# ---------------------------------------------------------------------------
+# T23: after a revert, the NEXT watchdog tick re-evaluates the artifact
+# from clean slate (fresh launch attempt) instead of being held off by
+# the cooldown gate. Closes the F-002 user-visible promise that the
+# revert restores eligibility, not just the field values.
+# ---------------------------------------------------------------------------
+print_test_header "T23: next tick after revert proceeds (no stuck cooldown)"
+setup_test
+install_mock claude 0
+# tmux mock with a per-call counter: first invocation fails (force revert),
+# second invocation succeeds (lets the next tick complete a real launch).
+cat > "${MOCK_BIN}/tmux" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${MOCK_BIN}/tmux.calls"
+counter_file="${MOCK_BIN}/tmux.counter"
+count=$(cat "${counter_file}" 2>/dev/null || echo 0)
+case "$1" in
+  has-session) exit 1 ;;       # never an existing session — proceed to new-session
+  new-session)
+    count=$((count + 1))
+    printf '%s' "${count}" > "${counter_file}"
+    if [[ "${count}" -eq 1 ]]; then
+      exit 2                    # first new-session: fail → revert
+    else
+      exit 0                    # subsequent: success
+    fi
+    ;;
+  *) exit 0 ;;
+esac
+MOCK
+sed -i.bak "s|\${MOCK_BIN}|${MOCK_BIN}|g" "${MOCK_BIN}/tmux" && rm -f "${MOCK_BIN}/tmux.bak"
+chmod +x "${MOCK_BIN}/tmux"
+target="$(make_request "sess-23" "${TEST_HOME}" "Two-tick test." "/ulw retry-after-revert")"
+mkdir -p "${TEST_HOME}/.claude/quality-pack/state/active-sess"
+# Tick 1: launch fails, revert restores artifact.
+SESSION_ID=active-sess bash "${WATCHDOG}" >/dev/null 2>&1
+assert_eq "T23: tick 1 left artifact reverted" "tmux-launch-reverted" \
+  "$(read_field "${target}" last_attempt_outcome)"
+# Tick 2: cooldown must NOT block — last_attempt_ts is back to 0 (or
+# absent) per revert. New-session succeeds → real claim lands.
+SESSION_ID=active-sess bash "${WATCHDOG}" >/dev/null 2>&1
+assert_eq "T23: tick 2 launched successfully" "watchdog-launched" \
+  "$(read_field "${target}" last_attempt_outcome)"
+assert_eq "T23: resume_attempts = 1 after second-tick claim" "1" \
+  "$(read_field "${target}" resume_attempts)"
+new_session_count="$(printf '%s' "$(mock_calls tmux)" | grep -c 'new-session' 2>/dev/null || true)"
+new_session_count="${new_session_count:-0}"
+assert_eq "T23: new-session called twice across two ticks" "2" "${new_session_count}"
+teardown_test
+
 printf '\n=== test-resume-watchdog: %d passed, %d failed ===\n' "${pass}" "${fail}"
 if (( fail > 0 )); then
   exit 1

@@ -55,7 +55,17 @@ fi
 # and `/ulw-report` can scan a known path.
 SYNTHETIC_SESSION_ID="${SESSION_ID:-_watchdog}"
 export SESSION_ID="${SYNTHETIC_SESSION_ID}"
-ensure_session_dir 2>/dev/null || mkdir -p "${STATE_ROOT}/${SYNTHETIC_SESSION_ID}" 2>/dev/null || true
+if ! ensure_session_dir 2>/dev/null \
+    && ! mkdir -p "${STATE_ROOT}/${SYNTHETIC_SESSION_ID}" 2>/dev/null; then
+  # STATE_ROOT itself is unwritable (read-only mount, missing parent,
+  # permissions). Telemetry rows from this tick will silently no-op
+  # in record_gate_event — surface the cause to stderr so a launchd /
+  # systemd / cron stdout-capture file shows the reason. The watchdog
+  # can still serve a useful tick (notify the user) without telemetry,
+  # so we degrade rather than abort.
+  printf 'resume-watchdog: STATE_ROOT %s is not writable; telemetry disabled this tick\n' \
+    "${STATE_ROOT}" >&2
+fi
 
 # --- helpers ---
 
@@ -112,9 +122,15 @@ launch_in_tmux() {
   command -v claude >/dev/null 2>&1 || return 3
 
   # tmux session names disallow `:` and `.`; sanitize the sid to a
-  # 12-char hex slug for the session-name. Bash 3.2-safe.
+  # 24-char slug for the session-name. Bash 3.2-safe. tr replaces every
+  # non-allowed byte (including any multi-byte sequences) with `_`, so
+  # the post-tr output is pure ASCII; `${var:0:24}` then truncates by
+  # character (== byte at this point). Avoids `head -c 24` because
+  # `head -c` is non-POSIX and behaves inconsistently on minimal
+  # coreutils variants the daemon may encounter under launchd/systemd.
   local sid_short
-  sid_short="$(printf '%s' "${sid}" | tr -c 'a-zA-Z0-9_-' '_' | head -c 24)"
+  sid_short="$(printf '%s' "${sid}" | tr -c 'a-zA-Z0-9_-' '_')"
+  sid_short="${sid_short:0:24}"
   local sess_name="omc-resume-${sid_short}"
 
   # Check we don't already have a tmux session named this — if a prior
@@ -129,6 +145,66 @@ launch_in_tmux() {
   prompt_esc="${prompt//\'/\'\\\'\'}"
   tmux new-session -d -s "${sess_name}" -c "${cwd}" \
     "claude --resume '${sid}' '${prompt_esc}'" >/dev/null 2>&1
+}
+
+# Revert a watchdog claim when the post-claim launch fails. Without this,
+# `last_attempt_ts=now` plus `resume_attempts++` would block retry for
+# `cooldown_secs` (default 600s) — a silent 10-minute black hole on a
+# host where tmux is on PATH but cannot start a new session (TMUX_TMPDIR
+# unwritable, $TMPDIR full, signal trap, launchd no-TTY edge case, etc.).
+# Restores `resumed_at_ts: null`, the prior `resume_attempts` count, and
+# the prior `last_attempt_ts` so the next tick re-evaluates this artifact
+# from a clean slate. Runs under the same cross-session lock the claim
+# helper used so a concurrent /ulw-resume cannot race the revert.
+revert_watchdog_claim() {
+  local target="$1"
+  local prev_attempts="$2"
+  local prev_last_ts="$3"
+  with_resume_lock _do_watchdog_revert "${target}" "${prev_attempts}" "${prev_last_ts}"
+}
+
+# shellcheck disable=SC2329 # invoked indirectly via with_resume_lock
+_do_watchdog_revert() {
+  local target="$1"
+  local prev_attempts="$2"
+  local prev_last_ts="$3"
+  local tmp jq_err
+
+  [[ -f "${target}" ]] || return 0
+  tmp="$(mktemp "${target}.XXXXXX")" || return 1
+
+  # Capture jq stderr so a malformed-artifact failure surfaces in
+  # log_anomaly with the actual cause. `2>&1 >"${tmp}"` puts stderr
+  # in the $() capture and stdout in tmp — the order matters; reversing
+  # the redirections collapses both streams into the capture and breaks
+  # the diff write.
+  if [[ "${prev_last_ts}" -gt 0 ]]; then
+    if ! jq_err="$(jq --argjson n "${prev_attempts}" --argjson t "${prev_last_ts}" \
+         '. + {resumed_at_ts: null, resume_attempts: $n, last_attempt_ts: $t,
+               last_attempt_outcome: "tmux-launch-reverted"}' \
+         "${target}" 2>&1 >"${tmp}")"; then
+      rm -f "${tmp}"
+      log_anomaly "resume-watchdog" "revert jq failed for ${target}: ${jq_err:-no stderr}"
+      return 1
+    fi
+  else
+    if ! jq_err="$(jq --argjson n "${prev_attempts}" \
+         'del(.last_attempt_ts) | . + {resumed_at_ts: null, resume_attempts: $n,
+                                         last_attempt_outcome: "tmux-launch-reverted"}' \
+         "${target}" 2>&1 >"${tmp}")"; then
+      rm -f "${tmp}"
+      log_anomaly "resume-watchdog" "revert jq failed for ${target}: ${jq_err:-no stderr}"
+      return 1
+    fi
+  fi
+
+  if [[ -s "${tmp}" ]]; then
+    mv -f "${tmp}" "${target}"
+  else
+    rm -f "${tmp}"
+    log_anomaly "resume-watchdog" "revert produced empty output for ${target}"
+    return 1
+  fi
 }
 
 # --- main loop ---
@@ -218,10 +294,19 @@ while IFS=$'\t' read -r _scope sid captured_ts artifact_path; do
   # -t omc-resume-<sid>`), and avoids the launchd-no-TTY question by
   # running inside a tmux server that owns its own pseudo-tty.
   if command -v tmux >/dev/null 2>&1 && command -v claude >/dev/null 2>&1; then
+    # Capture pre-claim state so the launch-failure branch can revert.
+    # Read before the claim mutates the file. read_num_field returns 0
+    # for missing/null fields, which is the correct neutral default for
+    # both prior_resume_attempts (a fresh artifact has 0 attempts) and
+    # prior_last_attempt_ts (no prior attempt = field absent).
+    prior_resume_attempts="$(read_num_field "${artifact_path}" "resume_attempts")"
+    prior_last_attempt_ts="$(read_num_field "${artifact_path}" "last_attempt_ts")"
+
     # Atomically claim BEFORE launching. Order is critical: claim first
     # so a parallel watchdog tick or /ulw-resume can't double-launch.
-    # If launch fails after claim, the artifact is marked attempted
-    # and the cooldown prevents immediate retry.
+    # If the post-claim launch fails, we revert below so the artifact
+    # remains eligible for the next tick instead of being silently
+    # quarantined for a full cooldown window.
     if ! bash "${CLAIM_HELPER}" --watchdog-launch "$$" --target "${artifact_path}" >/dev/null 2>&1; then
       record_gate_event "resume-watchdog" "claim-failed" \
         origin_session="${origin_sid}"
@@ -241,9 +326,26 @@ while IFS=$'\t' read -r _scope sid captured_ts artifact_path; do
       # serializes them).
       break
     else
-      record_gate_event "resume-watchdog" "tmux-launch-failed" \
-        origin_session="${origin_sid}"
-      log_hook "resume-watchdog" "tmux-launch-failed origin=${origin_sid}"
+      # Launch failed AFTER successful claim. Revert the claim so the
+      # next tick re-evaluates this artifact from clean slate; otherwise
+      # the cooldown (default 600s) blocks retry for 10 minutes with no
+      # recovery, even though the user's tmux/claude may have come back
+      # online a second later. Lock-protected: a concurrent /ulw-resume
+      # cannot race the revert.
+      if revert_watchdog_claim "${artifact_path}" \
+            "${prior_resume_attempts}" "${prior_last_attempt_ts}"; then
+        record_gate_event "resume-watchdog" "tmux-launch-failed-reverted" \
+          origin_session="${origin_sid}"
+        log_hook "resume-watchdog" "tmux-launch-failed-reverted origin=${origin_sid}"
+      else
+        # Revert itself failed (lock contention timeout, mv failure on
+        # a read-only mount, malformed artifact). Surface the unhealed
+        # state as a distinct event so /ulw-report shows the user the
+        # artifact is now stuck and needs manual cleanup.
+        record_gate_event "resume-watchdog" "tmux-launch-failed-revert-failed" \
+          origin_session="${origin_sid}"
+        log_anomaly "resume-watchdog" "revert failed for ${artifact_path}"
+      fi
     fi
   else
     # No tmux (or claude not on PATH) → notification fallback. Do NOT
