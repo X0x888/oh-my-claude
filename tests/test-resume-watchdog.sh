@@ -18,6 +18,32 @@ ORIG_PATH="${PATH}"
 pass=0
 fail=0
 
+# Resolve a dependency from the original PATH and symlink it into
+# MOCK_BIN. Skips silently if the dependency is missing or the link
+# already exists — idempotent across re-invocation. Used by setup_test
+# so any test can run with `PATH=${MOCK_BIN}` (strict isolation) and
+# still find the binaries common.sh / resume-watchdog.sh / their
+# claim-helper subprocesses need.
+#
+# `bash` is included because resume-watchdog.sh invokes
+# `bash "${CLAIM_HELPER}" ...` as a subprocess (lines 149 + 225).
+# Without it, a strict-PATH test exits 127 the moment the watchdog
+# tries to call the claim helper.
+install_path_deps() {
+  local dep src
+  for dep in bash jq sed date mkdir cat grep awk find rm mv touch chmod \
+             head tail tr cut sort dirname basename printf readlink \
+             xargs uname tee cp mktemp rmdir realpath flock stat ls \
+             id wc tac ln chown chgrp env sleep kill sha256sum shasum \
+             paste; do
+    [[ -e "${MOCK_BIN}/${dep}" ]] && continue
+    src="$(PATH="${ORIG_PATH}" command -v "${dep}" 2>/dev/null || true)"
+    if [[ -n "${src}" && -x "${src}" ]]; then
+      ln -sf "${src}" "${MOCK_BIN}/${dep}"
+    fi
+  done
+}
+
 setup_test() {
   TEST_HOME="$(mktemp -d)"
   export HOME="${TEST_HOME}"
@@ -39,6 +65,16 @@ setup_test() {
   MOCK_BIN="${TEST_HOME}/.mockbin"
   mkdir -p "${MOCK_BIN}"
   export PATH="${MOCK_BIN}:${ORIG_PATH}"
+
+  # Symlink common.sh / watchdog dependencies into MOCK_BIN so a test
+  # that needs strict-PATH isolation (T4 — no tmux) can drop the
+  # system PATH entirely without breaking the helper chain. On Ubuntu
+  # CI `tmux` lives at `/usr/bin/tmux`, so the prior workaround of
+  # `PATH=MOCK_BIN:/usr/bin:/bin` failed to mask it. Pinning to
+  # `PATH=MOCK_BIN` only with these symlinks present is the portable
+  # fix. Skips `tmux` so tests can install a tmux mock when they need
+  # one (and T4 relies on tmux being absent).
+  install_path_deps
 
   # Default: opt the watchdog ON for tests.
   export OMC_RESUME_WATCHDOG=on
@@ -218,13 +254,14 @@ setup_test
 install_mock claude 0
 install_mock notify-send 0
 install_mock osascript 0
-# Strict-PATH override: drop the inherited PATH (which on a dev box may
-# already have a real tmux from `brew install`) so `command -v tmux`
-# returns nothing and the watchdog takes the no-tmux fallback branch.
-# Includes /usr/bin:/bin for sed, jq, etc. that are dependencies of
-# common.sh helpers — strictly bare PATH would break the helper chain.
+# Strict-PATH override: drop the inherited PATH entirely so `command -v
+# tmux` cannot find the system tmux. Earlier workaround of
+# `PATH=MOCK_BIN:/usr/bin:/bin` failed on Ubuntu CI (tmux lives at
+# /usr/bin/tmux). setup_test runs install_path_deps to symlink jq, sed,
+# date, etc. into MOCK_BIN so common.sh's helper chain still resolves
+# under PATH=MOCK_BIN — no system PATH needed.
 target="$(make_request "sess-4" "${TEST_HOME}" "Notify me." "/ulw foo")"
-PATH="${MOCK_BIN}:/usr/bin:/bin" bash "${WATCHDOG}" >/dev/null 2>&1
+PATH="${MOCK_BIN}" bash "${WATCHDOG}" >/dev/null 2>&1
 notifier_called=0
 [[ -n "$(mock_calls osascript)" ]] && notifier_called=1
 [[ -n "$(mock_calls notify-send)" ]] && notifier_called=1
