@@ -948,6 +948,39 @@ assert_not_imperative "Tell me about the recent commit history."
 assert_not_imperative "What is the push cadence? I want to understand release engineering."
 assert_not_imperative "Review the merge request. Explain the tag strategy."
 
+# --- Implementation-verb-led conjunction (v1.23.0) ---
+# A natural-English imperative where an implementation verb is followed by
+# `and` / `,` and a destructive verb without a sentence-boundary punctuation
+# in between. Catches the user's actual offending prompt:
+#   "/ulw can the status line be enhanced? ... Implement and then commit
+#    as needed."
+# which v1.22.x mis-classified as advisory because the leading "can ..."
+# question dominated and the existing tail-imperative branch required a
+# `. , ? \n` before the destructive verb.
+printf '\nImplementation-verb-led conjunction (v1.23.0):\n'
+assert_imperative "Implement and then commit as needed."
+assert_imperative "Implement and commit when ready"
+assert_imperative "Implement and commit"
+assert_imperative "Implement the feature and ship to staging"
+assert_imperative "Refactor X and tag v2.0"
+assert_imperative "Build it, then push to origin"
+assert_imperative "Fix the bug, commit, and push"
+assert_imperative "Update X. Push when stable."
+assert_imperative "Update the helper and commit when tests pass"
+assert_imperative "Add the migration and tag v1.23.0"
+
+# Negatives: must NOT match natural-English false-positives
+printf '\nImplementation-verb-led conjunction negatives:\n'
+assert_not_imperative "we tested and committed yesterday"
+assert_not_imperative "Reviews show this and commit hooks are good"
+assert_not_imperative "explain commit message conventions"
+assert_not_imperative "Tell me about commit hook design"
+
+# End-to-end classification parity — the user's exact offending prompt
+assert_intent "execution" "/ulw can the status line be further enhanced for better ux? For instance, adding the information when will the limits be reset. Implement and then commit as needed."
+assert_intent "execution" "can you make this ux better? Implement and commit when done."
+assert_intent "execution" "Could the layout be cleaner? Refactor and push to staging."
+
 # --- Shell test script as framework keyword (added in 1.8.1) ---
 # verification_has_framework_keyword must recognize `bash tests/*.sh` and
 # similar shell-test invocations so pure-bash projects score above the

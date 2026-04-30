@@ -76,8 +76,8 @@ is_imperative_request() {
   #   - Requires a sentence boundary (`. `, `, `, `\n`) before the verb so
   #     past-tense mentions ("we pushed yesterday") don't match.
   #   - Requires an object marker after the verb (article/demonstrative/
-  #     preposition/tag-shaped literal) so noun uses ("push date", "the
-  #     commit message") don't match.
+  #     preposition/tag-shaped literal/temporal: when|if|as needed/etc) so
+  #     noun uses ("push date", "the commit message") don't match.
   #   - Allows optional transition words ("then", "now", "finally", "also",
   #     "afterwards") between the boundary and the verb so "Review the
   #     branch. Then push to origin." is caught without having to enumerate
@@ -85,7 +85,33 @@ is_imperative_request() {
   #   - Only fires on verbs that are genuinely destructive-execution when
   #     used imperatively: commit/push/tag/release/deploy/merge/ship/publish.
   #     Safer verbs (run/make/create) stay head-anchored.
-  elif [[ "${text}" =~ (\.|,|\?|$'\n')[[:space:]]+(then|now|finally|lastly|also|afterwards?|next)?[[:space:]]*,?[[:space:]]*(commit|push|tag|release|deploy|merge|ship|publish)[[:space:]]+(the|a|an|all|these|this|that|those|to[[:space:]]|origin[[:space:]]|upstream[[:space:]]+|v[0-9]|it[[:space:]]|them[[:space:]]+|changes?[[:space:]]|and[[:space:]]) ]]; then
+  elif [[ "${text}" =~ (\.|,|\?|$'\n')[[:space:]]+(then|now|finally|lastly|also|afterwards?|next)?[[:space:]]*,?[[:space:]]*(commit|push|tag|release|deploy|merge|ship|publish)[[:space:]]+(the|a|an|all|these|this|that|those|to[[:space:]]|origin[[:space:]]|upstream[[:space:]]+|v[0-9]|it[[:space:]]|them[[:space:]]+|changes?[[:space:]]|and[[:space:]]|when[[:space:]]|if[[:space:]]|as[[:space:]]+(needed|required|appropriate|done|done\.|ready|ready\.|stable|stable\.|fit|fit\.)) ]]; then
+    result=0
+  # Implementation-verb-led conjunction: an imperative-implementation
+  # verb followed by a conjunction (`and` / `,`) and a destructive verb
+  # via natural English. Catches "Implement and then commit as needed",
+  # "Build it and ship to staging", "Refactor X, then tag v2.0".
+  #
+  # Without this branch, prompts like
+  #   "/ulw can the status line be enhanced? ... Implement and then commit
+  #    as needed."
+  # misclassify as advisory because the leading "can ..." question
+  # dominates while the natural-English `and then commit` between
+  # `Implement` and `commit` lacks the sentence boundary the
+  # tail-imperative branch above requires.
+  #
+  # Narrow by design:
+  #   - Implementation verb anchors the imperative; past-tense forms are
+  #     excluded by the verb list (no `committed`, `tested`).
+  #   - Object marker after the destructive verb prevents noun uses
+  #     ("Implement and tell me commit-message ideas") and pure-fragment
+  #     matches.
+  #   - Optional intermediate object/fragment (≤80 chars, no sentence
+  #     boundaries inside) covers "Build the feature and then push",
+  #     "Refactor X and tag v2".
+  #   - Conjunction restricted to `and` / `,` so multi-clause spans like
+  #     "Implement after we discuss commit messages" do not match.
+  elif [[ "${text}" =~ (^|[[:space:]])(implement|build|fix|refactor|add|update|create|debug|deploy|write|make|change|modify|remove|delete|move|rename|install|configure|run|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|connect|enhance|polish|patch|simplify|extract|replace|upgrade|generate|apply)[[:space:]]+([^.?$'\n']{0,80}[[:space:]]+)?(and|,)[[:space:]]+(then|now|finally|lastly|also|afterwards?|next)?[[:space:]]*,?[[:space:]]*(commit|push|tag|release|deploy|merge|ship|publish)[[:space:]]+(the|a|an|all|these|this|that|those|to[[:space:]]|origin[[:space:]]|upstream[[:space:]]+|v[0-9]|it[[:space:]]|them[[:space:]]+|changes?[[:space:]]|and[[:space:]]|when[[:space:]]|if[[:space:]]|as[[:space:]]+(needed|required|appropriate|done|done\.|ready|ready\.|stable|stable\.|fit|fit\.)) ]]; then
     result=0
   fi
 
