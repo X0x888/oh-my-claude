@@ -76,6 +76,29 @@ platform() {
   esac
 }
 
+# Resolve the user's effective PATH so `claude` and `tmux` are found
+# under launchd / systemd-user, which otherwise inherit a barebones
+# PATH. Probe the user's login shell when available; fall back to the
+# current $PATH; further fall back to a safe default that covers
+# Homebrew + system bins. Required because Claude Code's binary may
+# live at ~/.local/bin/claude (npm global) or ~/.nvm/versions/.../bin
+# (nvm) — neither is on launchd's default PATH.
+resolved_path() {
+  local from_shell=""
+  if [[ -n "${SHELL:-}" ]] && [[ -x "${SHELL}" ]]; then
+    from_shell="$("${SHELL}" -ilc 'printf %s "${PATH}"' 2>/dev/null || true)"
+  fi
+  if [[ -n "${from_shell}" ]]; then
+    printf '%s' "${from_shell}"
+    return 0
+  fi
+  if [[ -n "${PATH:-}" ]]; then
+    printf '%s' "${PATH}"
+    return 0
+  fi
+  printf '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
+}
+
 # --- macOS LaunchAgent ---
 
 macos_install() {
@@ -85,11 +108,20 @@ macos_install() {
   local dest="${dest_dir}/dev.ohmyclaude.resume-watchdog.plist"
   mkdir -p "${dest_dir}" "${LOG_DIR}"
 
+  local user_path
+  user_path="$(resolved_path)"
+
+  # Escape `&` and `|` for sed (PATH may contain neither, but defense).
+  local user_path_esc
+  user_path_esc="${user_path//&/\\&}"
+  user_path_esc="${user_path_esc//|/\\|}"
+
   # Substitute placeholders.
   sed \
     -e "s|__OMC_HOME__|${CLAUDE_HOME}|g" \
     -e "s|__OMC_USER_HOME__|${HOME}|g" \
     -e "s|__OMC_LOG_DIR__|${LOG_DIR}|g" \
+    -e "s|__OMC_PATH__|${user_path_esc}|g" \
     "${src}" > "${dest}"
 
   # Bootstrap into the user's gui domain. If already loaded, kickstart
@@ -126,9 +158,18 @@ linux_install() {
   local dest_dir="${HOME}/.config/systemd/user"
   mkdir -p "${dest_dir}"
 
-  sed -e "s|__OMC_HOME__|${CLAUDE_HOME}|g" -e "s|__OMC_USER_HOME__|${HOME}|g" \
+  local user_path user_path_esc
+  user_path="$(resolved_path)"
+  user_path_esc="${user_path//&/\\&}"
+  user_path_esc="${user_path_esc//|/\\|}"
+
+  sed -e "s|__OMC_HOME__|${CLAUDE_HOME}|g" \
+      -e "s|__OMC_USER_HOME__|${HOME}|g" \
+      -e "s|__OMC_PATH__|${user_path_esc}|g" \
     "${src_svc}" > "${dest_dir}/oh-my-claude-resume-watchdog.service"
-  sed -e "s|__OMC_HOME__|${CLAUDE_HOME}|g" -e "s|__OMC_USER_HOME__|${HOME}|g" \
+  sed -e "s|__OMC_HOME__|${CLAUDE_HOME}|g" \
+      -e "s|__OMC_USER_HOME__|${HOME}|g" \
+      -e "s|__OMC_PATH__|${user_path_esc}|g" \
     "${src_tmr}" > "${dest_dir}/oh-my-claude-resume-watchdog.timer"
 
   if command -v systemctl >/dev/null 2>&1; then

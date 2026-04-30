@@ -218,8 +218,13 @@ setup_test
 install_mock claude 0
 install_mock notify-send 0
 install_mock osascript 0
+# Strict-PATH override: drop the inherited PATH (which on a dev box may
+# already have a real tmux from `brew install`) so `command -v tmux`
+# returns nothing and the watchdog takes the no-tmux fallback branch.
+# Includes /usr/bin:/bin for sed, jq, etc. that are dependencies of
+# common.sh helpers — strictly bare PATH would break the helper chain.
 target="$(make_request "sess-4" "${TEST_HOME}" "Notify me." "/ulw foo")"
-bash "${WATCHDOG}" >/dev/null 2>&1
+PATH="${MOCK_BIN}:/usr/bin:/bin" bash "${WATCHDOG}" >/dev/null 2>&1
 notifier_called=0
 [[ -n "$(mock_calls osascript)" ]] && notifier_called=1
 [[ -n "$(mock_calls notify-send)" ]] && notifier_called=1

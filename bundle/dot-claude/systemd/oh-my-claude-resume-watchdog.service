@@ -12,8 +12,10 @@ TimeoutStartSec=60s
 Nice=10
 
 # Inherit the user's PATH so `claude` and `tmux` resolve. systemd's
-# user-bus typically inherits these, but explicit is safer.
-Environment="PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+# user-bus typically inherits these, but baking the user's actual
+# $PATH in at install time avoids the silent "claude not found"
+# failure when the binary lives at ~/.local/bin or ~/.nvm/...
+Environment="PATH=__OMC_PATH__"
 Environment="HOME=__OMC_USER_HOME__"
 
 [Install]

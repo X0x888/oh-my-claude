@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Auto-resume harness — Wave 3 hotfix: bake user `$PATH` into LaunchAgent / systemd-user environment** (Serendipity Rule, caught in-session during the first real watchdog opt-in on a host whose `claude` lived at `~/.local/bin/claude`). The plist + service templates previously hardcoded `PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`. For users whose `claude` binary lives at `~/.local/bin/claude` (npm global), `~/.nvm/versions/.../bin/claude` (nvm), `~/.bun/bin/claude` (bun), or any non-standard prefix, the watchdog would silently skip the tmux-launch branch (because `command -v claude` returns nothing under launchd's barebones PATH) and fall through to notification-only mode forever. `install-resume-watchdog.sh` now resolves the user's effective `$PATH` at install time — preferring an interactive login-shell PATH (`$SHELL -ilc 'echo $PATH'`), falling back to the current `$PATH`, then to a safe Homebrew+system default — and substitutes it for `__OMC_PATH__` in both the plist and the systemd service template. T4 regression-fixed to use a strict-PATH override (`PATH=${MOCK_BIN}:/usr/bin:/bin`) so the no-tmux fallback test stays green on dev boxes that have tmux installed system-wide.
+
 ### Added
 
 - **Long-running-agent harness — Wave 3: headless resume watchdog (the autonomous part).** When a rate-limit window clears for an unclaimed `resume_request.json`, the daemon launches `claude --resume <session_id> '<original prompt>'` in a detached `tmux` session — no human required to be at the keyboard. Pairs with Wave 1's SessionStart hint and Wave 2's atomic claim helper to deliver the full "/ulw resumes as if it were never interrupted" promise.

@@ -36,12 +36,15 @@ __OMC_LOG_DIR__ tokens before loading.
   <true/>
 
   <!-- Inherit the user's PATH so `claude` and `tmux` resolve. The
-       installer can override this with the user's actual PATH if the
-       defaults don't include common install locations. -->
+       installer baked in the user's actual $PATH at install time
+       (preferring user-shell PATH when present, else the safe
+       defaults below) — without this the daemon launches under
+       launchd's barebones PATH and silently can't find claude when
+       it's installed via npm / nvm / asdf / ~/.local/bin. -->
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <string>__OMC_PATH__</string>
     <key>HOME</key>
     <string>__OMC_USER_HOME__</string>
   </dict>
