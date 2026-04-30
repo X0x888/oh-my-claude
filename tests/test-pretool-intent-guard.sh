@@ -876,5 +876,93 @@ fi
 teardown_test
 
 # ----------------------------------------------------------------------
+# T34 (positive — tag verb segment): advisory + prompt authorizes `tag`
+# → `git tag v9.9.9` must allow. Existing T31 covers the negative case
+# (push authorized, tag attempted → deny); T34 closes the positive
+# coverage gap for the tag segment specifically. Closes F-006 from the
+# v1.23.x follow-up wave (compound-segment safety beyond commit/push).
+setup_test
+init_session "t34" "advisory"
+seed_recent_prompt "t34" "Please tag v2.0.0 once the release branch is green."
+out_t34="$(run_guard "t34" "git tag v2.0.0")"
+assert_eq "T34: prompt authorizes tag → git tag allowed" "" "${out_t34}"
+teardown_test
+
+# ----------------------------------------------------------------------
+# T35 (positive — merge verb segment): advisory + prompt authorizes
+# `merge` → `git merge feature-branch` must allow.
+setup_test
+init_session "t35" "advisory"
+seed_recent_prompt "t35" "Could you merge the feature branch into main when CI passes?"
+out_t35="$(run_guard "t35" "git merge feature-branch")"
+assert_eq "T35: prompt authorizes merge → git merge allowed" "" "${out_t35}"
+teardown_test
+
+# ----------------------------------------------------------------------
+# T36 (positive — gh-publish via release verb): advisory + prompt
+# authorizes `release` → `gh release create v1.0.0` must allow. The
+# `gh-publish` verb-class accepts any of open/create/publish/release/
+# ship/merge/close/edit followed by a NOUN-shaped object marker
+# (a|an|the|this|new|pr|release|tag|issue/...). Using "publish the
+# release" satisfies the noun-marker rule (an object literal "v1.0.0"
+# alone does NOT — see _verb_appears_in_imperative_position's gh-publish
+# branch which is stricter than the single-verb branch).
+setup_test
+init_session "t36" "advisory"
+seed_recent_prompt "t36" "Please publish the release to production tonight."
+out_t36="$(run_guard "t36" "gh release create v1.0.0 --notes 'Wave 2 ship'")"
+assert_eq "T36: prompt authorizes release → gh release create allowed" "" "${out_t36}"
+teardown_test
+
+# ----------------------------------------------------------------------
+# T37 (compound — tag + push --tags both authorized): the canonical
+# release-tag-and-push compound. Both segments must be authorized.
+# Polite-please head form so is_imperative_request matches reliably
+# (the bare "Tag v..." head form does not match the head-imperative
+# verb list because `tag` is omitted there; only the polite/tail
+# branches accept it).
+setup_test
+init_session "t37" "advisory"
+seed_recent_prompt "t37" "Please tag v2.0.0 and push the tags to origin."
+out_t37="$(run_guard "t37" "git tag v2.0.0 && git push --tags")"
+assert_eq "T37: compound tag + push --tags with both authorized passes" "" "${out_t37}"
+teardown_test
+
+# ----------------------------------------------------------------------
+# T38 (compound — only tag authorized, push --tags smuggled): advisory
+# + prompt authorizes only `tag` → `git tag v2.0.0 && git push --tags`
+# must DENY because the push segment is unauthorized. Symmetric to T27
+# (commit && push --force smuggle) but for the tag/push pair. Closes
+# the gap where the existing T27 only verified the commit/push pair.
+setup_test
+init_session "t38" "advisory"
+seed_recent_prompt "t38" "Please tag v2.0.0 once the release branch is green."
+out_t38="$(run_guard "t38" "git tag v2.0.0 && git push --tags")"
+if denied "${out_t38}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T38: tag-authorized but push-unauthorized compound must deny (got: %s)\n' "${out_t38}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# ----------------------------------------------------------------------
+# T39 (compound — merge authorized but reset --hard smuggled): advisory
+# + prompt authorizes only `merge` → `git merge feature && git reset
+# --hard origin/main` must DENY. The merge/reset pair is the failure
+# mode where a merge-conflict resolution is reframed as a hard reset.
+setup_test
+init_session "t39" "advisory"
+seed_recent_prompt "t39" "Could you merge the feature branch into main when CI passes?"
+out_t39="$(run_guard "t39" "git merge feature-branch && git reset --hard origin/main")"
+if denied "${out_t39}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T39: merge-authorized but reset-unauthorized compound must deny (got: %s)\n' "${out_t39}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# ----------------------------------------------------------------------
 printf '\n%s passed, %s failed\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]] || exit 1

@@ -382,6 +382,44 @@ set -e
 assert_contains "rejection: mentions wave-append alternative" "wave-append" "${out}"
 
 # ===========================================================================
+# Test V15: kill-switch bypass emits an audit gate-event so /ulw-report
+# can surface the user's bypass count. The error message at line 62 of
+# mark-deferred.sh promises "audited" — without this row, the promise
+# was aspirational. Closes F-003 from the v1.23.x follow-up wave.
+# ===========================================================================
+printf '\nstrict-bypass emits an audit gate-event row:\n'
+setup_session "test-why-bypass-audit" '{"id":"why00009","source":"metis","summary":"finding","severity":"high","status":"pending","reason":"","ts":"100"}
+'
+events_file="$(session_file "gate_events.jsonl")"
+rm -f "${events_file}"
+out="$(OMC_MARK_DEFERRED_STRICT=off bash "${MARK_DEFERRED}" "out of scope" 2>&1)"
+assert_contains "bypass: deferral landed" "Deferred 1 pending finding" "${out}"
+events="$(cat "${events_file}" 2>/dev/null || echo '')"
+assert_contains "bypass: gate=mark-deferred row written" '"gate":"mark-deferred"' "${events}"
+assert_contains "bypass: event=strict-bypass row written" '"event":"strict-bypass"' "${events}"
+assert_contains "bypass: reason captured for audit" "out of scope" "${events}"
+
+# Test V16: kill-switch path with VALID reason — strict-bypass row must
+# NOT fire (the validator would have accepted under strict=on anyway,
+# so the bypass had no effect; emitting the row would inflate the count
+# and mislead /ulw-report).
+printf '\nstrict-bypass row absent when reason would have passed validation:\n'
+setup_session "test-why-bypass-valid" '{"id":"why00010","source":"metis","summary":"finding","severity":"high","status":"pending","reason":"","ts":"100"}
+'
+events_file2="$(session_file "gate_events.jsonl")"
+rm -f "${events_file2}"
+out="$(OMC_MARK_DEFERRED_STRICT=off bash "${MARK_DEFERRED}" "requires database migration" 2>&1)"
+assert_contains "valid-bypass: deferral landed" "Deferred 1 pending finding" "${out}"
+events2="$(cat "${events_file2}" 2>/dev/null || echo '')"
+case "${events2}" in
+  *strict-bypass*)
+    printf '  FAIL: V16: strict-bypass row should NOT fire for valid reason\n    actual: %s\n' "${events2}" >&2
+    fail=$((fail + 1)) ;;
+  *)
+    pass=$((pass + 1)) ;;
+esac
+
+# ===========================================================================
 printf '\nResults: pass=%d fail=%d\n' "${pass}" "${fail}"
 if [[ "${fail}" -gt 0 ]]; then
   exit 1

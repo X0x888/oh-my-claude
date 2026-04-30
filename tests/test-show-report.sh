@@ -371,5 +371,51 @@ rm -f "${QP}/gate_events.jsonl"
 rm -f "${QP}/session_summary.jsonl"
 
 # ----------------------------------------------------------------------
+printf 'Test 22: mark-deferred strict-bypass events surface in their own section\n'
+NOW="$(date +%s)"
+cat > "${QP}/gate_events.jsonl" <<EOF
+{"ts":${NOW},"session":"test-md-session","gate":"mark-deferred","event":"strict-bypass","details":{"reason":"out of scope"}}
+{"ts":${NOW},"session":"test-md-session","gate":"mark-deferred","event":"strict-bypass","details":{"reason":"low priority"}}
+EOF
+cat > "${QP}/session_summary.jsonl" <<EOF
+{"session_id":"test-md-session","start_ts":${NOW},"end_ts":${NOW},"domain":"coding","intent":"execution","edit_count":1,"verified":true,"reviewed":true,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":1,"outcome":"shipped","skip_count":0,"serendipity_count":0}
+EOF
+out="$(run_report week)"
+assert_contains "show-report: mark-deferred bypasses section header" \
+  "## Mark-deferred strict-bypasses" "${out}"
+assert_contains "show-report: bypass count rendered" \
+  "2 reason(s) bypassed the require-WHY validator" "${out}"
+assert_contains "show-report: 'out of scope' reason captured" \
+  "out of scope" "${out}"
+assert_contains "show-report: 'low priority' reason captured" \
+  "low priority" "${out}"
+rm -f "${QP}/gate_events.jsonl"
+rm -f "${QP}/session_summary.jsonl"
+
+# ----------------------------------------------------------------------
+printf 'Test 23: mark-deferred bypasses section is HIDDEN when no bypasses recorded\n'
+# The new section is conditional — clean sessions hide it entirely so
+# reports stay terse. Verify a session with no strict-bypass rows does
+# not render the section header (unlike bias-defense which always shows
+# either the table or a placeholder).
+NOW="$(date +%s)"
+cat > "${QP}/gate_events.jsonl" <<EOF
+{"ts":${NOW},"session":"test-clean","gate":"pretool-intent","event":"block","details":{"intent":"advisory"}}
+EOF
+cat > "${QP}/session_summary.jsonl" <<EOF
+{"session_id":"test-clean","start_ts":${NOW},"end_ts":${NOW},"domain":"coding","intent":"execution","edit_count":1,"verified":true,"reviewed":true,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":1,"outcome":"shipped","skip_count":0,"serendipity_count":0}
+EOF
+out="$(run_report week)"
+case "${out}" in
+  *"Mark-deferred strict-bypasses"*)
+    printf '  FAIL: T23: section should be hidden but rendered\n' >&2
+    fail=$((fail + 1)) ;;
+  *)
+    pass=$((pass + 1)) ;;
+esac
+rm -f "${QP}/gate_events.jsonl"
+rm -f "${QP}/session_summary.jsonl"
+
+# ----------------------------------------------------------------------
 printf '\n=== Show-Report Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]] || exit 1

@@ -309,6 +309,34 @@ else
 fi
 
 # ----------------------------------------------------------------------
+# Section 4c2: Mark-deferred strict-bypasses
+#
+# When OMC_MARK_DEFERRED_STRICT=off is in effect AND the deferral reason
+# would have been rejected by the require-WHY validator, mark-deferred.sh
+# emits gate=mark-deferred event=strict-bypass with the reason captured
+# under .details.reason. The validator's error message at line 62 of
+# mark-deferred.sh promises "audited"; without this aggregation the
+# audit row landed in the JSONL but was invisible to the user.
+#
+# Surfaces only when at least one bypass fired in the window. A clean
+# session sees no row, the placeholder hides the section entirely, and
+# the report stays terse.
+mark_deferred_bypass_rows="$(printf '%s\n' "${gate_event_rows}" | jq -c \
+    'select(.gate == "mark-deferred" and .event == "strict-bypass")' 2>/dev/null || true)"
+if [[ -n "${mark_deferred_bypass_rows}" ]]; then
+  bypass_count="$(printf '%s\n' "${mark_deferred_bypass_rows}" | grep -c .)"
+  printf '## Mark-deferred strict-bypasses\n\n'
+  printf '_%s reason(s) bypassed the require-WHY validator via OMC_MARK_DEFERRED_STRICT=off._\n\n' \
+    "${bypass_count}"
+  printf '| When | Reason (head 80) |\n|---|---|\n'
+  printf '%s\n' "${mark_deferred_bypass_rows}" \
+    | jq -r --slurp 'sort_by(.ts) | reverse | .[0:10][] |
+      "| \(.ts // "—") | \((.details.reason // "—") | .[0:80]) |"' \
+    2>/dev/null || true
+  printf '\n'
+fi
+
+# ----------------------------------------------------------------------
 # Section 4d: Wave-shape distribution (v1.22.0 — F-019)
 # Aggregates wave-plan gate events emitted by record-finding-list.sh
 # assign-wave so users can answer "are my recent wave plans actually

@@ -70,6 +70,23 @@ if [[ -z "${SESSION_ID:-}" ]]; then
   exit 2
 fi
 
+# Audit the strict-mode bypass. When OMC_MARK_DEFERRED_STRICT=off AND the
+# reason would have been rejected by the require-WHY validator, emit a
+# gate-event row so /ulw-report can surface the user's bypass count
+# across sessions. The error message at line 62 promises "audited" — this
+# call is what makes that promise concrete. Without it, a user could
+# silently bypass the validator indefinitely with no visibility into how
+# often they're sidestepping the silent-skip defense.
+if [[ "${OMC_MARK_DEFERRED_STRICT:-on}" != "on" ]] \
+    && ! omc_reason_has_concrete_why "${reason}"; then
+  # Pure-bash slice instead of `head -c 200`: same root-cause family as
+  # the Wave 1 resume-watchdog.sh:117 fix (head -c is non-POSIX and
+  # behaves inconsistently on minimal coreutils variants the harness may
+  # encounter under restricted PATH or BusyBox/Alpine setups).
+  record_gate_event "mark-deferred" "strict-bypass" \
+    reason="${reason:0:200}"
+fi
+
 scope_file="$(session_file "discovered_scope.jsonl")"
 if [[ ! -f "${scope_file}" ]]; then
   printf 'mark-deferred: no discovered_scope.jsonl in this session yet (nothing to defer)\n' >&2

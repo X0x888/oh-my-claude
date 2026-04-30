@@ -264,6 +264,64 @@ assert_contains "directive includes worked example" \
   "reset countdown" "${out}"
 
 # ----------------------------------------------------------------------
+# Tests 16-18: end-to-end coverage that the router actually deposits a
+# `record_gate_event "bias-defense" "directive_fired" directive=<name>`
+# row into <session>/gate_events.jsonl when each of the three directives
+# fires. Closes F-005 from the v1.23.x follow-up wave: prior tests only
+# asserted the directive TEXT in additionalContext, never that the
+# telemetry row /ulw-report depends on actually lands. If the
+# record_gate_event call site silently regresses (typo in directive
+# name, helper-rename without callsite update), the directive text
+# would still appear but /ulw-report's "Bias-defense directives fired"
+# section would render an empty placeholder — undetectable without
+# this E2E assertion.
+
+# Helper: read directive_fired rows from the session's gate_events.jsonl
+# for a given directive name. Returns count.
+_count_directive_fires() {
+  local sid="$1" directive="$2"
+  local f="${_test_state_root}/${sid}/gate_events.jsonl"
+  [[ -f "${f}" ]] || { printf '0'; return; }
+  jq -c --arg d "${directive}" \
+    'select(.gate=="bias-defense" and .event=="directive_fired" and .details.directive==$d)' \
+    "${f}" 2>/dev/null | wc -l | tr -d ' '
+}
+
+printf 'Test 16: exemplifying-directive E2E — gate_events row lands\n'
+sid_16="t16-${RANDOM}"
+_run_router "${sid_16}" "${_EXEMPLIFY_PROMPT}" >/dev/null
+fires_16="$(_count_directive_fires "${sid_16}" "exemplifying")"
+assert_contains "T16: exactly 1 exemplifying directive_fired row" "1" "${fires_16}"
+
+printf 'Test 17: prometheus-suggest E2E — gate_events row lands when flag on\n'
+sid_17="t17-${RANDOM}"
+_run_router "${sid_17}" "${_PROD_PROMPT}" "OMC_PROMETHEUS_SUGGEST=on" >/dev/null
+fires_17="$(_count_directive_fires "${sid_17}" "prometheus-suggest")"
+assert_contains "T17: exactly 1 prometheus-suggest directive_fired row" "1" "${fires_17}"
+
+printf 'Test 18: intent-verify E2E — gate_events row lands when flag on\n'
+sid_18="t18-${RANDOM}"
+# Use ambiguous-but-not-product prompt so prometheus does NOT win and
+# suppress intent-verify (the router's _bias_directive_emitted gate).
+_run_router "${sid_18}" "${_AMBIG_PROMPT}" "OMC_INTENT_VERIFY_DIRECTIVE=on" >/dev/null
+fires_18="$(_count_directive_fires "${sid_18}" "intent-verify")"
+assert_contains "T18: exactly 1 intent-verify directive_fired row" "1" "${fires_18}"
+
+# ----------------------------------------------------------------------
+printf 'Test 19: no directive_fired row emitted when no directive fires\n'
+# Targeted prompt with no example markers, no product-shaped wording,
+# no ambiguity — router takes the bias-defense block but emits nothing.
+sid_19="t19-${RANDOM}"
+_run_router "${sid_19}" "${_TARGETED_PROMPT}" \
+  "OMC_PROMETHEUS_SUGGEST=on" "OMC_INTENT_VERIFY_DIRECTIVE=on" >/dev/null
+fires_19_pro="$(_count_directive_fires "${sid_19}" "prometheus-suggest")"
+fires_19_iv="$(_count_directive_fires "${sid_19}" "intent-verify")"
+fires_19_ex="$(_count_directive_fires "${sid_19}" "exemplifying")"
+assert_contains "T19: zero prometheus rows on targeted prompt" "0" "${fires_19_pro}"
+assert_contains "T19: zero intent-verify rows on targeted prompt" "0" "${fires_19_iv}"
+assert_contains "T19: zero exemplifying rows on targeted prompt" "0" "${fires_19_ex}"
+
+# ----------------------------------------------------------------------
 printf '\n'
 printf 'Result: %d passed, %d failed\n' "${pass}" "${fail}"
 if [[ "${fail}" -gt 0 ]]; then

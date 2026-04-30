@@ -366,7 +366,7 @@ The classification order in `classify_task_intent()` is a protected design decis
 - `exemplifying_directive` (default on, v1.23.0) — defends against under-commitment when the prompt uses example markers (`for instance`, `e.g.`, `such as`, etc.) by instructing the model to treat the example as one item from an enumerable class. Symmetric to (but opposite of) the other two; fires INDEPENDENTLY because narrowing and widening are orthogonal.
 - `exemplifying_scope_gate` (default on) — hardens `exemplifying_directive` by requiring `exemplifying_scope.json` before Stop. The model records sibling items via `record-scope-checklist.sh init`; each item must become `shipped` or `declined` with a concrete WHY. This closes the gap where the directive could be ignored and the literal example still shipped alone.
 
-The three directives emit `gate=bias-defense` `event=directive_fired` rows for `/ulw-report` audit. The hard exemplifying-scope gate emits `gate=exemplifying-scope` block/exhausted rows.
+The three directives emit `gate=bias-defense` `event=directive_fired` rows for `/ulw-report` audit. The hard exemplifying-scope gate emits `gate=exemplifying-scope` block/exhausted rows. The mark-deferred validator emits `gate=mark-deferred` `event=strict-bypass` rows when `OMC_MARK_DEFERRED_STRICT=off` lets a would-be-rejected reason slip through (audit row carries the truncated reason under `.details.reason`); `/ulw-report` aggregates these into the "Mark-deferred strict-bypasses" section so silent-skip patterns remain visible across sessions.
 
 ---
 
