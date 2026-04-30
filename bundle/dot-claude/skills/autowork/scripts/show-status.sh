@@ -95,6 +95,7 @@ if [[ "${SUMMARY_MODE}" -eq 1 ]]; then
   advisory_blocks="$(jq -r '.advisory_guard_blocks // "0"' "${state_file}" 2>/dev/null || echo "0")"
   pretool_blocks="$(jq -r '.pretool_intent_blocks // "0"' "${state_file}" 2>/dev/null || echo "0")"
   scope_blocks="$(jq -r '.discovered_scope_blocks // "0"' "${state_file}" 2>/dev/null || echo "0")"
+  exemplifying_scope_blocks="$(jq -r '.exemplifying_scope_blocks // "0"' "${state_file}" 2>/dev/null || echo "0")"
   wave_shape_blocks="$(jq -r '.wave_shape_blocks // "0"' "${state_file}" 2>/dev/null || echo "0")"
 
   # Classifier misfires — how many of those blocks the post-classifier
@@ -180,6 +181,7 @@ if [[ "${SUMMARY_MODE}" -eq 1 ]]; then
   [[ "${advisory_blocks}" -ne 0 ]] && blocks_parts="${blocks_parts:+${blocks_parts} · }advisory=${advisory_blocks}"
   [[ "${pretool_blocks}" -ne 0 ]]  && blocks_parts="${blocks_parts:+${blocks_parts} · }pretool=${pretool_blocks}"
   [[ "${scope_blocks}" -ne 0 ]]    && blocks_parts="${blocks_parts:+${blocks_parts} · }scope=${scope_blocks}"
+  [[ "${exemplifying_scope_blocks}" -ne 0 ]] && blocks_parts="${blocks_parts:+${blocks_parts} · }example-scope=${exemplifying_scope_blocks}"
   [[ "${wave_shape_blocks}" -ne 0 ]] && blocks_parts="${blocks_parts:+${blocks_parts} · }wave-shape=${wave_shape_blocks}"
   if [[ -n "${blocks_parts}" ]]; then
     if [[ "${misfire_count}" -gt 0 ]]; then
@@ -307,6 +309,7 @@ jq -r '
   "Dimension blocks:  \(.dimension_guard_blocks // "0")",
   "Session handoffs:  \(.session_handoff_blocks // "0")",
   "Discovered-scope:  \(.discovered_scope_blocks // "0")",
+  "Example-scope:     \(.exemplifying_scope_blocks // "0")",
   "Wave-shape blocks: \(.wave_shape_blocks // "0")",
   "Serendipity fires: \(.serendipity_count // "0")\(if (.last_serendipity_fix // "") != "" then " (last: \(.last_serendipity_fix))" else "" end)",
   "Stall counter:     \(.stall_counter // "0")",
@@ -399,6 +402,17 @@ if [[ -f "${scope_file}" ]]; then
   scope_deferred="$(read_scope_count_by_status "deferred")"
   printf 'Discovered findings:       %s total · %s pending · %s shipped · %s deferred\n' \
     "${scope_total:-0}" "${scope_pending:-0}" "${scope_shipped:-0}" "${scope_deferred:-0}"
+fi
+
+# Exemplifying-scope checklist (example-marker prompts)
+exemplifying_file="${STATE_ROOT}/${latest_session}/exemplifying_scope.json"
+if [[ -f "${exemplifying_file}" ]]; then
+  ex_total="$(jq -r '(.items // []) | length' "${exemplifying_file}" 2>/dev/null || echo 0)"
+  ex_pending="$(jq -r '[.items[]? | select(.status == "pending")] | length' "${exemplifying_file}" 2>/dev/null || echo 0)"
+  ex_shipped="$(jq -r '[.items[]? | select(.status == "shipped")] | length' "${exemplifying_file}" 2>/dev/null || echo 0)"
+  ex_declined="$(jq -r '[.items[]? | select(.status == "declined")] | length' "${exemplifying_file}" 2>/dev/null || echo 0)"
+  printf 'Exemplified scope:         %s total · %s pending · %s shipped · %s declined\n' \
+    "${ex_total:-0}" "${ex_pending:-0}" "${ex_shipped:-0}" "${ex_declined:-0}"
 fi
 
 # Council Phase 8 wave plan (when active)

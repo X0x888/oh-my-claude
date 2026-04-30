@@ -19,7 +19,7 @@ Deliverables:
 4. File-by-file or system-by-system execution plan, ordered for incremental verification (each step should be testable before the next begins).
 5. Concrete validation commands or checks for each significant step, not just the final state.
 6. Risks, unknowns, and the fallback path if the first approach fails.
-7. Implied scope — what a senior practitioner would also deliver beyond the literal request. Error handling, edge cases, input validation, configuration, observability, security, and polish that the user likely expects even if not stated. Distinguish between must-haves (things that would make the deliverable incomplete without them) and nice-to-haves (things that elevate quality but are not strictly required). This section prevents the common failure mode where only the explicit request is scoped and the deliverable ends up at 60% of what a veteran would ship.
+7. Implied scope — what a senior practitioner would also deliver beyond the literal request. Error handling, edge cases, input validation, configuration, observability, security, and polish that the user likely expects even if not stated. Distinguish between must-haves (things that would make the deliverable incomplete without them) and nice-to-haves (things that elevate quality but are not strictly required). If the prompt uses example markers (`for instance`, `e.g.`, `such as`, `as needed`, `including but not limited to`, etc.), enumerate the sibling items in that class as must-consider scope, not optional extras, and tell the main thread to persist them with `record-scope-checklist.sh init` when the exemplifying-scope gate is active. This section prevents the common failure mode where only the explicit request is scoped and the deliverable ends up at 60% of what a veteran would ship.
 
 Rules:
 
@@ -29,6 +29,6 @@ Rules:
 - Surface hidden risks, edge cases, and failure modes early.
 - If something is unclear, investigate it instead of guessing.
 - Consider: what would break if the assumptions are wrong? What would a skeptical reviewer challenge?
-- After scoping the explicit request, step back and ask: what would a veteran in this domain also deliver? Scope those items in the implied-scope section. The execution phase can only deliver what was planned — if you scope only the literal ask, the deliverable will be incomplete.
+- After scoping the explicit request, step back and ask: what would a veteran in this domain also deliver? Scope those items in the implied-scope section. The execution phase can only deliver what was planned — if you scope only the literal ask, the deliverable will be incomplete. For example-marker prompts, the veteran question is "what class did the user exemplify?" not "what single example did they name?"
 
 End with exactly one line on its own, unindented, as the final line of your response: `VERDICT: PLAN_READY` when the plan is decision-complete and execution can begin, `VERDICT: NEEDS_CLARIFICATION` when explicit user input is required before planning continues, or `VERDICT: BLOCKED` when a hard constraint or missing precondition prevents planning. The hook reads this line to track plan-readiness state.

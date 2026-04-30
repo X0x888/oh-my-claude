@@ -317,22 +317,26 @@ assert_false "make a panel like the dash"    'is_exemplifying_request "make a pa
 assert_false "empty string"                  'is_exemplifying_request ""'
 
 # ----------------------------------------------------------------------
-# Test 13: conf parser wires v1.23.0 flags
-printf 'Test 13: conf parser wires exemplifying_directive / prompt_text_override / mark_deferred_strict\n'
+# Test 13: conf parser wires v1.23.0+ exemplifying / prompt-text flags
+printf 'Test 13: conf parser wires exemplifying / prompt-text / defer flags\n'
 _test_conf="$(mktemp -t bias-defense-conf-XXXXXX)"
 cat > "${_test_conf}" <<EOF
 exemplifying_directive=off
+exemplifying_scope_gate=off
 prompt_text_override=off
 mark_deferred_strict=off
 EOF
 _omc_env_exemplifying_directive=""
+_omc_env_exemplifying_scope_gate=""
 _omc_env_prompt_text_override=""
 _omc_env_mark_deferred_strict=""
 OMC_EXEMPLIFYING_DIRECTIVE="on"
+OMC_EXEMPLIFYING_SCOPE_GATE="on"
 OMC_PROMPT_TEXT_OVERRIDE="on"
 OMC_MARK_DEFERRED_STRICT="on"
 _parse_conf_file "${_test_conf}"
 assert_eq "exemplifying_directive parsed" "off" "${OMC_EXEMPLIFYING_DIRECTIVE}"
+assert_eq "exemplifying_scope_gate parsed" "off" "${OMC_EXEMPLIFYING_SCOPE_GATE}"
 assert_eq "prompt_text_override parsed"   "off" "${OMC_PROMPT_TEXT_OVERRIDE}"
 assert_eq "mark_deferred_strict parsed"   "off" "${OMC_MARK_DEFERRED_STRICT}"
 rm -f "${_test_conf}"
@@ -341,17 +345,21 @@ rm -f "${_test_conf}"
 _test_conf="$(mktemp -t bias-defense-conf-XXXXXX)"
 cat > "${_test_conf}" <<EOF
 exemplifying_directive=off
+exemplifying_scope_gate=off
 prompt_text_override=off
 mark_deferred_strict=off
 EOF
 _omc_env_exemplifying_directive="on"
+_omc_env_exemplifying_scope_gate="on"
 _omc_env_prompt_text_override="on"
 _omc_env_mark_deferred_strict="on"
 OMC_EXEMPLIFYING_DIRECTIVE="on"
+OMC_EXEMPLIFYING_SCOPE_GATE="on"
 OMC_PROMPT_TEXT_OVERRIDE="on"
 OMC_MARK_DEFERRED_STRICT="on"
 _parse_conf_file "${_test_conf}"
 assert_eq "env wins over conf — exemplifying" "on" "${OMC_EXEMPLIFYING_DIRECTIVE}"
+assert_eq "env wins over conf — scope gate"   "on" "${OMC_EXEMPLIFYING_SCOPE_GATE}"
 assert_eq "env wins over conf — prompt-text"  "on" "${OMC_PROMPT_TEXT_OVERRIDE}"
 assert_eq "env wins over conf — mark-defer"   "on" "${OMC_MARK_DEFERRED_STRICT}"
 rm -f "${_test_conf}"

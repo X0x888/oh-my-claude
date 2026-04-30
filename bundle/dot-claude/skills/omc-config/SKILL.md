@@ -65,9 +65,9 @@ Call `AskUserQuestion` once with both questions in the same tool invocation. The
 question: "Which profile should I apply? (To make no changes, pick Other and type 'cancel'.)"
 options:
   - label: "Maximum Quality + Automation (Recommended)"
-    description: "Every quality lever pulled — internally consistent with model_tier=quality. Full gates + blocking exhaustion + all bias-defense flags on + watchdog on + council_deep_default=on (auto-triggered /council uses opus per lens, matching your Opus-everywhere stance). Note: turns on prometheus_suggest + intent_verify_directive, so short/vague prompts will receive planning directives — fine-tune later if too chatty."
+    description: "Every quality lever pulled — internally consistent with model_tier=quality. Full gates + blocking exhaustion + all bias-defense flags on, including exemplified-scope checklist enforcement + watchdog on + council_deep_default=on (auto-triggered /council uses opus per lens, matching your Opus-everywhere stance). Note: turns on prometheus_suggest + intent_verify_directive, so short/vague prompts will receive planning directives — fine-tune later if too chatty."
   - label: "Balanced"
-    description: "Close to install-time defaults: full gates, scorecard exhaustion, no bias-defense layer, watchdog off, model_tier=balanced, council_deep_default=off (auto-/council on sonnet — cost cap lives here, not in Maximum). Safe for most users."
+    description: "Close to install-time defaults: full gates, scorecard exhaustion, low-friction bias-defense defaults on (prompt-text override, exemplified-scope checklist, strict defer reasons), watchdog off, model_tier=balanced, council_deep_default=off (auto-/council on sonnet — cost cap lives here, not in Maximum). Safe for most users."
   - label: "Minimal"
     description: "Lightest footprint: basic gates only, all telemetry off, watchdog off, model_tier=economy. For shared/regulated machines or low-cost setups."
   - label: "Review my defaults & fine-tune"

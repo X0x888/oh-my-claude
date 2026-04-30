@@ -30,62 +30,11 @@ if [[ -z "${reason//[[:space:]]/}" ]]; then
   exit 2
 fi
 
-# Require-WHY validation (v1.23.0). "Out of scope" alone, "not in scope"
-# alone, "follow-up" alone, etc. have historically been used to silently
-# skip work — the gate exists to make scope decisions auditable, but a
-# low-information reason word converts the structured deferral row back
-# into the silent-skip anti-pattern. The script now requires the reason
-# to contain a named WHY clause OR be a self-explanatory single token
-# from a small allowlist (duplicate / obsolete / superseded).
-#
-# OMC_MARK_DEFERRED_STRICT=off provides an opt-out for users who prefer
-# the legacy free-form behavior. Default `on` because the evidence from
-# the v1.22.x sessions shows the validation catches more legitimate
-# scope-narrowing than it false-rejects.
-_validate_reason_has_why() {
-  local r="$1"
-  # Normalize: lowercase, collapse whitespace, strip leading/trailing
-  # punctuation. The validation operates on this normalized form so a
-  # reason like "Duplicate." or "  duplicate " passes the allowlist.
-  local lc trimmed
-  lc="$(tr '[:upper:]' '[:lower:]' <<<"${r}")"
-  trimmed="$(sed -E 's/^[[:space:][:punct:]]+|[[:space:][:punct:]]+$//g' <<<"${lc}")"
-
-  # Allowlist of self-explanatory single-token reasons. These are
-  # intrinsically meaningful — `duplicate` IS the WHY, no further clause
-  # needed. Multi-word context still fine ("duplicate of F-042") because
-  # the require-WHY scan below will also pass them.
-  case "${trimmed}" in
-    duplicate|obsolete|superseded|wontfix|invalid|"won't fix"|"not applicable"|n/a|"not a bug")
-      return 0
-      ;;
-  esac
-
-  # Require-WHY scan. The reason must contain at least one keyword that
-  # marks a named context, blocker, or successor. Keywords were chosen
-  # from the documented acceptable shapes in mark-deferred/SKILL.md plus
-  # natural-English variants. Word boundaries are enforced via grep -w-
-  # like patterns to prevent substring matches (e.g., "scheduled" must
-  # not match a "sched" infix).
-  local why_keywords='\b(requires?|require[ds]?|need(s|ed|ing)?|blocked|blocking|superseded|supersedes|replaced|replaces|pending|awaiting|awaits|wait(s|ing)?|because|due[[:space:]]+to|tracks?[[:space:]]+to|tracked[[:space:]]+(in|at)|see[[:space:]]+(#|f-|wave)|after[[:space:]]+(f-|wave|ticket|issue)|until[[:space:]]+(f-|wave|ticket|issue|the[[:space:]]+(release|migration|launch|cutover))|once[[:space:]]+(f-|wave|the))\b'
-  if grep -Eiq "${why_keywords}" <<<"${trimmed}"; then
-    return 0
-  fi
-
-  # Issue/PR/wave reference shape (`#42`, `F-001`, `wave 3`, `PR-12`).
-  # Also acts as a structural marker that points to a successor.
-  if grep -Eiq '(\#[0-9]+|\bf-[0-9]+|\bwave[[:space:]]+[0-9]+|\bpr-?[0-9]+)' <<<"${trimmed}"; then
-    return 0
-  fi
-
-  return 1
-}
-
 # Reject reasons that have historically been used as silent-skip
 # escape hatches. The error message lists acceptable shapes so the
 # user (or model invoking the skill) can immediately rewrite.
 if [[ "${OMC_MARK_DEFERRED_STRICT:-on}" == "on" ]] \
-    && ! _validate_reason_has_why "${reason}"; then
+    && ! omc_reason_has_concrete_why "${reason}"; then
   cat >&2 <<EOF
 mark-deferred: reason rejected — must name a concrete WHY.
 

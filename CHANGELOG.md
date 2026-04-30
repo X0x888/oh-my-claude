@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.23.1] - 2026-04-30
+
+### Added
+
+- **Exemplifying-scope hard gate.** The v1.23.0 `EXEMPLIFYING SCOPE DETECTED` directive was useful but still soft: a model could ignore it and ship only the literal example. New `record-scope-checklist.sh` creates `<session>/exemplifying_scope.json` for example-marker prompts (`for instance`, `e.g.`, `such as`, `as needed`, etc.). `prompt-intent-router.sh` arms `exemplifying_scope_required=1` on fresh execution prompts, and `stop-guard.sh` now blocks until each sibling class item is marked `shipped` or `declined` with a concrete WHY. `quality-planner`, `quality-reviewer`, and `excellence-reviewer` now explicitly reconcile example-marker scope. New config flag: `exemplifying_scope_gate=on` (default; env `OMC_EXEMPLIFYING_SCOPE_GATE`), wired through `common.sh`, `oh-my-claude.conf.example`, `/omc-config`, presets, docs, and `/ulw-status`.
+- **Regression coverage for scope-checklist enforcement.** Added `tests/test-exemplifying-scope-gate.sh`, covering router arming, directive text, missing-checklist Stop block, pending-item Stop block, concrete-WHY rejection for `declined "out of scope"`, shipped/declined satisfaction, and clearing the requirement on the next non-exemplifying execution prompt. CI now runs the new test.
+
 ## [1.23.0] - 2026-04-30
 
 **What changes for you.** The `/ulw` workflow used to interpret short prompts literally — `for instance, X` became `implement only X`, and the PreTool guard parroted `reply with: ship the commit on <branch>` back at you when it misclassified your intent. v1.23.0 closes both, plus several adjacent failure modes you reported as one cohesive release:

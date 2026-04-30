@@ -114,9 +114,17 @@
 # informational rather than blocking, and the failure mode it defends
 # against was the primary v1.22.x complaint ("scope" had become an
 # escape trick). Set to off if the directive is too chatty for your
-# style — the calibration test in core.md still applies regardless.
+# style -- the calibration test in core.md still applies regardless.
 # Env: OMC_EXEMPLIFYING_DIRECTIVE.
 #exemplifying_directive=on
+
+# Hard gate for exemplified scope. When `on`, execution prompts with
+# example markers must record an `exemplifying_scope.json` checklist via
+# record-scope-checklist.sh; stop-guard blocks until every sibling item
+# is marked shipped or declined with a concrete WHY. Default ON because
+# the directive alone is not enough to prevent literal-minimum execution.
+# Env: OMC_EXEMPLIFYING_SCOPE_GATE.
+#exemplifying_scope_gate=on
 
 # PreTool guard's raw-prompt-text trust override. When the classifier
 # mis-routes a prompt as advisory but the most recent user prompt

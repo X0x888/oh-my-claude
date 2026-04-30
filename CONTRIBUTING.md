@@ -70,6 +70,7 @@ bash tests/test-install-artifacts.sh
 bash tests/test-post-merge-hook.sh
 bash tests/test-repro-redaction.sh
 bash tests/test-discovered-scope.sh
+bash tests/test-exemplifying-scope-gate.sh
 bash tests/test-finding-list.sh
 bash tests/test-state-io.sh
 bash tests/test-classifier-replay.sh
@@ -98,6 +99,11 @@ bash tests/test-auto-memory-skip.sh
 bash tests/test-memory-audit.sh
 bash tests/test-memory-drift-hint.sh
 bash tests/test-specialist-routing.sh
+bash tests/test-stop-failure-handler.sh
+bash tests/test-session-start-resume-hint.sh
+bash tests/test-claim-resume-request.sh
+bash tests/test-resume-watchdog.sh
+bash tests/test-omc-config.sh
 python3 -m unittest tests.test_statusline -v
 ```
 

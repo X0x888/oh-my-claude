@@ -129,6 +129,98 @@ if [[ "${ulw_pause_active}" != "1" ]] \
   fi
 fi
 
+# Exemplifying-scope checklist gate: when a fresh execution prompt uses
+# "for instance" / "e.g." / "such as" / "as needed" style markers, the
+# router records exemplifying_scope_required=1. A soft directive alone is
+# too easy for the model to ignore, so this gate requires an auditable
+# checklist: enumerate sibling class items, then mark each shipped or
+# consciously declined with a concrete WHY via record-scope-checklist.sh.
+if [[ "${OMC_EXEMPLIFYING_SCOPE_GATE:-on}" == "on" ]] \
+  && is_execution_intent_value "${task_intent}" \
+  && [[ "$(read_state "exemplifying_scope_required")" == "1" ]]; then
+  _es_file="$(session_file "exemplifying_scope.json")"
+  _es_prompt_ts="$(read_state "exemplifying_scope_prompt_ts")"
+  _es_prompt_ts="${_es_prompt_ts:-0}"
+  [[ "${_es_prompt_ts}" =~ ^[0-9]+$ ]] || _es_prompt_ts=0
+
+  _es_missing=1
+  _es_pending=0
+  _es_total=0
+  _es_scorecard="  (no checklist recorded)"
+
+  if [[ -f "${_es_file}" ]]; then
+    _es_file_prompt_ts="$(jq -r '.source_prompt_ts // 0' "${_es_file}" 2>/dev/null || printf '0')"
+    _es_total="$(jq -r '(.items // []) | length' "${_es_file}" 2>/dev/null || printf '0')"
+    _es_pending="$(jq -r '[.items[]? | select(.status == "pending")] | length' "${_es_file}" 2>/dev/null || printf '0')"
+    [[ "${_es_total}" =~ ^[0-9]+$ ]] || _es_total=0
+    [[ "${_es_pending}" =~ ^[0-9]+$ ]] || _es_pending=0
+    if [[ "${_es_file_prompt_ts}" == "${_es_prompt_ts}" && "${_es_total}" -gt 0 ]]; then
+      _es_missing=0
+    else
+      _es_scorecard="  (checklist exists but belongs to a different prompt or has no items)"
+    fi
+    if [[ "${_es_total}" -gt 0 ]]; then
+      _es_scorecard="$(jq -r '
+        (.items // [])
+        | map("  - [" + (.status // "pending") + "] " + .id + ": " + .summary
+              + (if (.reason // "") != "" then " -- " + .reason else "" end))
+        | .[]
+      ' "${_es_file}" 2>/dev/null || printf '  (could not read checklist)')"
+    fi
+  fi
+
+  if [[ "${_es_missing}" -eq 1 || "${_es_pending}" -gt 0 ]]; then
+    _es_blocks="$(read_state "exemplifying_scope_blocks")"
+    _es_blocks="${_es_blocks:-0}"
+    [[ "${_es_blocks}" =~ ^[0-9]+$ ]] || _es_blocks=0
+    _es_cap=2
+
+    if [[ "${_es_blocks}" -lt "${_es_cap}" || "${OMC_GUARD_EXHAUSTION_MODE}" == "block" ]]; then
+      if [[ "${_es_blocks}" -lt "${_es_cap}" ]]; then
+        write_state "exemplifying_scope_blocks" "$((_es_blocks + 1))"
+        _es_next_block="$((_es_blocks + 1))"
+      else
+        _es_next_block="${_es_blocks}"
+      fi
+      record_gate_event "exemplifying-scope" "block" \
+        "block_count=${_es_next_block}" \
+        "block_cap=${_es_cap}" \
+        "missing_checklist=${_es_missing}" \
+        "pending_count=${_es_pending}" \
+        "total_count=${_es_total}"
+      _es_recovery="$(format_gate_recovery_line "inspect the exemplified surface, run \`~/.claude/skills/autowork/scripts/record-scope-checklist.sh init\` with the sibling items, then mark each item \`shipped\` or \`declined <concrete why>\`. Bare 'out of scope' / 'not in scope' is not a reason. To bypass once with reason, run /ulw-skip.")"
+      if [[ "${_es_missing}" -eq 1 ]]; then
+        _es_reason="[Exemplifying-scope gate · ${_es_next_block}/${_es_cap}] this prompt used example markers, so the example is one item from a class, but no current scope checklist was recorded. ULW must not silently implement only the literal example. Record the sibling items a veteran would bundle into this pass before finalizing.${_es_recovery}"
+      else
+        _es_reason="[Exemplifying-scope gate · ${_es_next_block}/${_es_cap}] ${_es_pending}/${_es_total} exemplified-scope checklist item(s) are still pending. Ship them, or mark individual items declined with a concrete WHY. Current checklist:
+${_es_scorecard}
+${_es_recovery}"
+      fi
+      if [[ "${OMC_GUARD_EXHAUSTION_MODE}" == "block" && "${_es_blocks}" -ge "${_es_cap}" ]]; then
+        _es_reason="${_es_reason} BLOCK MODE: this gate will not release until the checklist is satisfied."
+      fi
+      jq -nc --arg reason "${_es_reason}" '{"decision":"block","reason":$reason}'
+      exit 0
+    fi
+
+    with_state_lock_batch \
+      "guard_exhausted" "$(now_epoch)" \
+      "guard_exhausted_detail" "exemplifying_scope_missing=${_es_missing},pending=${_es_pending}" \
+      "session_outcome" "exhausted"
+    record_gate_event "exemplifying-scope" "exhausted" \
+      "block_count=${_es_blocks}" \
+      "block_cap=${_es_cap}" \
+      "missing_checklist=${_es_missing}" \
+      "pending_count=${_es_pending}" \
+      "total_count=${_es_total}"
+    emit_scorecard_stop_context \
+      "EXEMPLIFYING-SCOPE SCORECARD (gate exhausted after ${_es_cap} blocks):" \
+      "The exemplifying-scope gate released without full checklist satisfaction. Name the remaining scope risk in your final summary." \
+      "${_es_scorecard}"
+    exit 0
+  fi
+fi
+
 # Wave-shape gate (F-013): block once when the active wave plan is
 # under-segmented per the canonical Phase 8 rule (avg <3 findings/wave
 # on a master list of \u22655 findings AND \u22652 waves planned). This catches

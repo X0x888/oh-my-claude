@@ -189,6 +189,7 @@ Session state is stored at:
   edited_files.log             # Paths of edited files
   classifier_telemetry.jsonl   # Per-turn classification rows + misfire annotations (capped at 100 rows)
   discovered_scope.jsonl       # Findings captured from advisory specialists (council lenses, metis, briefing-analyst); capped at 200 rows
+  exemplifying_scope.json      # Checklist of sibling scope items for example-marker prompts; managed by record-scope-checklist.sh and enforced by stop-guard
   findings.json                # Council Phase 8 master finding list (model-managed via record-finding-list.sh); waves[] declares the active wave plan
   gate_events.jsonl            # Per-event outcome attribution rows (gate fires + finding-status changes); capped at OMC_GATE_EVENTS_PER_SESSION_MAX, default 500. Added v1.14.0.
   design_contract.md           # Inline 9-section Design Contract captured from frontend-developer / ios-ui-developer SubagentStop, with agent/ts/cwd frontmatter. Read by design-reviewer / visual-craft-lens via find-design-contract.sh when no project-root DESIGN.md exists. Latest emission wins (the user may iterate). Added post-v1.15.0.
@@ -290,6 +291,13 @@ Separate from session state, `install.sh` writes four install-time artifacts tha
 | `advisory_guard_blocks` | Number of times the advisory inspection gate has blocked (cap: 1) |
 | `pretool_intent_blocks` | Number of times the `pretool-intent-guard.sh` PreToolUse hook denied a destructive git/gh command because `task_intent` was `advisory`, `session_management`, or `checkpoint` (counter, no cap) |
 | `discovered_scope_blocks` | Number of times the discovered-scope gate has blocked a stop because pending findings from advisory specialists were not addressed (cap: 2 by default; raised to `wave_total + 1` when a council Phase 8 wave plan is active in `findings.json` AND the plan is NOT under-segmented per `is_wave_plan_under_segmented` — narrow plans stay at cap=2 to avoid the polarity bug where 5×1-finding plans would otherwise release after 5 narrow waves). Reset by `/ulw-skip`. |
+| `exemplifying_scope_required` | `1` when the latest execution prompt used example markers and the exemplifying-scope gate requires a checklist before Stop. Cleared on the next fresh non-exemplifying execution prompt. |
+| `exemplifying_scope_prompt_ts` | Epoch timestamp of the prompt that armed the exemplifying-scope checklist requirement; `exemplifying_scope.json.source_prompt_ts` must match this to count as current. |
+| `exemplifying_scope_prompt_preview` | Truncated prompt preview used by `record-scope-checklist.sh` when creating `exemplifying_scope.json`. |
+| `exemplifying_scope_checklist_ts` | Epoch timestamp when `record-scope-checklist.sh init` last recorded a checklist for the current example-marker prompt. |
+| `exemplifying_scope_pending_count` | Cached pending-item count from `exemplifying_scope.json`; updated by `record-scope-checklist.sh status`. |
+| `exemplifying_scope_satisfied_ts` | Epoch timestamp when the exemplifying-scope checklist reached zero pending items. |
+| `exemplifying_scope_blocks` | Number of times the exemplifying-scope gate has blocked Stop because the checklist was missing/stale or still had pending items (cap: 2 unless `guard_exhaustion_mode=block`). |
 | `wave_shape_blocks` | Number of times the wave-shape gate (v1.22.0) has blocked a stop because the active wave plan is under-segmented (avg <3 findings/wave on a master list of ≥5 findings AND ≥2 waves). Cap: 1 per wave plan. Reset by `record-finding-list.sh init` so a fresh plan gets a fresh gate budget. The numerics live in three places: this predicate, the gate's user-facing block reason in `stop-guard.sh`, and the canonical text in `bundle/dot-claude/skills/council/SKILL.md` Step 8. |
 | `serendipity_count` | Number of times `record-serendipity.sh` has logged a Serendipity Rule application this session. Surfaced in `/ulw-status` full mode. |
 | `last_serendipity_ts` | Epoch of the most recent Serendipity Rule application, written by `record-serendipity.sh`. |
@@ -356,8 +364,9 @@ The classification order in `classify_task_intent()` is a protected design decis
 - `prometheus_suggest` (default off) — defends against over-commitment when an execution prompt is short, product-shaped, and unanchored.
 - `intent_verify_directive` (default off, suppressed when prometheus already fired) — defends against over-commitment by asking the model to restate the goal before its first edit when the prompt is short and unanchored.
 - `exemplifying_directive` (default on, v1.23.0) — defends against under-commitment when the prompt uses example markers (`for instance`, `e.g.`, `such as`, etc.) by instructing the model to treat the example as one item from an enumerable class. Symmetric to (but opposite of) the other two; fires INDEPENDENTLY because narrowing and widening are orthogonal.
+- `exemplifying_scope_gate` (default on) — hardens `exemplifying_directive` by requiring `exemplifying_scope.json` before Stop. The model records sibling items via `record-scope-checklist.sh init`; each item must become `shipped` or `declined` with a concrete WHY. This closes the gap where the directive could be ignored and the literal example still shipped alone.
 
-All three emit `gate=bias-defense` `event=directive_fired` rows for `/ulw-report` audit.
+The three directives emit `gate=bias-defense` `event=directive_fired` rows for `/ulw-report` audit. The hard exemplifying-scope gate emits `gate=exemplifying-scope` block/exhausted rows.
 
 ---
 

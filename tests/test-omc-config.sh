@@ -251,11 +251,11 @@ assert_file_lacks_line "atomic batch: auto_memory not written" "${USER_CONF_PATH
 assert_file_lacks_line "atomic batch: discovered_scope not written" "${USER_CONF_PATH}" "^discovered_scope=on\$"
 teardown
 
-# --- Test 13: apply-preset maximum writes all 15 keys (v1.23.0: +3 flags) ---
-printf 'Test 13: apply-preset maximum writes 15 keys\n'
+# --- Test 13: apply-preset maximum writes all 16 keys ---
+printf 'Test 13: apply-preset maximum writes 16 keys\n'
 setup
 out="$(bash "${HELPER}" apply-preset user maximum 2>&1)"
-assert_contains "apply-preset reports 15 keys" "15 keys" "${out}"
+assert_contains "apply-preset reports 16 keys" "16 keys" "${out}"
 assert_file_has_line "maximum: gate_level=full" "${USER_CONF_PATH}" "^gate_level=full\$"
 assert_file_has_line "maximum: guard_exhaustion_mode=block" "${USER_CONF_PATH}" "^guard_exhaustion_mode=block\$"
 assert_file_has_line "maximum: prometheus_suggest=on" "${USER_CONF_PATH}" "^prometheus_suggest=on\$"
@@ -265,6 +265,7 @@ assert_file_has_line "maximum: model_tier=quality" "${USER_CONF_PATH}" "^model_t
 # v1.23.0: Maximum preset includes the three new flags (all on for the
 # quality posture).
 assert_file_has_line "maximum: exemplifying_directive=on" "${USER_CONF_PATH}" "^exemplifying_directive=on\$"
+assert_file_has_line "maximum: exemplifying_scope_gate=on" "${USER_CONF_PATH}" "^exemplifying_scope_gate=on\$"
 assert_file_has_line "maximum: prompt_text_override=on" "${USER_CONF_PATH}" "^prompt_text_override=on\$"
 assert_file_has_line "maximum: mark_deferred_strict=on" "${USER_CONF_PATH}" "^mark_deferred_strict=on\$"
 # Regression net: council_deep_default=on belongs in Maximum (consistent
@@ -280,6 +281,7 @@ setup
 bash "${HELPER}" apply-preset user balanced > /dev/null
 assert_file_has_line "balanced: guard_exhaustion_mode=scorecard" "${USER_CONF_PATH}" "^guard_exhaustion_mode=scorecard\$"
 assert_file_has_line "balanced: prometheus_suggest=off" "${USER_CONF_PATH}" "^prometheus_suggest=off\$"
+assert_file_has_line "balanced: exemplifying_scope_gate=on" "${USER_CONF_PATH}" "^exemplifying_scope_gate=on\$"
 assert_file_has_line "balanced: resume_watchdog=off" "${USER_CONF_PATH}" "^resume_watchdog=off\$"
 assert_file_has_line "balanced: model_tier=balanced" "${USER_CONF_PATH}" "^model_tier=balanced\$"
 # Counterpart to the Maximum assertion above — Balanced is where the
@@ -295,6 +297,7 @@ bash "${HELPER}" apply-preset user minimal > /dev/null
 assert_file_has_line "minimal: gate_level=basic" "${USER_CONF_PATH}" "^gate_level=basic\$"
 assert_file_has_line "minimal: guard_exhaustion_mode=silent" "${USER_CONF_PATH}" "^guard_exhaustion_mode=silent\$"
 assert_file_has_line "minimal: auto_memory=off" "${USER_CONF_PATH}" "^auto_memory=off\$"
+assert_file_has_line "minimal: exemplifying_scope_gate=off" "${USER_CONF_PATH}" "^exemplifying_scope_gate=off\$"
 assert_file_has_line "minimal: model_tier=economy" "${USER_CONF_PATH}" "^model_tier=economy\$"
 # stop_failure_capture stays on across all presets (privacy + utility).
 assert_file_has_line "minimal: stop_failure_capture stays on" "${USER_CONF_PATH}" "^stop_failure_capture=on\$"

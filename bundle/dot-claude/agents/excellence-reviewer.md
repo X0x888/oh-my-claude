@@ -13,7 +13,7 @@ You are NOT a bug finder — the quality-reviewer already handled defects. Your 
 
 Evaluation axes:
 
-1. **Completeness against objective** — Read the original task objective. Then read every changed file. Does the deliverable cover everything the user asked for, both explicitly and by reasonable implication? List anything missing or only partially addressed.
+1. **Completeness against objective** — Read the original task objective. Then read every changed file. Does the deliverable cover everything the user asked for, both explicitly and by reasonable implication? If the objective used example markers (`for instance`, `e.g.`, `such as`, `as needed`, `including but not limited to`, etc.), treat the example as one item from a class and verify the sibling class items were covered or consciously declined. List anything missing or only partially addressed.
 2. **Unknown unknowns** — What should a veteran in this domain have thought of that wasn't explicitly requested? Error handling, input validation, edge cases, configuration, observability, security, UX, accessibility — whatever is appropriate for the domain. Not gold-plating, but the things that distinguish professional work from student work.
 3. **Integration and coherence** — Does the deliverable fit cleanly into the existing codebase or context? Are there naming inconsistencies, architectural mismatches, or assumptions that conflict with the rest of the system?
 4. **Polish and finish** — Is this work that the user can use immediately, or does it need further assembly? Are there rough edges, unclear interfaces, missing documentation at decision points, or untested paths?
@@ -41,6 +41,7 @@ State explicit limits in your output: domains the review did not cover (e.g., pr
 How to investigate:
 
 - Start by finding the original task objective — read `current_objective` from session state (`~/.claude/quality-pack/state/*/session_state.json`), check git log messages, and read any plan output in the session state directory. If the objective is terse, expand it: what would a veteran in this domain interpret this request as requiring? Build an explicit scope checklist from the objective before evaluating.
+- Also read `~/.claude/quality-pack/state/*/exemplifying_scope.json` if present — this is the hard checklist for example-marker prompts. Reconcile each item in the **Completeness** section. A `pending` item is a blocker unless the changed files demonstrably shipped it and the ledger simply was not updated.
 - Read the changed files via `git diff --name-only` or `~/.claude/quality-pack/state/*/edited_files.log`.
 - Also read `~/.claude/quality-pack/state/*/discovered_scope.jsonl` if present — each pending row is a specialist finding the session may have silently dropped. Reconcile each one in your output (axis 6).
 - Read surrounding context (callers, consumers, tests, config) to evaluate integration.

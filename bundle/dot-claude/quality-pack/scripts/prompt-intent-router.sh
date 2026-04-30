@@ -42,6 +42,11 @@ if [[ "${just_compacted_value}" == "1" ]] && [[ -n "${just_compacted_ts_value}" 
 fi
 
 TASK_INTENT="$(classify_task_intent "${PROMPT_TEXT}")"
+PROMPT_TS="$(now_epoch)"
+EXEMPLIFYING_SCOPE_DETECTED=0
+if is_execution_intent_value "${TASK_INTENT}" && is_exemplifying_request "${PROMPT_TEXT}"; then
+  EXEMPLIFYING_SCOPE_DETECTED=1
+fi
 
 # Classifier telemetry — capture this turn's classification and let the
 # misfire detector judge the PRIOR turn based on accumulated evidence.
@@ -58,13 +63,35 @@ write_state_batch \
   "last_advisory_verify_ts" "" \
   "task_intent" "${TASK_INTENT}" \
   "last_user_prompt" "${PROMPT_TEXT}" \
-  "last_user_prompt_ts" "$(now_epoch)" \
+  "last_user_prompt_ts" "${PROMPT_TS}" \
   "stall_counter" "0" \
   "ulw_pause_active" ""
 append_limited_state \
   "recent_prompts.jsonl" \
-  "$(jq -nc --arg ts "$(now_epoch)" --arg text "${PROMPT_TEXT}" '{ts:$ts,text:$text}')" \
+  "$(jq -nc --arg ts "${PROMPT_TS}" --arg text "${PROMPT_TEXT}" '{ts:$ts,text:$text}')" \
   "12"
+
+if [[ "${OMC_EXEMPLIFYING_SCOPE_GATE:-on}" == "on" ]]; then
+  if [[ "${EXEMPLIFYING_SCOPE_DETECTED}" -eq 1 ]]; then
+    write_state_batch \
+      "exemplifying_scope_required" "1" \
+      "exemplifying_scope_prompt_ts" "${PROMPT_TS}" \
+      "exemplifying_scope_prompt_preview" "$(truncate_chars 240 "${PROMPT_TEXT}")" \
+      "exemplifying_scope_blocks" "0" \
+      "exemplifying_scope_checklist_ts" "" \
+      "exemplifying_scope_pending_count" "" \
+      "exemplifying_scope_satisfied_ts" ""
+  elif is_execution_intent_value "${TASK_INTENT}"; then
+    write_state_batch \
+      "exemplifying_scope_required" "" \
+      "exemplifying_scope_prompt_ts" "" \
+      "exemplifying_scope_prompt_preview" "" \
+      "exemplifying_scope_blocks" "" \
+      "exemplifying_scope_checklist_ts" "" \
+      "exemplifying_scope_pending_count" "" \
+      "exemplifying_scope_satisfied_ts" ""
+  fi
+fi
 
 if ! is_maintenance_prompt "${PROMPT_TEXT}"; then
   normalized_objective="$(normalize_task_prompt "${PROMPT_TEXT}")"
@@ -343,12 +370,11 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
     # exemplifies, treat the example as one item from an enumerable
     # class and enumerate siblings.
     #
-    # Default ON because (a) it's informational, not blocking — the
-    # model adjusts framing without forced delegation; (b) the failure
-    # mode it defends against was the user's primary v1.22.x complaint
-    # ("scope" had become an escape trick); and (c) unlike prometheus/
-    # intent-verify, this directive does not introduce friction (no
-    # blocked stop, no forced sub-agent dispatch).
+    # Default ON because the failure mode it defends against was the
+    # user's primary v1.22.x complaint ("scope" had become an escape
+    # trick). The directive itself is framing; the separate
+    # exemplifying_scope_gate flag decides whether Stop enforces the
+    # resulting checklist.
     #
     # Fires INDEPENDENTLY of the narrowing directives (no
     # _bias_directive_emitted gating) because narrowing and widening
@@ -356,8 +382,12 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
     # legitimately receive both (clarify the goal interview-first AND
     # treat the named example as class-shaped scope).
     if [[ "${OMC_EXEMPLIFYING_DIRECTIVE:-on}" == "on" ]] \
-        && is_exemplifying_request "${PROMPT_TEXT}"; then
-      context_parts+=("EXEMPLIFYING SCOPE DETECTED: the prompt uses example markers ('for instance' / 'e.g.' / 'i.e.' / 'for example' / 'such as' / 'as needed' / 'as appropriate' / 'similar to' / 'including but not limited to' / 'things like' / 'stuff like' / 'examples include'). Treat the example as ONE item from an enumerable class — the *class* is the scope, not the literal example. Before stopping, enumerate the sibling items in the same class (other items a veteran would bundle into the same pass) and address all of them, or explicitly decline each with a one-line reason. Implementing only the literal example and silently dropping the class is **under-interpretation, not restraint** — it is the failure mode \`/ulw\` was created to prevent. Worked example: 'enhance the statusline, for instance adding reset countdown' enumerates as: reset countdown, in-flight indicators (pause/wave/plan markers), stale-data warnings, count surfaces, model-name handling — all live in the same statusline render path and are class items, not new capabilities. See core.md 'Excellence is not gold-plating' Calibration test, **Also keep going** bullet for the same rule. The user's request IS the permission to enumerate the class — do not gate-keep yourself by asking which siblings to include.")
+        && [[ "${EXEMPLIFYING_SCOPE_DETECTED}" -eq 1 ]]; then
+      exemplifying_scope_workflow="Before stopping, enumerate the sibling items in the same class (other items a veteran would bundle into the same pass) and address all of them, or explicitly decline each with a one-line concrete WHY."
+      if [[ "${OMC_EXEMPLIFYING_SCOPE_GATE:-on}" == "on" ]]; then
+        exemplifying_scope_workflow="After initial inspection and before implementation settles, record a checklist with \`~/.claude/skills/autowork/scripts/record-scope-checklist.sh init\` (JSON array of sibling scope items), then mark each item \`shipped\` or \`declined\` with a concrete WHY before stopping; the exemplifying-scope stop gate will block silent drops."
+      fi
+      context_parts+=("EXEMPLIFYING SCOPE DETECTED: the prompt uses example markers ('for instance' / 'e.g.' / 'i.e.' / 'for example' / 'such as' / 'as needed' / 'as appropriate' / 'similar to' / 'including but not limited to' / 'things like' / 'stuff like' / 'examples include'). Treat the example as ONE item from an enumerable class — the *class* is the scope, not the literal example. ${exemplifying_scope_workflow} Implementing only the literal example and silently dropping the class is **under-interpretation, not restraint** — it is the failure mode \`/ulw\` was created to prevent. Worked example: 'enhance the statusline, for instance adding reset countdown' enumerates as: reset countdown, in-flight indicators (pause/wave/plan markers), stale-data warnings, count surfaces, model-name handling — all live in the same statusline render path and are class items, not new capabilities. See core.md 'Excellence is not gold-plating' Calibration test, **Also keep going** bullet for the same rule. The user's request IS the permission to enumerate the class — do not gate-keep yourself by asking which siblings to include.")
       log_hook "prompt-intent-router" "bias-defense: exemplifying-directive fired"
       record_gate_event "bias-defense" "directive_fired" \
         "directive=exemplifying"

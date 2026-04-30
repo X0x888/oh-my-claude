@@ -25,7 +25,9 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # is_ambiguous_execution_request) instead of whatever is installed.
 _test_home="$(mktemp -d -t bias-defense-home-XXXXXX)"
 _test_state_root="${_test_home}/state"
+_test_project="${_test_home}/project"
 mkdir -p "${_test_home}/.claude/quality-pack" "${_test_state_root}"
+mkdir -p "${_test_project}"
 ln -s "${REPO_ROOT}/bundle/dot-claude/skills" "${_test_home}/.claude/skills"
 # Symlink only the read-only subdirs (scripts, memory) so cross-session
 # telemetry files (agent-metrics.json, gate-skips.jsonl) write into the
@@ -84,12 +86,13 @@ _run_router() {
   hook_json="$(jq -nc \
     --arg sid "${session_id}" \
     --arg p "${prompt_text}" \
-    '{session_id:$sid, prompt:$p, cwd:env.PWD}')"
+    --arg cwd "${_test_project}" \
+    '{session_id:$sid, prompt:$p, cwd:$cwd}')"
 
   HOME="${_test_home}" \
     STATE_ROOT="${_test_state_root}" \
     env ${env_args[@]+"${env_args[@]}"} \
-    bash "${REPO_ROOT}/bundle/dot-claude/quality-pack/scripts/prompt-intent-router.sh" \
+    bash -c 'cd "$1" && bash "$2"' _ "${_test_project}" "${REPO_ROOT}/bundle/dot-claude/quality-pack/scripts/prompt-intent-router.sh" \
     <<<"${hook_json}" 2>/dev/null \
     | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null \
     || true

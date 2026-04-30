@@ -138,7 +138,7 @@ oh-my-claude/
       memory/                 # Core, skills, and compact memory files
       scripts/                # 8 lifecycle scripts (prompt routing, compaction, session, stop-failure, resume-hint, resume-watchdog)
     skills/                   # 23 skill definitions, each in <name>/SKILL.md
-      autowork/scripts/       # 23 autowork hook scripts and utilities
+      autowork/scripts/       # 25 autowork hook scripts and utilities
         common.sh             # Shared functions (JSON, classification, scope)
         lib/state-io.sh       # Extracted state I/O subsystem; sourced by common.sh
         lib/classifier.sh     # Extracted prompt classifier (P0 + P1 + telemetry); sourced by common.sh
@@ -149,7 +149,7 @@ oh-my-claude/
   config/
     settings.patch.json       # Settings merged into user's settings.json
 
-  tests/                      # 43 bash + 1 python test scripts; CLAUDE.md "Testing" lists each one
+  tests/                      # 47 bash + 1 python test scripts; CLAUDE.md "Testing" lists each one
 
   tools/                      # Developer tools (not installed)
     replay-classifier-telemetry.sh
@@ -167,6 +167,7 @@ oh-my-claude/
 
 - **Hook scripts** (`quality-pack/scripts/`, `autowork/scripts/`): Bash scripts triggered by Claude Code lifecycle events (prompt entry, pre-tool-use, tool completion, compaction, session start). They route intents, manage state, and enforce quality gates.
 - **common.sh** (`autowork/scripts/common.sh`): Shared utility library. Sources `lib/state-io.sh` for the state I/O subsystem (`read_state`, `write_state`, `write_state_batch`, `with_state_lock`, `with_state_lock_batch`, `ensure_session_dir`, `session_file`, `append_state`, `append_limited_state`), `lib/verification.sh` for verification scoring and MCP-tool classification (`verification_matches_project_test_command`, `verification_has_framework_keyword`, `detect_verification_method`, `score_verification_confidence`, `classify_mcp_verification_tool`, `score_mcp_verification_confidence`, `detect_mcp_verification_outcome`), and `lib/classifier.sh` for prompt classification (`is_imperative_request`, `count_keyword_matches`, `is_ui_request`, `infer_domain`, `classify_task_intent`, `record_classifier_telemetry`, `detect_classifier_misfire`, `is_execution_intent_value`). Continues to provide domain routing, project profile detection (`detect_project_profile`), quality scorecard generation (`build_quality_scorecard`), stall detection helpers (`compute_stall_threshold`, `compute_progress_score`), dimension risk ordering (`order_dimensions_by_risk`), cross-session agent metrics (`record_agent_metric`), defect pattern tracking (`record_defect_pattern`, `get_defect_watch_list`), and the `_cap_cross_session_jsonl` aggregate-rotation helper.
+- **record-scope-checklist.sh** (`autowork/scripts/record-scope-checklist.sh`): State-backed checklist for example-marker prompts. `prompt-intent-router.sh` arms `exemplifying_scope_required=1` when an execution prompt uses `for instance` / `e.g.` / `such as` / `as needed`; the model records sibling class items in `exemplifying_scope.json`, then marks each `shipped` or `declined` with a concrete WHY. `stop-guard.sh` blocks silent drops while pending items remain.
 - **lib/state-io.sh** (`autowork/scripts/lib/state-io.sh`): Extracted state I/O module. Sourced by `common.sh` after `validate_session_id` and `log_anomaly` are defined. The lib uses portable readlink resolution so it works whether `common.sh` is installed normally, symlinked into a test HOME, or symlinked to a custom location.
 - **lib/classifier.sh** (`autowork/scripts/lib/classifier.sh`): Extracted prompt classification subsystem (~500 lines). Sourced by `common.sh` after every classifier dependency (`project_profile_has`, `is_advisory_request`, `normalize_task_prompt`, etc.) is defined. Behavior identical to the prior in-place definitions; this module exists for clearer ownership and to give the regression suite (`test-intent-classification.sh`, `test-classifier-replay.sh`) a single file of truth for future tuning.
 - **lib/verification.sh** (`autowork/scripts/lib/verification.sh`): Extracted verification subsystem (~300 lines). Sourced by `common.sh` immediately after `lib/state-io.sh` (no inter-lib dependencies — pure functions over command text, output, and `OMC_CUSTOM_VERIFY_MCP_TOOLS`). Owns: bash test-command matching (`verification_matches_project_test_command`), framework-keyword detection (`verification_has_framework_keyword`), output-signal heuristics (`verification_output_has_counts`, `verification_output_has_clear_outcome`), the verification-method label and confidence score, plus MCP tool classification, scoring, and outcome detection. Behavior identical to the prior in-place definitions.
@@ -287,6 +288,7 @@ bash tests/test-uninstall-merge.sh
 bash tests/test-common-utilities.sh
 bash tests/test-session-resume.sh
 bash tests/test-discovered-scope.sh
+bash tests/test-exemplifying-scope-gate.sh
 bash tests/test-finding-list.sh
 bash tests/test-state-io.sh
 bash tests/test-classifier-replay.sh

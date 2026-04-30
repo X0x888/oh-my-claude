@@ -67,6 +67,9 @@ jobs:
       - name: Run wave-shape tests
         run: bash tests/test-wave-shape.sh
 
+      - name: Run exemplifying-scope gate tests
+        run: bash tests/test-exemplifying-scope-gate.sh
+
       - name: Run agent VERDICT contract tests
         run: bash tests/test-agent-verdict-contract.sh
 

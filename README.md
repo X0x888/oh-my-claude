@@ -2,7 +2,7 @@
 
 **What if Claude Code couldn't cut corners?**
 
-[![Version](https://img.shields.io/badge/Version-1.23.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-1.23.1-blue.svg)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Shell](https://img.shields.io/badge/Shell-bash-green.svg)]()
 [![Dependencies](https://img.shields.io/badge/Dependencies-none-brightgreen.svg)]()
@@ -151,6 +151,8 @@ Three **bias-defense directive layers** can fire on fresh-execution prompts (all
 - `intent_verify_directive` (off) — restate-and-confirm before the first edit when the prompt is short and unanchored.
 - `exemplifying_directive` (on, v1.23.0) — when the prompt uses example markers (`for instance`, `e.g.`, `such as`, `as needed`, `similar to`, etc.), treat the example as ONE item from a class and enumerate sibling items rather than dropping the class. Defends against under-interpretation — implementing only the literal example when the prompt phrased it as an example is the failure mode `/ulw` was created to prevent.
 
+The widening layer now has a hard backstop: `exemplifying_scope_gate` (on) requires a state-backed checklist for example-marker prompts. Claude records sibling class items with `record-scope-checklist.sh`, then Stop is blocked until each item is marked shipped or declined with a concrete WHY.
+
 ### Multi-domain routing
 
 **Each domain has its own specialist chain — not a coding tool that happens to accept prose.**
@@ -245,12 +247,12 @@ oh-my-claude/
 ├── install.sh / uninstall.sh / verify.sh   # Install, remove, and verify
 ├── bundle/dot-claude/                       # Installs to ~/.claude/
 │   ├── agents/          (32 agents)         # Specialist agent definitions
-│   ├── skills/          (20 skills)         # Skill definitions + autowork hooks
+│   ├── skills/          (23 skills)         # Skill definitions + autowork hooks
 │   ├── quality-pack/                        # Lifecycle hooks + memory files
 │   ├── output-styles/                       # Output format templates
 │   └── statusline.py                        # Custom statusline widget
 ├── config/settings.patch.json               # Merged into user settings on install
-├── tests/               (42 bash + 1 py)    # See AGENTS.md / CONTRIBUTING.md for full list
+├── tests/               (47 bash + 1 py)    # See AGENTS.md / CONTRIBUTING.md for full list
 ├── tools/                                    # Developer-only tools (not installed)
 └── docs/                                    # Architecture, customization, FAQ, prompts
 ```
@@ -359,6 +361,7 @@ bash tests/test-install-artifacts.sh        # Installed-file artifact assertions
 bash tests/test-post-merge-hook.sh          # --git-hooks post-merge drift detection
 bash tests/test-repro-redaction.sh          # omc-repro.sh privacy contract regression
 bash tests/test-discovered-scope.sh         # Discovered-scope capture + wave-aware gate
+bash tests/test-exemplifying-scope-gate.sh  # Example-marker scope checklist + stop gate
 bash tests/test-finding-list.sh             # Council Phase 8 findings.json artifact
 bash tests/test-state-io.sh                 # Extracted lib/state-io.sh module
 bash tests/test-classifier.sh               # Extracted lib/classifier.sh module (symbol presence + smoke)

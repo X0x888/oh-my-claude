@@ -39,6 +39,7 @@ _omc_env_metis_on_plan_gate="${OMC_METIS_ON_PLAN_GATE:-}"
 _omc_env_prometheus_suggest="${OMC_PROMETHEUS_SUGGEST:-}"
 _omc_env_intent_verify_directive="${OMC_INTENT_VERIFY_DIRECTIVE:-}"
 _omc_env_exemplifying_directive="${OMC_EXEMPLIFYING_DIRECTIVE:-}"
+_omc_env_exemplifying_scope_gate="${OMC_EXEMPLIFYING_SCOPE_GATE:-}"
 _omc_env_prompt_text_override="${OMC_PROMPT_TEXT_OVERRIDE:-}"
 _omc_env_mark_deferred_strict="${OMC_MARK_DEFERRED_STRICT:-}"
 _omc_env_wave_override_ttl="${OMC_WAVE_OVERRIDE_TTL_SECONDS:-}"
@@ -151,6 +152,13 @@ OMC_INTENT_VERIFY_DIRECTIVE="${OMC_INTENT_VERIFY_DIRECTIVE:-off}"
 # ON because it's informational rather than blocking, and the failure
 # mode it defends against was a primary v1.22.x complaint.
 OMC_EXEMPLIFYING_DIRECTIVE="${OMC_EXEMPLIFYING_DIRECTIVE:-on}"
+# exemplifying_scope_gate (post-v1.23.0): when `on`, fresh execution
+# prompts that use example markers ("for instance", "e.g.", "such as",
+# etc.) must leave behind a state-backed scope checklist before the
+# session can stop. This turns the examples-as-classes rule from a
+# soft directive into an auditable deliverable ledger: every sibling
+# item must be shipped or explicitly declined with a concrete WHY.
+OMC_EXEMPLIFYING_SCOPE_GATE="${OMC_EXEMPLIFYING_SCOPE_GATE:-on}"
 # prompt_text_override (v1.23.0): when `on`, the PreTool intent guard
 # permits a destructive op when the most recent user prompt
 # unambiguously authorizes the verb being attempted, even if the
@@ -249,6 +257,8 @@ _parse_conf_file() {
         [[ -z "${_omc_env_intent_verify_directive}" && "${value}" =~ ^(on|off)$ ]] && OMC_INTENT_VERIFY_DIRECTIVE="${value}" || true ;;
       exemplifying_directive)
         [[ -z "${_omc_env_exemplifying_directive}" && "${value}" =~ ^(on|off)$ ]] && OMC_EXEMPLIFYING_DIRECTIVE="${value}" || true ;;
+      exemplifying_scope_gate)
+        [[ -z "${_omc_env_exemplifying_scope_gate}" && "${value}" =~ ^(on|off)$ ]] && OMC_EXEMPLIFYING_SCOPE_GATE="${value}" || true ;;
       prompt_text_override)
         [[ -z "${_omc_env_prompt_text_override}" && "${value}" =~ ^(on|off)$ ]] && OMC_PROMPT_TEXT_OVERRIDE="${value}" || true ;;
       mark_deferred_strict)
@@ -769,6 +779,34 @@ trim_whitespace() {
   text="${text%"${text##*[![:space:]]}"}"
 
   printf '%s' "${text}"
+}
+
+omc_reason_has_concrete_why() {
+  local r="$1"
+  local lc trimmed
+
+  lc="$(tr '[:upper:]' '[:lower:]' <<<"${r}")"
+  trimmed="$(sed -E 's/^[[:space:][:punct:]]+|[[:space:][:punct:]]+$//g' <<<"${lc}")"
+
+  # Self-explanatory reasons. These are the WHY.
+  case "${trimmed}" in
+    duplicate|obsolete|superseded|wontfix|invalid|"won't fix"|"not applicable"|n/a|"not a bug")
+      return 0
+      ;;
+  esac
+
+  local why_keywords='\b(requires?|require[ds]?|need(s|ed|ing)?|blocked|blocking|superseded|supersedes|replaced|replaces|pending|awaiting|awaits|wait(s|ing)?|because|due[[:space:]]+to|tracks?[[:space:]]+to|tracked[[:space:]]+(in|at)|see[[:space:]]+(#|f-|s-|wave)|after[[:space:]]+(f-|s-|wave|ticket|issue)|until[[:space:]]+(f-|s-|wave|ticket|issue|the[[:space:]]+(release|migration|launch|cutover))|once[[:space:]]+(f-|s-|wave|the))\b'
+  if grep -Eiq "${why_keywords}" <<<"${trimmed}"; then
+    return 0
+  fi
+
+  # Issue/PR/wave/scope-item reference shape (`#42`, `F-001`, `S-002`,
+  # `wave 3`, `PR-12`). These point to a successor or duplicate record.
+  if grep -Eiq '(\#[0-9]+|\bf-[0-9]+|\bs-[0-9]+|\bwave[[:space:]]+[0-9]+|\bpr-?[0-9]+)' <<<"${trimmed}"; then
+    return 0
+  fi
+
+  return 1
 }
 
 normalize_task_prompt() {
