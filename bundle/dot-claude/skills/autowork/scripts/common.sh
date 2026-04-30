@@ -35,6 +35,7 @@ _omc_env_classifier_tel="${OMC_CLASSIFIER_TELEMETRY:-}"
 _omc_env_discovered_scope="${OMC_DISCOVERED_SCOPE:-}"
 _omc_env_council_deep_default="${OMC_COUNCIL_DEEP_DEFAULT:-}"
 _omc_env_auto_memory="${OMC_AUTO_MEMORY:-}"
+_omc_env_output_style="${OMC_OUTPUT_STYLE:-}"
 _omc_env_metis_on_plan_gate="${OMC_METIS_ON_PLAN_GATE:-}"
 _omc_env_prometheus_suggest="${OMC_PROMETHEUS_SUGGEST:-}"
 _omc_env_intent_verify_directive="${OMC_INTENT_VERIFY_DIRECTIVE:-}"
@@ -273,6 +274,8 @@ _parse_conf_file() {
         [[ -z "${_omc_env_resume_watchdog}" && "${value}" =~ ^(on|off)$ ]] && OMC_RESUME_WATCHDOG="${value}" || true ;;
       resume_watchdog_cooldown_secs)
         [[ -z "${_omc_env_resume_watchdog_cooldown}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_RESUME_WATCHDOG_COOLDOWN_SECS="${value}" || true ;;
+      output_style)
+        [[ -z "${_omc_env_output_style}" && "${value}" =~ ^(opencode|preserve)$ ]] && OMC_OUTPUT_STYLE="${value}" || true ;;
     esac
   done < "${conf}"
 }

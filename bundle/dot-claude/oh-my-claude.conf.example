@@ -193,6 +193,20 @@
 # script runs — editing this line by hand will not rewrite agent files.
 #model_tier=balanced
 
+# Output style installer behavior. Controls whether `bash install.sh`
+# merges `outputStyle: "OpenCode Compact"` into ~/.claude/settings.json.
+#   opencode  — install the bundled OpenCode Compact style (default).
+#               Only sets settings.json's outputStyle when the key is
+#               absent or null; a pre-existing custom value is preserved.
+#   preserve  — leave settings.json's outputStyle untouched (including
+#               unset). Useful when you have your own output style and
+#               do not want install.sh to ever set it. The bundled
+#               opencode-compact.md file is still copied to
+#               ~/.claude/output-styles/ for reference; only the settings
+#               entry is skipped.
+# Env: OMC_OUTPUT_STYLE.
+#output_style=opencode
+
 # Auto-triggered council dispatches inherit `--deep` semantics — every
 # lens uses opus instead of sonnet. Default off; meaningfully more
 # expensive per run. Explicit `/council --deep` always escalates

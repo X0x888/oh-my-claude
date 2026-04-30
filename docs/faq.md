@@ -60,7 +60,12 @@ The installer merges hook entries from `settings.patch.json` into your existing 
 
 ### Can I use this with a different output style?
 
-Yes. The output style is configured in `~/.claude/settings.json` under the `outputStyle` key and defined in `~/.claude/output-styles/`. You can replace the bundled OpenCode Compact style with any style definition, or create a new style file and point `outputStyle` to its name. The harness hooks do not depend on the output style.
+Yes. Two upgrade-safe paths, documented in [`docs/customization.md → Output Style`](customization.md#output-style):
+
+1. **Copy and rename** — `cp ~/.claude/output-styles/opencode-compact.md ~/.claude/output-styles/my-style.md`, change the frontmatter `name:`, then point `outputStyle` in `~/.claude/settings.json` at the new name. Survives `bash install.sh` upgrades.
+2. **Opt out via the `output_style=preserve` flag** — set it in `~/.claude/oh-my-claude.conf` (or via `/omc-config`) and re-run install. The installer leaves your `outputStyle` setting untouched (including a pre-existing custom value, or its absence — Claude Code's built-in `Default` style takes over). The bundled `opencode-compact.md` file is still copied to `~/.claude/output-styles/` for reference.
+
+Avoid editing `opencode-compact.md` in place — `install.sh` rsyncs the bundle on every upgrade and overwrites in-place edits. The harness hooks do not depend on the output style being `OpenCode Compact`; the only requirement is that whatever is set in `outputStyle` resolves to a real file.
 
 ### How do I disable a specific quality gate?
 

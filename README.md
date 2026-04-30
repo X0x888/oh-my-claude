@@ -249,7 +249,7 @@ oh-my-claude/
 │   ├── agents/          (32 agents)         # Specialist agent definitions
 │   ├── skills/          (23 skills)         # Skill definitions + autowork hooks
 │   ├── quality-pack/                        # Lifecycle hooks + memory files
-│   ├── output-styles/                       # Output format templates
+│   ├── output-styles/                       # Bundled OpenCode Compact style (see docs/customization.md#output-style)
 │   └── statusline.py                        # Custom statusline widget
 ├── config/settings.patch.json               # Merged into user settings on install
 ├── tests/               (48 bash + 1 py)    # See AGENTS.md / CONTRIBUTING.md for full list

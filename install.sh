@@ -114,6 +114,7 @@ merge_settings_python() {
 
   python3 - "${settings_path}" "${patch_path}" "${bypass}" <<'PY'
 import json
+import os
 import pathlib
 import sys
 
@@ -138,8 +139,14 @@ with patch_path.open() as f:
 # guard, a user with `{"outputStyle": null}` in settings.json would
 # end up with the null persisting under python but getting coerced
 # to the patch value under jq.
+#
+# OMC_OUTPUT_STYLE_PREF (set by the parent shell from oh-my-claude.conf)
+# can opt out of the outputStyle merge entirely. "preserve" skips the
+# merge so a user with their own custom style never has it overwritten,
+# even on first install where the key starts unset.
 settings["statusLine"] = patch["statusLine"]
-if settings.get("outputStyle") is None:
+output_style_pref = os.environ.get("OMC_OUTPUT_STYLE_PREF", "opencode")
+if output_style_pref != "preserve" and settings.get("outputStyle") is None:
     settings["outputStyle"] = patch["outputStyle"]
 if settings.get("effortLevel") is None:
     settings["effortLevel"] = patch["effortLevel"]
@@ -362,7 +369,12 @@ merge_settings_jq() {
     | .skipDangerousModePermissionPrompt = true'
   fi
 
-  jq -s '
+  # OMC_OUTPUT_STYLE_PREF=preserve skips the outputStyle merge so a user
+  # with their own style is never overwritten. Default "opencode" keeps
+  # the historical "// default" behavior.
+  local output_style_pref="${OMC_OUTPUT_STYLE_PREF:-opencode}"
+
+  jq -s --arg output_style_pref "${output_style_pref}" '
     # Extract the script basename from a hook command. Strips leading
     # "bash " prefix and trailing arguments so that upgrades where only
     # a trailing argument changed (e.g. record-reviewer.sh → record-reviewer.sh prose)
@@ -496,7 +508,7 @@ merge_settings_jq() {
     | .[1] as $patch
     | $base
     | .statusLine = $patch.statusLine
-    | .outputStyle = (.outputStyle // $patch.outputStyle)
+    | (if $output_style_pref == "preserve" then . else .outputStyle = (.outputStyle // $patch.outputStyle) end)
     | .effortLevel = (.effortLevel // $patch.effortLevel)
     | .spinnerTipsEnabled = $patch.spinnerTipsEnabled
     | .spinnerVerbs = $patch.spinnerVerbs
@@ -749,9 +761,14 @@ apply_model_tier() {
   local conf_path="${CLAUDE_HOME}/oh-my-claude.conf"
   local tier="${MODEL_TIER}"
 
-  # If no flag was passed, read from config file.
+  # If no flag was passed, read from config file. Use `tail -1` (last-
+  # write-wins) to match common.sh's runtime parser and omc-config.sh's
+  # writer — both append on update, so the most-recent value is the
+  # source of truth. (Pre-existing `head -1` was inconsistent with the
+  # rest of the codebase; fixed alongside the same-pattern fix at the
+  # output_style conf-read site introduced in v1.24.0 wave 3.)
   if [[ -z "${tier}" && -f "${conf_path}" ]]; then
-    tier="$(grep -E '^model_tier=' "${conf_path}" 2>/dev/null | head -1 | cut -d= -f2)" || true
+    tier="$(grep -E '^model_tier=' "${conf_path}" 2>/dev/null | tail -1 | cut -d= -f2)" || true
   fi
 
   # If still empty, the user never opted in — use bundle defaults silently.
@@ -983,6 +1000,26 @@ fi
 install_ghostty
 
 # Step 4 — Merge settings.json (idempotent).
+#
+# Honor the user's `output_style` preference if they set one previously
+# (in ~/.claude/oh-my-claude.conf, written by /omc-config or hand-edit).
+# `preserve` skips the outputStyle merge so install never touches the
+# user's setting (or absence of it). `opencode` (default, also unset) is
+# the existing behavior.
+OMC_OUTPUT_STYLE_PREF="${OMC_OUTPUT_STYLE:-opencode}"
+if [[ -f "${CLAUDE_HOME}/oh-my-claude.conf" ]] && [[ -z "${OMC_OUTPUT_STYLE:-}" ]]; then
+  # Use `tail -1` (last-write-wins) to match the runtime parser in
+  # bundle/dot-claude/skills/autowork/scripts/common.sh and the conf
+  # writer in omc-config.sh — both append on update, so the most-recent
+  # value is the source of truth. Pre-existing `head -1` at line ~766
+  # for model_tier diverges from this contract; tracked as a follow-up.
+  _pref_from_conf="$(grep -E '^output_style=' "${CLAUDE_HOME}/oh-my-claude.conf" 2>/dev/null | tail -1 | cut -d= -f2-)" || true
+  if [[ "${_pref_from_conf}" =~ ^(opencode|preserve)$ ]]; then
+    OMC_OUTPUT_STYLE_PREF="${_pref_from_conf}"
+  fi
+fi
+export OMC_OUTPUT_STYLE_PREF
+
 if command -v python3 >/dev/null 2>&1; then
   merge_settings_python "${CLAUDE_HOME}/settings.json" "${SETTINGS_PATCH}" "${BYPASS_PERMISSIONS}"
 elif command -v jq >/dev/null 2>&1; then
@@ -1034,10 +1071,23 @@ if [[ -f "${CLAUDE_HOME}/oh-my-claude.conf" ]]; then
   fi
 fi
 if [[ -f "${CLAUDE_HOME}/output-styles/opencode-compact.md" ]]; then
-  # Robust to CRLF endings + multi-space-after-colon + embedded colons.
-  _style_name="$(awk '/^name:/{sub(/^name:[[:space:]]*/,""); sub(/[[:space:]]+$/,""); print; exit}' "${CLAUDE_HOME}/output-styles/opencode-compact.md" 2>/dev/null || true)"
-  if [[ -n "${_style_name}" ]]; then
-    printf '  Output style:  %s\n' "${_style_name}"
+  # Print the style that's actually active in settings.json — not the
+  # bundled file's frontmatter — so the summary tells the truth under
+  # output_style=preserve (where settings.json may carry a different
+  # value or no value at all). Fallback chain: settings.outputStyle →
+  # bundled-file frontmatter → silent skip.
+  _active_style=""
+  if [[ -f "${CLAUDE_HOME}/settings.json" ]] && command -v jq >/dev/null 2>&1; then
+    _active_style="$(jq -r '.outputStyle // empty' "${CLAUDE_HOME}/settings.json" 2>/dev/null || true)"
+  fi
+  if [[ -z "${_active_style}" ]]; then
+    _active_style="$(awk '/^name:/{sub(/^name:[[:space:]]*/,""); sub(/[[:space:]]+$/,""); print; exit}' "${CLAUDE_HOME}/output-styles/opencode-compact.md" 2>/dev/null || true)"
+    if [[ -n "${_active_style}" && "${OMC_OUTPUT_STYLE_PREF:-opencode}" == "preserve" ]]; then
+      _active_style="${_active_style} (bundle file; settings.json untouched per output_style=preserve)"
+    fi
+  fi
+  if [[ -n "${_active_style}" ]]; then
+    printf '  Output style:  %s\n' "${_active_style}"
   fi
 fi
 

@@ -112,6 +112,63 @@ else
   bad "parser truncates embedded colons or mishandles padding: got '${extras_value}'"
 fi
 
+# ---------------------------------------------------------------------------
+# 3. Install conf-read snippet (F-005) — tail -1 last-write-wins
+# ---------------------------------------------------------------------------
+
+# Mirrors the install.sh:1004-1014 logic so a regression in the snippet
+# (e.g., reverting tail -1 to head -1, or relaxing the regex validation
+# that defends against typos like `output_style=garbage`) is caught
+# before it lands. The runtime parser in common.sh and the conf writer
+# in omc-config.sh both use last-write-wins semantics; install.sh must
+# agree, otherwise an upgrade and a runtime read disagree about which
+# value the user picked.
+read_install_conf_snippet() {
+  local conf="$1"
+  local pref="opencode"
+  if [[ -f "${conf}" ]]; then
+    local raw
+    raw="$(grep -E '^output_style=' "${conf}" 2>/dev/null | tail -1 | cut -d= -f2-)" || true
+    if [[ "${raw}" =~ ^(opencode|preserve)$ ]]; then
+      pref="${raw}"
+    fi
+  fi
+  printf '%s' "${pref}"
+}
+
+# Last-write-wins on duplicate lines (regression net for the head-1 →
+# tail-1 fix surfaced by quality-reviewer in wave 3).
+multi_conf="$(mktemp)"
+printf 'output_style=opencode\noutput_style=preserve\n' > "${multi_conf}"
+multi_pref="$(read_install_conf_snippet "${multi_conf}")"
+rm -f "${multi_conf}"
+if [[ "${multi_pref}" == "preserve" ]]; then
+  ok
+else
+  bad "install conf-read uses head-1 instead of tail-1; got '${multi_pref}' instead of 'preserve'"
+fi
+
+# Garbage value rejection (regression net for the regex validator).
+junk_conf="$(mktemp)"
+printf 'output_style=garbage\n' > "${junk_conf}"
+junk_pref="$(read_install_conf_snippet "${junk_conf}")"
+rm -f "${junk_conf}"
+if [[ "${junk_pref}" == "opencode" ]]; then
+  ok
+else
+  bad "install conf-read does not reject invalid value 'garbage'; got '${junk_pref}'"
+fi
+
+# Empty conf falls through to default.
+empty_conf="$(mktemp)"
+empty_pref="$(read_install_conf_snippet "${empty_conf}")"
+rm -f "${empty_conf}"
+if [[ "${empty_pref}" == "opencode" ]]; then
+  ok
+else
+  bad "install conf-read does not default to opencode on empty conf; got '${empty_pref}'"
+fi
+
 # keep-coding-instructions: true (harness invariant).
 if grep -q '^keep-coding-instructions: true' "${STYLE_FILE}"; then
   ok

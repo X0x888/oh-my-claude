@@ -364,24 +364,35 @@ Git information is cached for 5 seconds per working directory to avoid performan
 
 ## Output Style
 
-oh-my-claude ships with the **OpenCode Compact** output style (`~/.claude/output-styles/opencode-compact.md`). It produces compact, scan-friendly responses with clear hierarchy: answer first, then verification, then risk or next steps.
+oh-my-claude ships with the **OpenCode Compact** output style (`~/.claude/output-styles/opencode-compact.md`). It produces compact, scan-friendly responses with clear hierarchy — answer first, then verification, then risks or next steps — plus an explicit `Implementation summary` template (`Changed` / `Verification` / `Risks` / `Serendipity:` / `Next`) for the dominant `/ulw` response shape, and dedicated guidance for tool-call narration, error/blocker reporting, and the workflow-frame asymmetry between execution and advisory prompts.
 
 ### Switching output styles
 
-To use a different output style, either:
+> **Important:** `~/.claude/output-styles/opencode-compact.md` is overwritten on every install (`bash install.sh` rsyncs the bundle and your in-place edits do not survive an upgrade). The patterns below are upgrade-safe.
 
-1. Replace the contents of `opencode-compact.md` with your preferred style definition.
-2. Create a new style file in `~/.claude/output-styles/` and update `~/.claude/settings.json`:
+**Recommended — copy to a new file with a different `name:`.** This preserves your customizations across upgrades.
 
-```json
-"outputStyle": "Your Style Name"
+```bash
+cp ~/.claude/output-styles/opencode-compact.md \
+   ~/.claude/output-styles/my-style.md
+# Edit ~/.claude/output-styles/my-style.md and change the frontmatter:
+#   name: My Style
+# Then point your settings at the new name:
+jq '.outputStyle = "My Style"' ~/.claude/settings.json > /tmp/s.json && \
+   mv /tmp/s.json ~/.claude/settings.json
 ```
 
-The style name must match the `name` field in the style file's frontmatter.
+The `outputStyle` value in `~/.claude/settings.json` must match the `name:` field in the style file's frontmatter exactly (case-sensitive).
 
-### Modifying the existing style
+**Alternative — opt out of the bundled style entirely.** Set `output_style=preserve` in `~/.claude/oh-my-claude.conf` (or via `/omc-config`) and re-run install. The installer will leave your `outputStyle` setting untouched (including a pre-set custom value). The bundled `opencode-compact.md` file is still copied to `~/.claude/output-styles/` for reference, but `~/.claude/settings.json` is not modified.
 
-Edit `~/.claude/output-styles/opencode-compact.md`. The file defines presentation rules (lead with the answer, use headings), response shape (comparison tables, bold labels), and tone (direct, collaborative, no filler). Changes take effect in new sessions.
+### Modifying the bundled style (discouraged)
+
+Editing `opencode-compact.md` in place works for the current session but is overwritten on the next `bash install.sh`. Use the copy-to-new-file pattern above unless you are intentionally testing a one-shot change. The HTML comment at the top of the bundled file warns about this.
+
+### Composition with Claude Code's built-in styles
+
+Claude Code ships its own output styles (`Default`, `Explanatory`, `Learning`) — `OpenCode Compact` declares `keep-coding-instructions: true`, which means Claude Code's coding-system-prompt (specialist-agent expectations, tool-use conventions) is preserved underneath. Switching to `Explanatory` or `Learning` swaps that surface entirely; the harness's specialist routing still works because agents have their own definitions, but the model's default coding posture changes. Using two output styles concurrently is not supported by Claude Code — only one is active per session.
 
 ---
 

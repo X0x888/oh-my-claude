@@ -190,7 +190,21 @@ options:
 
 Always emit `model_tier=<value>` (single-select — user has explicitly chosen).
 
-After all four clusters:
+**Cluster 5 — Output style** (single-select)
+
+```
+question: "Output style installer behavior?"
+header: "Style"
+options:
+  - label: "Bundle OpenCode Compact (Recommended)"
+    description: "Install ~/.claude/output-styles/opencode-compact.md and merge outputStyle='OpenCode Compact' into settings.json when unset. Pre-existing custom values are still preserved. output_style=opencode."
+  - label: "Preserve my settings.json"
+    description: "Skip the outputStyle merge entirely so install never touches settings.json. The bundled file is still copied to ~/.claude/output-styles/ for reference. Use when you have your own output style. output_style=preserve."
+```
+
+Always emit `output_style=<value>` (single-select — user has explicitly chosen).
+
+After all five clusters:
 
 ```bash
 bash ~/.claude/skills/autowork/scripts/omc-config.sh set "$SCOPE" <each k=v collected above>

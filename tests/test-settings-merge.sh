@@ -246,6 +246,46 @@ JSON
     "${work}/settings.json" '.statusLine.type' "command"
 
   # -----------------------------------------------------------------------
+  # F-005: OMC_OUTPUT_STYLE_PREF=preserve skips the outputStyle merge
+  # entirely, even on a fresh install where the key is unset. This is
+  # the opt-out path for users who want install.sh to never touch their
+  # outputStyle setting (or absence of it).
+  # -----------------------------------------------------------------------
+  work="${TEST_DIR}/${impl}-output-style-preserve-fresh"
+  mkdir -p "${work}"
+  printf '{}' > "${work}/settings.json"
+  OMC_OUTPUT_STYLE_PREF="preserve" run_merge "${impl}" "${work}/settings.json" "${SETTINGS_PATCH}" "false"
+  assert_json_eq "${impl}: F-005 — preserve skips outputStyle on fresh install" \
+    "${work}/settings.json" '.outputStyle // "absent"' "absent"
+
+  # -----------------------------------------------------------------------
+  # F-005: OMC_OUTPUT_STYLE_PREF=preserve also leaves an existing custom
+  # value alone (regression of Test 4 under the preserve flag — same
+  # outcome, different code path).
+  # -----------------------------------------------------------------------
+  work="${TEST_DIR}/${impl}-output-style-preserve-custom"
+  mkdir -p "${work}"
+  cat > "${work}/settings.json" <<'JSON'
+{
+  "outputStyle": "Learning"
+}
+JSON
+  OMC_OUTPUT_STYLE_PREF="preserve" run_merge "${impl}" "${work}/settings.json" "${SETTINGS_PATCH}" "false"
+  assert_json_eq "${impl}: F-005 — preserve does not touch existing custom outputStyle" \
+    "${work}/settings.json" '.outputStyle' "Learning"
+
+  # -----------------------------------------------------------------------
+  # F-005: OMC_OUTPUT_STYLE_PREF=opencode (or unset) keeps the historical
+  # behavior — outputStyle merges when absent.
+  # -----------------------------------------------------------------------
+  work="${TEST_DIR}/${impl}-output-style-opencode-default"
+  mkdir -p "${work}"
+  printf '{}' > "${work}/settings.json"
+  OMC_OUTPUT_STYLE_PREF="opencode" run_merge "${impl}" "${work}/settings.json" "${SETTINGS_PATCH}" "false"
+  assert_json_eq "${impl}: F-005 — opencode merges OpenCode Compact" \
+    "${work}/settings.json" '.outputStyle' "OpenCode Compact"
+
+  # -----------------------------------------------------------------------
   # Test 5: Pre-existing hooks from another plugin are preserved
   # -----------------------------------------------------------------------
   work="${TEST_DIR}/${impl}-existing-hooks"
