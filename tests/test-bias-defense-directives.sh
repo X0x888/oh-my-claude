@@ -118,8 +118,18 @@ assert_not_contains "no INTENT VERIFY default"   "INTENT VERIFICATION"          
 printf 'Test 2: prometheus-suggest fires on product+ambiguous\n'
 out="$(_run_router "t2-${RANDOM}" "${_PROD_PROMPT}" \
   "OMC_PROMETHEUS_SUGGEST=on")"
-assert_contains "PROMETHEUS hint present" "AMBIGUOUS PRODUCT-SHAPED PROMPT" "${out}"
-assert_contains "names /prometheus"       "/prometheus"                     "${out}"
+assert_contains "PROMETHEUS hint present"      "AMBIGUOUS PRODUCT-SHAPED PROMPT" "${out}"
+assert_contains "names /prometheus"            "/prometheus"                     "${out}"
+# Declare-and-proceed contract (v1.24.0): the directive must surface
+# the auditing-aid framing (state interpretation, proceed) and the
+# explicit anti-hold (no confirmation-pause). If a future edit
+# regresses the wording back to "before editing, ask the user", these
+# assertions break and lock the regression.
+assert_contains "PROMETHEUS declare contract"  "State your scope interpretation" "${out}"
+assert_contains "PROMETHEUS proceed contract"  "proceed with that interpretation" "${out}"
+assert_contains "PROMETHEUS forbids hold"      "Do NOT hold"                     "${out}"
+assert_not_contains "PROMETHEUS no ask-pause"  "ask the user to confirm"         "${out}"
+assert_not_contains "PROMETHEUS no pre-edit hold" "Before editing, consider running" "${out}"
 
 # ----------------------------------------------------------------------
 printf 'Test 3: prometheus-suggest does NOT fire on targeted code change\n'
@@ -137,8 +147,18 @@ assert_not_contains "no PROMETHEUS on long brief" "AMBIGUOUS PRODUCT-SHAPED PROM
 printf 'Test 5: intent-verify fires on short ambiguous execution prompt\n'
 out="$(_run_router "t5-${RANDOM}" "${_AMBIG_PROMPT}" \
   "OMC_INTENT_VERIFY_DIRECTIVE=on")"
-assert_contains "INTENT VERIFY present" "INTENT VERIFICATION" "${out}"
-assert_contains "asks to restate goal"  "restate the user's goal" "${out}"
+assert_contains "INTENT VERIFY present"           "INTENT VERIFICATION"            "${out}"
+# Declare-and-proceed contract (v1.24.0): the directive must surface
+# the auditing-aid framing (state interpretation, proceed) and the
+# explicit anti-hold (no confirmation-pause). If a future edit
+# regresses the wording back to "before your first edit, restate ...
+# and ask the user to confirm", these assertions break and lock the
+# regression.
+assert_contains "INTENT VERIFY declare contract"  "State your interpretation"      "${out}"
+assert_contains "INTENT VERIFY proceed contract"  "start work"                     "${out}"
+assert_contains "INTENT VERIFY forbids hold"      "Do NOT hold"                    "${out}"
+assert_not_contains "INTENT VERIFY no ask-pause"  "ask the user to confirm"        "${out}"
+assert_not_contains "INTENT VERIFY no pre-edit hold" "Before your first edit, restate" "${out}"
 
 # ----------------------------------------------------------------------
 printf 'Test 6: intent-verify does NOT fire when prometheus-suggest already fired\n'
@@ -320,6 +340,123 @@ fires_19_ex="$(_count_directive_fires "${sid_19}" "exemplifying")"
 assert_contains "T19: zero prometheus rows on targeted prompt" "0" "${fires_19_pro}"
 assert_contains "T19: zero intent-verify rows on targeted prompt" "0" "${fires_19_iv}"
 assert_contains "T19: zero exemplifying rows on targeted prompt" "0" "${fires_19_ex}"
+
+# ----------------------------------------------------------------------
+# Tests 20-22 (v1.24.0): declare-and-proceed regression net.
+#
+# A user reported that under ULW with both prometheus_suggest=on and
+# intent_verify_directive=on, an ambiguous classification produced a
+# hold-shaped response ("The advisory gate flagged this turn as
+# classification-ambiguous, so I'm holding before edits.") that
+# violated the core ULW rule (request IS the permission). The
+# directives were rewritten from "ask the user to confirm or correct"
+# / "Before your first edit, restate ..." to "state interpretation as
+# part of opener, proceed, do NOT pause." These tests lock the new
+# contract from both ends — positive (new wording present) covered in
+# T2/T5, negative (no hold-shaped phrasing on any code path that
+# emits a directive) covered here. If a future edit slips a
+# hold-shaped phrase back in, T20-T22 break before the user sees it.
+
+# Phrases that have historically produced ULW holds. Any directive
+# emitted under ULW must be free of all of them. Add to this list when
+# new hold-shaped phrasings are observed in the wild.
+#
+# Curation principle: include the *literal* phrase the model would emit
+# (or paraphrase the directive into) when violating the contract — not
+# the directive's own anti-hold framing. The directive itself can
+# legitimately use forward-motion language like "proceeding" / "start
+# work" without those phrases ever creating a hold.
+#
+# Extended in v1.24.0 (post-excellence-review F-3) with the
+# common-LLM-hedging shapes the original 10-phrase array missed:
+# "want me to", "shall I", "to confirm:", "let me confirm". These are
+# phrasings real models use when they paraphrase a directive into a
+# hold, even when the directive itself contains "Do NOT hold for
+# confirmation".
+_HOLD_PHRASES=(
+  "ask the user to confirm or correct"
+  "Before your first edit, restate"
+  "ask for confirmation"
+  "ask the user to confirm"
+  "wait for the user"
+  "pause for confirmation"
+  "I'm holding before edits"
+  "holding before edits"
+  "should I proceed"
+  "would you like me to"
+  "want me to"
+  "shall I"
+  "to confirm:"
+  "let me confirm"
+  "check with you first"
+)
+
+printf 'Test 20: prometheus-suggest directive emits no hold-shaped phrasing\n'
+out="$(_run_router "t20-${RANDOM}" "${_PROD_PROMPT}" \
+  "OMC_PROMETHEUS_SUGGEST=on")"
+for phrase in "${_HOLD_PHRASES[@]}"; do
+  assert_not_contains "T20: prometheus has no \"${phrase}\"" "${phrase}" "${out}"
+done
+
+printf 'Test 21: intent-verify directive emits no hold-shaped phrasing\n'
+out="$(_run_router "t21-${RANDOM}" "${_AMBIG_PROMPT}" \
+  "OMC_INTENT_VERIFY_DIRECTIVE=on")"
+for phrase in "${_HOLD_PHRASES[@]}"; do
+  assert_not_contains "T21: intent-verify has no \"${phrase}\"" "${phrase}" "${out}"
+done
+
+printf 'Test 22: both flags on — combined output emits no hold-shaped phrasing\n'
+# Combined-flag case is what the user actually reported. Even though
+# prometheus suppresses intent-verify on the same turn, the prometheus
+# branch is the one that fires here and must itself be hold-free.
+out="$(_run_router "t22-${RANDOM}" "${_PROD_PROMPT}" \
+  "OMC_PROMETHEUS_SUGGEST=on" "OMC_INTENT_VERIFY_DIRECTIVE=on")"
+for phrase in "${_HOLD_PHRASES[@]}"; do
+  assert_not_contains "T22: combined-flag output has no \"${phrase}\"" "${phrase}" "${out}"
+done
+# And one positive: the directive that does fire (prometheus) carries
+# the new declare-and-proceed contract under combined-flag conditions.
+assert_contains "T22: combined-flag output declares interpretation" \
+  "State your scope interpretation" "${out}"
+assert_contains "T22: combined-flag output forbids hold" \
+  "Do NOT hold" "${out}"
+
+# ----------------------------------------------------------------------
+# Test 23 (v1.24.0 post-excellence-review F-3): forward-motion verb
+# assertion. The negative-only regression net catches phrases that
+# directly produce a hold, but a more subtle regression — drop "Do NOT
+# hold for confirmation" AND drop "proceed"/"proceeding"/"start work"
+# from the directive — would slip past T20/T21/T22 because none of the
+# negative phrases land. This positive test asserts at least one
+# forward-motion verb survives in the directive, so a regression that
+# accidentally strips the proceed-framing also breaks CI.
+printf 'Test 23: each fired directive carries an explicit forward-motion verb\n'
+
+# Helper: assert at least one of the verbs from a list is present.
+_assert_has_forward_motion() {
+  local label="$1"
+  local haystack="$2"
+  shift 2
+  local needle
+  for needle in "$@"; do
+    if [[ "${haystack}" == *"${needle}"* ]]; then
+      pass=$((pass + 1))
+      return 0
+    fi
+  done
+  printf '  FAIL: %s\n    none of [%s] in haystack\n' "${label}" "$*" >&2
+  fail=$((fail + 1))
+}
+
+out="$(_run_router "t23a-${RANDOM}" "${_PROD_PROMPT}" \
+  "OMC_PROMETHEUS_SUGGEST=on")"
+_assert_has_forward_motion "T23a: prometheus carries forward-motion verb" \
+  "${out}" "proceed" "proceeding" "start work"
+
+out="$(_run_router "t23b-${RANDOM}" "${_AMBIG_PROMPT}" \
+  "OMC_INTENT_VERIFY_DIRECTIVE=on")"
+_assert_has_forward_motion "T23b: intent-verify carries forward-motion verb" \
+  "${out}" "proceed" "proceeding" "start work"
 
 # ----------------------------------------------------------------------
 printf '\n'

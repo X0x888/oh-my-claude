@@ -762,8 +762,15 @@ _has_code_anchor() {
 # is_product_shaped_request — true when the prompt looks like a product
 # or feature greenfield ask (build a tracker app, create a dashboard,
 # design an onboarding flow), as opposed to a targeted code change.
-# Used to suggest /prometheus interview-first scoping before the model
-# commits to a particular product shape.
+# Used in combination with is_ambiguous_execution_request to inject the
+# bias-defense declare-and-proceed directive (under ULW the model
+# states its scope interpretation in one or two declarative sentences
+# as part of its opener and proceeds; the user can redirect in real
+# time). /prometheus is reserved for the credible-approach-split case
+# (two interpretations credibly incompatible AND choosing wrong would
+# cost rework), not a default pre-edit step. Reframed v1.24.0 — see
+# `prompt-intent-router.sh` for the emitted text and `core.md` "Veteran
+# default for ambiguous prompts" for the principle.
 is_product_shaped_request() {
   local text="$1"
   [[ -z "${text}" ]] && return 1
@@ -794,9 +801,13 @@ is_product_shaped_request() {
 
 # is_ambiguous_execution_request — true when the prompt is short enough
 # and unanchored enough that the model is at risk of confidently
-# misinterpreting the goal. Used to inject an intent-verification
-# directive (restate the goal and pause for confirmation before the
-# first edit).
+# misinterpreting the goal. Used to inject the bias-defense
+# declare-and-proceed directive (under ULW the model states its
+# interpretation in one declarative sentence as part of its opener and
+# proceeds; the user can redirect in real time). Reframed v1.24.0 — the
+# directive is an auditing aid, not a pre-edit hold; see
+# `prompt-intent-router.sh` for the emitted text and `core.md` "Veteran
+# default for ambiguous prompts" for the principle.
 #
 # The caller is responsible for checking task_intent. This helper only
 # evaluates prompt shape, not intent — that keeps it cheap and lets it

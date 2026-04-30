@@ -91,17 +91,29 @@
 # Env: OMC_METIS_ON_PLAN_GATE.
 #metis_on_plan_gate=off
 
-# Inject a directive recommending /prometheus when a short, unanchored,
+# Inject a declare-and-proceed directive when a short, unanchored,
 # product-shaped prompt arrives (build/create/design + app/dashboard/
-# feature, no code anchors). Suggestion only — never blocks. Default off.
-# Env: OMC_PROMETHEUS_SUGGEST.
+# feature, no code anchors). The directive tells the model to state its
+# scope interpretation (audience, primary success criterion, non-goals)
+# in one or two declarative sentences as part of its opener and proceed
+# — under ULW the user's request IS the permission, so the model never
+# pauses for confirmation. /prometheus is reserved for the credible-
+# approach-split case from core.md (two interpretations credibly
+# incompatible AND choosing wrong would cost rework). Default off.
+# (Reframed v1.24.0 — the prior wording asked the model to consider
+# /prometheus before editing, which a small set of users reported as a
+# ULW hold.) Env: OMC_PROMETHEUS_SUGGEST.
 #prometheus_suggest=off
 
-# Inject a directive telling the model to restate the goal in 1–2 sentences
-# and ask for confirmation before its first edit, when the prompt is short
-# and unanchored. Lighter than prometheus. Suppressed when prometheus_suggest
-# already fires on the same turn. Default off.
-# Env: OMC_INTENT_VERIFY_DIRECTIVE.
+# Inject a declare-and-proceed directive telling the model to state its
+# interpretation of the goal in one declarative sentence as part of its
+# opener (e.g., "I'm interpreting this as <X> and proceeding now") and
+# start work — never pause for confirmation. Lighter than prometheus —
+# one declarative sentence, not two plus non-goals. Pause case is narrow:
+# only stop when both confidence is low AND the wrong call would be hard
+# to reverse. Suppressed when prometheus_suggest already fires on the
+# same turn. Default off. (Reframed v1.24.0 — see prometheus_suggest
+# above for the same rationale.) Env: OMC_INTENT_VERIFY_DIRECTIVE.
 #intent_verify_directive=off
 
 # Inject an EXEMPLIFYING SCOPE DETECTED directive when the prompt uses

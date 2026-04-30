@@ -65,7 +65,7 @@ Call `AskUserQuestion` once with both questions in the same tool invocation. The
 question: "Which profile should I apply? (To make no changes, pick Other and type 'cancel'.)"
 options:
   - label: "Maximum Quality + Automation (Recommended)"
-    description: "Every quality lever pulled — internally consistent with model_tier=quality. Full gates + blocking exhaustion + all bias-defense flags on, including exemplified-scope checklist enforcement + watchdog on + council_deep_default=on (auto-triggered /council uses opus per lens, matching your Opus-everywhere stance). Note: turns on prometheus_suggest + intent_verify_directive, so short/vague prompts will receive planning directives — fine-tune later if too chatty."
+    description: "Every quality lever pulled — internally consistent with model_tier=quality. Full gates + blocking exhaustion + all bias-defense flags on, including exemplified-scope checklist enforcement + watchdog on + council_deep_default=on (auto-triggered /council uses opus per lens, matching your Opus-everywhere stance). Note: turns on prometheus_suggest + intent_verify_directive — under v1.24.0 these are declare-and-proceed framing (the model declares its interpretation in one sentence as part of its opener, then proceeds; you can redirect in real time). They never produce a hold; fine-tune off later only if the framing is too chatty for your style."
   - label: "Balanced"
     description: "Close to install-time defaults: full gates, scorecard exhaustion, low-friction bias-defense defaults on (prompt-text override, exemplified-scope checklist, strict defer reasons), watchdog off, model_tier=balanced, council_deep_default=off (auto-/council on sonnet — cost cap lives here, not in Maximum). Safe for most users."
   - label: "Minimal"
@@ -145,10 +145,10 @@ question: "Which advisory directives should I inject? (multi-select)"
 header: "Advisory"
 multiSelect: true
 options:
-  - label: "Suggest /prometheus on vague prompts"
-    description: "When a short product-shaped prompt arrives without anchors, the router suggests interview-first planning. Catches the bias-blind 'confident wrong' mode."
-  - label: "Inject restate-and-confirm directive on short prompts"
-    description: "On unanchored prompts, the model restates the goal in 1–2 sentences and asks for confirmation before its first edit. Lighter than /prometheus."
+  - label: "Declare-and-proceed scope interpretation on vague product-shaped prompts"
+    description: "When a short product-shaped prompt arrives without anchors, the router tells the model to state its scope interpretation (audience, primary success criterion, non-goals) in one or two declarative sentences as part of its opener, then proceed. /prometheus is reserved for the credible-approach-split case. Catches the bias-blind 'confident wrong' mode without producing a hold."
+  - label: "Declare-and-proceed goal interpretation on short unanchored prompts"
+    description: "On unanchored prompts, the model states its interpretation of the goal in one declarative sentence as part of its opener (e.g., 'I'm interpreting this as <X> and proceeding now'), then starts work. Lighter than the product-shaped variant — one declarative sentence vs two plus non-goals. The user can redirect in real time; the directive never produces a hold."
   - label: "Block stop on complex plans until metis stress-tests"
     description: "Hard gate: a plan with ≥5 steps / ≥3 files / ≥2 waves can't reach Stop until metis has reviewed it."
 ```

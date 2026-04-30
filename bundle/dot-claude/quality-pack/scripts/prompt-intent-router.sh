@@ -324,27 +324,40 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
     context_parts+=("Ultrawork mode is active for this session. In your first user-facing response, start with the bold phrase **Ultrawork mode active.** as the opening line for visual distinction. Use the strongest specialist path available, keep momentum high, and do not stop early. Do not segment unfinished work into 'wave 1 done, wave 2 next' or 'ready for a new session' unless the user explicitly asked for a checkpoint.")
     context_parts+=("Detected intent: ${display_intent}. Detected domain: ${TASK_DOMAIN}. Surface the classification right after the opener — '**Domain:** ${TASK_DOMAIN} | **Intent:** ${display_intent}' — followed by the first action you will take, so the user can verify routing is correct. If the user corrects the classification, adjust immediately.")
 
-    # --- Bias-defense directives (v1.19.0, default-off) ---
+    # --- Bias-defense directives (v1.19.0, default-off; reframed v1.24.0) ---
     #
     # Two opt-in injections that target the bias-blindness gap (model
     # risks confidently solving the wrong problem because the prompt
-    # was short or product-shaped and the model never paused to verify
-    # intent). Both fire only on fresh execution prompts — the four
-    # earlier branches (continuation, session-management, advisory,
+    # was short or product-shaped and the model never named its
+    # interpretation). Both fire only on fresh execution prompts — the
+    # four earlier branches (continuation, session-management, advisory,
     # checkpoint) skip this block entirely.
     #
+    # **Declare-and-proceed contract (v1.24.0).** Earlier wording told
+    # the model to "ask the user to confirm or correct" / "before your
+    # first edit, restate the goal" — which the user reported as a
+    # ULW regression: an ambiguous classification produced a hold
+    # ("I'm holding before edits") that violated the core ULW rule
+    # ("the user's request IS the permission" — see core.md FORBIDDEN
+    # list). The rewrite preserves the auditability the directives
+    # were designed to give (model still names interpretation, user can
+    # course-correct in real time) but removes the artificial pause.
+    # Veteran-mode default: state the call, proceed, let the user
+    # interrupt if wrong. Pause only when both confidence is low AND
+    # the wrong call would be hard to reverse (the same dual gate
+    # core.md uses for the credible-approach-split pause case).
+    #
     # Mutually exclusive on the same turn: prometheus-suggest is the
-    # heavier intervention (recommends an interview-first sub-agent),
-    # so when it fires the intent-verify is suppressed to avoid
-    # double-friction. Both are conf-gated and default OFF; a user
-    # who flips one or both gets the directive injected here, and the
-    # model then has discretion to skip when the goal is unambiguous
-    # in context.
+    # heavier intervention (suggests an interview-first sub-agent as
+    # an option, not a pre-edit step), so when it fires the
+    # intent-verify is suppressed to avoid double-friction. Both are
+    # conf-gated and default OFF; a user who flips one or both gets
+    # the directive injected here.
     _bias_directive_emitted=0
     if [[ "${OMC_PROMETHEUS_SUGGEST:-off}" == "on" ]] \
         && is_product_shaped_request "${PROMPT_TEXT}" \
         && is_ambiguous_execution_request "${PROMPT_TEXT}"; then
-      context_parts+=("AMBIGUOUS PRODUCT-SHAPED PROMPT: this request looks short and product-shaped (build/create/design + app/dashboard/feature/onboarding/etc.) without a specific code anchor. Before editing, consider running /prometheus to interview-first scope the goal, audience, success criteria, and constraints. If the scope is already clear from prior context or you have already clarified with the user, proceed. The directive exists to catch the failure mode where the model commits to a particular product shape on incomplete information and ships the wrong thing.")
+      context_parts+=("AMBIGUOUS PRODUCT-SHAPED PROMPT: this request is short and product-shaped (build/create/design + app/dashboard/feature/onboarding/etc.) without a specific code anchor. State your scope interpretation (audience, primary success criterion, the one or two non-goals you are deliberately not building) in one or two declarative sentences as part of your opener, then proceed with that interpretation. The user can interrupt and redirect in real time if the call is wrong. Do NOT hold for confirmation — under ULW the request IS the permission (see core.md FORBIDDEN list). Only delegate to /prometheus when two interpretations are credibly incompatible and the wrong choice would cost significant rework — that is the credible-approach-split pause case from core.md, not a default-on hold. The directive's job is to make your interpretation auditable, not to stop forward motion.")
       _bias_directive_emitted=1
       log_hook "prompt-intent-router" "bias-defense: prometheus-suggest fired"
       record_gate_event "bias-defense" "directive_fired" \
@@ -353,7 +366,7 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
     if [[ "${OMC_INTENT_VERIFY_DIRECTIVE:-off}" == "on" ]] \
         && [[ "${_bias_directive_emitted}" -eq 0 ]] \
         && is_ambiguous_execution_request "${PROMPT_TEXT}"; then
-      context_parts+=("INTENT VERIFICATION: this prompt is short and unanchored (no file path, line ref, function name, or backtick-fenced identifier). Before your first edit, restate the user's goal in 1-2 sentences and ask the user to confirm or correct. If the goal is unambiguous from the prompt or the user has already confirmed in a prior turn, skip the pause and proceed. The directive exists to catch the failure mode where the model confidently solves the wrong problem because the request had multiple plausible interpretations.")
+      context_parts+=("INTENT VERIFICATION: this prompt is short and unanchored (no file path, line ref, function name, or backtick-fenced identifier). State your interpretation of the goal in one declarative sentence as part of your opener (e.g., 'I'm interpreting this as <X> and proceeding now'), then start work. Do NOT hold for confirmation — under ULW the user's request IS the permission (see core.md FORBIDDEN list) and they can redirect in real time. The pause case is narrow: only stop when both (a) confidence in the interpretation is low AND (b) the wrong call would be hard to reverse — both must hold. The directive exists to make your interpretation auditable so the user can correct it cheaply, not to stop forward motion.")
       log_hook "prompt-intent-router" "bias-defense: intent-verify fired"
       record_gate_event "bias-defense" "directive_fired" \
         "directive=intent-verify"

@@ -131,18 +131,30 @@ OMC_AUTO_MEMORY="${OMC_AUTO_MEMORY:-on}"
 # gate to enforce.
 OMC_METIS_ON_PLAN_GATE="${OMC_METIS_ON_PLAN_GATE:-off}"
 # prometheus_suggest: when `on`, the prompt-intent-router injects a
-# directive recommending /prometheus when an execution prompt is short
+# declare-and-proceed directive on execution prompts that are short
 # AND product-shaped (build/create/design + app/dashboard/feature, with
-# no specific code anchors). Suggestion-only; never blocks. Default off
-# to avoid false-positive grief on prompts the user knew they wanted
-# to drive directly.
+# no specific code anchors). The directive tells the model to state its
+# scope interpretation in one or two declarative sentences as part of
+# its opener and proceed — never to pause for confirmation. /prometheus
+# is reserved for the credible-approach-split case (two interpretations
+# credibly incompatible AND choosing wrong would cost rework). Default
+# off to avoid false-positive grief on prompts the user knew they
+# wanted to drive directly. (Reframed v1.24.0 — the prior wording told
+# the model to ask for confirmation before editing, which produced a
+# ULW-incompatible hold; the directive is now an auditing aid, not a
+# pause case.)
 OMC_PROMETHEUS_SUGGEST="${OMC_PROMETHEUS_SUGGEST:-off}"
 # intent_verify_directive: when `on`, the prompt-intent-router injects
-# a directive telling the model to restate the user's goal in 1-2
-# sentences and ask for confirmation before its first edit, when the
-# prompt is short and unanchored. Lighter than prometheus — single
-# confirmation step, not interview. Default off; suppressed when
-# prometheus_suggest already fired on the same turn (no double-friction).
+# a declare-and-proceed directive telling the model to state its
+# interpretation of the goal in one declarative sentence as part of
+# its opener (e.g., "I'm interpreting this as <X> and proceeding now")
+# and start work — never to pause for confirmation. Pause case is
+# narrow: only stop when both confidence is low AND the wrong call
+# would be hard to reverse (the credible-approach-split test from
+# core.md). Lighter than prometheus — one declarative sentence vs two
+# plus non-goals. Default off; suppressed when prometheus_suggest
+# already fired on the same turn (no double-friction). (Reframed
+# v1.24.0 — see prometheus_suggest note above for the same rationale.)
 OMC_INTENT_VERIFY_DIRECTIVE="${OMC_INTENT_VERIFY_DIRECTIVE:-off}"
 # exemplifying_directive (v1.23.0): when `on`, the prompt-intent-router
 # injects an EXEMPLIFYING SCOPE DETECTED directive telling the model to

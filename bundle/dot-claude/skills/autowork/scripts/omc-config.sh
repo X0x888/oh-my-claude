@@ -62,8 +62,8 @@ traceability_file_count|int|6|gates|Edited-file count that requires briefing-ana
 wave_override_ttl_seconds|int|1800|gates|Wave-plan freshness window for pretool guard
 custom_verify_mcp_tools|str||gates|Pipe-separated MCP tool patterns that count as verification
 metis_on_plan_gate|bool|off|advisory|Block stop on complex plan until metis stress-test
-prometheus_suggest|bool|off|advisory|Suggest /prometheus on short product-shaped prompts
-intent_verify_directive|bool|off|advisory|Restate-and-confirm directive on short prompts
+prometheus_suggest|bool|off|advisory|Declare-and-proceed scope interpretation on short product-shaped prompts
+intent_verify_directive|bool|off|advisory|Declare-and-proceed goal interpretation on short unanchored prompts
 exemplifying_directive|bool|on|advisory|Treat user-exemplified scope as a class (enumerate siblings)
 exemplifying_scope_gate|bool|on|gates|Require checklist for example-marker prompts before stop
 prompt_text_override|bool|on|gates|PreTool guard trusts prompt-text imperative when classifier disagrees

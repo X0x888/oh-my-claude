@@ -17,7 +17,7 @@ $ARGUMENTS
 
 1. Classify prompt intent: execution, continuation, advisory, session-management, or checkpoint. Advisory and session-management prompts should be answered directly without forcing implementation.
 2. Classify task domain: coding, writing, research, operations, mixed, or general. The prompt-intent-router hook injects domain-specific specialist guidance automatically.
-3. Make concrete progress before asking questions. The five-case pause list lives in `core.md` under "Workflow" — do not restate or paraphrase it here. Anything not listed there is yours to decide: pick, note the choice, proceed.
+3. Make concrete progress before asking questions. The five-case pause list lives in `core.md` under "Workflow" — do not restate or paraphrase it here. Anything not listed there is yours to decide: pick, note the choice, proceed. **Ambiguity by itself is not a sixth case.** When the classifier or a bias-defense directive flags the prompt as short, unanchored, or classification-ambiguous, declare your interpretation in one sentence as part of your opener and proceed; the user can redirect in real time. The directive's job is to make your call auditable, never to hold. See `core.md` "Veteran default for ambiguous prompts: declare-and-proceed, never ask-and-hold."
 4. After edits or material changes, run the strongest meaningful verification for the domain.
 5. Before finalizing, run the appropriate review path: `quality-reviewer` for code, `editor-critic` for prose, `metis` or `briefing-analyst` for analysis.
 6. For advisory tasks over codebases (reviews, audits, assessments):
