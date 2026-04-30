@@ -327,6 +327,35 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
       context_parts+=("INTENT VERIFICATION: this prompt is short and unanchored (no file path, line ref, function name, or backtick-fenced identifier). Before your first edit, restate the user's goal in 1-2 sentences and ask the user to confirm or correct. If the goal is unambiguous from the prompt or the user has already confirmed in a prior turn, skip the pause and proceed. The directive exists to catch the failure mode where the model confidently solves the wrong problem because the request had multiple plausible interpretations.")
       log_hook "prompt-intent-router" "bias-defense: intent-verify fired"
     fi
+
+    # --- Exemplifying-scope widening directive (v1.23.0, default-on) ---
+    #
+    # Symmetric to the prometheus/intent-verify narrowing directives
+    # but fires for the OPPOSITE bias: when the user phrases scope
+    # with example markers ("for instance", "e.g.", "such as", "as
+    # needed", "like X"), the model historically interpreted the
+    # example as the literal scope and dropped the class. This
+    # directive flips the default under ULW — when the prompt
+    # exemplifies, treat the example as one item from an enumerable
+    # class and enumerate siblings.
+    #
+    # Default ON because (a) it's informational, not blocking — the
+    # model adjusts framing without forced delegation; (b) the failure
+    # mode it defends against was the user's primary v1.22.x complaint
+    # ("scope" had become an escape trick); and (c) unlike prometheus/
+    # intent-verify, this directive does not introduce friction (no
+    # blocked stop, no forced sub-agent dispatch).
+    #
+    # Fires INDEPENDENTLY of the narrowing directives (no
+    # _bias_directive_emitted gating) because narrowing and widening
+    # are orthogonal axes — a product-shaped exemplifying prompt could
+    # legitimately receive both (clarify the goal interview-first AND
+    # treat the named example as class-shaped scope).
+    if [[ "${OMC_EXEMPLIFYING_DIRECTIVE:-on}" == "on" ]] \
+        && is_exemplifying_request "${PROMPT_TEXT}"; then
+      context_parts+=("EXEMPLIFYING SCOPE DETECTED: the prompt uses example markers ('for instance' / 'e.g.' / 'i.e.' / 'for example' / 'such as' / 'as needed' / 'as appropriate' / 'similar to' / 'including but not limited to' / 'things like' / 'stuff like' / 'examples include'). Treat the example as ONE item from an enumerable class — the *class* is the scope, not the literal example. Before stopping, enumerate the sibling items in the same class (other items a veteran would bundle into the same pass) and address all of them, or explicitly decline each with a one-line reason. Implementing only the literal example and silently dropping the class is **under-interpretation, not restraint** — it is the failure mode \`/ulw\` was created to prevent. Worked example: 'enhance the statusline, for instance adding reset countdown' enumerates as: reset countdown, in-flight indicators (pause/wave/plan markers), stale-data warnings, count surfaces, model-name handling — all live in the same statusline render path and are class items, not new capabilities. See core.md 'Excellence is not gold-plating' Calibration test, **Also keep going** bullet for the same rule. The user's request IS the permission to enumerate the class — do not gate-keep yourself by asking which siblings to include.")
+      log_hook "prompt-intent-router" "bias-defense: exemplifying-directive fired"
+    fi
   fi
 
   if [[ "${session_management_prompt}" -eq 0 && "${checkpoint_prompt}" -eq 0 ]]; then

@@ -198,6 +198,69 @@ assert_not_contains "no PROMETHEUS on continuation"   "AMBIGUOUS PRODUCT-SHAPED 
 assert_not_contains "no INTENT VERIFY on continuation" "INTENT VERIFICATION"            "${out}"
 
 # ----------------------------------------------------------------------
+# Test 10 (v1.23.0): EXEMPLIFYING SCOPE DETECTED widening directive
+#
+# Symmetric to prometheus-suggest / intent-verify but defends against
+# the OPPOSITE bias (under-commitment / under-interpretation).
+# Default ON — emits when an execution prompt contains example markers.
+printf 'Test 10: exemplifying-directive default-ON fires on example markers\n'
+_EXEMPLIFY_PROMPT="ulw enhance the dashboard, for instance adding filter chips"
+out="$(_run_router "t10-${RANDOM}" "${_EXEMPLIFY_PROMPT}")"
+assert_contains "EXEMPLIFYING directive present (default-ON)" \
+  "EXEMPLIFYING SCOPE DETECTED" "${out}"
+assert_contains "directive names class-treatment" \
+  "Treat the example as ONE item" "${out}"
+assert_contains "directive cites core.md" \
+  "Excellence is not gold-plating" "${out}"
+
+# ----------------------------------------------------------------------
+printf 'Test 11: exemplifying-directive opt-out via OMC_EXEMPLIFYING_DIRECTIVE=off\n'
+out="$(_run_router "t11-${RANDOM}" "${_EXEMPLIFY_PROMPT}" \
+  "OMC_EXEMPLIFYING_DIRECTIVE=off")"
+assert_not_contains "directive suppressed when off" \
+  "EXEMPLIFYING SCOPE DETECTED" "${out}"
+
+# ----------------------------------------------------------------------
+printf 'Test 12: exemplifying-directive does NOT fire on prompt without markers\n'
+out="$(_run_router "t12-${RANDOM}" "ulw fix the auth bug in lib/login.ts:42")"
+assert_not_contains "no directive without markers" \
+  "EXEMPLIFYING SCOPE DETECTED" "${out}"
+
+# ----------------------------------------------------------------------
+printf 'Test 13: exemplifying-directive fires INDEPENDENTLY of narrowing directives\n'
+# Per the v1.23.0 design: narrowing (prometheus-suggest, intent-verify)
+# and widening (exemplifying-directive) are orthogonal axes. A
+# product-shaped prompt that ALSO contains example markers can
+# legitimately receive both directives.
+_DUAL_PROMPT="ulw build me a habit tracker app, for instance with streak counters"
+out="$(_run_router "t13-${RANDOM}" "${_DUAL_PROMPT}" \
+  "OMC_PROMETHEUS_SUGGEST=on")"
+assert_contains "PROMETHEUS hint fires" "AMBIGUOUS PRODUCT-SHAPED PROMPT" "${out}"
+assert_contains "EXEMPLIFYING fires alongside PROMETHEUS" \
+  "EXEMPLIFYING SCOPE DETECTED" "${out}"
+
+# ----------------------------------------------------------------------
+printf 'Test 14: exemplifying-directive skipped on advisory prompt\n'
+# Advisory branch is the early-return path; bias-defense block is
+# inside the fresh-execution `else`. An advisory prompt with example
+# markers should NOT receive the directive.
+out="$(_run_router "t14-${RANDOM}" "ulw what do you think about icons such as lucide?")"
+assert_not_contains "no EXEMPLIFYING on advisory" \
+  "EXEMPLIFYING SCOPE DETECTED" "${out}"
+
+# ----------------------------------------------------------------------
+printf 'Test 15: user verbatim — "/ulw enhance the statusline, for instance ..."\n'
+# The exact shape of the user's offending prompt that motivated this
+# directive. Locks the regression so the failure mode the prompt
+# captured cannot return without breaking this assertion.
+_USER_VERBATIM="ulw can the status line be further enhanced for better ux? For instance, adding the information when will the limits be reset. Implement and then commit as needed."
+out="$(_run_router "t15-${RANDOM}" "${_USER_VERBATIM}")"
+assert_contains "user verbatim triggers directive" \
+  "EXEMPLIFYING SCOPE DETECTED" "${out}"
+assert_contains "directive includes worked example" \
+  "reset countdown" "${out}"
+
+# ----------------------------------------------------------------------
 printf '\n'
 printf 'Result: %d passed, %d failed\n' "${pass}" "${fail}"
 if [[ "${fail}" -gt 0 ]]; then

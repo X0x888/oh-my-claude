@@ -44,7 +44,9 @@ printf 'Test 1: lib/classifier.sh exports the contracted functions\n'
 for fn in is_imperative_request count_keyword_matches is_ui_request \
           infer_domain classify_task_intent record_classifier_telemetry \
           detect_classifier_misfire is_execution_intent_value \
-          is_exhaustive_authorization_request; do
+          is_exhaustive_authorization_request \
+          is_product_shaped_request is_ambiguous_execution_request \
+          is_exemplifying_request; do
   assert_function_defined "${fn}"
 done
 

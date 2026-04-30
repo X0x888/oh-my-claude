@@ -824,6 +824,46 @@ is_ambiguous_execution_request() {
   return 0
 }
 
+# is_exemplifying_request — true when the prompt phrases scope using
+# example markers ("for instance", "e.g.", "for example", "such as",
+# "as needed", "like X", "similar to", "including but not limited to").
+# Such phrasings mark ONE item from an enumerable class; the class is
+# the scope, not the literal example. Used to inject the
+# EXEMPLIFYING SCOPE DETECTED widening directive (v1.23.0) so the
+# model enumerates sibling items instead of stopping at the literal
+# example — the under-interpretation failure mode `/ulw` was created
+# to prevent.
+#
+# Symmetric to is_product_shaped_request / is_ambiguous_execution_request:
+# both bias-defense classifiers defend against *over*-commitment (the
+# model jumps to a specific implementation on too little info); this
+# one defends against *under*-commitment (the model interprets "for
+# instance, X" as "implement only X"). Both axes are real failure modes;
+# both deserve dedicated detection.
+#
+# The caller is responsible for checking task_intent. This helper only
+# evaluates prompt shape; the router gates the directive emission on
+# fresh-execution intent so the directive does NOT pollute advisory
+# turns ("what would you suggest, e.g., …" prompts).
+is_exemplifying_request() {
+  local text="$1"
+  [[ -z "${text}" ]] && return 1
+
+  # Example-marker phrases. Word boundaries via \b prevent substring
+  # matches (e.g., "instance" inside "instances" remains valid because
+  # "for instance" requires the leading "for "; "such" inside "such-and-
+  # such" requires "such as" with a space).
+  #
+  # Notably absent: a standalone "like X" pattern. "like" by itself is
+  # too ambiguous — "things I like about this code" has `like` as a
+  # verb, not an exemplifier — and `things like` / `stuff like` cover
+  # the most common exemplifier-shaped uses already. Users who want
+  # the wider net can add their own patterns via OMC_EXEMPLIFYING_DIRECTIVE
+  # off + custom prompt prefix.
+  local pat='\b(for[[:space:]]+instance|e\.g\.|i\.e\.|for[[:space:]]+example|such[[:space:]]+as|as[[:space:]]+needed|as[[:space:]]+appropriate|similar[[:space:]]+to|including[[:space:]]+but[[:space:]]+not[[:space:]]+limited[[:space:]]+to|things[[:space:]]+like|stuff[[:space:]]+like|examples[[:space:]]+(include|are|of))'
+  grep -Eiq "${pat}" <<<"${text}"
+}
+
 is_execution_intent_value() {
   local intent="$1"
 

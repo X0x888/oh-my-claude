@@ -38,6 +38,9 @@ _omc_env_auto_memory="${OMC_AUTO_MEMORY:-}"
 _omc_env_metis_on_plan_gate="${OMC_METIS_ON_PLAN_GATE:-}"
 _omc_env_prometheus_suggest="${OMC_PROMETHEUS_SUGGEST:-}"
 _omc_env_intent_verify_directive="${OMC_INTENT_VERIFY_DIRECTIVE:-}"
+_omc_env_exemplifying_directive="${OMC_EXEMPLIFYING_DIRECTIVE:-}"
+_omc_env_prompt_text_override="${OMC_PROMPT_TEXT_OVERRIDE:-}"
+_omc_env_mark_deferred_strict="${OMC_MARK_DEFERRED_STRICT:-}"
 _omc_env_wave_override_ttl="${OMC_WAVE_OVERRIDE_TTL_SECONDS:-}"
 _omc_env_stop_failure_capture="${OMC_STOP_FAILURE_CAPTURE:-}"
 _omc_env_resume_request_ttl="${OMC_RESUME_REQUEST_TTL_DAYS:-}"
@@ -139,6 +142,34 @@ OMC_PROMETHEUS_SUGGEST="${OMC_PROMETHEUS_SUGGEST:-off}"
 # confirmation step, not interview. Default off; suppressed when
 # prometheus_suggest already fired on the same turn (no double-friction).
 OMC_INTENT_VERIFY_DIRECTIVE="${OMC_INTENT_VERIFY_DIRECTIVE:-off}"
+# exemplifying_directive (v1.23.0): when `on`, the prompt-intent-router
+# injects an EXEMPLIFYING SCOPE DETECTED directive telling the model to
+# treat user-exemplified scope as a class (enumerate sibling items)
+# rather than as the literal example. Symmetric to prometheus/intent-
+# verify but defends against the OPPOSITE bias — *under-commitment*
+# (model interprets "for instance, X" as "implement only X"). Default
+# ON because it's informational rather than blocking, and the failure
+# mode it defends against was a primary v1.22.x complaint.
+OMC_EXEMPLIFYING_DIRECTIVE="${OMC_EXEMPLIFYING_DIRECTIVE:-on}"
+# prompt_text_override (v1.23.0): when `on`, the PreTool intent guard
+# permits a destructive op when the most recent user prompt
+# unambiguously authorizes the verb being attempted, even if the
+# classifier mis-routed the prompt as advisory. Defense-in-depth that
+# closes the long-tail of imperative-tail prompt shapes the regex
+# layer can't fully cover. Default ON because the failure mode it
+# defends against (model parroting "reply with: ship the commit on
+# <branch>") was the primary v1.22.x UX complaint.
+OMC_PROMPT_TEXT_OVERRIDE="${OMC_PROMPT_TEXT_OVERRIDE:-on}"
+# mark_deferred_strict (v1.23.0): when `on`, mark-deferred.sh rejects
+# bare "out of scope" / "not in scope" / "follow-up" / "separate task"
+# / "later" / "low priority" reasons that have historically been used
+# as silent-skip escape hatches. Reasons must contain a WHY keyword
+# (requires/blocked/superseded/awaiting/pending/etc.) OR be a self-
+# explanatory single token from the allowlist (duplicate / obsolete
+# / superseded / wontfix / invalid / not applicable / n/a / not a bug).
+# Default ON because the user explicitly identified this as a notorious
+# escape pattern in v1.22.x and earlier.
+OMC_MARK_DEFERRED_STRICT="${OMC_MARK_DEFERRED_STRICT:-on}"
 # Resume-request artifact lifetime: max age (days) for a `resume_request.json`
 # to still be considered claimable. Older artifacts are treated as stale and
 # silently ignored by the SessionStart resume hint and the watchdog. The
@@ -216,6 +247,12 @@ _parse_conf_file() {
         [[ -z "${_omc_env_prometheus_suggest}" && "${value}" =~ ^(on|off)$ ]] && OMC_PROMETHEUS_SUGGEST="${value}" || true ;;
       intent_verify_directive)
         [[ -z "${_omc_env_intent_verify_directive}" && "${value}" =~ ^(on|off)$ ]] && OMC_INTENT_VERIFY_DIRECTIVE="${value}" || true ;;
+      exemplifying_directive)
+        [[ -z "${_omc_env_exemplifying_directive}" && "${value}" =~ ^(on|off)$ ]] && OMC_EXEMPLIFYING_DIRECTIVE="${value}" || true ;;
+      prompt_text_override)
+        [[ -z "${_omc_env_prompt_text_override}" && "${value}" =~ ^(on|off)$ ]] && OMC_PROMPT_TEXT_OVERRIDE="${value}" || true ;;
+      mark_deferred_strict)
+        [[ -z "${_omc_env_mark_deferred_strict}" && "${value}" =~ ^(on|off)$ ]] && OMC_MARK_DEFERRED_STRICT="${value}" || true ;;
       wave_override_ttl_seconds)
         [[ -z "${_omc_env_wave_override_ttl}" && "${value}" =~ ^[0-9]+$ ]] && OMC_WAVE_OVERRIDE_TTL_SECONDS="${value}" || true ;;
       stop_failure_capture)

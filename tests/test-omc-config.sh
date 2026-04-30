@@ -251,17 +251,22 @@ assert_file_lacks_line "atomic batch: auto_memory not written" "${USER_CONF_PATH
 assert_file_lacks_line "atomic batch: discovered_scope not written" "${USER_CONF_PATH}" "^discovered_scope=on\$"
 teardown
 
-# --- Test 13: apply-preset maximum writes all 12 keys ---
-printf 'Test 13: apply-preset maximum writes 12 keys\n'
+# --- Test 13: apply-preset maximum writes all 15 keys (v1.23.0: +3 flags) ---
+printf 'Test 13: apply-preset maximum writes 15 keys\n'
 setup
 out="$(bash "${HELPER}" apply-preset user maximum 2>&1)"
-assert_contains "apply-preset reports 12 keys" "12 keys" "${out}"
+assert_contains "apply-preset reports 15 keys" "15 keys" "${out}"
 assert_file_has_line "maximum: gate_level=full" "${USER_CONF_PATH}" "^gate_level=full\$"
 assert_file_has_line "maximum: guard_exhaustion_mode=block" "${USER_CONF_PATH}" "^guard_exhaustion_mode=block\$"
 assert_file_has_line "maximum: prometheus_suggest=on" "${USER_CONF_PATH}" "^prometheus_suggest=on\$"
 assert_file_has_line "maximum: metis_on_plan_gate=on" "${USER_CONF_PATH}" "^metis_on_plan_gate=on\$"
 assert_file_has_line "maximum: resume_watchdog=on" "${USER_CONF_PATH}" "^resume_watchdog=on\$"
 assert_file_has_line "maximum: model_tier=quality" "${USER_CONF_PATH}" "^model_tier=quality\$"
+# v1.23.0: Maximum preset includes the three new flags (all on for the
+# quality posture).
+assert_file_has_line "maximum: exemplifying_directive=on" "${USER_CONF_PATH}" "^exemplifying_directive=on\$"
+assert_file_has_line "maximum: prompt_text_override=on" "${USER_CONF_PATH}" "^prompt_text_override=on\$"
+assert_file_has_line "maximum: mark_deferred_strict=on" "${USER_CONF_PATH}" "^mark_deferred_strict=on\$"
 # Regression net: council_deep_default=on belongs in Maximum (consistent
 # with model_tier=quality — every quality lever pulled). Originally
 # shipped as `off` for cost reasons; corrected after user review pointed

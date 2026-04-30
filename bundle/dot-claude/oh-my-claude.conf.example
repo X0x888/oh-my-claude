@@ -104,6 +104,46 @@
 # Env: OMC_INTENT_VERIFY_DIRECTIVE.
 #intent_verify_directive=off
 
+# Inject an EXEMPLIFYING SCOPE DETECTED directive when the prompt uses
+# example markers ("for instance", "e.g.", "such as", "as needed",
+# "like X", "similar to", "including but not limited to"). Tells the
+# model to treat the example as ONE item from an enumerable class —
+# the *class* is the scope, not the literal example. Symmetric to
+# prometheus/intent-verify but defends against the OPPOSITE bias
+# (under-commitment / under-interpretation). Default ON because it's
+# informational rather than blocking, and the failure mode it defends
+# against was the primary v1.22.x complaint ("scope" had become an
+# escape trick). Set to off if the directive is too chatty for your
+# style — the calibration test in core.md still applies regardless.
+# Env: OMC_EXEMPLIFYING_DIRECTIVE.
+#exemplifying_directive=on
+
+# PreTool guard's raw-prompt-text trust override. When the classifier
+# mis-routes a prompt as advisory but the most recent user prompt
+# unambiguously authorizes the destructive verb being attempted, allow
+# the op through and record a `prompt_text_override` gate event.
+# Defense-in-depth that closes the long-tail of imperative-tail prompt
+# shapes the regex layer can't fully cover. Default ON because the
+# failure mode it defends against (model parroting "reply with: ship
+# the commit on <branch>") was the primary v1.22.x UX complaint.
+# Safety: requires both is_imperative_request match AND segment-level
+# verb authorization (every destructive segment must be authorized).
+# Set to off if you prefer the strict "classifier intent is final"
+# behavior. Env: OMC_PROMPT_TEXT_OVERRIDE.
+#prompt_text_override=on
+
+# mark-deferred require-WHY validator. When `on`, /mark-deferred
+# rejects bare "out of scope" / "not in scope" / "follow-up" /
+# "separate task" / "later" / "low priority" reasons that have
+# historically been used as silent-skip escape hatches. Reasons must
+# contain a WHY keyword (requires/blocked/superseded/awaiting/pending/
+# etc.) OR be a self-explanatory single token from the allowlist
+# (duplicate / obsolete / superseded / wontfix / invalid / not
+# applicable / n/a / not a bug). Default ON because the user explicitly
+# identified this as a notorious escape pattern in v1.22.x and earlier.
+# Env: OMC_MARK_DEFERRED_STRICT.
+#mark_deferred_strict=on
+
 # Statusline shows a yellow `↑v<version>` arrow when the source repo is
 # ahead of the installed bundle. Useful nudge to re-run install.sh after
 # `git pull`. Default true.

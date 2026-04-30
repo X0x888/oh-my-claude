@@ -56,10 +56,11 @@ $ARGUMENTS
 
 Before treating the task as done, confirm:
 
-1. Every explicit request item is delivered. Every reasonably implied item is delivered or explicitly declined with a reason.
+1. Every explicit request item is delivered. Every reasonably implied item is delivered or explicitly declined with a reason. **For example-marker prompts ("for instance", "e.g.", "such as", "as needed", "like X"), this includes the sibling items in the class the example belongs to** — implementing only the literal example and silently dropping the class is under-interpretation, not restraint (see rule 11 above).
 2. New or changed behavior is covered by a test (new test added, existing test updated, or — only when a test is genuinely impossible — a concrete reason recorded).
 3. The strongest meaningful verification for the domain has run and passed. Lint-only checks do not satisfy this for code tasks.
 4. The changed files have been re-read with fresh eyes (or by `quality-reviewer` / `excellence-reviewer` for complex tasks) and any findings are shown in auditable form.
-5. The final user-facing response restates the key deliverable — ranked recommendations, the final answer, file-and-behavior summary — so the user does not have to scroll.
+5. **Discovered findings prefer wave-append over deferral.** If an advisory specialist surfaced findings mid-session that look same-surface to active work, append them to the wave plan via `record-finding-list.sh add-finding` + `assign-wave` rather than deferring with `/mark-deferred`. The four-option escalation ladder (ship → wave-append → defer-with-WHY → call out as risk) is documented in `core.md` ("Wave-append before defer") and `mark-deferred/SKILL.md`. Bare "out of scope" / "not in scope" reasons are rejected by the require-WHY validator — that's deliberate; the v1.22.x silent-skip pattern is what the harness now treats as the anti-pattern.
+6. The final user-facing response restates the key deliverable — ranked recommendations, the final answer, file-and-behavior summary — so the user does not have to scroll.
 
 If any row is not satisfied, keep working before stopping.

@@ -64,6 +64,9 @@ custom_verify_mcp_tools|str||gates|Pipe-separated MCP tool patterns that count a
 metis_on_plan_gate|bool|off|advisory|Block stop on complex plan until metis stress-test
 prometheus_suggest|bool|off|advisory|Suggest /prometheus on short product-shaped prompts
 intent_verify_directive|bool|off|advisory|Restate-and-confirm directive on short prompts
+exemplifying_directive|bool|on|advisory|Treat user-exemplified scope as a class (enumerate siblings)
+prompt_text_override|bool|on|gates|PreTool guard trusts prompt-text imperative when classifier disagrees
+mark_deferred_strict|bool|on|gates|Reject low-information defer reasons (out of scope / follow-up)
 installation_drift_check|true_false|true|advisory|Statusline yellow arrow when bundle is behind source
 auto_memory|bool|on|memory|Cross-session auto-memory writes (project/feedback/user/reference)
 classifier_telemetry|bool|on|telemetry|Per-turn classifier telemetry to session state
@@ -106,6 +109,9 @@ discovered_scope=on
 council_deep_default=on
 prometheus_suggest=on
 intent_verify_directive=on
+exemplifying_directive=on
+prompt_text_override=on
+mark_deferred_strict=on
 metis_on_plan_gate=on
 stop_failure_capture=on
 resume_watchdog=on
@@ -122,6 +128,9 @@ discovered_scope=on
 council_deep_default=off
 prometheus_suggest=off
 intent_verify_directive=off
+exemplifying_directive=on
+prompt_text_override=on
+mark_deferred_strict=on
 metis_on_plan_gate=off
 stop_failure_capture=on
 resume_watchdog=off
@@ -138,6 +147,9 @@ discovered_scope=off
 council_deep_default=off
 prometheus_suggest=off
 intent_verify_directive=off
+exemplifying_directive=on
+prompt_text_override=on
+mark_deferred_strict=off
 metis_on_plan_gate=off
 stop_failure_capture=on
 resume_watchdog=off

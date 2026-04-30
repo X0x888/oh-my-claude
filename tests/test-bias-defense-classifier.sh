@@ -279,6 +279,84 @@ assert_eq "env wins over conf intent"    "on" "${OMC_INTENT_VERIFY_DIRECTIVE}"
 rm -f "${_test_conf}"
 
 # ----------------------------------------------------------------------
+# Test 11 (v1.23.0): is_exemplifying_request positive cases
+#
+# Detects when the user has phrased scope using example markers — the
+# example is one item from a class, not the literal scope. Symmetric
+# to is_product_shaped_request / is_ambiguous_execution_request: those
+# defend against over-commitment; this defends against under-commitment.
+printf 'Test 11: is_exemplifying_request positive cases (v1.23.0)\n'
+assert_true "user verbatim — for instance"   'is_exemplifying_request "/ulw can the status line be enhanced for better ux? For instance, adding the information when will the limits be reset."'
+assert_true "for instance, ..."              'is_exemplifying_request "improve dashboards, for instance the search filters"'
+assert_true "e.g."                           'is_exemplifying_request "expand error states, e.g. 404 and 500"'
+assert_true "i.e."                           'is_exemplifying_request "fix the off-by-one, i.e. the parser bug"'
+assert_true "for example"                    'is_exemplifying_request "support more locales, for example fr-CA"'
+assert_true "such as"                        'is_exemplifying_request "ship error states such as 404 and 500"'
+assert_true "as needed (user verbatim)"      'is_exemplifying_request "Implement and commit as needed"'
+assert_true "as appropriate"                 'is_exemplifying_request "Polish the inputs as appropriate"'
+assert_true "similar to"                     'is_exemplifying_request "Build a tracker similar to Linear"'
+assert_true "including but not limited to"   'is_exemplifying_request "Add features including but not limited to search"'
+assert_true "things like"                    'is_exemplifying_request "things like search and filter"'
+assert_true "stuff like"                     'is_exemplifying_request "stuff like the toast and the modal"'
+assert_true "examples include"               'is_exemplifying_request "ship error states. examples include 404 and 500"'
+assert_true "examples are"                   'is_exemplifying_request "examples are the dashboard and the toast"'
+assert_true "examples of"                    'is_exemplifying_request "examples of class items: badges, indicators"'
+
+# ----------------------------------------------------------------------
+# Test 12: is_exemplifying_request negative cases
+#
+# Critical anti-false-positive: the standalone "like X" pattern was
+# considered but rejected because "things I like about this code" has
+# `like` as a verb. The negatives below lock in that trade-off.
+printf 'Test 12: is_exemplifying_request negative cases\n'
+assert_false "things I like (verb usage)"    'is_exemplifying_request "Things I like about this codebase: the naming"'
+assert_false "I likewise (false-friend)"     'is_exemplifying_request "I likewise prefer the existing format"'
+assert_false "no example markers"            'is_exemplifying_request "Fix the auth bug in login.tsx"'
+assert_false "no example markers (long)"     'is_exemplifying_request "Refactor the database layer to use Prisma instead of raw SQL"'
+assert_false "make a panel like the dash"    'is_exemplifying_request "make a panel like the dashboard"'
+assert_false "empty string"                  'is_exemplifying_request ""'
+
+# ----------------------------------------------------------------------
+# Test 13: conf parser wires v1.23.0 flags
+printf 'Test 13: conf parser wires exemplifying_directive / prompt_text_override / mark_deferred_strict\n'
+_test_conf="$(mktemp -t bias-defense-conf-XXXXXX)"
+cat > "${_test_conf}" <<EOF
+exemplifying_directive=off
+prompt_text_override=off
+mark_deferred_strict=off
+EOF
+_omc_env_exemplifying_directive=""
+_omc_env_prompt_text_override=""
+_omc_env_mark_deferred_strict=""
+OMC_EXEMPLIFYING_DIRECTIVE="on"
+OMC_PROMPT_TEXT_OVERRIDE="on"
+OMC_MARK_DEFERRED_STRICT="on"
+_parse_conf_file "${_test_conf}"
+assert_eq "exemplifying_directive parsed" "off" "${OMC_EXEMPLIFYING_DIRECTIVE}"
+assert_eq "prompt_text_override parsed"   "off" "${OMC_PROMPT_TEXT_OVERRIDE}"
+assert_eq "mark_deferred_strict parsed"   "off" "${OMC_MARK_DEFERRED_STRICT}"
+rm -f "${_test_conf}"
+
+# Env var precedence — env wins over conf.
+_test_conf="$(mktemp -t bias-defense-conf-XXXXXX)"
+cat > "${_test_conf}" <<EOF
+exemplifying_directive=off
+prompt_text_override=off
+mark_deferred_strict=off
+EOF
+_omc_env_exemplifying_directive="on"
+_omc_env_prompt_text_override="on"
+_omc_env_mark_deferred_strict="on"
+OMC_EXEMPLIFYING_DIRECTIVE="on"
+OMC_PROMPT_TEXT_OVERRIDE="on"
+OMC_MARK_DEFERRED_STRICT="on"
+_parse_conf_file "${_test_conf}"
+assert_eq "env wins over conf — exemplifying" "on" "${OMC_EXEMPLIFYING_DIRECTIVE}"
+assert_eq "env wins over conf — prompt-text"  "on" "${OMC_PROMPT_TEXT_OVERRIDE}"
+assert_eq "env wins over conf — mark-defer"   "on" "${OMC_MARK_DEFERRED_STRICT}"
+rm -f "${_test_conf}"
+
+# ----------------------------------------------------------------------
 printf '\n'
 printf 'Result: %d passed, %d failed\n' "${pass}" "${fail}"
 if [[ "${fail}" -gt 0 ]]; then
