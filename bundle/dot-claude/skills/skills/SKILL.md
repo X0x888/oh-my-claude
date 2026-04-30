@@ -26,6 +26,7 @@ Display this table to the user:
 | **ulw-skip** | `/ulw-skip <reason>` | Skip the current quality gate block once — use when a gate is blocking but you're confident |
 | **mark-deferred** | `/mark-deferred <reason>` | Bulk-defer pending discovered-scope findings with a one-line reason — pass the gate without silent skipping |
 | **ulw-pause** | `/ulw-pause <reason>` | Declare a legitimate user-decision pause without tripping the session-handoff gate (taste / policy / credible-approach split). Cap 2/session |
+| **ulw-resume** | `/ulw-resume [--peek \| --list \| --session-id <sid>]` | Atomically claim and replay an unclaimed `resume_request.json` after a Claude Code rate-limit StopFailure — picks up the prior /ulw task as if it were never interrupted |
 | **ulw-off** | `/ulw-off` | Deactivate ultrawork mode mid-session without ending the conversation |
 | **skills** | `/skills` | Show this list |
 
@@ -43,6 +44,7 @@ Display this table to the user:
 - **Gate blocking but you're confident?** Use `/ulw-skip <reason>` to pass once.
 - **Discovered-scope gate flagging findings you've consciously deferred?** Use `/mark-deferred <reason>` to bulk-defer all pending advisory findings with a recorded reason — keeps `/ulw-report` audits accurate.
 - **Need to pause for user input on a decision only the user can make?** Use `/ulw-pause <reason>` — declares a legitimate user-decision pause without tripping the session-handoff gate. Distinct from `/ulw-skip` (one-shot bypass) and `/mark-deferred` (defer findings).
+- **Prior /ulw task killed by a Claude Code rate-limit window?** Use `/ulw-resume` — atomically claims the most relevant unclaimed `resume_request.json` for the current cwd (or matching project_key) and replays the original objective. The SessionStart resume-hint hook surfaces the artifact automatically; `/ulw-resume` is the explicit claim verb. Run `/ulw-resume --peek` to inspect first, `--list` to see all claimable artifacts.
 - **MEMORY.md feels noisy or the drift hint fired?** Use `/memory-audit` — classifies entries and proposes rollup moves without moving anything itself.
 - **Setting up a new repo?** Use `/atlas`.
 

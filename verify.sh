@@ -130,6 +130,8 @@ required_paths=(
   "${CLAUDE_HOME}/skills/autowork/scripts/mark-deferred.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/ulw-pause.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/audit-memory.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/claim-resume-request.sh"
+  "${CLAUDE_HOME}/skills/ulw-resume/SKILL.md"
 )
 
 for path in "${required_paths[@]}"; do

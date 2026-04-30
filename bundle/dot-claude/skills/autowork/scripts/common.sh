@@ -326,6 +326,7 @@ find_claimable_resume_requests() {
       | select(
           (.schema_version // 0) > 0
           and (.resumed_at_ts // null) == null
+          and (.dismissed_at_ts // null) == null
           and $attempts == 0
           and $captured_at >= $cutoff
           and (
@@ -1775,6 +1776,15 @@ get_all_agent_metrics() {
 
 _DEFECT_PATTERNS_FILE="${_DEFECT_PATTERNS_FILE:-${HOME}/.claude/quality-pack/defect-patterns.json}"
 _DEFECT_PATTERNS_LOCK="${_DEFECT_PATTERNS_LOCK:-${HOME}/.claude/quality-pack/.defect-patterns.lock}"
+# Cross-session lock for the resume-request claim flow (Wave 2 of the
+# auto-resume harness). Distinct from with_state_lock (per-session) and
+# with_metrics_lock (per-file) — the claim races across sessions
+# (Wave 1 hint hook in session A vs. Wave 3 watchdog vs. /ulw-resume in
+# session B), so the lock must be globally scoped, not session-scoped.
+# Uses the same mkdir + stale-mtime recovery shape; a missing or stuck
+# lock recovers within OMC_STATE_LOCK_STALE_SECS so a crashed claimer
+# does not deadlock the resume system.
+_RESUME_REQUEST_LOCK="${_RESUME_REQUEST_LOCK:-${HOME}/.claude/quality-pack/.resume-request.lock}"
 
 # with_defect_lock: Run a command under the defect patterns file lock.
 # Separate from with_metrics_lock to avoid unnecessary contention.
@@ -1802,6 +1812,63 @@ with_defect_lock() {
 
     if [[ "${attempts}" -ge "${OMC_STATE_LOCK_MAX_ATTEMPTS}" ]]; then
       log_anomaly "with_defect_lock" "lock not acquired after ${OMC_STATE_LOCK_MAX_ATTEMPTS} attempts"
+      return 1
+    fi
+    sleep 0.05 2>/dev/null || sleep 1
+  done
+
+  local rc=0
+  "$@" || rc=$?
+  rmdir "${lockdir}" 2>/dev/null || true
+  return "${rc}"
+}
+
+# with_resume_lock: Run a command under the resume-request claim lock.
+#
+# Cross-session lock — the resume-request claim races across sessions
+# (Wave 1 hint hook in session A, Wave 3 watchdog daemon, and Wave 2's
+# /ulw-resume claim in session B can all reach the same artifact). The
+# claim sequence is read-current-state → decide-to-claim → atomic-write,
+# which is non-atomic without a lock. mkdir-as-mutex + stale-mtime
+# recovery (same shape as with_metrics_lock and with_defect_lock) is
+# the established pattern in this codebase; flock is avoided because
+# its behavior over networked filesystems is platform-dependent.
+#
+# Stale-recovery: if the lock has been held longer than
+# OMC_STATE_LOCK_STALE_SECS (default 5s), assume the holder crashed and
+# reclaim. Five seconds is comfortably longer than a healthy claim
+# (which is one re-read + one tmp+mv) and short enough that a real
+# crashed claimer does not block the system for long.
+#
+# Returns 1 (without executing) on lock-acquisition timeout. Caller
+# should treat this as "claim failed; retry next tick" rather than
+# "no claimable artifact".
+with_resume_lock() {
+  local lockdir="${_RESUME_REQUEST_LOCK}"
+  local lock_parent
+  lock_parent="$(dirname "${lockdir}")"
+  mkdir -p "${lock_parent}" 2>/dev/null || true
+
+  local attempts=0
+  while true; do
+    if mkdir "${lockdir}" 2>/dev/null; then
+      break
+    fi
+    attempts=$((attempts + 1))
+
+    if [[ -d "${lockdir}" ]]; then
+      local now held_since
+      now="$(date +%s)"
+      held_since="$(_lock_mtime "${lockdir}")"
+      if [[ "${held_since}" -gt 0 ]] \
+          && [[ $(( now - held_since )) -gt "${OMC_STATE_LOCK_STALE_SECS}" ]]; then
+        rmdir "${lockdir}" 2>/dev/null || true
+        continue
+      fi
+    fi
+
+    if [[ "${attempts}" -ge "${OMC_STATE_LOCK_MAX_ATTEMPTS}" ]]; then
+      log_anomaly "with_resume_lock" "lock not acquired after ${OMC_STATE_LOCK_MAX_ATTEMPTS} attempts"
       return 1
     fi
     sleep 0.05 2>/dev/null || sleep 1

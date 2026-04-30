@@ -577,6 +577,23 @@ state_flag="$(jq -r '.resume_hint_emitted // ""' \
 assert_eq "T27: legacy global key set when origin sid is invalid" "1" "${state_flag}"
 teardown_test
 
+# ---------------------------------------------------------------------------
+# Test 28: dismissed artifact (Wave 2 --dismiss) does not surface in hint
+# ---------------------------------------------------------------------------
+print_test_header "Test 28: dismissed artifact suppresses hint"
+setup_test
+sid="sess-rl-28"
+sdir="${TEST_HOME}/.claude/quality-pack/state/${sid}"
+make_request "${sid}" "${TEST_HOME}" "Dismissed objective." "/ulw foo" "rate_limit"
+# Stamp dismissed_at_ts directly to simulate a prior /ulw-resume --dismiss.
+_now28="$(date +%s)"
+tmp="${sdir}/resume_request.json.tmp"
+jq --argjson now "${_now28}" '. + {dismissed_at_ts: $now}' \
+  "${sdir}/resume_request.json" > "${tmp}" && mv -f "${tmp}" "${sdir}/resume_request.json"
+out="$(run_hook "new-28")"
+assert_eq "T28: hint absent for dismissed artifact" "" "${out}"
+teardown_test
+
 printf '\n=== Summary ===\n'
 printf 'Passed: %d\nFailed: %d\n' "${pass}" "${fail}"
 if (( fail > 0 )); then

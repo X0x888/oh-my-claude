@@ -82,5 +82,8 @@ jobs:
       - name: Run session-start resume-hint tests
         run: bash tests/test-session-start-resume-hint.sh
 
+      - name: Run claim-resume-request tests
+        run: bash tests/test-claim-resume-request.sh
+
       - name: Run statusline tests
         run: python3 -m unittest tests.test_statusline -v

@@ -234,6 +234,38 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
        && [[ "${_wave_status_line}" == *pending* || "${_wave_status_line}" == *in-progress* ]]; then
       context_parts+=("**Phase 8 wave plan detected** in this session: ${_wave_status_line}. Resume protocol: do NOT call \`record-finding-list.sh init\` (the existing plan would be clobbered). Run \`record-finding-list.sh counts\` and \`show\` to see where execution stands, identify the in-progress wave, and re-enter at the per-wave cycle (planner → impl → quality-reviewer → excellence-reviewer → verify → commit) for the next pending wave. Findings already marked shipped are done; pending findings still need work.")
     fi
+
+    # Wave 2 resume hint: when a continuation prompt arrives AND there is
+    # a claimable resume_request.json on disk for this cwd, inject a
+    # directive recommending /ulw-resume. Distinct from the SessionStart
+    # resume-hint hook (Wave 1) which fires once per session — this
+    # directive covers the case where the user typed an unrelated prompt
+    # at SessionStart, dismissed/missed the hint, and later says
+    # "continue". To avoid re-injecting on every continuation prompt
+    # for the same artifact in the same session (excellence-review
+    # Finding 5: hot path), the directive is suppressed when either
+    # (a) the SessionStart hint already mentioned this artifact in this
+    # session — `resume_hint_emitted_<sid>` is set — or (b) the router
+    # itself already injected the directive once — `resume_directive_<sid>`.
+    # The artifact is automatically excluded by find_claimable_resume_requests
+    # if the user has dismissed it via /ulw-resume --dismiss.
+    if is_stop_failure_capture_enabled \
+        && [[ -f "${HOME}/.claude/skills/ulw-resume/SKILL.md" ]]; then
+      _resume_candidate="$(find_claimable_resume_requests 2>/dev/null \
+        | jq -r --arg cwd "${PWD}" 'select(.cwd == $cwd) | .session_id' 2>/dev/null \
+        | head -1)"
+      if [[ -n "${_resume_candidate}" ]] \
+         && validate_session_id "${_resume_candidate}"; then
+        _hint_state_key="resume_hint_emitted_${_resume_candidate}"
+        _directive_state_key="resume_directive_${_resume_candidate}"
+        _hint_already_shown="$(read_state "${_hint_state_key}")"
+        _directive_already_shown="$(read_state "${_directive_state_key}")"
+        if [[ "${_hint_already_shown}" != "1" ]] && [[ "${_directive_already_shown}" != "1" ]]; then
+          context_parts+=("**Pending resume request for this cwd** (origin_session=${_resume_candidate}). A prior /ulw task in this directory was killed by a Claude Code StopFailure; the artifact is unclaimed. Before continuing, invoke the \`/ulw-resume\` skill to atomically claim the artifact and replay the original objective verbatim — that is the resume path that preserves exhaustive-authorization markers, council triggers, and specific constraints. If the user's continuation explicitly references different work than the artifact's recorded objective, run \`/ulw-resume --dismiss\` to silence the hint, or ignore this directive and proceed (the dismiss verb prevents re-injection on subsequent continuation prompts in this session).")
+          write_state "${_directive_state_key}" "1"
+        fi
+      fi
+    fi
   elif [[ "${session_management_prompt}" -eq 1 ]]; then
     context_parts+=("Ultrawork intent gate classified this prompt as session-management advice, not execution. Answer the user's question directly. Preserve the active objective instead of treating this prompt as a new task. Do not start implementing more work unless the user explicitly asks you to continue now. If you recommend a fresh session, checkpoint, or pause, explain why cleanly and stop without triggering deferral-style execution pressure.")
     context_parts+=("Lead your response with the classification line — e.g., '**Domain:** ${TASK_DOMAIN} | **Intent:** ${display_intent}' — before answering, so the user can verify routing is correct.")
