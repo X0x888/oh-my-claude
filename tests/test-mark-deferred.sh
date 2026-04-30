@@ -105,7 +105,7 @@ assert_eq "whitespace exit 2" "2" "${rc}"
 # ===========================================================================
 printf 'missing SESSION_ID rejected:\n'
 set +e
-out="$(env -u SESSION_ID bash "${MARK_DEFERRED}" "valid reason" 2>&1)"; rc=$?
+out="$(env -u SESSION_ID bash "${MARK_DEFERRED}" "requires separate specialist review" 2>&1)"; rc=$?
 set -e
 assert_eq "missing session exit 2" "2" "${rc}"
 assert_contains "session_id message" "no active session" "${out}"
@@ -117,7 +117,7 @@ printf 'missing scope file rejected:\n'
 export SESSION_ID="test-no-scope-file"
 ensure_session_dir
 set +e
-out="$(bash "${MARK_DEFERRED}" "valid reason" 2>&1)"; rc=$?
+out="$(bash "${MARK_DEFERRED}" "requires separate specialist review" 2>&1)"; rc=$?
 set -e
 assert_eq "no scope file exit 2" "2" "${rc}"
 assert_contains "scope-missing message" "no discovered_scope.jsonl" "${out}"
@@ -129,7 +129,7 @@ printf 'no pending rows is a no-op:\n'
 setup_session "test-no-pending" '{"id":"abc12345","source":"metis","summary":"already shipped","severity":"low","status":"shipped","reason":"done","ts":"100"}
 '
 set +e
-out="$(bash "${MARK_DEFERRED}" "valid reason" 2>&1)"; rc=$?
+out="$(bash "${MARK_DEFERRED}" "requires separate specialist review" 2>&1)"; rc=$?
 set -e
 assert_eq "no pending exit 0" "0" "${rc}"
 assert_contains "no-op message" "No pending findings" "${out}"
@@ -143,7 +143,11 @@ setup_session "test-flip-pending" '{"id":"abc12345","source":"metis","summary":"
 {"id":"ghi11122","source":"council/data-lens","summary":"finding C","severity":"low","status":"shipped","reason":"fixed in commit","ts":"102"}
 {"id":"jkl33344","source":"metis","summary":"finding D","severity":"medium","status":"deferred","reason":"prior defer","ts":"103"}
 '
-out="$(bash "${MARK_DEFERRED}" "out of scope for v1.16" 2>&1)"
+# v1.23.0: reason must include a named WHY clause (no bare "out of
+# scope" / "not in scope" / "follow-up"). The SKILL.md acceptable
+# shapes include 'requires <X>' and 'pending wave N'. The fixture
+# below uses an explicit 'requires <X>, pending wave N' reason.
+out="$(bash "${MARK_DEFERRED}" "requires database migration outside this session's surface, pending wave 5" 2>&1)"
 assert_contains "deferred-count message" "Deferred 2 pending finding" "${out}"
 assert_contains "gate-pass UX line" "Discovered-scope gate will pass" "${out}"
 
@@ -151,7 +155,7 @@ scope_file="$(session_file "discovered_scope.jsonl")"
 # The two pending rows must now be deferred with the new reason and a ts_updated.
 flipped="$(jq -r 'select(.id=="abc12345" or .id=="def67890") | "\(.status)|\(.reason)|\(has("ts_updated"))"' "${scope_file}" | sort -u)"
 assert_eq "both flipped rows have status=deferred + reason + ts_updated" \
-  "deferred|out of scope for v1.16|true" "${flipped}"
+  "deferred|requires database migration outside this session's surface, pending wave 5|true" "${flipped}"
 
 # ===========================================================================
 # Test 7: pre-existing deferred rows are preserved (reason untouched)
@@ -199,7 +203,7 @@ setup_session "test-other-statuses" '{"id":"aaa11111","source":"metis","summary"
 {"id":"bbb22222","source":"metis","summary":"rejected","severity":"medium","status":"rejected","reason":"not a defect","ts":"101"}
 {"id":"ccc33333","source":"metis","summary":"pending","severity":"low","status":"pending","reason":"","ts":"102"}
 '
-bash "${MARK_DEFERRED}" "rolling into v1.17" >/dev/null
+bash "${MARK_DEFERRED}" "rolling into v1.17 — pending feature flag flip" >/dev/null
 
 scope_file="$(session_file "discovered_scope.jsonl")"
 ip_status="$(jq -r 'select(.id=="aaa11111") | .status' "${scope_file}")"
@@ -235,7 +239,7 @@ setup_session "test-corrupt-jsonl" '{"id":"good1234","source":"metis","summary":
 this is not valid json — should fail jq transform
 {"id":"good5678","source":"metis","summary":"valid shipped","severity":"low","status":"shipped","reason":"done","ts":"102"}
 '
-out="$(bash "${MARK_DEFERRED}" "deferring corrupt-fixture batch" 2>&1)"
+out="$(bash "${MARK_DEFERRED}" "deferring corrupt-fixture batch — requires upstream cleanup" 2>&1)"
 # The valid pending row gets transformed.
 assert_contains "valid pending row deferred" "Deferred 1 pending finding" "${out}"
 # The invalid row is NOT silently preserved as "non_pending_preserved";
@@ -251,6 +255,131 @@ if [[ "${out}" == *"Discovered-scope gate will pass on the next stop attempt"* ]
 else
   pass=$((pass + 1))
 fi
+
+# ===========================================================================
+# Wave 3 (v1.23.0) — require-WHY validation tests
+#
+# The skill rejects low-information reasons that have historically been
+# used as silent-skip escape hatches ("out of scope", "not in scope",
+# "follow-up", "separate task", "later"). Reasons must contain a WHY
+# keyword (requires/blocked/superseded/awaiting/pending/etc.) OR be a
+# self-explanatory single token from the allowlist (duplicate / obsolete /
+# superseded / wontfix / invalid / not applicable / n/a / not a bug).
+# OMC_MARK_DEFERRED_STRICT=off provides an opt-out.
+# ===========================================================================
+
+# Test V1: bare "out of scope" rejected
+printf '\nrequire-WHY rejects bare "out of scope":\n'
+setup_session "test-why-out-of-scope" '{"id":"why00001","source":"metis","summary":"finding","severity":"high","status":"pending","reason":"","ts":"100"}
+'
+set +e
+out="$(bash "${MARK_DEFERRED}" "out of scope" 2>&1)"; rc=$?
+set -e
+assert_eq "out of scope: exit 2" "2" "${rc}"
+assert_contains "out of scope: error names the rule" "must name a concrete WHY" "${out}"
+assert_contains "out of scope: error lists acceptable shapes" "requires <named context>" "${out}"
+# Row must remain pending (rejection happens before any state mutation).
+scope_file="$(session_file "discovered_scope.jsonl")"
+post_status="$(jq -r '.status' "${scope_file}")"
+assert_eq "out of scope: row left untouched (still pending)" "pending" "${post_status}"
+
+# Test V2: "not in scope" rejected
+printf '\nrequire-WHY rejects "not in scope":\n'
+set +e
+out="$(bash "${MARK_DEFERRED}" "not in scope" 2>&1)"; rc=$?
+set -e
+assert_eq "not in scope: exit 2" "2" "${rc}"
+assert_contains "not in scope: error names rule" "must name a concrete WHY" "${out}"
+
+# Test V3: bare "follow-up" rejected
+printf '\nrequire-WHY rejects bare "follow-up":\n'
+set +e
+out="$(bash "${MARK_DEFERRED}" "follow-up" 2>&1)"; rc=$?
+set -e
+assert_eq "follow-up: exit 2" "2" "${rc}"
+assert_contains "follow-up: error names rule" "must name a concrete WHY" "${out}"
+
+# Test V4: "later" rejected
+printf '\nrequire-WHY rejects "later":\n'
+set +e
+out="$(bash "${MARK_DEFERRED}" "later" 2>&1)"; rc=$?
+set -e
+assert_eq "later: exit 2" "2" "${rc}"
+
+# Test V5: "low priority" rejected (rank, not reason)
+printf '\nrequire-WHY rejects "low priority":\n'
+set +e
+out="$(bash "${MARK_DEFERRED}" "low priority" 2>&1)"; rc=$?
+set -e
+assert_eq "low priority: exit 2" "2" "${rc}"
+
+# Test V6: "separate task" rejected
+printf '\nrequire-WHY rejects bare "separate task":\n'
+set +e
+out="$(bash "${MARK_DEFERRED}" "separate task" 2>&1)"; rc=$?
+set -e
+assert_eq "separate task: exit 2" "2" "${rc}"
+
+# Test V7: ACCEPT — "requires X" form
+printf '\nrequire-WHY accepts "requires X":\n'
+out="$(bash "${MARK_DEFERRED}" "requires database migration outside this surface" 2>&1)"
+assert_contains "requires X: success" "Deferred 1 pending finding" "${out}"
+post_status="$(jq -r '.status' "${scope_file}")"
+assert_eq "requires X: row flipped to deferred" "deferred" "${post_status}"
+
+# Test V8: ACCEPT — "blocked by F-NNN" form
+printf '\nrequire-WHY accepts "blocked by F-NNN":\n'
+setup_session "test-why-blocked" '{"id":"why00002","source":"metis","summary":"finding","severity":"high","status":"pending","reason":"","ts":"100"}
+'
+out="$(bash "${MARK_DEFERRED}" "blocked by F-042 fix shipping first" 2>&1)"
+assert_contains "blocked by F-NNN: success" "Deferred 1 pending finding" "${out}"
+
+# Test V9: ACCEPT — "awaiting <event>" form
+printf '\nrequire-WHY accepts "awaiting <event>":\n'
+setup_session "test-why-awaiting" '{"id":"why00003","source":"metis","summary":"finding","severity":"high","status":"pending","reason":"","ts":"100"}
+'
+out="$(bash "${MARK_DEFERRED}" "awaiting telemetry from canary" 2>&1)"
+assert_contains "awaiting X: success" "Deferred 1 pending finding" "${out}"
+
+# Test V10: ACCEPT — single-token allowlist "duplicate"
+printf '\nrequire-WHY accepts allowlist token "duplicate":\n'
+setup_session "test-why-duplicate" '{"id":"why00004","source":"metis","summary":"finding","severity":"high","status":"pending","reason":"","ts":"100"}
+'
+out="$(bash "${MARK_DEFERRED}" "duplicate" 2>&1)"
+assert_contains "duplicate: success" "Deferred 1 pending finding" "${out}"
+
+# Test V11: ACCEPT — allowlist token with trailing punctuation
+printf '\nrequire-WHY accepts "Duplicate." (case + punctuation):\n'
+setup_session "test-why-dup-punct" '{"id":"why00005","source":"metis","summary":"finding","severity":"high","status":"pending","reason":"","ts":"100"}
+'
+out="$(bash "${MARK_DEFERRED}" "Duplicate." 2>&1)"
+assert_contains "Duplicate.: success" "Deferred 1 pending finding" "${out}"
+
+# Test V12: ACCEPT — issue/wave reference shape
+printf '\nrequire-WHY accepts "pending #847":\n'
+setup_session "test-why-issueref" '{"id":"why00006","source":"metis","summary":"finding","severity":"high","status":"pending","reason":"","ts":"100"}
+'
+out="$(bash "${MARK_DEFERRED}" "pending #847" 2>&1)"
+assert_contains "pending #N: success" "Deferred 1 pending finding" "${out}"
+
+# Test V13: kill switch — OMC_MARK_DEFERRED_STRICT=off bypasses validation
+printf '\nrequire-WHY kill switch (OMC_MARK_DEFERRED_STRICT=off):\n'
+setup_session "test-why-killswitch" '{"id":"why00007","source":"metis","summary":"finding","severity":"high","status":"pending","reason":"","ts":"100"}
+'
+out="$(OMC_MARK_DEFERRED_STRICT=off bash "${MARK_DEFERRED}" "out of scope" 2>&1)"
+assert_contains "kill-switch: bare reason accepted" "Deferred 1 pending finding" "${out}"
+scope_file_kill="$(session_file "discovered_scope.jsonl")"
+post_status_kill="$(jq -r '.status' "${scope_file_kill}")"
+assert_eq "kill-switch: row flipped to deferred" "deferred" "${post_status_kill}"
+
+# Test V14: rejection error message lists wave-append as alternative
+printf '\nrejection message points to wave-append alternative:\n'
+setup_session "test-why-points-wave" '{"id":"why00008","source":"metis","summary":"finding","severity":"high","status":"pending","reason":"","ts":"100"}
+'
+set +e
+out="$(bash "${MARK_DEFERRED}" "out of scope" 2>&1)"; rc=$?
+set -e
+assert_contains "rejection: mentions wave-append alternative" "wave-append" "${out}"
 
 # ===========================================================================
 printf '\nResults: pass=%d fail=%d\n' "${pass}" "${fail}"

@@ -543,14 +543,15 @@ What NOT to do — these patterns violate core.md ('FORBIDDEN: Asking \"Should I
   - Do not phrase the next message as a permission prompt of any shape.
   - Do not ask the user for a one-word affirmation (any \"yes / go / proceed / continue\" gate) to retry a destructive op.
   - Do not invent a manual permission gate that the harness's own classifier resolves on the next imperative prompt.
+  - Do not coach the user to paste back text you wrote — that is puppeteering their input, not honoring their authorization. The user's words are the authorization, not yours rephrased.
 
-If you believe this block is a misclassification (for example, a system-injected resume or wakeup frame interrupted mid-wave execution), state that plainly in your response and propose a concrete imperative the user can paste back verbatim — for example: 'To unblock, reply with: implement wave 3' or 'reply with: ship the commit on <branch>'. The next imperative prompt is the authorization signal — do not manufacture one.
+If you believe this block is a genuine misclassification (rare with the v1.23.0 prompt-text override + classifier widening — both layers permit any prompt that contains an unambiguous imperative for the destructive verb), state plainly that the prior user prompt appeared to authorize this op but the classifier disagreed. Then ask the user to clarify in their own words. The user's next message — in their own words, not a script you provided — is the authorization signal. Never manufacture a concrete imperative for them to repeat.
 
 Do not work around this guard by using alternative commands (plumbing git verbs, absolute paths, filesystem edits to .git/, or invoking git through another language runtime) — the spirit of the rule is 'no unauthorized modifications to any repo', not 'only the surface forms listed'.
 
 Attempted command: $(truncate_chars 200 "${command_str}")"
 else
-  reason="[PreTool gate · ${intent_label} · block ${block_count}] Destructive git/gh operations still require explicit execution authorization. Deliver the ${intent_label} response the user asked for. If you believe this is a misclassification, propose a concrete imperative the user can paste back verbatim ('reply with: implement wave N') — do not solicit a one-word confirmation.
+  reason="[PreTool gate · ${intent_label} · block ${block_count}] Destructive git/gh operations still require explicit execution authorization. Deliver the ${intent_label} response the user asked for. If you believe this is a misclassification, name the prior user prompt's apparent authorization and ask the user to clarify in their own words — never manufacture an imperative for them to repeat back.
 Attempted: $(truncate_chars 200 "${command_str}")"
 fi
 

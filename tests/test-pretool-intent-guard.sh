@@ -276,18 +276,29 @@ assert_not_contains_ci "T9: no 'confirm with yes'"        "confirm with yes" "${
 teardown_test
 
 # ----------------------------------------------------------------------
-# T10 (text contract, positive side): the deny reason DOES include the
-# corrective guidance — propose a concrete imperative the user can paste
-# back verbatim, instead of soliciting a confirmation.
+# T10 (text contract — v1.23.0 anti-puppeteering rewrite). The deny
+# reason MUST cite the FORBIDDEN rule, name the "concrete imperative"
+# anti-pattern, AND tell the model to ask the user to clarify in their
+# own words. It MUST NOT contain the legacy "reply with: <X>" coaching
+# substring — that was the literal prose v1.22.x model parroted back to
+# the user as "reply with: ship the statusline reset-countdown commit
+# on main", which is the puppeteering anti-pattern this rewrite
+# eliminates. Locks in the new contract: no paste-back templates ever.
 setup_test
 init_session "t10" "advisory"
 out_t10="$(run_guard "t10" "git commit -m 'x'")"
-assert_contains "T10: reason includes 'concrete imperative' guidance" \
+assert_contains "T10: reason cites 'concrete imperative' anti-pattern" \
   "concrete imperative" "${out_t10}"
-assert_contains "T10: reason includes 'reply with:' template" \
-  "reply with:" "${out_t10}"
 assert_contains "T10: reason cites core.md FORBIDDEN rule" \
   "FORBIDDEN" "${out_t10}"
+assert_contains "T10: reason instructs to ask user 'in their own words'" \
+  "in their own words" "${out_t10}"
+assert_contains "T10: reason calls out the puppeteering anti-pattern" \
+  "puppeteering" "${out_t10}"
+assert_not_contains_ci "T10: reason MUST NOT contain 'reply with:' paste-back coaching" \
+  "reply with:" "${out_t10}"
+assert_not_contains_ci "T10: reason MUST NOT teach the model to invent paste-back text" \
+  "paste back verbatim" "${out_t10}"
 teardown_test
 
 # ----------------------------------------------------------------------
@@ -511,6 +522,8 @@ assert_not_contains_ci "T12: 2nd block has no 'say yes'"       "say yes"        
 assert_not_contains_ci "T12: 2nd block has no 'single yes'"    "single yes"     "${out_t12}"
 assert_not_contains_ci "T12: 2nd block has no 'reauthorize'"   "reauthorize"    "${out_t12}"
 assert_not_contains_ci "T12: 2nd block has no 'confirm with yes'" "confirm with yes" "${out_t12}"
+assert_not_contains_ci "T12: 2nd block has no 'reply with:' paste-back coaching" "reply with:" "${out_t12}"
+assert_contains "T12: 2nd block instructs 'ask user in their own words'" "in their own words" "${out_t12}"
 teardown_test
 
 # ----------------------------------------------------------------------
