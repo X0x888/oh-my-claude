@@ -237,6 +237,29 @@ fi
 
 removed=()
 
+# Capture the bundled output-style file's frontmatter `name:` BEFORE we
+# remove the file, so the settings cleanup (below) can value-gate against
+# the user's actual current name (which may have been customized in place
+# per docs/customization.md guidance) rather than a hardcoded literal.
+# Without this, a user who edited the bundled file's frontmatter to
+# something like "OpenCode Compact v2" and updated their settings to
+# match would have the file removed but the orphaned outputStyle entry
+# left pointing at a missing style. Falls back to the historical default
+# "OpenCode Compact" when the file is absent or the parse returns empty.
+OMC_BUNDLED_STYLE_NAME="OpenCode Compact"
+_bundled_style_path="${CLAUDE_HOME}/output-styles/opencode-compact.md"
+if [[ -f "${_bundled_style_path}" ]]; then
+  # Robust parser: strips trailing \r (CRLF defense — without it, a
+  # Windows-edited customized file would re-introduce the exact orphan
+  # leak F-010 was meant to fix), tolerates multi-space-after-colon, and
+  # preserves embedded colons in the name itself.
+  _parsed_style_name="$(awk '/^name:/{sub(/^name:[[:space:]]*/,""); sub(/[[:space:]]+$/,""); print; exit}' "${_bundled_style_path}" 2>/dev/null || true)"
+  if [[ -n "${_parsed_style_name}" ]]; then
+    OMC_BUNDLED_STYLE_NAME="${_parsed_style_name}"
+  fi
+fi
+export OMC_BUNDLED_STYLE_NAME
+
 # Remove the oh-my-claude-authored post-merge git hook, if the installer
 # wrote one. We find the source repo via `repo_path` in oh-my-claude.conf
 # (written by install.sh), then remove `<repo>/.git/hooks/post-merge`
@@ -322,6 +345,7 @@ clean_settings() {
 clean_settings_python() {
   python3 - "${SETTINGS}" <<'PY'
 import json
+import os
 import pathlib
 import sys
 
@@ -329,6 +353,12 @@ settings_path = pathlib.Path(sys.argv[1])
 
 with settings_path.open() as f:
     settings = json.load(f)
+
+# Bundled style name captured by the parent shell before the .md file
+# was removed. Falls back to "OpenCode Compact" if the parent did not
+# export it (e.g. when this function is invoked outside the normal
+# uninstall flow).
+omc_style_name = os.environ.get("OMC_BUNDLED_STYLE_NAME", "OpenCode Compact")
 
 # ---- Remove hooks whose commands reference oh-my-claude paths ----
 # Patterns that identify oh-my-claude hooks. Null-safe accessors via
@@ -380,8 +410,9 @@ elif "hooks" in settings:
 
 # ---- Remove oh-my-claude settings keys (only if they match our values) ----
 
-# outputStyle — only remove if set to our value.
-if settings.get("outputStyle") == "OpenCode Compact":
+# outputStyle — only remove if set to the bundled style's frontmatter
+# name (captured before removal so in-place customizations are matched).
+if settings.get("outputStyle") == omc_style_name:
     del settings["outputStyle"]
 
 # effortLevel — only remove if set to our value.
@@ -412,8 +443,9 @@ PY
 
 clean_settings_jq() {
   local temp_path="${SETTINGS}.tmp"
+  local omc_style_name="${OMC_BUNDLED_STYLE_NAME:-OpenCode Compact}"
 
-  jq '
+  jq --arg omc_style "${omc_style_name}" '
     # Remove hooks whose commands reference oh-my-claude paths.
     # Non-object entries (explicit null, scalars) are passed through
     # unchanged to match the Python path, which treats them as
@@ -438,7 +470,10 @@ clean_settings_jq() {
     # Remove hooks key if empty.
     | if (.hooks | length) == 0 then del(.hooks) else . end
     # Remove oh-my-claude settings keys only if they match our values.
-    | if .outputStyle == "OpenCode Compact" then del(.outputStyle) else . end
+    # outputStyle is matched against the bundled style frontmatter name
+    # captured before removal (env $omc_style), so in-place customizations
+    # are correctly cleaned rather than orphaned.
+    | if .outputStyle == $omc_style then del(.outputStyle) else . end
     | if .effortLevel == "high" then del(.effortLevel) else . end
     | if .spinnerTipsEnabled == false then del(.spinnerTipsEnabled) else . end
     | if (.spinnerVerbs.mode == "replace" and (.spinnerVerbs.verbs | sort) == ["Inspecting","Refining","Sketching","Verifying"]) then del(.spinnerVerbs) else . end

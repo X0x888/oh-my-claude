@@ -252,7 +252,7 @@ oh-my-claude/
 │   ├── output-styles/                       # Output format templates
 │   └── statusline.py                        # Custom statusline widget
 ├── config/settings.patch.json               # Merged into user settings on install
-├── tests/               (47 bash + 1 py)    # See AGENTS.md / CONTRIBUTING.md for full list
+├── tests/               (48 bash + 1 py)    # See AGENTS.md / CONTRIBUTING.md for full list
 ├── tools/                                    # Developer-only tools (not installed)
 └── docs/                                    # Architecture, customization, FAQ, prompts
 ```
@@ -382,6 +382,7 @@ bash tests/test-design-contract.sh          # 9-section Design Contract regressi
 bash tests/test-specialist-routing.sh       # Engineering-specialist routing in coding-domain hint (orphan-specialist regression net)
 bash tests/test-stop-failure-handler.sh     # StopFailure hook captures rate_limit / auth / billing fatal-stop signals into resume_request.json
 bash tests/test-omc-config.sh               # /omc-config skill backend (mode detection, atomic conf writes, presets, validation)
+bash tests/test-output-style-coherence.sh   # OpenCode Compact style frontmatter parity, hook-injected opener coherence, label regression net
 python3 -m unittest tests.test_statusline   # Statusline widget
 ```
 

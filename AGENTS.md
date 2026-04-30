@@ -149,7 +149,7 @@ oh-my-claude/
   config/
     settings.patch.json       # Settings merged into user's settings.json
 
-  tests/                      # 47 bash + 1 python test scripts; CLAUDE.md "Testing" lists each one
+  tests/                      # 48 bash + 1 python test scripts; CLAUDE.md "Testing" lists each one
 
   tools/                      # Developer tools (not installed)
     replay-classifier-telemetry.sh
@@ -274,30 +274,11 @@ shellcheck bundle/dot-claude/**/*.sh
 # Integration verification
 bash verify.sh
 
-# Unit / integration tests
-bash tests/test-intent-classification.sh
-bash tests/test-quality-gates.sh
-bash tests/test-stall-detection.sh
-bash tests/test-e2e-hook-sequence.sh
-bash tests/test-concurrency.sh
-bash tests/test-install-artifacts.sh
-bash tests/test-post-merge-hook.sh
-bash tests/test-repro-redaction.sh
-bash tests/test-settings-merge.sh
-bash tests/test-uninstall-merge.sh
-bash tests/test-common-utilities.sh
-bash tests/test-session-resume.sh
-bash tests/test-discovered-scope.sh
-bash tests/test-exemplifying-scope-gate.sh
-bash tests/test-finding-list.sh
-bash tests/test-state-io.sh
-bash tests/test-classifier-replay.sh
-bash tests/test-serendipity-log.sh
-bash tests/test-cross-session-rotation.sh
-bash tests/test-classifier.sh
-bash tests/test-show-report.sh
-bash tests/test-install-remote.sh
-python3 -m unittest tests.test_statusline -v
+# Unit / integration tests — run the full suite using the canonical
+# command list in CLAUDE.md → "Testing". CLAUDE.md is the single source
+# of truth so this file does not have to track every test addition; the
+# tally above (`tests/  # NN bash + 1 python …`) and CLAUDE.md must
+# agree on the count.
 ```
 
 ## Protected Design Decisions

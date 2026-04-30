@@ -151,6 +151,27 @@ for path in "${required_paths[@]}"; do
   fi
 done
 
+# Output-style frontmatter integrity. The path was already verified
+# above; here we additionally confirm the frontmatter `name:` field
+# matches the literal "OpenCode Compact" that config/settings.patch.json
+# writes into settings.json. Drift between the two would let a corrupted
+# or renamed file pass existence-only verification while silently failing
+# at session start when Claude Code tries to resolve outputStyle.
+style_path="${CLAUDE_HOME}/output-styles/opencode-compact.md"
+if [[ -f "${style_path}" ]]; then
+  # Robust to CRLF line endings, multi-space-after-colon, and embedded
+  # colons in the name itself. The naive `awk -F': ' '{print $2}'` form
+  # would carry a trailing \r on Windows-edited files and break the
+  # equality check below — silently identical to the F-010 leak path
+  # this verifier is supposed to catch.
+  style_name="$(awk '/^name:/{sub(/^name:[[:space:]]*/,""); sub(/[[:space:]]+$/,""); print; exit}' "${style_path}" 2>/dev/null || true)"
+  if [[ "${style_name}" == "OpenCode Compact" ]]; then
+    pass "output-style frontmatter name: ${style_name}"
+  else
+    fail "output-style frontmatter name '${style_name}' does not match expected 'OpenCode Compact' (file may be corrupted)"
+  fi
+fi
+
 printf '\n'
 
 # ---------------------------------------------------------------------------

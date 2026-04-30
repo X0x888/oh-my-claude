@@ -1033,6 +1033,13 @@ if [[ -f "${CLAUDE_HOME}/oh-my-claude.conf" ]]; then
     printf '  Model tier:    %s\n' "${_tier}"
   fi
 fi
+if [[ -f "${CLAUDE_HOME}/output-styles/opencode-compact.md" ]]; then
+  # Robust to CRLF endings + multi-space-after-colon + embedded colons.
+  _style_name="$(awk '/^name:/{sub(/^name:[[:space:]]*/,""); sub(/[[:space:]]+$/,""); print; exit}' "${CLAUDE_HOME}/output-styles/opencode-compact.md" 2>/dev/null || true)"
+  if [[ -n "${_style_name}" ]]; then
+    printf '  Output style:  %s\n' "${_style_name}"
+  fi
+fi
 
 # Orphan warning: surface files that were in a prior bundle but removed
 # in this release. These linger in ~/.claude/ because rsync -a has no

@@ -104,6 +104,7 @@ bash tests/test-session-start-resume-hint.sh
 bash tests/test-claim-resume-request.sh
 bash tests/test-resume-watchdog.sh
 bash tests/test-omc-config.sh
+bash tests/test-output-style-coherence.sh
 python3 -m unittest tests.test_statusline -v
 ```
 

@@ -207,6 +207,45 @@ JSON
     fi
   done
 
+  # -------------------------------------------------------------------------
+  # F-010: in-place customized outputStyle name. The user followed the
+  # docs/customization.md L373 advice and edited the bundled file's
+  # frontmatter `name:` to "OpenCode Compact v2", then updated their
+  # settings.json to match. uninstall.sh captures the actual frontmatter
+  # name BEFORE removing the file and exports OMC_BUNDLED_STYLE_NAME.
+  # The cleanup must use that captured name for value-gating, otherwise
+  # the file is removed but the orphaned outputStyle entry is left
+  # pointing at a missing style.
+  # -------------------------------------------------------------------------
+  work="${TEST_DIR}/${impl}-customized-name"
+  mkdir -p "${work}"
+  SETTINGS="${work}/settings.json"
+  cat > "${SETTINGS}" <<'JSON'
+{
+  "outputStyle": "OpenCode Compact v2"
+}
+JSON
+  OMC_BUNDLED_STYLE_NAME="OpenCode Compact v2" run_clean "${impl}" "${SETTINGS}"
+  assert_json_eq "${impl}: F-010 — customized name removed via captured frontmatter" \
+    "${SETTINGS}" '.outputStyle // "absent"' "absent"
+
+  # -------------------------------------------------------------------------
+  # F-010 negative: a user with a totally separate outputStyle (e.g.
+  # "Learning") must NOT have their setting removed when our captured
+  # name does not match. Confirms value-gating still preserves user data.
+  # -------------------------------------------------------------------------
+  work="${TEST_DIR}/${impl}-separate-style"
+  mkdir -p "${work}"
+  SETTINGS="${work}/settings.json"
+  cat > "${SETTINGS}" <<'JSON'
+{
+  "outputStyle": "Learning"
+}
+JSON
+  OMC_BUNDLED_STYLE_NAME="OpenCode Compact" run_clean "${impl}" "${SETTINGS}"
+  assert_json_eq "${impl}: F-010 — non-matching user style preserved" \
+    "${SETTINGS}" '.outputStyle' "Learning"
+
   printf '  %s implementation done.\n' "${impl}"
 done
 
