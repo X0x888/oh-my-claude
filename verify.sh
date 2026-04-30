@@ -104,6 +104,12 @@ required_paths=(
   "${CLAUDE_HOME}/skills/autowork/scripts/lib/state-io.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/lib/classifier.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/lib/verification.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/lib/timing.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/pretool-timing.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/posttool-timing.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/stop-time-summary.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/show-time.sh"
+  "${CLAUDE_HOME}/skills/ulw-time/SKILL.md"
   "${CLAUDE_HOME}/skills/autowork/scripts/record-serendipity.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/record-reviewer.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/record-subagent-summary.sh"
@@ -232,6 +238,10 @@ hook_scripts=(
   "${CLAUDE_HOME}/skills/autowork/scripts/ulw-deactivate.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/find-design-contract.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/record-archetype.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/pretool-timing.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/posttool-timing.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/stop-time-summary.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/show-time.sh"
 )
 
 for script in "${hook_scripts[@]}"; do
@@ -269,6 +279,8 @@ else
     "PostToolUse:record-verification.sh"
     "PostToolUse:reflect-after-agent.sh"
     "PostToolUse:record-advisory-verification.sh"
+    "PreToolUse:pretool-timing.sh"
+    "PostToolUse:posttool-timing.sh"
     "PreCompact:pre-compact-snapshot.sh"
     "PostCompact:post-compact-summary.sh"
     "StopFailure:stop-failure-handler.sh"
@@ -276,6 +288,7 @@ else
     "SubagentStop:record-plan.sh"
     "SubagentStop:record-reviewer.sh"
     "Stop:stop-guard.sh"
+    "Stop:stop-time-summary.sh"
   )
 
   # Scoped check: require the command fragment to appear under the correct

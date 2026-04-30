@@ -287,6 +287,7 @@ Skills are invoked as slash commands or routed automatically by the intent class
 | **Workflow control** (mid-session) | | |
 | ulw-demo *(onboarding)* | `/ulw-demo` | Guided walkthrough with real quality gates |
 | ulw-status *(diagnostics)* | `/ulw-status` | Show current session state and Council Phase 8 wave-plan progress. `summary` / `classifier` arguments swap modes. |
+| ulw-time *(time distribution)* | `/ulw-time [current\|last\|week\|month\|all]` | Show where this prompt's (or session's) wall time went — per-tool / per-subagent ASCII bar chart. Cross-session windows roll up "which agents are most expensive in your workflow?" |
 | ulw-report *(retrospective)* | `/ulw-report [last\|week\|month\|all]` | Markdown digest of cross-session activity — sessions, gate fires, top reviewers, classifier misfires, Serendipity catches, finding/wave outcomes |
 | memory-audit *(memory hygiene)* | `/memory-audit [--memory-dir <path>]` | Classify MEMORY.md entries (load-bearing, archival, superseded, drifted) and propose rollup moves. Read-only. |
 | ulw-skip *(skip a gate)* | `/ulw-skip <reason>` | Skip current quality gate block once |
@@ -310,7 +311,7 @@ Skills are invoked as slash commands or routed automatically by the intent class
 | **Router-suggested (reasoning)** under `/ulw` | Injected as a directive when prompt signals match | `prometheus`, `quality-planner`, `quality-researcher`, `librarian`, `metis`, `oracle` |
 | **Router-suggested (engineering)** under `/ulw` | Same mechanism — extended to engineering specialists in this release | `backend-api-developer`, `devops-infrastructure-engineer`, `test-automation-engineer`, `fullstack-feature-builder`, `ios-ui-developer`, `ios-core-engineer`, `ios-deployment-specialist`, `ios-ecosystem-integrator`, `abstraction-critic` |
 | **Auto-dispatched on prompt pattern** | An entire workflow (multi-agent + gates) fires when the router detects the pattern | `/council` for broad project-evaluation prompts, the 9-section Design Contract on UI work |
-| **Manual control/diagnostic** *(by design)* | You declare intent — auto-firing would be wrong | `/ulw-skip`, `/ulw-pause`, `/mark-deferred`, `/ulw-status`, `/ulw-report`, `/ulw-off`, `/skills` |
+| **Manual control/diagnostic** *(by design)* | You declare intent — auto-firing would be wrong | `/ulw-skip`, `/ulw-pause`, `/mark-deferred`, `/ulw-status`, `/ulw-time`, `/ulw-report`, `/ulw-off`, `/skills` |
 | **Manual setup/audit** | One-time or occasional | `/atlas`, `/memory-audit`, `/ulw-demo`, `/omc-config` |
 
 Most quality-boosting specialists are auto-suggested by the prompt-intent-router under `/ulw` based on prompt signals — `/ulw fix the auth bug` automatically nudges toward `oracle` for hard debugging, `librarian` for unfamiliar APIs, `quality-reviewer` before stop, and so on. You don't have to type `/oracle` to get Oracle — the slash command is the standalone escape hatch, not the only path in.
@@ -383,6 +384,7 @@ bash tests/test-specialist-routing.sh       # Engineering-specialist routing in 
 bash tests/test-stop-failure-handler.sh     # StopFailure hook captures rate_limit / auth / billing fatal-stop signals into resume_request.json
 bash tests/test-omc-config.sh               # /omc-config skill backend (mode detection, atomic conf writes, presets, validation)
 bash tests/test-output-style-coherence.sh   # OpenCode Compact style frontmatter parity, hook-injected opener coherence, label regression net
+bash tests/test-timing.sh                   # Per-prompt time-distribution capture, aggregator, format helpers, /ulw-time empty-states
 python3 -m unittest tests.test_statusline   # Statusline widget
 ```
 

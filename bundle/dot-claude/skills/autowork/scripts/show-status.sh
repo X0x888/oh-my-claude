@@ -203,6 +203,17 @@ if [[ "${SUMMARY_MODE}" -eq 1 ]]; then
     printf 'Wave plan:  %s\n' "${_wave_status_line#Findings: }"
   fi
 
+  if is_time_tracking_enabled; then
+    _time_log="${STATE_ROOT}/${latest_session}/timing.jsonl"
+    if [[ -f "${_time_log}" ]]; then
+      _time_agg="$(timing_aggregate "${_time_log}")"
+      _time_oneline="$(timing_format_oneline "${_time_agg}")"
+      if [[ -n "${_time_oneline}" ]]; then
+        printf '%s\n' "${_time_oneline}"
+      fi
+    fi
+  fi
+
   printf 'Outcome:    %s\n' "${outcome}"
   exit 0
 fi
@@ -493,6 +504,20 @@ fi
 # Subagent dispatch count
 dispatch_count="$(jq -r '.subagent_dispatch_count // "0"' "${state_file}" 2>/dev/null || echo "0")"
 printf 'Subagent dispatches: %s\n' "${dispatch_count}"
+
+# Time distribution — one-line composition for the active session.
+# Surfaces "where the time went" alongside the existing session-age line
+# so the user sees workflow shape without having to invoke /ulw-time.
+if is_time_tracking_enabled; then
+  _time_log="${STATE_ROOT}/${latest_session}/timing.jsonl"
+  if [[ -f "${_time_log}" ]]; then
+    _time_agg="$(timing_aggregate "${_time_log}")"
+    _time_oneline="$(timing_format_oneline "${_time_agg}")"
+    if [[ -n "${_time_oneline}" ]]; then
+      printf '%s\n' "${_time_oneline}"
+    fi
+  fi
+fi
 
 # Show agent performance metrics (cross-session)
 metrics_file="${HOME}/.claude/quality-pack/agent-metrics.json"

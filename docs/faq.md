@@ -71,6 +71,16 @@ Avoid editing `opencode-compact.md` in place — `install.sh` rsyncs the bundle 
 
 Edit `~/.claude/skills/autowork/scripts/stop-guard.sh`. Each gate is an independent conditional block. To disable one, either set its block cap to `0` (e.g., change `-ge 3` to `-ge 0`) or remove the block entirely. To disable all quality gates at once, clear the Stop hook array in `~/.claude/settings.json`: `"Stop": []`.
 
+### Why is my prompt slow? Where did the time go?
+
+Run `/ulw-time` to see a breakdown of the active session's wall time by bucket — agents (per-subagent), tools (per-tool, with call counts), and idle/model (residual: model thinking, permission-prompt waits, hook overhead). For a single-prompt slice, run `/ulw-time last-prompt`. For a cross-session view answering "which agents are most expensive in my workflow?", run `/ulw-time week` (or `month` / `all`). The `/ulw-status` and `/ulw-report` skills also surface a summary line.
+
+Capture is on by default (`time_tracking=on`). The Stop hook also emits a one-line `Time: ...` summary into the next turn's context — that's how the model sees workflow shape between turns. You'll find the same data interactively via the skills above.
+
+### How do I turn off time tracking?
+
+Set `time_tracking=off` in `~/.claude/oh-my-claude.conf` (or `OMC_TIME_TRACKING=off` in the environment). The PreToolUse / PostToolUse / Stop hooks fast-path-out in <1ms with no disk I/O, so opt-out is essentially free. The `Minimal` preset of `/omc-config` already sets this — run `/omc-config` and pick `Minimal` to flip it together with the other telemetry flags. Cross-session timing data has its own retention horizon (`time_tracking_xs_retain_days`, default 30) — the data already on disk is swept on the regular TTL pass.
+
 ### What does "ultrathink" do?
 
 Adding `ultrathink` to any prompt injects a deeper investigation directive. It tells Claude to favor verification over abstraction: read actual files instead of reasoning about their probable contents, check claims against real code, run tests, and investigate further when evidence is ambiguous. It is designed for hard problems where unverified assumptions produce wrong answers. It does not change the domain or intent classification.

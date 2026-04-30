@@ -71,6 +71,14 @@ append_limited_state \
   "$(jq -nc --arg ts "${PROMPT_TS}" --arg text "${PROMPT_TEXT}" '{ts:$ts,text:$text}')" \
   "12"
 
+# Time tracking: bump prompt_seq and emit a prompt_start row. The seq tags
+# every subsequent PreToolUse/PostToolUse so the aggregator pairs starts
+# and ends within the right epoch even across compaction boundaries.
+if is_time_tracking_enabled; then
+  _omc_new_prompt_seq="$(timing_next_prompt_seq)"
+  timing_append_prompt_start "${_omc_new_prompt_seq}"
+fi
+
 if [[ "${OMC_EXEMPLIFYING_SCOPE_GATE:-on}" == "on" ]]; then
   if [[ "${EXEMPLIFYING_SCOPE_DETECTED}" -eq 1 ]]; then
     write_state_batch \

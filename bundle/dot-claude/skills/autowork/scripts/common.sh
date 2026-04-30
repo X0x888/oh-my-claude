@@ -48,6 +48,8 @@ _omc_env_stop_failure_capture="${OMC_STOP_FAILURE_CAPTURE:-}"
 _omc_env_resume_request_ttl="${OMC_RESUME_REQUEST_TTL_DAYS:-}"
 _omc_env_resume_watchdog="${OMC_RESUME_WATCHDOG:-}"
 _omc_env_resume_watchdog_cooldown="${OMC_RESUME_WATCHDOG_COOLDOWN_SECS:-}"
+_omc_env_time_tracking="${OMC_TIME_TRACKING:-}"
+_omc_env_time_tracking_xs_retain="${OMC_TIME_TRACKING_XS_RETAIN_DAYS:-}"
 
 OMC_STALL_THRESHOLD="${OMC_STALL_THRESHOLD:-12}"
 OMC_EXCELLENCE_FILE_COUNT="${OMC_EXCELLENCE_FILE_COUNT:-3}"
@@ -215,6 +217,20 @@ OMC_RESUME_WATCHDOG="${OMC_RESUME_WATCHDOG:-off}"
 # window. Combined with the helper's 3-attempt cap, this caps total
 # retry effort at ~30 minutes per artifact before surrendering.
 OMC_RESUME_WATCHDOG_COOLDOWN_SECS="${OMC_RESUME_WATCHDOG_COOLDOWN_SECS:-600}"
+# Time-tracking — captures per-tool / per-subagent durations into
+# `<session>/timing.jsonl` and emits a one-line distribution summary as
+# Stop additionalContext when the session releases. Surfaces via the
+# `/ulw-time` skill, `/ulw-status`, and `/ulw-report` cross-session
+# rollups. Default `on` because the hook layer is append-only and
+# non-blocking; opt out on shared machines or when the residual disk
+# noise (one JSONL per session) is unwanted.
+OMC_TIME_TRACKING="${OMC_TIME_TRACKING:-on}"
+# Cross-session timing rollup retention (days). Per-session timing files
+# are swept by OMC_STATE_TTL_DAYS; this independent TTL governs the
+# global aggregate at `~/.claude/quality-pack/timing.jsonl`. Default 30
+# days — long enough for monthly reflection, short enough that workflow
+# data does not accrue indefinitely on shared machines.
+OMC_TIME_TRACKING_XS_RETAIN_DAYS="${OMC_TIME_TRACKING_XS_RETAIN_DAYS:-30}"
 
 _omc_conf_loaded=0
 
@@ -286,6 +302,10 @@ _parse_conf_file() {
         [[ -z "${_omc_env_resume_watchdog}" && "${value}" =~ ^(on|off)$ ]] && OMC_RESUME_WATCHDOG="${value}" || true ;;
       resume_watchdog_cooldown_secs)
         [[ -z "${_omc_env_resume_watchdog_cooldown}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_RESUME_WATCHDOG_COOLDOWN_SECS="${value}" || true ;;
+      time_tracking)
+        [[ -z "${_omc_env_time_tracking}" && "${value}" =~ ^(on|off)$ ]] && OMC_TIME_TRACKING="${value}" || true ;;
+      time_tracking_xs_retain_days)
+        [[ -z "${_omc_env_time_tracking_xs_retain}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_TIME_TRACKING_XS_RETAIN_DAYS="${value}" || true ;;
       output_style)
         [[ -z "${_omc_env_output_style}" && "${value}" =~ ^(opencode|preserve)$ ]] && OMC_OUTPUT_STYLE="${value}" || true ;;
     esac
@@ -349,6 +369,15 @@ is_stop_failure_capture_enabled() {
 # register the platform-specific scheduler.
 is_resume_watchdog_enabled() {
   [[ "${OMC_RESUME_WATCHDOG:-off}" == "on" ]]
+}
+
+# Returns 0 (true) when time-tracking is enabled, 1 (false) when
+# disabled. PreToolUse / PostToolUse / Stop hooks check this for an
+# early fast-path exit so opt-out is essentially free of overhead.
+# Default on; opt out on shared machines where workflow data should
+# not accrue to disk.
+is_time_tracking_enabled() {
+  [[ "${OMC_TIME_TRACKING:-on}" != "off" ]]
 }
 
 # find_claimable_resume_requests
@@ -604,6 +633,7 @@ _omc_self="$(_omc_resolve_path "${BASH_SOURCE[0]}")"
 _omc_self_dir="$(cd "$(dirname "${_omc_self}")" && pwd -P)"
 source "${_omc_self_dir}/lib/state-io.sh"
 source "${_omc_self_dir}/lib/verification.sh"
+source "${_omc_self_dir}/lib/timing.sh"
 # classifier.sh is sourced later (after its dependencies — project_profile_has,
 # is_advisory_request, etc. — are defined). _omc_self_dir stays in scope until
 # the bottom of this file, where every source statement has finished running.
@@ -763,6 +793,26 @@ sweep_stale_sessions() {
     _cap_cross_session_jsonl "${HOME}/.claude/quality-pack/serendipity-log.jsonl" 2000 1500
     _cap_cross_session_jsonl "${HOME}/.claude/quality-pack/gate_events.jsonl" 10000 8000
     _cap_cross_session_jsonl "${HOME}/.claude/quality-pack/used-archetypes.jsonl" 500 400
+
+    # Time-tracking cross-session log: TTL is governed by the dedicated
+    # OMC_TIME_TRACKING_XS_RETAIN_DAYS flag (default 30) rather than
+    # OMC_STATE_TTL_DAYS — workflow timing data is more sensitive than
+    # gate telemetry, and a tighter window matches the privacy default
+    # for shared machines. Drop rows older than the retention horizon.
+    local _xs_time_log="${HOME}/.claude/quality-pack/timing.jsonl"
+    if [[ -f "${_xs_time_log}" ]] && [[ -s "${_xs_time_log}" ]]; then
+      local _xs_time_cutoff=$(( now - OMC_TIME_TRACKING_XS_RETAIN_DAYS * 86400 ))
+      local _xs_time_tmp
+      _xs_time_tmp="$(mktemp "${_xs_time_log}.XXXXXX")"
+      if jq -c --argjson cutoff "${_xs_time_cutoff}" \
+          'select((.ts // 0) >= $cutoff)' \
+          "${_xs_time_log}" > "${_xs_time_tmp}" 2>/dev/null; then
+        mv "${_xs_time_tmp}" "${_xs_time_log}"
+      else
+        rm -f "${_xs_time_tmp}"
+      fi
+      _cap_cross_session_jsonl "${_xs_time_log}" 10000 8000
+    fi
   fi
 
   printf '%s\n' "${now}" > "${marker}"

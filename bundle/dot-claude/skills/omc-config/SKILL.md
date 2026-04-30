@@ -170,6 +170,8 @@ options:
     description: "When the 5h/7d cap fires, the original objective is captured so /ulw-resume can replay. stop_failure_capture=on."
   - label: "Discovered-scope finding capture (Recommended)"
     description: "Advisory specialists' findings are gated by stop-guard; explicit defer/ship required. discovered_scope=on."
+  - label: "Per-prompt time-distribution capture (Recommended)"
+    description: "Records where each prompt's wall time goes (per-tool / per-subagent) and surfaces a Stop epilogue + /ulw-time skill. time_tracking=on."
 ```
 
 For selected options, emit the corresponding `<flag>=on`. For unselected, do NOT emit `=off`.

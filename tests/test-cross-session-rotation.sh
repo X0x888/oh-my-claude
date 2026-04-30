@@ -88,7 +88,7 @@ printf 'Test 7: every cross-session JSONL cap goes through the helper\n'
 # Strip leading whitespace + comment lines so doc references don't inflate.
 miscall_count="$(grep -vE '^\s*#' "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh" \
   | grep -c '_cap_cross_session_jsonl' || true)"
-assert_eq "expected 7 mentions in common.sh (1 def + 6 callers)" "7" "${miscall_count}"
+assert_eq "expected 8 mentions in common.sh (1 def + 7 callers)" "8" "${miscall_count}"
 
 # Also assert the open-coded idiom is fully retired: no more "tail -n N > tmp ; mv tmp file"
 # blocks targeting cross-session JSONLs.

@@ -267,6 +267,32 @@
 #resume_watchdog_cooldown_secs=600
 
 # ---------------------------------------------------------------------------
+# Time tracking — surface "where did this prompt's time go?" via
+# per-tool / per-subagent capture, a Stop epilogue one-liner, and the
+# `/ulw-time` skill (current session, last session, week / month / all
+# cross-session rollups). The hook layer is append-only and lock-free
+# on the hot path; opt out on shared machines or when residual disk
+# noise (one JSONL per session under STATE_ROOT) is unwanted.
+# ---------------------------------------------------------------------------
+
+# Per-tool / per-subagent timing capture.
+#   on  — capture; emit Stop epilogue; populate /ulw-time, /ulw-status,
+#         /ulw-report. (Default.)
+#   off — kill switch; PreToolUse / PostToolUse / Stop hooks fast-exit
+#         in <1ms (no jq, no disk I/O); no rows captured.
+# Env: OMC_TIME_TRACKING.
+#time_tracking=on
+
+# Cross-session timing rollup retention (days). Per-session timing.jsonl
+# files are swept by state_ttl_days; the global aggregate at
+# `~/.claude/quality-pack/timing.jsonl` has its own (tighter) horizon
+# because workflow data is more privacy-sensitive than gate telemetry.
+# Default 30 days — long enough for monthly reflection, short enough
+# that workflow patterns do not accrue indefinitely on shared machines.
+# Env: OMC_TIME_TRACKING_XS_RETAIN_DAYS.
+#time_tracking_xs_retain_days=30
+
+# ---------------------------------------------------------------------------
 # Cleanup.
 # ---------------------------------------------------------------------------
 

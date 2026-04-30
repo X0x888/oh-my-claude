@@ -97,5 +97,8 @@ jobs:
       - name: Run output-style coherence tests
         run: bash tests/test-output-style-coherence.sh
 
+      - name: Run timing tests
+        run: bash tests/test-timing.sh
+
       - name: Run statusline tests
         run: python3 -m unittest tests.test_statusline -v

@@ -22,6 +22,7 @@ Display this table to the user:
 | **omc-config** | `/omc-config [setup\|update\|change]` | Guided multi-choice walkthrough for `oh-my-claude.conf` flags — pick a profile (Maximum Quality + Automation / Balanced / Minimal) or fine-tune individual flags. Auto-detects first-time setup vs upgrade vs ad-hoc change. |
 | **ulw-demo** | `/ulw-demo` | Guided onboarding — see the quality gates fire on a demo task |
 | **ulw-status** | `/ulw-status` | Inspect current session state — mode, domain, counters, flags (debugging) |
+| **ulw-time** | `/ulw-time [current\|last\|week\|month\|all]` | Show where wall time went this prompt or across sessions — per-tool / per-subagent ASCII bar chart. Answers "why did that prompt take so long?" and "which agents are most expensive in my workflow?" |
 | **ulw-report** | `/ulw-report [last\|week\|month\|all]` | Markdown digest of cross-session activity — sessions, gate fires, reviewers, misfires, Serendipity catches, finding/wave outcomes |
 | **memory-audit** | `/memory-audit [--memory-dir <path>]` | Classify MEMORY.md entries (load-bearing, archival, superseded, drifted) and propose rollup moves. Read-only — never moves or deletes files. |
 | **ulw-skip** | `/ulw-skip <reason>` | Skip the current quality gate block once — use when a gate is blocking but you're confident |

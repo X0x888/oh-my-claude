@@ -77,6 +77,8 @@ stop_failure_capture|bool|on|watchdog|Capture resume_request.json on rate-limit 
 resume_request_ttl_days|int|7|watchdog|Days a resume_request stays claimable
 resume_watchdog|bool|off|watchdog|Headless daemon launches claude --resume after cap clears
 resume_watchdog_cooldown_secs|int|600|watchdog|Per-artifact cooldown between watchdog launches
+time_tracking|bool|on|telemetry|Per-tool / per-subagent timing capture; backs Stop epilogue + /ulw-time
+time_tracking_xs_retain_days|pint|30|telemetry|Cross-session timing log retention (days)
 state_ttl_days|int|7|cleanup|Days before stale session-state dirs are swept
 output_style|enum:opencode/preserve|opencode|cost|Bundle the OpenCode Compact style (opencode) or leave settings.json untouched (preserve)
 EOF
@@ -118,6 +120,7 @@ mark_deferred_strict=on
 metis_on_plan_gate=on
 stop_failure_capture=on
 resume_watchdog=on
+time_tracking=on
 model_tier=quality
 EOF
       ;;
@@ -138,6 +141,7 @@ mark_deferred_strict=on
 metis_on_plan_gate=off
 stop_failure_capture=on
 resume_watchdog=off
+time_tracking=on
 model_tier=balanced
 EOF
       ;;
@@ -158,6 +162,7 @@ mark_deferred_strict=off
 metis_on_plan_gate=off
 stop_failure_capture=on
 resume_watchdog=off
+time_tracking=off
 model_tier=economy
 EOF
       ;;
@@ -273,6 +278,16 @@ validate_kv() {
     int)
       if [[ ! "${value}" =~ ^[0-9]+$ ]]; then
         printf 'omc-config: %s must be a non-negative integer (got: %s)\n' "${key}" "${value}" >&2
+        return 2
+      fi
+      ;;
+    pint)
+      # Positive integer (>= 1). Use this for retention windows / TTLs
+      # where 0 would silently be rejected by common.sh's parser regex
+      # (^[1-9][0-9]*$) and the user would get the default instead — a
+      # silent-fallback footgun the strict validator prevents.
+      if [[ ! "${value}" =~ ^[1-9][0-9]*$ ]]; then
+        printf 'omc-config: %s must be a positive integer (got: %s)\n' "${key}" "${value}" >&2
         return 2
       fi
       ;;

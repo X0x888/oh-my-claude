@@ -498,6 +498,92 @@ else
 fi
 
 # ----------------------------------------------------------------------
+# Section 6.5: Time spent across sessions
+printf '## Time spent across sessions\n\n'
+
+if ! is_time_tracking_enabled; then
+  printf '_Time tracking is disabled (`time_tracking=off`)._\n\n'
+else
+  _xs_time_log="$(timing_xs_log_path)"
+  if [[ ! -f "${_xs_time_log}" ]] || [[ ! -s "${_xs_time_log}" ]]; then
+    printf '_No cross-session timing rows yet._\n\n'
+  else
+    _xs_rollup="$(timing_xs_aggregate "${cutoff_ts}")"
+    _xs_sessions="$(jq -r '.sessions // 0' <<<"${_xs_rollup}" 2>/dev/null)"
+    _xs_sessions="${_xs_sessions:-0}"
+
+    if [[ "${_xs_sessions}" == "0" ]]; then
+      printf '_No sessions in window._\n\n'
+    else
+      _xs_walltime="$(jq -r '.walltime_s // 0' <<<"${_xs_rollup}" 2>/dev/null)"
+      _xs_agent="$(jq -r '.agent_total_s // 0' <<<"${_xs_rollup}" 2>/dev/null)"
+      _xs_tool="$(jq -r '.tool_total_s // 0' <<<"${_xs_rollup}" 2>/dev/null)"
+      _xs_idle="$(jq -r '.idle_model_s // 0' <<<"${_xs_rollup}" 2>/dev/null)"
+      _xs_prompts="$(jq -r '.prompts // 0' <<<"${_xs_rollup}" 2>/dev/null)"
+
+      printf '_Window: %s sessions · %s prompts · %s walltime._\n\n' \
+        "${_xs_sessions}" "${_xs_prompts:-0}" "$(timing_fmt_secs "${_xs_walltime:-0}")"
+
+      printf '| Bucket | Time | Share |\n'
+      printf '|---|---|---|\n'
+      _share() {
+        local part="$1" total="$2"
+        if [[ "${total}" =~ ^[0-9]+$ ]] && (( total > 0 )); then
+          printf '%d%%' "$(( part * 100 / total ))"
+        else
+          printf '—'
+        fi
+      }
+      printf '| agents | %s | %s |\n' "$(timing_fmt_secs "${_xs_agent:-0}")" "$(_share "${_xs_agent:-0}" "${_xs_walltime:-0}")"
+      printf '| tools | %s | %s |\n' "$(timing_fmt_secs "${_xs_tool:-0}")" "$(_share "${_xs_tool:-0}" "${_xs_walltime:-0}")"
+      printf '| idle/model | %s | %s |\n' "$(timing_fmt_secs "${_xs_idle:-0}")" "$(_share "${_xs_idle:-0}" "${_xs_walltime:-0}")"
+      printf '\n'
+
+      printf '**Top agents by time**\n\n'
+      _xs_top_agents="$(jq -r '
+        (.agent_breakdown // {})
+        | to_entries | sort_by(-.value)
+        | .[0:10]
+        | .[]
+        | "\(.value)\t\(.key)"
+      ' <<<"${_xs_rollup}" 2>/dev/null || true)"
+      if [[ -n "${_xs_top_agents}" ]]; then
+        while IFS=$'\t' read -r _xs_secs _xs_name; do
+          [[ -z "${_xs_name}" ]] && continue
+          printf -- '- `%s` — %s\n' "${_xs_name}" "$(timing_fmt_secs "${_xs_secs}")"
+        done <<<"${_xs_top_agents}"
+      else
+        printf '_None recorded._\n'
+      fi
+      printf '\n'
+
+      printf '**Top tools by time**\n\n'
+      _xs_top_tools="$(jq -r '
+        (.tool_breakdown // {})
+        | to_entries | sort_by(-.value)
+        | .[0:10]
+        | .[]
+        | "\(.value)\t\(.key)"
+      ' <<<"${_xs_rollup}" 2>/dev/null || true)"
+      if [[ -n "${_xs_top_tools}" ]]; then
+        while IFS=$'\t' read -r _xs_secs _xs_name; do
+          [[ -z "${_xs_name}" ]] && continue
+          printf -- '- `%s` — %s\n' "${_xs_name}" "$(timing_fmt_secs "${_xs_secs}")"
+        done <<<"${_xs_top_tools}"
+      else
+        printf '_None recorded._\n'
+      fi
+      printf '\n'
+
+      if (( _xs_prompts > 0 )) && [[ "${_xs_walltime}" =~ ^[0-9]+$ ]] && (( _xs_walltime > 0 )); then
+        printf '**Average prompt walltime:** %s\n\n' \
+          "$(timing_fmt_secs $(( _xs_walltime / _xs_prompts )))"
+      fi
+    fi
+  fi
+fi
+
+# ----------------------------------------------------------------------
 # Section 7: Patterns to consider (v1.17.0 interpretation footer)
 #
 # The previous /ulw-report contract was strictly "facts only" — the
