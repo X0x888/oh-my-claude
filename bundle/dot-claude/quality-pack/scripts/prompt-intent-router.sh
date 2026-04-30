@@ -320,12 +320,16 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
       context_parts+=("AMBIGUOUS PRODUCT-SHAPED PROMPT: this request looks short and product-shaped (build/create/design + app/dashboard/feature/onboarding/etc.) without a specific code anchor. Before editing, consider running /prometheus to interview-first scope the goal, audience, success criteria, and constraints. If the scope is already clear from prior context or you have already clarified with the user, proceed. The directive exists to catch the failure mode where the model commits to a particular product shape on incomplete information and ships the wrong thing.")
       _bias_directive_emitted=1
       log_hook "prompt-intent-router" "bias-defense: prometheus-suggest fired"
+      record_gate_event "bias-defense" "directive_fired" \
+        "directive=prometheus-suggest"
     fi
     if [[ "${OMC_INTENT_VERIFY_DIRECTIVE:-off}" == "on" ]] \
         && [[ "${_bias_directive_emitted}" -eq 0 ]] \
         && is_ambiguous_execution_request "${PROMPT_TEXT}"; then
       context_parts+=("INTENT VERIFICATION: this prompt is short and unanchored (no file path, line ref, function name, or backtick-fenced identifier). Before your first edit, restate the user's goal in 1-2 sentences and ask the user to confirm or correct. If the goal is unambiguous from the prompt or the user has already confirmed in a prior turn, skip the pause and proceed. The directive exists to catch the failure mode where the model confidently solves the wrong problem because the request had multiple plausible interpretations.")
       log_hook "prompt-intent-router" "bias-defense: intent-verify fired"
+      record_gate_event "bias-defense" "directive_fired" \
+        "directive=intent-verify"
     fi
 
     # --- Exemplifying-scope widening directive (v1.23.0, default-on) ---
@@ -355,6 +359,8 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
         && is_exemplifying_request "${PROMPT_TEXT}"; then
       context_parts+=("EXEMPLIFYING SCOPE DETECTED: the prompt uses example markers ('for instance' / 'e.g.' / 'i.e.' / 'for example' / 'such as' / 'as needed' / 'as appropriate' / 'similar to' / 'including but not limited to' / 'things like' / 'stuff like' / 'examples include'). Treat the example as ONE item from an enumerable class — the *class* is the scope, not the literal example. Before stopping, enumerate the sibling items in the same class (other items a veteran would bundle into the same pass) and address all of them, or explicitly decline each with a one-line reason. Implementing only the literal example and silently dropping the class is **under-interpretation, not restraint** — it is the failure mode \`/ulw\` was created to prevent. Worked example: 'enhance the statusline, for instance adding reset countdown' enumerates as: reset countdown, in-flight indicators (pause/wave/plan markers), stale-data warnings, count surfaces, model-name handling — all live in the same statusline render path and are class items, not new capabilities. See core.md 'Excellence is not gold-plating' Calibration test, **Also keep going** bullet for the same rule. The user's request IS the permission to enumerate the class — do not gate-keep yourself by asking which siblings to include.")
       log_hook "prompt-intent-router" "bias-defense: exemplifying-directive fired"
+      record_gate_event "bias-defense" "directive_fired" \
+        "directive=exemplifying"
     fi
   fi
 

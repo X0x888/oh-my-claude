@@ -244,28 +244,68 @@ else
   # unanswerable. Counts use `wc -l` over jq output — `grep -c . || echo
   # 0` produced a literal "0\n0" string when grep matched nothing AND
   # emitted 0, which broke the markdown table for every realistic dataset.
+  # Overrides column counts BOTH wave_override (v1.21.0, council Phase 8
+  # per-wave commits) AND prompt_text_override (v1.23.0, raw-prompt-text
+  # trust override). Both events represent the same conceptual class —
+  # the gate would have denied but a defense-in-depth path allowed —
+  # so they share the column. The totals line below breaks the count
+  # back out by event type for users who care which path fired.
   printf '%s\n' "${gate_event_rows}" \
     | jq -r '.gate' \
     | sort -u \
     | while IFS= read -r _gate; do
         [[ -z "${_gate}" ]] && continue
         _block_count="$(printf '%s\n' "${gate_event_rows}" | jq -c --arg g "${_gate}" 'select(.gate == $g and .event == "block")' | wc -l | tr -d '[:space:]')"
-        _override_count="$(printf '%s\n' "${gate_event_rows}" | jq -c --arg g "${_gate}" 'select(.gate == $g and .event == "wave_override")' | wc -l | tr -d '[:space:]')"
+        _override_count="$(printf '%s\n' "${gate_event_rows}" | jq -c --arg g "${_gate}" 'select(.gate == $g and (.event == "wave_override" or .event == "prompt_text_override"))' | wc -l | tr -d '[:space:]')"
         _status_count="$(printf '%s\n' "${gate_event_rows}" | jq -c --arg g "${_gate}" 'select(.gate == $g and (.event == "finding-status-change" or .event == "wave-status-change" or .event == "user-decision-marked"))' | wc -l | tr -d '[:space:]')"
         printf '| `%s` | %s | %s | %s |\n' "${_gate}" "${_block_count}" "${_override_count}" "${_status_count}"
       done
   printf '\n'
   total_blocks_pe="$(printf '%s\n' "${gate_event_rows}" | jq -c 'select(.event == "block")' | wc -l | tr -d '[:space:]')"
-  total_overrides="$(printf '%s\n' "${gate_event_rows}" | jq -c 'select(.event == "wave_override")' | wc -l | tr -d '[:space:]')"
+  total_wave_overrides="$(printf '%s\n' "${gate_event_rows}" | jq -c 'select(.event == "wave_override")' | wc -l | tr -d '[:space:]')"
+  total_prompt_overrides="$(printf '%s\n' "${gate_event_rows}" | jq -c 'select(.event == "prompt_text_override")' | wc -l | tr -d '[:space:]')"
+  total_overrides=$((total_wave_overrides + total_prompt_overrides))
   total_status_changes="$(printf '%s\n' "${gate_event_rows}" | jq -c 'select(.event == "finding-status-change" or .event == "wave-status-change" or .event == "user-decision-marked")' | wc -l | tr -d '[:space:]')"
   shipped_changes="$(printf '%s\n' "${gate_event_rows}" | jq -c 'select(.event == "finding-status-change" and .details.finding_status == "shipped")' | wc -l | tr -d '[:space:]')"
   user_decision_marks="$(printf '%s\n' "${gate_event_rows}" | jq -c 'select(.event == "user-decision-marked")' | wc -l | tr -d '[:space:]')"
   totals_line="_Total: ${total_blocks_pe} gate blocks"
-  [[ "${total_overrides}" -gt 0 ]] && totals_line="${totals_line}, ${total_overrides} wave-override allow(s)"
+  if [[ "${total_overrides}" -gt 0 ]]; then
+    if [[ "${total_wave_overrides}" -gt 0 ]] && [[ "${total_prompt_overrides}" -gt 0 ]]; then
+      totals_line="${totals_line}, ${total_overrides} override allow(s) (${total_wave_overrides} wave / ${total_prompt_overrides} prompt-text)"
+    elif [[ "${total_wave_overrides}" -gt 0 ]]; then
+      totals_line="${totals_line}, ${total_wave_overrides} wave-override allow(s)"
+    else
+      totals_line="${totals_line}, ${total_prompt_overrides} prompt-text override allow(s)"
+    fi
+  fi
   totals_line="${totals_line}, ${total_status_changes} status changes (${shipped_changes} findings shipped"
   [[ "${user_decision_marks}" -gt 0 ]] && totals_line="${totals_line}, ${user_decision_marks} user-decision marks"
   totals_line="${totals_line})._"
   printf '%s\n\n' "${totals_line}"
+fi
+
+# ----------------------------------------------------------------------
+# Section 4c: Bias-defense directive fires (v1.23.0)
+#
+# The router emits gate events with gate="bias-defense" when an
+# execution-prompt directive fires (prometheus-suggest, intent-verify,
+# exemplifying). Without this section the user could not answer "is
+# the new exemplifying directive actually firing on my prompts?" or
+# "how often does the narrowing layer kick in?" — the very telemetry
+# needed to validate that the v1.23.0 release is working.
+printf '## Bias-defense directives fired\n\n'
+bias_defense_rows="$(printf '%s\n' "${gate_event_rows}" | jq -c \
+    'select(.gate == "bias-defense" and .event == "directive_fired")' 2>/dev/null || true)"
+if [[ -z "${bias_defense_rows}" ]]; then
+  printf '_No bias-defense directives fired in window. Telemetry is new in v1.23.0; populates as sessions sweep._\n\n'
+else
+  printf '| Directive | Fires |\n|---|---:|\n'
+  for _directive in exemplifying prometheus-suggest intent-verify; do
+    _fire_count="$(printf '%s\n' "${bias_defense_rows}" | jq -c --arg d "${_directive}" 'select(.details.directive == $d)' | wc -l | tr -d '[:space:]')"
+    [[ "${_fire_count}" -eq 0 ]] && continue
+    printf '| `%s` | %s |\n' "${_directive}" "${_fire_count}"
+  done
+  printf '\n'
 fi
 
 # ----------------------------------------------------------------------

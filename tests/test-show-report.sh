@@ -303,5 +303,73 @@ rm -f "${QP}/gate_events.jsonl"
 rm -f "${QP}/session_summary.jsonl"
 
 # ----------------------------------------------------------------------
+printf 'Test 19: v1.23.0 — prompt_text_override events surface in Overrides column + totals breakdown\n'
+NOW="$(date +%s)"
+cat > "${QP}/gate_events.jsonl" <<EOF
+{"ts":${NOW},"session":"test-pt-session","gate":"pretool-intent","event":"block","details":{"intent":"advisory"}}
+{"ts":${NOW},"session":"test-pt-session","gate":"pretool-intent","event":"prompt_text_override","details":{"intent":"advisory","denied_segment":"git commit -m wave","prompt_preview":"Implement and commit as needed"}}
+{"ts":${NOW},"session":"test-pt-session","gate":"pretool-intent","event":"prompt_text_override","details":{"intent":"advisory","denied_segment":"git push origin","prompt_preview":"push when stable"}}
+{"ts":${NOW},"session":"test-pt-session","gate":"pretool-intent","event":"wave_override","details":{"intent":"advisory","denied_segment":"git commit -m wave2"}}
+EOF
+cat > "${QP}/session_summary.jsonl" <<EOF
+{"session_id":"test-pt-session","start_ts":${NOW},"end_ts":${NOW},"domain":"coding","intent":"execution","edit_count":3,"verified":true,"reviewed":true,"guard_blocks":1,"dim_blocks":0,"exhausted":false,"dispatches":1,"outcome":"shipped","skip_count":0,"serendipity_count":0}
+EOF
+out="$(run_report week)"
+# Per-gate row counts BOTH wave_override (1) + prompt_text_override (2) in Overrides column
+assert_contains "show-report: per-gate pretool-intent row counts prompt_text_override + wave_override" \
+  "| \`pretool-intent\` | 1 | 3 | 0 |" "${out}"
+# Totals line breaks down the 3 overrides into wave/prompt-text components
+assert_contains "show-report: totals line breaks out wave + prompt-text override counts" \
+  "1 wave / 2 prompt-text" "${out}"
+rm -f "${QP}/gate_events.jsonl"
+rm -f "${QP}/session_summary.jsonl"
+
+# ----------------------------------------------------------------------
+printf 'Test 20: v1.23.0 — bias-defense directive_fired events surface in their own section\n'
+NOW="$(date +%s)"
+cat > "${QP}/gate_events.jsonl" <<EOF
+{"ts":${NOW},"session":"test-bd-session","gate":"bias-defense","event":"directive_fired","details":{"directive":"exemplifying"}}
+{"ts":${NOW},"session":"test-bd-session","gate":"bias-defense","event":"directive_fired","details":{"directive":"exemplifying"}}
+{"ts":${NOW},"session":"test-bd-session","gate":"bias-defense","event":"directive_fired","details":{"directive":"prometheus-suggest"}}
+EOF
+cat > "${QP}/session_summary.jsonl" <<EOF
+{"session_id":"test-bd-session","start_ts":${NOW},"end_ts":${NOW},"domain":"coding","intent":"execution","edit_count":1,"verified":true,"reviewed":true,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":1,"outcome":"shipped","skip_count":0,"serendipity_count":0}
+EOF
+out="$(run_report week)"
+# Bias-defense directive section header is present
+assert_contains "show-report: bias-defense directives section is rendered" \
+  "## Bias-defense directives fired" "${out}"
+# Exemplifying directive shows count 2
+assert_contains "show-report: exemplifying directive fire-count rendered" \
+  "| \`exemplifying\` | 2 |" "${out}"
+# prometheus-suggest fire-count rendered
+assert_contains "show-report: prometheus-suggest fire-count rendered" \
+  "| \`prometheus-suggest\` | 1 |" "${out}"
+# intent-verify (zero fires) is NOT rendered (only non-zero entries)
+if [[ "${out}" == *"intent-verify"* ]]; then
+  printf '  FAIL: zero-count directive should be suppressed but found\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+rm -f "${QP}/gate_events.jsonl"
+rm -f "${QP}/session_summary.jsonl"
+
+# ----------------------------------------------------------------------
+printf 'Test 21: v1.23.0 — bias-defense section shows placeholder when no fires\n'
+NOW="$(date +%s)"
+cat > "${QP}/gate_events.jsonl" <<EOF
+{"ts":${NOW},"session":"test-empty-bd","gate":"pretool-intent","event":"block","details":{"intent":"advisory"}}
+EOF
+cat > "${QP}/session_summary.jsonl" <<EOF
+{"session_id":"test-empty-bd","start_ts":${NOW},"end_ts":${NOW},"domain":"coding","intent":"execution","edit_count":1,"verified":true,"reviewed":true,"guard_blocks":1,"dim_blocks":0,"exhausted":false,"dispatches":1,"outcome":"shipped","skip_count":0,"serendipity_count":0}
+EOF
+out="$(run_report week)"
+assert_contains "show-report: bias-defense placeholder when no fires" \
+  "No bias-defense directives fired" "${out}"
+rm -f "${QP}/gate_events.jsonl"
+rm -f "${QP}/session_summary.jsonl"
+
+# ----------------------------------------------------------------------
 printf '\n=== Show-Report Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]] || exit 1

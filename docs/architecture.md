@@ -343,11 +343,21 @@ The classification order in `classify_task_intent()` is a protected design decis
 
 3. **Session management** (`is_session_management_request`) -- Questions about session strategy: "should I start a new session?", "is the context budget okay?". Requires both session-related keywords AND question-form syntax.
 
-4. **Imperative** (`is_imperative_request`) -- Polite commands: "can you fix...", "please implement...", "go ahead and...", "I need you to...". Checked BEFORE advisory because "can you fix the bug?" is an action request, not advice-seeking. The verb list covers ~40 common action verbs.
+4. **Imperative** (`is_imperative_request`) -- Polite commands: "can you fix...", "please implement...", "go ahead and...", "I need you to...". Checked BEFORE advisory because "can you fix the bug?" is an action request, not advice-seeking. The verb list covers ~40 common action verbs. Two additional branches catch natural-English imperative shapes the head-anchored patterns miss: **tail-position imperative** (a prompt that opens advisory but closes with a destructive verb after a sentence boundary — `Review the plan. Then commit the changes.`) and **implementation-verb-led conjunction** (v1.23.0; `Implement and then commit as needed`, `Build it, then push to origin`, `Refactor X and tag v2.0` — impl-verb head + (and|,) conjunction + destructive verb + object-marker tail).
 
 5. **Advisory** (`is_advisory_request`) -- Questions and opinion-seeking: "should we...", "what do you think...", "is it better to...", "pros and cons". Only matched if none of the above patterns triggered first.
 
 6. **Default: execution** -- If nothing else matches, the prompt is treated as a direct execution request.
+
+**Defense-in-depth: prompt-text trust override (v1.23.0)** -- If the classifier mis-routes despite the widened patterns, `pretool-intent-guard.sh` re-reads `recent_prompts.jsonl` and re-runs `is_imperative_request` against the most recent user prompt before blocking a destructive op. When EVERY destructive non-allowed segment in the attempted command has its verb authorized in the prompt with an imperative-tail object marker (or at end-of-prompt), the guard allows and records `gate=pretool-intent` `event=prompt_text_override` for audit. Compound-command safety: `git commit && git push --force` only passes when both `commit` and `push` are authorized in the prompt — not just the first one. Conf-gated by `prompt_text_override` (default `on`).
+
+**Bias-defense directive layer (router-side)** -- The prompt-intent-router emits up to three directives on fresh-execution prompts to defend against classifier-blind biases (the classifier got the intent right but the *prompt shape* hides a bias):
+
+- `prometheus_suggest` (default off) — defends against over-commitment when an execution prompt is short, product-shaped, and unanchored.
+- `intent_verify_directive` (default off, suppressed when prometheus already fired) — defends against over-commitment by asking the model to restate the goal before its first edit when the prompt is short and unanchored.
+- `exemplifying_directive` (default on, v1.23.0) — defends against under-commitment when the prompt uses example markers (`for instance`, `e.g.`, `such as`, etc.) by instructing the model to treat the example as one item from an enumerable class. Symmetric to (but opposite of) the other two; fires INDEPENDENTLY because narrowing and widening are orthogonal.
+
+All three emit `gate=bias-defense` `event=directive_fired` rows for `/ulw-report` audit.
 
 ---
 

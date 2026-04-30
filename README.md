@@ -144,6 +144,13 @@ Each gate block message names the specific next reviewer. A `VERDICT: CLEAN|SHIP
 
 **Every prompt is classified by intent and domain before Claude acts on it.** Five intent categories (execution, continuation, advisory, checkpoint, session-management) crossed with six domains (coding, writing, research, operations, mixed, general). Advisory questions get answered directly; execution prompts get the full specialist pipeline.
 
+The classifier recognizes natural-English imperative shapes — including tail-position imperatives (`Review the plan. Then commit the changes.`) and implementation-verb-led conjunctions (`Implement and then commit as needed`). When the classifier mis-routes despite the widened patterns, a **prompt-text trust override** in the PreTool guard re-reads the most recent user prompt and allows destructive ops when the prompt itself authorizes them — even if the classifier disagreed. Compound-command safety: every destructive segment in `git commit && git push --force` must be authorized in the prompt text, not just the first one.
+
+Three **bias-defense directive layers** can fire on fresh-execution prompts (all opt-in via conf, two narrowing + one widening; default off / off / on respectively):
+- `prometheus_suggest` (off) — recommends `/prometheus` interview-first scoping when an execution prompt is short, product-shaped, and unanchored.
+- `intent_verify_directive` (off) — restate-and-confirm before the first edit when the prompt is short and unanchored.
+- `exemplifying_directive` (on, v1.23.0) — when the prompt uses example markers (`for instance`, `e.g.`, `such as`, `as needed`, `similar to`, etc.), treat the example as ONE item from a class and enumerate sibling items rather than dropping the class. Defends against under-interpretation — implementing only the literal example when the prompt phrased it as an example is the failure mode `/ulw` was created to prevent.
+
 ### Multi-domain routing
 
 **Each domain has its own specialist chain — not a coding tool that happens to accept prose.**

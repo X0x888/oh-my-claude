@@ -413,9 +413,9 @@ _verb_appears_in_imperative_position() {
     # anchors so `commit` matches at word boundary but NOT inside
     # `commit-message` or `precommit`. The trailing alternation accepts
     # imperative-tail object markers, end-of-prompt, or sentence-end
-    # punctuation. Also accepts the standalone bare verb (e.g., the
-    # user-typed "commit" follow-up that appeared in session cf10ddd2
-    # right after the misclassified first prompt).
+    # punctuation. Also accepts the standalone bare verb (e.g., a
+    # follow-up imperative immediately after a misclassified initial
+    # prompt — the canonical recovery path when the classifier misroutes).
     local pat="(^|[^a-z-])${verb}([[:space:]]+(the|a|an|all|these|this|that|those|to|origin|upstream|v[0-9]|it|them|changes?|and|when|if|as|onto|main|master)|[[:space:]]*[.,;!?]?[[:space:]]*$)"
     if [[ "${text}" =~ ${pat} ]]; then
       result=0
