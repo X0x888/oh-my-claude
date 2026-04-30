@@ -262,6 +262,11 @@ assert_file_has_line "maximum: prometheus_suggest=on" "${USER_CONF_PATH}" "^prom
 assert_file_has_line "maximum: metis_on_plan_gate=on" "${USER_CONF_PATH}" "^metis_on_plan_gate=on\$"
 assert_file_has_line "maximum: resume_watchdog=on" "${USER_CONF_PATH}" "^resume_watchdog=on\$"
 assert_file_has_line "maximum: model_tier=quality" "${USER_CONF_PATH}" "^model_tier=quality\$"
+# Regression net: council_deep_default=on belongs in Maximum (consistent
+# with model_tier=quality — every quality lever pulled). Originally
+# shipped as `off` for cost reasons; corrected after user review pointed
+# out the inconsistency. This assertion locks the right value in.
+assert_file_has_line "maximum: council_deep_default=on" "${USER_CONF_PATH}" "^council_deep_default=on\$"
 teardown
 
 # --- Test 14: apply-preset balanced writes balanced values ---
@@ -272,6 +277,10 @@ assert_file_has_line "balanced: guard_exhaustion_mode=scorecard" "${USER_CONF_PA
 assert_file_has_line "balanced: prometheus_suggest=off" "${USER_CONF_PATH}" "^prometheus_suggest=off\$"
 assert_file_has_line "balanced: resume_watchdog=off" "${USER_CONF_PATH}" "^resume_watchdog=off\$"
 assert_file_has_line "balanced: model_tier=balanced" "${USER_CONF_PATH}" "^model_tier=balanced\$"
+# Counterpart to the Maximum assertion above — Balanced is where the
+# council cost cap lives. If someone ever flips this to `on`, the cap
+# moves and Balanced loses its reason to exist.
+assert_file_has_line "balanced: council_deep_default=off" "${USER_CONF_PATH}" "^council_deep_default=off\$"
 teardown
 
 # --- Test 15: apply-preset minimal writes minimal values ---
@@ -393,6 +402,9 @@ setup
 out="$(bash "${HELPER}" presets maximum 2>&1)"
 assert_contains "presets maximum has gate_level" "gate_level=full" "${out}"
 assert_contains "presets maximum has resume_watchdog" "resume_watchdog=on" "${out}"
+# Maximum must include council_deep_default=on for internal consistency
+# with model_tier=quality. Cost cap lives in Balanced.
+assert_contains "presets maximum has council_deep_default=on" "council_deep_default=on" "${out}"
 out="$(bash "${HELPER}" presets minimal 2>&1)"
 assert_contains "presets minimal has gate_level basic" "gate_level=basic" "${out}"
 teardown

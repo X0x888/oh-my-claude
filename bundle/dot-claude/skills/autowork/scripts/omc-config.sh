@@ -80,7 +80,13 @@ EOF
 # --- Preset definitions ---
 #
 # `maximum`: quality + max automation (this project's intended posture).
-# `balanced`: close to install-time defaults; safe for most users.
+#   Internally consistent with `model_tier=quality` — every quality lever
+#   is pulled, including `council_deep_default=on` so auto-triggered
+#   council dispatches use opus per lens (matches the user's accepted
+#   "Opus everywhere" stance under model_tier=quality).
+# `balanced`: close to install-time defaults; safe for most users. Cost
+#   caps live here, not in `maximum` — `council_deep_default=off` keeps
+#   auto-council on sonnet for the typical user.
 # `minimal`: lightest footprint while keeping core gates working.
 #
 # stop_failure_capture stays on across all presets — it is privacy-aware,
@@ -97,7 +103,7 @@ guard_exhaustion_mode=block
 auto_memory=on
 classifier_telemetry=on
 discovered_scope=on
-council_deep_default=off
+council_deep_default=on
 prometheus_suggest=on
 intent_verify_directive=on
 metis_on_plan_gate=on
