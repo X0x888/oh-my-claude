@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 # Load statusline.py as a module from its bundle location
@@ -62,6 +63,93 @@ class TestFormatDuration(unittest.TestCase):
 
     def test_negative(self):
         self.assertEqual(sl.format_duration(-1000), "0s")
+
+
+class TestFormatResetCountdown(unittest.TestCase):
+    """Compact countdown for `rate_limits.{five_hour,seven_day}.resets_at`."""
+
+    NOW = 1_700_000_000  # arbitrary fixed reference epoch
+
+    def test_none_returns_empty(self):
+        self.assertEqual(sl.format_reset_countdown(None, now=self.NOW), "")
+
+    def test_zero_returns_empty(self):
+        self.assertEqual(sl.format_reset_countdown(0, now=self.NOW), "")
+
+    def test_negative_target_returns_empty(self):
+        self.assertEqual(sl.format_reset_countdown(-1, now=self.NOW), "")
+
+    def test_past_target_returns_empty(self):
+        self.assertEqual(sl.format_reset_countdown(self.NOW - 100, now=self.NOW), "")
+
+    def test_exact_now_returns_empty(self):
+        self.assertEqual(sl.format_reset_countdown(self.NOW, now=self.NOW), "")
+
+    def test_unparseable_returns_empty(self):
+        self.assertEqual(sl.format_reset_countdown("not a number", now=self.NOW), "")
+        self.assertEqual(sl.format_reset_countdown([1, 2], now=self.NOW), "")
+
+    def test_inf_returns_empty(self):
+        # `int(float('inf'))` raises OverflowError, distinct from the
+        # ValueError/TypeError that string/list inputs raise. The helper's
+        # except clause must include OverflowError or a malformed payload
+        # would crash the entire statusline. Regression guard for the
+        # quality-reviewer P1 caught in this change's review cycle.
+        self.assertEqual(sl.format_reset_countdown(float("inf"), now=self.NOW), "")
+        self.assertEqual(sl.format_reset_countdown(float("-inf"), now=self.NOW), "")
+
+    def test_nan_returns_empty(self):
+        self.assertEqual(sl.format_reset_countdown(float("nan"), now=self.NOW), "")
+
+    def test_under_one_minute(self):
+        self.assertEqual(sl.format_reset_countdown(self.NOW + 30, now=self.NOW), "<1m")
+
+    def test_one_second_clamps_to_under_one_minute(self):
+        self.assertEqual(sl.format_reset_countdown(self.NOW + 1, now=self.NOW), "<1m")
+
+    def test_minutes_only(self):
+        # 45m = 2700s
+        self.assertEqual(sl.format_reset_countdown(self.NOW + 2700, now=self.NOW), "45m")
+
+    def test_one_hour_exact_drops_minutes(self):
+        self.assertEqual(sl.format_reset_countdown(self.NOW + 3600, now=self.NOW), "1h")
+
+    def test_hours_with_minutes_zero_pads(self):
+        # 1h 03m = 3780s — exercises the {minutes:02d} pad
+        self.assertEqual(sl.format_reset_countdown(self.NOW + 3780, now=self.NOW), "1h03m")
+
+    def test_hours_with_minutes(self):
+        # 1h 23m = 4980s
+        self.assertEqual(sl.format_reset_countdown(self.NOW + 4980, now=self.NOW), "1h23m")
+
+    def test_one_day_exact_drops_hours(self):
+        self.assertEqual(sl.format_reset_countdown(self.NOW + 86400, now=self.NOW), "1d")
+
+    def test_days_with_hours(self):
+        # 2d 3h = 183_600s
+        self.assertEqual(sl.format_reset_countdown(self.NOW + 183_600, now=self.NOW), "2d3h")
+
+    def test_numeric_string_input(self):
+        # Defensive: a stringified epoch should still parse.
+        self.assertEqual(
+            sl.format_reset_countdown(str(self.NOW + 4980), now=self.NOW), "1h23m"
+        )
+
+    def test_float_input(self):
+        # Claude Code can emit resets_at as a float epoch — coerce, don't reject.
+        self.assertEqual(
+            sl.format_reset_countdown(float(self.NOW + 2700), now=self.NOW), "45m"
+        )
+
+    def test_uses_real_time_when_now_omitted(self):
+        # No `now` param → uses time.time(). Window is large enough that
+        # sub-second wall-clock skew can't push us past the hour boundary.
+        target = int(time.time()) + 7200  # 2 hours
+        result = sl.format_reset_countdown(target)
+        self.assertTrue(
+            result.startswith("1h") or result.startswith("2h"),
+            f"unexpected countdown: {result!r}",
+        )
 
 
 class TestFormatCost(unittest.TestCase):
@@ -1051,6 +1139,183 @@ class TestMainIntegration(unittest.TestCase):
         self.assertIn("C:66%", lines[1])  # 100k read / 150k total = 66%
         self.assertIn("API:66%", lines[1])  # 120k / 180k = 66%
 
+    def test_renders_reset_countdown_for_five_hour(self):
+        """5h `resets_at` in the future renders as `RL:N% R:<countdown>`."""
+        future = int(time.time()) + 4980  # ~1h 23m from now
+        data = {
+            "rate_limits": {
+                "five_hour": {"used_percentage": 85, "resets_at": future},
+            },
+        }
+        result = self.run_statusline(data)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("RL:85%", result.stdout)
+        # `R:1h…` rather than asserting the exact minute count, since the
+        # subprocess reads `time.time()` after the test does and a few
+        # seconds of skew can shift `1h23m` to `1h22m`.
+        self.assertIn("R:1h", result.stdout)
+
+    def test_omits_countdown_when_resets_at_in_past(self):
+        """A stale `resets_at` must NOT render `R:<countdown>` filler."""
+        data = {
+            "rate_limits": {
+                "five_hour": {"used_percentage": 30, "resets_at": 1},
+            },
+        }
+        result = self.run_statusline(data)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("RL:30%", result.stdout)
+        self.assertNotIn("R:", result.stdout)
+
+    def test_omits_countdown_when_resets_at_absent(self):
+        """No `resets_at` key → percent renders, countdown does not."""
+        data = {
+            "rate_limits": {
+                "five_hour": {"used_percentage": 30},
+            },
+        }
+        result = self.run_statusline(data)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("RL:30%", result.stdout)
+        self.assertNotIn("R:", result.stdout)
+
+    def test_renders_seven_day_when_used(self):
+        """7d window renders when used_percentage > 0."""
+        future = int(time.time()) + 86400 * 5 + 3600  # ~5d 1h
+        data = {
+            "rate_limits": {
+                "seven_day": {"used_percentage": 42, "resets_at": future},
+            },
+        }
+        result = self.run_statusline(data)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("7d:42%", result.stdout)
+        self.assertIn("R:5d", result.stdout)
+
+    def test_omits_seven_day_at_zero_percent(self):
+        """Fresh week (7d=0%) must not pollute line 2 with `7d:0%` noise."""
+        data = {
+            "rate_limits": {
+                "seven_day": {
+                    "used_percentage": 0,
+                    "resets_at": int(time.time()) + 86400,
+                },
+            },
+        }
+        result = self.run_statusline(data)
+        self.assertEqual(result.returncode, 0)
+        self.assertNotIn("7d:", result.stdout)
+
+    def test_renders_both_windows_together(self):
+        """Heavy session: both 5h and 7d tokens render with countdowns."""
+        five_hour_future = int(time.time()) + 1800  # 30m
+        seven_day_future = int(time.time()) + 86400 * 3  # 3d
+        data = {
+            "rate_limits": {
+                "five_hour": {"used_percentage": 92, "resets_at": five_hour_future},
+                "seven_day": {"used_percentage": 65, "resets_at": seven_day_future},
+            },
+        }
+        result = self.run_statusline(data)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("RL:92%", result.stdout)
+        self.assertIn("7d:65%", result.stdout)
+        self.assertIn("R:", result.stdout)
+
+    def test_does_not_crash_on_infinity_payload(self):
+        """A malformed payload with Infinity must not nuke the render OR
+        poison the sidecar.
+
+        `json.dumps(allow_nan=True)` (Python's default) emits `Infinity` /
+        `NaN` for `float('inf')` / `float('nan')`, and `json.loads` parses
+        them back. The statusline must survive both:
+
+        1. **Render path:** `int(float('inf'))` raises OverflowError out of
+           four call sites — the helper, the 5h percent parser, the 7d
+           percent parser, and the top-level pct cast. All four catch it
+           or guard via `math.isfinite`.
+        2. **Sidecar path:** `persist_rate_limit_status` must not write
+           non-strict JSON to disk; `stop-failure-handler.sh`'s `jq` reader
+           rejects `Infinity`/`NaN` tokens with a parse error, silently
+           breaking resume-watchdog reset timing.
+
+        The test exercises the full subprocess path including the sidecar
+        write by providing `session_id` + a tmpdir `STATE_ROOT` override.
+        Without these, an earlier version of this test passed for the
+        wrong reason (it short-circuited out of `persist_rate_limit_status`
+        before reaching the crash site at line 505). This test now reaches
+        every fix site and would fail against any of them being unfixed.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = os.path.join(tmpdir, "state")
+            session_id = "sess_inf_payload"
+            session_dir = os.path.join(state_root, session_id)
+            os.makedirs(session_dir)
+
+            data = {
+                "session_id": session_id,
+                "context_window": {
+                    "used_percentage": float("inf"),
+                    "current_usage": {
+                        "cache_creation_input_tokens": float("inf"),
+                        "cache_read_input_tokens": float("inf"),
+                    },
+                },
+                "cost": {
+                    "total_api_duration_ms": float("inf"),
+                    "total_duration_ms": 1000,
+                },
+                "rate_limits": {
+                    "five_hour": {
+                        "used_percentage": float("inf"),
+                        "resets_at": float("inf"),
+                    },
+                    "seven_day": {
+                        "used_percentage": float("nan"),
+                        "resets_at": float("inf"),
+                    },
+                },
+            }
+            encoded = json.dumps(data)
+            # Sanity-check the encoding emits non-strict tokens. If a future
+            # Python tightens the default and refuses inf, this test would
+            # silently degenerate; the assertion fails loudly instead.
+            self.assertIn("Infinity", encoded)
+
+            env = dict(os.environ)
+            env["STATE_ROOT"] = state_root
+            result = subprocess.run(
+                [sys.executable, STATUSLINE_PATH],
+                input=encoded,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                env=env,
+            )
+            self.assertEqual(
+                result.returncode, 0,
+                f"statusline crashed on Infinity payload; stderr:\n{result.stderr}",
+            )
+            # Two lines should still print — the malformed fields fall back
+            # to 0 / suppressed tokens, but the overall render survives.
+            lines = result.stdout.strip().split("\n")
+            self.assertEqual(len(lines), 2)
+            # 5h and 7d percent parsers fall through their except clauses →
+            # no `RL:` or `7d:` token. Not "RL:0%" — the whole token is
+            # suppressed when the int conversion fails.
+            self.assertNotIn("RL:", result.stdout)
+            self.assertNotIn("7d:", result.stdout)
+
+            # Sidecar contract: with all four input fields non-finite, every
+            # window's `entry` is empty, `windows` stays {}, and
+            # persist_rate_limit_status returns before write. No sidecar.
+            # Locks in the "filter, don't persist garbage" rule.
+            sidecar_path = os.path.join(session_dir, "rate_limit_status.json")
+            self.assertFalse(
+                os.path.exists(sidecar_path),
+                "sidecar must not be written when all rate-limit fields are non-finite",
+            )
+
     def test_empty_input(self):
         result = subprocess.run(
             [sys.executable, STATUSLINE_PATH],
@@ -1183,6 +1448,66 @@ class TestPersistRateLimitStatus(unittest.TestCase):
         data = {
             "session_id": sid,
             "rate_limits": {"five_hour": {}},
+        }
+        sl.persist_rate_limit_status(data)
+        self.assertFalse(os.path.exists(self._sidecar_path(sid)))
+
+    def test_filters_non_finite_floats(self):
+        """inf / -inf / nan in either field must NOT crash and must NOT
+        be persisted to the sidecar — `stop-failure-handler.sh`'s `jq`
+        reader rejects non-strict JSON tokens with a parse error.
+
+        Mixed payload: 5h has finite percent + Infinity reset (only
+        percent persists), 7d has NaN percent + finite reset (only reset
+        persists). The sidecar must be valid strict JSON containing only
+        the finite fields.
+        """
+        sid = "sess-mixed-nonfinite"
+        self._session_dir(sid)
+        data = {
+            "session_id": sid,
+            "rate_limits": {
+                "five_hour": {
+                    "used_percentage": 75,
+                    "resets_at": float("inf"),
+                },
+                "seven_day": {
+                    "used_percentage": float("nan"),
+                    "resets_at": 1738900000,
+                },
+            },
+        }
+        sl.persist_rate_limit_status(data)  # Must not raise.
+        with open(self._sidecar_path(sid)) as f:
+            raw = f.read()
+        # Strict-JSON guard: no `Infinity` / `NaN` tokens leaked into the
+        # serialized payload. A regex `in` check is sufficient — if either
+        # token is present, jq downstream would refuse to parse.
+        self.assertNotIn("Infinity", raw)
+        self.assertNotIn("NaN", raw)
+        payload = json.loads(raw)
+        # 5h: percent kept, reset filtered out
+        self.assertEqual(payload["five_hour"]["used_percentage"], 75)
+        self.assertNotIn("resets_at_ts", payload["five_hour"])
+        # 7d: reset kept, percent filtered out
+        self.assertEqual(payload["seven_day"]["resets_at_ts"], 1738900000)
+        self.assertNotIn("used_percentage", payload["seven_day"])
+
+    def test_filters_all_non_finite_writes_no_sidecar(self):
+        """When every input field is non-finite, the entry dict is empty
+        and the sidecar is skipped entirely — same code path as
+        test_skips_window_without_useful_fields, but reached via the
+        filter rather than via missing keys."""
+        sid = "sess-all-nonfinite"
+        self._session_dir(sid)
+        data = {
+            "session_id": sid,
+            "rate_limits": {
+                "five_hour": {
+                    "used_percentage": float("inf"),
+                    "resets_at": float("nan"),
+                },
+            },
         }
         sl.persist_rate_limit_status(data)
         self.assertFalse(os.path.exists(self._sidecar_path(sid)))

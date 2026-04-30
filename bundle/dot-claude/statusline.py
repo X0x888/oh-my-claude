@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import math
 import os
 import subprocess
 import sys
@@ -45,6 +46,58 @@ def format_duration(total_ms):
     if minutes:
         return f"{minutes}m {seconds:02d}s"
     return f"{seconds}s"
+
+
+def format_reset_countdown(resets_at_ts, now=None):
+    """Compact countdown to a future epoch timestamp for the statusline.
+
+    Used by the rate-limit indicators to show "when does the 5-hour /
+    7-day window reset" without bloating line 2. Returns an empty string
+    when the input is missing, unparseable, or already past — the
+    statusline omits the token entirely in that case rather than
+    rendering filler like "0s" or "expired".
+
+    The format intentionally drops separators (`1h23m`, not `1h 23m`) so
+    the countdown can sit next to the percent token without the renderer
+    inserting double-spaces between visually-related fields.
+
+    Examples (relative to a fixed `now`):
+        99000s  → "1d3h"
+        12345s  → "3h25m"
+        2700s   → "45m"
+        45s     → "<1m"
+        0s/past → ""
+    """
+    if not resets_at_ts:
+        return ""
+    try:
+        target = int(resets_at_ts)
+    except (ValueError, TypeError, OverflowError):
+        # OverflowError catches `int(float('inf'))`. A malformed payload with
+        # `resets_at: Infinity` must not crash the statusline; treat it as
+        # "no useful reset info" the same as None / past / unparseable.
+        return ""
+    if target <= 0:
+        return ""
+    current = int(now if now is not None else time.time())
+    delta = target - current
+    if delta <= 0:
+        return ""
+    if delta < 60:
+        return "<1m"
+    if delta < 3600:
+        return f"{delta // 60}m"
+    if delta < 86400:
+        hours, remainder = divmod(delta, 3600)
+        minutes = remainder // 60
+        if minutes:
+            return f"{hours}h{minutes:02d}m"
+        return f"{hours}h"
+    days, remainder = divmod(delta, 86400)
+    hours = remainder // 3600
+    if hours:
+        return f"{days}d{hours}h"
+    return f"{days}d"
 
 
 def format_cost(total_cost):
@@ -446,10 +499,15 @@ def persist_rate_limit_status(data):
             continue
         entry = {}
         used = block.get("used_percentage")
-        if isinstance(used, (int, float)):
+        # Filter inf/nan: persisting them serializes to non-strict JSON
+        # (`Infinity` / `NaN`), which `stop-failure-handler.sh`'s `jq` reader
+        # rejects with a parse error — silently breaking resume-watchdog
+        # reset timing. Also: `int(float('inf'))` below would crash the
+        # whole statusline before the sidecar ever lands.
+        if isinstance(used, (int, float)) and math.isfinite(used):
             entry["used_percentage"] = used
         resets = block.get("resets_at")
-        if isinstance(resets, (int, float)) and resets > 0:
+        if isinstance(resets, (int, float)) and math.isfinite(resets) and resets > 0:
             entry["resets_at_ts"] = int(resets)
         if entry:
             windows[name] = entry
@@ -499,7 +557,16 @@ def main():
     dir_name = os.path.basename(cwd.rstrip(os.sep)) or cwd
     model_name = safe_get(data, "model", "display_name") or safe_get(data, "model", "id") or "Claude"
     style_name = safe_get(data, "output_style", "name") or "default"
-    pct = int(float(safe_get(data, "context_window", "used_percentage", default=0) or 0))
+    # Defensive: a malformed payload with `used_percentage: Infinity` would
+    # raise OverflowError out of int(float()) and crash the entire render
+    # (no line 1, no line 2). Fall back to 0 rather than suppress — line 1's
+    # context bar is non-optional so suppression isn't an option here. The
+    # rate-limit / cache / API tokens below take the opposite tack: they
+    # suppress on bad input because those tokens are conditional anyway.
+    try:
+        pct = int(float(safe_get(data, "context_window", "used_percentage", default=0) or 0))
+    except (ValueError, TypeError, OverflowError):
+        pct = 0
     total_cost = safe_get(data, "cost", "total_cost_usd", default=0.0)
     total_duration_ms = safe_get(data, "cost", "total_duration_ms", default=0)
 
@@ -567,26 +634,63 @@ def main():
         color(format_duration(total_duration_ms), BLUE),
     ]
 
-    rl_pct_raw = safe_get(data, "rate_limits", "five_hour", "used_percentage", default=None)
-    if rl_pct_raw is not None:
+    # 5-hour window: render whenever Claude Code surfaces a percent. Append
+    # `R:<countdown>` (dim) when `resets_at` is in the future — answers the
+    # "when do I get my budget back?" question without forcing /ulw-report.
+    five_hour_pct_raw = safe_get(data, "rate_limits", "five_hour", "used_percentage", default=None)
+    five_hour_resets = safe_get(data, "rate_limits", "five_hour", "resets_at", default=None)
+    if five_hour_pct_raw is not None:
         try:
-            rl_pct = int(float(rl_pct_raw))
-            line_two_parts.append(color(f"RL:{rl_pct}%", bar_color(rl_pct)))
-        except (ValueError, TypeError):
+            rl_pct = int(float(five_hour_pct_raw))
+            rl_token = color(f"RL:{rl_pct}%", bar_color(rl_pct))
+            countdown = format_reset_countdown(five_hour_resets)
+            if countdown:
+                rl_token += color(f" R:{countdown}", f"{DIM}{WHITE}")
+            line_two_parts.append(rl_token)
+        except (ValueError, TypeError, OverflowError):
+            pass
+
+    # 7-day window: only render when used_percentage > 0. Fresh weeks would
+    # otherwise add a constant `7d:0%` token to line 2 with no signal value.
+    # Same color thresholds as the 5h bar so a hot 7-day reads RED at a glance.
+    seven_day_pct_raw = safe_get(data, "rate_limits", "seven_day", "used_percentage", default=None)
+    seven_day_resets = safe_get(data, "rate_limits", "seven_day", "resets_at", default=None)
+    if seven_day_pct_raw is not None:
+        try:
+            d7_pct = int(float(seven_day_pct_raw))
+            if d7_pct > 0:
+                d7_token = color(f"7d:{d7_pct}%", bar_color(d7_pct))
+                countdown = format_reset_countdown(seven_day_resets)
+                if countdown:
+                    d7_token += color(f" R:{countdown}", f"{DIM}{WHITE}")
+                line_two_parts.append(d7_token)
+        except (ValueError, TypeError, OverflowError):
             pass
 
     persist_rate_limit_status(data)
 
-    # Denominator is cache-eligible tokens only (created + read), not total input
-    cache_create = int(safe_get(data, "context_window", "current_usage", "cache_creation_input_tokens", default=0) or 0)
-    cache_read = int(safe_get(data, "context_window", "current_usage", "cache_read_input_tokens", default=0) or 0)
+    # Denominator is cache-eligible tokens only (created + read), not total
+    # input. Defensive cast: a malformed `Infinity` token-count would raise
+    # OverflowError out of int() and crash the renderer; same family as the
+    # rate-limit and context-window casts above. Falls back to 0 → cache
+    # token suppressed entirely, matching the "no signal" branch.
+    try:
+        cache_create = int(safe_get(data, "context_window", "current_usage", "cache_creation_input_tokens", default=0) or 0)
+        cache_read = int(safe_get(data, "context_window", "current_usage", "cache_read_input_tokens", default=0) or 0)
+    except (ValueError, TypeError, OverflowError):
+        cache_create = 0
+        cache_read = 0
     cache_total = cache_create + cache_read
     if cache_total > 0:
         cache_pct = int((cache_read / cache_total) * 100)
         line_two_parts.append(color(f"C:{cache_pct}%", f"{DIM}{WHITE}"))
 
-    api_duration_ms = int(safe_get(data, "cost", "total_api_duration_ms", default=0) or 0)
-    wall_duration_ms = int(total_duration_ms or 0)
+    try:
+        api_duration_ms = int(safe_get(data, "cost", "total_api_duration_ms", default=0) or 0)
+        wall_duration_ms = int(total_duration_ms or 0)
+    except (ValueError, TypeError, OverflowError):
+        api_duration_ms = 0
+        wall_duration_ms = 0
     if wall_duration_ms > 0 and api_duration_ms > 0:
         api_pct = min(int((api_duration_ms / wall_duration_ms) * 100), 100)
         line_two_parts.append(color(f"API:{api_pct}%", f"{DIM}{WHITE}"))
