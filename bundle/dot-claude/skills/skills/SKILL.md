@@ -27,7 +27,7 @@ Display this table to the user:
 | **ulw-skip** | `/ulw-skip <reason>` | Skip the current quality gate block once — use when a gate is blocking but you're confident |
 | **mark-deferred** | `/mark-deferred <reason>` | Bulk-defer pending discovered-scope findings with a one-line reason — pass the gate without silent skipping |
 | **ulw-pause** | `/ulw-pause <reason>` | Declare a legitimate user-decision pause without tripping the session-handoff gate (taste / policy / credible-approach split). Cap 2/session |
-| **ulw-resume** | `/ulw-resume [--peek \| --list \| --session-id <sid>]` | Atomically claim and replay an unclaimed `resume_request.json` after a Claude Code rate-limit StopFailure — picks up the prior /ulw task as if it were never interrupted |
+| **ulw-resume** | `/ulw-resume [--peek \| --list \| --session-id <sid> \| --dismiss]` | Atomically claim and replay an unclaimed `resume_request.json` after a Claude Code rate-limit StopFailure — picks up the prior /ulw task as if it were never interrupted. Use `--dismiss` to suppress the SessionStart hint without resuming |
 | **ulw-off** | `/ulw-off` | Deactivate ultrawork mode mid-session without ending the conversation |
 | **skills** | `/skills` | Show this list |
 

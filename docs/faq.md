@@ -22,9 +22,23 @@ Use this decision tree:
 
 8. **"I'm setting up a new repo for Claude Code."** → `/atlas [focus]` — bootstraps or refreshes CLAUDE.md / .claude/rules.
 
-9. **"I want to see what's happening."** → `/ulw-status` (session state) or `/skills` (list all skills).
+9. **"I want to see what's happening."**
+   - Current session state → `/ulw-status` — workflow mode, domain, intent, gate counters.
+   - Cross-session digest → `/ulw-report [last|week|month|all]` — sessions, gate fires, top reviewers, classifier misfires, Serendipity catches, finding/wave outcomes.
 
-10. **"I want to turn off ultrawork mode."** → `/ulw-off` — deactivates quality gates and domain routing for the rest of the session.
+10. **"I want to configure or change settings."** → `/omc-config` — edits `~/.claude/oh-my-claude.conf` via a guided multi-choice walkthrough. Three preset profiles (Maximum Quality + Automation / Balanced / Minimal) cover the 95% case; fine-tune mode walks individual flag clusters for the rest. Auto-detects whether you're doing first-time setup, post-update review, or an ad-hoc change.
+
+11. **"I want to list all skills."** → `/skills` — full skill list with usage signatures and a decision guide.
+
+12. **"A user-decision pause is needed (taste, policy, brand voice, credible-approach split)."** → `/ulw-pause <reason>` — declares a legitimate pause without tripping the session-handoff gate. Distinct from `/ulw-skip` (gate bypass) and `/mark-deferred` (defer findings) — this signals "I'm paused, waiting for your input on X". Cap is 2 pauses per session; the pause flag clears at the next user prompt.
+
+13. **"The discovered-scope gate is blocking on advisory findings I have decided not to ship."** → `/mark-deferred <reason>` — bulk-defers every pending finding with a one-line reason that names a concrete WHY (`requires database migration`, `blocked by F-042`, `awaiting telemetry`, etc.). Bare `out of scope` / `not in scope` / `follow-up` / `later` / `low priority` are rejected as silent-skip patterns. Prefer wave-append for same-surface findings; `/mark-deferred` is the last-resort verb.
+
+14. **"The MEMORY.md file feels noisy or has accumulated version-snapshot files."** → `/memory-audit` — read-only walk of the project's auto-memory directory that classifies each entry as load-bearing, archival, superseded, or drifted, and proposes consolidation `mv` commands. Never moves or deletes files — surfaces suggestions only.
+
+15. **"My prior `/ulw` task got killed by a Claude Code rate limit and I want to pick it up."** → `/ulw-resume` — atomically claims the most relevant unclaimed `resume_request.json` for the current cwd, replays the original prompt, and resumes as-if-uninterrupted. `/ulw-resume --peek` inspects without claiming; `/ulw-resume --list` enumerates claimable artifacts across projects; `/ulw-resume --dismiss` stamps the artifact dismissed so the SessionStart hint stops firing. See "What happens if my session is killed by a Claude Code rate limit mid-task?" below for the full auto-resume flow.
+
+16. **"I want to turn off ultrawork mode mid-session."** → `/ulw-off` — deactivates quality gates and domain routing for the rest of the session.
 
 **Rule of thumb:** If you're unsure, start with `/ulw`. It auto-detects the domain and routes to the right specialists.
 
@@ -63,6 +77,32 @@ Agent permission boundaries are a safety mechanism. Specialist agents (reviewers
 ### How does session continuity work?
 
 Two hook pairs handle continuity. Before compaction, `pre-compact-snapshot.sh` writes the current objective, domain, intent, specialist conclusions, edited files, and review status to a snapshot file. After compaction, `session-start-compact-handoff.sh` reads that snapshot and injects it as context. For session resume (continuing a previous transcript), `session-start-resume-handoff.sh` copies the entire state directory from the prior session and injects the preserved context. In both cases, Claude picks up from the saved state rather than reconstructing from scratch.
+
+### What happens if my session is killed by a Claude Code rate limit mid-task?
+
+The auto-resume harness handles this. When Claude Code terminates the session due to a rate cap, billing failure, auth failure, or other fatal stop, the `StopFailure` hook captures the original objective, last user prompt, matcher, and earliest known reset epoch into `<session>/resume_request.json`. Three consumer paths can act on it:
+
+1. **`/ulw-resume` (manual)** — invoke explicitly to atomically claim the most relevant unclaimed artifact for the current cwd and replay the original prompt. Pass `--peek` to inspect, `--list` to enumerate claimable artifacts across projects, `--session-id <sid>` to pin to a specific origin session, or `--dismiss` to suppress the hint without resuming.
+2. **SessionStart hint (always on)** — every time you open Claude Code in the affected project, the `session-start-resume-hint.sh` hook surfaces the unclaimed artifact's objective and humanized reset timing as `additionalContext`. The model knows there's a pending `/ulw-resume` and can prompt you to claim it.
+3. **Headless watchdog (opt-in)** — a LaunchAgent (macOS) / systemd user-timer (Linux) / cron job polls every ~2 minutes; when the rate-limit window clears, atomically claims the artifact and launches `claude --resume <sid> '<original prompt>'` in a detached `tmux` session. Falls back to an OS notification when `tmux` is unavailable. Enable via `/omc-config` (set `resume_watchdog=on` and the helper installs the platform scheduler).
+
+Privacy: the entire harness honors `stop_failure_capture=off` in `oh-my-claude.conf` — opt-out at the producer means no artifacts to act on, and all three consumers no-op. Artifacts older than `resume_request_ttl_days` (default 7) age out silently.
+
+### How do I configure oh-my-claude?
+
+Run `/omc-config` inside Claude Code. It auto-detects whether you're doing first-time setup, post-update review, or an ad-hoc change by reading `~/.claude/oh-my-claude.conf`, then walks you through a multi-choice configuration UX. Three preset profiles cover the 95% case:
+
+- **Maximum Quality + Automation** — full gates + blocking exhaustion + all bias-defense flags + watchdog + `model_tier=quality` (Opus everywhere). Highest cost, slowest, strongest gate enforcement.
+- **Balanced** — close to install-time defaults; tighter on a few quality knobs without the cost of all-Opus.
+- **Minimal** — basic gates, all telemetry off, `model_tier=economy`. For shared-machine or regulated-codebase setups.
+
+Fine-tune mode walks 4 cluster questions (gates, advisory, memory/telemetry, cost) for users who want to mix and match. The skill writes to `~/.claude/oh-my-claude.conf` via atomic tmp+mv, validates flag values against the table in `omc-config.sh`, and chains to `install-resume-watchdog.sh` / `switch-tier.sh` when the chosen profile requires those side effects. For users who prefer hand-editing, `~/.claude/oh-my-claude.conf.example` documents every flag with its default, accepted values, and env-var override.
+
+### Is the harness actually working? How do I tell which gates fired?
+
+The audit principle: gate-blocks should correlate with reviewer-found defects you actually fixed. Gate-blocks without a downstream finding-shipped row are friction, not value. Skip-rates above ~40% suggest a misconfigured threshold or a task class the gate wasn't designed for.
+
+`/ulw-status` shows the current session's state — workflow mode, domain, intent, gate counters, active flags. For cross-session visibility, `/ulw-report [last|week|month|all]` (default 7 days) renders a markdown digest of: sessions completed, gate fires per category (block / override / status-change), top reviewers by invocation, classifier misfires, Serendipity Rule applications, finding/wave outcomes, bias-defense directive fires (`exemplifying` / `prometheus-suggest` / `intent-verify`), wave-shape distribution, and `mark-deferred` strict-bypass audit rows. The report's interpretation footers name the heuristics that triggered (high gate density, skip-rate, archetype convergence).
 
 ### What is the intent classification system?
 
