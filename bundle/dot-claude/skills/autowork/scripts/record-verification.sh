@@ -81,12 +81,17 @@ if [[ -n "${command_text}" ]]; then
 
     verify_confidence="$(score_verification_confidence "${command_text}" "${tool_output}" "${project_test_cmd}")"
     verify_method="$(detect_verification_method "${command_text}" "${tool_output}" "${project_test_cmd}")"
+    # v1.27.0 (F-023): persist per-factor breakdown so /ulw-status can
+    # explain WHY a verification scored what it did. Empty/short cmds
+    # produce "test_match:0|framework:0|output_counts:0|clear_outcome:0|total:0".
+    verify_factors="$(score_verification_confidence_factors "${command_text}" "${tool_output}" "${project_test_cmd}")"
 
     with_state_lock_batch \
       "last_verify_ts" "$(now_epoch)" \
       "last_verify_cmd" "${command_text}" \
       "last_verify_outcome" "${verify_outcome}" \
       "last_verify_confidence" "${verify_confidence}" \
+      "last_verify_factors" "${verify_factors}" \
       "last_verify_method" "${verify_method}" \
       "project_test_cmd" "${project_test_cmd}" \
       "stop_guard_blocks" "0" \

@@ -47,6 +47,18 @@ Display this table to the user:
 - **Gate blocking but you're confident?** Use `/ulw-skip <reason>` to pass once.
 - **Discovered-scope gate flagging findings you've consciously deferred?** Use `/mark-deferred <reason>` to bulk-defer all pending advisory findings with a recorded reason — keeps `/ulw-report` audits accurate.
 - **Need to pause for user input on a decision only the user can make?** Use `/ulw-pause <reason>` — declares a legitimate user-decision pause without tripping the session-handoff gate. Distinct from `/ulw-skip` (one-shot bypass) and `/mark-deferred` (defer findings).
+
+### Deferral-verb decision tree (which one to use)
+
+Three skills, three different "I can't keep going" cases. Pick by symptom — they are NOT interchangeable:
+
+| Symptom | Skill |
+|---|---|
+| Gate fired but the work is done — false positive | `/ulw-skip <reason>` |
+| Discovered-scope flagged real findings you're consciously NOT shipping | `/mark-deferred <named-WHY>` |
+| User must make a call only they can make (taste, policy, brand voice) | `/ulw-pause <reason>` |
+
+**Escalation order before any of these fires:** ship inline → wave-append → defer-with-WHY → pause. The `/mark-deferred` validator rejects bare "out of scope" / "follow-up" / "later" reasons because those are silent-skip patterns; pass with `requires <X>`, `blocked by <Y>`, `awaiting <Z>`, `superseded by <id>`, or single tokens like `duplicate` / `obsolete` / `wontfix` / `n/a`.
 - **Prior /ulw task killed by a Claude Code rate-limit window?** Use `/ulw-resume` — atomically claims the most relevant unclaimed `resume_request.json` for the current cwd (or matching project_key) and replays the original objective. The SessionStart resume-hint hook surfaces the artifact automatically; `/ulw-resume` is the explicit claim verb. Run `/ulw-resume --peek` to inspect first, `--list` to see all claimable artifacts.
 - **MEMORY.md feels noisy or the drift hint fired?** Use `/memory-audit` — classifies entries and proposes rollup moves without moving anything itself.
 - **Setting up a new repo?** Use `/atlas`.

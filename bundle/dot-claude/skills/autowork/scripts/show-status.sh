@@ -477,6 +477,110 @@ if [[ -n "${verify_conf}" ]]; then
   verify_method="$(jq -r '.last_verify_method // "unknown"' "${state_file}" 2>/dev/null || true)"
   printf '\n--- Verification Confidence ---\n'
   printf 'Confidence: %s/100  Method: %s\n' "${verify_conf}" "${verify_method}"
+  # v1.27.0 (F-023): show per-factor breakdown when available so the
+  # user can see WHY the score is what it is. Format from
+  # score_verification_confidence_factors:
+  #   "test_match:40|framework:30|output_counts:20|clear_outcome:10|total:100"
+  # Each factor's max contribution is annotated in parentheses.
+  verify_factors="$(jq -r '.last_verify_factors // empty' "${state_file}" 2>/dev/null || true)"
+  if [[ -n "${verify_factors}" ]]; then
+    # Defensive parse: each segment must be `name:N` where N is a non-
+    # negative integer. Malformed/legacy state (e.g., from a pre-v1.27.0
+    # session whose key happens to share the name, or from a manual edit)
+    # falls back to 0 instead of trying to do arithmetic on a non-number.
+    f_test="${verify_factors#*test_match:}"; f_test="${f_test%%|*}"
+    f_fwk="${verify_factors#*framework:}";    f_fwk="${f_fwk%%|*}"
+    f_out="${verify_factors#*output_counts:}"; f_out="${f_out%%|*}"
+    f_clr="${verify_factors#*clear_outcome:}"; f_clr="${f_clr%%|*}"
+    [[ "${f_test}" =~ ^[0-9]+$ ]] || f_test=0
+    [[ "${f_fwk}"  =~ ^[0-9]+$ ]] || f_fwk=0
+    [[ "${f_out}"  =~ ^[0-9]+$ ]] || f_out=0
+    [[ "${f_clr}"  =~ ^[0-9]+$ ]] || f_clr=0
+    threshold="${OMC_VERIFY_CONFIDENCE_THRESHOLD:-40}"
+    printf 'Breakdown:  test-cmd-match=%s/40  framework-keyword=%s/30  output-counts=%s/20  clear-outcome=%s/10\n' \
+      "${f_test}" "${f_fwk}" "${f_out}" "${f_clr}"
+    if [[ "${verify_conf}" -lt "${threshold}" ]]; then
+      printf 'Status:     BELOW threshold (need %s+)\n' "${threshold}"
+      # Suggest the cheapest factor combination that would clear the
+      # threshold. Pick the single largest missing factor when it covers
+      # the gap; otherwise enumerate the missing factors so the user can
+      # combine them.
+      _need=$(( threshold - verify_conf ))
+      _project_cmd="$(jq -r '.project_test_cmd // "<none detected>"' "${state_file}" 2>/dev/null || echo "<none>")"
+      if [[ "${f_test}" -eq 0 ]] && [[ "${_need}" -le 40 ]]; then
+        printf 'Hint:       run the project test command (detected: %s) to add +40\n' "${_project_cmd}"
+      elif [[ "${f_fwk}" -eq 0 ]] && [[ "${_need}" -le 30 ]]; then
+        printf 'Hint:       use a recognized framework command (pytest, jest, cargo test, etc.) to add +30\n'
+      elif [[ "${f_out}" -eq 0 ]] && [[ "${_need}" -le 20 ]]; then
+        printf 'Hint:       capture test-counts in the output (e.g., ensure stderr/stdout is not silenced) to add +20\n'
+      else
+        # Threshold gap exceeds the largest single missing factor — list
+        # every zero factor with its potential contribution so the user
+        # knows which to combine.
+        _hints=""
+        [[ "${f_test}" -eq 0 ]] && _hints="${_hints:+${_hints}; }run project test cmd \`${_project_cmd}\` (+40)"
+        [[ "${f_fwk}"  -eq 0 ]] && _hints="${_hints:+${_hints}; }framework keyword (pytest/jest/cargo/etc., +30)"
+        [[ "${f_out}"  -eq 0 ]] && _hints="${_hints:+${_hints}; }surface test-counts in output (+20)"
+        [[ "${f_clr}"  -eq 0 ]] && _hints="${_hints:+${_hints}; }surface PASS/FAIL outcome (+10)"
+        if [[ -n "${_hints}" ]]; then
+          printf 'Hint:       combine — %s\n' "${_hints}"
+        fi
+      fi
+    else
+      printf 'Status:     PASS (>= %s threshold)\n' "${threshold}"
+    fi
+  else
+    # MCP-path verification: confidence + method are recorded but the
+    # per-factor breakdown is not (the MCP scorer has its own factor
+    # model — base + UI-context bonus + output-bearing bonus — that is
+    # not surfaced as state in v1.27.0). Make the silence explicit so
+    # the user understands the panel isn't broken.
+    if [[ "${verify_method}" == mcp_* ]]; then
+      printf 'Breakdown:  (MCP-path verification — per-factor breakdown not yet recorded)\n'
+    fi
+  fi
+fi
+
+# v1.27.0 (F-026): canary verdict distribution for the active session.
+# Surfaces drift-canary state alongside the verification confidence so
+# the user can see at a glance how many turns this session emitted
+# unverified verdicts (the silent-confab pattern).
+#
+# `grep -c PATTERN FILE` returns exit 1 on zero matches AND prints "0"
+# to stdout. The `|| printf 0` fallback then concatenates a SECOND "0",
+# producing the literal string "0\n0" — which corrupts the subsequent
+# arithmetic ($(( "0\n0" + ... )) is a syntax error). Solution: drop
+# the `|| printf 0` and let grep's "0" output stand. The default-zero
+# expansion `${var:-0}` covers the case where the file is missing
+# (caught by the outer `[[ -f ${canary_log} ]]` anyway).
+canary_log="${STATE_ROOT}/${latest_session}/canary.jsonl"
+if [[ -f "${canary_log}" ]] && [[ -s "${canary_log}" ]]; then
+  # `grep -c` exits 1 on zero matches; under `set -e` the bare assignment
+  # would propagate the failure. `|| true` lets stdout's "0" land in the
+  # variable. Do NOT use `|| printf 0` — that concatenates a second "0"
+  # because grep ALSO prints "0" on no match.
+  c_clean="$(grep -c '"verdict":"clean"' "${canary_log}" 2>/dev/null || true)"
+  c_covered="$(grep -c '"verdict":"covered"' "${canary_log}" 2>/dev/null || true)"
+  c_low="$(grep -c '"verdict":"low_coverage"' "${canary_log}" 2>/dev/null || true)"
+  c_unver="$(grep -c '"verdict":"unverified"' "${canary_log}" 2>/dev/null || true)"
+  c_clean="${c_clean:-0}"
+  c_covered="${c_covered:-0}"
+  c_low="${c_low:-0}"
+  c_unver="${c_unver:-0}"
+  c_total=$(( c_clean + c_covered + c_low + c_unver ))
+  if [[ "${c_total}" -gt 0 ]]; then
+    printf '\n--- Model-drift canary ---\n'
+    printf 'Verdicts:   total=%s · clean=%s · covered=%s · low_coverage=%s · unverified=%s\n' \
+      "${c_total}" "${c_clean}" "${c_covered}" "${c_low}" "${c_unver}"
+    if [[ "${c_unver}" -gt 0 ]]; then
+      drift_emitted="$(jq -r '.drift_warning_emitted // empty' "${state_file}" 2>/dev/null || true)"
+      if [[ "${drift_emitted}" == "1" ]]; then
+        printf 'Alert:      drift warning EMITTED this session\n'
+      else
+        printf 'Alert:      not yet emitted (threshold: 2 unverified events OR 1 with claim_count>=4)\n'
+      fi
+    fi
+  fi
 fi
 
 # Show project profile (cached or detected on demand)

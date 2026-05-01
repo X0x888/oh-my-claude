@@ -1,0 +1,186 @@
+#!/usr/bin/env bash
+# Focused tests for show-status.sh — covers the v1.27.0 (Wave 5)
+# defensive parse + canary-empty fixes that were caught by quality
+# reviewer findings 1 and 2.
+#
+# These are end-to-end runs (script-level), not unit tests of helper
+# functions, because the bugs lived in the show-status script body
+# (parameter expansion + grep-c fallback) — not in a library function.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+SHOW_STATUS="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/show-status.sh"
+
+pass=0
+fail=0
+
+assert_zero_exit() {
+  local label="$1"; shift
+  if "$@" >/dev/null 2>&1; then
+    pass=$((pass + 1))
+  else
+    rc=$?
+    printf '  FAIL: %s (rc=%d)\n' "${label}" "${rc}" >&2
+    "$@" 2>&1 | tail -10 >&2
+    fail=$((fail + 1))
+  fi
+}
+
+assert_output_contains() {
+  local label="$1" needle="$2"
+  shift 2
+  local out
+  out="$("$@" 2>&1 || true)"
+  if [[ "${out}" == *"${needle}"* ]]; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: %s\n    needle=%q\n    output(first 400)=%q\n' "${label}" "${needle}" "${out:0:400}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
+assert_output_NOT_contains() {
+  local label="$1" needle="$2"
+  shift 2
+  local out
+  out="$("$@" 2>&1 || true)"
+  if [[ "${out}" != *"${needle}"* ]]; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: %s\n    unexpected_needle=%q\n' "${label}" "${needle}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
+# Build a synthetic STATE_ROOT + SESSION_ID for each test.
+mk_session() {
+  local _root _sid
+  _root="$(mktemp -d -t show-status-test-XXXXXX)"
+  _sid="ut-$$-$RANDOM"
+  mkdir -p "${_root}/${_sid}"
+  printf '%s|%s' "${_root}" "${_sid}"
+}
+
+teardown_session() {
+  rm -rf "$1"
+}
+
+# ----------------------------------------------------------------------
+printf 'Test 1: defensive parse on malformed last_verify_factors does NOT crash (Wave-5 review #1)\n'
+parts="$(mk_session)"
+ROOT="${parts%|*}"
+SID="${parts##*|}"
+printf '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","last_verify_confidence":"30","last_verify_factors":"framework:30|total:30","last_verify_method":"shellcheck","session_start_ts":"%s"}' \
+  "$(date +%s)" > "${ROOT}/${SID}/session_state.json"
+
+# Even with malformed factors (missing test_match: segment), show-status
+# should exit 0 and render a sane breakdown (zero-falling-back).
+assert_zero_exit "T1: malformed factors does not crash" \
+  env STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}"
+
+assert_output_contains "T1: breakdown line still rendered" \
+  "Breakdown:" \
+  env STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}"
+
+# The malformed test_match segment should fall back to 0/40, not bleed
+# the framework string into the output.
+assert_output_contains "T1: malformed test_match falls back to 0/40" \
+  "test-cmd-match=0/40" \
+  env STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}"
+
+assert_output_NOT_contains "T1: malformed parse does NOT leak verbatim" \
+  "test-cmd-match=framework" \
+  env STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}"
+
+teardown_session "${ROOT}"
+
+# ----------------------------------------------------------------------
+printf 'Test 2: empty canary.jsonl does NOT crash and suppresses zero-row panel (Wave-5 review #2)\n'
+parts="$(mk_session)"
+ROOT="${parts%|*}"
+SID="${parts##*|}"
+printf '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","session_start_ts":"%s"}' \
+  "$(date +%s)" > "${ROOT}/${SID}/session_state.json"
+: > "${ROOT}/${SID}/canary.jsonl"
+
+assert_zero_exit "T2: empty canary.jsonl does not crash" \
+  env STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}"
+
+# Total=0 → suppress the panel entirely (per Wave-5 polish).
+assert_output_NOT_contains "T2: zero-total panel suppressed" \
+  "total=0" \
+  env STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}"
+assert_output_NOT_contains "T2: no model-drift header on empty file" \
+  "Model-drift canary" \
+  env STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}"
+
+teardown_session "${ROOT}"
+
+# ----------------------------------------------------------------------
+printf 'Test 3: populated canary.jsonl renders the verdict-distribution panel\n'
+parts="$(mk_session)"
+ROOT="${parts%|*}"
+SID="${parts##*|}"
+printf '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","session_start_ts":"%s"}' \
+  "$(date +%s)" > "${ROOT}/${SID}/session_state.json"
+{
+  printf '%s\n' '{"verdict":"clean","claim_count":1}'
+  printf '%s\n' '{"verdict":"unverified","claim_count":4}'
+  printf '%s\n' '{"verdict":"covered","claim_count":3}'
+} > "${ROOT}/${SID}/canary.jsonl"
+
+assert_output_contains "T3: total reflects 3 rows" \
+  "total=3" \
+  env STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}"
+assert_output_contains "T3: clean=1" \
+  "clean=1" \
+  env STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}"
+assert_output_contains "T3: unverified=1" \
+  "unverified=1" \
+  env STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}"
+assert_output_contains "T3: alert mentions claim_count threshold" \
+  "claim_count" \
+  env STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}"
+
+teardown_session "${ROOT}"
+
+# ----------------------------------------------------------------------
+printf 'Test 4: MCP-path verification renders the "no breakdown" fallback line (Wave-5 review #4)\n'
+parts="$(mk_session)"
+ROOT="${parts%|*}"
+SID="${parts##*|}"
+printf '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","last_verify_confidence":"30","last_verify_method":"mcp_browser_console_check","session_start_ts":"%s"}' \
+  "$(date +%s)" > "${ROOT}/${SID}/session_state.json"
+# Note: no last_verify_factors key — simulating MCP path that doesn't set it.
+
+assert_output_contains "T4: MCP fallback line renders" \
+  "MCP-path verification" \
+  env STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}"
+assert_output_contains "T4: still shows confidence + method" \
+  "Method: mcp_browser_console_check" \
+  env STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}"
+
+teardown_session "${ROOT}"
+
+# ----------------------------------------------------------------------
+printf 'Test 5: hint logic — when threshold gap > largest single factor, emit combine-hint\n'
+parts="$(mk_session)"
+ROOT="${parts%|*}"
+SID="${parts##*|}"
+# Confidence 0/100 with all factors at 0. Default threshold is 40. The
+# single-factor branches cover need<=40, so gap=40 still triggers the
+# test-cmd hint. To force the combine branch, use a custom threshold.
+printf '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","last_verify_confidence":"0","last_verify_factors":"test_match:0|framework:0|output_counts:0|clear_outcome:0|total:0","last_verify_method":"unknown","project_test_cmd":"npm test","session_start_ts":"%s"}' \
+  "$(date +%s)" > "${ROOT}/${SID}/session_state.json"
+
+# threshold=70 forces gap=70, which exceeds any single factor's max (40).
+assert_output_contains "T5: combine-hint when threshold gap > 40" \
+  "combine" \
+  env STATE_ROOT="${ROOT}" SESSION_ID="${SID}" OMC_VERIFY_CONFIDENCE_THRESHOLD=70 bash "${SHOW_STATUS}"
+
+teardown_session "${ROOT}"
+
+printf '\n=== Show-Status Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
+[[ "${fail}" -eq 0 ]]

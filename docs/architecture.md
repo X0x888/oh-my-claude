@@ -269,6 +269,7 @@ Separate from session state, `install.sh` writes four install-time artifacts tha
 | `last_verify_ts` | Epoch timestamp of the last test/build/lint verification |
 | `last_verify_cmd` | The verification command that was run |
 | `last_verify_confidence` | Integer 0-100 score of the last verification (lint-only ≈ 30, framework runs ≈ 50+, project test suites ≈ 70+); compared against `OMC_VERIFY_CONFIDENCE_THRESHOLD` by stop-guard |
+| `last_verify_factors` | Pipe-delimited per-factor breakdown of the last Bash-path verification score, in the format `test_match:N\|framework:N\|output_counts:N\|clear_outcome:N\|total:N`. The trailing `total` matches `last_verify_confidence`. Backed by `score_verification_confidence_factors` in `lib/verification.sh`; surfaced by `/ulw-status` for debug visibility (added in v1.27.0 F-023). MCP-path verifications do not yet write this key — `/ulw-status` shows `(MCP-path verification — per-factor breakdown not yet recorded)` in that case. |
 | `last_verify_method` | Classification of the last verification signal. Bash-command checks resolve to one of `project_test_command`, `framework_keyword`, `output_signal`, or `builtin_verification` (see `detect_verification_method` in `common.sh`). MCP observations resolve to `mcp_<check_type>` (e.g. `mcp_browser_visual_check`, `mcp_browser_console_check`). |
 | `last_review_ts` | Epoch timestamp of the last reviewer agent completion (any code-side reviewer) |
 | `last_doc_review_ts` | Epoch timestamp of the last editor-critic (prose) completion |

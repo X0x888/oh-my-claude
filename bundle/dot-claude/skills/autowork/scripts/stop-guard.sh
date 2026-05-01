@@ -576,9 +576,13 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
               ;;
             scorecard)
               log_hook "stop-guard" "review coverage gate exhausted (scorecard mode): emitting scorecard"
+              # v1.27.0 (F-024): scorecard footer is now actionable.
+              # Names the concrete recoveries the user/model can take
+              # when the gate releases without full completion, instead
+              # of the prior passive "note any gaps".
               emit_scorecard_stop_context \
                 "QUALITY SCORECARD (review coverage gate exhausted after 3 blocks):" \
-                "The review coverage gate released without full completion. Review the scorecard above and note the remaining coverage gaps in your final summary." \
+                "The review coverage gate released without full completion. Recovery options: (a) restate the missing reviewer dimensions in your final summary so the user can audit them; (b) for each missing dimension shown above, dispatch the corresponding reviewer (quality-reviewer for defects, excellence-reviewer for completeness, design-reviewer for visual craft, editor-critic for prose, metis for plan stress-tests) — even one focused pass converts a scorecard release into a clean release; (c) if the missing dimensions are genuinely out of scope for this task, name the explicit reason in your summary (a session that ships scorecard-released work without naming the gap is the anti-pattern this gate exists to surface)." \
                 "${scorecard}"
               exit 0
               ;;
@@ -698,9 +702,12 @@ if [[ "${guard_blocks}" -ge 3 ]]; then
       ;;
     scorecard)
       # Release but inject scorecard as context
+      # v1.27.0 (F-024): see review-coverage scorecard above for the
+      # rationale behind the actionable footer. Same pattern: name the
+      # concrete next-step shapes instead of "note any gaps".
       emit_scorecard_stop_context \
         "QUALITY SCORECARD (guard exhausted after 3 blocks):" \
-        "The quality gate released without full completion. Review the scorecard above and note any gaps in your final summary." \
+        "The quality gate released without full completion. Recovery options: (a) restate WHICH gates released without satisfaction so the user can audit them; (b) run a fresh quality-reviewer pass on the diff and address the findings (one short pass usually converts scorecard release into clean release); (c) run the project test suite (\`/ulw-status\` shows the detected command) and commit on green; (d) if the work is genuinely paused on user input, run /ulw-pause <reason> instead of letting the gate scorecard-release." \
         "${scorecard}"
       exit 0
       ;;

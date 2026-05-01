@@ -263,5 +263,39 @@ verification_matches_project_test_command 'bash ../tests/foo.sh extra-args' 'bas
   || { printf '  FAIL: direct prefix match should not be blocked by ../ in ptc\n' >&2; fail=$((fail + 1)); }
 
 # ----------------------------------------------------------------------
+# ----------------------------------------------------------------------
+printf 'Test 12: score_verification_confidence_factors emits per-factor breakdown (v1.27.0 F-023)\n'
+assert_function_defined score_verification_confidence_factors
+
+# All four factors fire on a full-fat test invocation.
+got="$(score_verification_confidence_factors 'npm test -- --runInBand' \
+        'PASS auth/login.test.ts'$'\n''Tests: 10 passed, 0 failed' \
+        'npm test')"
+assert_eq "T12: all four factors fire" \
+  "test_match:40|framework:30|output_counts:20|clear_outcome:10|total:100" "${got}"
+
+# Lint-only command (shellcheck): only framework keyword fires.
+got="$(score_verification_confidence_factors 'shellcheck script.sh' '' '')"
+assert_eq "T12: shellcheck-only → 30 via framework only" \
+  "test_match:0|framework:30|output_counts:0|clear_outcome:0|total:30" "${got}"
+
+# Empty cmd → all zeros, total=0.
+got="$(score_verification_confidence_factors '' '' '')"
+assert_eq "T12: empty cmd → all zeros" \
+  "test_match:0|framework:0|output_counts:0|clear_outcome:0|total:0" "${got}"
+
+# Total field equals score_verification_confidence on the same inputs
+# (round-trip property).
+for inputs in \
+  'npm test|PASS|npm test' \
+  'shellcheck a.sh||' \
+  'bash tests/x.sh|=== Results: 1 passed ===|bash tests/y.sh'; do
+  IFS='|' read -r _cmd _out _proj <<<"${inputs}"
+  factors_total="$(score_verification_confidence_factors "${_cmd}" "${_out}" "${_proj}" \
+    | sed 's/.*total://' )"
+  legacy_total="$(score_verification_confidence "${_cmd}" "${_out}" "${_proj}")"
+  assert_eq "T12: factors.total == legacy total ($_cmd)" "${legacy_total}" "${factors_total}"
+done
+
 printf '\n=== Verification Lib Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]] || exit 1

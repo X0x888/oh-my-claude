@@ -24,3 +24,22 @@
 - `/ulw-off` deactivates ultrawork mode mid-session without ending the conversation.
 - `/skills` lists all available skills with descriptions and a decision guide.
 - The `ulw` family auto-detects whether a task is coding, writing, research, operations, mixed, or general work, then chooses the correct specialists. Specialist agents activate automatically — you don't need to learn agent names.
+
+## Deferral-verb decision tree (which one to use)
+
+`/ulw-skip`, `/mark-deferred`, and `/ulw-pause` solve different "I can't keep going" cases. Pick by what's blocking — they are NOT interchangeable.
+
+| Symptom | Skill | What it does | When NOT to use |
+|---|---|---|---|
+| A specific gate fired and is wrong (false positive) and the rest of the work is complete | `/ulw-skip <reason>` | Logs the skip, clears that one block | The gate is right and the finding is real → use `/mark-deferred` |
+| The discovered-scope gate flagged real findings you're consciously NOT shipping this session | `/mark-deferred <named-WHY>` | Marks every pending finding deferred with the WHY recorded | You can ship the finding inline (do that) or wave-append (`record-finding-list.sh add-finding` + `assign-wave`) |
+| The user must make a call you can't make autonomously (taste, policy, brand voice, credible-approach split) | `/ulw-pause <reason>` | Sets the pause flag so the session-handoff gate doesn't fire while you wait; flag clears on the next user prompt | The session-handoff gate fired on your *own* premature stop — don't pause to bypass your own guard, finish the work |
+
+**Escalation order (most-preferred first) before any of the three skills fires:**
+
+1. **Ship inline** — fix the finding in the current wave/session.
+2. **Wave-append** — add to the active wave plan via `record-finding-list.sh add-finding` + `assign-wave`. Phase 8 of `/council` documents this.
+3. **Defer with named WHY** — `/mark-deferred` for findings; `/ulw-skip` for a wrong gate fire.
+4. **Pause** — `/ulw-pause` only when blocked on user judgment.
+
+The `/mark-deferred` validator rejects bare "out of scope" / "not in scope" / "follow-up" / "later" / "low priority" reasons because those have historically been silent-skip patterns. WHY shapes that pass: `requires <X>`, `blocked by <Y>`, `awaiting <Z>`, `superseded by <PR/F-id>`, or single self-explanatory tokens (`duplicate`, `obsolete`, `wontfix`, `n/a`).

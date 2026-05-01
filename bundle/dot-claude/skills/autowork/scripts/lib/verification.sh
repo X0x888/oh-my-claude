@@ -189,6 +189,38 @@ score_verification_confidence() {
   printf '%s' "${score}"
 }
 
+# score_verification_confidence_factors: same scoring logic as
+# score_verification_confidence but returns the per-factor contributions
+# as a pipe-delimited key:value string. Lets downstream surfaces (the
+# /ulw-status verification debug card, /ulw-report) explain WHY a score
+# was what it was without having to re-run the scorer.
+#
+# v1.27.0 (F-023): closes the user complaint that the verification
+# score was "a black box" — when the gate blocked at confidence 30,
+# the user couldn't see whether the lint-only command lacked a
+# project-test-cmd match (factor 1 = 0) and a framework keyword
+# (factor 2 = 0), or whether all factors fired but capped low.
+#
+# Output format (stable, parser-friendly):
+#   "test_match:N|framework:N|output_counts:N|clear_outcome:N|total:N"
+# Each N is the contribution to the total (40/30/20/10/0). Total at
+# the end matches score_verification_confidence on the same inputs.
+score_verification_confidence_factors() {
+  local cmd="${1:-}"
+  local output="${2:-}"
+  local project_test_cmd="${3:-}"
+  local f1=0 f2=0 f3=0 f4=0
+
+  if [[ -n "${cmd}" ]]; then
+    verification_matches_project_test_command "${cmd}" "${project_test_cmd}" && f1=40
+    verification_has_framework_keyword "${cmd}" && f2=30
+    verification_output_has_counts "${output}" && f3=20
+    verification_output_has_clear_outcome "${output}" && f4=10
+  fi
+  printf 'test_match:%s|framework:%s|output_counts:%s|clear_outcome:%s|total:%s' \
+    "${f1}" "${f2}" "${f3}" "${f4}" "$((f1 + f2 + f3 + f4))"
+}
+
 # --- MCP verification helpers ---
 
 # Builtin MCP tool names recognized as verification. Matches against the full

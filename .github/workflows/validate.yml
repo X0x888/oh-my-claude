@@ -100,5 +100,9 @@ jobs:
       - name: Run timing tests
         run: bash tests/test-timing.sh
 
+      - name: Run show-status tests
+        run: bash tests/test-show-status.sh
+
       - name: Run statusline tests
         run: python3 -m unittest tests.test_statusline -v
+
