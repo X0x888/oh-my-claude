@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.27.0] - 2026-05-02
+
+This release responds directly to user feedback that the ULW workflow felt **slow**, **not smart**, and **unsatisfying** in execution quality. Five surgical waves address each axis with measured improvements:
+
+- **Smartness** (Waves 1 + 3) — classifier no longer mis-routes investigation-verb-led conjunctions like *"review the auth code and ship the fix"* (was advisory, now execution); architecture/concurrency vocabulary (race condition, deadlock, idempotency, latency, throughput, mutex, etc.) now scores as coding domain; five generic-AI-shaped specialist prompts (`backend-api-developer`, `ios-core-engineer`, `ios-deployment-specialist`, `ios-ecosystem-integrator`, `devops-infrastructure-engineer`) rewritten with concrete decision rules, named anti-patterns, stack-defaults tables, and when-NOT-to-dispatch boundaries.
+- **Speed** (Wave 4) — new `read_state_keys` bulk-read helper replaces the dominant jq-fork hotspots in `stop-guard.sh` (11 reads → 2) and `prompt-intent-router.sh` (5 reads → 1). Measured **64ms saved per Stop, 30ms per UserPromptSubmit** on bash 3.2 macOS. Pre-source env-var fast-exit added to timing hooks for `OMC_TIME_TRACKING=off` users.
+- **Satisfaction** (Waves 2 + 5) — discovered-scope gate now captures `oracle` and `abstraction-critic` findings that pre-v1.27 silently dropped; canary fires loud-session alert on first turn with `claim_count >= 4`; verification-confidence breakdown surfaced in `/ulw-status` (was a black box: now shows per-factor contributions, PASS/BELOW threshold status, and concrete next-step hints); scorecard footers rewritten from passive to actionable.
+
+22 of 26 master findings shipped across the waves; 4 deferred with concrete WHY recorded (F-002 polite-imperative `?$` regression risk; F-008 fallback-regex tightening rejected legitimate fixture; F-020 / F-021 lazy-load deferred pending per-caller audit).
+
 ### Wave 5/5 — UX & visibility
 
 - **`/ulw-status` verification-confidence card now shows the per-factor breakdown.** Pre-v1.27 the user saw "Confidence: 30/100 Method: shellcheck" with no way to see WHY the score was low. New panel surfaces each factor's contribution (`test-cmd-match=0/40 framework-keyword=30/30 output-counts=0/20 clear-outcome=0/10`), shows whether the score is above the threshold, and when below threshold names the smallest add-on that would clear it (e.g. *"run the project test command (detected: npm test) to add +40"*). Backed by a new `score_verification_confidence_factors` helper in `lib/verification.sh` that returns a parser-friendly key:value string; `record-verification.sh` now persists the breakdown as `last_verify_factors` state. Closes F-023.
