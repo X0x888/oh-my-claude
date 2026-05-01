@@ -99,7 +99,7 @@ Definitions:
 
 ## Always-on epilogue
 
-The same card renders automatically as Stop `additionalContext` at the end
+The same card renders automatically as Stop `systemMessage` at the end
 of every turn whose walltime is `>= 5 seconds` (the noise floor that keeps
 trivial answers off the transcript). Below the floor, the hook stays
 silent. A recent stop-guard block within the last 3 seconds also

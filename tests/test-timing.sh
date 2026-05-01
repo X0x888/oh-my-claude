@@ -620,8 +620,16 @@ assert_eq "trivial turn yields no insight" "" "${insight}"
 # ----------------------------------------------------------------------
 printf 'Test 29: stop-time-summary emits multi-line epilogue above 5s floor\n'
 # End-to-end: real Stop hook script must produce JSON with multi-line
-# additionalContext when walltime >= 5s. Below 5s, no JSON. This is the
+# `systemMessage` when walltime >= 5s. Below 5s, no JSON. This is the
 # always-show contract — every meaningful turn surfaces the polished card.
+#
+# Schema regression net: Stop hooks do NOT support
+# `hookSpecificOutput.additionalContext` (silently dropped by Claude Code).
+# The documented user-visible Stop output field is `systemMessage`. v1.24.0
+# and v1.25.0 shipped using the wrong field; the bug surfaced when a
+# user noticed the polished card never appeared. Both the positive
+# `systemMessage` assertion and the negative `hookSpecificOutput` assertion
+# are required to catch a future regression.
 hook_root="$(mktemp -d)"
 hook_session="hook-test-session"
 hook_session_dir="${hook_root}/${hook_session}"
@@ -653,7 +661,11 @@ jq -nc --arg sid "${hook_session}" '{prompt_seq:1,session_id:$sid}' \
 hook_payload="$(jq -nc --arg sid "${hook_session}" '{session_id:$sid}')"
 hook_out="$(STATE_ROOT="${hook_root}" HOME="${HOME}" \
   bash "${SCRIPTS_DIR}/stop-time-summary.sh" <<<"${hook_payload}" 2>&1 || true)"
-ctx="$(jq -r '.hookSpecificOutput.additionalContext // ""' <<<"${hook_out}" 2>/dev/null)"
+# Use python to parse the multi-line JSON value (jq 1.7's read of JSON
+# with embedded newlines on stdin can be brittle on some platforms).
+ctx="$(printf '%s' "${hook_out}" \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("systemMessage",""))' \
+  2>/dev/null || printf '')"
 case "${ctx}" in
   *"─── Time breakdown ───"*) pass=$((pass + 1)) ;;
   *) printf '  FAIL: hook epilogue missing title rule:\n%s\n' "${hook_out}" >&2; fail=$((fail + 1)) ;;
@@ -666,6 +678,18 @@ esac
 case "${ctx}" in
   *$'\n'*) pass=$((pass + 1)) ;;
   *) printf '  FAIL: epilogue not multi-line:\n%s\n' "${ctx}" >&2; fail=$((fail + 1)) ;;
+esac
+# Schema regression net: hookSpecificOutput is silently dropped on Stop.
+# Asserting its absence catches a future revert that would re-ship the
+# v1.24.0 / v1.25.0 silent-drop bug.
+case "${hook_out}" in
+  *'"hookSpecificOutput"'*)
+    printf '  FAIL: Stop hook output uses hookSpecificOutput (silently dropped); use systemMessage:\n%s\n' "${hook_out}" >&2
+    fail=$((fail + 1))
+    ;;
+  *)
+    pass=$((pass + 1))
+    ;;
 esac
 
 # ----------------------------------------------------------------------

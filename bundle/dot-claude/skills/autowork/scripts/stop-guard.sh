@@ -14,18 +14,25 @@ fi
 
 ensure_session_dir
 
+# emit_scorecard_stop_context — Render a guard-exhaustion scorecard to
+# the user via `systemMessage` (the documented user-visible Stop output
+# field). `hookSpecificOutput.additionalContext` is silently dropped by
+# Claude Code on Stop. See CLAUDE.md "Stop hook output schema".
 emit_scorecard_stop_context() {
   local header="$1"
   local footer="$2"
   local scorecard="$3"
 
   rm -f "${STATE_ROOT}/.ulw_active"
-  jq -nc --arg sc "${header}\n${scorecard}\n${footer}" '{
-    hookSpecificOutput: {
-      hookEventName: "Stop",
-      additionalContext: $sc
-    }
-  }'
+  # `printf -v` is required for real newlines: bash double-quoted `\n`
+  # is two literal characters (backslash + n), and jq's `--arg` passes
+  # them through verbatim — the user would otherwise see `\n` glyphs at
+  # the header/footer joins. Pre-fix this was masked by the wrong schema
+  # silently dropping the entire field; once we switched to `systemMessage`
+  # the latent quoting bug surfaced.
+  local body
+  printf -v body '%s\n%s\n%s' "${header}" "${scorecard}" "${footer}"
+  jq -nc --arg sc "${body}" '{systemMessage: $sc}'
 }
 
 last_assistant_message="$(json_get '.last_assistant_message')"

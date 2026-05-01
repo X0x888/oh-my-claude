@@ -1129,6 +1129,21 @@ assert_contains "seq-U7: scorecard release emits scorecard" "QUALITY SCORECARD" 
 assert_not_contains "seq-U7: scorecard release is not a block" '"decision":"block"' "${out4}"
 exhausted_detail="$(read_st "su7" "guard_exhausted_detail")"
 assert_contains "seq-U7: exhaustion recorded" "dimensions_missing" "${exhausted_detail}"
+# Schema-regression net: emit_scorecard_stop_context must use systemMessage,
+# never hookSpecificOutput (silently dropped on Stop). Mirrors
+# tests/test-timing.sh T29 for the time-summary path. Without this
+# assertion, a future revert to the dropped-schema form would leave the
+# scorecard invisible to the user — same failure mode the v1.24.0 /
+# v1.25.0 stop-time-summary bug exhibited.
+assert_contains "seq-U7: scorecard uses systemMessage schema" '"systemMessage"' "${out4}"
+assert_not_contains "seq-U7: scorecard does not use dropped hookSpecificOutput schema" "hookSpecificOutput" "${out4}"
+# Real-newline assertion: bash double-quoted "\n" passes through as the
+# 2-char sequence backslash+n, which jq encodes as `\\n` in JSON and
+# renders as literal `\n` glyphs in the user's terminal. The fix uses
+# `printf -v body '%s\n%s\n%s' "$header" "$scorecard" "$footer"` so
+# joins are real newlines. The assertion checks that the JSON does not
+# carry the buggy 4-char escape (`\\\\n` in shell quoting → `\\n` literal).
+assert_not_contains "seq-U7: scorecard does not contain literal \\\\n glyph" '\\n' "${out4}"
 teardown_test
 
 # Sequence U7B: Review coverage gate exhaustion in block mode keeps blocking

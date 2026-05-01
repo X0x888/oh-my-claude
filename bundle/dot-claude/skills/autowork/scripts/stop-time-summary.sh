@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 #
-# stop-time-summary.sh — Stop hook that emits a one-line "Time: ..."
-# distribution as additionalContext when the session releases. Reads
-# `<session>/timing.jsonl`, finalizes the current prompt's walltime,
-# aggregates per-tool / per-subagent totals, and rolls the summary into
-# the cross-session log under ~/.claude/quality-pack/timing.jsonl.
+# stop-time-summary.sh — Stop hook that emits the polished
+# "─── Time breakdown ───" card as `systemMessage` when the session
+# releases. Reads `<session>/timing.jsonl`, finalizes the current
+# prompt's walltime, aggregates per-tool / per-subagent totals, and rolls
+# the summary into the cross-session log under
+# ~/.claude/quality-pack/timing.jsonl.
+#
+# Schema note: Stop hooks do NOT support hookSpecificOutput.additionalContext
+# (it is silently dropped). The documented user-visible Stop output field
+# is `systemMessage`. See CLAUDE.md "Stop hook output schema" rule.
 #
 # Self-suppression: stop-guard.sh is registered ahead of this hook in
 # the Stop array. If stop-guard JUST emitted a `decision:block`, we do
@@ -100,12 +105,10 @@ walltime_s="${walltime_s:-0}"
 if (( walltime_s >= 5 )); then
   epilogue="$(timing_format_full "${agg}" "Time breakdown")"
   if [[ -n "${epilogue}" ]]; then
-    jq -nc --arg ctx "${epilogue}" '{
-      hookSpecificOutput: {
-        hookEventName: "Stop",
-        additionalContext: $ctx
-      }
-    }'
+    # `systemMessage` is the documented user-visible Stop output field;
+    # `hookSpecificOutput.additionalContext` is silently dropped by
+    # Claude Code on Stop. See CLAUDE.md "Stop hook output schema".
+    jq -nc --arg msg "${epilogue}" '{systemMessage: $msg}'
   fi
 fi
 
