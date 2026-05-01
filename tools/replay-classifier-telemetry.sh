@@ -11,27 +11,54 @@
 #   tools/replay-classifier-telemetry.sh                    # replay default fixtures
 #   tools/replay-classifier-telemetry.sh path/to/file.jsonl # replay a specific file
 #   tools/replay-classifier-telemetry.sh --live             # replay live ~/.claude state
+#   tools/replay-classifier-telemetry.sh --known            # report known-misclassified
+#                                                           # rows that NOW classify
+#                                                           # correctly (promotion check)
 #   tools/replay-classifier-telemetry.sh --help
 #
 # Exit codes:
 #   0 — every row matched the recorded classification (no drift)
+#       OR (in --known mode) zero rows have been promoted to correct
 #   1 — at least one row drifted (regression suspected)
+#       OR (in --known mode) one or more rows now classify correctly and
+#       should be promoted from known_misclassified.jsonl into regression.jsonl
 #   2 — usage error or fixtures file missing
+#
+# The --known mode loads tools/classifier-fixtures/known_misclassified.jsonl,
+# which records prompts whose stored classification is suspected to be wrong
+# (the regression net deliberately does NOT pin them, so the classifier is
+# free to evolve). Each row in this mode is reported with the inverse
+# semantic: a "drift" — meaning the actual classification now differs from
+# the stored "wrong" classification — is a *promotion candidate* that should
+# move to regression.jsonl. The default replay against regression.jsonl is
+# unchanged.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DEFAULT_FIXTURES="${REPO_ROOT}/tools/classifier-fixtures/regression.jsonl"
+KNOWN_FIXTURES="${REPO_ROOT}/tools/classifier-fixtures/known_misclassified.jsonl"
 COMMON_SH="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh"
 
 mode="fixtures"
 fixtures_file="${DEFAULT_FIXTURES}"
 verbose=0
+# When 1, drift output is inverted: a row that NO LONGER matches the
+# stored classification is reported as a promotion candidate (the stored
+# classification was suspected wrong, and the classifier has evolved past
+# it). Used by --known mode.
+inverted=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --live)     mode="live"; shift ;;
+    --known)
+      mode="fixtures"
+      fixtures_file="${KNOWN_FIXTURES}"
+      inverted=1
+      shift
+      ;;
     --fixtures)
       mode="fixtures"; shift
       if [[ $# -eq 0 ]]; then
@@ -48,6 +75,11 @@ Usage: replay-classifier-telemetry.sh [OPTIONS] [FIXTURES_FILE]
 OPTIONS:
   --fixtures FILE   Replay against a specific JSONL fixtures file.
                     Default: tools/classifier-fixtures/regression.jsonl
+  --known           Replay against tools/classifier-fixtures/known_misclassified.jsonl;
+                    drift is reported as a *promotion candidate* (the row
+                    NOW classifies differently from the stored 'suspected
+                    wrong' value, suggesting the classifier evolved past
+                    the historical bug).
   --live            Replay against live ~/.claude/quality-pack/state/*/classifier_telemetry.jsonl files.
   -v, --verbose     Print one line per row processed.
   -h, --help        Print this help and exit.
@@ -130,7 +162,12 @@ run_replay_file() {
     fi
 
     drift=$((drift + 1))
-    local detail="DRIFT"
+    local detail
+    if [[ "${inverted}" -eq 1 ]]; then
+      detail="PROMOTION"
+    else
+      detail="DRIFT"
+    fi
     [[ "${matched_intent}" != "true" ]] && detail="${detail} intent ${expected_intent}→${actual_intent}"
     [[ "${matched_domain}" != "true" ]] && detail="${detail} domain ${expected_domain}→${actual_domain}"
     mismatches+=("${detail}")
@@ -161,18 +198,36 @@ else
 fi
 
 printf '\n--- Replay summary ---\n'
-printf 'Mode:    %s\n' "${mode}"
+if [[ "${inverted}" -eq 1 ]]; then
+  printf 'Mode:    known-misclassified (promotion-check)\n'
+else
+  printf 'Mode:    %s\n' "${mode}"
+fi
 printf 'Source:  %s\n' "${fixtures_file:-${HOME}/.claude/quality-pack/state/*/classifier_telemetry.jsonl}"
 printf 'Rows:    %d  (skipped: %d)\n' "${total}" "${skipped}"
-printf 'Drift:   %d\n' "${drift}"
+if [[ "${inverted}" -eq 1 ]]; then
+  printf 'Promotions: %d\n' "${drift}"
+else
+  printf 'Drift:   %d\n' "${drift}"
+fi
 
 if [[ "${drift}" -gt 0 ]]; then
-  printf '\n--- Drift details ---\n'
+  if [[ "${inverted}" -eq 1 ]]; then
+    printf '\n--- Promotion candidates ---\n'
+    printf '(stored classification %s -- now %s; consider promoting to regression.jsonl)\n' \
+      "(suspected-wrong)" "(actual)"
+  else
+    printf '\n--- Drift details ---\n'
+  fi
   for line in "${mismatches[@]}"; do
     printf '%s\n' "${line}"
   done
   exit 1
 fi
 
-printf 'No drift detected.\n'
+if [[ "${inverted}" -eq 1 ]]; then
+  printf 'No promotion candidates: known-misclassified rows still classify as recorded.\n'
+else
+  printf 'No drift detected.\n'
+fi
 exit 0

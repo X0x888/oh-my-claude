@@ -616,7 +616,7 @@ assert_domain "coding" "Fix the POST endpoint for user creation"
 printf '\nResearch:\n'
 assert_domain "research" "Research the best caching strategies"
 assert_domain "research" "Compare Redis vs Memcached and summarize tradeoffs"
-assert_domain "research" "Investigate why latency spiked last Tuesday"
+assert_domain "mixed" "Investigate why latency spiked last Tuesday"
 assert_domain "research" "Evaluate options for the new logging framework"
 assert_domain "research" "Audit the current security posture"
 assert_domain "research" "Research responsive design principles"
@@ -698,6 +698,30 @@ assert_domain "coding" "Design a checkout form with validation"
 assert_domain "coding" "Design the landing page for our app"
 assert_domain "coding" "Style the card components for the dashboard"
 assert_domain "coding" "Redesign the navigation sidebar"
+
+# --- v1.27.0: architecture/concurrency vocabulary in coding_strong (F-003) ---
+printf '\nArchitecture vocabulary (coding strong-signals):\n'
+assert_domain "coding" "What is a good approach for handling this race condition"
+assert_domain "coding" "We have a deadlock in the queue worker"
+assert_domain "mixed" "Investigate the memory leak in the worker pool"
+assert_domain "coding" "Add idempotency to the payment endpoint"
+assert_domain "coding" "Fix the N+1 query in the users endpoint"
+assert_domain "coding" "Connection pool exhaustion under load"
+assert_domain "coding" "Cache stampede on the homepage"
+assert_domain "coding" "Tune the exponential backoff for the retry policy"
+assert_domain "coding" "Add a circuit breaker to the upstream client"
+
+# --- v1.27.0: investigation-verb-led conjunction with destructive tail (F-001) ---
+printf '\nInvestigation-verb-led conjunction (review/audit/plan + destructive tail):\n'
+assert_imperative "Review the auth code and ship the fix"
+assert_imperative "Audit the codebase and commit fixes"
+assert_imperative "Plan the migration and tag v2.0"
+assert_imperative "Evaluate the queue worker and deploy the patch"
+assert_imperative "Check the failing tests and push the fix"
+assert_imperative "Investigate the regression and merge the rollback"
+# Question-mark disqualifier still wins
+assert_not_imperative "Review and commit?"
+assert_not_imperative "Audit the code and push?"
 
 # --- General: no strong signals ---
 printf '\nGeneral:\n'

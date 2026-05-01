@@ -1,16 +1,13 @@
 {"prompt_preview":"/ulw fix the failing test and add regression coverage","intent":"execution","domain":"coding","note":"canonical execution+coding /ulw prompt"}
 {"prompt_preview":"/ulw debug why settings saves but shows stale data until refresh","intent":"execution","domain":"coding","note":"debug verb under /ulw"}
 {"prompt_preview":"/ulw draft a project proposal for an AI-assisted research workflow","intent":"execution","domain":"writing","note":"writing-domain execution"}
-{"prompt_preview":"/ulw compare server-session auth vs JWT and recommend one","intent":"advisory","domain":"research","note":"compare+recommend reads as advisory despite /ulw prefix; documented behavior, possibly worth re-examining"}
 {"prompt_preview":"/ulw turn these meeting notes into an action plan and follow-up email","intent":"execution","domain":"operations","note":"operations-domain transform task"}
 {"prompt_preview":"/ulw evaluate my project and plan for improvements","intent":"execution","domain":"research","note":"council auto-trigger; classifier currently scores domain=research (evaluate dominates); future evolve to mixed would update this fixture"}
 {"prompt_preview":"At this stage, what should be done to further improve this project?","intent":"advisory","domain":"general","note":"open advisory question; classifier returns general because no strong domain signal"}
-{"prompt_preview":"What's a good approach for handling this race condition?","intent":"advisory","domain":"general","note":"race condition is coding-flavored but classifier currently returns general; suspected under-detection"}
+{"prompt_preview":"What's a good approach for handling this race condition?","intent":"advisory","domain":"coding","note":"v1.27.0 F-003: architecture vocab in coding_strong now scores 'race condition' as coding instead of general. Stays advisory (question form)."}
 {"prompt_preview":"continue with the auth migration","intent":"continuation","domain":"coding","note":"resume signal — `continue` verb"}
 {"prompt_preview":"keep going","intent":"continuation","domain":"general","note":"minimal continuation cue"}
 {"prompt_preview":"let's pause here for now","intent":"checkpoint","domain":"general","note":"explicit checkpoint phrase"}
-{"prompt_preview":"stop","intent":"execution","domain":"general","note":"bare imperative classified as execution; canonical session-management would expect 'session_management' — suspected misclassification, captured for stability"}
-{"prompt_preview":"can you check on the status of the deploy","intent":"execution","domain":"general","note":"polite question form classified as execution; suspected misclassification, captured for stability"}
 {"prompt_preview":"please push the changes and tag the release","intent":"execution","domain":"general","note":"v1.8.1 mixed-intent fix made this execution; domain is general because release verbs lack strong domain signal"}
 {"prompt_preview":"evaluate the migration plan and then commit it","intent":"execution","domain":"mixed","note":"mixed-intent execution per v1.8.1 fix; domain mixed because evaluate (research) + commit (operations)"}
 {"prompt_preview":"what do you think about the current architecture?","intent":"advisory","domain":"general","note":"opinion-seeking; advisory-means-no-edits memory still applies"}
@@ -27,3 +24,5 @@
 {"prompt_preview":"Implement and commit when ready","intent":"execution","domain":"coding","note":"v1.23.0 — minimal impl-verb + and + destructive + temporal-marker"}
 {"prompt_preview":"Build it, then push to origin","intent":"execution","domain":"general","note":"v1.23.0 — comma conjunction with transition + destination object-marker (build/push without coding nouns scores general)"}
 {"prompt_preview":"Refactor X and tag v2.0","intent":"execution","domain":"coding","note":"v1.23.0 — impl-verb + and + tag + version-shaped object-marker (refactor scores coding)"}
+{"prompt_preview":"Review the auth code and ship the fix","intent":"execution","domain":"coding","note":"v1.27.0 F-001 — investigation-verb-led conjunction (review/audit/plan/evaluate) now matches when paired with destructive tail. Was 'advisory' under v1.26.x because review was excluded from bare-imperative and not in impl-verb-led conjunction list."}
+{"prompt_preview":"Audit the codebase and commit fixes","intent":"execution","domain":"coding","note":"v1.27.0 F-001 — audit + and + commit + object-marker."}

@@ -81,6 +81,8 @@ stray_calls="$(awk '
   /^\}[[:space:]]*$/ { in_fn = 0; next }
   in_fn { next }
   /^[[:space:]]/ { next }     # continuation of multi-line decl
+  /^[A-Z_][A-Z0-9_]*=/ { next }   # top-level UPPERCASE/_-leading constant
+  /^_OMC_[A-Z0-9_]*=/ { next }    # oh-my-claude shared regex constants
   { print NR": "$0 }
 ' "${lib}")"
 if [[ -z "${stray_calls}" ]]; then

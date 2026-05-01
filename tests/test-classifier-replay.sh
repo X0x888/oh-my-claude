@@ -112,5 +112,39 @@ rm -f "${TMP2}"
 assert_eq "rc=0 with skipped rows" "0" "${rc}"
 assert_contains "summary reports skipped count" "skipped:" "${output}"
 
+# ----------------------------------------------------------------------
+printf 'Test 8: --known mode loads known_misclassified.jsonl and reports promotions\n'
+KNOWN_FIXTURES="${REPO_ROOT}/tools/classifier-fixtures/known_misclassified.jsonl"
+assert_eq "known fixtures present" "yes" "$([[ -f "${KNOWN_FIXTURES}" ]] && echo yes || echo no)"
+# All rows must parse as JSON objects with prompt_preview and intent.
+malformed=0
+while IFS= read -r row; do
+  [[ -z "${row}" ]] && continue
+  if ! jq -e 'type=="object" and (.prompt_preview // .prompt) and .intent' <<<"${row}" >/dev/null 2>&1; then
+    malformed=$((malformed + 1))
+  fi
+done < "${KNOWN_FIXTURES}"
+assert_eq "all known-misclassified rows valid" "0" "${malformed}"
+
+# Run --known: under stable classifier, every row matches its (suspected-wrong)
+# stored value, so the report should say "No promotion candidates".
+output="$(bash "${REPLAY}" --known 2>&1)"
+rc=$?
+assert_eq "--known stable replay returns 0" "0" "${rc}"
+assert_contains "--known mode label" "known-misclassified" "${output}"
+assert_contains "--known reports promotions field" "Promotions:" "${output}"
+
+# Force a promotion: synthesize a known-misclassified file with a row whose
+# stored classification is "wrong" — the classifier will return something
+# different and the tool must exit 1 with a promotion banner.
+TMP_KNOWN="$(mktemp)"
+printf '%s\n' '{"prompt_preview":"/ulw fix the failing test","intent":"advisory","domain":"writing","note":"forced-wrong fixture for promotion test"}' > "${TMP_KNOWN}"
+output="$(bash "${REPLAY}" --known --fixtures "${TMP_KNOWN}" 2>&1 || true)"
+rc=0
+bash "${REPLAY}" --known --fixtures "${TMP_KNOWN}" >/dev/null 2>&1 || rc=$?
+rm -f "${TMP_KNOWN}"
+assert_eq "--known with promotion returns 1" "1" "${rc}"
+assert_contains "--known reports promotion banner" "Promotion candidates" "${output}"
+
 printf '\n=== Classifier-Replay Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]

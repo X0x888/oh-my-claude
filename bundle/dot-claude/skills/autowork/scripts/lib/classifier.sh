@@ -30,6 +30,27 @@
 # record_classifier_telemetry / detect_classifier_misfire which append to
 # the per-session classifier_telemetry.jsonl.
 
+# --- Shared regex constants ---
+#
+# Destructive-action verbs: a small, stable set of verbs that are
+# unambiguously execution-shaped when paired with an object marker. Used
+# by:
+#   - the tail-imperative branch (sentence-boundary + verb + object)
+#   - the impl-verb-led conjunction branch (lead verb + AND/, + verb + object)
+#
+# Adding a new verb here propagates to BOTH branches. Treat with the
+# same care as adding to the imperative verb list — every entry must be
+# (a) genuinely destructive in normal use, (b) not commonly used as a
+# noun ("commit" can be a noun, but in the trailing-position with an
+# object marker it's always verbal).
+_OMC_DESTRUCTIVE_VERBS='commit|push|tag|release|deploy|merge|ship|publish'
+
+# Object markers that disambiguate the destructive verb above as an
+# imperative use (vs. a noun reference or quoted text). Used by the
+# same two branches as _OMC_DESTRUCTIVE_VERBS so the disambiguator stays
+# in lockstep.
+_OMC_OBJECT_MARKERS='(the|a|an|all|these|this|that|those|to[[:space:]]|origin[[:space:]]|upstream[[:space:]]+|v[0-9]|it[[:space:]]|them[[:space:]]+|changes?[[:space:]]|and[[:space:]]|when[[:space:]]|if[[:space:]]|as[[:space:]]+(needed|required|appropriate|done|done\.|ready|ready\.|stable|stable\.|fit|fit\.))'
+
 # --- P0: Imperative detection (checked before advisory in classify_task_intent) ---
 
 is_imperative_request() {
@@ -85,7 +106,7 @@ is_imperative_request() {
   #   - Only fires on verbs that are genuinely destructive-execution when
   #     used imperatively: commit/push/tag/release/deploy/merge/ship/publish.
   #     Safer verbs (run/make/create) stay head-anchored.
-  elif [[ "${text}" =~ (\.|,|\?|$'\n')[[:space:]]+(then|now|finally|lastly|also|afterwards?|next)?[[:space:]]*,?[[:space:]]*(commit|push|tag|release|deploy|merge|ship|publish)[[:space:]]+(the|a|an|all|these|this|that|those|to[[:space:]]|origin[[:space:]]|upstream[[:space:]]+|v[0-9]|it[[:space:]]|them[[:space:]]+|changes?[[:space:]]|and[[:space:]]|when[[:space:]]|if[[:space:]]|as[[:space:]]+(needed|required|appropriate|done|done\.|ready|ready\.|stable|stable\.|fit|fit\.)) ]]; then
+  elif [[ "${text}" =~ (\.|,|\?|$'\n')[[:space:]]+(then|now|finally|lastly|also|afterwards?|next)?[[:space:]]*,?[[:space:]]*(${_OMC_DESTRUCTIVE_VERBS})[[:space:]]+${_OMC_OBJECT_MARKERS} ]]; then
     result=0
   # Implementation-verb-led conjunction: an imperative-implementation
   # verb followed by a conjunction (`and` / `,`) and a destructive verb
@@ -111,7 +132,20 @@ is_imperative_request() {
   #     "Refactor X and tag v2".
   #   - Conjunction restricted to `and` / `,` so multi-clause spans like
   #     "Implement after we discuss commit messages" do not match.
-  elif [[ "${text}" =~ (^|[[:space:]])(implement|build|fix|refactor|add|update|create|debug|deploy|write|make|change|modify|remove|delete|move|rename|install|configure|run|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|connect|enhance|polish|patch|simplify|extract|replace|upgrade|generate|apply)[[:space:]]+([^.?$'\n']{0,80}[[:space:]]+)?(and|,)[[:space:]]+(then|now|finally|lastly|also|afterwards?|next)?[[:space:]]*,?[[:space:]]*(commit|push|tag|release|deploy|merge|ship|publish)[[:space:]]+(the|a|an|all|these|this|that|those|to[[:space:]]|origin[[:space:]]|upstream[[:space:]]+|v[0-9]|it[[:space:]]|them[[:space:]]+|changes?[[:space:]]|and[[:space:]]|when[[:space:]]|if[[:space:]]|as[[:space:]]+(needed|required|appropriate|done|done\.|ready|ready\.|stable|stable\.|fit|fit\.)) ]]; then
+  #   - Trailing-question-mark disqualifier added so "Review and commit?"
+  #     (genuine question form) stays advisory.
+  #
+  # The verb list spans two role classes:
+  #   1. Implementation verbs (build/create/refactor/etc.) — strongly
+  #      execution-shaped on their own.
+  #   2. Investigation verbs (review/check/plan/evaluate/audit/etc.) —
+  #      ambiguous bare ("Review the PR" can be advisory or imperative)
+  #      but unambiguously execution when followed by a destructive verb
+  #      tail (".../then commit"). Adding them here lets prompts like
+  #      "Review the auth code and ship the fix" route as execution
+  #      without weakening the bare-imperative branch's exclusions at
+  #      L66 — the destructive-verb tail is the disambiguator.
+  elif [[ ! "${text}" =~ \?[[:space:]]*$ ]] && [[ "${text}" =~ (^|[[:space:]])(implement|build|fix|refactor|add|update|create|debug|deploy|write|make|change|modify|remove|delete|move|rename|install|configure|run|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|connect|enhance|polish|patch|simplify|extract|replace|upgrade|generate|apply|review|check|plan|evaluate|audit|investigate|examine|inspect|analyze|analyse|assess|verify|validate|test|design|inspect|address|complete|clean)[[:space:]]+([^.?$'\n']{0,80}[[:space:]]+)?(and|,)[[:space:]]+(then|now|finally|lastly|also|afterwards?|next)?[[:space:]]*,?[[:space:]]*(${_OMC_DESTRUCTIVE_VERBS})[[:space:]]+${_OMC_OBJECT_MARKERS} ]]; then
     result=0
   fi
 
@@ -387,6 +421,16 @@ infer_domain() {
   local coding_strong
   coding_strong=$(count_keyword_matches '\b(bugs?|fix(es|ed|ing)?|debug(ging)?|refactor(ing)?|implement(ation|ed|ing)?|repos?(itory)?|function|class(es)?|component|endpoints?|apis?|schema|database|quer(y|ies)|migration|lint(ing)?|compile|tsc|typescript|javascript|python|swift|xcode|react|next\.?js|css|html|webhooks?|codebase|source.?code|ci/?cd|docker|container|backend|frontend|fullstack|tailwind|vue(\.?js)?|angular|svelte)\b' "${text}")
   coding_strong=$(( ${coding_strong:-0} + coding_bigrams ))
+
+  # Architecture / concurrency vocabulary — canonical coding signal even
+  # when no syntax-flavored word is present. Pre-v1.27 this list was
+  # absent so prompts like "what's the right approach for this race
+  # condition?" or "we have a deadlock in the queue worker" scored zero
+  # on coding and fell through to general. Captures concurrency, perf,
+  # reliability, and distributed-systems vocabulary.
+  local coding_architecture
+  coding_architecture=$(count_keyword_matches '\b(race[[:space:]]+condition|deadlocks?|livelocks?|memory[[:space:]]+leaks?|idempotenc(y|e|ies)|latenc(y|ies)|tail[[:space:]]+latency|throughputs?|backpressure|backoffs?|retr(y|ies|ying)|exponential[[:space:]]+backoff|circuit[[:space:]]+breakers?|concurrenc(y|ies)|mutexe?s?|semaphores?|atomic(s|ity)?|lock[[:space:]]+contention|connection[[:space:]]+pools?|garbage[[:space:]]+collect(ion|or)?|gc[[:space:]]+pauses?|hot[[:space:]]+path|cold[[:space:]]+path|fan[[:space:]]?out|fan[[:space:]]?in|sharding|shards?|replicas?|leader[[:space:]]+election|consensus|raft|paxos|cap[[:space:]]+theorem|eventual[[:space:]]+consistency|strong[[:space:]]+consistency|isolation[[:space:]]+levels?|read[[:space:]]+committed|serializable|two[[:space:]]?phase[[:space:]]+commit|saga[[:space:]]+pattern|event[[:space:]]+sourcing|cqrs|stale[[:space:]]+reads?|cache[[:space:]]+invalidation|cache[[:space:]]+stampede|thundering[[:space:]]+herd|n\+1[[:space:]]+quer(y|ies)|slow[[:space:]]+quer(y|ies)|index[[:space:]]+scans?|table[[:space:]]+scans?|query[[:space:]]+plans?|memory[[:space:]]+pressure|oom[[:space:]]+kills?|file[[:space:]]+descriptors?|fd[[:space:]]+leaks?|goroutines?|threads?|coroutines?|async/await|promises?|futures?|callbacks?)\b' "${text}")
+  coding_strong=$(( coding_strong + ${coding_architecture:-0} ))
 
   local coding_weak
   coding_weak=$(count_keyword_matches '\b(tests?|build|scripts?|config(uration)?|hooks?|deploy(ed|ing|ment)?|server|commit(s|ted|ting)?|push(ed|ing)?|merge[dr]?|rebase[dr]?|branch(es|ed|ing)?|cherry.?pick|stash(ed|ing)?|tag(ged|ging)?)\b' "${text}")
