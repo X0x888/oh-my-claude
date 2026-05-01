@@ -89,6 +89,16 @@ _add_tool_call() {
     >> "${_test_state_root}/${sid}/timing.jsonl"
 }
 
+_add_tool_call_no_id() {
+  local sid="$1" prompt_seq="$2" tool="$3"
+  printf '{"kind":"start","ts":1000,"tool":"%s","prompt_seq":%s}\n' \
+    "${tool}" "${prompt_seq}" \
+    >> "${_test_state_root}/${sid}/timing.jsonl"
+  printf '{"kind":"end","ts":1001,"tool":"%s","prompt_seq":%s}\n' \
+    "${tool}" "${prompt_seq}" \
+    >> "${_test_state_root}/${sid}/timing.jsonl"
+}
+
 _init_timing() {
   local sid="$1" prompt_seq="$2"
   mkdir -p "${_test_state_root}/${sid}"
@@ -158,10 +168,13 @@ _add_tool_call "${sid}" 3 Write w1    # Write must NOT count
 _add_tool_call "${sid}" 3 Grep g1
 _add_tool_call "${sid}" 3 TaskCreate tc1   # TaskCreate must NOT count
 assert_eq "tools count for prompt_seq=3"   "4" "$(canary_count_verification_tools "${sid}" 3)"
+_add_tool_call_no_id "${sid}" 3 Read
+_add_tool_call_no_id "${sid}" 3 Grep
+assert_eq "tools without tool_use_id still count" "6" "$(canary_count_verification_tools "${sid}" 3)"
 
 # Different prompt_seq must not bleed into the count.
 _add_tool_call "${sid}" 4 Read r3
-assert_eq "prompt_seq=3 unaffected by ps=4" "4" "$(canary_count_verification_tools "${sid}" 3)"
+assert_eq "prompt_seq=3 unaffected by ps=4" "6" "$(canary_count_verification_tools "${sid}" 3)"
 assert_eq "prompt_seq=4 sees its own"       "1" "$(canary_count_verification_tools "${sid}" 4)"
 
 # Missing timing.jsonl must return 0, not error.

@@ -150,20 +150,30 @@ canary_count_verification_tools() {
   [[ ! -f "${timing_file}" ]] && { printf '0'; return; }
 
   # Filter rows: kind=start, prompt_seq matches, tool is in the
-  # verification set. Count distinct tool_use_id values to dedupe
-  # any malformed double-emit.
+  # verification set. Count distinct tool_use_id values when present to
+  # dedupe any malformed double-emit; fall back to the row index when
+  # Claude Code omits tool_use_id so real verification calls still count.
   #
   # timing.jsonl schema (set by timing.sh — verify against
   # `head -3 ~/.claude/quality-pack/state/<sid>/timing.jsonl` if you
   # see schema drift):
-  #   {kind, ts, tool, prompt_seq, tool_use_id} for tool start/end
+  #   {kind, ts, tool, prompt_seq, tool_use_id?} for tool start/end
   #   {kind:"prompt_start"|"prompt_end", ts, prompt_seq, ...} for prompt boundaries
-  jq -r --arg ps "${prompt_seq}" '
-    select(.kind == "start"
-           and (.prompt_seq // "" | tostring) == $ps
-           and (.tool | IN("Read","Bash","Grep","Glob","WebFetch","NotebookRead")))
-    | .tool_use_id // empty
-  ' "${timing_file}" 2>/dev/null | sort -u | wc -l | tr -d ' '
+  jq -sr --arg ps "${prompt_seq}" '
+    [
+      to_entries[]
+      | select(.value.kind == "start"
+          and ((.value.prompt_seq // "") | tostring) == $ps
+          and (.value.tool | IN("Read","Bash","Grep","Glob","WebFetch","NotebookRead")))
+      | if ((.value.tool_use_id // "") != "") then
+          "id:\(.value.tool_use_id)"
+        else
+          "row:\(.key)"
+        end
+    ]
+    | unique
+    | length
+  ' "${timing_file}" 2>/dev/null || printf '0'
 }
 
 # canary_get_current_prompt_seq <session_id>
