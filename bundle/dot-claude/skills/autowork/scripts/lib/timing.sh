@@ -206,7 +206,7 @@ timing_aggregate() {
       ($pfilter == 0) or ((.prompt_seq // 0) == $pfilter)
     )] as $rows |
 
-    reduce $rows[] as $r (
+    (reduce $rows[] as $r (
       { pending: [], agent: {}, tool: {}, agent_n: {}, tool_n: {}, prompts: [], orphan_end: 0 };
       if $r.kind == "prompt_start" then
         .prompts += [{ ps: ($r.prompt_seq // 0), start: $r.ts, end: null, dur: 0 }]
@@ -237,7 +237,7 @@ timing_aggregate() {
         end
       else .
       end
-    ) as $st |
+    )) as $st |
     {
       walltime_s:       ([$st.prompts[] | select(.end != null) | .dur] | add // 0),
       agent_total_s:    ([$st.agent[]] | add // 0),
