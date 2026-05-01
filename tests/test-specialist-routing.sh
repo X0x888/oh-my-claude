@@ -88,6 +88,7 @@ out="$(_run_router "t1-${RANDOM}" "${_CODING_PROMPT}")"
 
 assert_contains "domain hint present"            "Detected likely task domain: coding" "${out}"
 assert_contains "names backend-api-developer"    "backend-api-developer"               "${out}"
+assert_contains "names frontend-developer (v1.27.0 F-016)" "frontend-developer"        "${out}"
 assert_contains "names devops-infrastructure"    "devops-infrastructure-engineer"      "${out}"
 assert_contains "names test-automation"          "test-automation-engineer"            "${out}"
 assert_contains "names fullstack-feature"        "fullstack-feature-builder"           "${out}"
@@ -107,6 +108,14 @@ assert_contains "names quality-researcher"       "quality-researcher"           
 assert_contains "names librarian"                "librarian"                           "${out}"
 assert_contains "names metis"                    "metis"                               "${out}"
 assert_contains "names oracle"                   "oracle"                              "${out}"
+
+# ----------------------------------------------------------------------
+printf 'Test 2b: planner/prometheus disambiguation guidance present (v1.27.0 F-017)\n'
+out="$(_run_router "t2b-${RANDOM}" "${_CODING_PROMPT}")"
+assert_contains "prometheus → quality-planner deferral guidance" \
+  "Defer to quality-planner instead when the request is concrete enough" "${out}"
+assert_contains "quality-planner → prometheus deferral guidance" \
+  "Defer to prometheus instead when the request is broad" "${out}"
 
 # ----------------------------------------------------------------------
 printf 'Test 3: vague catch-all line is gone\n'

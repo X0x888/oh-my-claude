@@ -502,12 +502,13 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
       coding)
         context_parts+=("Detected likely task domain: coding.
 Route by task shape:
-- broad or underspecified work → prometheus for interview-first scoping
-- non-trivial but specified work → quality-planner to scope explicit and implied requirements
+- broad or underspecified work (no concrete code anchor; request shape needs interview to nail down) → prometheus for interview-first scoping. Defer to quality-planner instead when the request is concrete enough that interview questions would not change the plan.
+- non-trivial but specified work (the request names files, components, or a defined deliverable) → quality-planner to scope explicit and implied requirements. Defer to prometheus instead when the request is broad/vague enough that you cannot enumerate the deliverable without asking the user.
 - local repo conventions or APIs unclear → quality-researcher
 - library, framework, or external API usage → librarian for official docs and reference implementations (or the context7 MCP when that plugin is installed) to confirm current syntax before writing code that calls it
 - risky plan → metis to pressure-test hidden assumptions
 - hard debugging or architecture uncertainty → oracle
+- client-side web work — React/Vue/Svelte/Angular components, pages, layouts, state management, accessibility, frontend tooling — → frontend-developer (engineering-first lane; the design-first lane is auto-injected separately when the prompt carries UI/design intent)
 - backend services, REST/GraphQL APIs, database schemas, migrations, auth, queues, caching, search → backend-api-developer
 - infrastructure, CI/CD, Docker, Kubernetes, Terraform, deployment, observability → devops-infrastructure-engineer
 - test strategy, coverage gaps, flaky tests, test architecture, fuzzing, performance tests → test-automation-engineer

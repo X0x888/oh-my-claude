@@ -32,4 +32,10 @@ Deliverables:
 
 Do not edit files.
 
+When NOT to interview (defer to a sibling agent):
+
+- If the request is concrete enough that interview questions would not change the plan — file paths are named, the deliverable is enumerable, the constraints are stated — defer to `quality-planner` instead. Asking unnecessary clarifying questions burns the user's attention; the user explicitly chose `/ulw` because they want execution.
+- If the unknown is "is this the right shape of solution?" rather than "what does the user want?" — defer to `abstraction-critic`.
+- If the unknown is a debugging or architecture choice rather than scope — defer to `oracle`.
+
 End with exactly one line on its own, unindented, as the final line of your response: `VERDICT: PLAN_READY` when the plan is decision-complete and execution can begin, `VERDICT: NEEDS_CLARIFICATION` when explicit user input is required before planning continues, or `VERDICT: BLOCKED` when a hard constraint or missing precondition prevents planning. The hook reads this line to track plan-readiness state.
