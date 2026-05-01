@@ -88,15 +88,25 @@ fi
 # --- Aggregate + emit ---
 agg="$(timing_aggregate "${log_path}")"
 
-oneline="$(timing_format_oneline "${agg}")"
+# Apply the 5s noise floor locally so timing_format_full stays a pure
+# formatter. timing_format_oneline used to do this internally; moving it
+# here keeps the formatter usable from manual /ulw-time invocations
+# (where the user expects to see whatever data exists, regardless of
+# walltime).
+walltime_s="$(jq -r '.walltime_s // 0' <<<"${agg}" 2>/dev/null)"
+walltime_s="${walltime_s:-0}"
+[[ "${walltime_s}" =~ ^[0-9]+$ ]] || walltime_s=0
 
-if [[ -n "${oneline}" ]]; then
-  jq -nc --arg ctx "${oneline}" '{
-    hookSpecificOutput: {
-      hookEventName: "Stop",
-      additionalContext: $ctx
-    }
-  }'
+if (( walltime_s >= 5 )); then
+  epilogue="$(timing_format_full "${agg}" "Time breakdown")"
+  if [[ -n "${epilogue}" ]]; then
+    jq -nc --arg ctx "${epilogue}" '{
+      hookSpecificOutput: {
+        hookEventName: "Stop",
+        additionalContext: $ctx
+      }
+    }'
+  fi
 fi
 
 # --- Cross-session rollup ---

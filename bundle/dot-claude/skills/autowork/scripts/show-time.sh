@@ -138,51 +138,72 @@ case "${MODE}" in
     idle_total="$(jq -r '.idle_model_s // 0' <<<"${rollup}" 2>/dev/null)"
     prompts="$(jq -r '.prompts // 0' <<<"${rollup}" 2>/dev/null)"
 
-    printf 'Time spent across sessions — %s\n' "${window_label}"
-    printf '  %s sessions · %s prompts · %s walltime\n' \
-      "${sessions:-0}" \
-      "${prompts:-0}" \
-      "$(timing_fmt_secs "${walltime:-0}")"
-    printf '\n'
+    sessions_label="sessions"
+    prompts_label="prompts"
+    (( ${sessions:-0} == 1 )) && sessions_label="session"
+    (( ${prompts:-0} == 1 )) && prompts_label="prompt"
+    printf '─── Time spent across sessions ─── %s · %s · %s %s · %s %s\n' \
+      "${window_label}" \
+      "$(timing_fmt_secs "${walltime:-0}")" \
+      "${sessions:-0}" "${sessions_label}" \
+      "${prompts:-0}" "${prompts_label}"
 
     if (( walltime > 0 )); then
       pct_a=$(( agent_total * 100 / walltime ))
       pct_t=$(( tool_total * 100 / walltime ))
       pct_i=$(( idle_total * 100 / walltime ))
+      stacked_bar="$(_timing_stacked_bar "${pct_a}" "${pct_t}" "${pct_i}" 30)"
+      printf '  %s  agents %d%% · tools %d%% · idle %d%%\n' \
+        "${stacked_bar}" "${pct_a}" "${pct_t}" "${pct_i}"
+      printf '\n'
       printf '  agents       %s (%d%%)\n'     "$(timing_fmt_secs "${agent_total}")" "${pct_a}"
       printf '  tools        %s (%d%%)\n'     "$(timing_fmt_secs "${tool_total}")"  "${pct_t}"
       printf '  idle/model   %s (%d%%)\n'     "$(timing_fmt_secs "${idle_total}")"  "${pct_i}"
     fi
 
-    printf '\n  Top agents by time:\n'
-    jq -r '
+    # Skip the entire "Top agents" section when the breakdown is empty
+    # (idle-only window). Same for "Top tools". An empty heading followed
+    # by zero rows is worse UX than no heading at all.
+    agent_rows="$(jq -r '
       (.agent_breakdown // {})
       | to_entries
       | sort_by(-.value)
       | .[0:10]
       | .[]
       | "\(.value)\t\(.key)"
-    ' <<<"${rollup}" 2>/dev/null | while IFS=$'\t' read -r secs name; do
-      [[ -z "${name}" ]] && continue
-      printf '    %-30s %s\n' "${name}" "$(timing_fmt_secs "${secs}")"
-    done
+    ' <<<"${rollup}" 2>/dev/null)"
+    if [[ -n "${agent_rows}" ]]; then
+      printf '\n  Top agents by time:\n'
+      while IFS=$'\t' read -r secs name; do
+        [[ -z "${name}" ]] && continue
+        printf '    %-30s %s\n' "${name}" "$(timing_fmt_secs "${secs}")"
+      done <<<"${agent_rows}"
+    fi
 
-    printf '\n  Top tools by time:\n'
-    jq -r '
+    tool_rows="$(jq -r '
       (.tool_breakdown // {})
       | to_entries
       | sort_by(-.value)
       | .[0:10]
       | .[]
       | "\(.value)\t\(.key)"
-    ' <<<"${rollup}" 2>/dev/null | while IFS=$'\t' read -r secs name; do
-      [[ -z "${name}" ]] && continue
-      printf '    %-30s %s\n' "${name}" "$(timing_fmt_secs "${secs}")"
-    done
+    ' <<<"${rollup}" 2>/dev/null)"
+    if [[ -n "${tool_rows}" ]]; then
+      printf '\n  Top tools by time:\n'
+      while IFS=$'\t' read -r secs name; do
+        [[ -z "${name}" ]] && continue
+        printf '    %-30s %s\n' "${name}" "$(timing_fmt_secs "${secs}")"
+      done <<<"${tool_rows}"
+    fi
 
     if (( sessions > 0 )); then
       printf '\n  Average prompt walltime: %s\n' \
         "$(timing_fmt_secs $(( prompts > 0 ? walltime / prompts : 0 )))"
+    fi
+
+    insight="$(timing_generate_insight "${rollup}" "window")"
+    if [[ -n "${insight}" ]]; then
+      printf '\n  %s\n' "${insight}"
     fi
 
     exit 0

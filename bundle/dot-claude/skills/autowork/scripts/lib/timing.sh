@@ -247,6 +247,7 @@ timing_aggregate() {
       tool_breakdown:   $st.tool,
       tool_calls:       $st.tool_n,
       prompt_count:     ([$st.prompts[] | select(.end != null)] | length),
+      prompts_seq:      [$st.prompts[] | select(.end != null) | {ps:.ps, dur:.dur}],
       active_pending:   ($st.pending | length),
       orphan_end_count: $st.orphan_end
     }
@@ -370,9 +371,200 @@ timing_format_oneline() {
   printf '%s' "${out}"
 }
 
+# timing_generate_insight <agg_json> [scope]
+#   At-most-one-line observation about the aggregate. Shown at the bottom
+#   of the polished epilogue. Priority order — only the FIRST matching rule
+#   fires, so the user sees the most load-bearing signal exactly once:
+#
+#     1. Anomaly  — orphan/active_pending > 0 (calls killed mid-flight)
+#     2. Dominance — top agent or tool >= 60% of walltime
+#     3. Idle-heavy — idle/model >= 60% on a turn >= 30s (reassurance)
+#     4. Tool churn — total tool calls >= 30 (parallelization hint)
+#     5. Diversity — distinct subagents >= 4 (fun fact)
+#     6. Reassurance — substantive turn (>=60s) with everything paired
+#
+#   <scope> defaults to "turn" — used by Stop hook and per-session views.
+#   Pass "window" for cross-session rollup so wording reads correctly
+#   ("across this window" instead of "this turn"). Anomaly/idle insights
+#   only fire on per-session aggregates because orphan_end_count and
+#   active_pending aren't carried into the cross-session row.
+#
+#   Returns empty (no insight) when no rule fires. Empty output causes the
+#   caller to omit the insight line entirely rather than print a placeholder.
+timing_generate_insight() {
+  local agg="${1:-}"
+  local scope="${2:-turn}"
+  [[ -z "${agg}" ]] && return 0
+
+  local span_word
+  case "${scope}" in
+    window) span_word="window" ;;
+    *)      span_word="turn"   ;;
+  esac
+
+  local walltime agent_total tool_total idle_model orphan active_pending
+  walltime="$(jq -r '.walltime_s // 0' <<<"${agg}" 2>/dev/null)"
+  agent_total="$(jq -r '.agent_total_s // 0' <<<"${agg}" 2>/dev/null)"
+  tool_total="$(jq -r '.tool_total_s // 0' <<<"${agg}" 2>/dev/null)"
+  idle_model="$(jq -r '.idle_model_s // 0' <<<"${agg}" 2>/dev/null)"
+  orphan="$(jq -r '.orphan_end_count // 0' <<<"${agg}" 2>/dev/null)"
+  active_pending="$(jq -r '.active_pending // 0' <<<"${agg}" 2>/dev/null)"
+
+  walltime="${walltime:-0}"
+  agent_total="${agent_total:-0}"
+  tool_total="${tool_total:-0}"
+  idle_model="${idle_model:-0}"
+  orphan="${orphan:-0}"
+  active_pending="${active_pending:-0}"
+
+  [[ "${walltime}" =~ ^[0-9]+$ ]] || walltime=0
+  [[ "${agent_total}" =~ ^[0-9]+$ ]] || agent_total=0
+  [[ "${tool_total}" =~ ^[0-9]+$ ]] || tool_total=0
+  [[ "${idle_model}" =~ ^[0-9]+$ ]] || idle_model=0
+  [[ "${orphan}" =~ ^[0-9]+$ ]] || orphan=0
+  [[ "${active_pending}" =~ ^[0-9]+$ ]] || active_pending=0
+
+  (( walltime < 1 )) && return 0
+
+  # 1. Anomaly — distinguish two genuinely different signals:
+  #   * orphan_end_count > 0 → an end row arrived with no matching start
+  #     in the same prompt_seq. Almost always means the call was killed
+  #     between PreToolUse and PostToolUse (rate limit, signal, OOM).
+  #   * active_pending > 0  → a start row never got an end. Could mean
+  #     killed (same as above), but could also mean the call is genuinely
+  #     still in-flight when the Stop hook fires between two PreTool /
+  #     PostTool pairs. Don't claim "killed" for in-flight calls — it
+  #     misleads users mid-session.
+  # Surface both signals with separate wording when both are present.
+  if (( orphan > 0 )) && (( active_pending > 0 )); then
+    printf 'Heads up: %d tool call%s killed mid-flight, %d still in-flight. Aggregates above may underestimate.' \
+      "${orphan}" "$( (( orphan == 1 )) && printf '' || printf 's' )" \
+      "${active_pending}"
+    return 0
+  elif (( orphan > 0 )); then
+    if (( orphan == 1 )); then
+      printf 'Heads up: 1 tool call killed mid-flight (likely rate-limited or interrupted). Aggregates above may underestimate.'
+    else
+      printf 'Heads up: %d tool calls killed mid-flight (likely rate-limited or interrupted). Aggregates above may underestimate.' "${orphan}"
+    fi
+    return 0
+  elif (( active_pending > 0 )); then
+    if (( active_pending == 1 )); then
+      printf 'Heads up: 1 tool call still in-flight at Stop time — its duration will fold into the next epilogue.'
+    else
+      printf 'Heads up: %d tool calls still in-flight at Stop time — their durations will fold into the next epilogue.' "${active_pending}"
+    fi
+    return 0
+  fi
+
+  # 2a. Single-agent dominance — common when an `excellence-reviewer` or
+  # `quality-reviewer` deep run carries a wave-completion turn. Reassures
+  # the user that the time was spent in a known specialist, not lost.
+  if (( agent_total > 0 )); then
+    local row
+    row="$(jq -r '
+      (.agent_breakdown // {})
+      | to_entries
+      | sort_by(-.value)
+      | first
+      | "\(.value)\t\(.key)"
+    ' <<<"${agg}" 2>/dev/null)"
+    local secs="" name=""
+    IFS=$'\t' read -r secs name <<<"${row}"
+    [[ "${secs}" =~ ^[0-9]+$ ]] || secs=0
+    if (( secs > 0 )); then
+      local pct=$(( secs * 100 / walltime ))
+      if (( pct >= 60 )); then
+        printf '%s carried %d%% of this %s (%s) — typical for a deep specialist run.' \
+          "${name}" "${pct}" "${span_word}" "$(timing_fmt_secs "${secs}")"
+        return 0
+      fi
+    fi
+  fi
+
+  # 2b. Single-tool dominance — flag when one tool ate the budget. Useful
+  # for spotting a Bash-heavy turn worth parallelizing or a runaway test
+  # loop.
+  if (( tool_total > 0 )); then
+    local trow
+    trow="$(jq -r '
+      (.tool_breakdown // {})
+      | to_entries
+      | sort_by(-.value)
+      | first
+      | "\(.value)\t\(.key)"
+    ' <<<"${agg}" 2>/dev/null)"
+    local tsecs="" tname=""
+    IFS=$'\t' read -r tsecs tname <<<"${trow}"
+    [[ "${tsecs}" =~ ^[0-9]+$ ]] || tsecs=0
+    if (( tsecs > 0 )); then
+      local tpct=$(( tsecs * 100 / walltime ))
+      if (( tpct >= 60 )); then
+        printf '%s dominated this %s at %d%% (%s) — consider whether parallelizable next time.' \
+          "${tname}" "${span_word}" "${tpct}" "$(timing_fmt_secs "${tsecs}")"
+        return 0
+      fi
+    fi
+  fi
+
+  # 3. Idle-heavy on a long turn. Specifically reassures: "thinking, not
+  # stuck". Triggers only on turns >= 30s so a quick clarification doesn't
+  # produce a hollow reassurance.
+  if (( walltime >= 30 )); then
+    local idle_pct=$(( idle_model * 100 / walltime ))
+    if (( idle_pct >= 60 )); then
+      printf 'Most time was model thinking (%d%% idle/model) — depth, not stalling.' "${idle_pct}"
+      return 0
+    fi
+  fi
+
+  # 4. Tool churn — many discrete tool calls suggests a read-heavy
+  # exploration turn. Hint at parallelizing without nagging.
+  local total_tool_calls
+  total_tool_calls="$(jq -r '(.tool_calls // {}) | [.[]] | add // 0' <<<"${agg}" 2>/dev/null)"
+  total_tool_calls="${total_tool_calls:-0}"
+  [[ "${total_tool_calls}" =~ ^[0-9]+$ ]] || total_tool_calls=0
+  if (( total_tool_calls >= 30 )); then
+    printf 'Heavy tool %s — %d total calls. Batching reads/greps in parallel can shave wallclock next time.' \
+      "${span_word}" "${total_tool_calls}"
+    return 0
+  fi
+
+  # 5. Diversity — many distinct subagents engaged in one turn. Fun fact;
+  # signals a multi-specialist wave-completion run.
+  local distinct_agents
+  distinct_agents="$(jq -r '(.agent_breakdown // {}) | length' <<<"${agg}" 2>/dev/null)"
+  distinct_agents="${distinct_agents:-0}"
+  [[ "${distinct_agents}" =~ ^[0-9]+$ ]] || distinct_agents=0
+  if (( distinct_agents >= 4 )); then
+    printf 'Diverse %s — %d distinct subagents engaged.' "${span_word}" "${distinct_agents}"
+    return 0
+  fi
+
+  # 6. Substantive clean run. Last-resort positive signal so users on a
+  # long, well-behaved turn don't get a silent epilogue.
+  if (( walltime >= 60 )); then
+    printf 'Clean run — every call paired correctly, no orphans.'
+    return 0
+  fi
+
+  return 0
+}
+
 # timing_format_full <agg_json> [title]
-#   Multi-line ASCII bar chart. Used by /ulw-time and /ulw-status.
-#   Returns empty when walltime_s == 0 (no data to render).
+#   Polished multi-line epilogue: title, stacked-segment top-line bar,
+#   per-bucket detail rows (agents / tools / idle), residual note when
+#   idle is non-trivial, anomaly note when calls were killed mid-flight,
+#   and a single insight line picked by timing_generate_insight.
+#
+#   Used by both the Stop hook (always-on epilogue at end of every turn
+#   above the 5s noise floor — applied by the caller) and /ulw-time. Same
+#   render across both surfaces so users build muscle memory for the layout.
+#
+#   Returns empty when walltime_s == 0 AND no orphans / in-flight calls
+#   exist. When walltime_s == 0 but orphans/active > 0 (session killed
+#   before any prompt finalized), renders a single-line orphan message
+#   so manual /ulw-time invocations still surface the in-flight signal.
 timing_format_full() {
   local agg="${1:-}"
   local title="${2:-Time breakdown}"
@@ -383,6 +575,21 @@ timing_format_full() {
   walltime="${walltime:-0}"
   [[ "${walltime}" =~ ^[0-9]+$ ]] || walltime=0
   if (( walltime == 0 )); then
+    # Orphan-only fall-through: surface the anomaly so a session killed
+    # before any prompt finalized still produces output on manual
+    # /ulw-time. The Stop hook's 5s floor independently suppresses this
+    # case automatically.
+    local _orphan _active
+    _orphan="$(jq -r '.orphan_end_count // 0' <<<"${agg}" 2>/dev/null)"
+    _active="$(jq -r '.active_pending // 0' <<<"${agg}" 2>/dev/null)"
+    _orphan="${_orphan:-0}"; [[ "${_orphan}" =~ ^[0-9]+$ ]] || _orphan=0
+    _active="${_active:-0}"; [[ "${_active}" =~ ^[0-9]+$ ]] || _active=0
+    if (( _orphan > 0 )) || (( _active > 0 )); then
+      printf '─── %s ─── no finalized prompts yet\n' "${title}"
+      printf '  %d unfinished start%s, %d orphan end%s — likely killed mid-flight or still in-flight.\n' \
+        "${_active}" "$( (( _active == 1 )) && printf '' || printf 's' )" \
+        "${_orphan}" "$( (( _orphan == 1 )) && printf '' || printf 's' )"
+    fi
     return 0
   fi
 
@@ -394,65 +601,54 @@ timing_format_full() {
   active_pending="$(jq -r '.active_pending // 0' <<<"${agg}" 2>/dev/null)"
   orphan_end="$(jq -r '.orphan_end_count // 0' <<<"${agg}" 2>/dev/null)"
 
-  printf '%s — %s total (%d prompt%s)\n' \
+  agent_total="${agent_total:-0}"
+  tool_total="${tool_total:-0}"
+  idle_model="${idle_model:-0}"
+  prompt_count="${prompt_count:-0}"
+  active_pending="${active_pending:-0}"
+  orphan_end="${orphan_end:-0}"
+
+  # Header — boxed-rule title puts the epilogue visually distinct from
+  # surrounding text. The leading "─── " is intentional; gives the eye
+  # a fixed anchor when scanning a long Claude Code transcript.
+  printf '─── %s ─── %s · %d prompt%s\n' \
     "${title}" \
     "$(timing_fmt_secs "${walltime}")" \
-    "${prompt_count:-0}" \
-    "$( [[ "${prompt_count:-0}" -eq 1 ]] && printf '' || printf 's' )"
+    "${prompt_count}" \
+    "$( (( prompt_count == 1 )) && printf '' || printf 's' )"
+
+  # Stacked top-line bar — three segment chars give three bands at-a-glance:
+  #   █ agents · ▒ tools · ░ idle/model.
+  # Percentages on the right echo the legend so colour-blind users / no-Unicode
+  # terminals still get the proportions even if the segment glyphs collapse.
+  local pct_a=0 pct_t=0 pct_i=0
+  if (( walltime > 0 )); then
+    pct_a=$(( agent_total * 100 / walltime ))
+    pct_t=$(( tool_total * 100 / walltime ))
+    pct_i=$(( idle_model * 100 / walltime ))
+  fi
+  local stacked_bar
+  stacked_bar="$(_timing_stacked_bar "${pct_a}" "${pct_t}" "${pct_i}" 30)"
+  printf '  %s  agents %d%% · tools %d%% · idle %d%%\n' \
+    "${stacked_bar}" "${pct_a}" "${pct_t}" "${pct_i}"
+
+  # Per-prompt sparkline — one cell per prompt, height encodes that
+  # prompt's walltime relative to the heaviest in the session. Surfaces
+  # exactly what the per-bucket bars cannot: where the heavy turns
+  # landed inside a multi-prompt session. Hidden on single-prompt views
+  # because there's nothing to compare against.
+  if (( prompt_count > 1 )); then
+    local spark
+    spark="$(_timing_sparkline "${agg}")"
+    if [[ -n "${spark}" ]]; then
+      printf '  prompts: %s  (one cell per prompt, height ∝ walltime)\n' "${spark}"
+    fi
+  fi
   printf '\n'
 
-  _timing_render_bucket() {
-    local label="$1" total="$2" walltime="$3" subkey="$4" agg="$5" countkey="${6:-}"
-    [[ "${total}" =~ ^[0-9]+$ ]] || return 0
-    (( total == 0 )) && return 0
-
-    local pct=0
-    if (( walltime > 0 )); then
-      pct=$(( total * 100 / walltime ))
-    fi
-    local bars
-    bars="$(_timing_bar "${pct}" 20)"
-    printf '  %-13s %-20s %s (%d%%)\n' \
-      "${label}" "${bars}" "$(timing_fmt_secs "${total}")" "${pct}"
-
-    if [[ -n "${subkey}" ]]; then
-      local rows
-      rows="$(jq -r --arg sk "${subkey}" --arg ck "${countkey}" '
-        (.[$sk] // {}) as $totals |
-        (if $ck == "" then {} else (.[$ck] // {}) end) as $counts |
-        ($totals | to_entries | sort_by(-.value))
-        | .[]
-        | "\(.value)\t\(($counts[.key] // 0))\t\(.key)"
-      ' <<<"${agg}" 2>/dev/null)"
-
-      while IFS=$'\t' read -r secs calls name; do
-        [[ -z "${name}" ]] && continue
-        [[ "${secs}" =~ ^[0-9]+$ ]] || continue
-        # Render even when secs == 0 if calls > 0 — sub-second tools
-        # (Read/Grep/Edit) routinely round to 0s under whole-second
-        # precision, but their call counts are still useful signal.
-        if (( secs == 0 )) && [[ -z "${calls}" || "${calls}" == "0" ]]; then
-          continue
-        fi
-        local sub_pct=0
-        if (( walltime > 0 )); then
-          sub_pct=$(( secs * 100 / walltime ))
-        fi
-        local sub_bars
-        sub_bars="$(_timing_bar "${sub_pct}" 14)"
-        local count_suffix=""
-        if [[ -n "${calls}" ]] && [[ "${calls}" =~ ^[0-9]+$ ]] && (( calls > 0 )); then
-          count_suffix=" (${calls})"
-        fi
-        printf '    %-22s %-14s %s%s\n' \
-          "${name}" "${sub_bars}" "$(timing_fmt_secs "${secs}")" "${count_suffix}"
-      done <<<"${rows}"
-    fi
-  }
-
-  _timing_render_bucket "agents"     "${agent_total:-0}"  "${walltime}" "agent_breakdown" "${agg}" "agent_calls"
-  _timing_render_bucket "tools"      "${tool_total:-0}"   "${walltime}" "tool_breakdown"  "${agg}" "tool_calls"
-  _timing_render_bucket "idle/model" "${idle_model:-0}"   "${walltime}" ""                "${agg}" ""
+  _timing_render_bucket "agents"     "${agent_total}"  "${walltime}" "agent_breakdown" "${agg}" "agent_calls"
+  _timing_render_bucket "tools"      "${tool_total}"   "${walltime}" "tool_breakdown"  "${agg}" "tool_calls"
+  _timing_render_bucket "idle/model" "${idle_model}"   "${walltime}" ""                "${agg}" ""
 
   if (( idle_model > 0 )); then
     printf '    %s\n' "(residual: model thinking, permission waits, hook overhead)"
@@ -461,9 +657,179 @@ timing_format_full() {
   if (( active_pending > 0 )) || (( orphan_end > 0 )); then
     printf '\n'
     printf '  Note: %d unfinished start%s, %d orphan end%s (likely killed mid-call).\n' \
-      "${active_pending:-0}" "$( [[ "${active_pending:-0}" -eq 1 ]] && printf '' || printf 's' )" \
-      "${orphan_end:-0}" "$( [[ "${orphan_end:-0}" -eq 1 ]] && printf '' || printf 's' )"
+      "${active_pending}" "$( (( active_pending == 1 )) && printf '' || printf 's' )" \
+      "${orphan_end}" "$( (( orphan_end == 1 )) && printf '' || printf 's' )"
   fi
+
+  local insight
+  insight="$(timing_generate_insight "${agg}")"
+  if [[ -n "${insight}" ]]; then
+    printf '\n  %s\n' "${insight}"
+  fi
+}
+
+# Render one bucket row plus its sub-rows. Module-level (not nested in
+# timing_format_full) so future surfaces — cross-session rollup, status
+# command, /ulw-report — can reuse the same row layout. Sub-second tools
+# (Read/Grep/Edit) routinely round to 0s under whole-second precision;
+# we still render rows when call_count > 0 because the count itself is
+# useful signal even when the time bar collapses.
+_timing_render_bucket() {
+  local label="$1" total="$2" walltime="$3" subkey="$4" agg="$5" countkey="${6:-}"
+  [[ "${total}" =~ ^[0-9]+$ ]] || return 0
+
+  # Honor the docstring contract: render the row when total==0 if and
+  # only if the bucket has non-zero call counts. Sub-second tools
+  # (Read/Grep/Edit) routinely round to 0s, but their call counts are
+  # useful signal — skipping the whole row hides exploration-heavy
+  # turns from the epilogue.
+  if (( total == 0 )); then
+    if [[ -z "${countkey}" ]]; then
+      return 0
+    fi
+    local total_calls
+    total_calls="$(jq -r --arg ck "${countkey}" \
+      '(.[$ck] // {}) | [.[]] | add // 0' <<<"${agg}" 2>/dev/null)"
+    total_calls="${total_calls:-0}"
+    [[ "${total_calls}" =~ ^[0-9]+$ ]] || total_calls=0
+    (( total_calls == 0 )) && return 0
+  fi
+
+  local pct=0
+  if (( walltime > 0 )); then
+    pct=$(( total * 100 / walltime ))
+  fi
+  local bars
+  bars="$(_timing_bar "${pct}" 20)"
+  printf '  %-13s %-20s %s (%d%%)\n' \
+    "${label}" "${bars}" "$(timing_fmt_secs "${total}")" "${pct}"
+
+  if [[ -n "${subkey}" ]]; then
+    local rows
+    rows="$(jq -r --arg sk "${subkey}" --arg ck "${countkey}" '
+      (.[$sk] // {}) as $totals |
+      (if $ck == "" then {} else (.[$ck] // {}) end) as $counts |
+      ($totals | to_entries | sort_by(-.value))
+      | .[]
+      | "\(.value)\t\(($counts[.key] // 0))\t\(.key)"
+    ' <<<"${agg}" 2>/dev/null)"
+
+    while IFS=$'\t' read -r secs calls name; do
+      [[ -z "${name}" ]] && continue
+      [[ "${secs}" =~ ^[0-9]+$ ]] || continue
+      if (( secs == 0 )) && [[ -z "${calls}" || "${calls}" == "0" ]]; then
+        continue
+      fi
+      local sub_pct=0
+      if (( walltime > 0 )); then
+        sub_pct=$(( secs * 100 / walltime ))
+      fi
+      local sub_bars
+      sub_bars="$(_timing_bar "${sub_pct}" 14)"
+      local count_suffix=""
+      if [[ -n "${calls}" ]] && [[ "${calls}" =~ ^[0-9]+$ ]] && (( calls > 0 )); then
+        count_suffix=" (${calls})"
+      fi
+      # Names over 22 chars push the bar/secs/count columns rightward and
+      # break vertical alignment with the parent row. Real subagent names
+      # like `excellence-reviewer` (19) fit fine; long custom subagent
+      # types or hyphenated MCP tool names (`mcp__playwright__browser_*`)
+      # would otherwise overflow. Truncate with U+2026 so the original
+      # name remains identifiable while the columns stay locked.
+      local display_name="${name}"
+      if (( ${#name} > 22 )); then
+        display_name="${name:0:21}…"
+      fi
+      printf '    %-22s %-14s %s%s\n' \
+        "${display_name}" "${sub_bars}" "$(timing_fmt_secs "${secs}")" "${count_suffix}"
+    done <<<"${rows}"
+  fi
+}
+
+# Stacked horizontal bar with up to three segments rendered with three
+# distinct fill chars: █ (full block, agents), ▒ (medium shade, tools),
+# ░ (light shade, idle/model). The three chars are visually separable
+# even on monochrome terminals, so the bar reads correctly without
+# colour. Width default 30 cells; segments < 1% but > 0 still get one
+# cell so a tiny non-zero bucket stays visible. Trims the highest
+# segment when rounding overshoots width; pads remainder with spaces.
+_timing_stacked_bar() {
+  local pct_a="${1:-0}" pct_b="${2:-0}" pct_c="${3:-0}" width="${4:-30}"
+  [[ "${pct_a}" =~ ^[0-9]+$ ]] || pct_a=0
+  [[ "${pct_b}" =~ ^[0-9]+$ ]] || pct_b=0
+  [[ "${pct_c}" =~ ^[0-9]+$ ]] || pct_c=0
+  [[ "${width}" =~ ^[0-9]+$ ]] || width=30
+
+  local n_a=$(( pct_a * width / 100 ))
+  local n_b=$(( pct_b * width / 100 ))
+  local n_c=$(( pct_c * width / 100 ))
+  (( pct_a > 0 && n_a == 0 )) && n_a=1
+  (( pct_b > 0 && n_b == 0 )) && n_b=1
+  (( pct_c > 0 && n_c == 0 )) && n_c=1
+
+  local total=$(( n_a + n_b + n_c ))
+  while (( total > width )); do
+    if (( n_a >= n_b && n_a >= n_c )); then n_a=$(( n_a - 1 ))
+    elif (( n_b >= n_c )); then n_b=$(( n_b - 1 ))
+    else n_c=$(( n_c - 1 ))
+    fi
+    total=$(( n_a + n_b + n_c ))
+  done
+
+  local out=""
+  local i
+  for (( i = 0; i < n_a; i++ )); do out+="█"; done
+  for (( i = 0; i < n_b; i++ )); do out+="▒"; done
+  for (( i = 0; i < n_c; i++ )); do out+="░"; done
+  for (( i = total; i < width; i++ )); do out+=" "; done
+  printf '%s' "${out}"
+}
+
+# Render a per-prompt sparkline from a JSONL list of {ps, dur} pairs.
+# Each prompt becomes one cell; height encodes the prompt's walltime
+# normalized to the heaviest prompt in the session. Eight discrete
+# levels via U+2581..U+2588 (block elements). Skipped silently when
+# there are fewer than 2 prompts (single-prompt session has nothing
+# to compare). Output is a single line — no leading/trailing spaces.
+_timing_sparkline() {
+  local agg="${1:-}"
+  [[ -z "${agg}" ]] && return 0
+
+  local rows
+  rows="$(jq -r '
+    (.prompts_seq // []) as $ps |
+    if ($ps | length) < 2 then empty
+    else
+      ($ps | map(.dur) | max) as $mx |
+      if $mx == 0 or $mx == null then empty
+      else
+        $ps[] | "\(.dur)\t\($mx)"
+      end
+    end
+  ' <<<"${agg}" 2>/dev/null)"
+
+  [[ -z "${rows}" ]] && return 0
+
+  # Eight ascending block heights — U+2581 (▁) through U+2588 (█).
+  local levels=("▁" "▂" "▃" "▄" "▅" "▆" "▇" "█")
+  local out=""
+  while IFS=$'\t' read -r dur mx; do
+    [[ "${dur}" =~ ^[0-9]+$ ]] || continue
+    [[ "${mx}" =~ ^[0-9]+$ ]] || continue
+    (( mx == 0 )) && continue
+    local idx
+    if (( dur == 0 )); then
+      idx=0
+    else
+      # 1..mx maps to indices 0..7 across eight levels.
+      idx=$(( (dur * 8 - 1) / mx ))
+      (( idx > 7 )) && idx=7
+      (( idx < 0 )) && idx=0
+    fi
+    out+="${levels[$idx]}"
+  done <<<"${rows}"
+
+  printf '%s' "${out}"
 }
 
 # Render an ASCII bar of given percentage and width. Uses block U+2588.

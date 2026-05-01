@@ -490,5 +490,438 @@ else
 fi
 
 # ----------------------------------------------------------------------
+printf 'Test 20: timing_format_full renders polished epilogue scaffold\n'
+# Polished epilogue must include: ─── title rule, stacked-bar legend with
+# pct breakdown, per-bucket rows, residual note, and closing insight when
+# any rule fires. Substring-grade so cosmetic char tweaks don't churn tests.
+reset_log
+timing_append_prompt_start 300
+timing_append_start "Agent" "" "excellence-reviewer" 300
+sleep 1
+timing_append_end "Agent" "" 300
+timing_append_start "Bash" "" "" 300
+sleep 1
+timing_append_end "Bash" "" 300
+timing_append_prompt_end 300 60
+agg="$(timing_aggregate "$(timing_log_path)")"
+out="$(timing_format_full "${agg}" "Time breakdown")"
+
+case "${out}" in
+  *"─── Time breakdown ───"*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: title rule missing\n%s\n' "${out}" >&2; fail=$((fail + 1)) ;;
+esac
+case "${out}" in
+  *"agents "*"%"*"tools "*"%"*"idle "*"%"*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: stacked-bar legend missing\n%s\n' "${out}" >&2; fail=$((fail + 1)) ;;
+esac
+case "${out}" in
+  *"agents"*"excellence-reviewer"*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: per-bucket agent row missing\n%s\n' "${out}" >&2; fail=$((fail + 1)) ;;
+esac
+case "${out}" in
+  *"residual: model thinking"*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: residual hint missing\n%s\n' "${out}" >&2; fail=$((fail + 1)) ;;
+esac
+
+# ----------------------------------------------------------------------
+printf 'Test 21: stacked bar uses three distinct fill chars\n'
+# Visual sanity — the three segment glyphs (█ ▒ ░) must each appear when
+# all three buckets carry weight, otherwise the bar collapses into a
+# single-band hard-to-read strip.
+case "${out}" in
+  *█*▒*░*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: stacked bar missing one or more segment chars\n%s\n' "${out}" >&2; fail=$((fail + 1)) ;;
+esac
+
+# ----------------------------------------------------------------------
+printf 'Test 22: insight engine — anomaly outranks every other rule\n'
+# Orphan/active_pending takes priority over every other signal so a
+# user staring at incomplete aggregates always sees the anomaly first.
+# Even on a turn where excellence-reviewer would otherwise trigger the
+# dominance rule (80% of walltime), the in-flight signal must surface.
+agg_anomaly='{"walltime_s":120,"agent_total_s":80,"tool_total_s":20,"idle_model_s":20,"agent_breakdown":{"excellence-reviewer":80},"tool_breakdown":{"Bash":20},"tool_calls":{"Bash":3},"agent_calls":{"excellence-reviewer":1},"prompt_count":1,"active_pending":1,"orphan_end_count":0}'
+insight="$(timing_generate_insight "${agg_anomaly}")"
+case "${insight}" in
+  *"Heads up"*"in-flight"*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: anomaly insight expected, got: %q\n' "${insight}" >&2; fail=$((fail + 1)) ;;
+esac
+# Dominance message must NOT have fired despite excellence-reviewer hitting 67%.
+case "${insight}" in
+  *"deep specialist run"*) printf '  FAIL: dominance leaked despite anomaly\n' >&2; fail=$((fail + 1)) ;;
+  *) pass=$((pass + 1)) ;;
+esac
+
+# ----------------------------------------------------------------------
+printf 'Test 23: insight engine — single-agent dominance\n'
+agg_dom='{"walltime_s":100,"agent_total_s":80,"tool_total_s":10,"idle_model_s":10,"agent_breakdown":{"excellence-reviewer":80},"tool_breakdown":{"Bash":10},"tool_calls":{"Bash":1},"agent_calls":{"excellence-reviewer":1},"prompt_count":1,"active_pending":0,"orphan_end_count":0}'
+insight="$(timing_generate_insight "${agg_dom}")"
+case "${insight}" in
+  *"excellence-reviewer carried 80%"*"deep specialist run"*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: dominance insight expected, got: %q\n' "${insight}" >&2; fail=$((fail + 1)) ;;
+esac
+
+# ----------------------------------------------------------------------
+printf 'Test 24: insight engine — idle-heavy reassurance\n'
+# Idle-heavy on a long turn should reassure ("depth, not stalling"), not
+# alarm. Triggers only when walltime >= 30 so quick clarifications aren'\''t
+# given a hollow reassurance.
+agg_idle='{"walltime_s":120,"agent_total_s":10,"tool_total_s":10,"idle_model_s":100,"agent_breakdown":{"oracle":10},"tool_breakdown":{"Read":10},"tool_calls":{"Read":1},"agent_calls":{"oracle":1},"prompt_count":1,"active_pending":0,"orphan_end_count":0}'
+insight="$(timing_generate_insight "${agg_idle}")"
+case "${insight}" in
+  *"thinking"*"depth, not stalling"*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: idle-heavy insight expected, got: %q\n' "${insight}" >&2; fail=$((fail + 1)) ;;
+esac
+
+# ----------------------------------------------------------------------
+printf 'Test 25: insight engine — tool-churn parallelization hint\n'
+agg_churn='{"walltime_s":120,"agent_total_s":0,"tool_total_s":50,"idle_model_s":70,"agent_breakdown":{},"tool_breakdown":{"Read":30,"Grep":20},"tool_calls":{"Read":25,"Grep":10},"agent_calls":{},"prompt_count":1,"active_pending":0,"orphan_end_count":0}'
+insight="$(timing_generate_insight "${agg_churn}")"
+case "${insight}" in
+  *"Heavy tool"*"35 total calls"*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: churn insight expected, got: %q\n' "${insight}" >&2; fail=$((fail + 1)) ;;
+esac
+
+# ----------------------------------------------------------------------
+printf 'Test 26: insight engine — diversity fun fact\n'
+agg_div='{"walltime_s":40,"agent_total_s":30,"tool_total_s":5,"idle_model_s":5,"agent_breakdown":{"metis":10,"oracle":8,"excellence-reviewer":7,"quality-planner":5},"tool_breakdown":{"Bash":5},"tool_calls":{"Bash":1},"agent_calls":{"metis":1,"oracle":1,"excellence-reviewer":1,"quality-planner":1},"prompt_count":1,"active_pending":0,"orphan_end_count":0}'
+insight="$(timing_generate_insight "${agg_div}")"
+case "${insight}" in
+  *"Diverse turn"*"4 distinct subagents"*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: diversity insight expected, got: %q\n' "${insight}" >&2; fail=$((fail + 1)) ;;
+esac
+
+# Same data, scope=window — wording must shift.
+insight_w="$(timing_generate_insight "${agg_div}" "window")"
+case "${insight_w}" in
+  *"Diverse window"*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: window-scoped insight expected, got: %q\n' "${insight_w}" >&2; fail=$((fail + 1)) ;;
+esac
+
+# ----------------------------------------------------------------------
+printf 'Test 27: insight engine — clean-run reassurance for substantive turns\n'
+# Substantive turn (>=60s) where no other rule fires must still surface
+# something positive so the user doesn'\''t see a silent epilogue.
+agg_clean='{"walltime_s":80,"agent_total_s":30,"tool_total_s":20,"idle_model_s":30,"agent_breakdown":{"a":15,"b":15},"tool_breakdown":{"Bash":15,"Read":5},"tool_calls":{"Bash":3,"Read":4},"agent_calls":{"a":1,"b":1},"prompt_count":1,"active_pending":0,"orphan_end_count":0}'
+insight="$(timing_generate_insight "${agg_clean}")"
+case "${insight}" in
+  *"Clean run"*"no orphans"*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: reassurance insight expected, got: %q\n' "${insight}" >&2; fail=$((fail + 1)) ;;
+esac
+
+# ----------------------------------------------------------------------
+printf 'Test 28: insight engine — silent on trivial turn\n'
+# A 4-second nothing-burger must produce no insight (no rule fires under
+# the noise floor). The Stop hook'\''s 5s gate keeps this offscreen anyway,
+# but the formatter contract is "empty insight → no line printed".
+agg_trivial='{"walltime_s":4,"agent_total_s":0,"tool_total_s":1,"idle_model_s":3,"agent_breakdown":{},"tool_breakdown":{"Read":1},"tool_calls":{"Read":1},"agent_calls":{},"prompt_count":1,"active_pending":0,"orphan_end_count":0}'
+insight="$(timing_generate_insight "${agg_trivial}")"
+assert_eq "trivial turn yields no insight" "" "${insight}"
+
+# ----------------------------------------------------------------------
+printf 'Test 29: stop-time-summary emits multi-line epilogue above 5s floor\n'
+# End-to-end: real Stop hook script must produce JSON with multi-line
+# additionalContext when walltime >= 5s. Below 5s, no JSON. This is the
+# always-show contract — every meaningful turn surfaces the polished card.
+hook_root="$(mktemp -d)"
+hook_session="hook-test-session"
+hook_session_dir="${hook_root}/${hook_session}"
+mkdir -p "${hook_session_dir}"
+hook_log="${hook_session_dir}/timing.jsonl"
+
+# Synthesize a 12s, agent+tool aggregate via direct row append (no live
+# wall-clock dependency — sleep would slow tests, hand-crafted rows match
+# what the live capture writes).
+now_ts="$(now_epoch)"
+jq -nc --argjson ts "${now_ts}" --argjson seq 1 \
+  '{kind:"prompt_start",ts:$ts,prompt_seq:$seq}' >> "${hook_log}"
+jq -nc --argjson ts "${now_ts}" --arg tool "Agent" --arg sub "metis" --argjson seq 1 \
+  '{kind:"start",ts:$ts,tool:$tool,prompt_seq:$seq,subagent:$sub}' >> "${hook_log}"
+jq -nc --argjson ts "$(( now_ts + 8 ))" --arg tool "Agent" --argjson seq 1 \
+  '{kind:"end",ts:$ts,tool:$tool,prompt_seq:$seq}' >> "${hook_log}"
+jq -nc --argjson ts "$(( now_ts + 8 ))" --arg tool "Bash" --argjson seq 1 \
+  '{kind:"start",ts:$ts,tool:$tool,prompt_seq:$seq}' >> "${hook_log}"
+jq -nc --argjson ts "$(( now_ts + 12 ))" --arg tool "Bash" --argjson seq 1 \
+  '{kind:"end",ts:$ts,tool:$tool,prompt_seq:$seq}' >> "${hook_log}"
+jq -nc --argjson ts "$(( now_ts + 12 ))" --argjson seq 1 --argjson dur 12 \
+  '{kind:"prompt_end",ts:$ts,prompt_seq:$seq,duration_s:$dur}' >> "${hook_log}"
+
+# Persist prompt_seq state so the hook script doesn't try to finalize again.
+jq -nc --arg sid "${hook_session}" '{prompt_seq:1,session_id:$sid}' \
+  > "${hook_session_dir}/session_state.json"
+
+# Pipe in the hook payload.
+hook_payload="$(jq -nc --arg sid "${hook_session}" '{session_id:$sid}')"
+hook_out="$(STATE_ROOT="${hook_root}" HOME="${HOME}" \
+  bash "${SCRIPTS_DIR}/stop-time-summary.sh" <<<"${hook_payload}" 2>&1 || true)"
+ctx="$(jq -r '.hookSpecificOutput.additionalContext // ""' <<<"${hook_out}" 2>/dev/null)"
+case "${ctx}" in
+  *"─── Time breakdown ───"*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: hook epilogue missing title rule:\n%s\n' "${hook_out}" >&2; fail=$((fail + 1)) ;;
+esac
+case "${ctx}" in
+  *"agents"*"%"*"tools"*"%"*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: hook epilogue missing stacked-bar legend:\n%s\n' "${hook_out}" >&2; fail=$((fail + 1)) ;;
+esac
+# Multi-line content carries newlines — must be encoded in the JSON
+case "${ctx}" in
+  *$'\n'*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: epilogue not multi-line:\n%s\n' "${ctx}" >&2; fail=$((fail + 1)) ;;
+esac
+
+# ----------------------------------------------------------------------
+printf 'Test 30: stop-time-summary suppressed under 5s floor\n'
+# Build a fresh 3s aggregate — no hook output should be produced.
+sub_root="$(mktemp -d)"
+sub_session="sub5-session"
+sub_dir="${sub_root}/${sub_session}"
+mkdir -p "${sub_dir}"
+sub_log="${sub_dir}/timing.jsonl"
+now_ts="$(now_epoch)"
+jq -nc --argjson ts "${now_ts}" --argjson seq 1 \
+  '{kind:"prompt_start",ts:$ts,prompt_seq:$seq}' >> "${sub_log}"
+jq -nc --argjson ts "$(( now_ts + 3 ))" --argjson seq 1 --argjson dur 3 \
+  '{kind:"prompt_end",ts:$ts,prompt_seq:$seq,duration_s:$dur}' >> "${sub_log}"
+jq -nc --arg sid "${sub_session}" '{prompt_seq:1,session_id:$sid}' \
+  > "${sub_dir}/session_state.json"
+
+sub_payload="$(jq -nc --arg sid "${sub_session}" '{session_id:$sid}')"
+sub_out="$(STATE_ROOT="${sub_root}" HOME="${HOME}" \
+  bash "${SCRIPTS_DIR}/stop-time-summary.sh" <<<"${sub_payload}" 2>&1 || true)"
+assert_eq "no output under noise floor" "" "${sub_out}"
+rm -rf "${sub_root}"
+rm -rf "${hook_root}"
+
+# ----------------------------------------------------------------------
+printf 'Test 31: bucket renders when total==0 but call counts > 0\n'
+# Regression net for the "sub-second tools vanish" defect: when a turn
+# has only Read/Grep/Edit calls (each <1s, all rounding to 0s), the
+# tools row must still appear in the epilogue because the call counts
+# are useful exploration-heavy signal. Without this contract a 30-call
+# Read-heavy exploration turn would silently print no tool data.
+agg_subsec='{"walltime_s":60,"agent_total_s":0,"tool_total_s":0,"idle_model_s":60,"agent_breakdown":{},"tool_breakdown":{"Read":0,"Grep":0,"Edit":0},"tool_calls":{"Read":12,"Grep":5,"Edit":2},"agent_calls":{},"prompt_count":1,"active_pending":0,"orphan_end_count":0}'
+out_subsec="$(timing_format_full "${agg_subsec}" "Time breakdown")"
+case "${out_subsec}" in
+  *"tools"*"Read"*"(12)"*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: tools row collapsed despite 12 Read calls\n%s\n' "${out_subsec}" >&2; fail=$((fail + 1)) ;;
+esac
+case "${out_subsec}" in
+  *"Grep"*"(5)"*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: Grep sub-row missing\n%s\n' "${out_subsec}" >&2; fail=$((fail + 1)) ;;
+esac
+
+# Inverse — when both total==0 AND call counts are missing/zero, the
+# row stays suppressed (no spurious "tools 0s (0%)" line under an
+# all-idle turn). The bucket row begins with two-space indent + label,
+# so check the row-shape pattern directly (substring matching against
+# bare "tools" would false-trigger on the legend line "tools 0%").
+agg_idle_only='{"walltime_s":30,"agent_total_s":0,"tool_total_s":0,"idle_model_s":30,"agent_breakdown":{},"tool_breakdown":{},"tool_calls":{},"agent_calls":{},"prompt_count":1,"active_pending":0,"orphan_end_count":0}'
+out_idle_only="$(timing_format_full "${agg_idle_only}" "Time breakdown")"
+# Bucket rows use a 13-char left-padded label, so a "tools" row begins
+# with `  tools` followed by trailing spaces, never the legend pattern
+# `tools 0%` (which appears mid-line).
+if grep -qE '^  tools +' <<<"${out_idle_only}"; then
+  printf '  FAIL: tools bucket row leaked with zero calls\n%s\n' "${out_idle_only}" >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+
+# ----------------------------------------------------------------------
+printf 'Test 32: anomaly wording distinguishes killed vs in-flight\n'
+# orphan_end_count alone → "killed mid-flight"; active_pending alone
+# → "still in-flight" (don'\''t accuse rate-limiter of killing a call
+# that may genuinely still be running). Both → split sentence.
+agg_killed='{"walltime_s":10,"agent_total_s":0,"tool_total_s":1,"idle_model_s":9,"agent_breakdown":{},"tool_breakdown":{"Bash":1},"tool_calls":{"Bash":1},"agent_calls":{},"prompt_count":1,"active_pending":0,"orphan_end_count":1}'
+ins_killed="$(timing_generate_insight "${agg_killed}")"
+case "${ins_killed}" in
+  *"killed mid-flight"*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: killed wording missing: %q\n' "${ins_killed}" >&2; fail=$((fail + 1)) ;;
+esac
+
+agg_inflight='{"walltime_s":10,"agent_total_s":0,"tool_total_s":1,"idle_model_s":9,"agent_breakdown":{},"tool_breakdown":{"Bash":1},"tool_calls":{"Bash":1},"agent_calls":{},"prompt_count":1,"active_pending":1,"orphan_end_count":0}'
+ins_inflight="$(timing_generate_insight "${agg_inflight}")"
+case "${ins_inflight}" in
+  *"still in-flight"*"next epilogue"*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: in-flight wording missing: %q\n' "${ins_inflight}" >&2; fail=$((fail + 1)) ;;
+esac
+case "${ins_inflight}" in
+  *"killed"*) printf '  FAIL: in-flight insight wrongly says "killed": %q\n' "${ins_inflight}" >&2; fail=$((fail + 1)) ;;
+  *) pass=$((pass + 1)) ;;
+esac
+
+agg_both='{"walltime_s":10,"agent_total_s":0,"tool_total_s":1,"idle_model_s":9,"agent_breakdown":{},"tool_breakdown":{"Bash":1},"tool_calls":{"Bash":1},"agent_calls":{},"prompt_count":1,"active_pending":2,"orphan_end_count":3}'
+ins_both="$(timing_generate_insight "${agg_both}")"
+case "${ins_both}" in
+  *"3 tool calls killed"*"2 still in-flight"*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: split-anomaly wording missing: %q\n' "${ins_both}" >&2; fail=$((fail + 1)) ;;
+esac
+
+# ----------------------------------------------------------------------
+printf 'Test 33: orphan-only fall-through renders when walltime == 0\n'
+# A session killed before any prompt finalized has walltime_s==0. Manual
+# /ulw-time must still surface the in-flight signal — empty output is
+# unhelpful exactly when feedback would be most useful.
+agg_orphan_only='{"walltime_s":0,"agent_total_s":0,"tool_total_s":0,"idle_model_s":0,"agent_breakdown":{},"tool_breakdown":{},"tool_calls":{},"agent_calls":{},"prompt_count":0,"active_pending":2,"orphan_end_count":0}'
+out_oo="$(timing_format_full "${agg_oo:-${agg_orphan_only}}" "Time breakdown")"
+case "${out_oo}" in
+  *"no finalized prompts yet"*"unfinished"*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: orphan-only render expected; got:\n%s\n' "${out_oo}" >&2; fail=$((fail + 1)) ;;
+esac
+
+# Inverse — walltime==0 AND no orphans/active = clean empty session
+# (newly created, no work yet). Must produce no output.
+agg_clean_empty='{"walltime_s":0,"agent_total_s":0,"tool_total_s":0,"idle_model_s":0,"agent_breakdown":{},"tool_breakdown":{},"tool_calls":{},"agent_calls":{},"prompt_count":0,"active_pending":0,"orphan_end_count":0}'
+out_ce="$(timing_format_full "${agg_clean_empty}" "Time breakdown")"
+assert_eq "clean empty session yields no output" "" "${out_ce}"
+
+# ----------------------------------------------------------------------
+printf 'Test 34: cross-session header pluralizes single session/prompt\n'
+# Single-session, single-prompt window must read "1 session · 1 prompt",
+# not the awkward "1 sessions · 1 prompts".
+xs_log_t34="${HOME}/.claude/quality-pack/timing.jsonl"
+mkdir -p "$(dirname "${xs_log_t34}")"
+rm -f "${xs_log_t34}"
+jq -nc --arg sid "solo-session" --argjson now "$(now_epoch)" \
+  '{ts:$now,session:$sid,project_key:"p",walltime_s:120,agent_total_s:60,
+    tool_total_s:30,idle_model_s:30,
+    agent_breakdown:{"oracle":60},
+    tool_breakdown:{"Bash":30},
+    prompt_count:1}' >> "${xs_log_t34}"
+
+solo_out="$(STATE_ROOT="${STATE_ROOT}" HOME="${HOME}" \
+  bash "${SCRIPTS_DIR}/show-time.sh" week 2>&1 || true)"
+case "${solo_out}" in
+  *"1 session · 1 prompt"*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: singular header pluralization wrong:\n%s\n' "${solo_out}" >&2; fail=$((fail + 1)) ;;
+esac
+
+# Multi-session must still pluralize correctly.
+jq -nc --arg sid "second-session" --argjson now "$(now_epoch)" \
+  '{ts:$now,session:$sid,project_key:"p",walltime_s:60,agent_total_s:30,
+    tool_total_s:15,idle_model_s:15,
+    agent_breakdown:{"metis":30},
+    tool_breakdown:{"Read":15},
+    prompt_count:3}' >> "${xs_log_t34}"
+
+multi_out="$(STATE_ROOT="${STATE_ROOT}" HOME="${HOME}" \
+  bash "${SCRIPTS_DIR}/show-time.sh" week 2>&1 || true)"
+case "${multi_out}" in
+  *"2 sessions · 4 prompts"*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: plural header wrong:\n%s\n' "${multi_out}" >&2; fail=$((fail + 1)) ;;
+esac
+
+# ----------------------------------------------------------------------
+printf 'Test 35: cross-session "Top agents/tools" sections suppressed when empty\n'
+# An idle-only cross-session row has empty agent_breakdown and
+# tool_breakdown. The section headings must not print as orphan headers
+# above zero rows — that is worse UX than printing nothing.
+xs_idle_log="${HOME}/.claude/quality-pack/timing.jsonl"
+rm -f "${xs_idle_log}"
+jq -nc --arg sid "idle-session" --argjson now "$(now_epoch)" \
+  '{ts:$now,session:$sid,project_key:"p",walltime_s:30,agent_total_s:0,
+    tool_total_s:0,idle_model_s:30,
+    agent_breakdown:{},tool_breakdown:{},
+    prompt_count:1}' >> "${xs_idle_log}"
+
+idle_out="$(STATE_ROOT="${STATE_ROOT}" HOME="${HOME}" \
+  bash "${SCRIPTS_DIR}/show-time.sh" week 2>&1 || true)"
+case "${idle_out}" in
+  *"Top agents by time"*) printf '  FAIL: empty agents section header leaked\n%s\n' "${idle_out}" >&2; fail=$((fail + 1)) ;;
+  *) pass=$((pass + 1)) ;;
+esac
+case "${idle_out}" in
+  *"Top tools by time"*) printf '  FAIL: empty tools section header leaked\n%s\n' "${idle_out}" >&2; fail=$((fail + 1)) ;;
+  *) pass=$((pass + 1)) ;;
+esac
+
+# ----------------------------------------------------------------------
+printf 'Test 36: aggregator exposes per-prompt durations as prompts_seq\n'
+# Per-prompt sparkline needs the per-prompt walltime list; the
+# aggregate must expose it. Without this, downstream sparkline
+# rendering has nothing to read.
+reset_log
+for ps in 50 51 52; do
+  case "$ps" in
+    50) dur=2;;
+    51) dur=8;;
+    52) dur=3;;
+  esac
+  timing_append_prompt_start "$ps"
+  timing_append_start "Read" "" "" "$ps"
+  timing_append_end "Read" "" "$ps"
+  timing_append_prompt_end "$ps" "$dur"
+done
+agg36="$(timing_aggregate "$(timing_log_path)")"
+seq_len="$(jq -r '.prompts_seq | length' <<<"${agg36}" 2>/dev/null)"
+assert_eq "prompts_seq has 3 entries" "3" "${seq_len}"
+durs="$(jq -r '[.prompts_seq[].dur] | join(",")' <<<"${agg36}" 2>/dev/null)"
+assert_eq "per-prompt durations preserved" "2,8,3" "${durs}"
+
+# ----------------------------------------------------------------------
+printf 'Test 37: sparkline renders for multi-prompt session\n'
+# Multi-prompt session must produce a sparkline line; single-prompt
+# session must NOT (nothing to compare against).
+out_multi="$(timing_format_full "${agg36}" "Time breakdown")"
+case "${out_multi}" in
+  *"prompts: "*"  (one cell per prompt"*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: sparkline missing for multi-prompt session\n%s\n' "${out_multi}" >&2; fail=$((fail + 1)) ;;
+esac
+
+# Verify the sparkline string contains exactly 3 cells (one per prompt).
+spark_line="$(grep -E '^  prompts: ' <<<"${out_multi}" | head -1)"
+spark_chars="$(printf '%s' "${spark_line}" | sed -E 's/^  prompts: ([▁▂▃▄▅▆▇█]+).*/\1/' | wc -m | tr -d '[:space:]')"
+# wc -m on 3 multi-byte chars + trailing newline = 4. Allow either 3 or 4.
+case "${spark_chars}" in
+  3|4) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: expected 3-char sparkline, got %s chars in: %q\n' "${spark_chars}" "${spark_line}" >&2; fail=$((fail + 1)) ;;
+esac
+
+# Single-prompt session must NOT show sparkline (nothing meaningful to plot).
+agg_single='{"walltime_s":30,"agent_total_s":0,"tool_total_s":1,"idle_model_s":29,"agent_breakdown":{},"tool_breakdown":{"Bash":1},"tool_calls":{"Bash":1},"agent_calls":{},"prompt_count":1,"prompts_seq":[{"ps":1,"dur":30}],"active_pending":0,"orphan_end_count":0}'
+out_single="$(timing_format_full "${agg_single}" "Time breakdown")"
+case "${out_single}" in
+  *"prompts: "*) printf '  FAIL: sparkline leaked into single-prompt view\n%s\n' "${out_single}" >&2; fail=$((fail + 1)) ;;
+  *) pass=$((pass + 1)) ;;
+esac
+
+# ----------------------------------------------------------------------
+printf 'Test 38: sparkline normalizes by max — heaviest prompt gets full block\n'
+# 4 prompts: 10s, 100s, 5s, 50s. Max = 100. The 100s prompt MUST be U+2588 (█).
+agg_norm='{"walltime_s":165,"agent_total_s":0,"tool_total_s":4,"idle_model_s":161,"agent_breakdown":{},"tool_breakdown":{"Bash":4},"tool_calls":{"Bash":4},"agent_calls":{},"prompt_count":4,"prompts_seq":[{"ps":1,"dur":10},{"ps":2,"dur":100},{"ps":3,"dur":5},{"ps":4,"dur":50}],"active_pending":0,"orphan_end_count":0}'
+spark_norm="$(_timing_sparkline "${agg_norm}")"
+case "${spark_norm}" in
+  *█*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: heaviest prompt did not render as U+2588: %q\n' "${spark_norm}" >&2; fail=$((fail + 1)) ;;
+esac
+
+# ----------------------------------------------------------------------
+printf 'Test 39: long subagent name truncated with U+2026 ellipsis\n'
+# Real subagent names like `excellence-reviewer` (19 chars) fit within
+# 22; long custom subagent types or hyphenated MCP tool names would
+# overflow and shift the bar column rightward, breaking alignment.
+# Truncate at 21 chars + … so the column stays locked.
+agg_long='{"walltime_s":30,"agent_total_s":2,"tool_total_s":0,"idle_model_s":28,"agent_breakdown":{"very-long-subagent-name-overflows-column":2},"tool_breakdown":{},"tool_calls":{},"agent_calls":{"very-long-subagent-name-overflows-column":1},"prompt_count":1,"prompts_seq":[{"ps":1,"dur":30}],"active_pending":0,"orphan_end_count":0}'
+out_long="$(timing_format_full "${agg_long}" "Time breakdown")"
+case "${out_long}" in
+  *"very-long-subagent-na…"*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: long name not truncated with U+2026: \n%s\n' "${out_long}" >&2; fail=$((fail + 1)) ;;
+esac
+
+# Original full name MUST NOT appear (the truncation is in-place).
+case "${out_long}" in
+  *"very-long-subagent-name-overflows-column"*) printf '  FAIL: full long name leaked into sub-row\n%s\n' "${out_long}" >&2; fail=$((fail + 1)) ;;
+  *) pass=$((pass + 1)) ;;
+esac
+
+# Names exactly 22 chars or shorter must NOT be truncated.
+agg_short='{"walltime_s":30,"agent_total_s":2,"tool_total_s":0,"idle_model_s":28,"agent_breakdown":{"excellence-reviewer":2},"tool_breakdown":{},"tool_calls":{},"agent_calls":{"excellence-reviewer":1},"prompt_count":1,"prompts_seq":[{"ps":1,"dur":30}],"active_pending":0,"orphan_end_count":0}'
+out_short="$(timing_format_full "${agg_short}" "Time breakdown")"
+case "${out_short}" in
+  *"excellence-reviewer"*"…"*) printf '  FAIL: short name wrongly truncated\n%s\n' "${out_short}" >&2; fail=$((fail + 1)) ;;
+  *"excellence-reviewer"*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: short name missing entirely\n%s\n' "${out_short}" >&2; fail=$((fail + 1)) ;;
+esac
+
+# ----------------------------------------------------------------------
 printf '\n=== Timing Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]
