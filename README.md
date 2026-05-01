@@ -2,7 +2,7 @@
 
 **What if Claude Code couldn't cut corners?**
 
-[![Version](https://img.shields.io/badge/Version-1.23.1-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-1.24.0-blue.svg)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Shell](https://img.shields.io/badge/Shell-bash-green.svg)]()
 [![Dependencies](https://img.shields.io/badge/Dependencies-none-brightgreen.svg)]()
@@ -247,12 +247,12 @@ oh-my-claude/
 ├── install.sh / uninstall.sh / verify.sh   # Install, remove, and verify
 ├── bundle/dot-claude/                       # Installs to ~/.claude/
 │   ├── agents/          (32 agents)         # Specialist agent definitions
-│   ├── skills/          (23 skills)         # Skill definitions + autowork hooks
+│   ├── skills/          (24 skills)         # Skill definitions + autowork hooks
 │   ├── quality-pack/                        # Lifecycle hooks + memory files
 │   ├── output-styles/                       # Bundled OpenCode Compact style (see docs/customization.md#output-style)
 │   └── statusline.py                        # Custom statusline widget
 ├── config/settings.patch.json               # Merged into user settings on install
-├── tests/               (48 bash + 1 py)    # See AGENTS.md / CONTRIBUTING.md for full list
+├── tests/               (49 bash + 1 py)    # See AGENTS.md / CONTRIBUTING.md for full list
 ├── tools/                                    # Developer-only tools (not installed)
 └── docs/                                    # Architecture, customization, FAQ, prompts
 ```

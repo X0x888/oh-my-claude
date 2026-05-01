@@ -205,6 +205,7 @@ Session state is stored at:
   rate_limit_status.json       # Rate-limit windows pre-staged by statusline.py: {five_hour, seven_day}.{used_percentage, resets_at_ts}. Pro/Max sessions only; absent on raw API-key sessions. Read by stop-failure-handler.sh on StopFailure.
   resume_request.json          # Written by stop-failure-handler.sh when Claude Code emits StopFailure: {rate_limited, matcher, original_objective, last_user_prompt, resets_at_ts, project_key, rate_limit_snapshot, resumed_at_ts, dismissed_at_ts, resume_attempts, last_attempt_ts, last_attempt_outcome, last_attempt_pid, ...}. project_key (added Wave 1) is the git-remote-first / cwd-hash _omc_project_key for the cwd at write time — used by Wave 1's resume-hint hook to match worktrees and clone-anywhere paths. Wave 2 `/ulw-resume` claim flow stamps resumed_at_ts (or dismissed_at_ts via --dismiss). Wave 3 watchdog stamps last_attempt_* on each launch attempt and increments resume_attempts (capped at 3 cumulative). Read by session-start-resume-hint.sh (Wave 1 hint), claim-resume-request.sh (Wave 2 atomic claim), and resume-watchdog.sh (Wave 3 daemon).
   resume_hint.md               # Markdown sidecar written by session-start-resume-hint.sh on emit (Wave 1). Frontmatter: origin_session_id, artifact_path, match_scope, matcher, emitted_at_ts, source. Body: the rendered additionalContext that was injected. Provides /ulw-status visibility and a paper trail the future Wave 3 watchdog can inspect without re-deriving from gate events.
+  timing.jsonl                 # Per-call timing rows appended by pretool-timing.sh / posttool-timing.sh / prompt-intent-router.sh / stop-time-summary.sh (lock-free, sub-PIPE_BUF O_APPEND). Row shapes (discriminated by `kind`): {kind:"prompt_start", ts, prompt_seq}, {kind:"prompt_end", ts, prompt_seq, duration_s}, {kind:"start", ts, tool, prompt_seq, tool_use_id?, subagent?}, {kind:"end", ts, tool, prompt_seq, tool_use_id?}. Read by stop-time-summary.sh's `timing_aggregate` for the Stop epilogue, by show-time.sh for /ulw-time, and by /ulw-status. Fast-path-skipped when `time_tracking=off`.
 ```
 
 Cross-session ledgers (in `~/.claude/quality-pack/`, not per-session):
@@ -216,11 +217,12 @@ serendipity-log.jsonl          # Serendipity Rule applications across sessions (
 gate-skips.jsonl               # /ulw-skip honored events for threshold tuning (cap: 200/150)
 gate_events.jsonl              # Per-event outcome rows aggregated from per-session gate_events.jsonl (cap: 10000/8000). Added v1.14.0.
 used-archetypes.jsonl          # Cross-session archetype priors keyed by `_omc_project_key` (git-remote-first, cwd fallback); written by record-archetype.sh on UI-specialist SubagentStop, read by `recent_archetypes_for_project` to feed the router's anti-anchoring advisory (cap: 500/400). Added post-v1.15.0.
+timing.jsonl                   # Cross-session per-session-summary rollup written by stop-time-summary.sh via `timing_record_session_summary` (dedups by session at write time — multi-Stop sessions don't accrue inflated totals). Row shape: {ts, session, project_key} merged with the `timing_aggregate` output (walltime_s, agent_total_s, agent_breakdown, agent_calls, tool_total_s, tool_breakdown, tool_calls, idle_model_s, prompt_count, active_pending, orphan_end_count). Sessions with walltime <5s are skipped (noise floor). Read by show-time.sh week/month/all rollups and the `/ulw-report` "Time spent across sessions" section. Cap: 10000 rows, pruned on the regular state-TTL sweep with `time_tracking_xs_retain_days` horizon. Added v1.24.0.
 defect-patterns.json           # Historical defect-category counters
 agent-metrics.json             # Invocations / clean / findings per agent type
 ```
 
-All six JSONL caps go through `_cap_cross_session_jsonl` in `common.sh`; the format `cap/retain` shows the trigger threshold and post-truncation tail size.
+All seven JSONL caps go through `_cap_cross_session_jsonl` in `common.sh`; the format `cap/retain` shows the trigger threshold and post-truncation tail size.
 
 `session_summary.jsonl` row schema (canonical writer: `sweep_stale_sessions` in `common.sh`):
 
@@ -275,6 +277,7 @@ Separate from session state, `install.sh` writes four install-time artifacts tha
 | `last_assistant_message_ts` | Epoch timestamp of the above |
 | `last_user_prompt` | Raw text of the last user prompt |
 | `last_user_prompt_ts` | Epoch timestamp of the above |
+| `prompt_seq` | Monotonic per-prompt epoch counter (added v1.24.0). Incremented by `prompt-intent-router.sh` on every UserPromptSubmit. Tagged onto each timing.jsonl row so `timing_aggregate` only pairs same-epoch start/end rows — pre-compaction starts cannot bind to post-compaction ends. Surfaced via `timing_next_prompt_seq` / `timing_current_prompt_seq` / `timing_latest_finalized_prompt_seq` helpers in `lib/timing.sh`. |
 | `last_meta_request` | Normalized text of the last advisory/session-mgmt/checkpoint prompt |
 | `last_verify_outcome` | Result of the last verification: `passed` or `failed` |
 | `last_excellence_review_ts` | Epoch timestamp of the last excellence-reviewer completion |
