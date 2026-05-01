@@ -67,14 +67,31 @@ OMC_TIME_TRACKING="on"
 # ----------------------------------------------------------------------
 printf 'Test 2: simple Bash start+end pair aggregates correctly\n'
 reset_log
+# DEBUG: capture-path diagnostic for CI portability investigation
+printf '  DEBUG: OMC_TIME_TRACKING=%s SESSION_ID=%s\n' "${OMC_TIME_TRACKING:-UNSET}" "${SESSION_ID:-UNSET}" >&2
+printf '  DEBUG: STATE_ROOT=%s\n' "${STATE_ROOT:-UNSET}" >&2
+printf '  DEBUG: timing_log_path=%s\n' "$(timing_log_path)" >&2
+printf '  DEBUG: session_dir_exists=%s\n' "$([ -d "${STATE_ROOT}/${SESSION_ID}" ] && echo YES || echo NO)" >&2
+printf '  DEBUG: jq_smoke=%s\n' "$(jq -nc '{ok:true}' 2>&1)" >&2
 timing_append_prompt_start 1
 timing_append_start "Bash" "" "" 1
+printf '  DEBUG: log_after_start exists=%s lines=%s\n' \
+  "$([ -f "$(timing_log_path)" ] && echo YES || echo NO)" \
+  "$(wc -l < "$(timing_log_path)" 2>/dev/null || echo 0)" >&2
 sleep 1
 timing_append_end "Bash" "" 1
 sleep 1
 timing_append_prompt_end 1 2
+printf '  DEBUG: log_after_all exists=%s lines=%s\n' \
+  "$([ -f "$(timing_log_path)" ] && echo YES || echo NO)" \
+  "$(wc -l < "$(timing_log_path)" 2>/dev/null || echo 0)" >&2
+if [[ -f "$(timing_log_path)" ]]; then
+  printf '  DEBUG: log_content=\n' >&2
+  cat "$(timing_log_path)" >&2
+fi
 
 agg="$(timing_aggregate "$(timing_log_path)")"
+printf '  DEBUG: agg=%s\n' "${agg}" >&2
 assert_eq "tool_total_s present" "true" \
   "$(jq -r 'has("tool_total_s")' <<<"${agg}")"
 bash_total="$(jq -r '.tool_breakdown.Bash // 0' <<<"${agg}")"
