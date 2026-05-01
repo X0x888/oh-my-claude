@@ -15,6 +15,16 @@
 
 set -euo pipefail
 
+# v1.27.0 (F-022): pre-source fast-exit for OMC_TIME_TRACKING=off. The
+# is_time_tracking_enabled check below also catches conf-file-driven
+# opt-outs, but only AFTER common.sh has sourced (~25-30ms cold-start
+# tax on bash 3.2 macOS). The env-var path is the cheap branch — users
+# who set OMC_TIME_TRACKING=off in their shell or omc-config.sh export
+# now skip the entire hook overhead.
+if [[ "${OMC_TIME_TRACKING:-}" == "off" ]]; then
+  exit 0
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOOK_JSON="$(cat)"
 . "${SCRIPT_DIR}/common.sh"

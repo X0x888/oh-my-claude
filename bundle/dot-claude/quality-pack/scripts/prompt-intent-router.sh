@@ -17,9 +17,25 @@ fi
 ensure_session_dir
 sweep_stale_sessions
 
-previous_objective="$(read_state "current_objective")"
-previous_domain="$(read_state "task_domain")"
-previous_last_assistant="$(read_state "last_assistant_message")"
+# v1.27.0 (F-019): bulk-read 5 always-together state keys at the top of
+# UserPromptSubmit in one jq fork (saves ~30ms on macOS bash 3.2).
+# Invariant: argv length === case-branch count (5 keys → 5 branches 0..4).
+_pir_idx=0
+while IFS= read -r _pir_line || [[ -n "${_pir_line}" ]]; do
+  case "${_pir_idx}" in
+    0) previous_objective="${_pir_line}" ;;
+    1) previous_domain="${_pir_line}" ;;
+    2) previous_last_assistant="${_pir_line}" ;;
+    3) just_compacted_value="${_pir_line}" ;;
+    4) just_compacted_ts_value="${_pir_line}" ;;
+  esac
+  _pir_idx=$((_pir_idx + 1))
+done < <(read_state_keys \
+  "current_objective" \
+  "task_domain" \
+  "last_assistant_message" \
+  "just_compacted" \
+  "just_compacted_ts")
 
 # Gap 2 — post-compact intent bias. When the very first UserPromptSubmit
 # fires after a PostCompact hook, we treat the previous objective as
@@ -29,8 +45,6 @@ previous_last_assistant="$(read_state "last_assistant_message")"
 # as fresh work. The flag decays after one prompt, or after 15 minutes of
 # staleness, whichever comes first.
 post_compact_bias=0
-just_compacted_value="$(read_state "just_compacted")"
-just_compacted_ts_value="$(read_state "just_compacted_ts")"
 if [[ "${just_compacted_value}" == "1" ]] && [[ -n "${just_compacted_ts_value}" ]]; then
   compact_age=$(( $(now_epoch) - just_compacted_ts_value ))
   if (( compact_age >= 0 )) && (( compact_age < 900 )); then

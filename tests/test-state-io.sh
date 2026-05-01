@@ -181,5 +181,80 @@ case "${got}" in
     ;;
 esac
 
+# ----------------------------------------------------------------------
+# Portable read-into-array helper for bash 3.2 (mapfile is bash 4+).
+# Producer must write to file ${_tmp_capture}; this then reads it back.
+# This pattern avoids the subshell-loses-assignment trap of `producer | reader`.
+got=()
+_tmp_capture="$(mktemp)"
+_capture_replay() {
+  got=()
+  local _line
+  while IFS= read -r _line || [[ -n "${_line}" ]]; do
+    got[${#got[@]}]="${_line}"
+  done <"${_tmp_capture}"
+}
+
+# ----------------------------------------------------------------------
+printf 'Test 13: read_state_keys bulk-reads N keys with positional alignment (v1.27.0 F-018)\n'
+reset_state
+write_state_batch "alpha" "one" "beta" "two" "gamma" "three"
+
+# Read 3 keys in given order.
+read_state_keys "alpha" "beta" "gamma" > "${_tmp_capture}"; _capture_replay
+assert_eq "T13: 3 keys returned" "3" "${#got[@]}"
+assert_eq "T13: alpha"   "one"   "${got[0]}"
+assert_eq "T13: beta"    "two"   "${got[1]}"
+assert_eq "T13: gamma"   "three" "${got[2]}"
+
+# Order is preserved when caller permutes.
+read_state_keys "gamma" "alpha" "beta" > "${_tmp_capture}"; _capture_replay
+assert_eq "T13: order preserved gamma" "three" "${got[0]}"
+assert_eq "T13: order preserved alpha" "one"   "${got[1]}"
+assert_eq "T13: order preserved beta"  "two"   "${got[2]}"
+
+# Missing keys emit empty lines, alignment preserved.
+read_state_keys "alpha" "missing_key" "beta" "also_missing" > "${_tmp_capture}"; _capture_replay
+assert_eq "T13: 4 lines for 4 args" "4" "${#got[@]}"
+assert_eq "T13: present alpha"     "one" "${got[0]}"
+assert_eq "T13: empty for missing" ""    "${got[1]}"
+assert_eq "T13: present beta"      "two" "${got[2]}"
+assert_eq "T13: empty for missing 2" ""  "${got[3]}"
+
+# Empty argv → no output, exit 0.
+output="$(read_state_keys 2>&1)"
+assert_eq "T13: empty argv → empty output" "" "${output}"
+
+# Missing state file → emits N empty lines for N args.
+rm -f "$(session_file "${STATE_JSON}")"
+read_state_keys "x" "y" "z" > "${_tmp_capture}"; _capture_replay
+assert_eq "T13: 3 empty lines when state file missing" "3" "${#got[@]}"
+
+# ----------------------------------------------------------------------
+printf 'Test 14: read_state_keys returns all values from one call (perf invariant)\n'
+reset_state
+write_state_batch "k1" "v1" "k2" "v2" "k3" "v3" "k4" "v4" "k5" "v5"
+read_state_keys "k1" "k2" "k3" "k4" "k5" > "${_tmp_capture}"; _capture_replay
+assert_eq "T14: 5 values from one invocation" "5" "${#got[@]}"
+assert_eq "T14: v1" "v1" "${got[0]}"
+assert_eq "T14: v5" "v5" "${got[4]}"
+
+# ----------------------------------------------------------------------
+printf 'Test 15: empty-string and missing keys are intentionally indistinguishable\n'
+# Documents the design choice: read_state_keys collapses
+# write_state(key, "") and "key never written" to the same empty-line
+# output. Call sites that need to distinguish must use read_state with
+# its individual-file fallback; bulk reads are JSON-state-only.
+reset_state
+write_state_batch "explicit_empty" "" "explicit_value" "set"
+read_state_keys "explicit_empty" "missing_key" "explicit_value" > "${_tmp_capture}"; _capture_replay
+assert_eq "T15: 3 lines for 3 args" "3" "${#got[@]}"
+assert_eq "T15: explicit empty -> empty line"     "" "${got[0]}"
+assert_eq "T15: missing -> empty line"            "" "${got[1]}"
+assert_eq "T15: explicit value preserved"      "set" "${got[2]}"
+# Final assertion: the empty-string and missing cases are byte-identical
+# under read_state_keys (this is the documented behavior).
+assert_eq "T15: indistinguishable (got[0] == got[1])" "${got[0]}" "${got[1]}"
+
 printf '\n=== State-IO Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]

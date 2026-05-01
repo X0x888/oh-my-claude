@@ -164,6 +164,60 @@ read_state() {
   cat "$(session_file "${key}")" 2>/dev/null || true
 }
 
+# read_state_keys k1 k2 k3 ...
+#
+# Bulk-read N keys from session_state.json in a single jq invocation.
+# Emits one line per key, in the order given. Missing keys emit an
+# empty line — preserving positional alignment so the caller can index
+# the output by argument position.
+#
+# Usage:
+#   mapfile -t values < <(read_state_keys task_intent task_domain ulw_active)
+#   intent="${values[0]}"
+#   domain="${values[1]}"
+#   active="${values[2]}"
+#
+# Why this exists (v1.27.0 F-018/F-019): stop-guard.sh previously made
+# 41 separate `read_state` calls per Stop event, and prompt-intent-
+# router.sh made 15+ per UserPromptSubmit. Each call forks `jq` and
+# does an independent file read. Bulk-reading 30+ keys in one jq
+# invocation cuts dominant-path subprocess overhead by ~30 jq forks
+# per turn (~100ms of cumulative wallclock on macOS bash 3.2). The
+# fallback-to-individual-file path that read_state has for backwards
+# compat is intentionally NOT replicated here; bulk reads are JSON-
+# state-only by design. If a key is in a sidecar file, use read_state
+# directly.
+read_state_keys() {
+  if [[ $# -eq 0 ]]; then
+    return 0
+  fi
+  local state_file
+  state_file="$(session_file "${STATE_JSON}")"
+  if [[ ! -f "${state_file}" ]]; then
+    # Emit empty lines for each requested key — preserves positional
+    # indexing in the caller's mapfile.
+    local _i
+    for ((_i = 0; _i < $#; _i++)); do
+      printf '\n'
+    done
+    return 0
+  fi
+  # Note on argument order: jq's `--args` flag consumes ALL trailing
+  # positional arguments AFTER the filter as $ARGS.positional. If we
+  # passed the JSON file as a positional too, jq would treat it as a
+  # key name and read JSON from stdin (which would be empty). Pipe the
+  # file in via stdin redirect so the filename never lands on argv.
+  jq -r --args '$ARGS.positional[] as $k | .[$k] // ""' "$@" < "${state_file}" 2>/dev/null \
+    || {
+      # On jq failure (corrupt state, etc), emit empty lines so the
+      # caller's mapfile stays positionally aligned.
+      local _i
+      for ((_i = 0; _i < $#; _i++)); do
+        printf '\n'
+      done
+    }
+}
+
 # --- Portable state lock (mkdir primitive, BSD/GNU stat compat) ---
 #
 # Wraps a function call with a mutex held against the session's state

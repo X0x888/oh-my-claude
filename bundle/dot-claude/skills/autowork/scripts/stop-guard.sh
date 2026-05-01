@@ -80,12 +80,30 @@ if [[ -n "${gate_skip_reason}" ]]; then
   fi
 fi
 
-current_objective="$(read_state "current_objective")"
-task_intent="$(read_state "task_intent")"
-last_user_prompt_ts="$(read_state "last_user_prompt_ts")"
-session_handoff_blocks="$(read_state "session_handoff_blocks")"
+# v1.27.0 (F-018): bulk-read 5 always-together state keys in one jq fork
+# instead of 5 sequential read_state calls (saves ~30-40ms on macOS bash 3.2).
+# Invariant: argv length === case-branch count (5 keys → 5 branches 0..4).
+# Adding a key requires (a) extending the read_state_keys argv below AND
+# (b) extending the case statement above. read_state_keys always emits
+# exactly N lines for N args (jq's // "" + corrupt/missing fallbacks),
+# so the case statement always sees a complete frame.
+_sg_idx=0
+while IFS= read -r _sg_line || [[ -n "${_sg_line}" ]]; do
+  case "${_sg_idx}" in
+    0) current_objective="${_sg_line}" ;;
+    1) task_intent="${_sg_line}" ;;
+    2) last_user_prompt_ts="${_sg_line}" ;;
+    3) session_handoff_blocks="${_sg_line}" ;;
+    4) last_edit_ts="${_sg_line}" ;;
+  esac
+  _sg_idx=$((_sg_idx + 1))
+done < <(read_state_keys \
+  "current_objective" \
+  "task_intent" \
+  "last_user_prompt_ts" \
+  "session_handoff_blocks" \
+  "last_edit_ts")
 session_handoff_blocks="${session_handoff_blocks:-0}"
-last_edit_ts="$(read_state "last_edit_ts")"
 
 if ! is_execution_intent_value "${task_intent}"; then
   # Advisory quality check: for advisory tasks over codebases, verify that
@@ -324,14 +342,28 @@ if [[ -z "${last_edit_ts}" ]]; then
   exit 0
 fi
 
-last_review_ts="$(read_state "last_review_ts")"
-last_doc_review_ts="$(read_state "last_doc_review_ts")"
-last_verify_ts="$(read_state "last_verify_ts")"
-last_code_edit_ts="$(read_state "last_code_edit_ts")"
-last_doc_edit_ts="$(read_state "last_doc_edit_ts")"
+# v1.27.0 (F-018): bulk-read 6 always-together state keys in one jq fork.
+# Invariant: argv length === case-branch count (6 keys → 6 branches 0..5).
+_sg2_idx=0
+while IFS= read -r _sg2_line || [[ -n "${_sg2_line}" ]]; do
+  case "${_sg2_idx}" in
+    0) last_review_ts="${_sg2_line}" ;;
+    1) last_doc_review_ts="${_sg2_line}" ;;
+    2) last_verify_ts="${_sg2_line}" ;;
+    3) last_code_edit_ts="${_sg2_line}" ;;
+    4) last_doc_edit_ts="${_sg2_line}" ;;
+    5) guard_blocks="${_sg2_line}" ;;
+  esac
+  _sg2_idx=$((_sg2_idx + 1))
+done < <(read_state_keys \
+  "last_review_ts" \
+  "last_doc_review_ts" \
+  "last_verify_ts" \
+  "last_code_edit_ts" \
+  "last_doc_edit_ts" \
+  "stop_guard_blocks")
 task_domain="$(task_domain)"
 task_domain="${task_domain:-general}"
-guard_blocks="$(read_state "stop_guard_blocks")"
 guard_blocks="${guard_blocks:-0}"
 
 missing_review=0

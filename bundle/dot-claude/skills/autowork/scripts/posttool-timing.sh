@@ -8,6 +8,12 @@
 
 set -euo pipefail
 
+# v1.27.0 (F-022): pre-source fast-exit for OMC_TIME_TRACKING=off. See
+# pretool-timing.sh for rationale.
+if [[ "${OMC_TIME_TRACKING:-}" == "off" ]]; then
+  exit 0
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOOK_JSON="$(cat)"
 . "${SCRIPT_DIR}/common.sh"
