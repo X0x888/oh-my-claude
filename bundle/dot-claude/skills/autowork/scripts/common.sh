@@ -2959,7 +2959,21 @@ source "${_omc_self_dir}/lib/classifier.sh"
 has_unfinished_session_handoff() {
   local text="$1"
 
-  grep -Eiq '\b(ready for a new session|ready for another session|continue in a new session|continue in another session|new session\b|another session\b|next wave\b|next phase\b|wave [0-9]+[^.!\n]* is next|phase [0-9]+[^.!\n]* is next|remaining work\b|the rest\b|pick up .* later|continue .* later)\b' <<<"${text}"
+  # v1.27.0 (F-009): tightened. Dropped four shapes that produced false
+  # positives on legitimate scoping language:
+  #   - "the rest" — appears in "implementing the rest now" (scoping)
+  #     vs. "the rest is for next session" (handoff). Without local
+  #     context the regex can't tell.
+  #   - "remaining work" — same shape; "remaining work is tracked in
+  #     F-042" is correct deferral, not handoff.
+  #   - "pick up .* later" — "pick up where I left off later" is a
+  #     legitimate user-facing offer of a future task.
+  #   - "continue .* later" — same family.
+  # The retained patterns all encode session-boundary hand-off shape
+  # explicitly: "new session", "another session", "next wave/phase",
+  # "wave/phase N is next" — phrasing that names a future invocation
+  # context as the work boundary.
+  grep -Eiq '\b(ready for a new session|ready for another session|continue in a new session|continue in another session|new session\b|another session\b|next wave\b|next phase\b|wave [0-9]+[^.!\n]* is next|phase [0-9]+[^.!\n]* is next)\b' <<<"${text}"
 }
 
 
@@ -3122,11 +3136,27 @@ is_council_evaluation_request() {
 
 # Whitelist of agent names whose output is parsed for findings. Excludes
 # excellence-reviewer / quality-reviewer (those are verifiers, not
-# discoverers — their findings already have dedicated dimensions).
+# discoverers — their findings already have dedicated dimensions). The
+# v1.27.0 expansion (F-006) adds `oracle` and `abstraction-critic` —
+# both surface novel issues with explicit severity-ranked output
+# (oracle's "Findings first, ordered by severity"; abstraction-critic's
+# wrong-shape-of-solution finding list). `quality-researcher` was
+# considered and rejected: its output is research reports / next-step
+# recommendations, not severity-anchored findings, so the fallback
+# regex at extract_discovered_findings would treat its "1. <rec> 2.
+# <rec> 3. <rec>" lists as findings and block Stop on legitimate
+# research output. Implementation specialists (backend, frontend,
+# fullstack, ios-*, devops, test-automation, draft-writer) are
+# intentionally NOT on this list — their output describes WHAT was
+# built, not WHAT was discovered, and parsing their step-by-step
+# implementation reports as findings produced false-positive blocks
+# in pilot runs.
 discovered_scope_capture_targets() {
   printf '%s\n' \
     "metis" \
     "briefing-analyst" \
+    "oracle" \
+    "abstraction-critic" \
     "security-lens" \
     "data-lens" \
     "product-lens" \

@@ -308,10 +308,67 @@ assert_false "T12: should_alert false after emission (one-shot)" 'canary_should_
 # Below threshold: should not alert even with no emission record.
 sid="t12b-$$"
 mkdir -p "${_test_state_root}/${sid}"
-printf '{"verdict":"unverified"}\n' > "${_test_state_root}/${sid}/canary.jsonl"
+printf '{"verdict":"unverified","claim_count":2}\n' > "${_test_state_root}/${sid}/canary.jsonl"
 printf '{}\n' > "${_test_state_root}/${sid}/session_state.json"
 export SESSION_ID="${sid}"
-assert_false "T12b: should_alert false below threshold (count=1)" 'canary_should_alert "${sid}"'
+assert_false "T12b: should_alert false below threshold (count=1, claim_count=2)" 'canary_should_alert "${sid}"'
+
+# ----------------------------------------------------------------------
+printf 'Test 12c: loud-session alert fires on FIRST unverified verdict when claim_count >= 4 (v1.27.0 F-010)\n'
+sid="t12c-$$"
+mkdir -p "${_test_state_root}/${sid}"
+# Single unverified event with 4 claims and 0 tools — loud session.
+printf '{"verdict":"unverified","claim_count":4,"tool_count":0}\n' \
+  > "${_test_state_root}/${sid}/canary.jsonl"
+printf '{}\n' > "${_test_state_root}/${sid}/session_state.json"
+export SESSION_ID="${sid}"
+assert_true "T12c: should_alert true on loud single event (claim_count=4)" \
+  'canary_should_alert "${sid}"'
+
+# Five claims also fires; one event, no pattern.
+sid="t12d-$$"
+mkdir -p "${_test_state_root}/${sid}"
+printf '{"verdict":"unverified","claim_count":5,"tool_count":0}\n' \
+  > "${_test_state_root}/${sid}/canary.jsonl"
+printf '{}\n' > "${_test_state_root}/${sid}/session_state.json"
+export SESSION_ID="${sid}"
+assert_true "T12d: should_alert true on louder single event (claim_count=5)" \
+  'canary_should_alert "${sid}"'
+
+# Three claims is below loud threshold AND below pattern threshold.
+sid="t12e-$$"
+mkdir -p "${_test_state_root}/${sid}"
+printf '{"verdict":"unverified","claim_count":3,"tool_count":0}\n' \
+  > "${_test_state_root}/${sid}/canary.jsonl"
+printf '{}\n' > "${_test_state_root}/${sid}/session_state.json"
+export SESSION_ID="${sid}"
+assert_false "T12e: should_alert false at claim_count=3 (below loud threshold)" \
+  'canary_should_alert "${sid}"'
+
+# canary_session_max_unverified_claims helper returns the maximum.
+sid="t12f-$$"
+mkdir -p "${_test_state_root}/${sid}"
+{
+  printf '%s\n' '{"verdict":"unverified","claim_count":2,"tool_count":0}'
+  printf '%s\n' '{"verdict":"clean","claim_count":1,"tool_count":0}'
+  printf '%s\n' '{"verdict":"unverified","claim_count":7,"tool_count":0}'
+  printf '%s\n' '{"verdict":"covered","claim_count":3,"tool_count":3}'
+} > "${_test_state_root}/${sid}/canary.jsonl"
+assert_eq "T12f: max returns 7 across mixed verdicts" "7" \
+  "$(canary_session_max_unverified_claims "${sid}")"
+
+# Empty canary file → max = 0.
+sid="t12g-$$"
+mkdir -p "${_test_state_root}/${sid}"
+printf '' > "${_test_state_root}/${sid}/canary.jsonl"
+assert_eq "T12g: max returns 0 on empty canary" "0" \
+  "$(canary_session_max_unverified_claims "${sid}")"
+
+# Missing canary file → max = 0.
+sid="t12h-$$"
+mkdir -p "${_test_state_root}/${sid}"
+assert_eq "T12h: max returns 0 when canary.jsonl absent" "0" \
+  "$(canary_session_max_unverified_claims "${sid}")"
 
 # ----------------------------------------------------------------------
 printf 'Test 13: opt-out via OMC_MODEL_DRIFT_CANARY=off\n'

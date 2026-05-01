@@ -324,9 +324,15 @@ assert_eq "short prefix rejected, status unchanged" "pending" "${unchanged_statu
 # ----------------------------------------------------------------------
 printf 'Test 15: capture_targets includes all advisory specialists\n'
 targets="$(discovered_scope_capture_targets | tr '\n' ' ')"
-for expected in metis briefing-analyst security-lens data-lens product-lens growth-lens sre-lens design-lens; do
+# v1.27.0 (F-006): added oracle and abstraction-critic. quality-researcher
+# was deliberately excluded — its output is research/recommendations, not
+# severity-anchored findings, and the fallback regex would over-fire on
+# its numbered next-step lists. Implementation specialists remain excluded
+# (they describe what was built, not what was discovered).
+for expected in metis briefing-analyst oracle abstraction-critic security-lens data-lens product-lens growth-lens sre-lens design-lens visual-craft-lens; do
   assert_contains "target list includes ${expected}" "${expected}" "${targets}"
 done
+assert_not_contains "quality-researcher excluded (research reports, not findings)" "quality-researcher" "${targets}"
 
 # ----------------------------------------------------------------------
 printf 'Test 16: capture_targets EXCLUDES verifiers (excellence-reviewer, quality-reviewer)\n'
@@ -630,6 +636,87 @@ assert_contains "router coding block names Serendipity Rule" \
   "Serendipity Rule" "${router_text}"
 assert_contains "router coding block names record-serendipity.sh" \
   "record-serendipity.sh" "${router_text}"
+
+# ----------------------------------------------------------------------
+printf 'Test 30: zero_capture telemetry fires on long whitelisted-agent output with no findings (v1.27.0 F-007)\n'
+# Set up: synthesize a SubagentStop event for `metis` with a long
+# message body that has no findings structure (no anchored heading, no
+# numbered list with finding-keyword + severity, etc.). The
+# record-subagent-summary.sh hook should:
+#   1. Try to extract findings — get nothing.
+#   2. Detect that the message is >500 chars (the new threshold).
+#   3. Emit a `gate=discovered-scope event=zero_capture` row.
+zc_session_root="$(mktemp -d)"
+zc_session_id="zc-test-$$"
+zc_state_dir="${zc_session_root}/${zc_session_id}"
+mkdir -p "${zc_state_dir}"
+# Activate ULW mode in the synthetic session so is_ultrawork_mode returns true.
+printf '{"workflow_mode":"ultrawork"}\n' > "${zc_state_dir}/session_state.json"
+
+# Build a >500-char message body that has no findings shape at all —
+# pure prose with no numbered list, no heading anchors. Use a
+# python/awk-portable string repeat to avoid yes|head SIGPIPE.
+long_prose=""
+for _ in 1 2 3 4 5 6 7; do
+  long_prose+="This is a long prose paragraph that summarizes my analysis without any structured findings list. "
+done
+zc_payload="$(jq -nc \
+  --arg sid "${zc_session_id}" \
+  --arg msg "${long_prose}" \
+  '{session_id: $sid, agent_type: "metis", message: $msg, last_assistant_message: $msg}')"
+
+OMC_DISCOVERED_SCOPE=on \
+SESSION_ID="${zc_session_id}" \
+STATE_ROOT="${zc_session_root}" \
+HOME="${zc_session_root}" \
+bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/record-subagent-summary.sh" \
+  <<<"${zc_payload}" >/dev/null 2>&1 || true
+
+zc_events="${zc_state_dir}/gate_events.jsonl"
+if [[ -f "${zc_events}" ]]; then
+  zc_zero="$(grep '"event":"zero_capture"' "${zc_events}" 2>/dev/null | head -1)"
+  assert_contains "zero_capture row written for long-no-findings metis output" \
+    '"gate":"discovered-scope"' "${zc_zero}"
+  assert_contains "zero_capture row carries agent name in details" \
+    '"agent":"metis"' "${zc_zero}"
+  # The msg_len should be a number, not a string, in the details.
+  zc_len="$(printf '%s' "${zc_zero}" | jq -r '.details.msg_len // empty' 2>/dev/null)"
+  assert_eq "msg_len present in details" "$(printf '%s' "${long_prose}" | wc -c | tr -d ' ')" "${zc_len}"
+else
+  printf '  FAIL: gate_events.jsonl was not written; zero_capture telemetry missing\n' >&2
+  fail=$((fail + 3))
+fi
+
+# Short message (<= 500 chars) should NOT trigger zero_capture telemetry —
+# threshold gates noise.
+short_session_id="zc-short-$$"
+short_state_dir="${zc_session_root}/${short_session_id}"
+mkdir -p "${short_state_dir}"
+printf '{"workflow_mode":"ultrawork"}\n' > "${short_state_dir}/session_state.json"
+short_payload="$(jq -nc \
+  --arg sid "${short_session_id}" \
+  '{session_id: $sid, agent_type: "metis", message: "Quick note.", last_assistant_message: "Quick note."}')"
+OMC_DISCOVERED_SCOPE=on \
+SESSION_ID="${short_session_id}" \
+STATE_ROOT="${zc_session_root}" \
+HOME="${zc_session_root}" \
+bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/record-subagent-summary.sh" \
+  <<<"${short_payload}" >/dev/null 2>&1 || true
+short_events="${short_state_dir}/gate_events.jsonl"
+# Tightened (per Wave 2 review): treat both "no file" and "file with
+# zero matches" as the not-fired case. grep -c emits "0" (not empty)
+# when the file exists but has no matches, so the prior assertion
+# could pass for the wrong reason if the file got created but stayed
+# empty.
+if [[ -f "${short_events}" ]]; then
+  short_zc_count="$(grep -c '"event":"zero_capture"' "${short_events}" 2>/dev/null || printf 0)"
+  short_zc_count="${short_zc_count:-0}"
+else
+  short_zc_count=0
+fi
+assert_eq "zero_capture not fired below 500 char threshold" "0" "${short_zc_count}"
+
+rm -rf "${zc_session_root}"
 
 printf '\n=== Discovered-Scope Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]

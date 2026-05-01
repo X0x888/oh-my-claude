@@ -343,6 +343,25 @@ canary_session_unverified_count() {
   jq -r 'select(.verdict == "unverified") | .verdict' "${f}" 2>/dev/null | wc -l | tr -d ' '
 }
 
+# canary_session_max_unverified_claims <session_id>
+#
+# Returns the maximum claim_count across all `unverified` verdict rows
+# in the session. Used by canary_should_alert to detect "loud sessions"
+# — a single turn that confabulates many claims with zero verification
+# tools. v1.27.0 (F-010): lets the canary alert on the FIRST unverified
+# event when that single event is loud (claim_count ≥ 4), instead of
+# waiting for two events to accumulate. Closes the gap where a single
+# very-confident-but-fully-confabulated turn would ship without a soft
+# alert.
+canary_session_max_unverified_claims() {
+  local session_id="$1"
+  local f
+  f="${STATE_ROOT}/${session_id}/canary.jsonl"
+  [[ ! -f "${f}" ]] && { printf '0'; return; }
+  jq -rs '[.[] | select(.verdict == "unverified") | .claim_count] | (max // 0)' "${f}" 2>/dev/null \
+    || printf '0'
+}
+
 # canary_should_alert <session_id>
 #
 # Returns 0 (true) when the session has crossed the unverified-claim
@@ -350,16 +369,31 @@ canary_session_unverified_count() {
 # session. The alert is one-shot per session — drift_warning_emitted
 # state flag prevents repetition.
 #
-# Threshold: >= 2 unverified verdicts in the session. Two is enough to
-# distinguish noise (a single confused claim under unusual prose) from
-# pattern (the model is consistently claiming verification work it
-# isn't doing).
+# Two thresholds (either fires the alert):
+#   1. Pattern threshold: >= 2 unverified verdicts in the session.
+#      Distinguishes noise (a single confused claim under unusual
+#      prose) from pattern (the model is consistently claiming
+#      verification work it isn't doing).
+#   2. Loud-session threshold (v1.27.0 F-010): single unverified
+#      event with claim_count >= 4. A single turn that asserts 4+
+#      verification claims with zero backing tool calls is itself
+#      strong-enough signal to alert immediately — waiting for a
+#      second event lets a "one big confabulated turn" session ship
+#      silently. Threshold of 4 chosen to be strictly above the
+#      claim_count >= 2 floor that triggers `unverified` verdict at
+#      all, and well above the noise-floor any single turn of normal
+#      execution prose generates.
 canary_should_alert() {
   local session_id="$1"
   local emitted
   emitted="$(read_state "drift_warning_emitted")"
   [[ "${emitted}" == "1" ]] && return 1
-  local count
+  local count max_claims
   count="$(canary_session_unverified_count "${session_id}")"
-  [[ "${count}" -ge 2 ]]
+  max_claims="$(canary_session_max_unverified_claims "${session_id}")"
+  # Either pattern threshold or loud-session threshold fires.
+  if [[ "${count}" -ge 2 ]] || [[ "${max_claims}" -ge 4 ]]; then
+    return 0
+  fi
+  return 1
 }

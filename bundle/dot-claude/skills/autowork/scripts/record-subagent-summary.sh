@@ -72,11 +72,16 @@ if [[ "${OMC_DISCOVERED_SCOPE}" == "on" ]] && is_ultrawork_mode; then
         # extracts zero findings is suspicious — the specialist may have
         # changed prose style (dropped a `### Findings` heading, switched
         # to prose-only output, etc.) in a way that silently disables the
-        # gate. Logging here lets the user see the issue instead of
-        # discovering it weeks later when a council surfaces problems
-        # that never get gated.
-        if [[ "${#LAST_ASSISTANT_MESSAGE}" -gt 800 ]]; then
+        # gate. v1.27.0 (F-007) lowered the threshold from 800 → 500
+        # chars so shorter prose-only specialist responses also surface,
+        # AND emits a `gate=discovered-scope event=zero_capture` row so
+        # /ulw-report can aggregate the rate per agent. The anomaly log
+        # is preserved for backward compatibility with existing tooling.
+        if [[ "${#LAST_ASSISTANT_MESSAGE}" -gt 500 ]]; then
           log_anomaly "discovered_scope_capture" "${_agent_short} returned ${#LAST_ASSISTANT_MESSAGE} chars but extractor caught zero findings"
+          record_gate_event "discovered-scope" "zero_capture" \
+            "agent=${_agent_short}" \
+            "msg_len=${#LAST_ASSISTANT_MESSAGE}" || true
         fi
       fi
       break
