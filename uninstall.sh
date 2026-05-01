@@ -113,6 +113,7 @@ AGENT_FILES=(
 
 # Standalone files.
 STANDALONE_FILES=(
+  "${CLAUDE_HOME}/output-styles/oh-my-claude.md"
   "${CLAUDE_HOME}/output-styles/opencode-compact.md"
   "${CLAUDE_HOME}/statusline.py"
   "${CLAUDE_HOME}/switch-tier.sh"
@@ -243,12 +244,13 @@ removed=()
 # the user's actual current name (which may have been customized in place
 # per docs/customization.md guidance) rather than a hardcoded literal.
 # Without this, a user who edited the bundled file's frontmatter to
-# something like "OpenCode Compact v2" and updated their settings to
+# something like "oh-my-claude v2" and updated their settings to
 # match would have the file removed but the orphaned outputStyle entry
 # left pointing at a missing style. Falls back to the historical default
-# "OpenCode Compact" when the file is absent or the parse returns empty.
-OMC_BUNDLED_STYLE_NAME="OpenCode Compact"
-_bundled_style_path="${CLAUDE_HOME}/output-styles/opencode-compact.md"
+# "oh-my-claude" when the file is absent or the parse returns empty.
+# Also accepts the legacy "OpenCode Compact" name for pre-v1.26.0 installs.
+OMC_BUNDLED_STYLE_NAME="oh-my-claude"
+_bundled_style_path="${CLAUDE_HOME}/output-styles/oh-my-claude.md"
 if [[ -f "${_bundled_style_path}" ]]; then
   # Robust parser: strips trailing \r (CRLF defense — without it, a
   # Windows-edited customized file would re-introduce the exact orphan
@@ -356,10 +358,10 @@ with settings_path.open() as f:
     settings = json.load(f)
 
 # Bundled style name captured by the parent shell before the .md file
-# was removed. Falls back to "OpenCode Compact" if the parent did not
+# was removed. Falls back to "oh-my-claude" if the parent did not
 # export it (e.g. when this function is invoked outside the normal
-# uninstall flow).
-omc_style_name = os.environ.get("OMC_BUNDLED_STYLE_NAME", "OpenCode Compact")
+# uninstall flow). Also accepts the legacy "OpenCode Compact" name.
+omc_style_name = os.environ.get("OMC_BUNDLED_STYLE_NAME", "oh-my-claude")
 
 # ---- Remove hooks whose commands reference oh-my-claude paths ----
 # Patterns that identify oh-my-claude hooks. Null-safe accessors via
@@ -413,7 +415,7 @@ elif "hooks" in settings:
 
 # outputStyle — only remove if set to the bundled style's frontmatter
 # name (captured before removal so in-place customizations are matched).
-if settings.get("outputStyle") == omc_style_name:
+if settings.get("outputStyle") in (omc_style_name, "OpenCode Compact"):
     del settings["outputStyle"]
 
 # effortLevel — only remove if set to our value.
@@ -444,7 +446,7 @@ PY
 
 clean_settings_jq() {
   local temp_path="${SETTINGS}.tmp"
-  local omc_style_name="${OMC_BUNDLED_STYLE_NAME:-OpenCode Compact}"
+  local omc_style_name="${OMC_BUNDLED_STYLE_NAME:-oh-my-claude}"
 
   jq --arg omc_style "${omc_style_name}" '
     # Remove hooks whose commands reference oh-my-claude paths.
@@ -474,7 +476,7 @@ clean_settings_jq() {
     # outputStyle is matched against the bundled style frontmatter name
     # captured before removal (env $omc_style), so in-place customizations
     # are correctly cleaned rather than orphaned.
-    | if .outputStyle == $omc_style then del(.outputStyle) else . end
+    | if (.outputStyle == $omc_style or .outputStyle == "OpenCode Compact") then del(.outputStyle) else . end
     | if .effortLevel == "high" then del(.effortLevel) else . end
     | if .spinnerTipsEnabled == false then del(.spinnerTipsEnabled) else . end
     | if (.spinnerVerbs.mode == "replace" and (.spinnerVerbs.verbs | sort) == ["Inspecting","Refining","Sketching","Verifying"]) then del(.spinnerVerbs) else . end

@@ -26,7 +26,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-STYLE_FILE="${REPO_ROOT}/bundle/dot-claude/output-styles/opencode-compact.md"
+STYLE_FILE="${REPO_ROOT}/bundle/dot-claude/output-styles/oh-my-claude.md"
 ROUTER="${REPO_ROOT}/bundle/dot-claude/quality-pack/scripts/prompt-intent-router.sh"
 PATCH="${REPO_ROOT}/config/settings.patch.json"
 
@@ -89,10 +89,10 @@ fi
 # applies to verify.sh and install.sh — the parser is shared (defined
 # here as `parse_style_name`) and audited by this assertion.
 crlf_fixture="$(mktemp)"
-printf 'name: OpenCode Compact\r\ndescription: x\r\nkeep-coding-instructions: true\r\n' > "${crlf_fixture}"
+printf 'name: oh-my-claude\r\ndescription: x\r\nkeep-coding-instructions: true\r\n' > "${crlf_fixture}"
 crlf_value="$(parse_style_name "${crlf_fixture}")"
 rm -f "${crlf_fixture}"
-if [[ "${crlf_value}" == "OpenCode Compact" ]]; then
+if [[ "${crlf_value}" == "oh-my-claude" ]]; then
   ok
 else
   # xxd-friendly diagnostic so the failure does not hide the trailing CR.
@@ -100,13 +100,13 @@ else
 fi
 
 # Multi-space-after-colon and embedded-colon preservation: a custom name
-# like "OpenCode Compact: v2" or whitespace introduced by a hand edit
+# like "oh-my-claude: v2" or whitespace introduced by a hand edit
 # must round-trip cleanly.
 extras_fixture="$(mktemp)"
-printf 'name:   OpenCode Compact: v2\ndescription: x\n' > "${extras_fixture}"
+printf 'name:   oh-my-claude: v2\ndescription: x\n' > "${extras_fixture}"
 extras_value="$(parse_style_name "${extras_fixture}")"
 rm -f "${extras_fixture}"
-if [[ "${extras_value}" == "OpenCode Compact: v2" ]]; then
+if [[ "${extras_value}" == "oh-my-claude: v2" ]]; then
   ok
 else
   bad "parser truncates embedded colons or mishandles padding: got '${extras_value}'"

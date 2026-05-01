@@ -206,14 +206,16 @@
 #model_tier=balanced
 
 # Output style installer behavior. Controls whether `bash install.sh`
-# merges `outputStyle: "OpenCode Compact"` into ~/.claude/settings.json.
-#   opencode  — install the bundled OpenCode Compact style (default).
+# merges `outputStyle: "oh-my-claude"` into ~/.claude/settings.json.
+#   opencode  — install the bundled oh-my-claude style (default).
 #               Only sets settings.json's outputStyle when the key is
 #               absent or null; a pre-existing custom value is preserved.
+#               Upgrades from the legacy "OpenCode Compact" name are
+#               migrated automatically.
 #   preserve  — leave settings.json's outputStyle untouched (including
 #               unset). Useful when you have your own output style and
 #               do not want install.sh to ever set it. The bundled
-#               opencode-compact.md file is still copied to
+#               oh-my-claude.md file is still copied to
 #               ~/.claude/output-styles/ for reference; only the settings
 #               entry is skipped.
 # Env: OMC_OUTPUT_STYLE.

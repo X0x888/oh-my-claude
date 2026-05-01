@@ -115,7 +115,7 @@ for impl in "${implementations[@]}"; do
   assert_json_eq "${impl}: fresh — statusLine.type" \
     "${work}/settings.json" '.statusLine.type' "command"
   assert_json_eq "${impl}: fresh — outputStyle" \
-    "${work}/settings.json" '.outputStyle' "OpenCode Compact"
+    "${work}/settings.json" '.outputStyle' "oh-my-claude"
   assert_json_eq "${impl}: fresh — effortLevel" \
     "${work}/settings.json" '.effortLevel' "high"
   assert_json_eq "${impl}: fresh — spinnerTipsEnabled" \
@@ -282,8 +282,27 @@ JSON
   mkdir -p "${work}"
   printf '{}' > "${work}/settings.json"
   OMC_OUTPUT_STYLE_PREF="opencode" run_merge "${impl}" "${work}/settings.json" "${SETTINGS_PATCH}" "false"
-  assert_json_eq "${impl}: F-005 — opencode merges OpenCode Compact" \
-    "${work}/settings.json" '.outputStyle' "OpenCode Compact"
+  assert_json_eq "${impl}: F-005 — opencode merges oh-my-claude" \
+    "${work}/settings.json" '.outputStyle' "oh-my-claude"
+
+  # -----------------------------------------------------------------------
+  # F-005b: Legacy "OpenCode Compact" is migrated to "oh-my-claude" on
+  # upgrade, regardless of output_style_pref.
+  # -----------------------------------------------------------------------
+  work="${TEST_DIR}/${impl}-output-style-migration"
+  mkdir -p "${work}"
+  printf '{"outputStyle": "OpenCode Compact"}' > "${work}/settings.json"
+  run_merge "${impl}" "${work}/settings.json" "${SETTINGS_PATCH}" "false"
+  assert_json_eq "${impl}: F-005b — legacy OpenCode Compact migrated to oh-my-claude" \
+    "${work}/settings.json" '.outputStyle' "oh-my-claude"
+
+  # Same migration should fire even under output_style=preserve.
+  work="${TEST_DIR}/${impl}-output-style-migration-preserve"
+  mkdir -p "${work}"
+  printf '{"outputStyle": "OpenCode Compact"}' > "${work}/settings.json"
+  OMC_OUTPUT_STYLE_PREF="preserve" run_merge "${impl}" "${work}/settings.json" "${SETTINGS_PATCH}" "false"
+  assert_json_eq "${impl}: F-005b — legacy name migrated even under preserve" \
+    "${work}/settings.json" '.outputStyle' "oh-my-claude"
 
   # -----------------------------------------------------------------------
   # Test 5: Pre-existing hooks from another plugin are preserved

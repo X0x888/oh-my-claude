@@ -1,5 +1,5 @@
 ---
-name: OpenCode Compact
+name: oh-my-claude
 description: Lead with the answer. Bold-label cards over heavy headings. Backticks for every command, path, and identifier. Brevity by default; recap-shaped tasks may expand.
 keep-coding-instructions: true
 ---
@@ -16,7 +16,7 @@ keep-coding-instructions: true
   `outputStyle` in ~/.claude/settings.json at the new name.
 -->
 
-# OpenCode Compact
+# oh-my-claude
 
 Compact, polished CLI presentation with strong visual hierarchy.
 

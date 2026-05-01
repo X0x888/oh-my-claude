@@ -1105,7 +1105,7 @@ class TestMainIntegration(unittest.TestCase):
         data = {
             "workspace": {"current_dir": "/tmp/my-project"},
             "model": {"display_name": "Opus 4", "id": "claude-opus-4-20250514"},
-            "output_style": {"name": "OpenCode Compact"},
+            "output_style": {"name": "oh-my-claude"},
             "context_window": {
                 "used_percentage": 45.5,
                 "total_input_tokens": 150000,
@@ -1131,7 +1131,7 @@ class TestMainIntegration(unittest.TestCase):
         # Line 1: model, dir, style
         self.assertIn("Opus 4", lines[0])
         self.assertIn("my-project", lines[0])
-        self.assertIn("OpenCode Compact", lines[0])
+        self.assertIn("oh-my-claude", lines[0])
         # Line 2: context bar, tokens, cost, rate limit, cache, API
         self.assertIn("45%", lines[1])
         self.assertIn("$2.75", lines[1])

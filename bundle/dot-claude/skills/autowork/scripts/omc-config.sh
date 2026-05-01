@@ -80,7 +80,7 @@ resume_watchdog_cooldown_secs|int|600|watchdog|Per-artifact cooldown between wat
 time_tracking|bool|on|telemetry|Per-tool / per-subagent timing capture; backs Stop epilogue + /ulw-time
 time_tracking_xs_retain_days|pint|30|telemetry|Cross-session timing log retention (days)
 state_ttl_days|int|7|cleanup|Days before stale session-state dirs are swept
-output_style|enum:opencode/preserve|opencode|cost|Bundle the OpenCode Compact style (opencode) or leave settings.json untouched (preserve)
+output_style|enum:opencode/preserve|opencode|cost|Bundle the oh-my-claude style (opencode) or leave settings.json untouched (preserve)
 EOF
 }
 

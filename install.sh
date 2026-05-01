@@ -146,7 +146,9 @@ with patch_path.open() as f:
 # even on first install where the key starts unset.
 settings["statusLine"] = patch["statusLine"]
 output_style_pref = os.environ.get("OMC_OUTPUT_STYLE_PREF", "opencode")
-if output_style_pref != "preserve" and settings.get("outputStyle") is None:
+if settings.get("outputStyle") == "OpenCode Compact":
+    settings["outputStyle"] = patch["outputStyle"]
+elif output_style_pref != "preserve" and settings.get("outputStyle") is None:
     settings["outputStyle"] = patch["outputStyle"]
 if settings.get("effortLevel") is None:
     settings["effortLevel"] = patch["effortLevel"]
@@ -508,7 +510,7 @@ merge_settings_jq() {
     | .[1] as $patch
     | $base
     | .statusLine = $patch.statusLine
-    | (if $output_style_pref == "preserve" then . else .outputStyle = (.outputStyle // $patch.outputStyle) end)
+    | (if .outputStyle == "OpenCode Compact" then .outputStyle = $patch.outputStyle elif $output_style_pref == "preserve" then . else .outputStyle = (.outputStyle // $patch.outputStyle) end)
     | .effortLevel = (.effortLevel // $patch.effortLevel)
     | .spinnerTipsEnabled = $patch.spinnerTipsEnabled
     | .spinnerVerbs = $patch.spinnerVerbs
@@ -1070,7 +1072,11 @@ if [[ -f "${CLAUDE_HOME}/oh-my-claude.conf" ]]; then
     printf '  Model tier:    %s\n' "${_tier}"
   fi
 fi
+# Clean up old-name output-style file from pre-v1.26.0 installs.
 if [[ -f "${CLAUDE_HOME}/output-styles/opencode-compact.md" ]]; then
+  rm -f "${CLAUDE_HOME}/output-styles/opencode-compact.md"
+fi
+if [[ -f "${CLAUDE_HOME}/output-styles/oh-my-claude.md" ]]; then
   # Print the style that's actually active in settings.json — not the
   # bundled file's frontmatter — so the summary tells the truth under
   # output_style=preserve (where settings.json may carry a different
@@ -1081,7 +1087,7 @@ if [[ -f "${CLAUDE_HOME}/output-styles/opencode-compact.md" ]]; then
     _active_style="$(jq -r '.outputStyle // empty' "${CLAUDE_HOME}/settings.json" 2>/dev/null || true)"
   fi
   if [[ -z "${_active_style}" ]]; then
-    _active_style="$(awk '/^name:/{sub(/^name:[[:space:]]*/,""); sub(/[[:space:]]+$/,""); print; exit}' "${CLAUDE_HOME}/output-styles/opencode-compact.md" 2>/dev/null || true)"
+    _active_style="$(awk '/^name:/{sub(/^name:[[:space:]]*/,""); sub(/[[:space:]]+$/,""); print; exit}' "${CLAUDE_HOME}/output-styles/oh-my-claude.md" 2>/dev/null || true)"
     if [[ -n "${_active_style}" && "${OMC_OUTPUT_STYLE_PREF:-opencode}" == "preserve" ]]; then
       _active_style="${_active_style} (bundle file; settings.json untouched per output_style=preserve)"
     fi

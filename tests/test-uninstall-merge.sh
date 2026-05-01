@@ -210,7 +210,7 @@ JSON
   # -------------------------------------------------------------------------
   # F-010: in-place customized outputStyle name. The user followed the
   # docs/customization.md L373 advice and edited the bundled file's
-  # frontmatter `name:` to "OpenCode Compact v2", then updated their
+  # frontmatter `name:` to "oh-my-claude v2", then updated their
   # settings.json to match. uninstall.sh captures the actual frontmatter
   # name BEFORE removing the file and exports OMC_BUNDLED_STYLE_NAME.
   # The cleanup must use that captured name for value-gating, otherwise
@@ -222,10 +222,10 @@ JSON
   SETTINGS="${work}/settings.json"
   cat > "${SETTINGS}" <<'JSON'
 {
-  "outputStyle": "OpenCode Compact v2"
+  "outputStyle": "oh-my-claude v2"
 }
 JSON
-  OMC_BUNDLED_STYLE_NAME="OpenCode Compact v2" run_clean "${impl}" "${SETTINGS}"
+  OMC_BUNDLED_STYLE_NAME="oh-my-claude v2" run_clean "${impl}" "${SETTINGS}"
   assert_json_eq "${impl}: F-010 — customized name removed via captured frontmatter" \
     "${SETTINGS}" '.outputStyle // "absent"' "absent"
 
@@ -242,9 +242,27 @@ JSON
   "outputStyle": "Learning"
 }
 JSON
-  OMC_BUNDLED_STYLE_NAME="OpenCode Compact" run_clean "${impl}" "${SETTINGS}"
+  OMC_BUNDLED_STYLE_NAME="oh-my-claude" run_clean "${impl}" "${SETTINGS}"
   assert_json_eq "${impl}: F-010 — non-matching user style preserved" \
     "${SETTINGS}" '.outputStyle' "Learning"
+
+  # -------------------------------------------------------------------------
+  # F-010b: Legacy "OpenCode Compact" in settings.json is cleaned up by
+  # uninstall even though the bundled file now says "oh-my-claude".
+  # Covers the upgrade path where a user never re-ran install.sh after
+  # the rename but later runs uninstall.
+  # -------------------------------------------------------------------------
+  work="${TEST_DIR}/${impl}-legacy-name-cleanup"
+  mkdir -p "${work}"
+  SETTINGS="${work}/settings.json"
+  cat > "${SETTINGS}" <<'JSON'
+{
+  "outputStyle": "OpenCode Compact"
+}
+JSON
+  OMC_BUNDLED_STYLE_NAME="oh-my-claude" run_clean "${impl}" "${SETTINGS}"
+  assert_json_eq "${impl}: F-010b — legacy OpenCode Compact removed by uninstall" \
+    "${SETTINGS}" '.outputStyle // "absent"' "absent"
 
   printf '  %s implementation done.\n' "${impl}"
 done

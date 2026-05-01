@@ -4,7 +4,7 @@
     "command": "~/.claude/statusline.py",
     "padding": 0
   },
-  "outputStyle": "OpenCode Compact",
+  "outputStyle": "oh-my-claude",
   "effortLevel": "high",
   "spinnerTipsEnabled": false,
   "spinnerVerbs": {

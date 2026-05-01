@@ -77,7 +77,7 @@ required_paths=(
   "${CLAUDE_HOME}/CLAUDE.md"
   "${CLAUDE_HOME}/statusline.py"
   "${CLAUDE_HOME}/omc-repro.sh"
-  "${CLAUDE_HOME}/output-styles/opencode-compact.md"
+  "${CLAUDE_HOME}/output-styles/oh-my-claude.md"
   "${CLAUDE_HOME}/quality-pack/scripts/prompt-intent-router.sh"
   "${CLAUDE_HOME}/quality-pack/scripts/session-start-resume-handoff.sh"
   "${CLAUDE_HOME}/quality-pack/scripts/session-start-compact-handoff.sh"
@@ -159,11 +159,11 @@ done
 
 # Output-style frontmatter integrity. The path was already verified
 # above; here we additionally confirm the frontmatter `name:` field
-# matches the literal "OpenCode Compact" that config/settings.patch.json
+# matches the literal "oh-my-claude" that config/settings.patch.json
 # writes into settings.json. Drift between the two would let a corrupted
 # or renamed file pass existence-only verification while silently failing
 # at session start when Claude Code tries to resolve outputStyle.
-style_path="${CLAUDE_HOME}/output-styles/opencode-compact.md"
+style_path="${CLAUDE_HOME}/output-styles/oh-my-claude.md"
 if [[ -f "${style_path}" ]]; then
   # Robust to CRLF line endings, multi-space-after-colon, and embedded
   # colons in the name itself. The naive `awk -F': ' '{print $2}'` form
@@ -171,10 +171,10 @@ if [[ -f "${style_path}" ]]; then
   # equality check below — silently identical to the F-010 leak path
   # this verifier is supposed to catch.
   style_name="$(awk '/^name:/{sub(/^name:[[:space:]]*/,""); sub(/[[:space:]]+$/,""); print; exit}' "${style_path}" 2>/dev/null || true)"
-  if [[ "${style_name}" == "OpenCode Compact" ]]; then
+  if [[ "${style_name}" == "oh-my-claude" ]]; then
     pass "output-style frontmatter name: ${style_name}"
   else
-    fail "output-style frontmatter name '${style_name}' does not match expected 'OpenCode Compact' (file may be corrupted)"
+    fail "output-style frontmatter name '${style_name}' does not match expected 'oh-my-claude' (file may be corrupted)"
   fi
 fi
 
