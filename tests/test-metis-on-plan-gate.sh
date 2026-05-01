@@ -140,12 +140,15 @@ _run_stop_guard() {
   local hook_json
   hook_json="$(jq -nc --arg sid "${sid}" '{session_id:$sid}')"
 
-  HOME="${_test_home}" \
-    STATE_ROOT="${_test_state_root}" \
-    env ${env_args[@]+"${env_args[@]}"} \
-    bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/stop-guard.sh" \
-    <<<"${hook_json}" 2>/dev/null \
-    || true
+  (
+    cd "${_test_home}" || exit 1
+    HOME="${_test_home}" \
+      STATE_ROOT="${_test_state_root}" \
+      env OMC_METIS_ON_PLAN_GATE=off ${env_args[@]+"${env_args[@]}"} \
+      bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/stop-guard.sh" \
+      <<<"${hook_json}" 2>/dev/null \
+      || true
+  )
 }
 
 _read_state() {
