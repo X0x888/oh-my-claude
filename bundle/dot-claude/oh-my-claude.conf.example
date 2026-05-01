@@ -304,6 +304,30 @@
 # Env: OMC_TIME_TRACKING_XS_RETAIN_DAYS.
 #time_tracking_xs_retain_days=30
 
+# Model-drift canary (v1.26.0 Wave 2). When `on`, the Stop hook runs a
+# claims-vs-tool-calls audit: it parses the model's last response for
+# assertive verification claims ("I read X", "I verified Y", "I checked
+# Z", "the function in /path/to/file does ...") and compares the count
+# against the actual Read/Bash/Grep tool calls that fired in the same
+# turn. When the model claims verification work it did not do, an
+# `unverified_claim` event lands in `<session>/canary.jsonl` and a
+# cross-session aggregate at `~/.claude/quality-pack/canary.jsonl`.
+# Surfaces in `/ulw-report` as a new "Canary signals" section. Soft
+# in-session alert fires when the per-session count crosses threshold
+# (one-shot per session). Lightweight: hook-based, no daemon, runs
+# only at Stop. Default `on`. Opt out on shared machines / regulated
+# codebases / very-high-volume workflows where the prose-parse cost is
+# unwelcome.
+#
+# REQUIRES time_tracking=on. The audit reads <session>/timing.jsonl to
+# count tool calls per prompt_seq; when time_tracking is off the canary
+# short-circuits silently with no audit rows written. Minimal preset
+# turns both off (consistent), maximum/balanced turn both on. If you
+# want the canary on a custom config, ensure time_tracking is also on.
+#
+# Env: OMC_MODEL_DRIFT_CANARY.
+#model_drift_canary=on
+
 # ---------------------------------------------------------------------------
 # Cleanup.
 # ---------------------------------------------------------------------------

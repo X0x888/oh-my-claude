@@ -81,6 +81,7 @@ time_tracking|bool|on|telemetry|Per-tool / per-subagent timing capture; backs St
 time_tracking_xs_retain_days|pint|30|telemetry|Cross-session timing log retention (days)
 state_ttl_days|int|7|cleanup|Days before stale session-state dirs are swept
 output_style|enum:opencode/preserve|opencode|cost|Bundle the oh-my-claude style (opencode) or leave settings.json untouched (preserve)
+model_drift_canary|bool|on|telemetry|Stop-hook canary detects silent confabulation (claims-vs-tool-calls audit; surfaces in /ulw-report)
 EOF
 }
 
@@ -121,6 +122,7 @@ metis_on_plan_gate=on
 stop_failure_capture=on
 resume_watchdog=on
 time_tracking=on
+model_drift_canary=on
 model_tier=quality
 EOF
       ;;
@@ -142,6 +144,7 @@ metis_on_plan_gate=off
 stop_failure_capture=on
 resume_watchdog=off
 time_tracking=on
+model_drift_canary=on
 model_tier=balanced
 EOF
       ;;
@@ -163,6 +166,7 @@ metis_on_plan_gate=off
 stop_failure_capture=on
 resume_watchdog=off
 time_tracking=off
+model_drift_canary=off
 model_tier=economy
 EOF
       ;;

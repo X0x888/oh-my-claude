@@ -143,7 +143,7 @@ for impl in "${implementations[@]}"; do
   assert_json_count "${impl}: fresh — PostCompact hooks" \
     "${work}/settings.json" '.hooks.PostCompact' "1"
   assert_json_count "${impl}: fresh — Stop hooks" \
-    "${work}/settings.json" '.hooks.Stop' "2"
+    "${work}/settings.json" '.hooks.Stop' "3"
   assert_json_count "${impl}: fresh — StopFailure hooks" \
     "${work}/settings.json" '.hooks.StopFailure' "1"
   assert_json_eq "${impl}: fresh — StopFailure wires stop-failure-handler.sh" \

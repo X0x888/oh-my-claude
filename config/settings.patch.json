@@ -274,6 +274,14 @@
             "command": "$HOME/.claude/skills/autowork/scripts/stop-time-summary.sh"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/skills/autowork/scripts/canary-claim-audit.sh"
+          }
+        ]
       }
     ],
     "StopFailure": [

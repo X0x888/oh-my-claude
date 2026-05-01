@@ -105,9 +105,11 @@ required_paths=(
   "${CLAUDE_HOME}/skills/autowork/scripts/lib/classifier.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/lib/verification.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/lib/timing.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/lib/canary.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/pretool-timing.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/posttool-timing.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/stop-time-summary.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/canary-claim-audit.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/show-time.sh"
   "${CLAUDE_HOME}/skills/ulw-time/SKILL.md"
   "${CLAUDE_HOME}/skills/autowork/scripts/record-serendipity.sh"
@@ -241,6 +243,7 @@ hook_scripts=(
   "${CLAUDE_HOME}/skills/autowork/scripts/pretool-timing.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/posttool-timing.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/stop-time-summary.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/canary-claim-audit.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/show-time.sh"
 )
 
@@ -289,6 +292,7 @@ else
     "SubagentStop:record-reviewer.sh"
     "Stop:stop-guard.sh"
     "Stop:stop-time-summary.sh"
+    "Stop:canary-claim-audit.sh"
   )
 
   # Scoped check: require the command fragment to appear under the correct

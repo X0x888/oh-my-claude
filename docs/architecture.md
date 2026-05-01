@@ -313,6 +313,7 @@ Separate from session state, `install.sh` writes four install-time artifacts tha
 | `last_serendipity_fix` | Short description of the most recent Serendipity Rule application — appended to the `Serendipity fires:` row in `/ulw-status`. |
 | `excellence_guard_triggered` | Whether the excellence gate has already fired this session (`1` or empty) |
 | `memory_drift_hint_emitted` | `1` after `prompt-intent-router.sh` injects the v1.20.0 memory-drift hint at session start; one-shot per session — second and later prompts do NOT re-emit |
+| `drift_warning_emitted` | `1` after `canary-claim-audit.sh` (v1.26.0 Wave 2) emits the silent-confab soft alert at Stop. One-shot for the lifetime of the session_state.json file — the canary keeps recording per-event audit rows in `<session>/canary.jsonl` after the alert fires, but the user-facing systemMessage is suppressed for the rest of the session to avoid alarm fatigue. Resets implicitly when a fresh session gets a new state file (no explicit clear path). Mirrors the `memory_drift_hint_emitted` lifetime. |
 | `guard_exhausted` | Epoch timestamp when guard caps were reached and stop was allowed |
 | `guard_exhausted_detail` | Diagnostic string showing which gates were still unsatisfied at exhaustion |
 | `session_outcome` | How the session ended: `completed` (all gates satisfied), `exhausted` (guard caps reached), or `abandoned` (TTL-swept without a completed stop). Carried into `session_summary.jsonl` for cross-session analytics. |

@@ -316,6 +316,66 @@ else
 fi
 
 # ----------------------------------------------------------------------
+# Section 4c1.5: Model-drift canary signals (v1.26.0 Wave 2)
+#
+# Surfaces the silent-confabulation canary readings recorded by
+# canary-claim-audit.sh at Stop time. The audit compares assertive
+# verification claims in the model's response against the actual
+# verification tool calls (Read/Bash/Grep/Glob/WebFetch/NotebookRead)
+# fired in the same prompt_seq epoch. When the claim count exceeds the
+# tool count by enough to suggest the model is asserting work it
+# didn't do, the audit emits a per-event row with verdict in
+# {clean, covered, low_coverage, unverified}. unverified is the
+# strongest single-event signal — it ALSO emits a gate-event row that
+# the section below counts.
+#
+# The renderer reads the cross-session canary aggregate first (rich
+# verdict distribution); if the aggregate is missing or empty it falls
+# back to gate_events to count unverified-claim fires alone. This
+# preserves a useful surface even on installs where the canary library
+# has emitted gate events but the cross-session JSONL hasn't accrued
+# yet (fresh install, opt-out then opt-in, etc.).
+canary_xs_jsonl="${HOME}/.claude/quality-pack/canary.jsonl"
+canary_event_rows="$(printf '%s\n' "${gate_event_rows}" | jq -c \
+    'select(.gate == "canary" and .event == "unverified_claim")' 2>/dev/null || true)"
+if [[ -f "${canary_xs_jsonl}" && -s "${canary_xs_jsonl}" ]] || [[ -n "${canary_event_rows}" ]]; then
+  printf '## Model-drift canary\n\n'
+  if [[ -f "${canary_xs_jsonl}" && -s "${canary_xs_jsonl}" ]]; then
+    # Distribution by verdict over the user's window (default 7d). Use
+    # the same `cutoff_ts` epoch the report's other sections use (declared
+    # at the top of show-report.sh based on the user's window argument).
+    canary_window_rows="$(jq -c --argjson cutoff "${cutoff_ts}" 'select((.ts // 0) >= $cutoff)' "${canary_xs_jsonl}" 2>/dev/null || true)"
+    if [[ -n "${canary_window_rows}" ]]; then
+      total_audits="$(printf '%s\n' "${canary_window_rows}" | grep -c . || printf 0)"
+      printf '_%s audits in the window. Verdict distribution:_\n\n' "${total_audits}"
+      printf '| Verdict | Count | What it means |\n|---|---:|---|\n'
+      for v in unverified low_coverage covered clean; do
+        c="$(printf '%s\n' "${canary_window_rows}" | jq -c --arg v "$v" 'select(.verdict==$v)' 2>/dev/null | wc -l | tr -d ' ')"
+        c="${c:-0}"
+        case "$v" in
+          unverified)   meaning="Model claimed verification, fired ZERO verification tools — silent confab signal" ;;
+          low_coverage) meaning="Tool count below claim count — partial verification" ;;
+          covered)      meaning="Tool count >= claim count — claims appear backed" ;;
+          clean)        meaning="Few or no claims — low-noise turn" ;;
+        esac
+        [[ "$c" -gt 0 ]] && printf '| `%s` | %s | %s |\n' "$v" "$c" "${meaning}"
+      done
+      printf '\n'
+      unv_count="$(printf '%s\n' "${canary_window_rows}" | jq -c 'select(.verdict=="unverified")' 2>/dev/null | wc -l | tr -d ' ')"
+      unv_count="${unv_count:-0}"
+      if [[ "${unv_count}" -gt 0 ]]; then
+        printf '_See `~/.claude/quality-pack/canary.jsonl` for per-event detail. To opt out: `model_drift_canary=off`._\n\n'
+      else
+        printf '_No silent-confab signals in window — clean run._\n\n'
+      fi
+    fi
+  elif [[ -n "${canary_event_rows}" ]]; then
+    canary_event_count="$(printf '%s\n' "${canary_event_rows}" | grep -c .)"
+    printf '_%s `unverified_claim` events in the window (cross-session aggregate not yet populated). The model named files/paths in its response without firing a corresponding Read/Bash/Grep — silent-confab signal._\n\n' "${canary_event_count}"
+  fi
+fi
+
+# ----------------------------------------------------------------------
 # Section 4c2: Mark-deferred strict-bypasses
 #
 # When OMC_MARK_DEFERRED_STRICT=off is in effect AND the deferral reason

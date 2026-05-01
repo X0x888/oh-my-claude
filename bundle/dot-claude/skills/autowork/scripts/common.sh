@@ -50,6 +50,7 @@ _omc_env_resume_watchdog="${OMC_RESUME_WATCHDOG:-}"
 _omc_env_resume_watchdog_cooldown="${OMC_RESUME_WATCHDOG_COOLDOWN_SECS:-}"
 _omc_env_time_tracking="${OMC_TIME_TRACKING:-}"
 _omc_env_time_tracking_xs_retain="${OMC_TIME_TRACKING_XS_RETAIN_DAYS:-}"
+_omc_env_model_drift_canary="${OMC_MODEL_DRIFT_CANARY:-}"
 
 OMC_STALL_THRESHOLD="${OMC_STALL_THRESHOLD:-12}"
 OMC_EXCELLENCE_FILE_COUNT="${OMC_EXCELLENCE_FILE_COUNT:-3}"
@@ -308,6 +309,8 @@ _parse_conf_file() {
         [[ -z "${_omc_env_time_tracking_xs_retain}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_TIME_TRACKING_XS_RETAIN_DAYS="${value}" || true ;;
       output_style)
         [[ -z "${_omc_env_output_style}" && "${value}" =~ ^(opencode|preserve)$ ]] && OMC_OUTPUT_STYLE="${value}" || true ;;
+      model_drift_canary)
+        [[ -z "${_omc_env_model_drift_canary}" && "${value}" =~ ^(on|off)$ ]] && OMC_MODEL_DRIFT_CANARY="${value}" || true ;;
     esac
   done < "${conf}"
 }
@@ -378,6 +381,24 @@ is_resume_watchdog_enabled() {
 # not accrue to disk.
 is_time_tracking_enabled() {
   [[ "${OMC_TIME_TRACKING:-on}" != "off" ]]
+}
+
+# is_model_drift_canary_enabled — v1.26.0 Wave 2.
+#
+# Default ON. The canary subsystem is a passive, hook-based detector for
+# silent confabulation patterns (the model claims verification work it
+# did not actually do — "I read X.swift" without a Read call on X.swift
+# in the same turn). Surfaces drift signals in `/ulw-report` and as a
+# soft in-session alert when the per-session unverified-claim count
+# crosses threshold. No new daemon process; runs at Stop time only.
+#
+# Opt-out by setting `model_drift_canary=off` in oh-my-claude.conf or
+# `OMC_MODEL_DRIFT_CANARY=off` in env. Use the opt-out for shared-machine
+# privacy or when the audit's prose-parsing overhead is unwelcome on
+# very high-volume workflows. Stop hook checks this for early-exit so
+# opt-out is essentially free of overhead.
+is_model_drift_canary_enabled() {
+  [[ "${OMC_MODEL_DRIFT_CANARY:-on}" != "off" ]]
 }
 
 # find_claimable_resume_requests
