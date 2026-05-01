@@ -195,8 +195,8 @@ timing_aggregate() {
         end
       )] |
       if length == 0 then null
-      elif $r.tool == "Agent" then last
-      else first
+      elif $r.tool == "Agent" then .[-1]
+      else .[0]
       end;
 
     # Optional prompt_seq slice: only retain rows tagged with the requested
@@ -225,7 +225,7 @@ timing_aggregate() {
         else
           ($r.ts - $m.value.ts) as $dur |
           (if $dur < 0 then 0 else $dur end) as $dur |
-          (.pending |= del(.[$m.key])) |
+          (.pending |= (.[:$m.key] + .[$m.key+1:])) |
           if $r.tool == "Agent" then
             (($m.value.subagent // "general-purpose")) as $sub |
             .agent[$sub] = ((.agent[$sub] // 0) + $dur) |
