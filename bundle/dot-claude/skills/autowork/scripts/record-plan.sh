@@ -113,6 +113,23 @@ _compute_plan_complexity() {
 
 _compute_plan_complexity "${LAST_ASSISTANT_MESSAGE}"
 
+# Soft-nudge handoff to PostToolUse:
+#
+# When the plan is high-complexity, set `plan_complexity_nudge_pending="1"`
+# so the PostToolUse Agent hook (`reflect-after-agent.sh`) can surface
+# the notice as `additionalContext` — the documented context-injection
+# mechanism for that event. SubagentStop does NOT support
+# `additionalContext` (silently dropped by Claude Code), so emitting
+# from this hook directly does not reach the model. See CLAUDE.md
+# "Stop hook output schema" rule.
+#
+# `reflect-after-agent.sh` clears the flag after emitting (one-shot
+# semantics per high-complexity plan).
+nudge_flag=""
+if [[ "${_plan_complexity_high}" == "1" ]]; then
+  nudge_flag="1"
+fi
+
 with_state_lock_batch \
   "has_plan" "true" \
   "plan_verdict" "${plan_verdict}" \
@@ -120,24 +137,5 @@ with_state_lock_batch \
   "plan_ts" "$(now_epoch)" \
   "plan_complexity_high" "${_plan_complexity_high}" \
   "plan_complexity_signals" "${_plan_complexity_signals}" \
+  "plan_complexity_nudge_pending" "${nudge_flag}" \
   "metis_gate_blocks" ""
-
-# Soft notice — emitted whenever the plan trips the high-complexity
-# threshold, regardless of conf. Tied to `_plan_complexity_high` rather
-# than the legacy step/file inequality so all four legs (steps, files,
-# waves, keywords-with-scope) surface an advisory consistently. Users
-# who opt into the metis-on-plan hard gate (Wave 3) get the hard block
-# on top of this advisory; users who don't still see the soft nudge.
-if [[ "${_plan_complexity_high}" == "1" ]]; then
-  jq -nc \
-    --arg steps "${_plan_step_count}" \
-    --arg files "${_plan_file_count}" \
-    --arg waves "${_plan_wave_count}" \
-    --arg signals "${_plan_complexity_signals}" \
-    '{
-      hookSpecificOutput: {
-        hookEventName: "SubagentStop",
-        additionalContext: ("PLAN COMPLEXITY NOTICE: The plan has " + $steps + " numbered steps, " + $waves + " waves, and references " + $files + " distinct files (signals: " + $signals + "). Consider running metis to pressure-test this plan for hidden assumptions, missing constraints, and weak validation before committing to execution.")
-      }
-    }'
-fi

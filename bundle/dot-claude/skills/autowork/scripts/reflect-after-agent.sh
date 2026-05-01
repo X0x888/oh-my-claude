@@ -64,16 +64,32 @@ if [[ -f "${summaries_file}" ]]; then
   fi
 fi
 
+# Plan-complexity nudge (handed off from record-plan.sh because
+# SubagentStop does not support additionalContext). One-shot: read
+# the pending flag set by record-plan.sh, render the notice, then
+# clear the flag so the next agent return doesn't re-emit. Only
+# planner-class subagents set the flag, so this fires at most once
+# per high-complexity plan. PostToolUse Agent ordering: this hook
+# fires AFTER SubagentStop (which sets the flag), so the read is
+# already-seeing-the-write.
+plan_complexity_nudge=""
+nudge_flag="$(read_state "plan_complexity_nudge_pending")"
+if [[ "${nudge_flag}" == "1" ]]; then
+  signals="$(read_state "plan_complexity_signals")"
+  plan_complexity_nudge=" PLAN COMPLEXITY NOTICE: the plan just returned trips the high-complexity threshold (signals: ${signals:-unspecified}). Consider running metis to pressure-test it for hidden assumptions, missing constraints, and weak validation before committing to execution."
+  with_state_lock_batch "plan_complexity_nudge_pending" ""
+fi
+
 task_intent="$(read_state "task_intent")"
 if [[ "${task_intent}" == "advisory" ]]; then
-  jq -nc --arg ctx "REFLECT: An agent just returned results.${finding_context} Before your next action: (1) verify the most impactful claims against actual code before relying on them, (2) check whether other exploration agents are still running — do NOT deliver the final structured report until all agents have returned. Deliver status updates if needed, but hold the synthesis." '{
+  jq -nc --arg ctx "REFLECT: An agent just returned results.${finding_context}${plan_complexity_nudge} Before your next action: (1) verify the most impactful claims against actual code before relying on them, (2) check whether other exploration agents are still running — do NOT deliver the final structured report until all agents have returned. Deliver status updates if needed, but hold the synthesis." '{
     hookSpecificOutput: {
       hookEventName: "PostToolUse",
       additionalContext: $ctx
     }
   }'
 else
-  jq -nc --arg ctx "REFLECT: An agent just returned results.${finding_context} Before your next action: verify the most impactful claims against the actual code before relying on them. Then proceed." '{
+  jq -nc --arg ctx "REFLECT: An agent just returned results.${finding_context}${plan_complexity_nudge} Before your next action: verify the most impactful claims against the actual code before relying on them. Then proceed." '{
     hookSpecificOutput: {
       hookEventName: "PostToolUse",
       additionalContext: $ctx

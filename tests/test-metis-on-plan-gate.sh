@@ -331,6 +331,82 @@ assert_not_contains "lifecycle step 3 passes" "Metis-on-plan gate" "${out2}"
 rm -f "${sentinel_dir2}/.ulw_active"
 
 # ----------------------------------------------------------------------
+printf 'Test 13: soft-nudge handoff — record-plan sets pending flag, reflect-after-agent surfaces it as PostToolUse additionalContext, then clears it (one-shot)\n'
+# Regression net for the SubagentStop additionalContext silent-drop bug:
+# record-plan.sh used to emit `hookSpecificOutput.additionalContext` from
+# a SubagentStop hook (which Claude Code drops silently). The fix moves
+# the soft nudge to a state handoff: record-plan sets
+# plan_complexity_nudge_pending="1", and reflect-after-agent.sh (a
+# PostToolUse Agent hook where additionalContext IS supported) reads
+# the flag, surfaces the notice, and clears the flag. One-shot per
+# high-complexity plan.
+
+sid="su13-handoff"
+sdir13="${_test_state_root}/${sid}"
+mkdir -p "${sdir13}"
+
+# Sentinel for reflect-after-agent.sh's fast-path check.
+mkdir -p "${_test_home}/.claude/quality-pack/state"
+touch "${_test_home}/.claude/quality-pack/state/.ulw_active"
+
+# Synthesize a high-complexity plan body so _compute_plan_complexity sets
+# _plan_complexity_high="1". Eight numbered steps, five files, two waves.
+plan_body='# Plan
+1. Read src/foo.ts
+2. Update src/bar.tsx
+3. Test src/baz.js
+4. Refactor src/qux.py
+5. Validate src/zap.go
+6. Document docs/note.md
+7. Wave 1/2: ship
+8. Wave 2/2: verify'
+
+# Pre-create session_state.json with workflow_mode=ultrawork (record-plan
+# uses with_state_lock_batch which expects the file to exist).
+jq -nc '{
+  workflow_mode: "ultrawork",
+  task_intent: "execution",
+  task_domain: "coding"
+}' >"${sdir13}/session_state.json"
+
+# Drive record-plan.sh
+HOOK_JSON="$(jq -nc --arg sid "${sid}" --arg agent "quality-planner" --arg msg "${plan_body}" \
+  '{session_id:$sid, agent_type:$agent, last_assistant_message:$msg}')"
+HOME="${_test_home}" STATE_ROOT="${_test_state_root}" \
+  bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/record-plan.sh" \
+  <<<"${HOOK_JSON}" >/dev/null 2>&1 || true
+
+# State assertion: nudge flag set, plan high
+assert_eq "T13: plan_complexity_high=1 after record-plan" "1" "$(_read_state "${sid}" "plan_complexity_high")"
+assert_eq "T13: plan_complexity_nudge_pending=1 after record-plan" "1" "$(_read_state "${sid}" "plan_complexity_nudge_pending")"
+
+# Drive reflect-after-agent.sh
+RA_PAYLOAD="$(jq -nc --arg sid "${sid}" '{session_id:$sid, tool_name:"Agent"}')"
+ra_out1="$(HOME="${_test_home}" STATE_ROOT="${_test_state_root}" \
+  bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/reflect-after-agent.sh" \
+  <<<"${RA_PAYLOAD}" 2>/dev/null || true)"
+
+assert_contains "T13: reflect-after-agent surfaces PLAN COMPLEXITY NOTICE" "PLAN COMPLEXITY NOTICE" "${ra_out1}"
+assert_contains "T13: notice carries the signals string" "steps=8" "${ra_out1}"
+assert_contains "T13: notice goes via additionalContext (PostToolUse-supported field)" "additionalContext" "${ra_out1}"
+assert_eq "T13: plan_complexity_nudge_pending cleared after emission" "" "$(_read_state "${sid}" "plan_complexity_nudge_pending")"
+
+# Run reflect-after-agent.sh AGAIN — no nudge should appear (one-shot).
+ra_out2="$(HOME="${_test_home}" STATE_ROOT="${_test_state_root}" \
+  bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/reflect-after-agent.sh" \
+  <<<"${RA_PAYLOAD}" 2>/dev/null || true)"
+assert_not_contains "T13: second reflect-after-agent does NOT re-emit the notice" "PLAN COMPLEXITY NOTICE" "${ra_out2}"
+
+# Schema-regression net: record-plan must NOT use the silently-dropped
+# hookSpecificOutput schema. (It now writes state only — no JSON to stdout.)
+record_plan_stdout="$(HOME="${_test_home}" STATE_ROOT="${_test_state_root}" \
+  bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/record-plan.sh" \
+  <<<"${HOOK_JSON}" 2>/dev/null || true)"
+assert_not_contains "T13: record-plan does NOT emit dropped Stop/SubagentStop additionalContext" "hookSpecificOutput" "${record_plan_stdout}"
+
+rm -f "${_test_home}/.claude/quality-pack/state/.ulw_active"
+
+# ----------------------------------------------------------------------
 printf '\n'
 printf 'Result: %d passed, %d failed\n' "${pass}" "${fail}"
 if [[ "${fail}" -gt 0 ]]; then
