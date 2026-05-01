@@ -263,13 +263,35 @@ assert_contains "EXEMPLIFYING fires alongside PROMETHEUS" \
   "EXEMPLIFYING SCOPE DETECTED" "${out}"
 
 # ----------------------------------------------------------------------
-printf 'Test 14: exemplifying-directive skipped on advisory prompt\n'
-# Advisory branch is the early-return path; bias-defense block is
-# inside the fresh-execution `else`. An advisory prompt with example
-# markers should NOT receive the directive.
+printf 'Test 14: advisory prompt fires completeness directive but NOT exemplifying sub-case (v1.26.0)\n'
+# v1.25.x: bias-defense block lived inside the fresh-execution `else` —
+# advisory + example marker received NO directive at all (the failure
+# the iOS-orphan-files post-mortem documented).
+# v1.26.0: completeness directive fires on advisory; the EXEMPLIFYING
+# SCOPE DETECTED sub-case (with checklist workflow) stays gated on
+# execution intent so blocking-on-advisory is avoided. Both contracts
+# locked in here:
+#   (a) the broader COMPLETENESS / COVERAGE QUERY directive DOES fire
+#   (b) the narrower EXEMPLIFYING SCOPE sub-case does NOT fire.
 out="$(_run_router "t14-${RANDOM}" "ulw what do you think about icons such as lucide?")"
-assert_not_contains "no EXEMPLIFYING on advisory" \
+assert_contains "completeness directive fires on advisory (v1.26.0)" \
+  "COMPLETENESS / COVERAGE QUERY DETECTED" "${out}"
+assert_not_contains "EXEMPLIFYING sub-case still skipped on advisory (no checklist demand)" \
   "EXEMPLIFYING SCOPE DETECTED" "${out}"
+
+# v1.26.0 — companion test: completeness directive ALSO fires on advisory
+# prompts with no example markers (the iOS-orphan failure pattern).
+# This is the regression net for the actual user-reported bug — under
+# v1.25.x the prompt "anything else to clean up?" fired no directive
+# even though it asked the canonical completeness question.
+printf 'Test 14b: advisory prompt with completeness verbs (no example marker) fires completeness directive (v1.26.0)\n'
+out="$(_run_router "t14b-${RANDOM}" "ulw anything else that we need to clean up?")"
+assert_contains "completeness directive fires on bare-completeness advisory (v1.26.0)" \
+  "COMPLETENESS / COVERAGE QUERY DETECTED" "${out}"
+assert_not_contains "no EXEMPLIFYING sub-case (no example marker present)" \
+  "EXEMPLIFYING SCOPE DETECTED" "${out}"
+assert_contains "directive cites the orphan-file worked example" \
+  "any other orphan files" "${out}"
 
 # ----------------------------------------------------------------------
 printf 'Test 15: user verbatim — "/ulw enhance the statusline, for instance ..."\n'
@@ -337,9 +359,76 @@ _run_router "${sid_19}" "${_TARGETED_PROMPT}" \
 fires_19_pro="$(_count_directive_fires "${sid_19}" "prometheus-suggest")"
 fires_19_iv="$(_count_directive_fires "${sid_19}" "intent-verify")"
 fires_19_ex="$(_count_directive_fires "${sid_19}" "exemplifying")"
+fires_19_co="$(_count_directive_fires "${sid_19}" "completeness")"
 assert_contains "T19: zero prometheus rows on targeted prompt" "0" "${fires_19_pro}"
 assert_contains "T19: zero intent-verify rows on targeted prompt" "0" "${fires_19_iv}"
 assert_contains "T19: zero exemplifying rows on targeted prompt" "0" "${fires_19_ex}"
+assert_contains "T19: zero completeness rows on targeted prompt (v1.26.0)" "0" "${fires_19_co}"
+
+# ----------------------------------------------------------------------
+# Tests 19b-19d (v1.26.0): completeness-directive E2E telemetry.
+#
+# The new directive emits one of two telemetry rows depending on
+# whether the narrow exemplifying sub-case ALSO matched:
+#   - directive=exemplifying: when example markers + execution intent
+#     (preserves the v1.23.0 row so /ulw-report top-N accounting holds)
+#   - directive=completeness: when the broader trigger matched but
+#     either there was no example marker (completeness verbs alone) or
+#     the intent was advisory/continuation (the new code path)
+# T19b–T19d cover the three combinations of trigger × intent that the
+# v1.26.0 broadening introduced.
+printf 'Test 19b: completeness E2E — advisory + completeness verbs (no example marker) emits directive=completeness\n'
+sid_19b="t19b-${RANDOM}"
+_run_router "${sid_19b}" "ulw anything else that we need to clean up?" >/dev/null
+fires_19b_co="$(_count_directive_fires "${sid_19b}" "completeness")"
+fires_19b_ex="$(_count_directive_fires "${sid_19b}" "exemplifying")"
+assert_contains "T19b: exactly 1 completeness row (broader trigger, no example marker)" "1" "${fires_19b_co}"
+assert_contains "T19b: zero exemplifying rows (no example marker present)" "0" "${fires_19b_ex}"
+
+printf 'Test 19c: completeness E2E — advisory + example marker emits directive=completeness (NOT exemplifying)\n'
+# v1.25.x silent-drop case: prompt has "for instance" but advisory intent
+# routed it past the directive entirely. v1.26.0 emits a completeness row
+# (broader trigger fires on advisory) but NOT exemplifying (sub-case
+# requires execution intent for checklist-blocking semantics).
+sid_19c="t19c-${RANDOM}"
+_run_router "${sid_19c}" "ulw what do you think we should clean up, for instance the orphan files?" >/dev/null
+fires_19c_co="$(_count_directive_fires "${sid_19c}" "completeness")"
+fires_19c_ex="$(_count_directive_fires "${sid_19c}" "exemplifying")"
+assert_contains "T19c: exactly 1 completeness row on advisory + example marker" "1" "${fires_19c_co}"
+assert_contains "T19c: zero exemplifying rows on advisory (sub-case stays execution-only)" "0" "${fires_19c_ex}"
+
+printf 'Test 19d: completeness E2E — execution + completeness verbs (no example marker) emits directive=completeness\n'
+# Execution intent with completeness vocabulary but no example marker —
+# the broader trigger fires, the narrow sub-case does not.
+sid_19d="t19d-${RANDOM}"
+_run_router "${sid_19d}" "ulw find all unused exports across the bundle and remove them" >/dev/null
+fires_19d_co="$(_count_directive_fires "${sid_19d}" "completeness")"
+fires_19d_ex="$(_count_directive_fires "${sid_19d}" "exemplifying")"
+assert_contains "T19d: exactly 1 completeness row (execution + completeness verbs, no marker)" "1" "${fires_19d_co}"
+assert_contains "T19d: zero exemplifying rows (no example marker)" "0" "${fires_19d_ex}"
+
+printf 'Test 19e: opt-out via OMC_EXEMPLIFYING_DIRECTIVE=off suppresses both completeness AND exemplifying rows\n'
+# The master flag controls both trigger paths — turning it off must
+# suppress the new completeness emission too, otherwise users who
+# explicitly opted out of the v1.23.0 directive get a louder v1.26.0
+# directive against their will.
+sid_19e="t19e-${RANDOM}"
+_run_router "${sid_19e}" "ulw anything else that we need to clean up?" \
+  "OMC_EXEMPLIFYING_DIRECTIVE=off" >/dev/null
+fires_19e_co="$(_count_directive_fires "${sid_19e}" "completeness")"
+fires_19e_ex="$(_count_directive_fires "${sid_19e}" "exemplifying")"
+assert_contains "T19e: opt-out suppresses completeness row" "0" "${fires_19e_co}"
+assert_contains "T19e: opt-out suppresses exemplifying row" "0" "${fires_19e_ex}"
+
+printf 'Test 19f: session-management prompt skips completeness directive entirely\n'
+# Per-design exclusion: session-management and checkpoint prompts are
+# workflow-state meta-asks where completeness-verification framing is
+# noise. The directive's outer gate matches the project-maturity gate
+# at line 460 of prompt-intent-router.sh.
+sid_19f="t19f-${RANDOM}"
+_run_router "${sid_19f}" "ulw-status anything else?" >/dev/null
+fires_19f_co="$(_count_directive_fires "${sid_19f}" "completeness")"
+assert_contains "T19f: zero completeness rows on session-management prompt" "0" "${fires_19f_co}"
 
 # ----------------------------------------------------------------------
 # Tests 20-22 (v1.24.0): declare-and-proceed regression net.

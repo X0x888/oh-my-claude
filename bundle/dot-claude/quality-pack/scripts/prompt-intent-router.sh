@@ -43,9 +43,33 @@ fi
 
 TASK_INTENT="$(classify_task_intent "${PROMPT_TEXT}")"
 PROMPT_TS="$(now_epoch)"
+
+# Two parallel detection flags (v1.26.0):
+#
+#   - COMPLETENESS_DIRECTIVE_FIRES: the BROADER trigger. Matches example
+#     markers OR completeness/coverage/cleanliness vocabulary. Drives the
+#     informational COMPLETENESS / COVERAGE QUERY DETECTED directive,
+#     which fires on advisory + execution + continuation intents so the
+#     "enumerate-the-universe-and-verify-each" nudge reaches the prompts
+#     that need it (the iOS-orphan-files failure was advisory).
+#
+#   - EXEMPLIFYING_SCOPE_DETECTED: the NARROW trigger. Matches example
+#     markers AND execution-class intent. Drives the BLOCKING scope-
+#     checklist gate (record-scope-checklist.sh + stop-guard enforcement).
+#     Stays execution-only because blocking advisory-turn Stop would be
+#     too disruptive — checklist enforcement on "anything missing?" is
+#     not the right shape.
+#
+# The directive is informational; the gate is blocking. They are on
+# different intent gates by design — broader for the nudge, narrower for
+# the block. See router lines further down for emission.
+COMPLETENESS_DIRECTIVE_FIRES=0
 EXEMPLIFYING_SCOPE_DETECTED=0
-if is_execution_intent_value "${TASK_INTENT}" && is_exemplifying_request "${PROMPT_TEXT}"; then
-  EXEMPLIFYING_SCOPE_DETECTED=1
+if is_completeness_request "${PROMPT_TEXT}"; then
+  COMPLETENESS_DIRECTIVE_FIRES=1
+  if is_execution_intent_value "${TASK_INTENT}" && is_exemplifying_request "${PROMPT_TEXT}"; then
+    EXEMPLIFYING_SCOPE_DETECTED=1
+  fi
 fi
 
 # Classifier telemetry — capture this turn's classification and let the
@@ -379,39 +403,68 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
       record_gate_event "bias-defense" "directive_fired" \
         "directive=intent-verify"
     fi
+  fi
 
-    # --- Exemplifying-scope widening directive (v1.23.0, default-on) ---
-    #
-    # Symmetric to the prometheus/intent-verify narrowing directives
-    # but fires for the OPPOSITE bias: when the user phrases scope
-    # with example markers ("for instance", "e.g.", "such as", "as
-    # needed", "like X"), the model historically interpreted the
-    # example as the literal scope and dropped the class. This
-    # directive flips the default under ULW — when the prompt
-    # exemplifies, treat the example as one item from an enumerable
-    # class and enumerate siblings.
-    #
-    # Default ON because the failure mode it defends against was the
-    # user's primary v1.22.x complaint ("scope" had become an escape
-    # trick). The directive itself is framing; the separate
-    # exemplifying_scope_gate flag decides whether Stop enforces the
-    # resulting checklist.
-    #
-    # Fires INDEPENDENTLY of the narrowing directives (no
-    # _bias_directive_emitted gating) because narrowing and widening
-    # are orthogonal axes — a product-shaped exemplifying prompt could
-    # legitimately receive both (clarify the goal interview-first AND
-    # treat the named example as class-shaped scope).
-    if [[ "${OMC_EXEMPLIFYING_DIRECTIVE:-on}" == "on" ]] \
-        && [[ "${EXEMPLIFYING_SCOPE_DETECTED}" -eq 1 ]]; then
+  # --- Completeness / coverage / cleanliness directive (v1.26.0) ---
+  #
+  # Generalizes the v1.23.0 exemplifying-scope widening directive. Fires
+  # on the BROADER trigger (example markers OR completeness vocabulary
+  # like "anything else", "find all", "is it clean", "did you cover")
+  # AND on advisory + execution + continuation intents. The v1.23.0
+  # version was gated inside the fresh-execution `else` branch — that
+  # gating let the iOS-orphan-files prompt ("anything else to clean up?
+  # for instance, support.html?") slip through in v1.25.x because the
+  # question-mark framing classified the prompt as advisory, where the
+  # directive never fired despite the example marker matching.
+  #
+  # The directive is INFORMATIONAL. It nudges the model toward enumerate-
+  # then-verify methodology before declaring "clean" / "no issues" /
+  # "covered" / "done" — the absence-of-known-bads vs presence-of-
+  # verified-checks failure pattern that recurred across v1.22.x-v1.25.x
+  # under cleanup/audit prompts. The BLOCKING scope-checklist gate
+  # (record-scope-checklist.sh + stop-guard enforcement) stays gated to
+  # the narrow trigger (example markers AND execution intent) via
+  # EXEMPLIFYING_SCOPE_DETECTED, so blocking-on-advisory is avoided.
+  #
+  # Skipped on session-management and checkpoint intents (same gate as
+  # the project-maturity block below) since those are workflow-state
+  # meta-prompts where completeness-verification framing is just noise.
+  #
+  # Telemetry distinguishes the broader trigger ("directive=completeness")
+  # from the narrow trigger that ALSO matched ("directive=exemplifying"),
+  # preserving v1.23.0+ /ulw-report top-N directive accounting.
+  #
+  # Fires INDEPENDENTLY of the narrowing directives (prometheus-suggest /
+  # intent-verify) above — narrowing and widening are orthogonal axes.
+  # A short product-shaped exemplifying prompt could legitimately receive
+  # BOTH a narrowing directive (clarify the goal interview-first) AND
+  # this widening directive (treat the named example as class-shaped
+  # scope). Future bias-defense directives extending this block should
+  # preserve the same independence; mutual exclusion is only correct
+  # when two directives target the SAME failure axis (intent-verify is
+  # mutex with prometheus-suggest because both narrow scope; completeness
+  # is not mutex with anything because it widens it).
+  if [[ "${OMC_EXEMPLIFYING_DIRECTIVE:-on}" == "on" ]] \
+      && [[ "${COMPLETENESS_DIRECTIVE_FIRES}" -eq 1 ]] \
+      && [[ "${session_management_prompt}" -eq 0 && "${checkpoint_prompt}" -eq 0 ]]; then
+    completeness_text="COMPLETENESS / COVERAGE QUERY DETECTED: this prompt asks about completeness, coverage, or cleanliness ('anything else', 'find all', 'is it clean', 'did you cover', 'any other surfaces', or example markers like 'for instance, X'). Defend against the default LLM failure mode of declaring 'clean' / 'no issues' / 'covered' / 'done' from the **absence of known-bad patterns** rather than from the **presence of verified consumers/coverage/checks**: (1) **Define the search universe explicitly** — name the set of candidates (every file in directory X, every consumer of API Y, every test in suite Z), not the items you already know about. (2) **Enumerate each candidate.** (3) **Verify each** by proving the property holds (a consumer exists, a test covers it, a reference loads it). (4) **Do not trust your own session-authored documentation as evidence** — if you wrote a doc this session claiming a path/file/symbol is live, verify against the consumer code, not against your own doc (a notorious silent-confab loop). Worked example: when asked 'any other orphan files?', do NOT pattern-match against known orphan filenames; list every file in the relevant directory, then for each one grep for at least one consumer (import, route registration, anchor tag, build manifest reference); files with zero consumers are orphan candidates."
+    if [[ "${EXEMPLIFYING_SCOPE_DETECTED}" -eq 1 ]]; then
+      # Append the v1.23.0 example-marker sub-case + checklist workflow
+      # (preserves prior behavior for example-marker execution prompts).
       exemplifying_scope_workflow="Before stopping, enumerate the sibling items in the same class (other items a veteran would bundle into the same pass) and address all of them, or explicitly decline each with a one-line concrete WHY."
       if [[ "${OMC_EXEMPLIFYING_SCOPE_GATE:-on}" == "on" ]]; then
         exemplifying_scope_workflow="After initial inspection and before implementation settles, record a checklist with \`~/.claude/skills/autowork/scripts/record-scope-checklist.sh init\` (JSON array of sibling scope items), then mark each item \`shipped\` or \`declined\` with a concrete WHY before stopping; the exemplifying-scope stop gate will block silent drops."
       fi
-      context_parts+=("EXEMPLIFYING SCOPE DETECTED: the prompt uses example markers ('for instance' / 'e.g.' / 'i.e.' / 'for example' / 'such as' / 'as needed' / 'as appropriate' / 'similar to' / 'including but not limited to' / 'things like' / 'stuff like' / 'examples include'). Treat the example as ONE item from an enumerable class — the *class* is the scope, not the literal example. ${exemplifying_scope_workflow} Implementing only the literal example and silently dropping the class is **under-interpretation, not restraint** — it is the failure mode \`/ulw\` was created to prevent. Worked example: 'enhance the statusline, for instance adding reset countdown' enumerates as: reset countdown, in-flight indicators (pause/wave/plan markers), stale-data warnings, count surfaces, model-name handling — all live in the same statusline render path and are class items, not new capabilities. See core.md 'Excellence is not gold-plating' Calibration test, **Also keep going** bullet for the same rule. The user's request IS the permission to enumerate the class — do not gate-keep yourself by asking which siblings to include.")
-      log_hook "prompt-intent-router" "bias-defense: exemplifying-directive fired"
+      completeness_text+=" — EXEMPLIFYING SCOPE DETECTED (sub-case): the prompt uses example markers ('for instance' / 'e.g.' / 'i.e.' / 'for example' / 'such as' / 'as needed' / 'as appropriate' / 'similar to' / 'including but not limited to' / 'things like' / 'stuff like' / 'examples include'). Treat the example as ONE item from an enumerable class — the *class* is the scope, not the literal example. ${exemplifying_scope_workflow} Implementing only the literal example and silently dropping the class is **under-interpretation, not restraint** — it is the failure mode \`/ulw\` was created to prevent. Worked example: 'enhance the statusline, for instance adding reset countdown' enumerates as: reset countdown, in-flight indicators (pause/wave/plan markers), stale-data warnings, count surfaces, model-name handling — all live in the same statusline render path and are class items, not new capabilities. See core.md 'Excellence is not gold-plating' Calibration test, **Also keep going** bullet for the same rule. The user's request IS the permission to enumerate the class — do not gate-keep yourself by asking which siblings to include."
+    fi
+    context_parts+=("${completeness_text}")
+    log_hook "prompt-intent-router" "bias-defense: completeness-directive fired (exemplifying=${EXEMPLIFYING_SCOPE_DETECTED})"
+    if [[ "${EXEMPLIFYING_SCOPE_DETECTED}" -eq 1 ]]; then
       record_gate_event "bias-defense" "directive_fired" \
         "directive=exemplifying"
+    else
+      record_gate_event "bias-defense" "directive_fired" \
+        "directive=completeness"
     fi
   fi
 

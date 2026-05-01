@@ -118,15 +118,25 @@
 
 # Inject an EXEMPLIFYING SCOPE DETECTED directive when the prompt uses
 # example markers ("for instance", "e.g.", "such as", "as needed",
-# "like X", "similar to", "including but not limited to"). Tells the
-# model to treat the example as ONE item from an enumerable class —
-# the *class* is the scope, not the literal example. Symmetric to
-# prometheus/intent-verify but defends against the OPPOSITE bias
-# (under-commitment / under-interpretation). Default ON because it's
-# informational rather than blocking, and the failure mode it defends
-# against was the primary v1.22.x complaint ("scope" had become an
-# escape trick). Set to off if the directive is too chatty for your
-# style -- the calibration test in core.md still applies regardless.
+# "like X", "similar to", "including but not limited to") OR (v1.26.0)
+# completeness vocabulary ("anything else", "find all", "is it clean",
+# "did you cover", "any other surfaces", "exhaustive sweep", "every
+# consumer", "orphan files", etc.). Tells the model to define the
+# search universe explicitly, enumerate each candidate, and verify each
+# (presence-of-verified-checks beats absence-of-known-bads), and to NOT
+# trust its own session-authored documentation as evidence. v1.23.0
+# version was gated to fresh-execution intent only — that gating let
+# the iOS-orphan-files prompt "anything else? for instance, support.html?"
+# slip through silently because question-mark framing classified it as
+# advisory; v1.26.0 fires on advisory + execution + continuation while
+# preserving the v1.23.0 example-marker-only sub-case (with checklist
+# workflow) under execution intent. Symmetric to prometheus/intent-verify
+# but defends against the OPPOSITE bias (under-commitment /
+# under-interpretation / silent-confab). Default ON because it's
+# informational rather than blocking — the BLOCKING scope-checklist
+# gate (exemplifying_scope_gate) stays gated to the narrow trigger.
+# Set to off if the directive is too chatty for your style -- the
+# calibration test in core.md still applies regardless.
 # Env: OMC_EXEMPLIFYING_DIRECTIVE.
 #exemplifying_directive=on
 

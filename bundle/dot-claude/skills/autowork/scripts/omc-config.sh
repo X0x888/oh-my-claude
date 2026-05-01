@@ -64,7 +64,7 @@ custom_verify_mcp_tools|str||gates|Pipe-separated MCP tool patterns that count a
 metis_on_plan_gate|bool|off|advisory|Block stop on complex plan until metis stress-test
 prometheus_suggest|bool|off|advisory|Declare-and-proceed scope interpretation on short product-shaped prompts
 intent_verify_directive|bool|off|advisory|Declare-and-proceed goal interpretation on short unanchored prompts
-exemplifying_directive|bool|on|advisory|Treat user-exemplified scope as a class (enumerate siblings)
+exemplifying_directive|bool|on|advisory|Completeness/coverage directive — enumerate the search universe, verify each (v1.26.0 broadens to completeness verbs + advisory turns)
 exemplifying_scope_gate|bool|on|gates|Require checklist for example-marker prompts before stop
 prompt_text_override|bool|on|gates|PreTool guard trusts prompt-text imperative when classifier disagrees
 mark_deferred_strict|bool|on|gates|Reject low-information defer reasons (out of scope / follow-up)
@@ -155,7 +155,7 @@ discovered_scope=off
 council_deep_default=off
 prometheus_suggest=off
 intent_verify_directive=off
-exemplifying_directive=on
+exemplifying_directive=off
 exemplifying_scope_gate=off
 prompt_text_override=on
 mark_deferred_strict=off

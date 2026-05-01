@@ -875,6 +875,59 @@ is_exemplifying_request() {
   grep -Eiq "${pat}" <<<"${text}"
 }
 
+# is_completeness_request — true when the prompt asks about completeness,
+# coverage, or cleanliness ("anything else", "find all", "is it clean",
+# "did you cover", "any other surfaces"). Generalizes is_exemplifying_request
+# to catch the broader failure mode where the model declares completion
+# from absence-of-known-bads rather than presence-of-verified-checks
+# (v1.26.0). Used by the COMPLETENESS / COVERAGE QUERY DETECTED directive.
+#
+# The iOS-orphan-files failure pattern (user's "anything else to clean
+# up? for instance, support.html?") was an advisory prompt where the
+# narrow is_exemplifying_request matched but the directive was gated off
+# by intent. is_completeness_request returns 0 on BOTH the example-marker
+# subset AND the broader completeness vocabulary, and the router fires
+# the directive on advisory + execution + continuation intents so the
+# class-enumeration nudge reaches the prompts that need it.
+#
+# Designed to NOT match casual check-in phrasings that share vocabulary
+# but mean small-talk rather than verify-completeness:
+#   "what's the latest on X" / "anything I should know" / "how's it going"
+#   / "any thoughts?" / "status update". The regex requires either an
+# explicit completeness noun ("anything else/missing/left", "any other
+# surfaces/files/consumers/callers/references"), an exhaustive verb
+# ("find all", "enumerate every"), a state-of-completeness adjective
+# ("is it clean/complete/ready"), or a verification verb ("did you
+# cover/check/verify"). Casual phrases lack these tails.
+#
+# Pure string predicate. The caller decides intent gating. Unlike
+# is_exemplifying_request whose docstring says the router gates emission
+# to fresh-execution intent, this predicate is meant to fire on advisory
+# turns too — that is the v1.26.0 behavior change.
+is_completeness_request() {
+  local text="$1"
+  [[ -z "${text}" ]] && return 1
+
+  # Subset 1 — example markers (preserves is_exemplifying_request behavior;
+  # ensures every prompt the existing predicate matches still matches the
+  # broader one, so v1.26.0 is strictly additive).
+  is_exemplifying_request "${text}" && return 0
+
+  # Subset 2 — completeness / coverage / cleanliness verbs and phrasings.
+  # Each alternation requires a specific noun/adjective/verb tail to avoid
+  # false-matching casual check-ins. Word boundaries via \b throughout.
+  #
+  # The regex is intentionally generous on the completeness axis. The
+  # alternative — patching corner-by-corner as new prompt shapes surface —
+  # is the failure mode the user explicitly named in the v1.26.0 brief
+  # ("a slightly different situation triggers a similar issue. In that
+  # sense, it would be endless. It's not a correct fix"). Asymmetric
+  # tolerance: a too-loud directive is informational; a too-quiet one
+  # silently lets the iOS-orphan-files failure recur.
+  local pat='\b(anything[[:space:]]+(else|missing|left|remaining|i[[:space:]]+missed|we[[:space:]]+missed)|any[[:space:]]+other[[:space:]]+(surfaces?|files?|consumers?|callers?|references?|usages?|orphan|paths?|entries|examples?|instances?)|any[[:space:]]+(leftover|dangling|stray|residual|forgotten|orphan|missed|stale|unused|dead|unreferenced)[[:space:]]+\w+|any[[:space:]]+\w+[[:space:]]+(we|you|i)[[:space:]]+(forgot|missed|skipped|left|overlooked|dropped)|find[[:space:]]+all|all[[:space:]]+the[[:space:]]+(orphan|unused|dead|stale|leftover|missing)|is[[:space:]]+(it|this|everything|the[[:space:]]+\w+)[[:space:]]+(clean|complete|ready|safe|covered|done|wired[[:space:]]+up|hooked[[:space:]]+up|accounted|sorted|finalized|fully[[:space:]]+\w+)|did[[:space:]]+(you|we|i)[[:space:]]+(cover|check|verify|miss|catch|enumerate|skip|forget|overlook)|did[[:space:]]+anything[[:space:]]+(slip|fall|get[[:space:]]+missed)|have[[:space:]]+(you|we|i)[[:space:]]+(covered|missed|hit|enumerated|checked|verified|caught|killed|cleaned|forgotten|skipped|seen|left[[:space:]]+anything|got[[:space:]]+(everything|all|enough|coverage|them[[:space:]]+all|the[[:space:]]+full))|(nothing|none)[[:space:]]+(else|left|missing|remaining|leftover|outstanding|unaccounted)|should[[:space:]]+anything[[:space:]]+(be|else|still)[[:space:]]+\w+|are[[:space:]]+we[[:space:]]+(good|ready|done|set|clear|all[[:space:]]+set)[[:space:]]+to[[:space:]]+(ship|go|merge|release|deploy|continue|proceed|move)|good[[:space:]]+to[[:space:]]+(ship|go|merge|release|deploy)|(do|does)[[:space:]]+(you|we|i|the[[:space:]]+\w+)[[:space:]]+have[[:space:]]+(full|complete|enough|adequate)[[:space:]]+(coverage|tests|references|consumers|inventory)|cleanup[[:space:]]+sweep|exhaustive[[:space:]]+(audit|check|search|scan|sweep)|full[[:space:]]+(inventory|enumeration|sweep|audit|coverage|cleanup)|enumerate[[:space:]]+(all|every|each)|every[[:space:]]+(consumer|caller|reference|usage|file|path|entry|instance)|orphan(ed)?[[:space:]]+(files?|paths?|references?|entries)|slip(ped)?[[:space:]]+through|verify[[:space:]]+nothing)\b'
+  grep -Eiq "${pat}" <<<"${text}"
+}
+
 is_execution_intent_value() {
   local intent="$1"
 

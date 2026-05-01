@@ -285,14 +285,21 @@ else
 fi
 
 # ----------------------------------------------------------------------
-# Section 4c: Bias-defense directive fires (v1.23.0)
+# Section 4c: Bias-defense directive fires (v1.23.0; broadened v1.26.0)
 #
-# The router emits gate events with gate="bias-defense" when an
-# execution-prompt directive fires (prometheus-suggest, intent-verify,
-# exemplifying). Without this section the user could not answer "is
-# the new exemplifying directive actually firing on my prompts?" or
-# "how often does the narrowing layer kick in?" — the very telemetry
-# needed to validate that the v1.23.0 release is working.
+# The router emits gate events with gate="bias-defense" when a
+# directive fires (prometheus-suggest, intent-verify, exemplifying,
+# completeness). Without this section the user could not answer "is
+# the broadened completeness directive actually firing on my prompts?"
+# or "how often does the narrowing layer kick in?" — the very telemetry
+# needed to validate that the v1.23.0 / v1.26.0 releases are working.
+#
+# v1.26.0 split: `directive=exemplifying` rows fire when example markers
+# matched AND execution intent (preserves the v1.23.0 narrow trigger).
+# `directive=completeness` rows fire when the broader trigger matched
+# (completeness verbs OR example markers on advisory) but the narrow
+# example-marker+execution combo did NOT — the new code path that fixes
+# the iOS-orphan-files miss.
 printf '## Bias-defense directives fired\n\n'
 bias_defense_rows="$(printf '%s\n' "${gate_event_rows}" | jq -c \
     'select(.gate == "bias-defense" and .event == "directive_fired")' 2>/dev/null || true)"
@@ -300,7 +307,7 @@ if [[ -z "${bias_defense_rows}" ]]; then
   printf '_No bias-defense directives fired in window. Telemetry is new in v1.23.0; populates as sessions sweep._\n\n'
 else
   printf '| Directive | Fires |\n|---|---:|\n'
-  for _directive in exemplifying prometheus-suggest intent-verify; do
+  for _directive in exemplifying completeness prometheus-suggest intent-verify; do
     _fire_count="$(printf '%s\n' "${bias_defense_rows}" | jq -c --arg d "${_directive}" 'select(.details.directive == $d)' | wc -l | tr -d '[:space:]')"
     [[ "${_fire_count}" -eq 0 ]] && continue
     printf '| `%s` | %s |\n' "${_directive}" "${_fire_count}"

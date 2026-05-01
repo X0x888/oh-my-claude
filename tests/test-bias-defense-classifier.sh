@@ -365,6 +365,126 @@ assert_eq "env wins over conf — mark-defer"   "on" "${OMC_MARK_DEFERRED_STRICT
 rm -f "${_test_conf}"
 
 # ----------------------------------------------------------------------
+# v1.26.0 — is_completeness_request positive cases
+#
+# The broader trigger that addresses the iOS-orphan-files failure pattern:
+# the model declares "clean" from absence of known-bads instead of
+# enumerating the search universe and verifying each candidate. This
+# predicate generalizes is_exemplifying_request to fire on completeness
+# vocabulary even without an example marker — the failure shape that
+# "anything else to clean up?" (sans 'for instance') exhibits today.
+printf 'Test 14: is_completeness_request positive cases (completeness verbs)\n'
+assert_true "anything else"               'is_completeness_request "Anything else that we need to clean up?"'
+assert_true "anything missing"            'is_completeness_request "Is anything missing from the migration?"'
+assert_true "anything left"               'is_completeness_request "anything left to wire up before we ship?"'
+assert_true "any other surfaces"          'is_completeness_request "are there any other surfaces affected by this change?"'
+assert_true "any other orphan files"      'is_completeness_request "Are there any other orphan files in the repo?"'
+assert_true "any other consumers"         'is_completeness_request "any other consumers of UserService still in tree?"'
+assert_true "any other references"        'is_completeness_request "any other references to support.html still around?"'
+assert_true "find all unused"             'is_completeness_request "Find all unused exports"'
+assert_true "all the orphan paths"        'is_completeness_request "list all the orphan paths in the bundle"'
+assert_true "all the unused"              'is_completeness_request "kill all the unused tests"'
+assert_true "is it clean"                 'is_completeness_request "Is everything clean?"'
+assert_true "is it complete"              'is_completeness_request "is the migration complete?"'
+assert_true "is it ready"                 'is_completeness_request "is the deployment ready?"'
+assert_true "is it safe"                  'is_completeness_request "is the bundle safe to ship?"'
+assert_true "did you cover"               'is_completeness_request "Did you cover all the edge cases?"'
+assert_true "did you check"               'is_completeness_request "did you check the rollback path?"'
+assert_true "did you verify"              'is_completeness_request "did you verify the fixture loaded?"'
+assert_true "did you miss"                'is_completeness_request "did we miss any callers?"'
+assert_true "exhaustive audit"            'is_completeness_request "run an exhaustive audit of the privacy surfaces"'
+assert_true "exhaustive sweep"            'is_completeness_request "do an exhaustive sweep of the bundle"'
+assert_true "full inventory"              'is_completeness_request "give me a full inventory of the assets"'
+assert_true "enumerate every"             'is_completeness_request "enumerate every consumer of this hook"'
+assert_true "every reference"             'is_completeness_request "walk every reference to AuthClient in the codebase"'
+assert_true "orphan files"                'is_completeness_request "are there orphan files left after the cleanup?"'
+assert_true "orphaned references"         'is_completeness_request "any orphaned references after the rename?"'
+
+# Excellence-reviewer F-1: sibling phrasings the iOS-prompt-tuned regex
+# initially missed. The veteran-realistic set the user would expect to
+# fire under the same failure mode but with naturally-different syntax.
+# Each pattern below was added to the alternation explicitly to close
+# that gap and locks in the broader trigger surface so future edits
+# cannot accidentally re-narrow it.
+assert_true "are we good to ship"         'is_completeness_request "are we good to ship?"'
+assert_true "are we good to merge"        'is_completeness_request "are we ready to merge?"'
+assert_true "good to deploy"              'is_completeness_request "good to deploy now?"'
+assert_true "have we got everything"      'is_completeness_request "have we got everything?"'
+assert_true "have we got coverage"        'is_completeness_request "have we got enough coverage?"'
+assert_true "have we covered all cases"   'is_completeness_request "have we covered all cases?"'
+assert_true "have we missed anything"     'is_completeness_request "have we missed anything important?"'
+assert_true "have we forgotten any"       'is_completeness_request "have we forgotten any consumer?"'
+assert_true "should anything be removed"  'is_completeness_request "should anything be removed?"'
+assert_true "should anything else"        'is_completeness_request "should anything else be cleaned up?"'
+assert_true "verify nothing is left"      'is_completeness_request "verify nothing is left over"'
+assert_true "is everything wired up"      'is_completeness_request "is everything wired up?"'
+assert_true "is everything hooked up"     'is_completeness_request "is everything hooked up?"'
+assert_true "is everything accounted"     'is_completeness_request "is everything accounted for?"'
+assert_true "is the system sorted"        'is_completeness_request "is the system sorted?"'
+assert_true "is the system finalized"     'is_completeness_request "is the migration finalized?"'
+assert_true "do you have full coverage"   'is_completeness_request "do you have full coverage of edge cases?"'
+assert_true "does it have full inventory" 'is_completeness_request "does it have a full inventory of consumers?"'
+assert_true "we have full tests"          'is_completeness_request "do we have complete tests?"'
+assert_true "any leftover files"          'is_completeness_request "are there any leftover files?"'
+assert_true "any dangling references"     'is_completeness_request "any dangling references?"'
+assert_true "any stray paths"             'is_completeness_request "any stray paths in the bundle?"'
+assert_true "any orphan entries"          'is_completeness_request "any orphan entries left in the manifest?"'
+assert_true "any unused exports"          'is_completeness_request "any unused exports remaining?"'
+assert_true "any callers we forgot"       'is_completeness_request "any callers we forgot?"'
+assert_true "any tests we skipped"        'is_completeness_request "any tests we skipped?"'
+assert_true "nothing else"                'is_completeness_request "nothing else to do?"'
+assert_true "nothing left over"           'is_completeness_request "nothing left over after the cleanup?"'
+assert_true "nothing remaining"           'is_completeness_request "nothing remaining to address?"'
+assert_true "nothing outstanding"         'is_completeness_request "nothing outstanding for the release?"'
+assert_true "did anything slip"           'is_completeness_request "did anything slip through?"'
+assert_true "did anything fall through"   'is_completeness_request "did anything fall through the cracks?"'
+assert_true "did you skip"                'is_completeness_request "did you skip any callers?"'
+assert_true "did you overlook"            'is_completeness_request "did you overlook the rollback path?"'
+assert_true "did you forget"              'is_completeness_request "did you forget anything important?"'
+assert_true "full cleanup"                'is_completeness_request "do a full cleanup of the assets directory"'
+assert_true "slipped through"             'is_completeness_request "anything that slipped through the cracks?"'
+
+# v1.26.0 — exemplifying subset still matches (backward compat)
+printf 'Test 15: is_completeness_request preserves is_exemplifying_request matches\n'
+assert_true "for instance"                'is_completeness_request "enhance the statusline, for instance adding reset countdown"'
+assert_true "e.g."                        'is_completeness_request "add admin tooling, e.g. user impersonation"'
+assert_true "such as"                     'is_completeness_request "polish the docs such as the install section"'
+assert_true "things like"                 'is_completeness_request "fix things like the broken links"'
+assert_true "ios session prompt"          'is_completeness_request "Anything else that we need to clean up or set up before embarking on actually improving the app? for instance, shouldn'\''t the support.html be cleaned up as well?"'
+
+# v1.26.0 — casual / unrelated phrasings should NOT match
+printf 'Test 16: is_completeness_request negative cases (casual / unrelated)\n'
+assert_false "casual: latest on build"    'is_completeness_request "what'\''s the latest on the build?"'
+assert_false "casual: status going on"    'is_completeness_request "what'\''s going on with the deploy?"'
+assert_false "casual: anything I should"  'is_completeness_request "anything I should know about this codebase?"'
+assert_false "casual: any thoughts"       'is_completeness_request "any thoughts on this approach?"'
+assert_false "casual: how is it going"    'is_completeness_request "how is it going with the migration?"'
+assert_false "casual: quick question"     'is_completeness_request "quick question about the migration"'
+assert_false "code anchor: parse.ts"      'is_completeness_request "fix the off-by-one in parse.ts:42"'
+assert_false "feature: build app"         'is_completeness_request "build a habit tracker app"'
+assert_false "general: how to structure"  'is_completeness_request "how should I structure this?"'
+assert_false "empty"                      'is_completeness_request ""'
+assert_false "single word"                'is_completeness_request "yes"'
+# Negative cases that share words but lack the specific tail.
+assert_false "any (no specific noun)"     'is_completeness_request "any chance you can look at this?"'
+assert_false "all (no completeness adj)" 'is_completeness_request "all the kids love it"'
+# "is it good" not in the cleanliness adjective set
+assert_false "is it good"                 'is_completeness_request "is it good?"'
+# F-1 negative cases — locked in to make sure the broader regex did not
+# over-fire on near-neighbor casual phrasings.
+assert_false "have we got time"           'is_completeness_request "have we got time for this?"'
+assert_false "have we eaten"              'is_completeness_request "have we eaten lunch yet?"'
+assert_false "are we good (bare)"         'is_completeness_request "are we good?"'
+assert_false "are we ok"                  'is_completeness_request "are we ok with this approach?"'
+assert_false "nothing matters"            'is_completeness_request "nothing matters here"'
+assert_false "have you tried"             'is_completeness_request "have you tried restarting?"'
+assert_false "do you have time"           'is_completeness_request "do you have time for a quick call?"'
+assert_false "did you sleep"              'is_completeness_request "did you sleep well?"'
+assert_false "any reason"                 'is_completeness_request "any reason to keep this?"'
+assert_false "should I add"               'is_completeness_request "should I add a test for this?"'
+assert_false "verify the connection"      'is_completeness_request "verify the connection works"'
+
+# ----------------------------------------------------------------------
 printf '\n'
 printf 'Result: %d passed, %d failed\n' "${pass}" "${fail}"
 if [[ "${fail}" -gt 0 ]]; then
