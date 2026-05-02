@@ -27,6 +27,11 @@
 
 set -euo pipefail
 
+# v1.27.0 (F-020): stop-time-summary needs lib/timing.sh for the
+# epilogue card but has no classifier dependency. Opt out of eager
+# classifier source; lib/timing.sh stays eager-loaded by default.
+export OMC_LAZY_CLASSIFIER=1
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOOK_JSON="$(cat 2>/dev/null || true)"
 . "${SCRIPT_DIR}/common.sh"

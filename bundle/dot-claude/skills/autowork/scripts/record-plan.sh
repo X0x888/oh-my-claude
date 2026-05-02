@@ -2,6 +2,11 @@
 
 set -euo pipefail
 
+# v1.27.0 (F-020 / F-021): plan-recording hook does state I/O only — no
+# classifier or timing-lib dependency.
+export OMC_LAZY_CLASSIFIER=1
+export OMC_LAZY_TIMING=1
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOOK_JSON="$(cat)"
 . "${SCRIPT_DIR}/common.sh"

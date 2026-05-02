@@ -93,12 +93,25 @@ else
 fi
 
 # ----------------------------------------------------------------------
-printf 'Test 5: classifier dependencies are defined before the source line\n'
+printf 'Test 5: classifier dependencies are defined before the source CALL site\n'
 # Source ordering regression: every helper named in the lib's dependency
-# header must be defined in common.sh strictly above the source statement.
+# header must be defined in common.sh strictly above the source-call site
+# (the line where _omc_load_classifier actually fires, not where the
+# loader function itself is defined). v1.27.0 introduced a lazy-load
+# loader function whose body contains a `source` statement at definition
+# time but only fires at the conditional call site near the bottom of
+# common.sh — that conditional call is the real "source line" for
+# ordering purposes.
 common="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh"
-source_line="$(grep -n 'source.*lib/classifier\.sh' "${common}" | grep -v '^[[:space:]]*#' | head -1 | cut -d: -f1)"
-[[ -n "${source_line}" ]] || { printf '  FAIL: no source line for lib/classifier.sh\n' >&2; fail=$((fail + 1)); }
+# Match the conditional load block (the actual call site, not the loader
+# function definition). The pattern `_omc_load_classifier` line in the
+# OMC_LAZY_CLASSIFIER if-block is the one that matters at runtime.
+source_line="$(grep -nE '^[[:space:]]*_omc_load_classifier[[:space:]]*$' "${common}" | grep -v '^[[:space:]]*#' | tail -1 | cut -d: -f1)"
+if [[ -z "${source_line}" ]]; then
+  # Pre-v1.27 fallback: literal source line.
+  source_line="$(grep -n 'source.*lib/classifier\.sh' "${common}" | grep -v '^[[:space:]]*#' | tail -1 | cut -d: -f1)"
+fi
+[[ -n "${source_line}" ]] || { printf '  FAIL: no source-call site for lib/classifier.sh\n' >&2; fail=$((fail + 1)); }
 
 for dep in project_profile_has normalize_task_prompt extract_skill_primary_task \
            is_continuation_request is_checkpoint_request is_session_management_request \
@@ -108,7 +121,7 @@ for dep in project_profile_has normalize_task_prompt extract_skill_primary_task 
     printf '  FAIL: dependency %q not defined in common.sh\n' "${dep}" >&2
     fail=$((fail + 1))
   elif [[ "${dep_line}" -ge "${source_line}" ]]; then
-    printf '  FAIL: dependency %q defined at line %s, AFTER source line %s\n' "${dep}" "${dep_line}" "${source_line}" >&2
+    printf '  FAIL: dependency %q defined at line %s, AFTER source-call line %s\n' "${dep}" "${dep_line}" "${source_line}" >&2
     fail=$((fail + 1))
   else
     pass=$((pass + 1))

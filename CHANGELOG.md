@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Wave 4 follow-up — lazy-load libs (post-release polish)
+
+After v1.27.0 shipped, the excellence reviewer flagged the F-020 / F-021 deferrals as *expedient rather than load-bearing* given the original brief's *"do not stop for cheap achievements"* line. Closing those two findings here:
+
+- **`lib/classifier.sh` is now lazy-loadable.** Idempotent `_omc_load_classifier` function added near the top of `common.sh`; the unconditional source at the bottom is now gated on `OMC_LAZY_CLASSIFIER != 1`. Three internal common.sh functions that depend on classifier helpers (`is_session_management_request`, `is_checkpoint_request`, the imperative-guard inside the early-imperative branch in checkpoint detection) call the loader explicitly so a hook that opts out and later transitively reaches them still gets a working classifier — no function-not-found errors. Closes F-020.
+- **`lib/timing.sh` is now lazy-loadable.** Same pattern: `_omc_load_timing` + `OMC_LAZY_TIMING` env-var. Hooks that need timing helpers (`pretool-timing`, `posttool-timing`, `show-time`, `show-status`, `show-report`, `stop-time-summary`) leave eager-load on; hooks that only do state I/O (`mark-edit`, `record-pending-agent`, `record-verification`, `record-advisory-verification`, `record-reviewer`, `record-subagent-summary`, `record-plan`, `reflect-after-agent`, `canary-claim-audit`) opt out via `export OMC_LAZY_TIMING=1` before sourcing common.sh. Closes F-021.
+- **Hot-path hooks updated to opt out** of both eager loads where safe: `pretool-timing.sh`, `posttool-timing.sh`, `mark-edit.sh`, `record-pending-agent.sh`, `record-verification.sh`, `record-advisory-verification.sh`, `record-reviewer.sh`, `record-subagent-summary.sh`, `record-plan.sh`, `reflect-after-agent.sh`, `canary-claim-audit.sh`, `stop-time-summary.sh` (timing-only). Each opt-in saves ~3ms per hook fire on bash 3.2 macOS; with ~12 hook fires per typical turn the cumulative savings stack.
+- **Test 5 in `test-classifier.sh` updated** to find the source-call site (the conditional `_omc_load_classifier` invocation) rather than the `source` line inside the loader function definition. The dependency-ordering invariant is preserved — the new check looks at the call site, which is where the actual import happens at runtime.
+
+### Hotfix v1.27.0 (commit `3711b0d`) — test-fixture lag
+
+Wave 2's F-009 narrowed `has_unfinished_session_handoff` to drop legitimate scoping language (`continue later`, `remaining work`, `pick up .* later`, `the rest`). The dedicated test (`test-discovered-scope`) was updated, but parallel fixtures in `test-common-utilities.sh` were not — CI on the tagged commit caught it and was fixed in `3711b0d`.
+
+
+
 ## [1.27.0] - 2026-05-02
 
 This release responds directly to user feedback that the ULW workflow felt **slow**, **not smart**, and **unsatisfying** in execution quality. Five surgical waves address each axis with measured improvements:

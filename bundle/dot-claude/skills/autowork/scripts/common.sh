@@ -654,7 +654,44 @@ _omc_self="$(_omc_resolve_path "${BASH_SOURCE[0]}")"
 _omc_self_dir="$(cd "$(dirname "${_omc_self}")" && pwd -P)"
 source "${_omc_self_dir}/lib/state-io.sh"
 source "${_omc_self_dir}/lib/verification.sh"
-source "${_omc_self_dir}/lib/timing.sh"
+
+# v1.27.0 (F-020 / F-021): lazy-loadable libs.
+#
+# `_omc_load_timing` and `_omc_load_classifier` source their respective
+# libs idempotently — repeat calls are no-ops once the guard variable
+# flips. Hooks that genuinely need the lib (timing helpers, classifier
+# functions) call the loader explicitly. Hooks that don't (most edit/
+# record/state hooks) opt out by setting `OMC_LAZY_<NAME>=1` in their
+# environment BEFORE sourcing common.sh — that skips the eager source
+# below and the loader is only invoked if a downstream caller asks for
+# it. ~5 ms saved per skipped lib × many hook firings per turn.
+#
+# Internal common.sh functions that depend on classifier
+# (`is_advisory_request`, `is_session_management_request`) call
+# `_omc_load_classifier` themselves so a hook that opts out of the
+# eager source but later calls those functions still gets a working
+# classifier — no function-not-found errors. Because the loader is
+# idempotent the per-call cost is one bash arithmetic check.
+_omc_classifier_loaded=0
+_omc_load_classifier() {
+  if [[ "${_omc_classifier_loaded}" -eq 1 ]]; then return 0; fi
+  # shellcheck disable=SC1091
+  source "${_omc_self_dir}/lib/classifier.sh"
+  _omc_classifier_loaded=1
+}
+_omc_timing_loaded=0
+_omc_load_timing() {
+  if [[ "${_omc_timing_loaded}" -eq 1 ]]; then return 0; fi
+  # shellcheck disable=SC1091
+  source "${_omc_self_dir}/lib/timing.sh"
+  _omc_timing_loaded=1
+}
+
+# Eager-load timing.sh by default. Hooks that don't need it set
+# OMC_LAZY_TIMING=1 before sourcing common.sh.
+if [[ "${OMC_LAZY_TIMING:-0}" != "1" ]]; then
+  _omc_load_timing
+fi
 # classifier.sh is sourced later (after its dependencies — project_profile_has,
 # is_advisory_request, etc. — are defined). _omc_self_dir stays in scope until
 # the bottom of this file, where every source statement has finished running.
@@ -2855,6 +2892,11 @@ project_profile_has() {
 is_checkpoint_request() {
   local text="$1"
 
+  # v1.27.0 (F-020): Phase 3 below calls is_imperative_request, which lives
+  # in lib/classifier.sh. When the caller opted out of eager classifier
+  # source via OMC_LAZY_CLASSIFIER=1, ensure-load it now.
+  _omc_load_classifier
+
   # ── Phase 1: position-independent unambiguous signals ──
   # These fire BEFORE the imperative guard because they are always checkpoint,
   # even when embedded after an imperative verb (e.g., "Fix the bug, then
@@ -2915,6 +2957,11 @@ is_checkpoint_request() {
 is_session_management_request() {
   local text="$1"
 
+  # v1.27.0 (F-020): is_imperative_request lives in lib/classifier.sh. When
+  # the caller opted out of eager classifier source via OMC_LAZY_CLASSIFIER=1,
+  # ensure-load it now so the function is defined before we call it.
+  _omc_load_classifier
+
   # An explicit imperative at the top of the prompt beats any embedded SM
   # keywords. Without this, a prompt like "Please evaluate ..." whose quoted
   # body contains "this session's" + "worth fixing" gets misrouted to SM.
@@ -2954,7 +3001,15 @@ is_advisory_request() {
 # is_session_management_request, is_advisory_request, session_file (lib),
 # log_hook, log_anomaly, now_epoch, truncate_chars, trim_whitespace — are
 # defined above this point.
-source "${_omc_self_dir}/lib/classifier.sh"
+#
+# v1.27.0 (F-020): eager-load is now opt-in via OMC_LAZY_CLASSIFIER. The
+# lazy loader (_omc_load_classifier above) is idempotent and is invoked
+# from inside is_advisory_request / is_session_management_request, so a
+# hook that opts out and later calls those functions still gets a working
+# classifier with no function-not-found errors.
+if [[ "${OMC_LAZY_CLASSIFIER:-0}" != "1" ]]; then
+  _omc_load_classifier
+fi
 
 has_unfinished_session_handoff() {
   local text="$1"

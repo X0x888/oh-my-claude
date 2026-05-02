@@ -5,6 +5,11 @@ set -euo pipefail
 # Fast-path: skip if ULW was never activated in this environment
 [[ -f "${HOME}/.claude/quality-pack/state/.ulw_active" ]] || exit 0
 
+# v1.27.0 (F-020 / F-021): no classifier or timing-lib dependency — opt out
+# of eager source for both libs.
+export OMC_LAZY_CLASSIFIER=1
+export OMC_LAZY_TIMING=1
+
 # REVIEWER_TYPE controls which dimension (if any) this reviewer ticks.
 # Values:
 #   standard       — quality-reviewer, superpowers/feature-dev code-reviewer

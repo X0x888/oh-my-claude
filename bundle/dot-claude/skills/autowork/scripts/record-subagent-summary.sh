@@ -2,6 +2,12 @@
 
 set -euo pipefail
 
+# v1.27.0 (F-020 / F-021): SubagentStop hook uses extract_discovered_findings
+# (awk-only) and is_design_contract_emitter (regex-only) — no classifier or
+# timing-lib dependency. Opt out of both eager sources.
+export OMC_LAZY_CLASSIFIER=1
+export OMC_LAZY_TIMING=1
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOOK_JSON="$(cat)"
 . "${SCRIPT_DIR}/common.sh"

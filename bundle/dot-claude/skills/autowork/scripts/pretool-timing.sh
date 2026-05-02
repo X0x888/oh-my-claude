@@ -25,6 +25,11 @@ if [[ "${OMC_TIME_TRACKING:-}" == "off" ]]; then
   exit 0
 fi
 
+# v1.27.0 (F-020): timing hooks have no classifier dependency. Opt out
+# of the eager classifier source so common.sh doesn't pay the lib's
+# parse cost on every PreTool fire.
+export OMC_LAZY_CLASSIFIER=1
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOOK_JSON="$(cat)"
 . "${SCRIPT_DIR}/common.sh"

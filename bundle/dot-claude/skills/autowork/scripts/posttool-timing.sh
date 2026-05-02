@@ -14,6 +14,9 @@ if [[ "${OMC_TIME_TRACKING:-}" == "off" ]]; then
   exit 0
 fi
 
+# v1.27.0 (F-020): no classifier dependency — opt out of eager source.
+export OMC_LAZY_CLASSIFIER=1
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOOK_JSON="$(cat)"
 . "${SCRIPT_DIR}/common.sh"

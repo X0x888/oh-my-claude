@@ -5,6 +5,11 @@ set -euo pipefail
 # Fast-path: skip if ULW was never activated in this environment
 [[ -f "${HOME}/.claude/quality-pack/state/.ulw_active" ]] || exit 0
 
+# v1.27.0 (F-020 / F-021): record/edit hooks have no classifier or timing-lib
+# dependency — opt out of eager source for both libs.
+export OMC_LAZY_CLASSIFIER=1
+export OMC_LAZY_TIMING=1
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOOK_JSON="$(cat)"
 . "${SCRIPT_DIR}/common.sh"

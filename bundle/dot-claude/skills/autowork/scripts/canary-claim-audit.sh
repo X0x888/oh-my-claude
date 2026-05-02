@@ -28,6 +28,12 @@
 
 set -euo pipefail
 
+# v1.27.0 (F-020 / F-021): canary reads timing.jsonl directly (file IO,
+# not via lib/timing.sh) and does not call any classifier function.
+# Opt out of both eager sources.
+export OMC_LAZY_CLASSIFIER=1
+export OMC_LAZY_TIMING=1
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "${SCRIPT_DIR}/common.sh"
 . "${SCRIPT_DIR}/lib/canary.sh"
