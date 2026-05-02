@@ -51,6 +51,9 @@ _omc_env_resume_watchdog_cooldown="${OMC_RESUME_WATCHDOG_COOLDOWN_SECS:-}"
 _omc_env_time_tracking="${OMC_TIME_TRACKING:-}"
 _omc_env_time_tracking_xs_retain="${OMC_TIME_TRACKING_XS_RETAIN_DAYS:-}"
 _omc_env_model_drift_canary="${OMC_MODEL_DRIFT_CANARY:-}"
+_omc_env_blindspot_inventory="${OMC_BLINDSPOT_INVENTORY:-}"
+_omc_env_intent_broadening="${OMC_INTENT_BROADENING:-}"
+_omc_env_blindspot_ttl="${OMC_BLINDSPOT_TTL_SECONDS:-}"
 
 OMC_STALL_THRESHOLD="${OMC_STALL_THRESHOLD:-12}"
 OMC_EXCELLENCE_FILE_COUNT="${OMC_EXCELLENCE_FILE_COUNT:-3}"
@@ -232,6 +235,30 @@ OMC_TIME_TRACKING="${OMC_TIME_TRACKING:-on}"
 # days — long enough for monthly reflection, short enough that workflow
 # data does not accrue indefinitely on shared machines.
 OMC_TIME_TRACKING_XS_RETAIN_DAYS="${OMC_TIME_TRACKING_XS_RETAIN_DAYS:-30}"
+# Blindspot inventory (v1.28.0): per-project enumeration of routes / env vars
+# / tests / docs / config flags / UI files / error states / auth paths /
+# release steps / scripts so the intent-broadening directive can give the
+# model a concrete surface map to reconcile against. Cached at
+# ~/.claude/quality-pack/blindspots/<project_key>.json with a 24h TTL by
+# default. Default ON because the scanner is fast (< 1s on typical
+# projects), runs on-demand, and the cache means most invocations are
+# free reads. Opt out for shared machines / regulated codebases / very
+# large monorepos where the scan would be slow.
+OMC_BLINDSPOT_INVENTORY="${OMC_BLINDSPOT_INVENTORY:-on}"
+# Intent-broadening directive (v1.28.0): when ON, the prompt-intent-router
+# injects a project-surface reconciliation directive on complex execution
+# / continuation prompts so the model widens its scope check beyond the
+# literal prompt text. Defends against the language-as-limitation failure
+# mode (the prompt names a surface but the work touches several). Default
+# ON; lighter than a hard gate — informational, expects the model to
+# surface gaps in its opener under a "Project surfaces touched:" line.
+OMC_INTENT_BROADENING="${OMC_INTENT_BROADENING:-on}"
+# Blindspot inventory cache TTL (seconds). Default 86400 = 24h — long
+# enough that subsequent prompts on the same day reuse the cache for
+# free, short enough that surfaces added today don't go missing for
+# more than a day. Refresh on demand via
+# `bash ~/.claude/skills/autowork/scripts/blindspot-inventory.sh scan --force`.
+OMC_BLINDSPOT_TTL_SECONDS="${OMC_BLINDSPOT_TTL_SECONDS:-86400}"
 
 _omc_conf_loaded=0
 
@@ -311,6 +338,12 @@ _parse_conf_file() {
         [[ -z "${_omc_env_output_style}" && "${value}" =~ ^(opencode|preserve)$ ]] && OMC_OUTPUT_STYLE="${value}" || true ;;
       model_drift_canary)
         [[ -z "${_omc_env_model_drift_canary}" && "${value}" =~ ^(on|off)$ ]] && OMC_MODEL_DRIFT_CANARY="${value}" || true ;;
+      blindspot_inventory)
+        [[ -z "${_omc_env_blindspot_inventory}" && "${value}" =~ ^(on|off)$ ]] && OMC_BLINDSPOT_INVENTORY="${value}" || true ;;
+      intent_broadening)
+        [[ -z "${_omc_env_intent_broadening}" && "${value}" =~ ^(on|off)$ ]] && OMC_INTENT_BROADENING="${value}" || true ;;
+      blindspot_ttl_seconds)
+        [[ -z "${_omc_env_blindspot_ttl}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_BLINDSPOT_TTL_SECONDS="${value}" || true ;;
     esac
   done < "${conf}"
 }
@@ -399,6 +432,54 @@ is_time_tracking_enabled() {
 # opt-out is essentially free of overhead.
 is_model_drift_canary_enabled() {
   [[ "${OMC_MODEL_DRIFT_CANARY:-on}" != "off" ]]
+}
+
+# is_blindspot_inventory_enabled — v1.28.0.
+# When ON (default), the blindspot-inventory.sh scanner is allowed to
+# read/write the cache at ~/.claude/quality-pack/blindspots/<key>.json.
+# When OFF, scanner short-circuits with no output and the
+# intent-broadening directive does not fire (no inventory to reference).
+is_blindspot_inventory_enabled() {
+  [[ "${OMC_BLINDSPOT_INVENTORY:-on}" != "off" ]]
+}
+
+# is_intent_broadening_enabled — v1.28.0.
+# Gate for the intent-broadening directive injection in
+# prompt-intent-router.sh. Default ON. Independent of
+# blindspot_inventory: a user may want the directive's reasoning
+# discipline (reconcile against project context) without the inventory
+# scanner running — in which case the directive renders without the
+# inventory path reference.
+is_intent_broadening_enabled() {
+  [[ "${OMC_INTENT_BROADENING:-on}" != "off" ]]
+}
+
+# blindspot_inventory_path — v1.28.0.
+# Resolves the cache path for the current project. Used by the directive
+# injection so the model can read the inventory directly. Returns the
+# path on stdout even when the file does not exist (caller checks).
+blindspot_inventory_path() {
+  local key
+  key="$(_omc_project_key 2>/dev/null || true)"
+  if [[ -z "${key}" ]]; then
+    return 0
+  fi
+  printf '%s/.claude/quality-pack/blindspots/%s.json' "${HOME}" "${key}"
+}
+
+# blindspot_inventory_summary — v1.28.0.
+# Emits a one-line summary of the cached inventory's surface counts
+# (e.g., "type=bash total=142 routes=0 envs=8 docs=50 cfgs=33").
+# Used by the directive to give the model a quick sense of what the
+# inventory contains before they decide to read it. Returns empty
+# when the cache is missing or malformed.
+blindspot_inventory_summary() {
+  local path
+  path="$(blindspot_inventory_path)"
+  [[ -n "${path}" && -f "${path}" ]] || return 0
+  jq -r '
+    "type=\(.project_type) total=\(.total_surfaces) routes=\(.surfaces.routes | length) envs=\(.surfaces.env_vars | length) docs=\(.surfaces.docs | length) cfgs=\(.surfaces.config_flags | length) ui=\(.surfaces.ui_files | length) errs=\(.surfaces.error_states | length) auths=\(.surfaces.auth_paths | length) releases=\(.surfaces.release_steps | length) scripts=\(.surfaces.scripts | length)"
+  ' "${path}" 2>/dev/null || true
 }
 
 # find_claimable_resume_requests

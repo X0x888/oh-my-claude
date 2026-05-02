@@ -111,6 +111,7 @@ required_paths=(
   "${CLAUDE_HOME}/skills/autowork/scripts/stop-time-summary.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/canary-claim-audit.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/show-time.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/blindspot-inventory.sh"
   "${CLAUDE_HOME}/skills/ulw-time/SKILL.md"
   "${CLAUDE_HOME}/skills/autowork/scripts/record-serendipity.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/record-reviewer.sh"
@@ -245,6 +246,7 @@ hook_scripts=(
   "${CLAUDE_HOME}/skills/autowork/scripts/stop-time-summary.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/canary-claim-audit.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/show-time.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/blindspot-inventory.sh"
 )
 
 for script in "${hook_scripts[@]}"; do

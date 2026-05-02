@@ -82,6 +82,9 @@ time_tracking_xs_retain_days|pint|30|telemetry|Cross-session timing log retentio
 state_ttl_days|int|7|cleanup|Days before stale session-state dirs are swept
 output_style|enum:opencode/preserve|opencode|cost|Bundle the oh-my-claude style (opencode) or leave settings.json untouched (preserve)
 model_drift_canary|bool|on|telemetry|Stop-hook canary detects silent confabulation (claims-vs-tool-calls audit; surfaces in /ulw-report)
+blindspot_inventory|bool|on|gates|Project-surface scanner backing the intent-broadening directive (lazy-cached, 24h TTL)
+intent_broadening|bool|on|advisory|Inject project-context reconciliation directive on complex execution prompts (defends against language-as-limitation failure)
+blindspot_ttl_seconds|pint|86400|gates|Cache TTL (seconds) for blindspot inventory; default 86400 = 24h
 EOF
 }
 
@@ -123,6 +126,8 @@ stop_failure_capture=on
 resume_watchdog=on
 time_tracking=on
 model_drift_canary=on
+blindspot_inventory=on
+intent_broadening=on
 model_tier=quality
 EOF
       ;;
@@ -145,6 +150,8 @@ stop_failure_capture=on
 resume_watchdog=off
 time_tracking=on
 model_drift_canary=on
+blindspot_inventory=on
+intent_broadening=on
 model_tier=balanced
 EOF
       ;;
@@ -167,6 +174,8 @@ stop_failure_capture=on
 resume_watchdog=off
 time_tracking=off
 model_drift_canary=off
+blindspot_inventory=off
+intent_broadening=off
 model_tier=economy
 EOF
       ;;

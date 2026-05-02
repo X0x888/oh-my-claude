@@ -329,6 +329,47 @@
 #model_drift_canary=on
 
 # ---------------------------------------------------------------------------
+# Intent broadening — defend against the "language is a limitation" failure
+# mode where a complex /ulw prompt names some surfaces but misses others.
+# The blindspot inventory enumerates project surfaces (routes, env vars,
+# tests, docs, config flags, UI files, error states, auth paths, release
+# steps, scripts) so the model can reconcile its task scope against the
+# project's real shape, not just the literal prompt text.
+# ---------------------------------------------------------------------------
+
+# Project surface inventory scanner. When `on` (default), the
+# blindspot-inventory.sh scanner generates / refreshes
+# ~/.claude/quality-pack/blindspots/<project_key>.json on demand, capped
+# at 50 entries per surface so a typical scan finishes in under 2 seconds.
+# The intent-broadening directive references the inventory; when this is
+# off, the directive renders without the path reference (kill switch for
+# shared machines / regulated codebases / very large monorepos where the
+# scan is too expensive).
+# Env: OMC_BLINDSPOT_INVENTORY.
+#blindspot_inventory=on
+
+# Inject a project-context reconciliation directive on complex execution
+# / continuation prompts. Tells the model to enumerate the surfaces this
+# work plausibly affects (release steps, env vars, tests, docs) and
+# reconcile against the prompt — surfacing gaps in the opener under a
+# "**Project surfaces touched:**" line rather than silently filling them.
+# Default ON. Lighter than a hard gate: informational, expects the model
+# to either ship the gap or defer with a one-line WHY. Independent of
+# `blindspot_inventory` — a user may want the discipline without the
+# scanner running, in which case the directive renders without an
+# inventory reference.
+# Env: OMC_INTENT_BROADENING.
+#intent_broadening=on
+
+# Cache TTL (seconds) for the blindspot inventory. Default 86400 = 24h —
+# long enough for free reuse within a day, short enough that surfaces
+# added today don't go missing for more than a day. Refresh on demand
+# via `bash ~/.claude/skills/autowork/scripts/blindspot-inventory.sh
+# scan --force`.
+# Env: OMC_BLINDSPOT_TTL_SECONDS.
+#blindspot_ttl_seconds=86400
+
+# ---------------------------------------------------------------------------
 # Cleanup.
 # ---------------------------------------------------------------------------
 

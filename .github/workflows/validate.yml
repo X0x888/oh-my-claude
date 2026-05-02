@@ -100,6 +100,9 @@ jobs:
       - name: Run timing tests
         run: bash tests/test-timing.sh
 
+      - name: Run blindspot-inventory tests
+        run: bash tests/test-blindspot-inventory.sh
+
       - name: Run show-status tests
         run: bash tests/test-show-status.sh
 

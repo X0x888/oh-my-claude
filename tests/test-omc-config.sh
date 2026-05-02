@@ -251,11 +251,12 @@ assert_file_lacks_line "atomic batch: auto_memory not written" "${USER_CONF_PATH
 assert_file_lacks_line "atomic batch: discovered_scope not written" "${USER_CONF_PATH}" "^discovered_scope=on\$"
 teardown
 
-# --- Test 13: apply-preset maximum writes all 18 keys ---
-printf 'Test 13: apply-preset maximum writes 18 keys\n'
+# --- Test 13: apply-preset maximum writes all 20 keys (v1.28.0 added
+# blindspot_inventory + intent_broadening to maximum) ---
+printf 'Test 13: apply-preset maximum writes 20 keys\n'
 setup
 out="$(bash "${HELPER}" apply-preset user maximum 2>&1)"
-assert_contains "apply-preset reports 18 keys" "18 keys" "${out}"
+assert_contains "apply-preset reports 20 keys" "20 keys" "${out}"
 assert_file_has_line "maximum: gate_level=full" "${USER_CONF_PATH}" "^gate_level=full\$"
 assert_file_has_line "maximum: guard_exhaustion_mode=block" "${USER_CONF_PATH}" "^guard_exhaustion_mode=block\$"
 assert_file_has_line "maximum: prometheus_suggest=on" "${USER_CONF_PATH}" "^prometheus_suggest=on\$"
@@ -273,6 +274,9 @@ assert_file_has_line "maximum: mark_deferred_strict=on" "${USER_CONF_PATH}" "^ma
 # shipped as `off` for cost reasons; corrected after user review pointed
 # out the inconsistency. This assertion locks the right value in.
 assert_file_has_line "maximum: council_deep_default=on" "${USER_CONF_PATH}" "^council_deep_default=on\$"
+# v1.28.0: blindspot_inventory + intent_broadening included in maximum.
+assert_file_has_line "maximum: blindspot_inventory=on" "${USER_CONF_PATH}" "^blindspot_inventory=on\$"
+assert_file_has_line "maximum: intent_broadening=on" "${USER_CONF_PATH}" "^intent_broadening=on\$"
 teardown
 
 # --- Test 14: apply-preset balanced writes balanced values ---

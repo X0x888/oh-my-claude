@@ -482,6 +482,66 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
     fi
   fi
 
+  # --- Intent-broadening directive (v1.28.0) ---
+  #
+  # The "language is a limitation" defense. A complex /ulw prompt names
+  # SOME of the surfaces it touches but rarely all of them. The default
+  # LLM failure mode is to ship exactly what was named and silently miss
+  # adjacent surfaces (release steps, env vars, tests, docs) the user
+  # would have wanted updated had they thought to mention them.
+  #
+  # This directive injects a project-surface inventory reference plus a
+  # reconciliation discipline: read the inventory, identify which
+  # surfaces this work touches, surface gaps in the opener under a
+  # "**Project surfaces touched:**" line. Either ship the gap or defer
+  # with a one-line WHY.
+  #
+  # Fires on execution + continuation intents (the modes where surface-
+  # missing has cost). Skipped on advisory / session_management /
+  # checkpoint where reconciliation framing is just noise.
+  #
+  # Fires INDEPENDENTLY of the other bias-defense directives (narrowing,
+  # completeness, exemplifying-scope) — they target different failure
+  # axes. A complex execution prompt may legitimately receive the
+  # narrowing directive (clarify the goal) AND this widening directive
+  # (reconcile against project surfaces).
+  #
+  # The blindspot inventory is generated lazily — first /ulw prompt on
+  # a project with no cache silently scans (one-time ~1s cost), then
+  # subsequent prompts reuse the 24h-fresh cache. The directive renders
+  # WITHOUT a path when blindspot_inventory=off (kill switch); the
+  # reconciliation discipline still applies.
+  if is_intent_broadening_enabled \
+      && [[ "${session_management_prompt}" -eq 0 ]] \
+      && [[ "${checkpoint_prompt}" -eq 0 ]] \
+      && [[ "${advisory_prompt}" -eq 0 ]]; then
+    intent_broadening_path=""
+    intent_broadening_summary=""
+    if is_blindspot_inventory_enabled; then
+      intent_broadening_path="$(blindspot_inventory_path)"
+      # Lazy generation: scan if cache is missing or stale. Suppress
+      # output (the scan logs to its own log; we don't want it in the
+      # hook's stderr context). Bounded — capped at 50 entries per
+      # surface, takes < 2s on typical projects.
+      if [[ -n "${intent_broadening_path}" ]]; then
+        bash "${HOME}/.claude/skills/autowork/scripts/blindspot-inventory.sh" scan >/dev/null 2>&1 || true
+        intent_broadening_summary="$(blindspot_inventory_summary 2>/dev/null || true)"
+      fi
+    fi
+    if [[ -n "${intent_broadening_summary}" ]]; then
+      context_parts+=("INTENT-BROADENING DIRECTIVE: A project surface inventory has been generated for this project at \`${intent_broadening_path}\` (${intent_broadening_summary}). Language is a limitation — the user's prompt names SOME of the surfaces this work touches but rarely all of them. Before committing to scope: (1) **Read the inventory** when scope is non-trivial. It enumerates concrete surfaces (routes, env vars, tests, docs, config flags, UI files, error states, auth paths, release steps, scripts) the prompt cannot explicitly list. (2) **Reconcile your task against it.** Which surfaces does this work plausibly touch (directly or transitively) vs which does the prompt explicitly name? (3) **Surface gaps in your opener** under a \`**Project surfaces touched:**\` bulleted line. If release steps, env vars, tests, or docs need updating beyond what the prompt names, ship them or defer with a one-line concrete WHY — never silently. (4) **The inventory is informational, not authoritative.** It widens your aperture, not constrains it. New surfaces appear faster than rescans; if a surface should exist but is missing, proceed with normal completeness reasoning. The inventory addresses the failure mode where a complex prompt silently misses surfaces the user did not name. Refresh: \`bash ~/.claude/skills/autowork/scripts/blindspot-inventory.sh scan --force\`.")
+      log_hook "prompt-intent-router" "bias-defense: intent-broadening fired (path=${intent_broadening_path})"
+      record_gate_event "bias-defense" "directive_fired" \
+        "directive=intent-broadening"
+    elif [[ -z "${intent_broadening_path}" ]] || ! is_blindspot_inventory_enabled; then
+      # Inventory disabled — emit the discipline without the path reference.
+      context_parts+=("INTENT-BROADENING DIRECTIVE (no inventory): Language is a limitation — the user's prompt names some of the surfaces this work touches but rarely all of them. Before committing to scope, enumerate the project surfaces this work plausibly affects (routes, env vars, tests, docs, config flags, release steps, error states, auth paths) and reconcile against the prompt. Surface gaps in your opener under a \`**Project surfaces touched:**\` line — ship the gap or defer with a one-line concrete WHY. Never silently fill or silently drop a surface the user did not name.")
+      log_hook "prompt-intent-router" "bias-defense: intent-broadening fired (no inventory path)"
+      record_gate_event "bias-defense" "directive_fired" \
+        "directive=intent-broadening-no-inventory"
+    fi
+  fi
+
   if [[ "${session_management_prompt}" -eq 0 && "${checkpoint_prompt}" -eq 0 ]]; then
     # Project-maturity prior — informational tag biasing advisory framing.
     # Fires once per session (cached) for active modes only. Skipped on
