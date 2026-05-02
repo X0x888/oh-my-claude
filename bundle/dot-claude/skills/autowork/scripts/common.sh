@@ -3359,11 +3359,24 @@ extract_findings_json() {
   local message="$1"
   [[ -z "${message}" ]] && return 0
 
-  # Grab the LAST FINDINGS_JSON: line that is unindented (matches the
-  # convention that agents emit it as a top-level block, not quoted).
+  # Strip fenced code blocks BEFORE grepping. Reviewer agents now carry
+  # FINDINGS_JSON examples in their system prompts; an LLM that quotes
+  # the example verbatim inside a ```code``` fence would otherwise inject
+  # phantom findings into discovered_scope.jsonl. Same awk pre-pass that
+  # extract_discovered_findings uses.
+  local cleaned
+  cleaned="$(printf '%s\n' "${message}" | awk '
+    /^```/ { in_code = !in_code; next }
+    !in_code { print }
+  ')"
+
+  # Grab the LAST FINDINGS_JSON: line that is unindented AND followed by
+  # a JSON array opener (`[`). Requiring `[` narrows the match to actual
+  # arrays — example text like `FINDINGS_JSON: <single-line JSON array>`
+  # in prose would otherwise match.
   local json_line
-  json_line="$(printf '%s\n' "${message}" \
-    | grep -E '^FINDINGS_JSON:' \
+  json_line="$(printf '%s\n' "${cleaned}" \
+    | grep -E '^FINDINGS_JSON:[[:space:]]*\[' \
     | tail -n 1 \
     | sed -E 's/^FINDINGS_JSON:[[:space:]]*//' \
     || true)"
@@ -3409,12 +3422,21 @@ normalize_finding_object() {
 # or empty when no line is present. Used by record-reviewer.sh to
 # derive the finding count without relying on the parenthesized
 # `FINDINGS (N)` count that may be missing or stale.
+#
+# Same fenced-block strip + `[` requirement as extract_findings_json so
+# the two helpers stay consistent on what they accept. A message that
+# extract reads as "no findings" must count as zero, not a phantom.
 count_findings_json() {
   local message="$1"
   [[ -z "${message}" ]] && return 0
+  local cleaned
+  cleaned="$(printf '%s\n' "${message}" | awk '
+    /^```/ { in_code = !in_code; next }
+    !in_code { print }
+  ')"
   local json_line
-  json_line="$(printf '%s\n' "${message}" \
-    | grep -E '^FINDINGS_JSON:' \
+  json_line="$(printf '%s\n' "${cleaned}" \
+    | grep -E '^FINDINGS_JSON:[[:space:]]*\[' \
     | tail -n 1 \
     | sed -E 's/^FINDINGS_JSON:[[:space:]]*//' \
     || true)"

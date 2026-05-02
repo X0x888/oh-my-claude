@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.28.0] - 2026-05-02
+
+This release responds to a comprehensive third-party review (GPT-shaped feedback) plus the user's own framing of *"language is a limitation"* — user prompts are necessarily incomplete, so a complex task silently misses surfaces the prompt did not name. Five waves address each axis:
+
+- **Wave 1 — Blindspot inventory + intent-broadening directive.** New `blindspot-inventory.sh` scanner enumerates 10 project surfaces (routes, env vars, tests, docs, config flags, UI files, error states, auth paths, release steps, scripts) and caches the result at `~/.claude/quality-pack/blindspots/<project_key>.json` with a 24h TTL. The `prompt-intent-router.sh` injects an `INTENT-BROADENING DIRECTIVE` on execution + continuation prompts that references the inventory and tells the model to surface gaps under a `**Project surfaces touched:**` opener line — ship the gap or defer with a one-line WHY. Three new conf flags (`blindspot_inventory`, `intent_broadening`, `blindspot_ttl_seconds`); maximum/balanced presets grew from 18 to 20 keys. Closes GPT review #3 + user's intent-broadening request.
+
+- **Wave 2 — Structured FINDINGS_JSON contract.** Reviewer agents (`quality-reviewer`, `excellence-reviewer`, `oracle`, `abstraction-critic`, `metis`, `design-reviewer`, `briefing-analyst`) now emit a single-line `FINDINGS_JSON: [...]` block immediately before the VERDICT line. Each finding object carries `{severity, category, file, line, claim, evidence, recommended_fix}`. `extract_findings_json` + `normalize_finding_object` helpers parse the block preferentially over prose heuristics; `extract_discovered_findings` takes the JSON path when present and emits rows with a `.structured` field. Backward-compatible: agents that don't emit the block fall through to prose extraction unchanged. Closes GPT review #4.
+
+- **Wave 3 — Hook latency budget framework.** New `check-latency-budgets.sh` benchmarks the six hot-path hooks with synthetic JSON payloads, computes median + p95 over N samples (default 5), and exit-codes a CI failure when any hook exceeds its budget. Default budgets in ms: `prompt-intent-router=1200`, `pretool-intent-guard=300`, `pretool-timing=200`, `posttool-timing=200`, `stop-guard=1000`, `stop-time-summary=400`. Per-hook env override: `OMC_LATENCY_BUDGET_<HOOK>_MS=<ms>`. Closes GPT review #5.
+
+- **Wave 4 — Generic agent rewrites.** Five thin agents (`atlas`, `librarian`, `chief-of-staff`, `draft-writer`, `writing-architect`) get the structural treatment the strong reviewers shipped with: trigger boundaries (when to use AND when NOT to use), inspection requirements, named anti-patterns, blind-spot examples, stack-specific defaults. Each grew from ~30 to ~80-95 lines of guidance grounded in concrete failure modes. Closes GPT review #2.
+
+- **Wave 5 — Honest Maximum profile + docs + version bump.** GPT review #6 was already substantially closed in Wave 1 (Maximum preset already pulled `guard_exhaustion_mode=block`, `metis_on_plan_gate=on`, `council_deep_default=on`, `model_tier=quality`); Wave 5 added `blindspot_inventory=on` + `intent_broadening=on` to Maximum and Balanced (off in Minimal for footprint). README, CLAUDE.md, AGENTS.md, CONTRIBUTING.md updated; CHANGELOG entry; VERSION bumped.
+
+This release also closes the v1.27.0 lazy-load follow-up (originally listed in Unreleased after the v1.27.0 tag):
+
 ### Wave 4 follow-up — lazy-load libs (post-release polish)
 
 After v1.27.0 shipped, the excellence reviewer flagged the F-020 / F-021 deferrals as *expedient rather than load-bearing* given the original brief's *"do not stop for cheap achievements"* line. Closing those two findings here:

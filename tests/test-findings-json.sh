@@ -244,6 +244,24 @@ ev_len="$(printf '%s' "${norm_out}" | jq -r '.evidence | length')"
 assert_true "[[ ${claim_len} -le 140 ]]" "claim truncated to ≤140 (got ${claim_len})"
 assert_true "[[ ${ev_len} -le 600 ]]" "evidence truncated to ≤600 (got ${ev_len})"
 
+# --- T18a (Serendipity Rule fix, v1.28.0) ---
+printf '\nT18a: FINDINGS_JSON inside fenced code block is ignored\n'
+fenced_msg=$'Real findings prose.\n\n```\nFINDINGS_JSON: [{"severity":"high","category":"bug","file":"phantom.ts","line":1,"claim":"PHANTOM","evidence":"e","recommended_fix":"f"}]\n```\n\nVERDICT: CLEAN'
+out="$(extract_findings_json "${fenced_msg}")"
+assert_eq "${out}" "" "fenced FINDINGS_JSON not extracted (phantom-finding fix)"
+n="$(count_findings_json "${fenced_msg}")"
+assert_eq "${n}" "" "count returns empty when only fenced match exists"
+
+printf '\nT18b: real FINDINGS_JSON outside fences still works alongside fenced example\n'
+mixed_msg=$'Example block (not real):\n\n```\nFINDINGS_JSON: [{"severity":"low","category":"other","file":"x","line":1,"claim":"PHANTOM","evidence":"e","recommended_fix":"f"}]\n```\n\nFINDINGS_JSON: [{"severity":"high","category":"bug","file":"r.ts","line":42,"claim":"REAL","evidence":"e","recommended_fix":"f"}]\n\nVERDICT: FINDINGS (1)'
+out="$(extract_findings_json "${mixed_msg}" | head -1 | jq -r '.claim')"
+assert_eq "${out}" "REAL" "real finding extracted; phantom dropped"
+
+printf '\nT18c: FINDINGS_JSON without `[` (prose mention) is ignored\n'
+prose_msg=$'The reviewer should emit a FINDINGS_JSON: line.\n\nVERDICT: CLEAN'
+out="$(extract_findings_json "${prose_msg}")"
+assert_eq "${out}" "" "prose mention without [ is not extracted"
+
 # --- T18 ---
 printf '\nT18: reviewer agents document FINDINGS_JSON contract\n'
 for agent in quality-reviewer excellence-reviewer oracle abstraction-critic metis design-reviewer briefing-analyst; do

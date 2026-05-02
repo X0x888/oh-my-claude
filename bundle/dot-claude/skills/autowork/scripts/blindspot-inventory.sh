@@ -50,8 +50,12 @@ EXCLUDE_DIRS=(
 
 # Helpers ---------------------------------------------------------------------
 
+# Local alias for the canonical helper sourced from common.sh. Kept as a
+# function (not a variable) so the rest of this script reads identically;
+# delegates to the shared definition so the conf/env-flag semantics stay
+# in one place.
 is_blindspot_enabled() {
-  [[ "${OMC_BLINDSPOT_INVENTORY:-on}" != "off" ]]
+  is_blindspot_inventory_enabled
 }
 
 # project_key with stable fallback when not in a git repo or git missing.
@@ -169,13 +173,21 @@ detect_project_type() {
 
 detect_routes() {
   local root="$1" type="$2"
+  # Strip the project root from each emitted file path so route entries
+  # match the relative-path convention every other detector follows. Also
+  # trim leading whitespace from the match string (awk's `$1=$2=""` leaves
+  # a leading separator artifact). Pass the root via -v so awk sees it.
   case "${type}" in
     web|polyglot)
       # Express / Hono / Koa / Fastify: app.METHOD('/path', ...)
       scoped_grep \
         "(app|router|server)\.(get|post|put|patch|delete|head|options)\s*\(['\"][^'\"]+['\"]" \
         "${root}" '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' \
-        | awk -F: '{file=$1; line=$2; $1=$2=""; sub(/^::/,""); printf "{\"file\":\"%s\",\"line\":%s,\"match\":\"%s\"}\n", file, line, substr($0,1,140)}' \
+        | awk -F: -v root="${root}/" '{
+            file=$1; line=$2; $1=$2=""; sub(/^::/,""); sub(/^[ \t]+/,"");
+            sub(root, "", file);
+            printf "{\"file\":\"%s\",\"line\":%s,\"match\":\"%s\"}\n", file, line, substr($0,1,140)
+          }' \
         | jq -c 'select(.file != null)' 2>/dev/null || true
       # Next.js: app/**/route.ts | pages/api/*.ts
       find "${root}" -type f \( -name 'route.ts' -o -name 'route.tsx' -o -name 'route.js' \) 2>/dev/null \
@@ -189,7 +201,11 @@ detect_routes() {
       scoped_grep \
         "@(app|router|api|bp)\.(get|post|put|patch|delete|route)\(" \
         "${root}" '*.py' \
-        | awk -F: '{file=$1; line=$2; $1=$2=""; sub(/^::/,""); printf "{\"file\":\"%s\",\"line\":%s,\"match\":\"%s\"}\n", file, line, substr($0,1,140)}' \
+        | awk -F: -v root="${root}/" '{
+            file=$1; line=$2; $1=$2=""; sub(/^::/,""); sub(/^[ \t]+/,"");
+            sub(root, "", file);
+            printf "{\"file\":\"%s\",\"line\":%s,\"match\":\"%s\"}\n", file, line, substr($0,1,140)
+          }' \
         | jq -c 'select(.file != null)' 2>/dev/null || true
       ;;
     go)
@@ -197,7 +213,11 @@ detect_routes() {
       scoped_grep \
         "(HandleFunc|\.(GET|POST|PUT|PATCH|DELETE|Get|Post|Put|Patch|Delete))\s*\(" \
         "${root}" '*.go' \
-        | awk -F: '{file=$1; line=$2; $1=$2=""; sub(/^::/,""); printf "{\"file\":\"%s\",\"line\":%s,\"match\":\"%s\"}\n", file, line, substr($0,1,140)}' \
+        | awk -F: -v root="${root}/" '{
+            file=$1; line=$2; $1=$2=""; sub(/^::/,""); sub(/^[ \t]+/,"");
+            sub(root, "", file);
+            printf "{\"file\":\"%s\",\"line\":%s,\"match\":\"%s\"}\n", file, line, substr($0,1,140)
+          }' \
         | jq -c 'select(.file != null)' 2>/dev/null || true
       ;;
   esac

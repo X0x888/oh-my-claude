@@ -141,13 +141,30 @@ emit_payload_for_hook() {
 
 # --- Timing primitives ---
 
-# now_ms — monotonic-ish ms timestamp. Uses python3 since `date +%s%N` is
-# GNU-only (BSD date on macOS does not support nanoseconds), and the
-# project already requires python3 for statusline. Fallback to whole
-# seconds × 1000 when python3 is unavailable (loses sub-second precision
-# but the gate would still catch >1s regressions).
+# now_ms — sub-second timestamp with fast paths first.
+#
+# Order of preference:
+#   1. bash 5+ `EPOCHREALTIME` (`1234567890.123456` — 6 fractional digits).
+#      Pure builtin, no fork, no jq, no python3 spawn. ~microseconds per call.
+#   2. python3 -c (~30ms per call due to interpreter startup). Used on
+#      bash 3.2 (default macOS) where EPOCHREALTIME is not exposed.
+#   3. `date +%s` × 1000 (whole-second precision; loses fractional ms).
+#      Last resort when neither bash 5 nor python3 is available.
+#
+# Why this matters: each python3 fork takes ~30ms, called twice per sample
+# × 5 samples × 6 hooks = ~1.8s of overhead per `check` run. Worse, the
+# python3 startup time straddled the bash invocation it was timing —
+# inflating measured ms by 30-60ms per hook. The bash 5+ path closes
+# both costs to negligible without changing the output format.
 now_ms() {
-  if command -v python3 >/dev/null 2>&1; then
+  if [[ -n "${EPOCHREALTIME:-}" ]]; then
+    # EPOCHREALTIME is `<sec>.<6 microsecond digits>`. Drop the dot
+    # and the last 3 digits to get integer ms. Bash 3.2 substring
+    # arithmetic uses ${var:start:length}, no negative offsets, so
+    # compute length explicitly.
+    local raw="${EPOCHREALTIME//./}"
+    printf '%s' "${raw:0:$((${#raw} - 3))}"
+  elif command -v python3 >/dev/null 2>&1; then
     python3 -c 'import time; print(int(time.time()*1000))'
   else
     printf '%d' "$(($(date +%s) * 1000))"
