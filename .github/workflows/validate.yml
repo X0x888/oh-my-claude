@@ -106,6 +106,9 @@ jobs:
       - name: Run findings-json tests
         run: bash tests/test-findings-json.sh
 
+      - name: Run latency-budgets tests
+        run: bash tests/test-latency-budgets.sh
+
       - name: Run show-status tests
         run: bash tests/test-show-status.sh
 
