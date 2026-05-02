@@ -242,11 +242,23 @@ assert_exit "next wave" "0" \
 assert_exit "next phase" "0" \
   has_unfinished_session_handoff "Moving to the next phase in a follow-up."
 
-assert_exit "continue later" "0" \
+# v1.27.0 (F-009): "continue later" and "remaining work" deliberately
+# DROPPED from has_unfinished_session_handoff because they match
+# legitimate scoping language ("implementing the rest now",
+# "remaining work tracked in F-042"). The retained patterns explicitly
+# encode session-boundary handoff: new session, another session, next
+# wave, next phase, wave/phase N is next.
+assert_exit "continue later — no longer matches (v1.27.0)" "1" \
   has_unfinished_session_handoff "We can continue this later."
 
-assert_exit "remaining work" "0" \
+assert_exit "remaining work — no longer matches (v1.27.0)" "1" \
   has_unfinished_session_handoff "The remaining work covers testing."
+
+assert_exit "another session: matches" "0" \
+  has_unfinished_session_handoff "We can pick this up in another session."
+
+assert_exit "wave N is next: matches" "0" \
+  has_unfinished_session_handoff "Wave 3 is next; ready to continue when you are."
 
 assert_exit "clean completion: no match" "1" \
   has_unfinished_session_handoff "All tasks complete. Tests passing."
