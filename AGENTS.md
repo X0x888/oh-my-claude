@@ -233,6 +233,14 @@ Total: 7 reviewer-class + 7 lens + 2 planner + 2 researcher + 1 debugger + 2 ope
 
 When wiring a new VERDICT vocabulary into a hook consumer, extend the parser regex in `record-reviewer.sh` (or add a new parser as `record-plan.sh` did for `plan_verdict`). Until then, the informational rows above emit the verdict for human readability and forward compatibility — the gate's behavior is unchanged for those agents.
 
+#### Structured FINDINGS_JSON contract (v1.28.0)
+
+Seven finding-emitting agents — `quality-reviewer`, `excellence-reviewer`, `oracle`, `abstraction-critic`, `metis`, `design-reviewer`, `briefing-analyst` — emit a single-line `FINDINGS_JSON: [...]` block immediately before the `VERDICT:` line when findings exist. Each finding object: `{severity, category, file, line, claim, evidence, recommended_fix}`. Severity ∈ `{high, medium, low}`. Category ∈ `{bug, missing_test, completeness, security, performance, docs, integration, design, other}`. Empty array `[]` is valid for clean reviews.
+
+The `extract_findings_json` helper in `common.sh` parses the line preferentially over the legacy prose heuristic; `normalize_finding_object` coerces severity aliases (`critical`/`p0`/`p1`/`p2`/`blocker` → `high`/`medium`/`low`) and unknown categories → `other`. The discovered-scope pipeline (`extract_discovered_findings`) takes the JSON path when present and emits rows with a `.structured` field carrying the full payload, falling through to the legacy heuristic only when the line is missing/empty/malformed (fail-open). Single-line array form is required for robust grep-based extraction; pretty-printed JSON is intentionally NOT supported.
+
+`editor-critic` is intentionally excluded from the contract — its findings are prose-quality observations, not severity-anchored structured items. The contract-presence regression net is `tests/test-findings-json.sh`.
+
 #### Dimension mapping
 
 The prescribed reviewer sequence (Check 4 of stop-guard) enforces distinct dimensions per reviewer on complex tasks:

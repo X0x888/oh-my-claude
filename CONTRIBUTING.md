@@ -106,6 +106,10 @@ bash tests/test-resume-watchdog.sh
 bash tests/test-omc-config.sh
 bash tests/test-output-style-coherence.sh
 bash tests/test-timing.sh
+bash tests/test-blindspot-inventory.sh
+bash tests/test-findings-json.sh
+bash tests/test-latency-budgets.sh
+bash tests/test-show-status.sh
 python3 -m unittest tests.test_statusline -v
 ```
 
@@ -145,6 +149,17 @@ When you add, remove, or rename agents, skills, scripts, or directories, update 
 - **CONTRIBUTING.md** -- testing and component-addition sections
 
 Keeping counts and directory listings accurate prevents drift between code and docs.
+
+### Reviewer-agent additions (FINDINGS_JSON contract)
+
+When adding a new finding-emitting reviewer agent (one whose role is to surface defects/gaps with severity), wire it into the v1.28.0 `FINDINGS_JSON` contract:
+
+1. Add the contract instruction to the agent's `.md` file (model emits a single-line `FINDINGS_JSON: [...]` block immediately before the `VERDICT:` line).
+2. Add the agent to the contract-presence regression net in `tests/test-findings-json.sh`.
+3. If the agent's findings should feed the discovered-scope gate, add it to `discovered_scope_capture_targets` in `bundle/dot-claude/skills/autowork/scripts/common.sh`.
+4. Document the agent in AGENTS.md under "Structured FINDINGS_JSON contract (v1.28.0)".
+
+`editor-critic` is intentionally excluded — prose-quality observations are not severity-anchored.
 
 ## Release Process
 
