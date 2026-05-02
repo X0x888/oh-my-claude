@@ -218,7 +218,7 @@ test_t3_ttl() {
   printf '  [diag] T3: cache path=%s\n' "${p}"
 
   local before_mtime after_mtime
-  before_mtime="$(stat -f %m "${p}" 2>/dev/null || stat -c %Y "${p}" 2>/dev/null || echo unknown)"
+  before_mtime="$(stat -c %Y "${p}" 2>/dev/null || stat -f %m "${p}" 2>/dev/null || echo unknown)"
   printf '  [diag] T3: before_mtime=%s\n' "${before_mtime}"
 
   sleep 1
@@ -232,7 +232,7 @@ test_t3_ttl() {
   fi
   printf '  [diag] T3: second scan stderr/stdout: %s\n' "${out2}"
 
-  after_mtime="$(stat -f %m "${p}" 2>/dev/null || stat -c %Y "${p}" 2>/dev/null || echo unknown)"
+  after_mtime="$(stat -c %Y "${p}" 2>/dev/null || stat -f %m "${p}" 2>/dev/null || echo unknown)"
   printf '  [diag] T3: after_mtime=%s\n' "${after_mtime}"
 
   assert_eq "${after_mtime}" "${before_mtime}" "fresh cache not rewritten"
@@ -247,10 +247,10 @@ test_t4_force() {
   local p
   p="$(cd "${proj}" && run_scanner path)"
   local before_mtime after_mtime
-  before_mtime="$(stat -f %m "${p}" 2>/dev/null || stat -c %Y "${p}")"
+  before_mtime="$(stat -c %Y "${p}" 2>/dev/null || stat -f %m "${p}" 2>/dev/null || echo unknown)"
   sleep 1
   ( cd "${proj}" && run_scanner scan --force >/dev/null 2>&1 )
-  after_mtime="$(stat -f %m "${p}" 2>/dev/null || stat -c %Y "${p}")"
+  after_mtime="$(stat -c %Y "${p}" 2>/dev/null || stat -f %m "${p}" 2>/dev/null || echo unknown)"
   if [[ "${after_mtime}" -gt "${before_mtime}" ]]; then
     PASS=$((PASS + 1))
     printf '  PASS: --force rewrote the cache (%s -> %s)\n' "${before_mtime}" "${after_mtime}"

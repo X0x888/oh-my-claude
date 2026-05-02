@@ -606,7 +606,14 @@ cmd_stale() {
     return 0  # missing -> stale
   fi
   local mtime now diff
-  mtime="$(stat -f %m "${cache}" 2>/dev/null || stat -c %Y "${cache}" 2>/dev/null || echo 0)"
+  # Linux GNU `stat -c %Y` first; macOS BSD `stat -f %m` fallback.
+  # The reverse order silently broke on Linux: `stat -f` is interpreted
+  # as `--file-system`, `%m` is treated as another (missing) file, but
+  # the named cache file IS valid → stdout gets the multi-line filesystem
+  # block before the `||` runs `stat -c %Y` and appends the mtime. The
+  # captured variable then contains literal `File:`, which downstream
+  # arithmetic (diff=$((now - mtime))) parses as an unbound variable.
+  mtime="$(stat -c %Y "${cache}" 2>/dev/null || stat -f %m "${cache}" 2>/dev/null || echo 0)"
   now="$(now_epoch)"
   diff=$((now - mtime))
   if [[ "${diff}" -gt "${BLINDSPOT_TTL}" ]]; then

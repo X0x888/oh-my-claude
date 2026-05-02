@@ -38,6 +38,18 @@ A pre-tag fresh-eye review (excellence + quality + abstraction-critic + security
 
 Findings deferred as genuine design judgments rather than v1.28.0 regressions (captured to project memory for future consideration): FINDINGS_JSON all-or-nothing precedence (abstraction-critic — design call between "JSON OR prose" and "merge with de-dup"); `blindspot_ttl_seconds` as a third conf flag for a tuning knob most users never touch; lazy-load discipline as a CLAUDE.md rule that could become self-enforcing via stub functions; privacy `SECURITY.md` note for the blindspot inventory; `head -c 65536` defense-in-depth cap before `jq` in the FINDINGS_JSON parser.
 
+### Hotfix v1.28.0 — Linux `stat -f %m` divergence in `cmd_stale` + tests
+
+CI on the v1.28.0 tag (`38f963c`) failed silently at `test-blindspot-inventory.sh T3` with no FAIL line and no stderr — `set -e` was killing the test after `( cd && run_scanner scan >/dev/null 2>&1 )` exited non-zero on Linux. A diagnostic commit (`c3bf6d0`) replaced the silent suppression with stderr capture + explicit FAIL prints, surfacing the actual error: bash arithmetic in `cmd_stale` was choking on a multi-line value with `set -u` triggering on `File: unbound variable`.
+
+Root cause: the BSD-first / GNU-fallback `stat` chain `mtime="$(stat -f %m FILE 2>/dev/null || stat -c %Y FILE 2>/dev/null || echo 0)"` is broken on Linux. GNU `stat -f` means `--file-system` (not "format"); `%m` is treated as another (missing) file argument; the named cache file IS valid, so stdout gets the multi-line filesystem-info dump for that file before the `||` runs `stat -c %Y` and appends the mtime number. The captured `mtime` then contains literal `File:`, and `diff=$((now - mtime))` parses `File` as a variable name.
+
+The bug affected production users on Linux too — any real `blindspot-inventory.sh scan` invocation post-cache hit `cmd_stale`. Fix: swap the order so Linux GNU `stat -c %Y` runs first; macOS BSD `stat -f %m` is the fallback. On macOS, `stat -c` errors silently to stderr (illegal option) with empty stdout, so the `||` cleanly falls through to the BSD form. Five lines fixed across two files (`bundle/dot-claude/skills/autowork/scripts/blindspot-inventory.sh:616`, `tests/test-blindspot-inventory.sh:221,235,250,253`).
+
+The other two grep hits for the same pattern (`bundle/dot-claude/omc-repro.sh:128-129`, `bundle/dot-claude/skills/autowork/scripts/lib/state-io.sh:241-243`) were already safe — they use *separate assignment statements* across the `||`, so each assignment overwrites stdout cleanly. Verified by inspection.
+
+The diagnostic stderr-capture pattern in T3 was retained (replaces silent `>/dev/null 2>&1` subshells with explicit FAIL+rc+output prints) so any future cross-platform regression surfaces the actual error instead of a silent set-e exit.
+
 ### Hotfix v1.27.0 (commit `3711b0d`) — test-fixture lag
 
 Wave 2's F-009 narrowed `has_unfinished_session_handoff` to drop legitimate scoping language (`continue later`, `remaining work`, `pick up .* later`, `the rest`). The dedicated test (`test-discovered-scope`) was updated, but parallel fixtures in `test-common-utilities.sh` were not — CI on the tagged commit caught it and was fixed in `3711b0d`.
