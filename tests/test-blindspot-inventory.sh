@@ -194,18 +194,47 @@ test_t2_project_type() {
 }
 
 # T3: TTL — fresh cache skips rescan -------------------------------------------
+# Diagnostic build (post-v1.28.0 hotfix candidate): capture stderr from every
+# subshell and print debug values so a Linux CI failure surfaces the actual
+# error instead of silently exiting via set -e. The original shape used
+# `( ... >/dev/null 2>&1 )` which suppressed all output — when a subshell
+# exited non-zero on Linux bash 5 (passes on macOS bash 3.2), the parent's
+# `set -e` killed the test with no FAIL line, no stderr, no diagnostic.
 test_t3_ttl() {
   printf '\nT3: fresh cache skips rescan\n'
   local proj="${TEST_HOME}/proj_t3"
   make_bash_project "${proj}"
-  ( cd "${proj}" && run_scanner scan --force >/dev/null 2>&1 )
+
+  local out1 rc1
+  out1="$( ( cd "${proj}" && run_scanner scan --force ) 2>&1 )" && rc1=0 || rc1=$?
+  if [[ "${rc1}" -ne 0 ]]; then
+    printf '  FAIL: first scan rc=%d output:\n%s\n' "${rc1}" "${out1}"
+    FAIL=$((FAIL + 1))
+    return 0
+  fi
+
   local p
   p="$(cd "${proj}" && run_scanner path)"
+  printf '  [diag] T3: cache path=%s\n' "${p}"
+
   local before_mtime after_mtime
-  before_mtime="$(stat -f %m "${p}" 2>/dev/null || stat -c %Y "${p}")"
+  before_mtime="$(stat -f %m "${p}" 2>/dev/null || stat -c %Y "${p}" 2>/dev/null || echo unknown)"
+  printf '  [diag] T3: before_mtime=%s\n' "${before_mtime}"
+
   sleep 1
-  ( cd "${proj}" && run_scanner scan >/dev/null 2>&1 )
-  after_mtime="$(stat -f %m "${p}" 2>/dev/null || stat -c %Y "${p}")"
+
+  local out2 rc2
+  out2="$( ( cd "${proj}" && run_scanner scan ) 2>&1 )" && rc2=0 || rc2=$?
+  if [[ "${rc2}" -ne 0 ]]; then
+    printf '  FAIL: second (cached) scan rc=%d output:\n%s\n' "${rc2}" "${out2}"
+    FAIL=$((FAIL + 1))
+    return 0
+  fi
+  printf '  [diag] T3: second scan stderr/stdout: %s\n' "${out2}"
+
+  after_mtime="$(stat -f %m "${p}" 2>/dev/null || stat -c %Y "${p}" 2>/dev/null || echo unknown)"
+  printf '  [diag] T3: after_mtime=%s\n' "${after_mtime}"
+
   assert_eq "${after_mtime}" "${before_mtime}" "fresh cache not rewritten"
 }
 
