@@ -168,9 +168,17 @@ referenced_files=""
 # We do not require strict adherence; any line containing a markdown
 # link `[...](*.md)` is treated as an entry. Lines without a link are
 # skipped (e.g. headings, blank lines, prose paragraphs).
+# Portable bash regex patterns. Inline backslash-escaped patterns
+# inside `[[ ... =~ ... ]]` work on bash 3.2 (macOS) but bash 5+
+# (Linux) strips backslash escapes during word-splitting, breaking
+# the regex engine. The variable form is the documented portable
+# pattern: assignment preserves literal backslashes, and `=~ $var`
+# bypasses word-splitting on the right side.
+_md_link_re='\[[^]]+\]\([^)]+\.md\)'
+
 while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
   # Skip lines without a markdown link to a *.md file.
-  if [[ ! "${raw_line}" =~ \[[^]]+\]\(([^\)]+\.md)\) ]]; then
+  if [[ ! "${raw_line}" =~ $_md_link_re ]]; then
     continue
   fi
 
@@ -261,11 +269,17 @@ while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
       # was a foot-gun — any entry whose subject is the closure
       # mechanism itself would be flagged for archival.
       desc_lower="$(printf '%s' "${description}" | tr '[:upper:]' '[:lower:]')"
-      if [[ "${desc_lower}" =~ closed[[:space:]]+in[[:space:]]+v[0-9] ]] \
-          || [[ "${desc_lower}" =~ superseded[[:space:]]+by[[:space:]]+v[0-9] ]] \
-          || [[ "${desc_lower}" =~ replaced[[:space:]]+by[[:space:]]+v[0-9] ]] \
-          || [[ "${desc_lower}" =~ superseded[[:space:]]+by[[:space:]]+\[ ]] \
-          || [[ "${desc_lower}" =~ replaced[[:space:]]+by[[:space:]]+\[ ]]; then
+      # Variable-form regex for bash 3.2/5+ portability; see _md_link_re note above.
+      _closed_in_re='closed[[:space:]]+in[[:space:]]+v[0-9]'
+      _supersede_v_re='superseded[[:space:]]+by[[:space:]]+v[0-9]'
+      _replace_v_re='replaced[[:space:]]+by[[:space:]]+v[0-9]'
+      _supersede_link_re='superseded[[:space:]]+by[[:space:]]+\['
+      _replace_link_re='replaced[[:space:]]+by[[:space:]]+\['
+      if [[ "${desc_lower}" =~ $_closed_in_re ]] \
+          || [[ "${desc_lower}" =~ $_supersede_v_re ]] \
+          || [[ "${desc_lower}" =~ $_replace_v_re ]] \
+          || [[ "${desc_lower}" =~ $_supersede_link_re ]] \
+          || [[ "${desc_lower}" =~ $_replace_link_re ]]; then
         status="superseded"
         action="description marks this as closed / superseded — review and remove"
         superseded=$((superseded + 1))
