@@ -3332,6 +3332,98 @@ _finding_id() {
   fi
 }
 
+# extract_findings_json <message>
+# v1.28.0 — structured-findings ingestion path. Reviewer agents that
+# emit a `FINDINGS_JSON:` line are parsed deterministically rather than
+# via prose heuristics. The contract:
+#
+#   FINDINGS_JSON: [{"severity":"high","category":"bug","file":"...",
+#     "line":42,"claim":"...","evidence":"...","recommended_fix":"..."}]
+#
+# Single-line array. Agents emit this AFTER findings prose and BEFORE
+# the VERDICT line. Multi-line JSON is intentionally NOT supported —
+# single-line is robustly grep-able from a long mixed Markdown response,
+# while multi-line would require state-tracking across line iteration
+# and produce silent extraction failures on minor formatting errors.
+#
+# Required fields per finding object: severity (high|medium|low),
+# category (bug|missing_test|completeness|security|performance|docs|
+# integration|design|other), file (string, may be empty), line (integer
+# or null), claim (string ≤140 chars), evidence (string), recommended_fix
+# (string). Unknown fields are preserved (forward-compatible).
+#
+# Return: NDJSON to stdout (one normalized object per line). Empty when:
+# no FINDINGS_JSON line present, JSON parse error, or empty array. Never
+# errors — fail-open is the contract; the prose heuristic still runs.
+extract_findings_json() {
+  local message="$1"
+  [[ -z "${message}" ]] && return 0
+
+  # Grab the LAST FINDINGS_JSON: line that is unindented (matches the
+  # convention that agents emit it as a top-level block, not quoted).
+  local json_line
+  json_line="$(printf '%s\n' "${message}" \
+    | grep -E '^FINDINGS_JSON:' \
+    | tail -n 1 \
+    | sed -E 's/^FINDINGS_JSON:[[:space:]]*//' \
+    || true)"
+  [[ -z "${json_line}" ]] && return 0
+
+  # Validate as JSON array; emit each element as NDJSON.
+  printf '%s' "${json_line}" \
+    | jq -c 'if type == "array" then .[] else empty end' 2>/dev/null \
+    || true
+}
+
+# normalize_finding_object <ndjson_row>
+# Coerces a single FINDINGS_JSON row into the canonical shape used by
+# discovered_scope.jsonl and the council finding list. Missing fields
+# default to safe values (severity=medium, category=other, line=null).
+# This is the v1.28.0 bridge between the JSON contract and the existing
+# heuristic-based pipeline — both paths converge on the same row shape.
+normalize_finding_object() {
+  local row="$1"
+  [[ -z "${row}" ]] && return 0
+  printf '%s' "${row}" | jq -c '{
+    severity: (.severity // "medium" | tostring | ascii_downcase
+               | if . == "critical" or . == "p0" or . == "blocker" then "high"
+                 elif . == "p1" or . == "moderate" or . == "important" then "medium"
+                 elif . == "p2" or . == "p3" or . == "minor" or . == "trivial" then "low"
+                 else . end
+               | if (. == "high" or . == "medium" or . == "low") then . else "medium" end),
+    category: (.category // "other" | tostring | ascii_downcase
+               | if (. == "bug" or . == "missing_test" or . == "completeness"
+                     or . == "security" or . == "performance" or . == "docs"
+                     or . == "integration" or . == "design" or . == "other") then .
+                 else "other" end),
+    file: (.file // "" | tostring),
+    line: (.line // null | if . == null then null else (tonumber? // null) end),
+    claim: (.claim // "" | tostring | .[0:140]),
+    evidence: (.evidence // "" | tostring | .[0:600]),
+    recommended_fix: (.recommended_fix // "" | tostring | .[0:600])
+  }' 2>/dev/null || true
+}
+
+# count_findings_json <message>
+# Convenience: returns the count of findings in the FINDINGS_JSON line,
+# or empty when no line is present. Used by record-reviewer.sh to
+# derive the finding count without relying on the parenthesized
+# `FINDINGS (N)` count that may be missing or stale.
+count_findings_json() {
+  local message="$1"
+  [[ -z "${message}" ]] && return 0
+  local json_line
+  json_line="$(printf '%s\n' "${message}" \
+    | grep -E '^FINDINGS_JSON:' \
+    | tail -n 1 \
+    | sed -E 's/^FINDINGS_JSON:[[:space:]]*//' \
+    || true)"
+  [[ -z "${json_line}" ]] && return 0
+  printf '%s' "${json_line}" \
+    | jq -r 'if type == "array" then length else 0 end' 2>/dev/null \
+    || true
+}
+
 # extract_discovered_findings <agent_name> <message>
 # Emits one JSONL row per detected bullet on stdout.
 # Heuristic:
@@ -3350,6 +3442,53 @@ extract_discovered_findings() {
 
   local now_ts cleaned bullets
   now_ts="$(now_epoch)"
+
+  # v1.28.0 FAST PATH: when the agent emits a FINDINGS_JSON: line,
+  # parse it directly. Each row becomes a normalized discovered_scope
+  # entry with deterministic id, severity, and category (no heuristic
+  # guessing required). Falls through to the prose path on parse error
+  # or empty array — fail-open by design.
+  local json_rows row summary severity category file line claim id
+  json_rows="$(extract_findings_json "${message}")"
+  if [[ -n "${json_rows}" ]]; then
+    while IFS= read -r row; do
+      [[ -z "${row}" ]] && continue
+      local normalized
+      normalized="$(normalize_finding_object "${row}")"
+      [[ -z "${normalized}" ]] && continue
+      severity="$(printf '%s' "${normalized}" | jq -r '.severity // "medium"')"
+      category="$(printf '%s' "${normalized}" | jq -r '.category // "other"')"
+      file="$(printf '%s' "${normalized}" | jq -r '.file // ""')"
+      line="$(printf '%s' "${normalized}" | jq -r '.line // empty')"
+      claim="$(printf '%s' "${normalized}" | jq -r '.claim // ""')"
+      # Build summary as "[severity/category] claim @ file:line" — gives
+      # the existing pipeline a stable single-line representation.
+      if [[ -n "${file}" && -n "${line}" ]]; then
+        summary="[${severity}/${category}] ${claim} @ ${file}:${line}"
+      elif [[ -n "${file}" ]]; then
+        summary="[${severity}/${category}] ${claim} @ ${file}"
+      else
+        summary="[${severity}/${category}] ${claim}"
+      fi
+      summary="${summary:0:240}"
+      id="$(_finding_id "${agent_name}" "${summary}")"
+      [[ -z "${id}" ]] && continue
+
+      jq -nc \
+        --arg id "${id}" \
+        --arg src "${agent_name}" \
+        --arg sum "${summary}" \
+        --arg sev "${severity}" \
+        --arg cat "${category}" \
+        --arg ts "${now_ts}" \
+        --argjson body "${normalized}" \
+        '{id:$id, source:$src, summary:$sum, severity:$sev, category:$cat, status:"pending", reason:"", ts:$ts, structured:$body}' \
+        2>/dev/null || continue
+    done <<<"${json_rows}"
+    # JSON path produced rows — do not fall through to prose heuristic.
+    # The caller already received structured output via the loop above.
+    return 0
+  fi
 
   cleaned="$(printf '%s\n' "${message}" | awk '
     /^```/ { in_code = !in_code; next }

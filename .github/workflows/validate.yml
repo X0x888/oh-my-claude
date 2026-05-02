@@ -103,6 +103,9 @@ jobs:
       - name: Run blindspot-inventory tests
         run: bash tests/test-blindspot-inventory.sh
 
+      - name: Run findings-json tests
+        run: bash tests/test-findings-json.sh
+
       - name: Run show-status tests
         run: bash tests/test-show-status.sh
 
