@@ -38,17 +38,29 @@ A pre-tag fresh-eye review (excellence + quality + abstraction-critic + security
 
 Findings deferred as genuine design judgments rather than v1.28.0 regressions (captured to project memory for future consideration): FINDINGS_JSON all-or-nothing precedence (abstraction-critic — design call between "JSON OR prose" and "merge with de-dup"); `blindspot_ttl_seconds` as a third conf flag for a tuning knob most users never touch; lazy-load discipline as a CLAUDE.md rule that could become self-enforcing via stub functions; privacy `SECURITY.md` note for the blindspot inventory; `head -c 65536` defense-in-depth cap before `jq` in the FINDINGS_JSON parser.
 
-### Hotfix v1.28.0 — Linux `stat -f %m` divergence in `cmd_stale` + tests
+### Hotfix v1.28.0 — Linux `stat -f %m` divergence in `cmd_stale` + tests + audit-memory + show-status
 
 CI on the v1.28.0 tag (`38f963c`) failed silently at `test-blindspot-inventory.sh T3` with no FAIL line and no stderr — `set -e` was killing the test after `( cd && run_scanner scan >/dev/null 2>&1 )` exited non-zero on Linux. A diagnostic commit (`c3bf6d0`) replaced the silent suppression with stderr capture + explicit FAIL prints, surfacing the actual error: bash arithmetic in `cmd_stale` was choking on a multi-line value with `set -u` triggering on `File: unbound variable`.
 
 Root cause: the BSD-first / GNU-fallback `stat` chain `mtime="$(stat -f %m FILE 2>/dev/null || stat -c %Y FILE 2>/dev/null || echo 0)"` is broken on Linux. GNU `stat -f` means `--file-system` (not "format"); `%m` is treated as another (missing) file argument; the named cache file IS valid, so stdout gets the multi-line filesystem-info dump for that file before the `||` runs `stat -c %Y` and appends the mtime number. The captured `mtime` then contains literal `File:`, and `diff=$((now - mtime))` parses `File` as a variable name.
 
-The bug affected production users on Linux too — any real `blindspot-inventory.sh scan` invocation post-cache hit `cmd_stale`. Fix: swap the order so Linux GNU `stat -c %Y` runs first; macOS BSD `stat -f %m` is the fallback. On macOS, `stat -c` errors silently to stderr (illegal option) with empty stdout, so the `||` cleanly falls through to the BSD form. Five lines fixed across two files (`bundle/dot-claude/skills/autowork/scripts/blindspot-inventory.sh:616`, `tests/test-blindspot-inventory.sh:221,235,250,253`).
+**Initial fix scope (`9549362`)** — five sites across two files: `bundle/dot-claude/skills/autowork/scripts/blindspot-inventory.sh:616`, `tests/test-blindspot-inventory.sh:221,235,250,253`. The commit message claimed "other grep hits already safe", which was wrong.
 
-The other two grep hits for the same pattern (`bundle/dot-claude/omc-repro.sh:128-129`, `bundle/dot-claude/skills/autowork/scripts/lib/state-io.sh:241-243`) were already safe — they use *separate assignment statements* across the `||`, so each assignment overwrites stdout cleanly. Verified by inspection.
+**Expanded fix scope (post-reviewer audit)** — the quality-reviewer's HIGH-severity finding caught that `audit-memory.sh` had the SAME broken pattern in four sites (`83`, `84`, `103-105`, `128-130`), `show-status.sh:379-388` had the same pattern with a silent-correctness bug on Linux (xargs+stat -f BSD branch ran first; `||` ran the find -printf GNU fallback which appended mixed output), and `test-memory-audit.sh:139-144` had it too. Worse, `test-memory-audit.sh` was NOT wired into `.github/workflows/validate.yml` — that's why CI on `9549362` was misleadingly green (the broken code path wasn't being checked). Total expanded scope:
 
-The diagnostic stderr-capture pattern in T3 was retained (replaces silent `>/dev/null 2>&1` subshells with explicit FAIL+rc+output prints) so any future cross-platform regression surfaces the actual error instead of a silent set-e exit.
+- `bundle/dot-claude/skills/autowork/scripts/audit-memory.sh:86,87,108,134` — 4 sites swapped to GNU-first
+- `bundle/dot-claude/skills/autowork/scripts/show-status.sh:379-388` — swapped GNU `find -printf` to first branch, BSD `xargs+stat -f` to fallback (BSD `find` lacks `-printf`, so the GNU branch fails on macOS and `||` cleanly runs the BSD pipeline)
+- `tests/test-memory-audit.sh:139-144` — same swap
+- `bundle/dot-claude/skills/autowork/scripts/blindspot-inventory.sh:616` (initial fix)
+- `tests/test-blindspot-inventory.sh:221,235,250,253` (initial fix)
+
+The two remaining grep hits (`bundle/dot-claude/omc-repro.sh:128-129`, `bundle/dot-claude/skills/autowork/scripts/lib/state-io.sh:241-243`) ARE safe — they use *separate assignment statements* across the `||` (each `mtime="$(...)"` or `ts="$(...)"` operand is its own assignment that overwrites stdout cleanly). Verified by inspection AND by the regression test's allowlist.
+
+**Regression net.** New `tests/test-no-broken-stat-chain.sh` greps for inline `stat -f ... || stat -c` patterns (single line) AND multi-line variants (`stat -f` and `stat -c` within 3 lines via `\` continuation), with an explicit allowlist for the verified-safe separate-assignment sites. Wired into `.github/workflows/validate.yml` alongside the previously-missing `tests/test-memory-audit.sh` so any future regression of either bug class is caught at CI time. The test is bash-3.2 compatible (uses `while read` instead of `mapfile` for portability with macOS's stock bash).
+
+**Diagnostic stderr-capture pattern** in T3 was retained (replaces silent `>/dev/null 2>&1` subshells with explicit FAIL+rc+output prints) so any future cross-platform regression surfaces the actual error instead of a silent set-e exit.
+
+**Lesson worth carrying:** when claiming "other sites verified safe" in a hotfix CHANGELOG, the verification needs to be auditable — either by enumerating the inspected sites OR by adding a regression test that locks in the safety property. The over-claim in the initial hotfix's CHANGELOG was caught by a fresh-eye reviewer pass; without that pass, the broader bug would have shipped silently.
 
 ### Hotfix v1.27.0 (commit `3711b0d`) — test-fixture lag
 

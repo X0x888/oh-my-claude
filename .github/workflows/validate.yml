@@ -112,6 +112,12 @@ jobs:
       - name: Run show-status tests
         run: bash tests/test-show-status.sh
 
+      - name: Run memory-audit tests
+        run: bash tests/test-memory-audit.sh
+
+      - name: Run no-broken-stat-chain regression tests
+        run: bash tests/test-no-broken-stat-chain.sh
+
       - name: Run statusline tests
         run: python3 -m unittest tests.test_statusline -v
 

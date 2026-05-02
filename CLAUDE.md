@@ -87,6 +87,7 @@ bash tests/test-timing.sh
 bash tests/test-blindspot-inventory.sh
 bash tests/test-findings-json.sh
 bash tests/test-latency-budgets.sh
+bash tests/test-no-broken-stat-chain.sh
 python3 -m unittest tests.test_statusline -v
 ```
 

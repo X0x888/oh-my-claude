@@ -136,12 +136,14 @@ assert_not_contains "no mv for load-bearing" "mv ${fixture}/user_profile.md"  "$
 # ----------------------------------------------------------------------
 printf 'Test 8: read-only — does not modify the fixture directory\n'
 # Capture mtime of every file before and after; assert no change.
-before="$(find "${fixture}" -type f -exec stat -f '%N %m' {} \; 2>/dev/null \
-  || find "${fixture}" -type f -exec stat -c '%n %Y' {} \; 2>/dev/null \
+# Linux GNU stat first; macOS BSD fallback. See blindspot-inventory.sh:616
+# for the rationale — the reverse order silently broke on Linux.
+before="$(find "${fixture}" -type f -exec stat -c '%n %Y' {} \; 2>/dev/null \
+  || find "${fixture}" -type f -exec stat -f '%N %m' {} \; 2>/dev/null \
   || true)"
 bash "${AUDIT}" --memory-dir "${fixture}" >/dev/null 2>&1
-after="$(find "${fixture}" -type f -exec stat -f '%N %m' {} \; 2>/dev/null \
-  || find "${fixture}" -type f -exec stat -c '%n %Y' {} \; 2>/dev/null \
+after="$(find "${fixture}" -type f -exec stat -c '%n %Y' {} \; 2>/dev/null \
+  || find "${fixture}" -type f -exec stat -f '%N %m' {} \; 2>/dev/null \
   || true)"
 if [[ "${before}" == "${after}" ]]; then
   pass=$((pass + 1))

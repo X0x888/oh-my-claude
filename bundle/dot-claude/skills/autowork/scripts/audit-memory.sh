@@ -80,8 +80,11 @@ if [[ ! -f "${memory_index}" ]]; then
   printf '|------|-----:|----------|\n'
   while IFS= read -r f; do
     [[ -z "${f}" ]] && continue
-    size_bytes="$(stat -f '%z' "${f}" 2>/dev/null || stat -c '%s' "${f}" 2>/dev/null || printf '0')"
-    mtime_iso="$(stat -f '%Sm' -t '%Y-%m-%d' "${f}" 2>/dev/null || stat -c '%y' "${f}" 2>/dev/null | cut -c1-10 || printf '?')"
+    # Linux GNU stat first; macOS BSD fallback. See blindspot-inventory.sh:616
+    # for the rationale — the reverse order silently dumps the filesystem info
+    # block on Linux because GNU stat -f means --file-system, not "format".
+    size_bytes="$(stat -c '%s' "${f}" 2>/dev/null || stat -f '%z' "${f}" 2>/dev/null || printf '0')"
+    mtime_iso="$( { stat -c '%y' "${f}" 2>/dev/null | cut -c1-10; } || stat -f '%Sm' -t '%Y-%m-%d' "${f}" 2>/dev/null || printf '?')"
     printf '| `%s` | %s | %s |\n' "$(basename "${f}")" "${size_bytes}" "${mtime_iso}"
   done < <(find "${memory_dir}" -maxdepth 1 -type f -name '*.md' -not -name 'MEMORY.md' 2>/dev/null | sort)
   exit 0
@@ -100,8 +103,9 @@ file_mtime_epoch() {
     printf '0'
     return 0
   fi
-  stat -f '%m' "${f}" 2>/dev/null \
-    || stat -c '%Y' "${f}" 2>/dev/null \
+  # Linux GNU first; macOS BSD fallback. See blindspot-inventory.sh:616.
+  stat -c '%Y' "${f}" 2>/dev/null \
+    || stat -f '%m' "${f}" 2>/dev/null \
     || printf '0'
 }
 
@@ -125,8 +129,9 @@ file_mtime_iso() {
     printf '?'
     return 0
   fi
-  stat -f '%Sm' -t '%Y-%m-%d' "${f}" 2>/dev/null \
-    || { stat -c '%y' "${f}" 2>/dev/null | cut -c1-10; } \
+  # Linux GNU first; macOS BSD fallback. See blindspot-inventory.sh:616.
+  { stat -c '%y' "${f}" 2>/dev/null | cut -c1-10; } \
+    || stat -f '%Sm' -t '%Y-%m-%d' "${f}" 2>/dev/null \
     || printf '?'
 }
 

@@ -376,11 +376,16 @@ if is_auto_memory_enabled 2>/dev/null; then
       # (macOS) accepts multiple file args, so dropping `-I {}` lets
       # xargs batch them into one invocation. The GNU-find fallback
       # (`-printf`) does not pipe through xargs, so it is unaffected.
+      # Linux GNU find -printf first; macOS BSD xargs+stat fallback. The
+      # reverse order silently broke on Linux: xargs+stat -f dumped
+      # filesystem info to stdout (because `-f` means --file-system on
+      # GNU stat), then `||` ran the find branch and concatenated more
+      # output. See blindspot-inventory.sh:616 for the full rationale.
       _mem_oldest_path="$(find "${_mem_dir}" -maxdepth 1 -type f -name '*.md' \
-        -not -name 'MEMORY.md' -print0 2>/dev/null \
-        | xargs -0 stat -f '%m %N' 2>/dev/null \
+        -not -name 'MEMORY.md' -printf '%T@ %p\n' 2>/dev/null \
         || find "${_mem_dir}" -maxdepth 1 -type f -name '*.md' \
-          -not -name 'MEMORY.md' -printf '%T@ %p\n' 2>/dev/null \
+          -not -name 'MEMORY.md' -print0 2>/dev/null \
+          | xargs -0 stat -f '%m %N' 2>/dev/null \
         || true)"
       if [[ -n "${_mem_oldest_path}" ]]; then
         _mem_oldest_iso="$(printf '%s\n' "${_mem_oldest_path}" \
