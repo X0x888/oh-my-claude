@@ -118,6 +118,9 @@ jobs:
       - name: Run no-broken-stat-chain regression tests
         run: bash tests/test-no-broken-stat-chain.sh
 
+      - name: Run classifier-replay regression tests
+        run: bash tests/test-classifier-replay.sh
+
       - name: Run statusline tests
         run: python3 -m unittest tests.test_statusline -v
 
