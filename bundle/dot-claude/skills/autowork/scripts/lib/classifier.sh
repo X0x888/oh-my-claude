@@ -79,6 +79,36 @@ is_imperative_request() {
   # "I need/want you to..." patterns
   elif [[ "${text}" =~ ^[[:space:]]*i[[:space:]]+(need|want)[[:space:]]+(you[[:space:]]+to|to)[[:space:]] ]]; then
     result=0
+  # Delegated-approval pattern (v1.28.1): "Do/execute/run/proceed-with
+  # <referent>" replies to a multi-option proposal. When the user
+  # responds "Do option C" or "Execute the plan" or "Go with approach 2",
+  # they are explicitly approving the prior assistant message's proposal
+  # — which already named the destructive verbs. Without this branch,
+  # such prompts misclassify as advisory because the destructive verbs
+  # live in the PRIOR assistant message rather than the user's text, and
+  # the prompt-text-override layer in pretool-intent-guard.sh blocks the
+  # destructive op even though the user's intent is unambiguous.
+  #
+  # Triggers in this session (multiple): "Do option 1 as you recommended"
+  # and "Do option C" both got blocked at PreTool gate as advisory. The
+  # gate's escape hatch (re-run is_imperative_request via prompt_text_
+  # override) failed for the same reason — the function has no branch
+  # for delegated-approval shape.
+  #
+  # Narrow by design:
+  #   - Anchor at start of prompt so trailing references ("we discussed
+  #     option C earlier") don't false-positive.
+  #   - Verb list: do|execute|run|proceed with|go with|go ahead with|
+  #     let's do|let's go with — all unambiguously imperative-by-reference.
+  #   - Object marker required: option|plan|approach|recommendation|
+  #     suggestion|proposal|step|fix|solution|route|path|idea — the
+  #     words a multi-option proposal would use. Optional leading "the".
+  #   - Optional identifier after the noun ([a-z0-9]+) for "option C",
+  #     "plan B", "step 3".
+  #   - Trailing-question-mark disqualifier so "do option C?" stays
+  #     advisory.
+  elif [[ ! "${text}" =~ \?[[:space:]]*$ ]] && [[ "${text}" =~ ^[[:space:]]*(do|execute|run|proceed[[:space:]]+with|go[[:space:]]+with|go[[:space:]]+ahead[[:space:]]+with)[[:space:]]+(the[[:space:]]+)?(option|plan|approach|recommendation|suggestion|proposal|step|fix|solution|route|path|idea)([[:space:]]+[a-z0-9]+)? ]]; then
+    result=0
   # Bare imperative: starts with unambiguous action verb, no trailing question mark
   # Excludes: check, test, help, review, plan, research, evaluate, design, style — too ambiguous as bare starts
   # (evaluate/plan/research can be nouns; design/style are adjective-like)

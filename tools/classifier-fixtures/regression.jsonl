@@ -26,3 +26,9 @@
 {"prompt_preview":"Refactor X and tag v2.0","intent":"execution","domain":"coding","note":"v1.23.0 — impl-verb + and + tag + version-shaped object-marker (refactor scores coding)"}
 {"prompt_preview":"Review the auth code and ship the fix","intent":"execution","domain":"coding","note":"v1.27.0 F-001 — investigation-verb-led conjunction (review/audit/plan/evaluate) now matches when paired with destructive tail. Was 'advisory' under v1.26.x because review was excluded from bare-imperative and not in impl-verb-led conjunction list."}
 {"prompt_preview":"Audit the codebase and commit fixes","intent":"execution","domain":"coding","note":"v1.27.0 F-001 — audit + and + commit + object-marker."}
+{"prompt_preview":"Do option C","intent":"execution","domain":"general","note":"v1.28.1 delegated-approval pattern — replies to multi-option proposals must classify as execution because the destructive verbs live in the prior assistant message, not the user's text"}
+{"prompt_preview":"Do option 1 as you recommended","intent":"execution","domain":"general","note":"v1.28.1 delegated-approval pattern — same shape as 'Do option C', longer phrasing"}
+{"prompt_preview":"Execute the plan","intent":"execution","domain":"general","note":"v1.28.1 delegated-approval — execute + the + plan referent"}
+{"prompt_preview":"Go with approach 2","intent":"execution","domain":"general","note":"v1.28.1 delegated-approval — go with + approach + identifier"}
+{"prompt_preview":"Proceed with the recommendation","intent":"execution","domain":"general","note":"v1.28.1 delegated-approval — proceed with + the + recommendation"}
+{"prompt_preview":"do option C?","intent":"advisory","domain":"general","note":"v1.28.1 delegated-approval disqualifier — trailing ? keeps the question form advisory"}
