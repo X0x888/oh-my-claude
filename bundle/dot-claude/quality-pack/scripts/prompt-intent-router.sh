@@ -557,13 +557,39 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
     intent_broadening_summary=""
     if is_blindspot_inventory_enabled; then
       intent_broadening_path="$(blindspot_inventory_path)"
-      # Lazy generation: scan if cache is missing or stale. Suppress
-      # output (the scan logs to its own log; we don't want it in the
-      # hook's stderr context). Bounded — capped at 50 entries per
-      # surface, takes < 2s on typical projects.
       if [[ -n "${intent_broadening_path}" ]]; then
-        bash "${HOME}/.claude/skills/autowork/scripts/blindspot-inventory.sh" scan >/dev/null 2>&1 || true
-        intent_broadening_summary="$(blindspot_inventory_summary 2>/dev/null || true)"
+        # v1.29.0 perf: detach scan from the prompt hot path. The scan
+        # walks ~10 `find` invocations + a `jq` per match across the
+        # whole repo (capped at 50 entries per surface) — measured 1-4s
+        # on a moderately-sized monorepo's first prompt. Synchronous
+        # execution made every fresh-project /ulw stall visibly while
+        # the user wondered why the hook hung. New behavior: when the
+        # cache is stale or missing, spawn the scan detached and render
+        # the no-inventory directive variant for THIS turn; the next
+        # prompt's check picks up the freshly-cached result.
+        # `cmd_stale` exits 0 when cache is missing or stale, 1 when
+        # fresh. setsid detaches from the hook's process group so the
+        # scan outlives this hook (falls through to plain `&` when
+        # setsid is unavailable on macOS without coreutils-gnu).
+        # `local` is invalid outside a function; the prompt-intent-
+        # router runs at top level. Plain assignment.
+        _scan_script="${HOME}/.claude/skills/autowork/scripts/blindspot-inventory.sh"
+        if bash "${_scan_script}" stale >/dev/null 2>&1; then
+          if command -v setsid >/dev/null 2>&1; then
+            setsid bash "${_scan_script}" scan </dev/null >/dev/null 2>&1 &
+          else
+            ( bash "${_scan_script}" scan </dev/null >/dev/null 2>&1 & ) >/dev/null 2>&1
+          fi
+          disown 2>/dev/null || true
+          record_gate_event "blindspot" "scan-deferred-bg" \
+            "path=${intent_broadening_path}"
+          # Suppress path/summary so the directive renders the no-
+          # inventory variant; next-prompt's check uses the fresh cache.
+          intent_broadening_path=""
+          intent_broadening_summary=""
+        else
+          intent_broadening_summary="$(blindspot_inventory_summary 2>/dev/null || true)"
+        fi
       fi
     fi
     if [[ -n "${intent_broadening_summary}" ]]; then

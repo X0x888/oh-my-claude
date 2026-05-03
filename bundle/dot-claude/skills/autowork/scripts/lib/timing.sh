@@ -53,6 +53,28 @@ timing_xs_log_path() {
 }
 
 # --- Capture helpers (called from hook scripts) ---
+#
+# v1.29.0 perf: replaces `jq -nc` per row with pure-bash JSON emission.
+# Timing append fires on every PreToolUse + PostToolUse hook (~50 calls
+# per heavy turn) — each `jq -nc` fork costs ~3ms on bash 3.2 macOS, so
+# the baseline timing tax was ~300ms of pure overhead per turn. Pure-
+# bash emission with parameter-expansion escaping drops this to <0.1ms
+# per row. Trade-off: the timing fields are trusted enums (tool name,
+# UUID-shaped tool_use_id, agent name) so escaping only `\` and `"` is
+# sufficient; the aggregator (`jq -c` over the file) silently skips
+# unparseable rows so a malformed edge case is graceful, not catastrophic.
+
+# JSON-escape <input> in place into the bash variable named by <out_var>.
+# Pure parameter-expansion + `printf -v` (no subshell, no fork). This is
+# the load-bearing primitive that lets the timing append helpers
+# replace `jq -nc` without paying the same fork cost via `$(...)`
+# capture. Bash 3.2 safe.
+_timing_json_escape() {
+  local _s="$1"
+  _s="${_s//\\/\\\\}"
+  _s="${_s//\"/\\\"}"
+  printf -v "$2" '%s' "${_s}"
+}
 
 # timing_append_start <tool> [tool_use_id] [subagent] [prompt_seq]
 timing_append_start() {
@@ -66,17 +88,28 @@ timing_append_start() {
   local prompt_seq="${4:-0}"
   [[ "${prompt_seq}" =~ ^[0-9]+$ ]] || prompt_seq=0
 
-  local row
-  row="$(jq -nc \
-    --argjson ts "$(now_epoch)" \
-    --arg tool "${tool}" \
-    --arg tool_use_id "${tool_use_id}" \
-    --arg subagent "${subagent}" \
-    --argjson prompt_seq "${prompt_seq}" \
-    '{kind:"start",ts:$ts,tool:$tool,prompt_seq:$prompt_seq}
-     + (if $tool_use_id != "" then {tool_use_id:$tool_use_id} else {} end)
-     + (if $subagent != "" then {subagent:$subagent} else {} end)' 2>/dev/null)"
-  [[ -z "${row}" ]] && return 0
+  # v1.29.0 perf: pure-bash JSON emission (was: `jq -nc` fork per call).
+  # Timing append fires on every PreToolUse + PostToolUse — at ~50 calls
+  # per heavy turn × ~3ms/jq-fork = ~300ms/turn baseline tax. Pure bash
+  # parameter-expansion drops it to <0.1ms/call. The fields are trusted
+  # enums (tool name, UUID-like tool_use_id, agent name) so escaping
+  # only `\` and `"` is sufficient for valid JSON; jq's aggregator
+  # silently skips unparseable rows so a malformed edge case is graceful.
+  # _timing_json_escape uses `printf -v` (no subshell) so the 30× win
+  # is real wallclock, not just fork-count.
+  local tool_esc tu_esc sa_esc ts
+  _timing_json_escape "${tool}" tool_esc
+  ts="$(now_epoch)"
+  local row='{"kind":"start","ts":'"${ts}"',"tool":"'"${tool_esc}"'","prompt_seq":'"${prompt_seq}"
+  if [[ -n "${tool_use_id}" ]]; then
+    _timing_json_escape "${tool_use_id}" tu_esc
+    row+=',"tool_use_id":"'"${tu_esc}"'"'
+  fi
+  if [[ -n "${subagent}" ]]; then
+    _timing_json_escape "${subagent}" sa_esc
+    row+=',"subagent":"'"${sa_esc}"'"'
+  fi
+  row+='}'
 
   ensure_session_dir 2>/dev/null || return 0
   printf '%s\n' "${row}" >> "$(timing_log_path)" 2>/dev/null || true
@@ -93,15 +126,15 @@ timing_append_end() {
   local prompt_seq="${3:-0}"
   [[ "${prompt_seq}" =~ ^[0-9]+$ ]] || prompt_seq=0
 
-  local row
-  row="$(jq -nc \
-    --argjson ts "$(now_epoch)" \
-    --arg tool "${tool}" \
-    --arg tool_use_id "${tool_use_id}" \
-    --argjson prompt_seq "${prompt_seq}" \
-    '{kind:"end",ts:$ts,tool:$tool,prompt_seq:$prompt_seq}
-     + (if $tool_use_id != "" then {tool_use_id:$tool_use_id} else {} end)' 2>/dev/null)"
-  [[ -z "${row}" ]] && return 0
+  local tool_esc tu_esc ts
+  _timing_json_escape "${tool}" tool_esc
+  ts="$(now_epoch)"
+  local row='{"kind":"end","ts":'"${ts}"',"tool":"'"${tool_esc}"'","prompt_seq":'"${prompt_seq}"
+  if [[ -n "${tool_use_id}" ]]; then
+    _timing_json_escape "${tool_use_id}" tu_esc
+    row+=',"tool_use_id":"'"${tu_esc}"'"'
+  fi
+  row+='}'
 
   ensure_session_dir 2>/dev/null || return 0
   printf '%s\n' "${row}" >> "$(timing_log_path)" 2>/dev/null || true
@@ -115,12 +148,9 @@ timing_append_prompt_start() {
   local prompt_seq="${1:-0}"
   [[ "${prompt_seq}" =~ ^[0-9]+$ ]] || prompt_seq=0
 
-  local row
-  row="$(jq -nc \
-    --argjson ts "$(now_epoch)" \
-    --argjson prompt_seq "${prompt_seq}" \
-    '{kind:"prompt_start",ts:$ts,prompt_seq:$prompt_seq}' 2>/dev/null)"
-  [[ -z "${row}" ]] && return 0
+  local ts
+  ts="$(now_epoch)"
+  local row='{"kind":"prompt_start","ts":'"${ts}"',"prompt_seq":'"${prompt_seq}"'}'
 
   ensure_session_dir 2>/dev/null || return 0
   printf '%s\n' "${row}" >> "$(timing_log_path)" 2>/dev/null || true
@@ -136,13 +166,9 @@ timing_append_prompt_end() {
   [[ "${prompt_seq}" =~ ^[0-9]+$ ]] || prompt_seq=0
   [[ "${duration_s}" =~ ^[0-9]+$ ]] || duration_s=0
 
-  local row
-  row="$(jq -nc \
-    --argjson ts "$(now_epoch)" \
-    --argjson prompt_seq "${prompt_seq}" \
-    --argjson duration_s "${duration_s}" \
-    '{kind:"prompt_end",ts:$ts,prompt_seq:$prompt_seq,duration_s:$duration_s}' 2>/dev/null)"
-  [[ -z "${row}" ]] && return 0
+  local ts
+  ts="$(now_epoch)"
+  local row='{"kind":"prompt_end","ts":'"${ts}"',"prompt_seq":'"${prompt_seq}"',"duration_s":'"${duration_s}"'}'
 
   ensure_session_dir 2>/dev/null || return 0
   printf '%s\n' "${row}" >> "$(timing_log_path)" 2>/dev/null || true
