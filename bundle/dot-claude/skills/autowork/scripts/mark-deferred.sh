@@ -66,7 +66,10 @@ EOF
 fi
 
 if [[ -z "${SESSION_ID:-}" ]]; then
-  printf 'mark-deferred: no active session (SESSION_ID unset)\n' >&2
+  SESSION_ID="$(discover_latest_session)"
+fi
+if [[ -z "${SESSION_ID:-}" ]]; then
+  printf 'mark-deferred: no active session (SESSION_ID unset and no session found under %s)\n' "${STATE_ROOT}" >&2
   exit 2
 fi
 

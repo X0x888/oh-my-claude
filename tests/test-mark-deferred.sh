@@ -11,7 +11,8 @@
 #
 # Coverage:
 #   1. Empty / whitespace-only reason rejected (exit 2)
-#   2. Missing SESSION_ID rejected (exit 2)
+#   2. Missing SESSION_ID + no discoverable session rejected (exit 2)
+#   2b. SESSION_ID unset but session discoverable → fallback works (exit 0)
 #   3. Missing scope file rejected (exit 2)
 #   4. No pending rows is a no-op (exit 0)
 #   5. Pending rows flipped to deferred with reason + ts_updated
@@ -101,14 +102,35 @@ set -e
 assert_eq "whitespace exit 2" "2" "${rc}"
 
 # ===========================================================================
-# Test 3: missing SESSION_ID rejected
+# Test 3: missing SESSION_ID AND no discoverable session → rejected
+# Uses an empty STATE_ROOT so discover_latest_session returns empty.
 # ===========================================================================
-printf 'missing SESSION_ID rejected:\n'
+printf 'missing SESSION_ID + no discoverable session rejected:\n'
+EMPTY_STATE="$(mktemp -d)"
 set +e
-out="$(env -u SESSION_ID bash "${MARK_DEFERRED}" "requires separate specialist review" 2>&1)"; rc=$?
+out="$(env -u SESSION_ID STATE_ROOT="${EMPTY_STATE}" bash "${MARK_DEFERRED}" "requires separate specialist review" 2>&1)"; rc=$?
 set -e
+rm -rf "${EMPTY_STATE}"
 assert_eq "missing session exit 2" "2" "${rc}"
 assert_contains "session_id message" "no active session" "${out}"
+
+# ===========================================================================
+# Test 3b: SESSION_ID unset but session discoverable → fallback succeeds
+# Proves the discover_latest_session fallback introduced for the /mark-deferred
+# skill invocation path (where hooks don't inject SESSION_ID via env).
+# ===========================================================================
+printf 'SESSION_ID unset but session discoverable — fallback works:\n'
+export SESSION_ID="test-discover-fallback"
+ensure_session_dir
+scope_fb="$(session_file "discovered_scope.jsonl")"
+printf '%s\n' '{"id":"fb00001","source":"metis","summary":"fallback test","severity":"high","status":"pending","reason":"","ts":"100"}' > "${scope_fb}"
+set +e
+out="$(env -u SESSION_ID bash "${MARK_DEFERRED}" "requires specialist — testing discover_latest_session fallback" 2>&1)"; rc=$?
+set -e
+assert_eq "discover fallback exit 0" "0" "${rc}"
+assert_contains "discover fallback: row deferred" "Deferred 1 pending finding" "${out}"
+post_status_fb="$(jq -r '.status' "${scope_fb}")"
+assert_eq "discover fallback: row flipped to deferred" "deferred" "${post_status_fb}"
 
 # ===========================================================================
 # Test 4: missing scope file rejected (exit 2 — nothing to do)
