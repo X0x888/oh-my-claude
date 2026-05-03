@@ -38,13 +38,14 @@ git clone https://github.com/X0x888/oh-my-claude.git ~/.local/share/oh-my-claude
 bash ~/.local/share/oh-my-claude/install.sh
 ```
 
-After install:
+After install, two mandatory steps:
 
-1. **Restart Claude Code.** Required — hooks only load at session start, so `/ulw` silently no-ops in your current session until you restart.
-2. **Verify**: `bash ~/.local/share/oh-my-claude/verify.sh`
-3. **Configure (recommended)**: type `/omc-config` *inside Claude Code* (not your terminal) — a multi-choice walkthrough that picks a profile (Maximum Quality + Automation, Balanced, Minimal) or walks you through default-off flags so you can opt into the ones you didn't know existed. Auto-detects first-time setup vs upgrade. Skip if you trust the install-time defaults.
-4. **Try it**: `/ulw-demo` — a guided walkthrough (under 2 minutes) that fires the quality gates on a real edit so you see them work.
-5. **Real work**: `/ulw fix the failing test and add regression coverage` (or anything, in any domain).
+1. **Restart Claude Code.** Hooks load at session start — `/ulw` silently no-ops in your current session until you restart.
+2. **Try it**: `/ulw-demo` (about 90 seconds, fires the gates on a real edit), then `/ulw <your task>` for real work in any domain.
+
+That's enough to feel the harness work. When you want more:
+- **Configure** with `/omc-config` *inside Claude Code* — pick a profile (Maximum / Balanced / Minimal) or walk individual flag clusters. Auto-detects first-time setup vs upgrade.
+- **Verify on-disk install** with `bash ~/.local/share/oh-my-claude/verify.sh` from your terminal — useful when something feels off.
 
 Both install paths keep Claude Code's permission prompts on; once you trust the harness, [`--bypass-permissions`](#power-user-setup) removes them. Quality gates apply either way.
 

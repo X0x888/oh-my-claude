@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### v1.29.0 Wave 5 — Onboarding + first-run experience
+
+Closes 4 growth-lens findings on the post-install funnel — the moment a user has installed but hasn't yet felt the harness work, where most cognitive cost is jargon and most dropoff is the silent restart trap.
+
+- **`/ulw-demo` Beat 1 opener tells the user what to expect** (`bundle/dot-claude/skills/ulw-demo/SKILL.md`). The single highest-conversion moment (post-install, user types `/ulw-demo`) previously opened with a paragraph about what was *about* to happen but never said how long it would take or whether the user needed to interact. Users sat at the terminal wondering whether to type. New opener: *"This will take about 90 seconds. You don't need to type anything — just watch the gates fire on a throwaway file in `/tmp`."* The duration promise + interaction expectation lands first; the "what's about to happen" explanation lands second.
+
+- **`/ulw-demo` Beat 8 is git-aware, not just project-type-aware** (`bundle/dot-claude/skills/ulw-demo/SKILL.md`). The bridge-to-real-work moment previously suggested generic stack-typed prompts (`/ulw fix the most recent failing test` for code projects, `/ulw rewrite the introduction` for docs projects). High dropoff: the user just felt the gates fire on a throwaway file; they need a prompt grounded in their *actual* work. New shape: combined `ls` + `git status --short` + `git log -5 --oneline` + `find -mtime -1 ...` inspection surfaces uncommitted changes, recent commits, and recently-modified files. When `git status` shows uncommitted changes in specific files, lead with **`/ulw debug or finish the work-in-progress on <file>`** — that's the highest-conversion prompt because the user is already mid-task on those files. Generic project-type prompts are now the LAST resort, not the default.
+
+- **`verify.sh` "What next?" footer leads with one CTA** (`verify.sh`). The footer previously listed three skills as a flat menu (`/omc-config`, `/ulw-demo`, `/ulw fix the failing test`) with `(recommended first step)` mid-line. New shape leads with a single bold imperative — `Next: type /ulw-demo (about 90 seconds — fires the gates on a real edit so you see them work).` — and presents the secondary skills (`/ulw <your real task>`, `/omc-config`) under a "Then, when you're ready:" header. Single CTA solves the "where do I look first" parsing cost.
+
+- **README Quick Start collapses 5 steps to 2** (`README.md`). The post-install sequence previously listed 5 steps (Restart, Verify, Configure, Demo, Real work) with two of them gated as `(recommended)` or troubleshoot. Most users skip the gated ones and treat the whole list as friction. New shape: 2 mandatory steps (Restart, Try it via `/ulw-demo` then `/ulw <task>`); the secondary surfaces (`/omc-config`, `verify.sh`) live under a "When you want more" header. The user reads 2 lines instead of 5; the activation moment is the second line.
+
+- **Test coverage:** test-install-artifacts 20/20, test-output-style-coherence 35/35, test-omc-config 121/121, plus README/SKILL.md content changes verified by `bash -n verify.sh` clean. **176 assertions verified.**
+
+- **Deferred:**
+  - SessionStart welcome banner detecting "you forgot to restart" silent dropoff (growth-lens P0-3) — implementing requires a new SessionStart hook that compares session start time vs install time and emits a one-line greeting; cleaner work for a follow-up wave that touches the SessionStart hook surface.
+  - Update mode shows "what's new since v$prev" (growth-lens P2-10) — needs comparing `installed_version` (read from conf before overwrite) against `OMC_VERSION` and a release-notes summary table; smaller surface but distinct from the onboarding-funnel scope.
+  - "What this is NOT" 3-line README differentiator block (growth-lens P2-8) — rolled into Wave 7 (README polish) so all README copy edits land together.
+
 ### v1.29.0 Wave 4 — UX voice + scorecards + time-card threshold
 
 Closes 3 product-lens findings. Each surface where prose written for the model also renders to the user gets clearer audience separation; the omc-config first-screen surfaces stop hiding the value behind walls of jargon.

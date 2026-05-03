@@ -27,7 +27,7 @@ Print this banner on its own line, then the explanation:
 ```
 
 Tell the user:
-> I'm going to walk you through oh-my-claude's quality gates. You'll see me get blocked from stopping until I complete testing and review. This is exactly what happens during real `/ulw` tasks — the harness enforces quality structurally.
+> This will take about 90 seconds. You don't need to type anything — just watch the gates fire on a throwaway file in `/tmp`. I'll walk you through oh-my-claude's quality gates: you'll see me get blocked from stopping until I complete testing and review. This is exactly what happens during real `/ulw` tasks — the harness enforces quality structurally.
 
 ### Step 2: Create a demo file
 
@@ -98,7 +98,29 @@ Print this banner on its own line first:
 
 The user just felt the gates fire on a demo file. The bridge to "I tried it on my own work" is the highest-leverage next moment — without a concrete prompt to run, most users walk away here.
 
-Quickly inspect the user's current working directory to detect the dominant project type (a single shell command — `ls` plus a glance at any obvious manifest like `package.json`, `Cargo.toml`, `pyproject.toml`, `Package.swift`, `Gemfile`, `.git`, `*.md`). Then suggest **three concrete first prompts** the user can copy-paste, tailored to what you saw. Keep each under one line:
+Inspect the user's current working directory to detect what they're ACTIVELY working on, not just the project type. The right prompts are tailored to live work the user is in the middle of, not generic boilerplate.
+
+Run this combined inspection in one Bash call:
+
+```bash
+ls 2>/dev/null | head -20 && echo "---" \
+  && (cd "$(pwd)" && git status --short 2>/dev/null | head -10) && echo "---" \
+  && (cd "$(pwd)" && git log -5 --oneline 2>/dev/null) && echo "---" \
+  && find . -maxdepth 3 -mtime -1 -type f \
+       \( -name '*.py' -o -name '*.js' -o -name '*.ts' -o -name '*.tsx' \
+          -o -name '*.swift' -o -name '*.rs' -o -name '*.go' -o -name '*.rb' \) \
+       -not -path './node_modules/*' -not -path './.git/*' 2>/dev/null | head -8
+```
+
+This surfaces:
+- **Project shape** (the manifest / dir layout)
+- **Uncommitted changes** (`git status` — what's mid-flight)
+- **Recent commits** (`git log` — what they were working on yesterday)
+- **Recently modified files** (`find -mtime -1` — what they touched today)
+
+If `git status` shows uncommitted changes in specific files, lead with **`/ulw debug or finish the work-in-progress on <file>`** — that's the highest-conversion prompt because the user is already mid-task on those files. If recent commits show a feature branch or a half-finished migration, suggest the natural next step. Falling back to project-type-generic suggestions is the LAST resort, not the default.
+
+Three concrete first prompts the user can copy-paste, tailored to what you saw. Keep each under one line:
 
 - **Code project (Node/Python/Rust/Swift/etc.)** examples:
   - `/ulw fix the most recent failing test and add regression coverage`
