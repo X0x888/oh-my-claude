@@ -94,6 +94,9 @@ jobs:
       - name: Run omc-config tests
         run: bash tests/test-omc-config.sh
 
+      - name: Run prompt-persist tests
+        run: bash tests/test-prompt-persist.sh
+
       - name: Run output-style coherence tests
         run: bash tests/test-output-style-coherence.sh
 
@@ -123,4 +126,3 @@ jobs:
 
       - name: Run statusline tests
         run: python3 -m unittest tests.test_statusline -v
-

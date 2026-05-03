@@ -377,8 +377,14 @@ _extract_destructive_verb_from_segment() {
 }
 
 # Read the most recent user prompt text from recent_prompts.jsonl.
-# Returns empty string when the file is absent or unreadable.
+# Returns empty string when the file is absent or unreadable, OR when
+# prompt persistence is disabled via `prompt_persist=off` (the producer
+# in prompt-intent-router.sh skips the append in that mode, so the file
+# absence already covers the disabled path — the explicit guard is
+# defensive against pre-existing files from a prior `prompt_persist=on`
+# session and against tests that pre-seed the JSONL).
 _read_most_recent_prompt() {
+  is_prompt_persist_enabled || return 0
   local file
   file="$(session_file "recent_prompts.jsonl")"
   [[ -f "${file}" ]] || return 0
@@ -493,13 +499,25 @@ fi
 # even if the classifier said advisory.
 if [[ "${OMC_PROMPT_TEXT_OVERRIDE:-on}" == "on" ]] \
     && _prompt_text_authorizes_command "${normalized_cmd}"; then
-  _pt_prompt_preview="$(_read_most_recent_prompt | tr '\n' ' ')"
   log_hook "pretool-intent-guard" \
     "prompt-text override: intent=${task_intent} cmd=$(truncate_chars 80 "${command_str}")"
-  record_gate_event "pretool-intent" "prompt_text_override" \
-    "intent=${task_intent}" \
-    "denied_segment=$(truncate_chars 120 "${denied_segment}")" \
-    "prompt_preview=$(truncate_chars 120 "${_pt_prompt_preview}")"
+  # When prompt_persist is on, capture a 120-char preview into the
+  # gate-event row for live debugging. When off, the field is omitted
+  # entirely — keeps the cross-session gate_events.jsonl free of prompt
+  # text after the TTL sweep lifts rows. The denied_segment is always
+  # captured (truncated to 120) because it is the command string the
+  # user typed at the model, not the user's verbatim prompt.
+  if is_prompt_persist_enabled; then
+    _pt_prompt_preview="$(_read_most_recent_prompt | tr '\n' ' ')"
+    record_gate_event "pretool-intent" "prompt_text_override" \
+      "intent=${task_intent}" \
+      "denied_segment=$(truncate_chars 120 "${denied_segment}")" \
+      "prompt_preview=$(truncate_chars 120 "${_pt_prompt_preview}")"
+  else
+    record_gate_event "pretool-intent" "prompt_text_override" \
+      "intent=${task_intent}" \
+      "denied_segment=$(truncate_chars 120 "${denied_segment}")"
+  fi
   exit 0
 fi
 

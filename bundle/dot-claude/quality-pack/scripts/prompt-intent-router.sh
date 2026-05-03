@@ -101,20 +101,34 @@ current_pretool_blocks="$(read_state "pretool_intent_blocks" 2>/dev/null || true
 current_pretool_blocks="${current_pretool_blocks:-0}"
 detect_classifier_misfire "${PROMPT_TEXT}" "${current_pretool_blocks}" || true
 
+# Privacy: when prompt_persist=off, the verbatim user prompt is NOT
+# written to disk. last_user_prompt is cleared (not redacted to a hash —
+# the consumer in pretool-intent-guard.sh treats empty as "no prompt
+# context available" and degrades the prompt-text-override path
+# gracefully). recent_prompts.jsonl append is skipped entirely. The
+# last_user_prompt_ts is preserved so consumers that rely on "did the
+# prompt change?" still see the timestamp tick.
+if is_prompt_persist_enabled; then
+  _omc_persisted_prompt="${PROMPT_TEXT}"
+else
+  _omc_persisted_prompt=""
+fi
 write_state_batch \
   "stop_guard_blocks" "0" \
   "session_handoff_blocks" "0" \
   "advisory_guard_blocks" "0" \
   "last_advisory_verify_ts" "" \
   "task_intent" "${TASK_INTENT}" \
-  "last_user_prompt" "${PROMPT_TEXT}" \
+  "last_user_prompt" "${_omc_persisted_prompt}" \
   "last_user_prompt_ts" "${PROMPT_TS}" \
   "stall_counter" "0" \
   "ulw_pause_active" ""
-append_limited_state \
-  "recent_prompts.jsonl" \
-  "$(jq -nc --arg ts "${PROMPT_TS}" --arg text "${PROMPT_TEXT}" '{ts:$ts,text:$text}')" \
-  "12"
+if is_prompt_persist_enabled; then
+  append_limited_state \
+    "recent_prompts.jsonl" \
+    "$(jq -nc --arg ts "${PROMPT_TS}" --arg text "${PROMPT_TEXT}" '{ts:$ts,text:$text}')" \
+    "12"
+fi
 
 # Time tracking: bump prompt_seq and emit a prompt_start row. The seq tags
 # every subsequent PreToolUse/PostToolUse so the aggregator pairs starts

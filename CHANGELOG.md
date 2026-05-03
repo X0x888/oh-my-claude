@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### v1.30.0 Wave 1 — Privacy horizon close-out
+
+Closes the v1.29.0 deferral list's first item: a granular `prompt_persist` flag that lets shared-machine and regulated-codebase users disable in-session prompt-text persistence WITHOUT giving up the entire PreTool guard. The v1.29.0 privacy-horizon docs explained the gap; this wave ships the flag.
+
+- **`prompt_persist` flag** (default `on`, env `OMC_PROMPT_PERSIST`). Wired through all three required sites per the project's flag-add rule: parser case in `bundle/dot-claude/skills/autowork/scripts/common.sh:_parse_conf_file`, documented user-facing entry in `bundle/dot-claude/oh-my-claude.conf.example`, table row in `bundle/dot-claude/skills/autowork/scripts/omc-config.sh:emit_known_flags`. Helper `is_prompt_persist_enabled` in `common.sh` is the canonical predicate.
+
+- **Producer gate** (`bundle/dot-claude/quality-pack/scripts/prompt-intent-router.sh`). When off: skips the `recent_prompts.jsonl` append entirely AND clears `last_user_prompt` in `session_state.json` to empty (not the verbatim prompt). `last_user_prompt_ts` is preserved so consumers tracking "did the prompt change?" still see the timestamp tick.
+
+- **Consumer graceful degrade** (`bundle/dot-claude/skills/autowork/scripts/pretool-intent-guard.sh`). `_read_most_recent_prompt` short-circuits to empty when `prompt_persist=off` (defensive against pre-existing JSONL from a prior `prompt_persist=on` session). The prompt-text-override defense path degrades to "no imperative-tail authorization for this turn"; the wave-active override and classifier widening still work. Cross-session `gate_events.jsonl` rows omit the `prompt_preview` field when off — closes the privacy horizon on the cross-session ledger.
+
+- **Propagation chain.** The producer-side clear of `last_user_prompt=""` in `session_state.json` propagates to every downstream reader without per-consumer plumbing: `stop-failure-handler.sh:81` reads it before stamping `resume_request.json::last_user_prompt` (cross-session artifact, survives state-TTL via `resume_request_ttl_days`); `pre-compact-snapshot.sh:57,65-67` reads it to build the compact-handoff `current_objective` summary; `omc-repro.sh:51` already redacts on repro export. With `prompt_persist=off` the resume artifact and pre-compact snapshot both see empty text — closes the strongest privacy horizons (cross-session + compaction).
+
+- **Preset wiring**. Maximum + Balanced presets keep `prompt_persist=on` (default). Minimal preset opts out (`prompt_persist=off`) — consistent with the privacy-first posture of `auto_memory=off` + `classifier_telemetry=off` already in Minimal.
+
+- **Privacy-note rewrite** in `bundle/dot-claude/oh-my-claude.conf.example` documents the three orthogonal prompt-text horizons explicitly: `auto_memory` (cross-session memory files), `prompt_persist` (in-session prompt writes), `pretool_intent_guard` (entire guard). Strongest privacy posture for shared / regulated machines: `state_ttl_days=1` AND `prompt_persist=off` AND `auto_memory=off`.
+
+- **Test coverage:** new `tests/test-prompt-persist.sh` (17 assertions) exercises the helper, env-var override, project-conf override, env-wins-over-conf precedence, registry presence, preset opt-in/opt-out. Wired into CI. Existing regressions: test-pretool-intent-guard 80/80, test-omc-config 122/122 (+2 from Wave 1's added Test 13 row + 1 prompt_persist=on assertion), test-e2e-hook-sequence 355/355, test-state-io 56/56, test-classifier 65/65, test-output-style-coherence 35/35. **730 assertions verified.**
+
 ## [1.29.0] - 2026-05-03
 
 This release responds to the user's request for a comprehensive multi-dimension audit (robustness, UX, work-quality, speed, token-efficiency, diversive-thinking) by dispatching 7 parallel evaluators (product-lens, sre-lens, security-lens, growth-lens, abstraction-critic, oracle, metis) and shipping the actionable surface-aligned subset across 8 waves. ~70 findings surfaced; 35+ shipped inline; the rest are tracked as named follow-ups (architectural deferrals below).

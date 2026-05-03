@@ -251,17 +251,18 @@ assert_file_lacks_line "atomic batch: auto_memory not written" "${USER_CONF_PATH
 assert_file_lacks_line "atomic batch: discovered_scope not written" "${USER_CONF_PATH}" "^discovered_scope=on\$"
 teardown
 
-# --- Test 13: apply-preset maximum writes all 20 keys (v1.28.0 added
-# blindspot_inventory + intent_broadening to maximum) ---
-printf 'Test 13: apply-preset maximum writes 20 keys\n'
+# --- Test 13: apply-preset maximum writes all 21 keys (v1.28.0 added
+# blindspot_inventory + intent_broadening; v1.30.0 added prompt_persist) ---
+printf 'Test 13: apply-preset maximum writes 21 keys\n'
 setup
 out="$(bash "${HELPER}" apply-preset user maximum 2>&1)"
-assert_contains "apply-preset reports 20 keys" "20 keys" "${out}"
+assert_contains "apply-preset reports 21 keys" "21 keys" "${out}"
 assert_file_has_line "maximum: gate_level=full" "${USER_CONF_PATH}" "^gate_level=full\$"
 assert_file_has_line "maximum: guard_exhaustion_mode=block" "${USER_CONF_PATH}" "^guard_exhaustion_mode=block\$"
 assert_file_has_line "maximum: prometheus_suggest=on" "${USER_CONF_PATH}" "^prometheus_suggest=on\$"
 assert_file_has_line "maximum: metis_on_plan_gate=on" "${USER_CONF_PATH}" "^metis_on_plan_gate=on\$"
 assert_file_has_line "maximum: resume_watchdog=on" "${USER_CONF_PATH}" "^resume_watchdog=on\$"
+assert_file_has_line "maximum: prompt_persist=on" "${USER_CONF_PATH}" "^prompt_persist=on\$"
 assert_file_has_line "maximum: model_tier=quality" "${USER_CONF_PATH}" "^model_tier=quality\$"
 # v1.23.0: Maximum preset includes the three new flags (all on for the
 # quality posture).

@@ -192,6 +192,26 @@
 # Env: OMC_AUTO_MEMORY.
 #auto_memory=on
 
+# In-session prompt persistence — verbatim user prompts written to
+# `<session>/recent_prompts.jsonl` and `session_state.json::last_user_prompt`.
+# These are the source the prompt-text-override defense-in-depth path in
+# pretool-intent-guard.sh reads to verify destructive verbs against the
+# user's actual words; the producer-side clear ALSO propagates to
+# `resume_request.json` (cross-session artifact written by
+# stop-failure-handler.sh on rate-limit/fatal stops, which read
+# last_user_prompt from state) and to pre-compact snapshots
+# (pre-compact-snapshot.sh reads last_user_prompt to build the
+# current_objective summary). Default on. Set to off for shared /
+# regulated machines where in-session prompt text on disk is unwanted —
+# the prompt-text-override degrades gracefully (no imperative-tail
+# authorization), classifier widening still works, prompt_preview in
+# cross-session gate_events is suppressed, AND the cross-session
+# resume_request.json + pre-compact snapshots see empty prompt text via
+# the producer's clear. More granular than `pretool_intent_guard=off`
+# (which disables the entire guard); orthogonal to `auto_memory`
+# (cross-session memory files). Env: OMC_PROMPT_PERSIST.
+#prompt_persist=on
+
 # Per-turn classifier telemetry — every UserPromptSubmit records intent +
 # domain + a 200-char prompt preview to per-session
 # `classifier_telemetry.jsonl`. Cross-session aggregate feeds /ulw-report's
@@ -322,19 +342,28 @@
 # renders regardless. Env: OMC_TIME_CARD_MIN_SECONDS.
 #time_card_min_seconds=5
 
-# Privacy note (v1.29.0). `auto_memory=off` disables CROSS-SESSION memory
-# writes (the project_*.md / feedback_*.md / user_*.md / reference_*.md
-# files under ~/.claude/projects/<encoded_cwd>/memory/). It does NOT
-# disable IN-SESSION prompt persistence: the harness writes verbatim
-# user prompts to `<session>/session_state.json::last_user_prompt` and
-# `<session>/recent_prompts.jsonl` because the prompt-text-override
-# defense-in-depth path in pretool-intent-guard.sh requires them. These
-# files live under STATE_ROOT and are swept by `state_ttl_days` (default
-# 7). On shared / regulated machines, the real prompt-persistence
-# horizon is `state_ttl_days`, not `auto_memory`. To minimize on-disk
-# prompt retention, set `state_ttl_days=1` (sweeps daily) AND
-# `auto_memory=off`. To disable prompt-text-override too, set
-# `pretool_intent_guard=off` (loses intent-based PreTool blocks).
+# Privacy note (v1.30.0). The harness has three orthogonal prompt-text
+# horizons; each closes a different scope:
+#
+#   1. `auto_memory=off` — disables CROSS-SESSION memory writes (the
+#      project_*.md / feedback_*.md / user_*.md / reference_*.md files
+#      under ~/.claude/projects/<encoded_cwd>/memory/).
+#
+#   2. `prompt_persist=off` (v1.30.0) — disables IN-SESSION prompt-text
+#      writes: skips the `<session>/recent_prompts.jsonl` append and
+#      clears `session_state.json::last_user_prompt` to empty. The
+#      prompt-text-override defense path degrades gracefully (no
+#      imperative-tail authorization); classifier widening still works.
+#      Cross-session `gate_events.jsonl` rows lifted at sweep have
+#      `prompt_preview` stripped.
+#
+#   3. `pretool_intent_guard=off` — disables the entire PreTool guard
+#      (loses ALL intent-based PreTool blocks, not just the prompt-text
+#      override path).
+#
+# Files under STATE_ROOT are swept by `state_ttl_days` (default 7). The
+# strongest privacy posture for shared / regulated machines: set
+# `state_ttl_days=1` AND `prompt_persist=off` AND `auto_memory=off`.
 
 # Model-drift canary (v1.26.0 Wave 2). When `on`, the Stop hook runs a
 # claims-vs-tool-calls audit: it parses the model's last response for

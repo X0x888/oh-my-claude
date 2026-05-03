@@ -82,6 +82,7 @@ bash tests/test-session-start-resume-hint.sh
 bash tests/test-claim-resume-request.sh
 bash tests/test-resume-watchdog.sh
 bash tests/test-omc-config.sh
+bash tests/test-prompt-persist.sh
 bash tests/test-output-style-coherence.sh
 bash tests/test-timing.sh
 bash tests/test-blindspot-inventory.sh

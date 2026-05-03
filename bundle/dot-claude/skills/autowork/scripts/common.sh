@@ -45,6 +45,7 @@ _omc_env_prompt_text_override="${OMC_PROMPT_TEXT_OVERRIDE:-}"
 _omc_env_mark_deferred_strict="${OMC_MARK_DEFERRED_STRICT:-}"
 _omc_env_wave_override_ttl="${OMC_WAVE_OVERRIDE_TTL_SECONDS:-}"
 _omc_env_stop_failure_capture="${OMC_STOP_FAILURE_CAPTURE:-}"
+_omc_env_prompt_persist="${OMC_PROMPT_PERSIST:-}"
 _omc_env_resume_request_ttl="${OMC_RESUME_REQUEST_TTL_DAYS:-}"
 _omc_env_resume_watchdog="${OMC_RESUME_WATCHDOG:-}"
 _omc_env_resume_watchdog_cooldown="${OMC_RESUME_WATCHDOG_COOLDOWN_SECS:-}"
@@ -326,6 +327,8 @@ _parse_conf_file() {
         [[ -z "${_omc_env_wave_override_ttl}" && "${value}" =~ ^[0-9]+$ ]] && OMC_WAVE_OVERRIDE_TTL_SECONDS="${value}" || true ;;
       stop_failure_capture)
         [[ -z "${_omc_env_stop_failure_capture}" && "${value}" =~ ^(on|off)$ ]] && OMC_STOP_FAILURE_CAPTURE="${value}" || true ;;
+      prompt_persist)
+        [[ -z "${_omc_env_prompt_persist}" && "${value}" =~ ^(on|off)$ ]] && OMC_PROMPT_PERSIST="${value}" || true ;;
       resume_request_ttl_days)
         [[ -z "${_omc_env_resume_request_ttl}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_RESUME_REQUEST_TTL_DAYS="${value}" || true ;;
       resume_watchdog)
@@ -399,6 +402,21 @@ is_auto_memory_enabled() {
 # auto_memory and classifier_telemetry opt-out shape.
 is_stop_failure_capture_enabled() {
   [[ "${OMC_STOP_FAILURE_CAPTURE:-on}" != "off" ]]
+}
+
+# Returns 0 (true) when in-session prompt persistence is enabled (default),
+# 1 (false) when disabled via `prompt_persist=off`. When disabled, the
+# UserPromptSubmit hook skips the `recent_prompts.jsonl` append and clears
+# `last_user_prompt` in session state to an empty string instead of the
+# verbatim prompt; the prompt-text-override defense-in-depth path in
+# pretool-intent-guard.sh degrades gracefully (empty consumer read => no
+# imperative-tail authorization, classifier widening still works); the
+# cross-session prompt_preview lift in record_gate_event also short-circuits.
+# Default on. Distinct from `auto_memory` (cross-session memory files) and
+# `pretool_intent_guard=off` (full guard disable) — this is the granular
+# in-session prompt-text horizon.
+is_prompt_persist_enabled() {
+  [[ "${OMC_PROMPT_PERSIST:-on}" != "off" ]]
 }
 
 # Returns 0 (true) when the resume watchdog is opted in, 1 (false)
