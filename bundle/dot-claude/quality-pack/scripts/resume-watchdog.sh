@@ -65,6 +65,18 @@ if ! ensure_session_dir 2>/dev/null \
   # so we degrade rather than abort.
   printf 'resume-watchdog: STATE_ROOT %s is not writable; telemetry disabled this tick\n' \
     "${STATE_ROOT}" >&2
+  # v1.29.0 sre-lens P2-10: write a tombstone to a known fallback path
+  # so /ulw-report can surface the watchdog as unhealthy. Without this,
+  # absence-of-events looks identical to "watchdog not installed" and
+  # the user has no signal to investigate. Best-effort soft-failure;
+  # the cache dir is conventional and almost always writable even when
+  # STATE_ROOT is not (e.g., user mounted ~/.claude on a read-only
+  # network share but ~/.cache stays local).
+  _watchdog_tombstone="${HOME}/.cache/omc-watchdog.last-error"
+  mkdir -p "${HOME}/.cache" 2>/dev/null || true
+  printf '{"ts":%s,"reason":"state_root_unwritable","state_root":"%s"}\n' \
+    "$(date +%s)" "${STATE_ROOT//\"/\\\"}" \
+    > "${_watchdog_tombstone}" 2>/dev/null || true
 fi
 
 # --- helpers ---
@@ -77,14 +89,28 @@ notify_resume_ready() {
   local objective="$2"
   local cwd="$3"
   local title="oh-my-claude resume ready"
+
+  # Sanitize objective (model-controllable in the resume artifact —
+  # could carry control characters, terminal escapes, or AppleScript
+  # constructs from a jailbroken/malicious model output). Truncate to
+  # 200 chars (notifications display short bodies anyway) and strip
+  # control bytes so a hostile body cannot inject escape sequences
+  # rendered by the notification tool. Bash 3.2-safe via tr + cut.
+  local safe_objective
+  safe_objective="$(printf '%s' "${objective}" | tr -d '[:cntrl:]' 2>/dev/null | cut -c -200)"
+
   local body
-  if [[ -n "${objective}" ]]; then
-    body="${cwd}: ${objective}"
+  if [[ -n "${safe_objective}" ]]; then
+    body="${cwd}: ${safe_objective}"
   else
     body="${cwd}: rate-limit cleared"
   fi
   if [[ "$(uname 2>/dev/null || echo "")" == "Darwin" ]] && command -v osascript >/dev/null 2>&1; then
-    # Escape backslashes and double quotes for AppleScript.
+    # Escape backslashes and double quotes for AppleScript. Control
+    # characters were stripped above so the AppleScript runtime cannot
+    # see embedded `\n`/`\r`/`\t` that older osascript versions have
+    # historically misparsed (CVE-style notification-sanitization gap
+    # closed by v1.29.0 security-lens audit).
     local body_esc title_esc
     body_esc="${body//\\/\\\\}"; body_esc="${body_esc//\"/\\\"}"
     title_esc="${title//\\/\\\\}"; title_esc="${title_esc//\"/\\\"}"

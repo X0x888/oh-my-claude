@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### v1.29.0 Wave 6 — Privacy + watchdog observability
+
+Closes 3 security/sre findings. Each fix is a small surface — no new flags, no schema changes — but each closes a specific failure mode the audit named.
+
+- **Notification body sanitization** (`bundle/dot-claude/quality-pack/scripts/resume-watchdog.sh:notify_resume_ready`). The watchdog's desktop notification fallback (osascript on macOS, notify-send on Linux) interpolated the resume artifact's `original_objective` into the notification body. Objective text is fully attacker-controllable (jailbroken model output, malicious clone, restored backup) and AppleScript has historic CVEs around control-character escape sequences. New shape: `printf '%s' "${objective}" | tr -d '[:cntrl:]' 2>/dev/null | cut -c -200` strips control bytes AND truncates to 200 chars before any escape chain runs. Notification length is bounded; control sequences cannot escape the notification format. Same protection applies to notify-send.
+
+- **Watchdog tombstone for unwritable STATE_ROOT** (`bundle/dot-claude/quality-pack/scripts/resume-watchdog.sh:55`). When STATE_ROOT is unwritable (read-only mount, NFS hop, permission flip), `record_gate_event` becomes a no-op and the watchdog's `tick-complete` rows never land — from `/ulw-report`'s view the watchdog appears identical to "watchdog not installed", and the user has no signal to investigate. New tombstone path: `${HOME}/.cache/omc-watchdog.last-error` carries `{ts, reason, state_root}` JSON. Best-effort soft-failure (the cache dir is conventional and almost always writable even when STATE_ROOT is not — e.g., user mounted ~/.claude on a read-only network share). `/ulw-report` can read this file in a future surface to flag unhealthy watchdogs.
+
+- **Privacy-horizon documentation** (`bundle/dot-claude/oh-my-claude.conf.example`). Security-lens flagged a real expectation gap: users who set `auto_memory=off` for shared/regulated-codebase reasons reasonably believe their prompts are not persisted, but in fact `<session>/session_state.json::last_user_prompt` and `<session>/recent_prompts.jsonl` retain verbatim user prompts for `state_ttl_days` (default 7 days). Why the writes happen: the prompt-text-override defense-in-depth path in `pretool-intent-guard.sh` requires `last_user_prompt` to verify destructive verbs against the prompt text. New documentation block names the gap explicitly: *"On shared / regulated machines, the real prompt-persistence horizon is `state_ttl_days`, not `auto_memory`. To minimize on-disk prompt retention, set `state_ttl_days=1` AND `auto_memory=off`."* Plus: documents that `pretool_intent_guard=off` disables prompt-text-override (loses defense-in-depth gain).
+
+- **Test coverage:** test-resume-watchdog 57/57, test-claim-resume-request 67/67, test-omc-config 121/121. **245 assertions verified.** No new tests added — the notification sanitizer is plumbing through trusted helpers (`tr`, `cut`); the tombstone is a single soft-failure write; the privacy doc is text-only.
+
+- **Deferred:**
+  - `prompt_persist=off` flag (security-lens F-8 option (b)) — would gate the `recent_prompts.jsonl` and `last_user_prompt` writes. Adds friction to the prompt-text-override path. Documentation-only fix preferred for v1.29.0; flag-based gate is a future-wave architectural choice.
+  - `/ulw-status --explain` mode (product-lens P2-10) — needs a larger surface in `show-status.sh` and is incremental UX polish. Rolled into a follow-up.
+  - `prior_*_ts` snapshot under lock in resume-watchdog (metis F-7 — already deferred from Wave 3) — protocol redesign.
+
 ### v1.29.0 Wave 5 — Onboarding + first-run experience
 
 Closes 4 growth-lens findings on the post-install funnel — the moment a user has installed but hasn't yet felt the harness work, where most cognitive cost is jargon and most dropoff is the silent restart trap.
