@@ -209,7 +209,10 @@ target="$(make_request "sess-1" "${TEST_HOME}" "Wave 3 happy path." "/ulw ship w
 bash "${WATCHDOG}" >/dev/null 2>&1
 tmux_calls="$(mock_calls tmux)"
 assert_contains "T1: tmux invoked with new-session -d" "new-session -d -s omc-resume-sess-1" "${tmux_calls}"
-assert_contains "T1: tmux launches claude --resume" "claude --resume 'sess-1'" "${tmux_calls}"
+# v1.29.0 F-1 fix: pass command as separate argv tokens after `--` so
+# tmux's args_escape handles shell-escaping internally rather than
+# trusting hand-rolled single-quoting in a shell-command string.
+assert_contains "T1: tmux uses -- argv-token form" "-- claude --resume sess-1" "${tmux_calls}"
 assert_contains "T1: tmux passes verbatim prompt" "/ulw ship wave 3" "${tmux_calls}"
 # Artifact must be claimed.
 assert_eq "T1: artifact resume_attempts = 1 after launch" "1" "$(read_field "${target}" resume_attempts)"

@@ -110,8 +110,16 @@ origin_chain_depth="${origin_chain_depth//[!0-9]/}"
 origin_chain_depth="${origin_chain_depth:-0}"
 
 # Atomic write: build the JSON via jq into a tmp file, then mv into place.
+# mktemp instead of `${target_file}.tmp.$$` — the $$ form is predictable
+# (process PID is enumerable) and a racer can pre-create the path as a
+# symlink to redirect the write. mktemp generates 6 random suffix chars
+# and uses O_CREAT|O_EXCL semantics; safe TOCTOU primitive across BSD
+# and GNU coreutils.
 target_file="$(session_file "resume_request.json")"
-tmp_file="${target_file}.tmp.$$"
+if ! tmp_file="$(mktemp "${target_file}.tmp.XXXXXX")"; then
+  log_hook "stop-failure-handler" "warn: mktemp failed for resume_request.json"
+  exit 0
+fi
 
 # Forward-compat fields for the Wave 3 watchdog: a schema_version so
 # additive shape changes don't require a migration of artifacts already

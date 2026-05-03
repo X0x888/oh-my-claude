@@ -529,10 +529,23 @@ find_claimable_resume_requests() {
   local raw_rows=""
   local d sid artifact
   for d in "${dirs[@]}"; do
+    # Reject symlinks. An attacker (shared-machine peer, restored
+    # backup, synced .claude/) who can drop entries under STATE_ROOT
+    # could otherwise place a UUID-shaped symlink pointing at an
+    # attacker-controlled directory containing a hostile
+    # resume_request.json. The directory-trailing slash on the glob
+    # already follows symlinks, so we have to strip the slash before
+    # the [[ -L ]] test — bash's -L returns true for a symlink whose
+    # path-form has no trailing slash, even when the target is a dir.
+    [[ -L "${d%/}" ]] && continue
     sid="$(basename "${d}")"
     validate_session_id "${sid}" || continue
     artifact="${d%/}/resume_request.json"
     [[ -f "${artifact}" ]] || continue
+    # Also reject when the artifact itself is a symlink — pointing it
+    # at a victim file (e.g. ~/.ssh/config) wouldn't pass jq -e but
+    # leaks read attempts via stat-style side effects elsewhere.
+    [[ -L "${artifact}" ]] && continue
     jq -e . "${artifact}" >/dev/null 2>&1 || continue
 
     local row

@@ -17,9 +17,12 @@ fi
 ensure_session_dir
 sweep_stale_sessions
 
-# v1.27.0 (F-019): bulk-read 5 always-together state keys at the top of
-# UserPromptSubmit in one jq fork (saves ~30ms on macOS bash 3.2).
-# Invariant: argv length === case-branch count (5 keys → 5 branches 0..4).
+# v1.27.0 (F-019): bulk-read state keys at the top of UserPromptSubmit
+# in one jq fork. Extended to 7 keys for v1.29.0 to cover the corrupt-
+# state recovery markers stamped by lib/state-io.sh:_ensure_valid_state
+# — surfaced once per recovery event below so the user sees the gate-
+# disarm risk instead of silently shipping unreviewed work.
+# Invariant: argv length === case-branch count (7 keys → 7 branches 0..6).
 _pir_idx=0
 while IFS= read -r _pir_line || [[ -n "${_pir_line}" ]]; do
   case "${_pir_idx}" in
@@ -28,6 +31,8 @@ while IFS= read -r _pir_line || [[ -n "${_pir_line}" ]]; do
     2) previous_last_assistant="${_pir_line}" ;;
     3) just_compacted_value="${_pir_line}" ;;
     4) just_compacted_ts_value="${_pir_line}" ;;
+    5) recovered_from_corrupt_ts="${_pir_line}" ;;
+    6) recovered_from_corrupt_archive="${_pir_line}" ;;
   esac
   _pir_idx=$((_pir_idx + 1))
 done < <(read_state_keys \
@@ -35,7 +40,9 @@ done < <(read_state_keys \
   "task_domain" \
   "last_assistant_message" \
   "just_compacted" \
-  "just_compacted_ts")
+  "just_compacted_ts" \
+  "recovered_from_corrupt_ts" \
+  "recovered_from_corrupt_archive")
 
 # Gap 2 — post-compact intent bias. When the very first UserPromptSubmit
 # fires after a PostCompact hook, we treat the previous objective as
@@ -193,6 +200,37 @@ if [[ "${TASK_INTENT}" == "advisory" || "${TASK_INTENT}" == "session_management"
 fi
 
 context_parts=()
+
+# State-corruption recovery surface (v1.29.0). lib/state-io.sh archives
+# session_state.json on detected JSON corruption and stamps two sticky
+# markers (recovered_from_corrupt_ts + recovered_from_corrupt_archive).
+# Without surfacing the event, every read_state in the prior turn would
+# have returned empty for `task_intent`/`last_review_ts`/etc., the
+# stop-guard's intent gate would have evaluated to false, and ALL
+# quality gates would have silently disarmed for that turn — the user
+# would have shipped without review or verify enforcement and nothing
+# in the user-visible transcript would have signaled it. Detecting and
+# emitting the warning here is the closing piece of the silent-disarm
+# defense pair (the other half is the marker write in state-io.sh).
+# Sticky pattern: clear the markers after one notice so the warning
+# fires exactly once per recovery event.
+if [[ -n "${recovered_from_corrupt_ts:-}" ]]; then
+  context_parts+=("**STATE RECOVERY — surface this to the user.** The previous \`session_state.json\` was corrupted and has been archived to \`${recovered_from_corrupt_archive:-(unknown path)}\`. Quality gates were silently disarmed for the prior turn (every \`read_state\` returned empty, so the stop-guard's intent gate evaluated false and skipped review/verify enforcement). Lead your first response to this prompt with a one-line acknowledgment of this notice and a recommendation to audit the most recent commits/edits before continuing. The harness has reset and will resume normal gate enforcement from this prompt forward.")
+  record_gate_event "state-corruption" "recovered" \
+    archive_path="${recovered_from_corrupt_archive:-}" \
+    recovered_ts="${recovered_from_corrupt_ts}"
+  log_anomaly "prompt-intent-router" "surfaced corrupt-state recovery from ${recovered_from_corrupt_archive:-unknown}"
+  # Sticky-marker clear. Intentionally NOT redirected `2>/dev/null` so a
+  # `with_state_lock` exhaustion (the very anomaly Wave 1 just made
+  # visible in state-io.sh) surfaces in hooks.log. On lock failure the
+  # markers stay set and the warning correctly re-fires next turn —
+  # better-redundant-than-silent for a user-facing security/correctness
+  # signal. Soft-`|| true` keeps the hook itself non-blocking on lock
+  # failure so the prompt still flows.
+  with_state_lock_batch \
+    "recovered_from_corrupt_ts" "" \
+    "recovered_from_corrupt_archive" "" || true
+fi
 
 render_prior_specialist_summaries() {
   local summaries_file

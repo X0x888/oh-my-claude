@@ -95,6 +95,41 @@ notify_resume_ready() {
   fi
 }
 
+# Verify a path is owned by the current uid. An attacker who can write
+# under STATE_ROOT (e.g., shared-machine peer, restored-from-backup
+# stale artifact, or a synced .claude/ directory) could otherwise drop
+# a hostile resume_request.json with a `cwd` pointing at an attacker-
+# controlled directory. The resumed `claude` would then inherit that
+# cwd's environment (.envrc, .git/config with includeIf, etc.), giving
+# the attacker effective code execution at the moment the watchdog
+# launches. Pair with find_claimable_resume_requests symlink rejection.
+# Returns 0 when target exists and uid matches; non-zero otherwise.
+_cwd_owned_by_self() {
+  local target="$1"
+  local owner_uid
+  # GNU stat -c first (per the v1.28.1 portability pattern); falls
+  # through cleanly to BSD stat -f when -c is rejected (macOS).
+  owner_uid="$(stat -c %u "${target}" 2>/dev/null)" || owner_uid=""
+  if [[ -z "${owner_uid}" ]]; then
+    owner_uid="$(stat -f %u "${target}" 2>/dev/null)" || owner_uid=""
+  fi
+  # Three-valued return so a sysadmin debugging "why didn't my
+  # legitimate session resume?" can distinguish stat-failure (exotic
+  # filesystem, unmounted between read and check) from foreign-
+  # ownership (the actual security signal). Conflating them sent
+  # debuggers down the wrong investigation path.
+  #   0 → owned by self
+  #   1 → owned by another uid
+  #   2 → stat failed (unknown owner)
+  if [[ -z "${owner_uid}" ]]; then
+    return 2
+  fi
+  if [[ "${owner_uid}" == "$(id -u)" ]]; then
+    return 0
+  fi
+  return 1
+}
+
 # Read a numeric field from an artifact, defaulting to 0 on miss.
 read_num_field() {
   local path="$1" field="$2"
@@ -121,6 +156,18 @@ launch_in_tmux() {
   command -v tmux >/dev/null 2>&1 || return 2
   command -v claude >/dev/null 2>&1 || return 3
 
+  # Validate the JSON-derived session_id before any use. The producer
+  # (find_claimable_resume_requests in common.sh) only validates the
+  # parent directory name; the artifact's internal `.session_id` field
+  # is read raw via read_str_field. An attacker who can write a hostile
+  # resume_request.json could otherwise inject a crafted sid into the
+  # tmux session-name slug or the `claude --resume` argv. validate_
+  # session_id allows only canonical UUID and synthetic _watchdog forms.
+  if ! validate_session_id "${sid}"; then
+    log_anomaly "resume-watchdog" "rejecting launch: invalid session_id from artifact: ${sid:0:60}"
+    return 5
+  fi
+
   # tmux session names disallow `:` and `.`; sanitize the sid to a
   # 24-char slug for the session-name. Bash 3.2-safe. tr replaces every
   # non-allowed byte (including any multi-byte sequences) with `_`, so
@@ -139,12 +186,17 @@ launch_in_tmux() {
     return 4
   fi
 
-  # Build the tmux launch command. Single-quote-escape the prompt to
-  # survive the shell interpolation tmux performs on the command-string.
-  local prompt_esc
-  prompt_esc="${prompt//\'/\'\\\'\'}"
-  tmux new-session -d -s "${sess_name}" -c "${cwd}" \
-    "claude --resume '${sid}' '${prompt_esc}'" >/dev/null 2>&1
+  # Pass the command as separate argv tokens after `--`. tmux's
+  # cmd_stringify_argv internally shell-escapes each token via
+  # args_escape() before joining for sh -c, so this is safe against
+  # shell metacharacters in `${prompt}` — including embedded `'`, `"`,
+  # `$`, `` ` ``, `&`, `|`, `;`, and tmux format-string sequences. A
+  # prior implementation interpolated a single command-string with
+  # hand-rolled single-quote escaping; while the escape pattern was
+  # correct in isolation, the surface was fragile against future edits
+  # and exposed any subtle escape bug to direct shell injection.
+  tmux new-session -d -s "${sess_name}" -c "${cwd}" -- \
+    claude --resume "${sid}" "${prompt}" >/dev/null 2>&1
 }
 
 # Revert a watchdog claim when the post-claim launch fails. Without this,
@@ -265,13 +317,34 @@ while IFS=$'\t' read -r _scope sid captured_ts artifact_path; do
     continue
   fi
 
-  # Skip if the cwd has gone missing — the relaunched session would
-  # fail immediately with a no-such-directory error.
-  if [[ -z "${cwd}" ]] || [[ ! -d "${cwd}" ]]; then
+  # Skip when the cwd is empty, missing, or not owned by the current
+  # uid. The ownership check is the security defense — see
+  # _cwd_owned_by_self comment for the threat model. An unowned cwd
+  # is treated as "missing" for telemetry-counter parity, but the
+  # `reason` detail field distinguishes the cause so /ulw-report can
+  # surface ownership rejections separately.
+  cwd_skip_reason=""
+  if [[ -z "${cwd}" ]]; then
+    cwd_skip_reason="empty"
+  elif [[ ! -d "${cwd}" ]]; then
+    cwd_skip_reason="missing"
+  else
+    # Capture the rc explicitly — `! cmd` collapses non-zero codes to 1,
+    # losing the stat-failed (rc=2) vs foreign-owned (rc=1) distinction.
+    _cwd_owned_by_self "${cwd}"
+    _cwd_rc=$?
+    case "${_cwd_rc}" in
+      0) ;; # owned by self — no skip
+      2) cwd_skip_reason="cwd-stat-failed" ;;
+      *) cwd_skip_reason="not-owned-by-self" ;;
+    esac
+  fi
+  if [[ -n "${cwd_skip_reason}" ]]; then
     total_skipped_missing_cwd=$((total_skipped_missing_cwd + 1))
     record_gate_event "resume-watchdog" "skipped-missing-cwd" \
       origin_session="${origin_sid}" \
-      missing_cwd="${cwd:-EMPTY}"
+      missing_cwd="${cwd:-EMPTY}" \
+      reason="${cwd_skip_reason}"
     continue
   fi
 

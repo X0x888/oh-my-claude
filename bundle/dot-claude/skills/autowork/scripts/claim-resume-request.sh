@@ -339,7 +339,14 @@ do_claim() {
     _outcome_arg="${new_outcome}"
   fi
 
-  local tmp="${target_path}.tmp.$$"
+  # mktemp instead of `${target_path}.tmp.$$` — predictable PID-suffixed
+  # tmp paths are vulnerable to symlink-based TOCTOU. mktemp uses O_EXCL
+  # semantics; failure (filesystem full, parent dir gone) returns 2 and
+  # the caller's cross-session lock keeps state consistent.
+  local tmp
+  if ! tmp="$(mktemp "${target_path}.tmp.XXXXXX")"; then
+    return 2
+  fi
   if [[ "${mode}" == "dismiss" ]]; then
     if ! jq -c \
         --argjson now "${now_ts}" \

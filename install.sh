@@ -982,6 +982,17 @@ fi
 # Ensure quality-pack state directory exists (not in the bundle).
 mkdir -p "${CLAUDE_HOME}/quality-pack/state"
 
+# Tighten quality-pack directory permissions to 700. Files inside are
+# created with `umask 077` (set by common.sh) so they're already 600,
+# but the parent directories default to 755 from `mkdir -p` under the
+# user's umask. On shared machines this lets local peers list session
+# UUIDs and time-correlate harness activity even when the file contents
+# are unreadable. Tightening the parent dirs to 700 closes that
+# exposure. Idempotent — re-running install on an already-700 dir is
+# a no-op. Soft-failure (`|| true`) so a permission-restricted parent
+# (synced volume, mounted FUSE) does not abort the install.
+chmod 700 "${CLAUDE_HOME}/quality-pack" "${CLAUDE_HOME}/quality-pack/state" 2>/dev/null || true
+
 # Step 2c-manifest — Orphan detection via bundle-file manifest.
 # rsync -a without --delete leaves files from prior releases sitting in
 # ~/.claude/ if the new bundle removed them (e.g. a renamed script). The

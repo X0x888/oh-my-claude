@@ -64,10 +64,21 @@ _ensure_valid_state() {
   fi
 
   if ! jq empty "${state_file}" 2>/dev/null; then
-    local archive
-    archive="$(session_file "${STATE_JSON}.corrupt.$(date +%s)")"
+    local archive recovered_ts
+    recovered_ts="$(date +%s)"
+    archive="$(session_file "${STATE_JSON}.corrupt.${recovered_ts}")"
     mv "${state_file}" "${archive}" 2>/dev/null || true
-    printf '{}\n' >"${state_file}"
+    # Persist a sticky recovery marker on the rebuilt state. Without it,
+    # subsequent `read_state task_intent` (etc.) returns empty for the
+    # rest of the session, the stop-guard's intent gate evaluates to
+    # false, and ALL quality gates silently disarm — the user keeps
+    # shipping work with no review/verify/excellence enforcement and
+    # nothing in the user-facing transcript signals the gates went away.
+    # Both `recovered_from_corrupt_ts` and `recovered_from_corrupt_archive`
+    # are read by prompt-intent-router on the next UserPromptSubmit so
+    # a systemMessage warning surfaces to the user.
+    printf '{"recovered_from_corrupt_ts":%s,"recovered_from_corrupt_archive":"%s"}\n' \
+      "${recovered_ts}" "${archive//\"/\\\"}" >"${state_file}"
     log_anomaly "common" "corrupt state detected and archived: ${archive}"
   fi
 
@@ -270,6 +281,13 @@ with_state_lock() {
     fi
 
     if [[ "${attempts}" -ge "${OMC_STATE_LOCK_MAX_ATTEMPTS}" ]]; then
+      # Mirror the anomaly-on-exhaustion shape used by every other lock
+      # primitive in the harness (with_metrics_lock, with_defect_lock,
+      # with_resume_lock, with_cross_session_log_lock, with_scope_lock).
+      # Without this, lost dimension/review/handoff writes from
+      # SubagentStop bursts disappear silently — no /ulw-report signal,
+      # no hooks.log entry, just gates that quietly mis-fire next turn.
+      log_anomaly "with_state_lock" "lock not acquired after ${OMC_STATE_LOCK_MAX_ATTEMPTS} attempts"
       return 1
     fi
     sleep 0.05 2>/dev/null || sleep 1
