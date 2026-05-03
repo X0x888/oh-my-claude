@@ -4,6 +4,47 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.29.0] - 2026-05-03
+
+This release responds to the user's request for a comprehensive multi-dimension audit (robustness, UX, work-quality, speed, token-efficiency, diversive-thinking) by dispatching 7 parallel evaluators (product-lens, sre-lens, security-lens, growth-lens, abstraction-critic, oracle, metis) and shipping the actionable surface-aligned subset across 8 waves. ~70 findings surfaced; 35+ shipped inline; the rest are tracked as named follow-ups (architectural deferrals below).
+
+**Headline wins:**
+- **Critical security fixes** (Wave 1): tmux command-injection in resume-watchdog closed via argv-token form + `validate_session_id`; cwd uid-ownership check; symlink rejection on `find_claimable_resume_requests`; `mktemp` replaces predictable `$$` tmp paths; `chmod 700` on quality-pack dirs; corrupt-state silent-disarm cascade closed with sticky markers + warning + telemetry.
+- **38% latency drop** on the dominant hot-path hook (Wave 2): `prompt-intent-router.sh` median **796ms → 491ms** via background blindspot scan + pure-bash timing JSONL emission (replaces 4 jq forks per timing row with parameter-expansion).
+- **Predicate decomposition** (Wave 8): `is_imperative_request` 200-line monolith decomposed into 8 named predicates. Exact regex behavior preserved; future fixes target one predicate without touching neighbors.
+- **UX clarity** (Waves 4 + 5 + 7): `/omc-config` profile descriptions ≤120 chars (was 850); FOR YOU / FOR MODEL audience-split on dual-audience block messages; README Quick Start collapsed 5 → 2 mandatory steps; `/skills` table phase-grouped (Onboarding / Working / Stuck / Reviewing / Configuring); README "What this is NOT" + "When stuck" mini-tables.
+
+**~3000 test assertions verified across 25+ test files** through the full wave chain. No behavior regressions.
+
+### Architectural deferrals (logged as named follow-ups for future sessions)
+
+These findings are too large for a single-session scope and are surfaced here so future work can pick them up with concrete WHY each was deferred:
+
+1. **`common.sh` decomposition** (oracle P0-1) — 4129-line god module with 111 functions and 30 OMC_* declarations. Split into 7 single-responsibility libs (`lib/conf.sh`, `lib/log.sh`, `lib/json.sh`, `lib/session.sh`, `lib/dimensions.sh`, `lib/cross-session.sh`, `lib/prompt.sh`); `common.sh` becomes a 30-line shim. Multi-release infrastructure milestone — every hook sources this file, blast radius warrants careful staging.
+2. **Profile-composition primitive** (oracle P0-3 / abstraction-critic P0-2) — replace 30+ flag triple-site invariant with a single `flags.json` manifest. Generate parser, conf example, omc-config table from the manifest. Triple-site rule becomes mechanical sync, not human discipline. Breaking conf-file change; needs migration story.
+3. **Unified `pending-work-queue` abstraction** (abstraction-critic P0-3) — collapse the three "blocking-on-stop" stores (`discovered_scope.jsonl`, `findings.json`, `exemplifying_scope.json`) into one queue with `{source: discovered|council|exemplifying, status, why_if_deferred}`. Stop-guard reads one store; deferral-verb ladder lives in one place. Cross-cutting refactor.
+4. **Python lib extraction** (abstraction-critic P0-4) — rewrite `lib/classifier.sh`, `lib/timing.sh`, `lib/state-io.sh`, `lib/verification.sh`, `lib/canary.sh` (~3157 LOC of pure computation in bash) as Python modules with bash CLI shims. Hot-path hooks remain bash for stdin/stdout/exit speed. Addresses the recurring bash 3.2-vs-5+ portability tax (v1.28.1 was a 3-bug hotfix release).
+5. **Small-LLM tiebreaker** (oracle P0-2 step 2) — for low-confidence prompts, the regex fast-path stays and ambiguous prompts call a structured intent-extractor returning `{intent, confidence, authorized_verbs[]}`. The Wave 8 predicate decomposition is the prerequisite. Adds ~200ms in borderline cases; worth focused measurement.
+6. **Directive-registry data shape** (oracle P1-1 / abstraction-critic P1-5) — extract directives from inline strings to `bundle/dot-claude/quality-pack/directives/*.json` with `{trigger, body, priority, axis, mutex_with}`. Router becomes registry-driven (collect → dedupe by axis → trim to char budget → emit top-K). Currently 5+ directives accumulate as ad-hoc context_parts appends with no compositional model.
+7. **Gate composition `Gate{}` data structure** (oracle P1-2) — stop-guard evaluates 6+ subsystems with no priority semantics. Introduce a Gate struct in `lib/gates.sh` so failures are collected and surfaced as ONE consolidated diagnostic instead of forcing the user through round-trip blocks.
+8. **Resume-chain JSON Schema + `lib/resume-artifact.sh`** (oracle P1-3 partial) — promote the chain-tracking schema to a JSON Schema file with a thin lib wrapping read/write/stamp helpers. Five cooperating scripts must currently agree on the schema shape by convention. (E2e test added in Wave 3 backfill.)
+9. **Test reorganization** (oracle P1-5) — 57 tests live flat in `tests/`. Reorganize into `tests/{unit,integration,e2e,scenarios}/`. CI runs buckets in parallel; scenarios cover named user-reported failures.
+10. **`~/.claude/quality-pack/` schema versioning** (oracle P1-6) — add `SCHEMA_VERSION` + `lib/schema-migrations.sh`. Collapse 5 lock primitives (`with_metrics_lock`, `with_defect_lock`, `with_resume_lock`, `with_cross_session_log_lock`, `with_scope_lock`) into one `with_xs_lock <name> <body>`.
+11. **Memory rules consolidation** (oracle P2-1 / abstraction-critic P1-6) — collapse `core.md` + `skills.md` + `compact.md` + `auto-memory.md` into 2 files (`core.md` + `persistence.md`). Currently 4 files cross-reference each other and share 80% of exclusion patterns.
+12. **`prompt-intent-router.sh` decomposition** (oracle P2-2) — 905 lines and rising. Extract directive composition + post-compact bias detection into `lib/directives.sh` and `lib/post-compact.sh`. Router shrinks to a coordinator (~300 lines).
+
+**Wave-deferred small items** (smaller scope, ready to pick up):
+
+- `prompt_persist=off` flag (security-lens F-8) — gates `recent_prompts.jsonl` writes.
+- `/ulw-status --explain` mode (product-lens P2-10).
+- SessionStart welcome banner detecting "you forgot to restart" silent dropoff (growth-lens P0-3).
+- Update mode "what's new since v$prev" surface (growth-lens P2-10).
+- PID-based recovery for the other 4 lock primitives (sre-lens P1-5 generalization).
+- `_cap_cross_session_jsonl` race + opportunistic cap (sre-lens P1-4).
+- Resume-watchdog `prior_*_ts` snapshot under lock (metis F-7).
+- cwd-ownership regression test, mktemp-failure regression test (Wave 1 excellence).
+- Output-styles preview side-by-side in `docs/customization.md` (product-lens P2-9).
+
 ### v1.29.0 Wave 8 — Classifier predicate decomposition
 
 Closes abstraction-critic P0-1 / oracle P0-2: the regex-cascade classifier had reached its complexity ceiling under monolithic shape (200-line `is_imperative_request` with 8 stacked `elif` branches each carrying 200–400-character regexes plus inline comments). Decomposed into 8 named predicates while preserving exact regex behavior — no behavior change, just smaller blast radius for future fixes and a clean dispatch pattern that future tiebreakers can plug into.
