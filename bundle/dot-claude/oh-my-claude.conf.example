@@ -313,6 +313,15 @@
 # Env: OMC_TIME_TRACKING_XS_RETAIN_DAYS.
 #time_tracking_xs_retain_days=30
 
+# Stop-epilogue time-card threshold (seconds, v1.29.0). The polished
+# `─── Time breakdown ───` card auto-emits at the end of every Stop hook
+# whose walltime crosses this floor. Default 5s suppresses the card on
+# trivial sub-second turns (single-tool clarifications) so transcripts
+# stay clean. Set =0 to render on every Stop, or =30 to only see the
+# card on substantive turns. Manual `/ulw-time` invocation always
+# renders regardless. Env: OMC_TIME_CARD_MIN_SECONDS.
+#time_card_min_seconds=5
+
 # Model-drift canary (v1.26.0 Wave 2). When `on`, the Stop hook runs a
 # claims-vs-tool-calls audit: it parses the model's last response for
 # assertive verification claims ("I read X", "I verified Y", "I checked

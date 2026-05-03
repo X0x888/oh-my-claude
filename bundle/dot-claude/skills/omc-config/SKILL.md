@@ -65,13 +65,13 @@ Call `AskUserQuestion` once with both questions in the same tool invocation. The
 question: "Which profile should I apply? (To make no changes, pick Other and type 'cancel'.)"
 options:
   - label: "Maximum Quality + Automation (Recommended)"
-    description: "Every quality lever pulled — internally consistent with model_tier=quality. Full gates + blocking exhaustion + all bias-defense flags on, including exemplified-scope checklist enforcement + watchdog on + council_deep_default=on (auto-triggered /council uses opus per lens, matching your Opus-everywhere stance). Note: turns on prometheus_suggest + intent_verify_directive — under v1.24.0 these are declare-and-proceed framing (the model declares its interpretation in one sentence as part of its opener, then proceeds; you can redirect in real time). They never produce a hold; fine-tune off later only if the framing is too chatty for your style."
+    description: "Most rigorous gates, all bias-defense directives on, opus model. Best for solo devs on important work."
   - label: "Balanced"
-    description: "Close to install-time defaults: full gates, scorecard exhaustion, low-friction bias-defense defaults on (prompt-text override, exemplified-scope checklist, strict defer reasons), watchdog off, model_tier=balanced, council_deep_default=off (auto-/council on sonnet — cost cap lives here, not in Maximum). Safe for most users."
+    description: "Standard gates + low-friction bias-defense, sonnet model, watchdog off. Good for daily use."
   - label: "Minimal"
-    description: "Lightest footprint: basic gates only, all telemetry off, watchdog off, model_tier=economy. For shared/regulated machines or low-cost setups."
+    description: "Basic gates, no telemetry, watchdog off, economy model. For shared/regulated machines."
   - label: "Review my defaults & fine-tune"
-    description: "Walk through individual flag clusters and opt into anything currently at default. Use this if you want to inspect what's been added since you last configured, or mix-and-match (e.g. Maximum gates with Minimal telemetry)."
+    description: "Walk individual flag clusters. Inspect what changed since your last config, or mix-and-match."
 ```
 
 The auto-injected "Other" option lets the user type `cancel` to bail without writes. If the user types `cancel` (case-insensitive) or any non-matching synonym, treat it as a cancel: print "No changes made." and stop. Do NOT call `mark-completed`. Do NOT proceed to Step 4. The skill should leave the conf untouched.

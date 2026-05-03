@@ -707,7 +707,7 @@ if [[ "${guard_blocks}" -ge 3 ]]; then
       # concrete next-step shapes instead of "note any gaps".
       emit_scorecard_stop_context \
         "QUALITY SCORECARD (guard exhausted after 3 blocks):" \
-        "The quality gate released without full completion. Recovery options: (a) restate WHICH gates released without satisfaction so the user can audit them; (b) run a fresh quality-reviewer pass on the diff and address the findings (one short pass usually converts scorecard release into clean release); (c) run the project test suite (\`/ulw-status\` shows the detected command) and commit on green; (d) if the work is genuinely paused on user input, run /ulw-pause <reason> instead of letting the gate scorecard-release." \
+        "**FOR YOU:** The quality gate released without full completion — work shipped without all gates satisfied. The model's next response will summarize what shipped vs. what's missing so you can audit. **FOR MODEL:** Recovery options: (a) restate WHICH gates released without satisfaction so the user can audit them; (b) run a fresh quality-reviewer pass on the diff and address the findings (one short pass usually converts scorecard release into clean release); (c) run the project test suite (\`/ulw-status\` shows the detected command) and commit on green; (d) if the work is genuinely paused on user input, run /ulw-pause <reason> instead of letting the gate scorecard-release." \
         "${scorecard}"
       exit 0
       ;;

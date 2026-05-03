@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### v1.29.0 Wave 4 — UX voice + scorecards + time-card threshold
+
+Closes 3 product-lens findings. Each surface where prose written for the model also renders to the user gets clearer audience separation; the omc-config first-screen surfaces stop hiding the value behind walls of jargon.
+
+- **`/omc-config` profile descriptions ≤120 chars** (`bundle/dot-claude/skills/omc-config/SKILL.md`). The post-install user's FIRST screen previously showed a 850-character single-paragraph description of "Maximum Quality + Automation" that mixed flag names, jargon (`prometheus_suggest`, `intent_verify_directive`, `council_deep_default`), version references (`v1.24.0`), and disclaimers. New shape: each profile description names the user-perceptible posture in ≤90 chars, no flag enumeration. *"Most rigorous gates, all bias-defense directives on, opus model. Best for solo devs on important work."* / *"Standard gates + low-friction bias-defense, sonnet model, watchdog off. Good for daily use."* / *"Basic gates, no telemetry, watchdog off, economy model. For shared/regulated machines."* The flag-by-flag detail is still applied atomically by `apply-preset` and is auditable via `omc-config.sh show` after the install — moving the detail off the picker screen lets users actually choose.
+
+- **Audience-split for scorecard release message** (`bundle/dot-claude/skills/autowork/scripts/stop-guard.sh:710`). The quality-gate scorecard release message rendered to the user as `systemMessage` but addressed the model: *"Recovery options: (a) restate WHICH gates released..."*. The user reads "restate WHICH gates released" and is supposed to wait for the model to do this — a dual-audience failure where one channel served two readers. New shape prepends `**FOR YOU:**` (one-sentence user-visible summary) and `**FOR MODEL:**` (existing recovery instructions). The user knows what just happened; the model still has its action list. Same architecture is portable to other dual-audience block messages in future waves.
+
+- **`time_card_min_seconds` conf flag** (`bundle/dot-claude/skills/autowork/scripts/stop-time-summary.sh`, `common.sh`, `oh-my-claude.conf.example`, `omc-config.sh`). The Stop-epilogue time card's 5s noise floor was hard-coded; users had no way to suppress the card on a long session of quick edits, or to surface it on every Stop for diagnostic work. New flag exposes the threshold (default 5, range 0..N integers, env `OMC_TIME_CARD_MIN_SECONDS`). Wired through all 3 required sites per the project's flag-add rule (parser case in `common.sh`, documented user-facing entry in `oh-my-claude.conf.example`, table row in `omc-config.sh:emit_known_flags`). Manual `/ulw-time` invocation continues to bypass the floor.
+
+- **Test coverage:** test-omc-config 121/121 (was 121, no schema change beyond adding a row to the registry table), test-timing 91/91, test-e2e-hook-sequence 355/355, test-output-style-coherence 35/35. **602 assertions verified.**
+
+- **Deferred:**
+  - Block-message tone alignment beyond the scorecard release message (product-lens P1-4 broader scope) — one-by-one rewrite of every `[Quality gate · N/3]`-shaped block message into the user-facing voice is a larger surface; the FOR-YOU/FOR-MODEL pattern is now established and portable. Rolled into a follow-up wave.
+  - Block-message escape-verb correction (product-lens P0-2): audited the existing messages — the right verbs ARE present (discovered-scope mentions /mark-deferred AND /ulw-skip; session-handoff mentions /ulw-pause; advisory/excellence/metis mention /ulw-skip). No silent-verb-mismatch remains. Closing the finding without an edit; logged for future audit.
+
 ### v1.29.0 Wave 3 — Edge-case correctness + lock primitives
 
 Closes 6 metis-discovered edge cases plus the Wave 1 security-test backfill the Wave 1 excellence-review flagged. Each fix lands in a focused diff with a regression test where one was missing.

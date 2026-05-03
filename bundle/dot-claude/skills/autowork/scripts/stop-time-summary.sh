@@ -107,7 +107,14 @@ walltime_s="$(jq -r '.walltime_s // 0' <<<"${agg}" 2>/dev/null)"
 walltime_s="${walltime_s:-0}"
 [[ "${walltime_s}" =~ ^[0-9]+$ ]] || walltime_s=0
 
-if (( walltime_s >= 5 )); then
+# Threshold below which the polished epilogue is suppressed. Default 5s
+# matches the historical noise floor (single-tool sub-second turns
+# don't deserve a 4-line card). Set OMC_TIME_CARD_MIN_SECONDS=0 to
+# show the card on every Stop, or =30 to only see it on substantive
+# turns. Closes product-lens P1-5.
+_card_threshold="${OMC_TIME_CARD_MIN_SECONDS:-5}"
+[[ "${_card_threshold}" =~ ^[0-9]+$ ]] || _card_threshold=5
+if (( walltime_s >= _card_threshold )); then
   epilogue="$(timing_format_full "${agg}" "Time breakdown")"
   if [[ -n "${epilogue}" ]]; then
     # `systemMessage` is the documented user-visible Stop output field;

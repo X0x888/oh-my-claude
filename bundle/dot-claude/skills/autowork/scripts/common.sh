@@ -50,6 +50,7 @@ _omc_env_resume_watchdog="${OMC_RESUME_WATCHDOG:-}"
 _omc_env_resume_watchdog_cooldown="${OMC_RESUME_WATCHDOG_COOLDOWN_SECS:-}"
 _omc_env_time_tracking="${OMC_TIME_TRACKING:-}"
 _omc_env_time_tracking_xs_retain="${OMC_TIME_TRACKING_XS_RETAIN_DAYS:-}"
+_omc_env_time_card_min_seconds="${OMC_TIME_CARD_MIN_SECONDS:-}"
 _omc_env_model_drift_canary="${OMC_MODEL_DRIFT_CANARY:-}"
 _omc_env_blindspot_inventory="${OMC_BLINDSPOT_INVENTORY:-}"
 _omc_env_intent_broadening="${OMC_INTENT_BROADENING:-}"
@@ -235,6 +236,7 @@ OMC_TIME_TRACKING="${OMC_TIME_TRACKING:-on}"
 # days — long enough for monthly reflection, short enough that workflow
 # data does not accrue indefinitely on shared machines.
 OMC_TIME_TRACKING_XS_RETAIN_DAYS="${OMC_TIME_TRACKING_XS_RETAIN_DAYS:-30}"
+OMC_TIME_CARD_MIN_SECONDS="${OMC_TIME_CARD_MIN_SECONDS:-5}"
 # Blindspot inventory (v1.28.0): per-project enumeration of routes / env vars
 # / tests / docs / config flags / UI files / error states / auth paths /
 # release steps / scripts so the intent-broadening directive can give the
@@ -334,6 +336,8 @@ _parse_conf_file() {
         [[ -z "${_omc_env_time_tracking}" && "${value}" =~ ^(on|off)$ ]] && OMC_TIME_TRACKING="${value}" || true ;;
       time_tracking_xs_retain_days)
         [[ -z "${_omc_env_time_tracking_xs_retain}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_TIME_TRACKING_XS_RETAIN_DAYS="${value}" || true ;;
+      time_card_min_seconds)
+        [[ -z "${_omc_env_time_card_min_seconds}" && "${value}" =~ ^[0-9]+$ ]] && OMC_TIME_CARD_MIN_SECONDS="${value}" || true ;;
       output_style)
         [[ -z "${_omc_env_output_style}" && "${value}" =~ ^(opencode|executive|preserve)$ ]] && OMC_OUTPUT_STYLE="${value}" || true ;;
       model_drift_canary)

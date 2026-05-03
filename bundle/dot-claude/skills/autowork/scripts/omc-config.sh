@@ -79,6 +79,7 @@ resume_watchdog|bool|off|watchdog|Headless daemon launches claude --resume after
 resume_watchdog_cooldown_secs|int|600|watchdog|Per-artifact cooldown between watchdog launches
 time_tracking|bool|on|telemetry|Per-tool / per-subagent timing capture; backs Stop epilogue + /ulw-time
 time_tracking_xs_retain_days|pint|30|telemetry|Cross-session timing log retention (days)
+time_card_min_seconds|int|5|telemetry|Min walltime to render the Stop epilogue time card (seconds; 0 = always)
 state_ttl_days|int|7|cleanup|Days before stale session-state dirs are swept
 output_style|enum:opencode/executive/preserve|opencode|cost|Bundled output style: opencode = oh-my-claude (compact CLI), executive = executive-brief (CEO-style status report), preserve = leave settings.json untouched
 model_drift_canary|bool|on|telemetry|Stop-hook canary detects silent confabulation (claims-vs-tool-calls audit; surfaces in /ulw-report)
