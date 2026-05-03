@@ -161,9 +161,15 @@ _do_mark_deferred() {
     status="$(jq -r '.status // empty' <<<"${line}" 2>/dev/null || true)"
     if [[ "${status}" == "pending" ]]; then
       local transformed
+      # ts_updated must be a JSON number, not string — every other
+      # timestamp in the harness uses --argjson (record_gate_event,
+      # append_discovered_scope, etc.). String comparison via jq's
+      # `>=` would lexically misorder timestamps across digit-count
+      # boundaries (e.g. "9999999999" > "10000000000" stringwise but
+      # numerically smaller). v1.29.0 fix.
       if transformed="$(jq -c \
             --arg reason "${reason}" \
-            --arg ts "${ts}" \
+            --argjson ts "${ts}" \
             '. + {status:"deferred", reason:$reason, ts_updated:$ts}' \
             <<<"${line}" 2>/dev/null)"; then
         printf '%s\n' "${transformed}" >> "${tmp}"

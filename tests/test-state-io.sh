@@ -110,6 +110,47 @@ archive_count="$(find "$(session_file "")" -name "${STATE_JSON}.corrupt.*" -type
 assert_ne "corrupt archive created" "0" "${archive_count}"
 
 # ----------------------------------------------------------------------
+printf 'Test 7b: corrupt-state recovery stamps sticky markers (v1.29.0 Wave 1)\n'
+reset_state
+# Inject corrupt JSON, trigger recovery, verify markers landed.
+printf 'not valid json {{{\n' > "$(session_file "${STATE_JSON}")"
+_state_validated=0
+write_state "trigger" "go"  # triggers _ensure_valid_state recovery branch
+recovered_ts="$(read_state "recovered_from_corrupt_ts")"
+recovered_archive="$(read_state "recovered_from_corrupt_archive")"
+assert_ne "T7b: recovered_from_corrupt_ts is non-empty" "" "${recovered_ts}"
+assert_ne "T7b: recovered_from_corrupt_archive is non-empty" "" "${recovered_archive}"
+# Marker MUST be a numeric epoch (router uses it as an arithmetic context).
+ts_numeric="no"
+[[ "${recovered_ts}" =~ ^[0-9]+$ ]] && ts_numeric="yes"
+assert_eq "T7b: ts is numeric" "yes" "${ts_numeric}"
+# Archive path must end in .corrupt.<digits>
+archive_ok="no"
+[[ "${recovered_archive}" == *.corrupt.* ]] && archive_ok="yes"
+assert_eq "T7b: archive path ends in .corrupt.<ts>" "yes" "${archive_ok}"
+# After clearing the markers, subsequent reads return empty (sticky pattern).
+write_state "recovered_from_corrupt_ts" ""
+write_state "recovered_from_corrupt_archive" ""
+assert_eq "T7b: cleared marker reads empty" "" "$(read_state "recovered_from_corrupt_ts")"
+assert_eq "T7b: cleared archive reads empty" "" "$(read_state "recovered_from_corrupt_archive")"
+
+# ----------------------------------------------------------------------
+printf 'Test 7c: read_state distinguishes empty-string from missing key (v1.29.0 metis F-3)\n'
+reset_state
+# Write a key with empty string AND create a sidecar file with the same name
+# but stale data. Pre-fix: read_state would fall through to the sidecar.
+# Post-fix: read_state honors the deliberate empty-string clear.
+write_state "explicitly_empty" ""
+printf 'STALE-SIDECAR-DATA' > "$(session_file "explicitly_empty")"
+got_empty="$(read_state "explicitly_empty")"
+assert_eq "T7c: explicit empty-string returns empty (NOT stale sidecar)" "" "${got_empty}"
+# But missing-key fallback to sidecar still works (Test 6 invariant preserved).
+got_missing="$(read_state "absent_key_with_sidecar")"
+printf 'NEW-SIDECAR' > "$(session_file "absent_key_with_sidecar")"
+got_missing="$(read_state "absent_key_with_sidecar")"
+assert_eq "T7c: missing key still falls back to sidecar" "NEW-SIDECAR" "${got_missing}"
+
+# ----------------------------------------------------------------------
 printf 'Test 8: with_state_lock serializes 5 concurrent writers\n'
 reset_state
 pids=()

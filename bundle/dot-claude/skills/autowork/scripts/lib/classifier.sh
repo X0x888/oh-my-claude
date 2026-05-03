@@ -655,11 +655,33 @@ record_classifier_telemetry() {
   printf '%s\n' "${record}" >> "${file}"
 
   # Cap at 100 rows per session to keep the file small under heavy use.
+  # Wrap the rotation in with_state_lock (v1.29.0 metis F-4 fix). The
+  # prior unlocked tail+mv could drop concurrent appends from a parallel
+  # hook fire (rare but possible when prompts arrive in close succession
+  # or detect_classifier_misfire reads while record_classifier_telemetry
+  # is rotating). Locked rotation eliminates the data loss without
+  # measurable perf cost (cap fires only once every 100 prompts).
   local line_count
   line_count="$(wc -l < "${file}" 2>/dev/null || echo 0)"
   line_count="${line_count##* }"
   if [[ "${line_count}" -gt 100 ]]; then
-    tail -n 100 "${file}" > "${file}.tmp" && mv "${file}.tmp" "${file}"
+    with_state_lock _cap_classifier_telemetry "${file}"
+  fi
+}
+
+# Helper: rotate classifier_telemetry.jsonl under with_state_lock. The
+# call site checks line_count > 100 outside the lock (cheap), then
+# invokes this under the lock so the tail+mv window is serialized
+# against concurrent appends.
+# shellcheck disable=SC2329 # invoked indirectly via with_state_lock
+_cap_classifier_telemetry() {
+  local file="$1"
+  local tmp
+  tmp="$(mktemp "${file}.XXXXXX")" || return 0
+  if tail -n 100 "${file}" > "${tmp}" 2>/dev/null; then
+    mv "${tmp}" "${file}"
+  else
+    rm -f "${tmp}" 2>/dev/null || true
   fi
 }
 

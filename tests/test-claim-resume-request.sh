@@ -559,6 +559,36 @@ assert_eq "T25: dismissed artifact NOT listed" "0" \
   "$(printf '%s' "${list_out}" | grep -c 'dismiss-me' || true)"
 teardown_test
 
+# ---------------------------------------------------------------------------
+# T26: symlink-shaped session dirs and artifacts rejected (v1.29.0 Wave 1
+#      security backfill — closes find_claimable_resume_requests symlink-
+#      elevation chain). An attacker with write access to STATE_ROOT could
+#      otherwise drop a UUID-shaped symlink at an attacker-controlled
+#      directory containing a hostile resume_request.json; combined with
+#      the watchdog launch path, that was a credible RCE vector.
+# ---------------------------------------------------------------------------
+print_test_header "T26: symlink session dirs and artifacts excluded from --list"
+setup_test
+# Real session, real artifact — should appear in --list.
+make_request "sess-26-real" "${TEST_HOME}" "Legitimate." > /dev/null
+# Create a UUID-shaped SYMLINK pointing at a victim dir with a hostile artifact.
+victim_dir="$(mktemp -d "${TEST_HOME}/victim.XXXXXX")"
+cat > "${victim_dir}/resume_request.json" <<EOF
+{"schema_version":1,"session_id":"sess-26-evil","cwd":"${victim_dir}","captured_at_ts":$(date +%s),"original_objective":"hostile","last_user_prompt":"hostile","resets_at_ts":null,"resume_attempts":0}
+EOF
+ln -s "${victim_dir}" "${TEST_HOME}/.claude/quality-pack/state/sess-26-evil-symlink-dir"
+# Also create a real session dir but with the artifact itself a symlink.
+mkdir -p "${TEST_HOME}/.claude/quality-pack/state/sess-26-artifact-symlink"
+ln -s "${victim_dir}/resume_request.json" "${TEST_HOME}/.claude/quality-pack/state/sess-26-artifact-symlink/resume_request.json"
+# Run --list and verify ONLY the real artifact is listed.
+list_out="$(bash "${HELPER}" --list 2>/dev/null || true)"
+assert_contains "T26: real artifact listed" "sess-26-real" "${list_out}"
+assert_eq "T26: symlinked dir NOT listed" "0" \
+  "$(printf '%s' "${list_out}" | grep -c 'sess-26-evil-symlink-dir' || true)"
+assert_eq "T26: symlinked artifact NOT listed" "0" \
+  "$(printf '%s' "${list_out}" | grep -c 'sess-26-artifact-symlink' || true)"
+teardown_test
+
 printf '\n=== test-claim-resume-request: %d passed, %d failed ===\n' "${pass}" "${fail}"
 if (( fail > 0 )); then
   exit 1

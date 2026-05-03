@@ -1092,11 +1092,27 @@ extract_skill_primary_task() {
   fi
 
   local body="${text#*"${head_marker}"}"
-  local tm anchored
+  local tm anchored matched=0
   for tm in "${tail_markers[@]}"; do
     anchored=$'\n'"${tm}"
-    body="${body%%"${anchored}"*}"
+    if [[ "${body}" == *"${anchored}"* ]]; then
+      body="${body%%"${anchored}"*}"
+      matched=1
+    fi
   done
+
+  # No tail marker matched (v1.29.0 metis F-8 fix). Returning the full
+  # post-head body would leak embedded footer prose ("Apply the autowork
+  # rules to the task above.") into classify_task_intent / infer_domain,
+  # tripping the imperative classifier on the literal verb "Apply" and
+  # mis-routing the prompt as execution. Refuse cleanly so the caller
+  # falls back to classifying the raw text — at least conservative.
+  # Surfaces via log_anomaly so /ulw-report can flag a skill-body shape
+  # change that needs the tail_markers list extended.
+  if [[ "${matched}" -eq 0 ]]; then
+    log_anomaly "extract_skill_primary_task" "no known tail marker found; skill body shape may have changed"
+    return 1
+  fi
 
   body="$(trim_whitespace "${body}")"
   [[ -n "${body}" ]] || return 1

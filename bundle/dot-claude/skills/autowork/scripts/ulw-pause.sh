@@ -11,8 +11,12 @@
 # without weakening the gate's protection against the former.
 #
 # State writes:
-#   ulw_pause_active=1            # cleared at next user prompt
-#   ulw_pause_count=N+1           # capped at 2 per session
+#   ulw_pause_active=1            # the FLAG is cleared at next user prompt
+#                                 # (so the session-handoff gate stops carving
+#                                 # the exception); the COUNT below is NOT.
+#   ulw_pause_count=N+1           # capped at PAUSE_CAP (2) per SESSION —
+#                                 # never resets within a session, regardless
+#                                 # of user prompts in between.
 #   ulw_pause_reason=<reason>     # most-recent reason (informational)
 #
 # Cap: 2 pauses per session (mirrors session-handoff cap). Past the cap
@@ -58,11 +62,11 @@ current_count="$(read_state "ulw_pause_count" 2>/dev/null || true)"
 current_count="${current_count:-0}"
 
 if [[ "${current_count}" -ge "${PAUSE_CAP}" ]]; then
-  printf 'ulw-pause: pause cap reached (%d/%d).\n' "${current_count}" "${PAUSE_CAP}" >&2
+  printf 'ulw-pause: pause cap reached (%d/%d for this session).\n' "${current_count}" "${PAUSE_CAP}" >&2
   printf '  At this point a stop is structurally a session handoff, not a pause.\n' >&2
   printf '  Options:\n' >&2
-  printf '    1. Resume the work in this session (the pause cap is per-session;\n' >&2
-  printf '       the next user prompt resets it).\n' >&2
+  printf '    1. Resume the work in this session (the pause cap is fixed for the\n' >&2
+  printf '       lifetime of the session; user prompts do NOT reset it).\n' >&2
   printf '    2. Ask the user explicitly whether to checkpoint — they may want\n' >&2
   printf '       to wrap up the session intentionally.\n' >&2
   printf '    3. If a gate is genuinely blocking and the work is complete, run\n' >&2
@@ -90,6 +94,14 @@ record_gate_event "ulw-pause" "ulw-pause" \
 printf 'ulw-pause: pause %d/%d active for this session.\n' "${new_count}" "${PAUSE_CAP}"
 printf '  Reason: %s\n' "${reason}"
 printf '  Session-handoff gate will allow your next stop. Surface the decision\n'
-printf '  in your summary; the next user prompt clears the pause flag automatically.\n'
+printf '  in your summary. The pause flag clears at the next user prompt; the\n'
+printf '  count (%d/%d used) is fixed for the lifetime of this session.\n' "${new_count}" "${PAUSE_CAP}"
+# Visibility: warn pre-emptively when the user is one pause away from the
+# cap so they have agency BEFORE hitting the wall on a future legitimate
+# pause. Closes product-lens P1-7 (cap was invisible until exhausted).
+if [[ "${new_count}" -ge "${PAUSE_CAP}" ]]; then
+  printf '  Note: this is your final pause for the session. The next pause attempt\n'
+  printf '        will be denied — consider /mark-deferred for follow-on findings.\n'
+fi
 
 exit 0

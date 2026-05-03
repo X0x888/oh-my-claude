@@ -160,18 +160,38 @@ read_state() {
   local key="$1"
   local state_file
   state_file="$(session_file "${STATE_JSON}")"
-  local result=""
 
   if [[ -f "${state_file}" ]]; then
-    result="$(jq -r --arg k "${key}" '.[$k] // empty' "${state_file}" 2>/dev/null || true)"
+    # Distinguish "key absent" from "key present with empty value" so
+    # write_state(key, "") (a deliberate clear) does NOT silently revive
+    # a stale legacy sidecar with the same name. v1.29.0 metis F-3 fix.
+    # `has(key)` is the presence test; the sentinel threads the absence
+    # signal through jq -r's string-only stdout. The sentinel is unlikely
+    # to appear as a legitimate state value (33 bytes of underscores +
+    # caps + suffix). Test 6 (missing-key fallback) preserved; the new
+    # behavior is that empty-string values are returned verbatim instead
+    # of falling through to the sidecar.
+    local result
+    result="$(jq -r --arg k "${key}" '
+      if has($k) then
+        (.[$k] // "")
+      else
+        "__OMC_KEY_ABSENT__"
+      end
+    ' "${state_file}" 2>/dev/null || printf '__OMC_KEY_ABSENT__')"
+
+    if [[ "${result}" != "__OMC_KEY_ABSENT__" ]]; then
+      printf '%s' "${result}"
+      return
+    fi
   fi
 
-  if [[ -n "${result}" ]]; then
-    printf '%s' "${result}"
-    return
-  fi
-
-  # Fallback: individual file (backwards compat or JSON key missing)
+  # Fallback: individual file (backwards compat for keys that legacy
+  # code wrote to a sidecar before the JSON-state migration). Only
+  # reached when the JSON key is absent — NOT when it was cleared to
+  # empty. This preserves the deliberate-clear semantic that callers
+  # like prompt-intent-router.sh:97-106 rely on (clearing 8 keys to ""
+  # at every UserPromptSubmit must NOT revive stale legacy sidecars).
   cat "$(session_file "${key}")" 2>/dev/null || true
 }
 
@@ -259,15 +279,28 @@ _lock_mtime() {
 with_state_lock() {
   local lockdir
   lockdir="$(session_file ".state.lock")"
+  local pidfile="${lockdir}/holder.pid"
   local attempts=0
 
   while true; do
     if mkdir "${lockdir}" 2>/dev/null; then
+      # Record holder PID so stale recovery can verify the holder is
+      # actually dead before force-releasing. Soft-failure: a missing
+      # pidfile falls through to mtime-only recovery (legacy behavior),
+      # so the new path is purely additive.
+      printf '%s\n' "$$" > "${pidfile}" 2>/dev/null || true
       break
     fi
     attempts=$((attempts + 1))
 
-    # Stale-lock recovery: if the dir has been held too long, force-release.
+    # Stale-lock recovery (v1.29.0 metis F-6 fix): if the dir has been
+    # held too long AND the recorded holder PID is dead, force-release.
+    # PID-check defeats the false-recovery race where a slow-but-live
+    # writer (jq parsing 100KB+ state under heavy IO) would otherwise
+    # lose its lock to a peer that timed out on mtime alone. Falls
+    # through to mtime-only when the pidfile is missing (legacy locks
+    # from before this change OR a Test-9-style synthetic stale lock
+    # — both treat absence-of-pidfile as "force-release allowed").
     if [[ -d "${lockdir}" ]]; then
       local now
       now="$(date +%s)"
@@ -275,8 +308,15 @@ with_state_lock() {
       held_since="$(_lock_mtime "${lockdir}")"
       if [[ "${held_since}" -gt 0 ]] \
           && [[ $(( now - held_since )) -gt "${OMC_STATE_LOCK_STALE_SECS}" ]]; then
-        rmdir "${lockdir}" 2>/dev/null || true
-        continue
+        local holder_pid=""
+        if [[ -f "${pidfile}" ]]; then
+          holder_pid="$(tr -d '[:space:]' < "${pidfile}" 2>/dev/null || true)"
+        fi
+        if [[ -z "${holder_pid}" ]] || ! kill -0 "${holder_pid}" 2>/dev/null; then
+          rm -f "${pidfile}" 2>/dev/null || true
+          rmdir "${lockdir}" 2>/dev/null || true
+          continue
+        fi
       fi
     fi
 
@@ -295,6 +335,7 @@ with_state_lock() {
 
   local rc=0
   "$@" || rc=$?
+  rm -f "${pidfile}" 2>/dev/null || true
   rmdir "${lockdir}" 2>/dev/null || true
   return "${rc}"
 }
