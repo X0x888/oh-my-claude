@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### v1.29.0 Wave 8 — Classifier predicate decomposition
+
+Closes abstraction-critic P0-1 / oracle P0-2: the regex-cascade classifier had reached its complexity ceiling under monolithic shape (200-line `is_imperative_request` with 8 stacked `elif` branches each carrying 200–400-character regexes plus inline comments). Decomposed into 8 named predicates while preserving exact regex behavior — no behavior change, just smaller blast radius for future fixes and a clean dispatch pattern that future tiebreakers can plug into.
+
+- **8 named predicate functions** in `bundle/dot-claude/skills/autowork/scripts/lib/classifier.sh`:
+  - `_imp_polite_can_could_would` — "Can/Could/Would you [verb]..." polite imperatives
+  - `_imp_please_verb` — "Please [adverb?] [verb]..." patterns
+  - `_imp_go_ahead` — "Go ahead and..." explicit grant
+  - `_imp_i_need_want` — "I need/want you to..." / "I need to..." patterns
+  - `_imp_delegated_approval` — "Do option C" / "Execute the plan" delegated-approval shape (v1.28.1)
+  - `_imp_bare_imperative` — bare action verb at start, no trailing `?`
+  - `_imp_tail_destructive` — sentence-tail destructive verb after advisory framing
+  - `_imp_conjunction_destructive` — implementation-verb-led conjunction with destructive tail
+
+  Each predicate carries its own narrow-by-design docstring. `is_imperative_request` becomes a 14-line dispatcher that wraps `shopt -s nocasematch` once and iterates the predicates in priority order.
+
+- **Why this matters.** Adding a 9th branch (or fixing a regression in branch 5 without touching branches 4 and 6) used to require navigating a 200-line monolith with shared regex variables. Each branch is now individually testable, individually grep-able, and individually replaceable. The future small-LLM-tiebreaker for low-confidence cases (deferred to a future wave) plugs in cleanly as a 9th predicate without touching the existing 8.
+
+- **Wave 3 metis F-8 adjustment** (`bundle/dot-claude/skills/autowork/scripts/common.sh:extract_skill_primary_task`). The Wave 3 strict guard ("refuse extraction when no tail marker matches") was too strict — it broke the head-extraction contract that callers rely on for genuinely tail-marker-less skill bodies (degenerate test fixtures, third-party skills with custom footers). New shape: `log_anomaly` on no-match (still surfaces the shape-change signal in `/ulw-report`) but continue returning the body so callers continue to get the post-head content. The anomaly remains the "verify the tail_markers list is current" hint without making the function fail-closed on genuine no-tail bodies. Closes a regression in `tests/test-intent-classification.sh` line 325 (the minimal `Primary task:\n\nDo X` extraction case).
+
+- **Test coverage:** test-classifier 65/65, test-classifier-replay 22/22, test-pretool-intent-guard 80/80, test-intent-classification 527/527, test-e2e-hook-sequence 355/355, test-state-io 56/56, test-common-utilities 388/388. **1493 assertions verified.** No behavior change measurable in any test.
+
+- **Deferred:**
+  - Small-LLM-tiebreaker for low-confidence prompts (oracle P0-2 step 2) — adds a per-prompt model call (~200ms latency in borderline cases). Worth shipping in a separate wave with focused measurement; the decomposition this wave landed is the prerequisite. Architectural deferral.
+
 ### v1.29.0 Wave 7 — README + skills surface polish
 
 Closes 4 product/growth-lens findings on the surfaces a first-time visitor or an experienced user navigating the harness sees most. Documentation-only — no code paths affected.

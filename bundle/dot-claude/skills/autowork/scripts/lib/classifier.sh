@@ -52,7 +52,140 @@ _OMC_DESTRUCTIVE_VERBS='commit|push|tag|release|deploy|merge|ship|publish'
 _OMC_OBJECT_MARKERS='(the|a|an|all|these|this|that|those|to[[:space:]]|origin[[:space:]]|upstream[[:space:]]+|v[0-9]|it[[:space:]]|them[[:space:]]+|changes?[[:space:]]|and[[:space:]]|when[[:space:]]|if[[:space:]]|as[[:space:]]+(needed|required|appropriate|done|done\.|ready|ready\.|stable|stable\.|fit|fit\.))'
 
 # --- P0: Imperative detection (checked before advisory in classify_task_intent) ---
+#
+# v1.29.0 Wave 8: decomposed from a single 200-line is_imperative_request
+# function into 8 named predicates. Each predicate corresponds to one
+# distinct imperative shape; the dispatcher iterates them in priority
+# order and returns 0 on first match. Decomposition preserves the EXACT
+# regex patterns of the prior monolith (no behavior change) — the win
+# is per-predicate testability, smaller blast radius for future fixes,
+# and a clean docstring per predicate naming the "narrow by design"
+# constraints the regex encodes. Closes abstraction-critic P0-1 and
+# oracle P0-2: the regex cascade had reached its complexity ceiling
+# under monolithic shape; decomposed shape lets each branch evolve
+# without touching neighbors. Future small-LLM-tiebreaker for
+# low-confidence cases (deferred to a future wave) plugs in cleanly
+# as a 9th predicate.
+#
+# Convention: each `_imp_*` predicate ASSUMES `shopt -s nocasematch`
+# is enabled by the caller (`is_imperative_request` wraps that). The
+# predicate body is a single `[[ ]]` test; success is exit code 0.
 
+# 1. "Can/Could/Would you [verb]..." — polite imperatives.
+# Verb list intentionally inclusive (any reasonable action verb works
+# in this polite-imperative shape).
+_imp_polite_can_could_would() {
+  local text="$1"
+  [[ "${text}" =~ ^[[:space:]]*(can|could|would)[[:space:]]+you[[:space:]]+(please[[:space:]]+)?(fix|implement|add|create|build|update|refactor|debug|deploy|test|write|make|set[[:space:]]+up|change|modify|remove|delete|move|rename|install|configure|check|run|help|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|connect|push|pull|merge|commit|tag|release|ship|publish|review|start|stop|enable|disable|open|close|evaluate|plan|audit|investigate|research|analyze|analyse|assess|execute|document|extend|raise|design|style|redesign|treat|diagnose|prioritize|preserve|ensure|perform|prepare|verify|validate|generate|apply|revert|simplify|extract|replace|upgrade|scaffold|swap|split|inline|expose|wire|bootstrap|downgrade|patch|determine|identify|examine|inspect|scan|explore|establish|conduct|complete|address|clean|hook) ]]
+}
+
+# 2. "Please [adverb?] [verb]..." patterns. Single optional -ly adverb
+# between please and verb. Release-action verbs (commit|push|tag|release|
+# ship|publish|merge) added in v1.8.1 so single-clause polite asks like
+# "Please push the changes to main." route as execution instead of
+# falling through. Mirrors the tail-imperative branch's destructive verb list.
+_imp_please_verb() {
+  local text="$1"
+  [[ "${text}" =~ ^[[:space:]]*(please)[[:space:]]+([a-z]+ly[[:space:]]+)?(fix|implement|add|create|build|update|refactor|debug|deploy|test|write|make|change|modify|remove|delete|move|rename|install|configure|check|run|help|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|commit|push|merge|tag|release|ship|publish|proceed|go|evaluate|plan|audit|investigate|research|analyze|analyse|assess|execute|document|extend|raise|design|style|redesign|treat|diagnose|prioritize|preserve|ensure|perform|prepare|verify|validate|generate|apply|revert|simplify|extract|replace|upgrade|scaffold|swap|split|inline|expose|wire|bootstrap|downgrade|patch|determine|identify|examine|inspect|scan|explore|establish|conduct|complete|address|clean|hook) ]]
+}
+
+# 3. "Go ahead and..." — explicit grant.
+_imp_go_ahead() {
+  local text="$1"
+  [[ "${text}" =~ ^[[:space:]]*go[[:space:]]+ahead ]]
+}
+
+# 4. "I need/want you to..." or "I need/want to..." patterns.
+_imp_i_need_want() {
+  local text="$1"
+  [[ "${text}" =~ ^[[:space:]]*i[[:space:]]+(need|want)[[:space:]]+(you[[:space:]]+to|to)[[:space:]] ]]
+}
+
+# 5. Delegated-approval pattern (v1.28.1): "Do/execute/run/proceed-with
+# <referent>" replies to a multi-option proposal. When the user responds
+# "Do option C" or "Execute the plan" or "Go with approach 2", they are
+# explicitly approving the prior assistant message's proposal — which
+# already named the destructive verbs. Without this branch, such prompts
+# misclassify as advisory because the destructive verbs live in the
+# PRIOR assistant message rather than the user's text.
+#
+# Narrow by design:
+#   - Anchor at start of prompt so trailing references ("we discussed
+#     option C earlier") don't false-positive.
+#   - Verb list: do|execute|run|proceed with|go with|go ahead with —
+#     all unambiguously imperative-by-reference.
+#   - Object marker required: option|plan|approach|recommendation|
+#     suggestion|proposal|step|fix|solution|route|path|idea.
+#   - Optional identifier after the noun ([a-z0-9]+) for "option C",
+#     "plan B", "step 3".
+#   - Trailing-question-mark disqualifier so "do option C?" stays advisory.
+_imp_delegated_approval() {
+  local text="$1"
+  [[ ! "${text}" =~ \?[[:space:]]*$ ]] \
+    && [[ "${text}" =~ ^[[:space:]]*(do|execute|run|proceed[[:space:]]+with|go[[:space:]]+with|go[[:space:]]+ahead[[:space:]]+with)[[:space:]]+(the[[:space:]]+)?(option|plan|approach|recommendation|suggestion|proposal|step|fix|solution|route|path|idea)([[:space:]]+[a-z0-9]+)? ]]
+}
+
+# 6. Bare imperative: starts with unambiguous action verb, no trailing `?`.
+# Excludes: check, test, help, review, plan, research, evaluate, design,
+# style — too ambiguous as bare starts (evaluate/plan/research can be
+# nouns; design/style are adjective-like). Also polite-only: complete,
+# address, clean, hook, determine, identify, examine, inspect, scan,
+# explore, establish, conduct — noun/adjective-ambiguous at prompt start.
+_imp_bare_imperative() {
+  local text="$1"
+  [[ ! "${text}" =~ \?[[:space:]]*$ ]] \
+    && [[ "${text}" =~ ^[[:space:]]*(fix|implement|add|create|build|update|refactor|debug|deploy|write|make|change|modify|remove|delete|move|rename|install|configure|run|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|connect|push|pull|merge|commit|start|stop|enable|disable|open|close|set[[:space:]]+up|proceed|audit|investigate|analyze|analyse|execute|document|extend|raise|redesign|treat|diagnose|prioritize|preserve|ensure|perform|prepare|verify|validate|generate|apply|revert|simplify|extract|replace|upgrade|scaffold|swap|split|inline|expose|wire|bootstrap|downgrade|patch)[[:space:]] ]]
+}
+
+# 7. Tail-position imperative: a prompt that opens with advisory/eval
+# framing but closes with an explicit release-action ask. The CLAUDE.md
+# release checklist prescribes this exact pattern ("comprehensively
+# evaluate each point; after all these, commit the changes and tag").
+#
+# Narrow by design:
+#   - Requires sentence boundary (`. `, `, `, `\n`, `?`) before the verb
+#     so past-tense mentions ("we pushed yesterday") don't match.
+#   - Requires an object marker after the verb (article/demonstrative/
+#     preposition/tag-shaped literal/temporal: when|if|as needed/etc) so
+#     noun uses ("push date", "the commit message") don't match.
+#   - Allows optional transition words ("then", "now", "finally", "also",
+#     "afterwards") between the boundary and the verb.
+#   - Only fires on _OMC_DESTRUCTIVE_VERBS (commit/push/tag/release/etc.).
+_imp_tail_destructive() {
+  local text="$1"
+  [[ "${text}" =~ (\.|,|\?|$'\n')[[:space:]]+(then|now|finally|lastly|also|afterwards?|next)?[[:space:]]*,?[[:space:]]*(${_OMC_DESTRUCTIVE_VERBS})[[:space:]]+${_OMC_OBJECT_MARKERS} ]]
+}
+
+# 8. Implementation-verb-led conjunction: an impl/investigation verb
+# followed by a conjunction (`and` / `,`) and a destructive verb. Catches
+# "Implement and then commit as needed", "Build it and ship to staging",
+# "Refactor X, then tag v2.0", "Review the auth code and ship the fix".
+#
+# The verb list spans two role classes:
+#   1. Implementation verbs (build/create/refactor/etc.) — strongly
+#      execution-shaped on their own.
+#   2. Investigation verbs (review/check/plan/evaluate/audit/etc.) —
+#      ambiguous bare ("Review the PR" can be advisory or imperative) but
+#      unambiguously execution when followed by a destructive verb tail.
+#
+# Narrow by design:
+#   - Object marker after the destructive verb prevents noun uses
+#     ("Implement and tell me commit-message ideas") and pure-fragment
+#     matches.
+#   - Optional intermediate object/fragment (≤80 chars, no sentence
+#     boundaries inside) covers "Build the feature and then push".
+#   - Conjunction restricted to `and` / `,` so multi-clause spans like
+#     "Implement after we discuss commit messages" do not match.
+#   - Trailing-`?` disqualifier so "Review and commit?" stays advisory.
+_imp_conjunction_destructive() {
+  local text="$1"
+  [[ ! "${text}" =~ \?[[:space:]]*$ ]] \
+    && [[ "${text}" =~ (^|[[:space:]])(implement|build|fix|refactor|add|update|create|debug|deploy|write|make|change|modify|remove|delete|move|rename|install|configure|run|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|connect|enhance|polish|patch|simplify|extract|replace|upgrade|generate|apply|review|check|plan|evaluate|audit|investigate|examine|inspect|analyze|analyse|assess|verify|validate|test|design|inspect|address|complete|clean)[[:space:]]+([^.?$'\n']{0,80}[[:space:]]+)?(and|,)[[:space:]]+(then|now|finally|lastly|also|afterwards?|next)?[[:space:]]*,?[[:space:]]*(${_OMC_DESTRUCTIVE_VERBS})[[:space:]]+${_OMC_OBJECT_MARKERS} ]]
+}
+
+# Dispatcher. Tries each predicate in priority order; returns 0 on first
+# match. Wraps `shopt -s nocasematch` so individual predicates don't have
+# to (saves shopt round-trips on hot path).
 is_imperative_request() {
   local text="$1"
   local nocasematch_was_set=0
@@ -61,122 +194,14 @@ is_imperative_request() {
   shopt -s nocasematch
 
   local result=1
-
-  # "Can/Could/Would you [verb]..." — polite imperatives
-  if [[ "${text}" =~ ^[[:space:]]*(can|could|would)[[:space:]]+you[[:space:]]+(please[[:space:]]+)?(fix|implement|add|create|build|update|refactor|debug|deploy|test|write|make|set[[:space:]]+up|change|modify|remove|delete|move|rename|install|configure|check|run|help|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|connect|push|pull|merge|commit|tag|release|ship|publish|review|start|stop|enable|disable|open|close|evaluate|plan|audit|investigate|research|analyze|analyse|assess|execute|document|extend|raise|design|style|redesign|treat|diagnose|prioritize|preserve|ensure|perform|prepare|verify|validate|generate|apply|revert|simplify|extract|replace|upgrade|scaffold|swap|split|inline|expose|wire|bootstrap|downgrade|patch|determine|identify|examine|inspect|scan|explore|establish|conduct|complete|address|clean|hook) ]]; then
-    result=0
-  # "Please [adverb?] [verb]..." patterns — single optional -ly adverb between please and verb
-  # Release-action verbs (commit|push|tag|release|ship|publish|merge) added
-  # in 1.8.1 so single-clause polite asks like "Please push the changes to
-  # main." or "Please tag v2.0." route as execution instead of falling
-  # through to the default. Mirrors the tail-imperative branch's narrow
-  # destructive-verb list.
-  elif [[ "${text}" =~ ^[[:space:]]*(please)[[:space:]]+([a-z]+ly[[:space:]]+)?(fix|implement|add|create|build|update|refactor|debug|deploy|test|write|make|change|modify|remove|delete|move|rename|install|configure|check|run|help|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|commit|push|merge|tag|release|ship|publish|proceed|go|evaluate|plan|audit|investigate|research|analyze|analyse|assess|execute|document|extend|raise|design|style|redesign|treat|diagnose|prioritize|preserve|ensure|perform|prepare|verify|validate|generate|apply|revert|simplify|extract|replace|upgrade|scaffold|swap|split|inline|expose|wire|bootstrap|downgrade|patch|determine|identify|examine|inspect|scan|explore|establish|conduct|complete|address|clean|hook) ]]; then
-    result=0
-  # "Go ahead and..." patterns
-  elif [[ "${text}" =~ ^[[:space:]]*go[[:space:]]+ahead ]]; then
-    result=0
-  # "I need/want you to..." patterns
-  elif [[ "${text}" =~ ^[[:space:]]*i[[:space:]]+(need|want)[[:space:]]+(you[[:space:]]+to|to)[[:space:]] ]]; then
-    result=0
-  # Delegated-approval pattern (v1.28.1): "Do/execute/run/proceed-with
-  # <referent>" replies to a multi-option proposal. When the user
-  # responds "Do option C" or "Execute the plan" or "Go with approach 2",
-  # they are explicitly approving the prior assistant message's proposal
-  # — which already named the destructive verbs. Without this branch,
-  # such prompts misclassify as advisory because the destructive verbs
-  # live in the PRIOR assistant message rather than the user's text, and
-  # the prompt-text-override layer in pretool-intent-guard.sh blocks the
-  # destructive op even though the user's intent is unambiguous.
-  #
-  # Triggers in this session (multiple): "Do option 1 as you recommended"
-  # and "Do option C" both got blocked at PreTool gate as advisory. The
-  # gate's escape hatch (re-run is_imperative_request via prompt_text_
-  # override) failed for the same reason — the function has no branch
-  # for delegated-approval shape.
-  #
-  # Narrow by design:
-  #   - Anchor at start of prompt so trailing references ("we discussed
-  #     option C earlier") don't false-positive.
-  #   - Verb list: do|execute|run|proceed with|go with|go ahead with|
-  #     let's do|let's go with — all unambiguously imperative-by-reference.
-  #   - Object marker required: option|plan|approach|recommendation|
-  #     suggestion|proposal|step|fix|solution|route|path|idea — the
-  #     words a multi-option proposal would use. Optional leading "the".
-  #   - Optional identifier after the noun ([a-z0-9]+) for "option C",
-  #     "plan B", "step 3".
-  #   - Trailing-question-mark disqualifier so "do option C?" stays
-  #     advisory.
-  elif [[ ! "${text}" =~ \?[[:space:]]*$ ]] && [[ "${text}" =~ ^[[:space:]]*(do|execute|run|proceed[[:space:]]+with|go[[:space:]]+with|go[[:space:]]+ahead[[:space:]]+with)[[:space:]]+(the[[:space:]]+)?(option|plan|approach|recommendation|suggestion|proposal|step|fix|solution|route|path|idea)([[:space:]]+[a-z0-9]+)? ]]; then
-    result=0
-  # Bare imperative: starts with unambiguous action verb, no trailing question mark
-  # Excludes: check, test, help, review, plan, research, evaluate, design, style — too ambiguous as bare starts
-  # (evaluate/plan/research can be nouns; design/style are adjective-like)
-  # Also polite-only: complete, address, clean, hook, determine, identify, examine,
-  # inspect, scan, explore, establish, conduct — noun/adjective-ambiguous at prompt start
-  elif [[ ! "${text}" =~ \?[[:space:]]*$ ]] && [[ "${text}" =~ ^[[:space:]]*(fix|implement|add|create|build|update|refactor|debug|deploy|write|make|change|modify|remove|delete|move|rename|install|configure|run|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|connect|push|pull|merge|commit|start|stop|enable|disable|open|close|set[[:space:]]+up|proceed|audit|investigate|analyze|analyse|execute|document|extend|raise|redesign|treat|diagnose|prioritize|preserve|ensure|perform|prepare|verify|validate|generate|apply|revert|simplify|extract|replace|upgrade|scaffold|swap|split|inline|expose|wire|bootstrap|downgrade|patch)[[:space:]] ]]; then
-    result=0
-  # Tail-position imperative: a prompt that opens with advisory/evaluation
-  # framing but closes with an explicit release-action ask. The CLAUDE.md
-  # release checklist prescribes this exact pattern ("comprehensively
-  # evaluate each point; after all these, commit the changes and tag").
-  # Without this branch, the head-anchored patterns above fail, advisory
-  # wins, and PreTool blocks the user's own explicitly-requested commit.
-  #
-  # Narrow by design:
-  #   - Requires a sentence boundary (`. `, `, `, `\n`) before the verb so
-  #     past-tense mentions ("we pushed yesterday") don't match.
-  #   - Requires an object marker after the verb (article/demonstrative/
-  #     preposition/tag-shaped literal/temporal: when|if|as needed/etc) so
-  #     noun uses ("push date", "the commit message") don't match.
-  #   - Allows optional transition words ("then", "now", "finally", "also",
-  #     "afterwards") between the boundary and the verb so "Review the
-  #     branch. Then push to origin." is caught without having to enumerate
-  #     every possible conjunction.
-  #   - Only fires on verbs that are genuinely destructive-execution when
-  #     used imperatively: commit/push/tag/release/deploy/merge/ship/publish.
-  #     Safer verbs (run/make/create) stay head-anchored.
-  elif [[ "${text}" =~ (\.|,|\?|$'\n')[[:space:]]+(then|now|finally|lastly|also|afterwards?|next)?[[:space:]]*,?[[:space:]]*(${_OMC_DESTRUCTIVE_VERBS})[[:space:]]+${_OMC_OBJECT_MARKERS} ]]; then
-    result=0
-  # Implementation-verb-led conjunction: an imperative-implementation
-  # verb followed by a conjunction (`and` / `,`) and a destructive verb
-  # via natural English. Catches "Implement and then commit as needed",
-  # "Build it and ship to staging", "Refactor X, then tag v2.0".
-  #
-  # Without this branch, prompts like
-  #   "/ulw can the status line be enhanced? ... Implement and then commit
-  #    as needed."
-  # misclassify as advisory because the leading "can ..." question
-  # dominates while the natural-English `and then commit` between
-  # `Implement` and `commit` lacks the sentence boundary the
-  # tail-imperative branch above requires.
-  #
-  # Narrow by design:
-  #   - Implementation verb anchors the imperative; past-tense forms are
-  #     excluded by the verb list (no `committed`, `tested`).
-  #   - Object marker after the destructive verb prevents noun uses
-  #     ("Implement and tell me commit-message ideas") and pure-fragment
-  #     matches.
-  #   - Optional intermediate object/fragment (≤80 chars, no sentence
-  #     boundaries inside) covers "Build the feature and then push",
-  #     "Refactor X and tag v2".
-  #   - Conjunction restricted to `and` / `,` so multi-clause spans like
-  #     "Implement after we discuss commit messages" do not match.
-  #   - Trailing-question-mark disqualifier added so "Review and commit?"
-  #     (genuine question form) stays advisory.
-  #
-  # The verb list spans two role classes:
-  #   1. Implementation verbs (build/create/refactor/etc.) — strongly
-  #      execution-shaped on their own.
-  #   2. Investigation verbs (review/check/plan/evaluate/audit/etc.) —
-  #      ambiguous bare ("Review the PR" can be advisory or imperative)
-  #      but unambiguously execution when followed by a destructive verb
-  #      tail (".../then commit"). Adding them here lets prompts like
-  #      "Review the auth code and ship the fix" route as execution
-  #      without weakening the bare-imperative branch's exclusions at
-  #      L66 — the destructive-verb tail is the disambiguator.
-  elif [[ ! "${text}" =~ \?[[:space:]]*$ ]] && [[ "${text}" =~ (^|[[:space:]])(implement|build|fix|refactor|add|update|create|debug|deploy|write|make|change|modify|remove|delete|move|rename|install|configure|run|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|connect|enhance|polish|patch|simplify|extract|replace|upgrade|generate|apply|review|check|plan|evaluate|audit|investigate|examine|inspect|analyze|analyse|assess|verify|validate|test|design|inspect|address|complete|clean)[[:space:]]+([^.?$'\n']{0,80}[[:space:]]+)?(and|,)[[:space:]]+(then|now|finally|lastly|also|afterwards?|next)?[[:space:]]*,?[[:space:]]*(${_OMC_DESTRUCTIVE_VERBS})[[:space:]]+${_OMC_OBJECT_MARKERS} ]]; then
-    result=0
+  if   _imp_polite_can_could_would    "${text}"; then result=0
+  elif _imp_please_verb               "${text}"; then result=0
+  elif _imp_go_ahead                  "${text}"; then result=0
+  elif _imp_i_need_want               "${text}"; then result=0
+  elif _imp_delegated_approval        "${text}"; then result=0
+  elif _imp_bare_imperative           "${text}"; then result=0
+  elif _imp_tail_destructive          "${text}"; then result=0
+  elif _imp_conjunction_destructive   "${text}"; then result=0
   fi
 
   if [[ "${nocasematch_was_set}" -eq 0 ]]; then shopt -u nocasematch; fi

@@ -1105,17 +1105,20 @@ extract_skill_primary_task() {
     fi
   done
 
-  # No tail marker matched (v1.29.0 metis F-8 fix). Returning the full
-  # post-head body would leak embedded footer prose ("Apply the autowork
-  # rules to the task above.") into classify_task_intent / infer_domain,
-  # tripping the imperative classifier on the literal verb "Apply" and
-  # mis-routing the prompt as execution. Refuse cleanly so the caller
-  # falls back to classifying the raw text — at least conservative.
-  # Surfaces via log_anomaly so /ulw-report can flag a skill-body shape
-  # change that needs the tail_markers list extended.
+  # No tail marker matched (v1.29.0 metis F-8 — observability-only). The
+  # original concern was footer prose ("Apply the autowork rules to the
+  # task above.") leaking into classify_task_intent and tripping the
+  # imperative classifier on the literal verb "Apply". But that only
+  # happens when a tail marker SHOULD have matched (skill format change)
+  # — for genuinely tail-marker-less bodies (degenerate test fixtures,
+  # third-party skills with custom footers, future Anthropic skill
+  # formats), refusing extraction would break the head-extraction
+  # contract that callers rely on. Compromise: emit log_anomaly so a
+  # skill-body shape change surfaces in /ulw-report, but still return
+  # the body so callers continue to get the post-head content. The
+  # anomaly is the "verify the tail_markers list is current" signal.
   if [[ "${matched}" -eq 0 ]]; then
-    log_anomaly "extract_skill_primary_task" "no known tail marker found; skill body shape may have changed"
-    return 1
+    log_anomaly "extract_skill_primary_task" "no known tail marker found; skill body shape may have changed (continuing with full body)"
   fi
 
   body="$(trim_whitespace "${body}")"
