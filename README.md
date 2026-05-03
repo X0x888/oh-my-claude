@@ -23,6 +23,12 @@ A cognitive quality harness for Claude Code -- bash hooks, skills, and specialis
 - **Domain routing across coding, writing, research, ops.** Each domain gets its own specialist chain. Not just a coding tool that accepts prose.
 - **Session continuity through compaction.** Objectives, decisions, and review state survive context compaction — you don't lose the plot mid-task.
 
+### What this is NOT
+
+- **Not a plugin framework or SDK.** It's bash hooks + skills + agents installed as an overlay into `~/.claude/`.
+- **Not a Claude Code replacement.** It sits *alongside* Claude Code; Claude Code's own surface is unchanged.
+- **Not Anthropic-affiliated.** Community-built. Not the same project as `oh-my-claudecode` (separate Node-based tool).
+
 ---
 
 ## Quick start
@@ -44,8 +50,20 @@ After install, two mandatory steps:
 2. **Try it**: `/ulw-demo` (about 90 seconds, fires the gates on a real edit), then `/ulw <your task>` for real work in any domain.
 
 That's enough to feel the harness work. When you want more:
-- **Configure** with `/omc-config` *inside Claude Code* — pick a profile (Maximum / Balanced / Minimal) or walk individual flag clusters. Auto-detects first-time setup vs upgrade.
+- **Configure** with `/omc-config` *inside Claude Code* — the default install is the **Balanced** profile (low-friction defaults; sonnet model). For the strongest opinionated posture, run `/omc-config` and pick **Maximum Quality + Automation** (opus model, all bias-defense directives, watchdog on). Auto-detects first-time setup vs upgrade.
 - **Verify on-disk install** with `bash ~/.local/share/oh-my-claude/verify.sh` from your terminal — useful when something feels off.
+
+### When stuck — which deferral verb?
+
+Three skills, three different "I can't keep going" cases. NOT interchangeable:
+
+| Symptom | Verb |
+|---|---|
+| Gate fired but the work is genuinely complete (false positive) | `/ulw-skip <reason>` |
+| Discovered-scope gate flagged real findings you've consciously deferred | `/mark-deferred <named-WHY>` |
+| User must make a call only they can make (taste, policy, brand voice) | `/ulw-pause <reason>` |
+
+Escalation order before any of these fires: ship inline → wave-append → defer-with-WHY → pause. Full decision tree in [`/skills`](#available-skills).
 
 Both install paths keep Claude Code's permission prompts on; once you trust the harness, [`--bypass-permissions`](#power-user-setup) removes them. Quality gates apply either way.
 

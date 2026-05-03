@@ -4,33 +4,55 @@ description: List all available oh-my-claude skills with descriptions and when t
 ---
 # Available Skills
 
-Display this table to the user:
+Display this list to the user, grouped by user-journey phase. Phase headers are themselves chapter markers — first-time users skim by phase, experienced users grep by skill name.
+
+### Onboarding — first install, first task
 
 | Skill | Command | When to use |
 |-------|---------|-------------|
-| **ulw** | `/ulw <task>` | Any non-trivial task needing full autonomy — coding, writing, research, ops |
-| **plan-hard** | `/plan-hard <task>` | You need a detailed plan *before* editing — scope decisions, architecture, sequencing |
-| **review-hard** | `/review-hard [focus]` | Review existing code or a worktree diff for bugs, quality, and missed requirements |
-| **research-hard** | `/research-hard <topic>` | Gather repo context, API details, or integration points before implementation |
-| **prometheus** | `/prometheus <goal>` | The goal is broad or ambiguous — needs interview-first clarification before planning |
-| **metis** | `/metis <plan>` | You have a draft plan or approach and want to stress-test it for hidden risks |
-| **oracle** | `/oracle <issue>` | Debugging is hard, root cause is unclear, or you need a second opinion on tradeoffs |
-| **librarian** | `/librarian <topic>` | You need official docs, third-party API references, or concrete external examples |
-| **frontend-design** | `/frontend-design <task>` | Distinctive, design-first frontend work — establishes palette, typography, layout before writing code |
-| **atlas** | `/atlas [focus]` | Bootstrap or refresh CLAUDE.md / .claude/rules for a repository |
-| **council** | `/council [focus] [--deep]` | Multi-role project evaluation — dispatches PM, design, security, data, SRE, and growth perspectives, then verifies the top 2-3 findings via `oracle`. `--deep` escalates lenses to opus for high-stakes audits. |
-| **omc-config** | `/omc-config [setup\|update\|change]` | Guided multi-choice walkthrough for `oh-my-claude.conf` flags — pick a profile (Maximum Quality + Automation / Balanced / Minimal) or fine-tune individual flags. Auto-detects first-time setup vs upgrade vs ad-hoc change. |
-| **ulw-demo** | `/ulw-demo` | Guided onboarding — see the quality gates fire on a demo task |
-| **ulw-status** | `/ulw-status` | Inspect current session state — mode, domain, counters, flags (debugging) |
-| **ulw-time** | `/ulw-time [current\|last\|last-prompt\|week\|month\|all]` | Polished end-of-turn time card — stacked top bar (`█` agents · `▒` tools · `░` idle), per-bucket ASCII chart, and a one-line insight (anomaly / dominance / reassurance / fun fact). Same card auto-emits as Stop `additionalContext` above the 5s noise floor. |
-| **ulw-report** | `/ulw-report [last\|week\|month\|all]` | Markdown digest of cross-session activity — sessions, gate fires, reviewers, misfires, Serendipity catches, finding/wave outcomes |
-| **memory-audit** | `/memory-audit [--memory-dir <path>]` | Classify MEMORY.md entries (load-bearing, archival, superseded, drifted) and propose rollup moves. Read-only — never moves or deletes files. |
-| **ulw-skip** | `/ulw-skip <reason>` | Skip the current quality gate block once — use when a gate is blocking but you're confident |
-| **mark-deferred** | `/mark-deferred <reason>` | Bulk-defer pending discovered-scope findings with a one-line reason — pass the gate without silent skipping |
-| **ulw-pause** | `/ulw-pause <reason>` | Declare a legitimate user-decision pause without tripping the session-handoff gate (taste / policy / credible-approach split). Cap 2/session |
-| **ulw-resume** | `/ulw-resume [--peek \| --list \| --session-id <sid> \| --dismiss]` | Atomically claim and replay an unclaimed `resume_request.json` after a Claude Code rate-limit StopFailure — picks up the prior /ulw task as if it were never interrupted. Use `--dismiss` to suppress the SessionStart hint without resuming |
-| **ulw-off** | `/ulw-off` | Deactivate ultrawork mode mid-session without ending the conversation |
-| **skills** | `/skills` | Show this list |
+| **omc-config** | `/omc-config [setup\|update\|change]` | Guided multi-choice walkthrough for `oh-my-claude.conf` — pick a profile (Maximum / Balanced / Minimal) or fine-tune individual clusters. Auto-detects first-time setup vs upgrade vs ad-hoc change. |
+| **ulw-demo** | `/ulw-demo` | Guided 90-second walkthrough that fires the quality gates on a demo file — best first step after install. |
+
+### Working — your real tasks
+
+| Skill | Command | When to use |
+|-------|---------|-------------|
+| **ulw** | `/ulw <task>` | Any non-trivial task needing full autonomy — coding, writing, research, ops. |
+| **plan-hard** | `/plan-hard <task>` | You need a detailed plan *before* editing — scope decisions, architecture, sequencing. |
+| **review-hard** | `/review-hard [focus]` | Review existing code or a worktree diff for bugs, quality, missed requirements. |
+| **research-hard** | `/research-hard <topic>` | Gather repo context, API details, integration points before implementation. |
+| **frontend-design** | `/frontend-design <task>` | Distinctive, design-first frontend work — establishes palette + typography + layout before code. |
+
+### Stuck — second opinions, validations, escape hatches
+
+| Skill | Command | When to use |
+|-------|---------|-------------|
+| **prometheus** | `/prometheus <goal>` | Goal is broad or ambiguous — needs interview-first clarification before planning. |
+| **metis** | `/metis <plan>` | You have a draft plan and want to stress-test it for hidden risks, missing constraints. |
+| **oracle** | `/oracle <issue>` | Debugging is hard, root cause unclear, or you need a second opinion on tradeoffs. |
+| **librarian** | `/librarian <topic>` | You need official docs, third-party API references, or concrete external examples. |
+| **ulw-skip** | `/ulw-skip <reason>` | Gate fired but the work is genuinely complete (false positive). One-shot bypass. |
+| **mark-deferred** | `/mark-deferred <reason>` | Discovered-scope flagged real findings you're consciously NOT shipping this session. |
+| **ulw-pause** | `/ulw-pause <reason>` | User must make a decision only they can make (taste, policy, brand voice). Cap 2/session. |
+| **ulw-resume** | `/ulw-resume [--peek\|--list\|--dismiss]` | Atomically claim a `resume_request.json` after a rate-limit StopFailure. |
+
+### Reviewing — multi-role evaluation, repo bootstrap
+
+| Skill | Command | When to use |
+|-------|---------|-------------|
+| **council** | `/council [focus] [--deep]` | Multi-role project evaluation — PM, design, security, data, SRE, growth lenses + verification pass. `--deep` escalates to opus. |
+| **atlas** | `/atlas [focus]` | Bootstrap or refresh CLAUDE.md / `.claude/rules` for a repository. |
+
+### Configuring & inspecting
+
+| Skill | Command | When to use |
+|-------|---------|-------------|
+| **ulw-status** | `/ulw-status` | Inspect current session state — mode, domain, counters, flags (debugging). |
+| **ulw-time** | `/ulw-time [current\|last\|last-prompt\|week\|month\|all]` | Polished time-distribution card — stacked top bar (`█` agents · `▒` tools · `░` idle), per-bucket chart, one-line insight. |
+| **ulw-report** | `/ulw-report [last\|week\|month\|all]` | Markdown digest of cross-session activity — gate fires, reviewers, misfires, Serendipity catches. |
+| **memory-audit** | `/memory-audit [--memory-dir <path>]` | Classify MEMORY.md entries (load-bearing, archival, superseded, drifted). Read-only. |
+| **ulw-off** | `/ulw-off` | Deactivate ultrawork mode mid-session without ending the conversation. |
+| **skills** | `/skills` | Show this list. |
 
 ## Decision guide
 

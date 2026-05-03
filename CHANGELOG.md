@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### v1.29.0 Wave 7 — README + skills surface polish
+
+Closes 4 product/growth-lens findings on the surfaces a first-time visitor or an experienced user navigating the harness sees most. Documentation-only — no code paths affected.
+
+- **README "What this is NOT" 3-line block** (`README.md:24-28`). First-time visitors confuse oh-my-claude with `oh-my-claudecode` (separate Node project), with the Claude Code plugin marketplace, with Anthropic's official agents, and with `claude-flow`. Without an explicit differentiator near the top, growth-channel discovery routinely sends the wrong audience here. New 3-line block under "What you get": *"Not a plugin framework or SDK"*, *"Not a Claude Code replacement"*, *"Not Anthropic-affiliated"*. Right audience self-identifies in 5 seconds.
+
+- **README "When stuck — which deferral verb?" mini-table** (`README.md:51-59`). The deferral-verb decision tree was previously only inside `bundle/dot-claude/skills/skills/SKILL.md` — invisible from the README. A user who hits a block, opens the README looking for *"skip vs defer vs pause"*, found nothing actionable. New 3-row mini-table inline in the README cross-links to the full tree in `/skills`. Closes the discoverability gap.
+
+- **Profile-default note in README Quick Start** (`README.md:43`). The post-install user previously had no explicit signal that the install-time default is the **Balanced** profile (not Maximum). Power users who wanted "the strongest opinionated posture" had to run `/omc-config` to discover Maximum existed. New explicit note in the configure step: *"the default install is the **Balanced** profile … For the strongest opinionated posture, run `/omc-config` and pick **Maximum**"*. Disambiguates the install vs config relationship.
+
+- **`/skills` table phase-grouped** (`bundle/dot-claude/skills/skills/SKILL.md`). Previously a single 24-row alphabetic-ish table with `/ulw-skip`, `/mark-deferred`, `/ulw-pause` immediately adjacent and indistinguishable. New shape: 5 phase headers (Onboarding, Working, Stuck, Reviewing, Configuring & inspecting) with skills grouped under each. First-time users skim by phase to find the right skill at the right moment; experienced users grep by skill name unchanged. The deferral-verb decision tree (preserved from the prior version) lives below the grouped tables.
+
+- **Test coverage:** test-output-style-coherence 35/35, test-omc-config 121/121, test-install-artifacts 20/20. **176 assertions verified.** No test regressed.
+
+- **Deferred:**
+  - Output-styles preview side-by-side in `docs/customization.md` (product-lens P2-9) — value is real but adds substantial markdown that could go in either README or customization.md; deferring to keep this wave cohesive.
+  - Update mode "what's new since v$prev" surface (growth-lens P2-10) — needs `installed_version` comparison logic in `install.sh`; rolled into the architectural-deferrals list.
+
 ### v1.29.0 Wave 6 — Privacy + watchdog observability
 
 Closes 3 security/sre findings. Each fix is a small surface — no new flags, no schema changes — but each closes a specific failure mode the audit named.
