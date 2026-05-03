@@ -141,15 +141,32 @@ with patch_path.open() as f:
 # to the patch value under jq.
 #
 # OMC_OUTPUT_STYLE_PREF (set by the parent shell from oh-my-claude.conf)
-# can opt out of the outputStyle merge entirely. "preserve" skips the
-# merge so a user with their own custom style never has it overwritten,
-# even on first install where the key starts unset.
+# selects which bundled style settings.outputStyle points at:
+#   opencode   → "oh-my-claude"   (default, compact CLI presentation)
+#   executive  → "executive-brief" (CEO-style status report)
+#   preserve   → never touch settings.outputStyle (user has a custom style)
+# A user-set outputStyle that does NOT match one of the bundled style
+# names is always preserved — only bundled-name values are auto-synced
+# when the conf flag changes (so /omc-config can switch between bundled
+# styles), and the legacy "OpenCode Compact" name is migrated.
 settings["statusLine"] = patch["statusLine"]
 output_style_pref = os.environ.get("OMC_OUTPUT_STYLE_PREF", "opencode")
+_BUNDLED_STYLES_CURRENT = {"oh-my-claude", "executive-brief"}
+_STYLE_FOR_PREF = {"opencode": "oh-my-claude", "executive": "executive-brief"}
 if settings.get("outputStyle") == "OpenCode Compact":
-    settings["outputStyle"] = patch["outputStyle"]
-elif output_style_pref != "preserve" and settings.get("outputStyle") is None:
-    settings["outputStyle"] = patch["outputStyle"]
+    # Legacy migration: pre-v1.26.0 installs left "OpenCode Compact" in
+    # settings, but the underlying style file was renamed to oh-my-claude
+    # and the legacy file removed. Leaving the legacy name would orphan
+    # the user (Claude Code cannot resolve it). Always migrate, even
+    # under preserve — preserve protects user choices, not installer
+    # artifacts pointing at a deleted style file. Honor the conf-resolved
+    # target when one is available; fall back to oh-my-claude otherwise.
+    settings["outputStyle"] = _STYLE_FOR_PREF.get(output_style_pref, patch["outputStyle"])
+elif output_style_pref != "preserve":
+    _target_style = _STYLE_FOR_PREF.get(output_style_pref, patch["outputStyle"])
+    _current_style = settings.get("outputStyle")
+    if _current_style is None or _current_style in _BUNDLED_STYLES_CURRENT:
+        settings["outputStyle"] = _target_style
 if settings.get("effortLevel") is None:
     settings["effortLevel"] = patch["effortLevel"]
 settings["spinnerTipsEnabled"] = patch["spinnerTipsEnabled"]
@@ -510,7 +527,36 @@ merge_settings_jq() {
     | .[1] as $patch
     | $base
     | .statusLine = $patch.statusLine
-    | (if .outputStyle == "OpenCode Compact" then .outputStyle = $patch.outputStyle elif $output_style_pref == "preserve" then . else .outputStyle = (.outputStyle // $patch.outputStyle) end)
+    | (
+        # Resolve OMC_OUTPUT_STYLE_PREF to a target bundled style name.
+        # Used by both the legacy-migration path and the bundled-sync path
+        # below.
+        (if $output_style_pref == "executive" then "executive-brief"
+         elif $output_style_pref == "opencode" then "oh-my-claude"
+         else $patch.outputStyle
+         end) as $target
+        # Legacy migration: pre-v1.26.0 installs left "OpenCode Compact"
+        # in settings, but the underlying style file was renamed to
+        # oh-my-claude and the legacy file removed. Leaving the legacy
+        # name would orphan the user (Claude Code cannot resolve it).
+        # Always migrate, even under preserve — preserve protects user
+        # choices, not installer artifacts pointing at a deleted style.
+        | if .outputStyle == "OpenCode Compact" then
+            .outputStyle = $target
+          elif $output_style_pref == "preserve" then
+            .
+          else
+            # Bundled-sync path: a user-set outputStyle that does NOT
+            # match a current bundled style name is preserved (custom
+            # styles win); bundled-name values are auto-synced so
+            # /omc-config can switch between bundled styles.
+            (.outputStyle) as $current
+            | if ($current == null) or ($current == "oh-my-claude") or ($current == "executive-brief")
+              then .outputStyle = $target
+              else .
+              end
+          end
+      )
     | .effortLevel = (.effortLevel // $patch.effortLevel)
     | .spinnerTipsEnabled = $patch.spinnerTipsEnabled
     | .spinnerVerbs = $patch.spinnerVerbs
@@ -1016,7 +1062,7 @@ if [[ -f "${CLAUDE_HOME}/oh-my-claude.conf" ]] && [[ -z "${OMC_OUTPUT_STYLE:-}" 
   # value is the source of truth. Pre-existing `head -1` at line ~766
   # for model_tier diverges from this contract; tracked as a follow-up.
   _pref_from_conf="$(grep -E '^output_style=' "${CLAUDE_HOME}/oh-my-claude.conf" 2>/dev/null | tail -1 | cut -d= -f2-)" || true
-  if [[ "${_pref_from_conf}" =~ ^(opencode|preserve)$ ]]; then
+  if [[ "${_pref_from_conf}" =~ ^(opencode|executive|preserve)$ ]]; then
     OMC_OUTPUT_STYLE_PREF="${_pref_from_conf}"
   fi
 fi
@@ -1076,24 +1122,39 @@ fi
 if [[ -f "${CLAUDE_HOME}/output-styles/opencode-compact.md" ]]; then
   rm -f "${CLAUDE_HOME}/output-styles/opencode-compact.md"
 fi
-if [[ -f "${CLAUDE_HOME}/output-styles/oh-my-claude.md" ]]; then
+if [[ -f "${CLAUDE_HOME}/output-styles/oh-my-claude.md" || -f "${CLAUDE_HOME}/output-styles/executive-brief.md" ]]; then
   # Print the style that's actually active in settings.json — not the
   # bundled file's frontmatter — so the summary tells the truth under
   # output_style=preserve (where settings.json may carry a different
   # value or no value at all). Fallback chain: settings.outputStyle →
-  # bundled-file frontmatter → silent skip.
+  # conf-resolved bundled file frontmatter → silent skip.
   _active_style=""
   if [[ -f "${CLAUDE_HOME}/settings.json" ]] && command -v jq >/dev/null 2>&1; then
     _active_style="$(jq -r '.outputStyle // empty' "${CLAUDE_HOME}/settings.json" 2>/dev/null || true)"
   fi
   if [[ -z "${_active_style}" ]]; then
-    _active_style="$(awk '/^name:/{sub(/^name:[[:space:]]*/,""); sub(/[[:space:]]+$/,""); print; exit}' "${CLAUDE_HOME}/output-styles/oh-my-claude.md" 2>/dev/null || true)"
-    if [[ -n "${_active_style}" && "${OMC_OUTPUT_STYLE_PREF:-opencode}" == "preserve" ]]; then
-      _active_style="${_active_style} (bundle file; settings.json untouched per output_style=preserve)"
+    case "${OMC_OUTPUT_STYLE_PREF:-opencode}" in
+      executive) _fallback_style_file="${CLAUDE_HOME}/output-styles/executive-brief.md" ;;
+      *)         _fallback_style_file="${CLAUDE_HOME}/output-styles/oh-my-claude.md" ;;
+    esac
+    if [[ -f "${_fallback_style_file}" ]]; then
+      _active_style="$(awk '/^name:/{sub(/^name:[[:space:]]*/,""); sub(/[[:space:]]+$/,""); print; exit}' "${_fallback_style_file}" 2>/dev/null || true)"
+      if [[ -n "${_active_style}" && "${OMC_OUTPUT_STYLE_PREF:-opencode}" == "preserve" ]]; then
+        _active_style="${_active_style} (bundle file; settings.json untouched per output_style=preserve)"
+      fi
     fi
   fi
   if [[ -n "${_active_style}" ]]; then
     printf '  Output style:  %s\n' "${_active_style}"
+    # Onboarding nudge: when the active style is the default oh-my-claude,
+    # mention the executive-brief alternative once. Skipped under preserve
+    # (the user has already chosen) and on executive (already on the
+    # alternative). Single line so it does not dominate the summary.
+    case "${_active_style}" in
+      "oh-my-claude")
+        printf '                 Tip: try the executive-brief style for CEO-grade status reports — `/omc-config` → cluster 5, or set output_style=executive in oh-my-claude.conf and re-run install.\n'
+        ;;
+    esac
   fi
 fi
 

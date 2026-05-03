@@ -215,19 +215,28 @@
 # script runs — editing this line by hand will not rewrite agent files.
 #model_tier=balanced
 
-# Output style installer behavior. Controls whether `bash install.sh`
-# merges `outputStyle: "oh-my-claude"` into ~/.claude/settings.json.
-#   opencode  — install the bundled oh-my-claude style (default).
-#               Only sets settings.json's outputStyle when the key is
-#               absent or null; a pre-existing custom value is preserved.
-#               Upgrades from the legacy "OpenCode Compact" name are
-#               migrated automatically.
-#   preserve  — leave settings.json's outputStyle untouched (including
-#               unset). Useful when you have your own output style and
-#               do not want install.sh to ever set it. The bundled
-#               oh-my-claude.md file is still copied to
-#               ~/.claude/output-styles/ for reference; only the settings
-#               entry is skipped.
+# Output style installer behavior. Controls which bundled output-style
+# name `bash install.sh` writes into ~/.claude/settings.json's outputStyle.
+# Both bundled style files (oh-my-claude.md, executive-brief.md) are always
+# copied into ~/.claude/output-styles/ regardless — this flag only chooses
+# which one settings.json points at.
+#   opencode   — bundled oh-my-claude style (default). Compact, polished CLI
+#                report with strong visual hierarchy. Implementation-first
+#                framing — Changed / Verification / Risks / Next.
+#   executive  — bundled executive-brief style. CEO-grade status briefing.
+#                Headline first, status verbs (Shipped / Blocked / At-risk /
+#                In-flight / Deferred / No-op), explicit Risks and Asks
+#                sections, decisive Next. For users who want decisive,
+#                signal-heavy reports.
+#   preserve   — leave settings.json's outputStyle untouched (including
+#                unset). Useful when you have your own custom output style
+#                and do not want install.sh to ever set it.
+# When the setting is `opencode` or `executive`, the installer rewrites
+# settings.outputStyle on every install — switching the conf flag and
+# re-running install moves a user between the two bundled styles. A
+# settings.outputStyle that does NOT match a bundled style name (i.e. a
+# user's custom style) is always preserved. Upgrades from the legacy
+# "OpenCode Compact" name are migrated automatically.
 # Env: OMC_OUTPUT_STYLE.
 #output_style=opencode
 

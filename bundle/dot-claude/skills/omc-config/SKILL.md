@@ -199,9 +199,11 @@ question: "Output style installer behavior?"
 header: "Style"
 options:
   - label: "Bundle oh-my-claude style (Recommended)"
-    description: "Install ~/.claude/output-styles/oh-my-claude.md and merge outputStyle='oh-my-claude' into settings.json when unset. Pre-existing custom values are still preserved. output_style=opencode."
+    description: "Compact, polished CLI presentation. Bold-label cards (Bottom line / Changed / Verification / Risks / Next), implementation-first framing, brevity bias. Sets settings.outputStyle to 'oh-my-claude'. output_style=opencode."
+  - label: "Bundle executive-brief style (CEO report)"
+    description: "CEO-style status report. Headline first (BLUF), status verbs (Shipped / Blocked / At-risk / In-flight / Deferred / No-op), explicit Risks and Asks sections, horizontal rules between primary sections. For decisive, signal-heavy reports. Sets settings.outputStyle to 'executive-brief'. output_style=executive."
   - label: "Preserve my settings.json"
-    description: "Skip the outputStyle merge entirely so install never touches settings.json. The bundled file is still copied to ~/.claude/output-styles/ for reference. Use when you have your own output style. output_style=preserve."
+    description: "Skip the outputStyle merge entirely so install never touches settings.json. Both bundled files are still copied to ~/.claude/output-styles/ for reference. Use when you have your own output style. output_style=preserve."
 ```
 
 Always emit `output_style=<value>` (single-select — user has explicitly chosen).

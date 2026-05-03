@@ -252,7 +252,7 @@ oh-my-claude/
 │   ├── agents/          (32 agents)         # Specialist agent definitions
 │   ├── skills/          (24 skills)         # Skill definitions + autowork hooks
 │   ├── quality-pack/                        # Lifecycle hooks + memory files
-│   ├── output-styles/                       # Bundled oh-my-claude style (see docs/customization.md#output-style)
+│   ├── output-styles/                       # Two bundled styles: oh-my-claude (default) + executive-brief (see docs/customization.md#output-style)
 │   └── statusline.py                        # Custom statusline widget
 ├── config/settings.patch.json               # Merged into user settings on install
 ├── tests/               (49 bash + 1 py)    # See AGENTS.md / CONTRIBUTING.md for full list
@@ -386,7 +386,7 @@ bash tests/test-design-contract.sh          # 9-section Design Contract regressi
 bash tests/test-specialist-routing.sh       # Engineering-specialist routing in coding-domain hint (orphan-specialist regression net)
 bash tests/test-stop-failure-handler.sh     # StopFailure hook captures rate_limit / auth / billing fatal-stop signals into resume_request.json
 bash tests/test-omc-config.sh               # /omc-config skill backend (mode detection, atomic conf writes, presets, validation)
-bash tests/test-output-style-coherence.sh   # oh-my-claude style frontmatter parity, hook-injected opener coherence, label regression net
+bash tests/test-output-style-coherence.sh   # All bundled styles: frontmatter parity, hook-injected opener coherence, label regression net, enum coverage
 bash tests/test-timing.sh                   # Per-prompt time-distribution capture, aggregator, format helpers, /ulw-time empty-states
 python3 -m unittest tests.test_statusline   # Statusline widget
 ```

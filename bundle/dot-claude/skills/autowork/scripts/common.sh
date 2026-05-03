@@ -335,7 +335,7 @@ _parse_conf_file() {
       time_tracking_xs_retain_days)
         [[ -z "${_omc_env_time_tracking_xs_retain}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_TIME_TRACKING_XS_RETAIN_DAYS="${value}" || true ;;
       output_style)
-        [[ -z "${_omc_env_output_style}" && "${value}" =~ ^(opencode|preserve)$ ]] && OMC_OUTPUT_STYLE="${value}" || true ;;
+        [[ -z "${_omc_env_output_style}" && "${value}" =~ ^(opencode|executive|preserve)$ ]] && OMC_OUTPUT_STYLE="${value}" || true ;;
       model_drift_canary)
         [[ -z "${_omc_env_model_drift_canary}" && "${value}" =~ ^(on|off)$ ]] && OMC_MODEL_DRIFT_CANARY="${value}" || true ;;
       blindspot_inventory)

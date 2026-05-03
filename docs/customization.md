@@ -366,13 +366,44 @@ Git information is cached for 5 seconds per working directory to avoid performan
 
 ## Output Style
 
-oh-my-claude ships with its own **oh-my-claude** output style (`~/.claude/output-styles/oh-my-claude.md`). It produces compact, scan-friendly responses with clear hierarchy — answer first, then verification, then risks or next steps — plus an explicit `Implementation summary` template (`Changed` / `Verification` / `Risks` / `Serendipity:` / `Next`) for the dominant `/ulw` response shape, and dedicated guidance for tool-call narration, error/blocker reporting, and the workflow-frame asymmetry between execution and advisory prompts.
+oh-my-claude ships with two built-in output styles. Both are copied into `~/.claude/output-styles/` on every install; the active one is whatever `outputStyle` in `~/.claude/settings.json` points at. Pick the voice that fits your work.
 
-### Switching output styles
+| Style | Filename | When to choose |
+|-------|----------|----------------|
+| **`oh-my-claude`** (default) | `oh-my-claude.md` | Day-to-day coding sessions. Compact, polished CLI presentation. Bold-label cards (`**Bottom line.**`, `**Changed.**`, `**Verification.**`, `**Risks.**`, `**Next.**`), implementation-first framing, brevity bias. |
+| **`executive-brief`** | `executive-brief.md` | Reports to stakeholders, multi-wave work, anything where decisiveness reads better than density. CEO-style status report — headline first, status verbs (`Shipped`, `Blocked`, `At-risk`, `In-flight`, `Deferred`, `No-op`), explicit `**Risks.**` and `**Asks.**` sections, horizontal rules between primary sections. |
 
-> **Important:** `~/.claude/output-styles/oh-my-claude.md` is overwritten on every install (`bash install.sh` rsyncs the bundle and your in-place edits do not survive an upgrade). The patterns below are upgrade-safe.
+Both declare `keep-coding-instructions: true`, so Claude Code's coding-system-prompt (specialist-agent expectations, tool-use conventions) is preserved underneath either style.
 
-**Recommended — copy to a new file with a different `name:`.** This preserves your customizations across upgrades.
+### Switching between bundled styles
+
+The fastest path is `/omc-config` — pick the value you want for `output_style` and re-run install:
+
+| Conf value | settings.outputStyle written |
+|------------|------------------------------|
+| `output_style=opencode` (default) | `oh-my-claude` |
+| `output_style=executive` | `executive-brief` |
+| `output_style=preserve` | (untouched) |
+
+When the conf flag is `opencode` or `executive`, `bash install.sh` rewrites `settings.outputStyle` on every install — switching the conf value moves you between bundled styles. A `settings.outputStyle` that does NOT match a bundled name (e.g. your own custom style) is preserved automatically.
+
+You can also set the value directly:
+
+```bash
+jq '.outputStyle = "executive-brief"' ~/.claude/settings.json > /tmp/s.json && \
+   mv /tmp/s.json ~/.claude/settings.json
+# or revert:
+jq '.outputStyle = "oh-my-claude"' ~/.claude/settings.json > /tmp/s.json && \
+   mv /tmp/s.json ~/.claude/settings.json
+```
+
+The `outputStyle` value in `~/.claude/settings.json` must match the `name:` field in the chosen style file's frontmatter exactly (case-sensitive).
+
+### Custom styles
+
+> **Important:** `~/.claude/output-styles/oh-my-claude.md` and `~/.claude/output-styles/executive-brief.md` are overwritten on every install (`bash install.sh` rsyncs the bundle and your in-place edits do not survive an upgrade). The patterns below are upgrade-safe.
+
+**Recommended — copy a bundled style to a new file with a different `name:`.** Preserves your customizations across upgrades.
 
 ```bash
 cp ~/.claude/output-styles/oh-my-claude.md \
@@ -384,17 +415,15 @@ jq '.outputStyle = "My Style"' ~/.claude/settings.json > /tmp/s.json && \
    mv /tmp/s.json ~/.claude/settings.json
 ```
 
-The `outputStyle` value in `~/.claude/settings.json` must match the `name:` field in the style file's frontmatter exactly (case-sensitive).
+**Alternative — opt out of any bundled style.** Set `output_style=preserve` in `~/.claude/oh-my-claude.conf` (or via `/omc-config`) and re-run install. The installer will leave your `outputStyle` setting untouched (including a pre-set custom value). Both bundled style files are still copied to `~/.claude/output-styles/` for reference, but `~/.claude/settings.json` is not modified.
 
-**Alternative — opt out of the bundled style entirely.** Set `output_style=preserve` in `~/.claude/oh-my-claude.conf` (or via `/omc-config`) and re-run install. The installer will leave your `outputStyle` setting untouched (including a pre-set custom value). The bundled `oh-my-claude.md` file is still copied to `~/.claude/output-styles/` for reference, but `~/.claude/settings.json` is not modified.
+### Modifying a bundled style (discouraged)
 
-### Modifying the bundled style (discouraged)
-
-Editing `oh-my-claude.md` in place works for the current session but is overwritten on the next `bash install.sh`. Use the copy-to-new-file pattern above unless you are intentionally testing a one-shot change. The HTML comment at the top of the bundled file warns about this.
+Editing `oh-my-claude.md` or `executive-brief.md` in place works for the current session but is overwritten on the next `bash install.sh`. Use the copy-to-new-file pattern above unless you are intentionally testing a one-shot change. The HTML comment at the top of each bundled file warns about this.
 
 ### Composition with Claude Code's built-in styles
 
-Claude Code ships its own output styles (`Default`, `Explanatory`, `Learning`) — the `oh-my-claude` style declares `keep-coding-instructions: true`, which means Claude Code's coding-system-prompt (specialist-agent expectations, tool-use conventions) is preserved underneath. Switching to `Explanatory` or `Learning` swaps that surface entirely; the harness's specialist routing still works because agents have their own definitions, but the model's default coding posture changes. Using two output styles concurrently is not supported by Claude Code — only one is active per session.
+Claude Code ships its own output styles (`Default`, `Explanatory`, `Learning`) — both bundled oh-my-claude styles declare `keep-coding-instructions: true`, which means Claude Code's coding-system-prompt (specialist-agent expectations, tool-use conventions) is preserved underneath. Switching to `Explanatory` or `Learning` swaps that surface entirely; the harness's specialist routing still works because agents have their own definitions, but the model's default coding posture changes. Using two output styles concurrently is not supported by Claude Code — only one is active per session.
 
 ---
 

@@ -133,7 +133,7 @@ oh-my-claude/
 
   bundle/dot-claude/          # Installs to ~/.claude/
     agents/                   # 32 specialist agent definitions (.md)
-    output-styles/            # Output format templates
+    output-styles/            # Two bundled output styles: oh-my-claude.md (compact CLI default) + executive-brief.md (CEO-style status report)
     quality-pack/
       memory/                 # Core, skills, and compact memory files
       scripts/                # 8 lifecycle scripts (prompt routing, compaction, session, stop-failure, resume-hint, resume-watchdog)

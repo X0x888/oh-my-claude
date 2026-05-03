@@ -78,6 +78,7 @@ required_paths=(
   "${CLAUDE_HOME}/statusline.py"
   "${CLAUDE_HOME}/omc-repro.sh"
   "${CLAUDE_HOME}/output-styles/oh-my-claude.md"
+  "${CLAUDE_HOME}/output-styles/executive-brief.md"
   "${CLAUDE_HOME}/quality-pack/scripts/prompt-intent-router.sh"
   "${CLAUDE_HOME}/quality-pack/scripts/session-start-resume-handoff.sh"
   "${CLAUDE_HOME}/quality-pack/scripts/session-start-compact-handoff.sh"
@@ -161,26 +162,34 @@ for path in "${required_paths[@]}"; do
   fi
 done
 
-# Output-style frontmatter integrity. The path was already verified
+# Output-style frontmatter integrity. The paths were already verified
 # above; here we additionally confirm the frontmatter `name:` field
-# matches the literal "oh-my-claude" that config/settings.patch.json
-# writes into settings.json. Drift between the two would let a corrupted
-# or renamed file pass existence-only verification while silently failing
-# at session start when Claude Code tries to resolve outputStyle.
-style_path="${CLAUDE_HOME}/output-styles/oh-my-claude.md"
-if [[ -f "${style_path}" ]]; then
-  # Robust to CRLF line endings, multi-space-after-colon, and embedded
-  # colons in the name itself. The naive `awk -F': ' '{print $2}'` form
-  # would carry a trailing \r on Windows-edited files and break the
-  # equality check below — silently identical to the F-010 leak path
-  # this verifier is supposed to catch.
-  style_name="$(awk '/^name:/{sub(/^name:[[:space:]]*/,""); sub(/[[:space:]]+$/,""); print; exit}' "${style_path}" 2>/dev/null || true)"
-  if [[ "${style_name}" == "oh-my-claude" ]]; then
-    pass "output-style frontmatter name: ${style_name}"
-  else
-    fail "output-style frontmatter name '${style_name}' does not match expected 'oh-my-claude' (file may be corrupted)"
+# matches the expected literal for each bundled style file. Drift between
+# the file and the literal would let a corrupted or renamed file pass
+# existence-only verification while silently failing at session start
+# when Claude Code tries to resolve outputStyle. The active patch style
+# (config/settings.patch.json's outputStyle) is `oh-my-claude` —
+# `executive-brief.md` is shipped as an opt-in alternative selected via
+# the `output_style=executive` conf flag.
+#
+# Robust to CRLF line endings, multi-space-after-colon, and embedded
+# colons in the name itself. The naive `awk -F': ' '{print $2}'` form
+# would carry a trailing \r on Windows-edited files and break the
+# equality check below — silently identical to the F-010 leak path
+# this verifier is supposed to catch.
+for bundled_style in "oh-my-claude:oh-my-claude" "executive-brief:executive-brief"; do
+  style_basename="${bundled_style%%:*}"
+  expected_name="${bundled_style##*:}"
+  style_path="${CLAUDE_HOME}/output-styles/${style_basename}.md"
+  if [[ -f "${style_path}" ]]; then
+    style_name="$(awk '/^name:/{sub(/^name:[[:space:]]*/,""); sub(/[[:space:]]+$/,""); print; exit}' "${style_path}" 2>/dev/null || true)"
+    if [[ "${style_name}" == "${expected_name}" ]]; then
+      pass "output-style frontmatter name: ${style_name}"
+    else
+      fail "output-style frontmatter name '${style_name}' in ${style_path} does not match expected '${expected_name}' (file may be corrupted)"
+    fi
   fi
-fi
+done
 
 printf '\n'
 

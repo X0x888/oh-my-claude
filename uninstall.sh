@@ -114,6 +114,7 @@ AGENT_FILES=(
 # Standalone files.
 STANDALONE_FILES=(
   "${CLAUDE_HOME}/output-styles/oh-my-claude.md"
+  "${CLAUDE_HOME}/output-styles/executive-brief.md"
   "${CLAUDE_HOME}/output-styles/opencode-compact.md"
   "${CLAUDE_HOME}/statusline.py"
   "${CLAUDE_HOME}/switch-tier.sh"
@@ -239,29 +240,42 @@ fi
 
 removed=()
 
-# Capture the bundled output-style file's frontmatter `name:` BEFORE we
-# remove the file, so the settings cleanup (below) can value-gate against
+# Capture each bundled output-style file's frontmatter `name:` BEFORE we
+# remove the files, so the settings cleanup (below) can value-gate against
 # the user's actual current name (which may have been customized in place
 # per docs/customization.md guidance) rather than a hardcoded literal.
-# Without this, a user who edited the bundled file's frontmatter to
+# Without this, a user who edited a bundled file's frontmatter to
 # something like "oh-my-claude v2" and updated their settings to
 # match would have the file removed but the orphaned outputStyle entry
 # left pointing at a missing style. Falls back to the historical default
-# "oh-my-claude" when the file is absent or the parse returns empty.
-# Also accepts the legacy "OpenCode Compact" name for pre-v1.26.0 installs.
+# names when a file is absent or the parse returns empty. Both bundled
+# names are captured separately so cleanup recognizes either; the legacy
+# "OpenCode Compact" name is also accepted for pre-v1.26.0 installs.
 OMC_BUNDLED_STYLE_NAME="oh-my-claude"
-_bundled_style_path="${CLAUDE_HOME}/output-styles/oh-my-claude.md"
-if [[ -f "${_bundled_style_path}" ]]; then
+OMC_BUNDLED_STYLE_NAME_EXECUTIVE="executive-brief"
+_parse_style_name() {
   # Robust parser: strips trailing \r (CRLF defense — without it, a
   # Windows-edited customized file would re-introduce the exact orphan
   # leak F-010 was meant to fix), tolerates multi-space-after-colon, and
   # preserves embedded colons in the name itself.
-  _parsed_style_name="$(awk '/^name:/{sub(/^name:[[:space:]]*/,""); sub(/[[:space:]]+$/,""); print; exit}' "${_bundled_style_path}" 2>/dev/null || true)"
+  awk '/^name:/{sub(/^name:[[:space:]]*/,""); sub(/[[:space:]]+$/,""); print; exit}' "$1" 2>/dev/null || true
+}
+_bundled_style_path="${CLAUDE_HOME}/output-styles/oh-my-claude.md"
+if [[ -f "${_bundled_style_path}" ]]; then
+  _parsed_style_name="$(_parse_style_name "${_bundled_style_path}")"
   if [[ -n "${_parsed_style_name}" ]]; then
     OMC_BUNDLED_STYLE_NAME="${_parsed_style_name}"
   fi
 fi
+_bundled_style_path_exec="${CLAUDE_HOME}/output-styles/executive-brief.md"
+if [[ -f "${_bundled_style_path_exec}" ]]; then
+  _parsed_style_name_exec="$(_parse_style_name "${_bundled_style_path_exec}")"
+  if [[ -n "${_parsed_style_name_exec}" ]]; then
+    OMC_BUNDLED_STYLE_NAME_EXECUTIVE="${_parsed_style_name_exec}"
+  fi
+fi
 export OMC_BUNDLED_STYLE_NAME
+export OMC_BUNDLED_STYLE_NAME_EXECUTIVE
 
 # Remove the oh-my-claude-authored post-merge git hook, if the installer
 # wrote one. We find the source repo via `repo_path` in oh-my-claude.conf
@@ -357,11 +371,12 @@ settings_path = pathlib.Path(sys.argv[1])
 with settings_path.open() as f:
     settings = json.load(f)
 
-# Bundled style name captured by the parent shell before the .md file
-# was removed. Falls back to "oh-my-claude" if the parent did not
-# export it (e.g. when this function is invoked outside the normal
+# Bundled style names captured by the parent shell before the .md files
+# were removed. Falls back to historical defaults if the parent did not
+# export them (e.g. when this function is invoked outside the normal
 # uninstall flow). Also accepts the legacy "OpenCode Compact" name.
 omc_style_name = os.environ.get("OMC_BUNDLED_STYLE_NAME", "oh-my-claude")
+omc_style_name_executive = os.environ.get("OMC_BUNDLED_STYLE_NAME_EXECUTIVE", "executive-brief")
 
 # ---- Remove hooks whose commands reference oh-my-claude paths ----
 # Patterns that identify oh-my-claude hooks. Null-safe accessors via
@@ -413,9 +428,14 @@ elif "hooks" in settings:
 
 # ---- Remove oh-my-claude settings keys (only if they match our values) ----
 
-# outputStyle — only remove if set to the bundled style's frontmatter
-# name (captured before removal so in-place customizations are matched).
-if settings.get("outputStyle") in (omc_style_name, "OpenCode Compact"):
+# outputStyle — only remove if set to one of the bundled styles'
+# frontmatter names (captured before removal so in-place customizations
+# are matched). Both the compact `oh-my-claude` style and the
+# `executive-brief` CEO-report style are recognized, plus the legacy
+# "OpenCode Compact" name from pre-v1.26.0 installs. A custom user style
+# that does NOT match any bundled name is preserved (orphaned but at
+# least the user's choice is not silently overwritten).
+if settings.get("outputStyle") in (omc_style_name, omc_style_name_executive, "OpenCode Compact"):
     del settings["outputStyle"]
 
 # effortLevel — only remove if set to our value.
@@ -447,8 +467,10 @@ PY
 clean_settings_jq() {
   local temp_path="${SETTINGS}.tmp"
   local omc_style_name="${OMC_BUNDLED_STYLE_NAME:-oh-my-claude}"
+  local omc_style_name_executive="${OMC_BUNDLED_STYLE_NAME_EXECUTIVE:-executive-brief}"
 
-  jq --arg omc_style "${omc_style_name}" '
+  jq --arg omc_style "${omc_style_name}" \
+     --arg omc_style_executive "${omc_style_name_executive}" '
     # Remove hooks whose commands reference oh-my-claude paths.
     # Non-object entries (explicit null, scalars) are passed through
     # unchanged to match the Python path, which treats them as
@@ -473,10 +495,14 @@ clean_settings_jq() {
     # Remove hooks key if empty.
     | if (.hooks | length) == 0 then del(.hooks) else . end
     # Remove oh-my-claude settings keys only if they match our values.
-    # outputStyle is matched against the bundled style frontmatter name
-    # captured before removal (env $omc_style), so in-place customizations
-    # are correctly cleaned rather than orphaned.
-    | if (.outputStyle == $omc_style or .outputStyle == "OpenCode Compact") then del(.outputStyle) else . end
+    # outputStyle is matched against either bundled style frontmatter name
+    # captured before removal (env $omc_style for oh-my-claude.md,
+    # $omc_style_executive for executive-brief.md), so in-place
+    # customizations are correctly cleaned rather than orphaned. The
+    # legacy "OpenCode Compact" name is also recognized for pre-v1.26.0
+    # installs. Custom user outputStyle values are preserved (cannot be
+    # cleaned without false positives).
+    | if (.outputStyle == $omc_style or .outputStyle == $omc_style_executive or .outputStyle == "OpenCode Compact") then del(.outputStyle) else . end
     | if .effortLevel == "high" then del(.effortLevel) else . end
     | if .spinnerTipsEnabled == false then del(.spinnerTipsEnabled) else . end
     | if (.spinnerVerbs.mode == "replace" and (.spinnerVerbs.verbs | sort) == ["Inspecting","Refining","Sketching","Verifying"]) then del(.spinnerVerbs) else . end

@@ -305,6 +305,63 @@ JSON
     "${work}/settings.json" '.outputStyle' "oh-my-claude"
 
   # -----------------------------------------------------------------------
+  # F-005c: OMC_OUTPUT_STYLE_PREF=executive selects the bundled
+  # executive-brief style on a fresh install. Three sub-cases pin the
+  # bundled-sync semantics introduced when the second bundled style
+  # shipped.
+  # -----------------------------------------------------------------------
+
+  # Sub-case 1: fresh install with executive pref → executive-brief.
+  work="${TEST_DIR}/${impl}-output-style-executive-fresh"
+  mkdir -p "${work}"
+  printf '{}' > "${work}/settings.json"
+  OMC_OUTPUT_STYLE_PREF="executive" run_merge "${impl}" "${work}/settings.json" "${SETTINGS_PATCH}" "false"
+  assert_json_eq "${impl}: F-005c — executive merges executive-brief on fresh install" \
+    "${work}/settings.json" '.outputStyle' "executive-brief"
+
+  # Sub-case 2: existing oh-my-claude flips to executive-brief when the
+  # conf flag is changed (the bundled-sync behavior — switching enums
+  # should swap settings.outputStyle so /omc-config can move users
+  # between bundled styles without manual settings.json edits).
+  work="${TEST_DIR}/${impl}-output-style-executive-flip"
+  mkdir -p "${work}"
+  printf '{"outputStyle": "oh-my-claude"}' > "${work}/settings.json"
+  OMC_OUTPUT_STYLE_PREF="executive" run_merge "${impl}" "${work}/settings.json" "${SETTINGS_PATCH}" "false"
+  assert_json_eq "${impl}: F-005c — executive flips an existing oh-my-claude to executive-brief" \
+    "${work}/settings.json" '.outputStyle' "executive-brief"
+
+  # Sub-case 2b: existing executive-brief flips back to oh-my-claude
+  # under the default opencode pref. Symmetric to sub-case 2.
+  work="${TEST_DIR}/${impl}-output-style-opencode-flip-back"
+  mkdir -p "${work}"
+  printf '{"outputStyle": "executive-brief"}' > "${work}/settings.json"
+  OMC_OUTPUT_STYLE_PREF="opencode" run_merge "${impl}" "${work}/settings.json" "${SETTINGS_PATCH}" "false"
+  assert_json_eq "${impl}: F-005c — opencode flips an existing executive-brief back to oh-my-claude" \
+    "${work}/settings.json" '.outputStyle' "oh-my-claude"
+
+  # Sub-case 3: a custom user style is preserved even when executive
+  # pref is set. The bundled-sync only fires for bundled-name values;
+  # custom strings (Learning, Explanatory, user-named styles) are never
+  # overwritten. This is the load-bearing "custom styles win" guarantee.
+  work="${TEST_DIR}/${impl}-output-style-executive-custom-preserved"
+  mkdir -p "${work}"
+  printf '{"outputStyle": "Learning"}' > "${work}/settings.json"
+  OMC_OUTPUT_STYLE_PREF="executive" run_merge "${impl}" "${work}/settings.json" "${SETTINGS_PATCH}" "false"
+  assert_json_eq "${impl}: F-005c — executive preserves a custom user style" \
+    "${work}/settings.json" '.outputStyle' "Learning"
+
+  # Sub-case 4: legacy "OpenCode Compact" migrates to executive-brief
+  # when the executive pref is set. Symmetric to F-005b's preserve case
+  # — legacy names always migrate, but the target follows the
+  # conf-resolved pref.
+  work="${TEST_DIR}/${impl}-output-style-legacy-to-executive"
+  mkdir -p "${work}"
+  printf '{"outputStyle": "OpenCode Compact"}' > "${work}/settings.json"
+  OMC_OUTPUT_STYLE_PREF="executive" run_merge "${impl}" "${work}/settings.json" "${SETTINGS_PATCH}" "false"
+  assert_json_eq "${impl}: F-005c — legacy OpenCode Compact migrates to executive-brief under executive pref" \
+    "${work}/settings.json" '.outputStyle' "executive-brief"
+
+  # -----------------------------------------------------------------------
   # Test 5: Pre-existing hooks from another plugin are preserved
   # -----------------------------------------------------------------------
   work="${TEST_DIR}/${impl}-existing-hooks"

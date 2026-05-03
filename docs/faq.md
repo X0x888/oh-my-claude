@@ -60,12 +60,13 @@ The installer merges hook entries from `settings.patch.json` into your existing 
 
 ### Can I use this with a different output style?
 
-Yes. Two upgrade-safe paths, documented in [`docs/customization.md → Output Style`](customization.md#output-style):
+Yes. oh-my-claude ships two bundled styles (`oh-my-claude` — compact CLI, default; `executive-brief` — CEO-style status report). Pick between them via `/omc-config` (`output_style=opencode` for `oh-my-claude`, `output_style=executive` for `executive-brief`) and re-run install. Three upgrade-safe paths, all documented in [`docs/customization.md → Output Style`](customization.md#output-style):
 
-1. **Copy and rename** — `cp ~/.claude/output-styles/oh-my-claude.md ~/.claude/output-styles/my-style.md`, change the frontmatter `name:`, then point `outputStyle` in `~/.claude/settings.json` at the new name. Survives `bash install.sh` upgrades.
-2. **Opt out via the `output_style=preserve` flag** — set it in `~/.claude/oh-my-claude.conf` (or via `/omc-config`) and re-run install. The installer leaves your `outputStyle` setting untouched (including a pre-existing custom value, or its absence — Claude Code's built-in `Default` style takes over). The bundled `oh-my-claude.md` file is still copied to `~/.claude/output-styles/` for reference.
+1. **Switch between bundled styles** — set `output_style=executive` in `~/.claude/oh-my-claude.conf` (or via `/omc-config`) and re-run install. The installer rewrites `settings.outputStyle` to `executive-brief`. Set it back to `output_style=opencode` to revert.
+2. **Copy and rename for full customization** — `cp ~/.claude/output-styles/oh-my-claude.md ~/.claude/output-styles/my-style.md` (or copy `executive-brief.md`), change the frontmatter `name:`, then point `outputStyle` in `~/.claude/settings.json` at the new name. Survives `bash install.sh` upgrades.
+3. **Opt out of the bundled style entirely via `output_style=preserve`** — set it in `~/.claude/oh-my-claude.conf` (or via `/omc-config`) and re-run install. The installer leaves your `outputStyle` setting untouched (including a pre-existing custom value, or its absence — Claude Code's built-in `Default` style takes over). Both bundled style files are still copied to `~/.claude/output-styles/` for reference.
 
-Avoid editing `oh-my-claude.md` in place — `install.sh` rsyncs the bundle on every upgrade and overwrites in-place edits. The harness hooks do not depend on the output style being `oh-my-claude`; the only requirement is that whatever is set in `outputStyle` resolves to a real file.
+Avoid editing the bundled style files in place — `install.sh` rsyncs the bundle on every upgrade and overwrites in-place edits. The harness hooks do not depend on which output style is active; the only requirement is that whatever is set in `outputStyle` resolves to a real file.
 
 ### How do I disable a specific quality gate?
 
