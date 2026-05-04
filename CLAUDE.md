@@ -9,19 +9,19 @@ This file is intentionally short. For implementation-level depth, read the sourc
 | Topic | Source of truth |
 |---|---|
 | Components, state-key dictionary, request flow, intent classification, FINDINGS_JSON parser, Wave 3 watchdog, timing-row shapes | `docs/architecture.md` |
-| Every conf flag (defaults, env vars, behavior) — `gate_level`, `verify_confidence_threshold`, `time_tracking`, `*_directive`, `*_gate`, `resume_watchdog`, `discovered_scope`, `wave_override_ttl_seconds`, etc. | `docs/customization.md` |
+| Conf flags — defaults, env vars, behavior (full table) | `docs/customization.md` |
 | Reviewer VERDICT contract, universal verdict tokens, FINDINGS_JSON schema, dimension mapping, discovered-scope capture targets | `AGENTS.md` |
 | Release process (full pre-flight, bump, post-flight CI verification), code standards, adding new components | `CONTRIBUTING.md` |
-| User-facing flag examples + defaults | `bundle/dot-claude/oh-my-claude.conf.example` |
+| Conf-flag examples with inline defaults | `bundle/dot-claude/oh-my-claude.conf.example` |
 
-If a fact appears here AND in one of the above, that doc is authoritative — keep this file's version a one-line pointer.
+If a fact appears here AND in one of the above, that doc is authoritative — keep this file's version a brief pointer, not a duplicated explanation.
 
 ## Key Directories
 
 - `bundle/dot-claude/agents/` — 33 specialist agent definitions with `disallowedTools` permission boundaries
 - `bundle/dot-claude/quality-pack/scripts/` — 9 lifecycle hooks (prompt routing, compaction, session start, StopFailure capture, resume hint, headless watchdog)
 - `bundle/dot-claude/skills/` — 25 skill definitions, each in `<name>/SKILL.md`
-- `bundle/dot-claude/skills/autowork/scripts/` — 32 autowork hooks + helpers. Shared utility library: `common.sh`. Lazy-loaded libs in `lib/`: `state-io.sh`, `classifier.sh`, `verification.sh`, `timing.sh`, `canary.sh`. Per-script descriptions in `docs/architecture.md`.
+- `bundle/dot-claude/skills/autowork/scripts/` — 32 autowork hooks + helpers; shared lib `common.sh`; lazy-loaded `lib/{state-io,classifier,verification,timing,canary}.sh`. Per-script detail in `docs/architecture.md`.
 - `bundle/dot-claude/output-styles/` — bundled output styles (`oh-my-claude.md` default, `executive-brief.md`); selected via `output_style=` in `oh-my-claude.conf`
 - `config/settings.patch.json` — settings merged into user config on install
 - `tests/` — 59 bash + 1 python test scripts
@@ -71,28 +71,29 @@ The CI-pinned test list lives in `.github/workflows/validate.yml`; extract with:
 
 ## Critical Gotchas
 
-These have caused regressions before — read carefully when editing the listed surfaces.
-
 - **Stop hook output schema.** Stop and SubagentStop hooks **cannot** emit `hookSpecificOutput.additionalContext` — Claude Code silently drops the field. Use top-level `systemMessage` (visible) or `decision: "block"` with `reason` (block path). Tests must assert both positive (`systemMessage` present) AND negative (`hookSpecificOutput` absent). The `additionalContext` field IS supported on: SessionStart, Setup, SubagentStart, UserPromptSubmit, UserPromptExpansion, PreToolUse, PostToolUse, PostToolUseFailure, PostToolBatch. Regression net: `tests/test-timing.sh` T29.
 
-- **Lazy-loaded libs (v1.27.0+).** `lib/classifier.sh` and `lib/timing.sh` are sourced via `_omc_load_classifier` / `_omc_load_timing` (idempotent loaders). Hot-path hooks that do not need a lib `export OMC_LAZY_CLASSIFIER=1` / `OMC_LAZY_TIMING=1` BEFORE sourcing `common.sh` to skip the eager parse cost. **When adding a new function inside `common.sh` that calls a classifier-defined function** (`is_imperative_request`, `classify_task_intent`, `infer_domain`, `is_completeness_request`, `is_exemplifying_request`, `is_council_evaluation_request`, `is_execution_intent_value`, `is_ui_request`, `is_exhaustive_authorization_request`), call `_omc_load_classifier` at the top of the new function — otherwise opted-out hooks that transitively reach it will crash with `command not found`. Same rule applies to timing-lib (`timing_*`) functions. Currently guarded helpers: `is_session_management_request`, `is_checkpoint_request`.
+- **Lazy-loaded libs (v1.27.0+).** `lib/classifier.sh` and `lib/timing.sh` are sourced via `_omc_load_classifier` / `_omc_load_timing` (idempotent loaders). Hot-path hooks that do not need a lib `export OMC_LAZY_CLASSIFIER=1` / `OMC_LAZY_TIMING=1` BEFORE sourcing `common.sh` to skip the eager parse cost.
+  - **Rule when adding a new function in `common.sh` that calls a classifier or timing function**: call `_omc_load_classifier` (or `_omc_load_timing`) at the top of the new function. Otherwise opted-out hooks that transitively reach it crash with `command not found`.
+  - Classifier functions to watch for: `is_imperative_request`, `classify_task_intent`, `infer_domain`, `is_completeness_request`, `is_exemplifying_request`, `is_council_evaluation_request`, `is_execution_intent_value`, `is_ui_request`, `is_exhaustive_authorization_request`. Timing-lib functions: any `timing_*`.
+  - Currently guarded helpers: `is_session_management_request`, `is_checkpoint_request`.
 
 ## Coordination Rules — keep in lockstep
 
-When making any of these changes, update ALL listed sites in the same commit. Missing one is a silent failure.
+When making any of these changes, update ALL listed sites in the same commit. Missing one is a silent failure. Ordered by historical violation frequency (most-violated first).
 
-- **Adding/removing/renaming agents, skills, scripts, or directories** → `README.md`, `CLAUDE.md`, `AGENTS.md`, `CONTRIBUTING.md`. Counts and directory listings drift fast — keep them accurate.
-- **Adding or removing a user-invocable skill** → `README.md` (skill table), `bundle/dot-claude/skills/skills/SKILL.md` (user-facing index), `bundle/dot-claude/quality-pack/memory/skills.md` (in-session memory). Missing causes either a discoverability gap (user can't find the skill) or a memory gap (Claude doesn't know to suggest it).
-- **Adding or removing a skill directory or agent file** → `verify.sh` (`required_paths`) AND `uninstall.sh` (`SKILL_DIRS` / `AGENT_FILES`). These two lists must stay parallel — otherwise uninstall leaks files or verify silently passes a broken install.
 - **Adding/removing/renaming a flag in `oh-my-claude.conf`** → all THREE definition sites:
   1. `bundle/dot-claude/skills/autowork/scripts/common.sh` — `_parse_conf_file()` case statement (the parser)
   2. `bundle/dot-claude/oh-my-claude.conf.example` — documented entry with default + env var + purpose
   3. `bundle/dot-claude/skills/autowork/scripts/omc-config.sh` — `emit_known_flags()` table row (the `/omc-config` skill backend)
 
   Missing any one is a silent failure: in parser but not example → undiscoverable; in example but not parser → silently ignored; missing from `omc-config.sh` → not settable via the skill UX. Flags read by `statusline.py` (e.g., `installation_drift_check`) parse via Python — skip (1) but still need (2) and (3).
+- **Adding or removing a skill directory or agent file** → `verify.sh` (`required_paths`) AND `uninstall.sh` (`SKILL_DIRS` / `AGENT_FILES`). These two lists must stay parallel — otherwise uninstall leaks files or verify silently passes a broken install.
+- **Adding or removing a user-invocable skill** → `README.md` (skill table), `bundle/dot-claude/skills/skills/SKILL.md` (user-facing index), `bundle/dot-claude/quality-pack/memory/skills.md` (in-session memory). Missing causes either a discoverability gap (user can't find the skill) or a memory gap (Claude doesn't know to suggest it).
+- **Adding/removing/renaming agents, skills, scripts, or directories** → `README.md`, `CLAUDE.md`, `AGENTS.md`, `CONTRIBUTING.md`. Counts and directory listings drift fast — keep them accurate.
 - **Adding a new state key** → `docs/architecture.md` "State keys in `session_state.json`" table.
-- **Adding a new reviewer-style agent** → six-step checklist in `CONTRIBUTING.md` "Reviewer-agent additions" + `AGENTS.md` "Adding New Components" (settings-patch wiring, VERDICT contract line, dimension mapping table, matcher-name + count assertions in `tests/test-settings-merge.sh`, simulator + sequence test in `tests/test-e2e-hook-sequence.sh`).
-- **Adding a new finding-emitting agent** → wire into the v1.28.0 `FINDINGS_JSON` contract per `CONTRIBUTING.md` "Reviewer-agent additions (FINDINGS_JSON contract)": agent `.md` instruction line, `tests/test-findings-json.sh` regression net, `discovered_scope_capture_targets` in `common.sh` (if findings should feed the discovered-scope gate), `AGENTS.md` documentation row.
+- **Adding a new reviewer-style agent** → "Procedural wiring" 6-step checklist in `CONTRIBUTING.md` "Reviewer-agent additions" (settings-patch wiring, VERDICT contract line, dimension mapping table in `AGENTS.md`, matcher-name + count assertions in `tests/test-settings-merge.sh`, simulator + sequence test in `tests/test-e2e-hook-sequence.sh`).
+- **Adding a new finding-emitting agent** → "FINDINGS_JSON contract" 4-step checklist in `CONTRIBUTING.md` "Reviewer-agent additions": agent `.md` instruction line, `tests/test-findings-json.sh` regression net, `discovered_scope_capture_targets` in `common.sh` (if findings should feed the discovered-scope gate), `AGENTS.md` documentation row.
 
 ## Release Process
 
