@@ -18,6 +18,23 @@ Closes the v1.30.0 wave-deferred set: security-lens F-5 (watchdog `claude` PATH-
 
 - **Test coverage**: 9 new assertions — test-resume-watchdog T24-T27 (claude_bin pin happy path / missing-executable fallback / --version-failure fallback / empty-pin legacy behavior), test-claim-resume-request T27-T31 (cooldown=0 disable / under-lock rejection rc=3 / outside-window claim-success / legacy callers without --cooldown-secs / invalid integer rejected), test-stop-failure-handler 3 cap-sweep assertions (cap=3 keeps newest 3 / cap=0 disables / cross-cwd isolation). All existing tests pass: 75/75 + 65/65 + 86/86 + 122/122 + 61/61 unchanged.
 
+### v1.31.0 Wave 7 — Distribution + activation surface (jq auto-install + headline + topics + badges)
+
+Closes 4 of 6 growth-lens findings; defers F-031 / F-032 / F-033 to v1.32 docs cycle (outcomes-first messaging + skills journey-grouping + real /ulw-report showcase entries — all require content authoring + telemetry data extraction work that exceeds a tight wave).
+
+- **jq auto-install offer in install-remote.sh** (growth-lens F-035, F-035). Pre-Wave-7 the bootstrapper hard-failed when `jq` was missing — correct fail-loud-not-silent UX, but produced an avoidable abandonment surface for first-time users on bare macOS / fresh Linux distros. Wave 7 adds `maybe_auto_install_jq()` which detects the platform package manager (`brew`, `apt-get`, `dnf`, `yum`, `apk`, `pacman`), prompts the user explicitly with the install command, and runs it on consent. Skipped under `OMC_BOOTSTRAP_NO_AUTOINSTALL=1` for sandboxed/regulated environments. Failure to install still hits `need_cmd jq` for the existing fail-loud path; users always see the explicit prompt before anything runs.
+
+- **Plain-English secondary headline** (growth-lens F-036, README.md:4). Pre-Wave-7 the sub-headline read *"A cognitive quality harness for Claude Code"* — accurate but jargon-heavy for the 30-second-bounce evaluator. Wave 7 adds *"Quality gates for Claude Code that actually block — until tests pass, review is done, and the work is verified."* between the contrarian headline and the badges. Plain-English first; the technical term ("cognitive quality harness") still appears in the body.
+
+- **GitHub topics** (growth-lens F-034, F-034). 8 SEO topics applied via `gh repo edit --add-topic`: `ai-coding`, `bash`, `claude-code`, `code-review-automation`, `developer-tools`, `hooks`, `llm-tooling`, `quality-gates`. Repo discovery on GitHub topic search now works for "claude code hooks", "claude code quality gates", "code review automation", etc.
+
+- **README badges expanded** (growth-lens F-038 partial). Test-count badge added (1700+ assertions across 60+ test files); the dependencies badge updated from "none" to the accurate "jq + rsync"; star-count and "trusted by N" badges deferred until adoption signals warrant them (per growth-lens recommendation: "the chicken-and-egg perception of low star count compounds the trust friction; defer until stars > 100").
+
+- **Deferred to v1.32 docs cycle**:
+  - **F-031 outcomes-first README restructure** — needs quantified-outcome content authored from real `/ulw-report` data ("23 Serendipity catches in v1.27 wave"). Pair with F-033.
+  - **F-032 skills table journey-grouped** — reorder the 16-row table to mirror `bundle/dot-claude/skills/skills/SKILL.md`'s Onboarding / Working / Stuck / Reviewing / Configuring grouping.
+  - **F-033 Showcase real entries** — extract 3+ actual session digests from accumulated `/ulw-report` history and ship as canonical Showcase entries.
+
 ### v1.31.0 Wave 6 — UX consolidation (canonical /ulw + skill grammar + output-style sync + canary legend)
 
 Closes 4 of 5 design-lens UX consolidation findings; defers F-029 (output-style label glossary) as low-severity cosmetic.

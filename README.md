@@ -2,10 +2,13 @@
 
 **What if Claude Code couldn't cut corners?**
 
-[![Version](https://img.shields.io/badge/Version-1.30.0-blue.svg)](CHANGELOG.md)
+*Quality gates for Claude Code that actually block — until tests pass, review is done, and the work is verified.*
+
+[![Version](https://img.shields.io/badge/Version-1.31.0-blue.svg)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Shell](https://img.shields.io/badge/Shell-bash-green.svg)]()
-[![Dependencies](https://img.shields.io/badge/Dependencies-none-brightgreen.svg)]()
+[![Dependencies](https://img.shields.io/badge/Dependencies-jq%20%2B%20rsync-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-1700%2B-brightgreen.svg)](tests/)
 
 **Jump to:** [Install](#quick-start) · [AI-assisted install](#ai-assisted-install) · [What you get](#what-you-get) · [Feature highlights](#feature-highlights) · [Skills](#available-skills) · [Troubleshooting](#troubleshooting) · [FAQ](docs/faq.md)
 

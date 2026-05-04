@@ -50,8 +50,71 @@ need_cmd() {
     err "missing required command: $1. Install it (e.g. via your package manager) and retry."
 }
 
+# v1.31.0 Wave 7 (growth-lens F-035): jq is the most common missing
+# prereq for first-time installs (macOS ships without it; many Linux
+# distros ship without it too). Pre-Wave-7 the script hard-failed,
+# which is correct UX (fail loud, not silent) but produced an
+# avoidable abandonment surface for users who would have happily
+# said "yes" to a one-line install. The auto-install offer is
+# explicitly opt-in: prints the platform-specific command and prompts
+# Y/N before running. Skipped under OMC_BOOTSTRAP_NO_AUTOINSTALL=1
+# (env override for sandboxed/regulated environments).
+maybe_auto_install_jq() {
+  command -v jq >/dev/null 2>&1 && return 0
+  if [[ -n "${OMC_BOOTSTRAP_NO_AUTOINSTALL:-}" ]]; then
+    return 1
+  fi
+
+  local install_cmd=""
+  case "$(uname 2>/dev/null || echo '')" in
+    Darwin)
+      command -v brew >/dev/null 2>&1 && install_cmd="brew install jq"
+      ;;
+    Linux)
+      if command -v apt-get >/dev/null 2>&1; then
+        install_cmd="sudo apt-get update && sudo apt-get install -y jq"
+      elif command -v dnf >/dev/null 2>&1; then
+        install_cmd="sudo dnf install -y jq"
+      elif command -v yum >/dev/null 2>&1; then
+        install_cmd="sudo yum install -y jq"
+      elif command -v apk >/dev/null 2>&1; then
+        install_cmd="sudo apk add jq"
+      elif command -v pacman >/dev/null 2>&1; then
+        install_cmd="sudo pacman -S --noconfirm jq"
+      fi
+      ;;
+  esac
+
+  [[ -z "${install_cmd}" ]] && return 1
+
+  printf '\n'
+  printf '%s jq is required but not installed.\n' "$(yellow 'note:')"
+  printf '         Detected install command: %s\n' "${install_cmd}"
+  printf '         Run it now? '
+  printf '%s' "$(bold 'y/N: ')"
+  local response=""
+  if [[ -t 0 ]]; then
+    read -r response
+  else
+    printf '(skipped — non-interactive)\n'
+    return 1
+  fi
+  case "${response}" in
+    [yY]|[yY][eE][sS])
+      printf '%s running: %s\n' "$(bold '==>')" "${install_cmd}"
+      eval "${install_cmd}" || return 1
+      command -v jq >/dev/null 2>&1
+      ;;
+    *)
+      printf 'Skipped. Install jq manually and re-run install-remote.sh.\n'
+      return 1
+      ;;
+  esac
+}
+
 need_cmd git
 need_cmd bash
+maybe_auto_install_jq || true
 need_cmd jq
 need_cmd rsync
 
