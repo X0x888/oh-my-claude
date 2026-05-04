@@ -81,13 +81,17 @@ assert_eq "last row preserved" '{"row":250}' "${last_row}"
 
 # ----------------------------------------------------------------------
 printf 'Test 7: every cross-session JSONL cap goes through the helper\n'
-# 1 def + 6 call sites (misfires, summary, serendipity-log, gate-skips,
-# gate_events, used-archetypes) = 7 total. If a future contributor open-
-# codes a 7th cap site instead of calling the helper, this fails — same
-# anti-pattern the helper was created to prevent.
+# 1 def + 7 call sites (misfires, summary, serendipity-log, gate-skips,
+# gate_events, used-archetypes, timing-log) = 8 total. If a future
+# contributor open-codes an 8th cap site instead of calling the helper,
+# this fails — same anti-pattern the helper was created to prevent.
 # Strip leading whitespace + comment lines so doc references don't inflate.
+# Anchor with `(^|[^a-zA-Z0-9_])` so the count excludes the v1.30.0
+# `_do_cap_cross_session_jsonl` inner-helper occurrences (which have
+# `_do_` as the leading substring), preventing a substring-match
+# inflation when the public helper's name is a suffix of an internal one.
 miscall_count="$(grep -vE '^\s*#' "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh" \
-  | grep -c '_cap_cross_session_jsonl' || true)"
+  | grep -cE '(^|[^a-zA-Z0-9_])_cap_cross_session_jsonl' || true)"
 assert_eq "expected 8 mentions in common.sh (1 def + 7 callers)" "8" "${miscall_count}"
 
 # Also assert the open-coded idiom is fully retired: no more "tail -n N > tmp ; mv tmp file"
@@ -127,5 +131,78 @@ got_b="$(wc -l < "${multi}" | tr -d '[:space:]')"
 assert_eq "second cap (200/100) further trims" "100" "${got_b}"
 
 # ----------------------------------------------------------------------
+# ----------------------------------------------------------------------
+printf 'Test 11: cap routes through with_cross_session_log_lock (v1.30.0 sre-lens F-2)\n'
+# Locks in the v1.30.0 cap-race fix: when over-cap, the rotation must
+# happen under with_cross_session_log_lock so concurrent SubagentStop
+# bursts (council Phase 8 fan-out → 30+ rows in a few hundred ms) do
+# not lose appends to the tail+mv window. Structural assertion: the
+# helper body must reference with_cross_session_log_lock; an open-
+# coded tail+mv inside _cap_cross_session_jsonl would silently regress.
+cap_body="$(declare -f _cap_cross_session_jsonl)"
+if [[ "${cap_body}" == *"with_cross_session_log_lock"* ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T11: _cap_cross_session_jsonl body lacks with_cross_session_log_lock\n' >&2
+  fail=$((fail + 1))
+fi
+# Inner helper exists.
+if declare -F _do_cap_cross_session_jsonl >/dev/null; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T11: _do_cap_cross_session_jsonl not defined\n' >&2
+  fail=$((fail + 1))
+fi
+
+# ----------------------------------------------------------------------
+printf 'Test 12: sweep marker corruption guard (v1.30.0 sre-lens F-3)\n'
+# Locks in the F-3 fix: a corrupt or non-numeric .last_sweep marker
+# must not crash sweep_stale_sessions under `set -euo pipefail` AND
+# must not trigger the CPU-storm where every common.sh source re-runs
+# the heavy find-walk. The guard validates the marker is `^[0-9]+$`;
+# on corruption it stamps a fresh epoch and skips the round.
+_T12_STATE_ROOT="$(mktemp -d)"
+_T12_STATE_ROOT_BACKUP="${STATE_ROOT}"
+STATE_ROOT="${_T12_STATE_ROOT}"
+mkdir -p "${STATE_ROOT}"
+
+# Case A: zero-byte marker (truncated by a crashed prior write).
+: > "${STATE_ROOT}/.last_sweep"
+_t12_rc=0
+sweep_stale_sessions || _t12_rc=$?
+assert_eq "T12 case A: zero-byte marker does not crash sweep" "0" "${_t12_rc}"
+_t12_after="$(cat "${STATE_ROOT}/.last_sweep" 2>/dev/null || echo "")"
+if [[ "${_t12_after}" =~ ^[0-9]+$ ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T12 case A: zero-byte marker not reset to numeric epoch (got %q)\n' "${_t12_after}" >&2
+  fail=$((fail + 1))
+fi
+
+# Case B: non-numeric garbage in marker.
+printf 'garbage-content\n' > "${STATE_ROOT}/.last_sweep"
+_t12_rc=0
+sweep_stale_sessions || _t12_rc=$?
+assert_eq "T12 case B: garbage marker does not crash sweep" "0" "${_t12_rc}"
+_t12_after="$(cat "${STATE_ROOT}/.last_sweep" 2>/dev/null || echo "")"
+if [[ "${_t12_after}" =~ ^[0-9]+$ ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T12 case B: garbage marker not reset to numeric epoch (got %q)\n' "${_t12_after}" >&2
+  fail=$((fail + 1))
+fi
+
+# Case C: valid recent marker — sweep skips, marker unchanged.
+_t12_now="$(date +%s)"
+printf '%s\n' "${_t12_now}" > "${STATE_ROOT}/.last_sweep"
+_t12_rc=0
+sweep_stale_sessions || _t12_rc=$?
+assert_eq "T12 case C: valid recent marker does not crash sweep" "0" "${_t12_rc}"
+_t12_after="$(cat "${STATE_ROOT}/.last_sweep" 2>/dev/null || echo "")"
+assert_eq "T12 case C: valid recent marker unchanged" "${_t12_now}" "${_t12_after}"
+
+STATE_ROOT="${_T12_STATE_ROOT_BACKUP}"
+rm -rf "${_T12_STATE_ROOT}"
+
 printf '\n=== Cross-Session Rotation Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]] || exit 1

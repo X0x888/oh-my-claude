@@ -823,18 +823,37 @@ now_epoch() {
 
 # _cap_cross_session_jsonl <file> <cap> <retain>
 # Caps a cross-session JSONL aggregate. No-op when the file is missing or
-# at/below cap. On overflow, truncates to the last <retain> lines via
-# atomic rename; on tail failure, leaves the original untouched.
+# at/below cap. On overflow, holds with_cross_session_log_lock, re-reads
+# the line count under the lock (concurrent writers may have appended
+# between the cheap pre-check and the lock acquisition), then truncates
+# to the last <retain> lines via atomic rename. On tail failure, leaves
+# the original untouched.
 #
-# Concurrency: the cap itself is single-writer — every call site runs
-# inside sweep_stale_sessions, which is gated by a daily marker file, so
-# two cap operations cannot overlap. Writers to the underlying file
-# (e.g. record-serendipity.sh) append unlocked, relying on POSIX line
-# atomicity. The tail+mv window is the one race that exists: an in-flight
-# append landing between tail and mv would be silently dropped. Cap fires
-# at most once per 24h after overflow, so the realistic loss is ≤ one
-# analytics row per cap-fire — acceptable for this data class.
+# Concurrency (v1.30.0 sre-lens F-2 fix): cap fires under
+# with_cross_session_log_lock so concurrent writers from a parallel
+# SubagentStop fan-out (council Phase 8 → 30+ gate_events / serendipity
+# / archetype rows) cannot land between tail and mv. The cheap pre-check
+# avoids paying the lock cost on the steady-state cap-not-needed path
+# (every common.sh source touches this for the daily sweep). Writers to
+# the underlying JSONL still append unlocked relying on POSIX line
+# atomicity (PIPE_BUF-bounded rows); locking the writers too would
+# regress hot-path latency for negligible additional safety.
 _cap_cross_session_jsonl() {
+  local file="$1" cap="$2" retain="$3"
+  [[ -f "${file}" ]] || return 0
+  local lines
+  lines="$(wc -l < "${file}" 2>/dev/null || echo 0)"
+  lines="${lines##* }"
+  [[ "${lines}" -le "${cap}" ]] && return 0
+  with_cross_session_log_lock "${file}" _do_cap_cross_session_jsonl "${file}" "${cap}" "${retain}"
+}
+
+# Locked body of _cap_cross_session_jsonl. Re-validates line count
+# inside the lock (a peer cap may have already trimmed) before doing
+# the trim. The early return when already at/below cap is the fast
+# path under contention — multiple peers race to acquire, the first
+# trims, the rest see lines<=cap and return without doing the work.
+_do_cap_cross_session_jsonl() {
   local file="$1" cap="$2" retain="$3"
   [[ -f "${file}" ]] || return 0
   local lines temp
@@ -854,10 +873,24 @@ sweep_stale_sessions() {
   local now
   now="$(date +%s)"
 
-  # Skip if swept within the last 24 hours
+  # Skip if swept within the last 24 hours. v1.30.0 sre-lens F-3 fix:
+  # validate the marker is a positive integer before the arithmetic. A
+  # corrupt marker (zero-byte file from a crashed prior sweep, garbage
+  # chars from a manual mis-edit, partial write from disk-full) would
+  # otherwise either crash here under `set -euo pipefail` (empty/non-
+  # numeric in `$(( now - last_sweep ))` errors) or evaluate the
+  # arithmetic with `last_sweep=0` causing the sweep to re-run on every
+  # common.sh source — a CPU storm where every hook invocation walks
+  # STATE_ROOT with `find -mtime`. On corrupt input: stamp a fresh
+  # epoch and skip THIS round; the next call in 24h proceeds normally.
   if [[ -f "${marker}" ]]; then
     local last_sweep
-    last_sweep="$(cat "${marker}" 2>/dev/null || echo 0)"
+    last_sweep="$(cat "${marker}" 2>/dev/null || echo "")"
+    if [[ ! "${last_sweep}" =~ ^[0-9]+$ ]]; then
+      printf '%s\n' "${now}" > "${marker}" 2>/dev/null || true
+      log_anomaly "sweep_stale_sessions" "non-numeric marker reset to ${now}"
+      return
+    fi
     if [[ $(( now - last_sweep )) -lt 86400 ]]; then
       return
     fi
@@ -989,7 +1022,14 @@ sweep_stale_sessions() {
     fi
   fi
 
-  printf '%s\n' "${now}" > "${marker}"
+  # Soft-failure on marker write — a full disk or read-only mount must
+  # not crash the sweep hook (would propagate a non-zero exit through
+  # every common.sh source). The tradeoff: if the marker write
+  # silently fails, the next call sees the OLD marker and the 24h
+  # gate still works correctly. The loss-of-write only becomes visible
+  # after the next 24h boundary, by which point the underlying disk
+  # condition is independently fixable.
+  printf '%s\n' "${now}" > "${marker}" 2>/dev/null || true
 }
 
 # --- end TTL sweep ---

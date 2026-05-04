@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### v1.30.0 Wave 3 — Cross-session correctness
+
+Closes the v1.29.0 sre-lens F-2 (cap race) + F-3 (sweep marker corruption / CPU storm). Both fixes land on the cross-session JSONL rotation hot path that runs on every `common.sh` source.
+
+- **`_cap_cross_session_jsonl` cap-race fix** (sre F-2). The pre-Wave-3 implementation's `wc → tail → mv` window was unlocked, so a concurrent SubagentStop fan-out (council Phase 8 → 30+ gate_events / serendipity / archetype rows in a few hundred ms) could land an append between `tail` and `mv` that the sweep silently dropped. Fix: when over-cap, the rotation now executes inside `with_cross_session_log_lock` via the new private body `_do_cap_cross_session_jsonl`. The cheap pre-check (`wc -l ≤ cap`) stays unlocked so the steady-state cap-not-needed path pays no lock cost; under contention, peers race the lock, the first peer trims, the rest re-validate inside the lock and return early. Writers to the underlying JSONL still append unlocked relying on POSIX-line atomicity (PIPE_BUF-bounded rows).
+
+- **`sweep_stale_sessions` marker corruption guard** (sre F-3). The pre-Wave-3 implementation read `last_sweep` via `cat … || echo 0` and fed it directly into `$(( now - last_sweep ))`. A zero-byte marker (truncated by a crashed prior write) or a non-numeric marker (manual mis-edit, partial write from disk-full) would either crash the hook under `set -euo pipefail` (empty/non-numeric in bash arithmetic errors) or evaluate as `(( now - 0 ))` causing the sweep to re-run on every `common.sh` source — a CPU storm where every hook invocation walks STATE_ROOT with `find -mtime`. Fix: validate the marker matches `^[0-9]+$` before the arithmetic; on corrupt input, stamp a fresh epoch and skip THIS round (next call in 24h proceeds normally). Emits `log_anomaly "sweep_stale_sessions"` so the corruption is visible in `/ulw-report` rather than silently swallowed.
+
+- **Post-sweep marker write soft-fails** (defensive nit caught in Wave 3). The post-sweep `printf > "${marker}"` was unprotected; a full disk or read-only mount would have surfaced as a non-zero exit propagated through every `common.sh` source. Now `|| true`'d — if the write silently fails, the OLD marker still gates correctly until the disk condition is independently fixed.
+
+- **Test coverage**: test-cross-session-rotation grows 16→23 with Test 11 (cap routes through `with_cross_session_log_lock` — structural assertion against open-coded regression) and Test 12 (3-case sweep marker guard — zero-byte, garbage, valid-recent). Test 7's substring-grep tightened to `(^|[^a-zA-Z0-9_])_cap_cross_session_jsonl` so the new `_do_cap_cross_session_jsonl` inner helper doesn't inflate the call-site count. **Existing regressions:** test-state-io 61/61, test-common-utilities 388/388, test-concurrency 5/5, test-cross-session-lock 14/14, test-prompt-persist 19/19, test-e2e-hook-sequence 355/355, test-stop-failure-handler 70/70. **935 assertions verified.** Shellcheck clean.
+
+- **Pre-existing test-timing T37 (sparkline byte/char count) noted, not introduced by Wave 3.** Local bash 3.2 measures `${#var}` in bytes (a 3-char UTF-8 sparkline `▂█▃` is 9 bytes); Linux CI uses bash 5+ which counts chars. v1.29.0 CI was green and this wave introduces no timing changes — same failure reproduces at HEAD~1. Same code-path family condition for the Serendipity Rule does NOT hold (timing rendering ≠ cross-session rotation); deferred as a v1.28 Linux-portability follow-up rather than fixed in this wave.
+
 ### v1.30.0 Wave 2 — Lock primitive unification + PID recovery generalization
 
 Closes the v1.29.0 sre-lens P1-5 (PID-recovery generalization) + abstraction-critic F-1 (six near-identical with_*_lock helpers). One private primitive replaces six copy-paste bodies; PID-based stale recovery now applies to every lock site instead of just `with_state_lock`.
