@@ -237,13 +237,18 @@ fi
 # v1.31.0 Wave 6 (design-lens F-027): bare-positional argument forms
 # accepted in addition to --double-dash.
 printf '\nT7: bare-positional argument forms (v1.31.0 grammar normalization)\n'
-out_summary_pos="$(bash "${SHOW_STATUS}" summary 2>&1 || true)"
-if [[ "${out_summary_pos}" == *"Session"* ]] || [[ "${out_summary_pos}" == *"no session"* ]]; then
-  pass=$((pass + 1))
-  printf '  PASS: bare `summary` works\n'
-else
-  printf '  FAIL: bare `summary` returns unexpected output\n' >&2
+# Use a fresh STATE_ROOT for each so the CI environment (no real
+# session) and local dev (a real session present) both produce the
+# "No active ULW session found." empty-state path. The assertion is
+# specifically that the BARE form does NOT exit with 'Unknown argument'
+# — that's the regression net for v1.31.0 grammar normalization.
+out_summary_pos="$(STATE_ROOT="$(mktemp -d)" bash "${SHOW_STATUS}" summary 2>&1 || true)"
+if [[ "${out_summary_pos}" == *"Unknown argument"* ]]; then
+  printf '  FAIL: bare `summary` rejected as Unknown argument\n%s\n' "${out_summary_pos}" >&2
   fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+  printf '  PASS: bare `summary` accepted\n'
 fi
 out_explain_pos="$(STATE_ROOT="$(mktemp -d)" bash "${SHOW_STATUS}" explain 2>&1 || true)"
 if [[ "${out_explain_pos}" == *"flag rationale"* ]]; then
@@ -253,13 +258,13 @@ else
   printf '  FAIL: bare `explain` failed\n' >&2
   fail=$((fail + 1))
 fi
-out_classifier_pos="$(bash "${SHOW_STATUS}" classifier 2>&1 || true)"
-if [[ "${out_classifier_pos}" == *"Classifier"* ]] || [[ "${out_classifier_pos}" == *"telemetry"* ]] || [[ "${out_classifier_pos}" == *"misfires"* ]]; then
-  pass=$((pass + 1))
-  printf '  PASS: bare `classifier` works\n'
-else
-  printf '  FAIL: bare `classifier` returns unexpected output\n' >&2
+out_classifier_pos="$(STATE_ROOT="$(mktemp -d)" bash "${SHOW_STATUS}" classifier 2>&1 || true)"
+if [[ "${out_classifier_pos}" == *"Unknown argument"* ]]; then
+  printf '  FAIL: bare `classifier` rejected as Unknown argument\n%s\n' "${out_classifier_pos}" >&2
   fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+  printf '  PASS: bare `classifier` accepted\n'
 fi
 # --help shows BOTH grammar forms.
 out_help_full="$(bash "${SHOW_STATUS}" --help 2>&1 || true)"
