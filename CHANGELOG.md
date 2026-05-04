@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.31.2] - 2026-05-04
+
+Tag-hygiene hotfix. v1.31.1 was tagged before the second CI miss (install.sh "What's new" cap budget) was discovered. Bumping to v1.31.2 so the latest released tag points at a green commit instead of force-pushing v1.31.1.
+
+Combined fixes shipped in v1.31.1 + the post-tag commit:
+- T7 sterile-CI matcher (test-show-status)
+- "What's new" cap raised 6 → 10 (install.sh + test-install-whats-new)
+
+CI: green on Ubuntu (all 32 bash tests + 128 Python statusline tests).
+
 ## [1.31.1] - 2026-05-04
 
 Hotfix release. v1.31.0 shipped with two test-suite regressions that local-dev (with populated state + CHANGELOG history shorter than the Wave 7 changelog growth) did not exercise. Production harness behavior is unchanged from v1.31.0 — only the test surface and the changelog-cap budget were adjusted.
