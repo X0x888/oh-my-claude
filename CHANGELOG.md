@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.31.1] - 2026-05-04
+
+Hotfix release. v1.31.0 shipped with a sterile-CI test-harness regression in `tests/test-show-status.sh:T7` that the local-dev suite did not catch (local sessions had populated state; CI ran in an empty `STATE_ROOT` and hit the empty-state path which my substring matcher missed). The production harness behavior is unchanged from v1.31.0 — only the test-side assertion was tightened.
+
+- **`tests/test-show-status.sh:T7` robustness for empty-state environments** (sterile CI fix). Pre-Wave-1.31.1 the matcher checked for `*"Session"*` (capital-S) substring and `*"no session"*` (lowercase). Linux CI's empty `STATE_ROOT` produces `"No active ULW session found."` — capital-N "No", lowercase-s "session" — neither pattern matched. Tightened the assertion to the actual regression net: the BARE positional form must NOT exit with `"Unknown argument"` (the v1.31.0 grammar-normalization regression that T7 exists to catch). Each sub-test now uses a fresh `STATE_ROOT="$(mktemp -d)"` so CI Linux and local macOS both exercise the empty-state branch identically.
+
+CI: 32/32 bash tests + 128/128 Python statusline tests on Ubuntu (post-fix run https://github.com/X0x888/oh-my-claude/actions/runs/25342174737).
+
 ## [1.31.0] - 2026-05-04
 
 This release responds to the user's request for a comprehensive nine-lens evaluation (product, sre, security, design/UX, data, growth, visual-craft, abstraction-critic, metis). v1.31.0 ships across 9 waves grouped by surface area; 33 of 39 findings ship with 6 paradigm-shift items deferred to v1.32 with named WHYs (conf flag posture-first refactor, directive registry refactor, common.sh split, gate-fire outcome attribution, retention-nudge surfaces, outcomes-first README authoring).
