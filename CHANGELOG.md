@@ -4,6 +4,43 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.30.0] - 2026-05-04
+
+This release responds to the user's request for a comprehensive post-v1.29.0 evaluation. A multi-lens council (product, sre, security, growth, abstraction-critic) surfaced ~30 findings; v1.30.0 ships the actionable surface-aligned subset across 7 waves. ~615 LOC net additions across the bundle (excluding tests + CHANGELOG); 6 of 9 v1.29.0 wave-deferred items closed; 1 architectural-deferral closed (lock-primitive unification, abstraction-critic F-1).
+
+**Headline wins:**
+- **Privacy horizon close-out** (Wave 1): `prompt_persist=off` flag — the in-session prompt-text horizon distinct from `auto_memory` and `pretool_intent_guard=off`. When off: skips `recent_prompts.jsonl` writes, clears `last_user_prompt` in state, propagates through `stop-failure-handler.sh` → `resume_request.json` (cross-session) and `pre-compact-snapshot.sh` → compact-handoff. Strongest privacy posture for shared/regulated machines: `state_ttl_days=1` + `prompt_persist=off` + `auto_memory=off`.
+- **Lock primitive unification** (Wave 2): one private `_with_lockdir <lockdir> <tag> <cmd> [args...]` primitive replaces six near-identical `with_*_lock` bodies (`with_metrics_lock`, `with_defect_lock`, `with_resume_lock`, `with_skips_lock`, `with_cross_session_log_lock`, `with_scope_lock`) plus `with_state_lock`. PID-based stale recovery (v1.29.0 metis F-6 pattern) generalized from `with_state_lock` to all sister locks. **-143 LOC net** in common.sh + state-io.sh combined. Naturally fixes v1.29.0 sre-lens F-5 (silent `with_skips_lock` exhaustion).
+- **Cross-session correctness** (Wave 3): `_cap_cross_session_jsonl` cap-race fix (sre F-2) — rotation now executes inside `with_cross_session_log_lock`; cheap pre-check stays unlocked so steady-state pays no lock cost. Sweep marker corruption guard (sre F-3) — non-numeric marker resets to current epoch and skips this round, closing the CPU-storm path.
+- **First-session welcome banner** (Wave 4): new `session-start-welcome.sh` SessionStart hook closes the v1.29.0 growth P0-3 silent-dropoff trap. Triple-tier idempotency: per-install (via `.welcome-shown-at`), per-session pre-prompt (skip when `recent_prompts.jsonl` exists), per-session within-session (via `welcome_banner_emitted=1`).
+- **Update-path "what's new since v$prev"** (Wave 5): install.sh captures `PRIOR_INSTALLED_VERSION` before overwriting; awk extracts CHANGELOG version headings between prior and current; renders 3-bullet summary in the install footer (capped at 6 entries with truncation marker). Closes v1.29.0 product P2-10 / growth P2-10.
+- **Stop-hook output primitive** (Wave 6): `emit_stop_message` + `emit_stop_block` helpers in common.sh encode the Stop-hook output schema. 14 inline emit sites migrated. The v1.24/v1.25 `additionalContext`-silently-dropped trap is now structurally impossible — the helper signature has no parameter for `additionalContext`. Plus a Serendipity Rule fix: 13 literal `·`/etc. escape sequences in bash double-quoted strings replaced with their UTF-8 counterparts (jq was wire-emitting `\\u00b7` instead of `·` in user-visible block messages).
+- **`/ulw-status --explain` + output-style preview** (Wave 7): per-flag rationale walker grouped by cluster; output-style side-by-side preview in customization.md.
+
+**~3500 test assertions verified across 30+ test files** through the full wave chain. No behavior regressions.
+
+**Wave-deferred small items remaining** (rolled to a future cycle):
+- Watchdog `claude` binary pin (security-lens F-5) — bigger surface, watchdog opt-in (default off), narrow PATH-hijack threat model.
+- PID-based recovery for `_cap_cross_session_jsonl` open-coded race (sre P1-4 part a — partially closed in Wave 3 but the unlocked appender path remains).
+- Resume-watchdog `prior_*_ts` snapshot under lock (metis F-7) — protocol redesign.
+- `/ulw-report --share` exportable card (growth F-6 — viral / shareability surface).
+- README SEO + GitHub topics (growth F-7).
+- README first-impression social-proof badge (growth F-3).
+
+### v1.30.0 Wave 7 — `/ulw-status --explain` + output-style preview docs
+
+Closes the v1.29.0 product-lens P2-10 (`/ulw-status --explain` mode) and product-lens P2-9 (output-styles side-by-side preview in `docs/customization.md`) deferred items. Both rolled into the v1.30.0 final wave for UX polish.
+
+- **`show-status.sh --explain` mode** (`bundle/dot-claude/skills/autowork/scripts/show-status.sh`). New flag walks the `omc-config.sh:emit_known_flags` manifest and prints each known oh-my-claude conf flag's current value, default, and one-line purpose, grouped by cluster (gates / advisory / memory / telemetry / cost / watchdog / cleanup). Non-default values are flagged with `*`. Closes the user-visible "I want to disable a flag but don't know what it does" gap that previously required reading the 422-line `oh-my-claude.conf.example` file. Conf precedence walks project conf → user conf → default. Session-independent (renders correctly on a pristine install with no session state). Subshell pattern with `set --` clears positional args before sourcing omc-config.sh so the source's bottom-line `main "$@"` doesn't trigger the unknown-subcommand exit-2 path.
+
+- **`/ulw-status` skill body extended** (`bundle/dot-claude/skills/ulw-status/SKILL.md`). New `explain | -e | --explain` argument routes through. Frontmatter description updated to mention all three modes.
+
+- **Output-style voice preview side-by-side** (`docs/customization.md` § Output Style). New "Voice preview — side-by-side" subsection extracted from the `bundle/dot-claude/output-styles/executive-brief.md` example. Shows the same `/ulw` outcome rendered in both bundled styles (`oh-my-claude` voice vs. `executive-brief` voice) with the *what changes* / *what does not change* commentary preserved.
+
+- **Test coverage**: extends `tests/test-show-status.sh` with Test 6 (5 assertions): `--explain` rationale header, `prompt_persist` surfaced with description, cluster grouping, session-independence, `--help` documents `--explain`. **Test count: 14 → 19** in test-show-status.sh.
+
+- **Existing regressions clean**: test-output-style-coherence 35/35, test-omc-config 122/122. Shellcheck clean.
+
 ### v1.30.0 Wave 6 — Stop-hook output primitive + literal-escape Serendipity fix
 
 Closes v1.29.0 abstraction-critic F-3 (three Stop-hook sites hand-rolled `{systemMessage:...}` / `{decision:"block",...}` shapes guarded only by 3-paragraph cautionary comments). The v1.24.0 / v1.25.0 `additionalContext`-silently-dropped bug was fixed via prose discipline; v1.30.0 encodes the contract in a primitive so the next Stop-hook author cannot misspell the schema.
