@@ -27,12 +27,12 @@ emit_scorecard_stop_context() {
   # `printf -v` is required for real newlines: bash double-quoted `\n`
   # is two literal characters (backslash + n), and jq's `--arg` passes
   # them through verbatim — the user would otherwise see `\n` glyphs at
-  # the header/footer joins. Pre-fix this was masked by the wrong schema
-  # silently dropping the entire field; once we switched to `systemMessage`
-  # the latent quoting bug surfaced.
+  # the header/footer joins. v1.30.0: emit_stop_message (common.sh)
+  # encodes the {systemMessage: $body} schema so this site cannot
+  # regress to additionalContext.
   local body
   printf -v body '%s\n%s\n%s' "${header}" "${scorecard}" "${footer}"
-  jq -nc --arg sc "${body}" '{systemMessage: $sc}'
+  emit_stop_message "${body}"
 }
 
 last_assistant_message="$(json_get '.last_assistant_message')"
@@ -121,7 +121,7 @@ if ! is_execution_intent_value "${task_intent}"; then
         write_state "advisory_guard_blocks" "$((advisory_guard_blocks + 1))"
         record_gate_event "advisory" "block" "block_count=1" "block_cap=1"
         advisory_recovery="$(format_gate_recovery_line "read or search the affected code (Read/Grep/Glob), then re-issue your summary citing files inspected. To bypass once with reason, run /ulw-skip.")"
-        jq -nc --arg reason "[Advisory gate \u00b7 1/1] this is an advisory task over a codebase, but no code inspection or build/test verification was detected. Before finalizing your response, read or search the actual codebase to ground your recommendations in evidence. If you have already inspected code via other means, briefly list the files inspected and restate your key recommendation at the end.${advisory_recovery}" '{"decision":"block","reason":$reason}'
+        emit_stop_block "[Advisory gate · 1/1] this is an advisory task over a codebase, but no code inspection or build/test verification was detected. Before finalizing your response, read or search the actual codebase to ground your recommendations in evidence. If you have already inspected code via other means, briefly list the files inspected and restate your key recommendation at the end.${advisory_recovery}"
         exit 0
       fi
     fi
@@ -138,7 +138,7 @@ fi
 # bundle/dot-claude/skills/autowork/scripts/ulw-pause.sh and cleared
 # automatically at the next user prompt by prompt-intent-router.sh.
 # This is the only structured "I'm legitimately paused, not stalling"
-# signal in the harness \u2014 see /ulw-pause SKILL.md for usage.
+# signal in the harness — see /ulw-pause SKILL.md for usage.
 ulw_pause_active="$(read_state "ulw_pause_active" 2>/dev/null || true)"
 if [[ "${ulw_pause_active}" != "1" ]] \
   && [[ -n "${last_assistant_message}" ]] \
@@ -148,8 +148,8 @@ if [[ "${ulw_pause_active}" != "1" ]] \
     write_state "session_handoff_blocks" "$((session_handoff_blocks + 1))"
     record_gate_event "session-handoff" "block" \
       "block_count=$((session_handoff_blocks + 1))" "block_cap=2"
-    handoff_recovery="$(format_gate_recovery_line "continue the deferred work now in this session, OR ask the user explicitly whether they want a checkpoint. If you are pausing because the user must decide something you cannot decide autonomously, run /ulw-pause <reason> instead \u2014 that signals a legitimate pause without tripping this gate. To bypass once with reason, run /ulw-skip.")"
-    jq -nc --arg reason "[Session-handoff gate \u00b7 $((session_handoff_blocks + 1))/2] your last response explicitly deferred remaining work to a future session. In ultrawork mode, do not stop with 'next wave', 'next phase', or 'ready for a new session' language unless the user explicitly asked for a checkpoint. Continue the remaining work now. If you genuinely must pause for user input, explain the hard blocker or run /ulw-pause <reason>; if you want to checkpoint, ask the user whether they want a checkpoint.${handoff_recovery}" '{"decision":"block","reason":$reason}'
+    handoff_recovery="$(format_gate_recovery_line "continue the deferred work now in this session, OR ask the user explicitly whether they want a checkpoint. If you are pausing because the user must decide something you cannot decide autonomously, run /ulw-pause <reason> instead — that signals a legitimate pause without tripping this gate. To bypass once with reason, run /ulw-skip.")"
+    emit_stop_block "[Session-handoff gate · $((session_handoff_blocks + 1))/2] your last response explicitly deferred remaining work to a future session. In ultrawork mode, do not stop with 'next wave', 'next phase', or 'ready for a new session' language unless the user explicitly asked for a checkpoint. Continue the remaining work now. If you genuinely must pause for user input, explain the hard blocker or run /ulw-pause <reason>; if you want to checkpoint, ask the user whether they want a checkpoint.${handoff_recovery}"
     exit 0
   fi
 fi
@@ -224,7 +224,7 @@ ${_es_recovery}"
       if [[ "${OMC_GUARD_EXHAUSTION_MODE}" == "block" && "${_es_blocks}" -ge "${_es_cap}" ]]; then
         _es_reason="${_es_reason} BLOCK MODE: this gate will not release until the checklist is satisfied."
       fi
-      jq -nc --arg reason "${_es_reason}" '{"decision":"block","reason":$reason}'
+      emit_stop_block "${_es_reason}"
       exit 0
     fi
 
@@ -274,15 +274,15 @@ if [[ "${OMC_DISCOVERED_SCOPE}" == "on" ]] \
       "total_findings=${_ws_total}" \
       "wave_total=${_ws_waves}" \
       "avg_per_wave=${_ws_avg}"
-    wave_shape_recovery="$(format_gate_recovery_line "merge adjacent wave surfaces so the plan reaches avg \u22653 findings/wave (5-10/wave is the canonical target; 3 is the minimum). Re-issue \`record-finding-list.sh assign-wave\` with the merged plan \u2014 note that re-issuing assign-wave alone won't re-arm this gate, so reconcile in one pass. To bypass once with reason \u2014 e.g., 'each finding owns a genuinely separate critical surface' \u2014 run /ulw-skip.")"
-    jq -nc --arg reason "[Wave-shape gate \u00b7 1/1] the active wave plan is under-segmented: ${_ws_total} findings across ${_ws_waves} waves (avg ${_ws_avg}/wave; the canonical Phase 8 rule in council/SKILL.md Step 8 is 5-10 findings/wave with \u22653 as the hard floor). Single-finding waves are acceptable only when (a) the master list itself has <5 findings, or (b) one finding is critical enough to own its own wave (rare \u2014 name the reason). Reconcile the plan before proceeding through the wave cycle.${wave_shape_recovery}" '{"decision":"block","reason":$reason}'
+    wave_shape_recovery="$(format_gate_recovery_line "merge adjacent wave surfaces so the plan reaches avg ≥3 findings/wave (5-10/wave is the canonical target; 3 is the minimum). Re-issue \`record-finding-list.sh assign-wave\` with the merged plan — note that re-issuing assign-wave alone won't re-arm this gate, so reconcile in one pass. To bypass once with reason — e.g., 'each finding owns a genuinely separate critical surface' — run /ulw-skip.")"
+    emit_stop_block "[Wave-shape gate · 1/1] the active wave plan is under-segmented: ${_ws_total} findings across ${_ws_waves} waves (avg ${_ws_avg}/wave; the canonical Phase 8 rule in council/SKILL.md Step 8 is 5-10 findings/wave with ≥3 as the hard floor). Single-finding waves are acceptable only when (a) the master list itself has <5 findings, or (b) one finding is critical enough to own its own wave (rare — name the reason). Reconcile the plan before proceeding through the wave cycle.${wave_shape_recovery}"
     exit 0
   fi
 fi
 
 # Discovered-scope gate: when advisory specialists (council lenses, metis,
 # briefing-analyst) emit findings during this session, the model must
-# explicitly account for each one before stopping \u2014 either ship the fix,
+# explicitly account for each one before stopping — either ship the fix,
 # defer with a stated reason, or call it out as known follow-up risk.
 # Silent skipping is the failure mode this gate catches.
 if [[ "${OMC_DISCOVERED_SCOPE}" == "on" ]] \
@@ -327,12 +327,10 @@ if [[ "${OMC_DISCOVERED_SCOPE}" == "on" ]] \
         "wave_total=${wave_total}" \
         "waves_completed=${waves_completed:-0}"
       scope_recovery="$(format_gate_recovery_line "ship/defer/call-out each pending finding individually in your summary, OR run /mark-deferred <reason> to bulk-defer all pending. If you fixed a verified adjacent defect on the same code path during this work, log it via ~/.claude/skills/autowork/scripts/record-serendipity.sh per the Serendipity Rule (core.md). To bypass once with reason, run /ulw-skip.")"
-      jq -nc \
-        --arg reason "[Discovered-scope gate \u00b7 $((discovered_scope_blocks + 1))/${scope_block_cap}] ${pending_count} finding(s) from advisory specialists were captured this session but not addressed in your final summary.${wave_progress} Top pending findings (severity-ranked):
+      emit_stop_block "[Discovered-scope gate · $((discovered_scope_blocks + 1))/${scope_block_cap}] ${pending_count} finding(s) from advisory specialists were captured this session but not addressed in your final summary.${wave_progress} Top pending findings (severity-ranked):
 ${scorecard}
 
-For each pending item, do one of: (a) **ship the fix** and reference the file/line in your summary (preferred when the finding is on a surface you are already loaded into — most discovered findings qualify); (b) **append to the active wave plan** via \`record-finding-list.sh add-finding\` + \`assign-wave\` when a wave plan exists and the finding is same-surface or naturally extends the next wave (the harness already has wave-append infrastructure for this); (c) **explicitly defer with a named WHY** via /mark-deferred — the reason must name what the deferral is *waiting on*: 'requires database migration outside this session’s surface', 'blocked by F-042 fix shipping first', 'awaiting stakeholder pricing decision', or 'duplicate'/'obsolete'/'superseded' (self-explanatory single tokens). Bare 'out of scope' / 'not in scope' / 'follow-up' / 'separate task' are rejected by the validator as silent-skip patterns; (d) call it out as a known follow-up risk in your summary when no commitment is being made. Silent skipping is the anti-pattern this gate exists to catch.${scope_recovery}" \
-        '{"decision":"block","reason":$reason}'
+For each pending item, do one of: (a) **ship the fix** and reference the file/line in your summary (preferred when the finding is on a surface you are already loaded into — most discovered findings qualify); (b) **append to the active wave plan** via \`record-finding-list.sh add-finding\` + \`assign-wave\` when a wave plan exists and the finding is same-surface or naturally extends the next wave (the harness already has wave-append infrastructure for this); (c) **explicitly defer with a named WHY** via /mark-deferred — the reason must name what the deferral is *waiting on*: 'requires database migration outside this session’s surface', 'blocked by F-042 fix shipping first', 'awaiting stakeholder pricing decision', or 'duplicate'/'obsolete'/'superseded' (self-explanatory single tokens). Bare 'out of scope' / 'not in scope' / 'follow-up' / 'separate task' are rejected by the validator as silent-skip patterns; (d) call it out as a known follow-up risk in your summary when no commitment is being made. Silent skipping is the anti-pattern this gate exists to catch.${scope_recovery}"
       exit 0
     fi
   fi
@@ -468,9 +466,9 @@ if [[ "${missing_review}" -eq 0 ]]; then
 fi
 
 if [[ "${task_domain}" == "writing" || "${task_domain}" == "research" || "${task_domain}" == "operations" || "${task_domain}" == "general" ]]; then
-  reason="[Quality gate \u00b7 $((guard_blocks + 1))/3] the deliverable changed but the final quality loop is incomplete."
+  reason="[Quality gate · $((guard_blocks + 1))/3] the deliverable changed but the final quality loop is incomplete."
 else
-  reason="[Quality gate \u00b7 $((guard_blocks + 1))/3] edits were made but the final quality loop is incomplete."
+  reason="[Quality gate · $((guard_blocks + 1))/3] edits were made but the final quality loop is incomplete."
 fi
 
 if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed}" -eq 0 && "${verify_low_confidence}" -eq 0 && "${review_unremediated}" -eq 0 ]]; then
@@ -548,7 +546,7 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
             fi
           done
 
-          dim_reason="[Review coverage \u00b7 $((dim_blocks + 1))/3 \u00b7 ${_done_dims}/${_total_dims} dimensions] complex task requires prescribed review coverage. Progress:${_checklist}\nNext step: run \`${next_reviewer}\` to cover ${next_description}. Each reviewer owns a distinct review area \u2014 do not substitute or reorder. After the reviewer returns, address any findings, then retry stop. After completing this, restate your key deliverable summary at the end of your response."
+          dim_reason="[Review coverage · $((dim_blocks + 1))/3 · ${_done_dims}/${_total_dims} dimensions] complex task requires prescribed review coverage. Progress:${_checklist}\nNext step: run \`${next_reviewer}\` to cover ${next_description}. Each reviewer owns a distinct review area — do not substitute or reorder. After the reviewer returns, address any findings, then retry stop. After completing this, restate your key deliverable summary at the end of your response."
           if [[ "${dim_blocks}" -ge 2 ]]; then
             dim_reason="${dim_reason} NOTE: this is the final review-coverage block — the next stop attempt will bypass this check."
           fi
@@ -557,7 +555,7 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
             "missing_dims=${missing_dims}" \
             "next_reviewer=${next_reviewer}" \
             "done_dims=${_done_dims}" "total_dims=${_total_dims}"
-          jq -nc --arg reason "${dim_reason}" '{"decision":"block","reason":$reason}'
+          emit_stop_block "${dim_reason}"
           exit 0
         else
           # Review coverage gate exhaustion: handle based on mode
@@ -571,7 +569,7 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
           case "${OMC_GUARD_EXHAUSTION_MODE}" in
             block)
               dim_reason="[Review coverage · BLOCK MODE] Guard exhaustion reached but block mode prevents release. QUALITY SCORECARD:\n${scorecard}\nMissing: ${_missing_descriptions}. Address the remaining reviews or switch to guard_exhaustion_mode=scorecard."
-              jq -nc --arg reason "${dim_reason}" '{"decision":"block","reason":$reason}'
+              emit_stop_block "${dim_reason}"
               exit 0
               ;;
             scorecard)
@@ -621,7 +619,7 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
     record_gate_event "excellence" "block" "block_count=1" "block_cap=1" \
       "edited_count=${unique_edited_count}"
     excellence_recovery="$(format_gate_recovery_line "dispatch the excellence-reviewer agent on the wave diff, then restate your deliverable summary. To bypass once with reason (e.g., already self-audited), run /ulw-skip.")"
-    jq -nc --arg reason "[Excellence gate \u00b7 1/1] standard review and verification passed, but this is a complex task (${unique_edited_count} files edited). Before finalizing, run excellence-reviewer for a fresh-eyes holistic evaluation — completeness against the original objective, unknown unknowns, and what a veteran would add. If you have already done a thorough self-assessment and are confident the deliverable is complete and excellent, explain your reasoning and stop. After the excellence review, restate your key deliverable summary at the end of your response.${excellence_recovery}" '{"decision":"block","reason":$reason}'
+    emit_stop_block "[Excellence gate · 1/1] standard review and verification passed, but this is a complex task (${unique_edited_count} files edited). Before finalizing, run excellence-reviewer for a fresh-eyes holistic evaluation — completeness against the original objective, unknown unknowns, and what a veteran would add. If you have already done a thorough self-assessment and are confident the deliverable is complete and excellent, explain your reasoning and stop. After the excellence review, restate your key deliverable summary at the end of your response.${excellence_recovery}"
     exit 0
   fi
   fi # end gate_level full|standard (excellence gate)
@@ -669,7 +667,7 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
         "block_count=1" "block_cap=1" \
         "complexity_signals=${plan_complexity_signals}"
       metis_recovery="$(format_gate_recovery_line "dispatch the metis agent on the current plan to stress-test for hidden assumptions, missing constraints, and weak validation. To bypass once with reason (e.g., simple greenfield plan), run /ulw-skip.")"
-      jq -nc --arg reason "[Metis-on-plan gate · 1/1] the current plan was flagged high-complexity (${plan_complexity_signals}) but no metis stress-test review has run since the plan was recorded. The bias-defense layer requires a fresh-eyes pressure test before execution to catch wrong-abstraction or missing-constraint risks the main thread may have committed to. After metis returns, restate your deliverable summary at the end of your response.${metis_recovery}" '{"decision":"block","reason":$reason}'
+      emit_stop_block "[Metis-on-plan gate · 1/1] the current plan was flagged high-complexity (${plan_complexity_signals}) but no metis stress-test review has run since the plan was recorded. The bias-defense layer requires a fresh-eyes pressure test before execution to catch wrong-abstraction or missing-constraint risks the main thread may have committed to. After metis returns, restate your deliverable summary at the end of your response.${metis_recovery}"
       exit 0
     fi
   fi
@@ -697,7 +695,7 @@ if [[ "${guard_blocks}" -ge 3 ]]; then
   case "${OMC_GUARD_EXHAUSTION_MODE}" in
     block)
       # Never release — keep blocking with scorecard
-      jq -nc --arg reason "[Quality gate · BLOCK MODE] Guard exhaustion reached but block mode prevents release. QUALITY SCORECARD:\n${scorecard}\nAddress the remaining items or switch to guard_exhaustion_mode=scorecard in oh-my-claude.conf." '{"decision":"block","reason":$reason}'
+      emit_stop_block "[Quality gate · BLOCK MODE] Guard exhaustion reached but block mode prevents release. QUALITY SCORECARD:\n${scorecard}\nAddress the remaining items or switch to guard_exhaustion_mode=scorecard in oh-my-claude.conf."
       exit 0
       ;;
     scorecard)
@@ -871,4 +869,4 @@ record_gate_event "quality" "block" \
   "verify_failed=${verify_failed}" \
   "verify_low_confidence=${verify_low_confidence}" \
   "review_unremediated=${review_unremediated}"
-jq -nc --arg reason "${reason}" '{"decision":"block","reason":$reason}'
+emit_stop_block "${reason}"

@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### v1.30.0 Wave 6 — Stop-hook output primitive + literal-escape Serendipity fix
+
+Closes v1.29.0 abstraction-critic F-3 (three Stop-hook sites hand-rolled `{systemMessage:...}` / `{decision:"block",...}` shapes guarded only by 3-paragraph cautionary comments). The v1.24.0 / v1.25.0 `additionalContext`-silently-dropped bug was fixed via prose discipline; v1.30.0 encodes the contract in a primitive so the next Stop-hook author cannot misspell the schema.
+
+- **`emit_stop_message <body>` + `emit_stop_block <reason>` primitives** (`bundle/dot-claude/skills/autowork/scripts/common.sh`). Both render the canonical Stop-hook output shapes — `{systemMessage: $msg}` for non-blocking user-visible Stop output, `{decision: "block", reason: $reason}` for Stop-blocking output. Function signatures have no parameter for `additionalContext`, so the v1.24.0 / v1.25.0 bug class is now structurally impossible.
+
+- **All 11 inline emit-block sites in `stop-guard.sh` migrated** to `emit_stop_block` one-liners: advisory gate (~L124), session-handoff gate (~L152), exemplifying-scope gate (~L227), wave-shape gate (~L278), discovered-scope gate (~L335 — the multi-line scorecard), dimension gate ×2 (~L560/574), excellence gate (~L624), metis-on-plan gate (~L672), quality block-mode (~L700), quality default-fallback (~L874). The 3 `emit_stop_message` sites (`stop-guard.sh:35`, `stop-time-summary.sh:126`, `canary-claim-audit.sh:81`) were already using the primitive in pre-positioned work.
+
+- **Serendipity Rule fix** (verified · same code path · bounded): the file on disk contained literal ASCII escape sequences (`·`, `≥3`, `—`, `…`, `–`) inside bash double-quoted strings. Bash does NOT interpret `\uXXXX` in double-quoted strings, so jq received the 6-char ASCII run and emitted `\\u00b7` on the JSON wire — the Claude Code consumer then rendered LITERAL `·` in user-visible block messages instead of `·`. Verified via hexdump (file bytes were `5c 75 30 30 62 37`, not the UTF-8 `c2 b7`) and via a `jq -nc --arg msg ... '{systemMessage:$msg}'` reproduction. Replaced all 13 escape instances with their UTF-8 counterparts (`·`, `≥`, `—`, `…`, `–`). Logged via `record-serendipity.sh`.
+
+- **Watchdog `claude` binary pin (security-lens F-5) deferred** to a follow-up. The watchdog runs as a daemon with potentially different `PATH` from the user's interactive shell — if `~/.local/bin/claude` ships before `/usr/local/bin/claude` in the daemon's PATH and an attacker drops a `claude` shim there (compromised npm postinstall, etc.), the watchdog launches the shim. The pin (capture absolute path at install time, validate at launch) needs install-time integration with `install-resume-watchdog.sh` and is opt-in feature surface; rolling into a future wave so it can land with focused security regression coverage.
+
+- **Test coverage** (no test changes required — public surface preserved): test-quality-gates 101/101, test-e2e-hook-sequence 355/355, test-discovered-scope 92/92, test-state-io 61/61, test-stop-failure-handler 70/70, test-prompt-persist 19/19. Shellcheck clean.
+
 ### v1.30.0 Wave 5 — Update-path "what's new since v$prev"
 
 Closes the v1.29.0 product-lens P2-10 / growth-lens P2-10 deferral. Users running `git pull && bash install.sh` weekly previously saw `Version: <semver>` in the install footer with zero in-context awareness of what changed since their prior install — they had to know to open `CHANGELOG.md` themselves. v1.29.0 shipped 35+ findings across 8 waves; v1.30.0 has shipped ~25 more and counting; the gap matters.

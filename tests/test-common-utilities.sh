@@ -2014,6 +2014,61 @@ fi
 # Summary
 # ===========================================================================
 
+# ===========================================================================
+# emit_stop_message + emit_stop_block helpers (v1.30.0 Wave 6)
+# ===========================================================================
+# These primitives encode the Stop-hook output contract. v1.24/v1.25 shipped
+# the bug where `hookSpecificOutput.additionalContext` was used at Stop and
+# silently dropped. Locking the schema in helpers (and asserting hand-rolled
+# emits stay extinct in the stop-* / canary scripts) prevents the future-author
+# regression.
+printf '\n--- emit_stop_message + emit_stop_block ---\n'
+
+emsg_out="$(emit_stop_message "card body")"
+assert_eq "emit_stop_message produces systemMessage body" "card body" \
+  "$(printf '%s' "${emsg_out}" | jq -r '.systemMessage // empty')"
+
+# Negative assertion — must NOT have hookSpecificOutput.
+if [[ "$(printf '%s' "${emsg_out}" | jq -r 'has("hookSpecificOutput")')" == "false" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: emit_stop_message included hookSpecificOutput (forbidden at Stop)\n' >&2
+  fail=$((fail + 1))
+fi
+
+eblk_out="$(emit_stop_block "block reason")"
+assert_eq "emit_stop_block produces decision=block" "block" \
+  "$(printf '%s' "${eblk_out}" | jq -r '.decision // empty')"
+assert_eq "emit_stop_block produces reason=block reason" "block reason" \
+  "$(printf '%s' "${eblk_out}" | jq -r '.reason // empty')"
+
+# Multi-line body preservation (time-card uses real newlines).
+nl_body="$(printf 'line1\nline2\nline3')"
+nl_out="$(emit_stop_message "${nl_body}")"
+assert_eq "emit_stop_message preserves embedded newlines" \
+  "${nl_body}" "$(printf '%s' "${nl_out}" | jq -r '.systemMessage')"
+
+# Schema regression net: stop-guard, stop-time-summary, canary-claim-audit
+# must NOT contain hand-rolled jq emits with `{systemMessage:` or
+# `{"decision":"block"`. Future sites should always route through the helpers.
+hand_rolled_total=0
+for hook in stop-guard.sh stop-time-summary.sh canary-claim-audit.sh; do
+  _hr_count="$(grep -c 'jq -nc --arg.*systemMessage\|jq -nc --arg.*"decision":"block"' \
+    "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/${hook}" 2>/dev/null || true)"
+  hand_rolled_total=$((hand_rolled_total + ${_hr_count:-0}))
+done
+if [[ "${hand_rolled_total}" -eq 0 ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: %s hand-rolled Stop-output jq emit(s) remain in stop-* / canary scripts (expected 0; route via emit_stop_message / emit_stop_block)\n' \
+    "${hand_rolled_total}" >&2
+  fail=$((fail + 1))
+fi
+
+# ===========================================================================
+# Summary
+# ===========================================================================
+
 printf '\n=== Results: %d passed, %d failed ===\n' "${pass}" "${fail}"
 if [[ "${fail}" -gt 0 ]]; then
   exit 1

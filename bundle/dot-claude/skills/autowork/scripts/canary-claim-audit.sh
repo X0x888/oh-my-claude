@@ -78,7 +78,7 @@ canary_run_audit "${SESSION_ID}" || true
 if canary_should_alert "${SESSION_ID}"; then
   unverified_count="$(canary_session_unverified_count "${SESSION_ID}")"
   alert_text="DRIFT WARNING (model-drift canary, v1.26.0): ${unverified_count} unverified-claim turns this session. **What to do now:** spot-check the claims — pick 2-3 file paths the model named in this session and \`git diff\` / \`Read\` them yourself to confirm the claimed verification actually happened; if the claims match reality, dismiss this warning. **What the canary saw:** the model's prose asserted verification work (\"I read X\", \"I verified Y\", \"I checked Z\") but the turn fired zero verification tool calls (Read/Bash/Grep/Glob/WebFetch/NotebookRead) for those named anchors — the silent-confabulation pattern. **What the model should do for the rest of the session:** define the search universe explicitly, enumerate each candidate, and verify each — do not declare 'verified' / 'checked' / 'read' without naming the tool call that produced the verification. See \`/ulw-report\` for cross-session canary trends."
-  jq -nc --arg msg "${alert_text}" '{systemMessage: $msg}'
+  emit_stop_message "${alert_text}"
   write_state "drift_warning_emitted" "1"
   log_hook "canary" "drift warning emitted (count=${unverified_count})"
 fi

@@ -117,10 +117,13 @@ _card_threshold="${OMC_TIME_CARD_MIN_SECONDS:-5}"
 if (( walltime_s >= _card_threshold )); then
   epilogue="$(timing_format_full "${agg}" "Time breakdown")"
   if [[ -n "${epilogue}" ]]; then
-    # `systemMessage` is the documented user-visible Stop output field;
-    # `hookSpecificOutput.additionalContext` is silently dropped by
-    # Claude Code on Stop. See CLAUDE.md "Stop hook output schema".
-    jq -nc --arg msg "${epilogue}" '{systemMessage: $msg}'
+    # emit_stop_message (common.sh, v1.30.0) encodes the contract: Stop
+    # hooks render via top-level `systemMessage`; `hookSpecificOutput.
+    # additionalContext` is silently dropped by Claude Code at Stop /
+    # SubagentStop. Centralizing the schema in a primitive prevents the
+    # next Stop-hook author from accidentally repeating the v1.24.0 /
+    # v1.25.0 bug. See CLAUDE.md "Stop hook output schema".
+    emit_stop_message "${epilogue}"
   fi
 fi
 
