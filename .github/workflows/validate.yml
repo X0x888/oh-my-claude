@@ -85,6 +85,9 @@ jobs:
       - name: Run session-start resume-hint tests
         run: bash tests/test-session-start-resume-hint.sh
 
+      - name: Run session-start welcome tests
+        run: bash tests/test-session-start-welcome.sh
+
       - name: Run claim-resume-request tests
         run: bash tests/test-claim-resume-request.sh
 

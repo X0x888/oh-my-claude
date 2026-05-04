@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### v1.30.0 Wave 4 — First-session welcome banner
+
+Closes the v1.29.0 growth-lens P0-3 silent-dropoff trap: the most common post-install failure mode is *"user installed/updated oh-my-claude, but did not restart Claude Code"* — hooks fire from `~/.claude/settings.json` at session-start; a session that was already running before the install has the OLD settings.json loaded, so `/ulw` and the gates appear inert. Without an active signal, the user concludes the harness "doesn't work" and walks away.
+
+- **New `bundle/dot-claude/quality-pack/scripts/session-start-welcome.sh` SessionStart hook**. Sibling to the existing `session-start-resume-hint.sh` — fires on every SessionStart (no matcher) and emits a one-line `additionalContext` greeting recommending `/ulw-demo` (90 seconds, throwaway file in `/tmp`) as the value-delivery moment, plus `/ulw <task>` for real work. Right audience: first-session-after-install users who have not yet typed a prompt.
+
+- **Triple-tier idempotency**:
+  1. **Per-install one-shot** via `${HOME}/.claude/.welcome-shown-at` — stores the install-stamp epoch the welcome was last keyed against; re-emits only on the next install / update / reinstall (when `.install-stamp` is newer).
+  2. **Per-session pre-prompt** — skips when `recent_prompts.jsonl` exists for the new session (the user has already typed at least one prompt and the harness is visibly active; banner would be redundant noise).
+  3. **Per-session within session** via `welcome_banner_emitted=1` in session state — a SessionStart fired multiple times for the same SESSION_ID (resume → compact → clear) does not re-emit.
+
+- **Privacy-clean**: reads only the install-stamp's mtime + the active version. No prompt text is read or written; no cross-session lift. Respects `prompt_persist=off` trivially (does not touch persistence).
+
+- **Defensive against partial state**: missing install-stamp → silent (partial install / test rig); corrupt welcome-marker → re-emit (defensive); missing version conf → banner shows `(unknown)` gracefully. Soft-failure throughout — never blocks Stop, never propagates non-zero.
+
+- **Plumbing wired through the four required sites**: `config/settings.patch.json` SessionStart hook chain extended; `verify.sh` `required_paths` + `hook_scripts` + `installed_hooks` array entries added; `.github/workflows/validate.yml` test row added.
+
+- **Test coverage**: new `tests/test-session-start-welcome.sh` (15 assertions) covers fresh-install banner emit, re-install re-emit, recent_prompts gate, per-session idempotency, missing install-stamp, corrupt marker, missing version conf, and missing session_id. Existing regressions all clean: test-session-start-resume-hint 58/58, test-install-artifacts 20/20, test-e2e-hook-sequence 355/355, test-settings-merge 196/196, test-uninstall-merge 42/42. **686 assertions verified.** Shellcheck clean.
+
 ### v1.30.0 Wave 3 — Cross-session correctness
 
 Closes the v1.29.0 sre-lens F-2 (cap race) + F-3 (sweep marker corruption / CPU storm). Both fixes land on the cross-session JSONL rotation hot path that runs on every `common.sh` source.

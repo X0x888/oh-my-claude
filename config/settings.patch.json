@@ -43,6 +43,14 @@
             "command": "bash $HOME/.claude/quality-pack/scripts/session-start-resume-hint.sh"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $HOME/.claude/quality-pack/scripts/session-start-welcome.sh"
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
