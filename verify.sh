@@ -447,11 +447,22 @@ fi
 
 printf 'oh-my-claude verification passed.\n'
 printf '\n'
-printf '\033[1mRestart Claude Code (or open a new session)\033[0m before testing — already-running\n'
+# v1.31.0 Wave 5 (visual-craft F-6 partial): TTY-guard the bold escapes.
+# Log redirects (verify.sh > verify.log) and CI dumps now get plain
+# text instead of literal `\033[1m...` markers.
+if [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]]; then
+  printf '\033[1mRestart Claude Code (or open a new session)\033[0m before testing — already-running\n'
+else
+  printf 'Restart Claude Code (or open a new session) before testing — already-running\n'
+fi
 printf '  sessions keep the previous hook wiring. Verify above only confirms the on-disk\n'
 printf '  install, not the live hook activation.\n'
 printf '\n'
-printf '\033[1mNext: type /ulw-demo\033[0m (about 90 seconds — fires the gates on a real edit so you see them work).\n'
+if [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]]; then
+  printf '\033[1mNext: type /ulw-demo\033[0m (about 90 seconds — fires the gates on a real edit so you see them work).\n'
+else
+  printf 'Next: type /ulw-demo (about 90 seconds — fires the gates on a real edit so you see them work).\n'
+fi
 printf '\n'
 printf 'Then, when you are ready:\n'
 printf '  /ulw <your real task>     -- runs work through the full quality gates\n'

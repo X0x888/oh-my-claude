@@ -105,7 +105,8 @@ if [[ "${EXPLAIN_MODE}" -eq 1 ]]; then
     fi
 
     printf '\n'
-    printf '== oh-my-claude flag rationale ==\n'
+    # v1.31.0 Wave 5 (visual-craft F-1): unified box-rule card head.
+    printf '─── oh-my-claude flag rationale ───\n'
     printf '\n'
     printf 'Each line is: <flag>=<current> (default=<default>)\n'
     printf '             <one-line purpose>\n'
@@ -300,7 +301,7 @@ if [[ "${SUMMARY_MODE}" -eq 1 ]]; then
   domain="$(jq -r '.task_domain // "unset"' "${state_file}" 2>/dev/null || echo "unset")"
   intent="$(jq -r '.task_intent // "unset"' "${state_file}" 2>/dev/null || echo "unset")"
 
-  printf '=== ULW Session Summary ===\n'
+  printf '─── ULW Session Summary ───\n'
   printf 'Session:    %s · %s · domain=%s · intent=%s\n' "${latest_session}" "${age_human}" "${domain}" "${intent}"
   printf 'Work:       %s unique files · %s code edits · %s doc edits · %s dispatches\n' \
     "${unique_files}" "${code_edits}" "${doc_edits}" "${dispatches}"
@@ -362,7 +363,7 @@ fi
 if [[ "${CLASSIFIER_MODE}" -eq 1 ]]; then
   telemetry_file="${STATE_ROOT}/${latest_session}/classifier_telemetry.jsonl"
 
-  printf '=== Classifier Telemetry (current session) ===\n'
+  printf '─── Classifier Telemetry (current session) ───\n'
   if [[ ! -f "${telemetry_file}" ]]; then
     printf '(No telemetry recorded for session %s yet.)\n\n' "${latest_session}"
   else
@@ -393,7 +394,7 @@ if [[ "${CLASSIFIER_MODE}" -eq 1 ]]; then
   if [[ -f "${cross_file}" ]]; then
     cross_total="$(wc -l < "${cross_file}" 2>/dev/null || echo 0)"
     cross_total="${cross_total##* }"
-    printf '\n=== Classifier Misfires (cross-session) ===\n'
+    printf '\n─── Classifier Misfires (cross-session) ───\n'
     printf 'Total recorded misfires: %s\n\n' "${cross_total}"
     printf -- '--- By prior intent ---\n'
     jq -r '.prior_intent // "unknown"' "${cross_file}" 2>/dev/null | \
@@ -408,7 +409,7 @@ if [[ "${CLASSIFIER_MODE}" -eq 1 ]]; then
   exit 0
 fi
 
-printf '=== ULW Session Status ===\n'
+printf '─── ULW Session Status ───\n'
 printf 'Session: %s\n\n' "${latest_session}"
 
 jq -r '

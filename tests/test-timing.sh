@@ -357,13 +357,15 @@ timing_record_session_summary "${agg_v2}"
 timing_record_session_summary "${agg_v3}"
 
 # After three Stops, only ONE row should exist for this session (the latest).
+# v1.31.0 Wave 4: timing.jsonl uses .session_id (was .session). Match
+# both for backwards compat with rows written before the rename.
 session_rows="$(jq -sr --arg sid "${SESSION_ID}" \
-  '[.[] | select((.session // "") == $sid)] | length' "${xs_log}" 2>/dev/null)"
+  '[.[] | select(((.session_id // .session) // "") == $sid)] | length' "${xs_log}" 2>/dev/null)"
 assert_eq "single row per session after multi-Stop" "1" "${session_rows}"
 
 # The surviving row must carry the LATEST walltime, not a stale earlier one.
 final_walltime="$(jq -sr --arg sid "${SESSION_ID}" \
-  '[.[] | select((.session // "") == $sid)] | first | .walltime_s' "${xs_log}" 2>/dev/null)"
+  '[.[] | select(((.session_id // .session) // "") == $sid)] | first | .walltime_s' "${xs_log}" 2>/dev/null)"
 assert_eq "surviving row has latest walltime" "42" "${final_walltime}"
 
 # Aggregating across all sessions must report the correct walltime —
@@ -408,7 +410,10 @@ sweep_stale_sessions
 
 remaining="$(wc -l < "${xs_log}" | tr -d '[:space:]')"
 assert_eq "stale row pruned by real sweep" "1" "${remaining}"
-surviving_session="$(jq -r '.session' "${xs_log}")"
+# v1.31.0 Wave 4: tolerate both old `.session` and new `.session_id`
+# field names (the test seed line 402-404 still writes `.session` for
+# this particular fixture; the helper itself writes `.session_id`).
+surviving_session="$(jq -r '(.session_id // .session)' "${xs_log}")"
 assert_eq "fresh row survived real sweep" "fresh-session" "${surviving_session}"
 
 # ----------------------------------------------------------------------

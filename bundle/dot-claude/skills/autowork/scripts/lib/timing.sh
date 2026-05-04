@@ -935,12 +935,19 @@ timing_record_session_summary() {
   [[ -z "${sid}" ]] && return 0
 
   local row
+  # v1.31.0 Wave 4 (data-lens F-3 + F-5): rename `session` field to
+  # `session_id` for cross-ledger join consistency (gate_events,
+  # session_summary, serendipity, classifier_misfires all use
+  # `session_id`). Add `_v:1` schema_version for future migrations.
+  # Pre-Wave-4 rows (with `session` field) coexist via the
+  # backwards-compat dedup filter below — see the `(.session // "")`
+  # / `(.session_id // "")` reads.
   row="$(jq -nc \
     --argjson ts "$(now_epoch)" \
-    --arg session "${sid}" \
+    --arg session_id "${sid}" \
     --arg project_key "$(_omc_project_key 2>/dev/null || _omc_project_id)" \
     --argjson agg "${agg}" \
-    '{ts:$ts,session:$session,project_key:$project_key} + $agg' 2>/dev/null)"
+    '{_v:1,ts:$ts,session_id:$session_id,project_key:$project_key} + $agg' 2>/dev/null)"
   [[ -z "${row}" ]] && return 0
 
   local target
@@ -958,7 +965,11 @@ timing_record_session_summary() {
     local tmp
     tmp="$(mktemp "${target}.XXXXXX" 2>/dev/null)" || tmp=""
     if [[ -n "${tmp}" ]]; then
-      if jq -c --arg sid "${sid}" 'select((.session // "") != $sid)' \
+      # v1.31.0 Wave 4: backwards-compat dedup over BOTH the legacy
+      # `.session` and the new `.session_id` field — old rows from
+      # pre-v1.31.0 timing.jsonl still need to be deduped against
+      # the current sid until they age out via the cross-session cap.
+      if jq -c --arg sid "${sid}" 'select(((.session_id // .session) // "") != $sid)' \
           "${target}" > "${tmp}" 2>/dev/null; then
         printf '%s\n' "${row}" >> "${tmp}"
         mv "${tmp}" "${target}" 2>/dev/null || rm -f "${tmp}"

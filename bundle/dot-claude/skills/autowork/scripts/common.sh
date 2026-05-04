@@ -966,16 +966,24 @@ _do_cap_cross_session_jsonl() {
 # this session's contribution.
 
 _sweep_append_misfires() {
-  local src_telemetry="$1" sid="$2" dst_misfires="$3"
+  local src_telemetry="$1" sid="$2" dst_misfires="$3" pkey="${4:-}"
+  # v1.31.0 Wave 4 (data-lens F-1): lift project_key onto each row at
+  # sweep time so multi-project users can slice /ulw-report by project.
+  # Pre-Wave-4 rows carry only session_id; cross-session aggregates
+  # without the lift cannot answer "show me ProjectA's misfires".
   grep '"misfire":true' "${src_telemetry}" 2>/dev/null \
-    | jq -c --arg sid "${sid}" '. + {session_id: $sid}' 2>/dev/null \
+    | jq -c --arg sid "${sid}" --arg pkey "${pkey}" \
+        'if $pkey == "" then . + {session_id: $sid} else . + {session_id: $sid, project_key: $pkey} end' \
+        2>/dev/null \
     >> "${dst_misfires}" \
     || true
 }
 
 _sweep_append_gate_events() {
-  local src_gate_events="$1" sid="$2" dst_gate_events="$3"
-  jq -c --arg sid "${sid}" '. + {session_id: $sid}' \
+  local src_gate_events="$1" sid="$2" dst_gate_events="$3" pkey="${4:-}"
+  # v1.31.0 Wave 4 (data-lens F-1): same project_key lift as misfires.
+  jq -c --arg sid "${sid}" --arg pkey "${pkey}" \
+    'if $pkey == "" then . + {session_id: $sid} else . + {session_id: $sid, project_key: $pkey} end' \
     "${src_gate_events}" 2>/dev/null \
     >> "${dst_gate_events}" \
     || true
@@ -1048,7 +1056,41 @@ sweep_stale_sessions() {
       log_anomaly "sweep_stale_sessions" "marker creation failed; falling back to -mtime"
       _sweep_find_cmd="find \"${STATE_ROOT}\" -maxdepth 1 -type d -mtime +\"${OMC_STATE_TTL_DAYS}\" ! -name '.' ! -name '..' ! -name '.*' ! -path \"${STATE_ROOT}\" -print"
     fi
+    # v1.31.0 Wave 4 (data-lens F-7): cap the synthetic _watchdog
+    # session's gate_events.jsonl. The watchdog daemon writes here
+    # continuously (every ~2 minutes), so its mtime never ages and
+    # the TTL sweep would never include it. Without a cap, the
+    # per-session file grows unbounded — a year of watchdog ticks
+    # is ~250k rows. The file is per-session not cross-session so
+    # we cap it via append_limited_state-shaped logic directly here
+    # rather than rotating into the global aggregate (which would
+    # double-count once we eventually start sweeping the dir).
+    local _watchdog_dir="${STATE_ROOT}/_watchdog"
+    if [[ -d "${_watchdog_dir}" ]]; then
+      local _watchdog_gate_events="${_watchdog_dir}/gate_events.jsonl"
+      if [[ -f "${_watchdog_gate_events}" ]] && [[ -s "${_watchdog_gate_events}" ]]; then
+        local _watchdog_lines
+        _watchdog_lines="$(wc -l < "${_watchdog_gate_events}" 2>/dev/null || echo 0)"
+        _watchdog_lines="${_watchdog_lines##* }"
+        # 5000-row cap: ~6 weeks of 2-minute ticks at one row/tick.
+        if [[ "${_watchdog_lines}" -gt 5000 ]]; then
+          local _watchdog_tmp
+          _watchdog_tmp="$(mktemp "${_watchdog_gate_events}.XXXXXX" 2>/dev/null)" || _watchdog_tmp=""
+          if [[ -n "${_watchdog_tmp}" ]]; then
+            tail -n 4000 "${_watchdog_gate_events}" > "${_watchdog_tmp}" 2>/dev/null \
+              && mv "${_watchdog_tmp}" "${_watchdog_gate_events}" 2>/dev/null \
+              || rm -f "${_watchdog_tmp}"
+          fi
+        fi
+      fi
+    fi
+
     eval "${_sweep_find_cmd}" 2>/dev/null | while IFS= read -r _sweep_dir; do
+      # v1.31.0 Wave 4 (data-lens F-7): explicitly skip _watchdog —
+      # the synthetic daemon session aggregates locally (capped
+      # above) and is NOT a candidate for the per-session sweep
+      # path that wraps in cross-session ledgers + rm -rf.
+      [[ "$(basename "${_sweep_dir}")" == "_watchdog" ]] && continue
         local _sweep_state="${_sweep_dir}/session_state.json"
         if [[ -f "${_sweep_state}" ]]; then
           local _sweep_sid _sweep_ec=0
@@ -1121,26 +1163,35 @@ sweep_stale_sessions() {
           # _cap_cross_session_jsonl rotation path (also under-lock as
           # of v1.30.0 Wave 3).
 
+          # v1.31.0 Wave 4 (data-lens F-1): read project_key from the
+          # session state once and pass to the cross-session append
+          # helpers so per-row project_key tagging makes /ulw-report
+          # multi-project slicing possible. Falls back to "" when
+          # session_state.json doesn't carry the key (legacy sessions
+          # before project_key tracking landed).
+          local _sweep_project_key=""
+          _sweep_project_key="$(jq -r '.project_key // ""' "${_sweep_state}" 2>/dev/null || echo "")"
+
           # Classifier telemetry: append this session's misfire rows to the
           # cross-session ledger. Tagged with session id so post-hoc
           # analysis can group by session, intent, reason, etc.
           local _sweep_telemetry="${_sweep_dir}/classifier_telemetry.jsonl"
           if [[ -f "${_sweep_telemetry}" ]]; then
             with_cross_session_log_lock "${misfires_file}" \
-              _sweep_append_misfires "${_sweep_telemetry}" "${_sweep_sid}" "${misfires_file}" \
-              || _sweep_append_misfires "${_sweep_telemetry}" "${_sweep_sid}" "${misfires_file}"
+              _sweep_append_misfires "${_sweep_telemetry}" "${_sweep_sid}" "${misfires_file}" "${_sweep_project_key}" \
+              || _sweep_append_misfires "${_sweep_telemetry}" "${_sweep_sid}" "${misfires_file}" "${_sweep_project_key}"
           fi
 
           # Gate events: append this session's per-event outcome rows to
           # the cross-session ledger so /ulw-report can answer "did this
           # gate-fire actually catch a real bug?" at the per-event grain.
-          # Tagged with session id for grouping.
+          # Tagged with session id + project_key for grouping.
           local _sweep_gate_events="${_sweep_dir}/gate_events.jsonl"
           local _gate_events_file="${HOME}/.claude/quality-pack/gate_events.jsonl"
           if [[ -f "${_sweep_gate_events}" ]]; then
             with_cross_session_log_lock "${_gate_events_file}" \
-              _sweep_append_gate_events "${_sweep_gate_events}" "${_sweep_sid}" "${_gate_events_file}" \
-              || _sweep_append_gate_events "${_sweep_gate_events}" "${_sweep_sid}" "${_gate_events_file}"
+              _sweep_append_gate_events "${_sweep_gate_events}" "${_sweep_sid}" "${_gate_events_file}" "${_sweep_project_key}" \
+              || _sweep_append_gate_events "${_sweep_gate_events}" "${_sweep_sid}" "${_gate_events_file}" "${_sweep_project_key}"
           fi
         fi
         rm -rf "${_sweep_dir}" 2>/dev/null || true
@@ -2662,6 +2713,19 @@ record_gate_event() {
   # so they round-trip as JSON numbers, not strings — keeping numeric
   # aggregations like `map(.details.pending_count) | add` honest. Any
   # value that does not match `^[0-9]+$` falls back to --arg (string).
+  #
+  # v1.31.0 Wave 4 (sre-lens F-8): cap string values at 1KB before
+  # passing to jq. PIPE_BUF on Linux is 4096 bytes; on macOS 512.
+  # Without a cap, a fat row (e.g. structured FINDINGS_JSON evidence
+  # field carrying a 5KB stack trace) crosses 4KB and POSIX no longer
+  # guarantees atomic append on Linux — concurrent SubagentStop
+  # writers can interleave bytes mid-row, tearing JSONL parsing.
+  # The cap preserves the diagnostic signal (1KB is plenty for a
+  # human-readable error excerpt) while keeping rows under the
+  # platform's PIPE_BUF floor.
+  local _details_value_cap="${OMC_GATE_EVENT_DETAILS_VALUE_CAP:-1024}"
+  [[ "${_details_value_cap}" =~ ^[0-9]+$ ]] || _details_value_cap=1024
+
   local block_count="" block_cap=""
   local details_args=()
   local kv key value
@@ -2675,6 +2739,15 @@ record_gate_event() {
         if [[ "${value}" =~ ^[0-9]+$ ]]; then
           details_args+=(--argjson "${key}" "${value}")
         else
+          # Cap fat string values; numeric byte-count via ${#var} is
+          # exact for ASCII and a slight under-truncation for multi-
+          # byte UTF-8 (still within PIPE_BUF). Truncation marker
+          # signals the loss to consumers — better than silent tear.
+          if (( ${#value} > _details_value_cap )); then
+            local _kept=$(( _details_value_cap - 32 ))
+            (( _kept < 0 )) && _kept=0
+            value="${value:0:${_kept}}…<truncated:${#value} bytes>"
+          fi
           details_args+=(--arg "${key}" "${value}")
         fi
         ;;

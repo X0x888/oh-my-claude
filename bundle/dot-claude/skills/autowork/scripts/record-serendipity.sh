@@ -78,13 +78,22 @@ conditions="$(jq -r '.conditions // empty' <<<"${input}")"
 commit_sha="$(jq -r '.commit // empty' <<<"${input}")"
 
 record="$(jq -nc \
-  --arg ts "${ts}" \
-  --arg session "${SESSION_ID}" \
+  --argjson ts "${ts}" \
+  --arg session_id "${SESSION_ID}" \
   --arg fix "${fix}" \
   --arg orig "${original}" \
   --arg cond "${conditions}" \
   --arg sha "${commit_sha}" \
-  '{ts:$ts, session:$session, fix:$fix, original_task:$orig, conditions:$cond, commit:$sha}')"
+  '{_v:1, ts:$ts, session_id:$session_id, fix:$fix, original_task:$orig, conditions:$cond, commit:$sha}')"
+# v1.31.0 Wave 4 (data-lens F-2 + F-3 + F-5):
+#   - --arg ts → --argjson ts: ts is now an integer everywhere, not
+#     "1777133312" (string). show-report.sh's tonumber wrappers no
+#     longer silently drop corrupt-typed rows.
+#   - session → session_id: align the field name with every other
+#     cross-session ledger so jq joins (gate_events × serendipity ×
+#     session_summary) work without column-rename.
+#   - _v:1 schema_version: future shape changes can be migrated with
+#     a known boundary instead of post-hoc archaeology.
 
 # Per-session log (JSONL append; line-sized writes are POSIX-atomic).
 session_log="$(session_file "serendipity_log.jsonl")"

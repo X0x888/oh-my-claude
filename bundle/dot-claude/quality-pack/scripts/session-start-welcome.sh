@@ -109,18 +109,39 @@ if [[ -z "${version}" ]]; then
   version="(unknown)"
 fi
 
-# Banner content. Two lines max — first line is the activation signal,
-# second is the single-CTA bridge. Mirrors the v1.29.0 verify.sh
-# "Next: type /ulw-demo" single-CTA pattern.
-banner="oh-my-claude v${version} active in this session.
+# v1.31.0 Wave 5 (visual-craft F-2): card framing matches the install
+# footer cadence — leading box-rule head, bold CTA, dim minor line,
+# plain disclaimer. Pre-Wave-5 was 5 plain-text paragraphs with no
+# visual hierarchy; the FIRST surface the user sees after install
+# read like an email signature. Now reads as a coherent activation
+# card. Box-rule glyph (─) is the canonical card head adopted across
+# /ulw-time, /ulw-status --explain, and the install footer.
+#
+# Banner content. Five lines: box-rule head + CTA-bold + minor + minor
+# + footer disclaimer. Bold + dim ANSI emitted only when stdout is a
+# TTY (TTY-guarded; would otherwise leak literal `\033[1m` to log
+# redirects). Same TTY guard as install.sh:1234.
+banner_head="─── oh-my-claude v${version} active ───"
+if [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]]; then
+  cta_open=$'\033[1m'
+  cta_close=$'\033[0m'
+  dim_open=$'\033[2m'
+  dim_close=$'\033[0m'
+else
+  cta_open=""
+  cta_close=""
+  dim_open=""
+  dim_close=""
+fi
+banner="${banner_head}
 
 To see the harness work end-to-end (about 90 seconds, on a throwaway file in /tmp), type:
 
-  /ulw-demo
+  ${cta_open}/ulw-demo${cta_close}
 
 Or jump straight to your real work with \`/ulw <task>\`. Run \`/omc-config\` to inspect or change settings.
 
-This banner shows once per fresh install or update; it is silent on subsequent sessions until you re-run install.sh."
+${dim_open}This banner shows once per fresh install or update; silent on subsequent sessions until you re-run install.sh.${dim_close}"
 
 payload="$(jq -nc --arg context "${banner}" '{
   hookSpecificOutput: {

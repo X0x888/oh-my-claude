@@ -729,7 +729,12 @@ if [[ "${added_or_removed}" -eq 0 && "${content_changed}" -eq 0 ]]; then
 fi
 
 printf '\n'
-printf '\033[1;33m[oh-my-claude]\033[0m Bundle changes detected after merge.\n'
+# v1.31.0 Wave 5 (visual-craft F-6 partial): TTY-guard the colored prefix.
+if [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]]; then
+  printf '\033[1;33m[oh-my-claude]\033[0m Bundle changes detected after merge.\n'
+else
+  printf '[oh-my-claude] Bundle changes detected after merge.\n'
+fi
 if [[ "${added_or_removed}" -eq 1 ]]; then
   printf '  - File set changed (additions or removals).\n'
 fi
@@ -1120,7 +1125,11 @@ fi
 # ===========================================================================
 
 printf '\n'
-printf '=== oh-my-claude install complete ===\n'
+# v1.31.0 Wave 5 (visual-craft F-1): unified box-rule card head matching
+# /ulw-time, show-status, and the welcome banner. Pre-Wave-5 used the
+# generic `=== title ===` form which reads as "default-Bash-tutorial"
+# in the visual-craft assessment.
+printf '─── oh-my-claude install complete ───\n'
 printf '\n'
 printf '  Version:       %s\n' "${OMC_VERSION}"
 if [[ -n "${installed_sha}" ]]; then
@@ -1231,7 +1240,15 @@ if [[ "${orphan_count}" -gt 0 ]]; then
 fi
 
 printf '\n'
-printf '\033[1mRestart Claude Code now (or open a new session).\033[0m Required — hooks load at\n'
+# v1.31.0 Wave 5 (visual-craft F-6 partial): TTY-guard the bold escape
+# so log-redirected installs (`bash install.sh > install.log`) get
+# plain text instead of literal `\033[1m...`. NO_COLOR env honored
+# per the de-facto convention.
+if [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]]; then
+  printf '\033[1mRestart Claude Code now (or open a new session).\033[0m Required — hooks load at\n'
+else
+  printf 'Restart Claude Code now (or open a new session). Required — hooks load at\n'
+fi
 printf '  session start; already-running sessions keep the previous wiring, so /ulw will\n'
 printf '  silently no-op until you restart.\n'
 printf '\n'

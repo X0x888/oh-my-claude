@@ -99,7 +99,10 @@ assert_eq "fix preserved" "Lock orphan cleanup" "$(jq -r '.fix' < "${session_log
 assert_eq "original_task preserved" "v1.12 state-io extract" "$(jq -r '.original_task' < "${session_log}")"
 assert_eq "conditions preserved" "verified, same-path, bounded" "$(jq -r '.conditions' < "${session_log}")"
 assert_eq "commit preserved" "deadbeef" "$(jq -r '.commit' < "${session_log}")"
-assert_eq "session id stamped" "${SESSION_ID}" "$(jq -r '.session' < "${session_log}")"
+assert_eq "session id stamped" "${SESSION_ID}" "$(jq -r '(.session_id // .session)' < "${session_log}")"
+# v1.31.0 Wave 4 (data-lens F-2 + F-3): ts is integer, _v stamped.
+assert_eq "ts is integer" "number" "$(jq -r '.ts | type' < "${session_log}")"
+assert_eq "_v schema version stamped" "1" "$(jq -r '._v' < "${session_log}")"
 
 # ----------------------------------------------------------------------
 printf 'Test 6: state counters increment monotonically\n'
@@ -120,7 +123,7 @@ echo '{"fix":"sess A fix"}' | bash "${SCRIPT}" 2>/dev/null
 SESSION_ID="other-session" bash -c "echo '{\"fix\":\"sess B fix\"}' | bash '${SCRIPT}'" 2>/dev/null
 cross_count="$(wc -l < "${cross_log}" | tr -d '[:space:]')"
 assert_eq "cross log has 2 rows across sessions" "2" "${cross_count}"
-sessions="$(jq -r '.session' < "${cross_log}" | sort -u | wc -l | tr -d '[:space:]')"
+sessions="$(jq -r '(.session_id // .session)' < "${cross_log}" | sort -u | wc -l | tr -d '[:space:]')"
 assert_eq "cross log spans 2 distinct sessions" "2" "${sessions}"
 
 # ----------------------------------------------------------------------
