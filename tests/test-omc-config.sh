@@ -251,12 +251,13 @@ assert_file_lacks_line "atomic batch: auto_memory not written" "${USER_CONF_PATH
 assert_file_lacks_line "atomic batch: discovered_scope not written" "${USER_CONF_PATH}" "^discovered_scope=on\$"
 teardown
 
-# --- Test 13: apply-preset maximum writes all 21 keys (v1.28.0 added
-# blindspot_inventory + intent_broadening; v1.30.0 added prompt_persist) ---
-printf 'Test 13: apply-preset maximum writes 21 keys\n'
+# --- Test 13: apply-preset maximum writes all 22 keys (v1.28.0 added
+# blindspot_inventory + intent_broadening; v1.30.0 added prompt_persist;
+# v1.32.0 added divergence_directive) ---
+printf 'Test 13: apply-preset maximum writes 22 keys\n'
 setup
 out="$(bash "${HELPER}" apply-preset user maximum 2>&1)"
-assert_contains "apply-preset reports 21 keys" "21 keys" "${out}"
+assert_contains "apply-preset reports 22 keys" "22 keys" "${out}"
 assert_file_has_line "maximum: gate_level=full" "${USER_CONF_PATH}" "^gate_level=full\$"
 assert_file_has_line "maximum: guard_exhaustion_mode=block" "${USER_CONF_PATH}" "^guard_exhaustion_mode=block\$"
 assert_file_has_line "maximum: prometheus_suggest=on" "${USER_CONF_PATH}" "^prometheus_suggest=on\$"

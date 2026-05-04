@@ -124,6 +124,9 @@ jobs:
       - name: Run memory-audit tests
         run: bash tests/test-memory-audit.sh
 
+      - name: Run divergence-directive tests
+        run: bash tests/test-divergence-directive.sh
+
       - name: Run no-broken-stat-chain regression tests
         run: bash tests/test-no-broken-stat-chain.sh
 

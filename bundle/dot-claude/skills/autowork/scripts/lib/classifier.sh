@@ -1049,6 +1049,128 @@ is_completeness_request() {
   grep -Eiq "${pat}" <<<"${text}"
 }
 
+# is_paradigm_ambiguous_request — true when the prompt names a paradigm-
+# shape decision (architecture, approach, strategy, X-vs-Y choice, or
+# open-ended "how should we" question) — the *shape* of the solution is
+# the load-bearing call, not the mechanics. Used by the DIVERGENT-FRAMING
+# DIRECTIVE (v1.32.0) so the model enumerates 2-3 alternative framings
+# inline before commit, defending against the default LLM failure mode
+# of anchoring on the first paradigm that surfaces.
+#
+# Distinct from is_product_shaped_request (greenfield product scope) and
+# is_ambiguous_execution_request (short-and-unanchored). Those defend
+# against scope ambiguity (what to build); this defends against PARADIGM
+# ambiguity (which shape to build it in). All three can co-fire — a
+# greenfield product prompt could legitimately receive both narrowing
+# directives and the divergent-framing directive — they target different
+# failure axes (scope vs paradigm).
+#
+# Pure string predicate — no state, no logging. The router gates emission
+# on execution + continuation intent so the directive does not pollute
+# advisory or session-management turns.
+is_paradigm_ambiguous_request() {
+  local text="$1"
+  [[ -z "${text}" ]] && return 1
+
+  # Disqualifier 1: bug-fix / hotfix prompts — the paradigm is already
+  # set in the surrounding code. Mirrors is_product_shaped_request L908
+  # exactly (issue|issues added 1.32.0 post-quality-reviewer F-2 to close
+  # the divergence between the two predicates).
+  if grep -Eiq '\b(fix(es|ed|ing)?|bug|bugs|hotfix|patch(es|ed|ing)?|defect|defects|issue|issues|fault|faults|crash(es|ed|ing)?|broken|failing[[:space:]]+test|stack[[:space:]]+trace)\b' <<<"${text}"; then
+    return 1
+  fi
+
+  # Strong positive A: explicit X-vs-Y or X-or-Y choice phrasing.
+  # Evaluated BEFORE the code-anchor disqualifier because backticked
+  # tech names (`Redux` vs `Context`) are typography, not scope-anchoring,
+  # and an explicit comparison is the canonical paradigm-decision shape.
+  #
+  # Tightened post-1.32.0 quality-reviewer F-1: bare "X vs Y" was
+  # over-matching casual comparisons ("Tom vs Jerry", "git rebase main
+  # vs feature", "compare apples vs oranges in the demo"). The fix
+  # requires an additional paradigm-context signal — a question word,
+  # an architectural-decision noun, or a "for X" / "in our X" tail.
+  # Real paradigm prompts ("websockets vs polling for the live status
+  # feed", "monolith versus microservices for this team", "should I use
+  # Redux or Context for global state") satisfy at least one of these;
+  # casual comparisons satisfy none.
+  if grep -Eiq '\b(vs|versus)\b' <<<"${text}"; then
+    if grep -Eiq '\b(should|how|what|which|why|when)\b' <<<"${text}" \
+        || grep -Eiq '\b(approach|architecture|paradigm|pattern|strategy|design|model|abstraction|protocol|framework|library|system|integration)\b' <<<"${text}" \
+        || grep -Eiq '\b(for|in[[:space:]]+(my|our|this))\b' <<<"${text}"; then
+      return 0
+    fi
+  fi
+  if grep -Eiq '\bshould[[:space:]]+(i|we|you)[[:space:]]+(use|pick|choose|go[[:space:]]+with|adopt)\b' <<<"${text}"; then
+    return 0
+  fi
+
+  # Disqualifier 2: code anchor on prompts WITHOUT an explicit X-vs-Y
+  # signal. Anchored prompts without a comparison signal are scoped
+  # tasks where the paradigm is implicit in the surrounding code.
+  if _has_code_anchor "${text}"; then
+    return 1
+  fi
+
+  # Positive B: open-ended shape question. "how should/do/can/might/would
+  # we/i/you" is the canonical lateral-thinking trigger. Word boundaries
+  # via \b prevent substring matches.
+  if grep -Eiq '\bhow[[:space:]]+(should|do|can|might|would)[[:space:]]+(we|i|you|one|to)\b' <<<"${text}"; then
+    return 0
+  fi
+
+  # Positive C: superlative + paradigm-shape noun. "best/right/optimal/
+  # cleanest/simplest" + "way/approach/architecture/pattern/design/
+  # strategy/model/abstraction/paradigm".
+  if grep -Eiq '\b(best|right|optimal|cleanest|simplest|correct)[[:space:]]+(way|approach|architecture|pattern|design|strategy|model|abstraction|paradigm)\b' <<<"${text}"; then
+    return 0
+  fi
+
+  # Positive D: paradigm-decision verb + abstract-shape noun.
+  # "design the auth strategy", "model the state machine", "architect
+  # the system". The verb-noun pair admits a small bridge ({0,3} words)
+  # so adjectives ("rate-limit retry strategy") don't break the match.
+  #
+  # Noun list dropped pipeline/workflow/lifecycle post-1.32.0 quality-
+  # reviewer F-3: those nouns describe both concrete deliverables ("design
+  # the build pipeline") and abstract paradigms ("design the streaming
+  # pipeline"), and the regex couldn't disambiguate. Kept: tighter nouns
+  # where the paradigm-decision interpretation dominates.
+  if grep -Eiq '\b(design(ing)?|architect(ing)?|model(ing)?|structur(e|ing))[[:space:]]+(the|a|an|our|my|this|that)?([[:space:]]+[a-z]+){0,3}[[:space:]]+(architecture|strategy|pattern|approach|system|abstraction|paradigm|protocol|state[[:space:]]+machine|data[[:space:]]+flow|control[[:space:]]+flow|caching[[:space:]]+layer)\b' <<<"${text}"; then
+    return 0
+  fi
+
+  # Positive E: "is there a better way" — explicit retrospective question
+  # that admits the current paradigm may not be optimal.
+  if grep -Eiq '\bis[[:space:]]+there[[:space:]]+a[[:space:]]+better[[:space:]]+way\b' <<<"${text}"; then
+    return 0
+  fi
+
+  # Positive F: paradigm-shift / adoption decisions (post-1.32.0
+  # excellence-reviewer F-3). Common senior-engineer paradigm-shape
+  # questions: "Should I migrate from Postgres to DynamoDB?",
+  # "consider switching to event sourcing", "thinking about adopting
+  # CQRS for the orders module", "what pattern fits this state
+  # propagation?". The "from X to Y" structure on the migrate/switch/
+  # move verbs is what disambiguates paradigm-shift questions from
+  # timing questions ("should I migrate the database now" — same verb,
+  # missing from/to, no fire).
+  if grep -Eiq '\b(migrating|switching|moving|migrate|switch|move)[[:space:]]+(from|to)\b' <<<"${text}"; then
+    return 0
+  fi
+  if grep -Eiq '\b(consider|considering)[[:space:]]+(switching|adopting|moving|migrating|using)\b' <<<"${text}"; then
+    return 0
+  fi
+  if grep -Eiq '\bthinking[[:space:]]+about[[:space:]]+(migrating|switching|moving|adopting|using)\b' <<<"${text}"; then
+    return 0
+  fi
+  if grep -Eiq '\b(what|which)[[:space:]]+pattern[[:space:]]+fits\b' <<<"${text}"; then
+    return 0
+  fi
+
+  return 1
+}
+
 is_execution_intent_value() {
   local intent="$1"
 

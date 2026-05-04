@@ -620,6 +620,50 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
     fi
   fi
 
+  # --- Divergent-framing directive (v1.32.0) ---
+  #
+  # The "first paradigm wins" defense. When a prompt names a paradigm-
+  # shape decision (architecture / approach / strategy / X-vs-Y choice /
+  # open-ended "how should we" question), the default LLM failure mode
+  # is to anchor on the first paradigm that surfaces — usually the most-
+  # recently-seen example or the easiest to articulate, not necessarily
+  # the best fit. A senior with lateral thinking pauses HERE before
+  # commit and asks "what other shapes could this take?".
+  #
+  # This directive injects an inline-enumeration discipline: name 2-3
+  # alternative framings, each with a label + mental model + EASY/HARD
+  # affordances, then pick one with reasoning + a "redirect if" clause.
+  # Escalation to the `/diverge` skill (heavier — dispatches the
+  # divergent-framer sub-agent) is reserved for high-stakes decisions
+  # where inline enumeration feels shallow.
+  #
+  # Fires on execution + continuation + advisory intents (a senior with
+  # lateral thinking diverges whenever the question admits paradigm
+  # shape, not only when committing to code — "what's the best way to
+  # model auth state?" is the canonical advisory paradigm question).
+  # Mirrors the v1.26.0 completeness-directive gate: skip only
+  # session-management + checkpoint, where workflow-state meta-prompts
+  # would receive paradigm framing as noise. The classifier
+  # is_paradigm_ambiguous_request handles the actual prompt-shape gate;
+  # the intent gate just excludes the two workflow-state branches.
+  #
+  # Fires INDEPENDENTLY of the other bias-defense directives (narrowing,
+  # completeness, intent-broadening). Paradigm enumeration is a third
+  # axis: narrowing defends against scope ambiguity ("what to build"),
+  # widening defends against surface omission ("which surfaces touched"),
+  # divergent framing defends against premature paradigm commitment
+  # ("which shape to build it in"). All three can co-fire on a prompt
+  # that legitimately needs each lens.
+  if [[ "${OMC_DIVERGENCE_DIRECTIVE:-on}" == "on" ]] \
+      && [[ "${session_management_prompt}" -eq 0 ]] \
+      && [[ "${checkpoint_prompt}" -eq 0 ]] \
+      && is_paradigm_ambiguous_request "${PROMPT_TEXT}"; then
+    context_parts+=("DIVERGENT-FRAMING DIRECTIVE: this prompt admits a paradigm-shape decision (architecture, approach, strategy, X-vs-Y choice, or open-ended \"how should we\") — the *shape* of the solution is the load-bearing call, not the mechanics. Defend against anchoring on the first paradigm that surfaces by enumerating 2-3 alternative framings INLINE in your opener: (1) **Name each framing** with a 2-4 word label, the mental model in one sentence, what it makes EASY (1 affordance), what it makes HARD (1 cost). (2) **Pick one with a one-line reason** plus a \"redirect if\" clause naming the condition under which a different framing would win. (3) **Escalate to \`/diverge\`** only when the decision is high-stakes AND your inline enumeration feels shallow — when you can list options but cannot rank them with conviction. The directive bias is *inline lateral thinking*, not a sub-agent dispatch on every task. When one paradigm is obviously dominant, say so explicitly with the alternatives you considered and ruled out (\"X is the standard here; Y/Z don't fit because…\"), rather than silently picking. Skip enumeration only when the prompt names the paradigm itself (e.g., \"implement X using the visitor pattern\" — paradigm pre-chosen, no decision to make).")
+    log_hook "prompt-intent-router" "bias-defense: divergence-directive fired"
+    record_gate_event "bias-defense" "directive_fired" \
+      "directive=divergence"
+  fi
+
   if [[ "${session_management_prompt}" -eq 0 && "${checkpoint_prompt}" -eq 0 ]]; then
     # Project-maturity prior — informational tag biasing advisory framing.
     # Fires once per session (cached) for active modes only. Skipped on

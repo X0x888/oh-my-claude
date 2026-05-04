@@ -88,6 +88,7 @@ output_style|enum:opencode/executive/preserve|opencode|cost|Bundled output style
 model_drift_canary|bool|on|telemetry|Stop-hook canary detects silent confabulation (claims-vs-tool-calls audit; surfaces in /ulw-report)
 blindspot_inventory|bool|on|gates|Project-surface scanner backing the intent-broadening directive (lazy-cached, 24h TTL)
 intent_broadening|bool|on|advisory|Inject project-context reconciliation directive on complex execution prompts (defends against language-as-limitation failure)
+divergence_directive|bool|on|advisory|Inject divergent-framing directive on paradigm-shape decisions (X-vs-Y, "best way", "how should we", "design the X strategy") — enumerate 2-3 framings inline before commit
 blindspot_ttl_seconds|pint|86400|gates|Cache TTL (seconds) for blindspot inventory; default 86400 = 24h
 EOF
 }
@@ -133,6 +134,7 @@ time_tracking=on
 model_drift_canary=on
 blindspot_inventory=on
 intent_broadening=on
+divergence_directive=on
 model_tier=quality
 EOF
       ;;
@@ -158,6 +160,7 @@ time_tracking=on
 model_drift_canary=on
 blindspot_inventory=on
 intent_broadening=on
+divergence_directive=on
 model_tier=balanced
 EOF
       ;;
@@ -183,6 +186,7 @@ time_tracking=off
 model_drift_canary=off
 blindspot_inventory=off
 intent_broadening=off
+divergence_directive=off
 model_tier=economy
 EOF
       ;;

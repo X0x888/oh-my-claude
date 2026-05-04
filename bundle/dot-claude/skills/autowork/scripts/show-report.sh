@@ -403,7 +403,7 @@ if [[ -z "${bias_defense_rows}" ]]; then
   printf '_No bias-defense directives fired in window. Telemetry is new in v1.23.0; populates as sessions sweep._\n\n'
 else
   printf '| Directive | Fires |\n|---|---:|\n'
-  for _directive in exemplifying completeness prometheus-suggest intent-verify; do
+  for _directive in exemplifying completeness prometheus-suggest intent-verify intent-broadening intent-broadening-no-inventory divergence; do
     _fire_count="$(printf '%s\n' "${bias_defense_rows}" | jq -c --arg d "${_directive}" 'select(.details.directive == $d)' | wc -l | tr -d '[:space:]')"
     [[ "${_fire_count}" -eq 0 ]] && continue
     printf '| `%s` | %s |\n' "${_directive}" "${_fire_count}"

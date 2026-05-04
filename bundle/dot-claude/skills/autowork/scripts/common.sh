@@ -55,6 +55,7 @@ _omc_env_time_card_min_seconds="${OMC_TIME_CARD_MIN_SECONDS:-}"
 _omc_env_model_drift_canary="${OMC_MODEL_DRIFT_CANARY:-}"
 _omc_env_blindspot_inventory="${OMC_BLINDSPOT_INVENTORY:-}"
 _omc_env_intent_broadening="${OMC_INTENT_BROADENING:-}"
+_omc_env_divergence_directive="${OMC_DIVERGENCE_DIRECTIVE:-}"
 _omc_env_blindspot_ttl="${OMC_BLINDSPOT_TTL_SECONDS:-}"
 _omc_env_claude_bin="${OMC_CLAUDE_BIN:-}"
 _omc_env_resume_request_per_cwd_cap="${OMC_RESUME_REQUEST_PER_CWD_CAP:-}"
@@ -365,6 +366,8 @@ _parse_conf_file() {
         [[ -z "${_omc_env_blindspot_inventory}" && "${value}" =~ ^(on|off)$ ]] && OMC_BLINDSPOT_INVENTORY="${value}" || true ;;
       intent_broadening)
         [[ -z "${_omc_env_intent_broadening}" && "${value}" =~ ^(on|off)$ ]] && OMC_INTENT_BROADENING="${value}" || true ;;
+      divergence_directive)
+        [[ -z "${_omc_env_divergence_directive}" && "${value}" =~ ^(on|off)$ ]] && OMC_DIVERGENCE_DIRECTIVE="${value}" || true ;;
       blindspot_ttl_seconds)
         [[ -z "${_omc_env_blindspot_ttl}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_BLINDSPOT_TTL_SECONDS="${value}" || true ;;
       claude_bin)

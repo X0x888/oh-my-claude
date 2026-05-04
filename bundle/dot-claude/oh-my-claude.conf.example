@@ -469,6 +469,27 @@
 #blindspot_ttl_seconds=86400
 
 # ---------------------------------------------------------------------------
+# Divergent framing — defend against premature paradigm commitment.
+# ---------------------------------------------------------------------------
+
+# Inject a divergent-framing directive on prompts that name a paradigm-
+# shape decision (architecture, approach, strategy, X-vs-Y choice, or an
+# open-ended "how should we" question). The model enumerates 2-3
+# alternative framings INLINE in its opener — name, mental model, what
+# each makes EASY/HARD — then picks one with a one-line reason and a
+# "redirect if" clause. Mirrors how a senior with lateral thinking
+# pauses to consider the option space before committing to a paradigm,
+# rather than anchoring on the first shape that surfaces. The `/diverge`
+# skill remains available for explicit escalation when inline enumeration
+# feels shallow. Default ON. Skipped on advisory / session_management /
+# checkpoint intents (paradigm enumeration on advisory turns is just
+# noise). Independent of the narrowing (prometheus-suggest, intent-verify)
+# and surface-widening (intent-broadening) directives — they target
+# different failure axes (scope vs surface vs paradigm).
+# Env: OMC_DIVERGENCE_DIRECTIVE.
+#divergence_directive=on
+
+# ---------------------------------------------------------------------------
 # Cleanup.
 # ---------------------------------------------------------------------------
 

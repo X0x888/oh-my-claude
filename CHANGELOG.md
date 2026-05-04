@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Divergent-framing directive (`divergence_directive`, default ON)** — new bias-defense directive on a third axis (paradigm enumeration vs the existing scope-narrowing and surface-widening directives). Auto-fires under `/ulw` when `is_paradigm_ambiguous_request` matches a paradigm-shape decision across six signals:
+    - **A.** Explicit X-vs-Y choice (`vs`/`versus`/`should I/we use X or Y`) — gated by an additional paradigm-context guard (question word, architectural noun, or `for`/`in (my|our|this)` tail) so casual comparisons (`Tom vs Jerry`, `git rebase main vs feature`) do not trip.
+    - **B.** Open-ended shape question (`how should/do/can/might/would we|i|you|one`).
+    - **C.** Superlative + paradigm noun (`(best|right|optimal|cleanest|simplest|correct) (way|approach|architecture|pattern|design|strategy|model|abstraction|paradigm)`).
+    - **D.** Paradigm-decision verb + abstract noun (`(design|architect|model|structure) the X (architecture|strategy|pattern|approach|system|abstraction|paradigm|protocol|state machine|data flow|control flow|caching layer)`).
+    - **E.** `is there a better way`.
+    - **F.** Migration / switching / adoption decisions (`(migrate|switch|move|migrating|switching|moving) (from|to) X`, `consider (switching|adopting|moving|migrating|using)`, `thinking about (migrating|switching|moving|adopting|using)`, `(what|which) pattern fits`) — covers the canonical senior-engineer "should I migrate from Postgres to DynamoDB" / "consider switching to event sourcing" / "thinking about adopting CQRS" shapes. The `from X to Y` structure is what disambiguates paradigm shifts from timing questions ("should I migrate the database now" — same verb, missing from/to, no fire).
+
+    Disqualifiers: bug-fix vocabulary (`fix`/`bug`/`hotfix`/`patch`/`defect`/`issue`/`fault`/`crash`/`broken`/`failing test`/`stack trace`) and code-anchored prompts — except when an explicit X-vs-Y signal is present (`` `Redux` vs `Context` `` typography is not scope-anchoring). Fires on advisory + execution + continuation intents (mirrors v1.26.0 completeness-directive gate); skipped on session_management + checkpoint. Independent of `prometheus_suggest` / `intent_verify_directive` / `intent_broadening` / `exemplifying_directive` — different failure axes can co-fire. The directive teaches inline lateral thinking (2-3 framings + EASY/HARD affordances + redirect-if clause) rather than dispatching the `divergent-framer` sub-agent on every task; `/diverge` remains for explicit escalation when inline enumeration feels shallow. Defends against the "first paradigm wins" failure mode where the model anchors on the first mental model that surfaces. New flag wired in three sites (`common.sh _parse_conf_file`, `oh-my-claude.conf.example`, `omc-config.sh emit_known_flags` + all three presets); env: `OMC_DIVERGENCE_DIRECTIVE`. Telemetry: `gate=bias-defense` `event=directive_fired` `directive=divergence` rows surface in `/ulw-report` "Bias-defense directives fired" section. New tests: `tests/test-divergence-directive.sh` (33 assertions across positive/negative classifier + intent gate + opt-out + axis independence both directions + env-precedence both directions + telemetry + contract phrases) and Tests 17-19 in `tests/test-bias-defense-classifier.sh` (66 classifier unit cases including F-1/F-2/F-3 quality-reviewer regression net + Signal F senior-paradigm coverage + conf-parser round-trip + env-precedence).
+
+### Fixed
+
+- **`/ulw-report` "Bias-defense directives fired" section now counts `intent-broadening` and `intent-broadening-no-inventory` rows** (`bundle/dot-claude/skills/autowork/scripts/show-report.sh` directive list). Pre-1.32.0 the loop hardcoded `[exemplifying, completeness, prometheus-suggest, intent-verify]` only — v1.28.0's intent-broadening telemetry rows fired correctly but never rendered in the report. Found inline while wiring the new `divergence` directive into the same loop (Serendipity Rule: verified, same code path, bounded one-line fix). All seven directive names now render: `exemplifying`, `completeness`, `prometheus-suggest`, `intent-verify`, `intent-broadening`, `intent-broadening-no-inventory`, `divergence`.
+
 ## [1.31.3] - 2026-05-04
 
 Final-pass quality-reviewer fixes after v1.31.2. Five findings closed (3 medium correctness + 2 low docs/threat-model). One regression introduced by F-3 fix discovered + closed (re-entrant `with_state_lock` detection).

@@ -485,6 +485,134 @@ assert_false "should I add"               'is_completeness_request "should I add
 assert_false "verify the connection"      'is_completeness_request "verify the connection works"'
 
 # ----------------------------------------------------------------------
+# v1.32.0 — is_paradigm_ambiguous_request positive cases
+#
+# Detects when the prompt names a paradigm-shape decision the model is
+# at risk of anchoring on the first-paradigm-that-surfaces. Symmetric to
+# is_completeness_request but on a third axis (paradigm enumeration vs
+# scope-width or scope-narrowness).
+printf 'Test 17: is_paradigm_ambiguous_request positive cases (v1.32.0)\n'
+# Signal A — explicit X vs Y / X-or-Y choice.
+assert_true "X vs Y"                       'is_paradigm_ambiguous_request "websockets vs polling for the live status feed"'
+assert_true "X versus Y"                   'is_paradigm_ambiguous_request "monolith versus microservices for this team"'
+assert_true "should I use X or Y"          'is_paradigm_ambiguous_request "should I use Redux or Context for the global state"'
+assert_true "should we pick X or Y"        'is_paradigm_ambiguous_request "should we pick GraphQL or REST for the API"'
+assert_true "backticked X vs Y"            'is_paradigm_ambiguous_request "should I use \`Redux\` or \`Context\` for state management"'
+# Signal B — open-ended shape question.
+assert_true "how should we"                'is_paradigm_ambiguous_request "how should we handle rate limit retries"'
+assert_true "how do we"                    'is_paradigm_ambiguous_request "how do we model the auth state machine"'
+assert_true "how can we"                   'is_paradigm_ambiguous_request "how can we structure the bootstrap pipeline"'
+assert_true "how might we"                 'is_paradigm_ambiguous_request "how might we approach the resume-watchdog daemon"'
+assert_true "how would you"                'is_paradigm_ambiguous_request "how would you architect this caching layer"'
+# Signal C — superlative + paradigm noun.
+assert_true "best way to model"            'is_paradigm_ambiguous_request "what is the best way to model auth state"'
+assert_true "right approach"               'is_paradigm_ambiguous_request "what is the right approach for retrying API calls"'
+assert_true "cleanest pattern"             'is_paradigm_ambiguous_request "what is the cleanest pattern for the cache layer"'
+assert_true "optimal architecture"         'is_paradigm_ambiguous_request "what is the optimal architecture for multi-tenant data"'
+assert_true "simplest design"              'is_paradigm_ambiguous_request "what is the simplest design for the wizard"'
+# Signal D — paradigm-decision verb + abstract noun.
+assert_true "design the strategy"          'is_paradigm_ambiguous_request "design the auth strategy for a multi-tenant rollout"'
+assert_true "architect the system"         'is_paradigm_ambiguous_request "architect the resume system end to end"'
+assert_true "model the state machine"      'is_paradigm_ambiguous_request "model the wizard state machine"'
+assert_true "design the pattern"           'is_paradigm_ambiguous_request "design the retry pattern for outbound webhooks"'
+assert_true "structure the data flow"      'is_paradigm_ambiguous_request "structure the data flow between the ingestion services"'
+# Signal E — explicit retrospective.
+assert_true "is there a better way"        'is_paradigm_ambiguous_request "is there a better way to handle this caching"'
+# Signal F — paradigm-shift / adoption decisions (post-excellence-reviewer F-3).
+# Senior-engineer paradigm shapes the v1.32.0-pre regex silently missed.
+assert_true "thinking about migrating from X to Y" \
+                                           'is_paradigm_ambiguous_request "thinking about migrating from Postgres to DynamoDB"'
+assert_true "should I migrate from X to Y" \
+                                           'is_paradigm_ambiguous_request "should I migrate from monolith to microservices"'
+assert_true "consider switching to X"      'is_paradigm_ambiguous_request "consider switching to event sourcing"'
+assert_true "should we move from X to Y"   'is_paradigm_ambiguous_request "should we move from REST to GraphQL"'
+assert_true "thinking about adopting X"    'is_paradigm_ambiguous_request "thinking about adopting CQRS for the orders module"'
+assert_true "considering moving to X"      'is_paradigm_ambiguous_request "considering moving to a CRDT-backed store"'
+assert_true "what pattern fits X"          'is_paradigm_ambiguous_request "What pattern fits this state propagation?"'
+assert_true "which pattern fits X"         'is_paradigm_ambiguous_request "which pattern fits the multi-tenant case best"'
+
+# ----------------------------------------------------------------------
+# v1.32.0 — is_paradigm_ambiguous_request negative cases
+printf 'Test 18: is_paradigm_ambiguous_request negative cases (v1.32.0)\n'
+# Disqualifier 1 — bug-fix vocabulary.
+assert_false "fix the bug"                 'is_paradigm_ambiguous_request "fix the off-by-one bug in the parser"'
+assert_false "hotfix"                      'is_paradigm_ambiguous_request "hotfix the auth flow before the release"'
+assert_false "patch the issue"             'is_paradigm_ambiguous_request "patch the dashboard scrollbar issue"'
+assert_false "broken"                      'is_paradigm_ambiguous_request "the rate limit handler is broken on retries"'
+assert_false "failing test"                'is_paradigm_ambiguous_request "the failing test in lib/auth needs investigation"'
+assert_false "crash"                       'is_paradigm_ambiguous_request "the resume watchdog crashes on null artifact"'
+# Disqualifier 2 — code anchor without X-vs-Y.
+assert_false "file path anchor"            'is_paradigm_ambiguous_request "edit lib/parse.ts to add logging"'
+assert_false "function anchor"             'is_paradigm_ambiguous_request "rewrite the foo() helper for performance"'
+assert_false "extensionless multi-path"    'is_paradigm_ambiguous_request "refactor src/services/auth using the existing helpers"'
+assert_false "backtick non-vs prompt"      'is_paradigm_ambiguous_request "edit \`bar.sh\` to add the new flag"'
+# Negative — no positive signals at all.
+assert_false "build a chat app"            'is_paradigm_ambiguous_request "build a chat app for my team"'
+assert_false "rename function"             'is_paradigm_ambiguous_request "rename getUser to fetchUser everywhere"'
+assert_false "add a button"                'is_paradigm_ambiguous_request "add a logout button to the dashboard"'
+assert_false "implement using named pat"   'is_paradigm_ambiguous_request "implement caching using LRU pattern in src/cache.ts"'
+assert_false "ship the commit"             'is_paradigm_ambiguous_request "ship the commit on main"'
+assert_false "empty string"                'is_paradigm_ambiguous_request ""'
+# Negative — false-friend "design" with concrete object (not abstract noun).
+assert_false "design a button"             'is_paradigm_ambiguous_request "design a logout button for the header"'
+
+# v1.32.0 quality-reviewer regression net (F-1, F-2, F-3).
+# Each assertion locks in a fix for a confirmed false-positive shape so
+# a future regex tweak that re-introduces the false-positive breaks CI
+# before the noisy directive injection ships.
+assert_false "F-1: bare vs with proper noun" \
+                                           'is_paradigm_ambiguous_request "Tom vs Jerry compare them"'
+assert_false "F-1: git CLI shape vs"       'is_paradigm_ambiguous_request "git rebase main vs feature"'
+assert_false "F-1: compare X vs Y casually" \
+                                           'is_paradigm_ambiguous_request "compare apples vs oranges in the demo"'
+assert_false "F-2: issue + how should we"  'is_paradigm_ambiguous_request "the auth issue keeps surfacing how should we model retries"'
+assert_false "F-2: bare issue keyword"     'is_paradigm_ambiguous_request "track this issue and how should we approach it"'
+assert_false "F-3: design build pipeline"  'is_paradigm_ambiguous_request "design the build pipeline for the new monorepo"'
+assert_false "F-3: design release workflow" \
+                                           'is_paradigm_ambiguous_request "design the release workflow for our team"'
+assert_false "F-3: structure data lifecycle" \
+                                           'is_paradigm_ambiguous_request "structure the data lifecycle in the worker"'
+# Signal F discriminator regression net (post-excellence-reviewer F-3):
+# Verbs in Signal F (migrate / switch / move / adopt) match paradigm
+# decisions only when "from X to Y" or "consider/thinking-about" framing
+# is present. Bare "should I migrate" without from/to is a timing
+# question, not a paradigm choice.
+assert_false "Signal F: migrate without from/to (timing question)" \
+                                           'is_paradigm_ambiguous_request "should I migrate the database now"'
+assert_false "Signal F: consider adding (verb not in adoption set)" \
+                                           'is_paradigm_ambiguous_request "consider adding logging to the worker"'
+assert_false "Signal F: thinking about non-adoption noun" \
+                                           'is_paradigm_ambiguous_request "thinking about a beach vacation"'
+assert_false "Signal F: what pattern works (not fits)" \
+                                           'is_paradigm_ambiguous_request "what pattern works for everyone"'
+assert_false "Signal F: bare move without from/to" \
+                                           'is_paradigm_ambiguous_request "let me move the file to the new directory"'
+
+# ----------------------------------------------------------------------
+# v1.32.0 — divergence_directive conf parser wiring
+printf 'Test 19: conf parser wires divergence_directive flag\n'
+_test_conf="$(mktemp -t divergence-conf-XXXXXX)"
+cat > "${_test_conf}" <<EOF
+divergence_directive=off
+EOF
+_omc_env_divergence_directive=""
+OMC_DIVERGENCE_DIRECTIVE="on"
+_parse_conf_file "${_test_conf}"
+assert_eq "divergence_directive parsed from conf" "off" "${OMC_DIVERGENCE_DIRECTIVE}"
+rm -f "${_test_conf}"
+
+# Env var precedence — env wins over conf.
+_test_conf="$(mktemp -t divergence-conf-XXXXXX)"
+cat > "${_test_conf}" <<EOF
+divergence_directive=off
+EOF
+_omc_env_divergence_directive="on"
+OMC_DIVERGENCE_DIRECTIVE="on"
+_parse_conf_file "${_test_conf}"
+assert_eq "env wins over conf — divergence" "on" "${OMC_DIVERGENCE_DIRECTIVE}"
+rm -f "${_test_conf}"
+
+# ----------------------------------------------------------------------
 printf '\n'
 printf 'Result: %d passed, %d failed\n' "${pass}" "${fail}"
 if [[ "${fail}" -gt 0 ]]; then
