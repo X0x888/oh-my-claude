@@ -4,7 +4,30 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-This release responds to the user's request for a comprehensive nine-lens evaluation (product, sre, security, design/UX, data, growth, visual-craft, abstraction-critic, metis). v1.31.0 ships across 9 waves grouped by surface area; ~50 findings ship with ~6 paradigm-shift items deferred to v1.32 with named WHYs.
+## [1.31.0] - 2026-05-04
+
+This release responds to the user's request for a comprehensive nine-lens evaluation (product, sre, security, design/UX, data, growth, visual-craft, abstraction-critic, metis). v1.31.0 ships across 9 waves grouped by surface area; 33 of 39 findings ship with 6 paradigm-shift items deferred to v1.32 with named WHYs (conf flag posture-first refactor, directive registry refactor, common.sh split, gate-fire outcome attribution, retention-nudge surfaces, outcomes-first README authoring).
+
+**Headline wins:**
+- **Watchdog hardening + cooldown race fix (Wave 1):** `claude` binary pin (security F-5 close-out) + under-lock cooldown enforcement (metis F-7) + per-cwd cap on resume_request artifacts (default 3).
+- **Lock coverage + sweep correctness (Wave 2):** `append_limited_state` under lock (sre F-1) + cross-session sweep aggregation under lock (sre F-2) + tightened lock cap (200→60) + long-wait telemetry (sre F-5) + state TTL marker-file portability (sre F-9) + blindspot scanner concurrency guard (sre F-7).
+- **Edge-case + portability (Wave 3):** T37 sparkline byte/char fix (POSIX `wc -m` portable) + `timing_display_width` helper for column-aware truncation + SESSION_ID dots-only rejection + install-remote tag-pin recommendation + tests/lib/test-env-isolate.sh shared isolation helpers.
+- **Telemetry correctness + schema versioning (Wave 4):** `project_key` lifted across cross-session ledgers + ts type uniform integer + `_v` schema_version on serendipity + timing rows + `session_id` consistency + `_watchdog` aggregation explicit + 1KB PIPE_BUF cap on details.
+- **Visual craft polish (Wave 5):** unified `─── title ───` box-rule across show-status / install / welcome (4 sites) + welcome banner card framing + TTY-guarded ANSI in install.sh + verify.sh.
+- **UX consolidation (Wave 6):** canonical /ulw + skill grammar accepts both bare-positional and --double-dash + output_style auto-syncs settings.json on /omc-config change + canary verdict legend in /ulw-status.
+- **Distribution + activation (Wave 7):** jq auto-install offer in install-remote.sh (with explicit consent prompt) + plain-English secondary headline + 8 GitHub topics added + README test-count badge.
+- **Privacy-safe shareable digest (Wave 8):** `/ulw-report --share` emits a numbers-and-distributions-only markdown card with redaction-grep test asserting NO free-text leak.
+- **Divergent-framer agent (Wave 9):** new `divergent-framer` agent + `/diverge` skill — closes the user's explicit "natural divergent thinking ability" axis-6 ask. Slots upstream of all convergent critics (oracle, metis, abstraction-critic, excellence-reviewer); emits 3-5 alternative paradigm framings BEFORE planning commits.
+
+**Test coverage:** all 32 CI bash test files green + 128 Python statusline tests. Test count: ~1750 assertions across 60+ test files.
+
+**Wave-deferred to v1.32 with named WHY:**
+- F-022 show-status default-mode rewrite (substantial reshape)
+- F-023 show-report mood-strip (pair with F-022 + F-037 visual-card surface refresh)
+- F-029 output-style label glossary (low-severity cosmetic)
+- F-031 outcomes-first README (needs telemetry-rich content authored from real /ulw-report data)
+- F-032 skills table journey-grouped (pair with F-031 as one coordinated README refresh)
+- F-033 showcase real entries (pair with F-031)
 
 ### v1.31.0 Wave 1 — Watchdog hardening + cooldown race fix
 

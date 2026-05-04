@@ -83,3 +83,13 @@ The other critics in this harness are *convergent* — they narrow the answer to
 That convergence is correct *after* the framing is chosen. Before the framing is chosen, convergence is premature. The model with strong convergence skills but no divergent peer will reliably pick the *first* framing that sounds plausible — which is often the framing closest to the most-recently-seen example, the most-cited pattern in training data, or the easiest to articulate. None of those are the same as "best fit for this problem".
 
 `divergent-framer` is the seam that protects against that.
+
+## VERDICT contract (v1.14.0 universal)
+
+End every response with exactly one line on its own, unindented, as the final line of your response. Tokens allowed for the framer role:
+
+- `VERDICT: FRAMINGS_READY (N)` — successful run; emitted N framings (3 ≤ N ≤ 5) with rank.
+- `VERDICT: NEEDS_PROBLEM_STATEMENT` — the prompt is too vague to enumerate framings against; ask the user to sharpen the problem statement before re-invoking.
+- `VERDICT: INSUFFICIENT_OPTIONS` — the problem genuinely admits only one credible framing and the divergent exercise is not warranted; recommend skipping `/diverge` and going directly to `quality-planner` / `prometheus`.
+
+The VERDICT line is read by `record-reviewer.sh` and surfaced in `/ulw-status` agent verdict counters. Do not skip it; do not embellish it; do not emit more than one.

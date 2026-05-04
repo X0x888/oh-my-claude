@@ -49,6 +49,8 @@ role_of_agent() {
       printf 'researcher' ;;
     oracle)
       printf 'debugger' ;;
+    divergent-framer)
+      printf 'framer' ;;
     atlas|chief-of-staff)
       printf 'operations' ;;
     draft-writer|writing-architect)
@@ -68,6 +70,7 @@ allowed_tokens_of_role() {
     planner)     printf 'PLAN_READY NEEDS_CLARIFICATION BLOCKED' ;;
     researcher)  printf 'REPORT_READY INSUFFICIENT_SOURCES' ;;
     debugger)    printf 'RESOLVED HYPOTHESIS NEEDS_EVIDENCE' ;;
+    framer)      printf 'FRAMINGS_READY NEEDS_PROBLEM_STATEMENT INSUFFICIENT_OPTIONS' ;;
     operations)  printf 'DELIVERED NEEDS_INPUT BLOCKED' ;;
     writer)      printf 'DELIVERED NEEDS_INPUT NEEDS_RESEARCH' ;;
     implementer) printf 'SHIP INCOMPLETE BLOCKED' ;;
@@ -96,7 +99,7 @@ shopt -s nullglob
 agent_files=("${AGENTS_DIR}"/*.md)
 shopt -u nullglob
 agent_count="${#agent_files[@]}"
-assert_eq "32 agent files present" "32" "${agent_count}"
+assert_eq "33 agent files present (v1.31.0 added divergent-framer)" "33" "${agent_count}"
 
 for f in "${agent_files[@]}"; do
   agent_name="$(basename "${f}" .md)"

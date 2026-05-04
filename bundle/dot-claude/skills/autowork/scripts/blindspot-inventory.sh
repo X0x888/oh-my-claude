@@ -655,7 +655,15 @@ cmd_scan() {
     # exit silently — no value in queueing behind a live scan.
     local lock_mtime now stale_age=3600
     now="$(date +%s)"
-    lock_mtime="$(stat -f %m "${lockdir}" 2>/dev/null || stat -c %Y "${lockdir}" 2>/dev/null || echo 0)"
+    # v1.31.0 portability fix (test-no-broken-stat-chain): separate-
+    # assignment pattern. Inline `stat -f ... || stat -c ...` is banned
+    # because on Linux `stat -f` queries the FILESYSTEM (not the file)
+    # and returns success with garbage data, so the GNU fallback never
+    # runs. Pattern matches lib/state-io.sh:317-319 _lock_mtime helper.
+    lock_mtime="$(stat -f %m "${lockdir}" 2>/dev/null)" || lock_mtime=""
+    if [[ -z "${lock_mtime}" ]]; then
+      lock_mtime="$(stat -c %Y "${lockdir}" 2>/dev/null)" || lock_mtime="0"
+    fi
     local holder_pid="" reap=0
     if [[ -f "${pidfile}" ]]; then
       holder_pid="$(tr -d '[:space:]' < "${pidfile}" 2>/dev/null || true)"
@@ -683,6 +691,8 @@ cmd_scan() {
   # literal command string — at trap-fire time bash just runs the
   # baked-in literal. Single-quoting the path values inside protects
   # against unusual chars in cache paths.
+  # shellcheck disable=SC2064  # Intentional: expand-at-set-time so
+  # the locals don't go out of scope before the trap fires.
   trap "rm -f '${pidfile}' 2>/dev/null; rmdir '${lockdir}' 2>/dev/null" EXIT
 
   local tmp="${cache}.tmp.$$.${RANDOM}"
