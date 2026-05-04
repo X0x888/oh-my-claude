@@ -13,8 +13,17 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # block counts, reviewer verdicts, commits, classifier misfires, outcome.
 # Intended for end-of-session review so invisible quality signals (e.g.
 # "3 PreTool blocks, all corrections-not-defects") become visible.
+# `--explain` (v1.30.0) prints a per-flag rationale: each known oh-my-claude
+# conf flag with its current value, default, and one-line purpose. Closes
+# the v1.29.0 product-lens P2-10 deferred item — `omc-config show` previously
+# dumped a bare star-table without explaining what each flag does, so users
+# wanting to disable e.g. `intent_broadening` had no in-CLI signal of what
+# they would lose. The conf-example file IS the source of truth (422 lines)
+# but most users never read it. This surface walks the omc-config flag
+# manifest so explanations stay synced with the parser/conf-example trio.
 SUMMARY_MODE=0
 CLASSIFIER_MODE=0
+EXPLAIN_MODE=0
 for arg in "$@"; do
   case "${arg}" in
     --summary|-s)
@@ -23,22 +32,151 @@ for arg in "$@"; do
     --classifier|-c)
       CLASSIFIER_MODE=1
       ;;
+    --explain|-e)
+      EXPLAIN_MODE=1
+      ;;
     --help|-h)
-      printf 'Usage: show-status.sh [--summary | --classifier]\n'
+      printf 'Usage: show-status.sh [--summary | --classifier | --explain]\n'
       printf '\n'
       printf '  (no flag)      Full diagnostic status (default).\n'
       printf '  --summary      Compact end-of-session recap.\n'
       printf '  --classifier   Intent-classifier telemetry for this session\n'
       printf '                 plus cross-session misfire patterns.\n'
+      printf '  --explain      Per-flag rationale: every known oh-my-claude\n'
+      printf '                 conf flag with current value, default, and\n'
+      printf '                 one-line purpose, grouped by cluster.\n'
       exit 0
       ;;
     *)
       printf 'Unknown argument: %s\n' "${arg}" >&2
-      printf 'Usage: show-status.sh [--summary | --classifier]\n' >&2
+      printf 'Usage: show-status.sh [--summary | --classifier | --explain]\n' >&2
       exit 1
       ;;
   esac
 done
+
+# --- Explain mode: per-flag rationale walker ---
+# Reads the omc-config flag manifest (the canonical name|type|default|cluster
+# |description registry — see `omc-config.sh:emit_known_flags`) and prints
+# a grouped explanation for every flag. Intentionally side-effect-free and
+# session-independent: skipped before the latest-session lookup so even a
+# pristine install (no session state yet) renders correctly.
+if [[ "${EXPLAIN_MODE}" -eq 1 ]]; then
+  # Co-locate with show-status.sh so the dev-tree and installed-tree
+  # paths resolve correctly without an environment dependency on
+  # ~/.claude/. SCRIPT_DIR is the directory of this script (set near
+  # the top of the file).
+  _ssd="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  OMC_CONFIG_SH="${_ssd}/omc-config.sh"
+  if [[ ! -f "${OMC_CONFIG_SH}" ]]; then
+    printf 'omc-config.sh not found at %s — cannot render explain.\n' "${OMC_CONFIG_SH}" >&2
+    exit 1
+  fi
+
+  # Load the flag manifest by sourcing omc-config.sh and calling its
+  # emit_known_flags helper. The helper streams `name|type|default|cluster
+  # |description` rows on stdout. Suppress any output from sourcing (the
+  # file is a script with subcommand dispatch but `source` only defines
+  # functions when called without args at the top of an interactive shell).
+  # shellcheck source=/dev/null
+  (
+    # Subshell to avoid leaking omc-config's local helpers into the
+    # outer scope of this script. `set --` clears positional parameters
+    # before sourcing because omc-config.sh's bottom-line `main "$@"`
+    # would otherwise see this script's argv (`--explain`) and exit 2
+    # via the unknown-subcommand branch.
+    set +e
+    # pipefail + nounset must also be off so a grep miss in the conf
+    # walk does not silently abort the loop (grep exits 1 on no match;
+    # under -o pipefail the command substitution propagates that and
+    # the assignment fails the calling context). Treat the explain
+    # renderer as best-effort: partial output is better than no output.
+    set +o pipefail
+    set +u
+    set --
+    # Suppress both stdout AND stderr while sourcing — omc-config.sh's
+    # bottom-line `main "$@"` runs with empty $@ → triggers the usage
+    # print to stdout. We only need its function definitions, not its
+    # main output.
+    source "${OMC_CONFIG_SH}" >/dev/null 2>&1 || true
+    if ! declare -F emit_known_flags >/dev/null 2>&1; then
+      printf 'omc-config.sh did not export emit_known_flags — cannot render.\n' >&2
+      exit 1
+    fi
+
+    printf '\n'
+    printf '== oh-my-claude flag rationale ==\n'
+    printf '\n'
+    printf 'Each line is: <flag>=<current> (default=<default>)\n'
+    printf '             <one-line purpose>\n'
+    printf '\n'
+    printf 'Source: omc-config.sh emit_known_flags manifest. To change a\n'
+    printf 'flag value, run /omc-config or edit ~/.claude/oh-my-claude.conf\n'
+    printf 'directly. To inspect the full set including descriptions for\n'
+    printf 'flags not yet in your conf, see ~/.claude/oh-my-claude.conf\n'
+    printf '(the canonical reference) or oh-my-claude.conf.example in the\n'
+    printf 'source repo.\n'
+    printf '\n'
+
+    # Group rows by cluster. Single-pass: stream rows, sort by cluster
+    # then name, render a header on cluster boundary.
+    last_cluster=""
+    while IFS='|' read -r _name _type _default _cluster _description; do
+      [[ -z "${_name}" ]] && continue
+      [[ "${_name}" == "EOF" ]] && break
+
+      # Resolve current value via the same precedence chain common.sh
+      # uses: project conf (PWD/.claude/oh-my-claude.conf) → user conf
+      # (~/.claude/oh-my-claude.conf) → default. Common.sh eagerly seeds
+      # OMC_* variables with defaults at source-time, so a "shell env vs
+      # default" distinction is not reliable from this script's vantage
+      # point. The conf-file value is the actionable signal — that's
+      # what the user actually configured. Env-var overrides still
+      # produce a `*` marker because OMC_FOO != default at the conf-
+      # check level. Direct grep avoids the read_conf_value 2-arg form
+      # complication and works whether or not omc-config.sh's helpers
+      # leaked into scope.
+      _cur=""
+      _proj_conf="${PWD}/.claude/oh-my-claude.conf"
+      _user_conf="${HOME}/.claude/oh-my-claude.conf"
+      for _conf in "${_proj_conf}" "${_user_conf}"; do
+        [[ -f "${_conf}" ]] || continue
+        # `|| true` neutralizes the pipeline's exit status: grep exits 1
+        # on no-match, and depending on shell-flag inheritance into the
+        # `$(...)` subshell, that 1 has historically aborted the
+        # explain-render mid-loop. Best-effort posture documented above.
+        _conf_val="$(grep -E "^${_name}=" "${_conf}" 2>/dev/null | tail -1 | cut -d= -f2- || true)"
+        if [[ -n "${_conf_val}" ]]; then
+          _cur="${_conf_val}"
+          break
+        fi
+      done
+      [[ -z "${_cur}" ]] && _cur="${_default}"
+
+      _delta_marker=""
+      if [[ "${_cur}" != "${_default}" ]]; then
+        _delta_marker=" *"
+      fi
+
+      if [[ "${_cluster}" != "${last_cluster}" ]]; then
+        [[ -n "${last_cluster}" ]] && printf '\n'
+        printf '── %s ──\n' "${_cluster}"
+        last_cluster="${_cluster}"
+      fi
+
+      printf '  %s=%s (default=%s)%s\n' \
+        "${_name}" "${_cur}" "${_default}" "${_delta_marker}"
+      if [[ -n "${_description}" ]]; then
+        printf '      %s\n' "${_description}"
+      fi
+    done < <(emit_known_flags 2>/dev/null)
+
+    printf '\n'
+    printf '* = value differs from default. Run /omc-config show to see the\n'
+    printf '    raw conf file, or /omc-config to change values interactively.\n'
+  )
+  exit 0
+fi
 
 # Find the most recent session directory via shared helper in common.sh.
 latest_session="$(discover_latest_session)"

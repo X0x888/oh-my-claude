@@ -182,5 +182,57 @@ assert_output_contains "T5: combine-hint when threshold gap > 40" \
 
 teardown_session "${ROOT}"
 
+# ----------------------------------------------------------------------
+printf 'Test 6: --explain renders per-flag rationale (v1.30.0 Wave 7)\n'
+# Closes the v1.29.0 product-lens P2-10 deferred item: users wanting to
+# disable a flag previously had to read the 422-line conf-example file
+# to learn what each flag does.
+out_explain="$(bash "${SHOW_STATUS}" --explain 2>&1 || true)"
+if [[ "${out_explain}" == *"flag rationale"* ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T6: --explain header missing; got first 300 chars:\n%s\n' \
+    "${out_explain:0:300}" >&2
+  fail=$((fail + 1))
+fi
+
+# Must list at least one known flag with its description.
+if [[ "${out_explain}" == *"prompt_persist"* ]] \
+    && [[ "${out_explain}" == *"In-session prompt"* ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T6: --explain did not surface prompt_persist + description\n' >&2
+  fail=$((fail + 1))
+fi
+
+# Must group by cluster (at least one cluster header is present).
+if [[ "${out_explain}" == *"── gates ──"* ]] \
+    || [[ "${out_explain}" == *"── memory ──"* ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T6: --explain missing cluster grouping headers\n' >&2
+  fail=$((fail + 1))
+fi
+
+# --explain is session-independent: must succeed even with no session state.
+_no_state_root="$(mktemp -d)"
+out_no_session="$(STATE_ROOT="${_no_state_root}" bash "${SHOW_STATUS}" --explain 2>&1 || true)"
+rm -rf "${_no_state_root}"
+if [[ "${out_no_session}" == *"flag rationale"* ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T6: --explain failed when no session state was present\n' >&2
+  fail=$((fail + 1))
+fi
+
+# Help mode lists --explain.
+out_help="$(bash "${SHOW_STATUS}" --help 2>&1 || true)"
+if [[ "${out_help}" == *"--explain"* ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T6: --help does not document --explain\n' >&2
+  fail=$((fail + 1))
+fi
+
 printf '\n=== Show-Status Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]

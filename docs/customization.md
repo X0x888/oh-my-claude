@@ -375,6 +375,41 @@ oh-my-claude ships with two built-in output styles. Both are copied into `~/.cla
 
 Both declare `keep-coding-instructions: true`, so Claude Code's coding-system-prompt (specialist-agent expectations, tool-use conventions) is preserved underneath either style.
 
+### Voice preview — side-by-side
+
+The same `/ulw` outcome rendered in both bundled styles. Use this preview to calibrate before flipping the conf flag — both surfaces cite the command and the count; the point is the **posture and word choice**, not whether numbers exist.
+
+**`oh-my-claude` voice:**
+
+> **Bottom line.** Added the new bundled style and wired it into install / uninstall / verify; tests pass.
+>
+> **Changed.**
+> - `bundle/dot-claude/output-styles/executive-brief.md` (new file).
+> - `output_style` conf enum extended to `opencode|executive|preserve`.
+>
+> **Verification.** `bash tests/test-settings-merge.sh` → `194 passed, 0 failed`.
+>
+> **Next.** Commit and update docs.
+
+**`executive-brief` voice (same outcome):**
+
+> **Headline.** Style shipped. 194 of 194 merge tests pass. No blockers, no asks.
+>
+> ---
+>
+> **Shipped.**
+> - `bundle/dot-claude/output-styles/executive-brief.md` (new file, 218 lines).
+> - `output_style` enum extended: `opencode | executive | preserve`.
+>
+> **Verification.**
+> - `bash tests/test-settings-merge.sh` → `194 passed, 0 failed`.
+>
+> **Next.** Commit the wave; update `CHANGELOG.md`.
+
+**What changes between the two:** lead label (`Bottom line.` vs `Headline.`), verb framing (`Added` vs `shipped`), explicit negative confirmation (`No blockers, no asks` — silence-means-none discipline applied to the headline itself), the horizontal rule between headline and body, and the tighter bullet cadence. **What does not change:** the cited command, the cited count, the `**Next.**` close. Both styles refuse to say `tests pass` without naming what passed.
+
+If neither voice fits, see [Custom styles](#custom-styles) below for the upgrade-safe pattern.
+
 ### Switching between bundled styles
 
 The fastest path is `/omc-config` — pick the value you want for `output_style` and re-run install:
