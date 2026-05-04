@@ -24,32 +24,41 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SUMMARY_MODE=0
 CLASSIFIER_MODE=0
 EXPLAIN_MODE=0
+# v1.31.0 Wave 6 (design-lens F-027): accept BOTH --double-dash AND
+# bare-positional argument forms so the skill grammar matches /ulw-time
+# (which uses positional `current|last|week`) and /ulw-report
+# (positional `last|week|month|all`). Pre-Wave-6 only --summary / -s
+# / --classifier / -c / --explain / -e were accepted; users typing
+# `/ulw-status summary` got "Unknown argument" with no recovery path.
+# Both forms map to the same modes; --help mentions both.
 for arg in "$@"; do
   case "${arg}" in
-    --summary|-s)
+    --summary|-s|summary)
       SUMMARY_MODE=1
       ;;
-    --classifier|-c)
+    --classifier|-c|classifier)
       CLASSIFIER_MODE=1
       ;;
-    --explain|-e)
+    --explain|-e|explain)
       EXPLAIN_MODE=1
       ;;
-    --help|-h)
-      printf 'Usage: show-status.sh [--summary | --classifier | --explain]\n'
+    --help|-h|help)
+      printf 'Usage: show-status.sh [summary | classifier | explain]\n'
+      printf '       show-status.sh [--summary | --classifier | --explain]\n'
       printf '\n'
       printf '  (no flag)      Full diagnostic status (default).\n'
-      printf '  --summary      Compact end-of-session recap.\n'
-      printf '  --classifier   Intent-classifier telemetry for this session\n'
+      printf '  summary, -s    Compact end-of-session recap.\n'
+      printf '  classifier, -c Intent-classifier telemetry for this session\n'
       printf '                 plus cross-session misfire patterns.\n'
-      printf '  --explain      Per-flag rationale: every known oh-my-claude\n'
+      printf '  explain, -e    Per-flag rationale: every known oh-my-claude\n'
       printf '                 conf flag with current value, default, and\n'
       printf '                 one-line purpose, grouped by cluster.\n'
       exit 0
       ;;
     *)
       printf 'Unknown argument: %s\n' "${arg}" >&2
-      printf 'Usage: show-status.sh [--summary | --classifier | --explain]\n' >&2
+      printf 'Usage: show-status.sh [summary | classifier | explain]\n' >&2
+      printf '       show-status.sh [--summary | --classifier | --explain]\n' >&2
       exit 1
       ;;
   esac
@@ -716,6 +725,12 @@ if [[ -f "${canary_log}" ]] && [[ -s "${canary_log}" ]]; then
     printf '\n--- Model-drift canary ---\n'
     printf 'Verdicts:   total=%s · clean=%s · covered=%s · low_coverage=%s · unverified=%s\n' \
       "${c_total}" "${c_clean}" "${c_covered}" "${c_low}" "${c_unver}"
+    # v1.31.0 Wave 6 (design-lens F-030): one-line legend for the
+    # verdict shapes. Pre-Wave-6 a first-time user saw `unverified=1`
+    # with no explanation and no recovery-path. The legend explicitly
+    # names what each verdict means so users can interpret the row
+    # without leaving the terminal for docs.
+    printf 'Legend:     clean=no claims · covered=claims+tools · low_coverage=fewer tools than claims · unverified=claims with no tools (silent-confab pattern)\n'
     if [[ "${c_unver}" -gt 0 ]]; then
       drift_emitted="$(jq -r '.drift_warning_emitted // empty' "${state_file}" 2>/dev/null || true)"
       if [[ "${drift_emitted}" == "1" ]]; then

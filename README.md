@@ -321,7 +321,7 @@ Skills are invoked as slash commands or routed automatically by the intent class
 
 > The mythology-named skills (atlas, metis, oracle, prometheus, librarian) carry one-word mnemonics — see [`docs/glossary.md`](docs/glossary.md) for the rationale behind each name.
 >
-> `/ulw` also responds to the aliases `/autowork` and `/ultrawork` (preferred) plus `sisyphus` (legacy). Use `/ulw` in new prompts; the aliases stay for muscle memory.
+> `/ulw` is the canonical user-facing name. The legacy aliases `/autowork`, `/ultrawork`, and `sisyphus` remain wired in the classifier for muscle-memory continuity but new prompts and docs should lead with `/ulw`. (v1.31.0 — naming consolidation.)
 
 ### Auto-routed vs. manual escape hatches
 

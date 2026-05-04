@@ -18,6 +18,18 @@ Closes the v1.30.0 wave-deferred set: security-lens F-5 (watchdog `claude` PATH-
 
 - **Test coverage**: 9 new assertions — test-resume-watchdog T24-T27 (claude_bin pin happy path / missing-executable fallback / --version-failure fallback / empty-pin legacy behavior), test-claim-resume-request T27-T31 (cooldown=0 disable / under-lock rejection rc=3 / outside-window claim-success / legacy callers without --cooldown-secs / invalid integer rejected), test-stop-failure-handler 3 cap-sweep assertions (cap=3 keeps newest 3 / cap=0 disables / cross-cwd isolation). All existing tests pass: 75/75 + 65/65 + 86/86 + 122/122 + 61/61 unchanged.
 
+### v1.31.0 Wave 6 — UX consolidation (canonical /ulw + skill grammar + output-style sync + canary legend)
+
+Closes 4 of 5 design-lens UX consolidation findings; defers F-029 (output-style label glossary) as low-severity cosmetic.
+
+- **Promote /ulw as canonical user-facing name** (design-lens F-026, README.md). The skill cluster has long used `/ulw-*` as the prefix (eight skills); the trigger-list still treated `/ulw`, `/autowork`, `/ultrawork`, and `sisyphus` as equivalent. The README footnote now explicitly leads with `/ulw` and demotes the other three to "muscle-memory legacy" status. The classifier still honors all four for backwards compat.
+
+- **Skill argument grammar normalization** (design-lens F-027, `bundle/dot-claude/skills/autowork/scripts/show-status.sh`). Pre-Wave-6 `/ulw-status` accepted only `--summary` / `--classifier` / `--explain` (double-dash). `/ulw-time` and `/ulw-report` use bare-positional (`current`, `last`, `week`). New users typing `/ulw-status summary` got "Unknown argument" with no recovery hint. Wave 6 accepts BOTH grammars: `summary | classifier | explain` (positional, matching ulw-time/ulw-report) AND `--summary | --classifier | --explain` (legacy; backwards-compat). `--help` documents both forms. Test-show-status grows 19 → 23 with T7 covering all four positional shapes.
+
+- **Output-style auto-sync to settings.json** (design-lens F-028, `bundle/dot-claude/skills/autowork/scripts/omc-config.sh`). Pre-Wave-6 `/omc-config set user output_style=executive` updated `oh-my-claude.conf` but left `settings.json:outputStyle` pointing at the prior bundled style — users had to remember to re-run `bash install.sh` for the switch to actually take effect. Wave 6 adds `sync_output_style_settings()` which reads settings.json and flips the bundled-style name in place. Preserves user-set custom styles (matches install.sh's "preserve unrecognized values" rule). Tests 47-50 in test-omc-config (122 → 127) cover opencode-sync / executive-sync / preserve-noop / user-custom-untouched.
+
+- **Canary verdict legend in /ulw-status** (design-lens F-030, `show-status.sh`). The model-drift canary verdicts (`clean`, `covered`, `low_coverage`, `unverified`) appeared in `/ulw-status` with zero in-CLI explanation. New legend line follows the verdict counts: `clean=no claims · covered=claims+tools · low_coverage=fewer tools than claims · unverified=claims with no tools (silent-confab pattern)`. First-time users can interpret the row without leaving the terminal.
+
 ### v1.31.0 Wave 5 — Visual craft polish (header unification + welcome banner + TTY-guards)
 
 Closes 4 of 6 visual-craft findings (F-020, F-021, F-024 partial, F-025 partial). Defers F-022 (show-status default mode rewrite) and F-023 (show-report mood-strip) to a follow-up cycle — both are ~50-100 LOC reshape work that warrants its own focused wave.

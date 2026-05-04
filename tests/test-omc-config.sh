@@ -793,6 +793,48 @@ else
 fi
 teardown
 
+# --- Test 47-50 (v1.31.0 Wave 6 design-lens F-028): output_style auto-syncs settings.json ---
+printf 'Test 47: output_style change auto-syncs settings.json (opencode)\n'
+setup
+mkdir -p "${TEST_HOME}/.claude"
+# Seed settings.json with the alternative bundled style.
+printf '{"outputStyle":"executive-brief","other":"keep"}\n' > "${TEST_HOME}/.claude/settings.json"
+bash "${HELPER}" set user output_style=opencode >/dev/null 2>&1
+synced="$(jq -r '.outputStyle' "${TEST_HOME}/.claude/settings.json" 2>/dev/null)"
+assert_eq "Test 47: settings.json outputStyle synced to oh-my-claude" "oh-my-claude" "${synced}"
+preserved="$(jq -r '.other' "${TEST_HOME}/.claude/settings.json" 2>/dev/null)"
+assert_eq "Test 47: other settings.json keys preserved" "keep" "${preserved}"
+teardown
+
+printf 'Test 48: output_style change auto-syncs settings.json (executive)\n'
+setup
+mkdir -p "${TEST_HOME}/.claude"
+printf '{"outputStyle":"oh-my-claude"}\n' > "${TEST_HOME}/.claude/settings.json"
+bash "${HELPER}" set user output_style=executive >/dev/null 2>&1
+synced="$(jq -r '.outputStyle' "${TEST_HOME}/.claude/settings.json" 2>/dev/null)"
+assert_eq "Test 48: settings.json outputStyle synced to executive-brief" "executive-brief" "${synced}"
+teardown
+
+printf 'Test 49: output_style=preserve does NOT touch settings.json\n'
+setup
+mkdir -p "${TEST_HOME}/.claude"
+printf '{"outputStyle":"my-custom-style"}\n' > "${TEST_HOME}/.claude/settings.json"
+bash "${HELPER}" set user output_style=preserve >/dev/null 2>&1
+preserved_custom="$(jq -r '.outputStyle' "${TEST_HOME}/.claude/settings.json" 2>/dev/null)"
+assert_eq "Test 49: user-custom outputStyle preserved" "my-custom-style" "${preserved_custom}"
+teardown
+
+printf 'Test 50: user-set custom outputStyle is NOT auto-synced even on bundled-style change\n'
+setup
+mkdir -p "${TEST_HOME}/.claude"
+# User has a custom style (not in the bundled set). Switching the conf
+# flag must NOT silently rewrite the user's choice.
+printf '{"outputStyle":"my-very-custom-style"}\n' > "${TEST_HOME}/.claude/settings.json"
+bash "${HELPER}" set user output_style=opencode >/dev/null 2>&1
+preserved_custom="$(jq -r '.outputStyle' "${TEST_HOME}/.claude/settings.json" 2>/dev/null)"
+assert_eq "Test 50: user-custom outputStyle preserved across opencode set" "my-very-custom-style" "${preserved_custom}"
+teardown
+
 # --- Summary ---
 printf '\n=== test-omc-config: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]

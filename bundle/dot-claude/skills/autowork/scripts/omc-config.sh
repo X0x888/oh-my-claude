@@ -556,14 +556,18 @@ cmd_set() {
   # call apply-tier" instruction relies on the model remembering across
   # turns; this backstops that.
   local prior_tier="" new_tier=""
+  local prior_style="" new_style=""
   for kv in "$@"; do
-    if [[ "${kv%%=*}" == "model_tier" ]]; then
-      new_tier="${kv#*=}"
-      break
-    fi
+    case "${kv%%=*}" in
+      model_tier) new_tier="${kv#*=}" ;;
+      output_style) new_style="${kv#*=}" ;;
+    esac
   done
   if [[ -n "${new_tier}" ]]; then
     prior_tier="$(read_conf_value "${conf}" model_tier)"
+  fi
+  if [[ -n "${new_style}" ]]; then
+    prior_style="$(read_conf_value "${conf}" output_style)"
   fi
 
   write_conf_atomic "${conf}" "$@"
@@ -580,6 +584,59 @@ cmd_set() {
         "${HOME}" "${new_tier}" >&2
     fi
   fi
+
+  # v1.31.0 Wave 6 (design-lens F-028): auto-sync settings.json when
+  # output_style changes via /omc-config. Pre-Wave-6 the conf flag
+  # was written but settings.json was untouched until the next
+  # `bash install.sh` run — users picked "executive" and got the old
+  # voice the rest of the session, with no signal that a reinstall
+  # was required. The sync flips the bundled-style name in
+  # settings.json without disturbing user-set custom styles (matches
+  # install.sh's "preserve user-set styles" rule).
+  if [[ -n "${new_style}" && "${new_style}" != "${prior_style}" ]]; then
+    sync_output_style_settings "${new_style}" || \
+      printf 'omc-config: WARNING: output_style sync to settings.json failed; run `bash ~/.claude/install.sh` manually\n' >&2
+  fi
+}
+
+# v1.31.0 Wave 6 (design-lens F-028): write settings.json's
+# outputStyle field from a known conf value. Mirrors install.sh's
+# logic: only auto-syncs when the existing setting is null or one of
+# the bundled style names. User-set custom styles are preserved.
+# Returns 0 on success, non-zero on failure (caller logs warning).
+sync_output_style_settings() {
+  local pref="$1"
+  local target_style=""
+  case "${pref}" in
+    opencode)  target_style="oh-my-claude" ;;
+    executive) target_style="executive-brief" ;;
+    preserve)  return 0 ;;  # explicit no-op
+    *) return 1 ;;
+  esac
+
+  local settings_file="${HOME}/.claude/settings.json"
+  if [[ ! -f "${settings_file}" ]]; then
+    return 0  # no settings.json yet — install.sh will create it
+  fi
+
+  local tmp
+  tmp="$(mktemp "${settings_file}.tmp.XXXXXX")" || return 1
+  local _BUNDLED='oh-my-claude|executive-brief|OpenCode Compact'
+  if jq --arg target "${target_style}" --arg bundled "${_BUNDLED}" '
+      . as $orig
+      | (.outputStyle // null) as $cur
+      | if ($cur == null) or (($cur | type) == "string" and (($cur | test("^(" + $bundled + ")$")) or ($cur == "")))
+        then .outputStyle = $target
+        else .
+        end
+    ' "${settings_file}" > "${tmp}" 2>/dev/null; then
+    if mv -f "${tmp}" "${settings_file}"; then
+      printf 'omc-config: settings.json outputStyle synced to %s\n' "${target_style}"
+      return 0
+    fi
+  fi
+  rm -f "${tmp}" 2>/dev/null
+  return 1
 }
 
 cmd_apply_preset() {

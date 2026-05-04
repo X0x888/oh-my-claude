@@ -234,5 +234,43 @@ else
   fail=$((fail + 1))
 fi
 
+# v1.31.0 Wave 6 (design-lens F-027): bare-positional argument forms
+# accepted in addition to --double-dash.
+printf '\nT7: bare-positional argument forms (v1.31.0 grammar normalization)\n'
+out_summary_pos="$(bash "${SHOW_STATUS}" summary 2>&1 || true)"
+if [[ "${out_summary_pos}" == *"Session"* ]] || [[ "${out_summary_pos}" == *"no session"* ]]; then
+  pass=$((pass + 1))
+  printf '  PASS: bare `summary` works\n'
+else
+  printf '  FAIL: bare `summary` returns unexpected output\n' >&2
+  fail=$((fail + 1))
+fi
+out_explain_pos="$(STATE_ROOT="$(mktemp -d)" bash "${SHOW_STATUS}" explain 2>&1 || true)"
+if [[ "${out_explain_pos}" == *"flag rationale"* ]]; then
+  pass=$((pass + 1))
+  printf '  PASS: bare `explain` works\n'
+else
+  printf '  FAIL: bare `explain` failed\n' >&2
+  fail=$((fail + 1))
+fi
+out_classifier_pos="$(bash "${SHOW_STATUS}" classifier 2>&1 || true)"
+if [[ "${out_classifier_pos}" == *"Classifier"* ]] || [[ "${out_classifier_pos}" == *"telemetry"* ]] || [[ "${out_classifier_pos}" == *"misfires"* ]]; then
+  pass=$((pass + 1))
+  printf '  PASS: bare `classifier` works\n'
+else
+  printf '  FAIL: bare `classifier` returns unexpected output\n' >&2
+  fail=$((fail + 1))
+fi
+# --help shows BOTH grammar forms.
+out_help_full="$(bash "${SHOW_STATUS}" --help 2>&1 || true)"
+if [[ "${out_help_full}" == *"[summary | classifier | explain]"* ]] \
+   && [[ "${out_help_full}" == *"--summary"* ]]; then
+  pass=$((pass + 1))
+  printf '  PASS: --help documents both positional and --flag forms\n'
+else
+  printf '  FAIL: --help missing one of the grammar forms\n' >&2
+  fail=$((fail + 1))
+fi
+
 printf '\n=== Show-Status Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]
