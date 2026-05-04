@@ -12,17 +12,19 @@ Closes the v1.29.0 product-lens P2-10 / growth-lens P2-10 deferral. Users runnin
 
 - **Awk-driven CHANGELOG summary in the post-install footer** (`install.sh` line ~1117). When `PRIOR_INSTALLED_VERSION` is non-empty AND differs from `OMC_VERSION` AND `CHANGELOG.md` exists, walks the changelog top-down and prints version headings between the two versions (exclusive lower bound, inclusive upper bound). Caps at 6 entries — a 6-month-old install upgrading to head gets the most recent 6 entries plus a `... (older entries — see CHANGELOG.md)` truncation marker. Silent on first install, same-version reinstall, missing CHANGELOG, or awk extraction failure.
 
+- **Unreleased rendered without double-paren** — the awk script special-cases `ver == "Unreleased"` so the section's bare-label form (`- Unreleased`) replaces what would otherwise be `- Unreleased  ((unreleased))` from the date wrapping logic. Released versions retain the `vX.Y.Z  (YYYY-MM-DD)` shape.
+
 - **Output shape** (real example, prior=1.27.0, current=1.30.0):
   ```
     What's new:    versions since v1.27.0:
-                   - Unreleased  ((unreleased))
+                   - Unreleased
                    - 1.29.0  (2026-05-03)
                    - 1.28.1  (2026-05-02)
                    - 1.28.0  (2026-05-02)
                    See <repo>/CHANGELOG.md for details.
   ```
 
-- **Test coverage**: extends `tests/test-install-artifacts.sh` with Test 7 (6 assertions) — first install, synthesize `installed_version=1.27.0`, re-install, assert footer contains "What's new", "since v1.27.0", "1.28.0", "1.29.0", "CHANGELOG.md"; then a same-version reinstall must NOT render the block (idempotency). **Test count: 20 → 26** in `test-install-artifacts.sh`. No other regressions; CI test row already covers it.
+- **Test coverage**: new `tests/test-install-whats-new.sh` (17 assertions across 7 tests) — T1 extracts versions between prev and current; T2 stops at first matching prev; T3 empty-prev (first install) caller suppresses; T4 same-version reinstall extracts only Unreleased; T5 synthetic Unreleased renders without double-paren; T6 6-entry cap renders truncation marker; T7 install.sh syntax + grep-able landmarks. Wired into CI. `install.sh` shellcheck clean (4 pre-existing SC1078 warnings on unrelated lines). No other regressions.
 
 ### v1.30.0 Wave 4 — First-session welcome banner
 

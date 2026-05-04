@@ -722,6 +722,44 @@ log_hook() {
   fi
 }
 
+# emit_stop_message <body>
+#
+# Print a Stop-hook output that is RENDERED TO THE USER as a non-blocking
+# system message. Stop hooks have a peculiar output schema (see Anthropic
+# hooks docs): `hookSpecificOutput.additionalContext` is silently dropped
+# at Stop and SubagentStop, so the only path for user-visible text is the
+# top-level `systemMessage` field. v1.24.0 / v1.25.0 shipped the bug
+# where stop-time-summary used `additionalContext` and the time card
+# never rendered; the fix was prose ("don't use additionalContext at
+# Stop"). v1.30.0 encodes the contract here so the next Stop-hook author
+# cannot accidentally repeat the failure mode — `emit_stop_message` has
+# no parameter for additionalContext, so the misuse is impossible.
+#
+# Use for non-blocking user-visible Stop output: time-breakdown card,
+# scorecard release notice, drift-canary alert, etc. For Stop output that
+# also blocks the model from stopping, use `emit_stop_block`.
+emit_stop_message() {
+  local body="$1"
+  jq -nc --arg msg "${body}" '{systemMessage: $msg}'
+}
+
+# emit_stop_block <reason>
+#
+# Print a Stop-hook output that BLOCKS the model from stopping AND
+# delivers the reason text to the model as the rationale. The schema
+# is `{decision: "block", reason: $reason}` — a different surface from
+# `systemMessage` (the latter is non-blocking). Stop hooks emit only
+# one of the two at a time; they are mutually exclusive.
+#
+# Mirrors emit_stop_message's purpose: encode the contract once so
+# future Stop-hook authors cannot misspell the schema. Replaces the
+# 10+ identical inline `jq -nc --arg reason "..." '{"decision":"block",...}'`
+# call sites scattered across stop-guard.sh.
+emit_stop_block() {
+  local reason="$1"
+  jq -nc --arg reason "${reason}" '{decision:"block", reason:$reason}'
+}
+
 json_get() {
   local query="$1"
   jq -r "${query} // empty" <<<"${HOOK_JSON}"

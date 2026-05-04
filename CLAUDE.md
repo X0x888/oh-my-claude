@@ -80,6 +80,7 @@ bash tests/test-specialist-routing.sh
 bash tests/test-stop-failure-handler.sh
 bash tests/test-session-start-resume-hint.sh
 bash tests/test-session-start-welcome.sh
+bash tests/test-install-whats-new.sh
 bash tests/test-claim-resume-request.sh
 bash tests/test-resume-watchdog.sh
 bash tests/test-omc-config.sh
