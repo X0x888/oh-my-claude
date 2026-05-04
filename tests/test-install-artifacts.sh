@@ -305,6 +305,53 @@ fi
 printf '\n'
 
 # ---------------------------------------------------------------------------
+# Test 7: "What's new" surface — re-install with a prior installed_version
+# triggers the changelog-summary block in the install footer (v1.30.0
+# closes the v1.29.0 product-lens P2-10 / growth-lens P2-10 deferral).
+# ---------------------------------------------------------------------------
+printf '7. "What'\''s new since v$prev" surface on re-install\n'
+
+# First, run a clean install so the harness writes installed_version=$current.
+LC_ALL=C run_install >/dev/null 2>&1
+
+# Synthesize the "user upgraded from an older version" state by rewriting
+# the conf's installed_version to a known older value. Mirrors the real
+# upgrade flow: prior install captured 1.27.0, current run will overwrite
+# to OMC_VERSION and detect the gap.
+if [[ -f "${CONF}" ]]; then
+  _backup="$(mktemp)"
+  grep -v '^installed_version=' "${CONF}" > "${_backup}" 2>/dev/null || true
+  printf 'installed_version=1.27.0\n' >> "${_backup}"
+  mv "${_backup}" "${CONF}"
+fi
+
+# Re-run install — the footer summary should now contain the "What's new"
+# block listing version headings between 1.27.0 (exclusive) and current.
+out_whatsnew="$(LC_ALL=C run_install 2>&1)"
+
+assert_contains "What's new line present"  "What's new:"   "${out_whatsnew}"
+assert_contains "names prior version 1.27.0" "since v1.27.0" "${out_whatsnew}"
+# The CHANGELOG between 1.27.0 (exclusive) and head should include 1.28.0
+# and 1.29.0 entries — both are stable tagged releases. We do NOT assert
+# the current OMC_VERSION number because that changes per release; the
+# extractor's behavior is what's under test, not the version it picks up.
+assert_contains "lists v1.28.0"             "1.28.0"        "${out_whatsnew}"
+assert_contains "lists v1.29.0"             "1.29.0"        "${out_whatsnew}"
+assert_contains "links to CHANGELOG"        "CHANGELOG.md"  "${out_whatsnew}"
+
+# Idempotency: a third install with installed_version now matching
+# OMC_VERSION (i.e. no upgrade) must NOT render the block.
+out_noop="$(LC_ALL=C run_install 2>&1)"
+if printf '%s' "${out_noop}" | grep -q "What's new:"; then
+  printf '  FAIL: same-version reinstall surfaced What'\''s new block (should be silent)\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+
+printf '\n'
+
+# ---------------------------------------------------------------------------
 # Results
 # ---------------------------------------------------------------------------
 printf '=== Results: %d passed, %d failed ===\n' "${pass}" "${fail}"

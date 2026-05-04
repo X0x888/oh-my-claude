@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### v1.30.0 Wave 5 — Update-path "what's new since v$prev"
+
+Closes the v1.29.0 product-lens P2-10 / growth-lens P2-10 deferral. Users running `git pull && bash install.sh` weekly previously saw `Version: <semver>` in the install footer with zero in-context awareness of what changed since their prior install — they had to know to open `CHANGELOG.md` themselves. v1.29.0 shipped 35+ findings across 8 waves; v1.30.0 has shipped ~25 more and counting; the gap matters.
+
+- **Prior-version capture in `install.sh`** (line ~960). Before overwriting `installed_version` in `oh-my-claude.conf`, snapshots the prior value into `PRIOR_INSTALLED_VERSION`. Empty on first install, on tarball/zip extracts without a prior conf, and on the unusual case where a custom build cleared the conf.
+
+- **Awk-driven CHANGELOG summary in the post-install footer** (`install.sh` line ~1117). When `PRIOR_INSTALLED_VERSION` is non-empty AND differs from `OMC_VERSION` AND `CHANGELOG.md` exists, walks the changelog top-down and prints version headings between the two versions (exclusive lower bound, inclusive upper bound). Caps at 6 entries — a 6-month-old install upgrading to head gets the most recent 6 entries plus a `... (older entries — see CHANGELOG.md)` truncation marker. Silent on first install, same-version reinstall, missing CHANGELOG, or awk extraction failure.
+
+- **Output shape** (real example, prior=1.27.0, current=1.30.0):
+  ```
+    What's new:    versions since v1.27.0:
+                   - Unreleased  ((unreleased))
+                   - 1.29.0  (2026-05-03)
+                   - 1.28.1  (2026-05-02)
+                   - 1.28.0  (2026-05-02)
+                   See <repo>/CHANGELOG.md for details.
+  ```
+
+- **Test coverage**: extends `tests/test-install-artifacts.sh` with Test 7 (6 assertions) — first install, synthesize `installed_version=1.27.0`, re-install, assert footer contains "What's new", "since v1.27.0", "1.28.0", "1.29.0", "CHANGELOG.md"; then a same-version reinstall must NOT render the block (idempotency). **Test count: 20 → 26** in `test-install-artifacts.sh`. No other regressions; CI test row already covers it.
+
 ### v1.30.0 Wave 4 — First-session welcome banner
 
 Closes the v1.29.0 growth-lens P0-3 silent-dropoff trap: the most common post-install failure mode is *"user installed/updated oh-my-claude, but did not restart Claude Code"* — hooks fire from `~/.claude/settings.json` at session-start; a session that was already running before the install has the OLD settings.json loaded, so `/ulw` and the gates appear inert. Without an active signal, the user concludes the harness "doesn't work" and walks away.

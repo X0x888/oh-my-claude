@@ -956,6 +956,17 @@ apply_model_tier
 # clears installed_sha when the install source is not a git worktree
 # (tarball, extracted zip) so a prior worktree install's SHA does not
 # linger as a false comparator.
+#
+# v1.30.0: capture the prior installed_version BEFORE overwriting so the
+# post-install summary can render a "What's new since v$prev" block.
+# Empty on first install, on tarball / zip extracts without a prior conf,
+# and on the unusual case where a custom build cleared the conf.
+PRIOR_INSTALLED_VERSION=""
+if [[ -f "${CLAUDE_HOME}/oh-my-claude.conf" ]]; then
+  PRIOR_INSTALLED_VERSION="$(grep -E '^installed_version=' "${CLAUDE_HOME}/oh-my-claude.conf" 2>/dev/null \
+    | tail -n1 | cut -d= -f2- | tr -d '[:space:]' || true)"
+fi
+
 set_conf "repo_path" "${SCRIPT_DIR}"
 set_conf "installed_version" "${OMC_VERSION}"
 
@@ -1114,6 +1125,44 @@ printf '\n'
 printf '  Version:       %s\n' "${OMC_VERSION}"
 if [[ -n "${installed_sha}" ]]; then
   printf '  Commit:        %s\n' "${installed_sha:0:12}"
+fi
+# v1.30.0: when the installed_version changed, surface the version
+# headings between PRIOR_INSTALLED_VERSION and OMC_VERSION extracted
+# from CHANGELOG.md. Closes the v1.29.0 product-lens P2-10 / growth-lens
+# P2-10 deferred item — users running `git pull && bash install.sh`
+# weekly previously got zero in-context awareness of what changed.
+# Silent on: first install (PRIOR empty), same-version reinstall (no
+# upgrade), missing CHANGELOG, awk extraction failure. Caps at 6 entries
+# so a 6-month-old install upgrading to head doesn't dominate the
+# summary; user can read CHANGELOG.md for full detail.
+if [[ -n "${PRIOR_INSTALLED_VERSION}" ]] \
+    && [[ "${PRIOR_INSTALLED_VERSION}" != "${OMC_VERSION}" ]] \
+    && [[ -f "${SCRIPT_DIR}/CHANGELOG.md" ]]; then
+  _whats_new="$(awk -v prev="${PRIOR_INSTALLED_VERSION}" -v curr="${OMC_VERSION}" '
+    /^## \[/ {
+      ver = $0
+      sub(/^## \[/, "", ver); sub(/\].*/, "", ver)
+      datepart = $0
+      sub(/^[^]]*\][[:space:]]*-?[[:space:]]*/, "", datepart)
+      if (ver == prev) { exit }
+      kept++
+      if (kept > 6) { truncated = 1; exit }
+      if (ver == "Unreleased") {
+        # Render the Unreleased section as a bare label — its date
+        # field is meaningless until promotion, and parenthesizing
+        # "(unreleased)" inside the (date) wrapper double-wraps.
+        printf "                   - %s\n", ver
+      } else {
+        printf "                   - %s%s\n", ver, (datepart == "" ? "" : "  (" datepart ")")
+      }
+    }
+    END { if (truncated) print "                   - ... (older entries — see CHANGELOG.md)" }
+  ' "${SCRIPT_DIR}/CHANGELOG.md" 2>/dev/null || true)"
+  if [[ -n "${_whats_new}" ]]; then
+    printf '  What'\''s new:    versions since v%s:\n' "${PRIOR_INSTALLED_VERSION}"
+    printf '%s' "${_whats_new}"
+    printf '                   See %s/CHANGELOG.md for details.\n' "${SCRIPT_DIR}"
+  fi
 fi
 printf '  Destination:   %s\n' "${CLAUDE_HOME}"
 printf '  Backup:        %s\n' "${BACKUP_DIR}"

@@ -88,6 +88,9 @@ jobs:
       - name: Run session-start welcome tests
         run: bash tests/test-session-start-welcome.sh
 
+      - name: Run install whats-new tests
+        run: bash tests/test-install-whats-new.sh
+
       - name: Run claim-resume-request tests
         run: bash tests/test-claim-resume-request.sh
 

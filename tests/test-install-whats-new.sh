@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+#
+# Tests for the v1.30.0 install.sh "What's new" block — the awk
+# extraction that surfaces CHANGELOG version headings between
+# PRIOR_INSTALLED_VERSION and OMC_VERSION on every install where the
+# version actually changed.
+#
+# Closes the v1.29.0 product-lens P2-10 / growth-lens P2-10 deferred
+# item: users running `git pull && bash install.sh` previously had
+# zero in-context awareness of what changed; the CHANGELOG.md was the
+# only source and most users skipped it.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+pass=0
+fail=0
+
+assert_eq() {
+  local label="$1" expected="$2" actual="$3"
+  if [[ "${actual}" == "${expected}" ]]; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: %s\n    expected=%q\n    actual=%q\n' "${label}" "${expected}" "${actual}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
+assert_contains() {
+  local label="$1" needle="$2" haystack="$3"
+  if [[ "${haystack}" == *"${needle}"* ]]; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: %s\n    expected to contain: %s\n    actual: %s\n' \
+      "${label}" "${needle}" "${haystack}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
+assert_not_contains() {
+  local label="$1" needle="$2" haystack="$3"
+  if [[ "${haystack}" != *"${needle}"* ]]; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: %s\n    expected NOT to contain: %s\n    actual: %s\n' \
+      "${label}" "${needle}" "${haystack}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
+# Run the awk extraction in isolation. Mirrors the body of the
+# install.sh "What's new" block — same awk script, same args, same
+# CHANGELOG.md.
+extract_whats_new() {
+  local prev="$1"
+  local curr="$2"
+  local changelog="${3:-${REPO_ROOT}/CHANGELOG.md}"
+  awk -v prev="${prev}" -v curr="${curr}" '
+    /^## \[/ {
+      ver = $0
+      sub(/^## \[/, "", ver); sub(/\].*/, "", ver)
+      datepart = $0
+      sub(/^[^]]*\][[:space:]]*-?[[:space:]]*/, "", datepart)
+      if (ver == prev) { exit }
+      kept++
+      if (kept > 6) { truncated = 1; exit }
+      if (ver == "Unreleased") {
+        printf "                   - %s\n", ver
+      } else {
+        printf "                   - %s%s\n", ver, (datepart == "" ? "" : "  (" datepart ")")
+      }
+    }
+    END { if (truncated) print "                   - ... (older entries — see CHANGELOG.md)" }
+  ' "${changelog}" 2>/dev/null || true
+}
+
+# ----------------------------------------------------------------------
+printf 'Test 1: extracts versions between prev and current\n'
+out="$(extract_whats_new "1.27.0" "$(cat "${REPO_ROOT}/VERSION")")"
+assert_contains "T1: includes 1.29.0" "1.29.0" "${out}"
+assert_contains "T1: includes 1.28.0" "1.28.0" "${out}"
+assert_not_contains "T1: stops at 1.27.0 (excluded)" "[1.27.0]" "${out}"
+
+# ----------------------------------------------------------------------
+printf 'Test 2: stops at first matching prev version\n'
+# Use 1.28.0 as the prior — should include 1.29.0 + 1.28.1 only,
+# and Unreleased + later if any.
+out="$(extract_whats_new "1.28.0" "$(cat "${REPO_ROOT}/VERSION")")"
+assert_contains "T2: includes 1.29.0" "1.29.0" "${out}"
+assert_contains "T2: includes 1.28.1" "1.28.1" "${out}"
+assert_not_contains "T2: stops before 1.28.0" "- 1.28.0" "${out}"
+
+# ----------------------------------------------------------------------
+printf 'Test 3: empty prev (first install) extracts nothing — handled at caller\n'
+# Install.sh guard `[[ -n "${PRIOR_INSTALLED_VERSION}" ]]` skips the
+# block entirely for first installs, so the awk would extract every
+# entry — the test verifies that BEHAVIOR (caller would suppress) by
+# confirming the awk's output IS the full changelog when prev=empty.
+out="$(extract_whats_new "" "$(cat "${REPO_ROOT}/VERSION")")"
+assert_contains "T3: empty prev extracts current run" "1.29.0" "${out}"
+# The 6-entry cap kicks in.
+truncated_count="$(printf '%s' "${out}" | grep -c "older entries" || true)"
+if [[ "${truncated_count}" -ge 1 ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T3: 6-entry cap should trigger truncation marker\n' >&2
+  fail=$((fail + 1))
+fi
+
+# ----------------------------------------------------------------------
+printf 'Test 4: same-version (no upgrade) extracts only Unreleased + nothing past current\n'
+# When prev == current, only the Unreleased section comes through (if
+# present); the next match exits the loop.
+out="$(extract_whats_new "$(cat "${REPO_ROOT}/VERSION")" "$(cat "${REPO_ROOT}/VERSION")")"
+# Unreleased rendered without double-parens.
+assert_not_contains "T4: no double-paren around Unreleased" "((unreleased))" "${out}"
+
+# ----------------------------------------------------------------------
+printf 'Test 5: Unreleased section renders without double-paren\n'
+# Synthetic CHANGELOG with an Unreleased section.
+synthetic="$(mktemp)"
+cat <<'EOF' > "${synthetic}"
+# Changelog
+
+## [Unreleased]
+
+### Wave whatever
+
+Stuff happening.
+
+## [1.30.0] - 2026-06-01
+
+Released.
+
+## [1.29.0] - 2026-05-03
+
+Earlier release.
+EOF
+out="$(extract_whats_new "1.29.0" "1.30.0" "${synthetic}")"
+assert_contains "T5: Unreleased present" "Unreleased" "${out}"
+assert_not_contains "T5: no double-paren" "((unreleased))" "${out}"
+assert_contains "T5: 1.30.0 with date wrapped once" "1.30.0  (2026-06-01)" "${out}"
+rm -f "${synthetic}"
+
+# ----------------------------------------------------------------------
+printf 'Test 6: 6-entry cap renders truncation marker when changelog has > 6 versions before prev\n'
+# Synthetic CHANGELOG with 8 versions; prev set to the 9th (none) so
+# all 8 would extract — cap triggers at 6.
+synthetic="$(mktemp)"
+{
+  printf '# Changelog\n\n'
+  for i in 8 7 6 5 4 3 2 1; do
+    printf '## [9.%d.0] - 2026-01-0%d\n\nRelease %d.\n\n' "${i}" "${i}" "${i}"
+  done
+} > "${synthetic}"
+out="$(extract_whats_new "non-existent-version" "9.9.0" "${synthetic}")"
+truncation_count="$(printf '%s' "${out}" | grep -c "older entries" || true)"
+if [[ "${truncation_count}" -ge 1 ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T6: cap-truncation marker missing for 8-entry changelog\n' >&2
+  fail=$((fail + 1))
+fi
+# Count actual entry lines (those starting with "                   - 9.")
+entry_count="$(printf '%s' "${out}" | grep -c "^                   - 9\." || true)"
+assert_eq "T6: 6 entries kept before truncation" "6" "${entry_count}"
+rm -f "${synthetic}"
+
+# ----------------------------------------------------------------------
+printf 'Test 7: install.sh syntax + new block grep-able\n'
+bash -n "${REPO_ROOT}/install.sh"
+assert_eq "T7: install.sh parses cleanly" "0" "$?"
+if grep -q "PRIOR_INSTALLED_VERSION" "${REPO_ROOT}/install.sh"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T7: install.sh missing PRIOR_INSTALLED_VERSION capture\n' >&2
+  fail=$((fail + 1))
+fi
+if grep -q "What.s new" "${REPO_ROOT}/install.sh"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T7: install.sh missing What.s new label\n' >&2
+  fail=$((fail + 1))
+fi
+
+# ----------------------------------------------------------------------
+printf '\n=== install-whats-new tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
+[[ "${fail}" -eq 0 ]]
