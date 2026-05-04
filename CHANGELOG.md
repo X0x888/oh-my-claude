@@ -6,11 +6,13 @@ All notable changes to this project will be documented in this file.
 
 ## [1.31.1] - 2026-05-04
 
-Hotfix release. v1.31.0 shipped with a sterile-CI test-harness regression in `tests/test-show-status.sh:T7` that the local-dev suite did not catch (local sessions had populated state; CI ran in an empty `STATE_ROOT` and hit the empty-state path which my substring matcher missed). The production harness behavior is unchanged from v1.31.0 — only the test-side assertion was tightened.
+Hotfix release. v1.31.0 shipped with two test-suite regressions that local-dev (with populated state + CHANGELOG history shorter than the Wave 7 changelog growth) did not exercise. Production harness behavior is unchanged from v1.31.0 — only the test surface and the changelog-cap budget were adjusted.
 
 - **`tests/test-show-status.sh:T7` robustness for empty-state environments** (sterile CI fix). Pre-Wave-1.31.1 the matcher checked for `*"Session"*` (capital-S) substring and `*"no session"*` (lowercase). Linux CI's empty `STATE_ROOT` produces `"No active ULW session found."` — capital-N "No", lowercase-s "session" — neither pattern matched. Tightened the assertion to the actual regression net: the BARE positional form must NOT exit with `"Unknown argument"` (the v1.31.0 grammar-normalization regression that T7 exists to catch). Each sub-test now uses a fresh `STATE_ROOT="$(mktemp -d)"` so CI Linux and local macOS both exercise the empty-state branch identically.
 
-CI: 32/32 bash tests + 128/128 Python statusline tests on Ubuntu (post-fix run https://github.com/X0x888/oh-my-claude/actions/runs/25342174737).
+- **install.sh "What's new" cap raised 6 → 10** (`install.sh:1158`, `tests/test-install-whats-new.sh`). The cap was uncomfortable for users upgrading across multiple releases — a 1.27.0 → 1.31.1 upgrade spans 7 versions (Unreleased + 1.31.1 + 1.31.0 + 1.30.0 + 1.29.0 + 1.28.1 + 1.28.0), exceeding the 6-entry budget and triggering an unnecessary "older entries — see CHANGELOG.md" truncation marker on a single span of releases. Bumped to 10. T6 in test-install-whats-new (synthetic 12-version CHANGELOG) updated in lockstep.
+
+CI: 32/32 bash tests + 128/128 Python statusline tests on Ubuntu post-fix.
 
 ## [1.31.0] - 2026-05-04
 

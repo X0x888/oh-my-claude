@@ -65,7 +65,7 @@ extract_whats_new() {
       sub(/^[^]]*\][[:space:]]*-?[[:space:]]*/, "", datepart)
       if (ver == prev) { exit }
       kept++
-      if (kept > 6) { truncated = 1; exit }
+      if (kept > 10) { truncated = 1; exit }
       if (ver == "Unreleased") {
         printf "                   - %s\n", ver
       } else {
@@ -145,27 +145,34 @@ assert_contains "T5: 1.30.0 with date wrapped once" "1.30.0  (2026-06-01)" "${ou
 rm -f "${synthetic}"
 
 # ----------------------------------------------------------------------
-printf 'Test 6: 6-entry cap renders truncation marker when changelog has > 6 versions before prev\n'
-# Synthetic CHANGELOG with 8 versions; prev set to the 9th (none) so
-# all 8 would extract — cap triggers at 6.
+printf 'Test 6: 10-entry cap renders truncation marker when changelog has > 10 versions before prev\n'
+# v1.31.1: cap raised from 6 → 10 because the original 6-entry budget
+# was uncomfortable for users upgrading across multiple releases (e.g.
+# 1.27.0 → 1.31.1 spans 7 entries). Synthetic CHANGELOG with 12
+# versions; prev set to the 13th (none) so all 12 would extract — cap
+# triggers at 10.
 synthetic="$(mktemp)"
 {
   printf '# Changelog\n\n'
-  for i in 8 7 6 5 4 3 2 1; do
-    printf '## [9.%d.0] - 2026-01-0%d\n\nRelease %d.\n\n' "${i}" "${i}" "${i}"
+  for i in 12 11 10 9 8 7 6 5 4 3 2 1; do
+    if [[ "${i}" -ge 10 ]]; then
+      printf '## [9.%d.0] - 2026-01-15\n\nRelease %d.\n\n' "${i}" "${i}"
+    else
+      printf '## [9.%d.0] - 2026-01-0%d\n\nRelease %d.\n\n' "${i}" "${i}" "${i}"
+    fi
   done
 } > "${synthetic}"
-out="$(extract_whats_new "non-existent-version" "9.9.0" "${synthetic}")"
+out="$(extract_whats_new "non-existent-version" "9.999.0" "${synthetic}")"
 truncation_count="$(printf '%s' "${out}" | grep -c "older entries" || true)"
 if [[ "${truncation_count}" -ge 1 ]]; then
   pass=$((pass + 1))
 else
-  printf '  FAIL: T6: cap-truncation marker missing for 8-entry changelog\n' >&2
+  printf '  FAIL: T6: cap-truncation marker missing for 12-entry changelog\n' >&2
   fail=$((fail + 1))
 fi
 # Count actual entry lines (those starting with "                   - 9.")
 entry_count="$(printf '%s' "${out}" | grep -c "^                   - 9\." || true)"
-assert_eq "T6: 6 entries kept before truncation" "6" "${entry_count}"
+assert_eq "T6: 10 entries kept before truncation" "10" "${entry_count}"
 rm -f "${synthetic}"
 
 # ----------------------------------------------------------------------
