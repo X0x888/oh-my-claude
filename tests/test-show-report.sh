@@ -417,5 +417,71 @@ rm -f "${QP}/gate_events.jsonl"
 rm -f "${QP}/session_summary.jsonl"
 
 # ----------------------------------------------------------------------
+# T24: v1.31.0 Wave 8 — --share emits privacy-safe markdown (no free-text
+# leak). Per metis Item 4: "fixture with sensitive prompts → --share
+# output → grep for the sensitive substring → assert absent." Load-bearing
+# privacy test for the share-card surface.
+# ----------------------------------------------------------------------
+NOW="$(date +%s)"
+SECRET_PROMPT="DELETE FROM users WHERE id=42 -- REDACT-CANARY-PROMPT"
+SECRET_REASON="connection string postgres://admin:hunter2@db:5432/prod -- REDACT-CANARY-REASON"
+SECRET_FIX="patched the SQL injection at api.py:42 -- REDACT-CANARY-FIX"
+
+cat > "${QP}/session_summary.jsonl" <<EOF
+{"session_id":"test-share","start_ts":${NOW},"end_ts":${NOW},"domain":"coding","intent":"execution","edit_count":3,"last_user_prompt":"${SECRET_PROMPT}","verified":true,"reviewed":true,"guard_blocks":2,"dim_blocks":0,"exhausted":false,"dispatches":4,"outcome":"shipped","skip_count":0,"serendipity_count":1}
+EOF
+
+cat > "${QP}/gate_events.jsonl" <<EOF
+{"ts":${NOW},"session":"test-share","gate":"discovered_scope","event":"block","details":{"reason":"${SECRET_REASON}","prompt_preview":"${SECRET_PROMPT}"}}
+{"ts":${NOW},"session":"test-share","gate":"pretool-intent","event":"block","details":{"command":"git push --force","intent":"advisory"}}
+EOF
+
+cat > "${QP}/serendipity-log.jsonl" <<EOF
+{"ts":${NOW},"session_id":"test-share","fix":"${SECRET_FIX}","original_task":"feature work","conditions":"verified|same-path|bounded","commit":"deadbeef"}
+EOF
+
+share_out="$(HOME="${TEST_HOME}" bash "${SHOW_REPORT}" --share week 2>&1 || true)"
+
+# Assert the share output renders structural data.
+case "${share_out}" in
+  *"oh-my-claude"*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: T24: --share missing oh-my-claude header\n' >&2; fail=$((fail + 1)) ;;
+esac
+case "${share_out}" in
+  *"Sessions:"*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: T24: --share missing Sessions count\n' >&2; fail=$((fail + 1)) ;;
+esac
+
+# CRITICAL: assert NONE of the secrets leak into the share output.
+case "${share_out}" in
+  *"REDACT-CANARY-PROMPT"*)
+    printf '  FAIL: T24: prompt text LEAKED into --share output\n%s\n' "${share_out}" >&2
+    fail=$((fail + 1)) ;;
+  *) pass=$((pass + 1)) ;;
+esac
+case "${share_out}" in
+  *"REDACT-CANARY-REASON"*)
+    printf '  FAIL: T24: gate-event reason LEAKED into --share output\n%s\n' "${share_out}" >&2
+    fail=$((fail + 1)) ;;
+  *) pass=$((pass + 1)) ;;
+esac
+case "${share_out}" in
+  *"REDACT-CANARY-FIX"*)
+    printf '  FAIL: T24: serendipity fix text LEAKED into --share output\n%s\n' "${share_out}" >&2
+    fail=$((fail + 1)) ;;
+  *) pass=$((pass + 1)) ;;
+esac
+case "${share_out}" in
+  *"hunter2"*)
+    printf '  FAIL: T24: password-shaped string LEAKED into --share output\n' >&2
+    fail=$((fail + 1)) ;;
+  *) pass=$((pass + 1)) ;;
+esac
+
+rm -f "${QP}/gate_events.jsonl"
+rm -f "${QP}/session_summary.jsonl"
+rm -f "${QP}/serendipity-log.jsonl"
+
+# ----------------------------------------------------------------------
 printf '\n=== Show-Report Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]] || exit 1

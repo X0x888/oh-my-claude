@@ -1,6 +1,6 @@
 ---
 name: ulw-report
-description: Render a markdown digest of recent harness activity — sessions, gate fires, top reviewers, classifier misfires, Serendipity catches, and finding/wave outcomes — over a chosen time window. Use to answer "is the harness actually helping me?".
+description: Render a markdown digest of recent harness activity — sessions, gate fires, top reviewers, classifier misfires, Serendipity catches, and finding/wave outcomes — over a chosen time window. Use to answer "is the harness actually helping me?". Pass `--share` for a privacy-safe shareable card (numbers + distributions only; no prompt text or free-text reasons).
 ---
 # ULW Report
 
@@ -12,6 +12,9 @@ Window selection:
 - `week` — sessions in the last 7 days (default when no argument given)
 - `month` — sessions in the last 30 days
 - `all` — every available row across the cross-session aggregates
+
+Modifiers:
+- `--share` (v1.31.0) — privacy-safe digest. Sessions / quality-gate-blocks / specialist-dispatches / Serendipity-fires counts plus the top-10 gate-name distribution. Suppresses ALL free-text fields (prompt previews, gate `reason` payloads, Serendipity fix text). Suitable for posting to Slack, PRs, or social. Combine with the window argument: `/ulw-report week --share`.
 
 Run the report:
 
