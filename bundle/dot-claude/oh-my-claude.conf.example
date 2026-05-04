@@ -304,8 +304,38 @@
 # Per-artifact cooldown (seconds) between watchdog launch attempts.
 # Combined with the 3-attempt cap, this caps total retry effort at ~30
 # minutes per artifact before the watchdog gives up. Default 600 = 10 min.
+# The cooldown is enforced both at unlocked pre-check (fast path) AND
+# under the cross-session lock at claim time (defends against parallel
+# watchdog ticks racing the cooldown window — v1.31.0 metis F-7 fix).
 # Env: OMC_RESUME_WATCHDOG_COOLDOWN_SECS.
 #resume_watchdog_cooldown_secs=600
+
+# Per-cwd cap on resume_request.json artifacts. A user who hits N
+# rate-limits in N days otherwise accumulates N artifacts (the
+# SessionStart resume-hint surfaces only the most-relevant one; the
+# rest live on disk until aged out by resume_request_ttl_days). The
+# stop-failure-handler producer sweeps oldest same-cwd artifacts after
+# each new write so the cap is atomic with capture. Default 3.
+# Set to 0 to disable the sweep (regulated environments where every
+# artifact must persist for audit). Cross-cwd isolation: artifacts at
+# OTHER cwds are never pruned — the cap is per-cwd, not per-user.
+# Env: OMC_RESUME_REQUEST_PER_CWD_CAP.
+#resume_request_per_cwd_cap=3
+
+# Pinned absolute path to the `claude` binary for the watchdog to launch.
+# Defends against PATH-hijack: an attacker who drops ~/.local/bin/claude
+# ahead of the real binary in the daemon's PATH cannot execute their
+# shim because the watchdog uses the absolute install-time path.
+# Auto-set by `bash ~/.claude/install-resume-watchdog.sh` (or via
+# /omc-config). When unset (default empty), the watchdog falls back to
+# live `command -v claude` at launch time — same as pre-v1.31.0 behavior.
+# When set, the watchdog validates the pin via `${pinned} --version`
+# (5s timeout if available) and falls back to live lookup on validation
+# failure WITHOUT overwriting the pin (prevents pin-churn from transient
+# nvm/Homebrew/manual upgrades). Host-specific — do not sync ~/.claude
+# across machines if the binary lives at different paths.
+# Env: OMC_CLAUDE_BIN.
+#claude_bin=
 
 # ---------------------------------------------------------------------------
 # Time tracking — surface "where did this prompt's time go?" via

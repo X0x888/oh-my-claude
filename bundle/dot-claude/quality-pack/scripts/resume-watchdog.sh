@@ -172,6 +172,66 @@ read_str_field() {
   jq -r "(.${field} // \"\")" "${path}" 2>/dev/null || true
 }
 
+# Resolve the `claude` binary path for launch. Prefers OMC_CLAUDE_BIN
+# pin (set by install-resume-watchdog.sh) when present and validation
+# passes; falls back to live `command -v claude` on any failure to
+# avoid stale-pin silent breakage (npm/nvm/Homebrew updates, manual
+# uninstall, host migration). When neither the pin nor live lookup
+# yields a usable binary, returns rc=1 — the caller falls through to
+# notification mode. Defends against the security-lens F-5 PATH-hijack:
+# an attacker who drops ~/.local/bin/claude ahead of the real binary
+# in the daemon's PATH cannot execute their shim because the pinned
+# path is the absolute install-time path, not a PATH lookup.
+#
+# Validation: when pin is set, run `${pinned} --version` with a 5s
+# `timeout` (when available). Failure → fall back to live `command -v`
+# without overwriting the pin (transient nvm switch, etc.; the next
+# tick re-validates and may succeed). When no pin is set, returns the
+# live `command -v` lookup unchanged (pre-v1.31.0 behavior preserved
+# for users who never opt in via install-resume-watchdog.sh).
+#
+# Stdout: absolute path to claude binary, OR empty when unresolvable.
+# Returns 0 on success, 1 when neither pin nor live lookup yields a
+# usable binary (caller falls through to notification mode).
+resolve_claude_binary() {
+  local pinned="${OMC_CLAUDE_BIN:-}"
+  local live=""
+
+  if [[ -n "${pinned}" ]] && [[ -x "${pinned}" ]]; then
+    # Validate via --version. The 5s cap defends against a hung wrapper
+    # (e.g., a Homebrew unlink left the pin pointing at a script that
+    # tries to refetch). On systems without `timeout`, run unguarded —
+    # the user can clear the pin manually if a hang surfaces.
+    local validate_rc=0
+    if command -v timeout >/dev/null 2>&1; then
+      timeout 5 "${pinned}" --version >/dev/null 2>&1 || validate_rc=$?
+    else
+      "${pinned}" --version >/dev/null 2>&1 || validate_rc=$?
+    fi
+    if [[ "${validate_rc}" -eq 0 ]]; then
+      printf '%s' "${pinned}"
+      return 0
+    fi
+    log_anomaly "resume-watchdog" "claude_bin pin failed --version (pinned=${pinned}); falling back to live command -v"
+  elif [[ -n "${pinned}" ]]; then
+    log_anomaly "resume-watchdog" "claude_bin pin not executable (pinned=${pinned}); falling back to live command -v"
+  fi
+
+  # Live fallback. command -v -p restricts to the secure system path on
+  # POSIX systems, but we deliberately use unrestricted command -v
+  # because the user's `claude` install may be in ~/.npm-global,
+  # ~/.local/bin, or a Node-version-manager path the system PATH
+  # doesn't include. The PATH-hijack defense lives in the pin (when
+  # set); when no pin exists, the user has implicitly accepted live
+  # PATH resolution by not opting in via install-resume-watchdog.sh.
+  live="$(command -v claude 2>/dev/null || true)"
+  if [[ -n "${live}" ]]; then
+    printf '%s' "${live}"
+    return 0
+  fi
+  return 1
+}
+
 # Spawn `claude --resume <sid> "<prompt>"` in a detached tmux session
 # rooted at <cwd>. Returns 0 on launch, non-zero on failure.
 launch_in_tmux() {
@@ -180,7 +240,9 @@ launch_in_tmux() {
   local prompt="$3"
 
   command -v tmux >/dev/null 2>&1 || return 2
-  command -v claude >/dev/null 2>&1 || return 3
+  local claude_bin
+  claude_bin="$(resolve_claude_binary)" || return 3
+  [[ -n "${claude_bin}" ]] || return 3
 
   # Validate the JSON-derived session_id before any use. The producer
   # (find_claimable_resume_requests in common.sh) only validates the
@@ -222,7 +284,7 @@ launch_in_tmux() {
   # correct in isolation, the surface was fragile against future edits
   # and exposed any subtle escape bug to direct shell injection.
   tmux new-session -d -s "${sess_name}" -c "${cwd}" -- \
-    claude --resume "${sid}" "${prompt}" >/dev/null 2>&1
+    "${claude_bin}" --resume "${sid}" "${prompt}" >/dev/null 2>&1
 }
 
 # Revert a watchdog claim when the post-claim launch fails. Without this,
@@ -392,7 +454,7 @@ while IFS=$'\t' read -r _scope sid captured_ts artifact_path; do
   # process exit, gives the user a path to attach later (`tmux attach
   # -t omc-resume-<sid>`), and avoids the launchd-no-TTY question by
   # running inside a tmux server that owns its own pseudo-tty.
-  if command -v tmux >/dev/null 2>&1 && command -v claude >/dev/null 2>&1; then
+  if command -v tmux >/dev/null 2>&1 && resolve_claude_binary >/dev/null 2>&1; then
     # Capture pre-claim state so the launch-failure branch can revert.
     # Read before the claim mutates the file. read_num_field returns 0
     # for missing/null fields, which is the correct neutral default for
@@ -406,9 +468,32 @@ while IFS=$'\t' read -r _scope sid captured_ts artifact_path; do
     # If the post-claim launch fails, we revert below so the artifact
     # remains eligible for the next tick instead of being silently
     # quarantined for a full cooldown window.
-    if ! bash "${CLAIM_HELPER}" --watchdog-launch "$$" --target "${artifact_path}" >/dev/null 2>&1; then
-      record_gate_event "resume-watchdog" "claim-failed" \
-        origin_session="${origin_sid}"
+    #
+    # --cooldown-secs is passed so the claim helper can re-validate the
+    # cooldown window UNDER THE LOCK (v1.31.0 metis F-7 fix). Two
+    # parallel watchdog ticks (LaunchAgent + manual cron, or two
+    # LaunchAgent ticks landing close together) can both pass the
+    # unlocked pre-check at line 326, then serially acquire the lock
+    # and both claim. The under-lock cooldown rejects the second peer
+    # deterministically with rc=3.
+    claim_rc=0
+    bash "${CLAIM_HELPER}" --watchdog-launch "$$" --target "${artifact_path}" \
+      --cooldown-secs "${cooldown_secs}" >/dev/null 2>&1 || claim_rc=$?
+    if [[ "${claim_rc}" -ne 0 ]]; then
+      case "${claim_rc}" in
+        3)
+          # Under-lock cooldown violation. Peer claimed within window.
+          # Telemetry already recorded by claim helper; bump local
+          # counter via the existing skipped-cooldown bucket so the
+          # operational summary stays consistent with the unlocked
+          # pre-check path.
+          total_skipped_cooldown=$((total_skipped_cooldown + 1))
+          ;;
+        *)
+          record_gate_event "resume-watchdog" "claim-failed" \
+            origin_session="${origin_sid}"
+          ;;
+      esac
       continue
     fi
 

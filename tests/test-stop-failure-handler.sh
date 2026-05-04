@@ -416,6 +416,96 @@ assert_eq "first-in-chain: origin_chain_depth defaults to 0" "0" \
 teardown_test
 
 # ---------------------------------------------------------------------------
+# v1.31.0 Wave 1: per-cwd cap on resume_request artifacts
+# ---------------------------------------------------------------------------
+# Cap test: with default cap (3) and cwd shared across artifacts, the
+# producer prunes oldest artifacts when N>cap accumulate.
+
+# Helper: write a resume_request.json directly with a specified cwd +
+# captured_at_ts to simulate a pre-existing artifact from a prior cap.
+seed_artifact() {
+  local sid="$1"
+  local cwd="$2"
+  local ts="$3"
+  local state_dir="${TEST_HOME}/.claude/quality-pack/state/${sid}"
+  mkdir -p "${state_dir}"
+  jq -nc \
+    --arg sid "${sid}" \
+    --arg cwd "${cwd}" \
+    --argjson ts "${ts}" \
+    '{schema_version:1, session_id:$sid, cwd:$cwd, captured_at_ts:$ts, original_objective:"obj", last_user_prompt:"p", resets_at_ts:null, resume_attempts:0}' \
+    > "${state_dir}/resume_request.json"
+}
+
+# Cap=3 default: 4 pre-existing same-cwd artifacts + new write = 5 total.
+# Producer's sweep keeps newest 3, deletes 2 oldest.
+setup_test
+shared_cwd="${TEST_HOME}"
+mkdir -p "${shared_cwd}"
+now_ts="$(date +%s)"
+# Seed 4 OLDER artifacts at the same cwd, descending timestamps.
+seed_artifact "sess-cap-old1" "${shared_cwd}" $((now_ts - 4000))
+seed_artifact "sess-cap-old2" "${shared_cwd}" $((now_ts - 3000))
+seed_artifact "sess-cap-old3" "${shared_cwd}" $((now_ts - 2000))
+seed_artifact "sess-cap-old4" "${shared_cwd}" $((now_ts - 1000))
+# Now run handler for a NEW session — total 5 artifacts share this cwd.
+init_session "sess-cap-new" "obj-new" "/ulw work" ""
+run_handler "$(jq -nc --arg sid "sess-cap-new" --arg cwd "${shared_cwd}" \
+  '{session_id:$sid, matcher:"rate_limit", hook_event_name:"StopFailure", cwd:$cwd}')"
+# Default cap=3 → keep newest 3 (sess-cap-new + old4 + old3); delete old2 + old1.
+assert_file_exists "cap: newest artifact (just written) kept" "$(resume_path sess-cap-new)"
+assert_file_exists "cap: 2nd newest (old4) kept" "$(resume_path sess-cap-old4)"
+assert_file_exists "cap: 3rd newest (old3) kept" "$(resume_path sess-cap-old3)"
+assert_file_absent "cap: old2 pruned (over cap)" "$(resume_path sess-cap-old2)"
+assert_file_absent "cap: old1 pruned (over cap)" "$(resume_path sess-cap-old1)"
+teardown_test
+
+# Cap=0 (env override) disables the sweep — 5 artifacts coexist.
+setup_test
+shared_cwd="${TEST_HOME}"
+mkdir -p "${shared_cwd}"
+now_ts="$(date +%s)"
+seed_artifact "sess-cap0-old1" "${shared_cwd}" $((now_ts - 4000))
+seed_artifact "sess-cap0-old2" "${shared_cwd}" $((now_ts - 3000))
+seed_artifact "sess-cap0-old3" "${shared_cwd}" $((now_ts - 2000))
+seed_artifact "sess-cap0-old4" "${shared_cwd}" $((now_ts - 1000))
+init_session "sess-cap0-new" "obj" "/ulw" ""
+OMC_RESUME_REQUEST_PER_CWD_CAP=0 run_handler "$(jq -nc --arg sid "sess-cap0-new" --arg cwd "${shared_cwd}" \
+  '{session_id:$sid, matcher:"rate_limit", hook_event_name:"StopFailure", cwd:$cwd}')"
+assert_file_exists "cap0: artifact 1 kept (sweep disabled)" "$(resume_path sess-cap0-old1)"
+assert_file_exists "cap0: artifact 2 kept" "$(resume_path sess-cap0-old2)"
+assert_file_exists "cap0: artifact 3 kept" "$(resume_path sess-cap0-old3)"
+assert_file_exists "cap0: artifact 4 kept" "$(resume_path sess-cap0-old4)"
+assert_file_exists "cap0: new artifact written" "$(resume_path sess-cap0-new)"
+teardown_test
+
+# Cross-cwd isolation: artifacts at OTHER cwds are NOT pruned.
+setup_test
+cwd_a="${TEST_HOME}/proj-a"
+cwd_b="${TEST_HOME}/proj-b"
+mkdir -p "${cwd_a}" "${cwd_b}"
+now_ts="$(date +%s)"
+# 4 artifacts at cwd_a (will trigger cap), 1 at cwd_b (untouched).
+seed_artifact "sess-A1" "${cwd_a}" $((now_ts - 4000))
+seed_artifact "sess-A2" "${cwd_a}" $((now_ts - 3000))
+seed_artifact "sess-A3" "${cwd_a}" $((now_ts - 2000))
+seed_artifact "sess-A4" "${cwd_a}" $((now_ts - 1000))
+seed_artifact "sess-B1" "${cwd_b}" $((now_ts - 5000))  # oldest overall, but different cwd
+init_session "sess-A5" "obj" "/ulw" ""
+run_handler "$(jq -nc --arg sid "sess-A5" --arg cwd "${cwd_a}" \
+  '{session_id:$sid, matcher:"rate_limit", hook_event_name:"StopFailure", cwd:$cwd}')"
+# cwd_a now has 5 artifacts → keep 3 newest (A5, A4, A3); delete A2, A1.
+# cwd_b's single artifact must be untouched even though it's older than
+# all the cwd_a deletions — different cwd is different sweep group.
+assert_file_exists "cross-cwd: B1 (other cwd) untouched" "$(resume_path sess-B1)"
+assert_file_absent "cross-cwd: A1 (oldest in cwd_a) pruned" "$(resume_path sess-A1)"
+assert_file_absent "cross-cwd: A2 pruned" "$(resume_path sess-A2)"
+assert_file_exists "cross-cwd: A3 kept" "$(resume_path sess-A3)"
+assert_file_exists "cross-cwd: A4 kept" "$(resume_path sess-A4)"
+assert_file_exists "cross-cwd: A5 (new) kept" "$(resume_path sess-A5)"
+teardown_test
+
+# ---------------------------------------------------------------------------
 # Result
 # ---------------------------------------------------------------------------
 

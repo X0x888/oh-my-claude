@@ -239,6 +239,26 @@ fi
 set_conf_value "resume_watchdog" "on"
 printf 'Set resume_watchdog=on in %s\n' "${CONF_FILE}"
 
+# v1.31.0 Wave 1: pin the absolute path to `claude` so the daemon
+# launches the user's chosen Claude Code binary, defeating the
+# security-lens F-5 PATH-hijack threat where an attacker drops
+# ~/.local/bin/claude ahead of the real binary in launchd's PATH.
+# The pin is host-specific (do not sync ~/.claude across machines if
+# the binary lives at different paths). When `command -v claude`
+# returns nothing at install time (npx-only users with no stable
+# path), the pin is left empty — the watchdog's live `command -v`
+# at launch time is the unchanged legacy fallback.
+claude_path="$(command -v claude 2>/dev/null || true)"
+if [[ -n "${claude_path}" ]] && [[ "${claude_path}" =~ ^/ ]]; then
+  set_conf_value "claude_bin" "${claude_path}"
+  printf 'Pinned claude_bin=%s in %s (PATH-hijack defense)\n' "${claude_path}" "${CONF_FILE}"
+else
+  printf 'NOTE: `claude` not on PATH; skipping claude_bin pin.\n'
+  printf '      Watchdog will fall back to live `command -v claude` at launch.\n'
+  printf '      Set claude_bin=<absolute path> manually in %s if PATH resolution at\n' "${CONF_FILE}"
+  printf '      launch time is unreliable on this host.\n'
+fi
+
 case "$(platform)" in
   macos) macos_install ;;
   linux) linux_install ;;

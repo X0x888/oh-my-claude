@@ -589,6 +589,77 @@ assert_eq "T26: symlinked artifact NOT listed" "0" \
   "$(printf '%s' "${list_out}" | grep -c 'sess-26-artifact-symlink' || true)"
 teardown_test
 
+# ---------------------------------------------------------------------------
+# T27-T29: v1.31.0 Wave 1 — under-lock cooldown enforcement (metis F-7)
+# ---------------------------------------------------------------------------
+# T27: cooldown_secs=0 disables under-lock check (legacy callers preserved)
+print_test_header "T27: --cooldown-secs 0 disables under-lock cooldown check"
+setup_test
+target="$(make_request "sess-27-cooldown" "${TEST_HOME}" "obj" "/ulw cooldown-test")"
+# Stamp last_attempt_ts to a very recent time but cooldown=0 → claim succeeds.
+now_ts=$(date +%s)
+recent="${now_ts}"
+jq --argjson ts "${recent}" '. + {last_attempt_ts: $ts}' "${target}" > "${target}.tmp" \
+  && mv "${target}.tmp" "${target}"
+rc=0
+bash "${HELPER}" --watchdog-launch "$$" --target "${target}" --cooldown-secs 0 >/dev/null 2>&1 || rc=$?
+assert_eq "T27: cooldown=0 → claim succeeds (rc=0)" "0" "${rc}"
+assert_eq "T27: artifact claimed" "1" "$(read_field "${target}" resume_attempts)"
+teardown_test
+
+# T28: cooldown_secs=600 with last_attempt within window → rc=3 rejection
+print_test_header "T28: under-lock cooldown rejects within window (rc=3)"
+setup_test
+target="$(make_request "sess-28-cooldown" "${TEST_HOME}" "obj" "/ulw cooldown-test")"
+now_ts=$(date +%s)
+recent_within="$(( now_ts - 60 ))"  # 60s ago, well within 600s cooldown
+jq --argjson ts "${recent_within}" '. + {last_attempt_ts: $ts}' "${target}" > "${target}.tmp" \
+  && mv "${target}.tmp" "${target}"
+rc=0
+bash "${HELPER}" --watchdog-launch "$$" --target "${target}" --cooldown-secs 600 >/dev/null 2>&1 || rc=$?
+assert_eq "T28: under-lock cooldown rejects (rc=3)" "3" "${rc}"
+# Artifact must NOT be mutated — the cooldown check must run BEFORE the
+# write step inside the do_claim function. attempts stays at 0.
+assert_eq "T28: artifact NOT mutated by cooldown rejection" "0" "$(read_field "${target}" resume_attempts)"
+teardown_test
+
+# T29: cooldown_secs=600 with last_attempt OUTSIDE window → claim succeeds
+print_test_header "T29: under-lock cooldown allows when last_attempt is older than window"
+setup_test
+target="$(make_request "sess-29-cooldown" "${TEST_HOME}" "obj" "/ulw cooldown-test")"
+now_ts=$(date +%s)
+old="$(( now_ts - 1200 ))"  # 20min ago, outside 600s window
+jq --argjson ts "${old}" '. + {last_attempt_ts: $ts}' "${target}" > "${target}.tmp" \
+  && mv "${target}.tmp" "${target}"
+rc=0
+bash "${HELPER}" --watchdog-launch "$$" --target "${target}" --cooldown-secs 600 >/dev/null 2>&1 || rc=$?
+assert_eq "T29: stale last_attempt → claim succeeds (rc=0)" "0" "${rc}"
+assert_eq "T29: artifact claimed (attempts=1)" "1" "$(read_field "${target}" resume_attempts)"
+teardown_test
+
+# T30: cooldown_secs not provided (legacy callers) → no under-lock check
+print_test_header "T30: omitted --cooldown-secs preserves legacy behavior"
+setup_test
+target="$(make_request "sess-30-cooldown" "${TEST_HOME}" "obj" "/ulw cooldown-test")"
+now_ts=$(date +%s)
+jq --argjson ts "${now_ts}" '. + {last_attempt_ts: $ts}' "${target}" > "${target}.tmp" \
+  && mv "${target}.tmp" "${target}"
+rc=0
+# No --cooldown-secs flag → claim helper does not enforce cooldown.
+# Existing v1.30.0 callers must continue to work unchanged.
+bash "${HELPER}" --watchdog-launch "$$" --target "${target}" >/dev/null 2>&1 || rc=$?
+assert_eq "T30: no flag → claim succeeds (rc=0, legacy)" "0" "${rc}"
+teardown_test
+
+# T31: invalid cooldown_secs → arg-error rc=64
+print_test_header "T31: invalid --cooldown-secs value rejected"
+setup_test
+target="$(make_request "sess-31-cooldown" "${TEST_HOME}" "obj" "/ulw")"
+rc=0
+bash "${HELPER}" --watchdog-launch "$$" --target "${target}" --cooldown-secs "not-a-number" >/dev/null 2>&1 || rc=$?
+assert_eq "T31: invalid integer rejected (rc=64)" "64" "${rc}"
+teardown_test
+
 printf '\n=== test-claim-resume-request: %d passed, %d failed ===\n' "${pass}" "${fail}"
 if (( fail > 0 )); then
   exit 1

@@ -212,7 +212,15 @@ assert_contains "T1: tmux invoked with new-session -d" "new-session -d -s omc-re
 # v1.29.0 F-1 fix: pass command as separate argv tokens after `--` so
 # tmux's args_escape handles shell-escaping internally rather than
 # trusting hand-rolled single-quoting in a shell-command string.
-assert_contains "T1: tmux uses -- argv-token form" "-- claude --resume sess-1" "${tmux_calls}"
+# v1.31.0 Wave 1: resolve_claude_binary returns the absolute path of
+# the `claude` binary (live `command -v claude` when no pin set, OR the
+# pinned OMC_CLAUDE_BIN when set). The substring 'claude --resume
+# sess-1' matches both bare-name and absolute-path forms because the
+# resolved path always ends in `claude`. Tighter check: assert `--`
+# argv-separator is in the call line followed by something ending in
+# `claude` and then `--resume sess-1`.
+assert_contains "T1: tmux uses -- argv-token form" "-- " "${tmux_calls}"
+assert_contains "T1: tmux invokes claude --resume sess-1" "claude --resume sess-1" "${tmux_calls}"
 assert_contains "T1: tmux passes verbatim prompt" "/ulw ship wave 3" "${tmux_calls}"
 # Artifact must be claimed.
 assert_eq "T1: artifact resume_attempts = 1 after launch" "1" "$(read_field "${target}" resume_attempts)"
@@ -843,6 +851,81 @@ assert_eq "T23: resume_attempts = 1 after second-tick claim" "1" \
 new_session_count="$(printf '%s' "$(mock_calls tmux)" | grep -c 'new-session' 2>/dev/null || true)"
 new_session_count="${new_session_count:-0}"
 assert_eq "T23: new-session called twice across two ticks" "2" "${new_session_count}"
+teardown_test
+
+# ---------------------------------------------------------------------------
+# T24-T27: v1.31.0 Wave 1 — claude_bin pin (security F-5 PATH-hijack defense)
+# ---------------------------------------------------------------------------
+# T24: pin valid — watchdog launches the pinned binary, not the PATH name
+print_test_header "T24: claude_bin pin used for tmux launch"
+setup_test
+install_tmux_mock
+install_mock claude 0
+# Create a separate "pinned" claude in a non-PATH location.
+mkdir -p "${TEST_HOME}/.opt/bin"
+cat > "${TEST_HOME}/.opt/bin/claude" <<'PINNED'
+#!/usr/bin/env bash
+case "$1" in
+  --version) printf 'claude-pinned 1.0.0\n'; exit 0 ;;
+  *) printf '%s\n' "$*" >> "${MOCK_BIN}/claude-pinned.calls"; exit 0 ;;
+esac
+PINNED
+sed -i.bak "s|\${MOCK_BIN}|${MOCK_BIN}|g" "${TEST_HOME}/.opt/bin/claude" && rm -f "${TEST_HOME}/.opt/bin/claude.bak"
+chmod +x "${TEST_HOME}/.opt/bin/claude"
+target="$(make_request "sess-24" "${TEST_HOME}" "Pin test." "/ulw via pin")"
+OMC_CLAUDE_BIN="${TEST_HOME}/.opt/bin/claude" bash "${WATCHDOG}" >/dev/null 2>&1
+tmux_calls="$(mock_calls tmux)"
+assert_contains "T24: tmux invokes pinned absolute path" "${TEST_HOME}/.opt/bin/claude --resume sess-24" "${tmux_calls}"
+assert_eq "T24: artifact claimed" "watchdog-launched" "$(read_field "${target}" last_attempt_outcome)"
+teardown_test
+
+# T25: pin missing-executable falls back to live command -v
+print_test_header "T25: claude_bin pin missing-executable falls back to live PATH"
+setup_test
+install_tmux_mock
+install_mock claude 0
+target="$(make_request "sess-25" "${TEST_HOME}" "Stale pin test." "/ulw via fallback")"
+# Pin path doesn't exist on disk → resolver logs anomaly and falls back.
+OMC_CLAUDE_BIN="${TEST_HOME}/.opt/no-such-claude" bash "${WATCHDOG}" >/dev/null 2>&1
+tmux_calls="$(mock_calls tmux)"
+# Falls back to live command -v which resolves to MOCK_BIN/claude.
+assert_contains "T25: tmux invokes live PATH claude on stale pin" "${MOCK_BIN}/claude --resume sess-25" "${tmux_calls}"
+assert_eq "T25: artifact still claimed via fallback" "watchdog-launched" "$(read_field "${target}" last_attempt_outcome)"
+teardown_test
+
+# T26: pin exists but --version fails → fallback (does NOT overwrite pin)
+print_test_header "T26: claude_bin pin --version failure falls back without overwriting"
+setup_test
+install_tmux_mock
+install_mock claude 0
+mkdir -p "${TEST_HOME}/.opt/bin"
+cat > "${TEST_HOME}/.opt/bin/claude" <<'BROKEN'
+#!/usr/bin/env bash
+exit 99
+BROKEN
+chmod +x "${TEST_HOME}/.opt/bin/claude"
+target="$(make_request "sess-26" "${TEST_HOME}" "Broken pin." "/ulw via fallback-v")"
+# Pin exists + executable + --version returns non-zero → fallback path.
+OMC_CLAUDE_BIN="${TEST_HOME}/.opt/bin/claude" bash "${WATCHDOG}" >/dev/null 2>&1
+tmux_calls="$(mock_calls tmux)"
+assert_contains "T26: tmux invokes live claude on --version failure" "${MOCK_BIN}/claude --resume sess-26" "${tmux_calls}"
+# Verify the pin is NOT overwritten — caller-set OMC_CLAUDE_BIN is preserved
+# by design (we don't auto-mutate state on transient failure). No assertion
+# needed beyond the launch routing because the env var is process-local.
+teardown_test
+
+# T27: empty pin (default) preserves legacy command -v behavior
+print_test_header "T27: empty claude_bin uses live command -v (legacy)"
+setup_test
+install_tmux_mock
+install_mock claude 0
+target="$(make_request "sess-27" "${TEST_HOME}" "Default pin." "/ulw via live")"
+unset OMC_CLAUDE_BIN
+bash "${WATCHDOG}" >/dev/null 2>&1
+tmux_calls="$(mock_calls tmux)"
+# Live command -v from PATH = MOCK_BIN/claude (resolved absolute path).
+assert_contains "T27: tmux invokes live PATH claude" "${MOCK_BIN}/claude --resume sess-27" "${tmux_calls}"
+assert_eq "T27: artifact claimed via legacy resolution" "watchdog-launched" "$(read_field "${target}" last_attempt_outcome)"
 teardown_test
 
 printf '\n=== test-resume-watchdog: %d passed, %d failed ===\n' "${pass}" "${fail}"

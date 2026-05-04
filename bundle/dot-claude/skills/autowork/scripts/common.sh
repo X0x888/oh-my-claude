@@ -56,6 +56,8 @@ _omc_env_model_drift_canary="${OMC_MODEL_DRIFT_CANARY:-}"
 _omc_env_blindspot_inventory="${OMC_BLINDSPOT_INVENTORY:-}"
 _omc_env_intent_broadening="${OMC_INTENT_BROADENING:-}"
 _omc_env_blindspot_ttl="${OMC_BLINDSPOT_TTL_SECONDS:-}"
+_omc_env_claude_bin="${OMC_CLAUDE_BIN:-}"
+_omc_env_resume_request_per_cwd_cap="${OMC_RESUME_REQUEST_PER_CWD_CAP:-}"
 
 OMC_STALL_THRESHOLD="${OMC_STALL_THRESHOLD:-12}"
 OMC_EXCELLENCE_FILE_COUNT="${OMC_EXCELLENCE_FILE_COUNT:-3}"
@@ -76,6 +78,20 @@ OMC_GATE_LEVEL="${OMC_GATE_LEVEL:-full}"
 # settings.json to trigger record-verification.sh. The builtin matcher only
 # covers Playwright and computer-use tools.
 OMC_CUSTOM_VERIFY_MCP_TOOLS="${OMC_CUSTOM_VERIFY_MCP_TOOLS:-}"
+# Pinned absolute path to the `claude` binary. Default empty = live
+# `command -v claude` lookup at watchdog launch time (legacy behavior
+# preserved). When set, the watchdog validates the pin via `${pinned}
+# --version` (5s timeout if available) before each launch and falls
+# back to live lookup on validation failure WITHOUT overwriting the
+# pin (avoids pin-churn from transient PATH conditions like nvm
+# switches). Auto-set by `install-resume-watchdog.sh` at install time.
+OMC_CLAUDE_BIN="${OMC_CLAUDE_BIN:-}"
+# Per-cwd cap on resume_request.json artifacts. Default 3: a user who hits
+# 7 rate-limits in 7 days accumulates 7 artifacts otherwise. Set to 0 to
+# disable the sweep (every artifact persists until age-out via
+# resume_request_ttl_days). Producer-side enforcement: stop-failure-handler.sh
+# sweeps after each new artifact write so the cap is atomic with capture.
+OMC_RESUME_REQUEST_PER_CWD_CAP="${OMC_RESUME_REQUEST_PER_CWD_CAP:-3}"
 # PreToolUse intent guard: when `true` (default), the guard denies destructive
 # git/gh operations while task_intent is advisory/session-management/checkpoint.
 # Set to `false` to disable enforcement and rely on the directive layer alone
@@ -351,6 +367,22 @@ _parse_conf_file() {
         [[ -z "${_omc_env_intent_broadening}" && "${value}" =~ ^(on|off)$ ]] && OMC_INTENT_BROADENING="${value}" || true ;;
       blindspot_ttl_seconds)
         [[ -z "${_omc_env_blindspot_ttl}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_BLINDSPOT_TTL_SECONDS="${value}" || true ;;
+      claude_bin)
+        # v1.31.0 Wave 1: pinned absolute path to the `claude` binary so
+        # the resume-watchdog daemon (LaunchAgent / systemd-user) launches
+        # the user's chosen Claude Code install instead of whatever lands
+        # first in the daemon's PATH (PATH-hijack defense — security-lens
+        # F-5). Validation requires absolute path; relative paths are
+        # silently ignored. Empty (default) preserves the legacy live
+        # `command -v claude` lookup. Host-specific — do not sync across
+        # machines if the binary lives at different paths.
+        [[ -z "${_omc_env_claude_bin}" && "${value}" =~ ^/ ]] && OMC_CLAUDE_BIN="${value}" || true ;;
+      resume_request_per_cwd_cap)
+        # v1.31.0 Wave 1: max resume_request.json artifacts per cwd before
+        # stop-failure-handler prunes oldest. Default 3 (sensible for a
+        # week of intermittent rate-limits). 0 disables sweep entirely
+        # (regulated environments where every artifact must persist).
+        [[ -z "${_omc_env_resume_request_per_cwd_cap}" && "${value}" =~ ^[0-9]+$ ]] && OMC_RESUME_REQUEST_PER_CWD_CAP="${value}" || true ;;
     esac
   done < "${conf}"
 }
@@ -906,6 +938,30 @@ _do_cap_cross_session_jsonl() {
   fi
 }
 
+# v1.31.0 Wave 2 (sre-lens F-2): locked bodies for cross-session
+# aggregation append-paths. Extracted from sweep_stale_sessions so
+# with_cross_session_log_lock can wrap the read-pipe-jq-append
+# pipeline atomically. Each function reads ONE per-session JSONL,
+# tags rows with the source session_id, and appends to the
+# cross-session ledger. On error: never abort the sweep, just skip
+# this session's contribution.
+
+_sweep_append_misfires() {
+  local src_telemetry="$1" sid="$2" dst_misfires="$3"
+  grep '"misfire":true' "${src_telemetry}" 2>/dev/null \
+    | jq -c --arg sid "${sid}" '. + {session_id: $sid}' 2>/dev/null \
+    >> "${dst_misfires}" \
+    || true
+}
+
+_sweep_append_gate_events() {
+  local src_gate_events="$1" sid="$2" dst_gate_events="$3"
+  jq -c --arg sid "${sid}" '. + {session_id: $sid}' \
+    "${src_gate_events}" 2>/dev/null \
+    >> "${dst_gate_events}" \
+    || true
+}
+
 sweep_stale_sessions() {
   local marker="${STATE_ROOT}/.last_sweep"
   local now
@@ -942,9 +998,38 @@ sweep_stale_sessions() {
   local misfires_file="${HOME}/.claude/quality-pack/classifier_misfires.jsonl"
 
   if [[ -d "${STATE_ROOT}" ]]; then
-    find "${STATE_ROOT}" -maxdepth 1 -type d -mtime +"${OMC_STATE_TTL_DAYS}" \
-      ! -name '.' ! -name '..' ! -name '.*' ! -path "${STATE_ROOT}" \
-      -print 2>/dev/null | while IFS= read -r _sweep_dir; do
+    # v1.31.0 Wave 2 (sre-lens F-9): replace `find -mtime +N` with
+    # explicit epoch math via a marker file. BSD `find -mtime +N`
+    # rounds DOWN (a 7-day-old dir tests false at exactly day 7) and
+    # GNU `find -mtime +N` rounds UP — so on Linux a session edited
+    # 7d 1m ago is swept, on macOS it is preserved. The boundary
+    # divergence is invisible most of the time but produces "where
+    # did my resume_request.json go?" surprises. Marker-based math
+    # is exact-second-accurate on both platforms.
+    local _sweep_cutoff_epoch=$(( now - OMC_STATE_TTL_DAYS * 86400 ))
+    local _sweep_cutoff_ts="" _sweep_marker=""
+    # BSD `date -r EPOCH` ; GNU `date -d @EPOCH` — try in order.
+    _sweep_cutoff_ts="$(date -r "${_sweep_cutoff_epoch}" '+%Y%m%d%H%M.%S' 2>/dev/null \
+      || date -d "@${_sweep_cutoff_epoch}" '+%Y%m%d%H%M.%S' 2>/dev/null \
+      || printf '')"
+    if [[ -n "${_sweep_cutoff_ts}" ]]; then
+      _sweep_marker="$(mktemp 2>/dev/null || true)"
+      if [[ -n "${_sweep_marker}" ]]; then
+        touch -t "${_sweep_cutoff_ts}" "${_sweep_marker}" 2>/dev/null || _sweep_marker=""
+      fi
+    fi
+    local _sweep_find_cmd
+    if [[ -n "${_sweep_marker}" ]] && [[ -f "${_sweep_marker}" ]]; then
+      # `! -newer marker` = target mtime ≤ marker mtime = older-than-cutoff.
+      _sweep_find_cmd="find \"${STATE_ROOT}\" -maxdepth 1 -type d ! -newer \"${_sweep_marker}\" ! -name '.' ! -name '..' ! -name '.*' ! -path \"${STATE_ROOT}\" -print"
+    else
+      # Fallback when date-format detection fails (exotic libcs, sandboxed env).
+      # The legacy -mtime path keeps the BSD/GNU boundary divergence but at
+      # least the sweep still functions.
+      log_anomaly "sweep_stale_sessions" "marker creation failed; falling back to -mtime"
+      _sweep_find_cmd="find \"${STATE_ROOT}\" -maxdepth 1 -type d -mtime +\"${OMC_STATE_TTL_DAYS}\" ! -name '.' ! -name '..' ! -name '.*' ! -path \"${STATE_ROOT}\" -print"
+    fi
+    eval "${_sweep_find_cmd}" 2>/dev/null | while IFS= read -r _sweep_dir; do
         local _sweep_state="${_sweep_dir}/session_state.json"
         if [[ -f "${_sweep_state}" ]]; then
           local _sweep_sid _sweep_ec=0
@@ -1005,13 +1090,26 @@ sweep_stale_sessions() {
             }
           ' "${_sweep_state}" >> "${summary_file}" 2>/dev/null || true
 
+          # v1.31.0 Wave 2 (sre-lens F-2): aggregation appends to cross-
+          # session JSONL files run UNDER the cross-session log lock. The
+          # daily-marker gate makes concurrent SWEEPS structurally
+          # impossible, but a parallel watchdog tick / record-* helper
+          # writing to the same cross-session JSONL during the sweep
+          # CAN race the appender — their unlocked writes interleave
+          # with the sweep's piped jq output and tear rows when the
+          # combined size crosses PIPE_BUF on Linux. Wrap the appends
+          # under with_cross_session_log_lock for symmetry with the
+          # _cap_cross_session_jsonl rotation path (also under-lock as
+          # of v1.30.0 Wave 3).
+
           # Classifier telemetry: append this session's misfire rows to the
           # cross-session ledger. Tagged with session id so post-hoc
           # analysis can group by session, intent, reason, etc.
           local _sweep_telemetry="${_sweep_dir}/classifier_telemetry.jsonl"
           if [[ -f "${_sweep_telemetry}" ]]; then
-            grep '"misfire":true' "${_sweep_telemetry}" 2>/dev/null | \
-              jq -c --arg sid "${_sweep_sid}" '. + {session_id: $sid}' 2>/dev/null >> "${misfires_file}" || true
+            with_cross_session_log_lock "${misfires_file}" \
+              _sweep_append_misfires "${_sweep_telemetry}" "${_sweep_sid}" "${misfires_file}" \
+              || _sweep_append_misfires "${_sweep_telemetry}" "${_sweep_sid}" "${misfires_file}"
           fi
 
           # Gate events: append this session's per-event outcome rows to
@@ -1021,8 +1119,9 @@ sweep_stale_sessions() {
           local _sweep_gate_events="${_sweep_dir}/gate_events.jsonl"
           local _gate_events_file="${HOME}/.claude/quality-pack/gate_events.jsonl"
           if [[ -f "${_sweep_gate_events}" ]]; then
-            jq -c --arg sid "${_sweep_sid}" '. + {session_id: $sid}' \
-              "${_sweep_gate_events}" 2>/dev/null >> "${_gate_events_file}" || true
+            with_cross_session_log_lock "${_gate_events_file}" \
+              _sweep_append_gate_events "${_sweep_gate_events}" "${_sweep_sid}" "${_gate_events_file}" \
+              || _sweep_append_gate_events "${_sweep_gate_events}" "${_sweep_sid}" "${_gate_events_file}"
           fi
         fi
         rm -rf "${_sweep_dir}" 2>/dev/null || true

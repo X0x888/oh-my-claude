@@ -170,6 +170,55 @@ fi
 
 mv -f "${tmp_file}" "${target_file}"
 
+# v1.31.0 Wave 1: per-cwd cap on resume_request.json artifacts.
+# A user who hits N rate-limits in N days accumulates N artifacts.
+# The SessionStart resume-hint surfaces the most-relevant one; the
+# rest live on disk and only age out via resume_request_ttl_days
+# (default 7d). Sweep older artifacts for the same cwd here so the
+# producer-side cap stays atomic with the write. Cap is 3 by default
+# (OMC_RESUME_REQUEST_PER_CWD_CAP env override; 0 disables the sweep).
+# Honors stop_failure_capture=off implicitly because this code is
+# only reached after the producer-side opt-out check above.
+_per_cwd_cap="${OMC_RESUME_REQUEST_PER_CWD_CAP:-3}"
+if [[ "${_per_cwd_cap}" =~ ^[0-9]+$ ]] \
+   && [[ "${_per_cwd_cap}" -gt 0 ]] \
+   && [[ -n "${record_cwd}" ]]; then
+  # Enumerate other resume_request.json files in STATE_ROOT, filter to
+  # the same cwd (exact match), sort by captured_at_ts desc, drop the
+  # newest N (kept), and rm the rest. find -newer mtime semantics are
+  # unreliable across BSD/GNU; sort the timestamp field within jq for
+  # cross-platform correctness. Skips silently on jq/find failures so
+  # an extra artifact is harmless — never blocks the producer.
+  _state_root="${STATE_ROOT:-${HOME}/.claude/quality-pack/state}"
+  _kept=0
+  while IFS= read -r _other_artifact; do
+    [[ -z "${_other_artifact}" ]] && continue
+    [[ "${_other_artifact}" == "${target_file}" ]] && continue
+    [[ ! -f "${_other_artifact}" ]] && continue
+    # Match by exact cwd. project_key match would over-aggressively
+    # delete cross-worktree artifacts that the user might still want
+    # to claim from a sibling checkout.
+    _other_cwd="$(jq -r '.cwd // ""' "${_other_artifact}" 2>/dev/null || true)"
+    [[ "${_other_cwd}" != "${record_cwd}" ]] && continue
+    _kept=$((_kept + 1))
+    # Cap counts TOTAL artifacts (the just-written one is always kept,
+    # so only (cap - 1) older OTHERS may remain). When _kept reaches
+    # cap, the next survivor would push total over the cap → delete.
+    if [[ "${_kept}" -ge "${_per_cwd_cap}" ]]; then
+      rm -f "${_other_artifact}" 2>/dev/null || true
+      log_hook "stop-failure-handler" "per-cwd cap pruned: ${_other_artifact}"
+    fi
+  done < <(
+    find "${_state_root}" -mindepth 2 -maxdepth 2 -name 'resume_request.json' -type f 2>/dev/null \
+      | while IFS= read -r _f; do
+          _ts="$(jq -r '(.captured_at_ts // 0) | tostring' "${_f}" 2>/dev/null || echo 0)"
+          printf '%s\t%s\n' "${_ts}" "${_f}"
+        done \
+      | sort -rn -t$'\t' -k1,1 \
+      | cut -f2-
+  )
+fi
+
 # Record a gate event so /ulw-report can surface stop-failure patterns.
 # record_gate_event applies the per-session cap (OMC_GATE_EVENTS_PER_SESSION_MAX,
 # default 500) and emits the canonical {ts, gate, event, details} shape that

@@ -423,6 +423,65 @@ printf '%s\n' "=================================================================
 printf '%s\n' "${TEST_NAME}"
 printf '%s\n' "================================================================================"
 
+# T12: v1.31.0 Wave 2 — concurrency guard via lockdir mutex (sre-lens F-7)
+test_t12_concurrency_guard() {
+  printf '\nT12: concurrent scans share the lockdir mutex\n'
+  local proj="${TEST_HOME}/proj_t12"
+  make_bash_project "${proj}"
+  local cache
+  cache="$(cd "${proj}" && run_scanner path)"
+
+  # Pre-existing lockdir simulates an in-flight peer scanner. cmd_scan
+  # must silent-skip (return 0, no cache write) when the lock is held
+  # by a live process (parent shell PID is live, satisfies kill -0).
+  local lockdir="${cache}.scanning"
+  mkdir -p "${lockdir}"
+  printf '%s\n' "$$" > "${lockdir}/holder.pid"
+  # Force the lockdir mtime to "now" so the stale-recovery (>1h)
+  # path is not taken.
+
+  # First scan with the lockdir held → silent skip (no cache file).
+  ( cd "${proj}" && run_scanner scan --force ) >/dev/null 2>&1
+  if [[ -f "${cache}" ]]; then
+    FAIL=$((FAIL + 1))
+    printf '  FAIL: cache written despite lockdir held by live PID\n'
+  else
+    PASS=$((PASS + 1))
+    printf '  PASS: live-held lockdir prevents concurrent write\n'
+  fi
+
+  # Now release the lock (rmdir + pidfile rm) and confirm scan
+  # proceeds normally.
+  rm -f "${lockdir}/holder.pid" 2>/dev/null
+  rmdir "${lockdir}" 2>/dev/null
+  ( cd "${proj}" && run_scanner scan --force ) >/dev/null 2>&1
+  if [[ -f "${cache}" ]]; then
+    PASS=$((PASS + 1))
+    printf '  PASS: scan resumes after lock released\n'
+  else
+    FAIL=$((FAIL + 1))
+    printf '  FAIL: cache not written after lock released\n'
+  fi
+
+  # Stale-recovery: lockdir held by a dead PID (use a definitely-
+  # gone PID like 1 <-> -1 trick: pick a PID that won't exist).
+  rm -f "${cache}" 2>/dev/null
+  mkdir -p "${lockdir}"
+  # PID 999999 is well past PID_MAX on macOS (default 99999); on Linux
+  # max PID is 4194303 by default, so test if PID 4000000 is dead. We
+  # use 99999999 which is unrealistic on either OS. As fallback the
+  # 1-hour staleness check kicks in.
+  printf '99999999\n' > "${lockdir}/holder.pid"
+  ( cd "${proj}" && run_scanner scan --force ) >/dev/null 2>&1
+  if [[ -f "${cache}" ]]; then
+    PASS=$((PASS + 1))
+    printf '  PASS: dead-PID lockdir gets reaped, scan proceeds\n'
+  else
+    FAIL=$((FAIL + 1))
+    printf '  FAIL: dead-PID lockdir blocks scan unexpectedly\n'
+  fi
+}
+
 test_t1_valid_json
 test_t2_project_type
 test_t3_ttl
@@ -434,6 +493,7 @@ test_t8_cap
 test_t9_excludes
 test_t10_subcommands
 test_t11_unknown_project
+test_t12_concurrency_guard
 
 # Cleanup
 rm -rf "${TEST_HOME}"

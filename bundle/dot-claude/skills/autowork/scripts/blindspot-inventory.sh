@@ -639,6 +639,52 @@ cmd_scan() {
   fi
 
   mkdir -p "${BLINDSPOT_DIR}"
+
+  # v1.31.0 Wave 2 (sre-lens F-7): concurrency guard. Without this,
+  # two /ulw prompts arriving 2s apart on a slow-scanning repo
+  # (1-4s scan time on monorepos) spawn two scanners at the same
+  # cache, and `mv ${cache}.tmp.$$.${RANDOM} ${cache}` races: the
+  # loser's content silently overwrites the winner's. lockdir
+  # mutex with stale-recovery (hour-based — scans always finish
+  # well within an hour) ensures only one scan runs per cache.
+  local lockdir="${cache}.scanning"
+  local pidfile="${lockdir}/holder.pid"
+  if ! mkdir "${lockdir}" 2>/dev/null; then
+    # Another scanner is in flight. Reap the lock if the holder
+    # process is dead OR the lock is older than 1 hour. Otherwise
+    # exit silently — no value in queueing behind a live scan.
+    local lock_mtime now stale_age=3600
+    now="$(date +%s)"
+    lock_mtime="$(stat -f %m "${lockdir}" 2>/dev/null || stat -c %Y "${lockdir}" 2>/dev/null || echo 0)"
+    local holder_pid="" reap=0
+    if [[ -f "${pidfile}" ]]; then
+      holder_pid="$(tr -d '[:space:]' < "${pidfile}" 2>/dev/null || true)"
+      if [[ -n "${holder_pid}" ]] && ! kill -0 "${holder_pid}" 2>/dev/null; then
+        reap=1
+      fi
+    fi
+    if [[ "${reap}" -eq 0 ]] \
+       && [[ "${lock_mtime}" -gt 0 ]] \
+       && (( now - lock_mtime > stale_age )); then
+      reap=1
+    fi
+    if [[ "${reap}" -eq 1 ]]; then
+      rm -f "${pidfile}" 2>/dev/null || true
+      rmdir "${lockdir}" 2>/dev/null || true
+      mkdir "${lockdir}" 2>/dev/null || return 0
+    else
+      return 0  # live scanner in flight — silent skip
+    fi
+  fi
+  printf '%s\n' "$$" > "${pidfile}" 2>/dev/null || true
+  # Trap fires at script exit, AFTER cmd_scan returns and its locals
+  # ($lockdir, $pidfile) are out of scope. Double-quote the trap body
+  # so the paths are interpolated NOW (at trap-set time) into the
+  # literal command string — at trap-fire time bash just runs the
+  # baked-in literal. Single-quoting the path values inside protects
+  # against unusual chars in cache paths.
+  trap "rm -f '${pidfile}' 2>/dev/null; rmdir '${lockdir}' 2>/dev/null" EXIT
+
   local tmp="${cache}.tmp.$$.${RANDOM}"
   if scan_project "${root}" > "${tmp}" 2>/dev/null; then
     mv "${tmp}" "${cache}"

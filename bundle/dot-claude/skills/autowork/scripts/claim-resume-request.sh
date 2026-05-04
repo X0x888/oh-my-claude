@@ -13,7 +13,7 @@
 # Usage:
 #   claim-resume-request.sh [--peek] [--cwd PATH] [--session-id SID]
 #                            [--target PATH] [--list]
-#                            [--watchdog-launch <pid>]
+#                            [--watchdog-launch <pid>] [--cooldown-secs N]
 #
 # Filters:
 #   --cwd PATH         Prefer artifacts whose .cwd matches PATH (default $PWD).
@@ -24,6 +24,14 @@
 #   --target PATH      Pin to a specific resume_request.json path (highest
 #                      precedence; the watchdog uses this to claim the exact
 #                      artifact it scanned).
+#   --cooldown-secs N  Watchdog mode only: refuse to claim when last_attempt_ts
+#                      is within N seconds of now. The watchdog already does an
+#                      unlocked pre-check; this is the authoritative under-lock
+#                      enforcement that defends against parallel watchdog ticks
+#                      (e.g., LaunchAgent + manual cron) racing the cooldown
+#                      window. Returns rc=1 with telemetry event
+#                      "claim-cooldown-violation" so the caller knows the lock
+#                      held but the cooldown rejected.
 #
 # Modes:
 #   --peek             Read-only inspection. Prints the artifact without
@@ -62,6 +70,7 @@ filter_cwd=""
 filter_sid=""
 filter_target=""
 watchdog_pid=""
+cooldown_secs=""
 
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
@@ -83,6 +92,9 @@ while [[ "$#" -gt 0 ]]; do
     --target)
       shift
       filter_target="${1:-}"; shift || true ;;
+    --cooldown-secs)
+      shift
+      cooldown_secs="${1:-}"; shift || true ;;
     -h|--help)
       sed -n '2,50p' "$0"
       exit 0 ;;
@@ -103,6 +115,17 @@ if [[ "${mode}" == "watchdog" ]] \
    && [[ -z "${filter_sid}" ]]; then
   printf 'claim-resume-request: --watchdog-launch requires --target <path> or --session-id <sid>\n' >&2
   exit 64
+fi
+
+# Cooldown flag is meaningful only in watchdog mode. Validate as a
+# non-negative integer (or empty for "no cooldown enforced"). Other
+# modes ignore the flag silently — /ulw-resume claim is user-driven
+# and the user explicitly opting in supersedes the cooldown.
+if [[ -n "${cooldown_secs}" ]]; then
+  if ! [[ "${cooldown_secs}" =~ ^[0-9]+$ ]]; then
+    printf 'claim-resume-request: --cooldown-secs must be a non-negative integer (got: %s)\n' "${cooldown_secs}" >&2
+    exit 64
+  fi
 fi
 
 if ! is_stop_failure_capture_enabled; then
@@ -291,6 +314,32 @@ do_claim() {
          || [[ "${current_dismissed}" != "null" ]]; then
         return 1
       fi
+      # Under-lock cooldown enforcement (v1.31.0 metis F-7 fix). The
+      # watchdog already does an unlocked pre-check at scan time, but
+      # two parallel watchdog ticks (LaunchAgent + manual cron, or two
+      # LaunchAgent ticks landing close together) can both pass the
+      # unlocked pre-check, then serially acquire the lock and both
+      # claim — both spawn tmux. This re-validates inside the lock
+      # against the freshly-read last_attempt_ts so the second peer
+      # rejects deterministically. Caller signals enforcement via
+      # --cooldown-secs N; without it (legacy callers) the check is
+      # skipped to preserve existing behavior.
+      if [[ -n "${cooldown_secs}" ]] && (( cooldown_secs > 0 )); then
+        local current_last_attempt_ts current_now
+        current_last_attempt_ts="$(jq -r '((.last_attempt_ts // 0) | tonumber? // 0)' "${target_path}" 2>/dev/null || echo 0)"
+        current_last_attempt_ts="${current_last_attempt_ts%%.*}"
+        current_last_attempt_ts="${current_last_attempt_ts//[!0-9]/}"
+        current_last_attempt_ts="${current_last_attempt_ts:-0}"
+        current_now="$(now_epoch)"
+        if [[ "${current_last_attempt_ts}" -gt 0 ]] \
+           && (( current_now - current_last_attempt_ts < cooldown_secs )); then
+          # Distinct rc=3 so the caller can distinguish cooldown from
+          # generic claim-race-lost (rc=1) — a parallel peer claimed
+          # within the cooldown window AND we lost the race; the right
+          # response is "wait the cooldown out" not "retry immediately."
+          return 3
+        fi
+      fi
       ;;
     dismiss)
       # /ulw-resume --dismiss: stamp dismissed_at_ts to suppress future
@@ -418,6 +467,17 @@ case "${claim_rc}" in
       mode="${mode}" \
       origin_session="${target_sid}"
     exit 1 ;;
+  3)
+    # Under-lock cooldown rejected the watchdog claim (v1.31.0 metis F-7).
+    # A peer landed an attempt within the cooldown window between our
+    # unlocked pre-check and the locked claim. Distinct from
+    # claim-race-lost (rc=1) so the caller can wait the cooldown rather
+    # than retrying immediately.
+    record_gate_event "ulw-resume" "claim-cooldown-violation" \
+      mode="${mode}" \
+      origin_session="${target_sid}" \
+      cooldown_secs="${cooldown_secs}"
+    exit 3 ;;
   2|*)
     record_gate_event "ulw-resume" "claim-failed" \
       mode="${mode}" \

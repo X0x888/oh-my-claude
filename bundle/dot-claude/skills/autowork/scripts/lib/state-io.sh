@@ -141,19 +141,48 @@ append_state() {
   printf '%s\n' "${value}" >>"$(session_file "${key}")"
 }
 
+# Lock-protected body of append_limited_state. Extracted so the public
+# function can wrap with_state_lock around the read-modify-write cycle
+# without the lock helper paying the function-resolution cost on every
+# caller.
+_append_limited_state_locked() {
+  local target="$1"
+  local value="$2"
+  local max_lines="$3"
+  local temp
+  temp="$(mktemp "${target}.XXXXXX")" || return 1
+  printf '%s\n' "${value}" >>"${target}"
+  tail -n "${max_lines}" "${target}" >"${temp}" 2>/dev/null || cp "${target}" "${temp}"
+  mv "${temp}" "${target}"
+}
+
 append_limited_state() {
   local key="$1"
   local value="$2"
   local max_lines="${3:-20}"
   local target
-  local temp
 
   target="$(session_file "${key}")"
-  temp="$(mktemp "${target}.XXXXXX")"
 
-  printf '%s\n' "${value}" >>"${target}"
-  tail -n "${max_lines}" "${target}" >"${temp}" 2>/dev/null || cp "${target}" "${temp}"
-  mv "${temp}" "${target}"
+  # v1.31.0 Wave 2 (sre-lens F-1): lock-protect the read-modify-write
+  # cycle. Without the lock, two concurrent SubagentStop hooks racing
+  # this function on gate_events.jsonl can lose rows: peer A appends
+  # row_a, reads tail (includes row_a + prior history), but before
+  # peer A's mv runs, peer B appends row_b. Peer A's mv then writes
+  # the tail snapshot that did NOT see row_b — row_b is silently
+  # dropped. Council Phase 8 fan-out (5 parallel reviewers writing
+  # 30+ gate_events) is the worst-case workload. with_state_lock
+  # serializes the cycle; the lock is mkdir-as-mutex (~5ms) and the
+  # contention window is bounded by the per-session gate-event cap
+  # (default 500). When SESSION_ID is unset (test rigs, /omc-config
+  # without a session), fall through to the unlocked path so callers
+  # outside an active session continue to work.
+  if [[ -n "${SESSION_ID:-}" ]]; then
+    with_state_lock _append_limited_state_locked "${target}" "${value}" "${max_lines}" \
+      || _append_limited_state_locked "${target}" "${value}" "${max_lines}"
+  else
+    _append_limited_state_locked "${target}" "${value}" "${max_lines}"
+  fi
 }
 
 read_state() {
@@ -263,7 +292,23 @@ read_state_keys() {
 # be acquired within OMC_STATE_LOCK_MAX_ATTEMPTS polls (default 200).
 
 OMC_STATE_LOCK_STALE_SECS="${OMC_STATE_LOCK_STALE_SECS:-5}"
-OMC_STATE_LOCK_MAX_ATTEMPTS="${OMC_STATE_LOCK_MAX_ATTEMPTS:-200}"
+# v1.31.0 Wave 2 (sre-lens F-5): cap tightened from 200×50ms (10s) to
+# 60×50ms (3s) — practical lock-hold time under heavy fan-out is well
+# under 1s; 3s is comfortable headroom and prevents hot-path stalls
+# from blowing past the 1000ms stop-guard budget. The PID-based stale
+# recovery at OMC_STATE_LOCK_STALE_SECS=5 already kicks in at 5s, so
+# the cap rarely fires in practice — the only path that hits it is
+# pathological contention (bash 5+ kernel-serialized appender storm
+# across 5+ peers) where the right answer is "report and skip" not
+# "wait 10 more seconds."
+OMC_STATE_LOCK_MAX_ATTEMPTS="${OMC_STATE_LOCK_MAX_ATTEMPTS:-60}"
+# Long-wait threshold (in attempts) for soft telemetry. When a lock
+# is held past this many attempts but hasn't yet exhausted the cap,
+# emit a `lock-long-wait` anomaly so /ulw-report can surface
+# contention patterns BEFORE the cap fires. Default 30 = ~1.5s of
+# polling — picked to fire on real contention but not on every busy
+# council Phase 8 turn.
+OMC_STATE_LOCK_LONG_WAIT_ATTEMPTS="${OMC_STATE_LOCK_LONG_WAIT_ATTEMPTS:-30}"
 
 _lock_mtime() {
   # Echoes mtime epoch of $1, or 0 on error. Tries BSD stat -f, then GNU stat -c.
@@ -342,6 +387,14 @@ _with_lockdir() {
     if [[ "${attempts}" -ge "${OMC_STATE_LOCK_MAX_ATTEMPTS}" ]]; then
       log_anomaly "${tag}" "lock not acquired after ${OMC_STATE_LOCK_MAX_ATTEMPTS} attempts"
       return 1
+    fi
+    # v1.31.0 Wave 2 (sre-lens F-5): emit a one-shot soft anomaly at the
+    # long-wait threshold so /ulw-report can surface contention BEFORE
+    # the hard cap fires. The _omc_long_wait_emitted local var keeps
+    # this to one log row per acquisition (otherwise the polling loop
+    # would emit ~30 rows during a single contended acquire).
+    if [[ "${attempts}" -eq "${OMC_STATE_LOCK_LONG_WAIT_ATTEMPTS}" ]]; then
+      log_anomaly "${tag}" "lock long-wait at ${attempts} attempts"
     fi
     sleep 0.05 2>/dev/null || sleep 1
   done
