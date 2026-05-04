@@ -30,6 +30,7 @@ Display this list to the user, grouped by user-journey phase. Phase headers are 
 | **prometheus** | `/prometheus <goal>` | Goal is broad or ambiguous — needs interview-first clarification before planning. |
 | **metis** | `/metis <plan>` | You have a draft plan and want to stress-test it for hidden risks, missing constraints. |
 | **oracle** | `/oracle <issue>` | Debugging is hard, root cause unclear, or you need a second opinion on tradeoffs. |
+| **diverge** | `/diverge <task>` | Multiple credible framings exist — generate 3-5 alternatives BEFORE commit to pick one consciously. Upstream of all the convergent critics. (v1.31.0) |
 | **librarian** | `/librarian <topic>` | You need official docs, third-party API references, or concrete external examples. |
 | **ulw-skip** | `/ulw-skip <reason>` | Gate fired but the work is genuinely complete (false positive). One-shot bypass. |
 | **mark-deferred** | `/mark-deferred <reason>` | Discovered-scope flagged real findings you're consciously NOT shipping this session. |

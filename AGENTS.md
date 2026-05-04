@@ -254,6 +254,7 @@ The prescribed reviewer sequence (Check 4 of stop-guard) enforces distinct dimen
 | `briefing-analyst` | `traceability` (only required at `traceability_file_count`+ files, default 6) |
 | `design-reviewer` | `design_quality` (only required when UI files edited: `.tsx`, `.jsx`, `.vue`, `.svelte`, `.astro`, `.css`, `.scss`, `.sass`, `.less`, `.styl`, `.html`, `.htm`) |
 | `abstraction-critic` | None (manual-dispatch only as of v1.19.0; not wired to a stop-guard dimension) |
+| `divergent-framer` | None (manual-dispatch only via `/diverge` skill as of v1.31.0; upstream of planning, not a verifier) |
 
 Each dimension ticks via `tick_dimension <name>` in `common.sh`, which wraps `write_state` in `with_state_lock` to prevent concurrent-tick races. Dimensions are validated via timestamp comparison against the relevant edit clock (`last_code_edit_ts` for most, `last_doc_edit_ts` for `prose`), so a post-tick edit implicitly invalidates the dimension without needing an explicit clear.
 

@@ -7,6 +7,7 @@
 - `/prometheus <goal>` runs interview-first planning for broad or ambiguous work before implementation.
 - `/metis <plan or focus>` stress-tests a draft plan or current approach for hidden risks and missing constraints.
 - `/oracle <issue>` provides a deep debugging or architecture second opinion when the right path is unclear.
+- `/diverge <task>` (v1.31.0) generates 3-5 alternative paradigm framings BEFORE commit — distinct from `prometheus` (clarify what to build), `metis` (stress-test a draft plan), `oracle` (debug second opinion), `abstraction-critic` (critique an existing artifact). Use when the task admits multiple credible approaches and choosing the wrong shape would cost rework.
 - `/librarian <topic>` gathers official docs, external APIs, reference implementations, and concrete source material.
 - `/frontend-design <task>` creates distinctive, design-first frontend interfaces. Establishes visual direction (palette, typography, spacing, layout, visual signature) before writing code. Use when visual craft matters.
 - `/atlas [focus]` bootstraps or refreshes concise project-specific instruction files for the current repository.

@@ -299,6 +299,7 @@ Skills are invoked as slash commands or routed automatically by the intent class
 | prometheus *(interview)* | `/prometheus <goal>` | Interview-first planning for ambiguous work |
 | metis *(stress-test)* | `/metis <plan>` | Pressure-test a plan for hidden risks |
 | oracle *(second opinion)* | `/oracle <issue>` | Deep debugging or architecture second opinion |
+| diverge *(expand option space)* | `/diverge <task>` | Generate 3-5 alternative framings BEFORE commit (v1.31.0; upstream of convergent critics) |
 | librarian *(docs lookup)* | `/librarian <topic>` | Official docs and reference research |
 | **Review & evaluate** | | |
 | review-hard *(review)* | `/review-hard [focus]` | Findings-first code review |
