@@ -2013,40 +2013,11 @@ _AGENT_METRICS_FILE="${_AGENT_METRICS_FILE:-${HOME}/.claude/quality-pack/agent-m
 _AGENT_METRICS_LOCK="${_AGENT_METRICS_LOCK:-${HOME}/.claude/quality-pack/.agent-metrics.lock}"
 
 # with_metrics_lock: Run a command under the agent metrics file lock.
-# Uses time-based stale-lock recovery (same pattern as with_state_lock)
-# and fails closed (returns 1 without executing) on lock exhaustion.
+# v1.30.0 routes through _with_lockdir (PID-based stale recovery; closes
+# the false-recovery race fixed for with_state_lock in v1.29.0). Public
+# signature preserved.
 with_metrics_lock() {
-  local lockdir="${_AGENT_METRICS_LOCK}"
-  local attempts=0
-
-  while true; do
-    if mkdir "${lockdir}" 2>/dev/null; then
-      break
-    fi
-    attempts=$((attempts + 1))
-
-    if [[ -d "${lockdir}" ]]; then
-      local now held_since
-      now="$(date +%s)"
-      held_since="$(_lock_mtime "${lockdir}")"
-      if [[ "${held_since}" -gt 0 ]] \
-          && [[ $(( now - held_since )) -gt "${OMC_STATE_LOCK_STALE_SECS}" ]]; then
-        rmdir "${lockdir}" 2>/dev/null || true
-        continue
-      fi
-    fi
-
-    if [[ "${attempts}" -ge "${OMC_STATE_LOCK_MAX_ATTEMPTS}" ]]; then
-      log_anomaly "with_metrics_lock" "lock not acquired after ${OMC_STATE_LOCK_MAX_ATTEMPTS} attempts"
-      return 1
-    fi
-    sleep 0.05 2>/dev/null || sleep 1
-  done
-
-  local rc=0
-  "$@" || rc=$?
-  rmdir "${lockdir}" 2>/dev/null || true
-  return "${rc}"
+  _with_lockdir "${_AGENT_METRICS_LOCK}" "with_metrics_lock" "$@"
 }
 
 # record_agent_metric: Record an agent invocation outcome.
@@ -2153,39 +2124,9 @@ _RESUME_REQUEST_LOCK="${_RESUME_REQUEST_LOCK:-${HOME}/.claude/quality-pack/.resu
 
 # with_defect_lock: Run a command under the defect patterns file lock.
 # Separate from with_metrics_lock to avoid unnecessary contention.
-# Uses time-based stale-lock recovery and fails closed on exhaustion.
+# v1.30.0 routes through _with_lockdir (PID-based stale recovery).
 with_defect_lock() {
-  local lockdir="${_DEFECT_PATTERNS_LOCK}"
-  local attempts=0
-
-  while true; do
-    if mkdir "${lockdir}" 2>/dev/null; then
-      break
-    fi
-    attempts=$((attempts + 1))
-
-    if [[ -d "${lockdir}" ]]; then
-      local now held_since
-      now="$(date +%s)"
-      held_since="$(_lock_mtime "${lockdir}")"
-      if [[ "${held_since}" -gt 0 ]] \
-          && [[ $(( now - held_since )) -gt "${OMC_STATE_LOCK_STALE_SECS}" ]]; then
-        rmdir "${lockdir}" 2>/dev/null || true
-        continue
-      fi
-    fi
-
-    if [[ "${attempts}" -ge "${OMC_STATE_LOCK_MAX_ATTEMPTS}" ]]; then
-      log_anomaly "with_defect_lock" "lock not acquired after ${OMC_STATE_LOCK_MAX_ATTEMPTS} attempts"
-      return 1
-    fi
-    sleep 0.05 2>/dev/null || sleep 1
-  done
-
-  local rc=0
-  "$@" || rc=$?
-  rmdir "${lockdir}" 2>/dev/null || true
-  return "${rc}"
+  _with_lockdir "${_DEFECT_PATTERNS_LOCK}" "with_defect_lock" "$@"
 }
 
 # with_resume_lock: Run a command under the resume-request claim lock.
@@ -2194,55 +2135,20 @@ with_defect_lock() {
 # (Wave 1 hint hook in session A, Wave 3 watchdog daemon, and Wave 2's
 # /ulw-resume claim in session B can all reach the same artifact). The
 # claim sequence is read-current-state → decide-to-claim → atomic-write,
-# which is non-atomic without a lock. mkdir-as-mutex + stale-mtime
-# recovery (same shape as with_metrics_lock and with_defect_lock) is
-# the established pattern in this codebase; flock is avoided because
-# its behavior over networked filesystems is platform-dependent.
-#
-# Stale-recovery: if the lock has been held longer than
-# OMC_STATE_LOCK_STALE_SECS (default 5s), assume the holder crashed and
-# reclaim. Five seconds is comfortably longer than a healthy claim
-# (which is one re-read + one tmp+mv) and short enough that a real
-# crashed claimer does not block the system for long.
+# which is non-atomic without a lock. mkdir-as-mutex + PID-based stale
+# recovery (centralized in _with_lockdir) is the established pattern;
+# flock is avoided because its behavior over networked filesystems is
+# platform-dependent. Stale window: OMC_STATE_LOCK_STALE_SECS (default 5s,
+# comfortably longer than a healthy claim — one re-read + one tmp+mv —
+# and short enough that a crashed claimer does not block the system).
 #
 # Returns 1 (without executing) on lock-acquisition timeout. Caller
 # should treat this as "claim failed; retry next tick" rather than
-# "no claimable artifact".
+# "no claimable artifact". v1.30.0: routed through _with_lockdir for
+# PID-based stale recovery — closes the false-recovery race for slow
+# claimers parsing 100KB+ artifacts under heavy IO.
 with_resume_lock() {
-  local lockdir="${_RESUME_REQUEST_LOCK}"
-  local lock_parent
-  lock_parent="$(dirname "${lockdir}")"
-  mkdir -p "${lock_parent}" 2>/dev/null || true
-
-  local attempts=0
-  while true; do
-    if mkdir "${lockdir}" 2>/dev/null; then
-      break
-    fi
-    attempts=$((attempts + 1))
-
-    if [[ -d "${lockdir}" ]]; then
-      local now held_since
-      now="$(date +%s)"
-      held_since="$(_lock_mtime "${lockdir}")"
-      if [[ "${held_since}" -gt 0 ]] \
-          && [[ $(( now - held_since )) -gt "${OMC_STATE_LOCK_STALE_SECS}" ]]; then
-        rmdir "${lockdir}" 2>/dev/null || true
-        continue
-      fi
-    fi
-
-    if [[ "${attempts}" -ge "${OMC_STATE_LOCK_MAX_ATTEMPTS}" ]]; then
-      log_anomaly "with_resume_lock" "lock not acquired after ${OMC_STATE_LOCK_MAX_ATTEMPTS} attempts"
-      return 1
-    fi
-    sleep 0.05 2>/dev/null || sleep 1
-  done
-
-  local rc=0
-  "$@" || rc=$?
-  rmdir "${lockdir}" 2>/dev/null || true
-  return "${rc}"
+  _with_lockdir "${_RESUME_REQUEST_LOCK}" "with_resume_lock" "$@"
 }
 
 # _ensure_valid_defect_patterns: Validate and recover the defect-patterns file.
@@ -2428,32 +2334,12 @@ get_defect_watch_list() {
 _GATE_SKIPS_FILE="${HOME}/.claude/quality-pack/gate-skips.jsonl"
 _GATE_SKIPS_LOCK="${HOME}/.claude/quality-pack/.gate-skips.lock"
 
+# with_skips_lock: Run a command under the gate-skip JSONL lock.
+# v1.30.0 routes through _with_lockdir; naturally closes the v1.29.0
+# sre-lens F-5 finding (silent return on exhaustion) — the helper
+# emits log_anomaly with the helper-name tag for parity with sister locks.
 with_skips_lock() {
-  local lockdir="${_GATE_SKIPS_LOCK}"
-  local attempts=0
-  while true; do
-    if mkdir "${lockdir}" 2>/dev/null; then break; fi
-    attempts=$((attempts + 1))
-    # Time-based stale-lock recovery (same pattern as with_state_lock)
-    if [[ -d "${lockdir}" ]]; then
-      local _now _held
-      _now="$(date +%s)"
-      _held="$(_lock_mtime "${lockdir}")"
-      if [[ "${_held}" -gt 0 ]] \
-          && [[ $(( _now - _held )) -gt "${OMC_STATE_LOCK_STALE_SECS}" ]]; then
-        rmdir "${lockdir}" 2>/dev/null || true
-        continue
-      fi
-    fi
-    if [[ "${attempts}" -ge "${OMC_STATE_LOCK_MAX_ATTEMPTS}" ]]; then
-      return 1
-    fi
-    sleep 0.05 2>/dev/null || sleep 1
-  done
-  local rc=0
-  "$@" || rc=$?
-  rmdir "${lockdir}" 2>/dev/null || true
-  return "${rc}"
+  _with_lockdir "${_GATE_SKIPS_LOCK}" "with_skips_lock" "$@"
 }
 
 # with_cross_session_log_lock <log_path> <fn> [args...]
@@ -2479,32 +2365,10 @@ with_cross_session_log_lock() {
     log_anomaly "with_cross_session_log_lock" "missing log_path argument"
     return 1
   fi
-  local lockdir="${log_path}.lock"
-  mkdir -p "$(dirname "${lockdir}")" 2>/dev/null || true
-  local attempts=0
-  while true; do
-    if mkdir "${lockdir}" 2>/dev/null; then break; fi
-    attempts=$((attempts + 1))
-    if [[ -d "${lockdir}" ]]; then
-      local _now _held
-      _now="$(date +%s)"
-      _held="$(_lock_mtime "${lockdir}")"
-      if [[ "${_held}" -gt 0 ]] \
-          && [[ $(( _now - _held )) -gt "${OMC_STATE_LOCK_STALE_SECS}" ]]; then
-        rmdir "${lockdir}" 2>/dev/null || true
-        continue
-      fi
-    fi
-    if [[ "${attempts}" -ge "${OMC_STATE_LOCK_MAX_ATTEMPTS}" ]]; then
-      log_anomaly "with_cross_session_log_lock" "lock not acquired after ${OMC_STATE_LOCK_MAX_ATTEMPTS} attempts: ${log_path}"
-      return 1
-    fi
-    sleep 0.05 2>/dev/null || sleep 1
-  done
-  local rc=0
-  "$@" || rc=$?
-  rmdir "${lockdir}" 2>/dev/null || true
-  return "${rc}"
+  # v1.30.0: routed through _with_lockdir. The tag embeds the log_path
+  # so the anomaly emit retains the per-file diagnostic context the
+  # prior implementation captured ("...attempts: ${log_path}").
+  _with_lockdir "${log_path}.lock" "with_cross_session_log_lock(${log_path})" "$@"
 }
 
 record_gate_skip() {
@@ -3824,41 +3688,16 @@ write_session_design_contract() {
 # --- end inline design-contract capture ---
 
 # with_scope_lock: serialize writes to discovered_scope.jsonl per session.
-# Same mkdir + stale-recovery pattern as with_metrics_lock / with_state_lock.
+# v1.30.0 routes through _with_lockdir (PID-based stale recovery). The
+# SESSION_ID guard is preserved at this wrapper layer because the
+# per-session lockdir cannot be derived without it.
 with_scope_lock() {
   if [[ -z "${SESSION_ID:-}" ]]; then
     return 1
   fi
   local lockdir
   lockdir="$(session_file ".scope.lock")"
-  local attempts=0
-
-  while true; do
-    if mkdir "${lockdir}" 2>/dev/null; then
-      break
-    fi
-    attempts=$((attempts + 1))
-    if [[ -d "${lockdir}" ]]; then
-      local now held_since
-      now="$(date +%s)"
-      held_since="$(_lock_mtime "${lockdir}")"
-      if [[ "${held_since}" -gt 0 ]] \
-          && [[ $(( now - held_since )) -gt "${OMC_STATE_LOCK_STALE_SECS}" ]]; then
-        rmdir "${lockdir}" 2>/dev/null || true
-        continue
-      fi
-    fi
-    if [[ "${attempts}" -ge "${OMC_STATE_LOCK_MAX_ATTEMPTS}" ]]; then
-      log_anomaly "with_scope_lock" "lock not acquired after ${OMC_STATE_LOCK_MAX_ATTEMPTS} attempts"
-      return 1
-    fi
-    sleep 0.05 2>/dev/null || sleep 1
-  done
-
-  local rc=0
-  "$@" || rc=$?
-  rmdir "${lockdir}" 2>/dev/null || true
-  return "${rc}"
+  _with_lockdir "${lockdir}" "with_scope_lock" "$@"
 }
 
 # append_discovered_scope <agent_name> <jsonl_rows>

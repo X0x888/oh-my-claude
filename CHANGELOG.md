@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### v1.30.0 Wave 2 — Lock primitive unification + PID recovery generalization
+
+Closes the v1.29.0 sre-lens P1-5 (PID-recovery generalization) + abstraction-critic F-1 (six near-identical with_*_lock helpers). One private primitive replaces six copy-paste bodies; PID-based stale recovery now applies to every lock site instead of just `with_state_lock`.
+
+- **New `_with_lockdir <lockdir> <tag> <cmd> [args...]` primitive** in `bundle/dot-claude/skills/autowork/scripts/lib/state-io.sh`. Centralizes mkdir-as-mutex + PID-based stale recovery (v1.29.0 metis F-6 pattern) + log_anomaly-on-exhaustion + cleanup-on-exit. Records holder PID into `<lockdir>/holder.pid`; force-releases only when the recorded PID is dead OR the pidfile is missing — defeats the false-recovery race where a slow-but-live writer would otherwise lose its lock to a peer that timed out on mtime alone.
+
+- **Seven helpers migrated to one-line wrappers**: `with_state_lock` (`lib/state-io.sh`), `with_metrics_lock`, `with_defect_lock`, `with_resume_lock`, `with_skips_lock`, `with_cross_session_log_lock`, `with_scope_lock` (`common.sh`). Public names + signatures preserved — call sites and tests are unchanged.
+
+- **Naturally fixes the v1.29.0 sre-lens F-5 finding**: `with_skips_lock` previously returned 1 silently on exhaustion, missing the `log_anomaly` emit that every sister lock had. Routing through `_with_lockdir` adds the anomaly emit for free via the tag argument.
+
+- **Naturally generalizes the parent-mkdir behavior**: `with_resume_lock`'s `mkdir -p $(dirname lockdir)` step is now part of the helper, so cross-session lock paths under `~/.claude/quality-pack/` work even on first install for any future lock site that lands under a not-yet-created directory.
+
+- **Net delta: -143 LOC** in `common.sh` + `lib/state-io.sh` combined (219 deletions in common.sh, 75-line helper net-add in state-io.sh). Adding a new lock site is now a one-line wrapper — copy-paste body shape goes away as a future drift risk.
+
+- **Test coverage:** test-state-io grows 56→61 assertions with Tests 16 + 17 that lock in the F-5 fix — T16 pre-creates `_GATE_SKIPS_LOCK` as a held mkdir-mutex, calls `with_skips_lock true` under cap=2 + stale-window=600s, asserts non-zero return AND that `hooks.log` carries an `[anomaly] with_skips_lock` row with the canonical "lock not acquired after N attempts" detail; T17 verifies `_with_lockdir` routes any caller-provided tag verbatim into the anomaly emit (regression-lock against accidental tag stripping in a future refactor). Public lock surface unchanged so existing concurrency suites pass without edits: test-concurrency 5/5, test-cross-session-lock 14/14, test-claim-resume-request 67/67, test-resume-watchdog 57/57, test-stop-failure-handler 70/70, test-prompt-persist 19/19, test-omc-config 122/122. **415 assertions verified** across the lock-touching suites. Shellcheck clean.
+
 ### v1.30.0 Wave 1 — Privacy horizon close-out
 
 Closes the v1.29.0 deferral list's first item: a granular `prompt_persist` flag that lets shared-machine and regulated-codebase users disable in-session prompt-text persistence WITHOUT giving up the entire PreTool guard. The v1.29.0 privacy-horizon docs explained the gap; this wave ships the flag.

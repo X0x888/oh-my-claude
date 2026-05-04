@@ -297,5 +297,92 @@ assert_eq "T15: explicit value preserved"      "set" "${got[2]}"
 # under read_state_keys (this is the documented behavior).
 assert_eq "T15: indistinguishable (got[0] == got[1])" "${got[0]}" "${got[1]}"
 
+# ----------------------------------------------------------------------
+printf 'Test 16: with_skips_lock emits log_anomaly on exhaustion (v1.30.0 Wave 2 / sre-lens F-5)\n'
+# Locks in the v1.29.0 sre-lens F-5 fix: with_skips_lock previously
+# returned 1 silently on exhaustion, missing the log_anomaly emit that
+# every sister lock had. v1.30.0 routes all 7 lock helpers through
+# _with_lockdir, which threads the caller's name through as the
+# anomaly tag. Without this regression-lock, a future refactor that
+# bypasses _with_lockdir's anomaly emit would silently regress F-5.
+_HOOK_LOG_BACKUP="${HOOK_LOG}"
+_TEST_HOOK_LOG="$(mktemp)"
+HOOK_LOG="${_TEST_HOOK_LOG}"
+_GATE_SKIPS_LOCK_BACKUP="${_GATE_SKIPS_LOCK}"
+_TEST_LOCK_DIR="${TEST_STATE_ROOT}/.skips-lock-test"
+_GATE_SKIPS_LOCK="${_TEST_LOCK_DIR}"
+mkdir -p "${_TEST_LOCK_DIR}"
+
+# Stale window large enough that recovery cannot reclaim within the
+# test; attempt cap small so exhaustion is fast.
+_lock_stale_backup="${OMC_STATE_LOCK_STALE_SECS}"
+_lock_attempts_backup="${OMC_STATE_LOCK_MAX_ATTEMPTS}"
+OMC_STATE_LOCK_STALE_SECS=600
+OMC_STATE_LOCK_MAX_ATTEMPTS=2
+
+# Capture rc via `|| _rc=$?` because `set -e` is in effect at the top
+# of this file; a bare `with_skips_lock true` followed by `_rc=$?`
+# would terminate the test on the first non-zero return.
+_rc=0
+with_skips_lock true || _rc=$?
+
+OMC_STATE_LOCK_STALE_SECS="${_lock_stale_backup}"
+OMC_STATE_LOCK_MAX_ATTEMPTS="${_lock_attempts_backup}"
+_GATE_SKIPS_LOCK="${_GATE_SKIPS_LOCK_BACKUP}"
+rmdir "${_TEST_LOCK_DIR}" 2>/dev/null || rm -rf "${_TEST_LOCK_DIR}"
+
+assert_eq "T16: with_skips_lock returns nonzero on exhaustion" "1" "${_rc}"
+
+# Hook log row format: `{ts}  [anomaly]  {tag}  {detail}`. Grep for the
+# bare tag (with_skips_lock) — the diagnostic surface other locks share.
+if grep -q "\\[anomaly\\][[:space:]]*with_skips_lock[[:space:]]" "${_TEST_HOOK_LOG}" 2>/dev/null; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T16: hooks.log missing anomaly row tagged with_skips_lock; got:\n%s\n' "$(cat "${_TEST_HOOK_LOG}")" >&2
+  fail=$((fail + 1))
+fi
+
+if grep -q "lock not acquired after" "${_TEST_HOOK_LOG}" 2>/dev/null; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T16: anomaly detail missing lock-not-acquired phrase\n' >&2
+  fail=$((fail + 1))
+fi
+
+HOOK_LOG="${_HOOK_LOG_BACKUP}"
+rm -f "${_TEST_HOOK_LOG}"
+
+# ----------------------------------------------------------------------
+printf 'Test 17: _with_lockdir routes the caller tag through to log_anomaly (v1.30.0 Wave 2)\n'
+# Sibling regression: an arbitrary caller-provided tag must appear
+# verbatim in the anomaly row. Locks in the contract that the
+# unification preserves per-helper attribution in /ulw-report.
+_HOOK_LOG_BACKUP="${HOOK_LOG}"
+_TEST_HOOK_LOG="$(mktemp)"
+HOOK_LOG="${_TEST_HOOK_LOG}"
+_TEST_LOCK_DIR="${TEST_STATE_ROOT}/.tag-routing-test"
+mkdir -p "${_TEST_LOCK_DIR}"
+
+OMC_STATE_LOCK_STALE_SECS=600
+OMC_STATE_LOCK_MAX_ATTEMPTS=1
+
+_rc=0
+_with_lockdir "${_TEST_LOCK_DIR}" "synthetic_tag_for_test" true || _rc=$?
+
+OMC_STATE_LOCK_STALE_SECS="${_lock_stale_backup}"
+OMC_STATE_LOCK_MAX_ATTEMPTS="${_lock_attempts_backup}"
+rmdir "${_TEST_LOCK_DIR}" 2>/dev/null || rm -rf "${_TEST_LOCK_DIR}"
+
+assert_eq "T17: _with_lockdir returns nonzero on exhaustion" "1" "${_rc}"
+if grep -q "synthetic_tag_for_test" "${_TEST_HOOK_LOG}" 2>/dev/null; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T17: hooks.log missing synthetic_tag_for_test in anomaly row; got:\n%s\n' "$(cat "${_TEST_HOOK_LOG}")" >&2
+  fail=$((fail + 1))
+fi
+
+HOOK_LOG="${_HOOK_LOG_BACKUP}"
+rm -f "${_TEST_HOOK_LOG}"
+
 printf '\n=== State-IO Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]

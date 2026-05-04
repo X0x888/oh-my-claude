@@ -276,35 +276,55 @@ _lock_mtime() {
   printf '%s' "${ts:-0}"
 }
 
-with_state_lock() {
-  local lockdir
-  lockdir="$(session_file ".state.lock")"
+# _with_lockdir <lockdir> <tag> <cmd> [args...]
+#
+# Run `<cmd> args...` while holding an mkdir-mutex on <lockdir>.
+# Centralizes the locking primitive used by every with_*_lock helper in
+# the harness: with_state_lock, with_metrics_lock, with_defect_lock,
+# with_resume_lock, with_skips_lock, with_cross_session_log_lock,
+# with_scope_lock. Public helpers stay one-line wrappers preserving
+# their names + signatures so call sites and tests are unchanged.
+#
+# Behavior:
+#   - mkdir-as-mutex with PID-based stale recovery (v1.29.0 metis F-6
+#     pattern, generalized in v1.30.0). Records holder PID into
+#     <lockdir>/holder.pid; on stale-mtime, force-releases ONLY when
+#     the recorded PID is dead (or pidfile is absent — legacy / synthetic
+#     stale locks). Defeats the false-recovery race where a slow-but-live
+#     writer (jq parsing 100KB+ state under heavy IO) would otherwise
+#     lose its lock to a peer that timed out on mtime alone.
+#   - Caps acquisition at OMC_STATE_LOCK_MAX_ATTEMPTS polls; stale window
+#     is OMC_STATE_LOCK_STALE_SECS (default 5s).
+#   - On exhaustion: log_anomaly "${tag}" "lock not acquired after N
+#     attempts" then return 1. The tag is the caller-provided name
+#     (with_metrics_lock, etc.) so log audit retains per-helper attribution.
+#     Naturally fixes the v1.29.0 sre-lens F-5 finding (with_skips_lock
+#     used to silent-fail on exhaustion; routing through this helper
+#     adds the anomaly emit for free).
+#   - Cleans up pidfile + lockdir even when the wrapped command fails.
+#   - Creates lockdir's parent best-effort (idempotent) so cross-session
+#     lock paths under ~/.claude/quality-pack/ work even on first install.
+#
+# Returns the wrapped command's exit status, or 1 on lock-acquisition
+# failure.
+_with_lockdir() {
+  local lockdir="$1"
+  local tag="$2"
+  shift 2
   local pidfile="${lockdir}/holder.pid"
+  local lock_parent
+  lock_parent="$(dirname "${lockdir}")"
+  mkdir -p "${lock_parent}" 2>/dev/null || true
   local attempts=0
-
   while true; do
     if mkdir "${lockdir}" 2>/dev/null; then
-      # Record holder PID so stale recovery can verify the holder is
-      # actually dead before force-releasing. Soft-failure: a missing
-      # pidfile falls through to mtime-only recovery (legacy behavior),
-      # so the new path is purely additive.
       printf '%s\n' "$$" > "${pidfile}" 2>/dev/null || true
       break
     fi
     attempts=$((attempts + 1))
-
-    # Stale-lock recovery (v1.29.0 metis F-6 fix): if the dir has been
-    # held too long AND the recorded holder PID is dead, force-release.
-    # PID-check defeats the false-recovery race where a slow-but-live
-    # writer (jq parsing 100KB+ state under heavy IO) would otherwise
-    # lose its lock to a peer that timed out on mtime alone. Falls
-    # through to mtime-only when the pidfile is missing (legacy locks
-    # from before this change OR a Test-9-style synthetic stale lock
-    # — both treat absence-of-pidfile as "force-release allowed").
     if [[ -d "${lockdir}" ]]; then
-      local now
+      local now held_since
       now="$(date +%s)"
-      local held_since
       held_since="$(_lock_mtime "${lockdir}")"
       if [[ "${held_since}" -gt 0 ]] \
           && [[ $(( now - held_since )) -gt "${OMC_STATE_LOCK_STALE_SECS}" ]]; then
@@ -319,25 +339,23 @@ with_state_lock() {
         fi
       fi
     fi
-
     if [[ "${attempts}" -ge "${OMC_STATE_LOCK_MAX_ATTEMPTS}" ]]; then
-      # Mirror the anomaly-on-exhaustion shape used by every other lock
-      # primitive in the harness (with_metrics_lock, with_defect_lock,
-      # with_resume_lock, with_cross_session_log_lock, with_scope_lock).
-      # Without this, lost dimension/review/handoff writes from
-      # SubagentStop bursts disappear silently — no /ulw-report signal,
-      # no hooks.log entry, just gates that quietly mis-fire next turn.
-      log_anomaly "with_state_lock" "lock not acquired after ${OMC_STATE_LOCK_MAX_ATTEMPTS} attempts"
+      log_anomaly "${tag}" "lock not acquired after ${OMC_STATE_LOCK_MAX_ATTEMPTS} attempts"
       return 1
     fi
     sleep 0.05 2>/dev/null || sleep 1
   done
-
   local rc=0
   "$@" || rc=$?
   rm -f "${pidfile}" 2>/dev/null || true
   rmdir "${lockdir}" 2>/dev/null || true
   return "${rc}"
+}
+
+with_state_lock() {
+  local lockdir
+  lockdir="$(session_file ".state.lock")"
+  _with_lockdir "${lockdir}" "with_state_lock" "$@"
 }
 
 # Convenience wrapper: atomic write_state_batch inside with_state_lock.
