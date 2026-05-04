@@ -178,9 +178,22 @@ append_limited_state() {
   # without a session), fall through to the unlocked path so callers
   # outside an active session continue to work.
   if [[ -n "${SESSION_ID:-}" ]]; then
-    with_state_lock _append_limited_state_locked "${target}" "${value}" "${max_lines}" \
-      || _append_limited_state_locked "${target}" "${value}" "${max_lines}"
+    # v1.31.2 quality-reviewer F-3: do NOT fall through to the unlocked
+    # path on LOCK-ACQUISITION FAILURE. Pre-Wave-1.31.2 behavior used
+    # `with_state_lock ... || _append_limited_state_locked ...` which
+    # silently retried unlocked when the lock cap fired (default 60
+    # attempts ~ 3s) — re-introducing the row-tearing race the lock
+    # was designed to prevent under heavy council Phase 8 fan-out.
+    # `with_state_lock` already calls `log_anomaly` on cap exhaustion,
+    # so the loss is auditable. Returning early is the correct
+    # degradation: better to drop ONE row (recorded in the anomaly log)
+    # than to tear ROWS in the JSONL append cycle.
+    with_state_lock _append_limited_state_locked "${target}" "${value}" "${max_lines}"
   else
+    # SESSION_ID unset (test rigs, /omc-config without a session,
+    # synthetic _watchdog daemon writes) — no lock dir to compute
+    # against. Fall through to the unlocked path; concurrent writers
+    # are not a credible threat shape outside an active session.
     _append_limited_state_locked "${target}" "${value}" "${max_lines}"
   fi
 }
@@ -390,9 +403,10 @@ _with_lockdir() {
     fi
     # v1.31.0 Wave 2 (sre-lens F-5): emit a one-shot soft anomaly at the
     # long-wait threshold so /ulw-report can surface contention BEFORE
-    # the hard cap fires. The _omc_long_wait_emitted local var keeps
-    # this to one log row per acquisition (otherwise the polling loop
-    # would emit ~30 rows during a single contended acquire).
+    # the hard cap fires. The `-eq` exact-equality predicate against
+    # the monotonically-incrementing `attempts` counter inherently fires
+    # ONCE per acquisition (no separate guard variable needed; the
+    # increment-and-compare semantics keep the log row count bounded).
     if [[ "${attempts}" -eq "${OMC_STATE_LOCK_LONG_WAIT_ATTEMPTS}" ]]; then
       log_anomaly "${tag}" "lock long-wait at ${attempts} attempts"
     fi
@@ -406,9 +420,29 @@ _with_lockdir() {
 }
 
 with_state_lock() {
+  # v1.31.2 quality-reviewer F-3 followup: re-entrant detection. Some
+  # callers (e.g. record-pending-agent.sh) wrap a body that itself
+  # calls append_limited_state — which since v1.31.2 calls
+  # with_state_lock internally. Without re-entrancy detection, the
+  # inner mkdir collides with the outer's already-held lockdir and
+  # the inner body silently drops. The marker is exported scoped to
+  # the outer with_state_lock invocation so nested callers see it
+  # and short-circuit to the body without re-acquiring.
+  if [[ -n "${_OMC_STATE_LOCK_HELD:-}" ]]; then
+    "$@"
+    return $?
+  fi
   local lockdir
   lockdir="$(session_file ".state.lock")"
-  _with_lockdir "${lockdir}" "with_state_lock" "$@"
+  # Set the marker for the duration of the locked body so nested
+  # callers detect re-entrancy and skip re-acquisition. Unset on
+  # return regardless of body success/failure.
+  local _outer_held="${_OMC_STATE_LOCK_HELD:-}"
+  _OMC_STATE_LOCK_HELD=1
+  local _rc=0
+  _with_lockdir "${lockdir}" "with_state_lock" "$@" || _rc=$?
+  _OMC_STATE_LOCK_HELD="${_outer_held}"
+  return "${_rc}"
 }
 
 # Convenience wrapper: atomic write_state_batch inside with_state_lock.

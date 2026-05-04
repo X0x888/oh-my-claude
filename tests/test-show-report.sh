@@ -428,7 +428,7 @@ SECRET_REASON="connection string postgres://admin:hunter2@db:5432/prod -- REDACT
 SECRET_FIX="patched the SQL injection at api.py:42 -- REDACT-CANARY-FIX"
 
 cat > "${QP}/session_summary.jsonl" <<EOF
-{"session_id":"test-share","start_ts":${NOW},"end_ts":${NOW},"domain":"coding","intent":"execution","edit_count":3,"last_user_prompt":"${SECRET_PROMPT}","verified":true,"reviewed":true,"guard_blocks":2,"dim_blocks":0,"exhausted":false,"dispatches":4,"outcome":"shipped","skip_count":0,"serendipity_count":1}
+{"session_id":"test-share","start_ts":${NOW},"end_ts":${NOW},"domain":"coding","intent":"execution","edit_count":3,"last_user_prompt":"${SECRET_PROMPT}","verified":true,"reviewed":true,"guard_blocks":2,"dim_blocks":3,"exhausted":false,"dispatches":4,"outcome":"shipped","skip_count":0,"serendipity_count":1}
 EOF
 
 cat > "${QP}/gate_events.jsonl" <<EOF
@@ -450,6 +450,15 @@ esac
 case "${share_out}" in
   *"Sessions:"*) pass=$((pass + 1)) ;;
   *) printf '  FAIL: T24: --share missing Sessions count\n' >&2; fail=$((fail + 1)) ;;
+esac
+# v1.31.2 quality-reviewer F-1: --share Quality-gate-blocks count must
+# include BOTH guard_blocks AND dim_blocks. Fixture has guard=2 + dim=3
+# = 5. Pre-fix the share output reported 2; the fix sums both.
+case "${share_out}" in
+  *"Quality-gate blocks (caught issues):** 5"*) pass=$((pass + 1)) ;;
+  *)
+    printf '  FAIL: T24 (F-1 fix): --share blocks should sum guard+dim (=5), got:\n%s\n' "${share_out}" >&2
+    fail=$((fail + 1)) ;;
 esac
 
 # CRITICAL: assert NONE of the secrets leak into the share output.

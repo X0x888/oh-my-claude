@@ -326,6 +326,14 @@
 # Defends against PATH-hijack: an attacker who drops ~/.local/bin/claude
 # ahead of the real binary in the daemon's PATH cannot execute their
 # shim because the watchdog uses the absolute install-time path.
+# Threat-model boundary: the pin is the actual defense. The
+# `${pinned} --version` runtime validation only catches benign breakage
+# (Homebrew unlink, broken symlink, npm prefix change leaving a stale
+# link). It does NOT defend against an attacker who replaces the
+# binary at the pinned path AFTER install — such an attacker can also
+# poison the --version output, since both invocations execute the
+# same untrusted binary. Pin defends the launch path; install-time
+# trust defends the pin itself.
 # Auto-set by `bash ~/.claude/install-resume-watchdog.sh` (or via
 # /omc-config). When unset (default empty), the watchdog falls back to
 # live `command -v claude` at launch time — same as pre-v1.31.0 behavior.

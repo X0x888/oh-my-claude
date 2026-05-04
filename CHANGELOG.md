@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.31.3] - 2026-05-04
+
+Final-pass quality-reviewer fixes after v1.31.2. Five findings closed (3 medium correctness + 2 low docs/threat-model). One regression introduced by F-3 fix discovered + closed (re-entrant `with_state_lock` detection).
+
+- **`/ulw-report --share` counts BOTH `guard_blocks` and `dim_blocks`** (quality-reviewer F-1, `bundle/dot-claude/skills/autowork/scripts/show-report.sh:107-115`). Pre-1.31.3 the share digest summed only `.guard_blocks`, silently dropping dimension-tick blocks (the SubagentStop reviewer chain — quality-reviewer / excellence-reviewer / metis / etc.). Verbose mode at line 189 sums both. The publicly-shareable headline number now agrees: `(.guard_blocks // 0) + (.dim_blocks // 0)`. Test-show-report T24 fixture extended (`dim_blocks: 0 → 3`); new assertion verifies the summed total of 5.
+
+- **`/ulw-report --share last` no longer lies about the window** (quality-reviewer F-2, same file:99-105). Pre-1.31.3 `MODE=last` set `cutoff_ts=0`, which the share queries treated as "all rows after epoch 0" = ENTIRE history under a `most recent session` header. Wave 1.31.3 short-circuits `MODE=last` by tail'ing the most recent session_summary row into a temp file, recomputing `cutoff_ts` from that row's `start_ts` so gate-event distribution scopes correctly too. Temp file cleaned up before `exit 0`.
+
+- **`append_limited_state` no longer re-introduces row-tearing on lock-cap exhaustion** (quality-reviewer F-3, `bundle/dot-claude/skills/autowork/scripts/lib/state-io.sh:181`). Pre-1.31.3 used `with_state_lock ... || _append_limited_state_locked ...` which fell through to the unlocked path on EITHER `SESSION_ID` unset (intended) OR lock-cap exhaustion (which bug-introduced unlocked writes under heavy fan-out, defeating the purpose of the v1.31.2 lock-coverage fix). 1.31.3 splits the two cases: `SESSION_ID` unset → unlocked path (unchanged); lock failure → drop and let `with_state_lock`'s `log_anomaly` row provide the audit trail.
+
+- **Re-entrant `with_state_lock` detection** (quality-reviewer F-3 followup, same file:422-441). The F-3 fix introduced a regression: `record-pending-agent.sh` wraps `_append_pending` (which calls `append_limited_state`) in an outer `with_state_lock`. With v1.31.2's append-under-lock change, the inner `with_state_lock` collided with the held outer lockdir and the body silently dropped — `tests/test-e2e-hook-sequence.sh` gap3 caught this (pending_agents.jsonl had 0 entries instead of 2). 1.31.3 adds re-entrant detection via `_OMC_STATE_LOCK_HELD` env marker: nested calls skip the acquire and run the body directly. `_outer_held` save+restore so chained nested calls don't corrupt the marker. New T18 in test-state-io.sh (61→64) covers the nested case.
+
+- **Comment cleanup at `_with_lockdir` long-wait emit** (quality-reviewer F-4, same file:404-411). Removed reference to a `_omc_long_wait_emitted` local variable that does not exist; clarified that the one-shot behavior comes from `-eq` exact-equality on the monotonically-incrementing `attempts` counter. Pure documentation fix; no behavior change.
+
+- **`claude_bin` threat-model boundary documented** (quality-reviewer F-5, `bundle/dot-claude/oh-my-claude.conf.example`). Pre-1.31.3 the conf example said the pin "defends against PATH-hijack" without naming what `${pinned} --version` validation actually catches. The runtime validation only catches benign breakage (Homebrew unlink, broken symlink, npm prefix change leaving a stale link); it does NOT defend against an attacker who replaces the binary AT the pinned path post-install (such an attacker poisons `--version` output too). Pin-at-install-time is the actual defense.
+
+CI: 32/32 bash tests + 128/128 Python statusline tests on Ubuntu post-fix. Test count delta: state-io 61→64 (T18 nested), show-report 70→71 (T24 dim_blocks fixture extended).
+
 ## [1.31.2] - 2026-05-04
 
 Tag-hygiene hotfix. v1.31.1 was tagged before the second CI miss (install.sh "What's new" cap budget) was discovered. Bumping to v1.31.2 so the latest released tag points at a green commit instead of force-pushing v1.31.1.

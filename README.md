@@ -4,7 +4,7 @@
 
 *Quality gates for Claude Code that actually block — until tests pass, review is done, and the work is verified.*
 
-[![Version](https://img.shields.io/badge/Version-1.31.2-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-1.31.3-blue.svg)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Shell](https://img.shields.io/badge/Shell-bash-green.svg)]()
 [![Dependencies](https://img.shields.io/badge/Dependencies-jq%20%2B%20rsync-brightgreen.svg)]()

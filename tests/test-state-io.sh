@@ -384,5 +384,46 @@ fi
 HOOK_LOG="${_HOOK_LOG_BACKUP}"
 rm -f "${_TEST_HOOK_LOG}"
 
+# v1.31.2 quality-reviewer F-3 followup: re-entrant with_state_lock
+# detection. append_limited_state in v1.31.2 wraps its body in
+# with_state_lock; some callers (record-pending-agent.sh) wrap a
+# function that itself calls append_limited_state inside an outer
+# with_state_lock. Without re-entrancy detection, the inner mkdir
+# collides with the outer's already-held lockdir and the body
+# silently drops.
+
+printf '\nTest 18: with_state_lock re-entrant detection (skips inner acquire when outer is held)\n'
+SESSION_ID="test-reentrant-$$"
+mkdir -p "${STATE_ROOT}/${SESSION_ID}"
+
+_inner_count=0
+_inner_body() { _inner_count=$((_inner_count + 1)); }
+_outer_body() {
+  with_state_lock _inner_body
+  with_state_lock _inner_body
+}
+with_state_lock _outer_body
+
+assert_eq "T18: nested with_state_lock executes inner body twice" "2" "${_inner_count}"
+
+# After the outer body completes, the marker MUST be unset so a
+# subsequent top-level with_state_lock call goes through the
+# acquisition path rather than treating itself as nested.
+if [[ -n "${_OMC_STATE_LOCK_HELD:-}" ]]; then
+  printf '  FAIL: T18: _OMC_STATE_LOCK_HELD leaked after outer body returned\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+
+# A subsequent fresh acquisition must lock normally.
+_post_inner=0
+_post_body() { _post_inner=1; }
+with_state_lock _post_body
+assert_eq "T18: post-nested with_state_lock still acquires + runs body" "1" "${_post_inner}"
+
+rm -rf "${STATE_ROOT:?}/${SESSION_ID:?}" 2>/dev/null || true
+unset SESSION_ID
+
 printf '\n=== State-IO Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]
