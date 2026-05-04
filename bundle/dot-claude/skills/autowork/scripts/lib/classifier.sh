@@ -1147,15 +1147,32 @@ is_paradigm_ambiguous_request() {
   fi
 
   # Positive F: paradigm-shift / adoption decisions (post-1.32.0
-  # excellence-reviewer F-3). Common senior-engineer paradigm-shape
-  # questions: "Should I migrate from Postgres to DynamoDB?",
-  # "consider switching to event sourcing", "thinking about adopting
-  # CQRS for the orders module", "what pattern fits this state
-  # propagation?". The "from X to Y" structure on the migrate/switch/
-  # move verbs is what disambiguates paradigm-shift questions from
-  # timing questions ("should I migrate the database now" — same verb,
-  # missing from/to, no fire).
-  if grep -Eiq '\b(migrating|switching|moving|migrate|switch|move)[[:space:]]+(from|to)\b' <<<"${text}"; then
+  # excellence-reviewer F-3, tightened post-third-pass-reviewer F-1).
+  # Common senior-engineer paradigm-shape questions: "Should I migrate
+  # from Postgres to DynamoDB?", "consider switching to event sourcing",
+  # "thinking about adopting CQRS for the orders module", "what pattern
+  # fits this state propagation?".
+  #
+  # The earlier `\b<verb>[[:space:]]+(from|to)\b` shape over-matched
+  # operational prompts ("switch to dark mode", "move to staging
+  # environment", "switch to feature branch", "the user wants to switch
+  # to a dark theme") — third-pass-reviewer F-1. The split below
+  # disambiguates:
+  #   F-a) the migrate/switch/move verb appears with BOTH "from" and
+  #        "to" in the same clause — the canonical paradigm-shift shape
+  #        ("migrate from Postgres to DynamoDB").
+  #   F-b) the migrate/switch/move verb is followed by "to" + a
+  #        paradigm-noun ("switch to event sourcing", "migrate to CQRS",
+  #        "move to event-driven architecture"). The noun list is the
+  #        union of Signal D's abstract nouns plus the specific paradigm
+  #        names users actually invoke (microservices, monolith, CQRS,
+  #        saga, GraphQL, REST, gRPC, Kafka, sourcing for "event
+  #        sourcing").
+  # Bare "<verb> to <concrete>" without paradigm noun no longer fires.
+  if grep -Eiq '\b(migrating|switching|moving|migrate|switch|move)\b[^.!?]{1,80}\bfrom\b[^.!?]{1,80}\bto\b' <<<"${text}"; then
+    return 0
+  fi
+  if grep -Eiq '\b(migrating|switching|moving|migrate|switch|move)[[:space:]]+to[[:space:]]+([a-z][a-z0-9-]*[[:space:]]+){0,3}(architecture|pattern|paradigm|approach|strategy|design|model|abstraction|protocol|framework|microservices?|monolith|cqrs|saga|graphql|rest|grpc|kafka|sourcing|state[[:space:]]+machine|data[[:space:]]+flow|control[[:space:]]+flow|caching[[:space:]]+layer|event-driven|event[[:space:]]+sourcing)\b' <<<"${text}"; then
     return 0
   fi
   if grep -Eiq '\b(consider|considering)[[:space:]]+(switching|adopting|moving|migrating|using)\b' <<<"${text}"; then

@@ -587,6 +587,34 @@ assert_false "Signal F: what pattern works (not fits)" \
                                            'is_paradigm_ambiguous_request "what pattern works for everyone"'
 assert_false "Signal F: bare move without from/to" \
                                            'is_paradigm_ambiguous_request "let me move the file to the new directory"'
+# Third-pass-reviewer F-1: Signal F's <verb> to <concrete-noun> shape
+# (without "from") was over-matching operational prompts. The fix splits
+# F into (a) verb + from + to (paradigm-shift shape) and (b) verb + to
+# + paradigm-noun (migration-target shape). These regression tests lock
+# both directions so future loosening can't reintroduce the noise.
+assert_false "F-1: switch to feature branch (git op)" \
+                                           'is_paradigm_ambiguous_request "switch to feature branch and run tests"'
+assert_false "F-1: move to staging environment (deploy)" \
+                                           'is_paradigm_ambiguous_request "move to staging environment"'
+assert_false "F-1: switch to dark mode (UI feature)" \
+                                           'is_paradigm_ambiguous_request "the user wants to switch to a dark theme"'
+assert_false "F-1: let us move to next agenda (meta)" \
+                                           'is_paradigm_ambiguous_request "let us move to the next agenda item"'
+assert_false "F-1: moving to new endpoint (refactor scope)" \
+                                           'is_paradigm_ambiguous_request "moving to the new endpoint"'
+
+# Conversely, the F-b paradigm-noun shape MUST still fire on real
+# paradigm-target migrations. Without this lock, an over-zealous
+# tightening of the regex could silently regress the user's stated
+# success criterion ("real person with lateral thinking").
+assert_true "F-b: switch to event sourcing"  \
+                                           'is_paradigm_ambiguous_request "switch to event sourcing"'
+assert_true "F-b: migrate to CQRS"         'is_paradigm_ambiguous_request "migrate to CQRS"'
+assert_true "F-b: move to event-driven architecture" \
+                                           'is_paradigm_ambiguous_request "move to event-driven architecture for the order pipeline"'
+assert_true "F-a: migrate from X to Y"     'is_paradigm_ambiguous_request "migrate from Postgres to DynamoDB"'
+assert_true "F-a: move from MVC to event-driven" \
+                                           'is_paradigm_ambiguous_request "move from MVC to event-driven architecture"'
 
 # ----------------------------------------------------------------------
 # v1.32.0 — divergence_directive conf parser wiring
