@@ -153,28 +153,49 @@ When you add, remove, or rename agents, skills, scripts, or directories, update 
 
 Keeping counts and directory listings accurate prevents drift between code and docs.
 
-### Reviewer-agent additions (FINDINGS_JSON contract)
+### Reviewer-agent additions
 
-When adding a new finding-emitting reviewer agent (one whose role is to surface defects/gaps with severity), wire it into the v1.28.0 `FINDINGS_JSON` contract:
+Adding a new reviewer-style agent has two layers. Do both in the same commit — missing the test-plumbing layer produces a broken install that `verify.sh` cannot catch.
+
+**Procedural wiring (all reviewer-style agents):**
+
+1. Wire the agent in `config/settings.patch.json` under `SubagentStop` with a reviewer-type argument: `$HOME/.claude/skills/autowork/scripts/record-reviewer.sh <type>` where `<type>` is `standard`, `excellence`, `prose`, `stress_test`, `traceability`, or `design_quality`.
+2. Add the `VERDICT:` contract line to its output-format section in `bundle/dot-claude/agents/<name>.md` (see "Reviewer VERDICT contract" in `AGENTS.md`).
+3. Update the dimension mapping table in `AGENTS.md` "Dimension mapping".
+4. Add a matcher-name assertion in `tests/test-settings-merge.sh`.
+5. Add a simulator function and at least one sequence test in `tests/test-e2e-hook-sequence.sh`.
+6. Update the `SubagentStop` count assertions in `tests/test-settings-merge.sh`.
+
+**FINDINGS_JSON contract (finding-emitting reviewers only — those that surface defects/gaps with severity):**
 
 1. Add the contract instruction to the agent's `.md` file (model emits a single-line `FINDINGS_JSON: [...]` block immediately before the `VERDICT:` line).
 2. Add the agent to the contract-presence regression net in `tests/test-findings-json.sh`.
 3. If the agent's findings should feed the discovered-scope gate, add it to `discovered_scope_capture_targets` in `bundle/dot-claude/skills/autowork/scripts/common.sh`.
 4. Document the agent in AGENTS.md under "Structured FINDINGS_JSON contract (v1.28.0)".
 
-`editor-critic` is intentionally excluded — prose-quality observations are not severity-anchored.
+`editor-critic` is intentionally excluded from FINDINGS_JSON — prose-quality observations are not severity-anchored.
 
 ## Release Process
 
 When bumping the version (changing `VERSION`), follow these steps in order. Replace `X.Y.Z` with the actual version number in all commands.
 
-1. Update `VERSION` with the new version number (e.g. `1.4.1`).
-2. Update the README.md badge: `[![Version](https://img.shields.io/badge/Version-X.Y.Z-blue.svg)]`.
-3. Add a CHANGELOG.md entry under `## [X.Y.Z] - YYYY-MM-DD` with Added/Fixed/Changed sections.
-4. Commit with a descriptive message summarizing the release.
-5. **Tag the release commit**: `git tag vX.Y.Z` — this is mandatory, not optional.
-6. Push commits and tags: `git push && git push --tags`.
-7. Create a GitHub release from the tag:
+### Pre-flight
+
+1. **CHANGELOG audit.** Run `git log --oneline vPREV..HEAD` and confirm every commit has a matching `[Unreleased]` bullet in `CHANGELOG.md`. Silent drop (a large commit's changes missing from the changelog) is the common failure mode. Also skim `docs/architecture.md` "State keys" table for new keys introduced in the window.
+2. **CI parity check.** Run locally exactly what `.github/workflows/validate.yml` will run — shellcheck warnings are CI-fatal, so any local warning is a CI red. Do not proceed if any of these exit non-zero or emit any warning:
+   - `find bundle/ -name '*.sh' -print0 | xargs -0 shellcheck -x --severity=warning`
+   - `find . -name '*.json' -not -path './.git/*' -print0 | xargs -0 -n1 python3 -m json.tool --no-ensure-ascii > /dev/null`
+   - Every test the CI workflow runs. Extract the current list live so this checklist cannot drift: `grep -E '^\s+run:\s+bash tests/test-' .github/workflows/validate.yml | awk '{print $NF}'`. Plus `python3 -m unittest tests.test_statusline -v`.
+
+### Bump and tag
+
+3. Update `VERSION` with the new version number (e.g. `1.4.1`).
+4. Update the README.md badge: `[![Version](https://img.shields.io/badge/Version-X.Y.Z-blue.svg)]`.
+5. Promote the `[Unreleased]` heading in `CHANGELOG.md` to `## [X.Y.Z] - YYYY-MM-DD` (keep `[Unreleased]` above it as an empty placeholder for the next cycle if desired).
+6. Commit with a descriptive message summarizing the release.
+7. **Tag the release commit**: `git tag vX.Y.Z` — this is mandatory, not optional.
+8. Push commits and tags: `git push && git push --tags`.
+9. Create a GitHub release from the tag:
    ```bash
    VER=$(cat VERSION)
    awk "/^## \\[$VER\\]/{found=1;next} /^## \\[/{if(found)exit} found" CHANGELOG.md \
@@ -182,7 +203,16 @@ When bumping the version (changing `VERSION`), follow these steps in order. Repl
    ```
    If `gh` is unavailable, create the release manually via GitHub's web UI.
 
-A version bump without a corresponding git tag breaks the release history. Every `VERSION` change must have a matching `vX.Y.Z` tag on the commit that introduced it.
+### Post-flight
+
+10. **CI verification.** Watch the just-tagged commit's CI run, pinned to the tag SHA so a teammate's concurrent push cannot resolve the wrong run:
+    ```bash
+    gh run watch --exit-status \
+      "$(gh run list --commit "$(git rev-parse vX.Y.Z)" --limit 1 --json databaseId -q '.[0].databaseId')"
+    ```
+    The command blocks until completion and exits non-zero on `failure`, `cancelled`, `timed_out`, or `action_required` — only `success` counts as green. If it does not return `success`, the release is **incomplete**: fix the issue and either `gh run rerun <id>` or push a hotfix commit. Do not declare the release shipped while CI on the tagged commit is anything other than green.
+
+A version bump without a corresponding git tag breaks the release history. Every `VERSION` change must have a matching `vX.Y.Z` tag on the commit that introduced it. Never skip tagging.
 
 ## Code of Conduct
 
