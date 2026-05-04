@@ -1363,6 +1363,16 @@ assert_exit "reject newlines" 1 validate_session_id "foo
 bar"
 assert_exit "reject backtick" 1 validate_session_id 'foo`id`'
 assert_exit "reject dollar" 1 validate_session_id 'foo$HOME'
+# v1.31.0 Wave 3 (security-lens): reject dots-only IDs that would
+# resolve session_file() paths back to STATE_ROOT or its ancestors.
+assert_exit "reject single dot" 1 validate_session_id "."
+assert_exit "reject double dot" 1 validate_session_id ".."
+assert_exit "reject triple dot" 1 validate_session_id "..."
+assert_exit "reject 5 dots" 1 validate_session_id "....."
+# Mixed dots-and-other content stays accepted (dots are legitimate
+# in semver-like IDs; only dots-only is rejected).
+assert_exit "accept '1.0-rc.1' (dots with non-dot chars)" 0 validate_session_id "1.0-rc.1"
+assert_exit "accept 'a.b'" 0 validate_session_id "a.b"
 
 # ===========================================================================
 # _ensure_valid_state (state corruption recovery)

@@ -892,8 +892,14 @@ case "${out_multi}" in
 esac
 
 # Verify the sparkline string contains exactly 3 cells (one per prompt).
+# v1.31.0 Wave 3: pin LC_ALL=en_US.UTF-8 so `wc -m` returns char count
+# uniformly across BSD coreutils (macOS) and GNU coreutils (Linux). On
+# environments where the default locale is C, `wc -m` returns BYTE
+# count and a 3-cell UTF-8 sparkline `▁▂▃` reports as 9, breaking the
+# assertion. The locale pin is also documented as the canonical
+# pattern in lib/timing.sh `timing_display_width`.
 spark_line="$(grep -E '^  prompts: ' <<<"${out_multi}" | head -1)"
-spark_chars="$(printf '%s' "${spark_line}" | sed -E 's/^  prompts: ([▁▂▃▄▅▆▇█]+).*/\1/' | wc -m | tr -d '[:space:]')"
+spark_chars="$(printf '%s' "${spark_line}" | sed -E 's/^  prompts: ([▁▂▃▄▅▆▇█]+).*/\1/' | LC_ALL=en_US.UTF-8 wc -m | tr -d '[:space:]')"
 # wc -m on 3 multi-byte chars + trailing newline = 4. Allow either 3 or 4.
 case "${spark_chars}" in
   3|4) pass=$((pass + 1)) ;;
@@ -944,6 +950,34 @@ case "${out_short}" in
   *"excellence-reviewer"*"…"*) printf '  FAIL: short name wrongly truncated\n%s\n' "${out_short}" >&2; fail=$((fail + 1)) ;;
   *"excellence-reviewer"*) pass=$((pass + 1)) ;;
   *) printf '  FAIL: short name missing entirely\n%s\n' "${out_short}" >&2; fail=$((fail + 1)) ;;
+esac
+
+# Test 40: timing_display_width — column-cell-aware width helper
+# (v1.31.0 Wave 3 visual-craft F-5 / metis Item 6 portability fix).
+printf 'Test 40: timing_display_width returns char count not byte count\n'
+# Pure ASCII: 1 byte per char, width should equal char count.
+case "$(timing_display_width 'hello')" in
+  5) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: ASCII width: expected 5, got %s\n' "$(timing_display_width 'hello')" >&2; fail=$((fail + 1)) ;;
+esac
+# Empty string returns 0.
+case "$(timing_display_width '')" in
+  0) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: empty width: expected 0, got %s\n' "$(timing_display_width '')" >&2; fail=$((fail + 1)) ;;
+esac
+# 3-char UTF-8 sparkline (9 bytes) returns 3 char-cells. This is the
+# canonical T37/byte-vs-char regression net.
+spark="▁▂▃"
+case "$(timing_display_width "${spark}")" in
+  3) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: UTF-8 sparkline width: expected 3, got %s on %d-byte input\n' "$(timing_display_width "${spark}")" "${#spark}" >&2; fail=$((fail + 1)) ;;
+esac
+# Mixed ASCII + multi-byte: 'mcp__测试' is 7 chars (5 ASCII + 2 CJK,
+# each CJK = 3 bytes UTF-8). Byte count would be 11.
+mixed="mcp__测试"
+case "$(timing_display_width "${mixed}")" in
+  7) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: mixed width: expected 7, got %s on %d-byte input\n' "$(timing_display_width "${mixed}")" "${#mixed}" >&2; fail=$((fail + 1)) ;;
 esac
 
 # ----------------------------------------------------------------------

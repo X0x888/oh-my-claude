@@ -42,6 +42,32 @@
 #   - Cross-session aggregate at ~/.claude/quality-pack/timing.jsonl is
 #     swept by OMC_TIME_TRACKING_XS_RETAIN_DAYS (default 30 days).
 
+# Display-cell width helper. Returns the number of CHARACTERS (not
+# bytes) in the input, suitable for terminal-column alignment.
+# Pre-Wave-3 sites used `${#var}` which counts bytes — a 3-cell
+# UTF-8 sparkline `▂█▃` reads as 9 on macOS bash 3.2 and 3 on
+# Linux bash 5+, breaking column alignment in `_timing_render_bucket`
+# (22-char truncation budget) and the per-prompt sparkline assertion.
+#
+# Implementation: `printf '%s' "$1" | LC_ALL=en_US.UTF-8 wc -m`
+# — POSIX-portable on BSD coreutils (macOS) and GNU coreutils (Linux),
+# locale-aware, ~50µs per call. Trim trailing whitespace because BSD
+# wc emits leading whitespace on numeric output (e.g., "       3\n").
+#
+# v1.31.0 Wave 3 (visual-craft F-5 + metis Item 6).
+timing_display_width() {
+  local s="${1:-}"
+  [[ -z "${s}" ]] && { printf 0; return 0; }
+  local n
+  n="$(printf '%s' "${s}" | LC_ALL=en_US.UTF-8 wc -m 2>/dev/null || printf 0)"
+  # Strip ALL whitespace (BSD wc pads with leading spaces; GNU wc emits
+  # plain digits). Falls back to byte count on any wc failure (exotic
+  # systems missing wc -m support).
+  n="${n//[[:space:]]/}"
+  [[ "${n}" =~ ^[0-9]+$ ]] || n="${#s}"
+  printf '%s' "${n}"
+}
+
 # --- Path helpers ---
 
 timing_log_path() {
@@ -763,7 +789,14 @@ _timing_render_bucket() {
       # would otherwise overflow. Truncate with U+2026 so the original
       # name remains identifiable while the columns stay locked.
       local display_name="${name}"
-      if (( ${#name} > 22 )); then
+      # v1.31.0 Wave 3 (visual-craft F-5 + metis Item 6): use display-cell
+      # width, not byte count. ${#name} would count bytes — a multi-byte
+      # name like `mcp__测试tool` would over-truncate (10 chars but 14
+      # bytes). timing_display_width returns the column-cell count via
+      # `wc -m` which is locale-aware and POSIX-portable.
+      local _name_w
+      _name_w="$(timing_display_width "${name}")"
+      if (( _name_w > 22 )); then
         display_name="${name:0:21}…"
       fi
       printf '    %-22s %-14s %s%s\n' \
@@ -817,6 +850,13 @@ _timing_stacked_bar() {
 # levels via U+2581..U+2588 (block elements). Skipped silently when
 # there are fewer than 2 prompts (single-prompt session has nothing
 # to compare). Output is a single line — no leading/trailing spaces.
+#
+# v1.31.0 Wave 3 (visual-craft F-5 + metis Item 6 portability fix):
+# Display-width is measured via timing_display_width — `wc -m` with
+# LC_ALL=en_US.UTF-8 — so a 3-cell `▁▂▃` sparkline reads as 3 chars
+# on bash 5+ Linux + bash 3.2 macOS uniformly. Pre-Wave-3 used
+# `${#var}` byte-count which returned 9 on macOS (3 chars × 3 bytes
+# each in UTF-8) and 3 on Linux, breaking T37's char-cell assertion.
 _timing_sparkline() {
   local agg="${1:-}"
   [[ -z "${agg}" ]] && return 0

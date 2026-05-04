@@ -801,11 +801,30 @@ json_get() {
 # SESSION_ID comes from Claude Code's hook JSON. Validate it as a safe
 # filesystem identifier (alphanumeric, hyphens, underscores, dots, 1-128
 # chars) to prevent path traversal via session_file(). Rejects slashes,
-# null bytes, and the ".." sequence. Claude Code uses UUIDs, but we
-# accept shorter IDs for test compatibility.
+# null bytes, the ".." sequence, AND any session_id consisting solely
+# of dots (`.`, `..`, `...`, etc.) which would resolve session_file()
+# paths back to STATE_ROOT itself or its ancestors — polluting the
+# state-root namespace and silently sharing artifacts across all
+# sessions. Claude Code uses UUIDs, but we accept shorter IDs for test
+# compatibility.
+#
+# v1.31.0 Wave 3 (security-lens new finding): SESSION_ID="." was the
+# concrete edge case — it matched `^[a-zA-Z0-9_.-]{1,128}$` and the
+# `*".."*` deny was vacuous, so `session_file('foo.json')` resolved to
+# `STATE_ROOT/./foo.json` = `STATE_ROOT/foo.json`. The dots-only deny
+# closes that without affecting legitimate IDs that contain dots
+# alongside other chars (e.g. `1.0-rc.1`).
 validate_session_id() {
   local id="$1"
-  [[ "${id}" =~ ^[a-zA-Z0-9_.-]{1,128}$ ]] && [[ "${id}" != *".."* ]]
+  # Reject empty, oversized, or chars outside the allowed set.
+  [[ "${id}" =~ ^[a-zA-Z0-9_.-]{1,128}$ ]] || return 1
+  # Reject ".." anywhere (path-traversal token, even partial sequences
+  # like "a..b" — there's no legitimate need for ".." in an ID).
+  [[ "${id}" != *".."* ]] || return 1
+  # Reject dots-only IDs (`.`, `..`, `...`, ...). A pure dot run resolves
+  # to a parent or sibling directory under most path semantics.
+  [[ ! "${id}" =~ ^\.+$ ]] || return 1
+  return 0
 }
 
 # state-io.sh provides ensure_session_dir, session_file, read_state,

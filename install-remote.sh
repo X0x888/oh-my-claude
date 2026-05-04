@@ -70,6 +70,31 @@ if [[ "${OMC_REPO_URL}" != "${OMC_DEFAULT_REPO_URL}" ]]; then
     "$(yellow 'warning:')" "${OMC_DEFAULT_REPO_URL}"
   printf '             If you did not set this yourself, abort with Ctrl-C now.\n'
 fi
+
+# v1.31.0 Wave 3 (security-lens supply-chain hardening): when OMC_REF
+# is the rolling default ("main"), probe the remote for the latest
+# semver-shaped tag and surface it as a pin recommendation. Rolling
+# main has the standard curl-pipe-bash supply-chain risk: a compromised
+# maintainer account, branch reset, or hostile commit lands on all
+# new installs immediately. Users who explicitly set OMC_REF (to a tag,
+# SHA, or even back to "main") opt-out of this prompt — no extra
+# noise on intentional rolling installs. Best-effort: skips silently
+# when the network is down or git ls-remote fails.
+if [[ "${OMC_REF}" == "main" ]] && [[ -z "${OMC_REF_PIN_HINT_SUPPRESS:-}" ]]; then
+  _latest_tag="$(git ls-remote --tags --refs "${OMC_REPO_URL}" 2>/dev/null \
+    | awk '{print $2}' \
+    | sed -E 's|refs/tags/||' \
+    | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' \
+    | sort -V \
+    | tail -1 \
+    || true)"
+  if [[ -n "${_latest_tag}" ]]; then
+    printf '    %s OMC_REF=main is rolling. To pin to the latest released tag:\n' "$(yellow 'tip:')"
+    printf '             OMC_REF=%s bash install-remote.sh\n' "${_latest_tag}"
+    printf '             (Set OMC_REF_PIN_HINT_SUPPRESS=1 to silence this hint.)\n'
+  fi
+  unset _latest_tag
+fi
 printf '\n'
 
 # Parallel-run guard. A user who double-pastes the curl one-liner (or a
