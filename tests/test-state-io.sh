@@ -226,12 +226,17 @@ esac
 # Portable read-into-array helper for bash 3.2 (mapfile is bash 4+).
 # Producer must write to file ${_tmp_capture}; this then reads it back.
 # This pattern avoids the subshell-loses-assignment trap of `producer | reader`.
+#
+# v1.34.0: switched to RS-delimited (`read -r -d $'\x1e'`) to match the
+# read_state_keys contract change. The previous newline-delimited
+# decode mis-aligned positional indices whenever a stored value
+# contained an embedded newline (the entire reason Bug B existed).
 got=()
 _tmp_capture="$(mktemp)"
 _capture_replay() {
   got=()
   local _line
-  while IFS= read -r _line || [[ -n "${_line}" ]]; do
+  while IFS= read -r -d $'\x1e' _line; do
     got[${#got[@]}]="${_line}"
   done <"${_tmp_capture}"
 }

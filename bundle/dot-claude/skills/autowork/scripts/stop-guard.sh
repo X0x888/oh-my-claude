@@ -128,8 +128,11 @@ fi
 # (b) extending the case statement above. read_state_keys always emits
 # exactly N lines for N args (jq's // "" + corrupt/missing fallbacks),
 # so the case statement always sees a complete frame.
+# v1.34.0: read_state_keys is RS-delimited (byte 0x1e) so multi-line
+# values like `current_objective` no longer overflow into later
+# positional slots. See state-io.sh:read_state_keys for the contract.
 _sg_idx=0
-while IFS= read -r _sg_line || [[ -n "${_sg_line}" ]]; do
+while IFS= read -r -d $'\x1e' _sg_line; do
   case "${_sg_idx}" in
     0) current_objective="${_sg_line}" ;;
     1) task_intent="${_sg_line}" ;;
@@ -383,8 +386,10 @@ fi
 
 # v1.27.0 (F-018): bulk-read 6 always-together state keys in one jq fork.
 # Invariant: argv length === case-branch count (6 keys → 6 branches 0..5).
+# v1.34.0: RS-delimited read protects against multi-line values stored
+# in any of the read clocks (rare today but cheap insurance).
 _sg2_idx=0
-while IFS= read -r _sg2_line || [[ -n "${_sg2_line}" ]]; do
+while IFS= read -r -d $'\x1e' _sg2_line; do
   case "${_sg2_idx}" in
     0) last_review_ts="${_sg2_line}" ;;
     1) last_doc_review_ts="${_sg2_line}" ;;

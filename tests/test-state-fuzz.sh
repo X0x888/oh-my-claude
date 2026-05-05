@@ -46,6 +46,16 @@ assert_true() {
   fi
 }
 
+assert_contains() {
+  local label="$1" needle="$2" haystack="$3"
+  if [[ "${haystack}" == *"${needle}"* ]]; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: %s — needle %q not in output\n' "${label}" "${needle}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
 assert_valid_json() {
   local label="$1" file="$2"
   if jq empty "${file}" 2>/dev/null; then
@@ -295,6 +305,133 @@ out="$(STATE_ROOT="${root}" SESSION_ID="${sid}" bash -c "
   read_state 'k'
 " 2>&1 || true)"
 assert_eq "orphan temp does not block write" "v" "${out}"
+rm -rf "${root}" 2>/dev/null
+
+# ---------------------------------------------------------------------
+# v1.34.0 Bug B: read_state_keys positional alignment under multi-line
+# values. Pre-fix, newline-delimited output meant any value containing
+# `\n` (e.g. multi-line `current_objective`, task-notification body)
+# would overflow into subsequent positional slots and silently
+# populate `recovered_from_corrupt_*` markers with prompt-text
+# fragments — triggering a false STATE RECOVERY directive every turn
+# and leaking prompt content into the cross-session gate-events
+# ledger. Post-fix uses RS-delimited records (byte 0x1e) so values
+# with embedded newlines pass through intact.
+# ---------------------------------------------------------------------
+
+printf '\nClass 12: bulk-read alignment under multi-line values (Bug B regression)\n'
+
+parts="$(mk_session)"
+root="${parts%|*}"
+sid="${parts#*|}"
+
+multi_line_value=$'line one\nline two\nline three\nline four\nline five\nline six\nline seven'
+jq -nc --arg ml "${multi_line_value}" '{
+  "current_objective": $ml,
+  "task_domain": "coding",
+  "last_assistant_message": "asst",
+  "just_compacted": "",
+  "just_compacted_ts": "",
+  "recovered_from_corrupt_ts": "",
+  "recovered_from_corrupt_archive": ""
+}' > "${root}/${sid}/session_state.json"
+
+bulk_out="$(STATE_ROOT="${root}" SESSION_ID="${sid}" bash -c "
+  . '${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh'
+  _idx=0
+  while IFS= read -r -d \$'\\x1e' _v; do
+    case \"\${_idx}\" in
+      0) printf 'k0_lines=%d\n' \"\$(printf '%s\n' \"\${_v}\" | wc -l | tr -d '[:space:]')\" ;;
+      1) printf 'k1=%s\n' \"\${_v}\" ;;
+      2) printf 'k2=%s\n' \"\${_v}\" ;;
+      3) printf 'k3=%s\n' \"\${_v}\" ;;
+      4) printf 'k4=%s\n' \"\${_v}\" ;;
+      5) printf 'k5=%s\n' \"\${_v}\" ;;
+      6) printf 'k6=%s\n' \"\${_v}\" ;;
+    esac
+    _idx=\$((_idx + 1))
+  done < <(read_state_keys current_objective task_domain last_assistant_message just_compacted just_compacted_ts recovered_from_corrupt_ts recovered_from_corrupt_archive)
+  printf 'total_records=%d\n' \"\${_idx}\"
+" 2>&1)"
+
+assert_contains "Bug B: 7 records emitted (not split by newlines)" "total_records=7" "${bulk_out}"
+assert_contains "Bug B: multi-line current_objective preserves all 7 lines" "k0_lines=7" "${bulk_out}"
+assert_contains "Bug B: task_domain at position 1 (no overflow)" "k1=coding" "${bulk_out}"
+assert_contains "Bug B: last_assistant_message at position 2" "k2=asst" "${bulk_out}"
+assert_contains "Bug B: recovery markers at positions 5-6 stay empty" "k5=" "${bulk_out}"
+assert_contains "Bug B: recovery archive marker stays empty" "k6=" "${bulk_out}"
+
+# Ensure the leak vector — prompt-text fragment landing in
+# recovered_from_corrupt_ts — is no longer reachable.
+[[ "${bulk_out}" != *"k5=line"* ]] && pass=$((pass + 1)) || { fail=$((fail + 1)); echo "  FAIL: Bug B: multi-line content must NOT leak into k5" >&2; }
+[[ "${bulk_out}" != *"k6=line"* ]] && pass=$((pass + 1)) || { fail=$((fail + 1)); echo "  FAIL: Bug B: multi-line content must NOT leak into k6" >&2; }
+
+rm -rf "${root}" 2>/dev/null
+
+# Empty-keys positional alignment: every requested key emits a record.
+parts="$(mk_session)"
+root="${parts%|*}"
+sid="${parts#*|}"
+echo '{}' > "${root}/${sid}/session_state.json"
+empty_out="$(STATE_ROOT="${root}" SESSION_ID="${sid}" bash -c "
+  . '${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh'
+  _idx=0
+  while IFS= read -r -d \$'\\x1e' _v; do
+    _idx=\$((_idx + 1))
+  done < <(read_state_keys a b c d e)
+  printf '%d' \"\${_idx}\"
+" 2>&1)"
+assert_eq "Bug B: 5-arg call → 5 records even with empty values" "5" "${empty_out}"
+rm -rf "${root}" 2>/dev/null
+
+# Missing state file emits empty records, not nothing.
+parts="$(mk_session)"
+root="${parts%|*}"
+sid="${parts#*|}"
+rm -f "${root}/${sid}/session_state.json"
+missing_out="$(STATE_ROOT="${root}" SESSION_ID="${sid}" bash -c "
+  . '${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh'
+  _idx=0
+  while IFS= read -r -d \$'\\x1e' _v; do
+    _idx=\$((_idx + 1))
+  done < <(read_state_keys a b c)
+  printf '%d' \"\${_idx}\"
+" 2>&1)"
+assert_eq "Bug B: missing state file → still emits N records" "3" "${missing_out}"
+rm -rf "${root}" 2>/dev/null
+
+# ---------------------------------------------------------------------
+# v1.34.0: state-corruption gate event field cap (privacy guard).
+# The recovery markers are supposed to hold a path + epoch, ~150
+# chars max. Cap to 256 so a future Bug B-class misalignment cannot
+# leak prompt-text fragments into the cross-session ledger.
+# ---------------------------------------------------------------------
+printf '\nClass 13: state-corruption gate-event field cap\n'
+
+parts="$(mk_session)"
+root="${parts%|*}"
+sid="${parts#*|}"
+echo '{}' > "${root}/${sid}/session_state.json"
+long_text="$(printf 'A%.0s' {1..512})"  # 512 chars
+cap_out="$(STATE_ROOT="${root}" SESSION_ID="${sid}" bash -c "
+  . '${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh'
+  record_gate_event 'state-corruption' 'recovered' archive_path=\"${long_text}\" recovered_ts=42
+  jq -r '.details.archive_path | length' \"${root}/${sid}/gate_events.jsonl\"
+" 2>&1)"
+[[ "${cap_out}" -le 256 ]] && pass=$((pass + 1)) || { fail=$((fail + 1)); echo "  FAIL: state-corruption archive_path NOT capped to 256 (got ${cap_out})" >&2; }
+rm -rf "${root}" 2>/dev/null
+
+# Non-state-corruption events keep the original 1024 cap.
+parts="$(mk_session)"
+root="${parts%|*}"
+sid="${parts#*|}"
+echo '{}' > "${root}/${sid}/session_state.json"
+nc_out="$(STATE_ROOT="${root}" SESSION_ID="${sid}" bash -c "
+  . '${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh'
+  record_gate_event 'quality' 'block' reason=\"${long_text}\"
+  jq -r '.details.reason | length' \"${root}/${sid}/gate_events.jsonl\"
+" 2>&1)"
+[[ "${nc_out}" -ge 256 && "${nc_out}" -le 1024 ]] && pass=$((pass + 1)) || { fail=$((fail + 1)); echo "  FAIL: non-state-corruption event should keep 1024 cap (got ${nc_out})" >&2; }
 rm -rf "${root}" 2>/dev/null
 
 # ---------------------------------------------------------------------

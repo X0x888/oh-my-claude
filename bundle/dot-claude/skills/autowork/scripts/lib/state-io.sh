@@ -259,15 +259,34 @@ read_state() {
 # read_state_keys k1 k2 k3 ...
 #
 # Bulk-read N keys from session_state.json in a single jq invocation.
-# Emits one line per key, in the order given. Missing keys emit an
-# empty line — preserving positional alignment so the caller can index
-# the output by argument position.
+# Emits values delimited by ASCII RS (byte 0x1e), one record per
+# requested key, in the order given. Missing keys emit an empty
+# record (just the trailing RS) — preserving
+# positional alignment so the caller can index records by argument
+# position. **Callers must use `read -r -d $'\\x1e'`** to
+# consume the records; line-delimited reads will mis-align whenever a
+# stored value contains a newline.
 #
-# Usage:
-#   mapfile -t values < <(read_state_keys task_intent task_domain ulw_active)
-#   intent="${values[0]}"
-#   domain="${values[1]}"
-#   active="${values[2]}"
+# Usage (canonical):
+#   while IFS= read -r -d $'\\x1e' _v; do
+#     case "${_idx}" in 0) intent="${_v}" ;; 1) domain="${_v}" ;; esac
+#     _idx=$((_idx + 1))
+#   done < <(read_state_keys task_intent task_domain)
+#
+# v1.34.0 — switched from `\n`-delimited to RS-delimited (byte 0x1e)
+# fix the positional-misalignment defect that fired the false STATE
+# RECOVERY directive every time a stored value (e.g. multi-line
+# `current_objective`, `last_assistant_message`, or task-notification
+# bodies) contained a newline. The newline-delimited contract was
+# introduced in v1.27.0 (F-018/F-019) and became user-visible in
+# v1.29.0 when keys 5-6 became the `recovered_from_corrupt_*`
+# markers — overflow lines from key 0 silently populated keys 5-6,
+# tripping the recovery directive on every multi-line prompt.
+# NUL was rejected as the separator because `jq -j` silently strips
+# NUL bytes from output; RS is the next-cleanest separator that jq
+# preserves and is essentially never present in textual content.
+# Regression net: tests/test-state-fuzz.sh covers multi-line values
+# under bulk read.
 #
 # Why this exists (v1.27.0 F-018/F-019): stop-guard.sh previously made
 # 41 separate `read_state` calls per Stop event, and prompt-intent-
@@ -286,11 +305,11 @@ read_state_keys() {
   local state_file
   state_file="$(session_file "${STATE_JSON}")"
   if [[ ! -f "${state_file}" ]]; then
-    # Emit empty lines for each requested key — preserves positional
-    # indexing in the caller's mapfile.
+    # Emit empty RS-delimited records for each requested key — preserves
+    # positional alignment in the caller's read loop.
     local _i
     for ((_i = 0; _i < $#; _i++)); do
-      printf '\n'
+      printf '\036'
     done
     return 0
   fi
@@ -299,13 +318,19 @@ read_state_keys() {
   # passed the JSON file as a positional too, jq would treat it as a
   # key name and read JSON from stdin (which would be empty). Pipe the
   # file in via stdin redirect so the filename never lands on argv.
-  jq -r --args '$ARGS.positional[] as $k | .[$k] // ""' "$@" < "${state_file}" 2>/dev/null \
+  #
+  # `jq -j` joins outputs with no separator (no implicit newline). We
+  # append ASCII RS (byte 0x1e via the jq escape \\u001e) to each
+  # value so the caller can use `read -d $'\\x1e'` for safe delimited
+  # consumption — newlines inside values pass through unchanged.
+  # NUL would be cleaner but `jq -j` strips NUL bytes from output.
+  jq -j --args '$ARGS.positional[] as $k | (.[$k] // "") + "\u001e"' "$@" < "${state_file}" 2>/dev/null \
     || {
-      # On jq failure (corrupt state, etc), emit empty lines so the
-      # caller's mapfile stays positionally aligned.
+      # On jq failure (corrupt state, etc), emit empty RS-records so
+      # the caller's read loop stays positionally aligned.
       local _i
       for ((_i = 0; _i < $#; _i++)); do
-        printf '\n'
+        printf '\036'
       done
     }
 }

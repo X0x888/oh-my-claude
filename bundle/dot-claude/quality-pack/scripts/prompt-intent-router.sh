@@ -23,8 +23,16 @@ sweep_stale_sessions
 # — surfaced once per recovery event below so the user sees the gate-
 # disarm risk instead of silently shipping unreviewed work.
 # Invariant: argv length === case-branch count (7 keys → 7 branches 0..6).
+# v1.34.0: read_state_keys emits RS-delimited records (byte 0x1e) so
+# multi-line values (e.g. multi-line `current_objective` from a long
+# user prompt, or the entire body of a `<task-notification>` injection
+# under Bug A) no longer overflow into subsequent positional slots.
+# Pre-v1.34.0 this loop used line-delimited reads and any 6+ line
+# value at index 0 would silently populate
+# `recovered_from_corrupt_{ts,archive}` with content fragments,
+# emitting a false STATE RECOVERY directive every turn.
 _pir_idx=0
-while IFS= read -r _pir_line || [[ -n "${_pir_line}" ]]; do
+while IFS= read -r -d $'\x1e' _pir_line; do
   case "${_pir_idx}" in
     0) previous_objective="${_pir_line}" ;;
     1) previous_domain="${_pir_line}" ;;

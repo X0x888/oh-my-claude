@@ -3888,6 +3888,21 @@ record_gate_event() {
   local _details_value_cap="${OMC_GATE_EVENT_DETAILS_VALUE_CAP:-1024}"
   [[ "${_details_value_cap}" =~ ^[0-9]+$ ]] || _details_value_cap=1024
 
+  # v1.34.0 (Bug B follow-on): tighter cap for `state-corruption`
+  # gate events. The recovery markers `archive_path` and
+  # `recovered_ts` are supposed to hold a file path and an epoch
+  # respectively — at most ~150 chars combined. Any larger value is
+  # almost certainly Bug B-style misalignment leaking prompt-text
+  # fragments into the cross-session ledger (see investigation doc
+  # for the user-visible rows already in
+  # `~/.claude/quality-pack/gate_events.jsonl`). 256-char cap
+  # provides a safety margin for unusual paths while bounding any
+  # future leak to a single line of context.
+  local _per_gate_cap="${_details_value_cap}"
+  if [[ "${gate}" == "state-corruption" ]]; then
+    _per_gate_cap=256
+  fi
+
   local block_count="" block_cap=""
   local details_args=()
   local kv key value
@@ -3905,8 +3920,8 @@ record_gate_event() {
           # exact for ASCII and a slight under-truncation for multi-
           # byte UTF-8 (still within PIPE_BUF). Truncation marker
           # signals the loss to consumers — better than silent tear.
-          if (( ${#value} > _details_value_cap )); then
-            local _kept=$(( _details_value_cap - 32 ))
+          if (( ${#value} > _per_gate_cap )); then
+            local _kept=$(( _per_gate_cap - 32 ))
             (( _kept < 0 )) && _kept=0
             value="${value:0:${_kept}}…<truncated:${#value} bytes>"
           fi
