@@ -9,7 +9,7 @@
 # function-coverage) and missed the highest-historical-frequency
 # violation surface (conf-flag 3-site lockstep).
 #
-# This broadened version enforces three lockstep contracts from
+# This broadened version enforces five lockstep contracts from
 # CLAUDE.md:
 #
 #   1. Conf-flag 3-site lockstep (most-violated). Every flag that
@@ -25,6 +25,13 @@
 #   3. Lib-test 1:1 mapping. Every `bundle/.../lib/*.sh` MUST have a
 #      `tests/test-${name}.sh` (with the `-lib.sh` suffix exception
 #      for verification.sh ↔ test-verification-lib.sh codified).
+#
+#   4. Repo-count lockstep. The live filesystem counts for agents,
+#      skills, lifecycle hooks, autowork scripts, and tests MUST match
+#      the user-facing counts in README.md, AGENTS.md, and CLAUDE.md.
+#
+#   5. Release-history lockstep. Every semver git tag `vX.Y.Z` MUST
+#      have a matching `## [X.Y.Z]` heading in CHANGELOG.md.
 #
 # Pinned in CI via .github/workflows/validate.yml; runs on every push.
 
@@ -215,6 +222,147 @@ else
         "expected ${expected}"
     fi
   done
+fi
+
+# ----------------------------------------------------------------------
+# Contract 4 — Repo-count lockstep
+# ----------------------------------------------------------------------
+printf '\nContract 4: repo-count lockstep\n'
+
+README_MD="${REPO_ROOT}/README.md"
+AGENTS_MD="${REPO_ROOT}/AGENTS.md"
+CLAUDE_MD="${REPO_ROOT}/CLAUDE.md"
+QP_SCRIPTS_DIR="${REPO_ROOT}/bundle/dot-claude/quality-pack/scripts"
+AUTOWORK_DIR="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts"
+
+agent_count="$(find "${REPO_ROOT}/bundle/dot-claude/agents" -maxdepth 1 -name '*.md' | wc -l | awk '{print $1}')"
+skill_count="$(find "${REPO_ROOT}/bundle/dot-claude/skills" -mindepth 2 -maxdepth 2 -name 'SKILL.md' | wc -l | awk '{print $1}')"
+lifecycle_count="$(find "${QP_SCRIPTS_DIR}" -maxdepth 1 -name '*.sh' | wc -l | awk '{print $1}')"
+autowork_count="$(find "${AUTOWORK_DIR}" -maxdepth 1 -name '*.sh' | wc -l | awk '{print $1}')"
+test_sh_count="$(find "${REPO_ROOT}/tests" -maxdepth 1 -name 'test-*.sh' | wc -l | awk '{print $1}')"
+test_py_count="$(find "${REPO_ROOT}/tests" -maxdepth 1 -name 'test_*.py' | wc -l | awk '{print $1}')"
+ci_pinned_count="$(printf '%s\n' "${ci_pinned_tests}" | grep -c . || true)"
+
+assert_doc_match() {
+  local label="$1" pattern="$2" path="$3" detail="$4"
+  if grep -qE "${pattern}" "${path}"; then
+    assert_pass "${label}"
+  else
+    assert_fail "${label}" "${detail}"
+  fi
+}
+
+assert_doc_match "C4: README agent headline count" \
+  "^\\*\\*${agent_count} specialist agents — none can edit files;" \
+  "${README_MD}" \
+  "README.md should describe the live agent count (${agent_count}) in the Permissioned agents section"
+
+assert_doc_match "C4: README repository agent count" \
+  "^│   ├── agents/[[:space:]]+\\(${agent_count} agents\\)" \
+  "${README_MD}" \
+  "README.md repository tree should report ${agent_count} agents"
+
+assert_doc_match "C4: README repository skill count" \
+  "^│   ├── skills/[[:space:]]+\\(${skill_count} skills\\)" \
+  "${README_MD}" \
+  "README.md repository tree should report ${skill_count} skills"
+
+assert_doc_match "C4: README repository test count" \
+  "^├── tests/[[:space:]]+\\(${test_sh_count} bash \\+ ${test_py_count} py\\)" \
+  "${README_MD}" \
+  "README.md repository tree should report ${test_sh_count} bash + ${test_py_count} py tests"
+
+assert_doc_match "C4: AGENTS architecture agent count" \
+  "agents/[[:space:]]+# ${agent_count} specialist agent definitions \\(.md\\)" \
+  "${AGENTS_MD}" \
+  "AGENTS.md architecture diagram should report ${agent_count} agents"
+
+assert_doc_match "C4: AGENTS lifecycle count" \
+  "scripts/[[:space:]]+# ${lifecycle_count} lifecycle scripts" \
+  "${AGENTS_MD}" \
+  "AGENTS.md architecture diagram should report ${lifecycle_count} lifecycle scripts"
+
+assert_doc_match "C4: AGENTS skill count" \
+  "skills/[[:space:]]+# ${skill_count} skill definitions, each in <name>/SKILL.md" \
+  "${AGENTS_MD}" \
+  "AGENTS.md architecture diagram should report ${skill_count} skills"
+
+assert_doc_match "C4: AGENTS autowork count" \
+  "autowork/scripts/[[:space:]]+# ${autowork_count} autowork hook scripts and utilities" \
+  "${AGENTS_MD}" \
+  "AGENTS.md architecture diagram should report ${autowork_count} autowork scripts"
+
+assert_doc_match "C4: AGENTS test count" \
+  "tests/[[:space:]]+# ${test_sh_count} bash \\+ ${test_py_count} python test scripts" \
+  "${AGENTS_MD}" \
+  "AGENTS.md architecture diagram should report ${test_sh_count} bash + ${test_py_count} python tests"
+
+assert_doc_match "C4: CLAUDE agent count" \
+  "bundle/dot-claude/agents/.*— ${agent_count} specialist agent definitions" \
+  "${CLAUDE_MD}" \
+  "CLAUDE.md should report ${agent_count} agents in Key Directories"
+
+assert_doc_match "C4: CLAUDE lifecycle count" \
+  "bundle/dot-claude/quality-pack/scripts/.*— ${lifecycle_count} lifecycle hooks" \
+  "${CLAUDE_MD}" \
+  "CLAUDE.md should report ${lifecycle_count} lifecycle hooks in Key Directories"
+
+assert_doc_match "C4: CLAUDE skill count" \
+  "bundle/dot-claude/skills/.*— ${skill_count} skill definitions" \
+  "${CLAUDE_MD}" \
+  "CLAUDE.md should report ${skill_count} skills in Key Directories"
+
+assert_doc_match "C4: CLAUDE autowork count" \
+  "bundle/dot-claude/skills/autowork/scripts/.*— ${autowork_count} autowork hooks \\+ helpers;" \
+  "${CLAUDE_MD}" \
+  "CLAUDE.md should report ${autowork_count} autowork hooks + helpers in Key Directories"
+
+assert_doc_match "C4: CLAUDE test count" \
+  "tests/.*— ${test_sh_count} bash \\+ ${test_py_count} python test scripts \\(${ci_pinned_count} bash CI-pinned" \
+  "${CLAUDE_MD}" \
+  "CLAUDE.md should report ${test_sh_count} bash + ${test_py_count} python tests and ${ci_pinned_count} CI-pinned bash suites"
+
+# ----------------------------------------------------------------------
+# Contract 5 — Release-history lockstep
+# ----------------------------------------------------------------------
+printf '\nContract 5: release-history lockstep\n'
+
+release_tags="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' | LC_ALL=C sort -u)"
+tag_count="$(printf '%s\n' "${release_tags}" | grep -c . || true)"
+printf '  semver tags: %d\n' "${tag_count}"
+
+if [[ "${tag_count}" -eq 0 ]]; then
+  assert_fail "C5: no semver git tags available" \
+    "release-history contract requires a tag-aware clone; fetch tags (CI should use fetch-depth: 0)"
+else
+  changelog_versions="$(grep -E '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' "${REPO_ROOT}/CHANGELOG.md" \
+    | sed -E 's/^## \[([0-9]+\.[0-9]+\.[0-9]+)\].*/v\1/' \
+    | LC_ALL=C sort -u)"
+
+  missing_in_changelog="$(comm -23 <(printf '%s\n' "${release_tags}") <(printf '%s\n' "${changelog_versions}"))"
+  extra_in_changelog="$(comm -13 <(printf '%s\n' "${release_tags}") <(printf '%s\n' "${changelog_versions}"))"
+  version_tag="v$(tr -d '\n' < "${REPO_ROOT}/VERSION")"
+
+  if [[ -z "${missing_in_changelog}" ]]; then
+    assert_pass "C5: every semver tag has a changelog heading"
+  else
+    assert_fail "C5: semver tags missing from CHANGELOG.md" \
+      "missing headings for: $(printf '%s' "${missing_in_changelog}" | paste -sd ', ' -)"
+  fi
+
+  if [[ -z "${extra_in_changelog}" ]]; then
+    assert_pass "C5: changelog headings have matching semver tags"
+  else
+    assert_fail "C5: CHANGELOG.md headings missing git tags" \
+      "missing tags for: $(printf '%s' "${extra_in_changelog}" | paste -sd ', ' -)"
+  fi
+
+  if printf '%s\n' "${changelog_versions}" | grep -qx "${version_tag}"; then
+    assert_pass "C5: VERSION file exists in changelog history"
+  else
+    assert_fail "C5: VERSION missing from changelog history" \
+      "VERSION=$(tr -d '\n' < "${REPO_ROOT}/VERSION") has no matching changelog heading"
+  fi
 fi
 
 # ----------------------------------------------------------------------

@@ -124,13 +124,25 @@ Adding a new reviewer-style agent has two layers. Do both in the same commit —
 
 `editor-critic` is intentionally excluded from FINDINGS_JSON — prose-quality observations are not severity-anchored.
 
+## Telemetry / Report Additions
+
+For any new telemetry field, timing counter, scorecard metric, report slice, or statusline aggregate, treat the feature as incomplete until all of the following land in the same change:
+
+1. A **write path** that records the data.
+2. A **read path** that consumes it.
+3. At least one **user-visible surface** (`/ulw-report`, `/ulw-status`, `/ulw-time`, statusline, install/update summary, or equivalent).
+4. A **regression test** that proves the data flows end to end.
+5. When historical rows matter, a **compatibility or backfill rule** so old sessions do not silently disappear from the new view.
+
+Do not count telemetry as "shipped" when only the state write exists. This partial-landing pattern caused repeated drift in earlier versions and is now considered a release-quality bug.
+
 ## Release Process
 
 When bumping the version (changing `VERSION`), follow these steps in order. Replace `X.Y.Z` with the actual version number in all commands.
 
 ### Pre-flight
 
-1. **CHANGELOG audit.** Run `git log --oneline vPREV..HEAD` and confirm every commit has a matching `[Unreleased]` bullet in `CHANGELOG.md`. Silent drop (a large commit's changes missing from the changelog) is the common failure mode. Also skim `docs/architecture.md` "State keys" table for new keys introduced in the window.
+1. **CHANGELOG audit.** Run `git log --oneline vPREV..HEAD` and confirm every commit has a matching `[Unreleased]` bullet in `CHANGELOG.md`. Silent drop (a large commit's changes missing from the changelog) is the common failure mode. Also skim `docs/architecture.md` "State keys" table for new keys introduced in the window. Release history is now lockstepped too: every semver git tag must have a matching `## [X.Y.Z]` heading in `CHANGELOG.md`. `tests/test-coordination-rules.sh` enforces this contract, so fetch tags before running it locally from a shallow clone.
 
 2. **CI parity check.** Run locally exactly what `.github/workflows/validate.yml` will run — shellcheck warnings are CI-fatal, so any local warning is a CI red. Do not proceed if any of these exit non-zero or emit any warning:
    - `find bundle/ -name '*.sh' -print0 | xargs -0 shellcheck -x --severity=warning`
