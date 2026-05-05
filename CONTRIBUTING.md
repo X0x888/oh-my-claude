@@ -207,6 +207,16 @@ When bumping the version (changing `VERSION`), follow these steps in order. Repl
 
 ### Bump and tag
 
+**Automated path (preferred since v1.32.14):**
+
+```bash
+bash tools/release.sh X.Y.Z
+```
+
+This runs steps 7-14 below in order, validating preconditions (clean tree, on `main`, X.Y.Z is above current, tag doesn't exist, no leftover `.hotfix-sweep-quick` marker) before any mutation. `--dry-run` previews; `--no-watch` skips the post-flight CI watch (still tags + pushes). Regression net: `tests/test-release.sh` (22 assertions, CI-pinned).
+
+**Manual path (kept for reference and for environments where the script can't run):**
+
 7. Update `VERSION` with the new version number (e.g. `1.4.1`).
 8. Update the README.md badge: `[![Version](https://img.shields.io/badge/Version-X.Y.Z-blue.svg)]`.
 9. Promote the `[Unreleased]` heading in `CHANGELOG.md` to `## [X.Y.Z] - YYYY-MM-DD` (keep `[Unreleased]` above it as an empty placeholder for the next cycle if desired).
@@ -240,6 +250,8 @@ When bumping the version (changing `VERSION`), follow these steps in order. Repl
       "$(gh run list --commit "$(git rev-parse vX.Y.Z)" --limit 1 --json databaseId -q '.[0].databaseId')"
     ```
     The command blocks until completion and exits non-zero on `failure`, `cancelled`, `timed_out`, or `action_required` — only `success` counts as green. If it does not return `success`, the release is **incomplete**: fix the issue and either `gh run rerun <id>` or push a hotfix commit. Do not declare the release shipped while CI on the tagged commit is anything other than green.
+
+   `tools/release.sh` runs this watch automatically as Step 14 unless `--no-watch` was passed.
 
 A version bump without a corresponding git tag breaks the release history. Every `VERSION` change must have a matching `vX.Y.Z` tag on the commit that introduced it. Never skip tagging.
 

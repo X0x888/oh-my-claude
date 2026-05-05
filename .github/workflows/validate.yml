@@ -238,6 +238,9 @@ jobs:
       - name: Run hotfix-sweep tests (v1.32.11 R5 closure)
         run: bash tests/test-hotfix-sweep.sh
 
+      - name: Run release-tool tests (v1.32.14 R4 closure)
+        run: bash tests/test-release.sh
+
       - name: Run sterile-env CI-parity check (v1.32.2 R3 promoted to strict)
         run: bash tests/run-sterile.sh
 

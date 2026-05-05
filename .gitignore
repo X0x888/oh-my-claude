@@ -3,3 +3,9 @@
 *.swp
 *~
 .claude/
+
+# v1.32.11 hotfix-sweep marker (transient — created by --quick mode,
+# cleared by a successful non-quick run). Must be gitignored so its
+# presence doesn't trip release.sh's clean-working-tree check before
+# the script can detect the marker and refuse to release.
+.hotfix-sweep-quick

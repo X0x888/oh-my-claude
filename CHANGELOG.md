@@ -4,6 +4,41 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.32.14] - 2026-05-05
+
+R4 closure from the v1.32.0 release post-mortem — `tools/release.sh` automation that wraps CONTRIBUTING.md bump-and-tag steps 7-14 into a single command. The original metis stress-test of R4's "stage-then-promote" proposal flagged the muscle-memory risk: a 14-step manual process gets skipped under time pressure (the v1.32.6 → v1.32.7 hotfix cycle this session is the canonical instance — tagged + pushed before noticing CI was red). Automation closes that — the script either runs every step in order or fails early with a named blocker, never partway-through.
+
+### Added
+
+- **`tools/release.sh X.Y.Z`** (developer-only). Runs steps 7-14 of CONTRIBUTING.md in order. Validates preconditions before any mutation:
+    - Argument is valid `X.Y.Z` semver (rejects `v1.2.3`, `1.2`, etc.)
+    - Working tree is clean (no uncommitted changes)
+    - On `main` branch
+    - `X.Y.Z` is strictly above current VERSION (uses `sort -V` for correct 1.10 > 1.9 ordering)
+    - `vX.Y.Z` tag does not already exist locally
+    - No leftover `.hotfix-sweep-quick` marker from the v1.32.11 sweep tool
+
+  Then executes: VERSION bump, README badge update, CHANGELOG `[Unreleased]` → `[X.Y.Z] - YYYY-MM-DD` promotion, **post-promotion re-run of CHANGELOG-coupled tests** (v1.32.7/8 step-9 fix), commit, tag, push, GitHub release create, and CI watch. `--dry-run` previews without executing; `--no-watch` skips the post-flight CI watch (still tags and pushes).
+
+- **`tests/test-release.sh`** (CI-pinned, 22 assertions). Regression net for the 8 validation paths and the dry-run mode. Builds isolated tmpdir git fixtures with controlled state (clean, dirty, on-main, off-main, version above/below current, tag exists, hotfix-sweep marker present). Live destructive tests (real tag push, gh release create) are NOT exercised — those would require a remote and gh credentials.
+
+- **`.gitignore`** entry for `.hotfix-sweep-quick` (the v1.32.11 sweep marker). Was implicit before; now explicit so a maintainer running `tools/hotfix-sweep.sh --quick` doesn't accumulate a tracked-but-ignored file that confuses subsequent `git status`.
+
+### Updated
+
+- **`CONTRIBUTING.md` Bump and tag section** now leads with the automated path:
+    ```bash
+    bash tools/release.sh X.Y.Z
+    ```
+    Manual steps 7-14 retained for reference and for environments where the script can't run.
+
+### Verification
+
+- `bash tests/test-release.sh` — 22/22
+- `bash tools/release.sh 1.99.99 --dry-run --no-watch` (live dry-run on this repo, post-commit) verifies all 14 steps wire correctly
+- 69/69 CI-pinned tests pass locally
+- shellcheck clean
+
 ## [1.32.13] - 2026-05-05
 
 Polish release closing all v1.32.x reviewer-deferred items in one bounded patch. Plus a fixture-leak hygiene fix surfaced when a v1.32.12 push accidentally pushed a stray `v0.0.0` tag to origin (immediately deleted; root-caused to a test fixture using version-shaped tag name).
