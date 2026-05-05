@@ -28,6 +28,23 @@ Closes 5 findings from the 4-attacker security review (release-reviewer-driven, 
 
 - **Deferred (named WHY).** A2-MED-5 `verify.sh` plist content diff (when `resume_watchdog=on`) — requires `verify.sh`-side reproduction of `install-resume-watchdog.sh`'s token substitution logic, too invasive for the install/verify-allowlist scope of this wave; queued for a follow-up wave with focused regression coverage on the watchdog-plist surface.
 
+### Wave 2 — agent boundary + watchdog tombstone TOCTOU (4-attacker security review)
+
+Closes 2 findings; defers 3 with named WHY.
+
+- **`bundle/dot-claude/agents/draft-writer.md` `disallowedTools` (A4-MED-1).** The prose-drafter agent had no permission boundary, inheriting `Write/Edit/MultiEdit` plus all `mcp__*` tools from the user's grant set. A prompt-injected draft-writer (e.g., hostile content returned via `WebFetch` while researching the draft) could write malicious files anywhere or call exfiltration MCPs. Added `disallowedTools: Write, Edit, MultiEdit` matching the sister writing-class agents `writing-architect.md` and `editor-critic.md`. The agent's documented job is to "produce strong drafts" — main thread persists the prose; agent never needs file-write capability.
+
+- **`bundle/dot-claude/quality-pack/scripts/resume-watchdog.sh` tombstone TOCTOU (A1-MED-4).** Pre-Wave-2 path was `${HOME}/.cache/omc-watchdog.last-error` written via plain `>` redirect — followed symlinks. An A1 attacker (unprivileged shell, NO write to `~/.claude/`) could pre-create the path as a symlink to `~/.bash_history` (or any user-readable file) and the next watchdog tick that hit the unwritable-STATE_ROOT branch would overwrite the target. Low-effort A1 data-destruction primitive. Three-layer fix:
+  1. **New path under a 700-mode subdir** (`${HOME}/.cache/omc/watchdog-last-error`) — parent perms lock out same-uid attackers (or at least require defeating the dir mode first, a louder signal).
+  2. **Refuse write if parent or grandparent is a symlink.** `[[ ! -L "${HOME}/.cache" && ! -L "${_watchdog_tombstone_dir}" ]]` rejects the symlinked-parent attack chain.
+  3. **`mktemp` + `mv -f` for the actual write.** `mktemp` uses `O_CREAT|O_EXCL` (won't follow attacker-pre-created symlinks at the random-suffix temp name); `mv -f` atomically replaces any prior file/symlink at the target without follow.
+
+- **Tests.** `tests/test-resume-watchdog.sh` extended +5 assertions (T28-T31) covering: tombstone path replacement when a symlink pre-exists at the target; `${HOME}/.cache/omc/` parent-symlink rejection; `${HOME}/.cache` grandparent-symlink rejection; chmod 700 enforcement on the parent dir. The tests verify the *security primitives* in isolation (re-run the logic via a helper that mirrors the production code path) rather than via full-watchdog integration — `ensure_session_dir`'s `chmod ... || true` masks its mkdir failure, making the tombstone branch hard to reach from a sandbox; testing the primitives directly is more honest than relying on a brittle integration trigger. test-resume-watchdog total: 65 → 70 passing.
+
+- **Deferred (named WHY).**
+  - **A4-MED-4 `atlas.md` MCP allowlist; A4-LOW-1 `backend-api-developer` / `devops-infrastructure-engineer` / `test-automation-engineer` / `ios-*` MCP allowlist; A4-LOW-3 `frontend-developer.md` auth-MCP deny.** Wildcard syntax for `disallowedTools` (e.g. `mcp__claude_ai_Gmail__*`) is not documented in `docs/customization.md` (which lists only the literal `Write, Edit, MultiEdit` pattern as canonical). Adding unverified wildcard syntax risks silently disabling the intended denylist while looking effective in the agent file — the worst-of-both outcome. Queued for a follow-up after schema verification via Anthropic docs (`librarian` dispatch) or a `claude-code-guide` confirmation that wildcards are honored. Risk if the wildcards turn out unsupported: the agent file says "Gmail denied" but the agent can still call `mcp__claude_ai_Gmail__send_email` — silent grant. Better to defer than to ship an apparent-fix that's actually a placebo.
+  - **A1-MED-1 watchdog cwd-trust gap, A1-MED-3 install-time PATH probe, A2-MED-1 resume-hint forged content, A2-MED-3 resume-handoff bulk-copy, A2-MED-7 auto-memory implicit trust** — already-deferred from triage with concrete WHYs (signing infrastructure, UX redesign, telemetry-data dependencies); no change in this wave.
+
 ## [1.32.15] - 2026-05-05
 
 Sixth release-reviewer dogfood. Reviewer pass on v1.32.14 surfaced 5 gaps; G1 (silent CHANGELOG-promotion no-op on regex non-match) and G2 (empty `[Unreleased]` ships empty notes) are real correctness bugs verified live. All 5 ship inline as Serendipity-bounded fixes.

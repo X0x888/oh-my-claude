@@ -72,11 +72,35 @@ if ! ensure_session_dir 2>/dev/null \
   # the cache dir is conventional and almost always writable even when
   # STATE_ROOT is not (e.g., user mounted ~/.claude on a read-only
   # network share but ~/.cache stays local).
-  _watchdog_tombstone="${HOME}/.cache/omc-watchdog.last-error"
-  mkdir -p "${HOME}/.cache" 2>/dev/null || true
-  printf '{"ts":%s,"reason":"state_root_unwritable","state_root":"%s"}\n' \
-    "$(date +%s)" "${STATE_ROOT//\"/\\\"}" \
-    > "${_watchdog_tombstone}" 2>/dev/null || true
+  #
+  # v1.32.16 (4-attacker security review, A1-MED-4): the prior path
+  # `${HOME}/.cache/omc-watchdog.last-error` was vulnerable to an
+  # unprivileged-shell attacker (A1) pre-creating it as a symlink to
+  # `~/.bash_history` (or any user-readable file). The `>` redirect
+  # follows symlinks and overwrites the target — a low-effort A1
+  # data-destruction primitive. Defense:
+  #   1. Move the file inside a 700-mode subdirectory the harness
+  #      controls (`${HOME}/.cache/omc/`), so the parent's mode locks
+  #      out same-uid attackers (or at least requires them to first
+  #      defeat the parent perms — a louder signal).
+  #   2. Refuse to write through a symlink at the parent OR the
+  #      target — explicit `[[ -L ]]` rejection before redirect.
+  #   3. Use mktemp + mv-f for the actual write so any prior content
+  #      (incl. a symlink the attacker raced in) is replaced
+  #      atomically without following it.
+  _watchdog_tombstone_dir="${HOME}/.cache/omc"
+  _watchdog_tombstone="${_watchdog_tombstone_dir}/watchdog-last-error"
+  if [[ ! -L "${HOME}/.cache" && ! -L "${_watchdog_tombstone_dir}" ]]; then
+    mkdir -p "${_watchdog_tombstone_dir}" 2>/dev/null || true
+    chmod 700 "${_watchdog_tombstone_dir}" 2>/dev/null || true
+    _tomb_tmp="$(mktemp "${_watchdog_tombstone_dir}/.last-error.XXXXXX" 2>/dev/null || true)"
+    if [[ -n "${_tomb_tmp}" ]]; then
+      printf '{"ts":%s,"reason":"state_root_unwritable","state_root":"%s"}\n' \
+        "$(date +%s)" "${STATE_ROOT//\"/\\\"}" \
+        > "${_tomb_tmp}" 2>/dev/null || true
+      mv -f "${_tomb_tmp}" "${_watchdog_tombstone}" 2>/dev/null || rm -f "${_tomb_tmp}"
+    fi
+  fi
 fi
 
 # --- helpers ---

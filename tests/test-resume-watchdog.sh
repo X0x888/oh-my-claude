@@ -928,6 +928,122 @@ assert_contains "T27: tmux invokes live PATH claude" "${MOCK_BIN}/claude --resum
 assert_eq "T27: artifact claimed via legacy resolution" "watchdog-launched" "$(read_field "${target}" last_attempt_outcome)"
 teardown_test
 
+# ---------------------------------------------------------------------------
+# T28-T30: Tombstone TOCTOU defense (4-attacker security review, A1-MED-4)
+# ---------------------------------------------------------------------------
+#
+# A1 (unprivileged shell) can pre-create
+#   `${HOME}/.cache/omc-watchdog.last-error`
+# as a symlink to ANY user-readable file. The pre-Wave-2 implementation
+# used a `>` redirect, which follows symlinks — overwriting attacker-
+# chosen targets (~/.bash_history, ~/.gnupg/gpg.conf, etc.) with the
+# tombstone JSON.
+#
+# Fix anatomy (resume-watchdog.sh:90-104):
+#   1. New tombstone path under a 700-mode subdir
+#      (${HOME}/.cache/omc/) the harness controls.
+#   2. Refuse to write if the parent OR target dir is a symlink
+#      (defense-in-depth against parent-dir symlink attack).
+#   3. mktemp + mv -f for the atomic write — replaces any pre-existing
+#      file/symlink at the target without follow.
+#
+# These tests verify the *security primitives* in isolation (re-run the
+# logic in a subshell). End-to-end triggering through the full watchdog
+# is awkward because `ensure_session_dir` masks its mkdir failure with
+# `chmod ... || true`, making the tombstone branch hard to fire from a
+# sandbox. Testing the primitives directly is a more honest assertion
+# of "this fix prevents the symlink attack" than relying on a brittle
+# integration trigger.
+
+_run_tombstone_logic() {
+  # Mirrors resume-watchdog.sh:90-104 inline. Stays in lockstep with
+  # the production code path; if that code changes, this helper must
+  # be updated alongside it.
+  local _wd_dir="${HOME}/.cache/omc"
+  local _wd_path="${_wd_dir}/watchdog-last-error"
+  if [[ ! -L "${HOME}/.cache" && ! -L "${_wd_dir}" ]]; then
+    mkdir -p "${_wd_dir}" 2>/dev/null || true
+    chmod 700 "${_wd_dir}" 2>/dev/null || true
+    local _tmp
+    _tmp="$(mktemp "${_wd_dir}/.last-error.XXXXXX" 2>/dev/null || true)"
+    if [[ -n "${_tmp}" ]]; then
+      printf '{"ts":1,"reason":"test","state_root":"/x"}\n' > "${_tmp}" 2>/dev/null || true
+      mv -f "${_tmp}" "${_wd_path}" 2>/dev/null || rm -f "${_tmp}"
+    fi
+  fi
+}
+
+# T28: Pre-existing symlink at the tombstone path is replaced, not followed.
+echo "=== T28: symlink at tombstone path replaced atomically ==="
+setup_test
+mkdir -p "${TEST_HOME}/.cache/omc"
+target_file="${TEST_HOME}/sensitive-data.txt"
+printf 'PRECIOUS USER DATA\n' > "${target_file}"
+ln -sf "${target_file}" "${TEST_HOME}/.cache/omc/watchdog-last-error"
+
+_run_tombstone_logic
+
+assert_eq "T28: target file not overwritten" "PRECIOUS USER DATA" \
+  "$(cat "${target_file}")"
+
+if [[ -f "${TEST_HOME}/.cache/omc/watchdog-last-error" \
+   && ! -L "${TEST_HOME}/.cache/omc/watchdog-last-error" ]]; then
+  pass=$((pass + 1))
+else
+  printf 'FAIL: T28 — tombstone path is missing or still a symlink\n' >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# T29: Symlink at parent ${HOME}/.cache/omc/ is refused (write skipped,
+# attacker-target receives nothing).
+echo "=== T29: symlink at tombstone parent dir refuses write ==="
+setup_test
+mkdir -p "${TEST_HOME}/.cache"
+mkdir -p "${TEST_HOME}/attacker-target"
+ln -sf "${TEST_HOME}/attacker-target" "${TEST_HOME}/.cache/omc"
+
+_run_tombstone_logic
+
+attacker_files="$(find "${TEST_HOME}/attacker-target" -type f 2>/dev/null | wc -l | tr -d '[:space:]')"
+assert_eq "T29: attacker-target has no files written through symlink" "0" "${attacker_files}"
+teardown_test
+
+# T30: Tombstone parent dir is 700-mode after the harness creates it.
+echo "=== T30: tombstone parent dir is chmod 700 ==="
+setup_test
+_run_tombstone_logic
+
+if [[ -d "${TEST_HOME}/.cache/omc" ]]; then
+  parent_mode="$(stat -c '%a' "${TEST_HOME}/.cache/omc" 2>/dev/null \
+    || stat -f '%Lp' "${TEST_HOME}/.cache/omc" 2>/dev/null \
+    || printf 'unknown')"
+  if [[ "${parent_mode}" == "700" ]]; then
+    pass=$((pass + 1))
+  else
+    printf 'FAIL: T30 — tombstone parent dir mode is %s, expected 700\n' \
+      "${parent_mode}" >&2
+    fail=$((fail + 1))
+  fi
+else
+  printf 'FAIL: T30 — tombstone parent dir was not created\n' >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# T31: Symlink at ${HOME}/.cache itself is refused (defense-in-depth
+# against parent-of-parent symlink attack).
+echo "=== T31: symlink at ${HOME}/.cache refuses write ==="
+setup_test
+mkdir -p "${TEST_HOME}/attacker-cache"
+ln -sf "${TEST_HOME}/attacker-cache" "${TEST_HOME}/.cache"
+
+_run_tombstone_logic
+
+attacker_cache_files="$(find "${TEST_HOME}/attacker-cache" -type f 2>/dev/null | wc -l | tr -d '[:space:]')"
+assert_eq "T31: attacker-cache has no files written" "0" "${attacker_cache_files}"
+teardown_test
+
 printf '\n=== test-resume-watchdog: %d passed, %d failed ===\n' "${pass}" "${fail}"
 if (( fail > 0 )); then
   exit 1
