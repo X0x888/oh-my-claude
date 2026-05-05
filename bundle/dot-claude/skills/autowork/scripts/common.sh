@@ -1911,17 +1911,59 @@ detect_commit_intent_from_prompt() {
     return
   }
 
-  if grep -Eiq '\b(do[[:space:]]+not|don'\''t|dont|without|avoid|no)\b.{0,24}\b(commit|push|tag|publish|release)\b|\bwithout\b.{0,16}\bcommitt?ing\b' <<<"${text}"; then
+  # v1.34.0 (Bug C fix): forbidden detection is COMMIT-SPECIFIC. The
+  # pre-fix regex collapsed `commit|push|tag|publish|release` into a
+  # single "publishing verb" group, so "commit the changes. Don't push
+  # it." classified the WHOLE prompt as `forbidden` (because the
+  # negation matched "Don't push") — even though the user explicitly
+  # authorized the commit. Push-side negations now feed
+  # `detect_push_intent_from_prompt` instead, which is checked
+  # separately by the pretool-intent-guard.
+  if grep -Eiq '\b(do[[:space:]]+not|don'\''t|dont|without|avoid|no)\b.{0,24}\bcommit(s|t?ing|t?ed)?\b|\bwithout\b.{0,16}\bcommitt?ing\b' <<<"${text}"; then
     printf 'forbidden'
     return
   fi
 
-  if grep -Eiq '\b(commit|push|tag|publish|release)\b.{0,24}\b(if[[:space:]]+needed|if[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?|if[[:space:]]+necessary|when[[:space:]]+needed|when[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?)\b|\b(if[[:space:]]+needed|if[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?|if[[:space:]]+necessary|when[[:space:]]+needed|when[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?)\b.{0,24}\b(commit|push|tag|publish|release)\b' <<<"${text}"; then
+  if grep -Eiq '\bcommit(s|t?ing|t?ed)?\b.{0,24}\b(if[[:space:]]+needed|if[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?|if[[:space:]]+necessary|when[[:space:]]+needed|when[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?)\b|\b(if[[:space:]]+needed|if[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?|if[[:space:]]+necessary|when[[:space:]]+needed|when[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?)\b.{0,24}\bcommit(s|t?ing|t?ed)?\b' <<<"${text}"; then
     printf 'if_needed'
     return
   fi
 
-  if grep -Eiq '\b(commit|push|tag|publish|release)\b|\b(open|create)\b.{0,24}\b(pr|pull[[:space:]]+request|release)\b' <<<"${text}"; then
+  if grep -Eiq '\bcommit(s|t?ing|t?ed)?\b|\b(open|create)\b.{0,24}\b(pr|pull[[:space:]]+request)\b' <<<"${text}"; then
+    printf 'required'
+    return
+  fi
+
+  printf 'unspecified'
+}
+
+# detect_push_intent_from_prompt — v1.34.0 (Bug C split).
+# Returns the push-side directive (`required` / `if_needed` /
+# `forbidden` / `unspecified`) for verbs that PUBLISH state outside
+# the local working tree: push, tag, publish, release, gh pr/release/
+# issue create-class. Distinct from `detect_commit_intent_from_prompt`
+# so a compound directive like "commit the changes first. Don't push
+# it." derives commit_mode=required AND push_mode=forbidden — letting
+# the pretool-intent-guard allow `git commit` while blocking
+# `git push` / `git tag` / `gh pr create`.
+detect_push_intent_from_prompt() {
+  local text="$1"
+  [[ -n "${text}" ]] || {
+    printf 'unspecified'
+    return
+  }
+
+  if grep -Eiq '\b(do[[:space:]]+not|don'\''t|dont|without|avoid|no)\b.{0,24}\b(push|pushes|pushed|pushing|tag|tags|tagged|tagging|publish|publishes|published|publishing|release|releases|released|releasing|ship|ships|shipped|shipping)\b|\bwithout\b.{0,16}\b(pushing|tagging|publishing|releasing|shipping)\b' <<<"${text}"; then
+    printf 'forbidden'
+    return
+  fi
+
+  if grep -Eiq '\b(push|tag|publish|release|ship)\b.{0,24}\b(if[[:space:]]+needed|if[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?|if[[:space:]]+necessary|when[[:space:]]+needed|when[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?)\b|\b(if[[:space:]]+needed|if[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?|if[[:space:]]+necessary|when[[:space:]]+needed|when[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?)\b.{0,24}\b(push|tag|publish|release|ship)\b' <<<"${text}"; then
+    printf 'if_needed'
+    return
+  fi
+
+  if grep -Eiq '\b(push|tag|publish|release|ship)\b|\b(open|create)\b.{0,24}\b(release|tag)\b' <<<"${text}"; then
     printf 'required'
     return
   fi

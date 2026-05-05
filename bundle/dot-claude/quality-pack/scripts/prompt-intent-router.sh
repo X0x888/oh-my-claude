@@ -600,6 +600,10 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
     [[ -n "${contract_primary}" ]] || contract_primary="${PROMPT_TEXT}"
 
     contract_commit_mode="$(detect_commit_intent_from_prompt "${PROMPT_TEXT}")"
+    # v1.34.0 (Bug C): push-side directive is independent of commit-
+    # side. "commit X. don't push Y." sets commit_mode=required AND
+    # push_mode=forbidden — pretool-intent-guard reads both.
+    contract_push_mode="$(detect_push_intent_from_prompt "${PROMPT_TEXT}")"
     contract_prompt_surfaces="$(derive_done_contract_prompt_surfaces "${PROMPT_TEXT}")"
     contract_test_expectation="$(derive_done_contract_test_expectation "${PROMPT_TEXT}" "${TASK_DOMAIN}")"
     contract_verify_required="$(derive_verification_contract_required \
@@ -612,6 +616,7 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
     write_state_batch \
       "done_contract_primary" "${contract_primary}" \
       "done_contract_commit_mode" "${contract_commit_mode}" \
+      "done_contract_push_mode" "${contract_push_mode}" \
       "done_contract_prompt_surfaces" "${contract_prompt_surfaces}" \
       "done_contract_test_expectation" "${contract_test_expectation}" \
       "verification_contract_required" "${contract_verify_required}" \

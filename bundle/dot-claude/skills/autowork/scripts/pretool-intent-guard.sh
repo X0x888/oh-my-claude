@@ -43,13 +43,17 @@ fi
 
 task_intent="$(read_state "task_intent")"
 commit_contract_mode="$(read_state "done_contract_commit_mode")"
+# v1.34.0 (Bug C): push_mode is independent of commit_mode so a
+# compound directive like "commit X. don't push Y." can allow the
+# commit while blocking the push.
+push_contract_mode="$(read_state "done_contract_push_mode")"
 intent_guard_active=0
 
 case "${task_intent}" in
   advisory|session_management|checkpoint) intent_guard_active=1 ;;
 esac
 
-if [[ "${intent_guard_active}" -eq 0 ]] && [[ "${commit_contract_mode}" != "forbidden" ]]; then
+if [[ "${intent_guard_active}" -eq 0 ]] && [[ "${commit_contract_mode}" != "forbidden" ]] && [[ "${push_contract_mode}" != "forbidden" ]]; then
   # execution, continuation, or unset with no explicit "do not commit"
   # contract — allow.
   exit 0
@@ -463,9 +467,21 @@ _prompt_text_authorizes_command() {
   return 0
 }
 
-_commit_contract_forbids_segment() {
+# v1.34.0 (Bug C split): commit_segment matcher narrows to git
+# commit-class only. push_segment matcher covers git push|tag and
+# gh pr/release/issue ops. Each is checked against its own contract
+# mode so a "commit X. don't push Y." prompt allows the commit.
+_commit_segment_forbidden() {
   local seg="$1"
-  if grep -Eq "${_GUARD_PRE}git[[:space:]]+(commit|push|tag)([[:space:]]|$)" <<<"${seg}"; then
+  if grep -Eq "${_GUARD_PRE}git[[:space:]]+commit([[:space:]]|$)" <<<"${seg}"; then
+    return 0
+  fi
+  return 1
+}
+
+_push_segment_forbidden() {
+  local seg="$1"
+  if grep -Eq "${_GUARD_PRE}git[[:space:]]+(push|tag)([[:space:]]|$)" <<<"${seg}"; then
     return 0
   fi
   if grep -Eq "${_GUARD_PRE}gh[[:space:]]+(pr|release|issue)[[:space:]]+(create|merge|edit|close|comment|delete|reopen)([[:space:]]|$)" <<<"${seg}"; then
@@ -478,7 +494,7 @@ if [[ "${commit_contract_mode}" == "forbidden" ]]; then
   _commit_denied_segment=""
   while IFS= read -r _seg; do
     [[ -z "${_seg// }" ]] && continue
-    if _cmd_matches_destructive "${_seg}" && ! _cmd_is_allowed_variant "${_seg}" && _commit_contract_forbids_segment "${_seg}"; then
+    if _cmd_matches_destructive "${_seg}" && ! _cmd_is_allowed_variant "${_seg}" && _commit_segment_forbidden "${_seg}"; then
       _commit_denied_segment="${_seg}"
       break
     fi
@@ -490,7 +506,34 @@ if [[ "${commit_contract_mode}" == "forbidden" ]]; then
       "mode=forbidden" \
       "intent=${task_intent:-unset}" \
       "denied_segment=$(truncate_chars 120 "${_commit_denied_segment}")"
-    jq -nc --arg reason "[Commit-contract gate] the active ULW contract says not to commit or publish from this run. Do the work, verify it, and stop without creating commits, pushes, tags, PRs, or releases. If the user wants a commit after all, they need to say so explicitly in a new prompt. Attempted command: $(truncate_chars 200 "${command_str}")" '{
+    jq -nc --arg reason "[Commit-contract gate] the active ULW contract says not to commit from this run. Do the work, verify it, and stop without creating commits. If the user wants a commit after all, they need to say so explicitly in a new prompt. Attempted command: $(truncate_chars 200 "${command_str}")" '{
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason: $reason
+      }
+    }'
+    exit 0
+  fi
+fi
+
+if [[ "${push_contract_mode}" == "forbidden" ]]; then
+  _push_denied_segment=""
+  while IFS= read -r _seg; do
+    [[ -z "${_seg// }" ]] && continue
+    if _cmd_matches_destructive "${_seg}" && ! _cmd_is_allowed_variant "${_seg}" && _push_segment_forbidden "${_seg}"; then
+      _push_denied_segment="${_seg}"
+      break
+    fi
+  done < <(sed -E 's/(&&|\|\||;|\|)/\n/g' <<<"${normalized_cmd}")
+
+  if [[ -n "${_push_denied_segment}" ]]; then
+    log_hook "pretool-intent-guard" "blocked by push contract: cmd=$(truncate_chars 80 "${command_str}")"
+    record_gate_event "push-contract" "block" \
+      "mode=forbidden" \
+      "intent=${task_intent:-unset}" \
+      "denied_segment=$(truncate_chars 120 "${_push_denied_segment}")"
+    jq -nc --arg reason "[Push-contract gate] the active ULW contract says not to push, tag, or publish from this run (commit is allowed if the contract permits). Stop the destructive segment; if the user wants a publish action after all, they need to say so explicitly in a new prompt. Attempted command: $(truncate_chars 200 "${command_str}")" '{
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
         permissionDecision: "deny",

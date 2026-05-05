@@ -1607,9 +1607,62 @@ assert_eq "commit intent: if needed" \
   "if_needed" \
   "$(detect_commit_intent_from_prompt "finish the fix and commit if needed")"
 
-assert_eq "commit intent: forbidden" \
+assert_eq "commit intent: forbidden (commit-specific negation)" \
   "forbidden" \
   "$(detect_commit_intent_from_prompt "fix the bug but do not commit or push anything")"
+
+# v1.34.0 (Bug C): forbidden detection is COMMIT-specific. A
+# compound directive like "commit X. don't push Y." classifies the
+# commit as required (since commit was explicitly authorized) and
+# the push side gets its own classifier (`detect_push_intent_from_prompt`).
+assert_eq "commit intent: 'commit but don't push' → required (Bug C fix)" \
+  "required" \
+  "$(detect_commit_intent_from_prompt "commit but don't push")"
+
+assert_eq "commit intent: 'commit X. Don't push Y.' → required" \
+  "required" \
+  "$(detect_commit_intent_from_prompt "commit the changes first. Don't push it.")"
+
+assert_eq "commit intent: bare 'don't push' → unspecified for commit" \
+  "unspecified" \
+  "$(detect_commit_intent_from_prompt "don't push")"
+
+assert_eq "commit intent: 'do not commit' → forbidden" \
+  "forbidden" \
+  "$(detect_commit_intent_from_prompt "do not commit")"
+
+assert_eq "commit intent: 'without committing' → forbidden" \
+  "forbidden" \
+  "$(detect_commit_intent_from_prompt "fix the bug without committing")"
+
+# detect_push_intent_from_prompt — independent push-side classifier.
+assert_eq "push intent: 'don't push' → forbidden" \
+  "forbidden" \
+  "$(detect_push_intent_from_prompt "commit but don't push")"
+
+assert_eq "push intent: 'don't release' → forbidden" \
+  "forbidden" \
+  "$(detect_push_intent_from_prompt "merge it but don't release")"
+
+assert_eq "push intent: 'don't tag' → forbidden" \
+  "forbidden" \
+  "$(detect_push_intent_from_prompt "ship the commit, but don't tag yet")"
+
+assert_eq "push intent: 'push when ready' → required" \
+  "required" \
+  "$(detect_push_intent_from_prompt "push when ready")"
+
+assert_eq "push intent: 'release v2.0' → required" \
+  "required" \
+  "$(detect_push_intent_from_prompt "release v2.0 to production")"
+
+assert_eq "push intent: 'fix the bug' → unspecified" \
+  "unspecified" \
+  "$(detect_push_intent_from_prompt "fix the bug")"
+
+assert_eq "push intent: 'commit the changes' → unspecified for push" \
+  "unspecified" \
+  "$(detect_push_intent_from_prompt "commit the changes")"
 
 assert_eq "prompt surfaces: docs + tests + release" \
   "tests,docs,release" \
