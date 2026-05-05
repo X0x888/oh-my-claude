@@ -713,23 +713,44 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
     fi
   fi
 
-  # --- Delivery-contract gate (prompt-time done contract) ---
+  # --- Delivery-contract gate (prompt-time + inferred contract) ---
   #
-  # The router now records explicit adjacent deliverables and commit
-  # expectations early in the run. Before we get into final answer
-  # formatting, block obvious misses against that earlier contract:
-  # prompt asked for tests/docs/config/release/migration and the surface
-  # was never touched, or the user requested a commit and none exists.
-  contract_blockers="$(delivery_contract_blocking_items)"
+  # v1 (prompt-time, v1.33.0): the router records explicit adjacent
+  # deliverables and commit expectations from the prompt wording.
+  # v2 (inferred, v1.34.0): refresh inferred surfaces from the actual
+  # edits — `code edited but no test`, `VERSION bumped without
+  # CHANGELOG`, `conf flag added without parser touched`, `migration
+  # without release notes`. Both layers feed the same gate so the model
+  # gets a single audit-ready blocker list instead of two narrowly-
+  # framed ones.
+  refresh_inferred_contract || true
+  contract_blockers_prompt="$(delivery_contract_blocking_items)"
+  contract_blockers_inferred="$(inferred_contract_blocking_items)"
+  contract_blockers=""
+  if [[ -n "${contract_blockers_prompt}" ]]; then
+    contract_blockers="${contract_blockers_prompt}"
+  fi
+  if [[ -n "${contract_blockers_inferred}" ]]; then
+    if [[ -n "${contract_blockers}" ]]; then
+      contract_blockers="${contract_blockers}"$'\n'"${contract_blockers_inferred}"
+    else
+      contract_blockers="${contract_blockers_inferred}"
+    fi
+  fi
   if [[ -n "${contract_blockers}" ]]; then
     contract_blocker_count="$(printf '%s\n' "${contract_blockers}" | awk 'NF{c++} END{print c+0}')"
+    contract_blocker_prompt_count="$(printf '%s\n' "${contract_blockers_prompt}" | awk 'NF{c++} END{print c+0}')"
+    contract_blocker_inferred_count="$(printf '%s\n' "${contract_blockers_inferred}" | awk 'NF{c++} END{print c+0}')"
     record_gate_event "delivery-contract" "block" \
       "remaining_count=${contract_blocker_count}" \
+      "prompt_blocker_count=${contract_blocker_prompt_count}" \
+      "inferred_blocker_count=${contract_blocker_inferred_count}" \
       "commit_mode=$(read_state "done_contract_commit_mode")" \
       "prompt_surfaces=$(read_state "done_contract_prompt_surfaces")" \
-      "test_expectation=$(read_state "done_contract_test_expectation")"
-    contract_recovery="$(format_gate_recovery_line "finish the missing surface(s) implied by the prompt, or if the repo genuinely cannot support one of them, name that constraint explicitly in your wrap before stopping. For explicit commits, create the commit now or explain why a commit is impossible in this repo.")"
-    emit_stop_block "[Delivery-contract gate] the work is drifting from the contract the user set at the start of the run. Remaining before Stop:\n- ${contract_blockers//$'\n'/$'\n- '}${contract_recovery}"
+      "test_expectation=$(read_state "done_contract_test_expectation")" \
+      "inferred_rules=$(read_state "inferred_contract_rules")"
+    contract_recovery="$(format_gate_recovery_line "finish the missing surface(s) — items tagged with (R1/R2/R3a/R3b/R4/R5) were inferred from your edits and are silent misses unless addressed. If the repo genuinely cannot support one of them, name that constraint explicitly in your wrap before stopping. For explicit commits, create the commit now or explain why a commit is impossible in this repo.")"
+    emit_stop_block "[Delivery-contract gate] the work is drifting from the prompt-stated contract and/or the surfaces inferred from edits made this session. Remaining before Stop:\n- ${contract_blockers//$'\n'/$'\n- '}${contract_recovery}"
     exit 0
   fi
 

@@ -521,6 +521,56 @@
 #directive_budget=balanced
 
 # ---------------------------------------------------------------------------
+# Delivery Contract v2 — infer required adjacent surfaces from real edits.
+# ---------------------------------------------------------------------------
+
+# Delivery Contract v2 (v1.34.0) extends v1's prompt-stated surfaces with
+# inference from the actual edits in the session. It catches:
+#
+#   R1  — code edited (≥2 files) but no test edited → block on missing test.
+#         Suppressed when fresh passing high-confidence verification ran
+#         AFTER the last code edit (`last_verify_outcome=passed`,
+#         confidence ≥ verify_confidence_threshold) — the existing test
+#         suite is acting as proof.
+#   R2  — VERSION bumped without CHANGELOG.md / RELEASE_NOTES.md touched
+#         → block on missing changelog (release lockstep).
+#   R3a — oh-my-claude.conf.example edited without common.sh `_parse_conf_file`
+#         touched → block on parser-site lockstep.
+#   R3b — oh-my-claude.conf.example edited without omc-config.sh
+#         `emit_known_flags` table touched → block on config-table lockstep.
+#         R3a + R3b together enforce the conf-flag triple-write rule from
+#         CLAUDE.md "Coordination Rules"; both must satisfy.
+#   R4  — migration file edited without changelog/release-notes → block.
+#   R5  — substantial code change (≥4 code files) without README/docs/
+#         touched → block on docs lockstep. Threshold is conservative
+#         to avoid false positives on internal-only refactors.
+#
+# Non-goals (explicit deferrals):
+#   • Generic "config" inference beyond R3 — generic config-file edits
+#     have no portable "rest of the system" partner site to lockstep.
+#   • UI state coverage — framework-specific (snapshot tests, Storybook,
+#     Playwright fixtures, XCUITest) and would need per-project signals.
+#     Track via existing `design_review` dimension when UI files edited.
+#
+# First-session aggressiveness: R1's verify-suppression requires both
+# `last_verify_ts` and `last_code_edit_ts` to be present and numeric.
+# A brand-new session where 2 code files are edited BEFORE the first
+# verification will reliably trip R1 — run a quick verification once
+# (test suite or framework run) to populate the suppression baseline.
+#
+# Inferred surfaces fold into `delivery_contract_blocking_items`
+# alongside v1's prompt-stated surfaces. `/ulw-status` surfaces both,
+# and `/ulw-report` aggregates rule-fire frequency under "Delivery
+# contract fires". Re-evaluated lazily on each unique-path mark-edit
+# event AND once at stop-guard.
+#
+# Default ON because the historical defect categories `missing_test ×151`
+# and `docs_stale ×62` directly motivate this layer. Opt out on free-form
+# prototyping projects where the missing-test inference would be noisy.
+# Env: OMC_INFERRED_CONTRACT.
+#inferred_contract=on
+
+# ---------------------------------------------------------------------------
 # Cleanup.
 # ---------------------------------------------------------------------------
 

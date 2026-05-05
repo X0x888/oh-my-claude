@@ -589,5 +589,28 @@ fi
 rm -f "${QP}/classifier_misfires.jsonl"
 
 # ----------------------------------------------------------------------
+printf 'Test 27: v1.34.0 — Delivery contract section empty-state\n'
+out="$(run_report week)"
+assert_contains "T27 — section header rendered" "## Delivery contract fires" "${out}"
+assert_contains "T27 — empty-state message" "No delivery-contract blocks in window" "${out}"
+
+# ----------------------------------------------------------------------
+printf 'Test 28: v1.34.0 — Delivery contract aggregates rule fires\n'
+NOW28="$(date +%s)"
+cat > "${QP}/gate_events.jsonl" <<EOF
+{"ts":${NOW28},"gate":"delivery-contract","event":"block","details":{"prompt_blocker_count":"0","inferred_blocker_count":"2","inferred_rules":"R1_missing_tests,R3a_conf_no_parser","commit_mode":"unspecified","prompt_surfaces":"","test_expectation":""}}
+{"ts":${NOW28},"gate":"delivery-contract","event":"block","details":{"prompt_blocker_count":"1","inferred_blocker_count":"1","inferred_rules":"R5_code_no_docs","commit_mode":"required","prompt_surfaces":"docs","test_expectation":"verify"}}
+{"ts":${NOW28},"gate":"delivery-contract","event":"block","details":{"prompt_blocker_count":"0","inferred_blocker_count":"3","inferred_rules":"R1_missing_tests,R3a_conf_no_parser,R3b_conf_no_config_table","commit_mode":"unspecified","prompt_surfaces":"","test_expectation":""}}
+EOF
+out="$(run_report week)"
+assert_contains "T28 — header line shows totals" "Window total: 3 delivery-contract block(s)" "${out}"
+assert_contains "T28 — splits prompt-only vs inferred" "0 prompt-only (v1) + 3 inferred (v2)" "${out}"
+assert_contains "T28 — R1 row" "\`R1_missing_tests\`" "${out}"
+assert_contains "T28 — R3a row" "\`R3a_conf_no_parser\`" "${out}"
+assert_contains "T28 — R3b row" "\`R3b_conf_no_config_table\`" "${out}"
+assert_contains "T28 — R5 row" "\`R5_code_no_docs\`" "${out}"
+rm -f "${QP}/gate_events.jsonl"
+
+# ----------------------------------------------------------------------
 printf '\n=== Show-Report Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]] || exit 1

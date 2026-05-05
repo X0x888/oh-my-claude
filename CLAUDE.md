@@ -24,7 +24,7 @@ If a fact appears here AND in one of the above, that doc is authoritative — ke
 - `bundle/dot-claude/skills/autowork/scripts/` — 32 autowork hooks + helpers; shared lib `common.sh`; lazy-loaded `lib/{state-io,classifier,verification,timing,canary}.sh`. Per-script detail in `docs/architecture.md`.
 - `bundle/dot-claude/output-styles/` — bundled output styles (`oh-my-claude.md` default, `executive-brief.md`); selected via `output_style=` in `oh-my-claude.conf`
 - `config/settings.patch.json` — settings merged into user config on install
-- `tests/` — 73 bash + 1 python test scripts (all 73 bash tests CI-pinned in `validate.yml`; pin discipline enforced by `tests/test-coordination-rules.sh`)
+- `tests/` — 74 bash + 1 python test scripts (all 74 bash tests CI-pinned in `validate.yml`; pin discipline enforced by `tests/test-coordination-rules.sh`)
 - `tools/` — developer-only tools (telemetry replay, classifier fixtures); not installed
 - `docs/` — architecture, customization, FAQ, glossary, prompts, showcase
 

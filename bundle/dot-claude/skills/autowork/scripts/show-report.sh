@@ -525,6 +525,59 @@ else
 fi
 
 # ----------------------------------------------------------------------
+# Section 4c1.0: Delivery-contract fires (v1.34.0 Delivery Contract v2)
+#
+# stop-guard records `delivery-contract` block events with rich detail
+# (`prompt_blocker_count`, `inferred_blocker_count`, `inferred_rules`,
+# `commit_mode`, `prompt_surfaces`, `test_expectation`). This section
+# aggregates the rule-fire frequency across the window so the user
+# can answer "is v2 catching real misses, or chiming on noise?"
+#
+# The aggregation splits prompt-side blockers (v1) from inferred-side
+# blockers (v2) and groups by inferred rule ID (R1/R2/R3a/R3b/R4/R5)
+# so each inference rule's value is observable.
+printf '## Delivery contract fires\n\n'
+delivery_contract_rows="$(printf '%s\n' "${gate_event_rows}" | jq -c \
+    'select(.gate == "delivery-contract" and .event == "block")' 2>/dev/null || true)"
+if [[ -z "${delivery_contract_rows}" ]]; then
+  printf '_No delivery-contract blocks in window._\n\n'
+else
+  _dc_total="$(printf '%s\n' "${delivery_contract_rows}" | wc -l | tr -d '[:space:]')"
+  _dc_with_inferred="$(printf '%s\n' "${delivery_contract_rows}" | jq -c \
+      'select((.details.inferred_blocker_count // "0" | tonumber) > 0)' 2>/dev/null \
+      | wc -l | tr -d '[:space:]')"
+  _dc_prompt_only=$(( _dc_total - _dc_with_inferred ))
+  printf '_Window total: %s delivery-contract block(s) — %s prompt-only (v1) + %s inferred (v2)._\n\n' \
+    "${_dc_total}" "${_dc_prompt_only}" "${_dc_with_inferred}"
+
+  # Per-rule fire counts. inferred_rules is a CSV ("R1_missing_tests,
+  # R3a_conf_no_parser") so we split each row into one record per
+  # rule before grouping.
+  printf '| Inference rule | Fires | Avg blocker count |\n'
+  printf '|---|---:|---:|\n'
+  jq -sr '
+    [.[] | . as $row | (.details.inferred_rules // "" | split(",") | .[]) | select(length > 0) |
+      {rule: ., total: ($row.details.inferred_blocker_count // "0" | tonumber)}]
+    | group_by(.rule)
+    | map({
+        rule: .[0].rule,
+        n: length,
+        avg: ((map(.total) | add) / length | floor)
+      })
+    | sort_by(-.n, .rule)
+    | .[0:12]
+    | .[]
+    | [.rule, (.n | tostring), (.avg | tostring)]
+    | @tsv
+  ' <<<"${delivery_contract_rows}" 2>/dev/null \
+    | while IFS=$'\t' read -r _dc_rule _dc_n _dc_avg; do
+        [[ -z "${_dc_rule}" ]] && continue
+        printf '| `%s` | %s | %s |\n' "${_dc_rule}" "${_dc_n}" "${_dc_avg}"
+      done
+  printf '\n'
+fi
+
+# ----------------------------------------------------------------------
 # Section 4c1.5: Model-drift canary signals (v1.26.0 Wave 2)
 #
 # Surfaces the silent-confabulation canary readings recorded by

@@ -60,6 +60,7 @@ _omc_env_directive_budget="${OMC_DIRECTIVE_BUDGET:-}"
 _omc_env_blindspot_ttl="${OMC_BLINDSPOT_TTL_SECONDS:-}"
 _omc_env_claude_bin="${OMC_CLAUDE_BIN:-}"
 _omc_env_resume_request_per_cwd_cap="${OMC_RESUME_REQUEST_PER_CWD_CAP:-}"
+_omc_env_inferred_contract="${OMC_INFERRED_CONTRACT:-}"
 
 OMC_STALL_THRESHOLD="${OMC_STALL_THRESHOLD:-12}"
 OMC_EXCELLENCE_FILE_COUNT="${OMC_EXCELLENCE_FILE_COUNT:-3}"
@@ -274,6 +275,18 @@ OMC_BLINDSPOT_INVENTORY="${OMC_BLINDSPOT_INVENTORY:-on}"
 # ON; lighter than a hard gate — informational, expects the model to
 # surface gaps in its opener under a "Project surfaces touched:" line.
 OMC_INTENT_BROADENING="${OMC_INTENT_BROADENING:-on}"
+# Inferred delivery contract (v1.34.0): when ON, mark-edit and stop-guard
+# derive required adjacent surfaces from the actual edits — not only
+# from explicit prompt wording. Catches "code edited but no test added",
+# "VERSION bumped without CHANGELOG", "conf flag added without parser
+# touched" (the triple-write coordination rule), and "migration without
+# release notes". Inferred surfaces fold into delivery_contract_blocking_items
+# alongside v1's prompt-stated surfaces; show-status surfaces both.
+# Default ON — the historical defect categories `missing_test ×151`
+# and `docs_stale ×62` directly motivate this layer. Opt out on
+# free-form prototyping projects where missing-test inference would be
+# noisy.
+OMC_INFERRED_CONTRACT="${OMC_INFERRED_CONTRACT:-on}"
 # Router directive budget (v1.33.0): caps stacking of SOFT router
 # directives so quality gains do not silently turn into prompt tax.
 # `maximum` keeps the widest aperture, `balanced` trims heavy co-fire
@@ -374,6 +387,8 @@ _parse_conf_file() {
         [[ -z "${_omc_env_blindspot_inventory}" && "${value}" =~ ^(on|off)$ ]] && OMC_BLINDSPOT_INVENTORY="${value}" || true ;;
       intent_broadening)
         [[ -z "${_omc_env_intent_broadening}" && "${value}" =~ ^(on|off)$ ]] && OMC_INTENT_BROADENING="${value}" || true ;;
+      inferred_contract)
+        [[ -z "${_omc_env_inferred_contract}" && "${value}" =~ ^(on|off)$ ]] && OMC_INFERRED_CONTRACT="${value}" || true ;;
       divergence_directive)
         [[ -z "${_omc_env_divergence_directive}" && "${value}" =~ ^(on|off)$ ]] && OMC_DIVERGENCE_DIRECTIVE="${value}" || true ;;
       directive_budget)
@@ -575,6 +590,16 @@ is_blindspot_inventory_enabled() {
 # inventory path reference.
 is_intent_broadening_enabled() {
   [[ "${OMC_INTENT_BROADENING:-on}" != "off" ]]
+}
+
+# is_inferred_contract_enabled — v1.34.0.
+# Gate for Delivery Contract v2 inference (`derive_inferred_contract_*`,
+# inferred-surface block in delivery_contract_blocking_items, the
+# inferred section in show-status). Default ON. When OFF, mark-edit's
+# refresh path is a no-op and stop-guard reverts to v1 behavior
+# (prompt-stated surfaces only).
+is_inferred_contract_enabled() {
+  [[ "${OMC_INFERRED_CONTRACT:-on}" != "off" ]]
 }
 
 # blindspot_inventory_path — v1.28.0.
@@ -2160,6 +2185,447 @@ delivery_contract_remaining_items() {
   fi
 
   printf '%s' "${items%$'\n'}"
+}
+
+# ===========================================================================
+# Delivery Contract v2 — inferred adjacent surfaces (v1.34.0)
+#
+# v1 (above) blocks Stop on surfaces the user named in the prompt
+# ("update the docs", "add a test"). v2 closes the gap when the user
+# does NOT name them but the actual edits imply them. Four conservative
+# inference rules, all derived from `edited_files.log`:
+#
+#   R1 — code edited (≥2 files) but no test edited
+#   R2 — VERSION bumped without changelog/release-notes touched
+#   R3 — oh-my-claude.conf.example edited without common.sh touched
+#        (the conf-flag triple-write coordination rule, parser half)
+#   R4 — migration file edited without changelog/release-notes touched
+#
+# State keys (all written via `refresh_inferred_contract`):
+#   inferred_contract_surfaces — CSV of surface tokens (e.g. "tests,release")
+#   inferred_contract_rules    — CSV of fired rule IDs (e.g. "R1,R2")
+#   inferred_contract_ts       — last refresh epoch
+#
+# Re-evaluated lazily: mark-edit calls refresh after every NEW unique
+# path is seen; stop-guard calls refresh once before reading blockers
+# so the state is always current for the gate decision.
+# ===========================================================================
+
+# Match VERSION-shaped files (top-level marker for release intent).
+is_version_file_path() {
+  local path="$1"
+  [[ -z "${path}" ]] && return 1
+  case "$(basename "${path}")" in
+    VERSION|version|version.txt|VERSION.txt|VERSION.md) return 0 ;;
+  esac
+  return 1
+}
+
+# Match CHANGELOG / release-notes files specifically. Stricter than
+# `is_release_path` (which also matches VERSION-marker files via the
+# `version*` basename pattern) so R2 / R4 do NOT consider a VERSION bump
+# as having "satisfied" the changelog requirement.
+is_changelog_path() {
+  local path="$1"
+  [[ -z "${path}" ]] && return 1
+  case "$(basename "${path}")" in
+    CHANGELOG|CHANGELOG.md|CHANGELOG.txt|CHANGELOG.rst|changelog|changelog.md|Changelog.md) return 0 ;;
+    RELEASE_NOTES|RELEASE_NOTES.md|RELEASE-NOTES.md|release-notes.md|release_notes.md|HISTORY.md|HISTORY|NEWS|NEWS.md) return 0 ;;
+  esac
+  case "${path}" in
+    */releases/*|*/release-notes/*|*/release_notes/*) return 0 ;;
+  esac
+  return 1
+}
+
+# Match the conf-flag user surface — the documented example file every
+# new flag must appear in (per the conf-flag triple-write rule in
+# CLAUDE.md "Coordination Rules").
+is_conf_example_path() {
+  local path="$1"
+  [[ -z "${path}" ]] && return 1
+  case "${path}" in
+    *oh-my-claude.conf.example) return 0 ;;
+    *.conf.example) return 0 ;;
+  esac
+  return 1
+}
+
+# Match the parser-side lockstep partner — the file that parses conf
+# values into env vars (common.sh's `_parse_conf_file`). One of the
+# THREE sites named in CLAUDE.md "Coordination Rules" for the conf-
+# flag triple-write. R3a fires when conf.example is touched without
+# this site.
+is_conf_parser_path() {
+  local path="$1"
+  [[ -z "${path}" ]] && return 1
+  case "${path}" in
+    */autowork/scripts/common.sh) return 0 ;;
+    common.sh) return 0 ;;
+  esac
+  return 1
+}
+
+# Match the config-table lockstep partner — the `emit_known_flags()`
+# table in `omc-config.sh` that backs `/omc-config`. Distinct from
+# `is_conf_parser_path` so R3 can require BOTH sites (the triple-
+# write rule names parser AND table AND example).
+is_omc_config_table_path() {
+  local path="$1"
+  [[ -z "${path}" ]] && return 1
+  case "${path}" in
+    */autowork/scripts/omc-config.sh) return 0 ;;
+    omc-config.sh) return 0 ;;
+  esac
+  return 1
+}
+
+# Match documentation-index files where a substantial code change
+# usually warrants a doc-side update. README and the `docs/` dir
+# are the canonical "if this code surface moves the doc surface
+# probably needs to follow" locations. Architecture notes, the
+# customization flag table, and the FAQ live there. Used by R5.
+is_doc_index_path() {
+  local path="$1"
+  [[ -z "${path}" ]] && return 1
+  case "$(basename "${path}")" in
+    README|README.md|README.markdown|README.rst|AGENTS.md|CLAUDE.md|CONTRIBUTING.md) return 0 ;;
+  esac
+  case "${path}" in
+    */docs/*) return 0 ;;
+    */doc/*) return 0 ;;
+  esac
+  return 1
+}
+
+# Skip paths that should NOT participate in inference. Internal harness
+# state, .git internals, vendor/build artifacts, and the model's own
+# scratch dirs would otherwise pollute counters. The vendor/build set
+# defends against code-mod tooling that regenerates files inside
+# `node_modules/`, `vendor/`, or framework build dirs — those edits
+# should NOT count as "code edited" for R1/R5 purposes.
+is_inference_skip_path() {
+  local path="$1"
+  [[ -z "${path}" ]] && return 0
+  case "${path}" in
+    *.claude/quality-pack/state/*) return 0 ;;
+    *.claude/projects/*) return 0 ;;
+    */.git/*) return 0 ;;
+    */node_modules/*) return 0 ;;
+    */vendor/*) return 0 ;;
+    */dist/*) return 0 ;;
+    */build/*) return 0 ;;
+    */.next/*) return 0 ;;
+    */.turbo/*) return 0 ;;
+    */.cache/*) return 0 ;;
+    */target/*) return 0 ;;
+  esac
+  return 1
+}
+
+# Walk the unique-edit log and emit `surfaces|rules`. Caller splits on
+# the pipe. Empty result means no rule fired.
+derive_inferred_contract_surfaces() {
+  local edited_log
+  edited_log="$(session_file "edited_files.log" 2>/dev/null || true)"
+
+  local code_count=0 test_count=0 doc_count=0
+  local saw_version=0 saw_changelog=0 saw_migration=0
+  local saw_conf_example=0 saw_parser=0 saw_config_table=0
+  local saw_doc_index=0
+  local _path
+
+  if [[ -f "${edited_log}" ]]; then
+    while IFS= read -r _path || [[ -n "${_path}" ]]; do
+      [[ -z "${_path}" ]] && continue
+      is_inference_skip_path "${_path}" && continue
+
+      # R1 code count counts ONLY real code: not tests, not docs, not
+      # config artifacts, not changelog/release notes, not migrations,
+      # not the conf-flag example. A 1-file edit to common.sh paired
+      # with a conf.example doc should not trip R1 (the missing-test
+      # rule) — that pairing IS the R3 lockstep, not undertested code.
+      if is_test_path "${_path}"; then
+        test_count=$((test_count + 1))
+      elif is_doc_path "${_path}"; then
+        doc_count=$((doc_count + 1))
+      elif is_config_path "${_path}" || is_release_path "${_path}" || is_migration_path "${_path}" || is_conf_example_path "${_path}"; then
+        :
+      else
+        code_count=$((code_count + 1))
+      fi
+
+      # IMPORTANT — these saw_* setters run UNCONDITIONALLY against
+      # every path, NOT inside the elif arm above. CHANGELOG.md
+      # classifies as `is_doc_path` first (matches `*.md`) and is
+      # excluded from `code_count`, but R2/R4 still need to know it
+      # was touched. Likewise `oh-my-claude.conf.example` matches
+      # `is_conf_example_path` (excluded from code) but R3 needs to
+      # see it. Do NOT collapse these into the elif chain — that
+      # would silently disable R2/R3/R4 for paths classified into
+      # an exclusion arm.
+      is_version_file_path "${_path}" && saw_version=1
+      is_changelog_path "${_path}" && saw_changelog=1
+      is_migration_path "${_path}" && saw_migration=1
+      is_conf_example_path "${_path}" && saw_conf_example=1
+      is_conf_parser_path "${_path}" && saw_parser=1
+      is_omc_config_table_path "${_path}" && saw_config_table=1
+      is_doc_index_path "${_path}" && saw_doc_index=1
+    done < <(sort -u "${edited_log}" 2>/dev/null || true)
+  fi
+
+  local surfaces=""
+  local rules=""
+
+  # R1: code edited (≥2 files) but no test file edited.
+  # Suppress when high-confidence test verification ran AFTER the last
+  # code edit and PASSED — the existing test suite is acting as proof
+  # of coverage. This is the mature-codebase common case (bug fix in
+  # code where the regression test already exists). The threshold for
+  # "high confidence" is OMC_VERIFY_CONFIDENCE_THRESHOLD (default 40),
+  # the same threshold v1's `delivery_contract_remaining_items` uses
+  # for the verify gate, so the two layers stay coherent.
+  if [[ "${code_count}" -ge 2 && "${test_count}" -eq 0 ]]; then
+    local _r1_last_verify_ts _r1_last_code_edit_ts _r1_outcome _r1_conf
+    _r1_last_verify_ts="$(read_state "last_verify_ts")"
+    _r1_last_code_edit_ts="$(read_state "last_code_edit_ts")"
+    _r1_outcome="$(read_state "last_verify_outcome")"
+    _r1_conf="$(read_state "last_verify_confidence")"
+    local _r1_threshold="${OMC_VERIFY_CONFIDENCE_THRESHOLD:-40}"
+    local _r1_satisfied=0
+    if [[ -n "${_r1_last_verify_ts}" \
+       && "${_r1_last_verify_ts}" =~ ^[0-9]+$ \
+       && -n "${_r1_last_code_edit_ts}" \
+       && "${_r1_last_code_edit_ts}" =~ ^[0-9]+$ \
+       && "${_r1_last_verify_ts}" -ge "${_r1_last_code_edit_ts}" \
+       && "${_r1_outcome}" == "passed" \
+       && "${_r1_conf}" =~ ^[0-9]+$ \
+       && "${_r1_conf}" -ge "${_r1_threshold}" ]]; then
+      _r1_satisfied=1
+    fi
+    if [[ "${_r1_satisfied}" -eq 0 ]]; then
+      surfaces="$(_csv_add_unique "${surfaces}" "tests")"
+      rules="$(_csv_add_unique "${rules}" "R1_missing_tests")"
+    fi
+  fi
+
+  if [[ "${saw_version}" -eq 1 && "${saw_changelog}" -eq 0 ]]; then
+    surfaces="$(_csv_add_unique "${surfaces}" "changelog")"
+    rules="$(_csv_add_unique "${rules}" "R2_version_no_changelog")"
+  fi
+
+  # R3 splits into R3a (parser-site lockstep) + R3b (omc-config table
+  # lockstep) so both parser-side partners of the conf-flag triple-
+  # write can fire independently. Touching `conf.example` + only
+  # `common.sh` previously satisfied R3, missing the omc-config.sh
+  # table row that backs `/omc-config`. Splitting fires both blockers
+  # in that case so the user gets a precise pointer to the missing
+  # site.
+  if [[ "${saw_conf_example}" -eq 1 && "${saw_parser}" -eq 0 ]]; then
+    surfaces="$(_csv_add_unique "${surfaces}" "parser_lockstep")"
+    rules="$(_csv_add_unique "${rules}" "R3a_conf_no_parser")"
+  fi
+  if [[ "${saw_conf_example}" -eq 1 && "${saw_config_table}" -eq 0 ]]; then
+    surfaces="$(_csv_add_unique "${surfaces}" "config_table_lockstep")"
+    rules="$(_csv_add_unique "${rules}" "R3b_conf_no_config_table")"
+  fi
+
+  if [[ "${saw_migration}" -eq 1 && "${saw_changelog}" -eq 0 ]]; then
+    surfaces="$(_csv_add_unique "${surfaces}" "changelog")"
+    rules="$(_csv_add_unique "${rules}" "R4_migration_no_release")"
+  fi
+
+  # R5 — substantial code change without docs touched. Fires only
+  # at a higher threshold than R1 (≥4 code files) because doc
+  # updates are a coarser correlation with code change than tests:
+  # a small refactor often needs no doc update. The conservative
+  # threshold protects against false positives on internal-only
+  # cleanups while still catching "added a feature, never wrote
+  # docs". Suppressed when ANY doc file (broad `is_doc_path`) was
+  # touched OR the README / docs/ dir saw an edit (specific
+  # `is_doc_index_path`). The threshold is intentionally not
+  # configurable via env yet — ship the rule with a sensible
+  # default and tune via telemetry from `/ulw-report` before adding
+  # a knob.
+  if [[ "${code_count}" -ge 4 && "${doc_count}" -eq 0 && "${saw_doc_index}" -eq 0 ]]; then
+    surfaces="$(_csv_add_unique "${surfaces}" "docs")"
+    rules="$(_csv_add_unique "${rules}" "R5_code_no_docs")"
+  fi
+
+  printf '%s|%s' "${surfaces}" "${rules}"
+}
+
+# Helper: build a comma-separated "e.g. /a/b, /c/d (+N more)" list of
+# code-file paths from edited_files.log so blocker messages can name
+# the offending files (auditability — without this users have to
+# inspect edited_files.log manually). Caps the list at 3 names plus
+# a remainder count so a 50-file session does not blow up the prompt.
+_inferred_code_files_eg() {
+  local edited_log="$1"
+  local cap=3 names=() count=0
+  if [[ -f "${edited_log}" ]]; then
+    while IFS= read -r _p || [[ -n "${_p}" ]]; do
+      [[ -z "${_p}" ]] && continue
+      is_inference_skip_path "${_p}" && continue
+      is_test_path "${_p}" && continue
+      is_doc_path "${_p}" && continue
+      if is_config_path "${_p}" || is_release_path "${_p}" || is_migration_path "${_p}" || is_conf_example_path "${_p}"; then
+        continue
+      fi
+      count=$((count + 1))
+      if [[ "${#names[@]}" -lt "${cap}" ]]; then
+        names+=("${_p}")
+      fi
+    done < <(sort -u "${edited_log}" 2>/dev/null || true)
+  fi
+  [[ "${count}" -eq 0 ]] && return 0
+  local IFS=', '
+  local visible="${names[*]}"
+  local remainder=$((count - ${#names[@]}))
+  if [[ "${remainder}" -gt 0 ]]; then
+    printf 'e.g. %s (+%d more)' "${visible}" "${remainder}"
+  else
+    printf 'e.g. %s' "${visible}"
+  fi
+}
+
+# Convert a fired-rules CSV into one human-readable blocker line per
+# rule. Lines are newline-separated, no trailing newline. Recomputes
+# the counts so the message is precise without callers re-deriving.
+inferred_contract_blocker_messages() {
+  local rules="${1:-}"
+  [[ -z "${rules}" ]] && return 0
+
+  local edited_log code_count=0 test_count=0 doc_count=0
+  edited_log="$(session_file "edited_files.log" 2>/dev/null || true)"
+  if [[ -f "${edited_log}" ]]; then
+    while IFS= read -r _path || [[ -n "${_path}" ]]; do
+      [[ -z "${_path}" ]] && continue
+      is_inference_skip_path "${_path}" && continue
+      # Same exclusion list as the deriver — keep the message counts
+      # truthful (otherwise R1/R5's "N code files" would include
+      # VERSION, CHANGELOG, conf example, and migration paths).
+      if is_test_path "${_path}"; then
+        test_count=$((test_count + 1))
+      elif is_doc_path "${_path}"; then
+        doc_count=$((doc_count + 1))
+      elif is_config_path "${_path}" || is_release_path "${_path}" || is_migration_path "${_path}" || is_conf_example_path "${_path}"; then
+        :
+      else
+        code_count=$((code_count + 1))
+      fi
+    done < <(sort -u "${edited_log}" 2>/dev/null || true)
+  fi
+
+  local code_eg
+  code_eg="$(_inferred_code_files_eg "${edited_log}")"
+
+  local items=""
+  local _rule
+  local _saved_ifs="${IFS}"
+  IFS=','
+  for _rule in ${rules}; do
+    case "${_rule}" in
+      R1_missing_tests)
+        if [[ -n "${code_eg}" ]]; then
+          items="${items}add or update tests for the code edited this session (R1: ${code_count} code files, ${test_count} test files; ${code_eg})"$'\n'
+        else
+          items="${items}add or update tests for the code edited this session (R1: ${code_count} code files, ${test_count} test files)"$'\n'
+        fi
+        ;;
+      R2_version_no_changelog)
+        items="${items}touch CHANGELOG.md / RELEASE_NOTES — VERSION bumped without release lockstep (R2)"$'\n'
+        ;;
+      R3a_conf_no_parser)
+        items="${items}touch common.sh \`_parse_conf_file\` — oh-my-claude.conf.example was edited without parser-site lockstep (R3a)"$'\n'
+        ;;
+      R3b_conf_no_config_table)
+        items="${items}touch omc-config.sh \`emit_known_flags\` — oh-my-claude.conf.example was edited without config-table lockstep (R3b)"$'\n'
+        ;;
+      R4_migration_no_release)
+        items="${items}touch CHANGELOG.md / RELEASE_NOTES — migration edited without release lockstep (R4)"$'\n'
+        ;;
+      R5_code_no_docs)
+        if [[ -n "${code_eg}" ]]; then
+          items="${items}touch README / docs/ to reflect the code change (R5: ${code_count} code files, ${doc_count} doc files; ${code_eg})"$'\n'
+        else
+          items="${items}touch README / docs/ to reflect the code change (R5: ${code_count} code files, ${doc_count} doc files)"$'\n'
+        fi
+        ;;
+    esac
+  done
+  IFS="${_saved_ifs}"
+
+  printf '%s' "${items%$'\n'}"
+}
+
+# Internal — runs the derive+write under a single lock holding so
+# the read-derive-write window is atomic. Pulled out as a helper
+# because `with_state_lock` requires a function name to dispatch.
+_refresh_inferred_contract_locked() {
+  local task_intent task_domain commit_mode result surfaces rules now
+  task_intent="$(read_state "task_intent")"
+  task_domain="$(read_state "task_domain")"
+  commit_mode="$(read_state "done_contract_commit_mode")"
+
+  if [[ "${task_intent}" != "execution" ]]; then
+    return 0
+  fi
+  if [[ "${task_domain}" == "writing" || "${task_domain}" == "research" ]]; then
+    return 0
+  fi
+  if [[ "${commit_mode}" == "forbidden" ]]; then
+    return 0
+  fi
+
+  result="$(derive_inferred_contract_surfaces)"
+  surfaces="${result%%|*}"
+  rules="${result#*|}"
+  now="$(now_epoch)"
+
+  write_state_batch \
+    "inferred_contract_surfaces" "${surfaces}" \
+    "inferred_contract_rules" "${rules}" \
+    "inferred_contract_ts" "${now}"
+}
+
+# Refresh the inferred-contract state. Idempotent. Called from
+# mark-edit (after a new unique path is appended) and from stop-guard
+# (right before reading blockers). Skips work when the flag is off.
+# The body runs under `with_state_lock` (re-entrant) so the read-
+# derive-write window — including reads of last_verify_ts /
+# last_code_edit_ts that gate R1's verify-suppression — is atomic
+# against concurrent mark-edit invocations.
+refresh_inferred_contract() {
+  is_inferred_contract_enabled || return 0
+  with_state_lock _refresh_inferred_contract_locked
+}
+
+# Read the persisted blocker messages. Used by stop-guard to extend
+# v1's blocking_items output. Returns empty when the flag is off, no
+# rules fired, or the contract is stale (no edits since refresh).
+inferred_contract_blocking_items() {
+  is_inferred_contract_enabled || return 0
+  local rules
+  rules="$(read_state "inferred_contract_rules")"
+  [[ -z "${rules}" ]] && return 0
+  inferred_contract_blocker_messages "${rules}"
+}
+
+# Human-readable summary of inferred contract state for show-status.
+# Returns one of:
+#   "off"           — flag disabled
+#   "none"          — flag on, no rules fired
+#   "<rules CSV>"   — rules currently firing (e.g. "R1, R3")
+inferred_contract_summary() {
+  is_inferred_contract_enabled || { printf 'off'; return; }
+  local rules
+  rules="$(read_state "inferred_contract_rules")"
+  if [[ -z "${rules}" ]]; then
+    printf 'none'
+    return
+  fi
+  printf '%s' "${rules//,/, }"
 }
 
 # --- Dimension tracking helpers ---

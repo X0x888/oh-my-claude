@@ -113,8 +113,20 @@ if [[ -n "${edited_path}" ]]; then
         fi
       fi
     fi
+    printf '%s' "${_seen}"
   }
-  with_state_lock _increment_edit_counter
+  _seen_result="$(with_state_lock _increment_edit_counter)"
+
+  # Delivery Contract v2 (v1.34.0): refresh inferred-surface contract
+  # when a NEW unique path landed. Skipping when _seen=1 keeps the
+  # per-edit overhead low — re-derivation is O(unique-paths) on
+  # edited_files.log, so we only pay it when the input set changed.
+  # `refresh_inferred_contract` is itself gated by
+  # `is_inferred_contract_enabled` and re-entrant against the state
+  # lock via `_OMC_STATE_LOCK_HELD`.
+  if [[ "${_seen_result}" == "0" ]]; then
+    refresh_inferred_contract || true
+  fi
 
   log_hook "mark-edit" "file=${edited_path} is_doc=${is_doc}"
 fi

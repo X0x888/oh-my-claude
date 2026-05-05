@@ -4,6 +4,33 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Delivery Contract v2 — infer required surfaces from real edits
+
+The v1 contract (v1.33.0) blocked Stop on adjacent deliverables the user *named* in the prompt — "update the docs", "add a test". v2 closes the gap when the user does NOT name them but the actual edits imply them. Six conservative inference rules, all derived from `edited_files.log` plus session state, fold into the same `delivery-contract` gate so the model sees a single audit-ready blocker list:
+
+- **R1 — `code edited (≥2 files) but no test edited`.** Suppressed when fresh passing high-confidence verification ran AFTER the last code edit (`last_verify_outcome=passed`, confidence ≥ `OMC_VERIFY_CONFIDENCE_THRESHOLD`) — the existing test suite is acting as proof. Mature-codebase common case.
+- **R2 — `VERSION bumped without CHANGELOG.md / RELEASE_NOTES.md touched`.** A new strict `is_changelog_path` matcher (distinct from `is_release_path`, which also matches VERSION-marker files) ensures the rule does not consider a bare VERSION bump as having satisfied the changelog requirement.
+- **R3a — `oh-my-claude.conf.example edited without common.sh `_parse_conf_file` touched`.** Parser-site lockstep.
+- **R3b — `oh-my-claude.conf.example edited without omc-config.sh `emit_known_flags` table touched`.** Config-table lockstep. R3a + R3b together enforce the three-site conf-flag triple-write rule documented in CLAUDE.md "Coordination Rules" — touching `conf.example` + only one of the two partner sites previously satisfied the single rule, masking the violation.
+- **R4 — `migration file edited without changelog/release notes touched`.** Same release-lockstep discipline as R2 for schema changes.
+- **R5 — `≥4 code files edited but no README/docs/ touched`.** Conservative threshold (≥4) avoids false positives on small refactors while catching the `docs_stale ×62` historical defect category.
+
+**Non-goals (explicit deferrals).** Generic "config" inference beyond R3 has no portable lockstep partner site to anchor against. UI state coverage is framework-specific (snapshot tests / Storybook / Playwright fixtures / XCUITest); the existing `design_review` dimension already gates UI files.
+
+### Added
+
+- **State keys (v1.34.0).** `inferred_contract_surfaces`, `inferred_contract_rules`, `inferred_contract_ts` — refreshed lazily by `mark-edit.sh` after each NEW unique edit path lands and once by `stop-guard.sh` immediately before the gate decision. The whole read-derive-write window runs under `with_state_lock` (re-entrant) for atomicity against concurrent mark-edits. Documented in `docs/architecture.md`.
+- **Conf flag `inferred_contract` (default `on`, env `OMC_INFERRED_CONTRACT`).** Triple-write present at `common.sh` parser case, `omc-config.sh` `emit_known_flags` table + presets (maximum/balanced=on, minimal=off), and `oh-my-claude.conf.example`. Documented in `docs/customization.md`.
+- **`tests/test-inferred-contract.sh`** — 76 focused assertions covering each rule's fire/silence/satisfaction conditions, multi-rule co-firing, refresh gating (advisory / writing / forbidden-commit / flag=off), `mark-edit` triggering refresh on new paths only, blocker-message correctness with sample-file lists, real-user-task simulations, and an F10 layer that pipes natural-language prompts through `derive_done_contract_prompt_surfaces` to verify v1 extracts NO surface from the prompt before v2 fills the gap. CI-pinned in `.github/workflows/validate.yml`.
+- **`/ulw-report` Delivery-contract section.** Aggregates v1 (prompt-stated) vs v2 (inferred) block counts and per-rule fire frequency / average blocker count, so users can answer "is v2 catching real misses or chiming on noise?".
+- **Helper functions** in `common.sh`: `is_changelog_path`, `is_version_file_path`, `is_conf_example_path`, `is_conf_parser_path`, `is_omc_config_table_path`, `is_doc_index_path`, `is_inference_skip_path`. The skip-path matcher excludes `node_modules/`, `vendor/`, `dist/`, `build/`, `.next/`, `.turbo/`, `.cache/`, `target/`, `.git/`, and harness state directories so vendor-regen tooling does not pollute counts.
+
+### Changed
+
+- **`delivery_contract_blocking_items` and the stop-guard `delivery-contract` block** now combine v1 (prompt-stated) and v2 (inferred) blockers into a single Stop block. Gate event details widen: `prompt_blocker_count`, `inferred_blocker_count`, `inferred_rules` join the existing `commit_mode` / `prompt_surfaces` / `test_expectation`.
+- **Blocker messages name offending files.** R1 / R5 messages append `e.g. /path/a, /path/b (+N more)` from `edited_files.log` so users can triage without reading the log.
+- **`/ulw-status`** surfaces `Inferred (v2):` and a per-rule blocker breakdown alongside the v1 contract section.
+
 ### Release-cycle speedups (post-mortem of the v1.33.0/.1/.2 cascade)
 
 The v1.33.0 release surfaced three avoidable cycles burning ~20 minutes total wall time on a Wave-4 `claude_bin` denylist firing on Linux's `/tmp/tmp.XXX` mktemp output that never reproduced under macOS dev or sterile-env. Four targeted improvements close the gap.

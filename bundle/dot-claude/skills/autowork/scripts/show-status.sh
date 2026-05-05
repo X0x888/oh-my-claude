@@ -215,6 +215,10 @@ contract_touched_surfaces="$(delivery_contract_touched_surfaces_summary 2>/dev/n
 contract_remaining_items="$(delivery_contract_remaining_items 2>/dev/null || true)"
 contract_blocking_items="$(delivery_contract_blocking_items 2>/dev/null || true)"
 
+# Delivery Contract v2 — inferred adjacent surfaces (v1.34.0).
+inferred_contract_status="$(inferred_contract_summary 2>/dev/null || printf 'unknown')"
+inferred_contract_blockers="$(inferred_contract_blocking_items 2>/dev/null || true)"
+
 # ---------------------------------------------------------------------------
 # Summary mode — compact recap
 # ---------------------------------------------------------------------------
@@ -518,8 +522,16 @@ printf 'Commit intent:       %s\n' "${contract_commit_mode}"
 printf 'Prompt surfaces:     %s\n' "${contract_prompt_surfaces}"
 printf 'Proof contract:      %s\n' "${contract_verify_required}"
 printf 'Touched surfaces:    %s\n' "${contract_touched_surfaces}"
+printf 'Inferred (v2):       %s\n' "${inferred_contract_status}"
 if [[ -n "${contract_blocking_items}" ]]; then
   printf 'Explicit blockers:   %s\n' "$(printf '%s' "${contract_blocking_items}" | head -1)"
+fi
+if [[ -n "${inferred_contract_blockers}" ]]; then
+  printf 'Inferred blockers:\n'
+  while IFS= read -r _inferred_item; do
+    [[ -z "${_inferred_item}" ]] && continue
+    printf '  - %s\n' "${_inferred_item}"
+  done <<<"${inferred_contract_blockers}"
 fi
 if [[ -n "${contract_remaining_items}" ]]; then
   printf 'Remaining:\n'

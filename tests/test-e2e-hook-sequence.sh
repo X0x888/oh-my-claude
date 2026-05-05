@@ -1079,7 +1079,10 @@ out2="$(sim_stop "su2" "$(structured_closeout "su2" "Updated the source files an
 assert_empty "seq-U2: stop allowed after editor-critic" "${out2}"
 teardown_test
 
-# Sequence U3: Very complex task (6+ files) requires briefing-analyst for traceability
+# Sequence U3: Very complex task (6+ files) requires briefing-analyst for traceability.
+# A doc edit is included so the v1.34.0 R5 (code-no-docs) inferred-contract rule
+# does not block on the 6-file source-only shape — real complete work at this
+# scale touches docs alongside the code.
 setup_test
 init_session "su3"
 sim_edit "su3" "/src/a.ts"
@@ -1088,11 +1091,13 @@ sim_edit "su3" "/src/c.ts"
 sim_edit "su3" "/src/d.ts"
 sim_edit "su3" "/src/e.ts"
 sim_edit "su3" "/src/f.ts"
+sim_edit_doc "su3" "/docs/architecture.md"
 sim_verify "su3" "npm test" "Tests: 10 passed"
 sim_review "su3" "Clean.
 VERDICT: CLEAN"
 sim_metis "su3"
 sim_excellence_review "su3"
+sim_editor_critic "su3"
 
 # Dimension gate requires traceability at 6+ files
 out="$(sim_stop "su3")"
@@ -1100,7 +1105,7 @@ assert_contains "seq-U3: block for traceability" '"decision":"block"' "${out}"
 assert_contains "seq-U3: names briefing-analyst" "briefing-analyst" "${out}"
 
 sim_briefing_analyst "su3"
-out2="$(sim_stop "su3" "$(structured_closeout "su3" "Updated the six source files and closed the traceability review loop.")")"
+out2="$(sim_stop "su3" "$(structured_closeout "su3" "Updated the six source files and refreshed docs/architecture.md so the traceability review loop is closed.")")"
 assert_empty "seq-U3: stop allowed after briefing-analyst" "${out2}"
 teardown_test
 

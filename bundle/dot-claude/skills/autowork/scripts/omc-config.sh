@@ -89,6 +89,7 @@ model_drift_canary|bool|on|telemetry|Stop-hook canary detects silent confabulati
 blindspot_inventory|bool|on|gates|Project-surface scanner backing the intent-broadening directive (lazy-cached, 24h TTL)
 intent_broadening|bool|on|advisory|Inject project-context reconciliation directive on complex execution prompts (defends against language-as-limitation failure)
 divergence_directive|bool|on|advisory|Inject divergent-framing directive on paradigm-shape decisions (X-vs-Y, "best way", "how should we", "design the X strategy") — enumerate 2-3 framings inline before commit
+inferred_contract|bool|on|gates|Delivery Contract v2: infer required adjacent surfaces (tests/changelog/parser-lockstep/migration-notes) from actual edits, block stop when silently missed
 directive_budget|enum:off/maximum/balanced/minimal|balanced|advisory|Router directive budget mode: suppress lower-priority SOFT directives when prompt-tax gets dense (balanced default)
 blindspot_ttl_seconds|pint|86400|gates|Cache TTL (seconds) for blindspot inventory; default 86400 = 24h
 EOF
@@ -136,6 +137,7 @@ model_drift_canary=on
 blindspot_inventory=on
 intent_broadening=on
 divergence_directive=on
+inferred_contract=on
 directive_budget=maximum
 model_tier=quality
 EOF
@@ -163,6 +165,7 @@ model_drift_canary=on
 blindspot_inventory=on
 intent_broadening=on
 divergence_directive=on
+inferred_contract=on
 directive_budget=balanced
 model_tier=balanced
 EOF
@@ -190,6 +193,7 @@ model_drift_canary=off
 blindspot_inventory=off
 intent_broadening=off
 divergence_directive=off
+inferred_contract=off
 directive_budget=minimal
 model_tier=economy
 EOF
