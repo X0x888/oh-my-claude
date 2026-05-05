@@ -872,7 +872,10 @@ setup_test
 install_tmux_mock
 install_mock claude 0
 # Create a separate "pinned" claude in a non-PATH, non-denylist location.
-PIN_HOME_T24="$(mkdir -p "${HOME}/.cache" 2>/dev/null && mktemp -d "${HOME}/.cache/omc-test-pin-XXXXXX" 2>/dev/null || mktemp -d)"
+# Use ORIG_HOME (the real home, line 15) — setup_test re-exports HOME to
+# TEST_HOME (line 49), so `${HOME}/.cache` would resolve back under /tmp
+# on Linux CI and the denylist would re-fire.
+PIN_HOME_T24="$(mkdir -p "${ORIG_HOME}/.cache" 2>/dev/null && mktemp -d "${ORIG_HOME}/.cache/omc-test-pin-XXXXXX" 2>/dev/null || mktemp -d)"
 mkdir -p "${PIN_HOME_T24}/.opt/bin"
 cat > "${PIN_HOME_T24}/.opt/bin/claude" <<'PINNED'
 #!/usr/bin/env bash
