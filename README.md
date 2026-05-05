@@ -8,7 +8,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Shell](https://img.shields.io/badge/Shell-bash-green.svg)]()
 [![Dependencies](https://img.shields.io/badge/Dependencies-jq%20%2B%20rsync-brightgreen.svg)]()
-[![Tests](https://img.shields.io/badge/Tests-1700%2B-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-2200%2B-brightgreen.svg)](tests/)
 
 **Jump to:** [Install](#quick-start) · [AI-assisted install](#ai-assisted-install) · [What you get](#what-you-get) · [Feature highlights](#feature-highlights) · [Skills](#available-skills) · [Troubleshooting](#troubleshooting) · [FAQ](docs/faq.md)
 
@@ -278,7 +278,7 @@ oh-my-claude/
 │   ├── output-styles/                       # Two bundled styles: oh-my-claude (default) + executive-brief (see docs/customization.md#output-style)
 │   └── statusline.py                        # Custom statusline widget
 ├── config/settings.patch.json               # Merged into user settings on install
-├── tests/               (49 bash + 1 py)    # See AGENTS.md / CONTRIBUTING.md for full list
+├── tests/               (63 bash + 1 py)    # See AGENTS.md / CONTRIBUTING.md for full list
 ├── tools/                                    # Developer-only tools (not installed)
 └── docs/                                    # Architecture, customization, FAQ, prompts
 ```

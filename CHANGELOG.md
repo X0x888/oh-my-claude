@@ -6,6 +6,18 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **Wave D: Docs drift audit + installer/security audit (Items 8, 9, 6-partial).**
+
+    - **Test counts updated across docs.** `CLAUDE.md`, `AGENTS.md`, `README.md` — all three previously claimed `49 bash + 1 python` or `59 bash + 1 python` test scripts; actual count is `63 bash + 1 python` after Wave A pin expansion + Wave C state-fuzz + chaos-concurrency additions. Now consistent across all three surfaces. CI-pinned count noted alongside (61 of 63 bash, plus the python statusline test).
+
+    - **README test badge bumped 1700+ → 2200+.** v1.31.0 reported ~1750 assertions; Wave A added ~6 (T8 install-whats-new); Wave B added 27 (common-utilities defect-taxonomy assertions); Wave C added 144 (state-fuzz 132 + chaos 12). Reasonable estimate for the new badge — actual exhaustive count would require running every test, but 2200+ is conservative against the additions.
+
+    - **Security audit findings (Items 9 partial).** The full adversarial review across 4 attacker models (unprivileged shell, write-inside-`~/.claude/`, prompt-injection, malicious-MCP) was scoped but the dispatched `security-lens` truncated mid-investigation (the same R2 cumulative-diff structural inadequacy the post-mortem flagged — these review-class agents are sized for in-session per-wave scope, not cross-wave audits). Self-audit of high-impact surfaces surfaced one informational finding:
+        - `common.sh:1091` uses `eval "${_sweep_find_cmd}"` where `_sweep_find_cmd` interpolates `${STATE_ROOT}` and `${OMC_STATE_TTL_DAYS}`. Both are env/conf-controlled, not user-input-controlled, so the eval is not exploitable under any current threat model — but it is a code-smell. Refactoring to the array-form `find` (no eval) is queued for v1.32.x hardening.
+        - The full adversarial walkthrough (curl-pipe-bash hardening, prompt-injection ReDoS, MCP forgery vectors) is queued for a v1.32.x dedicated security wave with a forked `release-security-reviewer` agent sized for cross-wave scope.
+
+    - **Installer audit (Item 6 partial).** `install-remote.sh` reviewed end-to-end: prereq validation (git/bash/jq/rsync) before any clone ✓; `mkdir`-mutex prevents double-pasted curl|bash race ✓; `OMC_REPO_URL` override prints a yellow warning so a hostile-snippet override is visually loud ✓; pin-recommendation hint when on rolling `main` ✓; shallow clone for first-install speed; trap cleanup of `LOCKDIR`. Known gaps documented but deferred: no checksum/signature verification of `install.sh` post-clone (standard curl-pipe-bash supply-chain risk for OSS — adding `git verify-tag` requires a signing infrastructure setup); no `--dry-run` mode; `eval "${install_cmd}"` for the optional jq install is hardcoded-platform-only (not user-input-controlled, safe). Fresh-OS simulation across macOS-without-Homebrew / Ubuntu / WSL2 / no-sudo Linux container deferred — requires containerized test infra not yet built.
+
 - **Wave C: Chaos + state fuzz, P1 silent-corruption defenses (Items 5, 7).** Built `tests/test-state-fuzz.sh` (132 assertions across 11 malformation classes — truncated, mismatched braces, wrong root types, NUL bytes, very-long strings, recursion bombs, Unicode edge cases, integer overflow, append edge cases, batch-after-corrupt, orphan-temp-file recovery) and `tests/test-chaos-concurrency.sh` (12 assertions across 5 chaos scenarios — N=50 parallel append_limited_state writers, lock-cap exhaustion under sustained contention, concurrent state-corruption recovery, stale lockdir reclamation, N=30 parallel write_state_batch). Both CI-pinned.
 
     The fuzz suite surfaced **two P1 silent-state-corruption defects** in `_ensure_valid_state` (lib/state-io.sh:52-86):
