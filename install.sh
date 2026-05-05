@@ -1141,10 +1141,13 @@ fi
 # P2-10 deferred item — users running `git pull && bash install.sh`
 # weekly previously got zero in-context awareness of what changed.
 # Silent on: first install (PRIOR empty), same-version reinstall (no
-# upgrade), missing CHANGELOG, awk extraction failure. Caps at 12 entries
-# (v1.32.1 raised from 10 because adding the 1.32.x patches pushed a real
-# 1.27.0 → head upgrade past the 10-cap, dropping 1.28.0 from the
-# What's-new summary). user can read CHANGELOG.md for full detail.
+# upgrade), missing CHANGELOG, awk extraction failure. Caps at 15 entries
+# (v1.32.3 raised from 12 because the 1.32.x patch cadence kept pushing
+# a real 1.27.0 → head upgrade past each successive cap. 15 gives ~3
+# patches of safety margin before the next bump is needed; the deeper
+# fix is to derive the cap from `git tag --list 'v*' | wc -l` minus
+# a safety margin — tracked as v1.33 follow-up). user can read
+# CHANGELOG.md for full detail.
 if [[ -n "${PRIOR_INSTALLED_VERSION}" ]] \
     && [[ "${PRIOR_INSTALLED_VERSION}" != "${OMC_VERSION}" ]] \
     && [[ -f "${SCRIPT_DIR}/CHANGELOG.md" ]]; then
@@ -1156,7 +1159,7 @@ if [[ -n "${PRIOR_INSTALLED_VERSION}" ]] \
       sub(/^[^]]*\][[:space:]]*-?[[:space:]]*/, "", datepart)
       if (ver == prev) { exit }
       kept++
-      if (kept > 12) { truncated = 1; exit }
+      if (kept > 15) { truncated = 1; exit }
       if (ver == "Unreleased") {
         # Render the Unreleased section as a bare label — its date
         # field is meaningless until promotion, and parenthesizing

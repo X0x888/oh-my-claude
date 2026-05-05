@@ -65,7 +65,7 @@ extract_whats_new() {
       sub(/^[^]]*\][[:space:]]*-?[[:space:]]*/, "", datepart)
       if (ver == prev) { exit }
       kept++
-      if (kept > 12) { truncated = 1; exit }
+      if (kept > 15) { truncated = 1; exit }
       if (ver == "Unreleased") {
         printf "                   - %s\n", ver
       } else {
@@ -145,7 +145,7 @@ assert_contains "T5: 1.30.0 with date wrapped once" "1.30.0  (2026-06-01)" "${ou
 rm -f "${synthetic}"
 
 # ----------------------------------------------------------------------
-printf 'Test 6: 12-entry cap renders truncation marker when changelog has > 12 versions before prev\n'
+printf 'Test 6: 15-entry cap renders truncation marker when changelog has > 15 versions before prev\n'
 # v1.31.1: cap raised from 6 → 10 because the original 6-entry budget
 # was uncomfortable for users upgrading across multiple releases (e.g.
 # 1.27.0 → 1.31.1 spans 7 entries). v1.32.1: cap raised from 10 → 12
@@ -156,7 +156,7 @@ printf 'Test 6: 12-entry cap renders truncation marker when changelog has > 12 v
 synthetic="$(mktemp)"
 {
   printf '# Changelog\n\n'
-  for i in 14 13 12 11 10 9 8 7 6 5 4 3 2 1; do
+  for i in 17 16 15 14 13 12 11 10 9 8 7 6 5 4 3 2 1; do
     if [[ "${i}" -ge 10 ]]; then
       printf '## [9.%d.0] - 2026-01-15\n\nRelease %d.\n\n' "${i}" "${i}"
     else
@@ -169,12 +169,12 @@ truncation_count="$(printf '%s' "${out}" | grep -c "older entries" || true)"
 if [[ "${truncation_count}" -ge 1 ]]; then
   pass=$((pass + 1))
 else
-  printf '  FAIL: T6: cap-truncation marker missing for 14-entry changelog\n' >&2
+  printf '  FAIL: T6: cap-truncation marker missing for 17-entry changelog\n' >&2
   fail=$((fail + 1))
 fi
 # Count actual entry lines (those starting with "                   - 9.")
 entry_count="$(printf '%s' "${out}" | grep -c "^                   - 9\." || true)"
-assert_eq "T6: 12 entries kept before truncation" "12" "${entry_count}"
+assert_eq "T6: 15 entries kept before truncation" "15" "${entry_count}"
 rm -f "${synthetic}"
 
 # ----------------------------------------------------------------------
@@ -259,12 +259,12 @@ else
       fail=$((fail + 1))
     fi
 
-    # (b) Positive bound — kept-entry count is in [1, 12].
+    # (b) Positive bound — kept-entry count is in [1, 15].
     entry_count="$(printf '%s' "${out}" | grep -c "^                   - " || true)"
-    if [[ "${entry_count}" -ge 1 && "${entry_count}" -le 12 ]]; then
+    if [[ "${entry_count}" -ge 1 && "${entry_count}" -le 15 ]]; then
       pass=$((pass + 1))
     else
-      printf '  FAIL: T8(%s): entry count %d not in [1,12]\n' "${prior}" "${entry_count}" >&2
+      printf '  FAIL: T8(%s): entry count %d not in [1,15]\n' "${prior}" "${entry_count}" >&2
       fail=$((fail + 1))
     fi
   done

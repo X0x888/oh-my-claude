@@ -4,6 +4,47 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.32.3] - 2026-05-05
+
+Reviewer-driven follow-up to v1.32.2. The `release-reviewer` (forked in v1.32.1) ran on the v1.32.2 diff and surfaced two real gaps in the new sterile-env infrastructure: (1) env-var precedence bug, (2) no regression net for the helper itself. Both met the Serendipity Rule criteria — verified, same code path as the v1.32.2 release-process work, bounded fix — so they ship inline rather than waiting for a future release. The verification cycle (release-reviewer → fix → ship) is itself the first dogfood of the new agent.
+
+### Fixed
+
+- **`tests/run-sterile.sh` env-var precedence bug.** Pre-1.32.3 the order
+    ```bash
+    [[ STRICT ]] && mode="strict"
+    [[ ADVISORY ]] && mode="advisory"
+    ```
+    let the second check unconditionally overwrite the first — strict silently degraded to advisory if both vars were set (e.g., a user has `OMC_STERILE_STRICT=1` in their shell rc and a teammate later sets `OMC_STERILE_ADVISORY=1` somewhere). Fixed: mutually-exclusive checks with a loud warning when both are set:
+    ```bash
+    if both: warn → advisory; elif advisory: advisory; elif strict: strict
+    ```
+    The warning makes the resolution auditable; advisory wins when both are set (matches the explicit-CLI-flag `--advisory` shape).
+
+### Added
+
+- **`tests/test-sterile-env.sh` (CI-pinned, 22 assertions).** Regression net for the v1.32.2 sterile-env infrastructure that became load-bearing when the runner promoted to strict + CI-pinned. Asserts:
+    - `build_sterile_env()` output shape — every expected key present (HOME, TMPDIR, PATH, TERM, LANG, LC_ALL, GIT_AUTHOR_*).
+    - **NO `STATE_ROOT=` and NO `SESSION_ID=` pre-set** (the v1.32.2 R9 fix — collision with the harness's HOME-derived state path).
+    - PATH composition includes `/sbin` (macOS `md5`), `/usr/bin` (Linux `md5sum`), `/bin` (POSIX core).
+    - jq-dir auto-detection — when jq is in the dev shell PATH, `build_sterile_env` prefixes its directory.
+    - Env-var precedence — both flags set → warn + advisory; STRICT=1 alone → strict; ADVISORY=1 alone → advisory; neither → strict default.
+    - CLI-flag precedence — `--advisory` flag → advisory; `--strict` flag → strict.
+
+    Wired into `.github/workflows/validate.yml` as a CI step.
+
+### Bonus Serendipity fix
+
+- **`install.sh` "What's new" cap raised 12 → 15** (caught by T8 in pre-tag full-suite). Adding v1.32.3 to CHANGELOG pushed a 1.27.0 → head upgrade past the 12-cap, dropping v1.28.0 again. Same recurring class as the v1.31.1 cap-was-6 and v1.32.1 cap-was-10 bugs. The 15-cap gives ~3 patches of safety margin; the deeper fix is to derive the cap from `git tag --list 'v*' | wc -l` minus a margin (queued as v1.33 follow-up). T6 synthetic fixture extended 14 → 17 entries; T8 bound `[1, 12]` → `[1, 15]`.
+
+### Verification
+
+- `bash tests/test-sterile-env.sh` — 22/22
+- `bash tests/test-coordination-rules.sh` — 81/81 (test-pin discipline holds — new test is already CI-pinned)
+- `bash tests/test-agent-verdict-contract.sh` — 444/444
+- `bash tests/run-sterile.sh` strict default — 63/63 sterile pass, exit 0
+- shellcheck clean, JSON valid
+
 ## [1.32.2] - 2026-05-05
 
 R9 closure — sterile-env CI-parity runner promoted from advisory → mandatory. The v1.32.0 sterile sweep had 7 env-leak susceptibilities documented as deferred follow-up; v1.32.2 closed all 7 in one bounded helper-only fix and wired the runner into CI as a pinned step.

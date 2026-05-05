@@ -53,11 +53,24 @@ while [[ $# -gt 0 ]]; do
     *) printf 'Unknown arg: %s\n' "$1" >&2; exit 2 ;;
   esac
 done
-# Backward-compat: pre-1.32.2 used OMC_STERILE_STRICT=1 to turn on
-# strict mode. Now strict is default; OMC_STERILE_ADVISORY=1 is the
-# new opt-out. Honor both for compatibility.
-[[ "${OMC_STERILE_STRICT:-0}" == "1" ]] && mode="strict"
-[[ "${OMC_STERILE_ADVISORY:-0}" == "1" ]] && mode="advisory"
+# Env-var precedence (v1.32.3 fix): mutually-exclusive checks with a
+# loud warning when both are set. Pre-1.32.3 the order
+#   [[ STRICT ]] && mode="strict"
+#   [[ ADVISORY ]] && mode="advisory"
+# meant the second check unconditionally overwrote the first — strict
+# silently degraded to advisory if a user had STRICT=1 in their shell
+# rc and a teammate set ADVISORY=1 elsewhere. Now: ADVISORY wins
+# (matches CLI flag --advisory which the user explicitly typed),
+# STRICT is the legacy backward-compat path, the warning makes the
+# resolution auditable.
+if [[ "${OMC_STERILE_ADVISORY:-0}" == "1" ]] && [[ "${OMC_STERILE_STRICT:-0}" == "1" ]]; then
+  printf 'warn: both OMC_STERILE_ADVISORY=1 and OMC_STERILE_STRICT=1 are set; picking advisory\n' >&2
+  mode="advisory"
+elif [[ "${OMC_STERILE_ADVISORY:-0}" == "1" ]]; then
+  mode="advisory"
+elif [[ "${OMC_STERILE_STRICT:-0}" == "1" ]]; then
+  mode="strict"
+fi
 
 # Extract CI-pinned test list LIVE from validate.yml so this can't
 # drift. Mirrors the CONTRIBUTING.md Step 2 grep extraction.
