@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.34.0] - 2026-05-05
+
 ### Cross-project state-corruption regression fixed (Bug A/B/C)
 
 A user reported that starting a second `/ulw` session in a different
