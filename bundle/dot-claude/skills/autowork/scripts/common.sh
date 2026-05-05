@@ -2432,7 +2432,7 @@ classify_finding_category() {
   # any finding description).
   if printf '%s' "${desc}" | grep -Eq '\b(race.?condition|concurrent|deadlock|mutex|data.?race)\b'; then
     printf 'race_condition'
-  elif printf '%s' "${desc}" | grep -Eq '\b(missing.?test|no.?test|untested|test.?coverage|add.?test|no.*(unit|integration)?\s*tests?)\b|\b(tests?|spec|assert|coverage)\b'; then
+  elif printf '%s' "${desc}" | grep -Eq '\b(missing.?test|no.?test|untested|test.?coverage|add.?test|no.*(unit|integration)?\s*tests?)\b|\b(needs?|lacks?|missing|adds?|requires?)\b[^.]{0,40}\b(tests?|spec|assertions?|coverage)\b|\b(coverage|tests?)\b[^.]{0,40}\b(below|threshold|gap|insufficient|inadequate|low)\b'; then
     printf 'missing_test'
   elif printf '%s' "${desc}" | grep -Eq '\btype.?error\b|typescript|cast|coercion|\bNaN\b|type.?mismatch'; then
     printf 'type_error'
@@ -2461,8 +2461,98 @@ classify_finding_category() {
   fi
 }
 
+# _classify_surface: Map a FINDINGS_JSON `file` value to a codebase
+# surface tag. Path-prefix lookup, deterministic O(1). Empty/missing
+# file → "other".
+#
+# v1.32.0 Wave B (defect-taxonomy paradigm fix): the abstraction-critic
+# pass identified that the user's "what kinds of mistakes recur?"
+# question maps to surface-area (router, install, telemetry, hooks,
+# common-lib, ...) far more than to defect-class — coordination-rule
+# violations across known surfaces are this project's dominant
+# recurring-failure shape.
+#
+# Surfaces are ordered most-specific-first so common.sh wins over
+# autowork (since common.sh lives under autowork/scripts/).
+_classify_surface() {
+  local f="${1:-}"
+  if [[ -z "${f}" ]]; then
+    printf 'other'
+    return
+  fi
+  # Order: most-specific first. Router/classifier/show-* ALL win over
+  # the generic */hooks/* and */autowork/* prefixes since they're a
+  # specific failure-shape that deserves its own bucket.
+  case "${f}" in
+    *prompt-intent-router*|*classifier*.sh)       printf 'router' ;;
+    *show-status*|*show-report*|*timing.sh|*canary.sh|*timing*|*canary*) printf 'telemetry' ;;
+    *common.sh)                                   printf 'common-lib' ;;
+    */lib/*.sh|*/lib/*.bash)                      printf 'common-lib' ;;
+    */quality-pack/scripts/*)                     printf 'hooks' ;;
+    */hooks/*)                                    printf 'hooks' ;;
+    tools/*)                                      printf 'tooling' ;;
+    *uninstall*.sh)                               printf 'install' ;;
+    install.sh|install-remote.sh|install-resume-watchdog.sh|verify.sh|*statusline.py) printf 'install' ;;
+    settings.patch.json|*settings.patch*|*oh-my-claude.conf*|*omc-config*|*switch-tier*) printf 'config' ;;
+    *bundle/dot-claude/skills/autowork/scripts/*) printf 'autowork' ;;
+    *bundle/dot-claude/skills/*)                  printf 'skills' ;;
+    *bundle/dot-claude/agents/*)                  printf 'agents' ;;
+    *.github/*|*ci/*)                             printf 'ci' ;;
+    *tests/*)                                     printf 'tests' ;;
+    README.md|CLAUDE.md|AGENTS.md|CONTRIBUTING.md|CHANGELOG.md|*docs/*) printf 'docs' ;;
+    plan*|*plan.md)                               printf 'process' ;;
+    *)                                            printf 'other' ;;
+  esac
+}
+
+# classify_finding_pair: Return the canonical "surface:category" key
+# used by defect-patterns.json from v1.32.0 forward. Honors the agent's
+# emitted category when present (the FINDINGS_JSON contract carries an
+# explicit, semantically-correct category enum); falls back to the
+# legacy regex classifier on prose when no JSON-derived category is
+# available.
+#
+# Args: file_path category_hint [legacy_description]
+#
+# Why two-tag: surface tells you WHERE recurring failures hit;
+# category tells you WHAT shape they take. Together they generate
+# directly-actionable session-start hints like
+#   `Watch for: install:integration ×24` (run verify.sh + lockstep audit)
+# vs the v1.31.x surfacing
+#   `Watch for: missing_test ×151` (generic).
+classify_finding_pair() {
+  local f="${1:-}" cat_hint="${2:-}" desc="${3:-}"
+  local surface category
+  surface="$(_classify_surface "${f}")"
+
+  # Honor the agent-emitted category if it's in the normalize_finding_object
+  # enum. This avoids re-deriving a worse signal from prose.
+  case "${cat_hint}" in
+    bug|missing_test|completeness|security|performance|docs|integration|design|other)
+      category="${cat_hint}"
+      ;;
+    *)
+      if [[ -n "${desc}" ]]; then
+        category="$(classify_finding_category "${desc}")"
+      else
+        category="other"
+      fi
+      ;;
+  esac
+
+  printf '%s:%s' "${surface}" "${category}"
+}
+
 # record_defect_pattern: Record a defect pattern for cross-session learning.
-# Usage: record_defect_pattern <category> [example_description]
+# Usage: record_defect_pattern <category_or_pair> [example_description]
+#
+# The first arg can be:
+#   - a legacy bare category (e.g. "security") — pre-1.32.0 callers
+#   - a v1.32.0 surface:category pair (e.g. "install:integration") —
+#     new callers via classify_finding_pair
+# Both shapes co-exist in defect-patterns.json; the 90-day cutoff
+# in get_top_defect_patterns / get_defect_watch_list ages out legacy
+# rows naturally.
 record_defect_pattern() {
   local category="${1:-unknown}"
   local example="${2:-}"

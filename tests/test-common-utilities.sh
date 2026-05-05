@@ -2076,6 +2076,130 @@ else
 fi
 
 # ===========================================================================
+# v1.32.0 Wave B — _classify_surface + classify_finding_pair
+# ===========================================================================
+printf '\n_classify_surface (v1.32.0 Wave B):\n'
+
+assert_eq "common.sh → common-lib" \
+  "common-lib" \
+  "$(_classify_surface "bundle/dot-claude/skills/autowork/scripts/common.sh")"
+
+assert_eq "lib/state-io.sh → common-lib" \
+  "common-lib" \
+  "$(_classify_surface "bundle/dot-claude/skills/autowork/scripts/lib/state-io.sh")"
+
+assert_eq "quality-pack/scripts/* → hooks" \
+  "hooks" \
+  "$(_classify_surface "bundle/dot-claude/quality-pack/scripts/stop-failure-handler.sh")"
+
+assert_eq "prompt-intent-router → router" \
+  "router" \
+  "$(_classify_surface "bundle/dot-claude/quality-pack/scripts/prompt-intent-router.sh")"
+
+assert_eq "show-report → telemetry" \
+  "telemetry" \
+  "$(_classify_surface "bundle/dot-claude/skills/autowork/scripts/show-report.sh")"
+
+assert_eq "install.sh → install" \
+  "install" \
+  "$(_classify_surface "install.sh")"
+
+assert_eq "uninstall.sh → install (not double-counted)" \
+  "install" \
+  "$(_classify_surface "uninstall.sh")"
+
+assert_eq "agents/quality-reviewer.md → agents" \
+  "agents" \
+  "$(_classify_surface "bundle/dot-claude/agents/quality-reviewer.md")"
+
+assert_eq "tests/test-foo.sh → tests" \
+  "tests" \
+  "$(_classify_surface "tests/test-foo.sh")"
+
+assert_eq "README.md → docs" \
+  "docs" \
+  "$(_classify_surface "README.md")"
+
+assert_eq "CLAUDE.md → docs" \
+  "docs" \
+  "$(_classify_surface "CLAUDE.md")"
+
+assert_eq ".github/workflows/validate.yml → ci" \
+  "ci" \
+  "$(_classify_surface ".github/workflows/validate.yml")"
+
+assert_eq "tools/install-upgrade-sim.sh → tooling" \
+  "tooling" \
+  "$(_classify_surface "tools/install-upgrade-sim.sh")"
+
+assert_eq "settings.patch.json → config" \
+  "config" \
+  "$(_classify_surface "config/settings.patch.json")"
+
+assert_eq "empty file → other" \
+  "other" \
+  "$(_classify_surface "")"
+
+assert_eq "unrecognized path → other" \
+  "other" \
+  "$(_classify_surface "some/random/path.txt")"
+
+printf '\nclassify_finding_pair (v1.32.0 Wave B):\n'
+
+# Honors agent-emitted category when present
+assert_eq "honors agent category bug" \
+  "common-lib:bug" \
+  "$(classify_finding_pair "bundle/dot-claude/skills/autowork/scripts/common.sh" "bug" "claim text")"
+
+assert_eq "honors agent category security" \
+  "router:security" \
+  "$(classify_finding_pair "bundle/dot-claude/quality-pack/scripts/prompt-intent-router.sh" "security" "")"
+
+assert_eq "honors agent integration" \
+  "install:integration" \
+  "$(classify_finding_pair "install.sh" "integration" "")"
+
+# Falls back to regex classifier when category hint is empty
+# Use record-reviewer.sh — autowork dir, not the show-*/timing telemetry surface
+assert_eq "falls back: missing test in autowork" \
+  "autowork:missing_test" \
+  "$(classify_finding_pair "bundle/dot-claude/skills/autowork/scripts/record-reviewer.sh" "" "no unit tests for the new parser module")"
+
+# Falls back to "other" when both empty
+assert_eq "double empty → other:other" \
+  "other:other" \
+  "$(classify_finding_pair "" "" "")"
+
+# Rejects out-of-enum agent categories, falls back to regex
+# "slow" triggers the perf regex (lowercase via tr in classify_finding_category)
+assert_eq "rejects bogus agent category, falls back" \
+  "telemetry:performance" \
+  "$(classify_finding_pair "bundle/dot-claude/skills/autowork/scripts/show-report.sh" "BOGUS_CATEGORY" "loop is slow on large datasets")"
+
+# v1.32.0 Wave B: tighter missing_test regex
+printf '\nmissing_test regex narrowing (v1.32.0 Wave B):\n'
+
+assert_eq "incidental 'tests pass' is NOT missing_test" \
+  "unknown" \
+  "$(classify_finding_category "the tests pass correctly")"
+
+assert_eq "incidental 'test runner is slow' → performance, not missing_test" \
+  "performance" \
+  "$(classify_finding_category "the test runner is slow on large fixtures")"
+
+assert_eq "still: 'no tests' → missing_test" \
+  "missing_test" \
+  "$(classify_finding_category "no tests for the parser")"
+
+assert_eq "still: 'coverage below threshold' → missing_test" \
+  "missing_test" \
+  "$(classify_finding_category "coverage is below threshold for utils.ts")"
+
+assert_eq "still: 'lacks coverage' → missing_test" \
+  "missing_test" \
+  "$(classify_finding_category "the new module lacks coverage")"
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 

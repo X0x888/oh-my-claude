@@ -197,18 +197,40 @@ record_agent_metric "${REVIEWER_TYPE}" "${metric_verdict}" "${metric_confidence}
 # verdict-level metric (recorded above) still captures that findings
 # happened. Noise-free cross-session signal beats volume.
 if [[ "${has_findings}" == "true" && -n "${review_message}" ]]; then
-  # Structural finding markers accepted:
-  #   - numbered items: "1.", "1)", "1:", or "**1." with optional bold
-  #   - bulleted items whose content starts with a bold label like "- **X**"
-  #   - bulleted items keyed on an issue keyword near the marker
-  #   - H3/H4 headings that name a finding (e.g. "### Finding 1:" or "#### Bug:").
-  #     H2 is excluded: reviewers commonly use "## Findings" as a section divider,
-  #     which is narration, not a specific finding. H3/H4 is typically per-item.
-  finding_sample="$(printf '%s\n' "${review_message}" \
-    | grep -Eim 1 '^[[:space:]]*(\*\*[[:space:]]*)?[0-9]+[[:space:]]*[\.\):]|^[[:space:]]*[-*][[:space:]]+\*\*|^[[:space:]]*[-*][[:space:]]+(bug|issue|finding|problem|concern|defect|risk|error|missing|vulnerab|uncaught|untested|fail|broken|unhandled)|^[[:space:]]*#{3,4}[[:space:]]+(finding|issue|bug|problem|concern|defect|risk)\b' \
-    | head -c 200 || true)"
-  if [[ -n "${finding_sample}" ]]; then
-    defect_cat="$(classify_finding_category "${finding_sample}")"
-    record_defect_pattern "${defect_cat}" "${finding_sample}" &
+  # v1.32.0 Wave B: prefer the structured FINDINGS_JSON contract — the
+  # agent's own category claim is more accurate than re-deriving from
+  # prose, and the file field gives us a deterministic surface tag.
+  # When an agent doesn't emit FINDINGS_JSON (older agents, prose-only
+  # paths) fall back to the legacy structural-marker grep + classifier.
+  json_rows="$(extract_findings_json "${review_message}" 2>/dev/null | head -n 10 || true)"
+
+  if [[ -n "${json_rows}" ]]; then
+    while IFS= read -r row; do
+      [[ -z "${row}" ]] && continue
+      # No `local` here — record-reviewer.sh runs as a script, not a function.
+      row_file="$(printf '%s' "${row}" | jq -r '.file // ""' 2>/dev/null || echo "")"
+      row_cat="$(printf '%s' "${row}" | jq -r '.category // ""' 2>/dev/null || echo "")"
+      row_claim="$(printf '%s' "${row}" | jq -r '.claim // ""' 2>/dev/null || echo "")"
+      pair="$(classify_finding_pair "${row_file}" "${row_cat}" "${row_claim}")"
+      example="${row_claim:-${row_file}}"
+      [[ -z "${example}" ]] && example="(no claim provided)"
+      record_defect_pattern "${pair}" "${example}" &
+    done <<<"${json_rows}"
+  else
+    # Legacy fallback path. Structural finding markers accepted:
+    #   - numbered items: "1.", "1)", "1:", or "**1." with optional bold
+    #   - bulleted items whose content starts with a bold label like "- **X**"
+    #   - bulleted items keyed on an issue keyword near the marker
+    #   - H3/H4 headings that name a finding (e.g. "### Finding 1:" or "#### Bug:").
+    #     H2 is excluded: reviewers commonly use "## Findings" as a section divider,
+    #     which is narration, not a specific finding. H3/H4 is typically per-item.
+    finding_sample="$(printf '%s\n' "${review_message}" \
+      | grep -Eim 1 '^[[:space:]]*(\*\*[[:space:]]*)?[0-9]+[[:space:]]*[\.\):]|^[[:space:]]*[-*][[:space:]]+\*\*|^[[:space:]]*[-*][[:space:]]+(bug|issue|finding|problem|concern|defect|risk|error|missing|vulnerab|uncaught|untested|fail|broken|unhandled)|^[[:space:]]*#{3,4}[[:space:]]+(finding|issue|bug|problem|concern|defect|risk)\b' \
+      | head -c 200 || true)"
+    if [[ -n "${finding_sample}" ]]; then
+      # No file context — surface defaults to "other" via empty arg.
+      pair="$(classify_finding_pair "" "" "${finding_sample}")"
+      record_defect_pattern "${pair}" "${finding_sample}" &
+    fi
   fi
 fi
