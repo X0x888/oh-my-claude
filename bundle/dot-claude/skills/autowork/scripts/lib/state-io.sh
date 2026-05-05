@@ -63,7 +63,26 @@ _ensure_valid_state() {
     return
   fi
 
-  if ! jq empty "${state_file}" 2>/dev/null; then
+  # v1.32.0 Wave C (Item 7 state-fuzz): the original `jq empty` check
+  # caught syntactically-invalid JSON but accepted JSON that's a valid
+  # NON-OBJECT root (array, string, number, bool, null). On those,
+  # subsequent write_state's `jq '.[$k] = $v'` errors with "Cannot
+  # index <type> with string" — and (worse) leaves the broken state
+  # file in place. The two-stage validation:
+  #   stage 1 — file is non-empty (zero-byte files are silent
+  #             archives from a prior crash mid-write; treat as corrupt)
+  #   stage 2 — root must be an object (so `.[$k] = $v` is well-typed)
+  # `jq -e 'type == "object"'` returns 0 only when both conditions
+  # hold, false-y otherwise. Catches the full malformation matrix
+  # exercised by tests/test-state-fuzz.sh.
+  local needs_recovery=0
+  if [[ ! -s "${state_file}" ]]; then
+    needs_recovery=1
+  elif ! jq -e 'type == "object"' "${state_file}" >/dev/null 2>&1; then
+    needs_recovery=1
+  fi
+
+  if [[ "${needs_recovery}" -eq 1 ]]; then
     local archive recovered_ts
     recovered_ts="$(date +%s)"
     archive="$(session_file "${STATE_JSON}.corrupt.${recovered_ts}")"
