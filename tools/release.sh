@@ -17,9 +17,21 @@
 # correctness; this script automates ceremony.
 #
 # Usage:
-#   bash tools/release.sh X.Y.Z          # full release flow
+#   bash tools/release.sh X.Y.Z          # full release flow (legacy: eager-tag + watch)
+#   bash tools/release.sh X.Y.Z --ci-preflight  # run local-ci as gate, tag immediately, no watch (RECOMMENDED)
+#   bash tools/release.sh X.Y.Z --tag-on-green  # push first, watch CI, tag only on green (legacy v1.33.x flow)
 #   bash tools/release.sh X.Y.Z --dry-run # print steps without executing
 #   bash tools/release.sh X.Y.Z --no-watch # skip post-flight CI watch (still tags+pushes)
+#
+# v1.34.1 — `--ci-preflight` is the recommended default. It runs
+# tools/local-ci.sh BEFORE the version bump (Ubuntu-container parity
+# of validate.yml). If local-ci passes, the commit is known-CI-green
+# before we tag, and the post-flight `gh run watch` is skipped — the
+# 6-13 minutes of remote-CI wall-clock per release that --tag-on-green
+# spent watching is reclaimed. CI still runs in parallel as a no-op
+# second opinion (observable via `gh run list`), but does not block.
+# Use --tag-on-green as the fallback for environments without Docker
+# or when you suspect local-ci fidelity issues.
 #
 # Pre-conditions (script verifies and exits early if missing):
 #   - Argument is valid X.Y.Z semver
@@ -29,6 +41,7 @@
 #   - tools/hotfix-sweep.sh exits 0 (call it first as Pre-flight Step 6)
 #
 # Steps executed:
+#   6.5. Local-ci pre-flight (v1.34.1; only under --ci-preflight)
 #   7. Update VERSION
 #   8. Update README badge
 #   9. Promote [Unreleased] in CHANGELOG to [X.Y.Z]
@@ -37,7 +50,7 @@
 #   11. Tag vX.Y.Z
 #   12. Push commits + tags
 #   13. Create GitHub release
-#   14. Watch CI on the tagged commit (skipped under --no-watch)
+#   14. Watch CI on the tagged commit (skipped under --no-watch / --ci-preflight)
 
 set -euo pipefail
 
@@ -45,12 +58,14 @@ VERSION_ARG="${1:-}"
 DRY_RUN=0
 NO_WATCH=0
 TAG_ON_GREEN=0
+CI_PREFLIGHT=0
 shift 2>/dev/null || true
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) DRY_RUN=1; shift ;;
     --no-watch) NO_WATCH=1; shift ;;
     --tag-on-green) TAG_ON_GREEN=1; shift ;;
+    --ci-preflight) CI_PREFLIGHT=1; shift ;;
     *) printf 'unknown arg: %s\n' "$1" >&2; exit 2 ;;
   esac
 done
@@ -62,6 +77,28 @@ done
 if [[ "${TAG_ON_GREEN}" -eq 1 ]] && [[ "${NO_WATCH}" -eq 1 ]]; then
   printf 'error: --tag-on-green and --no-watch are mutually exclusive\n' >&2
   exit 2
+fi
+
+# v1.34.1: --ci-preflight makes local-ci the gating artifact instead
+# of remote CI. tools/local-ci.sh runs the validate.yml suite inside
+# an Ubuntu container, catching the BSD-vs-GNU / mktemp-shape /
+# locale / sed-flag / stat-flag class of macOS-vs-Linux divergence
+# that v1.33.x's --tag-on-green was added to defend against. With
+# local-ci as pre-flight, the post-flight `gh run watch` becomes
+# duplicate work and only adds wall-clock latency — so --ci-preflight
+# implies --no-watch (CI still runs in parallel, observable via the
+# GH UI, but does not block the tag).
+#
+# --ci-preflight is mutually exclusive with --tag-on-green (both gate
+# the tag, but on different artifacts — let the maintainer pick one).
+# Compatible with --no-watch (redundant but harmless — the post-flight
+# watch is already implicit-skipped).
+if [[ "${CI_PREFLIGHT}" -eq 1 ]] && [[ "${TAG_ON_GREEN}" -eq 1 ]]; then
+  printf 'error: --ci-preflight and --tag-on-green are mutually exclusive (both gate the tag — pick one)\n' >&2
+  exit 2
+fi
+if [[ "${CI_PREFLIGHT}" -eq 1 ]]; then
+  NO_WATCH=1
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -136,6 +173,35 @@ fi
 # absent". Wording reflects that this is a guard against a known
 # anti-pattern, not a positive verification.
 ok "no --quick marker found (ensure tools/hotfix-sweep.sh was run as Pre-flight Step 6)"
+
+# ----------------------------------------------------------------------
+# Step 6.5 (v1.34.1) — local-ci pre-flight
+#
+# When --ci-preflight is set, run tools/local-ci.sh (validate.yml
+# suite inside an Ubuntu container) BEFORE the version bump. If
+# local-ci passes, the commit is known-CI-green BEFORE we tag — the
+# post-flight `gh run watch` becomes redundant and is skipped.
+#
+# Local-ci is the gating artifact, not remote CI. This shifts trust
+# from "wait for GitHub Actions" → "Ubuntu container locally is
+# faithful to GitHub Actions". If a CI failure ever occurs that
+# local-ci didn't catch, that's a local-ci fidelity bug to fix —
+# not a reason to wait through CI runs on every release.
+#
+# Skipped under --dry-run (the dry-run preview should not actually
+# spin up Docker). Aborts on local-ci failure — no commit, no tag.
+# ----------------------------------------------------------------------
+if [[ "${CI_PREFLIGHT}" -eq 1 ]]; then
+  say "Step 6.5 (v1.34.1): local-ci pre-flight"
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    printf '  [dry-run] bash tools/local-ci.sh\n'
+  else
+    if ! bash "${REPO_ROOT}/tools/local-ci.sh"; then
+      err "local-ci pre-flight failed — fix the failures before tagging. (Or fall back to --tag-on-green if local-ci has fidelity issues with your CI environment.)"
+    fi
+    ok "local-ci pre-flight green — post-flight CI watch will be skipped"
+  fi
+fi
 
 # ----------------------------------------------------------------------
 # Step 7-9 — VERSION, badge, CHANGELOG promotion
@@ -313,9 +379,17 @@ fi
 # Step 14 — watch CI
 # ----------------------------------------------------------------------
 if [[ "${NO_WATCH}" -eq 1 ]]; then
-  say "Step 14: skipped (--no-watch)"
-  printf '  Re-watch later: gh run watch --exit-status \\\n'
-  printf '    "$(gh run list --commit "$(git rev-parse v%s)" --limit 1 --json databaseId -q ".[0].databaseId")"\n' "${VERSION_ARG}"
+  if [[ "${CI_PREFLIGHT}" -eq 1 ]]; then
+    say "Step 14: skipped (--ci-preflight already validated; CI runs in parallel)"
+    printf '  Local-ci was the release gate. Remote CI will run in parallel —\n'
+    printf '  observe via: gh run list --branch main --limit 3\n'
+    printf '  A remote-CI failure on this commit implies local-ci fidelity drift —\n'
+    printf '  reproduce locally with: bash tools/local-ci.sh\n'
+  else
+    say "Step 14: skipped (--no-watch)"
+    printf '  Re-watch later: gh run watch --exit-status \\\n'
+    printf '    "$(gh run list --commit "$(git rev-parse v%s)" --limit 1 --json databaseId -q ".[0].databaseId")"\n' "${VERSION_ARG}"
+  fi
 elif [[ "${DRY_RUN}" -eq 1 ]]; then
   say "Step 14: watch CI (dry-run)"
   printf '  [dry-run] gh run watch --exit-status <run-id-for-v%s>\n' "${VERSION_ARG}"

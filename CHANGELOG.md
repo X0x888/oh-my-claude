@@ -4,6 +4,75 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### v1.34.0 post-release reviewer follow-ups + `--ci-preflight` release gate
+
+Three latent issues from the v1.34.0 post-release reviewer (a stale
+path-prefix guard, missing end-to-end coverage for one anchor in the
+synthetic-prompt filter, and an unset-`HOME` defense) plus one
+release-tool addition that makes `tools/local-ci.sh` the gating
+artifact instead of remote CI — closing the 6–13 minutes of remote-CI
+wall-clock per release that `--tag-on-green` (v1.33.x) spent watching.
+
+### Fixed
+
+- **`cleanup_sterile_env` stale path-prefix guard.** The function
+  (`tests/lib/sterile-env.sh:138`) is documented as a best-effort
+  recursive delete utility for sterile HOMEs, but its guard matched
+  only `*/tmp*` — fine pre-v1.34.0 when sterile_home lived under
+  `/tmp/tmp.XXX`, but a no-op after the v1.34.0 hotfix moved
+  sterile_home under `${HOME}/.cache/omc-sterile-home-*`. Zero
+  callers in the bundle today so the live impact is zero, but it
+  was a latent foot-gun if a future test ever trap-traps it. Fix
+  updates the guard to recognize both shapes and rejects unrelated
+  paths. Regression net: T7 in `tests/test-sterile-env.sh` (5 new
+  assertions; 30/0 total, was 25) covers the real shape, the legacy
+  `/tmp` shape, an arbitrary unrelated path that must not delete,
+  and empty/missing args that must not choke.
+- **`<system-reminder>` end-to-end regression coverage.** The
+  v1.34.0 `is_synthetic_prompt` filter has unit-cell coverage for
+  the wrapper (`tests/test-prompt-router-synthetic.sh:78`), but the
+  end-to-end integration loop only exercised `<task-notification>`
+  and `<bash-stdout>`. Added a fourth case
+  (`sid4 system-reminder-test`) that pipes a multi-line
+  `<system-reminder>` body through the router and asserts the
+  active contract (`current_objective` / `task_intent` /
+  `commit_mode` / `last_user_prompt_ts`) is preserved. Catches
+  future drift if the anchor list ever loses `<system-reminder>`.
+  Regression net: 4 new assertions in
+  `tests/test-prompt-router-synthetic.sh` (24/0 total, was 20).
+- **Defensive `HOME` guard in `build_sterile_env`.**
+  Belt-and-suspenders for unset/empty `${HOME}`: fall back to
+  `getent passwd $(id -un)` home-dir field, or last-resort to a
+  bare `mktemp -d`. Defends against Docker containers that strip
+  HOME via `env -i` invocations and the `--ci-preflight` flow
+  itself, which spawns Ubuntu containers that may not inherit the
+  host's `HOME`.
+
+### Added
+
+- **`tools/release.sh --ci-preflight`** — recommended default
+  release flow. Runs `tools/local-ci.sh` (validate.yml suite inside
+  an Ubuntu container) BEFORE the version bump as Step 6.5. If
+  local-ci passes, the commit is known-CI-green before we tag, and
+  the post-flight `gh run watch` is skipped — reclaiming the 6–13
+  minutes of remote-CI wall-clock per release that `--tag-on-green`
+  (v1.33.x) spent watching. Remote CI still runs in parallel as a
+  no-op second opinion (observable via `gh run list`) but does not
+  block. Mutually exclusive with `--tag-on-green` (both gate the
+  tag — pick one); compatible with `--no-watch` (redundant but
+  harmless — the post-flight watch is already implicit-skipped).
+  Use `--tag-on-green` as the fallback for environments without
+  Docker or when local-ci fidelity drift is suspected. Trust shifts
+  from "wait for GitHub Actions" → "Ubuntu container locally is
+  faithful to GitHub Actions". A remote-CI failure on a
+  `--ci-preflight` release implies local-ci fidelity drift — fix
+  local-ci, not the release flow. Regression net: T16/T17/T18 in
+  `tests/test-release.sh` (53/0 total, was 50) covering mutex with
+  `--tag-on-green`, dry-run announces Step 6.5 + skips watch with
+  the `ci-preflight already validated` wording, and arg-order
+  independence (`--dry-run --ci-preflight` and
+  `--ci-preflight --dry-run` both work).
+
 ## [1.34.0] - 2026-05-05
 
 ### Cross-project state-corruption regression fixed (Bug A/B/C)

@@ -319,5 +319,59 @@ assert_contains "T15: names the bad flag" "unknown arg" "${out}"
 cleanup_fixture "${repo}"
 
 # ---------------------------------------------------------------------
+# T16 (v1.34.1): --ci-preflight and --tag-on-green are mutually
+# exclusive. Both gate the tag — picking both is a config bug.
+printf 'Test 16: --ci-preflight + --tag-on-green mutually exclusive (v1.34.1)\n'
+repo="$(mk_release_fixture)"
+set +e
+out="$(cd "${repo}" && bash tools/release.sh "1.0.1" --ci-preflight --tag-on-green 2>&1)"
+rc=$?
+set -e
+assert_eq "T16: combo rejects with rc=2" "2" "${rc}"
+assert_contains "T16: names the conflict" "mutually exclusive" "${out}"
+assert_contains "T16: explains gate-overlap" "both gate the tag" "${out}"
+cleanup_fixture "${repo}"
+
+# ---------------------------------------------------------------------
+# T17 (v1.34.1): --ci-preflight dry-run announces Step 6.5 and
+# implies the post-flight watch is skipped (no Step 14 watch).
+printf 'Test 17: --ci-preflight dry-run announces Step 6.5 and skips watch (v1.34.1)\n'
+repo="$(mk_release_fixture)"
+set +e
+out="$(cd "${repo}" && bash tools/release.sh "1.0.1" --dry-run --ci-preflight 2>&1)"
+rc=$?
+set -e
+assert_eq "T17: dry-run exits 0" "0" "${rc}"
+assert_contains "T17: announces Step 6.5" "Step 6.5" "${out}"
+assert_contains "T17: dry-runs local-ci.sh" "[dry-run] bash tools/local-ci.sh" "${out}"
+assert_contains "T17: skips post-flight watch with ci-preflight wording" "ci-preflight already validated" "${out}"
+if printf '%s' "${out}" | grep -q "watching run\|Step 14: watch CI$"; then
+  printf '  FAIL: T17: --ci-preflight should skip the watch but watch fired\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+assert_contains "T17: tag stays eager (no defer)" "Step 10-12: commit + tag + push" "${out}"
+cleanup_fixture "${repo}"
+
+# ---------------------------------------------------------------------
+# T18 (v1.34.1): --ci-preflight parsed regardless of arg order.
+printf 'Test 18: --dry-run --ci-preflight order-independent (v1.34.1)\n'
+repo="$(mk_release_fixture)"
+set +e
+out_a="$(cd "${repo}" && bash tools/release.sh "1.0.1" --dry-run --ci-preflight 2>&1)"
+rc_a=$?
+set -e
+set +e
+out_b="$(cd "${repo}" && bash tools/release.sh "1.0.1" --ci-preflight --dry-run 2>&1)"
+rc_b=$?
+set -e
+assert_eq "T18: order A rc=0" "0" "${rc_a}"
+assert_eq "T18: order B rc=0" "0" "${rc_b}"
+assert_contains "T18: order A announces Step 6.5" "Step 6.5" "${out_a}"
+assert_contains "T18: order B announces Step 6.5" "Step 6.5" "${out_b}"
+cleanup_fixture "${repo}"
+
+# ---------------------------------------------------------------------
 printf '\n=== release tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]
