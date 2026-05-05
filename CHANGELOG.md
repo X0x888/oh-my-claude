@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.33.1] - 2026-05-05
+
 ### Fixed
 
 - **`tests/test-resume-watchdog.sh` T24 hosts the pinned binary outside `/tmp/`.** v1.33.0 surfaced a latent CI break: Wave 4's `claude_bin` path-prefix denylist (rejects pins under `/tmp/`, `/private/tmp/`, `/var/tmp/`, `/Users/Shared/`, `/dev/shm/`) interacts with Linux `mktemp -d` returning `/tmp/tmp.XXX`. T24 asserts the pin is honored, so the denylist rejection caused a fallback-to-PATH and the test failed in CI even though it passed locally on macOS (where `mktemp -d` returns `/var/folders/...`). T25/T26 still pass because they assert the fallback path. Fix: T24 now creates the pinned binary under `${HOME}/.cache/omc-test-pin-XXXXXX` so the denylist allows it on every platform. Wave 4's denylist itself is correct and unchanged.
