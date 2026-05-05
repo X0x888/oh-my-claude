@@ -4,6 +4,43 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.32.11] - 2026-05-05
+
+R5 closure from the v1.32.0 release post-mortem — final structural piece of the v1.31.x cascade-prevention chain. The post-mortem named the **Compound-Fix Tag-Race** anti-pattern (every hotfix is itself an opportunity for a new hotfix unless the post-fix regression net is enforced); the v1.31.0→v1.31.3 cascade had F-3's fix introduce its own regression that needed F-3-followup. v1.32.11 ships the gate that closes the pattern by wrapping the four already-shipped remediations (R3 sterile mandatory, v1.32.7/8 CHANGELOG-coupled tests, shellcheck CI-parity, R7 lib-reachability) into a single fast-feedback tool the user runs after every fix commit during release prep.
+
+### Added
+
+- **`tools/hotfix-sweep.sh`** (developer-only). Four checks, ~2 min budget:
+    1. **Sterile-env CI-parity** — delegates to `tests/run-sterile.sh` (R3, mandatory since v1.32.2).
+    2. **CHANGELOG-coupled tests** — `grep -lE 'CHANGELOG\.md|extract_whats_new' tests/test-*.sh` (v1.32.8 grep-based generalization of v1.32.7 step-8 fix).
+    3. **shellcheck on changed `bundle/*.sh`** — CI-parity at `--severity=warning`.
+    4. **Lib-reachability** — every modified `bundle/.../lib/*.sh` since the last tag must have a CI-pinned `tests/test-${name}.sh` (mirrors `tests/test-coordination-rules.sh:C3` as a pre-tag check).
+
+    Fast-path: docs-only / CHANGELOG-only changes skip the heavy checks with a "no fix-shaped changes" message. `--quick` mode skips sterile-env (1-min budget) but warns; re-run without `--quick` before tagging.
+
+- **`tests/test-hotfix-sweep.sh`** (CI-pinned, 12 assertions). Builds isolated tmpdir git-repo fixtures with controlled changes (docs-only, broken shellcheck, orphan lib, properly-pinned lib) and verifies the sweep's exit code + named-failure output for each. Pinned in `.github/workflows/validate.yml`.
+
+- **CONTRIBUTING.md Pre-flight Step 6** — documents the gate as MANDATORY since v1.32.11. Covers the 4 checks, the `--quick` mode, the fast-path, and the regression-net pointer.
+
+### Why this matters
+
+With v1.32.11 the v1.31.x cascade-prevention chain is structurally complete:
+- R3 sterile runner (mandatory since v1.32.2) — catches env-leak.
+- R7 lib-test 1:1 lockstep (CI-pinned since v1.32.0) — catches missing test.
+- R8 install-upgrade-sim (developer tool) — catches install-summary regression.
+- v1.32.7 cap=30 + step-8 grep — catches CHANGELOG-coupled drift.
+- **R5 hotfix-sweep (this release) — wraps all of the above into a single ~2-min gate.**
+
+A future maintainer running `bash tools/hotfix-sweep.sh` after a fix commit gets a single yes/no answer covering every defect class the v1.31.x cascade exposed.
+
+### Verification
+
+- `bash tests/test-hotfix-sweep.sh` — 12/12
+- `bash tests/test-coordination-rules.sh` 81/81 (test-pin discipline holds)
+- 68/68 CI-pinned tests pass locally
+- shellcheck clean on the new tool
+- Live no-op run (no changes since v1.32.10): exits 0 with "sweep is a no-op"
+
 ## [1.32.10] - 2026-05-05
 
 Fourth release-reviewer dogfood. Reviewer pass on v1.32.9 surfaced two BLOCK-class structural gaps in the project_key telemetry chain that v1.32.6/8/9 had silently left open. Both verified live before fix; both ship inline as Serendipity-bounded same-surface fixes.

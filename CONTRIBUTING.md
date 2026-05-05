@@ -196,6 +196,15 @@ When bumping the version (changing `VERSION`), follow these steps in order. Repl
 
 5. **Install upgrade simulation** *(advisory, v1.32.0 R8).* `bash tools/install-upgrade-sim.sh` runs `install.sh` end-to-end against a 4-case `PRIOR_INSTALLED_VERSION` matrix (empty/first-install, N-1, oldest-CHANGELOG/long-span, no-op-same-version) and inspects the user-visible "What's new" block. Catches the install-summary class of bug that produced the v1.31.1 → v1.31.1-hotfix-round-2 cascade (cap=6 too low for span-7-versions case). The unit-level complement is `tests/test-install-whats-new.sh` T8.
 
+6. **Hotfix-sweep gate** *(MANDATORY since v1.32.11 — R5 closure from the v1.31.x post-mortem).* `bash tools/hotfix-sweep.sh` runs after every fix commit during release prep, before the next bump. Closes the **Compound-Fix Tag-Race** anti-pattern (each hotfix is an opportunity for a new hotfix unless the post-fix regression net is enforced — the v1.31.0→v1.31.3 cascade was 4 patches in one day where F-3's fix introduced its own regression). Four checks, ~2 min budget:
+
+   - **Sterile-env CI-parity** (delegates to `tests/run-sterile.sh`) — catches v1.31.0-class T7 sterile-fail.
+   - **CHANGELOG-coupled tests** (grep-based, generalizes step 8 above) — catches install-whats-new cap drift.
+   - **shellcheck on changed `bundle/*.sh`** — catches CI-fatal warnings before tag.
+   - **lib-reachability** — every modified `bundle/.../lib/*.sh` since the last tag must have a CI-pinned `tests/test-${name}.sh` (mirrors `tests/test-coordination-rules.sh:C3` as a pre-tag check).
+
+   Fast-path: when only docs/CHANGELOG/VERSION changed since the last tag, the heavy checks skip with a "no fix-shaped changes" message. `--quick` mode skips sterile-env (saves ~1 min) but warns; re-run without `--quick` before tagging. Regression net: `tests/test-hotfix-sweep.sh` (12 assertions, CI-pinned).
+
 ### Bump and tag
 
 6. Update `VERSION` with the new version number (e.g. `1.4.1`).

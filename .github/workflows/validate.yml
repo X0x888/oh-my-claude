@@ -235,6 +235,9 @@ jobs:
       - name: Run backfill-project-key tests (v1.32.9 historical-data closure)
         run: bash tests/test-backfill-project-key.sh
 
+      - name: Run hotfix-sweep tests (v1.32.11 R5 closure)
+        run: bash tests/test-hotfix-sweep.sh
+
       - name: Run sterile-env CI-parity check (v1.32.2 R3 promoted to strict)
         run: bash tests/run-sterile.sh
 
