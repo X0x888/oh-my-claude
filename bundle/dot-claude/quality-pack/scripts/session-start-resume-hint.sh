@@ -51,6 +51,13 @@ fi
 
 ensure_session_dir
 
+# v1.32.8: tag the session with project_key BEFORE any record_gate_event
+# call so the sweep aggregator can correctly tag cross-session
+# telemetry rows for multi-project /ulw-report slicing. See
+# common.sh:record_project_key_if_unset for the rationale (was
+# router-only pre-1.32.8; non-ULW sessions slipped past).
+record_project_key_if_unset
+
 target_cwd="${HOOK_CWD:-${PWD}}"
 
 # Compute the project key for the new session. Best-effort — when the

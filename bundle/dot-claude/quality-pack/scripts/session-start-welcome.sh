@@ -50,6 +50,14 @@ fi
 
 ensure_session_dir
 
+# v1.32.8: tag the session with project_key BEFORE any record_gate_event
+# call so the sweep aggregator at common.sh:1193 can correctly tag
+# cross-session telemetry rows for multi-project /ulw-report slicing.
+# Pre-1.32.8 this only fired in the ULW path (router-side); non-ULW
+# sessions (welcome banner / resume hint only) recorded gate events
+# tagged project_key=null. Helper is first-write-wins; cheap on rerun.
+record_project_key_if_unset
+
 # Per-session idempotency. A second SessionStart in the same session
 # (resume → compact → clear) skips trivially — the banner is a
 # first-impression surface, not a recurring one.

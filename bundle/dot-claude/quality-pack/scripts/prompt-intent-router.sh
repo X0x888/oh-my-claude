@@ -331,23 +331,15 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
     fi
   fi
 
-  # v1.32.6: write project_key into session_state at first ULW
-  # activation. The natural sweep (common.sh:1193-1194) reads this
-  # field to tag cross-session telemetry rows for multi-project
-  # /ulw-report slicing. v1.31.0 Wave 4 wired the read path but
-  # never the write path — so all swept rows carried project_key:
-  # null, defeating the slicing feature. _omc_project_key() derives
-  # from `git remote get-url origin` (sha-256 first 12 hex), falling
-  # back to a cwd hash via `_omc_project_id` for non-git directories.
-  # First-write-wins like cwd above; the value is stable across
-  # prompts in the same session.
-  existing_project_key="$(read_state "project_key")"
-  if [[ -z "${existing_project_key}" ]]; then
-    SESSION_PROJECT_KEY="$(_omc_project_key 2>/dev/null || true)"
-    if [[ -n "${SESSION_PROJECT_KEY}" ]]; then
-      write_state "project_key" "${SESSION_PROJECT_KEY}"
-    fi
-  fi
+  # v1.32.6/v1.32.8: write project_key into session_state. v1.32.6
+  # initially placed this here (ULW gate); v1.32.8 moved the helper
+  # to common.sh and added calls from session-start hooks too, so
+  # non-ULW sessions (welcome banner / resume hint only) also tag
+  # their gate_events.jsonl rows with the correct project_key.
+  # This call is now redundant with the session-start path but
+  # remains as defense-in-depth for sessions that never went
+  # through SessionStart (e.g., a state file revived by recovery).
+  record_project_key_if_unset
 
   # Classifier telemetry — now that TASK_DOMAIN is known, record the row.
   # Outside-ULW sessions also skip this (no state bookkeeping there).

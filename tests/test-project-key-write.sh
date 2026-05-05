@@ -158,5 +158,38 @@ written_fallback="$(jq -r '.project_key // ""' "${state_file_t4}" 2>/dev/null)"
 assert_eq "T4: non-git project_key matches _omc_project_id fallback" "${expected_fallback}" "${written_fallback}"
 
 # ---------------------------------------------------------------------
+# ---------------------------------------------------------------------
+# Test 5 (v1.32.8 BLOCK fix): non-ULW session-start writes project_key
+# ---------------------------------------------------------------------
+# Pre-1.32.8 the project_key write was inside the router's ULW gate.
+# Sessions that never go ULW (welcome banner / resume hint only) still
+# called record_gate_event but tagged rows with project_key=null. This
+# test pins the v1.32.8 fix: session-start-welcome.sh is now an
+# unconditional caller of record_project_key_if_unset.
+printf 'Test 5: non-ULW session-start-welcome writes project_key\n'
+
+sid_t5="t5-$$-${RANDOM}"
+hook_json_t5="$(jq -nc \
+  --arg sid "${sid_t5}" \
+  --arg cwd "${_test_repo}" \
+  '{session_id:$sid, source:"startup", cwd:$cwd}')"
+cd "${_test_repo}"
+HOME="${_test_home}" \
+  STATE_ROOT="${_test_state_root}" \
+  bash "${REPO_ROOT}/bundle/dot-claude/quality-pack/scripts/session-start-welcome.sh" \
+  <<<"${hook_json_t5}" >/dev/null 2>&1 \
+  || true
+cd "${REPO_ROOT}"
+
+state_file_t5="${_test_state_root}/${sid_t5}/session_state.json"
+if [[ -f "${state_file_t5}" ]]; then
+  written_t5="$(jq -r '.project_key // ""' "${state_file_t5}" 2>/dev/null)"
+  assert_eq "T5: session-start-welcome writes project_key (non-ULW path)" "${expected_key}" "${written_t5}"
+else
+  printf '  FAIL: T5: session-start-welcome did not create session_state.json at %s\n' "${state_file_t5}" >&2
+  fail=$((fail + 1))
+fi
+
+# ---------------------------------------------------------------------
 printf '\n=== project-key-write tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]

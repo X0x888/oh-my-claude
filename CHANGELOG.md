@@ -4,6 +4,34 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.32.8] - 2026-05-05
+
+Reviewer-driven follow-up to v1.32.6 + v1.32.7 — third dogfood of the release-reviewer agent. Reviewer caught a BLOCK gap (project_key write was inside the ULW gate, so non-ULW sessions still tagged gate_events with project_key=null — same defect class v1.32.6 was meant to close) plus 3 lower-severity completeness gaps. All four ship inline.
+
+### Fixed
+
+- **`record_project_key_if_unset()` helper in `common.sh`** + calls from session-start hooks (BLOCK gap from the v1.32.7 review). Pre-1.32.8 the project_key write lived inside `prompt-intent-router.sh`'s ULW gate (`is_ulw_trigger || workflow_mode==ultrawork`). But `session-start-welcome.sh:164` and `session-start-resume-hint.sh:257` call `record_gate_event` BEFORE the router fires (and on sessions that never go ULW at all). Those rows tagged `project_key: null` because the field hadn't been written yet. Same defect class v1.32.6 was meant to close. Fixed: extracted the write into `record_project_key_if_unset()` (first-write-wins, idempotent), called from BOTH session-start hooks (before any record_gate_event) AND prompt-intent-router.sh (defense-in-depth).
+
+- **CONTRIBUTING.md step 8 generalized from named-tests to grep-based** (v1.32.7 fix was hardcoded to two specific test names). New shape: `for t in $(grep -lE 'CHANGELOG\.md|extract_whats_new' tests/test-*.sh); do bash "${t}"; done`. Catches any future CHANGELOG-coupled test that's added — closes the structural diff-between-step-2-and-step-8 invisibility class without depending on maintainer memory to add new tests to a hardcoded list.
+
+- **v1.32.6 GitHub release notes** edited via `gh release edit` to surface a CI-red warning at the top: anyone landing on the v1.32.6 release page now sees "⚠️ CI failed on this tag. Install v1.32.7+ instead." Pre-1.32.8 the warning lived only in v1.32.7's CHANGELOG; users finding v1.32.6 via search/external link missed it.
+
+### Added
+
+- **`tests/test-project-key-write.sh` T5** — non-ULW session-start path. Simulates `bash session-start-welcome.sh` with no ULW trigger; asserts `project_key` lands in `session_state.json`. Pins the v1.32.8 BLOCK fix. Test count: 5 → 6.
+
+### Acknowledged (deferred to v1.33)
+
+- **`tools/backfill-project-key.sh`** — reviewer noted that the v1.32.6 CHANGELOG claim "backfill not feasible" is wrong: `cwd` IS populated for ~48 of the user's existing session_state.json files, and `_omc_project_key` only needs `cwd` to compute. A `tools/backfill-project-key.sh` modeled on the v1.32.4 bootstrap pattern would close the historical gap. Deferred to v1.33 because (a) it's additive low-risk follow-up rather than a regression fix, (b) v1.32.8's session-start write closes the forward-going gap which is what matters for new telemetry, and (c) the v1.32.5 bootstrap aggregator is unaffected (it tags rows from per-session ledgers; once project_key lands in session_state going forward, the bootstrap picks it up automatically).
+
+### Verification
+
+- `bash tests/test-project-key-write.sh` — 6/6 (was 5/5)
+- `bash tests/test-coordination-rules.sh` — 81/81 (test-pin discipline holds)
+- 66/66 CI-pinned tests pass locally
+- shellcheck clean across all 4 modified files
+- `gh release view v1.32.6` confirms warning landed at top of release notes
+
 ## [1.32.7] - 2026-05-05
 
 Hotfix for v1.32.6 — CI failed on the tagged commit because adding the v1.32.6 CHANGELOG entry pushed a real 1.27.0 → head upgrade span past the 15-cap, dropping v1.28.0 from `extract_whats_new`. Same defect class that bit v1.31.1 / v1.32.1 / v1.32.3 / v1.32.5 / v1.32.6 — every 3-5 patches the cap had to be re-bumped. **Process-level root cause**: CONTRIBUTING.md step 2 (CI parity) runs BEFORE step 8 (CHANGELOG promotion), so the install-whats-new tests evaluate the OLD CHANGELOG content; the new entry's effect is invisible to pre-tag verification.

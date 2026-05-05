@@ -2941,6 +2941,37 @@ _omc_project_key() {
   _omc_project_id
 }
 
+# record_project_key_if_unset — first-write-wins helper that writes
+# `_omc_project_key` into session_state.json's `.project_key` field
+# when it's currently unset. Must be called before any gate_event-
+# emitting hook fires in a session, so the sweep aggregator at
+# common.sh:1193 can tag cross-session telemetry rows with the
+# correct project_key for multi-project /ulw-report slicing.
+#
+# v1.32.8 (BLOCK fix from v1.32.6+v1.32.7 cumulative review): the
+# v1.32.6 router-side write was inside the ULW gate, so non-ULW
+# sessions (welcome banner only, resume hint only) still wrote
+# gate_events with project_key=null. Lifting the helper into the
+# session-start path closes the gap for ALL sessions.
+#
+# Usage:
+#   record_project_key_if_unset
+#
+# Returns 0 always (best-effort; non-fatal if write fails).
+record_project_key_if_unset() {
+  [[ -z "${SESSION_ID:-}" ]] && return 0
+  local existing
+  existing="$(read_state "project_key" 2>/dev/null || true)"
+  if [[ -z "${existing}" ]]; then
+    local key
+    key="$(_omc_project_key 2>/dev/null || true)"
+    if [[ -n "${key}" ]]; then
+      write_state "project_key" "${key}" 2>/dev/null || true
+    fi
+  fi
+  return 0
+}
+
 # recent_archetypes_for_project [N]
 # Emits the up-to-N most-recent unique archetype names that have been
 # used in the current project (per `_omc_project_key`), newest first,
