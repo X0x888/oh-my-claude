@@ -193,5 +193,81 @@ else
 fi
 
 # ----------------------------------------------------------------------
+# T8 (v1.32.0 R6 + R6-amended) — real-world upgrade-span coverage.
+#
+# v1.31.0 → v1.31.1 cascade had a defect class T6 missed: the cap
+# value (then 6) was a magic number with no test asserting "the cap
+# accommodates a representative real-world upgrade span against the
+# LIVE CHANGELOG". T6 used a synthetic 12-version changelog that
+# guaranteed truncation by construction — it tests the cap mechanism,
+# not the cap value's appropriateness.
+#
+# T8 closes the gap with two assertions per representative prior:
+#   (a) negative — `extract_whats_new` against the real CHANGELOG.md
+#       MUST NOT contain the truncation marker (cap-too-low check)
+#   (b) positive bound — kept-entry count is between 1 and 10
+#       (cap-too-high sanity; symmetric to (a))
+#
+# "Representative priors" = the last 3 minor-version tags reachable
+# in the repo. Minor = the X in vN.X.Y; we pick one tag per minor
+# (the lowest patch, sorted ascending so the *oldest* representative
+# of each minor is chosen — the most-painful upgrade-span case).
+#
+# Rolls forward automatically: when v1.32.0 ships, the test starts
+# checking 1.31.x / 1.30.x / 1.29.x spans, etc. No magic-number rot.
+printf 'Test 8: cap accommodates representative real-world upgrade spans\n'
+
+# Extract distinct minor versions from git tags, descending-by-major-minor,
+# pick the LOWEST patch in each minor. macOS dev `sort -V` works; Ubuntu
+# CI also has GNU sort -V. Fallback for absent tags: skip with a logged
+# notice (test passes vacuously rather than blocking pre-tag prep).
+candidate_priors=()
+if command -v git >/dev/null 2>&1 \
+    && (cd "${REPO_ROOT}" 2>/dev/null && git rev-parse --git-dir >/dev/null 2>&1); then
+  # Get all v*.X.Y tags, sort by version, pick lowest patch per (major,minor).
+  # macOS sort -V works on coreutils 8.32+; bash 3.2 compat preserved.
+  while IFS= read -r line; do
+    [[ -n "${line}" ]] && candidate_priors+=("${line}")
+  done < <(
+    cd "${REPO_ROOT}" && \
+    git tag --list 'v*' 2>/dev/null \
+      | sed 's/^v//' \
+      | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+      | sort -V \
+      | awk -F. '{ key=$1"."$2; if (!seen[key]++) print $0 }' \
+      | sort -V \
+      | tail -3
+  )
+fi
+
+if [[ ${#candidate_priors[@]} -eq 0 ]]; then
+  printf '  T8: no v*.X.Y tags found — skipping (vacuous pass)\n'
+  pass=$((pass + 1))
+else
+  for prior in "${candidate_priors[@]}"; do
+    out="$(extract_whats_new "${prior}" "$(cat "${REPO_ROOT}/VERSION")")"
+
+    # (a) Negative — no truncation marker for representative span.
+    truncation_hits="$(printf '%s' "${out}" | grep -c "older entries" || true)"
+    if [[ "${truncation_hits}" -eq 0 ]]; then
+      pass=$((pass + 1))
+    else
+      printf '  FAIL: T8(%s): truncation marker present — cap too low for representative span\n' "${prior}" >&2
+      printf '    output:\n%s\n' "${out}" >&2
+      fail=$((fail + 1))
+    fi
+
+    # (b) Positive bound — kept-entry count is in [1, 10].
+    entry_count="$(printf '%s' "${out}" | grep -c "^                   - " || true)"
+    if [[ "${entry_count}" -ge 1 && "${entry_count}" -le 10 ]]; then
+      pass=$((pass + 1))
+    else
+      printf '  FAIL: T8(%s): entry count %d not in [1,10]\n' "${prior}" "${entry_count}" >&2
+      fail=$((fail + 1))
+    fi
+  done
+fi
+
+# ----------------------------------------------------------------------
 printf '\n=== install-whats-new tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]

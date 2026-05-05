@@ -420,14 +420,34 @@ _with_lockdir() {
 }
 
 with_state_lock() {
-  # v1.31.2 quality-reviewer F-3 followup: re-entrant detection. Some
-  # callers (e.g. record-pending-agent.sh) wrap a body that itself
-  # calls append_limited_state — which since v1.31.2 calls
-  # with_state_lock internally. Without re-entrancy detection, the
-  # inner mkdir collides with the outer's already-held lockdir and
-  # the inner body silently drops. The marker is exported scoped to
-  # the outer with_state_lock invocation so nested callers see it
-  # and short-circuit to the body without re-acquiring.
+  # ── Re-entrancy contract (v1.31.3 quality-reviewer F-3 followup) ───
+  #
+  # Marker:    _OMC_STATE_LOCK_HELD (env)
+  # Set when:  the OUTERMOST with_state_lock call enters; cleared on exit
+  # Read by:   nested calls — they skip lockdir acquire and run body inline
+  # Why:       v1.31.2 added with_state_lock around append_limited_state's
+  #            read-modify-write. Outer callers (record-pending-agent.sh,
+  #            record-serendipity.sh, mark-deferred.sh, etc.) already wrap
+  #            their work bodies in with_state_lock. Without re-entrancy
+  #            detection, the inner mkdir-based lockdir acquire collides
+  #            with the outer's held lockdir, the inner _with_lockdir
+  #            returns non-zero, and the body silently drops.
+  #
+  # External callers that wrap with_state_lock around bodies that
+  # transitively call append_limited_state / write_state / write_state_batch:
+  #   bundle/dot-claude/skills/autowork/scripts/record-pending-agent.sh
+  #   bundle/dot-claude/skills/autowork/scripts/record-serendipity.sh
+  #   bundle/dot-claude/skills/autowork/scripts/mark-deferred.sh
+  #   bundle/dot-claude/skills/autowork/scripts/record-finding-list.sh
+  #   bundle/dot-claude/skills/autowork/scripts/record-scope-checklist.sh
+  #
+  # If you add a new caller that nests with_state_lock around a body
+  # that touches state, you do NOT need to do anything — the marker
+  # handles it. If you add a new state-touching helper that should
+  # acquire its own lock when called standalone (like append_limited_state)
+  # you DO need with_state_lock; the marker makes it composition-safe.
+  #
+  # Tested by tests/test-state-io.sh:T18 (CI-pinned in v1.32.0).
   if [[ -n "${_OMC_STATE_LOCK_HELD:-}" ]]; then
     "$@"
     return $?

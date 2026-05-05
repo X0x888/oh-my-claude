@@ -2,9 +2,9 @@ name: Validate
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'release/v*']
   pull_request:
-    branches: [main]
+    branches: [main, 'release/v*']
 
 jobs:
   lint:
@@ -132,6 +132,90 @@ jobs:
 
       - name: Run classifier-replay regression tests
         run: bash tests/test-classifier-replay.sh
+
+      - name: Run state-io regression tests (v1.32.0 R1 pin)
+        run: bash tests/test-state-io.sh
+
+      - name: Run show-report regression tests (v1.32.0 R1 pin)
+        run: bash tests/test-show-report.sh
+
+      - name: Run cross-session-lock regression tests (v1.32.0 R1 pin)
+        run: bash tests/test-cross-session-lock.sh
+
+      - name: Run concurrency regression tests (v1.32.0 R1 pin)
+        run: bash tests/test-concurrency.sh
+
+      - name: Run classifier-lib tests (v1.32.0 R1 pin)
+        run: bash tests/test-classifier.sh
+
+      - name: Run bias-defense-classifier tests (v1.32.0 R1 pin)
+        run: bash tests/test-bias-defense-classifier.sh
+
+      - name: Run bias-defense-directives tests (v1.32.0 R1 pin)
+        run: bash tests/test-bias-defense-directives.sh
+
+      - name: Run mark-deferred tests (v1.32.0 R1 pin)
+        run: bash tests/test-mark-deferred.sh
+
+      - name: Run finding-list tests (v1.32.0 R1 pin)
+        run: bash tests/test-finding-list.sh
+
+      - name: Run pretool-intent-guard tests (v1.32.0 R1 pin)
+        run: bash tests/test-pretool-intent-guard.sh
+
+      - name: Run discovered-scope tests (v1.32.0 R1 pin)
+        run: bash tests/test-discovered-scope.sh
+
+      - name: Run canary tests (v1.32.0 R1 pin)
+        run: bash tests/test-canary.sh
+
+      - name: Run serendipity-log tests (v1.32.0 R1 pin)
+        run: bash tests/test-serendipity-log.sh
+
+      - name: Run archetype-memory tests (v1.32.0 R1 pin)
+        run: bash tests/test-archetype-memory.sh
+
+      - name: Run auto-memory-skip tests (v1.32.0 R1 pin)
+        run: bash tests/test-auto-memory-skip.sh
+
+      - name: Run cross-session-rotation tests (v1.32.0 R1 pin)
+        run: bash tests/test-cross-session-rotation.sh
+
+      - name: Run design-contract tests (v1.32.0 R1 pin)
+        run: bash tests/test-design-contract.sh
+
+      - name: Run directive-instrumentation tests (v1.32.0 R1 pin)
+        run: bash tests/test-directive-instrumentation.sh
+
+      - name: Run inline-design-contract tests (v1.32.0 R1 pin)
+        run: bash tests/test-inline-design-contract.sh
+
+      - name: Run install-artifacts tests (v1.32.0 R1 pin)
+        run: bash tests/test-install-artifacts.sh
+
+      - name: Run install-remote tests (v1.32.0 R1 pin)
+        run: bash tests/test-install-remote.sh
+
+      - name: Run memory-drift-hint tests (v1.32.0 R1 pin)
+        run: bash tests/test-memory-drift-hint.sh
+
+      - name: Run metis-on-plan-gate tests (v1.32.0 R1 pin)
+        run: bash tests/test-metis-on-plan-gate.sh
+
+      - name: Run post-merge-hook tests (v1.32.0 R1 pin)
+        run: bash tests/test-post-merge-hook.sh
+
+      - name: Run repro-redaction tests (v1.32.0 R1 pin)
+        run: bash tests/test-repro-redaction.sh
+
+      - name: Run specialist-routing tests (v1.32.0 R1 pin)
+        run: bash tests/test-specialist-routing.sh
+
+      - name: Run ulw-pause tests (v1.32.0 R1 pin)
+        run: bash tests/test-ulw-pause.sh
+
+      - name: Run coordination-rules lockstep tests (v1.32.0 R7)
+        run: bash tests/test-coordination-rules.sh
 
       - name: Run statusline tests
         run: python3 -m unittest tests.test_statusline -v

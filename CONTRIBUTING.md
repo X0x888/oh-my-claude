@@ -182,30 +182,39 @@ When bumping the version (changing `VERSION`), follow these steps in order. Repl
 ### Pre-flight
 
 1. **CHANGELOG audit.** Run `git log --oneline vPREV..HEAD` and confirm every commit has a matching `[Unreleased]` bullet in `CHANGELOG.md`. Silent drop (a large commit's changes missing from the changelog) is the common failure mode. Also skim `docs/architecture.md` "State keys" table for new keys introduced in the window.
+
 2. **CI parity check.** Run locally exactly what `.github/workflows/validate.yml` will run — shellcheck warnings are CI-fatal, so any local warning is a CI red. Do not proceed if any of these exit non-zero or emit any warning:
    - `find bundle/ -name '*.sh' -print0 | xargs -0 shellcheck -x --severity=warning`
    - `find . -name '*.json' -not -path './.git/*' -print0 | xargs -0 -n1 python3 -m json.tool --no-ensure-ascii > /dev/null`
    - Every test the CI workflow runs. Extract the current list live so this checklist cannot drift: `grep -E '^\s+run:\s+bash tests/test-' .github/workflows/validate.yml | awk '{print $NF}'`. Plus `python3 -m unittest tests.test_statusline -v`.
 
+   *v1.32.0 expanded the CI-pinned set from 33 → 61 tests (release post-mortem R1). Coordination-rules lockstep test (`tests/test-coordination-rules.sh`) now enforces "every test is CI-pinned OR carries a `# UNPINNED: <reason>` token" — adding a new test without explicit pin-or-justify blocks merge.*
+
+3. **Sterile-env CI-parity run** *(advisory, v1.32.0 R3).* `bash tests/run-sterile.sh` runs the CI-pinned tests under env scrubbed to look like Ubuntu CI's tmpfs (`env -i` + fresh `HOME`/`STATE_ROOT`/empty `SESSION_ID` + jq-aware PATH). Catches the "passes locally because dev has state X, fails in CI because tmpfs has empty X" class of bug that produced the v1.31.0 → v1.31.0-hotfix cascade (T7 sterile-CI miss). Currently advisory — exits 0 with a report. Pass `--strict` (or `OMC_STERILE_STRICT=1`) once ready to promote to mandatory; v1.32.x runs in advisory while we audit and fix the existing env-leak findings.
+
+4. **Cumulative-diff `quality-reviewer` run** *(advisory, v1.32.0 R2).* For releases that span more than one wave commit, run the `quality-reviewer` agent against `git diff "$(git describe --tags --abbrev=0)..HEAD"`. Per-wave reviewer passes catch per-wave defects; cumulative review catches **cross-wave interaction defects** (the v1.31.3 F-1/F-2/F-3/F-5 class). The existing `quality-reviewer` is sized for in-session per-wave review (1000-word/top-8 cap); for diffs that span 9+ waves, slice the dispatch by surface area (one reviewer per modified script directory) instead of one mega-review, mirroring the council Phase 8 wave-shape model. Block bump until findings are addressed in new commits OR explicitly deferred with named WHY via `/mark-deferred`. *Forking a `release-reviewer.md` agent with no top-N cap is tracked as a v1.32.x follow-up.*
+
+5. **Install upgrade simulation** *(advisory, v1.32.0 R8).* `bash tools/install-upgrade-sim.sh` runs `install.sh` end-to-end against a 4-case `PRIOR_INSTALLED_VERSION` matrix (empty/first-install, N-1, oldest-CHANGELOG/long-span, no-op-same-version) and inspects the user-visible "What's new" block. Catches the install-summary class of bug that produced the v1.31.1 → v1.31.1-hotfix-round-2 cascade (cap=6 too low for span-7-versions case). The unit-level complement is `tests/test-install-whats-new.sh` T8.
+
 ### Bump and tag
 
-3. Update `VERSION` with the new version number (e.g. `1.4.1`).
-4. Update the README.md badge: `[![Version](https://img.shields.io/badge/Version-X.Y.Z-blue.svg)]`.
-5. Promote the `[Unreleased]` heading in `CHANGELOG.md` to `## [X.Y.Z] - YYYY-MM-DD` (keep `[Unreleased]` above it as an empty placeholder for the next cycle if desired).
-6. Commit with a descriptive message summarizing the release.
-7. **Tag the release commit**: `git tag vX.Y.Z` — this is mandatory, not optional.
-8. Push commits and tags: `git push && git push --tags`.
-9. Create a GitHub release from the tag:
-   ```bash
-   VER=$(cat VERSION)
-   awk "/^## \\[$VER\\]/{found=1;next} /^## \\[/{if(found)exit} found" CHANGELOG.md \
-     | gh release create "v$VER" --title "v$VER" --notes-file -
-   ```
-   If `gh` is unavailable, create the release manually via GitHub's web UI.
+6. Update `VERSION` with the new version number (e.g. `1.4.1`).
+7. Update the README.md badge: `[![Version](https://img.shields.io/badge/Version-X.Y.Z-blue.svg)]`.
+8. Promote the `[Unreleased]` heading in `CHANGELOG.md` to `## [X.Y.Z] - YYYY-MM-DD` (keep `[Unreleased]` above it as an empty placeholder for the next cycle if desired).
+9. Commit with a descriptive message summarizing the release.
+10. **Tag the release commit**: `git tag vX.Y.Z` — this is mandatory, not optional.
+11. Push commits and tags: `git push && git push --tags`.
+12. Create a GitHub release from the tag:
+    ```bash
+    VER=$(cat VERSION)
+    awk "/^## \\[$VER\\]/{found=1;next} /^## \\[/{if(found)exit} found" CHANGELOG.md \
+      | gh release create "v$VER" --title "v$VER" --notes-file -
+    ```
+    If `gh` is unavailable, create the release manually via GitHub's web UI.
 
 ### Post-flight
 
-10. **CI verification.** Watch the just-tagged commit's CI run, pinned to the tag SHA so a teammate's concurrent push cannot resolve the wrong run:
+13. **CI verification.** Watch the just-tagged commit's CI run, pinned to the tag SHA so a teammate's concurrent push cannot resolve the wrong run:
     ```bash
     gh run watch --exit-status \
       "$(gh run list --commit "$(git rev-parse vX.Y.Z)" --limit 1 --json databaseId -q '.[0].databaseId')"
