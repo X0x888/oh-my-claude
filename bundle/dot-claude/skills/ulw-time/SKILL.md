@@ -1,6 +1,6 @@
 ---
 name: ulw-time
-description: Show where this prompt's (or session's) wall time went — polished end-of-turn card with a stacked-segment top bar (`█` agents · `▒` tools · `░` idle), per-bucket per-row chart, and a closing insight line. Pass `last-prompt` to slice the most recently finalized prompt, `last` for the most recent session, `week` / `month` / `all` for cross-session rollups. Use to answer "why did that prompt take so long?" and "which agents are the most expensive in my workflow?". The same card renders automatically at the end of every Stop hook above the 5s noise floor — invoke this skill when you want it on demand or want to slice a different window.
+description: Show where this prompt's (or session's) wall time went — polished end-of-turn card with a stacked-segment top bar (`█` agents · `▒` tools · `░` idle), per-bucket per-row chart, and a closing insight line. No argument (or `current`) is the active session; pass `last-prompt` to slice the most recently finalized prompt, `last` for the most recent session, `week` / `month` / `all` for cross-session rollups. Use to answer "why did that prompt take so long?" and "which agents are the most expensive in my workflow?". The same card renders automatically at the end of every Stop hook above the 5s noise floor (`time_card_min_seconds`, env `OMC_TIME_CARD_MIN_SECONDS`) — invoke this skill when you want it on demand or want to slice a different window.
 ---
 
 # ULW Time

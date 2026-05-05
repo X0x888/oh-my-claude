@@ -194,7 +194,7 @@ Reviewer findings (v1.28.0) are now machine-readable: each reviewer agent emits 
 
 ### Permissioned agents
 
-**32 specialist agents — none can edit files; the main thread owns all mutations.** Each agent's `disallowedTools` is enforced at dispatch. Agents read, search, analyze, and plan; the main thread executes any changes they recommend. This keeps the main thread as the single source of truth and prevents unsupervised writes from agents operating on incomplete context.
+**34 specialist agents — none can edit files; the main thread owns all mutations.** Each agent's `disallowedTools` is enforced at dispatch. Agents read, search, analyze, and plan; the main thread executes any changes they recommend. This keeps the main thread as the single source of truth and prevents unsupervised writes from agents operating on incomplete context.
 
 ### Project Council
 
@@ -273,12 +273,12 @@ oh-my-claude/
 ├── install.sh / uninstall.sh / verify.sh   # Install, remove, and verify
 ├── bundle/dot-claude/                       # Installs to ~/.claude/
 │   ├── agents/          (34 agents)         # Specialist agent definitions
-│   ├── skills/          (24 skills)         # Skill definitions + autowork hooks
+│   ├── skills/          (25 skills)         # Skill definitions + autowork hooks
 │   ├── quality-pack/                        # Lifecycle hooks + memory files
 │   ├── output-styles/                       # Two bundled styles: oh-my-claude (default) + executive-brief (see docs/customization.md#output-style)
 │   └── statusline.py                        # Custom statusline widget
 ├── config/settings.patch.json               # Merged into user settings on install
-├── tests/               (63 bash + 1 py)    # See AGENTS.md / CONTRIBUTING.md for full list
+├── tests/               (71 bash + 1 py)    # See AGENTS.md / CONTRIBUTING.md for full list
 ├── tools/                                    # Developer-only tools (not installed)
 └── docs/                                    # Architecture, customization, FAQ, prompts
 ```

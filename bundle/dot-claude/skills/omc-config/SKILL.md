@@ -118,7 +118,7 @@ Capture the previous `model_tier` value (from `cmd_show` in Step 1) so Step 5 ca
 
 ### Path B — fine-tune
 
-Walk the four cluster questions below. Use one `AskUserQuestion` call per cluster — clusters are conceptually distinct, and batching all of them at once would overload the user.
+Walk the five cluster questions below. Use one `AskUserQuestion` call per cluster — clusters are conceptually distinct, and batching all of them at once would overload the user.
 
 **Cluster 1 — Quality gates** (single-select)
 

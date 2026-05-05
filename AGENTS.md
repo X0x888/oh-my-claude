@@ -132,13 +132,13 @@ oh-my-claude/
   verify.sh                   # Post-install integrity checker
 
   bundle/dot-claude/          # Installs to ~/.claude/
-    agents/                   # 32 specialist agent definitions (.md)
+    agents/                   # 34 specialist agent definitions (.md)
     output-styles/            # Two bundled output styles: oh-my-claude.md (compact CLI default) + executive-brief.md (CEO-style status report)
     quality-pack/
       memory/                 # Core, skills, and compact memory files
-      scripts/                # 8 lifecycle scripts (prompt routing, compaction, session, stop-failure, resume-hint, resume-watchdog)
-    skills/                   # 24 skill definitions, each in <name>/SKILL.md
-      autowork/scripts/       # 29 autowork hook scripts and utilities
+      scripts/                # 9 lifecycle scripts (prompt routing, compaction, session, stop-failure, resume-hint, resume-watchdog)
+    skills/                   # 25 skill definitions, each in <name>/SKILL.md
+      autowork/scripts/       # 32 autowork hook scripts and utilities
         common.sh             # Shared functions (JSON, classification, scope)
         lib/state-io.sh       # Extracted state I/O subsystem; sourced by common.sh
         lib/classifier.sh     # Extracted prompt classifier (P0 + P1 + telemetry); sourced by common.sh
@@ -149,7 +149,7 @@ oh-my-claude/
   config/
     settings.patch.json       # Settings merged into user's settings.json
 
-  tests/                      # 63 bash + 1 python test scripts; CLAUDE.md "Testing" lists each one
+  tests/                      # 71 bash + 1 python test scripts; CLAUDE.md "Testing" lists each one
 
   tools/                      # Developer tools (not installed)
     replay-classifier-telemetry.sh

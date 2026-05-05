@@ -46,77 +46,26 @@ Keep PRs focused. One logical change per PR.
 
 ## Testing
 
-Before submitting a pull request:
+Before submitting a pull request, run the full CI-parity suite. The canonical command list lives in `CLAUDE.md` "Testing" — keep this section pointing at that single source of truth so the lists cannot drift.
 
 ```bash
-# Syntax + lint
-bash -n bundle/dot-claude/**/*.sh
-shellcheck bundle/dot-claude/**/*.sh
+# Syntax + lint (CI parity — shellcheck warnings ARE fatal)
+find bundle/ -name '*.sh' -print0 | xargs -0 shellcheck -x --severity=warning
+find . -name '*.json' -not -path './.git/*' -print0 | xargs -0 -n1 python3 -m json.tool --no-ensure-ascii > /dev/null
 
 # Installation verification
 bash verify.sh
 
-# Unit / integration tests
-bash tests/test-intent-classification.sh
-bash tests/test-quality-gates.sh
-bash tests/test-stall-detection.sh
-bash tests/test-e2e-hook-sequence.sh
-bash tests/test-settings-merge.sh
-bash tests/test-uninstall-merge.sh
-bash tests/test-common-utilities.sh
-bash tests/test-session-resume.sh
-bash tests/test-concurrency.sh
-bash tests/test-install-artifacts.sh
-bash tests/test-post-merge-hook.sh
-bash tests/test-repro-redaction.sh
-bash tests/test-discovered-scope.sh
-bash tests/test-exemplifying-scope-gate.sh
-bash tests/test-finding-list.sh
-bash tests/test-state-io.sh
-bash tests/test-classifier-replay.sh
-bash tests/test-serendipity-log.sh
-bash tests/test-cross-session-rotation.sh
-bash tests/test-classifier.sh
-bash tests/test-show-report.sh
-bash tests/test-install-remote.sh
-bash tests/test-phase8-integration.sh
-bash tests/test-wave-shape.sh
-bash tests/test-verification-lib.sh
-bash tests/test-agent-verdict-contract.sh
-bash tests/test-gate-events.sh
-bash tests/test-discover-session.sh
-bash tests/test-design-contract.sh
-bash tests/test-inline-design-contract.sh
-bash tests/test-archetype-memory.sh
-bash tests/test-cross-session-lock.sh
-bash tests/test-mark-deferred.sh
-bash tests/test-pretool-intent-guard.sh
-bash tests/test-ulw-pause.sh
-bash tests/test-bias-defense-classifier.sh
-bash tests/test-bias-defense-directives.sh
-bash tests/test-metis-on-plan-gate.sh
-bash tests/test-auto-memory-skip.sh
-bash tests/test-memory-audit.sh
-bash tests/test-memory-drift-hint.sh
-bash tests/test-specialist-routing.sh
-bash tests/test-stop-failure-handler.sh
-bash tests/test-session-start-resume-hint.sh
-bash tests/test-claim-resume-request.sh
-bash tests/test-resume-watchdog.sh
-bash tests/test-omc-config.sh
-bash tests/test-output-style-coherence.sh
-bash tests/test-timing.sh
-bash tests/test-blindspot-inventory.sh
-bash tests/test-findings-json.sh
-bash tests/test-latency-budgets.sh
-bash tests/test-show-status.sh
-bash tests/test-memory-audit.sh
-bash tests/test-divergence-directive.sh
-bash tests/test-no-broken-stat-chain.sh
+# Run every CI-pinned bash test (extracts the canonical list from validate.yml — never drifts)
+for t in $(grep -E '^\s+run:\s+bash tests/test-' .github/workflows/validate.yml | awk '{print $NF}'); do
+  bash "${t}" || { printf 'FAIL: %s\n' "${t}"; exit 1; }
+done
+
+# Statusline widget (Python)
 python3 -m unittest tests.test_statusline -v
 ```
 
-All checks must pass cleanly.
+All checks must pass cleanly. The pin-discipline contract (`tests/test-coordination-rules.sh:C2`) blocks adding a new `tests/test-*.sh` without either CI-pinning it in `validate.yml` or marking it `# UNPINNED: <reason>` — this keeps the list exhaustive without manual upkeep here.
 
 ## Adding Agents
 
