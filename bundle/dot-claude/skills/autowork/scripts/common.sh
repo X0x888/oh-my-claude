@@ -1149,6 +1149,7 @@ sweep_stale_sessions() {
             --argjson waves "${_sweep_waves_block}" '
             {
               session_id: $sid,
+              project_key: (.project_key // null),
               start_ts: (.session_start_ts // .last_user_prompt_ts // null),
               end_ts: (.last_edit_ts // .last_review_ts // null),
               domain: (.task_domain // "unknown"),

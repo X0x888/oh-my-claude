@@ -4,6 +4,32 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.32.10] - 2026-05-05
+
+Fourth release-reviewer dogfood. Reviewer pass on v1.32.9 surfaced two BLOCK-class structural gaps in the project_key telemetry chain that v1.32.6/8/9 had silently left open. Both verified live before fix; both ship inline as Serendipity-bounded same-surface fixes.
+
+### Fixed
+
+- **`common.sh:1147` session_summary jq filter never tagged rows with `project_key`.** This is the most user-visible gap in the entire v1.31.0 → v1.32.9 wiring chain: the WHOLE POINT of multi-project `/ulw-report` slicing is `session_summary.jsonl`-driven (it's what `show-report.sh:25` reads), but the jq filter at the per-session sweep aggregator (`_sweep_append_*`'s session_summary builder) had no `project_key` field. v1.31.0 Wave 4 wired the read in adjacent rollups, v1.32.6/8 wired the write to session_state, v1.32.9 backfilled state — but session_summary itself was never tagged. Fixed: added `project_key: (.project_key // null)` to the jq filter at common.sh:1148. Forward-going sweeps now emit tagged rows; pre-1.32.10 rows remain `null` (acknowledged — JSONL append-only, no row-level rewrite without full ledger rebuild).
+
+- **`tools/backfill-project-key.sh` surfaces stale-bootstrap-stamp interaction.** Pre-1.32.10 the tool wrote `project_key` to session_state but didn't surface that v1.32.5 bootstrap-aggregated sessions still carried EMPTY `project_key` in the user-scope `gate_events.jsonl` rollup (the bootstrap's `.bootstrap-aggregated` stamps prevented re-aggregation). Reviewer caught: 575 of 575 rollup rows tagged EMPTY despite state being correctly backfilled. Fixed: backfill counts stamped sessions and prints a remediation hint at the end naming the truncate + re-bootstrap recipe. Live re-bootstrap on user data now shows 580 of 581 rows tagged with real project_keys (3 distinct projects: 298/238/44). 1 EMPTY remains (pre-cwd-tracking row).
+
+### Live remediation executed
+
+After the fix landed, ran `bootstrap-gate-events-rollup.sh` after truncating + clearing stamps. Result: gate_events rollup went from `575 EMPTY` to `298 + 238 + 44 = 580 tagged + 1 EMPTY`. Multi-project `/ulw-report` slicing now has real data to slice across 3 distinct projects on this machine.
+
+### Acknowledged not-shipped
+
+- **T5 fixture isolation** (reviewer gap 5) — minor polish; T5 currently asserts `3 already-set` after rerun, depending on T2+T6 having written keys. Trivial improvement; queued for v1.33.
+- **T7 deterministic-shape pin for cwd-hash fallback** (reviewer gap 3) — defensive add to lock the SHA-256[0:12] shape. Queued for v1.33.
+
+### Verification
+
+- `bash tests/test-backfill-project-key.sh` — 12/12 (unchanged after stamp-surfacing addition)
+- 67/67 CI-pinned tests pass locally
+- shellcheck clean (`tools/backfill-project-key.sh`, `common.sh`)
+- Live rollup verified: 580 tagged rows across 3 projects post-remediation (was 575 EMPTY)
+
 ## [1.32.9] - 2026-05-05
 
 Closes the v1.32.8-deferred backfill of historical `session_state.json` files. v1.32.6 wired the write path for new sessions; v1.32.8 extended that to non-ULW session-start hooks. But ~48 of the user's existing pre-1.32.6 session_state.json files still carried no `project_key`. When those age past TTL and get swept, the natural sweep at common.sh:1193 reads `project_key: ""` and tags rows with empty project_key — multi-project /ulw-report slicing stays broken for that backlog.

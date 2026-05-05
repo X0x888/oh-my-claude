@@ -67,6 +67,7 @@ else
 fi
 
 backfilled=0
+backfilled_with_bootstrap_stamp=0
 skipped_already_set=0
 skipped_no_cwd=0
 skipped_fixture=0
@@ -136,6 +137,15 @@ while IFS= read -r state_file; do
   if jq --arg k "${key}" '.project_key = $k' "${state_file}" > "${tmp_file}" 2>/dev/null; then
     mv "${tmp_file}" "${state_file}"
     backfilled=$((backfilled + 1))
+    # v1.32.10 stale-stamp detection: if this session was previously
+    # bootstrap-aggregated (v1.32.5+), its rows in the user-scope
+    # gate_events.jsonl rollup were appended with the (then-empty)
+    # project_key. Backfilling state alone does NOT retroactively
+    # retag those rollup rows — the bootstrap won't re-process
+    # without --force. Surface this so the user knows to re-run.
+    if [[ -f "${sid_dir}/.bootstrap-aggregated" ]]; then
+      backfilled_with_bootstrap_stamp=$((backfilled_with_bootstrap_stamp + 1))
+    fi
   else
     rm -f "${tmp_file}" 2>/dev/null || true
     errors=$((errors + 1))
@@ -154,5 +164,19 @@ printf 'Skipped: %d already-set, %d no-cwd, %d fixture, %d _watchdog\n' \
 if [[ "${errors}" -gt 0 ]]; then
   printf 'Errors: %d (see stderr)\n' "${errors}"
   exit 1
+fi
+# v1.32.10: surface bootstrap-stamp interaction. Backfilled state
+# does NOT retag rows already in the user-scope rollup — those rows
+# were appended with empty project_key when the bootstrap originally
+# ran. To retag them, truncate the rollup + re-run bootstrap --force.
+if [[ "${backfilled_with_bootstrap_stamp}" -gt 0 ]]; then
+  printf '\nNote: %d backfilled session(s) already aggregated by bootstrap-gate-events-rollup.sh.\n' \
+    "${backfilled_with_bootstrap_stamp}"
+  printf '      Their rows in ~/.claude/quality-pack/gate_events.jsonl still carry the\n'
+  printf '      empty project_key the bootstrap recorded at original aggregation time.\n'
+  printf '      To retag: truncate the rollup and re-run with --force:\n'
+  printf '        : > ~/.claude/quality-pack/gate_events.jsonl\n'
+  printf '        find ~/.claude/quality-pack/state -name .bootstrap-aggregated -delete\n'
+  printf '        bash tools/bootstrap-gate-events-rollup.sh\n'
 fi
 exit 0
