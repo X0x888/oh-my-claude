@@ -1574,6 +1574,69 @@ assert_exit "sh file: not UI" "1" is_ui_path "/scripts/build.sh"
 assert_exit "empty: not UI" "1" is_ui_path ""
 
 # ===========================================================================
+# delivery-contract surface classifiers
+# ===========================================================================
+printf '\ndelivery-contract surface classifiers:\n'
+
+assert_exit "test path: __tests__" "0" is_test_path "/src/__tests__/auth.test.ts"
+assert_exit "test path: suffix" "0" is_test_path "/pkg/parser_spec.rb"
+assert_exit "test path: non-test source" "1" is_test_path "/src/auth/service.ts"
+
+assert_exit "config path: workflow" "0" is_config_path "/project/.github/workflows/validate.yml"
+assert_exit "config path: package.json" "0" is_config_path "/project/package.json"
+assert_exit "config path: non-config source" "1" is_config_path "/project/src/app.ts"
+
+assert_exit "release path: CHANGELOG" "0" is_release_path "/project/CHANGELOG.md"
+assert_exit "release path: VERSION" "0" is_release_path "/project/VERSION"
+assert_exit "release path: regular doc" "1" is_release_path "/project/docs/guide.md"
+
+assert_exit "migration path: migrations dir" "0" is_migration_path "/project/db/migrate/20260505_add_users.sql"
+assert_exit "migration path: schema.sql" "0" is_migration_path "/project/schema.sql"
+assert_exit "migration path: ordinary sql" "1" is_migration_path "/project/queries/report.sql"
+
+# ===========================================================================
+# delivery-contract prompt derivation
+# ===========================================================================
+printf '\ndelivery-contract prompt derivation:\n'
+
+assert_eq "commit intent: required" \
+  "required" \
+  "$(detect_commit_intent_from_prompt "fix the bug and commit the changes")"
+
+assert_eq "commit intent: if needed" \
+  "if_needed" \
+  "$(detect_commit_intent_from_prompt "finish the fix and commit if needed")"
+
+assert_eq "commit intent: forbidden" \
+  "forbidden" \
+  "$(detect_commit_intent_from_prompt "fix the bug but do not commit or push anything")"
+
+assert_eq "prompt surfaces: docs + tests + release" \
+  "tests,docs,release" \
+  "$(derive_done_contract_prompt_surfaces "fix the bug, add regression coverage, update the README and changelog")"
+
+assert_eq "prompt surfaces: config + migration" \
+  "config,migration" \
+  "$(derive_done_contract_prompt_surfaces "update the CI workflow and add the migration for the new column")"
+
+assert_eq "test expectation: explicit tests" \
+  "add_or_update_tests" \
+  "$(derive_done_contract_test_expectation "fix the bug and add regression coverage" "coding")"
+
+assert_eq "test expectation: coding fallback" \
+  "verify" \
+  "$(derive_done_contract_test_expectation "refactor the auth parser" "coding")"
+
+assert_eq "verification contract: coding + docs + commit" \
+  "code_review,code_verify,prose_review,test_surface,release_surface,commit_record" \
+  "$(derive_verification_contract_required \
+      "fix the bug, add regression coverage, update the changelog, and commit it" \
+      "coding" \
+      "tests,docs,release" \
+      "add_or_update_tests" \
+      "required")"
+
+# ===========================================================================
 # is_ui_request
 # ===========================================================================
 printf '\nis_ui_request:\n'

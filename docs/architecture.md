@@ -85,13 +85,13 @@ The block caps prevent infinite loops. After the cap, Claude is allowed to stop 
 
 **`skills/autowork/scripts/record-subagent-summary.sh`** -- **SubagentStop hook** (all agents). Appends the agent's type and last assistant message to `subagent_summaries.jsonl` (capped at 16 entries). Also removes the FIFO-oldest matching entry from `pending_agents.jsonl` via a line-by-line parser that tolerates malformed JSONL lines.
 
-**`quality-pack/scripts/pre-compact-snapshot.sh`** -- **PreCompact hook**. Snapshots the current working state to `precompact_snapshot.md`: session ID, working directory, workflow mode, domain, intent, objective, last assistant message, recent prompts, specialist conclusions, edited files, and review/verification status.
+**`quality-pack/scripts/pre-compact-snapshot.sh`** -- **PreCompact hook**. Snapshots the current working state to `precompact_snapshot.md`: session ID, working directory, workflow mode, domain, intent, objective, persisted delivery contract, edited files, recent prompts, specialist conclusions, and review/verification plus remaining-obligation status.
 
 **`quality-pack/scripts/post-compact-summary.sh`** -- **PostCompact hook**. Combines Claude's native compact summary with the preserved snapshot into `compact_handoff.md`.
 
 **`quality-pack/scripts/session-start-resume-handoff.sh`** -- **SessionStart hook** (resume). Copies session state from the previous session's state directory to the new session. Rehydrates JSON state, JSONL files, and logs. Injects continuation context with preserved objective, domain, workflow mode, specialist conclusions, and domain-specific directives.
 
-**`quality-pack/scripts/session-start-compact-handoff.sh`** -- **SessionStart hook** (compact). Reads the pre-compact snapshot, injects it with a continuation directive and thinking requirements.
+**`quality-pack/scripts/session-start-compact-handoff.sh`** -- **SessionStart hook** (compact). Reads the pre-compact snapshot, injects it with a continuation directive, preserved delivery contract, and remaining obligations so the compact boundary does not silently reset what "done" means.
 
 **`quality-pack/scripts/stop-failure-handler.sh`** -- **StopFailure hook**. Captures the moment Claude Code terminates the session due to a rate cap, billing failure, auth failure, or other fatal stop. Dispatched for any matcher (`rate_limit`, `authentication_failed`, `billing_error`, `invalid_request`, `server_error`, `max_output_tokens`, `unknown`). Reads the `rate_limit_status.json` sidecar that `statusline.py` writes during the session (the StopFailure payload itself does not carry rate-limits) and persists `resume_request.json` with the original objective, last user prompt, matcher, the earliest known reset epoch, and a snapshot of the rate-limit windows. Hook output is documented as ignored by Claude Code at this event — this script is purely for side-effect persistence so a future watchdog (or the next session-resume) can act on the stop without losing context. Also appends a `stop-failure-captured` row to `gate_events.jsonl` for `/ulw-report` visibility.
 
@@ -270,6 +270,12 @@ Separate from session state, `install.sh` writes four install-time artifacts tha
 | Key | Purpose |
 |---|---|
 | `current_objective` | Normalized task description, preserved across advisory/continuation prompts |
+| `done_contract_primary` | Prompt-time statement of the primary deliverable ULW believes it is trying to finish. Usually mirrors `current_objective`, but stored separately so `/ulw-status`, compact snapshots, and resume handoff can refer to the user's original "done means this" contract explicitly. |
+| `done_contract_commit_mode` | Commit/publish expectation derived from the latest execution prompt: `required`, `if_needed`, `forbidden`, or `unspecified`. Read by `/ulw-status`, compact/resume handoff, `stop-guard.sh` (required-commit enforcement), and `pretool-intent-guard.sh` (blocks commit/publish commands when the prompt said not to commit). |
+| `done_contract_prompt_surfaces` | Comma-separated explicit adjacent deliverables inferred from the prompt (`tests`, `docs`, `config`, `release`, `migration`). This is the early contract, not the touched-file ledger: it says what the user explicitly asked to be part of "done". |
+| `done_contract_test_expectation` | Test-specific contract derived at prompt time: empty, `verify`, or `add_or_update_tests`. `verify` is the default coding-work proof bar; `add_or_update_tests` is the stronger prompt-explicit bar used when the user asked for regression coverage or test additions. |
+| `verification_contract_required` | Comma-separated proof obligations derived from the prompt (`code_review`, `code_verify`, `prose_review`, `design_review`, `test_surface`, `config_surface`, `release_surface`, `migration_surface`, `commit_record`). Surfaced in `/ulw-status` and compact/resume handoff so the user can see the proof plan before Stop. |
+| `done_contract_updated_ts` | Epoch timestamp when the current delivery contract was last refreshed from a fresh execution prompt. Continuation/advisory prompts preserve the prior contract. |
 | `task_domain` | Classified domain: coding, writing, research, operations, mixed, general |
 | `task_intent` | Classified intent: execution, continuation, advisory, checkpoint, session_management |
 | `workflow_mode` | Active mode (currently: `ultrawork` or empty) |
@@ -354,11 +360,11 @@ Separate from session state, `install.sh` writes four install-time artifacts tha
 
 When Claude Code compacts a session — either automatically when the context budget is approaching the limit, or manually via `/compact` — the harness runs three hooks to preserve working state:
 
-1. **`PreCompact`** → `pre-compact-snapshot.sh`: writes `precompact_snapshot.md` with objective, domain, intent, last assistant message, recent prompts, active plan, edited files, review/verify status, pending specialists, and a `review_pending_at_compact` flag. Back-to-back compactions archive an unconsumed prior snapshot as `precompact_snapshot.<mtime>.md` (retained up to 5 files).
+1. **`PreCompact`** → `pre-compact-snapshot.sh`: writes `precompact_snapshot.md` with objective, domain, intent, delivery contract, last assistant message, recent prompts, active plan, edited files, review/verify status, remaining obligations, pending specialists, and a `review_pending_at_compact` flag. Back-to-back compactions archive an unconsumed prior snapshot as `precompact_snapshot.<mtime>.md` (retained up to 5 files).
 
 2. **`PostCompact`** → `post-compact-summary.sh`: reads Claude Code's `.compact_summary` field (or emits a fallback when empty), combines it with the snapshot into `compact_handoff.md`, and sets a `just_compacted` flag so the next `UserPromptSubmit` can bias classification toward continuation. `HOOK_DEBUG=true` dumps the raw hook JSON to `compact_debug.log` for schema diagnosis.
 
-3. **`SessionStart` (source=compact)** → `session-start-compact-handoff.sh`: injects the handoff document via `additionalContext`, with a directive stack that re-asserts ultrawork mode, lists any in-flight specialist dispatches for re-dispatch, and enforces pending-review requirements.
+3. **`SessionStart` (source=compact)** → `session-start-compact-handoff.sh`: injects the handoff document via `additionalContext`, with a directive stack that re-asserts ultrawork mode, carries forward the preserved delivery contract, lists any in-flight specialist dispatches for re-dispatch, names remaining obligations, and enforces pending-review requirements.
 
 Pending specialist tracking uses a new `PreToolUse` hook (`record-pending-agent.sh`) matched on the `Agent` tool. Every dispatch appends to `pending_agents.jsonl`; every `SubagentStop` removes the FIFO-oldest entry matching the `subagent_type`. This is a per-type counter — same-type concurrent dispatches cannot be distinguished, but the count remains accurate.
 

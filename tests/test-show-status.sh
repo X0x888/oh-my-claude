@@ -297,5 +297,40 @@ else
   fail=$((fail + 1))
 fi
 
+# ----------------------------------------------------------------------
+printf 'Test 8: delivery-contract section surfaces prompt contract and remaining obligations\n'
+parts="$(mk_session)"
+ROOT="${parts%|*}"
+SID="${parts##*|}"
+ts_now="$(date +%s)"
+printf '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","current_objective":"Ship the auth fix","done_contract_primary":"Ship the auth fix","done_contract_commit_mode":"required","done_contract_prompt_surfaces":"tests,docs,release","done_contract_test_expectation":"add_or_update_tests","verification_contract_required":"code_review,code_verify,prose_review,test_surface,release_surface,commit_record","last_code_edit_ts":"%s","last_doc_edit_ts":"%s","last_review_ts":"%s","last_doc_review_ts":"%s","last_verify_ts":"%s","last_verify_outcome":"passed","last_verify_confidence":"80","session_start_ts":"%s"}' \
+  "${ts_now}" "${ts_now}" "${ts_now}" "${ts_now}" "${ts_now}" "${ts_now}" > "${ROOT}/${SID}/session_state.json"
+cat > "${ROOT}/${SID}/edited_files.log" <<'EOF'
+/project/src/auth.ts
+/project/tests/auth.test.ts
+/project/README.md
+/project/CHANGELOG.md
+EOF
+
+assert_output_contains "T8: full status renders delivery-contract header" \
+  "--- Delivery Contract ---" \
+  env STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}"
+assert_output_contains "T8: commit intent rendered" \
+  "Commit intent:       required" \
+  env STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}"
+assert_output_contains "T8: prompt surfaces humanized" \
+  "Prompt surfaces:     tests · docs · release" \
+  env STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}"
+assert_output_contains "T8: touched surfaces rendered" \
+  "Touched surfaces:    code=2 · docs=2 · tests=1 · release=1" \
+  env STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}"
+assert_output_contains "T8: remaining commit obligation rendered" \
+  "create the requested commit before stopping" \
+  env STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}"
+assert_output_contains "T8: summary mode surfaces contract" \
+  "Contract:   commit=required · prompt surfaces=tests · docs · release" \
+  env STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}" --summary
+teardown_session "${ROOT}"
+
 printf '\n=== Show-Status Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]

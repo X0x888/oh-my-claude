@@ -25,6 +25,7 @@ A cognitive quality harness for Claude Code -- bash hooks, skills, and specialis
 - **Hard quality gates that actually block.** Claude can't mark a task done until tests, review, and verification are complete — no more "I've made the changes" with broken code or skipped review.
 - **Domain routing across coding, writing, research, ops.** Each domain gets its own specialist chain. Not just a coding tool that accepts prose.
 - **Session continuity through compaction.** Objectives, decisions, and review state survive context compaction — you don't lose the plot mid-task.
+- **A persistent done-contract.** `/ulw` now records the user’s primary deliverable, commit intent, adjacent requested surfaces, and proof obligations early, then shows the remaining obligations live in `/ulw-status` and carries them across resume/compact boundaries.
 
 ### What this is NOT
 
@@ -192,7 +193,7 @@ Reviewer findings (v1.28.0) are now machine-readable: each reviewer agent emits 
 
 ### Session continuity
 
-**Objectives, decisions, and review state survive context compaction — you don't lose the plot mid-task.** Pre- and post-compact hooks snapshot the working state. Domain classification, accepted decisions, specialist conclusions, in-flight dispatches, and pending review obligations all carry over. When the session resumes, context is rehydrated — not reconstructed from scratch.
+**Objectives, decisions, review state, and the done-contract survive context compaction — you don't lose the plot mid-task.** Pre- and post-compact hooks snapshot the working state. Domain classification, accepted decisions, specialist conclusions, in-flight dispatches, pending review obligations, and the remaining contract obligations all carry over. When the session resumes, context is rehydrated — not reconstructed from scratch.
 
 ### Permissioned agents
 
@@ -315,7 +316,7 @@ Skills are invoked as slash commands or routed automatically by the intent class
 | omc-config *(setup walkthrough)* | `/omc-config [setup\|update\|change]` | Multi-choice walkthrough for `oh-my-claude.conf` flags. Auto-detects first-time setup vs upgrade vs ad-hoc change. Picks a profile (Maximum Quality + Automation / Balanced / Minimal) or fine-tunes individual flags — no typing required. Triggered by phrases like "help me install", "configure oh-my-claude", "update my settings". |
 | **Workflow control** (mid-session) | | |
 | ulw-demo *(onboarding)* | `/ulw-demo` | Guided walkthrough with real quality gates |
-| ulw-status *(diagnostics)* | `/ulw-status` | Show current session state, Council Phase 8 wave-plan progress, and live timing/directive-surface totals. `summary` / `classifier` arguments swap modes. |
+| ulw-status *(diagnostics)* | `/ulw-status` | Show current session state, the persisted done-contract and remaining obligations, Council Phase 8 wave-plan progress, and live timing/directive-surface totals. `summary` / `classifier` arguments swap modes. |
 | ulw-time *(time distribution)* | `/ulw-time [current\|last\|last-prompt\|week\|month\|all]` | Polished end-of-turn time card — stacked top bar (`█` agents · `▒` tools · `░` idle), per-bucket ASCII chart, and a one-line insight (anomaly / dominance / reassurance / fun fact). The same card auto-emits as Stop `systemMessage` above the 5s noise floor; manual invocations slice a different window or bypass the floor. |
 | ulw-report *(retrospective)* | `/ulw-report [last\|week\|month\|all]` | Markdown digest of cross-session activity — sessions, gate fires, bias-defense fires, router directive footprint, top reviewers, classifier misfires, Serendipity catches, finding/wave outcomes |
 | memory-audit *(memory hygiene)* | `/memory-audit [--memory-dir <path>]` | Classify MEMORY.md entries (load-bearing, archival, superseded, drifted) and propose rollup moves. Read-only. |

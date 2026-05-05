@@ -1680,6 +1680,488 @@ is_ui_path() {
   return 1
 }
 
+_csv_add_unique() {
+  local csv="$1"
+  local token="$2"
+  [[ -n "${token}" ]] || {
+    printf '%s' "${csv}"
+    return
+  }
+
+  if [[ ",${csv}," == *",${token},"* ]]; then
+    printf '%s' "${csv}"
+  elif [[ -n "${csv}" ]]; then
+    printf '%s,%s' "${csv}" "${token}"
+  else
+    printf '%s' "${token}"
+  fi
+}
+
+csv_humanize() {
+  local csv="${1:-}"
+  [[ -n "${csv}" ]] || {
+    printf 'none'
+    return
+  }
+  printf '%s' "${csv//,/ · }"
+}
+
+# is_test_path — returns 0 for files that primarily represent test coverage.
+# Matches common test directories and filename conventions across JS/TS,
+# Python, Ruby, Go, Swift, and mixed repositories.
+is_test_path() {
+  local path="$1"
+  [[ -z "${path}" ]] && return 1
+
+  local base="${path##*/}"
+  local base_lc
+  base_lc="$(printf '%s' "${base}" | tr '[:upper:]' '[:lower:]')"
+
+  case "/${path}/" in
+    */__tests__/*|*/tests/*|*/test/*|*/spec/*|*/features/*) return 0 ;;
+  esac
+
+  case "${base_lc}" in
+    test_*|*_test.*|*.test.*|*.spec.*|*_spec.*|conftest.py|pytest.ini|tox.ini|nosetests.*) return 0 ;;
+  esac
+
+  return 1
+}
+
+# is_config_path — returns 0 for build/runtime configuration surfaces where
+# a change often needs explicit verification or rollout commentary.
+is_config_path() {
+  local path="$1"
+  [[ -z "${path}" ]] && return 1
+
+  local base="${path##*/}"
+  local base_lc
+  base_lc="$(printf '%s' "${base}" | tr '[:upper:]' '[:lower:]')"
+
+  case "/${path}/" in
+    */config/*|*/configs/*|*/.github/workflows/*|*/.circleci/*|*/.devcontainer/*|*/charts/*|*/helm/*)
+      return 0
+      ;;
+  esac
+
+  case "${base_lc}" in
+    .env|.env.*|*.env|dockerfile|docker-compose.yml|docker-compose.yaml|compose.yml|compose.yaml|package.json|package-lock.json|pnpm-lock.yaml|yarn.lock|bun.lockb|tsconfig.json|jsconfig.json|pyproject.toml|cargo.toml|go.mod|go.sum|package.swift|requirements.txt|requirements-*.txt|pipfile|pipfile.lock|poetry.lock|terraform.tfvars|terraform.tfvars.json|*.tf|*.tfvars|*.toml|*.ini|*.cfg|*.conf|*.properties|*.yaml|*.yml)
+      return 0
+      ;;
+    .eslintrc|.eslintrc.*|eslint.config.*|.prettierrc|.prettierrc.*|prettier.config.*|vite.config.*|vitest.config.*|jest.config.*|webpack.config.*|rollup.config.*|postcss.config.*|tailwind.config.*|next.config.*|nuxt.config.*|astro.config.*)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+# is_release_path — returns 0 for release-facing bookkeeping such as version
+# markers, release notes, and changelog surfaces.
+is_release_path() {
+  local path="$1"
+  [[ -z "${path}" ]] && return 1
+
+  local base="${path##*/}"
+  local base_lc
+  base_lc="$(printf '%s' "${base}" | tr '[:upper:]' '[:lower:]')"
+
+  case "/${path}/" in
+    */releases/*|*/release-notes/*) return 0 ;;
+  esac
+
+  case "${base_lc}" in
+    changelog*|release-notes*|release*|version|version.txt)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+# is_migration_path — returns 0 for schema/migration surfaces that often need
+# dedicated rollout or compatibility verification.
+is_migration_path() {
+  local path="$1"
+  [[ -z "${path}" ]] && return 1
+
+  local base="${path##*/}"
+  local base_lc
+  base_lc="$(printf '%s' "${base}" | tr '[:upper:]' '[:lower:]')"
+
+  case "/${path}/" in
+    */supabase/migrations/*|*/prisma/migrations/*|*/alembic/versions/*|*/db/migrate/*|*/migrations/*|*/migration/*)
+      return 0
+      ;;
+  esac
+
+  case "${base_lc}" in
+    *migration*|schema.sql|structure.sql)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+prompt_explicitly_requests_tests_surface() {
+  local text="$1"
+  [[ -n "${text}" ]] || return 1
+  grep -Eiq '(\b(add|write|create|update|expand|increase|improve|cover|include|fix)\b.{0,48}\b(test|tests|coverage|regression|benchmark)s?\b)|(\b(test|tests|coverage|regression|benchmark)s?\b.{0,48}\b(add|write|create|update|expand|increase|improve|cover|include|fix)\b)' <<<"${text}"
+}
+
+prompt_explicitly_requests_docs_surface() {
+  local text="$1"
+  [[ -n "${text}" ]] || return 1
+  grep -Eiq '(\b(update|add|write|document|refresh|touch|edit|fix|revise|mention)\b.{0,48}\b(readme|docs?|documentation|changelog|claude\.md|agents\.md|contributing\.md|faq)\b)|(\b(readme|docs?|documentation|changelog|claude\.md|agents\.md|contributing\.md|faq)\b.{0,48}\b(update|add|write|document|refresh|touch|edit|fix|revise|mention)\b)' <<<"${text}"
+}
+
+prompt_explicitly_requests_config_surface() {
+  local text="$1"
+  [[ -n "${text}" ]] || return 1
+  grep -Eiq '(\b(update|add|wire|fix|edit|change|configure|set|adjust|touch|modify)\b.{0,56}\b(config|configuration|settings|workflow|ci|pipeline|env(ironment)?[[:space:]]+vars?|dockerfile|docker[[:space:]]+compose|compose[[:space:]]+file|terraform|helm|kubernetes|package\.json|tsconfig|eslint|prettier)\b)|(\b(config|configuration|settings|workflow|ci|pipeline|env(ironment)?[[:space:]]+vars?|dockerfile|docker[[:space:]]+compose|compose[[:space:]]+file|terraform|helm|kubernetes|package\.json|tsconfig|eslint|prettier)\b.{0,56}\b(update|add|wire|fix|edit|change|configure|set|adjust|touch|modify)\b)' <<<"${text}"
+}
+
+prompt_explicitly_requests_release_surface() {
+  local text="$1"
+  [[ -n "${text}" ]] || return 1
+  grep -Eiq '(\b(update|add|cut|prepare|publish|ship|tag|bump|release|version)\b.{0,48}\b(changelog|release[[:space:]]+notes?|version|tag|release)\b)|(\b(changelog|release[[:space:]]+notes?|version|tag|release)\b.{0,48}\b(update|add|cut|prepare|publish|ship|tag|bump|release|version)\b)' <<<"${text}"
+}
+
+prompt_explicitly_requests_migration_surface() {
+  local text="$1"
+  [[ -n "${text}" ]] || return 1
+  grep -Eiq '(\b(add|create|write|update|run|prepare|ship|fix)\b.{0,48}\b(migration|migrations|schema)\b)|(\b(migration|migrations|schema)\b.{0,48}\b(add|create|write|update|run|prepare|ship|fix)\b)' <<<"${text}"
+}
+
+detect_commit_intent_from_prompt() {
+  local text="$1"
+  [[ -n "${text}" ]] || {
+    printf 'unspecified'
+    return
+  }
+
+  if grep -Eiq '\b(do[[:space:]]+not|don'\''t|dont|without|avoid|no)\b.{0,24}\b(commit|push|tag|publish|release)\b|\bwithout\b.{0,16}\bcommitt?ing\b' <<<"${text}"; then
+    printf 'forbidden'
+    return
+  fi
+
+  if grep -Eiq '\b(commit|push|tag|publish|release)\b.{0,24}\b(if[[:space:]]+needed|if[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?|if[[:space:]]+necessary|when[[:space:]]+needed|when[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?)\b|\b(if[[:space:]]+needed|if[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?|if[[:space:]]+necessary|when[[:space:]]+needed|when[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?)\b.{0,24}\b(commit|push|tag|publish|release)\b' <<<"${text}"; then
+    printf 'if_needed'
+    return
+  fi
+
+  if grep -Eiq '\b(commit|push|tag|publish|release)\b|\b(open|create)\b.{0,24}\b(pr|pull[[:space:]]+request|release)\b' <<<"${text}"; then
+    printf 'required'
+    return
+  fi
+
+  printf 'unspecified'
+}
+
+derive_done_contract_prompt_surfaces() {
+  local text="$1"
+  local surfaces=""
+
+  prompt_explicitly_requests_tests_surface "${text}" && surfaces="$(_csv_add_unique "${surfaces}" "tests")"
+  prompt_explicitly_requests_docs_surface "${text}" && surfaces="$(_csv_add_unique "${surfaces}" "docs")"
+  prompt_explicitly_requests_config_surface "${text}" && surfaces="$(_csv_add_unique "${surfaces}" "config")"
+  prompt_explicitly_requests_release_surface "${text}" && surfaces="$(_csv_add_unique "${surfaces}" "release")"
+  prompt_explicitly_requests_migration_surface "${text}" && surfaces="$(_csv_add_unique "${surfaces}" "migration")"
+
+  printf '%s' "${surfaces}"
+}
+
+derive_done_contract_test_expectation() {
+  local text="$1"
+  local task_domain="${2:-}"
+
+  if prompt_explicitly_requests_tests_surface "${text}"; then
+    printf 'add_or_update_tests'
+  elif [[ "${task_domain}" == "coding" || "${task_domain}" == "mixed" ]]; then
+    printf 'verify'
+  else
+    printf ''
+  fi
+}
+
+derive_verification_contract_required() {
+  local text="$1"
+  local task_domain="${2:-}"
+  local prompt_surfaces="${3:-}"
+  local test_expectation="${4:-}"
+  local commit_mode="${5:-}"
+  local required=""
+
+  if [[ "${task_domain}" == "coding" || "${task_domain}" == "mixed" ]]; then
+    required="$(_csv_add_unique "${required}" "code_review")"
+    required="$(_csv_add_unique "${required}" "code_verify")"
+  fi
+
+  if [[ "${task_domain}" == "writing" ]] || [[ ",${prompt_surfaces}," == *",docs,"* ]]; then
+    required="$(_csv_add_unique "${required}" "prose_review")"
+  fi
+
+  if [[ "${task_domain}" == "coding" || "${task_domain}" == "mixed" ]] && is_ui_request "${text}"; then
+    required="$(_csv_add_unique "${required}" "design_review")"
+  fi
+
+  [[ "${test_expectation}" == "add_or_update_tests" ]] && required="$(_csv_add_unique "${required}" "test_surface")"
+  [[ ",${prompt_surfaces}," == *",config,"* ]] && required="$(_csv_add_unique "${required}" "config_surface")"
+  [[ ",${prompt_surfaces}," == *",release,"* ]] && required="$(_csv_add_unique "${required}" "release_surface")"
+  [[ ",${prompt_surfaces}," == *",migration,"* ]] && required="$(_csv_add_unique "${required}" "migration_surface")"
+  [[ "${commit_mode}" == "required" ]] && required="$(_csv_add_unique "${required}" "commit_record")"
+
+  printf '%s' "${required}"
+}
+
+delivery_contract_commit_mode_label() {
+  case "${1:-unspecified}" in
+    required) printf 'required' ;;
+    if_needed) printf 'if needed' ;;
+    forbidden) printf 'forbidden' ;;
+    *) printf 'unspecified' ;;
+  esac
+}
+
+# Read unique edited-file surfaces for the current session. Returns 7 lines in
+# fixed order: code, docs, ui, tests, config, release, migration.
+read_delivery_surface_counts() {
+  local code_count=0
+  local doc_count=0
+  local ui_count=0
+  local test_count=0
+  local config_count=0
+  local release_count=0
+  local migration_count=0
+  local edited_log
+
+  edited_log="$(session_file "edited_files.log" 2>/dev/null || true)"
+  if [[ -f "${edited_log}" ]]; then
+    while IFS= read -r _path; do
+      [[ -z "${_path}" ]] && continue
+      if is_doc_path "${_path}"; then
+        doc_count=$((doc_count + 1))
+      else
+        code_count=$((code_count + 1))
+      fi
+      is_ui_path "${_path}" && ui_count=$((ui_count + 1))
+      is_test_path "${_path}" && test_count=$((test_count + 1))
+      is_config_path "${_path}" && config_count=$((config_count + 1))
+      is_release_path "${_path}" && release_count=$((release_count + 1))
+      is_migration_path "${_path}" && migration_count=$((migration_count + 1))
+    done < <(sort -u "${edited_log}" 2>/dev/null || true)
+  fi
+
+  printf '%s\n' \
+    "${code_count}" \
+    "${doc_count}" \
+    "${ui_count}" \
+    "${test_count}" \
+    "${config_count}" \
+    "${release_count}" \
+    "${migration_count}"
+}
+
+delivery_contract_touched_surfaces_summary() {
+  local code_count=0
+  local doc_count=0
+  local ui_count=0
+  local test_count=0
+  local config_count=0
+  local release_count=0
+  local migration_count=0
+  local summary=""
+  local _dc_idx=0
+  local _dc_line=""
+
+  while IFS= read -r _dc_line || [[ -n "${_dc_line}" ]]; do
+    case "${_dc_idx}" in
+      0) code_count="${_dc_line}" ;;
+      1) doc_count="${_dc_line}" ;;
+      2) ui_count="${_dc_line}" ;;
+      3) test_count="${_dc_line}" ;;
+      4) config_count="${_dc_line}" ;;
+      5) release_count="${_dc_line}" ;;
+      6) migration_count="${_dc_line}" ;;
+    esac
+    _dc_idx=$((_dc_idx + 1))
+  done < <(read_delivery_surface_counts)
+
+  [[ "${code_count}" -gt 0 ]] && summary="${summary:+${summary} · }code=${code_count}"
+  [[ "${doc_count}" -gt 0 ]] && summary="${summary:+${summary} · }docs=${doc_count}"
+  [[ "${ui_count}" -gt 0 ]] && summary="${summary:+${summary} · }ui=${ui_count}"
+  [[ "${test_count}" -gt 0 ]] && summary="${summary:+${summary} · }tests=${test_count}"
+  [[ "${config_count}" -gt 0 ]] && summary="${summary:+${summary} · }config=${config_count}"
+  [[ "${release_count}" -gt 0 ]] && summary="${summary:+${summary} · }release=${release_count}"
+  [[ "${migration_count}" -gt 0 ]] && summary="${summary:+${summary} · }migration=${migration_count}"
+
+  printf '%s' "${summary:-none}"
+}
+
+session_commit_count() {
+  local start_ts="${1:-}"
+  local repo_cwd="${2:-}"
+  local count="0"
+
+  if [[ -z "${start_ts}" ]]; then
+    start_ts="$(read_state "session_start_ts")"
+  fi
+  [[ "${start_ts}" =~ ^[0-9]+$ ]] || {
+    printf '0'
+    return
+  }
+
+  if [[ -z "${repo_cwd}" ]]; then
+    repo_cwd="$(read_state "cwd" 2>/dev/null || true)"
+  fi
+
+  if [[ -n "${repo_cwd}" ]] && command -v git >/dev/null 2>&1 && git -C "${repo_cwd}" rev-parse --git-dir >/dev/null 2>&1; then
+    count="$(git -C "${repo_cwd}" log --since="@${start_ts}" --format='%H' 2>/dev/null | wc -l | tr -d '[:space:]' || echo 0)"
+  elif command -v git >/dev/null 2>&1 && git rev-parse --git-dir >/dev/null 2>&1; then
+    count="$(git log --since="@${start_ts}" --format='%H' 2>/dev/null | wc -l | tr -d '[:space:]' || echo 0)"
+  fi
+
+  printf '%s' "${count:-0}"
+}
+
+delivery_contract_blocking_items() {
+  local prompt_surfaces commit_mode test_expectation start_ts
+  local code_count=0 doc_count=0 ui_count=0 test_count=0 config_count=0 release_count=0 migration_count=0
+  local items=""
+  local _dc_idx=0
+  local _dc_line=""
+
+  prompt_surfaces="$(read_state "done_contract_prompt_surfaces")"
+  commit_mode="$(read_state "done_contract_commit_mode")"
+  test_expectation="$(read_state "done_contract_test_expectation")"
+  start_ts="$(read_state "session_start_ts")"
+
+  while IFS= read -r _dc_line || [[ -n "${_dc_line}" ]]; do
+    case "${_dc_idx}" in
+      0) code_count="${_dc_line}" ;;
+      1) doc_count="${_dc_line}" ;;
+      2) ui_count="${_dc_line}" ;;
+      3) test_count="${_dc_line}" ;;
+      4) config_count="${_dc_line}" ;;
+      5) release_count="${_dc_line}" ;;
+      6) migration_count="${_dc_line}" ;;
+    esac
+    _dc_idx=$((_dc_idx + 1))
+  done < <(read_delivery_surface_counts)
+
+  if [[ "${test_expectation}" == "add_or_update_tests" && "${test_count}" -eq 0 ]]; then
+    items="${items}add or update the requested tests/regression coverage"$'\n'
+  fi
+  if [[ ",${prompt_surfaces}," == *",docs,"* ]] && [[ "${doc_count}" -eq 0 ]]; then
+    items="${items}touch the requested docs surface"$'\n'
+  fi
+  if [[ ",${prompt_surfaces}," == *",config,"* ]] && [[ "${config_count}" -eq 0 ]]; then
+    items="${items}touch the requested config/workflow surface"$'\n'
+  fi
+  if [[ ",${prompt_surfaces}," == *",release,"* ]] && [[ "${release_count}" -eq 0 ]]; then
+    items="${items}touch the requested release/changelog surface"$'\n'
+  fi
+  if [[ ",${prompt_surfaces}," == *",migration,"* ]] && [[ "${migration_count}" -eq 0 ]]; then
+    items="${items}touch the requested migration/schema surface"$'\n'
+  fi
+  if [[ "${commit_mode}" == "required" ]] && [[ "$(session_commit_count "${start_ts}")" -eq 0 ]]; then
+    items="${items}create the requested commit before stopping"$'\n'
+  fi
+
+  printf '%s' "${items%$'\n'}"
+}
+
+delivery_contract_remaining_items() {
+  local task_domain prompt_surfaces commit_mode test_expectation
+  local code_count=0 doc_count=0 ui_count=0 test_count=0 config_count=0 release_count=0 migration_count=0
+  local items=""
+  local _dc_idx=0
+  local _dc_line=""
+  local last_code_edit_ts last_doc_edit_ts last_review_ts last_doc_review_ts
+  local last_verify_ts last_verify_outcome last_verify_confidence
+  local required_dims start_ts
+
+  task_domain="$(task_domain)"
+  prompt_surfaces="$(read_state "done_contract_prompt_surfaces")"
+  commit_mode="$(read_state "done_contract_commit_mode")"
+  test_expectation="$(read_state "done_contract_test_expectation")"
+  last_code_edit_ts="$(read_state "last_code_edit_ts")"
+  last_doc_edit_ts="$(read_state "last_doc_edit_ts")"
+  last_review_ts="$(read_state "last_review_ts")"
+  last_doc_review_ts="$(read_state "last_doc_review_ts")"
+  last_verify_ts="$(read_state "last_verify_ts")"
+  last_verify_outcome="$(read_state "last_verify_outcome")"
+  last_verify_confidence="$(read_state "last_verify_confidence")"
+  start_ts="$(read_state "session_start_ts")"
+
+  while IFS= read -r _dc_line || [[ -n "${_dc_line}" ]]; do
+    case "${_dc_idx}" in
+      0) code_count="${_dc_line}" ;;
+      1) doc_count="${_dc_line}" ;;
+      2) ui_count="${_dc_line}" ;;
+      3) test_count="${_dc_line}" ;;
+      4) config_count="${_dc_line}" ;;
+      5) release_count="${_dc_line}" ;;
+      6) migration_count="${_dc_line}" ;;
+    esac
+    _dc_idx=$((_dc_idx + 1))
+  done < <(read_delivery_surface_counts)
+
+  if [[ "${test_expectation}" == "add_or_update_tests" && "${test_count}" -eq 0 ]]; then
+    items="${items}add or update the requested tests/regression coverage"$'\n'
+  fi
+  if [[ ",${prompt_surfaces}," == *",docs,"* ]] && [[ "${doc_count}" -eq 0 ]]; then
+    items="${items}touch the requested docs surface"$'\n'
+  fi
+  if [[ ",${prompt_surfaces}," == *",config,"* ]] && [[ "${config_count}" -eq 0 ]]; then
+    items="${items}touch the requested config/workflow surface"$'\n'
+  fi
+  if [[ ",${prompt_surfaces}," == *",release,"* ]] && [[ "${release_count}" -eq 0 ]]; then
+    items="${items}touch the requested release/changelog surface"$'\n'
+  fi
+  if [[ ",${prompt_surfaces}," == *",migration,"* ]] && [[ "${migration_count}" -eq 0 ]]; then
+    items="${items}touch the requested migration/schema surface"$'\n'
+  fi
+
+  if [[ "${code_count}" -gt 0 ]]; then
+    if [[ -z "${last_review_ts}" || -z "${last_code_edit_ts}" || "${last_review_ts}" -lt "${last_code_edit_ts}" ]]; then
+      items="${items}run a fresh code review after the latest code edits"$'\n'
+    fi
+    if [[ -z "${last_verify_ts}" || -z "${last_code_edit_ts}" || "${last_verify_ts}" -lt "${last_code_edit_ts}" ]]; then
+      items="${items}run verification after the latest code edits"$'\n'
+    elif [[ "${last_verify_outcome}" == "failed" ]]; then
+      items="${items}resolve the failing verification result"$'\n'
+    elif [[ -n "${last_verify_confidence}" && "${last_verify_confidence}" =~ ^[0-9]+$ && "${last_verify_confidence}" -lt "${OMC_VERIFY_CONFIDENCE_THRESHOLD}" ]]; then
+      items="${items}raise verification confidence to the configured threshold"$'\n'
+    fi
+  fi
+
+  if [[ "${doc_count}" -gt 0 ]] && { [[ -z "${last_doc_review_ts}" ]] || { [[ -n "${last_doc_edit_ts}" ]] && [[ "${last_doc_review_ts}" -lt "${last_doc_edit_ts}" ]]; }; }; then
+    items="${items}run editor-critic after the latest doc edits"$'\n'
+  fi
+
+  required_dims="$(get_required_dimensions 2>/dev/null || true)"
+  if [[ ",${required_dims}," == *",design_quality,"* ]] && [[ "${ui_count}" -gt 0 ]] && ! is_dimension_valid "design_quality"; then
+    items="${items}run design-reviewer for the visible UI work"$'\n'
+  fi
+
+  if [[ $((config_count + release_count + migration_count)) -gt 0 ]]; then
+    if [[ "${code_count}" -eq 0 ]] && [[ "${doc_count}" -eq 0 ]] && [[ -z "${last_verify_ts}" ]]; then
+      items="${items}either verify the config/release/migration change or call out its remaining rollout risk explicitly"$'\n'
+    fi
+  fi
+
+  if [[ "${commit_mode}" == "required" ]] && [[ "$(session_commit_count "${start_ts}")" -eq 0 ]]; then
+    items="${items}create the requested commit before stopping"$'\n'
+  fi
+  if [[ "${commit_mode}" == "forbidden" ]] && [[ "$(session_commit_count "${start_ts}")" -gt 0 ]]; then
+    items="${items}reconcile the unexpected commit or publish action — the prompt forbade it"$'\n'
+  fi
+
+  printf '%s' "${items%$'\n'}"
+}
+
 # --- Dimension tracking helpers ---
 #
 # Dimensions are stored as individual state keys of the form

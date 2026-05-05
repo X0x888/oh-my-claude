@@ -204,6 +204,16 @@ if [[ ! -f "${state_file}" ]]; then
 fi
 
 SESSION_ID="${latest_session}"
+contract_primary="$(read_state "done_contract_primary" 2>/dev/null || true)"
+if [[ -z "${contract_primary}" ]]; then
+  contract_primary="$(jq -r '.current_objective // "none"' "${state_file}" 2>/dev/null || echo "none")"
+fi
+contract_commit_mode="$(delivery_contract_commit_mode_label "$(read_state "done_contract_commit_mode" 2>/dev/null || true)")"
+contract_prompt_surfaces="$(csv_humanize "$(read_state "done_contract_prompt_surfaces" 2>/dev/null || true)")"
+contract_verify_required="$(csv_humanize "$(read_state "verification_contract_required" 2>/dev/null || true)")"
+contract_touched_surfaces="$(delivery_contract_touched_surfaces_summary 2>/dev/null || printf 'none')"
+contract_remaining_items="$(delivery_contract_remaining_items 2>/dev/null || true)"
+contract_blocking_items="$(delivery_contract_blocking_items 2>/dev/null || true)"
 
 # ---------------------------------------------------------------------------
 # Summary mode — compact recap
@@ -315,6 +325,8 @@ if [[ "${SUMMARY_MODE}" -eq 1 ]]; then
   printf 'Work:       %s unique files · %s code edits · %s doc edits · %s dispatches\n' \
     "${unique_files}" "${code_edits}" "${doc_edits}" "${dispatches}"
   printf 'Verify:     %s\n' "${verify_status}"
+  printf 'Contract:   commit=%s · prompt surfaces=%s\n' \
+    "${contract_commit_mode}" "${contract_prompt_surfaces}"
   if [[ -n "${verdicts_line}" ]]; then
     printf 'Reviews:    %s\n' "${verdicts_line}"
   else
@@ -342,6 +354,11 @@ if [[ "${SUMMARY_MODE}" -eq 1 ]]; then
   fi
 
   printf 'Commits:    %s\n' "${commits_line}"
+  if [[ -n "${contract_remaining_items}" ]]; then
+    printf 'Remaining:  %s\n' "$(printf '%s' "${contract_remaining_items}" | head -1)"
+  else
+    printf 'Remaining:  none\n'
+  fi
 
   # Wave plan health (F-019): single-line summary when a Phase 8 plan is
   # active. Calls the dedicated status-line helper to keep formatting
@@ -494,6 +511,25 @@ jq -r '
   "Review pending at compact: \(if (.review_pending_at_compact // "") == "1" then "YES" else "no" end)",
   "Just-compacted flag:       \(if (.just_compacted // "") == "1" then "set (age: \(.just_compacted_ts // "?"))" else "clear" end)"
 ' "${state_file}"
+
+printf '\n--- Delivery Contract ---\n'
+printf 'Primary deliverable: %s\n' "${contract_primary}"
+printf 'Commit intent:       %s\n' "${contract_commit_mode}"
+printf 'Prompt surfaces:     %s\n' "${contract_prompt_surfaces}"
+printf 'Proof contract:      %s\n' "${contract_verify_required}"
+printf 'Touched surfaces:    %s\n' "${contract_touched_surfaces}"
+if [[ -n "${contract_blocking_items}" ]]; then
+  printf 'Explicit blockers:   %s\n' "$(printf '%s' "${contract_blocking_items}" | head -1)"
+fi
+if [[ -n "${contract_remaining_items}" ]]; then
+  printf 'Remaining:\n'
+  while IFS= read -r _contract_item; do
+    [[ -z "${_contract_item}" ]] && continue
+    printf '  - %s\n' "${_contract_item}"
+  done <<<"${contract_remaining_items}"
+else
+  printf 'Remaining:           none\n'
+fi
 
 # Pending specialist count (jsonl file is separate from session_state.json)
 pending_file="${STATE_ROOT}/${latest_session}/pending_agents.jsonl"

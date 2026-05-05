@@ -31,17 +31,6 @@ if ! is_ultrawork_mode; then
   exit 0
 fi
 
-task_intent="$(read_state "task_intent")"
-
-case "${task_intent}" in
-  advisory|session_management|checkpoint)
-    ;;
-  *)
-    # execution, continuation, or unset — allow.
-    exit 0
-    ;;
-esac
-
 tool_name="$(json_get '.tool_name')"
 if [[ "${tool_name}" != "Bash" ]]; then
   exit 0
@@ -49,6 +38,20 @@ fi
 
 command_str="$(json_get '.tool_input.command')"
 if [[ -z "${command_str}" ]]; then
+  exit 0
+fi
+
+task_intent="$(read_state "task_intent")"
+commit_contract_mode="$(read_state "done_contract_commit_mode")"
+intent_guard_active=0
+
+case "${task_intent}" in
+  advisory|session_management|checkpoint) intent_guard_active=1 ;;
+esac
+
+if [[ "${intent_guard_active}" -eq 0 ]] && [[ "${commit_contract_mode}" != "forbidden" ]]; then
+  # execution, continuation, or unset with no explicit "do not commit"
+  # contract — allow.
   exit 0
 fi
 
@@ -459,6 +462,44 @@ _prompt_text_authorizes_command() {
   done < <(sed -E 's/(&&|\|\||;|\|)/\n/g' <<<"${cmd_normalized}")
   return 0
 }
+
+_commit_contract_forbids_segment() {
+  local seg="$1"
+  if grep -Eq "${_GUARD_PRE}git[[:space:]]+(commit|push|tag)([[:space:]]|$)" <<<"${seg}"; then
+    return 0
+  fi
+  if grep -Eq "${_GUARD_PRE}gh[[:space:]]+(pr|release|issue)[[:space:]]+(create|merge|edit|close|comment|delete|reopen)([[:space:]]|$)" <<<"${seg}"; then
+    return 0
+  fi
+  return 1
+}
+
+if [[ "${commit_contract_mode}" == "forbidden" ]]; then
+  _commit_denied_segment=""
+  while IFS= read -r _seg; do
+    [[ -z "${_seg// }" ]] && continue
+    if _cmd_matches_destructive "${_seg}" && ! _cmd_is_allowed_variant "${_seg}" && _commit_contract_forbids_segment "${_seg}"; then
+      _commit_denied_segment="${_seg}"
+      break
+    fi
+  done < <(sed -E 's/(&&|\|\||;|\|)/\n/g' <<<"${normalized_cmd}")
+
+  if [[ -n "${_commit_denied_segment}" ]]; then
+    log_hook "pretool-intent-guard" "blocked by commit contract: cmd=$(truncate_chars 80 "${command_str}")"
+    record_gate_event "commit-contract" "block" \
+      "mode=forbidden" \
+      "intent=${task_intent:-unset}" \
+      "denied_segment=$(truncate_chars 120 "${_commit_denied_segment}")"
+    jq -nc --arg reason "[Commit-contract gate] the active ULW contract says not to commit or publish from this run. Do the work, verify it, and stop without creating commits, pushes, tags, PRs, or releases. If the user wants a commit after all, they need to say so explicitly in a new prompt. Attempted command: $(truncate_chars 200 "${command_str}")" '{
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason: $reason
+      }
+    }'
+    exit 0
+  fi
+fi
 
 if _wave_execution_active && _wave_override_command_safe "${normalized_cmd}"; then
   # Extract the active wave's metadata for the gate-event details so

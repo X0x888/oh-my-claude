@@ -91,6 +91,14 @@ init_session() {
   }' > "${state_dir}/session_state.json"
 }
 
+set_commit_mode() {
+  local sid="$1" mode="$2"
+  local state_dir="${TEST_HOME}/.claude/quality-pack/state/${sid}"
+  jq --arg mode "${mode}" '. + {done_contract_commit_mode:$mode}' \
+    "${state_dir}/session_state.json" > "${state_dir}/session_state.json.tmp" \
+    && mv "${state_dir}/session_state.json.tmp" "${state_dir}/session_state.json"
+}
+
 # Seed findings.json with the given waves[] payload. Each call replaces the
 # whole document — tests describe the wave-state they care about explicitly.
 # Optional 3rd arg overrides updated_ts so tests can simulate a stale plan.
@@ -158,6 +166,21 @@ setup_test
 init_session "t2" "continuation"
 out_t2="$(run_guard "t2" "git push origin main")"
 assert_eq "T2: continuation + push allowed silently" "" "${out_t2}"
+teardown_test
+
+# ----------------------------------------------------------------------
+# T2b: execution intent + explicit do-not-commit contract → deny publish ops
+setup_test
+init_session "t2b" "execution"
+set_commit_mode "t2b" "forbidden"
+out_t2b="$(run_guard "t2b" "git commit -m 'forbidden by contract'")"
+if denied "${out_t2b}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T2b: forbidden commit contract must deny commit even under execution intent (got: %s)\n' "${out_t2b}" >&2
+  fail=$((fail + 1))
+fi
+assert_contains "T2b: deny reason names commit contract" "Commit-contract gate" "${out_t2b}"
 teardown_test
 
 # ----------------------------------------------------------------------

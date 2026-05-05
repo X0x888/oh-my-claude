@@ -68,6 +68,16 @@ if [[ -z "${current_objective_value}" ]]; then
   fi
 fi
 
+contract_primary_value="$(read_state "done_contract_primary")"
+if [[ -z "${contract_primary_value}" ]]; then
+  contract_primary_value="${current_objective_value}"
+fi
+contract_commit_mode_value="$(delivery_contract_commit_mode_label "$(read_state "done_contract_commit_mode")")"
+contract_prompt_surfaces_value="$(csv_humanize "$(read_state "done_contract_prompt_surfaces")")"
+contract_verify_required_value="$(csv_humanize "$(read_state "verification_contract_required")")"
+contract_touched_surfaces_value="$(delivery_contract_touched_surfaces_summary 2>/dev/null || printf 'none')"
+contract_remaining_items_value="$(delivery_contract_remaining_items 2>/dev/null || true)"
+
 render_review_status() {
   if [[ -z "${last_edit_ts}" ]]; then
     printf '%s\n' "No file edits recorded in this session."
@@ -186,6 +196,15 @@ render_pending_agents() {
     printf '\n## Current Objective\n%s\n' "${current_objective_value}"
   fi
 
+  if [[ -n "${contract_primary_value}" ]]; then
+    printf '\n## Delivery Contract\n'
+    printf -- '- Primary deliverable: %s\n' "${contract_primary_value}"
+    printf -- '- Commit intent: %s\n' "${contract_commit_mode_value}"
+    printf -- '- Prompt surfaces: %s\n' "${contract_prompt_surfaces_value}"
+    printf -- '- Proof contract: %s\n' "${contract_verify_required_value}"
+    printf -- '- Touched surfaces so far: %s\n' "${contract_touched_surfaces_value}"
+  fi
+
   # v1.32.16 Wave 6 (release-reviewer follow-up): the pre-compact
   # snapshot is concatenated into `additionalContext` by
   # session-start-compact-handoff.sh on the next session start.
@@ -243,6 +262,13 @@ render_pending_agents() {
   printf '\n## Completion State\n'
   printf -- '- %s\n' "$(render_review_status)"
   printf -- '- %s\n' "$(render_verification_status)"
+  if [[ -n "${contract_remaining_items_value}" ]]; then
+    printf '\n## Remaining Obligations\n'
+    while IFS= read -r _contract_item; do
+      [[ -z "${_contract_item}" ]] && continue
+      printf -- '- %s\n' "${_contract_item}"
+    done <<<"${contract_remaining_items_value}"
+  fi
 
   # Structured quality checkpoint for post-compact continuity
   required_dims_val="$(get_required_dimensions 2>/dev/null || true)"

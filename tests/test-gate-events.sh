@@ -182,6 +182,31 @@ assert_contains "final-closure event records missing_verification" '"missing_ver
 teardown_test
 
 # ---------------------------------------------------------------------
+# Test 3d: delivery-contract gate emits an event when prompt-explicit
+# surfaces were never touched
+# ---------------------------------------------------------------------
+printf 'Test 3d: stop-guard delivery-contract gate emits an event\n'
+setup_test
+init_session "ge3d"
+sd="${TEST_HOME}/.claude/quality-pack/state/ge3d"
+jq -nc --arg ts "$(date +%s)" \
+  '{workflow_mode:"ultrawork",task_domain:"coding",task_intent:"execution",current_objective:"contract test",last_user_prompt_ts:$ts,last_edit_ts:$ts,last_code_edit_ts:$ts,last_verify_ts:$ts,last_verify_cmd:"npm test",last_verify_outcome:"passed",last_verify_confidence:"80",last_review_ts:$ts,review_had_findings:"false",done_contract_prompt_surfaces:"tests",done_contract_test_expectation:"add_or_update_tests",done_contract_commit_mode:"unspecified"}' \
+  > "${sd}/session_state.json"
+printf '/tmp/project/src/foo.ts\n' > "${sd}/edited_files.log"
+
+out="$(printf '%s' "$(jq -nc --arg s ge3d '{session_id:$s,last_assistant_message:"**Changed.** Updated /tmp/project/src/foo.ts\n\n**Verification.** `npm test`\n\n**Next.** Done."}')" \
+  | bash "${HOOK_DIR}/stop-guard.sh" 2>/dev/null || true)"
+assert_contains "delivery-contract gate blocks" '"decision":"block"' "${out}"
+assert_contains "delivery-contract gate names itself" "Delivery-contract gate" "${out}"
+
+events_file="$(events_file_for "ge3d")"
+last_event="$(tail -n 1 "${events_file}")"
+assert_contains "delivery-contract event has gate=delivery-contract" '"gate":"delivery-contract"' "${last_event}"
+assert_contains "delivery-contract event has event=block" '"event":"block"' "${last_event}"
+assert_contains "delivery-contract event records prompt surfaces" '"prompt_surfaces":"tests"' "${last_event}"
+teardown_test
+
+# ---------------------------------------------------------------------
 # Test 4: record-finding-list.sh status command emits a finding-status event
 # ---------------------------------------------------------------------
 printf 'Test 4: record-finding-list status command emits finding-status event\n'

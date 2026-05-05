@@ -1532,6 +1532,30 @@ assert_contains "gap1: injection mentions domain" "coding" "${out_g1}"
 teardown_test
 
 # -------------------------------------------------------
+# Gap 1b: compact handoff carries the delivery contract and remaining work
+# -------------------------------------------------------
+setup_test
+setup_compact_tests
+init_session "cg1b" "coding"
+state_dir="${TEST_HOME}/.claude/quality-pack/state/cg1b"
+jq '. + {
+  done_contract_primary:"Ship the auth fix",
+  done_contract_commit_mode:"required",
+  done_contract_prompt_surfaces:"tests,docs",
+  done_contract_test_expectation:"add_or_update_tests",
+  verification_contract_required:"code_review,code_verify,prose_review,test_surface,commit_record"
+}' "${state_dir}/session_state.json" > "${state_dir}/session_state.json.tmp" \
+  && mv "${state_dir}/session_state.json.tmp" "${state_dir}/session_state.json"
+printf '/project/src/auth.ts\n' > "${state_dir}/edited_files.log"
+sim_pre_compact "cg1b"
+sim_post_compact "cg1b" "auto" "Summary body"
+out_g1b="$(sim_session_start_compact "cg1b")"
+assert_contains "gap1b: delivery contract carried into compact handoff" "Carry forward the preserved delivery contract: primary=Ship the auth fix; commit=required; prompt surfaces=tests · docs;" "${out_g1b}"
+assert_contains "gap1b: remaining obligations carried into compact handoff" "Outstanding obligations before Stop" "${out_g1b}"
+assert_contains "gap1b: missing tests named in compact handoff" "add or update the requested tests/regression coverage" "${out_g1b}"
+teardown_test
+
+# -------------------------------------------------------
 # Gap 2: post-compact intent bias preserves short prompts as continuation
 # -------------------------------------------------------
 setup_test

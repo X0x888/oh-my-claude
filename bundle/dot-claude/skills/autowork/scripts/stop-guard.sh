@@ -713,6 +713,26 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
     fi
   fi
 
+  # --- Delivery-contract gate (prompt-time done contract) ---
+  #
+  # The router now records explicit adjacent deliverables and commit
+  # expectations early in the run. Before we get into final answer
+  # formatting, block obvious misses against that earlier contract:
+  # prompt asked for tests/docs/config/release/migration and the surface
+  # was never touched, or the user requested a commit and none exists.
+  contract_blockers="$(delivery_contract_blocking_items)"
+  if [[ -n "${contract_blockers}" ]]; then
+    contract_blocker_count="$(printf '%s\n' "${contract_blockers}" | awk 'NF{c++} END{print c+0}')"
+    record_gate_event "delivery-contract" "block" \
+      "remaining_count=${contract_blocker_count}" \
+      "commit_mode=$(read_state "done_contract_commit_mode")" \
+      "prompt_surfaces=$(read_state "done_contract_prompt_surfaces")" \
+      "test_expectation=$(read_state "done_contract_test_expectation")"
+    contract_recovery="$(format_gate_recovery_line "finish the missing surface(s) implied by the prompt, or if the repo genuinely cannot support one of them, name that constraint explicitly in your wrap before stopping. For explicit commits, create the commit now or explain why a commit is impossible in this repo.")"
+    emit_stop_block "[Delivery-contract gate] the work is drifting from the contract the user set at the start of the run. Remaining before Stop:\n- ${contract_blockers//$'\n'/$'\n- '}${contract_recovery}"
+    exit 0
+  fi
+
   # --- Final-closure gate (user-facing auditability) ---
   #
   # Once the work itself is clean, the final response must let the user

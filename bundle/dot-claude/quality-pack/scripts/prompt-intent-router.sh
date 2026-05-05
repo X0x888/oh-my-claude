@@ -566,6 +566,36 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
   write_state "workflow_mode" "ultrawork"
   write_state "task_domain" "${TASK_DOMAIN}"
 
+  # Delivery contract (v1.33.0): persist the user's "done means this"
+  # contract early in the run so Stop, /ulw-status, and resume flows can
+  # all reason against the same source of truth instead of inferring it
+  # late from the final answer. Continuation/advisory prompts preserve the
+  # prior contract — they usually refine execution already in progress
+  # rather than replacing it.
+  if [[ "${TASK_INTENT}" == "execution" ]] && ! is_maintenance_prompt "${PROMPT_TEXT}"; then
+    contract_primary="$(trim_whitespace "$(read_state "current_objective")")"
+    [[ -n "${contract_primary}" ]] || contract_primary="$(trim_whitespace "$(normalize_task_prompt "${PROMPT_TEXT}")")"
+    [[ -n "${contract_primary}" ]] || contract_primary="${PROMPT_TEXT}"
+
+    contract_commit_mode="$(detect_commit_intent_from_prompt "${PROMPT_TEXT}")"
+    contract_prompt_surfaces="$(derive_done_contract_prompt_surfaces "${PROMPT_TEXT}")"
+    contract_test_expectation="$(derive_done_contract_test_expectation "${PROMPT_TEXT}" "${TASK_DOMAIN}")"
+    contract_verify_required="$(derive_verification_contract_required \
+      "${PROMPT_TEXT}" \
+      "${TASK_DOMAIN}" \
+      "${contract_prompt_surfaces}" \
+      "${contract_test_expectation}" \
+      "${contract_commit_mode}")"
+
+    write_state_batch \
+      "done_contract_primary" "${contract_primary}" \
+      "done_contract_commit_mode" "${contract_commit_mode}" \
+      "done_contract_prompt_surfaces" "${contract_prompt_surfaces}" \
+      "done_contract_test_expectation" "${contract_test_expectation}" \
+      "verification_contract_required" "${contract_verify_required}" \
+      "done_contract_updated_ts" "${PROMPT_TS}"
+  fi
+
   # Record session start time (only on first ULW activation, not every prompt)
   existing_start_ts="$(read_state "session_start_ts")"
   if [[ -z "${existing_start_ts}" ]]; then

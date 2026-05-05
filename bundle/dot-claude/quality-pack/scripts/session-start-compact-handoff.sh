@@ -52,6 +52,15 @@ workflow_mode_value="$(workflow_mode)"
 task_domain_value="$(task_domain)"
 task_intent_value="$(read_state "task_intent")"
 last_meta_request_value="$(read_state "last_meta_request")"
+contract_primary_value="$(read_state "done_contract_primary")"
+if [[ -z "${contract_primary_value}" ]]; then
+  contract_primary_value="$(read_state "current_objective")"
+fi
+contract_commit_mode_value="$(delivery_contract_commit_mode_label "$(read_state "done_contract_commit_mode")")"
+contract_prompt_surfaces_value="$(csv_humanize "$(read_state "done_contract_prompt_surfaces")")"
+contract_verify_required_value="$(csv_humanize "$(read_state "verification_contract_required")")"
+contract_touched_surfaces_value="$(delivery_contract_touched_surfaces_summary 2>/dev/null || printf 'none')"
+contract_remaining_items_value="$(delivery_contract_remaining_items 2>/dev/null || true)"
 
 case "${task_intent_value}" in
   advisory|session_management|checkpoint)
@@ -93,6 +102,13 @@ esac
 
 # Base continuation directive (always emitted).
 context_parts+=("A compaction just occurred. Continue from the preserved state below instead of restarting the task. Use the native compact summary plus this live handoff to keep continuity high. Do not fall back to a broad recap unless the user asks for one.")
+
+if [[ -n "${contract_primary_value}" ]]; then
+  context_parts+=("Carry forward the preserved delivery contract: primary=${contract_primary_value}; commit=${contract_commit_mode_value}; prompt surfaces=${contract_prompt_surfaces_value}; proof contract=${contract_verify_required_value}; touched surfaces so far=${contract_touched_surfaces_value}.")
+fi
+if [[ -n "${contract_remaining_items_value}" ]]; then
+  context_parts+=("Outstanding obligations before Stop:\n- ${contract_remaining_items_value//$'\n'/$'\n- '}")
+fi
 
 # Gap 3c — pending specialist re-dispatch. If agents were in flight when the
 # compact fired, list them so the main thread can re-dispatch the interrupted

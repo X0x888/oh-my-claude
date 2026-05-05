@@ -102,6 +102,11 @@ setup_source_session() {
   "task_domain": "coding",
   "task_intent": "execution",
   "current_objective": "Implement the auth refactor",
+  "done_contract_primary": "Implement the auth refactor",
+  "done_contract_commit_mode": "required",
+  "done_contract_prompt_surfaces": "tests,docs",
+  "done_contract_test_expectation": "add_or_update_tests",
+  "verification_contract_required": "code_review,code_verify,prose_review,test_surface,commit_record",
   "last_meta_request": "explain the token flow",
   "last_assistant_message": "I finished refactoring the token validator. Next step is updating the middleware.",
   "last_verify_cmd": "bash tests/test-auth.sh"
@@ -187,8 +192,11 @@ context="$(jq -r '.hookSpecificOutput.additionalContext // empty' <<<"${output}"
 assert_contains "context has workflow mode" "Preserved workflow mode: ultrawork" "${context}"
 assert_contains "context has task domain" "Preserved task domain: coding" "${context}"
 assert_contains "context has objective" "Preserved objective: Implement the auth refactor" "${context}"
+assert_contains "context has delivery contract" "Preserved delivery contract: primary=Implement the auth refactor; commit=required; prompt surfaces=tests · docs; proof contract=code_review · code_verify · prose_review · test_surface · commit_record;" "${context}"
 assert_contains "context has last meta request" "explain the token flow" "${context}"
 assert_contains "context has last assistant message" "refactoring the token validator" "${context}"
+assert_contains "context has remaining obligations" "Remaining obligations from the prior session" "${context}"
+assert_contains "context names missing tests from prior contract" "add or update the requested tests/regression coverage" "${context}"
 assert_contains "context has specialist conclusions" "quality-reviewer" "${context}"
 assert_contains "context has plan" "Auth Refactor Plan" "${context}"
 assert_contains "context has coding domain advice" "Make changes incrementally" "${context}"
