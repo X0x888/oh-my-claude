@@ -4,6 +4,32 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.32.9] - 2026-05-05
+
+Closes the v1.32.8-deferred backfill of historical `session_state.json` files. v1.32.6 wired the write path for new sessions; v1.32.8 extended that to non-ULW session-start hooks. But ~48 of the user's existing pre-1.32.6 session_state.json files still carried no `project_key`. When those age past TTL and get swept, the natural sweep at common.sh:1193 reads `project_key: ""` and tags rows with empty project_key — multi-project /ulw-report slicing stays broken for that backlog.
+
+### Added
+
+- **`tools/backfill-project-key.sh`** (developer-only one-shot). Walks every `${STATE_ROOT}/<sid>/session_state.json` with `cwd` set but `project_key` missing, computes `_omc_project_key` from the recorded cwd (cd's into the dir to invoke `git config --get remote.origin.url`), and writes back. Idempotent — safe to re-run; sessions with `project_key` already set are skipped silently. `--dry-run` previews counts. Skips: `_watchdog` synthetic session; non-UUID-shape session dirs (fixture filter, same shape as v1.32.5 bootstrap); sessions where cwd is empty (can't compute); sessions where `project_key` is already set (idempotent); cwd points at a no-longer-existent dir (fallback to cwd-hash via `_omc_project_id`).
+
+- **`tests/test-backfill-project-key.sh`** (CI-pinned, 12 assertions). Regression net covering: dry-run reports counts without writing; real run backfills UUID session with valid cwd; existing project_key not clobbered; fixture-shape session skipped; rerun is idempotent; cwd no-longer-exists falls back to cwd-hash.
+
+### Result
+
+Run on the user's machine: 48 backfilled, 0 errors, 39 fixture-skipped, 2 no-cwd, 1 _watchdog. Idempotent rerun: 0 backfilled, 48 already-set. Multi-project `/ulw-report --project <key>` slicing now has historical data to slice on going forward, since the natural sweep eventually rolls these session dirs up at TTL.
+
+### Bug fixed during build
+
+- **`tools/backfill-project-key.sh` exit-code bug.** Initial draft had `[[ "${errors}" -gt 0 ]] && printf 'Errors: %d ...' "${errors}"` as the last command. When errors=0, the `[[ ]]` returns 1, the `&&` short-circuits, and the script's last-command exit code is 1 — under `set -e` at the test-script level, this killed the regression test before it could reach the second assertion. Caught immediately by the regression net (T2 failed); fixed by replacing the chain with explicit `if`/`exit` pair.
+
+### Verification
+
+- `bash tests/test-backfill-project-key.sh` — 12/12
+- Live run on user data: 48 backfilled, idempotent rerun produces 0 changes
+- 67/67 CI-pinned tests pass locally
+- `bash tests/test-coordination-rules.sh` 81/81 (test-pin discipline holds)
+- shellcheck clean
+
 ## [1.32.8] - 2026-05-05
 
 Reviewer-driven follow-up to v1.32.6 + v1.32.7 — third dogfood of the release-reviewer agent. Reviewer caught a BLOCK gap (project_key write was inside the ULW gate, so non-ULW sessions still tagged gate_events with project_key=null — same defect class v1.32.6 was meant to close) plus 3 lower-severity completeness gaps. All four ship inline.

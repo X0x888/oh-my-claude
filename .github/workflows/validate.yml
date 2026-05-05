@@ -232,6 +232,9 @@ jobs:
       - name: Run project-key-write tests (v1.32.6 wiring closure)
         run: bash tests/test-project-key-write.sh
 
+      - name: Run backfill-project-key tests (v1.32.9 historical-data closure)
+        run: bash tests/test-backfill-project-key.sh
+
       - name: Run sterile-env CI-parity check (v1.32.2 R3 promoted to strict)
         run: bash tests/run-sterile.sh
 
