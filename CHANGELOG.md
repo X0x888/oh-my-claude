@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.32.12] - 2026-05-05
+
+Fifth release-reviewer dogfood. Reviewer pass on v1.32.11 returned **BLOCK** with one critical gap (G1) plus 3 process / honesty gaps. The G1 defect is exactly the install-remote `--depth=1` shallow-clone case the post-mortem flagged — silent-green-passing in the most user-relevant scenario means R5 closure was structurally incomplete. All 4 BLOCK-level gaps + 1 polish ship inline as Serendipity-bounded fixes.
+
+### Fixed
+
+- **`tools/hotfix-sweep.sh:70-72` no-tags fallback silently green-passed.** Pre-1.32.12 `LAST_TAG="$(git rev-parse HEAD~10 2>/dev/null || ...)"` only redirected stderr — and `git rev-parse HEAD~10` writes the literal string `HEAD~10` to STDOUT before failing rc=128. The `||` chain captured both the bad-stdout AND the fallback, producing a multi-line baseline. The subsequent `git diff ${LAST_TAG}..HEAD` failed silently, `CHANGED_FILES` became empty, and the no-op short-circuit fired — exiting 0 with "sweep is a no-op" even when fix-shaped changes were present. Verified live: a fresh repo with no tags + a real fix-shaped commit silent-greened. **This is exactly the install-remote.sh `--depth=1` shallow-clone case** that the post-mortem named as in-scope. Fix: switched to `git rev-list --max-parents=0 HEAD` (root commit walk — note: `git rev-parse` does NOT recognize `--max-parents` as a flag and would output it literally; this is rev-list-specific). Added T7 regression test that builds a no-tag repo with a fix-shaped commit and asserts the sweep exits non-zero with the orphan-lib error.
+
+- **`CONTRIBUTING.md` step-number collision.** Pre-1.32.12 Pre-flight ran 1-6 AND Bump-and-tag also started at 6 — same number for the new MANDATORY gate as the destructive VERSION bump. Renumbered: Pre-flight 1-6, Bump-and-tag 7-13, Post-flight 14. All cross-references inside Step 9 ("Re-run after step 9 promoted the CHANGELOG") updated.
+
+- **`tools/hotfix-sweep.sh` --quick mode loophole.** Pre-1.32.12 `--quick` exited 0 with a printed warning; nothing prevented a maintainer tagging without re-running. The very anti-pattern R5 was meant to close (sterile-env regression) was the one `--quick` skipped. Fix: `--quick` now stamps a `.hotfix-sweep-quick` marker file in REPO_ROOT; subsequent `--quick` runs see it and surface a "prior sweep was also --quick — sterile-env still unverified" warning. A successful non-quick run clears the marker. Added T8 regression test verifying the marker is created.
+
+- **`tests/test-hotfix-sweep.sh` T1 / T2 captured rc but never asserted.** Trivial polish — added `assert_eq "T1: no-op exits 0" "0" "${rc}"` and the equivalent for T2. Pre-fix the "no-op exits 0" intent was unverified; T1's exit-code path was silently unchecked.
+
+### Verification
+
+- `bash tests/test-hotfix-sweep.sh` — 19/19 (was 12/12; +7 for T1/T2 rc + T7 no-tag + T8 marker)
+- 68/68 CI-pinned tests pass locally
+- shellcheck clean
+- Live no-tag fixture verified post-fix: detects fix-shaped change, runs lib-reachability, exits non-zero correctly
+
 ## [1.32.11] - 2026-05-05
 
 R5 closure from the v1.32.0 release post-mortem — final structural piece of the v1.31.x cascade-prevention chain. The post-mortem named the **Compound-Fix Tag-Race** anti-pattern (every hotfix is itself an opportunity for a new hotfix unless the post-fix regression net is enforced); the v1.31.0→v1.31.3 cascade had F-3's fix introduce its own regression that needed F-3-followup. v1.32.11 ships the gate that closes the pattern by wrapping the four already-shipped remediations (R3 sterile mandatory, v1.32.7/8 CHANGELOG-coupled tests, shellcheck CI-parity, R7 lib-reachability) into a single fast-feedback tool the user runs after every fix commit during release prep.

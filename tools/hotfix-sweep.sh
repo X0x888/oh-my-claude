@@ -64,11 +64,27 @@ hdr() { printf '── %s ───\n' "$1"; }
 # ---------------------------------------------------------------------
 hdr "Hotfix-sweep gate (v1.32.11 R5)"
 
-# Last-tag baseline. Falls back to HEAD~10 when no tags exist (e.g.,
-# fresh-clone test scenario).
-LAST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || echo "")"
+# Last-tag baseline. Falls back to root commit when no tags exist
+# (fresh shallow clone, fork without upstream tags, --depth=1 install-
+# remote bootstrap path). v1.32.12 (G1 fix from v1.32.11 reviewer):
+# pre-fix used `git rev-parse HEAD~10` which writes "HEAD~10" to
+# STDOUT before failing rc=128 (only stderr was redirected); the
+# `||` chain then captured the bad-stdout, producing a multi-line
+# baseline that broke the `git diff ${LAST_TAG}..HEAD` and silently
+# green-passed the gate. The fix uses `git rev-list --max-parents=0
+# HEAD` (root commit walk — `git rev-parse` does NOT recognize
+# --max-parents as a flag and would output it literally; this is
+# specifically a rev-list feature).
+LAST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
 if [[ -z "${LAST_TAG}" ]]; then
-  LAST_TAG="$(git rev-parse HEAD~10 2>/dev/null || git rev-parse HEAD 2>/dev/null || echo "")"
+  # Take the FIRST line so a multi-root repo doesn't produce
+  # multi-line output that breaks the diff.
+  LAST_TAG="$(git rev-list --max-parents=0 HEAD 2>/dev/null | head -1 || true)"
+fi
+if [[ -z "${LAST_TAG}" ]]; then
+  printf '  ERROR: cannot determine baseline — no tags AND `git rev-parse --max-parents=0 HEAD` failed.\n' >&2
+  printf '         Are you inside a git repo?\n' >&2
+  exit 1
 fi
 log "baseline: ${LAST_TAG}"
 
@@ -199,6 +215,16 @@ fi
 # ---------------------------------------------------------------------
 hdr "Sweep summary"
 
+# v1.32.12 (G3 fix): if a prior --quick run left the marker, a
+# subsequent NON-quick run must complete to clear it. Block tagging
+# when the marker is still present (i.e., user's last sweep was
+# --quick).
+if [[ -f "${REPO_ROOT}/.hotfix-sweep-quick" ]] && [[ "${quick}" -ne 1 ]]; then
+  : # this run will clear the marker on success — fall through
+elif [[ -f "${REPO_ROOT}/.hotfix-sweep-quick" ]] && [[ "${quick}" -eq 1 ]]; then
+  warnings+=("prior sweep was also --quick — sterile-env still unverified")
+fi
+
 if [[ "${#failures[@]}" -gt 0 ]]; then
   printf '%d failure(s):\n' "${#failures[@]}"
   for f in "${failures[@]}"; do
@@ -219,6 +245,15 @@ if [[ "${#warnings[@]}" -gt 0 ]]; then
     printf '  ! %s\n' "${w}"
   done
   printf '\nWarnings present — re-run without --quick before tagging.\n'
+  # v1.32.12 (G3 fix): --quick mode is advisory but Step 6 marks the
+  # gate as MANDATORY. Stamp a marker so a follow-up full sweep can
+  # detect the prior --quick and require a re-run. The CONTRIBUTING.md
+  # discipline is "always end on a non-quick run before tagging" —
+  # this marker makes that auditable rather than reliance-on-memory.
+  : > "${REPO_ROOT}/.hotfix-sweep-quick"
+  exit 0
 fi
+# Successful non-quick run clears any prior --quick marker.
+rm -f "${REPO_ROOT}/.hotfix-sweep-quick" 2>/dev/null || true
 
 exit 0

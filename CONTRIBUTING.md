@@ -207,11 +207,11 @@ When bumping the version (changing `VERSION`), follow these steps in order. Repl
 
 ### Bump and tag
 
-6. Update `VERSION` with the new version number (e.g. `1.4.1`).
-7. Update the README.md badge: `[![Version](https://img.shields.io/badge/Version-X.Y.Z-blue.svg)]`.
-8. Promote the `[Unreleased]` heading in `CHANGELOG.md` to `## [X.Y.Z] - YYYY-MM-DD` (keep `[Unreleased]` above it as an empty placeholder for the next cycle if desired).
+7. Update `VERSION` with the new version number (e.g. `1.4.1`).
+8. Update the README.md badge: `[![Version](https://img.shields.io/badge/Version-X.Y.Z-blue.svg)]`.
+9. Promote the `[Unreleased]` heading in `CHANGELOG.md` to `## [X.Y.Z] - YYYY-MM-DD` (keep `[Unreleased]` above it as an empty placeholder for the next cycle if desired).
 
-   **Re-run all CHANGELOG-coupled tests after promotion** (v1.32.7 process fix, v1.32.8 generalization). Step 2's CI-parity check ran BEFORE step 8 promoted the CHANGELOG, so any test whose assertions depend on `CHANGELOG.md` content evaluates the OLD content. v1.31.1 / v1.32.1 / v1.32.3 / v1.32.5 / v1.32.6 all shipped with this gap. Pre-1.32.8 step 8 named two specific tests (`test-install-whats-new.sh`, `test-install-artifacts.sh`) — but new CHANGELOG-reading tests added later would silently slip through. v1.32.8 generalizes:
+   **Re-run all CHANGELOG-coupled tests after promotion** (v1.32.7 process fix, v1.32.8 generalization). Step 2's CI-parity check ran BEFORE step 9 promoted the CHANGELOG, so any test whose assertions depend on `CHANGELOG.md` content evaluates the OLD content. v1.31.1 / v1.32.1 / v1.32.3 / v1.32.5 / v1.32.6 all shipped with this gap. Pre-1.32.8 step 9 named two specific tests (`test-install-whats-new.sh`, `test-install-artifacts.sh`) — but new CHANGELOG-reading tests added later would silently slip through. v1.32.8 generalizes:
 
    ```bash
    for t in $(grep -lE 'CHANGELOG\.md|extract_whats_new' tests/test-*.sh); do
@@ -219,12 +219,12 @@ When bumping the version (changing `VERSION`), follow these steps in order. Repl
    done
    ```
 
-   Run this after the CHANGELOG promotion in step 8. If anything fails, fix before tagging — usually a cap-bump in `install.sh` and the test mirror.
+   Run this after the CHANGELOG promotion in step 9. If anything fails, fix before tagging — usually a cap-bump in `install.sh` and the test mirror.
 
-9. Commit with a descriptive message summarizing the release.
-10. **Tag the release commit**: `git tag vX.Y.Z` — this is mandatory, not optional.
-11. Push commits and tags: `git push && git push --tags`.
-12. Create a GitHub release from the tag:
+10. Commit with a descriptive message summarizing the release.
+11. **Tag the release commit**: `git tag vX.Y.Z` — this is mandatory, not optional.
+12. Push commits and tags: `git push && git push --tags`.
+13. Create a GitHub release from the tag:
     ```bash
     VER=$(cat VERSION)
     awk "/^## \\[$VER\\]/{found=1;next} /^## \\[/{if(found)exit} found" CHANGELOG.md \
@@ -234,7 +234,7 @@ When bumping the version (changing `VERSION`), follow these steps in order. Repl
 
 ### Post-flight
 
-13. **CI verification.** Watch the just-tagged commit's CI run, pinned to the tag SHA so a teammate's concurrent push cannot resolve the wrong run:
+14. **CI verification.** Watch the just-tagged commit's CI run, pinned to the tag SHA so a teammate's concurrent push cannot resolve the wrong run:
     ```bash
     gh run watch --exit-status \
       "$(gh run list --commit "$(git rev-parse vX.Y.Z)" --limit 1 --json databaseId -q '.[0].databaseId')"

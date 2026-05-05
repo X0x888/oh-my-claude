@@ -92,8 +92,11 @@ cleanup_fixture() {
 # ---------------------------------------------------------------------
 printf 'Test 1: no-op exit when no changes since baseline tag\n'
 repo="$(mk_fixture_repo)"
+set +e
 out="$(cd "${repo}" && bash tools/hotfix-sweep.sh 2>&1)"
 rc=$?
+set -e
+assert_eq "T1: no-op exits 0" "0" "${rc}"
 assert_contains "T1: announces no-op" "sweep is a no-op" "${out}"
 cleanup_fixture "${repo}"
 
@@ -102,8 +105,11 @@ printf 'Test 2: docs-only change → fast-path skips heavy checks\n'
 repo="$(mk_fixture_repo)"
 echo "doc change" > "${repo}/README.md"
 (cd "${repo}" && git add README.md && git commit -q -m "docs only")
+set +e
 out="$(cd "${repo}" && bash tools/hotfix-sweep.sh --verbose 2>&1)"
-# Docs-only run should complete (exit 0) and skip sterile-env
+rc=$?
+set -e
+assert_eq "T2: docs-only exits 0" "0" "${rc}"
 assert_contains "T2: sterile skipped on docs-only" "no fix-shaped changes" "${out}"
 assert_contains "T2: passes" "All checks passed" "${out}"
 cleanup_fixture "${repo}"
@@ -195,5 +201,93 @@ assert_contains "T6: --quick warning surfaces" "sterile-env skipped" "${out}"
 cleanup_fixture "${repo}"
 
 # ---------------------------------------------------------------------
+# ---------------------------------------------------------------------
+# Test 7 (v1.32.12 G1 fix): no-tags + fix-shaped changes — pre-fix
+# silently green-passed because `git rev-parse HEAD~10` writes
+# "HEAD~10" to stdout AND fails rc=128. Post-fix uses
+# `git rev-parse --max-parents=0 HEAD` (root commit) which always
+# succeeds; the diff against root reaches every commit.
+# ---------------------------------------------------------------------
+printf 'Test 7: no-tags repo with fix-shaped changes is NOT silently green\n'
+no_tag_repo="$(mktemp -d -t hotfix-sweep-notag-XXXXXX)"
+(
+  cd "${no_tag_repo}" || exit 1
+  git init -q
+  git config user.email "test@example.test"
+  git config user.name "Test"
+  mkdir -p tools tests bundle/dot-claude/skills/autowork/scripts/lib \
+           .github/workflows
+  cp "${TOOL_REAL}" "tools/hotfix-sweep.sh"
+  chmod +x "tools/hotfix-sweep.sh"
+  cat > .github/workflows/validate.yml <<'YAML'
+name: Validate
+on:
+  push:
+    branches: [main]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run foo tests
+        run: bash tests/test-foo.sh
+YAML
+  echo "initial" > a
+  git add -A
+  git commit -q -m "initial commit"
+  # No git tag — this simulates the install-remote.sh shallow-clone case.
+)
+# Make a fix-shaped change AFTER the root commit.
+mkdir -p "${no_tag_repo}/bundle/dot-claude/skills/autowork/scripts/lib"
+cat > "${no_tag_repo}/bundle/dot-claude/skills/autowork/scripts/lib/orphan.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "orphan"
+SH
+(cd "${no_tag_repo}" && git add -A && git commit -q -m "fix-shaped change")
+set +e
+out_t7="$(cd "${no_tag_repo}" && bash tools/hotfix-sweep.sh --quick 2>&1)"
+rc_t7=$?
+set -e
+# Pre-fix: silently green-passed with "sweep is a no-op", rc=0. The
+# G1 fix detects fix-shaped changes via root-commit baseline and
+# the lib-reachability check fires on the orphan lib.
+assert_eq "T7: no-tags repo with fix-shaped change exits non-zero" "1" "${rc_t7}"
+# Crucially must NOT silently green-pass:
+if [[ "${out_t7}" == *"sweep is a no-op"* ]]; then
+  printf '  FAIL: T7: tool reported no-op despite fix-shaped change present\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+assert_contains "T7: detects orphan lib via root-commit baseline" "orphan.sh" "${out_t7}"
+rm -rf "${no_tag_repo}" 2>/dev/null
+
+# ---------------------------------------------------------------------
+# Test 8 (v1.32.12 G3 fix): --quick stamps a marker; subsequent
+# --quick run sees the marker and warns about prior-also-quick.
+# ---------------------------------------------------------------------
+printf 'Test 8: --quick run stamps marker for later detection\n'
+repo="$(mk_fixture_repo)"
+mkdir -p "${repo}/bundle/dot-claude/scripts"
+cat > "${repo}/bundle/dot-claude/scripts/ok.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "ok"
+SH
+(cd "${repo}" && git add -A && git commit -q -m "fix-shaped change")
+# First --quick run — stamps marker.
+set +e
+out_first="$(cd "${repo}" && bash tools/hotfix-sweep.sh --quick 2>&1)"
+rc_first=$?
+set -e
+assert_eq "T8: first --quick exits 0" "0" "${rc_first}"
+if [[ -f "${repo}/.hotfix-sweep-quick" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T8: --quick did not create .hotfix-sweep-quick marker\n' >&2
+  fail=$((fail + 1))
+fi
+cleanup_fixture "${repo}"
+
 printf '\n=== hotfix-sweep tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]
