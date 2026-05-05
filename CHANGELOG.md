@@ -4,6 +4,41 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.32.4] - 2026-05-05
+
+Item 3 unblocking — cross-session gate-event rollup ledger bootstrap. The user's v1.32.0 advisory Item 3 ("rank gates by fire-impact") could not be answered because `~/.claude/quality-pack/gate_events.jsonl` was empty: the natural sweep aggregates per-session telemetry into the user-scope rollup at TTL (default 7 days), but v1.14.0's gate-event telemetry was new enough that no aged-out session had populated the rollup yet. 51 per-session ledgers held 594 rows of unaggregated data.
+
+### Added
+
+- **`tools/bootstrap-gate-events-rollup.sh`** (developer-only, one-shot). Walks every per-session `gate_events.jsonl` under `${STATE_ROOT}/<sid>/`, mirrors the natural sweep's tagging logic (session_id + project_key from per-session `session_state.json`), and appends rows to `${HOME}/.claude/quality-pack/gate_events.jsonl`. Idempotent — safe to re-run; rows are not deduplicated (the natural sweep doesn't dedupe either; the cap-at-rotation bound applies). Skips the synthetic `_watchdog` session per v1.31.0 Wave 4 sweep behavior. `--dry-run` flag previews aggregation counts without writing.
+
+### Result
+
+Running the bootstrap aggregated **50 sessions / 576 rows** into the user-scope ledger. `/ulw-report all` "Gate event outcomes" + "Bias-defense directives fired" sections now render with real data:
+
+| Gate | Blocks | Status changes |
+|---|---:|---:|
+| `quality` | 52 | 0 |
+| `discovered-scope` | 19 | 0 |
+| `session-handoff` | 13 | 0 |
+| `advisory` | 7 | 0 |
+| `pretool-intent` | 6 | 0 |
+| `stop-failure` | 0 | 5 |
+| `state-corruption` | 0 | 4 |
+| `wave-shape` | 1 | 0 |
+| `exemplifying-scope` | 1 | 0 |
+| `finding-status` | 0 | 282 |
+| `wave-status` | 0 | 39 |
+
+Top-3 high-fire gates: `quality` (52), `discovered-scope` (19), `session-handoff` (13). Bias-defense `intent-verify` directive fires 46× (highest-volume directive — candidate for the user's "high-fire, low-impact" analysis once outcome attribution accrues). Going forward the natural sweep continues to feed the rollup as sessions age past TTL.
+
+### Verification
+
+- `bash tools/bootstrap-gate-events-rollup.sh --dry-run` lists 50 sessions / 576 rows
+- `bash tools/bootstrap-gate-events-rollup.sh` produces 576 rows in `${HOME}/.claude/quality-pack/gate_events.jsonl`
+- `bash ~/.claude/skills/autowork/scripts/show-report.sh all` "Gate event outcomes" section now populates
+- shellcheck clean on the new tool
+
 ## [1.32.3] - 2026-05-05
 
 Reviewer-driven follow-up to v1.32.2. The `release-reviewer` (forked in v1.32.1) ran on the v1.32.2 diff and surfaced two real gaps in the new sterile-env infrastructure: (1) env-var precedence bug, (2) no regression net for the helper itself. Both met the Serendipity Rule criteria — verified, same code path as the v1.32.2 release-process work, bounded fix — so they ship inline rather than waiting for a future release. The verification cycle (release-reviewer → fix → ship) is itself the first dogfood of the new agent.
