@@ -253,5 +253,71 @@ assert_contains "T11: names empty Unreleased" "[Unreleased] section is empty" "$
 cleanup_fixture "${repo}"
 
 # ---------------------------------------------------------------------
+# T12 (v1.33.x): --tag-on-green and --no-watch are mutually exclusive.
+# tag-on-green REQUIRES the watch to know whether to tag, so combining
+# them silently degrades to the eager-tag flow without warning unless
+# the script rejects the combo loudly. Regression net for that.
+printf 'Test 12: --tag-on-green + --no-watch → mutually exclusive\n'
+repo="$(mk_release_fixture)"
+set +e
+out="$(cd "${repo}" && bash tools/release.sh "1.0.1" --tag-on-green --no-watch 2>&1)"
+rc=$?
+set -e
+assert_eq "T12: combo rejected" "2" "${rc}"
+assert_contains "T12: names mutual exclusion" "mutually exclusive" "${out}"
+cleanup_fixture "${repo}"
+
+# ---------------------------------------------------------------------
+# T13 (v1.33.x): legacy eager-tag dry-run announces tag-on-commit shape.
+# Smoke check that the unflagged path still reaches "Step 10-12: commit
+# + tag + push" and emits the [dry-run] tag command — guards against
+# accidental refactor regressions in the eager-tag branch.
+printf 'Test 13: eager-tag dry-run still emits tag step\n'
+repo="$(mk_release_fixture)"
+set +e
+out="$(cd "${repo}" && bash tools/release.sh "1.0.1" --dry-run --no-watch 2>&1)"
+rc=$?
+set -e
+assert_eq "T13: dry-run exits 0" "0" "${rc}"
+assert_contains "T13: tag step present" "git tag v1.0.1" "${out}"
+assert_contains "T13: tagged-and-pushed announcement" "tagged v1.0.1 and pushed" "${out}"
+cleanup_fixture "${repo}"
+
+# ---------------------------------------------------------------------
+# T14 (v1.33.x): --tag-on-green dry-run defers the tag and the GH release
+# until after CI watch. Smoke check that the new branch is wired and
+# emits the deferred-tag announcement instead of "tagged v...".
+printf 'Test 14: --tag-on-green dry-run defers tag until CI green\n'
+repo="$(mk_release_fixture)"
+set +e
+out="$(cd "${repo}" && bash tools/release.sh "1.0.1" --dry-run --tag-on-green 2>&1)"
+rc=$?
+set -e
+assert_eq "T14: dry-run exits 0" "0" "${rc}"
+assert_contains "T14: announces deferred tag" "tag deferred until CI green" "${out}"
+assert_contains "T14: defers GH release" "GitHub release (deferred" "${out}"
+# In dry-run we should NOT see the eager "tagged v1.0.1 and pushed" line.
+if printf '%s' "${out}" | grep -q "tagged v1.0.1 and pushed"; then
+  printf '  FAIL: T14: --tag-on-green leaked into eager-tag flow (saw "tagged ... and pushed")\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+cleanup_fixture "${repo}"
+
+# ---------------------------------------------------------------------
+# T15 (v1.33.x): unknown args still reject loudly even with the new flag
+# in the parser.
+printf 'Test 15: unknown arg still rejected after --tag-on-green added\n'
+repo="$(mk_release_fixture)"
+set +e
+out="$(cd "${repo}" && bash tools/release.sh "1.0.1" --bogus-flag 2>&1)"
+rc=$?
+set -e
+assert_eq "T15: unknown arg rejects with rc=2" "2" "${rc}"
+assert_contains "T15: names the bad flag" "unknown arg" "${out}"
+cleanup_fixture "${repo}"
+
+# ---------------------------------------------------------------------
 printf '\n=== release tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]

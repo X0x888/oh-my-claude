@@ -254,6 +254,9 @@ jobs:
       - name: Run release-tool tests (v1.32.14 R4 closure)
         run: bash tests/test-release.sh
 
+      - name: Run local-ci tool tests (v1.33.x post-mortem)
+        run: bash tests/test-local-ci.sh
+
       - name: Run sterile-env CI-parity check (v1.32.2 R3 promoted to strict)
         run: bash tests/run-sterile.sh
 

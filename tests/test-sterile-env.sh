@@ -150,5 +150,60 @@ out_strict_flag="$(bash "${REPO_ROOT}/tests/run-sterile.sh" --strict --only test
 assert_contains "T5: --strict flag → strict" "mode: strict" "${out_strict_flag}"
 
 # ----------------------------------------------------------------------
+# Test 6 (v1.33.x): sterile TMPDIR is forced under /tmp/.
+#
+# Post-mortem of the v1.33.0/.1/.2 cascade: Wave-4's claude_bin
+# denylist (rejects pins under /tmp, /private/tmp, /var/tmp,
+# /Users/Shared, /dev/shm) fired on Linux CI because mktemp -d
+# returned /tmp/tmp.XXX, but never on macOS sterile-env where
+# TMPDIR previously pointed inside sterile_home (/var/folders/...).
+# Forcing TMPDIR under /tmp/ makes sterile-env catch the
+# path-prefix-denylist class on every host.
+#
+# Regression net: assert build_sterile_env emits a TMPDIR= line
+# whose value starts with `/tmp/`. Source the lib directly so this
+# is a pure-unit assertion, no full sterile run needed.
+# ----------------------------------------------------------------------
+printf 'Test 6: sterile TMPDIR is forced under /tmp/ (v1.33.x post-mortem)\n'
+
+# shellcheck disable=SC1091
+. "${REPO_ROOT}/tests/lib/sterile-env.sh"
+
+env_block="$(build_sterile_env)"
+tmpdir_line="$(printf '%s\n' "${env_block}" | grep -E '^TMPDIR=')"
+home_line="$(printf '%s\n' "${env_block}" | grep -E '^HOME=')"
+
+assert_contains "T6: TMPDIR= line is emitted" "TMPDIR=" "${env_block}"
+
+tmpdir_value="${tmpdir_line#TMPDIR=}"
+home_value="${home_line#HOME=}"
+
+if [[ "${tmpdir_value}" == /tmp/* ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T6: sterile TMPDIR not under /tmp/ — got %q\n' "${tmpdir_value}" >&2
+  fail=$((fail + 1))
+fi
+
+# Sister check: HOME must NOT be under /tmp/. Pre-fix attempt had HOME
+# under /tmp which was MORE hostile than real CI (where HOME is
+# /home/runner) and broke tests using ${HOME}/.cache/... pin paths.
+# Ensures the sterile env stays a faithful proxy for CI, not stricter.
+case "${home_value}" in
+  /tmp/*|/private/tmp/*|/var/tmp/*)
+    printf '  FAIL: T6: sterile HOME landed under /tmp shape — got %q (sterile is not supposed to be more hostile than CI)\n' "${home_value}" >&2
+    fail=$((fail + 1))
+    ;;
+  *)
+    pass=$((pass + 1))
+    ;;
+esac
+
+# Cleanup the dirs build_sterile_env created so this test doesn't
+# accumulate garbage under /tmp on repeated runs.
+[[ -n "${tmpdir_value}" && -d "${tmpdir_value}" ]] && rm -rf "${tmpdir_value}"
+[[ -n "${home_value}" && -d "${home_value}" ]] && rm -rf "${home_value}"
+
+# ----------------------------------------------------------------------
 printf '\n=== sterile-env tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]

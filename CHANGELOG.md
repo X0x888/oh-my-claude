@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Release-cycle speedups (post-mortem of the v1.33.0/.1/.2 cascade)
+
+The v1.33.0 release surfaced three avoidable cycles burning ~20 minutes total wall time on a Wave-4 `claude_bin` denylist firing on Linux's `/tmp/tmp.XXX` mktemp output that never reproduced under macOS dev or sterile-env. Four targeted improvements close the gap.
+
+### Added
+
+- **`tools/local-ci.sh`** — runs the validate.yml CI parity suite inside an Ubuntu container so BSD-vs-GNU coreutils, `mktemp -d` shape, and locale defaults are caught BEFORE the GitHub Actions round-trip. Pack-and-extract: a tarball of the repo is bind-mounted read-only at `/work.tar` and extracted into a container-local `/work` so the host repo isn't mutated. Supports `--image`, `--runtime` (docker/podman), `--shell` (interactive debug, gets the same toolchain as the non-shell run), `--skip-sterile`, `--skip-shellcheck`. Regression net: `tests/test-local-ci.sh` (14 assertions, CI-pinned).
+
+- **`tools/release.sh --tag-on-green`** (opt-in) — push the release commit BEFORE creating the tag, watch CI on the just-pushed commit, and only tag (+ push tag + create GH release) when CI returns green. Eliminates the v1.33.x-style version-bump cascade when the failure is a test bug rather than a user-facing defect: a CI failure under `--tag-on-green` leaves the commit on `main` with no tag, no GH release, and the user pushes fixup commits on the same VERSION instead of bumping. Mutually exclusive with `--no-watch` (tag-on-green requires the watch). Default behavior unchanged — explicit opt-in.
+
+### Fixed
+
+- **`tests/lib/sterile-env.sh` forces `TMPDIR` under `/tmp/`.** Pre-fix `TMPDIR` pointed inside `sterile_home` (which on macOS is `/var/folders/.../tmp.XXX`), so any path-prefix denylist keyed on `/tmp/` (Wave-4 `claude_bin`, future denylists with the same shape) fired on Ubuntu CI but never on the local sterile-env proxy. T24 in `test-resume-watchdog.sh` shipped CI-red three times before the gap was understood. Now: `TMPDIR=$(mktemp -d /tmp/omc-sterile-tmp-XXXXXX)` so subsequent `mktemp -d` inside tests mimic Linux CI's `/tmp/tmp.XXX` shape regardless of host. `HOME` stays at the default mktemp location (NOT under `/tmp/`) so sterile-env mirrors GitHub Actions runners' `/home/runner` shape rather than being more hostile than CI. Regression net: `tests/test-sterile-env.sh` T6 (3 new assertions).
+
+- **`tools/release.sh` post-flight CI failure prints a diagnostic-habit hint.** When `gh run watch` returns non-zero, the script now surfaces the `grep -nE "HOME=|TMPDIR=|PATH=|export HOME|mktemp" tests/<failing-test>.sh` first-look canonical command before the error exit. Names `ORIG_HOME` (the real-home save pattern many tests use) explicitly. Closes the v1.33.1-class diagnostic miss where the patch used `${HOME}/.cache/...` not realizing `setup_test` re-exports `HOME=TEST_HOME`.
+
 ## [1.33.2] - 2026-05-05
 
 ### Fixed

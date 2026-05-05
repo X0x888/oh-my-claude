@@ -36,8 +36,27 @@
 build_sterile_env() {
   local sterile_home sterile_tmp jq_path jq_dir path
 
+  # HOME — leave at the default `mktemp -d` location (macOS:
+  # `/var/folders/.../tmp.XXX`; Linux: `/tmp/tmp.XXX`). This mirrors
+  # the GitHub Actions runner shape where HOME=/home/runner is
+  # outside any path-prefix denylist; we don't want sterile-env to
+  # be MORE hostile than CI on HOME-derived paths.
   sterile_home="$(mktemp -d)" || return 1
-  sterile_tmp="${sterile_home}/tmp"
+  # TMPDIR — force under `/tmp/` on every host so subsequent
+  # `mktemp -d` calls inside tests mimic Linux CI's `/tmp/tmp.XXX`
+  # shape regardless of macOS dev's `/var/folders/...` default.
+  # v1.33.x post-mortem: the v1.33.0/.1/.2 cascade was driven by
+  # Wave-4's `claude_bin` denylist (rejects pins under /tmp/,
+  # /private/tmp/, /var/tmp/, /Users/Shared/, /dev/shm/) firing on
+  # Ubuntu CI's `/tmp/tmp.XXX` mktemp output but never on the
+  # sterile-env local proxy because TMPDIR was previously pointed
+  # inside sterile_home (so mktemp output landed under
+  # /var/folders/.../tmp on macOS). Forcing TMPDIR under `/tmp/`
+  # captures the path-prefix denylist class without dragging HOME
+  # itself under /tmp (which would over-fire on tests that derive
+  # paths from ${HOME} or ORIG_HOME — those would never trigger on
+  # real CI's /home/runner).
+  sterile_tmp="$(mktemp -d /tmp/omc-sterile-tmp-XXXXXX)" || return 1
   mkdir -p "${sterile_tmp}" 2>/dev/null
 
   # PATH discovery: find jq from the live PATH, prefix its directory.

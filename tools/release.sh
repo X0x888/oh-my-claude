@@ -44,14 +44,25 @@ set -euo pipefail
 VERSION_ARG="${1:-}"
 DRY_RUN=0
 NO_WATCH=0
+TAG_ON_GREEN=0
 shift 2>/dev/null || true
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) DRY_RUN=1; shift ;;
     --no-watch) NO_WATCH=1; shift ;;
+    --tag-on-green) TAG_ON_GREEN=1; shift ;;
     *) printf 'unknown arg: %s\n' "$1" >&2; exit 2 ;;
   esac
 done
+
+# --tag-on-green and --no-watch are mutually exclusive: tag-on-green
+# REQUIRES the watch to know whether to tag, so --no-watch makes the
+# whole flag a no-op. Reject the combo loudly so the user doesn't
+# silently get the legacy eager-tag flow.
+if [[ "${TAG_ON_GREEN}" -eq 1 ]] && [[ "${NO_WATCH}" -eq 1 ]]; then
+  printf 'error: --tag-on-green and --no-watch are mutually exclusive\n' >&2
+  exit 2
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -235,33 +246,67 @@ fi
 
 # ----------------------------------------------------------------------
 # Step 10-12 — commit, tag, push
+#
+# v1.33.x added `--tag-on-green` (opt-in): commit + push BEFORE creating
+# the tag, watch CI on the just-pushed commit, then tag (+ push tag +
+# GH release) only on green. Recovery if CI red: the commit is on main,
+# no tag exists, no GH release exists. Push fixup commit(s), then run
+# `git tag v${VERSION_ARG} && git push --tags && gh release create
+# v${VERSION_ARG} --notes-file <(awk '/^## \\[${VERSION_ARG}\\]/{...}'
+# CHANGELOG.md)` manually. Eliminates the v1.33.0/.1/.2-style version-
+# bump cascade when the failure is a test bug, not a user-facing defect.
+#
+# Default (legacy eager-tag) flow stays identical so muscle-memory
+# `bash tools/release.sh X.Y.Z` is unchanged.
 # ----------------------------------------------------------------------
 say "Step 10-12: commit + tag + push"
 COMMIT_MSG="Release v${VERSION_ARG}"
 run git add VERSION README.md CHANGELOG.md
 run git commit -m "${COMMIT_MSG}"
-run git tag "v${VERSION_ARG}"
-run git push origin main
-run git push --tags
-ok "tagged v${VERSION_ARG} and pushed"
+
+if [[ "${TAG_ON_GREEN}" -eq 1 ]]; then
+  # Push commit only (no tag yet). The tag is conditional on CI green.
+  run git push origin main
+  ok "commit pushed (tag deferred until CI green — --tag-on-green)"
+else
+  run git tag "v${VERSION_ARG}"
+  run git push origin main
+  run git push --tags
+  ok "tagged v${VERSION_ARG} and pushed"
+fi
 
 # ----------------------------------------------------------------------
 # Step 13 — GitHub release
+#
+# Under --tag-on-green, this step is deferred to AFTER step 14's CI watch
+# (a green CI is the precondition for tagging, and the GH release needs
+# the tag to exist). The legacy eager-tag flow runs it inline here.
 # ----------------------------------------------------------------------
-say "Step 13: GitHub release"
-if ! command -v gh >/dev/null 2>&1; then
-  printf '  warn: gh CLI not found — skipping release create. Run manually:\n' >&2
-  printf '    awk "/^## \\\\[%s\\\\]/{found=1;next} /^## \\\\[/{if(found)exit} found" CHANGELOG.md \\\n' "${VERSION_ARG}"
-  printf '      | gh release create v%s --title v%s --notes-file -\n' "${VERSION_ARG}" "${VERSION_ARG}"
-elif [[ "${DRY_RUN}" -eq 1 ]]; then
-  printf '  [dry-run] gh release create v%s --title v%s --notes-file <(awk extract)\n' "${VERSION_ARG}" "${VERSION_ARG}"
-else
+emit_github_release() {
+  if ! command -v gh >/dev/null 2>&1; then
+    printf '  warn: gh CLI not found — skipping release create. Run manually:\n' >&2
+    printf '    awk "/^## \\\\[%s\\\\]/{found=1;next} /^## \\\\[/{if(found)exit} found" CHANGELOG.md \\\n' "${VERSION_ARG}"
+    printf '      | gh release create v%s --title v%s --notes-file -\n' "${VERSION_ARG}" "${VERSION_ARG}"
+    return 0
+  fi
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    printf '  [dry-run] gh release create v%s --title v%s --notes-file <(awk extract)\n' "${VERSION_ARG}" "${VERSION_ARG}"
+    return 0
+  fi
+  local release_notes
   release_notes="$(awk "/^## \\[${VERSION_ARG}\\]/{found=1;next} /^## \\[/{if(found)exit} found" CHANGELOG.md)"
   if [[ -z "${release_notes}" ]]; then
     printf '  warn: no CHANGELOG section found for v%s — release will have empty notes\n' "${VERSION_ARG}" >&2
   fi
   printf '%s' "${release_notes}" | gh release create "v${VERSION_ARG}" --title "v${VERSION_ARG}" --notes-file - 2>&1 | head -3
   ok "GitHub release created"
+}
+
+if [[ "${TAG_ON_GREEN}" -eq 1 ]]; then
+  say "Step 13: GitHub release (deferred — runs after CI green under --tag-on-green)"
+else
+  say "Step 13: GitHub release"
+  emit_github_release
 fi
 
 # ----------------------------------------------------------------------
@@ -276,14 +321,70 @@ elif [[ "${DRY_RUN}" -eq 1 ]]; then
   printf '  [dry-run] gh run watch --exit-status <run-id-for-v%s>\n' "${VERSION_ARG}"
 elif command -v gh >/dev/null 2>&1; then
   say "Step 14: watch CI"
-  RUN_ID="$(gh run list --commit "$(git rev-parse "v${VERSION_ARG}")" --limit 1 --json databaseId -q '.[0].databaseId' 2>/dev/null || echo "")"
-  if [[ -z "${RUN_ID}" ]]; then
-    printf '  warn: no CI run found for v%s yet — re-watch later\n' "${VERSION_ARG}" >&2
+  # Under --tag-on-green, the tag doesn't exist yet — query the run by
+  # the just-pushed commit SHA. Under eager-tag, the tag exists and we
+  # query by tag SHA (same SHA, different lookup path; either works).
+  if [[ "${TAG_ON_GREEN}" -eq 1 ]]; then
+    WATCH_REF="$(git rev-parse HEAD)"
   else
-    printf '  watching run %s (Ctrl-C to detach; tag is already pushed regardless)\n' "${RUN_ID}"
+    WATCH_REF="$(git rev-parse "v${VERSION_ARG}")"
+  fi
+  # GitHub Actions can take a few seconds to register the run after the
+  # push. Poll for up to ~30s before giving up. Without this the immediate
+  # `gh run list` returns empty even though a run is about to start.
+  RUN_ID=""
+  for poll in 1 2 3 4 5 6; do
+    RUN_ID="$(gh run list --commit "${WATCH_REF}" --limit 1 --json databaseId -q '.[0].databaseId' 2>/dev/null || echo "")"
+    [[ -n "${RUN_ID}" ]] && break
+    sleep 5
+  done
+  if [[ -z "${RUN_ID}" ]]; then
+    if [[ "${TAG_ON_GREEN}" -eq 1 ]]; then
+      printf '\n[warn] no CI run registered after ~30s — under --tag-on-green this means\n' >&2
+      printf '  the tag CANNOT be created automatically. The commit IS on main.\n' >&2
+      printf '  Recovery: wait for the run, then `gh run watch --exit-status <id>`\n' >&2
+      printf '  and on green: `git tag v%s && git push --tags`\n' "${VERSION_ARG}" >&2
+      err "tag-on-green: no CI run found"
+    else
+      printf '  warn: no CI run found for v%s yet — re-watch later\n' "${VERSION_ARG}" >&2
+    fi
+  else
+    if [[ "${TAG_ON_GREEN}" -eq 1 ]]; then
+      printf '  watching run %s (Ctrl-C to detach; tag will be created ONLY on green)\n' "${RUN_ID}"
+    else
+      printf '  watching run %s (Ctrl-C to detach; tag is already pushed regardless)\n' "${RUN_ID}"
+    fi
     if gh run watch --exit-status "${RUN_ID}" >/dev/null 2>&1; then
       ok "CI green on v${VERSION_ARG}"
+      if [[ "${TAG_ON_GREEN}" -eq 1 ]]; then
+        say "Step 11+13: tag + GH release (CI green)"
+        run git tag "v${VERSION_ARG}"
+        run git push --tags
+        ok "tagged v${VERSION_ARG} after green CI"
+        emit_github_release
+      fi
     else
+      # v1.33.x diagnostic hint (post-mortem of v1.33.0/.1/.2 cascade).
+      # The most expensive class of "passes locally / fails in CI" miss
+      # was: test setup re-exports HOME/TMPDIR, and the patch used the
+      # already-overridden ${HOME} instead of ORIG_HOME (or another
+      # outside-denylist path). Print the canonical first-look grep
+      # before the err so the maintainer doesn't repeat that miss.
+      printf '\n[hint] CI red on the %s. Common diagnostic miss:\n' \
+        "$( [[ "${TAG_ON_GREEN}" -eq 1 ]] && printf 'pushed commit (tag NOT created)' || printf 'tagged commit' )" >&2
+      printf '  - test setup may re-export HOME/TMPDIR/PATH — `${HOME}` in the\n' >&2
+      printf '    test body may NOT be the real home. Before patching, run:\n' >&2
+      printf '      grep -nE "HOME=|TMPDIR=|PATH=|export HOME|mktemp" tests/<failing-test>.sh\n' >&2
+      printf '    If `setup_test`/equivalent re-exports HOME, use `ORIG_HOME`\n' >&2
+      printf '    (saved before any test override) for paths that must escape\n' >&2
+      printf '    the active denylist.\n' >&2
+      if [[ "${TAG_ON_GREEN}" -eq 1 ]]; then
+        printf '\n[recovery] The Release v%s commit is on main without a tag.\n' "${VERSION_ARG}" >&2
+        printf '  Push fixup commit(s), watch CI green, then manually:\n' >&2
+        printf '    git tag v%s && git push --tags && \\\n' "${VERSION_ARG}" >&2
+        printf '    awk "/^## \\\\[%s\\\\]/{f=1;next} /^## \\\\[/{if(f)exit} f" CHANGELOG.md | \\\n' "${VERSION_ARG}" >&2
+        printf '      gh release create v%s --title v%s --notes-file -\n' "${VERSION_ARG}" "${VERSION_ARG}" >&2
+      fi
       err "CI failed on v${VERSION_ARG} — see gh run view ${RUN_ID}"
     fi
   fi

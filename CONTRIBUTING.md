@@ -179,6 +179,8 @@ When bumping the version (changing `VERSION`), follow these steps in order. Repl
 
    Fast-path: when only docs/CHANGELOG/VERSION changed since the last tag, the heavy checks skip with a "no fix-shaped changes" message. `--quick` mode skips sterile-env (saves ~1 min) but warns; re-run without `--quick` before tagging. Regression net: `tests/test-hotfix-sweep.sh` (12 assertions, CI-pinned).
 
+7. **Local Linux CI parity** *(advisory, v1.33.x post-mortem of v1.33.0/.1/.2 cascade).* `bash tools/local-ci.sh` runs the validate.yml CI parity suite inside an Ubuntu container so BSD-vs-GNU coreutils, `mktemp -d` shape (`/var/folders/...` vs `/tmp/tmp.XXX`), and locale defaults are caught BEFORE the GitHub Actions round-trip. Pairs with the sterile-env TMPDIR fix in `tests/lib/sterile-env.sh` — sterile-env handles env-shape divergence on macOS hosts; local-ci handles BSD-vs-GNU coreutils divergence sterile-env can't fully simulate. Requires Docker or podman; gracefully reports the missing runtime if absent. ~30s after first image pull, ~3+ min on cold pull. Regression net: `tests/test-local-ci.sh` (14 assertions, CI-pinned). Skip when working on docs-only changes.
+
 ### Bump and tag
 
 **Automated path (preferred since v1.32.14):**
@@ -187,7 +189,9 @@ When bumping the version (changing `VERSION`), follow these steps in order. Repl
 bash tools/release.sh X.Y.Z
 ```
 
-This runs steps 7-14 below in order, validating preconditions (clean tree, on `main`, X.Y.Z is above current, tag doesn't exist, no leftover `.hotfix-sweep-quick` marker) before any mutation. `--dry-run` previews; `--no-watch` skips the post-flight CI watch (still tags + pushes). Regression net: `tests/test-release.sh` (22 assertions, CI-pinned).
+This runs steps 7-14 below in order, validating preconditions (clean tree, on `main`, X.Y.Z is above current, tag doesn't exist, no leftover `.hotfix-sweep-quick` marker) before any mutation. `--dry-run` previews; `--no-watch` skips the post-flight CI watch (still tags + pushes). Regression net: `tests/test-release.sh` (40 assertions, CI-pinned).
+
+`--tag-on-green` *(opt-in, v1.33.x)* reorders the flow so the commit is pushed BEFORE the tag is created, CI is watched on the unverified commit, and the tag (+ push tag + GH release) only happens when CI returns green. Eliminates the v1.33.x-style version-bump cascade when the failure is a test bug, not a user-facing defect — a CI failure under `--tag-on-green` leaves the commit on `main` with no tag, and the user pushes fixup commits on the same VERSION instead of bumping. Mutually exclusive with `--no-watch` (the watch is what gates the tag). Default behavior unchanged.
 
 **Manual path (kept for reference and for environments where the script can't run):**
 
