@@ -194,7 +194,7 @@ The skill is invoked with `/my-skill <arguments>`. The `$ARGUMENTS` placeholder 
 
 ## Tuning Quality Gates
 
-The stop guard (`skills/autowork/scripts/stop-guard.sh`) enforces five independent gates: advisory inspection, session handoff, review/verification, dimension gate (prescribed reviewer sequence), and excellence review. Each has a block limit that caps how many times it can prevent Claude from stopping.
+The stop guard (`skills/autowork/scripts/stop-guard.sh`) enforces seven independent gates: advisory inspection, session handoff, review/verification, review coverage (prescribed reviewer sequence), excellence review, opt-in metis-on-plan, and final-closure auditability. The first six guard the work itself; the last one guards the user-facing closeout so the result can be audited without follow-up questions. The block-limited gates cap how many times they can prevent Claude from stopping.
 
 ### Adjusting block limits
 

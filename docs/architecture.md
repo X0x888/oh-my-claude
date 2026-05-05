@@ -42,7 +42,7 @@ oh-my-claude is a harness that wraps Claude Code's lifecycle events with bash ho
 7. If the prompt contains `ultrathink`, appends a deeper investigation directive.
 8. Emits the assembled context via `hookSpecificOutput.additionalContext`.
 
-**`skills/autowork/scripts/stop-guard.sh`** -- **Stop hook**. Hard quality gate that can block Claude from stopping. Five independent checks:
+**`skills/autowork/scripts/stop-guard.sh`** -- **Stop hook**. Hard quality gate that can block Claude from stopping. Seven independent checks:
 
 1. **Advisory inspection gate**: If the task is advisory over a codebase (coding or mixed domain) and no code inspection (`last_advisory_verify_ts`) or build/test verification (`last_verify_ts`) was detected, blocks the stop. Cap: 1 block.
 2. **Session handoff gate**: If the last assistant message contains deferral language ("ready for a new session", "next wave", "next phase") and the user did not request a checkpoint, blocks the stop. Cap: 2 blocks.
@@ -66,6 +66,8 @@ oh-my-claude is a harness that wraps Claude Code's lifecycle events with bash ho
     - **Resumed sessions**: sessions resumed from pre-dimension-gate state get one free stop (`dimension_resume_grace_used`) before the gate starts enforcing.
     - **Cap**: 3 blocks (`dimension_guard_blocks`). Exhaustion records `dimensions_missing=...` in `guard_exhausted_detail` and falls through to the excellence gate rather than bypassing all checks.
 5. **Excellence gate**: After all earlier gates pass, if the session has `excellence_file_count`+ unique edited files and no `last_excellence_review_ts` has been recorded (or it is stale), blocks the stop once to request a fresh-eyes holistic evaluation via `excellence-reviewer`. Cap: 1 block (controlled by `excellence_guard_triggered` flag).
+6. **Metis-on-plan gate** (opt-in): When `OMC_METIS_ON_PLAN_GATE=on` and the recorded plan is flagged high-complexity, blocks the stop until `metis` has stress-tested the current plan since `plan_ts`. Cap: 1 block per plan cycle (`metis_gate_blocks`).
+7. **Final-closure gate**: After the work itself is clean, checks whether Claude's final user-facing wrap is audit-ready. Substantive sessions must end with an implementation-summary shape that tells the user what changed, how it was verified, and what remains (`Changed`/`Shipped`, `Verification`, `Next`, plus `Risks` when anything was deferred). This gate is intentionally late and style-aware enough to accept either the standard or executive closeout labels; it exists so users do not have to interrogate a "looks done" answer for basic audit facts.
 
 The block caps prevent infinite loops. After the cap, Claude is allowed to stop even if gates are unsatisfied.
 
@@ -175,6 +177,8 @@ Claude attempts to stop
   |-- Check 3: Edits without review or verification (code/doc clocks)? -> Block (max 3)
   |-- Check 4: Prescribed dimensions missing on complex task? -> Block (max 3)
   |-- Check 5: 3+ files edited without excellence review? -> Block (max 1)
+  |-- Check 6: Complex plan without fresh `metis` stress-test? -> Block (opt-in, max 1)
+  |-- Check 7: Final wrap missing audit-ready closure? -> Block
   |-- All checks pass or caps reached -> Allow stop
   |
   v

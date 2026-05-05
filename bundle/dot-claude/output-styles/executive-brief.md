@@ -95,15 +95,15 @@ The dominant `/ulw` shape. After material code or content changes, structure the
 - <change 2>
 
 **Verification.**
-- `<command>` → `<result>` (exit `0`, `N tests pass`, observed assertion)
+- `<command or verification tool>` → `<result>` (exit `0`, `N tests pass`, observed assertion). If no automated verification ran, say so explicitly and name the clean review pass instead.
 
 **Risks.**
-- <named risk or open item>
+- <named risk or open item; if something was deferred, name the WHY>
 
 **Asks.** <only when the user must decide or unblock something; otherwise omit>
 - <named ask>
 
-**Next.** <one sentence on the immediate next move>
+**Next.** <one sentence on the immediate next move; use `Done.` when there is no follow-on action>
 ```
 
 Use the horizontal rule between Headline and the body when the report has more than two sections; skip it on short reports. The label "Shipped" is the executive verb for "Changed" — both name the same bucket; this style prefers `Shipped.` because it states delivery, not edit.

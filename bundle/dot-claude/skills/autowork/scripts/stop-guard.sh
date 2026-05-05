@@ -53,6 +53,47 @@ if [[ "${stop_hook_active}" == "true" ]]; then
   exit 0
 fi
 
+has_closeout_label() {
+  local kind="$1"
+  local text="${2:-}"
+  local pattern=""
+  case "${kind}" in
+    changed)      pattern='\*\*(Changed|Shipped)(\.)?\*\*' ;;
+    verification) pattern='\*\*Verification(\.)?\*\*' ;;
+    risks)        pattern='\*\*Risks(\.)?\*\*' ;;
+    next)         pattern='\*\*Next(\.)?\*\*' ;;
+    *) return 1 ;;
+  esac
+  [[ -n "${text}" ]] || return 1
+  printf '%s' "${text}" | grep -Eiq "${pattern}"
+}
+
+has_closeout_signal() {
+  local kind="$1"
+  local text="${2:-}"
+  local pattern=""
+  case "${kind}" in
+    delivery)     pattern='\b(changed|updated|added|fixed|implemented|shipped|refactored|removed|documented|wired)\b' ;;
+    verification) pattern='\b(verified|tested|reviewed|linted|validated|passed)\b' ;;
+    risks)        pattern='\b(risk|risks|defer(red)?|follow[- ]up|blocked|awaiting|pending|residual)\b' ;;
+    *) return 1 ;;
+  esac
+  [[ -n "${text}" ]] || return 1
+  printf '%s' "${text}" | grep -Eiq "${pattern}"
+}
+
+read_findings_count_by_status() {
+  local target_status="$1"
+  [[ -z "${target_status}" ]] && { printf '0'; return 0; }
+  [[ -z "${SESSION_ID:-}" ]] && { printf '0'; return 0; }
+  local file
+  file="$(session_file "findings.json")"
+  [[ -f "${file}" ]] || { printf '0'; return 0; }
+  jq -r --arg s "${target_status}" \
+    '[(.findings // [])[] | select(.status == $s)] | length' \
+    "${file}" 2>/dev/null || printf '0'
+}
+
 # --- Gate skip check (/ulw-skip) ---
 # If the user registered a gate skip, honor it if the edit clock has not
 # advanced since registration (new edits invalidate the skip). This prevents
@@ -670,6 +711,105 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
       emit_stop_block "[Metis-on-plan gate · 1/1] the current plan was flagged high-complexity (${plan_complexity_signals}) but no metis stress-test review has run since the plan was recorded. The bias-defense layer requires a fresh-eyes pressure test before execution to catch wrong-abstraction or missing-constraint risks the main thread may have committed to. After metis returns, restate your deliverable summary at the end of your response.${metis_recovery}"
       exit 0
     fi
+  fi
+
+  # --- Final-closure gate (user-facing auditability) ---
+  #
+  # Once the work itself is clean, the final response must let the user
+  # audit what changed, how it was verified, and what remains without a
+  # follow-up interrogation. This gate is intentionally late: it only
+  # runs after the substantive quality checks above have passed.
+  closure_edited_count=0
+  closure_edited_log="$(session_file "edited_files.log")"
+  if [[ -f "${closure_edited_log}" ]]; then
+    closure_edited_count="$(sort -u "${closure_edited_log}" | wc -l | tr -d '[:space:]')"
+  fi
+  [[ "${closure_edited_count}" =~ ^[0-9]+$ ]] || closure_edited_count=0
+
+  closure_dispatch_count="$(read_state "subagent_dispatch_count")"
+  [[ "${closure_dispatch_count}" =~ ^[0-9]+$ ]] || closure_dispatch_count=0
+
+  closure_deferred_scope_count="$(read_scope_count_by_status "deferred")"
+  [[ "${closure_deferred_scope_count}" =~ ^[0-9]+$ ]] || closure_deferred_scope_count=0
+  closure_deferred_finding_count="$(read_findings_count_by_status "deferred")"
+  [[ "${closure_deferred_finding_count}" =~ ^[0-9]+$ ]] || closure_deferred_finding_count=0
+
+  closure_needs_risks=0
+  if [[ "${closure_deferred_scope_count}" -gt 0 || "${closure_deferred_finding_count}" -gt 0 ]]; then
+    closure_needs_risks=1
+  fi
+
+  closure_structured_required=0
+  if [[ "${closure_edited_count}" -ge 2 || "${closure_dispatch_count}" -ge 1 || "${closure_needs_risks}" -eq 1 ]]; then
+    closure_structured_required=1
+  fi
+
+  closure_has_changed=0
+  has_closeout_label changed "${last_assistant_message}" && closure_has_changed=1
+  closure_has_verification=0
+  has_closeout_label verification "${last_assistant_message}" && closure_has_verification=1
+  closure_has_risks=0
+  has_closeout_label risks "${last_assistant_message}" && closure_has_risks=1
+  closure_has_next=0
+  has_closeout_label next "${last_assistant_message}" && closure_has_next=1
+
+  last_verify_cmd="$(read_state "last_verify_cmd")"
+  last_verify_method="$(read_state "last_verify_method")"
+  closure_verify_cmd_missing=0
+  if [[ -n "${last_verify_cmd}" && "${last_verify_method}" != mcp_* ]]; then
+    if [[ "${last_assistant_message}" != *"${last_verify_cmd}"* ]]; then
+      closure_verify_cmd_missing=1
+    fi
+  fi
+
+  closure_structured_ok=0
+  if [[ "${closure_has_changed}" -eq 1 ]] \
+    && [[ "${closure_has_verification}" -eq 1 ]] \
+    && [[ "${closure_has_next}" -eq 1 ]] \
+    && [[ "${closure_verify_cmd_missing}" -eq 0 ]] \
+    && { [[ "${closure_needs_risks}" -eq 0 ]] || [[ "${closure_has_risks}" -eq 1 ]]; }; then
+    closure_structured_ok=1
+  fi
+
+  closure_compact_ok=0
+  if has_closeout_signal delivery "${last_assistant_message}" \
+    && has_closeout_signal verification "${last_assistant_message}" \
+    && [[ "${closure_verify_cmd_missing}" -eq 0 ]] \
+    && { [[ "${closure_needs_risks}" -eq 0 ]] || has_closeout_signal risks "${last_assistant_message}"; }; then
+    closure_compact_ok=1
+  fi
+
+  if [[ "${closure_structured_required}" -eq 1 && "${closure_structured_ok}" -ne 1 ]] \
+    || [[ "${closure_structured_required}" -eq 0 && "${closure_structured_ok}" -ne 1 && "${closure_compact_ok}" -ne 1 ]]; then
+    closure_missing=""
+    if [[ "${closure_has_changed}" -ne 1 ]]; then
+      closure_missing="${closure_missing:+${closure_missing}, }\`Changed\`/\`Shipped\`"
+    fi
+    if [[ "${closure_has_verification}" -ne 1 ]]; then
+      closure_missing="${closure_missing:+${closure_missing}, }\`Verification\`"
+    elif [[ "${closure_verify_cmd_missing}" -eq 1 ]]; then
+      closure_missing="${closure_missing:+${closure_missing}, }\`Verification\` must name \`${last_verify_cmd}\`"
+    fi
+    if [[ "${closure_needs_risks}" -eq 1 && "${closure_has_risks}" -ne 1 ]]; then
+      closure_missing="${closure_missing:+${closure_missing}, }\`Risks\`"
+    fi
+    if [[ "${closure_structured_required}" -eq 1 && "${closure_has_next}" -ne 1 ]]; then
+      closure_missing="${closure_missing:+${closure_missing}, }\`Next\`"
+    fi
+    [[ -n "${closure_missing}" ]] || closure_missing="an audit-ready closeout"
+
+    record_gate_event "final-closure" "block" \
+      "structured_required=${closure_structured_required}" \
+      "missing_changed=$((closure_has_changed == 1 ? 0 : 1))" \
+      "missing_verification=$((closure_has_verification == 1 ? 0 : 1))" \
+      "missing_verify_cmd=${closure_verify_cmd_missing}" \
+      "missing_risks=$((closure_needs_risks == 1 && closure_has_risks != 1 ? 1 : 0))" \
+      "missing_next=$((closure_structured_required == 1 && closure_has_next != 1 ? 1 : 0))" \
+      "deferred_scope_count=${closure_deferred_scope_count}" \
+      "deferred_finding_count=${closure_deferred_finding_count}"
+    closure_recovery="$(format_gate_recovery_line "restate the final wrap using \`**Changed.**\` (or \`**Shipped.**\`), \`**Verification.**\`, and \`**Next.**\`. Name the exact verification command when one ran. If anything was deferred, add \`**Risks.**\` and state the WHY. If no further action is queued, \`**Next.** Done.\` is enough.")"
+    emit_stop_block "[Final-closure gate] the work itself is clean, but the final response is not audit-ready for the user. Missing: ${closure_missing}. The user should be able to see what changed, how it was verified, and what was deliberately deferred without follow-up questions.${closure_recovery}"
+    exit 0
   fi
 
   # Record session outcome for cross-session analytics. "completed" means

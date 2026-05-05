@@ -177,6 +177,31 @@ sim_stop_mode() {
     | env OMC_GUARD_EXHAUSTION_MODE="${mode}" bash "${HOOK_DIR}/stop-guard.sh" 2>/dev/null || true
 }
 
+structured_closeout() {
+  local sid="$1"
+  local changed_text="${2:-Updated the requested files and behavior.}"
+  local risks_text="${3:-}"
+  local next_text="${4:-Done.}"
+  local verify_cmd verify_line
+
+  verify_cmd="$(read_st "${sid}" "last_verify_cmd")"
+  if [[ -n "${verify_cmd}" ]]; then
+    verify_line="\`${verify_cmd}\` completed cleanly."
+  elif [[ -n "$(read_st "${sid}" "last_doc_review_ts")" ]]; then
+    verify_line="\`editor-critic\` returned \`CLEAN\`; no automated verification ran."
+  elif [[ -n "$(read_st "${sid}" "last_review_ts")" ]]; then
+    verify_line="\`quality-reviewer\` returned \`CLEAN\`."
+  else
+    verify_line="No automated verification ran."
+  fi
+
+  printf '**Changed.** %s\n\n**Verification.** %s\n' "${changed_text}" "${verify_line}"
+  if [[ -n "${risks_text}" ]]; then
+    printf '\n**Risks.** %s\n' "${risks_text}"
+  fi
+  printf '\n**Next.** %s' "${next_text}"
+}
+
 sim_status_mode() {
   local mode="$1"
   env OMC_GUARD_EXHAUSTION_MODE="${mode}" bash "${HOOK_DIR}/show-status.sh" 2>/dev/null || true
@@ -418,9 +443,46 @@ init_session "sa"
 sim_edit "sa"
 sim_verify "sa" "npm test" "Tests: 10 passed, 0 failed"
 sim_review "sa" "Summary: Code looks clean. No issues."
-output="$(sim_stop "sa")"
+output="$(sim_stop "sa" "$(structured_closeout "sa" "Updated /src/foo.ts for the requested fix.")")"
 
 assert_empty "seq-A: stop allowed (no output)" "${output}"
+teardown_test
+
+
+# -------------------------------------------------------
+# Sequence A0: Clean work still blocks without an audit-ready closeout
+# -------------------------------------------------------
+setup_test
+init_session "sa0"
+sim_edit "sa0"
+sim_verify "sa0" "npm test" "Tests: 3 passed, 0 failed"
+sim_review "sa0" "Summary: Code looks clean. No issues."
+output="$(sim_stop "sa0" "Here is the completed work.")"
+
+assert_contains "seq-A0: final closure blocks placeholder wrap" '"decision":"block"' "${output}"
+assert_contains "seq-A0: final closure names gate" "Final-closure gate" "${output}"
+assert_contains "seq-A0: final closure asks for Changed" "Changed" "${output}"
+assert_contains "seq-A0: final closure asks for Verification" "Verification" "${output}"
+teardown_test
+
+
+# -------------------------------------------------------
+# Sequence A1: Deferred work requires a Risks section in the closeout
+# -------------------------------------------------------
+setup_test
+init_session "sa1"
+sim_edit "sa1"
+sim_verify "sa1" "npm test" "Tests: 4 passed, 0 failed"
+sim_review "sa1" "Summary: Code looks clean. No issues."
+jq -nc --arg id "DS-001" --argjson ts "$(date +%s)" \
+  '{id:$id,severity:"medium",summary:"deferred follow-up",status:"deferred",reason:"awaiting upstream schema change",ts:$ts}' \
+  > "${TEST_HOME}/.claude/quality-pack/state/sa1/discovered_scope.jsonl"
+output="$(sim_stop "sa1" "$(structured_closeout "sa1" "Updated /src/foo.ts for the requested fix.")")"
+assert_contains "seq-A1: deferred work without Risks blocks" '"decision":"block"' "${output}"
+assert_contains "seq-A1: deferred work names Risks" "Risks" "${output}"
+
+output="$(sim_stop "sa1" "$(structured_closeout "sa1" "Updated /src/foo.ts for the requested fix." "Deferred adjacent schema cleanup is awaiting upstream schema change.")")"
+assert_empty "seq-A1: Risks section clears final closure gate" "${output}"
 teardown_test
 
 
@@ -580,7 +642,7 @@ sleep 1
 sim_edit "si" "/src/fixed.ts"
 sim_verify "si" "npm test" "Tests: 6 passed, 0 failed"
 sim_review "si" "Summary: Code looks clean. Issue resolved."
-output="$(sim_stop "si")"
+output="$(sim_stop "si" "$(structured_closeout "si" "Updated /src/fixed.ts and completed the remediation pass.")")"
 
 assert_empty "seq-I: full cycle allows stop" "${output}"
 teardown_test
@@ -746,7 +808,7 @@ init_session "sq"
 sim_edit "sq" "/src/single.ts"
 sim_verify "sq" "npm test" "Tests: 5 passed"
 sim_review "sq" "Summary: Code looks clean."
-output="$(sim_stop "sq")"
+output="$(sim_stop "sq" "$(structured_closeout "sq" "Updated /src/single.ts for the requested change.")")"
 
 assert_empty "seq-Q: single-file allows stop" "${output}"
 teardown_test
@@ -769,7 +831,7 @@ out1="$(sim_stop "sr")"
 assert_contains "seq-R: first stop blocks for excellence" '"decision":"block"' "${out1}"
 
 # Second stop: excellence_guard_triggered=1, skips excellence check, allows through
-out2="$(sim_stop "sr")"
+out2="$(sim_stop "sr" "$(structured_closeout "sr" "Updated the three source files for the requested change.")")"
 assert_empty "seq-R: second stop allowed (gate already triggered)" "${out2}"
 unset OMC_DIMENSION_GATE_FILE_COUNT
 teardown_test
@@ -795,7 +857,7 @@ assert_contains "seq-S: blocks for excellence" '"decision":"block"' "${out1}"
 sim_excellence_review "ss" "Verdict: Complete and excellent."
 
 # Stop: should allow through (excellence review recorded)
-out2="$(sim_stop "ss")"
+out2="$(sim_stop "ss" "$(structured_closeout "ss" "Updated the three source files for the requested change.")")"
 assert_empty "seq-S: stop allowed after excellence review" "${out2}"
 assert_not_empty "seq-S: excellence_review_ts set" "$(read_st "ss" "last_excellence_review_ts")"
 unset OMC_DIMENSION_GATE_FILE_COUNT
@@ -824,7 +886,7 @@ assert_eq "seq-T: excellence preserves review_had_findings" "false" "$(read_st "
 assert_not_empty "seq-T: excellence_review_ts set" "$(read_st "st" "last_excellence_review_ts")"
 
 # Stop: should allow through (no unremediated findings)
-out="$(sim_stop "st")"
+out="$(sim_stop "st" "$(structured_closeout "st" "Updated the three source files for the requested change.")")"
 assert_empty "seq-T: stop allowed" "${out}"
 unset OMC_DIMENSION_GATE_FILE_COUNT
 teardown_test
@@ -920,7 +982,7 @@ sim_edit_doc "sw3" "/docs/a.md"
 sim_editor_critic "sw3" "Doc updated.
 VERDICT: CLEAN"
 # No sim_verify — doc-only edit should not require it
-output="$(sim_stop "sw3")"
+output="$(sim_stop "sw3" "$(structured_closeout "sw3" "Updated /docs/a.md with the requested documentation change.")")"
 assert_empty "seq-W3: doc-only edit skips verify gate" "${output}"
 unset OMC_DIMENSION_GATE_FILE_COUNT
 teardown_test
@@ -988,7 +1050,7 @@ assert_contains "seq-U1: names excellence-reviewer" "excellence-reviewer" "${out
 sim_excellence_review "su1"
 
 # All dimensions ticked, stop allowed
-out3="$(sim_stop "su1")"
+out3="$(sim_stop "su1" "$(structured_closeout "su1" "Updated the three source files and closed the complex-task review loop.")")"
 assert_empty "seq-U1: stop allowed after all dims ticked" "${out3}"
 assert_not_empty "seq-U1: dim bug_hunt set" "$(read_st "su1" "dim_bug_hunt_ts")"
 assert_not_empty "seq-U1: dim stress_test set" "$(read_st "su1" "dim_stress_test_ts")"
@@ -1013,7 +1075,7 @@ assert_contains "seq-U2: block for prose dimension" '"decision":"block"' "${out}
 assert_contains "seq-U2: names editor-critic" "editor-critic" "${out}"
 
 sim_editor_critic "su2"
-out2="$(sim_stop "su2")"
+out2="$(sim_stop "su2" "$(structured_closeout "su2" "Updated the source files and CHANGELOG entry for the requested change.")")"
 assert_empty "seq-U2: stop allowed after editor-critic" "${out2}"
 teardown_test
 
@@ -1038,7 +1100,7 @@ assert_contains "seq-U3: block for traceability" '"decision":"block"' "${out}"
 assert_contains "seq-U3: names briefing-analyst" "briefing-analyst" "${out}"
 
 sim_briefing_analyst "su3"
-out2="$(sim_stop "su3")"
+out2="$(sim_stop "su3" "$(structured_closeout "su3" "Updated the six source files and closed the traceability review loop.")")"
 assert_empty "seq-U3: stop allowed after briefing-analyst" "${out2}"
 teardown_test
 
@@ -1049,7 +1111,7 @@ sim_edit "su4" "/src/single.ts"
 sim_verify "su4" "npm test" "Tests: 5 passed"
 sim_review "su4" "Clean.
 VERDICT: CLEAN"
-output="$(sim_stop "su4")"
+output="$(sim_stop "su4" "$(structured_closeout "su4" "Updated /src/single.ts for the requested change.")")"
 assert_empty "seq-U4: single-file bypass dimension gate" "${output}"
 teardown_test
 
@@ -1189,7 +1251,7 @@ sim_design_reviewer "su8"
 sim_excellence_review "su8"
 
 # Now stop should succeed (all dimensions ticked)
-out2="$(sim_stop "su8")"
+out2="$(sim_stop "su8" "$(structured_closeout "su8" "Updated the UI components and supporting utility for the requested change.")")"
 assert_empty "seq-U8: stop allowed after design review" "${out2}"
 
 # Verify ui_edit_count was tracked
@@ -1209,7 +1271,7 @@ VERDICT: CLEAN"
 sim_metis "su9"
 sim_excellence_review "su9"
 # No design-reviewer needed — no UI files edited
-out="$(sim_stop "su9")"
+out="$(sim_stop "su9" "$(structured_closeout "su9" "Updated the three non-UI source files for the requested change.")")"
 assert_empty "seq-U9: no design gate for non-UI edits" "${out}"
 assert_eq "seq-U9: ui_edit_count=0" "" "$(read_st "su9" "ui_edit_count")"
 teardown_test
@@ -1260,7 +1322,7 @@ assert_contains "seq-LC: mentions low confidence" "low confidence" "${out}"
 
 # Now run npm test (scores 70+ with output) — should satisfy
 sim_verify "slc" "npm test" "Tests: 10 passed, 0 failed"
-out2="$(sim_stop "slc")"
+out2="$(sim_stop "slc" "$(structured_closeout "slc" "Updated /src/app.ts and replaced the low-confidence verification with the project test suite.")")"
 assert_empty "seq-LC: real verification satisfies gate" "${out2}"
 teardown_test
 
@@ -1313,7 +1375,7 @@ sim_mcp_verify "smv5" "mcp__plugin_playwright_playwright__browser_snapshot" "DOM
 # With UI edit, confidence should be 45 (25 base + 20 UI bonus)
 assert_eq "mcp-v5: UI context boosts confidence" "45" "$(read_st "smv5" "last_verify_confidence")"
 sim_review "smv5" "Summary: The code looks good. No issues found."
-out="$(sim_stop "smv5")"
+out="$(sim_stop "smv5" "$(structured_closeout "smv5" "Updated /src/App.tsx for the requested UI change.")")"
 assert_empty "mcp-v5: full MCP cycle allows stop" "${out}"
 teardown_test
 
@@ -1397,7 +1459,7 @@ jq -nc --arg ts "$(date +%s)" \
   > "${state_dir}/session_state.json"
 
 # First stop on resumed session: dimension gate should grant grace
-out1="$(sim_stop "sbb")"
+out1="$(sim_stop "sbb" "$(structured_closeout "sbb" "Preserved the resumed-session state for the requested work.")")"
 assert_empty "seq-BB: resumed session first stop allowed" "${out1}"
 assert_eq "seq-BB: grace marked used" "1" "$(read_st "sbb" "dimension_resume_grace_used")"
 teardown_test

@@ -138,7 +138,7 @@ _run_stop_guard() {
   local env_args=("$@")
 
   local hook_json
-  hook_json="$(jq -nc --arg sid "${sid}" '{session_id:$sid}')"
+  hook_json="$(jq -nc --arg sid "${sid}" --arg msg $'**Changed.** Preserved the planned implementation state.\n\n**Verification.** Existing review and verification state remain current.\n\n**Next.** Done.' '{session_id:$sid,last_assistant_message:$msg}')"
 
   (
     cd "${_test_home}" || exit 1

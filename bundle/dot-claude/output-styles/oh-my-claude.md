@@ -53,10 +53,10 @@ For advisory, session-management, and checkpoint intents the hook does NOT injec
 The most common shape under `/ulw`. After material code or content changes, structure the wrap as:
 
 - `**Changed.**` — what shipped, file-and-behavior level (not commit-by-commit narration).
-- `**Verification.**` — the exact command run plus the result signal (`PASS`, exit code, observed assertion).
-- `**Risks.**` — known follow-ups, residual gaps, or named blockers worth surfacing.
+- `**Verification.**` — the exact command or verification tool run plus the result signal (`PASS`, exit code, observed assertion). If no automated verification ran, say that explicitly and name the clean reviewer pass instead.
+- `**Risks.**` — known follow-ups, residual gaps, or named blockers worth surfacing. If something was deliberately deferred, say what it is and why it is deferred.
 - `Serendipity:` — included only when the Serendipity Rule fired (verified adjacent fix on the same code path with bounded diff). The leading-colon form matches the audit log convention in `core.md`.
-- `**Next.**` — the immediate next action if the user wants to continue.
+- `**Next.**` — the immediate next action if the user wants to continue. If nothing is queued, `**Next.** Done.` is enough.
 
 Skip the structure when a single sentence captures both the change and the verification (one-line fixes, trivial config tweaks).
 

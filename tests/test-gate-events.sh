@@ -158,6 +158,30 @@ fi
 teardown_test
 
 # ---------------------------------------------------------------------
+# Test 3c: final-closure gate emits an event when the wrap is not audit-ready
+# ---------------------------------------------------------------------
+printf 'Test 3c: stop-guard final-closure gate emits an event\n'
+setup_test
+init_session "ge3c"
+sd="${TEST_HOME}/.claude/quality-pack/state/ge3c"
+jq -nc --arg ts "$(date +%s)" \
+  '{workflow_mode:"ultrawork",task_domain:"coding",task_intent:"execution",current_objective:"closure test",last_user_prompt_ts:$ts,last_edit_ts:$ts,last_code_edit_ts:$ts,last_verify_ts:$ts,last_verify_cmd:"npm test",last_verify_outcome:"passed",last_review_ts:$ts,review_had_findings:"false",subagent_dispatch_count:"1"}' \
+  > "${sd}/session_state.json"
+printf '/tmp/project/src/foo.ts\n' > "${sd}/edited_files.log"
+
+out="$(printf '%s' "$(jq -nc --arg s ge3c '{session_id:$s,last_assistant_message:"Here is the completed work."}')" \
+  | bash "${HOOK_DIR}/stop-guard.sh" 2>/dev/null || true)"
+assert_contains "final-closure gate blocks" '"decision":"block"' "${out}"
+assert_contains "final-closure gate names itself" "Final-closure gate" "${out}"
+
+events_file="$(events_file_for "ge3c")"
+last_event="$(tail -n 1 "${events_file}")"
+assert_contains "final-closure event has gate=final-closure" '"gate":"final-closure"' "${last_event}"
+assert_contains "final-closure event has event=block" '"event":"block"' "${last_event}"
+assert_contains "final-closure event records missing_verification" '"missing_verification":1' "${last_event}"
+teardown_test
+
+# ---------------------------------------------------------------------
 # Test 4: record-finding-list.sh status command emits a finding-status event
 # ---------------------------------------------------------------------
 printf 'Test 4: record-finding-list status command emits finding-status event\n'
