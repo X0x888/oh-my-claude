@@ -403,3 +403,44 @@ The three directives emit `gate=bias-defense` `event=directive_fired` rows for `
 Each domain gets a score equal to the number of keyword matches. The domain with the highest score wins. If all scores are zero, the domain defaults to `general`.
 
 **Mixed domain**: Triggered when coding has a nonzero score and a second domain scores at least 40% of the primary domain's score. This captures prompts like "research the API options and implement the best one" where both research and coding are significant.
+
+---
+
+## Paradigm choices and alternatives considered
+
+This section is the "why this shape, not another" companion to the "what" above. Read it before contemplating a paradigm shift — the alternatives were enumerated in v1.32.x via a `divergent-framer` pass (the post-v1.31.3 advisory item 10, deferred until items 1-9 stabilized) and the conclusion was **no shift**, with explicit redirect-if conditions named below.
+
+### The current paradigm (Framing 1 — chosen)
+
+**Prompt-injected directive substrate.** The harness is transparent middleware: `prompt-intent-router.sh` classifies the user's prompt and reshapes the model's context window with text directives (`EXEMPLIFYING SCOPE DETECTED`, `INTENT-BROADENING DIRECTIVE`, `DIVERGENT-FRAMING DIRECTIVE`, `EXHAUSTIVE AUTHORIZATION DETECTED`, etc.). `stop-guard.sh` enforces completion via Stop-hook gates with tiered caps (3 review/verification, 2 session-handoff and discovered-scope, 1 advisory and excellence). State is per-session JSON; cross-session aggregates are JSONL. Specialists are `.md` agent files with `disallowedTools` boundaries. Skills are thin `SKILL.md` wrappers.
+
+**Why it wins for the current scope.** The constraints — solo-dev cognitive overhead, substrate stability (bash + jq is preinstalled everywhere), Anthropic relationship (the harness rides published Claude Code hook surfaces, never forks), forward velocity (16 v1.32.x releases in one week of autonomous-loop sessions), adversarial robustness (recent 4-attacker security review closed via local-file primitives + `disallowedTools`) — all favor the status quo. The trade-off the paradigm makes is sophistication for installability; that trade is correct as long as the project stays solo-dev or single-team and Claude-Code-only.
+
+### Alternatives considered and rejected (for now)
+
+| Framing | Mental model | Why rejected for current scope |
+|---|---|---|
+| **MCP-first capability substrate** | Quality gates / classifiers / memory exposed as typed MCP tools the model calls explicitly. | Install friction (Node/Python server with auth + transport + lifecycle); Claude-Code-side gate semantics become "the model has to *choose* to call them" — exactly the loop the prompt-injection paradigm was built to remove. |
+| **Output-style + slash-command shell** | Native Claude Code config bundle only. No hooks, no state, no classifier. | Cannot enforce — only suggest. The 3-block stop cap, FINDINGS_JSON parsing, and per-session counters that drive measurable outcomes do not exist. The harness's differentiator is enforcement; this paradigm gives that up. |
+| **Telemetry-first, intervention-second** | Observability primary; directives derived from measured outcomes. | Telemetry surface is itself an attack target; feedback loop is statistically slow (n=many sessions per directive); without baseline-comparison framework, telemetry is bookkeeping cost without decision yield (see the v1.32.4 router cost audit Phase 2-4 deferrals — the canonical evidence). |
+| **Sub-agent orchestrator (graph-of-roles)** | Main thread navigates a state machine; every prompt routes through a planner→researcher→implementer→reviewer graph. | Latency / cost balloon (every node is a model call); breaks the user's "ULW = momentum" expectation on small tasks; per-session JSON paradigm doesn't survive (graph state needs a workflow engine). |
+
+### Redirect-if conditions
+
+The current paradigm is correct *for the current scope*; it is not correct *forever*. Revisit the rank when **either** of these holds:
+
+- **Distribution shift.** The harness ships to ≥10 external users. Install-friction cost is now amortized across users instead of paid by one solo dev; typed contracts (MCP) become non-negotiable for support overhead reasons.
+- **Surface shift.** The harness needs to run inside non-Claude-Code IDEs (Cursor, Windsurf, Zed). Cross-IDE portability is non-negotiable; MCP becomes the only credible substrate.
+
+When either trips, dispatch `divergent-framer` again with the updated constraints and re-rank. **Framing 2 (MCP-first) is the most likely successor.**
+
+### Within-paradigm improvement vectors (surfaced by the framer's "Makes hard" rows)
+
+These are not paradigm shifts but real costs of the current paradigm worth chipping at as polish work:
+
+- **Directive wording drift.** Behavior is text-coupled; tiny edits to directive text silently change outcomes. The router cost audit (Phase 1 shipped in v1.32.x) was the first instrumentation step; Phases 2-4 (token analysis, baseline comparison, firing-rate × cost cutoff) remain deferred. Worth resuming when classifier_telemetry data accrues enough to make the deltas statistically distinguishable.
+- **Conf-flag interactions.** The bias-defense flags can fight each other across long sessions (the test-isolation conf-leak case is the canonical symptom). A composability matrix in `docs/customization.md` would be the cheap win.
+- **FINDINGS_JSON brittleness across model versions.** Currently regression-netted by `tests/test-findings-json.sh` against the contract shape. Worth re-running the regression set against new Claude model releases (Sonnet/Opus/Haiku rev bumps) before assuming the JSON shape will hold.
+- **Classifier accuracy without formal eval.** `tools/classifier-fixtures/regression.jsonl` exists; a precision/recall surface against a labeled corpus would let directive tuning be evidence-driven rather than vibes-driven.
+
+These are recorded here (not as open issues) because they're polish work for an already-stable paradigm, not blockers for a shift to a different one.
