@@ -1156,9 +1156,29 @@ export OMC_OUTPUT_STYLE_PREF
 # post-merge read always returns the bundle. Capturing here is the only
 # point at which the user's pre-install value is visible.
 PRE_MERGE_STATUSLINE_CMD=""
-if [[ -f "${CLAUDE_HOME}/settings.json" ]] && command -v jq >/dev/null 2>&1; then
-  PRE_MERGE_STATUSLINE_CMD="$(jq -r '.statusLine.command // empty' \
-    "${CLAUDE_HOME}/settings.json" 2>/dev/null || true)"
+# Tool-detection ladder mirrors the merger below (python3 first, jq
+# fallback). Pre-fix this only checked jq, silently skipping the warn
+# on python3-only hosts even though the merger ran successfully via
+# python3 — the recovery-boundary signal was missed for users on
+# minimal containers without jq.
+if [[ -f "${CLAUDE_HOME}/settings.json" ]]; then
+  if command -v python3 >/dev/null 2>&1; then
+    PRE_MERGE_STATUSLINE_CMD="$(python3 -c '
+import json, sys
+try:
+  with open(sys.argv[1]) as f:
+    data = json.load(f)
+  sl = data.get("statusLine") or {}
+  if isinstance(sl, dict):
+    cmd = sl.get("command") or ""
+    sys.stdout.write(cmd if isinstance(cmd, str) else "")
+except Exception:
+  pass
+' "${CLAUDE_HOME}/settings.json" 2>/dev/null || true)"
+  elif command -v jq >/dev/null 2>&1; then
+    PRE_MERGE_STATUSLINE_CMD="$(jq -r '.statusLine.command // empty' \
+      "${CLAUDE_HOME}/settings.json" 2>/dev/null || true)"
+  fi
 fi
 
 if command -v python3 >/dev/null 2>&1; then
@@ -1280,7 +1300,7 @@ warn_foreign_hooks() {
 # (`~/.claude/statusline.py`) — equality check is cheaper than the
 # foreign-hook regex.
 warn_foreign_statusline() {
-  # shellcheck disable=SC2088 # comparing against literal string value, not using as path
+  # shellcheck disable=SC2088 # comparing unexpanded `~` literal — bundled patch ships the unexpanded form, Claude Code expands at exec time
   if [[ -n "${PRE_MERGE_STATUSLINE_CMD}" \
      && "${PRE_MERGE_STATUSLINE_CMD}" != "~/.claude/statusline.py" ]]; then
     printf '\n'

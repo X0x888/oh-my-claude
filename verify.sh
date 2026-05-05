@@ -535,7 +535,7 @@ fi
 if [[ -f "${CLAUDE_HOME}/settings.json" ]] && command -v jq >/dev/null 2>&1; then
   status_cmd="$(jq -r '.statusLine.command // empty' \
     "${CLAUDE_HOME}/settings.json" 2>/dev/null || true)"
-  # shellcheck disable=SC2088 # comparing against literal string value, not using as path
+  # shellcheck disable=SC2088 # comparing unexpanded `~` literal — bundled patch ships the unexpanded form, Claude Code expands at exec time
   if [[ -n "${status_cmd}" && "${status_cmd}" != "~/.claude/statusline.py" ]]; then
     foreign_report ".statusLine.command differs from bundled (got: ${status_cmd}; expected: ~/.claude/statusline.py)"
     if [[ "${STRICT_MODE}" != "true" ]]; then

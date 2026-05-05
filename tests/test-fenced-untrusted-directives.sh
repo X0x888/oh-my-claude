@@ -403,7 +403,12 @@ if [[ -f "${snapshot_file}" ]]; then
     pass=$((pass + 1))
   fi
 else
-  printf '  SKIP: Test 6 — pre-compact-snapshot did not produce a snapshot file\n'
+  # Production-code-realistic check: pre-compact-snapshot.sh MUST
+  # produce a snapshot for this test to be meaningful. A future
+  # refactor that breaks snapshot emission would otherwise pass
+  # silently here.
+  printf '  FAIL: Test 6 — pre-compact-snapshot did not produce a snapshot file at %s\n' "${snapshot_file}" >&2
+  fail=$((fail + 1))
 fi
 
 # ---------------------------------------------------------------------------

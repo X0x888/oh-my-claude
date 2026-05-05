@@ -418,6 +418,18 @@ verify_recovered_rc="$(printf '%s' "${verify_recovered_out}" | grep -o '__EXIT__
 assert_eq "verify.sh exits 0 after install.sh restores .statusLine" \
   "0" "${verify_recovered_rc}"
 
+# Note: the quality-reviewer flagged "warning silently skipped when
+# jq absent" as MEDIUM, but install.sh:898 hard-requires jq before
+# any other code path (the runtime hooks need jq) — so a "no-jq"
+# install configuration is actually unreachable. The python3
+# fallback added at install.sh:1164 is still defense-in-depth
+# (resilience if the user's jq is broken / version-skewed; alignment
+# with the merger's tool-preference order python3>jq), but there's
+# no directly-testable distinct trigger because install.sh exits
+# before reaching the capture if jq is genuinely missing. Test 5
+# above covers the warning-emission path under the real install
+# config (both tools available).
+
 printf '\n'
 
 # ===========================================================================
