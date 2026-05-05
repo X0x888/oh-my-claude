@@ -226,6 +226,9 @@ jobs:
       - name: Run sterile-env helper regression tests (v1.32.3)
         run: bash tests/test-sterile-env.sh
 
+      - name: Run bootstrap-gate-events tests (v1.32.5 reviewer-driven fixes)
+        run: bash tests/test-bootstrap-gate-events.sh
+
       - name: Run sterile-env CI-parity check (v1.32.2 R3 promoted to strict)
         run: bash tests/run-sterile.sh
 

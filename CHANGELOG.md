@@ -4,6 +4,41 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.32.5] - 2026-05-05
+
+Reviewer-driven follow-up to v1.32.4 — second dogfood of the new release-reviewer agent. Reviewer ran on the v1.32.4 diff and surfaced 4 real gaps in the bootstrap tool, all meeting Serendipity Rule criteria. All 4 ship inline.
+
+### Fixed
+
+- **`tools/bootstrap-gate-events-rollup.sh` was NOT idempotent despite the docstring claim.** Re-running double-counted: 576 rows after first run, 1153 rows after second run (verified live before fix). The natural sweep is idempotent because it `rm -rf`s the source dir after appending; the bootstrap leaves sources in place. **Fix**: per-source `.bootstrap-aggregated` stamp file. Subsequent runs skip stamped sessions (`--force` overrides). Verified 575 rows after first run, 575 after second run (idempotent now).
+
+- **Bootstrap appended without the cross-session log lock.** Natural sweep wraps in `with_cross_session_log_lock "${_gate_events_file}" _sweep_append_gate_events ...` (common.sh:1213); bootstrap appended bare. Concurrent watchdog tick or active hook write to the dst ledger could tear rows at PIPE_BUF on Linux. **Fix**: source `common.sh` and call `with_cross_session_log_lock` per append; fall back to bare append with a stderr warning when `common.sh` isn't reachable.
+
+- **Fixture-dir contamination.** Pre-1.32.5 the bootstrap walked every per-session `gate_events.jsonl`, including non-UUID directories (`p4-2398`, `ip-2`) created by prometheus-suggest perf benchmarks and classifier replays that didn't isolate `STATE_ROOT`. Their fixture rows leaked into the rollup. **Fix**: regex-filter source dirs to UUID shape (`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`). 2 fixture sessions now correctly skipped on this machine; same fix prevents the natural sweep from picking them up at TTL.
+
+- **Idempotency claim corrected in docstring.** Pre-1.32.5 the header said "Idempotent — safe to re-run". Now: "**One-shot, NOT idempotent** — re-running double-counts; per-source stamp prevents this on subsequent runs". Conflated the natural sweep's idempotency mechanism (delete-after-append) with the bootstrap's lack of one.
+
+### Acknowledged
+
+- **`project_key` is `null` for all bootstrap-aggregated rows** because no code in `bundle/` writes `.project_key` into `session_state.json`. v1.31.0 Wave 4 (data-lens F-1) wired the read path in `_sweep_append_gate_events` but never the corresponding write. Multi-project `/ulw-report` slicing currently can't work for ANY data — natural-swept or bootstrap-aggregated. Tracked as v1.32.x or v1.33 follow-up; not in scope for v1.32.5.
+
+### Added
+
+- **`tests/test-bootstrap-gate-events.sh`** (CI-pinned, 16 assertions). Regression net for the v1.32.5 fixes:
+    - T1: dry-run reports counts without writing to dst
+    - T2: real run aggregates UUID-shape session, skips fixture + watchdog, creates stamp
+    - T3: rerun is idempotent (stamped sessions skipped, dst row count unchanged)
+    - T4: `--force` overrides stamps and re-aggregates
+    - T5: rows tagged with `session_id` matching source dir name
+
+### Verification
+
+- `bash tests/test-bootstrap-gate-events.sh` — 16/16
+- Re-bootstrap from clean state: 48 sessions / 575 rows; rerun: 0 sessions, 575 rows unchanged (idempotent)
+- shellcheck clean on updated tool
+- 65/65 CI-pinned tests pass locally (added test-bootstrap-gate-events)
+- `bash tests/test-coordination-rules.sh` 81/81 (test-pin discipline holds)
+
 ## [1.32.4] - 2026-05-05
 
 Item 3 unblocking — cross-session gate-event rollup ledger bootstrap. The user's v1.32.0 advisory Item 3 ("rank gates by fire-impact") could not be answered because `~/.claude/quality-pack/gate_events.jsonl` was empty: the natural sweep aggregates per-session telemetry into the user-scope rollup at TTL (default 7 days), but v1.14.0's gate-event telemetry was new enough that no aged-out session had populated the rollup yet. 51 per-session ledgers held 594 rows of unaggregated data.
