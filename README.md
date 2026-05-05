@@ -4,7 +4,7 @@
 
 *Quality gates for Claude Code that actually block — until tests pass, review is done, and the work is verified.*
 
-[![Version](https://img.shields.io/badge/Version-1.32.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-1.32.1-blue.svg)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Shell](https://img.shields.io/badge/Shell-bash-green.svg)]()
 [![Dependencies](https://img.shields.io/badge/Dependencies-jq%20%2B%20rsync-brightgreen.svg)]()
@@ -272,7 +272,7 @@ How oh-my-claude differs from vanilla Claude Code:
 oh-my-claude/
 ├── install.sh / uninstall.sh / verify.sh   # Install, remove, and verify
 ├── bundle/dot-claude/                       # Installs to ~/.claude/
-│   ├── agents/          (33 agents)         # Specialist agent definitions
+│   ├── agents/          (34 agents)         # Specialist agent definitions
 │   ├── skills/          (24 skills)         # Skill definitions + autowork hooks
 │   ├── quality-pack/                        # Lifecycle hooks + memory files
 │   ├── output-styles/                       # Two bundled styles: oh-my-claude (default) + executive-brief (see docs/customization.md#output-style)
@@ -400,7 +400,7 @@ bash tests/test-show-report.sh              # /ulw-report skill backend (cross-s
 bash tests/test-install-remote.sh           # curl-pipe-bash bootstrapper (install-remote.sh)
 bash tests/test-phase8-integration.sh       # Council Phase 8 wave-cap wiring (record-finding-list ↔ stop-guard)
 bash tests/test-verification-lib.sh         # Extracted lib/verification.sh module (symbol presence + smoke)
-bash tests/test-agent-verdict-contract.sh   # Universal VERDICT contract regression net (all 33 agents)
+bash tests/test-agent-verdict-contract.sh   # Universal VERDICT contract regression net (all 34 agents)
 bash tests/test-bias-defense-classifier.sh  # Bias-defense prompt-shape classifiers + plan-complexity extraction
 bash tests/test-bias-defense-directives.sh  # prometheus-suggest + intent-verify directive injection
 bash tests/test-metis-on-plan-gate.sh       # Metis-on-plan stop-guard gate (Check 6, opt-in)

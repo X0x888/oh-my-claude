@@ -207,7 +207,7 @@ Cross-session data is stored alongside the state directory:
 
 #### Reviewer VERDICT contract
 
-Reviewer-style agents (`quality-reviewer`, `editor-critic`, `excellence-reviewer`, `metis`, `briefing-analyst`, `design-reviewer`, `abstraction-critic`) must end their output with exactly one line:
+Reviewer-style agents (`quality-reviewer`, `editor-critic`, `excellence-reviewer`, `release-reviewer`, `metis`, `briefing-analyst`, `design-reviewer`, `abstraction-critic`) must end their output with exactly one line:
 
 - `VERDICT: CLEAN` or `VERDICT: SHIP` — no actionable findings, dimension ticks
 - `VERDICT: FINDINGS (N)` or `VERDICT: BLOCK (N)` — N blocking findings, dimension does NOT tick
@@ -229,13 +229,13 @@ In v1.14.0 the VERDICT contract was extended to all 30 agents so the final-line 
 | Writer | `draft-writer`, `writing-architect` | `DELIVERED` / `NEEDS_INPUT` / `NEEDS_RESEARCH` | Draft/structure is ready, awaiting decision, or needs factual research. | None — informational. |
 | Implementer | `backend-api-developer`, `devops-infrastructure-engineer`, `frontend-developer`, `fullstack-feature-builder`, `ios-core-engineer`, `ios-deployment-specialist`, `ios-ecosystem-integrator`, `ios-ui-developer`, `test-automation-engineer` | `SHIP` / `INCOMPLETE` / `BLOCKED` | Implementation is complete and verified, partial, or blocked on a hard prerequisite. | None — informational. |
 
-Total: 7 reviewer-class + 7 lens + 2 planner + 2 researcher + 1 debugger + 1 framer + 2 operations + 2 writer + 9 implementer = **33 agents** (as of v1.31.0; framer added). The contract-presence regression net is `tests/test-agent-verdict-contract.sh` — when adding a new agent or role, extend that test's `role_of_agent()` and `allowed_tokens_of_role()` cases in lockstep with this table.
+Total: 8 reviewer-class + 7 lens + 2 planner + 2 researcher + 1 debugger + 1 framer + 2 operations + 2 writer + 9 implementer = **34 agents** (as of v1.32.x; release-reviewer added). The contract-presence regression net is `tests/test-agent-verdict-contract.sh` — when adding a new agent or role, extend that test's `role_of_agent()` and `allowed_tokens_of_role()` cases in lockstep with this table.
 
 When wiring a new VERDICT vocabulary into a hook consumer, extend the parser regex in `record-reviewer.sh` (or add a new parser as `record-plan.sh` did for `plan_verdict`). Until then, the informational rows above emit the verdict for human readability and forward compatibility — the gate's behavior is unchanged for those agents.
 
 #### Structured FINDINGS_JSON contract (v1.28.0)
 
-Seven finding-emitting agents — `quality-reviewer`, `excellence-reviewer`, `oracle`, `abstraction-critic`, `metis`, `design-reviewer`, `briefing-analyst` — emit a single-line `FINDINGS_JSON: [...]` block immediately before the `VERDICT:` line when findings exist. Each finding object: `{severity, category, file, line, claim, evidence, recommended_fix}`. Severity ∈ `{high, medium, low}`. Category ∈ `{bug, missing_test, completeness, security, performance, docs, integration, design, other}`. Empty array `[]` is valid for clean reviews.
+Eight finding-emitting agents — `quality-reviewer`, `excellence-reviewer`, `release-reviewer`, `oracle`, `abstraction-critic`, `metis`, `design-reviewer`, `briefing-analyst` — emit a single-line `FINDINGS_JSON: [...]` block immediately before the `VERDICT:` line when findings exist. Each finding object: `{severity, category, file, line, claim, evidence, recommended_fix}`. Severity ∈ `{high, medium, low}`. Category ∈ `{bug, missing_test, completeness, security, performance, docs, integration, design, other}`. Empty array `[]` is valid for clean reviews.
 
 The `extract_findings_json` helper in `common.sh` parses the line preferentially over the legacy prose heuristic; `normalize_finding_object` coerces severity aliases (`critical`/`p0`/`p1`/`p2`/`blocker` → `high`/`medium`/`low`) and unknown categories → `other`. The discovered-scope pipeline (`extract_discovered_findings`) takes the JSON path when present and emits rows with a `.structured` field carrying the full payload, falling through to the legacy heuristic only when the line is missing/empty/malformed (fail-open). Single-line array form is required for robust grep-based extraction; pretty-printed JSON is intentionally NOT supported.
 
@@ -250,6 +250,7 @@ The prescribed reviewer sequence (Check 4 of stop-guard) enforces distinct dimen
 | `quality-reviewer` | `bug_hunt`, `code_quality` |
 | `metis` | `stress_test` |
 | `excellence-reviewer` | `completeness` (plus resets legacy `last_excellence_review_ts`) |
+| `release-reviewer` | None (manual-dispatch only at release-prep time as of v1.32.x; cumulative-diff cross-wave reviewer, not a per-wave verifier) |
 | `editor-critic` | `prose` (only dimension that responds to doc edits) |
 | `briefing-analyst` | `traceability` (only required at `traceability_file_count`+ files, default 6) |
 | `design-reviewer` | `design_quality` (only required when UI files edited: `.tsx`, `.jsx`, `.vue`, `.svelte`, `.astro`, `.css`, `.scss`, `.sass`, `.less`, `.styl`, `.html`, `.htm`) |

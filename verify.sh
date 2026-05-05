@@ -131,6 +131,7 @@ required_paths=(
   "${CLAUDE_HOME}/skills/autowork/scripts/show-report.sh"
   "${CLAUDE_HOME}/agents/quality-planner.md"
   "${CLAUDE_HOME}/agents/quality-reviewer.md"
+  "${CLAUDE_HOME}/agents/release-reviewer.md"
   "${CLAUDE_HOME}/agents/writing-architect.md"
   "${CLAUDE_HOME}/agents/prometheus.md"
   "${CLAUDE_HOME}/agents/abstraction-critic.md"

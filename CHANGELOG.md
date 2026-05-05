@@ -4,6 +4,41 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.32.1] - 2026-05-05
+
+R2 follow-up from v1.32.0 — forked release-reviewer agent with no top-N cap, sized for cumulative-diff cross-wave reviews. Direct response to the v1.32.0 release-prep observation that the in-session `quality-reviewer` truncated mid-investigation 3× when given cumulative scope (security-lens, atlas, quality-reviewer-cumulative). The new agent is the first concrete step in the v1.32.x deferred-items list.
+
+**Bonus fix (Serendipity-shaped, surfaced by full-suite verification):** `install.sh` "What's new" cap raised 10 → 12. Adding v1.32.0 + v1.32.1 patches to the CHANGELOG pushed a real 1.27.0 → head upgrade past the 10-cap, dropping v1.28.0 from the install summary — the same defect class as v1.31.1's cap-was-6 bug. T8's real-world-span coverage caught the regression in the full-suite pre-tag run; T6 synthetic fixture extended from 12 → 14 entries to keep exercising the cap. Same code path as the v1.32.0 R6/R8 work; bounded fix.
+
+### Added
+
+- **`bundle/dot-claude/agents/release-reviewer.md`** — new reviewer-class agent for release-prep cumulative-diff review. Differences from `quality-reviewer` (sized for in-session per-wave scope):
+    - **No top-N finding cap.** The in-session reviewer caps at "top 8 highest-confidence issues"; release-reviewer captures every finding worth tracking.
+    - **3000-4000 word budget** (vs 1000 word cap on the in-session reviewer).
+    - **`maxTurns: 60`** (vs 30) — enough headroom for cumulative-scope investigation across 30+ files.
+    - **Surface-sliced dispatch instructions.** When the cumulative diff exceeds 30 files, the agent reviews surface-by-surface (`lib/`, `autowork/scripts/`, `quality-pack/scripts/`, `agents/`, `skills/`, `tests/`, `install*.sh`, `config/`, `.github/`, `docs/`, `tools/`) instead of one mega-pass. Per-surface findings + cross-surface interactions + Coordination Rules audit + Completeness-vs-CHANGELOG.
+    - **Per-wave reviewer is NOT a substitute.** The agent explicitly notes that each wave should still get its own per-wave `quality-reviewer` during implementation; release-reviewer catches the cross-wave interaction defects per-wave is structurally blind to.
+    - **Truncation discipline.** If running low on context, the agent is instructed to mark untouched surfaces with `## Surface X — TRUNCATED, NEEDS RE-DISPATCH` rather than producing a partial review without flagging the gap.
+
+- **CONTRIBUTING.md Pre-flight Step 4** updated to dispatch `release-reviewer` instead of in-session `quality-reviewer` for cumulative scope. Pre-1.32.1 the step said "Forking a `release-reviewer.md` agent ... is tracked as a v1.32.x follow-up." That follow-up is this release.
+
+- **Lockstep updates** (per `CONTRIBUTING.md` "Reviewer-agent additions" 6-step checklist):
+    - `config/settings.patch.json` — new SubagentStop matcher block routing `release-reviewer` → `record-reviewer.sh release` (matches the `excellence`/`prose`/`stress_test` pattern).
+    - `tests/test-agent-verdict-contract.sh` — `role_of_agent()` extended with `release-reviewer`; agent count assertion bumped 33 → 34.
+    - `tests/test-settings-merge.sh` — SubagentStop count assertions bumped 11 → 12 (fresh/idempotent/multi-hook/multi-base/null-hooks/null-event paths) and 12 → 13 (null-hook/null-entry paths where user-fixture entries don't consolidate with patch). New release-reviewer matcher-presence assertion + record-reviewer.sh release-arg assertion.
+    - `verify.sh` — `required_paths` extended with the new agent file.
+    - `uninstall.sh` — `AGENT_FILES` extended with the new agent file.
+    - `AGENTS.md` — VERDICT contract list extended; total-agent count 33 → 34; finding-emitter count 7 → 8; dimension mapping table includes release-reviewer (None — manual-dispatch at release-prep time, not a per-wave verifier).
+    - `CLAUDE.md` and `README.md` — agent counts 33 → 34.
+
+### Verification
+
+- `bash tests/test-agent-verdict-contract.sh` 444/444 (was 431; +13 for new agent and contract assertions)
+- `bash tests/test-settings-merge.sh` 200/200 (was 180; +20 for new count assertions across implementations)
+- `bash tests/test-coordination-rules.sh` 81/81 unchanged
+- `bash tests/test-e2e-hook-sequence.sh` 355/355 unchanged
+- `shellcheck`, JSON validation: clean
+
 ## [1.32.0] - 2026-05-05
 
 This release responds to user advisory items 2-9 from the post-v1.31.3 evaluation: empirical post-mortem of the 4-hotfix cascade (Item 1 shipped 2026-05-04 in earlier commits as Phase 1 instrumentation), telemetry review (Item 3), defect-class deep dive (Item 4), chaos audit (Item 5), state fuzz (Item 7), docs drift audit (Item 8), security audit (Item 9), installer audit (Item 6 partial). Item 10 (paradigm divergence) deferred per the user's own ordering.

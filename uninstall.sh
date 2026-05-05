@@ -105,6 +105,7 @@ AGENT_FILES=(
   "${CLAUDE_HOME}/agents/quality-planner.md"
   "${CLAUDE_HOME}/agents/quality-researcher.md"
   "${CLAUDE_HOME}/agents/quality-reviewer.md"
+  "${CLAUDE_HOME}/agents/release-reviewer.md"
   "${CLAUDE_HOME}/agents/security-lens.md"
   "${CLAUDE_HOME}/agents/sre-lens.md"
   "${CLAUDE_HOME}/agents/test-automation-engineer.md"
