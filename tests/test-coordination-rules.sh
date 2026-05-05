@@ -350,8 +350,17 @@ else
       "missing headings for: $(printf '%s' "${missing_in_changelog}" | paste -sd ', ' -)"
   fi
 
+  # In-flight release allowance: tools/release.sh promotes CHANGELOG (step 9)
+  # before creating the tag (step 11) and re-runs CHANGELOG-coupled tests in
+  # between. A single extra heading that matches the current VERSION file is
+  # the expected transient state — accept it. Anything beyond that (or a
+  # mismatch) still fails. The post-flight CI watch on the tagged commit
+  # closes the loop after the tag exists.
+  extra_count="$(printf '%s\n' "${extra_in_changelog}" | grep -c . || true)"
   if [[ -z "${extra_in_changelog}" ]]; then
     assert_pass "C5: changelog headings have matching semver tags"
+  elif [[ "${extra_count}" -eq 1 && "${extra_in_changelog}" == "${version_tag}" ]]; then
+    assert_pass "C5: changelog headings have matching semver tags (in-flight: ${version_tag} pending tag)"
   else
     assert_fail "C5: CHANGELOG.md headings missing git tags" \
       "missing tags for: $(printf '%s' "${extra_in_changelog}" | paste -sd ', ' -)"

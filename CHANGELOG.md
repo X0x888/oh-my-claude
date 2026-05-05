@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.33.0] - 2026-05-05
+
 ### Added
 
 - **`docs/ulw-version-assessment.md`** — comprehensive ULW version-line audit from `v1.0.0` through `v1.32.15`, with priority weighting on quality/automation first and speed/token usage second. Includes per-era comparison, best-version verdicts, failure analysis, and design-debt recommendations.
