@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.32.2] - 2026-05-05
+
+R9 closure — sterile-env CI-parity runner promoted from advisory → mandatory. The v1.32.0 sterile sweep had 7 env-leak susceptibilities documented as deferred follow-up; v1.32.2 closed all 7 in one bounded helper-only fix and wired the runner into CI as a pinned step.
+
+### Fixed
+
+- **`tests/lib/sterile-env.sh` STATE_ROOT/SESSION_ID collision (P1 root cause).** Pre-1.32.2 `build_sterile_env()` pre-set `STATE_ROOT=${HOME}/state` and `SESSION_ID=`. Both broke 7 tests (test-e2e-hook-sequence, test-phase8-integration, test-gate-events, test-stop-failure-handler, test-session-start-resume-hint, test-claim-resume-request, test-resume-watchdog) whose handlers compute state paths from HOME and ended up writing to a path with no `.claude/quality-pack/state/` parent. The harness's `common.sh` derives `STATE_ROOT` from `${HOME}/.claude/quality-pack/state` when unset; pre-setting forced an alternate path the test-harness side didn't expect. Fixed: removed both pre-sets so the harness's natural HOME-derivation works. Tests that need an explicit `TEST_STATE_ROOT` already set it themselves; nothing relies on a pre-set sterile `STATE_ROOT`.
+
+- **`tests/lib/sterile-env.sh` PATH missing `/sbin`.** `tests/test-cross-session-rotation.sh` uses `md5 -q || md5sum` (BSD/macOS or Linux). On macOS dev under sterile PATH, `md5` lives at `/sbin/md5` which wasn't in the sterile PATH (`/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`); on Ubuntu CI `md5sum` at `/usr/bin/md5sum` works. Fixed: added `/sbin:/usr/sbin` to the sterile PATH so the macOS branch resolves correctly.
+
+### Changed
+
+- **`tests/run-sterile.sh` strict-by-default (R9 closure).** Pre-1.32.2 the runner was advisory by default (exit 0 with a report); v1.32.2 flips to strict by default (exit non-zero on any sterile-only failure). New `--advisory` flag and `OMC_STERILE_ADVISORY=1` env var preserve the report-only behavior for explicit env-leak debugging. Backward-compat: `OMC_STERILE_STRICT=1` still works (now redundant since strict is default).
+
+- **`.github/workflows/validate.yml`** wired `bash tests/run-sterile.sh` as a CI step. Any future env-coupling regression now fails CI on push instead of being caught only at pre-tag local-run discipline. CI pin count: 63 → 64 (the sterile runner itself, alongside the 63 individual test files it wraps).
+
+- **`CONTRIBUTING.md` Pre-flight Step 3** updated: was "MANDATORY (deferred to v1.32.x audit)", is now "MANDATORY since v1.32.2 R9 closure". Documents the `--advisory` opt-out for env-leak debugging.
+
+### Verification
+
+- `bash tests/run-sterile.sh` (strict default): 63/63 sterile pass, 0 sterile-only failures, 0 pre-existing failures, exit 0
+- All 63 CI-pinned bash tests pass locally + 128 Python statusline tests
+- shellcheck clean, JSON valid
+
 ## [1.32.1] - 2026-05-05
 
 R2 follow-up from v1.32.0 — forked release-reviewer agent with no top-N cap, sized for cumulative-diff cross-wave reviews. Direct response to the v1.32.0 release-prep observation that the in-session `quality-reviewer` truncated mid-investigation 3× when given cumulative scope (security-lens, atlas, quality-reviewer-cumulative). The new agent is the first concrete step in the v1.32.x deferred-items list.

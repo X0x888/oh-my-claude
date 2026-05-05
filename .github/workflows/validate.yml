@@ -223,5 +223,8 @@ jobs:
       - name: Run chaos-concurrency tests (v1.32.0 Wave C Item 5)
         run: bash tests/test-chaos-concurrency.sh
 
+      - name: Run sterile-env CI-parity check (v1.32.2 R3 promoted to strict)
+        run: bash tests/run-sterile.sh
+
       - name: Run statusline tests
         run: python3 -m unittest tests.test_statusline -v

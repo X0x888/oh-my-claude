@@ -7,18 +7,25 @@
 # Catches the v1.31.0-class defect (T7 sterile-CI miss) before tag
 # rather than after.
 #
-# Mode: ADVISORY by default — exits 0 even when tests fail under
-# sterile env, prints a report. Promote to MANDATORY (exit non-zero
-# on any failure) by passing --strict, or via env OMC_STERILE_STRICT=1.
+# Mode: STRICT by default (v1.32.2 promotion) — exits non-zero on any
+# sterile-only failure. Override to ADVISORY by passing --advisory or
+# setting OMC_STERILE_ADVISORY=1.
 #
-# Two-phase rollout per metis stress-test (R3 unsafe-rollout finding):
-# phase 1 = ADVISORY mode for one release cycle, observe what falls
-# out; phase 2 = MANDATORY pre-flight via CONTRIBUTING.md Step 2b.
+# Phase 1 (v1.32.0) — ADVISORY mode for one release cycle, observed
+#   7 env-leak susceptibilities (test-e2e-hook-sequence,
+#   test-phase8-integration, test-gate-events, test-stop-failure-handler,
+#   test-session-start-resume-hint, test-claim-resume-request,
+#   test-resume-watchdog).
+# Phase 2 (v1.32.2) — closed all 7 by removing pre-set STATE_ROOT and
+#   SESSION_ID from build_sterile_env (they collided with the harness's
+#   ${HOME}/.claude/quality-pack/state derivation) and adding /sbin
+#   to the sterile PATH (macOS md5 lives at /sbin/md5). Promoted to
+#   STRICT default for CONTRIBUTING.md Step 3.
 #
 # Usage:
-#   bash tests/run-sterile.sh                    # advisory, print report
-#   bash tests/run-sterile.sh --strict           # fail on any sterile-only failure
-#   OMC_STERILE_STRICT=1 bash tests/run-sterile.sh
+#   bash tests/run-sterile.sh                    # strict, exit non-zero on any sterile-only failure
+#   bash tests/run-sterile.sh --advisory         # report-only
+#   OMC_STERILE_ADVISORY=1 bash tests/run-sterile.sh
 #   bash tests/run-sterile.sh --only test-show-status.sh    # single test
 #
 # Output: one line per test
@@ -35,17 +42,22 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 . "${SCRIPT_DIR}/lib/sterile-env.sh"
 
 # Args
-mode="advisory"
+mode="strict"  # v1.32.2: strict by default
 only=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --strict) mode="strict"; shift ;;
+    --advisory) mode="advisory"; shift ;;
     --only) only="$2"; shift 2 ;;
     -h|--help) sed -n '/^#/p' "$0" | sed 's/^#//' ; exit 0 ;;
     *) printf 'Unknown arg: %s\n' "$1" >&2; exit 2 ;;
   esac
 done
+# Backward-compat: pre-1.32.2 used OMC_STERILE_STRICT=1 to turn on
+# strict mode. Now strict is default; OMC_STERILE_ADVISORY=1 is the
+# new opt-out. Honor both for compatibility.
 [[ "${OMC_STERILE_STRICT:-0}" == "1" ]] && mode="strict"
+[[ "${OMC_STERILE_ADVISORY:-0}" == "1" ]] && mode="advisory"
 
 # Extract CI-pinned test list LIVE from validate.yml so this can't
 # drift. Mirrors the CONTRIBUTING.md Step 2 grep extraction.

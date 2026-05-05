@@ -34,34 +34,54 @@
 # Sets fresh: HOME=$(mktemp -d), TMPDIR=$HOME/tmp, STATE_ROOT=$HOME/state,
 #             PATH=<jq-dir>:<system-paths>
 build_sterile_env() {
-  local sterile_home sterile_tmp sterile_state jq_path jq_dir path
+  local sterile_home sterile_tmp jq_path jq_dir path
 
   sterile_home="$(mktemp -d)" || return 1
   sterile_tmp="${sterile_home}/tmp"
-  sterile_state="${sterile_home}/state"
-  mkdir -p "${sterile_tmp}" "${sterile_state}" 2>/dev/null
+  mkdir -p "${sterile_tmp}" 2>/dev/null
 
   # PATH discovery: find jq from the live PATH, prefix its directory.
   # Falls back to system paths only when jq isn't in PATH at all
   # (CI runner without jq installed — different problem, fail fast).
+  # The /opt/homebrew/bin entry handles the macOS-dev case where
+  # build_sterile_env runs from a shell with /opt/homebrew/bin in PATH.
   jq_path="$(command -v jq 2>/dev/null || true)"
   if [[ -n "${jq_path}" ]]; then
     jq_dir="$(dirname "${jq_path}")"
-    path="${jq_dir}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+    # /sbin and /usr/sbin needed for macOS `md5` (at /sbin/md5).
+    # Linux md5sum is in /usr/bin which is already covered.
+    if [[ "${jq_dir}" == "/opt/homebrew/bin" ]]; then
+      path="${jq_dir}:/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
+    else
+      path="${jq_dir}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
+    fi
   else
     # No jq found — sterile run will fail loudly (correct: most
     # tests need jq). Still return a non-broken PATH so the failure
     # is the test's, not env-init's.
-    path="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+    path="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
   fi
 
   # Preserve a minimal positive allowlist. TERM keeps colored output
   # readable; LANG/LC_ALL pin the locale (avoids the wc -m
   # byte-vs-char divergence that motivated lib/test-env-isolate.sh).
+  #
+  # v1.32.2 (R9 cleanup): do NOT pre-set STATE_ROOT or SESSION_ID.
+  # The harness's common.sh derives STATE_ROOT from
+  # `${HOME}/.claude/quality-pack/state` when unset; tests that need
+  # an explicit STATE_ROOT set it themselves via TEST_STATE_ROOT.
+  # Pre-setting STATE_ROOT to ${HOME}/state in pre-1.32.2 broke 7
+  # tests (test-e2e-hook-sequence, test-phase8-integration,
+  # test-gate-events, test-stop-failure-handler,
+  # test-session-start-resume-hint, test-claim-resume-request,
+  # test-resume-watchdog) whose handlers compute state paths from
+  # HOME and got steered to a path with no .claude/quality-pack/state
+  # parent. Same logic for SESSION_ID — the harness treats unset and
+  # empty differently in some paths, and `SESSION_ID=` with an empty
+  # value forced the empty-but-set branch when tests expected the
+  # unset branch.
   printf 'HOME=%s\n' "${sterile_home}"
   printf 'TMPDIR=%s\n' "${sterile_tmp}"
-  printf 'STATE_ROOT=%s\n' "${sterile_state}"
-  printf 'SESSION_ID=\n'
   printf 'PATH=%s\n' "${path}"
   printf 'TERM=%s\n' "${TERM:-xterm-256color}"
   printf 'LANG=%s\n' "${LANG:-en_US.UTF-8}"
