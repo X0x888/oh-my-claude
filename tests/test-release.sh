@@ -345,7 +345,12 @@ assert_eq "T17: dry-run exits 0" "0" "${rc}"
 assert_contains "T17: announces Step 6.5" "Step 6.5" "${out}"
 assert_contains "T17: dry-runs local-ci.sh" "[dry-run] bash tools/local-ci.sh" "${out}"
 assert_contains "T17: skips post-flight watch with ci-preflight wording" "ci-preflight already validated" "${out}"
-if printf '%s' "${out}" | grep -q "watching run\|Step 14: watch CI$"; then
+# v1.34.1 reviewer fix: `Step 14: watch CI$` end-anchor can never match
+# because `say` decorates output as `── Step 14: watch CI (dry-run) ───`,
+# making the negative-watch half a structural no-op. Use the dry-run
+# Step 14 wording (`watch CI (dry-run)`) and the live-watch wording
+# (`watching run`) directly — both are unambiguous and unanchored.
+if printf '%s' "${out}" | grep -q "watching run\|watch CI (dry-run)"; then
   printf '  FAIL: T17: --ci-preflight should skip the watch but watch fired\n' >&2
   fail=$((fail + 1))
 else
