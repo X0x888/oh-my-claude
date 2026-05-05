@@ -36,12 +36,24 @@
 build_sterile_env() {
   local sterile_home sterile_tmp jq_path jq_dir path
 
-  # HOME — leave at the default `mktemp -d` location (macOS:
-  # `/var/folders/.../tmp.XXX`; Linux: `/tmp/tmp.XXX`). This mirrors
-  # the GitHub Actions runner shape where HOME=/home/runner is
-  # outside any path-prefix denylist; we don't want sterile-env to
-  # be MORE hostile than CI on HOME-derived paths.
-  sterile_home="$(mktemp -d)" || return 1
+  # HOME — anchor under the OUTER ${HOME}/.cache so sterile-env stays
+  # outside any /tmp/-rooted path-prefix denylist on every host. The
+  # bare `mktemp -d` default (macOS: `/var/folders/.../tmp.XXX`;
+  # Linux: `/tmp/tmp.XXX`) was the wrong default on Linux — it
+  # landed sterile HOME under /tmp/ which is MORE hostile than real
+  # CI (where HOME=/home/runner) and contradicts the explicit
+  # "sterile is not supposed to be more hostile than CI" goal of
+  # T6 in test-sterile-env.sh.
+  #
+  # v1.34.0: anchor at ${HOME}/.cache/omc-sterile-home-XXXXXX so the
+  # parent is always under the user's HOME dir (which is NEVER under
+  # /tmp on macOS, Linux dev, or GitHub Actions runners — `/Users/x`,
+  # `/home/x`, or `/home/runner` respectively). This is the same
+  # ORIG_HOME-anchored pattern the v1.33.1/.2 hotfix used for the
+  # T24 pin-location escape.
+  local _sterile_parent="${HOME}/.cache"
+  mkdir -p "${_sterile_parent}" 2>/dev/null
+  sterile_home="$(mktemp -d "${_sterile_parent}/omc-sterile-home-XXXXXX")" || return 1
   # TMPDIR — force under `/tmp/` on every host so subsequent
   # `mktemp -d` calls inside tests mimic Linux CI's `/tmp/tmp.XXX`
   # shape regardless of macOS dev's `/var/folders/...` default.
