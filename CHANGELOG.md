@@ -4,6 +4,37 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.32.0] - 2026-05-05
+
+This release responds to user advisory items 2-9 from the post-v1.31.3 evaluation: empirical post-mortem of the 4-hotfix cascade (Item 1 shipped 2026-05-04 in earlier commits as Phase 1 instrumentation), telemetry review (Item 3), defect-class deep dive (Item 4), chaos audit (Item 5), state fuzz (Item 7), docs drift audit (Item 8), security audit (Item 9), installer audit (Item 6 partial). Item 10 (paradigm divergence) deferred per the user's own ordering.
+
+Four sequential waves (A through D) shipped in-session with quality gates per wave:
+
+- **Wave A** — Release post-mortem remediation (R1, R3, R6, R7, R8 + scaffolding for R2, R4 follow-ups). Detail below.
+- **Wave B** — Defect-taxonomy paradigm fix + missing_test regex narrowing.
+- **Wave C** — Chaos + state fuzz, **TWO P1 silent-state-corruption defenses closed** (wrong-root-type acceptance, empty-file acceptance).
+- **Wave D** — Docs drift audit + installer/security audit notes.
+
+**Headline wins:**
+- CI-pinned test set expanded **33 → 63** (`tests/test-state-io.sh` T18 F-3-followup regression net + 27 other previously-local-only tests now exercised on every push).
+- Two P1 silent-corruption defects in `_ensure_valid_state` closed (wrong-root-type + empty-file). Caught by the new `tests/test-state-fuzz.sh` (132 assertions across 11 malformation classes).
+- Defect taxonomy switched to surface+category two-tag schema. Session-start hints become directly actionable: `Watch for: install:integration ×24` instead of generic `missing_test ×151`.
+- New chaos suite (`tests/test-chaos-concurrency.sh`) covers N=50 parallel writers, lock-cap exhaustion, concurrent recovery, stale lockdir reclamation, and N=30 parallel `write_state_batch` (council Phase 8 worst-case).
+- `tests/run-sterile.sh` + `tests/lib/sterile-env.sh` advisory runner catches the v1.31.0-class T7 sterile-CI miss before tag (jq-aware PATH detection).
+- `tools/install-upgrade-sim.sh` integration-level check for the v1.31.1 install.sh "What's new" cap-budget class.
+- `tests/test-coordination-rules.sh` enforces the CLAUDE.md lockstep contracts (conf-flag 3-site, test-pin discipline, lib-test 1:1 mapping).
+- Re-entrancy contract for `with_state_lock` (`_OMC_STATE_LOCK_HELD` env marker) now documented in-code with caller enumeration.
+
+**Wave-deferred to v1.32.x with named WHY:**
+- R2 release-reviewer agent fork (existing `quality-reviewer` is structurally too small for cumulative since-last-tag diffs — verified in this very release: dispatched reviewer truncated mid-investigation 3× in one session).
+- R4 stage-then-promote release flow (needs `tools/release-stage.sh` + `tools/release-promote.sh` automation; muscle-memory change too risky without scripts).
+- R5 hotfix-sweep tool (needs R3 promoted from advisory to mandatory first per dependency edge).
+- R9 27-test STATE_ROOT-coupling cleanup (sterile runner found 7 env-leak susceptibilities; documented but not patched in this wave).
+- Full 4-attacker-model adversarial security review (security-lens truncated mid-investigation; needs forked release-security-reviewer agent).
+- Atlas docs deep-refresh (atlas truncated mid-investigation; manual targeted patches landed instead).
+- Item 10 paradigm divergence (per user's own ordering: "last — only worth running once 1-9 stabilize").
+- Telemetry rendering bug: `/ulw-report` shows `Serendipity Rule applications: 0` while serendipity-log.jsonl has rows. The aggregator reads `session_summary.jsonl` `.serendipity_count` (legacy rows lack the field); forward-going behavior is correct, historical data only.
+
 ### Added
 
 - **Wave D: Docs drift audit + installer/security audit (Items 8, 9, 6-partial).**
