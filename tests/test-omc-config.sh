@@ -251,13 +251,13 @@ assert_file_lacks_line "atomic batch: auto_memory not written" "${USER_CONF_PATH
 assert_file_lacks_line "atomic batch: discovered_scope not written" "${USER_CONF_PATH}" "^discovered_scope=on\$"
 teardown
 
-# --- Test 13: apply-preset maximum writes all 22 keys (v1.28.0 added
+# --- Test 13: apply-preset maximum writes all 23 keys (v1.28.0 added
 # blindspot_inventory + intent_broadening; v1.30.0 added prompt_persist;
-# v1.32.0 added divergence_directive) ---
-printf 'Test 13: apply-preset maximum writes 22 keys\n'
+# v1.32.0 added divergence_directive; v1.33.0 added directive_budget) ---
+printf 'Test 13: apply-preset maximum writes 23 keys\n'
 setup
 out="$(bash "${HELPER}" apply-preset user maximum 2>&1)"
-assert_contains "apply-preset reports 22 keys" "22 keys" "${out}"
+assert_contains "apply-preset reports 23 keys" "23 keys" "${out}"
 assert_file_has_line "maximum: gate_level=full" "${USER_CONF_PATH}" "^gate_level=full\$"
 assert_file_has_line "maximum: guard_exhaustion_mode=block" "${USER_CONF_PATH}" "^guard_exhaustion_mode=block\$"
 assert_file_has_line "maximum: prometheus_suggest=on" "${USER_CONF_PATH}" "^prometheus_suggest=on\$"
@@ -279,6 +279,7 @@ assert_file_has_line "maximum: council_deep_default=on" "${USER_CONF_PATH}" "^co
 # v1.28.0: blindspot_inventory + intent_broadening included in maximum.
 assert_file_has_line "maximum: blindspot_inventory=on" "${USER_CONF_PATH}" "^blindspot_inventory=on\$"
 assert_file_has_line "maximum: intent_broadening=on" "${USER_CONF_PATH}" "^intent_broadening=on\$"
+assert_file_has_line "maximum: directive_budget=maximum" "${USER_CONF_PATH}" "^directive_budget=maximum\$"
 teardown
 
 # --- Test 14: apply-preset balanced writes balanced values ---
@@ -290,6 +291,7 @@ assert_file_has_line "balanced: prometheus_suggest=off" "${USER_CONF_PATH}" "^pr
 assert_file_has_line "balanced: exemplifying_scope_gate=on" "${USER_CONF_PATH}" "^exemplifying_scope_gate=on\$"
 assert_file_has_line "balanced: resume_watchdog=off" "${USER_CONF_PATH}" "^resume_watchdog=off\$"
 assert_file_has_line "balanced: model_tier=balanced" "${USER_CONF_PATH}" "^model_tier=balanced\$"
+assert_file_has_line "balanced: directive_budget=balanced" "${USER_CONF_PATH}" "^directive_budget=balanced\$"
 # Counterpart to the Maximum assertion above — Balanced is where the
 # council cost cap lives. If someone ever flips this to `on`, the cap
 # moves and Balanced loses its reason to exist.
@@ -305,6 +307,7 @@ assert_file_has_line "minimal: guard_exhaustion_mode=silent" "${USER_CONF_PATH}"
 assert_file_has_line "minimal: auto_memory=off" "${USER_CONF_PATH}" "^auto_memory=off\$"
 assert_file_has_line "minimal: exemplifying_scope_gate=off" "${USER_CONF_PATH}" "^exemplifying_scope_gate=off\$"
 assert_file_has_line "minimal: model_tier=economy" "${USER_CONF_PATH}" "^model_tier=economy\$"
+assert_file_has_line "minimal: directive_budget=minimal" "${USER_CONF_PATH}" "^directive_budget=minimal\$"
 # stop_failure_capture stays on across all presets (privacy + utility).
 assert_file_has_line "minimal: stop_failure_capture stays on" "${USER_CONF_PATH}" "^stop_failure_capture=on\$"
 teardown
@@ -416,11 +419,13 @@ setup
 out="$(bash "${HELPER}" presets maximum 2>&1)"
 assert_contains "presets maximum has gate_level" "gate_level=full" "${out}"
 assert_contains "presets maximum has resume_watchdog" "resume_watchdog=on" "${out}"
+assert_contains "presets maximum has directive_budget=maximum" "directive_budget=maximum" "${out}"
 # Maximum must include council_deep_default=on for internal consistency
 # with model_tier=quality. Cost cap lives in Balanced.
 assert_contains "presets maximum has council_deep_default=on" "council_deep_default=on" "${out}"
 out="$(bash "${HELPER}" presets minimal 2>&1)"
 assert_contains "presets minimal has gate_level basic" "gate_level=basic" "${out}"
+assert_contains "presets minimal has directive_budget=minimal" "directive_budget=minimal" "${out}"
 teardown
 
 # --- Test 24: presets rejects unknown profile ---

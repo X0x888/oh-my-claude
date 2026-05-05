@@ -177,6 +177,8 @@ Five **bias-defense directive layers** can fire on `/ulw` prompts across three o
 
 The widening layers have hard backstops: `exemplifying_scope_gate` (on) requires a state-backed checklist for example-marker prompts. Claude records sibling class items with `record-scope-checklist.sh`, then Stop is blocked until each item is marked shipped or declined with a concrete WHY. The blindspot inventory itself is conf-gated by `blindspot_inventory` (on); kill switch for shared machines or very large monorepos.
 
+Those soft layers now compose under `directive_budget` (`balanced` by default). The router still emits the core ULW posture every turn, but trims lower-priority soft directives when prompt tax gets dense. Emitted footprint shows up in `/ulw-report` and `/ulw-status`; suppressed layers show up in `/ulw-report` so cost-control stays auditable.
+
 Reviewer findings (v1.28.0) are now machine-readable: each reviewer agent emits a single-line `FINDINGS_JSON: [{severity, category, file, line, claim, evidence, recommended_fix}, ...]` block before its verdict. Downstream gates parse the JSON preferentially over prose extraction; backward-compatible since prose fallback still works. The `check-latency-budgets.sh` script benchmarks the six hot-path hooks against per-hook ms budgets so speed regressions are caught before merge.
 
 ### Multi-domain routing
@@ -278,7 +280,7 @@ oh-my-claude/
 │   ├── output-styles/                       # Two bundled styles: oh-my-claude (default) + executive-brief (see docs/customization.md#output-style)
 │   └── statusline.py                        # Custom statusline widget
 ├── config/settings.patch.json               # Merged into user settings on install
-├── tests/               (71 bash + 1 py)    # See AGENTS.md / CONTRIBUTING.md for full list
+├── tests/               (72 bash + 1 py)    # See AGENTS.md / CONTRIBUTING.md for full list
 ├── tools/                                    # Developer-only tools (not installed)
 └── docs/                                    # Architecture, customization, FAQ, prompts
 ```
@@ -403,6 +405,7 @@ bash tests/test-verification-lib.sh         # Extracted lib/verification.sh modu
 bash tests/test-agent-verdict-contract.sh   # Universal VERDICT contract regression net (all 34 agents)
 bash tests/test-bias-defense-classifier.sh  # Bias-defense prompt-shape classifiers + plan-complexity extraction
 bash tests/test-bias-defense-directives.sh  # prometheus-suggest + intent-verify directive injection
+bash tests/test-ulw-benchmark-suite.sh      # Canonical ULW user-outcome scenarios (quality/automation first, prompt-tax second)
 bash tests/test-metis-on-plan-gate.sh       # Metis-on-plan stop-guard gate (Check 6, opt-in)
 bash tests/test-gate-events.sh              # Per-event outcome attribution (gate_events.jsonl helper + wiring)
 bash tests/test-discover-session.sh         # Cross-project session-discovery cwd filter (record-finding-list / show-status)

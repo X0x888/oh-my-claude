@@ -392,6 +392,29 @@ rm -f "${QP}/timing.jsonl"
 rm -f "${QP}/session_summary.jsonl"
 
 # ----------------------------------------------------------------------
+printf 'Test 21c: directive-budget suppressions surface in their own section\n'
+NOW="$(date +%s)"
+cat > "${QP}/gate_events.jsonl" <<EOF
+{"ts":${NOW},"session":"test-directive-budget","gate":"directive-budget","event":"suppressed","details":{"directive":"defect_watch","reason":"soft_count_cap","mode":"balanced"}}
+{"ts":${NOW},"session":"test-directive-budget","gate":"directive-budget","event":"suppressed","details":{"directive":"defect_watch","reason":"soft_count_cap","mode":"balanced"}}
+{"ts":${NOW},"session":"test-directive-budget","gate":"directive-budget","event":"suppressed","details":{"directive":"bias_defense_divergent_framing","reason":"soft_char_budget","mode":"minimal"}}
+EOF
+cat > "${QP}/session_summary.jsonl" <<EOF
+{"session_id":"test-directive-budget","start_ts":${NOW},"end_ts":${NOW},"domain":"coding","intent":"execution","edit_count":1,"verified":true,"reviewed":true,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":1,"outcome":"shipped","skip_count":0,"serendipity_count":0}
+EOF
+out="$(run_report week)"
+assert_contains "show-report: directive-budget section header rendered" \
+  "## Router directive suppressions" "${out}"
+assert_contains "show-report: directive-budget total line rendered" \
+  "Window total: 3 suppressed directive(s)." "${out}"
+assert_contains "show-report: grouped defect_watch suppression rendered" \
+  "| \`defect_watch\` | \`soft_count_cap\` | 2 |" "${out}"
+assert_contains "show-report: grouped divergence suppression rendered" \
+  "| \`bias_defense_divergent_framing\` | \`soft_char_budget\` | 1 |" "${out}"
+rm -f "${QP}/gate_events.jsonl"
+rm -f "${QP}/session_summary.jsonl"
+
+# ----------------------------------------------------------------------
 printf 'Test 22: mark-deferred strict-bypass events surface in their own section\n'
 NOW="$(date +%s)"
 cat > "${QP}/gate_events.jsonl" <<EOF

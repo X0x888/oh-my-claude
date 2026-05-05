@@ -483,6 +483,48 @@ else
 fi
 
 # ----------------------------------------------------------------------
+# Section 4c0.75: Router directive suppressions (v1.33.0)
+#
+# The directive budget records suppressions as gate events so users can
+# audit when the router trimmed lower-priority SOFT directives. This is
+# the second half of the budget contract: emitted prompt surface is
+# visible above, and suppressed prompt surface is visible here.
+printf '## Router directive suppressions\n\n'
+directive_budget_rows="$(printf '%s\n' "${gate_event_rows}" | jq -c \
+    'select(.gate == "directive-budget" and .event == "suppressed")' 2>/dev/null || true)"
+if [[ -z "${directive_budget_rows}" ]]; then
+  printf '_No directive-budget suppressions in window._\n\n'
+else
+  _directive_budget_total="$(printf '%s\n' "${directive_budget_rows}" | wc -l | tr -d '[:space:]')"
+  printf '_Window total: %s suppressed directive(s). Counts below are grouped by directive and suppression reason._\n\n' \
+    "${_directive_budget_total}"
+  printf '| Directive | Reason | Count |\n'
+  printf '|---|---|---:|\n'
+  jq -sr '
+    map({
+      directive: (.details.directive // "unknown"),
+      reason: (.details.reason // "unknown")
+    })
+    | group_by(.directive + "|" + .reason)
+    | map({
+        directive: .[0].directive,
+        reason: .[0].reason,
+        n: length
+      })
+    | sort_by(-.n, .directive, .reason)
+    | .[0:12]
+    | .[]
+    | [.directive, .reason, (.n | tostring)]
+    | @tsv
+  ' <<<"${directive_budget_rows}" 2>/dev/null \
+    | while IFS=$'\t' read -r _db_name _db_reason _db_count; do
+        [[ -z "${_db_name}" ]] && continue
+        printf '| `%s` | `%s` | %s |\n' "${_db_name}" "${_db_reason}" "${_db_count}"
+      done
+  printf '\n'
+fi
+
+# ----------------------------------------------------------------------
 # Section 4c1.5: Model-drift canary signals (v1.26.0 Wave 2)
 #
 # Surfaces the silent-confabulation canary readings recorded by

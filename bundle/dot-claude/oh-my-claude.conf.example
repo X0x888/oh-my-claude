@@ -501,6 +501,25 @@
 # Env: OMC_DIVERGENCE_DIRECTIVE.
 #divergence_directive=on
 
+# Router directive budget mode. Applies only to SOFT directives
+# (bias-defense, project-maturity, memory-drift, defect-watch, and
+# similar contextual nudges) — core routing/openers still emit. This is
+# the consolidation control that prevents quality improvements from
+# silently turning into prompt tax on dense `/ulw` prompts.
+#
+# Modes:
+#   maximum  — widest aperture; allows the most SOFT directives to stack
+#   balanced — trims dense co-fire cases while preserving the high-value
+#              layers (default; used by the Balanced preset)
+#   minimal  — aggressive suppression; pairs with Minimal preset
+#   off      — legacy/unbounded behavior; emit every eligible directive
+#
+# The budget is observable: suppressed directives write telemetry that
+# surfaces in `/ulw-report`, and emitted directive footprint is visible
+# in both `/ulw-report` and `/ulw-status`.
+# Env: OMC_DIRECTIVE_BUDGET.
+#directive_budget=balanced
+
 # ---------------------------------------------------------------------------
 # Cleanup.
 # ---------------------------------------------------------------------------

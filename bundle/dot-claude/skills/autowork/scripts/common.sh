@@ -56,6 +56,7 @@ _omc_env_model_drift_canary="${OMC_MODEL_DRIFT_CANARY:-}"
 _omc_env_blindspot_inventory="${OMC_BLINDSPOT_INVENTORY:-}"
 _omc_env_intent_broadening="${OMC_INTENT_BROADENING:-}"
 _omc_env_divergence_directive="${OMC_DIVERGENCE_DIRECTIVE:-}"
+_omc_env_directive_budget="${OMC_DIRECTIVE_BUDGET:-}"
 _omc_env_blindspot_ttl="${OMC_BLINDSPOT_TTL_SECONDS:-}"
 _omc_env_claude_bin="${OMC_CLAUDE_BIN:-}"
 _omc_env_resume_request_per_cwd_cap="${OMC_RESUME_REQUEST_PER_CWD_CAP:-}"
@@ -273,6 +274,13 @@ OMC_BLINDSPOT_INVENTORY="${OMC_BLINDSPOT_INVENTORY:-on}"
 # ON; lighter than a hard gate — informational, expects the model to
 # surface gaps in its opener under a "Project surfaces touched:" line.
 OMC_INTENT_BROADENING="${OMC_INTENT_BROADENING:-on}"
+# Router directive budget (v1.33.0): caps stacking of SOFT router
+# directives so quality gains do not silently turn into prompt tax.
+# `maximum` keeps the widest aperture, `balanced` trims heavy co-fire
+# cases, `minimal` is aggressive, and `off` preserves legacy unbounded
+# emission. Default `balanced` so new installs get budget protection
+# without disabling the core directive layer.
+OMC_DIRECTIVE_BUDGET="${OMC_DIRECTIVE_BUDGET:-balanced}"
 # Blindspot inventory cache TTL (seconds). Default 86400 = 24h — long
 # enough that subsequent prompts on the same day reuse the cache for
 # free, short enough that surfaces added today don't go missing for
@@ -368,6 +376,8 @@ _parse_conf_file() {
         [[ -z "${_omc_env_intent_broadening}" && "${value}" =~ ^(on|off)$ ]] && OMC_INTENT_BROADENING="${value}" || true ;;
       divergence_directive)
         [[ -z "${_omc_env_divergence_directive}" && "${value}" =~ ^(on|off)$ ]] && OMC_DIVERGENCE_DIRECTIVE="${value}" || true ;;
+      directive_budget)
+        [[ -z "${_omc_env_directive_budget}" && "${value}" =~ ^(off|maximum|balanced|minimal)$ ]] && OMC_DIRECTIVE_BUDGET="${value}" || true ;;
       blindspot_ttl_seconds)
         [[ -z "${_omc_env_blindspot_ttl}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_BLINDSPOT_TTL_SECONDS="${value}" || true ;;
       claude_bin)

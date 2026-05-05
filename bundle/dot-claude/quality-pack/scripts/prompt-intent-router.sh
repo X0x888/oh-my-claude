@@ -214,23 +214,277 @@ if [[ "${TASK_INTENT}" == "advisory" || "${TASK_INTENT}" == "session_management"
 fi
 
 context_parts=()
+directive_names=()
+directive_bodies=()
+directive_axes=()
+directive_priorities=()
+directive_classes=()
+directive_chars=()
+directive_emit_gates=()
+directive_emit_events=()
+directive_emit_details=()
+directive_emit_logs=()
 
-# Per-directive emission helper. Appends <body> to context_parts AND
-# records a directive_emitted row in timing.jsonl with the directive
-# <name> + body char count (locale-aware codepoint count via `${#var}`).
-# Centralizing emission attributes per-directive cost in /ulw-report
-# and offline analysis without mutating the directive bodies themselves.
+# Directive registry + budget (v1.33.0).
 #
-# Note: bash's `${#var}` is locale-aware — under UTF-8 locales it returns
-# codepoint (character) count, not raw byte count. The field is named
-# `chars` to reflect this honestly. Chars correlate with token cost
-# better than raw bytes (Anthropic's tokenizer operates on codepoints).
-# Phase 2 analysis still re-tokenizes via the actual tokenizer.
+# `add_directive` now queues directives with metadata rather than emitting
+# immediately. `flush_directives` selects under the configured SOFT-directive
+# budget, records suppressions to gate_events.jsonl, then emits the selected
+# bodies in original insertion order. This keeps the router's composition
+# observable and tunable instead of silently accreting prompt tax.
+#
+# HARD directives are never suppressed by the budget. SOFT directives are the
+# contextual nudges where compression is acceptable: bias-defense layers,
+# maturity priors, memory-drift hints, and historical defect watch lists.
+
+directive_budget_mode() {
+  case "${OMC_DIRECTIVE_BUDGET:-balanced}" in
+    off|maximum|balanced|minimal) printf '%s' "${OMC_DIRECTIVE_BUDGET:-balanced}" ;;
+    *)                            printf 'balanced' ;;
+  esac
+}
+
+directive_budget_soft_char_limit() {
+  case "$1" in
+    maximum) printf '9000' ;;
+    balanced) printf '6500' ;;
+    minimal) printf '2200' ;;
+    *) printf '0' ;;
+  esac
+}
+
+directive_budget_soft_count_limit() {
+  case "$1" in
+    maximum) printf '8' ;;
+    balanced) printf '5' ;;
+    minimal) printf '2' ;;
+    *) printf '0' ;;
+  esac
+}
+
+directive_budget_axis_cap() {
+  local mode="${1:-}"
+  local axis="${2:-}"
+  case "${axis}" in
+    scope)
+      case "${mode}" in
+        maximum|balanced|minimal) printf '1' ;;
+        *) printf '0' ;;
+      esac
+      ;;
+    surface)
+      case "${mode}" in
+        maximum|balanced) printf '2' ;;
+        minimal) printf '1' ;;
+        *) printf '0' ;;
+      esac
+      ;;
+    paradigm)
+      case "${mode}" in
+        maximum|balanced|minimal) printf '1' ;;
+        *) printf '0' ;;
+      esac
+      ;;
+    *)
+      printf '0'
+      ;;
+  esac
+}
+
+directive_meta_axis() {
+  case "$1" in
+    bias_defense_prometheus_suggest|bias_defense_intent_verify) printf 'scope' ;;
+    bias_defense_completeness|bias_defense_intent_broadening|bias_defense_intent_broadening_no_inventory) printf 'surface' ;;
+    bias_defense_divergent_framing) printf 'paradigm' ;;
+    project_maturity) printf 'maturity' ;;
+    memory_drift_hint|auto_memory_skip) printf 'memory' ;;
+    defect_watch) printf 'history' ;;
+    *) printf 'core' ;;
+  esac
+}
+
+directive_meta_priority() {
+  case "$1" in
+    bias_defense_completeness) printf '10' ;;
+    bias_defense_prometheus_suggest) printf '12' ;;
+    bias_defense_intent_verify) printf '14' ;;
+    bias_defense_intent_broadening) printf '18' ;;
+    bias_defense_intent_broadening_no_inventory) printf '20' ;;
+    bias_defense_divergent_framing) printf '24' ;;
+    project_maturity) printf '40' ;;
+    defect_watch) printf '50' ;;
+    memory_drift_hint) printf '60' ;;
+    auto_memory_skip) printf '70' ;;
+    *) printf '0' ;;
+  esac
+}
+
+directive_meta_class() {
+  case "$1" in
+    bias_defense_prometheus_suggest|bias_defense_intent_verify|bias_defense_completeness|bias_defense_intent_broadening|bias_defense_intent_broadening_no_inventory|bias_defense_divergent_framing|project_maturity|defect_watch|memory_drift_hint|auto_memory_skip)
+      printf 'soft'
+      ;;
+    *)
+      printf 'hard'
+      ;;
+  esac
+}
+
+directive_axis_is_bias() {
+  case "$1" in
+    scope|surface|paradigm) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 add_directive() {
   local _add_name="${1:-}"
   local _add_body="${2:-}"
-  context_parts+=("${_add_body}")
-  timing_append_directive "${_add_name}" "${#_add_body}" "${_omc_new_prompt_seq:-0}"
+  [[ -z "${_add_name}" || -z "${_add_body}" ]] && return 0
+  directive_names+=("${_add_name}")
+  directive_bodies+=("${_add_body}")
+  directive_axes+=("$(directive_meta_axis "${_add_name}")")
+  directive_priorities+=("$(directive_meta_priority "${_add_name}")")
+  directive_classes+=("$(directive_meta_class "${_add_name}")")
+  directive_chars+=("${#_add_body}")
+  directive_emit_gates+=("")
+  directive_emit_events+=("")
+  directive_emit_details+=("")
+  directive_emit_logs+=("")
+}
+
+set_last_directive_emit_notice() {
+  local total="${#directive_names[@]}"
+  (( total == 0 )) && return 0
+  local idx=$((total - 1))
+  directive_emit_gates[idx]="${1:-}"
+  directive_emit_events[idx]="${2:-}"
+  directive_emit_details[idx]="${3:-}"
+  directive_emit_logs[idx]="${4:-}"
+}
+
+flush_directives() {
+  local total="${#directive_names[@]}"
+  (( total == 0 )) && return 0
+
+  local mode
+  mode="$(directive_budget_mode)"
+  local soft_char_limit soft_count_limit
+  soft_char_limit="$(directive_budget_soft_char_limit "${mode}")"
+  soft_count_limit="$(directive_budget_soft_count_limit "${mode}")"
+
+  local selected=()
+  local i
+  for ((i = 0; i < total; i++)); do
+    selected+=(0)
+  done
+
+  if [[ "${mode}" == "off" ]]; then
+    for ((i = 0; i < total; i++)); do
+      selected[i]=1
+    done
+  else
+    local soft_order=""
+    for ((i = 0; i < total; i++)); do
+      if [[ "${directive_classes[$i]}" == "hard" ]]; then
+        selected[i]=1
+      else
+        soft_order+=$(printf '%s\t%s' "${directive_priorities[$i]}" "${i}")$'\n'
+      fi
+    done
+
+    local soft_chars_used=0
+    local soft_count_used=0
+    local scope_axis_count=0
+    local surface_axis_count=0
+    local paradigm_axis_count=0
+    local line priority idx axis chars reason axis_cap axis_used
+    while IFS= read -r line; do
+      [[ -z "${line}" ]] && continue
+      IFS=$'\t' read -r priority idx <<<"${line}"
+      [[ -z "${idx}" || "${idx}" == "${line}" ]] && continue
+      idx=$((10#${idx}))
+      axis="${directive_axes[$idx]}"
+      chars="${directive_chars[$idx]}"
+      reason=""
+
+      if directive_axis_is_bias "${axis}"; then
+        axis_cap="$(directive_budget_axis_cap "${mode}" "${axis}")"
+        case "${axis}" in
+          scope) axis_used="${scope_axis_count}" ;;
+          surface) axis_used="${surface_axis_count}" ;;
+          paradigm) axis_used="${paradigm_axis_count}" ;;
+          *) axis_used=0 ;;
+        esac
+        if [[ "${axis_cap}" =~ ^[0-9]+$ ]] \
+          && (( axis_cap > 0 )) \
+          && (( axis_used >= axis_cap )); then
+          reason="axis_cap"
+        fi
+      fi
+
+      if [[ -z "${reason}" ]] \
+        && [[ "${soft_count_limit}" =~ ^[0-9]+$ ]] \
+        && (( soft_count_limit > 0 )) \
+        && (( soft_count_used >= soft_count_limit )); then
+        reason="soft_count_cap"
+      fi
+
+      if [[ -z "${reason}" ]] \
+        && [[ "${soft_char_limit}" =~ ^[0-9]+$ ]] \
+        && (( soft_char_limit > 0 )) \
+        && (( soft_chars_used + chars > soft_char_limit )); then
+        reason="soft_char_budget"
+      fi
+
+      if [[ -n "${reason}" ]]; then
+        record_gate_event "directive-budget" "suppressed" \
+          "directive=${directive_names[$idx]}" \
+          "axis=${axis}" \
+          "priority=${directive_priorities[$idx]}" \
+          "mode=${mode}" \
+          "chars=${chars}" \
+          "reason=${reason}" \
+          "axis_cap=${axis_cap:-0}" \
+          "axis_used=${axis_used:-0}" \
+          "soft_chars_used=${soft_chars_used}" \
+          "soft_char_limit=${soft_char_limit}" \
+          "soft_count_used=${soft_count_used}" \
+          "soft_count_limit=${soft_count_limit}"
+        log_hook "prompt-intent-router" "directive-budget: suppressed ${directive_names[$idx]} reason=${reason} mode=${mode}"
+        continue
+      fi
+
+      selected[idx]=1
+      soft_chars_used=$((soft_chars_used + chars))
+      soft_count_used=$((soft_count_used + 1))
+      if directive_axis_is_bias "${axis}"; then
+        case "${axis}" in
+          scope) scope_axis_count=$((scope_axis_count + 1)) ;;
+          surface) surface_axis_count=$((surface_axis_count + 1)) ;;
+          paradigm) paradigm_axis_count=$((paradigm_axis_count + 1)) ;;
+        esac
+      fi
+    done <<<"$(printf '%s' "${soft_order}" | sort -t $'\t' -k1,1n -k2,2n)"
+  fi
+
+  for ((i = 0; i < total; i++)); do
+    if [[ "${selected[$i]}" == "1" ]]; then
+      context_parts+=("${directive_bodies[$i]}")
+      timing_append_directive "${directive_names[$i]}" "${directive_chars[$i]}" "${_omc_new_prompt_seq:-0}"
+      if [[ -n "${directive_emit_logs[$i]}" ]]; then
+        log_hook "prompt-intent-router" "${directive_emit_logs[$i]}"
+      fi
+      if [[ -n "${directive_emit_gates[$i]}" && -n "${directive_emit_events[$i]}" ]]; then
+        if [[ -n "${directive_emit_details[$i]}" ]]; then
+          record_gate_event "${directive_emit_gates[$i]}" "${directive_emit_events[$i]}" \
+            "${directive_emit_details[$i]}"
+        else
+          record_gate_event "${directive_emit_gates[$i]}" "${directive_emit_events[$i]}"
+        fi
+      fi
+    fi
+  done
 }
 
 # State-corruption recovery surface (v1.29.0). lib/state-io.sh archives
@@ -513,18 +767,18 @@ ${_spec_safe}
         && is_product_shaped_request "${PROMPT_TEXT}" \
         && is_ambiguous_execution_request "${PROMPT_TEXT}"; then
       add_directive "bias_defense_prometheus_suggest" "AMBIGUOUS PRODUCT-SHAPED PROMPT: this request is short and product-shaped (build/create/design + app/dashboard/feature/onboarding/etc.) without a specific code anchor. State your scope interpretation (audience, primary success criterion, the one or two non-goals you are deliberately not building) in one or two declarative sentences as part of your opener, then proceed with that interpretation. The user can interrupt and redirect in real time if the call is wrong. Do NOT hold for confirmation — under ULW the request IS the permission (see core.md FORBIDDEN list). Only delegate to /prometheus when two interpretations are credibly incompatible and the wrong choice would cost significant rework — that is the credible-approach-split pause case from core.md, not a default-on hold. The directive's job is to make your interpretation auditable, not to stop forward motion."
+      set_last_directive_emit_notice \
+        "bias-defense" "directive_fired" "directive=prometheus-suggest" \
+        "bias-defense: prometheus-suggest fired"
       _bias_directive_emitted=1
-      log_hook "prompt-intent-router" "bias-defense: prometheus-suggest fired"
-      record_gate_event "bias-defense" "directive_fired" \
-        "directive=prometheus-suggest"
     fi
     if [[ "${OMC_INTENT_VERIFY_DIRECTIVE:-off}" == "on" ]] \
         && [[ "${_bias_directive_emitted}" -eq 0 ]] \
         && is_ambiguous_execution_request "${PROMPT_TEXT}"; then
       add_directive "bias_defense_intent_verify" "INTENT VERIFICATION: this prompt is short and unanchored (no file path, line ref, function name, or backtick-fenced identifier). State your interpretation of the goal in one declarative sentence as part of your opener (e.g., 'I'm interpreting this as <X> and proceeding now'), then start work. Do NOT hold for confirmation — under ULW the user's request IS the permission (see core.md FORBIDDEN list) and they can redirect in real time. The pause case is narrow: only stop when both (a) confidence in the interpretation is low AND (b) the wrong call would be hard to reverse — both must hold. The directive exists to make your interpretation auditable so the user can correct it cheaply, not to stop forward motion."
-      log_hook "prompt-intent-router" "bias-defense: intent-verify fired"
-      record_gate_event "bias-defense" "directive_fired" \
-        "directive=intent-verify"
+      set_last_directive_emit_notice \
+        "bias-defense" "directive_fired" "directive=intent-verify" \
+        "bias-defense: intent-verify fired"
     fi
   fi
 
@@ -581,13 +835,14 @@ ${_spec_safe}
       completeness_text+=" — EXEMPLIFYING SCOPE DETECTED (sub-case): the prompt uses example markers ('for instance' / 'e.g.' / 'i.e.' / 'for example' / 'such as' / 'as needed' / 'as appropriate' / 'similar to' / 'including but not limited to' / 'things like' / 'stuff like' / 'examples include'). Treat the example as ONE item from an enumerable class — the *class* is the scope, not the literal example. ${exemplifying_scope_workflow} Implementing only the literal example and silently dropping the class is **under-interpretation, not restraint** — it is the failure mode \`/ulw\` was created to prevent. Worked example: 'enhance the statusline, for instance adding reset countdown' enumerates as: reset countdown, in-flight indicators (pause/wave/plan markers), stale-data warnings, count surfaces, model-name handling — all live in the same statusline render path and are class items, not new capabilities. See core.md 'Excellence is not gold-plating' Calibration test, **Also keep going** bullet for the same rule. The user's request IS the permission to enumerate the class — do not gate-keep yourself by asking which siblings to include."
     fi
     add_directive "bias_defense_completeness" "${completeness_text}"
-    log_hook "prompt-intent-router" "bias-defense: completeness-directive fired (exemplifying=${EXEMPLIFYING_SCOPE_DETECTED})"
     if [[ "${EXEMPLIFYING_SCOPE_DETECTED}" -eq 1 ]]; then
-      record_gate_event "bias-defense" "directive_fired" \
-        "directive=exemplifying"
+      set_last_directive_emit_notice \
+        "bias-defense" "directive_fired" "directive=exemplifying" \
+        "bias-defense: completeness-directive fired (exemplifying=1)"
     else
-      record_gate_event "bias-defense" "directive_fired" \
-        "directive=completeness"
+      set_last_directive_emit_notice \
+        "bias-defense" "directive_fired" "directive=completeness" \
+        "bias-defense: completeness-directive fired (exemplifying=0)"
     fi
   fi
 
@@ -665,15 +920,15 @@ ${_spec_safe}
     fi
     if [[ -n "${intent_broadening_summary}" ]]; then
       add_directive "bias_defense_intent_broadening" "INTENT-BROADENING DIRECTIVE: A project surface inventory has been generated for this project at \`${intent_broadening_path}\` (${intent_broadening_summary}). Language is a limitation — the user's prompt names SOME of the surfaces this work touches but rarely all of them. Before committing to scope: (1) **Read the inventory** when scope is non-trivial. It enumerates concrete surfaces (routes, env vars, tests, docs, config flags, UI files, error states, auth paths, release steps, scripts) the prompt cannot explicitly list. (2) **Reconcile your task against it.** Which surfaces does this work plausibly touch (directly or transitively) vs which does the prompt explicitly name? (3) **Surface gaps in your opener** under a \`**Project surfaces touched:**\` bulleted line. If release steps, env vars, tests, or docs need updating beyond what the prompt names, ship them or defer with a one-line concrete WHY — never silently. (4) **The inventory is informational, not authoritative.** It widens your aperture, not constrains it. New surfaces appear faster than rescans; if a surface should exist but is missing, proceed with normal completeness reasoning. The inventory addresses the failure mode where a complex prompt silently misses surfaces the user did not name. Refresh: \`bash ~/.claude/skills/autowork/scripts/blindspot-inventory.sh scan --force\`."
-      log_hook "prompt-intent-router" "bias-defense: intent-broadening fired (path=${intent_broadening_path})"
-      record_gate_event "bias-defense" "directive_fired" \
-        "directive=intent-broadening"
+      set_last_directive_emit_notice \
+        "bias-defense" "directive_fired" "directive=intent-broadening" \
+        "bias-defense: intent-broadening fired (path=${intent_broadening_path})"
     elif [[ -z "${intent_broadening_path}" ]] || ! is_blindspot_inventory_enabled; then
       # Inventory disabled — emit the discipline without the path reference.
       add_directive "bias_defense_intent_broadening_no_inventory" "INTENT-BROADENING DIRECTIVE (no inventory): Language is a limitation — the user's prompt names some of the surfaces this work touches but rarely all of them. Before committing to scope, enumerate the project surfaces this work plausibly affects (routes, env vars, tests, docs, config flags, release steps, error states, auth paths) and reconcile against the prompt. Surface gaps in your opener under a \`**Project surfaces touched:**\` line — ship the gap or defer with a one-line concrete WHY. Never silently fill or silently drop a surface the user did not name."
-      log_hook "prompt-intent-router" "bias-defense: intent-broadening fired (no inventory path)"
-      record_gate_event "bias-defense" "directive_fired" \
-        "directive=intent-broadening-no-inventory"
+      set_last_directive_emit_notice \
+        "bias-defense" "directive_fired" "directive=intent-broadening-no-inventory" \
+        "bias-defense: intent-broadening fired (no inventory path)"
     fi
   fi
 
@@ -716,9 +971,9 @@ ${_spec_safe}
       && [[ "${checkpoint_prompt}" -eq 0 ]] \
       && is_paradigm_ambiguous_request "${PROMPT_TEXT}"; then
     add_directive "bias_defense_divergent_framing" "DIVERGENT-FRAMING DIRECTIVE: this prompt admits a paradigm-shape decision (architecture, approach, strategy, X-vs-Y choice, or open-ended \"how should we\") — the *shape* of the solution is the load-bearing call, not the mechanics. Defend against anchoring on the first paradigm that surfaces by enumerating 2-3 alternative framings INLINE in your opener: (1) **Name each framing** with a 2-4 word label, the mental model in one sentence, what it makes EASY (1 affordance), what it makes HARD (1 cost). (2) **Pick one with a one-line reason** plus a \"redirect if\" clause naming the condition under which a different framing would win. (3) **Escalate to \`/diverge\`** only when the decision is high-stakes AND your inline enumeration feels shallow — when you can list options but cannot rank them with conviction. The directive bias is *inline lateral thinking*, not a sub-agent dispatch on every task. When one paradigm is obviously dominant, say so explicitly with the alternatives you considered and ruled out (\"X is the standard here; Y/Z don't fit because…\"), rather than silently picking. Skip enumeration only when the prompt names the paradigm itself (e.g., \"implement X using the visitor pattern\" — paradigm pre-chosen, no decision to make)."
-    log_hook "prompt-intent-router" "bias-defense: divergence-directive fired"
-    record_gate_event "bias-defense" "directive_fired" \
-      "directive=divergence"
+    set_last_directive_emit_notice \
+      "bias-defense" "directive_fired" "directive=divergence" \
+      "bias-defense: divergence-directive fired"
   fi
 
   if [[ "${session_management_prompt}" -eq 0 && "${checkpoint_prompt}" -eq 0 ]]; then
@@ -1069,6 +1324,8 @@ if is_execution_intent_value "${TASK_INTENT}"; then
     add_directive "defect_watch" "Historical defect patterns from prior sessions — ${defect_watch}. Pay extra attention to these categories during implementation and review."
   fi
 fi
+
+flush_directives
 
 if [[ "${#context_parts[@]}" -eq 0 ]]; then
   exit 0
