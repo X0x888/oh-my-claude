@@ -205,5 +205,57 @@ esac
 [[ -n "${home_value}" && -d "${home_value}" ]] && rm -rf "${home_value}"
 
 # ----------------------------------------------------------------------
+# v1.34.1: cleanup_sterile_env regression coverage. Pre-v1.34.1 the
+# helper's path-prefix guard matched only `*/tmp*` — after the v1.34.0
+# hotfix moved sterile_home under `${HOME}/.cache/omc-sterile-home-*`,
+# the guard silently never matched and the helper was a no-op. Verify
+# the post-fix guard recognizes the canonical sterile-home shape AND
+# rejects unrelated paths.
+# ----------------------------------------------------------------------
+printf 'Test 7: cleanup_sterile_env guard recognizes sterile-home shapes (v1.34.1)\n'
+
+# Real sterile-home shape — guard MUST match and remove.
+fake_home="$(mktemp -d "${HOME}/.cache/omc-sterile-home-test-XXXXXX")"
+[[ -d "${fake_home}" ]] && pass=$((pass + 1)) || { fail=$((fail + 1)); echo "  FAIL: T7 setup: mktemp didn't create dir"; }
+cleanup_sterile_env "${fake_home}"
+if [[ -d "${fake_home}" ]]; then
+  printf '  FAIL: T7: cleanup_sterile_env did not remove a real sterile-home shape: %q\n' "${fake_home}" >&2
+  fail=$((fail + 1))
+  rm -rf "${fake_home}"
+else
+  pass=$((pass + 1))
+fi
+
+# Legacy /tmp shape — guard MUST still match (forward-compat).
+legacy_home="$(mktemp -d /tmp/omc-sterile-legacy-XXXXXX)"
+cleanup_sterile_env "${legacy_home}"
+if [[ -d "${legacy_home}" ]]; then
+  printf '  FAIL: T7: cleanup_sterile_env did not remove legacy /tmp shape: %q\n' "${legacy_home}" >&2
+  fail=$((fail + 1))
+  rm -rf "${legacy_home}"
+else
+  pass=$((pass + 1))
+fi
+
+# Arbitrary unrelated path — guard MUST refuse.
+safe_dir="$(mktemp -d "${HOME}/.cache/omc-cleanup-safety-XXXXXX")"
+# Rename so the path no longer matches the sterile-home pattern.
+unrelated_dir="${safe_dir}/something-unrelated"
+mkdir -p "${unrelated_dir}"
+cleanup_sterile_env "${unrelated_dir}"
+if [[ -d "${unrelated_dir}" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T7: cleanup_sterile_env removed an unrelated path: %q\n' "${unrelated_dir}" >&2
+  fail=$((fail + 1))
+fi
+rm -rf "${safe_dir}" 2>/dev/null
+
+# Empty / missing arg — guard MUST be a no-op.
+cleanup_sterile_env ""
+cleanup_sterile_env "/nonexistent/path-that-doesnt-exist"
+pass=$((pass + 1))  # if we got here, the guard didn't choke
+
+# ----------------------------------------------------------------------
 printf '\n=== sterile-env tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]

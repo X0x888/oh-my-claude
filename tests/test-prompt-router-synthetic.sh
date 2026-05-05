@@ -181,6 +181,37 @@ output line two
 assert_eq "bash-stdout: current_objective unchanged" "untouched objective" \
   "$(jq -r '.current_objective // ""' "${sdir3}/session_state.json")"
 
+# v1.34.1: end-to-end regression for the <system-reminder> anchor
+# specifically. Claude Code injects <system-reminder>...</system-reminder>
+# wrappers around several flavors of synthetic content; if a future
+# refactor drops `system-reminder` from the anchor list in
+# is_synthetic_prompt, this test catches it before release.
+sid4="system-reminder-test"
+sdir4="${STATE_ROOT}/${sid4}"
+mkdir -p "${sdir4}"
+jq -nc '{
+  workflow_mode: "ultrawork",
+  task_intent: "execution",
+  task_domain: "coding",
+  current_objective: "v1.34.1 anchor regression target",
+  done_contract_commit_mode: "required",
+  last_user_prompt_ts: "2000"
+}' > "${sdir4}/session_state.json"
+
+run_router '<system-reminder>
+This is a notice about something the model should know.
+Multiple lines of synthetic content here.
+</system-reminder>' "${sid4}" >/dev/null
+
+assert_eq "system-reminder: current_objective preserved" "v1.34.1 anchor regression target" \
+  "$(jq -r '.current_objective // ""' "${sdir4}/session_state.json")"
+assert_eq "system-reminder: task_intent preserved" "execution" \
+  "$(jq -r '.task_intent // ""' "${sdir4}/session_state.json")"
+assert_eq "system-reminder: commit_mode preserved" "required" \
+  "$(jq -r '.done_contract_commit_mode // ""' "${sdir4}/session_state.json")"
+assert_eq "system-reminder: last_user_prompt_ts not bumped" "2000" \
+  "$(jq -r '.last_user_prompt_ts // ""' "${sdir4}/session_state.json")"
+
 # --- Result -------------------------------------------------------------
 
 printf '\n=== Synthetic-Prompt Filter Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"

@@ -51,9 +51,25 @@ build_sterile_env() {
   # `/home/x`, or `/home/runner` respectively). This is the same
   # ORIG_HOME-anchored pattern the v1.33.1/.2 hotfix used for the
   # T24 pin-location escape.
-  local _sterile_parent="${HOME}/.cache"
-  mkdir -p "${_sterile_parent}" 2>/dev/null
-  sterile_home="$(mktemp -d "${_sterile_parent}/omc-sterile-home-XXXXXX")" || return 1
+  # Defensive: HOME is normally always set, but Docker containers and
+  # `env -i ...` invocations may strip it. Fall back to the directory
+  # of the test runner's user (POSIX `getent` lookup) or — last resort —
+  # `mktemp -d` under TMPDIR (which on Linux CI lands under /tmp/, so
+  # T6's HOME-shape assertion would fail; that is the worst case but
+  # still better than mkdir against an empty path).
+  local _sterile_parent
+  if [[ -n "${HOME:-}" ]]; then
+    _sterile_parent="${HOME}/.cache"
+  else
+    _sterile_parent="$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6)/.cache"
+    [[ "${_sterile_parent}" == "/.cache" ]] && _sterile_parent=""
+  fi
+  if [[ -z "${_sterile_parent}" ]]; then
+    sterile_home="$(mktemp -d)" || return 1
+  else
+    mkdir -p "${_sterile_parent}" 2>/dev/null
+    sterile_home="$(mktemp -d "${_sterile_parent}/omc-sterile-home-XXXXXX")" || return 1
+  fi
   # TMPDIR — force under `/tmp/` on every host so subsequent
   # `mktemp -d` calls inside tests mimic Linux CI's `/tmp/tmp.XXX`
   # shape regardless of macOS dev's `/var/folders/...` default.
@@ -135,9 +151,21 @@ build_sterile_env() {
 # call this in a trap when they want the sterile HOME removed; the
 # default mktemp -d under TMPDIR/$TMPDIR is auto-swept by the OS
 # eventually, so this is hygiene, not correctness.
+#
+# The path-prefix guard prevents a typo'd argument from blast-radius
+# extending into a real directory. Matches paths that look like
+# something `build_sterile_env` itself would have created:
+#   v1.34.0+ — `*/omc-sterile-home-*` under `${HOME}/.cache`
+#   pre-v1.34.0 legacy — `*/tmp*` (kept for forward-compat with any
+#                        test that still passes the older shape)
+# Anything else is silently rejected — never recursive-delete a path
+# that doesn't match a sterile-home name on its own.
 cleanup_sterile_env() {
   local sterile_home="$1"
-  if [[ -n "${sterile_home}" && -d "${sterile_home}" && "${sterile_home}" == */tmp* ]]; then
-    rm -rf "${sterile_home}" 2>/dev/null || true
-  fi
+  [[ -n "${sterile_home}" && -d "${sterile_home}" ]] || return 0
+  case "${sterile_home}" in
+    */omc-sterile-home-*|*/tmp*)
+      rm -rf "${sterile_home}" 2>/dev/null || true
+      ;;
+  esac
 }
