@@ -857,26 +857,38 @@ teardown_test
 # T24-T27: v1.31.0 Wave 1 — claude_bin pin (security F-5 PATH-hijack defense)
 # ---------------------------------------------------------------------------
 # T24: pin valid — watchdog launches the pinned binary, not the PATH name
+#
+# v1.33.x note: Wave 4 (4-attacker security review on `main`) added a
+# claude_bin path-prefix denylist that rejects pins under `/tmp/`,
+# `/private/tmp/`, `/var/tmp/`, `/Users/Shared/`, `/dev/shm/`. On macOS
+# `mktemp -d` returns `/var/folders/...` so TEST_HOME is fine; on Linux CI
+# `mktemp -d` returns `/tmp/tmp.XXX` and a pin under TEST_HOME would be
+# rejected, falling back to PATH and breaking the "pin honored" assertion
+# below. T25/T26 don't care because they assert the FALLBACK path. T24
+# specifically needs the pin honored — host the pinned binary outside the
+# denylist by rooting it under `${HOME}/.cache/...`.
 print_test_header "T24: claude_bin pin used for tmux launch"
 setup_test
 install_tmux_mock
 install_mock claude 0
-# Create a separate "pinned" claude in a non-PATH location.
-mkdir -p "${TEST_HOME}/.opt/bin"
-cat > "${TEST_HOME}/.opt/bin/claude" <<'PINNED'
+# Create a separate "pinned" claude in a non-PATH, non-denylist location.
+PIN_HOME_T24="$(mkdir -p "${HOME}/.cache" 2>/dev/null && mktemp -d "${HOME}/.cache/omc-test-pin-XXXXXX" 2>/dev/null || mktemp -d)"
+mkdir -p "${PIN_HOME_T24}/.opt/bin"
+cat > "${PIN_HOME_T24}/.opt/bin/claude" <<'PINNED'
 #!/usr/bin/env bash
 case "$1" in
   --version) printf 'claude-pinned 1.0.0\n'; exit 0 ;;
   *) printf '%s\n' "$*" >> "${MOCK_BIN}/claude-pinned.calls"; exit 0 ;;
 esac
 PINNED
-sed -i.bak "s|\${MOCK_BIN}|${MOCK_BIN}|g" "${TEST_HOME}/.opt/bin/claude" && rm -f "${TEST_HOME}/.opt/bin/claude.bak"
-chmod +x "${TEST_HOME}/.opt/bin/claude"
+sed -i.bak "s|\${MOCK_BIN}|${MOCK_BIN}|g" "${PIN_HOME_T24}/.opt/bin/claude" && rm -f "${PIN_HOME_T24}/.opt/bin/claude.bak"
+chmod +x "${PIN_HOME_T24}/.opt/bin/claude"
 target="$(make_request "sess-24" "${TEST_HOME}" "Pin test." "/ulw via pin")"
-OMC_CLAUDE_BIN="${TEST_HOME}/.opt/bin/claude" bash "${WATCHDOG}" >/dev/null 2>&1
+OMC_CLAUDE_BIN="${PIN_HOME_T24}/.opt/bin/claude" bash "${WATCHDOG}" >/dev/null 2>&1
 tmux_calls="$(mock_calls tmux)"
-assert_contains "T24: tmux invokes pinned absolute path" "${TEST_HOME}/.opt/bin/claude --resume sess-24" "${tmux_calls}"
+assert_contains "T24: tmux invokes pinned absolute path" "${PIN_HOME_T24}/.opt/bin/claude --resume sess-24" "${tmux_calls}"
 assert_eq "T24: artifact claimed" "watchdog-launched" "$(read_field "${target}" last_attempt_outcome)"
+rm -rf "${PIN_HOME_T24}"
 teardown_test
 
 # T25: pin missing-executable falls back to live command -v
