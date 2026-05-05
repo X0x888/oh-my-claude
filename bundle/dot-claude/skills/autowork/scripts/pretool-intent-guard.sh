@@ -544,6 +544,17 @@ if [[ "${push_contract_mode}" == "forbidden" ]]; then
   fi
 fi
 
+# v1.34.0 (Bug C wave-2 fix): under execution intent, the only reason
+# the script reached this point is that a contract mode is forbidden
+# but the segment didn't match the contract's verb. The destructive-op
+# gate below this comment is meant for advisory / session-management /
+# checkpoint intents where every destructive op needs explicit
+# authorization. Under execution intent the user has already authorized
+# work; the contract checks above are the precise enforcement.
+if [[ "${intent_guard_active}" -eq 0 ]]; then
+  exit 0
+fi
+
 if _wave_execution_active && _wave_override_command_safe "${normalized_cmd}"; then
   # Extract the active wave's metadata for the gate-event details so
   # /ulw-report can attribute each override to a specific wave (which

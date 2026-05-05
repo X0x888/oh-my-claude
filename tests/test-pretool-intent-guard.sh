@@ -99,6 +99,15 @@ set_commit_mode() {
     && mv "${state_dir}/session_state.json.tmp" "${state_dir}/session_state.json"
 }
 
+# v1.34.0 (Bug C): push-side contract is independent of commit-side.
+set_push_mode() {
+  local sid="$1" mode="$2"
+  local state_dir="${TEST_HOME}/.claude/quality-pack/state/${sid}"
+  jq --arg mode "${mode}" '. + {done_contract_push_mode:$mode}' \
+    "${state_dir}/session_state.json" > "${state_dir}/session_state.json.tmp" \
+    && mv "${state_dir}/session_state.json.tmp" "${state_dir}/session_state.json"
+}
+
 # Seed findings.json with the given waves[] payload. Each call replaces the
 # whole document — tests describe the wave-state they care about explicitly.
 # Optional 3rd arg overrides updated_ts so tests can simulate a stale plan.
@@ -983,6 +992,113 @@ if denied "${out_t39}"; then
 else
   printf '  FAIL: T39: merge-authorized but reset-unauthorized compound must deny (got: %s)\n' "${out_t39}" >&2
   fail=$((fail + 1))
+fi
+teardown_test
+
+# ----------------------------------------------------------------------
+# v1.34.0 (Bug C end-to-end): push_mode=forbidden blocks publishing-class
+# verbs without forbidding commit. Validates the matcher-split between
+# `_commit_segment_forbidden` (git commit only) and
+# `_push_segment_forbidden` (git push|tag, gh pr/release/issue).
+# The fixture mirrors the user's reported case: prompt authorized
+# commit but explicitly forbade the push half.
+# ----------------------------------------------------------------------
+
+# T40 (Bug C): push_mode=forbidden + git commit → ALLOW. The
+# whole point of splitting from a single mode: commit must remain
+# authorized when only push was forbidden.
+setup_test
+init_session "t40" "execution"
+set_push_mode "t40" "forbidden"
+out_t40="$(run_guard "t40" "git commit -m 'auth fix'")"
+if denied "${out_t40}"; then
+  printf '  FAIL: T40: push_mode=forbidden must NOT deny git commit (got: %s)\n' "${out_t40}" >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+teardown_test
+
+# T41 (Bug C): push_mode=forbidden + git push → DENY.
+setup_test
+init_session "t41" "execution"
+set_push_mode "t41" "forbidden"
+out_t41="$(run_guard "t41" "git push origin main")"
+if denied "${out_t41}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T41: push_mode=forbidden must deny git push (got: %s)\n' "${out_t41}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# T42 (Bug C): push_mode=forbidden + git tag → DENY.
+setup_test
+init_session "t42" "execution"
+set_push_mode "t42" "forbidden"
+out_t42="$(run_guard "t42" "git tag v1.0.0")"
+if denied "${out_t42}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T42: push_mode=forbidden must deny git tag (got: %s)\n' "${out_t42}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# T43 (Bug C): push_mode=forbidden + gh pr create → DENY.
+setup_test
+init_session "t43" "execution"
+set_push_mode "t43" "forbidden"
+out_t43="$(run_guard "t43" "gh pr create --title 'feat' --body 'x'")"
+if denied "${out_t43}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T43: push_mode=forbidden must deny gh pr create (got: %s)\n' "${out_t43}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# T44 (Bug C): push_mode=forbidden + git status → ALLOW. Read-only
+# git ops must not trigger the publish-class block.
+setup_test
+init_session "t44" "execution"
+set_push_mode "t44" "forbidden"
+out_t44="$(run_guard "t44" "git status")"
+if denied "${out_t44}"; then
+  printf '  FAIL: T44: push_mode=forbidden must NOT deny git status (got: %s)\n' "${out_t44}" >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+teardown_test
+
+# T45 (Bug C compound): commit_mode=required, push_mode=forbidden +
+# `git commit && git push` → DENY (the push segment fails). The
+# commit-half being authorized is the whole point of the split, but
+# concatenating the forbidden push must still trip the gate.
+setup_test
+init_session "t45" "execution"
+set_commit_mode "t45" "required"
+set_push_mode "t45" "forbidden"
+out_t45="$(run_guard "t45" "git commit -m 'x' && git push")"
+if denied "${out_t45}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T45: commit-allowed + push-forbidden compound must deny (got: %s)\n' "${out_t45}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# T46 (Bug C): both modes unspecified + git push → ALLOW. No contract,
+# no block (subject to other gates that don't apply at execution intent).
+setup_test
+init_session "t46" "execution"
+out_t46="$(run_guard "t46" "git push")"
+if denied "${out_t46}"; then
+  printf '  FAIL: T46: no contract should not deny under execution intent (got: %s)\n' "${out_t46}" >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
 fi
 teardown_test
 

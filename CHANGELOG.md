@@ -4,6 +4,103 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Cross-project state-corruption regression fixed (Bug A/B/C)
+
+A user reported that starting a second `/ulw` session in a different
+project while the first session was working corrupted the second
+session's contract state — symptom: false STATE RECOVERY directives
+on every prompt, `task_intent` flipping to `advisory`,
+`current_objective` filled with `<task-notification>` payloads. The
+investigation surfaced three independent defects:
+
+- **Bug B (root cause, harness-side, latent since v1.27.0).**
+  `read_state_keys` (`lib/state-io.sh:282`) emitted values newline-
+  delimited; the three callers (`prompt-intent-router.sh:25` and
+  `stop-guard.sh:131,386`) consumed line-by-line assuming 1 line =
+  1 key. Any value containing a newline (multi-line user prompt,
+  multi-line `current_objective`, task-notification body) overflowed
+  into subsequent positional slots, silently populating
+  `recovered_from_corrupt_*` markers with prompt-text fragments and
+  triggering a false STATE RECOVERY directive every turn. The same
+  fragments leaked into the cross-session
+  `~/.claude/quality-pack/gate_events.jsonl` ledger that
+  `omc-repro.sh` packs into shareable tarballs. **User-visible**
+  since v1.29.0 when keys 5-6 became the recovery markers.
+- **Bug A (defensive, harness-side).** When Claude Code fires
+  UserPromptSubmit on background-Agent task-completion events
+  (observed in multi-Agent council shapes), the
+  prompt-intent-router treated the synthetic `<task-notification>`
+  payload as a user prompt and overwrote the entire
+  `done_contract_*` block. The harness had never filtered such
+  injections.
+- **Bug C (incidental, surfaced during the fix attempt).**
+  `detect_commit_intent_from_prompt` collapsed `commit | push | tag |
+  publish | release` into one "publishing verb" group, so a
+  compound directive like "commit X. don't push Y." classified the
+  whole prompt as `commit_mode=forbidden` because the negation
+  matched "don't push" — even though the user explicitly authorized
+  the commit.
+
+### Fixed
+
+- **`lib/state-io.sh:282`** — `read_state_keys` switched from
+  newline-delimited to ASCII RS (byte 0x1e) record-delimited output.
+  All three callers updated to use `read -r -d $'\x1e'`. NUL was
+  rejected as the separator because `jq -j` strips NUL bytes from
+  output. Multi-line values now pass through intact and never
+  mis-align positional indices. Regression net: `tests/test-state-
+  fuzz.sh` Class 12 fails if the helper reverts to newline
+  delimiters.
+- **`record_gate_event` privacy cap** — the per-field 1024-char cap
+  is tightened to 256 chars for `state-corruption` events. The
+  recovery markers (`archive_path`, `recovered_ts`) are supposed to
+  hold a path + epoch (~150 chars max); 256 caps any future
+  Bug B-shape misalignment to a single line of context instead of a
+  full prompt-text wholesale. Regression net: `tests/test-state-
+  fuzz.sh` Class 13.
+- **Cross-session ledger scrub** — the 4 leaked rows in the live
+  `~/.claude/quality-pack/gate_events.jsonl` were dropped in this
+  release (backup at `gate_events.jsonl.before-scrub-<ts>.bak`).
+  **Advisory:** if you ever ran `omc-repro.sh` on v1.29.0–v1.33.2
+  and shared the output, the included `gate_events.jsonl` may
+  contain prompt-text fragments under `state-corruption` rows —
+  rotate or redact in any tarball you've already shared.
+- **`is_synthetic_prompt()` filter** — anchor-based detection of
+  Claude-Code-injected wrappers (`<task-notification>`,
+  `<system-reminder>`, bash-stdout/stderr, command-* wrappers) at
+  the head of `prompt-intent-router.sh`. Synthetic injections are
+  short-circuited; the prior contract is preserved instead of
+  overwritten. Regression net: `tests/test-prompt-router-synthetic.sh`
+  (20 assertions, CI-pinned).
+- **Commit/push classifier split** — `detect_commit_intent_from_prompt`
+  now applies forbidden detection to the `commit` verb only.
+  `detect_push_intent_from_prompt` (NEW) covers
+  `push | tag | publish | release | ship` independently and persists
+  as `done_contract_push_mode`. `pretool-intent-guard.sh` now reads
+  both modes and gates `git commit` against commit_mode while
+  gating `git push | git tag | gh pr/release/issue create-class` ops
+  against push_mode. A compound directive like "commit X. don't
+  push Y." correctly produces `commit_mode=required` AND
+  `push_mode=forbidden`, allowing the commit while blocking the
+  push. Regression net: `tests/test-common-utilities.sh` (+12
+  classifier assertions) plus end-to-end gating cases in
+  `tests/test-pretool-intent-guard.sh`.
+
+### Added
+
+- **State key `done_contract_push_mode`** — push-side classifier
+  output, persisted at PromptSubmit time alongside
+  `done_contract_commit_mode`. Documented in
+  `docs/architecture.md`. Surfaced in `/ulw-status` as `Push intent:`
+  alongside the existing `Commit intent:` line.
+- **`tests/test-prompt-router-synthetic.sh`** — focused regression
+  net for Bug A. CI-pinned.
+- **`tests/test-state-fuzz.sh` Class 12 + Class 13** — multi-line
+  value bulk-read alignment under `read_state_keys`, plus the
+  state-corruption gate-event field cap.
+- **Test count lockstep** updated from 74 → 75 across `README.md`,
+  `AGENTS.md`, `CLAUDE.md`.
+
 ### Delivery Contract v2 — infer required surfaces from real edits
 
 The v1 contract (v1.33.0) blocked Stop on adjacent deliverables the user *named* in the prompt — "update the docs", "add a test". v2 closes the gap when the user does NOT name them but the actual edits imply them. Six conservative inference rules, all derived from `edited_files.log` plus session state, fold into the same `delivery-contract` gate so the model sees a single audit-ready blocker list:

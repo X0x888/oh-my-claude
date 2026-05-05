@@ -209,6 +209,9 @@ if [[ -z "${contract_primary}" ]]; then
   contract_primary="$(jq -r '.current_objective // "none"' "${state_file}" 2>/dev/null || echo "none")"
 fi
 contract_commit_mode="$(delivery_contract_commit_mode_label "$(read_state "done_contract_commit_mode" 2>/dev/null || true)")"
+# v1.34.0 (Bug C): push-side intent renders alongside commit-side so a
+# "commit X. don't push Y." prompt makes both halves auditable here.
+contract_push_mode="$(delivery_contract_commit_mode_label "$(read_state "done_contract_push_mode" 2>/dev/null || true)")"
 contract_prompt_surfaces="$(csv_humanize "$(read_state "done_contract_prompt_surfaces" 2>/dev/null || true)")"
 contract_verify_required="$(csv_humanize "$(read_state "verification_contract_required" 2>/dev/null || true)")"
 contract_touched_surfaces="$(delivery_contract_touched_surfaces_summary 2>/dev/null || printf 'none')"
@@ -519,6 +522,7 @@ jq -r '
 printf '\n--- Delivery Contract ---\n'
 printf 'Primary deliverable: %s\n' "${contract_primary}"
 printf 'Commit intent:       %s\n' "${contract_commit_mode}"
+printf 'Push intent:         %s\n' "${contract_push_mode}"
 printf 'Prompt surfaces:     %s\n' "${contract_prompt_surfaces}"
 printf 'Proof contract:      %s\n' "${contract_verify_required}"
 printf 'Touched surfaces:    %s\n' "${contract_touched_surfaces}"
