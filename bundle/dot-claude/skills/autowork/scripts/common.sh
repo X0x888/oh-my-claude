@@ -602,6 +602,51 @@ is_inferred_contract_enabled() {
   [[ "${OMC_INFERRED_CONTRACT:-on}" != "off" ]]
 }
 
+# is_synthetic_prompt — v1.34.0 (Bug A defense).
+# Returns 0 when the input looks like a Claude-Code-injected payload
+# rather than a user-submitted prompt. UserPromptSubmit hooks have
+# been observed to fire with these synthetic injections as `.prompt`
+# in some Claude Code versions / multi-Agent council shapes — when
+# that happens, our prompt-intent-router was overwriting
+# `last_user_prompt`, `current_objective`, `done_contract_*` etc.
+# with notification body text (often multi-line, which then tripped
+# Bug B's positional misalignment downstream).
+#
+# Detection is anchor-based on the first line: synthetic injections
+# begin with a recognizable XML-ish wrapper tag at column 0. The
+# match is intentionally conservative to avoid false positives on
+# human prompts that happen to include angle-bracket text inline —
+# we only fire when the FIRST non-whitespace token is one of the
+# known wrapper tags. Recognized tags are documented inline; new
+# Claude-Code injection shapes can be added here as they surface.
+#
+# Callers:
+#   prompt-intent-router.sh: skip contract overwrite when this
+#     returns 0 — a synthetic injection should not redefine the
+#     active task contract.
+is_synthetic_prompt() {
+  local text="$1"
+  [[ -z "${text}" ]] && return 1
+
+  # Strip leading whitespace for the anchor check; the wrapper
+  # tags always lead the body.
+  local first_chars="${text#"${text%%[![:space:]]*}"}"
+  case "${first_chars}" in
+    "<task-notification>"*) return 0 ;;
+    "<system-reminder>"*) return 0 ;;
+    "<bash-stdout>"*) return 0 ;;
+    "<bash-stderr>"*) return 0 ;;
+    "<command-stdout>"*) return 0 ;;
+    "<command-stderr>"*) return 0 ;;
+    "<command-message>"*) return 0 ;;
+    "<command-name>"*) return 0 ;;
+    "<command-args>"*) return 0 ;;
+    "<local-command-stdout>"*) return 0 ;;
+    "<local-command-stderr>"*) return 0 ;;
+  esac
+  return 1
+}
+
 # blindspot_inventory_path — v1.28.0.
 # Resolves the cache path for the current project. Used by the directive
 # injection so the model can read the inventory directly. Returns the

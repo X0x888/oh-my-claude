@@ -14,6 +14,20 @@ if [[ -z "${SESSION_ID}" || -z "${PROMPT_TEXT}" ]]; then
   exit 0
 fi
 
+# v1.34.0 (Bug A defense): UserPromptSubmit hooks have been observed
+# to fire with synthetic Claude-Code-injected payloads (e.g.
+# `<task-notification>...</task-notification>` task-completion
+# events under multi-Agent council runs) as `.prompt`. Treating those
+# as user prompts overwrites `last_user_prompt`, `current_objective`,
+# and the entire `done_contract_*` block with notification body text,
+# corrupting the active task contract. Skip routing entirely on a
+# detected synthetic injection — preserve the prior contract and let
+# the next real user prompt drive classification.
+if is_synthetic_prompt "${PROMPT_TEXT}"; then
+  log_hook "prompt-intent-router" "skip: synthetic injection (first 60 chars: ${PROMPT_TEXT:0:60})"
+  exit 0
+fi
+
 ensure_session_dir
 sweep_stale_sessions
 

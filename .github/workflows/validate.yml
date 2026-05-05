@@ -170,6 +170,9 @@ jobs:
       - name: Run inferred-contract tests (v1.34.0 Delivery Contract v2 pin)
         run: bash tests/test-inferred-contract.sh
 
+      - name: Run prompt-router synthetic-injection tests (v1.34.0 Bug A pin)
+        run: bash tests/test-prompt-router-synthetic.sh
+
       - name: Run pretool-intent-guard tests (v1.32.0 R1 pin)
         run: bash tests/test-pretool-intent-guard.sh
 
