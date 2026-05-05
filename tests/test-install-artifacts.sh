@@ -241,7 +241,14 @@ else
 fi
 
 # SHA, manifest, stamp all still present.
-assert_true "installed_sha still set" "grep -q '^installed_sha=' '${CONF}'"
+# SHA is only written when the source is a regular git clone (`.git` directory);
+# git worktrees have `.git` as a file, so install.sh skips the SHA write and the
+# assertion would fire spuriously. Guard mirrors Test 1 above.
+if [[ -d "${REPO_ROOT}/.git" ]]; then
+  assert_true "installed_sha still set" "grep -q '^installed_sha=' '${CONF}'"
+else
+  printf '  SKIP: repo is not a git directory; SHA persistence test not applicable\n'
+fi
 assert_true "manifest still exists" "[[ -f '${MANIFEST}' ]]"
 assert_true "install-stamp still exists" "[[ -f '${STAMP}' ]]"
 

@@ -318,7 +318,7 @@ assert_doc_match "C4: CLAUDE autowork count" \
   "CLAUDE.md should report ${autowork_count} autowork hooks + helpers in Key Directories"
 
 assert_doc_match "C4: CLAUDE test count" \
-  "tests/.*— ${test_sh_count} bash \\+ ${test_py_count} python test scripts \\(${ci_pinned_count} bash CI-pinned" \
+  "tests/.*— ${test_sh_count} bash \\+ ${test_py_count} python test scripts \\(.*${ci_pinned_count} bash[[:space:]]+(tests[[:space:]]+)?CI-pinned" \
   "${CLAUDE_MD}" \
   "CLAUDE.md should report ${test_sh_count} bash + ${test_py_count} python tests and ${ci_pinned_count} CI-pinned bash suites"
 
