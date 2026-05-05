@@ -1,17 +1,24 @@
 #!/usr/bin/env bash
-# Tests for the per-directive byte-count instrumentation added in
+# Tests for the per-directive size-count instrumentation added in
 # prompt-intent-router.sh. Each `add_directive` call should append a
-# `directive_emitted` row to timing.jsonl with name + bytes + prompt_seq,
+# `directive_emitted` row to timing.jsonl with name + chars + prompt_seq,
 # enabling /ulw-report and offline analysis to attribute the prompt's
 # additionalContext tax by category.
 #
+# `chars` (not bytes) because bash's `${#var}` is locale-aware: under
+# UTF-8 locales it returns codepoint count, not raw byte count. T7
+# guards this — directive bodies contain em-dashes (3 bytes / 1 codepoint
+# in UTF-8) and the recorded chars value must match the codepoint count,
+# not the byte count.
+#
 # Drives the router end-to-end with a synthetic /ulw prompt and asserts:
 #   - timing.jsonl contains directive_emitted rows
-#   - row schema (kind, ts, prompt_seq, name, bytes) is well-formed
-#   - bytes field matches the actual body byte count for known directives
+#   - row schema (kind, ts, prompt_seq, name, chars) is well-formed
+#   - chars field matches the actual body codepoint count for known directives
 #   - distinct names cover the expected categories on a fresh execution prompt
 #   - OMC_TIME_TRACKING=off suppresses emission entirely
 #   - aggregator does not error on directive_emitted rows (forward-compat)
+#   - chars stores codepoints not bytes for multi-byte UTF-8 bodies (T7)
 #
 # Mirrors structure of test-divergence-directive.sh for consistency.
 
@@ -117,12 +124,12 @@ if [[ -f "${tlog}" ]]; then
 fi
 
 # ----------------------------------------------------------------------
-printf 'Test 2: rows have well-formed schema (kind, ts, prompt_seq, name, bytes)\n'
+printf 'Test 2: rows have well-formed schema (kind, ts, prompt_seq, name, chars)\n'
 if [[ -f "${tlog}" ]]; then
   malformed="$(jq -c 'select(.kind=="directive_emitted") |
-    select(.ts == null or .prompt_seq == null or .name == null or .bytes == null
+    select(.ts == null or .prompt_seq == null or .name == null or .chars == null
       or (.ts | type) != "number"
-      or (.bytes | type) != "number"
+      or (.chars | type) != "number"
       or (.name | type) != "string"
       or (.prompt_seq | type) != "number")
   ' "${tlog}" 2>/dev/null | wc -l | tr -d ' ')"
@@ -141,15 +148,20 @@ if [[ -f "${tlog}" ]]; then
 fi
 
 # ----------------------------------------------------------------------
-printf 'Test 4: bytes field equals actual body length for known directive\n'
+printf 'Test 4: chars field equals actual body codepoint length for known directive\n'
 # The intent_classification body for a fresh execution prompt is fully
 # deterministic given TASK_DOMAIN and display_intent. We can't easily
 # recompute the literal here without duplicating the router's body, so
-# instead assert the cross-reference invariant: sum(bytes) over the
-# directive_emitted rows equals the byte length of the joined
+# instead assert the cross-reference invariant: sum(chars) over the
+# directive_emitted rows equals the codepoint length of the joined
 # additionalContext minus (rows-1) for the join newlines added at final
 # emission. This is the load-bearing accounting equation the analysis
 # layer will rely on.
+#
+# Both sides use the same locale-aware counting (`${#var}` and `${#ctx}`
+# both return codepoints under UTF-8) so the invariant holds regardless
+# of LANG. T7 separately guards that the recorded values are actual
+# codepoint counts and not byte counts (a different invariant).
 sid="t4-${RANDOM}"
 ctx="$(_run_router "${sid}" "ulw fix the off-by-one in lib/parse.ts:42" \
   | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null \
@@ -158,13 +170,13 @@ tlog4="$(_timing_file "${sid}")"
 if [[ -f "${tlog4}" ]] && [[ -n "${ctx}" ]]; then
   rows="$(jq -c 'select(.kind=="directive_emitted")' "${tlog4}" 2>/dev/null)"
   row_count="$(printf '%s\n' "${rows}" | grep -c .)"
-  bytes_sum="$(printf '%s\n' "${rows}" | jq -s 'map(.bytes) | add // 0' 2>/dev/null)"
-  ctx_bytes="${#ctx}"
+  chars_sum="$(printf '%s\n' "${rows}" | jq -s 'map(.chars) | add // 0' 2>/dev/null)"
+  ctx_chars="${#ctx}"
   # additionalContext is captured via `$(printf '%s\n' "${context_parts[@]}")`.
   # printf emits N trailing newlines, but command substitution strips the
   # final trailing newline — net (N-1) newline separators between N rows.
-  expected="$(( bytes_sum + row_count - 1 ))"
-  assert_eq "T4: sum(directive bytes) + (N-1) newlines == ctx byte length" "${expected}" "${ctx_bytes}"
+  expected="$(( chars_sum + row_count - 1 ))"
+  assert_eq "T4: sum(directive chars) + (N-1) newlines == ctx codepoint length" "${expected}" "${ctx_chars}"
 fi
 
 # ----------------------------------------------------------------------
@@ -203,6 +215,56 @@ if [[ -f "${tlog6}" ]]; then
       printf '  FAIL: T6: aggregator returned non-JSON: %s\n' "${agg:0:200}" >&2
       fail=$((fail + 1))
     fi
+  fi
+fi
+
+# ----------------------------------------------------------------------
+printf 'Test 7: chars field stores codepoint count, not byte count, for UTF-8 bodies\n'
+# Regression net for the locale defect quality-reviewer F-1 found.
+# Bash's `${#var}` is locale-aware. The router's directive bodies contain
+# em-dashes (U+2014, 3 bytes / 1 codepoint in UTF-8). T7 asserts the
+# recorded values are codepoint counts, NOT byte counts, by:
+#   (a) computing both ctx_chars (wc -m) and ctx_bytes (LC_ALL=C wc -c)
+#       on the additionalContext output;
+#   (b) confirming bodies actually contain multi-byte content (chars < bytes);
+#   (c) confirming the recorded sum matches the chars side, not the bytes side.
+# Without this test, a future change to `add_directive` that switched to
+# true bytes (e.g., wc -c via fork) would silently break the documented
+# semantics with no signal — T4 would still pass because both sides use
+# the same expansion.
+sid="t7-${RANDOM}"
+ctx="$(_run_router "${sid}" "ulw fix the off-by-one in lib/parse.ts:42" \
+  | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null \
+  || true)"
+tlog7="$(_timing_file "${sid}")"
+if [[ -f "${tlog7}" ]] && [[ -n "${ctx}" ]]; then
+  rows="$(jq -c 'select(.kind=="directive_emitted")' "${tlog7}" 2>/dev/null)"
+  row_count="$(printf '%s\n' "${rows}" | grep -c .)"
+  chars_sum="$(printf '%s\n' "${rows}" | jq -s 'map(.chars) | add // 0' 2>/dev/null)"
+  ctx_chars="$(printf '%s' "${ctx}" | LC_ALL=en_US.UTF-8 wc -m | tr -d ' ')"
+  ctx_bytes="$(printf '%s' "${ctx}" | LC_ALL=C wc -c | tr -d ' ')"
+
+  # (b) Bodies must actually contain multi-byte content for this test to
+  # be meaningful — otherwise both sides equal and the assertion is trivial.
+  if (( ctx_chars < ctx_bytes )); then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: T7 setup: directive bodies appear ASCII-only (ctx_chars=%d ctx_bytes=%d) — test cannot exercise multi-byte path\n' \
+      "${ctx_chars}" "${ctx_bytes}" >&2
+    fail=$((fail + 1))
+  fi
+
+  # (c) chars_sum should match the chars (codepoint) total, NOT the bytes total.
+  expected_chars=$(( chars_sum + row_count - 1 ))
+  assert_eq "T7: chars_sum + (N-1) == ctx_chars (codepoints, not bytes)" \
+    "${expected_chars}" "${ctx_chars}"
+  # And confirm the bytes total is meaningfully larger than the chars total
+  # so a future bytes-counting regression would diverge from the chars side.
+  if (( expected_chars != ctx_bytes )); then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: T7: chars_sum coincidentally matches byte count — test is non-discriminating\n' >&2
+    fail=$((fail + 1))
   fi
 fi
 

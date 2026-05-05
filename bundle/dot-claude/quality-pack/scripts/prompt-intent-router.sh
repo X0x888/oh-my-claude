@@ -217,13 +217,15 @@ context_parts=()
 
 # Per-directive emission helper. Appends <body> to context_parts AND
 # records a directive_emitted row in timing.jsonl with the directive
-# <name> + body byte count. Centralizing emission attributes per-
-# directive cost in /ulw-report and offline analysis without mutating
-# the directive bodies themselves.
+# <name> + body char count (locale-aware codepoint count via `${#var}`).
+# Centralizing emission attributes per-directive cost in /ulw-report
+# and offline analysis without mutating the directive bodies themselves.
 #
-# Token counting is deliberately deferred — bytes are exact, but
-# byte/4 heuristics mis-attribute by 15-30% on directive-shaped text.
-# The analysis layer re-tokenizes via the actual tokenizer.
+# Note: bash's `${#var}` is locale-aware — under UTF-8 locales it returns
+# codepoint (character) count, not raw byte count. The field is named
+# `chars` to reflect this honestly. Chars correlate with token cost
+# better than raw bytes (Anthropic's tokenizer operates on codepoints).
+# Phase 2 analysis still re-tokenizes via the actual tokenizer.
 add_directive() {
   local _add_name="${1:-}"
   local _add_body="${2:-}"
