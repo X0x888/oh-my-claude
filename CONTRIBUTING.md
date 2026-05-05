@@ -44,6 +44,19 @@ Keep PRs focused. One logical change per PR.
 - Use JSON for all state (`session_state.json`).
 - Use `read_state` and `write_state` / `write_state_batch` from `common.sh`.
 
+## ULW Workflow Changes
+
+For any change that affects `/ulw` behavior for end users — routing, directives, gates, reviewer sequencing, auto-dispatch, stop behavior, status/report surfaces, or prompt shaping — evaluate it primarily as a user-workflow change, not an internal refactor.
+
+Before calling the change an improvement, write down all four:
+
+1. **User failure mode fixed.** What real bad outcome does this prevent? Example: silent scope drop, wrong specialist choice, avoidable pause, weak verification, misleading report output.
+2. **Automation effect.** Does this reduce or increase the amount of steering/babysitting the user must do?
+3. **Latency/token cost.** What hot-path time or prompt/tool overhead does it add or remove?
+4. **Verification.** What test, measurement, or repro shows the tradeoff is worth it?
+
+If a change improves internal elegance but cannot answer those four items, describe it as internal maintenance rather than a ULW workflow improvement.
+
 ## Testing
 
 Before submitting a pull request, run the full CI-parity suite. The canonical command list lives in `CLAUDE.md` "Testing" — keep this section pointing at that single source of truth so the lists cannot drift.

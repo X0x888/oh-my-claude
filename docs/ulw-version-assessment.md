@@ -5,14 +5,27 @@ Date: 2026-05-05
 Scope:
 - audited release history from `v1.0.0` through `v1.32.15`
 - used `CHANGELOG.md`, release-tag commit messages, current tree counts, and targeted code inspection
-- evaluated with your stated priority order: `quality + automation` first, `speed + token usage` second
+- evaluated with the corrected lens: the quality of the real work a serious `/ulw` user receives first, how automatically the harness gets there second, and speed/token cost third
+
+## Lens Correction
+
+This is not mainly a repo-beauty contest. A version ranks higher only if it helps a Claude Code user ship better real work with less steering:
+
+- fewer silent scope drops
+- better specialist choice
+- stronger review / verification before stop
+- fewer avoidable user pauses
+- lower latency and token drag for the same or better outcome
+
+Internal cleanup, docs quality, and release discipline matter only when they change that user outcome or the user's ability to trust the workflow under real work.
 
 ## Executive Verdict
 
-- **Best overall today:** `v1.32.15`
-- **Best core ULW milestone:** `v1.31.3`
+- **Best version for serious `/ulw` users to run today:** `v1.32.15`, but only by a narrow margin
+- **Best pure ULW workflow line for user-visible work quality and automation:** `v1.31.3`
 - **Best speed-focused milestone:** `v1.27.0`
-- **Is the latest the best?** Yes overall, but mostly because it inherits the strongest `v1.27.0` to `v1.31.x` workflow gains and then closes release-discipline holes. It is the best *complete* version, not the cleanest *single-step* improvement.
+- **Best scope-protection milestone:** `v1.23.1`
+- **Is the latest the best?** Yes if the question is "what should a serious user run today?" No if the question is "which line contributed the biggest direct improvement to actual ULW work quality and automation?" That answer is `v1.31.3`, with `v1.27.0` the sharpest speed/value jump.
 - **Were there failures?** Yes, but mostly integration failures and drift, not wrong product direction:
   - `v1.24.0`-`v1.25.0` shipped stop-hook output through an unsupported field, so time-card / scorecard epilogues were largely invisible until `v1.26.0`.
   - `v1.32.6`-`v1.32.10` shipped multi-project telemetry in stages; `project_key` existed in reads before writes, so `/ulw-report` slicing was partially a feature in name only until the follow-up closures.
@@ -68,8 +81,8 @@ Interpretation:
 
 Method:
 - each row evaluates the **line**, using the latest patch in that line as the representative artifact
-- `Q/A delta` means impact on quality and automation
-- `Speed/token delta` means practical effect on latency, overhead, or prompt/tool efficiency
+- `Q/A delta` means the quality of the delivered work a `/ulw` user is likely to get, plus how automatically the harness gets there without babysitting
+- `Speed/token delta` means practical effect on latency, overhead, or prompt/tool efficiency during real work
 
 ### Foundation: `v1.0` to `v1.6`
 
@@ -127,49 +140,67 @@ Method:
 | `v1.29` | `v1.29.0` | High | High | Deep self-audit plus privacy controls, background blindspot scan, faster timing emission. Big system maturation step. |
 | `v1.30` | `v1.30.0` | High | Medium | Welcome banner, stop-output primitives, update-path summary, lock unification. More trust and resilience than raw new capability. |
 | `v1.31` | `v1.31.3` | Very High | Medium | The strongest core ULW line: nine-lens evaluation, major finding closure, divergence framing, and deep workflow refinement. |
-| `v1.32` | `v1.32.15` | High | Medium | Best complete version overall, but most of the line was release-process recovery, telemetry closure, and post-mortem hardening. |
+| `v1.32` | `v1.32.15` | High | Medium | Narrow current winner for users to run today, but most of the line's value is preserving `v1.31` behavior and making it safer to trust, not a huge new jump in delivered-work quality. |
+
+## User-Facing Ranking
+
+If the question is "which versions most improve the quality of the real work users get from `/ulw`?", my ranking is:
+
+1. `v1.32.15` — best version to run today, but by a narrow margin
+2. `v1.31.3` — best pure ULW workflow line and the clearest local maximum for direct user-visible work quality
+3. `v1.29.0` — major maturity step for clarity, privacy, and hot-path speed without weakening the workflow
+4. `v1.28.1` — strong quality parser + latency-budget + structured-findings line
+5. `v1.27.0` — biggest single speed/smartness jump
+6. `v1.23.1` — first version I would trust not to silently collapse example-shaped scope
 
 ## Which Version Works Best?
 
-### 1. Best overall: `v1.32.15`
+### 1. Best version for users to run today: `v1.32.15`
 
 Why:
-- inherits every major quality/automation win from `v1.23.1`, `v1.27.0`, `v1.28.1`, `v1.29.0`, and `v1.31.3`
-- closes several process holes that would otherwise make the repo itself harder to trust
-- current tree is the only version line that is both feature-rich and heavily self-audited
+- the user still gets every major workflow win from `v1.23.1`, `v1.27.0`, `v1.28.1`, `v1.29.0`, and `v1.31.3`
+- `v1.32.x` adds some real user-facing automation and trust improvements, but more importantly it removes ways the harness can quietly misreport, drift, or under-validate itself
+- for a serious current user, "best to run now" includes confidence that the workflow will stay coherent under long, messy, real work
 
-Why this is not a full endorsement of the `v1.32.x` process:
-- much of `v1.32.x` is recovery work for earlier release churn
-- the line improved release discipline, but it also proves discipline arrived late
-- if you judge only "new ULW product value per unit of churn", `v1.31.3` is cleaner
+Why this is only a narrow win:
+- much of `v1.32.x` is recovery work for earlier churn, not a fresh leap in delivered-work quality
+- most of the substantive user-visible ULW behavior was already present by `v1.31.3`
+- if you judge only "new ULW user value per unit of complexity", `v1.31.3` is cleaner
 
-### 2. Best core ULW release: `v1.31.3`
+### 2. Best pure ULW workflow line: `v1.31.3`
 
 Why:
-- it is the fullest expression of ULW as a serious end-to-end workflow, not just a harness
-- it ships the broadest evaluation posture while still staying focused on user-visible ULW behavior
-- it feels like the local maximum before `v1.32.x` pivots heavily into release mechanics
+- it is the fullest expression of ULW as a serious end-to-end workflow for user work, not just harness mechanics
+- the energy is still on improving what the user gets back from `/ulw`: broader evaluation, better framing, better closure, better share/report surfaces
+- it feels like the local maximum before `v1.32.x` shifts a large share of effort into release-system hardening
 
-### 3. Best speed/value release: `v1.27.0`
+### 3. Biggest speed/value release: `v1.27.0`
 
 Why:
 - it directly attacked the exact complaint set: slow, not smart, unsatisfying
 - unlike some earlier speed work, it paired performance changes with intelligence changes
 - it improved both perception and substance: routing, prompt quality, status visibility, hot-path latency
 
+### 4. First version that truly protected user scope: `v1.23.1`
+
+Why:
+- it is where `/ulw` stopped trusting the literal example and started defending the user's likely intent class
+- the exemplifying-scope hard gate addresses one of the most damaging real-world failure modes: shipping only the named example and silently dropping siblings
+- later versions build on this, but `v1.23.1` is the first line where I would say the workflow became materially harder to "look competent while missing the job"
+
 ## Is The Latest Version The Best?
 
-**Yes, overall. No, not by a wide margin.**
+**For a user deciding what to run today: yes. For a historian asking where the biggest improvement to actual `/ulw` work happened: no.**
 
-The latest version is best because:
-- it contains the strongest combined capability surface
+The latest version is the one I would install for real work today because:
 - it preserves the important speed work from `v1.27` and `v1.29`
 - it preserves the semantic-quality work from `v1.23`, `v1.28`, and `v1.31`
+- it adds enough trust and closure around the workflow that the user is less exposed to harness drift
 
-But the latest version is **not** the cleanest design state because:
-- `v1.32.x` spends a lot of energy cleaning up its own release mechanics
-- some telemetry features were still being wired fully this late
-- history and docs still drifted, which is why this branch now adds lockstep checks
+But the latest version is **not** the line that most improved the user's actual work output because:
+- `v1.32.x` spends a lot of energy cleaning up release mechanics and telemetry closure
+- many of the biggest direct wins to work quality, automation, and speed had already landed earlier
+- the margin over `v1.31.3` is real but small
 
 ## What Failed Or Underperformed
 
@@ -320,11 +351,11 @@ Ranked by how much they underdelivered relative to their apparent promise:
 
 ## Recommendation
 
-If the question is "which version should we stand behind today?", the answer is:
+If the question is "which version should a serious user run today?", the answer is:
 
 - **ship and use `v1.32.15`**
 
-If the question is "which version line most purely represents the best ULW workflow design so far?", the answer is:
+If the question is "which version most improved the actual work quality and automation users get from `/ulw`?", the answer is:
 
 - **`v1.31.3`**
 

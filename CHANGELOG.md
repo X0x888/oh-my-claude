@@ -7,12 +7,15 @@ All notable changes to this project will be documented in this file.
 ### Added
 
 - **`docs/ulw-version-assessment.md`** — comprehensive ULW version-line audit from `v1.0.0` through `v1.32.15`, with priority weighting on quality/automation first and speed/token usage second. Includes per-era comparison, best-version verdicts, failure analysis, and design-debt recommendations.
+- **User-outcome rubric for ULW changes.** `CLAUDE.md` and `CONTRIBUTING.md` now require `/ulw` workflow changes to justify four things in the same change: the end-user failure mode being fixed, the effect on automation/babysitting, the latency/token cost, and the verification proving the tradeoff. Internal elegance alone no longer counts as a ULW improvement.
 
 ### Fixed
 
 - **Release-history integrity guard.** `tests/test-coordination-rules.sh` now enforces two additional contracts: repository-count lockstep across `README.md` / `AGENTS.md` / `CLAUDE.md`, and semver tag-to-CHANGELOG parity (`git tag vX.Y.Z` must have a matching `## [X.Y.Z]` heading). `validate.yml` now checks out full history in the test job so the tag contract runs in CI instead of only on full local clones.
 - **`CHANGELOG.md` missing `v1.16.0` heading restored.** The release body was present in the file but the `## [1.16.0] - 2026-04-26` heading had silently disappeared, breaking tag-to-history parity and hiding the line from release-history scans.
+<<<<<<< HEAD
 - **Current documentation count drift corrected.** `README.md`, `AGENTS.md`, and `CLAUDE.md` now match the live tree: 34 agents, 25 skills, 9 lifecycle hooks, 32 autowork scripts, and 71 bash + 1 python tests.
+- **`docs/ulw-version-assessment.md` reframed around real `/ulw` user outcomes.** The audit now explicitly ranks versions by the quality of the work users receive, how automatically the harness gets there, and only then by speed/token cost. That correction changes the interpretation of `v1.31.3` versus `v1.32.15`: latest remains the best version to run today, but `v1.31.3` is the clearest local maximum for direct user-visible ULW workflow value.
 
 ### Atlas docs deep-refresh — closes the post-v1.32.x "atlas truncated" deferral
 
