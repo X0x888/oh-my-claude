@@ -196,6 +196,9 @@ jobs:
       - name: Run install-remote tests (v1.32.0 R1 pin)
         run: bash tests/test-install-remote.sh
 
+      - name: Run verify-foreign-hooks tests (v1.32.16 4-attacker review pin)
+        run: bash tests/test-verify-foreign-hooks.sh
+
       - name: Run memory-drift-hint tests (v1.32.0 R1 pin)
         run: bash tests/test-memory-drift-hint.sh
 

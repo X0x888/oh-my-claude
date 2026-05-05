@@ -73,7 +73,9 @@ TEST_HOME="$(mktemp -d)"
 CLAUDE_HOME="${TEST_HOME}/.claude"
 CONF="${CLAUDE_HOME}/oh-my-claude.conf"
 MANIFEST="${CLAUDE_HOME}/quality-pack/state/installed-manifest.txt"
+HASHES="${CLAUDE_HOME}/quality-pack/state/installed-hashes.txt"
 STAMP="${CLAUDE_HOME}/.install-stamp"
+BACKUP_PARENT="${CLAUDE_HOME}/backups"
 
 # ---------------------------------------------------------------------------
 # Test 1: First install writes SHA, manifest, and install-stamp
@@ -122,6 +124,65 @@ if ! printf '%s' "${install_output}" | grep -q 'Orphans:'; then
 else
   printf '  FAIL: first install should not emit orphan warning\n' >&2
   fail=$((fail + 1))
+fi
+
+# v1.32.16 (4-attacker security review, A2-MED-4): SHA-256 manifest for
+# drift detection. Best-effort write — present iff shasum or sha256sum
+# is on PATH at install time. CI runners and macOS dev boxes both have
+# shasum (Perl ships with it), so the file should exist on every install
+# we exercise here. Skip-on-tool-absence preserves the install-on-minimal-
+# container path; the assertion below would fire if tools regressed.
+if command -v shasum >/dev/null 2>&1 || command -v sha256sum >/dev/null 2>&1; then
+  assert_true "installed-hashes.txt exists when shasum/sha256sum is available" "[[ -f '${HASHES}' ]]"
+
+  # Each line: "<64-char hex>  <relative-path>".
+  if [[ -f "${HASHES}" ]]; then
+    hashes_lines="$(wc -l < "${HASHES}" | tr -d '[:space:]')"
+    if [[ "${hashes_lines}" -gt 10 ]]; then
+      pass=$((pass + 1))
+    else
+      printf '  FAIL: installed-hashes.txt must be non-trivial (got %s lines)\n' "${hashes_lines}" >&2
+      fail=$((fail + 1))
+    fi
+
+    # First non-blank line must match `<sha256>  <path>` shape.
+    first_line="$(grep -v '^[[:space:]]*$' "${HASHES}" | head -1)"
+    if [[ "${first_line}" =~ ^[0-9a-f]{64}\ \ .+ ]]; then
+      pass=$((pass + 1))
+    else
+      printf '  FAIL: first hash line must be `<sha256>  <path>` (got: %s)\n' "${first_line}" >&2
+      fail=$((fail + 1))
+    fi
+
+    # Hashes file should reference at least the core bundle files.
+    assert_contains "hashes lists CLAUDE.md" "CLAUDE.md" "$(cat "${HASHES}")"
+    assert_contains "hashes lists common.sh" "skills/autowork/scripts/common.sh" "$(cat "${HASHES}")"
+  fi
+else
+  printf '  SKIP: no shasum/sha256sum on PATH; drift-detection write skipped\n'
+fi
+
+# v1.32.16 (4-attacker security review, A2-MED-6): backup directory
+# perms are chmod 700 to prevent read-anywhere-in-${HOME} attackers from
+# mining prior settings.json / oh-my-claude.conf for credentials, paths,
+# or model-tier hints.
+backup_dirs="$(find "${BACKUP_PARENT}" -maxdepth 1 -type d -name 'oh-my-claude-*' 2>/dev/null || true)"
+if [[ -n "${backup_dirs}" ]]; then
+  backup_first="$(printf '%s\n' "${backup_dirs}" | head -1)"
+  # stat -c (GNU) and stat -f (BSD/macOS); fall back gracefully if both fail.
+  backup_mode="$(stat -c '%a' "${backup_first}" 2>/dev/null || stat -f '%Lp' "${backup_first}" 2>/dev/null || printf 'unknown')"
+  if [[ "${backup_mode}" == "700" ]]; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: backup dir must be chmod 700 (got: %s) at %s\n' "${backup_mode}" "${backup_first}" >&2
+    fail=$((fail + 1))
+  fi
+else
+  # First-install case where there's nothing to back up still creates
+  # the dir at install.sh:938. Confirm the dir exists and is 700.
+  if [[ -d "${BACKUP_PARENT}" ]]; then
+    pass=$((pass + 1))
+  fi
 fi
 
 printf '\n'

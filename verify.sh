@@ -22,6 +22,23 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TARGET_HOME="${TARGET_HOME:-$HOME}"
 CLAUDE_HOME="${TARGET_HOME}/.claude"
 
+# v1.32.16 (4-attacker security review): --strict escalates Step 8
+# (foreign hook detection) and Step 9 (SHA-256 drift) from `warn` to
+# `fail`. Default `warn` preserves the existing UX for users with
+# legitimate custom hook entries (CI integrations, personal automation
+# layered on top of the harness). --strict is the security-conscious
+# default for users who want their `verify.sh` exit code to fail on
+# any foreign content; this is the right setting for incident-response
+# audits and for shared/regulated machines.
+STRICT_MODE="false"
+for arg in "$@"; do
+  case "${arg}" in
+    --strict)
+      STRICT_MODE="true"
+      ;;
+  esac
+done
+
 # ---------------------------------------------------------------------------
 # State
 # ---------------------------------------------------------------------------
@@ -430,6 +447,145 @@ for agent_file in "${CLAUDE_HOME}/agents/"*.md; do
   fi
 done
 printf '  [info] Agent models: %d opus, %d sonnet\n' "${opus_count}" "${sonnet_count}"
+
+printf '\n'
+
+# ---------------------------------------------------------------------------
+# 8. Foreign hook detection (A2-HIGH-2 from 4-attacker security review)
+# ---------------------------------------------------------------------------
+#
+# Step 4 above checks "are the bundled hooks present?" — but never asks
+# the inverse "is anything ELSE wired into settings.json?". An A2
+# attacker (write-inside-`~/.claude/`) who appends a non-bundled hook
+# entry (e.g. {matcher: "*", command: "bash /tmp/persistence.sh"})
+# survives every install.sh run silently because the merge is additive.
+# Step 8 enumerates every hook command in settings.json and FAILs on
+# any path not under the bundled allowlist. This turns verify.sh into
+# the recovery boundary the user expects: "no foreign content has been
+# injected since install" rather than just "the install ran".
+
+printf '8. Foreign hook detection\n'
+
+# Default UX: warn on detect (preserves the verify.sh flow for users
+# with legitimate custom hooks layered on top of the harness — CI
+# integrations, personal automation, dev-loop hooks). --strict
+# escalates to fail for security-conscious audits where any foreign
+# content should break the verify exit code.
+foreign_report() {
+  if [[ "${STRICT_MODE}" == "true" ]]; then
+    fail "$1"
+  else
+    warn "$1"
+  fi
+}
+
+if [[ ! -f "${CLAUDE_HOME}/settings.json" ]]; then
+  fail "settings.json missing; cannot check for foreign hooks"
+elif ! command -v jq >/dev/null 2>&1; then
+  warn "jq not available; foreign-hook check skipped"
+else
+  # Distinguish jq parse failure from "no foreign entries". A
+  # malformed settings.json is itself an A2 indicator that warrants a
+  # loud signal — not a silent skip.
+  jq_err="$(jq -r '
+    [
+      (.hooks // {}) | to_entries[] |
+      .value[]? |
+      (.hooks // [])[]? |
+      .command // empty
+    ] | unique | .[]
+  ' "${CLAUDE_HOME}/settings.json" 2>&1)"
+  jq_rc=$?
+
+  if [[ ${jq_rc} -ne 0 ]]; then
+    fail "settings.json failed jq parse: ${jq_err}"
+  else
+    # FULL-string match; tight character classes for path/args
+    # structurally reject `..` traversal, `;`/`&&`/`|`/newline command
+    # chaining, and command substitution. The optional interpreter
+    # prefix is restricted to known shells/Python tokens (no absolute
+    # interpreter paths — those could be attacker-shimmed without
+    # flagging the path-allowlist). Whitespace pre-normalization
+    # collapses `bash  $HOME` cosmetic variants to `bash $HOME`.
+    bundled_re='^(bash |sh |dash |python3 )?([$]HOME|~)/\.claude/(skills/autowork/scripts/[A-Za-z0-9_-]+\.sh|quality-pack/scripts/[A-Za-z0-9_-]+\.sh|statusline\.py)( [A-Za-z0-9_-]+)*$'
+    foreign_count=0
+    while IFS= read -r cmd; do
+      [[ -z "${cmd}" ]] && continue
+      norm="$(printf '%s' "${cmd}" | tr -s '[:space:]' ' ')"
+      if [[ ! "${norm}" =~ ${bundled_re} ]]; then
+        foreign_report "Foreign hook command: ${cmd}"
+        foreign_count=$((foreign_count + 1))
+      fi
+    done <<< "${jq_err}"
+
+    if [[ "${foreign_count}" -eq 0 ]]; then
+      pass "No foreign hook commands"
+    elif [[ "${STRICT_MODE}" != "true" ]]; then
+      printf '  [info] Re-run with --strict to fail verify on foreign hooks.\n'
+    fi
+  fi
+fi
+
+printf '\n'
+
+# ---------------------------------------------------------------------------
+# 9. Drift detection via SHA-256 manifest (A2-MED-4 from 4-attacker review)
+# ---------------------------------------------------------------------------
+#
+# Step 3 above checks "do hook scripts pass bash -n syntax?" — but
+# `bash -n` accepts any syntactically-valid script, including a hostile
+# replacement (e.g. stop-guard.sh swapped for an exfiltration shim).
+# install.sh writes ${CLAUDE_HOME}/quality-pack/state/installed-hashes.txt
+# with one `<sha256>  <relative-path>` line per bundled file. Step 9
+# re-hashes each tracked path and FAILs on mismatch. An attacker who
+# tampered with installed-hashes.txt itself after editing a script is
+# a more sophisticated case; we don't claim full integrity (that needs
+# OS-level immutability — `chflags uchg` on macOS, `chattr +i` on Linux
+# ext4 — which require root and break legitimate updates). The drift
+# check raises the bar from "passes structural validation" to "matches
+# the bytes that shipped" for 95% of real-world A2 actors.
+
+printf '9. Drift detection (SHA-256 manifest)\n'
+
+HASHES_PATH="${CLAUDE_HOME}/quality-pack/state/installed-hashes.txt"
+
+if [[ ! -f "${HASHES_PATH}" ]]; then
+  warn "installed-hashes.txt missing (drift detection unavailable; reinstall to generate)"
+else
+  hash_check_tool=""
+  if command -v shasum >/dev/null 2>&1; then
+    hash_check_tool="shasum -a 256 -c"
+  elif command -v sha256sum >/dev/null 2>&1; then
+    hash_check_tool="sha256sum -c"
+  fi
+
+  if [[ -z "${hash_check_tool}" ]]; then
+    warn "Neither shasum nor sha256sum available; drift detection skipped"
+  else
+    # The hashes file's paths are relative to the bundle root. After
+    # rsync -a, the same relative paths exist under CLAUDE_HOME. Run the
+    # check from CLAUDE_HOME so each path resolves correctly. Force
+    # `LC_ALL=C` so the `FAILED` token is not localized — the grep
+    # filter relies on the English string emitted by shasum/sha256sum.
+    drift_output=""
+    drift_output="$(cd "${CLAUDE_HOME}" && LC_ALL=C ${hash_check_tool} "${HASHES_PATH}" 2>&1 \
+      | grep -E ': (FAILED|FAILED open or read)$' || true)"
+
+    if [[ -z "${drift_output}" ]]; then
+      pass "No drift detected on installed bundle files"
+    else
+      drift_lines=0
+      while IFS= read -r line; do
+        [[ -z "${line}" ]] && continue
+        foreign_report "Drift: ${line}"
+        drift_lines=$((drift_lines + 1))
+      done <<< "${drift_output}"
+      if [[ "${drift_lines}" -gt 0 && "${STRICT_MODE}" != "true" ]]; then
+        printf '  [info] Re-run with --strict to fail verify on drift.\n'
+      fi
+    fi
+  fi
+fi
 
 printf '\n'
 

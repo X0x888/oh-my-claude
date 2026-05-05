@@ -935,7 +935,16 @@ fi
 printf 'Installing oh-my-claude into %s ...\n' "${CLAUDE_HOME}"
 
 # Step 1 — Create directories and back up existing files.
+# Security: BACKUP_DIR holds copies of prior settings.json + oh-my-claude.conf
+# (which carries claude_bin pin, model_tier, and other host-specific values).
+# A2-MED-6 (4-attacker security review): chmod 700 the backup tree so a
+# read-anywhere-in-${HOME} attacker cannot mine prior state for credentials,
+# tokens, or oracle the user's PATH layout. The parent tree (${CLAUDE_HOME})
+# is not blanket-700 (Claude Code itself reads files there), so harden the
+# backup directly. The chmod runs before backup_existing_targets writes to
+# the dir so the perms apply to the freshly-created tree.
 mkdir -p "${CLAUDE_HOME}" "${BACKUP_DIR}"
+chmod 700 "${BACKUP_DIR}" 2>/dev/null || true
 backup_existing_targets
 
 # Step 2 — Copy bundle into ~/.claude/.
@@ -1049,6 +1058,52 @@ fi
 
 mv "${NEW_MANIFEST_TMP}" "${MANIFEST_PATH}"
 
+# Step 2c-hash — SHA-256 manifest for drift detection (A2-MED-4 from
+# 4-attacker security review).
+#
+# The path-only manifest above tells verify.sh "these files should
+# exist". It does NOT tell verify.sh "these files should still contain
+# their bundled bytes". An A2 attacker (write-inside-`~/.claude/`)
+# who replaces an installed script (e.g., stop-guard.sh swapped for an
+# exfiltration shim that still passes `bash -n`) goes undetected by the
+# existing existence-and-syntax checks. The hashes file closes that gap:
+# verify.sh re-hashes each tracked path and fails on mismatch.
+#
+# Best-effort: if neither shasum nor sha256sum is available, skip the
+# write. verify.sh treats a missing hashes file as "drift-detection
+# unavailable" (a [warn], not a [FAIL]) so we don't break installs on
+# minimal containers without coreutils.
+#
+# Hashing the BUNDLE bytes (not CLAUDE_HOME) is intentional: rsync -a
+# at line 942 preserves bytes faithfully, so install-time bundle hash
+# == at-rest CLAUDE_HOME hash. Hashing the bundle keeps the hash-list
+# scoped to "files we shipped" — user-modified files (oh-my-claude.conf,
+# omc-user/*, settings.json post-merge, session_state.json) are NOT in
+# the bundle so they're naturally excluded.
+HASHES_PATH="${CLAUDE_HOME}/quality-pack/state/installed-hashes.txt"
+NEW_HASHES_TMP="$(mktemp)"
+# Hash via xargs (single batched invocation) instead of one fork-exec
+# per file. The bundle ships ~120 files, so the loop form was 120x
+# fork overhead; xargs hands the full sorted file list as a single
+# shasum/sha256sum argv. Both tools accept multiple paths and emit
+# `<hash>  <path>` per file in argv order.
+if command -v shasum >/dev/null 2>&1; then
+  (cd "${BUNDLE_CLAUDE}" && find . -type f ! -name '.DS_Store' 2>/dev/null \
+    | sed 's|^\./||' \
+    | LC_ALL=C sort \
+    | xargs shasum -a 256) > "${NEW_HASHES_TMP}" 2>/dev/null || true
+elif command -v sha256sum >/dev/null 2>&1; then
+  (cd "${BUNDLE_CLAUDE}" && find . -type f ! -name '.DS_Store' 2>/dev/null \
+    | sed 's|^\./||' \
+    | LC_ALL=C sort \
+    | xargs sha256sum) > "${NEW_HASHES_TMP}" 2>/dev/null || true
+fi
+if [[ -s "${NEW_HASHES_TMP}" ]]; then
+  mv "${NEW_HASHES_TMP}" "${HASHES_PATH}"
+else
+  rm -f "${NEW_HASHES_TMP}"
+fi
+
 # Step 2d — Create user-override directory (never overwritten by rsync).
 # Files in omc-user/ survive updates. Existing user content is preserved.
 # The template is seeded on first install; subsequent installs only ensure
@@ -1103,6 +1158,107 @@ else
   printf 'Need either python3 or jq to merge settings.\n' >&2
   exit 1
 fi
+
+# Step 4a — Foreign hook detection (A2-HIGH-1 from 4-attacker security
+# review).
+#
+# The settings-merge above is purely additive: any hook entry already
+# present in settings.json that doesn't conflict with a bundled patch
+# entry (matcher- AND basename-disjoint) survives every reinstall. An
+# A2 attacker (write-inside-`~/.claude/`) who plants
+#   { "matcher": "*", "command": "bash /tmp/persistence.sh" }
+# inside ~/.claude/settings.json gains a hook that fires on every event
+# AND survives every reinstall the user runs to "fix" their environment.
+# Without this warning the survival is silent: the user's natural
+# recovery action (re-install) returns no signal of foreign content.
+#
+# We do not DELETE foreign entries here because (a) the user may
+# legitimately have non-bundled hooks (custom integrations), and (b)
+# destructive automation at install time would be alarming. We surface
+# them so the user can audit and prune. The verify.sh-side equivalent
+# (Step 8 in verify.sh) reports the same detection (default-warn or
+# --strict-fail), giving the user a clear "your install passes
+# structural checks but contains unexpected hook commands" signal.
+#
+# Allowlist (FULL-STRING match, ALL of these must hold):
+#   1. Optional interpreter prefix: `bash `, `sh `, `dash `, or
+#      `python3 ` (single space, no absolute interpreter paths — those
+#      could be attacker-shimmed without flagging the path-allowlist).
+#   2. Path root: `$HOME/.claude/` or `~/.claude/` (literal `$HOME` or
+#      `~`, not the expanded form — Claude Code expands at hook-fire).
+#   3. Bundled subpath: `skills/autowork/scripts/<name>.sh`,
+#      `quality-pack/scripts/<name>.sh`, or `statusline.py`. `<name>`
+#      restricted to `[A-Za-z0-9_-]` so `..` traversal is structurally
+#      rejected (`.` is not in the class).
+#   4. Optional positional args: each `[A-Za-z0-9_-]+`, space-separated.
+#      Bundled patch ships `record-reviewer.sh design_quality` shape.
+#   5. End anchor: nothing after the last positional arg. `;`, `&&`,
+#      `||`, `|`, `>`, `<`, `` ` ``, `$(`, newline, tab, multi-line —
+#      all structurally rejected because they're not in the args class
+#      AND they appear after the path/args region the regex consumes.
+#
+# Whitespace pre-normalization at line below collapses runs of space/
+# tab to single space so cosmetic variants of legitimate bundled
+# commands (e.g. `bash  $HOME/...` with a double space) don't false-
+# positive. This is sound because shell command parsing collapses the
+# same way at exec time.
+warn_foreign_hooks() {
+  local settings_file="$1"
+  [[ -f "${settings_file}" ]] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+
+  # Distinguish jq parse failure (malformed JSON — itself an A2
+  # indicator that warrants a loud signal) from "no foreign entries
+  # found" (silence is correct).
+  local cmds jq_err jq_rc
+  jq_err="$(jq -r '
+    [
+      (.hooks // {}) | to_entries[] |
+      .value[]? |
+      (.hooks // [])[]? |
+      .command // empty
+    ] | unique | .[]
+  ' "${settings_file}" 2>&1)"
+  jq_rc=$?
+
+  if [[ ${jq_rc} -ne 0 ]]; then
+    printf '\n'
+    printf '  [warn] settings.json could not be parsed by jq:\n'
+    printf '    %s\n' "${jq_err}"
+    printf '  Foreign-hook detection skipped on this install. Re-check\n'
+    printf '  the file and re-run install.sh.\n'
+    printf '\n'
+    return 0
+  fi
+  cmds="${jq_err}"
+
+  # FULL-string match anchors. `[$]HOME` is the unambiguous form for a
+  # literal `$HOME` token (vs `\$HOME` whose ERE escape semantics are
+  # implementation-dependent across bash versions).
+  local bundled_re='^(bash |sh |dash |python3 )?([$]HOME|~)/\.claude/(skills/autowork/scripts/[A-Za-z0-9_-]+\.sh|quality-pack/scripts/[A-Za-z0-9_-]+\.sh|statusline\.py)( [A-Za-z0-9_-]+)*$'
+  local foreign="" cmd norm
+  while IFS= read -r cmd; do
+    [[ -z "${cmd}" ]] && continue
+    # Collapse whitespace runs to single spaces (handles `bash  $HOME/`
+    # double-space and tab-separated cosmetic variants).
+    norm="$(printf '%s' "${cmd}" | tr -s '[:space:]' ' ')"
+    if [[ ! "${norm}" =~ ${bundled_re} ]]; then
+      foreign+="    ${cmd}"$'\n'
+    fi
+  done <<< "${cmds}"
+
+  if [[ -n "${foreign}" ]]; then
+    printf '\n'
+    printf '  [warn] Detected non-bundled hook commands in settings.json:\n'
+    printf '%s' "${foreign}"
+    printf '  These survive reinstalls. They may be legitimate custom hooks,\n'
+    printf '  but warrant a manual audit. Inspect with:\n'
+    printf '    jq .hooks %s\n' "${settings_file}"
+    printf '\n'
+  fi
+}
+
+warn_foreign_hooks "${CLAUDE_HOME}/settings.json"
 
 # Step 5 — Set executable bits on scripts.
 ensure_executable_bits
