@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.33.2] - 2026-05-05
+
 ### Fixed
 
 - **`tests/test-resume-watchdog.sh` T24 — second-pass fix uses `ORIG_HOME` for the pin location.** The v1.33.1 fix used `${HOME}/.cache/...` but `setup_test` (line 49) re-exports `HOME=TEST_HOME`, so `${HOME}/.cache` resolved back under `/tmp` at the time the pin was created and the `claude_bin` denylist re-fired in CI. Switch to `${ORIG_HOME}` (saved at line 15 before any test override) so the pin lands under the runner's real home (`/home/runner/.cache/...` on GitHub Actions) and stays outside the denylist.
