@@ -1141,13 +1141,16 @@ fi
 # P2-10 deferred item — users running `git pull && bash install.sh`
 # weekly previously got zero in-context awareness of what changed.
 # Silent on: first install (PRIOR empty), same-version reinstall (no
-# upgrade), missing CHANGELOG, awk extraction failure. Caps at 15 entries
-# (v1.32.3 raised from 12 because the 1.32.x patch cadence kept pushing
-# a real 1.27.0 → head upgrade past each successive cap. 15 gives ~3
-# patches of safety margin before the next bump is needed; the deeper
-# fix is to derive the cap from `git tag --list 'v*' | wc -l` minus
-# a safety margin — tracked as v1.33 follow-up). user can read
-# CHANGELOG.md for full detail.
+# upgrade), missing CHANGELOG, awk extraction failure. Caps at 30 entries
+# (v1.32.7 raised from 15 to end the recurring cap-bump cycle that
+# broke install-whats-new tests in v1.31.1 / v1.32.1 / v1.32.3 /
+# v1.32.5 / v1.32.6 — every 3-5 patches the cap had to be re-bumped
+# because adding entries pushed a real 1.27.0 → head upgrade past it.
+# 30 covers any reasonable upgrade span without the periodic bump
+# pressure. The deeper "derive from tag count" answer doesn't work
+# reliably because install-remote.sh defaults to a shallow clone
+# (--depth=1) without --tags, so `git tag --list` is unreliable.
+# user can read CHANGELOG.md for full detail.
 if [[ -n "${PRIOR_INSTALLED_VERSION}" ]] \
     && [[ "${PRIOR_INSTALLED_VERSION}" != "${OMC_VERSION}" ]] \
     && [[ -f "${SCRIPT_DIR}/CHANGELOG.md" ]]; then
@@ -1159,7 +1162,7 @@ if [[ -n "${PRIOR_INSTALLED_VERSION}" ]] \
       sub(/^[^]]*\][[:space:]]*-?[[:space:]]*/, "", datepart)
       if (ver == prev) { exit }
       kept++
-      if (kept > 15) { truncated = 1; exit }
+      if (kept > 30) { truncated = 1; exit }
       if (ver == "Unreleased") {
         # Render the Unreleased section as a bare label — its date
         # field is meaningless until promotion, and parenthesizing

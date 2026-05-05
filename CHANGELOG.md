@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.32.7] - 2026-05-05
+
+Hotfix for v1.32.6 — CI failed on the tagged commit because adding the v1.32.6 CHANGELOG entry pushed a real 1.27.0 → head upgrade span past the 15-cap, dropping v1.28.0 from `extract_whats_new`. Same defect class that bit v1.31.1 / v1.32.1 / v1.32.3 / v1.32.5 / v1.32.6 — every 3-5 patches the cap had to be re-bumped. **Process-level root cause**: CONTRIBUTING.md step 2 (CI parity) runs BEFORE step 8 (CHANGELOG promotion), so the install-whats-new tests evaluate the OLD CHANGELOG content; the new entry's effect is invisible to pre-tag verification.
+
+### Fixed
+
+- **`install.sh` "What's new" cap raised 15 → 30** to end the recurring cap-bump cycle. 30 covers any reasonable upgrade span without periodic bump pressure. The deeper "derive from `git tag --list`" answer doesn't work reliably because `install-remote.sh` defaults to a shallow clone (`--depth=1`) without `--tags`, so `git tag` is unreliable at install time. T6 synthetic CHANGELOG bumped 17 → 32 entries to keep exercising the cap. T8 bound `[1, 15]` → `[1, 30]`.
+
+- **CONTRIBUTING.md release-process step 8** now mandates re-running `tests/test-install-whats-new.sh` and `tests/test-install-artifacts.sh` AFTER the CHANGELOG promotion. Closes the structural gap that let v1.32.6 (and 5 prior releases) ship with broken CI on the tagged commit. Pre-1.32.7 step 2 CI-parity ran against the OLD changelog content; step 8 then changed that content; the diff between the two was invisible to verification.
+
+### Note on v1.32.6 tag
+
+The v1.32.6 tag remains in place pointing at `f9b744e` despite that commit's CI being red — force-pushing tags is destructive and worse than bumping (per the v1.31.x post-mortem lesson). v1.32.7 is the canonical release. v1.32.6's `project_key` wiring is included in v1.32.7 (no functional regression), but anyone who happens to install v1.32.6 specifically gets a `What's new` block missing v1.28.0 from a 1.27.0 → head upgrade — cosmetic only.
+
+### Verification
+
+- `bash tests/test-install-whats-new.sh` — 23/23 pass with cap=30
+- `bash tests/test-install-artifacts.sh` — 26/26 pass
+- 66/66 CI-pinned tests pass locally (after post-CHANGELOG-promotion re-run, per the new step 8 discipline)
+- shellcheck clean
+
 ## [1.32.6] - 2026-05-05
 
 Closes the v1.31.0 Wave 4 wiring debt that the v1.32.5 release-reviewer surfaced: `_sweep_append_gate_events`, `_sweep_append_misfires`, and the per-session telemetry sweeps had been READING `.project_key` from `session_state.json` since 2026-04-25, but no code in `bundle/` ever WROTE it there. Result: every cross-session telemetry row across `gate_events.jsonl`, `session_summary.jsonl`, `serendipity-log.jsonl`, `classifier_telemetry.jsonl`, and `used-archetypes.jsonl` carried `project_key: null` for 10 days. Multi-project `/ulw-report` slicing was a feature in name only.

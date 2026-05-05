@@ -201,6 +201,9 @@ When bumping the version (changing `VERSION`), follow these steps in order. Repl
 6. Update `VERSION` with the new version number (e.g. `1.4.1`).
 7. Update the README.md badge: `[![Version](https://img.shields.io/badge/Version-X.Y.Z-blue.svg)]`.
 8. Promote the `[Unreleased]` heading in `CHANGELOG.md` to `## [X.Y.Z] - YYYY-MM-DD` (keep `[Unreleased]` above it as an empty placeholder for the next cycle if desired).
+
+   **Re-run install-whats-new tests after promotion** (v1.32.7 process fix). Step 2's CI-parity check ran BEFORE step 8 promoted the CHANGELOG, so any test whose assertions depend on `CHANGELOG.md` content (notably `tests/test-install-whats-new.sh` T1 and `tests/test-install-artifacts.sh` "lists v…") evaluates the OLD content. v1.31.1 / v1.32.1 / v1.32.3 / v1.32.5 / v1.32.6 all shipped with this gap and tripped the install-whats-new cap recurring class. Run `bash tests/test-install-whats-new.sh && bash tests/test-install-artifacts.sh` again here. If anything fails, fix before tagging — usually a cap-bump in `install.sh` and the test mirror.
+
 9. Commit with a descriptive message summarizing the release.
 10. **Tag the release commit**: `git tag vX.Y.Z` — this is mandatory, not optional.
 11. Push commits and tags: `git push && git push --tags`.
