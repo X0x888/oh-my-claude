@@ -2266,6 +2266,77 @@ assert_eq "strip preserves CR (0x0d) for DOS / progress" \
   "$(printf '%s' "${cr_in}" | _omc_strip_render_unsafe)"
 
 # ===========================================================================
+# OMC_CLAUDE_BIN post-load validation (v1.32.16, A1-MED-2)
+# ===========================================================================
+
+# These tests run common.sh in a subshell with a manipulated env so the
+# source-time post-load_conf validation sees the test value. They
+# assert that a hostile value is cleared (fall back to live lookup)
+# while a legitimate value passes through.
+
+_run_with_env() {
+  # Run common.sh in a subshell with OMC_CLAUDE_BIN set, then echo
+  # the post-validation value. The 2>/dev/null suppresses the
+  # rejection warning that the validator prints to stderr (we
+  # exercise the warning separately via 2>&1 in the warning-text
+  # assertions below).
+  OMC_CLAUDE_BIN="$1" bash -c "
+    set +e
+    source '${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh' 2>/dev/null
+    printf '%s' \"\${OMC_CLAUDE_BIN}\"
+  "
+}
+
+# T-cb-1: /tmp/-shaped path is cleared.
+assert_eq "claude_bin under /tmp/ rejected" "" \
+  "$(_run_with_env "/tmp/evil-claude")"
+
+# T-cb-2: /var/tmp/-shaped path is cleared.
+assert_eq "claude_bin under /var/tmp/ rejected" "" \
+  "$(_run_with_env "/var/tmp/evil-claude")"
+
+# T-cb-3: /Users/Shared/-shaped path is cleared.
+assert_eq "claude_bin under /Users/Shared/ rejected" "" \
+  "$(_run_with_env "/Users/Shared/evil-claude")"
+
+# T-cb-4: /private/tmp/-shaped path is cleared (macOS /tmp resolution).
+assert_eq "claude_bin under /private/tmp/ rejected" "" \
+  "$(_run_with_env "/private/tmp/evil-claude")"
+
+# T-cb-5: /dev/shm/-shaped path is cleared (Linux tmpfs).
+assert_eq "claude_bin under /dev/shm/ rejected" "" \
+  "$(_run_with_env "/dev/shm/evil-claude")"
+
+# T-cb-6: a legitimate non-blacklisted path that exists + is executable
+# passes through. We use /bin/sh as the universally-available real
+# binary (not /bin/bash because Linux containers may use /bin/dash).
+if [[ -x /bin/sh ]]; then
+  assert_eq "claude_bin = /bin/sh preserved (legit absolute exec)" \
+    "/bin/sh" \
+    "$(_run_with_env "/bin/sh")"
+fi
+
+# T-cb-7: non-executable path is cleared (config bug, not a security
+# boundary, but the validator catches it as a quality signal).
+non_exec_path="${TEST_STATE_ROOT}/not-executable"
+touch "${non_exec_path}"
+chmod 644 "${non_exec_path}"
+assert_eq "claude_bin to non-executable file rejected" "" \
+  "$(_run_with_env "${non_exec_path}")"
+
+# T-cb-8: missing file is cleared.
+assert_eq "claude_bin to missing file rejected" "" \
+  "$(_run_with_env "/this/path/does/not/exist/at/all")"
+
+# T-cb-9: rejection emits a warning to stderr the user can grep.
+warning_text="$(OMC_CLAUDE_BIN="/tmp/evil" bash -c "
+  set +e
+  source '${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh' 2>&1 >/dev/null
+")"
+assert_contains "rejection warning surfaces on stderr" \
+  "rejecting OMC_CLAUDE_BIN" "${warning_text}"
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 

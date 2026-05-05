@@ -342,6 +342,18 @@
 # failure WITHOUT overwriting the pin (prevents pin-churn from transient
 # nvm/Homebrew/manual upgrades). Host-specific — do not sync ~/.claude
 # across machines if the binary lives at different paths.
+#
+# v1.32.16 (4-attacker security review, A1-MED-2): post-load
+# validation rejects values under `/tmp/`, `/private/tmp/`,
+# `/var/tmp/`, `/Users/Shared/`, `/dev/shm/` — known world-writable
+# or shared-by-default locations where an unprivileged-shell attacker
+# could drop a binary. Invalid pins fall back to live `command -v
+# claude` lookup with a one-line warning to stderr. The validation
+# applies to both conf-set AND env-set values (`OMC_CLAUDE_BIN`
+# override does NOT bypass the check). If your `claude` binary
+# legitimately lives in a temp-shaped path (e.g. test rigs), set it
+# elsewhere or accept the live-lookup fallback.
+#
 # Env: OMC_CLAUDE_BIN.
 #claude_bin=
 

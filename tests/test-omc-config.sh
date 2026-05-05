@@ -836,6 +836,82 @@ preserved_custom="$(jq -r '.outputStyle' "${TEST_HOME}/.claude/settings.json" 2>
 assert_eq "Test 50: user-custom outputStyle preserved across opencode set" "my-very-custom-style" "${preserved_custom}"
 teardown
 
+# --- v1.32.16 (4-attacker security review, A2-LOW-5): claude_bin
+# validator alignment with the parser. Pre-fix the omc-config writer
+# accepted any non-newline string for claude_bin (type=str) while the
+# common.sh parser silently dropped non-absolute paths — a writer/
+# parser divergence that left bad pins on disk doing nothing. Now
+# the writer enforces the parser's regex AND a path-prefix denylist.
+
+printf 'Test 51: set claude_bin=relative-path rejected\n'
+setup
+set +e
+out="$(bash "${HELPER}" set user claude_bin=relative/path 2>&1)"
+rc=$?
+set -e
+assert_eq "Test 51: set claude_bin=relative-path exit 2" "2" "${rc}"
+assert_contains "Test 51: error names absolute-path requirement" \
+  "must be an absolute path" "${out}"
+teardown
+
+printf 'Test 52: set claude_bin under /tmp/ rejected\n'
+setup
+set +e
+out="$(bash "${HELPER}" set user claude_bin=/tmp/evil-claude 2>&1)"
+rc=$?
+set -e
+assert_eq "Test 52: set claude_bin=/tmp/... exit 2" "2" "${rc}"
+assert_contains "Test 52: error names world-writable rejection" \
+  "world-writable" "${out}"
+teardown
+
+printf 'Test 53: set claude_bin under /Users/Shared/ rejected\n'
+setup
+set +e
+out="$(bash "${HELPER}" set user claude_bin=/Users/Shared/evil 2>&1)"
+rc=$?
+set -e
+assert_eq "Test 53: set claude_bin=/Users/Shared/... exit 2" "2" "${rc}"
+teardown
+
+printf 'Test 54: set claude_bin under /var/tmp/ rejected\n'
+setup
+set +e
+out="$(bash "${HELPER}" set user claude_bin=/var/tmp/evil 2>&1)"
+rc=$?
+set -e
+assert_eq "Test 54: set claude_bin=/var/tmp/... exit 2" "2" "${rc}"
+teardown
+
+printf 'Test 55: set claude_bin under /private/tmp/ rejected\n'
+setup
+set +e
+out="$(bash "${HELPER}" set user claude_bin=/private/tmp/evil 2>&1)"
+rc=$?
+set -e
+assert_eq "Test 55: set claude_bin=/private/tmp/... exit 2" "2" "${rc}"
+teardown
+
+printf 'Test 56: set claude_bin under /dev/shm/ rejected (Linux tmpfs)\n'
+setup
+set +e
+out="$(bash "${HELPER}" set user claude_bin=/dev/shm/evil 2>&1)"
+rc=$?
+set -e
+assert_eq "Test 56: set claude_bin=/dev/shm/... exit 2" "2" "${rc}"
+teardown
+
+printf 'Test 57: set claude_bin to legitimate path accepted\n'
+setup
+out="$(bash "${HELPER}" set user claude_bin=/usr/local/bin/claude 2>&1)"
+rc=$?
+assert_eq "Test 57: set claude_bin=/usr/local/bin/claude exit 0" "0" "${rc}"
+# Verify it landed in the conf file.
+written="$(grep '^claude_bin=' "${TEST_HOME}/.claude/oh-my-claude.conf" 2>/dev/null \
+  | head -1 | cut -d= -f2-)"
+assert_eq "Test 57: legit claude_bin written to conf" "/usr/local/bin/claude" "${written}"
+teardown
+
 # --- Summary ---
 printf '\n=== test-omc-config: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]

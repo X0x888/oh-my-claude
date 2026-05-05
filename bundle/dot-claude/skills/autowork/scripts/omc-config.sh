@@ -332,6 +332,32 @@ validate_kv() {
         printf 'omc-config: %s value cannot contain newlines or carriage returns\n' "${key}" >&2
         return 2
       fi
+      # v1.32.16 (4-attacker security review, A2-LOW-5): claude_bin
+      # carries a path that the resume-watchdog later execs. The
+      # conf parser at common.sh:382 enforces `^/` (absolute path);
+      # apply the same constraint at write time so the omc-config
+      # writer never lands a value the parser will silently drop.
+      # Pre-fix divergence: `omc-config set user claude_bin=relative`
+      # would write the line (parser later silently ignores), causing
+      # an audit confusion where the user thinks the pin is set but
+      # the watchdog uses live `command -v claude` instead.
+      #
+      # Path-prefix denylist mirrors the post-load common.sh block
+      # (rejects `/tmp/`, `/var/tmp/`, `/Users/Shared/`, `/dev/shm/`,
+      # `/private/tmp/`) so an attacker who tries to write a hostile
+      # pin through omc-config gets blocked at write time too.
+      if [[ "${key}" == "claude_bin" && -n "${value}" ]]; then
+        if [[ ! "${value}" =~ ^/ ]]; then
+          printf 'omc-config: claude_bin must be an absolute path (^/), got: %s\n' "${value}" >&2
+          return 2
+        fi
+        case "${value}" in
+          /tmp/*|/private/tmp/*|/var/tmp/*|/Users/Shared/*|/dev/shm/*)
+            printf 'omc-config: claude_bin under world-writable / shared location is rejected: %s\n' "${value}" >&2
+            return 2
+            ;;
+        esac
+      fi
       ;;
   esac
   return 0

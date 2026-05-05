@@ -379,6 +379,15 @@ _parse_conf_file() {
         # silently ignored. Empty (default) preserves the legacy live
         # `command -v claude` lookup. Host-specific — do not sync across
         # machines if the binary lives at different paths.
+        #
+        # v1.32.16 (4-attacker security review, A1-MED-2): the absolute-
+        # path check here is parser-arm only — it does NOT validate
+        # ownership, executability, or path-prefix safety, AND the env
+        # override below short-circuits the conf-source code path
+        # entirely. Defense-in-depth post-load validation lives at the
+        # post-load_conf block (search "OMC_CLAUDE_BIN" further down)
+        # which rejects paths under /tmp, /var/tmp, /Users/Shared, etc.
+        # regardless of source.
         [[ -z "${_omc_env_claude_bin}" && "${value}" =~ ^/ ]] && OMC_CLAUDE_BIN="${value}" || true ;;
       resume_request_per_cwd_cap)
         # v1.31.0 Wave 1: max resume_request.json artifacts per cwd before
@@ -414,6 +423,53 @@ load_conf() {
 
 # Load conf at source time so all scripts get configured values.
 load_conf
+
+# v1.32.16 (4-attacker security review, A1-MED-2): post-load validation
+# of OMC_CLAUDE_BIN. The conf-parser arm at line 382 only verifies the
+# value is an absolute path, AND only validates the conf-source code
+# path (env-set values bypass the conf parser entirely via the
+# `_omc_env_*` short-circuit). This validation runs AFTER both sources
+# have settled, so it catches:
+#   - Env override `OMC_CLAUDE_BIN=/tmp/evil-claude` (A1 attacker
+#     who can set env vars before claude launches).
+#   - Conf-set value `claude_bin=/tmp/evil-claude` (A1 attacker who
+#     plants a project-walk `.claude/oh-my-claude.conf` the user
+#     happens to cwd into).
+#
+# Validation is conservative — pin invalid → fall back to live
+# `command -v claude` lookup (legacy behavior). Print a one-line
+# warning to stderr so the user sees the rejection. The actual exec
+# of claude_bin happens via the watchdog's `--version` validation;
+# even an invalid pin would be probed there, but rejecting at conf-
+# load time is the cheaper signal.
+#
+# Path-prefix denylist: `/tmp/`, `/private/tmp/` (macOS resolves
+# /tmp via /private/tmp), `/var/tmp/`, `/Users/Shared/`, `/dev/shm/`
+# — known world-writable or user-readable-by-default locations where
+# an A1 attacker can drop a binary without already having
+# user-priv-elevated access to the user's $HOME.
+#
+# Caller-uid check (`stat -c %u` / `stat -f %u`) does NOT defend
+# same-uid attack — A1 attacker IS the user — so we do NOT assert
+# uid-match. We DO assert the binary is executable; a non-executable
+# pin is a config bug, not a security boundary.
+if [[ -n "${OMC_CLAUDE_BIN:-}" ]]; then
+  _claude_bin_invalid=""
+  case "${OMC_CLAUDE_BIN}" in
+    /tmp/*|/private/tmp/*|/var/tmp/*|/Users/Shared/*|/dev/shm/*)
+      _claude_bin_invalid="path under world-writable / shared location"
+      ;;
+  esac
+  if [[ -z "${_claude_bin_invalid}" && ! -x "${OMC_CLAUDE_BIN}" ]]; then
+    _claude_bin_invalid="not executable or missing"
+  fi
+  if [[ -n "${_claude_bin_invalid}" ]]; then
+    printf 'oh-my-claude: rejecting OMC_CLAUDE_BIN=%s (%s); falling back to live command -v claude lookup\n' \
+      "${OMC_CLAUDE_BIN}" "${_claude_bin_invalid}" >&2
+    OMC_CLAUDE_BIN=""
+  fi
+  unset _claude_bin_invalid
+fi
 
 # Normalize legacy exhaustion mode names to new canonical names.
 # Accepts both old (release/warn/strict) and new (silent/scorecard/block).
