@@ -1048,16 +1048,34 @@ sweep_stale_sessions() {
         touch -t "${_sweep_cutoff_ts}" "${_sweep_marker}" 2>/dev/null || _sweep_marker=""
       fi
     fi
-    local _sweep_find_cmd
+    # v1.32.0 Wave D follow-up (Serendipity Rule fix): refactored from
+    # `eval "${_sweep_find_cmd}"` to array-form `find`. The eval form
+    # was not exploitable under any current threat model (STATE_ROOT
+    # and OMC_STATE_TTL_DAYS are env/conf-controlled, not user-input),
+    # but the array form removes the surface entirely. Same code path
+    # as the v1.32.0 release-process post-mortem; bounded one-spot fix.
+    local _sweep_find_args
     if [[ -n "${_sweep_marker}" ]] && [[ -f "${_sweep_marker}" ]]; then
       # `! -newer marker` = target mtime ≤ marker mtime = older-than-cutoff.
-      _sweep_find_cmd="find \"${STATE_ROOT}\" -maxdepth 1 -type d ! -newer \"${_sweep_marker}\" ! -name '.' ! -name '..' ! -name '.*' ! -path \"${STATE_ROOT}\" -print"
+      _sweep_find_args=(
+        "${STATE_ROOT}" -maxdepth 1 -type d
+        ! -newer "${_sweep_marker}"
+        ! -name '.' ! -name '..' ! -name '.*'
+        ! -path "${STATE_ROOT}"
+        -print
+      )
     else
       # Fallback when date-format detection fails (exotic libcs, sandboxed env).
       # The legacy -mtime path keeps the BSD/GNU boundary divergence but at
       # least the sweep still functions.
       log_anomaly "sweep_stale_sessions" "marker creation failed; falling back to -mtime"
-      _sweep_find_cmd="find \"${STATE_ROOT}\" -maxdepth 1 -type d -mtime +\"${OMC_STATE_TTL_DAYS}\" ! -name '.' ! -name '..' ! -name '.*' ! -path \"${STATE_ROOT}\" -print"
+      _sweep_find_args=(
+        "${STATE_ROOT}" -maxdepth 1 -type d
+        -mtime "+${OMC_STATE_TTL_DAYS}"
+        ! -name '.' ! -name '..' ! -name '.*'
+        ! -path "${STATE_ROOT}"
+        -print
+      )
     fi
     # v1.31.0 Wave 4 (data-lens F-7): cap the synthetic _watchdog
     # session's gate_events.jsonl. The watchdog daemon writes here
@@ -1088,7 +1106,7 @@ sweep_stale_sessions() {
       fi
     fi
 
-    eval "${_sweep_find_cmd}" 2>/dev/null | while IFS= read -r _sweep_dir; do
+    find "${_sweep_find_args[@]}" 2>/dev/null | while IFS= read -r _sweep_dir; do
       # v1.31.0 Wave 4 (data-lens F-7): explicitly skip _watchdog —
       # the synthetic daemon session aggregates locally (capped
       # above) and is NOT a candidate for the per-session sweep

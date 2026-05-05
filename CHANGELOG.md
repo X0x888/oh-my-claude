@@ -37,6 +37,10 @@ Four sequential waves (A through D) shipped in-session with quality gates per wa
 
 ### Added
 
+- **Wave D follow-up: Serendipity catch — `common.sh:1091` eval refactored to array-form `find`.** During the v1.32.0 completeness review, `quality-reviewer` identified that the `eval "${_sweep_find_cmd}"` surface — though not exploitable under any current threat model (STATE_ROOT and OMC_STATE_TTL_DAYS are env/conf-controlled) — meets the Serendipity Rule criteria: verified, same code path as the v1.32.0 release-process post-mortem work, bounded one-spot fix. Refactored to `find "${_sweep_find_args[@]}"` array form, removing the exec surface entirely. Verified state-io 64/64, state-fuzz 132/132, common-utilities 427/427 unchanged.
+
+    - **Item 3 deferral clarified.** The user's "top 3 high-fire/low-impact + top 3 low-fire/high-value gate" analysis cannot run because `~/.claude/quality-pack/gate_events.jsonl` and `classifier_telemetry.jsonl` (cross-session rollup ledgers) don't yet exist at user-scope. Per-session `<sid>/gate_events.jsonl` ledgers exist (designed-this-way, not a bug) but the cross-session aggregation hook (`_sweep_append_gate_events`) only runs on session-stop. v1.32.0's Wave B fix (defect taxonomy paradigm fix) addressed the load-bearing classifier issue that blocked the user's question; the rank-by-impact telemetry analysis is correctly deferred until the rollup ledger has data. Documented as a v1.32.x deferred follow-up: "Bootstrap cross-session gate-event rollup at user-scope so `/ulw-report` per-event analysis populates."
+
 - **Wave D: Docs drift audit + installer/security audit (Items 8, 9, 6-partial).**
 
     - **Test counts updated across docs.** `CLAUDE.md`, `AGENTS.md`, `README.md` — all three previously claimed `49 bash + 1 python` or `59 bash + 1 python` test scripts; actual count is `63 bash + 1 python` after Wave A pin expansion + Wave C state-fuzz + chaos-concurrency additions. Now consistent across all three surfaces. CI-pinned count noted alongside (61 of 63 bash, plus the python statusline test).
