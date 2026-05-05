@@ -247,7 +247,7 @@ fi
 if [[ -d "${REPO_ROOT}/.git" ]]; then
   assert_true "installed_sha still set" "grep -q '^installed_sha=' '${CONF}'"
 else
-  printf '  SKIP: repo is not a git directory; SHA persistence test not applicable\n'
+  printf '  SKIP: repo is not a git worktree; SHA persistence test not applicable\n'
 fi
 assert_true "manifest still exists" "[[ -f '${MANIFEST}' ]]"
 assert_true "install-stamp still exists" "[[ -f '${STAMP}' ]]"
