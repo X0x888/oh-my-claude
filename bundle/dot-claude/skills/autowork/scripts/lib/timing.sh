@@ -17,6 +17,8 @@
 #                                                          -- PreToolUse
 #     {"kind":"end",   "ts":N, "tool":T, "prompt_seq":I, "tool_use_id":?}
 #                                                          -- PostToolUse
+#     {"kind":"directive_emitted", "ts":N, "prompt_seq":I, "name":S, "bytes":N}
+#                                                          -- prompt-intent-router
 #
 # Pairing rules (in aggregator):
 #   - tool_use_id present in BOTH start and end → exact match
@@ -177,6 +179,38 @@ timing_append_prompt_start() {
   local ts
   ts="$(now_epoch)"
   local row='{"kind":"prompt_start","ts":'"${ts}"',"prompt_seq":'"${prompt_seq}"'}'
+
+  ensure_session_dir 2>/dev/null || return 0
+  printf '%s\n' "${row}" >> "$(timing_log_path)" 2>/dev/null || true
+}
+
+# timing_append_directive <name> <bytes> [prompt_seq]
+#   Append a per-directive emission row to timing.jsonl. Used by the
+#   prompt-intent-router to record per-directive byte cost so future
+#   /ulw-report and offline analyses can attribute the prompt's
+#   additionalContext tax by category (intent classification, bias
+#   defense, archetype priors, intent broadening, divergent framing,
+#   etc.).
+#
+#   Bytes are exact and durable. Token counting is deliberately deferred
+#   to the analysis layer because byte/4 heuristics misattribute by
+#   15–30% on directive-shaped text — the actual tokenizer (Anthropic
+#   count_tokens / public BPE) is the right surface for tokenization.
+timing_append_directive() {
+  is_time_tracking_enabled || return 0
+  [[ -z "${SESSION_ID:-}" ]] && return 0
+
+  local name="${1:-}"
+  local bytes="${2:-0}"
+  local prompt_seq="${3:-0}"
+  [[ -z "${name}" ]] && return 0
+  [[ "${bytes}" =~ ^[0-9]+$ ]] || return 0
+  [[ "${prompt_seq}" =~ ^[0-9]+$ ]] || prompt_seq=0
+
+  local name_esc ts
+  _timing_json_escape "${name}" name_esc
+  ts="$(now_epoch)"
+  local row='{"kind":"directive_emitted","ts":'"${ts}"',"prompt_seq":'"${prompt_seq}"',"name":"'"${name_esc}"'","bytes":'"${bytes}"'}'
 
   ensure_session_dir 2>/dev/null || return 0
   printf '%s\n' "${row}" >> "$(timing_log_path)" 2>/dev/null || true

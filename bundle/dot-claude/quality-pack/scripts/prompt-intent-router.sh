@@ -215,6 +215,22 @@ fi
 
 context_parts=()
 
+# Per-directive emission helper. Appends <body> to context_parts AND
+# records a directive_emitted row in timing.jsonl with the directive
+# <name> + body byte count. Centralizing emission attributes per-
+# directive cost in /ulw-report and offline analysis without mutating
+# the directive bodies themselves.
+#
+# Token counting is deliberately deferred — bytes are exact, but
+# byte/4 heuristics mis-attribute by 15-30% on directive-shaped text.
+# The analysis layer re-tokenizes via the actual tokenizer.
+add_directive() {
+  local _add_name="${1:-}"
+  local _add_body="${2:-}"
+  context_parts+=("${_add_body}")
+  timing_append_directive "${_add_name}" "${#_add_body}" "${_omc_new_prompt_seq:-0}"
+}
+
 # State-corruption recovery surface (v1.29.0). lib/state-io.sh archives
 # session_state.json on detected JSON corruption and stamps two sticky
 # markers (recovered_from_corrupt_ts + recovered_from_corrupt_archive).
@@ -229,7 +245,7 @@ context_parts=()
 # Sticky pattern: clear the markers after one notice so the warning
 # fires exactly once per recovery event.
 if [[ -n "${recovered_from_corrupt_ts:-}" ]]; then
-  context_parts+=("**STATE RECOVERY — surface this to the user.** The previous \`session_state.json\` was corrupted and has been archived to \`${recovered_from_corrupt_archive:-(unknown path)}\`. Quality gates were silently disarmed for the prior turn (every \`read_state\` returned empty, so the stop-guard's intent gate evaluated false and skipped review/verify enforcement). Lead your first response to this prompt with a one-line acknowledgment of this notice and a recommendation to audit the most recent commits/edits before continuing. The harness has reset and will resume normal gate enforcement from this prompt forward.")
+  add_directive "state_recovery" "**STATE RECOVERY — surface this to the user.** The previous \`session_state.json\` was corrupted and has been archived to \`${recovered_from_corrupt_archive:-(unknown path)}\`. Quality gates were silently disarmed for the prior turn (every \`read_state\` returned empty, so the stop-guard's intent gate evaluated false and skipped review/verify enforcement). Lead your first response to this prompt with a one-line acknowledgment of this notice and a recommendation to audit the most recent commits/edits before continuing. The harness has reset and will resume normal gate enforcement from this prompt forward."
   record_gate_event "state-corruption" "recovered" \
     archive_path="${recovered_from_corrupt_archive:-}" \
     recovered_ts="${recovered_from_corrupt_ts}"
@@ -332,21 +348,21 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
   display_intent="${TASK_INTENT//_/-}"
 
   if [[ "${continuation_prompt}" -eq 1 ]]; then
-    context_parts+=("Ultrawork continuation mode is active for this session. Continue the prior task instead of treating the literal word 'continue' or 'resume' as a new objective. In your first user-facing response, start with the bold phrase **Ultrawork continuation active.** then briefly state what is already done, what remains, and the next concrete action. Reuse finished work, preserve the existing task domain, and only re-dispatch branches that were interrupted or are still missing.")
-    context_parts+=("Surface the classification after the opener — e.g., '**Domain:** ${TASK_DOMAIN} | **Intent:** ${display_intent}' — so the user can verify routing is correct.")
-    context_parts+=("Preserved objective: ${previous_objective}")
+    add_directive "ulw_continuation_opener" "Ultrawork continuation mode is active for this session. Continue the prior task instead of treating the literal word 'continue' or 'resume' as a new objective. In your first user-facing response, start with the bold phrase **Ultrawork continuation active.** then briefly state what is already done, what remains, and the next concrete action. Reuse finished work, preserve the existing task domain, and only re-dispatch branches that were interrupted or are still missing."
+    add_directive "intent_classification" "Surface the classification after the opener — e.g., '**Domain:** ${TASK_DOMAIN} | **Intent:** ${display_intent}' — so the user can verify routing is correct."
+    add_directive "preserved_objective" "Preserved objective: ${previous_objective}"
 
     if [[ -n "${previous_last_assistant}" ]]; then
-      context_parts+=("Last recorded assistant state before the interruption: $(truncate_chars 700 "${previous_last_assistant}")")
+      add_directive "last_assistant_state" "Last recorded assistant state before the interruption: $(truncate_chars 700 "${previous_last_assistant}")"
     fi
 
     specialist_context="$(render_prior_specialist_summaries)"
     if [[ -n "${specialist_context}" ]]; then
-      context_parts+=("Recent specialist conclusions:\n${specialist_context}")
+      add_directive "prior_specialist_summaries" "Recent specialist conclusions:\n${specialist_context}"
     fi
 
     if [[ -n "${continuation_directive}" ]]; then
-      context_parts+=("Additional continuation directive from the user: ${continuation_directive}")
+      add_directive "continuation_directive_explicit" "Additional continuation directive from the user: ${continuation_directive}"
     fi
 
     # Phase 8 resume hint: when a continuation prompt arrives in a session
@@ -357,7 +373,7 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
     _wave_status_line="$("${HOME}/.claude/skills/autowork/scripts/record-finding-list.sh" status-line 2>/dev/null || true)"
     if [[ -n "${_wave_status_line}" ]] && [[ "${_wave_status_line}" != *"no plan yet"* ]] \
        && [[ "${_wave_status_line}" == *pending* || "${_wave_status_line}" == *in-progress* ]]; then
-      context_parts+=("**Phase 8 wave plan detected** in this session: ${_wave_status_line}. Resume protocol: do NOT call \`record-finding-list.sh init\` (the existing plan would be clobbered). Run \`record-finding-list.sh counts\` and \`show\` to see where execution stands, identify the in-progress wave, and re-enter at the per-wave cycle (planner → impl → quality-reviewer → excellence-reviewer → verify → commit) for the next pending wave. Findings already marked shipped are done; pending findings still need work.")
+      add_directive "phase8_resume_hint" "**Phase 8 wave plan detected** in this session: ${_wave_status_line}. Resume protocol: do NOT call \`record-finding-list.sh init\` (the existing plan would be clobbered). Run \`record-finding-list.sh counts\` and \`show\` to see where execution stands, identify the in-progress wave, and re-enter at the per-wave cycle (planner → impl → quality-reviewer → excellence-reviewer → verify → commit) for the next pending wave. Findings already marked shipped are done; pending findings still need work."
     fi
 
     # Wave 2 resume hint: when a continuation prompt arrives AND there is
@@ -386,41 +402,41 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
         _hint_already_shown="$(read_state "${_hint_state_key}")"
         _directive_already_shown="$(read_state "${_directive_state_key}")"
         if [[ "${_hint_already_shown}" != "1" ]] && [[ "${_directive_already_shown}" != "1" ]]; then
-          context_parts+=("**Pending resume request for this cwd** (origin_session=${_resume_candidate}). A prior /ulw task in this directory was killed by a Claude Code StopFailure; the artifact is unclaimed. Before continuing, invoke the \`/ulw-resume\` skill to atomically claim the artifact and replay the original objective verbatim — that is the resume path that preserves exhaustive-authorization markers, council triggers, and specific constraints. If the user's continuation explicitly references different work than the artifact's recorded objective, run \`/ulw-resume --dismiss\` to silence the hint, or ignore this directive and proceed (the dismiss verb prevents re-injection on subsequent continuation prompts in this session).")
+          add_directive "resume_request_hint" "**Pending resume request for this cwd** (origin_session=${_resume_candidate}). A prior /ulw task in this directory was killed by a Claude Code StopFailure; the artifact is unclaimed. Before continuing, invoke the \`/ulw-resume\` skill to atomically claim the artifact and replay the original objective verbatim — that is the resume path that preserves exhaustive-authorization markers, council triggers, and specific constraints. If the user's continuation explicitly references different work than the artifact's recorded objective, run \`/ulw-resume --dismiss\` to silence the hint, or ignore this directive and proceed (the dismiss verb prevents re-injection on subsequent continuation prompts in this session)."
           write_state "${_directive_state_key}" "1"
         fi
       fi
     fi
   elif [[ "${session_management_prompt}" -eq 1 ]]; then
-    context_parts+=("Ultrawork intent gate classified this prompt as session-management advice, not execution. Answer the user's question directly. Preserve the active objective instead of treating this prompt as a new task. Do not start implementing more work unless the user explicitly asks you to continue now. If you recommend a fresh session, checkpoint, or pause, explain why cleanly and stop without triggering deferral-style execution pressure.")
-    context_parts+=("Lead your response with the classification line — e.g., '**Domain:** ${TASK_DOMAIN} | **Intent:** ${display_intent}' — before answering, so the user can verify routing is correct.")
+    add_directive "ulw_session_mgmt_opener" "Ultrawork intent gate classified this prompt as session-management advice, not execution. Answer the user's question directly. Preserve the active objective instead of treating this prompt as a new task. Do not start implementing more work unless the user explicitly asks you to continue now. If you recommend a fresh session, checkpoint, or pause, explain why cleanly and stop without triggering deferral-style execution pressure."
+    add_directive "intent_classification" "Lead your response with the classification line — e.g., '**Domain:** ${TASK_DOMAIN} | **Intent:** ${display_intent}' — before answering, so the user can verify routing is correct."
     if [[ -n "${previous_objective}" ]]; then
-      context_parts+=("Preserved active objective in the background: ${previous_objective}")
+      add_directive "preserved_objective" "Preserved active objective in the background: ${previous_objective}"
     fi
     if [[ -n "${previous_domain}" ]]; then
-      context_parts+=("Underlying active task domain: ${previous_domain}")
+      add_directive "preserved_domain" "Underlying active task domain: ${previous_domain}"
     fi
   elif [[ "${advisory_prompt}" -eq 1 ]]; then
-    context_parts+=("Ultrawork intent gate classified this prompt as advisory or decision support, not direct execution. Answer the question directly, use the current task state as context if relevant, and do not force implementation unless the user explicitly asks for it.")
-    context_parts+=("Lead your response with the classification line — e.g., '**Domain:** ${TASK_DOMAIN} | **Intent:** ${display_intent}' — before answering, so the user can verify routing is correct.")
+    add_directive "ulw_advisory_opener" "Ultrawork intent gate classified this prompt as advisory or decision support, not direct execution. Answer the question directly, use the current task state as context if relevant, and do not force implementation unless the user explicitly asks for it."
+    add_directive "intent_classification" "Lead your response with the classification line — e.g., '**Domain:** ${TASK_DOMAIN} | **Intent:** ${display_intent}' — before answering, so the user can verify routing is correct."
     if [[ -n "${previous_objective}" ]]; then
-      context_parts+=("Preserved active objective in the background: ${previous_objective}")
+      add_directive "preserved_objective" "Preserved active objective in the background: ${previous_objective}"
     fi
     if [[ -n "${previous_domain}" ]]; then
-      context_parts+=("Underlying active task domain: ${previous_domain}")
+      add_directive "preserved_domain" "Underlying active task domain: ${previous_domain}"
     fi
     # Note: ADVISORY OVER CODE guidance is deferred — it will be injected below
     # only if council evaluation is NOT detected (council dispatch is a superset
     # of advisory's "inspect before recommending" requirement).
   elif [[ "${checkpoint_prompt}" -eq 1 ]]; then
-    context_parts+=("Ultrawork intent gate classified this prompt as a checkpoint or pause request. Preserve the active objective, provide a sharp checkpoint, state what is done and what remains, and stop cleanly without forcing full completion in this turn.")
-    context_parts+=("Lead your response with the classification line — e.g., '**Domain:** ${TASK_DOMAIN} | **Intent:** ${display_intent}' — before the checkpoint, so the user can verify routing is correct.")
+    add_directive "ulw_checkpoint_opener" "Ultrawork intent gate classified this prompt as a checkpoint or pause request. Preserve the active objective, provide a sharp checkpoint, state what is done and what remains, and stop cleanly without forcing full completion in this turn."
+    add_directive "intent_classification" "Lead your response with the classification line — e.g., '**Domain:** ${TASK_DOMAIN} | **Intent:** ${display_intent}' — before the checkpoint, so the user can verify routing is correct."
     if [[ -n "${previous_objective}" ]]; then
-      context_parts+=("Preserved active objective in the background: ${previous_objective}")
+      add_directive "preserved_objective" "Preserved active objective in the background: ${previous_objective}"
     fi
   else
-    context_parts+=("Ultrawork mode is active for this session. In your first user-facing response, start with the bold phrase **Ultrawork mode active.** as the opening line for visual distinction. Use the strongest specialist path available, keep momentum high, and do not stop early. Do not segment unfinished work into 'wave 1 done, wave 2 next' or 'ready for a new session' unless the user explicitly asked for a checkpoint.")
-    context_parts+=("Detected intent: ${display_intent}. Detected domain: ${TASK_DOMAIN}. Surface the classification right after the opener — '**Domain:** ${TASK_DOMAIN} | **Intent:** ${display_intent}' — followed by the first action you will take, so the user can verify routing is correct. If the user corrects the classification, adjust immediately.")
+    add_directive "ulw_execution_opener" "Ultrawork mode is active for this session. In your first user-facing response, start with the bold phrase **Ultrawork mode active.** as the opening line for visual distinction. Use the strongest specialist path available, keep momentum high, and do not stop early. Do not segment unfinished work into 'wave 1 done, wave 2 next' or 'ready for a new session' unless the user explicitly asked for a checkpoint."
+    add_directive "intent_classification" "Detected intent: ${display_intent}. Detected domain: ${TASK_DOMAIN}. Surface the classification right after the opener — '**Domain:** ${TASK_DOMAIN} | **Intent:** ${display_intent}' — followed by the first action you will take, so the user can verify routing is correct. If the user corrects the classification, adjust immediately."
 
     # --- Bias-defense directives (v1.19.0, default-off; reframed v1.24.0) ---
     #
@@ -455,7 +471,7 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
     if [[ "${OMC_PROMETHEUS_SUGGEST:-off}" == "on" ]] \
         && is_product_shaped_request "${PROMPT_TEXT}" \
         && is_ambiguous_execution_request "${PROMPT_TEXT}"; then
-      context_parts+=("AMBIGUOUS PRODUCT-SHAPED PROMPT: this request is short and product-shaped (build/create/design + app/dashboard/feature/onboarding/etc.) without a specific code anchor. State your scope interpretation (audience, primary success criterion, the one or two non-goals you are deliberately not building) in one or two declarative sentences as part of your opener, then proceed with that interpretation. The user can interrupt and redirect in real time if the call is wrong. Do NOT hold for confirmation — under ULW the request IS the permission (see core.md FORBIDDEN list). Only delegate to /prometheus when two interpretations are credibly incompatible and the wrong choice would cost significant rework — that is the credible-approach-split pause case from core.md, not a default-on hold. The directive's job is to make your interpretation auditable, not to stop forward motion.")
+      add_directive "bias_defense_prometheus_suggest" "AMBIGUOUS PRODUCT-SHAPED PROMPT: this request is short and product-shaped (build/create/design + app/dashboard/feature/onboarding/etc.) without a specific code anchor. State your scope interpretation (audience, primary success criterion, the one or two non-goals you are deliberately not building) in one or two declarative sentences as part of your opener, then proceed with that interpretation. The user can interrupt and redirect in real time if the call is wrong. Do NOT hold for confirmation — under ULW the request IS the permission (see core.md FORBIDDEN list). Only delegate to /prometheus when two interpretations are credibly incompatible and the wrong choice would cost significant rework — that is the credible-approach-split pause case from core.md, not a default-on hold. The directive's job is to make your interpretation auditable, not to stop forward motion."
       _bias_directive_emitted=1
       log_hook "prompt-intent-router" "bias-defense: prometheus-suggest fired"
       record_gate_event "bias-defense" "directive_fired" \
@@ -464,7 +480,7 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
     if [[ "${OMC_INTENT_VERIFY_DIRECTIVE:-off}" == "on" ]] \
         && [[ "${_bias_directive_emitted}" -eq 0 ]] \
         && is_ambiguous_execution_request "${PROMPT_TEXT}"; then
-      context_parts+=("INTENT VERIFICATION: this prompt is short and unanchored (no file path, line ref, function name, or backtick-fenced identifier). State your interpretation of the goal in one declarative sentence as part of your opener (e.g., 'I'm interpreting this as <X> and proceeding now'), then start work. Do NOT hold for confirmation — under ULW the user's request IS the permission (see core.md FORBIDDEN list) and they can redirect in real time. The pause case is narrow: only stop when both (a) confidence in the interpretation is low AND (b) the wrong call would be hard to reverse — both must hold. The directive exists to make your interpretation auditable so the user can correct it cheaply, not to stop forward motion.")
+      add_directive "bias_defense_intent_verify" "INTENT VERIFICATION: this prompt is short and unanchored (no file path, line ref, function name, or backtick-fenced identifier). State your interpretation of the goal in one declarative sentence as part of your opener (e.g., 'I'm interpreting this as <X> and proceeding now'), then start work. Do NOT hold for confirmation — under ULW the user's request IS the permission (see core.md FORBIDDEN list) and they can redirect in real time. The pause case is narrow: only stop when both (a) confidence in the interpretation is low AND (b) the wrong call would be hard to reverse — both must hold. The directive exists to make your interpretation auditable so the user can correct it cheaply, not to stop forward motion."
       log_hook "prompt-intent-router" "bias-defense: intent-verify fired"
       record_gate_event "bias-defense" "directive_fired" \
         "directive=intent-verify"
@@ -523,7 +539,7 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
       fi
       completeness_text+=" — EXEMPLIFYING SCOPE DETECTED (sub-case): the prompt uses example markers ('for instance' / 'e.g.' / 'i.e.' / 'for example' / 'such as' / 'as needed' / 'as appropriate' / 'similar to' / 'including but not limited to' / 'things like' / 'stuff like' / 'examples include'). Treat the example as ONE item from an enumerable class — the *class* is the scope, not the literal example. ${exemplifying_scope_workflow} Implementing only the literal example and silently dropping the class is **under-interpretation, not restraint** — it is the failure mode \`/ulw\` was created to prevent. Worked example: 'enhance the statusline, for instance adding reset countdown' enumerates as: reset countdown, in-flight indicators (pause/wave/plan markers), stale-data warnings, count surfaces, model-name handling — all live in the same statusline render path and are class items, not new capabilities. See core.md 'Excellence is not gold-plating' Calibration test, **Also keep going** bullet for the same rule. The user's request IS the permission to enumerate the class — do not gate-keep yourself by asking which siblings to include."
     fi
-    context_parts+=("${completeness_text}")
+    add_directive "bias_defense_completeness" "${completeness_text}"
     log_hook "prompt-intent-router" "bias-defense: completeness-directive fired (exemplifying=${EXEMPLIFYING_SCOPE_DETECTED})"
     if [[ "${EXEMPLIFYING_SCOPE_DETECTED}" -eq 1 ]]; then
       record_gate_event "bias-defense" "directive_fired" \
@@ -607,13 +623,13 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
       fi
     fi
     if [[ -n "${intent_broadening_summary}" ]]; then
-      context_parts+=("INTENT-BROADENING DIRECTIVE: A project surface inventory has been generated for this project at \`${intent_broadening_path}\` (${intent_broadening_summary}). Language is a limitation — the user's prompt names SOME of the surfaces this work touches but rarely all of them. Before committing to scope: (1) **Read the inventory** when scope is non-trivial. It enumerates concrete surfaces (routes, env vars, tests, docs, config flags, UI files, error states, auth paths, release steps, scripts) the prompt cannot explicitly list. (2) **Reconcile your task against it.** Which surfaces does this work plausibly touch (directly or transitively) vs which does the prompt explicitly name? (3) **Surface gaps in your opener** under a \`**Project surfaces touched:**\` bulleted line. If release steps, env vars, tests, or docs need updating beyond what the prompt names, ship them or defer with a one-line concrete WHY — never silently. (4) **The inventory is informational, not authoritative.** It widens your aperture, not constrains it. New surfaces appear faster than rescans; if a surface should exist but is missing, proceed with normal completeness reasoning. The inventory addresses the failure mode where a complex prompt silently misses surfaces the user did not name. Refresh: \`bash ~/.claude/skills/autowork/scripts/blindspot-inventory.sh scan --force\`.")
+      add_directive "bias_defense_intent_broadening" "INTENT-BROADENING DIRECTIVE: A project surface inventory has been generated for this project at \`${intent_broadening_path}\` (${intent_broadening_summary}). Language is a limitation — the user's prompt names SOME of the surfaces this work touches but rarely all of them. Before committing to scope: (1) **Read the inventory** when scope is non-trivial. It enumerates concrete surfaces (routes, env vars, tests, docs, config flags, UI files, error states, auth paths, release steps, scripts) the prompt cannot explicitly list. (2) **Reconcile your task against it.** Which surfaces does this work plausibly touch (directly or transitively) vs which does the prompt explicitly name? (3) **Surface gaps in your opener** under a \`**Project surfaces touched:**\` bulleted line. If release steps, env vars, tests, or docs need updating beyond what the prompt names, ship them or defer with a one-line concrete WHY — never silently. (4) **The inventory is informational, not authoritative.** It widens your aperture, not constrains it. New surfaces appear faster than rescans; if a surface should exist but is missing, proceed with normal completeness reasoning. The inventory addresses the failure mode where a complex prompt silently misses surfaces the user did not name. Refresh: \`bash ~/.claude/skills/autowork/scripts/blindspot-inventory.sh scan --force\`."
       log_hook "prompt-intent-router" "bias-defense: intent-broadening fired (path=${intent_broadening_path})"
       record_gate_event "bias-defense" "directive_fired" \
         "directive=intent-broadening"
     elif [[ -z "${intent_broadening_path}" ]] || ! is_blindspot_inventory_enabled; then
       # Inventory disabled — emit the discipline without the path reference.
-      context_parts+=("INTENT-BROADENING DIRECTIVE (no inventory): Language is a limitation — the user's prompt names some of the surfaces this work touches but rarely all of them. Before committing to scope, enumerate the project surfaces this work plausibly affects (routes, env vars, tests, docs, config flags, release steps, error states, auth paths) and reconcile against the prompt. Surface gaps in your opener under a \`**Project surfaces touched:**\` line — ship the gap or defer with a one-line concrete WHY. Never silently fill or silently drop a surface the user did not name.")
+      add_directive "bias_defense_intent_broadening_no_inventory" "INTENT-BROADENING DIRECTIVE (no inventory): Language is a limitation — the user's prompt names some of the surfaces this work touches but rarely all of them. Before committing to scope, enumerate the project surfaces this work plausibly affects (routes, env vars, tests, docs, config flags, release steps, error states, auth paths) and reconcile against the prompt. Surface gaps in your opener under a \`**Project surfaces touched:**\` line — ship the gap or defer with a one-line concrete WHY. Never silently fill or silently drop a surface the user did not name."
       log_hook "prompt-intent-router" "bias-defense: intent-broadening fired (no inventory path)"
       record_gate_event "bias-defense" "directive_fired" \
         "directive=intent-broadening-no-inventory"
@@ -658,7 +674,7 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
       && [[ "${session_management_prompt}" -eq 0 ]] \
       && [[ "${checkpoint_prompt}" -eq 0 ]] \
       && is_paradigm_ambiguous_request "${PROMPT_TEXT}"; then
-    context_parts+=("DIVERGENT-FRAMING DIRECTIVE: this prompt admits a paradigm-shape decision (architecture, approach, strategy, X-vs-Y choice, or open-ended \"how should we\") — the *shape* of the solution is the load-bearing call, not the mechanics. Defend against anchoring on the first paradigm that surfaces by enumerating 2-3 alternative framings INLINE in your opener: (1) **Name each framing** with a 2-4 word label, the mental model in one sentence, what it makes EASY (1 affordance), what it makes HARD (1 cost). (2) **Pick one with a one-line reason** plus a \"redirect if\" clause naming the condition under which a different framing would win. (3) **Escalate to \`/diverge\`** only when the decision is high-stakes AND your inline enumeration feels shallow — when you can list options but cannot rank them with conviction. The directive bias is *inline lateral thinking*, not a sub-agent dispatch on every task. When one paradigm is obviously dominant, say so explicitly with the alternatives you considered and ruled out (\"X is the standard here; Y/Z don't fit because…\"), rather than silently picking. Skip enumeration only when the prompt names the paradigm itself (e.g., \"implement X using the visitor pattern\" — paradigm pre-chosen, no decision to make).")
+    add_directive "bias_defense_divergent_framing" "DIVERGENT-FRAMING DIRECTIVE: this prompt admits a paradigm-shape decision (architecture, approach, strategy, X-vs-Y choice, or open-ended \"how should we\") — the *shape* of the solution is the load-bearing call, not the mechanics. Defend against anchoring on the first paradigm that surfaces by enumerating 2-3 alternative framings INLINE in your opener: (1) **Name each framing** with a 2-4 word label, the mental model in one sentence, what it makes EASY (1 affordance), what it makes HARD (1 cost). (2) **Pick one with a one-line reason** plus a \"redirect if\" clause naming the condition under which a different framing would win. (3) **Escalate to \`/diverge\`** only when the decision is high-stakes AND your inline enumeration feels shallow — when you can list options but cannot rank them with conviction. The directive bias is *inline lateral thinking*, not a sub-agent dispatch on every task. When one paradigm is obviously dominant, say so explicitly with the alternatives you considered and ruled out (\"X is the standard here; Y/Z don't fit because…\"), rather than silently picking. Skip enumeration only when the prompt names the paradigm itself (e.g., \"implement X using the visitor pattern\" — paradigm pre-chosen, no decision to make)."
     log_hook "prompt-intent-router" "bias-defense: divergence-directive fired"
     record_gate_event "bias-defense" "directive_fired" \
       "directive=divergence"
@@ -678,16 +694,16 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
     _project_maturity="$(get_project_maturity 2>/dev/null || true)"
     case "${_project_maturity}" in
       polish-saturated)
-        context_parts+=("**Project maturity:** polish-saturated — long-running project with deep tests and cross-session memory. The user is not asking for a ship-readiness checklist; they are asking 'what's the next strategic move?'. Bias advisory framing toward soul, signature, voice, negative-space, AI-as-experience, first-five-minutes, and excellence-bar concerns rather than feature-completeness or engineering-pragmatism framings. The ship bar is high — match it. Specifically: when asked open-ended 'what's next' / 'evaluate' / 'review' questions, lead with strategic moves and excellence concerns; only surface ship-readiness items when they are genuine blockers.")
+        add_directive "project_maturity" "**Project maturity:** polish-saturated — long-running project with deep tests and cross-session memory. The user is not asking for a ship-readiness checklist; they are asking 'what's the next strategic move?'. Bias advisory framing toward soul, signature, voice, negative-space, AI-as-experience, first-five-minutes, and excellence-bar concerns rather than feature-completeness or engineering-pragmatism framings. The ship bar is high — match it. Specifically: when asked open-ended 'what's next' / 'evaluate' / 'review' questions, lead with strategic moves and excellence concerns; only surface ship-readiness items when they are genuine blockers."
         ;;
       mature)
-        context_parts+=("**Project maturity:** mature — established project with substantial test coverage. Bias advisory framing toward balancing new work with regression risk. New behavior must come with tests; refactors should be incremental and well-bounded. Avoid suggestions that imply 'rewrite this' unless the user has already signaled appetite for it.")
+        add_directive "project_maturity" "**Project maturity:** mature — established project with substantial test coverage. Bias advisory framing toward balancing new work with regression risk. New behavior must come with tests; refactors should be incremental and well-bounded. Avoid suggestions that imply 'rewrite this' unless the user has already signaled appetite for it."
         ;;
       shipping)
-        context_parts+=("**Project maturity:** shipping — early-to-mid project, beyond prototype but not yet polish-saturated. Standard ship-readiness framing applies; verify before claiming complete. New behavior should come with tests, but don't over-architect.")
+        add_directive "project_maturity" "**Project maturity:** shipping — early-to-mid project, beyond prototype but not yet polish-saturated. Standard ship-readiness framing applies; verify before claiming complete. New behavior should come with tests, but don't over-architect."
         ;;
       prototype)
-        context_parts+=("**Project maturity:** prototype — new repo, < 30 commits. Focus on shipping a working slice; do not over-architect or demand exhaustive test coverage for code that may pivot. Suggestions should bias toward concrete forward motion over polish.")
+        add_directive "project_maturity" "**Project maturity:** prototype — new repo, < 30 commits. Focus on shipping a working slice; do not over-architect or demand exhaustive test coverage for code that may pivot. Suggestions should bias toward concrete forward motion over polish."
         ;;
       unknown|"")
         :  # No git repo or git unavailable — skip the maturity hint
@@ -696,7 +712,7 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
 
     case "${TASK_DOMAIN}" in
       coding)
-        context_parts+=("Detected likely task domain: coding.
+        add_directive "domain_routing" "Detected likely task domain: coding.
 Route by task shape:
 - broad or underspecified work (no concrete code anchor; request shape needs interview to nail down) → prometheus for interview-first scoping. Defer to quality-planner instead when the request is concrete enough that interview questions would not change the plan.
 - non-trivial but specified work (the request names files, components, or a defined deliverable) → quality-planner to scope explicit and implied requirements. Defer to prometheus instead when the request is broad/vague enough that you cannot enumerate the deliverable without asking the user.
@@ -718,22 +734,22 @@ Discipline:
 - Run quality-reviewer before stopping. For complex or multi-file tasks, also run excellence-reviewer after defects are addressed for a fresh-eyes completeness and polish evaluation.
 - Never write placeholder stubs or sycophantic comments.
 - Never call an unfamiliar or version-sensitive library/API from memory — confirm the surface in current docs first.
-- When you discover a verified adjacent defect on the same code path with a bounded fix, the Serendipity Rule (core.md) requires fixing it in-session AND logging it via \`~/.claude/skills/autowork/scripts/record-serendipity.sh\` so the rule's effectiveness can be audited. Watch for adjacent defects during edits — that's when the rule is most likely to apply.")
+- When you discover a verified adjacent defect on the same code path with a bounded fix, the Serendipity Rule (core.md) requires fixing it in-session AND logging it via \`~/.claude/skills/autowork/scripts/record-serendipity.sh\` so the rule's effectiveness can be audited. Watch for adjacent defects during edits — that's when the rule is most likely to apply."
         ;;
       writing)
-        context_parts+=("Detected likely task domain: writing. Detect the document type early: formal (paper, report, proposal), informal (email, blog, memo), creative (essay, narrative), technical (docs, API reference), or professional (cover letter, SOP, statement). Route the specialist chain accordingly — formal documents benefit from writing-architect for structure; creative work needs less scaffolding. Clarify audience, purpose, format, tone, and constraints early. Use writing-architect for structure when needed, librarian for factual support, draft-writer for the draft, editor-critic before finalizing. Do not invent facts, citations, or quotations — mark uncertain details explicitly. For verification: check structural completeness against the stated purpose, cross-reference factual claims against sources, and use available prose linting tools (markdownlint, vale, textlint) when the output format supports them.")
+        add_directive "domain_routing" "Detected likely task domain: writing. Detect the document type early: formal (paper, report, proposal), informal (email, blog, memo), creative (essay, narrative), technical (docs, API reference), or professional (cover letter, SOP, statement). Route the specialist chain accordingly — formal documents benefit from writing-architect for structure; creative work needs less scaffolding. Clarify audience, purpose, format, tone, and constraints early. Use writing-architect for structure when needed, librarian for factual support, draft-writer for the draft, editor-critic before finalizing. Do not invent facts, citations, or quotations — mark uncertain details explicitly. For verification: check structural completeness against the stated purpose, cross-reference factual claims against sources, and use available prose linting tools (markdownlint, vale, textlint) when the output format supports them."
         ;;
       research)
-        context_parts+=("Detected likely task domain: research or analysis. Use librarian for authoritative sources, briefing-analyst to synthesize findings, metis to challenge weak conclusions, editor-critic for prose-heavy deliverables. Score source quality: primary sources and official documentation rank highest, peer-reviewed publications next, then established journalism, then community content. When multiple sources conflict, present the conflict rather than choosing arbitrarily. Flag unsourced claims. Prioritize source quality, separate evidence from inference, make uncertainty explicit, and optimize for decision usefulness.")
+        add_directive "domain_routing" "Detected likely task domain: research or analysis. Use librarian for authoritative sources, briefing-analyst to synthesize findings, metis to challenge weak conclusions, editor-critic for prose-heavy deliverables. Score source quality: primary sources and official documentation rank highest, peer-reviewed publications next, then established journalism, then community content. When multiple sources conflict, present the conflict rather than choosing arbitrarily. Flag unsourced claims. Prioritize source quality, separate evidence from inference, make uncertainty explicit, and optimize for decision usefulness."
         ;;
       operations)
-        context_parts+=("Detected likely task domain: operations or professional-assistant work. Use chief-of-staff to structure the deliverable, surface missing constraints, and turn the request into a clean plan, message, checklist, or action-oriented output. Detect deliverable type: if the task implies a checklist, plan, schedule, decision matrix, or action-item tracker, structure the output accordingly. Every action item should have an owner (even if 'user'), a deadline (even if 'as soon as possible'), and a clear done-condition. If substantial writing is required, pair that with draft-writer and editor-critic.")
+        add_directive "domain_routing" "Detected likely task domain: operations or professional-assistant work. Use chief-of-staff to structure the deliverable, surface missing constraints, and turn the request into a clean plan, message, checklist, or action-oriented output. Detect deliverable type: if the task implies a checklist, plan, schedule, decision matrix, or action-item tracker, structure the output accordingly. Every action item should have an owner (even if 'user'), a deadline (even if 'as soon as possible'), and a clear done-condition. If substantial writing is required, pair that with draft-writer and editor-critic."
         ;;
       mixed)
-        context_parts+=("Detected likely task domain: mixed. Split the work into coding and non-coding streams. Use the engineering specialists for code work and the writing, research, or operations specialists for the non-code deliverables. Keep the branches coordinated but do not collapse everything into one generic workflow.")
+        add_directive "domain_routing" "Detected likely task domain: mixed. Split the work into coding and non-coding streams. Use the engineering specialists for code work and the writing, research, or operations specialists for the non-code deliverables. Keep the branches coordinated but do not collapse everything into one generic workflow."
         ;;
       *)
-        context_parts+=("Detected likely task domain: general. The task did not match coding, writing, research, or operations keywords — classify it yourself before proceeding. Ask: what is the deliverable? Is it code, prose, a decision, a plan, or something else? Then choose the specialist path that fits. If the task involves a repository, treat it as coding. If it involves producing a document, treat it as writing. If it involves gathering information, treat it as research. Do not default to code-oriented repo exploration unless the task truly requires it.")
+        add_directive "domain_routing" "Detected likely task domain: general. The task did not match coding, writing, research, or operations keywords — classify it yourself before proceeding. Ask: what is the deliverable? Is it code, prose, a decision, a plan, or something else? Then choose the specialist path that fits. If the task involves a repository, treat it as coding. If it involves producing a document, treat it as writing. If it involves gathering information, treat it as research. Do not default to code-oriented repo exploration unless the task truly requires it."
         ;;
     esac
 
@@ -832,7 +848,7 @@ Discipline:
         fi
       fi
 
-      context_parts+=("UI/design work detected — context-aware design routing engaged. Before writing UI code, establish a visual direction using the **9-section Design Contract** ((1) Visual Theme & Atmosphere, (2) Color Palette & Roles, (3) Typography Rules, (4) Component Stylings, (5) Layout Principles, (6) Depth & Elevation, (7) Do's and Don'ts, (8) Responsive Behavior, (9) Agent Prompt Guide). Apply ${ui_tier_hint}. ${ui_platform_block} ${ui_domain_hint} Pick the closest brand archetype as point of departure, then commit to at least three specific things you will do *differently* to avoid cloning — anti-anchoring forces differentiation.${ui_archetype_advisory} **Cross-generation discipline:** never converge on common AI choices (Space Grotesk, Inter at default weight, Tailwind blue-500/indigo-500, centered-hero+CTA, three uniform feature cards, gradient-mesh backgrounds, default blue→purple) — vary palette, typography, and structural pattern across sessions. If \`DESIGN.md\` exists at project root, read it first and treat its commitments as a prior; if absent, emit your contract inline under a \`## Design Contract\` heading and offer the user persistence — **never auto-write or overwrite files at the project root**. The design-reviewer quality gate auto-activates when UI files (.tsx, .jsx, .vue, .css, .html) are edited and grades against the contract (or DESIGN.md if present). The /frontend-design skill is available for dedicated design-first workflows. To suppress this guidance, include 'no design polish' or 'functional only' in your prompt.")
+      add_directive "ui_design_contract" "UI/design work detected — context-aware design routing engaged. Before writing UI code, establish a visual direction using the **9-section Design Contract** ((1) Visual Theme & Atmosphere, (2) Color Palette & Roles, (3) Typography Rules, (4) Component Stylings, (5) Layout Principles, (6) Depth & Elevation, (7) Do's and Don'ts, (8) Responsive Behavior, (9) Agent Prompt Guide). Apply ${ui_tier_hint}. ${ui_platform_block} ${ui_domain_hint} Pick the closest brand archetype as point of departure, then commit to at least three specific things you will do *differently* to avoid cloning — anti-anchoring forces differentiation.${ui_archetype_advisory} **Cross-generation discipline:** never converge on common AI choices (Space Grotesk, Inter at default weight, Tailwind blue-500/indigo-500, centered-hero+CTA, three uniform feature cards, gradient-mesh backgrounds, default blue→purple) — vary palette, typography, and structural pattern across sessions. If \`DESIGN.md\` exists at project root, read it first and treat its commitments as a prior; if absent, emit your contract inline under a \`## Design Contract\` heading and offer the user persistence — **never auto-write or overwrite files at the project root**. The design-reviewer quality gate auto-activates when UI files (.tsx, .jsx, .vue, .css, .html) are edited and grades against the contract (or DESIGN.md if present). The /frontend-design skill is available for dedicated design-first workflows. To suppress this guidance, include 'no design polish' or 'functional only' in your prompt."
       log_hook "prompt-intent-router" "UI/design context injected (platform=${ui_platform} intent=${ui_intent} domain=${ui_domain}${ui_archetype_advisory:+ priors=${_prior_count}})"
     elif [[ "${ui_design_opt_out}" -eq 1 ]]; then
       log_hook "prompt-intent-router" "UI/design opt-out detected — skipping contract injection"
@@ -909,14 +925,14 @@ Discipline:
 
    **G. Final summary:** run \`record-finding-list.sh summary\` for the markdown finding-status table — USER-DECISION findings appear in their own column AND are surfaced separately for visibility. Restate the key deliverable in the response so the user does not have to scroll."
       fi
-      context_parts+=("COUNCIL EVALUATION DETECTED: This is a broad project evaluation request. Use the /council protocol to dispatch multi-role expert perspectives:
+      add_directive "council_evaluation" "COUNCIL EVALUATION DETECTED: This is a broad project evaluation request. Use the /council protocol to dispatch multi-role expert perspectives:
 1. Inspect the project to determine its type, maturity, and tech stack.
 2. Select 3-6 relevant role-lenses from: product-lens, design-lens, visual-craft-lens, security-lens, data-lens, sre-lens, growth-lens. Use the selection guide in the council skill to decide which lenses fit this project. design-lens and visual-craft-lens are disjoint by design (UX flow vs. visual craft) — dispatch both for projects where both surfaces matter.
 3. Dispatch ALL selected lenses in parallel using the Agent tool in a single message. Each gets the project context and its evaluation mandate.${_council_deep_hint}${_council_polish_hint}
 4. Wait for ALL lenses to return before synthesizing — do NOT begin synthesis early.
 5. Synthesize findings: deduplicate, rank by severity x breadth, attribute to perspectives, separate quick wins from strategic work. Reject findings that lack file/line evidence. **Mark user-decision findings:** when a finding involves taste, policy, brand voice, pricing, data-retention, release attribution, or a credible-approach split (two reasonable paths where choosing wrong costs significant rework), tag it with \`requires_user_decision: true\` and a one-line \`decision_reason\` explaining what the user needs to weigh in on. These findings are surfaced separately in Phase 8 — the wave executor pauses on them instead of choosing autonomously. The criterion mirrors core.md's pause cases.
 6. Present a unified Project Council Assessment with: critical findings, high-impact improvements, strategic recommendations, cross-perspective tensions, and quick wins.${_council_phase7_hint}${_council_phase8_hint}
-Challenge the project — the value is in what is missing or wrong, not in what is already good.")
+Challenge the project — the value is in what is missing or wrong, not in what is already good."
       log_hook "prompt-intent-router" "council evaluation detected${_council_deep_hint:+ (deep)}${_council_polish_hint:+ (polish)}${_council_phase8_hint:+ (execute)}${_council_authorization_hint:+ (exhaustive-auth)}"
     elif [[ "${advisory_prompt}" -eq 1 ]]; then
       # Advisory prompt that did NOT trigger council → inject code-grounding guidance.
@@ -924,14 +940,14 @@ Challenge the project — the value is in what is missing or wrong, not in what 
       # fires for non-council advisory prompts over code.
       effective_domain="${TASK_DOMAIN:-${previous_domain:-}}"
       if [[ "${effective_domain}" == "coding" || "${effective_domain}" == "mixed" ]]; then
-        context_parts+=("ADVISORY OVER CODE: This is an advisory task that targets a codebase. Build and test the project before forming recommendations. When launching parallel Explore agents, give each a distinct non-overlapping scope. Do NOT deliver the final structured report until all exploration agents have returned — deliver status updates while waiting, but hold the synthesis. Verify the highest-impact claims against actual code. Cover multiple layers: code correctness, user-facing copy/messaging, build/config/deployment, and external dependencies.")
+        add_directive "advisory_over_code" "ADVISORY OVER CODE: This is an advisory task that targets a codebase. Build and test the project before forming recommendations. When launching parallel Explore agents, give each a distinct non-overlapping scope. Do NOT deliver the final structured report until all exploration agents have returned — deliver status updates while waiting, but hold the synthesis. Verify the highest-impact claims against actual code. Cover multiple layers: code correctness, user-facing copy/messaging, build/config/deployment, and external dependencies."
       fi
     fi
   fi
 fi
 
 if grep -Eiq '(^|[^[:alnum:]_-])ultrathink([^[:alnum:]_-]|$)' <<<"${PROMPT_TEXT}"; then
-  context_parts+=("ULTRATHINK MODE ACTIVE — deeper investigation required. Favor verification over abstraction: check claims against real code, run tests, read actual files rather than reasoning about what they probably contain. Before acting: consider what could go wrong and verify your assumptions are grounded. After results: ask whether you found concrete evidence or just formed an opinion — if the latter, investigate further. When you encounter ambiguity, read the source rather than reason about it. This mode is for hard problems where unverified assumptions produce wrong answers.")
+  add_directive "ultrathink" "ULTRATHINK MODE ACTIVE — deeper investigation required. Favor verification over abstraction: check claims against real code, run tests, read actual files rather than reasoning about what they probably contain. Before acting: consider what could go wrong and verify your assumptions are grounded. After results: ask whether you found concrete evidence or just formed an opinion — if the latter, investigate further. When you encounter ambiguity, read the source rather than reason about it. This mode is for hard problems where unverified assumptions produce wrong answers."
 fi
 
 # Auto-memory skip directive (v1.20.0). The auto-memory wrap-up rule
@@ -950,7 +966,7 @@ fi
 # (those turns are the rule's intended audience).
 if [[ "${TASK_INTENT}" == "advisory" || "${TASK_INTENT}" == "session_management" ]] \
     && is_auto_memory_enabled 2>/dev/null; then
-  context_parts+=("AUTO-MEMORY SKIP: this turn is classified as ${TASK_INTENT//_/-}. The session-stop and compact-time auto-memory rules in auto-memory.md and compact.md target execution/continuation/checkpoint turns where work moved forward. Skip both passes this turn unless the user explicitly asks you to remember something. Advisory and session-management turns produce evaluation, not durable signal worth keeping across sessions.")
+  add_directive "auto_memory_skip" "AUTO-MEMORY SKIP: this turn is classified as ${TASK_INTENT//_/-}. The session-stop and compact-time auto-memory rules in auto-memory.md and compact.md target execution/continuation/checkpoint turns where work moved forward. Skip both passes this turn unless the user explicitly asks you to remember something. Advisory and session-management turns produce evaluation, not durable signal worth keeping across sessions."
 fi
 
 # Memory drift hint (v1.20.0). When the user-scope auto-memory dir
@@ -964,7 +980,7 @@ fi
 if [[ -z "$(read_state "memory_drift_hint_emitted")" ]]; then
   drift_msg="$(check_memory_drift 2>/dev/null || true)"
   if [[ -n "${drift_msg}" ]]; then
-    context_parts+=("${drift_msg}")
+    add_directive "memory_drift_hint" "${drift_msg}"
     write_state "memory_drift_hint_emitted" "1"
   fi
 fi
@@ -1000,7 +1016,7 @@ if [[ -n "${guard_exhausted}" ]]; then
     human_detail="${human_detail:+${human_detail}, }reviewer dimensions (${dims_part})"
   fi
   human_detail="${human_detail:-${guard_detail}}"
-  context_parts+=("WARNING — PREVIOUS RESPONSE INCOMPLETE: The stop guard was exhausted after 3 blocks. Missing quality gates: ${human_detail}. Before starting new work, verify and review the previous changes if they haven't been checked yet. Briefly tell the user about this gap.")
+  add_directive "guard_exhausted_warning" "WARNING — PREVIOUS RESPONSE INCOMPLETE: The stop guard was exhausted after 3 blocks. Missing quality gates: ${human_detail}. Before starting new work, verify and review the previous changes if they haven't been checked yet. Briefly tell the user about this gap."
   write_state_batch "guard_exhausted" "" "guard_exhausted_detail" ""
 fi
 
@@ -1009,7 +1025,7 @@ fi
 if is_execution_intent_value "${TASK_INTENT}"; then
   defect_watch="$(get_defect_watch_list 3 2>/dev/null || true)"
   if [[ -n "${defect_watch}" ]]; then
-    context_parts+=("Historical defect patterns from prior sessions — ${defect_watch}. Pay extra attention to these categories during implementation and review.")
+    add_directive "defect_watch" "Historical defect patterns from prior sessions — ${defect_watch}. Pay extra attention to these categories during implementation and review."
   fi
 fi
 
