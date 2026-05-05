@@ -185,5 +185,73 @@ assert_eq "T8: VERSION unchanged in dry-run" "1.0.0" "${ver_after}"
 cleanup_fixture "${repo}"
 
 # ---------------------------------------------------------------------
+# ---------------------------------------------------------------------
+# T9 (v1.32.15 G1 fix): trailing whitespace on [Unreleased] heading
+# detected and rejected pre-1.32.15 the perl regex silent-no-op'd.
+# ---------------------------------------------------------------------
+printf 'Test 9: [Unreleased] heading with trailing whitespace → fails\n'
+repo="$(mk_release_fixture)"
+# Replace clean [Unreleased] with one carrying trailing spaces.
+perl -i -pe 's|^## \[Unreleased\]$|## [Unreleased]   |' "${repo}/CHANGELOG.md"
+(cd "${repo}" && git add -A && git commit -q -m "introduce trailing whitespace")
+set +e
+out="$(cd "${repo}" && bash tools/release.sh "1.0.1" 2>&1)"
+rc=$?
+set -e
+assert_eq "T9: trailing-ws heading rejected" "1" "${rc}"
+assert_contains "T9: names trailing whitespace" "trailing whitespace" "${out}"
+# Verify CHANGELOG was NOT mutated (the bug pre-1.32.15 was a
+# silent perl no-op; we should fail BEFORE the perl substitution).
+if grep -qE '^## \[1\.0\.1\]' "${repo}/CHANGELOG.md"; then
+  printf '  FAIL: T9: trailing-ws case wrote a release heading anyway\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+cleanup_fixture "${repo}"
+
+# ---------------------------------------------------------------------
+# T10 (v1.32.15 G1 fix): CRLF line endings on [Unreleased] detected.
+# ---------------------------------------------------------------------
+printf 'Test 10: CRLF line endings on [Unreleased] → fails\n'
+repo="$(mk_release_fixture)"
+# Convert just the CHANGELOG to CRLF endings to simulate a Windows
+# editor save.
+awk 'BEGIN{ORS="\r\n"} {print}' "${repo}/CHANGELOG.md" > "${repo}/CHANGELOG.md.crlf"
+mv "${repo}/CHANGELOG.md.crlf" "${repo}/CHANGELOG.md"
+(cd "${repo}" && git add -A && git commit -q -m "introduce CRLF")
+set +e
+out="$(cd "${repo}" && bash tools/release.sh "1.0.1" 2>&1)"
+rc=$?
+set -e
+assert_eq "T10: CRLF heading rejected" "1" "${rc}"
+assert_contains "T10: names CRLF" "CRLF" "${out}"
+cleanup_fixture "${repo}"
+
+# ---------------------------------------------------------------------
+# T11 (v1.32.15 G2 fix): empty [Unreleased] section refuses to ship.
+# ---------------------------------------------------------------------
+printf 'Test 11: empty [Unreleased] section → fails\n'
+repo="$(mk_release_fixture)"
+# Replace the populated [Unreleased] with an empty one.
+cat > "${repo}/CHANGELOG.md" <<'CL'
+# Changelog
+
+## [Unreleased]
+
+## [1.0.0] - 2026-01-01
+
+initial.
+CL
+(cd "${repo}" && git add -A && git commit -q -m "empty unreleased")
+set +e
+out="$(cd "${repo}" && bash tools/release.sh "1.0.1" 2>&1)"
+rc=$?
+set -e
+assert_eq "T11: empty Unreleased rejected" "1" "${rc}"
+assert_contains "T11: names empty Unreleased" "[Unreleased] section is empty" "${out}"
+cleanup_fixture "${repo}"
+
+# ---------------------------------------------------------------------
 printf '\n=== release tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]

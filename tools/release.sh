@@ -120,7 +120,11 @@ say "Hotfix-sweep reminder"
 if [[ -f "${REPO_ROOT}/.hotfix-sweep-quick" ]]; then
   err "last sweep was --quick — re-run 'bash tools/hotfix-sweep.sh' (no --quick) before tagging"
 fi
-ok "hotfix-sweep marker absent — assumed run cleanly"
+# v1.32.15 (G4 fix): the marker is ONLY present when --quick was
+# used. A maintainer who never ran sweep at all also sees "marker
+# absent". Wording reflects that this is a guard against a known
+# anti-pattern, not a positive verification.
+ok "no --quick marker found (ensure tools/hotfix-sweep.sh was run as Pre-flight Step 6)"
 
 # ----------------------------------------------------------------------
 # Step 7-9 — VERSION, badge, CHANGELOG promotion
@@ -131,7 +135,11 @@ ok "VERSION → ${VERSION_ARG}"
 
 say "Step 8: update README badge"
 if [[ "${DRY_RUN}" -eq 1 ]]; then
-  printf '  [dry-run] sed -i "s/Version-${CURRENT_VERSION}-blue/Version-${VERSION_ARG}-blue/" README.md\n'
+  # v1.32.15 (G5 fix): match the actual implementation (perl -i -pe
+  # not sed -i — perl is portable across macOS BSD-sed and Linux
+  # GNU-sed; sed -i differs incompatibly between the two).
+  printf '  [dry-run] perl -i -pe "s/Version-%s-blue/Version-%s-blue/" README.md\n' "${CURRENT_VERSION}" "${VERSION_ARG}"
+  printf '  [dry-run] ✓ README badge → %s (would-emit on real run)\n' "${VERSION_ARG}"
 else
   if grep -q "Version-${CURRENT_VERSION}-blue" README.md; then
     perl -i -pe "s/Version-${CURRENT_VERSION}-blue/Version-${VERSION_ARG}-blue/" README.md
@@ -143,19 +151,70 @@ fi
 
 say "Step 9: promote [Unreleased] in CHANGELOG"
 TODAY="$(date +%Y-%m-%d)"
+
+# v1.32.15 (G1 fix from v1.32.14 reviewer): pre-validate the
+# [Unreleased] heading is exactly `## [Unreleased]` with no trailing
+# whitespace and LF line endings before the perl substitution. Pre-
+# 1.32.15 the perl regex `^(## \[Unreleased\])$` silent-no-op'd on
+# trailing-space or CRLF — perl exited 0, the script emitted "✓
+# CHANGELOG promoted", but no substitution happened. Then VERSION
+# was bumped, README updated, commit + tag + push proceeded with
+# a stale CHANGELOG.
+if ! grep -nE '^## \[Unreleased\]$' CHANGELOG.md >/dev/null 2>&1; then
+  # Diagnose the specific failure shape so the maintainer can fix.
+  # CRLF check FIRST (before generic trailing-whitespace) — \r is
+  # whitespace under [[:space:]], so the wider check would otherwise
+  # mask the CRLF-specific diagnosis.
+  if grep -nE $'^## \\[Unreleased\\]\r$' CHANGELOG.md >/dev/null 2>&1; then
+    err "[Unreleased] heading has CRLF line endings — convert to LF before re-running"
+  elif grep -nE '^## \[Unreleased\][[:space:]]+$' CHANGELOG.md >/dev/null 2>&1; then
+    err "[Unreleased] heading has trailing whitespace — fix CHANGELOG.md before re-running"
+  elif ! grep -E '^## \[Unreleased\]' CHANGELOG.md >/dev/null 2>&1; then
+    err "[Unreleased] heading not found in CHANGELOG.md — release.sh requires it"
+  else
+    err "[Unreleased] heading is malformed (does not match \`^## \\[Unreleased\\]\$\`)"
+  fi
+fi
+
+# v1.32.15 (G2 fix): refuse to ship an empty [Unreleased] section.
+# Count non-blank lines between [Unreleased] and the next ## heading.
+unrel_content_lines="$(awk '
+  /^## \[Unreleased\]$/ { in_unrel = 1; next }
+  /^## / && in_unrel    { exit }
+  in_unrel && NF > 0    { count++ }
+  END { print count + 0 }
+' CHANGELOG.md)"
+if [[ "${unrel_content_lines}" -eq 0 ]]; then
+  err "[Unreleased] section is empty — add release notes before tagging v${VERSION_ARG}"
+fi
+
 if [[ "${DRY_RUN}" -eq 1 ]]; then
   printf '  [dry-run] insert "## [%s] - %s" below "## [Unreleased]"\n' "${VERSION_ARG}" "${TODAY}"
 else
   # Insert "## [X.Y.Z] - YYYY-MM-DD" below the [Unreleased] line.
   # Keep [Unreleased] as an empty placeholder for the next cycle.
   perl -i -pe "s|^(## \\[Unreleased\\])\$|\$1\n\n## [${VERSION_ARG}] - ${TODAY}|" CHANGELOG.md
+  # v1.32.15 (G1 fix): verify the substitution actually happened.
+  # Pre-validation above should prevent the silent-no-op case, but
+  # belt-and-suspenders: confirm the new heading is now in the file.
+  if ! grep -qE "^## \\[${VERSION_ARG}\\] - ${TODAY}\$" CHANGELOG.md; then
+    err "Step 9 promotion did not produce the expected heading — CHANGELOG.md not modified. Check the [Unreleased] heading manually."
+  fi
   ok "CHANGELOG promoted → [${VERSION_ARG}] - ${TODAY}"
 fi
 
 # ----------------------------------------------------------------------
 # Step 9b — re-run CHANGELOG-coupled tests after promotion
 # (v1.32.7/8 process fix; 5 prior releases shipped CI-red because
-# step 2 ran against pre-promotion CHANGELOG)
+# step 2 ran against pre-promotion CHANGELOG).
+#
+# v1.32.15 (G3 contract clarification): the grep matches tests that
+# either reference `CHANGELOG.md` literally OR call `extract_whats_new`.
+# A future test that reads CHANGELOG via other paths (e.g.,
+# `git show v1.32.13:CHANGELOG.md`) without these strings would slip
+# past this filter — add one of the strings to the test's prose to
+# make it discoverable. Mirrors the discovered_scope_capture_targets
+# precedent in common.sh.
 # ----------------------------------------------------------------------
 say "Step 9b: re-run CHANGELOG-coupled tests"
 if [[ "${DRY_RUN}" -eq 1 ]]; then

@@ -4,6 +4,37 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.32.15] - 2026-05-05
+
+Sixth release-reviewer dogfood. Reviewer pass on v1.32.14 surfaced 5 gaps; G1 (silent CHANGELOG-promotion no-op on regex non-match) and G2 (empty `[Unreleased]` ships empty notes) are real correctness bugs verified live. All 5 ship inline as Serendipity-bounded fixes.
+
+### Fixed
+
+- **`tools/release.sh` Step 9 silent no-op on regex non-match (G1).** Pre-1.32.15 the perl substitution `s|^(## \[Unreleased\])$|$1\n\n## [X.Y.Z] - YYYY-MM-DD|` exited 0 even when zero matches happened — typically because the heading carries trailing whitespace (`## [Unreleased]   `) or CRLF line endings (`\r\n`). Both verified live: file unchanged, perl rc=0, script proceeded to commit + tag + push WITHOUT promoting the CHANGELOG. Fix: pre-validate the heading before the perl call. CRLF check runs before trailing-whitespace check (`\r` is `[[:space:]]`, would otherwise mask the more-specific diagnosis). Plus belt-and-suspenders post-substitution `grep` confirming the new heading is present.
+
+- **`tools/release.sh` Step 9 empty-Unreleased abort (G2).** Pre-1.32.15 a [Unreleased] section with no content (no bullets, no body) would still promote — Step 13's awk-extract returned empty, the warning printed, but `gh release create --notes-file` shipped with empty notes anyway. Fix: count non-blank lines between `[Unreleased]` and the next `## ` heading; abort with named error if zero. Validation phase, before any mutation.
+
+- **`tools/release.sh` Step 8 dry-run prints inaccurate command (G5).** Pre-1.32.15 the dry-run preview said `sed -i ...` but the actual implementation used `perl -i -pe` (sed -i differs incompatibly between BSD-sed/macOS and GNU-sed/Linux). Fixed: dry-run shows the exact perl command that would run, plus the success line that the real path emits.
+
+- **`tools/release.sh` hotfix-sweep banner wording (G4).** Pre-1.32.15 said "hotfix-sweep marker absent — assumed run cleanly", which is misleading: the marker is ONLY present when `--quick` was used; a maintainer who never ran sweep at all also sees the same green checkmark. Fixed: "no `--quick` marker found (ensure tools/hotfix-sweep.sh was run as Pre-flight Step 6)" — names the actual guard.
+
+- **`tools/release.sh` Step 9b grep contract documented (G3).** Comment block names the contract for what counts as a CHANGELOG-coupled test (literal `CHANGELOG.md` reference OR `extract_whats_new` helper). Future tests reading CHANGELOG via tagged-commit content (`git show vX.Y.Z:CHANGELOG.md`) need to add one of these strings to be discovered by the grep.
+
+### Added
+
+- **`tests/test-release.sh` T9-T11.** Three new regression nets pinning the v1.32.15 fixes:
+    - T9: trailing-whitespace heading rejected, CHANGELOG NOT mutated
+    - T10: CRLF line endings rejected (with the more-specific CRLF error wins over trailing-whitespace)
+    - T11: empty `[Unreleased]` section rejected before any mutation
+
+### Verification
+
+- `bash tests/test-release.sh` — 29/29 (was 22/22; +7 for T9 + T10 + T11 + their multi-assertion paths)
+- `bash tests/test-coordination-rules.sh` — 81/81 (test-pin discipline holds)
+- 69/69 CI-pinned tests pass locally
+- shellcheck clean
+- Live verification: `## [Unreleased]   \n` and `## [Unreleased]\r\n` both correctly diagnosed pre-mutation
+
 ## [1.32.14] - 2026-05-05
 
 R4 closure from the v1.32.0 release post-mortem — `tools/release.sh` automation that wraps CONTRIBUTING.md bump-and-tag steps 7-14 into a single command. The original metis stress-test of R4's "stage-then-promote" proposal flagged the muscle-memory risk: a 14-step manual process gets skipped under time pressure (the v1.32.6 → v1.32.7 hotfix cycle this session is the canonical instance — tagged + pushed before noticing CI was red). Automation closes that — the script either runs every step in order or fails early with a named blocker, never partway-through.
