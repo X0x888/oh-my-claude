@@ -79,7 +79,10 @@ jobs:
 YAML
     git add -A
     git commit -q -m "baseline"
-    git tag v0.0.0
+    # Use a non-version-shaped tag name so a fixture-leak (e.g.,
+    # subshell `cd` failure) cannot accidentally pollute the parent
+    # repo with a tag that looks like a real release.
+    git tag fixture-baseline
   ) || return 1
   printf '%s' "${repo}"
 }

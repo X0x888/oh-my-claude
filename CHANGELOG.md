@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.32.13] - 2026-05-05
+
+Polish release closing all v1.32.x reviewer-deferred items in one bounded patch. Plus a fixture-leak hygiene fix surfaced when a v1.32.12 push accidentally pushed a stray `v0.0.0` tag to origin (immediately deleted; root-caused to a test fixture using version-shaped tag name).
+
+### Fixed
+
+- **`tests/test-hotfix-sweep.sh` fixture-tag-name hardening.** Pre-1.32.13 the fixture used `git tag v0.0.0` inside a `mktemp -d` repo. v1.32.12's push accidentally pushed `v0.0.0` to origin (root-cause: under some test-execution path the subshell's `cd` failed silently and the `git tag` ran in the parent repo). Stray tag deleted from local + origin. Fixed: switched fixture to `git tag fixture-baseline` — non-version-shaped name that cannot collide with real release tags or fool a future `gh release` page.
+
+- **`tests/test-backfill-project-key.sh` T5 fixture isolation** (deferred from v1.32.10 reviewer gap 5). Pre-1.32.13 T5 ran the tool TWICE on the same fixture; the "3 already-set" assertion silently coupled to T2 + T6 behavior — if those tests' write-paths changed, T5 failed for an unrelated reason. Now T5 sets up its own fixture with all 3 already-set candidates pre-populated, runs backfill ONCE, and asserts the count without depending on prior tool behavior.
+
+- **`tests/test-backfill-project-key.sh` T7 deterministic-shape pin** (deferred from v1.32.10 reviewer gap 3). Locks the SHA-256[0:12] shape of the cwd-hash fallback so a future `_omc_project_id` refactor (e.g., adding a salt) doesn't silently drift from backfill behavior. Asserts the fallback equals `printf '%s' "${cwd}" | shasum -a 256 | cut -c1-12` byte-for-byte.
+
+### Verification
+
+- `bash tests/test-backfill-project-key.sh` — 14/14 (was 12/12; +2 for T5 + T7 polish)
+- `bash tests/test-hotfix-sweep.sh` — 19/19 (unchanged after fixture-tag-name change)
+- 68/68 CI-pinned tests pass locally
+- shellcheck clean
+- Stray v0.0.0 tag confirmed deleted from origin (`gh api ... 404`)
+
 ## [1.32.12] - 2026-05-05
 
 Fifth release-reviewer dogfood. Reviewer pass on v1.32.11 returned **BLOCK** with one critical gap (G1) plus 3 process / honesty gaps. The G1 defect is exactly the install-remote `--depth=1` shallow-clone case the post-mortem flagged — silent-green-passing in the most user-relevant scenario means R5 closure was structurally incomplete. All 4 BLOCK-level gaps + 1 polish ship inline as Serendipity-bounded fixes.
