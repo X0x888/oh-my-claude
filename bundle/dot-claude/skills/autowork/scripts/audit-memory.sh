@@ -193,9 +193,17 @@ while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
   # Strip strikethrough for further parsing.
   cleaned="$(strip_strikethrough "${raw_line}")"
 
-  # Extract title and file.
-  title="$(printf '%s' "${cleaned}" | sed -nE 's/.*\[([^]]+)\]\([^)]+\).*/\1/p' | head -1)"
-  file_ref="$(printf '%s' "${cleaned}" | sed -nE 's/.*\[[^]]+\]\(([^)]+\.md)\).*/\1/p' | head -1)"
+  # Extract title and file. Both fields come from MEMORY.md content
+  # which the model writes (`auto-memory.md` rule); strip C0/C1 control
+  # bytes so a hostile model that embedded `[2J[H` (clear screen)
+  # or `]0;HACKED` (terminal title escape) inside the markdown
+  # cannot drive the user's tty when `/memory-audit` renders the
+  # table at line 308 below. v1.32.16 (4-attacker security review,
+  # A3-MED-3). audit-memory.sh does NOT source common.sh, so this
+  # inlines the same byte set the `_omc_strip_render_unsafe` helper
+  # uses (preserves \t \n \r; strips ESC and other C0/C1 + DEL).
+  title="$(printf '%s' "${cleaned}" | sed -nE 's/.*\[([^]]+)\]\([^)]+\).*/\1/p' | head -1 | tr -d '\000-\010\013-\014\016-\037\177')"
+  file_ref="$(printf '%s' "${cleaned}" | sed -nE 's/.*\[[^]]+\]\(([^)]+\.md)\).*/\1/p' | head -1 | tr -d '\000-\010\013-\014\016-\037\177')"
 
   # Trailing description: everything after the link's closing paren,
   # stripped of leading separator punctuation/whitespace. Handled in two
@@ -216,6 +224,11 @@ while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
   # globs, so use sed with literal bytes via printf-rendered patterns.
   description="$(printf '%s' "${description}" | sed -e 's/^—[[:space:]]*//' -e 's/^–[[:space:]]*//')"
   description="${description# }"
+  # A3-MED-3 (4-attacker security review): strip control bytes from
+  # the model-influenced description before it lands in `${action}`
+  # at the table-row composition (line 308 below). Inline tr to keep
+  # this script common.sh-independent.
+  description="$(printf '%s' "${description}" | tr -d '\000-\010\013-\014\016-\037\177')"
 
   # Capture every *.md link target on this line for the orphaned-files
   # post-pass. A row with multiple `[Title](file.md)` links should not

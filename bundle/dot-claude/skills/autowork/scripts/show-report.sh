@@ -275,10 +275,14 @@ else
     "${unique_arches}" "$([[ "${unique_arches}" -eq 1 ]] && echo "" || echo "s")" \
     "${unique_projects}" "$([[ "${unique_projects}" -eq 1 ]] && echo "" || echo "s")"
   printf 'Top archetypes (by total emissions, newest 5):\n\n'
+  # A3-MED-2 (4-attacker security review): strip control bytes from
+  # the archetype label before render. .archetype is recorded by
+  # record-archetype.sh from model-influenced palette/contract output.
   printf '%s\n' "${archetype_rows}" | jq -r '.archetype // "unknown"' \
     | sort | uniq -c | sort -rn | head -5 \
     | while read -r n arche; do
-        printf -- '- `%s` × %s\n' "${arche}" "${n}"
+        _safe_arche="$(printf '%s' "${arche}" | _omc_strip_render_unsafe)"
+        printf -- '- `%s` × %s\n' "${_safe_arche}" "${n}"
       done
   printf '\n'
   _intp_arche_unique="${unique_arches}"
@@ -298,7 +302,14 @@ if [[ -z "${serendipity_rows}" ]]; then
 else
   count="$(printf '%s\n' "${serendipity_rows}" | grep -c .)"
   printf '%s catch%s. Recent fixes (newest first, up to 5):\n\n' "${count}" "$([[ "${count}" -eq 1 ]] && echo "" || echo "es")"
-  printf '%s\n' "${serendipity_rows}" | tail -n 5 | jq -r '"- \(.fix)\(if (.original_task // "") != "" then " (during: \(.original_task))" else "" end)"' || true
+  # v1.32.16 (4-attacker security review, A3-MED-1): strip C0/C1
+  # control bytes from model-controllable .fix / .original_task fields
+  # before render. jq -r decodes JSON `...` escapes back to raw
+  # bytes; without the strip a hostile model can drive ANSI sequences
+  # to the user's terminal via this render path.
+  printf '%s\n' "${serendipity_rows}" | tail -n 5 \
+    | jq -r '"- \(.fix)\(if (.original_task // "") != "" then " (during: \(.original_task))" else "" end)"' 2>/dev/null \
+    | _omc_strip_render_unsafe || true
   printf '\n'
 fi
 
@@ -312,8 +323,11 @@ else
   count="$(printf '%s\n' "${misfire_rows}" | grep -c .)"
   printf '%s misfire row%s recorded.\n\n' "${count}" "$([[ "${count}" -eq 1 ]] && echo "" || echo "s")"
   printf 'Top reasons:\n\n'
+  # A3-MED-2 (4-attacker security review): strip control bytes from
+  # the model-influenced misfire .reason field before render.
   printf '%s\n' "${misfire_rows}" | jq -r '.reason // "unknown"' | sort | uniq -c | sort -rn | head -5 | while read -r n reason; do
-    printf -- '- `%s` × %s\n' "${reason}" "${n}"
+    _safe_reason="$(printf '%s' "${reason}" | _omc_strip_render_unsafe)"
+    printf -- '- `%s` × %s\n' "${_safe_reason}" "${n}"
   done
   printf '\n'
   _intp_misfires="${count}"

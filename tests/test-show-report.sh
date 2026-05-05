@@ -492,5 +492,58 @@ rm -f "${QP}/session_summary.jsonl"
 rm -f "${QP}/serendipity-log.jsonl"
 
 # ----------------------------------------------------------------------
+# T25: A3 ANSI-escape neutralization in Serendipity render (4-attacker
+# security review).
+#
+# Plant a serendipity-log row whose .fix field carries a JSON-encoded
+# ANSI clear-screen + attacker text. After jq -r decodes, the bytes
+# would normally render to the user's tty. The render path now pipes
+# through `_omc_strip_render_unsafe` (tr) so ESC (0x1b) is removed.
+# We verify the report DOES NOT contain a literal 0x1b byte.
+printf 'T25: A3 ANSI-escape stripped from Serendipity render\n'
+# Encode `` (ESC) inside the .fix JSON value — this is what a
+# hostile model would emit through `record-serendipity.sh --arg fix`.
+printf '{"ts":%s,"fix":"safe-prefix\\u001b[2J\\u001b[Hattacker-content","original_task":"x","conditions":"verified|same-path|bounded","commit":""}\n' \
+  "$(date +%s)" > "${QP}/serendipity-log.jsonl"
+out_25="$(run_report week)"
+# Assert: literal ESC (0x1b) byte is NOT in the rendered output.
+if printf '%s' "${out_25}" | LC_ALL=C grep -q $'\x1b'; then
+  printf '  FAIL: T25 — ESC byte (0x1b) leaked into Serendipity render\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+# The benign payload bytes (the `[2J[H` tail that follows the
+# stripped ESC) DO appear because they're printable. The test wants
+# the cursor sequence broken, not the entire string redacted.
+case "${out_25}" in
+  *"safe-prefix"*) pass=$((pass + 1)) ;;
+  *)
+    printf '  FAIL: T25 — pre-escape benign bytes missing from render\n' >&2
+    fail=$((fail + 1)) ;;
+esac
+rm -f "${QP}/serendipity-log.jsonl"
+
+# T26: A3 ANSI-escape neutralization in classifier-misfire reason render.
+printf 'T26: A3 ANSI-escape stripped from misfire reason render\n'
+printf '{"ts":%s,"reason":"reason-prefix\\u001b]0;HACKED\\u0007","intent":"x","domain":"y"}\n' \
+  "$(date +%s)" > "${QP}/classifier_misfires.jsonl"
+out_26="$(run_report week)"
+if printf '%s' "${out_26}" | LC_ALL=C grep -q $'\x1b'; then
+  printf '  FAIL: T26 — ESC byte leaked into misfire reason render\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+# BEL (0x07) — would drive an audible beep / xterm title escape.
+if printf '%s' "${out_26}" | LC_ALL=C grep -q $'\x07'; then
+  printf '  FAIL: T26 — BEL byte leaked into misfire reason render\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+rm -f "${QP}/classifier_misfires.jsonl"
+
+# ----------------------------------------------------------------------
 printf '\n=== Show-Report Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]] || exit 1

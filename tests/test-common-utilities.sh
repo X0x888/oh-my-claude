@@ -2200,6 +2200,72 @@ assert_eq "still: 'lacks coverage' → missing_test" \
   "$(classify_finding_category "the new module lacks coverage")"
 
 # ===========================================================================
+# _omc_strip_render_unsafe (v1.32.16, 4-attacker security review A3-MED-*)
+# ===========================================================================
+
+# T-strip-1: ASCII text passes through unchanged.
+assert_eq "strip preserves plain ASCII" \
+  "hello world" \
+  "$(printf 'hello world' | _omc_strip_render_unsafe)"
+
+# T-strip-2: tabs and newlines are preserved (legitimate whitespace).
+assert_eq "strip preserves \\t and \\n" \
+  "$(printf 'a\tb\nc')" \
+  "$(printf 'a\tb\nc' | _omc_strip_render_unsafe)"
+
+# T-strip-3: ESC (0x1b) — the high-leverage byte for ANSI cursor /
+# color escape sequences — is removed. A hostile model that encoded
+# `[2J[H` (clear screen) into a state field would otherwise
+# get those bytes piped to the user's tty when /ulw-report renders.
+stripped="$(printf '\x1b[31mRED\x1b[0m' | _omc_strip_render_unsafe)"
+assert_eq "strip removes ESC byte (0x1b) from ANSI sequence" \
+  "[31mRED[0m" \
+  "${stripped}"
+
+# T-strip-4: NUL byte stripped.
+assert_eq "strip removes NUL byte" \
+  "ab" \
+  "$(printf 'a\x00b' | _omc_strip_render_unsafe)"
+
+# T-strip-5: BEL (0x07) stripped — would otherwise drive an audible
+# beep + xterm title escape (`\x1b]0;TITLE\x07`).
+assert_eq "strip removes BEL (0x07)" \
+  "ab" \
+  "$(printf 'a\x07b' | _omc_strip_render_unsafe)"
+
+# T-strip-6: DEL (0x7f) stripped — used in some legacy backspace
+# attacks against tty rendering.
+assert_eq "strip removes DEL (0x7f)" \
+  "ab" \
+  "$(printf 'a\x7fb' | _omc_strip_render_unsafe)"
+
+# T-strip-7: UTF-8 multi-byte sequences (start byte 0x80-0xff) pass
+# through unchanged. Without this guarantee, the helper would corrupt
+# legitimate non-ASCII content.
+utf8_in="$(printf 'café — π — 你好')"
+assert_eq "strip preserves UTF-8 multi-byte content" \
+  "${utf8_in}" \
+  "$(printf '%s' "${utf8_in}" | _omc_strip_render_unsafe)"
+
+# T-strip-8: full ANSI clear-screen + cursor-home sequence (the
+# canonical model-injection attack from A3) is neutralized.
+malicious_in="$(printf 'safe-prefix\x1b[2J\x1b[Hattacker-content')"
+malicious_out="$(printf '%s' "${malicious_in}" | _omc_strip_render_unsafe)"
+# Result still contains the trailing `[2J[H` literal text (the [
+# is 0x5b, a printable bracket — the *escape sequence* is broken
+# because ESC was stripped). The attacker no longer drives the cursor.
+assert_eq "strip neutralizes ANSI clear-screen sequence" \
+  "safe-prefix[2J[Hattacker-content" \
+  "${malicious_out}"
+
+# T-strip-9: CR (0x0d) is preserved (DOS line endings, in-place
+# progress emit). Confirms the strip range deliberately leaves \r.
+cr_in="$(printf 'line1\r\nline2')"
+assert_eq "strip preserves CR (0x0d) for DOS / progress" \
+  "${cr_in}" \
+  "$(printf '%s' "${cr_in}" | _omc_strip_render_unsafe)"
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 

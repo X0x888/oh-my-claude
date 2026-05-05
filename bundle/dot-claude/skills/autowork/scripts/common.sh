@@ -1280,6 +1280,42 @@ truncate_chars() {
   printf '%s...' "${text:0:limit}"
 }
 
+# Strip C0/C1 control bytes from text before rendering to a TTY.
+#
+# v1.32.16 (4-attacker security review, A3-MED-1/2/3/4): the harness
+# round-trips model output through JSON via the `record-*.sh` helpers
+# (jq `--arg` encoding is correct at write time), but the SHOW path
+# (`/ulw-report`, `/memory-audit`, `record-finding-list.sh summary`)
+# decodes JSON via `jq -r` which converts `...` escapes back to
+# raw bytes. A hostile model that emits `record-serendipity.sh` with
+# `.fix="]0;HACKED"` (terminal title escape) or
+# `[2J[H` (clear screen) gets those bytes piped to the
+# user's tty when the user runs `/ulw-report`. From the user's
+# perspective the report looks normal until the moment the escape
+# fires — the attacker can forge a fake `[Y/n]` confirmation overlay,
+# rewrite earlier output, or set the terminal title.
+#
+# Reads stdin, writes stdout. Preserves \t (0x09), \n (0x0a), \r
+# (0x0d) as legitimate whitespace (\r left for DOS line endings and
+# in-place progress emit); strips:
+#   0x00-0x08         (NUL through BS)
+#   0x0b-0x0c         (VT, FF — not LF)
+#   0x0e-0x1f         (SO through US — includes the high-leverage
+#                      ESC at 0x1b that drives ANSI cursor and color
+#                      sequences)
+#   0x7f              (DEL)
+#
+# Pure tr — Bash 3.2-safe, no perl/awk dep, byte-stable across UTF-8.
+# Multi-byte UTF-8 sequences (start byte 0x80-0xff) pass through
+# unchanged because the strip range stops at 0x7f.
+#
+# Usage:
+#   jq -r '...' file | _omc_strip_render_unsafe
+#   printf '%s' "${attacker_text}" | _omc_strip_render_unsafe
+_omc_strip_render_unsafe() {
+  tr -d '\000-\010\013-\014\016-\037\177'
+}
+
 trim_whitespace() {
   local text="$1"
 

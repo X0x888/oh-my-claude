@@ -511,6 +511,14 @@ case "${cmd}" in
     {
       printf '| ID | Severity | Surface | Decision | Status | Commit | Notes |\n'
       printf '|----|----------|---------|----------|--------|--------|-------|\n'
+      # A3-MED-4 (4-attacker security review): strip C0/C1 control
+      # bytes from the rendered markdown table. The .notes / .id /
+      # .severity / .surface fields originate in model-emitted
+      # FINDINGS_JSON (the contract permits any printable string), so
+      # JSON-decoded `` escape sequences would otherwise reach
+      # the user's tty when this summary is run interactively. The
+      # escape stripping happens post-jq-decode so any escape encoded
+      # at the JSON layer is bytes-already by the time tr filters it.
       jq -r '
         .findings | sort_by(.id)[] |
         "| \(.id) | \(.severity // "—") | \(.surface // "—") | \(
@@ -525,7 +533,7 @@ case "${cmd}" in
           else "○ pending"
           end
         ) | \(if (.commit_sha // "") == "" then "—" else (.commit_sha[0:7]) end) | \((.notes // "") | gsub("\\|"; "\\|")) |"
-      ' "${FINDINGS_FILE}"
+      ' "${FINDINGS_FILE}" | _omc_strip_render_unsafe
       printf '\n'
       total="$(jq '.findings|length' "${FINDINGS_FILE}")"
       shipped="$(jq '[.findings[]|select(.status=="shipped")]|length' "${FINDINGS_FILE}")"
