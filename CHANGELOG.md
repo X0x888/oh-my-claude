@@ -4,6 +4,39 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.32.6] - 2026-05-05
+
+Closes the v1.31.0 Wave 4 wiring debt that the v1.32.5 release-reviewer surfaced: `_sweep_append_gate_events`, `_sweep_append_misfires`, and the per-session telemetry sweeps had been READING `.project_key` from `session_state.json` since 2026-04-25, but no code in `bundle/` ever WROTE it there. Result: every cross-session telemetry row across `gate_events.jsonl`, `session_summary.jsonl`, `serendipity-log.jsonl`, `classifier_telemetry.jsonl`, and `used-archetypes.jsonl` carried `project_key: null` for 10 days. Multi-project `/ulw-report` slicing was a feature in name only.
+
+### Fixed
+
+- **`prompt-intent-router.sh` writes `project_key` into `session_state.json` at first ULW activation** (the same first-write-wins block that already records `cwd`, `session_start_ts`, and `workflow_mode`). Calls `_omc_project_key 2>/dev/null` (git-remote-first via SHA-256[0:12], `_omc_project_id` cwd-hash fallback for non-git directories). Stable across prompts in the same session — git remote URL changes mid-session do NOT update the recorded value (matches `cwd` semantics).
+
+### Added
+
+- **`tests/test-project-key-write.sh`** (CI-pinned, 5 assertions). Regression net for the wiring fix:
+    - T1: `_omc_project_key` produces a 12-char hex string for a fake repo
+    - T2: router writes `project_key` to session_state.json on `/ulw` prompt
+    - T3: first-write-wins — remote rename mid-session does NOT update the recorded value
+    - T4: non-git directory falls back to `_omc_project_id` cwd hash
+
+- **`docs/architecture.md` State keys table** — added `project_key` row enumerating: how it's computed, where it's written, where it's read, the sessions/surfaces it tags, and the v1.31.0 → v1.32.6 wiring debt history. Added `cwd` row for symmetry (was missing despite being a long-standing state key).
+
+### Why this matters
+
+Every telemetry surface that tags rows by `project_key` for grouping was silently empty. With the write path landed:
+- `/ulw-report --project <key>` (when added) can slice gate-event analysis per project
+- `gate_events.jsonl` rows added going forward carry the real `project_key`
+- Pre-1.32.6 rows remain `project_key: null` (acknowledged limitation; backfill not feasible because old session_state.json files don't carry the value)
+- Bootstrap tool from v1.32.5 reads the field; sessions after v1.32.6 will populate the rollup with real keys
+
+### Verification
+
+- `bash tests/test-project-key-write.sh` — 5/5
+- `bash tests/test-coordination-rules.sh` 81/81 (test-pin discipline holds)
+- 66/66 CI-pinned tests pass locally
+- shellcheck clean
+
 ## [1.32.5] - 2026-05-05
 
 Reviewer-driven follow-up to v1.32.4 — second dogfood of the new release-reviewer agent. Reviewer ran on the v1.32.4 diff and surfaced 4 real gaps in the bootstrap tool, all meeting Serendipity Rule criteria. All 4 ship inline.
