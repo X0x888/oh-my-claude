@@ -1150,6 +1150,17 @@ if [[ -f "${CLAUDE_HOME}/oh-my-claude.conf" ]] && [[ -z "${OMC_OUTPUT_STYLE:-}" 
 fi
 export OMC_OUTPUT_STYLE_PREF
 
+# v1.32.16 Wave 6 (release-reviewer follow-up): capture .statusLine.command
+# pre-merge so warn_foreign_statusline can compare. The merge_settings_*
+# functions OVERWRITE .statusLine with the bundled patch value, so a
+# post-merge read always returns the bundle. Capturing here is the only
+# point at which the user's pre-install value is visible.
+PRE_MERGE_STATUSLINE_CMD=""
+if [[ -f "${CLAUDE_HOME}/settings.json" ]] && command -v jq >/dev/null 2>&1; then
+  PRE_MERGE_STATUSLINE_CMD="$(jq -r '.statusLine.command // empty' \
+    "${CLAUDE_HOME}/settings.json" 2>/dev/null || true)"
+fi
+
 if command -v python3 >/dev/null 2>&1; then
   merge_settings_python "${CLAUDE_HOME}/settings.json" "${SETTINGS_PATCH}" "${BYPASS_PERMISSIONS}"
 elif command -v jq >/dev/null 2>&1; then
@@ -1256,9 +1267,35 @@ warn_foreign_hooks() {
     printf '    jq .hooks %s\n' "${settings_file}"
     printf '\n'
   fi
+
+}
+
+# warn_foreign_statusline — paired with warn_foreign_hooks, fires
+# AFTER merge_settings_*. Compares the PRE_MERGE_STATUSLINE_CMD
+# value (captured BEFORE the merge above) against the bundled value;
+# if they differed, surface a warning so the user knows install.sh
+# just thwarted (or normalized) a divergence. .statusLine.command is
+# a code-execution surface Claude Code execs every status-bar
+# refresh; the bundled patch is a single fixed value
+# (`~/.claude/statusline.py`) — equality check is cheaper than the
+# foreign-hook regex.
+warn_foreign_statusline() {
+  # shellcheck disable=SC2088 # comparing against literal string value, not using as path
+  if [[ -n "${PRE_MERGE_STATUSLINE_CMD}" \
+     && "${PRE_MERGE_STATUSLINE_CMD}" != "~/.claude/statusline.py" ]]; then
+    printf '\n'
+    printf '  [warn] .statusLine.command differed from bundled value pre-install.\n'
+    printf '    Pre-install: %s\n' "${PRE_MERGE_STATUSLINE_CMD}"
+    printf '    Restored to: ~/.claude/statusline.py\n'
+    printf '  install.sh always overwrites .statusLine on merge, but the\n'
+    printf '  divergence has been logged so you can investigate whether\n'
+    printf '  it was intentional or a sign of tampering.\n'
+    printf '\n'
+  fi
 }
 
 warn_foreign_hooks "${CLAUDE_HOME}/settings.json"
+warn_foreign_statusline
 
 # Step 5 — Set executable bits on scripts.
 ensure_executable_bits

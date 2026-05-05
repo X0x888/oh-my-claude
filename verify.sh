@@ -526,6 +526,24 @@ else
   fi
 fi
 
+# v1.32.16 Wave 6 (release-reviewer follow-up): .statusLine.command
+# is a code-execution surface Claude Code execs every status-bar
+# refresh — between installs the user's settings.json could carry an
+# attacker-replaced value. The bundled patch ships a single fixed
+# value (`~/.claude/statusline.py`); equality check covers it. Same
+# default-warn / --strict-fail pattern as Step 8.
+if [[ -f "${CLAUDE_HOME}/settings.json" ]] && command -v jq >/dev/null 2>&1; then
+  status_cmd="$(jq -r '.statusLine.command // empty' \
+    "${CLAUDE_HOME}/settings.json" 2>/dev/null || true)"
+  # shellcheck disable=SC2088 # comparing against literal string value, not using as path
+  if [[ -n "${status_cmd}" && "${status_cmd}" != "~/.claude/statusline.py" ]]; then
+    foreign_report ".statusLine.command differs from bundled (got: ${status_cmd}; expected: ~/.claude/statusline.py)"
+    if [[ "${STRICT_MODE}" != "true" ]]; then
+      printf '  [info] Re-run install.sh to restore the bundled value, or --strict to fail verify on this divergence.\n'
+    fi
+  fi
+fi
+
 printf '\n'
 
 # ---------------------------------------------------------------------------

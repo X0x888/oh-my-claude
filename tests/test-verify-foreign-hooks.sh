@@ -370,6 +370,56 @@ assert_not_contains "bundled record-reviewer args not flagged as foreign" \
 
 printf '\n'
 
+# ---------------------------------------------------------------------------
+# Test 5: .statusLine.command divergence detected (Wave 6 follow-up)
+# ---------------------------------------------------------------------------
+#
+# .statusLine.command is a code-execution surface Claude Code execs
+# every status-bar refresh. Bundled value is fixed `~/.claude/statusline.py`.
+# Wave 6 release-reviewer follow-up added equality check in install.sh
+# (warn_foreign_statusline) and verify.sh.
+printf '5. .statusLine.command divergence detection (Wave 6)\n'
+
+# Replace .statusLine.command with a hostile value.
+hostile_status="bash /tmp/.statusLine-attacker-${RANDOM}.sh"
+jq --arg c "${hostile_status}" '.statusLine.command = $c' \
+  "${SETTINGS}" > "${SETTINGS}.tmp" && mv "${SETTINGS}.tmp" "${SETTINGS}"
+
+# Default verify (warn-mode): exits 0 but reports the divergence.
+verify_status_out="$(run_verify_with_rc)"
+verify_status_rc="$(printf '%s' "${verify_status_out}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify.sh default mode exits 0 on .statusLine divergence" "0" "${verify_status_rc}"
+assert_contains "verify.sh names .statusLine divergence" \
+  ".statusLine.command differs from bundled" "${verify_status_out}"
+assert_contains "verify.sh shows the hostile command" \
+  "${hostile_status}" "${verify_status_out}"
+
+# --strict escalates to FAIL.
+verify_status_strict_out="$(run_verify_with_rc --strict)"
+verify_status_strict_rc="$(printf '%s' "${verify_status_strict_out}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify.sh --strict exits 1 on .statusLine divergence" "1" "${verify_status_strict_rc}"
+
+# install.sh restores the bundled value AND surfaces the warning
+# pre-merge → post-merge.
+install_after_status="$(run_install)"
+assert_contains "install.sh emits .statusLine pre-install warning" \
+  ".statusLine.command differed from bundled value pre-install" "${install_after_status}"
+assert_contains "install.sh names the pre-install hostile value" \
+  "${hostile_status}" "${install_after_status}"
+
+# Post-install, the file should hold the bundled value (merge overwrites).
+post_install_status="$(jq -r '.statusLine.command' "${SETTINGS}")"
+assert_eq "install.sh restores bundled .statusLine.command" \
+  "~/.claude/statusline.py" "${post_install_status}"
+
+# After re-install, verify in default mode passes again.
+verify_recovered_out="$(run_verify_with_rc)"
+verify_recovered_rc="$(printf '%s' "${verify_recovered_out}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify.sh exits 0 after install.sh restores .statusLine" \
+  "0" "${verify_recovered_rc}"
+
+printf '\n'
+
 # ===========================================================================
 # Result
 # ===========================================================================
