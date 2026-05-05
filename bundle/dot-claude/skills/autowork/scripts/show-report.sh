@@ -87,6 +87,7 @@ case "${MODE}" in
   month) window_label="last 30 days" ;;
   all)   window_label="all time" ;;
 esac
+_xs_rollup_cache=""
 
 # v1.31.0 Wave 8 (growth-lens F-037): --share renders a fully-sanitized
 # digest. Numbers, distributions, and structural counts only — no
@@ -426,6 +427,62 @@ else
 fi
 
 # ----------------------------------------------------------------------
+# Section 4c0.5: Router directive footprint (v1.32.x instrumentation payoff)
+#
+# `directive_emitted` timing rows record the character cost of every
+# router-added directive body. The first landing proved the rows existed;
+# this section is the user-facing payoff. It answers "which directives are
+# costing me the most prompt surface?" using recorded codepoint counts.
+#
+# Deliberately reports chars, not fake tokens. The instrumentation itself
+# stores codepoint counts and explicitly defers exact tokenization to a
+# tokenizer-aware analysis layer. Relative chars are still valuable for
+# ranking heavy directives and spotting prompt-tax drift.
+printf '## Router directive footprint\n\n'
+if ! is_time_tracking_enabled; then
+  printf '_Time tracking is disabled (`time_tracking=off`), so directive footprint is unavailable._\n\n'
+else
+  if [[ -z "${_xs_rollup_cache}" ]]; then
+    _xs_rollup_cache="$(timing_xs_aggregate "${cutoff_ts}")"
+  fi
+  _directive_total_chars="$(jq -r '.directive_total_chars // 0' <<<"${_xs_rollup_cache}" 2>/dev/null)"
+  _directive_total_fires="$(jq -r '.directive_count // 0' <<<"${_xs_rollup_cache}" 2>/dev/null)"
+  _directive_total_chars="${_directive_total_chars:-0}"
+  _directive_total_fires="${_directive_total_fires:-0}"
+  [[ "${_directive_total_chars}" =~ ^[0-9]+$ ]] || _directive_total_chars=0
+  [[ "${_directive_total_fires}" =~ ^[0-9]+$ ]] || _directive_total_fires=0
+
+  if [[ "${_directive_total_fires}" -eq 0 ]]; then
+    printf '_No directive footprint rows in window. Populates from v1.32.x timing telemetry as sessions sweep._\n\n'
+  else
+    printf '_Window total: %s directive fires, %s chars of router-added prompt surface. Char counts are recorded codepoints, not token estimates._\n\n' \
+      "${_directive_total_fires}" "${_directive_total_chars}"
+    printf '| Directive | Fires | Total chars | Avg chars/fire |\n'
+    printf '|---|---:|---:|---:|\n'
+    jq -r '
+      (.directive_breakdown // {}) as $chars
+      | (.directive_counts // {}) as $counts
+      | ($chars | to_entries | map({name: .key, chars: .value, fires: ($counts[.key] // 0)}))
+      | sort_by(-.chars, .name)
+      | .[0:12]
+      | .[]
+      | [
+          .name,
+          (.fires | tostring),
+          (.chars | tostring),
+          (if (.fires // 0) > 0 then ((.chars / .fires) | floor | tostring) else "0" end)
+        ]
+      | @tsv
+    ' <<<"${_xs_rollup_cache}" 2>/dev/null \
+      | while IFS=$'\t' read -r _d_name _d_fires _d_chars _d_avg; do
+          [[ -z "${_d_name}" ]] && continue
+          printf '| `%s` | %s | %s | %s |\n' "${_d_name}" "${_d_fires}" "${_d_chars}" "${_d_avg}"
+        done
+    printf '\n'
+  fi
+fi
+
+# ----------------------------------------------------------------------
 # Section 4c1.5: Model-drift canary signals (v1.26.0 Wave 2)
 #
 # Surfaces the silent-confabulation canary readings recorded by
@@ -685,7 +742,10 @@ else
   if [[ ! -f "${_xs_time_log}" ]] || [[ ! -s "${_xs_time_log}" ]]; then
     printf '_No cross-session timing rows yet._\n\n'
   else
-    _xs_rollup="$(timing_xs_aggregate "${cutoff_ts}")"
+    if [[ -z "${_xs_rollup_cache}" ]]; then
+      _xs_rollup_cache="$(timing_xs_aggregate "${cutoff_ts}")"
+    fi
+    _xs_rollup="${_xs_rollup_cache}"
     _xs_sessions="$(jq -r '.sessions // 0' <<<"${_xs_rollup}" 2>/dev/null)"
     _xs_sessions="${_xs_sessions:-0}"
 

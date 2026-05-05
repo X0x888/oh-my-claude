@@ -259,6 +259,10 @@ timing_append_prompt_end() {
 #     tool_total_s      — sum of paired non-Agent durations
 #     tool_breakdown    — {tool_name: total_s}
 #     tool_calls        — {tool_name: call_count}
+#     directive_total_chars — sum of directive_emitted.chars
+#     directive_breakdown   — {directive_name: total_chars}
+#     directive_counts      — {directive_name: fire_count}
+#     directive_count       — total directive_emitted rows
 #     idle_model_s      — walltime_s - (agent_total_s + tool_total_s)
 #                         (clamped to 0)
 #     prompt_count      — number of prompts with both start and end
@@ -300,7 +304,7 @@ timing_aggregate() {
     )] as $rows |
 
     (reduce $rows[] as $r (
-      { pending: [], agent: {}, tool: {}, agent_n: {}, tool_n: {}, prompts: [], orphan_end: 0 };
+      { pending: [], agent: {}, tool: {}, agent_n: {}, tool_n: {}, dir_chars: {}, dir_n: {}, prompts: [], orphan_end: 0 };
       if $r.kind == "prompt_start" then
         .prompts += [{ ps: ($r.prompt_seq // 0), start: $r.ts, end: null, dur: 0 }]
       elif $r.kind == "prompt_end" then
@@ -309,6 +313,15 @@ timing_aggregate() {
             . + { end: $r.ts, dur: ($r.duration_s // ($r.ts - .start)) }
           else . end
         )
+      elif $r.kind == "directive_emitted" then
+        (($r.name // "") | tostring) as $name |
+        (($r.chars // 0) | tonumber? // 0) as $chars |
+        if $name == "" or $chars <= 0 then
+          .
+        else
+          .dir_chars[$name] = ((.dir_chars[$name] // 0) + $chars) |
+          .dir_n[$name] = ((.dir_n[$name] // 0) + 1)
+        end
       elif $r.kind == "start" then
         .pending += [$r]
       elif $r.kind == "end" then
@@ -339,6 +352,10 @@ timing_aggregate() {
       tool_total_s:     ([$st.tool[]] | add // 0),
       tool_breakdown:   $st.tool,
       tool_calls:       $st.tool_n,
+      directive_total_chars: ([$st.dir_chars[]] | add // 0),
+      directive_breakdown: $st.dir_chars,
+      directive_counts: $st.dir_n,
+      directive_count: ([$st.dir_n[]] | add // 0),
       prompt_count:     ([$st.prompts[] | select(.end != null)] | length),
       prompts_seq:      [$st.prompts[] | select(.end != null) | {ps:.ps, dur:.dur}],
       active_pending:   ($st.pending | length),
@@ -382,13 +399,19 @@ timing_format_oneline() {
     return 0
   fi
 
-  local agent_total tool_total idle_model
+  local agent_total tool_total idle_model directive_total_chars directive_count
   agent_total="$(jq -r '.agent_total_s // 0' <<<"${agg}" 2>/dev/null)"
   tool_total="$(jq -r '.tool_total_s // 0' <<<"${agg}" 2>/dev/null)"
   idle_model="$(jq -r '.idle_model_s // 0' <<<"${agg}" 2>/dev/null)"
+  directive_total_chars="$(jq -r '.directive_total_chars // 0' <<<"${agg}" 2>/dev/null)"
+  directive_count="$(jq -r '.directive_count // 0' <<<"${agg}" 2>/dev/null)"
   agent_total="${agent_total:-0}"
   tool_total="${tool_total:-0}"
   idle_model="${idle_model:-0}"
+  directive_total_chars="${directive_total_chars:-0}"
+  directive_count="${directive_count:-0}"
+  [[ "${directive_total_chars}" =~ ^[0-9]+$ ]] || directive_total_chars=0
+  [[ "${directive_count}" =~ ^[0-9]+$ ]] || directive_count=0
 
   local out
   out="Time: $(timing_fmt_secs "${walltime}")"
@@ -459,6 +482,15 @@ timing_format_oneline() {
 
   if (( idle_model > 0 )); then
     out+=" · idle/model $(timing_fmt_secs "${idle_model}")"
+  fi
+
+  if (( directive_count > 0 )); then
+    out+=" · directive surface ${directive_total_chars} chars (${directive_count} fire"
+    if (( directive_count == 1 )); then
+      out+=")"
+    else
+      out+="s)"
+    fi
   fi
 
   printf '%s' "${out}"
@@ -1032,7 +1064,8 @@ timing_record_session_summary() {
 
 # timing_xs_aggregate <cutoff_epoch>
 #   Reads cross-session log; returns aggregated rollup over rows with ts >= cutoff.
-#   Output: {sessions:N, walltime_s:T, agent_breakdown:{...}, tool_breakdown:{...}}
+#   Output: {sessions:N, walltime_s:T, agent_breakdown:{...}, tool_breakdown:{...},
+#            directive_breakdown:{...}, directive_counts:{...}}
 timing_xs_aggregate() {
   local cutoff="${1:-0}"
   [[ "${cutoff}" =~ ^[0-9]+$ ]] || cutoff=0
@@ -1052,6 +1085,8 @@ timing_xs_aggregate() {
       agent_total_s:   ([$rows[] | (.agent_total_s // 0)] | add // 0),
       tool_total_s:    ([$rows[] | (.tool_total_s // 0)] | add // 0),
       idle_model_s:    ([$rows[] | (.idle_model_s // 0)] | add // 0),
+      directive_total_chars: ([$rows[] | (.directive_total_chars // 0)] | add // 0),
+      directive_count: ([$rows[] | (.directive_count // 0)] | add // 0),
       agent_breakdown: (
         [$rows[] | (.agent_breakdown // {}) | to_entries[]]
         | group_by(.key)
@@ -1060,6 +1095,18 @@ timing_xs_aggregate() {
       ),
       tool_breakdown: (
         [$rows[] | (.tool_breakdown // {}) | to_entries[]]
+        | group_by(.key)
+        | map({key: .[0].key, value: ([.[].value] | add)})
+        | from_entries
+      ),
+      directive_breakdown: (
+        [$rows[] | (.directive_breakdown // {}) | to_entries[]]
+        | group_by(.key)
+        | map({key: .[0].key, value: ([.[].value] | add)})
+        | from_entries
+      ),
+      directive_counts: (
+        [$rows[] | (.directive_counts // {}) | to_entries[]]
         | group_by(.key)
         | map({key: .[0].key, value: ([.[].value] | add)})
         | from_entries

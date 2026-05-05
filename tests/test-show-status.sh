@@ -183,6 +183,26 @@ assert_output_contains "T5: combine-hint when threshold gap > 40" \
 teardown_session "${ROOT}"
 
 # ----------------------------------------------------------------------
+printf 'Test 5b: live status surfaces directive prompt-surface totals in timing line\n'
+parts="$(mk_session)"
+ROOT="${parts%|*}"
+SID="${parts##*|}"
+printf '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","session_start_ts":"%s"}' \
+  "$(date +%s)" > "${ROOT}/${SID}/session_state.json"
+cat > "${ROOT}/${SID}/timing.jsonl" <<'EOF'
+{"kind":"prompt_start","ts":100,"prompt_seq":1}
+{"kind":"directive_emitted","ts":101,"prompt_seq":1,"name":"ui_design_contract","chars":160}
+{"kind":"directive_emitted","ts":102,"prompt_seq":1,"name":"intent_classification","chars":80}
+{"kind":"prompt_end","ts":106,"prompt_seq":1,"duration_s":6}
+EOF
+
+assert_output_contains "T5b: directive surface totals rendered in status timing line" \
+  "directive surface 240 chars (2 fires)" \
+  env STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}"
+
+teardown_session "${ROOT}"
+
+# ----------------------------------------------------------------------
 printf 'Test 6: --explain renders per-flag rationale (v1.30.0 Wave 7)\n'
 # Closes the v1.29.0 product-lens P2-10 deferred item: users wanting to
 # disable a flag previously had to read the 422-line conf-example file

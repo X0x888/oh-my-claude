@@ -19,6 +19,32 @@ This is not mainly a repo-beauty contest. A version ranks higher only if it help
 
 Internal cleanup, docs quality, and release discipline matter only when they change that user outcome or the user's ability to trust the workflow under real work.
 
+## Second-Pass Code Audit Coverage
+
+This revision goes beyond changelog reading.
+
+- Full current reads:
+  - `bundle/dot-claude/skills/autowork/SKILL.md`
+  - `bundle/dot-claude/agents/{quality-planner,quality-reviewer,metis,release-reviewer,divergent-framer}.md`
+  - `bundle/dot-claude/skills/diverge/SKILL.md`
+  - `tests/{test-show-report,test-show-status,test-timing,test-directive-instrumentation}.sh`
+- Direct code-diff inspection across major boundaries:
+  - `prompt-intent-router.sh`
+  - `pretool-intent-guard.sh`
+  - `stop-guard.sh`
+  - `common.sh`
+  - `lib/{classifier,timing,state-io}.sh`
+  - `show-{report,status}.sh`
+  - `config/settings.patch.json`
+- Historical boundaries inspected directly:
+  - `v1.23.1 → v1.27.0`
+  - `v1.27.0 → v1.28.1`
+  - `v1.28.1 → v1.29.0`
+  - `v1.29.0 → v1.31.3`
+  - `v1.31.3 → v1.32.15`
+
+I still did **not** literally read every file revision in every tag. This is a code-first audit of the ULW-critical surfaces.
+
 ## Executive Verdict
 
 - **Best version for serious `/ulw` users to run today:** `v1.32.15`, but only by a narrow margin
@@ -29,8 +55,23 @@ Internal cleanup, docs quality, and release discipline matter only when they cha
 - **Were there failures?** Yes, but mostly integration failures and drift, not wrong product direction:
   - `v1.24.0`-`v1.25.0` shipped stop-hook output through an unsupported field, so time-card / scorecard epilogues were largely invisible until `v1.26.0`.
   - `v1.32.6`-`v1.32.10` shipped multi-project telemetry in stages; `project_key` existed in reads before writes, so `/ulw-report` slicing was partially a feature in name only until the follow-up closures.
+  - `v1.32.x` added per-directive prompt-cost telemetry (`directive_emitted` rows) but, as shipped, did not surface that cost back to the user in `/ulw-report` or `/ulw-status`. That made the latest line stronger on instrumentation than on user-visible speed/token control until this branch closed the loop.
   - `v1.31.1` through `v1.32.15` showed release-process churn: repeated CI-red tags, cap bumps, and multiple post-tag fixes.
   - documentation and release-history drift accumulated: stale count claims and a missing `v1.16.0` changelog heading.
+
+## Second-Pass Corrections
+
+The code-level reread changed two parts of the first-pass assessment:
+
+1. **`v1.32.x` has more direct ULW user value than I first credited.**
+   - The `divergence_directive` is a real user-facing workflow upgrade, not release-only plumbing.
+   - The router now records per-directive prompt cost, which is the right foundation for speed/token self-audit.
+   - That means `v1.32.x` is not just recovery; it does contain meaningful workflow evolution.
+
+2. **`v1.32.x` also had a real incomplete-payoff gap.**
+   - The directive-cost telemetry was captured in timing rows and tested for existence, but not rendered to the user.
+   - That is exactly the kind of "good feature, incomplete landing" drift pattern this project has shown before.
+   - This branch now fixes that by surfacing router directive footprint in both `/ulw-report` and `/ulw-status`.
 
 ## What Improved Across The Whole Arc
 
@@ -140,7 +181,7 @@ Method:
 | `v1.29` | `v1.29.0` | High | High | Deep self-audit plus privacy controls, background blindspot scan, faster timing emission. Big system maturation step. |
 | `v1.30` | `v1.30.0` | High | Medium | Welcome banner, stop-output primitives, update-path summary, lock unification. More trust and resilience than raw new capability. |
 | `v1.31` | `v1.31.3` | Very High | Medium | The strongest core ULW line: nine-lens evaluation, major finding closure, divergence framing, and deep workflow refinement. |
-| `v1.32` | `v1.32.15` | High | Medium | Narrow current winner for users to run today, but most of the line's value is preserving `v1.31` behavior and making it safer to trust, not a huge new jump in delivered-work quality. |
+| `v1.32` | `v1.32.15` | High | Medium | Narrow current winner for users to run today. Second-pass code read confirms it adds real workflow value (`divergence_directive`, directive-cost telemetry), but also shipped one more incomplete observability loop than the first pass caught. |
 
 ## User-Facing Ranking
 
@@ -166,6 +207,7 @@ Why this is only a narrow win:
 - much of `v1.32.x` is recovery work for earlier churn, not a fresh leap in delivered-work quality
 - most of the substantive user-visible ULW behavior was already present by `v1.31.3`
 - if you judge only "new ULW user value per unit of complexity", `v1.31.3` is cleaner
+- as shipped, `v1.32.15` still left directive-cost telemetry invisible to the user, which mattered on the speed/token axis until this branch fixed it
 
 ### 2. Best pure ULW workflow line: `v1.31.3`
 
@@ -373,5 +415,9 @@ This assessment found and fixed immediate governance debt:
    - repo-count lockstep
    - release-tag to changelog parity
 4. updated CI checkout depth so tag-aware history checks run in automation
+
+Second pass added one more real workflow improvement:
+
+5. surfaced router directive footprint in `/ulw-report` and `/ulw-status` by wiring `directive_emitted` timing rows through the timing aggregate, report renderer, and live status timing line, so the latest line now exposes prompt-surface cost instead of merely recording it
 
 These are not cosmetic. They directly reduce the chance that future version assessments are built on untrustworthy release history.

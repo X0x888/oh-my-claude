@@ -371,6 +371,27 @@ rm -f "${QP}/gate_events.jsonl"
 rm -f "${QP}/session_summary.jsonl"
 
 # ----------------------------------------------------------------------
+printf 'Test 21b: directive footprint section renders chars and fire counts from timing rollup\n'
+NOW="$(date +%s)"
+cat > "${QP}/session_summary.jsonl" <<EOF
+{"session_id":"test-directive-footprint","start_ts":${NOW},"end_ts":${NOW},"domain":"coding","intent":"execution","edit_count":1,"verified":true,"reviewed":true,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":1,"outcome":"shipped","skip_count":0,"serendipity_count":0}
+EOF
+cat > "${QP}/timing.jsonl" <<EOF
+{"ts":${NOW},"session_id":"test-directive-footprint","project_key":"p1","walltime_s":90,"agent_total_s":30,"tool_total_s":20,"idle_model_s":40,"agent_breakdown":{"quality-reviewer":30},"tool_breakdown":{"Bash":20},"directive_total_chars":420,"directive_count":4,"directive_breakdown":{"domain_routing":180,"ui_design_contract":160,"intent_classification":80},"directive_counts":{"domain_routing":1,"ui_design_contract":1,"intent_classification":2},"prompt_count":1}
+EOF
+out="$(run_report week)"
+assert_contains "show-report: directive footprint header rendered" \
+  "## Router directive footprint" "${out}"
+assert_contains "show-report: directive footprint total line rendered" \
+  "Window total: 4 directive fires, 420 chars" "${out}"
+assert_contains "show-report: ui_design_contract row rendered" \
+  "| \`ui_design_contract\` | 1 | 160 | 160 |" "${out}"
+assert_contains "show-report: intent_classification avg chars rendered" \
+  "| \`intent_classification\` | 2 | 80 | 40 |" "${out}"
+rm -f "${QP}/timing.jsonl"
+rm -f "${QP}/session_summary.jsonl"
+
+# ----------------------------------------------------------------------
 printf 'Test 22: mark-deferred strict-bypass events surface in their own section\n'
 NOW="$(date +%s)"
 cat > "${QP}/gate_events.jsonl" <<EOF

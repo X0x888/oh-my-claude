@@ -160,6 +160,25 @@ assert_eq "cross-epoch start stays pending" "1" "${active_pending}"
 assert_eq "cross-epoch end is orphan" "1" "${orphan_end}"
 
 # ----------------------------------------------------------------------
+printf 'Test 6b: directive_emitted rows aggregate into directive footprint fields\n'
+reset_log
+timing_append_directive "domain_routing" 120 9
+timing_append_directive "domain_routing" 80 9
+timing_append_directive "intent_classification" 40 9
+
+agg="$(timing_aggregate "$(timing_log_path)")"
+directive_total="$(jq -r '.directive_total_chars // 0' <<<"${agg}")"
+directive_count="$(jq -r '.directive_count // 0' <<<"${agg}")"
+domain_chars="$(jq -r '.directive_breakdown.domain_routing // 0' <<<"${agg}")"
+domain_fires="$(jq -r '.directive_counts.domain_routing // 0' <<<"${agg}")"
+intent_chars="$(jq -r '.directive_breakdown.intent_classification // 0' <<<"${agg}")"
+assert_eq "directive chars summed" "240" "${directive_total}"
+assert_eq "directive fire count summed" "3" "${directive_count}"
+assert_eq "domain_routing chars summed" "200" "${domain_chars}"
+assert_eq "domain_routing fire count summed" "2" "${domain_fires}"
+assert_eq "intent_classification chars recorded" "40" "${intent_chars}"
+
+# ----------------------------------------------------------------------
 printf 'Test 7: oneline format renders bucket totals\n'
 reset_log
 timing_append_prompt_start 20
@@ -181,6 +200,24 @@ case "${oneline}" in
   *"tools"*"Bash"*) pass=$((pass + 1)) ;;
   *)
     printf '  FAIL: oneline missing tools breakdown: %q\n' "${oneline}" >&2
+    fail=$((fail + 1))
+    ;;
+esac
+
+# ----------------------------------------------------------------------
+printf 'Test 7b: oneline format surfaces directive footprint totals\n'
+reset_log
+timing_append_prompt_start 21
+timing_append_directive "ui_design_contract" 160 21
+timing_append_directive "intent_classification" 80 21
+timing_append_prompt_end 21 6
+
+agg="$(timing_aggregate "$(timing_log_path)")"
+oneline="$(timing_format_oneline "${agg}")"
+case "${oneline}" in
+  *"directive surface 240 chars (2 fires)"*) pass=$((pass + 1)) ;;
+  *)
+    printf '  FAIL: oneline missing directive footprint: %q\n' "${oneline}" >&2
     fail=$((fail + 1))
     ;;
 esac
@@ -268,12 +305,18 @@ jq -nc --arg session "s1" --argjson now "$(now_epoch)" \
     tool_total_s:20,idle_model_s:10,
     agent_breakdown:{"quality-reviewer":30},
     tool_breakdown:{"Bash":20},
+    directive_total_chars:180,directive_count:2,
+    directive_breakdown:{"domain_routing":120,"intent_classification":60},
+    directive_counts:{"domain_routing":1,"intent_classification":1},
     prompt_count:1}' >> "${xs_log}"
 jq -nc --arg session "s2" --argjson now "$(now_epoch)" \
   '{ts:$now,session:$session,project_key:"p1",walltime_s:120,agent_total_s:80,
     tool_total_s:30,idle_model_s:10,
     agent_breakdown:{"quality-reviewer":50,"metis":30},
     tool_breakdown:{"Bash":20,"Read":10},
+    directive_total_chars:220,directive_count:3,
+    directive_breakdown:{"domain_routing":100,"bias_defense_completeness":120},
+    directive_counts:{"domain_routing":1,"bias_defense_completeness":2},
     prompt_count:1}' >> "${xs_log}"
 
 rollup="$(timing_xs_aggregate 0)"
@@ -285,6 +328,12 @@ qr="$(jq -r '.agent_breakdown."quality-reviewer" // 0' <<<"${rollup}")"
 assert_eq "merged quality-reviewer total" "80" "${qr}"
 bash_total="$(jq -r '.tool_breakdown.Bash // 0' <<<"${rollup}")"
 assert_eq "merged Bash total" "40" "${bash_total}"
+directive_total="$(jq -r '.directive_total_chars // 0' <<<"${rollup}")"
+assert_eq "merged directive chars total" "400" "${directive_total}"
+domain_chars="$(jq -r '.directive_breakdown.domain_routing // 0' <<<"${rollup}")"
+assert_eq "merged domain_routing chars" "220" "${domain_chars}"
+completeness_fires="$(jq -r '.directive_counts.bias_defense_completeness // 0' <<<"${rollup}")"
+assert_eq "merged completeness directive fires" "2" "${completeness_fires}"
 
 # ----------------------------------------------------------------------
 printf 'Test 14: Stop self-suppression detects recent block\n'

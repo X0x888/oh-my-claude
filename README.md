@@ -313,9 +313,9 @@ Skills are invoked as slash commands or routed automatically by the intent class
 | omc-config *(setup walkthrough)* | `/omc-config [setup\|update\|change]` | Multi-choice walkthrough for `oh-my-claude.conf` flags. Auto-detects first-time setup vs upgrade vs ad-hoc change. Picks a profile (Maximum Quality + Automation / Balanced / Minimal) or fine-tunes individual flags — no typing required. Triggered by phrases like "help me install", "configure oh-my-claude", "update my settings". |
 | **Workflow control** (mid-session) | | |
 | ulw-demo *(onboarding)* | `/ulw-demo` | Guided walkthrough with real quality gates |
-| ulw-status *(diagnostics)* | `/ulw-status` | Show current session state and Council Phase 8 wave-plan progress. `summary` / `classifier` arguments swap modes. |
+| ulw-status *(diagnostics)* | `/ulw-status` | Show current session state, Council Phase 8 wave-plan progress, and live timing/directive-surface totals. `summary` / `classifier` arguments swap modes. |
 | ulw-time *(time distribution)* | `/ulw-time [current\|last\|last-prompt\|week\|month\|all]` | Polished end-of-turn time card — stacked top bar (`█` agents · `▒` tools · `░` idle), per-bucket ASCII chart, and a one-line insight (anomaly / dominance / reassurance / fun fact). The same card auto-emits as Stop `systemMessage` above the 5s noise floor; manual invocations slice a different window or bypass the floor. |
-| ulw-report *(retrospective)* | `/ulw-report [last\|week\|month\|all]` | Markdown digest of cross-session activity — sessions, gate fires, top reviewers, classifier misfires, Serendipity catches, finding/wave outcomes |
+| ulw-report *(retrospective)* | `/ulw-report [last\|week\|month\|all]` | Markdown digest of cross-session activity — sessions, gate fires, bias-defense fires, router directive footprint, top reviewers, classifier misfires, Serendipity catches, finding/wave outcomes |
 | memory-audit *(memory hygiene)* | `/memory-audit [--memory-dir <path>]` | Classify MEMORY.md entries (load-bearing, archival, superseded, drifted) and propose rollup moves. Read-only. |
 | ulw-skip *(skip a gate)* | `/ulw-skip <reason>` | Skip current quality gate block once |
 | mark-deferred *(triage findings)* | `/mark-deferred <reason>` | Bulk-defer pending discovered-scope findings with a one-line reason — pass the gate without silent skipping |

@@ -8,6 +8,7 @@ All notable changes to this project will be documented in this file.
 
 - **`docs/ulw-version-assessment.md`** — comprehensive ULW version-line audit from `v1.0.0` through `v1.32.15`, with priority weighting on quality/automation first and speed/token usage second. Includes per-era comparison, best-version verdicts, failure analysis, and design-debt recommendations.
 - **User-outcome rubric for ULW changes.** `CLAUDE.md` and `CONTRIBUTING.md` now require `/ulw` workflow changes to justify four things in the same change: the end-user failure mode being fixed, the effect on automation/babysitting, the latency/token cost, and the verification proving the tradeoff. Internal elegance alone no longer counts as a ULW improvement.
+- **Router directive footprint in `/ulw-report` and `/ulw-status`.** Cross-session timing rollups now surface per-directive fire counts and total recorded character cost for router-added prompt surface, and the live session timing line now shows the current session's directive-surface total. This closes the v1.32.x gap where `directive_emitted` timing rows existed but never reached the user.
 
 ### Fixed
 
@@ -16,6 +17,7 @@ All notable changes to this project will be documented in this file.
 <<<<<<< HEAD
 - **Current documentation count drift corrected.** `README.md`, `AGENTS.md`, and `CLAUDE.md` now match the live tree: 34 agents, 25 skills, 9 lifecycle hooks, 32 autowork scripts, and 71 bash + 1 python tests.
 - **`docs/ulw-version-assessment.md` reframed around real `/ulw` user outcomes.** The audit now explicitly ranks versions by the quality of the work users receive, how automatically the harness gets there, and only then by speed/token cost. That correction changes the interpretation of `v1.31.3` versus `v1.32.15`: latest remains the best version to run today, but `v1.31.3` is the clearest local maximum for direct user-visible ULW workflow value.
+- **Directive instrumentation now has a user-facing payoff.** `lib/timing.sh` aggregates `directive_emitted` rows into per-session and cross-session directive totals; `show-report.sh` renders the footprint table; and `show-status.sh` exposes the live session total in the timing line. `tests/test-timing.sh`, `tests/test-show-report.sh`, and `tests/test-show-status.sh` now cover the end-to-end surface instead of stopping at "rows exist and the aggregator does not error."
 
 ### Atlas docs deep-refresh — closes the post-v1.32.x "atlas truncated" deferral
 
