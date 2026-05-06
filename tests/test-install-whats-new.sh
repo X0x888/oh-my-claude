@@ -50,10 +50,66 @@ assert_not_contains() {
   fi
 }
 
-# Run the awk extraction in isolation. Mirrors the body of the
-# install.sh "What's new" block — same awk script, same args, same
-# CHANGELOG.md.
+# Run the awk extraction in isolation. Mirrors install.sh's NEW
+# collapsed default (v1.36.0+, item #6): same-X.Y patches roll up into
+# one summary line `- X.Y.x  (N entries — range X.Y.0 → X.Y.N)`. Single-
+# entry minors render in full as before. Cap is now 40 unique MINORS
+# (previously 40 individual entries).
 extract_whats_new() {
+  local prev="$1"
+  local curr="$2"
+  local changelog="${3:-${REPO_ROOT}/CHANGELOG.md}"
+  awk -v prev="${prev}" -v curr="${curr}" '
+    function flush(   line) {
+      if (current_minor == "") return
+      if (current_count == 1) {
+        line = current_first
+        if (current_first_date != "") { line = line "  (" current_first_date ")" }
+        printf "                   - %s\n", line
+      } else {
+        printf "                   - %s.x  (%d entries — range %s → %s)\n", \
+          current_minor, current_count, current_last, current_first
+      }
+      current_minor = ""; current_count = 0
+      current_first = ""; current_first_date = ""; current_last = ""
+    }
+    /^## \[/ {
+      ver = $0
+      sub(/^## \[/, "", ver); sub(/\].*/, "", ver)
+      datepart = $0
+      sub(/^[^]]*\][[:space:]]*-?[[:space:]]*/, "", datepart)
+      if (ver == prev) { flush(); exit }
+      if (ver == "Unreleased") {
+        flush()
+        printf "                   - %s\n", ver
+        next
+      }
+      n = split(ver, parts, ".")
+      if (n >= 2) { minor = parts[1] "." parts[2] } else { minor = ver }
+      if (minor != current_minor) {
+        flush()
+        minors_emitted++
+        if (minors_emitted > 40) { truncated = 1; exit }
+        current_minor = minor
+        current_count = 1
+        current_first = ver
+        current_first_date = datepart
+        current_last = ver
+      } else {
+        current_count++
+        current_last = ver
+      }
+    }
+    END {
+      flush()
+      if (truncated) print "                   - ... (older entries — see CHANGELOG.md)"
+    }
+  ' "${changelog}" 2>/dev/null || true
+}
+
+# Verbose mode (OMC_INSTALL_VERBOSE=1) preserves the pre-v1.36.0 per-
+# patch listing. Mirrors install.sh's verbose branch exactly.
+extract_whats_new_verbose() {
   local prev="$1"
   local curr="$2"
   local changelog="${3:-${REPO_ROOT}/CHANGELOG.md}"
@@ -93,19 +149,22 @@ assert_contains "T2: includes 1.28.1" "1.28.1" "${out}"
 assert_not_contains "T2: stops before 1.28.0" "- 1.28.0" "${out}"
 
 # ----------------------------------------------------------------------
-printf 'Test 3: empty prev (first install) extracts nothing — handled at caller\n'
+printf 'Test 3: empty prev (first install) extracts the full collapsed view\n'
 # Install.sh guard `[[ -n "${PRIOR_INSTALLED_VERSION}" ]]` skips the
 # block entirely for first installs, so the awk would extract every
-# entry — the test verifies that BEHAVIOR (caller would suppress) by
-# confirming the awk's output IS the full changelog when prev=empty.
+# entry — the test verifies the BEHAVIOR (caller would suppress) by
+# confirming the awk's output is non-empty when prev=empty. Under the
+# v1.36.0 collapsed default the cap is 40 UNIQUE MINORS rather than
+# 40 individual patches, so a CHANGELOG with N<40 minors emits cleanly
+# with no truncation marker. We assert "1.29.0" appears (a known minor
+# in the live CHANGELOG) and at least 1 entry line is present.
 out="$(extract_whats_new "" "$(cat "${REPO_ROOT}/VERSION")")"
 assert_contains "T3: empty prev extracts current run" "1.29.0" "${out}"
-# The 6-entry cap kicks in.
-truncated_count="$(printf '%s' "${out}" | grep -c "older entries" || true)"
-if [[ "${truncated_count}" -ge 1 ]]; then
+entry_count_t3="$(printf '%s' "${out}" | grep -c "^                   - " || true)"
+if [[ "${entry_count_t3}" -ge 1 ]]; then
   pass=$((pass + 1))
 else
-  printf '  FAIL: T3: 6-entry cap should trigger truncation marker\n' >&2
+  printf '  FAIL: T3: empty prev should produce at least one entry\n' >&2
   fail=$((fail + 1))
 fi
 
@@ -145,18 +204,14 @@ assert_contains "T5: 1.30.0 with date wrapped once" "1.30.0  (2026-06-01)" "${ou
 rm -f "${synthetic}"
 
 # ----------------------------------------------------------------------
-printf 'Test 6: 40-entry cap renders truncation marker when changelog has > 40 versions before prev\n'
-# v1.31.1: cap raised from 6 → 10 because the original 6-entry budget
-# was uncomfortable for users upgrading across multiple releases.
-# v1.32.1: 10 → 12 (1.32.x patches). v1.32.7: 12 → 30. v1.34.2: 30 → 40
-# because the 1.27.0 → 1.34.2 upgrade span landed at exactly 31 entries
-# after the v1.34.1+v1.34.2 release additions (the live-CHANGELOG T8
-# below caught it). 40 buys ~1 year of typical release cadence. Update
-# the synthetic CHANGELOG to 45 versions to exercise the new cap.
+printf 'Test 6: 40-MINOR cap renders truncation marker when changelog has > 40 unique minors\n'
+# v1.36.0 (item #6): the cap is now per UNIQUE MINOR (X.Y) rather
+# than per individual patch. Synthesize 45 distinct minors (each with
+# 1 patch) to exercise the new cap — under collapsed mode this still
+# emits 45 lines so truncation fires at minor #41.
 synthetic="$(mktemp)"
 {
   printf '# Changelog\n\n'
-  # 45 versions to exercise the 40-cap (v1.34.2+).
   for i in $(seq 45 -1 1); do
     if [[ "${i}" -ge 10 ]]; then
       printf '## [9.%d.0] - 2026-01-15\n\nRelease %d.\n\n' "${i}" "${i}"
@@ -170,12 +225,31 @@ truncation_count="$(printf '%s' "${out}" | grep -c "older entries" || true)"
 if [[ "${truncation_count}" -ge 1 ]]; then
   pass=$((pass + 1))
 else
-  printf '  FAIL: T6: cap-truncation marker missing for 45-entry changelog\n' >&2
+  printf '  FAIL: T6: cap-truncation marker missing for 45-minor changelog\n' >&2
   fail=$((fail + 1))
 fi
 # Count actual entry lines (those starting with "                   - 9.")
 entry_count="$(printf '%s' "${out}" | grep -c "^                   - 9\." || true)"
-assert_eq "T6: 40 entries kept before truncation" "40" "${entry_count}"
+assert_eq "T6: 40 minors kept before truncation" "40" "${entry_count}"
+rm -f "${synthetic}"
+
+# T6b — collapse: a changelog with 5 minors × 4 patches each = 20 entries
+# should collapse to 5 lines (well under the 40-minor cap, no truncation).
+synthetic="$(mktemp)"
+{
+  printf '# Changelog\n\n'
+  for minor in 5 4 3 2 1; do
+    for patch in 4 3 2 1 0; do
+      printf '## [8.%d.%d] - 2026-01-15\n\nRelease 8.%d.%d.\n\n' "${minor}" "${patch}" "${minor}" "${patch}"
+    done
+  done
+} > "${synthetic}"
+out_collapse="$(extract_whats_new "non-existent-version" "8.999.0" "${synthetic}")"
+collapse_lines="$(printf '%s' "${out_collapse}" | grep -c "^                   - 8\." || true)"
+assert_eq "T6b: 5 minors × 5 patches collapse to 5 lines" "5" "${collapse_lines}"
+# At least one ".x  (5 entries — range" marker present.
+assert_contains "T6b: collapse marker formatted with entry count" \
+  "8.5.x  (5 entries — range 8.5.0 → 8.5.4)" "${out_collapse}"
 rm -f "${synthetic}"
 
 # ----------------------------------------------------------------------
@@ -269,6 +343,41 @@ else
       fail=$((fail + 1))
     fi
   done
+fi
+
+# ----------------------------------------------------------------------
+printf 'Test 9: OMC_INSTALL_VERBOSE=1 mode preserves per-patch output (v1.36.0 #6)\n'
+# When the user opts into the legacy verbose view, every CHANGELOG
+# entry between prev and curr renders on its own line — same shape as
+# pre-v1.36.0 install footers. The `extract_whats_new_verbose` fixture
+# mirrors install.sh's verbose branch.
+synthetic="$(mktemp)"
+{
+  printf '# Changelog\n\n'
+  for patch in 5 4 3 2 1 0; do
+    printf '## [7.0.%d] - 2026-01-1%d\n\n' "${patch}" "${patch}"
+  done
+  printf '## [6.9.0] - 2026-01-09\n\nPrevious minor.\n\n'
+} > "${synthetic}"
+
+# Collapsed (default): 6 patches in 7.0 should collapse to ONE line.
+out_collapsed_v9="$(extract_whats_new "6.9.0" "7.0.5" "${synthetic}")"
+collapsed_lines="$(printf '%s' "${out_collapsed_v9}" | grep -c "^                   - " || true)"
+assert_eq "T9a: collapsed yields 1 line for 7.0.x patches" "1" "${collapsed_lines}"
+
+# Verbose: same input should emit 6 separate entry lines.
+out_verbose_v9="$(extract_whats_new_verbose "6.9.0" "7.0.5" "${synthetic}")"
+verbose_lines="$(printf '%s' "${out_verbose_v9}" | grep -c "^                   - 7\." || true)"
+assert_eq "T9b: verbose yields 6 lines for 7.0.x patches" "6" "${verbose_lines}"
+rm -f "${synthetic}"
+
+# T9c — install.sh contains both branches and the OMC_INSTALL_VERBOSE
+# env-var gate so users have a path back to per-patch output.
+if grep -q 'OMC_INSTALL_VERBOSE' "${REPO_ROOT}/install.sh"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T9c: install.sh missing OMC_INSTALL_VERBOSE branch\n' >&2
+  fail=$((fail + 1))
 fi
 
 # ----------------------------------------------------------------------

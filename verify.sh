@@ -45,6 +45,19 @@ done
 
 errors=0
 warnings=0
+# v1.36.0 (item #7): split warning total into informational vs actionable.
+# Tool-absence skips (jq missing, sha256sum missing) and optional-config
+# misses (Ghostty config not present) are info-only and don't gate ship-
+# readiness. Foreign hooks, agent-list mismatches, drift detection
+# fires, and statusline hijacks are actionable — saved to
+# ~/.claude/last-verify-warnings.txt for follow-up.
+info_warnings=0
+actionable_warnings=0
+ACTIONABLE_LOG="${TARGET_HOME:-$HOME}/.claude/last-verify-warnings.txt"
+# Truncate the actionable log up-front so each verify.sh run starts
+# fresh. If the directory does not exist (running against a wholly
+# empty ~/.claude/ on a tmpdir target), the rm is a no-op.
+rm -f "${ACTIONABLE_LOG}" 2>/dev/null || true
 
 pass() {
   printf '  [ok]   %s\n' "$1"
@@ -58,6 +71,22 @@ fail() {
 warn() {
   printf '  [warn] %s\n' "$1"
   warnings=$(( warnings + 1 ))
+  actionable_warnings=$(( actionable_warnings + 1 ))
+  # Append to the actionable log lazily — the file is created on first
+  # actionable warn so a clean install with zero actionable warnings
+  # leaves no stale file. Errors here are non-fatal (the warn itself
+  # already printed).
+  printf '%s\n' "$1" >> "${ACTIONABLE_LOG}" 2>/dev/null || true
+}
+
+# v1.36.0 (item #7): info_warn for tool-absence skips and optional
+# checks that produce a warning but don't gate ship-readiness. Same
+# `[info]` prefix used by the post-install footer in install.sh so
+# the visual hierarchy is consistent across surfaces.
+info_warn() {
+  printf '  [info] %s\n' "$1"
+  warnings=$(( warnings + 1 ))
+  info_warnings=$(( info_warnings + 1 ))
 }
 
 # ---------------------------------------------------------------------------
@@ -236,7 +265,7 @@ else
       fail "settings.json has invalid JSON syntax"
     fi
   else
-    warn "Skipping JSON validation (neither python3 nor jq available)"
+    info_warn "Skipping JSON validation (neither python3 nor jq available)"
   fi
 fi
 
@@ -384,10 +413,10 @@ if [[ -f "${ghostty_theme}" ]]; then
       fail "Ghostty config is missing: theme = Claude OpenCode"
     fi
   else
-    warn "Ghostty config file not found at ${ghostty_config}"
+    info_warn "Ghostty config file not found at ${ghostty_config}"
   fi
 else
-  warn "Ghostty theme not installed (this is optional)"
+  info_warn "Ghostty theme not installed (this is optional)"
 fi
 
 printf '\n'
@@ -412,7 +441,7 @@ if command -v claude >/dev/null 2>&1; then
     warn "claude agents returned no output"
   fi
 else
-  warn "claude CLI not found; skipping agent availability check"
+  info_warn "claude CLI not found; skipping agent availability check"
 fi
 
 printf '\n'
@@ -482,7 +511,7 @@ foreign_report() {
 if [[ ! -f "${CLAUDE_HOME}/settings.json" ]]; then
   fail "settings.json missing; cannot check for foreign hooks"
 elif ! command -v jq >/dev/null 2>&1; then
-  warn "jq not available; foreign-hook check skipped"
+  info_warn "jq not available; foreign-hook check skipped"
 else
   # Distinguish jq parse failure from "no foreign entries". A
   # malformed settings.json is itself an A2 indicator that warrants a
@@ -568,7 +597,7 @@ printf '9. Drift detection (SHA-256 manifest)\n'
 HASHES_PATH="${CLAUDE_HOME}/quality-pack/state/installed-hashes.txt"
 
 if [[ ! -f "${HASHES_PATH}" ]]; then
-  warn "installed-hashes.txt missing (drift detection unavailable; reinstall to generate)"
+  info_warn "installed-hashes.txt missing (drift detection unavailable; reinstall to generate)"
 else
   hash_check_tool=""
   if command -v shasum >/dev/null 2>&1; then
@@ -578,7 +607,7 @@ else
   fi
 
   if [[ -z "${hash_check_tool}" ]]; then
-    warn "Neither shasum nor sha256sum available; drift detection skipped"
+    info_warn "Neither shasum nor sha256sum available; drift detection skipped"
   else
     # The hashes file's paths are relative to the bundle root. After
     # rsync -a, the same relative paths exist under CLAUDE_HOME. Run the
@@ -612,9 +641,17 @@ printf '\n'
 # ===========================================================================
 
 printf '=== Verification complete ===\n'
-printf '  Version:  %s\n' "${omc_version}"
-printf '  Errors:   %d\n' "${errors}"
-printf '  Warnings: %d\n' "${warnings}"
+printf '  Version:       %s\n' "${omc_version}"
+printf '  Errors:        %d\n' "${errors}"
+# v1.36.0 (item #7): split warnings into informational vs actionable so
+# the user can tell at a glance whether the warnings need follow-up. The
+# legacy "Warnings: N" line is preserved as a sub-line for backwards
+# compatibility with any tooling that grepped it.
+printf '  Warnings:      %d  (informational: %d, actionable: %d)\n' \
+  "${warnings}" "${info_warnings}" "${actionable_warnings}"
+if [[ "${actionable_warnings}" -gt 0 ]] && [[ -f "${ACTIONABLE_LOG}" ]]; then
+  printf '  Actionable log: %s\n' "${ACTIONABLE_LOG}"
+fi
 printf '\n'
 
 if [[ "${errors}" -gt 0 ]]; then

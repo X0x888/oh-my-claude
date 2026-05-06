@@ -612,5 +612,70 @@ assert_contains "T28 — R5 row" "\`R5_code_no_docs\`" "${out}"
 rm -f "${QP}/gate_events.jsonl"
 
 # ----------------------------------------------------------------------
+printf 'Test 29: v1.36.0 — --sweep includes active-session rows in the report\n'
+# Setup: synthesize an empty cross-session ledger AND one active session
+# dir under STATE_ROOT. --sweep should fold the active session into the
+# in-memory view without touching the on-disk ledger.
+NOW29="$(date +%s)"
+SWEEP_STATE_ROOT="${TEST_HOME}/.claude/quality-pack/state"
+SWEEP_SID="active-session-T29"
+mkdir -p "${SWEEP_STATE_ROOT}/${SWEEP_SID}"
+cat > "${SWEEP_STATE_ROOT}/${SWEEP_SID}/session_state.json" <<EOF
+{
+  "session_start_ts": ${NOW29},
+  "last_user_prompt_ts": ${NOW29},
+  "last_edit_ts": ${NOW29},
+  "task_domain": "coding",
+  "task_intent": "execution",
+  "code_edit_count": "5",
+  "doc_edit_count": "1",
+  "stop_guard_blocks": "2",
+  "dimension_guard_blocks": "1",
+  "subagent_dispatch_count": "3",
+  "session_outcome": "active",
+  "skip_count": "0",
+  "serendipity_count": "0",
+  "project_key": "test-project"
+}
+EOF
+cat > "${SWEEP_STATE_ROOT}/${SWEEP_SID}/gate_events.jsonl" <<EOF
+{"ts":${NOW29},"gate":"stop-guard","event":"block","details":{"reason":"unverified"}}
+{"ts":${NOW29},"gate":"discovered-scope","event":"block","details":{"finding_count":"3"}}
+EOF
+
+# Empty cross-session ledgers — pre-sweep there's no data.
+: > "${QP}/session_summary.jsonl"
+: > "${QP}/gate_events.jsonl"
+
+# Without --sweep: report should show empty-state for sessions.
+out_no_sweep="$(run_report week)"
+assert_contains "T29a — no-sweep shows empty-ledger message" \
+  "No session_summary rows in window" "${out_no_sweep}"
+
+# With --sweep: report should fold in the active session.
+out_sweep="$(run_report --sweep week)"
+assert_contains "T29b — --sweep banner present" "active session(s) in this view" "${out_sweep}"
+# F-4 (Wave 3 review): bound the count cell with surrounding pipes
+# so a future row reformat that produced "Sessions | 12" cannot
+# substring-match a wrong count past the assertion.
+assert_contains "T29c — --sweep folds session into Sessions count" "| Sessions | 1 |" "${out_sweep}"
+# Gate events from the active session should appear under the gate
+# events section.
+assert_contains "T29d — --sweep folds gate events" "stop-guard" "${out_sweep}"
+
+# Confirm the on-disk ledger was NOT modified by --sweep.
+ledger_lines="$(wc -l < "${QP}/session_summary.jsonl" | tr -d '[:space:]')"
+if [[ "${ledger_lines}" -eq 0 ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T29e — --sweep wrote %d row(s) to on-disk ledger (must be 0)\n' "${ledger_lines}" >&2
+  fail=$((fail + 1))
+fi
+
+# Cleanup synthesized active session.
+rm -rf "${SWEEP_STATE_ROOT:?}/${SWEEP_SID:?}"
+rm -f "${QP}/gate_events.jsonl" "${QP}/session_summary.jsonl"
+
+# ----------------------------------------------------------------------
 printf '\n=== Show-Report Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]] || exit 1

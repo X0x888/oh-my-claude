@@ -1589,31 +1589,154 @@ fi
 if [[ -n "${PRIOR_INSTALLED_VERSION}" ]] \
     && [[ "${PRIOR_INSTALLED_VERSION}" != "${OMC_VERSION}" ]] \
     && [[ -f "${SCRIPT_DIR}/CHANGELOG.md" ]]; then
-  _whats_new="$(awk -v prev="${PRIOR_INSTALLED_VERSION}" -v curr="${OMC_VERSION}" '
-    /^## \[/ {
-      ver = $0
-      sub(/^## \[/, "", ver); sub(/\].*/, "", ver)
-      datepart = $0
-      sub(/^[^]]*\][[:space:]]*-?[[:space:]]*/, "", datepart)
-      if (ver == prev) { exit }
-      kept++
-      if (kept > 40) { truncated = 1; exit }
-      if (ver == "Unreleased") {
-        # Render the Unreleased section as a bare label — its date
-        # field is meaningless until promotion, and parenthesizing
-        # "(unreleased)" inside the (date) wrapper double-wraps.
-        printf "                   - %s\n", ver
-      } else {
-        printf "                   - %s%s\n", ver, (datepart == "" ? "" : "  (" datepart ")")
+  # v1.36.0 (item #6): collapse same-X.Y patches into one summary line.
+  # Pre-v1.36.0 the awk listed every CHANGELOG `## [X.Y.Z]` heading
+  # individually — e.g., a 1.27.0 → 1.34.x upgrade rendered 16 separate
+  # 1.32.x patch lines, dominating the install footer with low-signal
+  # noise. New shape:
+  #   - 1.34.0  (date)              ← single-entry minor: full line
+  #   - 1.32.x  (16 entries — see CHANGELOG.md, range 1.32.0 → 1.32.16)
+  #
+  # Two-pass logic kept inside one awk invocation: pass 1 walks lines
+  # in the file's natural reverse-chronological order, accumulates a
+  # current minor (X.Y), counts patches, and flushes one line per
+  # minor (or per individual entry if the minor has only one). Stops
+  # at the prior version. The 40-entry cap from v1.34.2 stays in
+  # place but now bounds the number of UNIQUE minors that can be
+  # emitted, which is more forgiving than the old per-patch cap.
+  #
+  # OMC_INSTALL_VERBOSE=1 toggles the full per-patch view back on for
+  # users who specifically want it (e.g., debugging which exact patch
+  # fixed something).
+  if [[ "${OMC_INSTALL_VERBOSE:-0}" == "1" ]]; then
+    _whats_new="$(awk -v prev="${PRIOR_INSTALLED_VERSION}" -v curr="${OMC_VERSION}" '
+      /^## \[/ {
+        ver = $0
+        sub(/^## \[/, "", ver); sub(/\].*/, "", ver)
+        datepart = $0
+        sub(/^[^]]*\][[:space:]]*-?[[:space:]]*/, "", datepart)
+        if (ver == prev) { exit }
+        kept++
+        if (kept > 40) { truncated = 1; exit }
+        if (ver == "Unreleased") {
+          printf "                   - %s\n", ver
+        } else {
+          printf "                   - %s%s\n", ver, (datepart == "" ? "" : "  (" datepart ")")
+        }
       }
-    }
-    END { if (truncated) print "                   - ... (older entries — see CHANGELOG.md)" }
-  ' "${SCRIPT_DIR}/CHANGELOG.md" 2>/dev/null || true)"
+      END { if (truncated) print "                   - ... (older entries — see CHANGELOG.md)" }
+    ' "${SCRIPT_DIR}/CHANGELOG.md" 2>/dev/null || true)"
+  else
+    _whats_new="$(awk -v prev="${PRIOR_INSTALLED_VERSION}" -v curr="${OMC_VERSION}" '
+      function flush(   line) {
+        if (current_minor == "") return
+        if (current_count == 1) {
+          line = current_first
+          if (current_first_date != "") { line = line "  (" current_first_date ")" }
+          printf "                   - %s\n", line
+        } else {
+          # current_first is the FIRST seen (highest patch since CHANGELOG
+          # is reverse-chronological); current_last is the LAST seen
+          # (lowest patch in the run). Emit the inclusive range so users
+          # know the span at a glance without reading the full CHANGELOG.
+          printf "                   - %s.x  (%d entries — range %s → %s)\n", \
+            current_minor, current_count, current_last, current_first
+        }
+        current_minor = ""; current_count = 0
+        current_first = ""; current_first_date = ""; current_last = ""
+      }
+      /^## \[/ {
+        ver = $0
+        sub(/^## \[/, "", ver); sub(/\].*/, "", ver)
+        datepart = $0
+        sub(/^[^]]*\][[:space:]]*-?[[:space:]]*/, "", datepart)
+
+        # Stop at the prior version — flush any pending group first
+        # so the trailing minor is rendered before exit.
+        if (ver == prev) { flush(); exit }
+
+        if (ver == "Unreleased") {
+          flush()
+          printf "                   - %s\n", ver
+          next
+        }
+
+        # Extract minor (X.Y) from X.Y.Z. Non-semver versions go
+        # through unchanged as their own minor.
+        n = split(ver, parts, ".")
+        if (n >= 2) {
+          minor = parts[1] "." parts[2]
+        } else {
+          minor = ver
+        }
+
+        if (minor != current_minor) {
+          flush()
+          # Cap on UNIQUE minors emitted (was 40 per-patch; now 40 minors).
+          minors_emitted++
+          if (minors_emitted > 40) { truncated = 1; exit }
+          current_minor = minor
+          current_count = 1
+          current_first = ver
+          current_first_date = datepart
+          current_last = ver
+        } else {
+          current_count++
+          current_last = ver
+        }
+      }
+      END {
+        flush()
+        if (truncated) print "                   - ... (older entries — see CHANGELOG.md)"
+      }
+    ' "${SCRIPT_DIR}/CHANGELOG.md" 2>/dev/null || true)"
+  fi
   if [[ -n "${_whats_new}" ]]; then
     printf '  What'\''s new:    versions since v%s:\n' "${PRIOR_INSTALLED_VERSION}"
     printf '%s' "${_whats_new}"
     printf '                   See %s/CHANGELOG.md for details.\n' "${SCRIPT_DIR}"
   fi
+fi
+
+# v1.36.0 (item #14): surface the v1.34.0 omc-repro.sh redaction
+# advisory if the user is upgrading from a version inside the affected
+# range (v1.29.0 ≤ prior ≤ v1.33.2). Pre-v1.34.0 omc-repro.sh tarballs
+# may carry prompt-text fragments under state-corruption rows in the
+# bundled gate_events.jsonl — the advisory was buried mid-CHANGELOG and
+# easily missed. Surface as a [security] line in the install footer so
+# users who are likely to be affected see it during upgrade rather than
+# discovering it later.
+#
+# Affected range encoding: a simple lexical-by-component check. Matches
+# 1.29.x, 1.30.x, 1.31.x, 1.32.x, 1.33.0, 1.33.1, 1.33.2 — and excludes
+# 1.33.3+ and 1.34.x+. Custom builds outside the semver shape silently
+# skip — the BASH_REMATCH check below returns 1 on non-`X.Y.Z` input,
+# so suffixed versions like `1.30.0-beta` and pre-tag dev strings are
+# treated as out-of-range (conservative — no advisory fires).
+_omc_in_affected_repro_range() {
+  local v="$1"
+  [[ -z "${v}" ]] && return 1
+  # Must match X.Y.Z numeric.
+  [[ "${v}" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || return 1
+  local maj="${BASH_REMATCH[1]}" min="${BASH_REMATCH[2]}" pat="${BASH_REMATCH[3]}"
+  # Only major=1 is relevant.
+  [[ "${maj}" -eq 1 ]] || return 1
+  # 1.29 to 1.32 — entire minor window.
+  if [[ "${min}" -ge 29 ]] && [[ "${min}" -le 32 ]]; then return 0; fi
+  # 1.33.0 to 1.33.2 inclusive.
+  if [[ "${min}" -eq 33 ]] && [[ "${pat}" -le 2 ]]; then return 0; fi
+  return 1
+}
+
+if [[ -n "${PRIOR_INSTALLED_VERSION}" ]] \
+    && _omc_in_affected_repro_range "${PRIOR_INSTALLED_VERSION}"; then
+  printf '\n'
+  printf '  [security]     Upgrading from v%s — affected by the v1.34.0 omc-repro.sh advisory.\n' "${PRIOR_INSTALLED_VERSION}"
+  printf '                 If you ran `omc-repro.sh` on v1.29.0–v1.33.2 AND shared the output,\n'
+  printf '                 the bundled gate_events.jsonl may carry prompt-text fragments under\n'
+  printf '                 state-corruption rows. Rotate or redact any tarball you have already\n'
+  printf '                 shared. The cross-session ledger in this install is already scrubbed.\n'
+  printf '                 See CHANGELOG.md v1.34.0 entry for full details.\n'
 fi
 printf '  Destination:   %s\n' "${CLAUDE_HOME}"
 printf '  Backup:        %s\n' "${BACKUP_DIR}"

@@ -36,11 +36,19 @@ DEFECT_PATTERNS_FILE="${QP_ROOT}/defect-patterns.json"
 # string field. Distribution counts and aggregate totals only.
 SHARE_MODE=0
 FIELD_SHAPE_AUDIT=0
+# v1.36.0 (item #8): --sweep aggregates currently-active session dirs
+# (under ${STATE_ROOT}) into the in-memory view used by this report,
+# without writing to the cross-session ledger or claiming the source
+# dirs. Closes the gap where /ulw-report run during an active session
+# missed that session's gate events because session_summary.jsonl /
+# gate_events.jsonl only populate at the daily TTL sweep.
+SWEEP_MODE=0
 NEW_ARGS=()
 for _arg in "$@"; do
   case "${_arg}" in
     --share)              SHARE_MODE=1 ;;
     --field-shape-audit)  FIELD_SHAPE_AUDIT=1 ;;
+    --sweep)              SWEEP_MODE=1 ;;
     *)                    NEW_ARGS+=("${_arg}") ;;
   esac
 done
@@ -102,6 +110,138 @@ case "${MODE}" in
   all)   window_label="all time" ;;
 esac
 _xs_rollup_cache=""
+
+# v1.36.0 (item #8): --sweep rollup. For each active session dir under
+# STATE_ROOT (excluding _watchdog), synthesize a session_summary row
+# AND fold its per-session gate_events.jsonl into the report's view —
+# without writing to the cross-session ledger and without claiming
+# (deleting) the source dirs. The render below uses the SUMMARY_FILE
+# and GATE_EVENTS_FILE variables; we redirect them to merged temp
+# files. Cleanup happens on EXIT trap below.
+_omc_sweep_active_count=0
+_OMC_SWEEP_TMPDIR=""
+if [[ "${SWEEP_MODE}" -eq 1 ]]; then
+  _OMC_SWEEP_TMPDIR="$(mktemp -d 2>/dev/null || true)"
+  if [[ -n "${_OMC_SWEEP_TMPDIR}" ]] && [[ -d "${_OMC_SWEEP_TMPDIR}" ]]; then
+    # Mirror SUMMARY_FILE + GATE_EVENTS_FILE if they exist.
+    _sweep_merged_summary="${_OMC_SWEEP_TMPDIR}/session_summary.jsonl"
+    _sweep_merged_gate="${_OMC_SWEEP_TMPDIR}/gate_events.jsonl"
+    [[ -f "${SUMMARY_FILE}" ]] && cp "${SUMMARY_FILE}" "${_sweep_merged_summary}" || true
+    [[ -f "${GATE_EVENTS_FILE}" ]] && cp "${GATE_EVENTS_FILE}" "${_sweep_merged_gate}" || true
+    # Ensure the files exist (empty is fine) so >>append works downstream.
+    : > "${_sweep_merged_summary}.lock" 2>/dev/null || true
+    [[ ! -f "${_sweep_merged_summary}" ]] && : > "${_sweep_merged_summary}"
+    [[ ! -f "${_sweep_merged_gate}" ]] && : > "${_sweep_merged_gate}"
+
+    # Walk active session dirs. STATE_ROOT comes from common.sh; if
+    # unset (degenerate environment), default to ~/.claude/quality-pack/state.
+    _sweep_state_root="${STATE_ROOT:-${HOME}/.claude/quality-pack/state}"
+    if [[ -d "${_sweep_state_root}" ]]; then
+      while IFS= read -r _sweep_dir; do
+        [[ -z "${_sweep_dir}" ]] && continue
+        # Exclude _watchdog (synthetic daemon session — its rows
+        # don't belong in the human-facing report).
+        local_basename="$(basename "${_sweep_dir}")"
+        [[ "${local_basename}" == "_watchdog" ]] && continue
+        local_state="${_sweep_dir}/session_state.json"
+        [[ -f "${local_state}" ]] || continue
+
+        # session_summary row — same jq formula as sweep_stale_sessions
+        # (common.sh:1278). Kept inline rather than extracting a helper
+        # because the show-report.sh use is the only second consumer.
+        local_edits_log="${_sweep_dir}/edited_files.log"
+        local_ec=0
+        [[ -f "${local_edits_log}" ]] && local_ec="$(sort -u "${local_edits_log}" | wc -l | tr -d '[:space:]')"
+
+        local_findings_file="${_sweep_dir}/findings.json"
+        local_findings_block='null'
+        local_waves_block='null'
+        if [[ -f "${local_findings_file}" ]]; then
+          local_findings_block="$(jq -c '
+            (.findings // []) | {
+              total: length,
+              shipped:     ([.[] | select(.status=="shipped")]     | length),
+              deferred:    ([.[] | select(.status=="deferred")]    | length),
+              rejected:    ([.[] | select(.status=="rejected")]    | length),
+              in_progress: ([.[] | select(.status=="in_progress")] | length),
+              pending:     ([.[] | select(.status=="pending")]     | length)
+            }
+          ' "${local_findings_file}" 2>/dev/null || echo 'null')"
+          local_waves_block="$(jq -c '
+            (.waves // []) | { total: length, completed: ([.[] | select(.status=="completed")] | length) }
+          ' "${local_findings_file}" 2>/dev/null || echo 'null')"
+        fi
+
+        jq -c --arg sid "${local_basename}" --argjson ec "${local_ec:-0}" \
+          --argjson findings "${local_findings_block}" \
+          --argjson waves "${local_waves_block}" '
+          {
+            session_id: $sid,
+            project_key: (.project_key // null),
+            start_ts: (.session_start_ts // .last_user_prompt_ts // null),
+            end_ts: (.last_edit_ts // .last_review_ts // null),
+            domain: (.task_domain // "unknown"),
+            intent: (.task_intent // "unknown"),
+            edit_count: $ec,
+            code_edits: ((.code_edit_count // "0") | tonumber),
+            doc_edits: ((.doc_edit_count // "0") | tonumber),
+            verified: (if .last_verify_ts then true else false end),
+            verify_outcome: (.last_verify_outcome // null),
+            verify_confidence: ((.last_verify_confidence // "0") | tonumber),
+            reviewed: (if .last_review_ts then true else false end),
+            guard_blocks: ((.stop_guard_blocks // "0") | tonumber),
+            dim_blocks: ((.dimension_guard_blocks // "0") | tonumber),
+            exhausted: (if .guard_exhausted then true else false end),
+            dispatches: ((.subagent_dispatch_count // "0") | tonumber),
+            outcome: (.session_outcome // "active"),
+            skip_count: ((.skip_count // "0") | tonumber),
+            serendipity_count: ((.serendipity_count // "0") | tonumber),
+            findings: $findings,
+            waves: $waves,
+            _live: true
+          }
+        ' "${local_state}" >> "${_sweep_merged_summary}" 2>/dev/null || true
+
+        # Per-session gate_events.jsonl — append each row with
+        # session_id and project_key tags so the cross-session
+        # query shape works unchanged.
+        local_gate_file="${_sweep_dir}/gate_events.jsonl"
+        if [[ -f "${local_gate_file}" ]] && [[ -s "${local_gate_file}" ]]; then
+          local_pkey="$(jq -r '.project_key // ""' "${local_state}" 2>/dev/null || echo "")"
+          jq -c --arg sid "${local_basename}" --arg pkey "${local_pkey}" \
+            '. + {session_id: $sid, project_key: ($pkey // null), _live: true}' \
+            "${local_gate_file}" >> "${_sweep_merged_gate}" 2>/dev/null || true
+        fi
+
+        _omc_sweep_active_count=$(( _omc_sweep_active_count + 1 ))
+      done < <(find "${_sweep_state_root}" -maxdepth 1 -type d \
+                  ! -name '.' ! -name '..' ! -path "${_sweep_state_root}" 2>/dev/null)
+    fi
+
+    # Repoint the report's data sources at the merged temps.
+    SUMMARY_FILE="${_sweep_merged_summary}"
+    GATE_EVENTS_FILE="${_sweep_merged_gate}"
+  fi
+
+  # Cleanup on EXIT — never delete the on-disk ledger files since we
+  # only ever wrote to the temp copy. Function-form trap (vs embedded
+  # variable expansion) avoids the SC2064 quote-injection class — the
+  # path is read from a captured variable at trap-fire time, not
+  # interpolated into a single-quoted shell argument at trap-set time.
+  _omc_sweep_cleanup() {
+    if [[ -n "${_OMC_SWEEP_TMPDIR:-}" ]] && [[ -d "${_OMC_SWEEP_TMPDIR}" ]]; then
+      rm -rf "${_OMC_SWEEP_TMPDIR:?}" 2>/dev/null || true
+    fi
+  }
+  trap _omc_sweep_cleanup EXIT
+
+  # Banner emits to STDOUT (not stderr) so it travels with the report
+  # in pipe / tee / file-redirect flows. F-1 fix: pre-fix the banner
+  # went to >&2, which lost it for users running
+  # `/ulw-report --sweep | tee report.md`.
+  printf '_[--sweep] Including %d active session(s) in this view (read-only; ledger not modified)._\n\n' \
+    "${_omc_sweep_active_count}"
+fi
 
 # v1.31.0 Wave 8 (growth-lens F-037): --share renders a fully-sanitized
 # digest. Numbers, distributions, and structural counts only — no
