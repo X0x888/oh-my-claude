@@ -238,5 +238,42 @@ assert_eq "T10: empty session_id no output" "" "${out}"
 teardown_test
 
 # ----------------------------------------------------------------------
+printf 'Test 11 (v1.36.0 #17): conf profile line — maximum defaults\n'
+setup_test
+touch "${TEST_HOME}/.claude/.install-stamp"
+# Conf with ONLY auto-set keys → 0 user overrides → "maximum defaults" line.
+cat > "${TEST_HOME}/.claude/oh-my-claude.conf" <<EOF
+repo_path=/Users/xxxcoding/Documents/ai-coding/oh-my-claude
+installed_version=1.36.0
+installed_sha=abc123
+model_tier=quality
+output_style=opencode
+EOF
+out="$(run_hook "t11-${RANDOM}")"
+assert_contains "T11: banner mentions maximum defaults" "maximum defaults" "${out}"
+assert_contains "T11: banner suggests omc-config for profile switch" "switch profile" "${out}"
+assert_not_contains "T11: not flag-override mode when count is 0" "flag override(s) active" "${out}"
+teardown_test
+
+# ----------------------------------------------------------------------
+printf 'Test 12 (v1.36.0 #17): conf profile line — N overrides\n'
+setup_test
+touch "${TEST_HOME}/.claude/.install-stamp"
+# Add 3 user overrides on top of the auto-set keys.
+cat > "${TEST_HOME}/.claude/oh-my-claude.conf" <<EOF
+repo_path=/Users/xxxcoding/Documents/ai-coding/oh-my-claude
+installed_version=1.36.0
+model_tier=quality
+output_style=opencode
+directive_budget=balanced
+prompt_persist=off
+auto_memory=off
+EOF
+out="$(run_hook "t12-${RANDOM}")"
+assert_contains "T12: banner names override count" "3 flag override(s) active" "${out}"
+assert_not_contains "T12: not maximum-defaults mode when overrides present" "maximum defaults" "${out}"
+teardown_test
+
+# ----------------------------------------------------------------------
 printf '\n=== Session-start-welcome tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]

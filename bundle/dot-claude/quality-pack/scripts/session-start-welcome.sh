@@ -141,6 +141,24 @@ else
   dim_open=""
   dim_close=""
 fi
+_omc_user_override_count=0
+if [[ -f "${HOME}/.claude/oh-my-claude.conf" ]]; then
+  # Append `|| true` to swallow pipeline-fail under set -e -o pipefail:
+  # the inner `grep -vE` exits non-zero when zero lines match (e.g.,
+  # a fresh install where the conf only contains auto-set keys), which
+  # would otherwise abort the whole hook before the banner emits.
+  _omc_user_override_count="$(grep -E '^[a-z_]+=' "${HOME}/.claude/oh-my-claude.conf" 2>/dev/null \
+    | grep -vE '^(repo_path|installed_version|installed_sha|model_tier|output_style)=' \
+    | wc -l | tr -d '[:space:]' || true)"
+  [[ "${_omc_user_override_count}" =~ ^[0-9]+$ ]] || _omc_user_override_count=0
+fi
+
+if [[ "${_omc_user_override_count}" -eq 0 ]]; then
+  _omc_profile_line="${dim_open}Profile: maximum defaults — gates fire loudly, directives are broad. Run \`/omc-config\` to switch profile (Balanced / Minimal) or tune individual flags.${dim_close}"
+else
+  _omc_profile_line="${dim_open}Profile: ${_omc_user_override_count} flag override(s) active. Run \`/omc-config\` to inspect or change.${dim_close}"
+fi
+
 banner="${banner_head}
 
 To see the harness work end-to-end (about 90 seconds, on a throwaway file in /tmp), type:
@@ -148,6 +166,8 @@ To see the harness work end-to-end (about 90 seconds, on a throwaway file in /tm
   ${cta_open}/ulw-demo${cta_close}
 
 Or jump straight to your real work with \`/ulw <task>\`. Run \`/omc-config\` to inspect or change settings.
+
+${_omc_profile_line}
 
 ${dim_open}This banner shows once per fresh install or update; silent on subsequent sessions until you re-run install.sh.${dim_close}"
 

@@ -142,7 +142,49 @@ If the directory looks like a fresh oh-my-claude install or you can't tell the p
 
 Close with a single sentence: **"Pick one and run it — the harness will route the right specialists automatically."** This is the handoff that closes the post-demo cliff.
 
-### Step 9: Clean up
+### Step 9 (v1.36.0 #18): Optional bonus — see /ulw-skip recovery
+
+If the user opted in (or if you want a complete demo), add this beat AFTER Step 6 closes the main flow and BEFORE the wrap. Otherwise skip to Step 10 cleanup.
+
+Print this banner on its own line first:
+
+```
+━━━ BEAT 8/9 · BONUS — /ulw-skip recovery (gate fire + skip + ship) ━━━
+```
+
+Show the user how to recover when a quality gate fires on something the model already addressed. Cite a real example from the demo: "Imagine the verifier called `bash -n` but the user wants you to also run `shellcheck` — the verification gate would re-fire. `/ulw-skip` is the structured way to bypass once with a logged reason."
+
+Demonstrate by running:
+
+```bash
+echo "Demo: /ulw-skip exists at ~/.claude/skills/ulw-skip/SKILL.md"
+echo "It logs the skip with the reason for /ulw-report telemetry."
+```
+
+The point is to surface the verb, not actually fire the skip in the demo (firing it would require synthesizing a gate-block state). Tell the user: "If a real gate fires that you've already addressed, run `/ulw-skip <one-line reason>` — the skip is recorded for threshold tuning. v1.35.0+: deferral verbs `/ulw-skip` (gate bypass) and `/mark-deferred` (defer findings) and `/ulw-pause` (user-decision pause) are not interchangeable — see the decision tree at `/skills`."
+
+### Step 9b (v1.36.0 #18): Optional bonus — exemplifying-scope gate
+
+This beat shows the gate that catches **under-interpretation** of `/ulw` prompts. Print:
+
+```
+━━━ BEAT 9/9 · BONUS — exemplifying-scope gate (the "for instance" rule) ━━━
+```
+
+Tell the user:
+
+> When you write `/ulw enhance the statusline, for instance adding a reset countdown`, the harness reads that as: "the example is ONE sibling from a class — the *class* is the scope, not the literal example." A senior practitioner adding the exemplified item plus its siblings (in-flight indicators, stale-data warnings, count surfaces, model-name handling) is doing what the request actually asked. Implementing only the literal example and silently dropping the class is **under-interpretation** — `record-scope-checklist.sh init` enumerates the siblings, and the stop guard blocks silent drops.
+
+Show the verb without firing it (the demo does not include a real prompt):
+
+```bash
+echo "Exemplifying-scope helper: ~/.claude/skills/autowork/scripts/record-scope-checklist.sh"
+echo "Used internally by the harness when prompts contain example markers (for instance, e.g., such as)."
+```
+
+This bonus beat exists so new users see the v1.35.0+ defenses (bare-WHY rejection, weak-defer validator, exemplifying-scope checklist) before they hit them on real work.
+
+### Step 10: Clean up
 
 Remove `/tmp/omc-demo.sh`.
 
