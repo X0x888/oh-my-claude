@@ -1035,5 +1035,62 @@ case "$(timing_display_width "${mixed}")" in
 esac
 
 # ----------------------------------------------------------------------
+# v1.34.1+ (data-lens D-002 / design-lens X-002): aggregator must surface
+# `concurrent_overhead_s` as a positive quantity when parallel agent/tool
+# work outran walltime. Prevents the broken "agents 32% + tools 58% +
+# idle 27% = 117%" math the renderer would otherwise display.
+printf 'Test 41: aggregator emits concurrent_overhead_s when parallel work overruns walltime\n'
+reset_log
+log="$(timing_log_path)"
+mkdir -p "$(dirname "${log}")"
+# Synthesize two parallel agents that each took 30s but in 20s walltime —
+# 40s of agent work in 20s wall = 20s of parallelism overhead.
+ts0=$(now_epoch)
+ts_end=$(( ts0 + 20 ))
+{
+  printf '{"kind":"prompt_start","ts":%d,"prompt_seq":1}\n' "${ts0}"
+  printf '{"kind":"start","ts":%d,"tool":"Agent","subagent":"reviewer-a","tool_use_id":"a","prompt_seq":1}\n' "${ts0}"
+  printf '{"kind":"start","ts":%d,"tool":"Agent","subagent":"reviewer-b","tool_use_id":"b","prompt_seq":1}\n' "${ts0}"
+  printf '{"kind":"end","ts":%d,"tool":"Agent","tool_use_id":"a","prompt_seq":1}\n' "$(( ts0 + 30 ))"
+  printf '{"kind":"end","ts":%d,"tool":"Agent","tool_use_id":"b","prompt_seq":1}\n' "$(( ts0 + 30 ))"
+  printf '{"kind":"prompt_end","ts":%d,"prompt_seq":1,"duration_s":20}\n' "${ts_end}"
+} > "${log}"
+agg_overhead="$(timing_aggregate "${log}")"
+overhead="$(jq -r '.concurrent_overhead_s // -1' <<<"${agg_overhead}")"
+assert_ge "concurrent_overhead_s present and positive when work > walltime" 30 "${overhead}"
+idle="$(jq -r '.idle_model_s // -1' <<<"${agg_overhead}")"
+assert_eq "idle_model_s clamped to 0 when overhead > 0" "0" "${idle}"
+agent_total="$(jq -r '.agent_total_s // 0' <<<"${agg_overhead}")"
+assert_eq "agent_total_s sums both parallel agents (60s)" "60" "${agent_total}"
+
+# When work fits inside walltime (no overhead), the field is 0.
+printf 'Test 42: aggregator emits concurrent_overhead_s=0 when work fits inside walltime\n'
+reset_log
+ts0=$(now_epoch)
+ts_end=$(( ts0 + 60 ))
+{
+  printf '{"kind":"prompt_start","ts":%d,"prompt_seq":1}\n' "${ts0}"
+  printf '{"kind":"start","ts":%d,"tool":"Bash","tool_use_id":"c","prompt_seq":1}\n' "${ts0}"
+  printf '{"kind":"end","ts":%d,"tool":"Bash","tool_use_id":"c","prompt_seq":1}\n' "$(( ts0 + 10 ))"
+  printf '{"kind":"prompt_end","ts":%d,"prompt_seq":1,"duration_s":60}\n' "${ts_end}"
+} > "${log}"
+agg_no_overhead="$(timing_aggregate "${log}")"
+no_overhead="$(jq -r '.concurrent_overhead_s // -1' <<<"${agg_no_overhead}")"
+assert_eq "concurrent_overhead_s is 0 when work fits inside walltime" "0" "${no_overhead}"
+
+# Cross-session aggregator must propagate the field.
+printf 'Test 43: cross-session aggregator surfaces concurrent_overhead_s\n'
+xs_log="${HOME}/.claude/quality-pack/timing.jsonl"
+mkdir -p "$(dirname "${xs_log}")"
+rm -f "${xs_log}"
+jq -nc --arg session "s1" --argjson now "$(now_epoch)" \
+  '{ts:$now,session:$session,project_key:"p1",walltime_s:60,agent_total_s:80,
+    tool_total_s:30,idle_model_s:0,concurrent_overhead_s:50,
+    agent_breakdown:{"reviewer":80},tool_breakdown:{"Bash":30},
+    prompt_count:1}' > "${xs_log}"
+xs_overhead="$(timing_xs_aggregate 0 | jq -r '.concurrent_overhead_s // -1')"
+assert_eq "cross-session rollup propagates concurrent_overhead_s" "50" "${xs_overhead}"
+
+# ----------------------------------------------------------------------
 printf '\n=== Timing Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]

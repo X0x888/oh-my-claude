@@ -113,6 +113,11 @@ if [[ -n "${gate_skip_reason}" ]]; then
     # Edit clock unchanged — skip is valid
     record_gate_skip "${gate_skip_reason}" &
     log_hook "stop-guard" "gate skip honored: ${gate_skip_reason}"
+    # v1.34.1+ (data-lens D-001): mark outcome=released so cross-session
+    # session_summary.jsonl distinguishes a clean skip-honored release
+    # from a true model abandonment. The default-fallback is "abandoned"
+    # which would otherwise paint every clean release as a failure.
+    with_state_lock write_state "session_outcome" "released" || true
     rm -f "${STATE_ROOT}/.ulw_active"
     exit 0
   else
@@ -165,13 +170,18 @@ if ! is_execution_intent_value "${task_intent}"; then
         write_state "advisory_guard_blocks" "$((advisory_guard_blocks + 1))"
         record_gate_event "advisory" "block" "block_count=1" "block_cap=1"
         advisory_recovery="$(format_gate_recovery_line "read or search the affected code (Read/Grep/Glob), then re-issue your summary citing files inspected. To bypass once with reason, run /ulw-skip.")"
-        emit_stop_block "[Advisory gate · 1/1] this is an advisory task over a codebase, but no code inspection or build/test verification was detected. Before finalizing your response, read or search the actual codebase to ground your recommendations in evidence. If you have already inspected code via other means, briefly list the files inspected and restate your key recommendation at the end.${advisory_recovery}"
+        # v1.34.1+ (P-002): tighter advisory block.
+        emit_stop_block "[Advisory gate · 1/1] this is an advisory task over a codebase, but no code inspection or verification was recorded.
+Ground your recommendation in the actual code before finalizing.${advisory_recovery}"
         exit 0
       fi
     fi
   fi
 
   if [[ -z "${last_edit_ts}" || -z "${last_user_prompt_ts}" || "${last_edit_ts}" -lt "${last_user_prompt_ts}" ]]; then
+    # v1.34.1+ (D-001): advisory-clean release (no fresh edits since prompt).
+    # Distinguishes from "abandoned" in cross-session analytics.
+    with_state_lock write_state "session_outcome" "released" || true
     exit 0
   fi
 fi
@@ -193,7 +203,11 @@ if [[ "${ulw_pause_active}" != "1" ]] \
     record_gate_event "session-handoff" "block" \
       "block_count=$((session_handoff_blocks + 1))" "block_cap=2"
     handoff_recovery="$(format_gate_recovery_line "continue the deferred work now in this session, OR ask the user explicitly whether they want a checkpoint. If you are pausing because the user must decide something you cannot decide autonomously, run /ulw-pause <reason> instead — that signals a legitimate pause without tripping this gate. To bypass once with reason, run /ulw-skip.")"
-    emit_stop_block "[Session-handoff gate · $((session_handoff_blocks + 1))/2] your last response explicitly deferred remaining work to a future session. In ultrawork mode, do not stop with 'next wave', 'next phase', or 'ready for a new session' language unless the user explicitly asked for a checkpoint. Continue the remaining work now. If you genuinely must pause for user input, explain the hard blocker or run /ulw-pause <reason>; if you want to checkpoint, ask the user whether they want a checkpoint.${handoff_recovery}"
+    # v1.34.1+ (P-002): tighter session-handoff block; recovery line
+    # already names the three legitimate continuation options. Keep the
+    # literal "deferred remaining work" phrase — locked by e2e seq-G.
+    emit_stop_block "[Session-handoff gate · $((session_handoff_blocks + 1))/2] your last response deferred remaining work to a future session, but the user did not request a checkpoint.
+Continue the work now (do not stop with 'next wave', 'ready for a new session' language).${handoff_recovery}"
     exit 0
   fi
 fi
@@ -319,7 +333,10 @@ if [[ "${OMC_DISCOVERED_SCOPE}" == "on" ]] \
       "wave_total=${_ws_waves}" \
       "avg_per_wave=${_ws_avg}"
     wave_shape_recovery="$(format_gate_recovery_line "merge adjacent wave surfaces so the plan reaches avg ≥3 findings/wave (5-10/wave is the canonical target; 3 is the minimum). Re-issue \`record-finding-list.sh assign-wave\` with the merged plan — note that re-issuing assign-wave alone won't re-arm this gate, so reconcile in one pass. To bypass once with reason — e.g., 'each finding owns a genuinely separate critical surface' — run /ulw-skip.")"
-    emit_stop_block "[Wave-shape gate · 1/1] the active wave plan is under-segmented: ${_ws_total} findings across ${_ws_waves} waves (avg ${_ws_avg}/wave; the canonical Phase 8 rule in council/SKILL.md Step 8 is 5-10 findings/wave with ≥3 as the hard floor). Single-finding waves are acceptable only when (a) the master list itself has <5 findings, or (b) one finding is critical enough to own its own wave (rare — name the reason). Reconcile the plan before proceeding through the wave cycle.${wave_shape_recovery}"
+    # v1.34.1+ (P-002): tighter block message; canonical 5-10/wave rule
+    # is documented in council/SKILL.md Step 8.
+    emit_stop_block "[Wave-shape gate · 1/1] wave plan under-segmented: ${_ws_total} findings across ${_ws_waves} waves (avg ${_ws_avg}/wave; canonical floor is ≥3, target 5-10).
+Reconcile the plan before continuing — merge adjacent waves or accept the shape with /ulw-skip <reason> if a single-finding wave is intentional here.${wave_shape_recovery}"
     exit 0
   fi
 fi
@@ -370,17 +387,28 @@ if [[ "${OMC_DISCOVERED_SCOPE}" == "on" ]] \
         "pending_count=${pending_count}" \
         "wave_total=${wave_total}" \
         "waves_completed=${waves_completed:-0}"
-      scope_recovery="$(format_gate_recovery_line "ship/defer/call-out each pending finding individually in your summary, OR run /mark-deferred <reason> to bulk-defer all pending. If you fixed a verified adjacent defect on the same code path during this work, log it via ~/.claude/skills/autowork/scripts/record-serendipity.sh per the Serendipity Rule (core.md). To bypass once with reason, run /ulw-skip.")"
-      emit_stop_block "[Discovered-scope gate · $((discovered_scope_blocks + 1))/${scope_block_cap}] ${pending_count} finding(s) from advisory specialists were captured this session but not addressed in your final summary.${wave_progress} Top pending findings (severity-ranked):
-${scorecard}
-
-For each pending item, do one of: (a) **ship the fix** and reference the file/line in your summary (preferred when the finding is on a surface you are already loaded into — most discovered findings qualify); (b) **append to the active wave plan** via \`record-finding-list.sh add-finding\` + \`assign-wave\` when a wave plan exists and the finding is same-surface or naturally extends the next wave (the harness already has wave-append infrastructure for this); (c) **explicitly defer with a named WHY** via /mark-deferred — the reason must name what the deferral is *waiting on*: 'requires database migration outside this session’s surface', 'blocked by F-042 fix shipping first', 'awaiting stakeholder pricing decision', or 'duplicate'/'obsolete'/'superseded' (self-explanatory single tokens). Bare 'out of scope' / 'not in scope' / 'follow-up' / 'separate task' are rejected by the validator as silent-skip patterns; (d) call it out as a known follow-up risk in your summary when no commitment is being made. Silent skipping is the anti-pattern this gate exists to catch.${scope_recovery}"
+      # v1.34.1+ (P-002 / X-001 / O-003): tighter block-message UX. The
+      # full discursive rationale ("ship inline > wave-append > defer with
+      # WHY > call-out as risk") lives in core.md "Wave-append before
+      # defer" and skills/SKILL.md's deferral-verb decision tree. The
+      # block message names the trigger, shows the pending list, and
+      # routes to the recommended actions — the discursive escalation
+      # ladder is for repeat blocks, not first-touch. Keep the
+      # record-serendipity.sh reminder inline (Serendipity Rule is
+      # invisible if not surfaced at gate-fire — locked by
+      # tests/test-discovered-scope.sh T28).
+      scope_recovery="$(format_gate_recovery_line "ship the fix inline (preferred for same-surface findings), OR /mark-deferred <named-WHY> for bulk defer (validator rejects bare \"out of scope\" / \"follow-up\" / \"later\"; use \"requires X\" / \"blocked by Y\" / \"awaiting Z\"), OR /ulw-skip <reason> to bypass once. If you fixed a verified adjacent defect on the same code path, log it via record-serendipity.sh per the Serendipity Rule.")"
+      emit_stop_block "[Discovered-scope gate · $((discovered_scope_blocks + 1))/${scope_block_cap}] ${pending_count} advisory finding(s) captured this session not addressed in your summary.${wave_progress}
+Top pending (severity-ranked):
+${scorecard}${scope_recovery}"
       exit 0
     fi
   fi
 fi
 
 if [[ -z "${last_edit_ts}" ]]; then
+  # v1.34.1+ (D-001): no edits made — released without work to verify.
+  with_state_lock write_state "session_outcome" "released" || true
   exit 0
 fi
 
@@ -665,7 +693,9 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
     record_gate_event "excellence" "block" "block_count=1" "block_cap=1" \
       "edited_count=${unique_edited_count}"
     excellence_recovery="$(format_gate_recovery_line "dispatch the excellence-reviewer agent on the wave diff, then restate your deliverable summary. To bypass once with reason (e.g., already self-audited), run /ulw-skip.")"
-    emit_stop_block "[Excellence gate · 1/1] standard review and verification passed, but this is a complex task (${unique_edited_count} files edited). Before finalizing, run excellence-reviewer for a fresh-eyes holistic evaluation — completeness against the original objective, unknown unknowns, and what a veteran would add. If you have already done a thorough self-assessment and are confident the deliverable is complete and excellent, explain your reasoning and stop. After the excellence review, restate your key deliverable summary at the end of your response.${excellence_recovery}"
+    # v1.34.1+ (P-002): tighter excellence-gate block.
+    emit_stop_block "[Excellence gate · 1/1] review/verify passed, but this is a complex task (${unique_edited_count} files edited).
+Run excellence-reviewer for fresh-eyes holistic evaluation (completeness, unknown unknowns, polish a veteran would add) before finalizing.${excellence_recovery}"
     exit 0
   fi
   fi # end gate_level full|standard (excellence gate)
@@ -713,7 +743,9 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
         "block_count=1" "block_cap=1" \
         "complexity_signals=${plan_complexity_signals}"
       metis_recovery="$(format_gate_recovery_line "dispatch the metis agent on the current plan to stress-test for hidden assumptions, missing constraints, and weak validation. To bypass once with reason (e.g., simple greenfield plan), run /ulw-skip.")"
-      emit_stop_block "[Metis-on-plan gate · 1/1] the current plan was flagged high-complexity (${plan_complexity_signals}) but no metis stress-test review has run since the plan was recorded. The bias-defense layer requires a fresh-eyes pressure test before execution to catch wrong-abstraction or missing-constraint risks the main thread may have committed to. After metis returns, restate your deliverable summary at the end of your response.${metis_recovery}"
+      # v1.34.1+ (P-002): tighter metis-on-plan block.
+      emit_stop_block "[Metis-on-plan gate · 1/1] plan flagged high-complexity (${plan_complexity_signals}) but no metis stress-test recorded since the plan landed.
+Run metis to pressure-test for wrong-abstraction / missing-constraint risks before execution.${metis_recovery}"
       exit 0
     fi
   fi
@@ -755,7 +787,11 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
       "test_expectation=$(read_state "done_contract_test_expectation")" \
       "inferred_rules=$(read_state "inferred_contract_rules")"
     contract_recovery="$(format_gate_recovery_line "finish the missing surface(s) — items tagged with (R1/R2/R3a/R3b/R4/R5) were inferred from your edits and are silent misses unless addressed. If the repo genuinely cannot support one of them, name that constraint explicitly in your wrap before stopping. For explicit commits, create the commit now or explain why a commit is impossible in this repo.")"
-    emit_stop_block "[Delivery-contract gate] the work is drifting from the prompt-stated contract and/or the surfaces inferred from edits made this session. Remaining before Stop:\n- ${contract_blockers//$'\n'/$'\n- '}${contract_recovery}"
+    # v1.34.1+ (P-002): tighter delivery-contract block; the
+    # contract_blockers list already names what's missing.
+    emit_stop_block "[Delivery-contract gate] work drifting from prompt-stated contract and/or surfaces inferred from edits.
+Remaining before Stop:
+- ${contract_blockers//$'\n'/$'\n- '}${contract_recovery}"
     exit 0
   fi
 
@@ -854,7 +890,9 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
       "deferred_scope_count=${closure_deferred_scope_count}" \
       "deferred_finding_count=${closure_deferred_finding_count}"
     closure_recovery="$(format_gate_recovery_line "restate the final wrap using \`**Changed.**\` (or \`**Shipped.**\`), \`**Verification.**\`, and \`**Next.**\`. Name the exact verification command when one ran. If anything was deferred, add \`**Risks.**\` and state the WHY. If no further action is queued, \`**Next.** Done.\` is enough.")"
-    emit_stop_block "[Final-closure gate] the work itself is clean, but the final response is not audit-ready for the user. Missing: ${closure_missing}. The user should be able to see what changed, how it was verified, and what was deliberately deferred without follow-up questions.${closure_recovery}"
+    # v1.34.1+ (P-002): tighter final-closure block.
+    emit_stop_block "[Final-closure gate] work is clean but the final response isn't audit-ready.
+Missing: ${closure_missing}.${closure_recovery}"
     exit 0
   fi
 

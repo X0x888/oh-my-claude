@@ -56,10 +56,12 @@ for arg in "$@"; do
       exit 0
       ;;
     *)
-      printf 'Unknown argument: %s\n' "${arg}" >&2
-      printf 'Usage: show-status.sh [summary | classifier | explain]\n' >&2
-      printf '       show-status.sh [--summary | --classifier | --explain]\n' >&2
-      exit 1
+      # v1.34.1+ (X-007): name the accepted forms inline so the user can
+      # recover from a typo without consulting --help. Mirrors show-time.sh
+      # and show-report.sh error shapes.
+      printf 'show-status: unknown argument %q (expected: summary, classifier, explain, or no argument for full diagnostic).\n' "${arg}" >&2
+      printf '             See --help for the full form list.\n' >&2
+      exit 2
       ;;
   esac
 done
@@ -128,8 +130,17 @@ if [[ "${EXPLAIN_MODE}" -eq 1 ]]; then
     printf 'source repo.\n'
     printf '\n'
 
-    # Group rows by cluster. Single-pass: stream rows, sort by cluster
-    # then name, render a header on cluster boundary.
+    # Group rows by cluster. Stable-sort by cluster (column 4 in the
+    # manifest's pipe-delimited shape) so all flags of the same cluster
+    # are contiguous; intra-cluster ordering preserves emit_known_flags's
+    # display order. Without the sort, an interleaved manifest produces
+    # duplicate cluster headers (── advisory ── ... ── gates ── ... ──
+    # advisory ── again) — a real UX defect surfaced by design-lens X-005
+    # in the v1.34.1 council. The aspirational pre-fix comment was
+    # "Single-pass: stream rows, sort by cluster then name" but the
+    # actual code only rendered headers on boundary changes — manifests
+    # ordered by importance (the v1.34.x convention) drifted from the
+    # cluster grouping the comment promised.
     last_cluster=""
     while IFS='|' read -r _name _type _default _cluster _description; do
       [[ -z "${_name}" ]] && continue
@@ -179,7 +190,7 @@ if [[ "${EXPLAIN_MODE}" -eq 1 ]]; then
       if [[ -n "${_description}" ]]; then
         printf '      %s\n' "${_description}"
       fi
-    done < <(emit_known_flags 2>/dev/null)
+    done < <(emit_known_flags 2>/dev/null | sort -t'|' -k4,4 -s)
 
     printf '\n'
     printf '* = value differs from default. Run /omc-config show to see the\n'
@@ -488,18 +499,18 @@ jq -r '
   )",
   "",
   "--- Counters ---",
-  "Stop guard blocks: \(.stop_guard_blocks // "0")",
-  "Dimension blocks:  \(.dimension_guard_blocks // "0")",
-  "Session handoffs:  \(.session_handoff_blocks // "0")",
-  "Discovered-scope:  \(.discovered_scope_blocks // "0")",
-  "Example-scope:     \(.exemplifying_scope_blocks // "0")",
-  "Wave-shape blocks: \(.wave_shape_blocks // "0")",
-  "Serendipity fires: \(.serendipity_count // "0")\(if (.last_serendipity_fix // "") != "" then " (last: \(.last_serendipity_fix))" else "" end)",
-  "Stall counter:     \(.stall_counter // "0")",
+  "Stop guard blocks: \( ((.stop_guard_blocks // "") | if . == "" then "0" else . end) )",
+  "Dimension blocks:  \( ((.dimension_guard_blocks // "") | if . == "" then "0" else . end) )",
+  "Session handoffs:  \( ((.session_handoff_blocks // "") | if . == "" then "0" else . end) )",
+  "Discovered-scope:  \( ((.discovered_scope_blocks // "") | if . == "" then "0" else . end) )",
+  "Example-scope:     \( ((.exemplifying_scope_blocks // "") | if . == "" then "0" else . end) )",
+  "Wave-shape blocks: \( ((.wave_shape_blocks // "") | if . == "" then "0" else . end) )",
+  "Serendipity fires: \( ((.serendipity_count // "") | if . == "" then "0" else . end) )\(if (.last_serendipity_fix // "") != "" then " (last: \(.last_serendipity_fix))" else "" end)",
+  "Stall counter:     \( ((.stall_counter // "") | if . == "" then "0" else . end) ) (fires gate at default 12 reads/greps without an edit)",
   "",
   "--- Intent Guards ---",
-  "Advisory guards:       \(.advisory_guard_blocks // "0")",
-  "PreTool intent blocks: \(.pretool_intent_blocks // "0")",
+  "Advisory guards:       \( ((.advisory_guard_blocks // "") | if . == "" then "0" else . end) )",
+  "PreTool intent blocks: \( ((.pretool_intent_blocks // "") | if . == "" then "0" else . end) )",
   "",
   "--- Flags ---",
   "Has plan:          \(.has_plan // "false")",
@@ -507,8 +518,8 @@ jq -r '
   "Guard exhausted:   \(if (.guard_exhausted // "") != "" then "YES (\(.guard_exhausted_detail // "unknown"))" else "no" end)",
   "",
   "--- Edit Counts ---",
-  "Code files edited: \(.code_edit_count // "0")",
-  "Doc files edited:  \(.doc_edit_count // "0")",
+  "Code files edited: \( ((.code_edit_count // "") | if . == "" then "0" else . end) )",
+  "Doc files edited:  \( ((.doc_edit_count // "") | if . == "" then "0" else . end) )",
   "",
   "--- Compact Continuity ---",
   "Last compact trigger:      \(.last_compact_trigger // "never")",
@@ -862,12 +873,18 @@ if [[ -f "${defect_file}" ]]; then
     map(select(.value.last_seen_ts > $cutoff)) |
     sort_by(-.value.count) |
     if length > 0 then
-      [.[] | "\(.key): \(.value.count) occurrences (last example: \((.value.examples // [])[-1] // "n/a" | .[0:60]))"] | join("\n")
+      [.[] | "\(.key): \(.value.count) occurrences"] | join("\n")
     else empty end
   ' "${defect_file}" 2>/dev/null || true)"
   if [[ -n "${defect_output}" ]]; then
+    # v1.34.1+ (X-010): drop the truncated mid-word example field. The
+    # category counts are signal; 60-char prompt fragments cut at random
+    # offsets are noise (and a privacy-leak risk — fragments can include
+    # user prompts from prior sessions on different repos). Full examples
+    # remain accessible via /ulw-report or the JSON file.
     printf '\n--- Defect Patterns (cross-session) ---\n'
     printf '%s\n' "${defect_output}"
+    printf '(Run /ulw-report week for examples and counts in context.)\n'
   fi
 fi
 

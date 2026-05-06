@@ -2268,16 +2268,17 @@ init_session "cg8s" "coding"
 set_intent "cg8s" "advisory"
 
 out_s1="$(sim_pretool_bash "cg8s" "git commit -m test")"
-# First block should contain the full coaching text — specifically the
-# "What to do:" / "What NOT to do" labels and the enumerated (a) (b)
-# list with the corrective-imperative guidance. The terse form omits these.
-# (Reason wording was hardened in v1.21.0 to drop the "ask the user to
-# confirm execution intent" phrasing — the source of the "single yes
-# reauthorizes commit" anti-pattern; see test-pretool-intent-guard.sh.)
+# v1.34.1+ (X-008): block-1 message tightened to recovery-first
+# structure ("Recovery options:" + → If you intended / → If misclassified
+# / → Bypass). The pre-fix verbose form ("What to do:" / "(a) Deliver"
+# / "What NOT to do" section headers) was the design-lens-flagged bloat;
+# the substance survives in the new form (concrete imperative + ulw-skip
+# + puppeteering rule) but the structure is leaner. Block-2 is the same
+# tighter shape minus the recovery options.
 assert_contains "gap8s: first block blocks" "\"permissionDecision\":\"deny\"" "${out_s1}"
-assert_contains "gap8s: first block is verbose (What to do:)" "What to do:" "${out_s1}"
-assert_contains "gap8s: first block lists options (a)" "(a) Deliver" "${out_s1}"
-assert_contains "gap8s: first block has 'What NOT to do' section" "What NOT to do" "${out_s1}"
+assert_contains "gap8s: first block has Recovery options header" "Recovery options:" "${out_s1}"
+assert_contains "gap8s: first block names → If misclassified path" "If misclassified" "${out_s1}"
+assert_contains "gap8s: first block names → Bypass path with /ulw-skip" "/ulw-skip" "${out_s1}"
 assert_contains "gap8s: first block proposes concrete imperative" "concrete imperative" "${out_s1}"
 
 counter_s1="$(read_st "cg8s" "pretool_intent_blocks")"
@@ -2291,17 +2292,19 @@ fi
 out_s2="$(sim_pretool_bash "cg8s" "git push origin main")"
 # Second block should still deny...
 assert_contains "gap8s: second block blocks" "\"permissionDecision\":\"deny\"" "${out_s2}"
-# ...but should NOT contain the verbose coaching text.
-if ! printf '%s' "${out_s2}" | grep -q "What to do:"; then
+# ...but should NOT contain the verbose coaching text from block-1
+# (the lengthy Recovery-options block, the "concrete imperative" +
+# "puppeteering" preamble).
+if ! printf '%s' "${out_s2}" | grep -q "Recovery options:"; then
   pass=$((pass + 1))
 else
-  printf '  FAIL: gap8s: second block must be terse (unexpected verbose "What to do:")\n' >&2
+  printf '  FAIL: gap8s: second block must be terse (unexpected "Recovery options:" preamble)\n' >&2
   fail=$((fail + 1))
 fi
-if ! printf '%s' "${out_s2}" | grep -q "(a) Deliver"; then
+if ! printf '%s' "${out_s2}" | grep -q "puppeteering"; then
   pass=$((pass + 1))
 else
-  printf '  FAIL: gap8s: second block must be terse (unexpected "(a) Deliver")\n' >&2
+  printf '  FAIL: gap8s: second block must be terse (unexpected "puppeteering" preamble)\n' >&2
   fail=$((fail + 1))
 fi
 # ...and should include a block-count marker so the user sees repeats.
@@ -2397,6 +2400,37 @@ sim_planner "pv4" "quality-planner" "Step 1. Implement.
 Step 2. Test."
 assert_eq "planner(no VERDICT): plan_verdict defaults to PLAN_READY" "PLAN_READY" "$(read_st "pv4" "plan_verdict")"
 assert_eq "planner(no VERDICT): has_plan still true (legacy compat)" "true" "$(read_st "pv4" "has_plan")"
+teardown_test
+
+# v1.34.1+ (data-lens D-001): session_outcome must be written on every
+# clean release path (not just the all-gates-pass `completed` exit). The
+# pre-fix shape defaulted unwritten outcomes to "abandoned" via the sweep
+# JSON field-merge, which made 100% of cross-session session_summary.jsonl
+# rows look like model abandonments — the metric a user would naturally
+# check first to evaluate the harness was wrong by construction.
+
+# T-D001-A: stop with no edits writes session_outcome=released.
+# init_session defaults: task_intent=execution, task_domain=coding,
+# no last_edit_ts → stop-guard hits the "no edits" early-exit path
+# (stop-guard.sh:383-388 in v1.34.1+).
+setup_test
+init_session "ow1"
+sim_stop "ow1" "Done — no edits needed."
+outcome="$(read_st "ow1" "session_outcome")"
+assert_eq "stop with no edits writes outcome=released" "released" "${outcome}"
+teardown_test
+
+# T-D001-B: advisory task that ends without fresh edits writes outcome=released.
+# Override task_intent to advisory; set advisory_verify ts so the advisory
+# gate doesn't block (otherwise we hit a different code path).
+setup_test
+init_session "ow2"
+state_file="${TEST_HOME}/.claude/quality-pack/state/ow2/session_state.json"
+jq '. + {task_intent:"advisory", last_user_prompt_ts:"1000", last_advisory_verify_ts:"1001"}' \
+  "${state_file}" > "${state_file}.tmp" && mv "${state_file}.tmp" "${state_file}"
+sim_stop "ow2" "Here is my recommendation."
+outcome="$(read_st "ow2" "session_outcome")"
+assert_eq "advisory clean exit writes outcome=released" "released" "${outcome}"
 teardown_test
 
 

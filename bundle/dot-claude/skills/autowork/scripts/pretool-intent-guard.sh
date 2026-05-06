@@ -41,12 +41,29 @@ if [[ -z "${command_str}" ]]; then
   exit 0
 fi
 
-task_intent="$(read_state "task_intent")"
-commit_contract_mode="$(read_state "done_contract_commit_mode")"
+# v1.34.1+ (sre-lens S-003): bulk-read the 3 always-together state keys
+# in one jq fork instead of 3 sequential read_state calls. Hot-path —
+# fires on every Bash tool call inside ULW; a council Phase 8 turn with
+# 30 Bash calls saves ~60-80ms per call (~2s cumulative). Same RS-
+# delimited pattern as stop-guard.sh:135-149 and prompt-intent-router's
+# v1.27.0 F-018/F-019 bulk-reads. Invariant: argv length === case
+# branches.
+#
 # v1.34.0 (Bug C): push_mode is independent of commit_mode so a
 # compound directive like "commit X. don't push Y." can allow the
 # commit while blocking the push.
-push_contract_mode="$(read_state "done_contract_push_mode")"
+_pig_idx=0
+while IFS= read -r -d $'\x1e' _pig_line; do
+  case "${_pig_idx}" in
+    0) task_intent="${_pig_line}" ;;
+    1) commit_contract_mode="${_pig_line}" ;;
+    2) push_contract_mode="${_pig_line}" ;;
+  esac
+  _pig_idx=$((_pig_idx + 1))
+done < <(read_state_keys \
+  "task_intent" \
+  "done_contract_commit_mode" \
+  "done_contract_push_mode")
 intent_guard_active=0
 
 case "${task_intent}" in
@@ -646,25 +663,27 @@ block_count="${block_count:-1}"
 log_hook "pretool-intent-guard" "blocked: intent=${task_intent} block=${block_count} cmd=$(truncate_chars 80 "${command_str}")"
 
 if [[ "${block_count}" -le 1 ]]; then
-  reason="[PreTool gate · ${intent_label} · block 1] The active prompt was classified as '${intent_label}', not execution. Destructive git/gh operations (commit, push, revert, reset --hard, rebase, cherry-pick, tag, merge, branch -D, switch -C, checkout -B, clean -f, update-ref, filter-branch, gh pr/release/issue create/merge/edit/close) require explicit execution authorization.
-
-What to do:
-  (a) Deliver the ${intent_label} response the user asked for — assessment, recommendation, or checkpoint.
-  (b) If changes are warranted, list them as concrete recommendations with file paths and rationale; let the user respond at their pace.
-
-What NOT to do — these patterns violate core.md ('FORBIDDEN: Asking \"Should I proceed?\" or \"Would you like me to…\" when the user has already requested the work; the request IS the permission'):
-  - Do not phrase the next message as a permission prompt of any shape.
-  - Do not ask the user for a one-word affirmation (any \"yes / go / proceed / continue\" gate) to retry a destructive op.
-  - Do not invent a manual permission gate that the harness's own classifier resolves on the next imperative prompt.
-  - Do not coach the user to paste back text you wrote — that is puppeteering their input, not honoring their authorization. The user's words are the authorization, not yours rephrased.
-
-If you believe this block is a genuine misclassification (rare with the v1.23.0 prompt-text override + classifier widening — both layers permit any prompt that contains an unambiguous imperative for the destructive verb), state plainly that the prior user prompt appeared to authorize this op but the classifier disagreed. Then ask the user to clarify in their own words. The user's next message — in their own words, not a script you provided — is the authorization signal. Never manufacture a concrete imperative for them to repeat.
-
-Do not work around this guard by using alternative commands (plumbing git verbs, absolute paths, filesystem edits to .git/, or invoking git through another language runtime) — the spirit of the rule is 'no unauthorized modifications to any repo', not 'only the surface forms listed'.
-
-Attempted command: $(truncate_chars 200 "${command_str}")"
+  # v1.34.1+ (X-008): collaborative tone, recovery-first ordering. The
+  # full "do not phrase the next message as a permission prompt" rationale
+  # belongs in core.md (Claude-facing instructions), not in user-visible
+  # block reasons — users seeing this gate fire are most likely already
+  # frustrated by a misclassification, so we lead with the recovery path
+  # instead of a list of forbidden behaviors. The two canonical FORBIDDEN
+  # snippets ('Should I proceed', 'Would you like me to') are still
+  # cited inline so the cross-script drift net in
+  # tests/test-pretool-intent-guard.sh T19 stays intact (the same drift
+  # net guards session-start-compact-handoff.sh).
+  reason="[PreTool gate · ${intent_label} · block 1] The active prompt is classified as '${intent_label}', not execution. Destructive git/gh ops (commit/push/reset --hard/rebase/cherry-pick/tag/merge/branch -D/clean -f/update-ref/filter-branch + gh pr|release|issue create/merge/edit/close) need explicit execution authorization.
+Recovery options:
+  → If you intended this op: re-state the concrete imperative ('commit X', 'push to origin', etc.); the prompt-text override should pick it up. If you believe the classifier got it wrong, ask the user to clarify in their own words — never manufacture text for them to repeat back (that's the puppeteering anti-pattern).
+  → If misclassified: deliver the ${intent_label} response the user asked for — assessment/recommendation/checkpoint — and let them request execution next. Do not invent a manual permission gate (core.md FORBIDDEN: 'Should I proceed?' / 'Would you like me to ...?' loops — the user's words ARE the authorization).
+  → Bypass the gate once: /ulw-skip <reason>.
+Attempted: $(truncate_chars 200 "${command_str}")"
 else
-  reason="[PreTool gate · ${intent_label} · block ${block_count}] Destructive git/gh operations still require explicit execution authorization. Deliver the ${intent_label} response the user asked for. If you believe this is a misclassification, name the prior user prompt's apparent authorization and ask the user to clarify in their own words — never manufacture an imperative for them to repeat back.
+  # Block-N: the user has already seen block-1; just name the gate, the
+  # attempted command, and the recovery path. Keep "in their own words"
+  # so the puppeteering rule isn't lost on repeat blocks (T12).
+  reason="[PreTool gate · ${intent_label} · block ${block_count}] Still classified '${intent_label}' — deliver that response, OR re-state the imperative, OR ask the user to clarify in their own words, OR /ulw-skip <reason>.
 Attempted: $(truncate_chars 200 "${command_str}")"
 fi
 

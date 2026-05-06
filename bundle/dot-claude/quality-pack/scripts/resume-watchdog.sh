@@ -13,10 +13,20 @@
 # manually invoke /ulw-resume from their terminal.
 #
 # Stateless. Idempotent. Cap of 1 launch per invocation (prevents a
-# resume storm if multiple sessions rate-limited at once). Per-artifact
-# cooldown via the artifact's `last_attempt_ts` field (default 600s)
-# prevents repeated launches for the same session within a window.
-# Per-artifact attempt cap (3) is enforced by the claim helper.
+# resume storm if multiple sessions rate-limited at once).
+#
+# Per-artifact attempt semantics (v1.34.1+ honest doc, sre-lens S-001):
+# `find_claimable_resume_requests` (common.sh:707) filters out any
+# artifact with `resume_attempts > 0`. So the watchdog's normal flow is:
+# attempt-once-and-notify. The user can re-claim a rejected artifact via
+# `/ulw-resume --list` if they want. The cooldown check (line 412-419)
+# and revert path (line 320-372) ARE load-bearing — they catch the
+# post-launch-failure case where revert restores `resume_attempts=0`
+# (artifact becomes re-claimable) AND `last_attempt_ts > 0` (cooldown
+# blocks immediate retry). Without that defense a flapping launch would
+# storm. The 3-attempt-cap claim in older docs was aspirational —
+# implementing real multi-attempt retries needs a `retry-eligible` mode
+# in find_claimable_resume_requests (deferred — a separate feature).
 #
 # Privacy: respects is_stop_failure_capture_enabled — opt-out at the
 # producer means no artifacts to act on. Also gated by
@@ -377,6 +387,13 @@ now_ts="$(now_epoch)"
 cooldown_secs="${OMC_RESUME_WATCHDOG_COOLDOWN_SECS:-600}"
 total_scanned=0
 total_skipped_cooldown=0
+# v1.34.1+ (sre-lens S-008): separate counter for the rare under-lock
+# cooldown rejection (rc=3 from the claim helper). Conflating with
+# pre-check cooldown masks the operational signal that two watchdog
+# peers are running concurrently (LaunchAgent + manual cron, duplicate
+# LaunchAgent registration). When this counter is non-zero in
+# /ulw-report, the user has two daemons racing and should clean up.
+total_skipped_cooldown_under_lock=0
 total_skipped_future=0
 total_skipped_missing_cwd=0
 total_skipped_empty=0
@@ -507,11 +524,11 @@ while IFS=$'\t' read -r _scope sid captured_ts artifact_path; do
       case "${claim_rc}" in
         3)
           # Under-lock cooldown violation. Peer claimed within window.
-          # Telemetry already recorded by claim helper; bump local
-          # counter via the existing skipped-cooldown bucket so the
-          # operational summary stays consistent with the unlocked
-          # pre-check path.
-          total_skipped_cooldown=$((total_skipped_cooldown + 1))
+          # Telemetry already recorded by claim helper; bump the
+          # SEPARATE under-lock counter (v1.34.1+ S-008) so /ulw-report
+          # can distinguish operational pre-check skips from the rare
+          # two-daemon race signal.
+          total_skipped_cooldown_under_lock=$((total_skipped_cooldown_under_lock + 1))
           ;;
         *)
           record_gate_event "resume-watchdog" "claim-failed" \
@@ -569,13 +586,57 @@ while IFS=$'\t' read -r _scope sid captured_ts artifact_path; do
   fi
 done <<<"${list_output}"
 
+# v1.34.1+ (sre-lens S-002): cap _watchdog gate_events.jsonl per-tick
+# instead of waiting for sweep_stale_sessions to do it. The sweep runs at
+# most once per 24h AND only from interactive session starts — on a host
+# where the watchdog is the only active path (no claude sessions opened),
+# the sweep never fires and rows accrue at ~150/hr per stale artifact
+# under cooldown. The cap here is bounded and cheap; matches the
+# OMC_GATE_EVENTS_PER_SESSION_MAX default (500). Best-effort; failures
+# don't block tick completion.
+_watchdog_events_file="${STATE_ROOT}/${SYNTHETIC_SESSION_ID}/gate_events.jsonl"
+if [[ -f "${_watchdog_events_file}" ]]; then
+  _watchdog_events_max="${OMC_GATE_EVENTS_PER_SESSION_MAX:-500}"
+  _watchdog_events_count="$(wc -l < "${_watchdog_events_file}" 2>/dev/null | tr -d ' ')"
+  _watchdog_events_count="${_watchdog_events_count:-0}"
+  if [[ "${_watchdog_events_count}" =~ ^[0-9]+$ ]] \
+     && [[ "${_watchdog_events_count}" -gt "${_watchdog_events_max}" ]]; then
+    _watchdog_tmp="$(mktemp "${_watchdog_events_file}.XXXXXX" 2>/dev/null || true)"
+    if [[ -n "${_watchdog_tmp}" ]]; then
+      tail -n "${_watchdog_events_max}" "${_watchdog_events_file}" > "${_watchdog_tmp}" 2>/dev/null \
+        && mv -f "${_watchdog_tmp}" "${_watchdog_events_file}" 2>/dev/null \
+        || rm -f "${_watchdog_tmp}"
+    fi
+  fi
+fi
+
 record_gate_event "resume-watchdog" "tick-complete" \
   total_scanned="${total_scanned}" \
   launched="${total_launched}" \
   notified="${total_notified}" \
   skipped_cooldown="${total_skipped_cooldown}" \
+  skipped_cooldown_under_lock="${total_skipped_cooldown_under_lock}" \
   skipped_future="${total_skipped_future}" \
   skipped_missing_cwd="${total_skipped_missing_cwd}" \
   skipped_empty="${total_skipped_empty}"
+
+# v1.34.1+ (sre-lens S-004): daemon-liveness heartbeat. Without this,
+# absence of tick-complete events looks identical to "no claimable
+# artifacts in last 24h" vs "watchdog is hung or crashing mid-tick".
+# A user relying on the watchdog to recover from rate-limits otherwise
+# loses recovery silently. The heartbeat is a single mtime-bumped file
+# (atomic mv), readable by /ulw-report and /ulw-status to surface
+# "last successful tick: N min ago" — converts a silent failure to a
+# loud one. Fail-soft: heartbeat write failure does not block the tick.
+_watchdog_heartbeat_dir="${STATE_ROOT}/${SYNTHETIC_SESSION_ID}"
+_watchdog_heartbeat="${_watchdog_heartbeat_dir}/last_tick_completed_ts"
+if [[ -d "${_watchdog_heartbeat_dir}" ]]; then
+  _hb_tmp="$(mktemp "${_watchdog_heartbeat_dir}/.heartbeat.XXXXXX" 2>/dev/null || true)"
+  if [[ -n "${_hb_tmp}" ]]; then
+    printf '%s\n' "$(now_epoch)" > "${_hb_tmp}" 2>/dev/null \
+      && mv -f "${_hb_tmp}" "${_watchdog_heartbeat}" 2>/dev/null \
+      || rm -f "${_hb_tmp}"
+  fi
+fi
 
 exit 0

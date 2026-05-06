@@ -136,6 +136,7 @@ case "${MODE}" in
     agent_total="$(jq -r '.agent_total_s // 0' <<<"${rollup}" 2>/dev/null)"
     tool_total="$(jq -r '.tool_total_s // 0' <<<"${rollup}" 2>/dev/null)"
     idle_total="$(jq -r '.idle_model_s // 0' <<<"${rollup}" 2>/dev/null)"
+    overhead_total="$(jq -r '.concurrent_overhead_s // 0' <<<"${rollup}" 2>/dev/null)"
     prompts="$(jq -r '.prompts // 0' <<<"${rollup}" 2>/dev/null)"
 
     sessions_label="sessions"
@@ -149,12 +150,33 @@ case "${MODE}" in
       "${prompts:-0}" "${prompts_label}"
 
     if (( walltime > 0 )); then
-      pct_a=$(( agent_total * 100 / walltime ))
-      pct_t=$(( tool_total * 100 / walltime ))
-      pct_i=$(( idle_total * 100 / walltime ))
+      # v1.34.1+ (D-002 / X-002): when work fits inside walltime (idle >= 0),
+      # render percentages against walltime — agents+tools+idle = 100. When
+      # parallel agents/tools overran walltime (concurrent_overhead_s > 0),
+      # the three buckets cannot partition walltime, so re-normalize against
+      # work-time (agent + tool + idle) and disclose the overlap explicitly.
+      # Buckets-overlap-walltime = 100% always; the disclosure tells the
+      # user how much serial time the parallelism saved.
+      overhead_total="${overhead_total:-0}"
+      [[ "${overhead_total}" =~ ^[0-9]+$ ]] || overhead_total=0
+      if (( overhead_total > 0 )); then
+        denom=$(( agent_total + tool_total + idle_total ))
+        (( denom == 0 )) && denom=1
+        pct_a=$(( agent_total * 100 / denom ))
+        pct_t=$(( tool_total * 100 / denom ))
+        pct_i=$(( idle_total * 100 / denom ))
+      else
+        pct_a=$(( agent_total * 100 / walltime ))
+        pct_t=$(( tool_total * 100 / walltime ))
+        pct_i=$(( idle_total * 100 / walltime ))
+      fi
       stacked_bar="$(_timing_stacked_bar "${pct_a}" "${pct_t}" "${pct_i}" 30)"
       printf '  %s  agents %d%% · tools %d%% · idle %d%%\n' \
         "${stacked_bar}" "${pct_a}" "${pct_t}" "${pct_i}"
+      if (( overhead_total > 0 )); then
+        printf '  parallelism saved ~%s of serial work-time\n' \
+          "$(timing_fmt_secs "${overhead_total}")"
+      fi
       printf '\n'
       printf '  agents       %s (%d%%)\n'     "$(timing_fmt_secs "${agent_total}")" "${pct_a}"
       printf '  tools        %s (%d%%)\n'     "$(timing_fmt_secs "${tool_total}")"  "${pct_t}"

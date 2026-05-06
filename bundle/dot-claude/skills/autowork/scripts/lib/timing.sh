@@ -362,7 +362,17 @@ timing_aggregate() {
       orphan_end_count: $st.orphan_end
     }
     | . + {
-        idle_model_s: ((.walltime_s - .agent_total_s - .tool_total_s) | if . < 0 then 0 else . end)
+        idle_model_s: ((.walltime_s - .agent_total_s - .tool_total_s) | if . < 0 then 0 else . end),
+        # v1.34.1+ (data-lens D-002 / design-lens X-002):
+        # When parallel agents/tools complete in less wall-time than their
+        # serial work-time would suggest (i.e., agent + tool > walltime),
+        # surface the parallelism overhead as a positive quantity. The
+        # `agents X% · tools Y% · idle Z%` bar in show-time.sh / show-status.sh
+        # otherwise reads as broken (X+Y+Z > 100) when callers naively
+        # divide work-time by walltime — exposing this field lets the
+        # renderers either disclose the overlap explicitly OR re-normalize.
+        # Always non-negative; 0 when work fits inside walltime.
+        concurrent_overhead_s: ((.agent_total_s + .tool_total_s - .walltime_s) | if . < 0 then 0 else . end)
       }
   ' < "${log}" 2>/dev/null || printf '%s\n' '{}'
 }
@@ -718,13 +728,14 @@ timing_format_full() {
     return 0
   fi
 
-  local agent_total tool_total idle_model prompt_count active_pending orphan_end
+  local agent_total tool_total idle_model prompt_count active_pending orphan_end overhead
   agent_total="$(jq -r '.agent_total_s // 0' <<<"${agg}" 2>/dev/null)"
   tool_total="$(jq -r '.tool_total_s // 0' <<<"${agg}" 2>/dev/null)"
   idle_model="$(jq -r '.idle_model_s // 0' <<<"${agg}" 2>/dev/null)"
   prompt_count="$(jq -r '.prompt_count // 0' <<<"${agg}" 2>/dev/null)"
   active_pending="$(jq -r '.active_pending // 0' <<<"${agg}" 2>/dev/null)"
   orphan_end="$(jq -r '.orphan_end_count // 0' <<<"${agg}" 2>/dev/null)"
+  overhead="$(jq -r '.concurrent_overhead_s // 0' <<<"${agg}" 2>/dev/null)"
 
   agent_total="${agent_total:-0}"
   tool_total="${tool_total:-0}"
@@ -732,6 +743,8 @@ timing_format_full() {
   prompt_count="${prompt_count:-0}"
   active_pending="${active_pending:-0}"
   orphan_end="${orphan_end:-0}"
+  overhead="${overhead:-0}"
+  [[ "${overhead}" =~ ^[0-9]+$ ]] || overhead=0
 
   # Header — boxed-rule title puts the epilogue visually distinct from
   # surrounding text. The leading "─── " is intentional; gives the eye
@@ -746,16 +759,34 @@ timing_format_full() {
   #   █ agents · ▒ tools · ░ idle/model.
   # Percentages on the right echo the legend so colour-blind users / no-Unicode
   # terminals still get the proportions even if the segment glyphs collapse.
+  #
+  # v1.34.1+ (D-002 / X-002): when concurrent_overhead_s > 0, parallel work
+  # outran walltime — re-normalize the bar against agent+tool+idle so the
+  # three buckets always partition 100%, then disclose the overlap on the
+  # next line. Without this, the bar can read "agents 32% · tools 58% ·
+  # idle 27% = 117%" which looks broken.
   local pct_a=0 pct_t=0 pct_i=0
   if (( walltime > 0 )); then
-    pct_a=$(( agent_total * 100 / walltime ))
-    pct_t=$(( tool_total * 100 / walltime ))
-    pct_i=$(( idle_model * 100 / walltime ))
+    if (( overhead > 0 )); then
+      local denom=$(( agent_total + tool_total + idle_model ))
+      (( denom == 0 )) && denom=1
+      pct_a=$(( agent_total * 100 / denom ))
+      pct_t=$(( tool_total * 100 / denom ))
+      pct_i=$(( idle_model * 100 / denom ))
+    else
+      pct_a=$(( agent_total * 100 / walltime ))
+      pct_t=$(( tool_total * 100 / walltime ))
+      pct_i=$(( idle_model * 100 / walltime ))
+    fi
   fi
   local stacked_bar
   stacked_bar="$(_timing_stacked_bar "${pct_a}" "${pct_t}" "${pct_i}" 30)"
   printf '  %s  agents %d%% · tools %d%% · idle %d%%\n' \
     "${stacked_bar}" "${pct_a}" "${pct_t}" "${pct_i}"
+  if (( overhead > 0 )); then
+    printf '  parallelism saved ~%s of serial work-time\n' \
+      "$(timing_fmt_secs "${overhead}")"
+  fi
 
   # Per-prompt sparkline — one cell per prompt, height encodes that
   # prompt's walltime relative to the heaviest in the session. Surfaces
@@ -1085,6 +1116,10 @@ timing_xs_aggregate() {
       agent_total_s:   ([$rows[] | (.agent_total_s // 0)] | add // 0),
       tool_total_s:    ([$rows[] | (.tool_total_s // 0)] | add // 0),
       idle_model_s:    ([$rows[] | (.idle_model_s // 0)] | add // 0),
+      # v1.34.1+ (D-002): sum the parallelism overhead so the renderer
+      # can disclose "X minutes saved by parallel work" across the window.
+      # Pre-Wave-1 rows lack the field; default to 0 keeps math clean.
+      concurrent_overhead_s: ([$rows[] | (.concurrent_overhead_s // 0)] | add // 0),
       directive_total_chars: ([$rows[] | (.directive_total_chars // 0)] | add // 0),
       directive_count: ([$rows[] | (.directive_count // 0)] | add // 0),
       agent_breakdown: (
