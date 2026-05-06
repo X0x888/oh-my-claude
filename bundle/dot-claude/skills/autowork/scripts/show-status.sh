@@ -463,7 +463,7 @@ jq -r '
   "Project maturity:  \(.project_maturity // "unset")",
   "Objective:         \(.current_objective // "none" | .[0:100])",
   "",
-  "--- Pause State (v1.18.0) ---",
+  "--- Pause State ---",
   "Pause active:      \(if (.ulw_pause_active // "") == "1" then "YES (clears at next user prompt)" else "no" end)",
   "Pause count:       \((.ulw_pause_count // "0"))/2 this session",
   "Last pause reason: \(.ulw_pause_reason // "—")",
@@ -521,14 +521,16 @@ jq -r '
   "Code files edited: \( ((.code_edit_count // "") | if . == "" then "0" else . end) )",
   "Doc files edited:  \( ((.doc_edit_count // "") | if . == "" then "0" else . end) )",
   "",
-  "--- Compact Continuity ---",
-  "Last compact trigger:      \(.last_compact_trigger // "never")",
-  "Last compact request ts:   \(.last_compact_request_ts // "never")",
-  "Last compact rehydrate ts: \(.last_compact_rehydrate_ts // "never")",
-  "Compact race count:        \(.compact_race_count // "0")",
-  "Review pending at compact: \(if (.review_pending_at_compact // "") == "1" then "YES" else "no" end)",
-  "Just-compacted flag:       \(if (.just_compacted // "") == "1" then "set (age: \(.just_compacted_ts // "?"))" else "clear" end)"
-' "${state_file}"
+  (
+    if (.last_compact_trigger // "") == ""
+       and ((.compact_race_count // "0") | tonumber? // 0) == 0
+       and (.just_compacted // "") != "1" then
+      ""
+    else
+      "--- Compact Continuity ---\nLast compact trigger:      \(.last_compact_trigger // "never")\nLast compact request ts:   \(.last_compact_request_ts // "never")\nLast compact rehydrate ts: \(.last_compact_rehydrate_ts // "never")\nCompact race count:        \(.compact_race_count // "0")\nReview pending at compact: \(if (.review_pending_at_compact // "") == "1" then "YES" else "no" end)\nJust-compacted flag:       \(if (.just_compacted // "") == "1" then "set (age: \(.just_compacted_ts // "?"))" else "clear" end)"
+    end
+  )
+' "${state_file}" | grep -v '^$' || true
 
 printf '\n--- Delivery Contract ---\n'
 printf 'Primary deliverable: %s\n' "${contract_primary}"
