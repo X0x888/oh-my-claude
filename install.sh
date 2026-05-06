@@ -1375,7 +1375,7 @@ if [[ -n "${PRIOR_INSTALLED_VERSION}" ]] \
       sub(/^[^]]*\][[:space:]]*-?[[:space:]]*/, "", datepart)
       if (ver == prev) { exit }
       kept++
-      if (kept > 30) { truncated = 1; exit }
+      if (kept > 40) { truncated = 1; exit }
       if (ver == "Unreleased") {
         # Render the Unreleased section as a bare label — its date
         # field is meaningless until promotion, and parenthesizing

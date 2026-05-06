@@ -75,6 +75,18 @@ the test failed.
   (the `<` skip pattern in flag-rule consumers prevents the
   flag-rule from re-redacting the marker).
 
+### Cap bump (install "What's new" + paired test)
+
+- **`install.sh:1378` + `tests/test-install-whats-new.sh:68,178`**:
+  cap on the install-time "What's new since v$prev" extractor
+  raised from 30 → 40 versions. The 1.27.0 → 1.34.2 upgrade span
+  landed at exactly 31 entries after the v1.34.1+v1.34.2 release
+  additions, dropping 1.28.0 (and 1.27.1) from the install footer
+  visible to upgraders. The historical cap progression was
+  6 → 10 → 12 → 30 → 40 — surfaced by `tests/test-install-whats-new.sh`
+  T1's live-CHANGELOG assertion before the run-sterile suite gate
+  let us push v1.34.2.
+
 ### Lockstep
 
 - **`docs/architecture.md` updated for 3 v1.34.1 state-key

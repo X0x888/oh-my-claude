@@ -65,7 +65,7 @@ extract_whats_new() {
       sub(/^[^]]*\][[:space:]]*-?[[:space:]]*/, "", datepart)
       if (ver == prev) { exit }
       kept++
-      if (kept > 30) { truncated = 1; exit }
+      if (kept > 40) { truncated = 1; exit }
       if (ver == "Unreleased") {
         printf "                   - %s\n", ver
       } else {
@@ -145,19 +145,19 @@ assert_contains "T5: 1.30.0 with date wrapped once" "1.30.0  (2026-06-01)" "${ou
 rm -f "${synthetic}"
 
 # ----------------------------------------------------------------------
-printf 'Test 6: 30-entry cap renders truncation marker when changelog has > 30 versions before prev\n'
+printf 'Test 6: 40-entry cap renders truncation marker when changelog has > 40 versions before prev\n'
 # v1.31.1: cap raised from 6 → 10 because the original 6-entry budget
-# was uncomfortable for users upgrading across multiple releases (e.g.
-# 1.27.0 → 1.31.1 spans 7 entries). v1.32.1: cap raised from 10 → 12
-# because adding the 1.32.x patches pushed a real 1.27.0 → head upgrade
-# past the 10-cap (dropping 1.28.0 from the What's-new summary). To
-# exercise the cap, the synthetic CHANGELOG now has 14 versions; prev
-# set to non-existent so all 14 would extract — cap triggers at 12.
+# was uncomfortable for users upgrading across multiple releases.
+# v1.32.1: 10 → 12 (1.32.x patches). v1.32.7: 12 → 30. v1.34.2: 30 → 40
+# because the 1.27.0 → 1.34.2 upgrade span landed at exactly 31 entries
+# after the v1.34.1+v1.34.2 release additions (the live-CHANGELOG T8
+# below caught it). 40 buys ~1 year of typical release cadence. Update
+# the synthetic CHANGELOG to 45 versions to exercise the new cap.
 synthetic="$(mktemp)"
 {
   printf '# Changelog\n\n'
-  # 32 versions to exercise the 30-cap (v1.32.7).
-  for i in $(seq 32 -1 1); do
+  # 45 versions to exercise the 40-cap (v1.34.2+).
+  for i in $(seq 45 -1 1); do
     if [[ "${i}" -ge 10 ]]; then
       printf '## [9.%d.0] - 2026-01-15\n\nRelease %d.\n\n' "${i}" "${i}"
     else
@@ -170,12 +170,12 @@ truncation_count="$(printf '%s' "${out}" | grep -c "older entries" || true)"
 if [[ "${truncation_count}" -ge 1 ]]; then
   pass=$((pass + 1))
 else
-  printf '  FAIL: T6: cap-truncation marker missing for 32-entry changelog\n' >&2
+  printf '  FAIL: T6: cap-truncation marker missing for 45-entry changelog\n' >&2
   fail=$((fail + 1))
 fi
 # Count actual entry lines (those starting with "                   - 9.")
 entry_count="$(printf '%s' "${out}" | grep -c "^                   - 9\." || true)"
-assert_eq "T6: 30 entries kept before truncation" "30" "${entry_count}"
+assert_eq "T6: 40 entries kept before truncation" "40" "${entry_count}"
 rm -f "${synthetic}"
 
 # ----------------------------------------------------------------------
