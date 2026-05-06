@@ -251,14 +251,15 @@ assert_file_lacks_line "atomic batch: auto_memory not written" "${USER_CONF_PATH
 assert_file_lacks_line "atomic batch: discovered_scope not written" "${USER_CONF_PATH}" "^discovered_scope=on\$"
 teardown
 
-# --- Test 13: apply-preset maximum writes all 24 keys (v1.28.0 added
+# --- Test 13: apply-preset maximum writes all 25 keys (v1.28.0 added
 # blindspot_inventory + intent_broadening; v1.30.0 added prompt_persist;
 # v1.32.0 added divergence_directive; v1.33.0 added directive_budget;
-# v1.34.0 added inferred_contract for Delivery Contract v2) ---
-printf 'Test 13: apply-preset maximum writes 24 keys\n'
+# v1.34.0 added inferred_contract for Delivery Contract v2;
+# v1.35.0 added shortcut_ratio_gate for shortcut-on-big-tasks defense) ---
+printf 'Test 13: apply-preset maximum writes 25 keys\n'
 setup
 out="$(bash "${HELPER}" apply-preset user maximum 2>&1)"
-assert_contains "apply-preset reports 24 keys" "24 keys" "${out}"
+assert_contains "apply-preset reports 25 keys" "25 keys" "${out}"
 assert_file_has_line "maximum: gate_level=full" "${USER_CONF_PATH}" "^gate_level=full\$"
 assert_file_has_line "maximum: guard_exhaustion_mode=block" "${USER_CONF_PATH}" "^guard_exhaustion_mode=block\$"
 assert_file_has_line "maximum: prometheus_suggest=on" "${USER_CONF_PATH}" "^prometheus_suggest=on\$"
@@ -272,6 +273,9 @@ assert_file_has_line "maximum: exemplifying_directive=on" "${USER_CONF_PATH}" "^
 assert_file_has_line "maximum: exemplifying_scope_gate=on" "${USER_CONF_PATH}" "^exemplifying_scope_gate=on\$"
 assert_file_has_line "maximum: prompt_text_override=on" "${USER_CONF_PATH}" "^prompt_text_override=on\$"
 assert_file_has_line "maximum: mark_deferred_strict=on" "${USER_CONF_PATH}" "^mark_deferred_strict=on\$"
+# v1.35.0: shortcut_ratio_gate=on in maximum (mechanical backstop for the
+# shortcut-on-big-tasks pattern; complements mark_deferred_strict).
+assert_file_has_line "maximum: shortcut_ratio_gate=on" "${USER_CONF_PATH}" "^shortcut_ratio_gate=on\$"
 # Regression net: council_deep_default=on belongs in Maximum (consistent
 # with model_tier=quality — every quality lever pulled). Originally
 # shipped as `off` for cost reasons; corrected after user review pointed
@@ -297,6 +301,9 @@ assert_file_has_line "balanced: directive_budget=balanced" "${USER_CONF_PATH}" "
 # council cost cap lives. If someone ever flips this to `on`, the cap
 # moves and Balanced loses its reason to exist.
 assert_file_has_line "balanced: council_deep_default=off" "${USER_CONF_PATH}" "^council_deep_default=off\$"
+# v1.35.0: shortcut_ratio_gate stays on in balanced (mechanical defense
+# is cheap and catches a real failure mode; no reason to relax in default).
+assert_file_has_line "balanced: shortcut_ratio_gate=on" "${USER_CONF_PATH}" "^shortcut_ratio_gate=on\$"
 teardown
 
 # --- Test 15: apply-preset minimal writes minimal values ---
@@ -311,6 +318,9 @@ assert_file_has_line "minimal: model_tier=economy" "${USER_CONF_PATH}" "^model_t
 assert_file_has_line "minimal: directive_budget=minimal" "${USER_CONF_PATH}" "^directive_budget=minimal\$"
 # stop_failure_capture stays on across all presets (privacy + utility).
 assert_file_has_line "minimal: stop_failure_capture stays on" "${USER_CONF_PATH}" "^stop_failure_capture=on\$"
+# v1.35.0: shortcut_ratio_gate=off in minimal (matches the minimal posture
+# of releasing as many gates as possible while keeping safety-critical paths).
+assert_file_has_line "minimal: shortcut_ratio_gate=off" "${USER_CONF_PATH}" "^shortcut_ratio_gate=off\$"
 teardown
 
 # --- Test 16: apply-preset rejects unknown profile ---

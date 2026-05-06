@@ -224,7 +224,26 @@ case "${cmd}" in
         exit 2
       fi
       if ! omc_reason_has_concrete_why "${reason}"; then
-        printf 'record-scope-checklist: decline reason rejected - must name a concrete WHY (requires X / blocked by Y / superseded by Z / duplicate / pending S-001). Provided: %s\n' "${reason}" >&2
+        cat >&2 <<EOF
+record-scope-checklist: decline reason rejected — must name a concrete WHY (external blocker, not effort excuse).
+
+Provided: ${reason}
+
+Acceptable shapes:
+  - requires <named context>           e.g. 'requires database migration'
+  - blocked by <named blocker>         e.g. 'blocked by F-042'
+  - superseded by <successor>          e.g. 'superseded by S-005'
+  - awaiting <named event>             e.g. 'awaiting telemetry from canary'
+  - pending #<issue> | wave N
+  - duplicate | obsolete | wontfix | not reproducible | false positive | by design
+
+Rejected — silent-skip patterns and effort excuses:
+  - 'out of scope' / 'follow-up' / 'later' / 'low priority' (no WHY)
+  - 'requires significant effort' / 'needs more time' / 'blocked by complexity'
+  - 'tracks to a future session' / 'superseded by future work'
+
+A legitimate WHY names what you are WAITING ON, not what the WORK COSTS.
+EOF
         exit 2
       fi
     fi

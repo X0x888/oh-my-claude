@@ -43,4 +43,10 @@
 3. **Defer with named WHY** — `/mark-deferred` for findings; `/ulw-skip` for a wrong gate fire.
 4. **Pause** — `/ulw-pause` only when blocked on user judgment.
 
-The `/mark-deferred` validator rejects bare "out of scope" / "not in scope" / "follow-up" / "later" / "low priority" reasons because those have historically been silent-skip patterns. WHY shapes that pass: `requires <X>`, `blocked by <Y>`, `awaiting <Z>`, `superseded by <PR/F-id>`, or single self-explanatory tokens (`duplicate`, `obsolete`, `wontfix`, `n/a`).
+The `/mark-deferred` validator rejects two classes of weak reasons:
+1. **Silent-skip patterns** (no WHY at all): bare `out of scope` / `not in scope` / `follow-up` / `later` / `low priority`.
+2. **Effort excuses** (v1.35.0; the WHY names the WORK, not an EXTERNAL blocker): `requires significant effort`, `needs more time`, `blocked by complexity`, `tracks to a future session`, `superseded by future work`, `because too big`, `due to size`. The escape valve: a weak reason CAN pass if it also names a real external object the work is waiting on (`requires major refactor — superseded by F-051` passes; `requires major refactor` alone rejects).
+
+WHY shapes that pass: `requires <X>`, `blocked by <Y>`, `awaiting <Z>`, `superseded by <PR/F-id>`, or single self-explanatory tokens/phrases (`duplicate`, `obsolete`, `wontfix`, `n/a`, `not reproducible`, `false positive`, `by design`, `working as intended`).
+
+The validator gates THREE call sites: `/mark-deferred`, `record-scope-checklist.sh declined`, and (v1.35.0) `record-finding-list.sh status deferred|rejected`. The complementary `shortcut_ratio_gate` catches the **pattern** of half-or-more deferrals on big plans (`findings.json` with total ≥ 10 AND deferred/decided ≥ 0.5) — even when each individual reason has a valid WHY, ship-vs-defer balance on a substantive plan is itself a signal of the shortcut-on-big-tasks failure mode.

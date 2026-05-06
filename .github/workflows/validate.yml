@@ -179,6 +179,9 @@ jobs:
       - name: Run finding-list tests (v1.32.0 R1 pin)
         run: bash tests/test-finding-list.sh
 
+      - name: Run shortcut-ratio gate tests (v1.35.0 Concern-2 pin)
+        run: bash tests/test-shortcut-ratio-gate.sh
+
       - name: Run inferred-contract tests (v1.34.0 Delivery Contract v2 pin)
         run: bash tests/test-inferred-contract.sh
 

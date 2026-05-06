@@ -401,11 +401,90 @@ if [[ "${OMC_DISCOVERED_SCOPE}" == "on" ]] \
       # record-serendipity.sh reminder inline (Serendipity Rule is
       # invisible if not surfaced at gate-fire — locked by
       # tests/test-discovered-scope.sh T28).
-      scope_recovery="$(format_gate_recovery_line "ship the fix inline (preferred for same-surface findings), OR /mark-deferred <named-WHY> for bulk defer (validator rejects bare \"out of scope\" / \"follow-up\" / \"later\"; use \"requires X\" / \"blocked by Y\" / \"awaiting Z\"), OR /ulw-skip <reason> to bypass once. If you fixed a verified adjacent defect on the same code path, log it via record-serendipity.sh per the Serendipity Rule.")"
+      scope_recovery="$(format_gate_recovery_line "ship the fix inline (preferred for same-surface findings), OR /mark-deferred <named-WHY> for bulk defer (validator rejects bare \"out of scope\" / \"follow-up\" / \"later\" AND effort excuses like \"requires significant effort\" / \"needs more time\" / \"blocked by complexity\"; use \"requires X\" / \"blocked by Y\" / \"awaiting Z\" naming an EXTERNAL blocker), OR /ulw-skip <reason> to bypass once. If you fixed a verified adjacent defect on the same code path, log it via record-serendipity.sh per the Serendipity Rule.")"
       emit_stop_block "[Discovered-scope gate · $((discovered_scope_blocks + 1))/${scope_block_cap}] ${pending_count} advisory finding(s) captured this session not addressed in your summary.${wave_progress}
 Top pending (severity-ranked):
 ${scorecard}${scope_recovery}"
       exit 0
+    fi
+  fi
+fi
+
+# Shortcut-detection ratio gate (v1.35.0): even when every individual
+# deferral has a valid WHY (the validator's job), ship-vs-defer balance
+# on a big plan is itself a signal of the shortcut-on-big-tasks pattern
+# the user named: "performs okay-level work to satisfy gate counts".
+# Catches the case where the model ships the easy half and defers the
+# hard half with reasons that lexically pass the validator, leaving the
+# gate's count-based blocks happy but the work fundamentally incomplete.
+#
+# Threshold rationale:
+#   - total >= 10 — only fire on substantively-sized plans where defer-
+#     mostly is unusual (small plans of 3-5 findings can legitimately have
+#     50% defer rates because each finding's domain may be very different)
+#   - decided >= 5 — at least some decisions made (otherwise meaningless
+#     ratio); decided = shipped + deferred (rejected excluded because
+#     "rejected" semantics are "not a real defect", not the same anti-
+#     pattern as "deferred the hard work")
+#   - deferred / decided >= 0.5 — majority-deferral on big plans is the
+#     signal. A 4-shipped/5-deferred mix on 9 decided findings ships only
+#     44% of decided work; that's the shortcut pattern.
+#
+# Block cap is 1 (single soft block). The model's recovery options:
+#   - ship more findings inline before stopping (best path)
+#   - wave-append same-surface findings to a follow-on wave
+#   - explicitly justify majority-deferral in the summary (legit cases:
+#     stakeholder-blocked, dependency upgrade pending, half the findings
+#     are tracked for next sprint with named external blockers)
+#   - /ulw-skip <reason> for one-time bypass
+#
+# Fail-open: missing or malformed findings.json returns the gate to
+# silent (not blocking), preserving sessions that don't run /council.
+if [[ "${OMC_SHORTCUT_RATIO_GATE}" == "on" ]] \
+  && is_execution_intent_value "${task_intent}"; then
+  _sr_total="$(read_total_findings_count)"
+  if [[ "${_sr_total}" =~ ^[0-9]+$ ]] && [[ "${_sr_total}" -ge 10 ]]; then
+    _sr_shipped="$(read_findings_count_by_status "shipped")"
+    _sr_deferred="$(read_findings_count_by_status "deferred")"
+    _sr_shipped="${_sr_shipped:-0}"
+    _sr_deferred="${_sr_deferred:-0}"
+    [[ "${_sr_shipped}" =~ ^[0-9]+$ ]] || _sr_shipped=0
+    [[ "${_sr_deferred}" =~ ^[0-9]+$ ]] || _sr_deferred=0
+    _sr_decided=$((_sr_shipped + _sr_deferred))
+
+    # Ratio = deferred * 100 / decided, integer arithmetic (>=50 means >=0.5).
+    if [[ "${_sr_decided}" -ge 5 ]]; then
+      _sr_ratio_pct=$(( _sr_deferred * 100 / _sr_decided ))
+      _sr_blocks="$(read_state "shortcut_ratio_blocks")"
+      _sr_blocks="${_sr_blocks:-0}"
+      [[ "${_sr_blocks}" =~ ^[0-9]+$ ]] || _sr_blocks=0
+
+      if [[ "${_sr_ratio_pct}" -ge 50 ]] && [[ "${_sr_blocks}" -lt 1 ]]; then
+        write_state "shortcut_ratio_blocks" "$((_sr_blocks + 1))"
+        # Build a deferred-set scorecard inline (the existing
+        # build_discovered_scope_scorecard is for discovered_scope.jsonl,
+        # not findings.json — different file, different fields).
+        _sr_findings_file="$(session_file "findings.json")"
+        _sr_scorecard="$(jq -r '
+          [(.findings // [])[] | select(.status == "deferred")]
+          | sort_by(.severity)
+          | .[0:8]
+          | .[]
+          | "  - " + .id + " [" + (.severity // "?") + "] "
+            + (.summary // "(no summary)")
+            + (if (.notes // "") != "" then " — " + .notes else "" end)
+        ' "${_sr_findings_file}" 2>/dev/null || printf '  (scorecard unavailable)')"
+        record_gate_event "shortcut-ratio" "block" \
+          "total=${_sr_total}" \
+          "shipped=${_sr_shipped}" \
+          "deferred=${_sr_deferred}" \
+          "ratio_pct=${_sr_ratio_pct}"
+        _sr_recovery="$(format_gate_recovery_line "ship one or more deferred findings inline before stopping (preferred), OR wave-append same-surface findings via record-finding-list.sh assign-wave, OR explicitly justify majority-deferral in your summary (legit cases: every deferred row names a real external blocker — a stakeholder, a dependency upgrade, a tracked successor F-id), OR /ulw-skip <reason> for one-time bypass.")"
+        emit_stop_block "[Shortcut-ratio gate · 1/1] wave plan has ${_sr_deferred}/${_sr_decided} decided findings deferred (${_sr_ratio_pct}%) on a ${_sr_total}-finding plan. Big-plan majority-deferral is the shortcut-on-big-tasks pattern: even valid-WHY deferrals can satisfy gate counts while leaving the work fundamentally incomplete.
+Deferred set (severity-ranked, top 8):
+${_sr_scorecard}${_sr_recovery}"
+        exit 0
+      fi
     fi
   fi
 fi

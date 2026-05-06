@@ -67,7 +67,8 @@ intent_verify_directive|bool|off|advisory|Declare-and-proceed goal interpretatio
 exemplifying_directive|bool|on|advisory|Completeness/coverage directive — enumerate the search universe, verify each (v1.26.0 broadens to completeness verbs + advisory turns)
 exemplifying_scope_gate|bool|on|gates|Require checklist for example-marker prompts before stop
 prompt_text_override|bool|on|gates|PreTool guard trusts prompt-text imperative when classifier disagrees
-mark_deferred_strict|bool|on|gates|Reject low-information defer reasons (out of scope / follow-up)
+mark_deferred_strict|bool|on|gates|Reject low-information defer reasons (out of scope / follow-up) AND effort excuses (requires significant effort / blocked by complexity)
+shortcut_ratio_gate|bool|on|gates|Soft-block when wave plan total≥10 AND deferred-to-decided ratio ≥0.5 (catches shortcut-on-big-tasks)
 installation_drift_check|true_false|true|advisory|Statusline yellow arrow when bundle is behind source
 auto_memory|bool|on|memory|Cross-session auto-memory writes (project/feedback/user/reference)
 prompt_persist|bool|on|memory|In-session prompt persistence (recent_prompts.jsonl + last_user_prompt). Off skips writes and degrades prompt-text-override gracefully.
@@ -129,6 +130,7 @@ exemplifying_directive=on
 exemplifying_scope_gate=on
 prompt_text_override=on
 mark_deferred_strict=on
+shortcut_ratio_gate=on
 metis_on_plan_gate=on
 stop_failure_capture=on
 resume_watchdog=on
@@ -157,6 +159,7 @@ exemplifying_directive=on
 exemplifying_scope_gate=on
 prompt_text_override=on
 mark_deferred_strict=on
+shortcut_ratio_gate=on
 metis_on_plan_gate=off
 stop_failure_capture=on
 resume_watchdog=off
@@ -185,6 +188,7 @@ exemplifying_directive=off
 exemplifying_scope_gate=off
 prompt_text_override=on
 mark_deferred_strict=off
+shortcut_ratio_gate=off
 metis_on_plan_gate=off
 stop_failure_capture=on
 resume_watchdog=off

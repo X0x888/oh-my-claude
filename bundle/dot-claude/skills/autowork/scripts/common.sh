@@ -43,6 +43,7 @@ _omc_env_exemplifying_directive="${OMC_EXEMPLIFYING_DIRECTIVE:-}"
 _omc_env_exemplifying_scope_gate="${OMC_EXEMPLIFYING_SCOPE_GATE:-}"
 _omc_env_prompt_text_override="${OMC_PROMPT_TEXT_OVERRIDE:-}"
 _omc_env_mark_deferred_strict="${OMC_MARK_DEFERRED_STRICT:-}"
+_omc_env_shortcut_ratio_gate="${OMC_SHORTCUT_RATIO_GATE:-}"
 _omc_env_wave_override_ttl="${OMC_WAVE_OVERRIDE_TTL_SECONDS:-}"
 _omc_env_stop_failure_capture="${OMC_STOP_FAILURE_CAPTURE:-}"
 _omc_env_prompt_persist="${OMC_PROMPT_PERSIST:-}"
@@ -208,16 +209,38 @@ OMC_EXEMPLIFYING_SCOPE_GATE="${OMC_EXEMPLIFYING_SCOPE_GATE:-on}"
 # defends against (model parroting "reply with: ship the commit on
 # <branch>") was the primary v1.22.x UX complaint.
 OMC_PROMPT_TEXT_OVERRIDE="${OMC_PROMPT_TEXT_OVERRIDE:-on}"
-# mark_deferred_strict (v1.23.0): when `on`, mark-deferred.sh rejects
-# bare "out of scope" / "not in scope" / "follow-up" / "separate task"
-# / "later" / "low priority" reasons that have historically been used
-# as silent-skip escape hatches. Reasons must contain a WHY keyword
-# (requires/blocked/superseded/awaiting/pending/etc.) OR be a self-
-# explanatory single token from the allowlist (duplicate / obsolete
-# / superseded / wontfix / invalid / not applicable / n/a / not a bug).
-# Default ON because the user explicitly identified this as a notorious
-# escape pattern in v1.22.x and earlier.
+# mark_deferred_strict (v1.23.0; extended v1.35.0): when `on`, the
+# require-WHY validator rejects bare "out of scope" / "not in scope" /
+# "follow-up" / "separate task" / "later" / "low priority" reasons AND
+# (v1.35.0) effort-shaped excuses such as "requires significant effort"
+# / "needs more time" / "blocked by complexity" / "tracks to a future
+# session" — patterns that lexically pass a keyword check but name the
+# WORK ITSELF instead of an EXTERNAL blocker the deferral is waiting on.
+# Reasons must contain a WHY keyword (requires/blocked/superseded/awaiting
+# /pending/etc.) AND name an external object (a domain noun like
+# migration/stakeholder/F-id, an issue/wave reference) — OR be a self-
+# explanatory single token from the allowlist (duplicate / obsolete /
+# superseded / wontfix / invalid / not applicable / n/a / not a bug /
+# not reproducible / cannot reproduce / false positive / working as
+# intended / by design). The same flag now gates THREE call sites (was
+# one in v1.23.0): mark-deferred.sh, record-scope-checklist.sh declined
+# path, and (v1.35.0) record-finding-list.sh status deferred|rejected.
+# Default ON because the user explicitly identified weak-defer cherry-
+# picking as a notorious escape pattern.
 OMC_MARK_DEFERRED_STRICT="${OMC_MARK_DEFERRED_STRICT:-on}"
+# shortcut_ratio_gate (v1.35.0): when `on`, stop-guard fires a one-time
+# soft block when the active wave plan has total≥10 findings AND the
+# deferred-to-decided ratio is ≥0.5 (i.e., the model deferred half or
+# more of the decisions instead of shipping). This is the mechanical
+# counterpart to the validator hardening (mark_deferred_strict): even
+# if every individual deferral has a valid WHY, ship-vs-defer balance
+# on big plans is itself a signal of the shortcut-on-big-tasks pattern.
+# The gate emits a scorecard listing the deferred set + their reasons
+# and routes to ship-inline / wave-append / explicit summary as recovery
+# options. Bypass-able with /ulw-skip <reason>; one block per session
+# (block_cap=1). Default ON because the user explicitly identified
+# "okay-level work to satisfy the gate" as a notorious failure mode.
+OMC_SHORTCUT_RATIO_GATE="${OMC_SHORTCUT_RATIO_GATE:-on}"
 # Resume-request artifact lifetime: max age (days) for a `resume_request.json`
 # to still be considered claimable. Older artifacts are treated as stale and
 # silently ignored by the SessionStart resume hint and the watchdog. The
@@ -361,6 +384,8 @@ _parse_conf_file() {
         [[ -z "${_omc_env_prompt_text_override}" && "${value}" =~ ^(on|off)$ ]] && OMC_PROMPT_TEXT_OVERRIDE="${value}" || true ;;
       mark_deferred_strict)
         [[ -z "${_omc_env_mark_deferred_strict}" && "${value}" =~ ^(on|off)$ ]] && OMC_MARK_DEFERRED_STRICT="${value}" || true ;;
+      shortcut_ratio_gate)
+        [[ -z "${_omc_env_shortcut_ratio_gate}" && "${value}" =~ ^(on|off)$ ]] && OMC_SHORTCUT_RATIO_GATE="${value}" || true ;;
       wave_override_ttl_seconds)
         [[ -z "${_omc_env_wave_override_ttl}" && "${value}" =~ ^[0-9]+$ ]] && OMC_WAVE_OVERRIDE_TTL_SECONDS="${value}" || true ;;
       stop_failure_capture)
@@ -1516,24 +1541,74 @@ omc_reason_has_concrete_why() {
   trimmed="$(sed -E 's/^[[:space:][:punct:]]+|[[:space:][:punct:]]+$//g' <<<"${lc}")"
 
   # Self-explanatory reasons. These are the WHY.
+  # v1.35.0: extended with rejected-status common tokens (false positive,
+  # not reproducible, cannot reproduce, working as intended, by design)
+  # so record-finding-list.sh status rejected can pass real-world reject
+  # reasons after the validator wires onto that path.
   case "${trimmed}" in
-    duplicate|obsolete|superseded|wontfix|invalid|"won't fix"|"not applicable"|n/a|"not a bug")
+    duplicate|obsolete|superseded|wontfix|invalid|"won't fix"|"not applicable"|n/a|"not a bug"|"not reproducible"|"cannot reproduce"|"can't reproduce"|"false positive"|"working as intended"|"by design")
       return 0
       ;;
   esac
 
-  local why_keywords='\b(requires?|require[ds]?|need(s|ed|ing)?|blocked|blocking|superseded|supersedes|replaced|replaces|pending|awaiting|awaits|wait(s|ing)?|because|due[[:space:]]+to|tracks?[[:space:]]+to|tracked[[:space:]]+(in|at)|see[[:space:]]+(#|f-|s-|wave)|after[[:space:]]+(f-|s-|wave|ticket|issue)|until[[:space:]]+(f-|s-|wave|ticket|issue|the[[:space:]]+(release|migration|launch|cutover))|once[[:space:]]+(f-|s-|wave|the))\b'
-  if grep -Eiq "${why_keywords}" <<<"${trimmed}"; then
-    return 0
+  # v1.35.0 — require a WHY-keyword always.
+  # Until v1.34.x the validator passed bare "F-001" because the
+  # ID-reference branch was OR-combined with WHY-keyword presence.
+  # This created inconsistent semantics: bare "#847" rejected (the
+  # leading # gets stripped by the trim regex above), but bare
+  # "F-001" passed. Excellence-reviewer flagged the inconsistency.
+  # The CHANGELOG-stated semantics are "WHY keyword AND name an
+  # external object" — so require a WHY-keyword always. Real-world
+  # ID-paired reasons all use a WHY-prefix verb anyway:
+  # `see F-001`, `blocked by F-001`, `tracks to F-001`, `pending #847`,
+  # `superseded by F-051`, `awaiting wave 3` — every one of those
+  # matches why_keywords below. Bare "F-001" alone is ambiguous
+  # ("waiting on it"? "tracked there"? "see its commit"?) and the
+  # explicit-WHY discipline is cheap to enforce.
+  local why_keywords='\b(requires?|require[ds]?|need(s|ed|ing)?|block(s|ed|ing|er|ers)?|superseded|supersedes|replaced|replaces|pending|awaiting|awaits|wait(s|ed|ing)?|because|due[[:space:]]+to|tracks?[[:space:]]+to|tracked[[:space:]]+(in|at)|see[[:space:]]+(#|f-|s-|wave)|after[[:space:]]+(f-|s-|wave|ticket|issue)|until[[:space:]]+(f-|s-|wave|ticket|issue|the[[:space:]]+(release|migration|launch|cutover))|once[[:space:]]+(f-|s-|wave|the))\b'
+  if ! grep -Eiq "${why_keywords}" <<<"${trimmed}"; then
+    return 1
   fi
 
-  # Issue/PR/wave/scope-item reference shape (`#42`, `F-001`, `S-002`,
-  # `wave 3`, `PR-12`). These point to a successor or duplicate record.
-  if grep -Eiq '(\#[0-9]+|\bf-[0-9]+|\bs-[0-9]+|\bwave[[:space:]]+[0-9]+|\bpr-?[0-9]+)' <<<"${trimmed}"; then
-    return 0
+  # v1.35.0 — Weak-target deny-list (Concern 1 fix).
+  #
+  # The keyword check above answers "does this reason name A WHY?" but
+  # not "is the WHY external?". Effort excuses lexically match the
+  # keyword check ("requires significant effort", "needs more time",
+  # "blocked by complexity", "tracks to a future session") while naming
+  # the WORK COST instead of an external blocker the work is waiting on.
+  #
+  # Rule: when the reason contains a weak-target token (work-cost or
+  # vague-deferral noun) AND does NOT contain any compensating external
+  # signal (domain noun, ID reference, owner/team noun), reject. The
+  # external-signal escape preserves legitimate compound reasons such as
+  # "requires major refactor — superseded by F-051" and "requires
+  # significant work on the auth migration".
+  #
+  # Known follow-up (v1.36+): a determined model can still launder a
+  # weak reason by appending an external token ("requires significant
+  # effort because of the migration"). The /ulw-report deferral panel
+  # logs every reject reason; if token-salad evasion appears in
+  # production telemetry, tighten to a leading-clause check anchored
+  # at the WHY keyword. For v1, the AND-NOT shape is the balanced
+  # middle ground — it rejects the obvious effort excuses without over-
+  # rejecting legitimate compound reasons.
+  local weak_target_pattern='\b(effort|focus|attention|bandwidth|capacity|thinking|rework|complexity|size|length|budget|future[[:space:]]+(session|work|iteration|sprint|quarter)|next[[:space:]]+(session|sprint|quarter|iteration)|another[[:space:]]+session|follow[- ]up|more[[:space:]]+(time|effort|focus|attention|investigation|analysis|review|work|thought|consideration)|deep[[:space:]]+investigation|deeper[[:space:]]+dive|significant[[:space:]]+(work|effort|investigation|changes|change)|substantial[[:space:]]+(work|effort|changes|change)|too[[:space:]]+(big|complex|much|long|hard|deep)|refactor|non[- ]trivial|large[- ]scale)\b'
+  # NOTE on 'review': intentionally NOT included as a bare external
+  # signal because it is too overloaded — "needs more review" is an
+  # effort excuse, but "needs legal review" / "needs security review"
+  # / "needs stakeholder review" name a real owner. The qualifier
+  # nouns (legal, security, stakeholder, design, etc.) carry the
+  # external signal, so concrete reasons still pass while bare
+  # "needs review" patterns get caught by the weak-target check.
+  local external_signal_pattern='(\#[0-9]+|\b[fs]-[0-9]+|\bpr-?[0-9]+|\bwave[[:space:]]+[0-9]+|\b(migration|ticket|issue|stakeholder|legal|compliance|approval|dependency|upstream|downstream|api|database|schema|deployment|release|launch|cutover|partner|vendor|telemetry|canary|harness|middleware|module|registry|specialist|owner|team|incident|spec|rfc|proposal|design|designs|ui|frontend|backend|service|endpoint|controller|cache|queue|worker|cron|pipeline|auth|encryption|gateway|router|adapter|sdk|security|legal|compliance)\b)'
+
+  if grep -Eiq "${weak_target_pattern}" <<<"${trimmed}" \
+      && ! grep -Eiq "${external_signal_pattern}" <<<"${trimmed}"; then
+    return 1
   fi
 
-  return 1
+  return 0
 }
 
 normalize_task_prompt() {

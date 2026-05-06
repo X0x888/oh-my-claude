@@ -251,6 +251,73 @@ case "${cmd}" in
       pending|in_progress|shipped|deferred|rejected) ;;
       *) printf 'invalid status: %s (expected pending|in_progress|shipped|deferred|rejected)\n' "${status}" >&2; exit 1 ;;
     esac
+
+    # v1.35.0 — require-WHY validation on terminal-status non-success transitions.
+    # Until v1.34.x this path was unvalidated, leaving a parallel silent-skip
+    # loophole to /mark-deferred: a model could mark a finding deferred or
+    # rejected with a vague notes string ("out of scope", "requires significant
+    # effort") and the wave-plan dashboard would accept it. The same validator
+    # that gates /mark-deferred and record-scope-checklist declined-paths now
+    # gates this transition. Gated by OMC_MARK_DEFERRED_STRICT (single source
+    # of truth flag for all three call sites).
+    #
+    # Scope:
+    #   - status=deferred — notes is the deferral reason, validated when present
+    #   - status=rejected — notes is the rejection reason, validated when present
+    #   - status=shipped|in_progress|pending — notes is descriptive metadata
+    #     (commit summary, comparison hint, transition note), NOT validated
+    #   - empty notes still permitted on this path (preserves prior notes
+    #     via the jq ternary in the status-update block below); validation
+    #     only fires when a non-empty notes string is provided AND status
+    #     is deferred|rejected
+    #
+    # The bypass path mirrors /mark-deferred: setting OMC_MARK_DEFERRED_STRICT=off
+    # disables the check. Bypass-with-failed-validator audits to gate_events.jsonl
+    # so /ulw-report aggregates the pattern.
+    if [[ "${status}" == "deferred" || "${status}" == "rejected" ]] \
+        && [[ -n "${notes//[[:space:]]/}" ]] \
+        && [[ "${OMC_MARK_DEFERRED_STRICT:-on}" == "on" ]] \
+        && ! omc_reason_has_concrete_why "${notes}"; then
+      cat >&2 <<EOF
+record-finding-list status: ${status}-reason rejected — must name a concrete WHY (external blocker, not effort excuse).
+
+Provided notes for F=${id}: ${notes}
+
+Acceptable shapes:
+  - requires <named context>           e.g. 'requires database migration'
+  - blocked by <named blocker>         e.g. 'blocked by F-042 shipping first'
+  - superseded by <successor>          e.g. 'superseded by F-051'
+  - awaiting <named event>             e.g. 'awaiting stakeholder pricing decision'
+  - pending #<issue> | wave N          e.g. 'pending #847' or 'pending wave 3'
+  - duplicate | obsolete | wontfix | not reproducible | false positive | by design
+
+Rejected — silent-skip patterns and effort excuses:
+  - 'out of scope' / 'follow-up' / 'later' / 'low priority' (no WHY at all)
+  - 'requires significant effort' / 'needs more time' / 'blocked by complexity'
+  - 'tracks to a future session' / 'superseded by future work'
+
+A legitimate WHY names what you are WAITING ON, not what the WORK COSTS.
+For same-surface findings, prefer wave-append (record-finding-list.sh
+add-finding + assign-wave) over marking deferred.
+
+Override (last resort, audited): set OMC_MARK_DEFERRED_STRICT=off.
+EOF
+      exit 2
+    fi
+    # Audit the strict-mode bypass when the reason would have been rejected
+    # under strict=on. Mirrors the audit shape used by mark-deferred.sh:84-91
+    # so /ulw-report can aggregate bypass counts across both call sites
+    # without separate plumbing.
+    if [[ "${status}" == "deferred" || "${status}" == "rejected" ]] \
+        && [[ -n "${notes//[[:space:]]/}" ]] \
+        && [[ "${OMC_MARK_DEFERRED_STRICT:-on}" != "on" ]] \
+        && ! omc_reason_has_concrete_why "${notes}"; then
+      record_gate_event "finding-status" "strict-bypass" \
+        "finding_id=${id}" \
+        "finding_status=${status}" \
+        reason="${notes:0:200}" 2>/dev/null || true
+    fi
+
     _ensure_file
     _acquire_lock
     current="$(cat "${FINDINGS_FILE}")"

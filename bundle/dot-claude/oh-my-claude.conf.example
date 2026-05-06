@@ -162,17 +162,39 @@
 # behavior. Env: OMC_PROMPT_TEXT_OVERRIDE.
 #prompt_text_override=on
 
-# mark-deferred require-WHY validator. When `on`, /mark-deferred
-# rejects bare "out of scope" / "not in scope" / "follow-up" /
-# "separate task" / "later" / "low priority" reasons that have
-# historically been used as silent-skip escape hatches. Reasons must
-# contain a WHY keyword (requires/blocked/superseded/awaiting/pending/
-# etc.) OR be a self-explanatory single token from the allowlist
-# (duplicate / obsolete / superseded / wontfix / invalid / not
-# applicable / n/a / not a bug). Default ON because the user explicitly
-# identified this as a notorious escape pattern in v1.22.x and earlier.
+# Defer-reason require-WHY validator. When `on`, the validator rejects
+# bare "out of scope" / "not in scope" / "follow-up" / "separate task"
+# / "later" / "low priority" reasons (no WHY at all) AND (v1.35.0)
+# effort excuses such as "requires significant effort" / "needs more
+# time" / "blocked by complexity" / "tracks to a future session" — the
+# WHY must name an EXTERNAL blocker the work is waiting on, not the
+# WORK COSTS itself. Reasons must contain a WHY keyword (requires/
+# blocked/superseded/awaiting/pending/etc.) AND name an external object
+# (a domain noun like migration/stakeholder/F-id, an issue/wave ref) —
+# OR be a self-explanatory token from the allowlist (duplicate /
+# obsolete / superseded / wontfix / invalid / not applicable / n/a /
+# not a bug / not reproducible / cannot reproduce / false positive /
+# working as intended / by design). The flag now gates THREE call
+# sites: /mark-deferred, record-scope-checklist.sh declined, and
+# (v1.35.0) record-finding-list.sh status deferred|rejected. Default
+# ON because weak-defer cherry-picking is a notorious escape pattern.
 # Env: OMC_MARK_DEFERRED_STRICT.
 #mark_deferred_strict=on
+
+# Shortcut-detection ratio gate (v1.35.0). When `on`, the stop-guard
+# fires a one-time soft block when the active wave plan has total≥10
+# findings AND the deferred-to-decided ratio is ≥0.5 — i.e., the model
+# deferred half or more of the decisions instead of shipping. This is
+# the mechanical counterpart to mark_deferred_strict: even if every
+# individual deferral has a valid WHY, ship-vs-defer balance on big
+# plans is itself a signal of the shortcut-on-big-tasks pattern (the
+# model satisfied gate counts by deferring the hard half of the work).
+# The gate emits a scorecard listing the deferred set + their reasons,
+# then routes to ship-inline / wave-append / explicit summary as
+# recovery. Bypass-able with /ulw-skip <reason>; one block per session.
+# Set to off if your workflow legitimately defers majority of council
+# findings to follow-up sprints. Env: OMC_SHORTCUT_RATIO_GATE.
+#shortcut_ratio_gate=on
 
 # Statusline shows a yellow `↑v<version>` arrow when the source repo is
 # ahead of the installed bundle. Useful nudge to re-run install.sh after

@@ -442,6 +442,185 @@ case "${events2}" in
 esac
 
 # ===========================================================================
+# Wave 4 (v1.35.0) — effort-excuse rejection tests
+#
+# v1.35.0 extended the validator's silent-skip defense to catch reasons
+# that lexically pass the WHY-keyword check but name the WORK COST
+# instead of an EXTERNAL blocker. Without this regression net, a future
+# softening of the deny-list could regress the protection.
+#
+# Test corpus: 26 attack reasons that MUST reject (work-cost excuses)
+# and 22 legitimate reasons that MUST pass (external-blocker WHYs +
+# allowlist phrases). Empirically verified during v1.35.0 implementation.
+# ===========================================================================
+
+# Helper: assert that a reason rejects under strict mode.
+# Uses an in-process call to omc_reason_has_concrete_why because we
+# already source common.sh at line 43; no need to spawn mark-deferred.sh
+# subshells per assertion.
+assert_validator_rejects() {
+  local label="$1" reason="$2"
+  if omc_reason_has_concrete_why "${reason}"; then
+    printf '  FAIL: %s\n    reason should REJECT but PASSED: %s\n' "${label}" "${reason}" >&2
+    fail=$((fail + 1))
+  else
+    pass=$((pass + 1))
+  fi
+}
+
+assert_validator_passes() {
+  local label="$1" reason="$2"
+  if omc_reason_has_concrete_why "${reason}"; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: %s\n    reason should PASS but REJECTED: %s\n' "${label}" "${reason}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
+# 26 effort-excuse attack reasons — every one MUST reject.
+# Failure mode the user named verbatim: "the agent defers a task simply
+# because a task is big and may take efforts". Each entry below is a
+# concrete shape that lexically passed the v1.34.x validator but named
+# the WORK COST, not an external blocker.
+printf '\n=== v1.35.0 — effort-excuse attack patterns must REJECT ===\n'
+assert_validator_rejects "V17 requires significant effort" "requires significant effort"
+assert_validator_rejects "V18 requires too much rework"     "requires too much rework"
+assert_validator_rejects "V19 requires more time"           "requires more time than available"
+assert_validator_rejects "V20 requires more focus"          "requires more focus than this session has"
+assert_validator_rejects "V21 blocked by complexity"        "blocked by complexity"
+assert_validator_rejects "V22 blocked by context budget"    "blocked by my context budget"
+assert_validator_rejects "V23 needs a refactor first"       "needs a refactor first"
+assert_validator_rejects "V24 needs more time"              "needs more time"
+assert_validator_rejects "V25 needs significant work"       "needs significant work"
+assert_validator_rejects "V26 needs deep investigation"     "needs deep investigation"
+assert_validator_rejects "V27 awaiting more focus"          "awaiting more focus"
+assert_validator_rejects "V28 pending future session"       "pending future session"
+assert_validator_rejects "V29 because too big"              "because too big"
+assert_validator_rejects "V30 due to size"                  "due to size"
+assert_validator_rejects "V31 superseded by future work"    "superseded by future work"
+assert_validator_rejects "V32 substantial changes"          "requires substantial changes outside this surface"
+assert_validator_rejects "V33 thinking time"                "blocked by needing more thinking time"
+assert_validator_rejects "V34 tracks to future session"     "tracks to a future session"
+assert_validator_rejects "V35 tracks to follow-up"          "tracks to follow-up"
+assert_validator_rejects "V36 needs additional thinking"    "needs additional thinking"
+assert_validator_rejects "V37 requires more attention"      "requires more attention"
+assert_validator_rejects "V38 blocked by bandwidth"         "blocked by bandwidth"
+assert_validator_rejects "V39 awaiting capacity"            "awaiting capacity"
+assert_validator_rejects "V40 effort required"              "due to effort required"
+assert_validator_rejects "V41 requires major refactor"      "requires major refactor"
+assert_validator_rejects "V42 needs the refactor"           "needs the refactor"
+
+# 22 legitimate reasons — every one MUST pass.
+# These name an EXTERNAL blocker (named domain object, ID reference,
+# allowlist phrase) and represent real-world deferral patterns the
+# validator must NOT over-reject. Drawn from production usage.
+printf '\n=== v1.35.0 — legitimate reasons must PASS ===\n'
+assert_validator_passes "V43 requires database migration"   "requires database migration that would take 2 weeks to plan"
+assert_validator_passes "V44 refactor superseded by F-051"  "requires major refactor — superseded by F-051"
+assert_validator_passes "V45 UI refactor pending design"    "requires UI refactor — pending design review"
+assert_validator_passes "V46 auth module refactor"          "requires auth module refactor"
+assert_validator_passes "V47 rewriting test harness"        "requires rewriting the test harness for adversarial fixtures"
+assert_validator_passes "V48 dependency upgrade"            "blocked by upstream dependency upgrade requiring 3 days investigation"
+assert_validator_passes "V49 awaiting telemetry"            "awaiting telemetry from canary"
+assert_validator_passes "V50 requires legal review"         "requires legal review"
+assert_validator_passes "V51 blocked by F-042"              "blocked by F-042 fix shipping first"
+assert_validator_passes "V52 superseded by F-051"           "superseded by F-051 which covers the same surface"
+assert_validator_passes "V53 awaiting stakeholder"          "awaiting stakeholder pricing decision"
+assert_validator_passes "V54 pending wave 5"                "pending wave 5"
+assert_validator_passes "V55 duplicate single token"        "duplicate"
+assert_validator_passes "V56 obsolete single token"         "obsolete"
+assert_validator_passes "V57 n/a single token"              "n/a"
+assert_validator_passes "V58 not reproducible"              "not reproducible"
+assert_validator_passes "V59 false positive"                "false positive"
+assert_validator_passes "V60 by design"                     "by design"
+assert_validator_passes "V61 working as intended"           "working as intended"
+assert_validator_passes "V62 migration plus wave"           "requires database migration outside this session — pending wave 3"
+assert_validator_passes "V63 upstream API"                  "blocked by upstream API redesign"
+assert_validator_passes "V64 compliance approval"           "awaiting compliance approval"
+
+# v1.35.0 — adjacent-token attack patterns surfaced by excellence-reviewer.
+# These are the same effort-shaped failure mode but with vocabulary the
+# initial deny-list missed: "next sprint/quarter/iteration", "future
+# iteration/sprint/quarter", "deeper dive", "more analysis/review/work/
+# thought/consideration", "non-trivial", "large-scale". Every one was
+# empirically observed to PASS the v1.35.0-rev0 validator before this
+# extension; pinning the rejections so a future regex edit cannot
+# silently regress the protection.
+printf '\n=== v1.35.0 — adjacent attack tokens (excellence-reviewer F-1) ===\n'
+assert_validator_rejects "V65 next sprint planning"     "requires next sprint planning"
+assert_validator_rejects "V66 next quarter"             "tracks to next quarter"
+assert_validator_rejects "V67 next iteration"           "tracks to next iteration"
+assert_validator_rejects "V68 future iteration"         "tracks to future iteration"
+assert_validator_rejects "V69 future sprint"            "blocked by future sprint capacity"
+assert_validator_rejects "V70 future quarter"           "tracks to future quarter"
+assert_validator_rejects "V71 deeper dive needed"       "deeper dive needed before fix"
+assert_validator_rejects "V72 blocked by deeper dive"   "blocked by deeper dive"
+assert_validator_rejects "V73 more analysis required"   "more analysis required"
+assert_validator_rejects "V74 needs more thought"       "needs more thought"
+assert_validator_rejects "V75 needs more consideration" "needs more consideration"
+assert_validator_rejects "V76 needs more work"          "needs more work"
+assert_validator_rejects "V77 needs more review"        "needs more review"
+assert_validator_rejects "V78 non-trivial change"       "requires non-trivial change"
+assert_validator_rejects "V79 non trivial change"       "requires non trivial change"
+assert_validator_rejects "V80 large-scale change"       "requires large-scale change"
+assert_validator_rejects "V81 significant change"       "requires significant change"
+assert_validator_rejects "V82 substantial change"       "requires substantial change"
+
+# v1.35.0 — adjacent-token PASSES (the deny-list extension must NOT
+# over-reject when the work-cost word is paired with a real external
+# blocker noun). These pin the false-positive guard.
+printf '\n=== v1.35.0 — adjacent legit reasons must PASS ===\n'
+assert_validator_passes "V83 analysis from data team"   "needs analysis from data team"
+assert_validator_passes "V84 review by legal"           "needs review by legal team"
+assert_validator_passes "V85 next sprint w/ stakeholder" "tracks to next sprint after stakeholder approval"
+assert_validator_passes "V86 large-scale + dependency"  "requires large-scale dependency upgrade"
+
+# v1.35.0 — bare ID-only must REJECT (excellence-reviewer F-2).
+# Until rev0 of v1.35.0 the validator had OR semantics: WHY-keyword OR
+# ID-reference was enough to pass. That made bare 'F-001' pass while
+# bare '#847' rejected (the # gets stripped by the trim regex), an
+# inconsistent shape. The fix requires has_why=1 always; pair the ID
+# with a successor verb (see/blocked by/tracks to/pending/etc.).
+printf '\n=== v1.35.0 — bare ID-only must REJECT (excellence-reviewer F-2) ===\n'
+assert_validator_rejects "V87 bare F-001"   "F-001"
+assert_validator_rejects "V88 bare f-001"   "f-001"
+assert_validator_rejects "V89 bare S-005"   "S-005"
+assert_validator_rejects "V90 bare wave 3"  "wave 3"
+assert_validator_rejects "V91 bare PR-12"   "PR-12"
+
+# v1.35.0 — ID paired with WHY-prefix verb still passes (no regression
+# on the documented legitimate shape).
+printf '\n=== v1.35.0 — ID + WHY-prefix verb still passes ===\n'
+assert_validator_passes "V92 see F-001"          "see F-001"
+assert_validator_passes "V93 blocked by F-001"   "blocked by F-001"
+assert_validator_passes "V94 superseded by F-051" "superseded by F-051"
+assert_validator_passes "V95 tracks to F-001"    "tracks to F-001"
+assert_validator_passes "V96 pending #847"       "pending #847"
+assert_validator_passes "V97 awaiting wave 3"    "awaiting wave 3"
+
+# End-to-end: an effort excuse via the full mark-deferred.sh CLI rejects
+# with exit code 2 AND a useful error message. This catches breakage
+# in the script wiring (env propagation, args, error formatting) that
+# the in-process tests above don't exercise.
+printf '\n=== v1.35.0 — effort excuse rejected end-to-end via mark-deferred.sh ===\n'
+setup_session "test-effort-e2e" '{"id":"effort01","source":"metis","summary":"finding","severity":"high","status":"pending","reason":"","ts":"100"}
+'
+set +e
+out="$(bash "${MARK_DEFERRED}" "requires significant effort" 2>&1)"; rc=$?
+set -e
+assert_eq "effort excuse: exit 2"                       "2" "${rc}"
+assert_contains "effort excuse: error names rule"       "must name a concrete WHY" "${out}"
+assert_contains "effort excuse: error mentions external" "external blocker" "${out}"
+assert_contains "effort excuse: error lists e.g."       "requires <named context>" "${out}"
+# The new message must enumerate effort excuses explicitly so the
+# model sees the rejected pattern without scrolling to docs.
+assert_contains "effort excuse: error names effort"     "requires significant effort" "${out}"
+# Pending row stays pending (rejection precedes any state mutation).
+post_status="$(jq -r '.status' "$(session_file "discovered_scope.jsonl")")"
+assert_eq "effort excuse: row stays pending"            "pending" "${post_status}"
+
+# ===========================================================================
 printf '\nResults: pass=%d fail=%d\n' "${pass}" "${fail}"
 if [[ "${fail}" -gt 0 ]]; then
   exit 1

@@ -4,6 +4,209 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.35.0] - 2026-05-06
+
+### Weak-defer cherry-picking + shortcut-on-big-tasks defenses
+
+User-reported failure modes after a comprehensive `/ulw` evaluation:
+
+1. **Weak deferrals** — "sometimes the agent defers a task simply because a task is big and may take efforts… it shouldn't cherry pick the easy ones and bypass the gate with a so-called 'concrete' reason."
+2. **Shortcut on big tasks** — "it took a shortcut on executing big tasks. Instead of performing an impeccable well-done job, it only performs a okay level job, just to fulfill the stop gate requirements."
+
+Empirically verified before fixing: 25/25 effort-shaped attack reasons
+passed the v1.34.x `omc_reason_has_concrete_why` validator (`requires
+significant effort`, `blocked by complexity`, `needs more time`,
+`tracks to a future session`, etc.). The validator was purely keyword-
+based; the error message at `mark-deferred.sh:39` promised "concrete
+WHY" but only enforced presence of a WHY-keyword, not that the WHY
+named an EXTERNAL blocker. Three call sites trust the validator
+(`/mark-deferred`, `record-scope-checklist.sh declined`, `record-
+finding-list.sh status deferred|rejected` — added in v1.35.0); all
+three got the upgrade in lockstep via the single source of truth in
+`common.sh`.
+
+The shortcut-on-big-tasks pattern is partially mechanical (the model
+can satisfy gate counts by deferring the hard half of a substantive
+plan) and partially behavioral (no single-string check catches "I
+shipped okay-level work"). v1.35.0 ships layered defenses for both
+shapes.
+
+### Added
+
+- **Validator weak-target deny-list** (`omc_reason_has_concrete_why`
+  in `common.sh:1511`). After the existing positive WHY-keyword check,
+  a secondary check rejects reasons whose target is the **work itself**
+  (`effort`, `focus`, `attention`, `bandwidth`, `capacity`, `thinking`,
+  `rework`, `complexity`, `size`, `length`, `budget`, `refactor`,
+  `non-trivial`, `large-scale`, `future {session,work,iteration,
+  sprint,quarter}`, `next {session,sprint,quarter,iteration}`,
+  `another session`, `follow-up`, `more {time,effort,focus,attention,
+  investigation,analysis,review,work,thought,consideration}`,
+  `deep investigation`, `deeper dive`, `significant {work,effort,
+  investigation,changes,change}`, `substantial {work,effort,changes,
+  change}`, `too {big,complex,much,long,hard,deep}`) UNLESS a
+  compensating external-signal token appears (issue/PR/wave reference,
+  OR a domain noun: `migration|ticket|issue|stakeholder|legal|
+  compliance|approval|dependency|upstream|downstream|api|database|
+  schema|deployment|release|launch|cutover|partner|vendor|telemetry|
+  canary|harness|middleware|module|registry|specialist|owner|team|
+  incident|spec|rfc|proposal|design|ui|frontend|backend|service|
+  endpoint|controller|cache|queue|worker|cron|pipeline|auth|
+  encryption|gateway|router|adapter|sdk|security|legal|compliance`).
+  Preserves legitimate compound reasons like `requires major refactor
+  — superseded by F-051` while rejecting bare effort excuses like
+  `requires major refactor`. Empirically: 38/38 attack reasons reject
+  (26 initial + 12 adjacent tokens surfaced by excellence-reviewer);
+  22/22 legitimate reasons pass; 9/9 existing test fixtures preserved.
+  `review` is INTENTIONALLY excluded from external-signal because
+  bare "needs review" / "more review" are effort-shaped; concrete
+  reasons still pass via the qualifier (`legal review`, `security
+  review`, `stakeholder review`). Known follow-up: token-salad
+  evasion (laundering "requires effort" by appending an external
+  noun) will pass — `/ulw-report` deferral panel logs every reject
+  reason; if the pattern appears in production telemetry, tighten to
+  a leading-clause check anchored at the WHY keyword in v1.36+.
+
+- **WHY-keyword required (excellence-reviewer F-2 fix).** The
+  validator previously had OR semantics: WHY-keyword OR ID-reference
+  was enough to pass. That made bare `F-001` pass while bare `#847`
+  rejected (because the leading `#` got stripped by the trim regex)
+  — inconsistent shape. v1.35.0 requires `has_why=1` always. The
+  ID-reference branch still serves its purpose: paired with a
+  successor verb (`see F-001`, `blocked by F-001`, `tracks to F-001`,
+  `pending #847`, `superseded by F-051`, `awaiting wave 3`), the WHY-
+  keyword-plus-ID combination passes. Bare ID-only rejects with a
+  message naming the missing prefix.
+
+- **`why_keywords` regex extended to all `block` verb forms.** Before:
+  `blocked|blocking`. After: `block(s|ed|ing|er|ers)?`. Catches
+  `blocks`, `blocker`, `blockers` which the literal `blocked|blocking`
+  alternation missed.
+
+- **Allowlist extension for rejected-status common tokens.** Added
+  `not reproducible`, `cannot reproduce`, `can't reproduce`, `false
+  positive`, `working as intended`, `by design` to the self-explanatory
+  allowlist case at `common.sh:1519` so `record-finding-list.sh status
+  rejected` accepts real-world reject reasons.
+
+- **`record-finding-list.sh status deferred|rejected` validator wiring**
+  (`record-finding-list.sh:244`). Until v1.34.x this path was
+  unvalidated, leaving a parallel silent-skip loophole to `/mark-
+  deferred`. The same validator that gates `/mark-deferred` and
+  `record-scope-checklist.sh declined` now gates this transition,
+  with bypass audit row `gate=finding-status event=strict-bypass` to
+  `gate_events.jsonl` when `OMC_MARK_DEFERRED_STRICT=off` and the
+  reason would have been rejected. Backward-compat: `shipped`,
+  `in_progress`, `pending` paths are NOT validated (notes are
+  descriptive metadata there); empty notes still permitted on the
+  deferred/rejected path (preserves prior notes via the existing jq
+  ternary).
+
+- **`shortcut_ratio_gate` mechanical gate** (default `on`). New
+  one-time soft block in `stop-guard.sh` between the discovered-scope
+  gate and the no-edits short-circuit. Fires when the active wave
+  plan (`findings.json`) has `total ≥ 10` findings AND `deferred /
+  decided ≥ 0.5` — i.e., the model deferred half or more of the
+  decided work. Catches the "ship the easy half, defer the hard
+  half with valid-WHY reasons" pattern even when each individual
+  reason passes the validator. Block message includes a deferred-set
+  scorecard (top 8 by severity with notes) and routes to ship-inline
+  / wave-append / explicit-summary recovery. Bypass-able with
+  `/ulw-skip <reason>`. Telemetry: `gate=shortcut-ratio event=block`
+  with `total`, `shipped`, `deferred`, `ratio_pct` details. The flag
+  joins the full coordination-rule set: `common.sh _parse_conf_file()`
+  case branch, `oh-my-claude.conf.example` doc block, `omc-config.sh
+  emit_known_flags()` table row, all three `omc-config` presets
+  (maximum=on, balanced=on, minimal=off), and `docs/customization.md`
+  table row.
+
+- **`core.md` "Depth proportional to scope" rule.** New behavioral
+  copy in the Code & Deliverable Quality section names the gate-as-
+  ceiling failure mode as FORBIDDEN and includes two diagnostic
+  prompts the model can self-check before declaring a substantial
+  task complete. Complement to the mechanical gate.
+
+- **`excellence-reviewer.md` axis 10 (Depth proportionality)** and
+  **axis 6 sub-check** for shared-effort-reason pattern (3+ deferred
+  rows sharing a work-cost target). Distinct from axis 1
+  (Completeness) which checks coverage; axis 10 checks **depth** on
+  the bottleneck component. Catches the shortcut pattern at review
+  time even for sessions without a formal wave plan (where the
+  mechanical gate cannot fire).
+
+- **`autowork/SKILL.md` final-mile rule 6.** New row in the
+  "Final-mile delivery checklist" referencing the depth rule + the
+  shortcut-ratio gate as backstop, not ceiling.
+
+### Fixed
+
+- **`omc_reason_has_concrete_why` reference-shape branch** preserved
+  for legitimate ID references but no longer the only positive-pass
+  path. Combined with the new deny-list, the validator now answers
+  both "does the reason name a WHY?" AND "is the WHY external?".
+
+- **Final-mile checklist numbering in `autowork/SKILL.md`** — the new
+  "Depth proportional to scope" rule and the existing user-response-
+  restatement rule were both numbered `6` after the diff. Renumbered
+  the latter to `7` so the list reads 1-7 (excellence-reviewer F-3).
+
+- **`record-finding-list.sh:188` test fixture (`concurrent-B`)** and
+  **`tests/test-finding-list.sh:491` fixture (`out of scope`)** updated
+  to use valid WHYs (`blocked by concurrent-B race fixture` and
+  `superseded by F-T01 fixture` respectively). Necessary because the
+  new validator path through `record-finding-list.sh status deferred`
+  rejects them under strict mode.
+
+### Coordination-rule sites updated (full lockstep)
+
+- `bundle/dot-claude/skills/autowork/scripts/common.sh` — `_parse_conf_file()`
+  parser case for `shortcut_ratio_gate`, env var capture, default init.
+- `bundle/dot-claude/oh-my-claude.conf.example` — `mark_deferred_strict`
+  doc updated to reflect 3-call-site coverage + effort-excuse shape;
+  new `shortcut_ratio_gate` block.
+- `bundle/dot-claude/skills/autowork/scripts/omc-config.sh` — new flag
+  in `emit_known_flags()` table; all three presets (maximum/balanced/
+  minimal) updated.
+- `docs/customization.md` — `mark_deferred_strict` row updated; new
+  `shortcut_ratio_gate` row.
+- `bundle/dot-claude/skills/mark-deferred/SKILL.md` — Rejected list
+  expanded with effort-excuse class + "the rule" sentence ("a
+  legitimate WHY names what you are WAITING ON, not what the WORK
+  COSTS").
+- `bundle/dot-claude/quality-pack/memory/skills.md` — WHY-shape note
+  rewritten to enumerate both rejection classes + 3 call sites + the
+  complementary ratio gate.
+- `bundle/dot-claude/skills/skills/SKILL.md` — escalation-order
+  paragraph updated to mention effort excuses and the ratio gate.
+- `bundle/dot-claude/quality-pack/memory/core.md` — escalation-order
+  block rewritten to enumerate both rejection classes; new "Depth
+  proportional to scope" bullet added below.
+- `bundle/dot-claude/skills/autowork/scripts/stop-guard.sh:404` —
+  discovered-scope gate-recovery line updated to mention effort
+  excuses.
+
+### Test coverage
+
+- `tests/test-mark-deferred.sh`: 142 pass (was 55) — added V17-V42
+  effort-excuse rejection block + V43-V64 legitimate-reason preservation
+  block + V65-V82 adjacent-token attack patterns (excellence-reviewer F-1)
+  + V83-V86 legit-paired tokens preservation + V87-V91 bare-ID rejection
+  (excellence-reviewer F-2) + V92-V97 ID-with-WHY-prefix preservation
+  + end-to-end mark-deferred CLI rejection assertions. Each attack
+  pattern from the user's empirically-tested corpus has a pin.
+- `tests/test-finding-list.sh`: 121 pass (was 103) — added 10 new
+  V1.35-* tests covering the new deferred/rejected validator path,
+  empty-notes backward compat, the shipped path's unvalidated metadata
+  semantics, kill-switch bypass + bypass-audit telemetry.
+- `tests/test-omc-config.sh`: 143 pass (was 141) — `shortcut_ratio_gate`
+  preset assertions for maximum/balanced/minimal, and the `25 keys`
+  preset-emission count update.
+- `tests/test-shortcut-ratio-gate.sh`: NEW. 20 tests covering flag-off,
+  total<10, decided<5, ratio<50%, ratio=50% threshold, ratio>50% fire,
+  block-cap=1 (no re-fire), non-execution intent, missing findings.json
+  fail-open, gate-event row shape, scorecard contents (top-8 cap), and
+  malformed-JSON fail-open. Pinned in `.github/workflows/validate.yml`.
+
 ## [1.34.2] - 2026-05-06
 
 ### Hotfix: v1.34.1 release-reviewer findings

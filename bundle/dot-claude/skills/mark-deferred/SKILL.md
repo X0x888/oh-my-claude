@@ -14,7 +14,12 @@ Bulk-update every `pending` finding in the current session's `discovered_scope.j
 3. **Defer with a named WHY** (this skill) — use when the finding genuinely cannot ship in this session and there is no wave plan to append to.
 4. **Call it out as known follow-up risk** in your summary — use when the finding is observation-only and no follow-up commitment is being made.
 
-The skill rejects low-information reasons that have historically been used to silently skip work. "Out of scope" alone, "not in scope" alone, "follow-up" alone, or any reason without a named *requires X / blocked by Y / superseded by Z* clause is rejected — write the WHY explicitly so future sessions can see what the deferral is *waiting on*.
+The skill rejects low-information reasons that have historically been used to silently skip work. The validator catches **two classes** of weak reasons:
+
+1. **No-WHY patterns** (silent-skip): "Out of scope" alone, "not in scope" alone, "follow-up" alone, "later" alone, "low priority" alone — these have no WHY at all.
+2. **Effort excuses** (v1.35.0): "requires significant effort", "needs more time", "blocked by complexity", "tracks to a future session", "superseded by future work", "due to size", "because too big" — these contain a WHY-keyword but the WHY names the WORK COSTS instead of an EXTERNAL blocker the work is waiting on.
+
+A legitimate WHY names what you are **waiting ON** (a migration, a ticket, a stakeholder, a dependency, a successor F-id, a tracked external object), not what the **work** costs or how **much** effort it takes.
 
 ## Usage
 
@@ -24,17 +29,27 @@ Acceptable reason shapes:
 - `requires <named context>` — `requires database migration`, `requires legal review`, `requires stakeholder X to confirm pricing`
 - `blocked by <named blocker>` — `blocked by F-042 fix shipping first`, `blocked by upstream dependency upgrade`
 - `superseded by <named successor>` — `superseded by F-051 which covers the same surface`
-- `duplicate` / `obsolete` / `superseded` — single-token self-explanatory reasons (allowlist)
+- `duplicate` / `obsolete` / `superseded` / `wontfix` / `not reproducible` / `false positive` / `by design` / `working as intended` — single-token / phrase self-explanatory reasons (allowlist)
 - `awaiting <named event>` — `awaiting telemetry from canary`, `awaiting user policy decision`
 - `pending #<issue>` / `pending wave N` — references to a tracked successor
 
-**Rejected** (the script will error and ask you to be specific):
-- `out of scope` (no WHY — what makes it out of scope?)
+**Rejected — silent-skip patterns** (no WHY at all):
+- `out of scope` (what makes it out of scope?)
 - `not in scope` (same)
-- `follow-up` (no WHY — what is the follow-up waiting on?)
-- `separate task` (same — what task, when?)
+- `follow-up` (waiting on what?)
+- `separate task` (which task, when?)
 - `later` / `not now` (no WHY)
 - `low priority` (rank, not reason — the gate already shows severity)
+
+**Rejected — effort excuses** (v1.35.0; the WHY names the WORK, not an EXTERNAL blocker):
+- `requires significant effort` / `requires more time` / `requires too much rework`
+- `blocked by complexity` / `blocked by bandwidth` / `blocked by my context budget`
+- `needs more focus` / `needs deep investigation` / `needs a refactor first`
+- `awaiting more focus` / `awaiting capacity`
+- `tracks to a future session` / `pending future session` / `superseded by future work`
+- `because too big` / `due to size` / `due to effort required`
+
+The escape valve: a weak reason CAN pass if it also names a real external object the work is waiting on. `requires major refactor — superseded by F-051` passes (F-051 is named). `requires major refactor` alone rejects. The rule preserves legitimate compound reasons while rejecting bare effort excuses.
 
 ## Steps
 

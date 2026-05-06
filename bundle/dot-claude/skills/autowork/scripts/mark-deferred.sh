@@ -36,19 +36,20 @@ fi
 if [[ "${OMC_MARK_DEFERRED_STRICT:-on}" == "on" ]] \
     && ! omc_reason_has_concrete_why "${reason}"; then
   cat >&2 <<EOF
-mark-deferred: reason rejected — must name a concrete WHY.
+mark-deferred: reason rejected — must name a concrete WHY (external blocker, not effort excuse).
 
 Provided: ${reason}
 
 Acceptable reason shapes (from mark-deferred/SKILL.md):
-  - requires <named context>     e.g. 'requires database migration'
-  - blocked by <named blocker>   e.g. 'blocked by F-042 shipping first'
-  - superseded by <successor>    e.g. 'superseded by F-051'
-  - awaiting <named event>       e.g. 'awaiting stakeholder pricing decision'
-  - pending #<issue> | wave N    e.g. 'pending #847' or 'pending wave 3'
-  - duplicate | obsolete | superseded (self-explanatory single token)
+  - requires <named context>           e.g. 'requires database migration'
+  - blocked by <named blocker>         e.g. 'blocked by F-042 shipping first'
+  - superseded by <successor>          e.g. 'superseded by F-051'
+  - awaiting <named event>             e.g. 'awaiting stakeholder pricing decision'
+  - pending #<issue> | wave N          e.g. 'pending #847' or 'pending wave 3'
+  - duplicate | obsolete | wontfix | not reproducible | false positive | by design
+    (self-explanatory single token / phrase)
 
-Rejected (silent-skip patterns):
+Rejected — silent-skip patterns (no WHY at all):
   - out of scope               (what makes it out of scope?)
   - not in scope               (same)
   - follow-up                  (waiting on what?)
@@ -56,11 +57,25 @@ Rejected (silent-skip patterns):
   - later / not now            (no WHY)
   - low priority               (rank, not reason)
 
-Reach for wave-append before deferral when the finding is same-surface to
-your active work — see /mark-deferred SKILL.md "When NOT to use".
+Rejected (v1.35.0) — effort excuses (the WHY names the WORK, not an
+EXTERNAL blocker the work is waiting on):
+  - requires significant effort / requires more time / requires too much rework
+  - blocked by complexity / blocked by bandwidth / blocked by my context budget
+  - needs more focus / needs deep investigation / needs a refactor first
+  - awaiting more focus / awaiting capacity
+  - tracks to a future session / pending future session / superseded by future work
+  - because too big / due to size / due to effort required
+
+The rule: a legitimate WHY names what you are WAITING ON (a migration,
+a ticket, a stakeholder, a dependency, a successor F-id), not what the
+WORK COSTS or how MUCH effort it takes. If the deferred finding is
+same-surface to your active work, prefer wave-append (record-finding-list.sh
+add-finding + assign-wave) over deferral — see /mark-deferred SKILL.md
+"When NOT to use".
 
 Override (last resort, audited): set OMC_MARK_DEFERRED_STRICT=off in the
-environment or oh-my-claude.conf. Prefer rewriting the reason instead.
+environment or oh-my-claude.conf. Bypasses are recorded to gate_events.jsonl
+and surface in /ulw-report. Prefer rewriting the reason instead.
 EOF
   exit 2
 fi

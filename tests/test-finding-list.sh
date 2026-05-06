@@ -183,7 +183,7 @@ echo '[
 # All three should land cleanly (no lost updates, no JSON corruption).
 "${SCRIPT}" status F-100 shipped sha100abc "concurrent-A" &
 pid1=$!
-"${SCRIPT}" status F-101 deferred "" "concurrent-B" &
+"${SCRIPT}" status F-101 deferred "" "blocked by concurrent-B race fixture" &
 pid2=$!
 "${SCRIPT}" assign-wave 1 1 "concurrency-test" F-100 F-101 F-102 &
 pid3=$!
@@ -488,7 +488,7 @@ echo '[
   {"id":"F-T03","summary":"already rejected","severity":"low","surface":"z"}
 ]' | "${SCRIPT}" init --force >/dev/null
 "${SCRIPT}" status F-T01 shipped abc1234 "" >/dev/null
-"${SCRIPT}" status F-T02 deferred "" "out of scope" >/dev/null
+"${SCRIPT}" status F-T02 deferred "" "superseded by F-T01 fixture" >/dev/null
 "${SCRIPT}" status F-T03 rejected "" "not reproducible" >/dev/null
 
 for terminal_id in F-T01 F-T02 F-T03; do
@@ -571,6 +571,114 @@ done
 status_line="$("${SCRIPT}" status-line)"
 assert_contains "5x1 plan flagged under-segmented" "under-segmented" "${status_line}"
 assert_contains "avg=1 reported" "avg 1/wave" "${status_line}"
+
+
+# ===========================================================================
+# v1.35.0 — require-WHY validation on status deferred|rejected
+#
+# Wave 1 of v1.35.0 wired omc_reason_has_concrete_why into the
+# record-finding-list status path so the model can no longer mark
+# findings deferred or rejected with weak reasons (parallel to the
+# /mark-deferred and record-scope-checklist defenses). Tests below
+# pin both the rejection of weak reasons AND the preservation of
+# legitimate ones, plus the kill-switch and bypass-audit behaviors.
+# ===========================================================================
+
+printf '\n=== v1.35.0 — status deferred|rejected validator ===\n'
+
+# Set up a fresh plan with three pending findings to exercise the validator.
+echo '[
+  {"id":"F-V01","summary":"a","severity":"high","surface":"x"},
+  {"id":"F-V02","summary":"b","severity":"high","surface":"y"},
+  {"id":"F-V03","summary":"c","severity":"high","surface":"z"}
+]' | "${SCRIPT}" init --force >/dev/null
+
+# Test V1.35-01: weak deferred reason rejected
+set +e
+out="$("${SCRIPT}" status F-V01 deferred "" "out of scope" 2>&1)"; rc=$?
+set -e
+assert_eq "deferred 'out of scope': exit 2" "2" "${rc}"
+assert_contains "deferred 'out of scope': error names rule" "must name a concrete WHY" "${out}"
+# Row stays pending because rejection precedes write.
+v01_status="$(jq -r '.findings[]|select(.id=="F-V01")|.status' "${findings_path}")"
+assert_eq "deferred 'out of scope': F-V01 stays pending" "pending" "${v01_status}"
+
+# Test V1.35-02: weak rejected reason rejected (rejected status path)
+set +e
+out="$("${SCRIPT}" status F-V01 rejected "" "later" 2>&1)"; rc=$?
+set -e
+assert_eq "rejected 'later': exit 2" "2" "${rc}"
+assert_contains "rejected 'later': error names rule" "must name a concrete WHY" "${out}"
+v01_status="$(jq -r '.findings[]|select(.id=="F-V01")|.status' "${findings_path}")"
+assert_eq "rejected 'later': F-V01 stays pending" "pending" "${v01_status}"
+
+# Test V1.35-03: effort excuse rejected on deferred path
+set +e
+out="$("${SCRIPT}" status F-V01 deferred "" "requires significant effort" 2>&1)"; rc=$?
+set -e
+assert_eq "deferred 'requires significant effort': exit 2" "2" "${rc}"
+assert_contains "effort excuse: error message present" "effort excuse" "${out}"
+
+# Test V1.35-04: legitimate reason passes on deferred path
+"${SCRIPT}" status F-V01 deferred "" "blocked by F-V02 fix shipping first" >/dev/null
+v01_status="$(jq -r '.findings[]|select(.id=="F-V01")|.status' "${findings_path}")"
+v01_notes="$(jq -r '.findings[]|select(.id=="F-V01")|.notes' "${findings_path}")"
+assert_eq "deferred legit: F-V01 status=deferred" "deferred" "${v01_status}"
+assert_eq "deferred legit: notes preserved" "blocked by F-V02 fix shipping first" "${v01_notes}"
+
+# Test V1.35-05: legitimate rejected reason passes
+"${SCRIPT}" status F-V02 rejected "" "false positive" >/dev/null
+v02_status="$(jq -r '.findings[]|select(.id=="F-V02")|.status' "${findings_path}")"
+assert_eq "rejected 'false positive': F-V02 status=rejected" "rejected" "${v02_status}"
+
+# Test V1.35-06: empty notes on deferred path is permitted (preserves
+# prior notes; same backward-compat as v1.34.x). The validator only
+# fires when non-empty notes are provided.
+"${SCRIPT}" status F-V03 deferred "" "" >/dev/null 2>&1 || true
+v03_status="$(jq -r '.findings[]|select(.id=="F-V03")|.status' "${findings_path}")"
+assert_eq "deferred empty-notes: F-V03 status=deferred" "deferred" "${v03_status}"
+
+# Test V1.35-07: shipped path unchanged (descriptive notes accepted, no validation)
+echo '[
+  {"id":"F-S01","summary":"shipped-test","severity":"high","surface":"x"}
+]' | "${SCRIPT}" init --force >/dev/null
+"${SCRIPT}" status F-S01 shipped abc1234 "this is a descriptive commit summary" >/dev/null
+s01_status="$(jq -r '.findings[]|select(.id=="F-S01")|.status' "${findings_path}")"
+assert_eq "shipped: F-S01 status=shipped" "shipped" "${s01_status}"
+
+# Test V1.35-08: kill switch — OMC_MARK_DEFERRED_STRICT=off bypasses validator
+echo '[
+  {"id":"F-K01","summary":"kill-switch-test","severity":"high","surface":"x"}
+]' | "${SCRIPT}" init --force >/dev/null
+OMC_MARK_DEFERRED_STRICT=off "${SCRIPT}" status F-K01 deferred "" "out of scope" >/dev/null
+k01_status="$(jq -r '.findings[]|select(.id=="F-K01")|.status' "${findings_path}")"
+assert_eq "kill-switch: F-K01 status=deferred" "deferred" "${k01_status}"
+
+# Test V1.35-09: bypass audit row — when OMC_MARK_DEFERRED_STRICT=off
+# AND the reason would have been rejected, gate_events.jsonl gets a
+# strict-bypass row. Mirrors the audit shape used by mark-deferred.sh.
+# events_file lives in the same session dir as findings.json.
+events_file="$(dirname "${findings_path}")/gate_events.jsonl"
+events_content="$(cat "${events_file}" 2>/dev/null || echo '')"
+assert_contains "bypass audit: gate=finding-status" '"gate":"finding-status"' "${events_content}"
+assert_contains "bypass audit: event=strict-bypass" '"event":"strict-bypass"' "${events_content}"
+assert_contains "bypass audit: reason captured" "out of scope" "${events_content}"
+
+# Test V1.35-10: bypass row absent when reason would have passed.
+# Reset events file and exercise a valid reason via kill-switch.
+echo '[
+  {"id":"F-K02","summary":"kill-switch-valid-test","severity":"high","surface":"x"}
+]' | "${SCRIPT}" init --force >/dev/null
+rm -f "${events_file}"
+OMC_MARK_DEFERRED_STRICT=off "${SCRIPT}" status F-K02 deferred "" "blocked by F-051 shipping first" >/dev/null
+events_after="$(cat "${events_file}" 2>/dev/null || echo '')"
+case "${events_after}" in
+  *strict-bypass*)
+    printf '  FAIL: V1.35-10: strict-bypass row should NOT fire for valid reason\n    actual: %s\n' "${events_after}" >&2
+    fail=$((fail + 1)) ;;
+  *)
+    pass=$((pass + 1)) ;;
+esac
 
 printf '\n=== Finding-List Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]
