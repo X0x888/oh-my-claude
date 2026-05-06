@@ -1035,6 +1035,69 @@ case "$(timing_display_width "${mixed}")" in
 esac
 
 # ----------------------------------------------------------------------
+# T44 (v1.34.1+ product-lens P-004 / trust-accrual): when the session
+# state has serendipity_count > 0 OR (resolved gate blocks AND outcome ==
+# completed/released), stop-time-summary prepends an "─── Outcome ───"
+# line above the time card. When NO signal exists, the line is silent
+# (silence is honest when nothing was caught).
+printf 'Test 44: stop-time-summary prepends Outcome line when serendipity > 0\n'
+hook44_root="$(mktemp -d)"
+hook44_session="hook-test-44"
+hook44_dir="${hook44_root}/${hook44_session}"
+mkdir -p "${hook44_dir}"
+hook44_log="${hook44_dir}/timing.jsonl"
+now_ts="$(now_epoch)"
+# Manufacture a 12s session shape (re-use the T29 pattern).
+jq -nc --argjson ts "${now_ts}" --argjson seq 1 '{kind:"prompt_start",ts:$ts,prompt_seq:$seq}' >> "${hook44_log}"
+jq -nc --argjson ts "${now_ts}" --arg tool "Bash" --argjson seq 1 '{kind:"start",ts:$ts,tool:$tool,prompt_seq:$seq}' >> "${hook44_log}"
+jq -nc --argjson ts "$(( now_ts + 12 ))" --arg tool "Bash" --argjson seq 1 '{kind:"end",ts:$ts,tool:$tool,prompt_seq:$seq}' >> "${hook44_log}"
+jq -nc --argjson ts "$(( now_ts + 12 ))" --argjson seq 1 --argjson dur 12 '{kind:"prompt_end",ts:$ts,prompt_seq:$seq,duration_s:$dur}' >> "${hook44_log}"
+# State carries serendipity_count=2 — should produce an Outcome line.
+jq -nc --arg sid "${hook44_session}" '{prompt_seq:1,session_id:$sid,serendipity_count:"2"}' > "${hook44_dir}/session_state.json"
+hook44_payload="$(jq -nc --arg sid "${hook44_session}" '{session_id:$sid}')"
+hook44_out="$(STATE_ROOT="${hook44_root}" HOME="${HOME}" \
+  bash "${SCRIPTS_DIR}/stop-time-summary.sh" <<<"${hook44_payload}" 2>&1 || true)"
+ctx44="$(printf '%s' "${hook44_out}" \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("systemMessage",""))' \
+  2>/dev/null || printf '')"
+case "${ctx44}" in
+  *"─── Outcome ───"*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: T44 — Outcome line missing when serendipity_count=2\n%s\n' "${ctx44}" >&2; fail=$((fail + 1)) ;;
+esac
+case "${ctx44}" in
+  *"adjacent fix"*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: T44 — Outcome line did not name "adjacent fix"\n' >&2; fail=$((fail + 1)) ;;
+esac
+
+printf 'Test 45: stop-time-summary outcome line is silent when no signal\n'
+hook45_root="$(mktemp -d)"
+hook45_session="hook-test-45"
+hook45_dir="${hook45_root}/${hook45_session}"
+mkdir -p "${hook45_dir}"
+hook45_log="${hook45_dir}/timing.jsonl"
+now_ts="$(now_epoch)"
+jq -nc --argjson ts "${now_ts}" --argjson seq 1 '{kind:"prompt_start",ts:$ts,prompt_seq:$seq}' >> "${hook45_log}"
+jq -nc --argjson ts "${now_ts}" --arg tool "Bash" --argjson seq 1 '{kind:"start",ts:$ts,tool:$tool,prompt_seq:$seq}' >> "${hook45_log}"
+jq -nc --argjson ts "$(( now_ts + 12 ))" --arg tool "Bash" --argjson seq 1 '{kind:"end",ts:$ts,tool:$tool,prompt_seq:$seq}' >> "${hook45_log}"
+jq -nc --argjson ts "$(( now_ts + 12 ))" --argjson seq 1 --argjson dur 12 '{kind:"prompt_end",ts:$ts,prompt_seq:$seq,duration_s:$dur}' >> "${hook45_log}"
+# State has zero signal — Outcome line must be silent.
+jq -nc --arg sid "${hook45_session}" '{prompt_seq:1,session_id:$sid}' > "${hook45_dir}/session_state.json"
+hook45_payload="$(jq -nc --arg sid "${hook45_session}" '{session_id:$sid}')"
+hook45_out="$(STATE_ROOT="${hook45_root}" HOME="${HOME}" \
+  bash "${SCRIPTS_DIR}/stop-time-summary.sh" <<<"${hook45_payload}" 2>&1 || true)"
+ctx45="$(printf '%s' "${hook45_out}" \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("systemMessage",""))' \
+  2>/dev/null || printf '')"
+case "${ctx45}" in
+  *"─── Outcome ───"*) printf '  FAIL: T45 — Outcome line emitted with no signal\n%s\n' "${ctx45}" >&2; fail=$((fail + 1)) ;;
+  *) pass=$((pass + 1)) ;;
+esac
+case "${ctx45}" in
+  *"─── Time breakdown ───"*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: T45 — Time breakdown still required even when no Outcome\n' >&2; fail=$((fail + 1)) ;;
+esac
+
+# ----------------------------------------------------------------------
 # v1.34.1+ (data-lens D-002 / design-lens X-002): aggregator must surface
 # `concurrent_overhead_s` as a positive quantity when parallel agent/tool
 # work outran walltime. Prevents the broken "agents 32% + tools 58% +

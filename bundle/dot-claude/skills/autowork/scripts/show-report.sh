@@ -128,9 +128,16 @@ if [[ "${SHARE_MODE}" -eq 1 ]]; then
     cutoff_ts="$(jq -r '.start_ts // 0 | tonumber? // 0' "${_share_sessions_src}" 2>/dev/null || echo 0)"
   fi
 
-  printf '## oh-my-claude — %s\n\n' "${window_label}"
-  printf '_Privacy-safe digest. Numbers and distributions only._\n\n'
-  # Sessions in window — count only.
+  # v1.34.1+ (growth-lens G-002): make --share a real shareable card.
+  # Pre-fix the output read as a debug dump (counts in raw bullets, no
+  # narrative, contradictory numbers when sessions=0 but gate-events
+  # ledger has rows). The new shape leads with a one-line headline,
+  # adds a time-saved estimate, and ends with a copy-paste-to-Twitter
+  # line. Suppresses bullets entirely when sessions=0 (no signal).
+  _share_sessions=0
+  _share_blocks=0
+  _share_dispatches=0
+  _share_serendipity=0
   if [[ -f "${_share_sessions_src}" ]] && [[ -s "${_share_sessions_src}" ]]; then
     _share_sessions="$(jq -s --argjson cutoff "${cutoff_ts}" \
       'map(select((.start_ts // 0 | tonumber? // 0) >= $cutoff)) | length' \
@@ -145,33 +152,90 @@ if [[ "${SHARE_MODE}" -eq 1 ]]; then
     _share_dispatches="$(jq -s --argjson cutoff "${cutoff_ts}" \
       'map(select((.start_ts // 0 | tonumber? // 0) >= $cutoff) | .dispatches // 0) | add // 0' \
       "${_share_sessions_src}" 2>/dev/null || echo 0)"
-    # Use `printf -- 'fmt'` to prevent the leading dash being parsed as a flag.
-    printf -- '- **Sessions:** %s\n' "${_share_sessions}"
-    printf -- '- **Quality-gate blocks (caught issues):** %s\n' "${_share_blocks}"
-    printf -- '- **Specialist dispatches:** %s\n' "${_share_dispatches}"
   fi
-  # Serendipity catches — count only, never the fix text.
   if [[ -f "${SERENDIPITY_FILE}" ]] && [[ -s "${SERENDIPITY_FILE}" ]]; then
     _share_serendipity="$(jq -s --argjson cutoff "${cutoff_ts}" \
       'map(select(((.ts // 0) | tonumber? // 0) >= $cutoff)) | length' \
       "${SERENDIPITY_FILE}" 2>/dev/null || echo 0)"
-    printf -- '- **Serendipity Rule fires (adjacent defects caught):** %s\n' "${_share_serendipity}"
   fi
-  # Gate-event distribution — gate names + counts only, never the
-  # `reason` / `details` payloads (which can carry arbitrary text).
-  if [[ -f "${GATE_EVENTS_FILE}" ]] && [[ -s "${GATE_EVENTS_FILE}" ]]; then
-    _share_gate_distrib="$(jq -sr --argjson cutoff "${cutoff_ts}" \
-      'map(select((.ts // 0) >= $cutoff))
-       | map(.gate)
-       | group_by(.) | map({gate: .[0], n: length})
-       | sort_by(-.n) | .[0:10]
-       | .[] | "  • \(.gate): \(.n)"' \
-      "${GATE_EVENTS_FILE}" 2>/dev/null || true)"
-    if [[ -n "${_share_gate_distrib}" ]]; then
-      printf '\n**Top gates by fire count:**\n'
-      printf '%s\n' "${_share_gate_distrib}"
+
+  # Time-saved heuristic. Each gate block represents an issue the
+  # harness caught BEFORE the user shipped — a debugging cycle the
+  # user did not have to run. 8 minutes per gate-block is a deliberately
+  # conservative estimate of avoided cost (a real debugging cycle on
+  # missed test / low-confidence verification / failed review usually
+  # costs 15-45 minutes; the 8min floor keeps the claim defensible).
+  # Serendipity catches add another ~5 minutes each (the "I would have
+  # noticed this myself" probability on adjacent defects is much
+  # higher than for verified-test gaps). Math is integer arithmetic
+  # in seconds so the formatter falls through to the timing_fmt_secs
+  # helper consistently.
+  _share_caught_total=$(( _share_blocks + _share_serendipity ))
+  _share_saved_secs=$(( _share_blocks * 480 + _share_serendipity * 300 ))
+  _share_saved_human="$(timing_fmt_secs "${_share_saved_secs}" 2>/dev/null || printf '%ds' "${_share_saved_secs}")"
+
+  printf '## oh-my-claude — %s\n\n' "${window_label}"
+
+  # Headline line — the share-friendly one-liner. Only emit when there
+  # is something to brag about. Pre-fix the card showed "Sessions: 0"
+  # next to "Top gates: 280 events" which read as broken.
+  if [[ "${_share_sessions}" -gt 0 ]]; then
+    printf '**Caught %s issue%s across %s session%s.** Estimated time saved: ~%s of debugging.\n\n' \
+      "${_share_caught_total}" \
+      "$( [[ "${_share_caught_total}" == "1" ]] && printf '' || printf 's' )" \
+      "${_share_sessions}" \
+      "$( [[ "${_share_sessions}" == "1" ]] && printf '' || printf 's' )" \
+      "${_share_saved_human}"
+  else
+    printf '_No sessions in window — nothing to share yet. Run /ulw <task> to start._\n\n'
+  fi
+
+  printf '_Privacy-safe digest. Numbers and distributions only._\n\n'
+
+  # Detail bullets — only when there's actual session activity.
+  if [[ "${_share_sessions}" -gt 0 ]]; then
+    printf -- '- **Sessions:** %s\n' "${_share_sessions}"
+    printf -- '- **Quality-gate blocks (caught issues):** %s\n' "${_share_blocks}"
+    printf -- '- **Specialist dispatches:** %s\n' "${_share_dispatches}"
+    if [[ "${_share_serendipity}" -gt 0 ]]; then
+      printf -- '- **Serendipity Rule fires (adjacent defects caught):** %s\n' "${_share_serendipity}"
     fi
+    # Gate-event distribution — gate names + counts only, never the
+    # `reason` / `details` payloads (which can carry arbitrary text).
+    if [[ -f "${GATE_EVENTS_FILE}" ]] && [[ -s "${GATE_EVENTS_FILE}" ]]; then
+      _share_gate_distrib="$(jq -sr --argjson cutoff "${cutoff_ts}" \
+        'map(select((.ts // 0) >= $cutoff))
+         | map(.gate)
+         | group_by(.) | map({gate: .[0], n: length})
+         | sort_by(-.n) | .[0:10]
+         | .[] | "  • \(.gate): \(.n)"' \
+        "${GATE_EVENTS_FILE}" 2>/dev/null || true)"
+      if [[ -n "${_share_gate_distrib}" ]]; then
+        printf '\n**Top gates by fire count:**\n'
+        printf '%s\n' "${_share_gate_distrib}"
+      fi
+    fi
+
+    # Copy-paste-friendly one-liner at the bottom — the line a user
+    # actually pastes into Slack/Twitter without editing.
+    case "${MODE}" in
+      week)  _share_window_phrase="this week" ;;
+      month) _share_window_phrase="this month" ;;
+      all)   _share_window_phrase="to date" ;;
+      last)  _share_window_phrase="this session" ;;
+      *)     _share_window_phrase="${window_label}" ;;
+    esac
+    printf '\n---\n\n'
+    printf '_Share-friendly one-liner:_\n'
+    printf '> oh-my-claude caught %s issue%s across %s session%s %s (~%s saved).\n' \
+      "${_share_caught_total}" \
+      "$( [[ "${_share_caught_total}" == "1" ]] && printf '' || printf 's' )" \
+      "${_share_sessions}" \
+      "$( [[ "${_share_sessions}" == "1" ]] && printf '' || printf 's' )" \
+      "${_share_window_phrase}" \
+      "${_share_saved_human}"
   fi
+
   printf '\n_Generated by [oh-my-claude](https://github.com/X0x888/oh-my-claude). All free-text fields suppressed; numbers and gate-name distribution only._\n'
   # Clean up the MODE=last temp file (if we created one).
   if [[ "${_share_sessions_src}" != "${SUMMARY_FILE}" ]] && [[ -f "${_share_sessions_src}" ]]; then

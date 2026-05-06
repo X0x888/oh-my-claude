@@ -117,13 +117,61 @@ _card_threshold="${OMC_TIME_CARD_MIN_SECONDS:-5}"
 if (( walltime_s >= _card_threshold )); then
   epilogue="$(timing_format_full "${agg}" "Time breakdown")"
   if [[ -n "${epilogue}" ]]; then
+    # v1.34.1+ (product-lens P-004 / trust-accrual): when this session
+    # had concrete outcomes the user should see, prepend a one-line
+    # outcome card above the time breakdown. Outcomes counted:
+    #   - Serendipity Rule fires (verified adjacent defects fixed)
+    #   - Quality / discovered-scope / wave-shape blocks RESOLVED
+    #     (block fired AND session ended cleanly — outcome=completed/
+    #     released, not exhausted)
+    # Surfaces value passively so users don't have to run /ulw-report
+    # to learn the harness is helping. Skip when there is no signal
+    # (no blocks, no Serendipity) — silence is honest when nothing
+    # was caught.
+    _outcome_line=""
+    _outcome_serendipity="$(read_state "serendipity_count" 2>/dev/null || true)"
+    _outcome_serendipity="${_outcome_serendipity:-0}"
+    [[ "${_outcome_serendipity}" =~ ^[0-9]+$ ]] || _outcome_serendipity=0
+    _outcome_blocks="$(read_state "stop_guard_blocks" 2>/dev/null || true)"
+    _outcome_blocks="${_outcome_blocks:-0}"
+    [[ "${_outcome_blocks}" =~ ^[0-9]+$ ]] || _outcome_blocks=0
+    _outcome_scope="$(read_state "discovered_scope_blocks" 2>/dev/null || true)"
+    _outcome_scope="${_outcome_scope:-0}"
+    [[ "${_outcome_scope}" =~ ^[0-9]+$ ]] || _outcome_scope=0
+    _outcome_status="$(read_state "session_outcome" 2>/dev/null || true)"
+    # Only count blocks as "caught" when the session ended with a clean
+    # outcome (gates resolved, not exhausted). An exhausted session means
+    # the gates fired but didn't get satisfied — that's a steering load,
+    # not a value claim.
+    _outcome_blocks_resolved=0
+    if [[ "${_outcome_status}" == "completed" || "${_outcome_status}" == "released" ]]; then
+      _outcome_blocks_resolved=$(( _outcome_blocks + _outcome_scope ))
+    fi
+    if (( _outcome_blocks_resolved > 0 )) || (( _outcome_serendipity > 0 )); then
+      _outcome_parts=()
+      if (( _outcome_blocks_resolved > 0 )); then
+        _outcome_parts+=("${_outcome_blocks_resolved} gate$( (( _outcome_blocks_resolved == 1 )) && printf '' || printf 's' ) caught + resolved")
+      fi
+      if (( _outcome_serendipity > 0 )); then
+        _outcome_parts+=("${_outcome_serendipity} adjacent fix$( (( _outcome_serendipity == 1 )) && printf '' || printf 'es' ) (Serendipity)")
+      fi
+      _outcome_joined=""
+      for _p in "${_outcome_parts[@]}"; do
+        if [[ -z "${_outcome_joined}" ]]; then
+          _outcome_joined="${_p}"
+        else
+          _outcome_joined="${_outcome_joined} · ${_p}"
+        fi
+      done
+      _outcome_line="─── Outcome ─── ${_outcome_joined}"$'\n'
+    fi
     # emit_stop_message (common.sh, v1.30.0) encodes the contract: Stop
     # hooks render via top-level `systemMessage`; `hookSpecificOutput.
     # additionalContext` is silently dropped by Claude Code at Stop /
     # SubagentStop. Centralizing the schema in a primitive prevents the
     # next Stop-hook author from accidentally repeating the v1.24.0 /
     # v1.25.0 bug. See CLAUDE.md "Stop hook output schema".
-    emit_stop_message "${epilogue}"
+    emit_stop_message "${_outcome_line}${epilogue}"
   fi
 fi
 
