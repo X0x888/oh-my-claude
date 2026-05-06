@@ -15,6 +15,7 @@ Window selection:
 
 Modifiers:
 - `--share` (v1.31.0) — privacy-safe digest. Sessions / quality-gate-blocks / specialist-dispatches / Serendipity-fires counts plus the top-10 gate-name distribution. Suppresses ALL free-text fields (prompt previews, gate `reason` payloads, Serendipity fix text). Suitable for posting to Slack, PRs, or social. Combine with the window argument: `/ulw-report week --share`.
+- `--field-shape-audit` (Bug B post-mortem hardening) — runs a runtime field-shape sanity check over `~/.claude/quality-pack/gate_events.jsonl` and reports any rows whose typed detail fields fail their declared shape contract. Catches Bug B-class leaks (positional misalignment landing prompt-text fragments into typed fields) directly from runtime artifacts instead of relying on source-only review. Bypasses the verbose body — emits a focused audit report and exits 1 if violations are present so it can be wired into CI / pre-release checks. Combine with the window argument: `/ulw-report all --field-shape-audit`. Detail field invariants checked: `state-corruption.archive_path` (path-shaped), `state-corruption.recovered_ts` (Unix epoch), `wave-plan.{wave_idx,wave_total,finding_count}` (non-negative int), `finding-status.{finding_id,finding_status}` (F-NN regex + enum), `bias-defense.directive` (enum). Other gates today have no typed detail invariants and pass through bounded only by the per-event 1024-char value cap (256 for state-corruption).
 
 Run the report:
 

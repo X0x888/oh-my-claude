@@ -523,11 +523,32 @@ flush_directives() {
 # Sticky pattern: clear the markers after one notice so the warning
 # fires exactly once per recovery event.
 if [[ -n "${recovered_from_corrupt_ts:-}" ]]; then
-  add_directive "state_recovery" "**STATE RECOVERY — surface this to the user.** The previous \`session_state.json\` was corrupted and has been archived to \`${recovered_from_corrupt_archive:-(unknown path)}\`. Quality gates were silently disarmed for the prior turn (every \`read_state\` returned empty, so the stop-guard's intent gate evaluated false and skipped review/verify enforcement). Lead your first response to this prompt with a one-line acknowledgment of this notice and a recommendation to audit the most recent commits/edits before continuing. The harness has reset and will resume normal gate enforcement from this prompt forward."
+  # Per-session recovery counter (Bug B post-mortem rule #3). State
+  # recovery firing repeatedly within a session is almost always a
+  # bug in the recovery itself, not real corruption — the v1.27.0 →
+  # v1.34.0 Bug B leak presented as a recovery firing on EVERY
+  # multi-line prompt for five releases without anyone noticing.
+  # The counter lives in a sidecar (.recovery_count) that survives
+  # the JSON-state archive in lib/state-io.sh:_ensure_valid_state.
+  _recovery_count_file="$(session_file ".recovery_count")"
+  _recovery_count="$(cat "${_recovery_count_file}" 2>/dev/null || printf '0')"
+  [[ "${_recovery_count}" =~ ^[0-9]+$ ]] || _recovery_count=0
+
+  if [[ "${_recovery_count}" -ge 2 ]]; then
+    # Escalated directive — the recovery has fired ≥2 times in this
+    # session, which is the alarm threshold per the Bug B post-mortem.
+    # Phrasing is intentionally direct: when this fires, the user's
+    # next action should be to investigate the recovery code path,
+    # NOT to trust the recovered state and continue.
+    add_directive "state_recovery_alarm" "**STATE RECOVERY ALARM — surface this to the user with high prominence.** The corrupt-state recovery has fired \`${_recovery_count}\` times in this session. **Recovery firing repeatedly is almost always a bug in the recovery itself**, NOT real corruption — the v1.34.x Bug B post-mortem documents the canonical example (false-positive recovery fired every multi-line prompt for five releases before anyone noticed). Surface this notice, recommend the user (a) audit \`bundle/dot-claude/skills/autowork/scripts/lib/state-io.sh:_ensure_valid_state\` for a recently-introduced false-positive, (b) inspect the archived state files at \`${recovered_from_corrupt_archive:-(unknown path)}\` and its siblings to confirm the JSON was actually invalid, and (c) consider \`/ulw-pause\` until the recovery loop is investigated. Do NOT keep working as if the harness recovered cleanly; the alarm is the point."
+  else
+    add_directive "state_recovery" "**STATE RECOVERY — surface this to the user.** The previous \`session_state.json\` was corrupted and has been archived to \`${recovered_from_corrupt_archive:-(unknown path)}\`. Quality gates were silently disarmed for the prior turn (every \`read_state\` returned empty, so the stop-guard's intent gate evaluated false and skipped review/verify enforcement). Lead your first response to this prompt with a one-line acknowledgment of this notice and a recommendation to audit the most recent commits/edits before continuing. The harness has reset and will resume normal gate enforcement from this prompt forward."
+  fi
   record_gate_event "state-corruption" "recovered" \
     archive_path="${recovered_from_corrupt_archive:-}" \
-    recovered_ts="${recovered_from_corrupt_ts}"
-  log_anomaly "prompt-intent-router" "surfaced corrupt-state recovery from ${recovered_from_corrupt_archive:-unknown}"
+    recovered_ts="${recovered_from_corrupt_ts}" \
+    recovery_count="${_recovery_count}"
+  log_anomaly "prompt-intent-router" "surfaced corrupt-state recovery (count=${_recovery_count}) from ${recovered_from_corrupt_archive:-unknown}"
   # Sticky-marker clear. Intentionally NOT redirected `2>/dev/null` so a
   # `with_state_lock` exhaustion (the very anomaly Wave 1 just made
   # visible in state-io.sh) surfaces in hooks.log. On lock failure the

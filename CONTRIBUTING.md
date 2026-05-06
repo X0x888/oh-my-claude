@@ -104,6 +104,80 @@ All checks must pass cleanly. The pin-discipline contract (`tests/test-coordinat
 4. Exit 0 when `SESSION_ID` is missing or empty.
 5. Register the hook in `config/settings.patch.json` under the appropriate event (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PreCompact`, `PostCompact`, `SubagentStop`, or `Stop`).
 
+## Quarterly self-audit cadence
+
+The Bug B post-mortem identified two structural failure modes that
+self-improve only when run as scheduled, not on-demand:
+
+1. **`/council --self-audit`** — every quarter, run a self-audit
+   council against the harness's own state-I/O, prompt-routing, and
+   gate-event surfaces. The fixed lens roster (`abstraction-critic`,
+   `oracle`, `sre-lens`, `quality-researcher`) is sized for
+   contract-shape and lifecycle review of the harness itself, not
+   user projects. Phase 8 is opt-in: surface findings; defer
+   implementation to a separate session unless a finding is
+   critical.
+
+2. **`tools/cluster-unknown-defects.sh`** — every quarter, run a
+   clustering pass against the `unknown` bucket of
+   `~/.claude/quality-pack/defect-patterns.json`. The script samples
+   stored examples, surfaces top tokens / bigrams / path mentions,
+   and produces a markdown candidate-cluster report. If a cluster
+   emerges (multiple defects sharing a token/path/bigram), codify
+   it as a new classifier category in
+   `bundle/dot-claude/skills/autowork/scripts/lib/classifier.sh`
+   with a regression net in `tests/test-classifier.sh`. Without
+   this pass, defects the auto-classifier can't categorize accumulate
+   into the unknown bucket and silently fall out of review — the
+   "unbinned-signal-loss" anti-pattern from the Bug B post-mortem.
+
+Both passes are intentionally cheap to run (a council dispatch + a
+shell-tool invocation) so the quarterly cost is bounded. `/ulw-report`
+nudges to run #2 when the unknown bucket exceeds 50 entries; #1 has
+no auto-trigger today and relies on calendar discipline.
+
+## Fixture realism rule
+
+**Bug B post-mortem rule (v1.34.x).** Any new test that exercises a
+**positional-decode helper, bulk-read API, or any code path that
+round-trips arbitrary user-controlled strings through `session_state.json`
+or another harness-managed value store** MUST exercise the helper
+against the adversarial value set defined in `tests/lib/value-shapes.sh`.
+
+The 12 adversarial classes cover the failure modes that have actually
+bitten oh-my-claude — multi-line values (Bug B), embedded ASCII RS
+(Bug B-class for the bulk-read delimiter), control bytes (ANSI
+injection adjacent), Unicode multi-byte, CRLF paste, very long values,
+and the empty/space/quote-heavy edges. Identifier-shaped fixtures
+(`"alpha"`, `"value-1"`) test the implementation the author imagined,
+not the inputs real consumers pass.
+
+### How to apply it
+
+```bash
+# In a positional-API test file:
+source "${REPO_ROOT}/tests/lib/value-shapes.sh"
+# ...
+assert_value_shape_invariants "round_trip"     write_state       read_state
+assert_bulk_value_shape_invariants "bulk_align" write_state_batch read_state_keys
+```
+
+The helpers iterate every adversarial class, increment the parent-scope
+`pass`/`fail` counters per shape, and print a diagnosable failure
+showing the offending shape label, position, and `%q`-quoted byte
+content. See `tests/test-state-io.sh:T19/T20` for the canonical use.
+
+### What violates the rule
+
+- Adding a new bulk-read or positional-decode test that uses only
+  identifier-shaped fixtures.
+- Documenting a "Consumer contract" on a helper without a regression
+  net that exercises the contract's edges (multi-line, embedded RS,
+  control bytes, very long values).
+
+`quality-reviewer` and `excellence-reviewer` are instructed to flag
+violations of this rule on any new positional-API test surface.
+
 ## Documentation Maintenance
 
 When you add, remove, or rename agents, skills, scripts, or directories, update these files:

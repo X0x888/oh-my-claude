@@ -35,11 +35,13 @@ DEFECT_PATTERNS_FILE="${QP_ROOT}/defect-patterns.json"
 # NEVER includes prompt text, gate reason free-text, or any free-form
 # string field. Distribution counts and aggregate totals only.
 SHARE_MODE=0
+FIELD_SHAPE_AUDIT=0
 NEW_ARGS=()
 for _arg in "$@"; do
   case "${_arg}" in
-    --share)  SHARE_MODE=1 ;;
-    *)        NEW_ARGS+=("${_arg}") ;;
+    --share)              SHARE_MODE=1 ;;
+    --field-shape-audit)  FIELD_SHAPE_AUDIT=1 ;;
+    *)                    NEW_ARGS+=("${_arg}") ;;
   esac
 done
 set -- "${NEW_ARGS[@]+${NEW_ARGS[@]}}"
@@ -60,6 +62,18 @@ Usage: show-report.sh [last|week|month|all] [--share]
            text, free-text reasons, or any free-form fields. Only
            counts and distributions. Combine with last|week|month|all
            to scope the window. (v1.31.0)
+  --field-shape-audit
+           Run a field-shape sanity audit over
+           ~/.claude/quality-pack/gate_events.jsonl. Per-gate-shape
+           expectations (path-shaped vs numeric vs token-shaped) are
+           checked against actual values; any rows whose detail
+           fields fail their declared shape are surfaced with the
+           offending gate, event, field, expected shape, and
+           offending excerpt. Catches the Bug B-class leak shape
+           where a positional misalignment lands prompt-text
+           fragments into typed detail fields. Bypasses the verbose
+           report body. Combine with last|week|month|all to scope
+           the audit window.
 
 Reads from ~/.claude/quality-pack/{session_summary,serendipity-log,classifier_misfires}.jsonl
 and ~/.claude/quality-pack/{agent-metrics,defect-patterns}.json.
@@ -164,6 +178,194 @@ if [[ "${SHARE_MODE}" -eq 1 ]]; then
     rm -f "${_share_sessions_src}" 2>/dev/null || true
   fi
   exit 0
+fi
+
+# v1.34.x — Field-shape audit (Bug B post-mortem rule #2).
+#
+# Walks ~/.claude/quality-pack/gate_events.jsonl and asserts every
+# row's detail fields match their gate-shape contract. The 4 leaked
+# rows in this session's pre-scrub ledger (state-corruption rows
+# carrying prompt-text fragments in archive_path) would have been
+# flagged in v1.29.0 if this audit had existed then. The audit is
+# read-only — surfaces violations, does not modify the ledger.
+#
+# Per-gate field-shape contract (the truthful shape of each detail
+# field, derived from the producer source):
+#
+#   state-corruption.recovered:
+#     details.archive_path  ~ /\.corrupt\.[0-9]+$/   (path-shaped, ends in .corrupt.<epoch>)
+#     details.recovered_ts  ~ /^[0-9]{10,}$/         (Unix epoch, ≥ 10 digits)
+#
+#   wave-plan.wave-assigned:
+#     details.wave_idx       ~ /^[0-9]+$/
+#     details.wave_total     ~ /^[0-9]+$/
+#     details.finding_count  ~ /^[0-9]+$/
+#     details.surface        ≤ 200 chars (free-text but bounded)
+#
+#   finding-status.finding-status-change:
+#     details.finding_id      ~ /^F-[0-9]+$/
+#     details.finding_status  ∈ {pending, in_progress, shipped, deferred, rejected}
+#
+#   bias-defense.directive_fired:
+#     details.directive       ∈ {prometheus-suggest, intent-verify,
+#                                exemplifying, completeness, intent-broadening,
+#                                intent-broadening-no-inventory, divergence}
+#
+# A row that violates ANY of these shapes is reported. Other gates
+# (advisory, discovered-scope, pretool-intent, quality, session-handoff,
+# wave-shape, ulw-pause, mark-deferred, canary, directive-budget,
+# delivery-contract, session-start-welcome, stop-failure) have no
+# typed detail-field invariants today; they are passed through with
+# only a generic length bound (every detail value ≤ 1024 chars per
+# the record_gate_event cap, with 256-char cap for state-corruption).
+# When a new gate adds typed detail invariants, extend this audit AND
+# the contract docstring on record_gate_event.
+if [[ "${FIELD_SHAPE_AUDIT}" -eq 1 ]]; then
+  printf '# Field-shape audit — %s\n\n' "${window_label}"
+  printf '_Source: `%s` · cutoff_ts=%s_\n\n' "${GATE_EVENTS_FILE}" "${cutoff_ts}"
+
+  if [[ ! -f "${GATE_EVENTS_FILE}" ]] || [[ ! -s "${GATE_EVENTS_FILE}" ]]; then
+    printf '_No `gate_events.jsonl` ledger to audit._\n'
+    exit 0
+  fi
+
+  # Apply window cutoff first, then audit. Materialize to a temp file
+  # so the per-gate jq passes don't re-scan the entire ledger N times.
+  _audit_window_jsonl="$(mktemp)"
+  trap 'rm -f "${_audit_window_jsonl}"' EXIT
+  if [[ "${MODE}" == "all" ]]; then
+    cp "${GATE_EVENTS_FILE}" "${_audit_window_jsonl}"
+  elif [[ "${MODE}" == "last" ]]; then
+    tail -n 200 "${GATE_EVENTS_FILE}" > "${_audit_window_jsonl}"
+  else
+    jq -c --argjson cutoff "${cutoff_ts}" 'select((.ts // 0) >= $cutoff)' \
+      "${GATE_EVENTS_FILE}" > "${_audit_window_jsonl}" 2>/dev/null || true
+  fi
+
+  _audit_total="$(wc -l < "${_audit_window_jsonl}" | tr -d '[:space:]')"
+  printf '_Audited %s row(s) in window._\n\n' "${_audit_total:-0}"
+
+  _violations=0
+  _violations_file="$(mktemp)"
+  trap 'rm -f "${_audit_window_jsonl}" "${_violations_file}"' EXIT
+
+  # Helper: emit one violation row to the violations table.
+  emit_violation() {
+    local gate="$1" event="$2" field="$3" expected="$4" got="$5" ts="$6"
+    # Truncate `got` aggressively for table render; ≤ 80 chars + ellipsis.
+    if (( ${#got} > 80 )); then
+      got="${got:0:77}…"
+    fi
+    # Replace newlines / RS / tabs / pipes in the excerpt to keep the
+    # markdown table render-safe. Pipes break the table; control bytes
+    # break terminal render and (with ANSI) could be hostile.
+    got="${got//$'\n'/␤}"
+    got="${got//$'\r'/␍}"
+    got="${got//$'\t'/␉}"
+    got="${got//$'\x1e'/␞}"
+    got="${got//|/\\|}"
+    printf '| `%s.%s` | `%s` | `%s` | `%s` | %s |\n' \
+      "${gate}" "${event}" "${field}" "${expected}" "${got}" "${ts}" >> "${_violations_file}"
+    _violations=$((_violations + 1))
+  }
+
+  # ── state-corruption.recovered ────────────────────────────────────
+  while IFS= read -r row; do
+    [[ -z "${row}" ]] && continue
+    ts="$(jq -r '.ts // "?"' <<<"${row}")"
+    archive_path="$(jq -r '.details.archive_path // ""' <<<"${row}")"
+    recovered_ts="$(jq -r '.details.recovered_ts // ""' <<<"${row}")"
+    recovery_count="$(jq -r '.details.recovery_count // ""' <<<"${row}")"
+    if [[ -n "${archive_path}" ]] && [[ ! "${archive_path}" =~ \.corrupt\.[0-9]+$ ]]; then
+      emit_violation "state-corruption" "recovered" "archive_path" \
+        "ends in .corrupt.<epoch>" "${archive_path}" "${ts}"
+    fi
+    if [[ -n "${recovered_ts}" ]] && [[ ! "${recovered_ts}" =~ ^[0-9]{10,}$ ]]; then
+      emit_violation "state-corruption" "recovered" "recovered_ts" \
+        "Unix epoch (≥10 digits)" "${recovered_ts}" "${ts}"
+    fi
+    # recovery_count is non-negative int when present (added with the
+    # Bug B post-mortem alarm — counts state-recovery fires per session
+    # and escalates the directive on the second fire).
+    if [[ -n "${recovery_count}" ]] && [[ ! "${recovery_count}" =~ ^[0-9]+$ ]]; then
+      emit_violation "state-corruption" "recovered" "recovery_count" \
+        "non-negative int" "${recovery_count}" "${ts}"
+    fi
+  done < <(jq -c 'select(.gate=="state-corruption" and .event=="recovered")' "${_audit_window_jsonl}" 2>/dev/null)
+
+  # ── wave-plan.wave-assigned ──────────────────────────────────────
+  while IFS= read -r row; do
+    [[ -z "${row}" ]] && continue
+    ts="$(jq -r '.ts // "?"' <<<"${row}")"
+    wave_idx="$(jq -r '.details.wave_idx // ""' <<<"${row}")"
+    wave_total="$(jq -r '.details.wave_total // ""' <<<"${row}")"
+    finding_count="$(jq -r '.details.finding_count // ""' <<<"${row}")"
+    surface="$(jq -r '.details.surface // ""' <<<"${row}")"
+    if [[ -n "${wave_idx}" ]] && [[ ! "${wave_idx}" =~ ^[0-9]+$ ]]; then
+      emit_violation "wave-plan" "wave-assigned" "wave_idx" "non-negative int" "${wave_idx}" "${ts}"
+    fi
+    if [[ -n "${wave_total}" ]] && [[ ! "${wave_total}" =~ ^[0-9]+$ ]]; then
+      emit_violation "wave-plan" "wave-assigned" "wave_total" "non-negative int" "${wave_total}" "${ts}"
+    fi
+    if [[ -n "${finding_count}" ]] && [[ ! "${finding_count}" =~ ^[0-9]+$ ]]; then
+      emit_violation "wave-plan" "wave-assigned" "finding_count" "non-negative int" "${finding_count}" "${ts}"
+    fi
+    if [[ -n "${surface}" ]] && (( ${#surface} > 200 )); then
+      emit_violation "wave-plan" "wave-assigned" "surface" "≤200 chars" "${surface}" "${ts}"
+    fi
+  done < <(jq -c 'select(.gate=="wave-plan" and .event=="wave-assigned")' "${_audit_window_jsonl}" 2>/dev/null)
+
+  # ── finding-status.finding-status-change ─────────────────────────
+  while IFS= read -r row; do
+    [[ -z "${row}" ]] && continue
+    ts="$(jq -r '.ts // "?"' <<<"${row}")"
+    finding_id="$(jq -r '.details.finding_id // ""' <<<"${row}")"
+    finding_status="$(jq -r '.details.finding_status // ""' <<<"${row}")"
+    if [[ -n "${finding_id}" ]] && [[ ! "${finding_id}" =~ ^F-[0-9]+$ ]]; then
+      emit_violation "finding-status" "finding-status-change" "finding_id" "F-<int>" "${finding_id}" "${ts}"
+    fi
+    if [[ -n "${finding_status}" ]]; then
+      case "${finding_status}" in
+        pending|in_progress|shipped|deferred|rejected) ;;
+        *) emit_violation "finding-status" "finding-status-change" "finding_status" \
+             "{pending,in_progress,shipped,deferred,rejected}" "${finding_status}" "${ts}" ;;
+      esac
+    fi
+  done < <(jq -c 'select(.gate=="finding-status" and .event=="finding-status-change")' "${_audit_window_jsonl}" 2>/dev/null)
+
+  # ── bias-defense.directive_fired ─────────────────────────────────
+  while IFS= read -r row; do
+    [[ -z "${row}" ]] && continue
+    ts="$(jq -r '.ts // "?"' <<<"${row}")"
+    directive="$(jq -r '.details.directive // ""' <<<"${row}")"
+    if [[ -n "${directive}" ]]; then
+      case "${directive}" in
+        prometheus-suggest|intent-verify|exemplifying|completeness|intent-broadening|intent-broadening-no-inventory|divergence) ;;
+        *) emit_violation "bias-defense" "directive_fired" "directive" \
+             "{prometheus-suggest,intent-verify,exemplifying,completeness,intent-broadening,intent-broadening-no-inventory,divergence}" \
+             "${directive}" "${ts}" ;;
+      esac
+    fi
+  done < <(jq -c 'select(.gate=="bias-defense" and .event=="directive_fired")' "${_audit_window_jsonl}" 2>/dev/null)
+
+  # ── Render result ────────────────────────────────────────────────
+  if [[ "${_violations}" -eq 0 ]]; then
+    printf '## Result: ✅ clean\n\n'
+    printf 'Every audited gate-event row matches its detail-field shape contract.\n\n'
+    printf 'Gates with typed detail invariants checked: `state-corruption`, `wave-plan`, `finding-status`, `bias-defense`.\n'
+    printf 'Other gates have no typed detail invariants today and are bounded only by the per-event 1024-char value cap (256 for state-corruption).\n'
+    exit 0
+  fi
+
+  printf '## Result: ❌ %d violation(s)\n\n' "${_violations}"
+  printf '_Each row below shows a gate event whose detail field violates its declared shape contract. Bug B-class leaks (positional misalignment dropping prompt-text into typed fields) appear here as values that fail their regex/enum/length contract._\n\n'
+  printf '| Gate.event | Field | Expected | Got (excerpt) | ts |\n'
+  printf '|---|---|---|---|---|\n'
+  cat "${_violations_file}"
+  printf '\n'
+  printf '_The full ledger is at `%s`. Investigate each violating row before scrubbing — it indicates either a producer bug, a misclassified gate event, or a contract that needs updating._\n' \
+    "${GATE_EVENTS_FILE}"
+  exit 1
 fi
 
 printf '# Harness report — %s\n\n' "${window_label}"
@@ -981,6 +1183,22 @@ if [[ -n "${_intp_reviewer_rate:-}" ]]; then
     _intp_lines+=("**Reviewers finding ${_intp_reviewer_rate}% of the time.** That is high — consider whether reviewer prompts are flagging style/preference issues alongside correctness. Tightening reviewer scope keeps signal-to-noise high.")
   elif [[ "${_intp_reviewer_rate}" -lt 10 && "${_intp_reviewed:-0}" -ge 5 ]]; then
     _intp_lines+=("**Reviewer find-rate low (${_intp_reviewer_rate}%).** Across ${_intp_reviewed} reviewed sessions, reviewers rarely surface findings. If your work is genuinely clean, no action needed — but if you suspect bugs are slipping past, narrow reviewer prompts to specific risk areas (security, concurrency, regressions).")
+  fi
+fi
+
+# Heuristic 7: Unknown defect bucket size. The Bug B post-mortem
+# named "unbinned-signal-loss" as a structural failure: defects we
+# can't classify get forgotten instead of investigated. When the
+# unknown bucket exceeds 50 entries, the report nudges the user to
+# run a quarterly clustering pass via tools/cluster-unknown-defects.sh.
+# 50 is the threshold below which a clustering pass usually has too
+# little signal to reveal a category; above it, the cumulative
+# evidence justifies the review cost.
+if [[ -f "${DEFECT_PATTERNS_FILE}" ]]; then
+  _unknown_count="$(jq -r '.unknown.count // 0' "${DEFECT_PATTERNS_FILE}" 2>/dev/null || echo 0)"
+  [[ "${_unknown_count}" =~ ^[0-9]+$ ]] || _unknown_count=0
+  if [[ "${_unknown_count}" -ge 50 ]]; then
+    _intp_lines+=("**Unknown defect bucket has ${_unknown_count} entries.** Defects the auto-classifier could not categorize accumulate into the unknown bucket and are otherwise dropped from review. Run \`tools/cluster-unknown-defects.sh\` to surface candidate clusters (top tokens, bigrams, and path mentions) — the Bug B post-mortem traced part of its longevity to this bucket never being inspected. If clusters emerge, codify them as new categories in \`lib/classifier.sh\`.")
   fi
 fi
 

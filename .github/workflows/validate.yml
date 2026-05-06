@@ -140,6 +140,18 @@ jobs:
       - name: Run state-io regression tests (v1.32.0 R1 pin)
         run: bash tests/test-state-io.sh
 
+      - name: Run consumer-contract lint tests (Bug B post-mortem hardening)
+        run: bash tests/test-consumer-contracts.sh
+
+      - name: Run field-shape-audit tests (Bug B post-mortem hardening)
+        run: bash tests/test-field-shape-audit.sh
+
+      - name: Run recovery-rate-alarm tests (Bug B post-mortem hardening)
+        run: bash tests/test-recovery-rate-alarm.sh
+
+      - name: Run self-audit + unknown-cluster tests (Bug B post-mortem hardening)
+        run: bash tests/test-self-audit-and-clusters.sh
+
       - name: Run show-report regression tests (v1.32.0 R1 pin)
         run: bash tests/test-show-report.sh
 

@@ -11,6 +11,8 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # shellcheck source=../bundle/dot-claude/skills/autowork/scripts/common.sh
 source "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh"
+# shellcheck source=lib/value-shapes.sh
+source "${REPO_ROOT}/tests/lib/value-shapes.sh"
 
 pass=0
 fail=0
@@ -427,6 +429,41 @@ _post_body() { _post_inner=1; }
 with_state_lock _post_body
 assert_eq "T18: post-nested with_state_lock still acquires + runs body" "1" "${_post_inner}"
 
+rm -rf "${STATE_ROOT:?}/${SESSION_ID:?}" 2>/dev/null || true
+unset SESSION_ID
+
+# ----------------------------------------------------------------------
+# Test 19: Fixture-realism — round-trip every adversarial value class
+#
+# Why this exists: pre-Bug-B Test 13 used identifier-shaped fixtures
+# ("alpha", "one") and missed the multi-line-value class entirely. Every
+# new positional API test from now on must run against the full
+# adversarial set (CONTRIBUTING.md "Fixture realism rule"). This test
+# is the canonical regression net for that rule on read_state /
+# write_state — without it, a future caller of read_state with a
+# value containing newlines / tabs / RS / control bytes regresses
+# silently.
+printf '\nTest 19: read_state / write_state survive every adversarial value shape\n'
+SESSION_ID="test-shape-invariants-$$"
+mkdir -p "${STATE_ROOT}/${SESSION_ID}"
+ensure_session_dir
+reset_state
+assert_value_shape_invariants "scalar_round_trip" write_state read_state
+rm -rf "${STATE_ROOT:?}/${SESSION_ID:?}" 2>/dev/null || true
+
+# ----------------------------------------------------------------------
+# Test 20: Fixture-realism — bulk read positional alignment under
+# every adversarial value class, with the offending value rotated
+# through positions 0, 3, and 5. This is the structural regression
+# net for Bug B: positions 5-6 in production hold consequence-bearing
+# recovery markers; an adversarial value at position 0 must NOT
+# overflow into those slots regardless of its byte content.
+printf '\nTest 20: read_state_keys positional alignment under adversarial value shapes\n'
+SESSION_ID="test-bulk-shape-$$"
+mkdir -p "${STATE_ROOT}/${SESSION_ID}"
+ensure_session_dir
+reset_state
+assert_bulk_value_shape_invariants "bulk_pos_align" write_state_batch read_state_keys
 rm -rf "${STATE_ROOT:?}/${SESSION_ID:?}" 2>/dev/null || true
 unset SESSION_ID
 

@@ -83,10 +83,32 @@ _ensure_valid_state() {
   fi
 
   if [[ "${needs_recovery}" -eq 1 ]]; then
-    local archive recovered_ts
+    local archive recovered_ts recovery_count_file recovery_count
     recovered_ts="$(date +%s)"
     archive="$(session_file "${STATE_JSON}.corrupt.${recovered_ts}")"
     mv "${state_file}" "${archive}" 2>/dev/null || true
+
+    # Per-session recovery counter. Lives in a sidecar file so it
+    # survives the JSON-state archive itself. The Bug B post-mortem
+    # surfaced "attractive resilience": the recovery directive
+    # looked like the harness working when in fact it was the
+    # harness mis-reading itself, firing every multi-line prompt
+    # for five releases. The user — not the harness — was the
+    # oracle that noticed the per-turn frequency. The counter
+    # converts that signal into a deterministic alarm: when
+    # recovery fires twice within a session, the user-facing
+    # directive escalates from "the harness recovered, audit recent
+    # commits" to "recovery is firing repeatedly; THIS IS ALMOST
+    # ALWAYS A BUG IN THE RECOVERY ITSELF — investigate before
+    # trusting any further session output". The escalation is the
+    # point: a recovery that fires repeatedly cannot be silently
+    # masked any more.
+    recovery_count_file="$(session_file ".recovery_count")"
+    recovery_count="$(cat "${recovery_count_file}" 2>/dev/null || printf '0')"
+    [[ "${recovery_count}" =~ ^[0-9]+$ ]] || recovery_count=0
+    recovery_count=$((recovery_count + 1))
+    printf '%s\n' "${recovery_count}" > "${recovery_count_file}" 2>/dev/null || true
+
     # Persist a sticky recovery marker on the rebuilt state. Without it,
     # subsequent `read_state task_intent` (etc.) returns empty for the
     # rest of the session, the stop-guard's intent gate evaluates to
@@ -95,10 +117,12 @@ _ensure_valid_state() {
     # nothing in the user-facing transcript signals the gates went away.
     # Both `recovered_from_corrupt_ts` and `recovered_from_corrupt_archive`
     # are read by prompt-intent-router on the next UserPromptSubmit so
-    # a systemMessage warning surfaces to the user.
+    # a systemMessage warning surfaces to the user; the recovery
+    # counter is read separately from the sidecar so it survives even
+    # the rebuilt state's archive.
     printf '{"recovered_from_corrupt_ts":%s,"recovered_from_corrupt_archive":"%s"}\n' \
       "${recovered_ts}" "${archive//\"/\\\"}" >"${state_file}"
-    log_anomaly "common" "corrupt state detected and archived: ${archive}"
+    log_anomaly "common" "corrupt state detected and archived (count=${recovery_count}): ${archive}"
   fi
 
   _state_validated=1
@@ -273,6 +297,52 @@ read_state() {
 #     _idx=$((_idx + 1))
 #   done < <(read_state_keys task_intent task_domain)
 #
+# ──────────────────────────────────────────────────────────────────
+# Consumer contract (v1.34.x — derived from Bug B post-mortem)
+# ──────────────────────────────────────────────────────────────────
+#
+# Producers (callers passing values through write_state / write_state_batch
+# that will later be read via this function) and consumers (the
+# `read -r -d $'\x1e'` loop after the call site) MUST agree on:
+#
+#   • DELIMITER: ASCII RS (byte 0x1e). Each record terminates in one
+#     RS; the consumer reads with `read -d $'\x1e'`.
+#
+#   • POSITIONAL ALIGNMENT: argv length === record count, even when
+#     keys are missing or values are empty. A 7-key call always emits
+#     7 records. The case-statement reading those records MUST cover
+#     0..(N-1); a missed branch silently drops a positional slot.
+#
+#   • VALUE SANITIZATION: ANY embedded RS byte (0x1e) inside a value
+#     is STRIPPED before the value is joined into the record stream.
+#     This is the contract that defends against the Bug B class for
+#     adversarial inputs: a single embedded RS would otherwise split
+#     the value into two records and shift every subsequent positional
+#     slot by one — re-introducing the consequence-by-position failure
+#     mode that v1.34.0's RS-delimited switchover was meant to close.
+#     Plain `read_state` does NOT strip RS — single-value reads have
+#     no delimiter to defend. If a caller needs byte-exact round-trip
+#     on values that may contain embedded control bytes, use
+#     `read_state` and accept the per-key jq fork cost.
+#     The strip is lossy by design: ASCII RS is a C0 control byte
+#     never present in legitimate textual content (multi-line prompts,
+#     code, JSON, Markdown). Real workloads never trip the strip.
+#
+#   • EMPTY VALUES: `write_state(key, "")` and "key never written"
+#     are byte-identical via this function (both emit a bare RS). Use
+#     `read_state` if the caller needs to distinguish them.
+#
+#   • CHARACTER SET: jq `-j` strips NUL (0x00) from output; producers
+#     storing NUL-bearing data cannot round-trip via this API. Other
+#     control bytes (TAB, BEL, BS, ESC, multi-byte UTF-8) pass through
+#     intact.
+#
+#   • REGRESSION NETS:
+#       - tests/test-state-io.sh:T20 (positional-alignment under all
+#         12 adversarial value shapes from tests/lib/value-shapes.sh)
+#       - tests/test-state-fuzz.sh Class 12 (multi-line value Bug B
+#         regression, the original failing case)
+#
 # v1.34.0 — switched from `\n`-delimited to RS-delimited (byte 0x1e)
 # fix the positional-misalignment defect that fired the false STATE
 # RECOVERY directive every time a stored value (e.g. multi-line
@@ -285,8 +355,14 @@ read_state() {
 # NUL was rejected as the separator because `jq -j` silently strips
 # NUL bytes from output; RS is the next-cleanest separator that jq
 # preserves and is essentially never present in textual content.
-# Regression net: tests/test-state-fuzz.sh covers multi-line values
-# under bulk read.
+# v1.34.x (Bug B post-mortem hardening) — the
+# fixture-realism rule (CONTRIBUTING.md "Fixture realism rule") added
+# a 12-shape adversarial fixture set; class-3 (embedded RS) revealed
+# that the v1.34.0 fix relied on probabilistic absence of RS in
+# values rather than a deterministic invariant. The gsub strip in the
+# jq filter below converts "essentially never present" into
+# "deterministically not present at the consumer", honoring the
+# contract above.
 #
 # Why this exists (v1.27.0 F-018/F-019): stop-guard.sh previously made
 # 41 separate `read_state` calls per Stop event, and prompt-intent-
@@ -324,7 +400,20 @@ read_state_keys() {
   # value so the caller can use `read -d $'\\x1e'` for safe delimited
   # consumption — newlines inside values pass through unchanged.
   # NUL would be cleaner but `jq -j` strips NUL bytes from output.
-  jq -j --args '$ARGS.positional[] as $k | (.[$k] // "") + "\u001e"' "$@" < "${state_file}" 2>/dev/null \
+  #
+  # The `gsub("\u001e"; "")` BEFORE the trailing-RS join enforces
+  # the value-sanitization clause of the Consumer contract above —
+  # any embedded RS in a stored value is stripped so it cannot
+  # collide with the delimiter and shift positional alignment. Without
+  # it, an adversarial value at position 0 carrying a single 0x1e byte
+  # splits into two records, overflowing into position 1 and cascading
+  # the same Bug B failure mode the v1.34.0 RS switchover was supposed
+  # to close. The strip is lossy by design — RS is a C0 control byte
+  # never present in legitimate textual content. Caught by
+  # tests/test-state-io.sh:T20 and tests/lib/value-shapes.sh class 3
+  # once the fixture-realism rule converted the implicit "essentially
+  # never" assumption into a deterministic test invariant.
+  jq -j --args '$ARGS.positional[] as $k | ((.[$k] // "") | gsub("\u001e"; "")) + "\u001e"' "$@" < "${state_file}" 2>/dev/null \
     || {
       # On jq failure (corrupt state, etc), emit empty RS-records so
       # the caller's read loop stays positionally aligned.
