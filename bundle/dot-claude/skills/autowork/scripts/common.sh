@@ -1584,15 +1584,6 @@ omc_reason_has_concrete_why() {
   # external-signal escape preserves legitimate compound reasons such as
   # "requires major refactor — superseded by F-051" and "requires
   # significant work on the auth migration".
-  #
-  # Known follow-up (v1.36+): a determined model can still launder a
-  # weak reason by appending an external token ("requires significant
-  # effort because of the migration"). The /ulw-report deferral panel
-  # logs every reject reason; if token-salad evasion appears in
-  # production telemetry, tighten to a leading-clause check anchored
-  # at the WHY keyword. For v1, the AND-NOT shape is the balanced
-  # middle ground — it rejects the obvious effort excuses without over-
-  # rejecting legitimate compound reasons.
   local weak_target_pattern='\b(effort|focus|attention|bandwidth|capacity|thinking|rework|complexity|size|length|budget|future[[:space:]]+(session|work|iteration|sprint|quarter)|next[[:space:]]+(session|sprint|quarter|iteration)|another[[:space:]]+session|follow[- ]up|more[[:space:]]+(time|effort|focus|attention|investigation|analysis|review|work|thought|consideration)|deep[[:space:]]+investigation|deeper[[:space:]]+dive|significant[[:space:]]+(work|effort|investigation|changes|change)|substantial[[:space:]]+(work|effort|changes|change)|too[[:space:]]+(big|complex|much|long|hard|deep)|refactor|non[- ]trivial|large[- ]scale)\b'
   # NOTE on 'review': intentionally NOT included as a bare external
   # signal because it is too overloaded — "needs more review" is an
@@ -1605,6 +1596,96 @@ omc_reason_has_concrete_why() {
 
   if grep -Eiq "${weak_target_pattern}" <<<"${trimmed}" \
       && ! grep -Eiq "${external_signal_pattern}" <<<"${trimmed}"; then
+    return 1
+  fi
+
+  # v1.36.0 (item #10) — Token-salad evasion close-out.
+  #
+  # Three-layer defense beyond the existing global rule above:
+  #
+  # (a) Bare-WHY rejection. `pending` / `awaiting` / `requires` /
+  #     `blocked by` alone match the why_keywords check above but
+  #     name no target — they are silent-skip patterns by another
+  #     name. Require the trimmed reason to have at least ONE token
+  #     after some WHY keyword.
+  #
+  # (b) Strip work-compounds from the FULL trimmed reason before
+  #     leading-clause analysis. Pre-fix, only the leading clause
+  #     was stripped — but `requires effort — api rework needed`
+  #     splits the noun (`api` in the 3-token window) from the
+  #     suffix (`rework` outside the window), so the strip's
+  #     adjacency requirement failed and `api` survived as an
+  #     external_signal escape. Stripping the full reason first
+  #     neutralizes whitespace-separated work-compounds regardless
+  #     of where they land relative to the WHY anchor window.
+  #
+  # (c) Multi-anchor scan. A reason like
+  #     `requires effort, needs more time, blocked by F-051`
+  #     names a real external blocker (F-051) in its third clause.
+  #     The first WHY anchor (requires effort) is dirty (weak target,
+  #     no external) but the third anchor (blocked by F-051) is clean.
+  #     Scan EVERY non-overlapping WHY anchor; if ANY is clean (no
+  #     weak_target OR has external_signal in its 3-token window),
+  #     accept. This preserves real-world multi-clause reason shapes
+  #     while still rejecting token-salad attacks where every anchor
+  #     names work-cost.
+  #
+  # 3-token window matches the user's "first 3-5 tokens" guidance with
+  # the tightest interpretation. Wider windows (5-8 tokens) let token-
+  # salad attacks pass via late-window external_signal escape.
+  #
+  # Known limitation (documented as v1.36.0 constraint): a single-
+  # clause reason like `requires effort because of F-051` REJECTs
+  # because F-051 falls one token past the 3-token window after
+  # the FIRST WHY anchor and the secondary `because` WHY is consumed
+  # by the greedy first-anchor match (no separate anchor for it).
+  # Users can rewrite to lead with the strong anchor:
+  # `blocked by F-051 (would have required effort)` PASSES.
+  local _work_suffix_re='(rework|work|effort|complexity|cleanup|refactor|investigation|analysis|change|changes|fix|fixes|rebuild)'
+  local _domain_noun_re='(migration|ticket|issue|stakeholder|legal|compliance|approval|dependency|upstream|downstream|api|database|schema|deployment|release|launch|cutover|partner|vendor|telemetry|canary|harness|middleware|module|registry|specialist|owner|team|incident|spec|rfc|proposal|design|designs|ui|frontend|backend|service|endpoint|controller|cache|queue|worker|cron|pipeline|auth|encryption|gateway|router|adapter|sdk|security)'
+  local _why_lead_re='\b(requires?|require[ds]?|need(s|ed|ing)?|block(s|ed|ing)?[[:space:]]+by|superseded[[:space:]]+by|supersedes|replaced[[:space:]]+by|replaces|pending|awaiting|awaits|wait(s|ed|ing)?[[:space:]]+(on|for)?|because|due[[:space:]]+to|tracks?[[:space:]]+to|tracked[[:space:]]+(in|at)|see[[:space:]]+(#|f-|s-|wave)|after[[:space:]]+(f-|s-|wave|ticket|issue)|until[[:space:]]+(f-|s-|wave|ticket|issue|the)|once[[:space:]]+(f-|s-|wave|the))(([[:space:]]+[^[:space:]]+){1,3})?'
+
+  # (a) Bare-WHY check: require ≥1 token after a WHY keyword that
+  # itself does not encode the ID-prefix (`see #`, `see f-`, `after
+  # wave`, etc. — those self-anchor the target via the ID prefix).
+  # Standalone `pending`, `awaiting`, `requires`, `blocked by` reject.
+  local _why_with_target_re='\b((requires?|require[ds]?|need(s|ed|ing)?|block(s|ed|ing)?[[:space:]]+by|superseded[[:space:]]+by|supersedes|replaced[[:space:]]+by|replaces|pending|awaiting|awaits|wait(s|ed|ing)?[[:space:]]+(on|for)?|because|due[[:space:]]+to|tracks?[[:space:]]+to|tracked[[:space:]]+(in|at))[[:space:]]+[^[:space:]]+|see[[:space:]]+(#|f-|s-|wave)|after[[:space:]]+(f-|s-|wave|ticket|issue)|until[[:space:]]+(f-|s-|wave|ticket|issue|the)|once[[:space:]]+(f-|s-|wave|the))'
+  if ! grep -Eiq "${_why_with_target_re}" <<<"${trimmed}"; then
+    return 1
+  fi
+
+  # (b) Strip work-compounds from the full reason.
+  local _stripped_full
+  _stripped_full="$(sed -E "s/${_domain_noun_re}-${_work_suffix_re}/ /gI" <<<"${trimmed}" 2>/dev/null \
+                      || printf '%s' "${trimmed}")"
+  _stripped_full="$(sed -E "s/${_domain_noun_re}[[:space:]]+${_work_suffix_re}/ /gI" <<<"${_stripped_full}" 2>/dev/null \
+                      || printf '%s' "${_stripped_full}")"
+
+  # (c) Multi-anchor scan. ANY clean WHY anchor accepts the reason.
+  # An anchor is "clean" iff it has a real target (not bare WHY) AND
+  # either has no weak_target OR has a compensating external_signal.
+  local _any_clean_anchor=0
+  local _candidate_lead
+  while IFS= read -r _candidate_lead; do
+    [[ -z "${_candidate_lead}" ]] && continue
+    # Skip bare-WHY anchors (just the keyword with no target). Without
+    # this check, a stripped "needs more time — backend refactor
+    # required" (where "backend refactor" was stripped) leaves
+    # "required" as a second WHY anchor that passes the cleanliness
+    # check trivially because it has no weak_target — but it also has
+    # no target at all, so it should not anchor acceptance.
+    if ! grep -Eiq "${_why_with_target_re}" <<<"${_candidate_lead}"; then
+      continue
+    fi
+    if grep -Eiq "${weak_target_pattern}" <<<"${_candidate_lead}" \
+        && ! grep -Eiq "${external_signal_pattern}" <<<"${_candidate_lead}"; then
+      continue
+    fi
+    _any_clean_anchor=1
+    break
+  done < <(grep -oiE "${_why_lead_re}" <<<"${_stripped_full}")
+
+  if [[ "${_any_clean_anchor}" -eq 0 ]]; then
     return 1
   fi
 

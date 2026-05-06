@@ -1287,30 +1287,47 @@ mv "${NEW_MANIFEST_TMP}" "${MANIFEST_PATH}"
 # unavailable" (a [warn], not a [FAIL]) so we don't break installs on
 # minimal containers without coreutils.
 #
-# Hashing the BUNDLE bytes (not CLAUDE_HOME) is intentional: rsync -a
-# at line 942 preserves bytes faithfully, so install-time bundle hash
-# == at-rest CLAUDE_HOME hash. Hashing the bundle keeps the hash-list
-# scoped to "files we shipped" — user-modified files (oh-my-claude.conf,
-# omc-user/*, settings.json post-merge, session_state.json) are NOT in
-# the bundle so they're naturally excluded.
+# v1.36.0 (item #16): hash CLAUDE_HOME bytes (not BUNDLE_CLAUDE).
+#
+# The pre-fix design hashed BUNDLE_CLAUDE under the assumption that
+# rsync -a preserves bytes faithfully so bundle hash == at-rest hash.
+# This was broken-by-design for any user with model_tier=quality or
+# model_tier=economy: apply_model_tier() runs AFTER rsync and rewrites
+# the `model:` field of every agent file in CLAUDE_HOME. The hash
+# manifest still reflects the bundle bytes (sonnet/opus original),
+# but the live files now carry the rewritten tier — so verify.sh
+# drift detection fired FAILED on every model-tier-customized install.
+# Symptom: 21 spurious actionable warnings on a clean install for a
+# user on quality tier (one per agent file with a `model:` field).
+#
+# Fix: hash the live CLAUDE_HOME files AFTER all post-rsync mutations
+# (apply_model_tier, --no-ios removals). The hash manifest now reflects
+# what's actually on disk. The MANIFEST_PATH file (written above)
+# enumerates the bundle file list; we filter to "still exists in
+# CLAUDE_HOME" so --no-ios removals are not treated as drift.
 HASHES_PATH="${CLAUDE_HOME}/quality-pack/state/installed-hashes.txt"
 NEW_HASHES_TMP="$(mktemp)"
-# Hash via xargs (single batched invocation) instead of one fork-exec
-# per file. The bundle ships ~120 files, so the loop form was 120x
-# fork overhead; xargs hands the full sorted file list as a single
-# shasum/sha256sum argv. Both tools accept multiple paths and emit
-# `<hash>  <path>` per file in argv order.
-if command -v shasum >/dev/null 2>&1; then
-  (cd "${BUNDLE_CLAUDE}" && find . -type f ! -name '.DS_Store' 2>/dev/null \
-    | sed 's|^\./||' \
-    | LC_ALL=C sort \
-    | xargs shasum -a 256) > "${NEW_HASHES_TMP}" 2>/dev/null || true
-elif command -v sha256sum >/dev/null 2>&1; then
-  (cd "${BUNDLE_CLAUDE}" && find . -type f ! -name '.DS_Store' 2>/dev/null \
-    | sed 's|^\./||' \
-    | LC_ALL=C sort \
-    | xargs sha256sum) > "${NEW_HASHES_TMP}" 2>/dev/null || true
+# Compose the hash-input list: every line in MANIFEST_PATH that still
+# resolves to an existing file under CLAUDE_HOME. mktemp form because
+# the count can be ~150 paths and we want a single batched xargs.
+HASH_INPUT_TMP="$(mktemp)"
+if [[ -f "${MANIFEST_PATH}" ]]; then
+  while IFS= read -r p; do
+    [[ -n "${p}" ]] || continue
+    [[ -f "${CLAUDE_HOME}/${p}" ]] && printf '%s\n' "${p}"
+  done < "${MANIFEST_PATH}" | LC_ALL=C sort > "${HASH_INPUT_TMP}"
 fi
+# Hash via xargs (single batched invocation) instead of one fork-exec
+# per file. Both shasum and sha256sum accept multiple paths and emit
+# `<hash>  <path>` per file in argv order.
+if [[ -s "${HASH_INPUT_TMP}" ]]; then
+  if command -v shasum >/dev/null 2>&1; then
+    (cd "${CLAUDE_HOME}" && xargs shasum -a 256 < "${HASH_INPUT_TMP}") > "${NEW_HASHES_TMP}" 2>/dev/null || true
+  elif command -v sha256sum >/dev/null 2>&1; then
+    (cd "${CLAUDE_HOME}" && xargs sha256sum < "${HASH_INPUT_TMP}") > "${NEW_HASHES_TMP}" 2>/dev/null || true
+  fi
+fi
+rm -f "${HASH_INPUT_TMP}"
 if [[ -s "${NEW_HASHES_TMP}" ]]; then
   mv "${NEW_HASHES_TMP}" "${HASHES_PATH}"
 else

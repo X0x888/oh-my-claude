@@ -611,6 +611,46 @@ else
   pass=$((pass + 1))
 fi
 
+# 10c — F-6 (Wave 4 review): regression test for SHA-256 drift fix.
+# Pre-v1.36.0 the hash manifest reflected BUNDLE bytes but
+# apply_model_tier rewrites CLAUDE_HOME agent files, so verify.sh
+# drift detection FAILED on every install with model_tier ≠ balanced.
+# Post-fix the hash manifest reflects CLAUDE_HOME bytes after all
+# post-rsync mutations, so drift check matches reality.
+#
+# We can't run verify.sh against test home easily here (it's tightly
+# scoped to ~/.claude paths). Instead we assert structural invariants
+# of the hash file: every line resolves to an existing file under
+# CLAUDE_HOME (no orphan hash entries from --no-ios removals).
+rm -rf "${TEST_HOME}"
+mkdir -p "${TEST_HOME}"
+TARGET_HOME="${TEST_HOME}" bash "${REPO_ROOT}/install.sh" --no-ios >/dev/null 2>&1 || true
+hashes_file="${TEST_HOME}/.claude/quality-pack/state/installed-hashes.txt"
+if [[ -f "${hashes_file}" ]]; then
+  orphan_hash_count=0
+  while IFS= read -r line; do
+    [[ -z "${line}" ]] && continue
+    # Each line: "<sha>  <relative-path>" — extract path and verify.
+    rel_path="$(printf '%s' "${line}" | awk '{print substr($0, index($0, $2))}')"
+    [[ -f "${TEST_HOME}/.claude/${rel_path}" ]] || orphan_hash_count=$((orphan_hash_count + 1))
+  done < "${hashes_file}"
+  if [[ "${orphan_hash_count}" -eq 0 ]]; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: hash manifest has %d entries pointing at non-existent files (--no-ios drift)\n' "${orphan_hash_count}" >&2
+    fail=$((fail + 1))
+  fi
+  # Also assert the manifest does NOT include iOS agents (excluded by --no-ios).
+  if grep -q '^[0-9a-f]\{64\}.*agents/ios-' "${hashes_file}"; then
+    printf '  FAIL: --no-ios install left iOS agents in hash manifest\n' >&2
+    fail=$((fail + 1))
+  else
+    pass=$((pass + 1))
+  fi
+else
+  printf '  SKIP: T10c — hashes file not generated (shasum/sha256sum absent?)\n'
+fi
+
 # 10b — Touch core.md so its mtime > .install-stamp mtime, then re-install.
 # Bump the file's mtime forward; touch -d / -t both work cross-platform
 # given we're not asserting an exact value. CI=1 suppresses the

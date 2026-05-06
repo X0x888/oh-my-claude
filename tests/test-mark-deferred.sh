@@ -261,7 +261,7 @@ setup_session "test-corrupt-jsonl" '{"id":"good1234","source":"metis","summary":
 this is not valid json — should fail jq transform
 {"id":"good5678","source":"metis","summary":"valid shipped","severity":"low","status":"shipped","reason":"done","ts":"102"}
 '
-out="$(bash "${MARK_DEFERRED}" "deferring corrupt-fixture batch — requires upstream cleanup" 2>&1)"
+out="$(bash "${MARK_DEFERRED}" "deferring corrupt-fixture batch — pending upstream migration" 2>&1)"
 # The valid pending row gets transformed.
 assert_contains "valid pending row deferred" "Deferred 1 pending finding" "${out}"
 # The invalid row is NOT silently preserved as "non_pending_preserved";
@@ -517,6 +517,13 @@ assert_validator_rejects "V42 needs the refactor"           "needs the refactor"
 # validator must NOT over-reject. Drawn from production usage.
 printf '\n=== v1.35.0 — legitimate reasons must PASS ===\n'
 assert_validator_passes "V43 requires database migration"   "requires database migration that would take 2 weeks to plan"
+# v1.35.0 escape-valve cases — multi-clause reasons that name an
+# external blocker in a SECOND WHY clause continue to pass under
+# v1.36.0's multi-anchor scan. "requires major refactor — superseded
+# by F-051" has two WHY anchors: the first ("requires major refactor")
+# is dirty (weak target, no external) but the second ("superseded by
+# F-051") is clean. The v1.36.0 leading-clause check accepts as long
+# as ANY anchor is clean.
 assert_validator_passes "V44 refactor superseded by F-051"  "requires major refactor — superseded by F-051"
 assert_validator_passes "V45 UI refactor pending design"    "requires UI refactor — pending design review"
 assert_validator_passes "V46 auth module refactor"          "requires auth module refactor"
@@ -573,7 +580,14 @@ assert_validator_rejects "V82 substantial change"       "requires substantial ch
 printf '\n=== v1.35.0 — adjacent legit reasons must PASS ===\n'
 assert_validator_passes "V83 analysis from data team"   "needs analysis from data team"
 assert_validator_passes "V84 review by legal"           "needs review by legal team"
-assert_validator_passes "V85 next sprint w/ stakeholder" "tracks to next sprint after stakeholder approval"
+# v1.36.0 (item #10) tightening: "next sprint" is in the 3-token leading
+# window after "tracks to" while "stakeholder approval" is at tokens 4-5
+# — outside the window. Per the new rule, leading clause names work-cost
+# without compensating external signal → REJECT. Pre-1.36.0 passed via
+# the global escape valve (stakeholder anywhere). Users can re-write as
+# "awaiting stakeholder approval (next sprint commit window)" — leading
+# with the external clause keeps the reason valid.
+assert_validator_rejects "V85 next sprint leading clause (v1.36 tightening)" "tracks to next sprint after stakeholder approval"
 assert_validator_passes "V86 large-scale + dependency"  "requires large-scale dependency upgrade"
 
 # v1.35.0 — bare ID-only must REJECT (excellence-reviewer F-2).
@@ -598,6 +612,70 @@ assert_validator_passes "V94 superseded by F-051" "superseded by F-051"
 assert_validator_passes "V95 tracks to F-001"    "tracks to F-001"
 assert_validator_passes "V96 pending #847"       "pending #847"
 assert_validator_passes "V97 awaiting wave 3"    "awaiting wave 3"
+
+# v1.36.0 (item #10) — token-salad evasion close-out.
+# Pre-fix attack patterns laundered weak reasons by appending an
+# external-noun token anywhere in the reason ("requires effort —
+# relevant adjacent api-rework" smuggles "api" past the global escape
+# valve, "requires significant effort because of the migration" puts
+# the external signal far past the WHY position). The leading-clause
+# check catches both shapes: the 3-token window after the WHY keyword
+# anchors what counts as escape, and work-compound nouns like
+# "api-rework" / "schema-cleanup" / "auth-refactor" are stripped
+# before the external-signal check so the prefix noun cannot escape.
+printf '\n=== v1.36.0 — token-salad attacks must REJECT ===\n'
+assert_validator_rejects "V100 effort+api-rework launder"   "requires effort — relevant adjacent api-rework"
+assert_validator_rejects "V101 effort+migration past window" "requires significant effort because of the migration"
+assert_validator_rejects "V102 effort F-051 past window"    "needs more time, will track in F-051"
+assert_validator_rejects "V103 schema-cleanup launder"      "requires effort — schema-cleanup needed"
+assert_validator_rejects "V104 auth-refactor launder"       "requires effort — auth-refactor work"
+assert_validator_rejects "V105 ui-rework launder"           "blocked by bandwidth — ui-rework underway"
+
+# v1.36.0 (item #10) — whitespace-separated work-compound launder.
+# Reviewer F-1: hyphen-only strip caught `api-rework` but missed
+# `api rework` (whitespace-joined). Strip pass now applies on the
+# FULL trimmed reason (not just leading clause) so noun + suffix
+# adjacency is detected even when the noun lands in the leading
+# window and the suffix lands outside it.
+printf '\n=== v1.36.0 — whitespace work-compound launder must REJECT ===\n'
+assert_validator_rejects "V115 api rework whitespace"      "requires effort — api rework needed"
+assert_validator_rejects "V116 auth refactor whitespace"   "requires effort — auth refactor needed"
+assert_validator_rejects "V117 schema cleanup whitespace"  "requires effort — schema cleanup needed"
+assert_validator_rejects "V118 api work whitespace"        "requires effort — api work needed"
+assert_validator_rejects "V119 ui rework whitespace"       "blocked by bandwidth — ui rework underway"
+assert_validator_rejects "V120 backend refactor space"     "needs more time — backend refactor required"
+
+# v1.36.0 (item #10) — bare-WHY rejection (reviewer F-2).
+# `pending`/`awaiting`/`requires`/`blocked by` alone match the
+# why_keywords presence check but name no target. The new bare-WHY
+# rule rejects them as silent-skip patterns by another name. Users
+# must name the target explicitly: `pending wave 3`, `awaiting
+# stakeholder approval`, `requires database migration`.
+printf '\n=== v1.36.0 — bare WHY without target must REJECT ===\n'
+assert_validator_rejects "V125 bare pending"     "pending"
+assert_validator_rejects "V126 bare awaiting"    "awaiting"
+assert_validator_rejects "V127 bare requires"    "requires"
+assert_validator_rejects "V128 bare blocked by"  "blocked by"
+
+# v1.36.0 (item #10) — multi-clause reasons accept on ANY clean
+# anchor (reviewer F-3). `requires effort, needs more time, blocked
+# by F-051` names a real blocker (F-051) in its third clause; the
+# multi-anchor scan finds the clean third anchor and accepts the
+# reason despite the dirty first two.
+printf '\n=== v1.36.0 — multi-clause reasons with clean third anchor PASS ===\n'
+assert_validator_passes "V130 multi-clause F-051 in third"  "requires effort, needs more time, blocked by F-051"
+assert_validator_passes "V131 multi-clause migration third" "needs more focus, also more time, blocked by migration"
+assert_validator_passes "V132 multi-clause stakeholder third" "more thinking required, more analysis needed, awaiting stakeholder decision"
+
+# v1.36.0 — token-salad PASSES (false-positive guards). When the lead
+# WHY clause names the external blocker, the reason passes regardless
+# of secondary work-cost language.
+printf '\n=== v1.36.0 — strong-lead reasons must PASS ===\n'
+assert_validator_passes "V110 F-051 leads, effort follows" "blocked by F-051 because effort is large"
+assert_validator_passes "V111 migration leads, time follows" "requires migration of database tables in F-051"
+assert_validator_passes "V112 stakeholder leads, focus follows" "awaiting stakeholder approval — needs more focus afterward"
+assert_validator_passes "V113 api migration as lead target"  "needs the api migration completed in F-001"
+assert_validator_passes "V114 dependency leads + work follows" "requires dependency upgrade — large-scale work"
 
 # End-to-end: an effort excuse via the full mark-deferred.sh CLI rejects
 # with exit code 2 AND a useful error message. This catches breakage
