@@ -24,7 +24,7 @@ If a fact appears here AND in one of the above, that doc is authoritative — ke
 - `bundle/dot-claude/skills/autowork/scripts/` — 32 autowork hooks + helpers; shared lib `common.sh`; lazy-loaded `lib/{state-io,classifier,verification,timing,canary}.sh`. Per-script detail in `docs/architecture.md`.
 - `bundle/dot-claude/output-styles/` — bundled output styles (`oh-my-claude.md` default, `executive-brief.md`); selected via `output_style=` in `oh-my-claude.conf`
 - `config/settings.patch.json` — settings merged into user config on install
-- `tests/` — 80 bash + 1 python test scripts (all 80 bash tests CI-pinned in `validate.yml`; pin discipline enforced by `tests/test-coordination-rules.sh`)
+- `tests/` — bash + python test scripts. Authoritative counts: `find tests/ -maxdepth 1 -name 'test-*.sh' | wc -l` (bash) and `find tests/ -maxdepth 1 -name 'test_*.py' | wc -l` (python). All bash tests CI-pinned in `validate.yml`; pin discipline enforced by `tests/test-coordination-rules.sh`. (v1.36.0 #11: replaced the hardcoded "80 bash + 1 python" enumeration with the grep-from-source pattern used in CONTRIBUTING.md to eliminate the recurring drift surface.)
 - `tools/` — developer-only tools (telemetry replay, classifier fixtures, defect-cluster review, consumer-contract lint); not installed
 - `docs/` — architecture, customization, FAQ, glossary, prompts, showcase
 
