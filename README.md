@@ -1,37 +1,37 @@
 # oh-my-claude
 
-**What if Claude Code couldn't cut corners?**
+**Ship better real work with Claude Code — with less steering.**
 
-*Quality gates for Claude Code that actually block — until tests pass, review is done, and the work is verified.*
+*Quality gates that block Claude from claiming "done" until tests pass, review lands, and the work is verified. So you stop babysitting every session.*
 
-[![Version](https://img.shields.io/badge/Version-1.34.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-1.34.1-blue.svg)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Shell](https://img.shields.io/badge/Shell-bash-green.svg)]()
 [![Dependencies](https://img.shields.io/badge/Dependencies-jq%20%2B%20rsync-brightgreen.svg)]()
 [![Tests](https://img.shields.io/badge/Tests-2200%2B-brightgreen.svg)](tests/)
 
-**Jump to:** [Install](#quick-start) · [AI-assisted install](#ai-assisted-install) · [What you get](#what-you-get) · [Feature highlights](#feature-highlights) · [Skills](#available-skills) · [Troubleshooting](#troubleshooting) · [FAQ](docs/faq.md)
+**Jump to:** [Install](#quick-start) · [AI-assisted install](#ai-assisted-install) · [What changes after install](#what-changes-after-you-install) · [Feature highlights](#feature-highlights) · [Skills](#available-skills) · [Troubleshooting](#troubleshooting) · [FAQ](docs/faq.md)
 
-A cognitive quality harness for Claude Code -- bash hooks, skills, and specialist agents that enforce thinking, testing, and review as structural requirements, not suggestions.
-
-> **Type `/ulw <task>` to activate.** The harness classifies your prompt, routes the work to specialist agents (different chain per domain — coding, writing, research, ops), and runs quality gates that block until testing and review are done. You don't need to learn agent names.
+> **Activate with `/ulw <task>` (ultrawork mode).** The harness classifies your prompt, routes specialists (different chain per domain — coding, writing, research, ops), runs reviewers, verifies the work, and refuses to stop early. You don't need to learn agent names.
 
 ![oh-my-claude /ulw-demo — quality gates in action](docs/ulw-demo.gif)
 
 *Two minutes of `/ulw-demo` showing the quality gates fire on a real edit — see [Quick start](#quick-start) below to install and try it yourself.*
 
-## What you get
+## What changes after you install
 
-- **Hard quality gates that actually block.** Claude can't mark a task done until tests, review, and verification are complete — no more "I've made the changes" with broken code or skipped review.
-- **Domain routing across coding, writing, research, ops.** Each domain gets its own specialist chain. Not just a coding tool that accepts prose.
-- **Session continuity through compaction.** Objectives, decisions, and review state survive context compaction — you don't lose the plot mid-task.
-- **A persistent done-contract.** `/ulw` now records the user’s primary deliverable, commit intent, adjacent requested surfaces, and proof obligations early, then shows the remaining obligations live in `/ulw-status` and carries them across resume/compact boundaries.
+Three outcomes you'll feel in your first week:
+
+- **Claude can't claim "done" with broken code.** Quality gates intercept the Stop event until tests, review, and verification land. No more "I've made the changes" on work that doesn't compile.
+- **Your prompts get classified before Claude acts.** Execution vs advisory, coding vs writing — and routed to the right specialists automatically. Less steering per turn; more useful first responses.
+- **When Claude is uncertain, it tells you instead of guessing.** Declare-and-proceed openers surface the model's interpretation in one sentence so you can redirect cheaply if it's wrong — instead of finding out 3 commits later.
+
+The harness is bash hooks + skills + agents installed as an overlay into `~/.claude/`. It sits alongside Claude Code; Claude Code's own surface is unchanged.
 
 ### What this is NOT
 
-- **Not a plugin framework or SDK.** It's bash hooks + skills + agents installed as an overlay into `~/.claude/`.
-- **Not a Claude Code replacement.** It sits *alongside* Claude Code; Claude Code's own surface is unchanged.
-- **Not Anthropic-affiliated.** Community-built. Not the same project as `oh-my-claudecode` (separate Node-based tool).
+- **Not a plugin framework or SDK** — no API, no extension model. Just hooks, skills, and agents.
+- **Not Anthropic-affiliated** — community-built. Not the same project as `oh-my-claudecode` (separate Node-based tool).
 
 ---
 
@@ -165,22 +165,11 @@ Each gate block message names the specific next reviewer. A `VERDICT: CLEAN|SHIP
 
 ### Intent classification
 
-**Every prompt is classified by intent and domain before Claude acts on it.** Five intent categories (execution, continuation, advisory, checkpoint, session-management) crossed with six domains (coding, writing, research, operations, mixed, general). Advisory questions get answered directly; execution prompts get the full specialist pipeline.
+**Every prompt is classified by intent and domain before Claude acts.** Five intent categories (execution, continuation, advisory, checkpoint, session-management) crossed with six domains (coding, writing, research, operations, mixed, general). Advisory questions get answered directly; execution prompts get the full specialist pipeline. A **prompt-text trust override** in the PreTool guard re-reads the user's prompt when the classifier disagrees, so destructive ops the prompt clearly authorized aren't blocked by mis-routing.
 
-The classifier recognizes natural-English imperative shapes — including tail-position imperatives (`Review the plan. Then commit the changes.`) and implementation-verb-led conjunctions (`Implement and then commit as needed`). When the classifier mis-routes despite the widened patterns, a **prompt-text trust override** in the PreTool guard re-reads the most recent user prompt and allows destructive ops when the prompt itself authorizes them — even if the classifier disagreed. Compound-command safety: every destructive segment in `git commit && git push --force` must be authorized in the prompt text, not just the first one.
+Five **bias-defense directive layers** (conf-gated) defend against under- and over-interpretation: `prometheus_suggest` and `intent_verify_directive` (declare-and-proceed on short unanchored prompts); `exemplifying_directive` (treat example-marked items as one of a class, enumerate siblings); `intent_broadening` (project-surface inventory reference so a prompt that names some surfaces doesn't silently miss the rest); `divergence_directive` (enumerate 2-3 paradigm framings inline before committing on shape-decisions). All compose under `directive_budget` (`balanced` default — trims lower-priority directives when prompt tax gets dense). Hard backstops: `exemplifying_scope_gate` blocks Stop until each enumerated sibling is marked shipped or consciously declined. Per-flag detail and tuning lives in [`docs/customization.md`](docs/customization.md).
 
-Five **bias-defense directive layers** can fire on `/ulw` prompts across three orthogonal axes (narrowing, widening, paradigm-enumeration; conf-gated):
-- `prometheus_suggest` (off) — declare-and-proceed: when an execution prompt is short, product-shaped, and unanchored, tells the model to state its scope interpretation in one or two declarative sentences as part of its opener and proceed (no confirmation hold; user can redirect in real time).
-- `intent_verify_directive` (off) — declare-and-proceed: when an execution prompt is short and unanchored, tells the model to state its goal interpretation in one declarative sentence as part of its opener and start work (no confirmation hold; user can redirect in real time).
-- `exemplifying_directive` (on, v1.23.0) — when the prompt uses example markers (`for instance`, `e.g.`, `such as`, `as needed`, `similar to`, etc.), treat the example as ONE item from a class and enumerate sibling items rather than dropping the class. Defends against under-interpretation — implementing only the literal example when the prompt phrased it as an example is the failure mode `/ulw` was created to prevent.
-- `intent_broadening` (on, v1.28.0) — defends against the "language is a limitation" failure mode. A complex /ulw prompt names some surfaces but rarely all of them. The directive injects a project-surface inventory reference (generated by `blindspot-inventory.sh`) and tells the model to surface gaps in its opener under a `**Project surfaces touched:**` line — ship the gap or defer with a one-line WHY, never silently miss a surface (release steps, env vars, tests, docs) the prompt didn't name.
-- `divergence_directive` (on, v1.32.0) — defends against the "first paradigm wins" failure mode. When a prompt names a paradigm-shape decision (X-vs-Y choice, "how should we handle…", "what's the best way to model…", "design the X strategy", "is there a better way"), the directive instructs the model to enumerate 2-3 alternative framings INLINE in its opener — label + mental model + EASY/HARD affordance — then pick one with a one-line reason plus a "redirect if" clause naming the condition under which a different framing would win. Auto-fires on advisory + execution + continuation intents (paradigm enumeration is the right response to "what's the best way to model auth?", not just to imperative commands). Explicit `/diverge` remains the heavier escalation when inline enumeration feels shallow.
-
-The widening layers have hard backstops: `exemplifying_scope_gate` (on) requires a state-backed checklist for example-marker prompts. Claude records sibling class items with `record-scope-checklist.sh`, then Stop is blocked until each item is marked shipped or declined with a concrete WHY. The blindspot inventory itself is conf-gated by `blindspot_inventory` (on); kill switch for shared machines or very large monorepos.
-
-Those soft layers now compose under `directive_budget` (`balanced` by default). The router still emits the core ULW posture every turn, but trims lower-priority soft directives when prompt tax gets dense. Emitted footprint shows up in `/ulw-report` and `/ulw-status`; suppressed layers show up in `/ulw-report` so cost-control stays auditable.
-
-Reviewer findings (v1.28.0) are now machine-readable: each reviewer agent emits a single-line `FINDINGS_JSON: [{severity, category, file, line, claim, evidence, recommended_fix}, ...]` block before its verdict. Downstream gates parse the JSON preferentially over prose extraction; backward-compatible since prose fallback still works. The `check-latency-budgets.sh` script benchmarks the six hot-path hooks against per-hook ms budgets so speed regressions are caught before merge.
+Reviewer findings are machine-readable (single-line `FINDINGS_JSON` block before each VERDICT). Hot-path hook latency is budgeted in `check-latency-budgets.sh` so speed regressions surface before merge.
 
 ### Multi-domain routing
 
