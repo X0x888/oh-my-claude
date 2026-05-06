@@ -317,10 +317,17 @@ assert_doc_match "C4: CLAUDE autowork count" \
   "${CLAUDE_MD}" \
   "CLAUDE.md should report ${autowork_count} autowork hooks + helpers in Key Directories"
 
-assert_doc_match "C4: CLAUDE test count" \
-  "tests/.*— ${test_sh_count} bash \\+ ${test_py_count} python test scripts \\(.*${ci_pinned_count} bash[[:space:]]+(tests[[:space:]]+)?CI-pinned" \
+# v1.36.0 (item #11) — replace the hardcoded "${test_sh_count} bash +
+# ${test_py_count} python test scripts" enumeration with a
+# grep-from-source pattern. The previous regex required the literal
+# count, which created the same drift surface CONTRIBUTING.md already
+# avoided. The new pattern validates the grep guidance is documented
+# (the user runs the find/grep and gets the live count) — not the
+# count itself, which now lives only on disk.
+assert_doc_match "C4: CLAUDE test count uses grep-from-source pattern (v1.36.0 #11)" \
+  "tests/.*find tests/.*test-\\*\\.sh.*wc -l.*find tests/.*test_\\*\\.py" \
   "${CLAUDE_MD}" \
-  "CLAUDE.md should report ${test_sh_count} bash + ${test_py_count} python tests and ${ci_pinned_count} CI-pinned bash suites"
+  "CLAUDE.md should reference the find/grep pattern for live test counts (closes the hardcoded-count drift surface)"
 
 # ----------------------------------------------------------------------
 # Contract 5 — Release-history lockstep

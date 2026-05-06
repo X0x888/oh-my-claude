@@ -4,6 +4,222 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.36.0] - 2026-05-06
+
+### v1.36.0 candidate set — 12 of 19 review items shipped
+
+User commissioned a comprehensive evaluation of the harness post-v1.35.0
+and surfaced 19 improvement candidates. Each was triaged and the
+12 actionable items shipped across six waves; three triaged WRONG
+or already-DONE; four logged as observation-only (need ≥1 release
+cycle of telemetry to make a sound decision).
+
+**Triage outcome:**
+- **APPLY (12):** #2, #3, #4, #6, #7, #8, #10, #11, #14, #16, #17, #18
+- **WRONG / SKIP (3):** #1 (sterile already strict + CI-wired since v1.32.2), #5 (`directive_budget` already defaults to `balanced` in `common.sh:319`), #12 (welcome banner already re-emits per install via `.install-stamp` mtime)
+- **OBSERVATION (4):** #9, #13, #15, #19 — recorded as project memory; need telemetry from one more release cycle before deciding
+
+### Wave 1 — install / UX safety (#2, #3, #4)
+
+- **`--no-ghostty` / `--with-ghostty` / auto-detect default (#3).**
+  Pre-fix every `install.sh` run seeded `~/.config/ghostty/` even on
+  hosts that don't run Ghostty (iTerm, Terminal, Alacritty users got
+  an unwanted side-effect dir). Default now skips when
+  `~/.config/ghostty/` does not pre-exist; `--no-ghostty` forces
+  skip; `--with-ghostty` forces seed. Mutual-exclusion check on the
+  pair refuses last-wins ambiguity. Auto-detect is documented as a
+  directory-existence heuristic (not a binary probe) — power users
+  who want strict control pass the explicit flag.
+- **`--keep-backups=N` retention (#4).** Default `10`. Pre-fix
+  `~/.claude/backups/oh-my-claude-*` accumulated indefinitely (one
+  reporter had 60+ dirs after the v1.32.x cascade). Post-install
+  pruning keeps the N newest by lexical-stamp sort. The just-created
+  backup is ALWAYS preserved by an inner-loop `[[ "${dir}" == "${BACKUP_DIR}" ]]`
+  guard even under adversarial sort order (clock skew, hand-named or
+  future-dated stamps). `--keep-backups=all` disables pruning entirely.
+  Regression net (Test 9e): pre-seeds 12 future-dated stamps and
+  asserts the run-time `${BACKUP_DIR}` survives.
+- **Memory file overwrite warning (#2).** Hand-edited
+  `quality-pack/memory/*.md` files (`core.md`, `skills.md`,
+  `compact.md`, `auto-memory.md`) were silently overwritten on every
+  install. New `warn_modified_memory_files` runs pre-rsync and
+  surfaces a per-file `[warn]` line for any file whose mtime exceeds
+  the previous `.install-stamp` mtime. Includes a concrete
+  `cp <backup-path> ${CLAUDE_HOME}/omc-user/overrides.md` migration
+  command. Five-second Ctrl-C window only fires interactively (TTY +
+  `!CI` guard); CI runs and `bash install.sh < /dev/null` proceed
+  immediately.
+
+### Wave 2 — sterile CI promotion (#1) — TRIAGED WRONG
+
+`tests/run-sterile.sh` has been **strict-by-default since v1.32.2**
+(line 12: `mode="strict"`) AND wired into `.github/workflows/validate.yml`
+as a CI step. The user's claim that it was "still advisory" was
+factually incorrect. No change shipped.
+
+### Wave 3 — UX / observability (#6, #7, #8, #14)
+
+- **CHANGELOG patch-storm collapse in install footer (#6).** Pre-fix
+  the `What's new since v$prev` block listed every individual
+  `## [X.Y.Z]` heading — a 1.27.0 → 1.34.x upgrade rendered 16
+  separate 1.32.x patch lines. New shape collapses same-X.Y patches
+  into `- 1.32.x  (16 entries — range 1.32.0 → 1.32.15)`; single-entry
+  minors keep the full `- 1.30.0  (date)` format. Cap is now 40 unique
+  MINORS (previously 40 individual entries). `OMC_INSTALL_VERBOSE=1`
+  preserves the legacy per-patch view for debugging.
+- **`verify.sh` warning stratification (#7).** Counts split into
+  Informational + Actionable in the summary line. New `info_warn()`
+  helper alongside existing `warn()`; 7 tool-absence callers
+  reclassified as info. Actionable warnings appended to
+  `~/.claude/last-verify-warnings.txt` for follow-up review. Foreign
+  hooks, foreign statusline, drift detection, and agent-list
+  mismatches stay actionable.
+- **`/ulw-report --sweep` flag (#8).** Folds currently-active session
+  dirs (under `${STATE_ROOT}`) into the in-memory view used by
+  `show-report.sh` WITHOUT writing to the cross-session ledger or
+  claiming the source dirs. Closes the gap where `/ulw-report` run
+  during an active session missed that session's gate events because
+  `session_summary.jsonl` / `gate_events.jsonl` only populate at the
+  daily TTL sweep. Synthesizes per-session rows using the same `jq`
+  formula as `sweep_stale_sessions`; tags rows `_live: true` for
+  downstream consumers. Banner prefaces the report on stdout (not
+  stderr — pipe consumers see the qualifier). Cleanup via
+  function-form EXIT trap (no SC2064 quote-injection hazard).
+- **v1.34.0 omc-repro security advisory in install footer (#14).**
+  When upgrading from `v1.29.0`–`v1.33.2`, install footer prints a
+  `[security]` line about the omc-repro.sh redaction advisory so
+  users likely to be affected see it during upgrade rather than
+  buried in the CHANGELOG. Range check via `BASH_REMATCH` (`X.Y.Z`
+  shape); non-semver versions silently skip (conservative — no
+  false-positive advisory for custom builds).
+
+### Wave 4 — validator hardening (#10, #16)
+
+- **Token-salad evasion close-out (#10).** Pre-fix the
+  `omc_reason_has_concrete_why` validator passed laundered effort
+  excuses like `requires effort — relevant adjacent api-rework` (the
+  `api` external-signal token escaped via the `api-rework` compound)
+  and `requires significant effort because of the migration` (external
+  token far past the WHY position). v1.35.0 explicitly named this as
+  the v1.36 follow-up. Three-layer defense:
+  1. **Bare-WHY rejection** — `pending` / `awaiting` / `requires` /
+     `blocked by` alone now reject (silent-skip patterns by another
+     name; require ≥1 target token after the WHY keyword).
+  2. **Strip work-compounds from full reason** — pre-fix only the
+     leading clause was stripped, so `requires effort — api rework
+     needed` smuggled `api` past the 3-token window via the
+     noun-in-window / suffix-out-of-window split. Now the full
+     trimmed reason has `<noun>-<suffix>` and `<noun> <suffix>`
+     compounds neutralized before leading-clause analysis.
+  3. **Multi-anchor scan** — accept on ANY clean WHY anchor.
+     Multi-clause reasons like `requires effort, needs more time,
+     blocked by F-051` pass because the third anchor is clean even
+     when the first two are dirty. Bare-WHY anchors don't qualify
+     (closes the false-PASS where stripping leaves a bare `required`
+     second anchor).
+
+  **Known limitation:** single-clause reasons like `requires effort
+  because of F-051` REJECT because F-051 falls one token past the
+  3-token window and the secondary `because` WHY is consumed by the
+  greedy first-anchor match. Users rewrite to lead with the strong
+  anchor: `blocked by F-051 (would have required effort)` PASSES.
+
+  Tests: V100-V120 cover token-salad attack patterns (hyphenated +
+  whitespace-separated work-compounds + multi-clause); V125-V128
+  cover bare-WHY rejection; V130-V132 cover multi-clause acceptance.
+  166 mark-deferred assertions pass total (was 141).
+
+  **Behavioral change:** V85 reverses PASS → REJECT under v1.36.0 —
+  `tracks to next sprint after stakeholder approval` puts `next
+  sprint` in the leading 3-token window with no compensating
+  external; `stakeholder` is past the window. Users rewrite as
+  `awaiting stakeholder approval (next sprint commit window)` to
+  lead with the strong anchor. V44 / V45 still PASS via the new
+  multi-anchor scan (clean second anchor `superseded by F-051` /
+  `pending design`).
+
+- **SHA-256 drift broken-by-design (#16).** Pre-fix `install.sh`
+  hashed `BUNDLE_CLAUDE` bytes but `apply_model_tier()` runs AFTER
+  rsync and rewrites the `model:` field of every
+  `${CLAUDE_HOME}/agents/*.md` file. Result: every install with
+  `model_tier=quality` or `model_tier=economy` produced ~21 spurious
+  `Drift: agents/X.md: FAILED` actionable warnings on `verify.sh`.
+  Empirically reproduced today on a `model_tier=quality` host: 21
+  actionable, 0 informational. Fix: hash `${CLAUDE_HOME}` bytes
+  after all post-rsync mutations. Use `MANIFEST_PATH` (already
+  enumerated bundle paths) as the file list; filter to "still exists
+  in `${CLAUDE_HOME}`" so `--no-ios` removals are not treated as
+  drift. Verified: post-fix `verify.sh` reports `Errors: 0
+  Warnings: 0  (informational: 0, actionable: 0)`. Regression net
+  (Test 10c): asserts every hash entry resolves to an existing file
+  AND `--no-ios` installs leave NO iOS agents in the hash manifest.
+
+### Wave 5 — demo + onboarding (#17, #18)
+
+- **First-session welcome banner surfaces active profile (#17).** The
+  banner had a generic `Run /omc-config` line that didn't make the
+  configuration surface feel load-bearing. New behavior:
+  - 0 user overrides (just auto-set keys) → "Profile: maximum
+    defaults — gates fire loudly, directives are broad. Run
+    `/omc-config` to switch profile (Balanced / Minimal) or tune
+    individual flags."
+  - N user overrides → "Profile: N flag override(s) active. Run
+    `/omc-config` to inspect or change."
+
+  Implementation: count lines in `oh-my-claude.conf` matching a
+  `key=value` shape minus the auto-set keys (`repo_path`,
+  `installed_version`, `installed_sha`, `model_tier`, `output_style`).
+  Pipeline-fail (`grep -vE` returning 1 when zero matches) suppressed
+  via `|| true` so the banner never silently fails to emit on a fresh
+  install. Tests T11/T12 cover both shapes.
+
+- **`/ulw-demo` extended with two bonus beats (#18).** New users now
+  see the v1.35.0+ defenses before hitting them on real work:
+  - **BEAT 8/9 — `/ulw-skip` recovery:** surfaces the verb without
+    firing it; explains the deferral-verb decision tree (skip vs
+    defer vs pause).
+  - **BEAT 9/9 — exemplifying-scope gate:** explains the "for
+    instance" rule via a worked statusline-siblings example; points
+    at `record-scope-checklist.sh`.
+
+  Beat banners updated from 7-beat to 9-beat sequence; original
+  Step 9 (Clean up) became Step 10.
+
+### Wave 6 — drift + observation (#11, #13, #15, #19)
+
+- **CLAUDE.md test count drift surface eliminated (#11).** Replaced
+  the hardcoded `80 bash + 1 python test scripts` enumeration with
+  the same grep-from-source pattern CONTRIBUTING.md uses. Coordination
+  rule C4 in `tests/test-coordination-rules.sh` updated to validate
+  the grep guidance is documented (not the count itself, which now
+  lives only on disk).
+- **Atlas / `/ulw-demo` onboarding friction (#13).** Triaged as
+  RESOLVED — Wave 5's Beat 7/8/9 enrichments add the missing
+  onboarding bridge (real first prompt + bonus defenses beats).
+  `/atlas` runs against `$PWD` which is the right semantic for fresh
+  sessions; no `--init` flag needed.
+- **#15 directive firing-rate audit + #19 SubagentStop reviewer
+  budget.** Both flagged as observation-only. Written to
+  `project_v1_36_observations.md` so the next release cycle's
+  telemetry can drive the decision rather than guessing now. Both
+  want ≥1 release cycle of v1.33.0 `directive_emitted` and v1.32.x
+  reviewer-chain telemetry to identify which directives / reviewers
+  have HIGH fire counts AND zero downstream behavior change.
+
+### Combined verification
+
+- All bundle scripts pass `bash -n` and
+  `shellcheck -x --severity=warning` (CI-parity).
+- 79/80 CI-pinned bash tests pass (1 pre-existing failure documented
+  in `project_test_isolation_conf_leak.md` — local-only conf-leak
+  under `claude_bin` pin; CI clean).
+- Sterile-env CI parity (`tests/run-sterile.sh`): 0 sterile-only
+  failures, 1 pre-existing breakage (same conf-leak; not introduced
+  by v1.36.0).
+- 128 python statusline tests pass.
+- Quality-reviewer + excellence-reviewer findings F-1 through F-10
+  addressed across waves.
+
 ## [1.35.0] - 2026-05-06
 
 ### Weak-defer cherry-picking + shortcut-on-big-tasks defenses
