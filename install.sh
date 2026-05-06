@@ -1612,7 +1612,7 @@ if [[ -n "${PRIOR_INSTALLED_VERSION}" ]] \
   # 1.32.x patch lines, dominating the install footer with low-signal
   # noise. New shape:
   #   - 1.34.0  (date)              ← single-entry minor: full line
-  #   - 1.32.x  (16 entries — see CHANGELOG.md, range 1.32.0 → 1.32.16)
+  #   - 1.32.x  (16 entries — see CHANGELOG.md, range 1.32.0 → 1.32.15)
   #
   # Two-pass logic kept inside one awk invocation: pass 1 walks lines
   # in the file's natural reverse-chronological order, accumulates a
@@ -1757,7 +1757,7 @@ if [[ -n "${PRIOR_INSTALLED_VERSION}" ]] \
 fi
 printf '  Destination:   %s\n' "${CLAUDE_HOME}"
 printf '  Backup:        %s\n' "${BACKUP_DIR}"
-if [[ -d "${BUNDLE_GHOSTTY}" ]]; then
+if [[ -d "${BUNDLE_GHOSTTY}" ]] && should_install_ghostty; then
   printf '  Ghostty:       %s\n' "${GHOSTTY_HOME}"
 fi
 if [[ "${BYPASS_PERMISSIONS}" == "true" ]]; then

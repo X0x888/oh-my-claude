@@ -59,7 +59,7 @@ case "${MODE}" in
   last|week|month|all) ;;
   --help|-h)
     cat <<'USAGE'
-Usage: show-report.sh [last|week|month|all] [--share]
+Usage: show-report.sh [last|week|month|all] [--share] [--sweep] [--field-shape-audit]
 
   last     Most recent session only.
   week     Sessions in the last 7 days (default).
@@ -70,6 +70,19 @@ Usage: show-report.sh [last|week|month|all] [--share]
            text, free-text reasons, or any free-form fields. Only
            counts and distributions. Combine with last|week|month|all
            to scope the window. (v1.31.0)
+  --sweep  Fold currently-active session dirs (under
+           ~/.claude/quality-pack/state/) into the in-memory view.
+           Read-only — never writes to the cross-session ledger
+           and never claims (deletes) the source dirs. Closes the
+           gap where /ulw-report run during an active session
+           missed that session's gate events because
+           session_summary.jsonl / gate_events.jsonl only populate
+           at the daily TTL sweep. Synthesizes per-session rows
+           using the same jq formula as sweep_stale_sessions and
+           tags them `_live: true`. Combine with last|week|month|all
+           to scope the window. Banner prefaces the report so the
+           user knows the cross-session aggregate was extended on
+           the fly. (v1.36.0)
   --field-shape-audit
            Run a field-shape sanity audit over
            ~/.claude/quality-pack/gate_events.jsonl. Per-gate-shape
