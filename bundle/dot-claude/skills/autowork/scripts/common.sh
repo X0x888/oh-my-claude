@@ -1471,15 +1471,32 @@ _omc_strip_render_unsafe() {
 # pattern shapes the redactor doesn't know about; this is a defense
 # against incidental leaks, not a guarantee.
 omc_redact_secrets() {
+  # v1.34.2 (release-reviewer F-5 / F-7): expanded coverage:
+  #   - hyphenated long-flag forms (--auth-token, --secret-access-key,
+  #     --api-token, --refresh-token, --access-key) — pre-fix only
+  #     `--token X` / `--auth X` style matched, missing the canonical
+  #     AWS `--secret-access-key` leak shape.
+  #   - sk-ant- (Anthropic — primary user) explicitly enumerated.
+  #     Pre-fix matched only by-luck via the bare `sk-` rule.
+  #   - AIza* (Google), sk_live_/sk_test_ (Stripe).
+  # Order matters: provider-shape patterns fire first so they get the
+  # more-specific <redacted-secret> marker even when they appear as
+  # values of flags. Bearer/key=value/--flag-value forms are second.
   sed -E \
-    -e 's/((token|password|secret|key|auth|api[_-]?key)[[:space:]]*=[[:space:]]*)[^[:space:]"'"'"']+/\1<redacted>/gI' \
-    -e 's/(--(token|password|secret|key|auth|api[_-]?key)[[:space:]]+)[^[:space:]-][^[:space:]"'"'"']*/\1<redacted>/gI' \
-    -e 's/[Bb]earer[[:space:]]+[A-Za-z0-9._\/+=-]{8,}/Bearer <redacted>/g' \
+    -e 's/sk-ant-[A-Za-z0-9_-]{16,}/<redacted-secret>/g' \
     -e 's/sk-[A-Za-z0-9_-]{16,}/<redacted-secret>/g' \
+    -e 's/sk_live_[A-Za-z0-9]{16,}/<redacted-secret>/g' \
+    -e 's/sk_test_[A-Za-z0-9]{16,}/<redacted-secret>/g' \
     -e 's/ghp_[A-Za-z0-9_]{16,}/<redacted-secret>/g' \
     -e 's/xoxb-[A-Za-z0-9-]{16,}/<redacted-secret>/g' \
     -e 's/AKIA[A-Z0-9]{16}/<redacted-secret>/g' \
-    -e 's/glpat-[A-Za-z0-9_-]{16,}/<redacted-secret>/g'
+    -e 's/AIza[A-Za-z0-9_-]{32,}/<redacted-secret>/g' \
+    -e 's/glpat-[A-Za-z0-9_-]{16,}/<redacted-secret>/g' \
+    -e 's/((token|password|secret|key|auth|api[_-]?key)[[:space:]]*=[[:space:]]*)[^[:space:]"<'"'"']+/\1<redacted>/gI' \
+    -e 's/(--(token|password|secret|key|auth|api[_-]?key)[[:space:]]+)[^[:space:]<-][^[:space:]"<'"'"']*/\1<redacted>/gI' \
+    -e 's/(--[A-Za-z][A-Za-z-]*-(token|password|secret|key|auth)([_-][A-Za-z-]+)?[[:space:]]+)[^[:space:]<-][^[:space:]"<'"'"']*/\1<redacted>/gI' \
+    -e 's/(--(access|secret|refresh)[_-]?(access[_-]?)?(token|key|secret)[[:space:]]+)[^[:space:]<-][^[:space:]"<'"'"']*/\1<redacted>/gI' \
+    -e 's/[Bb]earer[[:space:]]+[A-Za-z0-9._\/+=-]{8,}/Bearer <redacted>/g'
 }
 
 trim_whitespace() {

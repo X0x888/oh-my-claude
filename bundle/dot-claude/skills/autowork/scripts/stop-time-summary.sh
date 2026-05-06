@@ -139,10 +139,14 @@ if (( walltime_s >= _card_threshold )); then
     _outcome_scope="${_outcome_scope:-0}"
     [[ "${_outcome_scope}" =~ ^[0-9]+$ ]] || _outcome_scope=0
     _outcome_status="$(read_state "session_outcome" 2>/dev/null || true)"
-    # Only count blocks as "caught" when the session ended with a clean
-    # outcome (gates resolved, not exhausted). An exhausted session means
-    # the gates fired but didn't get satisfied — that's a steering load,
-    # not a value claim.
+    # v1.34.2 (release-reviewer F-1): only count blocks as "caught and
+    # resolved" when the session ended with completed (all gates
+    # satisfied) OR released (clean exit with no gates fired). The
+    # skip-released outcome means the user explicitly bypassed the
+    # gates via /ulw-skip — those gates fired but were NOT resolved
+    # by the model, so claiming "caught + resolved" would be a false
+    # trust signal. exhausted = same logic (gates fired, model never
+    # satisfied them, scorecard release).
     _outcome_blocks_resolved=0
     if [[ "${_outcome_status}" == "completed" || "${_outcome_status}" == "released" ]]; then
       _outcome_blocks_resolved=$(( _outcome_blocks + _outcome_scope ))

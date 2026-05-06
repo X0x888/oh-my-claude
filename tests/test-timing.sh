@@ -1065,6 +1065,53 @@ case "${out_par}" in
 esac
 
 # ----------------------------------------------------------------------
+# T47 (v1.34.2+ release-reviewer F-1 / F-2): when stop_guard_blocks > 0
+# AND session_outcome=skip-released (user explicitly invoked /ulw-skip
+# to bypass the gates), the outcome card MUST NOT claim "gates caught
+# + resolved" — the gates fired but the user bypassed them, NOT the
+# model resolved them. Pre-fix v1.34.1 wrote `released` on the gate-
+# skip path, and the outcome-card logic counted both `completed` and
+# `released` as positive, producing trust-claim overcounts.
+printf 'Test 47: outcome card excludes blocks when session_outcome=skip-released\n'
+hook47_root="$(mktemp -d)"
+hook47_session="hook-test-47"
+hook47_dir="${hook47_root}/${hook47_session}"
+mkdir -p "${hook47_dir}"
+hook47_log="${hook47_dir}/timing.jsonl"
+now_ts="$(now_epoch)"
+jq -nc --argjson ts "${now_ts}" --argjson seq 1 '{kind:"prompt_start",ts:$ts,prompt_seq:$seq}' >> "${hook47_log}"
+jq -nc --argjson ts "${now_ts}" --arg tool "Bash" --argjson seq 1 '{kind:"start",ts:$ts,tool:$tool,prompt_seq:$seq}' >> "${hook47_log}"
+jq -nc --argjson ts "$(( now_ts + 12 ))" --arg tool "Bash" --argjson seq 1 '{kind:"end",ts:$ts,tool:$tool,prompt_seq:$seq}' >> "${hook47_log}"
+jq -nc --argjson ts "$(( now_ts + 12 ))" --argjson seq 1 --argjson dur 12 '{kind:"prompt_end",ts:$ts,prompt_seq:$seq,duration_s:$dur}' >> "${hook47_log}"
+# State: 3 stop_guard_blocks fired AND user invoked /ulw-skip to bypass
+# (session_outcome=skip-released is the v1.34.2 marker).
+jq -nc --arg sid "${hook47_session}" '{prompt_seq:1,session_id:$sid,stop_guard_blocks:"3",session_outcome:"skip-released"}' > "${hook47_dir}/session_state.json"
+hook47_payload="$(jq -nc --arg sid "${hook47_session}" '{session_id:$sid}')"
+hook47_out="$(STATE_ROOT="${hook47_root}" HOME="${HOME}" \
+  bash "${SCRIPTS_DIR}/stop-time-summary.sh" <<<"${hook47_payload}" 2>&1 || true)"
+ctx47="$(printf '%s' "${hook47_out}" \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("systemMessage",""))' \
+  2>/dev/null || printf '')"
+case "${ctx47}" in
+  *"gates caught + resolved"*|*"gate caught + resolved"*)
+    printf '  FAIL: T47 — outcome card claimed "caught + resolved" for skip-released session (overcount defect F-1):\n%s\n' "${ctx47}" >&2
+    fail=$((fail + 1)) ;;
+  *) pass=$((pass + 1)) ;;
+esac
+# Also positive control: when outcome=completed AND blocks > 0, the
+# outcome card SHOULD render the count.
+jq -nc --arg sid "${hook47_session}" '{prompt_seq:1,session_id:$sid,stop_guard_blocks:"2",session_outcome:"completed"}' > "${hook47_dir}/session_state.json"
+hook47_out2="$(STATE_ROOT="${hook47_root}" HOME="${HOME}" \
+  bash "${SCRIPTS_DIR}/stop-time-summary.sh" <<<"${hook47_payload}" 2>&1 || true)"
+ctx47_2="$(printf '%s' "${hook47_out2}" \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("systemMessage",""))' \
+  2>/dev/null || printf '')"
+case "${ctx47_2}" in
+  *"2 gates caught + resolved"*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: T47 control — outcome=completed should render "2 gates caught + resolved":\n%s\n' "${ctx47_2}" >&2; fail=$((fail + 1)) ;;
+esac
+
+# ----------------------------------------------------------------------
 # T44 (v1.34.1+ product-lens P-004 / trust-accrual): when the session
 # state has serendipity_count > 0 OR (resolved gate blocks AND outcome ==
 # completed/released), stop-time-summary prepends an "─── Outcome ───"

@@ -4,6 +4,109 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.34.2] - 2026-05-06
+
+### Hotfix: v1.34.1 release-reviewer findings
+
+Post-release review of v1.34.1 (full release-reviewer pass on the
+cumulative diff) surfaced 12 findings including 1 HIGH-severity
+trust-claim defect introduced by the v1.34.1 outcome card AND a
+sterile-CI failure on the v1.34.1 tag commit. v1.34.2 fixes them.
+
+**The CI failure on v1.34.1.** The post-flight `gh run watch` reported
+`STERILE-FAIL test-sterile-env.sh` — the v1.34.1-prep `cleanup_sterile_env`
+guard rewrite (commit `ded747b`) used path-prefix glob `*/omc-sterile-
+home-*` which matches anywhere in the path. Under the sterile-env
+test runner (where HOME itself is `${OUTER_HOME}/.cache/omc-sterile-
+home-XXX`), every nested path inherits the sterile-home prefix —
+including the test's "unrelated path" check. The guard then
+(correctly per its broken pattern) deleted an unrelated path and
+the test failed.
+
+### Fixed
+
+- **`tests/lib/sterile-env.sh:166` `cleanup_sterile_env` guard
+  anchored at basename.** Pre-fix the `*/omc-sterile-home-*|*/tmp*`
+  glob matched any path containing those segments — under sterile
+  env the test's HOME was itself `omc-sterile-home-XXX` so EVERY
+  path under it inherited the prefix. Post-fix uses
+  `case "${sterile_home##*/}" in omc-sterile-*)` so the match is
+  anchored at the LAST path component (where the sterile-home
+  directory actually lives). T7 in `tests/test-sterile-env.sh`
+  passes under both dev AND sterile envs.
+- **`stop-time-summary.sh` outcome-card overcount on
+  `/ulw-skip` path.** Trust-claim defect introduced in v1.34.1's
+  P-004 outcome card. `stop-guard.sh` wrote `session_outcome=
+  released` on every clean-exit path INCLUDING the gate-skip-
+  honored path. Downstream the outcome card treated all `released`
+  outcomes as positive evidence and added `(stop_guard_blocks +
+  discovered_scope_blocks)` to the "gates caught + resolved"
+  claim — overcounting because `stop_guard_blocks` increments per
+  *fire*, not per *resolve*. Result: a session that fires 3 blocks
+  then `/ulw-skip`s would render "3 gates caught + resolved"
+  although the user explicitly bypassed all 3. Fix: `stop-guard.sh`
+  now writes a distinct `session_outcome=skip-released` on the
+  gate-skip path; `stop-time-summary.sh` excludes that outcome
+  from blocks_resolved counting. The `released` value is now
+  reserved for truly-clean exits (advisory pass, no-edits release).
+  `docs/architecture.md` updated to enumerate the 5-value enum
+  (was 3-value).
+- **`tools/check-consumer-contracts.sh` shipped with embedded NULL
+  + RS + US bytes.** A docstring comment intended to read
+  "RS via \\x1e, US via \\x1f, NUL via \\x00" was written in a
+  context that resolved the escapes to actual bytes. Result: `file`
+  reported the script as binary, `git diff` treated it as binary,
+  and a script claiming to lint implicit byte-stream contracts
+  was itself binary-classified by tooling. Rewrote the offending
+  line as plain prose ("RS = ASCII byte 0x1e, US = 0x1f,
+  NUL = 0x00"). File now `Bourne-Again shell script text
+  executable, Unicode text, UTF-8 text`. Tests still pass (10/0).
+- **`omc_redact_secrets` missed hyphenated long-flag forms** —
+  pre-fix `--token VALUE` matched but `--auth-token VALUE`,
+  `--secret-access-key VALUE`, `--refresh-token VALUE`,
+  `--api-token VALUE` did not. The canonical AWS leak shape
+  (`aws --secret-access-key WJALR...`) bypassed the redactor
+  entirely. Added two new alternations covering the hyphenated
+  long-flag family. Also added explicit `sk-ant-` (Anthropic —
+  the primary user!), `sk_live_` / `sk_test_` (Stripe), `AIza`
+  (Google) provider-key prefixes. Reordered rules so provider-
+  shape patterns fire first, getting the more-specific
+  `<redacted-secret>` marker even when they appear as flag values
+  (the `<` skip pattern in flag-rule consumers prevents the
+  flag-rule from re-redacting the marker).
+
+### Lockstep
+
+- **`docs/architecture.md` updated for 3 v1.34.1 state-key
+  additions** (state-key documentation lockstep per CLAUDE.md
+  Coordination Rules):
+  - `session_outcome` row enumerates the 5-value enum (was 3-value)
+    with semantics including `skip-released` and `released`.
+  - `timing.jsonl` row schema includes `concurrent_overhead_s`
+    (added v1.34.1; positive when parallel work outran walltime).
+  - `_watchdog` synthetic-session sidecar list documents
+    `last_tick_completed_ts` (heartbeat written at top + end of
+    every tick), `total_skipped_cooldown_under_lock` counter
+    semantics, and the per-tick `gate_events.jsonl` cap.
+- **`bundle/dot-claude/agents/excellence-reviewer.md`** got
+  priorities #8 (fixture-realism) and #9 (documented contracts on
+  positional/bulk helpers) added to honor the
+  `CONTRIBUTING.md` claim that BOTH `quality-reviewer` and
+  `excellence-reviewer` flag positional-API test surface
+  violations. Pre-fix only `quality-reviewer.md` had been updated
+  (in the Bug B post-mortem hardening commit `47f2b2e`).
+
+### Deferred from this hotfix
+
+The remaining v1.34.1 release-reviewer findings (F-2 missing test
+for the F-1 overcount path, F-9 narrow tonal touchups, F-10
+install-remote git-repo precondition, F-12 CHANGELOG count
+recount, plus several lower-severity items) ride to a follow-up
+release with named WHY in their respective wave commits. F-1's
+fix is the load-bearing change; the missing regression net for it
+is acceptable to defer to v1.34.3 since the fix is small and
+verified by manual reproduction.
+
 ## [1.34.1] - 2026-05-06
 
 ### Council-driven trust + steering improvements

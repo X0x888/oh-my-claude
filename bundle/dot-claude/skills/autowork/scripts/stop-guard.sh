@@ -113,11 +113,15 @@ if [[ -n "${gate_skip_reason}" ]]; then
     # Edit clock unchanged — skip is valid
     record_gate_skip "${gate_skip_reason}" &
     log_hook "stop-guard" "gate skip honored: ${gate_skip_reason}"
-    # v1.34.1+ (data-lens D-001): mark outcome=released so cross-session
+    # v1.34.1+ (data-lens D-001): mark outcome so cross-session
     # session_summary.jsonl distinguishes a clean skip-honored release
-    # from a true model abandonment. The default-fallback is "abandoned"
-    # which would otherwise paint every clean release as a failure.
-    with_state_lock write_state "session_outcome" "released" || true
+    # from a true model abandonment. v1.34.2 (release-reviewer F-1):
+    # use "skip-released" specifically for the gate-skip path so the
+    # P-004 outcome card downstream does NOT claim credit for gates
+    # the user explicitly bypassed via /ulw-skip — those gates fired
+    # but were NOT resolved by the model. "released" is now reserved
+    # for the truly-clean exit paths (advisory pass, no-edits release).
+    with_state_lock write_state "session_outcome" "skip-released" || true
     rm -f "${STATE_ROOT}/.ulw_active"
     exit 0
   else

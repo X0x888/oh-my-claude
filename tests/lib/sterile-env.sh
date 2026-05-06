@@ -163,8 +163,22 @@ build_sterile_env() {
 cleanup_sterile_env() {
   local sterile_home="$1"
   [[ -n "${sterile_home}" && -d "${sterile_home}" ]] || return 0
-  case "${sterile_home}" in
-    */omc-sterile-home-*|*/tmp*)
+  # v1.34.2 (sterile-CI failure on v1.34.1): anchor the guard at the
+  # BASENAME, not anywhere in the path. The pre-fix `*/omc-sterile-
+  # home-*` glob matched any path containing that segment — under
+  # sterile env where HOME ITSELF is `${OUTER_HOME}/.cache/omc-sterile-
+  # home-XXX`, EVERY nested path inherits the sterile-home prefix
+  # (e.g., `${HOME}/.cache/omc-cleanup-safety-XXX/something-unrelated`
+  # matched and got deleted). The basename check confines the match
+  # to the path's last component, where the sterile-home directory
+  # actually lives. Both the v1.34.0+ shape (`omc-sterile-home-XXX`)
+  # and the test's synthetic legacy (`omc-sterile-legacy-XXX`) match
+  # the unified `omc-sterile-*` prefix; the original `*/tmp*` shape
+  # is no longer produced by build_sterile_env (v1.34.0 anchor moved
+  # sterile_home under ${HOME}/.cache).
+  local _basename="${sterile_home##*/}"
+  case "${_basename}" in
+    omc-sterile-*)
       rm -rf "${sterile_home}" 2>/dev/null || true
       ;;
   esac
