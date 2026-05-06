@@ -165,5 +165,115 @@ set -e
 assert_contains "missing-installer message" "install.sh not found" "${out}"
 
 # ----------------------------------------------------------------------
+# T9-Z001 (v1.34.1+, security-lens Z-001): when OMC_REPO_URL is overridden
+# from default, the latest-tag pin tip must point at OMC_DEFAULT_REPO_URL,
+# NEVER at the (potentially attacker-controlled) override URL. Pre-fix
+# the helpful "tip: OMC_REF=v9.9.9 bash install-remote.sh" line told the
+# user to pin to whatever tag the override URL had at the top — i.e.,
+# attacker-chosen.
+printf 'T9-Z001: tag-pin tip never recommends overridden URL forks\n'
+
+# Build a "hostile fork" bare repo with a high-semver tag that the
+# canonical default does NOT have.
+HOSTILE_SRC="${WORK_DIR}/hostile-source"
+HOSTILE_BARE="${WORK_DIR}/hostile.git"
+mkdir -p "${HOSTILE_SRC}"
+(
+  cd "${HOSTILE_SRC}"
+  git init --quiet --initial-branch=main 2>/dev/null || git init --quiet
+  git config user.email a@a
+  git config user.name a
+  cat > install.sh <<'STUB'
+#!/usr/bin/env bash
+printf 'HOSTILE-FORK-RAN args=[%s]\n' "$*"
+exit 0
+STUB
+  chmod +x install.sh
+  git add install.sh
+  git commit --quiet -m "init"
+  git branch -m main 2>/dev/null || true
+  # The attacker plants a v9.9.99 tag — would have been the "tip" target
+  # under the pre-fix probe-against-OMC_REPO_URL code.
+  git tag v9.9.99
+)
+git clone --quiet --bare "${HOSTILE_SRC}" "${HOSTILE_BARE}"
+
+set +e
+HOSTILE_CLONE="${WORK_DIR}/hostile-clone"
+out="$(OMC_SRC_DIR="${HOSTILE_CLONE}" \
+       OMC_REPO_URL="${HOSTILE_BARE}" \
+       OMC_REF="main" \
+       bash "${BOOTSTRAPPER}" 2>&1)"
+set -e
+# v9.9.99 is the attacker tag. It MUST NOT appear in the recommended
+# pin command (the tip should reference upstream's tag list, never the
+# override URL's). Both the warning AND the absence of the attacker tag
+# inside any "tip:" line are required.
+assert_contains "T9-Z001: warning fires for hostile URL" \
+  "OMC_REPO_URL is OVERRIDDEN" "${out}"
+# Extract the tip line — if there's no canonical tag yet (probe failed),
+# the tip is silent and that's acceptable. When present, it must NOT
+# parrot the attacker's tag back at the user.
+if printf '%s' "${out}" | grep -q "v9.9.99"; then
+  printf '  FAIL: T9-Z001: attacker tag v9.9.99 leaked into install-remote output\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+
+# T10-Z002 (v1.34.1+, security-lens Z-002): OMC_EXPECTED_SHA verification.
+# When set, the cloned tree's HEAD SHA must match the expected prefix or
+# install.sh refuses to run. Closes the curl|bash zero-defense supply-
+# chain risk.
+printf 'T10-Z002: OMC_EXPECTED_SHA refuses run on mismatch\n'
+
+CLONE_SHA_DIR="${WORK_DIR}/sha-clone"
+set +e
+out="$(OMC_SRC_DIR="${CLONE_SHA_DIR}" \
+       OMC_REPO_URL="${BARE_REPO}" \
+       OMC_REF="main" \
+       OMC_EXPECTED_SHA="0000000000000000000000000000000000000000" \
+       bash "${BOOTSTRAPPER}" 2>&1)"
+rc=$?
+set -e
+[[ "${rc}" -ne 0 ]] && pass=$((pass + 1)) || { printf '  FAIL: T10-Z002: SHA mismatch should exit non-zero (rc=%s)\n' "${rc}" >&2; fail=$((fail + 1)); }
+assert_contains "T10-Z002: error names SHA verification failure" "SHA verification FAILED" "${out}"
+assert_contains "T10-Z002: error refuses to run install.sh" "Refusing to run install.sh" "${out}"
+
+# T11-Z002: OMC_EXPECTED_SHA matching the actual HEAD passes through.
+printf 'T11-Z002: OMC_EXPECTED_SHA matching HEAD lets install run\n'
+
+CLONE_SHA_OK="${WORK_DIR}/sha-clone-ok"
+# Discover the actual HEAD SHA in the bare repo by cloning fresh.
+ACTUAL_SHA="$(git --git-dir="${BARE_REPO}" rev-parse HEAD 2>/dev/null || echo "missing")"
+SHA_PREFIX="${ACTUAL_SHA:0:12}"
+
+set +e
+out="$(OMC_SRC_DIR="${CLONE_SHA_OK}" \
+       OMC_REPO_URL="${BARE_REPO}" \
+       OMC_REF="main" \
+       OMC_EXPECTED_SHA="${SHA_PREFIX}" \
+       bash "${BOOTSTRAPPER}" 2>&1)"
+rc=$?
+set -e
+[[ "${rc}" -eq 0 ]] && pass=$((pass + 1)) || { printf '  FAIL: T11-Z002: matching SHA should exit 0 (rc=%s)\n  out=%s\n' "${rc}" "${out}" >&2; fail=$((fail + 1)); }
+assert_contains "T11-Z002: ok line names verification" "SHA verified" "${out}"
+assert_contains "T11-Z002: install.sh ran after verification" "STUB-INSTALL-RAN" "${out}"
+
+# T12-Z002: malformed OMC_EXPECTED_SHA is rejected loudly.
+printf 'T12-Z002: malformed OMC_EXPECTED_SHA rejected with usage\n'
+
+set +e
+out="$(OMC_SRC_DIR="${WORK_DIR}/sha-bad" \
+       OMC_REPO_URL="${BARE_REPO}" \
+       OMC_REF="main" \
+       OMC_EXPECTED_SHA="not-hex-and-too-short" \
+       bash "${BOOTSTRAPPER}" 2>&1)"
+rc=$?
+set -e
+[[ "${rc}" -ne 0 ]] && pass=$((pass + 1)) || { printf '  FAIL: T12-Z002: malformed SHA should exit non-zero (rc=%s)\n' "${rc}" >&2; fail=$((fail + 1)); }
+assert_contains "T12-Z002: error names valid SHA shape" "7-40 char hex" "${out}"
+
+# ----------------------------------------------------------------------
 printf '\n=== Install-Remote Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]] || exit 1

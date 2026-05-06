@@ -91,9 +91,16 @@ if [[ -n "${command_text}" ]]; then
     # produce "test_match:0|framework:0|output_counts:0|clear_outcome:0|total:0".
     verify_factors="$(score_verification_confidence_factors "${command_text}" "${tool_output}" "${project_test_cmd}")"
 
+    # v1.34.1+ (security-lens Z-003): redact obvious secret patterns
+    # from the captured verification command BEFORE persisting to state.
+    # Closes a real leak: a model running `pytest --auth-token=$X tests/`
+    # would otherwise land $X verbatim in last_verify_cmd, where
+    # omc-repro bundles it for support tarballs. Cap to 500 chars too.
+    last_verify_cmd_safe="$(printf '%s' "${command_text}" | omc_redact_secrets | tr -d '\000')"
+    last_verify_cmd_safe="$(truncate_chars 500 "${last_verify_cmd_safe}")"
     with_state_lock_batch \
       "last_verify_ts" "$(now_epoch)" \
-      "last_verify_cmd" "${command_text}" \
+      "last_verify_cmd" "${last_verify_cmd_safe}" \
       "last_verify_outcome" "${verify_outcome}" \
       "last_verify_confidence" "${verify_confidence}" \
       "last_verify_factors" "${verify_factors}" \

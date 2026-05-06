@@ -22,9 +22,17 @@ fi
 ensure_session_dir
 
 plan_file="$(session_file "current_plan.md")"
+# v1.34.1+ (security-lens Z-004): strip C0/C1 control bytes at the
+# WRITE site, not only at re-render boundaries. The Wave 3 protected
+# router fences and show-report renders, but current_plan.md is the
+# durable artifact; any future tool/skill that reads + renders this
+# file (debug viewer, ulw-status detail mode, council planner that
+# reloads) would re-deliver attacker bytes from a malicious planner
+# output. Defense-in-depth: bytes never touch disk = bytes can never
+# resurface. _omc_strip_render_unsafe is the canonical helper.
 {
   printf '# Plan from %s\n\n' "${AGENT_TYPE:-planner}"
-  printf '%s\n' "${LAST_ASSISTANT_MESSAGE}"
+  printf '%s\n' "${LAST_ASSISTANT_MESSAGE}" | _omc_strip_render_unsafe
 } >"${plan_file}"
 
 # Parse the v1.14 universal VERDICT contract for planner-class agents

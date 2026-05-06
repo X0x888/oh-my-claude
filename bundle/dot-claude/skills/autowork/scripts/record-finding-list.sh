@@ -432,7 +432,14 @@ case "${cmd}" in
     record_gate_event "finding-status" "user-decision-marked" \
       "finding_id=${id}" \
       "decision_reason=${reason}"
-    printf 'F=%s requires_user_decision=true reason=%q\n' "${id}" "${reason}"
+    # v1.34.1+ (security-lens Z-009): pipe display through
+    # _omc_strip_render_unsafe to drop C0/C1 control bytes the model
+    # may have placed in the reason field. printf %q quotes shell
+    # metacharacters but does NOT strip terminal-control or display-
+    # mangling bytes (ANSI escapes, etc.). Defense-in-depth on the
+    # display path; the strip is a no-op when the reason is clean.
+    printf 'F=%s requires_user_decision=true reason=%q\n' "${id}" "${reason}" \
+      | _omc_strip_render_unsafe
     ;;
 
   show)

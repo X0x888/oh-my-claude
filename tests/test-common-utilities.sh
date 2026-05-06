@@ -2453,6 +2453,58 @@ assert_contains "rejection warning surfaces on stderr" \
   "rejecting OMC_CLAUDE_BIN" "${warning_text}"
 
 # ===========================================================================
+# omc_redact_secrets (v1.34.1+, security-lens Z-003)
+# ===========================================================================
+#
+# Strips common secret patterns from a bash command string before it lands
+# in last_verify_cmd / state files / repro tarballs. Patterns covered:
+# token=/password=/secret=/key=/auth=/api[_-]?key=, --token/--password,
+# Bearer, sk-/ghp_/xoxb-/AKIA-prefixed/glpat- provider keys.
+
+printf '\nomc_redact_secrets:\n'
+
+# Local helper — test-common-utilities.sh doesn't define a generic
+# negative-substring assertion (assert_not_doc / assert_not_ui are
+# specific). Inline a generic one for these new redaction assertions.
+_assert_no_substring() {
+  local label="$1" needle="$2" haystack="$3"
+  if [[ "${haystack}" != *"${needle}"* ]]; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: %s\n    expected NOT to contain: %s\n    actual: %s\n' \
+      "${label}" "${needle}" "${haystack}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
+# (a) plain key=value forms are redacted, value is replaced.
+out="$(printf '%s' 'pytest --auth-token=abc123def456 tests/' | omc_redact_secrets)"
+assert_contains "key=value: redacts the value" "auth-token=<redacted>" "${out}"
+_assert_no_substring "key=value: original token gone" "abc123def456" "${out}"
+
+# (b) Bearer tokens get their value replaced.
+out="$(printf '%s' 'curl -H "Authorization: Bearer abcdef0123456789" url' | omc_redact_secrets)"
+assert_contains "Bearer redacted" "Bearer <redacted>" "${out}"
+_assert_no_substring "Bearer: token gone" "abcdef0123456789" "${out}"
+
+# (c) Provider-shaped keys are caught even when not in key=value position.
+out="$(printf '%s' 'echo sk-1234567890abcdef foo' | omc_redact_secrets)"
+assert_contains "sk-* prefix redacted" "<redacted-secret>" "${out}"
+out="$(printf '%s' 'gh auth login --with-token ghp_1234567890ABCDEFghij' | omc_redact_secrets)"
+assert_contains "ghp_ token redacted" "<redacted-secret>" "${out}"
+out="$(printf '%s' 'AKIAIOSFODNN7EXAMPLE foo' | omc_redact_secrets)"
+assert_contains "AKIA prefix redacted" "<redacted-secret>" "${out}"
+
+# (d) clean commands pass through unchanged.
+out="$(printf '%s' 'pytest tests/ -v --no-cov' | omc_redact_secrets)"
+assert_eq "clean command passes through" "pytest tests/ -v --no-cov" "${out}"
+
+# (e) idempotent: re-running on already-redacted input is stable.
+once="$(printf '%s' 'pytest --auth-token=secret123 tests/' | omc_redact_secrets)"
+twice="$(printf '%s' "${once}" | omc_redact_secrets)"
+assert_eq "idempotent: redaction is stable across passes" "${once}" "${twice}"
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 

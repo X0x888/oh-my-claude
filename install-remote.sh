@@ -34,6 +34,16 @@ OMC_SRC_DIR="${OMC_SRC_DIR:-${HOME}/.local/share/oh-my-claude}"
 OMC_REPO_URL="${OMC_REPO_URL:-${OMC_DEFAULT_REPO_URL}}"
 OMC_REF="${OMC_REF:-main}"
 
+# v1.34.1+ (security-lens Z-002): supply-chain integrity flag. When set,
+# the bootstrapper computes the cloned tree's commit SHA and refuses to
+# hand off to install.sh unless it matches the expected value. The user
+# pins to a specific upstream commit (documented on the GitHub release
+# page) and gets fail-closed verification before any install.sh code
+# runs. Pre-fix the curl|bash chain had zero supply-chain defense
+# beyond TLS-to-GitHub. Set via env (OMC_EXPECTED_SHA=<hex>) — accepts
+# any prefix length >= 7 chars (shorthand SHA), full 40-char also fine.
+OMC_EXPECTED_SHA="${OMC_EXPECTED_SHA:-}"
+
 bold()   { printf '\033[1m%s\033[0m' "$1"; }
 red()    { printf '\033[31m%s\033[0m' "$1"; }
 green()  { printf '\033[32m%s\033[0m' "$1"; }
@@ -143,8 +153,17 @@ fi
 # SHA, or even back to "main") opt-out of this prompt — no extra
 # noise on intentional rolling installs. Best-effort: skips silently
 # when the network is down or git ls-remote fails.
+#
+# v1.34.1+ (security-lens Z-001): probe ONLY the canonical default URL.
+# Pre-fix the probe ran against ${OMC_REPO_URL} which could be an
+# attacker-controlled fork — the attacker's fork could include high
+# semver tags, and the helpful "tip: OMC_REF=v9.9.9 bash install-
+# remote.sh" line would tell the user to pin to an attacker-chosen
+# tag. The defensive UX actively recommended attacker-controlled
+# artifacts. Now the tip always points at OMC_DEFAULT_REPO_URL's
+# release tags, regardless of which fork the user is installing from.
 if [[ "${OMC_REF}" == "main" ]] && [[ -z "${OMC_REF_PIN_HINT_SUPPRESS:-}" ]]; then
-  _latest_tag="$(git ls-remote --tags --refs "${OMC_REPO_URL}" 2>/dev/null \
+  _latest_tag="$(git ls-remote --tags --refs "${OMC_DEFAULT_REPO_URL}" 2>/dev/null \
     | awk '{print $2}' \
     | sed -E 's|refs/tags/||' \
     | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' \
@@ -152,9 +171,20 @@ if [[ "${OMC_REF}" == "main" ]] && [[ -z "${OMC_REF_PIN_HINT_SUPPRESS:-}" ]]; th
     | tail -1 \
     || true)"
   if [[ -n "${_latest_tag}" ]]; then
-    printf '    %s OMC_REF=main is rolling. To pin to the latest released tag:\n' "$(yellow 'tip:')"
-    printf '             OMC_REF=%s bash install-remote.sh\n' "${_latest_tag}"
-    printf '             (Set OMC_REF_PIN_HINT_SUPPRESS=1 to silence this hint.)\n'
+    if [[ "${OMC_REPO_URL}" == "${OMC_DEFAULT_REPO_URL}" ]]; then
+      printf '    %s OMC_REF=main is rolling. To pin to the latest released tag:\n' "$(yellow 'tip:')"
+      printf '             OMC_REF=%s bash install-remote.sh\n' "${_latest_tag}"
+      printf '             (Set OMC_REF_PIN_HINT_SUPPRESS=1 to silence this hint.)\n'
+    else
+      # Custom-URL install — do NOT recommend pinning to a tag in this
+      # fork (attacker could craft hostile tags). Recommend installing
+      # from the canonical upstream OR explicitly accepting the fork.
+      printf '    %s Custom OMC_REPO_URL active. Latest UPSTREAM tag is %s.\n' \
+        "$(yellow 'tip:')" "${_latest_tag}"
+      printf '             To install the upstream release instead of this fork:\n'
+      printf '             OMC_REF=%s OMC_REPO_URL=%s bash install-remote.sh\n' \
+        "${_latest_tag}" "${OMC_DEFAULT_REPO_URL}"
+    fi
   fi
   unset _latest_tag
 fi
@@ -201,6 +231,32 @@ else
     git clone --quiet --branch "${OMC_REF}" "${OMC_REPO_URL}" "${OMC_SRC_DIR}" \
       || err "git clone failed. Check network and repo URL."
   fi
+fi
+
+# --- Supply-chain SHA verification (v1.34.1+ Z-002) ------------------
+#
+# When OMC_EXPECTED_SHA is set, the cloned tree's HEAD commit must
+# match the expected hex. Refuses to hand off to install.sh otherwise
+# — fail-closed. Accepts any prefix >= 7 chars; matches against the
+# leading characters of the full HEAD SHA. Lowercase comparison.
+if [[ -n "${OMC_EXPECTED_SHA}" ]]; then
+  _expected_sha_lc="$(printf '%s' "${OMC_EXPECTED_SHA}" | tr '[:upper:]' '[:lower:]')"
+  if ! [[ "${_expected_sha_lc}" =~ ^[0-9a-f]{7,40}$ ]]; then
+    err "OMC_EXPECTED_SHA must be a 7-40 char hex string (got: ${OMC_EXPECTED_SHA})"
+  fi
+  _actual_sha="$(git -C "${OMC_SRC_DIR}" rev-parse HEAD 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  _expected_len="${#_expected_sha_lc}"
+  _actual_prefix="${_actual_sha:0:${_expected_len}}"
+  if [[ "${_actual_prefix}" != "${_expected_sha_lc}" ]]; then
+    printf '%s SHA verification FAILED.\n' "$(red 'error:')" >&2
+    printf '       Expected (OMC_EXPECTED_SHA): %s\n' "${OMC_EXPECTED_SHA}" >&2
+    printf '       Actual (HEAD of clone):      %s\n' "${_actual_sha}" >&2
+    printf '       Refusing to run install.sh on unverified tree.\n' >&2
+    exit 1
+  fi
+  printf '    %s SHA verified: clone HEAD matches OMC_EXPECTED_SHA (%s)\n' \
+    "$(green 'ok:')" "${_expected_sha_lc}"
+  unset _expected_sha_lc _actual_sha _expected_len _actual_prefix
 fi
 
 # --- Hand off to install.sh ------------------------------------------

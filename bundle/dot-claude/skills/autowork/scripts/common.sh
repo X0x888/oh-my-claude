@@ -1452,6 +1452,36 @@ _omc_strip_render_unsafe() {
   tr -d '\000-\010\013-\014\016-\037\177'
 }
 
+# v1.34.1+ (security-lens Z-003): redact common secret patterns from a
+# bash command string before persisting it to state. Closes a real
+# leak: a model running `pytest --auth-token=$LEAKED_TOKEN tests/`
+# (because hostile WebFetch/MCP told it to) would otherwise land the
+# token verbatim in `last_verify_cmd`, where omc-repro.sh bundles it
+# for support tarballs.
+#
+# Patterns covered (case-insensitive on the key, value left as captured):
+#   *(token|password|secret|key|auth|api[_-]?key)=VALUE -> KEY=<redacted>
+#   Bearer  VALUE                                       -> Bearer <redacted>
+#   sk-XXXX, ghp_XXXX, xoxb-XXXX, AKIA-prefixed, glpat-XXXX (provider keys)
+#                                                       -> <redacted-secret>
+#
+# Pure sed — Bash 3.2-safe, no perl dep. Reads from stdin, writes to
+# stdout. Idempotent: repeated invocations on already-redacted input
+# leave it unchanged. Best-effort: a determined attacker can choose
+# pattern shapes the redactor doesn't know about; this is a defense
+# against incidental leaks, not a guarantee.
+omc_redact_secrets() {
+  sed -E \
+    -e 's/((token|password|secret|key|auth|api[_-]?key)[[:space:]]*=[[:space:]]*)[^[:space:]"'"'"']+/\1<redacted>/gI' \
+    -e 's/(--(token|password|secret|key|auth|api[_-]?key)[[:space:]]+)[^[:space:]-][^[:space:]"'"'"']*/\1<redacted>/gI' \
+    -e 's/[Bb]earer[[:space:]]+[A-Za-z0-9._\/+=-]{8,}/Bearer <redacted>/g' \
+    -e 's/sk-[A-Za-z0-9_-]{16,}/<redacted-secret>/g' \
+    -e 's/ghp_[A-Za-z0-9_]{16,}/<redacted-secret>/g' \
+    -e 's/xoxb-[A-Za-z0-9-]{16,}/<redacted-secret>/g' \
+    -e 's/AKIA[A-Z0-9]{16}/<redacted-secret>/g' \
+    -e 's/glpat-[A-Za-z0-9_-]{16,}/<redacted-secret>/g'
+}
+
 trim_whitespace() {
   local text="$1"
 
