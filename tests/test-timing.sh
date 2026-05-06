@@ -1035,6 +1035,36 @@ case "$(timing_display_width "${mixed}")" in
 esac
 
 # ----------------------------------------------------------------------
+# T46 (v1.34.1+ data-lens D-002 follow-up): under parallelism (overhead
+# > 0), the per-bucket rendering MUST use the same work-time denominator
+# as the top bar. Pre-fix the top bar said "agents 72%" but the per-
+# bucket row still showed "1m 20s (133%)" using walltime as divisor —
+# directly visible inconsistency. T46 renders the format and asserts
+# the per-bucket percentage tracks the top bar's value, NOT walltime.
+printf 'Test 46: under parallelism, per-bucket pct uses work-time denom not walltime\n'
+agg_par='{"walltime_s":60,"agent_total_s":80,"tool_total_s":30,"idle_model_s":0,"concurrent_overhead_s":50,"prompt_count":1,"agent_breakdown":{"reviewer":80},"tool_breakdown":{"Bash":30},"agent_calls":{"reviewer":1},"tool_calls":{"Bash":1},"active_pending":0,"orphan_end_count":0}'
+out_par="$(timing_format_full "${agg_par}" 'Time breakdown')"
+# Top bar should show agents 72% (80/110 ≈ 72%). Per-bucket row should
+# also show 72%, NOT 133% (which is 80/60).
+case "${out_par}" in
+  *"agents 72%"*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: T46 — top bar should show "agents 72%%" under parallelism\n%s\n' "${out_par}" >&2; fail=$((fail + 1)) ;;
+esac
+case "${out_par}" in
+  *"1m 20s (72%)"*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: T46 — per-bucket row should show "1m 20s (72%%)" not (133%%)\n%s\n' "${out_par}" >&2; fail=$((fail + 1)) ;;
+esac
+# Insight line should also use the same denom.
+case "${out_par}" in
+  *"reviewer carried 72%"*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: T46 — insight line should say "reviewer carried 72%%" not (133%%)\n%s\n' "${out_par}" >&2; fail=$((fail + 1)) ;;
+esac
+case "${out_par}" in
+  *"parallelism saved ~50s"*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: T46 — overlap disclosure missing\n' >&2; fail=$((fail + 1)) ;;
+esac
+
+# ----------------------------------------------------------------------
 # T44 (v1.34.1+ product-lens P-004 / trust-accrual): when the session
 # state has serendipity_count > 0 OR (resolved gate blocks AND outcome ==
 # completed/released), stop-time-summary prepends an "─── Outcome ───"
