@@ -537,13 +537,14 @@ timing_generate_insight() {
     *)      span_word="turn"   ;;
   esac
 
-  local walltime agent_total tool_total idle_model orphan active_pending
+  local walltime agent_total tool_total idle_model orphan active_pending overhead
   walltime="$(jq -r '.walltime_s // 0' <<<"${agg}" 2>/dev/null)"
   agent_total="$(jq -r '.agent_total_s // 0' <<<"${agg}" 2>/dev/null)"
   tool_total="$(jq -r '.tool_total_s // 0' <<<"${agg}" 2>/dev/null)"
   idle_model="$(jq -r '.idle_model_s // 0' <<<"${agg}" 2>/dev/null)"
   orphan="$(jq -r '.orphan_end_count // 0' <<<"${agg}" 2>/dev/null)"
   active_pending="$(jq -r '.active_pending // 0' <<<"${agg}" 2>/dev/null)"
+  overhead="$(jq -r '.concurrent_overhead_s // 0' <<<"${agg}" 2>/dev/null)"
 
   walltime="${walltime:-0}"
   agent_total="${agent_total:-0}"
@@ -551,6 +552,7 @@ timing_generate_insight() {
   idle_model="${idle_model:-0}"
   orphan="${orphan:-0}"
   active_pending="${active_pending:-0}"
+  overhead="${overhead:-0}"
 
   [[ "${walltime}" =~ ^[0-9]+$ ]] || walltime=0
   [[ "${agent_total}" =~ ^[0-9]+$ ]] || agent_total=0
@@ -558,8 +560,20 @@ timing_generate_insight() {
   [[ "${idle_model}" =~ ^[0-9]+$ ]] || idle_model=0
   [[ "${orphan}" =~ ^[0-9]+$ ]] || orphan=0
   [[ "${active_pending}" =~ ^[0-9]+$ ]] || active_pending=0
+  [[ "${overhead}" =~ ^[0-9]+$ ]] || overhead=0
 
   (( walltime < 1 )) && return 0
+
+  # v1.34.1+ (D-002 follow-up): same denominator pattern as
+  # timing_format_full so the insight line's percentages stay
+  # consistent with the top bar / per-bucket rendering. Under
+  # parallelism (overhead > 0), divide by work-time instead of
+  # walltime; otherwise the insight could claim "X carried 133%".
+  local insight_denom="${walltime}"
+  if (( overhead > 0 )); then
+    insight_denom=$(( agent_total + tool_total + idle_model ))
+    (( insight_denom == 0 )) && insight_denom="${walltime}"
+  fi
 
   # 1. Anomaly — distinguish two genuinely different signals:
   #   * orphan_end_count > 0 → an end row arrived with no matching start
@@ -608,7 +622,7 @@ timing_generate_insight() {
     IFS=$'\t' read -r secs name <<<"${row}"
     [[ "${secs}" =~ ^[0-9]+$ ]] || secs=0
     if (( secs > 0 )); then
-      local pct=$(( secs * 100 / walltime ))
+      local pct=$(( secs * 100 / insight_denom ))
       if (( pct >= 60 )); then
         printf '%s carried %d%% of this %s (%s) — typical for a deep specialist run.' \
           "${name}" "${pct}" "${span_word}" "$(timing_fmt_secs "${secs}")"
@@ -633,7 +647,7 @@ timing_generate_insight() {
     IFS=$'\t' read -r tsecs tname <<<"${trow}"
     [[ "${tsecs}" =~ ^[0-9]+$ ]] || tsecs=0
     if (( tsecs > 0 )); then
-      local tpct=$(( tsecs * 100 / walltime ))
+      local tpct=$(( tsecs * 100 / insight_denom ))
       if (( tpct >= 60 )); then
         printf '%s dominated this %s at %d%% (%s) — consider whether parallelizable next time.' \
           "${tname}" "${span_word}" "${tpct}" "$(timing_fmt_secs "${tsecs}")"
@@ -646,7 +660,7 @@ timing_generate_insight() {
   # stuck". Triggers only on turns >= 30s so a quick clarification doesn't
   # produce a hollow reassurance.
   if (( walltime >= 30 )); then
-    local idle_pct=$(( idle_model * 100 / walltime ))
+    local idle_pct=$(( idle_model * 100 / insight_denom ))
     if (( idle_pct >= 60 )); then
       printf 'Most time was model thinking (%d%% idle/model) — depth, not stalling.' "${idle_pct}"
       return 0
@@ -765,19 +779,23 @@ timing_format_full() {
   # three buckets always partition 100%, then disclose the overlap on the
   # next line. Without this, the bar can read "agents 32% · tools 58% ·
   # idle 27% = 117%" which looks broken.
+  # Compute the correct denominator for percentages. Under parallelism
+  # (overhead > 0), agent + tool can exceed walltime, so use the work-
+  # time sum (agent + tool + idle) which is always >= walltime. Under
+  # serial work, that sum equals walltime, so the formula collapses to
+  # the original. Used for BOTH the top bar AND the per-bucket rows
+  # (passed in as the "walltime" arg of _timing_render_bucket so the
+  # bucket-level percentage stays consistent with the top bar).
+  local pct_denom="${walltime}"
+  if (( walltime > 0 )) && (( overhead > 0 )); then
+    pct_denom=$(( agent_total + tool_total + idle_model ))
+    (( pct_denom == 0 )) && pct_denom=1
+  fi
   local pct_a=0 pct_t=0 pct_i=0
-  if (( walltime > 0 )); then
-    if (( overhead > 0 )); then
-      local denom=$(( agent_total + tool_total + idle_model ))
-      (( denom == 0 )) && denom=1
-      pct_a=$(( agent_total * 100 / denom ))
-      pct_t=$(( tool_total * 100 / denom ))
-      pct_i=$(( idle_model * 100 / denom ))
-    else
-      pct_a=$(( agent_total * 100 / walltime ))
-      pct_t=$(( tool_total * 100 / walltime ))
-      pct_i=$(( idle_model * 100 / walltime ))
-    fi
+  if (( pct_denom > 0 )); then
+    pct_a=$(( agent_total * 100 / pct_denom ))
+    pct_t=$(( tool_total * 100 / pct_denom ))
+    pct_i=$(( idle_model * 100 / pct_denom ))
   fi
   local stacked_bar
   stacked_bar="$(_timing_stacked_bar "${pct_a}" "${pct_t}" "${pct_i}" 30)"
@@ -802,9 +820,14 @@ timing_format_full() {
   fi
   printf '\n'
 
-  _timing_render_bucket "agents"     "${agent_total}"  "${walltime}" "agent_breakdown" "${agg}" "agent_calls"
-  _timing_render_bucket "tools"      "${tool_total}"   "${walltime}" "tool_breakdown"  "${agg}" "tool_calls"
-  _timing_render_bucket "idle/model" "${idle_model}"   "${walltime}" ""                "${agg}" ""
+  # Use pct_denom (work-time when parallelism, walltime otherwise) so
+  # per-bucket percentages stay consistent with the top bar. Pre-fix
+  # the per-bucket rows under parallelism showed e.g. "1m 20s (133%)"
+  # while the top bar (correctly) showed "agents 72%" — broken-looking
+  # math the user could see.
+  _timing_render_bucket "agents"     "${agent_total}"  "${pct_denom}" "agent_breakdown" "${agg}" "agent_calls"
+  _timing_render_bucket "tools"      "${tool_total}"   "${pct_denom}" "tool_breakdown"  "${agg}" "tool_calls"
+  _timing_render_bucket "idle/model" "${idle_model}"   "${pct_denom}" ""                "${agg}" ""
 
   if (( idle_model > 0 )); then
     printf '    %s\n' "(residual: model thinking, permission waits, hook overhead)"
