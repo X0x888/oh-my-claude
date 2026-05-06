@@ -650,5 +650,7 @@ printf "     what you want to accomplish; you don't need to learn agent names.\n
 printf '\n'
 printf 'Upgrading from a prior release?\n'
 printf '  The live hooks in ~/.claude/ do not auto-upgrade. After git pull, re-run bash install.sh\n'
-printf '  to sync agents, skills, and memory files. settings.json merges and omc-user/ are preserved.\n'
+printf '  to sync agents, skills, and memory files. settings.json merges and omc-user/ are preserved;\n'
+printf '  unedited memory files are refreshed in place. (v1.36.0+) hand-edited memory files trigger a\n'
+printf '  pre-rsync warning so you can migrate edits to %s/omc-user/overrides.md.\n' "${CLAUDE_HOME}"
 printf '  Run /omc-config afterwards to review your current settings — see CHANGELOG.md for the new-flag list.\n'

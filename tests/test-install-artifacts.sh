@@ -420,6 +420,222 @@ fi
 printf '\n'
 
 # ---------------------------------------------------------------------------
+# Test 8 (v1.36.0): --no-ghostty and ghostty auto-detect
+# ---------------------------------------------------------------------------
+printf '8. Ghostty install gating (v1.36.0)\n'
+
+# Reset test home to start clean.
+rm -rf "${TEST_HOME}"
+mkdir -p "${TEST_HOME}"
+GHOSTTY_HOME_FAKE="${TEST_HOME}/.config/ghostty"
+
+# 8a — Default install with no pre-existing ~/.config/ghostty/ should
+# NOT seed the dir (auto-detect skips silently). This is the silent-
+# side-effect closure — pre-1.36.0 every install seeded ghostty.
+TARGET_HOME="${TEST_HOME}" bash "${REPO_ROOT}/install.sh" >/dev/null 2>&1 || true
+if [[ -d "${GHOSTTY_HOME_FAKE}" ]]; then
+  printf '  FAIL: auto-detect should skip when ~/.config/ghostty/ does not pre-exist (was created)\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+
+# 8b — Pre-create ~/.config/ghostty/ then install — should now seed.
+mkdir -p "${GHOSTTY_HOME_FAKE}"
+TARGET_HOME="${TEST_HOME}" bash "${REPO_ROOT}/install.sh" >/dev/null 2>&1 || true
+if [[ -d "${GHOSTTY_HOME_FAKE}/themes" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: auto-detect should seed when ~/.config/ghostty/ pre-exists (themes/ missing)\n' >&2
+  fail=$((fail + 1))
+fi
+
+# 8c — --no-ghostty must skip seeding even when the dir pre-exists.
+rm -rf "${GHOSTTY_HOME_FAKE}/themes"
+TARGET_HOME="${TEST_HOME}" bash "${REPO_ROOT}/install.sh" --no-ghostty >/dev/null 2>&1 || true
+if [[ ! -d "${GHOSTTY_HOME_FAKE}/themes" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: --no-ghostty should skip even when ghostty home pre-exists\n' >&2
+  fail=$((fail + 1))
+fi
+
+# 8d — --with-ghostty must seed even when ~/.config/ghostty/ does NOT exist.
+rm -rf "${GHOSTTY_HOME_FAKE}"
+TARGET_HOME="${TEST_HOME}" bash "${REPO_ROOT}/install.sh" --with-ghostty >/dev/null 2>&1 || true
+if [[ -d "${GHOSTTY_HOME_FAKE}/themes" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: --with-ghostty should force-seed when ghostty home is absent\n' >&2
+  fail=$((fail + 1))
+fi
+
+# 8e — F-4 regression net: --no-ghostty and --with-ghostty are mutually
+# exclusive. Pre-fix the arg loop accepted both and silently last-wins
+# (whichever appeared last); post-fix the install must refuse the
+# combination with a non-zero exit and a clear error.
+rm -rf "${TEST_HOME}"
+mkdir -p "${TEST_HOME}"
+out_mutex="$(TARGET_HOME="${TEST_HOME}" bash "${REPO_ROOT}/install.sh" --no-ghostty --with-ghostty 2>&1 || true)"
+exit_mutex="$?"
+assert_contains "mutex error message" "mutually exclusive" "${out_mutex}"
+# install.sh on the conflict path must NOT have created CLAUDE_HOME.
+if [[ ! -d "${TEST_HOME}/.claude" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: --no-ghostty + --with-ghostty should fail before install begins\n' >&2
+  fail=$((fail + 1))
+fi
+
+printf '\n'
+
+# ---------------------------------------------------------------------------
+# Test 9 (v1.36.0): --keep-backups=N retention
+# ---------------------------------------------------------------------------
+printf '9. Backup retention (v1.36.0)\n'
+
+# Reset test home + simulate 12 prior backup directories with old timestamps.
+rm -rf "${TEST_HOME}"
+mkdir -p "${TEST_HOME}/.claude/backups"
+for i in $(seq 1 12); do
+  # Names sort by lexical timestamp; use 12-digit synthetic stamps.
+  stamp="$(printf '20260401-%06d' "$((100000 + i))")"
+  mkdir -p "${TEST_HOME}/.claude/backups/oh-my-claude-${stamp}"
+  printf 'placeholder\n' > "${TEST_HOME}/.claude/backups/oh-my-claude-${stamp}/marker"
+done
+
+# Default install adds one more (the current install's backup). With
+# 12 synthetic + 1 real = 13 dirs, default keep=10 should prune 3.
+out_prune="$(TARGET_HOME="${TEST_HOME}" bash "${REPO_ROOT}/install.sh" 2>&1 || true)"
+remaining_count="$(find "${TEST_HOME}/.claude/backups" -maxdepth 1 -type d -name 'oh-my-claude-*' 2>/dev/null | wc -l | tr -d '[:space:]')"
+if [[ "${remaining_count}" -eq 10 ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: default retention should keep 10 dirs (got %s)\n' "${remaining_count}" >&2
+  fail=$((fail + 1))
+fi
+assert_contains "prune output names retention" "Backup retention" "${out_prune}"
+
+# 9b — --keep-backups=all should not prune.
+rm -rf "${TEST_HOME}"
+mkdir -p "${TEST_HOME}/.claude/backups"
+for i in $(seq 1 5); do
+  stamp="$(printf '20260401-%06d' "$((200000 + i))")"
+  mkdir -p "${TEST_HOME}/.claude/backups/oh-my-claude-${stamp}"
+done
+TARGET_HOME="${TEST_HOME}" bash "${REPO_ROOT}/install.sh" --keep-backups=all >/dev/null 2>&1 || true
+remaining_all="$(find "${TEST_HOME}/.claude/backups" -maxdepth 1 -type d -name 'oh-my-claude-*' 2>/dev/null | wc -l | tr -d '[:space:]')"
+if [[ "${remaining_all}" -ge 6 ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: --keep-backups=all should preserve all dirs (got %s)\n' "${remaining_all}" >&2
+  fail=$((fail + 1))
+fi
+
+# 9c — --keep-backups with invalid value (non-integer) should fail fast.
+out_bad="$(TARGET_HOME="${TEST_HOME}" bash "${REPO_ROOT}/install.sh" --keep-backups=foo 2>&1 || true)"
+assert_contains "invalid keep-backups rejected" "Invalid --keep-backups" "${out_bad}"
+
+# 9d — --keep-backups=2 should aggressively prune.
+rm -rf "${TEST_HOME}"
+mkdir -p "${TEST_HOME}/.claude/backups"
+for i in $(seq 1 6); do
+  stamp="$(printf '20260401-%06d' "$((300000 + i))")"
+  mkdir -p "${TEST_HOME}/.claude/backups/oh-my-claude-${stamp}"
+done
+TARGET_HOME="${TEST_HOME}" bash "${REPO_ROOT}/install.sh" --keep-backups=2 >/dev/null 2>&1 || true
+remaining_two="$(find "${TEST_HOME}/.claude/backups" -maxdepth 1 -type d -name 'oh-my-claude-*' 2>/dev/null | wc -l | tr -d '[:space:]')"
+if [[ "${remaining_two}" -eq 2 ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: --keep-backups=2 should prune to 2 dirs (got %s)\n' "${remaining_two}" >&2
+  fail=$((fail + 1))
+fi
+
+# 9e — F-1 regression net (Wave 1 review): under adversarial sort order
+# (prior dirs with FUTURE-dated stamps that sort AHEAD of the current
+# install's stamp), the just-created backup must STILL survive. Pre-fix
+# the lexical-sort-only logic would push ${BACKUP_DIR} past the keep
+# threshold and rm -rf it, leaving the user with no recovery surface
+# for the install that just ran.
+rm -rf "${TEST_HOME}"
+mkdir -p "${TEST_HOME}/.claude/backups"
+# 12 future-dated stamps (year 2099) sort AHEAD of any plausible STAMP.
+for i in $(seq 1 12); do
+  stamp="$(printf '20990101-%06d' "$((400000 + i))")"
+  mkdir -p "${TEST_HOME}/.claude/backups/oh-my-claude-${stamp}"
+done
+# Run install with --keep-backups=2. Without the BACKUP_DIR guard the
+# real backup would be pruned (it sorts ALL the way at the bottom),
+# leaving only 2 of the future-dated synthetic dirs. With the guard
+# the real backup survives and the count stays at 3 (2 synthetic + 1
+# real).
+out_adv="$(TARGET_HOME="${TEST_HOME}" bash "${REPO_ROOT}/install.sh" --keep-backups=2 2>&1 || true)"
+# Locate the real backup dir by looking for the only one whose stamp
+# isn't a 2099 synthetic.
+real_backup_count="$(find "${TEST_HOME}/.claude/backups" -maxdepth 1 -type d -name 'oh-my-claude-*' \
+                       ! -name 'oh-my-claude-20990101-*' 2>/dev/null | wc -l | tr -d '[:space:]')"
+if [[ "${real_backup_count}" -eq 1 ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: F-1 adversarial — real BACKUP_DIR should survive future-dated synthetics (got %s real backup(s))\n' "${real_backup_count}" >&2
+  fail=$((fail + 1))
+fi
+
+printf '\n'
+
+# ---------------------------------------------------------------------------
+# Test 10 (v1.36.0): warn_modified_memory_files
+# ---------------------------------------------------------------------------
+printf '10. Memory file overwrite warning (v1.36.0)\n'
+
+# Reset and run a clean install to lay down memory files + .install-stamp.
+rm -rf "${TEST_HOME}"
+mkdir -p "${TEST_HOME}"
+TARGET_HOME="${TEST_HOME}" bash "${REPO_ROOT}/install.sh" >/dev/null 2>&1 || true
+
+mem_dir="${TEST_HOME}/.claude/quality-pack/memory"
+core_md="${mem_dir}/core.md"
+stamp_file="${TEST_HOME}/.claude/.install-stamp"
+
+assert_true "memory dir exists after install" "[[ -d '${mem_dir}' ]]"
+assert_true "core.md present" "[[ -f '${core_md}' ]]"
+assert_true ".install-stamp present" "[[ -f '${stamp_file}' ]]"
+
+# 10a — Clean re-install (no user edits) should NOT warn.
+out_quiet="$(TARGET_HOME="${TEST_HOME}" bash "${REPO_ROOT}/install.sh" 2>&1 || true)"
+if printf '%s' "${out_quiet}" | grep -q 'User edits detected'; then
+  printf '  FAIL: clean re-install should not warn (no user edits)\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+
+# 10b — Touch core.md so its mtime > .install-stamp mtime, then re-install.
+# Bump the file's mtime forward; touch -d / -t both work cross-platform
+# given we're not asserting an exact value. CI=1 suppresses the
+# warn_modified_memory_files 5-second Ctrl-C window (F-2 fix from Wave 1
+# review) — keeps the test run fast while still exercising the warning
+# emission path.
+sleep 1
+printf '\n# user edit\n' >> "${core_md}"
+out_warn="$(CI=1 TARGET_HOME="${TEST_HOME}" bash "${REPO_ROOT}/install.sh" 2>&1 || true)"
+
+if printf '%s' "${out_warn}" | grep -qF 'User edits detected'; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: hand-edited core.md should trigger warning\n' >&2
+  fail=$((fail + 1))
+fi
+
+# Warning should name the offending basename and the omc-user/overrides.md
+# remediation surface.
+assert_contains "warning names core.md"             "core.md"               "${out_warn}"
+assert_contains "warning points to omc-user/"       "omc-user/overrides.md" "${out_warn}"
+
+printf '\n'
+
+# ---------------------------------------------------------------------------
 # Results
 # ---------------------------------------------------------------------------
 printf '=== Results: %d passed, %d failed ===\n' "${pass}" "${fail}"

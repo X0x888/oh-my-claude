@@ -10,6 +10,9 @@
 #   bash install.sh                    # standard install
 #   bash install.sh --bypass-permissions  # also enable bypass-permissions mode
 #   bash install.sh --model-tier=economy  # all agents use Sonnet (cheaper)
+#   bash install.sh --no-ghostty         # skip Ghostty theme/config (v1.36.0)
+#   bash install.sh --with-ghostty       # force-install Ghostty even if not detected (v1.36.0)
+#   bash install.sh --keep-backups=N     # prune oh-my-claude-* backups, keep N newest (default 10; v1.36.0)
 #   bash install.sh --uninstall          # remove oh-my-claude (delegates to uninstall.sh)
 #
 # Requires: rsync, jq. Uses python3 for JSON merging when available, falls back to jq.
@@ -52,6 +55,22 @@ BYPASS_PERMISSIONS=false
 EXCLUDE_IOS=false
 MODEL_TIER=""
 INSTALL_GIT_HOOKS=false
+# v1.36.0: ghostty install is now auto-detect by default. "" = auto
+# (install only when ${GHOSTTY_HOME} already exists), "yes" = force
+# install, "no" = skip. Closes the silent ~/.config/ghostty/ side
+# effect on hosts that don't run Ghostty terminal.
+INSTALL_GHOSTTY_FLAG=""
+# Track which ghostty flags appeared so we can detect the mutually-
+# exclusive case. Pre-fix the arg loop accepted both flags and silently
+# last-wins; the explicit pair-tracking lets us refuse the combination
+# instead of guessing user intent.
+_OMC_GHOSTTY_NO_SEEN=0
+_OMC_GHOSTTY_YES_SEEN=0
+# v1.36.0: backup retention. 10 newest oh-my-claude-* dirs in
+# ${CLAUDE_HOME}/backups/ are kept; older ones pruned after install
+# completes. Set to 0 to disable retention; set --keep-backups=all
+# to skip pruning entirely.
+KEEP_BACKUPS="10"
 
 # Handle --uninstall early (mutually exclusive with install flags).
 if [[ "${1:-}" == "--uninstall" ]]; then
@@ -77,13 +96,44 @@ for arg in "$@"; do
     --git-hooks)
       INSTALL_GIT_HOOKS=true
       ;;
+    --no-ghostty)
+      INSTALL_GHOSTTY_FLAG="no"
+      _OMC_GHOSTTY_NO_SEEN=1
+      ;;
+    --with-ghostty)
+      INSTALL_GHOSTTY_FLAG="yes"
+      _OMC_GHOSTTY_YES_SEEN=1
+      ;;
+    --keep-backups=*)
+      KEEP_BACKUPS="${arg#*=}"
+      ;;
+    --keep-backups)
+      printf 'Missing value for --keep-backups. Usage: --keep-backups=N (or --keep-backups=all to disable pruning)\n' >&2
+      exit 1
+      ;;
     *)
       printf 'Unknown argument: %s\n' "${arg}" >&2
-      printf 'Usage: bash install.sh [--bypass-permissions] [--no-ios] [--model-tier=TIER] [--git-hooks] [--uninstall]\n' >&2
+      printf 'Usage: bash install.sh [--bypass-permissions] [--no-ios] [--model-tier=TIER] [--git-hooks] [--no-ghostty] [--with-ghostty] [--keep-backups=N] [--uninstall]\n' >&2
       exit 1
       ;;
   esac
 done
+
+# Validate --keep-backups value (must be "all" or a non-negative integer).
+if [[ -n "${KEEP_BACKUPS}" ]] && [[ "${KEEP_BACKUPS}" != "all" ]] && ! [[ "${KEEP_BACKUPS}" =~ ^[0-9]+$ ]]; then
+  printf 'Invalid --keep-backups value: %s. Must be "all" or a non-negative integer.\n' "${KEEP_BACKUPS}" >&2
+  exit 1
+fi
+
+# Refuse --no-ghostty + --with-ghostty in the same invocation. The two
+# flags express opposite intents and last-wins would silently ignore one;
+# better to surface the conflict so the user picks deliberately. Use
+# `%s\n` because the bash builtin printf treats a leading `--` in the
+# format string as end-of-options and rejects it as an invalid flag.
+if [[ "${_OMC_GHOSTTY_NO_SEEN}" -eq 1 ]] && [[ "${_OMC_GHOSTTY_YES_SEEN}" -eq 1 ]]; then
+  printf '%s\n' '--no-ghostty and --with-ghostty are mutually exclusive — pick one.' >&2
+  exit 1
+fi
 
 # Validate --model-tier value if provided.
 if [[ -n "${MODEL_TIER}" ]] && [[ "${MODEL_TIER}" != "quality" && "${MODEL_TIER}" != "balanced" && "${MODEL_TIER}" != "economy" ]]; then
@@ -100,6 +150,137 @@ need_cmd() {
   if ! command -v "${cmd}" >/dev/null 2>&1; then
     printf 'Missing required command: %s\n' "${cmd}" >&2
     exit 1
+  fi
+}
+
+# Two-hop stat helper (BSD then GNU) — same portability shape as
+# session-start-welcome.sh:_lock_mtime / common.sh state-io. Returns
+# the file's mtime epoch on stdout, empty string when unsupported.
+# Note on busybox/Alpine consumers below: `date -r` interprets its
+# argument as a FILENAME on busybox, not an epoch, so the formatted-
+# date branch in warn_modified_memory_files falls back to `epoch=N`
+# via the `||` operator there. This is a documented degradation,
+# not a bug.
+_install_file_mtime() {
+  local path="$1"
+  [[ -f "${path}" ]] || return 1
+  if stat -f '%m' "${path}" >/dev/null 2>&1; then
+    stat -f '%m' "${path}" 2>/dev/null
+  elif stat -c '%Y' "${path}" >/dev/null 2>&1; then
+    stat -c '%Y' "${path}" 2>/dev/null
+  fi
+}
+
+# v1.36.0: warn before overwriting memory files the user has hand-edited.
+# The end-of-install message used to advertise "settings.json merges and
+# omc-user/ are preserved" without mentioning that quality-pack/memory/*.md
+# is overwritten on every install. Users who hand-edited core.md or
+# skills.md to adjust their workflow lost those edits silently. This
+# helper compares each memory file's mtime against the previous
+# install-stamp; files modified post-install are listed BEFORE rsync
+# runs so the user can Ctrl-C and migrate edits to omc-user/overrides.md.
+warn_modified_memory_files() {
+  local install_stamp="${CLAUDE_HOME}/.install-stamp"
+  local memory_dir="${CLAUDE_HOME}/quality-pack/memory"
+  local stamp_ts=""
+
+  [[ -d "${memory_dir}" ]] || return 0
+  stamp_ts="$(_install_file_mtime "${install_stamp}" || true)"
+  # First install (no stamp) or unsupported stat — silent skip.
+  [[ -z "${stamp_ts}" ]] && return 0
+  [[ "${stamp_ts}" =~ ^[0-9]+$ ]] || return 0
+  [[ "${stamp_ts}" -le 0 ]] && return 0
+
+  local warned=0
+  local mem_file file_ts
+  while IFS= read -r mem_file; do
+    [[ -z "${mem_file}" ]] && continue
+    [[ -f "${mem_file}" ]] || continue
+    file_ts="$(_install_file_mtime "${mem_file}" || true)"
+    [[ "${file_ts}" =~ ^[0-9]+$ ]] || continue
+    if [[ "${file_ts}" -gt "${stamp_ts}" ]]; then
+      if [[ "${warned}" -eq 0 ]]; then
+        printf '\n  [warn] User edits detected in %s — these files will be overwritten.\n' "${memory_dir}"
+        printf '         To preserve your customizations across installs, move them to:\n'
+        printf '           %s/omc-user/overrides.md  (loaded after defaults; never overwritten)\n' "${CLAUDE_HOME}"
+        printf '         A copy of each modified file IS saved in %s before rsync, so\n' "${BACKUP_DIR}"
+        printf '         recovery is possible after-the-fact via:\n'
+        printf '           cp %s/quality-pack/memory/<file>.md \\\n' "${BACKUP_DIR}"
+        printf '              %s/omc-user/overrides.md   # then re-edit as additive overrides\n' "${CLAUDE_HOME}"
+        printf '         Modified files:\n'
+        warned=1
+      fi
+      printf '           - %s (modified %s)\n' \
+        "$(basename "${mem_file}")" \
+        "$(date -r "${file_ts}" '+%Y-%m-%d %H:%M' 2>/dev/null || printf 'epoch=%s' "${file_ts}")"
+    fi
+  done < <(find "${memory_dir}" -maxdepth 1 -type f -name '*.md' 2>/dev/null | LC_ALL=C sort)
+
+  if [[ "${warned}" -eq 1 ]]; then
+    # F-2 fix (Wave 1 review): only sleep when interactive AND not in CI.
+    # `bash install.sh < /dev/null` (curl-pipe-bash) and CI runs cannot
+    # Ctrl-C, so a 5s wait there is pure dead time; same surface where
+    # the bypass-permissions banner skips its prompt. Test runs (CI=1
+    # in GitHub Actions) and stdin-redirected installs print the warning
+    # and proceed immediately.
+    if [[ -t 0 ]] && [[ -z "${CI:-}" ]]; then
+      printf '         Continuing with install in 5 seconds — Ctrl-C to abort and migrate first.\n'
+      sleep 5 2>/dev/null || true
+    else
+      printf '         Non-interactive install — proceeding immediately. Migrate edits before the next install run.\n'
+    fi
+  fi
+}
+
+# v1.36.0: prune oh-my-claude-${STAMP} backup directories after install.
+# Keeps the most recent ${KEEP_BACKUPS} dirs (default 10); set
+# --keep-backups=all to disable. At the project's release cadence
+# (multiple installs per day during cascades) backups otherwise
+# accumulate ~30/month with no surface to surface or rotate them.
+#
+# Conservative pruning (newest-first by name; the timestamp is
+# embedded in the directory name so lexical sort == newest-first
+# under normal clock conditions). F-1 (Wave 1 review) defense:
+# even when prior dirs sort lexically AHEAD of ${BACKUP_DIR} (clock
+# skew, hand-renamed dirs, future-dated stamps from rolled-back hosts),
+# the just-created backup is ALWAYS preserved by an explicit
+# `[[ "${dir}" == "${BACKUP_DIR}" ]] && continue` guard inside the
+# prune loop. The guard is cheap and forecloses any ordering pathology.
+prune_old_backups() {
+  local keep="${KEEP_BACKUPS:-10}"
+  [[ "${keep}" == "all" ]] && return 0
+  [[ "${keep}" =~ ^[0-9]+$ ]] || return 0
+
+  local backups_root="${CLAUDE_HOME}/backups"
+  [[ -d "${backups_root}" ]] || return 0
+
+  local -a backups=()
+  while IFS= read -r dir; do
+    [[ -n "${dir}" ]] && backups+=("${dir}")
+  done < <(find "${backups_root}" -maxdepth 1 -type d -name 'oh-my-claude-*' 2>/dev/null \
+              | LC_ALL=C sort -r)
+
+  if [[ "${#backups[@]}" -le "${keep}" ]]; then
+    return 0
+  fi
+
+  local pruned=0 i
+  for ((i=keep; i<${#backups[@]}; i++)); do
+    # Hard guard: never prune the just-created backup, regardless of
+    # where it landed in the lexical-sort window. If clock-skew /
+    # future-dated prior dirs pushed ${BACKUP_DIR} past the keep
+    # threshold, this `continue` keeps the recovery surface intact.
+    if [[ "${backups[i]}" == "${BACKUP_DIR}" ]]; then
+      continue
+    fi
+    if rm -rf "${backups[i]}" 2>/dev/null; then
+      pruned=$((pruned + 1))
+    fi
+  done
+
+  if [[ "${pruned}" -gt 0 ]]; then
+    printf '  Backup retention: kept %d most recent oh-my-claude-* dir(s), pruned %d older.\n' \
+      "${keep}" "${pruned}"
   fi
 }
 
@@ -594,8 +775,10 @@ backup_existing_targets() {
     rsync -a "${CLAUDE_HOME}/settings.json" "${BACKUP_DIR}/settings.json"
   fi
 
-  # Back up any Ghostty files that will be touched.
-  if [[ -d "${BUNDLE_GHOSTTY}" ]]; then
+  # Back up any Ghostty files that will be touched. v1.36.0: respect
+  # the --no-ghostty / auto-detect gate so backups don't pull in
+  # ghostty paths the install will not touch.
+  if [[ -d "${BUNDLE_GHOSTTY}" ]] && should_install_ghostty; then
     while IFS= read -r source_path; do
       local rel_path
       local target_path
@@ -865,6 +1048,28 @@ apply_model_tier() {
 # Install Ghostty theme and config snippet
 # ---------------------------------------------------------------------------
 
+should_install_ghostty() {
+  case "${INSTALL_GHOSTTY_FLAG}" in
+    yes) return 0 ;;
+    no)  return 1 ;;
+    *)
+      # Auto-detect (default): install only when the user already has
+      # a ~/.config/ghostty/ directory. Closes the silent side-effect
+      # on hosts that don't run Ghostty terminal — pre-v1.36.0 every
+      # install seeded the dir even on iTerm/Terminal/Alacritty hosts.
+      #
+      # Limitation: this checks for the dir, not the binary. A user
+      # who removed Ghostty.app but left ~/.config/ghostty/ behind
+      # will still get the seed. The benign cost is an orphan config
+      # update; the alternative (binary probe) hits portability traps
+      # (path differences across Linux distros, App Store sandbox vs
+      # cask installs on macOS, etc.). Power users who want strict
+      # control pass --no-ghostty / --with-ghostty explicitly.
+      [[ -d "${GHOSTTY_HOME}" ]]
+      ;;
+  esac
+}
+
 install_ghostty() {
   local snippet_path="${BUNDLE_GHOSTTY}/config.snippet.ini"
   local theme_source="${BUNDLE_GHOSTTY}/themes/Claude OpenCode"
@@ -945,6 +1150,14 @@ printf 'Installing oh-my-claude into %s ...\n' "${CLAUDE_HOME}"
 # the dir so the perms apply to the freshly-created tree.
 mkdir -p "${CLAUDE_HOME}" "${BACKUP_DIR}"
 chmod 700 "${BACKUP_DIR}" 2>/dev/null || true
+# v1.36.0: surface user edits in memory/ before rsync overwrites them.
+# Runs BEFORE backup_existing_targets and BEFORE rsync — the warning
+# fires while the live edit is still untouched on disk, so a Ctrl-C
+# during the 5s wait (interactive only) leaves the file intact for the
+# user to migrate. The subsequent backup_existing_targets does eventually
+# preserve a copy under ${BACKUP_DIR}, but that recovery path is the
+# fallback, not the contract surfaced in the warn message.
+warn_modified_memory_files
 backup_existing_targets
 
 # Step 2 — Copy bundle into ~/.claude/.
@@ -1126,8 +1339,11 @@ elif [[ ! -f "${OMC_USER_DIR}/overrides.md" ]]; then
   fi
 fi
 
-# Step 3 — Install Ghostty theme/config (no-op if bundle has none).
-install_ghostty
+# Step 3 — Install Ghostty theme/config (no-op if bundle has none, or
+# if --no-ghostty / auto-detect skipped it).
+if should_install_ghostty; then
+  install_ghostty
+fi
 
 # Step 4 — Merge settings.json (idempotent).
 #
@@ -1332,6 +1548,12 @@ touch "${CLAUDE_HOME}/.install-stamp"
 if [[ "${INSTALL_GIT_HOOKS}" == "true" ]]; then
   install_git_hooks
 fi
+
+# Step 8 (v1.36.0) — Prune old backup directories. Runs LAST so an
+# install that aborts mid-flight leaves the just-created backup intact
+# for recovery; only runs when the install completed past the executable
+# bits + stamp steps.
+prune_old_backups
 
 # ===========================================================================
 # Summary

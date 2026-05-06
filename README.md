@@ -104,9 +104,13 @@ Restart Claude Code if any bundle file changed; the `verify.sh` summary lists or
 
 Your `--model-tier` preference persists in `~/.claude/oh-my-claude.conf` and re-applies automatically. The statusline shows a yellow `↑v<version>` arrow when the source repo is ahead of the installed bundle — re-run `install.sh` to sync.
 
-`install.sh` overwrites bundled files but preserves `settings.json` merges, `omc-user/overrides.md`, and custom agents or skills whose names are outside the bundle. See FAQ: [*How do I update?*](docs/faq.md#how-do-i-update-oh-my-claude) and [*Will updating overwrite my changes?*](docs/faq.md#will-updating-overwrite-my-changes) for the full safety matrix.
+`install.sh` overwrites bundled files but preserves `settings.json` merges, `omc-user/overrides.md`, and custom agents or skills whose names are outside the bundle. Hand-edited files in `quality-pack/memory/` get a pre-rsync warning so you can migrate edits to `omc-user/overrides.md` before they're overwritten. See FAQ: [*How do I update?*](docs/faq.md#how-do-i-update-oh-my-claude) and [*Will updating overwrite my changes?*](docs/faq.md#will-updating-overwrite-my-changes) for the full safety matrix.
 
-Reversible: `bash ~/.local/share/oh-my-claude/uninstall.sh` removes everything cleanly. Backups of pre-install settings live at `~/.claude/backups/oh-my-claude-<timestamp>/`.
+**Install flags (v1.36.0+):**
+- `--no-ghostty` / `--with-ghostty` — skip or force-install Ghostty theme/config. Default auto-detects: only seeds `~/.config/ghostty/` when that directory already exists.
+- `--keep-backups=N` (default `10`) — prune older `oh-my-claude-*` backup directories after install. `--keep-backups=all` disables pruning. Closes the unbounded-accumulation surface during patch cascades.
+
+Reversible: `bash ~/.local/share/oh-my-claude/uninstall.sh` removes everything cleanly. Backups of pre-install settings live at `~/.claude/backups/oh-my-claude-<timestamp>/` (auto-pruned per `--keep-backups`; the most recent always survives).
 
 ## Troubleshooting
 
