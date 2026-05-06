@@ -4,6 +4,167 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.34.1] - 2026-05-06
+
+### Council-driven trust + steering improvements
+
+A multi-lens project council ("ship better real work with less steering")
+surfaced 79 findings across product, SRE, data, design, security, growth,
+abstraction-critic, and oracle perspectives. v1.34.1 ships 24 of those
+findings across 7 thematic waves; the remaining 55 are deferred (each
+with a concrete WHY) — most need substantial cross-JSONL infrastructure
+or are user-decision design calls that can't be made autonomously.
+
+**The reductions you'll see immediately:**
+
+- **Gate-block messages dropped 3-6× in length.** Discovered-scope went
+  from ~1400 chars to 238 chars; the harness's most-fired blocker is
+  now a focused trigger + recovery instead of a paragraph wall.
+- **Time-card math is honest under parallelism.** When parallel agents
+  finished in less wall-time than their serial work-time would have
+  taken, the bar used to read e.g. "agents 32% · tools 58% · idle 27%"
+  — 117% of walltime, broken on its face. Now: re-normalized against
+  work-time with a "parallelism saved ~Xm of serial work-time" line.
+- **Outcome-card prepended to every Stop above the 5s noise floor.**
+  When the session caught real issues (gate blocks resolved, Serendipity
+  Rule fires), users see a one-line "─── Outcome ───" digest above the
+  time card. Silent when there's no signal.
+- **`/ulw-report --share` is now actually shareable.** Pre-fix it read as
+  a debug dump. Now: headline number ("Caught N issues across M sessions"),
+  conservative time-saved estimate, copy-paste-to-Twitter one-liner.
+- **README leads with the user's growth wedge** ("ship better real work
+  with less steering") instead of "cognitive quality harness" jargon.
+
+### Added
+
+- **`OMC_EXPECTED_SHA` install-remote.sh flag** (security-lens Z-002).
+  When set, the cloned tree's HEAD commit must match the expected hex
+  prefix (7-40 chars) or the bootstrapper refuses to hand off to
+  `install.sh`. Closes the curl|bash zero-defense supply-chain gap
+  beyond TLS-to-GitHub. Documented on release pages: users paste
+  `OMC_EXPECTED_SHA=<hex> bash -c "$(curl …)"` to pin to a specific
+  audited commit.
+- **`omc_redact_secrets` helper in `common.sh`** (security-lens Z-003).
+  Strips `(token|password|secret|key|auth|api_key)=VALUE`, `Bearer`,
+  `sk-` / `ghp_` / `xoxb-` / `AKIA-` / `glpat-` provider keys from
+  bash command strings before they land in `last_verify_cmd` or in
+  `omc-repro` support tarballs. Idempotent.
+- **`concurrent_overhead_s` field in timing aggregator** (data-lens
+  D-002 / design-lens X-002). Surfaces the parallelism overhead so
+  renderers can disclose "parallelism saved ~Xm" instead of producing
+  bars that sum to >100% of walltime. Cross-session aggregator
+  propagates the field.
+- **`session_outcome=released`** (data-lens D-001). Stop-guard now
+  writes `released` on every clean-exit path (gate-skip honored,
+  advisory clean exit, no-edits early return). Pre-fix only the all-
+  gates-pass path wrote "completed" and every other clean exit
+  defaulted to "abandoned" in cross-session sweep, making 100% of
+  session_summary.jsonl rows look like model abandonments.
+- **Outcome card prepended to Stop time card** (product-lens P-004).
+  When `serendipity_count > 0` OR resolved gate blocks (block fired
+  AND outcome=completed/released), `stop-time-summary.sh` prepends
+  a one-line `─── Outcome ───` digest above the time breakdown.
+  Silent when no signal exists.
+- **Watchdog daemon-liveness heartbeat** (sre-lens S-004).
+  `${STATE_ROOT}/_watchdog/last_tick_completed_ts` is written at end
+  of each successful tick. Without it, absence of tick-complete events
+  is indistinguishable from "no work to do" vs "daemon hung".
+- **Per-tick `_watchdog/gate_events.jsonl` cap** (sre-lens S-002).
+  Bounded to `OMC_GATE_EVENTS_PER_SESSION_MAX` (default 500) on every
+  tick, not just at sweep time. On hosts where the watchdog is the
+  only active path (no real claude sessions opened), the sweep never
+  fires and rows accrued ~150/hr per stale artifact pre-fix.
+- **Separate under-lock cooldown counter** (sre-lens S-008).
+  `skipped_cooldown_under_lock` distinguishes routine pre-check
+  cooldowns from the rare two-daemon race signal (LaunchAgent +
+  manual cron, duplicate registration).
+
+### Changed
+
+- **`/ulw-report --share` output reshape** (growth-lens G-002). New
+  shape: headline (Caught N issues across M sessions), conservative
+  time-saved estimate (8 min/gate-block + 5 min/Serendipity), bullets
+  only when sessions > 0, copy-paste-to-Twitter one-liner at the
+  bottom. When sessions=0, suppresses the contradictory bullet block
+  entirely and prints "_No sessions in window — nothing to share yet._"
+- **All 8 gate-block messages tightened** (product-lens P-002,
+  design-lens X-001, oracle O-003). Pattern: gate label + one-sentence
+  trigger + optional context + the existing `format_gate_recovery_line`
+  "→ Next:" line. Discursive escalation rationale ("ship inline →
+  wave-append → defer → call-out") moved out of inline blocks into
+  `core.md` / `skills/SKILL.md` where it lives. Locked tokens preserved
+  for drift-net tests (gate labels, scorecard format, Serendipity
+  reference).
+- **PreTool gate block-1 message rewritten to collaborative tone**
+  (design-lens X-008). Recovery-first ordering ("Recovery options:
+  → If you intended ... → If misclassified ... → Bypass") instead
+  of accusatory "What to do / What NOT to do" sections. Block-2 stays
+  terse. Cross-script FORBIDDEN drift net preserved (T19).
+- **`/ulw-status` verbose mode trimmed** (design-lens X-003).
+  `--- Pause State ---` header drops the (v1.18.0) version tag.
+  `--- Compact Continuity ---` section renders only when there's
+  been a compact, OR a compact race, OR `just_compacted=1` — silent
+  on the ~99% of sessions that never compacted.
+- **`/ulw-status` Counters section** uses `(.x // "" | if . == ""
+  then "0" else . end)` so empty-string fields render "0" instead
+  of literal whitespace (design-lens X-004). Pre-fix the live render
+  produced "Example-scope:    " (label + trailing whitespace, no
+  value).
+- **`/ulw-status --explain` sorts by cluster before rendering**
+  (design-lens X-005). Pre-fix produced duplicate cluster headers
+  (`── advisory ── ... ── gates ── ... ── advisory ──`) when the
+  importance-ordered manifest interleaved clusters.
+- **`/ulw-status` error message names accepted forms inline**
+  (design-lens X-007). Mirrors `show-time.sh` / `show-report.sh`
+  shape: `unknown argument 'foo' (expected: summary, classifier,
+  explain, …)` instead of dumping the dual-form usage block.
+- **`pretool-intent-guard.sh` hot path bulk-reads 3 state keys
+  in one jq fork** (sre-lens S-003). Same RS-delimited pattern as
+  `stop-guard.sh:135-149`. Saves ~60-80ms per Bash tool call on
+  macOS bash 3.2 — observable on council Phase 8 turns running
+  30+ Bash calls.
+- **`install-remote.sh` latest-tag tip probes the canonical default
+  URL, never the override** (security-lens Z-001). Pre-fix, a hostile
+  fork could include a v9.9.99 tag and the helpful "tip:" line would
+  recommend pinning to it — the defensive UX actively recommended
+  attacker-controlled artifacts. Fork users now see "Custom OMC_REPO_URL
+  active. Latest UPSTREAM tag is X" with the upstream pin command.
+- **`record-verification.sh` redacts and caps `last_verify_cmd`**
+  (security-lens Z-003). Capped at 500 chars; `omc_redact_secrets`
+  pipe before write. Closes the leak path where a model running
+  `pytest --auth-token=$LEAKED tests/` (because hostile WebFetch/MCP
+  told it to) would otherwise persist `$LEAKED` verbatim into
+  `session_state.json` and into `omc-repro` tarballs.
+- **`record-plan.sh` strips C0/C1 control bytes at the WRITE site**
+  (security-lens Z-004). `current_plan.md` is a durable artifact —
+  any future tool/skill that reads + renders it would re-deliver
+  attacker bytes from a malicious planner output. Bytes never touch
+  disk = bytes can never resurface.
+- **`record-finding-list.sh mark-user-decision` strips display output
+  through `_omc_strip_render_unsafe`** (security-lens Z-009). `printf
+  %q` quotes shell metacharacters but doesn't strip terminal-control
+  or display-mangling bytes; the strip is defense-in-depth on the
+  display path.
+- **`/ulw-status` defect-patterns dump drops the truncated example
+  field** (design-lens X-010). Category counts are signal; truncated
+  60-char prompt fragments cut at random offsets are noise + privacy
+  leak (fragments could include user prompts from prior sessions on
+  different repos). Full examples remain accessible via `/ulw-report`.
+- **README hero subhead and structure** (growth-lens G-001 / G-005,
+  product-lens P-001). Lead with "Ship better real work with Claude
+  Code — with less steering." Drop "cognitive quality harness"
+  jargon. "What you get" replaced with "What changes after you
+  install" — three outcome stories instead of an implementation-
+  layer feature catalog. Intent classification subsection of Feature
+  highlights trimmed from 17 lines to 8.
+- **`resume-watchdog.sh` docstring** clarified to be honest about
+  attempt-once-and-notify semantics (sre-lens S-001). The cooldown
+  and revert paths remain — they're load-bearing for the post-launch-
+  failure case where revert restores `resume_attempts=0`. The
+  3-attempt-cap claim was aspirational; implementing real multi-
+  attempt retries needs a `retry-eligible` mode in
+  `find_claimable_resume_requests` (deferred).
+
 ### Local-CI as the release gate (`--ci-preflight`)
 
 `tools/release.sh --ci-preflight` makes `tools/local-ci.sh` (the
@@ -22,7 +183,7 @@ On a runtime-missing host the script aborts cleanly at Step 6.5
 before any state change; fall back to `--tag-on-green` (the
 documented no-Docker path).
 
-### Added
+### Added (release tooling)
 
 - **`tools/release.sh --ci-preflight`** — runs `tools/local-ci.sh`
   BEFORE the version bump as Step 6.5; on green, skips the
