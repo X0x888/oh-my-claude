@@ -400,6 +400,25 @@ total_skipped_empty=0
 total_launched=0
 total_notified=0
 
+# v1.34.1+ (sre-lens S-004 follow-up): write the daemon-liveness
+# heartbeat at the TOP of each tick, before the no-work early exit.
+# Without this, an idle daemon (no claimable artifacts in the last
+# 24h — the common case) writes no heartbeat and looks identical to
+# a hung daemon. The heartbeat fires on every successful tick entry,
+# regardless of work to do — that's the load-bearing signal for
+# /ulw-report's "last successful tick: N min ago" surfacing.
+# Best-effort: write failures don't block the tick.
+_watchdog_heartbeat_dir="${STATE_ROOT}/${SYNTHETIC_SESSION_ID}"
+_watchdog_heartbeat="${_watchdog_heartbeat_dir}/last_tick_completed_ts"
+if [[ -d "${_watchdog_heartbeat_dir}" ]]; then
+  _hb_tmp="$(mktemp "${_watchdog_heartbeat_dir}/.heartbeat.XXXXXX" 2>/dev/null || true)"
+  if [[ -n "${_hb_tmp}" ]]; then
+    printf '%s\n' "${now_ts}" > "${_hb_tmp}" 2>/dev/null \
+      && mv -f "${_hb_tmp}" "${_watchdog_heartbeat}" 2>/dev/null \
+      || rm -f "${_hb_tmp}"
+  fi
+fi
+
 # Enumerate via the canonical helper. --list returns:
 #   <scope>\t<session_id>\t<captured_at_ts>\t<artifact_path>
 # one row per claimable artifact.
@@ -620,16 +639,11 @@ record_gate_event "resume-watchdog" "tick-complete" \
   skipped_missing_cwd="${total_skipped_missing_cwd}" \
   skipped_empty="${total_skipped_empty}"
 
-# v1.34.1+ (sre-lens S-004): daemon-liveness heartbeat. Without this,
-# absence of tick-complete events looks identical to "no claimable
-# artifacts in last 24h" vs "watchdog is hung or crashing mid-tick".
-# A user relying on the watchdog to recover from rate-limits otherwise
-# loses recovery silently. The heartbeat is a single mtime-bumped file
-# (atomic mv), readable by /ulw-report and /ulw-status to surface
-# "last successful tick: N min ago" — converts a silent failure to a
-# loud one. Fail-soft: heartbeat write failure does not block the tick.
-_watchdog_heartbeat_dir="${STATE_ROOT}/${SYNTHETIC_SESSION_ID}"
-_watchdog_heartbeat="${_watchdog_heartbeat_dir}/last_tick_completed_ts"
+# Heartbeat already written at top of tick (sre-lens S-004 follow-up
+# fix). Re-bump the mtime here too so /ulw-report can read "last
+# successful FULL tick" — the top-of-tick write covers the early-exit
+# case (no work to do); this end-of-tick re-write covers the case
+# where the user wants to know the loop ran to completion. Fail-soft.
 if [[ -d "${_watchdog_heartbeat_dir}" ]]; then
   _hb_tmp="$(mktemp "${_watchdog_heartbeat_dir}/.heartbeat.XXXXXX" 2>/dev/null || true)"
   if [[ -n "${_hb_tmp}" ]]; then

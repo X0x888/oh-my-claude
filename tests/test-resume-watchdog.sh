@@ -1060,24 +1060,19 @@ assert_eq "T31: attacker-cache has no files written" "0" "${attacker_cache_files
 teardown_test
 
 # T32 (v1.34.1+ sre-lens S-004): the watchdog must write a heartbeat
-# file at end of each successful tick. /ulw-report and /ulw-status read
-# this to surface "last successful tick: N min ago" — without it,
-# absence of tick-complete events is indistinguishable from "no work to
-# do" vs "daemon is hung". Asserts the heartbeat file exists, contains
-# a numeric epoch, and the timestamp is reasonable (within last 5 min).
-echo "=== T32: watchdog heartbeat file written end-of-tick ==="
+# file at the TOP of each tick. /ulw-report and /ulw-status read this
+# to surface "last successful tick: N min ago" — without it, absence
+# of tick-complete events is indistinguishable from "no work to do"
+# vs "daemon is hung". The heartbeat must fire EVEN ON IDLE TICKS
+# (no claimable artifacts) so an idle daemon shows liveness signal.
+# This test exercises the no-work early-exit path: no artifacts =
+# tick exits early at line ~408 BUT heartbeat already wrote.
+echo "=== T32: watchdog heartbeat fires at top of tick (idle case) ==="
 setup_test
 mkdir -p "${TEST_HOME}/.claude/quality-pack/state/_watchdog"
-# Force the watchdog into the no-list early-exit path by leaving
-# STATE_ROOT empty of resume_request artifacts. The early exit (line
-# 393) skips the heartbeat write, so we need a list_output to flow —
-# stub via a minimal artifact.
-mkdir -p "${TEST_HOME}/.claude/quality-pack/state/test-sid"
-cat > "${TEST_HOME}/.claude/quality-pack/state/test-sid/resume_request.json" <<EOF
-{"schema_version":1,"session_id":"test-sid","cwd":"${TEST_HOME}","captured_at_ts":$(date +%s),"original_objective":"x","last_user_prompt":"x","resume_attempts":0,"resets_at_ts":0}
-EOF
-# Run the watchdog; tmux/claude are absent so it'll take the notify path
-# which doesn't require additional mocks.
+# No artifacts — the tick will hit the no-list early exit. With the
+# top-of-tick heartbeat write (S-004 follow-up fix), the heartbeat
+# file should still appear.
 HOME="${TEST_HOME}" bash "${WATCHDOG}" >/dev/null 2>&1 || true
 heartbeat_file="${TEST_HOME}/.claude/quality-pack/state/_watchdog/last_tick_completed_ts"
 if [[ -f "${heartbeat_file}" ]]; then
@@ -1103,12 +1098,14 @@ fi
 teardown_test
 
 # T33 (v1.34.1+ sre-lens S-002): _watchdog gate_events.jsonl must be
-# capped per-tick, not only at sweep time. On a host where the watchdog
-# is the only active path (no claude sessions opened, no sweep_stale_
-# sessions invocation), pre-fix rows accrued without bound. Test:
-# pre-seed gate_events.jsonl with 600 rows, run a watchdog tick,
-# assert the file is bounded to OMC_GATE_EVENTS_PER_SESSION_MAX (default
-# 500).
+# capped per-tick, not only at sweep time. The cap fires AFTER the
+# artifact loop completes, so we need an artifact that PASSES the
+# find_claimable filter (resume_attempts=0, captured recently, no
+# future resets_at) AND gets recorded as skipped in the per-artifact
+# loop (so it adds an event row WITHOUT triggering tmux/claude
+# launch). Use a missing-cwd artifact: cwd points to /nonexistent,
+# the per-artifact loop records "skipped-missing-cwd" and continues
+# — no launch path entered.
 echo "=== T33: watchdog caps gate_events.jsonl per-tick ==="
 setup_test
 mkdir -p "${TEST_HOME}/.claude/quality-pack/state/_watchdog"
@@ -1117,18 +1114,18 @@ events_file="${TEST_HOME}/.claude/quality-pack/state/_watchdog/gate_events.jsonl
 for i in $(seq 1 600); do
   printf '{"ts":%s,"event":"test-row-%d"}\n' "$(date +%s)" "${i}"
 done > "${events_file}"
-# Stub a minimal artifact so the watchdog has work to do (otherwise
-# early-exit at line 393 skips the cap logic too).
 mkdir -p "${TEST_HOME}/.claude/quality-pack/state/sid-cap"
 cat > "${TEST_HOME}/.claude/quality-pack/state/sid-cap/resume_request.json" <<EOF
-{"schema_version":1,"session_id":"sid-cap","cwd":"${TEST_HOME}","captured_at_ts":$(date +%s),"original_objective":"x","last_user_prompt":"x","resume_attempts":0,"resets_at_ts":0}
+{"schema_version":1,"session_id":"sid-cap","cwd":"/nonexistent-dir-for-test","captured_at_ts":$(date +%s),"original_objective":"x","last_user_prompt":"x","resume_attempts":0,"resets_at_ts":0}
 EOF
 HOME="${TEST_HOME}" bash "${WATCHDOG}" >/dev/null 2>&1 || true
 post_count="$(wc -l < "${events_file}" 2>/dev/null | tr -d ' ')"
 post_count="${post_count:-0}"
-# Cap is 500 default, but the tick-complete event added one row, so
-# expect at most 501.
-if [[ "${post_count}" =~ ^[0-9]+$ ]] && (( post_count > 0 )) && (( post_count <= 501 )); then
+# Cap is 500 default. After processing: skipped-missing-cwd event +
+# tick-complete event added — but the cap should trim. Expect at most
+# 502 rows (cap=500 + the tick-complete row + the trailing event added
+# after the cap fires).
+if [[ "${post_count}" =~ ^[0-9]+$ ]] && (( post_count > 0 )) && (( post_count <= 502 )); then
   pass=$((pass + 1))
 else
   printf 'FAIL: T33 — _watchdog gate_events.jsonl not capped (post_count=%q)\n' "${post_count}" >&2
