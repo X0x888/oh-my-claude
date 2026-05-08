@@ -20,13 +20,13 @@ All notable changes to this project will be documented in this file.
 User commissioned a comprehensive evaluation of the harness post-v1.35.0
 and surfaced 19 improvement candidates. Each was triaged and the
 12 actionable items shipped across six waves; three triaged WRONG
-or already-DONE; four logged as observation-only (need ≥1 release
-cycle of telemetry to make a sound decision).
+or already-DONE; four required no new v1.36.0 code (three
+observation-only items and one resolved by earlier wave work).
 
 **Triage outcome:**
 - **APPLY (12):** #2, #3, #4, #6, #7, #8, #10, #11, #14, #16, #17, #18
 - **WRONG / SKIP (3):** #1 (sterile already strict + CI-wired since v1.32.2), #5 (`directive_budget` already defaults to `balanced` in `common.sh:319`), #12 (welcome banner already re-emits per install via `.install-stamp` mtime)
-- **OBSERVATION (4):** #9, #13, #15, #19 — recorded as project memory; need telemetry from one more release cycle before deciding
+- **OBSERVATION / RESOLVED-WITHOUT-CODE (4):** #9 (Atlas truncation fan-out watch item), #13 (resolved by Wave 5), #15 and #19 (recorded in project memory; need one more telemetry cycle before deciding)
 
 ### Wave 1 — install / UX safety (#2, #3, #4)
 
@@ -194,7 +194,7 @@ factually incorrect. No change shipped.
   Beat banners updated from 7-beat to 9-beat sequence; original
   Step 9 (Clean up) became Step 10.
 
-### Wave 6 — drift + observation (#11, #13, #15, #19)
+### Wave 6 — drift + observation (#9, #11, #13, #15, #19)
 
 - **CLAUDE.md test count drift surface eliminated (#11).** Replaced
   the hardcoded `80 bash + 1 python test scripts` enumeration with
@@ -202,6 +202,12 @@ factually incorrect. No change shipped.
   rule C4 in `tests/test-coordination-rules.sh` updated to validate
   the grep guidance is documented (not the count itself, which now
   lives only on disk).
+- **Atlas truncation fan-out (#9).** Retained as an observation-only
+  watch item rather than shipping another dispatch knob without real
+  evidence. The prior Atlas deep-refresh and v1.32.x release-reviewer
+  capacity work had already closed the immediate drift/truncation
+  failure mode; future fan-out should be driven by actual truncation
+  telemetry, not assumed up front.
 - **Atlas / `/ulw-demo` onboarding friction (#13).** Triaged as
   RESOLVED — Wave 5's Beat 7/8/9 enrichments add the missing
   onboarding bridge (real first prompt + bonus defenses beats).
