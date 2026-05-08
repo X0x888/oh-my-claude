@@ -76,6 +76,12 @@ setup_test() {
   # one (and T4 relies on tmux being absent).
   install_path_deps
 
+  # Keep common.sh's project-level config walk inside the isolated
+  # fixture. With HOME pointed at TEST_HOME but PWD left under the real
+  # home, the upward walk can reach the user's ~/.claude/oh-my-claude.conf
+  # and treat it as project config because it no longer equals $HOME.
+  cd "${TEST_HOME}"
+
   # Default: opt the watchdog ON for tests.
   export OMC_RESUME_WATCHDOG=on
   unset OMC_STOP_FAILURE_CAPTURE 2>/dev/null || true

@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Resume-watchdog test isolation.** `tests/test-resume-watchdog.sh`
+  now runs each fixture from its isolated temp home so `common.sh`'s
+  project-config walk cannot climb into the developer's real
+  `~/.claude/oh-my-claude.conf` while `$HOME` is overridden. This
+  removes the local-only `claude_bin` leak that made T27 depend on the
+  contributor's installed config instead of the test's mock PATH.
+
 ## [1.36.0] - 2026-05-06
 
 ### v1.36.0 candidate set — 12 of 19 review items shipped
