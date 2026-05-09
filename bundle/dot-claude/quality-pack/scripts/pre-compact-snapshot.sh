@@ -73,6 +73,7 @@ if [[ -z "${contract_primary_value}" ]]; then
   contract_primary_value="${current_objective_value}"
 fi
 contract_commit_mode_value="$(delivery_contract_commit_mode_label "$(read_state "done_contract_commit_mode")")"
+contract_push_mode_value="$(delivery_contract_commit_mode_label "$(read_state "done_contract_push_mode")")"
 contract_prompt_surfaces_value="$(csv_humanize "$(read_state "done_contract_prompt_surfaces")")"
 contract_verify_required_value="$(csv_humanize "$(read_state "verification_contract_required")")"
 contract_touched_surfaces_value="$(delivery_contract_touched_surfaces_summary 2>/dev/null || printf 'none')"
@@ -200,6 +201,7 @@ render_pending_agents() {
     printf '\n## Delivery Contract\n'
     printf -- '- Primary deliverable: %s\n' "${contract_primary_value}"
     printf -- '- Commit intent: %s\n' "${contract_commit_mode_value}"
+    printf -- '- Push intent: %s\n' "${contract_push_mode_value}"
     printf -- '- Prompt surfaces: %s\n' "${contract_prompt_surfaces_value}"
     printf -- '- Proof contract: %s\n' "${contract_verify_required_value}"
     printf -- '- Touched surfaces so far: %s\n' "${contract_touched_surfaces_value}"

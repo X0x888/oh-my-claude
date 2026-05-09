@@ -1555,9 +1555,38 @@ printf '/project/src/auth.ts\n' > "${state_dir}/edited_files.log"
 sim_pre_compact "cg1b"
 sim_post_compact "cg1b" "auto" "Summary body"
 out_g1b="$(sim_session_start_compact "cg1b")"
-assert_contains "gap1b: delivery contract carried into compact handoff" "Carry forward the preserved delivery contract: primary=Ship the auth fix; commit=required; prompt surfaces=tests · docs;" "${out_g1b}"
+assert_contains "gap1b: delivery contract carried into compact handoff" "Carry forward the preserved delivery contract: primary=Ship the auth fix; commit=required; push=unspecified; prompt surfaces=tests · docs;" "${out_g1b}"
 assert_contains "gap1b: remaining obligations carried into compact handoff" "Outstanding obligations before Stop" "${out_g1b}"
 assert_contains "gap1b: missing tests named in compact handoff" "add or update the requested tests/regression coverage" "${out_g1b}"
+teardown_test
+
+# -------------------------------------------------------
+# Gap 1c: compact handoff surfaces push_mode alongside commit_mode
+#   Defect repaired post-v1.36.0: push_mode was set in state by the
+#   v1.34.0 router but never surfaced in the compact/resume handoff
+#   text. After 4ac7e4d added Stop-time publish-record enforcement,
+#   the asymmetric handoff line silently dropped the publish half of
+#   compound prompts ("commit X then push") on resume.
+# -------------------------------------------------------
+setup_test
+setup_compact_tests
+init_session "cg1c" "coding"
+state_dir="${TEST_HOME}/.claude/quality-pack/state/cg1c"
+jq '. + {
+  done_contract_primary:"Ship and publish the release",
+  done_contract_commit_mode:"required",
+  done_contract_push_mode:"required",
+  done_contract_prompt_surfaces:"release",
+  done_contract_test_expectation:"verify",
+  verification_contract_required:"code_review,code_verify,release_surface,commit_record,publish_record"
+}' "${state_dir}/session_state.json" > "${state_dir}/session_state.json.tmp" \
+  && mv "${state_dir}/session_state.json.tmp" "${state_dir}/session_state.json"
+printf '/project/src/release.ts\n' > "${state_dir}/edited_files.log"
+sim_pre_compact "cg1c"
+sim_post_compact "cg1c" "auto" "Summary body"
+out_g1c="$(sim_session_start_compact "cg1c")"
+assert_contains "gap1c: compact handoff surfaces push=required" "commit=required; push=required;" "${out_g1c}"
+assert_contains "gap1c: outstanding publish obligation surfaced on compact resume" "run the requested push/tag/release/publish action" "${out_g1c}"
 teardown_test
 
 # -------------------------------------------------------

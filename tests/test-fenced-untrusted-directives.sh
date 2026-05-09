@@ -390,6 +390,14 @@ if [[ -f "${snapshot_file}" ]]; then
     "--- BEGIN PRIOR ASSISTANT STATE ---" "${snapshot_text}"
   assert_contains "pre-compact-snapshot fences subagent_rendered" \
     "--- BEGIN PRIOR SPECIALIST CONCLUSIONS ---" "${snapshot_text}"
+  # Post-v1.36.0 parity: snapshot must surface Push intent next to
+  # Commit intent so a resumed session sees the publish half of
+  # compound prompts. Fixture above doesn't set push_mode → renders as
+  # `unspecified`, which is the correct neutral default.
+  assert_contains "pre-compact-snapshot includes Commit intent line" \
+    "- Commit intent:" "${snapshot_text}"
+  assert_contains "pre-compact-snapshot includes Push intent line" \
+    "- Push intent:" "${snapshot_text}"
   if printf '%s' "${snapshot_text}" | LC_ALL=C grep -q $'\x1b'; then
     printf '  FAIL: Test 6 — ESC byte in snapshot file\n' >&2
     fail=$((fail + 1))

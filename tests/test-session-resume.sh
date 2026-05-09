@@ -192,7 +192,7 @@ context="$(jq -r '.hookSpecificOutput.additionalContext // empty' <<<"${output}"
 assert_contains "context has workflow mode" "Preserved workflow mode: ultrawork" "${context}"
 assert_contains "context has task domain" "Preserved task domain: coding" "${context}"
 assert_contains "context has objective" "Preserved objective: Implement the auth refactor" "${context}"
-assert_contains "context has delivery contract" "Preserved delivery contract: primary=Implement the auth refactor; commit=required; prompt surfaces=tests · docs; proof contract=code_review · code_verify · prose_review · test_surface · commit_record;" "${context}"
+assert_contains "context has delivery contract" "Preserved delivery contract: primary=Implement the auth refactor; commit=required; push=unspecified; prompt surfaces=tests · docs; proof contract=code_review · code_verify · prose_review · test_surface · commit_record;" "${context}"
 assert_contains "context has last meta request" "explain the token flow" "${context}"
 assert_contains "context has last assistant message" "refactoring the token validator" "${context}"
 assert_contains "context has remaining obligations" "Remaining obligations from the prior session" "${context}"
@@ -201,6 +201,45 @@ assert_contains "context has specialist conclusions" "quality-reviewer" "${conte
 assert_contains "context has plan" "Auth Refactor Plan" "${context}"
 assert_contains "context has coding domain advice" "Make changes incrementally" "${context}"
 assert_contains "context has resumed session preamble" "resumed Claude Code session" "${context}"
+
+# ------------------------------------------------------------------
+# Test 3b: Resume preserves push_mode alongside commit_mode (post-v1.36.0).
+#   Sibling of Test 3 — exercises the non-default push_mode case to
+#   prove the resume handoff carries push intent on prompts like
+#   "commit X then push to origin". Test 3 covers commit=required +
+#   push=unspecified (default); this covers commit=required + push=required.
+# ------------------------------------------------------------------
+printf '\nResume preserves push_mode (commit+publish prompt):\n'
+
+push_source_id="source-session-110"
+push_target_id="target-session-210"
+push_source_dir="${TEST_STATE_ROOT}/${push_source_id}"
+mkdir -p "${push_source_dir}"
+cat > "${push_source_dir}/session_state.json" <<'STATEJSON'
+{
+  "workflow_mode": "ultrawork",
+  "task_domain": "coding",
+  "task_intent": "execution",
+  "current_objective": "Ship the release tag",
+  "done_contract_primary": "Ship the release tag",
+  "done_contract_commit_mode": "required",
+  "done_contract_push_mode": "required",
+  "done_contract_prompt_surfaces": "release",
+  "done_contract_test_expectation": "verify",
+  "verification_contract_required": "code_review,code_verify,release_surface,commit_record,publish_record",
+  "done_contract_updated_ts": "100",
+  "session_start_ts": "50"
+}
+STATEJSON
+printf '/project/release/notes.md\n' > "${push_source_dir}/edited_files.log"
+
+run_resume "{\"session_id\":\"${push_target_id}\",\"source\":\"resume\",\"transcript_path\":\"/transcripts/${push_source_id}.jsonl\"}"
+push_output="$(resume_output)"
+push_context="$(jq -r '.hookSpecificOutput.additionalContext // empty' <<<"${push_output}")"
+assert_contains "push-mode resume: handoff surfaces commit + push parity" \
+  "commit=required; push=required;" "${push_context}"
+assert_contains "push-mode resume: outstanding publish obligation surfaced" \
+  "run the requested push/tag/release/publish action" "${push_context}"
 
 # ------------------------------------------------------------------
 # Test 4: Backwards-compatible resume from legacy individual files

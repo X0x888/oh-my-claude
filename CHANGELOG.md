@@ -34,6 +34,16 @@ All notable changes to this project will be documented in this file.
   `~/.claude/oh-my-claude.conf` while `$HOME` is overridden. This
   removes the local-only `claude_bin` leak that made T27 depend on the
   contributor's installed config instead of the test's mock PATH.
+- **Compact/resume handoff surfaces push intent.** The pre-compact
+  snapshot, compact handoff, and resume handoff scripts previously
+  rendered `commit=<mode>` but silently dropped the parallel
+  `push=<mode>` field. After the post-v1.36.0 commit that promoted
+  `done_contract_push_mode` from a forbid-only signal to a Stop-time
+  publish requirement, the asymmetric handoff line could let a
+  resumed session miss the publish half of compound prompts ("commit
+  X then push to origin"). All three surfaces now print
+  `push=<mode>` next to `commit=<mode>` for parity. Regression net:
+  `tests/test-e2e-hook-sequence.sh` Gap 1c.
 
 ## [1.36.0] - 2026-05-06
 
