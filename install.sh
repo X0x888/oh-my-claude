@@ -1826,6 +1826,15 @@ printf '\n'
 # so log-redirected installs (`bash install.sh > install.log`) get
 # plain text instead of literal `\033[1m...`. NO_COLOR env honored
 # per the de-facto convention.
+# v1.36.x W4 F-018: collapse the post-install staircase. Pre-fix the
+# footer named four "Then:" steps + a --bypass-permissions tip, all
+# competing for first-action attention. The growth funnel narrowed
+# significantly when users had to choose between Verify / Configure /
+# Demo / Real work — most picked Real work, skipped the demo, and
+# never felt the gates fire on a controlled fixture. The single
+# canonical next-action is /ulw-demo: it's the highest-leverage
+# activation moment, and Configure / Verify / Real work are all best
+# discovered AFTER the demo (the demo's epilogue routes there).
 if [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]]; then
   printf '\033[1mRestart Claude Code now (or open a new session).\033[0m Required — hooks load at\n'
 else
@@ -1834,15 +1843,18 @@ fi
 printf '  session start; already-running sessions keep the previous wiring, so /ulw will\n'
 printf '  silently no-op until you restart.\n'
 printf '\n'
-printf 'Then:\n'
-printf '  1. Verify the install:  bash %s/verify.sh\n' "${SCRIPT_DIR}"
-printf '  2. Configure:           /omc-config  (multi-choice walkthrough — pick a profile\n'
-printf '                          or fine-tune individual flags; auto-detects setup vs update)\n'
-printf '  3. See gates fire:      /ulw-demo  (under 2 minutes — guided walkthrough)\n'
-printf '  4. Real work:           /ulw fix the failing test and add regression coverage\n'
+if [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]]; then
+  printf 'Then run \033[1m/ulw-demo\033[0m in the new Claude Code session — under 2 minutes,\n'
+else
+  printf 'Then run /ulw-demo in the new Claude Code session — under 2 minutes,\n'
+fi
+printf '  it fires real gates on a throwaway file in /tmp so you can see the harness\n'
+printf '  work end-to-end. Its closing card routes you to /omc-config (settings) and\n'
+printf '  /ulw <task> (real work) when you are ready.\n'
 printf '\n'
-
 if [[ "${BYPASS_PERMISSIONS}" != "true" ]]; then
-  printf 'Once /ulw-demo confirms the harness is firing, re-run with --bypass-permissions\n'
+  printf 'After the demo confirms the harness is firing, re-run with --bypass-permissions\n'
   printf "to skip Claude Code's per-tool prompts. Quality gates apply either way.\n"
 fi
+printf '\n'
+printf 'Recovery if something feels off: bash %s/verify.sh\n' "${SCRIPT_DIR}"

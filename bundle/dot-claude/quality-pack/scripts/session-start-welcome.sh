@@ -161,7 +161,9 @@ fi
 
 banner="${banner_head}
 
-To see the harness work end-to-end (about 90 seconds, on a throwaway file in /tmp), type:
+${cta_open}You're now running oh-my-claude v${version}.${cta_close} The install completed and Claude Code reloaded the hooks for this fresh session — quality gates are active.
+
+To see the harness work end-to-end (about 90 seconds, on a throwaway file in /tmp):
 
   ${cta_open}/ulw-demo${cta_close}
 

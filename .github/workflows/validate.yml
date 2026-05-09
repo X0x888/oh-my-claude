@@ -290,5 +290,8 @@ jobs:
       - name: W3 gate-block UX regression (v1.36.x)
         run: bash tests/test-w3-gate-ux.sh
 
+      - name: W4 onboarding funnel regression (v1.36.x)
+        run: bash tests/test-w4-onboarding.sh
+
       - name: Run statusline tests
         run: python3 -m unittest tests.test_statusline -v

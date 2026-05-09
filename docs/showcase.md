@@ -17,19 +17,45 @@ Two minutes is the budget per entry. If a transcript can't be summarized in that
 
 ## Entries
 
-> The entry below is a **synthetic seed** so you can see the format in context. Real community submissions go above it under `## Entries` — replace or push this seed down as the page fills up.
+The entries below are real catches from this repo's own development history — moments where the harness's gates intercepted a defect before ship and the diff is in `git log` if you want to verify. Community-contributed entries go above these as they arrive.
 
-### v1.14 — Phase 8 wave-cap regression caught in vitro before in vivo *(synthetic seed)*
+### v1.36.x W2 — `_v:1` schema-version gap on the gate-skips writer caught at excellence-review
 
-> **Setup.** This very repo (`oh-my-claude`). The author was running a v1.14 quality wave that, among other things, extracted a verification subsystem to `lib/verification.sh`. As a deferred-from-v1.13 follow-up, the wave also needed to close an integration gap: `record-finding-list.sh` and `stop-guard.sh` had each been tested in isolation, but the contract that binds them — `wave_total` from `findings.json` raises the discovered-scope gate's block cap from 2 to `wave_total + 1` — had no integration test.
+> **Setup.** This repo. Author was wrapping up a 5-finding wave that added cross-session JSONL schema versioning (`_v:1`) to four writers (`record_gate_event`, `record-archetype.sh`, `record_classifier_telemetry`, `record_gate_skip`).
 >
-> **Block.** `[Discovered-scope gate · 1/5] 4 finding(s) from advisory specialists were captured this session but not addressed in your final summary. Wave plan: 0/4 waves completed.`
+> **Block.** Wave 2's excellence-reviewer dispatched on the diff and flagged: *"common.sh:4364 — `record_gate_skip` writer also lacks `_v:1`."* The author had grepped for `record_*` writers but the helper was named `_do_record_skip` (private prefix), missing the surface scan.
 >
-> **Resolution.** A new `tests/test-phase8-integration.sh` (18 assertions, 4 scenarios) was added that wires both halves end-to-end against a real `findings.json` and a real `discovered_scope.jsonl`. The first run flagged that the JSON-encoded middle-dot character (`·` baked into `stop-guard.sh`'s reason text) needed a literal-escape substitution for stable assertions. The second run flagged that the `Wave plan: X/N waves completed` text advanced correctly only after `wave-status completed` was called, not on `wave-status in_progress`. Both edge cases now have explicit assertions.
+> **Resolution.** Added `_v:1` to the gate-skips row literal as a wave-append rather than punting to a v1.37 follow-up. Same commit grew an additional same-class fix on `append_discovered_scope`'s row literal (line 5472) — the excellence-reviewer's scan unblocked a sibling pattern check.
 >
-> **Counterfactual.** Without the integration test, a future refactor of `read_active_wave_total` or `read_active_waves_completed` could have silently broken the cap formula — the unit tests would still pass, but the gate would either over-block (cap stuck at 2) or under-block (cap unbounded). The deferred-risk note was already in memory; the wave plan turned it into a regression net.
+> **Counterfactual.** Without the second reviewer pass, the wave would have shipped with 5 of 6 cross-session writers schema-versioned and the gate-skips row silently lacking `_v`. The next migration tool (when it lands) would have to special-case the unstamped writer or skip its rows entirely. Catching it pre-commit means the convention holds uniformly going forward.
+>
+> *— `git log f393986^..HEAD` for the wave commit; `record-finding-list.sh status-line` shows 11/25 shipped at that point.*
 
-Format we want for real entries (cribbed from the seed above): short, concrete, falsifiable. If your transcript can't be summarized in two minutes of reading, it's too long.
+### v1.35.0 — shortcut-ratio gate caught a wave plan deferring half its decided findings
+
+> **Setup.** This repo. A long ULW session had emitted a 12-finding wave plan; halfway through, the model started marking findings `deferred` with reasons like *"requires significant effort"* and *"tracks to a future session"* — strings that lexically passed the validator's silent-skip deny-list because they didn't match `out of scope` / `follow-up` / `later`.
+>
+> **Block.** `[Shortcut-ratio gate · 1/1] wave plan has 6/8 decided findings deferred (75%) on a 12-finding plan. Big-plan majority-deferral is the shortcut-on-big-tasks pattern: even valid-WHY deferrals can satisfy gate counts while leaving the work fundamentally incomplete.`
+>
+> **Resolution.** The model's recovery: ship 3 of the deferred findings inline, keep 3 deferred but rewrite their reasons to name an external blocker (`requires F-024 first`, `awaiting stakeholder pricing decision`, `superseded by F-051`), and explicitly justify the 50% ratio in the wrap-up summary. The validator's effort-excuse deny-list was extended in the same release to reject `requires significant effort` / `needs more time` / `blocked by complexity` outright.
+>
+> **Counterfactual.** Pre-v1.35.0 the validator was keyword-based and `requires significant effort` lexically passed. The stop-guard counted decided findings but not ship-vs-defer balance, so deferring the hard half satisfied gate counts. Without this gate, the model would have shipped a wave that looked complete (gates green, all findings decided) but where the substantive work was deferred indefinitely.
+>
+> *— v1.35.0 CHANGELOG covers the validator + shortcut-ratio gate landings.*
+
+### v1.34.x — Bug B post-mortem caught a 5-release silent state-corruption recovery
+
+> **Setup.** This repo. A user reported "my session keeps thinking it just recovered from corruption" with no actual corruption visible. Investigation traced to `read_state_keys` — a bulk-read helper added in v1.27.0 — silently overflowing the positional-alignment contract when one of the values contained a literal `\n`.
+>
+> **Block.** The recovery counter sticky marker fired on every prompt; `_ensure_valid_state` archived a "corrupt" `session_state.json` that was actually structurally sound. No gate fired during the recovery (the recovery is silent by design); the user noticed the marker pile-up.
+>
+> **Resolution.** Post-mortem identified a structural failure: the harness exempted itself from the `quality-pack/council` evaluation that's pointed at every other project. Wave fix: introduce a fixture-realism rule (every test fixture must reproduce real-world value shapes — newlines, control bytes, multi-line JSON), backfill 23 state-IO regression tests with adversarial values, and run `/council --self-audit` quarterly against the harness itself.
+>
+> **Counterfactual.** Without the post-mortem, the bug would have continued silently archiving session state on every prompt for arbitrarily long. Each recovery is a state-loss event the user doesn't see. The fixture-realism rule (now in `CONTRIBUTING.md`) is the structural defense that keeps similar bugs from surviving five releases again.
+>
+> *— v1.34.0 release notes; `tests/test-state-io.sh` T19/T20 are the regression net.*
+
+Format we want for community entries (cribbed from above): short, concrete, falsifiable. If your transcript can't be summarized in two minutes of reading, it's too long.
 
 ## Contributing your own
 

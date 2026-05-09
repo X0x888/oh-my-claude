@@ -12,6 +12,40 @@ All notable changes to this project will be documented in this file.
   creation, and common `gh` publish operations). Stop gating now has a
   concrete signal for prompts like "commit and push" instead of relying
   only on intent parsing or final-summary claims.
+- **Wave 4 onboarding funnel (post-v1.36.0 council, 5 findings):**
+  - **F-015:** README reorder — Comparison table moved from line
+    247 to right after the "What this is NOT" section, so a
+    skeptic sees the proof (`vs vanilla Claude Code`) BEFORE the
+    install plumbing. Pre-fix the comparison sat 200 lines below
+    Quick start; visitors who bounced at the install procedure
+    never saw the conversion artifact.
+  - **F-016:** docs/showcase.md replaces the synthetic seed
+    entry with three real catches from this repo's own
+    development: v1.36.x W2 `_v:1` schema-version gap caught
+    by excellence-reviewer; v1.35.0 shortcut-ratio gate fire on
+    a wave plan deferring half its decided findings; v1.34.x
+    Bug B post-mortem (silent state-corruption recovery surviving
+    five releases). Each entry is concrete, falsifiable, and
+    references the commit / release it landed in.
+  - **F-017:** README links `ohmyclaude.dev` (the companion
+    landing page) in the nav line and below the GIF. Pre-fix
+    the landing page existed but was invisible to GitHub-first
+    visitors, leaking the cross-repo handoff funnel.
+  - **F-018:** `install.sh` footer collapsed from a 4-step
+    "Then:" staircase (verify, configure, demo, real work) to a
+    single canonical CTA (`/ulw-demo`). The demo's epilogue
+    routes onward to `/omc-config` and `/ulw <task>`. Recovery
+    via `bash verify.sh` moves to a one-line footer below the
+    primary CTA. Pre-fix the 4-step ladder + bypass-permissions
+    tip + restart message gave new users six competing
+    first-actions.
+  - **F-019:** Welcome banner emphasizes the post-install
+    differentiation: "You're now running oh-my-claude vX.Y.Z.
+    The install completed and Claude Code reloaded the hooks
+    for this fresh session — quality gates are active." Closes
+    the "I restarted, now what?" gap by acking the restart
+    succeeded and routing immediately to `/ulw-demo`.
+
 - **Wave 3 gate-block UX (post-v1.36.0 council, 4 findings):**
   - **F-011:** `format_gate_block_dual <human> <model>` helper splits
     every gate-block message into a `**FOR YOU:**` lead (one-line

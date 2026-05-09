@@ -10,13 +10,13 @@
 [![Dependencies](https://img.shields.io/badge/Dependencies-jq%20%2B%20rsync-brightgreen.svg)]()
 [![Tests](https://img.shields.io/badge/Tests-2200%2B-brightgreen.svg)](tests/)
 
-**Jump to:** [Install](#quick-start) · [AI-assisted install](#ai-assisted-install) · [What changes after install](#what-changes-after-you-install) · [Feature highlights](#feature-highlights) · [Skills](#available-skills) · [Troubleshooting](#troubleshooting) · [FAQ](docs/faq.md)
+**Jump to:** [What changes after install](#what-changes-after-you-install) · [vs vanilla Claude Code](#how-is-this-different-from-vanilla-claude-code) · [Install](#quick-start) · [AI-assisted install](#ai-assisted-install) · [Feature highlights](#feature-highlights) · [Skills](#available-skills) · [Troubleshooting](#troubleshooting) · [FAQ](docs/faq.md) · [ohmyclaude.dev](https://ohmyclaude.dev)
 
 > **Activate with `/ulw <task>` (ultrawork mode).** The harness classifies your prompt, routes specialists (different chain per domain — coding, writing, research, ops), runs reviewers, verifies the work, and refuses to stop early. You don't need to learn agent names.
 
 ![oh-my-claude /ulw-demo — quality gates in action](docs/ulw-demo.gif)
 
-*Two minutes of `/ulw-demo` showing the quality gates fire on a real edit — see [Quick start](#quick-start) below to install and try it yourself.*
+*Two minutes of `/ulw-demo` showing the quality gates fire on a real edit — see [Quick start](#quick-start) below to install and try it yourself. Visit [ohmyclaude.dev](https://ohmyclaude.dev) for the visual walkthrough.*
 
 ## What changes after you install
 
@@ -32,6 +32,20 @@ The harness is bash hooks + skills + agents installed as an overlay into `~/.cla
 
 - **Not a plugin framework or SDK** — no API, no extension model. Just hooks, skills, and agents.
 - **Not Anthropic-affiliated** — community-built. Not the same project as `oh-my-claudecode` (separate Node-based tool).
+
+## How is this different from vanilla Claude Code?
+
+| | Vanilla Claude Code | oh-my-claude |
+|---|---|---|
+| **Quality enforcement** | None | Hard stop gates |
+| **Intent classification** | None | 5-category state machine |
+| **Domain coverage** | Code-focused | Coding, writing, research, ops |
+| **Dependencies** | — | bash + jq |
+| **Agent safety** | Unrestricted | `disallowedTools` enforced |
+| **Session continuity** | Lost on compaction | Pre/post-compact hooks |
+| **Architecture** | Monolithic | Harness hooks |
+
+See real catches in [`docs/showcase.md`](docs/showcase.md) — sessions where the gates intercepted defects before ship.
 
 ---
 
@@ -244,24 +258,6 @@ The core state machine (`common.sh`) handles intent classification, domain scori
 
 For the full architecture, see [docs/architecture.md](docs/architecture.md).
 
-## Comparison
-
-How oh-my-claude differs from vanilla Claude Code:
-
-| | Vanilla Claude Code | oh-my-claude |
-|---|---|---|
-| **Quality enforcement** | None | Hard stop gates |
-| **Intent classification** | None | 5-category state machine |
-| **Domain coverage** | Code-focused | Coding, writing, research, ops |
-| **Dependencies** | -- | bash + jq |
-| **Agent safety** | Unrestricted | `disallowedTools` enforced |
-| **Session continuity** | Lost on compaction | Pre/post-compact hooks |
-| **Architecture** | Monolithic | Harness hooks |
-
-> Sometimes confused with `oh-my-claudecode`, which is a separate Node.js/TypeScript plugin framework for Claude Code. See [FAQ](docs/faq.md#how-is-this-different-from-oh-my-claudecode) for the structural differences.
-
----
-
 ## Repository structure
 
 ```
@@ -274,7 +270,7 @@ oh-my-claude/
 │   ├── output-styles/                       # Two bundled styles: oh-my-claude (default) + executive-brief (see docs/customization.md#output-style)
 │   └── statusline.py                        # Custom statusline widget
 ├── config/settings.patch.json               # Merged into user settings on install
-├── tests/               (83 bash + 1 py)    # See AGENTS.md / CONTRIBUTING.md for full list
+├── tests/               (84 bash + 1 py)    # See AGENTS.md / CONTRIBUTING.md for full list
 ├── tools/                                    # Developer-only tools (not installed)
 └── docs/                                    # Architecture, customization, FAQ, prompts
 ```
