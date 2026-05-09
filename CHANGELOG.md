@@ -4,6 +4,45 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.37.1] - 2026-05-09
+
+Wave-5 follow-ups landed after the v1.37.0 tag in response to the
+post-tag completeness review (quality-reviewer pass on the full
+delivery). Three bounded gaps the per-wave reviewers missed:
+
+### Added
+
+- **Runtime regression test for F-023 router path.** `tests/test-w5-discovery.sh`
+  gains an executing fixture: pipes a real prompt JSON to
+  `prompt-intent-router.sh` under `set -u` with an empty session,
+  asserts clean exit AND no "unbound variable" / "command not found"
+  stderr. Codifies the failure class the v1.37.0 hotfix repaired
+  (commit `73b9d88` — `USER_PROMPT` → `PROMPT_TEXT`). The original
+  W5 unit test only grepped source for the literal directive name,
+  so a typo in the variable reference would still pass the unit test
+  while the router crashed silently in production. Net: 18 W5
+  assertions (was 16); test count 85 → 86.
+
+### Documentation
+
+- **W3 dual-block helper scope enumerated in v1.37.0 entry.** The
+  v1.37.0 W3 line "applied to 5 high-traffic gate sites" now names
+  the surfaces (advisory, session-handoff, wave-shape,
+  discovered-scope, shortcut-ratio) and explicitly lists `dim_block`,
+  excellence, metis-on-plan, delivery-contract, final-closure, and
+  block-mode-exhaustion as known follow-ups for a later wave. Pre-fix
+  a future maintainer reading the CHANGELOG could not tell whether
+  the remaining sites were skipped intentionally or accidentally.
+- **`### Known follow-ups` subsection added to v1.37.0.** Surfaces
+  the 5 abstraction-critic structural deferrals (gate/directive
+  unification, intent capability struct, defect/work-item split,
+  core.md universal/conditional split, reviewer registry
+  consolidation) plus the `blindspot-inventory.sh` sibling lock,
+  each with a one-sentence WHY. Restores the v1.31.0 convention
+  of explicit follow-up enumeration that v1.37.0 broke. The 5
+  abstraction-critic items are tagged `requires_user_decision` —
+  user vision on architectural direction needed before refactor.
+
 ## [1.37.0] - 2026-05-09
 
 User commissioned a comprehensive evaluation focused on "improvements
@@ -36,9 +75,13 @@ regression assertions.
 Wave 3 (commit f393986): gate-block UX — new
 `format_gate_block_dual <human> <model>` and
 `format_gate_recovery_options` helpers in common.sh, applied to 5
-high-traffic gate sites (advisory, session-handoff, wave-shape,
-discovered-scope, shortcut-ratio). `/ulw-status` objective truncation
-bumped 100→240 chars with ellipsis. New `OMC_PLAIN=1` env opt-out for
+high-traffic gate sites: **advisory**, **session-handoff**,
+**wave-shape**, **discovered-scope**, **shortcut-ratio**. The other
+14 `emit_stop_block` sites in `stop-guard.sh` (dim_block, excellence,
+metis-on-plan, delivery-contract, final-closure, block-mode-
+exhaustion, plus interior calls) are NOT yet covered — known
+follow-up for a later wave. `/ulw-status` objective truncation bumped
+100→240 chars with ellipsis. New `OMC_PLAIN=1` env opt-out for
 Unicode glyphs (stacked bar / sparkline / box-rule fall back to
 ASCII). 16 regression assertions.
 
@@ -67,9 +110,22 @@ Test count: 81 → 85 bash; skill count 25 → 26; lifecycle hook count
 test-settings-merge, test-state-io T16, test-show-status help) green
 post-fix. Reviewers ran on every wave (quality-reviewer +
 excellence-reviewer); all flagged findings either addressed or
-documented as deferred-with-rationale (e.g. blindspot-inventory.sh
-sibling lock has intentionally non-blocking semantics, refactor would
-change behavior).
+documented as deferred-with-rationale.
+
+### Known follow-ups (deferred from v1.37.0)
+
+These items surfaced during the council pass but are bounded by
+either user-vision dependencies (architectural direction the model
+should not pick autonomously) or intentional-semantics carve-outs.
+Listed here so future sessions can pick them up consciously instead
+of rediscovering them.
+
+- **Gate/directive unification** *(requires_user_decision, abstraction-critic F-001)*. Stop-guard `emit_stop_block` and router `add_directive`/`flush_directives` implement the same `predicate → cap → degrade → telemetry` machine across two scripts. Refactor would extract a single `Constraint` registry; user input needed on the seam shape (lifecycle moment vs operation type).
+- **Intent capability struct** *(requires_user_decision, abstraction-critic F-002)*. The 5-way intent enum collapses to capability bits at every consumer; restructure to expose capabilities directly. Touches every gate consumer; user vision on the boundary needed.
+- **Defect vs Work-item grain split** *(requires_user_decision, abstraction-critic F-003)*. The wave-shape numerics gate fights a categorization mismatch — "finding" is doing two jobs (immutable defect record vs mutable wave-plan unit). Refactor renames the most-used noun in the system; user input on the boundary needed.
+- **`core.md` universal-vs-conditional split** *(requires_user_decision, abstraction-critic F-004)*. ~50 of 111 lines are context-specific rules that the router could inject conditionally. Reduces global prompt tax; user vision on the line between universal and conditional needed.
+- **Reviewer registry consolidation** *(requires_user_decision, abstraction-critic F-007)*. Reviewer-as-SubagentStop-matcher leaks across 6 coordination sites. Single registry would collapse to 1 entry per reviewer. User input on the registry shape needed.
+- **`blindspot-inventory.sh` sibling lock** *(intentionally not consolidated)*. The inline reclaim logic at lines 641–696 reimplements PID-stale + mtime-stale recovery rather than routing through `_with_lockdir`. Reason: the blindspot lock is intentionally NON-BLOCKING ("scan or skip") whereas `_with_lockdir` is block-until-acquired. Refactoring would change semantics. A future `_try_lockdir` non-blocking variant would unify cleanly; out of scope for v1.37.0's reliability-hardening surface.
 
 ### Added
 

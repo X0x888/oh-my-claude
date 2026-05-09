@@ -143,6 +143,47 @@ else
   fail_msg "F-023: router missing .demo_completed sentinel reference"
 fi
 
+# v1.37.1: runtime-path regression net for F-023. The original W5 unit
+# test (above) only greps source for the literal strings, so a typo
+# like the post-tag USER_PROMPT → PROMPT_TEXT hotfix (commit 73b9d88)
+# would still pass that test even though the router crashed silently
+# under set -u with empty session_state. This fixture executes the
+# router with an empty session and asserts (a) clean exit, (b) no
+# "unbound variable" / "command not found" stderr — the failure class
+# the hotfix repaired. Output may be empty for non-ULW prompts; the
+# regression net is on bash error chatter, not directive emission.
+f023_runtime_home="${TEST_TMP}/f023-runtime-home"
+mkdir -p "${f023_runtime_home}/.claude"
+ln -sf "${REPO_ROOT}/bundle/dot-claude/skills" "${f023_runtime_home}/.claude/skills"
+ln -sf "${REPO_ROOT}/bundle/dot-claude/quality-pack" "${f023_runtime_home}/.claude/quality-pack"
+f023_runtime_state="${TEST_TMP}/f023-runtime-state"
+fake_sid="aaaaaaaa-bbbb-cccc-dddd-aaaa00000023"
+mkdir -p "${f023_runtime_state}/${fake_sid}"
+echo '{"prompt_seq":1, "workflow_mode":"ulw", "task_intent":"execution", "task_domain":"coding"}' \
+  > "${f023_runtime_state}/${fake_sid}/session_state.json"
+hook_stdin="$(jq -nc --arg sid "${fake_sid}" --arg cwd "/tmp" --arg prompt "fix the failing test" \
+  '{session_id:$sid, cwd:$cwd, prompt:$prompt}')"
+router_stderr_file="$(mktemp)"
+HOME="${f023_runtime_home}" \
+  STATE_ROOT="${f023_runtime_state}" \
+  bash "${ROUTER}" <<<"${hook_stdin}" >/dev/null 2>"${router_stderr_file}"
+router_rc=$?
+router_stderr="$(cat "${router_stderr_file}")"
+rm -f "${router_stderr_file}"
+
+if [[ "${router_rc}" -eq 0 ]]; then
+  ok
+else
+  fail_msg "F-023 runtime: router exited non-zero (rc=${router_rc}) — likely a bash crash from undefined variable"
+fi
+
+if [[ "${router_stderr}" != *"unbound variable"* ]] \
+   && [[ "${router_stderr}" != *"command not found"* ]]; then
+  ok
+else
+  fail_msg "F-023 runtime: router stderr contains bash error chatter (this is the regression class the v1.37.0 hotfix repaired): ${router_stderr}"
+fi
+
 # ----------------------------------------------------------------------
 # F-025 — /ulw-status --changed filter for non-default flags.
 # ----------------------------------------------------------------------
