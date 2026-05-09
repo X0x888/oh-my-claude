@@ -74,6 +74,8 @@ while IFS= read -r line || [[ -n "${line}" ]]; do
   domain="$(jq -r '.domain // empty' <<<"${line}")"
   agent="$(jq -r '.agent // empty' <<<"${line}")"
 
+  # v1.36.x W2 F-010: schema_version (_v:1) for future migrations.
+  # Convention shared with gate_events, serendipity-log, classifier_misfires.
   record="$(jq -nc \
     --arg ts "${ts}" \
     --arg session "${SESSION_ID}" \
@@ -82,7 +84,7 @@ while IFS= read -r line || [[ -n "${line}" ]]; do
     --arg plat "${platform}" \
     --arg dom "${domain}" \
     --arg ag "${agent}" \
-    '{ts:$ts, session:$session, project_key:$pkey, archetype:$arch, platform:$plat, domain:$dom, agent:$ag}')"
+    '{_v:1, ts:$ts, session:$session, project_key:$pkey, archetype:$arch, platform:$plat, domain:$dom, agent:$ag}')"
 
   # Cross-session aggregate. Tolerate write failure (read-only HOME,
   # disk full, etc.) — the archetype record is advisory, not load-

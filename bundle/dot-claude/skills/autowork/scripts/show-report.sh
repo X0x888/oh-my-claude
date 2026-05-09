@@ -312,19 +312,82 @@ if [[ "${SHARE_MODE}" -eq 1 ]]; then
       "${SERENDIPITY_FILE}" 2>/dev/null || echo 0)"
   fi
 
-  # Time-saved heuristic. Each gate block represents an issue the
-  # harness caught BEFORE the user shipped — a debugging cycle the
-  # user did not have to run. 8 minutes per gate-block is a deliberately
-  # conservative estimate of avoided cost (a real debugging cycle on
-  # missed test / low-confidence verification / failed review usually
-  # costs 15-45 minutes; the 8min floor keeps the claim defensible).
-  # Serendipity catches add another ~5 minutes each (the "I would have
-  # noticed this myself" probability on adjacent defects is much
-  # higher than for verified-test gaps). Math is integer arithmetic
-  # in seconds so the formatter falls through to the timing_fmt_secs
-  # helper consistently.
+  # Time-saved heuristic (v1.36.x W2 F-009 — weighted by gate type).
+  #
+  # Pre-fix: every block weighted at 8 min, every serendipity at 5 min,
+  # ignoring the gate type and not subtracting false-positive skips.
+  # The fixed formula was honest about being a heuristic but conflated
+  # high-stakes blocks (delivery-contract publish requirements; missed
+  # tests) with low-stakes ones (advisory misroute prevention).
+  #
+  # New shape: weight gate-block events by category and subtract a
+  # cost per /ulw-skip (false positives where the user said the gate
+  # was wrong). The weights are still heuristic, but now they reflect
+  # the actual cost-of-a-defect class.
+  #
+  # Gate weights (seconds saved per block):
+  #   - delivery-contract / dim_block: 600s (10 min) — heaviest defects,
+  #     e.g. publish requirements / missing tests / failed excellence.
+  #   - discovered-scope / wave-shape / shortcut-ratio: 360s (6 min)
+  #     — coverage / segmentation defenses.
+  #   - advisory / session-handoff / pretool: 240s (4 min)
+  #     — early-redirect defenses; saved a misroute cycle.
+  #   - everything else: 300s (5 min) — middle of the road.
+  # Serendipity stays at 300s (5 min) — bugs caught while doing other
+  # work, fixed in-session per the Serendipity Rule.
+  # SUBTRACTED: each /ulw-skip is 60s (1 min) — the false-positive
+  # cost the user paid because the gate fired on legitimate work.
+  _share_blocks_weighted_secs=0
+  if [[ -f "${GATE_EVENTS_FILE}" ]] && [[ -s "${GATE_EVENTS_FILE}" ]]; then
+    _share_blocks_weighted_secs="$(jq -s --argjson cutoff "${cutoff_ts}" '
+        map(select((.ts // 0) >= $cutoff and .event == "block"))
+        | map(
+            .gate as $g
+            | (
+                if ($g == "delivery-contract" or $g == "dim_block") then 600
+                elif ($g == "discovered-scope" or $g == "wave-shape" or $g == "shortcut-ratio") then 360
+                elif ($g == "advisory" or $g == "session-handoff" or $g == "pretool") then 240
+                else 300
+                end
+              )
+          )
+        | add // 0
+      ' "${GATE_EVENTS_FILE}" 2>/dev/null || echo 0)"
+    [[ "${_share_blocks_weighted_secs}" =~ ^[0-9]+$ ]] || _share_blocks_weighted_secs=0
+  fi
+  # If we have no per-event signal (e.g. early sessions before
+  # gate_events.jsonl was populated), fall back to the legacy
+  # 480s/block heuristic so the share card still has a defensible
+  # number — better than $0 and the upgrade path is gracious.
+  if [[ "${_share_blocks_weighted_secs}" -eq 0 ]] && [[ "${_share_blocks:-0}" -gt 0 ]]; then
+    _share_blocks_weighted_secs=$(( _share_blocks * 480 ))
+  fi
+
+  # Read total skips from session_summary rows in window — each is
+  # 60s of false-positive cost subtracted from the gross savings.
+  _share_skip_count=0
+  if [[ -f "${_share_sessions_src}" ]] && [[ -s "${_share_sessions_src}" ]]; then
+    _share_skip_count="$(jq -s --argjson cutoff "${cutoff_ts}" \
+      'map(select((.start_ts // 0 | tonumber? // 0) >= $cutoff) | .skip_count // 0) | add // 0' \
+      "${_share_sessions_src}" 2>/dev/null || echo 0)"
+    [[ "${_share_skip_count}" =~ ^[0-9]+$ ]] || _share_skip_count=0
+  fi
+  _share_skip_cost_secs=$(( _share_skip_count * 60 ))
+
   _share_caught_total=$(( _share_blocks + _share_serendipity ))
-  _share_saved_secs=$(( _share_blocks * 480 + _share_serendipity * 300 ))
+  _share_saved_secs=$(( _share_blocks_weighted_secs + _share_serendipity * 300 - _share_skip_cost_secs ))
+  # Floor at 0 — a session dominated by false-positive skips can produce
+  # a negative net (e.g. 1 cheap block × 240s minus 5 skips × 60s = -60s).
+  # Claiming "saved -1m of debugging" reads as broken/dishonest in a
+  # public share card; floor at 0 instead. The asymmetry is intentional:
+  # over-firing gates DO cost the user real time, but the share-card
+  # surface is for headline value, not full cost accounting. The full
+  # signal (skip count, false-positive rate, gate-block density) is
+  # surfaced uncensored in the non-share `/ulw-report` view at top of
+  # report.
+  if [[ "${_share_saved_secs}" -lt 0 ]]; then
+    _share_saved_secs=0
+  fi
   _share_saved_human="$(timing_fmt_secs "${_share_saved_secs}" 2>/dev/null || printf '%ds' "${_share_saved_secs}")"
 
   printf '## oh-my-claude — %s\n\n' "${window_label}"
@@ -588,11 +651,31 @@ fi
 printf '# Harness report — %s\n\n' "${window_label}"
 printf '_Generated %s. Source: `~/.claude/quality-pack/`._\n\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')"
 
+# ----------------------------------------------------------------------
+# Helper: filter JSONL rows by a timestamp field within the cutoff window.
+# Reads file path from $1, ts field jq path from $2 (e.g. '.start_ts' or '.ts').
+# Hoisted above the Headline pre-pass (v1.36.x W2 F-008) so the headline
+# heuristics can call it before the detail sections.
+filter_by_window() {
+  local file="$1" ts_path="$2"
+  [[ -f "${file}" ]] || return 0
+  if [[ "${MODE}" == "all" ]]; then
+    cat "${file}"
+  elif [[ "${MODE}" == "last" ]]; then
+    tail -n 1 "${file}"
+  else
+    jq -c --argjson cutoff "${cutoff_ts}" \
+      "select((${ts_path} // 0 | tonumber) >= \$cutoff)" "${file}" 2>/dev/null || true
+  fi
+}
+
 # Interpretation footer accumulators (v1.17.0). Each section below
-# updates these as it computes its own metrics; the final
-# "Patterns to consider" block at the bottom turns them into 1-line
-# actionable suggestions. Defaults to "no signal" so the footer renders
-# cleanly on empty datasets.
+# updates these as it computes its own metrics; the bottom "Patterns to
+# consider" block turns them into 1-line actionable suggestions.
+# v1.36.x W2 F-008 hoists the heuristic computation to a "Headline"
+# pre-pass at the top so a user opening the report once sees the
+# decision-ready insight before the table walls. Defaults to "no signal"
+# so headline renders cleanly on empty datasets.
 _intp_session_count=0
 _intp_block_total=0
 _intp_skip_total=0
@@ -606,20 +689,95 @@ _intp_arche_unique=0
 _intp_reviewer_rate=""
 
 # ----------------------------------------------------------------------
-# Helper: filter JSONL rows by a timestamp field within the cutoff window.
-# Reads file path from $1, ts field jq path from $2 (e.g. '.start_ts' or '.ts').
-filter_by_window() {
-  local file="$1" ts_path="$2"
-  [[ -f "${file}" ]] || return 0
-  if [[ "${MODE}" == "all" ]]; then
-    cat "${file}"
-  elif [[ "${MODE}" == "last" ]]; then
-    tail -n 1 "${file}"
-  else
-    jq -c --argjson cutoff "${cutoff_ts}" \
-      "select((${ts_path} // 0 | tonumber) >= \$cutoff)" "${file}" 2>/dev/null || true
+# v1.36.x W2 F-008 — Headline pre-pass.
+#
+# Runs the same heuristic queries the bottom "Patterns to consider"
+# section runs, but rendered FIRST so the user sees the
+# decision-ready insight before scrolling through 13 detail sections.
+# The detail sections re-derive their own values (small jq cost
+# duplication, ~5-10ms total); the predicates and thresholds match
+# the bottom section's so the two never disagree.
+#
+# Insight ranking (data-lens recommended):
+#   1. Anomaly outranks dominance outranks reassurance outranks fun
+#      fact. Specifically: gate-fire density and skip rate are
+#      anomaly signals (something off-target); serendipity catches
+#      and reviewer-low-find are reassurance/dominance signals.
+#   2. Render the top 3 strongest signals at the headline. The full
+#      list is still rendered at the bottom under "Patterns to
+#      consider" for users who want the comprehensive view.
+_headline_lines=()
+
+_hl_session_rows="$(filter_by_window "${SUMMARY_FILE}" '.start_ts')"
+_hl_session_count="$(printf '%s\n' "${_hl_session_rows}" | grep -c . || true)"
+_hl_session_count="${_hl_session_count//[!0-9]/}"
+_hl_session_count="${_hl_session_count:-0}"
+_hl_block_total=0
+_hl_skip_total=0
+_hl_serendipity_total=0
+_hl_reviewed=0
+if [[ "${_hl_session_count}" -gt 0 ]]; then
+  _hl_block_total="$(printf '%s\n' "${_hl_session_rows}" | jq -s 'map((.guard_blocks // 0) + (.dim_blocks // 0)) | add // 0' 2>/dev/null || echo 0)"
+  _hl_skip_total="$(printf '%s\n' "${_hl_session_rows}" | jq -s 'map(.skip_count // 0) | add // 0' 2>/dev/null || echo 0)"
+  _hl_serendipity_total="$(printf '%s\n' "${_hl_session_rows}" | jq -s 'map(.serendipity_count // 0) | add // 0' 2>/dev/null || echo 0)"
+  _hl_reviewed="$(printf '%s\n' "${_hl_session_rows}" | jq -s 'map(select(.reviewed == true)) | length' 2>/dev/null || echo 0)"
+fi
+
+# H1: gate-fire density >2/session is the strongest anomaly signal.
+if [[ "${_hl_session_count}" -gt 0 && "${_hl_block_total}" -gt 0 ]]; then
+  _hl_bps=$(( _hl_block_total * 10 / _hl_session_count ))
+  if [[ "${_hl_bps}" -ge 21 ]]; then
+    _hl_int=$(( _hl_bps / 10 ))
+    _hl_dec=$(( _hl_bps % 10 ))
+    _headline_lines+=("**High gate-fire density: ~${_hl_int}.${_hl_dec} blocks/session.** ${_hl_block_total} blocks across ${_hl_session_count} sessions. Gates may be over-firing — try \`/metis\` on the next big task or \`/plan-hard\` for tighter scope.")
   fi
-}
+fi
+
+# H2: skip-to-block ratio >40% suggests gates fire on legitimate work.
+if [[ "${_hl_block_total}" -gt 0 && "${_hl_skip_total}" -gt 0 ]]; then
+  _hl_skip_pct=$(( _hl_skip_total * 100 / _hl_block_total ))
+  if [[ "${_hl_skip_pct}" -ge 40 ]]; then
+    _headline_lines+=("**High skip rate: ${_hl_skip_pct}%.** ${_hl_skip_total}/${_hl_block_total} blocks ended in \`/ulw-skip\`. Gates are likely firing on legitimate work — review the most-skipped gate type below and consider tightening trigger conditions.")
+  fi
+fi
+
+# H3: classifier misfire trend.
+_hl_misfires=0
+if [[ -f "${HOME}/.claude/quality-pack/classifier_misfires.jsonl" ]]; then
+  if [[ "${MODE}" == "all" ]]; then
+    _hl_misfires="$(grep -c . "${HOME}/.claude/quality-pack/classifier_misfires.jsonl" 2>/dev/null || echo 0)"
+  else
+    _hl_misfires="$(jq -c --argjson cutoff "${cutoff_ts}" 'select((.ts // 0 | tonumber) >= $cutoff)' "${HOME}/.claude/quality-pack/classifier_misfires.jsonl" 2>/dev/null | grep -c . || echo 0)"
+  fi
+  _hl_misfires="${_hl_misfires//[!0-9]/}"
+  _hl_misfires="${_hl_misfires:-0}"
+fi
+if [[ "${_hl_misfires}" -ge 5 && "${MODE}" == "week" ]] || \
+   [[ "${_hl_misfires}" -ge 20 && "${MODE}" == "month" ]] || \
+   [[ "${_hl_misfires}" -ge 5 && "${MODE}" == "all" ]]; then
+  _headline_lines+=("**Classifier misfires accumulating: ${_hl_misfires}.** Run \`tools/replay-classifier-telemetry.sh\` against the regression fixture to spot structural patterns worth codifying in \`lib/classifier.sh\`.")
+fi
+
+# H4: serendipity (reassurance signal — only render if no anomaly above).
+if [[ "${#_headline_lines[@]}" -lt 3 && "${_hl_serendipity_total}" -gt 0 ]]; then
+  _headline_lines+=("**Serendipity caught ${_hl_serendipity_total} adjacent defect$([[ "${_hl_serendipity_total}" -eq 1 ]] && echo "" || echo "s")** in window — bugs found while doing other work, fixed in-session per the Serendipity Rule. Sustained > 0 means the rule is paying for itself.")
+fi
+
+# Render the headline section.
+printf '## Headline\n\n'
+if [[ "${#_headline_lines[@]}" -eq 0 ]]; then
+  if [[ "${_hl_session_count}" -eq 0 ]]; then
+    printf '_No sessions in window — run a few \`/ulw\` cycles, then re-check after the next daily sweep._\n\n'
+  else
+    printf '_No anomalies surfaced. %s session(s), %s gate-block(s), %s skip(s), %s serendipity catch(es) in window — ship with confidence._\n\n' \
+      "${_hl_session_count}" "${_hl_block_total}" "${_hl_skip_total}" "${_hl_serendipity_total}"
+  fi
+else
+  for _hl_line in "${_headline_lines[@]}"; do
+    printf -- '- %s\n\n' "${_hl_line}"
+  done
+fi
+printf '_Detail sections below; comprehensive heuristic review at the bottom under **Patterns to consider**._\n\n'
 
 # ----------------------------------------------------------------------
 # Section 1: Sessions overview
@@ -898,6 +1056,82 @@ else
           printf '| `%s` | %s | %s | %s |\n' "${_d_name}" "${_d_fires}" "${_d_chars}" "${_d_avg}"
         done
     printf '\n'
+  fi
+fi
+
+# ----------------------------------------------------------------------
+# Section 4c0.6: Directive value attribution (v1.36.x W2 F-006)
+#
+# Joins bias-defense directive_fired gate events with session_summary
+# outcomes (committed vs abandoned) so a user can answer "of sessions
+# where directive X fired, what fraction shipped?". A directive that
+# fires often but the sessions never commit may be over-firing or
+# misrouted; a directive that fires on sessions that ship at high
+# rate is paying for itself.
+#
+# Closes the v1.36.0 deferred audit (#15) read path: the firing-rate
+# audit needed a "did downstream behavior change" signal. Outcome is a
+# coarse but defensible proxy — committed sessions are the harness's
+# success surface; abandoned sessions are where steering may have
+# missed.
+printf '## Directive value attribution\n\n'
+_directive_fires_rows="$(printf '%s\n' "${gate_event_rows}" | jq -c \
+    'select(.gate == "bias-defense" and .event == "directive_fired" and (.details.directive // "") != "" and (.session_id // "") != "")' 2>/dev/null || true)"
+if [[ -z "${_directive_fires_rows}" ]]; then
+  printf '_No bias-defense directive fires with session attribution in window. The 4c (Bias-defense directives fired) section reports raw fire counts; this section adds session-outcome correlation when both data feeds are populated._\n\n'
+else
+  # Build a session_id → outcome map from session_summary rows in window.
+  if [[ -n "${_hl_session_rows}" ]]; then
+    _session_outcome_map="$(printf '%s\n' "${_hl_session_rows}" \
+      | jq -s 'map({key: .session_id, value: (.outcome // "unknown")}) | from_entries' 2>/dev/null || printf '{}')"
+  else
+    _session_outcome_map="{}"
+  fi
+
+  if [[ "${_session_outcome_map}" == "{}" ]] || [[ -z "${_session_outcome_map}" ]]; then
+    printf '_Directive fires recorded but no session_summary rows in window — outcome attribution requires both feeds._\n\n'
+  else
+    printf '| Directive | Fires | Sessions | Committed | Abandoned | Other | Apply rate |\n'
+    printf '|---|---:|---:|---:|---:|---:|---:|\n'
+    printf '%s\n' "${_directive_fires_rows}" \
+      | jq -sr --argjson outcomes "${_session_outcome_map}" '
+        # Group fires by directive name, collect unique session_ids
+        # touched, then look up the outcome of each session from the map.
+        group_by(.details.directive)
+        | map({
+            directive: .[0].details.directive,
+            fires: length,
+            sessions: (map(.session_id) | unique),
+          })
+        | map(. + {
+            outcomes: (.sessions | map($outcomes[.] // "unknown"))
+          })
+        | map(. + {
+            n_sessions: (.sessions | length),
+            n_committed: (.outcomes | map(select(. == "committed")) | length),
+            n_abandoned: (.outcomes | map(select(. == "abandoned")) | length),
+            n_other: (.outcomes | map(select(. != "committed" and . != "abandoned")) | length)
+          })
+        | sort_by(-.fires)
+        | .[0:10]
+        | .[]
+        | [
+            .directive,
+            (.fires | tostring),
+            (.n_sessions | tostring),
+            (.n_committed | tostring),
+            (.n_abandoned | tostring),
+            (.n_other | tostring),
+            (if (.n_committed + .n_abandoned) > 0 then ((.n_committed * 100 / (.n_committed + .n_abandoned)) | floor | tostring + "%") else "—" end)
+          ]
+        | @tsv
+      ' 2>/dev/null \
+      | while IFS=$'\t' read -r _dva_name _dva_fires _dva_sess _dva_com _dva_aban _dva_other _dva_rate; do
+          [[ -z "${_dva_name}" ]] && continue
+          printf '| `%s` | %s | %s | %s | %s | %s | %s |\n' \
+            "${_dva_name}" "${_dva_fires}" "${_dva_sess}" "${_dva_com}" "${_dva_aban}" "${_dva_other}" "${_dva_rate}"
+        done
+    printf '\n_Apply rate = committed / (committed + abandoned). "Other" = sessions still in flight or with non-terminal outcome. A directive with low apply rate AND high fire count is a candidate for budget removal — it is contributing prompt-tax without correlating to ship signal._\n\n'
   fi
 fi
 
@@ -1261,6 +1495,55 @@ if [[ -f "${AGENT_METRICS_FILE}" ]]; then
       | (map(.inv) | add // 0) as $i
       | if $i > 0 then (($f * 100 / $i) | floor | tostring) else "" end
     ' "${AGENT_METRICS_FILE}" 2>/dev/null || printf '')"
+
+    # ----------------------------------------------------------------
+    # v1.36.x W2 F-007 — Reviewer ROI.
+    #
+    # Joins agent-metrics.json (find rate) with the cross-session
+    # timing rollup's agent_breakdown (per-reviewer total seconds).
+    # Closes the data-lens deferred audit (#19) by giving the user
+    # per-invocation cost so a reviewer with 50 cheap zero-find
+    # calls can be cleanly distinguished from one with 5 expensive
+    # zero-find --deep calls. Time-per-invocation high AND find rate
+    # low is the candidate-for-balanced/minimal pattern.
+    if [[ -z "${_xs_rollup_cache}" ]]; then
+      _xs_rollup_cache="$(timing_xs_aggregate "${cutoff_ts}" 2>/dev/null || printf '{}')"
+    fi
+    _roi_breakdown="$(jq -r '(.agent_breakdown // {})' <<<"${_xs_rollup_cache}" 2>/dev/null || printf '{}')"
+    if [[ "${_roi_breakdown}" != "{}" ]] && [[ -n "${_roi_breakdown}" ]]; then
+      printf '\n**Reviewer ROI** _(window — joins find rate with time spent)_\n\n'
+      printf '| Reviewer | Inv | Finds | Find rate | Total time | Avg/inv |\n'
+      printf '|---|---:|---:|---:|---:|---:|\n'
+      jq -r --argjson breakdown "${_roi_breakdown}" '
+        .agents // {} | to_entries
+        | map({
+            name: .key,
+            inv: (.value.invocations // 0),
+            finds: (.value.finding_verdicts // 0),
+            total_s: ($breakdown[.key] // 0)
+          })
+        | map(select(.inv > 0))
+        | sort_by(-.total_s, -.inv)
+        | .[0:8]
+        | .[]
+        | [
+            .name,
+            (.inv | tostring),
+            (.finds | tostring),
+            (if .inv > 0 then ((.finds * 100 / .inv) | floor | tostring + "%") else "—" end),
+            (if .total_s > 0 then ((.total_s | floor | tostring) + "s") else "—" end),
+            (if .inv > 0 and .total_s > 0 then ((.total_s / .inv) | floor | tostring + "s") else "—" end)
+          ]
+        | @tsv
+      ' "${AGENT_METRICS_FILE}" 2>/dev/null \
+        | while IFS=$'\t' read -r _roi_name _roi_inv _roi_finds _roi_rate _roi_total _roi_avg; do
+            [[ -z "${_roi_name}" ]] && continue
+            printf '| `%s` | %s | %s | %s | %s | %s |\n' \
+              "${_roi_name}" "${_roi_inv}" "${_roi_finds}" "${_roi_rate}" "${_roi_total}" "${_roi_avg}"
+          done
+      printf '\n_Sorted by total time (highest cost first). A reviewer with high `Avg/inv` and low `Find rate` is a candidate for `reviewer_budget=balanced` or removal — runs often, finds little. A reviewer with low cost and high find rate is paying for itself even at low invocation count._\n\n'
+      printf '_Note: invocations are LIFETIME counts from `agent-metrics.json`; total time is WINDOW-scoped from the timing rollup. Avg/inv divides window-time by lifetime-inv, so it underestimates per-call cost when the agent has been used in past windows. Find rate is also lifetime — directional signal, not a within-window precision metric._\n\n'
+    fi
   else
     printf '_No reviewer activity recorded yet._\n\n'
   fi

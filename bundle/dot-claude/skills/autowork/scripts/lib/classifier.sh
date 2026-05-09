@@ -663,6 +663,9 @@ record_classifier_telemetry() {
   [[ "${OMC_CLASSIFIER_TELEMETRY}" == "on" ]] || return 0
   local file
   file="$(session_file "classifier_telemetry.jsonl")"
+  # v1.36.x W2 F-010: schema_version (_v:1) for future migrations.
+  # Per-session rows are sampled into cross-session classifier_misfires
+  # by detect_classifier_misfire below; both shapes carry the same _v.
   local record
   record="$(jq -nc \
     --arg ts "$(now_epoch)" \
@@ -671,6 +674,7 @@ record_classifier_telemetry() {
     --arg prompt_preview "$(truncate_chars 200 "${prompt_preview}")" \
     --argjson blocks "$(printf '%d' "${blocks_before:-0}")" \
     '{
+      _v: 1,
       ts: $ts,
       intent: $intent,
       domain: $domain,

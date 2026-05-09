@@ -223,6 +223,22 @@ For any new telemetry field, timing counter, scorecard metric, report slice, or 
 
 Do not count telemetry as "shipped" when only the state write exists. This partial-landing pattern caused repeated drift in earlier versions and is now considered a release-quality bug.
 
+### Cross-session JSONL schema versioning (v1.36.x W2 F-010)
+
+Every cross-session JSONL emitter MUST stamp a `_v` schema-version field as the first key on each row. Convention:
+
+- `_v: 1` is the current schema for all the cross-session ledgers under `~/.claude/quality-pack/`: `gate_events.jsonl`, `serendipity-log.jsonl`, `classifier_misfires.jsonl` (and the per-session `classifier_telemetry.jsonl`), `used-archetypes.jsonl`, `session_summary.jsonl` (already at v1 since v1.31.0).
+- `agent-metrics.json` uses `_schema_version: 2` (object, not row-stream — historical reasons).
+- When a row's shape changes (field rename, type change, removal), bump `_v` to `2` AND keep the v1 emitter on a deprecated path until consumers migrate. Use the new value in `_v` and document the diff in `CHANGELOG.md`.
+
+**Why:** without per-row versioning, every consumer that joins ledgers (e.g. show-report's gate × session × directive joins) breaks silently the moment one schema evolves. The `_v` discriminator lets `tools/migrate-schema.sh` (when introduced for a future migration) walk every ledger and apply per-version transforms without ambiguity.
+
+**When adding a new cross-session JSONL emitter:**
+
+1. Stamp `_v: 1` as the first key in the JSON row literal.
+2. Document the row schema in a doc-comment above the emitter function.
+3. The reader side should use `(.{_v} // 0)` or equivalent to detect missing `_v` (legacy rows from before this convention) and fall through gracefully — never crash on a missing field.
+
 ## Release Process
 
 When bumping the version (changing `VERSION`), follow these steps in order. Replace `X.Y.Z` with the actual version number in all commands.

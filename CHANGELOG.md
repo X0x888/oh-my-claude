@@ -12,6 +12,42 @@ All notable changes to this project will be documented in this file.
   creation, and common `gh` publish operations). Stop gating now has a
   concrete signal for prompts like "commit and push" instead of relying
   only on intent parsing or final-summary claims.
+- **Wave 2 telemetry & outcome attribution (post-v1.36.0 council, 5 findings):**
+  - **F-006:** New `## Directive value attribution` section in
+    `/ulw-report` joins bias-defense `directive_fired` events with
+    session_summary outcomes (committed vs abandoned). Closes the
+    deferred audit (#15) read path — answer to "directives with HIGH
+    fire counts AND zero downstream behavior change". Renders fires +
+    sessions touched + apply rate per directive name.
+  - **F-007:** New "Reviewer ROI" sub-table inside Reviewer activity
+    joins `agent-metrics.json` (find rate) with the cross-session
+    timing rollup's `agent_breakdown` (per-reviewer total seconds).
+    Surfaces avg seconds per invocation so high-cost low-find-rate
+    reviewers can be defensibly culled into `reviewer_budget=balanced`.
+    Closes the deferred audit (#19) read path. Inline note flags the
+    lifetime-vs-window asymmetry (invocations are lifetime; total time
+    is window-scoped) so the user reads the numbers correctly.
+  - **F-008:** Insight-first `## Headline` section at the top of
+    `/ulw-report`. Pre-fix the report led with raw counts; the
+    interpretive heuristics lived 1300 lines down at the bottom under
+    "Patterns to consider". The headline now runs the same predicates
+    as a pre-pass and renders the top 3 strongest signals (anomaly >
+    dominance > reassurance) as the LEAD. The bottom Patterns section
+    is preserved for the comprehensive review.
+  - **F-009:** Share-card time-saved is now weighted by gate type:
+    delivery-contract = 600s, discovered-scope/wave-shape = 360s,
+    advisory/session-handoff = 240s, default = 300s. Subtracts
+    `skip_count * 60` for false-positive cost. Floors at 0 with a
+    code comment explaining the rationale. Pre-fix every block was
+    weighted at 8 min, conflating "missed test caught" with
+    "advisory misroute prevented".
+  - **F-010:** Cross-session JSONL schema versioning. `_v:1` field
+    added to `record_gate_event`, `record-archetype.sh`,
+    `record_classifier_telemetry`, `record_gate_skip`, and the
+    discovered-scope writer. `record-serendipity` and `session_summary`
+    already had it. Convention documented in CONTRIBUTING.md. Future
+    schema migrations can use `_v` as the discriminator without post-hoc
+    archaeology.
 - **Wave 1 reliability hardening (post-v1.36.0 council, 6 findings):**
   - **F-001:** `record-finding-list.sh` and `record-scope-checklist.sh`
     bare-mkdir locks routed through new `with_findings_lock` and

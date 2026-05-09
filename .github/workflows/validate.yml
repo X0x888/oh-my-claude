@@ -284,5 +284,8 @@ jobs:
       - name: W1 reliability hardening regression (v1.36.x)
         run: bash tests/test-w1-reliability.sh
 
+      - name: W2 telemetry attribution regression (v1.36.x)
+        run: bash tests/test-w2-telemetry.sh
+
       - name: Run statusline tests
         run: python3 -m unittest tests.test_statusline -v

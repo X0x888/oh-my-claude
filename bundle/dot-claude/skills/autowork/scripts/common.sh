@@ -4360,8 +4360,9 @@ record_gate_skip() {
     ts="$(now_epoch)"
     local pid
     pid="$(_omc_project_id 2>/dev/null || echo "unknown")"
+    # v1.36.x W2 F-010: schema_version (_v:1) for future migrations.
     jq -nc --arg reason "${reason}" --argjson ts "${ts}" --arg project "${pid}" \
-      '{ts:$ts,reason:$reason,project:$project}' >> "${skip_file}" 2>/dev/null || true
+      '{_v:1,ts:$ts,reason:$reason,project:$project}' >> "${skip_file}" 2>/dev/null || true
     _cap_cross_session_jsonl "${skip_file}" 200 150
   }
 
@@ -4512,6 +4513,13 @@ record_gate_event() {
   fi
 
   local row
+  # v1.36.x W2 F-010: schema_version field (`_v: 1`) on every row so
+  # future schema migrations can read both old + new shapes side-by-side.
+  # Convention shared with session_summary (`_v` at lib/timing.sh:1077),
+  # serendipity-log, classifier_misfires, used-archetypes — see
+  # CONTRIBUTING.md "Cross-session schema versioning". Migration tools
+  # under `tools/migrate-schema.sh` walk every cross-session ledger and
+  # apply per-version transforms; the `_v` field is the discriminator.
   row="$(jq -nc \
     --argjson ts "$(now_epoch)" \
     --arg gate "${gate}" \
@@ -4519,7 +4527,7 @@ record_gate_event() {
     --arg block_count "${block_count}" \
     --arg block_cap "${block_cap}" \
     --argjson details "${details_json}" \
-    '{ts:$ts,gate:$gate,event:$event} +
+    '{_v:1,ts:$ts,gate:$gate,event:$event} +
      (if $block_count != "" then {block_count:($block_count|tonumber? // 0)} else {} end) +
      (if $block_cap != "" then {block_cap:($block_cap|tonumber? // 0)} else {} end) +
      {details:$details}' 2>/dev/null)"
@@ -5461,6 +5469,7 @@ extract_discovered_findings() {
       id="$(_finding_id "${agent_name}" "${summary}")"
       [[ -z "${id}" ]] && continue
 
+      # v1.36.x W2 F-010: schema_version (_v:1) for future migrations.
       jq -nc \
         --arg id "${id}" \
         --arg src "${agent_name}" \
@@ -5469,7 +5478,7 @@ extract_discovered_findings() {
         --arg cat "${category}" \
         --arg ts "${now_ts}" \
         --argjson body "${normalized}" \
-        '{id:$id, source:$src, summary:$sum, severity:$sev, category:$cat, status:"pending", reason:"", ts:$ts, structured:$body}' \
+        '{_v:1, id:$id, source:$src, summary:$sum, severity:$sev, category:$cat, status:"pending", reason:"", ts:$ts, structured:$body}' \
         2>/dev/null || continue
     done <<<"${json_rows}"
     # JSON path produced rows — do not fall through to prose heuristic.
