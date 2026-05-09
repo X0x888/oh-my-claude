@@ -12,6 +12,37 @@ All notable changes to this project will be documented in this file.
   creation, and common `gh` publish operations). Stop gating now has a
   concrete signal for prompts like "commit and push" instead of relying
   only on intent parsing or final-summary claims.
+- **Wave 5 discovery & status surfaces (post-v1.36.0 council, 5 findings):**
+  - **F-020:** /skills index gains a "Symptom → Skill" quick-table
+    at the top — 24 rows mapping "If you want X, use Y" so users
+    can scan the verb they need without reading the full
+    descriptive table. The phase-grouped tables remain below for
+    the full descriptions.
+  - **F-021:** New `/whats-new` skill renders the CHANGELOG
+    delta between `installed_version` (from
+    `~/.claude/oh-my-claude.conf`) and the source repo's HEAD.
+    Surfaces post-install features without forcing the user to
+    grep CHANGELOG.md by hand. Local-only; reads
+    `${repo_path}/CHANGELOG.md`. Backed by
+    `bundle/dot-claude/skills/autowork/scripts/show-whats-new.sh`.
+  - **F-022:** /ulw-time + /ulw-report now accept BOTH positional
+    (`week`, `month`) AND `--double-dash` flag forms (`--week`,
+    `--month`), matching /ulw-status's grammar. Pre-fix
+    `/ulw-time --week` errored with "unknown mode --week".
+  - **F-023:** First-ULW-after-install nudge. When the user runs
+    `/ulw <task>` for the first time on this install (no
+    `~/.claude/quality-pack/.demo_completed` sentinel), the
+    prompt-intent-router injects a one-shot tip routing them to
+    `/ulw-demo` while still proceeding with their task. Sentinel
+    is stamped after the nudge fires once so users who skip the
+    demo deliberately are not nagged.
+  - **F-025:** `/ulw-status --explain --changed` (or just
+    `--diff`) filter — shows ONLY flags whose current value
+    differs from the default. Closes the design-lens grievance
+    that --explain dumps 43 flags every call. Empty result on
+    clean installs renders a clear "No flags differ from
+    defaults" message.
+
 - **Wave 4 onboarding funnel (post-v1.36.0 council, 5 findings):**
   - **F-015:** README reorder — Comparison table moved from line
     247 to right after the "What this is NOT" section, so a

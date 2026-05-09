@@ -203,6 +203,8 @@ required_paths=(
   "${CLAUDE_HOME}/skills/ulw-resume/SKILL.md"
   "${CLAUDE_HOME}/skills/omc-config/SKILL.md"
   "${CLAUDE_HOME}/skills/autowork/scripts/omc-config.sh"
+  "${CLAUDE_HOME}/skills/whats-new/SKILL.md"
+  "${CLAUDE_HOME}/skills/autowork/scripts/show-whats-new.sh"
   "${CLAUDE_HOME}/oh-my-claude.conf.example"
 )
 

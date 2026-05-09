@@ -293,5 +293,8 @@ jobs:
       - name: W4 onboarding funnel regression (v1.36.x)
         run: bash tests/test-w4-onboarding.sh
 
+      - name: W5 discovery surfaces regression (v1.36.x)
+        run: bash tests/test-w5-discovery.sh
+
       - name: Run statusline tests
         run: python3 -m unittest tests.test_statusline -v

@@ -6,6 +6,39 @@ description: List all available oh-my-claude skills with descriptions and when t
 
 Display this list to the user, grouped by user-journey phase. Phase headers are themselves chapter markers — first-time users skim by phase, experienced users grep by skill name.
 
+## Symptom → Skill quick-table
+
+When you know what you want, jump straight to the verb:
+
+| If you... | Use |
+|---|---|
+| Want to ship real work end-to-end | `/ulw <task>` |
+| Just installed; want to feel the gates fire | `/ulw-demo` |
+| Need to inspect or change configuration | `/omc-config` |
+| Need a plan before you edit | `/plan-hard <task>` |
+| Need to review existing code | `/review-hard [focus]` |
+| Need repo / API context before coding | `/research-hard <topic>` |
+| Have a vague goal — need clarification | `/prometheus <goal>` |
+| Have a draft plan — want it stress-tested | `/metis <plan>` |
+| Stuck debugging — need a second opinion | `/oracle <issue>` |
+| Multiple framings exist — pick consciously | `/diverge <task>` |
+| Need official docs or external API | `/librarian <topic>` |
+| Want a multi-lens project evaluation | `/council [focus]` |
+| Want a design-first frontend pass | `/frontend-design <task>` |
+| A gate fired but the work is complete | `/ulw-skip <reason>` |
+| Discovered-scope flagged real items you defer | `/mark-deferred <reason>` |
+| Blocked on a user decision (taste, policy) | `/ulw-pause <reason>` |
+| Rate-limit kill left a resume artifact | `/ulw-resume` |
+| Want session state / counters / flags | `/ulw-status` |
+| Want a time-distribution card | `/ulw-time` |
+| Want cross-session activity digest | `/ulw-report` |
+| Want changelog deltas since your install | `/whats-new` |
+| Want to bootstrap CLAUDE.md for a repo | `/atlas` |
+| Memory directory feels noisy | `/memory-audit` |
+| Want to deactivate ULW mid-session | `/ulw-off` |
+
+The symptom-table above is a discovery shortcut. Each row maps to a skill in the phase-grouped tables below — those tables carry the full descriptions.
+
 ### Onboarding — first install, first task
 
 | Skill | Command | When to use |

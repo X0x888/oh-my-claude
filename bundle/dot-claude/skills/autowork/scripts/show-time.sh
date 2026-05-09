@@ -26,10 +26,25 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "${SCRIPT_DIR}/common.sh"
 
 MODE="${1:-current}"
+# v1.36.x W5 F-022: accept both positional (`current|last|week|...`) AND
+# double-dash flag (`--current|--last|--week|...`) forms. Pre-fix
+# /ulw-time only accepted positional, while /ulw-status accepted both —
+# users typing `/ulw-time --week` got "unknown mode --week" with no
+# recovery path. Both grammars now map to the same modes.
+case "${MODE}" in
+  --current)     MODE="current" ;;
+  --last)        MODE="last" ;;
+  --last-prompt) MODE="last-prompt" ;;
+  --week)        MODE="week" ;;
+  --month)       MODE="month" ;;
+  --all)         MODE="all" ;;
+esac
+
 case "${MODE}" in
   -h|--help)
     cat <<'USAGE'
 Usage: show-time.sh [current|last|last-prompt|week|month|all]
+       show-time.sh [--current|--last|--last-prompt|--week|--month|--all]
 
   current      Active session (default).
   last         Most recent finalized session.
@@ -38,8 +53,10 @@ Usage: show-time.sh [current|last|last-prompt|week|month|all]
   month        Cross-session rollup, last 30 days.
   all          Cross-session rollup, every recorded row.
 
-Backs the `/ulw-time` skill. Reads <session>/timing.jsonl for per-session
-modes and ~/.claude/quality-pack/timing.jsonl for cross-session rollups.
+Both positional and --double-dash flag forms are accepted (matches
+/ulw-status grammar). Backs the `/ulw-time` skill. Reads
+<session>/timing.jsonl for per-session modes and
+~/.claude/quality-pack/timing.jsonl for cross-session rollups.
 USAGE
     exit 0
     ;;
@@ -48,7 +65,7 @@ esac
 case "${MODE}" in
   current|last|last-prompt|week|month|all) ;;
   *)
-    printf 'show-time: unknown mode %q (expected: current|last|last-prompt|week|month|all)\n' "${MODE}" >&2
+    printf 'show-time: unknown mode %q (expected: current|last|last-prompt|week|month|all, or --double-dash equivalent)\n' "${MODE}" >&2
     exit 2
     ;;
 esac

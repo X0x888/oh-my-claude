@@ -71,6 +71,7 @@ SKILL_DIRS=(
   "${CLAUDE_HOME}/skills/memory-audit"
   "${CLAUDE_HOME}/skills/frontend-design"
   "${CLAUDE_HOME}/skills/omc-config"
+  "${CLAUDE_HOME}/skills/whats-new"
 )
 
 # Quality pack (scripts, memory, state, README).

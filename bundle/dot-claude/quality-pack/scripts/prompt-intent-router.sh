@@ -844,6 +844,23 @@ ${_spec_safe}
     add_directive "ulw_execution_opener" "Ultrawork mode is active for this session. In your first user-facing response, start with the bold phrase **Ultrawork mode active.** as the opening line for visual distinction. Use the strongest specialist path available, keep momentum high, and do not stop early. Do not segment unfinished work into 'wave 1 done, wave 2 next' or 'ready for a new session' unless the user explicitly asked for a checkpoint."
     add_directive "intent_classification" "Detected intent: ${display_intent}. Detected domain: ${TASK_DOMAIN}. Surface the classification right after the opener — '**Domain:** ${TASK_DOMAIN} | **Intent:** ${display_intent}' — followed by the first action you will take, so the user can verify routing is correct. If the user corrects the classification, adjust immediately."
 
+    # v1.36.x W5 F-023: First-ULW-after-install nudge. If the user has
+    # never seen /ulw-demo (no demo_completed sentinel), surface a
+    # one-shot tip routing them to the demo while still proceeding
+    # with their actual task. The sentinel is stamped after the
+    # directive fires once so the nudge never re-runs (we don't nag
+    # users who deliberately skip the demo). /ulw-demo's wrap-up also
+    # stamps the sentinel — see the demo skill body — so a user who
+    # ran the demo BEFORE their first /ulw never sees this nudge.
+    _omc_demo_sentinel="${HOME}/.claude/quality-pack/.demo_completed"
+    if [[ ! -f "${_omc_demo_sentinel}" ]] \
+       && ! is_synthetic_prompt "${USER_PROMPT}" \
+       && [[ "${USER_PROMPT}" != *"/ulw-demo"* ]]; then
+      add_directive "first_ulw_demo_nudge" "First /ulw run on this install — at the very top of your response (before the opener), include this single italicized line: '_Tip: run \`/ulw-demo\` (90 seconds, throwaway file) to feel the quality gates fire on a fixture before relying on them on real work. This nudge fires once — proceeding with your task now._' Then continue with the normal opener and the user's task. Do NOT block on this; the user explicitly asked for /ulw, run it."
+      mkdir -p "$(dirname "${_omc_demo_sentinel}")" 2>/dev/null || true
+      printf '%s\n' "$(date +%s)" > "${_omc_demo_sentinel}" 2>/dev/null || true
+    fi
+
     # --- Bias-defense directives (v1.19.0, default-off; reframed v1.24.0) ---
     #
     # Two opt-in injections that target the bias-blindness gap (model

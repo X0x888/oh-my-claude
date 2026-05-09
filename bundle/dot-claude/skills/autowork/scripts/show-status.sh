@@ -24,6 +24,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SUMMARY_MODE=0
 CLASSIFIER_MODE=0
 EXPLAIN_MODE=0
+# v1.36.x W5 F-025: --changed filter for explain mode prints ONLY flags
+# whose current value differs from the documented default. Closes the
+# design-lens grievance that --explain dumps 43 flags every call —
+# users wanting "what's not default" had to scan the * marker.
+CHANGED_ONLY=0
 # v1.31.0 Wave 6 (design-lens F-027): accept BOTH --double-dash AND
 # bare-positional argument forms so the skill grammar matches /ulw-time
 # (which uses positional `current|last|week`) and /ulw-report
@@ -42,9 +47,14 @@ for arg in "$@"; do
     --explain|-e|explain)
       EXPLAIN_MODE=1
       ;;
+    --changed|--diff|changed|diff)
+      # v1.36.x W5 F-025: only meaningful with --explain. Implies it.
+      EXPLAIN_MODE=1
+      CHANGED_ONLY=1
+      ;;
     --help|-h|help)
-      printf 'Usage: show-status.sh [summary | classifier | explain]\n'
-      printf '       show-status.sh [--summary | --classifier | --explain]\n'
+      printf 'Usage: show-status.sh [summary | classifier | explain] [--changed]\n'
+      printf '       show-status.sh [--summary | --classifier | --explain] [--changed]\n'
       printf '\n'
       printf '  (no flag)      Full diagnostic status (default).\n'
       printf '  summary, -s    Compact end-of-session recap.\n'
@@ -53,13 +63,15 @@ for arg in "$@"; do
       printf '  explain, -e    Per-flag rationale: every known oh-my-claude\n'
       printf '                 conf flag with current value, default, and\n'
       printf '                 one-line purpose, grouped by cluster.\n'
+      printf '  --changed      With explain: only show flags whose current\n'
+      printf '                 value differs from the default.\n'
       exit 0
       ;;
     *)
       # v1.34.1+ (X-007): name the accepted forms inline so the user can
       # recover from a typo without consulting --help. Mirrors show-time.sh
       # and show-report.sh error shapes.
-      printf 'show-status: unknown argument %q (expected: summary, classifier, explain, or no argument for full diagnostic).\n' "${arg}" >&2
+      printf 'show-status: unknown argument %q (expected: summary, classifier, explain, --changed, or no argument for full diagnostic).\n' "${arg}" >&2
       printf '             See --help for the full form list.\n' >&2
       exit 2
       ;;
@@ -177,8 +189,15 @@ if [[ "${EXPLAIN_MODE}" -eq 1 ]]; then
       [[ -z "${_cur}" ]] && _cur="${_default}"
 
       _delta_marker=""
+      _is_changed=0
       if [[ "${_cur}" != "${_default}" ]]; then
         _delta_marker=" *"
+        _is_changed=1
+      fi
+
+      # v1.36.x W5 F-025: --changed filter skips flags at default.
+      if [[ "${CHANGED_ONLY:-0}" -eq 1 ]] && [[ "${_is_changed}" -eq 0 ]]; then
+        continue
       fi
 
       if [[ "${_cluster}" != "${last_cluster}" ]]; then
@@ -195,8 +214,19 @@ if [[ "${EXPLAIN_MODE}" -eq 1 ]]; then
     done < <(emit_known_flags 2>/dev/null | sort -t'|' -k4,4 -s)
 
     printf '\n'
-    printf '* = value differs from default. Run /omc-config show to see the\n'
-    printf '    raw conf file, or /omc-config to change values interactively.\n'
+    if [[ "${CHANGED_ONLY:-0}" -eq 1 ]]; then
+      if [[ -z "${last_cluster}" ]]; then
+        printf 'No flags differ from defaults — your install is at the canonical Balanced profile.\n'
+        printf 'Drop --changed to see the full flag list.\n'
+      else
+        printf 'Showing only flags whose value differs from the default. Run\n'
+        printf '/ulw-status --explain (without --changed) for the full list.\n'
+      fi
+    else
+      printf '* = value differs from default. Run /omc-config show to see the\n'
+      printf '    raw conf file, or /omc-config to change values interactively.\n'
+      printf 'Tip: pass --changed to filter to only the flags you have customized.\n'
+    fi
   )
   exit 0
 fi

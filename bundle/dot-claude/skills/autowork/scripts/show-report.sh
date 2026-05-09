@@ -55,6 +55,17 @@ done
 set -- "${NEW_ARGS[@]+${NEW_ARGS[@]}}"
 
 MODE="${1:-week}"
+# v1.36.x W5 F-022: accept both positional (`last|week|month|all`) AND
+# double-dash flag (`--last|--week|--month|--all`) forms. Pre-fix
+# /ulw-report only accepted positional, while /ulw-status accepted
+# both — users typing `/ulw-report --week` got "unknown mode".
+case "${MODE}" in
+  --last)  MODE="last" ;;
+  --week)  MODE="week" ;;
+  --month) MODE="month" ;;
+  --all)   MODE="all" ;;
+esac
+
 case "${MODE}" in
   last|week|month|all) ;;
   --help|-h)
