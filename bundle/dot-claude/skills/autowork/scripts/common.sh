@@ -2206,6 +2206,7 @@ derive_verification_contract_required() {
   local prompt_surfaces="${3:-}"
   local test_expectation="${4:-}"
   local commit_mode="${5:-}"
+  local push_mode="${6:-}"
   local required=""
 
   if [[ "${task_domain}" == "coding" || "${task_domain}" == "mixed" ]]; then
@@ -2226,6 +2227,7 @@ derive_verification_contract_required() {
   [[ ",${prompt_surfaces}," == *",release,"* ]] && required="$(_csv_add_unique "${required}" "release_surface")"
   [[ ",${prompt_surfaces}," == *",migration,"* ]] && required="$(_csv_add_unique "${required}" "migration_surface")"
   [[ "${commit_mode}" == "required" ]] && required="$(_csv_add_unique "${required}" "commit_record")"
+  [[ "${push_mode}" == "required" ]] && required="$(_csv_add_unique "${required}" "publish_record")"
 
   printf '%s' "${required}"
 }
@@ -2340,8 +2342,86 @@ session_commit_count() {
   printf '%s' "${count:-0}"
 }
 
+# Delivery action detection --------------------------------------------------
+#
+# record-delivery-action.sh uses these helpers to remember successful commit
+# and publish-class Bash commands. The Stop contract then has a concrete
+# signal for prompts like "commit and push" instead of merely parsing the
+# intent and trusting the final summary.
+
+_OMC_DELIVERY_PRE='(^|[[:space:];&|(])([^[:space:]]*/)?'
+
+omc_normalize_git_gh_flags() {
+  sed -E 's/(^|[[:space:];&|(])(([^[:space:]]*\/)?(git|gh))(([[:space:]]+(-c|-C|--git-dir|--work-tree|--exec-path|--namespace|--super-prefix|--config-env|--attr-source)[[:space:]]+[^[:space:]]+)|([[:space:]]+-[^[:space:]]+))+/\1\2/g' <<<"$1"
+}
+
+omc_delivery_command_failed() {
+  local output="${1:-}"
+  [[ -n "${output}" ]] || return 1
+  grep -Eiq 'exit (code|status)[: ]*[1-9]|returned non-zero exit status|command failed with exit code [1-9]' <<<"${output}"
+}
+
+omc_delivery_allowed_variant() {
+  local cmd="$1"
+
+  if grep -Eq "${_OMC_DELIVERY_PRE}git[[:space:]]+(push|commit)[[:space:]]+.*(--dry-run|-n)([[:space:]]|$)" <<<"${cmd}"; then return 0; fi
+  if grep -Eq "${_OMC_DELIVERY_PRE}git[[:space:]]+apply[[:space:]]+.*(--check|--stat|--numstat|--summary)([[:space:]]|$)" <<<"${cmd}"; then return 0; fi
+  if grep -Eq "${_OMC_DELIVERY_PRE}git[[:space:]]+tag([[:space:]]+[^[:space:]]+)*[[:space:]]+(-l|--list|--sort|--contains|--no-contains|--points-at|--merged|--no-merged|-n[0-9]*|--column|--no-column|--format|-i|--ignore-case)([[:space:]=]|$)" <<<"${cmd}"; then return 0; fi
+
+  return 1
+}
+
+omc_delivery_segment_is_commit() {
+  grep -Eq "${_OMC_DELIVERY_PRE}git[[:space:]]+commit([[:space:]]|$)" <<<"$1"
+}
+
+omc_delivery_segment_is_publish() {
+  local cmd="$1"
+  if grep -Eq "${_OMC_DELIVERY_PRE}git[[:space:]]+(push|tag)([[:space:]]|$)" <<<"${cmd}"; then return 0; fi
+  if grep -Eq "${_OMC_DELIVERY_PRE}gh[[:space:]]+(pr|release|issue)[[:space:]]+(create|merge|edit|close|comment|delete|reopen)([[:space:]]|$)" <<<"${cmd}"; then return 0; fi
+  return 1
+}
+
+omc_delivery_action_kinds() {
+  local command_text="$1"
+  local normalized seg saw_commit=0 saw_publish=0
+
+  normalized="$(omc_normalize_git_gh_flags "${command_text}")"
+  while IFS= read -r seg; do
+    [[ -z "${seg// }" ]] && continue
+    omc_delivery_allowed_variant "${seg}" && continue
+    if omc_delivery_segment_is_commit "${seg}"; then
+      saw_commit=1
+    fi
+    if omc_delivery_segment_is_publish "${seg}"; then
+      saw_publish=1
+    fi
+  done < <(sed -E 's/(&&|\|\||;|\|)/\n/g' <<<"${normalized}")
+
+  [[ "${saw_commit}" -eq 1 ]] && printf 'commit\n'
+  [[ "${saw_publish}" -eq 1 ]] && printf 'publish\n'
+  return 0
+}
+
+delivery_action_recorded_since() {
+  local kind="$1"
+  local since_ts="${2:-}"
+  local key ts
+
+  [[ "${since_ts}" =~ ^[0-9]+$ ]] || return 1
+  case "${kind}" in
+    commit) key="last_commit_action_ts" ;;
+    publish) key="last_publish_action_ts" ;;
+    *) return 1 ;;
+  esac
+
+  ts="$(read_state "${key}" 2>/dev/null || true)"
+  [[ "${ts}" =~ ^[0-9]+$ ]] || return 1
+  [[ "${ts}" -ge "${since_ts}" ]]
+}
+
 delivery_contract_blocking_items() {
-  local prompt_surfaces commit_mode test_expectation start_ts
+  local prompt_surfaces commit_mode push_mode test_expectation start_ts contract_ts
   local code_count=0 doc_count=0 ui_count=0 test_count=0 config_count=0 release_count=0 migration_count=0
   local items=""
   local _dc_idx=0
@@ -2349,8 +2429,11 @@ delivery_contract_blocking_items() {
 
   prompt_surfaces="$(read_state "done_contract_prompt_surfaces")"
   commit_mode="$(read_state "done_contract_commit_mode")"
+  push_mode="$(read_state "done_contract_push_mode")"
   test_expectation="$(read_state "done_contract_test_expectation")"
   start_ts="$(read_state "session_start_ts")"
+  contract_ts="$(read_state "done_contract_updated_ts")"
+  [[ "${contract_ts}" =~ ^[0-9]+$ ]] || contract_ts="${start_ts}"
 
   while IFS= read -r _dc_line || [[ -n "${_dc_line}" ]]; do
     case "${_dc_idx}" in
@@ -2380,26 +2463,32 @@ delivery_contract_blocking_items() {
   if [[ ",${prompt_surfaces}," == *",migration,"* ]] && [[ "${migration_count}" -eq 0 ]]; then
     items="${items}touch the requested migration/schema surface"$'\n'
   fi
-  if [[ "${commit_mode}" == "required" ]] && [[ "$(session_commit_count "${start_ts}")" -eq 0 ]]; then
+  if [[ "${commit_mode}" == "required" ]] \
+    && ! delivery_action_recorded_since "commit" "${contract_ts}" \
+    && [[ "$(session_commit_count "${contract_ts}")" -eq 0 ]]; then
     items="${items}create the requested commit before stopping"$'\n'
+  fi
+  if [[ "${push_mode}" == "required" ]] && ! delivery_action_recorded_since "publish" "${contract_ts}"; then
+    items="${items}run the requested push/tag/release/publish action before stopping"$'\n'
   fi
 
   printf '%s' "${items%$'\n'}"
 }
 
 delivery_contract_remaining_items() {
-  local task_domain prompt_surfaces commit_mode test_expectation
+  local task_domain prompt_surfaces commit_mode push_mode test_expectation
   local code_count=0 doc_count=0 ui_count=0 test_count=0 config_count=0 release_count=0 migration_count=0
   local items=""
   local _dc_idx=0
   local _dc_line=""
   local last_code_edit_ts last_doc_edit_ts last_review_ts last_doc_review_ts
   local last_verify_ts last_verify_outcome last_verify_confidence
-  local required_dims start_ts
+  local required_dims start_ts contract_ts
 
   task_domain="$(task_domain)"
   prompt_surfaces="$(read_state "done_contract_prompt_surfaces")"
   commit_mode="$(read_state "done_contract_commit_mode")"
+  push_mode="$(read_state "done_contract_push_mode")"
   test_expectation="$(read_state "done_contract_test_expectation")"
   last_code_edit_ts="$(read_state "last_code_edit_ts")"
   last_doc_edit_ts="$(read_state "last_doc_edit_ts")"
@@ -2409,6 +2498,8 @@ delivery_contract_remaining_items() {
   last_verify_outcome="$(read_state "last_verify_outcome")"
   last_verify_confidence="$(read_state "last_verify_confidence")"
   start_ts="$(read_state "session_start_ts")"
+  contract_ts="$(read_state "done_contract_updated_ts")"
+  [[ "${contract_ts}" =~ ^[0-9]+$ ]] || contract_ts="${start_ts}"
 
   while IFS= read -r _dc_line || [[ -n "${_dc_line}" ]]; do
     case "${_dc_idx}" in
@@ -2467,11 +2558,20 @@ delivery_contract_remaining_items() {
     fi
   fi
 
-  if [[ "${commit_mode}" == "required" ]] && [[ "$(session_commit_count "${start_ts}")" -eq 0 ]]; then
+  if [[ "${commit_mode}" == "required" ]] \
+    && ! delivery_action_recorded_since "commit" "${contract_ts}" \
+    && [[ "$(session_commit_count "${contract_ts}")" -eq 0 ]]; then
     items="${items}create the requested commit before stopping"$'\n'
   fi
-  if [[ "${commit_mode}" == "forbidden" ]] && [[ "$(session_commit_count "${start_ts}")" -gt 0 ]]; then
-    items="${items}reconcile the unexpected commit or publish action — the prompt forbade it"$'\n'
+  if [[ "${commit_mode}" == "forbidden" ]] \
+    && { delivery_action_recorded_since "commit" "${contract_ts}" || [[ "$(session_commit_count "${contract_ts}")" -gt 0 ]]; }; then
+    items="${items}reconcile the unexpected commit action — the prompt forbade it"$'\n'
+  fi
+  if [[ "${push_mode}" == "required" ]] && ! delivery_action_recorded_since "publish" "${contract_ts}"; then
+    items="${items}run the requested push/tag/release/publish action before stopping"$'\n'
+  fi
+  if [[ "${push_mode}" == "forbidden" ]] && delivery_action_recorded_since "publish" "${contract_ts}"; then
+    items="${items}reconcile the unexpected push/tag/release/publish action — the prompt forbade it"$'\n'
   fi
 
   printf '%s' "${items%$'\n'}"
@@ -2482,14 +2582,15 @@ delivery_contract_remaining_items() {
 #
 # v1 (above) blocks Stop on surfaces the user named in the prompt
 # ("update the docs", "add a test"). v2 closes the gap when the user
-# does NOT name them but the actual edits imply them. Four conservative
+# does NOT name them but the actual edits imply them. Six conservative
 # inference rules, all derived from `edited_files.log`:
 #
 #   R1 — code edited (≥2 files) but no test edited
 #   R2 — VERSION bumped without changelog/release-notes touched
-#   R3 — oh-my-claude.conf.example edited without common.sh touched
-#        (the conf-flag triple-write coordination rule, parser half)
+#   R3a — oh-my-claude.conf.example edited without common.sh parser lockstep
+#   R3b — oh-my-claude.conf.example edited without omc-config table lockstep
 #   R4 — migration file edited without changelog/release-notes touched
+#   R5 — substantial code change (≥4 files) without docs touched
 #
 # State keys (all written via `refresh_inferred_contract`):
 #   inferred_contract_surfaces — CSV of surface tokens (e.g. "tests,release")
@@ -2853,18 +2954,14 @@ inferred_contract_blocker_messages() {
 # the read-derive-write window is atomic. Pulled out as a helper
 # because `with_state_lock` requires a function name to dispatch.
 _refresh_inferred_contract_locked() {
-  local task_intent task_domain commit_mode result surfaces rules now
+  local task_intent task_domain result surfaces rules now
   task_intent="$(read_state "task_intent")"
   task_domain="$(read_state "task_domain")"
-  commit_mode="$(read_state "done_contract_commit_mode")"
 
   if [[ "${task_intent}" != "execution" ]]; then
     return 0
   fi
   if [[ "${task_domain}" == "writing" || "${task_domain}" == "research" ]]; then
-    return 0
-  fi
-  if [[ "${commit_mode}" == "forbidden" ]]; then
     return 0
   fi
 

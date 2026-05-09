@@ -869,7 +869,7 @@ Run metis to pressure-test for wrong-abstraction / missing-constraint risks befo
       "prompt_surfaces=$(read_state "done_contract_prompt_surfaces")" \
       "test_expectation=$(read_state "done_contract_test_expectation")" \
       "inferred_rules=$(read_state "inferred_contract_rules")"
-    contract_recovery="$(format_gate_recovery_line "finish the missing surface(s) — items tagged with (R1/R2/R3a/R3b/R4/R5) were inferred from your edits and are silent misses unless addressed. If the repo genuinely cannot support one of them, name that constraint explicitly in your wrap before stopping. For explicit commits, create the commit now or explain why a commit is impossible in this repo.")"
+    contract_recovery="$(format_gate_recovery_line "finish the missing surface(s) — items tagged with (R1/R2/R3a/R3b/R4/R5) were inferred from your edits and are silent misses unless addressed. If the repo genuinely cannot support one of them, name that constraint explicitly in your wrap before stopping. For explicit commits or publish actions, do the action now or explain why it is impossible in this repo.")"
     # v1.34.1+ (P-002): tighter delivery-contract block; the
     # contract_blockers list already names what's missing.
     emit_stop_block "[Delivery-contract gate] work drifting from prompt-stated contract and/or surfaces inferred from edits.

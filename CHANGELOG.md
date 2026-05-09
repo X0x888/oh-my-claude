@@ -4,8 +4,30 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Delivery-action recorder for explicit ship prompts.** A new
+  `record-delivery-action.sh` PostToolUse hook records successful
+  `git commit` and publish-class actions (`git push`, release/tag
+  creation, and common `gh` publish operations). Stop gating now has a
+  concrete signal for prompts like "commit and push" instead of relying
+  only on intent parsing or final-summary claims.
+
 ### Fixed
 
+- **Publish requirements now block until satisfied.** Prompts that require
+  a push/tag/release/publish action now add `publish_record` to the
+  verification contract and block Stop until a fresh matching action is
+  recorded. Required commits are evaluated from the current contract
+  timestamp, so a commit made before a later "commit this" prompt no
+  longer satisfies the new request by accident.
+- **No-commit prompts still enforce adjacent work.** `commit_mode=forbidden`
+  no longer disables inferred-contract checks, so "fix this, but don't
+  commit" can still require missing tests, docs, or changelog lockstep
+  when the edits imply them.
+- **Read-only patch inspection is allowed in advisory mode.** The advisory
+  pre-tool guard now permits `git apply --check`, `--stat`, `--numstat`,
+  and `--summary`, matching other inspection-only commands.
 - **Resume-watchdog test isolation.** `tests/test-resume-watchdog.sh`
   now runs each fixture from its isolated temp home so `common.sh`'s
   project-config walk cannot climb into the developer's real

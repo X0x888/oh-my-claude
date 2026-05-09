@@ -228,6 +228,10 @@ contract_verify_required="$(csv_humanize "$(read_state "verification_contract_re
 contract_touched_surfaces="$(delivery_contract_touched_surfaces_summary 2>/dev/null || printf 'none')"
 contract_remaining_items="$(delivery_contract_remaining_items 2>/dev/null || true)"
 contract_blocking_items="$(delivery_contract_blocking_items 2>/dev/null || true)"
+delivery_commit_actions="$(read_state "commit_action_count" 2>/dev/null || true)"
+delivery_publish_actions="$(read_state "publish_action_count" 2>/dev/null || true)"
+delivery_commit_actions="${delivery_commit_actions:-0}"
+delivery_publish_actions="${delivery_publish_actions:-0}"
 
 # Delivery Contract v2 — inferred adjacent surfaces (v1.34.0).
 inferred_contract_status="$(inferred_contract_summary 2>/dev/null || printf 'unknown')"
@@ -345,6 +349,9 @@ if [[ "${SUMMARY_MODE}" -eq 1 ]]; then
   printf 'Verify:     %s\n' "${verify_status}"
   printf 'Contract:   commit=%s · prompt surfaces=%s\n' \
     "${contract_commit_mode}" "${contract_prompt_surfaces}"
+  if [[ "${delivery_commit_actions}" != "0" || "${delivery_publish_actions}" != "0" ]]; then
+    printf 'Actions:    commits=%s · publish=%s\n' "${delivery_commit_actions}" "${delivery_publish_actions}"
+  fi
   if [[ -n "${verdicts_line}" ]]; then
     printf 'Reviews:    %s\n' "${verdicts_line}"
   else
@@ -539,6 +546,7 @@ printf 'Push intent:         %s\n' "${contract_push_mode}"
 printf 'Prompt surfaces:     %s\n' "${contract_prompt_surfaces}"
 printf 'Proof contract:      %s\n' "${contract_verify_required}"
 printf 'Touched surfaces:    %s\n' "${contract_touched_surfaces}"
+printf 'Recorded actions:    commits=%s · publish=%s\n' "${delivery_commit_actions}" "${delivery_publish_actions}"
 printf 'Inferred (v2):       %s\n' "${inferred_contract_status}"
 if [[ -n "${contract_blocking_items}" ]]; then
   printf 'Explicit blockers:   %s\n' "$(printf '%s' "${contract_blocking_items}" | head -1)"

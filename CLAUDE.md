@@ -21,7 +21,7 @@ If a fact appears here AND in one of the above, that doc is authoritative — ke
 - `bundle/dot-claude/agents/` — 34 specialist agent definitions with `disallowedTools` permission boundaries (v1.32.1 added `release-reviewer`)
 - `bundle/dot-claude/quality-pack/scripts/` — 9 lifecycle hooks (prompt routing, compaction, session start, StopFailure capture, resume hint, headless watchdog)
 - `bundle/dot-claude/skills/` — 25 skill definitions, each in `<name>/SKILL.md`
-- `bundle/dot-claude/skills/autowork/scripts/` — 32 autowork hooks + helpers; shared lib `common.sh`; lazy-loaded `lib/{state-io,classifier,verification,timing,canary}.sh`. Per-script detail in `docs/architecture.md`.
+- `bundle/dot-claude/skills/autowork/scripts/` — 33 autowork hooks + helpers; shared lib `common.sh`; lazy-loaded `lib/{state-io,classifier,verification,timing,canary}.sh`. Per-script detail in `docs/architecture.md`.
 - `bundle/dot-claude/output-styles/` — bundled output styles (`oh-my-claude.md` default, `executive-brief.md`); selected via `output_style=` in `oh-my-claude.conf`
 - `config/settings.patch.json` — settings merged into user config on install
 - `tests/` — bash + python test scripts. Authoritative counts: `find tests/ -maxdepth 1 -name 'test-*.sh' | wc -l` (bash) and `find tests/ -maxdepth 1 -name 'test_*.py' | wc -l` (python). All bash tests CI-pinned in `validate.yml`; pin discipline enforced by `tests/test-coordination-rules.sh`. (v1.36.0 #11: replaced the hardcoded "80 bash + 1 python" enumeration with the grep-from-source pattern used in CONTRIBUTING.md to eliminate the recurring drift surface.)

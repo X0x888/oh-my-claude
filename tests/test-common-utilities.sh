@@ -1689,6 +1689,16 @@ assert_eq "verification contract: coding + docs + commit" \
       "add_or_update_tests" \
       "required")"
 
+assert_eq "verification contract: publish requested" \
+  "code_review,code_verify,commit_record,publish_record" \
+  "$(derive_verification_contract_required \
+      "fix the bug, commit it, and push to origin" \
+      "coding" \
+      "" \
+      "verify" \
+      "required" \
+      "required")"
+
 # ===========================================================================
 # is_ui_request
 # ===========================================================================

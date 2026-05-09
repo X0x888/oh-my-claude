@@ -124,6 +124,7 @@ fi
 # Allowed variants (read-only / recovery modes of the above verbs):
 #   git (rebase|merge|cherry-pick|revert|am) --abort|--continue|--skip|--quit
 #   git (push|commit) --dry-run|-n
+#   git apply --check|--stat|--numstat|--summary
 #   git tag -l|--list
 #
 # NOT covered (read-only or local-only reversible):
@@ -175,6 +176,9 @@ _cmd_is_allowed_variant() {
   if grep -Eq "${_GUARD_PRE}git[[:space:]]+(rebase|merge|cherry-pick|revert|am)[[:space:]]+.*(--abort|--continue|--skip|--quit)([[:space:]]|$)" <<<"${cmd}"; then return 0; fi
   # `--dry-run|-n` on push/commit reports intent without mutation.
   if grep -Eq "${_GUARD_PRE}git[[:space:]]+(push|commit)[[:space:]]+.*(--dry-run|-n)([[:space:]]|$)" <<<"${cmd}"; then return 0; fi
+  # Read-only `git apply` inspection forms. `git apply` itself mutates
+  # the worktree/index, but these flags only validate or summarize a patch.
+  if grep -Eq "${_GUARD_PRE}git[[:space:]]+apply[[:space:]]+.*(--check|--stat|--numstat|--summary)([[:space:]]|$)" <<<"${cmd}"; then return 0; fi
   # Read-only `git tag` invocations. The CLI is positional: presence of
   # `<tagname>` without flags is the create form; presence of any of
   # these flags is a list/inspect form. We accept the broader set so

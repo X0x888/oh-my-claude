@@ -16,6 +16,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 COMMON_SH="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh"
 MARK_EDIT_SH="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/mark-edit.sh"
+RECORD_DELIVERY_ACTION_SH="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/record-delivery-action.sh"
 STOP_GUARD_SH="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/stop-guard.sh"
 
 TEST_HOME="$(mktemp -d)"
@@ -108,12 +109,27 @@ run_blockers() {
     inferred_contract_blocking_items )
 }
 
+run_delivery_blockers() {
+  local sid="$1"
+  ( cd "${TEST_HOME}"
+    export SESSION_ID="${sid}"
+    . "${COMMON_SH}"
+    delivery_contract_blocking_items )
+}
+
 run_refresh() {
   local sid="$1"
   ( export SESSION_ID="${sid}"
     export OMC_INFERRED_CONTRACT="${OMC_INFERRED_CONTRACT:-on}"
     . "${COMMON_SH}"
     refresh_inferred_contract )
+}
+
+run_delivery_action() {
+  local sid="$1" command="$2" output="${3:-}"
+  jq -nc --arg s "${sid}" --arg cmd "${command}" --arg out "${output}" \
+    '{session_id:$s,tool_name:"Bash",tool_input:{command:$cmd},tool_response:$out}' \
+    | bash "${RECORD_DELIVERY_ACTION_SH}" 2>/dev/null
 }
 
 read_state_key() {
@@ -381,7 +397,7 @@ assert_eq "refresh skipped on writing domain" "" "$(read_state_key "writ" "infer
 setup_session "fbd" '{"task_intent":"execution","task_domain":"coding","done_contract_commit_mode":"forbidden"}'
 write_edits "fbd" /repo/src/a.go /repo/src/b.go
 run_refresh "fbd"
-assert_eq "refresh skipped when commit_mode=forbidden" "" "$(read_state_key "fbd" "inferred_contract_rules")"
+assert_eq "refresh still applies when commit_mode=forbidden" "R1_missing_tests" "$(read_state_key "fbd" "inferred_contract_rules")"
 
 setup_session "exec" "${EXEC_STATE}"
 write_edits "exec" /repo/src/a.go /repo/src/b.go
@@ -429,6 +445,38 @@ blockers="$(run_blockers "msg")"
 assert_contains "blocker: R1 message names count" "R1: 2 code files, 0 test files" "${blockers}"
 assert_contains "blocker: R1 message names files (auditability)" "e.g. /repo/src/a.go" "${blockers}"
 assert_contains "blocker: R2 message" "VERSION bumped without release lockstep (R2)" "${blockers}"
+
+# --- Delivery action contract -----------------------------------------------
+
+printf '\n--- delivery action recording + contract blockers ---\n'
+
+setup_session "da1" '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","done_contract_commit_mode":"required","done_contract_push_mode":"required","done_contract_updated_ts":"100","session_start_ts":"50"}'
+blockers="$(run_delivery_blockers "da1")"
+assert_contains "delivery: missing commit blocker" "create the requested commit" "${blockers}"
+assert_contains "delivery: missing publish blocker" "push/tag/release/publish" "${blockers}"
+
+run_delivery_action "da1" "git commit -m 'ship auth fix' && git push origin main" "pushed"
+assert_eq "delivery: commit action recorded" "1" "$(read_state_key "da1" "commit_action_count")"
+assert_eq "delivery: publish action recorded" "1" "$(read_state_key "da1" "publish_action_count")"
+blockers="$(run_delivery_blockers "da1")"
+assert_empty "delivery: commit+push action clears blockers" "${blockers}"
+
+setup_session "da2" '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","done_contract_push_mode":"required","done_contract_updated_ts":"100","session_start_ts":"50"}'
+run_delivery_action "da2" "git push --dry-run origin main" "dry run ok"
+assert_eq "delivery: dry-run push does not record publish" "" "$(read_state_key "da2" "last_publish_action_ts")"
+blockers="$(run_delivery_blockers "da2")"
+assert_contains "delivery: dry-run push does not satisfy publish contract" "push/tag/release/publish" "${blockers}"
+
+setup_session "da3" '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","done_contract_push_mode":"required","done_contract_updated_ts":"100","session_start_ts":"50"}'
+run_delivery_action "da3" "git push origin main" "exit code: 1"
+assert_eq "delivery: failed push does not record publish" "" "$(read_state_key "da3" "last_publish_action_ts")"
+
+setup_session "da4" '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","done_contract_commit_mode":"required","done_contract_updated_ts":"200","session_start_ts":"50","last_commit_action_ts":"150","commit_action_count":"1"}'
+blockers="$(run_delivery_blockers "da4")"
+assert_contains "delivery: stale commit action does not satisfy fresh prompt" "create the requested commit" "${blockers}"
+run_delivery_action "da4" "git commit -m 'fresh prompt commit'" "committed"
+blockers="$(run_delivery_blockers "da4")"
+assert_empty "delivery: fresh commit action clears commit blocker" "${blockers}"
 
 # --- mark-edit triggers refresh on new unique paths --------------------------
 

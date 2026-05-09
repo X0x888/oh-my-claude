@@ -632,7 +632,8 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
       "${TASK_DOMAIN}" \
       "${contract_prompt_surfaces}" \
       "${contract_test_expectation}" \
-      "${contract_commit_mode}")"
+      "${contract_commit_mode}" \
+      "${contract_push_mode}")"
 
     write_state_batch \
       "done_contract_primary" "${contract_primary}" \

@@ -4,7 +4,7 @@
 
 *Quality gates that block Claude from claiming "done" until tests pass, review lands, and the work is verified. So you stop babysitting every session.*
 
-[![Version](https://img.shields.io/badge/Version-1.34.2-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-1.36.0-blue.svg)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Shell](https://img.shields.io/badge/Shell-bash-green.svg)]()
 [![Dependencies](https://img.shields.io/badge/Dependencies-jq%20%2B%20rsync-brightgreen.svg)]()
@@ -152,7 +152,7 @@ The result: Claude classifies your intent before acting, routes work to speciali
 
 ### Hard quality gates
 
-**Claude can't mark a task done until verification + review are complete.** Skip tests, skip the reviewer, defer work to a "future session" without a checkpoint, or edit 3+ files without an excellence review — each is a hard stop, not a warning. Caps on each gate prevent infinite loops: if Claude can't satisfy them, it surfaces the gap instead of spinning.
+**Claude can't mark a task done until verification + review are complete.** Skip tests, skip the reviewer, defer work to a "future session" without a checkpoint, miss prompt-stated commit/push obligations, or edit 3+ files without an excellence review — each is a hard stop, not a warning. Caps on each gate prevent infinite loops: if Claude can't satisfy them, it surfaces the gap instead of spinning.
 
 ### Prescribed reviewer sequence
 

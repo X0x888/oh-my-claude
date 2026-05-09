@@ -142,7 +142,7 @@ for impl in "${implementations[@]}"; do
   assert_json_count "${impl}: fresh — PreToolUse hooks" \
     "${work}/settings.json" '.hooks.PreToolUse' "3"
   assert_json_count "${impl}: fresh — PostToolUse hooks" \
-    "${work}/settings.json" '.hooks.PostToolUse' "6"
+    "${work}/settings.json" '.hooks.PostToolUse' "7"
   assert_json_count "${impl}: fresh — SubagentStop hooks" \
     "${work}/settings.json" '.hooks.SubagentStop' "12"
   assert_json_count "${impl}: fresh — PreCompact hooks" \
@@ -172,6 +172,10 @@ for impl in "${implementations[@]}"; do
     "${work}/settings.json" \
     '[.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[0].command] | .[0] | tostring | contains("pretool-intent-guard.sh")' \
     "true"
+  assert_json_eq "${impl}: fresh — PostToolUse Bash wires record-delivery-action.sh" \
+    "${work}/settings.json" \
+    '[.hooks.PostToolUse[] | select(.matcher == "Bash") | .hooks[0].command] | any(. | tostring | contains("record-delivery-action.sh"))' \
+    "true"
 
   # No bypass keys should be set
   assert_json_eq "${impl}: fresh — no defaultMode" \
@@ -188,8 +192,8 @@ for impl in "${implementations[@]}"; do
     "${work}/settings.json" '.hooks.SessionStart' "4"
   assert_json_count "${impl}: idempotent — SubagentStop hooks still 11" \
     "${work}/settings.json" '.hooks.SubagentStop' "12"
-  assert_json_count "${impl}: idempotent — PostToolUse hooks still 6" \
-    "${work}/settings.json" '.hooks.PostToolUse' "6"
+  assert_json_count "${impl}: idempotent — PostToolUse hooks still 7" \
+    "${work}/settings.json" '.hooks.PostToolUse' "7"
   assert_json_count "${impl}: idempotent — PreToolUse hooks still 3" \
     "${work}/settings.json" '.hooks.PreToolUse' "3"
   assert_json_count "${impl}: idempotent — StopFailure hooks still 1" \

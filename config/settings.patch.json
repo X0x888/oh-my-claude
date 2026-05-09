@@ -119,6 +119,15 @@
         ]
       },
       {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/skills/autowork/scripts/record-delivery-action.sh"
+          }
+        ]
+      },
+      {
         "matcher": "mcp__.*__(browser_snapshot|browser_take_screenshot|browser_console_messages|browser_network_requests|browser_evaluate|browser_run_code)|mcp__computer-use__screenshot",
         "hooks": [
           {

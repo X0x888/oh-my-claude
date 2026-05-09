@@ -2199,6 +2199,10 @@ for cmd in \
   "git push --dry-run origin main" \
   "git push -n" \
   "git commit --dry-run" \
+  "git apply --check patch.diff" \
+  "git apply --stat patch.diff" \
+  "git apply --numstat patch.diff" \
+  "git apply --summary patch.diff" \
   "git tag -l" \
   "git tag --list" \
   "git tag --list 'v1.*'" \
