@@ -854,8 +854,8 @@ ${_spec_safe}
     # ran the demo BEFORE their first /ulw never sees this nudge.
     _omc_demo_sentinel="${HOME}/.claude/quality-pack/.demo_completed"
     if [[ ! -f "${_omc_demo_sentinel}" ]] \
-       && ! is_synthetic_prompt "${USER_PROMPT}" \
-       && [[ "${USER_PROMPT}" != *"/ulw-demo"* ]]; then
+       && ! is_synthetic_prompt "${PROMPT_TEXT}" \
+       && [[ "${PROMPT_TEXT}" != *"/ulw-demo"* ]]; then
       add_directive "first_ulw_demo_nudge" "First /ulw run on this install — at the very top of your response (before the opener), include this single italicized line: '_Tip: run \`/ulw-demo\` (90 seconds, throwaway file) to feel the quality gates fire on a fixture before relying on them on real work. This nudge fires once — proceeding with your task now._' Then continue with the normal opener and the user's task. Do NOT block on this; the user explicitly asked for /ulw, run it."
       mkdir -p "$(dirname "${_omc_demo_sentinel}")" 2>/dev/null || true
       printf '%s\n' "$(date +%s)" > "${_omc_demo_sentinel}" 2>/dev/null || true
