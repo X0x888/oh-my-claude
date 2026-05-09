@@ -117,7 +117,9 @@ if [[ "${EXPLAIN_MODE}" -eq 1 ]]; then
 
     printf '\n'
     # v1.31.0 Wave 5 (visual-craft F-1): unified box-rule card head.
-    printf '─── oh-my-claude flag rationale ───\n'
+    # v1.36.x W3 F-014: omc_box_rule_glyph honors OMC_PLAIN=1.
+    _box="$(omc_box_rule_glyph 3)"
+    printf '%s oh-my-claude flag rationale %s\n' "${_box}" "${_box}"
     printf '\n'
     printf 'Each line is: <flag>=<current> (default=<default>)\n'
     printf '             <one-line purpose>\n'
@@ -342,7 +344,8 @@ if [[ "${SUMMARY_MODE}" -eq 1 ]]; then
   domain="$(jq -r '.task_domain // "unset"' "${state_file}" 2>/dev/null || echo "unset")"
   intent="$(jq -r '.task_intent // "unset"' "${state_file}" 2>/dev/null || echo "unset")"
 
-  printf '─── ULW Session Summary ───\n'
+  _box="$(omc_box_rule_glyph 3)"
+  printf '%s ULW Session Summary %s\n' "${_box}" "${_box}"
   printf 'Session:    %s · %s · domain=%s · intent=%s\n' "${latest_session}" "${age_human}" "${domain}" "${intent}"
   printf 'Work:       %s unique files · %s code edits · %s doc edits · %s dispatches\n' \
     "${unique_files}" "${code_edits}" "${doc_edits}" "${dispatches}"
@@ -414,7 +417,8 @@ fi
 if [[ "${CLASSIFIER_MODE}" -eq 1 ]]; then
   telemetry_file="${STATE_ROOT}/${latest_session}/classifier_telemetry.jsonl"
 
-  printf '─── Classifier Telemetry (current session) ───\n'
+  _box="$(omc_box_rule_glyph 3)"
+  printf '%s Classifier Telemetry (current session) %s\n' "${_box}" "${_box}"
   if [[ ! -f "${telemetry_file}" ]]; then
     printf '(No telemetry recorded for session %s yet.)\n\n' "${latest_session}"
   else
@@ -445,7 +449,8 @@ if [[ "${CLASSIFIER_MODE}" -eq 1 ]]; then
   if [[ -f "${cross_file}" ]]; then
     cross_total="$(wc -l < "${cross_file}" 2>/dev/null || echo 0)"
     cross_total="${cross_total##* }"
-    printf '\n─── Classifier Misfires (cross-session) ───\n'
+    _box="$(omc_box_rule_glyph 3)"
+    printf '\n%s Classifier Misfires (cross-session) %s\n' "${_box}" "${_box}"
     printf 'Total recorded misfires: %s\n\n' "${cross_total}"
     printf -- '--- By prior intent ---\n'
     jq -r '.prior_intent // "unknown"' "${cross_file}" 2>/dev/null | \
@@ -460,15 +465,20 @@ if [[ "${CLASSIFIER_MODE}" -eq 1 ]]; then
   exit 0
 fi
 
-printf '─── ULW Session Status ───\n'
+_box="$(omc_box_rule_glyph 3)"
+printf '%s ULW Session Status %s\n' "${_box}" "${_box}"
 printf 'Session: %s\n\n' "${latest_session}"
 
-jq -r '
+_ellipsis="…"
+case "${OMC_PLAIN:-}" in
+  1|on|true|yes) _ellipsis="..." ;;
+esac
+jq -r --arg ellipsis "${_ellipsis}" '
   "Workflow mode:     \(.workflow_mode // "none")",
   "Task domain:       \(.task_domain // "unset")",
   "Task intent:       \(.task_intent // "unset")",
   "Project maturity:  \(.project_maturity // "unset")",
-  "Objective:         \(.current_objective // "none" | .[0:100])",
+  "Objective:         \(.current_objective // "none" | if length > 240 then .[0:240] + $ellipsis else . end)",
   "",
   "--- Pause State ---",
   "Pause active:      \(if (.ulw_pause_active // "") == "1" then "YES (clears at next user prompt)" else "no" end)",

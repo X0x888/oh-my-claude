@@ -962,11 +962,22 @@ _timing_stacked_bar() {
     total=$(( n_a + n_b + n_c ))
   done
 
+  # v1.36.x W3 F-014: OMC_PLAIN=1 forces ASCII-only output for
+  # monochrome/color-blind terminals, narrow-font logs, and clipboard
+  # captures where Unicode block characters degrade to indistinguishable
+  # boxes. Default (unset) keeps the high-contrast Unicode glyphs.
+  local glyph_a="█" glyph_b="▒" glyph_c="░"
+  case "${OMC_PLAIN:-}" in
+    1|on|true|yes)
+      glyph_a="#" glyph_b="=" glyph_c="."
+      ;;
+  esac
+
   local out=""
   local i
-  for (( i = 0; i < n_a; i++ )); do out+="█"; done
-  for (( i = 0; i < n_b; i++ )); do out+="▒"; done
-  for (( i = 0; i < n_c; i++ )); do out+="░"; done
+  for (( i = 0; i < n_a; i++ )); do out+="${glyph_a}"; done
+  for (( i = 0; i < n_b; i++ )); do out+="${glyph_b}"; done
+  for (( i = 0; i < n_c; i++ )); do out+="${glyph_c}"; done
   for (( i = total; i < width; i++ )); do out+=" "; done
   printf '%s' "${out}"
 }
@@ -1004,7 +1015,14 @@ _timing_sparkline() {
   [[ -z "${rows}" ]] && return 0
 
   # Eight ascending block heights — U+2581 (▁) through U+2588 (█).
+  # v1.36.x W3 F-014: OMC_PLAIN=1 falls back to single-line digits 0-7
+  # so the sparkline survives non-UTF8 locales / narrow fonts.
   local levels=("▁" "▂" "▃" "▄" "▅" "▆" "▇" "█")
+  case "${OMC_PLAIN:-}" in
+    1|on|true|yes)
+      levels=("." "_" "-" "=" "+" "*" "%" "#")
+      ;;
+  esac
   local out=""
   while IFS=$'\t' read -r dur mx; do
     [[ "${dur}" =~ ^[0-9]+$ ]] || continue

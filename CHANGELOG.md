@@ -12,6 +12,33 @@ All notable changes to this project will be documented in this file.
   creation, and common `gh` publish operations). Stop gating now has a
   concrete signal for prompts like "commit and push" instead of relying
   only on intent parsing or final-summary claims.
+- **Wave 3 gate-block UX (post-v1.36.0 council, 4 findings):**
+  - **F-011:** `format_gate_block_dual <human> <model>` helper splits
+    every gate-block message into a `**FOR YOU:**` lead (one-line
+    human summary) and a `**FOR MODEL:**` block (existing prose +
+    recovery line). Pre-fix the human read the same validator-
+    implementation prose the model needed, which felt punitive.
+    Applied to advisory, session-handoff, wave-shape, discovered-
+    scope, and shortcut-ratio gate sites.
+  - **F-012:** `format_gate_recovery_options <opt1> <opt2> ...`
+    helper produces a structured `Recovery options:` block with
+    one `→` bullet per option. Replaces the run-on `→ Next:` line
+    on multi-option gates. Mirrors the shape pretool-intent-guard
+    has used since v1.20.0 — extending the cleanest gate-block
+    recovery surface to the rest of the harness.
+  - **F-013:** `/ulw-status` objective truncation bumped 100 → 240
+    chars with `…` ellipsis when truncated. Pre-fix typical /ulw
+    prompts ("Please comprehensively evaluate…") were cut at
+    "those…", leaving the user with no anchor to resume from.
+  - **F-014:** `OMC_PLAIN=1` env opt-out for Unicode glyphs.
+    Falls back to ASCII (`#=.` for the stacked bar; `._-=+*%#`
+    for the sparkline; `-` for box-rule). Default behavior
+    unchanged. Use on monochrome/color-blind terminals, narrow
+    fonts, or when copying status to a system that doesn't render
+    block characters cleanly. New helper `omc_box_rule_glyph` in
+    common.sh powers the fallback consistently across show-status
+    sections.
+
 - **Wave 2 telemetry & outcome attribution (post-v1.36.0 council, 5 findings):**
   - **F-006:** New `## Directive value attribution` section in
     `/ulw-report` joins bias-defense `directive_fired` events with

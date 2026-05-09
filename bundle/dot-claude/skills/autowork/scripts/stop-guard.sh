@@ -173,10 +173,15 @@ if ! is_execution_intent_value "${task_intent}"; then
       if [[ -z "${advisory_verify_ts}" && -z "${verify_ts}" ]] && [[ "${advisory_guard_blocks}" -lt 1 ]]; then
         write_state "advisory_guard_blocks" "$((advisory_guard_blocks + 1))"
         record_gate_event "advisory" "block" "block_count=1" "block_cap=1"
-        advisory_recovery="$(format_gate_recovery_line "read or search the affected code (Read/Grep/Glob), then re-issue your summary citing files inspected. To bypass once with reason, run /ulw-skip.")"
+        advisory_recovery="$(format_gate_recovery_options \
+          "Inspect the code first: use Read/Grep/Glob, then re-issue the summary citing the files you inspected." \
+          "Bypass once with a reason: \`/ulw-skip <reason>\`.")"
         # v1.34.1+ (P-002): tighter advisory block.
-        emit_stop_block "[Advisory gate · 1/1] this is an advisory task over a codebase, but no code inspection or verification was recorded.
-Ground your recommendation in the actual code before finalizing.${advisory_recovery}"
+        # v1.36.x W3 F-011: dual-audience framing.
+        emit_stop_block "$(format_gate_block_dual \
+          "Advisory analysis without code inspection. Claude is recommending changes without having read the relevant code — ground the recommendation in the source first." \
+          "[Advisory gate · 1/1] this is an advisory task over a codebase, but no code inspection or verification was recorded.
+Ground your recommendation in the actual code before finalizing.${advisory_recovery}")"
         exit 0
       fi
     fi
@@ -206,12 +211,20 @@ if [[ "${ulw_pause_active}" != "1" ]] \
     write_state "session_handoff_blocks" "$((session_handoff_blocks + 1))"
     record_gate_event "session-handoff" "block" \
       "block_count=$((session_handoff_blocks + 1))" "block_cap=2"
-    handoff_recovery="$(format_gate_recovery_line "continue the deferred work now in this session, OR ask the user explicitly whether they want a checkpoint. If you are pausing because the user must decide something you cannot decide autonomously, run /ulw-pause <reason> instead — that signals a legitimate pause without tripping this gate. To bypass once with reason, run /ulw-skip.")"
+    handoff_recovery="$(format_gate_recovery_options \
+      "Continue the deferred work now in this session." \
+      "Ask the user explicitly whether they want a checkpoint." \
+      "If you are paused on user input only they can give: \`/ulw-pause <reason>\` (taste, policy, credible-approach split)." \
+      "Bypass once with a reason: \`/ulw-skip <reason>\`.")"
     # v1.34.1+ (P-002): tighter session-handoff block; recovery line
     # already names the three legitimate continuation options. Keep the
     # literal "deferred remaining work" phrase — locked by e2e seq-G.
-    emit_stop_block "[Session-handoff gate · $((session_handoff_blocks + 1))/2] your last response deferred remaining work to a future session, but the user did not request a checkpoint.
-Continue the work now (do not stop with 'next wave', 'ready for a new session' language).${handoff_recovery}"
+    # v1.36.x W3 F-011 / F-012: dual-audience framing + multi-option
+    # recovery shape.
+    emit_stop_block "$(format_gate_block_dual \
+      "Premature stop. Claude said something like 'next wave' or 'ready for a new session', but the user did not ask for a checkpoint." \
+      "[Session-handoff gate · $((session_handoff_blocks + 1))/2] your last response deferred remaining work to a future session, but the user did not request a checkpoint.
+Continue the work now (do not stop with 'next wave', 'ready for a new session' language).${handoff_recovery}")"
     exit 0
   fi
 fi
@@ -336,11 +349,16 @@ if [[ "${OMC_DISCOVERED_SCOPE}" == "on" ]] \
       "total_findings=${_ws_total}" \
       "wave_total=${_ws_waves}" \
       "avg_per_wave=${_ws_avg}"
-    wave_shape_recovery="$(format_gate_recovery_line "merge adjacent wave surfaces so the plan reaches avg ≥3 findings/wave (5-10/wave is the canonical target; 3 is the minimum). Re-issue \`record-finding-list.sh assign-wave\` with the merged plan — note that re-issuing assign-wave alone won't re-arm this gate, so reconcile in one pass. To bypass once with reason — e.g., 'each finding owns a genuinely separate critical surface' — run /ulw-skip.")"
+    wave_shape_recovery="$(format_gate_recovery_options \
+      "Merge adjacent wave surfaces so the plan reaches avg ≥3 findings/wave (5–10/wave is the canonical target). Re-issue \`record-finding-list.sh assign-wave\` with the merged plan." \
+      "Bypass once with a reason if each finding genuinely owns a separate critical surface: \`/ulw-skip <reason>\`.")"
     # v1.34.1+ (P-002): tighter block message; canonical 5-10/wave rule
     # is documented in council/SKILL.md Step 8.
-    emit_stop_block "[Wave-shape gate · 1/1] wave plan under-segmented: ${_ws_total} findings across ${_ws_waves} waves (avg ${_ws_avg}/wave; canonical floor is ≥3, target 5-10).
-Reconcile the plan before continuing — merge adjacent waves or accept the shape with /ulw-skip <reason> if a single-finding wave is intentional here.${wave_shape_recovery}"
+    # v1.36.x W3 F-011 / F-012: dual-audience framing.
+    emit_stop_block "$(format_gate_block_dual \
+      "Wave plan looks under-segmented (avg ${_ws_avg} findings/wave; the sweet spot is 5–10/wave). Either merge similar waves, or this is intentional and you can /ulw-skip." \
+      "[Wave-shape gate · 1/1] wave plan under-segmented: ${_ws_total} findings across ${_ws_waves} waves (avg ${_ws_avg}/wave; canonical floor is ≥3, target 5-10).
+Reconcile the plan before continuing — merge adjacent waves or accept the shape with /ulw-skip <reason> if a single-finding wave is intentional here.${wave_shape_recovery}")"
     exit 0
   fi
 fi
@@ -401,10 +419,19 @@ if [[ "${OMC_DISCOVERED_SCOPE}" == "on" ]] \
       # record-serendipity.sh reminder inline (Serendipity Rule is
       # invisible if not surfaced at gate-fire — locked by
       # tests/test-discovered-scope.sh T28).
-      scope_recovery="$(format_gate_recovery_line "ship the fix inline (preferred for same-surface findings), OR /mark-deferred <named-WHY> for bulk defer (validator rejects bare \"out of scope\" / \"follow-up\" / \"later\" AND effort excuses like \"requires significant effort\" / \"needs more time\" / \"blocked by complexity\"; use \"requires X\" / \"blocked by Y\" / \"awaiting Z\" naming an EXTERNAL blocker), OR /ulw-skip <reason> to bypass once. If you fixed a verified adjacent defect on the same code path, log it via record-serendipity.sh per the Serendipity Rule.")"
-      emit_stop_block "[Discovered-scope gate · $((discovered_scope_blocks + 1))/${scope_block_cap}] ${pending_count} advisory finding(s) captured this session not addressed in your summary.${wave_progress}
+      scope_recovery="$(format_gate_recovery_options \
+        "Ship the fix inline (preferred for same-surface findings)." \
+        "Wave-append: \`record-finding-list.sh add-finding\` + \`assign-wave\` for same-surface follow-on work." \
+        "Defer with named WHY: \`/mark-deferred <reason>\`. Validator rejects bare 'out of scope' / 'follow-up' / 'later' and effort excuses ('requires significant effort', 'needs more time'). Acceptable shapes: \`requires X\`, \`blocked by Y\`, \`awaiting Z\`, \`superseded by F-NNN\`." \
+        "Bypass once: \`/ulw-skip <reason>\`." \
+        "If you fixed a verified adjacent defect on the same code path, log it via \`record-serendipity.sh\` per the Serendipity Rule.")"
+      # v1.36.x W3 F-011 / F-012: dual-audience framing + structured
+      # multi-option recovery.
+      emit_stop_block "$(format_gate_block_dual \
+        "${pending_count} advisory finding(s) surfaced by lenses or specialists this session aren't addressed in the summary. Either ship them inline, wave-append, or defer with a concrete reason (not 'out of scope')." \
+        "[Discovered-scope gate · $((discovered_scope_blocks + 1))/${scope_block_cap}] ${pending_count} advisory finding(s) captured this session not addressed in your summary.${wave_progress}
 Top pending (severity-ranked):
-${scorecard}${scope_recovery}"
+${scorecard}${scope_recovery}")"
       exit 0
     fi
   fi
@@ -479,10 +506,17 @@ if [[ "${OMC_SHORTCUT_RATIO_GATE}" == "on" ]] \
           "shipped=${_sr_shipped}" \
           "deferred=${_sr_deferred}" \
           "ratio_pct=${_sr_ratio_pct}"
-        _sr_recovery="$(format_gate_recovery_line "ship one or more deferred findings inline before stopping (preferred), OR wave-append same-surface findings via record-finding-list.sh assign-wave, OR explicitly justify majority-deferral in your summary (legit cases: every deferred row names a real external blocker — a stakeholder, a dependency upgrade, a tracked successor F-id), OR /ulw-skip <reason> for one-time bypass.")"
-        emit_stop_block "[Shortcut-ratio gate · 1/1] wave plan has ${_sr_deferred}/${_sr_decided} decided findings deferred (${_sr_ratio_pct}%) on a ${_sr_total}-finding plan. Big-plan majority-deferral is the shortcut-on-big-tasks pattern: even valid-WHY deferrals can satisfy gate counts while leaving the work fundamentally incomplete.
+        _sr_recovery="$(format_gate_recovery_options \
+          "Ship one or more deferred findings inline before stopping (preferred)." \
+          "Wave-append same-surface findings via \`record-finding-list.sh assign-wave\`." \
+          "Explicitly justify majority-deferral in your summary — every deferred row should name a real external blocker (stakeholder, dependency upgrade, tracked successor F-id)." \
+          "Bypass once: \`/ulw-skip <reason>\`.")"
+        # v1.36.x W3 F-011 / F-012: dual-audience framing.
+        emit_stop_block "$(format_gate_block_dual \
+          "Cherry-picking pattern: ${_sr_deferred} of ${_sr_decided} decided findings deferred (${_sr_ratio_pct}%) on a ${_sr_total}-finding plan. Even valid-WHY deferrals at majority rate signal 'shortcut on the hard work' — ship more inline or justify the deferral pattern explicitly." \
+          "[Shortcut-ratio gate · 1/1] wave plan has ${_sr_deferred}/${_sr_decided} decided findings deferred (${_sr_ratio_pct}%) on a ${_sr_total}-finding plan. Big-plan majority-deferral is the shortcut-on-big-tasks pattern: even valid-WHY deferrals can satisfy gate counts while leaving the work fundamentally incomplete.
 Deferred set (severity-ranked, top 8):
-${_sr_scorecard}${_sr_recovery}"
+${_sr_scorecard}${_sr_recovery}")"
         exit 0
       fi
     fi

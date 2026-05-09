@@ -3806,6 +3806,78 @@ format_gate_recovery_line() {
   printf '\n→ Next: %s' "${action}"
 }
 
+# omc_box_rule_glyph
+#
+# v1.36.x W3 F-014: returns the box-rule glyph for `─── header ───`
+# style cards. Default is U+2500 (─); OMC_PLAIN=1 falls back to ASCII
+# `-` so non-UTF8 locales, narrow fonts, and clipboard captures get a
+# coherent header instead of replacement chars / tofu boxes. Use:
+#   printf '%s%s oh-my-claude header %s%s\n' \
+#     "$(omc_box_rule_glyph)" "$(omc_box_rule_glyph)" \
+#     "$(omc_box_rule_glyph)" "$(omc_box_rule_glyph)"
+# or call `omc_box_rule_glyph 3` for the three-rune block at once.
+omc_box_rule_glyph() {
+  local count="${1:-1}"
+  [[ "${count}" =~ ^[0-9]+$ ]] || count=1
+  local glyph="─"
+  case "${OMC_PLAIN:-}" in
+    1|on|true|yes) glyph="-" ;;
+  esac
+  local out="" i
+  for (( i = 0; i < count; i++ )); do out+="${glyph}"; done
+  printf '%s' "${out}"
+}
+
+# format_gate_recovery_options <option1> [option2] [option3] ...
+#
+# v1.36.x W3 F-012: structured multi-option recovery for high-cognitive-
+# load gate blocks. Produces a `Recovery options:` block with one `→`
+# bullet per option. Mirrors the shape pretool-intent-guard.sh has been
+# using since v1.20.0 (the cleanest gate-block recovery surface in the
+# codebase) so the rest of the harness's gates can adopt the same
+# scannable pattern. Use this when a gate has 2+ legitimate recovery
+# paths (ship inline / wave-append / defer / skip); use the single-line
+# format_gate_recovery_line for gates with one obvious next action.
+format_gate_recovery_options() {
+  local opt
+  printf '\nRecovery options:'
+  for opt in "$@"; do
+    [[ -z "${opt}" ]] && continue
+    printf '\n  → %s' "${opt}"
+  done
+}
+
+# format_gate_block_dual <human_summary> <model_prose>
+#
+# v1.36.x W3 F-011: emit a gate-block reason with explicit human-vs-
+# model framing. Pre-fix: every emit_stop_block site composed a single
+# multi-line prose blob, which both the model AND the human read in
+# their transcript. The model needed validator-implementation prose
+# (regex deny-lists, fully-named recovery primitives, contract
+# references) but the human reading the same payload felt lectured by
+# implementation details.
+#
+# The split produces:
+#
+#   **FOR YOU:** <one-line human summary in plain language>
+#
+#   **FOR MODEL:** <existing prose: gate name, what fired, recovery>
+#
+# Empty human_summary falls through to the model_prose unchanged
+# (backwards compatible — an emit site that hasn't migrated yet just
+# omits the human line, no breakage). The exhaustion-mode footer
+# (stop-guard.sh:1015) used this pattern manually since v1.30.0; this
+# helper makes it the convention everywhere.
+format_gate_block_dual() {
+  local human_summary="${1:-}"
+  local model_prose="${2:-}"
+  if [[ -n "${human_summary}" ]]; then
+    printf '**FOR YOU:** %s\n\n**FOR MODEL:** %s' "${human_summary}" "${model_prose}"
+  else
+    printf '%s' "${model_prose}"
+  fi
+}
+
 # --- end gate recovery line ---
 
 # --- Quality scorecard ---

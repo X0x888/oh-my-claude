@@ -338,6 +338,18 @@ To adjust these defaults, edit `core.md` directly. Changes take effect in new se
 
 To add new defaults, append new sections or bullet points. To relax a rule, remove or soften the relevant line. The "anti-patterns" section uses `FORBIDDEN:` labels -- removing a label removes the hard enforcement.
 
+### Accessibility — `OMC_PLAIN` for ASCII fallback
+
+`OMC_PLAIN=1` (or `on`/`true`/`yes`) forces ASCII glyphs for the harness's text-UI surfaces in `/ulw-time`, `/ulw-status`, and the Stop-hook time card:
+
+- The stacked `█▒░` bar in `/ulw-time` falls back to `#=.`.
+- The 8-level `▁▂▃▄▅▆▇█` sparkline falls back to `._-=+*%#`.
+- The `─── header ───` box rules in `/ulw-status` fall back to `--- header ---`.
+
+**When to set it:** monochrome / color-blind terminals where `█` and `▒` look identical, narrow fixed-width fonts that render the U+258x block elements as tofu boxes, and clipboard captures where you're pasting status into a system that doesn't render Unicode block characters cleanly. ANSI bold/dim and the `→ Next:` arrow on gate-block recovery lines are unaffected.
+
+`OMC_PLAIN` is env-only (no conf-file flag) — set it per-shell or in your shell rc when you need it. Default behavior (Unicode) is unchanged.
+
 ---
 
 ## Statusline
