@@ -4,6 +4,73 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.37.0] - 2026-05-09
+
+User commissioned a comprehensive evaluation focused on "improvements
+that help a Claude Code user ship better real work with less steering
+in a fast and reliable way." The council surfaced 25 findings across
+6 lenses (product, design, sre, growth, abstraction, data); /council
+Phase 8 executed all 25 across 5 waves with full quality gates per
+wave (planning → impl → quality-reviewer → excellence-reviewer →
+verify → commit).
+
+Wave 1 (commit 9b72e9f): reliability hardening — record-finding-list
++ record-scope-checklist locks routed through `_with_lockdir` (PID-
+stale recovery), `_write_hook_log` wrapped in
+`with_cross_session_log_lock` with recursion guard, `directive_budget=
+off` gains a hard 12000-char ceiling, `find_claimable_resume_requests`
+caps the candidate scan, new SessionStart `session-start-drift-check.sh`
+hook surfaces installed-vs-source bundle drift, `show-status.sh` gains
+a "Harness Health" section. 30 regression assertions.
+
+Wave 2 (commit 7b2237a): telemetry & outcome attribution — closes the
+data-lens deferred audits (#15 directive firing-rate, #19 reviewer
+chain budget). New `## Directive value attribution` section in
+`/ulw-report` joins bias-defense events with session outcomes; new
+"Reviewer ROI" sub-table joins agent-metrics with timing rollup;
+insight-first `## Headline` section at top of report; share-card
+weighted by gate type with skip-cost subtraction; cross-session JSONL
+schema versioning (`_v:1`) on every cross-session writer. 13
+regression assertions.
+
+Wave 3 (commit f393986): gate-block UX — new
+`format_gate_block_dual <human> <model>` and
+`format_gate_recovery_options` helpers in common.sh, applied to 5
+high-traffic gate sites (advisory, session-handoff, wave-shape,
+discovered-scope, shortcut-ratio). `/ulw-status` objective truncation
+bumped 100→240 chars with ellipsis. New `OMC_PLAIN=1` env opt-out for
+Unicode glyphs (stacked bar / sparkline / box-rule fall back to
+ASCII). 16 regression assertions.
+
+Wave 4 (commit 25b1be2): onboarding funnel — README reorder
+(comparison table moved to right after "What this is NOT", proof
+before procedure); docs/showcase.md replaces synthetic seed with
+three real catches from this repo's history; ohmyclaude.dev linked
+from README; `install.sh` footer staircase collapsed to single
+`/ulw-demo` CTA; welcome banner emphasizes post-install
+differentiation ("You're now running oh-my-claude vX.Y.Z. The install
+completed and Claude Code reloaded the hooks for this fresh session").
+10 regression assertions.
+
+Wave 5 (commit 39005f6): discovery & status surfaces —
+`/skills` index gains a 24-row "Symptom → Skill" quick-table at the
+top; new `/whats-new` skill renders CHANGELOG delta between installed
+version and source HEAD; `/ulw-time` and `/ulw-report` accept
+`--double-dash` flag forms in addition to positional, matching
+`/ulw-status`'s grammar; first-ULW-after-install nudge routes new
+users to `/ulw-demo` (one-shot, sentinel-tracked); `/ulw-status
+--explain --changed` filter shows only flags differing from defaults.
+16 regression assertions.
+
+Test count: 81 → 85 bash; skill count 25 → 26; lifecycle hook count
+9 → 10. All four prior-failing tests (test-coordination-rules,
+test-settings-merge, test-state-io T16, test-show-status help) green
+post-fix. Reviewers ran on every wave (quality-reviewer +
+excellence-reviewer); all flagged findings either addressed or
+documented as deferred-with-rationale (e.g. blindspot-inventory.sh
+sibling lock has intentionally non-blocking semantics, refactor would
+change behavior).
+
 ### Added
 
 - **Delivery-action recorder for explicit ship prompts.** A new
