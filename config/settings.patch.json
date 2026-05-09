@@ -48,6 +48,14 @@
         "hooks": [
           {
             "type": "command",
+            "command": "bash $HOME/.claude/quality-pack/scripts/session-start-drift-check.sh"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
             "command": "bash $HOME/.claude/quality-pack/scripts/session-start-welcome.sh"
           }
         ]

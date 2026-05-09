@@ -944,6 +944,51 @@ else
 fi
 
 # ----------------------------------------------------------------------
+# Section 4c0.5: Installation drift (v1.36.x W1 F-005)
+#
+# session-start-drift-check.sh emits an `installation-drift drift-detected`
+# row each time it surfaces a stale-bundle warning. Aggregate the rate
+# across the window so a user can see how often they were running a
+# stale install — high counts signal the user habitually skips
+# `bash install.sh` after `git pull`.
+printf '## Installation drift\n\n'
+drift_rows="$(printf '%s\n' "${gate_event_rows}" | jq -c \
+    'select(.gate == "installation-drift" and .event == "drift-detected")' 2>/dev/null || true)"
+if [[ -z "${drift_rows}" ]]; then
+  printf '_No installation-drift events in window. Either you keep your install fresh, or `installation_drift_check=false`._\n\n'
+else
+  _drift_total="$(printf '%s\n' "${drift_rows}" | wc -l | tr -d '[:space:]')"
+  printf '_Window total: %s drift detection(s). Each row marks a SessionStart where the installed bundle was older than the source repo — a `bash install.sh` would resolve the gap._\n\n' \
+    "${_drift_total}"
+  printf '| Drift kind | Source version | Commits ahead | Count |\n'
+  printf '|---|---|---:|---:|\n'
+  jq -sr '
+    map({
+      drift_kind: (.details.drift_kind // "unknown"),
+      version: (.details.version // "unknown"),
+      commits: (.details.commits // "0")
+    })
+    | group_by(.drift_kind + "|" + .version + "|" + .commits)
+    | map({
+        drift_kind: .[0].drift_kind,
+        version: .[0].version,
+        commits: .[0].commits,
+        n: length
+      })
+    | sort_by(-.n, .drift_kind, .version)
+    | .[0:8]
+    | .[]
+    | [.drift_kind, .version, .commits, (.n | tostring)]
+    | @tsv
+  ' <<<"${drift_rows}" 2>/dev/null \
+    | while IFS=$'\t' read -r _dk_kind _dk_ver _dk_commits _dk_count; do
+        [[ -z "${_dk_kind}" ]] && continue
+        printf '| `%s` | `%s` | %s | %s |\n' "${_dk_kind}" "${_dk_ver}" "${_dk_commits}" "${_dk_count}"
+      done
+  printf '\n'
+fi
+
+# ----------------------------------------------------------------------
 # Section 4c1.0: Delivery-contract fires (v1.34.0 Delivery Contract v2)
 #
 # stop-guard records `delivery-contract` block events with rich detail

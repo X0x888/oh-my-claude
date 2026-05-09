@@ -311,6 +311,17 @@
 # Env: OMC_RESUME_REQUEST_TTL_DAYS.
 #resume_request_ttl_days=7
 
+# Maximum number of session directories find_claimable_resume_requests
+# walks per call. v1.36.x W1 F-004 capped this scan because every
+# SessionStart hint, watchdog tick, and /ulw-resume invocation
+# previously walked the whole STATE_ROOT and ran two `jq` forks per
+# artifact — felt as latency on power-user retention windows. The cap
+# pre-sorts session dirs by mtime descending and heads to N. Raise if
+# you have many concurrent claimable kills across active projects;
+# lower on slow disks where the mtime-sort dominates. Default 30.
+# Env: OMC_RESUME_SCAN_MAX_SESSIONS.
+#resume_scan_max_sessions=30
+
 # Headless watchdog daemon — the autonomous part. When a rate-limit window
 # clears, atomically claims an unclaimed `resume_request.json` and launches
 # `claude --resume <session> '<original prompt>'` in a detached `tmux`

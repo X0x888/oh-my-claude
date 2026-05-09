@@ -12,6 +12,45 @@ All notable changes to this project will be documented in this file.
   creation, and common `gh` publish operations). Stop gating now has a
   concrete signal for prompts like "commit and push" instead of relying
   only on intent parsing or final-summary claims.
+- **Wave 1 reliability hardening (post-v1.36.0 council, 6 findings):**
+  - **F-001:** `record-finding-list.sh` and `record-scope-checklist.sh`
+    bare-mkdir locks routed through new `with_findings_lock` and
+    `with_exemplifying_scope_checklist_lock` helpers that delegate to
+    `_with_lockdir`. Crashed mid-write processes now reclaim the lock via
+    PID-stale recovery instead of orphaning it for the full retry budget.
+    Both scripts also gain the `lock long-wait` anomaly emit and
+    `lock-cap-exhausted` telemetry the centralized helper provides.
+  - **F-002:** `_write_hook_log` (common.sh) wraps `hooks.log` writes in
+    `with_cross_session_log_lock` with a recursion guard
+    (`_OMC_HOOK_LOG_RECURSION`, save-and-restore semantics) so the
+    lock-cap-exhausted path's own `log_anomaly` call cannot blow the
+    stack. `detail` is bounded at 3500 bytes to keep composed lines
+    under PIPE_BUF for atomic append. Body fn passes args explicitly to
+    avoid `_with_lockdir`'s `local tag` shadowing the outer tag —
+    pre-fix the wrapper helper's tag string was leaking into the row.
+  - **F-003:** `directive_budget=off` now enforces a hard ceiling
+    (12000 chars / 12 count) instead of selecting every queued directive
+    unconditionally. New suppression reasons `off_mode_count_cap` and
+    `off_mode_char_cap` distinguish off-mode caps from balanced/maximum
+    caps in `/ulw-report` telemetry.
+  - **F-004:** `find_claimable_resume_requests` caps the candidate scan
+    at `OMC_RESUME_SCAN_MAX_SESSIONS` (default 30) most-recently-modified
+    session dirs. Pre-fix every SessionStart hint, watchdog tick, and
+    `/ulw-resume` invocation walked all session dirs under STATE_ROOT
+    and ran two `jq` forks per artifact — felt as latency on the user's
+    prompt-submit path with `OMC_STATE_TTL_DAYS=30+` retention.
+  - **F-005:** New SessionStart `session-start-drift-check.sh` hook
+    surfaces installed-vs-source bundle drift via additionalContext so
+    the model sees stale-bundle risk during `/ulw`. Pre-fix the drift
+    detector lived only in `statusline.py`'s `↑v<version>` indicator;
+    the model never saw it. New bash port `omc_check_install_drift` in
+    common.sh returns `tag:<v>` or `commits:<v>:<n>` descriptors.
+    Wired into `config/settings.patch.json` and `verify.sh`.
+    Drift events surface in `/ulw-report` under "Installation drift".
+  - **F-024:** `show-status.sh` gained a "Harness Health" section
+    surfacing the watchdog tombstone (`~/.cache/omc/watchdog-last-error`)
+    and per-session state-recovery counter when non-zero. Silent on a
+    clean session.
 
 ### Fixed
 

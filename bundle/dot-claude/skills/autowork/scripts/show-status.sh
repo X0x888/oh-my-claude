@@ -630,6 +630,60 @@ if is_auto_memory_enabled 2>/dev/null; then
   fi
 fi
 
+# v1.36.x W1 F-024 — Harness Health surface.
+#
+# Pre-1.36 the watchdog wrote a tombstone to ~/.cache/omc/watchdog-last-error
+# when STATE_ROOT became unwritable, but nothing surfaced it — a user
+# whose watchdog had been silently dead for days only discovered the
+# breakage when an expected resume failed to fire. This section reads the
+# tombstone (and the per-session corruption-recovery counter) and prints
+# them WHEN they exist; silent on a clean install.
+_harness_health_emitted=0
+_watchdog_tomb="${HOME}/.cache/omc/watchdog-last-error"
+if [[ -f "${_watchdog_tomb}" ]] && [[ -s "${_watchdog_tomb}" ]]; then
+  if [[ "${_harness_health_emitted}" -eq 0 ]]; then
+    printf '\n--- Harness Health ---\n'
+    _harness_health_emitted=1
+  fi
+  # The tombstone format (resume-watchdog.sh:106-110) is two lines:
+  #   ts=<epoch>
+  #   reason=<message>
+  # Read both defensively — corrupt or partial writes fall back to the
+  # raw first 200 chars so the user still sees something useful.
+  _wd_ts="$(grep -E '^ts=' "${_watchdog_tomb}" 2>/dev/null | head -1 | cut -d'=' -f2- | tr -d '[:space:]')"
+  _wd_reason="$(grep -E '^reason=' "${_watchdog_tomb}" 2>/dev/null | head -1 | cut -d'=' -f2-)"
+  if [[ -z "${_wd_reason}" ]]; then
+    _wd_reason="$(head -c 200 "${_watchdog_tomb}" 2>/dev/null | tr -d '\n')"
+  fi
+  if [[ "${_wd_ts}" =~ ^[0-9]+$ ]]; then
+    _wd_iso="$(date -r "${_wd_ts}" '+%Y-%m-%d %H:%M:%S' 2>/dev/null \
+      || date -d "@${_wd_ts}" '+%Y-%m-%d %H:%M:%S' 2>/dev/null \
+      || printf '%s' "${_wd_ts}")"
+    printf 'Watchdog last error:       %s — %s\n' "${_wd_iso}" "${_wd_reason:-(no reason recorded)}"
+  else
+    printf 'Watchdog last error:       (tombstone present) — %s\n' "${_wd_reason:-(no reason recorded)}"
+  fi
+  printf '                           Tombstone: %s\n' "${_watchdog_tomb}"
+  printf '                           Run /omc-config to inspect or repair the watchdog (resume_watchdog flag).\n'
+fi
+
+# Per-session state-recovery counter — surfaced only when non-zero so a
+# clean session is silent. The counter is bumped by ensure_valid_state
+# (lib/state-io.sh) when session_state.json corruption forces an archive
+# + rebuild. A counter > 0 means the recovery actually fired during this
+# session — worth highlighting since the silent-archive behavior is easy
+# to miss otherwise.
+_recovery_count="$(read_state "recovery_count" 2>/dev/null || true)"
+if [[ "${_recovery_count}" =~ ^[0-9]+$ ]] && [[ "${_recovery_count}" -gt 0 ]]; then
+  if [[ "${_harness_health_emitted}" -eq 0 ]]; then
+    printf '\n--- Harness Health ---\n'
+    _harness_health_emitted=1
+  fi
+  printf 'State recovery (this session): %s — corruption was archived + rebuilt %s time(s).\n' \
+    "${_recovery_count}" "${_recovery_count}"
+  printf '                           Inspect ~/.claude/quality-pack/state/<session>/.recovered_from_corrupt_archive\n'
+fi
+
 # Discovered-scope findings (advisory specialist findings captured this session)
 scope_file="${STATE_ROOT}/${latest_session}/discovered_scope.jsonl"
 if [[ -f "${scope_file}" ]]; then

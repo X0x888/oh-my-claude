@@ -19,7 +19,7 @@ If a fact appears here AND in one of the above, that doc is authoritative — ke
 ## Key Directories
 
 - `bundle/dot-claude/agents/` — 34 specialist agent definitions with `disallowedTools` permission boundaries (v1.32.1 added `release-reviewer`)
-- `bundle/dot-claude/quality-pack/scripts/` — 9 lifecycle hooks (prompt routing, compaction, session start, StopFailure capture, resume hint, headless watchdog)
+- `bundle/dot-claude/quality-pack/scripts/` — 10 lifecycle hooks (prompt routing, compaction, session start incl. drift-check, StopFailure capture, resume hint, headless watchdog)
 - `bundle/dot-claude/skills/` — 25 skill definitions, each in `<name>/SKILL.md`
 - `bundle/dot-claude/skills/autowork/scripts/` — 33 autowork hooks + helpers; shared lib `common.sh`; lazy-loaded `lib/{state-io,classifier,verification,timing,canary}.sh`. Per-script detail in `docs/architecture.md`.
 - `bundle/dot-claude/output-styles/` — bundled output styles (`oh-my-claude.md` default, `executive-brief.md`); selected via `output_style=` in `oh-my-claude.conf`

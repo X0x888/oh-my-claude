@@ -284,6 +284,22 @@ directive_budget_soft_count_limit() {
   esac
 }
 
+# v1.36.x W1 F-003: hard ceilings for mode=off.
+# Even at `off`, enforce a generous ceiling so a pathological prompt
+# (state-recovery + Phase 8 + 6 maturity hints + intent-broadening +
+# completeness + defect-watch) cannot land 9KB+ on the model. The off-mode
+# cap is set 33% above the maximum-mode cap (9000 chars / 8 count) so
+# off-mode users have meaningful headroom for bursts without unbounded
+# growth. Suppressed directives still emit gate-event rows with
+# reason=off_mode_hard_cap so /ulw-report can surface the pattern.
+directive_budget_off_hard_cap() {
+  case "$1" in
+    chars) printf '12000' ;;
+    count) printf '12' ;;
+    *)     printf '0' ;;
+  esac
+}
+
 directive_budget_axis_cap() {
   local mode="${1:-}"
   local axis="${2:-}"
@@ -392,8 +408,19 @@ flush_directives() {
   local mode
   mode="$(directive_budget_mode)"
   local soft_char_limit soft_count_limit
-  soft_char_limit="$(directive_budget_soft_char_limit "${mode}")"
-  soft_count_limit="$(directive_budget_soft_count_limit "${mode}")"
+  if [[ "${mode}" == "off" ]]; then
+    # v1.36.x W1 F-003: off-mode used to select every queued directive
+    # with no cap, allowing pathological prompts to land 9KB+ on the
+    # model. We now run the same priority-sorted selection loop as
+    # budgeted modes, just with much higher caps. Axis caps are still 0
+    # for off-mode (no within-axis discrimination), so the only
+    # suppression reason possible is the off-mode hard ceiling.
+    soft_char_limit="$(directive_budget_off_hard_cap chars)"
+    soft_count_limit="$(directive_budget_off_hard_cap count)"
+  else
+    soft_char_limit="$(directive_budget_soft_char_limit "${mode}")"
+    soft_count_limit="$(directive_budget_soft_count_limit "${mode}")"
+  fi
 
   local selected=()
   local i
@@ -401,94 +428,99 @@ flush_directives() {
     selected+=(0)
   done
 
-  if [[ "${mode}" == "off" ]]; then
-    for ((i = 0; i < total; i++)); do
+  local soft_order=""
+  for ((i = 0; i < total; i++)); do
+    if [[ "${directive_classes[$i]}" == "hard" ]]; then
       selected[i]=1
-    done
-  else
-    local soft_order=""
-    for ((i = 0; i < total; i++)); do
-      if [[ "${directive_classes[$i]}" == "hard" ]]; then
-        selected[i]=1
+    else
+      soft_order+=$(printf '%s\t%s' "${directive_priorities[$i]}" "${i}")$'\n'
+    fi
+  done
+
+  local soft_chars_used=0
+  local soft_count_used=0
+  local scope_axis_count=0
+  local surface_axis_count=0
+  local paradigm_axis_count=0
+  local line priority idx axis chars reason axis_cap axis_used
+  while IFS= read -r line; do
+    [[ -z "${line}" ]] && continue
+    IFS=$'\t' read -r priority idx <<<"${line}"
+    [[ -z "${idx}" || "${idx}" == "${line}" ]] && continue
+    idx=$((10#${idx}))
+    axis="${directive_axes[$idx]}"
+    chars="${directive_chars[$idx]}"
+    reason=""
+
+    if directive_axis_is_bias "${axis}"; then
+      axis_cap="$(directive_budget_axis_cap "${mode}" "${axis}")"
+      case "${axis}" in
+        scope) axis_used="${scope_axis_count}" ;;
+        surface) axis_used="${surface_axis_count}" ;;
+        paradigm) axis_used="${paradigm_axis_count}" ;;
+        *) axis_used=0 ;;
+      esac
+      if [[ "${axis_cap}" =~ ^[0-9]+$ ]] \
+        && (( axis_cap > 0 )) \
+        && (( axis_used >= axis_cap )); then
+        reason="axis_cap"
+      fi
+    fi
+
+    if [[ -z "${reason}" ]] \
+      && [[ "${soft_count_limit}" =~ ^[0-9]+$ ]] \
+      && (( soft_count_limit > 0 )) \
+      && (( soft_count_used >= soft_count_limit )); then
+      # F-003 — distinguish off-mode hard ceiling from balanced/maximum
+      # caps in telemetry so /ulw-report can surface "you are running
+      # off-mode and still hitting the ceiling" as a separate signal.
+      if [[ "${mode}" == "off" ]]; then
+        reason="off_mode_count_cap"
       else
-        soft_order+=$(printf '%s\t%s' "${directive_priorities[$i]}" "${i}")$'\n'
-      fi
-    done
-
-    local soft_chars_used=0
-    local soft_count_used=0
-    local scope_axis_count=0
-    local surface_axis_count=0
-    local paradigm_axis_count=0
-    local line priority idx axis chars reason axis_cap axis_used
-    while IFS= read -r line; do
-      [[ -z "${line}" ]] && continue
-      IFS=$'\t' read -r priority idx <<<"${line}"
-      [[ -z "${idx}" || "${idx}" == "${line}" ]] && continue
-      idx=$((10#${idx}))
-      axis="${directive_axes[$idx]}"
-      chars="${directive_chars[$idx]}"
-      reason=""
-
-      if directive_axis_is_bias "${axis}"; then
-        axis_cap="$(directive_budget_axis_cap "${mode}" "${axis}")"
-        case "${axis}" in
-          scope) axis_used="${scope_axis_count}" ;;
-          surface) axis_used="${surface_axis_count}" ;;
-          paradigm) axis_used="${paradigm_axis_count}" ;;
-          *) axis_used=0 ;;
-        esac
-        if [[ "${axis_cap}" =~ ^[0-9]+$ ]] \
-          && (( axis_cap > 0 )) \
-          && (( axis_used >= axis_cap )); then
-          reason="axis_cap"
-        fi
-      fi
-
-      if [[ -z "${reason}" ]] \
-        && [[ "${soft_count_limit}" =~ ^[0-9]+$ ]] \
-        && (( soft_count_limit > 0 )) \
-        && (( soft_count_used >= soft_count_limit )); then
         reason="soft_count_cap"
       fi
+    fi
 
-      if [[ -z "${reason}" ]] \
-        && [[ "${soft_char_limit}" =~ ^[0-9]+$ ]] \
-        && (( soft_char_limit > 0 )) \
-        && (( soft_chars_used + chars > soft_char_limit )); then
+    if [[ -z "${reason}" ]] \
+      && [[ "${soft_char_limit}" =~ ^[0-9]+$ ]] \
+      && (( soft_char_limit > 0 )) \
+      && (( soft_chars_used + chars > soft_char_limit )); then
+      if [[ "${mode}" == "off" ]]; then
+        reason="off_mode_char_cap"
+      else
         reason="soft_char_budget"
       fi
+    fi
 
-      if [[ -n "${reason}" ]]; then
-        record_gate_event "directive-budget" "suppressed" \
-          "directive=${directive_names[$idx]}" \
-          "axis=${axis}" \
-          "priority=${directive_priorities[$idx]}" \
-          "mode=${mode}" \
-          "chars=${chars}" \
-          "reason=${reason}" \
-          "axis_cap=${axis_cap:-0}" \
-          "axis_used=${axis_used:-0}" \
-          "soft_chars_used=${soft_chars_used}" \
-          "soft_char_limit=${soft_char_limit}" \
-          "soft_count_used=${soft_count_used}" \
-          "soft_count_limit=${soft_count_limit}"
-        log_hook "prompt-intent-router" "directive-budget: suppressed ${directive_names[$idx]} reason=${reason} mode=${mode}"
-        continue
-      fi
+    if [[ -n "${reason}" ]]; then
+      record_gate_event "directive-budget" "suppressed" \
+        "directive=${directive_names[$idx]}" \
+        "axis=${axis}" \
+        "priority=${directive_priorities[$idx]}" \
+        "mode=${mode}" \
+        "chars=${chars}" \
+        "reason=${reason}" \
+        "axis_cap=${axis_cap:-0}" \
+        "axis_used=${axis_used:-0}" \
+        "soft_chars_used=${soft_chars_used}" \
+        "soft_char_limit=${soft_char_limit}" \
+        "soft_count_used=${soft_count_used}" \
+        "soft_count_limit=${soft_count_limit}"
+      log_hook "prompt-intent-router" "directive-budget: suppressed ${directive_names[$idx]} reason=${reason} mode=${mode}"
+      continue
+    fi
 
-      selected[idx]=1
-      soft_chars_used=$((soft_chars_used + chars))
-      soft_count_used=$((soft_count_used + 1))
-      if directive_axis_is_bias "${axis}"; then
-        case "${axis}" in
-          scope) scope_axis_count=$((scope_axis_count + 1)) ;;
-          surface) surface_axis_count=$((surface_axis_count + 1)) ;;
-          paradigm) paradigm_axis_count=$((paradigm_axis_count + 1)) ;;
-        esac
-      fi
-    done <<<"$(printf '%s' "${soft_order}" | sort -t $'\t' -k1,1n -k2,2n)"
-  fi
+    selected[idx]=1
+    soft_chars_used=$((soft_chars_used + chars))
+    soft_count_used=$((soft_count_used + 1))
+    if directive_axis_is_bias "${axis}"; then
+      case "${axis}" in
+        scope) scope_axis_count=$((scope_axis_count + 1)) ;;
+        surface) surface_axis_count=$((surface_axis_count + 1)) ;;
+        paradigm) paradigm_axis_count=$((paradigm_axis_count + 1)) ;;
+      esac
+    fi
+  done <<<"$(printf '%s' "${soft_order}" | sort -t $'\t' -k1,1n -k2,2n)"
 
   for ((i = 0; i < total; i++)); do
     if [[ "${selected[$i]}" == "1" ]]; then

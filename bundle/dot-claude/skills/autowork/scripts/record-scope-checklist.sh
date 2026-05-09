@@ -30,27 +30,13 @@ fi
 
 ensure_session_dir
 SCOPE_CHECKLIST_FILE="$(session_file "exemplifying_scope.json")"
-LOCKDIR="${SCOPE_CHECKLIST_FILE}.lock"
 
 _now() { date +%s; }
 
-_acquire_lock() {
-  trap '_release_lock' EXIT INT TERM
-  local i=0
-  while ! mkdir "${LOCKDIR}" 2>/dev/null; do
-    i=$((i + 1))
-    if [[ "${i}" -gt 50 ]]; then
-      printf 'record-scope-checklist: lock timeout on %s\n' "${LOCKDIR}" >&2
-      trap - EXIT INT TERM
-      return 1
-    fi
-    sleep 0.1 2>/dev/null || sleep 1
-  done
-}
-
-_release_lock() {
-  rmdir "${LOCKDIR}" 2>/dev/null || true
-}
+# v1.36.x W1 F-001: Lock acquisition routes through
+# with_exemplifying_scope_checklist_lock (in common.sh), which delegates
+# to _with_lockdir for PID-based stale recovery. Same rationale as
+# record-finding-list.sh: prior bare-mkdir lockdir orphaned on crash.
 
 _atomic_write() {
   local content="$1"
@@ -187,10 +173,13 @@ case "${cmd}" in
       exit 2
     fi
 
-    _acquire_lock
-    _atomic_write "${checklist}"
-    _release_lock
-    trap - EXIT INT TERM
+    _do_init_write() {
+      _atomic_write "${checklist}"
+    }
+    if ! with_exemplifying_scope_checklist_lock _do_init_write; then
+      printf 'record-scope-checklist: lock acquisition failed for %s\n' "${SCOPE_CHECKLIST_FILE}" >&2
+      exit 2
+    fi
 
     write_state_batch \
       "exemplifying_scope_checklist_ts" "${ts}" \
@@ -259,26 +248,36 @@ EOF
     fi
 
     ts="$(_now)"
-    _acquire_lock
-    updated="$(jq -c \
-      --arg id "${id_prefix}" \
-      --arg status "${status}" \
-      --arg reason "${reason}" \
-      --argjson ts "${ts}" '
-        .updated_ts = $ts
-        | .items |= map(
-            if (.id | startswith($id)) then
-              .status = $status
-              | .reason = $reason
-              | .ts = $ts
-            else
-              .
-            end
-          )
-      ' "${SCOPE_CHECKLIST_FILE}")"
-    _atomic_write "${updated}"
-    _release_lock
-    trap - EXIT INT TERM
+    _do_status_update() {
+      # `updated` is intentionally NOT declared `local` — line 275 reads
+      # it post-lock to compute `pending` (which drives the
+      # exemplifying_scope_satisfied_ts state write and ultimately
+      # stop-guard's release decision). _with_lockdir runs the body via
+      # `"$@"` (no subshell), so the assignment persists in caller
+      # scope. A well-meaning shellcheck-cleanup pass that adds
+      # `local updated` here would silently break the pending counter.
+      updated="$(jq -c \
+        --arg id "${id_prefix}" \
+        --arg status "${status}" \
+        --arg reason "${reason}" \
+        --argjson ts "${ts}" '
+          .updated_ts = $ts
+          | .items |= map(
+              if (.id | startswith($id)) then
+                .status = $status
+                | .reason = $reason
+                | .ts = $ts
+              else
+                .
+              end
+            )
+        ' "${SCOPE_CHECKLIST_FILE}")"
+      _atomic_write "${updated}"
+    }
+    if ! with_exemplifying_scope_checklist_lock _do_status_update; then
+      printf 'record-scope-checklist: lock acquisition failed for status update on %s\n' "${id_prefix}" >&2
+      exit 2
+    fi
 
     pending="$(jq -r '[.items[] | select(.status=="pending")] | length' <<< "${updated}")"
     write_state "exemplifying_scope_pending_count" "${pending}"

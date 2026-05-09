@@ -50,6 +50,7 @@ _omc_env_prompt_persist="${OMC_PROMPT_PERSIST:-}"
 _omc_env_resume_request_ttl="${OMC_RESUME_REQUEST_TTL_DAYS:-}"
 _omc_env_resume_watchdog="${OMC_RESUME_WATCHDOG:-}"
 _omc_env_resume_watchdog_cooldown="${OMC_RESUME_WATCHDOG_COOLDOWN_SECS:-}"
+_omc_env_resume_scan_max_sessions="${OMC_RESUME_SCAN_MAX_SESSIONS:-}"
 _omc_env_time_tracking="${OMC_TIME_TRACKING:-}"
 _omc_env_time_tracking_xs_retain="${OMC_TIME_TRACKING_XS_RETAIN_DAYS:-}"
 _omc_env_time_card_min_seconds="${OMC_TIME_CARD_MIN_SECONDS:-}"
@@ -398,6 +399,8 @@ _parse_conf_file() {
         [[ -z "${_omc_env_resume_watchdog}" && "${value}" =~ ^(on|off)$ ]] && OMC_RESUME_WATCHDOG="${value}" || true ;;
       resume_watchdog_cooldown_secs)
         [[ -z "${_omc_env_resume_watchdog_cooldown}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_RESUME_WATCHDOG_COOLDOWN_SECS="${value}" || true ;;
+      resume_scan_max_sessions)
+        [[ -z "${_omc_env_resume_scan_max_sessions}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_RESUME_SCAN_MAX_SESSIONS="${value}" || true ;;
       time_tracking)
         [[ -z "${_omc_env_time_tracking}" && "${value}" =~ ^(on|off)$ ]] && OMC_TIME_TRACKING="${value}" || true ;;
       time_tracking_xs_retain_days)
@@ -744,6 +747,40 @@ find_claimable_resume_requests() {
     return 0
   fi
 
+  # v1.36.x W1 F-004: cap the candidate scan at the N most-recently-modified
+  # session dirs. Pre-cap, every SessionStart hint, /ulw-resume invocation,
+  # router continuation hint, and watchdog tick walked every session
+  # directory under STATE_ROOT and ran two `jq` forks per artifact. With
+  # OMC_STATE_TTL_DAYS overridden to 30+ days (a power-user pattern for
+  # historical retention), this scaled to 30+ jq forks per render — felt
+  # latency on the user's prompt-submit path. The mtime sort is one
+  # filesystem stat per dir (cheap, ~10us/dir on warm cache) plus one
+  # sort+head fork; net is roughly the same cost as the prior single-jq
+  # fork that was happening per-dir, but the iteration loop now visits at
+  # most OMC_RESUME_SCAN_MAX_SESSIONS dirs, and resume artifacts older
+  # than the 30 most recent sessions are essentially never the "most
+  # relevant claim" anyway.
+  local max_scan="${OMC_RESUME_SCAN_MAX_SESSIONS:-30}"
+  if [[ ! "${max_scan}" =~ ^[0-9]+$ ]] || (( max_scan < 1 )); then
+    max_scan=30
+  fi
+  if (( ${#dirs[@]} > max_scan )); then
+    local _mtime_paths=""
+    local _d_path _d_mtime
+    for _d_path in "${dirs[@]}"; do
+      _d_mtime="$(_lock_mtime "${_d_path%/}")"
+      _mtime_paths+="${_d_mtime}"$'\t'"${_d_path}"$'\n'
+    done
+    local _sorted_paths
+    _sorted_paths="$(printf '%s' "${_mtime_paths}" | sort -t$'\t' -k1,1nr | head -n "${max_scan}" | awk -F'\t' '{print $2}')"
+    local _capped_dirs=()
+    while IFS= read -r _d_path; do
+      [[ -z "${_d_path}" ]] && continue
+      _capped_dirs+=("${_d_path}")
+    done <<<"${_sorted_paths}"
+    dirs=("${_capped_dirs[@]}")
+  fi
+
   local raw_rows=""
   local d sid artifact
   for d in "${dirs[@]}"; do
@@ -807,6 +844,102 @@ find_claimable_resume_requests() {
 
   # Sort by captured_at_ts desc using jq (-s slurp).
   printf '%s' "${raw_rows}" | jq -s -c 'sort_by(-(.captured_at_ts // 0)) | .[]' 2>/dev/null || true
+}
+
+# omc_check_install_drift
+#
+# v1.36.x W1 F-005. Bash port of statusline.py:installation_drift().
+# Pre-1.36 the drift detector was Python-only and emitted only via the
+# statusline `↑v<version>` indicator; the model running /ulw never saw
+# the warning. This function lets a SessionStart hook surface drift via
+# additionalContext so the model can flag stale-bundle risk before the
+# user trusts a /ulw cycle's gates.
+#
+# Reads installed_version, installed_sha, repo_path from
+# ~/.claude/oh-my-claude.conf. Reads the source repo's VERSION and HEAD
+# via git. Returns one of:
+#   ""                  — no drift, check disabled, or check inconclusive
+#   "tag:<version>"     — source's VERSION file is newer than installed
+#   "commits:<version>:<N>" — same version, source HEAD is N commits
+#                         ahead of installed_sha
+#
+# All git/file operations are best-effort and fail closed (returns "").
+# A 2s timeout matches statusline.py's behavior on flaky filesystems.
+omc_check_install_drift() {
+  local installed_version installed_sha repo_path
+  local conf="${HOME}/.claude/oh-my-claude.conf"
+  [[ -f "${conf}" ]] || return 0
+
+  # Conf reads use grep|head|cut pipelines that exit non-zero when the
+  # key is missing. Under set -e + pipefail (the harness's standard) a
+  # naked assignment from a failing pipe trips errexit; the `|| true`
+  # tail forces a clean rc on missing-key reads, which is the expected
+  # branch for new-install conf files that do not yet declare the flag.
+  local check_flag="${OMC_INSTALLATION_DRIFT_CHECK:-}"
+  if [[ -z "${check_flag}" ]]; then
+    check_flag="$(grep -E '^installation_drift_check=' "${conf}" 2>/dev/null \
+      | head -1 | cut -d'=' -f2- | tr -d '[:space:]' || true)"
+  fi
+  # Bash 3.2 (macOS default) does not support ${var,,} expansion; use
+  # tr for the lowercase normalization.
+  local check_flag_lc
+  check_flag_lc="$(printf '%s' "${check_flag}" | tr '[:upper:]' '[:lower:]')"
+  case "${check_flag_lc}" in
+    false|0|no|off) return 0 ;;
+  esac
+
+  installed_version="$(grep -E '^installed_version=' "${conf}" 2>/dev/null \
+    | head -1 | cut -d'=' -f2- | tr -d '[:space:]' || true)"
+  [[ -z "${installed_version}" ]] && return 0
+
+  repo_path="$(grep -E '^repo_path=' "${conf}" 2>/dev/null \
+    | head -1 | cut -d'=' -f2- | tr -d '[:space:]' || true)"
+  [[ -z "${repo_path}" ]] && return 0
+  [[ -d "${repo_path}" ]] || return 0
+  [[ -f "${repo_path}/VERSION" ]] || return 0
+
+  local upstream
+  upstream="$(head -1 "${repo_path}/VERSION" 2>/dev/null | tr -d '[:space:]')"
+  [[ -z "${upstream}" ]] && return 0
+
+  if [[ "${upstream}" != "${installed_version}" ]]; then
+    # Tag-ahead branch — only report when source is strictly newer.
+    # A user bisecting on an older tag locally should not see "upgrade
+    # available". `sort -V` handles dotted-int and dotted-int-with-
+    # rc-suffix correctly on both BSD and GNU sort (BSD/GNU agree that
+    # `1.7.0-rc1` < `1.7.0`). On exotic version strings sort -V's
+    # behavior is platform-dependent; the surrounding "only print when
+    # newer == upstream" guard keeps a sort tie from producing a false
+    # positive — at worst we silently skip the drift notice for an
+    # unparseable version pair, which matches the function's
+    # fail-closed contract.
+    local newer
+    newer="$(printf '%s\n%s\n' "${installed_version}" "${upstream}" | sort -V 2>/dev/null | tail -n1)"
+    if [[ "${newer}" == "${upstream}" && "${upstream}" != "${installed_version}" ]]; then
+      printf 'tag:%s' "${upstream}"
+      return 0
+    fi
+    return 0
+  fi
+
+  # Commits-ahead branch — same version but repo HEAD may be ahead.
+  installed_sha="$(grep -E '^installed_sha=' "${conf}" 2>/dev/null \
+    | head -1 | cut -d'=' -f2- | tr -d '[:space:]' || true)"
+  [[ -z "${installed_sha}" ]] && return 0
+
+  local commits
+  # 2s timeout via `timeout` if available, else best-effort.
+  if command -v timeout >/dev/null 2>&1; then
+    commits="$(timeout 2 git -C "${repo_path}" rev-list --count \
+      "${installed_sha}..HEAD" 2>/dev/null || true)"
+  else
+    commits="$(git -C "${repo_path}" rev-list --count \
+      "${installed_sha}..HEAD" 2>/dev/null || true)"
+  fi
+  commits="${commits//[!0-9]/}"
+  if [[ -n "${commits}" && "${commits}" != "0" ]]; then
+    printf 'commits:%s:%s' "${upstream}" "${commits}"
+  fi
 }
 
 # Returns the *conventional* directory where the current cwd's
@@ -892,20 +1025,70 @@ _write_hook_log() {
   local ts
   ts="$(date '+%Y-%m-%d %H:%M:%S')"
   mkdir -p "${STATE_ROOT}" 2>/dev/null || return 0
-  printf '%s  [%s]  %s  %s\n' "${ts}" "${tag}" "${hook_name}" "${detail}" >>"${HOOK_LOG}" 2>/dev/null || return 0
 
-  local _line_count
-  _line_count="$(wc -l < "${HOOK_LOG}" 2>/dev/null || echo 0)"
-  _line_count="${_line_count##* }"
-  if [[ "${_line_count}" -gt 2000 ]]; then
-    local _temp
-    _temp="$(mktemp "${HOOK_LOG}.XXXXXX" 2>/dev/null)" || return 0
-    if tail -n 1500 "${HOOK_LOG}" >"${_temp}" 2>/dev/null; then
-      mv "${_temp}" "${HOOK_LOG}" 2>/dev/null || rm -f "${_temp}"
-    else
-      rm -f "${_temp}"
-    fi
+  # v1.36.x W1 F-002: cap detail at 3500 bytes to keep the composed line
+  # under macOS/Linux PIPE_BUF (4096). Bare `printf >>` is only atomic
+  # per write(2) when the payload is at-most PIPE_BUF; longer payloads
+  # can interleave between concurrent writers. The trailing ` …truncated`
+  # marker preserves debuggability when truncation fires.
+  if [[ "${#detail}" -gt 3500 ]]; then
+    detail="${detail:0:3500} …truncated"
   fi
+
+  # v1.36.x W1 F-002: route through with_cross_session_log_lock so a
+  # SubagentStop fan-out cannot race the rotation (`wc -l` check + tail +
+  # mv) and so multi-line `detail` strings exceeding PIPE_BUF cannot
+  # interleave bytes between writers. Recursion guard required because
+  # _with_lockdir's lock-cap-exhausted path calls log_anomaly, which
+  # routes back here — without the guard, a busy-lock would recurse and
+  # blow the stack. The fallback bare append matches the prior behavior
+  # exactly so cap-exhaustion is not a hard data loss.
+  if [[ "${_OMC_HOOK_LOG_RECURSION:-0}" == "1" ]]; then
+    printf '%s  [%s]  %s  %s\n' "${ts}" "${tag}" "${hook_name}" "${detail}" \
+      >>"${HOOK_LOG}" 2>/dev/null || return 0
+    return 0
+  fi
+
+  # Body fn receives the row values as arguments instead of via outer-
+  # scope dynamic-scoping. _with_lockdir defines `local tag="$2"` which
+  # shadows the outer `tag` here ("anomaly") with the lock helper's tag
+  # ("with_cross_session_log_lock(<path>)"); the row would otherwise
+  # write the wrong tag-slot value. Passing args avoids the collision
+  # without inventing a unique-prefix convention for every body-fn local.
+  _do_write_hook_log() {
+    local _row_ts="$1" _row_tag="$2" _row_hook="$3" _row_detail="$4"
+    printf '%s  [%s]  %s  %s\n' "${_row_ts}" "${_row_tag}" "${_row_hook}" "${_row_detail}" \
+      >>"${HOOK_LOG}" 2>/dev/null || return 0
+
+    local _line_count
+    _line_count="$(wc -l < "${HOOK_LOG}" 2>/dev/null || echo 0)"
+    _line_count="${_line_count##* }"
+    if [[ "${_line_count}" -gt 2000 ]]; then
+      local _temp
+      _temp="$(mktemp "${HOOK_LOG}.XXXXXX" 2>/dev/null)" || return 0
+      if tail -n 1500 "${HOOK_LOG}" >"${_temp}" 2>/dev/null; then
+        mv "${_temp}" "${HOOK_LOG}" 2>/dev/null || rm -f "${_temp}"
+      else
+        rm -f "${_temp}"
+      fi
+    fi
+  }
+
+  # Save-and-restore the recursion guard so we don't clobber a value the
+  # caller (or its parent) set before invoking us. Conditional unset
+  # only when the guard was previously unset; otherwise restore the
+  # caller's prior value.
+  local _had_guard="${_OMC_HOOK_LOG_RECURSION+set}"
+  local _prior_guard="${_OMC_HOOK_LOG_RECURSION:-}"
+  _OMC_HOOK_LOG_RECURSION=1
+  with_cross_session_log_lock "${HOOK_LOG}" _do_write_hook_log "${ts}" "${tag}" "${hook_name}" "${detail}"
+  local _rc=$?
+  if [[ -z "${_had_guard}" ]]; then
+    unset _OMC_HOOK_LOG_RECURSION
+  else
+    _OMC_HOOK_LOG_RECURSION="${_prior_guard}"
+  fi
+  return "${_rc}"
 }
 
 log_anomaly() {
@@ -5562,6 +5745,35 @@ with_scope_lock() {
   local lockdir
   lockdir="$(session_file ".scope.lock")"
   _with_lockdir "${lockdir}" "with_scope_lock" "$@"
+}
+
+# with_findings_lock: serialize writes to findings.json (Phase 8 wave plan).
+# v1.36.0 W1 F-001 routes record-finding-list.sh through _with_lockdir's
+# PID-based stale recovery. Pre-1.36 the script used a bare-mkdir lockdir
+# with no PID reclaim, so a crashed mid-write process orphaned the lock for
+# the full retry budget. Per-session lockdir keeps wave plans isolated
+# across concurrent sessions on the same machine.
+with_findings_lock() {
+  if [[ -z "${SESSION_ID:-}" ]]; then
+    return 1
+  fi
+  local lockdir
+  lockdir="$(session_file "findings.json.lock")"
+  _with_lockdir "${lockdir}" "with_findings_lock" "$@"
+}
+
+# with_exemplifying_scope_checklist_lock: serialize writes to
+# exemplifying_scope.json (the example-marker checklist). Distinct from
+# with_scope_lock (discovered_scope.jsonl) — different file, different
+# lifecycle. v1.36.0 W1 F-001 — same PID-stale rationale as
+# with_findings_lock above.
+with_exemplifying_scope_checklist_lock() {
+  if [[ -z "${SESSION_ID:-}" ]]; then
+    return 1
+  fi
+  local lockdir
+  lockdir="$(session_file "exemplifying_scope.json.lock")"
+  _with_lockdir "${lockdir}" "with_exemplifying_scope_checklist_lock" "$@"
 }
 
 # append_discovered_scope <agent_name> <jsonl_rows>

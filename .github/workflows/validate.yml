@@ -281,5 +281,8 @@ jobs:
       - name: Run sterile-env CI-parity check (v1.32.2 R3 promoted to strict)
         run: bash tests/run-sterile.sh
 
+      - name: W1 reliability hardening regression (v1.36.x)
+        run: bash tests/test-w1-reliability.sh
+
       - name: Run statusline tests
         run: python3 -m unittest tests.test_statusline -v

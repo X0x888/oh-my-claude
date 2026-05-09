@@ -78,35 +78,16 @@ fi
 
 ensure_session_dir
 FINDINGS_FILE="$(session_file "findings.json")"
-LOCKDIR="${FINDINGS_FILE}.lock"
 
 _now() { date +%s; }
 
-# Lock retry: 50 attempts × 0.1s sleep = ~5s effective timeout.
-LOCK_RETRIES=50
-LOCK_SLEEP_S=0.1
-
-_acquire_lock() {
-  # Install the trap BEFORE the mkdir loop so a SIGINT delivered between
-  # mkdir success and the trap install can't orphan the lock directory.
-  # The trap's rmdir is a safe no-op when LOCKDIR doesn't yet exist.
-  trap '_release_lock' EXIT INT TERM
-  local i=0
-  while ! mkdir "${LOCKDIR}" 2>/dev/null; do
-    i=$((i + 1))
-    if [[ "${i}" -gt "${LOCK_RETRIES}" ]]; then
-      printf 'record-finding-list: lock timeout on %s (waited ~%ss)\n' \
-        "${LOCKDIR}" "$(awk "BEGIN { print ${LOCK_RETRIES} * ${LOCK_SLEEP_S} }")" >&2
-      trap - EXIT INT TERM
-      return 1
-    fi
-    sleep "${LOCK_SLEEP_S}"
-  done
-}
-
-_release_lock() {
-  rmdir "${LOCKDIR}" 2>/dev/null || true
-}
+# v1.36.x W1 F-001: Lock acquisition routes through with_findings_lock
+# (in common.sh), which delegates to _with_lockdir for PID-based stale
+# recovery. Prior versions had a bare-mkdir lockdir with no PID reclaim,
+# so a crashed mid-write process orphaned the lock for the full retry
+# budget (~5s) before the next caller could proceed. The new helper
+# uses kill -0 to reclaim immediately on holder-process death and
+# emits a long-wait anomaly for /ulw-report visibility.
 
 _atomic_write() {
   local content="$1"
@@ -177,12 +158,18 @@ case "${cmd}" in
         requires_user_decision: (.requires_user_decision // false),
         decision_reason: (.decision_reason // "")
       }]')"
-    _acquire_lock
-    new_doc="$(jq -n \
-      --argjson ts "$(_now)" \
-      --argjson findings "${normalized}" \
-      '{version:1, created_ts:$ts, updated_ts:$ts, findings:$findings, waves:[]}')"
-    _atomic_write "${new_doc}"
+    _do_init_write() {
+      local new_doc
+      new_doc="$(jq -n \
+        --argjson ts "$(_now)" \
+        --argjson findings "${normalized}" \
+        '{version:1, created_ts:$ts, updated_ts:$ts, findings:$findings, waves:[]}')"
+      _atomic_write "${new_doc}"
+    }
+    if ! with_findings_lock _do_init_write; then
+      printf 'record-finding-list init: lock acquisition or body failed for %s\n' "${FINDINGS_FILE}" >&2
+      exit 1
+    fi
     count="$(jq 'length' <<<"${normalized}")"
     # Fresh plan = fresh gate budget. The wave-shape gate's cap=1 design
     # is "once per wave plan", not "once per session" — without this
@@ -209,31 +196,52 @@ case "${cmd}" in
     fi
     new_id="$(printf '%s' "${input}" | jq -r '.id')"
     _ensure_file
-    _acquire_lock
-    current="$(cat "${FINDINGS_FILE}")"
-    if printf '%s' "${current}" | jq -e --arg id "${new_id}" \
-        '[.findings[] | select(.id == $id)] | length > 0' >/dev/null 2>&1; then
+    # Pre-validate dedup outside the lock — a duplicate-id rejection is
+    # cheaper to surface without acquiring the mutex, and a concurrent
+    # add-finding for the same id is rare in the wave-plan workflow
+    # (the finding-id space is model-generated and globally unique per
+    # wave plan). The dedup check inside _do_add_finding still fires
+    # under the lock to close the race; this is a fast-path bail-out.
+    _add_finding_dedup_outside_lock="$(jq -e --arg id "${new_id}" \
+      '[.findings[] | select(.id == $id)] | length > 0' "${FINDINGS_FILE}" 2>/dev/null && printf '1' || printf '0')"
+    if [[ "${_add_finding_dedup_outside_lock}" == "1" ]]; then
       # shellcheck disable=SC2016  # backticks are literal in the error text.
       printf 'record-finding-list add-finding: id %s already exists; use `status` to update\n' \
         "${new_id}" >&2
       exit 1
     fi
-    normalized="$(printf '%s' "${input}" | jq --argjson ts "$(_now)" \
-      '. + {
-        ts: (.ts // $ts),
-        status: (.status // "pending"),
-        wave: (.wave // null),
-        commit_sha: (.commit_sha // ""),
-        notes: (.notes // ""),
-        requires_user_decision: (.requires_user_decision // false),
-        decision_reason: (.decision_reason // "")
-      }')"
-    updated="$(printf '%s' "${current}" | jq \
-      --argjson finding "${normalized}" \
-      --argjson ts "$(_now)" '
-      .updated_ts = $ts |
-      .findings += [$finding]')"
-    _atomic_write "${updated}"
+    _do_add_finding() {
+      local current normalized updated
+      current="$(cat "${FINDINGS_FILE}")"
+      # Re-check inside the lock — a peer may have added the same id
+      # between the outside-lock fast-path bail-out and this acquire.
+      if printf '%s' "${current}" | jq -e --arg id "${new_id}" \
+          '[.findings[] | select(.id == $id)] | length > 0' >/dev/null 2>&1; then
+        printf 'record-finding-list add-finding: id %s already exists (race-detected under lock)\n' \
+          "${new_id}" >&2
+        return 1
+      fi
+      normalized="$(printf '%s' "${input}" | jq --argjson ts "$(_now)" \
+        '. + {
+          ts: (.ts // $ts),
+          status: (.status // "pending"),
+          wave: (.wave // null),
+          commit_sha: (.commit_sha // ""),
+          notes: (.notes // ""),
+          requires_user_decision: (.requires_user_decision // false),
+          decision_reason: (.decision_reason // "")
+        }')"
+      updated="$(printf '%s' "${current}" | jq \
+        --argjson finding "${normalized}" \
+        --argjson ts "$(_now)" '
+        .updated_ts = $ts |
+        .findings += [$finding]')"
+      _atomic_write "${updated}"
+    }
+    if ! with_findings_lock _do_add_finding; then
+      printf 'record-finding-list add-finding: lock acquisition or write failed for F=%s\n' "${new_id}" >&2
+      exit 1
+    fi
     printf 'F=%s added (status=pending)\n' "${new_id}"
     ;;
 
@@ -319,26 +327,32 @@ EOF
     fi
 
     _ensure_file
-    _acquire_lock
-    current="$(cat "${FINDINGS_FILE}")"
-    updated="$(printf '%s' "${current}" | jq \
-      --arg id "${id}" \
-      --arg status "${status}" \
-      --arg commit_sha "${commit_sha}" \
-      --arg notes "${notes}" \
-      --argjson ts "$(_now)" '
-      .updated_ts = $ts |
-      .findings = (.findings | map(
-        if .id == $id then
-          . + {
-            status: $status,
-            commit_sha: (if $commit_sha == "" then .commit_sha else $commit_sha end),
-            notes: (if $notes == "" then .notes else $notes end),
-            ts: $ts
-          }
-        else . end
-      ))')"
-    _atomic_write "${updated}"
+    _do_status_update() {
+      local current updated
+      current="$(cat "${FINDINGS_FILE}")"
+      updated="$(printf '%s' "${current}" | jq \
+        --arg id "${id}" \
+        --arg status "${status}" \
+        --arg commit_sha "${commit_sha}" \
+        --arg notes "${notes}" \
+        --argjson ts "$(_now)" '
+        .updated_ts = $ts |
+        .findings = (.findings | map(
+          if .id == $id then
+            . + {
+              status: $status,
+              commit_sha: (if $commit_sha == "" then .commit_sha else $commit_sha end),
+              notes: (if $notes == "" then .notes else $notes end),
+              ts: $ts
+            }
+          else . end
+        ))')"
+      _atomic_write "${updated}"
+    }
+    if ! with_findings_lock _do_status_update; then
+      printf 'record-finding-list status: lock acquisition or body failed for F=%s\n' "${id}" >&2
+      exit 1
+    fi
     record_gate_event "finding-status" "finding-status-change" \
       "finding_id=${id}" \
       "finding_status=${status}" \
@@ -355,24 +369,30 @@ EOF
     ids_json="$(printf '%s\n' "$@" | jq -R . | jq -s .)"
     finding_count="$#"
     _ensure_file
-    _acquire_lock
-    current="$(cat "${FINDINGS_FILE}")"
-    updated="$(printf '%s' "${current}" | jq \
-      --argjson idx "${wave_idx}" \
-      --argjson total "${wave_total}" \
-      --arg surface "${surface}" \
-      --argjson ids "${ids_json}" \
-      --argjson ts "$(_now)" '
-      .updated_ts = $ts |
-      .findings = (.findings | map(
-        if (.id as $fid | $ids | index($fid)) then . + {wave:$idx} else . end
-      )) |
-      .waves = (
-        ((.waves // []) | map(select(.index != $idx))) +
-        [{index:$idx, total:$total, surface:$surface, finding_ids:$ids, status:"pending", commit_sha:"", ts:$ts}]
-      ) |
-      .waves |= sort_by(.index)')"
-    _atomic_write "${updated}"
+    _do_assign_wave() {
+      local current updated
+      current="$(cat "${FINDINGS_FILE}")"
+      updated="$(printf '%s' "${current}" | jq \
+        --argjson idx "${wave_idx}" \
+        --argjson total "${wave_total}" \
+        --arg surface "${surface}" \
+        --argjson ids "${ids_json}" \
+        --argjson ts "$(_now)" '
+        .updated_ts = $ts |
+        .findings = (.findings | map(
+          if (.id as $fid | $ids | index($fid)) then . + {wave:$idx} else . end
+        )) |
+        .waves = (
+          ((.waves // []) | map(select(.index != $idx))) +
+          [{index:$idx, total:$total, surface:$surface, finding_ids:$ids, status:"pending", commit_sha:"", ts:$ts}]
+        ) |
+        .waves |= sort_by(.index)')"
+      _atomic_write "${updated}"
+    }
+    if ! with_findings_lock _do_assign_wave; then
+      printf 'record-finding-list assign-wave: lock acquisition or body failed for wave=%s\n' "${wave_idx}" >&2
+      exit 1
+    fi
     # F-011 — emit gate event for cross-session telemetry. /ulw-report
     # aggregates these into a wave-shape distribution panel.
     record_gate_event "wave-plan" "wave-assigned" \
@@ -416,24 +436,30 @@ EOF
       *) printf 'invalid wave status: %s (expected pending|in_progress|completed)\n' "${wstatus}" >&2; exit 1 ;;
     esac
     _ensure_file
-    _acquire_lock
-    current="$(cat "${FINDINGS_FILE}")"
-    updated="$(printf '%s' "${current}" | jq \
-      --argjson idx "${wave_idx}" \
-      --arg wstatus "${wstatus}" \
-      --arg commit_sha "${commit_sha}" \
-      --argjson ts "$(_now)" '
-      .updated_ts = $ts |
-      .waves = (.waves | map(
-        if .index == $idx then
-          . + {
-            status: $wstatus,
-            commit_sha: (if $commit_sha == "" then .commit_sha else $commit_sha end),
-            ts: $ts
-          }
-        else . end
-      ))')"
-    _atomic_write "${updated}"
+    _do_wave_status() {
+      local current updated
+      current="$(cat "${FINDINGS_FILE}")"
+      updated="$(printf '%s' "${current}" | jq \
+        --argjson idx "${wave_idx}" \
+        --arg wstatus "${wstatus}" \
+        --arg commit_sha "${commit_sha}" \
+        --argjson ts "$(_now)" '
+        .updated_ts = $ts |
+        .waves = (.waves | map(
+          if .index == $idx then
+            . + {
+              status: $wstatus,
+              commit_sha: (if $commit_sha == "" then .commit_sha else $commit_sha end),
+              ts: $ts
+            }
+          else . end
+        ))')"
+      _atomic_write "${updated}"
+    }
+    if ! with_findings_lock _do_wave_status; then
+      printf 'record-finding-list wave-status: lock acquisition or body failed for wave=%s\n' "${wave_idx}" >&2
+      exit 1
+    fi
     record_gate_event "wave-status" "wave-status-change" \
       "wave_idx=${wave_idx}" \
       "wave_status=${wstatus}" \
@@ -457,45 +483,65 @@ EOF
       exit 1
     fi
     _ensure_file
-    _acquire_lock
-    current="$(cat "${FINDINGS_FILE}")"
-    # Refuse if id does not exist — silent no-op would mask typos.
-    if ! printf '%s' "${current}" | jq -e --arg id "${id}" \
-        '[.findings[] | select(.id == $id)] | length > 0' >/dev/null 2>&1; then
+    # Pre-check id existence and current status outside the lock — both
+    # are read-only and a positive ID-not-found / terminal-status response
+    # surfaces faster without serializing through the mutex. The actual
+    # update inside _do_mark_user_decision re-reads under the lock so a
+    # racing terminal-status transition cannot slip through.
+    if ! jq -e --arg id "${id}" \
+        '[.findings[] | select(.id == $id)] | length > 0' "${FINDINGS_FILE}" >/dev/null 2>&1; then
       printf 'record-finding-list mark-user-decision: id %s not found\n' "${id}" >&2
       exit 1
     fi
-    # Reject if the finding is already in a terminal status. mark-user-
-    # decision is for actionable findings only — flagging shipped /
-    # deferred / rejected findings creates confusing UX where past-tense
-    # rows look identical to actionable ones in the summary table. If the
-    # user needs to record retrospective context, use `status` with a notes
-    # field instead.
-    current_status="$(printf '%s' "${current}" | jq -r --arg id "${id}" \
-      '.findings[] | select(.id == $id) | .status')"
-    case "${current_status}" in
+    _muc_current_status_outside_lock="$(jq -r --arg id "${id}" \
+      '.findings[] | select(.id == $id) | .status' "${FINDINGS_FILE}" 2>/dev/null || true)"
+    case "${_muc_current_status_outside_lock}" in
       shipped|deferred|rejected)
         printf 'record-finding-list mark-user-decision: F=%s already %s; mark-user-decision is for actionable findings only\n' \
-          "${id}" "${current_status}" >&2
+          "${id}" "${_muc_current_status_outside_lock}" >&2
         printf '  Use `status` to update notes if you need to record retrospective context.\n' >&2
         exit 1
         ;;
     esac
-    updated="$(printf '%s' "${current}" | jq \
-      --arg id "${id}" \
-      --arg reason "${reason}" \
-      --argjson ts "$(_now)" '
-      .updated_ts = $ts |
-      .findings = (.findings | map(
-        if .id == $id then
-          . + {
-            requires_user_decision: true,
-            decision_reason: $reason,
-            ts: $ts
-          }
-        else . end
-      ))')"
-    _atomic_write "${updated}"
+    _do_mark_user_decision() {
+      local current updated current_status
+      current="$(cat "${FINDINGS_FILE}")"
+      # Re-check terminal status under the lock — a peer may have shipped/
+      # deferred/rejected this finding between the outside-lock pre-check
+      # and this acquire. mark-user-decision is for actionable findings
+      # only; flagging shipped / deferred / rejected findings creates
+      # confusing UX where past-tense rows look identical to actionable
+      # ones in the summary table.
+      current_status="$(printf '%s' "${current}" | jq -r --arg id "${id}" \
+        '.findings[] | select(.id == $id) | .status')"
+      case "${current_status}" in
+        shipped|deferred|rejected)
+          printf 'record-finding-list mark-user-decision: F=%s already %s (race-detected under lock)\n' \
+            "${id}" "${current_status}" >&2
+          printf '  Use `status` to update notes if you need to record retrospective context.\n' >&2
+          return 1
+          ;;
+      esac
+      updated="$(printf '%s' "${current}" | jq \
+        --arg id "${id}" \
+        --arg reason "${reason}" \
+        --argjson ts "$(_now)" '
+        .updated_ts = $ts |
+        .findings = (.findings | map(
+          if .id == $id then
+            . + {
+              requires_user_decision: true,
+              decision_reason: $reason,
+              ts: $ts
+            }
+          else . end
+        ))')"
+      _atomic_write "${updated}"
+    }
+    if ! with_findings_lock _do_mark_user_decision; then
+      printf 'record-finding-list mark-user-decision: lock acquisition or write failed for F=%s\n' "${id}" >&2
+      exit 1
+    fi
     record_gate_event "finding-status" "user-decision-marked" \
       "finding_id=${id}" \
       "decision_reason=${reason}"
