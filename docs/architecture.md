@@ -350,7 +350,9 @@ Separate from session state, `install.sh` writes four install-time artifacts tha
 | `cwd` | First-write-wins. Working directory captured at first ULW activation from the hook JSON's `.cwd`. Used by `discover_latest_session` (which command-line scripts without hook JSON rely on) to prefer the session whose cwd matches the current process — prevents cross-project session leak when two sessions race on touch. Stable across prompts in the same session. |
 | `subagent_dispatch_count` | Count of Agent tool calls dispatched this session (each `PreToolUse: Agent` increments it); surfaced in `/ulw-status` for cost visibility |
 | `gate_skip_ts` | Epoch timestamp when `/ulw-skip` was last invoked (set by `ulw-skip-register.sh`) |
+| `gate_skip_reason` | Free-text reason captured at `/ulw-skip` registration time; surfaced in `/ulw-status`. v1.38.0 made this lockstep with the `ulw-skip:registered` gate-event row (`details.reason`) so the reason exists in BOTH the per-session state and the cross-session ledger. |
 | `gate_skip_edit_ts` | Edit clock captured at `/ulw-skip` registration time; stop-guard invalidates the skip if `last_edit_ts` has advanced past this value |
+| `whats_new_emitted` | Per-session dedupe flag (`1` after first emit) for the SessionStart `whats-new` hook. Cross-session dedupe lives at `~/.claude/quality-pack/.last_session_seen_version`. v1.38.0. |
 | `stall_counter` | Consecutive Read/Grep calls without a progress action |
 | `resume_source_session_id` | Session ID of the session this one was resumed from |
 | `last_compact_trigger` | What triggered the last compaction |

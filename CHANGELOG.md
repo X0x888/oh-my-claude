@@ -4,6 +4,179 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.38.0] - 2026-05-10
+
+User commissioned a focused 10-item review of v1.37.0/v1.37.1 (delivered
+as a single block of recommendations spanning gate UX, hook surfaces,
+test coverage, telemetry, docs, and the install-time backup contract).
+The wave plan addressed every item and shipped the four waves below
+through the standard `/ulw` ladder (planning → implementation →
+quality-reviewer per wave → excellence-reviewer at the end → verify →
+commit).
+
+### Added
+
+- **Wave 1 — F-014 dual-block migration to remaining 9 `emit_stop_block`
+  sites in `stop-guard.sh`** (commit `c275f42`). Completes the F-011
+  rollout that v1.37.0 W3 began with 5 sites. Migrated: exemplifying-
+  scope (2 branches), review-coverage per-block + BLOCK MODE,
+  excellence, metis-on-plan, delivery-contract, final-closure, BLOCK
+  MODE quality exhaustion, terminal quality. The terminal block
+  authors its FOR YOU summary DYNAMICALLY alongside the reason builder
+  because the combinatorial state space (`guard_blocks ∈ {0,1,2}` ×
+  `missing_review/missing_verify/verify_failed/verify_low_confidence/
+  review_unremediated`) makes a static line misleading. W3 site count
+  guard bumped from `≥5` to `≥13` so a regression that strips wraps is
+  caught (the prior `≥5` predicate stayed green even under multi-site
+  rollback). 4 new W3 fixture assertions for the dynamic FOR YOU
+  builder cover `verify_failed`, `missing review+verify`,
+  `review_unremediated`, and `stop_guard_blocks=2 final-block` paths.
+
+- **Wave 2 — gate/hook UX surface improvements** (commit `f97c331`).
+  Five separate UX fixes:
+  - **F-002** drift-check CWD awareness — when CWD is at or under
+    `repo_path`, the drift notice gets calmer "(working in source
+    repo — drift expected during dev)" copy. Pre-fix the only escape
+    was the global `installation_drift_check=false` which cost drift
+    safety in OTHER projects. Symlink-safe via `pwd -P` resolve.
+  - **F-007** new `session-start-whats-new.sh` SessionStart hook —
+    symmetric counterpart to drift-check. When `installed_version`
+    differs from `~/.claude/quality-pack/.last_session_seen_version`
+    a one-shot "oh-my-claude updated. <prev> → <new>" notice fires
+    pointing at `/whats-new`. Stamp dedupes per version transition.
+    New conf flag `whats_new_session_hint=true` (default), wired
+    through 3-site coordination (parser case in `common.sh`,
+    `oh-my-claude.conf.example` documentation, `omc-config.sh`
+    emit_known_flags table) plus settings.patch.json (SessionStart
+    matcher count 5 → 6) plus lifecycle counts in CLAUDE.md /
+    AGENTS.md / README.md (10 → 11 lifecycle scripts).
+  - **F-009** off_mode_char_cap user-facing surface —
+    `prompt-intent-router.sh:flush_directives` tracks off-mode hard-
+    ceiling suppressions and appends a one-line additionalContext
+    when `mode=off` and the cap fires. Names suppressed count, total
+    chars, first-suppressed directive, and points at /ulw-report's
+    "Directive value attribution" section for the per-directive
+    breakdown. Pre-fix, off-mode users hitting the 12000-char ceiling
+    saw fewer directives than expected with no signal.
+  - **Item 4** delivery-contract gate names commit_mode=forbidden +
+    inferred-blocker shape. When `commit_mode=forbidden` AND
+    inferred-blocker count > 0 AND prompt-blocker count == 0, FOR YOU
+    explicitly says "You asked me not to commit, but the edits imply
+    `<surface_categories>` are needed". Inferred-rule tags (R1=tests,
+    R2=CHANGELOG, R3a=conf-parser, R3b=conf-example, R4=docs,
+    R5=migration) get human names extracted from the blocker list.
+  - **Item 8** discovered-scope FOR YOU explicitly states wave-append
+    preference order (1) ship inline, (2) wave-append (preferred over
+    defer for same-surface findings), (3) defer with concrete WHY.
+    Surfaces `core.md:70-90` escalation order at the gate-firing
+    moment instead of requiring the user to remember it.
+
+  Wave 2 ships with the `tests/test-v1-37x-w2-followup.sh` regression
+  suite (30 assertions across all 5 surfaces) plus a settings-merge
+  count update.
+
+- **Wave 3 — runtime regression nets to W1/W2/W3 tests** (commit
+  `86f7806`). Per Item 5 audit of grep-only blindspots: source-grep
+  tests for `_v:1` schema fields, "Harness Health" section, and
+  240-char objective truncation could pass even if a typo in the
+  rendering variable left the literal string in source while the
+  runtime path skipped or crashed. Wave 5's v1.37.1 hotfix
+  (commit `73b9d88`) was caused by exactly this class of test
+  blindspot. New runtime fixtures across three waves: W1 +3 (Harness
+  Health header, Watchdog last error line, tombstone reason
+  propagation); W2 +2 (record-serendipity row carries `_v:1`,
+  record_gate_event row carries `_v:1`); W3 +4 (Objective line
+  contains ellipsis, unique trailing marker truncated, OMC_PLAIN
+  swaps Unicode for ASCII). W4 audit: source-greps already test
+  static docs (README, CHANGELOG, install.sh footers) where source
+  IS what the user sees — not the F-023 class, no runtime fixtures
+  needed.
+
+- **Wave 4 — catch-quality logging + schema migration playbook +
+  backup pruning preview** (commit `be654f3`).
+  - **Item 6** shortcut_ratio_gate catch-quality logging —
+    `ulw-skip-register.sh` tail-scans `gate_events.jsonl` for the
+    most recent block, records an `ulw-skip:registered` event with
+    `skipped_gate=<gate>` detail. `show-report.sh` adds a "Per-gate
+    skip rate" sub-table joining ulw-skip events back to the gate
+    they bypassed. **The data window for re-evaluating share-card
+    weighting starts here**; first useful render of the sub-table
+    needs ~2 weeks of multi-session data before the wave-shape vs
+    discovered-scope skip-rate signal is statistically meaningful.
+    The infrastructure now makes the eventual reweighting empirical,
+    not heuristic.
+  - **Item 7** CONTRIBUTING.md cross-session schema migration
+    playbook — the pre-existing § Cross-session JSONL schema
+    versioning documented the `_v:1` convention; future v1→v2
+    migrations would discover the procedure during the migration.
+    New § "Worked example: bumping a row schema from `_v:1` to
+    `_v:2`" walks (1) add v2 writer alongside v1, (2) make reader
+    version-aware (must hold for at least one full release cycle),
+    (3) sweep job (`tools/migrate-schema.sh` sketch) OR strict
+    cutoff, (4) document in CHANGELOG. Plus a Common Pitfalls
+    section naming three failure modes.
+  - **Item 10** backup pruning preview in `install.sh` —
+    `prune_old_backups` now builds the to-be-deleted list FIRST,
+    prints a preview naming each older backup with size, sleeps 5s
+    with a Ctrl-C window in interactive non-CI mode (mirrors the
+    existing memory-overwrite warning shape from line 218-228), and
+    prints "Non-interactive — proceeding immediately" in CI /
+    curl-pipe-bash. Pre-fix, `--keep-backups=N` silently pruned
+    older dirs without warning; a contributor with hand-edited
+    backups had no chance to abort.
+
+  Wave 4 ships with `tests/test-v1-37x-w4-followup.sh` (20
+  assertions across the three items) and CI pin.
+
+### Changed
+
+- **`stop-guard.sh:909` delivery-contract** FOR YOU summary now
+  enriches with prompt-stated vs inferred-blocker counts AND surfaces
+  the commit_mode=forbidden + inferred-only branch explicitly with
+  human-readable surface categories.
+- **`stop-guard.sh:430` discovered-scope** FOR YOU now states
+  preference order (ship inline > wave-append > defer) instead of
+  presenting the three options as equals.
+- **W3 site count guard** for dual-block migration bumped from `≥5`
+  to `≥13` (covers all 14 emit_stop_block invocations in
+  stop-guard.sh; allows 1 site of slack for future moves).
+- **SessionStart hook count** in `settings.patch.json`: 5 → 6
+  (whats-new added).
+- **Lifecycle script count** in CLAUDE.md / AGENTS.md: 10 → 11.
+- **Test count** in README / AGENTS: 85 → 87 bash files.
+
+### Documentation
+
+- **CONTRIBUTING.md** § "Worked example: bumping a row schema from
+  `_v:1` to `_v:2`" — 4-step playbook + Common Pitfalls.
+- **CHANGELOG.md** entries promoted from `[Unreleased]` to
+  `[1.38.0]` (this entry).
+
+### Known follow-ups (deferred)
+
+- **Skip-rate sub-table is silent for ~2 weeks post-release.** The
+  Per-gate skip rate sub-table at `show-report.sh:984+` only renders
+  when at least one `ulw-skip:registered` event exists in the window.
+  Pre-commit those rows didn't exist; data accumulates from this
+  release forward. Empirical share-card reweighting decision should
+  wait until 2+ weeks of multi-session data is available.
+- **`format_gate_block_dual` invocation banner** at the first call
+  site in stop-guard.sh — minor doc nicety; defer until the next
+  cluster of stop-guard edits.
+
+### Verification
+
+- 87 bash test files passing (CI-pinned set extracted live from
+  `.github/workflows/validate.yml`); coordination-rules 108/108;
+  e2e 373/373; dual-block migration 14/14 sites; new W2 follow-up
+  30/30, new W4 follow-up 20/20.
+- Shellcheck: clean across `bundle/`.
+- Quality-reviewer + excellence-reviewer ran per wave; 7 findings
+  surfaced and addressed inline pre-commit (W1 IFS join bug, W1
+  decorative comments, W2 OMC_WHATS_NEW_SESSION_HINT default
+  fallback, W2 unused off_mode_suppression_chars accumulator, plus
+  3 LOW excellence findings noted but accepted as-shipped).
+
 ## [1.37.1] - 2026-05-09
 
 Wave-5 follow-ups landed after the v1.37.0 tag in response to the
