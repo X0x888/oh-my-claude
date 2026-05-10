@@ -344,5 +344,76 @@ else
 fi
 
 # ----------------------------------------------------------------------
+# F-013 follow-up (Item 5): runtime regression for objective truncation.
+# The source-greps above (lines 145-152) test that the literal `240` and
+# `_ellipsis="..."` strings exist in show-status.sh, but a typo in the
+# variable referenced by the jq filter would still leave those literals
+# in source while the actual rendered output skipped truncation. This
+# fixture seeds a long current_objective (>240 chars), invokes
+# show-status, and asserts the output is truncated AND contains the
+# ellipsis suffix.
+# ----------------------------------------------------------------------
+printf '\n--- F-013 runtime: objective truncation actually fires ---\n'
+
+f013_runtime_home="${TEST_TMP}/f013-runtime-home"
+mkdir -p "${f013_runtime_home}/.claude"
+ln -sf "${REPO_ROOT}/bundle/dot-claude/skills" "${f013_runtime_home}/.claude/skills"
+ln -sf "${REPO_ROOT}/bundle/dot-claude/quality-pack" "${f013_runtime_home}/.claude/quality-pack"
+
+f013_state="${TEST_TMP}/f013-state"
+f013_sid="aaaaaaaa-bbbb-cccc-dddd-000000000013"
+mkdir -p "${f013_state}/${f013_sid}"
+
+# Build an objective: 240 'A's prefix + a unique trailing token. The
+# unique token only appears once in the source string AND is at
+# position > 240 char threshold, so a properly-truncated line cannot
+# contain it. (The earlier prepared-string approach used a repeated
+# sentence; the position-based marker collided with earlier reps.)
+f013_long_prefix="$(printf 'A%.0s' $(seq 1 240))"
+f013_unique_tail="UNIQUE_F013_TAIL_MARKER_THAT_MUST_BE_TRUNCATED"
+f013_long="${f013_long_prefix}${f013_unique_tail}"
+
+jq -nc --arg obj "${f013_long}" \
+  '{workflow_mode:"ulw",task_intent:"execution",task_domain:"coding",current_objective:$obj}' \
+  > "${f013_state}/${f013_sid}/session_state.json"
+
+f013_out="$(HOME="${f013_runtime_home}" \
+  STATE_ROOT="${f013_state}" \
+  SESSION_ID="${f013_sid}" \
+  bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/show-status.sh" 2>/dev/null || true)"
+
+# Find the rendered Objective line from the output.
+f013_obj_line="$(printf '%s\n' "${f013_out}" | grep '^Objective:' | head -1)"
+
+# Assertion 1: the objective line ends with the ellipsis (Unicode … or ASCII ...).
+if [[ "${f013_obj_line}" == *"…"* ]] || [[ "${f013_obj_line}" == *"..."* ]]; then
+  ok
+else
+  fail_msg "F-013 runtime: objective line should contain ellipsis suffix when objective > 240 chars (got: ${f013_obj_line})"
+fi
+
+# Assertion 2: the unique trailing marker (positioned > 240 chars in)
+# must NOT be in the rendered line — truncation must have fired.
+if [[ "${f013_obj_line}" != *"${f013_unique_tail}"* ]]; then
+  ok
+else
+  fail_msg "F-013 runtime: objective line still contains the unique tail marker — truncation did not fire (line: ${f013_obj_line})"
+fi
+
+# Assertion 3: OMC_PLAIN=1 swaps the Unicode … for ASCII "..." in the
+# rendered output (not just in the source).
+f013_plain_out="$(HOME="${f013_runtime_home}" \
+  STATE_ROOT="${f013_state}" \
+  SESSION_ID="${f013_sid}" \
+  OMC_PLAIN=1 \
+  bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/show-status.sh" 2>/dev/null || true)"
+f013_plain_line="$(printf '%s\n' "${f013_plain_out}" | grep '^Objective:' | head -1)"
+if [[ "${f013_plain_line}" == *"..."* ]] && [[ "${f013_plain_line}" != *"…"* ]]; then
+  ok
+else
+  fail_msg "F-013 runtime: OMC_PLAIN=1 should render ASCII '...' not Unicode '…' (got: ${f013_plain_line})"
+fi
+
+# ----------------------------------------------------------------------
 printf '\n=== Wave 3 gate-UX tests: %s passed, %s failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]

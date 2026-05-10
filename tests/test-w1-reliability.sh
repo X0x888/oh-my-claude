@@ -435,6 +435,53 @@ else
   fail_msg "F-024: show-status.sh does not reference the tombstone path"
 fi
 
+# v1.37.x W3 follow-up (Item 5): runtime regression net for F-024. The
+# two source-greps above test that the literal strings exist in source,
+# but they don't catch the F-023-class blindspot — a typo in the
+# variable referenced inside the printf would still leave "Harness
+# Health" in source while the runtime path skipped or crashed. This
+# fixture writes a tombstone, invokes show-status, asserts the section
+# emits the EXPECTED runtime content (not just that the string is
+# somewhere in the file).
+f024_runtime_home="${TEST_TMP}/f024-runtime-home"
+mkdir -p "${f024_runtime_home}/.cache/omc"
+# Tombstone format per resume-watchdog.sh: `ts=<epoch>\nreason=<msg>`.
+# show-status.sh:693-696 grep-extracts each line by prefix; raw-line
+# fixtures fall back to the first-200-chars path.
+printf 'ts=%s\nreason=%s\n' "$(date +%s)" "rate-limit-cap-clearing" \
+  > "${f024_runtime_home}/.cache/omc/watchdog-last-error"
+mkdir -p "${f024_runtime_home}/.claude"
+ln -sf "${REPO_ROOT}/bundle/dot-claude/skills" "${f024_runtime_home}/.claude/skills"
+ln -sf "${REPO_ROOT}/bundle/dot-claude/quality-pack" "${f024_runtime_home}/.claude/quality-pack"
+
+f024_state="${TEST_TMP}/f024-state"
+f024_sid="aaaaaaaa-bbbb-cccc-dddd-000000000024"
+mkdir -p "${f024_state}/${f024_sid}"
+echo '{}' > "${f024_state}/${f024_sid}/session_state.json"
+
+f024_out="$(HOME="${f024_runtime_home}" \
+  STATE_ROOT="${f024_state}" \
+  SESSION_ID="${f024_sid}" \
+  bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/show-status.sh" 2>/dev/null || true)"
+
+if [[ "${f024_out}" == *"Harness Health"* ]]; then
+  ok
+else
+  fail_msg "F-024 runtime: show-status output should contain 'Harness Health' section header when tombstone present (got first 500 chars: ${f024_out:0:500})"
+fi
+
+if [[ "${f024_out}" == *"Watchdog last error"* ]]; then
+  ok
+else
+  fail_msg "F-024 runtime: show-status output should name the watchdog last-error line"
+fi
+
+if [[ "${f024_out}" == *"rate-limit-cap-clearing"* ]]; then
+  ok
+else
+  fail_msg "F-024 runtime: show-status output should propagate the tombstone reason text"
+fi
+
 # ----------------------------------------------------------------------
 printf '\n=== Wave 1 reliability tests: %s passed, %s failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]

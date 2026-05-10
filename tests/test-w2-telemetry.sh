@@ -238,5 +238,79 @@ else
 fi
 
 # ----------------------------------------------------------------------
+# v1.37.x W3 follow-up (Item 5): runtime regression for F-010 schema
+# versioning. The source-greps above (lines ~110-128) test that the
+# `_v:1` literal exists in record-serendipity.sh / record-archetype.sh.
+# But that's the F-023-class blindspot — a typo in the variable
+# referenced by the row-emit jq expression would still leave the
+# literal `_v:1` in source while the actual JSONL row written at
+# runtime omits it. These fixtures invoke each writer with synthetic
+# input and assert the OUTPUT row carries `_v:1`.
+# ----------------------------------------------------------------------
+printf '\n--- F-010 runtime: schema-version field actually written by writers ---\n'
+
+# A. record-serendipity.sh — invoke with a synthetic JSON payload and
+# check the written row carries _v.
+F010_HOME="${TEST_TMP}/f010-rt-home"
+mkdir -p "${F010_HOME}/.claude/quality-pack"
+ln -sf "${REPO_ROOT}/bundle/dot-claude/skills" "${F010_HOME}/.claude/skills"
+
+f010_state_root="${F010_HOME}/.claude/quality-pack/state"
+f010_sid="aaaaaaaa-bbbb-cccc-dddd-000000000010"
+mkdir -p "${f010_state_root}/${f010_sid}"
+printf '{"workflow_mode":"ulw"}\n' > "${f010_state_root}/${f010_sid}/session_state.json"
+
+# record-serendipity.sh consumes JSON via stdin and appends a row to
+# ~/.claude/quality-pack/serendipity-log.jsonl.
+echo '{"fix":"runtime test fix","original_task":"F-010 regression","conditions":"verified|same-path|bounded","commit":"deadbeef"}' \
+  | HOME="${F010_HOME}" \
+    STATE_ROOT="${f010_state_root}" \
+    SESSION_ID="${f010_sid}" \
+    bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/record-serendipity.sh" >/dev/null 2>&1 || true
+
+f010_serendipity_log="${F010_HOME}/.claude/quality-pack/serendipity-log.jsonl"
+if [[ -f "${f010_serendipity_log}" ]]; then
+  f010_row="$(tail -1 "${f010_serendipity_log}")"
+  if [[ "${f010_row}" == *'"_v":1'* ]] || [[ "${f010_row}" == *'"_v": 1'* ]]; then
+    ok
+  else
+    fail_msg "F-010 runtime (serendipity): row missing _v field. Row: ${f010_row}"
+  fi
+else
+  fail_msg "F-010 runtime (serendipity): writer did not produce serendipity-log.jsonl at ${f010_serendipity_log}"
+fi
+
+# B. record_gate_event from common.sh — the cross-session writer for
+# gate_events.jsonl. This is the highest-traffic writer in the system,
+# so a missing _v on emit would cascade through every consumer in
+# /ulw-report.
+F010B_HOME="${TEST_TMP}/f010b-rt-home"
+mkdir -p "${F010B_HOME}/.claude/quality-pack/state"
+ln -sf "${REPO_ROOT}/bundle/dot-claude/skills" "${F010B_HOME}/.claude/skills"
+mkdir -p "${F010B_HOME}/.claude/quality-pack/state/${f010_sid}"
+printf '{}\n' > "${F010B_HOME}/.claude/quality-pack/state/${f010_sid}/session_state.json"
+
+HOME="${F010B_HOME}" \
+  STATE_ROOT="${F010B_HOME}/.claude/quality-pack/state" \
+  SESSION_ID="${f010_sid}" \
+  bash -c "
+    set -euo pipefail
+    . '${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh'
+    record_gate_event 'F010-runtime' 'block' 'detail=test'
+  " 2>/dev/null || true
+
+f010b_events="${F010B_HOME}/.claude/quality-pack/state/${f010_sid}/gate_events.jsonl"
+if [[ -f "${f010b_events}" ]]; then
+  f010b_row="$(tail -1 "${f010b_events}")"
+  if [[ "${f010b_row}" == *'"_v":1'* ]] || [[ "${f010b_row}" == *'"_v": 1'* ]]; then
+    ok
+  else
+    fail_msg "F-010 runtime (record_gate_event): row missing _v field. Row: ${f010b_row}"
+  fi
+else
+  fail_msg "F-010 runtime (record_gate_event): writer did not produce gate_events.jsonl"
+fi
+
+# ----------------------------------------------------------------------
 printf '\n=== Wave 2 telemetry tests: %s passed, %s failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]
