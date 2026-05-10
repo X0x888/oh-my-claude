@@ -264,16 +264,48 @@ prune_old_backups() {
     return 0
   fi
 
-  local pruned=0 i
+  # v1.37.x W4 (Item 10): pre-prune preview. Build the to-be-deleted
+  # list FIRST, print it for the user, then (in interactive non-CI
+  # mode) sleep 5 seconds with a Ctrl-C window — mirroring the
+  # memory-overwrite warning shape at line 218-228 above. Pre-fix,
+  # `--keep-backups=N` deleted older dirs without warning, which a
+  # contributor with hand-edited backups (rare but real) had no chance
+  # to abort. Same `[[ -t 0 ]] && [[ -z "${CI:-}" ]]` interactive-mode
+  # gate as the memory warning so curl-pipe-bash and CI installs don't
+  # eat dead time.
+  local -a to_prune=()
+  local i
   for ((i=keep; i<${#backups[@]}; i++)); do
-    # Hard guard: never prune the just-created backup, regardless of
-    # where it landed in the lexical-sort window. If clock-skew /
-    # future-dated prior dirs pushed ${BACKUP_DIR} past the keep
-    # threshold, this `continue` keeps the recovery surface intact.
     if [[ "${backups[i]}" == "${BACKUP_DIR}" ]]; then
       continue
     fi
-    if rm -rf "${backups[i]}" 2>/dev/null; then
+    to_prune+=("${backups[i]}")
+  done
+
+  if [[ "${#to_prune[@]}" -eq 0 ]]; then
+    return 0
+  fi
+
+  printf '  Backup retention: keeping %d most recent oh-my-claude-* dir(s); will prune %d older:\n' \
+    "${keep}" "${#to_prune[@]}"
+  for dir in "${to_prune[@]}"; do
+    local size=""
+    size="$(du -sh "${dir}" 2>/dev/null | awk '{print $1}')"
+    printf '    - %s%s\n' \
+      "$(basename "${dir}")" \
+      "${size:+ (${size})}"
+  done
+
+  if [[ -t 0 ]] && [[ -z "${CI:-}" ]]; then
+    printf '  Continuing prune in 5 seconds — Ctrl-C to abort and run with --keep-backups=all to disable.\n'
+    sleep 5 2>/dev/null || true
+  else
+    printf '  Non-interactive install — proceeding immediately with prune.\n'
+  fi
+
+  local pruned=0
+  for dir in "${to_prune[@]}"; do
+    if rm -rf "${dir}" 2>/dev/null; then
       pruned=$((pruned + 1))
     fi
   done

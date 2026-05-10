@@ -981,6 +981,51 @@ else
   [[ "${user_decision_marks}" -gt 0 ]] && totals_line="${totals_line}, ${user_decision_marks} user-decision marks"
   totals_line="${totals_line})._"
   printf '%s\n\n' "${totals_line}"
+
+  # v1.37.x W4 (Item 6): per-gate skip-rate sub-table. Joins ulw-skip:
+  # registered events back to the gate they bypassed (recorded by
+  # ulw-skip-register.sh:48+). High skip rate on a gate is a false-
+  # positive proxy — that gate is firing on legitimate work. The
+  # share-card weighting (show-report.sh:359 — wave-shape and
+  # discovered-scope both at 360s) was an open question per Item 6;
+  # this surface lets the user empirically answer "is wave-shape
+  # over-firing?" before any reweighting decision. Skip rate column
+  # only renders when at least one ulw-skip:registered event exists
+  # in the window, so clean sessions get a quiet section.
+  ulw_skip_rows="$(printf '%s\n' "${gate_event_rows}" \
+    | jq -c 'select(.gate == "ulw-skip" and .event == "registered")' 2>/dev/null || true)"
+  if [[ -n "${ulw_skip_rows}" ]]; then
+    printf '_Per-gate skip rate (false-positive proxy):_\n\n'
+    printf '| Gate | Blocks | Skips | Skip-rate |\n'
+    printf '|---|---:|---:|---:|\n'
+    # For each gate that fired AT LEAST one block, compute skip count
+    # by joining ulw-skip rows on details.skipped_gate. Skip rate =
+    # skips/blocks (capped at 100%; values >1 are theoretically
+    # possible if a stale skip carries over, treat as 100%).
+    printf '%s\n' "${gate_event_rows}" \
+      | jq -r 'select(.event == "block") | .gate' \
+      | sort -u \
+      | while IFS= read -r _gate; do
+          [[ -z "${_gate}" ]] && continue
+          [[ "${_gate}" == "ulw-skip" ]] && continue
+          _gate_blocks="$(printf '%s\n' "${gate_event_rows}" \
+            | jq -c --arg g "${_gate}" 'select(.gate == $g and .event == "block")' \
+            | wc -l | tr -d '[:space:]')"
+          _gate_skips="$(printf '%s\n' "${ulw_skip_rows}" \
+            | jq -c --arg g "${_gate}" 'select(.details.skipped_gate == $g)' \
+            | wc -l | tr -d '[:space:]')"
+          [[ "${_gate_blocks}" =~ ^[0-9]+$ ]] || _gate_blocks=0
+          [[ "${_gate_skips}" =~ ^[0-9]+$ ]] || _gate_skips=0
+          if [[ "${_gate_blocks}" -gt 0 ]]; then
+            _skip_rate_pct=$(( _gate_skips * 100 / _gate_blocks ))
+            [[ "${_skip_rate_pct}" -gt 100 ]] && _skip_rate_pct=100
+            printf '| `%s` | %d | %d | %d%% |\n' \
+              "${_gate}" "${_gate_blocks}" "${_gate_skips}" "${_skip_rate_pct}"
+          fi
+        done
+    printf '\n'
+    printf '_High skip-rate on a single gate suggests false-positive firing — used to empirically re-evaluate the share-card weighting (currently uniform 360s for wave-shape / discovered-scope / shortcut-ratio per show-report.sh:359). Two weeks of multi-session data is a reasonable cohort before re-weighting._\n\n'
+  fi
 fi
 
 # ----------------------------------------------------------------------

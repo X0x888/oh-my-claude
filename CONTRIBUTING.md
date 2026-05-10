@@ -239,6 +239,82 @@ Every cross-session JSONL emitter MUST stamp a `_v` schema-version field as the 
 2. Document the row schema in a doc-comment above the emitter function.
 3. The reader side should use `(.{_v} // 0)` or equivalent to detect missing `_v` (legacy rows from before this convention) and fall through gracefully — never crash on a missing field.
 
+### Worked example: bumping a row schema from `_v:1` to `_v:2`
+
+Document the playbook **before** the first migration is needed, not during it. The worked example below assumes a hypothetical bump to `serendipity-log.jsonl` where the `conditions` field changes from a `|`-delimited string ("verified|same-path|bounded") into a structured object (`{"verified":true,"same_path":true,"bounded":true}`). The same pattern applies to any field rename, type change, or removal.
+
+**Step 1 — Add the v2 writer alongside v1.** Do NOT replace the v1 emit immediately. Both emitters land in the same commit so old code paths still produce valid rows during the rollout window.
+
+```bash
+# OLD writer (record-serendipity.sh, _v:1):
+jq -nc --arg fix "${fix}" --arg cond "${conditions}" \
+  '{_v:1, ts:now|floor, fix:$fix, conditions:$cond, ...}' \
+  >> "${log_file}"
+
+# NEW writer (replaces above, emits _v:2 only):
+jq -nc --arg fix "${fix}" \
+       --argjson v "${verified:-false}" \
+       --argjson sp "${same_path:-false}" \
+       --argjson bn "${bounded:-false}" \
+  '{_v:2, ts:now|floor, fix:$fix,
+    conditions:{verified:$v, same_path:$sp, bounded:$bn},
+    ...}' \
+  >> "${log_file}"
+```
+
+**Step 2 — Make the reader version-aware.** Every consumer of the ledger (in `show-report.sh`, `tools/telemetry-replay.py`, etc.) must branch on `_v` and handle BOTH shapes for the deprecation window. Never assume the latest schema is the only one on disk.
+
+```bash
+# In show-report.sh — joining serendipity rows:
+jq -r '
+  .conditions
+  | if (.[0:1] == "v") or (type == "object") then
+      # _v:2 shape — structured object.
+      [.verified, .same_path, .bounded] | map(if . then "T" else "F" end) | join("/")
+    else
+      # _v:1 shape — pipe-delimited string. Map "verified|same-path|bounded"
+      # → "T/T/T" for parity with the v2 path.
+      split("|") | map(if . == "verified" or . == "same-path" or . == "bounded" then "T" else "F" end) | join("/")
+    end
+' "${SERENDIPITY_LOG}"
+```
+
+The reader's version branch lives **for at least one full release cycle** after the writer migration. Don't drop v1 support in the same release that adds v2; that breaks resumed sessions and rate-limit-paused work that left rows on disk under v1.
+
+**Step 3 — Sweep job OR strict cutoff.** Pick one based on the data's value:
+
+- **Sweep job** (`tools/migrate-schema.sh`) — for ledgers where historical rows matter (e.g., `serendipity-log.jsonl` powers cross-session catch-rate analytics). Walk every row, apply the v1→v2 transform, write a new file, atomic-rename. Add a regression test that the rewriter is idempotent (running twice produces identical output).
+
+  ```bash
+  # tools/migrate-schema.sh (sketched):
+  while IFS= read -r row; do
+    v="$(printf '%s' "${row}" | jq -r '._v // 0')"
+    if [[ "${v}" == "2" ]]; then
+      printf '%s\n' "${row}" >> "${tmp}"  # already v2; passthrough
+    elif [[ "${v}" == "1" ]] || [[ "${v}" == "0" ]]; then
+      # v0 = legacy, before the _v convention landed (treat as v1 shape).
+      printf '%s' "${row}" | jq -c '
+        ._v = 2 | .conditions = (
+          .conditions | split("|")
+          | {verified: contains(["verified"]),
+             same_path: contains(["same-path"]),
+             bounded: contains(["bounded"])}
+        )
+      ' >> "${tmp}"
+    fi
+  done < "${log_file}"
+  mv "${tmp}" "${log_file}"
+  ```
+
+- **Strict cutoff** — for telemetry where pre-cutoff history is noise (e.g., a counter that resets per release). Document the cutoff version in `CHANGELOG.md` and have the reader treat any `_v:1` row older than the cutoff date as deprecated/skipped. No sweep needed; the data ages out naturally as TTL sweeps run.
+
+**Step 4 — Document in CHANGELOG.md.** The migration entry must name (a) which writer changed, (b) what the field shape change is, (c) which release drops v1 reader support, (d) whether a sweep job ran or a strict cutoff applies. Without this audit trail the next migration can't tell which `_v:N` rows are legitimately on disk.
+
+**Common pitfalls:**
+- **Adding `_v:2` rows without bumping the reader first.** A reader that hits an unknown `_v` should fall through gracefully (not crash); the version-aware branch must be in place BEFORE the new writer ships.
+- **Treating `_v:0` (missing field) as invalid.** Legacy rows from before the v1.36.x F-010 convention have no `_v` key. Readers should treat missing `_v` as v1-equivalent (the original schema), not as a corrupt row.
+- **Mixing v1 and v2 writers in the same emit path.** A single emitter must produce a single `_v` per row. If you need both shapes during a transition, run two emitters writing to two files and merge at read time.
+
 ## Release Process
 
 When bumping the version (changing `VERSION`), follow these steps in order. Replace `X.Y.Z` with the actual version number in all commands.

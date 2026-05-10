@@ -299,5 +299,8 @@ jobs:
       - name: v1.37.x W2 follow-up regression
         run: bash tests/test-v1-37x-w2-followup.sh
 
+      - name: v1.37.x W4 follow-up regression
+        run: bash tests/test-v1-37x-w4-followup.sh
+
       - name: Run statusline tests
         run: python3 -m unittest tests.test_statusline -v
