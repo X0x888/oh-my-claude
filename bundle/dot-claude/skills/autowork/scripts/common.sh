@@ -59,6 +59,7 @@ _omc_env_blindspot_inventory="${OMC_BLINDSPOT_INVENTORY:-}"
 _omc_env_intent_broadening="${OMC_INTENT_BROADENING:-}"
 _omc_env_divergence_directive="${OMC_DIVERGENCE_DIRECTIVE:-}"
 _omc_env_directive_budget="${OMC_DIRECTIVE_BUDGET:-}"
+_omc_env_quality_policy="${OMC_QUALITY_POLICY:-}"
 _omc_env_blindspot_ttl="${OMC_BLINDSPOT_TTL_SECONDS:-}"
 _omc_env_claude_bin="${OMC_CLAUDE_BIN:-}"
 _omc_env_resume_request_per_cwd_cap="${OMC_RESUME_REQUEST_PER_CWD_CAP:-}"
@@ -327,6 +328,12 @@ OMC_INFERRED_CONTRACT="${OMC_INFERRED_CONTRACT:-on}"
 # emission. Default `balanced` so new installs get budget protection
 # without disabling the core directive layer.
 OMC_DIRECTIVE_BUDGET="${OMC_DIRECTIVE_BUDGET:-balanced}"
+# Quality policy: balanced (default, low-friction) or zero_steering
+# (strict autonomous shipping posture). zero_steering does NOT simply
+# maximize every cost knob globally; router/stop-guard helpers combine it
+# with task-risk state so small work stays compact while serious/broad
+# work keeps blocking until proof surfaces are green.
+OMC_QUALITY_POLICY="${OMC_QUALITY_POLICY:-balanced}"
 # Blindspot inventory cache TTL (seconds). Default 86400 = 24h — long
 # enough that subsequent prompts on the same day reuse the cache for
 # free, short enough that surfaces added today don't go missing for
@@ -430,6 +437,8 @@ _parse_conf_file() {
         [[ -z "${_omc_env_divergence_directive}" && "${value}" =~ ^(on|off)$ ]] && OMC_DIVERGENCE_DIRECTIVE="${value}" || true ;;
       directive_budget)
         [[ -z "${_omc_env_directive_budget}" && "${value}" =~ ^(off|maximum|balanced|minimal)$ ]] && OMC_DIRECTIVE_BUDGET="${value}" || true ;;
+      quality_policy)
+        [[ -z "${_omc_env_quality_policy}" && "${value}" =~ ^(balanced|zero_steering)$ ]] && OMC_QUALITY_POLICY="${value}" || true ;;
       blindspot_ttl_seconds)
         [[ -z "${_omc_env_blindspot_ttl}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_BLINDSPOT_TTL_SECONDS="${value}" || true ;;
       claude_bin)
@@ -2979,11 +2988,12 @@ derive_inferred_contract_surfaces() {
   # the same threshold v1's `delivery_contract_remaining_items` uses
   # for the verify gate, so the two layers stay coherent.
   if [[ "${code_count}" -ge 2 && "${test_count}" -eq 0 ]]; then
-    local _r1_last_verify_ts _r1_last_code_edit_ts _r1_outcome _r1_conf
+    local _r1_last_verify_ts _r1_last_code_edit_ts _r1_outcome _r1_conf _r1_scope
     _r1_last_verify_ts="$(read_state "last_verify_ts")"
     _r1_last_code_edit_ts="$(read_state "last_code_edit_ts")"
     _r1_outcome="$(read_state "last_verify_outcome")"
     _r1_conf="$(read_state "last_verify_confidence")"
+    _r1_scope="$(read_state "last_verify_scope")"
     local _r1_threshold="${OMC_VERIFY_CONFIDENCE_THRESHOLD:-40}"
     local _r1_satisfied=0
     if [[ -n "${_r1_last_verify_ts}" \
@@ -2994,7 +3004,14 @@ derive_inferred_contract_surfaces() {
        && "${_r1_outcome}" == "passed" \
        && "${_r1_conf}" =~ ^[0-9]+$ \
        && "${_r1_conf}" -ge "${_r1_threshold}" ]]; then
-      _r1_satisfied=1
+      # Legacy sessions have no last_verify_scope; preserve the old
+      # behavior for them. New verification records must be full or
+      # targeted test scope before a passing command can suppress the
+      # missing-test inference. Lint/build/browser-only proof is useful,
+      # but it does not demonstrate changed-behavior coverage.
+      if [[ -z "${_r1_scope}" || "${_r1_scope}" == "full" || "${_r1_scope}" == "targeted" ]]; then
+        _r1_satisfied=1
+      fi
     fi
     if [[ "${_r1_satisfied}" -eq 0 ]]; then
       surfaces="$(_csv_add_unique "${surfaces}" "tests")"
@@ -5155,6 +5172,55 @@ is_advisory_request() {
 if [[ "${OMC_LAZY_CLASSIFIER:-0}" != "1" ]]; then
   _omc_load_classifier
 fi
+
+is_zero_steering_policy_enabled() {
+  [[ "${OMC_QUALITY_POLICY:-balanced}" == "zero_steering" ]]
+}
+
+# Lightweight risk tier used to make zero-steering quality controls
+# adaptive instead of globally expensive. It intentionally relies only
+# on prompt/domain/intent signals so it can run in UserPromptSubmit
+# before any tools or edits exist.
+classify_task_risk_tier() {
+  local text="$1" intent="${2:-}" domain="${3:-}"
+  local lower
+  lower="$(printf '%s' "${text}" | tr '[:upper:]' '[:lower:]')"
+
+  local score=0
+
+  case "${intent}" in
+    execution|continuation) score=$((score + 1)) ;;
+  esac
+
+  case "${domain}" in
+    mixed) score=$((score + 2)) ;;
+    coding|operations) score=$((score + 1)) ;;
+  esac
+
+  if grep -Eiq '\b(all|entire|whole|every|comprehensive|exhaustive|broad|codebase|project|repo|repository|audit|evaluate|review|assess|10/10|no steering|minimal prompt|ship better|production|release|deploy|migration|schema|database|auth|authentication|permission|security|payment|billing|stripe|data loss|breaking|refactor|architecture|performance|latency|scale|concurrency|race|leak)\b' <<<"${lower}"; then
+    score=$((score + 3))
+  fi
+
+  if grep -Eiq '\b(fix|implement|build|create|add|change|update|refactor|migrate|deploy|ship|commit|push)\b' <<<"${lower}"; then
+    score=$((score + 1))
+  fi
+
+  if grep -Eiq '\b(simple|small|tiny|minor|one[- ]line|typo|comment|docs? only|readme only|quick)\b' <<<"${lower}"; then
+    score=$((score - 2))
+  fi
+
+  if (( score >= 5 )); then
+    printf 'high'
+  elif (( score >= 2 )); then
+    printf 'medium'
+  else
+    printf 'low'
+  fi
+}
+
+is_high_task_risk() {
+  [[ "$(read_state "task_risk_tier" 2>/dev/null || true)" == "high" ]]
+}
 
 has_unfinished_session_handoff() {
   local text="$1"

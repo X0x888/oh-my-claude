@@ -1,0 +1,18 @@
+{
+  "id": "targeted-bugfix",
+  "risk": "medium",
+  "fixture": "fixtures/typescript-counter",
+  "prompt": "/ulw fix the off-by-one counter bug and add regression coverage",
+  "required_outcomes": [
+    "tests_passed",
+    "targeted_verification",
+    "review_clean",
+    "regression_test_added",
+    "final_closeout_audit_ready"
+  ],
+  "budgets": {
+    "max_tokens": 45000,
+    "max_tool_calls": 55,
+    "max_elapsed_seconds": 900
+  }
+}

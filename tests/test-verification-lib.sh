@@ -63,12 +63,12 @@ assert_eq() {
 }
 
 # ----------------------------------------------------------------------
-printf 'Test 1: lib/verification.sh exports the nine contracted functions\n'
+printf 'Test 1: lib/verification.sh exports the contracted functions\n'
 for fn in verification_matches_project_test_command verification_has_framework_keyword \
           verification_output_has_counts verification_output_has_clear_outcome \
           detect_verification_method score_verification_confidence \
           classify_mcp_verification_tool score_mcp_verification_confidence \
-          detect_mcp_verification_outcome; do
+          detect_mcp_verification_outcome classify_verification_scope; do
   assert_function_defined "${fn}"
 done
 
@@ -296,6 +296,19 @@ for inputs in \
   legacy_total="$(score_verification_confidence "${_cmd}" "${_out}" "${_proj}")"
   assert_eq "T12: factors.total == legacy total ($_cmd)" "${legacy_total}" "${factors_total}"
 done
+
+# ----------------------------------------------------------------------
+printf 'Test 13: classify_verification_scope distinguishes proof breadth\n'
+assert_eq "T13: project test command match → full" \
+  "full" "$(classify_verification_scope 'npm test -- --runInBand' 'npm test')"
+assert_eq "T13: pytest specific test file → targeted" \
+  "targeted" "$(classify_verification_scope 'pytest tests/test_auth.py -q' '')"
+assert_eq "T13: pytest selector → targeted" \
+  "targeted" "$(classify_verification_scope 'pytest -k login' '')"
+assert_eq "T13: shellcheck → lint" \
+  "lint" "$(classify_verification_scope 'shellcheck bundle/foo.sh' '')"
+assert_eq "T13: docker build → build" \
+  "build" "$(classify_verification_scope 'docker build .' '')"
 
 printf '\n=== Verification Lib Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]] || exit 1

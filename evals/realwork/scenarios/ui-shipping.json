@@ -1,0 +1,19 @@
+{
+  "id": "ui-shipping",
+  "risk": "medium",
+  "fixture": "fixtures/react-dashboard",
+  "prompt": "/ulw redesign the settings dashboard so it feels production-grade",
+  "required_outcomes": [
+    "design_contract_recorded",
+    "ui_files_changed",
+    "browser_or_visual_verification",
+    "design_review_clean",
+    "no_layout_overlap",
+    "final_closeout_audit_ready"
+  ],
+  "budgets": {
+    "max_tokens": 90000,
+    "max_tool_calls": 120,
+    "max_elapsed_seconds": 1800
+  }
+}

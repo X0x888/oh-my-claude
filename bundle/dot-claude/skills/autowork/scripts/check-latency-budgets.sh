@@ -10,16 +10,17 @@
 #
 # Subcommands:
 #   benchmark [--samples N] [--hook NAME]   Run all (or one) hooks N times,
-#                                            print median + p95 ms per hook
+#                                            print first + median + p95 ms
+#                                            per hook
 #   check     [--samples N]                 Same as benchmark but exit 1
 #                                            when ANY hook exceeds its
 #                                            budget. Default for CI.
 #   show-budgets                            Print the budget table
 #
-# Default samples: 5. Median + p95 over the samples are reported and
-# compared against the budget. Single-sample budgets are flaky on shared
-# machines (cold-cache first run dominates); 5 samples give stable
-# medians without burning CI minutes.
+# Default samples: 5. First-sample + median + p95 over the samples are
+# reported. P95 is compared against the warm budget; first-sample is
+# compared against a cold budget (default 150% of warm). This keeps the
+# common-path p95 tight while still surfacing cold/warm skew explicitly.
 #
 # Budgets (ms; conf-overridable via OMC_LATENCY_BUDGET_<HOOK>_MS):
 #   prompt-intent-router.sh: 1200  — heaviest hook (loads classifier +
@@ -83,6 +84,21 @@ budget_for_hook() {
     printf '%s' "${override}"
   else
     printf '%s' "${default}"
+  fi
+}
+
+cold_budget_for_hook() {
+  local hook="$1"
+  local warm
+  warm="$(budget_for_hook "${hook}")"
+  local env_name="OMC_LATENCY_COLD_BUDGET_${hook//.sh/}"
+  env_name="${env_name//-/_}"
+  env_name="$(printf '%s' "${env_name}" | tr '[:lower:]' '[:upper:]')_MS"
+  local override="${!env_name:-}"
+  if [[ -n "${override}" ]] && [[ "${override}" =~ ^[0-9]+$ ]]; then
+    printf '%s' "${override}"
+  else
+    awk -v w="${warm}" 'BEGIN { printf "%d", int((w * 1.5) + 0.5) }'
   fi
 }
 
@@ -230,7 +246,11 @@ benchmark_hook() {
   # Cleanup synthetic state directories the bench created.
   rm -rf "${STATE_ROOT}"/omc-bench-$$-* 2>/dev/null || true
 
-  printf '%d\n' "${measurements[@]}" | compute_stats
+  local first
+  first="${measurements[0]:-0}"
+  local stats
+  stats="$(printf '%d\n' "${measurements[@]}" | compute_stats)"
+  printf '%s %s' "${first}" "${stats}"
 }
 
 # --- Subcommands ---
@@ -245,32 +265,37 @@ cmd_benchmark() {
     esac
   done
 
-  printf '%-32s %8s %8s %8s   %s\n' "HOOK" "MEDIAN" "P95" "BUDGET" "STATUS"
-  printf '%-32s %8s %8s %8s   %s\n' "----" "------" "---" "------" "------"
+  printf '%-32s %8s %8s %8s %8s %8s   %s\n' "HOOK" "FIRST" "MEDIAN" "P95" "BUDGET" "COLD" "STATUS"
+  printf '%-32s %8s %8s %8s %8s %8s   %s\n' "----" "-----" "------" "---" "------" "----" "------"
 
-  local breaches=0 missing=0 hook budget median p95 status
+  local breaches=0 missing=0 hook budget cold_budget first median p95 status
   while IFS='|' read -r hook _; do
     [[ -z "${hook}" ]] && continue
     if [[ -n "${only_hook}" ]] && [[ "${hook}" != "${only_hook}" ]]; then
       continue
     fi
     budget="$(budget_for_hook "${hook}")"
+    cold_budget="$(cold_budget_for_hook "${hook}")"
     local stats
     stats="$(benchmark_hook "${hook}" "${samples}" 1 || echo "MISSING MISSING")"
     if [[ "${stats}" == "MISSING MISSING" ]]; then
       missing=$((missing + 1))
-      printf '%-32s %8s %8s %8s   %s\n' "${hook}" "—" "—" "${budget}ms" "missing"
+      printf '%-32s %8s %8s %8s %8s %8s   %s\n' "${hook}" "—" "—" "—" "${budget}ms" "${cold_budget}ms" "missing"
       continue
     fi
-    median="${stats%% *}"
-    p95="${stats##* }"
+    first="$(printf '%s' "${stats}" | awk '{print $1}')"
+    median="$(printf '%s' "${stats}" | awk '{print $2}')"
+    p95="$(printf '%s' "${stats}" | awk '{print $3}')"
     if [[ "${p95}" -gt "${budget}" ]]; then
       breaches=$((breaches + 1))
       status="BREACH"
+    elif [[ "${first}" -gt "${cold_budget}" ]]; then
+      breaches=$((breaches + 1))
+      status="COLD_BREACH"
     else
       status="ok"
     fi
-    printf '%-32s %7sms %7sms %7sms   %s\n' "${hook}" "${median}" "${p95}" "${budget}" "${status}"
+    printf '%-32s %7sms %7sms %7sms %7sms %7sms   %s\n' "${hook}" "${first}" "${median}" "${p95}" "${budget}" "${cold_budget}" "${status}"
   done < <(emit_budgets)
 
   printf '\nSamples per hook: %d\n' "${samples}"
@@ -317,8 +342,11 @@ Subcommands:
 Per-hook budget overrides via env:
   OMC_LATENCY_BUDGET_<HOOK>_MS=<ms>
   e.g., OMC_LATENCY_BUDGET_PROMPT_INTENT_ROUTER_MS=500
+  OMC_LATENCY_COLD_BUDGET_<HOOK>_MS=<ms>
+  e.g., OMC_LATENCY_COLD_BUDGET_PROMPT_INTENT_ROUTER_MS=1800
 
-Default samples: 5 (median + p95).
+Default samples: 5 (first + median + p95). P95 uses the warm budget;
+first uses a cold budget (default 150% of warm).
 
 CI integration: a release pipeline runs `bash check-latency-budgets.sh
 check` and fails the build on a budget breach. Closes GPT review #5

@@ -670,8 +670,12 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
     TASK_DOMAIN="$(infer_domain "${PROMPT_TEXT}" "${_project_profile}")"
   fi
 
+  TASK_RISK_TIER="$(classify_task_risk_tier "${PROMPT_TEXT}" "${TASK_INTENT}" "${TASK_DOMAIN}")"
+
   write_state "workflow_mode" "ultrawork"
   write_state "task_domain" "${TASK_DOMAIN}"
+  write_state "task_risk_tier" "${TASK_RISK_TIER}"
+  write_state "quality_policy" "${OMC_QUALITY_POLICY:-balanced}"
 
   # Delivery contract (v1.33.0): persist the user's "done means this"
   # contract early in the run so Stop, /ulw-status, and resume flows can
@@ -749,12 +753,26 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
   # Sentinel for fast-path exit in PostToolUse hooks (zero-cost check)
   touch "${STATE_ROOT}/.ulw_active"
 
-  log_hook "prompt-intent-router" "ulw=on domain=${TASK_DOMAIN} intent=${TASK_INTENT}"
+  log_hook "prompt-intent-router" "ulw=on domain=${TASK_DOMAIN} intent=${TASK_INTENT} risk=${TASK_RISK_TIER} policy=${OMC_QUALITY_POLICY:-balanced}"
 
   # Display form of TASK_INTENT: state-layer uses underscores (session_management),
   # but the user-visible classification line reads better with hyphens. Normalize
   # once here so all branches render consistently.
   display_intent="${TASK_INTENT//_/-}"
+
+  if is_zero_steering_policy_enabled; then
+    case "${TASK_RISK_TIER}" in
+      high)
+        add_directive "zero_steering_policy" "ZERO-STEERING POLICY: Treat this as high-risk autonomous shipping work. Choose the fastest path that can still satisfy all gates: make a concrete plan, use specialist agents only where they reduce risk, run targeted verification for changed behavior plus the broad project check when available, and do not stop with unresolved high-severity reviewer findings or failing verification. Keep user-facing prose concise; spend tokens on proof, not narration."
+        ;;
+      medium)
+        add_directive "zero_steering_policy" "ZERO-STEERING POLICY: Treat this as medium-risk autonomous shipping work. Proceed without asking unless blocked, keep directives compact, verify the changed behavior, and use the smallest reviewer/agent set that can make the work audit-ready."
+        ;;
+      *)
+        add_directive "zero_steering_policy" "ZERO-STEERING POLICY: Treat this as low-risk work. Stay compact, avoid unnecessary agent fan-out, and still finish with a concrete verification or explicit no-verification reason."
+        ;;
+    esac
+  fi
 
   if [[ "${continuation_prompt}" -eq 1 ]]; then
     add_directive "ulw_continuation_opener" "Ultrawork continuation mode is active for this session. Continue the prior task instead of treating the literal word 'continue' or 'resume' as a new objective. In your first user-facing response, start with the bold phrase **Ultrawork continuation active.** then briefly state what is already done, what remains, and the next concrete action. Reuse finished work, preserve the existing task domain, and only re-dispatch branches that were interrupted or are still missing."

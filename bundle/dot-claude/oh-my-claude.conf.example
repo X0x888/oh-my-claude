@@ -38,6 +38,13 @@
 # Env: OMC_GUARD_EXHAUSTION_MODE.
 #guard_exhaustion_mode=scorecard
 
+# Adaptive quality posture.
+#   balanced      — low-friction defaults; caps can release with scorecards.
+#   zero_steering — autonomous shipping posture. Serious/high-risk work keeps
+#                   blocking after caps, while small work stays compact.
+# Env: OMC_QUALITY_POLICY.
+#quality_policy=balanced
+
 # Minimum verification confidence (0–100) to satisfy the verify gate.
 # Default 40 blocks lint-only checks (shellcheck=30, bash -n=30) while
 # accepting project test suites (npm test=70+) and framework runs (jest=50+).

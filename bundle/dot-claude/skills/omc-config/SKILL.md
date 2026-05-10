@@ -59,13 +59,15 @@ Print a short preamble matched to the mode (2–3 lines max):
 
 Call `AskUserQuestion` once with both questions in the same tool invocation. The user answers both before any work happens.
 
-**Question 1 — header `Profile`** (single-select, 4 options + auto-Other for cancel/minimal)
+**Question 1 — header `Profile`** (single-select, 5 options + auto-Other for cancel/minimal)
 
 ```
 question: "Which profile should I apply? (To make no changes, pick Other and type 'cancel'.)"
 options:
-  - label: "Maximum Quality + Automation (Recommended)"
-    description: "Most rigorous gates, all bias-defense directives on, opus model. Best for solo devs on important work."
+  - label: "Zero Steering (Recommended)"
+    description: "Adaptive strict autonomous shipping: maximum automation, opus model, and high-risk work keeps blocking until proof is green."
+  - label: "Maximum Quality + Automation"
+    description: "Same as Zero Steering, kept as the legacy profile name."
   - label: "Balanced"
     description: "Standard gates + low-friction bias-defense, sonnet model, watchdog off. Good for daily use."
   - label: "Minimal"
@@ -89,7 +91,8 @@ options:
 
 Map the user's answers back to short tokens:
 
-- "Maximum Quality + Automation (Recommended)" → `maximum`
+- "Zero Steering (Recommended)" → `zero-steering`
+- "Maximum Quality + Automation" → `maximum`
 - "Balanced" → `balanced`
 - "Minimal" → `minimal`
 - "Review my defaults & fine-tune" → `custom`
@@ -98,7 +101,7 @@ Map the user's answers back to short tokens:
 
 If the user typed something via the auto-injected "Other" option:
 - Text matching `cancel` / `quit` / `exit` / `stop` / `no` (case-insensitive) → bail. Print "No changes made." and stop. Do NOT call `mark-completed`.
-- Anything else → treat as `custom` and walk Step 4's fine-tune path. (If the typed text matches a profile name like `maximum`/`balanced`/`minimal`, treat it as that profile.)
+- Anything else → treat as `custom` and walk Step 4's fine-tune path. (If the typed text matches a profile name like `zero-steering`/`maximum`/`balanced`/`minimal`, treat it as that profile.)
 
 ---
 
@@ -106,7 +109,7 @@ If the user typed something via the auto-injected "Other" option:
 
 ### Path A — preset
 
-If `$PROFILE` is `maximum`, `balanced`, or `minimal`:
+If `$PROFILE` is `zero-steering`, `maximum`, `balanced`, or `minimal`:
 
 ```bash
 bash ~/.claude/skills/autowork/scripts/omc-config.sh apply-preset "$SCOPE" "$PROFILE"
@@ -274,7 +277,7 @@ Then print a final summary:
 
 ```
 oh-my-claude configured.
-  Profile:   <maximum|balanced|minimal|custom>
+  Profile:   <zero-steering|maximum|balanced|minimal|custom>
   Scope:     <user|project>
   Watchdog:  <installed|flag set|off>
   Tier:      <tier> (agents <rewritten|unchanged>)
@@ -283,7 +286,7 @@ oh-my-claude configured.
 
 Add a one-line restart hint when needed:
 
-- If `gate_level`, `guard_exhaustion_mode`, or any `*_file_count` changed → "Restart Claude Code to pick up the new gate level."
+- If `gate_level`, `guard_exhaustion_mode`, `quality_policy`, or any `*_file_count` changed → "Restart Claude Code to pick up the new gate level."
 - If `model_tier` changed → "Tier change applied to agent files; new sessions use the new tier automatically."
 - If only watchdog/memory/telemetry flags changed → no restart needed.
 

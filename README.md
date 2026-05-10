@@ -185,7 +185,7 @@ Each gate block message names the specific next reviewer. A `VERDICT: CLEAN|SHIP
 
 **Every prompt is classified by intent and domain before Claude acts.** Five intent categories (execution, continuation, advisory, checkpoint, session-management) crossed with six domains (coding, writing, research, operations, mixed, general). Advisory questions get answered directly; execution prompts get the full specialist pipeline. A **prompt-text trust override** in the PreTool guard re-reads the user's prompt when the classifier disagrees, so destructive ops the prompt clearly authorized aren't blocked by mis-routing.
 
-Five **bias-defense directive layers** (conf-gated) defend against under- and over-interpretation: `prometheus_suggest` and `intent_verify_directive` (declare-and-proceed on short unanchored prompts); `exemplifying_directive` (treat example-marked items as one of a class, enumerate siblings); `intent_broadening` (project-surface inventory reference so a prompt that names some surfaces doesn't silently miss the rest); `divergence_directive` (enumerate 2-3 paradigm framings inline before committing on shape-decisions). All compose under `directive_budget` (`balanced` default — trims lower-priority directives when prompt tax gets dense). Hard backstops: `exemplifying_scope_gate` blocks Stop until each enumerated sibling is marked shipped or consciously declined. Per-flag detail and tuning lives in [`docs/customization.md`](docs/customization.md).
+Five **bias-defense directive layers** (conf-gated) defend against under- and over-interpretation: `prometheus_suggest` and `intent_verify_directive` (declare-and-proceed on short unanchored prompts); `exemplifying_directive` (treat example-marked items as one of a class, enumerate siblings); `intent_broadening` (project-surface inventory reference so a prompt that names some surfaces doesn't silently miss the rest); `divergence_directive` (enumerate 2-3 paradigm framings inline before committing on shape-decisions). All compose under `directive_budget` (`balanced` default — trims lower-priority directives when prompt tax gets dense). `quality_policy=zero_steering` adds adaptive strictness for users who want minimal-prompt autonomous shipping: high-risk work keeps blocking until proof is green, while small work stays compact. Hard backstops: `exemplifying_scope_gate` blocks Stop until each enumerated sibling is marked shipped or consciously declined. Per-flag detail and tuning lives in [`docs/customization.md`](docs/customization.md).
 
 Reviewer findings are machine-readable (single-line `FINDINGS_JSON` block before each VERDICT). Hot-path hook latency is budgeted in `check-latency-budgets.sh` so speed regressions surface before merge.
 
@@ -270,7 +270,8 @@ oh-my-claude/
 │   ├── output-styles/                       # Two bundled styles: oh-my-claude (default) + executive-brief (see docs/customization.md#output-style)
 │   └── statusline.py                        # Custom statusline widget
 ├── config/settings.patch.json               # Merged into user settings on install
-├── tests/               (87 bash + 1 py)    # See AGENTS.md / CONTRIBUTING.md for full list
+├── evals/realwork/                           # Outcome eval scenarios for minimal-prompt shipping
+├── tests/               (89 bash + 1 py)    # See AGENTS.md / CONTRIBUTING.md for full list
 ├── tools/                                    # Developer-only tools (not installed)
 └── docs/                                    # Architecture, customization, FAQ, prompts
 ```
@@ -397,6 +398,8 @@ bash tests/test-agent-verdict-contract.sh   # Universal VERDICT contract regress
 bash tests/test-bias-defense-classifier.sh  # Bias-defense prompt-shape classifiers + plan-complexity extraction
 bash tests/test-bias-defense-directives.sh  # prometheus-suggest + intent-verify directive injection
 bash tests/test-ulw-benchmark-suite.sh      # Canonical ULW user-outcome scenarios (quality/automation first, prompt-tax second)
+bash tests/test-zero-steering-policy.sh     # Adaptive zero-steering Stop/advisory/metis policy
+bash tests/test-realwork-eval-suite.sh      # Outcome-oriented real-work eval schema + scorer
 bash tests/test-metis-on-plan-gate.sh       # Metis-on-plan stop-guard gate (Check 6, opt-in)
 bash tests/test-gate-events.sh              # Per-event outcome attribution (gate_events.jsonl helper + wiring)
 bash tests/test-discover-session.sh         # Cross-project session-discovery cwd filter (record-finding-list / show-status)

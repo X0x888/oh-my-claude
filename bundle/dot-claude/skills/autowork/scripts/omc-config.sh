@@ -14,7 +14,7 @@
 #   show                                 Pretty-print current effective config
 #   list-flags                           Emit known flags as JSON (for skill)
 #   set <user|project> <k=v>...          Atomic write of one or more keys
-#   apply-preset <user|project> <name>   Apply preset (maximum|balanced|minimal)
+#   apply-preset <user|project> <name>   Apply preset (maximum|zero-steering|balanced|minimal)
 #   presets <name>                       Print preset key=value pairs to stdout
 #   apply-tier <tier>                    Run switch-tier.sh (rewrites agent files)
 #   install-watchdog                     Run install-resume-watchdog.sh
@@ -53,6 +53,7 @@ emit_known_flags() {
 gate_level|enum:basic/standard/full|full|gates|Quality-gate enforcement depth
 guard_exhaustion_mode|enum:silent/scorecard/block|scorecard|gates|Behavior when gate-block cap is reached
 verify_confidence_threshold|int|40|gates|Minimum verification confidence (0-100)
+quality_policy|enum:balanced/zero_steering|balanced|gates|Adaptive quality posture for no-steering work
 discovered_scope|bool|on|gates|Capture advisory findings + gate stop until addressed
 pretool_intent_guard|true_false|true|gates|Block destructive git/gh under non-execution intent
 stall_threshold|int|12|gates|Consecutive read/grep before stall fires
@@ -105,6 +106,9 @@ EOF
 #   is pulled, including `council_deep_default=on` so auto-triggered
 #   council dispatches use opus per lens (matches the user's accepted
 #   "Opus everywhere" stance under model_tier=quality).
+# `zero-steering`: explicit alias for maximum. It exists so a user can
+#   name the outcome they want ("ship without steering") instead of
+#   reverse-engineering which quality levers that implies.
 # `balanced`: close to install-time defaults; safe for most users. Cost
 #   caps live here, not in `maximum` — `council_deep_default=off` keeps
 #   auto-council on sonnet for the typical user.
@@ -117,10 +121,11 @@ EOF
 emit_preset() {
   local profile="$1"
   case "${profile}" in
-    maximum)
+    maximum|zero-steering|zero_steering)
       cat <<'EOF'
 gate_level=full
 guard_exhaustion_mode=block
+quality_policy=zero_steering
 auto_memory=on
 prompt_persist=on
 classifier_telemetry=on
@@ -150,6 +155,7 @@ EOF
       cat <<'EOF'
 gate_level=full
 guard_exhaustion_mode=scorecard
+quality_policy=balanced
 auto_memory=on
 prompt_persist=on
 classifier_telemetry=on
@@ -179,6 +185,7 @@ EOF
       cat <<'EOF'
 gate_level=basic
 guard_exhaustion_mode=silent
+quality_policy=balanced
 auto_memory=off
 prompt_persist=off
 classifier_telemetry=off
@@ -205,7 +212,7 @@ model_tier=economy
 EOF
       ;;
     *)
-      printf 'omc-config: unknown preset: %s (expected maximum|balanced|minimal)\n' "${profile}" >&2
+      printf 'omc-config: unknown preset: %s (expected maximum|zero-steering|balanced|minimal)\n' "${profile}" >&2
       return 2
       ;;
   esac
@@ -686,7 +693,7 @@ sync_output_style_settings() {
 cmd_apply_preset() {
   if [[ $# -ne 2 ]]; then
     printf 'omc-config: apply-preset requires <scope> <profile>\n' >&2
-    printf 'usage: omc-config.sh apply-preset <user|project> <maximum|balanced|minimal>\n' >&2
+    printf 'usage: omc-config.sh apply-preset <user|project> <maximum|zero-steering|balanced|minimal>\n' >&2
     return 2
   fi
   local scope="$1" profile="$2"
@@ -800,7 +807,7 @@ Subcommands:
   show                                 Pretty-print current effective config
   list-flags                           Emit known flags as JSON (for skill)
   set <user|project> <k=v>...          Atomic write of one or more keys
-  apply-preset <user|project> <name>   Apply preset (maximum|balanced|minimal)
+  apply-preset <user|project> <name>   Apply preset (maximum|zero-steering|balanced|minimal)
   presets <name>                       Print preset key=value pairs to stdout
   apply-tier <quality|balanced|economy>  Run switch-tier.sh (rewrites agent files)
   install-watchdog                     Run install-resume-watchdog.sh

@@ -795,8 +795,9 @@ fi
 verify_conf="$(jq -r '.last_verify_confidence // empty' "${state_file}" 2>/dev/null || true)"
 if [[ -n "${verify_conf}" ]]; then
   verify_method="$(jq -r '.last_verify_method // "unknown"' "${state_file}" 2>/dev/null || true)"
+  verify_scope="$(jq -r '.last_verify_scope // "unknown"' "${state_file}" 2>/dev/null || true)"
   printf '\n--- Verification Confidence ---\n'
-  printf 'Confidence: %s/100  Method: %s\n' "${verify_conf}" "${verify_method}"
+  printf 'Confidence: %s/100  Method: %s  Scope: %s\n' "${verify_conf}" "${verify_method}" "${verify_scope}"
   # v1.27.0 (F-023): show per-factor breakdown when available so the
   # user can see WHY the score is what it is. Format from
   # score_verification_confidence_factors:

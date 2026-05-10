@@ -86,6 +86,7 @@ if [[ -n "${command_text}" ]]; then
 
     verify_confidence="$(score_verification_confidence "${command_text}" "${tool_output}" "${project_test_cmd}")"
     verify_method="$(detect_verification_method "${command_text}" "${tool_output}" "${project_test_cmd}")"
+    verify_scope="$(classify_verification_scope "${command_text}" "${project_test_cmd}")"
     # v1.27.0 (F-023): persist per-factor breakdown so /ulw-status can
     # explain WHY a verification scored what it did. Empty/short cmds
     # produce "test_match:0|framework:0|output_counts:0|clear_outcome:0|total:0".
@@ -105,11 +106,12 @@ if [[ -n "${command_text}" ]]; then
       "last_verify_confidence" "${verify_confidence}" \
       "last_verify_factors" "${verify_factors}" \
       "last_verify_method" "${verify_method}" \
+      "last_verify_scope" "${verify_scope}" \
       "project_test_cmd" "${project_test_cmd}" \
       "stop_guard_blocks" "0" \
       "session_handoff_blocks" "0" \
       "stall_counter" "0"
-    log_hook "record-verification" "cmd=${command_text} outcome=${verify_outcome} confidence=${verify_confidence} method=${verify_method}"
+    log_hook "record-verification" "cmd=${command_text} outcome=${verify_outcome} confidence=${verify_confidence} method=${verify_method} scope=${verify_scope}"
   fi
 
 # --- Path 2: MCP tool verification ---
@@ -129,6 +131,7 @@ elif [[ -n "${mcp_verify_type}" ]]; then
 
   verify_outcome="$(detect_mcp_verification_outcome "${tool_output}" "${mcp_verify_type}")"
   verify_confidence="$(score_mcp_verification_confidence "${mcp_verify_type}" "${tool_output}" "${has_ui_context}")"
+  verify_scope="mcp_${mcp_verify_type}"
 
   # Detect project test command for remediation messaging (shared with Bash path)
   project_test_cmd="$(read_state "project_test_cmd" 2>/dev/null || true)"
@@ -142,9 +145,10 @@ elif [[ -n "${mcp_verify_type}" ]]; then
     "last_verify_outcome" "${verify_outcome}" \
     "last_verify_confidence" "${verify_confidence}" \
     "last_verify_method" "mcp_${mcp_verify_type}" \
+    "last_verify_scope" "${verify_scope}" \
     "project_test_cmd" "${project_test_cmd}" \
     "stop_guard_blocks" "0" \
     "session_handoff_blocks" "0" \
     "stall_counter" "0"
-  log_hook "record-verification" "mcp_tool=${tool_name} type=${mcp_verify_type} outcome=${verify_outcome} confidence=${verify_confidence}"
+  log_hook "record-verification" "mcp_tool=${tool_name} type=${mcp_verify_type} outcome=${verify_outcome} confidence=${verify_confidence} scope=${verify_scope}"
 fi

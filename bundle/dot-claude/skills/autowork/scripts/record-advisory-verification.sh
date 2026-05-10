@@ -56,7 +56,16 @@ fi
 # state file. Without the lock, this write can be lost when a sibling
 # hook's write_state_batch races the temp-file rename.
 if [[ "${task_intent}" == "advisory" && -n "${target_path}" && "${is_internal_path}" -eq 0 ]]; then
-  with_state_lock write_state "last_advisory_verify_ts" "$(now_epoch)"
+  append_limited_state "advisory_evidence_paths.log" "${target_path}" "80"
+  advisory_evidence_count="1"
+  advisory_evidence_file="$(session_file "advisory_evidence_paths.log")"
+  if [[ -f "${advisory_evidence_file}" ]]; then
+    advisory_evidence_count="$(sort -u "${advisory_evidence_file}" 2>/dev/null | wc -l | tr -d '[:space:]')"
+  fi
+  advisory_evidence_count="${advisory_evidence_count:-1}"
+  with_state_lock_batch \
+    "last_advisory_verify_ts" "$(now_epoch)" \
+    "advisory_evidence_count" "${advisory_evidence_count}"
 fi
 
 # P4: Stall detection — track call count and unique file paths

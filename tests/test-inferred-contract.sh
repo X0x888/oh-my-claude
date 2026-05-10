@@ -252,6 +252,16 @@ write_edits "r1d" /repo/src/auth.go /repo/src/payment.go
 result="$(run_derive "r1d")"
 assert_eq "R1 satisfied by passing high-conf verify after edits" "|" "${result}"
 
+setup_session "r1d_scope" '{"task_intent":"execution","task_domain":"coding","last_code_edit_ts":"100","last_verify_ts":"200","last_verify_outcome":"passed","last_verify_confidence":"70","last_verify_scope":"lint"}'
+write_edits "r1d_scope" /repo/src/auth.go /repo/src/payment.go
+result="$(run_derive "r1d_scope")"
+assert_eq "R1 fires when fresh high-conf verification is lint scope" "tests|R1_missing_tests" "${result}"
+
+setup_session "r1d_targeted" '{"task_intent":"execution","task_domain":"coding","last_code_edit_ts":"100","last_verify_ts":"200","last_verify_outcome":"passed","last_verify_confidence":"70","last_verify_scope":"targeted"}'
+write_edits "r1d_targeted" /repo/src/auth.go /repo/src/payment.go
+result="$(run_derive "r1d_targeted")"
+assert_eq "R1 satisfied by targeted verification scope" "|" "${result}"
+
 setup_session "r1e" '{"task_intent":"execution","task_domain":"coding","last_code_edit_ts":"300","last_verify_ts":"200","last_verify_outcome":"passed","last_verify_confidence":"70"}'
 write_edits "r1e" /repo/src/auth.go /repo/src/payment.go
 result="$(run_derive "r1e")"

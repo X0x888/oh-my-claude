@@ -375,4 +375,49 @@ detect_mcp_verification_outcome() {
   printf 'passed'
 }
 
+classify_verification_scope() {
+  local command_text="${1:-}"
+  local project_test_cmd="${2:-}"
+  local lower project_lower
+  lower="$(printf '%s' "${command_text}" | tr '[:upper:]' '[:lower:]')"
+  project_lower="$(printf '%s' "${project_test_cmd}" | tr '[:upper:]' '[:lower:]')"
+
+  [[ -z "${lower}" ]] && { printf 'unknown'; return; }
+
+  if [[ -n "${project_lower}" && "${lower}" == *"${project_lower}"* ]]; then
+    printf 'full'
+    return
+  fi
+
+  if grep -Eiq '(^|[[:space:]])(shellcheck|bash[[:space:]]+-n|ruff|mypy|eslint|tsc|typecheck|markdownlint|mdl|vale|textlint|alex|write-good|ansible-lint|helm[[:space:]]+lint|terraform[[:space:]]+validate)\b' <<<"${lower}"; then
+    printf 'lint'
+    return
+  fi
+
+  if grep -Eiq '(^|[[:space:]])(docker[[:space:]]+build|docker[[:space:]]+compose[[:space:]]+build|swift[[:space:]]+build|cargo[[:space:]]+build|npm[[:space:]]+run[[:space:]]+build|pnpm[[:space:]]+build|yarn[[:space:]]+build|bun[[:space:]]+run[[:space:]]+build|nix[[:space:]]+build)\b' <<<"${lower}"; then
+    printf 'build'
+    return
+  fi
+
+  if grep -Eiq '(^|[[:space:]])(terraform[[:space:]]+plan|terraform[[:space:]]+apply|kubectl|helm|ansible|docker[[:space:]]+compose)\b' <<<"${lower}"; then
+    printf 'operations'
+    return
+  fi
+
+  if grep -Eiq '(^|[[:space:]])(npm[[:space:]]+(test|run[[:space:]]+test)|pnpm[[:space:]]+(test|run[[:space:]]+test)|yarn[[:space:]]+(test|run[[:space:]]+test)|bun[[:space:]]+(test|run[[:space:]]+test)|bash[[:space:]]+verify\.sh|bash[[:space:]]+tests?/test[^[:space:]]*\.sh|pytest|python[[:space:]]+-m[[:space:]]+pytest|vitest|jest|go[[:space:]]+test|cargo[[:space:]]+test|swift[[:space:]]+test|xcodebuild[[:space:]].*test|phpunit|rspec|gradle[[:space:]]+test|mvn[[:space:]]+(test|verify)|dotnet[[:space:]]+test|mix[[:space:]]+test|rake[[:space:]]+test|deno[[:space:]]+test|zig[[:space:]]+build[[:space:]]+test)\b' <<<"${lower}"; then
+    if grep -Eiq '(^|[[:space:]])(-k|--testnamepattern|--test-name-pattern|--grep|--runintest|--filter|--tests?|--include|--only|:[[:alnum:]_.-]+|[./][^[:space:]]*(test|spec)[^[:space:]]*\.(js|jsx|ts|tsx|py|rb|go|rs|swift|php|java|cs)|tests?/[^[:space:]]+|spec/[^[:space:]]+)' <<<"${lower}"; then
+      printf 'targeted'
+    else
+      printf 'full'
+    fi
+    return
+  fi
+
+  if grep -Eiq '\b(test|tests|verify|validate|check)\b' <<<"${lower}"; then
+    printf 'unknown_test'
+  else
+    printf 'unknown'
+  fi
+}
+
 # --- end verification helpers ---

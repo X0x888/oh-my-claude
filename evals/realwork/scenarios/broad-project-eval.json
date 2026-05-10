@@ -1,0 +1,19 @@
+{
+  "id": "broad-project-eval",
+  "risk": "high",
+  "fixture": "fixtures/mixed-service",
+  "prompt": "/ulw comprehensively evaluate this project and ship the highest leverage improvements",
+  "required_outcomes": [
+    "council_or_lens_coverage",
+    "wave_plan_recorded",
+    "findings_resolved_or_deferred_with_why",
+    "full_verification",
+    "review_clean",
+    "token_budget_respected"
+  ],
+  "budgets": {
+    "max_tokens": 180000,
+    "max_tool_calls": 220,
+    "max_elapsed_seconds": 3600
+  }
+}

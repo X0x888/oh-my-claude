@@ -104,6 +104,31 @@ if [[ -z "${has_findings}" ]]; then
   fi
 fi
 
+review_format_issue=""
+if [[ -z "${verdict_token}" ]]; then
+  review_format_issue="missing_verdict"
+fi
+if [[ "${REVIEWER_TYPE}" != "prose" && "${has_findings}" == "true" && -n "${review_message}" ]]; then
+  review_json_probe="$(extract_findings_json "${review_message}" 2>/dev/null | head -n 1 || true)"
+  if [[ -z "${review_json_probe}" ]]; then
+    if [[ -n "${review_format_issue}" ]]; then
+      review_format_issue="${review_format_issue},missing_findings_json"
+    else
+      review_format_issue="missing_findings_json"
+    fi
+  fi
+fi
+
+# In zero-steering / high-risk work, structured reviewer format failures are
+# themselves actionable. The legacy prose fallback remains available for
+# balanced low-risk work, but strict autonomous shipping should not mark a
+# dimension clean from an ambiguous reviewer transcript.
+if [[ -n "${review_format_issue}" ]]; then
+  if is_zero_steering_policy_enabled || is_high_task_risk; then
+    has_findings="true"
+  fi
+fi
+
 # --- State writes and dimension ticking ---
 
 now_ts="$(now_epoch)"
@@ -115,6 +140,7 @@ if [[ "${REVIEWER_TYPE}" == "excellence" ]]; then
   with_state_lock_batch \
     "last_review_ts" "${now_ts}" \
     "last_excellence_review_ts" "${now_ts}" \
+    "review_format_issue" "${review_format_issue}" \
     "stop_guard_blocks" "0" \
     "session_handoff_blocks" "0" \
     "dimension_guard_blocks" "0"
@@ -127,6 +153,7 @@ else
   batch_args=(
     "last_review_ts" "${now_ts}"
     "review_had_findings" "${has_findings}"
+    "review_format_issue" "${review_format_issue}"
     "stop_guard_blocks" "0"
     "session_handoff_blocks" "0"
     "dimension_guard_blocks" "0"

@@ -173,6 +173,12 @@ jobs:
       - name: Run ULW benchmark suite (v1.33.0 consolidation pin)
         run: bash tests/test-ulw-benchmark-suite.sh
 
+      - name: Run zero-steering policy tests
+        run: bash tests/test-zero-steering-policy.sh
+
+      - name: Run real-work eval suite tests
+        run: bash tests/test-realwork-eval-suite.sh
+
       - name: Run mark-deferred tests (v1.32.0 R1 pin)
         run: bash tests/test-mark-deferred.sh
 

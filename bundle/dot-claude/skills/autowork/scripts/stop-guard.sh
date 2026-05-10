@@ -35,6 +35,22 @@ emit_scorecard_stop_context() {
   emit_stop_message "${body}"
 }
 
+effective_guard_exhaustion_mode() {
+  local serious_missing="${1:-0}"
+  local configured="${OMC_GUARD_EXHAUSTION_MODE:-scorecard}"
+  local risk_tier
+  risk_tier="$(read_state "task_risk_tier" 2>/dev/null || true)"
+
+  if is_zero_steering_policy_enabled; then
+    if [[ "${risk_tier}" == "high" || "${serious_missing}" == "1" ]]; then
+      printf 'block'
+      return 0
+    fi
+  fi
+
+  printf '%s' "${configured}"
+}
+
 last_assistant_message="$(json_get '.last_assistant_message')"
 if [[ -n "${last_assistant_message}" ]]; then
   write_state_batch \
@@ -167,6 +183,14 @@ if ! is_execution_intent_value "${task_intent}"; then
     if [[ "${task_domain_val}" == "coding" || "${task_domain_val}" == "mixed" ]]; then
       advisory_verify_ts="$(read_state "last_advisory_verify_ts")"
       verify_ts="$(read_state "last_verify_ts")"
+      advisory_evidence_count="$(read_state "advisory_evidence_count")"
+      advisory_evidence_count="${advisory_evidence_count:-0}"
+      [[ "${advisory_evidence_count}" =~ ^[0-9]+$ ]] || advisory_evidence_count=0
+      advisory_evidence_required=0
+      task_risk_tier="$(read_state "task_risk_tier")"
+      if [[ "${task_risk_tier}" == "high" ]] || is_zero_steering_policy_enabled; then
+        advisory_evidence_required=2
+      fi
       advisory_guard_blocks="$(read_state "advisory_guard_blocks")"
       advisory_guard_blocks="${advisory_guard_blocks:-0}"
 
@@ -182,6 +206,21 @@ if ! is_execution_intent_value "${task_intent}"; then
           "Advisory analysis without code inspection. Claude is recommending changes without having read the relevant code — ground the recommendation in the source first." \
           "[Advisory gate · 1/1] this is an advisory task over a codebase, but no code inspection or verification was recorded.
 Ground your recommendation in the actual code before finalizing.${advisory_recovery}")"
+        exit 0
+      elif [[ -n "${advisory_verify_ts}" && -z "${verify_ts}" && "${advisory_evidence_required}" -gt 0 && "${advisory_evidence_count}" -lt "${advisory_evidence_required}" && "${advisory_guard_blocks}" -lt 1 ]]; then
+        write_state "advisory_guard_blocks" "$((advisory_guard_blocks + 1))"
+        record_gate_event "advisory" "block" \
+          "block_count=1" "block_cap=1" \
+          "evidence_count=${advisory_evidence_count}" \
+          "evidence_required=${advisory_evidence_required}" \
+          "risk=${task_risk_tier}"
+        advisory_recovery="$(format_gate_recovery_options \
+          "Inspect at least ${advisory_evidence_required} distinct relevant source files or run a verification command, then finalize with file-grounded evidence." \
+          "Bypass once with a reason: \`/ulw-skip <reason>\`.")"
+        emit_stop_block "$(format_gate_block_dual \
+          "High-confidence advisory analysis needs more than a single inspected surface. Claude has inspected ${advisory_evidence_count}/${advisory_evidence_required} distinct source files; broaden the evidence before finalizing." \
+          "[Advisory evidence gate · 1/1] high-risk or zero-steering advisory work needs ${advisory_evidence_required} distinct source-file evidence points before Stop.
+Ground the recommendation in multiple relevant files and cite them in the final response.${advisory_recovery}")"
         exit 0
       fi
     fi
@@ -275,7 +314,8 @@ if [[ "${OMC_EXEMPLIFYING_SCOPE_GATE:-on}" == "on" ]] \
     [[ "${_es_blocks}" =~ ^[0-9]+$ ]] || _es_blocks=0
     _es_cap=2
 
-    if [[ "${_es_blocks}" -lt "${_es_cap}" || "${OMC_GUARD_EXHAUSTION_MODE}" == "block" ]]; then
+    _es_effective_exhaustion_mode="$(effective_guard_exhaustion_mode 1)"
+    if [[ "${_es_blocks}" -lt "${_es_cap}" || "${_es_effective_exhaustion_mode}" == "block" ]]; then
       if [[ "${_es_blocks}" -lt "${_es_cap}" ]]; then
         write_state "exemplifying_scope_blocks" "$((_es_blocks + 1))"
         _es_next_block="$((_es_blocks + 1))"
@@ -298,7 +338,7 @@ ${_es_scorecard}
 ${_es_recovery}"
         _es_human="${_es_pending}/${_es_total} sibling items from your example-marked scope are still pending. Ship them inline, or decline each with a concrete WHY (bare 'out of scope' is rejected by the validator)."
       fi
-      if [[ "${OMC_GUARD_EXHAUSTION_MODE}" == "block" && "${_es_blocks}" -ge "${_es_cap}" ]]; then
+      if [[ "${_es_effective_exhaustion_mode}" == "block" && "${_es_blocks}" -ge "${_es_cap}" ]]; then
         _es_reason="${_es_reason} BLOCK MODE: this gate will not release until the checklist is satisfied."
       fi
       emit_stop_block "$(format_gate_block_dual "${_es_human}" "${_es_reason}")"
@@ -766,10 +806,11 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
           log_hook "stop-guard" "review coverage gate exhausted after 3 blocks: missing=${missing_dims}"
           scorecard="$(build_quality_scorecard)"
 
-          case "${OMC_GUARD_EXHAUSTION_MODE}" in
+          _dim_effective_exhaustion_mode="$(effective_guard_exhaustion_mode 1)"
+          case "${_dim_effective_exhaustion_mode}" in
             block)
               dim_reason="[Review coverage · BLOCK MODE] Guard exhaustion reached but block mode prevents release. QUALITY SCORECARD:\n${scorecard}\nMissing: ${_missing_descriptions}. Address the remaining reviews or switch to guard_exhaustion_mode=scorecard."
-              dim_human="Review coverage exhausted but \`guard_exhaustion_mode=block\` keeps blocking instead of releasing. Either run the missing reviewers (${_missing_descriptions}) — even one focused pass usually clears the gate — or switch \`guard_exhaustion_mode=scorecard\` in \`oh-my-claude.conf\` to release with a scorecard footer instead of continuing to block."
+              dim_human="Review coverage exhausted but the effective policy keeps blocking instead of releasing. Either run the missing reviewers (${_missing_descriptions}) — even one focused pass usually clears the gate — or switch \`guard_exhaustion_mode=scorecard\` / \`quality_policy=balanced\` in \`oh-my-claude.conf\` to release with a scorecard footer instead of continuing to block."
               emit_stop_block "$(format_gate_block_dual "${dim_human}" "${dim_reason}")"
               exit 0
               ;;
@@ -842,7 +883,16 @@ Run excellence-reviewer for fresh-eyes holistic evaluation (completeness, unknow
   # standard gates miss. record-plan.sh resets metis_gate_blocks on
   # every fresh plan, so the cap=1 semantic is "block once per plan
   # cycle", not "block once per session".
+  _metis_gate_enabled=0
+  _metis_zero_steering_high=0
   if [[ "${OMC_METIS_ON_PLAN_GATE}" == "on" ]]; then
+    _metis_gate_enabled=1
+  elif is_zero_steering_policy_enabled && is_high_task_risk; then
+    _metis_gate_enabled=1
+    _metis_zero_steering_high=1
+  fi
+
+  if [[ "${_metis_gate_enabled}" -eq 1 ]]; then
     plan_complexity_high="$(read_state "plan_complexity_high")"
     has_plan="$(read_state "has_plan")"
     plan_ts="$(read_state "plan_ts")"
@@ -862,7 +912,7 @@ Run excellence-reviewer for fresh-eyes holistic evaluation (completeness, unknow
       metis_stale_or_missing=1
     fi
 
-    if [[ "${plan_complexity_high}" == "1" ]] \
+    if { [[ "${plan_complexity_high}" == "1" ]] || [[ "${_metis_zero_steering_high}" -eq 1 ]]; } \
         && [[ "${has_plan}" == "true" ]] \
         && [[ "${metis_stale_or_missing}" -eq 1 ]] \
         && (( metis_gate_blocks < 1 )); then
@@ -1111,15 +1161,21 @@ if [[ "${guard_blocks}" -ge 3 ]]; then
     "session_outcome" "exhausted"
   log_hook "stop-guard" "exhausted after 3 blocks: review=${missing_review} verify=${missing_verify} failed=${verify_failed} unremediated=${review_unremediated} low_conf=${verify_low_confidence}"
 
-  case "${OMC_GUARD_EXHAUSTION_MODE}" in
+  _main_serious_missing=0
+  if [[ "${missing_review}" -eq 1 || "${missing_verify}" -eq 1 || "${verify_failed}" -eq 1 || "${review_unremediated}" -eq 1 ]]; then
+    _main_serious_missing=1
+  fi
+  _main_effective_exhaustion_mode="$(effective_guard_exhaustion_mode "${_main_serious_missing}")"
+
+  case "${_main_effective_exhaustion_mode}" in
     block)
       # Never release — keep blocking with scorecard. Translates the
       # operator-language ("guard exhaustion reached but block mode
       # prevents release") into user-meaning: WHY it keeps blocking
       # and which conf flag changes that.
       emit_stop_block "$(format_gate_block_dual \
-        "Quality gates exhausted (3 blocks fired) but \`guard_exhaustion_mode=block\` keeps blocking instead of releasing — your conf is set to never let work ship without all gates green. Either fix the remaining items in the scorecard, or switch \`guard_exhaustion_mode=scorecard\` in \`oh-my-claude.conf\` if you want a release with a scorecard footer instead." \
-        "[Quality gate · BLOCK MODE] Guard exhaustion reached but block mode prevents release. QUALITY SCORECARD:\n${scorecard}\nAddress the remaining items or switch to guard_exhaustion_mode=scorecard in oh-my-claude.conf.")"
+        "Quality gates exhausted (3 blocks fired) but the effective policy keeps blocking instead of releasing. Either fix the remaining items in the scorecard, or switch \`guard_exhaustion_mode=scorecard\` / \`quality_policy=balanced\` in \`oh-my-claude.conf\` if you want a release with a scorecard footer instead." \
+        "[Quality gate · BLOCK MODE] Guard exhaustion reached but block mode prevents release. QUALITY SCORECARD:\n${scorecard}\nAddress the remaining items or switch to guard_exhaustion_mode=scorecard / quality_policy=balanced in oh-my-claude.conf.")"
       exit 0
       ;;
     scorecard)

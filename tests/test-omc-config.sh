@@ -251,17 +251,19 @@ assert_file_lacks_line "atomic batch: auto_memory not written" "${USER_CONF_PATH
 assert_file_lacks_line "atomic batch: discovered_scope not written" "${USER_CONF_PATH}" "^discovered_scope=on\$"
 teardown
 
-# --- Test 13: apply-preset maximum writes all 25 keys (v1.28.0 added
+# --- Test 13: apply-preset maximum writes all 26 keys (v1.28.0 added
 # blindspot_inventory + intent_broadening; v1.30.0 added prompt_persist;
 # v1.32.0 added divergence_directive; v1.33.0 added directive_budget;
 # v1.34.0 added inferred_contract for Delivery Contract v2;
-# v1.35.0 added shortcut_ratio_gate for shortcut-on-big-tasks defense) ---
-printf 'Test 13: apply-preset maximum writes 25 keys\n'
+# v1.35.0 added shortcut_ratio_gate for shortcut-on-big-tasks defense;
+# zero-steering policy added quality_policy) ---
+printf 'Test 13: apply-preset maximum writes 26 keys\n'
 setup
 out="$(bash "${HELPER}" apply-preset user maximum 2>&1)"
-assert_contains "apply-preset reports 25 keys" "25 keys" "${out}"
+assert_contains "apply-preset reports 26 keys" "26 keys" "${out}"
 assert_file_has_line "maximum: gate_level=full" "${USER_CONF_PATH}" "^gate_level=full\$"
 assert_file_has_line "maximum: guard_exhaustion_mode=block" "${USER_CONF_PATH}" "^guard_exhaustion_mode=block\$"
+assert_file_has_line "maximum: quality_policy=zero_steering" "${USER_CONF_PATH}" "^quality_policy=zero_steering\$"
 assert_file_has_line "maximum: prometheus_suggest=on" "${USER_CONF_PATH}" "^prometheus_suggest=on\$"
 assert_file_has_line "maximum: metis_on_plan_gate=on" "${USER_CONF_PATH}" "^metis_on_plan_gate=on\$"
 assert_file_has_line "maximum: resume_watchdog=on" "${USER_CONF_PATH}" "^resume_watchdog=on\$"
@@ -292,6 +294,7 @@ printf 'Test 14: apply-preset balanced writes balanced defaults\n'
 setup
 bash "${HELPER}" apply-preset user balanced > /dev/null
 assert_file_has_line "balanced: guard_exhaustion_mode=scorecard" "${USER_CONF_PATH}" "^guard_exhaustion_mode=scorecard\$"
+assert_file_has_line "balanced: quality_policy=balanced" "${USER_CONF_PATH}" "^quality_policy=balanced\$"
 assert_file_has_line "balanced: prometheus_suggest=off" "${USER_CONF_PATH}" "^prometheus_suggest=off\$"
 assert_file_has_line "balanced: exemplifying_scope_gate=on" "${USER_CONF_PATH}" "^exemplifying_scope_gate=on\$"
 assert_file_has_line "balanced: resume_watchdog=off" "${USER_CONF_PATH}" "^resume_watchdog=off\$"
@@ -312,6 +315,7 @@ setup
 bash "${HELPER}" apply-preset user minimal > /dev/null
 assert_file_has_line "minimal: gate_level=basic" "${USER_CONF_PATH}" "^gate_level=basic\$"
 assert_file_has_line "minimal: guard_exhaustion_mode=silent" "${USER_CONF_PATH}" "^guard_exhaustion_mode=silent\$"
+assert_file_has_line "minimal: quality_policy=balanced" "${USER_CONF_PATH}" "^quality_policy=balanced\$"
 assert_file_has_line "minimal: auto_memory=off" "${USER_CONF_PATH}" "^auto_memory=off\$"
 assert_file_has_line "minimal: exemplifying_scope_gate=off" "${USER_CONF_PATH}" "^exemplifying_scope_gate=off\$"
 assert_file_has_line "minimal: model_tier=economy" "${USER_CONF_PATH}" "^model_tier=economy\$"
@@ -431,9 +435,13 @@ out="$(bash "${HELPER}" presets maximum 2>&1)"
 assert_contains "presets maximum has gate_level" "gate_level=full" "${out}"
 assert_contains "presets maximum has resume_watchdog" "resume_watchdog=on" "${out}"
 assert_contains "presets maximum has directive_budget=maximum" "directive_budget=maximum" "${out}"
+assert_contains "presets maximum has quality_policy=zero_steering" "quality_policy=zero_steering" "${out}"
 # Maximum must include council_deep_default=on for internal consistency
 # with model_tier=quality. Cost cap lives in Balanced.
 assert_contains "presets maximum has council_deep_default=on" "council_deep_default=on" "${out}"
+out="$(bash "${HELPER}" presets zero-steering 2>&1)"
+assert_contains "presets zero-steering alias has gate_level" "gate_level=full" "${out}"
+assert_contains "presets zero-steering alias has quality_policy" "quality_policy=zero_steering" "${out}"
 out="$(bash "${HELPER}" presets minimal 2>&1)"
 assert_contains "presets minimal has gate_level basic" "gate_level=basic" "${out}"
 assert_contains "presets minimal has directive_budget=minimal" "directive_budget=minimal" "${out}"

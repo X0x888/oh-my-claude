@@ -189,11 +189,23 @@ assert_not_contains "T1: no advisory-over-code on direct execution" "ADVISORY OV
 
 # ----------------------------------------------------------------------
 printf 'Test 2: broad repo evaluation routes through council without collapsing into generic execution\n'
-ctx="$(_run_router_context "t2-${RANDOM}" "${_COUNCIL_PROMPT}")"
+sid_2="t2-${RANDOM}"
+ctx="$(_run_router_context "${sid_2}" "${_COUNCIL_PROMPT}")"
 assert_contains "T2: council evaluation directive present" "COUNCIL EVALUATION DETECTED" "${ctx}"
 assert_contains "T2: mixed-domain routing still surfaced" "Detected likely task domain: mixed." "${ctx}"
 assert_contains "T2: project-surface broadening still present" "INTENT-BROADENING DIRECTIVE" "${ctx}"
 assert_not_contains "T2: no advisory-over-code on execution-style council entry" "ADVISORY OVER CODE" "${ctx}"
+risk_2="$(jq -r '.task_risk_tier // ""' "${_test_state_root}/${sid_2}/session_state.json")"
+assert_eq "T2: broad repo eval classified high risk" "high" "${risk_2}"
+
+# ----------------------------------------------------------------------
+printf 'Test 2b: zero-steering policy injects compact strictness directive\n'
+sid_2b="t2b-${RANDOM}"
+ctx="$(_run_router_context "${sid_2b}" "${_COUNCIL_PROMPT}" OMC_QUALITY_POLICY=zero_steering)"
+assert_contains "T2b: zero-steering directive present" "ZERO-STEERING POLICY" "${ctx}"
+assert_contains "T2b: high-risk wording present" "high-risk autonomous shipping work" "${ctx}"
+policy_2b="$(jq -r '.quality_policy // ""' "${_test_state_root}/${sid_2b}/session_state.json")"
+assert_eq "T2b: quality policy persisted" "zero_steering" "${policy_2b}"
 
 # ----------------------------------------------------------------------
 printf 'Test 3: example-marker execution preserves widening + checklist discipline\n'
