@@ -291,15 +291,17 @@ if [[ "${OMC_EXEMPLIFYING_SCOPE_GATE:-on}" == "on" ]] \
       _es_recovery="$(format_gate_recovery_line "inspect the exemplified surface, run \`~/.claude/skills/autowork/scripts/record-scope-checklist.sh init\` with the sibling items, then mark each item \`shipped\` or \`declined <concrete why>\`. Bare 'out of scope' / 'not in scope' is not a reason. To bypass once with reason, run /ulw-skip.")"
       if [[ "${_es_missing}" -eq 1 ]]; then
         _es_reason="[Exemplifying-scope gate · ${_es_next_block}/${_es_cap}] this prompt used example markers, so the example is one item from a class, but no current scope checklist was recorded. ULW must not silently implement only the literal example. Record the sibling items a veteran would bundle into this pass before finalizing.${_es_recovery}"
+        _es_human="Your prompt used example markers (\`for instance\`, \`e.g.\`, \`such as\`) — that names ONE item from a class, not the whole scope. Claude needs to enumerate the sibling items in that class before stopping, not silently ship only the literal example."
       else
         _es_reason="[Exemplifying-scope gate · ${_es_next_block}/${_es_cap}] ${_es_pending}/${_es_total} exemplified-scope checklist item(s) are still pending. Ship them, or mark individual items declined with a concrete WHY. Current checklist:
 ${_es_scorecard}
 ${_es_recovery}"
+        _es_human="${_es_pending}/${_es_total} sibling items from your example-marked scope are still pending. Ship them inline, or decline each with a concrete WHY (bare 'out of scope' is rejected by the validator)."
       fi
       if [[ "${OMC_GUARD_EXHAUSTION_MODE}" == "block" && "${_es_blocks}" -ge "${_es_cap}" ]]; then
         _es_reason="${_es_reason} BLOCK MODE: this gate will not release until the checklist is satisfied."
       fi
-      emit_stop_block "${_es_reason}"
+      emit_stop_block "$(format_gate_block_dual "${_es_human}" "${_es_reason}")"
       exit 0
     fi
 
@@ -738,15 +740,17 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
           done
 
           dim_reason="[Review coverage · $((dim_blocks + 1))/3 · ${_done_dims}/${_total_dims} dimensions] complex task requires prescribed review coverage. Progress:${_checklist}\nNext step: run \`${next_reviewer}\` to cover ${next_description}. Each reviewer owns a distinct review area — do not substitute or reorder. After the reviewer returns, address any findings, then retry stop. After completing this, restate your key deliverable summary at the end of your response."
+          dim_human="Complex task needs ${_total_dims} reviewer dimensions; ${_done_dims} done. Next: \`${next_reviewer}\` covers ${next_description} — each reviewer owns a distinct area, substitutes don't satisfy the gate."
           if [[ "${dim_blocks}" -ge 2 ]]; then
             dim_reason="${dim_reason} NOTE: this is the final review-coverage block — the next stop attempt will bypass this check."
+            dim_human="${dim_human} This is the final review-coverage block; next stop attempt will bypass this check."
           fi
           record_gate_event "review-coverage" "block" \
             "block_count=$((dim_blocks + 1))" "block_cap=3" \
             "missing_dims=${missing_dims}" \
             "next_reviewer=${next_reviewer}" \
             "done_dims=${_done_dims}" "total_dims=${_total_dims}"
-          emit_stop_block "${dim_reason}"
+          emit_stop_block "$(format_gate_block_dual "${dim_human}" "${dim_reason}")"
           exit 0
         else
           # Review coverage gate exhaustion: handle based on mode
@@ -760,7 +764,8 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
           case "${OMC_GUARD_EXHAUSTION_MODE}" in
             block)
               dim_reason="[Review coverage · BLOCK MODE] Guard exhaustion reached but block mode prevents release. QUALITY SCORECARD:\n${scorecard}\nMissing: ${_missing_descriptions}. Address the remaining reviews or switch to guard_exhaustion_mode=scorecard."
-              emit_stop_block "${dim_reason}"
+              dim_human="Review coverage exhausted but \`guard_exhaustion_mode=block\` keeps blocking instead of releasing. Either run the missing reviewers (${_missing_descriptions}) — even one focused pass usually clears the gate — or switch \`guard_exhaustion_mode=scorecard\` in \`oh-my-claude.conf\` to release with a scorecard footer instead of continuing to block."
+              emit_stop_block "$(format_gate_block_dual "${dim_human}" "${dim_reason}")"
               exit 0
               ;;
             scorecard)
@@ -811,8 +816,10 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
       "edited_count=${unique_edited_count}"
     excellence_recovery="$(format_gate_recovery_line "dispatch the excellence-reviewer agent on the wave diff, then restate your deliverable summary. To bypass once with reason (e.g., already self-audited), run /ulw-skip.")"
     # v1.34.1+ (P-002): tighter excellence-gate block.
-    emit_stop_block "[Excellence gate · 1/1] review/verify passed, but this is a complex task (${unique_edited_count} files edited).
-Run excellence-reviewer for fresh-eyes holistic evaluation (completeness, unknown unknowns, polish a veteran would add) before finalizing.${excellence_recovery}"
+    emit_stop_block "$(format_gate_block_dual \
+      "Wave touched ${unique_edited_count} files — quality-reviewer catches defects, but excellence-reviewer is the fresh-eyes pass for completeness, unknown unknowns, and polish a veteran would add. Different ground; complex waves need both." \
+      "[Excellence gate · 1/1] review/verify passed, but this is a complex task (${unique_edited_count} files edited).
+Run excellence-reviewer for fresh-eyes holistic evaluation (completeness, unknown unknowns, polish a veteran would add) before finalizing.${excellence_recovery}")"
     exit 0
   fi
   fi # end gate_level full|standard (excellence gate)
@@ -861,8 +868,10 @@ Run excellence-reviewer for fresh-eyes holistic evaluation (completeness, unknow
         "complexity_signals=${plan_complexity_signals}"
       metis_recovery="$(format_gate_recovery_line "dispatch the metis agent on the current plan to stress-test for hidden assumptions, missing constraints, and weak validation. To bypass once with reason (e.g., simple greenfield plan), run /ulw-skip.")"
       # v1.34.1+ (P-002): tighter metis-on-plan block.
-      emit_stop_block "[Metis-on-plan gate · 1/1] plan flagged high-complexity (${plan_complexity_signals}) but no metis stress-test recorded since the plan landed.
-Run metis to pressure-test for wrong-abstraction / missing-constraint risks before execution.${metis_recovery}"
+      emit_stop_block "$(format_gate_block_dual \
+        "Plan flagged high-complexity (${plan_complexity_signals}) — risky plans need a second-opinion stress-test before execution. metis pressure-tests for hidden assumptions and missing constraints; that's a different lens from oracle (debugging) or quality-reviewer (post-implementation defects)." \
+        "[Metis-on-plan gate · 1/1] plan flagged high-complexity (${plan_complexity_signals}) but no metis stress-test recorded since the plan landed.
+Run metis to pressure-test for wrong-abstraction / missing-constraint risks before execution.${metis_recovery}")"
       exit 0
     fi
   fi
@@ -905,10 +914,26 @@ Run metis to pressure-test for wrong-abstraction / missing-constraint risks befo
       "inferred_rules=$(read_state "inferred_contract_rules")"
     contract_recovery="$(format_gate_recovery_line "finish the missing surface(s) — items tagged with (R1/R2/R3a/R3b/R4/R5) were inferred from your edits and are silent misses unless addressed. If the repo genuinely cannot support one of them, name that constraint explicitly in your wrap before stopping. For explicit commits or publish actions, do the action now or explain why it is impossible in this repo.")"
     # v1.34.1+ (P-002): tighter delivery-contract block; the
-    # contract_blockers list already names what's missing.
-    emit_stop_block "[Delivery-contract gate] work drifting from prompt-stated contract and/or surfaces inferred from edits.
+    # contract_blockers list already names what's missing. The FOR YOU
+    # human summary names BOTH layers (prompt-stated vs inferred from
+    # edits) so the user can see at a glance which contracts the gate
+    # is enforcing — Wave 2 deepens this with explicit "you said X /
+    # but edits Y imply Z" surfacing per Item 4.
+    contract_human_summary=""
+    if [[ "${contract_blocker_prompt_count}" -gt 0 ]]; then
+      contract_human_summary="${contract_blocker_prompt_count} prompt-stated surface(s) you committed to (commit, publish, etc.) not done"
+    fi
+    if [[ "${contract_blocker_inferred_count}" -gt 0 ]]; then
+      if [[ -n "${contract_human_summary}" ]]; then
+        contract_human_summary="${contract_human_summary}; ${contract_blocker_inferred_count} surface(s) inferred from your edits (tests, changelog, docs) silently missing"
+      else
+        contract_human_summary="${contract_blocker_inferred_count} surface(s) inferred from your edits (tests, changelog, docs) silently missing"
+      fi
+    fi
+    contract_human="${contract_blocker_count} delivery-contract item(s) remaining: ${contract_human_summary}. Finish them, or run \`/mark-deferred <reason>\` if a constraint genuinely blocks (validator rejects bare 'out of scope')."
+    emit_stop_block "$(format_gate_block_dual "${contract_human}" "[Delivery-contract gate] work drifting from prompt-stated contract and/or surfaces inferred from edits.
 Remaining before Stop:
-- ${contract_blockers//$'\n'/$'\n- '}${contract_recovery}"
+- ${contract_blockers//$'\n'/$'\n- '}${contract_recovery}")"
     exit 0
   fi
 
@@ -1008,8 +1033,10 @@ Remaining before Stop:
       "deferred_finding_count=${closure_deferred_finding_count}"
     closure_recovery="$(format_gate_recovery_line "restate the final wrap using \`**Changed.**\` (or \`**Shipped.**\`), \`**Verification.**\`, and \`**Next.**\`. Name the exact verification command when one ran. If anything was deferred, add \`**Risks.**\` and state the WHY. If no further action is queued, \`**Next.** Done.\` is enough.")"
     # v1.34.1+ (P-002): tighter final-closure block.
-    emit_stop_block "[Final-closure gate] work is clean but the final response isn't audit-ready.
-Missing: ${closure_missing}.${closure_recovery}"
+    emit_stop_block "$(format_gate_block_dual \
+      "Work is clean but the wrap-up isn't audit-ready — restate using **Changed.** / **Verification.** / **Next.** (and **Risks.** if anything's deferred) so you don't have to interrogate the model for what shipped." \
+      "[Final-closure gate] work is clean but the final response isn't audit-ready.
+Missing: ${closure_missing}.${closure_recovery}")"
     exit 0
   fi
 
@@ -1035,8 +1062,13 @@ if [[ "${guard_blocks}" -ge 3 ]]; then
 
   case "${OMC_GUARD_EXHAUSTION_MODE}" in
     block)
-      # Never release — keep blocking with scorecard
-      emit_stop_block "[Quality gate · BLOCK MODE] Guard exhaustion reached but block mode prevents release. QUALITY SCORECARD:\n${scorecard}\nAddress the remaining items or switch to guard_exhaustion_mode=scorecard in oh-my-claude.conf."
+      # Never release — keep blocking with scorecard. Translates the
+      # operator-language ("guard exhaustion reached but block mode
+      # prevents release") into user-meaning: WHY it keeps blocking
+      # and which conf flag changes that.
+      emit_stop_block "$(format_gate_block_dual \
+        "Quality gates exhausted (3 blocks fired) but \`guard_exhaustion_mode=block\` keeps blocking instead of releasing — your conf is set to never let work ship without all gates green. Either fix the remaining items in the scorecard, or switch \`guard_exhaustion_mode=scorecard\` in \`oh-my-claude.conf\` if you want a release with a scorecard footer instead." \
+        "[Quality gate · BLOCK MODE] Guard exhaustion reached but block mode prevents release. QUALITY SCORECARD:\n${scorecard}\nAddress the remaining items or switch to guard_exhaustion_mode=scorecard in oh-my-claude.conf.")"
       exit 0
       ;;
     scorecard)
@@ -1210,4 +1242,39 @@ record_gate_event "quality" "block" \
   "verify_failed=${verify_failed}" \
   "verify_low_confidence=${verify_low_confidence}" \
   "review_unremediated=${review_unremediated}"
-emit_stop_block "${reason}"
+
+# v1.37.x W1: dual-audience framing (F-011 follow-up). Build the human
+# summary dynamically so the FOR YOU line tracks the actual state — the
+# combinatorial reason above (guard_blocks 0/1/2 × missing_review ×
+# missing_verify × verify_failed × verify_low_confidence × code/doc
+# routing) means a static FOR YOU would mislead. Authoring per state.
+human_block_count=$((guard_blocks + 1))
+quality_human=""
+if [[ "${verify_failed}" -eq 1 ]]; then
+  quality_human="Verification failed — fix the failing tests before stopping (block ${human_block_count}/3)."
+elif [[ "${verify_low_confidence}" -eq 1 ]]; then
+  if [[ -n "${project_test_cmd}" ]]; then
+    quality_human="Verification ran but with low confidence (${last_verify_confidence}/100). Run \`${project_test_cmd}\` for proper validation (block ${human_block_count}/3)."
+  else
+    quality_human="Verification ran but with low confidence (${last_verify_confidence}/100). Run a more comprehensive test command (project test suite) before stopping (block ${human_block_count}/3)."
+  fi
+elif [[ "${missing_review}" -eq 1 && "${missing_verify}" -eq 1 ]]; then
+  quality_human="Both review and verification missing — code shipped without either signal. Run validation, then ${review_target_label} (block ${human_block_count}/3)."
+elif [[ "${missing_review}" -eq 1 ]]; then
+  quality_human="Review missing — run ${review_target_label} on the diff before stopping (block ${human_block_count}/3)."
+elif [[ "${missing_verify}" -eq 1 ]]; then
+  if [[ -n "${project_test_cmd}" ]]; then
+    quality_human="Verification missing — run \`${project_test_cmd}\` before stopping (block ${human_block_count}/3)."
+  else
+    quality_human="Verification missing — run the smallest meaningful validation before stopping (block ${human_block_count}/3)."
+  fi
+elif [[ "${review_unremediated}" -eq 1 ]]; then
+  quality_human="Reviewer flagged findings that weren't addressed — fix them or explain why they don't apply (block ${human_block_count}/3)."
+else
+  quality_human="Quality gate fired — review/verify state isn't clean (block ${human_block_count}/3)."
+fi
+if [[ "${guard_blocks}" -ge 2 ]]; then
+  quality_human="${quality_human} This is the final guard block; next stop will be allowed regardless of completion."
+fi
+
+emit_stop_block "$(format_gate_block_dual "${quality_human}" "${reason}")"
