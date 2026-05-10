@@ -136,7 +136,7 @@ oh-my-claude/
     output-styles/            # Two bundled output styles: oh-my-claude.md (compact CLI default) + executive-brief.md (CEO-style status report)
     quality-pack/
       memory/                 # Core, skills, and compact memory files
-      scripts/                # 10 lifecycle scripts (prompt routing, compaction, session start [4 hooks incl. drift-check], stop-failure, resume-watchdog)
+      scripts/                # 11 lifecycle scripts (prompt routing, compaction, session start [5 hooks incl. drift-check + whats-new], stop-failure, resume-watchdog)
     skills/                   # 26 skill definitions, each in <name>/SKILL.md
       autowork/scripts/       # 34 autowork hook scripts and utilities
         common.sh             # Shared functions (JSON, classification, scope)
@@ -149,7 +149,7 @@ oh-my-claude/
   config/
     settings.patch.json       # Settings merged into user's settings.json
 
-  tests/                      # 85 bash + 1 python test scripts; CLAUDE.md "Testing" lists each one
+  tests/                      # 86 bash + 1 python test scripts; CLAUDE.md "Testing" lists each one
 
   tools/                      # Developer tools (not installed)
     replay-classifier-telemetry.sh

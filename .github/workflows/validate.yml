@@ -296,5 +296,8 @@ jobs:
       - name: W5 discovery surfaces regression (v1.36.x)
         run: bash tests/test-w5-discovery.sh
 
+      - name: v1.37.x W2 follow-up regression
+        run: bash tests/test-v1-37x-w2-followup.sh
+
       - name: Run statusline tests
         run: python3 -m unittest tests.test_statusline -v

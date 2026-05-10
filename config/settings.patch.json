@@ -56,6 +56,14 @@
         "hooks": [
           {
             "type": "command",
+            "command": "bash $HOME/.claude/quality-pack/scripts/session-start-whats-new.sh"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
             "command": "bash $HOME/.claude/quality-pack/scripts/session-start-welcome.sh"
           }
         ]

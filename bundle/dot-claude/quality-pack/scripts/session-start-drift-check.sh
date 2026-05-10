@@ -47,20 +47,59 @@ if [[ -z "${drift}" ]]; then
   exit 0
 fi
 
+# v1.37.x W2 F-002: CWD-aware downgrade — when the current working
+# directory is at or under repo_path (the user is editing the source
+# repo), drift is expected during dev (the user just made the change
+# they haven't installed yet). The full warning stays for OTHER
+# projects so you don't lose drift safety repo-wide. The pre-fix
+# global escape (installation_drift_check=false) costs you the safety
+# in every project; this lets you keep it on globally and still get a
+# calm message in the source repo itself.
+in_source_repo=0
+conf="${HOME}/.claude/oh-my-claude.conf"
+if [[ -f "${conf}" ]]; then
+  conf_repo_path="$(grep -E '^repo_path=' "${conf}" 2>/dev/null \
+    | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'" | xargs)"
+  if [[ -n "${conf_repo_path}" ]] && [[ -d "${conf_repo_path}" ]]; then
+    # Resolve both to canonical absolute paths so symlinks / relative
+    # PWD don't produce spurious mismatches. PWD must be at OR under
+    # repo_path — exact match alone is too narrow (subdirs are still
+    # the source tree).
+    cwd_resolved="$(cd "${PWD}" && pwd -P 2>/dev/null || true)"
+    repo_resolved="$(cd "${conf_repo_path}" && pwd -P 2>/dev/null || true)"
+    if [[ -n "${cwd_resolved}" ]] && [[ -n "${repo_resolved}" ]]; then
+      if [[ "${cwd_resolved}" == "${repo_resolved}" ]] \
+        || [[ "${cwd_resolved}" == "${repo_resolved}/"* ]]; then
+        in_source_repo=1
+      fi
+    fi
+  fi
+fi
+
 # Compose the additionalContext payload. The notice is intentionally
 # concise — one bold lead, one fix line, one why line. Model behavior
 # we want: when /ulw runs, the model surfaces the drift in its opener
-# rather than silently relying on stale gates.
+# rather than silently relying on stale gates. Downgraded copy when
+# in_source_repo=1 trades the urgent-fix framing for a "this is
+# expected during dev" framing the model relays calmly.
 case "${drift}" in
   tag:*)
     drift_version="${drift#tag:}"
-    drift_msg="**Bundle drift detected.** The source repo at \`${drift_version}\` is ahead of your installed bundle. Run \`bash install.sh\` from the source tree before relying on new gate behavior — your hooks are still running the old version."
+    if [[ "${in_source_repo}" -eq 1 ]]; then
+      drift_msg="**Bundle drift (working in source repo).** The source repo VERSION (\`${drift_version}\`) is ahead of the installed bundle — drift is expected during dev. Run \`bash install.sh\` once the changes are ready to use the new behavior."
+    else
+      drift_msg="**Bundle drift detected.** The source repo at \`${drift_version}\` is ahead of your installed bundle. Run \`bash install.sh\` from the source tree before relying on new gate behavior — your hooks are still running the old version."
+    fi
     ;;
   commits:*)
     drift_rest="${drift#commits:}"
     drift_version="${drift_rest%%:*}"
     drift_commits="${drift_rest##*:}"
-    drift_msg="**Bundle drift detected.** Your installed bundle (\`${drift_version}\`) is ${drift_commits} commit(s) behind the source repo HEAD. Run \`bash install.sh\` from the source tree to pick up the new commits — your hooks are running the older snapshot."
+    if [[ "${in_source_repo}" -eq 1 ]]; then
+      drift_msg="**Bundle drift (working in source repo).** The source repo HEAD is ${drift_commits} commit(s) ahead of the installed bundle (\`${drift_version}\`) — drift is expected during dev. Run \`bash install.sh\` once the changes are ready."
+    else
+      drift_msg="**Bundle drift detected.** Your installed bundle (\`${drift_version}\`) is ${drift_commits} commit(s) behind the source repo HEAD. Run \`bash install.sh\` from the source tree to pick up the new commits — your hooks are running the older snapshot."
+    fi
     ;;
   *)
     exit 0
@@ -95,6 +134,7 @@ write_state "drift_check_emitted" "1"
 record_gate_event "installation-drift" "drift-detected" \
   "drift_kind=${drift%%:*}" \
   "version=${drift_version:-unknown}" \
-  "commits=${drift_commits:-0}"
+  "commits=${drift_commits:-0}" \
+  "in_source_repo=${in_source_repo:-0}"
 
-log_hook "session-start-drift-check" "drift detected: ${drift}"
+log_hook "session-start-drift-check" "drift detected: ${drift} in_source_repo=${in_source_repo:-0}"

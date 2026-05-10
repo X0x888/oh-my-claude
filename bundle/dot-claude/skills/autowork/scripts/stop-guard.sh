@@ -428,9 +428,14 @@ if [[ "${OMC_DISCOVERED_SCOPE}" == "on" ]] \
         "Bypass once: \`/ulw-skip <reason>\`." \
         "If you fixed a verified adjacent defect on the same code path, log it via \`record-serendipity.sh\` per the Serendipity Rule.")"
       # v1.36.x W3 F-011 / F-012: dual-audience framing + structured
-      # multi-option recovery.
+      # multi-option recovery. v1.37.x W2: FOR YOU explicitly names the
+      # PREFERENCE order — ship inline > wave-append > defer — instead
+      # of presenting the three as equals (the equality framing was
+      # the documented Item 8 gap). The escalation order lives in
+      # core.md ~lines 70-90; surfacing it here means the user reading
+      # the gate block doesn't have to remember it.
       emit_stop_block "$(format_gate_block_dual \
-        "${pending_count} advisory finding(s) surfaced by lenses or specialists this session aren't addressed in the summary. Either ship them inline, wave-append, or defer with a concrete reason (not 'out of scope')." \
+        "${pending_count} advisory finding(s) surfaced by lenses or specialists this session aren't addressed in the summary. Preference order: (1) ship inline, (2) wave-append (\`record-finding-list.sh add-finding\` + \`assign-wave\` for same-surface follow-on work — preferred over defer when the finding lives in code you're already touching), (3) defer with a concrete WHY (validator rejects bare 'out of scope' / 'follow-up')." \
         "[Discovered-scope gate · $((discovered_scope_blocks + 1))/${scope_block_cap}] ${pending_count} advisory finding(s) captured this session not addressed in your summary.${wave_progress}
 Top pending (severity-ranked):
 ${scorecard}${scope_recovery}")"
@@ -914,23 +919,69 @@ Run metis to pressure-test for wrong-abstraction / missing-constraint risks befo
       "inferred_rules=$(read_state "inferred_contract_rules")"
     contract_recovery="$(format_gate_recovery_line "finish the missing surface(s) — items tagged with (R1/R2/R3a/R3b/R4/R5) were inferred from your edits and are silent misses unless addressed. If the repo genuinely cannot support one of them, name that constraint explicitly in your wrap before stopping. For explicit commits or publish actions, do the action now or explain why it is impossible in this repo.")"
     # v1.34.1+ (P-002): tighter delivery-contract block; the
-    # contract_blockers list already names what's missing. The FOR YOU
-    # human summary names BOTH layers (prompt-stated vs inferred from
-    # edits) so the user can see at a glance which contracts the gate
-    # is enforcing — Wave 2 deepens this with explicit "you said X /
-    # but edits Y imply Z" surfacing per Item 4.
-    contract_human_summary=""
-    if [[ "${contract_blocker_prompt_count}" -gt 0 ]]; then
-      contract_human_summary="${contract_blocker_prompt_count} prompt-stated surface(s) you committed to (commit, publish, etc.) not done"
-    fi
-    if [[ "${contract_blocker_inferred_count}" -gt 0 ]]; then
-      if [[ -n "${contract_human_summary}" ]]; then
-        contract_human_summary="${contract_human_summary}; ${contract_blocker_inferred_count} surface(s) inferred from your edits (tests, changelog, docs) silently missing"
-      else
-        contract_human_summary="${contract_blocker_inferred_count} surface(s) inferred from your edits (tests, changelog, docs) silently missing"
+    # contract_blockers list already names what's missing.
+    #
+    # v1.37.x W2 Item 4: the FOR YOU summary names BOTH layers
+    # (prompt-stated vs inferred from edits) AND surfaces the
+    # commit_mode=forbidden + inferred-blocker shape explicitly. Pre-
+    # fix, a user who said "do X but don't commit" then triggered the
+    # inferred-contract gate (because edits implied tests/docs) saw
+    # only "[Delivery-contract gate] work drifting from prompt-stated
+    # contract..." — the connection between the user's "don't commit"
+    # constraint and the inferred blockers wasn't surfaced. Now the
+    # FOR YOU explicitly says "you asked me not to commit, but the
+    # edits to <surfaces> imply <those surfaces> are needed; ship
+    # those or run /mark-deferred."
+    commit_mode_state="$(read_state "done_contract_commit_mode")"
+    inferred_surface_categories=""
+    if [[ -n "${contract_blockers_inferred}" ]]; then
+      # Extract the inferred-rule tags (R1/R2/R3a/R3b/R4/R5) so the
+      # FOR YOU names the categories rather than the count alone. Each
+      # tag corresponds to a class: R1=tests, R2=changelog, R3a=conf-
+      # parser, R3b=conf-example, R4=docs, R5=migration-notes. See
+      # inferred_contract_blocking_items in common.sh for the full
+      # mapping.
+      _icat_tags="$(printf '%s\n' "${contract_blockers_inferred}" \
+        | grep -oE '\(R[0-9]+[a-z]?\)' | sort -u | tr -d '()' \
+        | tr '\n' ',' | sed 's/,$//')"
+      _icat_human=()
+      [[ "${_icat_tags}" == *"R1"* ]] && _icat_human+=("tests")
+      [[ "${_icat_tags}" == *"R2"* ]] && _icat_human+=("CHANGELOG")
+      [[ "${_icat_tags}" == *"R3a"* ]] && _icat_human+=("conf parser")
+      [[ "${_icat_tags}" == *"R3b"* ]] && _icat_human+=("conf example")
+      [[ "${_icat_tags}" == *"R4"* ]] && _icat_human+=("docs")
+      [[ "${_icat_tags}" == *"R5"* ]] && _icat_human+=("release notes / migration")
+      if [[ "${#_icat_human[@]}" -gt 0 ]]; then
+        inferred_surface_categories="${_icat_human[0]}"
+        for _icat_i in "${_icat_human[@]:1}"; do
+          inferred_surface_categories="${inferred_surface_categories}, ${_icat_i}"
+        done
       fi
     fi
-    contract_human="${contract_blocker_count} delivery-contract item(s) remaining: ${contract_human_summary}. Finish them, or run \`/mark-deferred <reason>\` if a constraint genuinely blocks (validator rejects bare 'out of scope')."
+
+    contract_human=""
+    if [[ "${commit_mode_state}" == "forbidden" ]] \
+      && [[ "${contract_blocker_inferred_count}" -gt 0 ]] \
+      && [[ "${contract_blocker_prompt_count}" -eq 0 ]]; then
+      # Specific shape Item 4 names: user said don't commit, edits
+      # imply support surfaces; surface that connection.
+      contract_human="You asked me not to commit, but the edits imply ${inferred_surface_categories:-tests/docs/CHANGELOG} are needed (${contract_blocker_inferred_count} inferred surface(s)). Ship those, or run \`/mark-deferred <reason>\` per item if a constraint genuinely blocks."
+    else
+      # General case: name both layers separately.
+      contract_human_summary=""
+      if [[ "${contract_blocker_prompt_count}" -gt 0 ]]; then
+        contract_human_summary="${contract_blocker_prompt_count} prompt-stated surface(s) you committed to (commit, publish, etc.) not done"
+      fi
+      if [[ "${contract_blocker_inferred_count}" -gt 0 ]]; then
+        _inferred_phrase="${contract_blocker_inferred_count} surface(s) inferred from your edits (${inferred_surface_categories:-tests/docs/CHANGELOG}) silently missing"
+        if [[ -n "${contract_human_summary}" ]]; then
+          contract_human_summary="${contract_human_summary}; ${_inferred_phrase}"
+        else
+          contract_human_summary="${_inferred_phrase}"
+        fi
+      fi
+      contract_human="${contract_blocker_count} delivery-contract item(s) remaining: ${contract_human_summary}. Finish them, or run \`/mark-deferred <reason>\` if a constraint genuinely blocks (validator rejects bare 'out of scope')."
+    fi
     emit_stop_block "$(format_gate_block_dual "${contract_human}" "[Delivery-contract gate] work drifting from prompt-stated contract and/or surfaces inferred from edits.
 Remaining before Stop:
 - ${contract_blockers//$'\n'/$'\n- '}${contract_recovery}")"

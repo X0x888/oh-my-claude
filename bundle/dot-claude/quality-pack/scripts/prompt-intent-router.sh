@@ -443,6 +443,17 @@ flush_directives() {
   local surface_axis_count=0
   local paradigm_axis_count=0
   local line priority idx axis chars reason axis_cap axis_used
+  # v1.37.x W2 F-009 (Item 9 follow-up): track off-mode hard-ceiling
+  # suppressions so we can surface a one-line additionalContext to the
+  # user. Pre-fix, off-mode users who hit the 12000-char/12-count
+  # ceiling silently got fewer directives than expected — only the
+  # gate_events.jsonl row recorded it. Surfacing the count tells the
+  # user WHY directives were suppressed even though they set
+  # `directive_budget=off` to "see everything", and points them to
+  # /ulw-report for the per-directive breakdown.
+  local off_mode_suppression_count=0
+  local off_mode_suppression_chars=0
+  local off_mode_first_suppressed=""
   while IFS= read -r line; do
     [[ -z "${line}" ]] && continue
     IFS=$'\t' read -r priority idx <<<"${line}"
@@ -507,6 +518,11 @@ flush_directives() {
         "soft_count_used=${soft_count_used}" \
         "soft_count_limit=${soft_count_limit}"
       log_hook "prompt-intent-router" "directive-budget: suppressed ${directive_names[$idx]} reason=${reason} mode=${mode}"
+      if [[ "${reason}" == off_mode_* ]]; then
+        off_mode_suppression_count=$((off_mode_suppression_count + 1))
+        off_mode_suppression_chars=$((off_mode_suppression_chars + chars))
+        [[ -z "${off_mode_first_suppressed}" ]] && off_mode_first_suppressed="${directive_names[$idx]}"
+      fi
       continue
     fi
 
@@ -539,6 +555,22 @@ flush_directives() {
       fi
     fi
   done
+
+  # v1.37.x W2 F-009 (Item 9): surface off-mode hard-ceiling
+  # suppressions to the user. Pre-fix, the cap fires SILENTLY — the
+  # gate_events.jsonl row records each suppression but the user who
+  # set `directive_budget=off` to "see everything" sees fewer
+  # directives than expected with no signal that anything was cut.
+  # The notice fires once per turn, naming the count, the cap, and
+  # the first-suppressed directive — and points the user at
+  # /ulw-report's "Directive value attribution" section for the
+  # full per-directive accounting.
+  if [[ "${mode}" == "off" ]] && (( off_mode_suppression_count > 0 )); then
+    local _off_cap_chars _off_cap_count
+    _off_cap_chars="$(directive_budget_off_hard_cap chars)"
+    _off_cap_count="$(directive_budget_off_hard_cap count)"
+    context_parts+=("**\`directive_budget=off\` hard-ceiling fired.** ${off_mode_suppression_count} directive(s) (\`${off_mode_suppression_chars}\` chars total) suppressed despite \`directive_budget=off\` — the off-mode hard ceiling (\`${_off_cap_chars}\` chars / \`${_off_cap_count}\` directives) still applies as a runaway-prompt floor. First suppressed: \`${off_mode_first_suppressed}\`. See \`/ulw-report\` § Directive value attribution for the full per-directive breakdown.")
+  fi
 }
 
 # State-corruption recovery surface (v1.29.0). lib/state-io.sh archives

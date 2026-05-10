@@ -202,6 +202,17 @@
 # Env: OMC_INSTALLATION_DRIFT_CHECK.
 #installation_drift_check=true
 
+# Whats-new SessionStart hint. When the installed_version differs from
+# the version the previous session saw (i.e., you just re-ran
+# install.sh), the first SessionStart after the install emits a one-
+# shot "oh-my-claude updated. <prev> → <new> — run /whats-new" notice.
+# Stamps cross-session at ~/.claude/quality-pack/.last_session_seen_version
+# so it fires exactly once per version transition. Symmetric counterpart
+# to installation_drift_check (drift surfaces a git-pull-without-install;
+# this surfaces a re-install). Default true.
+# Env: OMC_WHATS_NEW_SESSION_HINT.
+#whats_new_session_hint=true
+
 # ---------------------------------------------------------------------------
 # Memory & telemetry — what gets persisted across sessions.
 # ---------------------------------------------------------------------------

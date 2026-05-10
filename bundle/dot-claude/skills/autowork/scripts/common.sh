@@ -63,6 +63,7 @@ _omc_env_blindspot_ttl="${OMC_BLINDSPOT_TTL_SECONDS:-}"
 _omc_env_claude_bin="${OMC_CLAUDE_BIN:-}"
 _omc_env_resume_request_per_cwd_cap="${OMC_RESUME_REQUEST_PER_CWD_CAP:-}"
 _omc_env_inferred_contract="${OMC_INFERRED_CONTRACT:-}"
+_omc_env_whats_new_session_hint="${OMC_WHATS_NEW_SESSION_HINT:-}"
 
 OMC_STALL_THRESHOLD="${OMC_STALL_THRESHOLD:-12}"
 OMC_EXCELLENCE_FILE_COUNT="${OMC_EXCELLENCE_FILE_COUNT:-3}"
@@ -145,6 +146,14 @@ OMC_COUNCIL_DEEP_DEFAULT="${OMC_COUNCIL_DEEP_DEFAULT:-off}"
 # session memory should not accrue across runs. Explicit user requests
 # ("remember that...") still apply regardless of this flag.
 OMC_AUTO_MEMORY="${OMC_AUTO_MEMORY:-on}"
+# Whats-new SessionStart hint: when `true` (default), the first
+# SessionStart after the installed_version changes emits a one-shot
+# "oh-my-claude updated. <prev> → <new> — run /whats-new" notice via
+# session-start-whats-new.sh. Symmetric default-fallback wiring with
+# the rest of the OMC_* env vars so any consumer (hook, statusline,
+# omc-config) sees a stable value whether it reads pre- or post-conf-
+# parse. v1.37.x W2 F-007.
+OMC_WHATS_NEW_SESSION_HINT="${OMC_WHATS_NEW_SESSION_HINT:-true}"
 # Bias-defense layer (v1.19.0): three opt-in mechanisms that target the
 # bias-blindness gap (model confidently solves the wrong problem). All
 # three default OFF so existing sessions see zero behavior change unless
@@ -448,6 +457,16 @@ _parse_conf_file() {
         # week of intermittent rate-limits). 0 disables sweep entirely
         # (regulated environments where every artifact must persist).
         [[ -z "${_omc_env_resume_request_per_cwd_cap}" && "${value}" =~ ^[0-9]+$ ]] && OMC_RESUME_REQUEST_PER_CWD_CAP="${value}" || true ;;
+      whats_new_session_hint)
+        # v1.37.x W2 F-007 (Item 3): SessionStart hook surfaces a one-
+        # shot "you upgraded — run /whats-new" notice the first time a
+        # session starts after the installed version changes. Symmetric
+        # counterpart to installation_drift_check (the drift surfaces a
+        # `git pull`-without-install case; this surfaces a re-install).
+        # Default true — a one-line additionalContext per upgrade is
+        # cheap; turn off for shared machines or regulated codebases
+        # where the hint is noise.
+        [[ -z "${_omc_env_whats_new_session_hint}" && "${value}" =~ ^(true|false)$ ]] && OMC_WHATS_NEW_SESSION_HINT="${value}" || true ;;
     esac
   done < "${conf}"
 }
