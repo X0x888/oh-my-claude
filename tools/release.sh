@@ -17,12 +17,13 @@
 # correctness; this script automates ceremony.
 #
 # Usage:
-#   bash tools/release.sh X.Y.Z                 # full release flow (default: --tag-on-green + watch)
-#   bash tools/release.sh X.Y.Z --ci-preflight  # run local-ci as gate, tag immediately, no watch
+#   bash tools/release.sh X.Y.Z                 # full release flow (default: local-sweep + --tag-on-green + watch)
+#   bash tools/release.sh X.Y.Z --ci-preflight  # run local-ci as gate (Docker), tag immediately, no watch
 #   bash tools/release.sh X.Y.Z --tag-on-green  # explicit: push first, watch CI, tag only on green
 #   bash tools/release.sh X.Y.Z --legacy-eager-tag # opt back into pre-v1.40 default (eager-tag + watch)
 #   bash tools/release.sh X.Y.Z --dry-run       # print steps without executing
 #   bash tools/release.sh X.Y.Z --no-watch      # skip CI watch; with no other flags this falls back to legacy eager-tag for compatibility
+#   bash tools/release.sh X.Y.Z --skip-local-sweep # emergency: skip the pre-flight bash sweep (NOT recommended)
 #
 # v1.40.x (SRE-3 F-009): tag-on-green is now the default. Pre-fix
 # default was eager-tag, which on a red CI left a published tag +
@@ -50,6 +51,11 @@
 #
 # Steps executed:
 #   6.5. Local-ci pre-flight (v1.34.1; only under --ci-preflight)
+#   6.7. Local bash sweep (v1.40.x; on by default — runs CI-pinned bash
+#        tests directly without Docker. Skip via --skip-local-sweep or
+#        OMC_RELEASE_SKIP_LOCAL_SWEEP=1. Catches the v1.32.6 / v1.40.0
+#        class of CI-red-tag failures locally in 3-5min instead of
+#        15min of remote CI per failed bump.)
 #   7. Update VERSION
 #   8. Update README badge
 #   9. Promote [Unreleased] in CHANGELOG to [X.Y.Z]
@@ -79,6 +85,10 @@ TAG_ON_GREEN=1
 TAG_ON_GREEN_EXPLICIT=0
 LEGACY_EAGER_TAG=0
 CI_PREFLIGHT=0
+# v1.40.x: local-sweep pre-flight is on by default; opt out via flag or
+# env (env override useful for nested CI / hotfix-loop where the gate
+# already ran in the parent context).
+SKIP_LOCAL_SWEEP="${OMC_RELEASE_SKIP_LOCAL_SWEEP:-0}"
 shift 2>/dev/null || true
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -87,6 +97,7 @@ while [[ $# -gt 0 ]]; do
     --tag-on-green) TAG_ON_GREEN=1; TAG_ON_GREEN_EXPLICIT=1; LEGACY_EAGER_TAG=0; shift ;;
     --legacy-eager-tag) LEGACY_EAGER_TAG=1; TAG_ON_GREEN=0; shift ;;
     --ci-preflight) CI_PREFLIGHT=1; TAG_ON_GREEN=0; shift ;;
+    --skip-local-sweep) SKIP_LOCAL_SWEEP=1; shift ;;
     *) printf 'unknown arg: %s\n' "$1" >&2; exit 2 ;;
   esac
 done
@@ -206,6 +217,97 @@ fi
 # absent". Wording reflects that this is a guard against a known
 # anti-pattern, not a positive verification.
 ok "no --quick marker found (ensure tools/hotfix-sweep.sh was run as Pre-flight Step 6)"
+
+# ----------------------------------------------------------------------
+# Step 6.7 (v1.40.x) — local bash sweep
+#
+# Runs every CI-pinned bash test from .github/workflows/validate.yml
+# locally, in sequence, with `set -e` semantics. Aborts the release
+# flow if ANY test fails — closes the v1.32.6 / v1.40.0 pattern where
+# a CI-red tag shipped because the test failure was only discovered
+# 15min into the remote-CI watch loop.
+#
+# Why default-on (not opt-in like --ci-preflight):
+#   - Cost: 3-5 min on a typical dev laptop. Compared to 15min of
+#     remote CI per failed bump, the dominant cost shape is "rerun the
+#     tag attempt N times" — making this default catches the failure
+#     in the first 3min instead of the 15th.
+#   - No Docker dependency: --ci-preflight requires the Ubuntu local-ci
+#     container; this gate runs the bash suite directly. Faithful to
+#     the validate.yml `test` job since it pulls the exact same test
+#     list from the workflow file at runtime (no drift surface).
+#   - The sweep complements --ci-preflight rather than replacing it:
+#     --ci-preflight catches BSD-vs-GNU / locale / coreutils-version
+#     divergence that only manifests in the Ubuntu container; the
+#     local sweep catches test-shape failures (key counts, hardcoded
+#     versions, line-number coupling) that the container would catch
+#     too but more slowly.
+#   - Skipped under --dry-run (the dry-run preview should not actually
+#     run minutes of tests).
+#   - Opt-out: --skip-local-sweep or OMC_RELEASE_SKIP_LOCAL_SWEEP=1.
+#     Use ONLY when the sweep already ran successfully in a parent
+#     context (e.g., hotfix-loop where v1.X.0 swept then v1.X.1 hotfix
+#     ships the same code +1 fix). Skipping for time pressure is the
+#     anti-pattern this gate exists to prevent.
+# ----------------------------------------------------------------------
+say "Step 6.7 (v1.40.x): local bash sweep pre-flight"
+if [[ "${SKIP_LOCAL_SWEEP}" -eq 1 ]]; then
+  printf '  \033[33mnotice:\033[0m local-sweep gate skipped (--skip-local-sweep / OMC_RELEASE_SKIP_LOCAL_SWEEP=1)\n'
+elif [[ ! -f "${REPO_ROOT}/.github/workflows/validate.yml" ]]; then
+  # Gate cannot operate without the CI source-of-truth. Skip with a
+  # visible notice rather than aborting — this path fires only in
+  # minimal fixtures (test-release fixtures, repos without CI yet);
+  # in a real release context the file always exists and the gate
+  # runs unconditionally. Checked BEFORE the dry-run bypass so the
+  # "skip with notice" is uniform behavior — a dry-run against a
+  # repo missing validate.yml should not pretend the gate ran.
+  printf '  \033[33mnotice:\033[0m .github/workflows/validate.yml not present — local-sweep gate skipped\n'
+elif [[ "${DRY_RUN}" -eq 1 ]]; then
+  printf '  [dry-run] would run CI-pinned bash tests from .github/workflows/validate.yml\n'
+else
+  # Extract the exact test list from the workflow file. Two patterns
+  # cover bare invocations and ones with arg-binding (e.g.,
+  # `OMC_X=y bash tests/test-foo.sh`). De-duplicate across both jobs
+  # (the macOS job pins a subset of the test job's list).
+  ci_tests="$(grep -E '^\s+run:\s+bash tests/test-' "${REPO_ROOT}/.github/workflows/validate.yml" 2>/dev/null \
+    | awk '{for (i=1; i<=NF; i++) if ($i ~ /^tests\/test-/) { print $i; next }}' \
+    | sort -u)"
+  if [[ -z "${ci_tests}" ]]; then
+    err "could not extract CI-pinned test list from .github/workflows/validate.yml — refusing to bypass the gate silently. Run with --skip-local-sweep if intentional."
+  fi
+  ci_test_count="$(printf '%s\n' "${ci_tests}" | wc -l | tr -d ' ')"
+  printf '  Running %s CI-pinned bash tests...\n' "${ci_test_count}"
+  sweep_failures=""
+  sweep_count_pass=0
+  sweep_count_fail=0
+  while IFS= read -r test_file; do
+    [[ -z "${test_file}" ]] && continue
+    if [[ ! -f "${REPO_ROOT}/${test_file}" ]]; then
+      # Test pinned in CI but missing on disk — surface as a hard
+      # failure rather than silently skipping.
+      sweep_failures="${sweep_failures}\n    ${test_file}: file not present in repo"
+      sweep_count_fail=$((sweep_count_fail + 1))
+      continue
+    fi
+    if bash "${REPO_ROOT}/${test_file}" >/dev/null 2>&1; then
+      sweep_count_pass=$((sweep_count_pass + 1))
+    else
+      # Capture the tail for the failure summary — keep terse so the
+      # summary stays readable when 1-2 tests fail (the common case).
+      tail_msg="$(bash "${REPO_ROOT}/${test_file}" 2>&1 | tail -2 | tr '\n' ' ' || true)"
+      sweep_failures="${sweep_failures}\n    ${test_file}: ${tail_msg}"
+      sweep_count_fail=$((sweep_count_fail + 1))
+    fi
+  done <<< "${ci_tests}"
+
+  if [[ "${sweep_count_fail}" -gt 0 ]]; then
+    printf '\n  \033[31m✗\033[0m local sweep: %d passed, %d failed\n' \
+      "${sweep_count_pass}" "${sweep_count_fail}" >&2
+    printf '  Failed tests:%b\n' "${sweep_failures}" >&2
+    err "local sweep gate failed — fix the failing tests before tagging. (Or pass --skip-local-sweep if this is a known follow-up release and the failures are tracked.)"
+  fi
+  ok "local sweep gate: ${sweep_count_pass}/${sweep_count_pass} CI-pinned bash tests passed"
+fi
 
 # ----------------------------------------------------------------------
 # Step 6.5 (v1.34.1) — local-ci pre-flight

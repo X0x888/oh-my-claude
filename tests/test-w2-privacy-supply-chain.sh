@@ -163,7 +163,13 @@ mkdir -p "${fixture}"
 cp -r "${REPO_ROOT}/.github" "${fixture}/" 2>/dev/null || true
 cp -r "${REPO_ROOT}/tools" "${fixture}/"
 cp -r "${REPO_ROOT}/bundle" "${fixture}/" 2>/dev/null || true
-cp "${REPO_ROOT}/VERSION" "${fixture}/" 2>/dev/null || echo "1.39.0" > "${fixture}/VERSION"
+# v1.40.x F-009 hotfix: pin the fixture VERSION to 1.39.0 so the test
+# always exercises a forward 1.39.0 -> 1.40.0 bump regardless of the
+# live project VERSION. Previously this copied REPO_ROOT/VERSION,
+# which made the test break the moment the live project moved past
+# v1.40.0 (the dry-run target hardcoded in the assertions below) —
+# release.sh refuses to bump backwards.
+echo "1.39.0" > "${fixture}/VERSION"
 # Minimal README + CHANGELOG with an [Unreleased] section that has content.
 mkdir -p "${fixture}"
 printf 'placeholder for [![Version](https://img.shields.io/badge/Version-1.39.0-blue.svg)](CHANGELOG.md)\n' > "${fixture}/README.md"

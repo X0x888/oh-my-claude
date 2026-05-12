@@ -378,5 +378,114 @@ assert_contains "T18: order B announces Step 6.5" "Step 6.5" "${out_b}"
 cleanup_fixture "${repo}"
 
 # ---------------------------------------------------------------------
+# T19 (v1.40.x): local-sweep gate skips with notice when validate.yml
+# is missing. The minimal fixture has no .github/workflows/validate.yml
+# (it's not part of mk_release_fixture), so the gate must skip
+# gracefully rather than abort the release flow.
+# ---------------------------------------------------------------------
+printf 'Test 19: local-sweep gate skip-with-notice on missing validate.yml (v1.40.x)\n'
+repo="$(mk_release_fixture)"
+set +e
+out="$(cd "${repo}" && bash tools/release.sh "1.0.1" --dry-run 2>&1)"
+rc=$?
+set -e
+assert_eq "T19: dry-run with missing validate.yml exits 0" "0" "${rc}"
+assert_contains "T19: announces Step 6.7" "Step 6.7" "${out}"
+assert_contains "T19: notice on missing workflow" "validate.yml not present" "${out}"
+cleanup_fixture "${repo}"
+
+# ---------------------------------------------------------------------
+# T20 (v1.40.x): --skip-local-sweep bypasses the gate explicitly.
+# Even with validate.yml present, the flag must cleanly skip and
+# announce the skip rather than silently running the sweep.
+# ---------------------------------------------------------------------
+printf 'Test 20: --skip-local-sweep bypass (v1.40.x)\n'
+repo="$(mk_release_fixture)"
+# Plant a non-empty validate.yml so the gate WOULD run without the
+# skip flag. Use a content shape that the gate's grep recognizes.
+mkdir -p "${repo}/.github/workflows"
+cat > "${repo}/.github/workflows/validate.yml" <<'YML'
+jobs:
+  test:
+    steps:
+      - name: Run a test
+        run: bash tests/test-nonexistent.sh
+YML
+(cd "${repo}" && git add -A && git commit -q -m "add fixture validate.yml")
+set +e
+out="$(cd "${repo}" && bash tools/release.sh "1.0.1" --dry-run --skip-local-sweep 2>&1)"
+rc=$?
+set -e
+assert_eq "T20: --skip-local-sweep dry-run exits 0" "0" "${rc}"
+assert_contains "T20: announces gate skipped" "local-sweep gate skipped" "${out}"
+cleanup_fixture "${repo}"
+
+# ---------------------------------------------------------------------
+# T21 (v1.40.x): OMC_RELEASE_SKIP_LOCAL_SWEEP=1 bypasses the gate.
+# Env-var-based skip is useful for nested CI contexts where a parent
+# wrapper has already verified the bash suite.
+# ---------------------------------------------------------------------
+printf 'Test 21: OMC_RELEASE_SKIP_LOCAL_SWEEP env bypass (v1.40.x)\n'
+repo="$(mk_release_fixture)"
+mkdir -p "${repo}/.github/workflows"
+cat > "${repo}/.github/workflows/validate.yml" <<'YML'
+jobs:
+  test:
+    steps:
+      - run: bash tests/test-nonexistent.sh
+YML
+(cd "${repo}" && git add -A && git commit -q -m "add fixture validate.yml")
+set +e
+out="$(cd "${repo}" && OMC_RELEASE_SKIP_LOCAL_SWEEP=1 bash tools/release.sh "1.0.1" --dry-run 2>&1)"
+rc=$?
+set -e
+assert_eq "T21: env-skip dry-run exits 0" "0" "${rc}"
+assert_contains "T21: env-skip announces gate skipped" "local-sweep gate skipped" "${out}"
+cleanup_fixture "${repo}"
+
+# ---------------------------------------------------------------------
+# T22 (v1.40.x): the gate ABORTS the release when a CI-pinned test
+# fails. This is the load-bearing assertion — without it, a future
+# refactor that turns the gate into "warn but continue" would silently
+# regress and v1.40.0-class CI-red tags would ship again.
+#
+# Build a fixture that:
+#   1) Has a validate.yml pinning a failing test
+#   2) Has the failing test on disk (so the gate runs it, vs. the
+#      "file not present" sub-failure path)
+#   3) Drives a NON-dry-run invocation (dry-run bypasses the gate
+#      body, so testing the abort requires a real run)
+# ---------------------------------------------------------------------
+printf 'Test 22: local-sweep gate aborts on test failure (v1.40.x)\n'
+repo="$(mk_release_fixture)"
+mkdir -p "${repo}/.github/workflows" "${repo}/tests"
+cat > "${repo}/.github/workflows/validate.yml" <<'YML'
+jobs:
+  test:
+    steps:
+      - name: Run failing test
+        run: bash tests/test-deliberate-fail.sh
+YML
+cat > "${repo}/tests/test-deliberate-fail.sh" <<'TEST'
+#!/usr/bin/env bash
+printf 'this test deliberately fails for T22 coverage\n' >&2
+exit 1
+TEST
+chmod +x "${repo}/tests/test-deliberate-fail.sh"
+(cd "${repo}" && git add -A && git commit -q -m "add failing fixture test")
+set +e
+out="$(cd "${repo}" && bash tools/release.sh "1.0.1" 2>&1)"
+rc=$?
+set -e
+assert_eq "T22: gate-failure exits non-zero" "1" "${rc}"
+assert_contains "T22: names local-sweep gate failure" "local sweep gate failed" "${out}"
+assert_contains "T22: lists the failing test" "test-deliberate-fail.sh" "${out}"
+# Verify the gate aborted BEFORE Step 7 (VERSION bump). If Step 7 ran,
+# the failing test fixture would have been promoted to a release.
+ver_after="$(cat "${repo}/VERSION")"
+assert_eq "T22: VERSION unchanged after gate-failure" "1.0.0" "${ver_after}"
+cleanup_fixture "${repo}"
+
+# ---------------------------------------------------------------------
 printf '\n=== release tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]

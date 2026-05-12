@@ -4,6 +4,172 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+User-driven release-loop reform after v1.40.0 and v1.40.1 each shipped
+CI-red on tagged-SHAs. The user pointed out that monitoring CI was
+costing 15+ minutes per failed bump (the `gh run watch --exit-status`
+returns 0 on completion regardless of conclusion, a silent footgun) and
+that the recurring CI-red pattern was rooted in **tests with hardcoded
+values that break for unrelated reasons** — key counts when a flag
+ships, line numbers when a function is extended, target versions when
+VERSION bumps. The user also asked the harness to stop bumping VERSION
+for every small follow-up so back-to-back x.y.z hotfix-CI-watch loops
+stop burning their wall time — accumulate work under `[Unreleased]` and
+tag on user signal or thematic boundary instead. This unreleased
+section ships three local test fixes + a structural rewrite of the
+most line-coupled test + a default-on pre-flight gate that runs the
+full CI test list locally before any tag attempt, all as plain
+`main`-commits without a version bump.
+
+### Three local test fixes (from the v1.40.1 post-tag CI-red)
+
+The v1.40.1 CI failed on three different tests, each with the same
+shape: a test value tightly coupled to something else that changed
+for an unrelated reason.
+
+- **`tests/test-omc-config.sh` Test 13** — hardcoded `26 keys`
+  assertion. Wave 5 added the `no_defer_mode` flag to the maximum
+  preset, taking the count to 27. Bumped to 27 and added an explicit
+  `assert_file_has_line "maximum: no_defer_mode=on"` so the per-key
+  assertions document what's in the preset (not just the total).
+  Updated the inline release-history comment.
+
+- **`tests/test-w1-reliability-v1-40.sh` lines 270-271** — Wave 1
+  added a stat-perm check using BSD-first ordering (`stat -f` then
+  `stat -c`). On Linux GNU coreutils this is the multi-line
+  filesystem-info-block bug the v1.28 hotfix added the regression
+  net for. Swapped to Linux-first ordering.
+
+- **`tests/test-w2-privacy-supply-chain.sh` F-009 release-flag tests**
+  — fixture VERSION was copied from `${REPO_ROOT}/VERSION`, so once
+  live VERSION moved past `1.40.0` (the hardcoded dry-run target in
+  the assertions), release.sh's "version not above current" guard
+  fired and the dry-run output changed. Pinned the fixture VERSION
+  to `1.39.0` regardless of the live project version, so the test
+  always exercises a forward `1.39.0 → 1.40.0` bump.
+
+### Wave 12a — structural detection in `test-no-broken-stat-chain.sh`
+
+The third local fix (the previous version) updated a line-number-
+based allowlist in `test-no-broken-stat-chain.sh` from
+`omc-repro.sh:128` to `omc-repro.sh:202` because Wave 11's F-008
+fallback-hardening shifted the safe `stat -f`-then-`stat -c`
+separate-assignment site down by 74 lines. The line-number coupling
+was the actual defect: any future edit shifting the line again
+would silently break the allowlist match and re-trigger the false-
+positive.
+
+**Fix:** replaced the line-number allowlist with **structural
+detection** in the multi-line scanner:
+
+- A `stat -f` line is **structurally safe** when its `$(...)`
+  substitution closes on the same line (pattern `$(stat -f ... )"`).
+  Then any next-physical-line `||` is at statement level — each
+  operand is its own complete assignment to the same variable —
+  rather than a continuation INSIDE the substitution. Linux runs
+  each substitution in isolation and captures its stdout, so the
+  filesystem-info-block-then-mtime concatenation that the v1.28
+  hotfix added the net for cannot occur.
+- The same check applies to the matching `stat -c` line on the next
+  line. If both close their substitutions on their own lines, the
+  pair is the documented safe separate-assignment chain.
+- The allowlist now contains only the test file itself (its own
+  header docstring contains the patterns in comments). The
+  `omc-repro.sh` and `state-io.sh` entries were removed —
+  structural detection handles them naturally.
+
+**Regression net:** three synthetic fixtures added inline in the
+test, exercising all three classes:
+
+- `unsafe-bare.sh` — bare-command BSD-first chain → must flag.
+- `safe-separate.sh` — separate-assignment substitution chain →
+  must NOT flag.
+- `unsafe-inline-spanning.sh` — substitution spans lines with `||`
+  inside it → must flag (catches a future "simplification" that
+  reverts to line-number allowlisting).
+
+`test-no-broken-stat-chain.sh` 4 → 7 assertions, green on the
+real repo + all three synthetic fixtures.
+
+### Wave 12b — local-sweep gate as Step 6.7 of `tools/release.sh`
+
+The user's pain shape, named directly: monitoring CI takes 15+
+minutes per failed bump. v1.40.0 and v1.40.1 each shipped CI-red on
+tagged-SHA, requiring a follow-up release. The fundamental cost
+shape is **a local issue discovered remotely** — a 5-minute local
+test run upstream catches what would otherwise burn 15 minutes of
+remote CI loops downstream.
+
+**Step 6.7 (new) — local bash sweep pre-flight**, inserted in
+`tools/release.sh` between the hotfix-sweep reminder (Step 6) and
+the optional Docker-based local-ci pre-flight (Step 6.5). Default
+behavior:
+
+- Extracts the full CI-pinned bash test list directly from
+  `.github/workflows/validate.yml` at runtime (no test-list drift
+  surface — the gate uses the SAME list CI uses).
+- Runs every test in sequence with `bash -e` semantics.
+- Aborts the release flow if ANY test fails, naming the failing
+  tests in the error output.
+- Skip-with-notice when `validate.yml` is missing (handles minimal
+  fixtures and repos without CI yet); checked BEFORE the dry-run
+  bypass so the notice is uniform behavior.
+- Opt-out: `--skip-local-sweep` flag OR
+  `OMC_RELEASE_SKIP_LOCAL_SWEEP=1` env var. Use only when the sweep
+  already ran in a parent context (e.g., the v1.X.0 → v1.X.1
+  hotfix-loop pattern from v1.32.6 / v1.40.0 history).
+- Skipped under `--dry-run` (the preview should not actually run
+  minutes of tests).
+
+**Complementary to `--ci-preflight`**, not a replacement: ci-preflight
+catches BSD-vs-GNU / locale / coreutils-version divergence that only
+manifests in the Ubuntu container (the v1.28 portability cascade
+class); the bash sweep catches test-shape failures (key counts,
+hardcoded versions, line-number coupling) that the container would
+catch too but more slowly and only after you Docker-up.
+
+**Why default-on, not opt-in.** `--ci-preflight` has been opt-in
+since v1.34.1 and didn't get used in the v1.40.0 or v1.40.1
+release runs because the muscle memory was "run release.sh, watch
+CI" rather than "remember the flag". Default-on closes that gap:
+the gate fires automatically and saves the user from the recurring
+muscle-memory failure mode. The opt-out exists for the legitimate
+hotfix-loop case.
+
+**Regression net** in `tests/test-release.sh`:
+
+- T19 — local-sweep gate skips with notice on missing `validate.yml`.
+- T20 — `--skip-local-sweep` bypass announces the skip.
+- T21 — `OMC_RELEASE_SKIP_LOCAL_SWEEP=1` env bypass announces the
+  skip.
+- T22 (load-bearing) — gate ABORTS the release when a CI-pinned
+  test fails. Builds a fixture with a deliberately-failing test
+  pinned in `validate.yml`, runs a non-dry-run invocation, asserts
+  `exit 1` + "local sweep gate failed" + names the failing test +
+  VERSION unchanged after gate-failure. Without this assertion a
+  future refactor that turned the gate into "warn but continue"
+  would silently regress and v1.40.0-class CI-red tags would ship
+  again.
+
+`tests/test-release.sh` 53 → 64 assertions.
+
+**Tests verified green:**
+  - test-no-broken-stat-chain   7/0  (was 4/0; +structural detection + 3 synthetic fixtures)
+  - test-release                64/0 (was 53/0; +T19-T22)
+  - test-omc-config            152/0 (was 150/0; +no_defer_mode preset assertion)
+  - test-w1-reliability-v1-40   22/0 (Linux-first stat ordering)
+  - test-w2-privacy             14/0 (fixture VERSION pinned)
+  - test-no-defer-contract      20/0 (Wave 10/11 surfaces clean)
+  - test-no-defer-mode          37/0
+
+bundle/ shellcheck `--severity=warning` clean. JSON syntax clean.
+
+**Files changed:** `tests/test-omc-config.sh`,
+`tests/test-w1-reliability-v1-40.sh`,
+`tests/test-w2-privacy-supply-chain.sh`,
+`tests/test-no-broken-stat-chain.sh` (structural detection +
+synthetic fixtures), `tests/test-release.sh` (T19-T22),
+`tools/release.sh` (Step 6.7), `VERSION`, `README.md`, `CHANGELOG.md`.
+
 ## [1.40.1] - 2026-05-12
 
 Hotfix for two findings discovered in the v1.40.0 post-tag verification

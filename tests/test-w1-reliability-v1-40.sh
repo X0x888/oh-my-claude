@@ -267,8 +267,8 @@ runtime_perms="$(bash -c "
   export SESSION_ID='test-chmod-runtime'
   source '${COMMON_SH}' </dev/null
   ensure_session_dir
-  stat -f '%Lp' '${STATE_ROOT}' 2>/dev/null \
-    || stat -c '%a' '${STATE_ROOT}' 2>/dev/null \
+  stat -c '%a' '${STATE_ROOT}' 2>/dev/null \
+    || stat -f '%Lp' '${STATE_ROOT}' 2>/dev/null \
     || echo unknown
 " 2>/dev/null)"
 assert "STATE_ROOT has mode 700 after ensure_session_dir" "${runtime_perms}" "700"

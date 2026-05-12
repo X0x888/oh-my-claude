@@ -251,16 +251,17 @@ assert_file_lacks_line "atomic batch: auto_memory not written" "${USER_CONF_PATH
 assert_file_lacks_line "atomic batch: discovered_scope not written" "${USER_CONF_PATH}" "^discovered_scope=on\$"
 teardown
 
-# --- Test 13: apply-preset maximum writes all 26 keys (v1.28.0 added
+# --- Test 13: apply-preset maximum writes all 27 keys (v1.28.0 added
 # blindspot_inventory + intent_broadening; v1.30.0 added prompt_persist;
 # v1.32.0 added divergence_directive; v1.33.0 added directive_budget;
 # v1.34.0 added inferred_contract for Delivery Contract v2;
 # v1.35.0 added shortcut_ratio_gate for shortcut-on-big-tasks defense;
-# zero-steering policy added quality_policy) ---
-printf 'Test 13: apply-preset maximum writes 26 keys\n'
+# zero-steering policy added quality_policy; v1.40.0 added
+# no_defer_mode for the no-defer contract) ---
+printf 'Test 13: apply-preset maximum writes 27 keys\n'
 setup
 out="$(bash "${HELPER}" apply-preset user maximum 2>&1)"
-assert_contains "apply-preset reports 26 keys" "26 keys" "${out}"
+assert_contains "apply-preset reports 27 keys" "27 keys" "${out}"
 assert_file_has_line "maximum: gate_level=full" "${USER_CONF_PATH}" "^gate_level=full\$"
 assert_file_has_line "maximum: guard_exhaustion_mode=block" "${USER_CONF_PATH}" "^guard_exhaustion_mode=block\$"
 assert_file_has_line "maximum: quality_policy=zero_steering" "${USER_CONF_PATH}" "^quality_policy=zero_steering\$"
@@ -287,6 +288,10 @@ assert_file_has_line "maximum: council_deep_default=on" "${USER_CONF_PATH}" "^co
 assert_file_has_line "maximum: blindspot_inventory=on" "${USER_CONF_PATH}" "^blindspot_inventory=on\$"
 assert_file_has_line "maximum: intent_broadening=on" "${USER_CONF_PATH}" "^intent_broadening=on\$"
 assert_file_has_line "maximum: directive_budget=maximum" "${USER_CONF_PATH}" "^directive_budget=maximum\$"
+# v1.40.0: no_defer_mode=on in maximum (and zero-steering/balanced) is the
+# load-bearing default for the no-defer contract. Power-user opt-out
+# is no_defer_mode=off (minimal preset emits off — see Test 15).
+assert_file_has_line "maximum: no_defer_mode=on" "${USER_CONF_PATH}" "^no_defer_mode=on\$"
 teardown
 
 # --- Test 14: apply-preset balanced writes balanced values ---
