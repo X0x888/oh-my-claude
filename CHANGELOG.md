@@ -469,6 +469,51 @@ contract section or the anti-pattern list first.
 
 **Files changed:** `core.md`, `CHANGELOG.md`.
 
+### Wave 9 — harden anti-opt clause + add regression net
+
+Quality-reviewer surfaced 6 real findings on the Wave 8 anti-optimization
+clause. All addressed in-wave (Serendipity Rule: verified, same-path,
+bounded).
+
+- **Duplicate "library choice" token** in `core.md`'s contract item 3
+  (copy-paste artifact from Wave 8). Removed.
+- **Anti-Patterns cross-reference was generic boilerplate** — would not
+  survive a doc-cleanup wave. Replaced with verbatim quotes of the
+  exact softening proposals a future reviewer is most likely to make
+  (*"add an escape hatch for credible-approach-split"*, *"soft-warn
+  instead of hard-block"*, etc.), making the bullet unconsolidatable.
+- **`skills.md` (in-session memory) had no anti-optimization clause** —
+  added a paragraph explicitly forbidding the same softening proposals,
+  cross-referencing `core.md` and the regression net.
+- **`council/SKILL.md` Phase 5 step 6** marked LOAD-BEARING with an
+  explicit "do NOT propose to widen this criterion" note (Phase 5 is
+  where the council marks user-decision findings; weakening this step
+  would re-introduce the v1.39 pause-on-taste behavior).
+- **`omc-config.sh emit_preset()`** got a `v1.40.0 LOAD-BEARING (do NOT
+  optimize away)` comment block explaining why `no_defer_mode=on` must
+  ship in `maximum`/`zero-steering`/`balanced` and why `off` in
+  `minimal` is legitimate.
+- **Anti-optimization clause was untestable** — biggest defect.
+  Added `tests/test-no-defer-contract.sh` (12 assertions / CI-pinned)
+  asserting every load-bearing marker is present: core.md section header,
+  FORBIDDEN list with concrete quotes, Anti-Patterns cross-reference,
+  skills.md LOAD-BEARING note, council/SKILL.md step 6 marker,
+  omc-config.sh comment block, preset behavior (maximum/zero-steering/
+  balanced emit `=on`, minimal emits `=off`), `common.sh` default `on`,
+  conf.example `#no_defer_mode=on`. A future "doc cleanup" wave that
+  silently deleted the contract would fail CI immediately.
+
+**Tests:** `test-no-defer-contract.sh` 12/0 (new, CI-pinned). Adjacent
+regression net: `test-no-defer-mode 37/0`, `test-coordination-rules
+112/0`, `test-agent-verdict-contract 444/0`, `test-e2e-hook-sequence
+373/0`. README + AGENTS test counts 97 → 98.
+
+**Files changed:** `core.md` (duplicate removed + Anti-Patterns
+sharpened), `skills.md` (LOAD-BEARING paragraph), `council/SKILL.md`
+(step 6 marker), `omc-config.sh` (comment block),
+`tests/test-no-defer-contract.sh` (new), `.github/workflows/validate.yml`
+(CI pin), `README.md` + `AGENTS.md` (test counts), `CHANGELOG.md`.
+
 ## [1.39.0] - 2026-05-12
 
 Multi-lens council audit of v1.38.0 + the post-tag `ebb7044` "Add

@@ -119,6 +119,17 @@ EOF
 # tiny, and the only thing that makes /ulw-resume work after a Claude
 # Code rate-limit kill. Users who actually need it off should set it
 # explicitly, not adopt a preset.
+#
+# v1.40.0 LOAD-BEARING (do NOT optimize away): `no_defer_mode=on` MUST
+# ship in `maximum`/`zero-steering` AND `balanced` presets. This is the
+# recommended-preset half of the no-defer contract documented in
+# `~/.claude/quality-pack/memory/core.md` ("The v1.40.0 no-defer
+# contract"). A recommended preset that shipped `no_defer_mode=off`
+# would teach new installs that defer is normal behavior, defeating the
+# contract before it ever fires. The `minimal` preset legitimately ships
+# `no_defer_mode=off` because that preset's stance is "lightest footprint
+# while keeping core gates working" — power-user opt-out by design.
+# Flipping any of the three values triggers tests/test-no-defer-contract.sh.
 emit_preset() {
   local profile="$1"
   case "${profile}" in

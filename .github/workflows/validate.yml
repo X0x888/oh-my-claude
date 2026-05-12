@@ -203,6 +203,9 @@ jobs:
       - name: Run no_defer_mode tests (v1.40.0 ULW no-defer pin)
         run: bash tests/test-no-defer-mode.sh
 
+      - name: Run no-defer-contract regression net (v1.40.0 Wave 9 pin)
+        run: bash tests/test-no-defer-contract.sh
+
       - name: Run inferred-contract tests (v1.34.0 Delivery Contract v2 pin)
         run: bash tests/test-inferred-contract.sh
 

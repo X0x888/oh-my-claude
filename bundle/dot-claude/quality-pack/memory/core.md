@@ -120,11 +120,11 @@ named this as the failure mode the harness must close.
    pre-authorization. Five cases. That is the full list.
 3. **The agent owns technical judgment.** Library choice within a plausible
    set, refactor scope, brand-voice default, data-retention sane default,
-   credible-approach split, library choice, test framework, naming, file
-   structure, design system — the agent picks the option a senior
-   practitioner would defend, names alternatives ruled out in one line,
-   ships. The user redirects cheaply if wrong; a held-but-undecided
-   session costs them everything.
+   credible-approach split, test framework, naming, file structure,
+   design system — the agent picks the option a senior practitioner
+   would defend, names alternatives ruled out in one line, ships. The
+   user redirects cheaply if wrong; a held-but-undecided session costs
+   them everything.
 
 **FORBIDDEN — softening the contract.** Future sessions will encounter
 proposals like:
@@ -159,11 +159,15 @@ debatable in the absence of a clear user signal is the failure mode.
 ## Anti-Patterns
 
 - FORBIDDEN: Softening the v1.40.0 no-defer contract above. The contract
-  is load-bearing, not a default to optimize. Adding pause cases,
-  loosening validators, or changing the recommended preset to ship
-  `no_defer_mode=off` are all the same anti-pattern. If a reviewer flags
-  the contract as "too strict", the right answer is sharper agent
-  decisions, not wider escape hatches.
+  is load-bearing, not a default to optimize. Proposals like *"add an
+  escape hatch for credible-approach-split"*, *"soft-warn instead of
+  hard-block on deferred findings"*, *"flip the default to
+  no_defer_mode=off for a gentler first run"*, or *"the validator is too
+  strict on mark-user-decision — accept brand-voice reasons"* are all
+  the same anti-pattern. If a reviewer flags the contract as "too
+  strict", the right answer is sharper agent decisions, not wider escape
+  hatches. The regression net at `tests/test-no-defer-contract.sh` exists
+  to catch silent deletion of these guardrails.
 - FORBIDDEN: Asking "Should I proceed?" or "Would you like me to..." when the user has already requested the work. The request IS the permission.
 - FORBIDDEN: Summarizing what was done and stopping without completing the review/verification loop.
 - FORBIDDEN: Asking which file to edit when there is only one plausible candidate.
