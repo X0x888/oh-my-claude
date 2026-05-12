@@ -200,6 +200,7 @@ if [[ "${SWEEP_MODE}" -eq 1 ]]; then
           --argjson findings "${local_findings_block}" \
           --argjson waves "${local_waves_block}" '
           {
+            _v: 1,
             session_id: $sid,
             project_key: (.project_key // null),
             start_ts: (.session_start_ts // .last_user_prompt_ts // null),
@@ -719,7 +720,14 @@ _intp_reviewer_rate=""
 #      consider" for users who want the comprehensive view.
 _headline_lines=()
 
-_hl_session_rows="$(filter_by_window "${SUMMARY_FILE}" '.start_ts')"
+# Legacy filter: pre-v1.39.0 sweep writer emitted outcome="abandoned" as a
+# default label; the current writer (common.sh:1599-1611) cannot produce that
+# string for any session state. Strip those rows on read so analytics reflect
+# the current-schema reality, not stale defaults that haven't rotated out of
+# the 500-row cap yet. Forward-looking sessions carry _v:1 (sweep writer +
+# show-report --sweep mirror); current legacy is identified by outcome label
+# alone since pre-v1.31.0 rows lack _v entirely.
+_hl_session_rows="$(filter_by_window "${SUMMARY_FILE}" '.start_ts' | jq -c 'select(.outcome != "abandoned")' 2>/dev/null || true)"
 _hl_session_count="$(printf '%s\n' "${_hl_session_rows}" | grep -c . || true)"
 _hl_session_count="${_hl_session_count//[!0-9]/}"
 _hl_session_count="${_hl_session_count:-0}"
@@ -793,7 +801,7 @@ printf '_Detail sections below; comprehensive heuristic review at the bottom und
 # ----------------------------------------------------------------------
 # Section 1: Sessions overview
 printf '## Sessions\n\n'
-sessions_rows="$(filter_by_window "${SUMMARY_FILE}" '.start_ts')"
+sessions_rows="$(filter_by_window "${SUMMARY_FILE}" '.start_ts' | jq -c 'select(.outcome != "abandoned")' 2>/dev/null || true)"
 if [[ -z "${sessions_rows}" ]]; then
   printf '_No session_summary rows in window. Run a few sessions, then re-check after the next daily sweep._\n\n'
 else

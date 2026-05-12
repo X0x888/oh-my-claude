@@ -289,6 +289,62 @@ next real validation is in-session prose.
 
 Ships under this same `[Unreleased]` block, no version bump.
 
+### Harness self-improvement wave — telemetry hygiene + gate-language polish
+
+User-driven session: "fix all issues that would make this ULW workflow a
+better tool and produce better quality work in a fast way."
+
+Grounded in cross-session telemetry rather than intuition. The full
+analytical pass (corrected after initial broken-write-path claims didn't
+survive contact with the writer code) named five concrete wins; each
+ships as its own commit under this same `[Unreleased]` block, no version
+bump.
+
+#### W1 — Legacy `session_summary.jsonl` hygiene
+
+**The data shape.** 418 of 418 rows in cross-session
+`session_summary.jsonl` show `outcome: "abandoned"` (417) or
+`completed` (1). The current sweep writer at
+`common.sh:1599-1605` cannot produce the string `"abandoned"` — that
+label was retired in v1.39.0 Wave 1 ("telemetry truth — outcome label
++ apply-rate token alignment"). Cross-session cap is 500 rows with
+rotation to 400, and at 418 rows no rotation has triggered, so legacy
+rows continue to dominate `/ulw-report` analytics. Every reader of
+`session_summary` is currently seeing pre-v1.39.0 data.
+
+**Two-edge fix.**
+
+1. Sweep writers at `common.sh:1599` (canonical daily sweep) and
+   `show-report.sh:202` (`--sweep` live-mirror) gain a `_v: 1`
+   schema-version marker. Future schema bumps now have a clean
+   migration anchor; the existing `_v: 1` pattern in
+   `record-serendipity.sh`, `record-archetype.sh`,
+   `classifier_telemetry`, and `gate_events` writers (codified in
+   `test-w2-telemetry.sh` F-010) extends to the last unmarked
+   cross-session log.
+
+2. Read-side legacy filter at `show-report.sh:722` and `:797` — both
+   `_hl_session_rows` (headline pre-pass) and `sessions_rows`
+   (Sessions section detail) pipe through
+   `jq -c 'select(.outcome != "abandoned")'` so the 418 legacy rows
+   stop polluting headline heuristics and the sessions table. Filter
+   on `outcome` rather than `_v` because the current writer cannot
+   emit `"abandoned"` for any session state — exact legacy match,
+   zero collateral on current rows.
+
+Tests verified green:
+- `test-show-report.sh` 96/0
+- `test-w2-telemetry.sh` 15/0 (F-010 already asserts `_v:1` on
+  sibling cross-session writers; sweep writer is the new addition)
+- `test-cross-session-rotation.sh` 23/0
+- `test-e2e-hook-sequence.sh` 373/0
+- `test-quality-gates.sh` 101/0
+- `test-session-summary-outcome.sh` 21/0
+
+**Files changed:**
+`bundle/dot-claude/skills/autowork/scripts/common.sh`,
+`bundle/dot-claude/skills/autowork/scripts/show-report.sh`.
+
 ## [1.40.1] - 2026-05-12
 
 Hotfix for two findings discovered in the v1.40.0 post-tag verification
