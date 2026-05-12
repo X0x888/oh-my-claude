@@ -6,17 +6,19 @@ Add `ultrathink` to any prompt to force deeper investigation -- verification ove
 
 ## Autonomy behavior
 
-In ulw mode Claude defaults to action and only pauses for one of five specific cases:
+In ulw mode Claude defaults to action and only pauses for one of five **operational** cases (v1.40.0):
 
-1. **Credentials or external accounts.** Credentials, payment, account access, or an external-account action is required.
-2. **Destructive data loss.** The next step would delete or overwrite user data in a non-recoverable way.
-3. **Product-taste or policy judgment.** A decision only the user can make — pricing, brand voice, data-retention policy, release-note attribution.
-4. **Unfamiliar in-progress state.** The repository contains untracked files, unpushed branches, or stashes whose intent cannot be recovered.
-5. **Credible-approach split.** Two credible approaches exist and choosing wrong would cost significant rework.
+1. **Credentials or external accounts.** A credential, payment, account access, or external-account action the agent literally cannot supply. A missing INPUT, not a decision.
+2. **Hard external blocker.** Rate limit hit, paid API quota exhausted, dead build/test infra, or a dependency upgrade pending in a tracked external ticket the agent cannot resolve.
+3. **Destructive data loss on shared state.** The next step would delete or overwrite user data in a non-recoverable way (drop a prod table, force-push `main`, `rm -rf` against unstaged changes).
+4. **Unfamiliar in-progress state.** Untracked files, unpushed branches, or stashes whose intent cannot be recovered by inspection — risk of clobbering work in flight.
+5. **Scope explosion without pre-authorization.** A council or planner surfaced ≥10 findings AND the prompt did not explicitly authorize exhaustive implementation.
 
-Any decision outside these five — library choice inside a plausible set, refactor scope, test framework — is made autonomously, stated briefly, and executed. If you want Claude to ask more, add `checkpoint` or `ask before X` to the prompt.
+Anything outside these five — **including** product-taste judgment, brand voice, data-retention policy, release-note attribution, library choice within a plausible set, refactor scope, test framework, and credible-approach splits — is the agent's call under ULW with default `no_defer_mode=on`. It picks the option a senior practitioner would defend, names alternatives ruled out in one line, and ships. You can redirect cheaply in real time if the call is wrong; a held-but-undecided session costs you everything.
 
-The canonical, always-loaded source for this list is `bundle/dot-claude/quality-pack/memory/core.md` ("Workflow" section). If that file and this section drift, `core.md` wins.
+If you want the legacy v1.39-era "pause for taste / policy / credible-approach" behavior, set `no_defer_mode=off` in `~/.claude/oh-my-claude.conf`. If you want Claude to ask more on a specific prompt, add `checkpoint` or `ask before X` to the prompt itself.
+
+The canonical, always-loaded source for this list is `bundle/dot-claude/quality-pack/memory/core.md` ("Maximum-Autonomy Defaults" → "Workflow" section). If that file and this section drift, `core.md` wins.
 
 ---
 

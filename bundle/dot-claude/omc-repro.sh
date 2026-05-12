@@ -44,9 +44,19 @@ REDACT_CHARS="${OMC_REPRO_REDACT_CHARS:-80}"
 # beginning with `--api-key sk-ant-...` kept the credential intact
 # in the first 80 chars. State written by pre-v1.40 sessions still
 # carries raw secrets on disk; this fallback scrub catches them at
-# bundle time. Sources omc_redact_secrets from common.sh; falls back
-# to a no-op if common.sh cannot be sourced (rare — implies a broken
-# install, but we should still bundle the rest of the session data).
+# bundle time. Sources omc_redact_secrets from common.sh.
+#
+# v1.40.0 hardening (F-008): the fallback used to silently cat-
+# passthrough so the pipeline "never breaks" — but a user running
+# omc-repro.sh against a corrupted install would then ship secrets
+# verbatim in the support tarball, defeating the F-007 contract.
+# The new behavior is FAIL-CLOSED: if common.sh can't be sourced or
+# omc_redact_secrets isn't defined, the script aborts with a stderr
+# warning naming the failure mode. Power users who genuinely want
+# the legacy unredacted-bundle path (rare — only legitimate when
+# the user has no secrets in session state and accepts the risk)
+# can set OMC_REPRO_ALLOW_UNREDACTED=1 to re-enable the cat-
+# passthrough. Default is abort.
 _omc_self_dir="$(cd "$(dirname "$0")" && pwd)"
 _common_sh="${_omc_self_dir}/skills/autowork/scripts/common.sh"
 if [[ -f "${_common_sh}" ]]; then
@@ -55,7 +65,18 @@ if [[ -f "${_common_sh}" ]]; then
     source "${_common_sh}" </dev/null 2>/dev/null || true
 fi
 if ! declare -f omc_redact_secrets >/dev/null 2>&1; then
-  omc_redact_secrets() { cat; }   # no-op fallback so the pipeline never breaks
+  if [[ "${OMC_REPRO_ALLOW_UNREDACTED:-0}" == "1" ]]; then
+    printf 'omc-repro: WARNING — OMC_REPRO_ALLOW_UNREDACTED=1 set; bundling without secret redaction.\n' >&2
+    printf 'omc-repro:          The tarball MAY contain credentials, tokens, or other secrets from\n' >&2
+    printf 'omc-repro:          your session state. Review the bundle before sharing.\n' >&2
+    omc_redact_secrets() { cat; }
+  else
+    printf 'omc-repro: ERROR — common.sh failed to source; omc_redact_secrets is unavailable.\n' >&2
+    printf 'omc-repro:        Aborting to prevent secrets from leaking into the bundle (F-007 contract).\n' >&2
+    printf 'omc-repro:        Likely cause: corrupted or partial install. Try re-running install.sh.\n' >&2
+    printf 'omc-repro:        Override (NOT recommended): OMC_REPRO_ALLOW_UNREDACTED=1 bash omc-repro.sh ...\n' >&2
+    exit 2
+  fi
 fi
 
 # Redact user-prompt and assistant-message fields to the configured char

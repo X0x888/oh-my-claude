@@ -164,6 +164,64 @@ BUNDLED_INTENT="$(jq -r '.intent' < "${BUNDLED_TEL}")"
 assert_eq "bundled row preserves intent" "advisory" "${BUNDLED_INTENT}"
 
 # ---------------------------------------------------------------------------
+# Case 3 (v1.40.0 F-008): the fallback path must FAIL-CLOSED, not silently
+# cat-passthrough. Prior behavior: if common.sh couldn't be sourced, the
+# script installed a no-op omc_redact_secrets and bundled secrets verbatim.
+# The hardened behavior is to abort with a stderr warning naming the failure
+# mode, and require OMC_REPRO_ALLOW_UNREDACTED=1 to opt back into the
+# legacy unredacted-bundle path.
+#
+# To exercise the fallback we copy omc-repro.sh into an isolated directory
+# without the skills/autowork/scripts/common.sh sibling, so the source path
+# resolves to a missing file and omc_redact_secrets stays undefined.
+# ---------------------------------------------------------------------------
+printf '\nomc-repro fallback path (F-008):\n'
+
+ISO_DIR="${TEST_TMP}/iso"
+mkdir -p "${ISO_DIR}"
+cp "${REPRO_SCRIPT}" "${ISO_DIR}/omc-repro.sh"
+
+# Sub-case 3a: default mode — must abort with exit 2 and stderr message.
+ISO_EXIT=0
+ISO_STDERR_FILE="${TEST_TMP}/iso-stderr.txt"
+HOME="${SANDBOX_HOME}" bash "${ISO_DIR}/omc-repro.sh" "${SESSION_ID}" \
+  >/dev/null 2>"${ISO_STDERR_FILE}" || ISO_EXIT=$?
+assert_eq "fallback default aborts with exit 2" "2" "${ISO_EXIT}"
+
+if grep -Fq 'omc_redact_secrets is unavailable' "${ISO_STDERR_FILE}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: fallback default emits stderr error naming omc_redact_secrets\n' >&2
+  printf '    stderr was: %s\n' "$(cat "${ISO_STDERR_FILE}")" >&2
+  fail=$((fail + 1))
+fi
+
+# The fallback must NOT write any tarball when it aborts.
+shopt -s nullglob
+ISO_TARBALLS=("${SANDBOX_HOME}"/omc-repro-*-iso-*.tar.gz)
+shopt -u nullglob
+assert_eq "fallback default writes no tarball" "0" "${#ISO_TARBALLS[@]}"
+
+# Sub-case 3b: opt-in mode (OMC_REPRO_ALLOW_UNREDACTED=1) — must emit the
+# WARNING line and proceed (exit 0). We don't assert the tarball contents
+# here — the contract is "agent opted out of redaction; secrets may flow
+# through". Just confirm the path is reachable and emits the warning.
+OPT_EXIT=0
+OPT_STDERR_FILE="${TEST_TMP}/opt-stderr.txt"
+HOME="${SANDBOX_HOME}" OMC_REPRO_ALLOW_UNREDACTED=1 \
+  bash "${ISO_DIR}/omc-repro.sh" "${SESSION_ID}" \
+  >/dev/null 2>"${OPT_STDERR_FILE}" || OPT_EXIT=$?
+assert_eq "fallback opt-in exits 0" "0" "${OPT_EXIT}"
+
+if grep -Fq 'OMC_REPRO_ALLOW_UNREDACTED=1 set; bundling without' "${OPT_STDERR_FILE}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: fallback opt-in emits stderr WARNING line\n' >&2
+  printf '    stderr was: %s\n' "$(cat "${OPT_STDERR_FILE}")" >&2
+  fail=$((fail + 1))
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 printf '\n=== Results: %d passed, %d failed ===\n' "${pass}" "${fail}"

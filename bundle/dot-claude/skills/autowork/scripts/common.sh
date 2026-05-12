@@ -2175,8 +2175,6 @@ omc_reason_names_operational_block() {
 }
 
 # is_no_defer_active — predicate for the v1.40.0 no_defer_mode gate.
-
-# is_no_defer_active — predicate for the v1.40.0 no_defer_mode gate.
 # Returns 0 (active) when ALL three conditions hold:
 #   1. OMC_NO_DEFER_MODE=on (default)
 #   2. ULW mode is active in this session

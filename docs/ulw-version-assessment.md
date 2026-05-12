@@ -1,5 +1,7 @@
 # ULW Version Assessment
 
+> **Note (v1.40.0):** This assessment uses the pre-v1.40 framing of `/ulw-pause` and "user-decision pauses" (taste / policy / brand voice / credible-approach split). v1.40.0 narrowed `/ulw-pause` to operational-only blocks; technical-judgment decisions are now the agent's under ULW with default `no_defer_mode=on`. The historical narrative below is preserved as-is for release-history continuity; the current contract lives in `bundle/dot-claude/quality-pack/memory/core.md` ("The v1.40.0 no-defer contract" section).
+
 Date: 2026-05-05
 
 Scope:

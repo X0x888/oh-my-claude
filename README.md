@@ -81,10 +81,10 @@ Three skills, three different "I can't keep going" cases. NOT interchangeable:
 | Symptom | Verb |
 |---|---|
 | Gate fired but the work is genuinely complete (false positive) | `/ulw-skip <reason>` |
-| Discovered-scope gate flagged real findings you've consciously deferred | `/mark-deferred <named-WHY>` |
-| User must make a call only they can make (taste, policy, brand voice) | `/ulw-pause <reason>` |
+| Discovered-scope flagged real findings you've consciously deferred *(legacy soft-defer — under ULW execution with default `no_defer_mode=on` the agent ships inline instead; opt out via `no_defer_mode=off`)* | `/mark-deferred <named-WHY>` |
+| Blocked on a real operational input — credentials, login, infra down, rate limit hit | `/ulw-pause <reason>` |
 
-Escalation order before any of these fires: ship inline → wave-append → defer-with-WHY → pause. Full decision tree in [`/skills`](#available-skills).
+Escalation order before any of these fires (v1.40.0): ship inline → wave-append → reject-as-not-a-defect → pause-for-operational-block. Taste/policy/credible-approach calls are the agent's under ULW (`no_defer_mode=on`). Full decision tree in [`/skills`](#available-skills).
 
 Both install paths keep Claude Code's permission prompts on; once you trust the harness, [`--bypass-permissions`](#power-user-setup) removes them. Quality gates apply either way.
 
@@ -317,7 +317,7 @@ Skills are invoked as slash commands or routed automatically by the intent class
 | ulw-skip *(skip a gate)* | `/ulw-skip <reason>` | Skip current quality gate block once |
 | ulw-correct *(fix a misclassification)* | `/ulw-correct <correction>` | Tell the harness "the last turn was misclassified" — records the misfire and updates intent/domain when parseable. (v1.40.x) |
 | mark-deferred *(triage findings)* | `/mark-deferred <reason>` | Bulk-defer pending discovered-scope findings with a one-line reason — pass the gate without silent skipping |
-| ulw-pause *(user-decision pause)* | `/ulw-pause <reason>` | Declare a legitimate user-decision pause without tripping the session-handoff gate. Cap 2/session |
+| ulw-pause *(operational-block pause)* | `/ulw-pause <reason>` | Declare an operational block — credentials/login, hard external blocker, destructive shared-state action, unfamiliar in-progress state. NOT for taste/policy/credible-approach (v1.40.0: agent owns those under ULW). Cap 2/session |
 | ulw-resume *(post-rate-limit recovery)* | `/ulw-resume [--peek \| --list \| --session-id <sid> \| --dismiss]` | Atomically claim and replay the most relevant unclaimed `resume_request.json` — picks up a /ulw task that a Claude Code rate-limit kill interrupted. `--dismiss` suppresses the SessionStart hint without resuming. Pairs with the SessionStart resume-hint hook (Wave 1) and the headless watchdog (Wave 3). |
 | ulw-off *(deactivate)* | `/ulw-off` | Deactivate ultrawork mode mid-session |
 | skills *(this list)* | `/skills` | List all available skills with usage guide |

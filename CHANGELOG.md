@@ -514,6 +514,138 @@ sharpened), `skills.md` (LOAD-BEARING paragraph), `council/SKILL.md`
 `tests/test-no-defer-contract.sh` (new), `.github/workflows/validate.yml`
 (CI pin), `README.md` + `AGENTS.md` (test counts), `CHANGELOG.md`.
 
+### Wave 10 — pre-tag doc-class sweep + regression net (F-1…F-6)
+
+Pre-tag release-reviewer pass on the 9 v1.40.0 commits flagged 8 findings;
+three (F-1/F-2/F-3) were release-blocking MAJORs of the same defect class
+the Wave 6/7 sweeps thought they had closed. Wave 6 swept code surfaces
+(`prompt-intent-router`, `council/SKILL.md`, `stop-guard.sh`,
+`record-finding-list.sh`); Wave 7 swept the in-session memory
+(`skills/SKILL.md`) + `show-report.sh` + the mark-user-decision validator.
+But the user-facing docs — `README.md`, `docs/prompts.md`, `docs/faq.md`,
+`docs/architecture.md`, `docs/ulw-version-assessment.md` — were never
+swept. A user following the README's "When stuck — which deferral verb?"
+table or the FAQ's deferral-verb index would have hit a runtime refusal
+from `omc_reason_names_operational_block` and been confused about why the
+doc told them to do something the harness blocks.
+
+This is exactly the `docs_stale ×62` historical pattern. The permanent
+fix is not just patching the surfaces — it's extending the regression
+net so the class cannot recur silently.
+
+- **F-1 (MAJOR) — `README.md` "When stuck" table.** Lines 85/87/320
+  still mapped *taste, policy, brand voice* → `/ulw-pause` and listed
+  the v1.39 escalation order `ship → wave-append → defer-with-WHY →
+  pause`. Rewrote the `/ulw-pause` row to operational-block phrasing
+  (mirrors `skills/SKILL.md:30`: *"Blocked on a real operational input
+  — credentials, login, infra down, rate limit hit"*), the
+  `/mark-deferred` row to name the v1.40.0 `no_defer_mode=on` opt-out,
+  and the escalation order to `ship → wave-append → reject-as-not-a-
+  defect → pause-for-operational-block`. Updated the table-of-skills
+  row label from *"user-decision pause"* to *"operational-block pause"*.
+- **F-2 (MAJOR) — `docs/prompts.md` autonomy section.** Lines 9-19
+  listed the v1.39 five-pause-case scheme including the two REMOVED
+  cases (*Product-taste or policy judgment* and *Credible-approach
+  split*) that core.md:23 explicitly names as deleted in v1.40.0. The
+  doc itself declared *"core.md wins on drift"* — but had drifted.
+  Rewrote the five cases to mirror core.md verbatim (credentials, hard
+  external blocker, destructive shared-state, unfamiliar in-progress
+  state, scope explosion without pre-authorization) and added a closing
+  paragraph naming `no_defer_mode=off` as the legacy-behavior opt-out.
+- **F-3 (MAJOR) — `docs/faq.md` item 12.** Same defect class as F-1
+  on the FAQ. Rewrote to operational-only phrasing with v1.40.0 caveat.
+- **F-4 (MINOR) — orphan duplicate docstring above `is_no_defer_active`
+  in `common.sh:2177-2178`.** Wave 5/7 copy-paste artifact. Removed.
+- **F-5 (MINOR) — pre-existing v1.32.1 drift in `docs/architecture.md`.**
+  FINDINGS_JSON emitting-agents list omitted `release-reviewer`
+  (`AGENTS.md:240` had 8 agents; architecture.md had 7). Appended.
+- **F-6 (MINOR) — `docs/ulw-version-assessment.md` lacked a v1.40.0
+  framing banner.** Historical doc preserved unchanged; banner added
+  at the top so readers know it uses pre-v1.40 pause-case terminology.
+- **Predicate consistency check.** The README's new "operational input"
+  examples (`credentials, login, infra down, rate limit hit`) were
+  verified against `omc_reason_names_operational_block` at runtime —
+  all four phrases pass the predicate, so a user following the doc
+  literally won't hit a refusal. (Earlier draft used *"dead infra"*
+  which fails the predicate due to word-order asymmetry in the regex;
+  caught before commit and rephrased to `infra down`.)
+
+**Regression net extension — the permanent fix.**
+`tests/test-no-defer-contract.sh` extended from 12 → 19 assertions
+(T12-T18 added) covering:
+
+- T12 — README "When stuck" table does NOT map taste/policy/brand-voice
+  to `/ulw-pause`.
+- T13 — README `/ulw-pause` row names *operational-block pause* scope.
+- T14 — `docs/prompts.md` autonomy section does NOT list *Product-taste
+  or policy judgment* as a pause case.
+- T15 — `docs/prompts.md` does NOT list *Credible-approach split* as
+  a pause case.
+- T16 — `docs/prompts.md` DOES list *Hard external blocker* (one of
+  the five operational cases in core.md).
+- T17 — `docs/prompts.md` DOES list *Scope explosion without
+  pre-authorization* (the fifth operational case).
+- T18 — `docs/faq.md` item 12 does NOT use the v1.39 framing.
+
+New `assert_not_contains_file` helper added for negative-presence
+assertions. Without these assertions, CI cannot catch a future doc
+surface drifting back to the v1.39 pause-case framing — the regression
+net Wave 9 shipped only covered the in-session memory + omc-config.sh
+preset emitters.
+
+**Skipped from the release-reviewer audit.** F-7 (Wave 9 CHANGELOG
+phrasing — *"duplicate library choice token"* is technically true at
+the item level but the whole-item duplication is the bigger story)
+is a documentation-style nit that doesn't affect behavior or future
+discovery; skipped per the reviewer's *"skip-able for tagging"* note.
+F-8 ships in Wave 11 below.
+
+**Tests:** `test-no-defer-contract` 12→19 assertions, all green.
+Adjacent regression net stays clean: `test-no-defer-mode 37/0`,
+`test-mark-deferred 166/0`, `test-finding-list 121/0`,
+`test-coordination-rules 112/0`, `test-e2e-hook-sequence 373/0`.
+
+**Files changed:** `README.md`, `docs/prompts.md`, `docs/faq.md`,
+`docs/architecture.md`, `docs/ulw-version-assessment.md`,
+`bundle/dot-claude/skills/autowork/scripts/common.sh` (orphan docstring
+removed), `tests/test-no-defer-contract.sh` (extended), `CHANGELOG.md`.
+
+### Wave 11 — pre-tag `omc-repro.sh` fallback hardening (F-8)
+
+Pre-tag review F-8: the fallback path in `omc-repro.sh` silently
+installed a `cat`-passthrough `omc_redact_secrets` when `common.sh`
+failed to source — defeating the Wave 2 F-007 *defense-in-depth secret
+redaction* contract on degraded installs. A user with a corrupted
+install running `omc-repro.sh` to generate a bug-report tarball would
+ship their session's secrets verbatim, with no warning.
+
+Hardened the fallback to FAIL-CLOSED:
+
+- **Default** — abort with `exit 2` and a four-line stderr error
+  message naming the failure mode, the F-007 contract, the likely
+  cause (corrupted install), and the override flag.
+- **Opt-in** — `OMC_REPRO_ALLOW_UNREDACTED=1` re-enables the legacy
+  cat-passthrough but emits a three-line stderr WARNING so the user
+  cannot pipe-and-share the tarball unaware.
+
+This is a behavior change for the degraded-install path (previously
+silent leak, now hard abort). The happy path is unchanged — the
+fallback only triggers when `common.sh` can't be sourced, which
+implies a partial or broken install.
+
+**Test:** `tests/test-repro-redaction.sh` extended from 11 → 15
+assertions (Case 3 added). New sub-tests:
+
+- 3a (default mode): copy `omc-repro.sh` to an isolated dir without
+  the `skills/autowork/scripts/common.sh` sibling, run, assert
+  `exit 2`, assert stderr contains `omc_redact_secrets is
+  unavailable`, assert no tarball produced.
+- 3b (opt-in mode): re-run with `OMC_REPRO_ALLOW_UNREDACTED=1`,
+  assert `exit 0`, assert stderr contains the WARNING line.
+
+**Files changed:** `bundle/dot-claude/omc-repro.sh`,
+`tests/test-repro-redaction.sh`, `CHANGELOG.md`.
+
 ## [1.39.0] - 2026-05-12
 
 Multi-lens council audit of v1.38.0 + the post-tag `ebb7044` "Add

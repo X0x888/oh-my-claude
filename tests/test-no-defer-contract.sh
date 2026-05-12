@@ -21,6 +21,25 @@
 #   T9  — emit_preset minimal legitimately emits no_defer_mode=off
 #   T10 — no_defer_mode default in common.sh is "on"
 #   T11 — oh-my-claude.conf.example documents the flag with default "on"
+#   T12 — README.md "When stuck" table does NOT map taste/policy/brand-
+#         voice to /ulw-pause (v1.39 phrasing that contradicts v1.40)
+#   T13 — README.md /ulw-pause table row names operational-block scope
+#   T14 — docs/prompts.md autonomy section does NOT list "Product-taste
+#         or policy judgment" as a pause case (REMOVED in v1.40.0)
+#   T15 — docs/prompts.md autonomy section does NOT list "Credible-
+#         approach split" as a pause case (REMOVED in v1.40.0)
+#   T16 — docs/prompts.md autonomy section DOES list "Hard external
+#         blocker" (one of the five v1.40 cases)
+#   T17 — docs/prompts.md autonomy section DOES list "Scope explosion
+#         without pre-authorization" (one of the five v1.40 cases)
+#   T18 — docs/faq.md item 12 does NOT map taste/policy/brand-voice/
+#         credible-approach to /ulw-pause (v1.39 phrasing)
+#
+# T12-T18 close the docs_stale class that v1.40.0's Wave 6/7 sweeps
+# missed on the user-facing surfaces — the in-session memory was swept
+# but README/docs/prompts/docs/faq were not. Without these assertions
+# CI cannot catch a future doc surface drifting back to the v1.39
+# pause-case framing.
 #
 # Failure modes this catches:
 #   - "Doc cleanup" silently deletes the contract section.
@@ -28,6 +47,8 @@
 #   - "Default rebase" changes OMC_NO_DEFER_MODE default to off in
 #     common.sh.
 #   - Adding a new preset that ships no_defer_mode=off as recommended.
+#   - A README/docs edit reintroduces the v1.39 "user-decision pause for
+#     taste/policy/brand-voice" framing that v1.40 explicitly removed.
 #
 # Updating this test:
 #   This test exists to PREVENT softening. If you legitimately need to
@@ -52,6 +73,20 @@ assert_contains_file() {
     printf '  FAIL: %s\n    file: %s\n    expected to contain: %s\n' \
       "${label}" "${file}" "${needle}" >&2
     fail=$((fail + 1))
+  fi
+}
+
+# Used by T12, T14, T15, T18 — assert a v1.39-era phrasing is NOT
+# present in a user-facing doc. Fail loudly when the deprecated phrasing
+# reappears so a future doc edit cannot silently regress the contract.
+assert_not_contains_file() {
+  local label="$1" needle="$2" file="$3"
+  if grep -Fq -- "${needle}" "${file}" 2>/dev/null; then
+    printf '  FAIL: %s\n    file: %s\n    expected NOT to contain: %s\n' \
+      "${label}" "${file}" "${needle}" >&2
+    fail=$((fail + 1))
+  else
+    pass=$((pass + 1))
   fi
 }
 
@@ -159,6 +194,68 @@ assert_contains_file \
   "T11 — conf.example documents no_defer_mode=on default" \
   "#no_defer_mode=on" \
   "${CONF_EXAMPLE}"
+
+# T12-T18 — user-facing doc surfaces. Wave 6 swept code, Wave 7 swept
+# the in-session memory + skills/SKILL.md, but README and docs/ were
+# missed. These assertions close that gap so a future doc surface
+# cannot silently drift back to the v1.39 framing.
+
+README_MD="${REPO_ROOT}/README.md"
+PROMPTS_MD="${REPO_ROOT}/docs/prompts.md"
+FAQ_MD="${REPO_ROOT}/docs/faq.md"
+
+# T12 — README's "When stuck" decision table must NOT map taste / policy
+# / brand voice to /ulw-pause. That's the v1.39 phrasing the v1.40
+# contract explicitly forbids — a user following it hits a runtime
+# refusal from omc_reason_names_operational_block.
+assert_not_contains_file \
+  "T12 — README 'When stuck' table does NOT map taste/policy/brand-voice to /ulw-pause" \
+  "(taste, policy, brand voice) | \`/ulw-pause" \
+  "${README_MD}"
+
+# T13 — README's /ulw-pause row must name the operational-block scope
+# explicitly. The replacement phrasing mirrors skills/SKILL.md line 71.
+assert_contains_file \
+  "T13 — README /ulw-pause row names operational-block scope" \
+  "operational-block pause" \
+  "${README_MD}"
+
+# T14 — docs/prompts.md autonomy section must NOT list "Product-taste
+# or policy judgment" as a pause case. core.md:23 names this as one of
+# the two pause cases REMOVED in v1.40.0.
+assert_not_contains_file \
+  "T14 — docs/prompts.md does NOT list Product-taste/policy as a pause case" \
+  "Product-taste or policy judgment" \
+  "${PROMPTS_MD}"
+
+# T15 — docs/prompts.md autonomy section must NOT list "Credible-
+# approach split" as a pause case. core.md:23 names this as the second
+# pause case REMOVED in v1.40.0.
+assert_not_contains_file \
+  "T15 — docs/prompts.md does NOT list Credible-approach split as a pause case" \
+  "Credible-approach split.** Two credible approaches" \
+  "${PROMPTS_MD}"
+
+# T16 — docs/prompts.md autonomy section DOES list "Hard external
+# blocker" (one of the five operational cases enumerated in core.md).
+assert_contains_file \
+  "T16 — docs/prompts.md lists 'Hard external blocker' as a pause case" \
+  "Hard external blocker" \
+  "${PROMPTS_MD}"
+
+# T17 — docs/prompts.md autonomy section DOES list "Scope explosion
+# without pre-authorization" (the fifth operational case).
+assert_contains_file \
+  "T17 — docs/prompts.md lists 'Scope explosion without pre-authorization'" \
+  "Scope explosion without pre-authorization" \
+  "${PROMPTS_MD}"
+
+# T18 — docs/faq.md item 12 must NOT map taste / policy / brand voice
+# / credible-approach split to /ulw-pause. Same defect class as T12.
+assert_not_contains_file \
+  "T18 — docs/faq.md item 12 does NOT use v1.39 user-decision-pause framing" \
+  "taste, policy, brand voice, credible-approach split" \
+  "${FAQ_MD}"
 
 printf '\nResults: %d passed, %d failed\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]
