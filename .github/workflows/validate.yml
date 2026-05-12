@@ -30,6 +30,9 @@ jobs:
         run: |
           find . -name '*.json' -not -path './.git/*' -print0 | xargs -0 -n1 python3 -m json.tool --no-ensure-ascii > /dev/null
 
+      - name: Check flag coordination (3-site SoT parity)
+        run: bash tools/check-flag-coordination.sh
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -325,6 +328,9 @@ jobs:
 
       - name: Run W3 user surfaces v1.40 regression
         run: bash tests/test-w3-user-surfaces.sh
+
+      - name: Run W4 flag coordination v1.40 regression
+        run: bash tests/test-w4-flag-coordination.sh
 
       - name: Run statusline tests
         run: python3 -m unittest tests.test_statusline -v

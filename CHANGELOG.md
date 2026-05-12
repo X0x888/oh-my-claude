@@ -189,6 +189,69 @@ the CLI.
   (in-session memory) document the new skill per the three-site
   coordination rule for user-invocable skills.
 
+### Wave 4/4 — flag-coordination validator (F-014; F-013 & F-015 deferred)
+
+The abstraction-critic surfaced three structural refactor findings.
+W4 ships the lowest-risk one (a CI-enforced drift check on the most-
+violated coordination rule) and defers the two larger refactors with
+concrete WHYs anchored to a v1.41+ structural cycle, so the deferrals
+are auditable and not silent.
+
+- **F-014 (architecture) — `tools/check-flag-coordination.sh` + CI
+  wire.** Audits the three flag-definition SoT sites
+  (`common.sh::_parse_conf_file` case statement, `oh-my-claude.conf.example`,
+  `omc-config.sh::emit_known_flags` table) for parity. Exits 1 on
+  drift, naming the missing flag(s); exits 0 with a one-line summary
+  (`parser=44 · example=46 · omc-config=46`) when clean. Two flags
+  (`installation_drift_check`, `model_tier`) are exempt from the parser
+  because they're read via separate paths (statusline.py / install-
+  time grep); the exempt list is in the validator and documented in
+  comments. Wired into the lint job in `.github/workflows/validate.yml`
+  so a future PR that drifts the trio fails CI immediately. The
+  validator is the smallest shippable form of the flags.yml codegen
+  proposal — a future v1.41+ PR can promote `flags.yml` as the
+  single source and generate the three downstream sites; this audit
+  becomes the codegen's verification check.
+
+- **F-013 (architecture) — DEFERRED.** `common.sh` grew 5586 → 6402
+  LOC across five releases despite three prior lib extractions.
+  The abstraction-critic listed 12 candidate sections (`dimensions`,
+  `scorecard`, `cross-session`, `project`, `risk`, `scope`, etc.)
+  that should move to `lib/`. **Defer reason:** requires per-section
+  dependency tracing — each section has cross-cutting state
+  dependencies (common.sh primitives, init order, lazy-load guards)
+  that make safe extraction a per-section PR scope with its own
+  regression net. Bundling 12 deltas into one wave commit would
+  conflate the failure surface. Anchor: v1.41+ structural refactor
+  cycle, paired with F-019 (gate registry) and F-020 (directive
+  registry) which are in the same architectural-shape class.
+
+- **F-015 (architecture) — DEFERRED.** `classifier.sh`'s `is_ui_request`
+  packs 5 verb classes × ~30 noun alternatives interleaved with
+  prepositions into one ~600-character regex. The abstraction-critic
+  proposed extracting noun/verb classes to `data/<class>.txt` files
+  with a regex-assembly function at load time. **Defer reason:**
+  requires per-class regex decomposition — clean separation needs
+  a regex-assembly helper, per-class data files, and parity tests
+  that prove the pre/post-extraction regex matches the same prompt
+  corpus. Dedicated PR scope. Anchor: v1.41+ readability cycle.
+
+- **New regression net `tests/test-w4-flag-coordination.sh`** — 4
+  assertions: validator passes on the current repo, exits 1 on a
+  synthetic drift fixture (and names the drifted flag in the report),
+  parser-exempt flags are not surfaced as drift.
+
+- README + AGENTS bash test count bumped 95 → 96.
+
+**Wave plan summary:** 21 council findings · 13 shipped (W1: 6,
+W2: 3, W3: 3, W4: 1) · 2 deferred with concrete WHYs (F-013, F-015,
+anchored to v1.41+) · 6 require user decision (F-016 README persona,
+F-017 README anti-positioning, F-018 --share organic nudge, F-019
+stop-guard registry refactor, F-020 directive registry refactor,
+F-021 /ulw &lt;verb&gt; taxonomy). The deferred and user-decision
+findings are recorded in the session's `findings.json` and surfaced
+in `/ulw-report` for future audit.
+
 ## [1.39.0] - 2026-05-12
 
 Multi-lens council audit of v1.38.0 + the post-tag `ebb7044` "Add
