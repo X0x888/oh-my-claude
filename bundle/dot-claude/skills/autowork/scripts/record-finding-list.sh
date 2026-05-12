@@ -223,6 +223,19 @@ case "${cmd}" in
           "${new_id}" >&2
         return 1
       fi
+      # v1.40.x harness-improvement wave: `originating_reviewer` captures
+      # which agent surfaced each finding. Closes the reviewer-feedback
+      # loop: agent-metrics.json shows reviewer clean-rates (2-11% across
+      # quality/excellence/traceability/...) but offers no signal on
+      # whether the findings were shipped, rejected, or deferred. With
+      # this field carried through to finding-status-change gate events,
+      # /ulw-report can render per-reviewer fix-rate (shipped / total
+      # finding-status-change events for that reviewer) — the data signal
+      # for tuning reviewer prompts away from over-firing.
+      #
+      # Field is optional on input; defaults to empty for back-compat
+      # with callers that don't yet supply it (legacy FINDINGS_JSON
+      # parsers, hand-curated wave plans, fixture-driven tests).
       normalized="$(printf '%s' "${input}" | jq --argjson ts "$(_now)" \
         '. + {
           ts: (.ts // $ts),
@@ -231,7 +244,8 @@ case "${cmd}" in
           commit_sha: (.commit_sha // ""),
           notes: (.notes // ""),
           requires_user_decision: (.requires_user_decision // false),
-          decision_reason: (.decision_reason // "")
+          decision_reason: (.decision_reason // ""),
+          originating_reviewer: (.originating_reviewer // "")
         }')"
       updated="$(printf '%s' "${current}" | jq \
         --argjson finding "${normalized}" \
@@ -387,10 +401,20 @@ EOF
       printf 'record-finding-list status: lock acquisition or body failed for F=%s\n' "${id}" >&2
       exit 1
     fi
+    # v1.40.x harness-improvement wave: include originating_reviewer in
+    # the finding-status-change event details so /ulw-report can compute
+    # per-reviewer fix-rate. Lookup is read-after-write under the same
+    # findings.json (no extra lock — we just wrote it). Falls back to
+    # empty string for legacy findings missing the field — preserves
+    # the existing event shape for downstream consumers.
+    _finding_originating_reviewer="$(jq -r --arg id "${id}" \
+      '(.findings[] | select(.id == $id) | .originating_reviewer) // ""' \
+      "${FINDINGS_FILE}" 2>/dev/null || printf '')"
     record_gate_event "finding-status" "finding-status-change" \
       "finding_id=${id}" \
       "finding_status=${status}" \
-      "commit_sha=${commit_sha}"
+      "commit_sha=${commit_sha}" \
+      "originating_reviewer=${_finding_originating_reviewer}"
     printf 'F=%s status=%s\n' "${id}" "${status}"
     ;;
 

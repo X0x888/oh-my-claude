@@ -250,6 +250,32 @@ summary_val="$(jq -r '.findings[] | select(.id=="F-301") | .summary' "${findings
 assert_eq "new finding summary preserved" "discovered mid-wave" "${summary_val}"
 
 # ----------------------------------------------------------------------
+# v1.40.x harness-improvement wave: originating_reviewer captured per
+# finding so /ulw-report can compute per-reviewer fix-rate (closes the
+# reviewer-feedback loop gap surfaced by agent-metrics.json showing
+# 2-11% clean-rates across reviewers but no signal on which findings
+# were actually shipped).
+printf 'Test 21b: add-finding captures originating_reviewer field\n'
+"${SCRIPT}" add-finding <<<'{"id":"F-310","summary":"surfaced by quality-reviewer","severity":"high","surface":"auth","originating_reviewer":"quality-reviewer"}' >/dev/null
+reviewer_val="$(jq -r '.findings[] | select(.id=="F-310") | .originating_reviewer' "${findings_path}")"
+assert_eq "originating_reviewer preserved on add" "quality-reviewer" "${reviewer_val}"
+
+# Back-compat: add-finding without the field defaults to empty string.
+"${SCRIPT}" add-finding <<<'{"id":"F-311","summary":"legacy add — no reviewer field","severity":"low","surface":"docs"}' >/dev/null
+reviewer_empty="$(jq -r '.findings[] | select(.id=="F-311") | .originating_reviewer' "${findings_path}")"
+assert_eq "originating_reviewer defaults to empty for legacy callers" "" "${reviewer_empty}"
+
+# Status-change event surfaces the reviewer (lookup against findings.json).
+# Use the per-session gate_events.jsonl that record_gate_event writes to.
+mkdir -p "${STATE_ROOT}/finding-list-test-session"
+SESSION_ID="finding-list-test-session" "${SCRIPT}" status "F-310" "shipped" "abc1234" "wave 1 ship" >/dev/null
+_gate_event_file="${STATE_ROOT}/finding-list-test-session/gate_events.jsonl"
+if [[ -f "${_gate_event_file}" ]]; then
+  reviewer_in_event="$(jq -r 'select(.event=="finding-status-change" and .details.finding_id=="F-310") | .details.originating_reviewer' "${_gate_event_file}" 2>/dev/null | head -1)"
+  assert_eq "finding-status-change event carries originating_reviewer" "quality-reviewer" "${reviewer_in_event}"
+fi
+
+# ----------------------------------------------------------------------
 printf 'Test 22: add-finding rejects duplicate id\n'
 output="$("${SCRIPT}" add-finding <<<'{"id":"F-301","summary":"dup","severity":"low","surface":"x"}' 2>&1 || echo CAUGHT)"
 assert_contains "duplicate rejected" "already exists" "${output}"

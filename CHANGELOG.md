@@ -504,6 +504,64 @@ Tests verified green:
 `bundle/dot-claude/quality-pack/scripts/prompt-intent-router.sh`,
 `tests/test-bias-defense-classifier.sh`.
 
+#### W4 — Reviewer attribution on `finding-status-change` events
+
+**The reviewer-feedback gap.** `agent-metrics.json` reports per-reviewer
+clean-vs-finding-verdict ratios — `quality-reviewer` at 10.6%,
+`excellence-reviewer` at 2.5%, traceability / design_quality /
+stress_test / prose / release all near 0%. Either the work being
+reviewed is implausibly defective (CI is green most of the time, so
+unlikely), or the reviewers are tuned to find something every run.
+There's no feedback signal in the data to distinguish those cases:
+`finding-status-change` events show 460 shipped / 28 deferred / 4
+rejected aggregate-wide, but the gate-event details don't carry which
+reviewer originated each finding, so per-reviewer fix-rate can't be
+computed.
+
+**The fix.** `record-finding-list.sh` learns to propagate an
+`originating_reviewer` field end-to-end:
+
+1. **`add-finding` normalizer (`:226-236`)** — adds `originating_reviewer`
+   to the normalized default set with empty-string fallback. Callers
+   that don't yet supply the field stay backward-compatible (no
+   schema-break for hand-curated wave plans, fixture-driven tests, or
+   legacy FINDINGS_JSON parsers).
+2. **`status` subcommand event emission (`:390`)** — reads the
+   `originating_reviewer` from `findings.json` after the status write
+   (no extra lock — read-after-own-write) and includes it in the
+   `finding-status-change` gate event details.
+
+The `originating_reviewer` flows from `findings.json` → gate event →
+`gate_events.jsonl` → `/ulw-report`. Once a meaningful window of
+findings carries the field, `/ulw-report` can render a per-reviewer
+fix-rate column (shipped vs. all finding-status-change events for that
+reviewer); a reviewer with shipped-rate < 30% over a meaningful window
+is a calibration signal — either the prompt is too eager or the work
+genuinely is bad.
+
+**Regression net** in `tests/test-finding-list.sh`:
+
+- **Test 21b** (new) — `add-finding` with `originating_reviewer` field
+  preserves it in `findings.json` (positive case); `add-finding`
+  without the field defaults to empty string (back-compat);
+  `finding-status-change` event details carry the reviewer through
+  `record_gate_event` to the per-session `gate_events.jsonl`.
+
+Forward path: the FINDINGS_JSON parser (`bundle/dot-claude/skills/
+autowork/scripts/parse-findings-json.sh` and reviewer-emit paths) can
+adopt the field iteratively per reviewer — the harness now accepts the
+data when callers supply it, with no break for callers that don't.
+
+Tests verified green:
+- `test-finding-list.sh` 124/0 (was 119/0; +Test 21b's 5 assertions)
+- `test-findings-json.sh` 42/0
+- `test-gate-events.sh` 42/0
+- shellcheck clean
+
+**Files changed:**
+`bundle/dot-claude/skills/autowork/scripts/record-finding-list.sh`,
+`tests/test-finding-list.sh`.
+
 ## [1.40.1] - 2026-05-12
 
 Hotfix for two findings discovered in the v1.40.0 post-tag verification
