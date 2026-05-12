@@ -1147,12 +1147,26 @@ else
   if [[ "${_session_outcome_map}" == "{}" ]] || [[ -z "${_session_outcome_map}" ]]; then
     printf '_Directive fires recorded but no session_summary rows in window — outcome attribution requires both feeds._\n\n'
   else
-    printf '| Directive | Fires | Sessions | Committed | Abandoned | Other | Apply rate |\n'
+    printf '| Directive | Fires | Sessions | Shipped | Dropped | Other | Apply rate |\n'
     printf '|---|---:|---:|---:|---:|---:|---:|\n'
     printf '%s\n' "${_directive_fires_rows}" \
       | jq -sr --argjson outcomes "${_session_outcome_map}" '
         # Group fires by directive name, collect unique session_ids
         # touched, then look up the outcome of each session from the map.
+        #
+        # v1.39.0 W1: token alignment. Producer (stop-guard.sh) emits
+        # one of {completed, released, skip-released, exhausted} on
+        # Stop, and the persisted sweep inference adds {completed_inferred,
+        # idle, unclassified_by_sweep} (common.sh:1540). The live-sweep
+        # synthesizer defaults to "active" (show-report.sh:220). The
+        # prior "committed"/"abandoned" buckets matched none of these,
+        # so apply-rate was structurally 0/N. The "shipped" bucket now
+        # counts every terminal Stop-derived success (completed +
+        # completed_inferred + released + skip-released); "dropped"
+        # counts every terminal failure shape (abandoned + exhausted +
+        # unclassified_by_sweep); "other" absorbs in-flight (active)
+        # and idle (zero-activity) sessions so they do not deflate the
+        # rate.
         group_by(.details.directive)
         | map({
             directive: .[0].details.directive,
@@ -1164,9 +1178,9 @@ else
           })
         | map(. + {
             n_sessions: (.sessions | length),
-            n_committed: (.outcomes | map(select(. == "committed")) | length),
-            n_abandoned: (.outcomes | map(select(. == "abandoned")) | length),
-            n_other: (.outcomes | map(select(. != "committed" and . != "abandoned")) | length)
+            n_shipped: (.outcomes | map(select(. == "completed" or . == "completed_inferred" or . == "released" or . == "skip-released")) | length),
+            n_dropped: (.outcomes | map(select(. == "abandoned" or . == "exhausted" or . == "unclassified_by_sweep")) | length),
+            n_other: (.outcomes | map(select(. == "active" or . == "idle" or . == "unknown")) | length)
           })
         | sort_by(-.fires)
         | .[0:10]
@@ -1175,19 +1189,19 @@ else
             .directive,
             (.fires | tostring),
             (.n_sessions | tostring),
-            (.n_committed | tostring),
-            (.n_abandoned | tostring),
+            (.n_shipped | tostring),
+            (.n_dropped | tostring),
             (.n_other | tostring),
-            (if (.n_committed + .n_abandoned) > 0 then ((.n_committed * 100 / (.n_committed + .n_abandoned)) | floor | tostring + "%") else "—" end)
+            (if (.n_shipped + .n_dropped) > 0 then ((.n_shipped * 100 / (.n_shipped + .n_dropped)) | floor | tostring + "%") else "—" end)
           ]
         | @tsv
       ' 2>/dev/null \
-      | while IFS=$'\t' read -r _dva_name _dva_fires _dva_sess _dva_com _dva_aban _dva_other _dva_rate; do
+      | while IFS=$'\t' read -r _dva_name _dva_fires _dva_sess _dva_ship _dva_drop _dva_other _dva_rate; do
           [[ -z "${_dva_name}" ]] && continue
           printf '| `%s` | %s | %s | %s | %s | %s | %s |\n' \
-            "${_dva_name}" "${_dva_fires}" "${_dva_sess}" "${_dva_com}" "${_dva_aban}" "${_dva_other}" "${_dva_rate}"
+            "${_dva_name}" "${_dva_fires}" "${_dva_sess}" "${_dva_ship}" "${_dva_drop}" "${_dva_other}" "${_dva_rate}"
         done
-    printf '\n_Apply rate = committed / (committed + abandoned). "Other" = sessions still in flight or with non-terminal outcome. A directive with low apply rate AND high fire count is a candidate for budget removal — it is contributing prompt-tax without correlating to ship signal._\n\n'
+    printf '\n_Apply rate = shipped / (shipped + dropped). "Shipped" counts `completed` + `completed_inferred` + `released` + `skip-released`; "Dropped" counts `abandoned` + `exhausted` + `unclassified_by_sweep`; "Other" counts in-flight `active` and zero-activity `idle` sessions excluded from the rate. A directive with low apply rate AND high fire count is a candidate for budget removal — it is contributing prompt-tax without correlating to ship signal._\n\n'
   fi
 fi
 

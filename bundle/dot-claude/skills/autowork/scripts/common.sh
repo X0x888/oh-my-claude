@@ -1537,7 +1537,13 @@ sweep_stale_sessions() {
               dim_blocks: ((.dimension_guard_blocks // "0") | tonumber),
               exhausted: (if .guard_exhausted then true else false end),
               dispatches: ((.subagent_dispatch_count // "0") | tonumber),
-              outcome: (.session_outcome // "abandoned"),
+              outcome: (
+                if (.session_outcome // "") != "" then .session_outcome
+                elif ((.last_review_ts // "") != "") and ((.last_verify_ts // "") != "") and (((.code_edit_count // "0") | tonumber) > 0) then "completed_inferred"
+                elif (((.code_edit_count // "0") | tonumber) == 0) and ((.last_review_ts // "") == "") and ((.last_verify_ts // "") == "") then "idle"
+                else "unclassified_by_sweep"
+                end
+              ),
               skip_count: ((.skip_count // "0") | tonumber),
               serendipity_count: ((.serendipity_count // "0") | tonumber),
               findings: $findings,

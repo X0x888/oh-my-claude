@@ -176,6 +176,9 @@ jobs:
       - name: Run zero-steering policy tests
         run: bash tests/test-zero-steering-policy.sh
 
+      - name: Run session-summary outcome tests (v1.39.0 W1)
+        run: bash tests/test-session-summary-outcome.sh
+
       - name: Run real-work eval suite tests
         run: bash tests/test-realwork-eval-suite.sh
 
