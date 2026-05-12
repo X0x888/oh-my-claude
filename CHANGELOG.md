@@ -4,6 +4,273 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.39.0] - 2026-05-12
+
+Multi-lens council audit of v1.38.0 + the post-tag `ebb7044` "Add
+adaptive zero-steering quality policy" commit ran six perspectives in
+parallel (product, sre, data, security, design, abstraction-critic)
+under deep-mode opus, with Phase 7 oracle verification of the top 3
+findings. The yardstick was the project's stated goal: *"help a Claude
+Code user ship 10/10 quality work with minimal prompt, fast, with
+minimum token usage, without degrading quality."* The council found
+the goal was unmeasurable — every cross-session "did we ship 10/10?"
+metric was downstream-corrupted by two compound bugs in the telemetry
+producer/consumer chain, and the verified top finding was that
+`task_risk_tier` (the new adaptive-policy input) was read as
+prompt-time ground truth at four Stop-time gates despite the harness
+already collecting strictly better session evidence.
+
+The four waves below close the verified findings and ship the missing
+producer that makes the eval scoring layer falsifiable against real
+sessions instead of hand-written fixtures.
+
+### Adaptive zero-steering policy (post-v1.38.0 commit folded in)
+
+- **`ebb7044` — Add adaptive zero-steering quality policy**. New
+  conf flag `quality_policy=balanced|zero_steering` (default
+  `balanced`, env `OMC_QUALITY_POLICY`). When set to `zero_steering`,
+  serious/high-risk work keeps blocking after exhaustion caps while
+  small work stays compact. Introduces `classify_task_risk_tier()`
+  prompt-time classifier (`common.sh:5184-5219`) that scores
+  intent/domain/scope-keywords/verb signals to bucket each ULW prompt
+  into low/medium/high. Adds `last_verify_scope` distinguishing
+  `targeted`/`full`/`lint`/`build`/`operations` so lint-only proof no
+  longer suppresses the inferred missing-tests surface (universal
+  quality lift — applies to balanced policy too, not just
+  zero-steering). 53 new tests (`test-zero-steering-policy.sh` +
+  `test-realwork-eval-suite.sh`); 7 router/stop-guard/record-reviewer/
+  check-latency-budgets sites consume the new tier; CLAUDE.md +
+  `oh-my-claude.conf.example` + omc-config emit-table follow the
+  three-site lockstep.
+
+### Wave 1 — telemetry truth (commit `610d540`)
+
+Closes the verified compound bug surfaced by the data lens: every
+cross-session metric the harness has surfaced through `/ulw-report`'s
+"directive value attribution" section was computed against a
+structurally-zero denominator, because the producer and consumer of
+the session outcome field used non-overlapping token sets.
+
+- **Sweep producer (`common.sh:1540`)** mislabeled non-Stop sessions.
+  The bare `"abandoned"` default fired whenever no Stop hook wrote
+  `session_outcome` — empirically 417/418 historical rows carried
+  this default, 348 of which had zero edits AND no review/verify
+  (genuinely idle, not abandoned). Replaced with an inference:
+  `completed_inferred` when reviewed+verified+code_edits>0; `idle`
+  when zero activity; `unclassified_by_sweep` for partial-signal
+  sessions. Stop-hook-set values pass through unchanged.
+- **Apply-rate aggregation (`show-report.sh:1150-1190`)** counted a
+  token the producer never emits. Prior code counted
+  `n_committed: . == "committed"` and `n_abandoned: . == "abandoned"`
+  for the apply-rate numerator/denominator; the producer emits
+  `{completed, completed_inferred, released, skip-released,
+  abandoned, exhausted, unclassified_by_sweep, idle, active}`. The
+  apply rate was structurally `0/N` for every release that surfaced
+  it. Replaced with `n_shipped` (completed +
+  completed_inferred + released + skip-released), `n_dropped`
+  (abandoned + exhausted + unclassified_by_sweep), `n_other`
+  (active + idle + unknown) — the three-bucket shape makes the
+  rate computable and the residual visible.
+- New `tests/test-session-summary-outcome.sh` — 21 assertions:
+  inference logic over 12 input shapes, aggregation buckets across
+  every producer-emitted token, lockstep grep that keeps the inline
+  jq in sync with the test fixture.
+- `docs/architecture.md` outcome value-space updated (two rows);
+  README + AGENTS bash test count bumped 89 → 90 per
+  coordination-rules contract C4.
+
+### Wave 2 — risk tier reality (commit `3061b78`)
+
+Closes the verified top finding from the abstraction-critic +
+sre-lens: `task_risk_tier` was a prompt-time noun read as ground
+truth at every Stop-time gate, ignoring session evidence that had
+materially changed the actual risk. A "fix the typo" prompt that
+escalated into `auth/middleware.ts` stayed `low`; a "refactor the
+architecture" prompt that collapsed to a one-line config flip stayed
+`high` and paid full strict-gate cost. The signals to do better
+(reviewer FINDINGS_JSON severity, edited surfaces, verify confidence,
+discovered_scope depth) already lived in session state.
+
+- **New `current_session_risk_tier()` helper (`common.sh:5239+`)**.
+  Layered view: reads prompt-time tier first, short-circuits when
+  already high. Otherwise applies four escalators —
+  (1) `findings.json` carries severity high|critical;
+  (2) edited path matches the sensitive-surface regex
+      `(auth|authn|authz|payment|billing|stripe|migration|migrations|`
+      `schema|secret|credential|keystore|crypto)` word-bounded by
+      path separators;
+  (3) `last_verify_confidence < 40` AND `last_verify_outcome != "passed"`;
+  (4) `discovered_scope.jsonl` carries 3+ pending rows.
+  Composes additively — never demotes prompt-time high (the model
+  already saw the high-risk directive). A narrow de-escalation path
+  moves medium→low only when 0 code edits AND ≥3 doc edits AND no
+  escalator fired. Escalators always win over de-escalation
+  (regression-net F5/F6 pin the precedence).
+- **`is_high_session_risk()` wrapper** swapped at four consumer
+  sites: `stop-guard.sh:42` (effective_guard_exhaustion_mode),
+  `stop-guard.sh:191` (advisory evidence required), `stop-guard.sh:890`
+  (metis-on-plan-gate auto-enable), `record-reviewer.sh:127` (strict
+  FINDINGS_JSON format enforcement). The prompt-time `is_high_task_risk`
+  is retained with rewritten docstring stating it has no in-tree
+  callers post-W2 — kept as a stable predicate for future
+  UserPromptSubmit-stage consumers that need the prompt-time-only
+  read.
+- **New `session_risk_factors` state key** — comma-joined list of
+  escalators that fired (`high_severity_findings,sensitive_surface_edited,
+  low_verify_confidence,pending_discovered_scope`). Persisted
+  idempotently by `current_session_risk_tier`. Surfaced as a `Risk:`
+  line in `/ulw-status` so users can explain WHY the harness
+  considered the work high-risk — closes the sre-lens observability
+  gap ("when the classifier flips a prompt to high, the user has no
+  surface naming the score factors").
+- New `tests/test-session-risk-tier.sh` — 36 assertions across A-J
+  parts covering prompt-time short-circuit, each escalator's positive
+  + negative cases, de-escalation, escalator-over-deescalation
+  precedence, factor accumulation, idempotent write, missing-state
+  safety, classifier regression, directive-selection-caller
+  isolation.
+- Eventual consistency note in helper docstring: two near-simultaneous
+  calls from the same Stop tick can observe slightly different factor
+  sets if `findings.json` or `edited_files.log` grows between them;
+  `write_state`'s lock guarantees no torn writes and the next call
+  converges.
+
+### Wave 3 — eval producer (commit `577a4f5`)
+
+Closes the verified high-impact data-lens finding: `evals/realwork/`
+was contract-only. `run.sh score` consumed a result JSON shape no
+script in the repo produced; tests fed hand-written fixtures into the
+scorer. The whole eval layer was unfalsifiable against actual harness
+behavior.
+
+- **New `evals/realwork/result-from-session.sh`** — 230-line script
+  that reads a real session's telemetry
+  (`session_state.json` + `timing.jsonl` + `findings.json` +
+  `edited_files.log`) and emits stdout JSON conforming to
+  `run.sh score`'s input contract:
+  `{scenario_id, tokens, tool_calls, elapsed_seconds, outcomes{...}}`.
+  CLI: `--scenario <id>` required; `--session <sid>` optional
+  (defaults to most-recently-modified dir under STATE_ROOT);
+  `--state-root <dir>` override for CI / batch scoring.
+- Tokens via `chars/4` heuristic over `directive_emitted` rows
+  (timing-lib documents 15-30% misattribution on directive-shaped
+  text — acceptable proxy without a tokenizer call). Tool calls via
+  count of timing.jsonl `start` events. Elapsed via session_start
+  to max(last_edit, last_review, last_verify, last_assistant_msg).
+- **15 generic outcome detectors** covering all 3 shipped scenarios
+  + likely-recurring future signals: tests_passed (verify passed +
+  scope in {targeted, full}), targeted_verification, full_verification,
+  review_clean, regression_test_added (test-shaped path in
+  edited_files.log), final_closeout_audit_ready (2+ closeout labels
+  in last_assistant_message), design_contract_recorded, ui_files_changed,
+  browser_or_visual_verification, design_review_clean, no_layout_overlap,
+  council_or_lens_coverage (3+ dispatches + lens names in
+  dispatch_log.jsonl), wave_plan_recorded, findings_resolved_or_deferred_with_why
+  (every finding terminal AND deferred/rejected carries a reason),
+  token_budget_respected.
+- Unknown outcome keys (a scenario that names something the script
+  doesn't detect) emit `false` → the scorer marks it missing and the
+  missing_outcomes array names the gap.
+- **Fixture decision documented**: scenarios continue to reference
+  fixture paths but the directories are NOT bundled. Realistic
+  fixtures are project-specific and would bloat the install
+  footprint. The producer is fixture-agnostic — run `/ulw` anywhere,
+  point this script at the resulting session, score it.
+- New `tests/test-realwork-producer.sh` — 27 assertions covering
+  numeric extraction, perfect-shape positive cases for each scenario,
+  negative cases (lint scope, no review, no test file, deferred
+  without reason), end-to-end pipe through the scorer (perfect
+  synthetic session → `score=100, pass=true`), CLI contract.
+- `evals/realwork/README.md` expanded with commands table + an
+  end-to-end usage example: run `/ulw` on a fixture → call
+  `result-from-session.sh` → pipe into `run.sh score` → assert
+  `{"score":100,"pass":true}`.
+
+### Wave 4 — UX clarity (commit `477c286`)
+
+Closes the verified design-lens P0 finding: `/omc-config` showed two
+visible profile options ("Zero Steering (Recommended)" and "Maximum
+Quality + Automation") mapped to the same preset. The SKILL.md
+literally admitted the duplication.
+
+- **Profile-name dedupe** across 6 surfaces (lockstep):
+  `bundle/dot-claude/skills/omc-config/SKILL.md` (visible options
+  list, token mapping, Step 2 framing, Step 4 Other handler),
+  `README.md` (install guide + skills table),
+  `docs/faq.md` (two locations),
+  `bundle/dot-claude/quality-pack/memory/skills.md` (model-facing
+  /omc-config description).
+- **Back-compat preserved**: `maximum` token unchanged as backend
+  alias — accepted by `omc-config.sh apply-preset`, by the conf-file
+  parser, and by the Step 4 Other-typed handler. Users with `maximum`
+  in their conf, scripts calling `apply-preset maximum`, and users
+  who type `maximum` in Other all continue to get the Zero Steering
+  posture.
+- Visible options reduced 5 → 4: Zero Steering / Balanced / Minimal /
+  Review my defaults & fine-tune.
+
+**Other W4 pieces evaluated and scoped out** (with reasoning in the
+commit body): the *Quality gate dual-audience migration* was a no-op
+(the gate already uses `format_gate_block_dual` at `stop-guard.sh:1395`
+with a per-state `quality_human` set at lines 1367-1389 — the lens
+read the `reason` variable in isolation and missed the actual
+emission path); the *Skill IA "5 competing tables" consolidation* was
+skipped after re-inspection showed the tables answer different
+questions for different user states (find-by-symptom vs workflow
+shape vs decide-between-similar-tools) and are intentional multi-view
+rather than duplicates.
+
+### Coordination + state-key changes
+
+- New state key `session_risk_factors` documented in
+  `docs/architecture.md` state-keys table.
+- `task_risk_tier` state-key doc updated to describe the split-read
+  paradigm (prompt-time callers use `is_high_task_risk`; gate-time
+  callers use `is_high_session_risk`).
+- `outcome` value-space documented in `docs/architecture.md` —
+  Stop-hook-set values + new sweep-inferred values + live-session
+  default; retired-bare-`abandoned` history noted.
+- Bash test count 89 → 92 across three wave bumps; coordination-
+  rules contract C4 enforced on each.
+
+### Tests
+
+Three new test files, all CI-pinned:
+- `test-session-summary-outcome.sh` (21 assertions) — W1
+- `test-session-risk-tier.sh` (36 assertions) — W2
+- `test-realwork-producer.sh` (27 assertions) — W3
+- Existing `test-omc-config.sh` (151), `test-coordination-rules.sh`
+  (110), `test-show-status.sh` (30), `test-quality-gates.sh` (101),
+  `test-zero-steering-policy.sh` (14), `test-show-report.sh` (96),
+  `test-metis-on-plan-gate.sh` (27), `test-realwork-eval-suite.sh`
+  (10) all pass unchanged across the wave commits.
+
+### Cumulative diff
+
+- Wave 1: 7 files, 238 insertions, 15 deletions
+- Wave 2: 9 files, 485 insertions, 9 deletions
+- Wave 3: 6 files, 603 insertions, 7 deletions
+- Wave 4: 4 files, 11 insertions, 11 deletions
+- Total: ~1300 insertions across 26 unique files + 3 new tests + 1
+  new producer script.
+
+### Deferred to v1.40.0+
+
+- Closed-loop policy tuning from eval data (S1 from council
+  recommendations) — multi-release arc.
+- Pretool-intent-guard expansion beyond git/gh (S2) — `requires_user_decision: true`,
+  needs the canonical "always confirm" list.
+- Wave-plan prompt-binding via `created_prompt_sha` on
+  `record-finding-list.sh init` (S3) — closes the synthesize-on-
+  advisory hole identified by security-lens; oracle-refined as
+  narrower than initially claimed.
+- Auto-emit at session Stop of result.json when scenario_id env
+  is set — needs a hook + env-var contract.
+- Fixture bootstrap for evals/realwork/.
+- Directive value attribution widening to non-bias-defense
+  directives — needs `add_directive` to emit `directive_fired`
+  gate events uniformly (telemetry-volume design question).
+
 ## [1.38.0] - 2026-05-10
 
 User commissioned a focused 10-item review of v1.37.0/v1.37.1 (delivered
