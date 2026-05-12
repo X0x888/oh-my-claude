@@ -1424,12 +1424,17 @@ sim_edit "saa" "/src/foo.ts"
 # No review, no verify → keeps blocking on missing_review
 
 out1="$(sim_stop "saa")"
-assert_contains "seq-AA: block 1 is verbose" "FIRST self-assess" "${out1}"
+# v1.40.x harness-improvement wave: anchor changed from "FIRST self-assess"
+# to "correctness AND completeness". The prior verbose form's FIRST/THEN
+# procedural scaffolding was replaced with a single sentence framing the
+# reviewer's lens — the new anchor stays load-bearing for the
+# block-1-only-vs-block-2-concise distinction this sequence tests.
+assert_contains "seq-AA: block 1 is verbose" "correctness AND completeness" "${out1}"
 
 out2="$(sim_stop "saa")"
-# Block 2 must NOT contain the self-assess boilerplate
-if [[ "${out2}" == *"FIRST self-assess"* ]]; then
-  printf '  FAIL: seq-AA: block 2 should drop FIRST self-assess text\n' >&2
+# Block 2 must NOT contain the verbose review_action body
+if [[ "${out2}" == *"correctness AND completeness"* ]]; then
+  printf '  FAIL: seq-AA: block 2 should drop verbose review_action text\n' >&2
   fail=$((fail + 1))
 else
   pass=$((pass + 1))

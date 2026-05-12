@@ -787,9 +787,9 @@ if [[ "${missing_review}" -eq 0 ]]; then
 fi
 
 if [[ "${task_domain}" == "writing" || "${task_domain}" == "research" || "${task_domain}" == "operations" || "${task_domain}" == "general" ]]; then
-  reason="[Quality gate · $((guard_blocks + 1))/3] the deliverable changed but the final quality loop is incomplete."
+  reason="[Quality gate · block $((guard_blocks + 1))] the deliverable changed but quality checks haven't run."
 else
-  reason="[Quality gate · $((guard_blocks + 1))/3] edits were made but the final quality loop is incomplete."
+  reason="[Quality gate · block $((guard_blocks + 1))] code changed but quality checks haven't run."
 fi
 
 if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed}" -eq 0 && "${verify_low_confidence}" -eq 0 && "${review_unremediated}" -eq 0 ]]; then
@@ -867,7 +867,7 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
             fi
           done
 
-          dim_reason="[Review coverage · $((dim_blocks + 1))/3 · ${_done_dims}/${_total_dims} dimensions] complex task requires prescribed review coverage. Progress:${_checklist}\nNext step: run \`${next_reviewer}\` to cover ${next_description}. Each reviewer owns a distinct review area — do not substitute or reorder. After the reviewer returns, address any findings, then retry stop. After completing this, restate your key deliverable summary at the end of your response."
+          dim_reason="[Review coverage · ${_done_dims}/${_total_dims} dimensions] complex task requires prescribed review coverage. Progress:${_checklist}\nNext step: run \`${next_reviewer}\` to cover ${next_description}. Each reviewer owns a distinct review area — do not substitute or reorder. After the reviewer returns, address any findings, then retry stop."
           dim_human="Complex task needs ${_total_dims} reviewer dimensions; ${_done_dims} done. Next: \`${next_reviewer}\` covers ${next_description} — each reviewer owns a distinct area, substitutes don't satisfy the gate."
           if [[ "${dim_blocks}" -ge 2 ]]; then
             dim_reason="${dim_reason} NOTE: this is the final review-coverage block — the next stop attempt will bypass this check."
@@ -943,7 +943,7 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
     write_state "excellence_guard_triggered" "1"
     record_gate_event "excellence" "block" "block_count=1" "block_cap=1" \
       "edited_count=${unique_edited_count}"
-    excellence_recovery="$(format_gate_recovery_line "dispatch the excellence-reviewer agent on the wave diff, then restate your deliverable summary. To bypass once with reason (e.g., already self-audited), run /ulw-skip.")"
+    excellence_recovery="$(format_gate_recovery_line "dispatch the excellence-reviewer agent on the wave diff. To bypass once with reason (e.g., already self-audited), run /ulw-skip.")"
     # v1.34.1+ (P-002): tighter excellence-gate block.
     emit_stop_block "$(format_gate_block_dual \
       "Wave touched ${unique_edited_count} files — quality-reviewer catches defects, but excellence-reviewer is the fresh-eyes pass for completeness, unknown unknowns, and polish a veteran would add. Different ground; complex waves need both." \
@@ -1337,35 +1337,41 @@ elif [[ "${verify_failed}" -eq 1 ]]; then
 elif [[ "${verify_low_confidence}" -eq 1 ]]; then
   last_verify_cmd="$(read_state "last_verify_cmd")"
   if [[ -n "${project_test_cmd}" ]]; then
-    verify_action="the last verification (\`${last_verify_cmd:-unknown}\`) had low confidence (${last_verify_confidence}/100, threshold: ${OMC_VERIFY_CONFIDENCE_THRESHOLD}) — run the project test suite (\`${project_test_cmd}\`) for proper validation"
+    verify_action="the last verification (\`${last_verify_cmd:-unknown}\`) was too thin to count — run the project test suite (\`${project_test_cmd}\`) for proper coverage"
   else
-    verify_action="the last verification had low confidence (${last_verify_confidence}/100) — run a more comprehensive test command (e.g., the project's test suite) instead of a single-file check"
+    verify_action="the last verification was too thin to count — run a more comprehensive test command (e.g., the project's test suite) instead of a single-file check"
   fi
 fi
 
 if [[ "${guard_blocks}" -eq 0 ]]; then
-  # Block 1: full verbose text. Preserve the existing wording exactly so
-  # existing test assertions (seq-D "validation", "quality-reviewer") and
-  # agent routing keep working.
+  # Block 1: full verbose text. v1.40.x harness-improvement wave — the
+  # prior copy stacked four imperatives (FIRST self-assess, THEN delegate,
+  # check completeness against scope, restate the summary) that read as
+  # junior-engineer runbook rather than senior-engineering nudge. The
+  # rewrite collapses to two facts the model actually needs: thin
+  # verification, missing reviewer. The "correctness AND completeness"
+  # framing replaces scope-as-quality-proxy — the reviewer's job is
+  # quality on both axes, not a checklist audit of components against
+  # the prompt. The trailing "restate your key deliverable summary"
+  # instruction is dropped — it conflicts with the output-style brevity
+  # rule that ships in the same release.
   if [[ "${missing_review}" -eq 1 ]]; then
     if [[ "${task_domain}" == "writing" || "${task_domain}" == "research" || "${task_domain}" == "operations" || "${task_domain}" == "general" ]]; then
-      review_action="FIRST self-assess: enumerate every component of the original request and mark each as delivered, partial, or missing — continue implementing anything not fully delivered. THEN delegate to editor-critic or another relevant reviewer and address any high-signal findings — the reviewer must evaluate not just quality issues but completeness: does this deliver everything the user asked for?"
+      review_action="delegate to editor-critic or another relevant reviewer to evaluate the work for correctness AND completeness — the lens is both \"does this read well as written?\" and \"does this deliver what was asked?\". Address its findings or explain why they don't apply"
     else
-      review_action="FIRST self-assess: enumerate every component of the original request and mark each as delivered, partial, or missing — continue implementing anything not fully delivered. THEN delegate to ${review_target_label} and address its highest-signal findings — the reviewer must evaluate not just bugs but completeness: does the implementation cover the full scope of the original task?"
+      review_action="delegate to ${review_target_label} to evaluate the work for correctness AND completeness — the lens is both \"does this work as built?\" and \"does this deliver what was asked?\". Address its findings or explain why they don't apply"
     fi
   elif [[ "${review_unremediated}" -eq 1 ]]; then
     review_action="the reviewer flagged issues that were not addressed — fix them or explain why they do not apply, then re-evaluate whether the deliverable is complete"
   fi
 
   if [[ -n "${verify_action}" && -n "${review_action}" ]]; then
-    reason="${reason} Continue working: ${verify_action}, then ${review_action}, and only then stop."
+    reason="${reason} ${verify_action}, then ${review_action}."
   elif [[ -n "${verify_action}" ]]; then
-    reason="${reason} Continue working: ${verify_action} before stopping. If reliable automation is impossible, explain the exact blocker and residual risk."
+    reason="${reason} ${verify_action} before stopping. If reliable automation is impossible, explain the exact blocker and residual risk."
   elif [[ -n "${review_action}" ]]; then
-    reason="${reason} Continue working: ${review_action}, and only then stop."
+    reason="${reason} ${review_action}."
   fi
-
-  reason="${reason} After completing these steps, restate your key deliverable summary at the end of your response."
 else
   # Blocks 2+: concise form. Lists what's still missing and the single
   # next action, without the summary-reinflating self-assess boilerplate.

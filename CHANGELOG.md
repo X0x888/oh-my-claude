@@ -345,6 +345,108 @@ Tests verified green:
 `bundle/dot-claude/skills/autowork/scripts/common.sh`,
 `bundle/dot-claude/skills/autowork/scripts/show-report.sh`.
 
+#### W2 — `stop-guard.sh` quality-gate message overhaul
+
+**The original user critique.** Reading the verbose block-1 quality-gate
+message, the user named two problems: (a) the "1/3" framing read as
+escalation theater, and (b) the body over-indexed on "scope coverage"
+when the essence of a final-quality loop is broader — correctness,
+robustness, design coherence, completeness. Cross-session telemetry
+confirmed the critique was measurable, not just stylistic:
+
+- **0 of 418 sessions** ever reached `guard_blocks ≥ 2` on the quality
+  gate (verified via `gate_events.jsonl` slicing). The `· N/3` suffix
+  was decorative — block 2 and 3 never fire.
+- **88% of quality-gate blocks** (102 of 116) involve `missing_review=1`
+  with or without `verify_low_confidence`. The gate is fundamentally a
+  "run a reviewer" gate; the scope-coverage prose accreted layers
+  beyond what the gate's logic actually measured.
+
+**Six edits in `stop-guard.sh`:**
+
+1. **`:790, :792` — opener.** `[Quality gate · $((guard_blocks + 1))/3]`
+   → `[Quality gate · block $((guard_blocks + 1))]`. Drops the
+   decorative `/3` suffix that doesn't reflect real escalation
+   behavior; keeps the block counter for visibility when a session
+   does re-block on a different gate kind.
+
+2. **`:870` — review-coverage gate message.** Same `· N/3` removal
+   (this gate has its own block cap, never hit in current telemetry)
+   plus drops the trailing `After completing this, restate your key
+   deliverable summary at the end of your response` instruction —
+   that line was anti-brevity in tension with the output-style rule
+   `oh-my-claude.md` ships in the same release.
+
+3. **`:946` — excellence-recovery line.** Drops `then restate your
+   deliverable summary` for the same reason as #2.
+
+4. **`:1340, :1342` — verify_low_confidence message.** Replaced
+   `had low confidence (${last_verify_confidence}/100, threshold:
+   ${OMC_VERIFY_CONFIDENCE_THRESHOLD})` with `was too thin to count`.
+   The numeric heuristic was telemetry leakage: a 10/100 score
+   doesn't mean "10% as good" — it means the heuristic returned 10
+   on its 0-100 scale, an opaque internal metric that invited the
+   model to argue with the number rather than fix the underlying
+   weakness (running a smoke check instead of the project test
+   suite). The repair direction (run the detected `project_test_cmd`)
+   is preserved.
+
+5. **`:1352, :1354` — review_action body overhaul.** The prior
+   verbose form was:
+
+       FIRST self-assess: enumerate every component of the original
+       request and mark each as delivered, partial, or missing —
+       continue implementing anything not fully delivered. THEN
+       delegate to ${review_target_label} and address its
+       highest-signal findings — the reviewer must evaluate not just
+       bugs but completeness: does the implementation cover the full
+       scope of the original task?
+
+   Replaced with:
+
+       delegate to ${review_target_label} to evaluate the work for
+       correctness AND completeness — the lens is both "does this
+       work as built?" and "does this deliver what was asked?".
+       Address its findings or explain why they don't apply
+
+   Three changes baked in: drops the procedural FIRST/THEN
+   scaffolding (junior-runbook framing), replaces "cover the full
+   scope of the original task" with "correctness AND completeness"
+   (scope is one axis of quality, not the whole of it), drops the
+   "enumerate every component / mark each as delivered, partial, or
+   missing" step (the harness has a separate discovered-scope gate
+   that does this mechanically — the prose-form duplicate adds
+   token cost without changing behavior). The writing-domain
+   branch (`:1352`) gets the parallel rewrite with `"does this
+   read well as written?"` as the correctness half.
+
+6. **`:1368` — trailing instruction deleted.** The block-1 reason
+   used to end with `After completing these steps, restate your key
+   deliverable summary at the end of your response.`. Dropped
+   entirely — anti-brevity tail in tension with the output-style
+   rule (`End-of-turn summary: one or two sentences. What changed
+   and what's next. Nothing else.`).
+
+**Test anchor update.** `tests/test-e2e-hook-sequence.sh` seq-AA
+asserted block 1 contained `FIRST self-assess` and block 2 did NOT.
+The anchor moved to `correctness AND completeness` (same load-bearing
+property: only appears in the verbose block-1 form). Comment cites
+the v1.40.x harness-improvement wave so future readers see why the
+anchor changed.
+
+Tests verified green:
+- `test-e2e-hook-sequence.sh` 373/0 (anchor swap, all 373 still pass)
+- `test-quality-gates.sh` 101/0
+- `test-show-status.sh` 30/0
+- `test-verification-lib.sh` 60/0
+- `test-stop-failure-handler.sh` 86/0
+- `test-show-report.sh` 96/0
+- shellcheck clean
+
+**Files changed:**
+`bundle/dot-claude/skills/autowork/scripts/stop-guard.sh`,
+`tests/test-e2e-hook-sequence.sh`.
+
 ## [1.40.1] - 2026-05-12
 
 Hotfix for two findings discovered in the v1.40.0 post-tag verification
