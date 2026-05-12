@@ -4,6 +4,76 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+Multi-lens council audit of v1.39.0 ran six perspectives in parallel
+(sre, security, data, product, growth, abstraction-critic) under
+deep-mode opus, with Phase 7 oracle verification of the top 3 findings.
+Yardstick: post-v1.39 ship quality across reliability, privacy, and
+the user-visible measurement gap on the stated 10/10 goal. 21 findings
+total — 15 ship across 4 waves, 6 require user-decision input (README
+persona/anti-positioning, gate/directive registry refactors, /ulw verb
+taxonomy). The wave below closes the verified reliability + telemetry-
+truth findings.
+
+### Wave 1/4 — reliability hardening + telemetry truth (F-001…F-006)
+
+Six findings on the script + telemetry surfaces:
+
+- **F-001 (SRE) — lazy-load gap closed.** `derive_verification_contract_required`
+  in `common.sh` calls `is_ui_request` (from `lib/classifier.sh`).
+  Today's only caller eager-loads the classifier, but the function was
+  missing from CLAUDE.md's "Currently guarded helpers" list and any
+  future caller opting into `OMC_LAZY_CLASSIFIER=1` would crash. Added
+  `_omc_load_classifier` at the function head (idempotent loader; no-op
+  when already sourced) and appended the function to CLAUDE.md's guard
+  list.
+- **F-002 (SRE) — bounded stdin reads for all 25 hooks.** Bare
+  `HOOK_JSON="$(cat)"` blocks indefinitely if Claude Code fails to close
+  stdin (race on misbehaving hosts or partial pipe close). Hot-path
+  hooks like `prompt-intent-router` / `pretool-intent-guard` fire on
+  every prompt/tool-call — one hung instance stalls the next dispatch.
+  Added `_omc_read_hook_stdin` helper (`common.sh`) that wraps `cat`
+  with `timeout ${OMC_HOOK_STDIN_TIMEOUT_S:-5}` when available, falls
+  back to bare `cat 2>/dev/null` so macOS without coreutils still works.
+  Swept the pattern across 25 hooks (10 quality-pack + 15 autowork);
+  the test ensures `common.sh` is sourced BEFORE the helper is called.
+- **F-003 (SRE) — stop-guard jq observability.** Three sequential
+  `jq … || printf '0'` reads in `stop-guard.sh` (exemplifying-scope
+  gate) silently zeroed out on parse failure — exactly the
+  gate-not-firing failure mode the v1.36 F-2 race fix targeted.
+  Consolidated to a single `@tsv` read + explicit `log_anomaly` on parse
+  failure, so silent gate-skips become observable in `hooks.log`.
+- **F-004 (security) — STATE_ROOT defense-in-depth chmod 700.**
+  `~/.claude/quality-pack` and `~/.claude/quality-pack/state` are
+  created via `mkdir -p` without explicit chmod. Session dirs inside
+  are 700, but if a sibling user on a shared host could traverse the
+  parents (created at 755 by an earlier-loaded tool), they could
+  enumerate session IDs. Added `chmod 700` on both parents in
+  `ensure_session_dir` and `_write_hook_log` (idempotent, cheap).
+- **F-005 (SRE) — macOS CI parity job.** CI ran only on `ubuntu-latest`
+  despite macOS being the primary dev platform; BSD vs GNU coreutils
+  divergence (the v1.28 portability cascade) historically surfaced only
+  post-tag. New `test-macos` job runs the 8 portability-sensitive tests
+  on `macos-latest` (classifier, state-io, cross-session-rotation,
+  hotfix-sweep, common-utilities, quality-gates, w1-reliability-v1-40,
+  + `bash -n` syntax check).
+- **F-006 (data) — Reviewer ROI table 0-rows bug.** Sibling to v1.39's
+  apply-rate mismatch. The Reviewer ROI table in `show-report.sh` gated
+  display on `_roi_breakdown != "{}"`, where `_roi_breakdown` is the
+  window-scoped `agent_breakdown` field from the cross-session timing
+  rollup. But `agent-metrics.json` (lifetime invocations + finds) and
+  the timing rollup populate via independent paths — every time-
+  tracking-disabled / short-window / failed-timing-flush case empties
+  the rollup while lifetime data is rich. The gate hid the table for
+  users with hundreds of reviewer invocations. Dropped the outer gate;
+  the per-row jq fallbacks already emit `—` for missing window time.
+- **New regression net (`tests/test-w1-reliability-v1-40.sh`)** — 19
+  assertions covering all six findings: static guard checks, runtime
+  helper behavior (timeout + passthrough), source-before-helper order
+  in 6 representative hooks, no bare-cat residue in executable code,
+  jq anomaly logging, STATE_ROOT mode-700 at runtime, ROI gate removal.
+- README + AGENTS bash test count bumped 92 → 93 per coordination-rules
+  contract C4.
+
 ## [1.39.0] - 2026-05-12
 
 Multi-lens council audit of v1.38.0 + the post-tag `ebb7044` "Add

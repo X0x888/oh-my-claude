@@ -77,7 +77,7 @@ The CI-pinned test list lives in `.github/workflows/validate.yml`; extract with:
 - **Lazy-loaded libs (v1.27.0+).** `lib/classifier.sh` and `lib/timing.sh` are sourced via `_omc_load_classifier` / `_omc_load_timing` (idempotent loaders). Hot-path hooks that do not need a lib `export OMC_LAZY_CLASSIFIER=1` / `OMC_LAZY_TIMING=1` BEFORE sourcing `common.sh` to skip the eager parse cost.
   - **Rule when adding a new function in `common.sh` that calls a classifier or timing function**: call `_omc_load_classifier` (or `_omc_load_timing`) at the top of the new function. Otherwise opted-out hooks that transitively reach it crash with `command not found`.
   - Classifier functions to watch for: `is_imperative_request`, `classify_task_intent`, `infer_domain`, `is_completeness_request`, `is_exemplifying_request`, `is_council_evaluation_request`, `is_execution_intent_value`, `is_ui_request`, `is_exhaustive_authorization_request`. Timing-lib functions: any `timing_*`.
-  - Currently guarded helpers: `is_session_management_request`, `is_checkpoint_request`.
+  - Currently guarded helpers: `is_session_management_request`, `is_checkpoint_request`, `derive_verification_contract_required` (v1.40.x SRE-1).
 
 ## Coordination Rules — keep in lockstep
 

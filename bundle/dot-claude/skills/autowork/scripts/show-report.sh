@@ -1579,41 +1579,48 @@ if [[ -f "${AGENT_METRICS_FILE}" ]]; then
     if [[ -z "${_xs_rollup_cache}" ]]; then
       _xs_rollup_cache="$(timing_xs_aggregate "${cutoff_ts}" 2>/dev/null || printf '{}')"
     fi
+    # v1.40.x data-lens F-006: do NOT gate on _roi_breakdown being non-empty.
+    # _xs_rollup_cache.agent_breakdown is window-scoped (paired Agent timing
+    # rows); AGENT_METRICS_FILE.agents is lifetime. They populate via
+    # independent paths — agent_breakdown is empty whenever time_tracking=off,
+    # the window cuts before all sessions, or the timing flush did not run.
+    # The per-row jq fallbacks below already emit `—` when window-timing is
+    # missing, so the table renders correctly with lifetime inv/finds and
+    # dashed time columns when the rollup is empty.
     _roi_breakdown="$(jq -r '(.agent_breakdown // {})' <<<"${_xs_rollup_cache}" 2>/dev/null || printf '{}')"
-    if [[ "${_roi_breakdown}" != "{}" ]] && [[ -n "${_roi_breakdown}" ]]; then
-      printf '\n**Reviewer ROI** _(window — joins find rate with time spent)_\n\n'
-      printf '| Reviewer | Inv | Finds | Find rate | Total time | Avg/inv |\n'
-      printf '|---|---:|---:|---:|---:|---:|\n'
-      jq -r --argjson breakdown "${_roi_breakdown}" '
-        .agents // {} | to_entries
-        | map({
-            name: .key,
-            inv: (.value.invocations // 0),
-            finds: (.value.finding_verdicts // 0),
-            total_s: ($breakdown[.key] // 0)
-          })
-        | map(select(.inv > 0))
-        | sort_by(-.total_s, -.inv)
-        | .[0:8]
-        | .[]
-        | [
-            .name,
-            (.inv | tostring),
-            (.finds | tostring),
-            (if .inv > 0 then ((.finds * 100 / .inv) | floor | tostring + "%") else "—" end),
-            (if .total_s > 0 then ((.total_s | floor | tostring) + "s") else "—" end),
-            (if .inv > 0 and .total_s > 0 then ((.total_s / .inv) | floor | tostring + "s") else "—" end)
-          ]
-        | @tsv
-      ' "${AGENT_METRICS_FILE}" 2>/dev/null \
-        | while IFS=$'\t' read -r _roi_name _roi_inv _roi_finds _roi_rate _roi_total _roi_avg; do
-            [[ -z "${_roi_name}" ]] && continue
-            printf '| `%s` | %s | %s | %s | %s | %s |\n' \
-              "${_roi_name}" "${_roi_inv}" "${_roi_finds}" "${_roi_rate}" "${_roi_total}" "${_roi_avg}"
-          done
-      printf '\n_Sorted by total time (highest cost first). A reviewer with high `Avg/inv` and low `Find rate` is a candidate for `reviewer_budget=balanced` or removal — runs often, finds little. A reviewer with low cost and high find rate is paying for itself even at low invocation count._\n\n'
-      printf '_Note: invocations are LIFETIME counts from `agent-metrics.json`; total time is WINDOW-scoped from the timing rollup. Avg/inv divides window-time by lifetime-inv, so it underestimates per-call cost when the agent has been used in past windows. Find rate is also lifetime — directional signal, not a within-window precision metric._\n\n'
-    fi
+    [[ -z "${_roi_breakdown}" ]] && _roi_breakdown='{}'
+    printf '\n**Reviewer ROI** _(joins lifetime find rate with window time when available)_\n\n'
+    printf '| Reviewer | Inv | Finds | Find rate | Total time | Avg/inv |\n'
+    printf '|---|---:|---:|---:|---:|---:|\n'
+    jq -r --argjson breakdown "${_roi_breakdown}" '
+      .agents // {} | to_entries
+      | map({
+          name: .key,
+          inv: (.value.invocations // 0),
+          finds: (.value.finding_verdicts // 0),
+          total_s: ($breakdown[.key] // 0)
+        })
+      | map(select(.inv > 0))
+      | sort_by(-.total_s, -.inv)
+      | .[0:8]
+      | .[]
+      | [
+          .name,
+          (.inv | tostring),
+          (.finds | tostring),
+          (if .inv > 0 then ((.finds * 100 / .inv) | floor | tostring + "%") else "—" end),
+          (if .total_s > 0 then ((.total_s | floor | tostring) + "s") else "—" end),
+          (if .inv > 0 and .total_s > 0 then ((.total_s / .inv) | floor | tostring + "s") else "—" end)
+        ]
+      | @tsv
+    ' "${AGENT_METRICS_FILE}" 2>/dev/null \
+      | while IFS=$'\t' read -r _roi_name _roi_inv _roi_finds _roi_rate _roi_total _roi_avg; do
+          [[ -z "${_roi_name}" ]] && continue
+          printf '| `%s` | %s | %s | %s | %s | %s |\n' \
+            "${_roi_name}" "${_roi_inv}" "${_roi_finds}" "${_roi_rate}" "${_roi_total}" "${_roi_avg}"
+        done
+    printf '\n_Sorted by total time when window timing is available, else by invocations. A reviewer with high `Avg/inv` and low `Find rate` is a candidate for `reviewer_budget=balanced` or removal — runs often, finds little. A reviewer with low cost and high find rate is paying for itself even at low invocation count._\n\n'
+    printf '_Note: invocations and find rate are LIFETIME counts from `agent-metrics.json`; total time is WINDOW-scoped from the timing rollup and shows `—` when no paired Agent timing rows exist for the window (e.g., `time_tracking=off`, short window, or sessions whose timing flush did not run). Find rate is directional, not within-window precision._\n\n'
   else
     printf '_No reviewer activity recorded yet._\n\n'
   fi

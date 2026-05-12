@@ -3,8 +3,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-HOOK_JSON="$(cat)"
 . "${HOME}/.claude/skills/autowork/scripts/common.sh"
+HOOK_JSON="$(_omc_read_hook_stdin)"
 
 SESSION_ID="$(json_get '.session_id')"
 TRIGGER="$(json_get '.trigger')"

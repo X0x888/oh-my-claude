@@ -3,8 +3,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-HOOK_JSON="$(cat)"
 . "${SCRIPT_DIR}/common.sh"
+HOOK_JSON="$(_omc_read_hook_stdin)"
 
 SESSION_ID="$(json_get '.session_id')"
 
@@ -295,9 +295,26 @@ if [[ "${OMC_EXEMPLIFYING_SCOPE_GATE:-on}" == "on" ]] \
   _es_scorecard="  (no checklist recorded)"
 
   if [[ -f "${_es_file}" ]]; then
-    _es_file_prompt_ts="$(jq -r '.source_prompt_ts // 0' "${_es_file}" 2>/dev/null || printf '0')"
-    _es_total="$(jq -r '(.items // []) | length' "${_es_file}" 2>/dev/null || printf '0')"
-    _es_pending="$(jq -r '[.items[]? | select(.status == "pending")] | length' "${_es_file}" 2>/dev/null || printf '0')"
+    # v1.40.x SRE-3 F-003: single jq read with explicit error capture. The
+    # prior three jq invocations each swallowed parse errors via
+    # `|| printf '0'`, silently treating parse failure as "no items
+    # pending" — a gate-not-firing failure mode on the exact race
+    # (concurrent SubagentStop fan-out mid-write) the v1.36 F-2 fix
+    # targeted. Atomic three-field read; explicit parse-error capture
+    # routes to log_anomaly so the silent gate-skip becomes observable.
+    # `if cmd` form is set-e safe — the helper does not abort the gate
+    # under parse failure, only marks zero counts and audits the cause.
+    # @tsv form avoids nested-quote parse errors that bite when an outer
+    # jq string-interp \(...) collides with inner "pending" literals.
+    if _es_summary="$(jq -r '[(.source_prompt_ts // 0), ((.items // []) | length), ([.items[]? | select(.status == "pending")] | length)] | @tsv' "${_es_file}" 2>&1)"; then
+      IFS=$'\t' read -r _es_file_prompt_ts _es_total _es_pending <<<"${_es_summary}"
+    else
+      log_anomaly "stop-guard" "exemplifying_scope jq parse failed: ${_es_summary:0:200}"
+      _es_file_prompt_ts=0
+      _es_total=0
+      _es_pending=0
+    fi
+    [[ "${_es_file_prompt_ts}" =~ ^[0-9]+$ ]] || _es_file_prompt_ts=0
     [[ "${_es_total}" =~ ^[0-9]+$ ]] || _es_total=0
     [[ "${_es_pending}" =~ ^[0-9]+$ ]] || _es_pending=0
     if [[ "${_es_file_prompt_ts}" == "${_es_prompt_ts}" && "${_es_total}" -gt 0 ]]; then

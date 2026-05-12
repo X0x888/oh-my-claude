@@ -29,8 +29,8 @@ export OMC_LAZY_TIMING=1
 REVIEWER_TYPE="${1:-standard}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-HOOK_JSON="$(cat)"
 . "${SCRIPT_DIR}/common.sh"
+HOOK_JSON="$(_omc_read_hook_stdin)"
 
 SESSION_ID="$(json_get '.session_id')"
 

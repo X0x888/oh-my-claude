@@ -1053,6 +1053,11 @@ _write_hook_log() {
   local ts
   ts="$(date '+%Y-%m-%d %H:%M:%S')"
   mkdir -p "${STATE_ROOT}" 2>/dev/null || return 0
+  # v1.40.x security-lens F-004: chmod-700 STATE_ROOT (idempotent; cheap).
+  # _write_hook_log can fire before ensure_session_dir (which also harms
+  # this), so apply here too. Hardens parent perms on multi-user hosts
+  # where a sibling user could otherwise enumerate session IDs.
+  chmod 700 "${STATE_ROOT}" 2>/dev/null || true
 
   # v1.36.x W1 F-002: cap detail at 3500 bytes to keep the composed line
   # under macOS/Linux PIPE_BUF (4096). Bare `printf >>` is only atomic
@@ -1276,6 +1281,42 @@ fi
 # is_advisory_request, etc. — are defined). _omc_self_dir stays in scope until
 # the bottom of this file, where every source statement has finished running.
 unset -f _omc_resolve_path
+
+# v1.40.x SRE-2 F-002: defensive stdin read for hook entry points. Bare
+# `HOOK_JSON="$(cat)"` blocks indefinitely if Claude Code's host fails to
+# close stdin (a known race on misbehaving extensions or partial pipe
+# close). Hot-path hooks like prompt-intent-router / pretool-intent-guard
+# fire on every prompt or tool-call — a single hung instance stalls the
+# next dispatch. Wrap stdin reads in this helper to bound them to
+# OMC_HOOK_STDIN_TIMEOUT_S seconds (default 5; env-overridable).
+#
+# Three execution paths in order of preference:
+#   1. `timeout` (GNU coreutils — Linux default)
+#   2. `gtimeout` (`brew install coreutils` on macOS)
+#   3. Bash-native fallback: background reader + sleep-then-kill watchdog
+# Stock macOS (no brew coreutils, no Linux env) lands on path 3, which
+# implements the same bounded-read semantics in pure bash so the fix
+# delivers on its claim across all installs — not just Linux.
+_omc_read_hook_stdin() {
+  local _t="${OMC_HOOK_STDIN_TIMEOUT_S:-5}"
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "${_t}" cat 2>/dev/null || true
+    return 0
+  fi
+  if command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "${_t}" cat 2>/dev/null || true
+    return 0
+  fi
+  # Bash-native fallback: `read -r -d '' -t` reads to NUL or EOF or
+  # timeout-elapsed. JSON hook payloads have no NUL bytes, so this is
+  # equivalent to "read all stdin within ${_t} seconds, else give up
+  # with whatever arrived so far." Works without coreutils, no
+  # backgrounded subprocesses (avoids the stdin-redirect-on-bg quirk
+  # under bash command substitution).
+  local _buf=""
+  IFS='' read -r -d '' -t "${_t}" _buf 2>/dev/null || true
+  printf '%s' "${_buf}"
+}
 
 now_epoch() {
   date +%s
@@ -2418,6 +2459,11 @@ derive_done_contract_test_expectation() {
 }
 
 derive_verification_contract_required() {
+  # v1.40.x SRE-1 F-001: calls is_ui_request from lib/classifier.sh. Hook
+  # callers may opt out of the eager classifier load via OMC_LAZY_CLASSIFIER=1
+  # — the lazy loader is idempotent, so calling it here is a no-op when
+  # the classifier was already sourced and a safety net otherwise.
+  _omc_load_classifier
   local text="$1"
   local task_domain="${2:-}"
   local prompt_surfaces="${3:-}"

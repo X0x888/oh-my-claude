@@ -18,8 +18,8 @@ fi
 export OMC_LAZY_CLASSIFIER=1
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-HOOK_JSON="$(cat)"
 . "${SCRIPT_DIR}/common.sh"
+HOOK_JSON="$(_omc_read_hook_stdin)"
 
 is_time_tracking_enabled || exit 0
 

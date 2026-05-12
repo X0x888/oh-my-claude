@@ -39,7 +39,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "${SCRIPT_DIR}/lib/canary.sh"
 
 # Stop-hook payload includes session_id at the top level.
-HOOK_JSON="$(cat)"
+HOOK_JSON="$(_omc_read_hook_stdin)"
 SESSION_ID="$(printf '%s' "${HOOK_JSON}" | jq -r '.session_id // empty' 2>/dev/null || true)"
 
 if [[ -z "${SESSION_ID}" ]]; then

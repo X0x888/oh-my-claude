@@ -28,6 +28,16 @@ ensure_session_dir() {
     log_anomaly "common" "invalid session_id format, skipping: ${SESSION_ID:0:40}"
     exit 0
   fi
+  # v1.40.x security-lens F-004: harden parent dir perms for defense-in-
+  # depth on multi-user hosts. STATE_ROOT and its ~/.claude/quality-pack
+  # parent are created via `mkdir -p` elsewhere without explicit chmod —
+  # if they were created by an earlier-loaded tool with default 0755,
+  # sibling users can traverse and enumerate session IDs even though the
+  # SESSION_ID dir itself is 700. chmod is idempotent and cheap; always
+  # applying matches the per-session-dir treatment below.
+  local _qp_root="${STATE_ROOT%/state}"
+  [[ -d "${_qp_root}" ]] && chmod 700 "${_qp_root}" 2>/dev/null || true
+  [[ -d "${STATE_ROOT}" ]] && chmod 700 "${STATE_ROOT}" 2>/dev/null || true
   mkdir -p "${STATE_ROOT}/${SESSION_ID}"
   chmod 700 "${STATE_ROOT}/${SESSION_ID}" 2>/dev/null || true
 }

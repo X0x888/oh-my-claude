@@ -317,5 +317,50 @@ jobs:
       - name: v1.37.x W4 follow-up regression
         run: bash tests/test-v1-37x-w4-followup.sh
 
+      - name: Run W1 reliability v1.40 regression
+        run: bash tests/test-w1-reliability-v1-40.sh
+
       - name: Run statusline tests
         run: python3 -m unittest tests.test_statusline -v
+
+  # v1.40.x SRE-5 F-005: macOS parity job. CI runs on ubuntu-latest by
+  # default, but the primary dev platform is macOS — BSD vs GNU coreutils
+  # divergence (the v1.28 Linux portability cascade documented in memory)
+  # historically only surfaced post-tag. This job runs the portability-
+  # sensitive subset on macos-latest to catch BSD/GNU regressions in CI.
+  # Subset rationale: full suite (~85 tests) would balloon CI minutes;
+  # these tests exercise stat, regex, lock, and shell-builtin variance.
+  test-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies (jq + shellcheck)
+        run: brew install jq shellcheck
+
+      - name: Run classifier tests
+        run: bash tests/test-classifier.sh
+
+      - name: Run state-io tests
+        run: bash tests/test-state-io.sh
+
+      - name: Run cross-session-rotation tests
+        run: bash tests/test-cross-session-rotation.sh
+
+      - name: Run hotfix-sweep tests
+        run: bash tests/test-hotfix-sweep.sh
+
+      - name: Run common utilities tests
+        run: bash tests/test-common-utilities.sh
+
+      - name: Run quality gate tests
+        run: bash tests/test-quality-gates.sh
+
+      - name: Run w1-reliability v1.40 regression
+        run: bash tests/test-w1-reliability-v1-40.sh
+
+      - name: Check bash syntax (BSD vs GNU shape)
+        run: find bundle/ -name '*.sh' -print0 | xargs -0 -n1 bash -n

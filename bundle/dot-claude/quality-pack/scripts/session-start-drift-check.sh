@@ -25,10 +25,10 @@
 
 set -euo pipefail
 
-HOOK_JSON="$(cat 2>/dev/null || true)"
 
 # shellcheck source=../../skills/autowork/scripts/common.sh
 . "${HOME}/.claude/skills/autowork/scripts/common.sh"
+HOOK_JSON="$(_omc_read_hook_stdin)"
 
 SESSION_ID="$(json_get '.session_id')"
 [[ -z "${SESSION_ID}" ]] && exit 0

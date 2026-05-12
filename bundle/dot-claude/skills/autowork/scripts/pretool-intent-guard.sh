@@ -6,8 +6,8 @@ set -euo pipefail
 [[ -f "${HOME}/.claude/quality-pack/state/.ulw_active" ]] || exit 0
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-HOOK_JSON="$(cat)"
 . "${SCRIPT_DIR}/common.sh"
+HOOK_JSON="$(_omc_read_hook_stdin)"
 
 SESSION_ID="$(json_get '.session_id')"
 if [[ -z "${SESSION_ID}" ]]; then
