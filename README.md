@@ -4,7 +4,7 @@
 
 *Quality gates that block Claude from claiming "done" until tests pass, review lands, and the work is verified. So you stop babysitting every session.*
 
-[![Version](https://img.shields.io/badge/Version-1.40.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-1.40.1-blue.svg)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Shell](https://img.shields.io/badge/Shell-bash-green.svg)]()
 [![Dependencies](https://img.shields.io/badge/Dependencies-jq%20%2B%20rsync-brightgreen.svg)]()
@@ -316,7 +316,7 @@ Skills are invoked as slash commands or routed automatically by the intent class
 | whats-new *(changelog delta)* | `/whats-new` | Show CHANGELOG entries between your installed version and the source repo HEAD. Surfaces post-install features without `cat CHANGELOG.md`. (v1.36.x) |
 | ulw-skip *(skip a gate)* | `/ulw-skip <reason>` | Skip current quality gate block once |
 | ulw-correct *(fix a misclassification)* | `/ulw-correct <correction>` | Tell the harness "the last turn was misclassified" — records the misfire and updates intent/domain when parseable. (v1.40.x) |
-| mark-deferred *(triage findings)* | `/mark-deferred <reason>` | Bulk-defer pending discovered-scope findings with a one-line reason — pass the gate without silent skipping |
+| mark-deferred *(triage findings)* | `/mark-deferred <reason>` | Bulk-defer pending discovered-scope findings with a one-line reason — legacy soft-defer path. **Refused under ULW execution with default `no_defer_mode=on`** (v1.40.0); the agent ships inline, wave-appends, or rejects as not-a-defect instead. Opt out via `no_defer_mode=off` for the v1.39 behavior |
 | ulw-pause *(operational-block pause)* | `/ulw-pause <reason>` | Declare an operational block — credentials/login, hard external blocker, destructive shared-state action, unfamiliar in-progress state. NOT for taste/policy/credible-approach (v1.40.0: agent owns those under ULW). Cap 2/session |
 | ulw-resume *(post-rate-limit recovery)* | `/ulw-resume [--peek \| --list \| --session-id <sid> \| --dismiss]` | Atomically claim and replay the most relevant unclaimed `resume_request.json` — picks up a /ulw task that a Claude Code rate-limit kill interrupted. `--dismiss` suppresses the SessionStart hint without resuming. Pairs with the SessionStart resume-hint hook (Wave 1) and the headless watchdog (Wave 3). |
 | ulw-off *(deactivate)* | `/ulw-off` | Deactivate ultrawork mode mid-session |

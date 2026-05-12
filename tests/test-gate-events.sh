@@ -310,9 +310,15 @@ printf 'Test 7: record-finding-list mark-user-decision emits gate event\n'
 setup_test
 init_session "ge7"
 echo '[
-  {"id":"F-D01","summary":"taste call","severity":"medium","surface":"copy"}
+  {"id":"F-D01","summary":"requires prod credentials","severity":"medium","surface":"deploy"}
 ]' | "${HOOK_DIR}/record-finding-list.sh" init >/dev/null
-"${HOOK_DIR}/record-finding-list.sh" mark-user-decision F-D01 "brand voice" >/dev/null
+# v1.40.0: mark-user-decision validates the reason against
+# omc_reason_names_operational_block when no_defer_mode=on AND the
+# session is ULW execution (init_session sets both). Use a reason in
+# the operational accept set ("credentials missing") — the v1.39-era
+# example "brand voice" is now correctly rejected by the validator and
+# would fail this test under `set -e`.
+"${HOOK_DIR}/record-finding-list.sh" mark-user-decision F-D01 "credentials missing" >/dev/null
 
 events_file="$(events_file_for "ge7")"
 last_event="$(tail -n 1 "${events_file}")"
@@ -323,7 +329,7 @@ assert_contains "user-decision event has event=user-decision-marked" \
 assert_contains "user-decision event records finding_id=F-D01" \
   '"finding_id":"F-D01"' "${last_event}"
 assert_contains "user-decision event records decision_reason" \
-  '"decision_reason":"brand voice"' "${last_event}"
+  '"decision_reason":"credentials missing"' "${last_event}"
 teardown_test
 
 # ---------------------------------------------------------------------

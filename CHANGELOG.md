@@ -4,6 +4,66 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.40.1] - 2026-05-12
+
+Hotfix for two findings discovered in the v1.40.0 post-tag verification
+loop:
+
+1. **CI-red on v1.40.0 tag** (the v1.32.6 pattern recurring). v1.40.0
+   CI failed on `tests/test-gate-events.sh` Test 7 — the test set up an
+   ULW execution session (`workflow_mode=ultrawork`, `task_intent=
+   execution`, `.ulw_active` marker) and then called `record-finding-
+   list.sh mark-user-decision F-D01 "brand voice"`. Wave 7's
+   `omc_reason_names_operational_block` validator correctly rejected
+   `"brand voice"` under `no_defer_mode=on`, exit 2 propagated through
+   `set -e`, and the test failed. Wave 7 swept the sibling test
+   `tests/test-no-defer-mode.sh` for v1.39-era reasons but missed
+   `tests/test-gate-events.sh:315`. Same defect class as Wave 10's
+   F-1/F-3 (sweeping one surface, missing a sibling on a different
+   file). Per the project's no-force-push policy (v1.32.6 / v1.32.7
+   precedent), the v1.40.0 tag at `08a3c60` stays in place even though
+   its tagged-SHA CI is red; v1.40.1 is the canonical green tag for
+   the v1.40.0 contract.
+
+   Fix: changed Test 7's reason from `"brand voice"` to
+   `"credentials missing"` (in the operational accept set), updated
+   the finding summary to match (`"requires prod credentials"`), and
+   added an explanatory code comment noting why the v1.39 phrasing
+   would fail under v1.40.0. test-gate-events 41→42 assertions, green
+   on Linux + macOS locally.
+
+2. **Quality-reviewer finding: `README.md:319` `/mark-deferred` skill-
+   table row.** A pre-tag quality-reviewer pass on the Wave 10/11 diff
+   found that while the "When stuck" mini-table at `README.md:84` was
+   swept in Wave 10 (F-1), the canonical skill table further down
+   (line 319) still described `/mark-deferred` as a normal action with
+   no v1.40.0 ULW caveat. Same defect class as F-1/F-3 — a doc surface
+   that didn't get the contract update. Wave 10's regression net
+   (T13) asserted README contains *"operational-block pause"* for the
+   `/ulw-pause` row but had no assertion on the `/mark-deferred` row.
+
+   Fix: rewrote line 319 to name the `no_defer_mode=on` ULW refusal
+   explicitly, with the `no_defer_mode=off` opt-out as the v1.39
+   escape hatch. Extended `tests/test-no-defer-contract.sh` with
+   T19 asserting the line carries *"Refused under ULW execution with
+   default"* — closes the assertion gap so a future doc edit can't
+   silently regress this row even while the earlier "When stuck" table
+   stays correct. test-no-defer-contract 19→20 assertions.
+
+**Why these landed as v1.40.1 instead of being held back to v1.41.0.**
+Per the Serendipity Rule conditions (verified + same-path + bounded)
+and the v1.40.0 no-defer contract (the agent owns technical judgment
+and ships inline rather than deferring same-class adjacent defects),
+both findings ship in-session. The CI-red on v1.40.0 was structurally
+identical to v1.32.6 — the project's documented pattern is to
+preserve the tag for traceability and ship a same-day x.y.1 hotfix
+with the closure. v1.40.1 is the canonical v1.40 release.
+
+**Files changed:** `tests/test-gate-events.sh` (Test 7 reason +
+comment), `README.md` (line 319 caveat + version badge),
+`tests/test-no-defer-contract.sh` (T19 added + docstring updated),
+`VERSION`, `CHANGELOG.md`.
+
 ## [1.40.0] - 2026-05-12
 
 Multi-lens council audit of v1.39.0 ran six perspectives in parallel

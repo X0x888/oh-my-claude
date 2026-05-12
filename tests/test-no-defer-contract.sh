@@ -34,8 +34,14 @@
 #         without pre-authorization" (one of the five v1.40 cases)
 #   T18 — docs/faq.md item 12 does NOT map taste/policy/brand-voice/
 #         credible-approach to /ulw-pause (v1.39 phrasing)
+#   T19 — README.md /mark-deferred skill-table row names the v1.40.0
+#         ULW refusal under no_defer_mode=on (caught by quality-reviewer
+#         pre-tag on v1.40.0 release; shipped in v1.40.1 hotfix). Without
+#         this assertion the canonical skill table at README:319 could
+#         silently drift back to v1.39 framing even though the "When
+#         stuck" mini-table (T12/T13) stays correct.
 #
-# T12-T18 close the docs_stale class that v1.40.0's Wave 6/7 sweeps
+# T12-T19 close the docs_stale class that v1.40.0's Wave 6/7 sweeps
 # missed on the user-facing surfaces — the in-session memory was swept
 # but README/docs/prompts/docs/faq were not. Without these assertions
 # CI cannot catch a future doc surface drifting back to the v1.39
@@ -256,6 +262,17 @@ assert_not_contains_file \
   "T18 — docs/faq.md item 12 does NOT use v1.39 user-decision-pause framing" \
   "taste, policy, brand voice, credible-approach split" \
   "${FAQ_MD}"
+
+# T19 — README's canonical skill table at line 319 must name the v1.40.0
+# ULW refusal for /mark-deferred. The "When stuck" mini-table earlier in
+# the README (T12/T13 scope) was swept in Wave 10, but the canonical skill
+# table was missed. v1.40.1 hotfix added the caveat — without this
+# assertion a future doc edit could silently drift back to the v1.39
+# framing on this row even while the earlier table stays correct.
+assert_contains_file \
+  "T19 — README /mark-deferred skill row names v1.40.0 ULW refusal" \
+  "Refused under ULW execution with default" \
+  "${README_MD}"
 
 printf '\nResults: %d passed, %d failed\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]
