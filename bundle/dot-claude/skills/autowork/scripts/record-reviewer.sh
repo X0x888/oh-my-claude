@@ -124,7 +124,10 @@ fi
 # balanced low-risk work, but strict autonomous shipping should not mark a
 # dimension clean from an ambiguous reviewer transcript.
 if [[ -n "${review_format_issue}" ]]; then
-  if is_zero_steering_policy_enabled || is_high_task_risk; then
+  # v1.39.0 W2: session-derived risk (was prompt-time-only). A reviewer
+  # that returned high-severity findings escalates the work to high
+  # regardless of opening-sentence keywords.
+  if is_zero_steering_policy_enabled || is_high_session_risk; then
     has_findings="true"
   fi
 fi

@@ -5225,7 +5225,139 @@ classify_task_risk_tier() {
 }
 
 is_high_task_risk() {
+  # Stable predicate kept for future UserPromptSubmit-stage callers.
+  # Currently has no in-tree consumers — v1.39.0 W2 swapped the 4
+  # production call sites (stop-guard.sh ×3, record-reviewer.sh ×1)
+  # to `is_high_session_risk` (below), which layers session-evidence
+  # escalators on top of this prompt-time read. The router itself
+  # uses the local `TASK_RISK_TIER` variable for directive selection
+  # rather than calling this function. Retained because the predicate
+  # IS valid for prompt-time-only callers (e.g., a future directive
+  # whose copy must depend on the prompt-time tier alone, before any
+  # tools have run); the helper saves them from repeating the
+  # read_state call.
   [[ "$(read_state "task_risk_tier" 2>/dev/null || true)" == "high" ]]
+}
+
+# v1.39.0 W2: derived risk tier read at gate-evaluation time.
+#
+# The prompt-time classifier (classify_task_risk_tier above) runs once
+# in UserPromptSubmit before any tools or edits exist — it can only
+# inspect prompt/intent/domain. By Stop time the session has produced
+# strictly better evidence: edited surfaces, reviewer FINDINGS_JSON
+# severity, verify confidence, discovered_scope depth. This helper
+# layers that evidence on top of the prompt-time tier so gates fire on
+# what the work IS, not what the opening sentence said.
+#
+# Composes additively. Never demotes a prompt-time `high` (the model
+# already saw the high-risk directive; undoing strictness mid-session
+# is UX whiplash). Escalates medium→high or low→high when the work has
+# acquired load-bearing risk signals. A narrow de-escalation path
+# moves medium→low only when edits are entirely doc-shaped AND no
+# findings are pending (the "I said refactor but it turned out to be
+# a markdown rename" case).
+#
+# Side effect: persists `session_risk_factors` state when any
+# escalator fires, so /ulw-status can explain WHY high was reached
+# without re-running inspection. Idempotent — no-op write when factor
+# string is unchanged. Eventually-consistent under concurrent calls:
+# two near-simultaneous evaluations from the same Stop tick can
+# observe slightly different factor sets if findings.json or
+# edited_files.log grows between them, but write_state's lock
+# guarantees no torn writes and the next call always converges.
+current_session_risk_tier() {
+  local prompt_tier
+  prompt_tier="$(read_state "task_risk_tier" 2>/dev/null || true)"
+  prompt_tier="${prompt_tier:-low}"
+
+  if [[ "${prompt_tier}" == "high" ]]; then
+    printf 'high'
+    return 0
+  fi
+
+  local escalation_reasons=""
+
+  # Escalator 1: reviewer findings carry severity high|critical.
+  local _csrt_findings_file
+  _csrt_findings_file="$(session_file "findings.json")"
+  if [[ -f "${_csrt_findings_file}" ]]; then
+    if jq -e '(.findings // []) | any(.severity == "high" or .severity == "critical")' "${_csrt_findings_file}" >/dev/null 2>&1; then
+      escalation_reasons="${escalation_reasons:+${escalation_reasons},}high_severity_findings"
+    fi
+  fi
+
+  # Escalator 2: edited files touch sensitive surfaces (auth, payment,
+  # migrations, secret material). The regex is word-bounded by path
+  # separators or extension chars so "authentication-helper.go" matches
+  # but "author.go" does not.
+  local _csrt_edited_log
+  _csrt_edited_log="$(session_file "edited_files.log")"
+  if [[ -f "${_csrt_edited_log}" ]]; then
+    if grep -Eiq '(^|/)(auth|authn|authz|payment|billing|stripe|migration|migrations|schema|secret|credential|keystore|crypto)([./_-]|$)' "${_csrt_edited_log}" 2>/dev/null; then
+      escalation_reasons="${escalation_reasons:+${escalation_reasons},}sensitive_surface_edited"
+    fi
+  fi
+
+  # Escalator 3: verification ran with low confidence and did NOT pass.
+  # Threshold 40 matches the inferred-contract gate's
+  # OMC_VERIFY_CONFIDENCE_THRESHOLD default so the two layers stay
+  # coherent.
+  local _csrt_verify_conf _csrt_verify_outcome
+  _csrt_verify_conf="$(read_state "last_verify_confidence" 2>/dev/null || true)"
+  _csrt_verify_outcome="$(read_state "last_verify_outcome" 2>/dev/null || true)"
+  if [[ -n "${_csrt_verify_conf}" && "${_csrt_verify_conf}" =~ ^[0-9]+$ \
+     && "${_csrt_verify_outcome}" != "passed" \
+     && "${_csrt_verify_conf}" -lt 40 ]]; then
+    escalation_reasons="${escalation_reasons:+${escalation_reasons},}low_verify_confidence"
+  fi
+
+  # Escalator 4: 3+ pending discovered-scope items mean untriaged
+  # adjacent work has accumulated — strict-gate posture should engage
+  # so the model commits a ship-vs-defer decision before Stop.
+  local _csrt_discovered_scope
+  _csrt_discovered_scope="$(session_file "discovered_scope.jsonl")"
+  if [[ -f "${_csrt_discovered_scope}" ]]; then
+    local _csrt_pending_count
+    _csrt_pending_count="$(jq -s '[.[] | select((.status // "pending") == "pending")] | length' "${_csrt_discovered_scope}" 2>/dev/null || echo 0)"
+    [[ "${_csrt_pending_count}" =~ ^[0-9]+$ ]] || _csrt_pending_count=0
+    if [[ "${_csrt_pending_count}" -ge 3 ]]; then
+      escalation_reasons="${escalation_reasons:+${escalation_reasons},}pending_discovered_scope"
+    fi
+  fi
+
+  if [[ -n "${escalation_reasons}" ]]; then
+    local _csrt_current_factors
+    _csrt_current_factors="$(read_state "session_risk_factors" 2>/dev/null || true)"
+    if [[ "${_csrt_current_factors}" != "${escalation_reasons}" ]]; then
+      write_state "session_risk_factors" "${escalation_reasons}" 2>/dev/null || true
+    fi
+    printf 'high'
+    return 0
+  fi
+
+  # De-escalation path: medium prompt-time tier de-escalates to low
+  # only when edits are entirely doc-shaped AND no findings are
+  # pending. Keeps the strict-gate posture from firing on prompts
+  # that mentioned auth/migration but turned out to touch only docs.
+  if [[ "${prompt_tier}" == "medium" ]]; then
+    local _csrt_code_edits _csrt_doc_edits
+    _csrt_code_edits="$(read_state "code_edit_count" 2>/dev/null || true)"
+    _csrt_code_edits="${_csrt_code_edits:-0}"
+    [[ "${_csrt_code_edits}" =~ ^[0-9]+$ ]] || _csrt_code_edits=0
+    _csrt_doc_edits="$(read_state "doc_edit_count" 2>/dev/null || true)"
+    _csrt_doc_edits="${_csrt_doc_edits:-0}"
+    [[ "${_csrt_doc_edits}" =~ ^[0-9]+$ ]] || _csrt_doc_edits=0
+    if [[ "${_csrt_code_edits}" -eq 0 && "${_csrt_doc_edits}" -ge 3 ]]; then
+      printf 'low'
+      return 0
+    fi
+  fi
+
+  printf '%s' "${prompt_tier}"
+}
+
+is_high_session_risk() {
+  [[ "$(current_session_risk_tier)" == "high" ]]
 }
 
 has_unfinished_session_handoff() {

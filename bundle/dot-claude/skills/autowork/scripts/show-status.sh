@@ -374,6 +374,15 @@ if [[ "${SUMMARY_MODE}" -eq 1 ]]; then
   domain="$(jq -r '.task_domain // "unset"' "${state_file}" 2>/dev/null || echo "unset")"
   intent="$(jq -r '.task_intent // "unset"' "${state_file}" 2>/dev/null || echo "unset")"
 
+  # v1.39.0 W2: adaptive risk tier — prompt-time classification + any
+  # session-evidence escalation factors recorded by gate consumers.
+  # session_risk_factors is written by current_session_risk_tier()
+  # only when an escalator fires, so its absence means no Stop-time
+  # gate has evaluated the session yet (or the prompt was already
+  # high → no escalation needed).
+  risk_prompt_tier="$(jq -r '.task_risk_tier // ""' "${state_file}" 2>/dev/null || echo "")"
+  risk_factors="$(jq -r '.session_risk_factors // ""' "${state_file}" 2>/dev/null || echo "")"
+
   _box="$(omc_box_rule_glyph 3)"
   printf '%s ULW Session Summary %s\n' "${_box}" "${_box}"
   printf 'Session:    %s · %s · domain=%s · intent=%s\n' "${latest_session}" "${age_human}" "${domain}" "${intent}"
@@ -434,6 +443,17 @@ if [[ "${SUMMARY_MODE}" -eq 1 ]]; then
       if [[ -n "${_time_oneline}" ]]; then
         printf '%s\n' "${_time_oneline}"
       fi
+    fi
+  fi
+
+  # v1.39.0 W2: risk-tier line — only show when prompt-time tier is set
+  # (i.e. the router ran). Surface the session-evidence escalation
+  # factors when present so the user can explain WHY high was reached.
+  if [[ -n "${risk_prompt_tier}" ]]; then
+    if [[ -n "${risk_factors}" ]]; then
+      printf 'Risk:       prompt=%s · session=high · factors=%s\n' "${risk_prompt_tier}" "${risk_factors}"
+    else
+      printf 'Risk:       %s\n' "${risk_prompt_tier}"
     fi
   fi
 

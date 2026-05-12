@@ -38,8 +38,11 @@ emit_scorecard_stop_context() {
 effective_guard_exhaustion_mode() {
   local serious_missing="${1:-0}"
   local configured="${OMC_GUARD_EXHAUSTION_MODE:-scorecard}"
+  # v1.39.0 W2: read session-derived tier so a prompt-time `low` that
+  # escalated to high via reviewer findings / sensitive-surface edits /
+  # low verify confidence still triggers block-mode exhaustion.
   local risk_tier
-  risk_tier="$(read_state "task_risk_tier" 2>/dev/null || true)"
+  risk_tier="$(current_session_risk_tier 2>/dev/null || true)"
 
   if is_zero_steering_policy_enabled; then
     if [[ "${risk_tier}" == "high" || "${serious_missing}" == "1" ]]; then
@@ -187,8 +190,12 @@ if ! is_execution_intent_value "${task_intent}"; then
       advisory_evidence_count="${advisory_evidence_count:-0}"
       [[ "${advisory_evidence_count}" =~ ^[0-9]+$ ]] || advisory_evidence_count=0
       advisory_evidence_required=0
-      task_risk_tier="$(read_state "task_risk_tier")"
-      if [[ "${task_risk_tier}" == "high" ]] || is_zero_steering_policy_enabled; then
+      # v1.39.0 W2: session-derived tier — escalates on findings,
+      # sensitive-surface edits, low verify confidence, pending
+      # discovered-scope. Local var name disambiguated from the
+      # same-named state key (which holds the prompt-time tier).
+      session_risk_tier="$(current_session_risk_tier)"
+      if [[ "${session_risk_tier}" == "high" ]] || is_zero_steering_policy_enabled; then
         advisory_evidence_required=2
       fi
       advisory_guard_blocks="$(read_state "advisory_guard_blocks")"
@@ -213,7 +220,7 @@ Ground your recommendation in the actual code before finalizing.${advisory_recov
           "block_count=1" "block_cap=1" \
           "evidence_count=${advisory_evidence_count}" \
           "evidence_required=${advisory_evidence_required}" \
-          "risk=${task_risk_tier}"
+          "risk=${session_risk_tier}"
         advisory_recovery="$(format_gate_recovery_options \
           "Inspect at least ${advisory_evidence_required} distinct relevant source files or run a verification command, then finalize with file-grounded evidence." \
           "Bypass once with a reason: \`/ulw-skip <reason>\`.")"
@@ -887,7 +894,8 @@ Run excellence-reviewer for fresh-eyes holistic evaluation (completeness, unknow
   _metis_zero_steering_high=0
   if [[ "${OMC_METIS_ON_PLAN_GATE}" == "on" ]]; then
     _metis_gate_enabled=1
-  elif is_zero_steering_policy_enabled && is_high_task_risk; then
+  elif is_zero_steering_policy_enabled && is_high_session_risk; then
+    # v1.39.0 W2: session-derived high tier (was prompt-time-only).
     _metis_gate_enabled=1
     _metis_zero_steering_high=1
   fi

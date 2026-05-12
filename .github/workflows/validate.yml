@@ -179,6 +179,9 @@ jobs:
       - name: Run session-summary outcome tests (v1.39.0 W1)
         run: bash tests/test-session-summary-outcome.sh
 
+      - name: Run session risk-tier tests (v1.39.0 W2)
+        run: bash tests/test-session-risk-tier.sh
+
       - name: Run real-work eval suite tests
         run: bash tests/test-realwork-eval-suite.sh
 
