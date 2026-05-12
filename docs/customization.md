@@ -389,7 +389,7 @@ oh-my-claude ships with two built-in output styles. Both are copied into `~/.cla
 
 | Style | Filename | When to choose |
 |-------|----------|----------------|
-| **`oh-my-claude`** (default) | `oh-my-claude.md` | Day-to-day coding sessions. Compact, polished CLI presentation. Bold-label cards (`**Bottom line.**`, `**Changed.**`, `**Verification.**`, `**Risks.**`, `**Next.**`), implementation-first framing, brevity bias. |
+| **`oh-my-claude`** (default) | `oh-my-claude.md` | Day-to-day coding sessions. Compact, polished CLI presentation. First line is the headline (reading-stop-worthy on its own, survives hook noise). Bold-label cards (`**Bottom line.**`, `**Changed.**`, `**Verification.**`, `**Risks.**`, `**Next.**`), implementation-first framing, layman-aware glosses for load-bearing jargon, brevity bias — length tracks substance, not template. |
 | **`executive-brief`** | `executive-brief.md` | Reports to stakeholders, multi-wave work, anything where decisiveness reads better than density. CEO-style status report — headline first, status verbs (`Shipped`, `Blocked`, `At-risk`, `In-flight`, `Deferred`, `No-op`), explicit `**Risks.**` and `**Asks.**` sections, horizontal rules between primary sections. |
 
 Both declare `keep-coding-instructions: true`, so Claude Code's coding-system-prompt (specialist-agent expectations, tool-use conventions) is preserved underneath either style.

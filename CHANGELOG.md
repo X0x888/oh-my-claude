@@ -233,6 +233,62 @@ All four fixes ship together as a follow-up commit on `main`
 under this same `[Unreleased]` block, no version bump per the
 new accumulate-before-tag rule.
 
+### Output-style overhaul (`oh-my-claude.md`) — user-driven voice tightening
+
+User feedback after several `/ulw` sessions: the default output style
+landed key information in places the reader couldn't grasp at a
+glance — important headlines buried under stop-hook output, calibration
+that ran verbose where unneeded and too brief where context was needed,
+and technical jargon used without layman-aware framing. The bundled
+voice rules also lagged behind `executive-brief.md` on several axes
+(no calibration anchor, no `silence means none` discipline, no place
+to surface hidden judgment calls).
+
+Rather than collapse the lighter default into the heavier sibling, this
+release ports the load-bearing improvements back to `oh-my-claude.md`
+while preserving the lighter posture (still `~60%` the size of
+`executive-brief.md` — `9,794` vs `15,828` bytes).
+
+Seven additions to `bundle/dot-claude/output-styles/oh-my-claude.md`:
+
+- **Voice calibration** at the top names the user's stated preference:
+  `accurate, brief, concise — every sentence earns its space, every
+  claim stands on evidence, no padding survives the read`.
+- **`## First line is the headline`** — every response's first
+  user-facing line must be reading-stop-worthy on its own. Reconciled
+  with workflow-frame injection, generalized to `**Bottom line.**` in
+  multi-section responses, and to the goal sentence when a tool batch
+  leads (the goal must name the outcome being verified, not the action).
+- **`## Length tracks substance, not template`** — brevity that
+  confuses is worse than length that informs; padding fails in both
+  directions.
+- **`## Layman-aware language`** — first-use parenthetical gloss for
+  load-bearing technical terms (`TTL (cache lifetime)`); explicit
+  negative-space rules so glosses stay disciplined.
+- **`Silence means none`** under Structure — kills `**Risks.** None.`
+  / `**Asks.** None.` placeholder lines.
+- **`Surface hidden judgment calls`** under Voice — when an
+  unauthorized choice is made (library A over B, scoped refactor,
+  named flag), state the choice and the alternative in one sentence
+  so the user can redirect cheaply.
+- **Worked example — calibration anchor** — explicitly hypothetical
+  example (`acme-tool` + `cache_ttl_seconds`, framed as illustration)
+  demonstrating headline, layman-gloss, surfaced judgment call,
+  path-with-line-range, and silence-means-none simultaneously.
+
+Round-tripped through two editor-critic passes (Round 1: 4 findings +
+2 minors; Round 2: 2 findings; all addressed before stop).
+
+`docs/customization.md:392` — style-picker table row description synced
+same-surface (Serendipity Rule application) so users picking between
+bundled styles see the new headline-first + layman-gloss emphasis.
+
+Tests pass: `test-output-style-coherence.sh` (35), `test-settings-merge.sh`
+(206), `test-omc-config.sh` (152). Voice quality is not unit-testable;
+next real validation is in-session prose.
+
+Ships under this same `[Unreleased]` block, no version bump.
+
 ## [1.40.1] - 2026-05-12
 
 Hotfix for two findings discovered in the v1.40.0 post-tag verification
