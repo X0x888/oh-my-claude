@@ -22,7 +22,9 @@
 #                                          # status: pending | in_progress | completed
 #   record-finding-list.sh mark-user-decision <id> <reason>
 #                                          # Flag a finding as requiring user judgment
-#                                          # (taste, policy, credible-approach split)
+#                                          # (v1.40.0: operational-only — credentials/login, external account,
+#                                          # destructive shared-state action awaiting confirmation. NOT for
+#                                          # taste/policy/credible-approach under no_defer_mode=on.)
 #                                          # so Phase 8 wave executor pauses on it
 #                                          # rather than choosing autonomously.
 #   record-finding-list.sh show            # print current findings.json (pretty)
@@ -503,7 +505,8 @@ EOF
     id="${1:-}"; reason="${2:-}"
     if [[ -z "${id}" || -z "${reason}" ]]; then
       printf 'usage: record-finding-list mark-user-decision <id> <reason>\n' >&2
-      printf '  Reason must be non-empty (taste, policy, credible-approach split).\n' >&2
+      printf '  Reason must name a real OPERATIONAL block (credentials, login, external account, destructive shared-state action).\n' >&2
+      printf '  Under v1.40.0 no_defer_mode=on, taste/policy/credible-approach are NOT user-decision findings — the agent picks those.\n' >&2
       exit 1
     fi
     # Reject newlines in reason — they break the markdown bullet rendering

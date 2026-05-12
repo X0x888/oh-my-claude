@@ -339,6 +339,47 @@ all clean.
 `ulw-pause/SKILL.md`, `tests/test-no-defer-mode.sh`,
 `.github/workflows/validate.yml`, `README.md`, `AGENTS.md`.
 
+### Wave 6 — align router + council + stop-guard to the v1.40.0 contract
+
+Wave 5 closed three deferral surfaces but the `requires_user_decision`
+mechanism in council + prompt-intent-router still taught the model to
+pause on taste/policy/credible-approach findings. The contract was
+partially landed — a council session under the new rules would still
+have routed technical decisions back to the non-expert user, exactly
+the failure mode Wave 5 set out to close.
+
+Wave 6 narrows the user-decision criteria everywhere under
+`no_defer_mode=on` (default) to **operational-only**: credentials/
+login required, external account action, destructive shared-state
+action awaiting confirmation. Taste, policy, brand voice, pricing,
+data-retention sane default, release attribution, library choice,
+refactor scope, and credible-approach split are **NOT user-decision
+findings** under v1.40.0 — the agent picks the sibling-of-codebase
+choice with stated reasoning and ships. Held under the legacy
+`no_defer_mode=off` opt-out for power users on the v1.39 path.
+
+Sites aligned:
+- `prompt-intent-router.sh` Phase 5 synthesis directive (line 1434) +
+  Phase 8 bootstrap option C (line 1419) + Phase 8 option E
+  pause-on-user-decision (line 1423).
+- `council/SKILL.md` step 6 (mark user-decision findings) + step 4.1a
+  (Phase 8 wave executor pause behavior).
+- `stop-guard.sh` /ulw-pause carve-out comment (line 244) and recovery
+  option text (line 263).
+- `record-finding-list.sh` `mark-user-decision` subcommand comment
+  (line 25) and error message (line 506).
+
+**Tests:** existing regression net stays green — `test-prompt-router-
+synthetic 24/0`, `test-no-defer-mode 21/0`, `test-mark-deferred 166/0`,
+`test-finding-list 121/0`, `test-shortcut-ratio-gate 20/0`,
+`test-coordination-rules 112/0`, `test-e2e-hook-sequence 373/0`.
+The router-synthetic test exercises the directive text shape and
+continues to pass, confirming no breaking change to the prompt-text
+contract; only the prose narrowing changed.
+
+**Files changed:** `prompt-intent-router.sh`, `council/SKILL.md`,
+`stop-guard.sh`, `record-finding-list.sh`, `CHANGELOG.md`.
+
 ## [1.39.0] - 2026-05-12
 
 Multi-lens council audit of v1.38.0 + the post-tag `ebb7044` "Add

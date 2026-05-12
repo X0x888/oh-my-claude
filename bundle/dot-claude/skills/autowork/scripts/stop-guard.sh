@@ -241,9 +241,13 @@ Ground the recommendation in multiple relevant files and cite them in the final 
   fi
 fi
 
-# /ulw-pause carve-out: when the assistant declared a legitimate user-
-# decision pause this turn (taste, policy, credible-approach split),
-# the session-handoff gate must NOT fire. The pause flag is set by
+# /ulw-pause carve-out: when the assistant declared a legitimate
+# operational pause this turn (credentials/login required, hard
+# external blocker, destructive shared-state action awaiting
+# confirmation, unfamiliar in-progress state — v1.40.0 narrowed the
+# pause cases; taste/policy/credible-approach split are NO LONGER
+# valid pause reasons), the session-handoff gate must NOT fire. The
+# pause flag is set by
 # bundle/dot-claude/skills/autowork/scripts/ulw-pause.sh and cleared
 # automatically at the next user prompt by prompt-intent-router.sh.
 # This is the only structured "I'm legitimately paused, not stalling"
@@ -260,7 +264,7 @@ if [[ "${ulw_pause_active}" != "1" ]] \
     handoff_recovery="$(format_gate_recovery_options \
       "Continue the deferred work now in this session." \
       "Ask the user explicitly whether they want a checkpoint." \
-      "If you are paused on user input only they can give: \`/ulw-pause <reason>\` (taste, policy, credible-approach split)." \
+      "If you are blocked on an OPERATIONAL input only the user can supply: \`/ulw-pause <reason>\` — v1.40.0 narrows this to credentials/login, hard external blocker, destructive shared-state action, or unfamiliar in-progress state. NOT for taste/policy/credible-approach (under ULW the agent picks those and ships)." \
       "Bypass once with a reason: \`/ulw-skip <reason>\`.")"
     # v1.34.1+ (P-002): tighter session-handoff block; recovery line
     # already names the three legitimate continuation options. Keep the
