@@ -30,6 +30,72 @@ if [[ -z "${reason//[[:space:]]/}" ]]; then
   exit 2
 fi
 
+# Resolve SESSION_ID before any state-touching guard runs. The model
+# invokes /mark-deferred via the Bash tool with no hook JSON, so the
+# SESSION_ID env var is typically unset. Under `set -u` (active from
+# line 20 above), `session_file()` references `${SESSION_ID}` without a
+# default and would crash before our discovery fallback at line 133
+# could run. Resolving here means `is_no_defer_active` (which transitively
+# calls `read_state` → `session_file`) and the legacy require-WHY
+# validator both have a discovered SESSION_ID. Commit 02c4105 added
+# the original discovery fallback for the legacy validator path; this
+# moves it up so the new v1.40.0 guard inherits the same protection.
+if [[ -z "${SESSION_ID:-}" ]]; then
+  SESSION_ID="$(discover_latest_session)"
+fi
+if [[ -z "${SESSION_ID:-}" ]]; then
+  printf 'mark-deferred: no active session (SESSION_ID unset and no session found under %s)\n' "${STATE_ROOT}" >&2
+  exit 2
+fi
+
+# v1.40.0 no_defer_mode guard. The validator below still has a job for
+# non-ULW sessions (general scope-defer hygiene), but under ULW execution
+# the answer to "should the model be allowed to defer?" is no — full
+# stop. The model must ship inline, wave-append same-surface findings, or
+# hit a real external blocker (rate limit, credentials, dead infra).
+# Asking the typical /ulw user to weigh in on technical splits or
+# defer-vs-keep decisions is the failure mode this gate exists to close.
+# The guard is centralized in common.sh::is_no_defer_active so all three
+# call sites (this script, record-finding-list.sh status, stop-guard.sh)
+# share the same predicate. Opt-out via `no_defer_mode=off` in
+# oh-my-claude.conf for power users who want the legacy soft-validator
+# behavior with mark_deferred_strict as the only barrier.
+if is_no_defer_active; then
+  cat >&2 <<'EOF'
+mark-deferred: refused under ULW execution intent (no_defer_mode=on).
+
+The /ulw workflow does not defer findings — the agent ships them or hits a
+real external blocker. Deferring technical decisions to the user is the
+agent escaping responsibility, not respecting the user's judgment.
+
+Recovery options (in preference order):
+  1. **Ship inline.** Address the finding in the current wave or session.
+  2. **Wave-append same-surface findings.** Use record-finding-list.sh:
+       record-finding-list.sh add-finding <<<'{"id":"F-NNN","summary":"...","severity":"...","surface":"..."}'
+       record-finding-list.sh assign-wave <idx> <total> <surface> F-NNN
+  3. **/ulw-pause <reason>** — ONLY for these cases:
+       - Credentials/login required (a missing INPUT, not a judgment).
+       - Hard external blocker (rate limit hit, paid API quota gone,
+         infra dead, dependency upgrade pending in a tracked ticket).
+       - Build/test infra fault that needs human intervention.
+     NOT for: library choice, refactor scope, brand-voice defaults,
+     credible-approach splits, taste/policy. Under ULW the agent picks
+     with stated reasoning and ships. The user redirects if wrong.
+  4. **/ulw-skip <reason>** — one-time bypass for a wrongly-firing gate
+     (false positive). Logged for audit.
+
+Override (last resort, audited): set `no_defer_mode=off` in
+~/.claude/oh-my-claude.conf. Reverts to the legacy soft-validator
+behavior where mark_deferred_strict is the only barrier and the model
+can defer with a valid-WHY-shaped reason. NOT recommended — the
+validator-WHY loophole is the root cause this gate closes.
+EOF
+  # SESSION_ID was resolved above the guard, so the audit is unconditional.
+  record_gate_event "no-defer-mode" "mark-deferred-refused" \
+    "reason_preview=${reason:0:200}" 2>/dev/null || true
+  exit 2
+fi
+
 # Reject reasons that have historically been used as silent-skip
 # escape hatches. The error message lists acceptable shapes so the
 # user (or model invoking the skill) can immediately rewrite.
@@ -77,14 +143,6 @@ Override (last resort, audited): set OMC_MARK_DEFERRED_STRICT=off in the
 environment or oh-my-claude.conf. Bypasses are recorded to gate_events.jsonl
 and surface in /ulw-report. Prefer rewriting the reason instead.
 EOF
-  exit 2
-fi
-
-if [[ -z "${SESSION_ID:-}" ]]; then
-  SESSION_ID="$(discover_latest_session)"
-fi
-if [[ -z "${SESSION_ID:-}" ]]; then
-  printf 'mark-deferred: no active session (SESSION_ID unset and no session found under %s)\n' "${STATE_ROOT}" >&2
   exit 2
 fi
 

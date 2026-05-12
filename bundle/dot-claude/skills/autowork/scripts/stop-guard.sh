@@ -508,6 +508,61 @@ ${scorecard}${scope_recovery}")"
   fi
 fi
 
+# no_defer_mode hard-block (v1.40.0). The third of three deferral call
+# sites this flag governs (mark-deferred.sh entry, record-finding-list.sh
+# status path, this stop hook). When ULW execution is active AND
+# no_defer_mode=on, ANY deferred entry in findings.json hard-blocks the
+# stop — not soft-block, not block-cap-1, but every stop attempt until
+# the deferred entries are addressed (shipped, rejected with real WHY,
+# or the user disables the flag).
+#
+# Why this is more aggressive than shortcut_ratio_gate below:
+#   - Ratio gate fires only at total≥10 AND ratio≥50% — by then half the
+#     plan is already deferred. Too late.
+#   - This gate fires on ONE deferred entry. The model can't quietly
+#     mark a single substantive finding as deferred and stop.
+#   - Block cap is 0 (no cap). Recovery is to flip status to shipped or
+#     rejected, not to argue past it with /ulw-skip (still available
+#     as a last-resort manual override). Each subsequent stop checks
+#     fresh state — the block clears the moment the deferred set
+#     becomes empty.
+#
+# Fail-open: missing findings.json returns the gate to silent — sessions
+# that don't run /council and never registered findings are unaffected.
+# The orthogonal "wave-commits-without-findings.json" failure mode is
+# a separate v1.40+ gate (not implemented in this wave; tracked).
+if is_no_defer_active; then
+  _nd_findings_file="$(session_file "findings.json")"
+  if [[ -f "${_nd_findings_file}" ]]; then
+    _nd_deferred_count="$(jq -r '[(.findings // [])[] | select(.status == "deferred")] | length' "${_nd_findings_file}" 2>/dev/null || printf '0')"
+    [[ "${_nd_deferred_count}" =~ ^[0-9]+$ ]] || _nd_deferred_count=0
+    if [[ "${_nd_deferred_count}" -gt 0 ]]; then
+      _nd_scorecard="$(jq -r '
+        [(.findings // [])[] | select(.status == "deferred")]
+        | sort_by(.severity)
+        | .[0:8]
+        | .[]
+        | "  - " + .id + " [" + (.severity // "?") + "] "
+          + (.summary // "(no summary)")
+          + (if (.notes // "") != "" then " — " + .notes else "" end)
+      ' "${_nd_findings_file}" 2>/dev/null || printf '  (scorecard unavailable)')"
+      record_gate_event "no-defer-mode" "stop-block" \
+        "deferred_count=${_nd_deferred_count}"
+      _nd_recovery="$(format_gate_recovery_options \
+        "Ship each deferred finding inline, then update its status: \`record-finding-list.sh status F-NNN shipped <commit_sha>\`." \
+        "If a finding is genuinely not-a-defect (false positive, by design, working as intended, duplicate, obsolete), flip to rejected with a real WHY: \`record-finding-list.sh status F-NNN rejected <commit_sha> 'duplicate of F-042'\`." \
+        "Real external blocker (credentials, rate limit, dead infra, dependency upgrade in flight)? Use \`/ulw-pause <reason>\` — NOT for credible-approach splits, library choices, or refactor scope (the agent picks those under ULW)." \
+        "Bypass once (audited): \`/ulw-skip <reason>\`. Repeated bypass on this gate signals \`no_defer_mode=off\` may be the right user preference — update \`oh-my-claude.conf\` if so.")"
+      emit_stop_block "$(format_gate_block_dual \
+        "${_nd_deferred_count} finding(s) marked deferred under ULW (\`no_defer_mode=on\`). The /ulw workflow does not defer — ship each finding inline, flip rejected if genuinely not-a-defect, or hit a real external blocker. Deferring technical decisions to the user is the agent escaping responsibility." \
+        "[No-defer gate · always-on] ${_nd_deferred_count} finding(s) with status=deferred in findings.json. Under ULW execution intent (\`no_defer_mode=on\` default), the workflow ships findings or hits a real external blocker — it does NOT defer.
+Deferred set (severity-ranked, top 8):
+${_nd_scorecard}${_nd_recovery}")"
+      exit 0
+    fi
+  fi
+fi
+
 # Shortcut-detection ratio gate (v1.35.0): even when every individual
 # deferral has a valid WHY (the validator's job), ship-vs-defer balance
 # on a big plan is itself a signal of the shortcut-on-big-tasks pattern

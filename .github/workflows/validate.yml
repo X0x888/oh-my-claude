@@ -200,6 +200,9 @@ jobs:
       - name: Run shortcut-ratio gate tests (v1.35.0 Concern-2 pin)
         run: bash tests/test-shortcut-ratio-gate.sh
 
+      - name: Run no_defer_mode tests (v1.40.0 ULW no-defer pin)
+        run: bash tests/test-no-defer-mode.sh
+
       - name: Run inferred-contract tests (v1.34.0 Delivery Contract v2 pin)
         run: bash tests/test-inferred-contract.sh
 

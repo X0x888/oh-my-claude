@@ -5,13 +5,15 @@ argument-hint: <reason — must include WHY (requires X / blocked by Y / superse
 ---
 # Mark Pending Findings Deferred
 
+> **v1.40.0: refused under ULW execution intent by default (`no_defer_mode=on`).** When ULW is active AND `task_intent=execution`, this skill exits with a 2 and a recovery message. The validator-WHY loophole that let "blocked by Waves 4-12 wave-plan rollout" pass as a legitimate reason is closed at the source — the answer to "should the model defer under /ulw?" is no. Under ULW, address each finding inline, wave-append it to the active plan, or — for genuine not-a-defect cases only — flip its status to `rejected` with a concrete WHY via `record-finding-list.sh status`. The skill remains usable in advisory/continuation intents, in non-ULW sessions, and under the user-opt-out `no_defer_mode=off`. The rest of this document describes the legacy soft-validator behavior; it applies when `no_defer_mode` is off or the intent isn't execution.
+
 Bulk-update every `pending` finding in the current session's `discovered_scope.jsonl` to `deferred` with a one-line reason. The discovered-scope gate counts only `pending` rows, so once you defer the rest, your next stop attempt passes through. The deferred rows are kept (not deleted) so you and `/ulw-report` can see what was triaged versus what was shipped.
 
-**Important — `/mark-deferred` is the LAST resort, not the first.** The discovered-scope gate offers four ways to address a finding:
+**Important — `/mark-deferred` is the LAST resort, not the first.** The discovered-scope gate offers four ways to address a finding (under non-ULW conditions where this skill is still callable):
 
 1. **Ship it** — fix the finding in this session and reference the file/line in your summary. Default for findings on surfaces you are already loaded into. Cheapest option when the fix is bounded.
 2. **Append to the active wave plan** (when one exists) — `record-finding-list.sh add-finding <<< '{"id":"F-NNN","summary":"...","severity":"...","surface":"..."}'` then `record-finding-list.sh assign-wave <idx> <total> <surface> F-NNN`. Use when the finding is same-surface as work you are already doing OR a natural follow-on wave. Phase 8 of `/council` documents this; the same pattern works for any session with a wave plan.
-3. **Defer with a named WHY** (this skill) — use when the finding genuinely cannot ship in this session and there is no wave plan to append to.
+3. **Defer with a named WHY** (this skill — disabled under ULW execution) — use when the finding genuinely cannot ship in this session and there is no wave plan to append to.
 4. **Call it out as known follow-up risk** in your summary — use when the finding is observation-only and no follow-up commitment is being made.
 
 The skill rejects low-information reasons that have historically been used to silently skip work. The validator catches **two classes** of weak reasons:

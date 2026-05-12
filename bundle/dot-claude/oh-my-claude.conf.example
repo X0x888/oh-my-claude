@@ -203,6 +203,26 @@
 # findings to follow-up sprints. Env: OMC_SHORTCUT_RATIO_GATE.
 #shortcut_ratio_gate=on
 
+# no_defer_mode (v1.40.0). The hard answer to the "/ulw became a
+# sophisticated defer-escape" failure mode. When `on` AND ULW is active
+# AND task_intent=execution, all three deferral surfaces are turned off:
+#   * /mark-deferred refuses entirely (the model must ship inline or
+#     wave-append same-surface findings)
+#   * record-finding-list.sh status <id> deferred is rejected
+#   * stop-guard hard-blocks (not soft) when findings.json has any
+#     status=deferred entry
+# The remaining legitimate stop conditions are operational, not
+# judgmental: credentials/login required (a missing INPUT), hard
+# external blocker (rate limit, paid API quota gone, infra dead),
+# build/test infra fault that needs human intervention. Technical
+# decisions — library choice, refactor scope, brand-voice default,
+# credible-approach split — are the agent's call under ULW. The
+# canonical /ulw user is not an expert coder; deferring those decisions
+# to them is the agent escaping responsibility, not respecting their
+# judgment. Disable (`no_defer_mode=off`) only if you want the legacy
+# soft-validator behavior. Env: OMC_NO_DEFER_MODE.
+#no_defer_mode=on
+
 # Statusline shows a yellow `↑v<version>` arrow when the source repo is
 # ahead of the installed bundle. Useful nudge to re-run install.sh after
 # `git pull`. Default true.

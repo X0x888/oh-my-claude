@@ -70,6 +70,7 @@ exemplifying_scope_gate|bool|on|gates|Require checklist for example-marker promp
 prompt_text_override|bool|on|gates|PreTool guard trusts prompt-text imperative when classifier disagrees
 mark_deferred_strict|bool|on|gates|Reject low-information defer reasons (out of scope / follow-up) AND effort excuses (requires significant effort / blocked by complexity)
 shortcut_ratio_gate|bool|on|gates|Soft-block when wave plan total≥10 AND deferred-to-decided ratio ≥0.5 (catches shortcut-on-big-tasks)
+no_defer_mode|bool|on|gates|v1.40.0: under ULW execution, /mark-deferred refuses, findings status=deferred rejected, stop-guard hard-blocks on any deferred entry. Agent must ship inline or hit a real external blocker.
 installation_drift_check|true_false|true|advisory|Statusline yellow arrow when bundle is behind source
 whats_new_session_hint|true_false|true|advisory|SessionStart "you upgraded — run /whats-new" notice (once per version transition)
 auto_memory|bool|on|memory|Cross-session auto-memory writes (project/feedback/user/reference)
@@ -138,6 +139,7 @@ exemplifying_scope_gate=on
 prompt_text_override=on
 mark_deferred_strict=on
 shortcut_ratio_gate=on
+no_defer_mode=on
 metis_on_plan_gate=on
 stop_failure_capture=on
 resume_watchdog=on
@@ -168,6 +170,7 @@ exemplifying_scope_gate=on
 prompt_text_override=on
 mark_deferred_strict=on
 shortcut_ratio_gate=on
+no_defer_mode=on
 metis_on_plan_gate=off
 stop_failure_capture=on
 resume_watchdog=off
@@ -198,6 +201,7 @@ exemplifying_scope_gate=off
 prompt_text_override=on
 mark_deferred_strict=off
 shortcut_ratio_gate=off
+no_defer_mode=off
 metis_on_plan_gate=off
 stop_failure_capture=on
 resume_watchdog=off

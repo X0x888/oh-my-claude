@@ -44,6 +44,7 @@ _omc_env_exemplifying_scope_gate="${OMC_EXEMPLIFYING_SCOPE_GATE:-}"
 _omc_env_prompt_text_override="${OMC_PROMPT_TEXT_OVERRIDE:-}"
 _omc_env_mark_deferred_strict="${OMC_MARK_DEFERRED_STRICT:-}"
 _omc_env_shortcut_ratio_gate="${OMC_SHORTCUT_RATIO_GATE:-}"
+_omc_env_no_defer_mode="${OMC_NO_DEFER_MODE:-}"
 _omc_env_wave_override_ttl="${OMC_WAVE_OVERRIDE_TTL_SECONDS:-}"
 _omc_env_stop_failure_capture="${OMC_STOP_FAILURE_CAPTURE:-}"
 _omc_env_prompt_persist="${OMC_PROMPT_PERSIST:-}"
@@ -252,6 +253,21 @@ OMC_MARK_DEFERRED_STRICT="${OMC_MARK_DEFERRED_STRICT:-on}"
 # (block_cap=1). Default ON because the user explicitly identified
 # "okay-level work to satisfy the gate" as a notorious failure mode.
 OMC_SHORTCUT_RATIO_GATE="${OMC_SHORTCUT_RATIO_GATE:-on}"
+# no_defer_mode (v1.40.0): the hard answer to the "/ulw became a sophisticated
+# defer-escape" failure mode. When `on` AND task_intent=execution AND ULW
+# is active, /mark-deferred refuses entirely and `record-finding-list.sh
+# status <id> deferred` is rejected — the model must either ship the
+# finding inline, wave-append it to the active plan, or genuinely hit a
+# hard external blocker (rate limit, missing credentials, dead infra).
+# Stop-guard adds a hard block when findings.json has any status=deferred
+# under ULW execution. Rationale: the canonical /ulw user is not an expert
+# coder; deferring technical decisions to the user is the agent escaping
+# responsibility dressed as deference. Validator-WHY shapes still allow
+# escape via "blocked by X" when X is the model's own future work — the
+# only structural fix is to remove deferral as a tool entirely under ULW.
+# Default ON. Disable via `no_defer_mode=off` for power users who want
+# the legacy behavior with mark_deferred_strict as the only guard.
+OMC_NO_DEFER_MODE="${OMC_NO_DEFER_MODE:-on}"
 # Resume-request artifact lifetime: max age (days) for a `resume_request.json`
 # to still be considered claimable. Older artifacts are treated as stale and
 # silently ignored by the SessionStart resume hint and the watchdog. The
@@ -403,6 +419,8 @@ _parse_conf_file() {
         [[ -z "${_omc_env_mark_deferred_strict}" && "${value}" =~ ^(on|off)$ ]] && OMC_MARK_DEFERRED_STRICT="${value}" || true ;;
       shortcut_ratio_gate)
         [[ -z "${_omc_env_shortcut_ratio_gate}" && "${value}" =~ ^(on|off)$ ]] && OMC_SHORTCUT_RATIO_GATE="${value}" || true ;;
+      no_defer_mode)
+        [[ -z "${_omc_env_no_defer_mode}" && "${value}" =~ ^(on|off)$ ]] && OMC_NO_DEFER_MODE="${value}" || true ;;
       wave_override_ttl_seconds)
         [[ -z "${_omc_env_wave_override_ttl}" && "${value}" =~ ^[0-9]+$ ]] && OMC_WAVE_OVERRIDE_TTL_SECONDS="${value}" || true ;;
       stop_failure_capture)
@@ -2123,6 +2141,32 @@ is_ulw_trigger() {
 
 is_ultrawork_mode() {
   [[ "$(workflow_mode)" == "ultrawork" ]]
+}
+
+# is_no_defer_active — predicate for the v1.40.0 no_defer_mode gate.
+# Returns 0 (active) when ALL three conditions hold:
+#   1. OMC_NO_DEFER_MODE=on (default)
+#   2. ULW mode is active in this session
+#   3. task_intent is execution (not advisory/continuation/etc.)
+# Otherwise returns 1.
+#
+# Used by mark-deferred.sh (entry guard), record-finding-list.sh status
+# (deferred path), and stop-guard.sh (post-stop hard block on
+# findings.json deferred entries). Centralized so all three sites stay
+# in lockstep — flipping no_defer_mode off in conf takes effect
+# simultaneously across the trio.
+#
+# Loads the classifier lazily because is_execution_intent_value lives
+# in lib/classifier.sh and not every hot-path consumer has eagerly
+# sourced it. Pattern mirrors the guard-helper rule in CLAUDE.md
+# "Critical Gotchas → Lazy-loaded libs".
+is_no_defer_active() {
+  [[ "${OMC_NO_DEFER_MODE:-on}" == "on" ]] || return 1
+  is_ultrawork_mode || return 1
+  _omc_load_classifier
+  local intent
+  intent="$(read_state "task_intent")"
+  is_execution_intent_value "${intent}"
 }
 
 task_domain() {

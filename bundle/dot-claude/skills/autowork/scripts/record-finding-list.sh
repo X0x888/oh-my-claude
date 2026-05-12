@@ -260,6 +260,38 @@ case "${cmd}" in
       *) printf 'invalid status: %s (expected pending|in_progress|shipped|deferred|rejected)\n' "${status}" >&2; exit 1 ;;
     esac
 
+    # v1.40.0 no_defer_mode guard — the second of three deferral call
+    # sites. Under ULW execution intent, marking a finding deferred via
+    # the wave-plan ledger is the same escape pattern /mark-deferred
+    # closed: a model can hide cherry-picked work behind a status flip.
+    # The guard refuses the transition; the model must use status=shipped
+    # (with a real commit_sha), keep status=pending until shipped, or
+    # mark status=rejected when the finding is genuinely not-a-defect
+    # (the validator on rejected still requires a concrete WHY, and the
+    # bar for "not a defect" is high — it should be uncommon). Status
+    # transitions other than deferred (pending/in_progress/shipped/
+    # rejected) pass through unchanged.
+    if [[ "${status}" == "deferred" ]] && is_no_defer_active; then
+      cat >&2 <<EOF
+record-finding-list: status=deferred refused for F=${id} under ULW execution (no_defer_mode=on).
+
+The /ulw workflow does not defer findings. Recovery options:
+  1. Ship the finding inline, then: record-finding-list.sh status ${id} shipped <commit_sha>
+  2. Keep status=pending and address it in the active or next wave.
+  3. status=rejected with a concrete WHY — ONLY when the finding is
+     genuinely not a defect (false positive, working as intended, by
+     design, duplicate, obsolete, wontfix with a real reason).
+  4. /ulw-pause for a real external blocker (credentials, rate limit,
+     dead infra) — NOT for credible-approach splits or taste calls.
+
+Override (last resort, audited): no_defer_mode=off in oh-my-claude.conf.
+EOF
+      record_gate_event "no-defer-mode" "finding-deferred-refused" \
+        "finding_id=${id}" \
+        "notes_preview=${notes:0:200}" 2>/dev/null || true
+      exit 2
+    fi
+
     # v1.35.0 — require-WHY validation on terminal-status non-success transitions.
     # Until v1.34.x this path was unvalidated, leaving a parallel silent-skip
     # loophole to /mark-deferred: a model could mark a finding deferred or

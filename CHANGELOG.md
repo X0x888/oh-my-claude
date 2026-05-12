@@ -252,6 +252,93 @@ F-021 /ulw &lt;verb&gt; taxonomy). The deferred and user-decision
 findings are recorded in the session's `findings.json` and surfaced
 in `/ulw-report` for future audit.
 
+### Wave 5 — `no_defer_mode` (ULW v1.40.0 contract)
+
+The user named a structural failure mode: under `/ulw`, the validator-
+WHY loophole turned `/mark-deferred` into a stop-button. Sessions
+shipped 30% of scope, deferred 70% with reasons that passed the
+validator (`"blocked by Waves 4-12 wave-plan rollout"`) but really
+said *"this is too much work for this turn"*. Worse, the legacy pause
+cases included **product-taste or policy judgment** and **credible-
+approach split** — both of which routed *technical decisions back to
+the user*. The canonical `/ulw` user is not an expert coder; asking
+them to adjudicate between SwiftUI patterns is the agent escaping
+responsibility dressed as deference, not a safety feature.
+
+This wave ships the hard answer: under ULW execution intent with
+`no_defer_mode=on` (default), deferrals are off entirely and the agent
+owns technical judgment. Five files at three call sites in lockstep:
+
+- **`common.sh` — new conf flag.** `OMC_NO_DEFER_MODE` env capture +
+  default + parser case + `is_no_defer_active` predicate (centralizes
+  the gate condition: flag on AND `is_ultrawork_mode` AND
+  `is_execution_intent_value(task_intent)`). The classifier loader
+  follows the same lazy-load pattern as other guard helpers per
+  CLAUDE.md "Critical Gotchas".
+- **`mark-deferred.sh` — entry guard.** Refuses with exit 2 and a
+  multi-line recovery message naming the three legitimate paths (ship
+  inline, wave-append, `/ulw-pause` for operational blocker only).
+  Writes a `no-defer-mode/mark-deferred-refused` gate-event row so
+  `/ulw-report` audits the rule's firing rate.
+- **`record-finding-list.sh` — second call site.** `status <id>
+  deferred` refused under the same predicate, before the existing
+  v1.35.0 require-WHY validator. The wave-plan ledger can no longer
+  silently absorb cherry-picked work behind a status flip.
+- **`stop-guard.sh` — third call site, hard-block.** When ULW
+  execution is active AND `findings.json` has any `status="deferred"`
+  entry, stops are hard-blocked (no `block_cap`). Subsequent stops
+  re-check fresh state — the moment all deferred entries become
+  shipped/rejected, the block clears. Fail-open on missing
+  `findings.json` (sessions without `/council` are unaffected). Slots
+  before the v1.35.0 `shortcut_ratio_gate` so the stronger check fires
+  first.
+
+The remaining legitimate stop conditions on outstanding work collapse
+to **operational only**:
+
+1. Credentials/login required (missing INPUT, not a decision).
+2. Hard external blocker (rate limit, paid API quota gone, dead
+   infra, dependency upgrade in flight in a tracked ticket).
+3. Destructive shared-state action awaiting confirmation (force-push
+   main, prod data, rm -rf with unstaged user changes).
+4. Unfamiliar in-progress state (untracked files / stashes the agent
+   cannot recover intent for).
+5. Scope explosion without pre-authorization (≥10 findings + no
+   exhaustive-authorization marker in the prompt).
+
+The two v1.39-era pause cases the harness removed:
+
+- ~~Product-taste or policy judgment~~ — under ULW, agent picks the
+  sane default (GDPR-friendly, accessible-first, sibling-of-codebase
+  choice) and ships with stated reasoning.
+- ~~Credible-approach split~~ — under ULW, agent picks the option a
+  senior practitioner would defend, names alternatives ruled out in
+  one line, ships. The user redirects cheaply if wrong; a held
+  session costs them everything.
+
+`core.md` rewritten to reflect the new contract; `mark-deferred/
+SKILL.md` and `ulw-pause/SKILL.md` updated to document the narrower
+scope under ULW. Power users who want the legacy soft-validator
+behavior: `no_defer_mode=off` in `oh-my-claude.conf` reverts to the
+v1.39 path (`mark_deferred_strict` remains the validator there).
+The `Zero Steering` and `Balanced` presets in `/omc-config` ship the
+flag on by default; `Minimal` ships it off (matches the rest of
+that preset's stance on quality gates).
+
+**Tests:** `tests/test-no-defer-mode.sh` (new, 17 assertions across
+14 scenarios; CI-pinned). Covers the predicate truth table, all
+three call-site refusals, the no-op paths (flag off / advisory /
+non-ULW), gate-event auditing, and the stop-guard fail-open on
+missing `findings.json`. Coordination contracts C2 (test pinning),
+C4 (README+AGENTS test count → 97), and C5 (semver tag continuity)
+all clean.
+
+**Files changed:** `common.sh`, `mark-deferred.sh`,
+`record-finding-list.sh`, `stop-guard.sh`, `omc-config.sh`,
+`oh-my-claude.conf.example`, `core.md`, `mark-deferred/SKILL.md`,
+`ulw-pause/SKILL.md`, `tests/test-no-defer-mode.sh`,
+`.github/workflows/validate.yml`, `README.md`, `AGENTS.md`.
+
 ## [1.39.0] - 2026-05-12
 
 Multi-lens council audit of v1.38.0 + the post-tag `ebb7044` "Add
