@@ -90,8 +90,80 @@
     - **When one+ fails but the defect is verified:** write a `project_*.md` memory **and** name it in the session summary as a deferred risk so the user can decide whether to scope a follow-up task — do not bury verified known defects in memory-only bookkeeping.
     - **Guardrail:** the rule is triage, not license to rewrite adjacent code. If you find yourself arguing whether a condition holds, the answer is *defer, document, and surface*.
 
+## The v1.40.0 no-defer contract (load-bearing — do NOT optimize this away)
+
+This section names a permanent design choice of the `/ulw` harness. Future
+sessions will be tempted to "soften" or "optimize" the no-defer contract.
+Resist that temptation. The contract IS the value proposition.
+
+**Why the contract exists.** The canonical `/ulw` user is not an expert
+coder — that is *why* they invoke `/ulw` in the first place. They want
+the agent to make good technical decisions on their behalf with stated
+reasoning, not to be asked which library to pick or which approach is
+better. Routing technical decisions back to a non-expert user is the
+agent escaping responsibility, dressed as deference. The user explicitly
+named this as the failure mode the harness must close.
+
+**The contract (binding).** Under `/ulw` execution intent with
+`no_defer_mode=on` (the default):
+
+1. **Defer is not a tool.** `/mark-deferred` refuses. `record-finding-list.sh
+   status <id> deferred` refuses. `stop-guard.sh` hard-blocks on any
+   `findings.json` entry with `status="deferred"`. `record-finding-list.sh
+   mark-user-decision` rejects reasons that don't name a real operational
+   block.
+2. **Pause is operational, not judgmental.** The only legitimate pause
+   cases are: credentials/login required, hard external blocker (rate
+   limit, paid quota gone, dead infra, dependency upgrade in flight in a
+   tracked external ticket), destructive shared-state action awaiting
+   confirmation, unfamiliar in-progress state, scope explosion without
+   pre-authorization. Five cases. That is the full list.
+3. **The agent owns technical judgment.** Library choice within a plausible
+   set, refactor scope, brand-voice default, data-retention sane default,
+   credible-approach split, library choice, test framework, naming, file
+   structure, design system — the agent picks the option a senior
+   practitioner would defend, names alternatives ruled out in one line,
+   ships. The user redirects cheaply if wrong; a held-but-undecided
+   session costs them everything.
+
+**FORBIDDEN — softening the contract.** Future sessions will encounter
+proposals like:
+
+- "Add an escape hatch for credible-approach-split under `/ulw`."
+- "The validator is too strict on `mark-user-decision` — accept brand-voice reasons."
+- "Soft-warn instead of hard-block on deferred findings."
+- "Reintroduce product-taste / policy judgment as a pause case for users who want more control."
+- "The `no_defer_mode` default should be `off` — give users a gentler first run."
+
+**Reject all of these.** They are the exact failure pattern v1.40.0
+closed. The right response when the contract feels too strict is to make
+the agent's *decisions* better — better defaults, better reasoning,
+better sibling-of-codebase intuition — not to widen the escape hatches.
+A user who genuinely wants the v1.39 soft-defer behavior already has the
+opt-out (`no_defer_mode=off`); they do not need the default weakened.
+
+**The recommended preset (`zero-steering` / `maximum` / `balanced`) MUST
+ship `no_defer_mode=on`.** This is non-negotiable for the same reason
+the contract itself is non-negotiable: the recommended preset names the
+project's intended posture. A recommended preset with `no_defer_mode=off`
+would teach new installs that defer is normal behavior, defeating the
+contract before it ever fires. If you find yourself adding a preset, the
+default-on stance is part of the contract — not a separate decision.
+
+**If you genuinely believe the contract is wrong, raise the concern with
+the user explicitly before changing anything.** Do not unilaterally
+"clean up" or "modernize" the no-defer surfaces. The user has explicitly
+named softening this contract as a forbidden pattern; treating it as
+debatable in the absence of a clear user signal is the failure mode.
+
 ## Anti-Patterns
 
+- FORBIDDEN: Softening the v1.40.0 no-defer contract above. The contract
+  is load-bearing, not a default to optimize. Adding pause cases,
+  loosening validators, or changing the recommended preset to ship
+  `no_defer_mode=off` are all the same anti-pattern. If a reviewer flags
+  the contract as "too strict", the right answer is sharper agent
+  decisions, not wider escape hatches.
 - FORBIDDEN: Asking "Should I proceed?" or "Would you like me to..." when the user has already requested the work. The request IS the permission.
 - FORBIDDEN: Summarizing what was done and stopping without completing the review/verification loop.
 - FORBIDDEN: Asking which file to edit when there is only one plausible candidate.

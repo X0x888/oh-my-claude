@@ -434,6 +434,41 @@ on `mark-user-decision`), `show-report.sh` (Section 4c3 no-defer
 slice), `skills/SKILL.md` (four lines narrowed),
 `tests/test-no-defer-mode.sh` (16 new assertions), `CHANGELOG.md`.
 
+### Wave 8 — anti-optimization clause for the no-defer contract
+
+User explicitly raised concern that future sessions would "optimize"
+the v1.40.0 no-defer contract away — a credible risk given that
+quality-reviewers and councils naturally look for "escape hatches" and
+"strictness reduction" as legitimate-sounding improvements. The
+contract is load-bearing, not a default to tune. Adding pause cases,
+loosening validators, or flipping the recommended preset to
+`no_defer_mode=off` are all the same anti-pattern.
+
+Added a new top-level "The v1.40.0 no-defer contract (load-bearing —
+do NOT optimize this away)" section to `core.md` directly above
+`## Anti-Patterns`. The section spells out:
+
+  - Why the contract exists (non-expert /ulw user, agent escaping
+    responsibility via deference)
+  - The contract itself (defer-is-not-a-tool, pause-is-operational-only,
+    agent-owns-technical-judgment)
+  - FORBIDDEN softening patterns named concretely so future model
+    sessions recognize them when they surface (escape hatches for
+    credible-approach-split, validator loosening, soft-warn instead of
+    hard-block, reintroducing taste/policy as pause cases, flipping
+    default to off)
+  - The recommended preset MUST ship `no_defer_mode=on` (non-negotiable
+    — a preset defaulting `off` would teach new installs that defer is
+    normal, defeating the contract before it fires)
+  - Genuine concerns about the contract go to the user first, not into
+    unilateral "cleanup"
+
+Plus a new entry under `## Anti-Patterns` cross-referencing the rule
+so future model sessions hit the FORBIDDEN tag whether they read the
+contract section or the anti-pattern list first.
+
+**Files changed:** `core.md`, `CHANGELOG.md`.
+
 ## [1.39.0] - 2026-05-12
 
 Multi-lens council audit of v1.38.0 + the post-tag `ebb7044` "Add
