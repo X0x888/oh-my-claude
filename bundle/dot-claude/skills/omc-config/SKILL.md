@@ -49,7 +49,7 @@ Relay the output verbatim. Stars (`*`) in the table flag values that differ from
 
 Print a short preamble matched to the mode (2–3 lines max):
 
-- **setup** — "First-time configuration. Pick a profile or fine-tune individual flags. The recommended profile applies oh-my-claude's intended posture: maximum quality + automation."
+- **setup** — "First-time configuration. Pick a profile or fine-tune individual flags. The recommended profile (Zero Steering) applies oh-my-claude's intended posture: maximum automation + adaptive strict gates for high-risk work."
 - **update** — "Welcome back. The bundle is newer than your installed version (table above). Your current values are starred against defaults — review them, then either keep them, switch to a profile, or fine-tune individual flags. (Note: update mode does not auto-detect which flags are new in this release; it surfaces the *current state* against *current defaults*. To see what changed in this release, read `CHANGELOG.md`.)"
 - **change** — "Pick a profile to overwrite settings, or 'Fine-tune' to change individual flags."
 
@@ -59,15 +59,13 @@ Print a short preamble matched to the mode (2–3 lines max):
 
 Call `AskUserQuestion` once with both questions in the same tool invocation. The user answers both before any work happens.
 
-**Question 1 — header `Profile`** (single-select, 5 options + auto-Other for cancel/minimal)
+**Question 1 — header `Profile`** (single-select, 4 options + auto-Other for cancel/aliases)
 
 ```
 question: "Which profile should I apply? (To make no changes, pick Other and type 'cancel'.)"
 options:
   - label: "Zero Steering (Recommended)"
     description: "Adaptive strict autonomous shipping: maximum automation, opus model, and high-risk work keeps blocking until proof is green."
-  - label: "Maximum Quality + Automation"
-    description: "Same as Zero Steering, kept as the legacy profile name."
   - label: "Balanced"
     description: "Standard gates + low-friction bias-defense, sonnet model, watchdog off. Good for daily use."
   - label: "Minimal"
@@ -75,6 +73,8 @@ options:
   - label: "Review my defaults & fine-tune"
     description: "Walk individual flag clusters. Inspect what changed since your last config, or mix-and-match."
 ```
+
+v1.39.0 W4 collapsed the prior "Maximum Quality + Automation" option — it mapped to the same preset as "Zero Steering" and showing both was confusing for new users. The `maximum` token remains a valid backend alias (a user with `maximum` in their conf or someone typing it via Other still gets the same posture).
 
 The auto-injected "Other" option lets the user type `cancel` to bail without writes. If the user types `cancel` (case-insensitive) or any non-matching synonym, treat it as a cancel: print "No changes made." and stop. Do NOT call `mark-completed`. Do NOT proceed to Step 4. The skill should leave the conf untouched.
 
@@ -92,7 +92,6 @@ options:
 Map the user's answers back to short tokens:
 
 - "Zero Steering (Recommended)" → `zero-steering`
-- "Maximum Quality + Automation" → `maximum`
 - "Balanced" → `balanced`
 - "Minimal" → `minimal`
 - "Review my defaults & fine-tune" → `custom`
@@ -101,7 +100,8 @@ Map the user's answers back to short tokens:
 
 If the user typed something via the auto-injected "Other" option:
 - Text matching `cancel` / `quit` / `exit` / `stop` / `no` (case-insensitive) → bail. Print "No changes made." and stop. Do NOT call `mark-completed`.
-- Anything else → treat as `custom` and walk Step 4's fine-tune path. (If the typed text matches a profile name like `zero-steering`/`maximum`/`balanced`/`minimal`, treat it as that profile.)
+- Text matching `maximum` (legacy alias for Zero Steering, preserved for back-compat) → treat as `zero-steering`.
+- Anything else → treat as `custom` and walk Step 4's fine-tune path. (If the typed text matches a profile name like `zero-steering`/`balanced`/`minimal`, treat it as that profile.)
 
 ---
 

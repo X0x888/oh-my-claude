@@ -26,7 +26,7 @@ Use this decision tree:
    - Current session state → `/ulw-status` — workflow mode, domain, intent, gate counters.
    - Cross-session digest → `/ulw-report [last|week|month|all]` — sessions, gate fires, top reviewers, classifier misfires, Serendipity catches, finding/wave outcomes.
 
-10. **"I want to configure or change settings."** → `/omc-config` — edits `~/.claude/oh-my-claude.conf` via a guided multi-choice walkthrough. Three preset profiles (Maximum Quality + Automation / Balanced / Minimal) cover the 95% case; fine-tune mode walks individual flag clusters for the rest. Auto-detects whether you're doing first-time setup, post-update review, or an ad-hoc change.
+10. **"I want to configure or change settings."** → `/omc-config` — edits `~/.claude/oh-my-claude.conf` via a guided multi-choice walkthrough. Three preset profiles (Zero Steering / Balanced / Minimal) cover the 95% case; fine-tune mode walks individual flag clusters for the rest. Auto-detects whether you're doing first-time setup, post-update review, or an ad-hoc change.
 
 11. **"I want to list all skills."** → `/skills` — full skill list with usage signatures and a decision guide.
 
@@ -108,7 +108,7 @@ Privacy: the entire harness honors `stop_failure_capture=off` in `oh-my-claude.c
 
 Run `/omc-config` inside Claude Code. It auto-detects whether you're doing first-time setup, post-update review, or an ad-hoc change by reading `~/.claude/oh-my-claude.conf`, then walks you through a multi-choice configuration UX. Three preset profiles cover the 95% case:
 
-- **Maximum Quality + Automation** — full gates + blocking exhaustion + all bias-defense flags + watchdog + `model_tier=quality` (Opus everywhere). Highest cost, slowest, strongest gate enforcement.
+- **Zero Steering** *(legacy alias: `maximum`)* — full gates + blocking exhaustion + all bias-defense flags + watchdog + `model_tier=quality` (Opus everywhere) + adaptive strict gates for high-risk work via `quality_policy=zero_steering`. Highest cost, slowest, strongest gate enforcement.
 - **Balanced** — close to install-time defaults; tighter on a few quality knobs without the cost of all-Opus.
 - **Minimal** — basic gates, all telemetry off, `model_tier=economy`. For shared-machine or regulated-codebase setups.
 
