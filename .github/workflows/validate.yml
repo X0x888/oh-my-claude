@@ -323,6 +323,9 @@ jobs:
       - name: Run W2 privacy + supply chain v1.40 regression
         run: bash tests/test-w2-privacy-supply-chain.sh
 
+      - name: Run W3 user surfaces v1.40 regression
+        run: bash tests/test-w3-user-surfaces.sh
+
       - name: Run statusline tests
         run: python3 -m unittest tests.test_statusline -v
 

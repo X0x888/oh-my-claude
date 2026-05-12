@@ -131,6 +131,64 @@ Three high-stakes security/safety findings:
 
 - README + AGENTS bash test count bumped 93 → 94.
 
+### Wave 3/4 — user-facing quality surfaces (F-010…F-012)
+
+Three findings that close the gap between the harness's stated value
+prop ("ship 10/10 quality work") and what the user can SEE from inside
+the CLI.
+
+- **F-010 (product) — Coverage row in `/ulw-status --summary`.** The
+  v1.39 Wave 3 eval producer landed in `evals/realwork/result-from-
+  session.sh` but its output was maintainer-side only. The user-facing
+  surfaces (`/ulw-status`, `/ulw-report`, statusline) had zero
+  references to the eval contract — so the stated 10/10 goal was
+  unmeasurable from inside the user's workflow. New `Coverage: X/6`
+  row enumerates six concrete shipping signals — verify ✓/✗, review
+  ✓/✗, regression-test ✓/✗, closeout ✓/✗, contract ✓/✗, wave-plan
+  ✓/✗. Per oracle refinement: this is a *checklist*, not a numeric
+  "Score: 87/100" — auditable, ungameable, no Goodhart drift risk.
+  Suppressed on fresh sessions (zero signals) to avoid noise.
+
+- **F-011 (product) — new `/ulw-correct` skill.** The classifier's
+  `detect_classifier_misfire` is passive (it infers misfires from
+  PreToolUse blocks and bare-affirmation prompts in the next turn).
+  Before W3, a user whose `/ulw` misrouted had to either rephrase or
+  learn the classifier's mental model to fix it — no one-button
+  feedback path. `/ulw-correct <correction>` is the active
+  counterpart: it parses optional `intent=X` / `domain=Y` tokens
+  from the reason, updates `task_intent` / `task_domain` in active
+  session state, and records a `corrected_by_user=true` row to both
+  the per-session `classifier_telemetry.jsonl` and the cross-session
+  `classifier_misfires.jsonl` ledger. Sibling skill of `/ulw-skip`
+  (gate bypass) and `/ulw-pause` (user-decision signal) — distinct
+  case, distinct verb.
+
+- **F-012 (growth) — Outcome card names gate kinds.** The Stop-hook
+  Outcome line already shipped a counterfactual moment in v1.34.1
+  ("N gates caught + resolved"), but it was generic — the user knew
+  *something* fired but not *what*. Now reads `gate_events.jsonl`,
+  enumerates the unique gate kinds that blocked + resolved this
+  session, and emits `caught + resolved: review-coverage, quality
+  +1 more`. The named-gate enumeration is the difference between
+  "the harness caught a thing" and "the harness caught the broken
+  tests" — concrete enough to build trust on a real shipping turn.
+
+- **New regression net `tests/test-w3-user-surfaces.sh`** — 18
+  assertions covering: Coverage line presence on a 5-of-6 fixture,
+  suppression on a fresh session, ulw-correct returns the right
+  transition string for parseable intent/domain, both ledgers (per-
+  session + cross-session) get the misfire row, state mutation
+  applied, bare reasons (no intent= / domain=) still record as
+  misfire, and the F-012 gate-kind enumeration is wired in the
+  Stop hook.
+
+- README + AGENTS bash test count bumped 94 → 95. `verify.sh` +
+  `uninstall.sh` register the new `ulw-correct` skill directory and
+  backing script. `bundle/dot-claude/skills/skills/SKILL.md` (user-
+  facing index) + `bundle/dot-claude/quality-pack/memory/skills.md`
+  (in-session memory) document the new skill per the three-site
+  coordination rule for user-invocable skills.
+
 ## [1.39.0] - 2026-05-12
 
 Multi-lens council audit of v1.38.0 + the post-tag `ebb7044` "Add

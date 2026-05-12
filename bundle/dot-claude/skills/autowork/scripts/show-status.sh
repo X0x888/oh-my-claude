@@ -435,6 +435,68 @@ if [[ "${SUMMARY_MODE}" -eq 1 ]]; then
     printf 'Wave plan:  %s\n' "${_wave_status_line#Findings: }"
   fi
 
+  # v1.40.x product-lens F-010: outcome-coverage checklist. Closes the
+  # user-facing "stated 10/10 goal is unmeasured" gap by surfacing a
+  # `Coverage: X/Y` line over six concrete shipping signals (verify,
+  # review, regression-test, closeout, contract, wave-plan). Detection
+  # is intentionally narrow: not a numeric "Score: 87/100" (Goodhart
+  # risk), but a checklist a senior reader can audit at a glance.
+  # Suppressed when the session has done no real work yet — only fire
+  # when at least one of the signals is positive, so a fresh session
+  # doesn't show "Coverage: 0/6" noise.
+  _cov_verify=0
+  _cov_review=0
+  _cov_regression=0
+  _cov_closeout=0
+  _cov_contract=0
+  _cov_wave=0
+  # Read state vars fresh — cmd_summary's existing locals have varying
+  # names ($verify_outcome, $last_review_ts, etc.), so we self-source
+  # rather than rely on enclosing scope.
+  _cov_state="${state_file}"
+  _cov_verify_out="$(jq -r '.last_verify_outcome // ""' "${_cov_state}" 2>/dev/null || printf '')"
+  _cov_verify_scope="$(jq -r '.last_verify_scope // ""' "${_cov_state}" 2>/dev/null || printf '')"
+  _cov_review_ts="$(jq -r '.last_review_ts // ""' "${_cov_state}" 2>/dev/null || printf '')"
+  _cov_review_findings="$(jq -r '.review_had_findings // ""' "${_cov_state}" 2>/dev/null || printf '')"
+  if [[ "${_cov_verify_out}" == "passed" ]] && \
+     [[ "${_cov_verify_scope}" == "targeted" || "${_cov_verify_scope}" == "full" ]]; then
+    _cov_verify=1
+  fi
+  if [[ -n "${_cov_review_ts}" ]] && [[ "${_cov_review_findings}" != "true" ]]; then
+    _cov_review=1
+  fi
+  _edited_log="${STATE_ROOT}/${latest_session}/edited_files.log"
+  if [[ -f "${_edited_log}" ]] && \
+     grep -Eiq '(^|/)(tests?|spec|__tests__)/|[._-](test|spec)\.(js|jsx|ts|tsx|py|rb|go|rs|swift|php|java|cs|sh)$' \
+       "${_edited_log}" 2>/dev/null; then
+    _cov_regression=1
+  fi
+  _last_assistant="$(jq -r '.last_assistant_message // ""' "${_cov_state}" 2>/dev/null || printf '')"
+  if [[ -n "${_cov_review_ts}" ]]; then
+    _closeout_signals=0
+    for _label in 'Changed\.\|Shipped\.' 'Verification\.' 'Risks\.\|Risk\.' 'Next\.'; do
+      if grep -Eiq "\\*\\*(${_label})\\*\\*" <<<"${_last_assistant}"; then
+        _closeout_signals=$((_closeout_signals + 1))
+      fi
+    done
+    [[ "${_closeout_signals}" -ge 2 ]] && _cov_closeout=1
+  fi
+  _contract_primary="$(jq -r '.done_contract_primary // ""' "${_cov_state}" 2>/dev/null || printf '')"
+  [[ -n "${_contract_primary}" ]] && _cov_contract=1
+  _findings_file="${STATE_ROOT}/${latest_session}/findings.json"
+  if [[ -f "${_findings_file}" ]] && \
+     jq -e '(.waves // []) | length > 0' "${_findings_file}" >/dev/null 2>&1; then
+    _cov_wave=1
+  fi
+  _cov_total=$((_cov_verify + _cov_review + _cov_regression + _cov_closeout + _cov_contract + _cov_wave))
+  if [[ "${_cov_total}" -gt 0 ]]; then
+    _mk() { [[ "$1" -eq 1 ]] && printf '✓' || printf '✗'; }
+    printf 'Coverage:   %d/6 (verify %s · review %s · regression-test %s · closeout %s · contract %s · wave-plan %s)\n' \
+      "${_cov_total}" \
+      "$(_mk "${_cov_verify}")" "$(_mk "${_cov_review}")" "$(_mk "${_cov_regression}")" \
+      "$(_mk "${_cov_closeout}")" "$(_mk "${_cov_contract}")" "$(_mk "${_cov_wave}")"
+  fi
+
   if is_time_tracking_enabled; then
     _time_log="${STATE_ROOT}/${latest_session}/timing.jsonl"
     if [[ -f "${_time_log}" ]]; then

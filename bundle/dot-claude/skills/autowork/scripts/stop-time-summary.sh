@@ -154,7 +154,42 @@ if (( walltime_s >= _card_threshold )); then
     if (( _outcome_blocks_resolved > 0 )) || (( _outcome_serendipity > 0 )); then
       _outcome_parts=()
       if (( _outcome_blocks_resolved > 0 )); then
-        _outcome_parts+=("${_outcome_blocks_resolved} gate$( (( _outcome_blocks_resolved == 1 )) && printf '' || printf 's' ) caught + resolved")
+        # v1.40.x growth-lens F-012: name the gate kinds caught. The
+        # generic "1 gate caught + resolved" line was the counterfactual
+        # MOMENT but missed the WHAT. Reading gate_events.jsonl and
+        # emitting "caught: review-coverage, quality" (sorted, deduped,
+        # capped at 3 names with "+N more" suffix) gives the user the
+        # concrete signal the harness intercepted defects they did not
+        # have to chase themselves.
+        _gate_kinds=""
+        _gate_kinds_more=0
+        if [[ -f "${gate_events_path}" ]]; then
+          _gate_kinds_arr="$(jq -rs '
+            [.[] | select(.event == "block") | (.gate // "")]
+            | map(select(. != ""))
+            | unique
+            | sort
+          ' "${gate_events_path}" 2>/dev/null || printf '[]')"
+          _gate_total="$(jq -r 'length' <<<"${_gate_kinds_arr}" 2>/dev/null || printf '0')"
+          [[ "${_gate_total}" =~ ^[0-9]+$ ]] || _gate_total=0
+          if (( _gate_total > 0 )); then
+            _gate_kinds="$(jq -r '.[0:3] | join(", ")' <<<"${_gate_kinds_arr}" 2>/dev/null || printf '')"
+            if (( _gate_total > 3 )); then
+              _gate_kinds_more=$(( _gate_total - 3 ))
+            fi
+          fi
+        fi
+        if [[ -n "${_gate_kinds}" ]]; then
+          if (( _gate_kinds_more > 0 )); then
+            _outcome_parts+=("caught + resolved: ${_gate_kinds} +${_gate_kinds_more} more")
+          else
+            _outcome_parts+=("caught + resolved: ${_gate_kinds}")
+          fi
+        else
+          # Fallback when gate_events.jsonl is missing or empty (older
+          # session) — keep the legacy "N gates" shape.
+          _outcome_parts+=("${_outcome_blocks_resolved} gate$( (( _outcome_blocks_resolved == 1 )) && printf '' || printf 's' ) caught + resolved")
+        fi
       fi
       if (( _outcome_serendipity > 0 )); then
         _outcome_parts+=("${_outcome_serendipity} adjacent fix$( (( _outcome_serendipity == 1 )) && printf '' || printf 'es' ) (Serendipity)")

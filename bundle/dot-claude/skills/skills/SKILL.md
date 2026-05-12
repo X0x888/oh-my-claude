@@ -66,6 +66,7 @@ The symptom-table above is a discovery shortcut. Each row maps to a skill in the
 | **diverge** | `/diverge <task>` | Multiple credible framings exist — generate 3-5 alternatives BEFORE commit to pick one consciously. Upstream of all the convergent critics. (v1.31.0) |
 | **librarian** | `/librarian <topic>` | You need official docs, third-party API references, or concrete external examples. |
 | **ulw-skip** | `/ulw-skip <reason>` | Gate fired but the work is genuinely complete (false positive). One-shot bypass. |
+| **ulw-correct** | `/ulw-correct <correction>` | Last turn's classification was wrong — record misfire and (when parseable) update intent/domain in-place. Active counterpart to the passive `detect_classifier_misfire`. (v1.40.x) |
 | **mark-deferred** | `/mark-deferred <reason>` | Discovered-scope flagged real findings you're consciously NOT shipping this session. |
 | **ulw-pause** | `/ulw-pause <reason>` | User must make a decision only they can make (taste, policy, brand voice). Cap 2/session. |
 | **ulw-resume** | `/ulw-resume [--peek\|--list\|--dismiss]` | Atomically claim a `resume_request.json` after a rate-limit StopFailure. |

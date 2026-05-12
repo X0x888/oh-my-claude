@@ -268,13 +268,13 @@ oh-my-claude/
 ├── install.sh / uninstall.sh / verify.sh   # Install, remove, and verify
 ├── bundle/dot-claude/                       # Installs to ~/.claude/
 │   ├── agents/          (34 agents)         # Specialist agent definitions
-│   ├── skills/          (26 skills)         # Skill definitions + autowork hooks
+│   ├── skills/          (27 skills)         # Skill definitions + autowork hooks
 │   ├── quality-pack/                        # Lifecycle hooks + memory files
 │   ├── output-styles/                       # Two bundled styles: oh-my-claude (default) + executive-brief (see docs/customization.md#output-style)
 │   └── statusline.py                        # Custom statusline widget
 ├── config/settings.patch.json               # Merged into user settings on install
 ├── evals/realwork/                           # Outcome eval scenarios for minimal-prompt shipping
-├── tests/               (94 bash + 1 py)    # See AGENTS.md / CONTRIBUTING.md for full list
+├── tests/               (95 bash + 1 py)    # See AGENTS.md / CONTRIBUTING.md for full list
 ├── tools/                                    # Developer-only tools (not installed)
 └── docs/                                    # Architecture, customization, FAQ, prompts
 ```
@@ -315,6 +315,7 @@ Skills are invoked as slash commands or routed automatically by the intent class
 | memory-audit *(memory hygiene)* | `/memory-audit [--memory-dir <path>]` | Classify MEMORY.md entries (load-bearing, archival, superseded, drifted) and propose rollup moves. Read-only. |
 | whats-new *(changelog delta)* | `/whats-new` | Show CHANGELOG entries between your installed version and the source repo HEAD. Surfaces post-install features without `cat CHANGELOG.md`. (v1.36.x) |
 | ulw-skip *(skip a gate)* | `/ulw-skip <reason>` | Skip current quality gate block once |
+| ulw-correct *(fix a misclassification)* | `/ulw-correct <correction>` | Tell the harness "the last turn was misclassified" — records the misfire and updates intent/domain when parseable. (v1.40.x) |
 | mark-deferred *(triage findings)* | `/mark-deferred <reason>` | Bulk-defer pending discovered-scope findings with a one-line reason — pass the gate without silent skipping |
 | ulw-pause *(user-decision pause)* | `/ulw-pause <reason>` | Declare a legitimate user-decision pause without tripping the session-handoff gate. Cap 2/session |
 | ulw-resume *(post-rate-limit recovery)* | `/ulw-resume [--peek \| --list \| --session-id <sid> \| --dismiss]` | Atomically claim and replay the most relevant unclaimed `resume_request.json` — picks up a /ulw task that a Claude Code rate-limit kill interrupted. `--dismiss` suppresses the SessionStart hint without resuming. Pairs with the SessionStart resume-hint hook (Wave 1) and the headless watchdog (Wave 3). |
