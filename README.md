@@ -4,7 +4,7 @@
 
 *Quality gates that block Claude from claiming "done" until tests pass, review lands, and the work is verified. So you stop babysitting every session.*
 
-[![Version](https://img.shields.io/badge/Version-1.39.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-1.40.0-blue.svg)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Shell](https://img.shields.io/badge/Shell-bash-green.svg)]()
 [![Dependencies](https://img.shields.io/badge/Dependencies-jq%20%2B%20rsync-brightgreen.svg)]()

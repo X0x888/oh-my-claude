@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.40.0] - 2026-05-12
+
 Multi-lens council audit of v1.39.0 ran six perspectives in parallel
 (sre, security, data, product, growth, abstraction-critic) under
 deep-mode opus, with Phase 7 oracle verification of the top 3 findings.
