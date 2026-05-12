@@ -380,6 +380,60 @@ contract; only the prose narrowing changed.
 **Files changed:** `prompt-intent-router.sh`, `council/SKILL.md`,
 `stop-guard.sh`, `record-finding-list.sh`, `CHANGELOG.md`.
 
+### Wave 7 — close v1.40.0 completeness gaps
+
+Quality-reviewer surfaced three real gaps in the v1.40.0 rollout. All
+three landed in the same wave because each one was on the same code
+path Wave 5 and Wave 6 touched (Serendipity Rule conditions met:
+verified, same-path, bounded).
+
+**Gap 1 — User-facing skill index `skills/SKILL.md` missed by Wave 6.**
+Four locations (lines 30, 71, 106, 116 in the user-discoverable skill
+catalog) still listed `/ulw-pause` as the verb for taste / policy /
+brand-voice decisions — directly contradicting the v1.40.0 contract.
+Aligned all four to name operational blocks only (credentials/login,
+hard external blocker, destructive shared-state action, unfamiliar
+in-progress state).
+
+**Gap 2 — Missing `/ulw-report` telemetry slice for the no-defer gate.**
+v1.36.0 coordination rule: telemetry needs write + read + user-visible
+surface in lockstep. Wave 5 shipped the write path (gate events emitted
+on each refusal) but no read path — `/ulw-report` had no slice to
+surface "did this fix the 30%/70% ship-vs-defer ratio?" Added Section
+4c3 to `show-report.sh` aggregating `mark-deferred-refused`,
+`finding-deferred-refused`, and `stop-block` event types with a fire-
+rate table and a stop-block-recovery hint when stop fires > 0.
+
+**Gap 3 — `record-finding-list.sh mark-user-decision` had no runtime
+validator for the narrowed v1.40.0 criterion.** A model under
+`no_defer_mode=on` could still pass `reason="brand voice call"` and the
+subcommand accepted it — the same lexical-pass-WHY loophole pattern the
+v1.35.0 `mark-deferred` validator was hardened against. Added
+`omc_reason_names_operational_block` helper in `common.sh` (matches the
+narrowed accept set: credentials / external account / destructive
+shared state / hard external blocker / unfamiliar in-progress state)
+and wired it into `record-finding-list.sh mark-user-decision` under
+`is_no_defer_active`. Reasons that don't match the operational-block
+shape exit 2 with a recovery message naming the accept-set explicitly.
+The legacy `no_defer_mode=off` path falls through to the v1.39 broader
+acceptance.
+
+**Tests:** `test-no-defer-mode.sh` extended from 21 → 37 assertions
+(T15–T20 added: validator rejection on taste/policy, acceptance on
+credentials, acceptance on destructive-state, no_defer_mode=off legacy
+path, predicate truth-table over 6 operational and 5 technical-judgment
+examples). Adjacent regression net clean: `test-mark-deferred 166/0`,
+`test-finding-list 121/0`, `test-shortcut-ratio-gate 20/0`,
+`test-coordination-rules 112/0`, `test-e2e-hook-sequence 373/0`,
+`test-discovered-scope 92/0`. Shellcheck `--severity=warning` clean
+across all changed files.
+
+**Files changed:** `common.sh` (new helper +
+`is_no_defer_active` docstring), `record-finding-list.sh` (validator
+on `mark-user-decision`), `show-report.sh` (Section 4c3 no-defer
+slice), `skills/SKILL.md` (four lines narrowed),
+`tests/test-no-defer-mode.sh` (16 new assertions), `CHANGELOG.md`.
+
 ## [1.39.0] - 2026-05-12
 
 Multi-lens council audit of v1.38.0 + the post-tag `ebb7044` "Add

@@ -27,7 +27,7 @@ When you know what you want, jump straight to the verb:
 | Want a design-first frontend pass | `/frontend-design <task>` |
 | A gate fired but the work is complete | `/ulw-skip <reason>` |
 | Discovered-scope flagged real items you defer | `/mark-deferred <reason>` |
-| Blocked on a user decision (taste, policy) | `/ulw-pause <reason>` |
+| Blocked on a real operational input (credentials, login, dead infra) | `/ulw-pause <reason>` |
 | Rate-limit kill left a resume artifact | `/ulw-resume` |
 | Want session state / counters / flags | `/ulw-status` |
 | Want a time-distribution card | `/ulw-time` |
@@ -68,7 +68,7 @@ The symptom-table above is a discovery shortcut. Each row maps to a skill in the
 | **ulw-skip** | `/ulw-skip <reason>` | Gate fired but the work is genuinely complete (false positive). One-shot bypass. |
 | **ulw-correct** | `/ulw-correct <correction>` | Last turn's classification was wrong — record misfire and (when parseable) update intent/domain in-place. Active counterpart to the passive `detect_classifier_misfire`. (v1.40.x) |
 | **mark-deferred** | `/mark-deferred <reason>` | Discovered-scope flagged real findings you're consciously NOT shipping this session. |
-| **ulw-pause** | `/ulw-pause <reason>` | User must make a decision only they can make (taste, policy, brand voice). Cap 2/session. |
+| **ulw-pause** | `/ulw-pause <reason>` | Operational block only — credentials/login, hard external blocker, destructive shared-state action, unfamiliar in-progress state. NOT for taste/policy/credible-approach (v1.40.0: agent owns those under ULW). Cap 2/session. |
 | **ulw-resume** | `/ulw-resume [--peek\|--list\|--dismiss]` | Atomically claim a `resume_request.json` after a rate-limit StopFailure. |
 
 ### Reviewing — multi-role evaluation, repo bootstrap
@@ -103,7 +103,7 @@ The symptom-table above is a discovery shortcut. Each row maps to a skill in the
 - **Need repo context before building?** Use `/research-hard`.
 - **Gate blocking but you're confident?** Use `/ulw-skip <reason>` to pass once.
 - **Discovered-scope gate flagging findings you've consciously deferred?** Use `/mark-deferred <reason>` to bulk-defer all pending advisory findings with a recorded reason — keeps `/ulw-report` audits accurate.
-- **Need to pause for user input on a decision only the user can make?** Use `/ulw-pause <reason>` — declares a legitimate user-decision pause without tripping the session-handoff gate. Distinct from `/ulw-skip` (one-shot bypass) and `/mark-deferred` (defer findings).
+- **Blocked on an OPERATIONAL input only the user can supply?** Use `/ulw-pause <reason>` — credentials/login, external account, hard external blocker, destructive shared-state action awaiting confirmation, unfamiliar in-progress state. Under v1.40.0 `no_defer_mode=on` (default), taste/policy/credible-approach are NOT pause cases — the agent picks the sane default and ships. Distinct from `/ulw-skip` (one-shot gate bypass) and `/mark-deferred` (legacy soft-defer, disabled under ULW execution).
 
 ### Deferral-verb decision tree (which one to use)
 
@@ -113,7 +113,7 @@ Three skills, three different "I can't keep going" cases. Pick by symptom — th
 |---|---|
 | Gate fired but the work is done — false positive | `/ulw-skip <reason>` |
 | Discovered-scope flagged real findings you're consciously NOT shipping | `/mark-deferred <named-WHY>` |
-| User must make a call only they can make (taste, policy, brand voice) | `/ulw-pause <reason>` |
+| Blocked on an OPERATIONAL input — credentials/login, hard external blocker, destructive shared-state action, unfamiliar in-progress state | `/ulw-pause <reason>` |
 
 **Escalation order before any of these fires:** ship inline → wave-append → defer-with-WHY → pause. The `/mark-deferred` validator rejects (1) bare silent-skip patterns (`out of scope` / `follow-up` / `later` / `low priority`) AND (2) **effort excuses** (v1.35.0) — `requires significant effort` / `needs more time` / `blocked by complexity` / `tracks to a future session` / `superseded by future work` — that name the WORK COSTS instead of an EXTERNAL blocker. Pass with `requires <X>`, `blocked by <Y>`, `awaiting <Z>`, `superseded by <id>`, or single tokens/phrases like `duplicate` / `obsolete` / `wontfix` / `n/a` / `not reproducible` / `false positive`. The complementary `shortcut_ratio_gate` (v1.35.0) catches the **pattern** of half-or-more deferrals on big plans even when each individual reason has a valid WHY.
 - **Prior /ulw task killed by a Claude Code rate-limit window?** Use `/ulw-resume` — atomically claims the most relevant unclaimed `resume_request.json` for the current cwd (or matching project_key) and replays the original objective. The SessionStart resume-hint hook surfaces the artifact automatically; `/ulw-resume` is the explicit claim verb. Run `/ulw-resume --peek` to inspect first, `--list` to see all claimable artifacts.

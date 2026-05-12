@@ -2143,6 +2143,39 @@ is_ultrawork_mode() {
   [[ "$(workflow_mode)" == "ultrawork" ]]
 }
 
+# omc_reason_names_operational_block — returns 0 (matches) when the
+# reason names a real operational input or external blocker only the
+# user can supply. Used by record-finding-list.sh mark-user-decision
+# under v1.40.0 no_defer_mode to enforce the narrowed criterion at
+# runtime (not just docstring).
+#
+# Accept shapes:
+#   - credential / login / password / token / api[- ]key / oauth / secret
+#   - external account / third-party / vendor / partner integration
+#   - destructive shared state: force-push / push to main / rm -rf /
+#     drop table / drop database / drop schema / prod data
+#   - hard external blocker: rate limit / quota exhausted / api down /
+#     infra down / dependency upgrade in flight
+#   - unfamiliar in-progress state: untracked / stashed / dirty worktree
+#
+# Reject everything else under v1.40.0 no_defer_mode — taste / policy /
+# brand voice / credible-approach / library choice / refactor scope are
+# the agent's call. The function is permissive within the accept-set
+# (any keyword match is enough); the deliberate trade-off is that the
+# v1.40 contract bias is "ship under ULW", and overly-strict rejection
+# here would push the model toward false-pause patterns we explicitly
+# want to discourage.
+omc_reason_names_operational_block() {
+  local r="$1"
+  local lc
+  lc="$(tr '[:upper:]' '[:lower:]' <<<"${r}")"
+
+  local operational_pattern='\b(credentials?|login|password|token|api[- ]?key|oauth|secret|external[[:space:]]+(account|service|api|system)|third[- ]?party|vendor|partner|destructive|force[- ]?push|push[[:space:]]+to[[:space:]]+(main|master|production|prod)|rm[[:space:]]+-rf|drop[[:space:]]+(table|database|schema|index)|prod(uction)?[[:space:]]+(data|database|schema)|rate[[:space:]]+limit|quota[[:space:]]+(exhausted|gone|hit)|api[[:space:]]+down|infra(structure)?[[:space:]]+(down|dead|failure|fault)|dependency[[:space:]]+upgrade|untracked[[:space:]]+(files?|changes?)|stash(ed)?|dirty[[:space:]]+worktree|unfamiliar[[:space:]]+state|in[- ]progress[[:space:]]+state)\b'
+  grep -Eiq "${operational_pattern}" <<<"${lc}"
+}
+
+# is_no_defer_active — predicate for the v1.40.0 no_defer_mode gate.
+
 # is_no_defer_active — predicate for the v1.40.0 no_defer_mode gate.
 # Returns 0 (active) when ALL three conditions hold:
 #   1. OMC_NO_DEFER_MODE=on (default)
@@ -2151,10 +2184,10 @@ is_ultrawork_mode() {
 # Otherwise returns 1.
 #
 # Used by mark-deferred.sh (entry guard), record-finding-list.sh status
-# (deferred path), and stop-guard.sh (post-stop hard block on
-# findings.json deferred entries). Centralized so all three sites stay
-# in lockstep — flipping no_defer_mode off in conf takes effect
-# simultaneously across the trio.
+# (deferred path) + record-finding-list.sh mark-user-decision (narrowed
+# criterion), and stop-guard.sh (post-stop hard block on findings.json
+# deferred entries). Centralized so all four sites stay in lockstep —
+# flipping no_defer_mode off in conf takes effect simultaneously.
 #
 # Loads the classifier lazily because is_execution_intent_value lives
 # in lib/classifier.sh and not every hot-path consumer has eagerly

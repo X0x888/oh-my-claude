@@ -517,6 +517,51 @@ EOF
       printf '  Use single-line reason; put detail in `notes` if needed.\n' >&2
       exit 1
     fi
+    # v1.40.0 — under ULW execution with no_defer_mode=on, the reason
+    # must name a real operational block (credentials / login / external
+    # account / destructive shared state / rate limit / dead infra /
+    # unfamiliar in-progress state). Lexically-passing strings that name
+    # taste / policy / brand-voice / credible-approach / library choice
+    # are the SAME loophole pattern the v1.35.0 mark-deferred validator
+    # was hardened against — under v1.40.0 the criterion is narrower
+    # still: operational-only.
+    if is_no_defer_active && ! omc_reason_names_operational_block "${reason}"; then
+      cat >&2 <<EOF
+record-finding-list mark-user-decision: reason rejected for F=${id} under ULW execution (no_defer_mode=on).
+
+Provided: ${reason}
+
+Under v1.40.0 \`no_defer_mode=on\`, the user-decision criterion is
+operational-only. The reason must name a real input or external block
+only the user can supply:
+
+  - credentials / login / password / token / api key / oauth / secret
+  - external account / third-party / vendor / partner integration
+  - destructive shared state (force-push, push to main, rm -rf, drop
+    table, prod data)
+  - hard external blocker (rate limit, quota exhausted, api down,
+    infra dead, dependency upgrade in flight)
+  - unfamiliar in-progress state (untracked files, stashed changes)
+
+REJECTED — these are the agent's call under ULW, NOT user-decision:
+  - taste / aesthetic / look-and-feel
+  - policy / brand voice / pricing / data-retention sane default
+  - credible-approach split / library choice / refactor scope
+  - which color / which font / which copy / X-vs-Y
+
+The agent picks the sibling-of-codebase choice with stated reasoning
+and ships; the user redirects cheaply if wrong.
+
+Override (last resort, audited): set no_defer_mode=off in
+oh-my-claude.conf. Reverts to the v1.39 broader criterion. NOT
+recommended — taste/policy decisions routed to non-expert users is
+the failure mode v1.40.0 closes.
+EOF
+      record_gate_event "no-defer-mode" "user-decision-refused" \
+        "finding_id=${id}" \
+        "reason_preview=${reason:0:200}" 2>/dev/null || true
+      exit 2
+    fi
     _ensure_file
     # Pre-check id existence and current status outside the lock — both
     # are read-only and a positive ID-not-found / terminal-status response

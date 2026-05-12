@@ -225,9 +225,13 @@ assert_eq "T8 — mark-deferred allowed outside ULW" "0" "${rc}"
 RFL="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/record-finding-list.sh"
 
 # Initialize a findings.json with one pending finding we can flip status on.
+# STATE_ROOT must be passed explicitly because the test harness sets it
+# locally (not exported) and `bash "${RFL}" init` runs in a subshell that
+# would otherwise default to $HOME/.claude/quality-pack/state.
 init_finding() {
   rm -f "$(session_file "findings.json")"
-  bash "${RFL}" init <<EOF >/dev/null 2>&1 || true
+  STATE_ROOT="${STATE_ROOT}" SESSION_ID="${SESSION_ID}" \
+    bash "${RFL}" init <<EOF >/dev/null 2>&1 || true
 [{"id":"F-001","summary":"x","severity":"high","surface":"core"}]
 EOF
 }
@@ -319,6 +323,83 @@ else
   printf '  FAIL: T14 — gate_events.jsonl not written\n' >&2
   fail=$((fail + 1))
 fi
+
+# -- mark-user-decision validator (v1.40.0 Wave 7) ------------------------
+
+# T15 — mark-user-decision rejects taste/policy reasons under ULW execution
+# (Reason uses ASCII only — em-dash bytes trip _omc_strip_render_unsafe's tr
+# under C locale, which is a pre-existing edge case in the harness's
+# rendering layer, not part of this wave's scope.)
+OMC_NO_DEFER_MODE=on
+set_session_mode "ultrawork" "execution"
+init_finding
+rc=0
+out="$(SESSION_ID="${SESSION_ID}" STATE_ROOT="${STATE_ROOT}" OMC_NO_DEFER_MODE=on \
+  bash "${RFL}" mark-user-decision F-001 "brand voice call: copy A or copy B" 2>&1)" || rc=$?
+assert_eq "T15 — mark-user-decision rejects taste/policy reason under ULW exits 2" "2" "${rc}"
+assert_contains "T15 — message names operational-only criterion" "operational-only" "${out}"
+
+# T16 — mark-user-decision accepts a real operational-block reason
+OMC_NO_DEFER_MODE=on
+set_session_mode "ultrawork" "execution"
+init_finding
+rc=0
+out="$(SESSION_ID="${SESSION_ID}" STATE_ROOT="${STATE_ROOT}" OMC_NO_DEFER_MODE=on \
+  bash "${RFL}" mark-user-decision F-001 "credentials needed in STRIPE_SECRET_KEY env var" 2>&1)" || rc=$?
+assert_eq "T16 — mark-user-decision accepts credentials reason under ULW" "0" "${rc}"
+
+# T17 — mark-user-decision falls through under no_defer_mode=off (legacy)
+OMC_NO_DEFER_MODE=off
+set_session_mode "ultrawork" "execution"
+init_finding
+rc=0
+out="$(SESSION_ID="${SESSION_ID}" STATE_ROOT="${STATE_ROOT}" OMC_NO_DEFER_MODE=off \
+  bash "${RFL}" mark-user-decision F-001 "brand voice call: copy A or copy B" 2>&1)" || rc=$?
+assert_eq "T17 — mark-user-decision accepts taste reason under no_defer_mode=off (legacy)" "0" "${rc}"
+
+# T18 — mark-user-decision accepts destructive-shared-state reason under ULW
+OMC_NO_DEFER_MODE=on
+set_session_mode "ultrawork" "execution"
+init_finding
+rc=0
+out="$(SESSION_ID="${SESSION_ID}" STATE_ROOT="${STATE_ROOT}" OMC_NO_DEFER_MODE=on \
+  bash "${RFL}" mark-user-decision F-001 "awaiting confirmation before force-push to main" 2>&1)" || rc=$?
+assert_eq "T18 — mark-user-decision accepts destructive-state reason under ULW" "0" "${rc}"
+
+# T19 — predicate accepts known operational shapes
+operational_examples=(
+  "credentials needed for API access"
+  "login required for the third-party service"
+  "rate limit hit on upstream API"
+  "untracked files in repo — intent unclear"
+  "destructive: drop table users awaiting confirmation"
+  "external account access for the partner integration"
+)
+for r in "${operational_examples[@]}"; do
+  if omc_reason_names_operational_block "${r}"; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: T19 — predicate should accept operational example: %s\n' "${r}" >&2
+    fail=$((fail + 1))
+  fi
+done
+
+# T20 — predicate rejects technical-judgment shapes
+judgment_examples=(
+  "brand voice — copy A or copy B"
+  "library choice between React and Vue"
+  "which color for the CTA button"
+  "credible-approach split on cache strategy"
+  "taste — pick the typography"
+)
+for r in "${judgment_examples[@]}"; do
+  if omc_reason_names_operational_block "${r}"; then
+    printf '  FAIL: T20 — predicate should reject technical example: %s\n' "${r}" >&2
+    fail=$((fail + 1))
+  else
+    pass=$((pass + 1))
+  fi
+done
 
 # -- summary --------------------------------------------------------------
 

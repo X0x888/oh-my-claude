@@ -1434,6 +1434,44 @@ if [[ -n "${mark_deferred_bypass_rows}" ]]; then
 fi
 
 # ----------------------------------------------------------------------
+# Section 4c3: no_defer_mode gate fires (v1.40.0)
+#
+# The v1.40.0 contract under ULW execution closes the three deferral
+# surfaces. Each refusal emits a gate event so /ulw-report can answer:
+# "did this fix the 30%/70% ship-vs-defer ratio that motivated the
+# change?" Per the v1.36.0 coordination rule (telemetry → write + read
+# + user-visible surface in lockstep), the write path lives in
+# mark-deferred.sh, record-finding-list.sh, and stop-guard.sh; this is
+# the read path. Three event shapes are aggregated:
+#
+#   - mark-deferred-refused  — /mark-deferred refused at entry guard
+#   - finding-deferred-refused — record-finding-list status=deferred refused
+#   - stop-block             — stop-guard hard-block on deferred findings.json entry
+#
+# Surfaces only when at least one no-defer event fired in the window.
+# A clean ULW session sees no row; the placeholder hides the section.
+no_defer_rows="$(printf '%s\n' "${gate_event_rows}" | jq -c \
+    'select(.gate == "no-defer-mode")' 2>/dev/null || true)"
+if [[ -n "${no_defer_rows}" ]]; then
+  no_defer_total="$(printf '%s\n' "${no_defer_rows}" | grep -c .)"
+  nd_mark_count="$(printf '%s\n' "${no_defer_rows}" | jq -c 'select(.event == "mark-deferred-refused")' 2>/dev/null | grep -c . || true)"
+  nd_finding_count="$(printf '%s\n' "${no_defer_rows}" | jq -c 'select(.event == "finding-deferred-refused")' 2>/dev/null | grep -c . || true)"
+  nd_stop_count="$(printf '%s\n' "${no_defer_rows}" | jq -c 'select(.event == "stop-block")' 2>/dev/null | grep -c . || true)"
+  printf '## No-defer-mode gate fires (v1.40.0)\n\n'
+  printf '_The ULW workflow does not defer under `no_defer_mode=on` (default). Fires below show the contract intercepting deferral attempts._\n\n'
+  printf '| Surface | Fires |\n|---|---|\n'
+  printf '| /mark-deferred entry refused | %s |\n' "${nd_mark_count}"
+  printf '| record-finding-list status=deferred refused | %s |\n' "${nd_finding_count}"
+  printf '| stop-guard hard-block on deferred findings | %s |\n' "${nd_stop_count}"
+  printf '| **Total no-defer events (window)** | **%s** |\n' "${no_defer_total}"
+  printf '\n'
+  if [[ "${nd_stop_count}" -gt 0 ]]; then
+    printf '_%s stop-block fire(s) — the model had findings marked status=deferred at Stop time. Recovery: flip those findings to shipped (with commit_sha) or rejected (with concrete WHY) before the next Stop attempt clears the block._\n\n' \
+      "${nd_stop_count}"
+  fi
+fi
+
+# ----------------------------------------------------------------------
 # Section 4d: Wave-shape distribution (v1.22.0 — F-019)
 # Aggregates wave-plan gate events emitted by record-finding-list.sh
 # assign-wave so users can answer "are my recent wave plans actually
