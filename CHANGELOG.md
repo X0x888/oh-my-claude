@@ -5,10 +5,22 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 User-driven release-loop reform after v1.40.0 and v1.40.1 each shipped
-CI-red on tagged-SHAs. The user pointed out that monitoring CI was
-costing 15+ minutes per failed bump (the `gh run watch --exit-status`
-returns 0 on completion regardless of conclusion, a silent footgun) and
-that the recurring CI-red pattern was rooted in **tests with hardcoded
+CI-red on tagged-SHAs. The actual cost shape:
+
+  1. A test failure surfaces only after the 15-minute remote-CI watch
+     finishes — local-only verification was selective, not exhaustive.
+  2. Once a tag is pushed, a CI-red on the tagged SHA leaves a
+     published tag + GitHub release pointing at broken code; recovery
+     requires a follow-up VERSION bump (v1.X.0 → v1.X.1 hotfix loop).
+  3. Each bump + watch consumes another 15-min cycle of the user's
+     wall time on the `gh run watch` block.
+
+(Earlier drafts of this entry mis-blamed `gh run watch --exit-status`;
+it does exit non-zero on CI failure per `gh run watch --help`. The
+silent footgun in the session was piping the watch through `tail`,
+which swallowed the exit code — not gh's behavior.)
+
+The recurring CI-red pattern was rooted in **tests with hardcoded
 values that break for unrelated reasons** — key counts when a flag
 ships, line numbers when a function is extended, target versions when
 VERSION bumps. The user also asked the harness to stop bumping VERSION
@@ -169,6 +181,57 @@ bundle/ shellcheck `--severity=warning` clean. JSON syntax clean.
 `tests/test-no-broken-stat-chain.sh` (structural detection +
 synthetic fixtures), `tests/test-release.sh` (T19-T22),
 `tools/release.sh` (Step 6.7), `VERSION`, `README.md`, `CHANGELOG.md`.
+
+### Follow-up — quality-reviewer pass on the initial commit
+
+After the initial `[Unreleased]` commit (`c7714d8`) landed,
+quality-reviewer surfaced 5 findings (3 MAJOR, 2 MINOR). Verification
+against the actual code:
+
+- **F1 dismissed** — reviewer claimed the `safe_separate` regex in
+  `test-no-broken-stat-chain.sh:140` returns 0 on a nested-`$()` shape
+  (`stat -f "%Sm-$(date +%Y)"`). Probe disproved: the regex returns
+  `safe=1` on all three shapes the reviewer named, which is the correct
+  classification. The inner `$(date)` close happens to align with the
+  required `)"` pattern through the format string's closing quote.
+  The inline scanner separately catches same-line unsafe shapes, so
+  the multi-line scanner classifying `||`-inside-substitution as safe
+  is benign (already flagged by the inline pass). No change required.
+
+- **F2 fixed** — `tools/release.sh:309` rendered the success message
+  as `${sweep_count_pass}/${sweep_count_pass}` (self-divided). The
+  "N/N" output coincidentally read correctly on full-green runs,
+  masking the bug. Changed to `${sweep_count_pass}/${ci_test_count}`.
+
+- **F3 fixed** — earlier draft of this CHANGELOG entry mis-blamed
+  `gh run watch --exit-status` as a silent footgun. Verified via
+  `gh run watch --help` that `--exit-status` does exit non-zero on
+  CI failure; the actual session footgun was piping the watch
+  through `tail -25`, which swallowed `$?`. Rewrote the cost-shape
+  paragraph to name the real root cause (test failures discovered
+  only after the 15-min watch + tag-recovery cycle) without the
+  misdirected blame on gh.
+
+- **F4 fixed** — `tools/release.sh:292,297` ran each failing test
+  twice (once for the pass/fail decision, once to capture tail
+  stderr). Flaky tests could disagree between runs and produce
+  "failure reported but no output captured" states. Replaced with
+  a single `bash` invocation; capture output once, branch on
+  `$?`, tail the captured output for the failure summary.
+
+- **F5 fixed** — added a sanity-check after the sweep that warns
+  when the extracted CI-pinned test count is materially lower
+  than the on-disk `tests/test-*.sh` file count. Closes the latent
+  gap where a future CI step using env-prefixed bash invocations
+  (`OMC_FOO=y bash tests/...`) wouldn't match the `^[[:space:]]+
+  run:\s+bash tests/` extractor and would silently skip those
+  tests from the sweep. Tolerance of 5 absorbs the legitimate
+  "not pinned in CI" case (a handful of tests in `tests/` are
+  helpers or not yet wired).
+
+All four fixes ship together as a follow-up commit on `main`
+under this same `[Unreleased]` block, no version bump per the
+new accumulate-before-tag rule.
 
 ## [1.40.1] - 2026-05-12
 

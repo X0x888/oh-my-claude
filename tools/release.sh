@@ -289,12 +289,21 @@ else
       sweep_count_fail=$((sweep_count_fail + 1))
       continue
     fi
-    if bash "${REPO_ROOT}/${test_file}" >/dev/null 2>&1; then
+    # Capture stdout+stderr once; branch on exit code. The earlier
+    # shape ran the test twice on failure (once for pass/fail, once
+    # to capture tail output) — flaky tests could disagree between
+    # runs, producing a state where the gate reports a failure but
+    # captures no output (or vice versa).
+    set +e
+    test_full_out="$(bash "${REPO_ROOT}/${test_file}" 2>&1)"
+    test_rc=$?
+    set -e
+    if [[ "${test_rc}" -eq 0 ]]; then
       sweep_count_pass=$((sweep_count_pass + 1))
     else
-      # Capture the tail for the failure summary — keep terse so the
-      # summary stays readable when 1-2 tests fail (the common case).
-      tail_msg="$(bash "${REPO_ROOT}/${test_file}" 2>&1 | tail -2 | tr '\n' ' ' || true)"
+      # Keep the tail terse so the summary stays readable when 1-2
+      # tests fail (the common case).
+      tail_msg="$(printf '%s\n' "${test_full_out}" | tail -2 | tr '\n' ' ')"
       sweep_failures="${sweep_failures}\n    ${test_file}: ${tail_msg}"
       sweep_count_fail=$((sweep_count_fail + 1))
     fi
@@ -306,7 +315,19 @@ else
     printf '  Failed tests:%b\n' "${sweep_failures}" >&2
     err "local sweep gate failed — fix the failing tests before tagging. (Or pass --skip-local-sweep if this is a known follow-up release and the failures are tracked.)"
   fi
-  ok "local sweep gate: ${sweep_count_pass}/${sweep_count_pass} CI-pinned bash tests passed"
+  # Sanity-check: extracted test count should match the on-disk
+  # test-*.sh count (minus a small tolerance for tests intentionally
+  # not pinned in CI). If the extractor regex misses a class of
+  # invocations (e.g., a future `OMC_FOO=y bash tests/...` form
+  # added to validate.yml that the bare `bash tests/test-` pattern
+  # wouldn't match), divergence here surfaces the gap instead of
+  # silently passing tests the gate never ran.
+  on_disk_count="$(find "${REPO_ROOT}/tests" -maxdepth 1 -name 'test-*.sh' 2>/dev/null | wc -l | tr -d ' ')"
+  if [[ -n "${on_disk_count}" ]] && [[ "${ci_test_count}" -lt $((on_disk_count - 5)) ]]; then
+    printf '  \033[33mnotice:\033[0m extractor saw %d CI-pinned tests but %d test-*.sh files on disk — check validate.yml for env-prefixed invocations or unpinned tests.\n' \
+      "${ci_test_count}" "${on_disk_count}" >&2
+  fi
+  ok "local sweep gate: ${sweep_count_pass}/${ci_test_count} CI-pinned bash tests passed"
 fi
 
 # ----------------------------------------------------------------------
