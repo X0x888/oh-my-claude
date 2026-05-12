@@ -74,6 +74,63 @@ Six findings on the script + telemetry surfaces:
 - README + AGENTS bash test count bumped 92 → 93 per coordination-rules
   contract C4.
 
+### Wave 2/4 — privacy + supply chain + release safety (F-007…F-009)
+
+Three high-stakes security/safety findings:
+
+- **F-007 (security) — prompt redaction wired into all persistence
+  paths.** Pre-fix `omc_redact_secrets` existed in `common.sh` but was
+  invoked from only two narrow sites; raw user prompts containing
+  `--api-key sk-ant-XYZ`, `Bearer eyJ...`, or `secret_token=XXX` landed
+  verbatim in 8 destinations including the `omc-repro.sh` support
+  tarball the user is told to share with maintainers. New
+  `PROMPT_TEXT_SAFE` variable in `prompt-intent-router.sh` is the
+  redacted upstream for all persistence (`last_user_prompt`,
+  `recent_prompts.jsonl`, `current_objective`, `last_meta_request`,
+  `exemplifying_scope_prompt_preview`, `done_contract_primary`,
+  `classifier_telemetry::prompt_preview`). `pre-compact-snapshot.sh`
+  pipes `_meta_safe`, `_last_safe`, and rendered recent prompts
+  through the redactor. `omc-repro.sh` sources `common.sh` and
+  post-processes the truncated fields through `omc_redact_secrets`
+  so older pre-v1.40 sessions on disk still scrub at bundle time.
+  Classifier-relevant tokens (verbs, file paths, slash commands)
+  pass through unchanged — the redactor only touches secret-shaped
+  substrings. **Behavioral change:** `prompt_persist=on` no longer
+  guarantees byte-verbatim persistence; secrets are scrubbed even
+  when persist is on. Tests in `test-prompt-persist.sh` updated to
+  assert the new contract (non-secret prefix preserved, secret
+  token redacted).
+
+- **F-008 (security) — README install pin documented.** Default
+  `curl ... install-remote.sh | bash` trusts rolling `main` HEAD with
+  no signature verification. `OMC_REF=v1.39.0` pinning was opt-in and
+  surfaced only as a runtime "tip" after install. README now leads
+  with the pinned form, lists rolling as a secondary option, and
+  documents `git clone --branch v1.39.0` as the strongest supply-
+  chain posture. install-remote.sh's tip messaging unchanged
+  (already correct since v1.31.0).
+
+- **F-009 (release safety) — `tools/release.sh` defaults to
+  `--tag-on-green`.** Pre-fix default was eager-tag: commit + tag +
+  push + GitHub release BEFORE the CI watch. A red CI on the tagged
+  commit left a published tag + GH release pointing at broken code
+  with no automatic rollback (the v1.33.0/.1/.2 hotfix-cascade
+  pattern). New default: commit pushed first, CI watched, tag
+  created only on green. `--legacy-eager-tag` opts back into the
+  pre-v1.40 default. `--no-watch` alone falls back to legacy with
+  a notice so the old muscle-memory pattern (`bash tools/release.sh
+  X.Y.Z --no-watch`) keeps working.
+
+- **New regression net `tests/test-w2-privacy-supply-chain.sh`** —
+  14 assertions: static checks that all five W2 sites wire the
+  redactor; a real canary plant that runs the router against a
+  prompt containing `sk-ant-CANARY...` and asserts the literal
+  token does not appear in any state-tree file; README pin string
+  present; release.sh default flow announces tag-deferred and
+  rejects eager-tag patterns without explicit opt-in.
+
+- README + AGENTS bash test count bumped 93 → 94.
+
 ## [1.39.0] - 2026-05-12
 
 Multi-lens council audit of v1.38.0 + the post-tag `ebb7044` "Add

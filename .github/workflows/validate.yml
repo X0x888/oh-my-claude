@@ -320,6 +320,9 @@ jobs:
       - name: Run W1 reliability v1.40 regression
         run: bash tests/test-w1-reliability-v1-40.sh
 
+      - name: Run W2 privacy + supply chain v1.40 regression
+        run: bash tests/test-w2-privacy-supply-chain.sh
+
       - name: Run statusline tests
         run: python3 -m unittest tests.test_statusline -v
 

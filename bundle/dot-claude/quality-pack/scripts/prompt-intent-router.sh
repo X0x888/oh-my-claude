@@ -28,6 +28,16 @@ if is_synthetic_prompt "${PROMPT_TEXT}"; then
   exit 0
 fi
 
+# v1.40.x security-lens F-007: redacted variant for persistence paths.
+# omc_redact_secrets scrubs Bearer tokens, provider keys (sk-ant/ghp_/
+# xoxb-/AKIA-/glpat-/etc.), and KEY=VALUE secret patterns. Always
+# defined (independent of prompt_persist flag) because non-persist
+# fields like current_objective and exemplifying_scope_prompt_preview
+# are written regardless — they should never carry raw credentials.
+# Used downstream wherever PROMPT_TEXT lands on disk; left untouched
+# in classifier/intent-detection paths that operate in-memory only.
+PROMPT_TEXT_SAFE="$(printf '%s' "${PROMPT_TEXT}" | omc_redact_secrets | tr -d '\000')"
+
 ensure_session_dir
 sweep_stale_sessions
 
@@ -130,10 +140,21 @@ detect_classifier_misfire "${PROMPT_TEXT}" "${current_pretool_blocks}" || true
 # gracefully). recent_prompts.jsonl append is skipped entirely. The
 # last_user_prompt_ts is preserved so consumers that rely on "did the
 # prompt change?" still see the timestamp tick.
+#
+# v1.40.x security-lens F-007: ALL persistence paths use the redacted
+# `_omc_persisted_prompt_safe` variant rather than raw PROMPT_TEXT.
+# omc_redact_secrets covers common secret patterns (Bearer tokens,
+# provider keys like sk-ant/ghp_/xoxb-/AKIA-/glpat-, KEY=VALUE flag
+# forms). Classifier-relevant tokens (verbs, file paths, slash commands)
+# pass through unchanged — the redactor only touches secret-shaped
+# substrings. Pre-fix every prompt containing `--api-key sk-ant-XXX`
+# or `Bearer eyJ...` landed verbatim in `session_state.json`,
+# `recent_prompts.jsonl`, the resume_request.json, and the
+# omc-repro.sh support tarball.
 if is_prompt_persist_enabled; then
-  _omc_persisted_prompt="${PROMPT_TEXT}"
+  _omc_persisted_prompt_safe="$(printf '%s' "${PROMPT_TEXT}" | omc_redact_secrets | tr -d '\000')"
 else
-  _omc_persisted_prompt=""
+  _omc_persisted_prompt_safe=""
 fi
 write_state_batch \
   "stop_guard_blocks" "0" \
@@ -141,14 +162,14 @@ write_state_batch \
   "advisory_guard_blocks" "0" \
   "last_advisory_verify_ts" "" \
   "task_intent" "${TASK_INTENT}" \
-  "last_user_prompt" "${_omc_persisted_prompt}" \
+  "last_user_prompt" "${_omc_persisted_prompt_safe}" \
   "last_user_prompt_ts" "${PROMPT_TS}" \
   "stall_counter" "0" \
   "ulw_pause_active" ""
 if is_prompt_persist_enabled; then
   append_limited_state \
     "recent_prompts.jsonl" \
-    "$(jq -nc --arg ts "${PROMPT_TS}" --arg text "${PROMPT_TEXT}" '{ts:$ts,text:$text}')" \
+    "$(jq -nc --arg ts "${PROMPT_TS}" --arg text "${_omc_persisted_prompt_safe}" '{ts:$ts,text:$text}')" \
     "12"
 fi
 
@@ -165,7 +186,7 @@ if [[ "${OMC_EXEMPLIFYING_SCOPE_GATE:-on}" == "on" ]]; then
     write_state_batch \
       "exemplifying_scope_required" "1" \
       "exemplifying_scope_prompt_ts" "${PROMPT_TS}" \
-      "exemplifying_scope_prompt_preview" "$(truncate_chars 240 "${PROMPT_TEXT}")" \
+      "exemplifying_scope_prompt_preview" "$(truncate_chars 240 "${PROMPT_TEXT_SAFE}")" \
       "exemplifying_scope_blocks" "0" \
       "exemplifying_scope_checklist_ts" "" \
       "exemplifying_scope_pending_count" "" \
@@ -183,7 +204,9 @@ if [[ "${OMC_EXEMPLIFYING_SCOPE_GATE:-on}" == "on" ]]; then
 fi
 
 if ! is_maintenance_prompt "${PROMPT_TEXT}"; then
-  normalized_objective="$(normalize_task_prompt "${PROMPT_TEXT}")"
+  # v1.40.x F-007: normalize the redacted variant for current_objective.
+  # Persisted on disk; should never carry credentials.
+  normalized_objective="$(normalize_task_prompt "${PROMPT_TEXT_SAFE}")"
   if is_continuation_request "${PROMPT_TEXT}" && [[ -n "${previous_objective}" ]]; then
     write_state "current_objective" "${previous_objective}"
   elif [[ "${TASK_INTENT}" == "advisory" || "${TASK_INTENT}" == "session_management" || "${TASK_INTENT}" == "checkpoint" ]] \
@@ -208,7 +231,7 @@ if ! is_maintenance_prompt "${PROMPT_TEXT}"; then
   elif [[ -n "${normalized_objective}" ]]; then
     write_state "current_objective" "${normalized_objective}"
   else
-    write_state "current_objective" "${PROMPT_TEXT}"
+    write_state "current_objective" "${PROMPT_TEXT_SAFE}"
   fi
 fi
 
@@ -227,11 +250,11 @@ if [[ "${post_compact_bias}" -eq 1 ]]; then
 fi
 
 if [[ "${TASK_INTENT}" == "advisory" || "${TASK_INTENT}" == "session_management" || "${TASK_INTENT}" == "checkpoint" ]]; then
-  normalized_meta_request="$(trim_whitespace "$(normalize_task_prompt "${PROMPT_TEXT}")")"
+  normalized_meta_request="$(trim_whitespace "$(normalize_task_prompt "${PROMPT_TEXT_SAFE}")")"
   if [[ -n "${normalized_meta_request}" ]]; then
     write_state "last_meta_request" "${normalized_meta_request}"
   else
-    write_state "last_meta_request" "${PROMPT_TEXT}"
+    write_state "last_meta_request" "${PROMPT_TEXT_SAFE}"
   fi
 fi
 
@@ -684,9 +707,13 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
   # prior contract — they usually refine execution already in progress
   # rather than replacing it.
   if [[ "${TASK_INTENT}" == "execution" ]] && ! is_maintenance_prompt "${PROMPT_TEXT}"; then
+    # v1.40.x F-007: done_contract_primary lands in session_state.json
+    # and feeds resume_request.json. Use the redacted variant for both
+    # the normalize path and the bare-fallback path so credentials in
+    # the user's prompt don't ship into the contract.
     contract_primary="$(trim_whitespace "$(read_state "current_objective")")"
-    [[ -n "${contract_primary}" ]] || contract_primary="$(trim_whitespace "$(normalize_task_prompt "${PROMPT_TEXT}")")"
-    [[ -n "${contract_primary}" ]] || contract_primary="${PROMPT_TEXT}"
+    [[ -n "${contract_primary}" ]] || contract_primary="$(trim_whitespace "$(normalize_task_prompt "${PROMPT_TEXT_SAFE}")")"
+    [[ -n "${contract_primary}" ]] || contract_primary="${PROMPT_TEXT_SAFE}"
 
     contract_commit_mode="$(detect_commit_intent_from_prompt "${PROMPT_TEXT}")"
     # v1.34.0 (Bug C): push-side directive is independent of commit-
@@ -747,7 +774,7 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
   record_classifier_telemetry \
     "${TASK_INTENT}" \
     "${TASK_DOMAIN}" \
-    "${PROMPT_TEXT}" \
+    "${PROMPT_TEXT_SAFE}" \
     "${current_pretool_blocks}" || true
 
   # Sentinel for fast-path exit in PostToolUse hooks (zero-cost check)

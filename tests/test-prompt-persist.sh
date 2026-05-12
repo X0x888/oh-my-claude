@@ -126,9 +126,23 @@ _run_router "${sid_on}" "${prompt_on}"
 state_file="${_test_state_root}/${sid_on}/session_state.json"
 recent_file="${_test_state_root}/${sid_on}/recent_prompts.jsonl"
 
+# v1.40.x F-007: persist=on now applies omc_redact_secrets BEFORE
+# writing to disk. The non-secret prefix is preserved; secret-shaped
+# substrings are replaced with <redacted-...> tokens.
 if [[ -f "${state_file}" ]]; then
   last_prompt="$(jq -r '.last_user_prompt // ""' "${state_file}")"
-  assert_eq "last_user_prompt verbatim with persist=on" "${prompt_on}" "${last_prompt}"
+  if [[ "${last_prompt}" == *"ulw fix the bug in foo.py:42"* ]]; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: persist=on dropped non-secret prefix (got: %q)\n' "${last_prompt}" >&2
+    fail=$((fail + 1))
+  fi
+  if [[ "${last_prompt}" != *"abc123"* ]]; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: persist=on leaked secret token abc123 (got: %q)\n' "${last_prompt}" >&2
+    fail=$((fail + 1))
+  fi
 else
   printf '  FAIL: state file not created\n' >&2
   fail=$((fail + 1))
@@ -136,7 +150,18 @@ fi
 
 if [[ -f "${recent_file}" ]]; then
   recent_text="$(jq -r '.text // ""' "${recent_file}" | head -1)"
-  assert_eq "recent_prompts.jsonl carries verbatim with persist=on" "${prompt_on}" "${recent_text}"
+  if [[ "${recent_text}" == *"ulw fix the bug in foo.py:42"* ]]; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: recent_prompts.jsonl dropped non-secret prefix (got: %q)\n' "${recent_text}" >&2
+    fail=$((fail + 1))
+  fi
+  if [[ "${recent_text}" != *"abc123"* ]]; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: recent_prompts.jsonl leaked secret token abc123 (got: %q)\n' "${recent_text}" >&2
+    fail=$((fail + 1))
+  fi
 else
   printf '  FAIL: recent_prompts.jsonl not created with persist=on\n' >&2
   fail=$((fail + 1))

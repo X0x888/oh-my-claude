@@ -54,11 +54,14 @@ See real catches in [`docs/showcase.md`](docs/showcase.md) — sessions where th
 Requires `jq` and `rsync`. macOS: `brew install jq` (`rsync` is preinstalled). Debian/Ubuntu: `apt install jq rsync`. `install.sh` hard-fails if `jq` is missing.
 
 ```bash
-# One-liner (clones to ~/.local/share/oh-my-claude for you):
+# Pinned install (recommended — install-remote.sh prints the current tag tip):
+OMC_REF=v1.39.0 bash -c "$(curl -fsSL https://raw.githubusercontent.com/X0x888/oh-my-claude/main/install-remote.sh)"
+
+# Rolling install (tracks main HEAD — fine for trying things; pin a tag for prod):
 curl -fsSL https://raw.githubusercontent.com/X0x888/oh-my-claude/main/install-remote.sh | bash
 
-# OR manual clone (audit before installing):
-git clone https://github.com/X0x888/oh-my-claude.git ~/.local/share/oh-my-claude
+# OR manual clone (audit before installing — strongest supply-chain posture):
+git clone --branch v1.39.0 https://github.com/X0x888/oh-my-claude.git ~/.local/share/oh-my-claude
 bash ~/.local/share/oh-my-claude/install.sh
 ```
 
@@ -271,7 +274,7 @@ oh-my-claude/
 │   └── statusline.py                        # Custom statusline widget
 ├── config/settings.patch.json               # Merged into user settings on install
 ├── evals/realwork/                           # Outcome eval scenarios for minimal-prompt shipping
-├── tests/               (93 bash + 1 py)    # See AGENTS.md / CONTRIBUTING.md for full list
+├── tests/               (94 bash + 1 py)    # See AGENTS.md / CONTRIBUTING.md for full list
 ├── tools/                                    # Developer-only tools (not installed)
 └── docs/                                    # Architecture, customization, FAQ, prompts
 ```

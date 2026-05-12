@@ -17,11 +17,19 @@
 # correctness; this script automates ceremony.
 #
 # Usage:
-#   bash tools/release.sh X.Y.Z          # full release flow (legacy: eager-tag + watch)
-#   bash tools/release.sh X.Y.Z --ci-preflight  # run local-ci as gate, tag immediately, no watch (RECOMMENDED)
-#   bash tools/release.sh X.Y.Z --tag-on-green  # push first, watch CI, tag only on green (legacy v1.33.x flow)
-#   bash tools/release.sh X.Y.Z --dry-run # print steps without executing
-#   bash tools/release.sh X.Y.Z --no-watch # skip post-flight CI watch (still tags+pushes)
+#   bash tools/release.sh X.Y.Z                 # full release flow (default: --tag-on-green + watch)
+#   bash tools/release.sh X.Y.Z --ci-preflight  # run local-ci as gate, tag immediately, no watch
+#   bash tools/release.sh X.Y.Z --tag-on-green  # explicit: push first, watch CI, tag only on green
+#   bash tools/release.sh X.Y.Z --legacy-eager-tag # opt back into pre-v1.40 default (eager-tag + watch)
+#   bash tools/release.sh X.Y.Z --dry-run       # print steps without executing
+#   bash tools/release.sh X.Y.Z --no-watch      # skip CI watch; with no other flags this falls back to legacy eager-tag for compatibility
+#
+# v1.40.x (SRE-3 F-009): tag-on-green is now the default. Pre-fix
+# default was eager-tag, which on a red CI left a published tag +
+# GitHub release pointing at broken code with no automatic rollback
+# (the v1.33.0/.1/.2 hotfix-cascade pattern). The new default is
+# safe-by-default: commit pushed first, CI watched, tag created only
+# on green. Opt back into eager-tag via --legacy-eager-tag.
 #
 # v1.34.1 — `--ci-preflight` is the recommended default. It runs
 # tools/local-ci.sh BEFORE the version bump (Ubuntu-container parity
@@ -57,18 +65,43 @@ set -euo pipefail
 VERSION_ARG="${1:-}"
 DRY_RUN=0
 NO_WATCH=0
-TAG_ON_GREEN=0
+# v1.40.x SRE-3 F-009: TAG_ON_GREEN defaults to 1 (safe-by-default).
+# Pre-fix: default was eager-tag — commit + tag + push + GitHub release
+# BEFORE the CI watch. A red CI on the tagged commit left a published
+# tag + GH release pointing at broken code with no automatic rollback,
+# requiring a hotfix-version-bump cascade (the v1.33.0/.1/.2 pattern).
+# Now: tag-on-green is the default; commit pushed first, CI watched,
+# tag created only on green. Opt back into eager-tag via
+# --legacy-eager-tag for environments where the post-push delay before
+# tag is unacceptable (or as a temporary escape if tag-on-green has a
+# bug — surface the bug; don't silently regress to eager-tag).
+TAG_ON_GREEN=1
+TAG_ON_GREEN_EXPLICIT=0
+LEGACY_EAGER_TAG=0
 CI_PREFLIGHT=0
 shift 2>/dev/null || true
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) DRY_RUN=1; shift ;;
     --no-watch) NO_WATCH=1; shift ;;
-    --tag-on-green) TAG_ON_GREEN=1; shift ;;
-    --ci-preflight) CI_PREFLIGHT=1; shift ;;
+    --tag-on-green) TAG_ON_GREEN=1; TAG_ON_GREEN_EXPLICIT=1; LEGACY_EAGER_TAG=0; shift ;;
+    --legacy-eager-tag) LEGACY_EAGER_TAG=1; TAG_ON_GREEN=0; shift ;;
+    --ci-preflight) CI_PREFLIGHT=1; TAG_ON_GREEN=0; shift ;;
     *) printf 'unknown arg: %s\n' "$1" >&2; exit 2 ;;
   esac
 done
+
+# v1.40.x F-009: graceful default-fallback for --no-watch. Pre-fix,
+# --no-watch was compatible with the eager-tag default. Now that
+# tag-on-green is the default, --no-watch alone would conflict
+# (tag-on-green requires the watch to know whether to tag). Treat
+# `bash tools/release.sh X.Y.Z --no-watch` as a request for the
+# legacy eager-tag flow — preserves the old muscle memory.
+if [[ "${NO_WATCH}" -eq 1 ]] && [[ "${TAG_ON_GREEN_EXPLICIT}" -eq 0 ]] && [[ "${LEGACY_EAGER_TAG}" -eq 0 ]] && [[ "${CI_PREFLIGHT}" -eq 0 ]]; then
+  LEGACY_EAGER_TAG=1
+  TAG_ON_GREEN=0
+  printf '\033[33mnotice:\033[0m --no-watch with no --tag-on-green: falling back to --legacy-eager-tag (matches pre-v1.40 behavior)\n' >&2
+fi
 
 # --tag-on-green and --no-watch are mutually exclusive: tag-on-green
 # REQUIRES the watch to know whether to tag, so --no-watch makes the

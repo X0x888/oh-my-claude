@@ -39,6 +39,25 @@ STATE_ROOT="${STATE_ROOT:-${HOME}/.claude/quality-pack/state}"
 BUNDLE_DIR="${HOME}/.claude"
 REDACT_CHARS="${OMC_REPRO_REDACT_CHARS:-80}"
 
+# v1.40.x security-lens F-007: defense-in-depth secret redaction.
+# Prior versions of this script applied truncation only — a prompt
+# beginning with `--api-key sk-ant-...` kept the credential intact
+# in the first 80 chars. State written by pre-v1.40 sessions still
+# carries raw secrets on disk; this fallback scrub catches them at
+# bundle time. Sources omc_redact_secrets from common.sh; falls back
+# to a no-op if common.sh cannot be sourced (rare — implies a broken
+# install, but we should still bundle the rest of the session data).
+_omc_self_dir="$(cd "$(dirname "$0")" && pwd)"
+_common_sh="${_omc_self_dir}/skills/autowork/scripts/common.sh"
+if [[ -f "${_common_sh}" ]]; then
+  # shellcheck source=skills/autowork/scripts/common.sh
+  OMC_LAZY_CLASSIFIER=1 OMC_LAZY_TIMING=1 SESSION_ID="omc-repro-$$" \
+    source "${_common_sh}" </dev/null 2>/dev/null || true
+fi
+if ! declare -f omc_redact_secrets >/dev/null 2>&1; then
+  omc_redact_secrets() { cat; }   # no-op fallback so the pipeline never breaks
+fi
+
 # Redact user-prompt and assistant-message fields to the configured char
 # cap. The comma-generator (not array literal) form of `reduce` iterates
 # one field name per pass with `$k` bound to the string; `has($k)` guards
@@ -47,6 +66,8 @@ REDACT_CHARS="${OMC_REPRO_REDACT_CHARS:-80}"
 redact_session_state() {
   local src="$1"
   local dst="$2"
+  local _tmp_truncated _tmp_safe k v
+  _tmp_truncated="$(mktemp "${dst}.trunc.XXXXXX")" || { printf '{}\n' > "${dst}"; return 1; }
   jq --argjson n "${REDACT_CHARS}" '
     reduce ("last_user_prompt","last_assistant_message","current_objective","last_meta_request") as $k (.;
       if has($k) and (.[$k] | type == "string")
@@ -54,16 +75,32 @@ redact_session_state() {
         else .
       end
     )
-  ' "${src}" > "${dst}" 2>/dev/null \
+  ' "${src}" > "${_tmp_truncated}" 2>/dev/null \
     || {
-      # jq failed (corrupt JSON, jq missing, etc.). Rather than fall back
-      # to the unredacted copy, emit an empty object — an unredacted leak
-      # is worse than a missing file in a bug-report bundle. The repro
-      # recipient will see `{}` and know to ask the reporter to share
-      # state.json separately if they need it.
+      # jq failed (corrupt JSON, etc.). Emit an empty object — an
+      # unredacted leak is worse than a missing file in a bug-report.
+      rm -f "${_tmp_truncated}"
       printf '{}\n' > "${dst}"
       return 1
     }
+  # v1.40.x F-007: post-process the four redacted fields through
+  # omc_redact_secrets so a secret in the first REDACT_CHARS chars
+  # (e.g. "/ulw fix bug, key=sk-ant-XYZ...") is scrubbed before the
+  # tarball ships. Each pass extracts the raw field value, pipes it
+  # through omc_redact_secrets, and writes it back via jq --arg.
+  cp "${_tmp_truncated}" "${dst}"
+  rm -f "${_tmp_truncated}"
+  for k in last_user_prompt last_assistant_message current_objective last_meta_request; do
+    v="$(jq -r --arg k "${k}" 'if has($k) then .[$k] else "" end' "${dst}" 2>/dev/null)"
+    [[ -z "${v}" || "${v}" == "null" ]] && continue
+    v_safe="$(printf '%s' "${v}" | omc_redact_secrets)"
+    _tmp_safe="$(mktemp "${dst}.safe.XXXXXX")" || continue
+    if jq --arg k "${k}" --arg v "${v_safe}" 'if has($k) then .[$k] = $v else . end' "${dst}" > "${_tmp_safe}" 2>/dev/null; then
+      mv "${_tmp_safe}" "${dst}"
+    else
+      rm -f "${_tmp_safe}"
+    fi
+  done
   return 0
 }
 
@@ -75,6 +112,8 @@ redact_jsonl_field() {
   local src="$1"
   local dst="$2"
   local field="$3"
+  local _tmp_trunc
+  _tmp_trunc="$(mktemp "${dst}.trunc.XXXXXX")" || return 1
   jq -cR --arg field "${field}" --argjson n "${REDACT_CHARS}" '
     . as $line
     | try (
@@ -84,7 +123,21 @@ redact_jsonl_field() {
             else .
           end
       ) catch empty
-  ' "${src}" > "${dst}" 2>/dev/null
+  ' "${src}" > "${_tmp_trunc}" 2>/dev/null
+  # v1.40.x F-007: scrub the truncated field through omc_redact_secrets
+  # so secrets in chars 0..REDACT_CHARS-1 don't survive in the bundle.
+  : > "${dst}"
+  local row v v_safe
+  while IFS= read -r row; do
+    [[ -z "${row}" ]] && continue
+    v="$(printf '%s' "${row}" | jq -r --arg f "${field}" 'if has($f) then .[$f] else "" end' 2>/dev/null)"
+    if [[ -n "${v}" && "${v}" != "null" ]]; then
+      v_safe="$(printf '%s' "${v}" | omc_redact_secrets)"
+      row="$(printf '%s' "${row}" | jq -c --arg f "${field}" --arg v "${v_safe}" 'if has($f) then .[$f] = $v else . end' 2>/dev/null)"
+    fi
+    printf '%s\n' "${row}" >> "${dst}"
+  done < "${_tmp_trunc}"
+  rm -f "${_tmp_trunc}"
 }
 
 usage() {
