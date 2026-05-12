@@ -303,6 +303,25 @@ assert_true "examples are"                   'is_exemplifying_request "examples 
 assert_true "examples of"                    'is_exemplifying_request "examples of class items: badges, indicators"'
 
 # ----------------------------------------------------------------------
+# Test 11b (v1.40.x harness-improvement wave):
+# exemplifying_request_matched_phrase — evidence helper that returns the
+# FIRST matched example-marker phrase. Used by the EXEMPLIFYING-SCOPE
+# directive emission to surface the actual trigger phrase instead of
+# letting users guess between the detector's watch list and the
+# prompt's content. Closes the UX gap in gate-skips.jsonl 1778022459.
+printf 'Test 11b: exemplifying_request_matched_phrase returns evidence\n'
+assert_eq "for instance -> matched phrase" "for instance" \
+  "$(exemplifying_request_matched_phrase "improve dashboards, for instance the search filters" | tr '[:upper:]' '[:lower:]')"
+assert_eq "e.g. -> matched phrase" "e.g." \
+  "$(exemplifying_request_matched_phrase "expand error states, e.g. 404 and 500")"
+assert_eq "such as -> matched phrase" "such as" \
+  "$(exemplifying_request_matched_phrase "ship error states such as 404 and 500")"
+assert_eq "no markers -> empty string" "" \
+  "$(exemplifying_request_matched_phrase "Fix the auth bug in login.tsx")"
+assert_eq "empty input -> empty output" "" \
+  "$(exemplifying_request_matched_phrase "")"
+
+# ----------------------------------------------------------------------
 # Test 12: is_exemplifying_request negative cases
 #
 # Critical anti-false-positive: the standalone "like X" pattern was

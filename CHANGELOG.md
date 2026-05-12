@@ -447,6 +447,63 @@ Tests verified green:
 `bundle/dot-claude/skills/autowork/scripts/stop-guard.sh`,
 `tests/test-e2e-hook-sequence.sh`.
 
+#### W3 — Exemplifying-scope evidence helper (closes gate-skips 1778022459)
+
+**The UX gap.** `gate-skips.jsonl` row `1778022459` documented a user
+confusion: when the EXEMPLIFYING-SCOPE directive fires, the directive
+text lists the watch-list phrases (`'for instance'` / `'e.g.'` / `'such
+as'` / …) as part of its instructions to the model. The user — reading
+the augmented prompt and not the regex internals — couldn't tell whether
+those phrases were the detector's *watch list* (the markers it looks
+for) or the *match* (what fired in the prompt). The skip reason captures
+the exact confusion: *"example markers appear in the hook's own
+EXEMPLIFYING SCOPE DETECTED directive text, not in the user's prompt"*.
+The directive's prose was ambiguous about which interpretation was
+correct.
+
+**The fix.** Surface the actual matched phrase from the prompt in the
+directive output. Two-edge change:
+
+1. **`lib/classifier.sh` — extract shared pattern + add evidence helper.**
+   The shared constant `_OMC_EXEMPLIFYING_PAT` now backs both:
+   - `is_exemplifying_request` (the existing pure boolean predicate)
+   - `exemplifying_request_matched_phrase` (new — returns the first
+     matched substring or empty string)
+
+   Single source of truth prevents drift between "what fires the
+   directive" and "what the directive cites as evidence."
+
+2. **`prompt-intent-router.sh:1040` — evidence-bearing directive copy.**
+   When `EXEMPLIFYING_SCOPE_DETECTED=1`, the router now extracts the
+   matched phrase and surfaces it: `EXEMPLIFYING SCOPE DETECTED
+   (sub-case): the prompt contains the example marker "<actual
+   phrase>"`. Falls back to the generic watch-list framing when
+   extraction returns empty (defensive — handles exotic locale cases
+   for `grep -o` and very short prompts). The body of the directive
+   (worked example, calibration guidance, scope-checklist workflow) is
+   preserved verbatim — only the opening clause changes.
+
+**Regression net** in `tests/test-bias-defense-classifier.sh`:
+
+- **Test 11b** (new) — `exemplifying_request_matched_phrase` returns:
+  the matched phrase (`"for instance"`, `"e.g."`, `"such as"`),
+  empty string when no markers present (negative case),
+  empty string on empty input (boundary).
+
+Tests verified green:
+- `test-bias-defense-classifier.sh` 250/0 (was 245/0; +Test 11b's 5
+  assertions)
+- `test-classifier.sh` 65/0
+- `test-e2e-hook-sequence.sh` 373/0
+- `test-intent-classification.sh` 527/0
+- `test-directive-instrumentation.sh` 11/0
+- shellcheck clean
+
+**Files changed:**
+`bundle/dot-claude/skills/autowork/scripts/lib/classifier.sh`,
+`bundle/dot-claude/quality-pack/scripts/prompt-intent-router.sh`,
+`tests/test-bias-defense-classifier.sh`.
+
 ## [1.40.1] - 2026-05-12
 
 Hotfix for two findings discovered in the v1.40.0 post-tag verification

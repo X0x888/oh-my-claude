@@ -1037,7 +1037,21 @@ ${_spec_safe}
       if [[ "${OMC_EXEMPLIFYING_SCOPE_GATE:-on}" == "on" ]]; then
         exemplifying_scope_workflow="After initial inspection and before implementation settles, record a checklist with \`~/.claude/skills/autowork/scripts/record-scope-checklist.sh init\` (JSON array of sibling scope items), then mark each item \`shipped\` or \`declined\` with a concrete WHY before stopping; the exemplifying-scope stop gate will block silent drops."
       fi
-      completeness_text+=" — EXEMPLIFYING SCOPE DETECTED (sub-case): the prompt uses example markers ('for instance' / 'e.g.' / 'i.e.' / 'for example' / 'such as' / 'as needed' / 'as appropriate' / 'similar to' / 'including but not limited to' / 'things like' / 'stuff like' / 'examples include'). Treat the example as ONE item from an enumerable class — the *class* is the scope, not the literal example. ${exemplifying_scope_workflow} Implementing only the literal example and silently dropping the class is **under-interpretation, not restraint** — it is the failure mode \`/ulw\` was created to prevent. Worked example: 'enhance the statusline, for instance adding reset countdown' enumerates as: reset countdown, in-flight indicators (pause/wave/plan markers), stale-data warnings, count surfaces, model-name handling — all live in the same statusline render path and are class items, not new capabilities. See core.md 'Excellence is not gold-plating' Calibration test, **Also keep going** bullet for the same rule. The user's request IS the permission to enumerate the class — do not gate-keep yourself by asking which siblings to include."
+      # v1.40.x harness-improvement wave: surface the ACTUAL matched
+      # phrase from the prompt so the user can audit the detector's
+      # trigger instead of confusing the directive's watch-list with
+      # the prompt's content. Closes the UX gap in gate-skips.jsonl
+      # 1778022459 ("example markers ... appear in the hook's own
+      # EXEMPLIFYING SCOPE DETECTED directive text, not in the user's
+      # prompt"). Falls back to the generic watch-list when extraction
+      # fails (very short prompts, exotic locale issues with grep -o).
+      _omc_exemplifying_matched="$(exemplifying_request_matched_phrase "${PROMPT_TEXT}" 2>/dev/null || true)"
+      if [[ -n "${_omc_exemplifying_matched}" ]]; then
+        _omc_exemplifying_evidence="the prompt contains the example marker \"${_omc_exemplifying_matched}\""
+      else
+        _omc_exemplifying_evidence="the prompt contains an example marker (one of: 'for instance' / 'e.g.' / 'i.e.' / 'for example' / 'such as' / 'as needed' / 'as appropriate' / 'similar to' / 'including but not limited to' / 'things like' / 'stuff like' / 'examples include')"
+      fi
+      completeness_text+=" — EXEMPLIFYING SCOPE DETECTED (sub-case): ${_omc_exemplifying_evidence}. Treat the example as ONE item from an enumerable class — the *class* is the scope, not the literal example. ${exemplifying_scope_workflow} Implementing only the literal example and silently dropping the class is **under-interpretation, not restraint** — it is the failure mode \`/ulw\` was created to prevent. Worked example: 'enhance the statusline, for instance adding reset countdown' enumerates as: reset countdown, in-flight indicators (pause/wave/plan markers), stale-data warnings, count surfaces, model-name handling — all live in the same statusline render path and are class items, not new capabilities. See core.md 'Excellence is not gold-plating' Calibration test, **Also keep going** bullet for the same rule. The user's request IS the permission to enumerate the class — do not gate-keep yourself by asking which siblings to include."
     fi
     add_directive "bias_defense_completeness" "${completeness_text}"
     if [[ "${EXEMPLIFYING_SCOPE_DETECTED}" -eq 1 ]]; then

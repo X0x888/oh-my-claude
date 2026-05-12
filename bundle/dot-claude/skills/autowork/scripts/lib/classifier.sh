@@ -981,6 +981,17 @@ is_ambiguous_execution_request() {
 # evaluates prompt shape; the router gates the directive emission on
 # fresh-execution intent so the directive does NOT pollute advisory
 # turns ("what would you suggest, e.g., …" prompts).
+# v1.40.x harness-improvement wave: the exemplifying-scope pattern is
+# shared between the predicate (is_exemplifying_request — pure boolean
+# for gating) and the evidence helper (exemplifying_request_matched_phrase
+# — returns the first matched substring for inclusion in the directive
+# text). The shared constant prevents drift between "what fires the
+# directive" and "what the directive cites as evidence" — a bug class
+# called out in gate-skips.jsonl 1778022459 where the user couldn't
+# tell whether the directive's listed phrases were detector-watch-list
+# or actual matches from the prompt.
+_OMC_EXEMPLIFYING_PAT='\b(for[[:space:]]+instance|e\.g\.|i\.e\.|for[[:space:]]+example|such[[:space:]]+as|as[[:space:]]+needed|as[[:space:]]+appropriate|similar[[:space:]]+to|including[[:space:]]+but[[:space:]]+not[[:space:]]+limited[[:space:]]+to|things[[:space:]]+like|stuff[[:space:]]+like|examples[[:space:]]+(include|are|of))'
+
 is_exemplifying_request() {
   local text="$1"
   [[ -z "${text}" ]] && return 1
@@ -996,8 +1007,22 @@ is_exemplifying_request() {
   # the most common exemplifier-shaped uses already. Users who want
   # the wider net can add their own patterns via OMC_EXEMPLIFYING_DIRECTIVE
   # off + custom prompt prefix.
-  local pat='\b(for[[:space:]]+instance|e\.g\.|i\.e\.|for[[:space:]]+example|such[[:space:]]+as|as[[:space:]]+needed|as[[:space:]]+appropriate|similar[[:space:]]+to|including[[:space:]]+but[[:space:]]+not[[:space:]]+limited[[:space:]]+to|things[[:space:]]+like|stuff[[:space:]]+like|examples[[:space:]]+(include|are|of))'
-  grep -Eiq "${pat}" <<<"${text}"
+  grep -Eiq "${_OMC_EXEMPLIFYING_PAT}" <<<"${text}"
+}
+
+# exemplifying_request_matched_phrase — return the FIRST matched
+# example-marker phrase from the prompt, or empty string if none.
+# Used by the EXEMPLIFYING-SCOPE directive emission to surface the
+# actual evidence (which phrase in the user's prompt triggered the
+# directive) rather than letting the user guess between the
+# detector's watch list and the prompt's content. Pure string
+# helper; no state, no logging.
+exemplifying_request_matched_phrase() {
+  local text="$1"
+  [[ -z "${text}" ]] && return 0
+  grep -Eoi "${_OMC_EXEMPLIFYING_PAT}" <<<"${text}" 2>/dev/null \
+    | head -n 1 \
+    | tr -d '\n'
 }
 
 # is_completeness_request — true when the prompt asks about completeness,
