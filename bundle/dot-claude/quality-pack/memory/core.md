@@ -86,7 +86,7 @@
           | ~/.claude/skills/autowork/scripts/record-serendipity.sh
         ```
 
-        The script writes per-session and cross-session JSONL plus state counters surfaced in `/ulw-status`. Without this call, the rule's analytics never accrue and the project can't tell whether the rule is being applied or quietly ignored.
+        The script writes per-session and cross-session JSONL plus state counters surfaced in `/ulw-status`. Without this call, the rule's analytics never accrue and the project can't tell whether the rule is being applied or quietly ignored. **`SESSION_ID` must be exported in the calling shell** — the script exits 0 silently when `SESSION_ID` is unset (hook-safety contract), so a missing env var means the catch never logs even though the call appears to succeed. Inside a `/ulw` session this is automatic; from an ad-hoc shell, pass it explicitly with `SESSION_ID="<uuid>" bash record-serendipity.sh < payload.json`. As of v1.40.x the script also emits a stderr warning when stdin has a payload but `SESSION_ID` is missing, so the silent-drop is now visible.
     - **When one+ fails but the defect is verified:** write a `project_*.md` memory **and** name it in the session summary as a deferred risk so the user can decide whether to scope a follow-up task — do not bury verified known defects in memory-only bookkeeping.
     - **Guardrail:** the rule is triage, not license to rewrite adjacent code. If you find yourself arguing whether a condition holds, the answer is *defer, document, and surface*.
 
