@@ -1285,9 +1285,16 @@ write_state "stop_guard_blocks" "$((guard_blocks + 1))"
 
 # --- Block-message construction ---
 #
-# Block 1 emits the full verbose "FIRST self-assess" text — this is the
-# one pass every complex task goes through and the self-assessment prompt
-# demonstrably helps agents catch completeness gaps on the first round.
+# Block 1 emits the full verbose "correctness AND completeness" review
+# directive — this is the one pass every complex task goes through, and
+# the framing of correctness *and* completeness as the dual reviewer
+# lens demonstrably keeps agents from declaring done with bugs or with
+# gaps. v1.40.x harness-improvement wave overhauled this slot: prior
+# wording was a four-imperative "FIRST self-assess / THEN delegate /
+# check completeness against scope / restate summary" runbook that
+# read junior-procedural; the rewrite collapses to the two facts the
+# model actually needs (thin verify, missing reviewer) and the dual
+# lens.
 #
 # Blocks 2–3 switch to a concise form that names only the missing items
 # and the next action, reducing the summary-inflation pressure that long
