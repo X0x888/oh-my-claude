@@ -153,5 +153,16 @@ SESSION_ID="" rc=0
 echo '{"fix":"x"}' | env -u SESSION_ID bash "${SCRIPT}" >/dev/null 2>&1 || rc=$?
 assert_eq "missing SESSION_ID returns 0" "0" "${rc}"
 
+# v1.40.x harness-improvement wave follow-up: silent-exit on missing
+# SESSION_ID is the hook-safety contract, but when stdin carries an
+# actual payload (non-TTY input) and SESSION_ID is unset, the script
+# now emits a stderr warning so the caller knows the catch was
+# dropped instead of logged. The hook-safety contract (exit code 0)
+# is preserved — only the stderr surface changes.
+printf 'Test 9b: missing SESSION_ID with piped payload emits stderr warning\n'
+warn_output="$(echo '{"fix":"x"}' | env -u SESSION_ID bash "${SCRIPT}" 2>&1 >/dev/null)"
+assert_contains "warning names SESSION_ID requirement" "SESSION_ID unset" "${warn_output}"
+assert_contains "warning shows the explicit invocation form" "SESSION_ID=" "${warn_output}"
+
 printf '\n=== Serendipity-Log Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]

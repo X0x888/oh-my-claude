@@ -27,7 +27,26 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 
 # Hook-style guard: exit 0 on missing SESSION_ID so test/non-session
 # invocations don't fail loudly.
+#
+# v1.40.x harness-improvement wave follow-up: when stdin has actual
+# content (a Serendipity JSON payload waiting to be logged), emit a
+# stderr warning before the silent exit. The hook-safety contract
+# (exit 0 in non-session contexts) is preserved, but the warning
+# saves the next user from the silent-failure trap the rule's author
+# just hit when invoking from a shell where SESSION_ID wasn't
+# exported — the call returned rc=0, the counter stayed at 0, and
+# the catch was invisible until cross-checked against the per-session
+# state. The `-t 0` test below would already catch interactive
+# invocations; this branch catches piped-input cases.
 if [[ -z "${SESSION_ID:-}" ]]; then
+  if [[ ! -t 0 ]]; then
+    cat <<'WARN' >&2
+record-serendipity: SESSION_ID unset — payload discarded silently for hook-safety.
+To log a Serendipity catch from a shell, run inside the active session
+(SESSION_ID is set by the harness) or pass it explicitly:
+  SESSION_ID="<session-uuid>" bash record-serendipity.sh < payload.json
+WARN
+  fi
   exit 0
 fi
 
