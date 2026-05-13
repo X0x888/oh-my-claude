@@ -74,60 +74,130 @@ else
   printf '_Installed: **v%s**_\n\n' "${installed_version}"
 fi
 
-# Walk the changelog. State machine:
-#   in_section=1 means we are currently capturing lines (section is newer).
-#   in_section=0 means skip until next ## heading.
-in_section=0
-collected=""
-collected_count=0
-unreleased_section=""
+# Walk the changelog with awk — one pass, single subprocess, no bash
+# string concatenation in a loop.
+#
+# Prior implementation (replaced as a Serendipity catch in the v1.40.x
+# harness-improvement wave): bash `read -r` line-by-line with `+=` to
+# accumulate `collected` and `unreleased_section`. On CHANGELOG.md
+# files past ~2K lines, bash string append in a loop is O(n²) — the
+# 3000+ line current file pushed wall time past the test-w5-discovery
+# F-021 timeout (single-run wall time observed at >15 minutes locally
+# under bash 3.2). The awk rewrite is single-pass linear; same file
+# completes in well under a second.
+#
+# First-draft of the rewrite tried a two-phase pipeline (awk emits
+# NUL-separated sections, bash filters by is_version_newer). That
+# inherited the same O(n²) cost because bash's regex-on-large-string
+# and `+=` on big bodies still scaled badly. Final shape: awk does
+# the filtering inline via a precomputed "newer-than-installed"
+# version set passed in with -v, and emits the kept sections
+# directly to stdout. Bash only handles the top/bottom framing.
 
-while IFS= read -r line; do
-  # Match `## [Unreleased]` heading.
-  if [[ "${line}" =~ ^##[[:space:]]+\[Unreleased\] ]]; then
-    in_section=2  # special marker
-    continue
-  fi
+# Compute the set of CHANGELOG versions strictly newer than installed.
+# Strategy: grep all version headings, sort -V them together with the
+# installed version, then take every line AFTER the installed line.
+# `sort -V` puts versions in strict numeric order; everything past the
+# installed-line marker is "newer than installed."
+newer_versions="$( {
+    grep -oE '^##[[:space:]]+\[[0-9]+\.[0-9]+\.[0-9]+\]' "${changelog}" \
+      | sed -E 's/^##[[:space:]]+\[([0-9]+\.[0-9]+\.[0-9]+)\]$/\1/'
+    printf '%s\n' "${installed_version}__OMC_INSTALLED_MARKER__"
+  } | sort -V \
+    | awk '
+      /__OMC_INSTALLED_MARKER__$/ { take = 1; next }
+      take { print }
+    ' \
+    | awk -v inst="${installed_version}" '$0 != inst { print }')"
 
-  # Match `## [X.Y.Z] - YYYY-MM-DD` heading.
-  if [[ "${line}" =~ ^##[[:space:]]+\[([0-9]+\.[0-9]+\.[0-9]+)\] ]]; then
-    # Extract version. BSD bash 3.2 doesn't support BASH_REMATCH well
-    # in all forms; safer to parse via sed.
-    cand_version="$(printf '%s' "${line}" | sed -E 's/^##[[:space:]]+\[([0-9]+\.[0-9]+\.[0-9]+)\].*/\1/')"
-    if is_version_newer "${cand_version}"; then
-      in_section=1
-      collected_count=$((collected_count + 1))
-      collected+="${line}"$'\n'
-    else
-      in_section=0
-    fi
-    continue
-  fi
+# Build an OR-regex matching any newer-version heading. Empty when
+# installed is at or above the highest CHANGELOG version. Wrap the
+# pipeline in `|| true` because `grep -v '^$'` on empty input exits
+# non-zero (no matches), which under `set -e` would kill the script
+# before the [Unreleased] section gets a chance to emit.
+newer_re="$( { printf '%s\n' "${newer_versions}" | grep -v '^$' \
+  | sed -e 's/\./\\./g' \
+  | awk 'BEGIN{ORS="|"} {print "\\[" $0 "\\]"}' \
+  | sed 's/|$//'; } || true)"
 
-  if [[ "${in_section}" -eq 1 ]]; then
-    collected+="${line}"$'\n'
-  elif [[ "${in_section}" -eq 2 ]]; then
-    unreleased_section+="${line}"$'\n'
-  fi
-done < "${changelog}"
+# Phase 1: awk extracts ONLY [Unreleased] + sections whose heading
+# matches one of the newer-version patterns. Output goes straight
+# to a temp file (bypasses bash string append). Marker lines between
+# sections let the framing code below add the right banners.
+sections_tmp="$(mktemp -t omc-whats-new-sections-XXXXXX)"
+trap 'rm -f "${sections_tmp}"' EXIT
 
-if [[ "${collected_count}" -eq 0 ]] && [[ -z "${unreleased_section//[[:space:]]/}" ]]; then
+awk -v newer_re="${newer_re}" '
+  BEGIN { keep = 0 }
+  /^##[[:space:]]+\[Unreleased\]/ {
+    if (keep) print "__OMC_SEC_END__"
+    print "__OMC_SEC_UNRELEASED__"
+    print
+    keep = 2
+    next
+  }
+  /^##[[:space:]]+\[[0-9]+\.[0-9]+\.[0-9]+\]/ {
+    if (keep) print "__OMC_SEC_END__"
+    if (newer_re != "" && match($0, newer_re)) {
+      print "__OMC_SEC_RELEASE__"
+      print
+      keep = 1
+    } else {
+      keep = 0
+    }
+    next
+  }
+  /^##[[:space:]]+\[/ {
+    # Other ## heading — close current section.
+    if (keep) print "__OMC_SEC_END__"
+    keep = 0
+    next
+  }
+  keep > 0 { print }
+  END { if (keep) print "__OMC_SEC_END__" }
+' "${changelog}" > "${sections_tmp}"
+
+# Phase 2: render the sections file with the right banners. Use awk
+# again rather than bash so we never read large bodies into bash
+# variables. The state-machine here is trivial: replace the
+# __OMC_SEC_*__ markers with the appropriate banner text, drop the
+# __OMC_SEC_END__ separators.
+if [[ ! -s "${sections_tmp}" ]]; then
   printf '_You are at HEAD — no newer entries in CHANGELOG.md._\n\n'
   printf 'Run `bash %s/install.sh` after a `git pull` to refresh hooks if the source repo advances.\n' "${repo_path}"
   exit 0
 fi
 
-if [[ -n "${unreleased_section//[[:space:]]/}" ]]; then
-  printf '## [Unreleased] — post-release work in source tree\n\n'
-  # Cap at 200 lines so a sprawling [Unreleased] block doesn't fill the
-  # whole context. The user can read the rest of CHANGELOG.md directly.
-  printf '%s' "${unreleased_section}" | head -200
-  printf '\n_To install Unreleased: `git -C %s pull && bash install.sh`_\n\n' "${repo_path}"
-fi
-
-if [[ -n "${collected}" ]]; then
-  printf '%s' "${collected}"
-fi
+awk -v repo_path="${repo_path}" '
+  /^__OMC_SEC_UNRELEASED__$/ {
+    print "## [Unreleased] — post-release work in source tree"
+    print ""
+    in_unreleased = 1; unreleased_lines = 0
+    next
+  }
+  /^__OMC_SEC_RELEASE__$/ {
+    if (in_unreleased) {
+      printf "_To install Unreleased: `git -C %s pull && bash install.sh`_\n\n", repo_path
+      in_unreleased = 0
+    }
+    next
+  }
+  /^__OMC_SEC_END__$/ {
+    if (in_unreleased) {
+      printf "_To install Unreleased: `git -C %s pull && bash install.sh`_\n\n", repo_path
+      in_unreleased = 0
+    }
+    next
+  }
+  in_unreleased {
+    # Cap [Unreleased] section at 200 lines so a sprawling block does
+    # not fill the whole context. The user can read the rest of
+    # CHANGELOG.md directly.
+    if (unreleased_lines < 200) { print; unreleased_lines++ }
+    next
+  }
+  { print }
+' "${sections_tmp}"
 
 # Footer
 printf '\n---\n_Read CHANGELOG.md directly at %s for the full history._\n' "${changelog}"

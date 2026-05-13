@@ -562,6 +562,138 @@ Tests verified green:
 `bundle/dot-claude/skills/autowork/scripts/record-finding-list.sh`,
 `tests/test-finding-list.sh`.
 
+#### W5 — Top-2 directive trim (`domain_routing` + `intent_broadening`)
+
+**The cost shape.** Per-directive char counts pulled from cross-session
+`timing.jsonl` rows (`kind: "directive_emitted"`, current schema):
+
+| Directive | Fires | Avg chars | Total chars |
+|---|---:|---:|---:|
+| `domain_routing` | 110 | 1,637 | 180,075 |
+| `bias_defense_intent_broadening` | 75 | 1,458 | 109,367 |
+
+Combined: ~290K chars across the user's session history, ~50% of all
+directive-emitted prompt content. Both bodies had accreted authorial
+debt of the same shape the prior `stop-guard` overhaul (W2) addressed —
+duplicate guidance, layered procedural scaffolding, redundant
+disclaimers.
+
+**Trims:**
+
+1. **`domain_routing` (coding-domain branch, `:1230`).** The prior
+   Discipline section duplicated seven rules already loaded every
+   turn via `~/.claude/quality-pack/memory/core.md` (incremental
+   changes, test rigorously, self-assess before reviewer,
+   reviewer/excellence gates, no placeholder stubs, library-doc
+   verification, Serendipity Rule). Collapsed to one compact line
+   that preserves the `Make changes incrementally` anchor (asserted
+   by `test-session-resume.sh:202`) and points the model back at
+   `core.md` for the rest. The Routing-by-task-shape bullets — the
+   actual routing knowledge this directive owns — remain verbatim.
+
+   **Anchor restore caught mid-wave by `test-discovered-scope.sh`
+   Test 29.** The initial trim removed `record-serendipity.sh` from
+   the directive, breaking the proactive-context anchor for the
+   Serendipity Rule (the test's comment explicitly documents that
+   the router's coding block is the at-edit-time surface for the
+   rule, not just core.md). Restored a one-clause mention of the
+   Serendipity script path in the Discipline line — still ~45%
+   shorter than the prior section, and the test regression net
+   caught the regression before the commit landed.
+
+2. **`bias_defense_intent_broadening` (`:1141`).** The prior body
+   enumerated surface kinds (`routes, env vars, tests, docs, config
+   flags, UI files, error states, auth paths, release steps,
+   scripts`) twice — once inline and once via the
+   `${intent_broadening_summary}` per-counts — and spent four
+   sentences on the "informational not authoritative" disclaimer
+   that one sentence covers. Tightened to ~50% of prior length
+   without dropping any load-bearing signal. Renamed the lead from
+   `has been generated` to `was generated` (terser, same
+   information).
+
+**Council_evaluation directive deliberately untouched** — its body is
+load-bearing for Phase 8 wave execution (`record-finding-list.sh`
+bootstrap, wave-grouping HARD bar, polish-mode lens roster). A trim
+risks regressing real workflow behavior; the data-grounded leverage
+on the other two captures most of the cumulative savings without
+that risk.
+
+Tests verified green (full suite passes):
+- `test-session-resume.sh` 48/0 (anchor `Make changes incrementally`
+  still present)
+- `test-directive-instrumentation.sh` 11/0
+- `test-blindspot-inventory.sh` 34/0
+- `test-e2e-hook-sequence.sh` 373/0
+- `test-intent-classification.sh` 527/0
+- `test-bias-defense-directives.sh` 108/0
+- `test-w2-telemetry.sh` 15/0
+- shellcheck clean
+
+**Files changed:**
+`bundle/dot-claude/quality-pack/scripts/prompt-intent-router.sh`.
+
+##### Serendipity: `show-whats-new.sh` O(n²) → linear
+
+While verifying W5's directive trim against the full test suite,
+`tests/test-w5-discovery.sh` F-021 hung — each clean invocation of
+`bash tests/test-w5-discovery.sh` ran for 15+ minutes without
+completing, blocking W5 verification.
+
+**Verified, same-path, bounded** — the three Serendipity Rule
+conditions held:
+
+- **Verified.** Reproduced the hang outside the test: a direct
+  invocation of `bash show-whats-new.sh` with
+  `installed_version=1.34.0` against the current CHANGELOG.md (3,300
+  lines) took >15 min before manual abort. `bash -x` tracing showed
+  the read-line loop processing CHANGELOG content lines indefinitely.
+- **Same code path.** F-021 directly invokes
+  `bundle/dot-claude/skills/autowork/scripts/show-whats-new.sh`,
+  the same script W5's CHANGELOG growth had pushed into the
+  pathological regime — the fix is *literally* the script the test
+  fixture is hanging on.
+- **Bounded fix.** Single file, no new flags, no new tests required
+  (F-021 in test-w5-discovery.sh is the regression net), perf
+  trade-off well-named in code comments. Verified against three
+  cases: drift (1.34.0 installed, real CHANGELOG → renders full
+  delta), at-HEAD with `[Unreleased]` (1.40.1 → renders Unreleased
+  section), at-HEAD without `[Unreleased]` (synthesized fixture →
+  "you are at HEAD" message).
+
+**Root cause.** Prior implementation read CHANGELOG.md line by line in
+bash with `+=` accumulating `collected` and `unreleased_section`. On
+files past ~2K lines the bash string append is O(n²) — for a
+3,300-line CHANGELOG that's ~10M character-ops cumulative. Bash 3.2
+on macOS is particularly slow on this pattern.
+
+**Fix.** Three-stage pipeline that keeps all O(n) work outside bash
+loops:
+
+1. `grep + sort -V` precomputes the set of CHANGELOG versions strictly
+   newer than installed (anchored at an `__OMC_INSTALLED_MARKER__`
+   sentinel in the sort-merged stream).
+2. `awk` walks CHANGELOG once, emitting only `[Unreleased]` plus any
+   release sections whose heading matches the newer-set regex.
+   Output goes to a temp file (bypasses bash string accumulation
+   entirely).
+3. A final `awk` pass replaces section markers with banners and caps
+   the `[Unreleased]` body at 200 lines (preserves prior UX guarantee).
+
+`set -e` interaction caught mid-fix: `grep -v '^$'` on empty input
+exits non-zero, which under `set -e` killed the script before the
+[Unreleased] section could emit. Wrapped the regex-build pipeline
+in `{ … ; } || true`.
+
+**Perf observed.** Drift case (installed=1.34.0, full delta render):
+**>15 min → 0.10s** (~9,000× speedup). At-HEAD case: instant.
+
+Logged via `record-serendipity.sh` per the core.md rule so the
+cross-session effectiveness audit can see the catch.
+
+**Files changed:**
+`bundle/dot-claude/skills/autowork/scripts/show-whats-new.sh`.
+
 ## [1.40.1] - 2026-05-12
 
 Hotfix for two findings discovered in the v1.40.0 post-tag verification

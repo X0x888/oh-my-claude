@@ -1138,7 +1138,14 @@ ${_spec_safe}
       fi
     fi
     if [[ -n "${intent_broadening_summary}" ]]; then
-      add_directive "bias_defense_intent_broadening" "INTENT-BROADENING DIRECTIVE: A project surface inventory has been generated for this project at \`${intent_broadening_path}\` (${intent_broadening_summary}). Language is a limitation — the user's prompt names SOME of the surfaces this work touches but rarely all of them. Before committing to scope: (1) **Read the inventory** when scope is non-trivial. It enumerates concrete surfaces (routes, env vars, tests, docs, config flags, UI files, error states, auth paths, release steps, scripts) the prompt cannot explicitly list. (2) **Reconcile your task against it.** Which surfaces does this work plausibly touch (directly or transitively) vs which does the prompt explicitly name? (3) **Surface gaps in your opener** under a \`**Project surfaces touched:**\` bulleted line. If release steps, env vars, tests, or docs need updating beyond what the prompt names, ship them or defer with a one-line concrete WHY — never silently. (4) **The inventory is informational, not authoritative.** It widens your aperture, not constrains it. New surfaces appear faster than rescans; if a surface should exist but is missing, proceed with normal completeness reasoning. The inventory addresses the failure mode where a complex prompt silently misses surfaces the user did not name. Refresh: \`bash ~/.claude/skills/autowork/scripts/blindspot-inventory.sh scan --force\`."
+      # v1.40.x harness-improvement wave: this directive fires on most
+      # short prompts (75 fires × 1,458 avg chars, per timing.jsonl).
+      # The prior body redundantly enumerated surface kinds (which the
+      # ${intent_broadening_summary} already names per-counts) and
+      # spent four sentences on the "informational not authoritative"
+      # disclaimer that one sentence covers. Tightened to ~50% of
+      # prior length without losing any load-bearing signal.
+      add_directive "bias_defense_intent_broadening" "INTENT-BROADENING DIRECTIVE: A project surface inventory was generated at \`${intent_broadening_path}\` (${intent_broadening_summary}). Language is a limitation — the user's prompt names SOME of the surfaces this work touches but rarely all of them. Before committing to scope: (1) **Read the inventory** when scope is non-trivial. (2) **Reconcile your task against it** — which surfaces does this plausibly touch vs which did the prompt explicitly name? (3) **Surface gaps in your opener** under a \`**Project surfaces touched:**\` line — ship them or defer each with a one-line concrete WHY. The inventory is informational, not authoritative — widens aperture, doesn't constrain it; missing surfaces are fine to add via normal completeness reasoning. Refresh: \`bash ~/.claude/skills/autowork/scripts/blindspot-inventory.sh scan --force\`."
       set_last_directive_emit_notice \
         "bias-defense" "directive_fired" "directive=intent-broadening" \
         "bias-defense: intent-broadening fired (path=${intent_broadening_path})"
@@ -1227,6 +1234,19 @@ ${_spec_safe}
 
     case "${TASK_DOMAIN}" in
       coding)
+        # v1.40.x harness-improvement wave: this directive is the
+        # single most-emitted by char count (110 fires × 1,637 avg
+        # chars per fire, per timing.jsonl). The prior Discipline
+        # section duplicated seven rules already loaded every turn
+        # via ~/.claude/quality-pack/memory/core.md (incremental
+        # changes, test after edits, self-assess, reviewer/excellence
+        # gates, no placeholder stubs, library-doc verification, the
+        # Serendipity Rule). Collapsed to one compact line that
+        # preserves the "Make changes incrementally" anchor used by
+        # test-session-resume.sh:202 and points the model back at
+        # core.md for the rest. Routing bullets — which are the
+        # routing-specific signal the directive actually owns —
+        # remain verbatim. Estimated ~50% char reduction per fire.
         add_directive "domain_routing" "Detected likely task domain: coding.
 Route by task shape:
 - broad or underspecified work (no concrete code anchor; request shape needs interview to nail down) → prometheus for interview-first scoping. Defer to quality-planner instead when the request is concrete enough that interview questions would not change the plan.
@@ -1242,14 +1262,7 @@ Route by task shape:
 - features spanning frontend + backend (auth flows, payments, real-time, file upload, search, notifications) → fullstack-feature-builder
 - Apple platforms (Swift, SwiftUI, Xcode) → ios-ui-developer (screens & animations), ios-core-engineer (data, networking, lifecycle), ios-deployment-specialist (TestFlight & App Store), ios-ecosystem-integrator (HealthKit, WidgetKit, StoreKit, etc.)
 - the framing or paradigm fit feels off — 'is this the right shape of solution?' → abstraction-critic (distinct from metis on plan edge cases and oracle on debugging)
-Discipline:
-- Make changes incrementally — one logical change, verify it, then proceed.
-- Test rigorously after edits — failing to test is the #1 failure mode.
-- Before invoking the reviewer, self-assess: enumerate every component of the request and verify each is delivered.
-- Run quality-reviewer before stopping. For complex or multi-file tasks, also run excellence-reviewer after defects are addressed for a fresh-eyes completeness and polish evaluation.
-- Never write placeholder stubs or sycophantic comments.
-- Never call an unfamiliar or version-sensitive library/API from memory — confirm the surface in current docs first.
-- When you discover a verified adjacent defect on the same code path with a bounded fix, the Serendipity Rule (core.md) requires fixing it in-session AND logging it via \`~/.claude/skills/autowork/scripts/record-serendipity.sh\` so the rule's effectiveness can be audited. Watch for adjacent defects during edits — that's when the rule is most likely to apply."
+Discipline: Make changes incrementally, test after edits, verify unfamiliar libraries against current docs before use (training data goes stale). Watch for adjacent defects on the same code path during edits — the Serendipity Rule fix-and-log path uses \`~/.claude/skills/autowork/scripts/record-serendipity.sh\`. The rest of the discipline list — reviewer/excellence gates, no placeholder stubs — is in core.md and loads every turn."
         ;;
       writing)
         add_directive "domain_routing" "Detected likely task domain: writing. Detect the document type early: formal (paper, report, proposal), informal (email, blog, memo), creative (essay, narrative), technical (docs, API reference), or professional (cover letter, SOP, statement). Route the specialist chain accordingly — formal documents benefit from writing-architect for structure; creative work needs less scaffolding. Clarify audience, purpose, format, tone, and constraints early. Use writing-architect for structure when needed, librarian for factual support, draft-writer for the draft, editor-critic before finalizing. Do not invent facts, citations, or quotations — mark uncertain details explicitly. For verification: check structural completeness against the stated purpose, cross-reference factual claims against sources, and use available prose linting tools (markdownlint, vale, textlint) when the output format supports them."
