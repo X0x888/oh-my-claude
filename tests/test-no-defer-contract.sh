@@ -12,6 +12,10 @@
 # Coverage:
 #   T1  — core.md contains the contract section header
 #   T2  — core.md lists the FORBIDDEN softening proposals concretely
+#   T2b — core.md FORBIDDEN list cross-references the v1.40.x dual-
+#         failure-mode framing (depth-prime + no-defer) so a future
+#         "consolidate redundant priming" wave cannot remove the depth
+#         half while leaving the contract intact
 #   T3  — core.md Anti-Patterns has the no-defer cross-reference
 #   T4  — skills.md (in-session memory) has the LOAD-BEARING note
 #   T5  — council/SKILL.md Phase 5 step 6 marks the criterion as LOAD-BEARING
@@ -136,6 +140,19 @@ assert_contains_file \
 assert_contains_file \
   "T2 — core.md FORBIDDEN list quotes a concrete softening proposal" \
   "Soft-warn instead of hard-block" \
+  "${CORE_MD}"
+
+# T2b — core.md FORBIDDEN list cross-references the v1.40.x dual-
+# failure-mode framing (depth-prime rebalance). Without this entry, a
+# future "consolidate redundant priming" wave could remove the
+# Why-/ulw-exists preamble and the Thinking Quality strengthening
+# while leaving the no-defer contract intact — recreating the v1.40.0
+# action-bias-overcorrection failure mode the user named 2026-05-15
+# (shallow thinking on every prompt). The cross-link names this as
+# the SAME anti-pattern class as softening the contract itself.
+assert_contains_file \
+  "T2b — core.md FORBIDDEN list cross-references dual-failure-mode framing" \
+  "Collapsing the dual-failure-mode framing" \
   "${CORE_MD}"
 
 # T3 — Anti-Patterns has the no-defer cross-reference. The cross-ref

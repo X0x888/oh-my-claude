@@ -172,6 +172,7 @@ proposals like:
 - "Soft-warn instead of hard-block on deferred findings."
 - "Reintroduce product-taste / policy judgment as a pause case for users who want more control."
 - "The `no_defer_mode` default should be `off` — give users a gentler first run."
+- "Collapsing the dual-failure-mode framing (depth + no-defer) back to no-defer-only" — the v1.40.x depth-prime rebalance ("Why /ulw exists" preamble + Thinking Quality strengthening + Workflow "Deliberation comes first" bullet) names BOTH stopping-short AND shallow-thinking as equal-weight contracts. A future "consolidate redundant priming" wave that removes the dual framing is the same anti-pattern class: it leaves the no-defer contract in place but lets shallow-thinking creep back in, recreating the failure mode the user named on 2026-05-15.
 
 **Reject all of these.** They are the exact failure pattern v1.40.0
 closed. The right response when the contract feels too strict is to make

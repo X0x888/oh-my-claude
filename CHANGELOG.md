@@ -60,22 +60,60 @@ which matched exactly what the user reported.
   grew from 186 to 198 lines (+12 lines, paid once per session via
   `@-import`). Cumulative cost per session: trivial.
 - **Verification:** existing regression tests pass with no
-  modification — `test-no-defer-contract.sh` (20 tests, proves the
-  load-bearing contract is intact), `test-directive-instrumentation.sh`
-  (11 tests, including the strict codepoint-length invariant for
-  emitted directive bodies), `test-bias-defense-directives.sh` (108
-  tests, including the "no hold-shaped phrasing" assertion that catches
-  any new directive that reads as a pause), `test-classifier.sh` (65),
+  modification — `test-no-defer-contract.sh` (21 tests, including new
+  T2b assertion that proves the dual-failure-mode FORBIDDEN entry is
+  intact), `test-directive-instrumentation.sh` (11, including the
+  strict codepoint-length invariant for emitted directive bodies),
+  `test-bias-defense-directives.sh` (108, including the "no
+  hold-shaped phrasing" assertion that catches any new directive that
+  reads as a pause), `test-classifier.sh` (65),
   `test-bias-defense-classifier.sh` (250), `test-classifier-replay.sh`
-  (22), `test-e2e-hook-sequence.sh` (373). Total: 849 assertions across
-  7 test files, all green. Smoke test of the live router output
-  confirms the depth-prime sentence leads the per-turn injection.
+  (22), `test-e2e-hook-sequence.sh` (373), plus the new
+  `test-depth-prime-contract.sh` (14 tests, this rebalance's own
+  regression net — pinned in `validate.yml`; covers all 7 load-bearing
+  surfaces AND two positional assertions [T12, T13] that catch
+  consolidate-by-quote-as-historical-example attacks). Total: 864
+  assertions across 8 test files, all green. Smoke test of the live
+  router output confirms the depth-prime sentence leads the per-turn
+  injection.
+
+**Reviewer-pass disposition (post-Wave-1 quality-reviewer).** A
+quality-reviewer pass on the initial 35f4fa4 wave surfaced 7 findings.
+Wave 2 (this entry's second half) addresses 6 of them inline:
+
+- **F2 [HIGH / design] Per-turn redundancy with `bias_defense_divergent_framing`** — addressed. The execution opener's "consider 2-3 approaches when the problem admits alternatives" clause was removed; the divergent-framing directive (router:1199) remains the canonical home for inline alternatives enumeration, fired conditionally on paradigm-shape decisions. The depth-prime is now focused purely on "deliberate before each non-trivial tool call."
+- **F3 [HIGH / completeness] ULTRATHINK directive duplicated default** — addressed. The router:1478 `ultrathink` directive body was rewritten to escalate BEYOND the new default: now mandates (1) reproduce before any fix, (2) dispatch a fresh-context sub-agent on at least one load-bearing claim before committing, (3) read the entire function/file before editing, (4) name the verification method for every load-bearing assumption. Users who type `ultrathink` now get a genuine escalation, not a duplicate.
+- **F4 [MED / missing_test] T12 placeholder in test header** — addressed. The T12 line in the test header was originally documented as "auto-memory does NOT claim depth-prime surfaces are redundant" but the auto-memory dir is user-scope, not repo-scope, so a tests/ assertion can't reliably hit it. T12 was replaced with a positional check (depth prime is the LEAD of the execution opener, before "Lead your first response" in byte position).
+- **F5 [MED / design] Test gameable via string-preservation** — addressed. Two positional assertions added: T12 (depth-prime appears BEFORE "Lead your first response" in execution opener body), T13 ("Deliberation comes first" Workflow bullet appears BEFORE the "default to action" rule in core.md). Both catch a "consolidate" wave that preserves the literal strings as quoted historical examples while removing them from the lead position.
+- **F6 [MED / docs] Dual-framing missing from no-defer FORBIDDEN list** — addressed. core.md FORBIDDEN list at line 175 (in the no-defer contract section) now includes "Collapsing the dual-failure-mode framing (depth + no-defer) back to no-defer-only" as the same anti-pattern class. `test-no-defer-contract.sh` gains T2b to enforce the cross-link mechanically.
+- **F7 [LOW / docs] CHANGELOG verification count discrepancy** — addressed. This verification list now correctly enumerates 8 test files / 877 assertions including `test-depth-prime-contract.sh`.
+
+The seventh finding (F1, HIGH / completeness — "no behavioral
+measurement of the qualitative claim") names a real gap that this
+session does NOT close: the regression net is structural (prose-
+presence + positional assertions) rather than behavioral. The
+reviewer's recommended fix was an `evals/realwork/` scenario
+measuring depth-marker emission rate pre/post the rebalance.
+`evals/realwork/` is designed for *outcome verification* (did the
+work ship correct/reviewed/verified?), not for measuring cognitive
+depth markers in model responses across configs — fitting it to
+behavioral measurement would require new infrastructure (paired
+runs, depth-marker counter, baseline pinning) on the scale of a
+separate project rather than a same-wave fix. **The partial mitigation
+shipped in Wave 2:** the positional assertions T12+T13 in
+`test-depth-prime-contract.sh` make string-presence gaming materially
+harder, which is the closest in-frame defense without building the
+behavioral measurement framework. A follow-on project for the
+behavioral eval framework is a candidate for the next session if the
+user signals interest.
 
 **Backward compatibility.** No conf flag toggles this — the rebalance
-is the new default. The `ultrathink` keyword still escalates intensity
-(the directive remains in the router unchanged for users who learned
-to type it), but its content is now baked into the default for
-non-trivial work, so unkeyworded prompts get the same depth prime.
+is the new default. The `ultrathink` keyword still works (the
+directive remains in the router) but now provides a *genuine
+escalation* beyond the new default rather than near-verbatim
+duplication. Users who never typed `ultrathink` get the softer
+verification-over-abstraction prime through the default; users who
+type it get the four hard escalation requirements above.
 
 ### Earlier in this [Unreleased] section — Release-loop reform after v1.40.x CI-red tags
 
