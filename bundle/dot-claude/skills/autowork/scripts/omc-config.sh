@@ -82,6 +82,7 @@ stop_failure_capture|bool|on|watchdog|Capture resume_request.json on rate-limit 
 resume_request_ttl_days|int|7|watchdog|Days a resume_request stays claimable
 resume_watchdog|bool|off|watchdog|Headless daemon launches claude --resume after cap clears
 resume_watchdog_cooldown_secs|int|600|watchdog|Per-artifact cooldown between watchdog launches
+resume_session_ttl_secs|int|7200|watchdog|Max lifetime for headless omc-resume tmux sessions before reaper kills them
 resume_scan_max_sessions|pint|30|watchdog|Max session dirs find_claimable_resume_requests walks (caps SessionStart/watchdog/resume hot-path latency on long retention)
 claude_bin|str||watchdog|Pinned absolute path to claude binary (PATH-hijack defense; auto-set by install-resume-watchdog.sh)
 resume_request_per_cwd_cap|int|3|watchdog|Max resume_request artifacts per cwd before stop-failure-handler prunes oldest (0 disables)

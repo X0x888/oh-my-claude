@@ -372,6 +372,15 @@
 # Env: OMC_RESUME_WATCHDOG.
 #resume_watchdog=off
 
+# Maximum lifetime (seconds) for headless omc-resume-* tmux sessions.
+# `claude --resume` enters interactive mode after completing its initial task,
+# so without a TTL, orphan processes sit indefinitely — holding auth tokens
+# that can cause 401 errors in the user's foreground Claude Code session.
+# The watchdog reaper kills sessions older than this on each tick.
+# Default 7200 = 2 hours.
+# Env: OMC_RESUME_SESSION_TTL_SECS.
+#resume_session_ttl_secs=7200
+
 # Per-artifact cooldown (seconds) between watchdog launch attempts.
 # Combined with the 3-attempt cap, this caps total retry effort at ~30
 # minutes per artifact before the watchdog gives up. Default 600 = 10 min.

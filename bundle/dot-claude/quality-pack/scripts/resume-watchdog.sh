@@ -381,6 +381,47 @@ _do_watchdog_revert() {
   fi
 }
 
+# Reap stale omc-resume-* tmux sessions that have been alive longer than
+# OMC_RESUME_SESSION_TTL_SECS (default 7200 = 2h). `claude --resume` enters
+# interactive mode after completing its initial task, waiting for user input
+# that never arrives in a headless tmux session. Without this reaper, orphan
+# processes accumulate indefinitely — holding auth tokens that can invalidate
+# the user's foreground Claude Code session (observed: 401 "Invalid
+# authentication credentials" on every new session open).
+_reap_stale_tmux_sessions() {
+  command -v tmux >/dev/null 2>&1 || return 0
+  local ttl="${OMC_RESUME_SESSION_TTL_SECS:-7200}"
+  local now_ts reaped=0
+  now_ts="$(now_epoch)"
+
+  while IFS= read -r sess_name; do
+    [[ -z "${sess_name}" ]] && continue
+    case "${sess_name}" in omc-resume-*) ;; *) continue ;; esac
+
+    # Never kill a session a user is actively looking at.
+    local attached
+    attached="$(tmux display-message -p -t "${sess_name}" '#{session_attached}' 2>/dev/null || echo 0)"
+    attached="${attached//[!0-9]/}"
+    [[ -n "${attached}" && "${attached}" != "0" ]] && continue
+
+    local created_ts
+    created_ts="$(tmux display-message -p -t "${sess_name}" '#{session_created}' 2>/dev/null || echo 0)"
+    created_ts="${created_ts//[!0-9]/}"
+    [[ -z "${created_ts}" || "${created_ts}" == "0" ]] && continue
+
+    if (( now_ts - created_ts > ttl )); then
+      tmux kill-session -t "${sess_name}" 2>/dev/null || true
+      reaped=$((reaped + 1))
+      record_gate_event "resume-watchdog" "reaped-stale-session" \
+        session_name="${sess_name}" \
+        age_secs="$(( now_ts - created_ts ))" \
+        ttl_secs="${ttl}"
+    fi
+  done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null || true)
+
+  printf '%s' "${reaped}"
+}
+
 # --- main loop ---
 
 now_ts="$(now_epoch)"
@@ -399,6 +440,7 @@ total_skipped_missing_cwd=0
 total_skipped_empty=0
 total_launched=0
 total_notified=0
+total_reaped=0
 
 # v1.34.1+ (sre-lens S-004 follow-up): write the daemon-liveness
 # heartbeat at the TOP of each tick, before the no-work early exit.
@@ -418,6 +460,10 @@ if [[ -d "${_watchdog_heartbeat_dir}" ]]; then
       || rm -f "${_hb_tmp}"
   fi
 fi
+
+# Reap stale sessions before processing new claims — prevents orphan
+# accumulation that causes auth-token conflicts with foreground sessions.
+total_reaped="$(_reap_stale_tmux_sessions)"
 
 # Enumerate via the canonical helper. --list returns:
 #   <scope>\t<session_id>\t<captured_at_ts>\t<artifact_path>
@@ -633,6 +679,7 @@ record_gate_event "resume-watchdog" "tick-complete" \
   total_scanned="${total_scanned}" \
   launched="${total_launched}" \
   notified="${total_notified}" \
+  reaped="${total_reaped}" \
   skipped_cooldown="${total_skipped_cooldown}" \
   skipped_cooldown_under_lock="${total_skipped_cooldown_under_lock}" \
   skipped_future="${total_skipped_future}" \

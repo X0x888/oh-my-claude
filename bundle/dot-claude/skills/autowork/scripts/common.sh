@@ -51,6 +51,7 @@ _omc_env_prompt_persist="${OMC_PROMPT_PERSIST:-}"
 _omc_env_resume_request_ttl="${OMC_RESUME_REQUEST_TTL_DAYS:-}"
 _omc_env_resume_watchdog="${OMC_RESUME_WATCHDOG:-}"
 _omc_env_resume_watchdog_cooldown="${OMC_RESUME_WATCHDOG_COOLDOWN_SECS:-}"
+_omc_env_resume_session_ttl="${OMC_RESUME_SESSION_TTL_SECS:-}"
 _omc_env_resume_scan_max_sessions="${OMC_RESUME_SCAN_MAX_SESSIONS:-}"
 _omc_env_time_tracking="${OMC_TIME_TRACKING:-}"
 _omc_env_time_tracking_xs_retain="${OMC_TIME_TRACKING_XS_RETAIN_DAYS:-}"
@@ -292,6 +293,9 @@ OMC_RESUME_WATCHDOG="${OMC_RESUME_WATCHDOG:-off}"
 # window. Combined with the helper's 3-attempt cap, this caps total
 # retry effort at ~30 minutes per artifact before surrendering.
 OMC_RESUME_WATCHDOG_COOLDOWN_SECS="${OMC_RESUME_WATCHDOG_COOLDOWN_SECS:-600}"
+# Maximum lifetime for headless omc-resume-* tmux sessions before the
+# watchdog reaper kills them. Default 7200s (2h).
+OMC_RESUME_SESSION_TTL_SECS="${OMC_RESUME_SESSION_TTL_SECS:-7200}"
 # Time-tracking — captures per-tool / per-subagent durations into
 # `<session>/timing.jsonl` and emits a one-line distribution summary as
 # Stop additionalContext when the session releases. Surfaces via the
@@ -433,6 +437,8 @@ _parse_conf_file() {
         [[ -z "${_omc_env_resume_watchdog}" && "${value}" =~ ^(on|off)$ ]] && OMC_RESUME_WATCHDOG="${value}" || true ;;
       resume_watchdog_cooldown_secs)
         [[ -z "${_omc_env_resume_watchdog_cooldown}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_RESUME_WATCHDOG_COOLDOWN_SECS="${value}" || true ;;
+      resume_session_ttl_secs)
+        [[ -z "${_omc_env_resume_session_ttl}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_RESUME_SESSION_TTL_SECS="${value}" || true ;;
       resume_scan_max_sessions)
         [[ -z "${_omc_env_resume_scan_max_sessions}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_RESUME_SCAN_MAX_SESSIONS="${value}" || true ;;
       time_tracking)

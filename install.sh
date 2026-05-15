@@ -1195,6 +1195,15 @@ backup_existing_targets
 # Step 2 — Copy bundle into ~/.claude/.
 rsync -a --exclude='.DS_Store' "${BUNDLE_CLAUDE}/" "${CLAUDE_HOME}/"
 
+# Strip macOS extended attributes (com.apple.provenance, com.apple.quarantine)
+# inherited from the git clone. Without this, launchd processes (e.g. the
+# resume-watchdog) get "Operation not permitted" reading installed scripts on
+# macOS 15+ due to TCC restrictions on provenance-tagged files.
+if [[ "$(uname)" == "Darwin" ]] && command -v xattr >/dev/null 2>&1; then
+  xattr -dr com.apple.provenance "${CLAUDE_HOME}/" 2>/dev/null || true
+  xattr -dr com.apple.quarantine "${CLAUDE_HOME}/" 2>/dev/null || true
+fi
+
 # Remove iOS agents if --no-ios was specified.
 if [[ "${EXCLUDE_IOS}" == "true" ]]; then
   for ios_agent in "${CLAUDE_HOME}/agents/ios-"*.md; do

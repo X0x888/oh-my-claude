@@ -160,6 +160,15 @@ mock_calls() {
   cat "${MOCK_BIN}/${name}.calls" 2>/dev/null || echo ""
 }
 
+# Count tmux new-session (launch) calls, ignoring read-only calls from the
+# stale-session reaper (list-sessions, display-message) and the skip check
+# (has-session).
+mock_launch_count() {
+  local count
+  count="$(printf '%s' "$(mock_calls tmux)" | grep -c new-session 2>/dev/null)" || count=0
+  printf '%s' "${count}"
+}
+
 # Build a claimable resume_request.json; returns its path on stdout.
 make_request() {
   local sid="$1"
@@ -243,7 +252,7 @@ install_tmux_mock
 install_mock claude 0
 target="$(make_request "sess-2" "${TEST_HOME}" "obj" "/ulw foo" "rate_limit" "+3600")"
 bash "${WATCHDOG}" >/dev/null 2>&1
-assert_eq "T2: tmux NOT invoked" "" "$(mock_calls tmux)"
+assert_eq "T2: tmux NOT launched" "0" "$(mock_launch_count)"
 # But the artifact has a future reset, so find_claimable_resume_requests
 # already filtered it out — this is the helper's behavior verified
 # from the watchdog perspective.
@@ -259,7 +268,7 @@ install_tmux_mock
 install_mock claude 0
 target="$(make_request "sess-3" "/no/such/dir" "obj" "/ulw foo")"
 bash "${WATCHDOG}" >/dev/null 2>&1
-assert_eq "T3: tmux NOT invoked" "" "$(mock_calls tmux)"
+assert_eq "T3: tmux NOT launched" "0" "$(mock_launch_count)"
 assert_eq "T3: artifact unmutated" "0" "$(read_field "${target}" resume_attempts)"
 teardown_test
 
@@ -328,7 +337,7 @@ tmp="${target}.tmp"
 jq --argjson t "${recent_ts}" '. + {last_attempt_ts: $t, resume_attempts: 1}' \
   "${target}" > "${tmp}" && mv -f "${tmp}" "${target}"
 bash "${WATCHDOG}" >/dev/null 2>&1
-assert_eq "T7: tmux NOT invoked (cooldown)" "" "$(mock_calls tmux)"
+assert_eq "T7: tmux NOT launched (cooldown)" "0" "$(mock_launch_count)"
 teardown_test
 
 # ---------------------------------------------------------------------------
@@ -393,7 +402,7 @@ tmp="${target}.tmp"
 jq --argjson t "${now_ts}" '. + {resumed_at_ts: $t, resume_attempts: 1}' \
   "${target}" > "${tmp}" && mv -f "${tmp}" "${target}"
 bash "${WATCHDOG}" >/dev/null 2>&1
-assert_eq "T10: tmux NOT invoked" "" "$(mock_calls tmux)"
+assert_eq "T10: tmux NOT launched" "0" "$(mock_launch_count)"
 teardown_test
 
 # ---------------------------------------------------------------------------
@@ -409,7 +418,7 @@ tmp="${target}.tmp"
 jq --argjson t "${now_ts}" '. + {dismissed_at_ts: $t}' \
   "${target}" > "${tmp}" && mv -f "${tmp}" "${target}"
 bash "${WATCHDOG}" >/dev/null 2>&1
-assert_eq "T11: tmux NOT invoked (dismissed)" "" "$(mock_calls tmux)"
+assert_eq "T11: tmux NOT launched (dismissed)" "0" "$(mock_launch_count)"
 teardown_test
 
 # ---------------------------------------------------------------------------
@@ -1136,6 +1145,240 @@ if [[ "${post_count}" =~ ^[0-9]+$ ]] && (( post_count > 0 )) && (( post_count <=
 else
   printf 'FAIL: T33 — _watchdog gate_events.jsonl not capped (post_count=%q)\n' "${post_count}" >&2
   fail=$((fail + 1))
+fi
+teardown_test
+
+# T34: stale-session reaper kills omc-resume-* tmux sessions older than TTL
+echo "=== T34: reaper kills stale tmux sessions ==="
+setup_test
+# Custom tmux mock that simulates one stale omc-resume-* session.
+stale_ts=$(( $(date +%s) - 8000 ))   # 8000s old, exceeds 7200s default TTL
+cat > "${MOCK_BIN}/tmux" <<REAPER_MOCK
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "${MOCK_BIN}/tmux.calls"
+case "\$1" in
+  list-sessions) printf 'omc-resume-stale-test-sess\n'; exit 0 ;;
+  display-message)
+    case "\$*" in
+      *session_attached*) printf '0\n'; exit 0 ;;
+      *session_created*)  printf '${stale_ts}\n'; exit 0 ;;
+    esac
+    exit 0 ;;
+  kill-session) exit 0 ;;
+  has-session) exit 1 ;;
+  *) exit 0 ;;
+esac
+REAPER_MOCK
+chmod +x "${MOCK_BIN}/tmux"
+install_mock claude 0
+# No claimable artifacts — just test the reaper.
+mkdir -p "${TEST_HOME}/.claude/quality-pack/state/_watchdog"
+HOME="${TEST_HOME}" bash "${WATCHDOG}" >/dev/null 2>&1 || true
+calls="$(mock_calls tmux)"
+if printf '%s' "${calls}" | grep -q 'kill-session.*omc-resume-stale-test-sess'; then
+  pass=$((pass + 1))
+else
+  printf 'FAIL: T34 — reaper did not kill stale session (calls=%q)\n' "${calls}" >&2
+  fail=$((fail + 1))
+fi
+# Verify gate event was recorded.
+events_file="${TEST_HOME}/.claude/quality-pack/state/_watchdog/gate_events.jsonl"
+if [[ -f "${events_file}" ]] && grep -q 'reaped-stale-session' "${events_file}"; then
+  pass=$((pass + 1))
+else
+  printf 'FAIL: T34 — reaped-stale-session gate event missing\n' >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# T35: reaper skips sessions younger than TTL
+echo "=== T35: reaper skips fresh sessions ==="
+setup_test
+fresh_ts=$(( $(date +%s) - 60 ))   # 60s old, well within 7200s TTL
+cat > "${MOCK_BIN}/tmux" <<FRESH_MOCK
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "${MOCK_BIN}/tmux.calls"
+case "\$1" in
+  list-sessions) printf 'omc-resume-fresh-test-sess\n'; exit 0 ;;
+  display-message)
+    case "\$*" in
+      *session_attached*) printf '0\n'; exit 0 ;;
+      *session_created*)  printf '${fresh_ts}\n'; exit 0 ;;
+    esac
+    exit 0 ;;
+  kill-session) exit 0 ;;
+  has-session) exit 1 ;;
+  *) exit 0 ;;
+esac
+FRESH_MOCK
+chmod +x "${MOCK_BIN}/tmux"
+install_mock claude 0
+mkdir -p "${TEST_HOME}/.claude/quality-pack/state/_watchdog"
+HOME="${TEST_HOME}" bash "${WATCHDOG}" >/dev/null 2>&1 || true
+calls="$(mock_calls tmux)"
+if printf '%s' "${calls}" | grep -q 'kill-session'; then
+  printf 'FAIL: T35 — reaper killed fresh session (calls=%q)\n' "${calls}" >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+teardown_test
+
+# T36: reaper skips attached sessions even if stale
+echo "=== T36: reaper skips attached sessions ==="
+setup_test
+stale_ts=$(( $(date +%s) - 8000 ))
+cat > "${MOCK_BIN}/tmux" <<ATTACH_MOCK
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "${MOCK_BIN}/tmux.calls"
+case "\$1" in
+  list-sessions) printf 'omc-resume-attached-sess\n'; exit 0 ;;
+  display-message)
+    case "\$*" in
+      *session_attached*) printf '1\n'; exit 0 ;;
+      *session_created*)  printf '${stale_ts}\n'; exit 0 ;;
+    esac
+    exit 0 ;;
+  kill-session) exit 0 ;;
+  has-session) exit 1 ;;
+  *) exit 0 ;;
+esac
+ATTACH_MOCK
+chmod +x "${MOCK_BIN}/tmux"
+install_mock claude 0
+mkdir -p "${TEST_HOME}/.claude/quality-pack/state/_watchdog"
+HOME="${TEST_HOME}" bash "${WATCHDOG}" >/dev/null 2>&1 || true
+calls="$(mock_calls tmux)"
+if printf '%s' "${calls}" | grep -q 'kill-session'; then
+  printf 'FAIL: T36 — reaper killed attached session (calls=%q)\n' "${calls}" >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+teardown_test
+
+# T37: custom TTL via OMC_RESUME_SESSION_TTL_SECS env var
+echo "=== T37: custom TTL env var controls reaper threshold ==="
+setup_test
+custom_ts=$(( $(date +%s) - 150 ))   # 150s old
+cat > "${MOCK_BIN}/tmux" <<TTL_MOCK
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "${MOCK_BIN}/tmux.calls"
+case "\$1" in
+  list-sessions) printf 'omc-resume-custom-ttl-sess\n'; exit 0 ;;
+  display-message)
+    case "\$*" in
+      *session_attached*) printf '0\n'; exit 0 ;;
+      *session_created*)  printf '${custom_ts}\n'; exit 0 ;;
+    esac
+    exit 0 ;;
+  kill-session) exit 0 ;;
+  has-session) exit 1 ;;
+  *) exit 0 ;;
+esac
+TTL_MOCK
+chmod +x "${MOCK_BIN}/tmux"
+install_mock claude 0
+mkdir -p "${TEST_HOME}/.claude/quality-pack/state/_watchdog"
+# 100s TTL: 150s-old session should be reaped.
+OMC_RESUME_SESSION_TTL_SECS=100 HOME="${TEST_HOME}" bash "${WATCHDOG}" >/dev/null 2>&1 || true
+calls="$(mock_calls tmux)"
+if printf '%s' "${calls}" | grep -q 'kill-session.*omc-resume-custom-ttl-sess'; then
+  pass=$((pass + 1))
+else
+  printf 'FAIL: T37 — custom TTL 100s did not reap 150s-old session (calls=%q)\n' "${calls}" >&2
+  fail=$((fail + 1))
+fi
+# Same session with 200s TTL: should NOT be reaped.
+teardown_test
+setup_test
+cat > "${MOCK_BIN}/tmux" <<TTL_MOCK2
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "${MOCK_BIN}/tmux.calls"
+case "\$1" in
+  list-sessions) printf 'omc-resume-custom-ttl-sess\n'; exit 0 ;;
+  display-message)
+    case "\$*" in
+      *session_attached*) printf '0\n'; exit 0 ;;
+      *session_created*)  printf '${custom_ts}\n'; exit 0 ;;
+    esac
+    exit 0 ;;
+  kill-session) exit 0 ;;
+  has-session) exit 1 ;;
+  *) exit 0 ;;
+esac
+TTL_MOCK2
+chmod +x "${MOCK_BIN}/tmux"
+install_mock claude 0
+mkdir -p "${TEST_HOME}/.claude/quality-pack/state/_watchdog"
+# 200s TTL: 150s-old session should be kept.
+OMC_RESUME_SESSION_TTL_SECS=200 HOME="${TEST_HOME}" bash "${WATCHDOG}" >/dev/null 2>&1 || true
+calls="$(mock_calls tmux)"
+if printf '%s' "${calls}" | grep -q 'kill-session'; then
+  printf 'FAIL: T37 — 200s TTL wrongly reaped 150s-old session (calls=%q)\n' "${calls}" >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+teardown_test
+
+# T38: display-message failure degrades gracefully (skip, don't kill)
+echo "=== T38: display-message failure skips session ==="
+setup_test
+cat > "${MOCK_BIN}/tmux" <<ERR_MOCK
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "${MOCK_BIN}/tmux.calls"
+case "\$1" in
+  list-sessions) printf 'omc-resume-err-sess\n'; exit 0 ;;
+  display-message) printf 'garbage-not-a-number\n'; exit 1 ;;
+  kill-session) exit 0 ;;
+  has-session) exit 1 ;;
+  *) exit 0 ;;
+esac
+ERR_MOCK
+chmod +x "${MOCK_BIN}/tmux"
+install_mock claude 0
+mkdir -p "${TEST_HOME}/.claude/quality-pack/state/_watchdog"
+HOME="${TEST_HOME}" bash "${WATCHDOG}" >/dev/null 2>&1 || true
+calls="$(mock_calls tmux)"
+if printf '%s' "${calls}" | grep -q 'kill-session'; then
+  printf 'FAIL: T38 — display-message failure caused reap (calls=%q)\n' "${calls}" >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+teardown_test
+
+# T39: multi-client attached session (attached=2) is not reaped
+echo "=== T39: multi-client attached session skipped ==="
+setup_test
+stale_ts=$(( $(date +%s) - 8000 ))
+cat > "${MOCK_BIN}/tmux" <<MULTI_MOCK
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "${MOCK_BIN}/tmux.calls"
+case "\$1" in
+  list-sessions) printf 'omc-resume-multi-client\n'; exit 0 ;;
+  display-message)
+    case "\$*" in
+      *session_attached*) printf '2\n'; exit 0 ;;
+      *session_created*)  printf '${stale_ts}\n'; exit 0 ;;
+    esac
+    exit 0 ;;
+  kill-session) exit 0 ;;
+  has-session) exit 1 ;;
+  *) exit 0 ;;
+esac
+MULTI_MOCK
+chmod +x "${MOCK_BIN}/tmux"
+install_mock claude 0
+mkdir -p "${TEST_HOME}/.claude/quality-pack/state/_watchdog"
+HOME="${TEST_HOME}" bash "${WATCHDOG}" >/dev/null 2>&1 || true
+calls="$(mock_calls tmux)"
+if printf '%s' "${calls}" | grep -q 'kill-session'; then
+  printf 'FAIL: T39 — multi-client (attached=2) session was reaped (calls=%q)\n' "${calls}" >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
 fi
 teardown_test
 
