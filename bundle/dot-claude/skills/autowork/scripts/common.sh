@@ -52,10 +52,6 @@ _omc_env_resume_request_ttl="${OMC_RESUME_REQUEST_TTL_DAYS:-}"
 _omc_env_resume_watchdog="${OMC_RESUME_WATCHDOG:-}"
 _omc_env_resume_watchdog_cooldown="${OMC_RESUME_WATCHDOG_COOLDOWN_SECS:-}"
 _omc_env_resume_scan_max_sessions="${OMC_RESUME_SCAN_MAX_SESSIONS:-}"
-_omc_env_cleanup_orphan_resume="${OMC_CLEANUP_ORPHAN_RESUME:-}"
-_omc_env_orphan_resume_max_age_hours="${OMC_ORPHAN_RESUME_MAX_AGE_HOURS:-}"
-_omc_env_cleanup_orphan_tmp="${OMC_CLEANUP_ORPHAN_TMP:-}"
-_omc_env_orphan_tmp_max_age_hours="${OMC_ORPHAN_TMP_MAX_AGE_HOURS:-}"
 _omc_env_time_tracking="${OMC_TIME_TRACKING:-}"
 _omc_env_time_tracking_xs_retain="${OMC_TIME_TRACKING_XS_RETAIN_DAYS:-}"
 _omc_env_time_card_min_seconds="${OMC_TIME_CARD_MIN_SECONDS:-}"
@@ -439,14 +435,6 @@ _parse_conf_file() {
         [[ -z "${_omc_env_resume_watchdog_cooldown}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_RESUME_WATCHDOG_COOLDOWN_SECS="${value}" || true ;;
       resume_scan_max_sessions)
         [[ -z "${_omc_env_resume_scan_max_sessions}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_RESUME_SCAN_MAX_SESSIONS="${value}" || true ;;
-      cleanup_orphan_resume)
-        [[ -z "${_omc_env_cleanup_orphan_resume}" && "${value}" =~ ^(on|off)$ ]] && OMC_CLEANUP_ORPHAN_RESUME="${value}" || true ;;
-      orphan_resume_max_age_hours)
-        [[ -z "${_omc_env_orphan_resume_max_age_hours}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_ORPHAN_RESUME_MAX_AGE_HOURS="${value}" || true ;;
-      cleanup_orphan_tmp)
-        [[ -z "${_omc_env_cleanup_orphan_tmp}" && "${value}" =~ ^(on|off)$ ]] && OMC_CLEANUP_ORPHAN_TMP="${value}" || true ;;
-      orphan_tmp_max_age_hours)
-        [[ -z "${_omc_env_orphan_tmp_max_age_hours}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_ORPHAN_TMP_MAX_AGE_HOURS="${value}" || true ;;
       time_tracking)
         [[ -z "${_omc_env_time_tracking}" && "${value}" =~ ^(on|off)$ ]] && OMC_TIME_TRACKING="${value}" || true ;;
       time_tracking_xs_retain_days)
@@ -604,50 +592,6 @@ is_auto_memory_enabled() {
 # auto_memory and classifier_telemetry opt-out shape.
 is_stop_failure_capture_enabled() {
   [[ "${OMC_STOP_FAILURE_CAPTURE:-on}" != "off" ]]
-}
-
-# Returns 0 (true) when the SessionStart orphan-resume cleanup hook is
-# enabled (default), 1 (false) when disabled via
-# `cleanup_orphan_resume=off`. Mirrors the auto_memory / classifier_
-# telemetry opt-out shape so shared-machine users can suppress
-# automatic tmux-session pruning if they have other long-running
-# `omc-resume-*` sessions they want to manage manually.
-is_cleanup_orphan_resume_enabled() {
-  [[ "${OMC_CLEANUP_ORPHAN_RESUME:-on}" != "off" ]]
-}
-
-# Returns the integer max-age in hours that the orphan-resume cleanup
-# uses as a kill threshold. Default 4 hours — conservative, on the
-# assumption that watchdog-spawned `claude --resume` processes that
-# haven't been attached after 4h are claude-at-prompt zombies, not
-# active work. Configurable via env or `orphan_resume_max_age_hours`
-# conf flag.
-orphan_resume_max_age_hours() {
-  local _hours="${OMC_ORPHAN_RESUME_MAX_AGE_HOURS:-4}"
-  [[ "${_hours}" =~ ^[1-9][0-9]*$ ]] || _hours=4
-  printf '%s' "${_hours}"
-}
-
-# Returns 0 (true) when the SessionStart orphan-tmp cleanup hook is
-# enabled (default), 1 (false) when disabled via
-# `cleanup_orphan_tmp=off`. Sweeps stale `/tmp/omc-*` directories left
-# by test helpers that don't trap their own cleanup. Distinct from
-# `cleanup_orphan_resume` (tmux session pruning) so users can opt out
-# of either independently.
-is_cleanup_orphan_tmp_enabled() {
-  [[ "${OMC_CLEANUP_ORPHAN_TMP:-on}" != "off" ]]
-}
-
-# Returns the integer max-age in hours that the orphan-tmp cleanup
-# uses as a removal threshold. Default 24 — more conservative than the
-# tmux cleanup's 4h because /tmp/omc-* may include an active test run
-# the user invoked manually. Raise if you intentionally leave omc-*
-# scratch dirs around longer. Configurable via env or
-# `orphan_tmp_max_age_hours` conf flag.
-orphan_tmp_max_age_hours() {
-  local _hours="${OMC_ORPHAN_TMP_MAX_AGE_HOURS:-24}"
-  [[ "${_hours}" =~ ^[1-9][0-9]*$ ]] || _hours=24
-  printf '%s' "${_hours}"
 }
 
 # Returns 0 (true) when in-session prompt persistence is enabled (default),

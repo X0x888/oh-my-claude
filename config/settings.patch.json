@@ -48,22 +48,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash $HOME/.claude/quality-pack/scripts/cleanup-orphan-resume.sh"
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash $HOME/.claude/quality-pack/scripts/cleanup-orphan-tmp.sh"
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
             "command": "bash $HOME/.claude/quality-pack/scripts/session-start-drift-check.sh"
           }
         ]
