@@ -677,5 +677,97 @@ rm -rf "${SWEEP_STATE_ROOT:?}/${SWEEP_SID:?}"
 rm -f "${QP}/gate_events.jsonl" "${QP}/session_summary.jsonl"
 
 # ----------------------------------------------------------------------
+# Test 30 (v1.40.x W4 follow-up): per-reviewer fix-rate sub-table.
+# W4 (89a98a7) shipped the write path (record-finding-list.sh emits
+# originating_reviewer in finding-status-change event details) but
+# show-report.sh had no read path — the field accumulated as dead
+# data. The follow-up closes the loop: when finding-status-change
+# events carry originating_reviewer, /ulw-report renders fix-rate
+# (shipped/total) per reviewer with a `← below threshold` marker
+# for reviewers below 30%. Six rows synthesize two reviewers
+# (above-threshold and at-threshold) to lock the rendering shape.
+# ----------------------------------------------------------------------
+printf 'Test 30: v1.40.x — per-reviewer fix-rate sub-table renders with calibration marker\n'
+NOW="$(date +%s)"
+cat > "${QP}/gate_events.jsonl" <<EOF
+{"ts":${NOW},"session":"test-rev","gate":"finding-status","event":"finding-status-change","details":{"finding_id":"F-001","finding_status":"shipped","originating_reviewer":"quality-reviewer","commit_sha":"aaa"}}
+{"ts":${NOW},"session":"test-rev","gate":"finding-status","event":"finding-status-change","details":{"finding_id":"F-002","finding_status":"shipped","originating_reviewer":"quality-reviewer","commit_sha":"bbb"}}
+{"ts":${NOW},"session":"test-rev","gate":"finding-status","event":"finding-status-change","details":{"finding_id":"F-003","finding_status":"rejected","originating_reviewer":"quality-reviewer","commit_sha":"ccc"}}
+{"ts":${NOW},"session":"test-rev","gate":"finding-status","event":"finding-status-change","details":{"finding_id":"F-004","finding_status":"rejected","originating_reviewer":"over-eager-reviewer","commit_sha":"ddd"}}
+{"ts":${NOW},"session":"test-rev","gate":"finding-status","event":"finding-status-change","details":{"finding_id":"F-005","finding_status":"rejected","originating_reviewer":"over-eager-reviewer","commit_sha":"eee"}}
+{"ts":${NOW},"session":"test-rev","gate":"finding-status","event":"finding-status-change","details":{"finding_id":"F-006","finding_status":"shipped","originating_reviewer":"over-eager-reviewer","commit_sha":"fff"}}
+EOF
+cat > "${QP}/session_summary.jsonl" <<EOF
+{"session_id":"test-rev","start_ts":${NOW},"end_ts":${NOW},"domain":"coding","intent":"execution","edit_count":6,"verified":true,"reviewed":true,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":1,"outcome":"shipped","skip_count":0,"serendipity_count":0}
+EOF
+out="$(run_report week)"
+assert_contains "T30a: section header rendered" \
+  "Per-reviewer fix-rate" "${out}"
+# quality-reviewer: 2 shipped / 3 total = 66%
+assert_contains "T30b: quality-reviewer row with 66% fix-rate" \
+  "| \`quality-reviewer\` | 3 | 2 | 66%" "${out}"
+# over-eager-reviewer: 1 shipped / 3 total = 33% (above 30% — no marker)
+assert_contains "T30c: over-eager-reviewer row with 33% fix-rate (above threshold)" \
+  "| \`over-eager-reviewer\` | 3 | 1 | 33%" "${out}"
+# Ascending-by-fix-rate sort: over-eager (33%) appears before quality (66%)
+over_eager_line="$(printf '%s' "${out}" | grep -n 'over-eager-reviewer' | head -1 | cut -d: -f1)"
+quality_line="$(printf '%s' "${out}" | grep -n '| `quality-reviewer`' | head -1 | cut -d: -f1)"
+if [[ -n "${over_eager_line}" ]] && [[ -n "${quality_line}" ]] && [[ "${over_eager_line}" -lt "${quality_line}" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T30d — ascending-by-fix-rate sort: over-eager (line %s) should precede quality (line %s)\n' "${over_eager_line}" "${quality_line}" >&2
+  fail=$((fail + 1))
+fi
+rm -f "${QP}/gate_events.jsonl" "${QP}/session_summary.jsonl"
+
+# ----------------------------------------------------------------------
+# Test 31 (v1.40.x W4 follow-up): below-threshold marker fires when
+# fix-rate drops under 30%. Locks the calibration-signal behavior:
+# a reviewer flagging mostly-rejected findings is the failure mode
+# the marker exists to surface.
+# ----------------------------------------------------------------------
+printf 'Test 31: v1.40.x — below-threshold marker renders for reviewers under 30%% fix-rate\n'
+NOW="$(date +%s)"
+cat > "${QP}/gate_events.jsonl" <<EOF
+{"ts":${NOW},"session":"test-bad","gate":"finding-status","event":"finding-status-change","details":{"finding_id":"F-101","finding_status":"rejected","originating_reviewer":"bad-reviewer","commit_sha":"aaa"}}
+{"ts":${NOW},"session":"test-bad","gate":"finding-status","event":"finding-status-change","details":{"finding_id":"F-102","finding_status":"rejected","originating_reviewer":"bad-reviewer","commit_sha":"bbb"}}
+{"ts":${NOW},"session":"test-bad","gate":"finding-status","event":"finding-status-change","details":{"finding_id":"F-103","finding_status":"rejected","originating_reviewer":"bad-reviewer","commit_sha":"ccc"}}
+{"ts":${NOW},"session":"test-bad","gate":"finding-status","event":"finding-status-change","details":{"finding_id":"F-104","finding_status":"rejected","originating_reviewer":"bad-reviewer","commit_sha":"ddd"}}
+{"ts":${NOW},"session":"test-bad","gate":"finding-status","event":"finding-status-change","details":{"finding_id":"F-105","finding_status":"shipped","originating_reviewer":"bad-reviewer","commit_sha":"eee"}}
+EOF
+cat > "${QP}/session_summary.jsonl" <<EOF
+{"session_id":"test-bad","start_ts":${NOW},"end_ts":${NOW},"domain":"coding","intent":"execution","edit_count":5,"verified":true,"reviewed":true,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":1,"outcome":"shipped","skip_count":0,"serendipity_count":0}
+EOF
+out="$(run_report week)"
+# 1 shipped / 5 total = 20% → below-threshold marker fires
+assert_contains "T31a: bad-reviewer row with 20% fix-rate and below-threshold marker" \
+  "| \`bad-reviewer\` | 5 | 1 | 20% ← below threshold |" "${out}"
+rm -f "${QP}/gate_events.jsonl" "${QP}/session_summary.jsonl"
+
+# ----------------------------------------------------------------------
+# Test 32 (v1.40.x W4 follow-up): section HIDDEN when no
+# originating_reviewer present. Back-compat for legacy
+# finding-status-change rows pre-W4 that don't carry the field.
+# ----------------------------------------------------------------------
+printf 'Test 32: v1.40.x — per-reviewer section HIDDEN when no originating_reviewer rows present\n'
+NOW="$(date +%s)"
+cat > "${QP}/gate_events.jsonl" <<EOF
+{"ts":${NOW},"session":"test-leg","gate":"finding-status","event":"finding-status-change","details":{"finding_id":"F-201","finding_status":"shipped","commit_sha":"aaa"}}
+{"ts":${NOW},"session":"test-leg","gate":"finding-status","event":"finding-status-change","details":{"finding_id":"F-202","finding_status":"shipped","originating_reviewer":"","commit_sha":"bbb"}}
+EOF
+cat > "${QP}/session_summary.jsonl" <<EOF
+{"session_id":"test-leg","start_ts":${NOW},"end_ts":${NOW},"domain":"coding","intent":"execution","edit_count":2,"verified":true,"reviewed":true,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":1,"outcome":"shipped","skip_count":0,"serendipity_count":0}
+EOF
+out="$(run_report week)"
+# Section header MUST NOT appear when every row has empty/missing reviewer
+if [[ "${out}" == *"Per-reviewer fix-rate"* ]]; then
+  printf '  FAIL: T32 — Per-reviewer section rendered despite no originating_reviewer rows\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+rm -f "${QP}/gate_events.jsonl" "${QP}/session_summary.jsonl"
+
+# ----------------------------------------------------------------------
 printf '\n=== Show-Report Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]] || exit 1

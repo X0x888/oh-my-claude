@@ -990,6 +990,59 @@ else
   totals_line="${totals_line})._"
   printf '%s\n\n' "${totals_line}"
 
+  # v1.40.x follow-up to W4 (89a98a7): per-reviewer fix-rate sub-table.
+  # W4 added originating_reviewer to finding-status-change event details
+  # but the read path was never wired — the field accumulated as dead
+  # data in gate_events.jsonl. This closure consumes the field and
+  # renders shipped-rate per reviewer.
+  #
+  # Why it matters: agent-metrics.json showed 2-11% clean-rates across
+  # all reviewers but no signal on which findings got shipped vs
+  # deferred vs rejected once flagged. A reviewer below 30% shipped-
+  # rate is a calibration signal — either the prompt is too eager
+  # (over-flagging legitimate work) or the work is genuinely defective.
+  # Either way the user can act on it.
+  #
+  # Quiet section: only renders when at least one finding-status-change
+  # event carries a non-empty originating_reviewer. Legacy rows pre-W4
+  # have empty originating_reviewer and are excluded; a cross-session
+  # window without fresh reviewer-attribution data renders no table.
+  #
+  # Sort: ascending by fix-rate so calibration outliers (the rows the
+  # user cares about) surface at the top with the `← below threshold`
+  # marker rather than buried below well-calibrated reviewers.
+  reviewer_rows="$(printf '%s\n' "${gate_event_rows}" \
+    | jq -c 'select(.gate == "finding-status" and .event == "finding-status-change" and ((.details.originating_reviewer // "") != ""))' 2>/dev/null || true)"
+  if [[ -n "${reviewer_rows}" ]]; then
+    printf '_Per-reviewer fix-rate (calibration signal — reviewers below 30%% may be over-eager):_\n\n'
+    printf '| Reviewer | Findings | Shipped | Fix-rate |\n'
+    printf '|---|---:|---:|---:|\n'
+    # Single jq -s pass groups by reviewer, counts total + shipped,
+    # computes fix-rate, sorts ascending. Bash only renders the
+    # markdown rows from the parsed output (avoids the prior pattern
+    # of multiple jq subprocesses per reviewer).
+    printf '%s\n' "${reviewer_rows}" \
+      | jq -rs '
+          group_by(.details.originating_reviewer)
+          | map({
+              reviewer: .[0].details.originating_reviewer,
+              total: length,
+              shipped: (map(select(.details.finding_status == "shipped")) | length)
+            })
+          | map(.fix_rate = (if .total > 0 then ((.shipped * 100) / .total | floor) else 0 end))
+          | sort_by(.fix_rate)
+          | .[]
+          | "\(.reviewer)|\(.total)|\(.shipped)|\(.fix_rate)"
+        ' 2>/dev/null \
+      | while IFS='|' read -r _r _total _shipped _rate; do
+          [[ -z "${_r}" ]] && continue
+          _marker=""
+          [[ "${_rate}" -lt 30 ]] && _marker=" ← below threshold"
+          printf '| `%s` | %s | %s | %s%%%s |\n' "${_r}" "${_total}" "${_shipped}" "${_rate}" "${_marker}"
+        done
+    printf '\n'
+  fi
+
   # v1.37.x W4 (Item 6): per-gate skip-rate sub-table. Joins ulw-skip:
   # registered events back to the gate they bypassed (recorded by
   # ulw-skip-register.sh:48+). High skip rate on a gate is a false-

@@ -487,5 +487,128 @@ assert_eq "T22: VERSION unchanged after gate-failure" "1.0.0" "${ver_after}"
 cleanup_fixture "${repo}"
 
 # ---------------------------------------------------------------------
+# T23 (v1.40.x follow-up to c7714d8 + fbf957e): lint sub-stage aborts
+# on bash -n syntax error in bundle/. The original Step 6.7 gate only
+# ran the test job's bash tests; lint regressions (shellcheck warnings,
+# broken JSON, flag-coord drift, syntax errors) shipped CI-red despite
+# the gate "passing" locally. T23-T25 lock the lint sub-stage in.
+# ---------------------------------------------------------------------
+printf 'Test 23: lint sub-stage aborts on bash -n syntax error (v1.40.x)\n'
+repo="$(mk_release_fixture)"
+mkdir -p "${repo}/.github/workflows" "${repo}/bundle/dot-claude/skills/autowork/scripts"
+cat > "${repo}/.github/workflows/validate.yml" <<'YML'
+jobs:
+  test:
+    steps:
+      - name: Run a passing test
+        run: bash tests/test-noop.sh
+YML
+# A bash file in bundle/ with deliberate syntax error (unclosed quote).
+cat > "${repo}/bundle/dot-claude/skills/autowork/scripts/broken.sh" <<'BAD'
+#!/usr/bin/env bash
+echo "unterminated string
+BAD
+# Provide a passing test so if the lint sub-stage were skipped, the
+# test sub-stage would not error — keeps the assertion focused on lint.
+cat > "${repo}/tests/test-noop.sh" <<'TEST'
+#!/usr/bin/env bash
+exit 0
+TEST
+chmod +x "${repo}/tests/test-noop.sh"
+(cd "${repo}" && git add -A && git commit -q -m "add broken bundle file + noop test")
+set +e
+out="$(cd "${repo}" && bash tools/release.sh "1.0.1" 2>&1)"
+rc=$?
+set -e
+assert_eq "T23: gate-failure exits non-zero" "1" "${rc}"
+assert_contains "T23: names lint-sweep failure" "lint-sweep failed" "${out}"
+assert_contains "T23: names bash -n category" "bash -n syntax" "${out}"
+ver_after="$(cat "${repo}/VERSION")"
+assert_eq "T23: VERSION unchanged after lint-failure" "1.0.0" "${ver_after}"
+cleanup_fixture "${repo}"
+
+# ---------------------------------------------------------------------
+# T24 (v1.40.x follow-up): lint sub-stage aborts on JSON validation
+# failure. Catches the failure mode where invalid JSON in settings.json
+# / config/*.json gets committed and only surfaces on CI's
+# `python3 -m json.tool` step.
+# ---------------------------------------------------------------------
+printf 'Test 24: lint sub-stage aborts on JSON validation failure (v1.40.x)\n'
+repo="$(mk_release_fixture)"
+mkdir -p "${repo}/.github/workflows"
+cat > "${repo}/.github/workflows/validate.yml" <<'YML'
+jobs:
+  test:
+    steps:
+      - name: Noop
+        run: bash tests/test-noop.sh
+YML
+cat > "${repo}/broken-config.json" <<'BAD'
+{ "foo": "bar"   <-- missing closing brace and quote
+BAD
+cat > "${repo}/tests/test-noop.sh" <<'TEST'
+#!/usr/bin/env bash
+exit 0
+TEST
+chmod +x "${repo}/tests/test-noop.sh"
+(cd "${repo}" && git add -A && git commit -q -m "add broken JSON + noop test")
+# Skip the test if python3 isn't on PATH — the lint stage would skip
+# JSON validation in that case, so T24 has nothing to assert.
+if command -v python3 >/dev/null 2>&1; then
+  set +e
+  out="$(cd "${repo}" && bash tools/release.sh "1.0.1" 2>&1)"
+  rc=$?
+  set -e
+  assert_eq "T24: gate-failure exits non-zero" "1" "${rc}"
+  assert_contains "T24: names lint-sweep failure" "lint-sweep failed" "${out}"
+  assert_contains "T24: names JSON category" "JSON validation" "${out}"
+  ver_after="$(cat "${repo}/VERSION")"
+  assert_eq "T24: VERSION unchanged after JSON-failure" "1.0.0" "${ver_after}"
+else
+  printf '  SKIP T24: python3 not in PATH\n'
+fi
+cleanup_fixture "${repo}"
+
+# ---------------------------------------------------------------------
+# T25 (v1.40.x follow-up): lint sub-stage aborts on flag-coordination
+# drift. tools/check-flag-coordination.sh exits non-zero when the
+# 3-site SoT trio (parser/example/omc-config) is out of sync. Fixture
+# provides a stub that exits 1 so the gate exercises the failure path
+# without recreating the entire SoT trio.
+# ---------------------------------------------------------------------
+printf 'Test 25: lint sub-stage aborts on flag-coord failure (v1.40.x)\n'
+repo="$(mk_release_fixture)"
+mkdir -p "${repo}/.github/workflows" "${repo}/tools"
+cat > "${repo}/.github/workflows/validate.yml" <<'YML'
+jobs:
+  test:
+    steps:
+      - name: Noop
+        run: bash tests/test-noop.sh
+YML
+cat > "${repo}/tools/check-flag-coordination.sh" <<'STUB'
+#!/usr/bin/env bash
+printf 'flag drift detected: example flag missing from parser\n' >&2
+exit 1
+STUB
+chmod +x "${repo}/tools/check-flag-coordination.sh"
+cat > "${repo}/tests/test-noop.sh" <<'TEST'
+#!/usr/bin/env bash
+exit 0
+TEST
+chmod +x "${repo}/tests/test-noop.sh"
+(cd "${repo}" && git add -A && git commit -q -m "add failing flag-coord stub + noop test")
+set +e
+out="$(cd "${repo}" && bash tools/release.sh "1.0.1" 2>&1)"
+rc=$?
+set -e
+assert_eq "T25: gate-failure exits non-zero" "1" "${rc}"
+assert_contains "T25: names lint-sweep failure" "lint-sweep failed" "${out}"
+assert_contains "T25: names flag-coord category" "flag-coord" "${out}"
+ver_after="$(cat "${repo}/VERSION")"
+assert_eq "T25: VERSION unchanged after flag-coord-failure" "1.0.0" "${ver_after}"
+cleanup_fixture "${repo}"
+
+# ---------------------------------------------------------------------
 printf '\n=== release tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]

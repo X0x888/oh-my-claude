@@ -947,6 +947,97 @@ e2e-hook-sequence 373, coordination-rules pass (counts back to 98 /
 EXIT-trap discipline checks in run-sterile.sh and test-sterile-env.sh
 that prove the source-side fix works.
 
+### Post-v1.40.1 evaluation follow-ups (two CI-parity gaps closed)
+
+A retrospective evaluation of the post-v1.40.1 [Unreleased] commit
+series surfaced two real gaps. Both fixed in the same `main`-commit
+flow under [Unreleased] per the accumulate-before-tag rule. Smaller
+nits caught by the audit (show-whats-new.sh temp-file cleanup,
+next-session regex breadth) were already correctly handled by the
+prior commits and required no follow-up.
+
+**Gap A — `tools/release.sh` Step 6.7 only mirrored the CI `test`
+job, not the `lint` job.** The c7714d8 / fbf957e commits shipped a
+"local CI-parity pre-flight" that extracted the bash-test list from
+`validate.yml` and ran each test. But the CI `lint` job runs four
+additional checks the gate never invoked — bash `-n` syntax,
+`shellcheck --severity=warning`, JSON validation, and
+`tools/check-flag-coordination.sh`. Plus the `test` job's python
+`tests.test_statusline` invocation never matched the bash-only
+extractor regex. Net: a shellcheck warning, broken JSON, flag-coord
+drift, syntax error in `bundle/`, or python statusline regression
+would still ship CI-red on a tagged-SHA despite the gate "passing"
+locally — exactly the v1.40.0/v1.40.1 failure mode the gate was
+built to prevent, just transposed to a different failure category.
+
+Fix: re-cast Step 6.7 as two sub-stages — `lint sweep` (1/5 bash
+-n, 2/5 JSON, 3/5 flag-coord, 4/5 shellcheck, 5/5 python
+statusline) followed by the existing `test sweep`. Each lint check
+skips with a visible notice when its dependency (`shellcheck`,
+`python3`) is missing, so a minimal dev box gets partial parity
+instead of hard-failing. Lint runs before tests so cheap failures
+(seconds) abort the gate before the multi-minute test sweep starts.
+Section banner updated from "local bash sweep pre-flight" to
+"local CI-parity pre-flight (lint + bash tests)" to match.
+
+Regression net (`tests/test-release.sh`):
+- T23 — lint sub-stage aborts on bash `-n` syntax error in `bundle/`.
+- T24 — lint sub-stage aborts on JSON validation failure (skips
+  cleanly when python3 is not in PATH so CI parity is honest).
+- T25 — lint sub-stage aborts on `tools/check-flag-coordination.sh`
+  exit-1 (stub fixture).
+
+`test-release.sh` 64 → 76 assertions. Existing T22 (test-sweep
+abort) still passes because the lint sweep skips gracefully on
+fixtures missing `bundle/`, `tools/check-flag-coordination.sh`, and
+`tests/test_statusline.py`.
+
+**Gap B — W4 (`89a98a7`) shipped half-closed.** The `originating_
+reviewer` field was added to `record-finding-list.sh`'s write path
+in W4, with the commit body claiming "/ulw-report can render per-
+reviewer fix-rate" once the data accrues. But the read path was
+never wired — `show-report.sh` ignored the field entirely, so
+every `finding-status-change` event since W4 carried
+`originating_reviewer` as dead data. This violates the project's
+own Coordination Rule for telemetry shipments: *"write path, read
+path, user-visible surface, regression test"* — only the write path
+and a partial test had landed.
+
+Fix: new sub-table in the "Per-event outcome attribution" section
+of `show-report.sh`. When at least one `finding-status-change`
+event carries a non-empty `originating_reviewer`, render:
+
+> _Per-reviewer fix-rate (calibration signal — reviewers below 30% may be over-eager):_
+>
+> | Reviewer | Findings | Shipped | Fix-rate |
+> |---|---:|---:|---:|
+> | `over-eager-reviewer` | 4 | 1 | 25% ← below threshold |
+> | `quality-reviewer`    | 8 | 6 | 75%                   |
+
+Single `jq -s` pass groups by reviewer, counts total + shipped,
+computes fix-rate, sorts ascending (so calibration outliers
+surface at the top with the `← below threshold` marker rather
+than buried below well-calibrated rows). The 30% threshold matches
+the W4 commit body's stated calibration cutoff. Quiet section:
+hidden entirely when no finding-status-change rows carry the
+field, so legacy data pre-W4 doesn't produce a noisy empty table.
+
+Regression net (`tests/test-show-report.sh`):
+- T30 — section renders with ascending-by-fix-rate sort + 33% row
+  with no marker (above threshold).
+- T31 — 20% row renders with `← below threshold` marker.
+- T32 — section HIDDEN when no `originating_reviewer` is present
+  (back-compat for pre-W4 rows).
+
+`test-show-report.sh` 96 → 102 assertions.
+
+**Verification**: targeted regression sweep across the touched and
+adjacent surfaces — test-release 76/0, test-show-report 102/0,
+test-finding-list 124/0, test-gate-events 42/0, test-show-status
+30/0, test-quality-gates 101/0. shellcheck `--severity=warning`
+clean. flag-coordination clean. No version bump per the
+accumulate-before-tag rule.
+
 ## [1.40.1] - 2026-05-12
 
 Hotfix for two findings discovered in the v1.40.0 post-tag verification

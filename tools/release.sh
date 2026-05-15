@@ -249,8 +249,27 @@ ok "no --quick marker found (ensure tools/hotfix-sweep.sh was run as Pre-flight 
 #     context (e.g., hotfix-loop where v1.X.0 swept then v1.X.1 hotfix
 #     ships the same code +1 fix). Skipping for time pressure is the
 #     anti-pattern this gate exists to prevent.
+#
+# Two sub-stages (post-followup to the original c7714d8 commit):
+#
+#   Sub-stage A — lint sweep: mirrors the CI `lint` job. Runs
+#     bash -n on bundle/, JSON validation, flag-coordination audit,
+#     `shell-lint` (shellcheck) on bundle/, and the python
+#     statusline test. The original gate ran only the `test` job;
+#     lint regressions (shell-lint warnings, JSON syntax errors,
+#     flag-coord drift, python statusline breaks) shipped CI-red on
+#     tagged-SHAs because nothing local caught them. Each check
+#     skips with a visible notice if its dependency (shell-lint,
+#     python3) is not available — so a minimal dev box still gets
+#     partial parity without hard-failing.
+#
+#   Sub-stage B — test sweep: the original CI-pinned bash test
+#     sweep (extracts test list from validate.yml at runtime,
+#     runs sequentially, aborts on any failure). Runs after the
+#     lint sweep so cheap lint failures surface before the
+#     multi-minute test loop starts.
 # ----------------------------------------------------------------------
-say "Step 6.7 (v1.40.x): local bash sweep pre-flight"
+say "Step 6.7 (v1.40.x): local CI-parity pre-flight (lint + bash tests)"
 if [[ "${SKIP_LOCAL_SWEEP}" -eq 1 ]]; then
   printf '  \033[33mnotice:\033[0m local-sweep gate skipped (--skip-local-sweep / OMC_RELEASE_SKIP_LOCAL_SWEEP=1)\n'
 elif [[ ! -f "${REPO_ROOT}/.github/workflows/validate.yml" ]]; then
@@ -263,8 +282,124 @@ elif [[ ! -f "${REPO_ROOT}/.github/workflows/validate.yml" ]]; then
   # repo missing validate.yml should not pretend the gate ran.
   printf '  \033[33mnotice:\033[0m .github/workflows/validate.yml not present — local-sweep gate skipped\n'
 elif [[ "${DRY_RUN}" -eq 1 ]]; then
-  printf '  [dry-run] would run CI-pinned bash tests from .github/workflows/validate.yml\n'
+  printf '  [dry-run] would run lint sweep (bash -n, JSON, flag-coord, shellcheck, statusline) + CI-pinned bash tests from .github/workflows/validate.yml\n'
 else
+  # === SUB-STAGE A: LINT SWEEP ===
+  #
+  # Mirrors the CI `lint` job. Order is cheap-first / dependency-light-
+  # first so a minimal dev box still gets bash-syntax + flag-coord
+  # parity even without shellcheck/python3 installed.
+  lint_failures=""
+  lint_count_pass=0
+  lint_count_fail=0
+  lint_count_skip=0
+
+  # Lint 1/5: bash -n syntax on bundle/ (no external dependency).
+  if [[ -d "${REPO_ROOT}/bundle" ]]; then
+    printf '  Lint 1/5: bash -n syntax check...\n'
+    set +e
+    syntax_out="$(find "${REPO_ROOT}/bundle" -name '*.sh' -print0 2>/dev/null | xargs -0 -n1 bash -n 2>&1)"
+    syntax_rc=$?
+    set -e
+    if [[ "${syntax_rc}" -eq 0 ]]; then
+      lint_count_pass=$((lint_count_pass + 1))
+    else
+      lint_count_fail=$((lint_count_fail + 1))
+      lint_failures="${lint_failures}\n    bash -n syntax: $(printf '%s' "${syntax_out}" | tail -2 | tr '\n' ' ')"
+    fi
+  else
+    printf '  \033[33mnotice:\033[0m Lint 1/5: bundle/ not present — bash -n skipped\n'
+    lint_count_skip=$((lint_count_skip + 1))
+  fi
+
+  # Lint 2/5: JSON validation (requires python3).
+  if command -v python3 >/dev/null 2>&1; then
+    printf '  Lint 2/5: JSON validation...\n'
+    set +e
+    json_bad=""
+    while IFS= read -r -d '' json_file; do
+      if ! python3 -m json.tool --no-ensure-ascii < "${json_file}" >/dev/null 2>&1; then
+        json_bad="${json_bad} ${json_file#"${REPO_ROOT}"/}"
+      fi
+    done < <(find "${REPO_ROOT}" -name '*.json' -not -path '*/.git/*' -print0 2>/dev/null)
+    set -e
+    if [[ -z "${json_bad}" ]]; then
+      lint_count_pass=$((lint_count_pass + 1))
+    else
+      lint_count_fail=$((lint_count_fail + 1))
+      lint_failures="${lint_failures}\n    JSON validation:${json_bad}"
+    fi
+  else
+    printf '  \033[33mnotice:\033[0m Lint 2/5: python3 not in PATH — JSON validation skipped\n'
+    lint_count_skip=$((lint_count_skip + 1))
+  fi
+
+  # Lint 3/5: flag-coordination audit (3-site SoT parity).
+  if [[ -f "${REPO_ROOT}/tools/check-flag-coordination.sh" ]]; then
+    printf '  Lint 3/5: flag-coordination audit...\n'
+    set +e
+    flagcoord_out="$(bash "${REPO_ROOT}/tools/check-flag-coordination.sh" 2>&1)"
+    flagcoord_rc=$?
+    set -e
+    if [[ "${flagcoord_rc}" -eq 0 ]]; then
+      lint_count_pass=$((lint_count_pass + 1))
+    else
+      lint_count_fail=$((lint_count_fail + 1))
+      lint_failures="${lint_failures}\n    flag-coord: $(printf '%s' "${flagcoord_out}" | tail -3 | tr '\n' ' ')"
+    fi
+  else
+    printf '  \033[33mnotice:\033[0m Lint 3/5: tools/check-flag-coordination.sh missing — flag-coord skipped\n'
+    lint_count_skip=$((lint_count_skip + 1))
+  fi
+
+  # Lint 4/5: shellcheck on bundle/ (slowest local check; ordered
+  # last among lint stages so faster checks abort early on cheap
+  # failures).
+  if command -v shellcheck >/dev/null 2>&1 && [[ -d "${REPO_ROOT}/bundle" ]]; then
+    printf '  Lint 4/5: shellcheck (severity=warning)...\n'
+    set +e
+    shellcheck_out="$(find "${REPO_ROOT}/bundle" -name '*.sh' -print0 2>/dev/null | xargs -0 shellcheck -x --severity=warning 2>&1)"
+    shellcheck_rc=$?
+    set -e
+    if [[ "${shellcheck_rc}" -eq 0 ]]; then
+      lint_count_pass=$((lint_count_pass + 1))
+    else
+      lint_count_fail=$((lint_count_fail + 1))
+      lint_failures="${lint_failures}\n    shellcheck: $(printf '%s' "${shellcheck_out}" | tail -3 | tr '\n' ' ')"
+    fi
+  else
+    printf '  \033[33mnotice:\033[0m Lint 4/5: shellcheck not in PATH (or bundle/ missing) — install via `brew install shellcheck` (macOS) or `apt-get install shellcheck` (Linux) for full CI parity\n'
+    lint_count_skip=$((lint_count_skip + 1))
+  fi
+
+  # Lint 5/5: python statusline test.
+  if command -v python3 >/dev/null 2>&1 && [[ -f "${REPO_ROOT}/tests/test_statusline.py" ]]; then
+    printf '  Lint 5/5: python3 statusline test...\n'
+    set +e
+    statusline_out="$( (cd "${REPO_ROOT}" && python3 -m unittest tests.test_statusline 2>&1) )"
+    statusline_rc=$?
+    set -e
+    if [[ "${statusline_rc}" -eq 0 ]]; then
+      lint_count_pass=$((lint_count_pass + 1))
+    else
+      lint_count_fail=$((lint_count_fail + 1))
+      lint_failures="${lint_failures}\n    python statusline: $(printf '%s' "${statusline_out}" | tail -2 | tr '\n' ' ')"
+    fi
+  else
+    printf '  \033[33mnotice:\033[0m Lint 5/5: python3 or tests/test_statusline.py missing — statusline test skipped\n'
+    lint_count_skip=$((lint_count_skip + 1))
+  fi
+
+  if [[ "${lint_count_fail}" -gt 0 ]]; then
+    printf '\n  \033[31m✗\033[0m local lint sweep: %d passed, %d failed (%d skipped)\n' \
+      "${lint_count_pass}" "${lint_count_fail}" "${lint_count_skip}" >&2
+    printf '  Failed checks:%b\n' "${lint_failures}" >&2
+    err "local lint-sweep failed — fix the lint warnings before tagging. (Or pass --skip-local-sweep if intentional.)"
+  fi
+  ok "local lint sweep: ${lint_count_pass} checks passed${lint_count_skip:+ (${lint_count_skip} skipped — install missing deps for full parity)}"
+
+  # === SUB-STAGE B: TEST SWEEP ===
+  #
   # Extract the exact test list from the workflow file. Two patterns
   # cover bare invocations and ones with arg-binding (e.g.,
   # `OMC_X=y bash tests/test-foo.sh`). De-duplicate across both jobs
