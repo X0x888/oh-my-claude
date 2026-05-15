@@ -87,6 +87,8 @@ claude_bin|str||watchdog|Pinned absolute path to claude binary (PATH-hijack defe
 resume_request_per_cwd_cap|int|3|watchdog|Max resume_request artifacts per cwd before stop-failure-handler prunes oldest (0 disables)
 cleanup_orphan_resume|bool|on|watchdog|SessionStart hook prunes stale omc-resume-* tmux sessions left by the watchdog (default on)
 orphan_resume_max_age_hours|int|4|watchdog|Age threshold (hours since session_created, never attached) for the orphan-resume cleanup hook to kill an omc-resume-* tmux session
+cleanup_orphan_tmp|bool|on|hygiene|SessionStart hook sweeps stale /tmp/omc-* dirs left by test helpers that don't trap cleanup (default on)
+orphan_tmp_max_age_hours|int|24|hygiene|Age threshold (hours since mtime) for the orphan-tmp cleanup hook to remove a /tmp/omc-* path
 time_tracking|bool|on|telemetry|Per-tool / per-subagent timing capture; backs Stop epilogue + /ulw-time
 time_tracking_xs_retain_days|pint|30|telemetry|Cross-session timing log retention (days)
 time_card_min_seconds|int|5|telemetry|Min walltime to render the Stop epilogue time card (seconds; 0 = always)

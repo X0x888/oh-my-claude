@@ -54,6 +54,8 @@ _omc_env_resume_watchdog_cooldown="${OMC_RESUME_WATCHDOG_COOLDOWN_SECS:-}"
 _omc_env_resume_scan_max_sessions="${OMC_RESUME_SCAN_MAX_SESSIONS:-}"
 _omc_env_cleanup_orphan_resume="${OMC_CLEANUP_ORPHAN_RESUME:-}"
 _omc_env_orphan_resume_max_age_hours="${OMC_ORPHAN_RESUME_MAX_AGE_HOURS:-}"
+_omc_env_cleanup_orphan_tmp="${OMC_CLEANUP_ORPHAN_TMP:-}"
+_omc_env_orphan_tmp_max_age_hours="${OMC_ORPHAN_TMP_MAX_AGE_HOURS:-}"
 _omc_env_time_tracking="${OMC_TIME_TRACKING:-}"
 _omc_env_time_tracking_xs_retain="${OMC_TIME_TRACKING_XS_RETAIN_DAYS:-}"
 _omc_env_time_card_min_seconds="${OMC_TIME_CARD_MIN_SECONDS:-}"
@@ -441,6 +443,10 @@ _parse_conf_file() {
         [[ -z "${_omc_env_cleanup_orphan_resume}" && "${value}" =~ ^(on|off)$ ]] && OMC_CLEANUP_ORPHAN_RESUME="${value}" || true ;;
       orphan_resume_max_age_hours)
         [[ -z "${_omc_env_orphan_resume_max_age_hours}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_ORPHAN_RESUME_MAX_AGE_HOURS="${value}" || true ;;
+      cleanup_orphan_tmp)
+        [[ -z "${_omc_env_cleanup_orphan_tmp}" && "${value}" =~ ^(on|off)$ ]] && OMC_CLEANUP_ORPHAN_TMP="${value}" || true ;;
+      orphan_tmp_max_age_hours)
+        [[ -z "${_omc_env_orphan_tmp_max_age_hours}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_ORPHAN_TMP_MAX_AGE_HOURS="${value}" || true ;;
       time_tracking)
         [[ -z "${_omc_env_time_tracking}" && "${value}" =~ ^(on|off)$ ]] && OMC_TIME_TRACKING="${value}" || true ;;
       time_tracking_xs_retain_days)
@@ -619,6 +625,28 @@ is_cleanup_orphan_resume_enabled() {
 orphan_resume_max_age_hours() {
   local _hours="${OMC_ORPHAN_RESUME_MAX_AGE_HOURS:-4}"
   [[ "${_hours}" =~ ^[1-9][0-9]*$ ]] || _hours=4
+  printf '%s' "${_hours}"
+}
+
+# Returns 0 (true) when the SessionStart orphan-tmp cleanup hook is
+# enabled (default), 1 (false) when disabled via
+# `cleanup_orphan_tmp=off`. Sweeps stale `/tmp/omc-*` directories left
+# by test helpers that don't trap their own cleanup. Distinct from
+# `cleanup_orphan_resume` (tmux session pruning) so users can opt out
+# of either independently.
+is_cleanup_orphan_tmp_enabled() {
+  [[ "${OMC_CLEANUP_ORPHAN_TMP:-on}" != "off" ]]
+}
+
+# Returns the integer max-age in hours that the orphan-tmp cleanup
+# uses as a removal threshold. Default 24 — more conservative than the
+# tmux cleanup's 4h because /tmp/omc-* may include an active test run
+# the user invoked manually. Raise if you intentionally leave omc-*
+# scratch dirs around longer. Configurable via env or
+# `orphan_tmp_max_age_hours` conf flag.
+orphan_tmp_max_age_hours() {
+  local _hours="${OMC_ORPHAN_TMP_MAX_AGE_HOURS:-24}"
+  [[ "${_hours}" =~ ^[1-9][0-9]*$ ]] || _hours=24
   printf '%s' "${_hours}"
 }
 

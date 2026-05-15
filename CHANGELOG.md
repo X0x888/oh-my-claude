@@ -847,17 +847,30 @@ bundled here.
 - `bundle/dot-claude/quality-pack/memory/skills.md` (decision tree rows)
 - `tests/test-common-utilities.sh` (regression net)
 
-### Background-process hygiene — auto-cleanup of orphan `omc-resume-*` tmux sessions
+### Hygiene class — orphan-shell cleanup (one item of N) + general /tmp/omc-* sweep
 
-User-reported failure: orphan shells accumulating across `/ulw`
-sessions. Observed evidence on a single host: 4 detached
-`omc-resume-*` tmux sessions (spawned by the resume-watchdog
-`launch_in_tmux` path) with elapsed times **8, 8, 9, and 11 days**,
-each carrying a stuck `claude --resume` process accumulating 25–51
-minutes of CPU time. The user named the failure mode: *"two possible
-orphan shells running in the background when this sessions ends.
-This has happened multiple times. You should have a general rule
-set in the workflow."*
+User-reported failure: orphan artifacts accumulating across `/ulw`
+sessions. The user phrased the prompt with an example marker (*"For
+instance, I currently see two possible orphan shells running in the
+background when this sessions ends"*), then in a follow-up named the
+under-interpretation: *"Orphan shells are an example. Did you realise
+that? For instance, in terms of hygiene, orphan test temp files
+should also be cleaned up."*
+
+The first commit (W1 below) shipped only the literal-example fix —
+the `omc-resume-*` tmux sweep. The follow-up commit (W2) closes the
+broader class by adding a general `/tmp/omc-*` sweep plus the
+source-side fix that stopped the leak being created in the first
+place. The behavioral rule in `core.md` is renamed and broadened
+from "background-process hygiene" to "Hygiene: clean up after
+yourself" with multi-category coverage.
+
+#### W1 — Orphan `omc-resume-*` tmux session sweep
+
+Observed evidence on a single host: 4 detached `omc-resume-*` tmux
+sessions (spawned by the resume-watchdog `launch_in_tmux` path) with
+elapsed times **8, 8, 9, and 11 days**, each carrying a stuck
+`claude --resume` process accumulating 25–51 minutes of CPU time.
 
 Root cause: the resume-watchdog spawns `claude --resume <sid>
 "<prompt>"` inside `tmux new-session -d -s omc-resume-<sid_short>`.
@@ -947,6 +960,114 @@ else the agent might spawn.
 - `tests/test-cleanup-orphan-resume.sh` (new — 10 scenarios, 15 assertions)
 - `.github/workflows/validate.yml` (CI pin)
 - `README.md` / `CLAUDE.md` / `AGENTS.md` (count lockstep per Coordination Rules: 11→12 lifecycle hooks, 98→99 bash tests)
+
+#### W2 — Orphan `/tmp/omc-*` sweep + source-side trap in sterile-env
+
+User follow-up: *"Orphan shells are an example. Did you realise that?
+For instance, in terms of hygiene, orphan test temp files should also
+be cleaned up."* The W1 commit treated the example as the literal
+scope — under-interpretation of an exemplifying prompt. W2 closes the
+broader class.
+
+Smoking gun on this host: **56** `/tmp/omc-sterile-tmp-*` directories,
+oldest 4 days old, all created by `tests/lib/sterile-env.sh:87` via
+`mktemp -d /tmp/omc-sterile-tmp-XXXXXX`. The helper exposes a
+`cleanup_sterile_env` function but it only cleaned the HOME path; the
+TMPDIR path was hidden inside the subshell-capture pattern
+`sterile_env="$(build_sterile_env)"`. The parent shell (e.g.
+`tests/run-sterile.sh:103`) had no documented way to recover and clean
+the TMPDIR path. Every `run-sterile.sh` invocation leaked one dir.
+
+Mechanical safety net — `cleanup-orphan-tmp.sh` SessionStart hook:
+
+- Glob `/tmp/omc-*` (directories and files).
+- Skip paths whose mtime is within threshold (default 24h;
+  conservative because a user may have an active manual test run).
+- TOCTOU defense: re-resolve each path's parent and confirm it's
+  still `/tmp/` before any removal (defends against a symlink swap
+  between glob and rm).
+- Cross-platform `stat` (`stat -f %m` BSD / `stat -c %Y` GNU).
+- Hard cap 100 removals/invocation as a runaway guard.
+- Pattern-scoped (`omc-*` prefix only — non-harness paths can never
+  be touched).
+- Fail-safe (exit 0 on any error).
+- Opt-out via `cleanup_orphan_tmp=off`.
+
+Real-world verification: 58 paths removed on first run (56
+`omc-sterile-tmp-*` directories + `omc-findings.json` + one straggler).
+
+Source-side fix — stops the leak being created in the first place:
+
+- `tests/lib/sterile-env.sh:cleanup_sterile_env` extended to accept
+  an optional second `TMPDIR` argument with a parent-must-be-`/tmp/`
+  guard and `omc-sterile-*` basename guard. Backwards-compatible —
+  single-arg callers keep v1.34+ HOME-only behavior.
+- New helper `extract_sterile_path KEY ENV_LINES` parses a single
+  `KEY=value` line out of `build_sterile_env`'s printed env-lines
+  output. Callers that captured `env_lines="$(build_sterile_env)"`
+  can now recover the HOME and TMPDIR paths for an EXIT trap.
+- `tests/run-sterile.sh:103` updated to call `extract_sterile_path`
+  for HOME and TMPDIR after `build_sterile_env`, then
+  `trap 'cleanup_sterile_env "${_sterile_home_path}"
+  "${_sterile_tmp_path}"' EXIT`.
+
+Behavioral rule broadened — `core.md` "Background-process hygiene"
+renamed to "Hygiene: clean up after yourself" with multi-category
+coverage: background processes, temp files / directories, recordings,
+dev servers, watchers, any `mktemp` without trap. Names both real
+in-the-wild failures (4 tmux orphans, 56 `/tmp/omc-sterile-tmp-*`
+dirs) as the concrete evidence. Adds the bash-3.2 empty-array gotcha
+under `set -u` as a sub-rule (`${arr[@]+"${arr[@]}"}` form), the
+cleanup-symmetry rule for helpers that hide created paths behind
+subshell capture, and an explicit statement that the harness can't
+sweep what it doesn't own.
+
+Two new conf flags (lockstep 3-site updates):
+
+- `cleanup_orphan_tmp` (bool, default `on`) — env
+  `OMC_CLEANUP_ORPHAN_TMP`. Opt-out for users who use `/tmp/omc-*`
+  for long-running artifacts.
+- `orphan_tmp_max_age_hours` (int, default `24`) — env
+  `OMC_ORPHAN_TMP_MAX_AGE_HOURS`. More conservative than the
+  4h `omc-resume` threshold because `/tmp/omc-*` may include an
+  active manual test run.
+
+Wired into `config/settings.patch.json` SessionStart chain after
+`cleanup-orphan-resume.sh`. Pinned in CI.
+
+Bash 3.2 (macOS default) compatibility fix found mid-test: the
+script's `_candidates=( "${_tmp_root}/omc-"* )` array expanded as
+`"${_candidates[@]}"` under `set -u` raised "unbound variable" on an
+empty glob (nullglob made it empty but the array expansion itself was
+the trigger). Switched to `${_candidates[@]+"${_candidates[@]}"}`
+form which is empty-safe on both bash 3.2 and bash 5+.
+
+Honest accounting on what did NOT ship in W2:
+
+- The 4 non-`omc-`-prefixed `/tmp/` artifacts (`bs-test`, `gap-test`,
+  `edge_test.sh`, `es_test.json`) are outside scope by design — those
+  look like user-authored ad-hoc fixtures, not harness leaks. The
+  hygiene rule documents that the harness can't sweep what it doesn't
+  own; those are the user's responsibility.
+- No `tests/lib/sterile-env.sh:build_sterile_env` registry-file
+  mechanism. The subshell-capture pattern fundamentally can't propagate
+  trap registrations to the parent; the `extract_sterile_path` helper
+  is the documented escape hatch, and the SessionStart sweep is the
+  safety net for callers that ignore it.
+
+**Files changed in W2:**
+- `bundle/dot-claude/quality-pack/scripts/cleanup-orphan-tmp.sh` (new)
+- `bundle/dot-claude/skills/autowork/scripts/common.sh` (2 env-var declarations + 2 parser cases + 2 helpers)
+- `bundle/dot-claude/quality-pack/memory/core.md` (renamed Workflow hygiene rule, multi-category coverage)
+- `bundle/dot-claude/oh-my-claude.conf.example` (2 new flag entries)
+- `bundle/dot-claude/skills/autowork/scripts/omc-config.sh` (2 emit_known_flags rows)
+- `config/settings.patch.json` (SessionStart hook entry)
+- `verify.sh` (3 places)
+- `tests/lib/sterile-env.sh` (cleanup_sterile_env tmp arg + new extract_sterile_path helper + doc comment update)
+- `tests/run-sterile.sh` (EXIT trap with both paths)
+- `tests/test-cleanup-orphan-tmp.sh` (new — 10 scenarios, 14 assertions)
+- `.github/workflows/validate.yml` (CI pin)
+- `README.md` / `CLAUDE.md` / `AGENTS.md` (count lockstep: 12→13 lifecycle hooks, 99→100 bash tests)
 
 ## [1.40.1] - 2026-05-12
 

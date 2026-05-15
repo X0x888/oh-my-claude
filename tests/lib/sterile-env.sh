@@ -147,10 +147,19 @@ build_sterile_env() {
   printf 'GIT_COMMITTER_EMAIL=sterile@oh-my-claude.test\n'
 }
 
-# cleanup_sterile_env DIR — best-effort recursive delete. Tests should
-# call this in a trap when they want the sterile HOME removed; the
-# default mktemp -d under TMPDIR/$TMPDIR is auto-swept by the OS
-# eventually, so this is hygiene, not correctness.
+# cleanup_sterile_env HOME [TMP] — best-effort recursive delete of the
+# sterile-env scratch paths. Tests should call this in a trap. Two
+# args: the sterile HOME dir (created under ${HOME}/.cache/
+# omc-sterile-home-XXX) and OPTIONALLY the sterile TMPDIR (created
+# under /tmp/omc-sterile-tmp-XXX). The TMP arg was added in v1.40.x
+# after the harness shipped with 56 orphan `/tmp/omc-sterile-tmp-*`
+# dirs on a dev host — `build_sterile_env` creates that dir but its
+# subshell-capture output pattern (`sterile_env="$(build_sterile_env)"`)
+# means the parent shell only saw the PRINTED env lines, not the
+# created paths as variables. The caller could parse HOME and TMPDIR
+# out of the printed lines but had no documented way to clean both.
+# Callers that pass only one arg get the v1.34+ HOME-only behavior;
+# callers that pass both get the full cleanup.
 #
 # The path-prefix guard prevents a typo'd argument from blast-radius
 # extending into a real directory. Matches paths that look like
@@ -158,11 +167,20 @@ build_sterile_env() {
 #   v1.34.0+ — `*/omc-sterile-home-*` under `${HOME}/.cache`
 #   pre-v1.34.0 legacy — `*/tmp*` (kept for forward-compat with any
 #                        test that still passes the older shape)
+#   v1.40.x+ — `*/omc-sterile-tmp-*` under `/tmp/` (the second arg)
 # Anything else is silently rejected — never recursive-delete a path
-# that doesn't match a sterile-home name on its own.
+# that doesn't match a sterile-* name on its own.
+#
+# Safety net: the harness ALSO ships a SessionStart hook
+# (`bundle/dot-claude/quality-pack/scripts/cleanup-orphan-tmp.sh`)
+# that sweeps `/tmp/omc-*` paths older than `orphan_tmp_max_age_hours`
+# (default 24h). Callers that forget to pass TMP, or that abort
+# before the trap fires, still get eventual cleanup on the next
+# session start.
 cleanup_sterile_env() {
   local sterile_home="$1"
-  [[ -n "${sterile_home}" && -d "${sterile_home}" ]] || return 0
+  local sterile_tmp="${2:-}"
+
   # v1.34.2 (sterile-CI failure on v1.34.1): anchor the guard at the
   # BASENAME, not anywhere in the path. The pre-fix `*/omc-sterile-
   # home-*` glob matched any path containing that segment — under
@@ -176,10 +194,44 @@ cleanup_sterile_env() {
   # the unified `omc-sterile-*` prefix; the original `*/tmp*` shape
   # is no longer produced by build_sterile_env (v1.34.0 anchor moved
   # sterile_home under ${HOME}/.cache).
-  local _basename="${sterile_home##*/}"
-  case "${_basename}" in
-    omc-sterile-*)
-      rm -rf "${sterile_home}" 2>/dev/null || true
-      ;;
-  esac
+  if [[ -n "${sterile_home}" && -d "${sterile_home}" ]]; then
+    local _basename="${sterile_home##*/}"
+    case "${_basename}" in
+      omc-sterile-*)
+        rm -rf "${sterile_home}" 2>/dev/null || true
+        ;;
+    esac
+  fi
+
+  # v1.40.x: also clean the /tmp/omc-sterile-tmp-* dir if the caller
+  # passed it. Path guard mirrors the HOME guard — basename must
+  # match `omc-sterile-*`, parent must be `/tmp/` (re-checked to
+  # defend against TOCTOU symlink swaps).
+  if [[ -n "${sterile_tmp}" && -d "${sterile_tmp}" ]]; then
+    local _tmp_parent _tmp_basename
+    _tmp_parent="$(dirname -- "${sterile_tmp}")"
+    _tmp_basename="${sterile_tmp##*/}"
+    if [[ "${_tmp_parent}" == "/tmp" ]]; then
+      case "${_tmp_basename}" in
+        omc-sterile-*)
+          rm -rf "${sterile_tmp}" 2>/dev/null || true
+          ;;
+      esac
+    fi
+  fi
+}
+
+# extract_sterile_path KEY ENV_LINES — parse a single env-line key
+# out of build_sterile_env's printed output. Used by callers that
+# captured `env_lines="$(build_sterile_env)"` and need to recover the
+# HOME and TMPDIR paths for an EXIT trap. Example:
+#   env_lines="$(build_sterile_env)"
+#   sterile_home="$(extract_sterile_path HOME "${env_lines}")"
+#   sterile_tmp="$(extract_sterile_path TMPDIR "${env_lines}")"
+#   trap 'cleanup_sterile_env "'"${sterile_home}"'" "'"${sterile_tmp}"'"' EXIT
+# Output empty string when the key isn't found; never errors.
+extract_sterile_path() {
+  local key="$1"
+  local env_lines="$2"
+  printf '%s\n' "${env_lines}" | grep -E "^${key}=" | head -1 | cut -d= -f2-
 }

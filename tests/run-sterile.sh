@@ -106,6 +106,17 @@ while IFS= read -r line; do
   [[ -n "${line}" ]] && sterile_env_array+=("${line}")
 done <<<"${sterile_env}"
 
+# v1.40.x: register EXIT trap to clean the sterile HOME + TMPDIR that
+# build_sterile_env just created. Pre-fix the script captured both
+# paths inside the printed env lines but never cleaned either —
+# every `run-sterile.sh` invocation leaked `/tmp/omc-sterile-tmp-XXX`
+# (56 such orphans accumulated on a dev host over 4 days before the
+# leak was noticed). The cleanup-orphan-tmp.sh SessionStart sweep is
+# the safety net; this trap is the source-side fix.
+_sterile_home_path="$(extract_sterile_path HOME "${sterile_env}")"
+_sterile_tmp_path="$(extract_sterile_path TMPDIR "${sterile_env}")"
+trap 'cleanup_sterile_env "${_sterile_home_path}" "${_sterile_tmp_path}"' EXIT
+
 pass=0
 sterile_fail=0
 double_fail=0

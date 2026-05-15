@@ -414,6 +414,26 @@
 # Env: OMC_ORPHAN_RESUME_MAX_AGE_HOURS.
 #orphan_resume_max_age_hours=4
 
+# SessionStart hook that sweeps stale `/tmp/omc-*` directories left
+# behind by the test harness (`tests/lib/sterile-env.sh` creates
+# `/tmp/omc-sterile-tmp-*` via mktemp; tests that abort mid-run never
+# trigger their EXIT cleanup, so directories leak). Observed in the
+# wild: 56 `omc-sterile-tmp-*` directories accumulated on a single
+# dev host over 4 days. Pattern is hard-coded to `/tmp/omc-*` (glob,
+# not regex). Only paths whose parent re-resolves to `/tmp/` are
+# touched; no symlink-out-of-/tmp races. Default on. Set to off if
+# you intentionally use `/tmp/omc-*` for long-running artifacts.
+# Env: OMC_CLEANUP_ORPHAN_TMP.
+#cleanup_orphan_tmp=on
+
+# Age threshold (hours since mtime) for the orphan-tmp cleanup hook
+# to remove a `/tmp/omc-*` path. Default 24 — more conservative than
+# the omc-resume cleanup's 4h because `/tmp/omc-*` may include an
+# active manual test run the user invoked. Raise if you intentionally
+# leave omc-* scratch dirs around longer than a day.
+# Env: OMC_ORPHAN_TMP_MAX_AGE_HOURS.
+#orphan_tmp_max_age_hours=24
+
 # Pinned absolute path to the `claude` binary for the watchdog to launch.
 # Defends against PATH-hijack: an attacker who drops ~/.local/bin/claude
 # ahead of the real binary in the daemon's PATH cannot execute their
