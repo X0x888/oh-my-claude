@@ -266,6 +266,78 @@ assert_exit "clean completion: no match" "1" \
 assert_exit "normal discussion: no match" "1" \
   has_unfinished_session_handoff "The implementation looks good."
 
+# v1.40.x cross-session-handoff regression: the v1.27.0 tightening
+# accidentally created an asymmetry — intra-session boundaries ("next
+# wave", "next phase") were caught but the most explicit cross-session
+# boundary phrasings ("next session", "future session", "later
+# session", "separate session") were not. A reported failure had the
+# model close a session at ~33% context with "Both candidates for next
+# session." — the gate did not fire because the regex literally never
+# tested for "next session". These cases lock the gap closed.
+#
+# Quality-reviewer FP audit drove two design refinements during the
+# same change: (1) `fresh session\b` was dropped — ambient phrasing in
+# session-start-compact-handoff.sh ("do not treat … as a fresh
+# session"), session-start-welcome.sh ("this fresh session"), and
+# router directive text would false-positive when echoed by the model.
+# (2) Preposition `for|to|in|until` is REQUIRED before the
+# adjective+session pair — rejects descriptive contexts ("as a fresh
+# session", "on the next session start", "per fresh session start")
+# and quoted anti-patterns ("I will not say wave 2 next session"). The
+# residual known FP is "tracks to a future session" (validator's own
+# effort-excuse example) — probability low, /ulw-skip is the recovery.
+
+# Preposition-shaped TP cases (the v1.40.x additions catch these via
+# `(for|to|in|until)\s+(a|the|another)?\s+(next|future|later|separate)
+# \s+session`).
+assert_exit "for next session: matches (the reported failure)" "0" \
+  has_unfinished_session_handoff "Both candidates for next session."
+
+assert_exit "for next session (scheduled): matches" "0" \
+  has_unfinished_session_handoff "Remaining work scheduled for next session."
+
+assert_exit "in a future session: matches" "0" \
+  has_unfinished_session_handoff "Better handled in a future session."
+
+assert_exit "for a later session: matches" "0" \
+  has_unfinished_session_handoff "Queue this for a later session."
+
+assert_exit "for a future session (save): matches" "0" \
+  has_unfinished_session_handoff "Save the heavy refactor for a future session."
+
+assert_exit "to next session (defer): matches" "0" \
+  has_unfinished_session_handoff "Defer this to next session."
+
+# The reported defer text in full — must match end-to-end via the
+# trailing "Both candidates for next session." sentence.
+assert_exit "v1.40.x reported defer text: matches" "0" \
+  has_unfinished_session_handoff "Remaining heavy refactors queued from the original v12 plan. These are multi-hour each with UI-render verification requirements. A fresh /council pass on the current branch would also surface post-v12 findings cleanly. Both candidates for next session."
+
+# False-positive guards — must NOT match. These are real phrasings
+# present in the harness's own scripts and docs that the model might
+# echo in a stop summary; without these guards the regex would create
+# block-storms when the model quotes its own context.
+assert_exit "as a fresh session (compact directive echo): no match" "1" \
+  has_unfinished_session_handoff "Do not treat this compact boundary as a fresh session."
+
+assert_exit "fresh session start (install banner echo): no match" "1" \
+  has_unfinished_session_handoff "The install banner shows once per fresh session start."
+
+assert_exit "on the next session start (hook descriptive): no match" "1" \
+  has_unfinished_session_handoff "On the next session start, the hook will rehydrate state."
+
+assert_exit "anti-pattern quote: no match" "1" \
+  has_unfinished_session_handoff "I will not say wave 2 next session — that is the anti-pattern."
+
+assert_exit "future sessions inherit (atlas description): no match" "1" \
+  has_unfinished_session_handoff "Future sessions should look at memory/MEMORY.md."
+
+assert_exit "within this session — no match" "1" \
+  has_unfinished_session_handoff "Within this session we shipped everything."
+
+assert_exit "session-handoff (compound noun) — no match" "1" \
+  has_unfinished_session_handoff "The session-handoff gate fires correctly."
+
 # ===========================================================================
 # is_execution_intent_value
 # ===========================================================================

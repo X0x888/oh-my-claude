@@ -5495,11 +5495,51 @@ has_unfinished_session_handoff() {
   #   - "pick up .* later" — "pick up where I left off later" is a
   #     legitimate user-facing offer of a future task.
   #   - "continue .* later" — same family.
-  # The retained patterns all encode session-boundary hand-off shape
-  # explicitly: "new session", "another session", "next wave/phase",
-  # "wave/phase N is next" — phrasing that names a future invocation
-  # context as the work boundary.
-  grep -Eiq '\b(ready for a new session|ready for another session|continue in a new session|continue in another session|new session\b|another session\b|next wave\b|next phase\b|wave [0-9]+[^.!\n]* is next|phase [0-9]+[^.!\n]* is next)\b' <<<"${text}"
+  #
+  # v1.40.x: the v1.27.0 tightening accidentally created an asymmetry —
+  # the regex caught intra-session boundaries ("next wave\b", "next
+  # phase\b") but missed the most explicit *cross-session* boundary
+  # phrasing ("next session", "future session"). A real reported
+  # failure had the model close a session at ~33% context with "Both
+  # candidates for next session." — the gate did not fire because the
+  # regex literally never tested for "next session".
+  #
+  # The v1.40.x additions catch "for|to|in|until + (a|the|another)? +
+  # (next|future|later|separate) + session" — handoff-shaped
+  # phrasings. Quality-reviewer FP audit (catalogued the harness's own
+  # ambient text) drove these design choices:
+  #   - DROPPED `fresh session\b`: ambient phrasing in
+  #     session-start-compact-handoff.sh ("do not treat … as a fresh
+  #     session"), session-start-welcome.sh ("this fresh session"),
+  #     and prompt-intent-router directive text ("if you recommend a
+  #     fresh session"). The model echoing any of these in a stop
+  #     summary would false-positive. Reported-failure phrase was
+  #     "A fresh /council pass" (not "fresh session") — the literal
+  #     phrasing the regex must catch trips on "for next session", not
+  #     "fresh session".
+  #   - REQUIRED preposition `for|to|in|until` precedes the
+  #     adjective+session pair: rejects descriptive contexts like
+  #     "as a fresh session", "on the next session start", "per fresh
+  #     session start" and quoted anti-patterns like "I will not say
+  #     wave 2 next session". Real handoff prose always uses
+  #     for/to/in/until ("for next session", "in a future session",
+  #     "to a later session").
+  #   - Residual known FP: "tracks to a future session" (the v1.35.0
+  #     validator's effort-excuse example, present in mark-deferred /
+  #     excellence-reviewer / skills bodies). Probability of the
+  #     model quoting validator deny-list text in its own stop
+  #     summary is low; if it happens, /ulw-skip is the recovery.
+  #
+  # Other v1.27.0 dropped patterns ("the rest", "remaining work",
+  # "pick up later", "continue later") remain dropped — their false-
+  # positive footprint hasn't changed.
+  #
+  # Retained patterns encode session-boundary hand-off shape explicitly:
+  # "new/another session", "for|to|in|until + (next|future|later|
+  # separate) session", "next wave/phase", "wave/phase N is next" —
+  # phrasing that names a future invocation context as the work
+  # boundary.
+  grep -Eiq '\b(ready for a new session|ready for another session|continue in a new session|continue in another session|new session\b|another session\b|next wave\b|next phase\b|wave [0-9]+[^.!\n]* is next|phase [0-9]+[^.!\n]* is next|(for|to|in|until) (a |the |another )?(next|future|later|separate) session)\b' <<<"${text}"
 }
 
 

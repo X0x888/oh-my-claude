@@ -694,6 +694,159 @@ cross-session effectiveness audit can see the catch.
 **Files changed:**
 `bundle/dot-claude/skills/autowork/scripts/show-whats-new.sh`.
 
+### Session-handoff gate — close the `next session` regex gap + behavioral substitutes
+
+User-reported v1.40.1 failure: a Claude Code session at ~33% context
+closed with prose like *"Remaining heavy refactors queued from the
+original v12 plan — F-AB-17, F-AB-21, F-AB-23, Wave 5, Wave 6. These
+are multi-hour each with UI-render verification requirements. A fresh
+/council pass would also surface post-v12 findings cleanly. Both
+candidates for next session."* The agent bypassed all four no-defer
+defense layers (validator, no_defer_mode, handoff regex,
+shortcut_ratio_gate) by never calling `mark-deferred`, never updating
+`findings.json`, and using the literal phrase `next session` which the
+v1.27.0 handoff regex never tested for.
+
+#### W1 — Regex backstop closes the `for next session` family
+
+`has_unfinished_session_handoff` in `common.sh:5485` caught
+`new session\b`, `next wave\b`, `next phase\b`, but never tested for
+`next session\b`. The v1.27.0 tightening accidentally created an
+asymmetry: intra-session boundaries were caught, the most explicit
+*cross-session* boundary phrasing was not.
+
+The v1.40.x addition catches preposition-anchored handoff phrasings:
+`(for|to|in|until)\s+(a|the|another)?\s+(next|future|later|separate)
+\s+session`. Examples that now match: *"Both candidates for next
+session"*, *"Better handled in a future session"*, *"Save the heavy
+refactor for a future session"*, *"Defer this to next session"*.
+
+A quality-reviewer FP audit (HIGH finding) drove two design choices:
+
+- **`fresh session` was DROPPED** from the pattern set. Ambient
+  harness text uses *"this fresh session"* in install banners
+  (`session-start-welcome.sh`), *"do not treat this … as a fresh
+  session"* in compact directives
+  (`session-start-compact-handoff.sh`), and *"if you recommend a
+  fresh session"* in router directives
+  (`prompt-intent-router.sh`). If the model echoed any of these in a
+  stop summary, the regex would block-storm. The reported v1.40.1
+  failure used *"A fresh /council pass"* (not "fresh session") — the
+  literal language the gate must catch is *"for next session"*, not
+  *"fresh session"*.
+- **Preposition `for|to|in|until` is REQUIRED** before the
+  adjective+session pair. This rejects descriptive contexts
+  (*"as a fresh session"*, *"on the next session start"*, *"per
+  fresh session start"*) and quoted anti-patterns (*"I will not say
+  wave 2 next session"*). Real handoff prose always uses
+  for/to/in/until.
+
+Residual known FP: *"tracks to a future session"* (the v1.35.0
+validator's effort-excuse example present in mark-deferred /
+excellence-reviewer / skills bodies). Probability of the model
+quoting validator deny-list text in its own stop summary is low; if
+it happens, `/ulw-skip` is the recovery.
+
+Regression net (`tests/test-common-utilities.sh`) adds 13 cases: 7
+preposition-shaped positive cases + the literal reported failure
+prose end-to-end + 5 false-positive guards mirroring the actual
+ambient phrasings discovered in the audit. Full
+`test-common-utilities.sh` suite = 501 passed, 0 failed.
+
+#### W2 — Behavioral substitutes in `core.md` and `skills.md`
+
+The regex is a backstop, not the fix. The deeper failure mode is the
+agent rationalizing a stop on "multi-hour" / "fresh council needed" /
+"UI verification can't run on CLI" grounds — each clause is genuinely
+true but used to escape work, not own it. Three deep-thinking agent
+critiques (oracle, metis, abstraction-critic) converged on the same
+diagnostic: the contradiction between "no defer under ULW" and
+"long-context drift is real" needs structural resolution, not
+suppression.
+
+`core.md` "Workflow" anti-pattern paragraph rewritten with **concrete
+substitutes by rationalization shape**:
+
+- "Multi-hour" → chunk into a 30-minute sub-step; diagnostic prompt
+  *"If I were to chunk the next 30-minute slice, what would it be?"*
+- "Fresh council needed" → `Agent({subagent_type: "<lens>", …})`
+  sub-dispatch with copy-paste-ready invocation shape. A sub-agent has
+  its own context window; "fresh" is a tool, not a session reset.
+- "UI verification can't run on CLI" → ship the code + add
+  `User-must-verify-UI: <flow>` follow-up line; the refactor still
+  lands this session.
+- "Candidates for next session" → no such category exists under ULW;
+  legitimate dispositions are *shipped*, *rejected with WHY*,
+  *wave-appended*, or *operationally paused via `/ulw-pause`*.
+
+New paragraph addressing the *genuinely* drift-degraded main-thread
+case: **ask, do not announce.** If the agent believes a session
+boundary is truly required, the legitimate response is to state the
+specific evidence of degradation, ask the user explicitly, and wait —
+not to write "candidates for next session" prose and stop. An
+affirmative user reply is `is_checkpoint_request`-shaped and the gate
+respects it.
+
+`skills.md` deferral-verb decision tree gains two rows:
+
+- **"Heavy work feels too big" → chunk-and-ship** (diagnostic +
+  examples).
+- **"Long-context drift biasing judgment" → `Agent` sub-dispatch**
+  (concrete invocation pattern + lens routing).
+- **"Main thread truly drift-degraded" → ASK the user, don't
+  announce** (named-evidence requirement + check on
+  more-than-once-per-twenty-prompts rationalization rate).
+
+#### W3 — Stop-guard block message expanded
+
+`stop-guard.sh:275-280` block message expanded to name the new
+patterns (`next session`, `fresh session`, `candidates for next
+session`) in both the FOR YOU user-facing line and the FOR MODEL
+directive, plus the new "rationalization, not stop signal" framing
+and the sub-dispatch substitute. The locked phrase `deferred
+remaining work` (e2e seq-G regression anchor) is preserved.
+
+#### What did NOT ship — and why
+
+A proposed `unshipped_wave_plan_gate` state-based gate was
+**explicitly dropped** after the deep-thinking-agent critiques:
+
+- **metis BLOCK (3 high findings):** Trigger 1 (pending findings →
+  block) re-creates the v1.21.0 polarity bug — `pending` is the
+  normal state between waves. Trigger 2 (finding-ID regex on stop
+  message) would match the gate's own block messages, `/ulw-status`
+  output, MEMORY.md content, and `git log --oneline` rendering. Cap-
+  reset keyword detection collides with English (`"stop"` /
+  `"keep going"` in the harness's own status output).
+- **abstraction-critic (F2):** The gate would read state the failure
+  path doesn't produce — same shape as discovered-scope and
+  exemplifying-scope. The session that fails most often has no
+  recorded `findings.json` plan; the gate cannot fire on the exact
+  path it targets.
+- **oracle:** Recommended deferring to a second PR with FP corpus
+  calibration against `gate_events.jsonl`.
+
+Cap-reset on user imperative was also dropped after a verify-against-
+code pass: `prompt-intent-router.sh:159-168` already resets
+`session_handoff_blocks` to `0` on every UserPromptSubmit
+unconditionally. The cap doesn't exhaust across user prompts. The
+reported failure pattern was the regex-never-matched loop, not cap
+exhaustion. Oracle's HIGH finding turned out to be incorrect when
+checked against the actual code.
+
+Upstream attractor-signature detection (`UserPromptSubmit` /
+`PostToolUse` injection on cumulative session telemetry — the
+abstraction-critic primary recommendation) is a v1.41+ initiative
+requiring separate design and telemetry-driven calibration. Not
+bundled here.
+
+**Files changed:**
+- `bundle/dot-claude/skills/autowork/scripts/common.sh` (`has_unfinished_session_handoff`)
+- `bundle/dot-claude/skills/autowork/scripts/stop-guard.sh` (gate block message)
+- `bundle/dot-claude/quality-pack/memory/core.md` (Workflow anti-pattern paragraph + ask-don't-announce paragraph)
+- `bundle/dot-claude/quality-pack/memory/skills.md` (decision tree rows)
+- `tests/test-common-utilities.sh` (regression net)
+
 ## [1.40.1] - 2026-05-12
 
 Hotfix for two findings discovered in the v1.40.0 post-tag verification

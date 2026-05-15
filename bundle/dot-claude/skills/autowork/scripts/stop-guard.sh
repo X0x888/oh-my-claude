@@ -271,10 +271,16 @@ if [[ "${ulw_pause_active}" != "1" ]] \
     # literal "deferred remaining work" phrase — locked by e2e seq-G.
     # v1.36.x W3 F-011 / F-012: dual-audience framing + multi-option
     # recovery shape.
+    # v1.40.x: example phrasings expanded to include the new
+    # preposition-anchored cross-session patterns ('for next session',
+    # 'candidates for next session', 'in a future session') so the
+    # FOR YOU message names the actual rationalization shapes the
+    # regex now catches. ('fresh session' was excluded after FP audit
+    # against ambient harness text.)
     emit_stop_block "$(format_gate_block_dual \
-      "Premature stop. Claude said something like 'next wave' or 'ready for a new session', but the user did not ask for a checkpoint." \
+      "Premature stop. Claude said something like 'next wave', 'for next session', 'candidates for next session', or 'ready for a new session', but the user did not ask for a checkpoint." \
       "[Session-handoff gate · $((session_handoff_blocks + 1))/2] your last response deferred remaining work to a future session, but the user did not request a checkpoint.
-Continue the work now (do not stop with 'next wave', 'ready for a new session' language).${handoff_recovery}")"
+Continue the work now (do not stop with 'next wave', 'for next session', 'in a future session', 'candidates for next session', or 'ready for a new session' language). 'Multi-hour' / 'too heavy' / 'needs a fresh council' are rationalizations, not stop signals — chunk the work into more waves or dispatch a sub-agent (which has its own fresh context) and ship the next concrete sub-step now.${handoff_recovery}")"
     exit 0
   fi
 fi
