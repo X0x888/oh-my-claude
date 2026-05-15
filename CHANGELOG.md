@@ -847,6 +847,107 @@ bundled here.
 - `bundle/dot-claude/quality-pack/memory/skills.md` (decision tree rows)
 - `tests/test-common-utilities.sh` (regression net)
 
+### Background-process hygiene — auto-cleanup of orphan `omc-resume-*` tmux sessions
+
+User-reported failure: orphan shells accumulating across `/ulw`
+sessions. Observed evidence on a single host: 4 detached
+`omc-resume-*` tmux sessions (spawned by the resume-watchdog
+`launch_in_tmux` path) with elapsed times **8, 8, 9, and 11 days**,
+each carrying a stuck `claude --resume` process accumulating 25–51
+minutes of CPU time. The user named the failure mode: *"two possible
+orphan shells running in the background when this sessions ends.
+This has happened multiple times. You should have a general rule
+set in the workflow."*
+
+Root cause: the resume-watchdog spawns `claude --resume <sid>
+"<prompt>"` inside `tmux new-session -d -s omc-resume-<sid_short>`.
+The inner claude completes its initial task and then **sits idle at
+a prompt forever** — the tmux session won't terminate until the
+inner claude exits, but the inner claude has no termination
+condition once the user resumes manually in another window.
+
+#### Mechanical cleanup — `cleanup-orphan-resume.sh` SessionStart hook
+
+New script `bundle/dot-claude/quality-pack/scripts/cleanup-orphan-
+resume.sh` runs on every SessionStart (any source: startup, resume,
+compact, clear). For each tmux session matching `omc-resume-*`:
+
+- Skip if `session_attached >= 1` (someone is using it right now).
+- Skip if the name matches the current SESSION_ID's expected
+  `sess_name` (computed via the same `tr | truncate` algorithm as
+  `resume-watchdog.sh:301-303` so the exclude is byte-exact).
+- Skip if age (now − session_created) is below threshold (default
+  4 hours, configurable).
+- Otherwise: `tmux kill-session -t <name>` and log to
+  `gate_events.jsonl` for cross-session observability.
+
+Safety rails:
+
+- Pattern `omc-resume-*` is the only thing touched — non-watchdog
+  tmux sessions are never at risk.
+- Exits 0 on any error (fail-safe in SessionStart context).
+- Hard cap of 50 kills per invocation as a runaway guard.
+- `tmux` absence is a clean no-op.
+- Empty `SESSION_ID` is a clean no-op (without it we can't compute
+  the current-session exclude; better to skip than risk killing the
+  live session).
+- Malformed `session_created` rows are skipped, not fatal.
+
+Real-world verification: the new script killed the three actual
+orphan sessions on this host (222h, 207h, 279h old) on first run
+while preserving the live `omc-resume-9b7683f9-…` for this session.
+Test corpus exercises 10 scenarios via a mocked `tmux` on PATH;
+`tests/test-cleanup-orphan-resume.sh` = 15 passed, 0 failed.
+
+Two new conf flags (lockstep 3-site updates):
+
+- `cleanup_orphan_resume` (bool, default `on`) — env
+  `OMC_CLEANUP_ORPHAN_RESUME`. Opt-out for users who manage their
+  own `omc-resume-*` tmux sessions or run regulated environments
+  where automatic process termination is forbidden.
+- `orphan_resume_max_age_hours` (int, default `4`) — env
+  `OMC_ORPHAN_RESUME_MAX_AGE_HOURS`. Raise if you intentionally
+  leave watchdog-spawned sessions detached for longer.
+
+Wired into `config/settings.patch.json` SessionStart hook chain
+between `session-start-resume-hint.sh` and `session-start-drift-
+check.sh`. Pinned in `.github/workflows/validate.yml` under
+"Run cleanup-orphan-resume tests".
+
+#### Behavioral rule — `core.md` background-process hygiene
+
+New Workflow bullet names the general rule: *"If you spawn a long-
+running background process during a session — a dev server, an
+`asciinema rec`, a `watch` loop, a `tmux new-session`, an
+`npm run dev`, anything started with `&` / `nohup` / `setsid` /
+`run_in_background: true` — track its PID and clean it up before
+stop."* Five concrete sub-rules:
+
+1. Foreground commands by default.
+2. Track every PID you spawn (`$!`, foreground task ID).
+3. Kill before stopping — the end-of-task summary should *name*
+   what was killed.
+4. Diagnostic: `ps -ef | grep <command>` (or `tmux ls`) before stop.
+5. Hooks needing long-lived processes belong in
+   `bundle/dot-claude/launchd/` or `bundle/dot-claude/systemd/` as
+   OS-supervised units, not as ad-hoc `&`-detached shells.
+
+The mechanical cleanup is a safety net for the specific
+`omc-resume-*` case only; the behavioral rule covers everything
+else the agent might spawn.
+
+**Files changed:**
+- `bundle/dot-claude/quality-pack/scripts/cleanup-orphan-resume.sh` (new)
+- `bundle/dot-claude/skills/autowork/scripts/common.sh` (2 env-var declarations + 2 parser cases + 2 helpers)
+- `bundle/dot-claude/quality-pack/memory/core.md` (background-process hygiene rule)
+- `bundle/dot-claude/oh-my-claude.conf.example` (2 new flag entries)
+- `bundle/dot-claude/skills/autowork/scripts/omc-config.sh` (2 emit_known_flags rows)
+- `config/settings.patch.json` (SessionStart hook entry)
+- `verify.sh` (3 places: required_paths, hook_scripts, required_hooks)
+- `tests/test-cleanup-orphan-resume.sh` (new — 10 scenarios, 15 assertions)
+- `.github/workflows/validate.yml` (CI pin)
+- `README.md` / `CLAUDE.md` / `AGENTS.md` (count lockstep per Coordination Rules: 11→12 lifecycle hooks, 98→99 bash tests)
+
 ## [1.40.1] - 2026-05-12
 
 Hotfix for two findings discovered in the v1.40.0 post-tag verification
