@@ -61,6 +61,15 @@ printf 'Test 1: build_sterile_env output shape\n'
 . "${REPO_ROOT}/tests/lib/sterile-env.sh"
 env_out="$(build_sterile_env)"
 
+# v1.40.x: register EXIT trap for the T1 build_sterile_env call — pre-
+# fix the test left /tmp/omc-sterile-tmp-* dirs uncleaned on every run
+# (one of the source-side leak sites the W2 hygiene commit closes).
+# Uses the v1.40.x extract_sterile_path helper to recover both paths
+# from the captured env-lines output.
+_t1_home_path="$(extract_sterile_path HOME "${env_out}")"
+_t1_tmp_path="$(extract_sterile_path TMPDIR "${env_out}")"
+trap 'cleanup_sterile_env "${_t1_home_path}" "${_t1_tmp_path}"' EXIT
+
 assert_contains "T1: contains HOME=" "HOME=" "${env_out}"
 assert_contains "T1: contains TMPDIR=" "TMPDIR=" "${env_out}"
 assert_contains "T1: contains PATH=" "PATH=" "${env_out}"
