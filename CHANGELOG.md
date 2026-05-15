@@ -4,6 +4,81 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Depth-on-every-prompt rebalance
+
+User-reported failure mode: *"I feel claude with this workflow installed
+sometimes are not smart and proactive enough. It doesn't think deep
+enough on every prompt and doesn't try its best."*
+
+Diagnosis: the harness's depth-vs-action ratio was structurally
+imbalanced. `core.md` (186 lines) had ~5 lines of "Thinking Quality"
+priming versus ~180 lines of action-bias / no-defer / no-stop content.
+The Workflow section opened with **"default to action"** before any
+deliberation framing fired. The per-turn execution opener pushed
+momentum without depth-priming. The strongest depth content in the
+harness — the `ULTRATHINK` directive — only fired when the user
+literally typed `ultrathink` in their prompt, an opt-in trigger most
+users never discover.
+
+Result: the model read `core.md` primed to act fast, not to think deep —
+which matched exactly what the user reported.
+
+**Three surgical edits, no new conf flags, no new directive types:**
+
+1. **`core.md` preamble** ("Why /ulw exists") names BOTH failure modes
+   (stop-short AND shallow-think) as equal-weight contracts, explicitly
+   disambiguating *deferral of remaining work* (blocked by the no-defer
+   contract) from *deferral of thinking time* (encouraged).
+2. **`core.md` Thinking Quality** strengthens the "Think before acting"
+   bullet from soft suggestion to load-bearing rule that overrides
+   "default to action" framings. Adds two bullets — "Engage at full
+   cognitive depth on every prompt" (the *try-its-best* contract) and
+   "Favor verification over abstraction" (previously gated behind
+   user-typed `ultrathink`, now the default for non-trivial work).
+3. **Per-turn execution + continuation openers** trim redundant
+   verbiage and lead with a one-sentence depth prime: *"Engage at full
+   cognitive depth on this prompt — deliberate before each non-trivial
+   tool call; 'default to action' follows deliberation, never replaces
+   it."* Continuation opener adds *"resist autopilot, re-read the
+   actual state rather than what you remember of it"* as the long-
+   session drift counter.
+
+**Coordination-rule documentation (per `CLAUDE.md` "Changing /ulw workflow behavior"):**
+
+- **User failure mode being fixed:** "doesn't think deep enough on
+  every prompt and doesn't try its best" — the post-v1.40.0
+  action-bias overcorrection crowded out depth on every prompt, not
+  just hard ones.
+- **Effect on automation/babysitting:** marginal. The depth prime is
+  one extra sentence per execution turn; the model deliberates briefly
+  before tool calls and considers alternatives when the problem admits
+  them. Shipping rate is essentially unchanged; per-turn quality of
+  thinking improves.
+- **Latency/token cost:** execution opener grew from ~365 chars to
+  ~530 chars (+165 chars per fresh execution prompt). Continuation
+  opener grew from ~470 chars to ~580 chars (+110 chars). `core.md`
+  grew from 186 to 198 lines (+12 lines, paid once per session via
+  `@-import`). Cumulative cost per session: trivial.
+- **Verification:** existing regression tests pass with no
+  modification — `test-no-defer-contract.sh` (20 tests, proves the
+  load-bearing contract is intact), `test-directive-instrumentation.sh`
+  (11 tests, including the strict codepoint-length invariant for
+  emitted directive bodies), `test-bias-defense-directives.sh` (108
+  tests, including the "no hold-shaped phrasing" assertion that catches
+  any new directive that reads as a pause), `test-classifier.sh` (65),
+  `test-bias-defense-classifier.sh` (250), `test-classifier-replay.sh`
+  (22), `test-e2e-hook-sequence.sh` (373). Total: 849 assertions across
+  7 test files, all green. Smoke test of the live router output
+  confirms the depth-prime sentence leads the per-turn injection.
+
+**Backward compatibility.** No conf flag toggles this — the rebalance
+is the new default. The `ultrathink` keyword still escalates intensity
+(the directive remains in the router unchanged for users who learned
+to type it), but its content is now baked into the default for
+non-trivial work, so unkeyworded prompts get the same depth prime.
+
+### Earlier in this [Unreleased] section — Release-loop reform after v1.40.x CI-red tags
+
 User-driven release-loop reform after v1.40.0 and v1.40.1 each shipped
 CI-red on tagged-SHAs. The actual cost shape:
 

@@ -802,7 +802,7 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
   fi
 
   if [[ "${continuation_prompt}" -eq 1 ]]; then
-    add_directive "ulw_continuation_opener" "Ultrawork continuation mode is active for this session. Continue the prior task instead of treating the literal word 'continue' or 'resume' as a new objective. In your first user-facing response, start with the bold phrase **Ultrawork continuation active.** then briefly state what is already done, what remains, and the next concrete action. Reuse finished work, preserve the existing task domain, and only re-dispatch branches that were interrupted or are still missing."
+    add_directive "ulw_continuation_opener" "Ultrawork continuation mode is active. **Re-engage at full cognitive depth** — long sessions accumulate drift; resist autopilot, re-read the actual state rather than what you remember of it. Continue the prior task instead of treating the literal word 'continue' or 'resume' as a new objective. Lead your first response with **Ultrawork continuation active.** then briefly state what is already done, what remains, and the next concrete action. Reuse finished work, preserve the existing task domain, and only re-dispatch branches that were interrupted or are still missing."
     add_directive "intent_classification" "Surface the classification after the opener — e.g., '**Domain:** ${TASK_DOMAIN} | **Intent:** ${display_intent}' — so the user can verify routing is correct."
     add_directive "preserved_objective" "Preserved objective: ${previous_objective}"
 
@@ -918,7 +918,7 @@ ${_spec_safe}
       add_directive "preserved_objective" "Preserved active objective in the background: ${previous_objective}"
     fi
   else
-    add_directive "ulw_execution_opener" "Ultrawork mode is active for this session. In your first user-facing response, start with the bold phrase **Ultrawork mode active.** as the opening line for visual distinction. Use the strongest specialist path available, keep momentum high, and do not stop early. Do not segment unfinished work into 'wave 1 done, wave 2 next' or 'ready for a new session' unless the user explicitly asked for a checkpoint."
+    add_directive "ulw_execution_opener" "Ultrawork mode is active. **Engage at full cognitive depth on this prompt** — deliberate before each non-trivial tool call; consider 2-3 approaches when the problem admits alternatives. \"Default to action\" follows deliberation, never replaces it. Lead your first response with **Ultrawork mode active.** as the opening line. Use the strongest specialist path, keep momentum high, do not stop early, and do not segment unfinished work into cross-session handoffs (\"wave 1 done, wave 2 next\", \"ready for a new session\") unless the user explicitly asked for a checkpoint."
     add_directive "intent_classification" "Detected intent: ${display_intent}. Detected domain: ${TASK_DOMAIN}. Surface the classification right after the opener — '**Domain:** ${TASK_DOMAIN} | **Intent:** ${display_intent}' — followed by the first action you will take, so the user can verify routing is correct. If the user corrects the classification, adjust immediately."
 
     # v1.36.x W5 F-023: First-ULW-after-install nudge. If the user has
