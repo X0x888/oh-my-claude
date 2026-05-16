@@ -4,6 +4,54 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### v1.41 polish — cross-wave cumulative-review findings (W1-W4 follow-up)
+
+Cumulative quality-reviewer pass over the Wave 1-4 patches surfaced
+five low-severity findings; addressed in-wave as a polish commit
+rather than letting them ride into v1.41:
+
+1. **Duplicate-row suppression in `/ulw-report` Session-duration
+   table.** When only ONE sub-cohort populates (e.g. all rows are
+   pre-v1.41 "Unlabeled"), the "All qualifying" row used to render
+   identical numbers to the sole sub-cohort — visually redundant.
+   Now suppressed when `_dur_populated_subcohorts < 2`. Visible
+   improvement on the current user's telemetry today (the
+   "All qualifying" / "Unlabeled" duplicate is gone).
+
+2. **`*(n<5)*` annotation on low-n cohort rows.** Percentile math
+   collapses degenerately when n is small (n=1 → all four percentile
+   columns are the same value; n=2 → upper-median = p75; etc.).
+   The annotation surfaces sample-size confidence without changing
+   the math.
+
+3. **Anti-DRY marker on the Wave 4 snapshot.** `previous_last_prompt_ts`
+   is snapshotted ~1450 lines BEFORE its consumer in
+   `prompt-intent-router.sh`. A future "DRY up the state reads"
+   refactor that merged this read with the bulk `read_state_keys`
+   below would silently reintroduce the read-after-write bug Wave 4
+   was guarding against. Added a `!!! DO NOT MOVE` marker so future
+   editors see the constraint.
+
+4. **Advisory-turn timestamp side-effect documented inline.** The
+   mid-session-checkpoint gate fires only on execution intent, but
+   `last_user_prompt_ts` is written on ALL intents. Net effect: an
+   advisory turn sitting in the middle of a long idle period will
+   suppress the directive AND advance the timestamp, so the
+   next-following execution prompt measures gap from the advisory
+   prompt. This is intentional (advisory IS activity) but worth
+   documenting at the gate so future "smart gap measurement" work
+   doesn't treat it as a bug.
+
+5. **Cumulative test-count anchor.** The four W1-W4 commits each
+   added one test file. Aggregate count for the whole `[Unreleased]`
+   block: 99 → 102 bash tests, +91 new assertions across the four
+   new test files (35 + 13-extended + 28 + 15).
+
+Tests added under this polish entry: T35b (cohort-row suppression
+when one sub-cohort populates) and T35c / T34 update (low-n
+annotation visible). `test-show-report.sh` 115 → 119 assertions
+total.
+
 ### Mid-session memory checkpoint (Wave 4)
 
 Telemetry-driven gap: ~16% of sessions live past 6 hours and ~5%

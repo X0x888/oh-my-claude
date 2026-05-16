@@ -1929,7 +1929,7 @@ else
 
   _dur_emit_row() {
     local label="$1" rows="$2"
-    local n stats p50 p75 p90 p95 maxv
+    local n stats p50 p75 p90 p95 maxv n_note
     n="$(printf '%s\n' "${rows}" | grep -c . || echo 0)"
     if (( n == 0 )); then
       return
@@ -1949,8 +1949,17 @@ else
     p90="$(jq -r '.p90 // 0' <<<"${stats}")"
     p95="$(jq -r '.p95 // 0' <<<"${stats}")"
     maxv="$(jq -r '.max // 0' <<<"${stats}")"
-    printf '| %s | %s | %s | %s | %s | %s | %s |\n' \
-      "${label}" "${n}" \
+    # Low-n annotation: for n<5 every percentile column collapses
+    # onto a small handful of values (n=1 → all four columns are the
+    # SAME value; n=2 → median = p75 = upper, p90 = p95 = max). The
+    # annotation makes the low-confidence sample size visible without
+    # changing the math.
+    n_note=""
+    if (( n < 5 )); then
+      n_note=" *(n<5)*"
+    fi
+    printf '| %s%s | %s | %s | %s | %s | %s | %s |\n' \
+      "${label}" "${n_note}" "${n}" \
       "$(timing_fmt_secs "${p50:-0}")" \
       "$(timing_fmt_secs "${p75:-0}")" \
       "$(timing_fmt_secs "${p90:-0}")" \
@@ -1958,13 +1967,26 @@ else
       "$(timing_fmt_secs "${maxv:-0}")"
   }
 
-  printf '| Cohort | n | Median | p75 | p90 | p95 | max |\n'
-  printf '|---|---|---|---|---|---|---|\n'
-  _dur_emit_row "All qualifying" "${_dur_rows}"
-
   _dur_edit_review="$(printf '%s\n' "${_dur_rows}" | jq -c 'select((.end_ts_source // null) == "edit" or (.end_ts_source // null) == "review")' 2>/dev/null || true)"
   _dur_prompt_only="$(printf '%s\n' "${_dur_rows}" | jq -c 'select((.end_ts_source // null) == "prompt")' 2>/dev/null || true)"
   _dur_unlabeled="$(printf '%s\n' "${_dur_rows}" | jq -c 'select((.end_ts_source // null) == null)' 2>/dev/null || true)"
+
+  # Count populated sub-cohorts. If only ONE sub-cohort has rows, the
+  # "All qualifying" row would render identical numbers to that sole
+  # sub-cohort — visually redundant. Suppress in that case; show the
+  # sub-cohort row only. When two or more sub-cohorts populate, keep
+  # the "All qualifying" row so the reader can see the rollup
+  # alongside the breakdown.
+  _dur_populated_subcohorts=0
+  [[ -n "${_dur_edit_review}" ]] && _dur_populated_subcohorts=$(( _dur_populated_subcohorts + 1 ))
+  [[ -n "${_dur_prompt_only}"  ]] && _dur_populated_subcohorts=$(( _dur_populated_subcohorts + 1 ))
+  [[ -n "${_dur_unlabeled}"    ]] && _dur_populated_subcohorts=$(( _dur_populated_subcohorts + 1 ))
+
+  printf '| Cohort | n | Median | p75 | p90 | p95 | max |\n'
+  printf '|---|---|---|---|---|---|---|\n'
+  if (( _dur_populated_subcohorts >= 2 )); then
+    _dur_emit_row "All qualifying" "${_dur_rows}"
+  fi
 
   if [[ -n "${_dur_edit_review}" ]]; then
     _dur_emit_row "Edit/review-grade" "${_dur_edit_review}"

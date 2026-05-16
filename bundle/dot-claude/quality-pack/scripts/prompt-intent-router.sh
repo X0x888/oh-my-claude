@@ -102,6 +102,15 @@ PROMPT_TS="$(now_epoch)"
 # the mid-session memory-checkpoint directive to detect long idle
 # gaps (the user came back after a long break and the stretch just
 # closed may have memory-worthy signal we don't want to lose).
+#
+# !!! DO NOT MOVE THIS READ BELOW THE write_state_batch THAT WRITES
+# !!! last_user_prompt_ts (it lives ~60 lines below this point). A
+# !!! future "DRY up the state reads" refactor that merges this with
+# !!! the bulk read_state_keys consumer further down WILL silently
+# !!! reintroduce the bug Wave 4 was guarding against — the gap
+# !!! would always be 0 (PROMPT_TS - PROMPT_TS) and the directive
+# !!! would never fire. The downstream consumer is ~1450 lines below
+# !!! at the `_msc_should_fire` block; that distance is the risk.
 previous_last_prompt_ts="$(read_state "last_user_prompt_ts" 2>/dev/null || true)"
 midsession_checkpoint_last_fired_ts="$(read_state "midsession_checkpoint_last_fired_ts" 2>/dev/null || true)"
 
@@ -1547,6 +1556,17 @@ fi
 # checkpoint nudge here would contradict that. Checkpoint turns are
 # wrap-up-shaped — the session-stop auto-memory pass is the right
 # surface for them, not a mid-session nudge.
+#
+# Known side-effect: `last_user_prompt_ts` is written UNCONDITIONALLY
+# above (line ~174) for all intents. So a long idle gap that ends on
+# an *advisory* prompt suppresses the checkpoint AND advances the
+# timestamp — the next execution prompt then measures `_msc_gap_s`
+# from the ADVISORY prompt, not the prior execution prompt. This is
+# intentional (advisory prompts ARE activity; treating the user as
+# "still idle" because their last turn was advisory would over-fire
+# the directive). Documenting so a future "smart" gap measurement
+# that times-from-last-execution-prompt knows the prior behavior was
+# a conscious choice, not an oversight.
 #
 # Honors `auto_memory=off` (no rule to checkpoint against) and
 # `mid_session_memory_checkpoint=off` (the user opted out of the

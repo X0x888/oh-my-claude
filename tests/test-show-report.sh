@@ -802,9 +802,14 @@ cat > "${QP}/session_summary.jsonl" <<EOF
 EOF
 out="$(run_report all)"
 assert_contains "T34 section heading"      "## Session duration distribution" "${out}"
+# n=7, no low-n annotation; renders because 2+ sub-cohorts populate (edit/review + prompt-only).
 assert_contains "T34 all-qualifying row"   "| All qualifying | 7 |" "${out}"
+# n=5 exactly — no low-n annotation (threshold is n<5).
 assert_contains "T34 edit/review cohort"   "| Edit/review-grade | 5 |" "${out}"
-assert_contains "T34 prompt-only cohort"   "| Prompt-only (advisory) | 2 |" "${out}"
+# n=2 — gets the low-n annotation. Assert prefix + count separately so the
+# annotation doesn't break the regression net.
+assert_contains "T34 prompt-only cohort label" "Prompt-only (advisory)" "${out}"
+assert_contains "T34 prompt-only cohort low-n annotation" "Prompt-only (advisory) *(n<5)*" "${out}"
 # 2 rows excluded: one with wall=5s (below 10s floor), one with null end_ts.
 assert_contains "T34 throwaway disclosure" "Excluded: 2 session(s)" "${out}"
 # Sanity — pre-Wave-1 unlabeled row should NOT appear when all rows have a label.
@@ -824,7 +829,18 @@ cat > "${QP}/session_summary.jsonl" <<EOF
 {"session_id":"old2","start_ts":1777010000,"end_ts":1777013600,"outcome":"completed_inferred","edit_count":2,"reviewed":true,"verified":true,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":0,"skip_count":0,"serendipity_count":0,"domain":"coding","intent":"execution"}
 EOF
 out="$(run_report all)"
-assert_contains "T35 unlabeled cohort rendered" "Unlabeled (pre-v1.41 rows) | 2 |" "${out}"
+assert_contains "T35 unlabeled cohort rendered" "Unlabeled (pre-v1.41 rows)" "${out}"
+assert_contains "T35a unlabeled cohort shows n=2"   "| 2 |" "${out}"
+# v1.41 W4 polish (cumulative-review F1): when only ONE sub-cohort has
+# rows, the "All qualifying" row would be visually identical — suppress.
+if [[ "${out}" == *"All qualifying"* ]]; then
+  printf '  FAIL: T35b — All-qualifying row rendered when only one sub-cohort populated (visually redundant)\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+# v1.41 W4 polish (cumulative-review F3): n<5 annotation
+assert_contains "T35c low-n annotation present" "*(n<5)*" "${out}"
 rm -f "${QP}/session_summary.jsonl"
 
 # ----------------------------------------------------------------------
