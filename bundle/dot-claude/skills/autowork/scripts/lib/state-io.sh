@@ -138,7 +138,7 @@ _ensure_valid_state() {
   _state_validated=1
 }
 
-write_state() {
+_write_state_unlocked() {
   local key="$1"
   local value="$2"
   local state_file
@@ -156,7 +156,20 @@ write_state() {
   fi
 }
 
-write_state_batch() {
+write_state() {
+  # Public state writes lock by default. Older call sites wrapped
+  # write_state in with_state_lock only where authors remembered the
+  # read-modify-write race; the default must be safe because hooks fan
+  # out concurrently. with_state_lock is re-entrant, so existing locked
+  # callers run the unlocked body inline under the outer lock.
+  if [[ -n "${_OMC_STATE_LOCK_HELD:-}" || -z "${SESSION_ID:-}" ]]; then
+    _write_state_unlocked "$@"
+  else
+    with_state_lock _write_state_unlocked "$@"
+  fi
+}
+
+_write_state_batch_unlocked() {
   if [[ $(( $# % 2 )) -ne 0 ]]; then
     printf 'write_state_batch: odd number of arguments (%d)\n' "$#" >&2
     return 1
@@ -185,6 +198,16 @@ write_state_batch() {
   else
     rm -f "${temp_file}"
     return 1
+  fi
+}
+
+write_state_batch() {
+  # See write_state: batch writes are also lock-protected by default so
+  # concurrent hooks cannot lose updates via parallel temp-file moves.
+  if [[ -n "${_OMC_STATE_LOCK_HELD:-}" || -z "${SESSION_ID:-}" ]]; then
+    _write_state_batch_unlocked "$@"
+  else
+    with_state_lock _write_state_batch_unlocked "$@"
   fi
 }
 
@@ -438,14 +461,14 @@ read_state_keys() {
 #
 # Wraps a function call with a mutex held against the session's state
 # directory. Uses mkdir as the atomic lock primitive (portable across
-# macOS and Linux — flock is non-standard on BSD). A stale-lock timeout
-# prevents a crashed hook from holding the lock forever: if the lockdir
-# is older than OMC_STATE_LOCK_STALE_SECS (default 5), force-release it.
+# macOS and Linux — flock is non-standard on BSD). A dead holder PID is
+# reclaimed immediately; pidless legacy locks wait for the stale-lock
+# timeout first.
 #
 # Usage: with_state_lock my_function arg1 arg2 ...
 #
 # Returns the wrapped function's exit status, or 1 if the lock cannot
-# be acquired within OMC_STATE_LOCK_MAX_ATTEMPTS polls (default 200).
+# be acquired within OMC_STATE_LOCK_MAX_ATTEMPTS polls (default 60).
 
 OMC_STATE_LOCK_STALE_SECS="${OMC_STATE_LOCK_STALE_SECS:-5}"
 # v1.31.0 Wave 2 (sre-lens F-5): cap tightened from 200×50ms (10s) to
@@ -457,7 +480,7 @@ OMC_STATE_LOCK_STALE_SECS="${OMC_STATE_LOCK_STALE_SECS:-5}"
 # pathological contention (bash 5+ kernel-serialized appender storm
 # across 5+ peers) where the right answer is "report and skip" not
 # "wait 10 more seconds."
-OMC_STATE_LOCK_MAX_ATTEMPTS="${OMC_STATE_LOCK_MAX_ATTEMPTS:-60}"
+OMC_STATE_LOCK_MAX_ATTEMPTS="${OMC_STATE_LOCK_MAX_ATTEMPTS:-${OMC_LOCK_CAP:-60}}"
 # Long-wait threshold (in attempts) for soft telemetry. When a lock
 # is held past this many attempts but hasn't yet exhausted the cap,
 # emit a `lock-long-wait` anomaly so /ulw-report can surface
@@ -489,11 +512,12 @@ _lock_mtime() {
 # Behavior:
 #   - mkdir-as-mutex with PID-based stale recovery (v1.29.0 metis F-6
 #     pattern, generalized in v1.30.0). Records holder PID into
-#     <lockdir>/holder.pid; on stale-mtime, force-releases ONLY when
-#     the recorded PID is dead (or pidfile is absent — legacy / synthetic
-#     stale locks). Defeats the false-recovery race where a slow-but-live
-#     writer (jq parsing 100KB+ state under heavy IO) would otherwise
-#     lose its lock to a peer that timed out on mtime alone.
+#     <lockdir>/holder.pid; dead recorded PIDs are reclaimed immediately.
+#     Pidless locks are reclaimed only after stale-mtime because a live
+#     process may have created the lockdir but not written holder.pid yet.
+#     Defeats the false-recovery race where a slow-but-live writer (jq
+#     parsing 100KB+ state under heavy IO) would otherwise lose its lock
+#     to a peer that timed out on mtime alone.
 #   - Caps acquisition at OMC_STATE_LOCK_MAX_ATTEMPTS polls; stale window
 #     is OMC_STATE_LOCK_STALE_SECS (default 5s).
 #   - On exhaustion: log_anomaly "${tag}" "lock not acquired after N
@@ -527,13 +551,18 @@ _with_lockdir() {
       local now held_since
       now="$(date +%s)"
       held_since="$(_lock_mtime "${lockdir}")"
+      local holder_pid=""
+      if [[ -f "${pidfile}" ]]; then
+        holder_pid="$(cat "${pidfile}" 2>/dev/null | tr -d '[:space:]' || true)"
+      fi
+      if [[ -n "${holder_pid}" ]] && ! kill -0 "${holder_pid}" 2>/dev/null; then
+        rm -f "${pidfile}" 2>/dev/null || true
+        rmdir "${lockdir}" 2>/dev/null || true
+        continue
+      fi
       if [[ "${held_since}" -gt 0 ]] \
           && [[ $(( now - held_since )) -gt "${OMC_STATE_LOCK_STALE_SECS}" ]]; then
-        local holder_pid=""
-        if [[ -f "${pidfile}" ]]; then
-          holder_pid="$(tr -d '[:space:]' < "${pidfile}" 2>/dev/null || true)"
-        fi
-        if [[ -z "${holder_pid}" ]] || ! kill -0 "${holder_pid}" 2>/dev/null; then
+        if [[ -z "${holder_pid}" ]]; then
           rm -f "${pidfile}" 2>/dev/null || true
           rmdir "${lockdir}" 2>/dev/null || true
           continue
@@ -611,5 +640,5 @@ with_state_lock() {
 # Convenience wrapper: atomic write_state_batch inside with_state_lock.
 # Usage: with_state_lock_batch k1 v1 k2 v2 ...
 with_state_lock_batch() {
-  with_state_lock write_state_batch "$@"
+  with_state_lock _write_state_batch_unlocked "$@"
 }

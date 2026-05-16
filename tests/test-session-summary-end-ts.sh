@@ -240,6 +240,36 @@ assert_old_form_absent "C6a common.sh old buggy form absent" "${COMMON_SH}"
 assert_old_form_absent "C6b show-report.sh old buggy form absent" "${REPORT_SH}"
 
 # ---------------------------------------------------------------
+# Part D: real sweep path executes the production jq block
+# ---------------------------------------------------------------
+#
+# The mirrored jq above is useful for fast truth-table coverage, but it
+# must be paired with one production-path exercise so the test cannot
+# drift into proving only its own copy of the logic.
+
+tmp_home="$(mktemp -d)"
+(
+  export HOME="${tmp_home}"
+  export STATE_ROOT="${tmp_home}/.claude/quality-pack/state"
+  export OMC_STATE_TTL_DAYS=0
+  mkdir -p "${STATE_ROOT}/real-sweep-prompt"
+  printf '%s\n' '{"workflow_mode":"ultrawork","task_intent":"advisory","task_domain":"mixed","session_start_ts":"1777000000","last_user_prompt_ts":"1777003600"}' \
+    > "${STATE_ROOT}/real-sweep-prompt/session_state.json"
+  printf '%s\n' "$(( $(date +%s) - 90000 ))" > "${STATE_ROOT}/.last_sweep"
+  old_touch="$(date -v-10S +%Y%m%d%H%M.%S 2>/dev/null || date -d '10 seconds ago' +%Y%m%d%H%M.%S 2>/dev/null || true)"
+  [[ -n "${old_touch}" ]] && touch -t "${old_touch}" "${STATE_ROOT}/real-sweep-prompt" 2>/dev/null || true
+  # shellcheck disable=SC1090
+  . "${COMMON_SH}"
+  sweep_stale_sessions
+)
+real_row="$(cat "${tmp_home}/.claude/quality-pack/session_summary.jsonl" 2>/dev/null || true)"
+rm -rf "${tmp_home}"
+assert_eq "D1 real sweep writes prompt-grade end_ts" "1777003600" \
+  "$(printf '%s\n' "${real_row}" | jq -r '.end_ts // ""' 2>/dev/null || true)"
+assert_eq "D2 real sweep writes prompt end_ts_source" "prompt" \
+  "$(printf '%s\n' "${real_row}" | jq -r '.end_ts_source // ""' 2>/dev/null || true)"
+
+# ---------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------
 total=$((pass + fail))

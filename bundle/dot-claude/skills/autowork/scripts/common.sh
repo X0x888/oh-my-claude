@@ -115,9 +115,11 @@ OMC_PRETOOL_INTENT_GUARD="${OMC_PRETOOL_INTENT_GUARD:-true}"
 # the gate allows `git commit` even under non-execution intent. Stale
 # plans (older than the TTL) do NOT trigger the override, so abandoned
 # plans cannot leak per-wave authorization into unrelated later work.
-# Default 1800s = 30 minutes; raise if your wave cycles legitimately
-# exceed this between commits, lower to tighten.
-OMC_WAVE_OVERRIDE_TTL_SECONDS="${OMC_WAVE_OVERRIDE_TTL_SECONDS:-1800}"
+# Default 7200s = 2 hours. Ultra-complex waves often spend well over
+# 30 minutes in implementation/review/verify before the commit; a too-
+# short TTL nudges the model toward smaller artificial scopes. Lower to
+# tighten if stale-plan authorization is a bigger concern for your use.
+OMC_WAVE_OVERRIDE_TTL_SECONDS="${OMC_WAVE_OVERRIDE_TTL_SECONDS:-7200}"
 # Classifier telemetry capture: when `on` (default), every UserPromptSubmit
 # records a row to `<session>/classifier_telemetry.jsonl` and the follow-up
 # prompt's hook may annotate misfire rows. The prompt preview (first 200
@@ -1235,6 +1237,51 @@ json_get() {
   jq -r "${query} // empty" <<<"${HOOK_JSON}"
 }
 
+omc_hook_tool_failed() {
+  local hook_json="${1:-${HOOK_JSON:-}}"
+  [[ -n "${hook_json}" ]] || return 1
+
+  local exit_code status success
+  exit_code="$(jq -r '
+    [
+      (.tool_response | objects | .exit_code?),
+      (.tool_response | objects | .exitCode?),
+      (.tool_result | objects | .exit_code?),
+      (.tool_result | objects | .exitCode?)
+    ]
+    | map(select(. != null and . != ""))
+    | .[0] // empty
+    | tostring
+  ' <<<"${hook_json}" 2>/dev/null || true)"
+  if [[ "${exit_code}" =~ ^[1-9][0-9]*$ ]]; then
+    return 0
+  fi
+
+  status="$(jq -r '
+    [
+      (.tool_response | objects | .status?),
+      (.tool_result | objects | .status?)
+    ]
+    | map(select(. != null and . != ""))
+    | .[0] // empty
+    | tostring
+  ' <<<"${hook_json}" 2>/dev/null || true)"
+  if printf '%s' "${status}" | grep -Eiq '^(failed|failure|error)$'; then
+    return 0
+  fi
+
+  success="$(jq -r '
+    [
+      (.tool_response | objects | .success?),
+      (.tool_result | objects | .success?)
+    ]
+    | map(select(. != null and . != ""))
+    | .[0] // empty
+    | tostring
+  ' <<<"${hook_json}" 2>/dev/null || true)"
+  [[ "${success}" == "false" ]]
+}
+
 # --- Session ID validation ---
 # SESSION_ID comes from Claude Code's hook JSON. Validate it as a safe
 # filesystem identifier (alphanumeric, hyphens, underscores, dots, 1-128
@@ -1463,7 +1510,7 @@ _sweep_append_gate_events() {
     || true
 }
 
-sweep_stale_sessions() {
+_sweep_stale_sessions_locked() {
   local marker="${STATE_ROOT}/.last_sweep"
   local now
   now="$(date +%s)"
@@ -1493,8 +1540,10 @@ sweep_stale_sessions() {
 
   # Pre-sweep aggregation: capture a summary line per session before deletion.
   # This preserves longitudinal data for quality analysis.
-  # No lock needed: sweep is gated by the daily marker file, so only one
-  # process runs it at a time. Concurrent writes are structurally impossible.
+  # Runs under STATE_ROOT/.sweep.lock. The daily marker is a freshness
+  # check, not an atomic claim; without this outer lock, multiple hooks
+  # that cross the 24h boundary together can all pass the marker check
+  # and duplicate summary rows / deletions.
   #
   # end_ts cascade rationale (v1.41 W1, post-telemetry-audit):
   # Pre-v1.41 the writer used `(.last_edit_ts // .last_review_ts // null)`,
@@ -1765,6 +1814,12 @@ sweep_stale_sessions() {
   # after the next 24h boundary, by which point the underlying disk
   # condition is independently fixable.
   printf '%s\n' "${now}" > "${marker}" 2>/dev/null || true
+}
+
+sweep_stale_sessions() {
+  mkdir -p "${STATE_ROOT}" 2>/dev/null || true
+  _with_lockdir "${STATE_ROOT}/.sweep.lock" "sweep_stale_sessions" \
+    _sweep_stale_sessions_locked || true
 }
 
 # --- end TTL sweep ---
@@ -5838,11 +5893,10 @@ _finding_id() {
 #   FINDINGS_JSON: [{"severity":"high","category":"bug","file":"...",
 #     "line":42,"claim":"...","evidence":"...","recommended_fix":"..."}]
 #
-# Single-line array. Agents emit this AFTER findings prose and BEFORE
-# the VERDICT line. Multi-line JSON is intentionally NOT supported —
-# single-line is robustly grep-able from a long mixed Markdown response,
-# while multi-line would require state-tracking across line iteration
-# and produce silent extraction failures on minor formatting errors.
+# Single-line array is preferred for grep/debug ergonomics. Multi-line
+# JSON arrays are also accepted now: the parser captures from the last
+# unindented FINDINGS_JSON line through the closing array (or VERDICT).
+# Agents emit this AFTER findings prose and BEFORE the VERDICT line.
 #
 # Required fields per finding object: severity (high|medium|low),
 # category (bug|missing_test|completeness|security|performance|docs|
@@ -5853,6 +5907,42 @@ _finding_id() {
 # Return: NDJSON to stdout (one normalized object per line). Empty when:
 # no FINDINGS_JSON line present, JSON parse error, or empty array. Never
 # errors — fail-open is the contract; the prose heuristic still runs.
+_extract_findings_json_payload() {
+  local cleaned="$1"
+  local line payload="" last_payload="" capturing=0
+
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    if [[ "${line}" =~ ^FINDINGS_JSON:[[:space:]]*\[ ]]; then
+      payload="$(printf '%s' "${line}" | sed -E 's/^FINDINGS_JSON:[[:space:]]*//')"
+      capturing=1
+    elif [[ "${capturing}" -eq 1 ]]; then
+      if [[ "${line}" =~ ^VERDICT: ]]; then
+        if printf '%s' "${payload}" | jq -e 'type == "array"' >/dev/null 2>&1; then
+          last_payload="${payload}"
+        fi
+        capturing=0
+        continue
+      fi
+      payload="${payload}"$'\n'"${line}"
+    else
+      continue
+    fi
+
+    if [[ "${capturing}" -eq 1 ]] \
+        && printf '%s' "${payload}" | jq -e 'type == "array"' >/dev/null 2>&1; then
+      last_payload="${payload}"
+      capturing=0
+    fi
+  done <<<"${cleaned}"
+
+  if [[ "${capturing}" -eq 1 ]] \
+      && printf '%s' "${payload}" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    last_payload="${payload}"
+  fi
+
+  printf '%s' "${last_payload}"
+}
+
 extract_findings_json() {
   local message="$1"
   [[ -z "${message}" ]] && return 0
@@ -5868,16 +5958,12 @@ extract_findings_json() {
     !in_code { print }
   ')"
 
-  # Grab the LAST FINDINGS_JSON: line that is unindented AND followed by
+  # Grab the LAST FINDINGS_JSON block that is unindented AND starts with
   # a JSON array opener (`[`). Requiring `[` narrows the match to actual
-  # arrays — example text like `FINDINGS_JSON: <single-line JSON array>`
-  # in prose would otherwise match.
+  # arrays — example text like `FINDINGS_JSON: <JSON array>` in prose
+  # would otherwise match.
   local json_line
-  json_line="$(printf '%s\n' "${cleaned}" \
-    | grep -E '^FINDINGS_JSON:[[:space:]]*\[' \
-    | tail -n 1 \
-    | sed -E 's/^FINDINGS_JSON:[[:space:]]*//' \
-    || true)"
+  json_line="$(_extract_findings_json_payload "${cleaned}")"
   [[ -z "${json_line}" ]] && return 0
 
   # Validate as JSON array; emit each element as NDJSON.
@@ -5933,11 +6019,7 @@ count_findings_json() {
     !in_code { print }
   ')"
   local json_line
-  json_line="$(printf '%s\n' "${cleaned}" \
-    | grep -E '^FINDINGS_JSON:[[:space:]]*\[' \
-    | tail -n 1 \
-    | sed -E 's/^FINDINGS_JSON:[[:space:]]*//' \
-    || true)"
+  json_line="$(_extract_findings_json_payload "${cleaned}")"
   [[ -z "${json_line}" ]] && return 0
   printf '%s' "${json_line}" \
     | jq -r 'if type == "array" then length else 0 end' 2>/dev/null \

@@ -188,6 +188,10 @@ for impl in "${implementations[@]}"; do
     "${work}/settings.json" \
     '[.hooks.PostToolUse[] | select(.matcher == "Bash") | .hooks[0].command] | any(. | tostring | contains("record-delivery-action.sh"))' \
     "true"
+  assert_json_eq "${impl}: fresh — PostToolUse broad MCP matcher wires record-verification.sh" \
+    "${work}/settings.json" \
+    '[.hooks.PostToolUse[] | select(.matcher == "mcp__.*") | .hooks[0].command] | any(. | tostring | contains("record-verification.sh"))' \
+    "true"
 
   # No bypass keys should be set
   assert_json_eq "${impl}: fresh — no defaultMode" \

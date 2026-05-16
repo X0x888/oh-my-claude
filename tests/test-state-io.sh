@@ -173,6 +173,25 @@ assert_eq "lock dir released after concurrent writers" "no" \
   "$([[ -d "$(session_file ".state.lock")" ]] && echo yes || echo no)"
 
 # ----------------------------------------------------------------------
+printf 'Test 8b: standalone write_state serializes concurrent writers by default\n'
+reset_state
+pids=()
+for i in $(seq 1 20); do
+  ( write_state "auto${i}" "value-${i}" ) &
+  pids+=($!)
+done
+for pid in "${pids[@]}"; do
+  wait "${pid}"
+done
+jq empty "$(session_file "${STATE_JSON}")" >/dev/null
+for i in $(seq 1 20); do
+  got="$(read_state "auto${i}")"
+  assert_eq "auto-locked writer auto${i} landed" "value-${i}" "${got}"
+done
+assert_eq "auto-lock dir released after standalone writers" "no" \
+  "$([[ -d "$(session_file ".state.lock")" ]] && echo yes || echo no)"
+
+# ----------------------------------------------------------------------
 printf 'Test 9: with_state_lock recovers from a stale lock\n'
 reset_state
 lockdir="$(session_file ".state.lock")"

@@ -51,6 +51,17 @@ effective_guard_exhaustion_mode() {
     fi
   fi
 
+  # v1.41 autonomy-depth hardening: default ULW execution runs with
+  # no_defer_mode=on. In that mode, a gate cap is a progress nudge, not a
+  # permission to stop with missing review, verification, remediation, or
+  # pending scope. This addresses the observed "complex sessions end
+  # around the cap window by narrowing scope / deferring the hard part"
+  # pattern without imposing an artificial elapsed-time floor.
+  if is_no_defer_active && [[ "${serious_missing}" == "1" ]]; then
+    printf 'block'
+    return 0
+  fi
+
   printf '%s' "${configured}"
 }
 
@@ -257,10 +268,16 @@ if [[ "${ulw_pause_active}" != "1" ]] \
   && [[ -n "${last_assistant_message}" ]] \
   && has_unfinished_session_handoff "${last_assistant_message}" \
   && ! is_checkpoint_request "${current_objective}"; then
-  if [[ "${session_handoff_blocks}" -lt 2 ]]; then
-    write_state "session_handoff_blocks" "$((session_handoff_blocks + 1))"
+  _handoff_effective_exhaustion_mode="$(effective_guard_exhaustion_mode 1)"
+  if [[ "${session_handoff_blocks}" -lt 2 || "${_handoff_effective_exhaustion_mode}" == "block" ]]; then
+    if [[ "${session_handoff_blocks}" -lt 2 ]]; then
+      _handoff_next_block="$((session_handoff_blocks + 1))"
+      write_state "session_handoff_blocks" "${_handoff_next_block}"
+    else
+      _handoff_next_block="${session_handoff_blocks}"
+    fi
     record_gate_event "session-handoff" "block" \
-      "block_count=$((session_handoff_blocks + 1))" "block_cap=2"
+      "block_count=${_handoff_next_block}" "block_cap=2"
     handoff_recovery="$(format_gate_recovery_options \
       "Continue the deferred work now in this session." \
       "Ask the user explicitly whether they want a checkpoint." \
@@ -277,10 +294,14 @@ if [[ "${ulw_pause_active}" != "1" ]] \
     # FOR YOU message names the actual rationalization shapes the
     # regex now catches. ('fresh session' was excluded after FP audit
     # against ambient harness text.)
+    _handoff_block_tail=""
+    if [[ "${_handoff_effective_exhaustion_mode}" == "block" && "${session_handoff_blocks}" -ge 2 ]]; then
+      _handoff_block_tail=" BLOCK MODE: no-defer/zero-steering policy keeps blocking after the cap; continue the work, use /ulw-pause for a real operational blocker, or opt out of strict autonomy explicitly."
+    fi
     emit_stop_block "$(format_gate_block_dual \
       "Premature stop. Claude said something like 'next wave', 'for next session', 'candidates for next session', or 'ready for a new session', but the user did not ask for a checkpoint." \
-      "[Session-handoff gate · $((session_handoff_blocks + 1))/2] your last response deferred remaining work to a future session, but the user did not request a checkpoint.
-Continue the work now (do not stop with 'next wave', 'for next session', 'in a future session', 'candidates for next session', or 'ready for a new session' language). 'Multi-hour' / 'too heavy' / 'needs a fresh council' are rationalizations, not stop signals — chunk the work into more waves or dispatch a sub-agent (which has its own fresh context) and ship the next concrete sub-step now.${handoff_recovery}")"
+      "[Session-handoff gate · ${_handoff_next_block}/2] your last response deferred remaining work to a future session, but the user did not request a checkpoint.
+Continue the work now (do not stop with 'next wave', 'for next session', 'in a future session', 'candidates for next session', or 'ready for a new session' language). 'Multi-hour' / 'too heavy' / 'needs a fresh council' are rationalizations, not stop signals — chunk the work into more waves or dispatch a sub-agent (which has its own fresh context) and ship the next concrete sub-step now.${_handoff_block_tail}${handoff_recovery}")"
     exit 0
   fi
 fi
@@ -470,8 +491,15 @@ if [[ "${OMC_DISCOVERED_SCOPE}" == "on" ]] \
     else
       scope_block_cap=2
     fi
-    if [[ "${pending_count}" -gt 0 && "${discovered_scope_blocks}" -lt "${scope_block_cap}" ]]; then
-      write_state "discovered_scope_blocks" "$((discovered_scope_blocks + 1))"
+    scope_effective_exhaustion_mode="$(effective_guard_exhaustion_mode 1)"
+    if [[ "${pending_count}" -gt 0 ]] \
+      && [[ "${discovered_scope_blocks}" -lt "${scope_block_cap}" || "${scope_effective_exhaustion_mode}" == "block" ]]; then
+      if [[ "${discovered_scope_blocks}" -lt "${scope_block_cap}" ]]; then
+        scope_next_block="$((discovered_scope_blocks + 1))"
+        write_state "discovered_scope_blocks" "${scope_next_block}"
+      else
+        scope_next_block="${discovered_scope_blocks}"
+      fi
       scorecard="$(build_discovered_scope_scorecard 8 || true)"
       wave_progress=""
       if [[ "${wave_total}" -gt 0 ]]; then
@@ -480,7 +508,7 @@ if [[ "${OMC_DISCOVERED_SCOPE}" == "on" ]] \
         wave_progress=" Wave plan: ${waves_completed}/${wave_total} waves completed."
       fi
       record_gate_event "discovered-scope" "block" \
-        "block_count=$((discovered_scope_blocks + 1))" \
+        "block_count=${scope_next_block}" \
         "block_cap=${scope_block_cap}" \
         "pending_count=${pending_count}" \
         "wave_total=${wave_total}" \
@@ -501,6 +529,10 @@ if [[ "${OMC_DISCOVERED_SCOPE}" == "on" ]] \
         "Defer with named WHY: \`/mark-deferred <reason>\`. Validator rejects bare 'out of scope' / 'follow-up' / 'later' and effort excuses ('requires significant effort', 'needs more time'). Acceptable shapes: \`requires X\`, \`blocked by Y\`, \`awaiting Z\`, \`superseded by F-NNN\`." \
         "Bypass once: \`/ulw-skip <reason>\`." \
         "If you fixed a verified adjacent defect on the same code path, log it via \`record-serendipity.sh\` per the Serendipity Rule.")"
+      scope_block_tail=""
+      if [[ "${scope_effective_exhaustion_mode}" == "block" && "${discovered_scope_blocks}" -ge "${scope_block_cap}" ]]; then
+        scope_block_tail=" BLOCK MODE: strict autonomy keeps blocking after the cap because pending discovered scope is still serious missing work."
+      fi
       # v1.36.x W3 F-011 / F-012: dual-audience framing + structured
       # multi-option recovery. v1.37.x W2: FOR YOU explicitly names the
       # PREFERENCE order — ship inline > wave-append > defer — instead
@@ -510,7 +542,7 @@ if [[ "${OMC_DISCOVERED_SCOPE}" == "on" ]] \
       # the gate block doesn't have to remember it.
       emit_stop_block "$(format_gate_block_dual \
         "${pending_count} advisory finding(s) surfaced by lenses or specialists this session aren't addressed in the summary. Preference order: (1) ship inline, (2) wave-append (\`record-finding-list.sh add-finding\` + \`assign-wave\` for same-surface follow-on work — preferred over defer when the finding lives in code you're already touching), (3) defer with a concrete WHY (validator rejects bare 'out of scope' / 'follow-up')." \
-        "[Discovered-scope gate · $((discovered_scope_blocks + 1))/${scope_block_cap}] ${pending_count} advisory finding(s) captured this session not addressed in your summary.${wave_progress}
+        "[Discovered-scope gate · ${scope_next_block}/${scope_block_cap}] ${pending_count} advisory finding(s) captured this session not addressed in your summary.${wave_progress}${scope_block_tail}
 Top pending (severity-ranked):
 ${scorecard}${scope_recovery}")"
       exit 0
@@ -898,8 +930,8 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
           _dim_effective_exhaustion_mode="$(effective_guard_exhaustion_mode 1)"
           case "${_dim_effective_exhaustion_mode}" in
             block)
-              dim_reason="[Review coverage · BLOCK MODE] Guard exhaustion reached but block mode prevents release. QUALITY SCORECARD:\n${scorecard}\nMissing: ${_missing_descriptions}. Address the remaining reviews or switch to guard_exhaustion_mode=scorecard."
-              dim_human="Review coverage exhausted but the effective policy keeps blocking instead of releasing. Either run the missing reviewers (${_missing_descriptions}) — even one focused pass usually clears the gate — or switch \`guard_exhaustion_mode=scorecard\` / \`quality_policy=balanced\` in \`oh-my-claude.conf\` to release with a scorecard footer instead of continuing to block."
+              dim_reason="[Review coverage · BLOCK MODE] Guard exhaustion reached but block mode prevents release. QUALITY SCORECARD:\n${scorecard}\nMissing: ${_missing_descriptions}. Address the remaining reviews or explicitly opt out of the strict-autonomy policy that is keeping this gate hard-blocking."
+              dim_human="Review coverage exhausted but the effective policy keeps blocking instead of releasing. Run the missing reviewers (${_missing_descriptions}) — even one focused pass usually clears the gate — or deliberately opt out of strict autonomy in \`oh-my-claude.conf\` if you want scorecard releases."
               emit_stop_block "$(format_gate_block_dual "${dim_human}" "${dim_reason}")"
               exit 0
               ;;
@@ -1252,7 +1284,7 @@ if [[ "${guard_blocks}" -ge 3 ]]; then
   log_hook "stop-guard" "exhausted after 3 blocks: review=${missing_review} verify=${missing_verify} failed=${verify_failed} unremediated=${review_unremediated} low_conf=${verify_low_confidence}"
 
   _main_serious_missing=0
-  if [[ "${missing_review}" -eq 1 || "${missing_verify}" -eq 1 || "${verify_failed}" -eq 1 || "${review_unremediated}" -eq 1 ]]; then
+  if [[ "${missing_review}" -eq 1 || "${missing_verify}" -eq 1 || "${verify_failed}" -eq 1 || "${verify_low_confidence}" -eq 1 || "${review_unremediated}" -eq 1 ]]; then
     _main_serious_missing=1
   fi
   _main_effective_exhaustion_mode="$(effective_guard_exhaustion_mode "${_main_serious_missing}")"
@@ -1264,8 +1296,8 @@ if [[ "${guard_blocks}" -ge 3 ]]; then
       # prevents release") into user-meaning: WHY it keeps blocking
       # and which conf flag changes that.
       emit_stop_block "$(format_gate_block_dual \
-        "Quality gates exhausted (3 blocks fired) but the effective policy keeps blocking instead of releasing. Either fix the remaining items in the scorecard, or switch \`guard_exhaustion_mode=scorecard\` / \`quality_policy=balanced\` in \`oh-my-claude.conf\` if you want a release with a scorecard footer instead." \
-        "[Quality gate · BLOCK MODE] Guard exhaustion reached but block mode prevents release. QUALITY SCORECARD:\n${scorecard}\nAddress the remaining items or switch to guard_exhaustion_mode=scorecard / quality_policy=balanced in oh-my-claude.conf.")"
+        "Quality gates exhausted (3 blocks fired) but the effective policy keeps blocking instead of releasing. Fix the remaining items in the scorecard, use /ulw-pause for a real operational blocker, or explicitly opt out of strict autonomy in \`oh-my-claude.conf\`." \
+        "[Quality gate · BLOCK MODE] Guard exhaustion reached but block mode prevents release. QUALITY SCORECARD:\n${scorecard}\nAddress the remaining items. To intentionally release with scorecards again, set guard_exhaustion_mode=scorecard AND disable the strict-autonomy trigger that applies here (for example no_defer_mode=off for ULW execution, or quality_policy=balanced for zero-steering sessions).")"
       exit 0
       ;;
     scorecard)

@@ -4,6 +4,138 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### v1.41 hardening — no-defer enforcement, concurrency, parser robustness
+
+Follow-up patch tightening enforcement gaps and concurrency races
+surfaced after the v1.41 polish commit. The theme is "make the
+contracts already documented in `core.md` *actually fire* at the
+gate boundary, and remove a few quiet race surfaces."
+
+1. **No-defer block-past-cap (load-bearing).** Under ULW execution
+   with `no_defer_mode=on` (default), the stop-guard now treats
+   gate caps as **progress nudges, not permission to release with
+   serious missing work**. When `is_no_defer_active` returns true
+   AND any of `missing_review` / `missing_verify` / `verify_failed`
+   / `verify_low_confidence` / `review_unremediated` / pending
+   discovered-scope / handoff-shape language is present, the
+   effective exhaustion mode is forced to `block` — overriding the
+   user-set `guard_exhaustion_mode=scorecard` on the strict path.
+   The discovered-scope, session-handoff, and main quality gates
+   all carry this through; recovery prose names both the
+   `no_defer_mode=off` and `quality_policy=balanced` opt-outs so
+   users who want the legacy scorecard release have an explicit
+   path. `verify_low_confidence` also joined `_main_serious_missing`
+   — previously it could quietly satisfy the gate at exhaustion.
+
+2. **`write_state` / `write_state_batch` auto-lock by default.**
+   Public state writes used to be unlocked unless the caller
+   remembered to wrap in `with_state_lock`. Concurrent hooks (very
+   common — PostToolUse + SubagentStop fan out together) could
+   race the read-modify-write and lose updates via parallel
+   temp-file moves. Both public entry points now lock by default;
+   re-entrancy via `_OMC_STATE_LOCK_HELD` keeps existing
+   `with_state_lock write_state` call sites no-op-correct.
+   `with_state_lock_batch` calls `_write_state_batch_unlocked`
+   directly to skip the re-entrancy probe under the outer lock.
+
+3. **TTL sweep mutex.** `sweep_stale_sessions` previously trusted
+   the daily marker file as an atomic claim. The marker is a
+   freshness check; multiple hooks crossing the 24h boundary
+   together can all pass it and duplicate summary rows / deletions.
+   The sweep now runs under `${STATE_ROOT}/.sweep.lock` via the
+   existing `_with_lockdir` helper.
+
+4. **`install.sh` install lock.** Concurrent `bash install.sh`
+   runs (two terminals, watchdog re-install, `--bypass-permissions`
+   from a parallel script) could corrupt each other mid-merge.
+   New `${CLAUDE_HOME}/.install.lock` mkdir-mutex with PID-based
+   stale recovery, released on EXIT. Pidless legacy locks get a
+   brief grace before reclaim to absorb the create-vs-write race.
+
+5. **Dead-PID lock reclaim is immediate.** `_with_lockdir` now
+   reclaims a lock whose recorded holder PID is dead on the very
+   next poll instead of waiting for the stale-mtime threshold.
+   Pidless locks still require stale-mtime because a live process
+   may have created the lockdir before writing `holder.pid`. The
+   `OMC_STATE_LOCK_MAX_ATTEMPTS` default also honors a secondary
+   `OMC_LOCK_CAP` fallback so `tests/test-chaos-concurrency.sh`'s
+   existing knob takes effect instead of being silently dropped.
+
+6. **Multi-line `FINDINGS_JSON` accepted.** The parser previously
+   matched only single-line `FINDINGS_JSON: [...]` payloads. An
+   agent that pretty-printed the JSON across multiple lines
+   silently failed extraction and dropped to the prose heuristic.
+   The new `_extract_findings_json_payload` walks from the
+   `FINDINGS_JSON:` line to either a valid JSON array boundary or
+   `VERDICT:`. `AGENTS.md` doc updated to reflect the broader
+   contract; single-line remains the preferred grep-able form.
+
+7. **Structured tool-failure detection.** New `omc_hook_tool_failed`
+   helper inspects PostToolUse JSON for `tool_response.exit_code` /
+   `.exitCode` / `.status` (`failed`/`failure`/`error`) /
+   `.success=false`. Used by `record-verification.sh` (failed
+   `npm test` no longer marks `verify_outcome=passed` when the
+   heuristic missed the structured signal) and
+   `record-delivery-action.sh` (failed `git push` no longer
+   satisfies the delivery contract).
+
+8. **Release-reviewer state isolation.** `record-reviewer.sh
+   release` now writes its own `last_release_review_ts` /
+   `release_review_had_findings` / `release_review_format_issue`
+   keys instead of ticking the standard review dimensions. A clean
+   release-prep review previously could clear stop-guard counters
+   and satisfy bug_hunt/code_quality dimensions intended for
+   per-wave implementation reviews.
+
+9. **`record-finding-list` ID validation.** `status` and
+   `assign-wave` now pre-check that the named finding IDs exist
+   (and re-check under the file lock to catch concurrent rewrites)
+   instead of silently no-op'ing on a typo. `assign-wave` also
+   validates `idx` / `total` as positive integers with
+   `idx <= total`.
+
+10. **Subagent summary secret redaction.** `record-subagent-summary.sh`
+    now pipes `LAST_ASSISTANT_MESSAGE` through `omc_redact_secrets`
+    and strips null bytes before persisting to
+    `subagent_summaries.jsonl`. Closes a real leak where an oracle
+    investigation that quoted a token-bearing log line would land
+    the token verbatim in cross-session state.
+
+11. **PostToolUse MCP matcher broadened.** `mcp__.*` replaces the
+    narrow browser/screenshot enumeration. `record-verification.sh`
+    already filters via `classify_mcp_verification_tool` (returns
+    empty for non-verification tools, so non-MCP-verify tools exit
+    cleanly at the early-exit guard). Custom verify tools wired
+    through `custom_verify_mcp_tools` now actually fire because the
+    PostToolUse-level matcher reaches them.
+
+12. **Wave-override TTL default widened: 1800s → 7200s (30min → 2h).**
+    Real per-wave cycles on complex work (plan + impl + review +
+    verify + commit) routinely run well past 30 minutes. A too-short
+    TTL nudged the model toward smaller artificial scopes between
+    commits. Stale plans still never grant the override; the
+    `OMC_WAVE_OVERRIDE_TTL_SECONDS=0` kill switch still disables it
+    entirely. All four required sites updated in lockstep
+    (`common.sh` parser default, `oh-my-claude.conf.example`,
+    `omc-config.sh` known-flags table) plus `docs/customization.md`
+    and `docs/compact-intent-preservation.md`.
+
+**Coordination preserved.** New state keys (`last_release_review_ts`,
+`release_review_had_findings`, `release_review_format_issue`)
+documented in `docs/architecture.md`. `README.md` and
+`docs/customization.md` describe the no-defer block-past-cap
+behavior and the opt-out paths. `AGENTS.md` reflects the
+multi-line FINDINGS_JSON acceptance.
+
+**Tests.** All 10 modified test files extended with explicit
+coverage: standalone `write_state` auto-lock, multi-line
+FINDINGS_JSON, structured exit-code failure detection, no-defer
+block-past-cap, no-defer opt-out scorecard release, release-reviewer
+state isolation, record-finding-list non-existent-id rejection,
+broad MCP matcher wires `record-verification.sh`, real-sweep
+production-path execution, subagent summary secret redaction.
+Full CI suite remains 102/102 bash + 128/128 python statusline.
+
 ### v1.41 polish — cross-wave cumulative-review findings (W1-W4 follow-up)
 
 Cumulative quality-reviewer pass over the Wave 1-4 patches surfaced

@@ -60,7 +60,7 @@ stall_threshold|int|12|gates|Consecutive read/grep before stall fires
 excellence_file_count|int|3|gates|Edited-file count that triggers excellence-reviewer
 dimension_gate_file_count|int|3|gates|Edited-file count that triggers dimension gate
 traceability_file_count|int|6|gates|Edited-file count that requires briefing-analyst
-wave_override_ttl_seconds|int|1800|gates|Wave-plan freshness window for pretool guard
+wave_override_ttl_seconds|int|7200|gates|Wave-plan freshness window for pretool guard
 custom_verify_mcp_tools|str||gates|Pipe-separated MCP tool patterns that count as verification
 metis_on_plan_gate|bool|off|advisory|Block stop on complex plan until metis stress-test
 prometheus_suggest|bool|off|advisory|Declare-and-proceed scope interpretation on short product-shaped prompts

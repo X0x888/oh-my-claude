@@ -70,9 +70,9 @@
 # Wave-plan freshness window (seconds) for the pretool guard's wave
 # exception. When a council Phase 8 plan is active and updated within this
 # window, `git commit` is allowed even under non-execution intent. Default
-# 1800s = 30 min. Stale plans never grant the exception.
+# 7200s = 2h. Stale plans never grant the exception.
 # Env: OMC_WAVE_OVERRIDE_TTL_SECONDS.
-#wave_override_ttl_seconds=1800
+#wave_override_ttl_seconds=7200
 
 # Internal gate tuning. Most users never touch these.
 #stall_threshold=12              # consecutive Read/Grep before stall fires

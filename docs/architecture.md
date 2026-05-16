@@ -315,8 +315,11 @@ Separate from session state, `install.sh` writes four install-time artifacts tha
 | `last_meta_request` | Normalized text of the last advisory/session-mgmt/checkpoint prompt |
 | `last_verify_outcome` | Result of the last verification: `passed` or `failed` |
 | `last_excellence_review_ts` | Epoch timestamp of the last excellence-reviewer completion |
+| `last_release_review_ts` | Epoch timestamp of the last release-reviewer completion. Release reviews are cumulative/manual release-prep reviews and do not tick normal review dimensions. |
 | `review_had_findings` | Whether the last review reported actionable findings (`true`/`false`) |
 | `review_format_issue` | Structured reviewer contract issue detected by `record-reviewer.sh`, e.g. `missing_verdict` or `missing_findings_json`. In high-risk / zero-steering sessions, format failures are treated as actionable findings instead of allowing a clean dimension tick via legacy prose fallback. |
+| `release_review_had_findings` | Whether the last release-reviewer pass reported actionable findings (`true`/`false`). Kept separate from `review_had_findings` so release-prep review cannot satisfy or reset ordinary implementation review gates. |
+| `release_review_format_issue` | Structured reviewer contract issue detected on the last release-reviewer pass. Kept separate from `review_format_issue` for the same isolation reason as `release_review_had_findings`. |
 | `dim_bug_hunt_ts` | Epoch when `bug_hunt` dimension was last ticked |
 | `dim_code_quality_ts` | Epoch when `code_quality` dimension was last ticked |
 | `dim_stress_test_ts` | Epoch when `stress_test` dimension was last ticked |
@@ -328,13 +331,13 @@ Separate from session state, `install.sh` writes four install-time artifacts tha
 | `ui_platform` | Platform classification of the most recent UI prompt (`web` / `ios` / `macos` / `cli` / `unknown`); written by `prompt-intent-router.sh` when a UI request fires the design hint, consumed by `record-subagent-summary.sh` to attribute archetype rows correctly. |
 | `ui_intent` | UI-intent classification of the most recent UI prompt (`build` / `style` / `polish` / `fix` / `none`); written alongside `ui_platform`. |
 | `ui_domain` | Product-domain classification of the most recent UI prompt (`fintech` / `wellness` / `creative` / `devtool` / `editorial` / `education` / `enterprise` / `consumer` / `unknown`); written alongside `ui_platform`. |
-| `stop_guard_blocks` | Number of times the review/verify gate has blocked (cap: 3) |
-| `dimension_guard_blocks` | Number of times the dimension gate has blocked (cap: 3) |
+| `stop_guard_blocks` | Number of times the review/verify gate has blocked (cap: 3; strict effective block mode keeps serious missing work blocking after cap) |
+| `dimension_guard_blocks` | Number of times the dimension gate has blocked (cap: 3; strict effective block mode keeps missing review coverage blocking after cap) |
 | `dimension_resume_grace_used` | Whether the one-shot resumed-session dimension-gate grace has been used (`1` or empty) |
-| `session_handoff_blocks` | Number of times the deferral gate has blocked (cap: 2) |
+| `session_handoff_blocks` | Number of times the deferral gate has blocked (cap: 2; strict effective block mode keeps blocking after the cap instead of permitting future-session handoff language) |
 | `advisory_guard_blocks` | Number of times the advisory inspection gate has blocked (cap: 1) |
 | `pretool_intent_blocks` | Number of times the `pretool-intent-guard.sh` PreToolUse hook denied a destructive git/gh command because `task_intent` was `advisory`, `session_management`, or `checkpoint` (counter, no cap) |
-| `discovered_scope_blocks` | Number of times the discovered-scope gate has blocked a stop because pending findings from advisory specialists were not addressed (cap: 2 by default; raised to `wave_total + 1` when a council Phase 8 wave plan is active in `findings.json` AND the plan is NOT under-segmented per `is_wave_plan_under_segmented` — narrow plans stay at cap=2 to avoid the polarity bug where 5×1-finding plans would otherwise release after 5 narrow waves). Reset by `/ulw-skip`. |
+| `discovered_scope_blocks` | Number of times the discovered-scope gate has blocked a stop because pending findings from advisory specialists were not addressed (cap: 2 by default; raised to `wave_total + 1` when a council Phase 8 wave plan is active in `findings.json` AND the plan is NOT under-segmented per `is_wave_plan_under_segmented` — narrow plans stay at cap=2 to avoid the polarity bug where 5×1-finding plans would otherwise release after 5 narrow waves). Under strict effective block mode (`no_defer_mode=on` for ULW execution or `quality_policy=zero_steering`), the counter stops incrementing at the cap but the gate continues blocking until pending scope is resolved. Reset by `/ulw-skip`. |
 | `exemplifying_scope_required` | `1` when the latest execution prompt used example markers AND classified as execution intent — the **narrow** trigger that arms the blocking scope-checklist gate. Cleared on the next fresh non-exemplifying execution prompt. (v1.26.0 broadened the **directive** trigger to also fire on completeness vocabulary and on advisory + continuation intents — but the **blocking gate** stays gated to this narrow trigger so blocking-on-advisory is avoided. The two are decoupled in `prompt-intent-router.sh` via the bash variables `COMPLETENESS_DIRECTIVE_FIRES` (broader, drives directive emission) and `EXEMPLIFYING_SCOPE_DETECTED` (narrow, drives this state key).) |
 | `exemplifying_scope_prompt_ts` | Epoch timestamp of the prompt that armed the exemplifying-scope checklist requirement; `exemplifying_scope.json.source_prompt_ts` must match this to count as current. |
 | `exemplifying_scope_prompt_preview` | Truncated prompt preview used by `record-scope-checklist.sh` when creating `exemplifying_scope.json`. |

@@ -148,7 +148,7 @@
         ]
       },
       {
-        "matcher": "mcp__.*__(browser_snapshot|browser_take_screenshot|browser_console_messages|browser_network_requests|browser_evaluate|browser_run_code)|mcp__computer-use__screenshot",
+        "matcher": "mcp__.*",
         "hooks": [
           {
             "type": "command",

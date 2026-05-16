@@ -1169,6 +1169,42 @@ if [[ "${BYPASS_PERMISSIONS}" != "true" ]] && [[ -z "${CI:-}" ]] && [[ -t 0 ]]; 
   printf '\n'
 fi
 
+INSTALL_LOCK_DIR="${CLAUDE_HOME}/.install.lock"
+acquire_install_lock() {
+  mkdir -p "${CLAUDE_HOME}"
+  local attempts=0 lock_pid=""
+  while ! mkdir "${INSTALL_LOCK_DIR}" 2>/dev/null; do
+    attempts=$((attempts + 1))
+    lock_pid="$(cat "${INSTALL_LOCK_DIR}/pid" 2>/dev/null || true)"
+    if [[ "${lock_pid}" =~ ^[0-9]+$ ]]; then
+      if ! kill -0 "${lock_pid}" 2>/dev/null; then
+        rm -rf "${INSTALL_LOCK_DIR}" 2>/dev/null || true
+        continue
+      fi
+    elif [[ "${attempts}" -gt 4 ]]; then
+      # A lock without a pid file is either a crashed install or a tiny
+      # race before the owning process wrote pid. Wait briefly, then
+      # reclaim so one bad install cannot wedge future updates forever.
+      rm -rf "${INSTALL_LOCK_DIR}" 2>/dev/null || true
+      continue
+    fi
+    if [[ "${attempts}" -ge 120 ]]; then
+      printf 'Another oh-my-claude install appears to be running (lock: %s).\n' "${INSTALL_LOCK_DIR}" >&2
+      printf 'If that is stale, remove the lock directory and retry.\n' >&2
+      exit 1
+    fi
+    sleep 0.25 2>/dev/null || sleep 1
+  done
+  printf '%s\n' "$$" > "${INSTALL_LOCK_DIR}/pid" 2>/dev/null || true
+}
+
+release_install_lock() {
+  rm -rf "${INSTALL_LOCK_DIR}" 2>/dev/null || true
+}
+
+acquire_install_lock
+trap release_install_lock EXIT
+
 printf 'Installing oh-my-claude into %s ...\n' "${CLAUDE_HOME}"
 
 # Step 1 — Create directories and back up existing files.

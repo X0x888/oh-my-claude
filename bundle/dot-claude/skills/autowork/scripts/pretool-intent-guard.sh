@@ -284,24 +284,25 @@ _wave_execution_active() {
   [[ -f "${findings_file}" ]] || return 1
 
   # Freshness gate. If the wave plan has not been touched in
-  # OMC_WAVE_OVERRIDE_TTL_SECONDS (default 1800 = 30 minutes), the user
+  # OMC_WAVE_OVERRIDE_TTL_SECONDS (default 7200 = 2 hours), the user
   # has likely moved on or abandoned the plan without explicitly marking
   # waves completed/rejected. Without this gate, a stale findings.json
   # in the same session dir would leak the override across unrelated
   # later work — the exact "broad authorization that lingers past
-  # intent" risk the gate is supposed to prevent. 1800s is wider than
+  # intent" risk the gate is supposed to prevent. 7200s is wider than
   # the 900s post-compact-bias / classifier-misfire staleness windows
   # because per-wave cycles (plan + impl + review + verify + commit)
-  # legitimately span 10+ minutes; tighter would create false negatives
-  # during normal Phase 8 execution. Read the timestamp before the
-  # waves[] inspection so a malformed/zero ts disqualifies the override
+  # legitimately span well over 30 minutes on complex work; tighter
+  # defaults nudge the model toward artificial smaller scopes. Read
+  # the timestamp before the waves[] inspection so a malformed/zero ts
+  # disqualifies the override
   # — fail-closed when the plan's freshness cannot be established.
   local updated_ts now_ts age max_age
   updated_ts="$(jq -r '.updated_ts // 0' "${findings_file}" 2>/dev/null || printf '0')"
   [[ "${updated_ts}" =~ ^[0-9]+$ ]] || return 1
   now_ts="$(date +%s)"
   age=$((now_ts - updated_ts))
-  max_age="${OMC_WAVE_OVERRIDE_TTL_SECONDS:-1800}"
+  max_age="${OMC_WAVE_OVERRIDE_TTL_SECONDS:-7200}"
   # TTL=0 is a documented kill-switch: the override never fires regardless
   # of age. Without this special-case, the natural `age > 0` comparison
   # leaves a one-second window where a same-second wave-status write

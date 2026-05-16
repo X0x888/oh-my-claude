@@ -123,7 +123,7 @@ assert_eq "router policy persisted" "zero_steering" "$(read_state_key "${sid}" "
 assert_eq "router risk persisted" "high" "$(read_state_key "${sid}" "task_risk_tier")"
 assert_contains "router emits zero-steering directive" "ZERO-STEERING POLICY" "${router_out}"
 
-printf 'Test 3: balanced scorecard mode still releases with scorecard after cap\n'
+printf 'Test 3: balanced scorecard mode still releases with scorecard after cap when strict no-defer is off\n'
 sid="zs-scorecard-${RANDOM}"
 write_session_json "${sid}" '{
   "workflow_mode":"ultrawork",
@@ -135,9 +135,25 @@ write_session_json "${sid}" '{
   "last_user_prompt_ts":"900",
   "stop_guard_blocks":"3"
 }'
-out="$(run_stop_guard "${sid}" OMC_QUALITY_POLICY=balanced OMC_GUARD_EXHAUSTION_MODE=scorecard)"
+out="$(run_stop_guard "${sid}" OMC_QUALITY_POLICY=balanced OMC_NO_DEFER_MODE=off OMC_GUARD_EXHAUSTION_MODE=scorecard)"
 assert_eq "balanced exhaustion does not hard-block" "" "$(jq -r '.decision // ""' <<<"${out}" 2>/dev/null || true)"
 assert_contains "balanced exhaustion emits scorecard" "QUALITY SCORECARD" "${out}"
+
+printf 'Test 3b: default no-defer keeps serious exhausted gates blocking even in balanced scorecard mode\n'
+sid="zs-no-defer-block-${RANDOM}"
+write_session_json "${sid}" '{
+  "workflow_mode":"ultrawork",
+  "task_intent":"execution",
+  "task_domain":"coding",
+  "task_risk_tier":"medium",
+  "last_edit_ts":"1000",
+  "last_code_edit_ts":"1000",
+  "last_user_prompt_ts":"900",
+  "stop_guard_blocks":"3"
+}'
+out="$(run_stop_guard "${sid}" OMC_QUALITY_POLICY=balanced OMC_GUARD_EXHAUSTION_MODE=scorecard)"
+assert_eq "no-defer exhaustion hard-blocks" "block" "$(jq -r '.decision // ""' <<<"${out}")"
+assert_contains "no-defer block includes scorecard" "QUALITY SCORECARD" "${out}"
 
 printf 'Test 4: zero-steering keeps serious exhausted gates blocking\n'
 sid="zs-block-${RANDOM}"
@@ -151,7 +167,7 @@ write_session_json "${sid}" '{
   "last_user_prompt_ts":"900",
   "stop_guard_blocks":"3"
 }'
-out="$(run_stop_guard "${sid}" OMC_QUALITY_POLICY=zero_steering OMC_GUARD_EXHAUSTION_MODE=scorecard)"
+out="$(run_stop_guard "${sid}" OMC_QUALITY_POLICY=zero_steering OMC_NO_DEFER_MODE=off OMC_GUARD_EXHAUSTION_MODE=scorecard)"
 assert_eq "zero-steering exhaustion hard-blocks" "block" "$(jq -r '.decision // ""' <<<"${out}")"
 assert_contains "zero-steering block names policy escape hatch" "quality_policy=balanced" "${out}"
 

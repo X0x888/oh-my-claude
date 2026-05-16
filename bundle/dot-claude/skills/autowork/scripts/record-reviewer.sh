@@ -26,6 +26,9 @@ export OMC_LAZY_TIMING=1
 #                    → ticks traceability
 #   design_quality — design-reviewer
 #                    → ticks design_quality
+#   release        — release-reviewer
+#                    → records release-specific state only; does NOT tick
+#                      normal review dimensions or reset quality gates
 REVIEWER_TYPE="${1:-standard}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -136,7 +139,16 @@ fi
 
 now_ts="$(now_epoch)"
 
-if [[ "${REVIEWER_TYPE}" == "excellence" ]]; then
+if [[ "${REVIEWER_TYPE}" == "release" ]]; then
+  # release-reviewer is a cumulative/manual release-prep reviewer. It is
+  # intentionally outside the per-wave quality dimensions; treating it as
+  # `standard` would let a clean release review satisfy bug_hunt/code_quality
+  # and clear stop-guard counters for ordinary implementation work.
+  with_state_lock_batch \
+    "last_release_review_ts" "${now_ts}" \
+    "release_review_had_findings" "${has_findings}" \
+    "release_review_format_issue" "${review_format_issue}"
+elif [[ "${REVIEWER_TYPE}" == "excellence" ]]; then
   # Excellence reviews update last_review_ts and their own timestamp, but must
   # not overwrite review_had_findings from the standard review — the excellence
   # gate is independent of the remediation gate.

@@ -90,6 +90,15 @@ sim_review() {
       '{session_id:$s,last_assistant_message:$m}')"
 }
 
+sim_release_review() {
+  local sid="$1"
+  local msg="${2:-Release review is clean.
+VERDICT: CLEAN}"
+  printf '%s' "$(jq -nc --arg s "${sid}" --arg m "${msg}" \
+    '{session_id:$s,last_assistant_message:$m}')" \
+    | bash "${HOOK_DIR}/record-reviewer.sh" release 2>/dev/null || true
+}
+
 sim_excellence_review() {
   local sid="$1"
   local msg="${2:-Verdict: The deliverable is complete and excellent.
@@ -174,7 +183,8 @@ sim_stop_mode() {
   local msg="${3:-Here is the completed work.}"
   printf '%s' "$(jq -nc --arg s "${sid}" --arg m "${msg}" \
     '{session_id:$s,last_assistant_message:$m}')" \
-    | env OMC_GUARD_EXHAUSTION_MODE="${mode}" bash "${HOOK_DIR}/stop-guard.sh" 2>/dev/null || true
+    | env OMC_GUARD_EXHAUSTION_MODE="${mode}" OMC_NO_DEFER_MODE="${OMC_NO_DEFER_MODE:-on}" \
+      bash "${HOOK_DIR}/stop-guard.sh" 2>/dev/null || true
 }
 
 structured_closeout() {
@@ -313,6 +323,19 @@ teardown_test
 
 
 # -------------------------------------------------------
+# Test 3a: record-verification.sh honors structured non-zero exit code
+# -------------------------------------------------------
+setup_test
+init_session "s3a"
+run_hook "${HOOK_DIR}/record-verification.sh" \
+  "$(jq -nc --arg s "s3a" --arg c "npm test" \
+    '{session_id:$s,tool_name:"Bash",tool_input:{command:$c},tool_response:{exit_code:1,output:"Tests: 10 passed"}}')"
+
+assert_eq "verify(exit_code): outcome is failed" "failed" "$(read_st "s3a" "last_verify_outcome")"
+teardown_test
+
+
+# -------------------------------------------------------
 # Test 4: record-verification.sh — no tool_response defaults to passed
 # -------------------------------------------------------
 setup_test
@@ -354,6 +377,24 @@ init_session "s7"
 sim_review "s7" "Summary: No significant issues, but there is a regression risk in the error handler."
 
 assert_eq "review(qualifier): findings override" "true" "$(read_st "s7" "review_had_findings")"
+teardown_test
+
+
+# -------------------------------------------------------
+# Test 7a: release-reviewer records release-specific state only
+# -------------------------------------------------------
+setup_test
+init_session "s7a"
+sim_edit "s7a" "/src/release.ts"
+sim_release_review "s7a" "Release diff is clean.
+VERDICT: CLEAN"
+
+assert_not_empty "release-review: last_release_review_ts set" "$(read_st "s7a" "last_release_review_ts")"
+assert_eq "release-review: no findings" "false" "$(read_st "s7a" "release_review_had_findings")"
+assert_empty "release-review: does not set normal last_review_ts" "$(read_st "s7a" "last_review_ts")"
+assert_empty "release-review: does not set review_had_findings" "$(read_st "s7a" "review_had_findings")"
+assert_empty "release-review: does not tick bug_hunt" "$(read_st "s7a" "dim_bug_hunt_ts")"
+assert_empty "release-review: does not tick code_quality" "$(read_st "s7a" "dim_code_quality_ts")"
 teardown_test
 
 
@@ -567,9 +608,12 @@ assert_contains "seq-E: penultimate warning" "final guard block" "${out3}"
 blocks3="$(read_st "se" "stop_guard_blocks")"
 assert_eq "seq-E: guard_blocks=3" "3" "${blocks3}"
 
-# Fourth stop: exhausted, released with scorecard (scorecard mode is default)
+# Fourth stop: exhausted, but default no_defer_mode keeps serious missing
+# review/verification blocking after the cap.
 out4="$(sim_stop "se")"
 assert_contains "seq-E: fourth stop exhausted scorecard" "QUALITY SCORECARD" "${out4}"
+assert_contains "seq-E: fourth stop remains blocked under no-defer" '"decision":"block"' "${out4}"
+assert_contains "seq-E: fourth stop names block mode" "BLOCK MODE" "${out4}"
 assert_not_empty "seq-E: guard_exhausted set" "$(read_st "se" "guard_exhausted")"
 detail="$(read_st "se" "guard_exhausted_detail")"
 assert_contains "seq-E: exhaustion detail has review" "review=" "${detail}"
@@ -1190,8 +1234,9 @@ out3="$(sim_stop "su7")"
 assert_contains "seq-U7: block 3" '"decision":"block"' "${out3}"
 assert_contains "seq-U7: final warning" "final review-coverage block" "${out3}"
 
-# 4th stop: exhausted in scorecard mode, released with scorecard
-out4="$(sim_stop_mode "su7" "scorecard")"
+# 4th stop: legacy scorecard release remains available when strict
+# no-defer autonomy is explicitly disabled.
+out4="$(OMC_NO_DEFER_MODE=off sim_stop_mode "su7" "scorecard")"
 assert_contains "seq-U7: scorecard release emits scorecard" "QUALITY SCORECARD" "${out4}"
 assert_not_contains "seq-U7: scorecard release is not a block" '"decision":"block"' "${out4}"
 exhausted_detail="$(read_st "su7" "guard_exhausted_detail")"
@@ -1653,6 +1698,21 @@ fi
 sim_post_compact "cg3" "auto" "Summary"
 out_g3="$(sim_session_start_compact "cg3")"
 assert_contains "gap3: handoff mentions interrupted dispatches" "Interrupted specialist dispatches" "${out_g3}"
+teardown_test
+
+# -------------------------------------------------------
+# Gap 3 privacy: subagent summary ledger redacts obvious secrets
+# -------------------------------------------------------
+setup_test
+setup_compact_tests
+init_session "cg3p" "coding"
+run_hook "${HOOK_DIR}/record-subagent-summary.sh" \
+  "$(jq -nc --arg s "cg3p" --arg m "Investigated with token sk-1234567890abcdef in logs." \
+    '{session_id:$s,agent_type:"oracle",last_assistant_message:$m}')"
+summary_file_p="${TEST_HOME}/.claude/quality-pack/state/cg3p/subagent_summaries.jsonl"
+summary_payload="$(cat "${summary_file_p}" 2>/dev/null || true)"
+assert_contains "gap3p: summary contains redaction marker" "<redacted-secret>" "${summary_payload}"
+assert_not_contains "gap3p: summary does not contain raw token" "sk-1234567890abcdef" "${summary_payload}"
 teardown_test
 
 # -------------------------------------------------------

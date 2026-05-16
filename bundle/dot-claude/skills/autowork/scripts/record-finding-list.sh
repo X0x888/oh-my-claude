@@ -375,9 +375,21 @@ EOF
     fi
 
     _ensure_file
+    if ! jq -e --arg id "${id}" \
+        '[(.findings // [])[] | select(.id == $id)] | length > 0' \
+        "${FINDINGS_FILE}" >/dev/null 2>&1; then
+      printf 'record-finding-list status: id %s not found\n' "${id}" >&2
+      exit 1
+    fi
     _do_status_update() {
       local current updated
       current="$(cat "${FINDINGS_FILE}")"
+      if ! printf '%s' "${current}" | jq -e --arg id "${id}" \
+          '[(.findings // [])[] | select(.id == $id)] | length > 0' \
+          >/dev/null 2>&1; then
+        printf 'record-finding-list status: id %s not found (race-detected under lock)\n' "${id}" >&2
+        return 1
+      fi
       updated="$(printf '%s' "${current}" | jq \
         --arg id "${id}" \
         --arg status "${status}" \
@@ -424,12 +436,40 @@ EOF
       printf 'usage: record-finding-list assign-wave <idx> <total> <surface> <id> [<id>...]\n' >&2
       exit 1
     fi
+    if [[ ! "${wave_idx}" =~ ^[1-9][0-9]*$ || ! "${wave_total}" =~ ^[1-9][0-9]*$ ]]; then
+      printf 'record-finding-list assign-wave: idx and total must be positive integers\n' >&2
+      exit 1
+    fi
+    if [[ "${wave_idx}" -gt "${wave_total}" ]]; then
+      printf 'record-finding-list assign-wave: idx %s cannot exceed total %s\n' "${wave_idx}" "${wave_total}" >&2
+      exit 1
+    fi
     ids_json="$(printf '%s\n' "$@" | jq -R . | jq -s .)"
     finding_count="$#"
     _ensure_file
+    missing_ids="$(jq -r --argjson ids "${ids_json}" '
+      (.findings // [] | map(.id)) as $known
+      | $ids[] as $id
+      | select(($known | index($id)) == null)
+      | $id
+    ' "${FINDINGS_FILE}" 2>/dev/null || true)"
+    if [[ -n "${missing_ids}" ]]; then
+      printf 'record-finding-list assign-wave: id(s) not found: %s\n' "${missing_ids//$'\n'/,}" >&2
+      exit 1
+    fi
     _do_assign_wave() {
-      local current updated
+      local current updated missing_under_lock
       current="$(cat "${FINDINGS_FILE}")"
+      missing_under_lock="$(printf '%s' "${current}" | jq -r --argjson ids "${ids_json}" '
+        (.findings // [] | map(.id)) as $known
+        | $ids[] as $id
+        | select(($known | index($id)) == null)
+        | $id
+      ' 2>/dev/null || true)"
+      if [[ -n "${missing_under_lock}" ]]; then
+        printf 'record-finding-list assign-wave: id(s) not found under lock: %s\n' "${missing_under_lock//$'\n'/,}" >&2
+        return 1
+      fi
       updated="$(printf '%s' "${current}" | jq \
         --argjson idx "${wave_idx}" \
         --argjson total "${wave_total}" \

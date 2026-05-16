@@ -78,6 +78,9 @@ if [[ -n "${command_text}" ]]; then
         verify_outcome="failed"
       fi
     fi
+    if omc_hook_tool_failed "${HOOK_JSON}"; then
+      verify_outcome="failed"
+    fi
 
     project_test_cmd="$(read_state "project_test_cmd" 2>/dev/null || true)"
     if [[ -z "${project_test_cmd}" ]]; then

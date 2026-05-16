@@ -418,13 +418,13 @@ teardown_test
 
 # ----------------------------------------------------------------------
 # T16 (freshness gate): a wave plan whose updated_ts is older than the
-# default 30-minute TTL must NOT trigger the override. This protects
+# default 2-hour TTL must NOT trigger the override. This protects
 # against stale findings.json leaking the per-wave authorization into
 # unrelated later work in the same session.
 setup_test
 init_session "t16" "advisory"
-# Set updated_ts to 2 hours ago — well outside the default 1800s TTL.
-stale_ts=$(( $(date +%s) - 7200 ))
+# Set updated_ts to 3 hours ago — outside the default 7200s TTL.
+stale_ts=$(( $(date +%s) - 10800 ))
 seed_findings "t16" '[
   {"index":1,"total":1,"surface":"auth","finding_ids":["F-001"],"status":"in_progress","commit_sha":""}
 ]' "${stale_ts}"

@@ -168,9 +168,23 @@ output="$("${SCRIPT}" status "" shipped 2>&1 || echo CAUGHT)"
 assert_contains "missing id rejected" "usage:" "${output}"
 
 # ----------------------------------------------------------------------
+printf 'Test 15b: status rejects non-existent id\n'
+output="$("${SCRIPT}" status F-NOPE shipped abc123 "typo" 2>&1 || echo CAUGHT)"
+assert_contains "non-existent status id rejected" "id F-NOPE not found" "${output}"
+noop_count="$(jq '[.findings[] | select(.id=="F-NOPE")] | length' "${findings_path}")"
+assert_eq "non-existent status id not created" "0" "${noop_count}"
+
+# ----------------------------------------------------------------------
 printf 'Test 16: assign-wave missing surface rejected\n'
 output="$("${SCRIPT}" assign-wave 1 2 "" F-001 2>&1 || echo CAUGHT)"
 assert_contains "missing surface rejected" "usage:" "${output}"
+
+# ----------------------------------------------------------------------
+printf 'Test 16b: assign-wave rejects non-existent ids\n'
+output="$("${SCRIPT}" assign-wave 1 1 "typo-surface" F-NOPE 2>&1 || echo CAUGHT)"
+assert_contains "non-existent wave id rejected" "id(s) not found: F-NOPE" "${output}"
+wave_count_after_reject="$(jq '.waves | length' "${findings_path}")"
+assert_eq "non-existent wave id did not create wave" "0" "${wave_count_after_reject}"
 
 # ----------------------------------------------------------------------
 printf 'Test 17: concurrent status updates serialize via file lock\n'

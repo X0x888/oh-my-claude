@@ -137,7 +137,7 @@ A system-injected `UserPromptSubmit` frame (scheduled `/loop` tick, post-compact
 
 Three coordinated changes in `pretool-intent-guard.sh`:
 
-**(a) Wave-active override (`_wave_execution_active` + `_wave_override_command_safe`).** When `findings.json` records a council Phase 8 plan with at least one wave still `pending` or `in_progress`, AND its `updated_ts` is within `OMC_WAVE_OVERRIDE_TTL_SECONDS` (default `1800` = 30 min), the gate short-circuits and allows the operation. The override is intentionally narrow:
+**(a) Wave-active override (`_wave_execution_active` + `_wave_override_command_safe`).** When `findings.json` records a council Phase 8 plan with at least one wave still `pending` or `in_progress`, AND its `updated_ts` is within `OMC_WAVE_OVERRIDE_TTL_SECONDS` (default `7200` = 2h), the gate short-circuits and allows the operation. The override is intentionally narrow:
 
 - **Scope:** `git commit` only — the canonical per-wave operation in the Phase 8 protocol. Push, force-push, tag, rebase, reset --hard, branch -D, gh pr create, etc. still require fresh execution intent.
 - **Compound safety:** `_wave_override_command_safe` re-walks every shell segment (the destructive matcher stops at the first hit) and only fires if EVERY destructive segment is a `git commit`. So `git commit -m wave && git push --force` still denies on the force-push.
@@ -149,14 +149,14 @@ Three coordinated changes in `pretool-intent-guard.sh`:
 
 ### 10.3 Configurability
 
-- `OMC_WAVE_OVERRIDE_TTL_SECONDS` (env) or `wave_override_ttl_seconds` (conf, in `oh-my-claude.conf`). Default `1800` seconds. Lower to tighten; raise if your wave cycles legitimately exceed 30 minutes between commits.
+- `OMC_WAVE_OVERRIDE_TTL_SECONDS` (env) or `wave_override_ttl_seconds` (conf, in `oh-my-claude.conf`). Default `7200` seconds. Lower to tighten; raise if stale-plan authorization is a bigger concern than long autonomous wave cycles.
 - `OMC_PRETOOL_INTENT_GUARD=false` still disables the entire gate (and therefore the override too).
 
 ### 10.4 What was rejected
 
 - **Broadening the override to `git push`.** Phase 8 commits per wave but does not auto-push between waves; pushing is a separate user decision. Allowing push under the override would re-open the original threat surface (unauthorized publication during advisory).
 - **Detecting "system-injected vs user-typed" UserPromptSubmit frames at the classifier level.** Considered, deferred. The classifier would need a reliable signal (markers in the injected text, frame metadata) and the wave-active heuristic gives us most of the benefit at zero classifier complexity. Revisit if the override misses cases that a frame-shape detector would catch.
-- **Allowing the override regardless of `findings.json` age.** Would protect more legitimate Phase 8 commits but at the cost of stale plans leaking authorization. The 30-minute window aligns with typical per-wave cycle time (plan + impl + review + verify + commit ≈ 10-25 minutes) while disqualifying abandoned plans.
+- **Allowing the override regardless of `findings.json` age.** Would protect more legitimate Phase 8 commits but at the cost of stale plans leaking authorization. The 2-hour window covers complex per-wave cycles (plan + impl + review + verify + commit) while still disqualifying abandoned plans.
 
 ### 10.5 Regression tests
 

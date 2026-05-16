@@ -41,7 +41,7 @@ fi
 
 # PostToolUse can still carry failed shell output depending on Claude Code
 # version. Failed commit/push attempts must not satisfy the delivery contract.
-if omc_delivery_command_failed "${tool_output}"; then
+if omc_hook_tool_failed "${HOOK_JSON}" || omc_delivery_command_failed "${tool_output}"; then
   exit 0
 fi
 

@@ -8,9 +8,11 @@
 # coverage. This test exercises the real scripts end-to-end against a
 # real findings.json and a real discovered_scope.jsonl.
 #
-# Three scenarios:
-#   1. No wave plan → cap=2 (legacy default, block twice then release).
-#   2. Wave plan with N=4 waves → cap=5 (block five times then release).
+# Four scenarios:
+#   1. No wave plan → cap=2 (default no-defer blocks after cap; legacy
+#      opt-out releases).
+#   2. Wave plan with N=4 waves → cap=5 (default no-defer blocks after cap;
+#      legacy opt-out releases).
 #   3. wave_progress text reflects waves_completed correctly as wave
 #      statuses transition pending → in_progress → completed.
 set -euo pipefail
@@ -70,9 +72,17 @@ seed_pending_findings() {
 sim_stop() {
   local sid="$1"
   local msg="${2:-Here is the completed work.}"
+  local env_args=(
+    OMC_DISCOVERED_SCOPE=on
+    OMC_GUARD_EXHAUSTION_MODE="${OMC_GUARD_EXHAUSTION_MODE:-scorecard}"
+    OMC_QUALITY_POLICY="${OMC_QUALITY_POLICY:-balanced}"
+  )
+  if [[ -n "${OMC_NO_DEFER_MODE:-}" ]]; then
+    env_args+=(OMC_NO_DEFER_MODE="${OMC_NO_DEFER_MODE}")
+  fi
   printf '%s' "$(jq -nc --arg s "${sid}" --arg m "${msg}" \
     '{session_id:$s,last_assistant_message:$m}')" \
-    | env OMC_DISCOVERED_SCOPE=on bash "${STOP_GUARD}" 2>/dev/null || true
+    | env "${env_args[@]}" bash "${STOP_GUARD}" 2>/dev/null || true
 }
 
 # Decode the gate's JSON `reason` field. stop-guard.sh embeds the
@@ -126,7 +136,7 @@ assert_not_contains() {
 printf '=== Phase 8 Integration Tests (record-finding-list ↔ stop-guard) ===\n\n'
 
 # ---------------------------------------------------------------------
-# Scenario 1: No wave plan → cap=2 (legacy default)
+# Scenario 1: No wave plan → cap=2
 # ---------------------------------------------------------------------
 printf 'Scenario 1: no wave plan, cap=2\n'
 setup_test
@@ -153,10 +163,17 @@ out2="$(printf '%s' "${out2_raw}" | jq -r '.reason // empty' 2>/dev/null | sed '
 assert_contains "scenario1: block 2 fires" '"decision":"block"' "${out2_raw}"
 assert_contains "scenario1: block 2 announces 2/2" 'Discovered-scope gate · 2/2' "${out2}"
 
-# Block 3 — should release (cap reached, scope gate falls through)
+# Block 3 — default no-defer keeps blocking after the cap.
 out3_raw="$(sim_stop "phase8-no-wave")"
 out3="$(printf '%s' "${out3_raw}" | jq -r '.reason // empty' 2>/dev/null | sed 's/\\u00b7/·/g' || printf '')"
-assert_not_contains "scenario1: block 3 releases (no scope-gate decision)" 'Discovered-scope gate' "${out3}"
+assert_contains "scenario1: block 3 still blocks by default" 'Discovered-scope gate · 2/2' "${out3}"
+assert_contains "scenario1: block 3 explains strict block mode" 'BLOCK MODE' "${out3}"
+
+# Legacy opt-out preserves the old scorecard-release behavior.
+OMC_NO_DEFER_MODE=off
+out4="$(sim_stop_reason "phase8-no-wave")"
+unset OMC_NO_DEFER_MODE
+assert_not_contains "scenario1: no-defer opt-out releases after cap" 'Discovered-scope gate' "${out4}"
 
 teardown_test
 
@@ -212,9 +229,16 @@ assert_contains "scenario2: block 4 announces 4/5" 'Discovered-scope gate · 4/5
 out5="$(sim_stop_reason "phase8-with-wave")"
 assert_contains "scenario2: block 5 announces 5/5" 'Discovered-scope gate · 5/5' "${out5}"
 
-# Block 6 — cap reached, gate releases (scope-gate text absent from any reason)
+# Block 6 — default no-defer keeps blocking after the cap.
 out6="$(sim_stop_reason "phase8-with-wave")"
-assert_not_contains "scenario2: block 6 releases (cap reached)" 'Discovered-scope gate' "${out6}"
+assert_contains "scenario2: block 6 still blocks by default" 'Discovered-scope gate · 5/5' "${out6}"
+assert_contains "scenario2: block 6 explains strict block mode" 'BLOCK MODE' "${out6}"
+
+# Legacy opt-out preserves the old cap-release behavior.
+OMC_NO_DEFER_MODE=off
+out7="$(sim_stop_reason "phase8-with-wave")"
+unset OMC_NO_DEFER_MODE
+assert_not_contains "scenario2: no-defer opt-out releases after cap" 'Discovered-scope gate' "${out7}"
 
 teardown_test
 

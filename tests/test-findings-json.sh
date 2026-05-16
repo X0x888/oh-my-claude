@@ -80,6 +80,17 @@ assert_eq "${first_severity}" "high" "first row severity preserved"
 second_line_null="$(printf '%s\n' "${rows}" | sed -n '2p' | jq -r '.line')"
 assert_eq "${second_line_null}" "null" "null line preserved as JSON null"
 
+# --- T1b ---
+printf '\nT1b: extract_findings_json parses multi-line JSON array\n'
+pretty=$'Review prose\n\nFINDINGS_JSON: [\n  {"severity":"high","category":"bug","file":"pretty.ts","line":7,"claim":"pretty","evidence":"e","recommended_fix":"r"}\n]\nVERDICT: FINDINGS (1)'
+rows="$(extract_findings_json "${pretty}")"
+count="$(printf '%s\n' "${rows}" | grep -c severity || true)"
+assert_eq "${count}" "1" "multi-line extract emits 1 row"
+pretty_file="$(printf '%s\n' "${rows}" | head -1 | jq -r '.file')"
+assert_eq "${pretty_file}" "pretty.ts" "multi-line file preserved"
+pretty_count="$(count_findings_json "${pretty}")"
+assert_eq "${pretty_count}" "1" "multi-line count returns 1"
+
 # --- T2 ---
 printf '\nT2: empty / missing FINDINGS_JSON line returns nothing\n'
 out="$(extract_findings_json "no findings json here")"

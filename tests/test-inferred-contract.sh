@@ -481,6 +481,12 @@ setup_session "da3" '{"workflow_mode":"ultrawork","task_intent":"execution","tas
 run_delivery_action "da3" "git push origin main" "exit code: 1"
 assert_eq "delivery: failed push does not record publish" "" "$(read_state_key "da3" "last_publish_action_ts")"
 
+setup_session "da3b" '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","done_contract_push_mode":"required","done_contract_updated_ts":"100","session_start_ts":"50"}'
+jq -nc --arg s "da3b" \
+  '{session_id:$s,tool_name:"Bash",tool_input:{command:"git push origin main"},tool_response:{exit_code:1,output:"remote rejected"}}' \
+  | bash "${RECORD_DELIVERY_ACTION_SH}" 2>/dev/null
+assert_eq "delivery: structured exit_code failure does not record publish" "" "$(read_state_key "da3b" "last_publish_action_ts")"
+
 setup_session "da4" '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","done_contract_commit_mode":"required","done_contract_updated_ts":"200","session_start_ts":"50","last_commit_action_ts":"150","commit_action_count":"1"}'
 blockers="$(run_delivery_blockers "da4")"
 assert_contains "delivery: stale commit action does not satisfy fresh prompt" "create the requested commit" "${blockers}"
