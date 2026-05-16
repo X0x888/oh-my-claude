@@ -346,6 +346,17 @@ do_claim() {
       # hints. Refuse if already claimed (the resume already ran) or
       # already dismissed (idempotent — return 0 either way is fine,
       # but exit 1 makes the second dismiss a clean no-op).
+      #
+      # KNOWN LIMITATION (v1.41.x follow-up): a spent artifact
+      # (resume_attempts>0) cannot be explicitly dismissed via this
+      # helper because find_claimable_resume_requests filters it out
+      # before the case statement reaches dismiss mode. The artifact
+      # is effectively dismissed via the same filter (no future hints
+      # / no future watchdog claims), so user-facing surfaces match
+      # what dismiss would produce — but users get no exit-0 receipt.
+      # A proper fix requires restructuring the early-exit flow to add
+      # a dismiss-specific finder that includes spent artifacts; tracked
+      # as follow-up to the install-time auto-claim root-cause fix.
       if [[ "${current_resumed}" != "null" ]] \
          || [[ "${current_dismissed}" != "null" ]]; then
         return 1

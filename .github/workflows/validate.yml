@@ -104,6 +104,9 @@ jobs:
       - name: Run resume-watchdog tests
         run: bash tests/test-resume-watchdog.sh
 
+      - name: Run install-resume-watchdog tests
+        run: bash tests/test-install-resume-watchdog.sh
+
       - name: Run omc-config tests
         run: bash tests/test-omc-config.sh
 

@@ -265,13 +265,24 @@ case "$(platform)" in
   other) cron_install ;;
 esac
 
-# Sanity-check by running one tick (dry — exits early if no claimable
-# artifacts). Gate-events tell the operator the watchdog ran; absent
-# any claimable artifact, the run is silent.
-if bash "${WATCHDOG_SCRIPT}" >/dev/null 2>&1; then
-  printf '\nWatchdog dry-run: OK\n'
+# Self-test: verify the watchdog can source common.sh, pass its guards
+# (conf-flag / capture-flag / claim-helper-present), and exit cleanly —
+# WITHOUT claiming any artifact or launching `claude --resume` in tmux.
+# OMC_WATCHDOG_SELF_TEST=1 short-circuits the main loop in
+# resume-watchdog.sh immediately after the guard layer. Real launchd /
+# systemd / cron ticks never set this env, so they execute the full
+# claim/launch path.
+#
+# This used to be `bash "${WATCHDOG_SCRIPT}"` — a label-as-dry-run that
+# actually ran the live tick. With any claimable `resume_request.json` on
+# disk, every install re-run silently spawned a detached tmux session
+# running `claude --resume <objective>`, accumulating orphan agents that
+# could commit and push work without the user realizing. Closed by the
+# v1.41.x post-install audit (4 artifacts spent / 4 install runs).
+if OMC_WATCHDOG_SELF_TEST=1 bash "${WATCHDOG_SCRIPT}" >/dev/null 2>&1; then
+  printf '\nWatchdog self-test: OK\n'
 else
-  printf '\nWARNING: watchdog dry-run returned non-zero. Inspect the script manually:\n  bash %s\n' "${WATCHDOG_SCRIPT}"
+  printf '\nWARNING: watchdog self-test returned non-zero. Inspect the script manually:\n  OMC_WATCHDOG_SELF_TEST=1 bash %s\n' "${WATCHDOG_SCRIPT}"
 fi
 
 cat <<EOM

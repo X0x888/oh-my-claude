@@ -58,6 +58,30 @@ if [[ ! -x "${CLAIM_HELPER}" ]] && [[ ! -f "${CLAIM_HELPER}" ]]; then
   exit 0
 fi
 
+# Self-test escape. The installer (`install-resume-watchdog.sh`) sets
+# OMC_WATCHDOG_SELF_TEST=1 to verify the script can source common.sh and
+# pass the conf-flag / capture / claim-helper guards WITHOUT claiming any
+# artifact or launching a real `claude --resume` in tmux. Real launchd /
+# systemd / cron ticks never set this env, so they execute the full
+# claim/launch path. Without this escape, the installer's "sanity-check
+# tick" would silently consume any claimable artifact on disk — observed
+# 4x in production before the v1.41.x post-install audit (4 artifacts
+# resumed across 4 install runs, the most recent producing a 30-minute
+# orphan tmux session that committed real work the user didn't expect).
+#
+# Placement note (load-bearing): the escape runs BEFORE the synthetic
+# session id setup, heartbeat write (~:467), and stale-tmux reaper
+# (`_reap_stale_tmux_sessions` call at ~:480) so install-time runs do
+# not (a) falsely advance the daemon-liveness signal `/ulw-report`
+# surfaces as "last successful tick", and (b) kill real user tmux
+# sessions that happen to be named `omc-resume-*`. A future
+# "comprehensive install-time health checks" refactor that moves the
+# escape after these blocks re-introduces both failure modes — keep
+# it here.
+if [[ "${OMC_WATCHDOG_SELF_TEST:-0}" == "1" ]]; then
+  exit 0
+fi
+
 # The watchdog runs as a daemon, not inside any user session. record_gate_event
 # is a no-op without a SESSION_ID (per its docstring). Use a synthetic session
 # id `_watchdog` (passes validate_session_id; underscore prefix avoids collision

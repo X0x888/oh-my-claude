@@ -18,6 +18,28 @@
 # Code. It edits this file for you (atomic writes, validation), recommends
 # defaults aligned with the project's intended posture, and hands off to
 # install-resume-watchdog.sh / switch-tier.sh when those are needed.
+#
+# Internal-only envs (NOT user-settable conf flags — listed so future
+# maintainers can find the namespace without grep diving):
+#   OMC_WATCHDOG_SELF_TEST       — set by install-resume-watchdog.sh to
+#                                   short-circuit the watchdog before its
+#                                   claim/launch loop during install-time
+#                                   sanity check. Closes the v1.41.x
+#                                   "dry-run" that actually consumed
+#                                   artifacts on disk.
+#   OMC_MID_SESSION_IDLE_THRESHOLD_SECS
+#                                — power-user override for the mid-session
+#                                   memory checkpoint idle gap (default
+#                                   1800s; the user-visible flag is
+#                                   `mid_session_memory_checkpoint=on|off`).
+#   OMC_RESUME_SESSION_TTL_SECS  — power-user override for the watchdog
+#                                   reaper's max tmux session age
+#                                   (default 7200s).
+#   OMC_RESUME_WATCHDOG_COOLDOWN_SECS
+#                                — per-artifact cooldown between watchdog
+#                                   launch attempts (default 600s; also
+#                                   surfaced as the conf flag
+#                                   `resume_watchdog_cooldown_secs`).
 
 # ---------------------------------------------------------------------------
 # Quality gates — what blocks Stop and how strictly.

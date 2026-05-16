@@ -4,6 +4,104 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Post-install audit — installer-time auto-claim fix
+
+**The bug.** `install-resume-watchdog.sh:271` invoked the watchdog as
+`bash "${WATCHDOG_SCRIPT}" >/dev/null 2>&1` and labeled the call a
+"dry-run." The label was wrong: the watchdog script executed its full
+claim/launch loop, silently consuming any claimable `resume_request.json`
+on disk and spawning a detached `claude --resume <objective>` in a tmux
+session named `omc-resume-<sid>`. Observed in production 4 times across
+4 install runs in a single user account — 4 artifacts spent, the most
+recent producing a 30-minute orphan tmux session that committed two
+real Co-Authored-By Claude commits without the user realizing the
+install had launched it. Discovered during a post-`v1.41.0` install
+audit when the user enabled `resume_watchdog=on` for the first time and
+noticed an unexpected resumed_at_ts on a 2-day-old artifact.
+
+**Root cause.** The watchdog's main loop (claim helper enumeration,
+synthetic session id, heartbeat write, stale-tmux reaper, claim/launch)
+ran unconditionally after the script's three guard checks
+(`is_resume_watchdog_enabled`, `is_stop_failure_capture_enabled`,
+claim-helper-presence). There was no escape mechanism for callers that
+only wanted to exercise the source/guard layer for sanity checking.
+
+**The fix (three files, one commit):**
+
+1. `bundle/dot-claude/quality-pack/scripts/resume-watchdog.sh` — added
+   a self-test escape immediately after the guard checks but **before**
+   the synthetic session id setup, heartbeat write (`~:467`), and
+   stale-tmux reaper (`_reap_stale_tmux_sessions` at `~:480`):
+
+   ```bash
+   if [[ "${OMC_WATCHDOG_SELF_TEST:-0}" == "1" ]]; then
+     exit 0
+   fi
+   ```
+
+   The placement is load-bearing — a future "comprehensive install-time
+   health checks" refactor that moves the escape after the heartbeat
+   would falsely advance the daemon-liveness signal `/ulw-report`
+   surfaces as "last successful tick"; after the reaper it would kill
+   real user tmux sessions named `omc-resume-*`. The placement comment
+   documents this so future maintainers don't re-introduce either
+   failure mode.
+
+2. `bundle/dot-claude/install-resume-watchdog.sh` — line 281 changed
+   from `bash "${WATCHDOG_SCRIPT}"` to
+   `OMC_WATCHDOG_SELF_TEST=1 bash "${WATCHDOG_SCRIPT}"`. The output
+   string changed from `Watchdog dry-run: OK` to
+   `Watchdog self-test: OK` to reflect the actual semantics. The
+   WARNING line on non-zero exit now suggests the matching repro
+   command (`OMC_WATCHDOG_SELF_TEST=1 bash <path>`).
+
+3. `bundle/dot-claude/skills/autowork/scripts/claim-resume-request.sh`
+   — added a comment block at the `dismiss)` case (no code change)
+   documenting a related known limitation: `--dismiss` cannot
+   explicitly mark spent artifacts (`resume_attempts > 0`) as
+   dismissed because `find_claimable_resume_requests` filters them out
+   at line 150 before the case statement runs. The artifact is
+   functionally invisible (no future hints / no future watchdog
+   claims) — but the user gets `exit 1` with no diagnostic if they
+   try to dismiss explicitly. **Known limitation tracked here for
+   v1.41.x+ follow-up;** a proper fix requires restructuring the
+   early-exit flow to add a dismiss-specific finder. Out of scope for
+   the root-cause fix per Serendipity Rule bounded-fix guardrail.
+
+**Env-var naming.** The internal escape uses the codebase's standard
+`OMC_` prefix (`OMC_WATCHDOG_SELF_TEST`) for consistency with the 21
+other env vars in `quality-pack/scripts/`. The env is not a
+user-settable conf flag; it is an install-time-only signal that does
+not need a 3-site coordination entry. A new "internal-only envs"
+callout in `oh-my-claude.conf.example` lists it alongside any future
+internal envs so future maintainers can find the namespace.
+
+**Tests.** New `tests/test-install-resume-watchdog.sh` (7 assertions,
+3 tests). T1 is the smoking-gun regression test: seed a claimable
+`resume_request.json` under a fake HOME, run the installer with mocked
+`launchctl` / `systemctl` / `tmux` / `claude`, assert the artifact's
+`resume_attempts` is unchanged AND no `tmux new-session` call landed.
+T2 is a code-shape backstop that greps the installer for the
+`OMC_WATCHDOG_SELF_TEST=1` prefix — defeats a future "clean up env
+naming" PR that strips the prefix and re-introduces the v1.41.x bug.
+T3 is the no-artifact happy path (install completes, self-test passes,
+conf flag set).
+
+Existing test extensions:
+- `tests/test-resume-watchdog.sh` T40 (5 new assertions): asserts
+  `OMC_WATCHDOG_SELF_TEST=1` exits 0, `resume_attempts` unchanged, no
+  `tmux new-session` call, no `resumed_at_ts` stamp — plus a negative
+  check that without the env the same artifact IS claimed (so the test
+  fixture itself is sound). 81 → 86 assertions.
+
+CI pinning: `tests/test-install-resume-watchdog.sh` added to
+`.github/workflows/validate.yml` immediately after `test-resume-watchdog.sh`
+so the regression net stays armed.
+
+**Coordination preserved.** No new conf flag (internal env only). The
+existing flag coordination triad (`common.sh` parser /
+`oh-my-claude.conf.example` / `omc-config.sh`) is untouched.
+
 ### W6 — agent-first floor matcher: narrow `git tag` to mutating forms only
 
 **The false positive.** Observed live in the v1.41.0 first-use session:

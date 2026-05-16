@@ -1382,6 +1382,34 @@ else
 fi
 teardown_test
 
+# T40: OMC_WATCHDOG_SELF_TEST=1 short-circuits before claim/launch
+# Locks the v1.41.x install-time auto-claim bug: the installer's
+# "Watchdog dry-run: OK" line used to spawn a live `claude --resume`
+# on any claimable artifact. Self-test must source common.sh + pass
+# guards but never touch resume_attempts and never invoke tmux.
+print_test_header "T40: self-test mode does not claim or launch"
+setup_test
+install_tmux_mock
+install_mock claude 0
+target_path="$(make_request "sess-40-selftest" "${TEST_HOME}" "Self-test scope guard.")"
+attempts_before="$(read_field "${target_path}" resume_attempts)"
+mkdir -p "${TEST_HOME}/.claude/quality-pack/state/_watchdog"
+rc=0
+OMC_WATCHDOG_SELF_TEST=1 HOME="${TEST_HOME}" bash "${WATCHDOG}" >/dev/null 2>&1 || rc=$?
+attempts_after="$(read_field "${target_path}" resume_attempts)"
+assert_eq "T40: self-test exits 0" "0" "${rc}"
+assert_eq "T40: resume_attempts unchanged" "${attempts_before}" "${attempts_after}"
+assert_eq "T40: no tmux new-session call" "0" "$(mock_launch_count)"
+assert_eq "T40: resumed_at_ts not stamped" "" \
+  "$(jq -r '.resumed_at_ts // ""' "${target_path}" 2>/dev/null | tr -d 'null')"
+# Negative check: without the env var, the SAME artifact would be claimed.
+unset WATCHDOG_SELF_TEST
+rc=0
+HOME="${TEST_HOME}" bash "${WATCHDOG}" >/dev/null 2>&1 || rc=$?
+attempts_post_real="$(read_field "${target_path}" resume_attempts)"
+assert_eq "T40: real tick after self-test does claim" "1" "${attempts_post_real}"
+teardown_test
+
 printf '\n=== test-resume-watchdog: %d passed, %d failed ===\n' "${pass}" "${fail}"
 if (( fail > 0 )); then
   exit 1
