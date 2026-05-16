@@ -287,6 +287,48 @@ else
 fi
 teardown_test
 
+# T0c9 (quality-reviewer F1 HIGH): top-level git flag must not bypass
+# the floor. Without _normalize_git_flags on the floor path,
+# `git --no-pager tag v1.0` slipped through because the outer regex
+# requires `tag` immediately after `git`. The fix normalizes the
+# command first (sharing the same pass the advisory matcher at :366
+# uses), so this and `git -c user.email=x commit` correctly deny.
+setup_test
+init_session "t0c9" "execution"
+out_t0c9="$(run_guard "t0c9" "git --no-pager tag v1.0.0")"
+if denied "${out_t0c9}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T0c9: git --no-pager tag <name> must deny (top-level-flag bypass) (got: %s)\n' "${out_t0c9}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+setup_test
+init_session "t0c10" "execution"
+out_t0c10="$(run_guard "t0c10" "git -c commit.gpgsign=false commit -m 'x'")"
+if denied "${out_t0c10}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T0c10: git -c <override> commit must deny (config-override bypass) (got: %s)\n' "${out_t0c10}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# T0c11 (quality-reviewer F2 MEDIUM): `git tag --column always v1.0`
+# is the documented-limitation class shared with the advisory matcher.
+# `--column` is a list-mode flag, but a trailing positional tag name
+# would create. The regex stops at the flag without checking for the
+# positional, so this currently ALLOWS. Locking the known shape
+# prevents silent regression in either direction. The mitigation
+# (Stop-hook mark-edit tracker + quality-reviewer pass) catches the
+# mutation downstream even when the floor lets it through.
+setup_test
+init_session "t0c11" "execution"
+out_t0c11="$(run_guard "t0c11" "git tag --column always v1.0")"
+assert_eq "T0c11: --column flag-then-positional allowed (documented limit)" "" "${out_t0c11}"
+teardown_test
+
 # ----------------------------------------------------------------------
 # T0d: execution intent + qualifying specialist completed → Edit allowed and
 # first mutation is recorded for the Stop-hook backstop.

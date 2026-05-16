@@ -81,6 +81,48 @@ Shellcheck clean.
 `bundle/dot-claude/skills/autowork/scripts/pretool-intent-guard.sh`,
 `tests/test-pretool-intent-guard.sh`.
 
+### W6 follow-up — quality-reviewer F1+F2 on commit `076f8fa`
+
+Quality-reviewer dispatched against the W6 commit surfaced two findings
+that metis's pre-commit stress-test missed:
+
+- **F1 (HIGH) — top-level git flag bypass.** `git --no-pager tag v1.0`,
+  `git -c user.email=x commit`, and friends silently passed the floor
+  matcher because the floor's outer regex assumes `git tag` /
+  `git commit` adjacent without any top-level flags between binary and
+  verb. The advisory matcher at `:366` already calls
+  `_normalize_git_flags` before regexing; the floor didn't reuse that
+  pass. **Fix:** hoisted `_normalize_git_flags` from `:331` to above
+  `_bash_command_may_mutate_workspace` (the floor matcher) and invoked
+  it at the top of the floor so `git --no-pager tag v1.0` canonicalizes
+  to `git tag v1.0` before regex classification. Removed the duplicate
+  later definition. The hoist was structurally required because bash
+  function resolution at the script's first execution point (the
+  conditional at `:152`) reads only definitions seen so far — a forward
+  reference would have called an undefined function.
+
+- **F2 (MEDIUM) — missing regression test for the documented
+  `--format=<fmt>` create-with-list-flag limitation.** The reviewer
+  flagged `git tag --column always v1.0` as the more idiomatic
+  misuse-shape of the documented limitation. Added T0c11 locking the
+  known behavior so a future tightening doesn't silently regress in
+  either direction.
+
+**Additional regression tests** (T0c9-T0c11, 104 → 107):
+
+| Test | Command | Expected |
+|---|---|---|
+| T0c9 | `git --no-pager tag v1.0.0` | **deny** (top-level-flag bypass, F1) |
+| T0c10 | `git -c commit.gpgsign=false commit -m 'x'` | **deny** (config-override bypass) |
+| T0c11 | `git tag --column always v1.0` | allow (documented limitation, F2) |
+
+Tests verified green: `test-pretool-intent-guard.sh` 107/0,
+`test-e2e-hook-sequence.sh` 396/0, `test-quality-gates.sh` 101/0,
+`test-classifier.sh` 65/0. Shellcheck clean. Two pre-existing test
+failures in the full suite (`test-directive-instrumentation.sh` T7
+codepoint counting, `test-session-start-welcome.sh`) verified
+unrelated to W6 — fail identically on `main` without these changes.
+
 ## [1.41.0] - 2026-05-16
 
 ### Agent-first `/ulw` execution invariant

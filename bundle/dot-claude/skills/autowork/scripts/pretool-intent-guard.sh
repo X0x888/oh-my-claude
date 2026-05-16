@@ -83,9 +83,48 @@ _agent_first_gate_active() {
   esac
 }
 
+# v1.41.x harness-improvement wave — hoisted from :331 so
+# `_bash_command_may_mutate_workspace` (the agent-first floor matcher,
+# defined immediately below and invoked from the `_agent_first_gate_active
+# && _tool_attempts_mutation` conditional later in the script) can
+# reuse the same normalization the advisory matcher applies at :366.
+# Without this hoist, the floor silently allowed top-level-flag bypass
+# forms (`git --no-pager tag v1.0`, `git -c user.email=x commit`) —
+# the class quality-reviewer F1 flagged as HIGH. Forward-reference
+# from a later script-level call is fine for `_bash_command_may_mutate_workspace`
+# itself; the issue is bash's depth-first resolution at the script's
+# first execution point, which is the conditional on line ~152.
+#
+# Two flag shapes are handled:
+#   (a) Flags that accept a space-separated argument: `-c name=value`,
+#       `-C path`, `--git-dir <path>`, `--work-tree <path>`, `--exec-path
+#       <path>`, `--namespace <name>`, `--super-prefix <path>`,
+#       `--config-env <name>=<envvar>`, `--attr-source <tree-ish>`.
+#   (b) Single-token flags: `--foo`, `--foo=bar`, bare `-X`, `--no-pager`.
+#       Consumed by the `-[^[:space:]]+` branch.
+#
+# Anchored by the same start-of-segment / optional-path prefix that the
+# `_GUARD_PRE` constant lower in the file documents.
+_normalize_git_flags() {
+  sed -E 's/(^|[[:space:];&|(])(([^[:space:]]*\/)?(git|gh))(([[:space:]]+(-c|-C|--git-dir|--work-tree|--exec-path|--namespace|--super-prefix|--config-env|--attr-source)[[:space:]]+[^[:space:]]+)|([[:space:]]+-[^[:space:]]+))+/\1\2/g' <<<"$1"
+}
+
 _bash_command_may_mutate_workspace() {
   local cmd="$1"
   [[ -z "${cmd}" ]] && return 1
+
+  # v1.41.x harness-improvement wave — quality-reviewer F1 (HIGH).
+  # Normalize git/gh top-level flags BEFORE the destructive-verb regex
+  # runs, so `git --no-pager tag v1.0`, `git -c user.email=x commit`,
+  # `git --git-dir /x commit`, etc. canonicalize to `git tag v1.0` /
+  # `git commit` and the matchers below catch them. Without this pass
+  # the floor silently allowed top-level-flag forms — the same class
+  # the advisory matcher already defends against via the
+  # `_normalize_git_flags` call at :366. sed is a no-op on commands
+  # without `git` / `gh` tokens, so the normalized variant is safe to
+  # use as the basis for ALL match checks below (not just the git/gh
+  # ones).
+  cmd="$(_normalize_git_flags "${cmd}")"
 
   local cleaned
   cleaned="$(sed -E \
@@ -306,31 +345,11 @@ fi
 #   - `my-git`                     → does NOT match (no trailing `/` after `my-`)
 readonly _GUARD_PRE='(^|[[:space:];&|(])([^[:space:]]*/)?'
 
-# Strip git/gh top-level flags between the binary and the verb, so the
-# destructive/allow-list regexes see a canonical `git <verb>` form.
-#
-# Two flag shapes are handled:
-#   (a) Flags that accept a space-separated argument: `-c name=value`,
-#       `-C path`, `--git-dir <path>`, `--work-tree <path>`, `--exec-path
-#       <path>`, `--namespace <name>`, `--super-prefix <path>`,
-#       `--config-env <name>=<envvar>`, `--attr-source <tree-ish>`. This is
-#       the complete set of git(1) top-level options that take a separate-
-#       token argument per the `git --help` usage line. Without the explicit
-#       list here, the single-token branch would consume the flag but leave
-#       the separate-token argument in place — that argument would then sit
-#       between `git` and the verb, defeating the destructive regex (e.g.
-#       `git --git-dir /tmp/repo commit` normalizes to `git /tmp/repo
-#       commit`, which the guard's `git commit` pattern no longer matches).
-#   (b) Single-token flags: `--foo`, `--foo=bar`, bare `-X`, `--no-pager`.
-#       These are consumed in one unit by the `-[^[:space:]]+` branch, so
-#       `--git-dir=/tmp/repo` (the `=` form of the same flag) is handled
-#       here without needing the explicit list.
-#
-# Anchored by the same `_GUARD_PRE` prefix so absolute-path and wrapper-
-# prefix forms (`/usr/bin/git`, `sudo git`, `env git`) normalize correctly.
-_normalize_git_flags() {
-  sed -E 's/(^|[[:space:];&|(])(([^[:space:]]*\/)?(git|gh))(([[:space:]]+(-c|-C|--git-dir|--work-tree|--exec-path|--namespace|--super-prefix|--config-env|--attr-source)[[:space:]]+[^[:space:]]+)|([[:space:]]+-[^[:space:]]+))+/\1\2/g' <<<"$1"
-}
+# `_normalize_git_flags` is defined earlier in the file (hoisted in the
+# v1.41.x harness-improvement wave) so the agent-first floor matcher
+# can reuse the same normalization the advisory matcher applies at
+# :366. See the definition above for the rationale and the two flag
+# shapes it handles.
 
 # Recovery and read-only variants of verbs that are otherwise destructive.
 # Runs on already-normalized input so `git -c foo=bar rebase --abort` (which
