@@ -204,19 +204,32 @@ if [[ "${SWEEP_MODE}" -eq 1 ]]; then
             session_id: $sid,
             project_key: (.project_key // null),
             start_ts: (.session_start_ts // .last_user_prompt_ts // null),
-            end_ts: (.last_edit_ts // .last_review_ts // null),
+            end_ts: (
+              if   ((.last_edit_ts // "")        != "") then .last_edit_ts
+              elif ((.last_review_ts // "")      != "") then .last_review_ts
+              elif ((.last_user_prompt_ts // "") != "") then .last_user_prompt_ts
+              else null
+              end
+            ),
+            end_ts_source: (
+              if   ((.last_edit_ts // "")        != "") then "edit"
+              elif ((.last_review_ts // "")      != "") then "review"
+              elif ((.last_user_prompt_ts // "") != "") then "prompt"
+              else null
+              end
+            ),
             domain: (.task_domain // "unknown"),
             intent: (.task_intent // "unknown"),
             edit_count: $ec,
             code_edits: ((.code_edit_count // "0") | tonumber),
             doc_edits: ((.doc_edit_count // "0") | tonumber),
-            verified: (if .last_verify_ts then true else false end),
+            verified: ((.last_verify_ts // "") != ""),
             verify_outcome: (.last_verify_outcome // null),
             verify_confidence: ((.last_verify_confidence // "0") | tonumber),
-            reviewed: (if .last_review_ts then true else false end),
+            reviewed: ((.last_review_ts // "") != ""),
             guard_blocks: ((.stop_guard_blocks // "0") | tonumber),
             dim_blocks: ((.dimension_guard_blocks // "0") | tonumber),
-            exhausted: (if .guard_exhausted then true else false end),
+            exhausted: ((.guard_exhausted // "") != ""),
             dispatches: ((.subagent_dispatch_count // "0") | tonumber),
             outcome: (.session_outcome // "active"),
             skip_count: ((.skip_count // "0") | tonumber),

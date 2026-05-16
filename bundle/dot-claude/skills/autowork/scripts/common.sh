@@ -1461,6 +1461,21 @@ sweep_stale_sessions() {
   # This preserves longitudinal data for quality analysis.
   # No lock needed: sweep is gated by the daily marker file, so only one
   # process runs it at a time. Concurrent writes are structurally impossible.
+  #
+  # end_ts cascade rationale (v1.41 W1, post-telemetry-audit):
+  # Pre-v1.41 the writer used `(.last_edit_ts // .last_review_ts // null)`,
+  # which left `end_ts: null` for every advisory / exploratory / "what is X?"
+  # session that ran no edits and no review. An audit at ship time found
+  # a majority of historical rows carried null end_ts — making the
+  # cross-session ledger structurally blind to advisory-work duration.
+  # The third fallback to .last_user_prompt_ts gives those sessions an
+  # honest end_ts; the new end_ts_source field ("edit"/"review"/"prompt"
+  # /null) lets downstream readers filter by signal strength when they
+  # want edit-or-review-grade duration only (e.g. /ulw-report computing
+  # "real coding-session duration" by filtering end_ts_source in
+  # {"edit","review"}). The if/elif form is required because bare jq `//`
+  # treats "" as truthy — `last_edit_ts:""` would leak through to
+  # `end_ts:""` and the source label would disagree.
   local summary_file="${HOME}/.claude/quality-pack/session_summary.jsonl"
   local misfires_file="${HOME}/.claude/quality-pack/classifier_misfires.jsonl"
 
@@ -1589,19 +1604,32 @@ sweep_stale_sessions() {
               session_id: $sid,
               project_key: (.project_key // null),
               start_ts: (.session_start_ts // .last_user_prompt_ts // null),
-              end_ts: (.last_edit_ts // .last_review_ts // null),
+              end_ts: (
+                if   ((.last_edit_ts // "")        != "") then .last_edit_ts
+                elif ((.last_review_ts // "")      != "") then .last_review_ts
+                elif ((.last_user_prompt_ts // "") != "") then .last_user_prompt_ts
+                else null
+                end
+              ),
+              end_ts_source: (
+                if   ((.last_edit_ts // "")        != "") then "edit"
+                elif ((.last_review_ts // "")      != "") then "review"
+                elif ((.last_user_prompt_ts // "") != "") then "prompt"
+                else null
+                end
+              ),
               domain: (.task_domain // "unknown"),
               intent: (.task_intent // "unknown"),
               edit_count: $ec,
               code_edits: ((.code_edit_count // "0") | tonumber),
               doc_edits: ((.doc_edit_count // "0") | tonumber),
-              verified: (if .last_verify_ts then true else false end),
+              verified: ((.last_verify_ts // "") != ""),
               verify_outcome: (.last_verify_outcome // null),
               verify_confidence: ((.last_verify_confidence // "0") | tonumber),
-              reviewed: (if .last_review_ts then true else false end),
+              reviewed: ((.last_review_ts // "") != ""),
               guard_blocks: ((.stop_guard_blocks // "0") | tonumber),
               dim_blocks: ((.dimension_guard_blocks // "0") | tonumber),
-              exhausted: (if .guard_exhausted then true else false end),
+              exhausted: ((.guard_exhausted // "") != ""),
               dispatches: ((.subagent_dispatch_count // "0") | tonumber),
               outcome: (
                 if (.session_outcome // "") != "" then .session_outcome

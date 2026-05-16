@@ -182,6 +182,9 @@ jobs:
       - name: Run session-summary outcome tests (v1.39.0 W1)
         run: bash tests/test-session-summary-outcome.sh
 
+      - name: Run session-summary end_ts cascade tests (v1.41 W1)
+        run: bash tests/test-session-summary-end-ts.sh
+
       - name: Run session risk-tier tests (v1.39.0 W2)
         run: bash tests/test-session-risk-tier.sh
 

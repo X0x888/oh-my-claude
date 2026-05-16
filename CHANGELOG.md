@@ -4,6 +4,46 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Telemetry data integrity — `end_ts` cascade + sibling-boolean tightness (Wave 1)
+
+Driven by a 248-session telemetry audit: 66% of historical
+`session_summary.jsonl` rows carried `end_ts: null`, making the
+cross-session ledger structurally blind to advisory-work duration.
+Root cause: the writer's jq cascade stopped at `last_edit_ts //
+last_review_ts`, so every advisory / exploratory / "what is X?"
+session that ran no edits and no review emitted `null` end_ts.
+
+**Changes (lockstep across the two writers — `common.sh:1592` daily
+sweep + `show-report.sh:207` `--sweep` in-memory merge):**
+
+1. **`end_ts` cascade** extended to a third fallback: `.last_edit_ts
+   → .last_review_ts → .last_user_prompt_ts → null`. Implemented as
+   an explicit `if/elif` chain with `((.x // "") != "")` guards
+   because jq's bare `//` treats `""` as truthy — bare cascade would
+   leak empty strings through and the source label would disagree.
+2. **`end_ts_source` field** added: `"edit"` / `"review"` /
+   `"prompt"` / `null` so downstream readers can filter for
+   edit-or-review-grade duration when they want to exclude
+   prompt-only advisory rows.
+3. **Sibling booleans tightened (Serendipity Rule)** — `verified:`,
+   `reviewed:`, `exhausted:` previously used `if .x then true else
+   false end`, which jq evaluates truthy for `""`. A session whose
+   `last_review_ts` was ever written empty used to report
+   `reviewed:true`. Switched to `((.x // "") != "")` matching the
+   pattern already used in `show-status.sh:647` and `outcome:`.
+
+**Schema/docs:** `docs/architecture.md` session_summary table gains
+the `end_ts_source` row and updated `end_ts` description. Inline
+rationale comment at `common.sh:1467` explains the if/elif form so
+future "simplifications" don't reintroduce the bug.
+
+**Test:** new `tests/test-session-summary-end-ts.sh` (35 assertions
+across three parts: cascade priority, lockstep grep both writers,
+and a regression net asserting the old buggy form is absent).
+Pinned in `validate.yml`. Existing
+`test-session-summary-outcome.sh` / `test-show-report.sh` /
+`test-hotfix-sweep.sh` all still pass.
+
 ### Depth-on-every-prompt rebalance
 
 User-reported failure mode: *"I feel claude with this workflow installed
