@@ -55,11 +55,28 @@ read_st() {
     "${TEST_HOME}/.claude/quality-pack/state/${sid}/session_state.json" 2>/dev/null || true
 }
 
+set_agent_first_satisfied() {
+  local sid="$1" agent="${2:-quality-planner}"
+  local state_dir="${TEST_HOME}/.claude/quality-pack/state/${sid}"
+  jq --arg agent "${agent}" --arg ts "$(date +%s)" \
+    '. + {agent_first_specialist_ts:$ts, agent_first_specialist_type:$agent}' \
+    "${state_dir}/session_state.json" > "${state_dir}/session_state.json.tmp" \
+    && mv "${state_dir}/session_state.json.tmp" "${state_dir}/session_state.json"
+}
+
 # --- Hook simulators ---
 
 sim_edit() {
   local sid="$1"
   local fp="${2:-/src/foo.ts}"
+  # Synthetic edits represent a tool call that already passed PreToolUse.
+  # Real /ulw execution now requires a shaping specialist before mutation,
+  # so seed that floor here to keep unrelated stop-gate tests focused.
+  if is_intent="$(read_st "${sid}" "task_intent")" && [[ "${is_intent}" == "execution" || "${is_intent}" == "continuation" ]]; then
+    if [[ -z "$(read_st "${sid}" "agent_first_specialist_ts")" ]]; then
+      set_agent_first_satisfied "${sid}"
+    fi
+  fi
   run_hook "${HOOK_DIR}/mark-edit.sh" \
     "$(jq -nc --arg s "${sid}" --arg f "${fp}" '{session_id:$s,tool_input:{file_path:$f}}')"
 }
@@ -158,15 +175,13 @@ VERDICT: CLEAN}"
 sim_edit_doc() {
   local sid="$1"
   local fp="${2:-/docs/README.md}"
-  run_hook "${HOOK_DIR}/mark-edit.sh" \
-    "$(jq -nc --arg s "${sid}" --arg f "${fp}" '{session_id:$s,tool_input:{file_path:$f}}')"
+  sim_edit "${sid}" "${fp}"
 }
 
 sim_edit_ui() {
   local sid="$1"
   local fp="${2:-/src/components/Button.tsx}"
-  run_hook "${HOOK_DIR}/mark-edit.sh" \
-    "$(jq -nc --arg s "${sid}" --arg f "${fp}" '{session_id:$s,tool_input:{file_path:$f}}')"
+  sim_edit "${sid}" "${fp}"
 }
 
 sim_stop() {
@@ -739,6 +754,23 @@ jq -nc '{task_intent:"execution",current_objective:"test"}' > "${state_dir}/sess
 output="$(sim_prompt "${sid}" "yes please continue with the implementation")"
 
 assert_empty "seq-K: no context without ULW" "${output}"
+teardown_test
+
+# -------------------------------------------------------
+# Sequence K3: Fresh execution prompt clears prior agent-first evidence
+# -------------------------------------------------------
+setup_test
+setup_prompt_router
+init_session "sk3af"
+set_agent_first_satisfied "sk3af" "quality-planner"
+state_dir="${TEST_HOME}/.claude/quality-pack/state/sk3af"
+jq '. + {first_mutation_ts:"123",first_mutation_tool:"Edit",agent_first_gate_blocks:"2"}' \
+  "${state_dir}/session_state.json" > "${state_dir}/session_state.json.tmp" \
+  && mv "${state_dir}/session_state.json.tmp" "${state_dir}/session_state.json"
+sim_prompt "sk3af" "/ulw implement a new feature in this repo" >/dev/null
+assert_empty "seq-K3: fresh execution clears agent-first timestamp" "$(read_st "sk3af" "agent_first_specialist_ts")"
+assert_empty "seq-K3: fresh execution clears first mutation timestamp" "$(read_st "sk3af" "first_mutation_ts")"
+assert_empty "seq-K3: fresh execution clears agent-first block count" "$(read_st "sk3af" "agent_first_gate_blocks")"
 teardown_test
 
 # -------------------------------------------------------
@@ -2029,6 +2061,7 @@ setup_test
 setup_compact_tests
 init_session "cg8g" "coding"
 # intent=execution from init_session
+set_agent_first_satisfied "cg8g"
 out_g8g="$(sim_pretool_bash "cg8g" "git commit -m 'implement feature'")"
 if [[ -z "${out_g8g}" ]]; then
   pass=$((pass + 1))
@@ -2123,6 +2156,7 @@ assert_contains "gap8n: first commit under advisory is blocked" "\"permissionDec
 # User replies with a clearly imperative prompt; the router reclassifies intent.
 sim_user_prompt "cg8n" "implement the fix and commit it" >/dev/null
 assert_eq "gap8n: intent reclassified to execution" "execution" "$(read_st "cg8n" "task_intent")"
+set_agent_first_satisfied "cg8n"
 out_allowed="$(sim_pretool_bash "cg8n" "git commit -m 'now allowed'")"
 if [[ -z "${out_allowed}" ]]; then
   pass=$((pass + 1))
@@ -2141,9 +2175,11 @@ init_session "cg8o" "coding"
 set_intent "cg8o" "advisory"
 sim_pretool_bash "cg8o" "git commit -m 'seed the counter'" >/dev/null
 assert_eq "gap8o: counter seeded" "1" "$(read_st "cg8o" "pretool_intent_blocks")"
+set_agent_first_satisfied "cg8o" "quality-planner"
 # Deactivate — must clear the counter
 run_hook "${HOOK_DIR}/ulw-deactivate.sh" '{}' >/dev/null
 assert_empty "gap8o: counter cleared by ulw-deactivate" "$(read_st "cg8o" "pretool_intent_blocks")"
+assert_empty "gap8o: agent-first stamp cleared by ulw-deactivate" "$(read_st "cg8o" "agent_first_specialist_ts")"
 teardown_test
 
 # Gap 8l: PreToolUse guard allow-list edges — commands that look destructive
@@ -2214,9 +2250,8 @@ else
 fi
 teardown_test
 
-# Gap 8k: PreToolUse guard allows non-Bash tools unconditionally.
-# The hook is wired only on Bash, but it also bails on tool_name mismatch
-# as defense-in-depth; confirm that path works.
+# Gap 8k: PreToolUse guard allows edit tools under advisory intent. The same
+# hook blocks edit tools for execution until the agent-first floor is met.
 setup_test
 setup_compact_tests
 init_session "cg8k" "coding"
@@ -2229,6 +2264,42 @@ else
   printf '  FAIL: gap8k: non-Bash tool must pass through (got: %s)\n' "${out_g8k}" >&2
   fail=$((fail + 1))
 fi
+teardown_test
+
+# Gap 8t: execution mutations are agent-first. Read-only inspection is
+# allowed before specialists; Edit/Bash mutations block until a qualifying
+# shaping specialist (not a post-hoc reviewer) returns.
+setup_test
+setup_compact_tests
+init_session "cg8t" "coding"
+out_g8t_ro="$(sim_pretool_bash "cg8t" "git status 2>/dev/null")"
+assert_eq "gap8t: read-only Bash allowed before agent-first specialist" "" "${out_g8t_ro}"
+out_g8t_edit1="$(run_hook "${HOOK_DIR}/pretool-intent-guard.sh" \
+  "$(jq -nc --arg s "cg8t" '{session_id:$s,tool_name:"Edit",tool_input:{file_path:"/tmp/x",old_string:"a",new_string:"b"},hook_event_name:"PreToolUse"}')")"
+assert_contains "gap8t: Edit before specialist is denied" "\"permissionDecision\":\"deny\"" "${out_g8t_edit1}"
+assert_contains "gap8t: deny reason names agent-first" "Agent-first gate" "${out_g8t_edit1}"
+run_hook "${HOOK_DIR}/record-subagent-summary.sh" \
+  "$(jq -nc --arg s "cg8t" '{session_id:$s,agent_type:"quality-reviewer",last_assistant_message:"Clean.\nVERDICT: CLEAN"}')"
+assert_empty "gap8t: quality-reviewer does not satisfy agent-first floor" "$(read_st "cg8t" "agent_first_specialist_ts")"
+run_hook "${HOOK_DIR}/record-subagent-summary.sh" \
+  "$(jq -nc --arg s "cg8t" '{session_id:$s,agent_type:"quality-planner",last_assistant_message:"Plan ready.\nVERDICT: PLAN_READY"}')"
+assert_eq "gap8t: quality-planner stamps agent-first type" "quality-planner" "$(read_st "cg8t" "agent_first_specialist_type")"
+out_g8t_edit2="$(run_hook "${HOOK_DIR}/pretool-intent-guard.sh" \
+  "$(jq -nc --arg s "cg8t" '{session_id:$s,tool_name:"Edit",tool_input:{file_path:"/tmp/x",old_string:"a",new_string:"b"},hook_event_name:"PreToolUse"}')")"
+assert_eq "gap8t: Edit allowed after qualifying specialist" "" "${out_g8t_edit2}"
+assert_eq "gap8t: first mutation tool recorded" "Edit" "$(read_st "cg8t" "first_mutation_tool")"
+teardown_test
+
+# Gap 8u: Stop-hook backstop catches stale wiring where an edit was recorded
+# but no agent-first specialist returned.
+setup_test
+setup_compact_tests
+init_session "cg8u" "coding"
+run_hook "${HOOK_DIR}/mark-edit.sh" \
+  "$(jq -nc --arg s "cg8u" '{session_id:$s,tool_name:"Edit",tool_input:{file_path:"/tmp/backstop.ts"}}')"
+out_g8u="$(run_hook "${HOOK_DIR}/stop-guard.sh" \
+  "$(jq -nc --arg s "cg8u" '{session_id:$s,stop_hook_active:false,last_assistant_message:"done"}')")"
+assert_contains "gap8u: Stop backstop blocks missing agent-first specialist" "Agent-first gate" "${out_g8u}"
 teardown_test
 
 # Gap 8p: guard blocks destructive commands even when git top-level flags

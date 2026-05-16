@@ -39,9 +39,9 @@ No enforcement layer existed at the PreToolUse level to catch destructive git op
 
 The replacement semantics matter: appending would let both directives fight, and the momentum phrasing would win by proximity.
 
-### Layer 2 — PreToolUse Bash intent guard
+### Layer 2 — PreToolUse mutation intent guard
 
-New hook: `pretool-intent-guard.sh`, wired on `PreToolUse` matcher `Bash`. When ULW is active and `task_intent` is non-execution, it denies destructive git/gh commands via `hookSpecificOutput.permissionDecision: "deny"`.
+New hook: `pretool-intent-guard.sh`, wired on `PreToolUse` matcher `Bash|Edit|Write|MultiEdit`. When ULW is active and `task_intent` is non-execution, it denies destructive git/gh commands via `hookSpecificOutput.permissionDecision: "deny"`. For execution/continuation turns it also enforces the agent-first floor before mutating tools run.
 
 Coverage:
 
@@ -160,12 +160,12 @@ Three coordinated changes in `pretool-intent-guard.sh`:
 
 ### 10.5 Regression tests
 
-`tests/test-pretool-intent-guard.sh` (19 cases / 42 assertions) locks in:
+`tests/test-pretool-intent-guard.sh` locks in:
 
 - The deny paths for advisory and session_management intents.
 - The wave-active override (positive: T5, T15) and its non-application (T6 completed plan, T7 empty waves, T13 non-commit destructive ops, T14 compound `commit && force-push`, T16 stale plan, T18 commit-substring false-match).
 - Configurable TTL via env (T17) AND via `oh-my-claude.conf` (T17b — the conf-parser regression that the v1.21.0 review caught: docs advertised the conf key but the parser entry was missing on the initial implementation).
-- Kill-switch bypass (T11), non-Bash tool short-circuit (T8), and the verbose-vs-terse first/second block coaching (T9, T10, T12).
+- Kill-switch bypass (T11), non-execution edit-tool pass-through (T8), agent-first execution mutation blocking, and the verbose-vs-terse first/second block coaching (T9, T10, T12).
 - Text contract: deny reason MUST NOT contain `say yes`, `single yes`, `reauthorize`, `confirm with yes`; MUST include `concrete imperative`, `reply with:`, `FORBIDDEN`.
 
 `tests/test-show-report.sh` Test 18 verifies the new "Overrides" column and `wave-override allow(s)` totals suffix. The e2e Gap 8s assertions in `test-e2e-hook-sequence.sh` were updated to match the rewritten verbose reason text (`What to do:` / `What NOT to do` / `concrete imperative` markers).

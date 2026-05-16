@@ -163,13 +163,17 @@ These aren't edge cases. They're the daily experience of anyone using Claude Cod
 
 oh-my-claude enforces cognitive quality through structure, not prompt engineering. Instead of asking Claude to please think harder, it installs bash hooks that intercept Claude Code's lifecycle events -- prompt submission, session compaction, stop attempts -- and injects domain-aware context, quality requirements, and hard gates that Claude cannot bypass.
 
-The result: Claude classifies your intent before acting, routes work to specialist agents, thinks between tool calls, and literally cannot mark a task as done until review and verification are complete.
+The result: Claude classifies your intent before acting, routes work to specialist agents, blocks implementation mutations until a fresh-context specialist has shaped the work, thinks between tool calls, and literally cannot mark a task as done until review and verification are complete.
 
 ## Feature highlights
 
 ### Hard quality gates
 
 **Claude can't mark a task done until verification + review are complete.** Skip tests, skip the reviewer, defer work to a "future session" without a checkpoint, miss prompt-stated commit/push obligations, or edit 3+ files without an excellence review — each is a hard stop, not a warning. Caps on each gate prevent infinite loops: if Claude can't satisfy them, it surfaces the gap instead of spinning.
+
+### Agent-first execution
+
+**On `/ulw` execution, Claude must dispatch and wait for a fresh-context shaping specialist before the first workspace mutation.** Read-only inspection is still allowed first, but `Edit`/`Write`/`MultiEdit` and common mutating Bash commands block until a planner, domain specialist, challenge agent, researcher, writer, or lens has returned. Post-hoc reviewers do not satisfy this floor; they remain the cleanup gates after implementation.
 
 ### Prescribed reviewer sequence
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # test-pretool-intent-guard.sh — focused regression for pretool-intent-guard.sh.
 #
-# Coverage (19 cases / 42 assertions):
+# Coverage:
 #   - intent classification × destructive-command outcome (control + regression)
 #   - wave-execution override (the v1.21.0 fix for the "single yes reauthorizes
 #     commit" anti-pattern: when a council Phase 8 wave plan is active, a
@@ -108,6 +108,21 @@ set_push_mode() {
     && mv "${state_dir}/session_state.json.tmp" "${state_dir}/session_state.json"
 }
 
+set_agent_first_satisfied() {
+  local sid="$1" agent="${2:-quality-planner}"
+  local state_dir="${TEST_HOME}/.claude/quality-pack/state/${sid}"
+  jq --arg agent "${agent}" --arg ts "$(date +%s)" \
+    '. + {agent_first_specialist_ts:$ts, agent_first_specialist_type:$agent}' \
+    "${state_dir}/session_state.json" > "${state_dir}/session_state.json.tmp" \
+    && mv "${state_dir}/session_state.json.tmp" "${state_dir}/session_state.json"
+}
+
+read_state_key() {
+  local sid="$1" key="$2"
+  local state_dir="${TEST_HOME}/.claude/quality-pack/state/${sid}"
+  jq -r --arg key "${key}" '.[$key] // ""' "${state_dir}/session_state.json" 2>/dev/null || true
+}
+
 # Seed findings.json with the given waves[] payload. Each call replaces the
 # whole document — tests describe the wave-state they care about explicitly.
 # Optional 3rd arg overrides updated_ts so tests can simulate a stale plan.
@@ -162,9 +177,57 @@ denied() {
 }
 
 # ----------------------------------------------------------------------
+# T0a: execution intent + Edit before any specialist → agent-first deny
+setup_test
+init_session "t0a" "execution"
+out_t0a="$(run_guard "t0a" "" "Edit")"
+if denied "${out_t0a}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T0a: execution + Edit before specialist must be denied (got: %s)\n' "${out_t0a}" >&2
+  fail=$((fail + 1))
+fi
+assert_contains "T0a: deny reason names agent-first gate" "Agent-first gate" "${out_t0a}"
+teardown_test
+
+# ----------------------------------------------------------------------
+# T0b: execution intent + mutating Bash before any specialist → agent-first deny
+setup_test
+init_session "t0b" "execution"
+out_t0b="$(run_guard "t0b" "touch /tmp/omc-agent-first-test")"
+if denied "${out_t0b}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T0b: execution + mutating Bash before specialist must be denied (got: %s)\n' "${out_t0b}" >&2
+  fail=$((fail + 1))
+fi
+assert_contains "T0b: deny reason includes attempted Bash mutation" "Attempted mutation: Bash:" "${out_t0b}"
+teardown_test
+
+# ----------------------------------------------------------------------
+# T0c: execution intent + read-only Bash before any specialist → allow
+setup_test
+init_session "t0c" "execution"
+out_t0c="$(run_guard "t0c" "git status 2>/dev/null")"
+assert_eq "T0c: read-only Bash allowed before specialist" "" "${out_t0c}"
+teardown_test
+
+# ----------------------------------------------------------------------
+# T0d: execution intent + qualifying specialist completed → Edit allowed and
+# first mutation is recorded for the Stop-hook backstop.
+setup_test
+init_session "t0d" "execution"
+set_agent_first_satisfied "t0d" "quality-planner"
+out_t0d="$(run_guard "t0d" "" "Edit")"
+assert_eq "T0d: Edit allowed after qualifying specialist" "" "${out_t0d}"
+assert_eq "T0d: first mutation tool recorded" "Edit" "$(read_state_key "t0d" "first_mutation_tool")"
+teardown_test
+
+# ----------------------------------------------------------------------
 # T1 (control): execution intent + `git commit` → allow (silent exit 0)
 setup_test
 init_session "t1" "execution"
+set_agent_first_satisfied "t1"
 out_t1="$(run_guard "t1" "git commit -m 'real work'")"
 assert_eq "T1: execution + commit allowed silently" "" "${out_t1}"
 teardown_test
@@ -173,6 +236,7 @@ teardown_test
 # T2 (control): continuation intent + `git push` → allow
 setup_test
 init_session "t2" "continuation"
+set_agent_first_satisfied "t2"
 out_t2="$(run_guard "t2" "git push origin main")"
 assert_eq "T2: continuation + push allowed silently" "" "${out_t2}"
 teardown_test
@@ -181,6 +245,7 @@ teardown_test
 # T2b: execution intent + explicit do-not-commit contract → deny publish ops
 setup_test
 init_session "t2b" "execution"
+set_agent_first_satisfied "t2b"
 set_commit_mode "t2b" "forbidden"
 out_t2b="$(run_guard "t2b" "git commit -m 'forbidden by contract'")"
 if denied "${out_t2b}"; then
@@ -271,10 +336,9 @@ fi
 teardown_test
 
 # ----------------------------------------------------------------------
-# T8: advisory + active wave plan + non-Bash tool → silent allow. The
-# guard already short-circuits on non-Bash tools at line 46-48; this test
-# is a regression check that the wave-override logic does not perturb the
-# tool-name short-circuit.
+# T8: advisory + active wave plan + non-Bash tool → silent allow. Edit tools
+# are only gated for execution/continuation agent-first mutations; advisory
+# edit-tool payloads still pass through this hook.
 setup_test
 init_session "t8" "advisory"
 seed_findings "t8" '[
@@ -1009,6 +1073,7 @@ teardown_test
 # authorized when only push was forbidden.
 setup_test
 init_session "t40" "execution"
+set_agent_first_satisfied "t40"
 set_push_mode "t40" "forbidden"
 out_t40="$(run_guard "t40" "git commit -m 'auth fix'")"
 if denied "${out_t40}"; then
@@ -1022,6 +1087,7 @@ teardown_test
 # T41 (Bug C): push_mode=forbidden + git push → DENY.
 setup_test
 init_session "t41" "execution"
+set_agent_first_satisfied "t41"
 set_push_mode "t41" "forbidden"
 out_t41="$(run_guard "t41" "git push origin main")"
 if denied "${out_t41}"; then
@@ -1035,6 +1101,7 @@ teardown_test
 # T42 (Bug C): push_mode=forbidden + git tag → DENY.
 setup_test
 init_session "t42" "execution"
+set_agent_first_satisfied "t42"
 set_push_mode "t42" "forbidden"
 out_t42="$(run_guard "t42" "git tag v1.0.0")"
 if denied "${out_t42}"; then
@@ -1048,6 +1115,7 @@ teardown_test
 # T43 (Bug C): push_mode=forbidden + gh pr create → DENY.
 setup_test
 init_session "t43" "execution"
+set_agent_first_satisfied "t43"
 set_push_mode "t43" "forbidden"
 out_t43="$(run_guard "t43" "gh pr create --title 'feat' --body 'x'")"
 if denied "${out_t43}"; then
@@ -1078,6 +1146,7 @@ teardown_test
 # concatenating the forbidden push must still trip the gate.
 setup_test
 init_session "t45" "execution"
+set_agent_first_satisfied "t45"
 set_commit_mode "t45" "required"
 set_push_mode "t45" "forbidden"
 out_t45="$(run_guard "t45" "git commit -m 'x' && git push")"
@@ -1093,6 +1162,7 @@ teardown_test
 # no block (subject to other gates that don't apply at execution intent).
 setup_test
 init_session "t46" "execution"
+set_agent_first_satisfied "t46"
 out_t46="$(run_guard "t46" "git push")"
 if denied "${out_t46}"; then
   printf '  FAIL: T46: no contract should not deny under execution intent (got: %s)\n' "${out_t46}" >&2

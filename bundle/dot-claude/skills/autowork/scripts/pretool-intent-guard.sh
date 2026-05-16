@@ -32,19 +32,18 @@ if ! is_ultrawork_mode; then
 fi
 
 tool_name="$(json_get '.tool_name')"
-if [[ "${tool_name}" != "Bash" ]]; then
-  exit 0
+command_str=""
+if [[ "${tool_name}" == "Bash" ]]; then
+  command_str="$(json_get '.tool_input.command')"
 fi
+task_intent=""
+commit_contract_mode=""
+push_contract_mode=""
+agent_first_specialist_ts=""
 
-command_str="$(json_get '.tool_input.command')"
-if [[ -z "${command_str}" ]]; then
-  exit 0
-fi
-
-# v1.34.1+ (sre-lens S-003): bulk-read the 3 always-together state keys
-# in one jq fork instead of 3 sequential read_state calls. Hot-path —
-# fires on every Bash tool call inside ULW; a council Phase 8 turn with
-# 30 Bash calls saves ~60-80ms per call (~2s cumulative). Same RS-
+# v1.34.1+ (sre-lens S-003): bulk-read the always-together state keys
+# in one jq fork instead of sequential read_state calls. Hot-path —
+# fires on every guarded PreToolUse call inside ULW. Same RS-
 # delimited pattern as stop-guard.sh:135-149 and prompt-intent-router's
 # v1.27.0 F-018/F-019 bulk-reads. Invariant: argv length === case
 # branches.
@@ -58,17 +57,138 @@ while IFS= read -r -d $'\x1e' _pig_line; do
     0) task_intent="${_pig_line}" ;;
     1) commit_contract_mode="${_pig_line}" ;;
     2) push_contract_mode="${_pig_line}" ;;
+    3) agent_first_specialist_ts="${_pig_line}" ;;
   esac
   _pig_idx=$((_pig_idx + 1))
 done < <(read_state_keys \
   "task_intent" \
   "done_contract_commit_mode" \
-  "done_contract_push_mode")
+  "done_contract_push_mode" \
+  "agent_first_specialist_ts")
 intent_guard_active=0
 
 case "${task_intent}" in
   advisory|session_management|checkpoint) intent_guard_active=1 ;;
 esac
+
+# Agent-first invariant for /ulw execution. The main thread may inspect first,
+# but it must not mutate the workspace before at least one fresh-context
+# specialist (planner, domain specialist, challenge agent, lens, researcher,
+# writer, etc.) has returned. Post-hoc reviewers do not stamp
+# agent_first_specialist_ts; see record-subagent-summary.sh.
+_agent_first_gate_active() {
+  case "${task_intent}" in
+    execution|continuation) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+_bash_command_may_mutate_workspace() {
+  local cmd="$1"
+  [[ -z "${cmd}" ]] && return 1
+
+  local cleaned
+  cleaned="$(sed -E \
+    -e 's/[0-9]*>>?[[:space:]]*\/dev\/null//g' \
+    -e 's/[0-9]*>[&][0-9]+//g' \
+    <<<"${cmd}")"
+
+  # Shell redirects to real files are writes. This intentionally ignores
+  # input redirects (`<`) and stderr/stdout redirects to /dev/null handled
+  # above, so read-only inspection commands like `git status 2>/dev/null`
+  # stay allowed before the specialist floor is satisfied.
+  if grep -Eq '(^|[^0-9])>>?[[:space:]]*[^[:space:]&|;]+' <<<"${cleaned}"; then return 0; fi
+
+  # Common workspace mutation forms. This is deliberately a floor, not a
+  # sandbox: obscure write paths are still caught by edit tracking and stop
+  # gates, while the common direct-edit and package-manager paths are denied
+  # before they run.
+  if grep -Eiq '(^|[[:space:];&|(])(rm|rmdir|mv|cp|mkdir|touch|chmod|chown|ln|truncate|install|rsync|dd|tee)([[:space:]]|$)' <<<"${cmd}"; then return 0; fi
+  if grep -Eiq '(^|[[:space:];&|(])sed[[:space:]][^;&|]*[[:space:]]-i([^[:alnum:]_-]|$)' <<<"${cmd}"; then return 0; fi
+  if grep -Eiq '(^|[[:space:];&|(])perl[[:space:]][^;&|]*-(p?i|i?p)([^[:alnum:]_-]|$)' <<<"${cmd}"; then return 0; fi
+  if grep -Eiq '(^|[[:space:];&|(])(prettier|eslint|ruff)[[:space:]][^;&|]*(--write|--fix)([[:space:]]|$)' <<<"${cmd}"; then return 0; fi
+  if grep -Eiq '(^|[[:space:];&|(])(black|isort|rustfmt|swiftformat)([[:space:]]|$)' <<<"${cmd}"; then return 0; fi
+  if grep -Eiq '(^|[[:space:];&|(])gofmt[[:space:]][^;&|]*-w([[:space:]]|$)' <<<"${cmd}"; then return 0; fi
+  if grep -Eiq '(^|[[:space:];&|(])(npm|pnpm|yarn)[[:space:]]+(install|i|add|remove|rm|uninstall|update|upgrade|dedupe)([[:space:]]|$)' <<<"${cmd}"; then return 0; fi
+  if grep -Eiq '(^|[[:space:];&|(])npm[[:space:]]+audit[[:space:]]+fix([[:space:]]|$)' <<<"${cmd}"; then return 0; fi
+  if grep -Eiq '(^|[[:space:];&|(])(pip|pip3|poetry|uv|bundle|cargo|gem|brew)[[:space:]]+(install|add|remove|rm|uninstall|update|upgrade|lock|fix)([[:space:]]|$)' <<<"${cmd}"; then return 0; fi
+  if grep -Eiq '(^|[[:space:];&|(])go[[:space:]]+(mod[[:space:]]+tidy|get|install)([[:space:]]|$)' <<<"${cmd}"; then return 0; fi
+  if grep -Eiq '(^|[[:space:];&|(])swift[[:space:]]+package[[:space:]]+(update|resolve)([[:space:]]|$)' <<<"${cmd}"; then return 0; fi
+
+  # Destructive git/gh operations are also mutations. The full advisory-intent
+  # matcher below is stricter; these common forms are enough for the agent-first
+  # floor before that matcher is defined.
+  if grep -Eiq '(^|[[:space:];&|(])([^[:space:]]*/)?git[[:space:]]+(commit|push|revert|reset[[:space:]]+--hard|rebase|cherry-pick|tag|merge|am|apply|clean|update-ref|symbolic-ref|fast-import|filter-branch|replace|stash[[:space:]]+(push|pop|apply))([[:space:]]|$)' <<<"${cmd}"; then return 0; fi
+  if grep -Eiq '(^|[[:space:];&|(])([^[:space:]]*/)?gh[[:space:]]+(pr|release|issue)[[:space:]]+(create|merge|edit|close|comment|delete|reopen)([[:space:]]|$)' <<<"${cmd}"; then return 0; fi
+
+  return 1
+}
+
+_tool_attempts_mutation() {
+  case "${tool_name}" in
+    Edit|Write|MultiEdit|NotebookEdit)
+      return 0
+      ;;
+    Bash)
+      _bash_command_may_mutate_workspace "${command_str}"
+      return
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+_record_first_mutation_attempt() {
+  local existing
+  existing="$(read_state "first_mutation_ts")"
+  if [[ -z "${existing}" ]]; then
+    write_state_batch \
+      "first_mutation_ts" "$(now_epoch)" \
+      "first_mutation_tool" "${tool_name}"
+  fi
+}
+
+if _agent_first_gate_active && _tool_attempts_mutation; then
+  if [[ -z "${agent_first_specialist_ts}" ]]; then
+    # shellcheck disable=SC2329  # invoked indirectly via with_state_lock
+    _increment_agent_first_blocks() {
+      local _c
+      _c="$(read_state "agent_first_gate_blocks")"
+      _c="${_c:-0}"
+      _c=$((_c + 1))
+      write_state "agent_first_gate_blocks" "${_c}"
+      printf '%s' "${_c}"
+    }
+    agent_first_block_count="$(with_state_lock _increment_agent_first_blocks)" || agent_first_block_count=""
+    agent_first_block_count="${agent_first_block_count:-1}"
+    attempted_mutation="${tool_name}"
+    if [[ "${tool_name}" == "Bash" ]]; then
+      attempted_mutation="Bash: $(truncate_chars 160 "${command_str}")"
+    fi
+    record_gate_event "agent-first" "block" \
+      "block_count=${agent_first_block_count}" \
+      "tool=${tool_name}" \
+      "attempted=$(truncate_chars 180 "${attempted_mutation}")"
+    jq -nc --arg reason "[Agent-first gate · block ${agent_first_block_count}] /ulw execution is orchestrated multi-agent work, not main-thread implementation followed by reviewer cleanup. Read-only inspection is allowed, but before the first workspace mutation you must dispatch and wait for a fresh-context specialist that can shape the work (quality-planner, prometheus, metis, oracle, abstraction-critic, a domain specialist, librarian/quality-researcher, writing-architect, or a relevant lens). Post-hoc reviewers such as quality-reviewer do not satisfy this gate. Attempted mutation: ${attempted_mutation}" '{
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason: $reason
+      }
+    }'
+    exit 0
+  fi
+  with_state_lock _record_first_mutation_attempt || true
+fi
+
+if [[ "${tool_name}" != "Bash" ]]; then
+  exit 0
+fi
+
+if [[ -z "${command_str}" ]]; then
+  exit 0
+fi
 
 if [[ "${intent_guard_active}" -eq 0 ]] && [[ "${commit_contract_mode}" != "forbidden" ]] && [[ "${push_contract_mode}" != "forbidden" ]]; then
   # execution, continuation, or unset with no explicit "do not commit"

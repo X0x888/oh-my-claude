@@ -7,12 +7,13 @@ model: opus
 # ULW Demo — See the Quality Gates in Action
 
 This is a guided walkthrough of oh-my-claude's quality enforcement. You will:
-1. Make a small code edit (triggers the edit tracker)
-2. Attempt to stop (triggers the stop-guard block)
-3. Run verification (satisfies the verification gate)
-4. Run a review (satisfies the review gate)
-5. Stop cleanly (all gates satisfied)
-6. Receive three first-prompt suggestions tailored to your repo
+1. Run a tiny specialist pass before mutation (satisfies the agent-first gate)
+2. Make a small code edit (triggers the edit tracker)
+3. Attempt to stop (triggers the stop-guard block)
+4. Run verification (satisfies the verification gate)
+5. Run a review (satisfies the review gate)
+6. Stop cleanly (all gates satisfied)
+7. Receive three first-prompt suggestions tailored to your repo
 
 ## Instructions
 
@@ -23,77 +24,88 @@ Walk the user through a hands-on demo of the quality gates. Follow these steps e
 Print this banner on its own line, then the explanation:
 
 ```
-━━━ BEAT 1/7 · INTRO ━━━
+━━━ BEAT 1/8 · INTRO ━━━
 ```
 
 Tell the user:
 > This will take about 90 seconds. You don't need to type anything — just watch the gates fire on a throwaway file in `/tmp`. I'll walk you through oh-my-claude's quality gates: you'll see me get blocked from stopping until I complete testing and review. This is exactly what happens during real `/ulw` tasks — the harness enforces quality structurally.
 
-### Step 2: Create a demo file
+### Step 2: Run a pre-edit specialist pass
 
 Print this banner on its own line first:
 
 ```
-━━━ BEAT 2/7 · EDIT (triggers the edit tracker) ━━━
+━━━ BEAT 2/8 · AGENT-FIRST (fresh specialist before mutation) ━━━
+```
+
+Delegate to the `quality-planner` agent before editing. Scope the prompt tightly to keep it under 15 seconds (e.g., "Plan the tiny `/tmp/omc-demo.sh` quality-gate demo. Single bash file under 10 LOC. Return one short implementation note and one risk."). This satisfies the agent-first gate that real `/ulw` work uses before mutation.
+
+### Step 3: Create a demo file
+
+Print this banner on its own line first:
+
+```
+━━━ BEAT 3/8 · EDIT (triggers the edit tracker) ━━━
 ```
 
 Create a small file called `/tmp/omc-demo.sh` with a simple bash function that has a deliberate minor issue (e.g., missing quotes around a variable). Keep it under 10 lines. This triggers the edit tracker.
 
-### Step 3: Attempt to stop (you will be blocked)
+### Step 4: Attempt to stop (you will be blocked)
 
 Print this banner on its own line first:
 
 ```
-━━━ BEAT 3/7 · STOP-GUARD (expect [Quality gate] block) ━━━
+━━━ BEAT 4/8 · STOP-GUARD (expect [Quality gate] block) ━━━
 ```
 
 After creating the file, attempt to deliver your response and stop. The stop-guard will block you with a `[Quality gate]` message. **Show the user this is happening** — add a one-line call-out like `↳ blocked: verification + review not yet run` so the GIF viewer sees what just happened.
 
-### Step 4: Run verification
+### Step 5: Run verification
 
 Print this banner on its own line first:
 
 ```
-━━━ BEAT 4/7 · VERIFY (satisfies the verification gate) ━━━
+━━━ BEAT 5/8 · VERIFY (satisfies the verification gate) ━━━
 ```
 
 Run `bash -n /tmp/omc-demo.sh` to syntax-check the file. This satisfies the verification gate.
 
-### Step 5: Run a code review
+### Step 6: Run a code review
 
 Print this banner on its own line first:
 
 ```
-━━━ BEAT 5/7 · REVIEW (satisfies the review gate) ━━━
+━━━ BEAT 6/8 · REVIEW (satisfies the review gate) ━━━
 ```
 
 Delegate to the `quality-reviewer` agent to review the demo file. Scope the review prompt tightly to keep it under 20 seconds (e.g., "Review `/tmp/omc-demo.sh` for defects. Single-file, ~10 LOC. Report under 100 words.").
 
-### Step 6: Address any findings and stop cleanly
+### Step 7: Address any findings and stop cleanly
 
 Print this banner on its own line first:
 
 ```
-━━━ BEAT 6/7 · SHIP (all gates green) ━━━
+━━━ BEAT 7/8 · SHIP (all gates green) ━━━
 ```
 
 Fix any findings the reviewer flags, then deliver the final summary. The stop-guard should now allow you to stop. Close with a one-line recap like `✓ edit → block → verify → review → fix → ship`.
 
-### Step 7: Explain what happened
+### Step 8: Explain what happened
 
 Brief recap — keep it tight; the user just felt the gates work, so don't over-explain:
 
+- The agent-first gate required a fresh specialist before the edit. That's what prevents main-thread-only implementation.
 - The stop-guard blocked you until verification and review were done. That's what blocks every `/ulw` task.
 - Each gate has a cap (3 blocks). If Claude can't satisfy one, it surfaces the gap instead of spinning forever.
 
 Then tell them: "This is what `/ulw` does on every real task. The gates fire automatically — you never need to think about them."
 
-### Step 8: Bridge to a real first task
+### Step 9: Bridge to a real first task
 
 Print this banner on its own line first:
 
 ```
-━━━ BEAT 7/7 · NEXT (your first real task) ━━━
+━━━ BEAT 8/8 · NEXT (your first real task) ━━━
 ```
 
 The user just felt the gates fire on a demo file. The bridge to "I tried it on my own work" is the highest-leverage next moment — without a concrete prompt to run, most users walk away here.
@@ -142,9 +154,9 @@ If the directory looks like a fresh oh-my-claude install or you can't tell the p
 
 Close with a single sentence: **"Pick one and run it — the harness will route the right specialists automatically."** This is the handoff that closes the post-demo cliff.
 
-### Step 9 (v1.36.0 #18): Optional bonus — see /ulw-skip recovery
+### Step 10 (v1.36.0 #18): Optional bonus — see /ulw-skip recovery
 
-If the user opted in (or if you want a complete demo), add this beat AFTER Step 6 closes the main flow and BEFORE the wrap. Otherwise skip to Step 10 cleanup.
+If the user opted in (or if you want a complete demo), add this beat AFTER Step 7 closes the main flow and BEFORE the wrap. Otherwise skip to Step 11 cleanup.
 
 Print this banner on its own line first:
 
@@ -163,7 +175,7 @@ echo "It logs the skip with the reason for /ulw-report telemetry."
 
 The point is to surface the verb, not actually fire the skip in the demo (firing it would require synthesizing a gate-block state). Tell the user: "If a real gate fires that you've already addressed, run `/ulw-skip <one-line reason>` — the skip is recorded for threshold tuning. v1.35.0+: deferral verbs `/ulw-skip` (gate bypass) and `/mark-deferred` (defer findings) and `/ulw-pause` (user-decision pause) are not interchangeable — see the decision tree at `/skills`."
 
-### Step 9b (v1.36.0 #18): Optional bonus — exemplifying-scope gate
+### Step 10b (v1.36.0 #18): Optional bonus — exemplifying-scope gate
 
 This beat shows the gate that catches **under-interpretation** of `/ulw` prompts. Print:
 
@@ -184,7 +196,7 @@ echo "Used internally by the harness when prompts contain example markers (for i
 
 This bonus beat exists so new users see the v1.35.0+ defenses (bare-WHY rejection, weak-defer validator, exemplifying-scope checklist) before they hit them on real work.
 
-### Step 10: Clean up
+### Step 11: Clean up
 
 Remove `/tmp/omc-demo.sh`.
 

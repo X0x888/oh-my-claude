@@ -183,6 +183,19 @@ write_state_batch \
   "last_user_prompt_ts" "${PROMPT_TS}" \
   "stall_counter" "0" \
   "ulw_pause_active" ""
+
+# Fresh execution prompts must earn their own agent-first cognition evidence.
+# Continuation keeps prior evidence because it is the same active objective
+# resuming; fresh execution clears the floor so a specialist from an earlier
+# unrelated prompt cannot satisfy the invariant for new work.
+if [[ "${TASK_INTENT}" == "execution" ]]; then
+  write_state_batch \
+    "agent_first_specialist_ts" "" \
+    "agent_first_specialist_type" "" \
+    "agent_first_gate_blocks" "" \
+    "first_mutation_ts" "" \
+    "first_mutation_tool" ""
+fi
 if is_prompt_persist_enabled; then
   append_limited_state \
     "recent_prompts.jsonl" \

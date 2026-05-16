@@ -252,6 +252,35 @@ Ground the recommendation in multiple relevant files and cite them in the final 
   fi
 fi
 
+# Agent-first backstop: PreToolUse blocks fresh /ulw execution mutations
+# before they run. This Stop-time check catches older/stale hook wiring or
+# uncommon mutation paths that only the edit tracker observed. Recovery is to
+# run a shaping specialist now and integrate its findings before finalizing.
+if is_execution_intent_value "${task_intent}"; then
+  first_mutation_ts="$(read_state "first_mutation_ts")"
+  agent_first_specialist_ts="$(read_state "agent_first_specialist_ts")"
+  if [[ -n "${first_mutation_ts}" && -z "${agent_first_specialist_ts}" ]]; then
+    agent_first_blocks="$(read_state "agent_first_gate_blocks")"
+    agent_first_blocks="${agent_first_blocks:-0}"
+    [[ "${agent_first_blocks}" =~ ^[0-9]+$ ]] || agent_first_blocks=0
+    agent_first_next_block="$((agent_first_blocks + 1))"
+    write_state "agent_first_gate_blocks" "${agent_first_next_block}"
+    first_mutation_tool="$(read_state "first_mutation_tool")"
+    first_mutation_tool="${first_mutation_tool:-unknown}"
+    record_gate_event "agent-first" "stop-block" \
+      "block_count=${agent_first_next_block}" \
+      "first_mutation_tool=${first_mutation_tool}"
+    agent_first_recovery="$(format_gate_recovery_options \
+      "Dispatch and wait for a fresh-context shaping specialist now: quality-planner, prometheus, metis, oracle, abstraction-critic, a domain specialist, librarian/quality-researcher, writing-architect, or a relevant lens." \
+      "Integrate its findings into the current work before retrying Stop. Post-hoc reviewers such as quality-reviewer do not satisfy this gate." \
+      "If this is genuinely a one-line/no-op edit where an agent would add no value, bypass once with a reason: \`/ulw-skip <reason>\`.")"
+    emit_stop_block "$(format_gate_block_dual \
+      "/ulw work mutated before any fresh-context specialist returned. The workflow is agent-first: implementation should be shaped by an independent specialist, not only cleaned up by reviewers afterward." \
+      "[Agent-first gate · ${agent_first_next_block}] first mutation recorded via ${first_mutation_tool}, but no qualifying specialist has returned. Dispatch a shaping specialist, wait for it, integrate any findings, then finalize.${agent_first_recovery}")"
+    exit 0
+  fi
+fi
+
 # /ulw-pause carve-out: when the assistant declared a legitimate
 # operational pause this turn (credentials/login required, hard
 # external blocker, destructive shared-state action awaiting

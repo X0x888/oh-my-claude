@@ -4,6 +4,67 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Agent-first `/ulw` execution invariant
+
+Closes the concrete failure mode where `/ulw` could still behave like
+"main thread implements first, reviewers clean up later." The prior
+workflow had strong post-edit review/verification gates, but no hard
+pre-mutation floor: an execution turn could mutate files before any
+fresh-context planner, domain specialist, challenge agent, researcher,
+writer, or lens had shaped the work.
+
+- **Behavior change:** `pretool-intent-guard.sh` now runs on
+  `Bash|Edit|Write|MultiEdit` and blocks `/ulw` execution/continuation
+  mutations until `record-subagent-summary.sh` has recorded a qualifying
+  shaping specialist. Read-only inspection still passes. Post-hoc
+  reviewers (`quality-reviewer`, `excellence-reviewer`, `editor-critic`,
+  `design-reviewer`, `release-reviewer`) do not satisfy the floor.
+- **Backstop:** `mark-edit.sh` records the first mutation, and
+  `stop-guard.sh` blocks finalization if stale hook wiring or an unusual
+  path allowed mutation before any qualifying specialist returned.
+  Fresh execution prompts clear the agent-first state; continuation
+  preserves it for the same active objective.
+- **User impact:** `/ulw` should feel less perfunctory on non-trivial
+  work because the first edit now has to be preceded by independent
+  agent context. Users do not need to add a new flag or write stronger
+  prompts; the default workflow enforces it.
+- **Cost:** one extra specialist dispatch before the first mutation on
+  execution work. Small read-only advisory/checkpoint/session-management
+  turns are unaffected, and read-only inspection before the dispatch is
+  still allowed.
+- **Verification:** targeted regressions cover the PreTool edit/Bash
+  block path, reviewer exclusion, qualifying specialist stamp, Stop-hook
+  backstop, and settings merge matcher. `/ulw-demo` now demonstrates the
+  agent-first beat before the edit tracker and quality gate beats.
+
+### Installer: matcher-rename detection
+
+The matcher widening above (`Bash` → `Bash|Edit|Write|MultiEdit`)
+exposed a latent gap in the three-phase settings merge: reinstalling a
+patch whose matcher value had changed produced TWO PreToolUse entries
+pointing at the same `pretool-intent-guard.sh`, because the merger
+keyed on exact `(matcher, basename-set)` equality and treated a
+matcher-renamed entry as disjoint.
+
+- **Behavior change:** both `merge_settings_python` and
+  `merge_settings_jq` now run a Phase 0 matcher-rename detection before
+  Phase 1. When the patch entry's basename set exactly matches an
+  unclaimed ORIGINAL existing entry's basename set, the matchers differ,
+  AND the existing matcher value is no longer present anywhere in the
+  patch, the existing entry is replaced in place. Idempotent re-merges
+  and patches that legitimately share a basename across many matchers
+  (e.g. `record-reviewer.sh` wired to `quality-reviewer`,
+  `editor-critic`, `excellence-reviewer`, ...) are unaffected because
+  Phase 0 requires the existing matcher to be absent from the patch.
+- **Why it matters:** users reinstalling oh-my-claude after this release
+  would have seen the PreToolUse hook fire twice on every Bash call
+  without this fix — corrupting `agent_first_gate_blocks` counters and
+  emitting duplicate deny responses on the agent-first gate.
+- **Verification:** ten new cross-impl assertions in
+  `test-settings-merge.sh` exercise matcher rename, matcher-rename
+  isolation (the old matcher's unrelated entries stay intact), and the
+  pre-existing 208 cross-impl assertions all still pass.
+
 ### v1.41 hardening — no-defer enforcement, concurrency, parser robustness
 
 Follow-up patch tightening enforcement gaps and concurrency races

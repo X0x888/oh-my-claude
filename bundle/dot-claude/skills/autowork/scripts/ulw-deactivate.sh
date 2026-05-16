@@ -36,7 +36,12 @@ write_state_batch \
   "just_compacted_ts" "" \
   "review_pending_at_compact" "" \
   "compact_race_count" "" \
-  "pretool_intent_blocks" ""
+  "pretool_intent_blocks" "" \
+  "agent_first_specialist_ts" "" \
+  "agent_first_specialist_type" "" \
+  "agent_first_gate_blocks" "" \
+  "first_mutation_ts" "" \
+  "first_mutation_tool" ""
 
 # Delete the pending-agents queue so a subsequent compact does not render or
 # re-dispatch agents that were dispatched under the now-deactivated session.

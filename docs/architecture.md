@@ -85,7 +85,7 @@ The block caps prevent infinite loops. After the cap, Claude is allowed to stop 
 
 **`skills/autowork/scripts/record-pending-agent.sh`** -- **PreToolUse hook** for Agent. Records every agent dispatch to `pending_agents.jsonl` (capped at 32 entries) under the state lock. Used by `pre-compact-snapshot.sh` to render a "Pending Specialists (In Flight)" section, and by `session-start-compact-handoff.sh` to emit a re-dispatch directive on compact resume. Entries are removed by `record-subagent-summary.sh` on `SubagentStop` (FIFO-oldest match by `agent_type`).
 
-**`skills/autowork/scripts/record-subagent-summary.sh`** -- **SubagentStop hook** (all agents). Appends the agent's type and last assistant message to `subagent_summaries.jsonl` (capped at 16 entries). Also removes the FIFO-oldest matching entry from `pending_agents.jsonl` via a line-by-line parser that tolerates malformed JSONL lines.
+**`skills/autowork/scripts/record-subagent-summary.sh`** -- **SubagentStop hook** (all agents). Appends the agent's type and last assistant message to `subagent_summaries.jsonl` (capped at 16 entries). Also removes the FIFO-oldest matching entry from `pending_agents.jsonl` via a line-by-line parser that tolerates malformed JSONL lines. During execution/continuation ULW turns, qualifying shaping specialists stamp the agent-first floor (`agent_first_specialist_ts` / `agent_first_specialist_type`); post-hoc reviewer/verifier agents are excluded so they cannot satisfy the pre-implementation cognition gate.
 
 **`quality-pack/scripts/pre-compact-snapshot.sh`** -- **PreCompact hook**. Snapshots the current working state to `precompact_snapshot.md`: session ID, working directory, workflow mode, domain, intent, objective, persisted delivery contract, edited files, recent prompts, specialist conclusions, and review/verification plus remaining-obligation status.
 
@@ -293,6 +293,11 @@ Separate from session state, `install.sh` writes four install-time artifacts tha
 | `quality_policy` | Effective runtime quality posture recorded for the session (`balanced` or `zero_steering`), mirroring `OMC_QUALITY_POLICY` at prompt-routing time for status/debug audits. |
 | `workflow_mode` | Active mode (currently: `ultrawork` or empty) |
 | `last_edit_ts` | Epoch timestamp of the last file edit (any type — backward compat) |
+| `first_mutation_ts` | Epoch timestamp of the first recorded workspace mutation in the current fresh execution prompt. Written by `pretool-intent-guard.sh` for allowed mutation attempts and by `mark-edit.sh` as a PostToolUse backstop. Cleared by `prompt-intent-router.sh` on fresh execution prompts; preserved across continuation. Used by `stop-guard.sh` to catch stale wiring that let mutation happen before any agent-first specialist returned. |
+| `first_mutation_tool` | Tool name for `first_mutation_ts` (`Edit`, `Write`, `MultiEdit`, `Bash`, etc.). Used in agent-first gate diagnostics. |
+| `agent_first_specialist_ts` | Epoch timestamp of the first qualifying fresh-context specialist completion for the current execution objective. Written by `record-subagent-summary.sh` on SubagentStop for execution/continuation turns, excluding post-hoc reviewers (`quality-reviewer`, `excellence-reviewer`, `editor-critic`, `design-reviewer`, `release-reviewer`). Read by `pretool-intent-guard.sh` to block the first mutation until a shaping specialist has returned, and by `stop-guard.sh` as a backstop. Cleared on fresh execution prompts. |
+| `agent_first_specialist_type` | Short agent type that satisfied the agent-first floor (for example `quality-planner`, `metis`, `oracle`, `frontend-developer`, `librarian`). Surfaced in debugging/state inspection; not used as a gate predicate beyond the timestamp's existence. |
+| `agent_first_gate_blocks` | Number of times the agent-first gate has blocked PreToolUse or Stop in the current execution objective. Cleared on fresh execution prompts. |
 | `last_code_edit_ts` | Epoch timestamp of the last code edit (non-doc path) |
 | `last_doc_edit_ts` | Epoch timestamp of the last doc edit (matched by `is_doc_path`) |
 | `code_edit_count` | Cached count of unique code files edited this session |
@@ -336,7 +341,7 @@ Separate from session state, `install.sh` writes four install-time artifacts tha
 | `dimension_resume_grace_used` | Whether the one-shot resumed-session dimension-gate grace has been used (`1` or empty) |
 | `session_handoff_blocks` | Number of times the deferral gate has blocked (cap: 2; strict effective block mode keeps blocking after the cap instead of permitting future-session handoff language) |
 | `advisory_guard_blocks` | Number of times the advisory inspection gate has blocked (cap: 1) |
-| `pretool_intent_blocks` | Number of times the `pretool-intent-guard.sh` PreToolUse hook denied a destructive git/gh command because `task_intent` was `advisory`, `session_management`, or `checkpoint` (counter, no cap) |
+| `pretool_intent_blocks` | Number of times the `pretool-intent-guard.sh` PreToolUse hook denied a destructive git/gh command because `task_intent` was `advisory`, `session_management`, or `checkpoint` (counter, no cap). Separate from `agent_first_gate_blocks`, which covers execution mutations attempted before any shaping specialist returned. |
 | `discovered_scope_blocks` | Number of times the discovered-scope gate has blocked a stop because pending findings from advisory specialists were not addressed (cap: 2 by default; raised to `wave_total + 1` when a council Phase 8 wave plan is active in `findings.json` AND the plan is NOT under-segmented per `is_wave_plan_under_segmented` — narrow plans stay at cap=2 to avoid the polarity bug where 5×1-finding plans would otherwise release after 5 narrow waves). Under strict effective block mode (`no_defer_mode=on` for ULW execution or `quality_policy=zero_steering`), the counter stops incrementing at the cap but the gate continues blocking until pending scope is resolved. Reset by `/ulw-skip`. |
 | `exemplifying_scope_required` | `1` when the latest execution prompt used example markers AND classified as execution intent — the **narrow** trigger that arms the blocking scope-checklist gate. Cleared on the next fresh non-exemplifying execution prompt. (v1.26.0 broadened the **directive** trigger to also fire on completeness vocabulary and on advisory + continuation intents — but the **blocking gate** stays gated to this narrow trigger so blocking-on-advisory is avoided. The two are decoupled in `prompt-intent-router.sh` via the bash variables `COMPLETENESS_DIRECTIVE_FIRES` (broader, drives directive emission) and `EXEMPLIFYING_SCOPE_DETECTED` (narrow, drives this state key).) |
 | `exemplifying_scope_prompt_ts` | Epoch timestamp of the prompt that armed the exemplifying-scope checklist requirement; `exemplifying_scope.json.source_prompt_ts` must match this to count as current. |
@@ -389,7 +394,7 @@ When Claude Code compacts a session — either automatically when the context bu
 
 Pending specialist tracking uses a new `PreToolUse` hook (`record-pending-agent.sh`) matched on the `Agent` tool. Every dispatch appends to `pending_agents.jsonl`; every `SubagentStop` removes the FIFO-oldest entry matching the `subagent_type`. This is a per-type counter — same-type concurrent dispatches cannot be distinguished, but the count remains accurate.
 
-On `/ulw-off`, `ulw-deactivate.sh` clears the compact-continuity flags and deletes `pending_agents.jsonl` so stale state from a deactivated session cannot bleed into a later compact resume.
+On `/ulw-off`, `ulw-deactivate.sh` clears the compact-continuity flags, PreTool/agent-first counters, and deletes `pending_agents.jsonl` so stale state from a deactivated session cannot bleed into a later compact resume.
 
 ---
 

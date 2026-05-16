@@ -176,13 +176,12 @@ for impl in "${implementations[@]}"; do
     '[.hooks.PreToolUse[] | select(.matcher == "Agent") | .hooks[0].command] | .[0] | tostring | contains("record-pending-agent.sh")' \
     "true"
 
-  # PreToolUse must wire the Bash matcher to pretool-intent-guard.sh
+  # PreToolUse must wire the Bash/Edit matcher to pretool-intent-guard.sh.
   # This is the enforcement backstop for advisory/session-management/checkpoint
-  # intent — blocks destructive git ops when the classifier says the user
-  # asked for an opinion, not for changes.
-  assert_json_eq "${impl}: fresh — PreToolUse Bash matcher wired" \
+  # intent, plus the agent-first floor for /ulw execution mutations.
+  assert_json_eq "${impl}: fresh — PreToolUse mutation guard matcher wired" \
     "${work}/settings.json" \
-    '[.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[0].command] | .[0] | tostring | contains("pretool-intent-guard.sh")' \
+    '[.hooks.PreToolUse[] | select((.matcher // "") | test("Bash") and test("Edit") and test("Write") and test("MultiEdit")) | .hooks[0].command] | .[0] | tostring | contains("pretool-intent-guard.sh")' \
     "true"
   assert_json_eq "${impl}: fresh — PostToolUse Bash wires record-delivery-action.sh" \
     "${work}/settings.json" \
@@ -907,6 +906,80 @@ JSON
     "${work}/settings.json" \
     '[.hooks.SubagentStop[] | select(.matcher == "editor-critic") | .hooks[] | .command] | any(tostring | contains("valid-user-hook.sh"))' \
     "true"
+
+  # -----------------------------------------------------------------------
+  # Test 13: Matcher rename. When a previous install wired a hook under one
+  # matcher (e.g. "Bash") and a later patch widens that matcher
+  # (e.g. "Bash|Edit|Write|MultiEdit") for the same script basename, the
+  # merge MUST replace the old entry rather than append a duplicate. Two
+  # entries pointing at the same script would fire the hook twice on every
+  # tool call covered by both matchers — corrupting block counters and
+  # producing duplicate deny responses.
+  # -----------------------------------------------------------------------
+  work="${TEST_DIR}/${impl}-matcher-rename"
+  mkdir -p "${work}"
+  cat > "${work}/settings.json" <<'JSON'
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "bash $HOME/.claude/skills/autowork/scripts/pretool-intent-guard.sh" }
+        ]
+      }
+    ]
+  }
+}
+JSON
+  run_merge "${impl}" "${work}/settings.json" "${SETTINGS_PATCH}" "false"
+  assert_json_count "${impl}: matcher-rename — single pretool-intent-guard.sh entry" \
+    "${work}/settings.json" \
+    '[.hooks.PreToolUse[] | select(.hooks[]?.command | tostring | contains("pretool-intent-guard.sh"))]' \
+    "1"
+  assert_json_eq "${impl}: matcher-rename — entry uses new widened matcher" \
+    "${work}/settings.json" \
+    '[.hooks.PreToolUse[] | select(.hooks[]?.command | tostring | contains("pretool-intent-guard.sh")) | .matcher] | .[0]' \
+    "Bash|Edit|Write|MultiEdit"
+  assert_json_eq "${impl}: matcher-rename — no leftover bare Bash entry for the renamed script" \
+    "${work}/settings.json" \
+    '[.hooks.PreToolUse[] | select((.matcher // "") == "Bash") | select(.hooks[]?.command | tostring | contains("pretool-intent-guard.sh"))] | length' \
+    "0"
+
+  # Matcher rename must not clobber an unrelated entry that happens to share
+  # the OLD matcher value but a disjoint basename set. User customization at
+  # the old matcher value with different scripts stays intact.
+  work="${TEST_DIR}/${impl}-matcher-rename-isolation"
+  mkdir -p "${work}"
+  cat > "${work}/settings.json" <<'JSON'
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "bash $HOME/.claude/skills/autowork/scripts/pretool-intent-guard.sh" }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "$HOME/.claude/user-hook.sh" }
+        ]
+      }
+    ]
+  }
+}
+JSON
+  run_merge "${impl}" "${work}/settings.json" "${SETTINGS_PATCH}" "false"
+  assert_json_eq "${impl}: matcher-rename isolation — unrelated user-hook.sh preserved on old matcher" \
+    "${work}/settings.json" \
+    '[.hooks.PreToolUse[] | select(.hooks[]?.command | tostring | contains("user-hook.sh"))] | length' \
+    "1"
+  assert_json_eq "${impl}: matcher-rename isolation — single pretool-intent-guard.sh entry" \
+    "${work}/settings.json" \
+    '[.hooks.PreToolUse[] | select(.hooks[]?.command | tostring | contains("pretool-intent-guard.sh"))] | length' \
+    "1"
 
   printf '  %s implementation done.\n' "${impl}"
 done

@@ -513,6 +513,30 @@ for event, patch_entries in (patch.get("hooks") or {}).items():
     existing_entries = normalize_base_entries(hooks[event])
     hooks[event] = existing_entries
 
+    # Snapshot pre-patch entry count and track which original indices have
+    # been claimed by Phase 0 below. The patch loop appends new entries to
+    # existing_entries, but Phase 0 must only consider entries from the
+    # ORIGINAL pre-patch state — otherwise patches that legitimately share
+    # a basename across different matchers (e.g. record-reviewer.sh wired
+    # to quality-reviewer, editor-critic, excellence-reviewer, ...) would
+    # cascade-rename each other and collapse to a single entry.
+    original_count = len(existing_entries)
+    claimed_by_rename = set()
+
+    # Precompute the set of matcher values the patch installs. Phase 0
+    # only fires when the existing entry's matcher is NOT present in this
+    # set — i.e., the patch removed the old matcher value entirely (the
+    # rename case). If the matcher is still in the patch, Phase 1 will
+    # match it directly and Phase 0 must not preempt with a different
+    # patch entry that happens to share the basename set. This keeps
+    # idempotent re-merges and shared-basename patches (record-reviewer.sh
+    # under many matchers) free of spurious renames.
+    patch_matcher_set = {
+        entry_matcher(e)
+        for e in (patch_entries or [])
+        if isinstance(e, dict)
+    }
+
     for patch_entry in patch_entries or []:
         if not isinstance(patch_entry, dict):
             existing_entries.append(patch_entry)
@@ -521,6 +545,36 @@ for event, patch_entries in (patch.get("hooks") or {}).items():
         p_matcher = entry_matcher(patch_entry)
         p_basenames = entry_basenames(patch_entry)
         p_basename_set = frozenset(p_basenames)
+
+        # Phase 0: matcher-rename detection. When the patch's basename set
+        # exactly matches an unclaimed ORIGINAL existing entry's basename
+        # set, the matcher value differs, and the existing matcher is NOT
+        # still present elsewhere in the patch, treat as a matcher rename
+        # (e.g. "Bash" widened to "Bash|Edit|Write|MultiEdit"). Replace the
+        # existing entry in place and claim the index so subsequent patch
+        # iterations cannot rename the same slot again. Skipped when the
+        # patch entry has no basenames (empty entries cannot disambiguate
+        # ownership).
+        if p_basename_set:
+            rename_idx = None
+            for i in range(original_count):
+                if i in claimed_by_rename:
+                    continue
+                existing = existing_entries[i]
+                if not isinstance(existing, dict):
+                    continue
+                e_matcher = entry_matcher(existing)
+                if e_matcher == p_matcher:
+                    continue
+                if e_matcher in patch_matcher_set:
+                    continue
+                if frozenset(entry_basenames(existing)) == p_basename_set:
+                    rename_idx = i
+                    break
+            if rename_idx is not None:
+                existing_entries[rename_idx] = patch_entry
+                claimed_by_rename.add(rename_idx)
+                continue
 
         # Phase 1: exact match on (matcher, basename set) — fast path for
         # fresh installs and idempotent re-merges. Replaces whole entry.
@@ -705,33 +759,70 @@ merge_settings_jq() {
     # Merge a list of patch entries into a base entries array using the
     # three-phase algorithm: exact match → overlap → append.
     def merge_entries($patch_entries):
-      reduce $patch_entries[] as $p_entry (.;
-        ($p_entry | entry_matcher) as $p_matcher
-        | ($p_entry | entry_basenames) as $p_basenames
-        # Phase 1: exact match on (matcher, basename set).
-        | [range(0; length) as $i
-           | select((.[$i] | type) == "object")
-           | select((.[$i] | entry_matcher) == $p_matcher)
-           | select(sets_equal((.[$i] | entry_basenames); $p_basenames))
-           | $i] as $exact
-        | if ($exact | length) > 0 then
-            .[$exact[0]] = $p_entry
-          else
-            # Phase 2: same matcher + non-empty basename intersection →
-            # hook-level merge on the first overlapping base entry.
-            [range(0; length) as $i
-             | select((.[$i] | type) == "object")
-             | select((.[$i] | entry_matcher) == $p_matcher)
-             | select(sets_overlap((.[$i] | entry_basenames); $p_basenames))
-             | $i] as $overlap
-            | if ($overlap | length) > 0 then
-                .[$overlap[0]] |= merge_hook_level($p_entry.hooks // [])
-              else
-                # Phase 3: disjoint → append as a new entry.
-                . + [$p_entry]
-              end
-          end
-      );
+      # Snapshot the pre-patch entry count so Phase 0 only considers
+      # ORIGINAL existing entries — not entries appended earlier in this
+      # patch loop. Track which original indices Phase 0 has already
+      # claimed so cascading renames are impossible when multiple patch
+      # entries legitimately share a basename across different matchers
+      # (e.g. record-reviewer.sh wired to quality-reviewer, editor-critic,
+      # excellence-reviewer, ...). The accumulator carries the live entries
+      # array plus a claimed-index map; the closing `.entries` unwraps it
+      # so merge_entries still returns a plain entries array.
+      (length) as $original_count
+      # Precompute the set of matcher values the patch installs. Phase 0
+      # only fires when the existing entry''s matcher is NOT in this set:
+      # if it still IS in the patch, Phase 1 will match it directly and
+      # Phase 0 must not preempt. Encoded as an object for O(1) lookup.
+      | ([$patch_entries[] | select(type == "object") | entry_matcher]
+         | unique | map({(.): true}) | add // {}) as $patch_matcher_set
+      | reduce $patch_entries[] as $p_entry ({entries: ., claimed: {}};
+          ($p_entry | entry_matcher) as $p_matcher
+          | ($p_entry | entry_basenames) as $p_basenames
+          | .entries as $arr
+          | .claimed as $cl
+          # Phase 0: matcher-rename detection — original, unclaimed entries
+          # only, and only when the existing matcher is no longer in the
+          # patch. Skipped when the patch has no basenames (empty entries
+          # cannot disambiguate ownership).
+          | [range(0; $original_count) as $i
+             | select(($cl | has($i | tostring)) | not)
+             | select(($arr[$i] | type) == "object")
+             | select(($arr[$i] | entry_matcher) != $p_matcher)
+             | select(($patch_matcher_set | has(($arr[$i] | entry_matcher))) | not)
+             | select(($p_basenames | length) > 0)
+             | select(sets_equal(($arr[$i] | entry_basenames); $p_basenames))
+             | $i] as $rename
+          | if ($rename | length) > 0 then
+              {entries: ($arr | .[$rename[0]] = $p_entry),
+               claimed: ($cl + {($rename[0] | tostring): true})}
+            else
+              # Phase 1: exact match on (matcher, basename set).
+              [range(0; ($arr | length)) as $i
+               | select(($arr[$i] | type) == "object")
+               | select(($arr[$i] | entry_matcher) == $p_matcher)
+               | select(sets_equal(($arr[$i] | entry_basenames); $p_basenames))
+               | $i] as $exact
+              | if ($exact | length) > 0 then
+                  {entries: ($arr | .[$exact[0]] = $p_entry), claimed: $cl}
+                else
+                  # Phase 2: same matcher + non-empty basename intersection →
+                  # hook-level merge on the first overlapping base entry.
+                  [range(0; ($arr | length)) as $i
+                   | select(($arr[$i] | type) == "object")
+                   | select(($arr[$i] | entry_matcher) == $p_matcher)
+                   | select(sets_overlap(($arr[$i] | entry_basenames); $p_basenames))
+                   | $i] as $overlap
+                  | if ($overlap | length) > 0 then
+                      {entries: ($arr | .[$overlap[0]] |= merge_hook_level($p_entry.hooks // [])),
+                       claimed: $cl}
+                    else
+                      # Phase 3: disjoint → append as a new entry.
+                      {entries: ($arr + [$p_entry]), claimed: $cl}
+                    end
+                end
+            end
+        )
+      | .entries;
     def merge_hooks($base; $patch):
       reduce ($patch | to_entries[]) as $item ($base;
         .[$item.key] = ((.[$item.key] // []) | normalize_base_entries | merge_entries($item.value // []))

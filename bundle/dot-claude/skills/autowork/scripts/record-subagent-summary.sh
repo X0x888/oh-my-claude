@@ -28,6 +28,41 @@ append_limited_state \
   "$(jq -nc --arg ts "$(now_epoch)" --arg agent_type "${AGENT_TYPE}" --arg message "${SUMMARY_MESSAGE_SAFE}" '{ts:$ts,agent_type:$agent_type,message:$message}')" \
   "16"
 
+# Agent-first invariant: under /ulw execution the main thread should not
+# implement first and use specialists only as after-the-fact cleanup. Record
+# the first fresh-context specialist that can legitimately shape the work
+# before mutation. Post-hoc verifier/reviewer agents are intentionally
+# excluded; they remain required by their own gates but do not satisfy this
+# pre-implementation cognition floor.
+agent_first_specialist_agent() {
+  local agent_short="$1"
+  case "${agent_short}" in
+    quality-reviewer|excellence-reviewer|editor-critic|design-reviewer|release-reviewer)
+      return 1
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
+
+_agent_first_task_intent="$(read_state "task_intent")"
+if is_ultrawork_mode && { [[ "${_agent_first_task_intent}" == "execution" ]] || [[ "${_agent_first_task_intent}" == "continuation" ]]; }; then
+  _agent_short="${AGENT_TYPE##*:}"
+  if agent_first_specialist_agent "${_agent_short}"; then
+    _record_agent_first_specialist() {
+      local existing
+      existing="$(read_state "agent_first_specialist_ts")"
+      if [[ -z "${existing}" ]]; then
+        write_state_batch \
+          "agent_first_specialist_ts" "$(now_epoch)" \
+          "agent_first_specialist_type" "${_agent_short}"
+      fi
+    }
+    with_state_lock _record_agent_first_specialist || true
+  fi
+fi
+
 # Inline design-contract capture: when a UI specialist emits its 9-section
 # Design Contract block inline, persist it to <session>/design_contract.md
 # so design-reviewer / visual-craft-lens can read it and grade drift even

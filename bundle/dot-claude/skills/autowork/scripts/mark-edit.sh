@@ -15,6 +15,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOOK_JSON="$(_omc_read_hook_stdin)"
 
 SESSION_ID="$(json_get '.session_id')"
+tool_name="$(json_get '.tool_name')"
 
 if [[ -z "${SESSION_ID}" ]]; then
   exit 0
@@ -44,6 +45,17 @@ is_doc=0
 if [[ -n "${edited_path}" ]] && is_doc_path "${edited_path}"; then
   is_doc=1
 fi
+
+_record_first_mutation_from_edit() {
+  local existing
+  existing="$(read_state "first_mutation_ts")"
+  if [[ -z "${existing}" ]]; then
+    write_state_batch \
+      "first_mutation_ts" "${now}" \
+      "first_mutation_tool" "${tool_name:-Edit}"
+  fi
+}
+with_state_lock _record_first_mutation_from_edit || true
 
 # last_edit_ts is still updated for every edit (doc or code) to preserve
 # backward compatibility with the legacy review_unremediated path and
