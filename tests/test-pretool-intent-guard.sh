@@ -213,6 +213,81 @@ assert_eq "T0c: read-only Bash allowed before specialist" "" "${out_t0c}"
 teardown_test
 
 # ----------------------------------------------------------------------
+# T0c1..T0c8 (v1.41.x harness-improvement wave): `git tag` list-mode
+# inspection must pass the agent-first floor. Mirrors the advisory
+# matcher's allow-list at _cmd_is_allowed_variant (:311). Reported
+# false-positive: `git tag --sort=-creatordate | head -5 && git status
+# --short` was blocked on a session-start inspection burst even though
+# every segment is read-only. Closes the v1.41.0 "Read-only inspection
+# still passes" contract gap for the tag verb.
+#
+# Lock the allowed list-mode forms in (T0c1-T0c5) AND lock the still-
+# denied create/mutation forms (T0c6-T0c8) so the narrowed regex
+# doesn't drift back into letting `git tag <name>` through.
+setup_test
+init_session "t0c1" "execution"
+out_t0c1="$(run_guard "t0c1" "git tag --sort=-creatordate | head -5")"
+assert_eq "T0c1: git tag --sort allowed (original false-positive)" "" "${out_t0c1}"
+teardown_test
+
+setup_test
+init_session "t0c2" "execution"
+out_t0c2="$(run_guard "t0c2" "git tag --list 'v*'")"
+assert_eq "T0c2: git tag --list allowed" "" "${out_t0c2}"
+teardown_test
+
+setup_test
+init_session "t0c3" "execution"
+out_t0c3="$(run_guard "t0c3" "git tag --contains HEAD")"
+assert_eq "T0c3: git tag --contains allowed" "" "${out_t0c3}"
+teardown_test
+
+setup_test
+init_session "t0c4" "execution"
+out_t0c4="$(run_guard "t0c4" "git tag -n5")"
+assert_eq "T0c4: git tag -n5 allowed (list with annotations)" "" "${out_t0c4}"
+teardown_test
+
+setup_test
+init_session "t0c5" "execution"
+out_t0c5="$(run_guard "t0c5" "git tag -v v1.41.0")"
+assert_eq "T0c5: git tag -v allowed (signature verify, read-only)" "" "${out_t0c5}"
+teardown_test
+
+setup_test
+init_session "t0c6" "execution"
+out_t0c6="$(run_guard "t0c6" "git tag v9.9.9")"
+if denied "${out_t0c6}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T0c6: git tag <name> must still deny before specialist (got: %s)\n' "${out_t0c6}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+setup_test
+init_session "t0c7" "execution"
+out_t0c7="$(run_guard "t0c7" "git tag -a v1.0.0 -m 'release'")"
+if denied "${out_t0c7}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T0c7: git tag -a (annotate-create) must still deny (got: %s)\n' "${out_t0c7}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+setup_test
+init_session "t0c8" "execution"
+out_t0c8="$(run_guard "t0c8" "git tag --delete v1.0.0")"
+if denied "${out_t0c8}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T0c8: git tag --delete must still deny (got: %s)\n' "${out_t0c8}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# ----------------------------------------------------------------------
 # T0d: execution intent + qualifying specialist completed → Edit allowed and
 # first mutation is recorded for the Stop-hook backstop.
 setup_test

@@ -4,6 +4,83 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### W6 — agent-first floor matcher: narrow `git tag` to mutating forms only
+
+**The false positive.** Observed live in the v1.41.0 first-use session:
+the agent-first gate blocked `git tag --sort=-creatordate | head -5 &&
+echo "---" && git status --short` on a read-only session-start
+inspection burst. The v1.41.0 contract is explicit — *"Read-only
+inspection still passes"* — but the floor matcher at
+`pretool-intent-guard.sh:121` lumped `tag` into the same
+destructive-verb alternation as `commit|push|revert|reset --hard|...`,
+matching ALL `git tag` invocations including the documented list-mode
+forms (`--list`, `--sort`, `--contains`, `--points-at`, `--merged`,
+`-n[N]`, `--column`, `--format`, `-v|--verify`, bare `git tag`).
+
+The advisory matcher at `:311` already handles this correctly via
+`_cmd_is_allowed_variant`; the floor matcher just didn't reuse the
+same nuance. A v1.14 comment at the advisory site notes the narrower
+`-l|--list` form *"caused real friction during the v1.14 advisory
+pass — the inspection commands had to be replaced with `ls
+.git/refs/tags/` plumbing as a workaround."* The v1.41.0 first-use
+session recreated that same friction one layer down.
+
+**The fix.** `_bash_command_may_mutate_workspace`:
+
+1. **Removed** `tag` from the destructive-verb alternation. The other
+   verbs in that group (`commit`, `push`, `revert`, `reset --hard`,
+   `rebase`, `cherry-pick`, `merge`, `am`, `apply`, `clean`,
+   `update-ref`, `symbolic-ref`, `fast-import`, `filter-branch`,
+   `replace`, `stash push/pop/apply`) have no meaningful read-only
+   list mode; `tag` is the only outlier.
+2. **Added** a two-part `git tag` check immediately below: outer regex
+   matches any `git tag` invocation; inner regex matches the list-mode
+   forms (bare `git tag` at end-of-command or segment boundary, or
+   `git tag` followed by one of `-l|--list|--sort|--contains|
+   --no-contains|--points-at|--merged|--no-merged|-n[0-9]*|--column|
+   --no-column|--format|-i|--ignore-case|-v|--verify`). The deny path
+   fires only when outer matches AND inner doesn't.
+
+**Metis stress-test findings addressed in the shipped commit:**
+
+- **HIGH** — `-v|--verify` was missing from my initial allow set;
+  read-only signature verification (`git tag -v v1.41.0`) would still
+  have denied. Added.
+- **MEDIUM** — Case-sensitivity divergence from the advisory matcher
+  documented in the new comment block. The floor uses `-Ei` because
+  `git tag` has no case-distinct flag pair (unlike `git branch -D`
+  vs `-d`); a future maintainer adding a case-distinct flag needs to
+  reverify.
+- **LOW** — `git tag --format='<fmt>' newtag` (create with a custom
+  format flag) falsely matches list-mode because the regex stops at
+  the first list-mode flag without checking for a trailing positional
+  tag name. Pre-existing limitation shared with the advisory matcher;
+  documented in the comment, deferred to a follow-up. Mitigation: the
+  Stop-hook's `mark-edit` tracker and quality-reviewer pass catch the
+  mutation downstream.
+
+**Regression net** in `tests/test-pretool-intent-guard.sh` (T0c1-T0c8,
+8 new assertions, 96 → 104):
+
+| Test | Command | Expected |
+|---|---|---|
+| T0c1 | `git tag --sort=-creatordate \| head -5` | **allow** (the original false positive) |
+| T0c2 | `git tag --list 'v*'` | allow |
+| T0c3 | `git tag --contains HEAD` | allow |
+| T0c4 | `git tag -n5` | allow (list with annotations) |
+| T0c5 | `git tag -v v1.41.0` | allow (signature verify, read-only) |
+| T0c6 | `git tag v9.9.9` | **deny** (create — must still block) |
+| T0c7 | `git tag -a v1.0.0 -m 'release'` | deny (annotate-create) |
+| T0c8 | `git tag --delete v1.0.0` | deny |
+
+Tests verified green: `test-pretool-intent-guard.sh` 104/0,
+`test-e2e-hook-sequence.sh` 396/0, `test-quality-gates.sh` 101/0.
+Shellcheck clean.
+
+**Files changed:**
+`bundle/dot-claude/skills/autowork/scripts/pretool-intent-guard.sh`,
+`tests/test-pretool-intent-guard.sh`.
+
 ## [1.41.0] - 2026-05-16
 
 ### Agent-first `/ulw` execution invariant

@@ -118,8 +118,53 @@ _bash_command_may_mutate_workspace() {
   # Destructive git/gh operations are also mutations. The full advisory-intent
   # matcher below is stricter; these common forms are enough for the agent-first
   # floor before that matcher is defined.
-  if grep -Eiq '(^|[[:space:];&|(])([^[:space:]]*/)?git[[:space:]]+(commit|push|revert|reset[[:space:]]+--hard|rebase|cherry-pick|tag|merge|am|apply|clean|update-ref|symbolic-ref|fast-import|filter-branch|replace|stash[[:space:]]+(push|pop|apply))([[:space:]]|$)' <<<"${cmd}"; then return 0; fi
+  if grep -Eiq '(^|[[:space:];&|(])([^[:space:]]*/)?git[[:space:]]+(commit|push|revert|reset[[:space:]]+--hard|rebase|cherry-pick|merge|am|apply|clean|update-ref|symbolic-ref|fast-import|filter-branch|replace|stash[[:space:]]+(push|pop|apply))([[:space:]]|$)' <<<"${cmd}"; then return 0; fi
   if grep -Eiq '(^|[[:space:];&|(])([^[:space:]]*/)?gh[[:space:]]+(pr|release|issue)[[:space:]]+(create|merge|edit|close|comment|delete|reopen)([[:space:]]|$)' <<<"${cmd}"; then return 0; fi
+
+  # `git tag` is the one verb above that has a frequently-used list mode
+  # (`git tag` alone, `git tag --list`, `git tag --sort=-creatordate`,
+  # `git tag --contains HEAD`, `git tag --points-at v1.13.0`, `git tag -n5`,
+  # `git tag -v <name>` for signature verification). The advisory matcher's
+  # `_cmd_is_allowed_variant` at :311 already encodes this discrimination;
+  # the floor matcher needs the same nuance so read-only inspection of tags
+  # is allowed before the specialist floor is satisfied — matching the
+  # v1.41.0 "Read-only inspection still passes" contract.
+  #
+  # The narrowing was triggered by a real false-positive: the agent-first
+  # gate blocked `git tag --sort=-creatordate | head -5 && git status
+  # --short` on a session-start inspection burst, which is exactly the
+  # kind of read-only audit the gate is supposed to allow.
+  #
+  # Allow-list: any `git tag` whose immediate next token is one of the
+  # documented list-mode flags (including `-v|--verify` for signature
+  # checking, which is read-only per git-tag(1)), or which has no further
+  # token at all (`git tag` alone = list). Anything else (positional name
+  # = create, `-a/-s/-d/-f`, `--annotate/--sign/--delete/--force`,
+  # `-m/--message`, `-F/--file`, `--cleanup`, `-u/--local-user`,
+  # `--no-sign`) falls through to the mutation branch below.
+  #
+  # Known limitation (shared with the advisory matcher at :311):
+  # `git tag --format='<fmt>' newtag` — the create form with a custom
+  # format flag — falsely matches list-mode because the regex stops at
+  # the first list-mode flag without checking for a trailing positional
+  # tag name. Deferred; the pattern is uncommon enough that the v1.14
+  # advisory pass shipped without catching it. The mitigation: the Stop
+  # hook's mark-edit tracker and quality-reviewer pass still catch the
+  # mutation downstream.
+  #
+  # Case-sensitivity: `-Ei` (case-insensitive) is intentionally different
+  # from the advisory matcher's case-sensitive choice at :320. The advisory
+  # matcher uses case-sensitivity to distinguish `git branch -D` (force-
+  # delete) from `-d` (safe-delete). `git tag` has no such case-distinct
+  # flag pair — `-d` is the only delete form — so case-insensitive matching
+  # is safe here and slightly more permissive against `Git Tag` / `GIT TAG`
+  # corner cases. Document this divergence so a future maintainer adding
+  # a case-distinct flag doesn't introduce a silent regression.
+  if grep -Eiq '(^|[[:space:];&|(])([^[:space:]]*/)?git[[:space:]]+tag([[:space:]]|$)' <<<"${cmd}"; then
+    if ! grep -Eiq '(^|[[:space:];&|(])([^[:space:]]*/)?git[[:space:]]+tag([[:space:]]*$|[[:space:]]*[|;&]|[[:space:]]+(-l|--list|--sort|--contains|--no-contains|--points-at|--merged|--no-merged|-n[0-9]*|--column|--no-column|--format|-i|--ignore-case|-v|--verify)([[:space:]=]|$))' <<<"${cmd}"; then
+      return 0
+    fi
+  fi
 
   return 1
 }
