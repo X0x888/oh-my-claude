@@ -769,5 +769,105 @@ fi
 rm -f "${QP}/gate_events.jsonl" "${QP}/session_summary.jsonl"
 
 # ----------------------------------------------------------------------
+# Wave 2 — Session duration distribution section
+#
+# Verifies the new ## Session duration distribution section renders
+# correct cohort breakdown (edit/review vs prompt-only vs unlabeled),
+# applies the <10s throwaway filter, and handles empty-state cleanly.
+# ----------------------------------------------------------------------
+printf 'Test 33: v1.41 W2 — duration section empty-state when no rows have end_ts\n'
+cat > "${QP}/session_summary.jsonl" <<EOF
+{"session_id":"no-end","start_ts":1777000000,"end_ts":null,"end_ts_source":null,"domain":"mixed","intent":"advisory","edit_count":0,"verified":false,"reviewed":false,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":0,"outcome":"unclassified_by_sweep","skip_count":0,"serendipity_count":0}
+EOF
+out="$(run_report all)"
+assert_contains "T33 duration empty-state message" "No sessions with measurable wall-clock duration" "${out}"
+assert_contains "T33 section heading present" "## Session duration distribution" "${out}"
+rm -f "${QP}/session_summary.jsonl"
+
+# ----------------------------------------------------------------------
+printf 'Test 34: v1.41 W2 — duration cohort split by end_ts_source\n'
+# Fixture: 3 edit-grade (1h, 2h, 3h), 2 review-grade (10m, 30m), 2 prompt-only
+# (5m, 1h), 1 throwaway (5s), 1 missing end_ts.
+NOW="$(date +%s)"
+cat > "${QP}/session_summary.jsonl" <<EOF
+{"session_id":"edit1","start_ts":1777000000,"end_ts":1777003600,"end_ts_source":"edit","outcome":"completed_inferred","edit_count":3,"reviewed":true,"verified":true,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":1,"skip_count":0,"serendipity_count":0,"domain":"coding","intent":"execution"}
+{"session_id":"edit2","start_ts":1777010000,"end_ts":1777017200,"end_ts_source":"edit","outcome":"completed_inferred","edit_count":7,"reviewed":true,"verified":true,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":1,"skip_count":0,"serendipity_count":0,"domain":"coding","intent":"execution"}
+{"session_id":"edit3","start_ts":1777020000,"end_ts":1777030800,"end_ts_source":"edit","outcome":"completed_inferred","edit_count":2,"reviewed":true,"verified":true,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":1,"skip_count":0,"serendipity_count":0,"domain":"coding","intent":"execution"}
+{"session_id":"rev1","start_ts":1777040000,"end_ts":1777040600,"end_ts_source":"review","outcome":"unclassified_by_sweep","edit_count":0,"reviewed":true,"verified":false,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":1,"skip_count":0,"serendipity_count":0,"domain":"coding","intent":"execution"}
+{"session_id":"rev2","start_ts":1777050000,"end_ts":1777051800,"end_ts_source":"review","outcome":"unclassified_by_sweep","edit_count":0,"reviewed":true,"verified":false,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":1,"skip_count":0,"serendipity_count":0,"domain":"coding","intent":"execution"}
+{"session_id":"pmt1","start_ts":1777060000,"end_ts":1777060300,"end_ts_source":"prompt","outcome":"idle","edit_count":0,"reviewed":false,"verified":false,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":0,"skip_count":0,"serendipity_count":0,"domain":"mixed","intent":"advisory"}
+{"session_id":"pmt2","start_ts":1777070000,"end_ts":1777073600,"end_ts_source":"prompt","outcome":"idle","edit_count":0,"reviewed":false,"verified":false,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":0,"skip_count":0,"serendipity_count":0,"domain":"mixed","intent":"advisory"}
+{"session_id":"thrw","start_ts":1777080000,"end_ts":1777080005,"end_ts_source":"edit","outcome":"idle","edit_count":0,"reviewed":false,"verified":false,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":0,"skip_count":0,"serendipity_count":0,"domain":"mixed","intent":"execution"}
+{"session_id":"noend","start_ts":1777090000,"end_ts":null,"end_ts_source":null,"outcome":"idle","edit_count":0,"reviewed":false,"verified":false,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":0,"skip_count":0,"serendipity_count":0,"domain":"mixed","intent":"advisory"}
+EOF
+out="$(run_report all)"
+assert_contains "T34 section heading"      "## Session duration distribution" "${out}"
+assert_contains "T34 all-qualifying row"   "| All qualifying | 7 |" "${out}"
+assert_contains "T34 edit/review cohort"   "| Edit/review-grade | 5 |" "${out}"
+assert_contains "T34 prompt-only cohort"   "| Prompt-only (advisory) | 2 |" "${out}"
+# 2 rows excluded: one with wall=5s (below 10s floor), one with null end_ts.
+assert_contains "T34 throwaway disclosure" "Excluded: 2 session(s)" "${out}"
+# Sanity — pre-Wave-1 unlabeled row should NOT appear when all rows have a label.
+if [[ "${out}" == *"Unlabeled (pre-v1.41 rows)"* ]]; then
+  printf '  FAIL: T34 — Unlabeled cohort rendered despite all rows having end_ts_source\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+rm -f "${QP}/session_summary.jsonl"
+
+# ----------------------------------------------------------------------
+printf 'Test 35: v1.41 W2 — pre-Wave-1 rows render in "Unlabeled" cohort\n'
+# Two rows without end_ts_source — simulates pre-fix ledger entries.
+cat > "${QP}/session_summary.jsonl" <<EOF
+{"session_id":"old1","start_ts":1777000000,"end_ts":1777001800,"outcome":"completed_inferred","edit_count":1,"reviewed":true,"verified":true,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":0,"skip_count":0,"serendipity_count":0,"domain":"coding","intent":"execution"}
+{"session_id":"old2","start_ts":1777010000,"end_ts":1777013600,"outcome":"completed_inferred","edit_count":2,"reviewed":true,"verified":true,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":0,"skip_count":0,"serendipity_count":0,"domain":"coding","intent":"execution"}
+EOF
+out="$(run_report all)"
+assert_contains "T35 unlabeled cohort rendered" "Unlabeled (pre-v1.41 rows) | 2 |" "${out}"
+rm -f "${QP}/session_summary.jsonl"
+
+# ----------------------------------------------------------------------
+printf 'Test 36: v1.41 W2 — --share mode emits median session length bullet\n'
+NOW="$(date +%s)"
+cat > "${QP}/session_summary.jsonl" <<EOF
+{"session_id":"s1","start_ts":${NOW},"end_ts":$((NOW + 1800)),"end_ts_source":"edit","outcome":"completed_inferred","edit_count":2,"reviewed":true,"verified":true,"guard_blocks":1,"dim_blocks":0,"exhausted":false,"dispatches":1,"skip_count":0,"serendipity_count":0,"domain":"coding","intent":"execution"}
+{"session_id":"s2","start_ts":$((NOW - 3600)),"end_ts":$((NOW - 3000)),"end_ts_source":"edit","outcome":"completed_inferred","edit_count":1,"reviewed":true,"verified":true,"guard_blocks":1,"dim_blocks":0,"exhausted":false,"dispatches":1,"skip_count":0,"serendipity_count":0,"domain":"coding","intent":"execution"}
+EOF
+out="$(run_report week --share)"
+assert_contains "T36 share-mode duration bullet" "Median session length (wall-clock)" "${out}"
+# Share card MUST NOT include per-session data (privacy contract).
+# Fixture session IDs (s1/s2) plus structural shapes for prod session
+# IDs (UUID-ish) and raw timestamps (10-digit unix). All three must be
+# absent — fixture-only literal check would miss leaks in prod data.
+if [[ "${out}" == *"s1"* ]] || [[ "${out}" == *"s2"* ]]; then
+  printf '  FAIL: T36 — share mode leaked fixture session IDs (s1/s2)\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+# UUID-shaped session IDs (8-4-4-4-12 hex) — production session shape.
+# T36 fixture doesn't use these, but the test asserts the SHAPE never
+# leaks regardless of fixture choice. The `LC_ALL=C` keeps grep -E
+# locale-stable across BSD/GNU.
+if printf '%s' "${out}" | LC_ALL=C grep -Eq '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'; then
+  printf '  FAIL: T36 — share mode leaked a UUID-shaped session ID\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+# Raw unix timestamps (10-digit since 2001-09-09, will fail when
+# epoch crosses 11 digits in year 2286). The fixture sets start_ts
+# to ${NOW} which IS a 10-digit timestamp — a regression that emitted
+# raw ts in the share digest would surface here.
+if printf '%s' "${out}" | LC_ALL=C grep -Eq '\b1[7-9][0-9]{8}\b'; then
+  printf '  FAIL: T36 — share mode leaked a raw unix timestamp\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+rm -f "${QP}/session_summary.jsonl"
+
+# ----------------------------------------------------------------------
 printf '\n=== Show-Report Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]] || exit 1

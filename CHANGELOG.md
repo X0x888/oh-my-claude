@@ -4,6 +4,47 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### `/ulw-report` session duration distribution surface (Wave 2)
+
+Builds on Wave 1's `end_ts_source` field. Pre-fix `/ulw-report` had
+no surface for session duration — gate fires and finding counts were
+visible, but "how long is my typical session?" required raw transcript
+analysis. Telemetry was there; the report just didn't read it.
+
+**New section: `## Session duration distribution`** between
+`## Time spent across sessions` and `## Patterns to consider`. Renders
+a cohort table with `n / Median / p75 / p90 / p95 / max` for:
+
+- **All qualifying** — every session with both timestamps + wall ≥10s.
+- **Edit/review-grade** — rows where `end_ts_source` is `"edit"` or
+  `"review"`, i.e. real coding/review sessions.
+- **Prompt-only (advisory)** — rows where `end_ts_source` is
+  `"prompt"`, i.e. advisory/exploratory sessions Wave 1 made visible.
+- **Unlabeled (pre-v1.41 rows)** — rows without `end_ts_source`,
+  rendered when pre-Wave-1 ledger entries still dominate the window.
+  Ages out via the daily sweep as new rows accrue.
+
+**Throwaway disclosure:** counts of sessions excluded (<10s wall or
+missing/non-numeric timestamps) with the excluded-percentage. Catches
+the hook-fire-noise bucket honestly so the median isn't dragged down
+by aborted starts.
+
+**`--share` mode:** single new `**Median session length (wall-clock):**`
+bullet — privacy-safe aggregate (one number per cohort, no
+per-session data). Regression test asserts no UUID-shaped IDs and no
+raw 10-digit unix timestamps leak through the share output.
+
+**Percentile convention:** upper-median nearest-rank (`length/2 | floor`
+after sort). For even n the Median picks the higher middle value;
+rationale documented inline because it over-states (rather than
+under-states) typical session length, which is the more honest
+direction for "how long am I working" telemetry.
+
+**Tests:** four new cases in `tests/test-show-report.sh` (T33-T36)
+covering empty-state, cohort split correctness, pre-Wave-1 unlabeled
+rendering, and `--share` privacy contract (UUID + timestamp pattern
+absence). 115 show-report assertions total, all green.
+
 ### Telemetry data integrity — `end_ts` cascade + sibling-boolean tightness (Wave 1)
 
 Driven by a 248-session telemetry audit: 66% of historical

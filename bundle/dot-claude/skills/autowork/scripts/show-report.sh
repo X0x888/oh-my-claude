@@ -441,6 +441,26 @@ if [[ "${SHARE_MODE}" -eq 1 ]]; then
     if [[ "${_share_serendipity}" -gt 0 ]]; then
       printf -- '- **Serendipity Rule fires (adjacent defects caught):** %s\n' "${_share_serendipity}"
     fi
+    # v1.41 W2: median wall-clock session duration. Single aggregate
+    # number — privacy-safe (no per-session data, no timestamps).
+    # Filters throwaway sessions (<10s) and rows missing end_ts.
+    _share_median_dur="$(jq -s --argjson cutoff "${cutoff_ts}" '
+      map(select(
+        (.start_ts // 0 | tonumber? // 0) >= $cutoff
+        and (.start_ts // "") != "" and (.end_ts // "") != ""
+        and ((.start_ts | tonumber?) != null)
+        and ((.end_ts | tonumber?) != null)
+      ))
+      | map((.end_ts | tonumber) - (.start_ts | tonumber))
+      | map(select(. >= 10))
+      | sort
+      | if length == 0 then 0 else .[(length / 2 | floor)] end
+    ' "${_share_sessions_src}" 2>/dev/null || echo 0)"
+    [[ "${_share_median_dur}" =~ ^[0-9]+$ ]] || _share_median_dur=0
+    if (( _share_median_dur > 0 )); then
+      printf -- '- **Median session length (wall-clock):** %s\n' \
+        "$(timing_fmt_secs "${_share_median_dur}")"
+    fi
     # Gate-event distribution — gate names + counts only, never the
     # `reason` / `details` payloads (which can carry arbitrary text).
     if [[ -f "${GATE_EVENTS_FILE}" ]] && [[ -s "${GATE_EVENTS_FILE}" ]]; then
@@ -1848,6 +1868,119 @@ else
           "$(timing_fmt_secs $(( _xs_walltime / _xs_prompts )))"
       fi
     fi
+  fi
+fi
+
+# ----------------------------------------------------------------------
+# Section 6b: Session duration distribution (v1.41 W2)
+#
+# Wall-clock per-session duration from `session_summary.jsonl`. Pairs
+# with Section 6 (Time spent across sessions) — that section sums the
+# active-engagement seconds from timing.jsonl (5s floor, work-only);
+# this section shows the start-to-end wall-clock spread per session,
+# which includes idle time. Both numbers together let the user
+# distinguish "I worked for 45 min" from "session was open for 6h
+# but mostly idle".
+#
+# Data source: SUMMARY_FILE filtered to the active window via
+# filter_by_window (not the `sessions_rows` post-filter — that excludes
+# `abandoned` rows whose duration is still meaningful). Wave 1's
+# end_ts cascade extends coverage to advisory sessions that previously
+# wrote null end_ts; pre-Wave-1 ledger rows often have null end_ts
+# and are skipped here — they age out via the daily sweep.
+#
+# Throwaway filter: durations <10s are aborted/empty sessions. They
+# distort the median downward without representing real work.
+# Reported as a separate count so the user knows what was excluded.
+#
+# Cohorts via end_ts_source (Wave 1): "edit"/"review" → real coding
+# sessions; "prompt" → advisory/exploratory; null → pre-Wave-1 rows.
+#
+# Percentile convention: upper-median nearest-rank. For even n, the
+# Median row picks the HIGHER of the two middle values (index
+# `length/2 | floor` after sort). Same convention applied to
+# p75/p90/p95. This is the C-style integer-division rank; the
+# alternative (interpolated / lower-median) would round long sessions
+# down and over-state how tight the typical session feels. The label
+# is rendered "Median" rather than "p50" to match the prose used
+# elsewhere in this report.
+printf '## Session duration distribution\n\n'
+
+_dur_filtered_window="$(filter_by_window "${SUMMARY_FILE}" '.start_ts' 2>/dev/null || true)"
+_dur_rows="$(printf '%s\n' "${_dur_filtered_window}" | jq -c '
+  select(
+    (.start_ts // "") != "" and (.end_ts // "") != ""
+    and ((.start_ts | tonumber?) != null)
+    and ((.end_ts   | tonumber?) != null)
+  )
+  | . + {duration_s: ((.end_ts | tonumber) - (.start_ts | tonumber))}
+  | select(.duration_s >= 10)
+' 2>/dev/null || true)"
+
+_dur_total_in_window="$(printf '%s\n' "${_dur_filtered_window}" | grep -c . || true)"
+_dur_qualifying="$(printf '%s\n' "${_dur_rows}" | grep -c . || true)"
+_dur_throwaway=$(( _dur_total_in_window - _dur_qualifying ))
+if (( _dur_throwaway < 0 )); then _dur_throwaway=0; fi
+
+if [[ -z "${_dur_rows}" ]] || (( _dur_qualifying == 0 )); then
+  printf '_No sessions with measurable wall-clock duration in window. Pre-v1.41 W1 rows often have null `end_ts`; new rows accrue with the fixed cascade._\n\n'
+else
+  printf '_Wall-clock (end_ts − start_ts) per session. Includes idle time within a session — pair with the active-engagement breakdown above to separate "worked 45min" from "left open 6h"._\n\n'
+
+  _dur_emit_row() {
+    local label="$1" rows="$2"
+    local n stats p50 p75 p90 p95 maxv
+    n="$(printf '%s\n' "${rows}" | grep -c . || echo 0)"
+    if (( n == 0 )); then
+      return
+    fi
+    stats="$(printf '%s\n' "${rows}" | jq -s '
+      map(.duration_s) | sort | length as $n |
+      {
+        p50: .[($n / 2 | floor)],
+        p75: .[($n * 3 / 4 | floor)],
+        p90: .[($n * 9 / 10 | floor)],
+        p95: .[($n * 95 / 100 | floor)],
+        max: .[-1]
+      }
+    ' 2>/dev/null || echo '{}')"
+    p50="$(jq -r '.p50 // 0' <<<"${stats}")"
+    p75="$(jq -r '.p75 // 0' <<<"${stats}")"
+    p90="$(jq -r '.p90 // 0' <<<"${stats}")"
+    p95="$(jq -r '.p95 // 0' <<<"${stats}")"
+    maxv="$(jq -r '.max // 0' <<<"${stats}")"
+    printf '| %s | %s | %s | %s | %s | %s | %s |\n' \
+      "${label}" "${n}" \
+      "$(timing_fmt_secs "${p50:-0}")" \
+      "$(timing_fmt_secs "${p75:-0}")" \
+      "$(timing_fmt_secs "${p90:-0}")" \
+      "$(timing_fmt_secs "${p95:-0}")" \
+      "$(timing_fmt_secs "${maxv:-0}")"
+  }
+
+  printf '| Cohort | n | Median | p75 | p90 | p95 | max |\n'
+  printf '|---|---|---|---|---|---|---|\n'
+  _dur_emit_row "All qualifying" "${_dur_rows}"
+
+  _dur_edit_review="$(printf '%s\n' "${_dur_rows}" | jq -c 'select((.end_ts_source // null) == "edit" or (.end_ts_source // null) == "review")' 2>/dev/null || true)"
+  _dur_prompt_only="$(printf '%s\n' "${_dur_rows}" | jq -c 'select((.end_ts_source // null) == "prompt")' 2>/dev/null || true)"
+  _dur_unlabeled="$(printf '%s\n' "${_dur_rows}" | jq -c 'select((.end_ts_source // null) == null)' 2>/dev/null || true)"
+
+  if [[ -n "${_dur_edit_review}" ]]; then
+    _dur_emit_row "Edit/review-grade" "${_dur_edit_review}"
+  fi
+  if [[ -n "${_dur_prompt_only}" ]]; then
+    _dur_emit_row "Prompt-only (advisory)" "${_dur_prompt_only}"
+  fi
+  if [[ -n "${_dur_unlabeled}" ]]; then
+    _dur_emit_row "Unlabeled (pre-v1.41 rows)" "${_dur_unlabeled}"
+  fi
+  printf '\n'
+
+  if (( _dur_throwaway > 0 )) && (( _dur_total_in_window > 0 )); then
+    _dur_throwaway_pct=$(( 100 * _dur_throwaway / _dur_total_in_window ))
+    printf '_Excluded: %d session(s) (%d%%) — wall <10s, missing `end_ts`, or non-numeric timestamps. Pre-v1.41 ledger rows are often missing end_ts for advisory sessions._\n\n' \
+      "${_dur_throwaway}" "${_dur_throwaway_pct}"
   fi
 fi
 
