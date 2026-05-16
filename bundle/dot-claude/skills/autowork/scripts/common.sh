@@ -68,6 +68,7 @@ _omc_env_resume_request_per_cwd_cap="${OMC_RESUME_REQUEST_PER_CWD_CAP:-}"
 _omc_env_inferred_contract="${OMC_INFERRED_CONTRACT:-}"
 _omc_env_whats_new_session_hint="${OMC_WHATS_NEW_SESSION_HINT:-}"
 _omc_env_lazy_session_start="${OMC_LAZY_SESSION_START:-}"
+_omc_env_mid_session_memory_checkpoint="${OMC_MID_SESSION_MEMORY_CHECKPOINT:-}"
 
 OMC_STALL_THRESHOLD="${OMC_STALL_THRESHOLD:-12}"
 OMC_EXCELLENCE_FILE_COUNT="${OMC_EXCELLENCE_FILE_COUNT:-3}"
@@ -275,6 +276,13 @@ OMC_NO_DEFER_MODE="${OMC_NO_DEFER_MODE:-on}"
 # AND preserve the dedupe stamps for the next real session. Resume / handoff
 # hooks stay eager (the user needs them before typing). Default off — opt-in.
 OMC_LAZY_SESSION_START="${OMC_LAZY_SESSION_START:-off}"
+# v1.41 W4: when the user returns after a ≥30 min idle gap (see also
+# OMC_MID_SESSION_IDLE_THRESHOLD_SECS), inject a MID-SESSION CHECKPOINT
+# directive that nudges the model to apply auto-memory.md to the
+# just-completed stretch before responding. Default on; firing is
+# already gated on (a) execution-class intent, (b) auto_memory=on,
+# (c) once per idle gap.
+OMC_MID_SESSION_MEMORY_CHECKPOINT="${OMC_MID_SESSION_MEMORY_CHECKPOINT:-on}"
 # Resume-request artifact lifetime: max age (days) for a `resume_request.json`
 # to still be considered claimable. Older artifacts are treated as stale and
 # silently ignored by the SessionStart resume hint and the watchdog. The
@@ -516,6 +524,16 @@ _parse_conf_file() {
         # / compact-handoff hooks stay eager because the user needs them
         # before they type. Default off (no behavior change); opt-in.
         [[ -z "${_omc_env_lazy_session_start}" && "${value}" =~ ^(on|off)$ ]] && OMC_LAZY_SESSION_START="${value}" || true ;;
+      mid_session_memory_checkpoint)
+        # v1.41 W4: nudge the model to sweep the just-completed stretch
+        # for memory-worthy signal when the user returns after a long
+        # idle gap (default 30 min, configurable via env
+        # OMC_MID_SESSION_IDLE_THRESHOLD_SECS). Long-tail sessions
+        # sometimes die without a clean Stop, so the wrap-up pass may
+        # never fire — this directive closes the gap. Fires once per
+        # idle period, only on execution-class intent, only when
+        # auto_memory is on. Default on; opt out for ad-hoc shells.
+        [[ -z "${_omc_env_mid_session_memory_checkpoint}" && "${value}" =~ ^(on|off)$ ]] && OMC_MID_SESSION_MEMORY_CHECKPOINT="${value}" || true ;;
     esac
   done < "${conf}"
 }

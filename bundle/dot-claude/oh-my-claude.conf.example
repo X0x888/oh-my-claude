@@ -256,6 +256,21 @@
 # Env: OMC_LAZY_SESSION_START.
 #lazy_session_start=off
 
+# Mid-session memory checkpoint (v1.41 W4). When the user returns to
+# the session after a ≥30 min idle gap (configurable via env
+# `OMC_MID_SESSION_IDLE_THRESHOLD_SECS`), inject a MID-SESSION
+# CHECKPOINT directive that nudges the model to apply the auto-memory.md
+# threshold to the just-closed stretch BEFORE responding to the new
+# prompt. Long-tail sessions sometimes die without a clean Stop
+# (rate-limit kill, network drop, native quit), so the session-stop
+# wrap-up may never fire — this directive closes the gap. Throttled
+# to once per idle period; only fires on execution-class intent;
+# honors auto_memory=off (no checkpoint against an off-rule). Default
+# on. Opt out for ad-hoc shells / one-shot CLI sessions where the
+# memory cluster is not relevant.
+# Env: OMC_MID_SESSION_MEMORY_CHECKPOINT.
+#mid_session_memory_checkpoint=on
+
 # ---------------------------------------------------------------------------
 # Memory & telemetry — what gets persisted across sessions.
 # ---------------------------------------------------------------------------

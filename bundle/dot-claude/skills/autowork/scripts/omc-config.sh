@@ -74,6 +74,7 @@ no_defer_mode|bool|on|gates|v1.40.0: under ULW execution, /mark-deferred refuses
 installation_drift_check|true_false|true|advisory|Statusline yellow arrow when bundle is behind source
 whats_new_session_hint|true_false|true|advisory|SessionStart "you upgraded — run /whats-new" notice (once per version transition)
 lazy_session_start|bool|off|gates|Defer whats-new/drift-check/welcome SessionStart hooks to first UserPromptSubmit. Throwaway sessions skip the work AND preserve dedupe stamps for the next real session.
+mid_session_memory_checkpoint|bool|on|memory|Inject MID-SESSION CHECKPOINT directive when user returns after ≥30 min idle gap. Nudges auto-memory.md sweep on the just-closed stretch before responding.
 auto_memory|bool|on|memory|Cross-session auto-memory writes (project/feedback/user/reference)
 prompt_persist|bool|on|memory|In-session prompt persistence (recent_prompts.jsonl + last_user_prompt). Off skips writes and degrades prompt-text-override gracefully.
 classifier_telemetry|bool|on|telemetry|Per-turn classifier telemetry to session state

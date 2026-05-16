@@ -4,6 +4,52 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Mid-session memory checkpoint (Wave 4)
+
+Telemetry-driven gap: ~16% of sessions live past 6 hours and ~5%
+past a day, parked across long idle periods. The auto-memory.md
+wrap-up only fires at session Stop (or on compact). A session
+killed mid-stretch — rate-limit kill, network drop, native quit,
+crashed model — loses every memory-worthy signal since the last
+wrap-up. Long-tail-session users were silently losing durable
+context the rule was supposed to capture.
+
+**New behavior:** when a UserPromptSubmit fires after a ≥30 min
+idle gap from the previous prompt, the `prompt-intent-router.sh`
+injects a `MID-SESSION CHECKPOINT` directive that nudges the model
+to apply auto-memory.md to the just-closed stretch BEFORE
+responding to the new prompt. The model writes any qualifying
+project/feedback/user/reference memories first, then proceeds —
+so a subsequent crash doesn't evaporate the signal.
+
+**Gating:** fires only on **execution-class intent** (execution /
+continuation; checkpoint and advisory turns already have their
+own memory-skip / wrap-up semantics). Honors `auto_memory=off`
+(no rule to checkpoint against) and the new
+`mid_session_memory_checkpoint=off` opt-out. Throttled to **once
+per idle period** via `midsession_checkpoint_last_fired_ts`
+state — if the user types another prompt within the same gap, no
+re-fire; a new gap (activity since last fire) is eligible to fire
+again.
+
+**Threshold:** 30 minutes by default. Tunable via the env-only
+`OMC_MID_SESSION_IDLE_THRESHOLD_SECS` for power users.
+
+**Coordination:** new conf flag `mid_session_memory_checkpoint`
+wired across the three sites (`common.sh` parser, conf.example,
+`omc-config.sh` `emit_known_flags`). Directive registered in the
+router's metadata tables (axis=`memory`, priority=55, class=`soft`
+— ranks above `defect_watch`/`memory_drift_hint` for time
+sensitivity but below the directive-budget hard layer).
+
+**Test:** new `tests/test-mid-session-checkpoint.sh` (15 assertions
+across 10 parts): gap below threshold, gap above threshold fires,
+advisory intent suppressed, throttle (strict-equal AND strict-
+greater fire-vs-prev comparisons), `auto_memory=off` suppressed,
+flag off suppressed, first prompt no-fire, new gap after activity
+fires again, plus the 3-site flag-coordination grep. Pinned in
+`validate.yml`. Test count 101 → 102 bash.
+
 ### Lazy SessionStart hooks (Wave 3) — opt-in throwaway-session savings
 
 User-reported issue: 8.9% of sessions exit in under 10 seconds (the

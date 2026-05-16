@@ -188,6 +188,9 @@ jobs:
       - name: Run lazy SessionStart tests (v1.41 W3)
         run: bash tests/test-lazy-session-start.sh
 
+      - name: Run mid-session memory checkpoint tests (v1.41 W4)
+        run: bash tests/test-mid-session-checkpoint.sh
+
       - name: Run session risk-tier tests (v1.39.0 W2)
         run: bash tests/test-session-risk-tier.sh
 

@@ -97,6 +97,14 @@ fi
 TASK_INTENT="$(classify_task_intent "${PROMPT_TEXT}")"
 PROMPT_TS="$(now_epoch)"
 
+# v1.41 W4: snapshot the previous prompt's timestamp BEFORE the
+# write_state_batch below overwrites `last_user_prompt_ts`. Used by
+# the mid-session memory-checkpoint directive to detect long idle
+# gaps (the user came back after a long break and the stretch just
+# closed may have memory-worthy signal we don't want to lose).
+previous_last_prompt_ts="$(read_state "last_user_prompt_ts" 2>/dev/null || true)"
+midsession_checkpoint_last_fired_ts="$(read_state "midsession_checkpoint_last_fired_ts" 2>/dev/null || true)"
+
 # Two parallel detection flags (v1.26.0):
 #
 #   - COMPLETENESS_DIRECTIVE_FIRES: the BROADER trigger. Matches example
@@ -358,7 +366,7 @@ directive_meta_axis() {
     bias_defense_completeness|bias_defense_intent_broadening|bias_defense_intent_broadening_no_inventory) printf 'surface' ;;
     bias_defense_divergent_framing) printf 'paradigm' ;;
     project_maturity) printf 'maturity' ;;
-    memory_drift_hint|auto_memory_skip) printf 'memory' ;;
+    memory_drift_hint|auto_memory_skip|mid_session_memory_checkpoint) printf 'memory' ;;
     defect_watch) printf 'history' ;;
     *) printf 'core' ;;
   esac
@@ -374,6 +382,7 @@ directive_meta_priority() {
     bias_defense_divergent_framing) printf '24' ;;
     project_maturity) printf '40' ;;
     defect_watch) printf '50' ;;
+    mid_session_memory_checkpoint) printf '55' ;;
     memory_drift_hint) printf '60' ;;
     auto_memory_skip) printf '70' ;;
     *) printf '0' ;;
@@ -382,7 +391,7 @@ directive_meta_priority() {
 
 directive_meta_class() {
   case "$1" in
-    bias_defense_prometheus_suggest|bias_defense_intent_verify|bias_defense_completeness|bias_defense_intent_broadening|bias_defense_intent_broadening_no_inventory|bias_defense_divergent_framing|project_maturity|defect_watch|memory_drift_hint|auto_memory_skip)
+    bias_defense_prometheus_suggest|bias_defense_intent_verify|bias_defense_completeness|bias_defense_intent_broadening|bias_defense_intent_broadening_no_inventory|bias_defense_divergent_framing|project_maturity|defect_watch|memory_drift_hint|auto_memory_skip|mid_session_memory_checkpoint)
       printf 'soft'
       ;;
     *)
@@ -1510,6 +1519,66 @@ if [[ -z "$(read_state "memory_drift_hint_emitted")" ]]; then
   if [[ -n "${drift_msg}" ]]; then
     add_directive "memory_drift_hint" "${drift_msg}"
     write_state "memory_drift_hint_emitted" "1"
+  fi
+fi
+
+# v1.41 W4: mid-session memory checkpoint.
+#
+# Telemetry showed ~16% of sessions live past 6 hours and ~5% past a
+# day, parked across long idle gaps. Auto-memory wrap-up only fires
+# at session Stop (or at compact). A session killed mid-stretch
+# (rate limit, native quit, network drop) loses everything since the
+# last memory write. When the user returns after a 30-min+ gap, nudge
+# the model to sweep the stretch just completed for durable signal —
+# shipped work, deferred risks with named reasons, stakeholder
+# constraints, surprising decisions — and write memories BEFORE
+# responding to the new prompt, so a subsequent crash doesn't
+# evaporate the signal.
+#
+# Throttle: at most one fire per idle period. The throttle uses
+# `midsession_checkpoint_last_fired_ts >= previous_last_prompt_ts`
+# as "we already fired for this gap" — if we did activity (a prompt)
+# AFTER the last fire, a new gap is now eligible.
+#
+# Intent gate: execution / continuation only (is_execution_intent_value
+# returns false for checkpoint, advisory, session_management). Advisory
+# turns are evaluation-shaped — the auto_memory_skip directive above
+# already suppresses memory writes on those turns; firing the
+# checkpoint nudge here would contradict that. Checkpoint turns are
+# wrap-up-shaped — the session-stop auto-memory pass is the right
+# surface for them, not a mid-session nudge.
+#
+# Honors `auto_memory=off` (no rule to checkpoint against) and
+# `mid_session_memory_checkpoint=off` (the user opted out of the
+# specific behavior even though auto-memory is on).
+if [[ "${OMC_MID_SESSION_MEMORY_CHECKPOINT:-on}" == "on" ]] \
+   && is_auto_memory_enabled 2>/dev/null \
+   && is_execution_intent_value "${TASK_INTENT}"; then
+  if [[ -n "${previous_last_prompt_ts}" ]] \
+     && [[ "${previous_last_prompt_ts}" =~ ^[0-9]+$ ]]; then
+    _msc_idle_threshold="${OMC_MID_SESSION_IDLE_THRESHOLD_SECS:-1800}"
+    [[ "${_msc_idle_threshold}" =~ ^[0-9]+$ ]] || _msc_idle_threshold=1800
+    _msc_gap_s=$(( PROMPT_TS - previous_last_prompt_ts ))
+    if (( _msc_gap_s >= _msc_idle_threshold )); then
+      _msc_should_fire=1
+      if [[ -n "${midsession_checkpoint_last_fired_ts}" ]] \
+         && [[ "${midsession_checkpoint_last_fired_ts}" =~ ^[0-9]+$ ]] \
+         && (( midsession_checkpoint_last_fired_ts >= previous_last_prompt_ts )); then
+        # We already fired for the gap ending at previous_last_prompt_ts.
+        # The user has not produced an activity boundary since, so don't
+        # re-fire the same nudge.
+        _msc_should_fire=0
+      fi
+      if (( _msc_should_fire == 1 )); then
+        _msc_minutes=$(( _msc_gap_s / 60 ))
+        _msc_human="${_msc_minutes} min"
+        if (( _msc_minutes >= 120 )); then
+          _msc_human="$(( _msc_minutes / 60 ))h $(( _msc_minutes % 60 ))m"
+        fi
+        add_directive "mid_session_memory_checkpoint" "MID-SESSION CHECKPOINT: ${_msc_human} elapsed since the previous prompt — the stretch just closed may have durable signal that has not yet been written. Before responding to the current prompt, sweep the just-completed stretch for memory-worthy items per the auto-memory.md threshold (shipped work, deferred risks with named reasons, stakeholder constraints, surprising decisions, validated approaches). If anything qualifies, write the relevant project_*/feedback_*/user_*/reference_* memory now; long-idle sessions sometimes die without a clean Stop, so the wrap-up pass may never fire for this stretch. Skip the write only when nothing in the stretch meets the threshold. Then resume with the current prompt."
+        write_state "midsession_checkpoint_last_fired_ts" "${PROMPT_TS}"
+      fi
+    fi
   fi
 fi
 
