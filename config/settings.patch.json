@@ -74,6 +74,10 @@
         "hooks": [
           {
             "type": "command",
+            "command": "bash $HOME/.claude/quality-pack/scripts/first-prompt-session-init.sh"
+          },
+          {
+            "type": "command",
             "command": "bash $HOME/.claude/quality-pack/scripts/prompt-intent-router.sh"
           }
         ]

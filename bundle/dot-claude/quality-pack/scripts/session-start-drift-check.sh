@@ -33,6 +33,15 @@ HOOK_JSON="$(_omc_read_hook_stdin)"
 SESSION_ID="$(json_get '.session_id')"
 [[ -z "${SESSION_ID}" ]] && exit 0
 
+# v1.41 W3: lazy-init defer (see session-start-whats-new.sh for shape).
+# Defer to first UserPromptSubmit so throwaway sessions skip the drift
+# check entirely; the dispatcher re-invokes us with OMC_DEFERRED_DISPATCH=1.
+if [[ "${OMC_LAZY_SESSION_START:-off}" == "on" ]] && [[ "${OMC_DEFERRED_DISPATCH:-0}" != "1" ]]; then
+  ensure_session_dir
+  printf '%s\n' "session-start-drift-check.sh" >> "${STATE_ROOT}/${SESSION_ID}/.deferred_session_start_hooks" 2>/dev/null || true
+  exit 0
+fi
+
 # Bail early if this hook already emitted for this session — the matcher
 # fan-out (resume / compact / catchall) can otherwise produce three
 # drift notices on a single SessionStart.

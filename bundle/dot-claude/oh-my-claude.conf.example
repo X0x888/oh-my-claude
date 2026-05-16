@@ -240,6 +240,22 @@
 # Env: OMC_WHATS_NEW_SESSION_HINT.
 #whats_new_session_hint=true
 
+# Lazy-init SessionStart hooks (v1.41 W3). When on, three SessionStart
+# hooks — `session-start-whats-new.sh`, `session-start-drift-check.sh`,
+# and `session-start-welcome.sh` — defer their work to the first
+# `UserPromptSubmit` of the session instead of firing at session start.
+# Throwaway sessions (the user closes Claude Code before typing) skip
+# the work entirely AND preserve the per-version / per-install dedupe
+# stamps, so the NEXT real session sees the banner the user actually
+# deserved to see. The resume-hint / resume-handoff / compact-handoff
+# hooks stay eager — those carry state the user needs BEFORE they type.
+# Default off (no behavior change). Opt in if you want telemetry-clean
+# throwaway sessions; the user experience for real sessions is
+# identical (the banner appears in the response to the first prompt,
+# same place SessionStart additionalContext shows up anyway).
+# Env: OMC_LAZY_SESSION_START.
+#lazy_session_start=off
+
 # ---------------------------------------------------------------------------
 # Memory & telemetry — what gets persisted across sessions.
 # ---------------------------------------------------------------------------

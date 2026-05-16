@@ -51,6 +51,18 @@ if [[ "${OMC_WHATS_NEW_SESSION_HINT:-true}" == "false" ]]; then
   exit 0
 fi
 
+# v1.41 W3: lazy-init defer. When OMC_LAZY_SESSION_START=on the hook
+# postpones its work to the first UserPromptSubmit (handled by
+# first-prompt-session-init.sh). On throwaway sessions that never
+# produce a prompt, the work is skipped AND the cross-session dedupe
+# stamp stays intact for the next real session. The dispatcher
+# re-invokes us with OMC_DEFERRED_DISPATCH=1 to bypass this guard.
+if [[ "${OMC_LAZY_SESSION_START:-off}" == "on" ]] && [[ "${OMC_DEFERRED_DISPATCH:-0}" != "1" ]]; then
+  ensure_session_dir
+  printf '%s\n' "session-start-whats-new.sh" >> "${STATE_ROOT}/${SESSION_ID}/.deferred_session_start_hooks" 2>/dev/null || true
+  exit 0
+fi
+
 ensure_session_dir
 existing_emitted="$(read_state "whats_new_emitted" 2>/dev/null || true)"
 if [[ "${existing_emitted}" == "1" ]]; then

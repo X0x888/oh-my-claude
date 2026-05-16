@@ -4,6 +4,68 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Lazy SessionStart hooks (Wave 3) — opt-in throwaway-session savings
+
+User-reported issue: 8.9% of sessions exit in under 10 seconds (the
+`claude` binary started, no prompt typed, user closed it). Each of
+those throwaway sessions still fired all 6 SessionStart hooks — and,
+worse, hooks like `session-start-whats-new.sh` BURNED their
+per-version dedupe stamp on a session that never produced a model
+response. The user's NEXT real session then missed the
+upgrade-banner they were owed.
+
+**New conf flag `lazy_session_start`** (default `off` — opt-in;
+no behavior change unless toggled on). When on, three SessionStart
+hooks defer their work to the first `UserPromptSubmit`:
+
+- `session-start-whats-new.sh`
+- `session-start-drift-check.sh`
+- `session-start-welcome.sh`
+
+The other three SessionStart hooks (`resume-hint`, `resume-handoff`,
+`compact-handoff`) stay eager because they carry state the user
+needs before the first prompt.
+
+**Mechanism:** each lazy hook, when the flag is on, writes its
+basename to `${STATE_ROOT}/${SESSION_ID}/.deferred_session_start_hooks`
+and exits clean. A new UserPromptSubmit hook
+`first-prompt-session-init.sh` drains the marker on the first prompt
+of the session, re-invokes each listed hook with
+`OMC_DEFERRED_DISPATCH=1` (bypasses the defer guard), captures the
+combined `additionalContext`, and re-emits as a UserPromptSubmit
+payload. Allowlist on the deferred hook names prevents a tampered
+marker from triggering arbitrary bash execution.
+
+**The dedupe-preservation win:** a throwaway session never reaches
+`UserPromptSubmit`, so the deferred hooks never run, AND the
+per-version / per-install stamps stay untouched. The NEXT real
+session sees the banner the user actually deserved.
+
+**Mid-session flag-flip is honored.** If a session started with the
+flag on (markers written) and the user flips it off mid-session,
+the dispatcher still drains the pending markers — the flag controls
+whether NEW markers get written, not whether EXISTING ones get
+drained. (Quality-reviewer Wave 3 F1 — addressed in-wave.)
+
+**Coordination:** the flag's three sites are wired in lockstep
+(`common.sh` parser, `oh-my-claude.conf.example`, `omc-config.sh`
+`emit_known_flags`). The new dispatcher is registered in
+`config/settings.patch.json` BEFORE `prompt-intent-router.sh` so its
+additionalContext arrives before the router's directives. The
+dispatcher path is pinned in `verify.sh` `required_paths`.
+
+**Lifecycle count:** `bundle/dot-claude/quality-pack/scripts/` grows
+from 11 → 12 hooks; docs in `CLAUDE.md` + `AGENTS.md` updated.
+
+**Test:** new `tests/test-lazy-session-start.sh` (28 assertions
+across 7 parts) covers: flag-off default behavior, flag-on defer
+(marker contents + no stdout emission + dedupe-stamp preservation),
+dispatcher idempotency, allowlist defense (asserts unknown entries
+do NOT execute AND log_anomaly fires), mid-session flag-flip drains
+pending markers, end-to-end SessionStart → UserPromptSubmit emission
+with the same banner content, and 3-site flag coordination grep.
+Pinned in `validate.yml`.
+
 ### `/ulw-report` session duration distribution surface (Wave 2)
 
 Builds on Wave 1's `end_ts_source` field. Pre-fix `/ulw-report` had

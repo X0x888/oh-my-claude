@@ -48,6 +48,15 @@ if [[ -z "${SESSION_ID}" ]]; then
   exit 0
 fi
 
+# v1.41 W3: lazy-init defer (see session-start-whats-new.sh for shape).
+# Defer to first UserPromptSubmit so throwaway sessions don't burn the
+# one-shot welcome stamp; the dispatcher re-invokes with OMC_DEFERRED_DISPATCH=1.
+if [[ "${OMC_LAZY_SESSION_START:-off}" == "on" ]] && [[ "${OMC_DEFERRED_DISPATCH:-0}" != "1" ]]; then
+  ensure_session_dir
+  printf '%s\n' "session-start-welcome.sh" >> "${STATE_ROOT}/${SESSION_ID}/.deferred_session_start_hooks" 2>/dev/null || true
+  exit 0
+fi
+
 ensure_session_dir
 
 # v1.32.8: tag the session with project_key BEFORE any record_gate_event

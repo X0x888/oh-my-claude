@@ -131,6 +131,7 @@ required_paths=(
   "${CLAUDE_HOME}/quality-pack/scripts/session-start-resume-hint.sh"
   "${CLAUDE_HOME}/quality-pack/scripts/session-start-drift-check.sh"
   "${CLAUDE_HOME}/quality-pack/scripts/session-start-welcome.sh"
+  "${CLAUDE_HOME}/quality-pack/scripts/first-prompt-session-init.sh"
   "${CLAUDE_HOME}/quality-pack/scripts/pre-compact-snapshot.sh"
   "${CLAUDE_HOME}/quality-pack/scripts/post-compact-summary.sh"
   "${CLAUDE_HOME}/quality-pack/scripts/stop-failure-handler.sh"

@@ -73,6 +73,7 @@ shortcut_ratio_gate|bool|on|gates|Soft-block when wave plan total≥10 AND defer
 no_defer_mode|bool|on|gates|v1.40.0: under ULW execution, /mark-deferred refuses, findings status=deferred rejected, stop-guard hard-blocks on any deferred entry. Agent must ship inline or hit a real external blocker.
 installation_drift_check|true_false|true|advisory|Statusline yellow arrow when bundle is behind source
 whats_new_session_hint|true_false|true|advisory|SessionStart "you upgraded — run /whats-new" notice (once per version transition)
+lazy_session_start|bool|off|gates|Defer whats-new/drift-check/welcome SessionStart hooks to first UserPromptSubmit. Throwaway sessions skip the work AND preserve dedupe stamps for the next real session.
 auto_memory|bool|on|memory|Cross-session auto-memory writes (project/feedback/user/reference)
 prompt_persist|bool|on|memory|In-session prompt persistence (recent_prompts.jsonl + last_user_prompt). Off skips writes and degrades prompt-text-override gracefully.
 classifier_telemetry|bool|on|telemetry|Per-turn classifier telemetry to session state

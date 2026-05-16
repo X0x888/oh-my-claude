@@ -67,6 +67,7 @@ _omc_env_claude_bin="${OMC_CLAUDE_BIN:-}"
 _omc_env_resume_request_per_cwd_cap="${OMC_RESUME_REQUEST_PER_CWD_CAP:-}"
 _omc_env_inferred_contract="${OMC_INFERRED_CONTRACT:-}"
 _omc_env_whats_new_session_hint="${OMC_WHATS_NEW_SESSION_HINT:-}"
+_omc_env_lazy_session_start="${OMC_LAZY_SESSION_START:-}"
 
 OMC_STALL_THRESHOLD="${OMC_STALL_THRESHOLD:-12}"
 OMC_EXCELLENCE_FILE_COUNT="${OMC_EXCELLENCE_FILE_COUNT:-3}"
@@ -269,6 +270,11 @@ OMC_SHORTCUT_RATIO_GATE="${OMC_SHORTCUT_RATIO_GATE:-on}"
 # Default ON. Disable via `no_defer_mode=off` for power users who want
 # the legacy behavior with mark_deferred_strict as the only guard.
 OMC_NO_DEFER_MODE="${OMC_NO_DEFER_MODE:-on}"
+# v1.41 W3: defer the whats-new / drift-check / welcome SessionStart hooks
+# until the first UserPromptSubmit fires. Throwaway sessions skip the work
+# AND preserve the dedupe stamps for the next real session. Resume / handoff
+# hooks stay eager (the user needs them before typing). Default off — opt-in.
+OMC_LAZY_SESSION_START="${OMC_LAZY_SESSION_START:-off}"
 # Resume-request artifact lifetime: max age (days) for a `resume_request.json`
 # to still be considered claimable. Older artifacts are treated as stale and
 # silently ignored by the SessionStart resume hint and the watchdog. The
@@ -500,6 +506,16 @@ _parse_conf_file() {
         # cheap; turn off for shared machines or regulated codebases
         # where the hint is noise.
         [[ -z "${_omc_env_whats_new_session_hint}" && "${value}" =~ ^(true|false)$ ]] && OMC_WHATS_NEW_SESSION_HINT="${value}" || true ;;
+      lazy_session_start)
+        # v1.41 W3: defer three SessionStart hooks (whats-new, drift-check,
+        # welcome) until the first UserPromptSubmit fires. Throwaway
+        # sessions that never produce a prompt skip the work entirely
+        # AND preserve the dedupe stamps for the NEXT real session —
+        # so a version-transition banner doesn't get burned on a 5-second
+        # accidental `claude` invocation. The resume-hint / resume-handoff
+        # / compact-handoff hooks stay eager because the user needs them
+        # before they type. Default off (no behavior change); opt-in.
+        [[ -z "${_omc_env_lazy_session_start}" && "${value}" =~ ^(on|off)$ ]] && OMC_LAZY_SESSION_START="${value}" || true ;;
     esac
   done < "${conf}"
 }

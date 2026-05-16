@@ -185,6 +185,9 @@ jobs:
       - name: Run session-summary end_ts cascade tests (v1.41 W1)
         run: bash tests/test-session-summary-end-ts.sh
 
+      - name: Run lazy SessionStart tests (v1.41 W3)
+        run: bash tests/test-lazy-session-start.sh
+
       - name: Run session risk-tier tests (v1.39.0 W2)
         run: bash tests/test-session-risk-tier.sh
 
