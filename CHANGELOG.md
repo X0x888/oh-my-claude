@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.41.0] - 2026-05-16
+
 ### Agent-first `/ulw` execution invariant
 
 Closes the concrete failure mode where `/ulw` could still behave like
