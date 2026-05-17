@@ -292,6 +292,76 @@ class TestCachePath(unittest.TestCase):
         path2 = sl.cache_path_for("/dir/b")
         self.assertNotEqual(path1, path2)
 
+
+class TestGatesBlockedLast7d(unittest.TestCase):
+    """v1.42.x F-013 — passive retention counter.
+
+    The function reads `~/.claude/quality-pack/state/*/gate_events.jsonl`
+    so the OMC_STATUSLINE_RETENTION opt-out is the easiest assertion to
+    pin in tests (HOME isolation would require fixturing the full state
+    tree). The on-state behavior is smoke-tested via the main render
+    path which the existing TestMainIntegration cases already exercise.
+    """
+
+    def test_opt_out_returns_none(self):
+        orig = os.environ.get("OMC_STATUSLINE_RETENTION")
+        try:
+            os.environ["OMC_STATUSLINE_RETENTION"] = "off"
+            self.assertIsNone(sl.gates_blocked_last_7d())
+            os.environ["OMC_STATUSLINE_RETENTION"] = "false"
+            self.assertIsNone(sl.gates_blocked_last_7d())
+            os.environ["OMC_STATUSLINE_RETENTION"] = "0"
+            self.assertIsNone(sl.gates_blocked_last_7d())
+        finally:
+            if orig is None:
+                os.environ.pop("OMC_STATUSLINE_RETENTION", None)
+            else:
+                os.environ["OMC_STATUSLINE_RETENTION"] = orig
+
+    def test_returns_int_or_none_when_default(self):
+        # Default mode: function returns either int (state dir exists)
+        # or None (state dir absent). Never raises.
+        orig = os.environ.pop("OMC_STATUSLINE_RETENTION", None)
+        try:
+            result = sl.gates_blocked_last_7d()
+            self.assertTrue(result is None or isinstance(result, int))
+            if isinstance(result, int):
+                self.assertGreaterEqual(result, 0)
+        finally:
+            if orig is not None:
+                os.environ["OMC_STATUSLINE_RETENTION"] = orig
+
+
+class TestTermWidthBudget(unittest.TestCase):
+    """v1.42.x F-017 — terminal-width-aware token collapse."""
+
+    def test_columns_env_honored(self):
+        orig = os.environ.get("COLUMNS")
+        try:
+            os.environ["COLUMNS"] = "80"
+            self.assertEqual(sl.term_width_budget(), 80)
+            os.environ["COLUMNS"] = "200"
+            self.assertEqual(sl.term_width_budget(), 200)
+        finally:
+            if orig is None:
+                os.environ.pop("COLUMNS", None)
+            else:
+                os.environ["COLUMNS"] = orig
+
+    def test_invalid_columns_falls_through(self):
+        orig = os.environ.get("COLUMNS")
+        try:
+            os.environ["COLUMNS"] = "not-a-number"
+            # Returns either an int (from get_terminal_size) or None;
+            # never crashes on bad COLUMNS.
+            result = sl.term_width_budget()
+            self.assertTrue(result is None or isinstance(result, int))
+        finally:
+            if orig is None:
+                os.environ.pop("COLUMNS", None)
+            else:
+                os.environ["COLUMNS"] = orig
+
     def test_in_temp_dir(self):
         path = sl.cache_path_for("/test")
         self.assertTrue(path.startswith(tempfile.gettempdir()))

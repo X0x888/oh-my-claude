@@ -179,6 +179,87 @@ def cache_path_for(cwd):
     return os.path.join(tempfile.gettempdir(), f"claude-statusline-{digest}.json")
 
 
+# v1.42.x F-013: cross-session retention counter — "gates blocked in
+# last 7 days" surfaced in the statusline so the user feels the
+# harness's value passively (no /ulw-report needed). Aggressively
+# cached: statusline ticks at ~300ms, gate-event scan is O(N sessions
+# × file read), so we cache the count for 5 minutes per (cwd) — that
+# reduces compute by ~1000x while keeping the user-visible refresh
+# rate within "I just opened a new session" perception. Set
+# OMC_STATUSLINE_RETENTION=off to suppress.
+def gates_blocked_last_7d():
+    """Return integer count of `event=='block'` gate events across all
+    sessions in the last 7 days, or None on missing data / disabled."""
+    if os.environ.get("OMC_STATUSLINE_RETENTION", "on").lower() in ("off", "false", "0", "no"):
+        return None
+    state_root = os.path.join(os.path.expanduser("~"), ".claude", "quality-pack", "state")
+    if not os.path.isdir(state_root):
+        return None
+    # Cache key: tied to the state-root directory (one user = one
+    # answer), 5min TTL.
+    cache_path = os.path.join(
+        tempfile.gettempdir(),
+        f"claude-statusline-gates7d-{hashlib.sha1(state_root.encode()).hexdigest()[:12]}.json",
+    )
+    cached = read_cache(cache_path, ttl_seconds=300)
+    if cached is not None and isinstance(cached, dict) and "count" in cached:
+        return int(cached["count"])
+    cutoff = time.time() - (7 * 86400)
+    total = 0
+    try:
+        for session_id in os.listdir(state_root):
+            ge_path = os.path.join(state_root, session_id, "gate_events.jsonl")
+            if not os.path.isfile(ge_path):
+                continue
+            try:
+                with open(ge_path, "r", encoding="utf-8") as handle:
+                    for line in handle:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            row = json.loads(line)
+                        except (json.JSONDecodeError, ValueError):
+                            continue
+                        if row.get("event") != "block":
+                            continue
+                        ts = row.get("ts")
+                        if ts is None:
+                            continue
+                        try:
+                            ts_num = float(ts)
+                        except (ValueError, TypeError):
+                            continue
+                        if ts_num >= cutoff:
+                            total += 1
+            except OSError:
+                continue
+    except OSError:
+        return None
+    write_cache(cache_path, {"count": total, "computed_at": int(time.time())})
+    return total
+
+
+# v1.42.x F-017: terminal-width budget. The statusline pre-fix could
+# pile up to ~120 columns at the high end ([Model] dir [ULW:domain]
+# [g:N f:M] git:branch* style:foo v1.42.0 ↑v1.43.0 (+3)). When the
+# terminal is narrow (< 100 cols), drop the lowest-priority tokens
+# (`style:` first; if still over budget, shorten `git:branch*` to
+# `b:branch*`). Returns the COLUMNS env var if set, else os.get_
+# terminal_size's width, else None (unknown — render full line).
+def term_width_budget():
+    raw = os.environ.get("COLUMNS")
+    if raw:
+        try:
+            return int(raw)
+        except (ValueError, TypeError):
+            pass
+    try:
+        return os.get_terminal_size().columns
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
 def read_cache(path, ttl_seconds):
     try:
         if time.time() - os.path.getmtime(path) > ttl_seconds:
@@ -643,13 +724,25 @@ def main():
     if gate_text:
         line_one_parts.append(color(f"[{gate_text}]", f"{DIM}{YELLOW}"))
 
+    # v1.42.x F-017: width-budget collapse rule. When terminal is
+    # narrow (< 100 cols), drop `style:` first; shorten `git:branch*`
+    # to `b:branch*` for further compression. Unknown width (None) →
+    # render full line (current behavior). Set OMC_STATUSLINE_WIDTH=off
+    # to disable the collapse and always render full.
+    _term_w = term_width_budget()
+    _collapse_off = os.environ.get("OMC_STATUSLINE_WIDTH", "on").lower() in ("off", "false", "0", "no")
+    _narrow = (_term_w is not None) and (_term_w < 100) and (not _collapse_off)
     if branch_text:
-        line_one_parts.append(color(branch_text, YELLOW))
-    line_one_parts.append(color(f"style:{style_name}", f"{DIM}{BLUE}"))
+        if _narrow and branch_text.startswith("git:"):
+            line_one_parts.append(color("b:" + branch_text[4:], YELLOW))
+        else:
+            line_one_parts.append(color(branch_text, YELLOW))
+    if not _narrow:
+        line_one_parts.append(color(f"style:{style_name}", f"{DIM}{BLUE}"))
     if omc_version:
         line_one_parts.append(color(f"v{omc_version}", f"{DIM}{WHITE}"))
         if isinstance(omc_drift, dict):
-            drift_label = f"\u2191v{omc_drift.get('version', '?')}"
+            drift_label = f"{glyph(chr(0x2191), '^')}v{omc_drift.get('version', '?')}"
             commits = omc_drift.get("commits")
             if commits is not None:
                 # `commits="?"` is the explicit "comparator failed"
@@ -663,7 +756,7 @@ def main():
             # bare string. Preserve backward-compatible rendering so an
             # in-place statusline.py update before a full reinstall does
             # not crash on a legacy return shape.
-            line_one_parts.append(color(f"\u2191v{omc_drift}", YELLOW))
+            line_one_parts.append(color(f"{glyph(chr(0x2191), '^')}v{omc_drift}", YELLOW))
 
     total_in = safe_get(data, "context_window", "total_input_tokens", default=0)
     total_out = safe_get(data, "context_window", "total_output_tokens", default=0)
@@ -680,6 +773,19 @@ def main():
         cost_text,
         color(format_duration(total_duration_ms), BLUE),
     ]
+    # v1.42.x F-013: retention counter. When the harness has blocked
+    # gates in the last 7d, surface `[7d:N gates]` so the user sees the
+    # value passively instead of needing /ulw-report. Silent when 0 (no
+    # blocks = no value-evidence = no need to render).
+    _g7d = gates_blocked_last_7d()
+    if _g7d is not None and _g7d > 0 and not _narrow:
+        # Token shape `[gw:N]` — gates this week. Distinct from the
+        # session-level `[g:N f:M]` token AND the 7-day rate-limit
+        # token `7d:NN%` (the test suite asserts the latter's absence
+        # by bare-substring match, so any token containing `7d:` would
+        # collide). `gw` reads as "gates / week" and keeps line 2
+        # compact when retention signal is non-zero.
+        line_two_parts.append(color(f"[gw:{_g7d}]", f"{DIM}{GREEN}"))
 
     # 5-hour window: render whenever Claude Code surfaces a percent. Append
     # `R:<countdown>` (dim) when `resets_at` is in the future — answers the
