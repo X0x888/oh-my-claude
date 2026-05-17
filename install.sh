@@ -1294,7 +1294,38 @@ release_install_lock() {
 }
 
 acquire_install_lock
-trap release_install_lock EXIT
+
+# v1.42.x F-023 (SRE-lens): rollback-aware emergency trap.
+#
+# Pre-fix, a mid-install crash (rsync OOM, disk-full, SIGKILL during a
+# post-rsync mutation) left the user with a half-installed CLAUDE_HOME
+# AND a fresh BACKUP_DIR they had to discover and restore by hand. The
+# trap below auto-prints a copy-paste recovery command naming the
+# specific backup path on this run so the user has a one-line rollback
+# at the bottom of their terminal scroll.
+#
+# The trap does NOT auto-restore (auto-restore could be wrong if the
+# user wants partial state, e.g., new bundle + old settings). The
+# explicit-restore-instructions pattern is "fail loud with recovery"
+# rather than "fail silent with assumed recovery."
+_emergency_recovery_msg() {
+  local _rc=$?
+  if [[ ${_rc} -eq 0 ]]; then
+    return 0
+  fi
+  printf >&2 '\n'
+  printf >&2 'install.sh exited with status %d. Partial install possible.\n' "${_rc}"
+  if [[ -d "${BACKUP_DIR}" ]]; then
+    printf >&2 'Backup of pre-install state: %s\n' "${BACKUP_DIR}"
+    printf >&2 'Recovery: restore prior settings.json and conf with:\n'
+    printf >&2 '  cp -a "%s/settings.json" "%s/settings.json" 2>/dev/null\n' "${BACKUP_DIR}" "${CLAUDE_HOME}"
+    printf >&2 '  cp -a "%s/oh-my-claude.conf" "%s/oh-my-claude.conf" 2>/dev/null\n' "${BACKUP_DIR}" "${CLAUDE_HOME}"
+    printf >&2 'Or re-run `bash install.sh` after fixing the underlying error.\n'
+  fi
+  return "${_rc}"
+}
+
+trap '_emergency_recovery_msg; release_install_lock' EXIT
 
 printf 'Installing oh-my-claude into %s ...\n' "${CLAUDE_HOME}"
 

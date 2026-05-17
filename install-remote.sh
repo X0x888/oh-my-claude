@@ -75,31 +75,48 @@ maybe_auto_install_jq() {
     return 1
   fi
 
-  local install_cmd=""
+  # v1.42.x F-024 (security-lens): track the package-manager token
+  # separately from the human-readable command string, then dispatch
+  # via a literal-command case branch instead of `eval "${install_cmd}"`.
+  # The eval surface was not user-controllable in the normal path (the
+  # case-of-uname table is the only source), but a malicious upstream
+  # maintainer editing the table to append `; rm -rf …` would have
+  # invoked the postfix under sudo on a user's `y` keystroke. The
+  # case-branch dispatch eliminates the eval attack surface entirely.
+  local install_pm=""
+  local install_cmd_display=""
   case "$(uname 2>/dev/null || echo '')" in
     Darwin)
-      command -v brew >/dev/null 2>&1 && install_cmd="brew install jq"
+      if command -v brew >/dev/null 2>&1; then
+        install_pm="brew"
+        install_cmd_display="brew install jq"
+      fi
       ;;
     Linux)
       if command -v apt-get >/dev/null 2>&1; then
-        install_cmd="sudo apt-get update && sudo apt-get install -y jq"
+        install_pm="apt"
+        install_cmd_display="sudo apt-get update && sudo apt-get install -y jq"
       elif command -v dnf >/dev/null 2>&1; then
-        install_cmd="sudo dnf install -y jq"
+        install_pm="dnf"
+        install_cmd_display="sudo dnf install -y jq"
       elif command -v yum >/dev/null 2>&1; then
-        install_cmd="sudo yum install -y jq"
+        install_pm="yum"
+        install_cmd_display="sudo yum install -y jq"
       elif command -v apk >/dev/null 2>&1; then
-        install_cmd="sudo apk add jq"
+        install_pm="apk"
+        install_cmd_display="sudo apk add jq"
       elif command -v pacman >/dev/null 2>&1; then
-        install_cmd="sudo pacman -S --noconfirm jq"
+        install_pm="pacman"
+        install_cmd_display="sudo pacman -S --noconfirm jq"
       fi
       ;;
   esac
 
-  [[ -z "${install_cmd}" ]] && return 1
+  [[ -z "${install_pm}" ]] && return 1
 
   printf '\n'
   printf '%s jq is required but not installed.\n' "$(yellow 'note:')"
-  printf '         Detected install command: %s\n' "${install_cmd}"
+  printf '         Detected install command: %s\n' "${install_cmd_display}"
   printf '         Run it now? '
   printf '%s' "$(bold 'y/N: ')"
   local response=""
@@ -111,8 +128,22 @@ maybe_auto_install_jq() {
   fi
   case "${response}" in
     [yY]|[yY][eE][sS])
-      printf '%s running: %s\n' "$(bold '==>')" "${install_cmd}"
-      eval "${install_cmd}" || return 1
+      printf '%s running: %s\n' "$(bold '==>')" "${install_cmd_display}"
+      # Literal-command dispatch — no eval. Each branch invokes the
+      # package manager directly via argv arrays, so a malicious table
+      # entry cannot inject extra commands.
+      case "${install_pm}" in
+        brew)   brew install jq ;;
+        apt)    sudo apt-get update && sudo apt-get install -y jq ;;
+        dnf)    sudo dnf install -y jq ;;
+        yum)    sudo yum install -y jq ;;
+        apk)    sudo apk add jq ;;
+        pacman) sudo pacman -S --noconfirm jq ;;
+        *)      printf 'unsupported package manager: %s\n' "${install_pm}" >&2
+                return 1 ;;
+      esac
+      local _rc=$?
+      [[ ${_rc} -ne 0 ]] && return 1
       command -v jq >/dev/null 2>&1
       ;;
     *)
