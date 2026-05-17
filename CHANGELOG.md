@@ -4,6 +4,128 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v1.42.0] — 2026-05-17
+
+### Council-driven 4-wave follow-up (24 findings; 16 shipped, 8 closed not-a-defect)
+
+A 7-lens council evaluation (product, design, visual-craft, security,
+sre, data, growth — `--deep` opus tier) produced a 24-finding master
+plan executed across 4 waves end-to-end in a single session. The most
+striking signal of the evaluation: **5 of 8 closed findings were
+already-shipped surfaces the lenses missed**, evidence that the
+project is materially more mature than fresh-context evaluators give
+it credit for and that internal discoverability is the next-highest-
+leverage investment.
+
+The user's "vibe-coder three-trait" framing (blind spots, communication
+limits, result-oriented-by-design) was consolidated into the
+foundational layer of `core.md` without duplicating existing rules.
+The preamble is recursive: it applies to the user's request *to /ulw
+itself*, naming the listener-bears-this-in-mind reading load-bearing.
+
+**Wave 1 — framing + IA (F-001..F-004):**
+- core.md gains `## Who /ulw is built for` preamble naming three
+  vibe-coder traits as the WHY upstream of every rule. Each trait
+  maps to existing rule families via "→ Addressed by..." pointers.
+  Reinforces (does not soften) the v1.40.0 no-defer contract.
+- ulw-demo gains BEAT 10/10 covering the no-defer contract — the
+  most load-bearing v1.40.0 feature, previously absent from the demo.
+- README "Jump to" bar trimmed 9 → 6 destinations.
+- skills/SKILL.md deferral-verb tree consolidated to a pointer at
+  the canonical SoT in `skills.md` (always-loaded memory file). Closes
+  the 4-source drift the design-lens flagged.
+
+**Wave 2 — telemetry self-tuning (F-008..F-012):**
+- show-report.sh gains "Top user-corrected misfire patterns (prior
+  intent/domain → corrected)" sub-panel — the passive surface of the
+  closed-loop classifier feedback the data-lens flagged as missing.
+- 11 ledger-writer sites (record-*.sh + common.sh + lib/canary.sh +
+  lib/classifier.sh) flipped from `--arg ts` (string) to `--argjson ts`
+  (int) for cross-ledger numeric-join correctness. Regression test:
+  tests/test-ts-typing.sh (CI-pinned) scans 17 scripts for violations.
+- gate_events.jsonl `_v:1` schema regression test added
+  (tests/test-schema-versioning.sh, CI-pinned).
+- record-finding-list.sh gains `oldest_pending_age_days` field in
+  `counts` and an oldest-pending-Nd token in `status-line` (silent
+  when fresh).
+- show-report.sh gains a "Pending-finding aging" panel with per-
+  bucket histogram (0-1d, 1-3d, 3-7d, 7d+) across every findings.json.
+  Surfaces the silent-rot failure mode that v1.40.0 closed for `defer`
+  but reopened for `pending`.
+
+**Wave 2 follow-up (quality-reviewer F1-F5):**
+- 6 sibling ledger writers in common.sh / lib/* still had `--arg ts`
+  — the F-010 fix was scoped too narrowly; reviewer caught it.
+- F-011 aging jq guarded with `tonumber? // $now` so legacy string-ts
+  rows don't crash the panel.
+- test-ts-typing.sh scope extended to common.sh + lib/*.sh.
+- test-schema-versioning.sh added to CI pin (was untracked).
+- show-report.sh ✅/❌ emoji replaced with semantic words per the
+  no-emoji discipline named in output-styles/oh-my-claude.md.
+
+**Wave 3 — retention + visual polish (F-013..F-020):**
+- statusline gains `[gw:N]` retention counter showing gates blocked
+  in the last 7 days (cached 5 min; silent at zero). Closes the
+  growth-lens "passive value-evidence" gap.
+- statusline gains terminal-width-budget collapse rule: when
+  `COLUMNS < 100`, drop `style:` token and shorten `git:branch*` to
+  `b:branch*`. Honors `OMC_STATUSLINE_WIDTH=off` for full-line mode.
+- statusline make_bar unified on `█/░` block glyphs matching the
+  time-card stacked bar. Plain mode (`OMC_PLAIN` or `NO_COLOR`)
+  preserves the `#/-` ASCII fallback.
+- statusline honors `NO_COLOR` AND `OMC_PLAIN`: all ANSI codes
+  become empty in plain mode; Unicode arrows (↑v drift, ↑/↓ token
+  in/out) fall back to ^/v via new `glyph()` helper. Cron-piped or
+  log-redirected callers no longer see literal escape sequences.
+- install.sh banner line 1752 branches on OMC_PLAIN for parity with
+  `omc_box_rule_glyph`.
+
+**Wave 4 — reliability + security (F-023..F-024):**
+- install-remote.sh `eval "${install_cmd}"` replaced with a literal-
+  command case branch dispatching on `install_pm` token. Eliminates
+  the eval attack surface (a malicious upstream maintainer editing
+  the case-of-uname table could have injected commands under sudo on
+  user `y` keystroke).
+- install.sh gains `_emergency_recovery_msg` EXIT trap that prints
+  the BACKUP_DIR path + a copy-paste recovery command on non-zero
+  exit only. Auto-restore is NOT done (auto-restore could be wrong
+  if the user wants partial state); fail-loud-with-recovery pattern.
+
+**Closed as not-a-defect (concrete WHYs in commit bodies):**
+- F-005 (gate-name renames): labels are descriptive category tags;
+  FOR YOU body explains in plain English. 8-surface synchronized
+  update for marginal benefit.
+- F-006 (/ulw-* arg-shape consistency): diverges only on diagnostic
+  subcommands; breaking long-standing grammars hurts muscle memory.
+- F-007 (README/ulw-pause "drift"): two valid framings of the same
+  fact, not factual divergence.
+- F-012 (directive cost-per-ship): apply_rate panel already rendered
+  at show-report.sh:1280-1298 since prior wave.
+- F-014 (sticky /ulw-demo nudge): dual-nudge already sticky —
+  SessionStart whats-new + prompt-intent-router demo nudge persists
+  until the .demo_completed sentinel is stamped.
+- F-015 (--share filter as script): IS a deterministic script branch
+  at show-report.sh:284-310 since v1.31.0 W8.
+- F-021 (session-dir TTL sweep): `sweep_stale_sessions` exists at
+  common.sh:1565-1644+ since v1.31.0 W2. SRE-lens missed it.
+- F-022 (fire-and-forget `&` guards): preventive hardening only;
+  SRE-lens own audit found zero observed orphans; bg-orphan window
+  bounded by OS init reaping.
+- F-025 (undo/rollback for /ulw): by design — `git revert/reset` is
+  the canonical undo; `/ulw-undo` would force the harness to take
+  semantic positions only the user can specify, recreating the
+  trait-3 ask-the-user anti-pattern the no-defer contract closes.
+
+**Tests:** 2 new test files added & CI-pinned (`test-ts-typing.sh`,
+`test-schema-versioning.sh`). `test_statusline.py` extended from 128
+→ 135 tests covering the new make_bar dual-shape, `gates_blocked_
+last_7d`, and `term_width_budget` functions. All pre-existing test
+files pass (no-defer-contract 21/21, output-style 35/35, mark-deferred
+166/166, bias-defense 108/108, discovered-scope 92/92, exemplifying-
+scope 21/21, finding-list 128/128, show-report 119/119, state-io
+133/133, classifier 65/65). shellcheck clean (severity=warning). JSON
+valid.
+
 ### Post-install audit — installer-time auto-claim fix
 
 **The bug.** `install-resume-watchdog.sh:271` invoked the watchdog as
