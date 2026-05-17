@@ -85,7 +85,7 @@ output="$(HOME="${TMP_HOME}" bash "${SHOW_REPORT}" all --field-shape-audit 2>&1 
 rc=0
 HOME="${TMP_HOME}" bash "${SHOW_REPORT}" all --field-shape-audit >/dev/null 2>&1 || rc=$?
 assert_eq "T1: exit 0 on clean ledger" "0" "${rc}"
-assert_contains "T1: clean banner emitted" "✅ clean" "${output}"
+assert_contains "T1: clean banner emitted" "## Result: clean" "${output}"
 assert_contains "T1: row count surfaced" "Audited 4" "${output}"
 
 # ----------------------------------------------------------------------
@@ -165,7 +165,7 @@ output="$(HOME="${TMP_HOME}" bash "${SHOW_REPORT}" all --field-shape-audit 2>&1 
 rc=0
 HOME="${TMP_HOME}" bash "${SHOW_REPORT}" all --field-shape-audit >/dev/null 2>&1 || rc=$?
 assert_eq "T8: non-typed gates exit 0" "0" "${rc}"
-assert_contains "T8: success banner" "✅ clean" "${output}"
+assert_contains "T8: success banner" "## Result: clean" "${output}"
 
 # ----------------------------------------------------------------------
 printf 'T9: empty ledger → exit 0 with empty-state message\n'
