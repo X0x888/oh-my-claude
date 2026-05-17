@@ -1841,7 +1841,13 @@ if [[ -n "${PRIOR_INSTALLED_VERSION}" ]] \
         sub(/^[^]]*\][[:space:]]*-?[[:space:]]*/, "", datepart)
         if (ver == prev) { exit }
         kept++
-        if (kept > 40) { truncated = 1; exit }
+        # v1.42.0: cap raised from 40 → 60. The project has accumulated
+        # 43 unique major.minor releases as of v1.42.0, pushing the
+        # previous cap into truncation on full-history spans. 60 gives
+        # ~17 minor-release headroom at current cadence (~1-2 years).
+        # Bump in lockstep with install.sh:1901 (collapsed cap) and
+        # tests/test-install-whats-new.sh Test 6 synthesizer (>60 needed).
+        if (kept > 60) { truncated = 1; exit }
         if (ver == "Unreleased") {
           printf "                   - %s\n", ver
         } else {
@@ -1898,7 +1904,8 @@ if [[ -n "${PRIOR_INSTALLED_VERSION}" ]] \
           flush()
           # Cap on UNIQUE minors emitted (was 40 per-patch; now 40 minors).
           minors_emitted++
-          if (minors_emitted > 40) { truncated = 1; exit }
+          # v1.42.0: cap raised 40 → 60 (lockstep with install.sh:1844).
+          if (minors_emitted > 60) { truncated = 1; exit }
           current_minor = minor
           current_count = 1
           current_first = ver

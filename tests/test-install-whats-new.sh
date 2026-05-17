@@ -89,7 +89,8 @@ extract_whats_new() {
       if (minor != current_minor) {
         flush()
         minors_emitted++
-        if (minors_emitted > 40) { truncated = 1; exit }
+        # v1.42.0: cap 40 → 60 (lockstep with install.sh:1901).
+        if (minors_emitted > 60) { truncated = 1; exit }
         current_minor = minor
         current_count = 1
         current_first = ver
@@ -121,7 +122,8 @@ extract_whats_new_verbose() {
       sub(/^[^]]*\][[:space:]]*-?[[:space:]]*/, "", datepart)
       if (ver == prev) { exit }
       kept++
-      if (kept > 40) { truncated = 1; exit }
+      # v1.42.0: cap 40 → 60 (lockstep with install.sh:1844).
+      if (kept > 60) { truncated = 1; exit }
       if (ver == "Unreleased") {
         printf "                   - %s\n", ver
       } else {
@@ -204,15 +206,17 @@ assert_contains "T5: 1.30.0 with date wrapped once" "1.30.0  (2026-06-01)" "${ou
 rm -f "${synthetic}"
 
 # ----------------------------------------------------------------------
-printf 'Test 6: 40-MINOR cap renders truncation marker when changelog has > 40 unique minors\n'
-# v1.36.0 (item #6): the cap is now per UNIQUE MINOR (X.Y) rather
-# than per individual patch. Synthesize 45 distinct minors (each with
-# 1 patch) to exercise the new cap — under collapsed mode this still
-# emits 45 lines so truncation fires at minor #41.
+printf 'Test 6: 60-MINOR cap renders truncation marker when changelog has > 60 unique minors\n'
+# v1.36.0 (item #6): the cap is per UNIQUE MINOR (X.Y) rather than
+# per individual patch. v1.42.0 (this commit): cap raised 40 → 60 to
+# accommodate the project's actual history span (43 unique minors at
+# v1.42.0, growing). Synthesize 65 distinct minors to exercise the
+# new cap — under collapsed mode this still emits 65 lines so
+# truncation fires at minor #61.
 synthetic="$(mktemp)"
 {
   printf '# Changelog\n\n'
-  for i in $(seq 45 -1 1); do
+  for i in $(seq 65 -1 1); do
     if [[ "${i}" -ge 10 ]]; then
       printf '## [9.%d.0] - 2026-01-15\n\nRelease %d.\n\n' "${i}" "${i}"
     else
@@ -225,12 +229,12 @@ truncation_count="$(printf '%s' "${out}" | grep -c "older entries" || true)"
 if [[ "${truncation_count}" -ge 1 ]]; then
   pass=$((pass + 1))
 else
-  printf '  FAIL: T6: cap-truncation marker missing for 45-minor changelog\n' >&2
+  printf '  FAIL: T6: cap-truncation marker missing for 65-minor changelog\n' >&2
   fail=$((fail + 1))
 fi
 # Count actual entry lines (those starting with "                   - 9.")
 entry_count="$(printf '%s' "${out}" | grep -c "^                   - 9\." || true)"
-assert_eq "T6: 40 minors kept before truncation" "40" "${entry_count}"
+assert_eq "T6: 60 minors kept before truncation" "60" "${entry_count}"
 rm -f "${synthetic}"
 
 # T6b — collapse: a changelog with 5 minors × 4 patches each = 20 entries
@@ -334,12 +338,16 @@ else
       fail=$((fail + 1))
     fi
 
-    # (b) Positive bound — kept-entry count is in [1, 30].
+    # (b) Positive bound — kept-entry count is in [1, 50].
+    # v1.42.0: bound raised 30 → 50 to track the cap bump (40 → 60 in
+    # install.sh). The project has 43+ unique minors as of v1.42.0; the
+    # whats-new view legitimately shows more lines than at v1.36.0 when
+    # the bound was set. 50 still keeps the view readable in a terminal.
     entry_count="$(printf '%s' "${out}" | grep -c "^                   - " || true)"
-    if [[ "${entry_count}" -ge 1 && "${entry_count}" -le 30 ]]; then
+    if [[ "${entry_count}" -ge 1 && "${entry_count}" -le 50 ]]; then
       pass=$((pass + 1))
     else
-      printf '  FAIL: T8(%s): entry count %d not in [1,30]\n' "${prior}" "${entry_count}" >&2
+      printf '  FAIL: T8(%s): entry count %d not in [1,50]\n' "${prior}" "${entry_count}" >&2
       fail=$((fail + 1))
     fi
   done
