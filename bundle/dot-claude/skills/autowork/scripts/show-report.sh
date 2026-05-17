@@ -674,15 +674,19 @@ if [[ "${FIELD_SHAPE_AUDIT}" -eq 1 ]]; then
   done < <(jq -c 'select(.gate=="bias-defense" and .event=="directive_fired")' "${_audit_window_jsonl}" 2>/dev/null)
 
   # ── Render result ────────────────────────────────────────────────
+  # v1.42.x F-016: replaced ✅/❌ with semantic words to honor the
+  # no-emoji discipline named in output-styles/oh-my-claude.md (every
+  # other oh-my-claude surface uses semantic words + bold weight, not
+  # decorative icons). Caught by the visual-craft lens.
   if [[ "${_violations}" -eq 0 ]]; then
-    printf '## Result: ✅ clean\n\n'
+    printf '## Result: clean\n\n'
     printf 'Every audited gate-event row matches its detail-field shape contract.\n\n'
     printf 'Gates with typed detail invariants checked: `state-corruption`, `wave-plan`, `finding-status`, `bias-defense`.\n'
     printf 'Other gates have no typed detail invariants today and are bounded only by the per-event 1024-char value cap (256 for state-corruption).\n'
     exit 0
   fi
 
-  printf '## Result: ❌ %d violation(s)\n\n' "${_violations}"
+  printf '## Result: %d violation(s)\n\n' "${_violations}"
   printf '_Each row below shows a gate event whose detail field violates its declared shape contract. Bug B-class leaks (positional misalignment dropping prompt-text into typed fields) appear here as values that fail their regex/enum/length contract._\n\n'
   printf '| Gate.event | Field | Expected | Got (excerpt) | ts |\n'
   printf '|---|---|---|---|---|\n'
@@ -1708,9 +1712,12 @@ if [[ -d "${state_root_for_decisions}" ]]; then
     # Per-file: for each pending/in_progress finding, compute age in days
     # and bucket it. jq returns a JSON object {b0:N,b1:N,b3:N,b7:N,oldest:N,total:N}
     # which we sum across files in shell.
+    # Post-W2-review hardening (F-011): `tonumber?` tolerates pre-F-010
+    # string-typed `ts` rows so the aging panel never silently drops
+    # findings.json files written under the old schema convention.
     bucket_obj="$(jq --argjson now "${_aging_now}" '
       [.findings[] | select(.status=="pending" or .status=="in_progress")
-                  | (($now - (.ts // .created_ts // $now)) / 86400 | floor)]
+                  | (($now - ((.ts // .created_ts // $now) | tonumber? // $now)) / 86400 | floor)]
       | {
           b0: (map(select(. < 1)) | length),
           b1: (map(select(. >= 1 and . < 3)) | length),

@@ -357,6 +357,9 @@ jobs:
       - name: Run cross-ledger ts-typing regression (F-010)
         run: bash tests/test-ts-typing.sh
 
+      - name: Run schema-versioning regression (F-009 + F-012 closeout)
+        run: bash tests/test-schema-versioning.sh
+
       - name: Run statusline tests
         run: python3 -m unittest tests.test_statusline -v
 

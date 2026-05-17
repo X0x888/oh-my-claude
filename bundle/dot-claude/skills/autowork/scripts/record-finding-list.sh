@@ -740,12 +740,15 @@ EOF
     fi
     # v1.42.x F-011: oldest pending/in_progress age — surfaces silent rot
     # under the v1.40.0 no-defer contract (failure mode shifts from
-    # "marked deferred" to "left pending forever"). Cap at 1d minimum so
-    # in-session ledgers (created moments ago) don't churn the line.
+    # "marked deferred" to "left pending forever"). Silent when no
+    # finding has aged past 1 day. Post-W2-review hardening: `tonumber?`
+    # tolerates pre-F-010 string-typed `ts` rows without jq-crashing;
+    # `jq -r` returns bare numbers for safer bash arithmetic.
     if [[ "${pending}" -gt 0 ]] || [[ "${in_progress}" -gt 0 ]]; then
       _now_epoch="$(date +%s)"
-      _oldest_ts="$(jq --argjson now "${_now_epoch}" '
-        [.findings[] | select(.status=="pending" or .status=="in_progress") | .ts // .created_ts // $now]
+      _oldest_ts="$(jq -r --argjson now "${_now_epoch}" '
+        [.findings[] | select(.status=="pending" or .status=="in_progress")
+                    | ((.ts // .created_ts // $now) | tonumber? // $now)]
         | if length > 0 then min else $now end
       ' "${FINDINGS_FILE}")"
       _age_days=$(( (_now_epoch - _oldest_ts) / 86400 ))
@@ -785,10 +788,12 @@ EOF
     # v1.42.x F-011: oldest pending/in_progress finding age in days. The
     # no-defer contract's silent-rot failure mode is invisible without
     # this — shipping ages defer-by-inaction across the threshold where
-    # a no-decision-yet finding becomes a stale orphan.
+    # a no-decision-yet finding becomes a stale orphan. Post-W2-review
+    # hardening: `tonumber?` tolerates pre-F-010 string-typed `ts` rows.
     _now_epoch="$(date +%s)"
-    oldest_pending_age_days="$(jq --argjson now "${_now_epoch}" '
-      [.findings[] | select(.status=="pending" or .status=="in_progress") | .ts // .created_ts // $now]
+    oldest_pending_age_days="$(jq -r --argjson now "${_now_epoch}" '
+      [.findings[] | select(.status=="pending" or .status=="in_progress")
+                  | ((.ts // .created_ts // $now) | tonumber? // $now)]
       | if length > 0 then ($now - min) / 86400 | floor else 0 end
     ' "${FINDINGS_FILE}")"
     printf 'total=%s shipped=%s deferred=%s rejected=%s in_progress=%s pending=%s user_decision=%s oldest_pending_age_days=%s\n' \

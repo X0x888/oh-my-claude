@@ -668,7 +668,7 @@ record_classifier_telemetry() {
   # by detect_classifier_misfire below; both shapes carry the same _v.
   local record
   record="$(jq -nc \
-    --arg ts "$(now_epoch)" \
+    --argjson ts "$(now_epoch)" \
     --arg intent "${intent}" \
     --arg domain "${domain}" \
     --arg prompt_preview "$(truncate_chars 200 "${prompt_preview}")" \
@@ -822,7 +822,7 @@ detect_classifier_misfire() {
 
   local record
   record="$(jq -nc \
-    --arg ts "$(now_epoch)" \
+    --argjson ts "$(now_epoch)" \
     --arg prior_ts "${prior_ts}" \
     --arg prior_intent "${prior_intent}" \
     --arg reason "${reason}" \

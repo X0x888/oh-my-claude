@@ -32,15 +32,28 @@ if [[ ! -d "${SCRIPTS_DIR}" ]]; then
   exit 2
 fi
 
-# Find every record-*.sh ledger-writer script. Exclude the SKILL.md and
-# any non-shell artifacts. Bash 3.2 portable (no `mapfile`).
+# Scan every script that writes JSONL/JSON rows with timestamps:
+# record-*.sh ledger writers + common.sh (the findings.json + alert
+# row writers at common.sh:6086 / 6173) + lib/canary.sh (canary
+# event rows) + lib/classifier.sh (classifier telemetry rows). The
+# v1.42.x post-Wave-2 review found the original scope was too narrow:
+# fixing only record-*.sh missed 6 sibling sites that emitted string
+# `ts` and broke cross-ledger numeric joins on shipped data.
 RECORD_SCRIPTS=()
 while IFS= read -r _f; do
   RECORD_SCRIPTS+=("${_f}")
 done < <(find "${SCRIPTS_DIR}" -maxdepth 1 -name 'record-*.sh' -type f | sort)
+if [[ -f "${SCRIPTS_DIR}/common.sh" ]]; then
+  RECORD_SCRIPTS+=("${SCRIPTS_DIR}/common.sh")
+fi
+if [[ -d "${SCRIPTS_DIR}/lib" ]]; then
+  while IFS= read -r _f; do
+    RECORD_SCRIPTS+=("${_f}")
+  done < <(find "${SCRIPTS_DIR}/lib" -maxdepth 1 -name '*.sh' -type f | sort)
+fi
 
 if [[ ${#RECORD_SCRIPTS[@]} -eq 0 ]]; then
-  printf >&2 'FAIL: no record-*.sh scripts found — test premise wrong\n'
+  printf >&2 'FAIL: no record-*.sh / common.sh / lib scripts found — test premise wrong\n'
   exit 2
 fi
 

@@ -6083,7 +6083,7 @@ extract_discovered_findings() {
         --arg sum "${summary}" \
         --arg sev "${severity}" \
         --arg cat "${category}" \
-        --arg ts "${now_ts}" \
+        --argjson ts "${now_ts}" \
         --argjson body "${normalized}" \
         '{_v:1, id:$id, source:$src, summary:$sum, severity:$sev, category:$cat, status:"pending", reason:"", ts:$ts, structured:$body}' \
         2>/dev/null || continue
@@ -6170,7 +6170,7 @@ extract_discovered_findings() {
       --arg src "${agent_name}" \
       --arg sum "${summary}" \
       --arg sev "${severity}" \
-      --arg ts "${now_ts}" \
+      --argjson ts "${now_ts}" \
       '{id:$id, source:$src, summary:$sum, severity:$sev, status:"pending", reason:"", ts:$ts}' \
       2>/dev/null || continue
   done <<<"${capped}"

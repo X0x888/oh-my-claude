@@ -271,7 +271,7 @@ canary_run_audit() {
 
   local row
   row="$(jq -nc \
-    --arg ts "$(now_epoch)" \
+    --argjson ts "$(now_epoch)" \
     --arg ps "${prompt_seq}" \
     --argjson cc "${claim_count}" \
     --argjson tc "${tool_count}" \
@@ -303,7 +303,7 @@ canary_run_audit() {
   local project_key
   project_key="$(_omc_project_key 2>/dev/null || printf 'unknown')"
   jq -nc \
-    --arg ts "$(now_epoch)" \
+    --argjson ts "$(now_epoch)" \
     --arg pk "${project_key}" \
     --arg sid "${session_id}" \
     --arg ps "${prompt_seq}" \
