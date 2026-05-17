@@ -216,28 +216,68 @@ class TestBarColor(unittest.TestCase):
 
 
 class TestMakeBar(unittest.TestCase):
-    def test_zero(self):
+    """v1.42.x F-018: make_bar unified on `█/░` block glyphs (matching
+    the time-card stacked bar in lib/timing.sh). Plain mode (NO_COLOR
+    or OMC_PLAIN set) keeps the `#/-` ASCII fallback so terminals that
+    can't render Unicode block characters still get a coherent bar.
+    Both shapes are tested below by stubbing `sl._PLAIN_MODE`.
+    """
+
+    def setUp(self):
+        # Snapshot original mode so each test starts in a known state.
+        self._orig_plain = sl._PLAIN_MODE
+
+    def tearDown(self):
+        sl._PLAIN_MODE = self._orig_plain
+
+    # --- color mode (default; Unicode block glyphs) ---
+
+    def test_zero_color(self):
+        sl._PLAIN_MODE = False
+        bar = sl.make_bar(0, width=10)
+        self.assertEqual(bar, "░" * 10)
+
+    def test_full_color(self):
+        sl._PLAIN_MODE = False
+        bar = sl.make_bar(100, width=10)
+        self.assertEqual(bar, "█" * 10)
+
+    def test_half_color(self):
+        sl._PLAIN_MODE = False
+        bar = sl.make_bar(50, width=10)
+        self.assertEqual(bar, ("█" * 5) + ("░" * 5))
+
+    # --- plain mode (NO_COLOR / OMC_PLAIN; ASCII fallback) ---
+
+    def test_zero_plain(self):
+        sl._PLAIN_MODE = True
         bar = sl.make_bar(0, width=10)
         self.assertEqual(bar, "----------")
 
-    def test_full(self):
+    def test_full_plain(self):
+        sl._PLAIN_MODE = True
         bar = sl.make_bar(100, width=10)
         self.assertEqual(bar, "##########")
 
-    def test_half(self):
+    def test_half_plain(self):
+        sl._PLAIN_MODE = True
         bar = sl.make_bar(50, width=10)
         self.assertEqual(bar, "#####-----")
 
+    # --- shape invariants (orientation-agnostic) ---
+
     def test_over_100(self):
         bar = sl.make_bar(150, width=10)
-        self.assertEqual(bar, "##########")
+        self.assertEqual(len(bar), 10)
 
     def test_negative(self):
         bar = sl.make_bar(-10, width=10)
-        self.assertEqual(bar, "----------")
+        self.assertEqual(len(bar), 10)
 
     def test_default_width(self):
         bar = sl.make_bar(50)
+        # In color mode the chars are multi-byte but len() counts code
+        # points, not bytes, so the width invariant holds.
         self.assertEqual(len(bar), 18)
 
 

@@ -1749,7 +1749,15 @@ printf '\n'
 # /ulw-time, show-status, and the welcome banner. Pre-Wave-5 used the
 # generic `=== title ===` form which reads as "default-Bash-tutorial"
 # in the visual-craft assessment.
-printf '─── oh-my-claude install complete ───\n'
+#
+# v1.42.x F-019 (visual-craft post-W2 review): honor OMC_PLAIN here for
+# parity with omc_box_rule_glyph (common.sh:4106). The installer can't
+# safely source common.sh (the install hasn't happened yet), so the
+# OMC_PLAIN branch is inlined for symmetry.
+case "${OMC_PLAIN:-}" in
+  1|on|true|yes) printf -- '--- oh-my-claude install complete ---\n' ;;
+  *) printf '─── oh-my-claude install complete ───\n' ;;
+esac
 printf '\n'
 printf '  Version:       %s\n' "${OMC_VERSION}"
 if [[ -n "${installed_sha}" ]]; then

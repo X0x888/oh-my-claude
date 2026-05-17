@@ -10,19 +10,56 @@ import tempfile
 import time
 
 
-RESET = "\033[0m"
-BOLD = "\033[1m"
-DIM = "\033[2m"
-WHITE = "\033[97m"
-CYAN = "\033[36m"
-YELLOW = "\033[33m"
-BLUE = "\033[34m"
-GREEN = "\033[32m"
-RED = "\033[31m"
-MAGENTA = "\033[35m"
+# v1.42.x F-020: honor NO_COLOR (the cross-tool de-facto standard;
+# https://no-color.org) and OMC_PLAIN (oh-my-claude project convention
+# used by install banner, time card, status summary). When either is
+# set to a non-empty value, color() becomes a passthrough and ASCII
+# glyphs replace Unicode where ambiguous. The check happens at module
+# import so the statusline doesn't recompute per render-tick.
+_PLAIN_MODE = bool(os.environ.get("NO_COLOR")) or bool(os.environ.get("OMC_PLAIN"))
+
+# Unicode glyphs that have plain-ASCII fallbacks. The drift-arrow ↑
+# and rate-limit ↑/↓ tokens previously had no fallback — on a LANG=C
+# terminal or a log-capture pipe they would render as `?`. Centralize
+# the fallback table here so future surfaces use the same shape.
+_GLYPH_FALLBACK = {
+    "↑": "^",  # ↑ → ^ (up-arrow: drift indicator, token-in counter)
+    "↓": "v",  # ↓ → v (down-arrow: token-out counter)
+}
+
+
+def glyph(unicode_char, override=None):
+    """Return `unicode_char` in normal mode, the ASCII fallback in plain mode.
+
+    `override` lets a caller provide a context-specific fallback that
+    beats the global table (e.g., ↑ → "+" makes sense in a drift label
+    but ↑ → "^" makes sense for a token counter).
+    """
+    if not _PLAIN_MODE:
+        return unicode_char
+    if override is not None:
+        return override
+    return _GLYPH_FALLBACK.get(unicode_char, unicode_char)
+
+
+RESET = "" if _PLAIN_MODE else "\033[0m"
+BOLD = "" if _PLAIN_MODE else "\033[1m"
+DIM = "" if _PLAIN_MODE else "\033[2m"
+WHITE = "" if _PLAIN_MODE else "\033[97m"
+CYAN = "" if _PLAIN_MODE else "\033[36m"
+YELLOW = "" if _PLAIN_MODE else "\033[33m"
+BLUE = "" if _PLAIN_MODE else "\033[34m"
+GREEN = "" if _PLAIN_MODE else "\033[32m"
+RED = "" if _PLAIN_MODE else "\033[31m"
+MAGENTA = "" if _PLAIN_MODE else "\033[35m"
 
 
 def color(text, code):
+    # v1.42.x F-020: in plain mode the codes are empty strings so the
+    # output is identical to the raw text; explicit guard avoids
+    # emitting bare RESET sequences when code happens to be empty.
+    if not code:
+        return text
     return f"{code}{text}{RESET}"
 
 
@@ -122,9 +159,19 @@ def bar_color(pct):
 
 
 def make_bar(pct, width=18):
+    """Render a horizontal usage bar.
+
+    v1.42.x F-018: unified on `█/░` (the block-glyph aesthetic used by
+    the time-card stacked bar in `lib/timing.sh`) so the brand-signature
+    block-glyph reads consistently across surfaces. `OMC_PLAIN`/
+    `NO_COLOR` mode falls back to `#/-` for terminals that can't render
+    Unicode block characters.
+    """
     pct = max(0, min(int(pct), 100))
     filled = round((pct / 100.0) * width)
-    return ("#" * filled) + ("-" * (width - filled))
+    if _PLAIN_MODE:
+        return ("#" * filled) + ("-" * (width - filled))
+    return ("█" * filled) + ("░" * (width - filled))
 
 
 def cache_path_for(cwd):
@@ -629,7 +676,7 @@ def main():
     line_two_parts = [
         color(make_bar(pct), usage_color),
         color(f"{pct:>3}% ctx", usage_color),
-        color(f"{format_tokens(total_in)}\u2191 {format_tokens(total_out)}\u2193", WHITE),
+        color(f"{format_tokens(total_in)}{glyph(chr(0x2191), '^')} {format_tokens(total_out)}{glyph(chr(0x2193), 'v')}", WHITE),
         cost_text,
         color(format_duration(total_duration_ms), BLUE),
     ]
