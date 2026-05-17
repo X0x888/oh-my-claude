@@ -196,6 +196,34 @@ echo "Used internally by the harness when prompts contain example markers (for i
 
 This bonus beat exists so new users see the v1.35.0+ defenses (bare-WHY rejection, weak-defer validator, exemplifying-scope checklist) before they hit them on real work.
 
+### Step 10c (v1.41.x): Optional bonus — the no-defer contract
+
+This beat shows the v1.40.0 contract that closes the "defer to a future session" failure mode. Print this banner on its own line first:
+
+```
+━━━ BEAT 10/10 · BONUS — no-defer contract (the v1.40.0 contract) ━━━
+```
+
+Tell the user:
+
+> The most load-bearing v1.40.0 change is that **defer is no longer a tool** under `/ulw` execution. When an advisory specialist (council lens, `metis`, `briefing-analyst`) surfaces a finding mid-session, the options collapse to three: **ship inline** (default for findings on a surface you're already loaded into), **wave-append** (for natural follow-on work), or **reject as not-a-defect** (with a concrete WHY — false positive, by design, duplicate, obsolete). `/mark-deferred` is REFUSED. The canonical `/ulw` user is not an expert coder; routing technical decisions back to them is the agent escaping responsibility, dressed as deference. This is the agent owning its judgment.
+>
+> **Why this exists:** the foundational framing is in `~/.claude/quality-pack/memory/core.md` under `Who /ulw is built for` — the canonical user is *result-oriented by design* (built the tool because they don't want to do the work themselves), so the agent making technical decisions on their behalf is the value prop, not a workaround.
+
+Show the contract is real without firing it:
+
+```bash
+echo "Under ULW execution (no_defer_mode=on default):"
+echo "  /mark-deferred → refused (skill exits with recovery message)"
+echo "  record-finding-list.sh status <id> deferred → refused (validator blocks)"
+echo "  stop-guard.sh → hard-blocks any findings.json entry with status=deferred"
+echo ""
+echo "Contract spec: ~/.claude/quality-pack/memory/core.md (\"The v1.40.0 no-defer contract\")"
+echo "Regression net: tests/test-no-defer-contract.sh"
+```
+
+This bonus beat exists so new users see the WHY behind every quality-gate block they'll hit on real work: the harness is enforcing the contract that the agent owns technical judgment instead of pushing it back to the user.
+
 ### Step 11: Clean up
 
 Remove `/tmp/omc-demo.sh`.

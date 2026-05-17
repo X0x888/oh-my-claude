@@ -105,17 +105,19 @@ The symptom-table above is a discovery shortcut. Each row maps to a skill in the
 - **Discovered-scope gate flagging findings you've consciously deferred?** Use `/mark-deferred <reason>` to bulk-defer all pending advisory findings with a recorded reason — keeps `/ulw-report` audits accurate.
 - **Blocked on an OPERATIONAL input only the user can supply?** Use `/ulw-pause <reason>` — credentials/login, external account, hard external blocker, destructive shared-state action awaiting confirmation, unfamiliar in-progress state. Under v1.40.0 `no_defer_mode=on` (default), taste/policy/credible-approach are NOT pause cases — the agent picks the sane default and ships. Distinct from `/ulw-skip` (one-shot gate bypass) and `/mark-deferred` (legacy soft-defer, disabled under ULW execution).
 
-### Deferral-verb decision tree (which one to use)
+### Deferral-verb decision tree
 
-Three skills, three different "I can't keep going" cases. Pick by symptom — they are NOT interchangeable:
+Three skills, three different "I can't keep going" cases — NOT interchangeable. The full decision tree (symptoms, when-NOT-to-use, validator-acceptable WHY shapes, v1.40.0 no-defer contract) is the canonical single source of truth in `~/.claude/quality-pack/memory/skills.md` → "Deferral-verb decision tree (which one to use)". That file loads into every session, so the model already has it; this page intentionally does not duplicate it.
 
-| Symptom | Skill |
+Quick reference (symptom → verb):
+
+| Symptom | Verb |
 |---|---|
-| Gate fired but the work is done — false positive | `/ulw-skip <reason>` |
-| Discovered-scope flagged real findings you're consciously NOT shipping | `/mark-deferred <named-WHY>` |
+| Gate fired but the work is genuinely done (false positive) | `/ulw-skip <reason>` |
+| Discovered-scope flagged real findings you're consciously NOT shipping *(v1.40.0: refused under ULW execution with default `no_defer_mode=on` — agent ships inline instead)* | `/mark-deferred <named-WHY>` |
 | Blocked on an OPERATIONAL input — credentials/login, hard external blocker, destructive shared-state action, unfamiliar in-progress state | `/ulw-pause <reason>` |
 
-**Escalation order before any of these fires:** ship inline → wave-append → defer-with-WHY → pause. The `/mark-deferred` validator rejects (1) bare silent-skip patterns (`out of scope` / `follow-up` / `later` / `low priority`) AND (2) **effort excuses** (v1.35.0) — `requires significant effort` / `needs more time` / `blocked by complexity` / `tracks to a future session` / `superseded by future work` — that name the WORK COSTS instead of an EXTERNAL blocker. Pass with `requires <X>`, `blocked by <Y>`, `awaiting <Z>`, `superseded by <id>`, or single tokens/phrases like `duplicate` / `obsolete` / `wontfix` / `n/a` / `not reproducible` / `false positive`. The complementary `shortcut_ratio_gate` (v1.35.0) catches the **pattern** of half-or-more deferrals on big plans even when each individual reason has a valid WHY.
+Escalation order before any of these fires: **ship inline** → **wave-append** → **reject-as-not-a-defect** → **pause-for-operational-block**. Under ULW with `no_defer_mode=on` (default), `/mark-deferred` is unavailable; the agent owns technical judgment and ships.
 - **Prior /ulw task killed by a Claude Code rate-limit window?** Use `/ulw-resume` — atomically claims the most relevant unclaimed `resume_request.json` for the current cwd (or matching project_key) and replays the original objective. The SessionStart resume-hint hook surfaces the artifact automatically; `/ulw-resume` is the explicit claim verb. Run `/ulw-resume --peek` to inspect first, `--list` to see all claimable artifacts.
 - **MEMORY.md feels noisy or the drift hint fired?** Use `/memory-audit` — classifies entries and proposes rollup moves without moving anything itself.
 - **Setting up a new repo?** Use `/atlas`.

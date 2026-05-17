@@ -10,7 +10,7 @@
 [![Dependencies](https://img.shields.io/badge/Dependencies-jq%20%2B%20rsync-brightgreen.svg)]()
 [![Tests](https://img.shields.io/badge/Tests-2200%2B-brightgreen.svg)](tests/)
 
-**Jump to:** [What changes after install](#what-changes-after-you-install) · [vs vanilla Claude Code](#how-is-this-different-from-vanilla-claude-code) · [Install](#quick-start) · [AI-assisted install](#ai-assisted-install) · [Feature highlights](#feature-highlights) · [Skills](#available-skills) · [Troubleshooting](#troubleshooting) · [FAQ](docs/faq.md) · [ohmyclaude.dev](https://ohmyclaude.dev)
+**Jump to:** [What changes after install](#what-changes-after-you-install) · [vs vanilla Claude Code](#how-is-this-different-from-vanilla-claude-code) · [Install](#quick-start) · [Skills](#available-skills) · [FAQ](docs/faq.md) · [ohmyclaude.dev](https://ohmyclaude.dev)
 
 > **Activate with `/ulw <task>` (ultrawork mode).** The harness classifies your prompt, routes specialists (different chain per domain — coding, writing, research, ops), runs reviewers, verifies the work, and refuses to stop early. You don't need to learn agent names.
 
@@ -81,10 +81,10 @@ Three skills, three different "I can't keep going" cases. NOT interchangeable:
 | Symptom | Verb |
 |---|---|
 | Gate fired but the work is genuinely complete (false positive) | `/ulw-skip <reason>` |
-| Discovered-scope flagged real findings you've consciously deferred *(legacy soft-defer — under ULW execution with default `no_defer_mode=on` the agent ships inline instead; opt out via `no_defer_mode=off`)* | `/mark-deferred <named-WHY>` |
+| Discovered-scope flagged real findings *(under ULW with default `no_defer_mode=on`: agent ships inline; opt out via `no_defer_mode=off` for legacy soft-defer)* | `/mark-deferred <named-WHY>` |
 | Blocked on a real operational input — credentials, login, infra down, rate limit hit | `/ulw-pause <reason>` |
 
-Escalation order before any of these fires (v1.40.0): ship inline → wave-append → reject-as-not-a-defect → pause-for-operational-block. Taste/policy/credible-approach calls are the agent's under ULW (`no_defer_mode=on`). Full decision tree in [`/skills`](#available-skills).
+Escalation order before any of these fires (v1.40.0): ship inline → wave-append → reject-as-not-a-defect → pause-for-operational-block. Taste/policy/credible-approach calls are the agent's under ULW (`no_defer_mode=on`). The full decision tree (symptoms, when-NOT-to-use, validator-acceptable WHY shapes) is the single source of truth in `~/.claude/quality-pack/memory/skills.md` — loaded into every session, so the model already has it; also surfaced via [`/skills`](#available-skills).
 
 Both install paths keep Claude Code's permission prompts on; once you trust the harness, [`--bypass-permissions`](#power-user-setup) removes them. Quality gates apply either way.
 
