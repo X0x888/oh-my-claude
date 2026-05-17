@@ -667,6 +667,32 @@ output="$(sim_stop "sg" "I've completed wave 1. The remaining work is ready for 
 
 assert_contains "seq-G: handoff blocked" '"decision":"block"' "${output}"
 assert_contains "seq-G: handoff reason" "deferred remaining work" "${output}"
+# v1.40.x-newer: block message must enumerate the new failure-mode
+# example phrasings ('in your next prompt' etc.) so the model sees
+# why the new shapes are also caught. If someone reverts the
+# stop-guard message but leaves the regex intact, the gate would
+# still fire — but with stale opaque prose; this assertion catches
+# that drift.
+assert_contains "seq-G: block lists 'in your next prompt' example" "in your next prompt" "${output}"
+teardown_test
+
+
+# -------------------------------------------------------
+# Sequence G2: v1.40.x-newer mid-iteration handoff phrasing blocked
+# -------------------------------------------------------
+# The reported failure had the model stop a mid-wave council session
+# at W6/16 with "Continue from there in your next prompt." This
+# locks the regex expansion + stop-guard wiring against the literal
+# reported failure phrase.
+setup_test
+init_session "sg2"
+sim_edit "sg2"
+sim_verify "sg2" "npm test" "Tests: 5 passed"
+sim_review "sg2" "Summary: Looks good."
+output="$(sim_stop "sg2" "Next. W7 (PortfolioPerformanceMetrics) is the highest-impact remaining wave per the user's core-feature recapitulation. Continue from there in your next prompt.")"
+
+assert_contains "seq-G2: in-your-next-prompt handoff blocked" '"decision":"block"' "${output}"
+assert_contains "seq-G2: block names the new failure shape" "in your next prompt" "${output}"
 teardown_test
 
 

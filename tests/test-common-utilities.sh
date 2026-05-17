@@ -338,6 +338,79 @@ assert_exit "within this session — no match" "1" \
 assert_exit "session-handoff (compound noun) — no match" "1" \
   has_unfinished_session_handoff "The session-handoff gate fires correctly."
 
+# v1.40.x-newer cross-session-handoff regression: the v1.40.x regex
+# caught "next session" / "future session" / "later session" but not
+# "next prompt" — slipping past on TWO axes. A real reported failure
+# had the model stop a mid-wave council session at W6/16 with the
+# literal phrase: "Continue from there in your next prompt." The
+# regex missed because:
+#   (1) article slot `(a |the |another )?` excluded possessive
+#       pronouns (your / my / our were ungrammatical to the gate)
+#   (2) noun was hardcoded `session`; the model's handoff phrasings
+#       also use prompt / turn / message / response (all
+#       future-invocation-context tokens with the same semantic
+#       shape).
+# These cases lock the gap closed.
+
+# Positive cases — must MATCH (gate fires)
+assert_exit "v1.40.x-newer: 'in your next prompt' (reported failure)" "0" \
+  has_unfinished_session_handoff "Continue from there in your next prompt."
+
+assert_exit "v1.40.x-newer: 'in your next turn' (sibling shape)" "0" \
+  has_unfinished_session_handoff "Pick this up in your next turn."
+
+assert_exit "v1.40.x-newer: 'for your next message' (alternate possessive)" "0" \
+  has_unfinished_session_handoff "Save the rest for your next message."
+
+assert_exit "v1.40.x-newer: 'in the next response' (article=the, noun=response)" "0" \
+  has_unfinished_session_handoff "I'll address W7 in the next response."
+
+assert_exit "v1.40.x-newer: 'in our next prompt' (article=our)" "0" \
+  has_unfinished_session_handoff "Deferred to our next prompt — too much for now."
+
+# Full reported failure phrasing — must MATCH end-to-end
+assert_exit "v1.40.x-newer: reported failure full text matches" "0" \
+  has_unfinished_session_handoff "Next. W7 (PortfolioPerformanceMetrics — TWR/MWR/drawdown + benchmark overlay) is the highest-impact remaining wave per the user's core-feature recapitulation. Continue from there in your next prompt."
+
+# False-positive guards — must NOT match. Bare "next prompt" / "next
+# turn" without preposition-anchor are legitimate non-handoff prose
+# in the harness's own corpus (e.g., classifier debug discussion,
+# docs explaining inter-turn behavior). Without preposition guards
+# these phrases would block-storm.
+assert_exit "bare 'next prompt' (no preposition): no match" "1" \
+  has_unfinished_session_handoff "Will check the next prompt for context."
+
+assert_exit "'into the next turn' (preposition=into, not in list): no match" "1" \
+  has_unfinished_session_handoff "Emits a one-line summary into the next turn's context."
+
+assert_exit "'on the next turn' (preposition=on, not in list): no match" "1" \
+  has_unfinished_session_handoff "Records misfires on the next turn when patterns appear."
+
+assert_exit "'this prompt' (no next/future adjective): no match" "1" \
+  has_unfinished_session_handoff "I'll handle that in this prompt itself."
+
+# ===========================================================================
+# is_checkpoint_request — iterate-N-times prompt locks no-bypass invariant
+# ===========================================================================
+printf 'is_checkpoint_request (iterate-N-times regression):\n'
+
+# v1.40.x-newer regression: the reported failure session was started
+# with "Iterate the above request 8 times and each time with a fresh
+# eye (clear the context with /new if you can)" — this is a council
+# multi-wave execution prompt with a META permission for the agent
+# to /new BETWEEN iterations. It is NOT a checkpoint request; the
+# imperative verb "Iterate" must trigger Phase 3's imperative guard
+# in is_checkpoint_request and short-circuit any Phase 5 keyword
+# matching on "/new" / "clear the context".
+# Without this guard, the gate would treat the entire session as
+# checkpoint-authorized and bypass session-handoff blocking even on
+# mid-iteration stops.
+assert_exit "iterate N times with /new — NOT a checkpoint (imperative wins)" "1" \
+  is_checkpoint_request "Iterate the above request 8 times and each time with a fresh eye (clear the context with /new if you can)"
+
+assert_exit "iterate 8x — NOT a checkpoint (no checkpoint keyword)" "1" \
+  is_checkpoint_request "Iterate 8 times with fresh context between iterations."
+
 # ===========================================================================
 # is_execution_intent_value
 # ===========================================================================

@@ -323,14 +323,21 @@ if [[ "${ulw_pause_active}" != "1" ]] \
     # FOR YOU message names the actual rationalization shapes the
     # regex now catches. ('fresh session' was excluded after FP audit
     # against ambient harness text.)
+    # v1.40.x-newer (mid-iteration handoff): example phrasings further
+    # expanded to include 'in your next prompt' and 'highest-impact
+    # remaining wave per the user's recapitulation' — both observed
+    # in a reported failure where the model stopped at W6/16 with 9
+    # waves still open. The regex now catches preposition-anchored
+    # shapes against prompt/turn/message/response nouns too, not just
+    # session.
     _handoff_block_tail=""
     if [[ "${_handoff_effective_exhaustion_mode}" == "block" && "${session_handoff_blocks}" -ge 2 ]]; then
       _handoff_block_tail=" BLOCK MODE: no-defer/zero-steering policy keeps blocking after the cap; continue the work, use /ulw-pause for a real operational blocker, or opt out of strict autonomy explicitly."
     fi
     emit_stop_block "$(format_gate_block_dual \
-      "Premature stop. Claude said something like 'next wave', 'for next session', 'candidates for next session', or 'ready for a new session', but the user did not ask for a checkpoint." \
-      "[Session-handoff gate · ${_handoff_next_block}/2] your last response deferred remaining work to a future session, but the user did not request a checkpoint.
-Continue the work now (do not stop with 'next wave', 'for next session', 'in a future session', 'candidates for next session', or 'ready for a new session' language). 'Multi-hour' / 'too heavy' / 'needs a fresh council' are rationalizations, not stop signals — chunk the work into more waves or dispatch a sub-agent (which has its own fresh context) and ship the next concrete sub-step now.${_handoff_block_tail}${handoff_recovery}")"
+      "Premature stop. Claude said something like 'next wave', 'for next session', 'in your next prompt', 'candidates for next session', or 'ready for a new session', but the user did not ask for a checkpoint." \
+      "[Session-handoff gate · ${_handoff_next_block}/2] your last response deferred remaining work to a future invocation, but the user did not request a checkpoint.
+Continue the work now (do not stop with 'next wave', 'for next session', 'in a future session', 'in your next prompt', 'continue from there in your next prompt', 'candidates for next session', or 'ready for a new session' language). 'Multi-hour' / 'too heavy' / 'needs a fresh council' / 'highest-impact remaining wave per the user's recapitulation' are rationalizations, not stop signals — chunk the work into more waves or dispatch a sub-agent (which has its own fresh context) and ship the next concrete sub-step now.${_handoff_block_tail}${handoff_recovery}")"
     exit 0
   fi
 fi

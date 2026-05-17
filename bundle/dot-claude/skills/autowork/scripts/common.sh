@@ -5662,7 +5662,60 @@ has_unfinished_session_handoff() {
   # separate) session", "next wave/phase", "wave/phase N is next" —
   # phrasing that names a future invocation context as the work
   # boundary.
-  grep -Eiq '\b(ready for a new session|ready for another session|continue in a new session|continue in another session|new session\b|another session\b|next wave\b|next phase\b|wave [0-9]+[^.!\n]* is next|phase [0-9]+[^.!\n]* is next|(for|to|in|until) (a |the |another )?(next|future|later|separate) session)\b' <<<"${text}"
+  #
+  # v1.40.x-newer (this revision): a second reported failure showed
+  # the model close a mid-wave council session at W6/16 with 9 waves
+  # still open. The literal stop phrase was:
+  #   "Next. W7 (...) is the highest-impact remaining wave per the
+  #    user's core-feature recapitulation. Continue from there in
+  #    your next prompt."
+  # The v1.40.x regex caught "next session" / "future session" but
+  # NOT "next prompt" — slipping past on two axes:
+  #   (1) the article slot `(a |the |another )?` excluded possessive
+  #       pronouns; "your" / "my" / "our" were ungrammatical to the
+  #       gate.
+  #   (2) the noun was hardcoded to `session`; the model's actual
+  #       handoff phrasings also use prompt / turn / message /
+  #       response — all "future invocation context" tokens with the
+  #       same semantic shape as session.
+  # Both gaps are closed below:
+  #   - Article alternation expanded to include
+  #     `your |my |our ` (the three possessive articles real handoff
+  #     prose uses). Bare `your/my/our` would over-match in
+  #     non-handoff contexts; the preposition-anchor + adjective gate
+  #     keeps the shape tight.
+  #   - Noun alternation expanded from `session` to
+  #     `(session|prompt|turn|message|response)`. The
+  #     preposition-anchored shape (for/to/in/until + optional
+  #     article + next/future/later/separate + noun) remains the
+  #     fingerprint; only the noun slot widens.
+  # The standalone tokens (`new session\b`, `another session\b`)
+  # deliberately did NOT expand to `new prompt\b` / `another
+  # prompt\b` — "new prompt" / "another prompt" appear in legitimate
+  # non-handoff prose (debugging-the-prompt context) at a rate the
+  # preposition-anchored form does not. The cross-session-handoff
+  # surface is preposition-anchored in practice; the rare standalone
+  # "new prompt" handoff is acceptable miss for the FP budget.
+  #
+  # Corpus FP audit (metis + quality-reviewer follow-up): one live
+  # ambient echo at `bundle/dot-claude/skills/ulw-correct/SKILL.md`
+  # ("in the next turn" in the body text) matched the new pattern;
+  # reworded to "on the next turn" in the same commit. CHANGELOG.md
+  # has two classes of residual hits, both intentionally left in
+  # place per the "don't rewrite history" convention: (a) the
+  # historical F-011 bullet describing PreToolUse + bare-affirmation
+  # capture ("prompts in the next turn"), and (b) the new
+  # Unreleased-entry self-quotes that document this very failure
+  # mode (the failure phrase, the rationalization shape, and the
+  # ulw-correct rewording). The Unreleased self-quotes are FINE —
+  # if the model echoes its own CHANGELOG entry verbatim in a stop
+  # summary, the gate blocking it is the CORRECT outcome (the
+  # entry IS the documented failure phrase). The historical F-011
+  # bullet has low probability of verbatim echo in a stop summary;
+  # /ulw-skip is the recovery if it ever fires. The comment
+  # deliberately does NOT cite line numbers — CHANGELOG.md grows
+  # with each release and line-anchored callouts rot fast.
+  grep -Eiq '\b(ready for a new session|ready for another session|continue in a new session|continue in another session|new session\b|another session\b|next wave\b|next phase\b|wave [0-9]+[^.!\n]* is next|phase [0-9]+[^.!\n]* is next|(for|to|in|until) (a |the |another |your |my |our )?(next|future|later|separate) (session|prompt|turn|message|response))\b' <<<"${text}"
 }
 
 

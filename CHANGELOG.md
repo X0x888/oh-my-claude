@@ -4,6 +4,86 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Session-handoff gate: catch "in your next prompt" / mid-iteration handoff (v1.40.x-newer)
+
+A reported failure had a multi-wave council session stop at W6/16 with
+9 waves still open. The model's literal stop phrase was:
+
+> "Next. W7 (...) is the highest-impact remaining wave per the user's
+> core-feature recapitulation. Continue from there in your next prompt."
+
+The v1.40.x session-handoff gate caught preposition-anchored
+`for|to|in|until + (a|the|another)? + (next|future|later|separate) +
+session` shapes but missed this one on TWO axes: (1) the article slot
+excluded possessive pronouns (`your` / `my` / `our`), and (2) the
+noun was hardcoded to `session` — the model's actual handoff prose
+also uses `prompt` / `turn` / `message` / `response` (all
+future-invocation-context tokens with the same semantic shape).
+
+**Mechanical fix.** The regex in
+`bundle/dot-claude/skills/autowork/scripts/common.sh`
+(`has_unfinished_session_handoff`) now matches:
+
+```
+for|to|in|until
+  + (a |the |another |your |my |our )?
+  + next|future|later|separate
+  + (session|prompt|turn|message|response)
+```
+
+The standalone `new session\b` / `another session\b` tokens were
+deliberately NOT extended to `new prompt\b` / `another prompt\b` —
+those appear in legitimate debugging-the-prompt prose at a rate the
+preposition-anchored form does not. The gate stays preposition-
+anchored for non-session nouns.
+
+**Behavioral fix.** `bundle/dot-claude/quality-pack/memory/core.md`
+rationalization catalog (bullet 4) now names two rhetorical shapes
+beyond the literal "Candidates for next session" phrasings:
+
+- **Triage-as-stop** — ranking remaining work ("highest-impact
+  remaining wave per the user's recapitulation") is itself a
+  stop-intent signal; the right move is to pick the top-ranked item
+  and ship its next concrete sub-step, then re-rank.
+- **Resumption-instruction** — writing "Continue from there in your
+  next prompt" is the failure; chunking-and-shipping is the recovery.
+  Replace the sentence with the first concrete tool call of that
+  continuation.
+
+Also clarified **iteration-boundary vs wave-boundary confusion**:
+when a user grants checkpoint permission at a META boundary
+("iterate N times with /new between iterations"), that permission
+applies *between full iterations*, never *mid-iteration*. The wave
+list inside one iteration is not the iteration list.
+
+**Corpus FP audit.** One live ambient echo (`ulw-correct/SKILL.md:8`
+"in the next turn") would have false-positive under the new regex;
+reworded to "on the next turn" in the same change. CHANGELOG.md has
+the same phrase in a historical release note — left as-is per the
+don't-rewrite-history convention; probability of being echoed
+verbatim in a stop summary is low and `/ulw-skip` is the recovery
+if it ever fires.
+
+**Tests.** `tests/test-common-utilities.sh` adds 6 positive cases
+(including the full reported-failure phrase end-to-end) + 4 FP
+guards + 2 `is_checkpoint_request` regression tests locking the
+"iterate N times" prompt as NOT a checkpoint (imperative guard
+wins).
+
+**Files touched:**
+
+- `bundle/dot-claude/skills/autowork/scripts/common.sh` — regex
+  expansion + comment block documenting v1.40.x-newer rationale.
+- `bundle/dot-claude/skills/autowork/scripts/stop-guard.sh` — block-
+  error message examples updated to name the new shapes.
+- `bundle/dot-claude/quality-pack/memory/core.md` — rationalization
+  catalog extended with triage-as-stop, resumption-instruction, and
+  iteration-vs-wave-boundary patterns; gate description updated to
+  reflect new noun + article set.
+- `bundle/dot-claude/skills/ulw-correct/SKILL.md` — "in the next
+  turn" → "on the next turn" (close the only ambient FP echo).
+- `tests/test-common-utilities.sh` — regression tests.
+
 ## [1.42.0] - 2026-05-17
 
 ### Council-driven 4-wave follow-up (24 findings; 16 shipped, 8 closed not-a-defect)

@@ -5,7 +5,7 @@ argument-hint: <correction reason — optionally include "intent=X" and/or "doma
 ---
 # Correct a ULW Misclassification
 
-Tell the harness "the last turn was misclassified" with a short reason. The classifier's `detect_classifier_misfire` is passive — it only records misfires when it sees blocks or bare-affirmation patterns in the next turn. This skill is the active counterpart: a one-button "this is wrong, here's the correction" verb so you don't have to rephrase three ways or learn the classifier's mental model.
+Tell the harness "the last turn was misclassified" with a short reason. The classifier's `detect_classifier_misfire` is passive — it only records misfires on the next turn when it sees blocks or bare-affirmation patterns. This skill is the active counterpart: a one-button "this is wrong, here's the correction" verb so you don't have to rephrase three ways or learn the classifier's mental model.
 
 ## Usage
 
