@@ -1222,11 +1222,17 @@ _make_repo_with_commits() {
   git -C "${dir}" config user.email "test@example.com"
   git -C "${dir}" config user.name "Test"
   git -C "${dir}" config commit.gpgsign false
+  # v1.42.0 post-release fix: use --allow-empty to skip the per-iteration
+  # `printf + git add` cycle. The 300-commit test cases were timing-out
+  # on Ubuntu CI (`git rev-list --count HEAD` returned 0, classifier
+  # fell to "unknown"); reducing each iteration from 3 git invocations
+  # to 1 brings the 300-commit setup well under any reasonable per-test
+  # budget. classify_project_maturity itself only inspects commit count
+  # via `git rev-list --count HEAD` — empty vs non-empty commits are
+  # indistinguishable to the function, so test fidelity is preserved.
   local i
   for ((i = 0; i < commits; i++)); do
-    printf 'commit %d\n' "${i}" > "${dir}/file.txt"
-    git -C "${dir}" add file.txt
-    git -C "${dir}" commit -q -m "commit ${i}" --no-verify --no-gpg-sign
+    git -C "${dir}" commit -q --allow-empty -m "commit ${i}" --no-verify --no-gpg-sign
   done
 }
 
