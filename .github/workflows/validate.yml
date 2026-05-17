@@ -354,6 +354,9 @@ jobs:
       - name: Run W4 flag coordination v1.40 regression
         run: bash tests/test-w4-flag-coordination.sh
 
+      - name: Run cross-ledger ts-typing regression (F-010)
+        run: bash tests/test-ts-typing.sh
+
       - name: Run statusline tests
         run: python3 -m unittest tests.test_statusline -v
 

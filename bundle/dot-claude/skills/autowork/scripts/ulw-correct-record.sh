@@ -82,7 +82,7 @@ prompt_safe="$(printf '%s' "${prior_prompt}" | omc_redact_secrets | tr -d '\000'
 
 # Per-session row.
 session_row="$(jq -nc \
-  --arg ts "${ts}" \
+  --argjson ts "${ts}" \
   --arg prior_intent "${prior_intent}" \
   --arg prior_domain "${prior_domain}" \
   --arg corrected_intent "${corrected_intent}" \
@@ -107,7 +107,7 @@ append_state "classifier_telemetry.jsonl" "${session_row}"
 cross_file="${HOME}/.claude/quality-pack/classifier_misfires.jsonl"
 mkdir -p "$(dirname "${cross_file}")" 2>/dev/null || true
 cross_row="$(jq -nc \
-  --arg ts "${ts}" \
+  --argjson ts "${ts}" \
   --arg sid "${SESSION_ID}" \
   --arg prior_intent "${prior_intent}" \
   --arg prior_domain "${prior_domain}" \

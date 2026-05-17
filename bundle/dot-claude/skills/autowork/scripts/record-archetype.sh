@@ -77,7 +77,7 @@ while IFS= read -r line || [[ -n "${line}" ]]; do
   # v1.36.x W2 F-010: schema_version (_v:1) for future migrations.
   # Convention shared with gate_events, serendipity-log, classifier_misfires.
   record="$(jq -nc \
-    --arg ts "${ts}" \
+    --argjson ts "${ts}" \
     --arg session "${SESSION_ID}" \
     --arg pkey "${project_key}" \
     --arg arch "${archetype}" \

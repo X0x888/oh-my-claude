@@ -960,6 +960,28 @@ else
     printf -- '- `%s` × %s\n' "${_safe_reason}" "${n}"
   done
   printf '\n'
+
+  # v1.42.x F-008 (closed-loop classifier insight): cluster misfires by
+  # the (prior → corrected) intent/domain pair so the user can see which
+  # classification shape is the most recurring source of pain. This is
+  # the passive surface of the closed-loop feedback the data-lens flagged
+  # as missing — without it, /ulw-correct is write-only telemetry.
+  # Router-side injection (use these patterns to bias next classification)
+  # is a deliberate future scope: ship the insight first, validate it
+  # against real data over a release, then wire if the patterns hold.
+  _pattern_lines="$(printf '%s\n' "${misfire_rows}" \
+    | jq -r 'select((.corrected_by_user // false) == true)
+              | "\(.prior_intent // "?")/\(.prior_domain // "?") -> \(.corrected_intent // "?")/\(.corrected_domain // "?")"' \
+    | sort | uniq -c | sort -rn | head -3)"
+  if [[ -n "${_pattern_lines}" ]]; then
+    printf 'Top user-corrected misfire patterns *(prior intent/domain → corrected)*:\n\n'
+    printf '%s\n' "${_pattern_lines}" | while read -r _pn _ppat; do
+      [[ -z "${_ppat}" ]] && continue
+      printf -- '- `%s` × %s\n' "${_ppat}" "${_pn}"
+    done
+    printf '\n_A pattern recurring ≥3 times is a candidate for codification in `lib/classifier.sh` (the active feedback loop; this panel is the passive surface)._\n\n'
+  fi
+
   _intp_misfires="${count}"
 fi
 
@@ -1662,6 +1684,70 @@ else
     printf '%s\n' "${pending_ud_rows}" | jq -r \
       '"| \(.sid[0:8]) | \(.id) | \(.surface) | \(.reason) |"'
     printf '\n'
+  fi
+fi
+
+# ----------------------------------------------------------------------
+# Section 4.5 (v1.42.x F-011): Pending-finding aging panel.
+#
+# The v1.40.0 no-defer contract closed the "marked deferred" escape but
+# the silent-rot mode shifted to "left pending forever". This panel
+# surfaces the age distribution of currently-pending or in_progress
+# findings across all sessions in the state root, so the user sees rot
+# accumulating before it becomes an emergency.
+#
+# Buckets: [0-1d, 1-3d, 3-7d, 7d+]. Silent when zero pending exist.
+printf '## Pending-finding aging\n\n'
+_ab0=0; _ab1=0; _ab3=0; _ab7=0
+aging_oldest_days=0
+aging_total=0
+if [[ -d "${state_root_for_decisions}" ]]; then
+  _aging_now="$(date +%s)"
+  while IFS= read -r findings_path; do
+    [[ -f "${findings_path}" ]] || continue
+    # Per-file: for each pending/in_progress finding, compute age in days
+    # and bucket it. jq returns a JSON object {b0:N,b1:N,b3:N,b7:N,oldest:N,total:N}
+    # which we sum across files in shell.
+    bucket_obj="$(jq --argjson now "${_aging_now}" '
+      [.findings[] | select(.status=="pending" or .status=="in_progress")
+                  | (($now - (.ts // .created_ts // $now)) / 86400 | floor)]
+      | {
+          b0: (map(select(. < 1)) | length),
+          b1: (map(select(. >= 1 and . < 3)) | length),
+          b3: (map(select(. >= 3 and . < 7)) | length),
+          b7: (map(select(. >= 7)) | length),
+          oldest: (if length > 0 then max else 0 end),
+          total: length
+        }' "${findings_path}" 2>/dev/null || printf '{"b0":0,"b1":0,"b3":0,"b7":0,"oldest":0,"total":0}')"
+    b0="$(jq -r '.b0' <<<"${bucket_obj}")"
+    b1="$(jq -r '.b1' <<<"${bucket_obj}")"
+    b3="$(jq -r '.b3' <<<"${bucket_obj}")"
+    b7="$(jq -r '.b7' <<<"${bucket_obj}")"
+    _oldest="$(jq -r '.oldest' <<<"${bucket_obj}")"
+    _total="$(jq -r '.total' <<<"${bucket_obj}")"
+    _ab0=$((_ab0 + b0))
+    _ab1=$((_ab1 + b1))
+    _ab3=$((_ab3 + b3))
+    _ab7=$((_ab7 + b7))
+    aging_total=$((aging_total + _total))
+    if (( _oldest > aging_oldest_days )); then
+      aging_oldest_days=${_oldest}
+    fi
+  done < <(find "${state_root_for_decisions}" -name 'findings.json' -type f 2>/dev/null)
+fi
+
+if [[ "${aging_total}" -eq 0 ]]; then
+  printf '_No pending/in-progress findings in any tracked session — no rot._\n\n'
+else
+  printf '%d pending/in-progress finding(s) across all sessions; oldest is %d day(s) old.\n\n' \
+    "${aging_total}" "${aging_oldest_days}"
+  printf '| Age | Count |\n|---|---:|\n'
+  printf '| 0-1d (fresh) | %d |\n' "${_ab0}"
+  printf '| 1-3d | %d |\n' "${_ab1}"
+  printf '| 3-7d | %d |\n' "${_ab3}"
+  printf '| 7d+ (rot risk) | %d |\n\n' "${_ab7}"
+  if [[ "${aging_oldest_days}" -ge 7 ]]; then
+    printf '_Findings older than 7 days under the v1.40.0 no-defer contract usually mean an active session never returned to triage them. Run `record-finding-list.sh show` in the relevant session, then ship/reject/wave-append each pending entry._\n\n'
   fi
 fi
 

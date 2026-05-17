@@ -35,7 +35,7 @@ description="$(json_get '.tool_input.description')"
 description="$(truncate_chars 260 "${description}")"
 
 pending_entry="$(jq -nc \
-  --arg ts "$(now_epoch)" \
+  --argjson ts "$(now_epoch)" \
   --arg agent_type "${subagent_type}" \
   --arg description "${description}" \
   '{ts:$ts,agent_type:$agent_type,description:$description}')"

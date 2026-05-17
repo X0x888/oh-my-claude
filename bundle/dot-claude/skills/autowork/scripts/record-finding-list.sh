@@ -710,9 +710,13 @@ EOF
 
   status-line)
     # Single human-readable status line for in-session progress visibility.
-    # Format: "Findings: <shipped>/<total> shipped · <waves_completed>/<wave_total> waves · <pending> pending [· avg <N>/wave]"
+    # Format: "Findings: <shipped>/<total> shipped · <waves_completed>/<wave_total> waves · <pending> pending [· oldest pending <N>d] [· avg <N>/wave]"
     # The avg/wave suffix appears only when a wave plan is active. Trailing
     # warnings ("⚠ under-segmented") are appended when the predicate matches.
+    # The oldest-pending-age token (v1.42.x F-011) appears only when at
+    # least one pending/in_progress finding has aged past 1 day — silent
+    # when everything is fresh; loud when the no-defer contract has let
+    # findings rot without explicit decisions.
     if [[ ! -f "${FINDINGS_FILE}" ]]; then
       printf 'Findings: no plan yet (run record-finding-list.sh init to start)\n'
       exit 0
@@ -733,6 +737,21 @@ EOF
     fi
     if [[ "${deferred}" -gt 0 ]]; then
       line+=" · ${deferred} deferred"
+    fi
+    # v1.42.x F-011: oldest pending/in_progress age — surfaces silent rot
+    # under the v1.40.0 no-defer contract (failure mode shifts from
+    # "marked deferred" to "left pending forever"). Cap at 1d minimum so
+    # in-session ledgers (created moments ago) don't churn the line.
+    if [[ "${pending}" -gt 0 ]] || [[ "${in_progress}" -gt 0 ]]; then
+      _now_epoch="$(date +%s)"
+      _oldest_ts="$(jq --argjson now "${_now_epoch}" '
+        [.findings[] | select(.status=="pending" or .status=="in_progress") | .ts // .created_ts // $now]
+        | if length > 0 then min else $now end
+      ' "${FINDINGS_FILE}")"
+      _age_days=$(( (_now_epoch - _oldest_ts) / 86400 ))
+      if [[ "${_age_days}" -ge 1 ]]; then
+        line+=" · oldest pending ${_age_days}d"
+      fi
     fi
     if [[ "${wave_total}" -gt 0 ]]; then
       line+=" · ${waves_completed}/${wave_total} waves"
@@ -763,8 +782,17 @@ EOF
     # in_progress). Once a finding is shipped/deferred/rejected, the
     # user-decision flag is informational history, not actionable status.
     user_decision="$(jq '[.findings[]|select((.requires_user_decision // false) == true and (.status=="pending" or .status=="in_progress"))]|length' "${FINDINGS_FILE}")"
-    printf 'total=%s shipped=%s deferred=%s rejected=%s in_progress=%s pending=%s user_decision=%s\n' \
-      "${total}" "${shipped}" "${deferred}" "${rejected}" "${in_progress}" "${pending}" "${user_decision}"
+    # v1.42.x F-011: oldest pending/in_progress finding age in days. The
+    # no-defer contract's silent-rot failure mode is invisible without
+    # this — shipping ages defer-by-inaction across the threshold where
+    # a no-decision-yet finding becomes a stale orphan.
+    _now_epoch="$(date +%s)"
+    oldest_pending_age_days="$(jq --argjson now "${_now_epoch}" '
+      [.findings[] | select(.status=="pending" or .status=="in_progress") | .ts // .created_ts // $now]
+      | if length > 0 then ($now - min) / 86400 | floor else 0 end
+    ' "${FINDINGS_FILE}")"
+    printf 'total=%s shipped=%s deferred=%s rejected=%s in_progress=%s pending=%s user_decision=%s oldest_pending_age_days=%s\n' \
+      "${total}" "${shipped}" "${deferred}" "${rejected}" "${in_progress}" "${pending}" "${user_decision}" "${oldest_pending_age_days}"
     ;;
 
   summary)

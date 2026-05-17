@@ -25,7 +25,7 @@ ensure_session_dir
 SUMMARY_MESSAGE_SAFE="$(printf '%s' "${LAST_ASSISTANT_MESSAGE}" | omc_redact_secrets | tr -d '\000')"
 append_limited_state \
   "subagent_summaries.jsonl" \
-  "$(jq -nc --arg ts "$(now_epoch)" --arg agent_type "${AGENT_TYPE}" --arg message "${SUMMARY_MESSAGE_SAFE}" '{ts:$ts,agent_type:$agent_type,message:$message}')" \
+  "$(jq -nc --argjson ts "$(now_epoch)" --arg agent_type "${AGENT_TYPE}" --arg message "${SUMMARY_MESSAGE_SAFE}" '{ts:$ts,agent_type:$agent_type,message:$message}')" \
   "16"
 
 # Agent-first invariant: under /ulw execution the main thread should not
