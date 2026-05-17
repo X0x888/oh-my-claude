@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-## [v1.42.0] — 2026-05-17
+## [1.42.0] - 2026-05-17
 
 ### Council-driven 4-wave follow-up (24 findings; 16 shipped, 8 closed not-a-defect)
 
