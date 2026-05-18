@@ -4,6 +4,56 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Council-driven post-v1.42.x evaluation — Wave 4: bypass-taxonomy doc (v1.43-pre)
+
+**Wave 4/5 — Standalone bypass-surface taxonomy (1 oracle
+underweight-strength).** Lifted the four-category bypass-surface
+taxonomy (state-predicate / prose-pattern / single-call-flip /
+classifier-misroute) from `AGENTS.md:278-291` into a standalone,
+project-independent reference at `docs/bypass-taxonomy.md`.
+
+The oracle audit framed this as the project's underweighted moat — the
+taxonomy is rare-earth (no other quality harness has anything like
+it), born of the harness's own failure dataset across hundreds of
+sessions of telemetry-observed + preventive defenses. Burying it
+inside AGENTS.md (a developer guide) made it both undiscoverable for
+external users and harder to reference from external work.
+
+The new doc is structured as a field guide a maintainer of any
+quality harness can adopt without taking the rest of oh-my-claude:
+
+- **Why a taxonomy** — the two failure modes uncategorized defense
+  codebases drift into (quietly homogeneous; impossible to reason
+  about the mix).
+- **The four categories** — table with enforcement axis, examples,
+  and tradeoff per category.
+- **Application rule** — when proposing a new defense, name its
+  category; if prose-pattern and the live count is already ≥3,
+  justify why no state-predicate alternative exists.
+- **Why this matters** — the abstraction-critic v1.42.x lens result
+  that prose-pattern defenses scale through ~12-15 then collapse
+  under FP-audit burden, and how the taxonomy converts the question
+  from tactical to structural.
+- **Practical use** — "when to reach for which category" guide.
+- **Current defense inventory** — 2 prose-pattern + 3 single-call-flip
+  + 2 state-predicate as of v1.42.x — intentionally biased toward
+  durable categories.
+
+AGENTS.md trimmed to a short cross-reference + short-form application
+rule (keeps the developer-guide use case without duplicating content).
+README.md "Documentation" section adds a direct link with one-line
+summary so external users find it from the project entry point.
+
+Regression net: `test-stop-guard-bypass-surface.sh` gains 7 new
+assertions pinning (a) the doc's existence, (b) all four category
+names present in the doc, (c) AGENTS.md still cross-references the
+doc (lift, not orphan), (d) README.md docs index links to it.
+
+Files changed: new `docs/bypass-taxonomy.md`, `AGENTS.md` (full
+taxonomy → cross-reference + short-form rule), `README.md` (added to
+docs index), `tests/test-stop-guard-bypass-surface.sh` (+7
+sentinels).
+
 ### Council-driven post-v1.42.x evaluation — Wave 3: no-defer FP observability (v1.43-pre)
 
 **Wave 3/5 — No-defer contract observability (1 oracle finding).**

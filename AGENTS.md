@@ -273,25 +273,34 @@ The capture wiring uses no per-agent matcher (Approach A in the plan), so adding
 
 **Silent-disarm telemetry.** When a whitelisted specialist returns more than 800 characters but the heuristic extractor catches zero findings, `record-subagent-summary.sh` writes a `[anomaly]` row via `log_anomaly`. This makes prose-style drift (specialist drops a `### Findings` heading, switches to prose-only output) visible instead of silently disabling the gate.
 
-#### Bypass-surface taxonomy (v1.42.x-newer)
+#### Bypass-surface taxonomy (v1.42.x-newer, lifted to `docs/bypass-taxonomy.md` in v1.43)
 
-The v1.42.x stop-guard bypass-closure work added seven mechanical defenses + one umbrella regression net to close paths the agent was using to clear the quality gates without finishing work. As the defense list grows, the cognitive load + FP-audit burden on each new defense rises. To keep the pattern sustainable, **every new bypass defense MUST declare which category it operates in**. This puts an explicit budget on the most fragile category (prose-pattern) and steers new defenses toward the more durable categories.
+The four-category framework for stop-guard bypass defenses
+(**state-predicate**, **prose-pattern**, **single-call-flip**,
+**classifier-misroute**) is documented at full length in
+**[`docs/bypass-taxonomy.md`](docs/bypass-taxonomy.md)** — a standalone,
+project-independent reference. The v1.42.x bypass-closure work added
+seven mechanical defenses + one umbrella regression net
+(`tests/test-stop-guard-bypass-surface.sh`).
 
-| Category | Enforcement axis | Example defenses | Tradeoff |
-|---|---|---|---|
-| **state-predicate** | Reads ledgered state (findings.json, discovered_scope.jsonl, edit-clock, gate_events.jsonl). The agent's prose is irrelevant; only state-transition completeness gates the stop. | `advisory_no_findings_gate` (advisory dispatches without findings); `ulw-skip post-edit refusal` (review_had_findings=true AND last_edit_ts > last_review_ts) | Highest durability — open-vocabulary prose drift cannot bypass. Cost: requires every "remaining work" surface to be ledgered upstream. |
-| **prose-pattern** | Regex on the agent's last assistant message. Inspects free-form natural-language output for handoff vocabulary, rationalization phrasings, missing closure labels. | `has_unfinished_session_handoff` regex; `has_closeout_label` closing-region scan; rationalization catalog in `core.md`. | Lowest durability — the open-vocabulary surface guarantees phrasing drift. Cost: every defense adds 1 noun/adjective/idiom slot AND requires a FP-audit pass. **Hard cap: max ~3 active prose-pattern defenses in the live set. New prose-pattern proposals must demonstrate why a state-predicate alternative isn't viable.** |
-| **single-call-flip** | Refuses a specific script invocation that would atomically flip the work into a bypassable state in one shell call. Examples: mid-turn `task_intent` downgrade via `ulw-correct-record`, `record-finding-list status rejected` with subjective tokens. | Intent-downgrade refusal (edit-clock check); rejected-token tightening (deny-list pruning). | Medium durability — surface is small (the call site itself) but the input vocabulary can be open. Cost: input validator must be tight enough not to under-fire AND loose enough not to block legitimate paths. |
-| **classifier-misroute** | Catches prompts whose router classification doesn't match the work being done. Example: an advisory-classified prompt that authorizes a destructive tool call. | `prompt_text_override` audit + `intent-flip` backstop; `prompt_classified_intent` write at the router. | Medium-high durability — anchored to the per-prompt classifier output the router writes once and doesn't mutate mid-turn. Cost: classifier vocabulary must keep pace with new authorization phrasings (Tier 7+ in the imperative pattern set). |
-
-**Application rule.** When proposing a new defense:
+**Application rule (short form — full version in the standalone doc):**
 
 1. Name the category in the design doc / CHANGELOG entry.
-2. If the proposal is **prose-pattern** and the live count is already ≥3, the proposal MUST first attempt a state-predicate alternative. If none exists, that justification goes in the CHANGELOG so the next reviewer can challenge it.
-3. The umbrella regression net (`tests/test-stop-guard-bypass-surface.sh`) must add coverage in the same commit per the existing coordination rule.
-4. FP-audit notes (which ambient harness text the new regex/validator might match) go in a comment block at the call site so future cleanup waves know what to keep.
+2. If the proposal is **prose-pattern** and the live count is already
+   ≥3, the proposal MUST first attempt a state-predicate alternative.
+   If none exists, the justification goes in CHANGELOG so the next
+   reviewer can challenge it.
+3. The umbrella regression net must add coverage in the same commit
+   per the existing coordination rule.
+4. FP-audit notes go in a comment block at the call site so future
+   cleanup waves know what to keep.
 
-**Why this matters.** The abstraction-critic Wave 0 lens (v1.42.x-newer council) flagged the seven-defense framing as scalable through ~12-15 defenses then collapsing under FP-audit burden — not because the umbrella test fails to scale (it does, mechanically) but because each prose-pattern defense expands the cognitive surface the next session must reason about when choosing recovery paths. The taxonomy converts "should we add another regex?" from a tactical decision into a structural one.
+The taxonomy converts *"should we add another regex?"* from a tactical
+decision into a structural one. See the standalone doc for the
+four-category table, current defense inventory (2 prose-pattern + 3
+single-call-flip + 2 state-predicate as of v1.42.x — biased toward the
+durable categories), and the "when to reach for which category"
+practical guide.
 
 - Agent `model:` assignments (`opus` or `sonnet`) are set in the bundle but can be overridden at install time via `--model-tier`. The installer rewrites the `model:` line after copying. When adding a new agent, assign `model: opus` for complex reasoning tasks or `model: sonnet` for faster execution tasks. See [customization.md](docs/customization.md#model-tiers) for details.
 

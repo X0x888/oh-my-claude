@@ -689,5 +689,26 @@ grep -q '^advisory_no_findings_gate|' "${HOOK_DIR}/omc-config.sh" \
 grep -q '^ulw_pause_validator|' "${HOOK_DIR}/omc-config.sh" \
   && pass=$((pass + 1)) || { printf '  FAIL: ulw_pause_validator not in omc-config\n'; fail=$((fail + 1)); }
 
+# v1.43 oracle Wave 4: standalone bypass-taxonomy doc must exist + name all four categories.
+BYPASS_DOC="${REPO_ROOT}/docs/bypass-taxonomy.md"
+[[ -f "${BYPASS_DOC}" ]] \
+  && pass=$((pass + 1)) \
+  || { printf '  FAIL: docs/bypass-taxonomy.md (standalone bypass-surface field guide) missing\n'; fail=$((fail + 1)); }
+if [[ -f "${BYPASS_DOC}" ]]; then
+  for cat in 'state-predicate' 'prose-pattern' 'single-call-flip' 'classifier-misroute'; do
+    grep -q "${cat}" "${BYPASS_DOC}" \
+      && pass=$((pass + 1)) \
+      || { printf '  FAIL: docs/bypass-taxonomy.md missing category %q\n' "${cat}"; fail=$((fail + 1)); }
+  done
+fi
+# AGENTS.md must cross-reference the standalone doc (lift, not orphan).
+grep -q 'docs/bypass-taxonomy.md' "${REPO_ROOT}/AGENTS.md" \
+  && pass=$((pass + 1)) \
+  || { printf '  FAIL: AGENTS.md no longer cross-references docs/bypass-taxonomy.md\n'; fail=$((fail + 1)); }
+# README must surface the doc in its docs index.
+grep -q 'docs/bypass-taxonomy.md' "${REPO_ROOT}/README.md" \
+  && pass=$((pass + 1)) \
+  || { printf '  FAIL: README.md docs index no longer links to bypass-taxonomy.md\n'; fail=$((fail + 1)); }
+
 printf '\n=== Stop-Guard Bypass Surface: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]] || exit 1

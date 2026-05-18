@@ -429,6 +429,7 @@ The harness is designed to be extended. Agent definitions, quality gate threshol
 - [FAQ](docs/faq.md) -- common questions and troubleshooting
 - [Prompts](docs/prompts.md) -- prompt reference and routing details
 - [Glossary](docs/glossary.md) -- decoder ring for the mythology-named skills and internal terms
+- [Bypass-surface taxonomy](docs/bypass-taxonomy.md) -- four-category field guide for how LLM agents escape work contracts (state-predicate / prose-pattern / single-call-flip / classifier-misroute); project-independent reference
 - [Showcase](docs/showcase.md) -- real-world transcripts where the gates caught a bug or stalled completion (community-contributed)
 
 ## Auto-resume after a Claude Code rate-limit kill
