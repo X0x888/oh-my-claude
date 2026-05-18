@@ -809,7 +809,12 @@ if [[ "${OMC_PROMPT_TEXT_OVERRIDE:-on}" == "on" ]] \
   # captured (truncated to 120) because it is the command string the
   # user typed at the model, not the user's verbatim prompt.
   if is_prompt_persist_enabled; then
-    _pt_prompt_preview="$(_read_most_recent_prompt | tr '\n' ' ')"
+    # Redact secret-shaped tokens before persisting prompt text into
+    # gate_events.jsonl. The prompt may contain API keys the user
+    # pasted into an imperative; the cross-session sweep aggregates
+    # gate events into ~/.claude/quality-pack and we do not want
+    # passive secret accumulation in that ledger.
+    _pt_prompt_preview="$(_read_most_recent_prompt | tr '\n' ' ' | omc_redact_secrets)"
     record_gate_event "pretool-intent" "prompt_text_override" \
       "intent=${task_intent}" \
       "denied_segment=$(truncate_chars 120 "${denied_segment}")" \

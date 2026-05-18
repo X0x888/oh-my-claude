@@ -216,5 +216,56 @@ assert_no_auth "templating"         "make the docstring polished and the readme 
 assert_auth "user verbatim prompt body" "At this stage, what should we do next to further improve the agent memory wall feature? Remember, think what Steve Jobs would do. Make this feature impeccable to use. As a product, it is either 0 or 1. Middle states are basically 0. Continue all identified gaps in Waves. Do all waves."
 
 # ----------------------------------------------------------------------
+# v1.42.x security: record_classifier_telemetry must redact secret-shaped
+# tokens before writing prompt_preview to <session>/classifier_telemetry.jsonl.
+# Without redaction the cross-session sweep can aggregate prompt text
+# (including any pasted credential) into ~/.claude/quality-pack which is
+# a less-guarded surface than the per-session dir.
+printf 'Test: classifier_telemetry redacts secret tokens at write time\n'
+_CLF_TMP="$(mktemp -d)"
+export SESSION_ID="redaction-classifier-test"
+ORIG_STATE_ROOT="${STATE_ROOT:-}"
+ORIG_TELEMETRY="${OMC_CLASSIFIER_TELEMETRY:-}"
+# Override STATE_ROOT directly — common.sh's STATE_ROOT was bound at
+# source time so a later HOME change has no effect. The writer reads
+# the live value via `session_file`.
+export STATE_ROOT="${_CLF_TMP}/state"
+export OMC_CLASSIFIER_TELEMETRY="on"
+mkdir -p "${STATE_ROOT}/${SESSION_ID}"
+_omc_load_classifier 2>/dev/null || true
+_SECRET='sk-ant-deadbeefcafebabe1234567ABCDEFG'
+_PROMPT_WITH_SECRET="please run with --auth-token ${_SECRET} and ship Wave 1"
+record_classifier_telemetry "execution" "coding" "${_PROMPT_WITH_SECRET}" 0 2>/dev/null || true
+_clf_file="${STATE_ROOT}/${SESSION_ID}/classifier_telemetry.jsonl"
+if [[ -s "${_clf_file}" ]]; then
+  _row="$(tail -n 1 "${_clf_file}")"
+  case "${_row}" in
+    *"${_SECRET}"*)
+      printf '  FAIL: classifier telemetry leaked sk-ant- token\n    row=%s\n' "${_row}" >&2
+      fail=$((fail + 1))
+      ;;
+    *"<redacted-secret>"*)
+      pass=$((pass + 1))
+      ;;
+    *)
+      printf '  FAIL: classifier telemetry redaction marker missing\n    row=%s\n' "${_row}" >&2
+      fail=$((fail + 1))
+      ;;
+  esac
+  case "${_row}" in
+    *"Ship Wave 1"*|*"ship Wave 1"*) pass=$((pass + 1)) ;;
+    *) printf '  FAIL: classifier non-secret prose dropped from prompt_preview\n    row=%s\n' "${_row}" >&2; fail=$((fail + 1)) ;;
+  esac
+else
+  printf '  FAIL: classifier telemetry file not created (%s)\n' "${_clf_file}" >&2
+  fail=$((fail + 1))
+fi
+# Restore env and clean up.
+if [[ -n "${ORIG_STATE_ROOT}" ]]; then export STATE_ROOT="${ORIG_STATE_ROOT}"; else unset STATE_ROOT; fi
+if [[ -n "${ORIG_TELEMETRY}" ]]; then export OMC_CLASSIFIER_TELEMETRY="${ORIG_TELEMETRY}"; else unset OMC_CLASSIFIER_TELEMETRY; fi
+rm -rf "${_CLF_TMP}"
+unset SESSION_ID
+
+# ----------------------------------------------------------------------
 printf '\n=== Classifier Lib Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]] || exit 1

@@ -1290,5 +1290,45 @@ fi
 teardown_test
 
 # ----------------------------------------------------------------------
+# T47 (v1.42.x security): when the prompt_text_override fires and
+# is_prompt_persist_enabled is true, the gate_events row's
+# prompt_preview MUST redact secret-shaped tokens. Without this the
+# cross-session sweep aggregates raw prompts containing API keys into
+# ~/.claude/quality-pack/gate_events.jsonl — a less-guarded surface
+# than the per-session dir and the exact passive-leak case the
+# security audit flagged.
+setup_test
+init_session "t47" "advisory"
+_SECRET='sk-ant-deadbeefcafebabe1234567ABCDEFG'
+seed_recent_prompt "t47" "Implement and commit as needed. token=${_SECRET}"
+_=$(OMC_PROMPT_PERSIST=on run_guard "t47" "git commit -m 'wave A'")
+gate_events_file="${TEST_HOME}/.claude/quality-pack/state/t47/gate_events.jsonl"
+last_row="$(tail -1 "${gate_events_file}" 2>/dev/null || printf '{}')"
+prompt_preview_t47="$(jq -r '.details.prompt_preview // ""' <<<"${last_row}")"
+case "${prompt_preview_t47}" in
+  *"${_SECRET}"*)
+    printf '  FAIL: T47: pretool gate prompt_preview leaked sk-ant- token\n    preview=%s\n' "${prompt_preview_t47}" >&2
+    fail=$((fail + 1))
+    ;;
+  *"<redacted-secret>"*)
+    pass=$((pass + 1))
+    ;;
+  *)
+    # Override may not have fired (e.g. classifier reread); only fail
+    # if prompt_preview is non-empty AND contains no redaction marker
+    # AND contains the secret literally — already covered by the first
+    # branch. An empty preview is acceptable (means override didn't
+    # fire on this command shape).
+    if [[ -n "${prompt_preview_t47}" ]]; then
+      printf '  FAIL: T47: gate preview present but no redaction marker\n    preview=%s\n' "${prompt_preview_t47}" >&2
+      fail=$((fail + 1))
+    else
+      pass=$((pass + 1))
+    fi
+    ;;
+esac
+teardown_test
+
+# ----------------------------------------------------------------------
 printf '\n%s passed, %s failed\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]] || exit 1

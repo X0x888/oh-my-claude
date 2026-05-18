@@ -79,6 +79,21 @@ resets_at_ts="$(printf '%s' "${rl_sidecar_json}" | jq -r '
 
 current_objective="$(read_state "current_objective")"
 last_user_prompt="$(read_state "last_user_prompt")"
+
+# Redact secret-shaped tokens before persisting either field into the
+# resume_request.json artifact on disk. The artifact survives across
+# sessions (TTL 7d), is read by session-start-resume-hint.sh, and
+# becomes additionalContext on the next claude --resume. Without
+# redaction at the write site, any secret the user pasted into a
+# prompt during the prior session leaks into the future session's
+# model context as load-bearing text. Defense pairs with the
+# distrust-delimiter wrap on the consumer side (resume-hint).
+if [[ -n "${current_objective}" ]]; then
+  current_objective="$(printf '%s' "${current_objective}" | omc_redact_secrets)"
+fi
+if [[ -n "${last_user_prompt}" ]]; then
+  last_user_prompt="$(printf '%s' "${last_user_prompt}" | omc_redact_secrets)"
+fi
 captured_at_ts="$(now_epoch)"
 
 state_cwd="$(read_state "cwd")"

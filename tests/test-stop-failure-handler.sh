@@ -506,6 +506,52 @@ assert_file_exists "cross-cwd: A5 (new) kept" "$(resume_path sess-A5)"
 teardown_test
 
 # ---------------------------------------------------------------------------
+# Secret-redaction at the producer side. The resume artifact survives
+# across sessions (TTL 7d) and is read by session-start-resume-hint.sh
+# into additionalContext on the next claude --resume. A prior session
+# whose objective or last_user_prompt contained an API key must NOT
+# leak the verbatim secret onto disk — redaction MUST fire at the
+# write site (defense pairs with the distrust-delimiter wrap on the
+# consumer side).
+# ---------------------------------------------------------------------------
+setup_test
+
+init_session "sess-redact" \
+  "Ship the fix. AKIA1234567890ABCDEF and token=sk-ant-deadbeefcafebabe1234567" \
+  "/ulw run --auth-token ghp_xxxxxxxxxxxxxxxxxxxx and AIza0123456789abcdefghijklmnopqrstuv" \
+  ""
+
+run_handler "$(jq -nc \
+  --arg sid "sess-redact" \
+  '{session_id:$sid, matcher:"rate_limit", hook_event_name:"StopFailure", cwd:"/tmp"}')"
+
+target="$(resume_path sess-redact)"
+assert_file_exists "redact: resume_request.json written" "${target}"
+_obj="$(jq -r '.original_objective' "${target}")"
+_lp="$(jq -r '.last_user_prompt' "${target}")"
+
+# Secrets must NOT appear verbatim in the persisted artifact.
+case "${_obj}" in
+  *"AKIA1234567890ABCDEF"*) printf '  FAIL: redact: AKIA leaked to objective\n' >&2; fail=$((fail + 1)) ;;
+  *"sk-ant-deadbeefcafebabe1234567"*) printf '  FAIL: redact: sk-ant- leaked to objective\n' >&2; fail=$((fail + 1)) ;;
+  *) pass=$((pass + 1)) ;;
+esac
+case "${_lp}" in
+  *"ghp_xxxxxxxxxxxxxxxxxxxx"*) printf '  FAIL: redact: ghp_ leaked to last_user_prompt\n' >&2; fail=$((fail + 1)) ;;
+  *"AIza0123456789abcdef"*) printf '  FAIL: redact: AIza leaked to last_user_prompt\n' >&2; fail=$((fail + 1)) ;;
+  *) pass=$((pass + 1)) ;;
+esac
+
+# Sanity: surrounding non-secret prose preserved so the artifact remains
+# useful for the resume hint.
+case "${_obj}" in
+  *"Ship the fix."*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: redact: non-secret prose dropped from objective: %s\n' "${_obj}" >&2; fail=$((fail + 1)) ;;
+esac
+
+teardown_test
+
+# ---------------------------------------------------------------------------
 # Result
 # ---------------------------------------------------------------------------
 

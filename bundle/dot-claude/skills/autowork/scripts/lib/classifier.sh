@@ -671,7 +671,7 @@ record_classifier_telemetry() {
     --argjson ts "$(now_epoch)" \
     --arg intent "${intent}" \
     --arg domain "${domain}" \
-    --arg prompt_preview "$(truncate_chars 200 "${prompt_preview}")" \
+    --arg prompt_preview "$(printf '%s' "$(truncate_chars 200 "${prompt_preview}")" | omc_redact_secrets)" \
     --argjson blocks "$(printf '%d' "${blocks_before:-0}")" \
     '{
       _v: 1,
