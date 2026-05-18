@@ -31,13 +31,93 @@ CLAUDE_HOME="${TARGET_HOME}/.claude"
 # any foreign content; this is the right setting for incident-response
 # audits and for shared/regulated machines.
 STRICT_MODE="false"
+HEALTH_MODE="false"
 for arg in "$@"; do
   case "${arg}" in
     --strict)
       STRICT_MODE="true"
       ;;
+    --health)
+      # v1.42.x-newer (sre-lens F-005): one-line healthcheck mode for
+      # `watch grep OK` and external monitor wrap. Reads heartbeat age
+      # (resume-watchdog last tick), active-session count, anomaly tail.
+      # Single-line output; exit 0 if healthy, 1 if WARN, 2 if FAIL.
+      HEALTH_MODE="true"
+      ;;
   esac
 done
+
+# --- Health mode: one-line SLO output ---
+# Converts "is the harness healthy?" from a 200-line full-verify into a
+# greppable line. Designed for `watch -n 60 'bash verify.sh --health'`
+# or for external monitors that just need a heartbeat. Intentionally
+# does NOT check installation integrity (that's full verify's job).
+if [[ "${HEALTH_MODE}" == "true" ]]; then
+  _state_root="${TARGET_HOME}/.claude/quality-pack/state"
+  _hb_dir="${_state_root}/_watchdog"
+  _hb_file="${_hb_dir}/heartbeat"
+  now_ts="$(date +%s)"
+
+  # Heartbeat age. Missing heartbeat is acceptable when the watchdog
+  # opt-in is off (most users) — reported as `no-watchdog`, not FAIL.
+  hb_status="no-watchdog"
+  hb_age_secs=""
+  if [[ -f "${_hb_file}" ]]; then
+    _hb_ts="$(cat "${_hb_file}" 2>/dev/null | head -c 32 | tr -dc '0-9' || true)"
+    if [[ -n "${_hb_ts}" ]] && [[ "${_hb_ts}" =~ ^[0-9]+$ ]]; then
+      hb_age_secs=$(( now_ts - _hb_ts ))
+      if (( hb_age_secs < 0 )); then hb_age_secs=0; fi
+      # Watchdog ticks every 60s by default + cooldown buffer; >900s
+      # without a tick is stale. <60s is healthy.
+      if (( hb_age_secs <= 600 )); then
+        hb_status="ok-${hb_age_secs}s"
+      elif (( hb_age_secs <= 1800 )); then
+        hb_status="warn-stale-${hb_age_secs}s"
+      else
+        hb_status="fail-stale-${hb_age_secs}s"
+      fi
+    else
+      hb_status="warn-unreadable"
+    fi
+  fi
+
+  # Active-session count (sessions with state files modified in last 24h).
+  active_sessions=0
+  if [[ -d "${_state_root}" ]]; then
+    active_sessions="$(find "${_state_root}" -mindepth 1 -maxdepth 1 -type d -name '[a-f0-9]*' -mmin -1440 2>/dev/null | wc -l | tr -d ' ')"
+  fi
+
+  # Anomaly count in last hour — high counts signal something is
+  # repeatedly going wrong (lock contention, corrupt state, etc.).
+  anomaly_count=0
+  _anomaly_file="${TARGET_HOME}/.claude/quality-pack/anomaly_log.jsonl"
+  if [[ -f "${_anomaly_file}" ]]; then
+    _cutoff=$(( now_ts - 3600 ))
+    anomaly_count="$(jq -rs --argjson c "${_cutoff}" \
+      'map(select((.ts // 0 | tonumber? // 0) >= $c)) | length' \
+      "${_anomaly_file}" 2>/dev/null || echo 0)"
+    [[ "${anomaly_count}" =~ ^[0-9]+$ ]] || anomaly_count=0
+  fi
+
+  # Overall status: FAIL if heartbeat is stale-fail OR anomaly count > 10.
+  # WARN if heartbeat stale-warn OR anomaly count 4-10.
+  # OK otherwise.
+  overall="OK"
+  rc=0
+  case "${hb_status}" in
+    fail-*) overall="FAIL"; rc=2 ;;
+    warn-*) overall="WARN"; rc=1 ;;
+  esac
+  if (( anomaly_count > 10 )) && [[ "${overall}" != "FAIL" ]]; then
+    overall="FAIL"; rc=2
+  elif (( anomaly_count >= 4 )) && [[ "${overall}" == "OK" ]]; then
+    overall="WARN"; rc=1
+  fi
+
+  printf '%s: watchdog=%s sessions=%s anomalies_1h=%s\n' \
+    "${overall}" "${hb_status}" "${active_sessions}" "${anomaly_count}"
+  exit "${rc}"
+fi
 
 # ---------------------------------------------------------------------------
 # State

@@ -686,10 +686,18 @@ done <<<"${list_output}"
 _watchdog_events_file="${STATE_ROOT}/${SYNTHETIC_SESSION_ID}/gate_events.jsonl"
 if [[ -f "${_watchdog_events_file}" ]]; then
   _watchdog_events_max="${OMC_GATE_EVENTS_PER_SESSION_MAX:-500}"
+  # v1.42.x-newer (sre-lens F-002): hysteresis. Trim only when the file
+  # has exceeded `max * 1.2` (so a tick that lands right at the boundary
+  # doesn't cause a tail+mv on every subsequent tick). When the trigger
+  # fires, we trim back to `max` — so subsequent ticks add up to 20%
+  # before the next trim. Avoids trim-thrashing under steady-state load
+  # near the boundary; cheap insurance against an upstream change that
+  # would record many events per tick.
+  _watchdog_events_trigger=$(( _watchdog_events_max * 12 / 10 ))
   _watchdog_events_count="$(wc -l < "${_watchdog_events_file}" 2>/dev/null | tr -d ' ')"
   _watchdog_events_count="${_watchdog_events_count:-0}"
   if [[ "${_watchdog_events_count}" =~ ^[0-9]+$ ]] \
-     && [[ "${_watchdog_events_count}" -gt "${_watchdog_events_max}" ]]; then
+     && [[ "${_watchdog_events_count}" -gt "${_watchdog_events_trigger}" ]]; then
     _watchdog_tmp="$(mktemp "${_watchdog_events_file}.XXXXXX" 2>/dev/null || true)"
     if [[ -n "${_watchdog_tmp}" ]]; then
       tail -n "${_watchdog_events_max}" "${_watchdog_events_file}" > "${_watchdog_tmp}" 2>/dev/null \
