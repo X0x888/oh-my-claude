@@ -53,6 +53,8 @@ assert_eq() {
 OUTCOME_JQ='(
   if (.session_outcome // "") != "" then .session_outcome
   elif ((.last_review_ts // "") != "") and ((.last_verify_ts // "") != "") and (((.code_edit_count // "0") | tonumber) > 0) then "completed_inferred"
+  elif (((.code_edit_count // "0") | tonumber) > 0) and (((.last_review_ts // "") != "") or ((.last_verify_ts // "") != "")) then "completed_inferred_partial"
+  elif (((.code_edit_count // "0") | tonumber) > 0) then "edited_no_quality"
   elif (((.code_edit_count // "0") | tonumber) == 0) and ((.last_review_ts // "") == "") and ((.last_verify_ts // "") == "") then "idle"
   else "unclassified_by_sweep"
   end
@@ -88,15 +90,30 @@ assert_eq "A4a idle (zero edits, all empty)" "idle" \
 assert_eq "A4b idle (empty object)" "idle" \
   "$(infer_outcome '{}')"
 
-# A5: unclassified_by_sweep for everything in between
-assert_eq "A5a unclassified (edits only, no review/verify)" "unclassified_by_sweep" \
-  "$(infer_outcome '{"code_edit_count":"5"}')"
-assert_eq "A5b unclassified (reviewed but no verify)" "unclassified_by_sweep" \
-  "$(infer_outcome '{"last_review_ts":"2026-01-01","code_edit_count":"3"}')"
-assert_eq "A5c unclassified (verified+reviewed but zero edits)" "unclassified_by_sweep" \
+# A5: unclassified_by_sweep — only when verified+reviewed BUT zero edits
+# (real-world: reviewer ran on an empty/no-change branch; that's not idle
+# nor edited, so the bucket name stays).
+assert_eq "A5 unclassified (verified+reviewed but zero edits)" "unclassified_by_sweep" \
   "$(infer_outcome '{"last_verify_ts":"2026-01-01","last_review_ts":"2026-01-01","code_edit_count":"0"}')"
-assert_eq "A5d unclassified (review without verify, edits>0)" "unclassified_by_sweep" \
-  "$(infer_outcome '{"last_review_ts":"2026-01-01","code_edit_count":"2"}')"
+
+# v1.43 data-lens F-001 — new buckets
+
+# A6: completed_inferred_partial — edits + ONE quality step.
+# These rows previously fell to unclassified_by_sweep (poisoning
+# n_shipped) — now correctly counted as shipped.
+assert_eq "A6a partial (edits + review, no verify)" "completed_inferred_partial" \
+  "$(infer_outcome '{"last_review_ts":"2026-01-01","code_edit_count":"3"}')"
+assert_eq "A6b partial (edits + verify, no review)" "completed_inferred_partial" \
+  "$(infer_outcome '{"last_verify_ts":"2026-01-01","code_edit_count":"4"}')"
+
+# A7: edited_no_quality — edits but neither review nor verify fired.
+# These rows previously fell to unclassified_by_sweep (counted as
+# dropped) — now surfaced separately as a "shipping unknown, quality
+# concern" bucket; excluded from both n_shipped AND n_dropped.
+assert_eq "A7a edited_no_quality (edits only)" "edited_no_quality" \
+  "$(infer_outcome '{"code_edit_count":"5"}')"
+assert_eq "A7b edited_no_quality (large edits, no quality)" "edited_no_quality" \
+  "$(infer_outcome '{"code_edit_count":"42"}')"
 
 # ---------------------------------------------------------------
 # Part B: apply-rate aggregation tokens (show-report.sh:1150-1190)
@@ -118,44 +135,48 @@ APPLY_RATE_JQ='
     })
   | map(. + {
       n_sessions: (.sessions | length),
-      n_shipped: (.outcomes | map(select(. == "completed" or . == "completed_inferred" or . == "released" or . == "skip-released")) | length),
+      n_shipped: (.outcomes | map(select(. == "completed" or . == "completed_inferred" or . == "completed_inferred_partial" or . == "released" or . == "skip-released")) | length),
       n_dropped: (.outcomes | map(select(. == "abandoned" or . == "exhausted" or . == "unclassified_by_sweep")) | length),
-      n_other: (.outcomes | map(select(. == "active" or . == "idle" or . == "unknown")) | length)
+      n_other: (.outcomes | map(select(. == "active" or . == "idle" or . == "edited_no_quality" or . == "unknown")) | length)
     })
   | .[]
 '
 
-# Build a session_id → outcome map that exercises every producer-emitted token
-OUTCOMES_MAP='{"s-completed":"completed","s-inferred":"completed_inferred","s-released":"released","s-skip-released":"skip-released","s-abandoned":"abandoned","s-exhausted":"exhausted","s-unclassified":"unclassified_by_sweep","s-active":"active","s-idle":"idle"}'
+# Build a session_id → outcome map that exercises every producer-emitted
+# token, including the v1.43 additions (completed_inferred_partial,
+# edited_no_quality).
+OUTCOMES_MAP='{"s-completed":"completed","s-inferred":"completed_inferred","s-partial":"completed_inferred_partial","s-released":"released","s-skip-released":"skip-released","s-abandoned":"abandoned","s-exhausted":"exhausted","s-unclassified":"unclassified_by_sweep","s-active":"active","s-idle":"idle","s-edited-noq":"edited_no_quality"}'
 
-# Fires: 9 rows, all directive=demo, one per session_id above
+# Fires: 11 rows, all directive=demo, one per session_id above
 FIRES_NDJSON='{"gate":"bias-defense","event":"directive_fired","session_id":"s-completed","details":{"directive":"demo"}}
 {"gate":"bias-defense","event":"directive_fired","session_id":"s-inferred","details":{"directive":"demo"}}
+{"gate":"bias-defense","event":"directive_fired","session_id":"s-partial","details":{"directive":"demo"}}
 {"gate":"bias-defense","event":"directive_fired","session_id":"s-released","details":{"directive":"demo"}}
 {"gate":"bias-defense","event":"directive_fired","session_id":"s-skip-released","details":{"directive":"demo"}}
 {"gate":"bias-defense","event":"directive_fired","session_id":"s-abandoned","details":{"directive":"demo"}}
 {"gate":"bias-defense","event":"directive_fired","session_id":"s-exhausted","details":{"directive":"demo"}}
 {"gate":"bias-defense","event":"directive_fired","session_id":"s-unclassified","details":{"directive":"demo"}}
 {"gate":"bias-defense","event":"directive_fired","session_id":"s-active","details":{"directive":"demo"}}
-{"gate":"bias-defense","event":"directive_fired","session_id":"s-idle","details":{"directive":"demo"}}'
+{"gate":"bias-defense","event":"directive_fired","session_id":"s-idle","details":{"directive":"demo"}}
+{"gate":"bias-defense","event":"directive_fired","session_id":"s-edited-noq","details":{"directive":"demo"}}'
 
 bucket="$(printf '%s\n' "${FIRES_NDJSON}" | jq -sr --argjson outcomes "${OUTCOMES_MAP}" "${APPLY_RATE_JQ}")"
 
-# B1: shipped bucket counts all four success tokens
+# B1: shipped bucket counts all FIVE success tokens
 n_shipped="$(jq -r '.n_shipped' <<<"${bucket}")"
-assert_eq "B1 n_shipped counts completed+completed_inferred+released+skip-released" "4" "${n_shipped}"
+assert_eq "B1 n_shipped counts completed+completed_inferred+completed_inferred_partial+released+skip-released" "5" "${n_shipped}"
 
-# B2: dropped bucket counts all three failure tokens
+# B2: dropped bucket counts the three failure tokens (unchanged)
 n_dropped="$(jq -r '.n_dropped' <<<"${bucket}")"
 assert_eq "B2 n_dropped counts abandoned+exhausted+unclassified_by_sweep" "3" "${n_dropped}"
 
-# B3: other bucket absorbs active + idle (and unknown)
+# B3: other bucket absorbs active + idle + edited_no_quality (and unknown)
 n_other="$(jq -r '.n_other' <<<"${bucket}")"
-assert_eq "B3 n_other counts active+idle" "2" "${n_other}"
+assert_eq "B3 n_other counts active+idle+edited_no_quality" "3" "${n_other}"
 
-# B4: apply rate = 4/7 = 57% (floor)
+# B4: apply rate = 5/8 = 62% (floor)
 rate="$(jq -r 'if (.n_shipped + .n_dropped) > 0 then ((.n_shipped * 100 / (.n_shipped + .n_dropped)) | floor | tostring + "%") else "—" end' <<<"${bucket}")"
-assert_eq "B4 apply rate 4/7 floor" "57%" "${rate}"
+assert_eq "B4 apply rate 5/8 floor" "62%" "${rate}"
 
 # B5: dash when both buckets empty (all sessions still active)
 EMPTY_OUTCOMES='{"s-active1":"active","s-active2":"active"}'
@@ -170,20 +191,23 @@ assert_eq "B5 dash when no terminal outcomes in window" "—" "${rate_empty}"
 # ---------------------------------------------------------------
 
 if grep -q '"completed_inferred"' "${COMMON_SH}" \
+   && grep -q '"completed_inferred_partial"' "${COMMON_SH}" \
+   && grep -q '"edited_no_quality"' "${COMMON_SH}" \
    && grep -q '"unclassified_by_sweep"' "${COMMON_SH}" \
    && grep -q 'elif ((.last_review_ts // "") != "") and ((.last_verify_ts // "") != "")' "${COMMON_SH}"; then
   pass=$((pass + 1))
 else
-  printf '  FAIL: lockstep — outcome inference fragment missing from common.sh:1540\n' >&2
+  printf '  FAIL: lockstep — outcome inference fragment (three-tier ladder) missing from common.sh:1540\n' >&2
   fail=$((fail + 1))
 fi
 
 if grep -q 'n_shipped:' "${REPORT_SH}" \
    && grep -q 'n_dropped:' "${REPORT_SH}" \
-   && grep -q '. == "completed" or . == "completed_inferred"' "${REPORT_SH}"; then
+   && grep -q '. == "completed_inferred_partial"' "${REPORT_SH}" \
+   && grep -q '. == "edited_no_quality"' "${REPORT_SH}"; then
   pass=$((pass + 1))
 else
-  printf '  FAIL: lockstep — apply-rate token alignment missing from show-report.sh\n' >&2
+  printf '  FAIL: lockstep — apply-rate token alignment (new buckets) missing from show-report.sh\n' >&2
   fail=$((fail + 1))
 fi
 

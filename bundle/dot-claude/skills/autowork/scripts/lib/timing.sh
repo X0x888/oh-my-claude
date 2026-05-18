@@ -239,6 +239,45 @@ timing_append_prompt_end() {
 
   ensure_session_dir 2>/dev/null || return 0
   printf '%s\n' "${row}" >> "$(timing_log_path)" 2>/dev/null || true
+
+  # v1.43 data-lens F-003: per-session timing.jsonl was uncapped (only
+  # the cross-session aggregate at ${HOME}/.claude/quality-pack/timing.jsonl
+  # was capped at 10000 rows). Long ULW sessions with heavy parallel
+  # subagent dispatch can exceed 5000 rows, at which point /ulw-report's
+  # `timing_aggregate` jq pass slows materially. Cap runs here in the
+  # cold path (once per prompt) rather than the hot path (start/end
+  # fires ~50×/turn) so no fork tax lands on tool-call boundaries.
+  _cap_per_session_jsonl "$(timing_log_path)" "${OMC_TIMING_PER_SESSION_CAP:-5000}" "${OMC_TIMING_PER_SESSION_RETAIN:-4000}" 2>/dev/null || true
+}
+
+# _cap_per_session_jsonl <file> <cap> <retain>
+#   Cap a per-session JSONL at <cap> rows, retaining the last <retain>
+#   on overflow. Single-writer per session (no cross-session lock needed
+#   — unlike _cap_cross_session_jsonl). Fast-path early-return when
+#   already at/below cap. Bash 3.2 safe.
+#
+#   Caller invariant: COLD-PATH ONLY. The single-writer assumption
+#   holds only if every caller fires at most once per Stop turn from the
+#   Stop hook (currently: timing_append_prompt_end via stop-time-summary).
+#   Do NOT call from hot-path hooks (PreToolUse/PostToolUse) or from
+#   SubagentStop — those CAN fire concurrently and a peer cap mid-trim
+#   would race the tail+mv. If a hot-path cap is ever needed, route
+#   through with_cross_session_log_lock or shard the per-session file.
+_cap_per_session_jsonl() {
+  local file="$1" cap="${2:-5000}" retain="${3:-4000}"
+  [[ -f "${file}" ]] || return 0
+  [[ "${cap}" =~ ^[0-9]+$ ]] || return 0
+  [[ "${retain}" =~ ^[0-9]+$ ]] || return 0
+  local lines temp
+  lines="$(wc -l < "${file}" 2>/dev/null || echo 0)"
+  lines="${lines##* }"
+  [[ "${lines}" -le "${cap}" ]] && return 0
+  temp="$(mktemp "${file}.XXXXXX" 2>/dev/null)" || return 0
+  if tail -n "${retain}" "${file}" > "${temp}" 2>/dev/null; then
+    mv "${temp}" "${file}" 2>/dev/null || rm -f "${temp}"
+  else
+    rm -f "${temp}"
+  fi
 }
 
 # --- Aggregator ---

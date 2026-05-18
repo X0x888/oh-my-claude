@@ -130,6 +130,63 @@ cross_row="$(jq -nc \
   }')"
 printf '%s\n' "${cross_row}" >> "${cross_file}" 2>/dev/null || true
 
+# v1.43 data-lens F-002: auto-write a classifier-fixture candidate when
+# the correction is parseable AND the prompt is non-empty. The candidate
+# file is the mechanical bridge between user corrections and the
+# regression fixture set under tools/classifier-fixtures/regression.jsonl
+# — without this, the misfire signal accumulates in cross-session
+# telemetry but a maintainer has to manually re-derive the prompt+label
+# pair to extend the fixture. Now /ulw-report can surface "N fixture
+# candidates ready to promote" and a maintainer extraction script can
+# vet+promote them in bulk.
+#
+# Schema matches tools/classifier-fixtures/regression.jsonl exactly
+# (prompt_preview / intent / domain / note) so promotion is jq-cat with
+# vetting, not field-renaming. Falls back to prior_* when only one of
+# {intent, domain} was corrected — the fixture captures the COMPLETE
+# desired classification, not just the changed dimension.
+#
+# Skip conditions: empty prompt (nothing to learn from), no parseable
+# correction (a misfire row without label ground truth is not useful as
+# a fixture).
+fixture_candidates_file="${HOME}/.claude/quality-pack/classifier_fixture_candidates.jsonl"
+if [[ -n "${prompt_safe}" ]] \
+  && { [[ -n "${corrected_intent}" ]] || [[ -n "${corrected_domain}" ]]; }; then
+  fixture_intent="${corrected_intent:-${prior_intent}}"
+  fixture_domain="${corrected_domain:-${prior_domain}}"
+  # Only write when both intent AND domain are non-empty (a fixture row
+  # without both labels is unpromotable). A misfire with neither prior
+  # nor corrected value (very rare — race during state-init) falls out
+  # here naturally.
+  if [[ -n "${fixture_intent}" ]] && [[ -n "${fixture_domain}" ]]; then
+    fixture_note="user-correction via /ulw-correct"
+    [[ -n "${prior_intent}" ]] && [[ -n "${corrected_intent}" ]] && [[ "${prior_intent}" != "${corrected_intent}" ]] \
+      && fixture_note="${fixture_note}; intent ${prior_intent}→${corrected_intent}"
+    [[ -n "${prior_domain}" ]] && [[ -n "${corrected_domain}" ]] && [[ "${prior_domain}" != "${corrected_domain}" ]] \
+      && fixture_note="${fixture_note}; domain ${prior_domain}→${corrected_domain}"
+    fixture_row="$(jq -nc \
+      --arg prompt_preview "${prompt_safe:0:240}" \
+      --arg intent "${fixture_intent}" \
+      --arg domain "${fixture_domain}" \
+      --arg note "${fixture_note}" \
+      --arg sid "${SESSION_ID}" \
+      --argjson ts "${ts}" \
+      '{
+        prompt_preview: $prompt_preview,
+        intent: $intent,
+        domain: $domain,
+        note: $note,
+        _source: "ulw-correct",
+        _session_id: $sid,
+        _ts: $ts
+      }' 2>/dev/null || true)"
+    if [[ -n "${fixture_row}" ]]; then
+      mkdir -p "$(dirname "${fixture_candidates_file}")" 2>/dev/null || true
+      printf '%s\n' "${fixture_row}" >> "${fixture_candidates_file}" 2>/dev/null || true
+    fi
+  fi
+fi
+
 # Apply the correction to active session state when values parsed.
 applied_parts=()
 blocked_parts=()

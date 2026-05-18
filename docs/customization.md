@@ -274,6 +274,8 @@ exemplifying_scope_gate=on
 
 Values can also be overridden via environment variables (`OMC_STALL_THRESHOLD`, `OMC_EXCELLENCE_FILE_COUNT`, `OMC_DIMENSION_GATE_FILE_COUNT`, `OMC_TRACEABILITY_FILE_COUNT`, `OMC_STATE_TTL_DAYS`, `OMC_VERIFY_CONFIDENCE_THRESHOLD`, `OMC_CUSTOM_VERIFY_MCP_TOOLS`, `OMC_INSTALLATION_DRIFT_CHECK`, `OMC_PRETOOL_INTENT_GUARD`, `OMC_WAVE_OVERRIDE_TTL_SECONDS`). Environment variables take precedence over the conf file, and both override the built-in defaults. `OMC_REPRO_REDACT_CHARS` (default `80`) is env-only and controls the truncation length applied by `~/.claude/omc-repro.sh`.
 
+`OMC_TIMING_PER_SESSION_CAP` (default `5000`) and `OMC_TIMING_PER_SESSION_RETAIN` (default `4000`) are env-only (v1.43 data-lens F-003) and cap each session's `<session>/timing.jsonl` at `CAP` rows, retaining the most recent `RETAIN` rows on overflow. The cap runs in the cold path of `timing_append_prompt_end` (once per Stop turn), not the hot path (which fires ~50× per heavy turn). Raise both proportionally if you regularly run very long ULW sessions with heavy parallel subagent dispatch and want longer in-session timeline retention; the trade-off is /ulw-report jq pass time and disk footprint per session.
+
 ### Recipe: shell-only / lint-as-tests projects
 
 For projects where the primary automated check is a linter — pure-bash utilities, config-only repositories, spec-only documentation packages — the default `verify_confidence_threshold=40` can block legitimate stop attempts because `bash -n` and `shellcheck` score `30`. Rather than lowering the threshold globally (which weakens verification for every project), use per-project configuration to scope the override:

@@ -4,6 +4,78 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Council-driven post-v1.42.x evaluation — Wave 1: telemetry truthing (v1.43-pre)
+
+User asked for a comprehensive evaluation focused on real-work quality,
+24/7 continuous-work, minimum user input/config, and auto-found
+improvements. Dispatched 5 parallel deep-look specialists (sre-lens,
+product-lens, abstraction-critic, data-lens, oracle) — each scoped to a
+dimension with file anchors + 500-1000-word caps. Verification round
+re-read every cited path/line before promoting findings to waves; the
+abstraction-critic + oracle paradigm-scale findings (stop-guard as
+adversarial regex firewall, no-defer contract as symptom-ban, classifier
+as bash-substrate semantics, hook boundary as Claude-Code-event-shaped)
+captured as a project memory for the next thematic boundary — they are
+expensive refactors (medium-to-rewrite cost), not v1.43 patches.
+
+**Wave 1/5 — Telemetry truthing (3 data-lens findings).**
+Closed three places where the harness's own success metrics
+under-counted real work or accumulated without informing decisions.
+
+1. **Session-outcome predicate three-tier ladder** (data-lens F-001,
+   `bundle/dot-claude/skills/autowork/scripts/common.sh:1763`). The
+   pre-v1.43 sweep inference required BOTH `last_review_ts` AND
+   `last_verify_ts` AND `code_edit_count>0` for `completed_inferred` —
+   real sessions where edits shipped with only ONE of {review, verify}
+   (committed mid-loop, user restarted Claude Code, asymmetric quality
+   step) fell to `unclassified_by_sweep` and were counted as DROPPED
+   in `/ulw-report` directive-value-attribution. Audit found ~24% of
+   working sessions mis-labeled. New ladder: `completed_inferred` (full
+   loop, unchanged) → `completed_inferred_partial` (edits + ONE quality
+   step, counted as SHIPPED) → `edited_no_quality` (edits + zero quality
+   steps, counted as OTHER and surfaced separately as a Patterns
+   heuristic). show-report.sh n_shipped/n_dropped/n_other consumers
+   updated for the new tokens.
+
+2. **Classifier fixture-candidate auto-write** (data-lens F-002,
+   `bundle/dot-claude/skills/autowork/scripts/ulw-correct-record.sh`).
+   `/ulw-correct` already wrote misfire rows to
+   `classifier_misfires.jsonl` — but the bridge to the regression-net
+   fixtures at `tools/classifier-fixtures/regression.jsonl` was manual
+   (maintainer had to re-derive prompt+label pairs). When a correction
+   supplies enough to label a fixture (prompt + intent + domain), the
+   corrector now also writes a `regression.jsonl`-shaped row to
+   `~/.claude/quality-pack/classifier_fixture_candidates.jsonl`. A new
+   `/ulw-report` Patterns row surfaces the candidate count so a
+   maintainer can vet and promote in bulk.
+
+3. **Per-session timing.jsonl row cap** (data-lens F-003,
+   `bundle/dot-claude/skills/autowork/scripts/lib/timing.sh`). Pre-v1.43
+   only the cross-session aggregate at `~/.claude/quality-pack/timing.jsonl`
+   was capped (10000 rows); per-session `<session>/timing.jsonl` was
+   unbounded. Long ULW sessions with heavy parallel subagent dispatch
+   could land 10K+ rows per session and slow `/ulw-report`'s
+   `timing_aggregate` jq pass materially. New `_cap_per_session_jsonl`
+   helper runs in the cold path of `timing_append_prompt_end` (once per
+   prompt) — NOT the hot path (`timing_append_start/end` fires ~50× per
+   heavy turn) — so no fork tax lands on tool-call boundaries. Cap
+   defaults: 5000 rows, retain 4000. Tunable via
+   `OMC_TIMING_PER_SESSION_CAP` / `OMC_TIMING_PER_SESSION_RETAIN`.
+
+Tests: `tests/test-session-summary-outcome.sh` extended with A6/A7 for
+the new buckets (22 tests, all pass), token-alignment Part B updated for
+new shipped/other counts. New `tests/test-data-lens-w1.sh` exercises
+fixture-candidate auto-write under intent-only, domain-only, both, and
+empty-prompt scenarios + per-session timing cap including fast-path,
+malformed-cap, and inode-stability under-cap (16 tests, all pass).
+Coordination tests + ShellCheck clean.
+
+Files changed: `common.sh`, `show-report.sh`, `lib/timing.sh`,
+`ulw-correct-record.sh`, `tests/test-session-summary-outcome.sh` (updated),
+`tests/test-data-lens-w1.sh` (new), `.github/workflows/validate.yml`
+(CI pinned the new test), `README.md` + `AGENTS.md` (test-count
+107 → 108), `docs/customization.md` (new env vars documented).
+
 ### Council-driven 3-wave post-v1.42.x follow-up (v1.42.x-newer)
 
 User asked for a comprehensive evaluation focusing on real-work quality

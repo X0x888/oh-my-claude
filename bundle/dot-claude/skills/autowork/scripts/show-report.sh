@@ -1278,15 +1278,24 @@ else
         # one of {completed, released, skip-released, exhausted} on
         # Stop, and the persisted sweep inference adds {completed_inferred,
         # idle, unclassified_by_sweep} (common.sh:1540). The live-sweep
-        # synthesizer defaults to "active" (show-report.sh:220). The
-        # prior "committed"/"abandoned" buckets matched none of these,
-        # so apply-rate was structurally 0/N. The "shipped" bucket now
-        # counts every terminal Stop-derived success (completed +
-        # completed_inferred + released + skip-released); "dropped"
-        # counts every terminal failure shape (abandoned + exhausted +
-        # unclassified_by_sweep); "other" absorbs in-flight (active)
-        # and idle (zero-activity) sessions so they do not deflate the
-        # rate.
+        # synthesizer defaults to "active" (show-report.sh:220).
+        #
+        # v1.43 data-lens F-001: sweep inference now also emits
+        # `completed_inferred_partial` (edits + ONE quality step — still
+        # shipped) and `edited_no_quality` (edits + zero quality steps —
+        # unknown shipping). The partial bucket joins "shipped"; the no-
+        # quality bucket joins "other" because we cannot tell if work
+        # shipped externally without ledger evidence.
+        #
+        # The prior "committed"/"abandoned" buckets matched none of
+        # these, so apply-rate was structurally 0/N. The "shipped"
+        # bucket counts every terminal Stop-derived success (completed
+        # + completed_inferred + completed_inferred_partial + released
+        # + skip-released); "dropped" counts every terminal failure
+        # shape (abandoned + exhausted + unclassified_by_sweep);
+        # "other" absorbs in-flight (active), zero-activity (idle), and
+        # edited-without-quality (edited_no_quality) sessions so they
+        # do not deflate the rate.
         group_by(.details.directive)
         | map({
             directive: .[0].details.directive,
@@ -1298,9 +1307,9 @@ else
           })
         | map(. + {
             n_sessions: (.sessions | length),
-            n_shipped: (.outcomes | map(select(. == "completed" or . == "completed_inferred" or . == "released" or . == "skip-released")) | length),
+            n_shipped: (.outcomes | map(select(. == "completed" or . == "completed_inferred" or . == "completed_inferred_partial" or . == "released" or . == "skip-released")) | length),
             n_dropped: (.outcomes | map(select(. == "abandoned" or . == "exhausted" or . == "unclassified_by_sweep")) | length),
-            n_other: (.outcomes | map(select(. == "active" or . == "idle" or . == "unknown")) | length)
+            n_other: (.outcomes | map(select(. == "active" or . == "idle" or . == "edited_no_quality" or . == "unknown")) | length)
           })
         | sort_by(-.fires)
         | .[0:10]
@@ -1321,7 +1330,7 @@ else
           printf '| `%s` | %s | %s | %s | %s | %s | %s |\n' \
             "${_dva_name}" "${_dva_fires}" "${_dva_sess}" "${_dva_ship}" "${_dva_drop}" "${_dva_other}" "${_dva_rate}"
         done
-    printf '\n_Apply rate = shipped / (shipped + dropped). "Shipped" counts `completed` + `completed_inferred` + `released` + `skip-released`; "Dropped" counts `abandoned` + `exhausted` + `unclassified_by_sweep`; "Other" counts in-flight `active` and zero-activity `idle` sessions excluded from the rate. A directive with low apply rate AND high fire count is a candidate for budget removal — it is contributing prompt-tax without correlating to ship signal._\n\n'
+    printf '\n_Apply rate = shipped / (shipped + dropped). "Shipped" counts `completed` + `completed_inferred` + `completed_inferred_partial` + `released` + `skip-released`; "Dropped" counts `abandoned` + `exhausted` + `unclassified_by_sweep`; "Other" counts in-flight `active`, zero-activity `idle`, and `edited_no_quality` sessions (excluded from the rate). A directive with low apply rate AND high fire count is a candidate for budget removal — it is contributing prompt-tax without correlating to ship signal._\n\n'
   fi
 fi
 
@@ -2148,6 +2157,42 @@ if [[ "${_intp_misfires:-0}" -ge 5 && "${MODE}" == "week" ]] || \
    [[ "${_intp_misfires:-0}" -ge 20 && "${MODE}" == "month" ]] || \
    [[ "${_intp_misfires:-0}" -ge 5 && "${MODE}" == "all" ]]; then
   _intp_lines+=("**Classifier misfires accumulating.** ${_intp_misfires} misfire row$([[ "${_intp_misfires}" -eq 1 ]] && echo "" || echo "s") in window. Run \`tools/replay-classifier-telemetry.sh\` against \`tools/classifier-fixtures/regression.jsonl\` to see whether the prompts your classifier is mis-routing share a structural pattern worth adding to \`lib/classifier.sh\`.")
+fi
+
+# Heuristic 3b (v1.43 data-lens F-001): edited_no_quality bucket
+# accumulation. The new outcome predicate at common.sh:1763 emits
+# `edited_no_quality` for sessions that edited code but neither the
+# review nor the verify quality step fired. These are excluded from
+# both n_shipped and n_dropped (we cannot tell if the work shipped
+# externally), but a sustained nonzero count is itself a quality
+# signal: reviewers are being bypassed, intentionally or not. The
+# heuristic fires conservatively (≥3 in window) so a single
+# exploratory session doesn't trip it.
+if [[ -n "${sessions_rows:-}" ]]; then
+  _edited_noq_count="$(printf '%s\n' "${sessions_rows}" | jq -c 'select(.outcome == "edited_no_quality")' | wc -l | tr -d '[:space:]')"
+  _edited_noq_count="${_edited_noq_count:-0}"
+  [[ "${_edited_noq_count}" =~ ^[0-9]+$ ]] || _edited_noq_count=0
+  if [[ "${_edited_noq_count}" -ge 3 ]]; then
+    _intp_lines+=("**${_edited_noq_count} session$([[ "${_edited_noq_count}" -eq 1 ]] && echo "" || echo "s") edited code without quality gates firing.** Sessions classified as \`edited_no_quality\` (edits + zero review + zero verify) are excluded from apply-rate because we cannot tell if work shipped externally — but a sustained count means reviewers are being bypassed. Check whether \`/ulw-skip\` is being used to clear review blocks, whether \`quality_policy=off\` is set, or whether the work was committed before the in-session review chain ran.")
+  fi
+fi
+
+# Heuristic 4b (v1.43 data-lens F-002): classifier fixture candidates
+# ready to promote. /ulw-correct writes promotion-shaped candidate rows
+# to ~/.claude/quality-pack/classifier_fixture_candidates.jsonl every
+# time a user correction supplies enough to label a fixture (prompt +
+# intent + domain). Surfacing the count here closes the misfire→fixture
+# feedback loop without auto-merging into the source repo's fixtures —
+# the maintainer still vets each candidate, but they no longer have to
+# rediscover them by reading the misfire ledger.
+_fixture_candidates_file="${HOME}/.claude/quality-pack/classifier_fixture_candidates.jsonl"
+if [[ -f "${_fixture_candidates_file}" ]]; then
+  _fixture_candidates_count="$(wc -l < "${_fixture_candidates_file}" 2>/dev/null | tr -d '[:space:]')"
+  _fixture_candidates_count="${_fixture_candidates_count:-0}"
+  [[ "${_fixture_candidates_count}" =~ ^[0-9]+$ ]] || _fixture_candidates_count=0
+  if [[ "${_fixture_candidates_count}" -gt 0 ]]; then
+    _intp_lines+=("**${_fixture_candidates_count} classifier fixture candidate$([[ "${_fixture_candidates_count}" -eq 1 ]] && echo "" || echo "s") ready to promote.** \`/ulw-correct\` writes promotion-shaped rows (prompt + intent + domain) to \`~/.claude/quality-pack/classifier_fixture_candidates.jsonl\` so the maintainer can vet them in bulk. Cat the file, drop the \`_source\`/\`_session_id\`/\`_ts\` fields, and append vetted rows to \`tools/classifier-fixtures/regression.jsonl\` — then \`tools/replay-classifier-telemetry.sh\` will pin the corrected routing.")
+  fi
 fi
 
 # Heuristic 5: archetype convergence. Same archetype emitted ≥3 times

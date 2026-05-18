@@ -1760,9 +1760,24 @@ _sweep_stale_sessions_locked() {
               dim_blocks: ((.dimension_guard_blocks // "0") | tonumber),
               exhausted: ((.guard_exhausted // "") != ""),
               dispatches: ((.subagent_dispatch_count // "0") | tonumber),
+              # v1.43 data-lens F-001 (outcome predicate, three-tier ladder):
+              # Pre-v1.43 the inference required BOTH last_review_ts AND
+              # last_verify_ts AND code_edit_count>0 for completed_inferred.
+              # Real sessions where edits shipped with only ONE of
+              # {review, verify} fell to unclassified_by_sweep and were
+              # excluded from n_shipped in directive-value-attribution.
+              # New ladder:
+              #   completed_inferred         = full loop (review+verify+edits)
+              #   completed_inferred_partial = edits + ONE of {review,verify} -- still shipped
+              #   edited_no_quality          = edits + zero quality steps -- unknown
+              #                                shipping (could ship externally),
+              #                                excluded from both shipped and
+              #                                dropped, surfaced in Patterns.
               outcome: (
                 if (.session_outcome // "") != "" then .session_outcome
                 elif ((.last_review_ts // "") != "") and ((.last_verify_ts // "") != "") and (((.code_edit_count // "0") | tonumber) > 0) then "completed_inferred"
+                elif (((.code_edit_count // "0") | tonumber) > 0) and (((.last_review_ts // "") != "") or ((.last_verify_ts // "") != "")) then "completed_inferred_partial"
+                elif (((.code_edit_count // "0") | tonumber) > 0) then "edited_no_quality"
                 elif (((.code_edit_count // "0") | tonumber) == 0) and ((.last_review_ts // "") == "") and ((.last_verify_ts // "") == "") then "idle"
                 else "unclassified_by_sweep"
                 end
