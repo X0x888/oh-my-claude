@@ -86,11 +86,21 @@ _pause_operational_pattern='\b(credential|credentials|login|password|token|api[-
 # (agent escaping to non-expert user).
 _pause_externalizing_verb='\b(blocked[[:space:]]+by|awaiting|pending|requires?|superseded[[:space:]]+by|tracks?[[:space:]]+to|tracked[[:space:]]+(in|at)|because)\b'
 
+# Compute "would the validator reject this reason?" once so the
+# refuse path AND the audit path can share the verdict. The force
+# override (OMC_ULW_PAUSE_FORCE=1) doesn't change the validator's
+# verdict — it just lets the call through. The audit path NEEDS the
+# original verdict to know whether to emit a force-bypass event.
+_pause_would_reject=false
 if [[ "${OMC_ULW_PAUSE_VALIDATOR:-on}" == "on" ]] \
-  && [[ "${OMC_ULW_PAUSE_FORCE:-}" != "1" ]] \
   && grep -Eiq "${_pause_judgment_pattern}" <<<"${reason}" \
   && { ! grep -Eiq "${_pause_operational_pattern}" <<<"${reason}" \
        || ! grep -Eiq "${_pause_externalizing_verb}" <<<"${reason}"; }; then
+  _pause_would_reject=true
+fi
+
+if [[ "${_pause_would_reject}" == "true" ]] \
+  && [[ "${OMC_ULW_PAUSE_FORCE:-}" != "1" ]]; then
   record_gate_event "ulw-pause" "non-operational-refused" \
     "reason_preview=${reason:0:200}" 2>/dev/null || true
   cat >&2 <<EOF
@@ -129,6 +139,21 @@ fi
 if [[ -z "${SESSION_ID:-}" ]]; then
   printf 'ulw-pause: no active session (SESSION_ID unset)\n' >&2
   exit 2
+fi
+
+# v1.42.x audit symmetry: when the force override flips the validator's
+# rejection into a pass, emit a distinct force-bypass event AND
+# increment a per-session counter so /ulw-status and /ulw-report can
+# surface whether the escape valve is being used routinely. Mirrors
+# the ulw-skip pattern at ulw-skip-register.sh:121-129.
+if [[ "${_pause_would_reject}" == "true" ]] \
+  && [[ "${OMC_ULW_PAUSE_FORCE:-}" == "1" ]]; then
+  record_gate_event "ulw-pause" "force-bypass" \
+    "reason_preview=${reason:0:200}" 2>/dev/null || true
+  _pause_force_count="$(read_state "ulw_pause_force_count" 2>/dev/null || true)"
+  _pause_force_count="${_pause_force_count:-0}"
+  [[ "${_pause_force_count}" =~ ^[0-9]+$ ]] || _pause_force_count=0
+  write_state "ulw_pause_force_count" "$((_pause_force_count + 1))" 2>/dev/null || true
 fi
 
 PAUSE_CAP=2

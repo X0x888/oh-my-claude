@@ -163,15 +163,32 @@ if [[ -n "${corrected_intent}" ]] \
   [[ "${_last_edit_ts}" =~ ^[0-9]+$ ]] || _last_edit_ts=0
   [[ "${_last_user_prompt_ts}" =~ ^[0-9]+$ ]] || _last_user_prompt_ts=0
 
-  if [[ "${OMC_ULW_CORRECT_FORCE:-}" != "1" ]] \
-    && [[ "${_last_edit_ts}" -gt "${_last_user_prompt_ts}" ]]; then
-    _intent_downgrade_blocked=1
-    blocked_parts+=("intent execution → ${corrected_intent} (mid-turn refused)")
-    record_gate_event "intent-downgrade-blocked" "block" \
-      "prior=execution" \
-      "attempted=${corrected_intent}" \
-      "last_edit_ts=${_last_edit_ts}" \
-      "last_user_prompt_ts=${_last_user_prompt_ts}" || true
+  if [[ "${_last_edit_ts}" -gt "${_last_user_prompt_ts}" ]]; then
+    if [[ "${OMC_ULW_CORRECT_FORCE:-}" != "1" ]]; then
+      _intent_downgrade_blocked=1
+      blocked_parts+=("intent execution → ${corrected_intent} (mid-turn refused)")
+      record_gate_event "intent-downgrade-blocked" "block" \
+        "prior=execution" \
+        "attempted=${corrected_intent}" \
+        "last_edit_ts=${_last_edit_ts}" \
+        "last_user_prompt_ts=${_last_user_prompt_ts}" || true
+    else
+      # v1.42.x audit symmetry: the validator would have blocked this
+      # mid-turn downgrade, but OMC_ULW_CORRECT_FORCE=1 flipped the
+      # outcome to a pass. Emit a distinct force-bypass event AND
+      # increment a per-session counter so /ulw-status surfaces whether
+      # the escape valve is being used routinely. Mirrors the ulw-skip
+      # and ulw-pause force-bypass logging.
+      record_gate_event "intent-downgrade-blocked" "force-bypass" \
+        "prior=execution" \
+        "attempted=${corrected_intent}" \
+        "last_edit_ts=${_last_edit_ts}" \
+        "last_user_prompt_ts=${_last_user_prompt_ts}" || true
+      _correct_force_count="$(read_state "ulw_correct_force_count" 2>/dev/null || true)"
+      _correct_force_count="${_correct_force_count:-0}"
+      [[ "${_correct_force_count}" =~ ^[0-9]+$ ]] || _correct_force_count=0
+      write_state "ulw_correct_force_count" "$((_correct_force_count + 1))" 2>/dev/null || true
+    fi
   fi
 fi
 

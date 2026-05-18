@@ -109,6 +109,22 @@ read_state_field() {
     "${STATE_ROOT}/${SESSION_ID}/session_state.json" 2>/dev/null
 }
 
+# v1.42.x audit-symmetry helper: jq-scan the per-session gate_events.jsonl
+# for a row whose .gate and .event match the supplied tokens. Empty
+# match returns empty string; caller uses assert_eq / assert_contains.
+gate_event_exists() {
+  local gate="$1" event="$2"
+  local file="${STATE_ROOT}/${SESSION_ID}/gate_events.jsonl"
+  # Normalize the no-file case to "0" — some scripts never write any
+  # gate event on their happy path (e.g. ulw-correct-record when no
+  # downgrade is attempted), and the test's assert_eq needs a stable
+  # comparable value rather than an empty string.
+  [[ -f "${file}" ]] || { printf '0'; return 0; }
+  jq -rs --arg gate "${gate}" --arg event "${event}" \
+    'map(select(.gate == $gate and .event == $event)) | length' \
+    "${file}" 2>/dev/null
+}
+
 # ===========================================================================
 # F-001: handoff regex (v1.42.x expanded slots + idioms)
 # ===========================================================================
@@ -233,6 +249,22 @@ setup
 out="$(OMC_ULW_PAUSE_FORCE=1 "${HOOK_DIR}/ulw-pause.sh" "user must pick copy A vs B" 2>&1)"
 rc=$?
 assert_eq "OMC_ULW_PAUSE_FORCE=1 overrides validator" "0" "${rc}"
+# v1.42.x audit symmetry: distinct force-bypass event MUST be logged
+# when the force flag flips a would-be rejection into a pass. Without
+# this, the override is silent and routine misuse cannot be detected
+# by /ulw-report cross-session aggregation.
+assert_eq "ulw-pause FORCE emits force-bypass event" "1" "$(gate_event_exists 'ulw-pause' 'force-bypass')"
+assert_eq "ulw_pause_force_count incremented" "1" "$(read_state_field 'ulw_pause_force_count')"
+teardown
+
+# FORCE on a reason that wasn't a judgment call → no force-bypass
+# event (validator would have allowed it; no bypass occurred).
+setup
+out="$(OMC_ULW_PAUSE_FORCE=1 "${HOOK_DIR}/ulw-pause.sh" "credentials missing — awaiting login token" 2>&1)"
+rc=$?
+assert_eq "FORCE on operational reason exits 0" "0" "${rc}"
+assert_eq "no force-bypass event when validator would have passed" "0" "$(gate_event_exists 'ulw-pause' 'force-bypass')"
+assert_eq "ulw_pause_force_count NOT incremented when no bypass occurred" "" "$(read_state_field 'ulw_pause_force_count')"
 teardown
 
 # ===========================================================================
@@ -293,6 +325,26 @@ rc=$?
 set -e
 assert_eq "FORCE override exits 0" "0" "${rc}"
 assert_eq "task_intent flipped under FORCE" "advisory" "$(read_state_field 'task_intent')"
+# v1.42.x audit symmetry: same as ulw-pause — when the FORCE flips
+# the mid-turn downgrade-block into a pass, the override MUST be
+# audited via a distinct event AND a per-session counter increment.
+assert_eq "ulw-correct FORCE emits force-bypass event" "1" "$(gate_event_exists 'intent-downgrade-blocked' 'force-bypass')"
+assert_eq "ulw_correct_force_count incremented" "1" "$(read_state_field 'ulw_correct_force_count')"
+teardown
+
+# Case E (parity negative): FORCE set, but no mid-turn condition
+# (last_edit_ts <= last_user_prompt_ts → downgrade legitimately
+# allowed). No bypass occurred, so NO force-bypass event AND NO
+# counter increment. Mirror of the ulw-pause negative test above.
+setup
+write_state_field "task_intent" "execution"
+write_state_int "last_user_prompt_ts" "2000"
+write_state_int "last_edit_ts" "1000"
+out="$(OMC_ULW_CORRECT_FORCE=1 "${HOOK_DIR}/ulw-correct-record.sh" "actually advisory intent=advisory" 2>&1)"
+rc=$?
+assert_eq "FORCE on no-mid-turn downgrade exits 0" "0" "${rc}"
+assert_eq "no force-bypass event when no rejection occurred" "0" "$(gate_event_exists 'intent-downgrade-blocked' 'force-bypass')"
+assert_eq "ulw_correct_force_count NOT incremented" "" "$(read_state_field 'ulw_correct_force_count')"
 teardown
 
 # ===========================================================================
@@ -461,6 +513,12 @@ out="$(OMC_ULW_SKIP_FORCE=1 "${HOOK_DIR}/ulw-skip-register.sh" "force override f
 rc=$?
 assert_eq "FORCE override exits 0" "0" "${rc}"
 assert_contains "skip registered after force" "force override for unblocked CI" "$(read_state_field 'gate_skip_reason')"
+# v1.42.x audit symmetry: ulw-skip already logged the force-bypass
+# event; the missing piece was the per-session counter. With
+# ulw_skip_force_count surfaced in /ulw-status, routine misuse of
+# the escape valve becomes visible at-a-glance.
+assert_eq "ulw-skip FORCE emits force-bypass event" "1" "$(gate_event_exists 'ulw-skip' 'force-bypass')"
+assert_eq "ulw_skip_force_count incremented" "1" "$(read_state_field 'ulw_skip_force_count')"
 teardown
 
 # No findings → skip works as expected (not gated)

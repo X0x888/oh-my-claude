@@ -596,6 +596,20 @@ jq -r --arg ellipsis "${_ellipsis}" '
   "Pause active:      \(if (.ulw_pause_active // "") == "1" then "YES (clears at next user prompt)" else "no" end)",
   "Pause count:       \((.ulw_pause_count // "0"))/2 this session",
   "Last pause reason: \(.ulw_pause_reason // "—")",
+  (
+    # v1.42.x audit-symmetry visibility: surface force-override usage so
+    # the user can see whether the escape valves (OMC_ULW_SKIP_FORCE /
+    # PAUSE_FORCE / CORRECT_FORCE) are firing routinely. Each counter
+    # increments only when the validator would have rejected the call
+    # but FORCE=1 flipped the outcome. Suppressed when all three are 0
+    # to keep the steady-state view noise-free.
+    (.ulw_skip_force_count // "0" | tonumber? // 0) as $sf |
+    (.ulw_pause_force_count // "0" | tonumber? // 0) as $pf |
+    (.ulw_correct_force_count // "0" | tonumber? // 0) as $cf |
+    if ($sf + $pf + $cf) > 0 then
+      "Force overrides:   skip=\($sf) pause=\($pf) correct=\($cf) this session"
+    else empty end
+  ),
   "",
   "--- Timestamps ---",
   "Last user prompt:  \(.last_user_prompt_ts // "never")",

@@ -332,5 +332,43 @@ assert_output_contains "T8: summary mode surfaces contract" \
   env STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}" --summary
 teardown_session "${ROOT}"
 
+# ----------------------------------------------------------------------
+printf 'Test 9: force-override counters surfaced only when nonzero (v1.42.x audit symmetry)\n'
+parts="$(mk_session)"
+ROOT="${parts%|*}"
+SID="${parts##*|}"
+
+# Baseline: no force overrides → row suppressed (steady-state quietness).
+printf '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","session_start_ts":"%s"}' \
+  "$(date +%s)" > "${ROOT}/${SID}/session_state.json"
+assert_output_NOT_contains "T9: zero counters suppress the row" \
+  "Force overrides:" \
+  env STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}"
+
+# Set one counter (skip=2) → row appears with all three values.
+printf '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","session_start_ts":"%s","ulw_skip_force_count":"2"}' \
+  "$(date +%s)" > "${ROOT}/${SID}/session_state.json"
+assert_output_contains "T9: nonzero counter surfaces the row" \
+  "Force overrides:" \
+  env STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}"
+assert_output_contains "T9: skip count rendered" \
+  "skip=2" \
+  env STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}"
+assert_output_contains "T9: pause defaults to 0 when only skip set" \
+  "pause=0" \
+  env STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}"
+assert_output_contains "T9: correct defaults to 0 when only skip set" \
+  "correct=0" \
+  env STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}"
+
+# All three counters set → all three render with their values.
+printf '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","session_start_ts":"%s","ulw_skip_force_count":"1","ulw_pause_force_count":"3","ulw_correct_force_count":"2"}' \
+  "$(date +%s)" > "${ROOT}/${SID}/session_state.json"
+assert_output_contains "T9: all three counters render together" \
+  "skip=1 pause=3 correct=2" \
+  env STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}"
+
+teardown_session "${ROOT}"
+
 printf '\n=== Show-Status Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]

@@ -126,6 +126,13 @@ if [[ "${_review_had_findings}" == "true" ]] \
     "skipped_gate=quality" \
     "review_had_findings=true" \
     "reason_preview=${SKIP_REASON:0:200}" 2>/dev/null || true
+  # v1.42.x audit symmetry: per-session counter so /ulw-status can show
+  # routine-vs-genuine-stuck usage at a glance. Mirrors the analogous
+  # ulw_pause_force_count and ulw_correct_force_count increments.
+  _skip_force_count="$(read_state "ulw_skip_force_count" 2>/dev/null || true)"
+  _skip_force_count="${_skip_force_count:-0}"
+  [[ "${_skip_force_count}" =~ ^[0-9]+$ ]] || _skip_force_count=0
+  write_state "ulw_skip_force_count" "$((_skip_force_count + 1))" 2>/dev/null || true
 fi
 
 # v1.37.x W4 (Item 6): catch-quality logging for share-card weighting
