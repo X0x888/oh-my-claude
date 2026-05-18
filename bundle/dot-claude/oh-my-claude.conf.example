@@ -114,6 +114,37 @@
 # Env: OMC_ULW_PAUSE_VALIDATOR.
 #ulw_pause_validator=on
 
+# --- FORCE overrides (env-only, audited) ---
+# Three env-only escape valves let the user (or test harness) bypass a
+# stop-guard bypass-closure validator on the rare case where the validator
+# is wrong and the call is genuinely needed. These are NOT conf flags
+# because they are operational, single-call overrides — not project-level
+# defaults to flip. Every FORCE use is double-audited:
+#   1. Distinct `force-bypass` event in <session>/gate_events.jsonl so
+#      /ulw-report can aggregate cross-session usage.
+#   2. Per-session counter (`ulw_skip_force_count`, `ulw_pause_force_count`,
+#      `ulw_correct_force_count`) surfaced by /ulw-status in the
+#      `Force overrides:` row — appears the moment any counter is nonzero
+#      and stays visible for the session lifetime.
+#
+#   OMC_ULW_SKIP_FORCE=1     /ulw-skip on unremediated post-edit reviewer
+#                             gate. Override only when the reviewer
+#                             literally cannot run (network/infra dead).
+#   OMC_ULW_PAUSE_FORCE=1    /ulw-pause with a judgment-token reason
+#                             unpaired with an operational signal.
+#                             Override only when a real operational
+#                             blocker exists but doesn't lex into the
+#                             validator's vocabulary.
+#   OMC_ULW_CORRECT_FORCE=1  /ulw-correct mid-turn execution-intent
+#                             downgrade refusal. Override only when
+#                             reclassifying after work has started is
+#                             genuinely required (extremely rare).
+#
+# Usage shape: `OMC_ULW_SKIP_FORCE=1 bash /path/to/ulw-skip-register.sh "<reason>"`.
+# Routine usage (counter rising session-over-session in /ulw-report) is
+# the failure mode the validators exist to prevent — the FORCE is a
+# fire-extinguisher, not a daily-use surface.
+
 # Block destructive git/gh ops (push, force-push, branch -D, reset --hard,
 # rebase, gh pr create, etc.) while task_intent is advisory / session-
 # management / checkpoint. Defense against the 2026-04-17-class incident.
