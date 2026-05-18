@@ -132,7 +132,50 @@ printf '%s\n' "${cross_row}" >> "${cross_file}" 2>/dev/null || true
 
 # Apply the correction to active session state when values parsed.
 applied_parts=()
-if [[ -n "${corrected_intent}" ]] && [[ "${corrected_intent}" != "${prior_intent}" ]]; then
+blocked_parts=()
+
+# v1.42.x stop-guard bypass closure (Bypass-Surface F-005 / SEV-4):
+# Refuse mid-turn execution-intent downgrades. The legitimate user-correction
+# path fires `/ulw-correct` at the START of a turn (router just wrote
+# `last_user_prompt_ts`; no edits have happened yet). An agent self-issued
+# downgrade fires LATE in a turn after edits have happened — the only
+# observable signal is `last_edit_ts > last_user_prompt_ts`. We refuse the
+# downgrade in that case AND record a `intent-downgrade-blocked` gate event
+# so cross-session telemetry surfaces the attempt pattern.
+#
+# Why refuse instead of just logging: the downgrade FROM `execution` collapses
+# every execution-gated stop-guard check (no-defer, shortcut-ratio,
+# discovered-scope, wave-shape, agent-first, dimension, excellence,
+# metis-on-plan, delivery-contract). A single mid-turn write would bypass
+# every gate; a forensic log fired post-stop is too late to keep the work
+# honest. The override allowed via `OMC_ULW_CORRECT_FORCE=1` exists for
+# tests and for the user's explicit "yes I really mean it" recovery.
+_intent_downgrade_blocked=0
+if [[ -n "${corrected_intent}" ]] \
+  && [[ "${corrected_intent}" != "${prior_intent}" ]] \
+  && [[ "${prior_intent}" == "execution" ]] \
+  && [[ "${corrected_intent}" != "execution" ]] \
+  && [[ "${corrected_intent}" != "continuation" ]]; then
+  _last_edit_ts="$(read_state "last_edit_ts" 2>/dev/null || true)"
+  _last_user_prompt_ts="$(read_state "last_user_prompt_ts" 2>/dev/null || true)"
+  _last_edit_ts="${_last_edit_ts:-0}"
+  _last_user_prompt_ts="${_last_user_prompt_ts:-0}"
+  [[ "${_last_edit_ts}" =~ ^[0-9]+$ ]] || _last_edit_ts=0
+  [[ "${_last_user_prompt_ts}" =~ ^[0-9]+$ ]] || _last_user_prompt_ts=0
+
+  if [[ "${OMC_ULW_CORRECT_FORCE:-}" != "1" ]] \
+    && [[ "${_last_edit_ts}" -gt "${_last_user_prompt_ts}" ]]; then
+    _intent_downgrade_blocked=1
+    blocked_parts+=("intent execution → ${corrected_intent} (mid-turn refused)")
+    record_gate_event "intent-downgrade-blocked" "block" \
+      "prior=execution" \
+      "attempted=${corrected_intent}" \
+      "last_edit_ts=${_last_edit_ts}" \
+      "last_user_prompt_ts=${_last_user_prompt_ts}" || true
+  fi
+fi
+
+if [[ -n "${corrected_intent}" ]] && [[ "${corrected_intent}" != "${prior_intent}" ]] && [[ "${_intent_downgrade_blocked}" -eq 0 ]]; then
   write_state "task_intent" "${corrected_intent}"
   applied_parts+=("intent ${prior_intent:-?} → ${corrected_intent}")
 fi
@@ -141,8 +184,27 @@ if [[ -n "${corrected_domain}" ]] && [[ "${corrected_domain}" != "${prior_domain
   applied_parts+=("domain ${prior_domain:-?} → ${corrected_domain}")
 fi
 
+if [[ "${#blocked_parts[@]}" -gt 0 ]]; then
+  printf 'BLOCKED: %s\n' "$(IFS='; '; printf '%s' "${blocked_parts[*]}")" >&2
+  printf '  Reason: an edit has occurred this turn (last_edit_ts=%s > last_user_prompt_ts=%s).\n' "${_last_edit_ts}" "${_last_user_prompt_ts}" >&2
+  printf '  Mid-turn execution-intent downgrades collapse every execution-only gate; that is the failure mode this guard catches.\n' >&2
+  printf '  If you genuinely need to reclassify a misfire AFTER work has started:\n' >&2
+  printf '    1. Submit a NEW user prompt with the correction (the router rewrites task_intent at prompt time without this restriction).\n' >&2
+  printf '    2. For a real operational blocker, use /ulw-pause <reason> instead.\n' >&2
+  printf '    3. Last-resort, run /ulw-skip <reason> to bypass the gate once (audited).\n' >&2
+  printf '  The misfire row WAS recorded for cross-session learning regardless.\n' >&2
+fi
+
 if [[ "${#applied_parts[@]}" -gt 0 ]]; then
   printf 'corrected: %s\n' "$(IFS='; '; printf '%s' "${applied_parts[*]}")"
-else
+elif [[ "${#blocked_parts[@]}" -eq 0 ]]; then
   printf 'recorded as misfire (no intent= or domain= parseable from reason)\n'
+fi
+
+# Exit 4 for blocked downgrade so callers / tests can distinguish from
+# clean apply (0) and bad-invocation (2). Non-blocked corrections still
+# exit 0 even when no parseable intent/domain was present — same legacy
+# behavior.
+if [[ "${_intent_downgrade_blocked}" -eq 1 ]]; then
+  exit 4
 fi

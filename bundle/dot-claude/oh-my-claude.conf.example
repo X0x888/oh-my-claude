@@ -81,6 +81,39 @@
 # Env: OMC_DISCOVERED_SCOPE.
 #discovered_scope=on
 
+# Advisory-dispatch-without-findings gate (v1.42.x stop-guard bypass closure).
+# When N+ advisory specialists are dispatched but no findings are recorded,
+# block once. Closes the fail-open where findings.json never exists and the
+# 4 finding-gated stop-guard checks silently disengage. Telemetry observed
+# 10 sessions in 30d dispatching 3-6 lenses without ever creating a findings
+# file.
+#   on  — gate on (default).
+#   off — kill switch; useful when specialists are routinely consulted for
+#         non-finding-emitting work (research, docs lookups).
+# Env: OMC_ADVISORY_NO_FINDINGS_GATE.
+#advisory_no_findings_gate=on
+
+# Threshold for the advisory-no-findings gate. Default 2 — 1 specialist
+# is the legitimate "single question" carve-out (e.g., asking metis for a
+# focused stress-test); 2+ specialists is the smallest pattern that maps
+# to a finding-emitting workflow (small council / focused dual-lens
+# review). v1.42.x quality-reviewer F-3 catches the 2-lens small-council
+# bypass shape; pre-fix threshold-of-3 missed it.
+# Env: OMC_ADVISORY_NO_FINDINGS_THRESHOLD.
+#advisory_no_findings_threshold=2
+
+# /ulw-pause reason validator (v1.42.x stop-guard bypass closure). Reject
+# pause reasons that name technical-judgment categories the agent OWNS
+# under ULW v1.40.0 (taste / library choice / refactor scope / brand voice /
+# naming / credible-approach split / design direction) unless paired with
+# an operational signal (credentials, rate limit, dead infra, stakeholder
+# approval). Preventive — telemetry showed 0 abuse in 30d, but mirrors
+# the mark-deferred validator architecture for symmetric defense.
+#   on  — validator on (default).
+#   off — kill switch; allow any reason.
+# Env: OMC_ULW_PAUSE_VALIDATOR.
+#ulw_pause_validator=on
+
 # Block destructive git/gh ops (push, force-push, branch -D, reset --hard,
 # rebase, gh pr create, etc.) while task_intent is advisory / session-
 # management / checkpoint. Defense against the 2026-04-17-class incident.

@@ -389,6 +389,70 @@ assert_exit "'on the next turn' (preposition=on, not in list): no match" "1" \
 assert_exit "'this prompt' (no next/future adjective): no match" "1" \
   has_unfinished_session_handoff "I'll handle that in this prompt itself."
 
+# v1.42.x stop-guard bypass closure (Bypass-Surface F-001 / abstraction-
+# critic): the regex was a fixed-set match against an open vocabulary.
+# Three new pattern classes added — noun-slot expansion (work-cadence
+# nouns), adjective-slot expansion (subsequent/dedicated/follow-on/up),
+# and three preposition-anchored follow-up idioms.
+
+# (A) NOUN SLOT EXPANSION — new boundary nouns
+assert_exit "v1.42.x: 'in the next pass' (noun=pass)" "0" \
+  has_unfinished_session_handoff "Leave the broader refactor for the next pass."
+
+assert_exit "v1.42.x: 'for a future iteration' (noun=iteration)" "0" \
+  has_unfinished_session_handoff "Additional polish remains for a future iteration."
+
+assert_exit "v1.42.x: 'in a subsequent cycle' (noun=cycle)" "0" \
+  has_unfinished_session_handoff "Deferring to a subsequent cycle."
+
+assert_exit "v1.42.x: 'for the next sprint' (noun=sprint)" "0" \
+  has_unfinished_session_handoff "Flagging these for the next sprint."
+
+# (B) ADJECTIVE SLOT EXPANSION — new adjectives
+assert_exit "v1.42.x: 'for a dedicated pass' (adj=dedicated)" "0" \
+  has_unfinished_session_handoff "Leave the broader refactor for a dedicated pass."
+
+assert_exit "v1.42.x: 'for a follow-up commit' (adj=follow-up)" "0" \
+  has_unfinished_session_handoff "Save the rest for a follow-up commit."
+
+assert_exit "v1.42.x: 'for follow-on work' (adj=follow-on)" "0" \
+  has_unfinished_session_handoff "Earmarked for follow-on work."
+
+# (C) FOLLOW-UP IDIOMS — preposition-anchored
+assert_exit "v1.42.x: 'as a known follow-up' (idiom)" "0" \
+  has_unfinished_session_handoff "Documented as a known follow-up."
+
+assert_exit "v1.42.x: 'as a known limitation' (idiom)" "0" \
+  has_unfinished_session_handoff "Leaving as a known limitation."
+
+assert_exit "v1.42.x: 'queued for later' (deferral verb idiom)" "0" \
+  has_unfinished_session_handoff "The deeper architectural work is queued for later."
+
+assert_exit "v1.42.x: 'parked for follow-up' (deferral verb idiom)" "0" \
+  has_unfinished_session_handoff "Parking this for follow-up — too complex this turn."
+
+assert_exit "v1.42.x: 'earmarked for the future' (idiom)" "0" \
+  has_unfinished_session_handoff "Earmarked for the future."
+
+assert_exit "v1.42.x: 'noted for later' (lightweight idiom)" "0" \
+  has_unfinished_session_handoff "Noted for later attention."
+
+assert_exit "v1.42.x: 'flagged for follow-up' (idiom)" "0" \
+  has_unfinished_session_handoff "These are flagged for follow-up review."
+
+# FALSE-POSITIVE GUARDS for v1.42.x additions
+assert_exit "v1.42.x FP: 'the next pass through the loop': no match" "1" \
+  has_unfinished_session_handoff "The next pass through the loop normalizes the data."
+
+assert_exit "v1.42.x FP: 'a follow-up question' (descriptive): no match" "1" \
+  has_unfinished_session_handoff "I have a follow-up question about that."
+
+assert_exit "v1.42.x FP: 'queued behind the request' (no for/as later/future): no match" "1" \
+  has_unfinished_session_handoff "The job is queued behind the request."
+
+assert_exit "v1.42.x FP: 'this iteration' (no preposition+adj): no match" "1" \
+  has_unfinished_session_handoff "We addressed all findings this iteration."
+
 # ===========================================================================
 # is_checkpoint_request — iterate-N-times prompt locks no-bypass invariant
 # ===========================================================================

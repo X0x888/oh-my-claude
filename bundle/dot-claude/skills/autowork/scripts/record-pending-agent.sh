@@ -42,12 +42,36 @@ pending_entry="$(jq -nc \
 
 # Append under lock so a concurrent SubagentStop cleanup does not race the write.
 # Also increment the subagent dispatch counter for cost/budget visibility.
+#
+# v1.42.x stop-guard bypass closure (Bypass-Surface F-008):
+# Separately track advisory-specialist dispatches. The
+# advisory-no-findings stop-guard gate uses this counter to detect
+# the "specialists dispatched but no findings recorded" pattern that
+# forensics observed (10 sessions in 30d, 37 zero_capture events).
+# The advisory set mirrors discovered_scope_capture_targets in
+# common.sh — kept in lockstep there.
+_is_advisory_specialist() {
+  local _type="$1"
+  case "${_type##*:}" in
+    metis|briefing-analyst|oracle|abstraction-critic) return 0 ;;
+    security-lens|data-lens|product-lens|growth-lens|sre-lens|design-lens|visual-craft-lens) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 _append_pending() {
   append_limited_state "pending_agents.jsonl" "${pending_entry}" "32"
   local _count
   _count="$(read_state "subagent_dispatch_count")"
   _count="${_count:-0}"
   write_state "subagent_dispatch_count" "$((_count + 1))"
+
+  if _is_advisory_specialist "${subagent_type}"; then
+    local _adv_count
+    _adv_count="$(read_state "advisory_specialist_dispatch_count")"
+    _adv_count="${_adv_count:-0}"
+    write_state "advisory_specialist_dispatch_count" "$((_adv_count + 1))"
+  fi
 }
 with_state_lock _append_pending || exit 0
 

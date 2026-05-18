@@ -224,7 +224,10 @@ Acceptable shapes:
   - superseded by <successor>          e.g. 'superseded by S-005'
   - awaiting <named event>             e.g. 'awaiting telemetry from canary'
   - pending #<issue> | wave N
-  - duplicate | obsolete | wontfix | not reproducible | false positive | by design
+  - duplicate | obsolete | not reproducible | false positive | n/a | invalid
+    (verifiable bare tokens)
+  - by design | wontfix | working as intended — PAIRED with a WHY only
+    (v1.42.x F-010 closure)
 
 Rejected — silent-skip patterns and effort excuses:
   - 'out of scope' / 'follow-up' / 'later' / 'low priority' (no WHY)

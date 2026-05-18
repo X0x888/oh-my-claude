@@ -52,6 +52,80 @@ if [[ "${reason}" == *$'\n'* ]]; then
   exit 2
 fi
 
+# v1.42.x stop-guard bypass closure (Bypass-Surface F-003 — preventive
+# hardening): reject reasons that name technical-judgment categories
+# the agent is supposed to OWN under ULW v1.40.0. The pause carve-out
+# is OPERATIONAL-ONLY (credentials, rate limits, dead infra, destructive
+# shared-state confirmation, unfamiliar in-progress state) — taste,
+# library choice, brand voice, naming, refactor scope, credible-approach
+# split are explicitly the agent's call.
+#
+# Telemetry (last 30 days): only 2 pause events, both legitimately
+# operational ("awaiting user authorization to git push --tags") — no
+# abuse observed. This validator is preventive: documents the
+# operational-only contract at the entry point and surfaces telemetry
+# when the agent tries a non-operational reason. Audit-fires the gate
+# event whether the call is refused or override'd via
+# OMC_ULW_PAUSE_FORCE=1.
+#
+# Pattern intent: only reject reasons that EXCLUSIVELY name technical
+# judgment without ALSO naming an operational signal. "library choice
+# blocked by stakeholder approval" PASSES — it names a real external
+# blocker. Bare "library choice" REJECTS.
+_pause_judgment_pattern='\b(taste|aesthetic|aesthetics|look[- ]and[- ]feel|brand[[:space:]]+(voice|style|tone)|design[[:space:]]+direction|naming|library[[:space:]]+(choice|selection|decision)|framework[[:space:]]+(choice|selection|decision)|refactor[[:space:]]+scope|credible[- ]approach|approach[[:space:]]+split|x[- ]vs[- ]y|color|font|copy|data[[:space:]]+retention[[:space:]]+default|(pick|choose|decide)[[:space:]]+(library|framework|approach|option|tool|pattern|color|font|copy|name)|(pick|choose|decide)[^.!\n]*[[:space:]]+vs[[:space:]]+|[[:space:]]+vs[[:space:]]+[a-zA-Z])\b'
+_pause_operational_pattern='\b(credential|credentials|login|password|token|api[- ]?key|oauth|secret|external[[:space:]]+account|third[- ]party|vendor|partner|rate[[:space:]]+limit|quota|api[[:space:]]+(down|dead)|infra(structure)?[[:space:]]+(down|dead)|dependency[[:space:]]+upgrade|destructive|force[- ]push|push[[:space:]]+to[[:space:]]+main|rm[[:space:]]+-rf|drop[[:space:]]+table|prod[[:space:]]+data|untracked|stash(ed)?|unfamiliar|stakeholder[[:space:]]+(approval|decision|authorization)|legal[[:space:]]+(approval|review)|compliance[[:space:]]+(approval|review)|user[[:space:]]+(authorization|approval|confirmation|input|decision))\b'
+# v1.42.x quality-reviewer F-5: when judgment-token is present, require
+# an externalizing verb (`blocked by` / `awaiting` / `pending` /
+# `requires` / `superseded by`) IN ADDITION to the operational signal.
+# Pre-fix, "library choice — needs user input" passed because
+# `user[[:space:]]+input` matched operationally — but "needs user
+# input" is the agent ASKING the user to make a judgment call, which is
+# the v1.40.0 anti-pattern. With the externalizing verb required,
+# "library choice — blocked by stakeholder approval" passes (real
+# external decider) while "library choice — needs user input" rejects
+# (agent escaping to non-expert user).
+_pause_externalizing_verb='\b(blocked[[:space:]]+by|awaiting|pending|requires?|superseded[[:space:]]+by|tracks?[[:space:]]+to|tracked[[:space:]]+(in|at)|because)\b'
+
+if [[ "${OMC_ULW_PAUSE_VALIDATOR:-on}" == "on" ]] \
+  && [[ "${OMC_ULW_PAUSE_FORCE:-}" != "1" ]] \
+  && grep -Eiq "${_pause_judgment_pattern}" <<<"${reason}" \
+  && { ! grep -Eiq "${_pause_operational_pattern}" <<<"${reason}" \
+       || ! grep -Eiq "${_pause_externalizing_verb}" <<<"${reason}"; }; then
+  record_gate_event "ulw-pause" "non-operational-refused" \
+    "reason_preview=${reason:0:200}" 2>/dev/null || true
+  cat >&2 <<EOF
+ulw-pause: reason rejected — names technical judgment without an operational signal.
+
+Provided: ${reason}
+
+Under ULW v1.40.0 the agent OWNS technical-judgment calls — library
+choice, refactor scope, brand voice, naming, credible-approach split,
+taste, design direction, data-retention default. Routing these to a
+non-expert user is the failure mode the v1.40.0 contract closes.
+
+The /ulw-pause carve-out is operational-only:
+  - credentials / login / password / token / api key / oauth / secret
+  - external account / third-party / vendor / partner integration
+  - destructive shared state (force-push, push to main, rm -rf, drop
+    table, prod data)
+  - hard external blocker (rate limit, quota exhausted, api down,
+    infra dead, dependency upgrade in flight)
+  - unfamiliar in-progress state (untracked files, stashed changes)
+  - stakeholder/legal/compliance approval (named external decider)
+
+Recovery:
+  1. Pick the option a senior practitioner would defend, name the
+     alternative you considered and ruled out in one line, ship. The
+     user redirects cheaply if wrong.
+  2. If your reason has BOTH a judgment-token AND an operational
+     blocker, rephrase to lead with the operational one (e.g.,
+     "library choice — blocked by stakeholder approval on framework
+     license terms" PASSES because it names the real external blocker).
+  3. Last-resort override (audited): \`OMC_ULW_PAUSE_FORCE=1 bash <script>\`.
+EOF
+  exit 2
+fi
+
 if [[ -z "${SESSION_ID:-}" ]]; then
   printf 'ulw-pause: no active session (SESSION_ID unset)\n' >&2
   exit 2

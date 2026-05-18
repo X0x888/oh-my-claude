@@ -295,8 +295,11 @@ The /ulw workflow does not defer findings. Recovery options:
   1. Ship the finding inline, then: record-finding-list.sh status ${id} shipped <commit_sha>
   2. Keep status=pending and address it in the active or next wave.
   3. status=rejected with a concrete WHY — ONLY when the finding is
-     genuinely not a defect (false positive, working as intended, by
-     design, duplicate, obsolete, wontfix with a real reason).
+     genuinely not a defect. Verifiable bare tokens accepted: false
+     positive, not reproducible, duplicate, obsolete, n/a, invalid.
+     Subjective tokens (by design, wontfix, working as intended) MUST
+     be paired with a WHY-keyword (e.g., 'by design — see F-042',
+     'wontfix because superseded by F-051'). v1.42.x F-010 closure.
   4. /ulw-pause for a real external blocker (credentials, rate limit,
      dead infra) — NOT for credible-approach splits or taste calls.
 
@@ -322,14 +325,49 @@ EOF
     #   - status=rejected — notes is the rejection reason, validated when present
     #   - status=shipped|in_progress|pending — notes is descriptive metadata
     #     (commit summary, comparison hint, transition note), NOT validated
-    #   - empty notes still permitted on this path (preserves prior notes
-    #     via the jq ternary in the status-update block below); validation
-    #     only fires when a non-empty notes string is provided AND status
-    #     is deferred|rejected
+    #   - empty notes still permitted on this path for status=deferred only
+    #     (preserves prior notes via the jq ternary in the status-update
+    #     block below); validation fires when a non-empty notes string is
+    #     provided AND status is deferred|rejected
+    #
+    # v1.42.x stop-guard bypass closure (quality-reviewer F-2, Serendipity
+    # Rule applied — same code path as F-010): the pre-v1.42.x empty-notes
+    # path was a parallel bypass. An agent could call:
+    #   status F-NNN rejected <sha> ""
+    # and the empty-notes branch let the rejection pass with NO rationale,
+    # silently preserving whatever notes were there before (or none at all
+    # if the finding was newly added). Same semantic shape as the F-010
+    # subjective-token bypass closed via the allowlist tightening above —
+    # both let the model close a finding without a real WHY. Fix is
+    # specific to status=rejected: require non-empty notes. status=deferred
+    # is already gated by no_defer_mode hard-block above and by the
+    # validator-on-non-empty path; rejected was the unguarded surface.
     #
     # The bypass path mirrors /mark-deferred: setting OMC_MARK_DEFERRED_STRICT=off
     # disables the check. Bypass-with-failed-validator audits to gate_events.jsonl
     # so /ulw-report aggregates the pattern.
+    if [[ "${status}" == "rejected" ]] \
+        && [[ -z "${notes//[[:space:]]/}" ]] \
+        && [[ "${OMC_MARK_DEFERRED_STRICT:-on}" == "on" ]]; then
+      cat >&2 <<EOF
+record-finding-list status: rejected with empty notes — must name a concrete WHY.
+
+A rejected transition with no rationale is the v1.42.x F-010-parallel bypass
+(quality-reviewer F-2 closure). The agent must say WHY the finding is not a
+defect — duplicate of what? obsolete how? not reproducible because of what?
+
+Acceptable shapes (same as the validator below — empty notes is what's
+specifically refused on the rejected path):
+  - duplicate / obsolete / not reproducible / false positive / n/a / invalid
+  - paired subjective: 'by design because <X>', 'wontfix — superseded by F-NNN',
+    'working as intended because <Y>'
+  - requires/blocked-by/awaiting/pending/superseded-by patterns
+EOF
+      record_gate_event "finding-status" "empty-rejected-refused" \
+        "finding_id=${id}" 2>/dev/null || true
+      exit 2
+    fi
+
     if [[ "${status}" == "deferred" || "${status}" == "rejected" ]] \
         && [[ -n "${notes//[[:space:]]/}" ]] \
         && [[ "${OMC_MARK_DEFERRED_STRICT:-on}" == "on" ]] \
@@ -345,7 +383,11 @@ Acceptable shapes:
   - superseded by <successor>          e.g. 'superseded by F-051'
   - awaiting <named event>             e.g. 'awaiting stakeholder pricing decision'
   - pending #<issue> | wave N          e.g. 'pending #847' or 'pending wave 3'
-  - duplicate | obsolete | wontfix | not reproducible | false positive | by design
+  - duplicate | obsolete | not reproducible | false positive | n/a | invalid
+    (verifiable bare tokens)
+  - by design | wontfix | working as intended — PAIRED with a WHY only
+    (e.g., 'by design because <X>', 'wontfix — superseded by F-051').
+    v1.42.x F-010 closure: bare subjective tokens are rejected.
 
 Rejected — silent-skip patterns and effort excuses:
   - 'out of scope' / 'follow-up' / 'later' / 'low priority' (no WHY at all)

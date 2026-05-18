@@ -55,6 +55,9 @@ guard_exhaustion_mode|enum:silent/scorecard/block|scorecard|gates|Behavior when 
 verify_confidence_threshold|int|40|gates|Minimum verification confidence (0-100)
 quality_policy|enum:balanced/zero_steering|balanced|gates|Adaptive quality posture for no-steering work
 discovered_scope|bool|on|gates|Capture advisory findings + gate stop until addressed
+advisory_no_findings_gate|bool|on|gates|Block stop when N+ advisory specialists dispatched but zero findings recorded (closes fail-open of finding-gated gates)
+advisory_no_findings_threshold|int|2|gates|Specialist dispatch count that activates the advisory-no-findings gate
+ulw_pause_validator|bool|on|gates|/ulw-pause validator: reject pause reasons that name technical-judgment categories without an operational signal
 pretool_intent_guard|true_false|true|gates|Block destructive git/gh under non-execution intent
 stall_threshold|int|12|gates|Consecutive read/grep before stall fires
 excellence_file_count|int|3|gates|Edited-file count that triggers excellence-reviewer

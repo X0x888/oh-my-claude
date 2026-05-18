@@ -540,8 +540,17 @@ assert_validator_passes "V56 obsolete single token"         "obsolete"
 assert_validator_passes "V57 n/a single token"              "n/a"
 assert_validator_passes "V58 not reproducible"              "not reproducible"
 assert_validator_passes "V59 false positive"                "false positive"
-assert_validator_passes "V60 by design"                     "by design"
-assert_validator_passes "V61 working as intended"           "working as intended"
+# v1.42.x stop-guard bypass closure: bare "by design" / "wontfix" / "won't
+# fix" / "working as intended" REMOVED from the bare-token allowlist
+# (Bypass-Surface F-010, telemetry forensic observation #1 — 29 findings
+# escaped via these subjective bare-token notes in a single release-prep
+# session, df222220). These now require a WHY-keyword pairing.
+assert_validator_rejects "V60 by design bare"               "by design"
+assert_validator_rejects "V61 working as intended bare"     "working as intended"
+assert_validator_passes "V60a by design paired"             "by design because the security contract specifies it"
+assert_validator_passes "V61a working as intended paired"   "working as intended because the contract specifies it"
+assert_validator_passes "V60b wontfix paired"               "wontfix — superseded by F-051"
+assert_validator_passes "V60c by design see F-id"           "by design — see F-042 for the contract"
 assert_validator_passes "V62 migration plus wave"           "requires database migration outside this session — pending wave 3"
 assert_validator_passes "V63 upstream API"                  "blocked by upstream API redesign"
 assert_validator_passes "V64 compliance approval"           "awaiting compliance approval"

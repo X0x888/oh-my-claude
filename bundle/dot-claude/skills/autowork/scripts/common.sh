@@ -33,6 +33,9 @@ _omc_env_verify_mcp="${OMC_CUSTOM_VERIFY_MCP_TOOLS:-}"
 _omc_env_pretool_intent="${OMC_PRETOOL_INTENT_GUARD:-}"
 _omc_env_classifier_tel="${OMC_CLASSIFIER_TELEMETRY:-}"
 _omc_env_discovered_scope="${OMC_DISCOVERED_SCOPE:-}"
+_omc_env_advisory_no_findings_gate="${OMC_ADVISORY_NO_FINDINGS_GATE:-}"
+_omc_env_advisory_no_findings_threshold="${OMC_ADVISORY_NO_FINDINGS_THRESHOLD:-}"
+_omc_env_ulw_pause_validator="${OMC_ULW_PAUSE_VALIDATOR:-}"
 _omc_env_council_deep_default="${OMC_COUNCIL_DEEP_DEFAULT:-}"
 _omc_env_auto_memory="${OMC_AUTO_MEMORY:-}"
 _omc_env_output_style="${OMC_OUTPUT_STYLE:-}"
@@ -136,6 +139,43 @@ OMC_CLASSIFIER_TELEMETRY="${OMC_CLASSIFIER_TELEMETRY:-on}"
 # (kill switch) — useful when heuristic extraction proves noisy on a
 # specific project's prose style.
 OMC_DISCOVERED_SCOPE="${OMC_DISCOVERED_SCOPE:-on}"
+# Advisory-dispatch-without-findings gate (v1.42.x stop-guard bypass closure /
+# Bypass-Surface F-008 / forensic-observed #3): when `on` (default), stop-guard
+# blocks ONCE when N or more advisory specialists (council lenses, metis,
+# briefing-analyst, oracle, abstraction-critic) were dispatched this session
+# AND no findings were recorded to `findings.json` or `discovered_scope.jsonl`.
+# The threshold is `OMC_ADVISORY_NO_FINDINGS_THRESHOLD` (default 2).
+#
+# Why this exists: the 4 existing finding-gated checks (no-defer, discovered-
+# scope, shortcut-ratio, wave-shape) all fail-OPEN when `findings.json` doesn't
+# exist. Telemetry observed 10 sessions in 30 days dispatching 3-6 lenses
+# without ever creating a findings file — the gates silently disengaged.
+# 37 `discovered-scope zero_capture` events in the same window confirmed
+# specialists were producing substantial output that the extractor missed.
+# This gate closes that fail-open by gating on the dispatch-count signal
+# (which IS reliably recorded in `subagent_dispatch_count` and
+# `advisory_specialist_dispatch_count`) instead of the findings-file signal
+# (which is silent on the failure case).
+#
+# Set to `off` to disable — useful for genuinely-research sessions where
+# specialists are consulted without findings-emitting workflow.
+OMC_ADVISORY_NO_FINDINGS_GATE="${OMC_ADVISORY_NO_FINDINGS_GATE:-on}"
+# v1.42.x quality-reviewer F-3: threshold lowered 3 → 2 to catch the
+# 2-lens "small council" bypass shape. 1 specialist is the legitimate
+# "single question" carve-out (asking metis for a stress-test on a
+# focused area is non-finding-emitting consultation); 2+ specialists is
+# the smallest pattern that maps to finding-emitting workflow.
+OMC_ADVISORY_NO_FINDINGS_THRESHOLD="${OMC_ADVISORY_NO_FINDINGS_THRESHOLD:-2}"
+# /ulw-pause reason validator (v1.42.x stop-guard bypass closure /
+# Bypass-Surface F-003): when `on` (default), /ulw-pause rejects reasons
+# that name technical-judgment categories the agent OWNS under ULW
+# v1.40.0 (taste, library choice, refactor scope, brand voice, naming,
+# credible-approach split, design direction, etc.) unless the same
+# reason ALSO names an operational signal (credentials, rate limits,
+# dead infra, stakeholder approval, etc.). Override:
+# `OMC_ULW_PAUSE_FORCE=1` for tests and the user's explicit "yes I
+# really mean it" recovery.
+OMC_ULW_PAUSE_VALIDATOR="${OMC_ULW_PAUSE_VALIDATOR:-on}"
 # Council deep-default: when `on`, auto-triggered council dispatches (via the
 # prompt-intent-router's `is_council_evaluation_request` detection) inherit
 # the equivalent of `/council --deep` — lens dispatches get `model: "opus"`
@@ -419,6 +459,12 @@ _parse_conf_file() {
         [[ -z "${_omc_env_classifier_tel}" && "${value}" =~ ^(on|off)$ ]] && OMC_CLASSIFIER_TELEMETRY="${value}" || true ;;
       discovered_scope)
         [[ -z "${_omc_env_discovered_scope}" && "${value}" =~ ^(on|off)$ ]] && OMC_DISCOVERED_SCOPE="${value}" || true ;;
+      advisory_no_findings_gate)
+        [[ -z "${_omc_env_advisory_no_findings_gate}" && "${value}" =~ ^(on|off)$ ]] && OMC_ADVISORY_NO_FINDINGS_GATE="${value}" || true ;;
+      advisory_no_findings_threshold)
+        [[ -z "${_omc_env_advisory_no_findings_threshold}" && "${value}" =~ ^[0-9]+$ ]] && OMC_ADVISORY_NO_FINDINGS_THRESHOLD="${value}" || true ;;
+      ulw_pause_validator)
+        [[ -z "${_omc_env_ulw_pause_validator}" && "${value}" =~ ^(on|off)$ ]] && OMC_ULW_PAUSE_VALIDATOR="${value}" || true ;;
       council_deep_default)
         [[ -z "${_omc_env_council_deep_default}" && "${value}" =~ ^(on|off)$ ]] && OMC_COUNCIL_DEEP_DEFAULT="${value}" || true ;;
       auto_memory)
@@ -1945,8 +1991,42 @@ omc_reason_has_concrete_why() {
   # not reproducible, cannot reproduce, working as intended, by design)
   # so record-finding-list.sh status rejected can pass real-world reject
   # reasons after the validator wires onto that path.
+  #
+  # v1.42.x stop-guard bypass closure (Bypass-Surface F-010 / forensic-
+  # observed #1): four tokens REMOVED from the bare-token allowlist —
+  # `wontfix`, `won't fix`, `working as intended`, `by design`.
+  #
+  # Live-session telemetry showed 29 findings cleared via these subjective
+  # bare-token notes in a single release-prep session (session df222220,
+  # 6 of 9 findings closed with notes="by design") — they are the same
+  # shape as the "bare 'out of scope'" pattern the v1.35.0 deny-list was
+  # built to catch, just on the rejected-path instead of the deferred-
+  # path. The four removed tokens name a SUBJECTIVE state, not a
+  # VERIFIABLE one: "is this duplicate?" can be machine-checked against
+  # another F-id; "is this by design?" can only be checked by reading the
+  # agent's mind.
+  #
+  # Retained bare tokens all name a CONCRETE, AUDIT-VISIBLE state:
+  #   - duplicate / superseded — points at another finding (verifiable)
+  #   - obsolete / invalid — the underlying code/spec is gone (verifiable
+  #     against current source)
+  #   - not applicable / n/a / not a bug — concrete scope statement
+  #   - not reproducible / cannot reproduce / can't reproduce — verifiable
+  #     via re-run
+  #   - false positive — the analyzer/reviewer was wrong, verifiable
+  #     against current behavior
+  #
+  # The REMOVED four can still pass the validator, but only paired with a
+  # WHY-keyword (`because`, `superseded by F-...`, `tracks to ...`):
+  #   - `by design` ✗ (bare) → `by design — see verified at X.sh:42` ✓
+  #   - `wontfix` ✗ (bare) → `wontfix because duplicate of F-042` ✓
+  #   - `working as intended` ✗ (bare) → `working as intended because <X>` ✓
+  #
+  # The WHY-keyword check at the bottom of this function catches the
+  # paired forms. Bare subjective tokens now fail through to the deny-
+  # list path the same as "out of scope" / "follow-up" do.
   case "${trimmed}" in
-    duplicate|obsolete|superseded|wontfix|invalid|"won't fix"|"not applicable"|n/a|"not a bug"|"not reproducible"|"cannot reproduce"|"can't reproduce"|"false positive"|"working as intended"|"by design")
+    duplicate|obsolete|superseded|invalid|"not applicable"|n/a|"not a bug"|"not reproducible"|"cannot reproduce"|"can't reproduce"|"false positive")
       return 0
       ;;
   esac
@@ -5715,7 +5795,46 @@ has_unfinished_session_handoff() {
   # /ulw-skip is the recovery if it ever fires. The comment
   # deliberately does NOT cite line numbers — CHANGELOG.md grows
   # with each release and line-anchored callouts rot fast.
-  grep -Eiq '\b(ready for a new session|ready for another session|continue in a new session|continue in another session|new session\b|another session\b|next wave\b|next phase\b|wave [0-9]+[^.!\n]* is next|phase [0-9]+[^.!\n]* is next|(for|to|in|until) (a |the |another |your |my |our )?(next|future|later|separate) (session|prompt|turn|message|response))\b' <<<"${text}"
+  #
+  # v1.42.x stop-guard bypass closure (Bypass-Surface F-001 — abstraction-
+  # critic flagged the regex as a fixed-set match against an open
+  # vocabulary; defensive hardening with FP audit). Three new pattern
+  # classes added:
+  #
+  # (A) NOUN SLOT EXPANSION: the cross-session-boundary noun set expands
+  #     from {session,prompt,turn,message,response} to also include
+  #     {pass,iteration,cycle,sprint,milestone}. The five new nouns name
+  #     work-cadence boundaries the model uses interchangeably with
+  #     "session" in handoff phrasing ("for a future iteration", "in the
+  #     next pass"). The ticket/issue/PR/commit/change/effort tokens were
+  #     considered and REJECTED — "leave for the next PR" can be
+  #     legitimate same-flow scoping ("I'll address that in the next PR
+  #     in this stack"), so the FP rate outweighs catch rate.
+  #
+  # (B) ADJECTIVE SLOT EXPANSION: from {next,future,later,separate} to
+  #     also include {subsequent,dedicated,follow-on,follow-up}. The four
+  #     new adjectives all name handoff-shape boundaries; the
+  #     preposition-anchor + noun-slot pair keeps the FP rate bounded
+  #     (e.g., "follow-up commit" alone is non-handoff scoping; "for a
+  #     follow-up commit" is handoff).
+  #
+  # (C) FOLLOW-UP IDIOMS: three preposition-anchored shapes that the
+  #     existing adjective+noun slot does not catch but are documented
+  #     handoff rationalizations:
+  #     - "as a known (follow-up|limitation|gap|risk|todo)" — names
+  #       the boundary explicitly as a non-shipped item.
+  #     - "(queued|parked|earmarked) (for|as) (later|future|follow-up|
+  #       a/the/another <noun>)" — names the deferral verb + boundary.
+  #     - "(noted|flagged|tracked) for (later|future|follow-up)" — the
+  #       lightweight self-documentation rationalization.
+  #
+  # FP audit done on the v1.42.x corpus (CHANGELOG, mark-deferred deny
+  # list, skill bodies): the new patterns add 1 ambient self-quote
+  # match in this very CHANGELOG entry ("queued for later" appears
+  # below as the test exemplar). Acceptable cost — the gate firing
+  # on the model echoing its own deny-list documentation is the
+  # CORRECT outcome.
+  grep -Eiq '\b(ready for a new session|ready for another session|continue in a new session|continue in another session|new session\b|another session\b|next wave\b|next phase\b|wave [0-9]+[^.!\n]* is next|phase [0-9]+[^.!\n]* is next|(for|to|in|until) (a |the |another |your |my |our )?(next|future|later|separate|subsequent|dedicated|follow-on|follow-up) (session|prompt|turn|message|response|pass|iteration|cycle|sprint|milestone|commit|PR|pr|issue|ticket|task|work|change|investigation)|as (a |the )?known (follow-up|limitation|gap|risk|todo)|(queued|parked|parking|earmarked|earmarking) (it |this |that |them |these )?(for|as) (later|future|follow-up|a |the |another )|(noted|flagged|tracked) for (later|future|follow-up))\b' <<<"${text}"
 }
 
 

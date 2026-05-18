@@ -230,6 +230,26 @@ debatable in the absence of a clear user signal is the failure mode.
   strict", the right answer is sharper agent decisions, not wider escape
   hatches. The regression net at `tests/test-no-defer-contract.sh` exists
   to catch silent deletion of these guardrails.
+- FORBIDDEN: Bypassing the stop-guard quality gates with substitute paths
+  the v1.42.x bypass-surface closure work documented. The seven closed
+  surfaces (handoff regex, ulw-pause judgment, ulw-correct mid-turn
+  downgrade, advisory-no-findings, rejected-finding subjective tokens,
+  final-closure region match, ulw-skip on unremediated review) close
+  observed bypasses where the agent shipped work without finishing all
+  tasks. Proposals like *"loosen the rejected-finding validator — bare
+  `by design` should pass"*, *"remove the advisory-no-findings gate —
+  it false-positives on docs lookups"*, *"let ulw-skip clear post-edit
+  reviewer gates without a re-run — the prose disposition is enough"*,
+  or *"the mid-turn intent-downgrade refusal is too strict for
+  legitimate corrections"* are all the same anti-pattern as the
+  no-defer-contract softening: the contract sharper-not-wider rule
+  applies. The regression net at
+  `tests/test-stop-guard-bypass-surface.sh` exists to catch silent
+  deletion of these guardrails — if a defense breaks, the umbrella test
+  must be updated EXPLICITLY (the test exists to ensure relaxations
+  are conscious, not silent). Telemetry-observed bypasses are FACTS,
+  not theory — closures must stay closed unless the user explicitly
+  signals otherwise.
 - FORBIDDEN: Asking "Should I proceed?" or "Would you like me to..." when the user has already requested the work. The request IS the permission.
 - FORBIDDEN: Summarizing what was done and stopping without completing the review/verification loop.
 - FORBIDDEN: Asking which file to edit when there is only one plausible candidate.

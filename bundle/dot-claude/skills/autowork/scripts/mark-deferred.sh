@@ -112,8 +112,12 @@ Acceptable reason shapes (from mark-deferred/SKILL.md):
   - superseded by <successor>          e.g. 'superseded by F-051'
   - awaiting <named event>             e.g. 'awaiting stakeholder pricing decision'
   - pending #<issue> | wave N          e.g. 'pending #847' or 'pending wave 3'
-  - duplicate | obsolete | wontfix | not reproducible | false positive | by design
-    (self-explanatory single token / phrase)
+  - duplicate | obsolete | not reproducible | false positive | n/a | invalid
+    (self-explanatory single token / phrase that names a verifiable state)
+  - by design / wontfix / working as intended — only when PAIRED with a WHY
+    (e.g., 'by design because <X>', 'wontfix — superseded by F-051');
+    bare subjective tokens are rejected. v1.42.x closure of Bypass-Surface
+    F-010 — 29 findings escaped this way in observed live sessions.
 
 Rejected — silent-skip patterns (no WHY at all):
   - out of scope               (what makes it out of scope?)

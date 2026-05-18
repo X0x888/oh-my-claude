@@ -206,6 +206,9 @@ jobs:
       - name: Run mark-deferred tests (v1.32.0 R1 pin)
         run: bash tests/test-mark-deferred.sh
 
+      - name: Run stop-guard bypass-surface umbrella tests (v1.42.x pin)
+        run: bash tests/test-stop-guard-bypass-surface.sh
+
       - name: Run finding-list tests (v1.32.0 R1 pin)
         run: bash tests/test-finding-list.sh
 

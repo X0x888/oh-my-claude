@@ -116,12 +116,18 @@ teardown
 # ---------------------------------------------------------------------
 printf 'Test 5: first pause sets flag, count=1, records gate event\n'
 setup
-out="$("${ULW_PAUSE}" "user must pick copy A vs B" 2>&1)"
+# v1.42.x stop-guard bypass closure (Bypass-Surface F-003): the v1.40.0
+# pause carve-out is operational-only; the pre-v1.42.x test fixture
+# "user must pick copy A vs B" is exactly the technical-judgment
+# anti-pattern the new validator catches (copy/A-vs-B = brand-voice
+# call, the agent's to make under ULW). Replaced with a legitimately-
+# operational reason that names a credential / authorization block.
+out="$("${ULW_PAUSE}" "awaiting user authorization to push tag to remote" 2>&1)"
 rc=$?
 assert_eq "first pause exit code 0" "0" "${rc}"
 assert_eq "ulw_pause_active=1" "1" "$(read_state_field 'ulw_pause_active')"
 assert_eq "ulw_pause_count=1" "1" "$(read_state_field 'ulw_pause_count')"
-assert_eq "ulw_pause_reason set" "user must pick copy A vs B" "$(read_state_field 'ulw_pause_reason')"
+assert_eq "ulw_pause_reason set" "awaiting user authorization to push tag to remote" "$(read_state_field 'ulw_pause_reason')"
 assert_contains "stdout reports 1/2" "1/2" "${out}"
 
 # Gate event recorded
@@ -131,7 +137,7 @@ last_event="$(tail -n 1 "${events_file}")"
 assert_contains "event has gate=ulw-pause" '"gate":"ulw-pause"' "${last_event}"
 assert_contains "event has event=ulw-pause" '"event":"ulw-pause"' "${last_event}"
 assert_contains "event records pause_count=1" '"pause_count":1' "${last_event}"
-assert_contains "event records reason" '"reason":"user must pick copy A vs B"' "${last_event}"
+assert_contains "event records reason" '"reason":"awaiting user authorization to push tag to remote"' "${last_event}"
 teardown
 
 # ---------------------------------------------------------------------
@@ -267,6 +273,74 @@ assert_contains "show-report renders 'Awaiting input now' subsection" \
   "Awaiting input now" "${report_text}"
 assert_contains "show-report empty-state names mark-user-decision affordance" \
   "mark-user-decision" "${report_text}"
+
+# ---------------------------------------------------------------------
+# v1.42.x stop-guard bypass closure (Bypass-Surface F-003): /ulw-pause
+# reason validator. Reject technical-judgment categories the agent OWNS
+# under ULW v1.40.0 unless paired with an operational signal.
+# ---------------------------------------------------------------------
+
+printf 'Test 16: validator rejects bare technical-judgment reasons\n'
+setup
+# Bare taste/scope/library/brand reasons must reject (exit 2).
+set +e
+out="$("${ULW_PAUSE}" "user must pick library A vs B" 2>&1)"
+rc=$?
+set -e
+assert_eq "library choice bare reason exits 2" "2" "${rc}"
+assert_contains "rejection message names operational-only contract" "operational-only" "${out}"
+assert_contains "rejection message names override env var" "OMC_ULW_PAUSE_FORCE" "${out}"
+# State must NOT have changed
+assert_eq "ulw_pause_active not set after rejected reason" "" "$(read_state_field 'ulw_pause_active')"
+teardown
+
+setup
+set +e
+out="$("${ULW_PAUSE}" "needs taste decision on color palette" 2>&1)"
+rc=$?
+set -e
+assert_eq "taste/color bare reason exits 2" "2" "${rc}"
+teardown
+
+setup
+set +e
+out="$("${ULW_PAUSE}" "credible-approach split — refactor scope" 2>&1)"
+rc=$?
+set -e
+assert_eq "refactor-scope bare reason exits 2" "2" "${rc}"
+teardown
+
+printf 'Test 17: validator accepts technical-judgment reasons paired with operational signal\n'
+setup
+# When a judgment-token is paired with an operational signal (stakeholder
+# approval / credentials / etc.) the validator passes.
+out="$("${ULW_PAUSE}" "library choice — blocked by stakeholder approval on license terms" 2>&1)"
+rc=$?
+assert_eq "paired reason exits 0" "0" "${rc}"
+assert_eq "ulw_pause_active=1 after paired reason" "1" "$(read_state_field 'ulw_pause_active')"
+teardown
+
+setup
+out="$("${ULW_PAUSE}" "refactor scope — awaiting legal review" 2>&1)"
+rc=$?
+assert_eq "legal-review paired reason exits 0" "0" "${rc}"
+teardown
+
+printf 'Test 18: OMC_ULW_PAUSE_FORCE=1 overrides the validator (audited)\n'
+setup
+out="$(OMC_ULW_PAUSE_FORCE=1 "${ULW_PAUSE}" "library choice — refactor scope unknown" 2>&1)"
+rc=$?
+assert_eq "force-override exits 0" "0" "${rc}"
+assert_eq "ulw_pause_active=1 under force" "1" "$(read_state_field 'ulw_pause_active')"
+teardown
+
+printf 'Test 19: ulw_pause_validator=off disables the validator (kill switch)\n'
+setup
+out="$(OMC_ULW_PAUSE_VALIDATOR=off "${ULW_PAUSE}" "user must pick copy A vs B" 2>&1)"
+rc=$?
+assert_eq "kill-switch exits 0" "0" "${rc}"
+assert_eq "ulw_pause_active=1 under kill switch" "1" "$(read_state_field 'ulw_pause_active')"
+teardown
 
 printf '\n=== ULW-Pause Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]] || exit 1

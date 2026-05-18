@@ -95,7 +95,24 @@ has_closeout_label() {
     *) return 1 ;;
   esac
   [[ -n "${text}" ]] || return 1
-  printf '%s' "${text}" | grep -Eiq "${pattern}"
+  # v1.42.x stop-guard bypass closure (Bypass-Surface F-010): only match
+  # closeout labels in the CLOSING REGION (last 40% of the message). The
+  # pre-fix regex matched anywhere, so meta-mentions ("To pass the
+  # closure gate I'd need to write **Changed.**...") and quoted echoes
+  # of earlier turn content satisfied the gate without an actual close.
+  # The 40% threshold is generous — closing wraps are typically the last
+  # 10-20% of a multi-section message, so legitimate closures pass; the
+  # cutoff filters out meta/quoted occurrences from the body discussion.
+  # For short messages (<200 chars), the entire body IS the close — full
+  # scan in that case.
+  local len="${#text}"
+  if [[ "${len}" -lt 200 ]]; then
+    printf '%s' "${text}" | grep -Eiq "${pattern}"
+    return $?
+  fi
+  local closing_start=$((len * 6 / 10))
+  local closing_region="${text:${closing_start}}"
+  printf '%s' "${closing_region}" | grep -Eiq "${pattern}"
 }
 
 has_closeout_signal() {
@@ -188,7 +205,37 @@ done < <(read_state_keys \
   "last_edit_ts")
 session_handoff_blocks="${session_handoff_blocks:-0}"
 
+# v1.42.x stop-guard bypass closure (Bypass-Surface F-005 backstop):
+# If task_intent is non-execution AND `last_edit_ts > last_user_prompt_ts`
+# (work happened this turn) AND `prompt_classified_intent` was execution
+# (the router's original call), distrust the current `task_intent` for
+# the bypass check at line 191. This catches the case where some path
+# bypassed `ulw-correct-record.sh`'s validator (direct state write, future
+# bypass we haven't enumerated) and still flipped intent mid-turn.
+#
+# `prompt_classified_intent` is the router's per-prompt write; ulw-correct
+# does not mutate it. Missing key means a session that pre-dates this
+# defense — falls back to current behavior.
+#
+# Note we do NOT clear `task_intent` itself (the user-visible state stays
+# correct for status displays); we only override the gating decision.
+_effective_intent="${task_intent}"
 if ! is_execution_intent_value "${task_intent}"; then
+  _prompt_classified_intent="$(read_state "prompt_classified_intent" 2>/dev/null || true)"
+  if [[ "${_prompt_classified_intent}" == "execution" ]] \
+    && [[ -n "${last_edit_ts}" && -n "${last_user_prompt_ts}" ]] \
+    && [[ "${last_edit_ts}" -gt "${last_user_prompt_ts}" ]]; then
+    _effective_intent="execution"
+    record_gate_event "intent-flip-overridden" "block" \
+      "router_intent=execution" \
+      "current_intent=${task_intent}" \
+      "last_edit_ts=${last_edit_ts}" \
+      "last_user_prompt_ts=${last_user_prompt_ts}" || true
+    log_hook "stop-guard" "intent-flip overridden: router=execution but task_intent=${task_intent} after edits"
+  fi
+fi
+
+if ! is_execution_intent_value "${_effective_intent}"; then
   # Advisory quality check: for advisory tasks over codebases, verify that
   # actual code inspection happened before allowing the response to finalize.
   if [[ "${task_intent}" == "advisory" ]]; then
@@ -454,6 +501,107 @@ ${_es_recovery}"
   fi
 fi
 
+# Advisory-dispatch-without-findings gate (v1.42.x stop-guard bypass closure /
+# Bypass-Surface F-008 / forensic-observed #3): when N+ advisory specialists
+# (council lenses, metis, briefing-analyst, oracle, abstraction-critic) were
+# dispatched this session AND no findings were recorded (findings.json absent
+# or empty AND discovered_scope.jsonl absent or zero pending), block ONCE.
+#
+# Live-session telemetry (30 days): 10 sessions dispatched 3-6 lenses without
+# ever creating a findings file. 37 `discovered-scope zero_capture` events in
+# the same window confirmed specialists were producing substantial output that
+# the extractor missed (top zero_capture emitters: product-lens 7, oracle 7,
+# visual-craft-lens 6). The 4 existing finding-gated checks (no-defer,
+# discovered-scope, shortcut-ratio, wave-shape) all fail-OPEN on missing
+# findings.json — this gate closes that fail-open by using the dispatch-count
+# signal (reliably recorded by record-pending-agent.sh) instead of the
+# findings-file signal (silent on the failure case).
+#
+# Cap = 1. Recovery: extract findings via record-finding-list.sh add-finding
+# (preferred — preserves Phase 8 wave structure), or invoke
+# record-discovered-scope manually for the specialist outputs, or /ulw-skip
+# with a reason naming why the specialists' output is non-actionable. Gated
+# by OMC_ADVISORY_NO_FINDINGS_GATE (default on).
+#
+# Threshold: OMC_ADVISORY_NO_FINDINGS_THRESHOLD (default 2). 1 specialist
+# is the legitimate "single question" carve-out; 2+ maps to finding-
+# emitting workflow. v1.42.x quality-reviewer F-3: lowered from 3.
+#
+# Fires BEFORE wave-shape and discovered-scope so the fail-open case is
+# caught at its root (no findings.json) rather than downstream gates
+# silently disengaging.
+if [[ "${OMC_ADVISORY_NO_FINDINGS_GATE}" == "on" ]] \
+  && is_execution_intent_value "${task_intent}"; then
+  _anf_advisory_count="$(read_state "advisory_specialist_dispatch_count" 2>/dev/null || true)"
+  _anf_advisory_count="${_anf_advisory_count:-0}"
+  [[ "${_anf_advisory_count}" =~ ^[0-9]+$ ]] || _anf_advisory_count=0
+  _anf_threshold="${OMC_ADVISORY_NO_FINDINGS_THRESHOLD:-2}"
+  [[ "${_anf_threshold}" =~ ^[0-9]+$ ]] || _anf_threshold=2
+
+  if [[ "${_anf_advisory_count}" -ge "${_anf_threshold}" ]]; then
+    _anf_findings_file="$(session_file "findings.json")"
+    _anf_scope_file="$(session_file "discovered_scope.jsonl")"
+    _anf_findings_total=0
+    _anf_scope_total=0
+    if [[ -f "${_anf_findings_file}" ]]; then
+      _anf_findings_total="$(jq -r '(.findings // []) | length' "${_anf_findings_file}" 2>/dev/null || printf '0')"
+    fi
+    if [[ -f "${_anf_scope_file}" ]] && [[ -s "${_anf_scope_file}" ]]; then
+      _anf_scope_total="$(wc -l < "${_anf_scope_file}" | tr -d '[:space:]')"
+    fi
+    [[ "${_anf_findings_total}" =~ ^[0-9]+$ ]] || _anf_findings_total=0
+    [[ "${_anf_scope_total}" =~ ^[0-9]+$ ]] || _anf_scope_total=0
+    _anf_total=$((_anf_findings_total + _anf_scope_total))
+
+    # Tail-scan gate_events.jsonl for zero_capture events this session
+    # (per-agent diagnostics). If specialists returned but the extractor
+    # caught nothing, this is the "silent capture failure" tells the model
+    # exactly what to fix.
+    _anf_events_file="$(session_file "gate_events.jsonl")"
+    _anf_zero_capture_count=0
+    if [[ -f "${_anf_events_file}" ]] && [[ -s "${_anf_events_file}" ]]; then
+      _anf_zero_capture_count="$(tail -200 "${_anf_events_file}" 2>/dev/null \
+        | jq -rs '[.[] | select(.gate == "discovered-scope" and .event == "zero_capture")] | length' 2>/dev/null \
+        || printf '0')"
+    fi
+    [[ "${_anf_zero_capture_count}" =~ ^[0-9]+$ ]] || _anf_zero_capture_count=0
+
+    _anf_blocks="$(read_state "advisory_no_findings_blocks")"
+    _anf_blocks="${_anf_blocks:-0}"
+    [[ "${_anf_blocks}" =~ ^[0-9]+$ ]] || _anf_blocks=0
+
+    if [[ "${_anf_total}" -eq 0 ]] && [[ "${_anf_blocks}" -lt 1 ]]; then
+      # v1.42.x quality-reviewer F-4: write under lock. The 1/1 cap
+      # contract requires atomic check-then-set; without the lock,
+      # concurrent Stop + SubagentStop both see _anf_blocks=0, both
+      # pass the < 1 check, and both fire emit_stop_block, violating
+      # the cap.
+      with_state_lock write_state "advisory_no_findings_blocks" "1"
+      record_gate_event "advisory-no-findings" "block" \
+        "block_count=1" "block_cap=1" \
+        "advisory_dispatch_count=${_anf_advisory_count}" \
+        "threshold=${_anf_threshold}" \
+        "findings_count=${_anf_findings_total}" \
+        "scope_count=${_anf_scope_total}" \
+        "zero_capture_count=${_anf_zero_capture_count}"
+      _anf_zero_capture_hint=""
+      if [[ "${_anf_zero_capture_count}" -gt 0 ]]; then
+        _anf_zero_capture_hint=" (${_anf_zero_capture_count} \`discovered-scope zero_capture\` event(s) this session — the specialists returned substantial output but the extractor caught nothing; their findings exist in your context but aren't recorded)"
+      fi
+      _anf_recovery="$(format_gate_recovery_options \
+        "Walk the specialist outputs and record each finding via \`record-finding-list.sh add-finding\` (preferred — feeds Phase 8 wave plan)." \
+        "If the specialists returned strict-format findings, run \`record-discovered-scope.sh\` to extract them into \`discovered_scope.jsonl\` (the gate clears as soon as either file is non-empty)." \
+        "If a specialist response was genuinely non-actionable (e.g., a librarian docs lookup with no findings), \`/ulw-skip <reason>\` naming WHY the dispatch did not produce gate-able output." \
+        "Disable the gate entirely (kill switch): \`advisory_no_findings_gate=off\` in oh-my-claude.conf. Lowers the safety floor — recommended only when specialists are routinely consulted for non-finding-emitting work.")"
+      emit_stop_block "$(format_gate_block_dual \
+        "${_anf_advisory_count} advisory specialist(s) dispatched but zero findings recorded${_anf_zero_capture_hint}. The 4 existing finding-gated stop-guard checks fail-open without \`findings.json\` — silently disengaging when specialists return prose-only output. Extract their findings before stopping so the gates can audit." \
+        "[Advisory-no-findings gate · 1/1] ${_anf_advisory_count} advisory specialist(s) dispatched this session (threshold=${_anf_threshold}) but no findings recorded (findings.json:${_anf_findings_total} + discovered_scope.jsonl:${_anf_scope_total} = 0).
+Either the specialists returned non-actionable output (rare), or their findings need to be extracted now so the no-defer / discovered-scope / shortcut-ratio / wave-shape gates have something to audit.${_anf_recovery}")"
+      exit 0
+    fi
+  fi
+fi
+
 # Wave-shape gate (F-013): block once when the active wave plan is
 # under-segmented per the canonical Phase 8 rule (avg <3 findings/wave
 # on a master list of \u22655 findings AND \u22652 waves planned). This catches
@@ -628,7 +776,7 @@ if is_no_defer_active; then
         "deferred_count=${_nd_deferred_count}"
       _nd_recovery="$(format_gate_recovery_options \
         "Ship each deferred finding inline, then update its status: \`record-finding-list.sh status F-NNN shipped <commit_sha>\`." \
-        "If a finding is genuinely not-a-defect (false positive, by design, working as intended, duplicate, obsolete), flip to rejected with a real WHY: \`record-finding-list.sh status F-NNN rejected <commit_sha> 'duplicate of F-042'\`." \
+        "If a finding is genuinely not-a-defect (false positive, not reproducible, duplicate, obsolete, n/a), flip to rejected with a real WHY: \`record-finding-list.sh status F-NNN rejected <commit_sha> 'duplicate of F-042'\`. Subjective verdicts (by design / wontfix / working as intended) must be PAIRED with a WHY like 'by design because <X>'." \
         "Real external blocker (credentials, rate limit, dead infra, dependency upgrade in flight)? Use \`/ulw-pause <reason>\` — NOT for credible-approach splits, library choices, or refactor scope (the agent picks those under ULW)." \
         "Bypass once (audited): \`/ulw-skip <reason>\`. Repeated bypass on this gate signals \`no_defer_mode=off\` may be the right user preference — update \`oh-my-claude.conf\` if so.")"
       emit_stop_block "$(format_gate_block_dual \

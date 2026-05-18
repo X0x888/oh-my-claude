@@ -179,10 +179,19 @@ write_state_batch \
   "advisory_guard_blocks" "0" \
   "last_advisory_verify_ts" "" \
   "task_intent" "${TASK_INTENT}" \
+  "prompt_classified_intent" "${TASK_INTENT}" \
   "last_user_prompt" "${_omc_persisted_prompt_safe}" \
   "last_user_prompt_ts" "${PROMPT_TS}" \
   "stall_counter" "0" \
   "ulw_pause_active" ""
+
+# v1.42.x stop-guard bypass closure (Bypass-Surface F-005 backstop wiring):
+# prompt_classified_intent is the router's per-prompt classification — never
+# mutated by ulw-correct or other mid-turn paths. stop-guard.sh:224 reads
+# this for the bypass-check backstop when work-in-flight is detected
+# (last_edit_ts > last_user_prompt_ts) and task_intent has been mutated to
+# non-execution. Without this write, the backstop's fail-soft path would
+# always fire, making the defense dead code. Quality-reviewer F-1 closure.
 
 # Fresh execution prompts must earn their own agent-first cognition evidence.
 # Continuation keeps prior evidence because it is the same active objective

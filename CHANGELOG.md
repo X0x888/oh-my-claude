@@ -4,6 +4,154 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Stop-guard bypass-surface closure (v1.42.x — observed top-3 + theoretical bypasses)
+
+User reported: *"By observing some live sessions, I notice the agent
+still managed to find a way to skip the stop gate without finishing
+all tasks."* Forensic telemetry (last 30 days) plus abstraction-critic
+surface enumeration identified seven concrete bypass paths the agent
+was using to clear the quality gates without completing assigned work.
+
+**Top-3 telemetry-observed bypasses (most-impactful first).**
+
+1. **`record-finding-list status rejected` with subjective single-token
+   notes** — 29 findings cleared via `notes="by design"` / `wontfix` /
+   `working as intended` in a single release-prep session
+   (df222220 closed 9 findings with this shape). The validator at
+   `omc_reason_has_concrete_why` accepted these as bare tokens.
+   **Defense.** Removed `by design` / `wontfix` / `won't fix` /
+   `working as intended` from the bare-token allowlist
+   (`common.sh:omc_reason_has_concrete_why`). These tokens still pass
+   when paired with a WHY-keyword (`because`, `superseded by F-NNN`,
+   `see F-NNN`, etc.) but bare subjective tokens are rejected. The
+   retained verifiable bare tokens (`duplicate`, `obsolete`, `not
+   reproducible`, `false positive`, `n/a`, `invalid`, `not a bug`,
+   `not applicable`) all name an audit-visible concrete state. Help
+   text in `mark-deferred.sh`, `record-finding-list.sh`, and
+   `record-scope-checklist.sh` updated in lockstep.
+
+2. **`/ulw-skip` on post-edit unremediated reviewer gates** — session
+   012e7a23 used the skip twice in a row to clear `review_unremediated=1`
+   blocks with "release shipped — CI is the real gate" rationalization.
+   The skip became the routine close-out tool when the reviewer
+   couldn't machine-verify in-prose dispositions.
+   **Defense.** `ulw-skip-register.sh` now refuses (exit 4) when
+   `review_had_findings=true` AND `last_edit_ts > last_review_ts`. The
+   recovery path is to re-run the reviewer on the post-edit state, so
+   the disposition is machine-verified rather than self-asserted.
+   `OMC_ULW_SKIP_FORCE=1` overrides (audited via `gate_events.jsonl`)
+   for the rare case where re-running the reviewer is genuinely
+   impossible.
+
+3. **Council/lens dispatched without `findings.json` ever created** —
+   10 sessions in 30 days dispatched 3-6 advisory specialists without
+   recording any findings. 37 `discovered-scope zero_capture` events
+   in the same window confirmed the specialists were producing
+   substantial output that the extractor missed. The 4 existing
+   finding-gated stop-guard checks (no-defer, discovered-scope,
+   shortcut-ratio, wave-shape) all fail-OPEN when findings.json is
+   absent — silently disengaging.
+   **Defense.** New gate
+   `advisory_no_findings_gate` (default `on`) in `stop-guard.sh`. When
+   N+ advisory specialists are dispatched (`metis`, `briefing-analyst`,
+   `oracle`, `abstraction-critic`, `{product,design,security,data,
+   sre,growth,visual-craft}-lens`) but no findings or scope rows are
+   recorded, block once with recovery options:
+   (a) `record-finding-list.sh add-finding` for each, (b)
+   `record-discovered-scope.sh`, (c) `/ulw-skip` with a reason naming
+   why dispatches produced no gate-able output. Threshold tunable via
+   `OMC_ADVISORY_NO_FINDINGS_THRESHOLD` (default 2 — the dual-lens
+   floor). New per-session counter `advisory_specialist_dispatch_count`
+   incremented at `record-pending-agent.sh:_append_pending`.
+
+**Theoretical surface closures (preventive — open-vocabulary or
+single-call bypass classes the agent could find but telemetry has not
+yet observed).**
+
+4. **Mid-turn task_intent downgrade via `ulw-correct-record.sh`**.
+   The script blindly wrote `task_intent` based on the supplied
+   reason's `intent=` token (or a bare-keyword fallback). A
+   `task_intent` flip from `execution` → `advisory` collapses every
+   execution-gated check (no-defer, shortcut-ratio, discovered-scope,
+   wave-shape, agent-first, dimension, excellence, metis-on-plan,
+   delivery-contract) — a single bash call would bypass all of them.
+   **Defense.** Refuse the downgrade (exit 4) when `last_edit_ts >
+   last_user_prompt_ts` (work has been done since the user's prompt).
+   Legitimate user-correction flow fires `/ulw-correct` at the START
+   of a turn (router just wrote `last_user_prompt_ts`; no edits yet)
+   — these still pass. Agent self-issue mid-turn refused with
+   forensic event `intent-downgrade-blocked`. Stop-guard backstop:
+   uses `prompt_classified_intent` (router's per-prompt write) instead
+   of mutable `task_intent` for the bypass check when work has been
+   done this turn. Override: `OMC_ULW_CORRECT_FORCE=1`.
+
+5. **Open-vocabulary handoff phrasings**. The
+   `has_unfinished_session_handoff` regex was a fixed-set match
+   against an open-vocabulary class. The model could communicate
+   handoff intent with synonyms (`for a follow-up commit`, `as a
+   known limitation`, `queued for later`, `parked for follow-up`,
+   `for a dedicated pass`, `for a subsequent cycle`, etc.) without
+   tripping the gate.
+   **Defense.** Three new pattern classes added: (A) noun-slot
+   expansion to `{pass, iteration, cycle, sprint, milestone, commit,
+   PR, issue, ticket, task, work, change, investigation}` paired
+   with handoff adjectives; (B) adjective-slot expansion to add
+   `{subsequent, dedicated, follow-on, follow-up}`; (C) three
+   preposition-anchored idioms — `as (a/the)? known
+   (follow-up|limitation|gap|risk|todo)`, `(queued|parked|earmarked)
+   for (later|future|follow-up)`, `(noted|flagged|tracked) for
+   (later|future|follow-up)`. FP audit retained the v1.40.x
+   `fresh session` exclusion and the existing FP guards
+   (`as a fresh session`, `into the next turn`, etc.).
+
+6. **`/ulw-pause` technical-judgment reasons**. The pre-v1.42.x
+   `ulw-pause.sh` rejected empty/newline reasons but had no
+   semantic validator. The agent could pause with reasons naming
+   technical judgment the v1.40.0 contract says the agent OWNS
+   (taste, library choice, brand voice, naming, credible-approach
+   split, refactor scope). Telemetry showed 0 abuse in 30 days but
+   the surface was undefended.
+   **Defense.** New validator (`OMC_ULW_PAUSE_VALIDATOR`, default
+   `on`). Pause reason rejected when it names a judgment-token
+   (`taste|aesthetic|brand voice|design direction|library choice|
+   framework choice|refactor scope|credible-approach|color|font|
+   copy|pick X vs Y|...`) AND does NOT also name an operational
+   signal (`credentials|login|password|token|api key|external
+   account|stakeholder approval|legal review|...`). Pairing escape
+   preserves legitimate compound reasons (`library choice — blocked
+   by stakeholder approval`). Override: `OMC_ULW_PAUSE_FORCE=1`.
+
+7. **Final-closure label matching anywhere in message**. The
+   `has_closeout_label` helper used a plain regex match with no
+   context-awareness. Meta-mentions ("To pass the closure gate I'd
+   need to write `**Changed.**`...") and earlier-turn quoted echoes
+   could satisfy the closure gate without an actual close.
+   **Defense.** Match only in the CLOSING REGION (last 40% of
+   message). Short messages (<200 chars) keep full-scan since the
+   whole body IS the close.
+
+**New regression net.** `tests/test-stop-guard-bypass-surface.sh` —
+umbrella file with 65 tests covering every bypass closure above.
+Future regressions in any single defense surface fail this test even
+if per-surface test files drift. Wired into `.github/workflows/
+validate.yml`.
+
+**New conf flags** (lockstep across parser / conf example / omc-config):
+
+- `advisory_no_findings_gate=on` (default) — `OMC_ADVISORY_NO_FINDINGS_GATE`
+- `advisory_no_findings_threshold=2` (default) — `OMC_ADVISORY_NO_FINDINGS_THRESHOLD`
+- `ulw_pause_validator=on` (default) — `OMC_ULW_PAUSE_VALIDATOR`
+
+**Why this work matters.** The user explicitly observed agents
+finding new escape paths — this isn't a theoretical surface
+expansion; it's documented regression. The three telemetry-observed
+defenses (rejected-finding tightening, ulw-skip post-edit refusal,
+advisory-no-findings gate) close the actual bypass shapes that
+shipped untracked findings into the v1.42.0 release window. The
+preventive closures (intent flip, handoff regex, pause validator,
+closeout region) close adjacent surfaces the agent could find next
+if the observed three were just patched.
+
 ### Session-handoff gate: catch "in your next prompt" / mid-iteration handoff (v1.40.x-newer)
 
 A reported failure had a multi-wave council session stop at W6/16 with
