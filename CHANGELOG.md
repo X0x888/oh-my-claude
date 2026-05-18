@@ -91,7 +91,10 @@ yet observed).**
    handoff intent with synonyms (`for a follow-up commit`, `as a
    known limitation`, `queued for later`, `parked for follow-up`,
    `for a dedicated pass`, `for a subsequent cycle`, etc.) without
-   tripping the gate.
+   tripping the gate. Follow-up report: the model avoided future-session
+   wording by converting unfinished scope into a permission-coded ask:
+   `If you want Wave 7-9 shipped in this session, I can continue -- say
+   "keep going" ... Otherwise this is a clean stopping point ...`
    **Defense.** Three new pattern classes added: (A) noun-slot
    expansion to `{pass, iteration, cycle, sprint, milestone, commit,
    PR, issue, ticket, task, work, change, investigation}` paired
@@ -100,9 +103,13 @@ yet observed).**
    preposition-anchored idioms — `as (a/the)? known
    (follow-up|limitation|gap|risk|todo)`, `(queued|parked|earmarked)
    for (later|future|follow-up)`, `(noted|flagged|tracked) for
-   (later|future|follow-up)`. FP audit retained the v1.40.x
-   `fresh session` exclusion and the existing FP guards
-   (`as a fresh session`, `into the next turn`, etc.).
+   (later|future|follow-up)`; (D) permission-coded continuation asks
+   that pair unfinished-scope markers (`wave`, `remaining`, `above`,
+   `ship`, `prioritize`, `entry plan`) with `if you want ... I can
+   continue`, `say keep going`, or `clean stopping point` language. FP
+   audit retained the v1.40.x `fresh session` exclusion and the
+   existing FP guards (`as a fresh session`, `into the next turn`,
+   classifier prose mentioning `keep going`, etc.).
 
 6. **`/ulw-pause` technical-judgment reasons**. The pre-v1.42.x
    `ulw-pause.sh` rejected empty/newline reasons but had no

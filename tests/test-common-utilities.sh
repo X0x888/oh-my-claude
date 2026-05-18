@@ -440,6 +440,18 @@ assert_exit "v1.42.x: 'noted for later' (lightweight idiom)" "0" \
 assert_exit "v1.42.x: 'flagged for follow-up' (idiom)" "0" \
   has_unfinished_session_handoff "These are flagged for follow-up review."
 
+# (D) PERMISSION-CODED CONTINUATION ASK — remaining work hidden behind
+# "say keep going" / "if you want me to continue" rather than explicit
+# "next session" wording.
+assert_exit "v1.42.x follow-up: conditional wave continuation ask matches" "0" \
+  has_unfinished_session_handoff 'Next. If you want Wave 7-9 shipped in this session, I can continue -- say "keep going" and name which of the above to prioritize. Otherwise this is a clean stopping point for v33 with a documented v34 entry plan.'
+
+assert_exit "v1.42.x follow-up: say keep going with remaining work matches" "0" \
+  has_unfinished_session_handoff 'Say "keep going" and I will handle the remaining waves.'
+
+assert_exit "v1.42.x follow-up: clean stopping point with entry plan matches" "0" \
+  has_unfinished_session_handoff "Otherwise this is a clean stopping point for v33 with a documented v34 entry plan."
+
 # FALSE-POSITIVE GUARDS for v1.42.x additions
 assert_exit "v1.42.x FP: 'the next pass through the loop': no match" "1" \
   has_unfinished_session_handoff "The next pass through the loop normalizes the data."
@@ -452,6 +464,12 @@ assert_exit "v1.42.x FP: 'queued behind the request' (no for/as later/future): n
 
 assert_exit "v1.42.x FP: 'this iteration' (no preposition+adj): no match" "1" \
   has_unfinished_session_handoff "We addressed all findings this iteration."
+
+assert_exit "v1.42.x FP: classifier docs mention keep going: no match" "1" \
+  has_unfinished_session_handoff "The continuation classifier treats keep going as a continuation prompt."
+
+assert_exit "v1.42.x FP: optional explanation without unfinished scope: no match" "1" \
+  has_unfinished_session_handoff "If you want, I can continue explaining the tradeoffs."
 
 # ===========================================================================
 # is_checkpoint_request — iterate-N-times prompt locks no-bypass invariant

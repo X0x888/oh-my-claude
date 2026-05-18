@@ -382,9 +382,9 @@ if [[ "${ulw_pause_active}" != "1" ]] \
       _handoff_block_tail=" BLOCK MODE: no-defer/zero-steering policy keeps blocking after the cap; continue the work, use /ulw-pause for a real operational blocker, or opt out of strict autonomy explicitly."
     fi
     emit_stop_block "$(format_gate_block_dual \
-      "Premature stop. Claude said something like 'next wave', 'for next session', 'in your next prompt', 'candidates for next session', or 'ready for a new session', but the user did not ask for a checkpoint." \
+      "Premature stop. Claude said something like 'next wave', 'for next session', 'in your next prompt', 'say keep going', 'clean stopping point', or 'ready for a new session', but the user did not ask for a checkpoint." \
       "[Session-handoff gate · ${_handoff_next_block}/2] your last response deferred remaining work to a future invocation, but the user did not request a checkpoint.
-Continue the work now (do not stop with 'next wave', 'for next session', 'in a future session', 'in your next prompt', 'continue from there in your next prompt', 'candidates for next session', or 'ready for a new session' language). 'Multi-hour' / 'too heavy' / 'needs a fresh council' / 'highest-impact remaining wave per the user's recapitulation' are rationalizations, not stop signals — chunk the work into more waves or dispatch a sub-agent (which has its own fresh context) and ship the next concrete sub-step now.${_handoff_block_tail}${handoff_recovery}")"
+Continue the work now (do not stop with 'next wave', 'for next session', 'in a future session', 'in your next prompt', 'continue from there in your next prompt', 'say keep going', 'clean stopping point', or 'ready for a new session' language). 'Multi-hour' / 'too heavy' / 'needs a fresh council' / 'highest-impact remaining wave per the user's recapitulation' / 'if you want the remaining waves shipped' are rationalizations, not stop signals — chunk the work into more waves or dispatch a sub-agent (which has its own fresh context) and ship the next concrete sub-step now.${_handoff_block_tail}${handoff_recovery}")"
     exit 0
   fi
 fi

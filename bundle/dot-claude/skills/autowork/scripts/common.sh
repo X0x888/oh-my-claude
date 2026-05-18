@@ -5834,7 +5834,19 @@ has_unfinished_session_handoff() {
   # below as the test exemplar). Acceptable cost — the gate firing
   # on the model echoing its own deny-list documentation is the
   # CORRECT outcome.
-  grep -Eiq '\b(ready for a new session|ready for another session|continue in a new session|continue in another session|new session\b|another session\b|next wave\b|next phase\b|wave [0-9]+[^.!\n]* is next|phase [0-9]+[^.!\n]* is next|(for|to|in|until) (a |the |another |your |my |our )?(next|future|later|separate|subsequent|dedicated|follow-on|follow-up) (session|prompt|turn|message|response|pass|iteration|cycle|sprint|milestone|commit|PR|pr|issue|ticket|task|work|change|investigation)|as (a |the )?known (follow-up|limitation|gap|risk|todo)|(queued|parked|parking|earmarked|earmarking) (it |this |that |them |these )?(for|as) (later|future|follow-up|a |the |another )|(noted|flagged|tracked) for (later|future|follow-up))\b' <<<"${text}"
+  if grep -Eiq '\b(ready for a new session|ready for another session|continue in a new session|continue in another session|new session\b|another session\b|next wave\b|next phase\b|wave [0-9]+[^.!\n]* is next|phase [0-9]+[^.!\n]* is next|(for|to|in|until) (a |the |another |your |my |our )?(next|future|later|separate|subsequent|dedicated|follow-on|follow-up) (session|prompt|turn|message|response|pass|iteration|cycle|sprint|milestone|commit|PR|pr|issue|ticket|task|work|change|investigation)|as (a |the )?known (follow-up|limitation|gap|risk|todo)|(queued|parked|parking|earmarked|earmarking) (it |this |that |them |these )?(for|as) (later|future|follow-up|a |the |another )|(noted|flagged|tracked) for (later|future|follow-up))\b' <<<"${text}"; then
+    return 0
+  fi
+
+  # v1.42.x follow-up: permission-coded continuation asks are another
+  # handoff shape. The model may avoid explicit "next session" language
+  # by turning remaining work into a user opt-in: "If you want Wave 7-9
+  # shipped, I can continue — say keep going." Under ULW execution, that is
+  # still a premature stop unless the assistant used the structured
+  # /ulw-pause path for a real operational blocker. Keep the pattern tied
+  # to unfinished-scope markers (wave/rest/remaining/above/ship/prioritize)
+  # so ordinary continuation-prose or classifier docs do not match.
+  grep -Eiq '\b(if (you want|you.d like|you would like)[^.!]*(wave|waves|remaining|rest|above|prioritiz(e|ing)|ship(ped)?|stopping point|entry plan|next|follow-up)[^.!]*(i can|i.ll|i will|we can)[^.!]*(continue|keep going|go on|proceed|carry on)|(say|reply with|tell me|prompt me with)[^.!]*(keep going|continue|go on|proceed)[^.!]*(wave|waves|remaining|rest|above|prioritiz(e|ing)|ship(ped)?|next|follow-up|which)|clean stopping point[^.!]*(entry plan|next|follow-up|v[0-9]+))\b' <<<"${text}"
 }
 
 

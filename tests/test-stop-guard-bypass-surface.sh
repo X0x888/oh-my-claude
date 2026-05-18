@@ -8,8 +8,8 @@
 # test-common-utilities) drift or skip the regression case.
 #
 # Bypass surfaces covered:
-#   F-001: has_unfinished_session_handoff — expanded noun/adj slots +
-#          follow-up idiom patterns (v1.42.x)
+#   F-001: has_unfinished_session_handoff — expanded noun/adj slots,
+#          follow-up idioms, permission-coded continuation asks (v1.42.x)
 #   F-003: ulw-pause reason validator — technical-judgment deny-list
 #   F-005: ulw-correct mid-turn execution-intent downgrade refusal
 #   F-008: advisory-no-findings gate — specialist dispatch w/o findings
@@ -117,11 +117,11 @@ printf '=== F-001: has_unfinished_session_handoff bypass closure ===\n'
 # Source the function from common.sh. Need to disable the lazy-load opt-out
 # guards by entering through a fresh shell.
 detect_handoff() {
-  bash -c '
+  OMC_HANDOFF_TEST_PHRASE="$1" bash -c '
     set -e
     SCRIPT_DIR="'"${HOOK_DIR}"'"
     . "${SCRIPT_DIR}/common.sh"
-    has_unfinished_session_handoff "'"$1"'"
+    has_unfinished_session_handoff "${OMC_HANDOFF_TEST_PHRASE}"
   '
 }
 
@@ -168,13 +168,39 @@ for phrase in "Documented as a known follow-up." \
   assert_eq "matches: ${phrase}" "0" "${rc}"
 done
 
+printf 'permission-coded continuation asks: if-you-want / say-keep-going / clean-stopping-point\n'
+for phrase in 'Next. If you want Wave 7-9 shipped in this session, I can continue -- say "keep going" and name which of the above to prioritize. Otherwise this is a clean stopping point for v33 with a documented v34 entry plan.' \
+              'Say "keep going" and I will handle the remaining waves.' \
+              "Otherwise this is a clean stopping point for v33 with a documented v34 entry plan."; do
+  set +e
+  detect_handoff "${phrase}"
+  rc=$?
+  set -e
+  assert_eq "matches: ${phrase}" "0" "${rc}"
+done
+
+setup
+write_state_field "task_intent" "execution"
+write_state_field "current_objective" "ship all waves"
+write_state_int "last_user_prompt_ts" 100
+write_state_int "last_edit_ts" 200
+handoff_msg='Next. If you want Wave 7-9 shipped in this session, I can continue -- say "keep going" and name which of the above to prioritize. Otherwise this is a clean stopping point for v33 with a documented v34 entry plan.'
+out="$(jq -n --arg sid "${SESSION_ID}" --arg msg "${handoff_msg}" \
+  '{session_id:$sid, stop_hook_active:false, last_assistant_message:$msg}' \
+  | "${HOOK_DIR}/stop-guard.sh")"
+assert_contains "stop-guard blocks permission-coded continuation ask" '"decision":"block"' "${out}"
+assert_contains "stop-guard recovery names say keep going" "say keep going" "${out}"
+teardown
+
 # FP guards: must NOT match (block storms would otherwise fire on common
 # non-handoff prose)
 printf 'FP guards: legitimate non-handoff prose must NOT match\n'
 for phrase in "The next pass through the loop normalizes the data." \
               "I have a follow-up question about that." \
               "The job is queued behind the request." \
-              "We addressed all findings this iteration."; do
+              "We addressed all findings this iteration." \
+              "The continuation classifier treats keep going as a continuation prompt." \
+              "If you want, I can continue explaining the tradeoffs."; do
   set +e
   detect_handoff "${phrase}"
   rc=$?
