@@ -4,6 +4,54 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Council-driven post-v1.42.x evaluation — Wave 5: /ulw-report outcomes-led header (v1.43-pre)
+
+**Wave 5/5 — Outcomes section lead (1 product-lens finding).**
+Pre-v1.43 `/ulw-report` led with `## Headline` — an anomaly-driven
+section that fires only when something looks off. The canonical
+vibe-coder question ("is this harness actually helping me?") was
+left for the user to infer from per-section histograms.
+
+The new `## Outcomes` section (added BEFORE Headline) answers that
+question directly:
+
+- **One-line summary** adapts to data shape:
+  - zero sessions → invitation to try /ulw
+  - all-zero outcomes → "Clean shipping — gates were satisfied
+    first-pass throughout"
+  - any non-zero → joined non-zero clauses
+    ("prevented N premature stops, caught K adjacent bugs, shipped
+    P findings, absorbed M classifier corrections")
+- **6-row table** with all outcomes (including zeros, so the user
+  sees the inventory of what's tracked):
+  - Premature stops prevented (`guard_blocks + dim_blocks` from
+    session_summary)
+  - Adjacent bugs caught (Serendipity Rule applications)
+  - Wave-plan findings shipped
+  - Findings deferred (caps near zero under `no_defer_mode=on`)
+  - Classifier corrections absorbed (from `/ulw-correct`)
+  - Specialist sub-agents dispatched
+- **Closing note** explains the relationship: Outcomes surfaces what
+  was ADDED; Headline flags only calibration-worth issues; per-section
+  tables carry full counts.
+
+Headline section unchanged — it still surfaces anomaly-driven
+calibration cues for users who want to dig deeper. The Outcomes card
+is purely additive (no information lost) and reorients the lede
+toward value delivered rather than issues surfaced.
+
+Tests: `test-ulw-report-outcomes.sh` covers 6 paths (empty data ->
+invitation; all-zero -> clean-shipping; non-zero -> joined clauses +
+table; structural ordering Outcomes-before-Headline; classifier
+corrections from cross-session ledger; corrections-only path) — 16
+tests, all pass.
+
+Files changed: `show-report.sh` (new Outcomes section + 3 new
+aggregations: dispatches, findings shipped, classifier corrections),
+new `test-ulw-report-outcomes.sh`,
+`.github/workflows/validate.yml` (CI pin), `README.md` + `AGENTS.md`
+(test count 110 → 111).
+
 ### Council-driven post-v1.42.x evaluation — Wave 4: bypass-taxonomy doc (v1.43-pre)
 
 **Wave 4/5 — Standalone bypass-surface taxonomy (1 oracle

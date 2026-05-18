@@ -772,11 +772,35 @@ _hl_block_total=0
 _hl_skip_total=0
 _hl_serendipity_total=0
 _hl_reviewed=0
+_hl_dispatches_total=0
+_hl_findings_shipped=0
+_hl_findings_deferred=0
+_hl_corrected_misfires=0
 if [[ "${_hl_session_count}" -gt 0 ]]; then
   _hl_block_total="$(printf '%s\n' "${_hl_session_rows}" | jq -s 'map((.guard_blocks // 0) + (.dim_blocks // 0)) | add // 0' 2>/dev/null || echo 0)"
   _hl_skip_total="$(printf '%s\n' "${_hl_session_rows}" | jq -s 'map(.skip_count // 0) | add // 0' 2>/dev/null || echo 0)"
   _hl_serendipity_total="$(printf '%s\n' "${_hl_session_rows}" | jq -s 'map(.serendipity_count // 0) | add // 0' 2>/dev/null || echo 0)"
   _hl_reviewed="$(printf '%s\n' "${_hl_session_rows}" | jq -s 'map(select(.reviewed == true)) | length' 2>/dev/null || echo 0)"
+  # v1.43 product-lens Wave 5: collect outcome-shaped metrics for the
+  # leading Outcomes card. Tracked separately from the anomaly-driven
+  # Headline so the user sees value delivered BEFORE issues surfaced.
+  _hl_dispatches_total="$(printf '%s\n' "${_hl_session_rows}" | jq -s 'map(.dispatches // 0) | add // 0' 2>/dev/null || echo 0)"
+  _hl_findings_shipped="$(printf '%s\n' "${_hl_session_rows}" | jq -s 'map(.findings.shipped // 0) | add // 0' 2>/dev/null || echo 0)"
+  _hl_findings_deferred="$(printf '%s\n' "${_hl_session_rows}" | jq -s 'map(.findings.deferred // 0) | add // 0' 2>/dev/null || echo 0)"
+fi
+
+# Count user-corrected misfires in window (read from the cross-session
+# ledger so we capture corrections even from sessions that don't have a
+# session_summary row yet — recently-finished sessions sweep on a 24h
+# cadence, but /ulw-correct writes immediately).
+if [[ -f "${HOME}/.claude/quality-pack/classifier_misfires.jsonl" ]]; then
+  if [[ "${MODE}" == "all" ]]; then
+    _hl_corrected_misfires="$(jq -c 'select(.corrected_by_user == true)' "${HOME}/.claude/quality-pack/classifier_misfires.jsonl" 2>/dev/null | grep -c . || echo 0)"
+  else
+    _hl_corrected_misfires="$(jq -c --argjson cutoff "${cutoff_ts}" 'select((.ts // 0 | tonumber) >= $cutoff and .corrected_by_user == true)' "${HOME}/.claude/quality-pack/classifier_misfires.jsonl" 2>/dev/null | grep -c . || echo 0)"
+  fi
+  _hl_corrected_misfires="${_hl_corrected_misfires//[!0-9]/}"
+  _hl_corrected_misfires="${_hl_corrected_misfires:-0}"
 fi
 
 # H1: gate-fire density >2/session is the strongest anomaly signal.
@@ -817,6 +841,74 @@ fi
 # H4: serendipity (reassurance signal — only render if no anomaly above).
 if [[ "${#_headline_lines[@]}" -lt 3 && "${_hl_serendipity_total}" -gt 0 ]]; then
   _headline_lines+=("**Serendipity caught ${_hl_serendipity_total} adjacent defect$([[ "${_hl_serendipity_total}" -eq 1 ]] && echo "" || echo "s")** in window — bugs found while doing other work, fixed in-session per the Serendipity Rule. Sustained > 0 means the rule is paying for itself.")
+fi
+
+# ----------------------------------------------------------------------
+# Outcomes section (v1.43 product-lens Wave 5)
+#
+# The pre-v1.43 report led with `## Headline` — an anomaly-driven
+# section that fires only when something looks off. A vibe-coder's
+# canonical question — "is this harness actually helping me?" — was
+# left for the user to infer from the per-section histograms below.
+#
+# This Outcomes card answers that question DIRECTLY at the top: how
+# many premature stops the gates prevented, how many adjacent bugs the
+# Serendipity Rule caught, how many wave-plan findings shipped, how
+# many classifier misfires the user redirected — i.e. what the harness
+# ADDED vs. what it merely OBSERVED. The Headline anomaly section
+# follows so the reader still sees urgent calibration cues, just not
+# leading.
+#
+# The one-line summary at the top adapts to the data shape:
+#   - zero sessions: invitation to try /ulw
+#   - any nonzero outcome: "in N sessions the harness prevented M
+#     premature stops, caught K adjacent bugs, shipped P findings"
+#   - all zero outcomes: "clean shipping — gates were satisfied
+#     first-pass"
+printf '## Outcomes\n\n'
+if [[ "${_hl_session_count}" -eq 0 ]]; then
+  printf '_No /ulw cycles in window yet — run a few, then re-check after the next daily sweep to see what the harness caught._\n\n'
+else
+  _outcomes_added=$(( _hl_block_total + _hl_serendipity_total + _hl_findings_shipped + _hl_corrected_misfires ))
+  if [[ "${_outcomes_added}" -eq 0 ]]; then
+    printf '**Clean shipping.** %s session(s) in window with zero gate blocks, zero Serendipity catches, and zero findings — quality gates were satisfied first-pass throughout.\n\n' "${_hl_session_count}"
+  else
+    # Build the one-liner from non-zero clauses only so it stays compact.
+    _ol_parts=()
+    [[ "${_hl_block_total}" -gt 0 ]] && _ol_parts+=("prevented ${_hl_block_total} premature stop$([[ "${_hl_block_total}" -eq 1 ]] && echo "" || echo "s")")
+    [[ "${_hl_serendipity_total}" -gt 0 ]] && _ol_parts+=("caught ${_hl_serendipity_total} adjacent bug$([[ "${_hl_serendipity_total}" -eq 1 ]] && echo "" || echo "s") via Serendipity Rule")
+    [[ "${_hl_findings_shipped}" -gt 0 ]] && _ol_parts+=("shipped ${_hl_findings_shipped} wave-plan finding$([[ "${_hl_findings_shipped}" -eq 1 ]] && echo "" || echo "s")")
+    [[ "${_hl_corrected_misfires}" -gt 0 ]] && _ol_parts+=("absorbed ${_hl_corrected_misfires} classifier correction$([[ "${_hl_corrected_misfires}" -eq 1 ]] && echo "" || echo "s")")
+    # Join with commas + final "and".
+    _ol_count="${#_ol_parts[@]}"
+    if [[ "${_ol_count}" -eq 1 ]]; then
+      _ol_joined="${_ol_parts[0]}"
+    elif [[ "${_ol_count}" -eq 2 ]]; then
+      _ol_joined="${_ol_parts[0]} and ${_ol_parts[1]}"
+    else
+      _ol_last_idx=$(( _ol_count - 1 ))
+      _ol_joined=""
+      for _i in $(seq 0 $((_ol_last_idx - 1))); do
+        _ol_joined="${_ol_joined}${_ol_parts[$_i]}, "
+      done
+      _ol_joined="${_ol_joined}and ${_ol_parts[${_ol_last_idx}]}"
+    fi
+    printf '**In %s session(s), the harness %s.**\n\n' "${_hl_session_count}" "${_ol_joined}"
+  fi
+
+  # Compact table of all outcomes — including zero-valued rows so the
+  # reader can see what was tracked but didn't fire. The "Meaning" column
+  # converts the metric into outcome language the vibe-coder reads
+  # directly instead of inferring from raw counts.
+  printf '| Outcome | Window | What it means |\n'
+  printf '|---|---:|---|\n'
+  printf '| Premature stops prevented | %s | Quality gates blocked the agent from declaring done before review/verify completed |\n' "${_hl_block_total}"
+  printf '| Adjacent bugs caught (Serendipity Rule) | %s | Verified, same-code-path, bounded fixes shipped alongside the main task |\n' "${_hl_serendipity_total}"
+  printf '| Wave-plan findings shipped | %s | Council/lens-discovered findings closed in-session (not deferred or rejected) |\n' "${_hl_findings_shipped}"
+  printf '| Findings deferred | %s | Tracked but not shipped — `no_defer_mode=on` (default) caps this near zero under ULW execution |\n' "${_hl_findings_deferred}"
+  printf '| Classifier corrections absorbed | %s | `/ulw-correct` invocations that redirected misclassified prompts (cross-session ledger) |\n' "${_hl_corrected_misfires}"
+  printf '| Specialist sub-agents dispatched | %s | Fresh-context sub-agents (reviewers, lenses, planner, oracle, etc.) that did focused work |\n' "${_hl_dispatches_total}"
+  printf '\n_Read upward: the Outcomes card surfaces what the harness ADDED; the Headline below flags only the calibration-worth issues; the per-section tables further down carry the full counts._\n\n'
 fi
 
 # Render the headline section.
