@@ -4,6 +4,53 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Council-driven post-v1.42.x evaluation — Wave 2: 24/7 watchdog-health alarm (v1.43-pre)
+
+**Wave 2/5 — Watchdog-dead alarm (1 sre-lens P0 finding).**
+Closes the silent-failure trap that breaks the harness's 24/7-autonomy
+promise: pre-v1.43 the resume watchdog wrote a heartbeat at
+`${STATE_ROOT}/_watchdog/last_tick_completed_ts` on every tick, but
+nothing alarmed when the heartbeat went stale. If launchd unloaded the
+agent (macOS update, `launchctl bootout` from a tooling script, plist
+signature change, `claude` CLI upgrade that broke `--version`
+validation, post-suspend debounce), the user discovered the dead
+watchdog only the next time auto-resume *should* have fired — exactly
+the window 24/7 autonomy exists to cover.
+
+New hook `bundle/dot-claude/quality-pack/scripts/session-start-watchdog-health.sh`
+fires on SessionStart when `resume_watchdog=on`:
+
+- **Threshold** = 3 × StartInterval = 360s (one missed tick tolerated;
+  alarm fires on the second). Tunable via
+  `OMC_WATCHDOG_HEALTH_STALENESS_SECS`.
+- **Never-started case** — heartbeat file absent → distinct alarm
+  ("agent likely not registered with launchd/systemd").
+- **Stale case** — heartbeat age ≥ threshold → alarm with age rendered
+  legibly (Nm / NhM / NdH).
+- **Corrupt content** — non-numeric heartbeat → silent skip +
+  `log_anomaly` (alarm would mislead).
+- **Recovery action surfaced** — `bash $HOME/.claude/install-resume-watchdog.sh`
+  + opt-out path (`resume_watchdog=off`).
+- **Per-session idempotent** — `watchdog_health_emitted=1` in state
+  prevents re-emit on multiple SessionStart firings in the same
+  session (resume → compact → clear).
+- Recorded as `watchdog-health` gate event for `/ulw-report` aggregation.
+
+Wired into SessionStart hook chain in `config/settings.patch.json`
+(7th entry, after `resume-hint`). verify.sh, AGENTS.md, CLAUDE.md, and
+the settings-merge test's hook-count assertions updated in lockstep.
+
+Tests: `tests/test-watchdog-health.sh` covers 8 paths — opt-out silent,
+heartbeat missing (never-started alarm), heartbeat fresh (silent),
+heartbeat stale (alarm with age rendering), corrupt content (silent),
+per-session idempotency, env-override threshold, JSON shape validation
+(15 tests, all pass).
+
+Files changed: new `session-start-watchdog-health.sh`, new
+`test-watchdog-health.sh`, `config/settings.patch.json`,
+`verify.sh`, `test-settings-merge.sh` (SessionStart count 6 → 7),
+CHANGELOG, README/AGENTS/CLAUDE (test/hook counts).
+
 ### Council-driven post-v1.42.x evaluation — Wave 1: telemetry truthing (v1.43-pre)
 
 User asked for a comprehensive evaluation focused on real-work quality,

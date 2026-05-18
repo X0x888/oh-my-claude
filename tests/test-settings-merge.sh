@@ -130,9 +130,12 @@ for impl in "${implementations[@]}"; do
   # sees stale-bundle risk before relying on /ulw gates. v1.37.x W2
   # F-007 added session-start-whats-new.sh as the 6th — surfaces a
   # one-shot "you upgraded — run /whats-new" notice the first session
-  # after the installed_version changes.
+  # after the installed_version changes. v1.43 sre-lens F-001 added
+  # session-start-watchdog-health.sh as the 7th — alarms when the
+  # resume-watchdog heartbeat is missing or stale (closes the silent-
+  # dead-watchdog 24/7-break trap).
   assert_json_count "${impl}: fresh — SessionStart hooks" \
-    "${work}/settings.json" '.hooks.SessionStart' "6"
+    "${work}/settings.json" '.hooks.SessionStart' "7"
   assert_json_eq "${impl}: fresh — SessionStart wires session-start-resume-hint.sh" \
     "${work}/settings.json" \
     '[.hooks.SessionStart[] | .hooks[0].command] | any(. | tostring | contains("session-start-resume-hint.sh"))' \
@@ -148,6 +151,10 @@ for impl in "${implementations[@]}"; do
   assert_json_eq "${impl}: fresh — SessionStart wires session-start-whats-new.sh" \
     "${work}/settings.json" \
     '[.hooks.SessionStart[] | .hooks[0].command] | any(. | tostring | contains("session-start-whats-new.sh"))' \
+    "true"
+  assert_json_eq "${impl}: fresh — SessionStart wires session-start-watchdog-health.sh" \
+    "${work}/settings.json" \
+    '[.hooks.SessionStart[] | .hooks[0].command] | any(. | tostring | contains("session-start-watchdog-health.sh"))' \
     "true"
   assert_json_count "${impl}: fresh — UserPromptSubmit hooks" \
     "${work}/settings.json" '.hooks.UserPromptSubmit' "1"
@@ -203,8 +210,8 @@ for impl in "${implementations[@]}"; do
   # -----------------------------------------------------------------------
   run_merge "${impl}" "${work}/settings.json" "${SETTINGS_PATCH}" "false"
 
-  assert_json_count "${impl}: idempotent — SessionStart hooks still 6" \
-    "${work}/settings.json" '.hooks.SessionStart' "6"
+  assert_json_count "${impl}: idempotent — SessionStart hooks still 7" \
+    "${work}/settings.json" '.hooks.SessionStart' "7"
   assert_json_count "${impl}: idempotent — SubagentStop hooks still 11" \
     "${work}/settings.json" '.hooks.SubagentStop' "12"
   assert_json_count "${impl}: idempotent — PostToolUse hooks still 7" \

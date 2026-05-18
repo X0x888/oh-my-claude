@@ -191,6 +191,9 @@ jobs:
       - name: Run data-lens W1 telemetry-truthing tests (v1.43)
         run: bash tests/test-data-lens-w1.sh
 
+      - name: Run watchdog-health hook tests (v1.43 sre-lens F-001)
+        run: bash tests/test-watchdog-health.sh
+
       - name: Run session-summary end_ts cascade tests (v1.41 W1)
         run: bash tests/test-session-summary-end-ts.sh
 
