@@ -41,6 +41,7 @@ for arg in "$@"; do
       # v1.42.x-newer (sre-lens F-005): one-line healthcheck mode for
       # `watch grep OK` and external monitor wrap. Reads heartbeat age
       # (resume-watchdog last tick), active-session count, anomaly tail.
+      # Thresholds: heartbeat ≤600s OK, 600-1800s WARN, >1800s FAIL.
       # Single-line output; exit 0 if healthy, 1 if WARN, 2 if FAIL.
       HEALTH_MODE="true"
       ;;
@@ -67,8 +68,9 @@ if [[ "${HEALTH_MODE}" == "true" ]]; then
     if [[ -n "${_hb_ts}" ]] && [[ "${_hb_ts}" =~ ^[0-9]+$ ]]; then
       hb_age_secs=$(( now_ts - _hb_ts ))
       if (( hb_age_secs < 0 )); then hb_age_secs=0; fi
-      # Watchdog ticks every 60s by default + cooldown buffer; >900s
-      # without a tick is stale. <60s is healthy.
+      # Watchdog ticks every 60s by default; ≤600s OK, 600-1800s WARN,
+      # >1800s FAIL. Tolerant window accommodates the 5-min cooldown
+      # buffer + occasional load spikes on a busy host.
       if (( hb_age_secs <= 600 )); then
         hb_status="ok-${hb_age_secs}s"
       elif (( hb_age_secs <= 1800 )); then
@@ -84,6 +86,8 @@ if [[ "${HEALTH_MODE}" == "true" ]]; then
   # Active-session count (sessions with state files modified in last 24h).
   active_sessions=0
   if [[ -d "${_state_root}" ]]; then
+    # 1440 min = 24h. Counts UUID-shaped session dirs (hex-prefixed)
+    # touched in the last 24h.
     active_sessions="$(find "${_state_root}" -mindepth 1 -maxdepth 1 -type d -name '[a-f0-9]*' -mmin -1440 2>/dev/null | wc -l | tr -d ' ')"
   fi
 

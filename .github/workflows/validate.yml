@@ -104,6 +104,9 @@ jobs:
       - name: Run resume-watchdog tests
         run: bash tests/test-resume-watchdog.sh
 
+      - name: Run verify-health tests
+        run: bash tests/test-verify-health.sh
+
       - name: Run install-resume-watchdog tests
         run: bash tests/test-install-resume-watchdog.sh
 

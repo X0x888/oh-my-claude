@@ -693,7 +693,20 @@ if [[ -f "${_watchdog_events_file}" ]]; then
   # before the next trim. Avoids trim-thrashing under steady-state load
   # near the boundary; cheap insurance against an upstream change that
   # would record many events per tick.
-  _watchdog_events_trigger=$(( _watchdog_events_max * 12 / 10 ))
+  #
+  # Edge clamp: at max=0 (operator disabled the cap entirely) integer
+  # arithmetic gives trigger=0 and any count>0 would trim to empty.
+  # Treat max=0 as "no trimming" by lifting the trigger out of reach.
+  # For tiny max values (1-4) integer-divide rounds the hysteresis
+  # buffer to 0; force trigger > max so the buffer is always at least 1.
+  if [[ "${_watchdog_events_max}" -le 0 ]]; then
+    _watchdog_events_trigger=$(( 1 << 30 ))
+  else
+    _watchdog_events_trigger=$(( _watchdog_events_max * 12 / 10 ))
+    if [[ "${_watchdog_events_trigger}" -le "${_watchdog_events_max}" ]]; then
+      _watchdog_events_trigger=$(( _watchdog_events_max + 1 ))
+    fi
+  fi
   _watchdog_events_count="$(wc -l < "${_watchdog_events_file}" 2>/dev/null | tr -d ' ')"
   _watchdog_events_count="${_watchdog_events_count:-0}"
   if [[ "${_watchdog_events_count}" =~ ^[0-9]+$ ]] \
