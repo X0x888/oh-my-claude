@@ -194,6 +194,9 @@ jobs:
       - name: Run watchdog-health hook tests (v1.43 sre-lens F-001)
         run: bash tests/test-watchdog-health.sh
 
+      - name: Run no-defer FP observability tests (v1.43 oracle Wave 3)
+        run: bash tests/test-no-defer-fp-observability.sh
+
       - name: Run session-summary end_ts cascade tests (v1.41 W1)
         run: bash tests/test-session-summary-end-ts.sh
 

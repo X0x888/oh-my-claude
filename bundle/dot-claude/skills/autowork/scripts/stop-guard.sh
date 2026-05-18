@@ -782,6 +782,13 @@ if is_no_defer_active; then
       ' "${_nd_findings_file}" 2>/dev/null || printf '  (scorecard unavailable)')"
       record_gate_event "no-defer-mode" "stop-block" \
         "deferred_count=${_nd_deferred_count}"
+      # v1.43 oracle FP-rate instrumentation: stamp the block ts so
+      # the next prompt-intent-router invocation can pair the block
+      # with the user's next prompt within the reprompt window. Closes
+      # the "no-defer contract is asserted-correct rather than
+      # measured-correct" observability gap. Behavior unchanged; only
+      # /ulw-report gains a directional FP-rate row.
+      write_state "last_no_defer_block_ts" "$(now_epoch)" 2>/dev/null || true
       _nd_recovery="$(format_gate_recovery_options \
         "Ship each deferred finding inline, then update its status: \`record-finding-list.sh status F-NNN shipped <commit_sha>\`." \
         "If a finding is genuinely not-a-defect (false positive, not reproducible, duplicate, obsolete, n/a), flip to rejected with a real WHY: \`record-finding-list.sh status F-NNN rejected <commit_sha> 'duplicate of F-042'\`. Subjective verdicts (by design / wontfix / working as intended) must be PAIRED with a WHY like 'by design because <X>'." \

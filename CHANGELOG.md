@@ -4,6 +4,53 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Council-driven post-v1.42.x evaluation — Wave 3: no-defer FP observability (v1.43-pre)
+
+**Wave 3/5 — No-defer contract observability (1 oracle finding).**
+Closes the "no-defer contract is asserted-correct, not measured-correct"
+gap. Pre-v1.43 the regression net at
+`tests/test-no-defer-contract.sh` prevented loosening of the contract,
+but no telemetry measured whether the contract over-fires in practice.
+
+New behavior (purely additive — contract behavior unchanged):
+
+1. `stop-guard.sh:783` — when the no-defer stop-block fires, also
+   write `last_no_defer_block_ts` to session state.
+2. `common.sh:no_defer_check_post_block_reprompt()` — new helper. Reads
+   the timestamp; when called within the reprompt window (default 60s,
+   tunable via `OMC_NO_DEFER_REPROMPT_WINDOW_SECS`), records a new
+   `no-defer-mode/post-block-reprompt` gate event. Always clears the
+   single-use state flag.
+3. `prompt-intent-router.sh` — calls the helper on every
+   UserPromptSubmit, near the post-compact-bias block.
+4. `show-report.sh` Patterns section — new heuristic 3c computes
+   `post-block-reprompt / stop-block` ratio over the window:
+   - `≥50%` AND `≥3 blocks` → calibration cue "contract may be
+     over-firing; consider `no_defer_mode=off`"
+   - `≤20%` AND `≥5 blocks` → "contract calibrated correctly"
+   - In between: silent (signal not strong enough to act on).
+
+The ratio is **directional, not definitive** (a re-prompt can mean
+the block was wrong OR that the user wanted to clarify); the
+heuristic surfaces it as a calibration cue, not a verdict.
+
+Edge cases: future-timestamp (clock skew → negative age skipped),
+corrupt content (silent skip + flag cleared), env override of window
+(non-numeric / zero falls back to default 60s).
+
+Tests: `tests/test-no-defer-fp-observability.sh` covers 8 paths
+(no-prior, fresh-within-window, stale, corrupt, env override,
+future-timestamp, plus two lockstep grep assertions) — 15 tests, all
+pass. Test isolates HOME + STATE_ROOT and runs from the test dir to
+avoid conf-bleed (the developer's real `~/.claude/oh-my-claude.conf`
+must not leak into the subprocess).
+
+Files changed: `common.sh` (new helper), `stop-guard.sh` (block-ts
+writer), `prompt-intent-router.sh` (helper call), `show-report.sh`
+(Patterns heuristic), new `test-no-defer-fp-observability.sh`,
+`.github/workflows/validate.yml` (CI pin), `README.md` + `AGENTS.md`
+(test count 109 → 110).
+
 ### Council-driven post-v1.42.x evaluation — Wave 2: 24/7 watchdog-health alarm (v1.43-pre)
 
 **Wave 2/5 — Watchdog-dead alarm (1 sre-lens P0 finding).**

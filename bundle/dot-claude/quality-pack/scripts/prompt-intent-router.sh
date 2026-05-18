@@ -94,6 +94,15 @@ if [[ "${just_compacted_value}" == "1" ]] && [[ -n "${just_compacted_ts_value}" 
   write_state_batch "just_compacted" "" "just_compacted_ts" ""
 fi
 
+# v1.43 oracle: no-defer FP-rate observability. Pairs every previous-
+# turn `no-defer-mode/stop-block` with this prompt's submit (within
+# the reprompt window — default 60s) to record a `post-block-reprompt`
+# gate event. /ulw-report computes the ratio as a DIRECTIONAL false-
+# positive signal — the no-defer contract is now MEASURED-correct in
+# addition to asserted-correct. Function clears the state flag on
+# every call so each block is paired at most once. Single-use.
+no_defer_check_post_block_reprompt || true
+
 TASK_INTENT="$(classify_task_intent "${PROMPT_TEXT}")"
 PROMPT_TS="$(now_epoch)"
 

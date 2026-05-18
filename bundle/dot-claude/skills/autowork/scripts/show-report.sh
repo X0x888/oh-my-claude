@@ -2177,6 +2177,49 @@ if [[ -n "${sessions_rows:-}" ]]; then
   fi
 fi
 
+# Heuristic 3c (v1.43 oracle): no-defer false-positive rate. Pairs
+# `no-defer-mode/stop-block` events with `no-defer-mode/post-block-reprompt`
+# events (the latter fires from prompt-intent-router.sh when the user
+# re-prompts within 60s of a no-defer block — directional FP signal).
+# Interpretation: the rate is INDICATIVE, not definitive — a re-prompt
+# can mean "the model was wrong to block" OR "the user came back to
+# clarify" OR "the user wants help on the deferred item". The signal
+# is most useful as a calibration cue: a sustained >50% rate suggests
+# the no-defer contract is over-firing in this project's patterns
+# (consider `no_defer_mode=off` in oh-my-claude.conf); <20% suggests
+# the contract is correct.
+if [[ -n "${gate_event_rows:-}" ]]; then
+  _nd_blocks="$(printf '%s\n' "${gate_event_rows}" | jq -c 'select(.gate == "no-defer-mode" and .event == "stop-block")' | wc -l | tr -d '[:space:]')"
+  _nd_reprompts="$(printf '%s\n' "${gate_event_rows}" | jq -c 'select(.gate == "no-defer-mode" and .event == "post-block-reprompt")' | wc -l | tr -d '[:space:]')"
+  _nd_blocks="${_nd_blocks:-0}"
+  _nd_reprompts="${_nd_reprompts:-0}"
+  [[ "${_nd_blocks}" =~ ^[0-9]+$ ]] || _nd_blocks=0
+  [[ "${_nd_reprompts}" =~ ^[0-9]+$ ]] || _nd_reprompts=0
+  # Surface ONLY when there's enough signal: at least 3 blocks AND a
+  # meaningful ratio. Below 3, single-event noise dominates and the
+  # ratio is misleading.
+  #
+  # Cross-window pairing (quality-reviewer Wave 3 F-003): a block from
+  # outside the report window can pair with a reprompt INSIDE the
+  # window — inflating `_nd_reprompts` past `_nd_blocks` and producing
+  # >100%. Cap the rate at 100% AND emit a one-line note documenting
+  # the cross-window join when it fires, so the user understands
+  # WHY rate=100% looks suspicious.
+  if [[ "${_nd_blocks}" -ge 3 ]]; then
+    if [[ "${_nd_reprompts}" -gt "${_nd_blocks}" ]]; then
+      _nd_pct=100
+      _intp_lines+=("**No-defer reprompt join-warning.** ${_nd_reprompts} post-block-reprompt events vs ${_nd_blocks} blocks in window — reprompts exceed blocks. The cross-window pairing case: a block fired before the report window opened, but its paired reprompt landed inside the window. Rate clamped to 100%. Widen the report window (\`/ulw-report all\`) to see the matching block; the ratio in the wider window is the truth.")
+    else
+      _nd_pct=$(( _nd_reprompts * 100 / _nd_blocks ))
+    fi
+    if [[ "${_nd_pct}" -ge 50 ]]; then
+      _intp_lines+=("**No-defer block reprompt-rate ${_nd_pct}%.** ${_nd_reprompts} of ${_nd_blocks} no-defer stop-blocks in window were followed by a user re-prompt within 60s. **Directional, not definitive** — a re-prompt can mean the block was wrong OR that the user wanted to clarify. A sustained rate this high suggests the no-defer contract may be over-firing on your prompts. If you want the v1.39 soft-defer behavior back, set \`no_defer_mode=off\` in \`~/.claude/oh-my-claude.conf\`.")
+    elif [[ "${_nd_pct}" -le 20 ]] && [[ "${_nd_blocks}" -ge 5 ]]; then
+      _intp_lines+=("**No-defer contract calibrated correctly.** ${_nd_reprompts}/${_nd_blocks} blocks (${_nd_pct}%) were followed by a user re-prompt within 60s — the contract is rarely surprising the user. This is the intended steady-state shape; no action needed.")
+    fi
+  fi
+fi
+
 # Heuristic 4b (v1.43 data-lens F-002): classifier fixture candidates
 # ready to promote. /ulw-correct writes promotion-shaped candidate rows
 # to ~/.claude/quality-pack/classifier_fixture_candidates.jsonl every

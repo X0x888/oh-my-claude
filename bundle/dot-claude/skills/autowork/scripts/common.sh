@@ -2419,6 +2419,57 @@ is_no_defer_active() {
   is_execution_intent_value "${intent}"
 }
 
+# no_defer_check_post_block_reprompt — v1.43 oracle FP-rate instrumentation.
+#
+# Pairs every `no-defer-mode/stop-block` gate event with the user's
+# next prompt: when the next UserPromptSubmit arrives within the
+# reprompt window (default 60s), record `no-defer-mode/post-block-reprompt`
+# so /ulw-report can compute a DIRECTIONAL false-positive rate (a
+# block followed by a near-immediate user re-prompt is a signal the
+# user did NOT consider the work done — i.e., the block may have been
+# correct, OR the model didn't surface enough for the user to act on,
+# OR the block was wrong; the report says "directional, not definitive",
+# and surfaces the ratio as a calibration cue).
+#
+# The pre-v1.43 no-defer contract was asserted-correct: the regression
+# net at tests/test-no-defer-contract.sh prevents loosening, but no
+# counter measures whether the contract over-fires in practice. This
+# function closes that gap WITHOUT changing contract behavior — the
+# block still fires the same way; only the observability is new.
+#
+# Caller invariant: this runs from prompt-intent-router.sh, fires at
+# most once per user prompt, and is single-use (clears the state key
+# on read so the NEXT prompt doesn't double-count the same block).
+#
+# Window tunable via OMC_NO_DEFER_REPROMPT_WINDOW_SECS (default 60).
+# Why 60s: an attended user typing a clarification re-prompt is in
+# the 10-30s range; a returning-from-coffee user is in the 5-15 min
+# range. 60s captures the directional "I came right back" signal
+# while excluding the "I thought about it and came back" pattern
+# (which is genuinely ambiguous as a FP signal).
+no_defer_check_post_block_reprompt() {
+  local last_ts current_ts age window
+  last_ts="$(read_state "last_no_defer_block_ts" 2>/dev/null || echo "")"
+  [[ -z "${last_ts}" ]] && return 0
+  [[ "${last_ts}" =~ ^[0-9]+$ ]] || {
+    # Corrupt content — clear and skip silently.
+    write_state "last_no_defer_block_ts" "" 2>/dev/null || true
+    return 0
+  }
+  current_ts="$(now_epoch)"
+  age=$(( current_ts - last_ts ))
+  window="${OMC_NO_DEFER_REPROMPT_WINDOW_SECS:-60}"
+  [[ "${window}" =~ ^[1-9][0-9]*$ ]] || window=60
+  # Clear single-use flag BEFORE the event-record write so a downstream
+  # write failure cannot turn this into a permanent flag.
+  write_state "last_no_defer_block_ts" "" 2>/dev/null || true
+  if (( age >= 0 )) && (( age < window )); then
+    record_gate_event "no-defer-mode" "post-block-reprompt" \
+      "block_age_secs=${age}" \
+      "window_secs=${window}" || true
+  fi
+}
+
 task_domain() {
   read_state "task_domain"
 }
