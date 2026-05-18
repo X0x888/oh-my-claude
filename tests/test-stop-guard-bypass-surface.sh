@@ -184,6 +184,19 @@ for phrase in "Documented as a known follow-up." \
   assert_eq "matches: ${phrase}" "0" "${rc}"
 done
 
+printf 'v1.42.x-newer noun-slot: phase / revision / audit / refactor + adj upcoming\n'
+for phrase in "Deferred to a separate refactor next sprint." \
+              "Save these for a follow-up audit." \
+              "Will tackle in a future revision." \
+              "Leaving the broader work for an upcoming cycle." \
+              "Deferring this to a later phase of the project."; do
+  set +e
+  detect_handoff "${phrase}"
+  rc=$?
+  set -e
+  assert_eq "matches: ${phrase}" "0" "${rc}"
+done
+
 printf 'permission-coded continuation asks: if-you-want / say-keep-going / clean-stopping-point\n'
 for phrase in 'Next. If you want Wave 7-9 shipped in this session, I can continue -- say "keep going" and name which of the above to prioritize. Otherwise this is a clean stopping point for v33 with a documented v34 entry plan.' \
               'Say "keep going" and I will handle the remaining waves.' \
@@ -216,7 +229,13 @@ for phrase in "The next pass through the loop normalizes the data." \
               "The job is queued behind the request." \
               "We addressed all findings this iteration." \
               "The continuation classifier treats keep going as a continuation prompt." \
-              "If you want, I can continue explaining the tradeoffs."; do
+              "If you want, I can continue explaining the tradeoffs." \
+              "Treat this as a fresh session for safety." \
+              "Do not treat as a fresh session." \
+              "The job was queued for execution by the scheduler." \
+              "These bullets are flagged for review by the linter." \
+              "Each refactor lives on its own branch in this project." \
+              "The audit log records every commit independently."; do
   set +e
   detect_handoff "${phrase}"
   rc=$?

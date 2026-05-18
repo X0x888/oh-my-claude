@@ -276,3 +276,14 @@ if [[ "${has_findings}" == "true" && -n "${review_message}" ]]; then
     fi
   fi
 fi
+
+# v1.42.x SRE F-001: wait for the fire-and-forget telemetry writers
+# (record_agent_metric, record_defect_pattern) to complete before the
+# hook returns. record-reviewer.sh runs under PostToolUse / SubagentStop
+# and Claude Code reaps the process group when the parent script exits.
+# Without an explicit wait, the backgrounded `&` children can be
+# SIGHUPed mid-`mv` of their atomic temp file — leaking .XXXXXX files
+# and silently dropping cross-session telemetry rows. The metric and
+# defect-pattern writers are quick (a single jq + atomic write each);
+# `wait` adds only the longest-child latency, not their sum.
+wait 2>/dev/null || true

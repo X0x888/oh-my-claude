@@ -159,6 +159,14 @@ if [[ -n "${gate_skip_reason}" ]]; then
   if [[ "${current_edit_ts_for_skip}" -le "${gate_skip_edit_ts}" ]]; then
     # Edit clock unchanged — skip is valid
     record_gate_skip "${gate_skip_reason}" &
+    # v1.42.x SRE F-001: this script exits a few lines below via `exit 0`,
+    # so the backgrounded `record_gate_skip` child can be SIGHUPed
+    # mid-write when Claude Code reaps the process group. The /ulw-skip
+    # audit trail in gate_events.jsonl is load-bearing — /ulw-report
+    # aggregates skip-rate-per-gate from those rows for the share card.
+    # `wait $!` blocks only on this one child; faster than a script-end
+    # wait and contained to the skip-honored path.
+    wait $! 2>/dev/null || true
     log_hook "stop-guard" "gate skip honored: ${gate_skip_reason}"
     # v1.34.1+ (data-lens D-001): mark outcome so cross-session
     # session_summary.jsonl distinguishes a clean skip-honored release

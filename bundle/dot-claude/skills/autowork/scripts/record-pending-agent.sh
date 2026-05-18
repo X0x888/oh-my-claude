@@ -53,7 +53,7 @@ pending_entry="$(jq -nc \
 _is_advisory_specialist() {
   local _type="$1"
   case "${_type##*:}" in
-    metis|briefing-analyst|oracle|abstraction-critic) return 0 ;;
+    metis|briefing-analyst|oracle|abstraction-critic|editor-critic) return 0 ;;
     security-lens|data-lens|product-lens|growth-lens|sre-lens|design-lens|visual-craft-lens) return 0 ;;
     *) return 1 ;;
   esac

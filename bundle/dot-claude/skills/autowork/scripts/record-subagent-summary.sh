@@ -181,3 +181,16 @@ _clear_pending_match() {
   fi
 }
 with_state_lock _clear_pending_match || true
+
+# v1.42.x SRE F-001: wait for fire-and-forget telemetry children
+# (record-archetype subshell at line 95, append_discovered_scope
+# at line 111) before the SubagentStop hook returns. Without an
+# explicit barrier, Claude Code reaps the process group when this
+# parent script exits — backgrounded children writing to the
+# archetype log AND discovered_scope.jsonl can be SIGHUPed
+# mid-atomic-mv, leaking .XXXXXX files and dropping the gate-
+# critical scope rows. discovered_scope.jsonl is read by the
+# advisory_no_findings gate, so a dropped row silently disables
+# the gate for that SubagentStop. Cheap insurance: both children
+# are jq-bound and complete well under the hook timeout budget.
+wait 2>/dev/null || true

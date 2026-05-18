@@ -5834,7 +5834,18 @@ has_unfinished_session_handoff() {
   # below as the test exemplar). Acceptable cost — the gate firing
   # on the model echoing its own deny-list documentation is the
   # CORRECT outcome.
-  if grep -Eiq '\b(ready for a new session|ready for another session|continue in a new session|continue in another session|new session\b|another session\b|next wave\b|next phase\b|wave [0-9]+[^.!\n]* is next|phase [0-9]+[^.!\n]* is next|(for|to|in|until) (a |the |another |your |my |our )?(next|future|later|separate|subsequent|dedicated|follow-on|follow-up) (session|prompt|turn|message|response|pass|iteration|cycle|sprint|milestone|commit|PR|pr|issue|ticket|task|work|change|investigation)|as (a |the )?known (follow-up|limitation|gap|risk|todo)|(queued|parked|parking|earmarked|earmarking) (it |this |that |them |these )?(for|as) (later|future|follow-up|a |the |another )|(noted|flagged|tracked) for (later|future|follow-up))\b' <<<"${text}"; then
+  # v1.42.x-newer (excellence-reviewer): the noun slot was missing four
+  # rationalization-catalog adjacent shapes — `phase`, `revision`,
+  # `audit`, `refactor`. All four name discrete process boundaries the
+  # agent can route through to signal "more work elsewhere later"
+  # without tripping the existing wave/session/pass surface. `step`,
+  # `round`, `branch`, `review` were considered but rejected — each
+  # appears commonly in legitimate mid-execution prose ("for the next
+  # step", "for another round of review", "in a separate branch",
+  # "for a follow-up review") at a rate the FP audit cannot accept.
+  # Adjective-slot adds `upcoming` (the model's natural synonym for
+  # `next` when the latter is grammatically awkward).
+  if grep -Eiq '\b(ready for a new session|ready for another session|continue in a new session|continue in another session|new session\b|another session\b|next wave\b|next phase\b|wave [0-9]+[^.!\n]* is next|phase [0-9]+[^.!\n]* is next|(for|to|in|until) (a |an |the |another |your |my |our )?(next|future|later|separate|subsequent|dedicated|follow-on|follow-up|upcoming) (session|prompt|turn|message|response|pass|iteration|cycle|sprint|milestone|commit|PR|pr|issue|ticket|task|work|change|investigation|phase|revision|audit|refactor)|as (a |the )?known (follow-up|limitation|gap|risk|todo)|(queued|parked|parking|earmarked|earmarking) (it |this |that |them |these )?(for|as) (later|future|follow-up|a |the |another )|(noted|flagged|tracked) for (later|future|follow-up))\b' <<<"${text}"; then
     return 0
   fi
 
@@ -6030,6 +6041,7 @@ discovered_scope_capture_targets() {
     "briefing-analyst" \
     "oracle" \
     "abstraction-critic" \
+    "editor-critic" \
     "security-lens" \
     "data-lens" \
     "product-lens" \
