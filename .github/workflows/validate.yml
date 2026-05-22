@@ -308,6 +308,9 @@ jobs:
       - name: Run coordination-rules lockstep tests (v1.32.0 R7)
         run: bash tests/test-coordination-rules.sh
 
+      - name: Run model-robustness doctrine tests (v1.43-pre)
+        run: bash tests/test-model-robustness-doctrine.sh
+
 
       - name: Run state-fuzz tests (v1.32.0 Wave C Item 7)
         run: bash tests/test-state-fuzz.sh

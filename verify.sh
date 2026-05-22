@@ -227,6 +227,7 @@ required_paths=(
   "${CLAUDE_HOME}/systemd/oh-my-claude-resume-watchdog.timer"
   "${CLAUDE_HOME}/quality-pack/memory/core.md"
   "${CLAUDE_HOME}/quality-pack/memory/skills.md"
+  "${CLAUDE_HOME}/quality-pack/memory/model-robustness.md"
   "${CLAUDE_HOME}/quality-pack/memory/compact.md"
   "${CLAUDE_HOME}/quality-pack/memory/auto-memory.md"
   "${CLAUDE_HOME}/skills/autowork/scripts/stop-guard.sh"

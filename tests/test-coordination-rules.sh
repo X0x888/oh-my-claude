@@ -9,7 +9,7 @@
 # function-coverage) and missed the highest-historical-frequency
 # violation surface (conf-flag 3-site lockstep).
 #
-# This broadened version enforces five lockstep contracts from
+# This broadened version enforces six lockstep contracts from
 # CLAUDE.md:
 #
 #   1. Conf-flag 3-site lockstep (most-violated). Every flag that
@@ -32,6 +32,13 @@
 #
 #   5. Release-history lockstep. Every semver git tag `vX.Y.Z` MUST
 #      have a matching `## [X.Y.Z]` heading in CHANGELOG.md.
+#
+#   6. Memory-file lockstep. Every `*.md` in
+#      `bundle/dot-claude/quality-pack/memory/` MUST appear in
+#      `bundle/dot-claude/CLAUDE.md` `@-include` list AND in
+#      `verify.sh` `required_paths`. Missing either → silent failure
+#      (file present but never loaded, or install verification passes
+#      a broken install).
 #
 # Pinned in CI via .github/workflows/validate.yml; runs on every push.
 
@@ -378,6 +385,49 @@ else
   else
     assert_fail "C5: VERSION missing from changelog history" \
       "VERSION=$(tr -d '\n' < "${REPO_ROOT}/VERSION") has no matching changelog heading"
+  fi
+fi
+
+# ----------------------------------------------------------------------
+# Contract 6 — Memory-file lockstep
+# ----------------------------------------------------------------------
+printf '\nContract 6: memory-file lockstep\n'
+
+MEMORY_DIR="${REPO_ROOT}/bundle/dot-claude/quality-pack/memory"
+BUNDLE_CLAUDE_MD="${REPO_ROOT}/bundle/dot-claude/CLAUDE.md"
+VERIFY_SH="${REPO_ROOT}/verify.sh"
+
+if [[ ! -d "${MEMORY_DIR}" ]]; then
+  assert_fail "C6: memory directory missing" \
+    "${MEMORY_DIR} should exist; if you renamed it, update this contract and all @-include / required_paths sites"
+else
+  memory_count=0
+  for memory_file in "${MEMORY_DIR}"/*.md; do
+    [[ -e "${memory_file}" ]] || continue
+    memory_count=$((memory_count + 1))
+    name="$(basename "${memory_file}")"
+
+    if grep -Fq "@~/.claude/quality-pack/memory/${name}" "${BUNDLE_CLAUDE_MD}"; then
+      assert_pass "C6: ${name} @-included in bundle CLAUDE.md"
+    else
+      assert_fail "C6: ${name} missing @-include in bundle CLAUDE.md" \
+        "add '@~/.claude/quality-pack/memory/${name}' to ${BUNDLE_CLAUDE_MD} or the memory file will never load on session start"
+    fi
+
+    if grep -Fq "/quality-pack/memory/${name}" "${VERIFY_SH}"; then
+      assert_pass "C6: ${name} in verify.sh required_paths"
+    else
+      assert_fail "C6: ${name} missing from verify.sh required_paths" \
+        "add \"\${CLAUDE_HOME}/quality-pack/memory/${name}\" to required_paths in ${VERIFY_SH} so post-install verification catches a broken install"
+    fi
+  done
+
+  # Empty-directory guard: zero iterations is indistinguishable from
+  # all-pass without this assertion. If the memory dir ever ends up
+  # empty (refactor moved files away, etc.) Contract 6 must fail loud.
+  if [[ "${memory_count}" -eq 0 ]]; then
+    assert_fail "C6: memory directory contains zero *.md files" \
+      "${MEMORY_DIR} exists but has no *.md files — the @-include and required_paths surfaces are silently uncovered. If memory is being relocated, update Contract 6 to point at the new directory"
   fi
 fi
 

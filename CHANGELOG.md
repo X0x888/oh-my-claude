@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Model-robustness mechanism navigation doctrine (v1.43-pre)
+
+**Names the structural mechanisms the harness uses to produce quality when the model is near-sighted, drifting, or pattern-matching — and honestly admits where they run out.** The user prompt that drove this: *"focus on methodology and other stuff so that the workflow can still produce high quality work even when the model itself is not smart enough and has limitations and near-sighted."*
+
+The doctrine is `~/.claude/quality-pack/memory/model-robustness.md` — a new always-loaded memory file complementary to `core.md`. Where `core.md` is the **rule book** ("do X"), this file is the **mechanism navigation map** ("X exists because the model fails in shape Y; here are the structural surfaces that catch shape Y independent of model effort").
+
+- **Premise.** Effort is not the bottleneck. The model can produce reasoning-shaped tokens without reasoning, verification-shaped tokens without verifying. The workflow must be structurally robust to a model that is not thinking harder.
+- **Mechanism map.** Nine existing harness surfaces named with what each catches and when to escalate: verification scoring, sub-dispatch, council/lens passes, stop-guard, no-defer contract, findings ledger, wave execution, excellence+quality reviewer chain, auto-memory + compaction sweep.
+- **Honest gap admission.** Three failure modes (pattern-match-without-understanding, confidence miscalibration, fabrication-from-training) have **no structural mechanism**; the paradigm-correct answer per `project_v1_43_audit_paradigm_concerns.md` is **input enrichment** (completion contracts, verification-by-running), not another habit doctrine. Interim compensation: sub-dispatch.
+- **Bidirectional inoculation.** `core.md` "FORBIDDEN — softening the contract" extended with a new bullet naming `model-robustness.md` as part of the same anti-pattern class as the dual-failure-mode-collapse. A future "consolidate redundant priming" wave that deletes or merges the doctrine recreates the failure mode the user named on 2026-05-15.
+- **Council-shaped.** `abstraction-critic` (verdict BLOCK — KILL AND REDESIGN) and `metis` (verdict BLOCK — 4 high-severity findings) ran in parallel on the original draft (which was a habits-and-failure-modes instruction sheet). Both said: more instruction is the wrong shape for "model is not smart enough." The shipped doctrine is the redesign — mechanisms, not habits — that both lenses recommended.
+- **Wiring.** New @-include in `bundle/dot-claude/CLAUDE.md`. Added to `verify.sh` `required_paths`. New 4-site coordination rule in project `CLAUDE.md` (file + @-include + verify.sh + Contract 6). New `tests/test-model-robustness-doctrine.sh` regression net + Contract 6 in `tests/test-coordination-rules.sh` (memory-file lockstep). CI-pinned.
+
+What this is NOT: a new instruction layer, a new gate, a new directive, a new regex predicate, a new hook, a new adversarial-framing surface, or a softening of any existing contract. It is a navigation map for what already exists.
+
 ### bg-spawn hygiene gate + enforcement-class taxonomy (v1.43-pre)
 
 **Closes the orphan-loop hygiene failure (4 stuck tmux sessions, 56 `/tmp/omc-*` dirs) with a precise PreTool boundary defense; publishes the gated-vs-attention-only line for the rest of `core.md`.**
