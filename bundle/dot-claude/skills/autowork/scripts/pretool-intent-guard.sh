@@ -33,9 +33,110 @@ fi
 
 tool_name="$(json_get '.tool_name')"
 command_str=""
+run_in_background=""
 if [[ "${tool_name}" == "Bash" ]]; then
   command_str="$(json_get '.tool_input.command')"
+  # v1.43.x bg-spawn gate (hygiene class). The tool_input.run_in_background
+  # parameter is the strongest signal that a poll-loop command will detach
+  # from the harness's process tree — combined with a `(until|while) ...
+  # sleep` shape it reproduces the orphan-loop failure mode that recurred
+  # across sessions despite core.md hygiene-rule prose. Captured here once
+  # so the hygiene check below and the existing intent-guard logic share
+  # one extraction.
+  run_in_background="$(json_get '.tool_input.run_in_background')"
 fi
+
+# Hygiene gate (v1.43.x): block Bash commands that pair a poll-loop
+# construct with background detach. Closes the demonstrated "until grep
+# -q ...; do sleep N; done with run_in_background:true" orphan failure
+# the user reported (4 detached tmux sessions accumulated over 8-11 days
+# each, 56 /tmp/omc-sterile-tmp-* dirs from a separate sterile-env
+# subshell-capture bug). Fires at SPAWN time — distinct from the SessionStart
+# auto-cleanup sweep that was prototyped and reverted in v1.40.x (commit
+# 5be9699) because pattern-narrow TTL-based cleanup was over-engineering
+# for what should be a source-side discipline. This gate IS the source-side
+# discipline, mechanically enforced at the PreToolUse boundary.
+#
+# Scope: ULW sessions only (matches the kill-switch and ULW-gate above).
+# Universal kill switch is OMC_BG_SPAWN_GATE / bg_spawn_gate conf flag.
+#
+# Category (per docs/bypass-taxonomy.md): this is NOT a stop-guard bypass
+# defense — it's a hygiene defense. The bypass-taxonomy categorizes
+# defenses against stopping-short; this category lives in the new
+# docs/enforcement-classes.md companion doc.
+_bash_command_orphans_unattended_loop() {
+  local cmd="$1"
+  local rib="${2:-}"
+  [[ -z "${cmd}" ]] && return 1
+
+  # Strip quoted strings before pattern matching. grep has no shell-quoting
+  # awareness; without this, prose like `echo "wait until ready"; sleep 1;
+  # cmd &` matches the loop-keyword predicate inside the quoted string.
+  # Quoted content is data, not control flow — strip it. Handles single-
+  # and double-quoted forms; nested or escaped quotes are out of scope
+  # (rare in agent-authored Bash). Discovered by quality-reviewer F1 on
+  # the v1.43.x initial implementation.
+  local stripped
+  stripped="$(sed -E 's/"[^"]*"//g; s/'\''[^'\'']*'\''//g' <<<"${cmd}")"
+
+  # nohup/setsid: processes that survive parent exit with no run_in_background
+  # notification path.
+  if grep -Eq '(^|[[:space:];&|(])(nohup|setsid)[[:space:]]' <<<"${stripped}"; then
+    return 0
+  fi
+
+  # Three-predicate AND: loop keyword + `do` body marker + numeric sleep.
+  # Requiring `do` closes the false-positive class where (until|while)
+  # appears in stripped prose without an actual loop construct — a
+  # genuine shell loop must have `do` between the keyword and the body.
+  local has_poll_loop=0
+  if grep -Eq '(^|[[:space:];&|(])(until|while)[[:space:]]' <<<"${stripped}" \
+     && grep -Eq '(^|[[:space:];])do[[:space:]]' <<<"${stripped}" \
+     && grep -Eq '\bsleep[[:space:]]+[0-9]' <<<"${stripped}"; then
+    has_poll_loop=1
+  fi
+
+  if [[ "${has_poll_loop}" -eq 1 ]]; then
+    # rib:true on a poll loop — canonical orphan.
+    if [[ "${rib}" == "true" ]]; then
+      return 0
+    fi
+    # Trailing `&` on stripped command — same orphan class via subshell
+    # background. Operates on the stripped variant so quoted `&` glyphs
+    # don't false-positive.
+    if grep -Eq '&[[:space:]]*$' <<<"${stripped}"; then
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+if [[ "${tool_name}" == "Bash" ]] \
+    && [[ -n "${command_str}" ]] \
+    && [[ "${OMC_BG_SPAWN_GATE:-true}" != "false" ]] \
+    && _bash_command_orphans_unattended_loop "${command_str}" "${run_in_background}"; then
+  log_hook "pretool-intent-guard" \
+    "bg-spawn block: run_in_background=${run_in_background:-false} cmd=$(truncate_chars 80 "${command_str}")"
+  record_gate_event "bg-spawn" "block" \
+    "tool=Bash" \
+    "run_in_background=${run_in_background:-false}" \
+    "attempted=$(truncate_chars 180 "${command_str}")"
+  jq -nc --arg reason "[Hygiene gate · bg-spawn] this Bash command pairs a poll-loop construct (until/while + sleep) with background detach (run_in_background:true, trailing &, or explicit nohup/setsid). Per core.md hygiene rule, such loops have no parent-process tie and orphan when the session moves on — the recurring failure mode that produced 4+ stuck tmux sessions and 56+ /tmp/omc-* dirs in real telemetry.
+Recovery options:
+  → Launch the actual work with run_in_background:true ONCE and wait for the harness completion notification. Do NOT also spawn a manual poll loop alongside it — the notification IS the wait mechanism.
+  → For brief synchronous waits on a service to come up, run the loop in the FOREGROUND (no &, no run_in_background) — those are allowed; only background poll loops orphan.
+  → For a genuinely long-lived detached process the user explicitly asked for, /ulw-skip <reason> bypasses this gate once.
+Attempted: $(truncate_chars 200 "${command_str}")" '{
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: $reason
+    }
+  }'
+  exit 0
+fi
+
 task_intent=""
 commit_contract_mode=""
 push_contract_mode=""

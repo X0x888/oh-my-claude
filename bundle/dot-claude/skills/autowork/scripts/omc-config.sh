@@ -59,6 +59,7 @@ advisory_no_findings_gate|bool|on|gates|Block stop when N+ advisory specialists 
 advisory_no_findings_threshold|int|2|gates|Specialist dispatch count that activates the advisory-no-findings gate
 ulw_pause_validator|bool|on|gates|/ulw-pause validator: reject pause reasons that name technical-judgment categories without an operational signal
 pretool_intent_guard|true_false|true|gates|Block destructive git/gh under non-execution intent
+bg_spawn_gate|true_false|true|gates|Block Bash poll-loop + background detach (hygiene; v1.43.x)
 stall_threshold|int|12|gates|Consecutive read/grep before stall fires
 excellence_file_count|int|3|gates|Edited-file count that triggers excellence-reviewer
 dimension_gate_file_count|int|3|gates|Edited-file count that triggers dimension gate

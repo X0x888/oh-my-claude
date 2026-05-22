@@ -108,8 +108,23 @@ Of the seven defenses listed, **2 are prose-pattern** (under the hard
 cap of 3), **3 are single-call-flip**, **2 are state-predicate**. The
 mix is intentionally biased toward the more durable categories.
 
+## Scope note
+
+The four categories above are **stop-guard bypass defenses** — they
+close paths the agent uses to clear stop-time quality gates without
+finishing work. They are not the only mechanical defense surface in
+the harness. PreTool boundary defenses (agent-first invariant,
+commit/push contract, bg-spawn hygiene) are a parallel class for a
+different problem (invariants enforced before tool execution, not at
+stop time). For the broader view of every rule in `core.md` mapped to
+its enforcement class — including the **behavior-only** class for
+rules that have no mechanical defense and depend on model attention —
+see `docs/enforcement-classes.md`.
+
 ## See also
 
+- `docs/enforcement-classes.md` — broader enforcement taxonomy (six
+  classes including PreTool boundary + behavior-only)
 - `AGENTS.md` — current taxonomy reference (cross-links here)
 - `tests/test-stop-guard-bypass-surface.sh` — umbrella regression net
 - `~/.claude/quality-pack/memory/core.md` — the contract this enforces

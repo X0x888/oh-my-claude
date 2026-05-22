@@ -31,6 +31,7 @@ _omc_env_verify_conf="${OMC_VERIFY_CONFIDENCE_THRESHOLD:-}"
 _omc_env_gate_level="${OMC_GATE_LEVEL:-}"
 _omc_env_verify_mcp="${OMC_CUSTOM_VERIFY_MCP_TOOLS:-}"
 _omc_env_pretool_intent="${OMC_PRETOOL_INTENT_GUARD:-}"
+_omc_env_bg_spawn_gate="${OMC_BG_SPAWN_GATE:-}"
 _omc_env_classifier_tel="${OMC_CLASSIFIER_TELEMETRY:-}"
 _omc_env_discovered_scope="${OMC_DISCOVERED_SCOPE:-}"
 _omc_env_advisory_no_findings_gate="${OMC_ADVISORY_NO_FINDINGS_GATE:-}"
@@ -112,6 +113,13 @@ OMC_RESUME_REQUEST_PER_CWD_CAP="${OMC_RESUME_REQUEST_PER_CWD_CAP:-3}"
 # (e.g. for users who prefer the model to make its own judgement calls and
 # accept the risk of the 2026-04-17-class incident).
 OMC_PRETOOL_INTENT_GUARD="${OMC_PRETOOL_INTENT_GUARD:-true}"
+# v1.43.x bg-spawn hygiene gate: block Bash commands that pair a poll-loop
+# construct (until/while + sleep) with background detach (run_in_background:
+# true, trailing &, or nohup/setsid). Closes the recurring orphan-loop
+# failure mode that core.md's hygiene rule could not prevent on attention
+# alone. Set false to disable; the directive layer alone is then the only
+# defense (and the failure mode recurs on the next attention lapse).
+OMC_BG_SPAWN_GATE="${OMC_BG_SPAWN_GATE:-true}"
 # Wave-execution override TTL (seconds): freshness window for the
 # `pretool-intent-guard.sh` wave-active exception. When a council Phase 8
 # wave plan is active and its `updated_ts` is within this many seconds,
@@ -455,6 +463,8 @@ _parse_conf_file() {
         [[ -z "${_omc_env_verify_mcp}" && -n "${value}" ]] && OMC_CUSTOM_VERIFY_MCP_TOOLS="${value}" || true ;;
       pretool_intent_guard)
         [[ -z "${_omc_env_pretool_intent}" && "${value}" =~ ^(true|false)$ ]] && OMC_PRETOOL_INTENT_GUARD="${value}" || true ;;
+      bg_spawn_gate)
+        [[ -z "${_omc_env_bg_spawn_gate}" && "${value}" =~ ^(true|false)$ ]] && OMC_BG_SPAWN_GATE="${value}" || true ;;
       classifier_telemetry)
         [[ -z "${_omc_env_classifier_tel}" && "${value}" =~ ^(on|off)$ ]] && OMC_CLASSIFIER_TELEMETRY="${value}" || true ;;
       discovered_scope)

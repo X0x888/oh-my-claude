@@ -1330,5 +1330,262 @@ esac
 teardown_test
 
 # ----------------------------------------------------------------------
+# v1.43.x bg-spawn hygiene gate. Closes the recurring orphan-loop failure
+# mode the user reported (until ... ; do sleep N ; done with
+# run_in_background:true → process orphans when the conversation moves
+# on). Tests cover:
+#   T48 — poll loop + run_in_background:true → BLOCK
+#   T49 — poll loop + trailing & → BLOCK (subshell detach)
+#   T50 — poll loop without background → ALLOW (foreground wait is legit)
+#   T51 — nohup → BLOCK regardless of run_in_background
+#   T52 — setsid → BLOCK regardless of run_in_background
+#   T53 — non-Bash tool → ALLOW (gate is Bash-only)
+#   T54 — kill switch OMC_BG_SPAWN_GATE=false → ALLOW even on offending pattern
+#   T55 — recovery message names the harness mechanism (run_in_background + notification)
+#   T56 — read-only inspection with sleep but no loop → ALLOW (no FP on `sleep 1; ls`)
+#   T57  — while-read-from-file (no sleep) → ALLOW (no FP on data-driven loops)
+#   T58  — gate event recorded with `bg-spawn` reason on block
+#   T58b — quoted-prose containing `until`/`while` → ALLOW (F1 strip-quotes regression)
+#   T59  — compound poll-loop + extra commands → BLOCK (F4 segment-scope regression)
+#   T60  — `2>&1 &` redirect without loop → ALLOW (F5 conjunction sibling)
+#   T61  — loop + sleep + `2>&1 &` → BLOCK (F5 conjunction sibling)
+#   T62  — until-in-quotes + sleep + & → ALLOW (do-token predicate regression)
+
+# Wrapper that lets a test set tool_input.run_in_background. The existing
+# run_guard helper hard-codes Bash payload without that field; this
+# wrapper extends it minimally so we don't fork run_guard's signature for
+# every caller in the file.
+run_guard_bg() {
+  local sid="$1" cmd="$2" rib="$3"
+  local payload
+  payload="$(jq -nc --arg s "${sid}" --arg c "${cmd}" --argjson r "${rib}" '{
+    session_id: $s,
+    tool_name: "Bash",
+    tool_input: {command: $c, run_in_background: $r},
+    hook_event_name: "PreToolUse"
+  }')"
+  printf '%s' "${payload}" | bash "${HOOK_SCRIPT}" 2>/dev/null || true
+}
+
+# T48: classic orphan pattern — until-grep-sleep loop with run_in_background:true.
+setup_test
+init_session "t48" "execution"
+out_t48="$(run_guard_bg "t48" 'until grep -q "done" /tmp/out; do sleep 5; done' true)"
+assert_contains "T48: bg-spawn block on poll-loop + run_in_background:true" \
+  '"permissionDecision":"deny"' "${out_t48}"
+assert_contains "T48: block reason names the hygiene gate" \
+  '[Hygiene gate · bg-spawn]' "${out_t48}"
+teardown_test
+
+# T49: poll loop with trailing & (subshell-background) — same orphan class.
+setup_test
+init_session "t49" "execution"
+out_t49="$(run_guard_bg "t49" 'until test -f /tmp/x; do sleep 2; done &' false)"
+assert_contains "T49: bg-spawn block on poll-loop + trailing &" \
+  '"permissionDecision":"deny"' "${out_t49}"
+teardown_test
+
+# T50: foreground poll loop (no &, no run_in_background) — ALLOWED. Brief
+# foreground waits don't orphan and are sometimes legitimately useful
+# (waiting on a service to be ready before the next step in a script).
+setup_test
+init_session "t50" "execution"
+out_t50="$(run_guard_bg "t50" 'until curl -s localhost:8080/ready; do sleep 1; done' false)"
+if [[ "${out_t50}" == *'"permissionDecision":"deny"'* ]] && [[ "${out_t50}" == *'[Hygiene gate · bg-spawn]'* ]]; then
+  printf '  FAIL: T50: foreground poll loop should NOT trigger hygiene gate\n    output=%s\n' "${out_t50}" >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+teardown_test
+
+# T51: nohup → always orphans, blocked regardless of run_in_background.
+setup_test
+init_session "t51" "execution"
+out_t51="$(run_guard_bg "t51" 'nohup bash run-thing.sh > out.log 2>&1' false)"
+assert_contains "T51: bg-spawn block on nohup" \
+  '"permissionDecision":"deny"' "${out_t51}"
+teardown_test
+
+# T52: setsid → same class as nohup, blocked.
+setup_test
+init_session "t52" "execution"
+out_t52="$(run_guard_bg "t52" 'setsid sh -c "long-running"' false)"
+assert_contains "T52: bg-spawn block on setsid" \
+  '"permissionDecision":"deny"' "${out_t52}"
+teardown_test
+
+# T53: non-Bash tool input → gate ignores. Defensive: tool_input.command
+# from a non-Bash tool would never contain a shell construct, but the
+# function early-returns on missing command_str anyway.
+setup_test
+init_session "t53" "execution"
+out_t53="$(printf '%s' "$(jq -nc '{
+  session_id: "t53",
+  tool_name: "Edit",
+  tool_input: {file_path: "/tmp/x"},
+  hook_event_name: "PreToolUse"
+}')" | bash "${HOOK_SCRIPT}" 2>/dev/null || true)"
+if [[ "${out_t53}" == *'[Hygiene gate · bg-spawn]'* ]]; then
+  printf '  FAIL: T53: gate fired on non-Bash tool\n    output=%s\n' "${out_t53}" >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+teardown_test
+
+# T54: kill switch — OMC_BG_SPAWN_GATE=false disables the gate entirely.
+# The orphan pattern from T48 should pass through silently.
+setup_test
+init_session "t54" "execution"
+out_t54="$(OMC_BG_SPAWN_GATE=false run_guard_bg "t54" 'until grep -q "done" /tmp/out; do sleep 5; done' true)"
+if [[ "${out_t54}" == *'[Hygiene gate · bg-spawn]'* ]]; then
+  printf '  FAIL: T54: kill switch did not disable hygiene gate\n    output=%s\n' "${out_t54}" >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+teardown_test
+
+# T55: recovery message points to the harness mechanism the agent was
+# supposed to use instead. Without this, a model hitting the block would
+# learn "this Bash form is forbidden" without learning what to do
+# instead — defeating the educational purpose of the gate.
+setup_test
+init_session "t55" "execution"
+out_t55="$(run_guard_bg "t55" 'until grep -q "x" /tmp/y; do sleep 3; done' true)"
+assert_contains "T55: recovery names run_in_background:true mechanism" \
+  'run_in_background:true' "${out_t55}"
+assert_contains "T55: recovery names harness notification" \
+  'completion notification' "${out_t55}"
+assert_contains "T55: recovery names /ulw-skip escape" \
+  '/ulw-skip' "${out_t55}"
+teardown_test
+
+# T56: read-only command with `sleep` but no loop construct — ALLOW. The
+# anti-pattern is the COMBINATION; an isolated `sleep 1` between two
+# commands is a legitimate pause (e.g., debounce between operations).
+setup_test
+init_session "t56" "execution"
+out_t56="$(run_guard_bg "t56" 'ls -la && sleep 1 && ls -la' true)"
+if [[ "${out_t56}" == *'[Hygiene gate · bg-spawn]'* ]]; then
+  printf '  FAIL: T56: standalone sleep should not trigger gate\n    output=%s\n' "${out_t56}" >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+teardown_test
+
+# T57: while-read loop over a file — no sleep, no orphan. ALLOW.
+# Data-driven loops are common in shell scripts; the gate must not
+# false-positive on them.
+setup_test
+init_session "t57" "execution"
+out_t57="$(run_guard_bg "t57" 'while IFS= read -r line; do echo "$line"; done < /tmp/in' true)"
+if [[ "${out_t57}" == *'[Hygiene gate · bg-spawn]'* ]]; then
+  printf '  FAIL: T57: while-read loop without sleep should not trigger gate\n    output=%s\n' "${out_t57}" >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+teardown_test
+
+# T58b (v1.43.x reviewer F1 regression): quoted-prose containing
+# `until` MUST NOT trigger the hygiene gate. grep has no shell-quoting
+# awareness, so without a strip-quotes pass the `(until|while)` predicate
+# matches inside `echo "wait until ready"` and the trailing `&` predicate
+# completes the conjunction. End-to-end: `echo "wait until ready"; sleep 1;
+# npm test &` was a false-positive on the initial implementation.
+setup_test
+init_session "t58b" "execution"
+out_t58b="$(run_guard_bg "t58b" 'echo "wait until ready"; sleep 1; npm test &' false)"
+if [[ "${out_t58b}" == *'[Hygiene gate · bg-spawn]'* ]]; then
+  printf '  FAIL: T58b: quoted-prose FP — hygiene gate fired on echoed "until"\n    output=%s\n' "${out_t58b}" >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+out_t58b2="$(run_guard_bg "t58b" "echo 'running while ok'; sleep 2; cmd &" false)"
+if [[ "${out_t58b2}" == *'[Hygiene gate · bg-spawn]'* ]]; then
+  printf '  FAIL: T58b: single-quoted FP — hygiene gate fired on echoed "while"\n    output=%s\n' "${out_t58b2}" >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+teardown_test
+
+# T59 (v1.43.x reviewer F4): compound poll-loop followed by additional
+# commands in the same Bash call still orphans under run_in_background:true.
+# Without this test, a future refactor tightening segment boundaries
+# could silently allow `until X; do sleep N; done; ls` to pass.
+setup_test
+init_session "t59" "execution"
+out_t59="$(run_guard_bg "t59" 'until grep -q done out; do sleep 2; done; echo finished' true)"
+assert_contains "T59: compound poll-loop + extra commands still blocks under rib:true" \
+  '"permissionDecision":"deny"' "${out_t59}"
+assert_contains "T59: block reason names hygiene gate" \
+  '[Hygiene gate · bg-spawn]' "${out_t59}"
+teardown_test
+
+# T60 (v1.43.x reviewer F5): trailing `2>&1 &` without loop+sleep MUST NOT
+# trigger the gate. The trailing-`&` predicate matches `2>&1 &` literally,
+# but the conjunction with loop+sleep is what makes it an orphan.
+setup_test
+init_session "t60" "execution"
+out_t60="$(run_guard_bg "t60" 'npm run dev 2>&1 &' false)"
+if [[ "${out_t60}" == *'[Hygiene gate · bg-spawn]'* ]]; then
+  printf '  FAIL: T60: trailing 2>&1 & without loop should not trigger gate\n    output=%s\n' "${out_t60}" >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+teardown_test
+
+# T61 (v1.43.x reviewer F5): loop + sleep + `2>&1 &` IS the orphan shape —
+# blocked. Sibling to T60 ensuring the redirect doesn't accidentally
+# defuse the trailing-`&` check.
+setup_test
+init_session "t61" "execution"
+out_t61="$(run_guard_bg "t61" 'while true; do sleep 1; done 2>&1 &' false)"
+assert_contains "T61: while-true loop with sleep + 2>&1 & still blocks" \
+  '"permissionDecision":"deny"' "${out_t61}"
+teardown_test
+
+# T62: regression for the `do`-token requirement. A command containing
+# `until` (in stripped prose) and `sleep` but no `do` token must NOT
+# trigger the gate.
+setup_test
+init_session "t62" "execution"
+out_t62="$(run_guard_bg "t62" 'echo "use until-then form"; sleep 1; cmd2 &' false)"
+if [[ "${out_t62}" == *'[Hygiene gate · bg-spawn]'* ]]; then
+  printf '  FAIL: T62: until in quoted prose + sleep + & should not trigger gate\n    output=%s\n' "${out_t62}" >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+teardown_test
+
+# T58: gate_events.jsonl row gets a `bg-spawn` event with `block` status
+# and run_in_background detail captured. Without this, /ulw-report and
+# the cross-session ledger have no signal that the gate fired.
+setup_test
+init_session "t58" "execution"
+_=$(run_guard_bg "t58" 'until grep -q done out; do sleep 2; done' true)
+gate_events_file="${TEST_HOME}/.claude/quality-pack/state/t58/gate_events.jsonl"
+if [[ -f "${gate_events_file}" ]]; then
+  last_row="$(tail -1 "${gate_events_file}" 2>/dev/null || printf '{}')"
+  gate_name="$(jq -r '.gate // ""' <<<"${last_row}")"
+  gate_event="$(jq -r '.event // ""' <<<"${last_row}")"
+  rib_detail="$(jq -r '.details.run_in_background // ""' <<<"${last_row}")"
+  assert_eq "T58: gate name is bg-spawn" "bg-spawn" "${gate_name}"
+  assert_eq "T58: event is block" "block" "${gate_event}"
+  assert_eq "T58: run_in_background detail captured" "true" "${rib_detail}"
+else
+  printf '  FAIL: T58: gate_events.jsonl not written\n' >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# ----------------------------------------------------------------------
 printf '\n%s passed, %s failed\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]] || exit 1

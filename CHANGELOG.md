@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### bg-spawn hygiene gate + enforcement-class taxonomy (v1.43-pre)
+
+**Closes the orphan-loop hygiene failure (4 stuck tmux sessions, 56 `/tmp/omc-*` dirs) with a precise PreTool boundary defense; publishes the gated-vs-attention-only line for the rest of `core.md`.**
+
+- **New gate.** `pretool-intent-guard.sh` blocks Bash commands that pair `(until|while) ... do ... sleep` with background detach (`run_in_background:true`, trailing `&`, or `nohup`/`setsid`). Quoted prose stripped before matching so `echo "wait until ready"` doesn't false-positive. Foreground poll loops still allowed.
+- **Conf flag.** `OMC_BG_SPAWN_GATE` env / `bg_spawn_gate` conf (default `true`), wired through `common.sh` + `oh-my-claude.conf.example` + `omc-config.sh` (3-site rule) + `docs/customization.md`.
+- **Tests.** 16 new cases in `tests/test-pretool-intent-guard.sh` (T48-T62) covering orphan patterns, foreground passes, kill switch, quoted-prose FP regression (reviewer F1), compound poll-loop, `2>&1 &` interaction. Suite: 131 passed.
+- **Taxonomy doc.** New `docs/enforcement-classes.md` names six enforcement classes — five mechanical, one **behavior-only** (the implicit class for rules with no defense). Companion to `docs/bypass-taxonomy.md` (which is the stop-guard subset). The bg-spawn gate is the worked example of a behavior-only rule moving partially into PreTool boundary.
+
+Distinct from the v1.40.x SessionStart auto-cleanup sweep (reverted, commit `5be9699`): this is source-side spawn-time enforcement, no thresholds, no TTLs. Rationale, alternatives considered, and full taxonomy live in `docs/enforcement-classes.md` and the inline comments in `pretool-intent-guard.sh`.
+
 ### Council-driven post-v1.42.x evaluation — Wave 5: /ulw-report outcomes-led header (v1.43-pre)
 
 **Wave 5/5 — Outcomes section lead (1 product-lens finding).**
