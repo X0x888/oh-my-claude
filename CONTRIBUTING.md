@@ -80,6 +80,32 @@ python3 -m unittest tests.test_statusline -v
 
 All checks must pass cleanly. The pin-discipline contract (`tests/test-coordination-rules.sh:C2`) blocks adding a new `tests/test-*.sh` without either CI-pinning it in `validate.yml` or marking it `# UNPINNED: <reason>` — this keeps the list exhaustive without manual upkeep here.
 
+### Test isolation: `cd` into TEST_HOME (load_conf walk-up safety)
+
+Any test that overrides `HOME` to a temp dir (`mktemp -d`) and runs a script that sources `common.sh` MUST also `cd` into that temp dir before invoking the script. `load_conf` walks UP from `$PWD` to discover project-level `.claude/oh-my-claude.conf`; the walk-up skips `${HOME}` but it does NOT skip the test author's real home if `HOME` has been overridden to a `/tmp` location elsewhere on disk. Without the `cd`, the walk-up reaches the real `/Users/<you>/.claude/oh-my-claude.conf` and applies non-security flags (e.g., `lazy_session_start=on`) as "project" — silently breaking test isolation.
+
+Canonical pattern (used by `test-stop-guard-bypass-surface.sh`, `test-session-start-welcome.sh`, `test-e2e-hook-sequence.sh`):
+
+```bash
+ORIG_HOME="${HOME}"
+ORIG_PWD="${PWD}"
+
+setup_test() {
+  TEST_HOME="$(mktemp -d)"
+  export HOME="${TEST_HOME}"
+  # ... create skill symlinks under TEST_HOME/.claude/ ...
+  cd "${TEST_HOME}"   # ← critical: keeps load_conf walk-up inside TEST_HOME
+}
+
+teardown_test() {
+  cd "${ORIG_PWD}" 2>/dev/null || true
+  export HOME="${ORIG_HOME}"
+  rm -rf "${TEST_HOME}"
+}
+```
+
+For per-invocation HOME overrides (e.g., `HOME="${f007_home}" bash hook.sh ...`), wrap the command in a subshell `(cd "${f007_home}" && HOME="${f007_home}" bash hook.sh ...)`.
+
 ## Adding Agents
 
 1. Create a new file in `bundle/dot-claude/agents/` with a descriptive, hyphen-separated name.

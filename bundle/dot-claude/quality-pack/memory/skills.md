@@ -1,6 +1,6 @@
 # oh-my-claude Skills
 
-- `/ulw <task>` is the main workflow. Use it for end-to-end implementation, debugging, migrations, refactors, and other non-trivial work where autonomy matters. Aliases: `/autowork`, `/ultrawork`, `sisyphus` also work.
+- `/ulw <task>` is the main workflow. Use it for end-to-end implementation, debugging, migrations, refactors, and other non-trivial work where autonomy matters. Aliases: `/autowork`, `/ultrawork`, `sisyphus` also work. **v1.44 god-scope path:** a verb-only imperative (single-word `fix`, `audit`, `ship`, `improve`, `polish`, etc., or `fix it` / `audit everything please`) injects a `GOD-SCOPE-SCAN DIRECTIVE` that instructs identify-and-implement across the WHOLE project — no clarification ask, no scope-down, no defer to next session. Lead the opener with `**Bare imperative "<verb>" — running god-scope scan.**` so the routing is auditable. Toggle off via `god_scope_on_bare_prompt=off`. The contract is sibling to v1.40.0 no-defer: under ULW execution with `no_defer_mode=on` (default), "out-of-scope" is no longer a category — discovered surfaces ship inline or wave-append, never defer to a future session.
 - `/plan-hard <task>` creates a decision-complete plan without editing files.
 - `/review-hard [focus]` performs a findings-first review of the current worktree or a focused area.
 - `/research-hard <topic>` gathers targeted repository, tool, or API context before implementation.
