@@ -224,9 +224,9 @@ assert_eq "T2b last retained row is prompt_end (new write preserved)" "prompt_en
 # T3: cap fast-path — when already at/below cap, no rewrite happens.
 export OMC_TIMING_PER_SESSION_CAP=1000
 export OMC_TIMING_PER_SESSION_RETAIN=800
-pre_inode="$(stat -f '%i' "${TIMING_FILE}" 2>/dev/null || stat -c '%i' "${TIMING_FILE}" 2>/dev/null)"
+pre_inode="$(stat -c '%i' "${TIMING_FILE}" 2>/dev/null || stat -f '%i' "${TIMING_FILE}" 2>/dev/null)"
 timing_append_prompt_end 2 7
-post_inode="$(stat -f '%i' "${TIMING_FILE}" 2>/dev/null || stat -c '%i' "${TIMING_FILE}" 2>/dev/null)"
+post_inode="$(stat -c '%i' "${TIMING_FILE}" 2>/dev/null || stat -f '%i' "${TIMING_FILE}" 2>/dev/null)"
 assert_eq "T3 fast-path: no inode change when below cap" "${pre_inode}" "${post_inode}"
 
 # T4: malformed cap is rejected (cap is a no-op, file untouched).
