@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Anti-Pattern marker: criticism-as-literal-directive (v1.43-pre)
+
+**Names the criticism-handling failure mode the user identified.** User-reported shape: *"this workflow doesn't handle user's criticism correctly. It either behaves stupid or over do stuff. He's taking things too literally."* Agent collapses into either **tiny-defensive-fix-plus-reflex-apology** (under-interpret — small literal nudge that misses the actual concern) or **sweeping-refactor-from-narrow-criticism** (over-interpret — gates/tests/memory/abstractions in response to a single named complaint). Both downstream of obeying surface phrasing instead of decompressing the underlying signal.
+
+- **Shipped form.** One new entry in `core.md` "Anti-Patterns" co-locating the failure name with the existing declare-and-proceed contract (Workflow section) and pointing at sub-dispatch (`model-robustness.md` Mechanism 2) as the right escalation when the criticism is unclear. No parallel interpretive doctrine.
+
+- **Right-shape calibration via `abstraction-critic` (VERDICT: REDESIGN).** Original draft was a 40-line H2 section "Handling User Criticism" with a 5-step protocol, sub-bullets, and a diagnostic prompt. The critic flagged it as the **exact paradigm-regress** `model-robustness.md` was written to prevent — adding a habit-list to fix a pattern-match-without-understanding failure produces diagnosis-shaped tokens, not diagnosis. Per `model-robustness.md` §"Mechanism-First Principle" line 101: *"What the right move is not: another habit list, another regex predicate, another lifecycle hook, another classifier rule."* The shipped form is the smaller-tier fix the critic recommended: 1 entry, mechanism-pointer, no new interpretive layer.
+
+- **Meta-recursive consistency.** A 20-word criticism gets a 1-entry response, not a 40-line response. The proposal failing its own calibration prompt was itself evidence of the failure mode being addressed.
+
+- **Explicit non-additions.** No new classifier helper (`is_criticism_request`), no UserPromptSubmit hook directive, no regression test, no new memory file, no new conf flag, no new gate. Per the user's `feedback_weak_defer_shortcut_concerns` memory and the `over-eng-when-words-suffice` failure-mode label catalogued in `project_post_release_evaluation_method.md`, the right answer to a behavioral failure is the smallest-sufficient prime, not infrastructure.
+
+Files changed: `bundle/dot-claude/quality-pack/memory/core.md` (1 entry added to Anti-Patterns, between "asking which file" and "sequential tool calls").
+
 ### Model-robustness mechanism navigation doctrine (v1.43-pre)
 
 **Names the structural mechanisms the harness uses to produce quality when the model is near-sighted, drifting, or pattern-matching — and honestly admits where they run out.** The user prompt that drove this: *"focus on methodology and other stuff so that the workflow can still produce high quality work even when the model itself is not smart enough and has limitations and near-sighted."*
