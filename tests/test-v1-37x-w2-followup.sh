@@ -151,7 +151,7 @@ echo '{}' > "${f007_state}/sid-007/session_state.json"
 
 # Case A: stamp file empty (fresh install) → emits the upgrade notice.
 hook_stdin_007="$(jq -nc --arg sid sid-007 --arg src startup '{session_id:$sid,source:$src}')"
-out_007a="$(HOME="${f007_home}" \
+out_007a="$(cd "${f007_home}" && HOME="${f007_home}" \
   STATE_ROOT="${f007_state}" \
   bash "${REPO_ROOT}/bundle/dot-claude/quality-pack/scripts/session-start-whats-new.sh" <<<"${hook_stdin_007}" 2>/dev/null || true)"
 msg_007a="$(printf '%s' "${out_007a}" | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null || true)"
@@ -174,7 +174,7 @@ fi
 mkdir -p "${f007_state}/sid-007b"
 echo '{}' > "${f007_state}/sid-007b/session_state.json"
 hook_stdin_007b="$(jq -nc --arg sid sid-007b --arg src startup '{session_id:$sid,source:$src}')"
-out_007b="$(HOME="${f007_home}" \
+out_007b="$(cd "${f007_home}" && HOME="${f007_home}" \
   STATE_ROOT="${f007_state}" \
   bash "${REPO_ROOT}/bundle/dot-claude/quality-pack/scripts/session-start-whats-new.sh" <<<"${hook_stdin_007b}" 2>/dev/null || true)"
 if [[ -z "${out_007b}" ]]; then
@@ -188,7 +188,7 @@ printf '1.36.0\n' > "${f007_home}/.claude/quality-pack/.last_session_seen_versio
 mkdir -p "${f007_state}/sid-007c"
 echo '{}' > "${f007_state}/sid-007c/session_state.json"
 hook_stdin_007c="$(jq -nc --arg sid sid-007c --arg src startup '{session_id:$sid,source:$src}')"
-out_007c="$(HOME="${f007_home}" \
+out_007c="$(cd "${f007_home}" && HOME="${f007_home}" \
   STATE_ROOT="${f007_state}" \
   bash "${REPO_ROOT}/bundle/dot-claude/quality-pack/scripts/session-start-whats-new.sh" <<<"${hook_stdin_007c}" 2>/dev/null || true)"
 msg_007c="$(printf '%s' "${out_007c}" | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null || true)"
@@ -204,7 +204,7 @@ mkdir -p "${f007_state}/sid-007d"
 echo '{}' > "${f007_state}/sid-007d/session_state.json"
 printf '1.36.0\n' > "${f007_home}/.claude/quality-pack/.last_session_seen_version"
 hook_stdin_007d="$(jq -nc --arg sid sid-007d --arg src startup '{session_id:$sid,source:$src}')"
-out_007d="$(HOME="${f007_home}" \
+out_007d="$(cd "${f007_home}" && HOME="${f007_home}" \
   STATE_ROOT="${f007_state}" \
   OMC_WHATS_NEW_SESSION_HINT=false \
   bash "${REPO_ROOT}/bundle/dot-claude/quality-pack/scripts/session-start-whats-new.sh" <<<"${hook_stdin_007d}" 2>/dev/null || true)"

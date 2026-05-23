@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### v1.44 follow-up: test-isolation fixes for project-conf walk-up
+
+Closes 4 baseline test files (39 individual assertion failures) the No-Out-of-Scope contract surfaced when the full suite ran. Root cause: tests override `HOME` to a temp dir but don't `cd` into it, so `load_conf`'s project-conf walk-up reaches the test author's real `${HOME}/.claude/oh-my-claude.conf` and applies non-security flags like `lazy_session_start=on` as "project" — silently breaking test isolation. This is the same v1.43 fix that landed only for `tests/test-stop-guard-bypass-surface.sh`, now extended to the four sibling tests with the same shape.
+
+- **`tests/test-session-start-welcome.sh`** — added `cd "${TEST_HOME}"` to `setup_test`. 20/0.
+- **`tests/test-w1-reliability.sh`** — wrapped the F-005 E2E hook invocation in `cd "${f005_e2e_home}" && ...`. 33/0.
+- **`tests/test-v1-37x-w2-followup.sh`** — wrapped all four `out_007*` hook invocations in `cd "${f007_home}" && ...`. 30/0.
+- **`tests/test-e2e-hook-sequence.sh`** — added `cd "${TEST_HOME}"` to `setup_test`, `cd "${ORIG_PWD}"` to `teardown_test`, declared `ORIG_PWD`. 399/0.
+
+These were pre-existing failures latent on baseline; the No-Out-of-Scope contract's "every finding is in scope" framing made shipping them the right move per the v1.44 doctrine. CONTRIBUTING.md's "Test isolation" section should be updated to make this the documented pattern.
+
 ### v1.44 No-Out-of-Scope contract + GOD-SCOPE on bare-imperative prompts
 
 **Closes the "still pushing tasks to next prompt or next session" failure mode the user named directly (2026-05-23).** User-reported shape: *"Everything is within scope. There is no such things as out of scope. […] no matter what the assessment agent finds, as long as it is actually good, or will be implemented anyway in future sessions, don't push it to future sessions, do them in this session. […] The workflow should smartly identify what to do with the projects without any user prompt. This should even apply when users simply say a single word 'fix'."*

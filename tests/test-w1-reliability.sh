@@ -377,8 +377,11 @@ echo '{}' > "${f005_e2e_state}/${fake_sid}/session_state.json"
 hook_stdin="$(jq -nc --arg sid "${fake_sid}" --arg src startup --arg cwd "${TEST_TMP}" \
   '{session_id:$sid, source:$src, cwd:$cwd}')"
 
-# Wrap the hook in a tempfile so we can invoke it with HOME override.
-hook_out="$(HOME="${f005_e2e_home}" \
+# Wrap the hook in a subshell with `cd "${f005_e2e_home}"` so load_conf's
+# project-conf walk-up does NOT reach the real user conf at the test
+# author's actual home — v1.44 test-isolation fix (parallel to
+# test-stop-guard-bypass-surface.sh and test-session-start-welcome.sh).
+hook_out="$(cd "${f005_e2e_home}" && HOME="${f005_e2e_home}" \
   STATE_ROOT="${f005_e2e_state}" \
   bash "${REPO_ROOT}/bundle/dot-claude/quality-pack/scripts/session-start-drift-check.sh" <<<"${hook_stdin}" 2>/dev/null || true)"
 

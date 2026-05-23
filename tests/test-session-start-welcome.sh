@@ -31,6 +31,13 @@ setup_test() {
   mkdir -p "${TEST_HOME}/.claude/quality-pack/state"
   export STATE_ROOT="${TEST_HOME}/.claude/quality-pack/state"
   unset OMC_PROMPT_PERSIST 2>/dev/null || true
+  # v1.44 test-isolation fix (parallel to test-stop-guard-bypass-surface.sh):
+  # cd to TEST_HOME so load_conf's project-conf walk-up does NOT reach the
+  # real user conf at /<orig-home>/.claude/oh-my-claude.conf and apply
+  # non-security flags (lazy_session_start in particular) as "project".
+  # Without this cd, the welcome hook silently exits via the lazy-defer
+  # branch on every test even though TEST_HOME's conf has no lazy flag set.
+  cd "${TEST_HOME}"
 }
 
 teardown_test() {

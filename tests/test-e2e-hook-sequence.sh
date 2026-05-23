@@ -6,6 +6,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 HOOK_DIR="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts"
 
 ORIG_HOME="${HOME}"
+ORIG_PWD="${PWD}"
 pass=0
 fail=0
 
@@ -23,9 +24,15 @@ setup_test() {
   # default-off behavior live in test-pretool-intent-guard.sh
   # (T_aff_off_*) where the unit-test isolation is tighter.
   export OMC_AGENT_FIRST_GATE=on
+  # v1.44 test-isolation fix: cd to TEST_HOME so load_conf's project-
+  # conf walk-up does NOT reach the real user conf and apply non-security
+  # flags (lazy_session_start, etc.) as "project". Without this cd, the
+  # whole e2e sequence inherits the user's conf as a project layer.
+  cd "${TEST_HOME}"
 }
 
 teardown_test() {
+  cd "${ORIG_PWD:-${REPO_ROOT}}" 2>/dev/null || true
   export HOME="${ORIG_HOME}"
   unset OMC_AGENT_FIRST_GATE
   local attempt
