@@ -358,6 +358,21 @@
 # soft-validator behavior. Env: OMC_NO_DEFER_MODE.
 #no_defer_mode=on
 
+# god_scope_on_bare_prompt (v1.44). The "No Out of Scope" autonomous
+# mode. When `on`, a verb-only imperative prompt — single-word "fix",
+# "audit", "improve", "ship", "polish", etc. — triggers the
+# GOD-SCOPE-SCAN directive: identify-and-implement across the WHOLE
+# project, no clarification ask, no scope-down to one file, no defer
+# to a future session. The directive instructs the agent to (1) scan
+# the blindspot inventory + git state + CHANGELOG + pending waves,
+# (2) enumerate every plausible target of the bare verb, (3) produce
+# a wave plan, (4) execute every wave end-to-end IN THIS SESSION.
+# Disable (`god_scope_on_bare_prompt=off`) only if you want bare
+# prompts to slip through the bias-defense floor and execute literally
+# against accumulated context (the pre-v1.44 behavior). Env:
+# OMC_GOD_SCOPE_ON_BARE_PROMPT. Default ON.
+#god_scope_on_bare_prompt=on
+
 # Statusline shows a yellow `↑v<version>` arrow when the source repo is
 # ahead of the installed bundle. Useful nudge to re-run install.sh after
 # `git pull`. Default true.

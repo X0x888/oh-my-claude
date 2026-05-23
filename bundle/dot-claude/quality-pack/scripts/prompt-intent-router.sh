@@ -1020,7 +1020,7 @@ ${_spec_safe}
     if [[ "${OMC_PROMETHEUS_SUGGEST:-off}" == "on" ]] \
         && is_product_shaped_request "${PROMPT_TEXT}" \
         && is_ambiguous_execution_request "${PROMPT_TEXT}"; then
-      add_directive "bias_defense_prometheus_suggest" "AMBIGUOUS PRODUCT-SHAPED PROMPT: this request is short and product-shaped (build/create/design + app/dashboard/feature/onboarding/etc.) without a specific code anchor. State your scope interpretation (audience, primary success criterion, the one or two non-goals you are deliberately not building) in one or two declarative sentences as part of your opener, then proceed with that interpretation. The user can interrupt and redirect in real time if the call is wrong. Do NOT hold for confirmation — under ULW the request IS the permission (see core.md FORBIDDEN list). Only delegate to /prometheus when two interpretations are credibly incompatible and the wrong choice would cost significant rework — that is the credible-approach-split pause case from core.md, not a default-on hold. The directive's job is to make your interpretation auditable, not to stop forward motion."
+      add_directive "bias_defense_prometheus_suggest" "AMBIGUOUS PRODUCT-SHAPED PROMPT: this request is short and product-shaped (build/create/design + app/dashboard/feature/onboarding/etc.) without a specific code anchor. State your scope interpretation (audience, primary success criterion, the one or two non-goals you are deliberately not building) in one or two declarative sentences as part of your opener, then proceed with that interpretation. The user can interrupt and redirect in real time if the call is wrong. Do NOT hold for confirmation — under ULW the request IS the permission (see core.md FORBIDDEN list). \`/prometheus\` is a tool you may choose to dispatch when interview-first scoping would reduce risk meaningfully — but it is NEVER a pause: dispatch the sub-agent in-thread (\`Agent({subagent_type: \"prometheus\", ...})\`), apply its scoping, and proceed. There is no credible-approach-split pause case under ULW — the agent owns the technical judgment. The directive's job is to make your interpretation auditable, not to stop forward motion."
       set_last_directive_emit_notice \
         "bias-defense" "directive_fired" "directive=prometheus-suggest" \
         "bias-defense: prometheus-suggest fired"
@@ -1029,10 +1029,44 @@ ${_spec_safe}
     if [[ "${OMC_INTENT_VERIFY_DIRECTIVE:-off}" == "on" ]] \
         && [[ "${_bias_directive_emitted}" -eq 0 ]] \
         && is_ambiguous_execution_request "${PROMPT_TEXT}"; then
-      add_directive "bias_defense_intent_verify" "INTENT VERIFICATION: this prompt is short and unanchored (no file path, line ref, function name, or backtick-fenced identifier). State your interpretation of the goal in one declarative sentence as part of your opener (e.g., 'I'm interpreting this as <X> and proceeding now'), then start work. Do NOT hold for confirmation — under ULW the user's request IS the permission (see core.md FORBIDDEN list) and they can redirect in real time. The pause case is narrow: only stop when both (a) confidence in the interpretation is low AND (b) the wrong call would be hard to reverse — both must hold. The directive exists to make your interpretation auditable so the user can correct it cheaply, not to stop forward motion."
+      add_directive "bias_defense_intent_verify" "INTENT VERIFICATION: this prompt is short and unanchored (no file path, line ref, function name, or backtick-fenced identifier). State your interpretation of the goal in one declarative sentence as part of your opener (e.g., 'I'm interpreting this as <X> and proceeding now'), then start work. Do NOT hold for confirmation — under ULW the user's request IS the permission (see core.md FORBIDDEN list) and they can redirect in real time. There is no pause case for ambiguity itself — declare-and-proceed always. Reversibility is the agent's call: pick the reversible-by-default path (small, scoped, easy to revert) and ship. The directive exists to make your interpretation auditable so the user can correct it cheaply, not to stop forward motion."
       set_last_directive_emit_notice \
         "bias-defense" "directive_fired" "directive=intent-verify" \
         "bias-defense: intent-verify fired"
+    fi
+
+    # --- v1.44 god-scope: bare-imperative prompts ("fix", "audit", "ship") ---
+    #
+    # The "user typed one word and expects the agent to figure it out" path.
+    # The pre-v1.44 router had no branch for this shape — bias-defense
+    # directives required length ≥ 15, leaving single-token imperatives
+    # ungated. The result was a model that either anchored on the most-
+    # recent context (often wrong) or asked the user to clarify (the
+    # exact failure mode the user named: "the workflow should smartly
+    # identify what to do with the projects without any user prompt").
+    #
+    # The directive instructs god-scope identify-and-implement: scan the
+    # project, enumerate every plausible target of the bare verb across
+    # the repo, produce a wave plan, execute every wave in-session.
+    # No clarification ask; no scope-down to one file; no defer.
+    #
+    # Conf-gated default ON under zero_steering / balanced (the most
+    # autonomous policies). User can disable per-project with
+    # god_scope_on_bare_prompt=off in oh-my-claude.conf.
+    if is_god_scope_enabled \
+        && is_bare_imperative_prompt "${PROMPT_TEXT}"; then
+      # NB: the router runs at top-level scope (not inside a function),
+      # so `local` is invalid here — variables are intentionally process-
+      # global. Use an `_omc_gss_` prefix to make collision risk obvious.
+      _omc_gss_verb="$(printf '%s' "${PROMPT_TEXT}" | tr -d '[:space:].!?' | tr '[:upper:]' '[:lower:]' | head -c 30)"
+      write_state "god_scope_required" "1"
+      write_state "god_scope_verb" "${_omc_gss_verb}"
+      add_directive "god_scope_scan" "**GOD-SCOPE SCAN DIRECTIVE.** The user typed a verb-only imperative (\"${_omc_gss_verb}\") — this is the canonical \"no out of scope\" signal: identify-and-implement autonomously across the WHOLE project. Do NOT ask for clarification, do NOT scope down to one file, do NOT defer surfaces to a future session. Required protocol: (1) **Scan first** — read the blindspot inventory if present (\`~/.claude/quality-pack/blindspots/\`), \`git status\` + \`git log -20\` for active context, the project's CHANGELOG / Unreleased entries, and any \`findings.json\` waves still pending. Dispatch a \`general-purpose\` or appropriate-specialist sub-agent for a project-wide audit when the surface is non-trivial. (2) **Enumerate every plausible target** of \"${_omc_gss_verb}\" — every file, function, gate, doc, test, surface that the verb could mean. Open-vocabulary; err toward inclusion. (3) **Produce a wave plan** via \`record-finding-list.sh init\` with 5–10 findings per wave grouped by surface. (4) **Execute every wave end-to-end IN THIS SESSION** — plan → impl → quality-reviewer → excellence-reviewer → verify → commit. Do not stop at wave N with N+1 \"queued for next session.\" (5) **Lead the opener** with: **Bare imperative \"${_omc_gss_verb}\" — running god-scope scan.** so the user can verify the routing. If the user wants a narrower interpretation, they will redirect cheaply on the next prompt — your job is to make the broad call and ship. Under \`no_defer_mode=on\` (default), every finding ships inline or is rejected as not-a-defect; \"out of scope\" is no longer a category."
+      record_gate_event "bias-defense" "directive_fired" \
+        "directive=god-scope-scan" \
+        "verb=${_omc_gss_verb}"
+      log_hook "prompt-intent-router" "god-scope-scan fired (verb=${_omc_gss_verb})"
+      unset _omc_gss_verb
     fi
   fi
 
@@ -1082,9 +1116,9 @@ ${_spec_safe}
     if [[ "${EXEMPLIFYING_SCOPE_DETECTED}" -eq 1 ]]; then
       # Append the v1.23.0 example-marker sub-case + checklist workflow
       # (preserves prior behavior for example-marker execution prompts).
-      exemplifying_scope_workflow="Before stopping, enumerate the sibling items in the same class (other items a veteran would bundle into the same pass) and address all of them, or explicitly decline each with a one-line concrete WHY."
+      exemplifying_scope_workflow="Before stopping, enumerate the sibling items in the same class (other items a veteran would bundle into the same pass) and **ship each one IN THIS SESSION**. Decline is reserved for genuine non-class items (false sibling, already-shipped, obsolete) — not for items you simply don't want to do this turn. **There is no out-of-scope under ULW** — discovered class members ship inline, not deferred to a future session."
       if [[ "${OMC_EXEMPLIFYING_SCOPE_GATE:-on}" == "on" ]]; then
-        exemplifying_scope_workflow="After initial inspection and before implementation settles, record a checklist with \`~/.claude/skills/autowork/scripts/record-scope-checklist.sh init\` (JSON array of sibling scope items), then mark each item \`shipped\` or \`declined\` with a concrete WHY before stopping; the exemplifying-scope stop gate will block silent drops."
+        exemplifying_scope_workflow="After initial inspection and before implementation settles, record a checklist with \`~/.claude/skills/autowork/scripts/record-scope-checklist.sh init\` (JSON array of sibling scope items), then mark each item \`shipped\` IN THIS SESSION. \`declined\` is reserved for genuine non-class items (false sibling, already-shipped, obsolete) — never \"too much work this turn\" or \"out of scope\"; the exemplifying-scope stop gate will block silent drops and the validator will reject weak WHYs."
       fi
       # v1.40.x harness-improvement wave: surface the ACTUAL matched
       # phrase from the prompt so the user can audit the detector's
@@ -1194,13 +1228,13 @@ ${_spec_safe}
       # spent four sentences on the "informational not authoritative"
       # disclaimer that one sentence covers. Tightened to ~50% of
       # prior length without losing any load-bearing signal.
-      add_directive "bias_defense_intent_broadening" "INTENT-BROADENING DIRECTIVE: A project surface inventory was generated at \`${intent_broadening_path}\` (${intent_broadening_summary}). Language is a limitation — the user's prompt names SOME of the surfaces this work touches but rarely all of them. Before committing to scope: (1) **Read the inventory** when scope is non-trivial. (2) **Reconcile your task against it** — which surfaces does this plausibly touch vs which did the prompt explicitly name? (3) **Surface gaps in your opener** under a \`**Project surfaces touched:**\` line — ship them or defer each with a one-line concrete WHY. The inventory is informational, not authoritative — widens aperture, doesn't constrain it; missing surfaces are fine to add via normal completeness reasoning. Refresh: \`bash ~/.claude/skills/autowork/scripts/blindspot-inventory.sh scan --force\`."
+      add_directive "bias_defense_intent_broadening" "INTENT-BROADENING DIRECTIVE: A project surface inventory was generated at \`${intent_broadening_path}\` (${intent_broadening_summary}). Language is a limitation — the user's prompt names SOME of the surfaces this work touches but rarely all of them. Before committing to scope: (1) **Read the inventory** when scope is non-trivial. (2) **Reconcile your task against it** — which surfaces does this plausibly touch vs which did the prompt explicitly name? (3) **Surface gaps in your opener** under a \`**Project surfaces touched:**\` line — ship each one inline, or wave-append via \`record-finding-list.sh add-finding\` + \`assign-wave\` so it executes IN THIS SESSION. **There is no out-of-scope.** Under ULW (\`no_defer_mode=on\` default) you do not push surfaces to a future session — deferring with a WHY is no longer a valid third option for discovered scope. The inventory is informational, not authoritative — widens aperture, doesn't constrain it; missing surfaces are fine to add via normal completeness reasoning. Refresh: \`bash ~/.claude/skills/autowork/scripts/blindspot-inventory.sh scan --force\`."
       set_last_directive_emit_notice \
         "bias-defense" "directive_fired" "directive=intent-broadening" \
         "bias-defense: intent-broadening fired (path=${intent_broadening_path})"
     elif [[ -z "${intent_broadening_path}" ]] || ! is_blindspot_inventory_enabled; then
       # Inventory disabled — emit the discipline without the path reference.
-      add_directive "bias_defense_intent_broadening_no_inventory" "INTENT-BROADENING DIRECTIVE (no inventory): Language is a limitation — the user's prompt names some of the surfaces this work touches but rarely all of them. Before committing to scope, enumerate the project surfaces this work plausibly affects (routes, env vars, tests, docs, config flags, release steps, error states, auth paths) and reconcile against the prompt. Surface gaps in your opener under a \`**Project surfaces touched:**\` line — ship the gap or defer with a one-line concrete WHY. Never silently fill or silently drop a surface the user did not name."
+      add_directive "bias_defense_intent_broadening_no_inventory" "INTENT-BROADENING DIRECTIVE (no inventory): Language is a limitation — the user's prompt names some of the surfaces this work touches but rarely all of them. Before committing to scope, enumerate the project surfaces this work plausibly affects (routes, env vars, tests, docs, config flags, release steps, error states, auth paths) and reconcile against the prompt. Surface gaps in your opener under a \`**Project surfaces touched:**\` line — ship each one inline, or wave-append (\`record-finding-list.sh add-finding\` + \`assign-wave\`) so it executes IN THIS SESSION. **There is no out-of-scope under ULW** — deferring discovered surfaces to a future session is not a valid third option. Never silently fill, silently drop, or quietly defer a surface the user did not name."
       set_last_directive_emit_notice \
         "bias-defense" "directive_fired" "directive=intent-broadening-no-inventory" \
         "bias-defense: intent-broadening fired (no inventory path)"

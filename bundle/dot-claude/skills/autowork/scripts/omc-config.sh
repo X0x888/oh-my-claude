@@ -76,6 +76,7 @@ prompt_text_override|bool|on|gates|PreTool guard trusts prompt-text imperative w
 mark_deferred_strict|bool|on|gates|Reject low-information defer reasons (out of scope / follow-up) AND effort excuses (requires significant effort / blocked by complexity)
 shortcut_ratio_gate|bool|on|gates|Soft-block when wave plan total≥10 AND deferred-to-decided ratio ≥0.5 (catches shortcut-on-big-tasks)
 no_defer_mode|bool|on|gates|v1.40.0: under ULW execution, /mark-deferred refuses, findings status=deferred rejected, stop-guard hard-blocks on any deferred entry. Agent must ship inline or hit a real external blocker.
+god_scope_on_bare_prompt|bool|on|advisory|v1.44: bare-imperative prompts (single-word "fix"/"audit"/"ship") inject GOD-SCOPE-SCAN directive — identify-and-implement across the whole project, no clarification, no defer to next session.
 installation_drift_check|true_false|true|advisory|Statusline yellow arrow when bundle is behind source
 whats_new_session_hint|true_false|true|advisory|SessionStart "you upgraded — run /whats-new" notice (once per version transition)
 lazy_session_start|bool|off|gates|Defer whats-new/drift-check/welcome SessionStart hooks to first UserPromptSubmit. Throwaway sessions skip the work AND preserve dedupe stamps for the next real session.
@@ -159,6 +160,7 @@ prompt_text_override=on
 mark_deferred_strict=on
 shortcut_ratio_gate=on
 no_defer_mode=on
+god_scope_on_bare_prompt=on
 metis_on_plan_gate=on
 stop_failure_capture=on
 resume_watchdog=on
@@ -190,6 +192,7 @@ prompt_text_override=on
 mark_deferred_strict=on
 shortcut_ratio_gate=on
 no_defer_mode=on
+god_scope_on_bare_prompt=on
 metis_on_plan_gate=off
 stop_failure_capture=on
 resume_watchdog=off
@@ -221,6 +224,7 @@ prompt_text_override=on
 mark_deferred_strict=off
 shortcut_ratio_gate=off
 no_defer_mode=off
+god_scope_on_bare_prompt=off
 metis_on_plan_gate=off
 stop_failure_capture=on
 resume_watchdog=off

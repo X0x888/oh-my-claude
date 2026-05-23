@@ -4,6 +4,43 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### v1.44 No-Out-of-Scope contract + GOD-SCOPE on bare-imperative prompts
+
+**Closes the "still pushing tasks to next prompt or next session" failure mode the user named directly (2026-05-23).** User-reported shape: *"Everything is within scope. There is no such things as out of scope. […] no matter what the assessment agent finds, as long as it is actually good, or will be implemented anyway in future sessions, don't push it to future sessions, do them in this session. […] The workflow should smartly identify what to do with the projects without any user prompt. This should even apply when users simply say a single word 'fix'."*
+
+Telemetry (8 classifier misfires across recent sessions) confirmed the failure mode: every recorded misfire was the user overriding the agent's "let me ask first" reflex (`"Don't ask me. Can't you think?"`, `"Continue of course. Don't ask me this."`, etc.). Two structural gaps were the proximate cause: (1) bare-imperative prompts (single-word "fix", "audit", "ship") had no broadening directive because `is_ambiguous_execution_request` requires `len >= 15` — single tokens slipped through with no god-scope routing; (2) intent-broadening + exemplifying-scope directives still legitimized "ship or defer with a one-line concrete WHY" — defer-with-WHY is the rationalization the model uses to push surfaces to "next session."
+
+**Headline changes (binding under `no_defer_mode=on` default)**
+
+- **New `is_bare_imperative_prompt` classifier predicate** (`lib/classifier.sh`). Matches verb-only prompts ("fix", "audit", "ship.", "POLISH") plus verb-plus-bare-object ("fix it", "audit everything", "ship now"). Disqualified by code anchors (`fix lib/foo.sh`) and length > 30. Disambiguated from `is_ambiguous_execution_request` (which targets 15–200-char prompts) — this one targets the verb-alone shape that the former excludes because of its `len < 15` floor.
+- **New GOD-SCOPE-SCAN directive** (`prompt-intent-router.sh`). Fires when `is_bare_imperative_prompt` returns true on execution intent. Instructs identify-and-implement across the WHOLE project: (1) scan blindspot inventory + git state + CHANGELOG + pending waves, (2) enumerate every plausible target of the bare verb, (3) produce a wave plan via `record-finding-list.sh init`, (4) execute every wave end-to-end IN THIS SESSION. No clarification ask, no scope-down, no defer. The agent leads with `**Bare imperative "<verb>" — running god-scope scan.**` for auditability. State key `god_scope_required` + `god_scope_verb` stamped at router entry.
+- **New conf flag `god_scope_on_bare_prompt=on|off`** (env: `OMC_GOD_SCOPE_ON_BARE_PROMPT`), default **on**. Triple-write across the three coordination sites: `common.sh` `_parse_conf_file` parser, `oh-my-claude.conf.example` documented entry, `omc-config.sh` `emit_known_flags` table row. Recommended preset (`maximum` / `zero-steering` / `balanced`) ships `on`; `minimal` ships `off`.
+- **Directive language scrub** (`prompt-intent-router.sh`). Three load-bearing rewrites:
+  - **Intent-broadening (with-inventory).** "ship them or defer each with a one-line concrete WHY" → "ship each one inline, or wave-append via `record-finding-list.sh add-finding` + `assign-wave` so it executes IN THIS SESSION. **There is no out-of-scope.**"
+  - **Intent-broadening (no-inventory).** Parallel rewrite — explicit refusal of defer as a third option.
+  - **Exemplifying-scope workflow.** `declined` status is now restricted to genuine non-class items (false sibling, already-shipped, obsolete). "too much work this turn" / "out of scope" / generic decline are validator-rejected.
+  - **Bias-defense intent-verify.** The "(b) the wrong call would be hard to reverse" pause clause is removed. Declare-and-proceed always; reversibility is the agent's call.
+  - **Bias-defense prometheus-suggest.** "Only delegate to /prometheus when …" rewritten as "dispatch the sub-agent in-thread (`Agent({subagent_type: \"prometheus\", ...})`), apply its scoping, and proceed" — `/prometheus` is now a tool, never a hold.
+- **Stop-guard recovery menus tightened under `no_defer_mode`** (`stop-guard.sh`). The session-handoff and discovered-scope gate block messages now drop "Ask the user explicitly whether they want a checkpoint" and "Bypass once: `/ulw-skip <reason>`" from the recommended recovery options. Under ULW the legitimate paths are continue-work, fresh-context sub-dispatch, or `/ulw-pause` for a real operational block. The non-ULW recovery (legacy behavior with `/mark-deferred` + `/ulw-skip`) remains for `no_defer_mode=off` sessions.
+- **`core.md` "ASK do not announce" carve-out closed.** The v1.43 paragraph that authorized the agent to *ask* the user about a session boundary when long-context drift was self-judged is replaced with sub-dispatch routing: drift-degraded → spawn `Agent({subagent_type: ...})` for fresh context, never ask the user to make a decision the agent owns. Trait 3 of *Who /ulw is built for* explicitly forbids deferring technical judgment to a non-expert user.
+- **`core.md` "The v1.44 No-Out-of-Scope contract" section added** (load-bearing — do NOT optimize away). Sibling to the v1.40.0 no-defer contract. Three binding rules: (1) out-of-scope is not a category, (2) bare prompts trigger god-scope, (3) the agent owns the breadth of execution. FORBIDDEN list extended with No-Out-of-Scope softening proposals — same anti-pattern class as softening no-defer.
+
+**Regression net**
+
+- **`tests/test-no-out-of-scope-contract.sh`** (25 / 0) — pinned into `.github/workflows/validate.yml` alongside the no-defer contract. Asserts: contract section header present, FORBIDDEN list cross-references softening, ASK-don't-announce paragraph replaced by sub-dispatch routing, classifier exports `is_bare_imperative_prompt` with verified behavior (verb-only matches, code-anchor rejects, >30-char rejects), common.sh exports `is_god_scope_enabled` with default ON, conf.example documents the flag, omc-config emit_known_flags lists it, router injects the GOD-SCOPE-SCAN directive, intent-broadening directives say ship-or-wave-append (NOT "defer each with WHY"), exemplifying-scope restricts `declined` to genuine non-class items, intent-verify removes the hard-to-reverse pause clause.
+
+**Files changed**
+
+- `bundle/dot-claude/skills/autowork/scripts/lib/classifier.sh` — `_imp_bare_imperative` extended for verb-only prompts; new `is_bare_imperative_prompt` + `_OMC_BARE_IMP_VERBS` constant.
+- `bundle/dot-claude/skills/autowork/scripts/common.sh` — `_omc_env_god_scope_on_bare_prompt` snapshot, `_parse_conf_file` case, `is_god_scope_enabled` helper.
+- `bundle/dot-claude/quality-pack/scripts/prompt-intent-router.sh` — GOD-SCOPE-SCAN directive injection block, intent-broadening + exemplifying-scope + bias-defense intent-verify + bias-defense prometheus-suggest language rewrites.
+- `bundle/dot-claude/skills/autowork/scripts/stop-guard.sh` — `is_no_defer_active`-gated recovery menus for session-handoff and discovered-scope gates.
+- `bundle/dot-claude/skills/autowork/scripts/omc-config.sh` — `emit_known_flags` row, `emit_preset` zero-steering/balanced/minimal entries.
+- `bundle/dot-claude/oh-my-claude.conf.example` — documented flag entry under the no_defer_mode block.
+- `bundle/dot-claude/quality-pack/memory/core.md` — new "The v1.44 No-Out-of-Scope contract" section, FORBIDDEN list extension, ASK-don't-announce paragraph rewrite.
+- `tests/test-no-out-of-scope-contract.sh` — new (25 / 0).
+- `.github/workflows/validate.yml` — new CI step.
+
 ## [1.43.0] - 2026-05-23
 
 ### Agent-first gate: opt-in (default off) + follow-up gap-closures from in-session council (v1.43-pre)

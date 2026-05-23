@@ -131,10 +131,57 @@ _imp_delegated_approval() {
 # nouns; design/style are adjective-like). Also polite-only: complete,
 # address, clean, hook, determine, identify, examine, inspect, scan,
 # explore, establish, conduct — noun/adjective-ambiguous at prompt start.
+#
+# v1.44: the verb list is a shared constant — `is_bare_imperative_prompt`
+# (below) reuses it for god-scope routing on verb-only prompts. This
+# predicate intentionally REQUIRES content after the verb so existing
+# call sites (the prompt-text-override safety rail at
+# pretool-intent-guard.sh, the destructive-verb defense, etc.) are NOT
+# polluted by single-word prompts that should be treated as bare
+# imperatives only via the separate `is_bare_imperative_prompt` path.
+_OMC_BARE_IMP_VERBS='fix|implement|add|create|build|update|refactor|debug|deploy|write|make|change|modify|remove|delete|move|rename|install|configure|run|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|connect|push|pull|merge|commit|start|stop|enable|disable|open|close|set[[:space:]]+up|proceed|audit|investigate|analyze|analyse|execute|document|extend|raise|redesign|treat|diagnose|prioritize|preserve|ensure|perform|prepare|verify|validate|generate|apply|revert|simplify|extract|replace|upgrade|scaffold|swap|split|inline|expose|wire|bootstrap|downgrade|patch|polish|ship|tighten|harden|enhance'
 _imp_bare_imperative() {
   local text="$1"
   [[ ! "${text}" =~ \?[[:space:]]*$ ]] \
-    && [[ "${text}" =~ ^[[:space:]]*(fix|implement|add|create|build|update|refactor|debug|deploy|write|make|change|modify|remove|delete|move|rename|install|configure|run|handle|resolve|convert|migrate|optimize|improve|rewrite|restructure|integrate|connect|push|pull|merge|commit|start|stop|enable|disable|open|close|set[[:space:]]+up|proceed|audit|investigate|analyze|analyse|execute|document|extend|raise|redesign|treat|diagnose|prioritize|preserve|ensure|perform|prepare|verify|validate|generate|apply|revert|simplify|extract|replace|upgrade|scaffold|swap|split|inline|expose|wire|bootstrap|downgrade|patch)[[:space:]] ]]
+    && [[ "${text}" =~ ^[[:space:]]*(${_OMC_BARE_IMP_VERBS})[[:space:]] ]]
+}
+
+# v1.44 god-scope: returns 0 when the prompt is a verb-only imperative
+# without any code anchor — the "I want a result, scan and figure it out"
+# shape. Caller is responsible for checking task_intent==execution.
+# Disambiguated from is_ambiguous_execution_request (len 15–200, no
+# code anchor) — that one targets short-but-articulated prompts; this
+# one targets the verb-alone shape that the former excludes because of
+# its `len < 15` floor.
+is_bare_imperative_prompt() {
+  local text="$1"
+  [[ -z "${text}" ]] && return 1
+  # Strip leading/trailing whitespace; check if what remains is verb-only.
+  local trimmed="${text#"${text%%[![:space:]]*}"}"
+  trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+  [[ -z "${trimmed}" ]] && return 1
+  # Length cap: prompts above ~30 chars are not "single-word imperative"
+  # shape even if they happen to start with a bare verb. The bias-defense
+  # directives (is_ambiguous_execution_request) cover 15–200.
+  local len="${#trimmed}"
+  (( len > 30 )) && return 1
+  # Disqualify any code anchor — file path, function, backticks, etc.
+  if _has_code_anchor "${trimmed}"; then
+    return 1
+  fi
+  # Match verb-only, verb-plus-bare-object, or verb-plus-stacked-trailing
+  # ("fix it", "audit all", "ship now", "audit everything please",
+  # "fix it now please") — the imperative is unambiguous, the OBJECT is
+  # implied. Allow ≤3 stacked trailing tokens to keep the regex bounded.
+  shopt -s nocasematch
+  local result=1
+  local trail='(it|this|that|them|us|all|everything|the[[:space:]]+rest|please|now|asap|already|today)'
+  if [[ "${trimmed}" =~ ^(${_OMC_BARE_IMP_VERBS})[[:space:]]*[.!]?$ ]] \
+    || [[ "${trimmed}" =~ ^(${_OMC_BARE_IMP_VERBS})([[:space:]]+${trail}){1,3}[[:space:]]*[.!]?$ ]]; then
+    result=0
+  fi
+  shopt -u nocasematch
+  return "${result}"
 }
 
 # 7. Tail-position imperative: a prompt that opens with advisory/eval

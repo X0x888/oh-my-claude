@@ -390,11 +390,23 @@ if [[ "${ulw_pause_active}" != "1" ]] \
     fi
     record_gate_event "session-handoff" "block" \
       "block_count=${_handoff_next_block}" "block_cap=2"
-    handoff_recovery="$(format_gate_recovery_options \
-      "Continue the deferred work now in this session." \
-      "Ask the user explicitly whether they want a checkpoint." \
-      "If you are blocked on an OPERATIONAL input only the user can supply: \`/ulw-pause <reason>\` — v1.40.0 narrows this to credentials/login, hard external blocker, destructive shared-state action, or unfamiliar in-progress state. NOT for taste/policy/credible-approach (under ULW the agent picks those and ships)." \
-      "Bypass once with a reason: \`/ulw-skip <reason>\`.")"
+    # v1.44 No-Out-of-Scope: under no_defer_mode, "ask the user about a
+    # checkpoint" is the very escape hatch the contract closes. Drop it
+    # and /ulw-skip from the recovery menu. The legitimate recovery
+    # options are continue-work, sub-dispatch fresh specialist, or
+    # /ulw-pause for a real operational block.
+    if is_no_defer_active; then
+      handoff_recovery="$(format_gate_recovery_options \
+        "Continue the work now in this session — chunk the next concrete 30-minute sub-step and ship it." \
+        "Sub-dispatch a fresh-context specialist (\`Agent\` tool) when long-context drift is biasing main-thread judgment — sub-agents have their own fresh context, no session boundary required." \
+        "If you are blocked on an OPERATIONAL input only the user can supply: \`/ulw-pause <reason>\` — credentials/login, hard external blocker, destructive shared-state action, or unfamiliar in-progress state ONLY. NOT for taste/policy/credible-approach (under ULW the agent picks those and ships).")"
+    else
+      handoff_recovery="$(format_gate_recovery_options \
+        "Continue the deferred work now in this session." \
+        "Ask the user explicitly whether they want a checkpoint." \
+        "If you are blocked on an OPERATIONAL input only the user can supply: \`/ulw-pause <reason>\` — v1.40.0 narrows this to credentials/login, hard external blocker, destructive shared-state action, or unfamiliar in-progress state. NOT for taste/policy/credible-approach (under ULW the agent picks those and ships)." \
+        "Bypass once with a reason: \`/ulw-skip <reason>\`.")"
+    fi
     # v1.34.1+ (P-002): tighter session-handoff block; recovery line
     # already names the three legitimate continuation options. Keep the
     # literal "deferred remaining work" phrase — locked by e2e seq-G.
@@ -743,12 +755,28 @@ if [[ "${OMC_DISCOVERED_SCOPE}" == "on" ]] \
       # record-serendipity.sh reminder inline (Serendipity Rule is
       # invisible if not surfaced at gate-fire — locked by
       # tests/test-discovered-scope.sh T28).
-      scope_recovery="$(format_gate_recovery_options \
-        "Ship the fix inline (preferred for same-surface findings)." \
-        "Wave-append: \`record-finding-list.sh add-finding\` + \`assign-wave\` for same-surface follow-on work." \
-        "Defer with named WHY: \`/mark-deferred <reason>\`. Validator rejects bare 'out of scope' / 'follow-up' / 'later' and effort excuses ('requires significant effort', 'needs more time'). Acceptable shapes: \`requires X\`, \`blocked by Y\`, \`awaiting Z\`, \`superseded by F-NNN\`." \
-        "Bypass once: \`/ulw-skip <reason>\`." \
-        "If you fixed a verified adjacent defect on the same code path, log it via \`record-serendipity.sh\` per the Serendipity Rule.")"
+      # v1.44 No-Out-of-Scope: under no_defer_mode, the third recovery
+      # path (`/mark-deferred`) is refused at the call site anyway, so
+      # leading with it as a recovery option teaches the wrong default.
+      # Recovery now reads ship-inline > wave-append > (sub-dispatch
+      # fresh specialist for breadth) > Serendipity-Rule log. /mark-deferred
+      # is mentioned only in the legacy non-ULW recovery line. /ulw-skip
+      # also dropped — under ULW the model should not be able to skip
+      # discovered scope mid-session.
+      if is_no_defer_active; then
+        scope_recovery="$(format_gate_recovery_options \
+          "Ship the fix inline (preferred for same-surface findings)." \
+          "Wave-append: \`record-finding-list.sh add-finding\` + \`assign-wave\` for same-surface follow-on work — executes IN THIS SESSION." \
+          "Breadth via fresh-context sub-dispatch: \`Agent({subagent_type: \"<lens|specialist>\", description: \"...\", prompt: \"...\"})\`. The sub-agent's fresh context closes main-thread drift WITHOUT a session boundary." \
+          "If you fixed a verified adjacent defect on the same code path, log it via \`record-serendipity.sh\` per the Serendipity Rule.")"
+      else
+        scope_recovery="$(format_gate_recovery_options \
+          "Ship the fix inline (preferred for same-surface findings)." \
+          "Wave-append: \`record-finding-list.sh add-finding\` + \`assign-wave\` for same-surface follow-on work." \
+          "Defer with named WHY: \`/mark-deferred <reason>\`. Validator rejects bare 'out of scope' / 'follow-up' / 'later' and effort excuses ('requires significant effort', 'needs more time'). Acceptable shapes: \`requires X\`, \`blocked by Y\`, \`awaiting Z\`, \`superseded by F-NNN\`." \
+          "Bypass once: \`/ulw-skip <reason>\`." \
+          "If you fixed a verified adjacent defect on the same code path, log it via \`record-serendipity.sh\` per the Serendipity Rule.")"
+      fi
       scope_block_tail=""
       if [[ "${scope_effective_exhaustion_mode}" == "block" && "${discovered_scope_blocks}" -ge "${scope_block_cap}" ]]; then
         scope_block_tail=" BLOCK MODE: strict autonomy keeps blocking after the cap because pending discovered scope is still serious missing work."

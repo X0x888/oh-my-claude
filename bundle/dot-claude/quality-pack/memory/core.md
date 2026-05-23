@@ -90,7 +90,7 @@ These are not in tension. "Default to action" never means "act before thinking" 
         - **Iteration-boundary vs wave-boundary confusion.** When a user prompt grants checkpoint permission at a *meta* boundary ("iterate N times with /new between iterations"), that permission applies *between full iterations*, never *mid-iteration*. The wave list inside one iteration is not the iteration list. Conflating the two — stopping mid-iteration with "continue in your next prompt" under the meta-permission framing — is the failure mode the v1.40.x-newer regex update closes.
     - **Permission-coded stop** ("If you want Waves 7-9 shipped, I can continue — say keep going", "otherwise this is a clean stopping point with a vNext entry plan") → **Do not ask the user to re-authorize already-authorized execution scope.** This is the same handoff with softer words: the agent stopped, made the user say the magic word, and framed the pause as courtesy. Under ULW the magic word is already present in the original execution prompt. Pick the next wave, ship its next concrete sub-step, and summarize only after the work lands.
   When you catch yourself constructing any of these phrasings: re-read the user's prompt. If they did not ask for a checkpoint, the right answer is to chunk-and-ship the next concrete sub-step or sub-dispatch via `Agent`, not to defer.
-- **When the main thread is GENUINELY drift-degraded and the agent believes a session boundary is required: ASK, do not announce.** There is a narrow case where the main thread really has accumulated enough biased context that fresh execution would be lower-quality. The legitimate response is *not* to write "candidates for next session" prose and stop — that's deciding for the user. The legitimate response is: (a) state the specific evidence of degradation (named contradictions in the agent's own prior decisions, observable repetition, demonstrably-stale grounding), (b) ask the user explicitly: *"I'm seeing <evidence>. Would you prefer I checkpoint and resume in a new session with `/ulw-resume`, or push through here?"*, and (c) wait for the user's answer. An affirmative user reply is a checkpoint request — the session-handoff gate respects `is_checkpoint_request`. Announcing the checkpoint and stopping is taking the user's call for them; *asking* is owning the technical judgment AND deferring the decision to whose call it actually is. This case is rare; if you find yourself reaching for it on more than one prompt in twenty, you're rationalizing.
+- **When the main thread is GENUINELY drift-degraded: dispatch a fresh-context sub-agent, do NOT announce a session boundary.** Sub-dispatch via the `Agent` tool IS the fresh-context mechanism — that is its purpose under ULW. Mechanism 2 of `model-robustness.md` names this: *"Fresh context for biased context."* A claim that "the main thread is too biased for this load-bearing call" is a sub-dispatch trigger (spawn `quality-planner`, `oracle`, `abstraction-critic`, or the appropriate lens on a fresh context window), NOT a stop trigger. The v1.44 No-Out-of-Scope contract closes the old asking-the-user-to-checkpoint escape. Asking the user *"would you prefer I checkpoint?"* is asking the user to make a decision the agent owns — Trait 3 of *Who /ulw is built for* explicitly forbids that. If after sub-dispatch you STILL believe a session boundary is required and the user has not asked for one, the right action is to chunk the next 30-minute slice and ship it (`skills.md` deferral-verb decision tree), not to surface a checkpoint question. This case is now formally absent from the ULW contract — if you find yourself reaching for it, you are rationalizing.
 - **The session-handoff gate is a backstop, not the standard.** As of v1.40.x-newer it catches preposition-anchored handoff phrasings — `for|to|in|until` followed by `(a|the|another|your|my|our)?` followed by `next/future/later/separate` followed by `(session|prompt|turn|message|response)` — in addition to the earlier `new session` / `another session` / `next wave` / `next phase` patterns. v1.42.x also catches open-vocabulary work-boundary nouns and permission-coded continuation asks like `say keep going` when they are paired with unfinished-scope markers. (Bare `fresh session` was excluded after a false-positive audit — ambient harness text uses "this fresh session" / "as a fresh session" / "do not treat as a fresh session" in install banners and compact directives; the model echoing those would block-storm. Standalone `new prompt\b` / `another prompt\b` was also excluded — those tokens appear in legitimate debugging-the-prompt prose at a higher rate than the preposition-anchored form, so the gate stays preposition-anchored for non-session nouns.) The standard is recognizing the rationalization before the gate has to fire. The gate exists because the rationalization is hard to resist; the goal is to make the gate redundant by always preferring chunk-and-ship or sub-dispatch.
 - **Hygiene: clean up after yourself.** If you spawn or create *any* transient artifact during a session — a background process, a temp file or directory, a recording, a scratch fixture, a detached service — track it and clean it up before stop. The user observed real recurring damage from neglecting this: 4 detached `omc-resume-*` tmux sessions accumulated over 8–11 days each carrying a stuck `claude --resume` process at 25–51 CPU-minutes; separately, 56 `/tmp/omc-sterile-tmp-*` dirs accumulated from a test helper whose subshell-capture pattern (`sterile_env="$(build_sterile_env)"`) hid the created paths from the parent shell's EXIT trap. The class is broader than those examples: recordings (`asciinema rec`), dev servers (`npm run dev`), watchers, `nohup` / `setsid` / `tmux new-session`, any `&`-detached shell, any `run_in_background: true` Bash invocation, any `mktemp -d` without trap, any download/scratch directory the agent created — all the same class. The standard is the agent recognizing what it spawned/created and cleaning it explicitly. Concretely:
     - **Foreground by default.** Don't reach for `&` or `run_in_background: true` unless the work genuinely outlives the current command.
@@ -221,6 +221,91 @@ the user explicitly before changing anything.** Do not unilaterally
 named softening this contract as a forbidden pattern; treating it as
 debatable in the absence of a clear user signal is the failure mode.
 
+## The v1.44 No-Out-of-Scope contract (load-bearing — do NOT optimize this away)
+
+Sibling contract to no-defer. Where no-defer governs FINDINGS (the
+discovered scope from advisory specialists), No-Out-of-Scope governs
+SURFACES (the broader work the prompt plausibly touches) and BARE
+PROMPTS (the user typed "fix" and expects the agent to figure it out).
+
+**Why the contract exists.** The user named this directly (2026-05-23):
+*"Everything is within scope. There is no such things as out of scope.
+Regardless of what you find. […] no matter what the assessment agent
+finds, as long as it is actually good, or will be implemented anyway
+in future sessions, don't push it to future sessions, do them in this
+session. […] This should even apply when users simply say a single
+word 'fix'."* The canonical `/ulw` user is result-oriented (trait 3 of
+*Who /ulw is built for*). Pushing surfaces to "next session" is the
+same failure mode as deferring findings — just one abstraction level
+up. The harness must close both at the same level.
+
+**The contract (binding).** Under `/ulw` execution intent with
+`no_defer_mode=on` (default):
+
+1. **Out-of-scope is not a category.** "I'll address X in a future
+   session", "out of scope for this turn", "leaving Y for a follow-up
+   pass" are all rephrasings of *defer to next session* and are
+   refused by the same mechanisms that refuse `/mark-deferred`. The
+   intent-broadening + exemplifying-scope directives instruct ship-
+   inline OR wave-append — never defer.
+
+2. **Bare prompts trigger god-scope.** A verb-only imperative ("fix",
+   "audit", "ship", "improve", "polish", "clean", "harden") is the
+   user authorizing identify-and-implement across the WHOLE project.
+   The agent's protocol: (a) scan the blindspot inventory + git state
+   + CHANGELOG + pending waves, (b) enumerate every plausible target
+   of the bare verb across the repo, (c) produce a wave plan, (d)
+   execute every wave end-to-end in this session. Do NOT ask for
+   clarification. Do NOT scope down to one file. Do NOT defer surfaces
+   to next session. The router injects a GOD-SCOPE-SCAN directive when
+   `is_bare_imperative_prompt` fires; the agent leads with `**Bare
+   imperative "<verb>" — running god-scope scan.**` so the routing is
+   auditable, and the user redirects cheaply on the next prompt if the
+   call is wrong.
+
+3. **The agent owns the breadth of execution.** Just as `no-defer`
+   makes "ship or hit a real external blocker" the only two options
+   for findings, `no-out-of-scope` makes "ship or wave-append" the
+   only two options for discovered surfaces. The third option (defer
+   to next session) does not exist under ULW.
+
+**FORBIDDEN — softening the contract.** Future sessions will encounter
+proposals like:
+
+- "Add an escape hatch for surfaces the user clearly didn't ask
+  about." → Trait 2 of *Who /ulw is built for*: communication is
+  lossy. The user not explicitly naming a surface is not evidence
+  they wanted it omitted; it is evidence of natural-language
+  bandwidth. Ship the surface or wave-append it.
+- "Bare-prompt god-scope is too aggressive — fall back to asking for
+  clarification." → Trait 3: result-oriented by design. The user
+  invoked `/ulw` precisely so they would not have to specify the
+  work. Asking is unhelpful; deciding is helpful.
+- "Out-of-scope is sometimes a legitimate category — taste/policy
+  decisions can fall outside the prompt." → Same anti-pattern as
+  softening the no-defer contract. Under ULW the agent owns
+  technical judgment; *"this isn't what they asked for"* dressed as
+  scope discipline is the agent escaping responsibility.
+- "Disable god_scope_on_bare_prompt by default so first-time users
+  aren't surprised." → The recommended preset's stance is `on`. A
+  preset shipping `off` would teach new installs that bare prompts
+  are clarification requests, defeating the contract before it ever
+  fires. If you find yourself adding a preset, the default-on stance
+  is part of the contract.
+
+**Reject all of these.** The right response when the contract feels
+too aggressive is sharper agent JUDGMENT (better project scanning,
+better surface enumeration, better wave-shape sizing) — not wider
+escape hatches.
+
+**If you genuinely believe a specific god-scope invocation produced
+wrong work, the post-hoc redirect is cheap.** The user types one
+correcting sentence on the next prompt; the harness's `/ulw-correct`
+records the misfire for future tuning. That cost is small. The cost
+of a held-and-undecided session, by contrast, is the entire `/ulw`
+session. Asymmetric: bias toward the cheap-redirect failure mode, not
+toward the expensive-hold failure mode.
+
 ## Anti-Patterns
 
 - FORBIDDEN: Softening the v1.40.0 no-defer contract above. The contract
@@ -253,6 +338,17 @@ debatable in the absence of a clear user signal is the failure mode.
   are conscious, not silent). Telemetry-observed bypasses are FACTS,
   not theory — closures must stay closed unless the user explicitly
   signals otherwise.
+- FORBIDDEN: Softening the v1.44 No-Out-of-Scope contract above. Sibling
+  to no-defer. Proposals like *"add an escape hatch for surfaces the
+  user clearly didn't name"*, *"bare-prompt god-scope is too aggressive
+  — fall back to asking"*, *"out-of-scope is sometimes a legitimate
+  category"*, *"flip the recommended preset default to
+  god_scope_on_bare_prompt=off"* are all the same anti-pattern as
+  softening no-defer: the contract sharper-not-wider rule applies. The
+  canonical `/ulw` user is result-oriented; asking instead of deciding
+  is the agent escaping responsibility. The regression net at
+  `tests/test-no-out-of-scope-contract.sh` exists to catch silent
+  deletion of these guardrails.
 - FORBIDDEN: Asking "Should I proceed?" or "Would you like me to..." when the user has already requested the work. The request IS the permission.
 - FORBIDDEN: Summarizing what was done and stopping without completing the review/verification loop.
 - FORBIDDEN: Asking which file to edit when there is only one plausible candidate.

@@ -60,6 +60,7 @@ _omc_env_prompt_text_override="${OMC_PROMPT_TEXT_OVERRIDE:-}"
 _omc_env_mark_deferred_strict="${OMC_MARK_DEFERRED_STRICT:-}"
 _omc_env_shortcut_ratio_gate="${OMC_SHORTCUT_RATIO_GATE:-}"
 _omc_env_no_defer_mode="${OMC_NO_DEFER_MODE:-}"
+_omc_env_god_scope_on_bare_prompt="${OMC_GOD_SCOPE_ON_BARE_PROMPT:-}"
 _omc_env_wave_override_ttl="${OMC_WAVE_OVERRIDE_TTL_SECONDS:-}"
 _omc_env_stop_failure_capture="${OMC_STOP_FAILURE_CAPTURE:-}"
 _omc_env_prompt_persist="${OMC_PROMPT_PERSIST:-}"
@@ -605,6 +606,8 @@ _parse_conf_file() {
         [[ -z "${_omc_env_shortcut_ratio_gate}" && "${value}" =~ ^(on|off)$ ]] && OMC_SHORTCUT_RATIO_GATE="${value}" || true ;;
       no_defer_mode)
         [[ -z "${_omc_env_no_defer_mode}" && "${value}" =~ ^(on|off)$ ]] && OMC_NO_DEFER_MODE="${value}" || true ;;
+      god_scope_on_bare_prompt)
+        [[ -z "${_omc_env_god_scope_on_bare_prompt}" && "${value}" =~ ^(on|off)$ ]] && OMC_GOD_SCOPE_ON_BARE_PROMPT="${value}" || true ;;
       wave_override_ttl_seconds)
         [[ -z "${_omc_env_wave_override_ttl}" && "${value}" =~ ^[0-9]+$ ]] && OMC_WAVE_OVERRIDE_TTL_SECONDS="${value}" || true ;;
       stop_failure_capture)
@@ -876,6 +879,22 @@ is_blindspot_inventory_enabled() {
 # inventory path reference.
 is_intent_broadening_enabled() {
   [[ "${OMC_INTENT_BROADENING:-on}" != "off" ]]
+}
+
+# is_god_scope_enabled — v1.44.
+# Gate for the GOD-SCOPE-SCAN directive injection in
+# prompt-intent-router.sh. Default ON. When a bare-imperative prompt
+# fires (single-word verb like "fix", "audit", "ship") the directive
+# instructs identify-and-implement across the WHOLE project — the
+# "no out of scope" autonomous mode.
+#
+# Off-mode falls back to the v1.43 behavior where single-word prompts
+# slipped through the bias-defense floor (is_ambiguous_execution_request
+# requires len >= 15) with no broadening directive. Users who want
+# strict prompt-literal scoping can flip the flag in
+# `oh-my-claude.conf`.
+is_god_scope_enabled() {
+  [[ "${OMC_GOD_SCOPE_ON_BARE_PROMPT:-on}" != "off" ]]
 }
 
 # is_inferred_contract_enabled — v1.34.0.
