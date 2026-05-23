@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.43.0] - 2026-05-23
+
 ### Agent-first gate: opt-in (default off) + follow-up gap-closures from in-session council (v1.43-pre)
 
 **Removes a uniform tax that no longer pays for itself + closes 7 gaps a parallel multi-lens council surfaced before the release shipped; NOT a softening of the no-defer contract.** User-reported shape (2026-05-23): *"this workflow is too conservative, preventing it from doing the right work and didn't think deep enough. Plus, the subagent is not as smart as the main agent, which wastes work, time and token."* Telemetry: the agent-first gate fired 54 times across 25 sessions (~2.16 mandatory dispatches per session) on the canonical /ulw user — main thread and specialists both Opus 4.7 under `model_tier=quality`, where the smartness-gap assumption that justified the mandate no longer holds.
