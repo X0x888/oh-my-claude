@@ -31,6 +31,17 @@ _omc_env_verify_conf="${OMC_VERIFY_CONFIDENCE_THRESHOLD:-}"
 _omc_env_gate_level="${OMC_GATE_LEVEL:-}"
 _omc_env_verify_mcp="${OMC_CUSTOM_VERIFY_MCP_TOOLS:-}"
 _omc_env_pretool_intent="${OMC_PRETOOL_INTENT_GUARD:-}"
+_omc_env_agent_first_gate="${OMC_AGENT_FIRST_GATE:-}"
+# v1.43+: case-fold the env capture so OMC_AGENT_FIRST_GATE=ON/On/oN all
+# normalize to lowercase before the in-script comparisons. The conf
+# parser does the same on the conf-source path (see _parse_conf_file
+# agent_first_gate case). Closes quality-reviewer F1 — users who write
+# `OMC_AGENT_FIRST_GATE=ON` or `agent_first_gate=ON` previously got
+# silent default-off because the comparison was case-sensitive.
+if [[ -n "${_omc_env_agent_first_gate}" ]]; then
+  _omc_env_agent_first_gate="$(printf '%s' "${_omc_env_agent_first_gate}" | tr '[:upper:]' '[:lower:]')"
+  OMC_AGENT_FIRST_GATE="${_omc_env_agent_first_gate}"
+fi
 _omc_env_bg_spawn_gate="${OMC_BG_SPAWN_GATE:-}"
 _omc_env_classifier_tel="${OMC_CLASSIFIER_TELEMETRY:-}"
 _omc_env_discovered_scope="${OMC_DISCOVERED_SCOPE:-}"
@@ -113,6 +124,39 @@ OMC_RESUME_REQUEST_PER_CWD_CAP="${OMC_RESUME_REQUEST_PER_CWD_CAP:-3}"
 # (e.g. for users who prefer the model to make its own judgement calls and
 # accept the risk of the 2026-04-17-class incident).
 OMC_PRETOOL_INTENT_GUARD="${OMC_PRETOOL_INTENT_GUARD:-true}"
+# Agent-first invariant gate. When `on`, /ulw execution and continuation
+# intents block the FIRST workspace mutation per session until a fresh-
+# context specialist (planner, prometheus, metis, oracle, abstraction-
+# critic, domain specialist, lens, researcher, writer) has returned.
+# Telemetry (first_mutation_ts, agent_first_gate_blocks, first_mutation_tool)
+# is always captured regardless of this flag — the change is mandate-vs-tool,
+# not visibility.
+#
+# Default `off` (v1.43+). This is *removal of a uniform tax*, not
+# softening of a contract — the no-defer contract (load-bearing per
+# core.md) is unaffected. The mandate was the right shape when (a)
+# specialists ran on a smarter tier than the main thread, (b) the
+# depth-on-every-prompt rule did not exist yet, and (c) reflexive-
+# dispatch round-trip cost less than drift-failure cost. None of
+# those three premises hold now: model_tier=quality lifts specialists
+# to the main thread's tier, core.md Thinking Quality is now load-
+# bearing, and telemetry (~2.2 mandatory dispatches per session under
+# the canonical /ulw user) shows the round-trip cost dominating.
+#
+# The gap that remains uncovered when this flag is off: long-session
+# main-thread drift on a single surface where the model doesn't notice
+# it's anchored. The model_robustness.md "Mechanism 2 — sub-dispatch
+# as fresh context" rule is your tool here; you (or the model) become
+# responsible for invoking specialists when main-thread judgment is
+# the bottleneck, instead of relying on the mandatory pre-mutation
+# block as scaffolding.
+#
+# Set to `on` to restore the legacy mandate. Useful when training a
+# new workflow habit, when running with `model_tier=economy` (Sonnet
+# specialists vs Sonnet main thread — the smartness-gap assumption
+# holds), or when the active session is prone to drift on a single
+# surface and you want the gate as a forcing function.
+OMC_AGENT_FIRST_GATE="${OMC_AGENT_FIRST_GATE:-off}"
 # v1.43.x bg-spawn hygiene gate: block Bash commands that pair a poll-loop
 # construct (until/while + sleep) with background detach (run_in_background:
 # true, trailing &, or nohup/setsid). Closes the recurring orphan-loop
@@ -429,8 +473,29 @@ _omc_conf_loaded=0
 
 # Parse a single conf file, applying values that pass validation.
 # Env vars always take precedence (checked via _omc_env_* guards).
+#
+# v1.43+ (security-lens P1): `level` argument (`user`|`project`) marks
+# which conf-source we are parsing. Security-load-bearing flags
+# (`pretool_intent_guard`, `bg_spawn_gate`, `agent_first_gate`,
+# `no_defer_mode`) are SKIPPED when level=project — a malicious repo's
+# committed `.claude/oh-my-claude.conf` cannot disable defensive gates
+# the user opted into via their `${HOME}/.claude/oh-my-claude.conf`. The
+# walk-up in load_conf passes `project` for any conf path it discovers
+# below CWD; the user-conf call passes `user`.
+#
+# CONTRACT: `level` is required. Defaults to `user` to keep the
+# user-conf surface working if `load_conf` ever refactors its second
+# arg out — flipping the default to `project` would silently drop
+# security-flag effect from `${HOME}/.claude/oh-my-claude.conf`, which
+# is a worse failure mode than a hypothetical future caller forgetting
+# to pass `project` (the test umbrella F-013 pins both call sites
+# explicitly). Quality-reviewer Wave 2 F1: declined the "flip default
+# to project" suggestion — the existing shape is the safer default for
+# THIS code, and the deny-list-in-case-statement IS the security
+# contract regardless of default direction.
 _parse_conf_file() {
   local conf="$1"
+  local level="${2:-user}"
   [[ -f "${conf}" ]] || return 0
 
   local line key value
@@ -441,6 +506,39 @@ _parse_conf_file() {
 
     key="${line%%=*}"
     value="${line#*=}"
+
+    # v1.43+ (quality-reviewer Wave 2 F2): trim leading/trailing
+    # whitespace from the value so `agent_first_gate=on ` (trailing
+    # space) or `agent_first_gate=on\r` (CRLF from a Windows editor)
+    # no longer silently falls to the default. Universal — all flags
+    # benefit. Internal whitespace is preserved (no flag currently
+    # uses pipe-separated values with internal spaces — pipe-separated
+    # MCP-tool patterns use literal `|`, not space).
+    value="$(printf '%s' "${value}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+
+    # Security-load-bearing flags: refuse project-conf overrides so a
+    # malicious / unfamiliar repo's `.claude/oh-my-claude.conf` cannot
+    # turn off defensive gates the user opted into at the user level.
+    # User-conf and env still work normally.
+    #
+    # SILENT rejection — see CONTRIBUTING.md for the WHY. (Earlier
+    # designs emitted a stderr warning here, but load_conf runs at
+    # common.sh source-time, before log_anomaly is defined, and the
+    # stderr write contaminated downstream test fixtures that capture
+    # combined stdout+stderr from hook scripts — test-timing.sh
+    # T28/T29 and similar broke when the user's real ~/.claude conf
+    # was mis-classified as "project" due to test PWD walking up into
+    # the real user tree.) Users observing that their project conf
+    # entry for a security flag has no effect can read
+    # `docs/customization.md` "Project-conf security restriction"
+    # section, which documents the deny-list explicitly.
+    if [[ "${level}" == "project" ]]; then
+      case "${key}" in
+        pretool_intent_guard|bg_spawn_gate|agent_first_gate|no_defer_mode)
+          continue
+          ;;
+      esac
+    fi
 
     case "${key}" in
       stall_threshold)
@@ -463,6 +561,16 @@ _parse_conf_file() {
         [[ -z "${_omc_env_verify_mcp}" && -n "${value}" ]] && OMC_CUSTOM_VERIFY_MCP_TOOLS="${value}" || true ;;
       pretool_intent_guard)
         [[ -z "${_omc_env_pretool_intent}" && "${value}" =~ ^(true|false)$ ]] && OMC_PRETOOL_INTENT_GUARD="${value}" || true ;;
+      agent_first_gate)
+        if [[ -z "${_omc_env_agent_first_gate}" ]]; then
+          # v1.43+ (quality-reviewer F1): case-fold the value so `ON`,
+          # `On`, `OFF`, etc. all normalize to lowercase before the
+          # regex check. Previously the regex `^(on|off)$` silently
+          # rejected uppercase and fell back to default-off.
+          local _v
+          _v="$(printf '%s' "${value}" | tr '[:upper:]' '[:lower:]')"
+          [[ "${_v}" =~ ^(on|off)$ ]] && OMC_AGENT_FIRST_GATE="${_v}" || true
+        fi ;;
       bg_spawn_gate)
         [[ -z "${_omc_env_bg_spawn_gate}" && "${value}" =~ ^(true|false)$ ]] && OMC_BG_SPAWN_GATE="${value}" || true ;;
       classifier_telemetry)
@@ -601,16 +709,22 @@ load_conf() {
   _omc_conf_loaded=1
 
   # Layer 1: User-level config
-  _parse_conf_file "${HOME}/.claude/oh-my-claude.conf"
+  _parse_conf_file "${HOME}/.claude/oh-my-claude.conf" "user"
 
-  # Layer 2: Project-level config (overrides user-level).
-  # Walk up from $PWD looking for .claude/oh-my-claude.conf, capped at 10
-  # levels. Skip $HOME to avoid double-reading the user conf.
+  # Layer 2: Project-level config (overrides user-level for non-security
+  # flags). Walk up from $PWD looking for .claude/oh-my-claude.conf,
+  # capped at 10 levels. Skip $HOME to avoid double-reading the user conf.
+  #
+  # v1.43+ (security-lens P1): project-level conf is parsed with
+  # `level=project` so security-load-bearing flags (pretool_intent_guard,
+  # bg_spawn_gate, agent_first_gate, no_defer_mode) cannot be disabled
+  # by a malicious or unfamiliar repo. The user's `${HOME}` conf still
+  # works normally, and env vars override both.
   local _dir="${PWD}"
   local _depth=0
   while [[ "${_dir}" != "/" && "${_depth}" -lt 10 ]]; do
     if [[ "${_dir}" != "${HOME}" && -f "${_dir}/.claude/oh-my-claude.conf" ]]; then
-      _parse_conf_file "${_dir}/.claude/oh-my-claude.conf"
+      _parse_conf_file "${_dir}/.claude/oh-my-claude.conf" "project"
       break
     fi
     _dir="$(dirname "${_dir}")"

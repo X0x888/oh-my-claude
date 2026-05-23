@@ -35,10 +35,18 @@ setup_test() {
   export HOME="${TEST_HOME}"
   mkdir -p "${TEST_HOME}/.claude/quality-pack/state"
   touch "${TEST_HOME}/.claude/quality-pack/state/.ulw_active"
+  # v1.43+: the agent-first gate's BLOCK is opt-in (default off). The
+  # T0a-T0c8 cases (and any other test that expects pre-specialist
+  # mutation to be denied) need the gate explicitly ON to preserve
+  # their original semantics. Tests that exercise the new default-off
+  # behavior (T_aff_off_*) override this with `unset OMC_AGENT_FIRST_GATE`
+  # before calling run_guard.
+  export OMC_AGENT_FIRST_GATE=on
 }
 
 teardown_test() {
   export HOME="${ORIG_HOME}"
+  unset OMC_AGENT_FIRST_GATE
   rm -rf "${TEST_HOME}" 2>/dev/null || true
 }
 
@@ -1584,6 +1592,322 @@ else
   printf '  FAIL: T58: gate_events.jsonl not written\n' >&2
   fail=$((fail + 1))
 fi
+teardown_test
+
+# ======================================================================
+# v1.43+ agent-first gate opt-in tests. The gate's BLOCK is now opt-in
+# (default off) because the mandate fired ~2.2x/session under the
+# canonical /ulw user without paying for itself — depth-on-every-prompt
+# + sub-dispatch-as-tool carry the actual concern. These tests pin both
+# directions: default-off must allow pre-specialist mutation; explicit
+# opt-in must restore the legacy block; telemetry runs unconditionally.
+# Also pins the Serendipity quote-strip fix for the redirect matcher.
+# ======================================================================
+
+# ----------------------------------------------------------------------
+# T_aff_off_a: default gate (off) + Edit before specialist → ALLOW.
+# Counter-regression for T0a (which keeps OMC_AGENT_FIRST_GATE=on via
+# setup_test). When the flag is off, the main thread can mutate
+# directly without dispatching a specialist first.
+setup_test
+unset OMC_AGENT_FIRST_GATE
+init_session "t_aff_off_a" "execution"
+out_aff_off_a="$(run_guard "t_aff_off_a" "" "Edit")"
+assert_eq "T_aff_off_a: default-off allows pre-specialist Edit (no deny)" "" "${out_aff_off_a}"
+teardown_test
+
+# T_aff_off_b: default gate (off) + mutating Bash before specialist → ALLOW.
+setup_test
+unset OMC_AGENT_FIRST_GATE
+init_session "t_aff_off_b" "execution"
+out_aff_off_b="$(run_guard "t_aff_off_b" "touch /tmp/omc-aff-off-test")"
+assert_eq "T_aff_off_b: default-off allows pre-specialist mutating Bash (no deny)" "" "${out_aff_off_b}"
+teardown_test
+
+# T_aff_off_c: default gate (off) + Edit → first_mutation_ts STILL recorded.
+# Telemetry must run regardless of the flag so cross-session reporting
+# can compare opt-in vs opt-out outcomes. Note: when the gate's block is
+# bypassed (flag off), the script records first_mutation_ts via
+# _record_first_mutation_attempt; the value must be a positive epoch.
+setup_test
+unset OMC_AGENT_FIRST_GATE
+init_session "t_aff_off_c" "execution"
+_=$(run_guard "t_aff_off_c" "" "Edit")
+fmt_off="$(read_state_key "t_aff_off_c" "first_mutation_ts")"
+if [[ "${fmt_off}" =~ ^[1-9][0-9]+$ ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T_aff_off_c: first_mutation_ts not recorded under default-off (got: %q)\n' "${fmt_off}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# T_aff_off_d: default gate (off) + continuation intent + Edit → ALLOW.
+# The gate's block surface covered both execution and continuation;
+# the opt-out must lift both.
+setup_test
+unset OMC_AGENT_FIRST_GATE
+init_session "t_aff_off_d" "continuation"
+out_aff_off_d="$(run_guard "t_aff_off_d" "" "Edit")"
+assert_eq "T_aff_off_d: default-off allows pre-specialist Edit on continuation intent" "" "${out_aff_off_d}"
+teardown_test
+
+# T_aff_off_e (quality-reviewer F5): mark-edit.sh (PostToolUse) records
+# first_mutation_ts even under gate=off. mark-edit.sh's
+# _record_first_mutation_from_edit is a PARALLEL writer to the PreTool
+# path; the Stop backstop reads first_mutation_ts from EITHER source.
+# Without this test, a refactor that conditionally skips the PostTool
+# writer would silently break the opt-in → on transition (when a user
+# flips the flag mid-session, the backstop wouldn't fire even if the
+# session had mutated).
+setup_test
+unset OMC_AGENT_FIRST_GATE
+init_session "t_aff_off_e" "execution"
+MARK_EDIT_SCRIPT="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/mark-edit.sh"
+printf '%s' "$(jq -nc --arg s "t_aff_off_e" '{session_id:$s,tool_name:"Edit",tool_input:{file_path:"/src/foo.ts"}}')" \
+  | bash "${MARK_EDIT_SCRIPT}" 2>/dev/null || true
+fmt_off_e="$(read_state_key "t_aff_off_e" "first_mutation_ts")"
+if [[ "${fmt_off_e}" =~ ^[1-9][0-9]+$ ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T_aff_off_e: mark-edit.sh did not record first_mutation_ts under gate=off (got: %q)\n' "${fmt_off_e}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# T_aff_precedence (quality-reviewer F6): env var precedence over conf.
+# common.sh's _parse_conf_file honors env-first via _omc_env_agent_first_gate.
+# A future refactor that flipped the order would silently change behavior;
+# this regression net catches the flip.
+setup_test
+init_session "t_aff_prec" "execution"
+mkdir -p "${TEST_HOME}/.claude"
+printf 'agent_first_gate=on\n' > "${TEST_HOME}/.claude/oh-my-claude.conf"
+# Env says OFF; conf says ON. Env must win → mutation ALLOWED.
+export OMC_AGENT_FIRST_GATE=off
+out_aff_prec="$(run_guard "t_aff_prec" "" "Edit")"
+assert_eq "T_aff_precedence: OMC_AGENT_FIRST_GATE=off env wins over conf=on (mutation allowed)" "" "${out_aff_prec}"
+teardown_test
+
+# T_aff_on_explicit: explicit OMC_AGENT_FIRST_GATE=on still denies.
+# Mirror of T0a but with the env explicitly set (rather than via the
+# setup_test default), so a future refactor of setup_test does not
+# silently change the contract.
+setup_test
+export OMC_AGENT_FIRST_GATE=on
+init_session "t_aff_on" "execution"
+out_aff_on="$(run_guard "t_aff_on" "" "Edit")"
+if denied "${out_aff_on}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T_aff_on: explicit gate=on must deny pre-specialist Edit (got: %s)\n' "${out_aff_on}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# ----------------------------------------------------------------------
+# Serendipity quote-strip regression (_bash_command_may_mutate_workspace).
+# The redirect regex `(^|[^0-9])>>?[[:space:]]*[^[:space:]&|;]+` matched
+# literal `<unset>` inside a double-quoted printf arg because the `>` is
+# followed by `"`. Fix: strip "..." and '...' content before the redirect
+# check. These tests pin both directions: prose-`<X>` no longer denies,
+# real redirects still deny.
+#
+# Tests run with gate=on (setup_test default) so the false-positive
+# would actually FIRE without the fix.
+
+# T_aff_qfix_a: printf with literal `<unset>` in quoted arg → ALLOW
+# (the bug that bit a real /ulw session and prompted the v1.43 redesign).
+setup_test
+init_session "t_aff_qfix_a" "execution"
+out_qfa="$(run_guard "t_aff_qfix_a" 'printf "%s\n" "${var:-<unset>}"')"
+assert_eq "T_aff_qfix_a: printf with <unset> in quoted arg must not false-positive as redirect" "" "${out_qfa}"
+teardown_test
+
+# T_aff_qfix_b: literal `>` inside double-quoted string → ALLOW.
+setup_test
+init_session "t_aff_qfix_b" "execution"
+out_qfb="$(run_guard "t_aff_qfix_b" 'echo "hello > world"')"
+assert_eq "T_aff_qfix_b: literal > inside double quotes must not match redirect" "" "${out_qfb}"
+teardown_test
+
+# T_aff_qfix_c: literal `>` inside single-quoted string → ALLOW.
+setup_test
+init_session "t_aff_qfix_c" "execution"
+out_qfc="$(run_guard "t_aff_qfix_c" "echo 'a > b'")"
+assert_eq "T_aff_qfix_c: literal > inside single quotes must not match redirect" "" "${out_qfc}"
+teardown_test
+
+# T_aff_qfix_d: REAL redirect to file still denies (regression
+# protection — quote-stripping must not lose coverage of actual writes).
+setup_test
+init_session "t_aff_qfix_d" "execution"
+out_qfd="$(run_guard "t_aff_qfix_d" "echo hello > /tmp/omc-real-redirect.txt")"
+if denied "${out_qfd}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T_aff_qfix_d: real `> file` redirect must still deny (got: %s)\n' "${out_qfd}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# ======================================================================
+# v1.43+ Wave 2 (review-cycle follow-up) — additional pinning:
+#  * T_aff_off_e_tool: T_aff_off_e didn't verify first_mutation_tool;
+#    a refactor that dropped the tool name would still pass the prior
+#    assertion. (quality-reviewer F3)
+#  * T_aff_off_e_state: gate state must be stamped on first_mutation_ts
+#    capture so /ulw-report and stop-guard can join opt-in vs opt-out
+#    outcomes per-row. (data-lens P0)
+#  * T_aff_precedence_b: env-empty + conf=on must opt in. The original
+#    T_aff_precedence only covered env-wins-over-conf; this asserts
+#    the conf-only opt-in path doesn't silently fail. (quality-reviewer F2)
+#  * T_aff_case_*: case-insensitive flag parsing. ON / On / OFF / off
+#    must all normalize. (quality-reviewer F1)
+#  * T_aff_project_conf_security: a project-level
+#    .claude/oh-my-claude.conf must NOT be able to flip security flags
+#    (pretool_intent_guard, bg_spawn_gate, agent_first_gate,
+#    no_defer_mode) — only the user-level conf and env can. (security-lens P1)
+# ======================================================================
+
+# T_aff_off_e_tool: also assert tool name was recorded.
+setup_test
+unset OMC_AGENT_FIRST_GATE
+init_session "t_aff_off_e_tool" "execution"
+MARK_EDIT_SCRIPT="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/mark-edit.sh"
+printf '%s' "$(jq -nc --arg s "t_aff_off_e_tool" '{session_id:$s,tool_name:"Edit",tool_input:{file_path:"/src/foo.ts"}}')" \
+  | bash "${MARK_EDIT_SCRIPT}" 2>/dev/null || true
+fmt_tool="$(read_state_key "t_aff_off_e_tool" "first_mutation_tool")"
+assert_eq "T_aff_off_e_tool: first_mutation_tool stamped as Edit by mark-edit.sh" "Edit" "${fmt_tool}"
+teardown_test
+
+# T_aff_off_e_state: gate state must be stamped (data-lens P0 closure).
+setup_test
+unset OMC_AGENT_FIRST_GATE
+init_session "t_aff_off_e_state" "execution"
+MARK_EDIT_SCRIPT="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/mark-edit.sh"
+printf '%s' "$(jq -nc --arg s "t_aff_off_e_state" '{session_id:$s,tool_name:"Edit",tool_input:{file_path:"/src/bar.ts"}}')" \
+  | bash "${MARK_EDIT_SCRIPT}" 2>/dev/null || true
+fmt_state="$(read_state_key "t_aff_off_e_state" "agent_first_gate_state")"
+assert_eq "T_aff_off_e_state: agent_first_gate_state=off stamped on mutation under default-off" "off" "${fmt_state}"
+teardown_test
+
+# T_aff_on_state: same stamp under gate=on must record "on".
+setup_test
+export OMC_AGENT_FIRST_GATE=on
+init_session "t_aff_on_state" "execution"
+MARK_EDIT_SCRIPT="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/mark-edit.sh"
+printf '%s' "$(jq -nc --arg s "t_aff_on_state" '{session_id:$s,tool_name:"Edit",tool_input:{file_path:"/src/baz.ts"}}')" \
+  | bash "${MARK_EDIT_SCRIPT}" 2>/dev/null || true
+fmt_state_on="$(read_state_key "t_aff_on_state" "agent_first_gate_state")"
+assert_eq "T_aff_on_state: agent_first_gate_state=on stamped on mutation under gate=on" "on" "${fmt_state_on}"
+teardown_test
+
+# T_aff_precedence_b: env-empty + conf-set=on → mutation DENIED.
+# Mirror of T_aff_precedence in the other direction. If
+# _omc_env_agent_first_gate capture regressed, the conf-only opt-in
+# path would silently fall to default-off and this test would catch.
+setup_test
+unset OMC_AGENT_FIRST_GATE
+init_session "t_aff_prec_b" "execution"
+mkdir -p "${TEST_HOME}/.claude"
+printf 'agent_first_gate=on\n' > "${TEST_HOME}/.claude/oh-my-claude.conf"
+out_aff_prec_b="$(run_guard "t_aff_prec_b" "" "Edit")"
+if denied "${out_aff_prec_b}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T_aff_precedence_b: env-empty + conf=on must deny pre-specialist Edit (got: %s)\n' "${out_aff_prec_b}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# T_aff_case_env_upper: OMC_AGENT_FIRST_GATE=ON must opt-in.
+setup_test
+export OMC_AGENT_FIRST_GATE=ON
+init_session "t_aff_case_env_upper" "execution"
+out_case_eu="$(run_guard "t_aff_case_env_upper" "" "Edit")"
+if denied "${out_case_eu}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T_aff_case_env_upper: OMC_AGENT_FIRST_GATE=ON must deny (got: %s)\n' "${out_case_eu}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# T_aff_case_env_mixed: OMC_AGENT_FIRST_GATE=On (mixed case) must opt-in.
+setup_test
+export OMC_AGENT_FIRST_GATE=On
+init_session "t_aff_case_env_mixed" "execution"
+out_case_em="$(run_guard "t_aff_case_env_mixed" "" "Edit")"
+if denied "${out_case_em}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T_aff_case_env_mixed: OMC_AGENT_FIRST_GATE=On must deny (got: %s)\n' "${out_case_em}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# T_aff_case_conf_upper: conf agent_first_gate=ON must opt-in (env empty).
+setup_test
+unset OMC_AGENT_FIRST_GATE
+init_session "t_aff_case_conf_upper" "execution"
+mkdir -p "${TEST_HOME}/.claude"
+printf 'agent_first_gate=ON\n' > "${TEST_HOME}/.claude/oh-my-claude.conf"
+out_case_cu="$(run_guard "t_aff_case_conf_upper" "" "Edit")"
+if denied "${out_case_cu}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T_aff_case_conf_upper: conf agent_first_gate=ON must deny (got: %s)\n' "${out_case_cu}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# T_aff_case_env_off_upper: OMC_AGENT_FIRST_GATE=OFF must opt-out (default-off explicit).
+setup_test
+export OMC_AGENT_FIRST_GATE=OFF
+init_session "t_aff_case_env_off_upper" "execution"
+out_case_eou="$(run_guard "t_aff_case_env_off_upper" "" "Edit")"
+assert_eq "T_aff_case_env_off_upper: OMC_AGENT_FIRST_GATE=OFF must allow (default opt-out semantics)" "" "${out_case_eou}"
+teardown_test
+
+# T_aff_project_conf_security: project-level conf cannot disable security flags.
+# A user at ~/.claude has agent_first_gate=on. A project's .claude/oh-my-claude.conf
+# sets agent_first_gate=off (malicious-repo simulation). The user-level value MUST
+# win — the project-level setting is rejected with a stderr log.
+setup_test
+unset OMC_AGENT_FIRST_GATE
+init_session "t_aff_proj_sec" "execution"
+mkdir -p "${TEST_HOME}/.claude"
+printf 'agent_first_gate=on\n' > "${TEST_HOME}/.claude/oh-my-claude.conf"
+# Create a fake project dir with a .claude/oh-my-claude.conf disabling the gate.
+PROJ_DIR="${TEST_HOME}/proj"
+mkdir -p "${PROJ_DIR}/.claude"
+printf 'agent_first_gate=off\n' > "${PROJ_DIR}/.claude/oh-my-claude.conf"
+# Run the guard from inside the project dir; user-level should still apply.
+out_proj_sec="$(cd "${PROJ_DIR}" && run_guard "t_aff_proj_sec" "" "Edit")"
+if denied "${out_proj_sec}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T_aff_project_conf_security: project conf must NOT be able to flip agent_first_gate off (got: %s)\n' "${out_proj_sec}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# T_aff_project_conf_allowed_flag: project-level conf CAN still override
+# non-security flags (e.g. classifier_telemetry, council_deep_default).
+# Pin that the deny-list is narrow — only the 4 security-load-bearing
+# flags are restricted. Otherwise we'd silently break legitimate
+# project customization.
+setup_test
+unset OMC_AGENT_FIRST_GATE
+init_session "t_aff_proj_allowed" "execution"
+mkdir -p "${TEST_HOME}/.claude"
+PROJ_DIR2="${TEST_HOME}/proj-allowed"
+mkdir -p "${PROJ_DIR2}/.claude"
+printf 'classifier_telemetry=off\n' > "${PROJ_DIR2}/.claude/oh-my-claude.conf"
+# Source common.sh from inside PROJ_DIR2 in a subshell and read OMC_CLASSIFIER_TELEMETRY.
+out_allowed="$(cd "${PROJ_DIR2}" && bash -c '. "'"${REPO_ROOT}"'/bundle/dot-claude/skills/autowork/scripts/common.sh" >/dev/null 2>&1; printf "%s" "${OMC_CLASSIFIER_TELEMETRY:-}"')"
+assert_eq "T_aff_project_conf_allowed_flag: project conf classifier_telemetry=off must apply (non-security flag)" "off" "${out_allowed}"
 teardown_test
 
 # ----------------------------------------------------------------------

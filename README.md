@@ -173,7 +173,9 @@ The result: Claude classifies your intent before acting, routes work to speciali
 
 ### Agent-first execution
 
-**On `/ulw` execution, Claude must dispatch and wait for a fresh-context shaping specialist before the first workspace mutation.** Read-only inspection is still allowed first, but `Edit`/`Write`/`MultiEdit` and common mutating Bash commands block until a planner, domain specialist, challenge agent, researcher, writer, or lens has returned. Post-hoc reviewers do not satisfy this floor; they remain the cleanup gates after implementation.
+**Opt-in (v1.43+).** When `agent_first_gate=on`, `/ulw` execution requires Claude to dispatch and wait for a fresh-context shaping specialist before the first workspace mutation — read-only inspection still works, but `Edit`/`Write`/`MultiEdit` and common mutating Bash commands block until a planner, domain specialist, challenge agent, researcher, writer, or lens has returned. Post-hoc reviewers do not satisfy this floor.
+
+**Default is `off`** because the mandate was firing ~2.2x/session under `model_tier=quality` (where specialists and main thread are both Opus, removing the smartness gap the mandate was buying) and the depth-on-every-prompt rule + sub-dispatch-as-tool guidance in `~/.claude/quality-pack/memory/model-robustness.md` now carry the actual concern. Turn it on via `/omc-config` when training a new workflow habit, running on `model_tier=economy`, or when the active session is drift-prone on a single surface. Telemetry (`first_mutation_ts`, `first_mutation_tool`, `agent_first_gate_state`, `agent_first_gate_blocks`) captures unconditionally regardless of the flag — `/ulw-report` can compare opt-in vs opt-out outcomes per-row.
 
 ### Prescribed reviewer sequence
 

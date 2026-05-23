@@ -153,6 +153,42 @@
 # Env: OMC_PRETOOL_INTENT_GUARD.
 #pretool_intent_guard=true
 
+# Agent-first invariant gate (v1.43+). When `on`, /ulw execution and
+# continuation intents block the FIRST workspace mutation per session
+# until a fresh-context specialist (planner, prometheus, metis, oracle,
+# abstraction-critic, domain specialist, lens, researcher, writer) has
+# returned. Telemetry (`first_mutation_ts`, `agent_first_gate_blocks`,
+# `first_mutation_tool`) is always captured regardless of this flag —
+# the change is mandate-vs-tool, not visibility.
+#
+# Default `off`. This is *removal of a uniform tax*, NOT a softening of
+# the no-defer contract (which remains load-bearing per core.md).
+# The mandate was the right shape when (a) specialists ran on a
+# smarter tier than main, (b) the depth-on-every-prompt rule did not
+# exist yet, and (c) reflexive-dispatch round-trip cost less than
+# drift-failure cost. Under model_tier=quality + depth-on-every-prompt,
+# none of the three premises hold — the gate was firing ~2.2x/session
+# on the canonical /ulw user without paying for itself.
+#
+# The gap that remains uncovered when off: long-session main-thread
+# drift on a single surface where the model doesn't notice it's
+# anchored. You (or the model) become responsible for invoking
+# specialists when main-thread judgment is the bottleneck — see
+# `~/.claude/quality-pack/memory/model-robustness.md` Mechanism 2
+# (sub-dispatch as fresh context). The `Agent` tool is always there;
+# under `off` it's a tool the model reaches for when warranted,
+# instead of a precondition fired on every prompt.
+#
+# Set to `on` to restore the legacy mandate. Recommended when:
+#   * training a new workflow habit (the block is scaffolding)
+#   * running with `model_tier=economy` (Sonnet specialists vs Sonnet
+#     main — the smartness-gap assumption that justified the mandate
+#     still holds)
+#   * active session is drift-prone on a single surface and the
+#     forcing function is genuinely worth the latency
+# Env: OMC_AGENT_FIRST_GATE.
+#agent_first_gate=off
+
 # Block Bash commands that pair a poll-loop construct (until/while + sleep)
 # with background detach (run_in_background:true, trailing &, or
 # nohup/setsid). v1.43.x hygiene gate — fires at spawn time so orphan

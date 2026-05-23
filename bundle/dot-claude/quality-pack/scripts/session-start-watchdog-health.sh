@@ -194,12 +194,22 @@ if [[ -z "${payload}" ]]; then
   exit 0
 fi
 
-# Stamp idempotency BEFORE printing. Same crash-tolerance contract as
-# session-start-welcome.sh: a partial-write crash mid-emit will re-show
-# the warning on the next session (preferred over silent loss).
+# v1.43+ (SRE-lens P1a): emit FIRST, stamp LAST. The prior order
+# (stamp-then-print) silently lost the alarm when printf failed: a
+# closed stdout, SIGPIPE, hook-timeout-mid-emit, or any partial-write
+# failure of the payload would leave `watchdog_health_emitted=1` set,
+# and the NEXT SessionStart would skip the alarm entirely because the
+# idempotency stamp said it had already fired. The new order makes the
+# print observable before the stamp commits: if the print fails, the
+# stamp also fails to commit (or commits with the alarm already
+# observable), so the next session re-shows. Trade-off: a near-
+# impossible race where print succeeds but the subsequent stamp
+# fails could double-show the warning on the next session — acceptable
+# vs the prior silent-loss failure mode that the comment claimed but
+# the code order produced.
 #
-# One-shot-per-session contract (quality-reviewer Wave 2 F-003):
-# The stamp persists until the session ends. If the watchdog dies, the
+# One-shot-per-session contract (quality-reviewer Wave 2 F-003): the
+# stamp persists until the session ends. If the watchdog dies, the
 # alarm fires once, the user re-registers via install-resume-watchdog.sh,
 # and the heartbeat goes fresh — the stamp does NOT clear, so the user
 # never sees an in-session "recovered" message. This is intentional: a
@@ -209,10 +219,11 @@ fi
 # noise budget is better spent on the original alarm. The NEXT
 # SessionStart will see a fresh heartbeat and stay silent — the
 # implicit "recovered" signal.
-write_state "watchdog_health_emitted" "1"
+
+printf '%s\n' "${payload}"
 
 record_gate_event "watchdog-health" "stale" \
   "reason=${reason}" \
   "threshold_secs=${threshold_secs}" || true
 
-printf '%s\n' "${payload}"
+write_state "watchdog_health_emitted" "1"

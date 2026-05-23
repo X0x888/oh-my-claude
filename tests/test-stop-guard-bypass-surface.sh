@@ -59,6 +59,8 @@ assert_not_contains() {
   fi
 }
 
+_ORIG_PWD="$(pwd)"
+
 setup() {
   TEST_HOME="$(mktemp -d)"
   export HOME="${TEST_HOME}"
@@ -71,9 +73,17 @@ setup() {
   # to fast-path-skip non-ULW sessions. Recreate it for tests that exercise
   # those hooks.
   touch "${STATE_ROOT}/.ulw_active"
+  # v1.43+ (F-013 follow-up): cd into TEST_HOME so the conf walk-up in
+  # common.sh's load_conf doesn't traverse into the real user's
+  # ~/.claude/oh-my-claude.conf (which lives at a level above the
+  # repo's CWD). Without this, sub-shells sourcing common.sh would
+  # classify the real user conf as a "project" conf and the new
+  # security flag restriction would log rejections to stderr.
+  cd "${TEST_HOME}"
 }
 
 teardown() {
+  cd "${_ORIG_PWD}"
   rm -rf "${TEST_HOME}"
   # Keep HOME set across teardowns — sub-shells that source common.sh
   # require it under `set -u`. STATE_ROOT and SESSION_ID are session-
@@ -665,6 +675,131 @@ rc=$?
 set -e
 assert_eq "cross-product: handoff regex also catches" "0" "${rc}"
 teardown
+
+# ===========================================================================
+# F-012: agent-first-gate opt-in (v1.43+) — Stop backstop must respect the
+# new flag at all three surfaces: (a) silent when state-at-mutation was
+# `off`, (b) fires when state-at-mutation was `on`, (c) lockstep grep
+# that stop-guard.sh reads the recorded state, not the live env var.
+# Defense rationale: when the PreTool block becomes opt-in, the Stop
+# backstop must NOT silently fire under default-off — that would
+# defeat the opt-out at a different surface. Mirrors the per-surface
+# tests in test-pretool-intent-guard.sh (T_aff_off_*) but at the Stop
+# layer where the umbrella is the only regression net (no dedicated
+# Stop-time per-surface test exists for this flag).
+# Closes excellence-reviewer F1 (release-readiness gap).
+# ===========================================================================
+printf '\n=== F-012: agent-first-gate opt-in Stop backstop semantics ===\n'
+
+# (a) state-at-mutation=off → backstop silent.
+# Set up a state where first_mutation_ts is recorded but
+# agent_first_gate_state is "off" (the default-off opt-out path).
+# Stop hook should NOT block.
+setup
+write_state_field "task_intent" "execution"
+write_state_int "first_mutation_ts" "1000"
+write_state_field "first_mutation_tool" "Edit"
+write_state_field "agent_first_gate_state" "off"
+# Run stop-guard and capture its exit code + output. The backstop reads
+# agent_first_gate_state; with "off", it should fall through without
+# emitting a block payload at the agent-first surface.
+out_a="$(printf '%s' "$(jq -nc --arg s "${SESSION_ID}" '{session_id:$s,hook_event_name:"Stop"}')" \
+  | bash "${HOOK_DIR}/stop-guard.sh" 2>&1 || true)"
+# Backstop block payload contains "/ulw work mutated before any fresh-context specialist"
+if [[ "${out_a}" == *"/ulw work mutated before any fresh-context specialist"* ]]; then
+  printf '  FAIL: F-012a: agent_first_gate_state=off must NOT fire backstop (got block)\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+teardown
+
+# (b) state-at-mutation=on + no specialist → backstop FIRES.
+setup
+write_state_field "task_intent" "execution"
+write_state_int "first_mutation_ts" "1000"
+write_state_field "first_mutation_tool" "Edit"
+write_state_field "agent_first_gate_state" "on"
+# No agent_first_specialist_ts set → backstop fires.
+out_b="$(printf '%s' "$(jq -nc --arg s "${SESSION_ID}" '{session_id:$s,hook_event_name:"Stop"}')" \
+  | bash "${HOOK_DIR}/stop-guard.sh" 2>&1 || true)"
+if [[ "${out_b}" == *"/ulw work mutated before any fresh-context specialist"* ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: F-012b: agent_first_gate_state=on (no specialist) must fire backstop (got: %s)\n' "${out_b}" >&2
+  fail=$((fail + 1))
+fi
+teardown
+
+# (c) state-at-mutation=on + specialist ran → backstop silent.
+setup
+write_state_field "task_intent" "execution"
+write_state_int "first_mutation_ts" "1000"
+write_state_field "first_mutation_tool" "Edit"
+write_state_field "agent_first_gate_state" "on"
+write_state_int "agent_first_specialist_ts" "1500"
+out_c="$(printf '%s' "$(jq -nc --arg s "${SESSION_ID}" '{session_id:$s,hook_event_name:"Stop"}')" \
+  | bash "${HOOK_DIR}/stop-guard.sh" 2>&1 || true)"
+if [[ "${out_c}" == *"/ulw work mutated before any fresh-context specialist"* ]]; then
+  printf '  FAIL: F-012c: gate=on + specialist returned must NOT fire backstop (got block)\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+teardown
+
+# (d) Lockstep grep — stop-guard.sh must read the state field, not the
+# live env var. Future refactor that flipped this back to OMC_AGENT_FIRST_GATE
+# would re-introduce the toggle-flip footgun.
+if grep -q 'gate_state_at_mutation=.*read_state.*"agent_first_gate_state"' "${HOOK_DIR}/stop-guard.sh"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: F-012d: stop-guard.sh must read agent_first_gate_state from state, not OMC_AGENT_FIRST_GATE\n' >&2
+  fail=$((fail + 1))
+fi
+
+# (e) Lockstep grep — both writers (pretool-intent-guard.sh, mark-edit.sh)
+# must stamp agent_first_gate_state. A refactor that dropped the field
+# from either writer would leave Stop backstop silent for that path.
+for writer in pretool-intent-guard.sh mark-edit.sh; do
+  if grep -q '"agent_first_gate_state"' "${HOOK_DIR}/${writer}"; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: F-012e: %s must stamp agent_first_gate_state on first_mutation_ts capture\n' "${writer}" >&2
+    fail=$((fail + 1))
+  fi
+done
+
+# ===========================================================================
+# F-013: project-conf security flag deny-list (v1.43+ security-lens P1).
+# A malicious or unfamiliar repo's `.claude/oh-my-claude.conf` must NOT
+# be able to disable security-load-bearing gates the user opted into
+# via their user-level `${HOME}/.claude/oh-my-claude.conf`. The deny-
+# list is narrow: pretool_intent_guard, bg_spawn_gate, agent_first_gate,
+# no_defer_mode. All other flags can still be project-overridden.
+# ===========================================================================
+printf '\n=== F-013: project-conf security flag deny-list ===\n'
+
+# (a) _parse_conf_file must accept a `level` argument and refuse
+# security flags when level=project. Grep anchors on the closing `)`
+# (case-statement marker) so a refactor that removed the actual
+# case-statement while leaving the bare comment block would NOT pass
+# this regression (quality-reviewer Wave 2 F3 follow-up).
+if grep -q 'pretool_intent_guard|bg_spawn_gate|agent_first_gate|no_defer_mode)' "${HOOK_DIR}/common.sh"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: F-013a: common.sh case-statement must restrict pretool_intent_guard/bg_spawn_gate/agent_first_gate/no_defer_mode from project conf\n' >&2
+  fail=$((fail + 1))
+fi
+
+# (b) load_conf must pass "project" when calling _parse_conf_file for
+# the walk-up path.
+if grep -q '_parse_conf_file "\${_dir}/.claude/oh-my-claude.conf" "project"' "${HOOK_DIR}/common.sh"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: F-013b: load_conf must pass level=project when parsing the project conf\n' >&2
+  fail=$((fail + 1))
+fi
 
 # ===========================================================================
 # Sentinel: every coordination rule met (file existence + bundle wiring)

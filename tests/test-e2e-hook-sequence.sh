@@ -16,10 +16,18 @@ setup_test() {
   export HOME="${TEST_HOME}"
   mkdir -p "${TEST_HOME}/.claude/quality-pack/state"
   touch "${TEST_HOME}/.claude/quality-pack/state/.ulw_active"
+  # v1.43+: agent-first gate is opt-in (default off). Existing e2e cases
+  # (Sequence K3, Gap 8t, Gap 8u, and the auto-satisfy helper at line ~76)
+  # were authored when the gate was mandatory; preserve their semantics
+  # by defaulting it ON for e2e runs. Tests exercising the new
+  # default-off behavior live in test-pretool-intent-guard.sh
+  # (T_aff_off_*) where the unit-test isolation is tighter.
+  export OMC_AGENT_FIRST_GATE=on
 }
 
 teardown_test() {
   export HOME="${ORIG_HOME}"
+  unset OMC_AGENT_FIRST_GATE
   local attempt
   for attempt in 1 2 3 4 5; do
     rm -rf "${TEST_HOME}" 2>/dev/null || true

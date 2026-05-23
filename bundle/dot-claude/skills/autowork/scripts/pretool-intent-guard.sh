@@ -228,7 +228,31 @@ _bash_command_may_mutate_workspace() {
   cmd="$(_normalize_git_flags "${cmd}")"
 
   local cleaned
+  # v1.43+ Serendipity (narrowed per quality-reviewer F3): the quote-strip
+  # below is LOCAL to the redirect-detection branch only. The verb regexes
+  # downstream of this block inspect the un-stripped `cmd` directly so
+  # this narrowing changes nothing about their behavior — same un-stripped
+  # input they have always received.
+  #
+  # Without quote-stripping in the redirect path, literal string content
+  # like `printf "%s" "${var:-<unset>}"` matches the redirect regex
+  # (the `>` inside `<unset>` followed by the closing `"` looks like
+  # `> path`). Quoted content is data, not control flow — same principle
+  # as `_bash_command_orphans_unattended_loop`'s strip at :80.
+  #
+  # Pre-existing blind spot (NOT introduced or worsened by this strip,
+  # called out for honesty per the reviewer pass): the verb regexes
+  # require `rm`/`mv`/etc. to be preceded by `(^|[[:space:];&|(])` —
+  # `"` is not in that delimiter class. So `bash -c "rm -rf /"` was
+  # never caught by the verb regex even on un-stripped input, and is
+  # still not caught now. Closing that would need either (a) quote-aware
+  # tokenization or (b) explicit `bash|sh|zsh|eval` wrappers in the verb
+  # regex — out of scope for this Serendipity since it pre-dates the
+  # change and the Edit/Write tool path catches workspace mutation
+  # through a different channel.
   cleaned="$(sed -E \
+    -e 's/"[^"]*"//g' \
+    -e "s/'[^']*'//g" \
     -e 's/[0-9]*>>?[[:space:]]*\/dev\/null//g' \
     -e 's/[0-9]*>[&][0-9]+//g' \
     <<<"${cmd}")"
@@ -236,7 +260,9 @@ _bash_command_may_mutate_workspace() {
   # Shell redirects to real files are writes. This intentionally ignores
   # input redirects (`<`) and stderr/stdout redirects to /dev/null handled
   # above, so read-only inspection commands like `git status 2>/dev/null`
-  # stay allowed before the specialist floor is satisfied.
+  # stay allowed before the specialist floor is satisfied. Runs on
+  # `cleaned` (quote-stripped) so literal `>` inside strings doesn't
+  # false-positive.
   if grep -Eq '(^|[^0-9])>>?[[:space:]]*[^[:space:]&|;]+' <<<"${cleaned}"; then return 0; fi
 
   # Common workspace mutation forms. This is deliberately a floor, not a
@@ -328,14 +354,36 @@ _record_first_mutation_attempt() {
   local existing
   existing="$(read_state "first_mutation_ts")"
   if [[ -z "${existing}" ]]; then
+    # v1.43+ (data-lens P0): stamp the gate state AT THE MOMENT of
+    # capture. Pairs with the matching stamp in mark-edit.sh (the
+    # PostToolUse writer). This closes the schema gap that previously
+    # made opt-in vs opt-out outcomes unjoinable in /ulw-report and
+    # gives stop-guard a state-at-mutation-time signal instead of
+    # reading the (toggleable) live flag at Stop time.
+    local _gate_state="${OMC_AGENT_FIRST_GATE:-off}"
     write_state_batch \
       "first_mutation_ts" "$(now_epoch)" \
-      "first_mutation_tool" "${tool_name}"
+      "first_mutation_tool" "${tool_name}" \
+      "agent_first_gate_state" "${_gate_state}"
   fi
 }
 
 if _agent_first_gate_active && _tool_attempts_mutation; then
-  if [[ -z "${agent_first_specialist_ts}" ]]; then
+  # v1.43+: gate the BLOCK on the agent_first_gate conf flag. Default off —
+  # the mandate fired ~2.2x/session on the canonical /ulw user under
+  # model_tier=quality, where main thread and specialists are both Opus
+  # and the smartness-gap assumption that justified the mandate no longer
+  # holds. Depth-on-every-prompt (core.md Thinking Quality) and
+  # sub-dispatch-as-tool (model-robustness.md Mechanism 2) carry the
+  # actual concern. Telemetry (first_mutation_ts, agent_first_gate_blocks)
+  # is still captured below so cross-session reporting can compare opt-in
+  # vs opt-out outcomes. Users who want the forcing function can opt in
+  # via `agent_first_gate=on` in oh-my-claude.conf or
+  # `OMC_AGENT_FIRST_GATE=on` in the environment.
+  #
+  # This is removal-of-uniform-tax, NOT softening-of-contract. The
+  # no-defer contract (core.md "v1.40.0 no-defer contract") is unaffected.
+  if [[ "${OMC_AGENT_FIRST_GATE:-off}" == "on" ]] && [[ -z "${agent_first_specialist_ts}" ]]; then
     # shellcheck disable=SC2329  # invoked indirectly via with_state_lock
     _increment_agent_first_blocks() {
       local _c

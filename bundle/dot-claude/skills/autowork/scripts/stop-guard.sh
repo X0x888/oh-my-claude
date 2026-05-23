@@ -311,7 +311,26 @@ fi
 # before they run. This Stop-time check catches older/stale hook wiring or
 # uncommon mutation paths that only the edit tracker observed. Recovery is to
 # run a shaping specialist now and integrate its findings before finalizing.
-if is_execution_intent_value "${task_intent}"; then
+#
+# v1.43+: gated on the recorded `agent_first_gate_state` (stamped at
+# first_mutation_ts capture time in pretool-intent-guard.sh and
+# mark-edit.sh). Using the state-at-mutation-time value rather than the
+# live OMC_AGENT_FIRST_GATE means: (a) opt-out (gate=off when the
+# mutation happened) silences the backstop — same semantics as before;
+# (b) opt-in (gate=on when the mutation happened) fires the backstop;
+# (c) mid-session toggling no longer creates the off→on flag-flip
+# footgun the prior implementation acknowledged honestly but did not
+# close (SRE-lens P1b / abstraction-critic F2). Legacy state rows
+# (pre-v1.43 first_mutation_ts captured before the new field existed)
+# read empty and are treated as `off` — safer default than firing on
+# arbitrary historical state.
+#
+# Telemetry capture in pretool-intent-guard.sh and mark-edit.sh still
+# runs unconditionally on every first-mutation, so cross-session
+# reporting via /ulw-report observes the preconditions regardless of
+# whether the backstop fires.
+gate_state_at_mutation="$(read_state "agent_first_gate_state")"
+if [[ "${gate_state_at_mutation:-off}" == "on" ]] && is_execution_intent_value "${task_intent}"; then
   first_mutation_ts="$(read_state "first_mutation_ts")"
   agent_first_specialist_ts="$(read_state "agent_first_specialist_ts")"
   if [[ -n "${first_mutation_ts}" && -z "${agent_first_specialist_ts}" ]]; then

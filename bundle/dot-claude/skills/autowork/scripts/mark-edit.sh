@@ -50,9 +50,18 @@ _record_first_mutation_from_edit() {
   local existing
   existing="$(read_state "first_mutation_ts")"
   if [[ -z "${existing}" ]]; then
+    # v1.43+ (data-lens P0): stamp the gate state AT THE MOMENT of
+    # capture so /ulw-report can compare opt-in vs opt-out outcomes
+    # per-row, and so stop-guard's backstop can read the state-at-
+    # mutation-time rather than the (possibly toggled) state-at-Stop-
+    # time. The check is "on" vs anything-else; legacy rows that
+    # predate this field read empty and are treated as "off" by the
+    # Stop backstop.
+    local _gate_state="${OMC_AGENT_FIRST_GATE:-off}"
     write_state_batch \
       "first_mutation_ts" "${now}" \
-      "first_mutation_tool" "${tool_name:-Edit}"
+      "first_mutation_tool" "${tool_name:-Edit}" \
+      "agent_first_gate_state" "${_gate_state}"
   fi
 }
 with_state_lock _record_first_mutation_from_edit || true
