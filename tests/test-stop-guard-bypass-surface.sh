@@ -471,8 +471,12 @@ closeout_check() {
         *) return 1 ;;
       esac
       [[ -n "${text}" ]] || return 1
+      # v1.43+: threshold synced with stop-guard.sh has_closeout_label
+      # (200 → 400). The fixtures below pad to >600 chars so the
+      # closing-region branch is still exercised by long_meta /
+      # long_closure; short_close at 36 chars trivially hits full scan.
       local len="${#text}"
-      if [[ "${len}" -lt 200 ]]; then
+      if [[ "${len}" -lt 400 ]]; then
         printf "%s" "${text}" | grep -Eiq "${pattern}"
         return $?
       fi

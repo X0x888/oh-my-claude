@@ -103,10 +103,19 @@ has_closeout_label() {
   # The 40% threshold is generous — closing wraps are typically the last
   # 10-20% of a multi-section message, so legitimate closures pass; the
   # cutoff filters out meta/quoted occurrences from the body discussion.
-  # For short messages (<200 chars), the entire body IS the close — full
-  # scan in that case.
+  #
+  # v1.43+ (CI regression fix): short-message threshold raised from 200
+  # → 400. Pre-fix, legitimate structured closeouts produced by the
+  # canonical `structured_closeout` shape (≥4 sections at ~200-300
+  # chars) tripped the closing-region path with their `**Changed.**`
+  # label out of the 40% window, blocking even when all required
+  # labels were present. Caught when CI seq-A1 broke after F-010
+  # landed without a parallel test-helper threshold sync. F-010 tests
+  # use ≥600-char fixtures so the bump preserves bypass-closure
+  # behavior; the test helper at tests/test-stop-guard-bypass-surface.sh
+  # inlines the same constant.
   local len="${#text}"
-  if [[ "${len}" -lt 200 ]]; then
+  if [[ "${len}" -lt 400 ]]; then
     printf '%s' "${text}" | grep -Eiq "${pattern}"
     return $?
   fi
