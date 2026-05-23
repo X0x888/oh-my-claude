@@ -231,6 +231,40 @@ assert_contains "stop-guard blocks permission-coded continuation ask" '"decision
 assert_contains "stop-guard recovery names say keep going" "say keep going" "${out}"
 teardown
 
+# v1.44 quote-stripping FP closure: handoff phrases inside backtick-fenced
+# spans, ASCII double-quotes, or ASCII single-quotes MUST NOT match. True
+# handoff announcements are never quoted — a model writing
+# `"pushing tasks to next session"` is REPORTING the user's complaint,
+# not announcing a handoff. Same for inline-code phrasings used to discuss
+# the gate's own regex.
+printf 'v1.44 quote-stripping: quoted handoff phrases must NOT match\n'
+for phrase in 'The user-named failure mode ("still pushing tasks to next session") is now closed.' \
+              "The user-named failure mode ('still pushing tasks to next session') is now closed." \
+              'The gate catches phrases like `for next session` or `in your next prompt`.' \
+              'The deny list includes "tracks to a future session" and "in a future session" as effort excuses.' \
+              'CHANGELOG entry: "deferring to next session is no longer a category".' \
+              'Quoted anti-pattern: `"next wave" / "next phase" / "for next session"`.'; do
+  set +e
+  detect_handoff "${phrase}"
+  rc=$?
+  set -e
+  assert_eq "no-match (quoted): ${phrase}" "1" "${rc}"
+done
+
+# v1.44 quote-stripping: unquoted handoff prose MUST still match even when
+# adjacent quoted text exists. The regex strips quotes before matching, so
+# a sentence with BOTH quoted reference AND unquoted handoff announcement
+# still trips on the unquoted half.
+printf 'v1.44 quote-stripping: unquoted handoff MUST still match (mixed)\n'
+for phrase in 'The user said "do not stop" but I will pick this up in a future session.' \
+              'The gate catches phrases like `for next session` — and I will pick this up in your next prompt.'; do
+  set +e
+  detect_handoff "${phrase}"
+  rc=$?
+  set -e
+  assert_eq "matches (mixed): ${phrase}" "0" "${rc}"
+done
+
 # FP guards: must NOT match (block storms would otherwise fire on common
 # non-handoff prose)
 printf 'FP guards: legitimate non-handoff prose must NOT match\n'

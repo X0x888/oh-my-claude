@@ -5897,6 +5897,27 @@ is_high_session_risk() {
 has_unfinished_session_handoff() {
   local text="$1"
 
+  # v1.44 quote-stripping (applies to preposition-anchored regex below).
+  # The handoff regex catches preposition-anchored "for|to|in|until X
+  # next session" phrases, which legitimately also appears in:
+  #   - quoted user-complaint prose: `"pushing tasks to next session"`
+  #   - quoted anti-pattern doctrine: `"in your next prompt" is forbidden`
+  #   - inline-code references: `for next session`
+  # True handoff announcements are NEVER inside quote-delimiting spans —
+  # a model that's actually announcing a handoff writes the phrase as
+  # prose, not as a quoted reference. The stripped variant feeds the
+  # FIRST regex (preposition-anchored shape) ONLY. The SECOND regex
+  # (permission-coded continuation ask at the bottom of this function)
+  # expects literal quotes around "keep going" / "continue" as evidence
+  # of the user-opt-in framing, so it MUST run against the original
+  # unstripped text. Failing to keep the two variants separate breaks
+  # the v1.42.x permission-coded continuation defense.
+  local _stripped="${text}"
+  _stripped="$(printf '%s' "${_stripped}" | perl -0777 -pe 's/```.*?```//gs' 2>/dev/null || printf '%s' "${_stripped}")"
+  _stripped="$(printf '%s' "${_stripped}" | perl -0777 -pe 's/`[^`\n]{1,200}`//g' 2>/dev/null || printf '%s' "${_stripped}")"
+  _stripped="$(printf '%s' "${_stripped}" | perl -0777 -pe 's/"[^"\n]{1,200}"//g' 2>/dev/null || printf '%s' "${_stripped}")"
+  _stripped="$(printf '%s' "${_stripped}" | perl -0777 -pe "s/'[^'\\n]{3,200}'//g" 2>/dev/null || printf '%s' "${_stripped}")"
+
   # v1.27.0 (F-009): tightened. Dropped four shapes that produced false
   # positives on legitimate scoping language:
   #   - "the rest" — appears in "implementing the rest now" (scoping)
@@ -6054,7 +6075,7 @@ has_unfinished_session_handoff() {
   # "for a follow-up review") at a rate the FP audit cannot accept.
   # Adjective-slot adds `upcoming` (the model's natural synonym for
   # `next` when the latter is grammatically awkward).
-  if grep -Eiq '\b(ready for a new session|ready for another session|continue in a new session|continue in another session|new session\b|another session\b|next wave\b|next phase\b|wave [0-9]+[^.!\n]* is next|phase [0-9]+[^.!\n]* is next|(for|to|in|until) (a |an |the |another |your |my |our )?(next|future|later|separate|subsequent|dedicated|follow-on|follow-up|upcoming) (session|prompt|turn|message|response|pass|iteration|cycle|sprint|milestone|commit|PR|pr|issue|ticket|task|work|change|investigation|phase|revision|audit|refactor)|as (a |the )?known (follow-up|limitation|gap|risk|todo)|(queued|parked|parking|earmarked|earmarking) (it |this |that |them |these )?(for|as) (later|future|follow-up|a |the |another )|(noted|flagged|tracked) for (later|future|follow-up))\b' <<<"${text}"; then
+  if grep -Eiq '\b(ready for a new session|ready for another session|continue in a new session|continue in another session|new session\b|another session\b|next wave\b|next phase\b|wave [0-9]+[^.!\n]* is next|phase [0-9]+[^.!\n]* is next|(for|to|in|until) (a |an |the |another |your |my |our )?(next|future|later|separate|subsequent|dedicated|follow-on|follow-up|upcoming) (session|prompt|turn|message|response|pass|iteration|cycle|sprint|milestone|commit|PR|pr|issue|ticket|task|work|change|investigation|phase|revision|audit|refactor)|as (a |the )?known (follow-up|limitation|gap|risk|todo)|(queued|parked|parking|earmarked|earmarking) (it |this |that |them |these )?(for|as) (later|future|follow-up|a |the |another )|(noted|flagged|tracked) for (later|future|follow-up))\b' <<<"${_stripped}"; then
     return 0
   fi
 

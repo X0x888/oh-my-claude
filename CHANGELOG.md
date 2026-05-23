@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### v1.44 follow-up: quote-strip the handoff regex to close quoted-prose FPs
+
+Closes a recurring false-positive class the session-handoff gate fired on twice in a single session: legitimate model prose that QUOTES handoff-shaped phrasings (e.g., `"still pushing tasks to next session"` quoting the user's complaint) was tripping the preposition-anchored regex. True handoff announcements are never wrapped in backticks, ASCII double-quotes, or ASCII single-quotes — a model that's actually announcing a handoff writes the phrase as prose, not as a quoted reference.
+
+`has_unfinished_session_handoff` now pre-strips four span types before applying the preposition-anchored regex (the FIRST of two regexes in the function): triple-backtick fences, single-backtick spans, double-quoted spans (length-bounded ≤200 chars), single-quoted spans (length-bounded 3–200 chars to avoid apostrophe over-strip on contractions). The SECOND regex (permission-coded continuation ask: `say "keep going" and I'll handle the remaining`) still runs against the original unstripped text because it specifically expects literal quotes around `"keep going"` / `"continue"` as evidence of the user-opt-in framing — splitting the two variants is required to preserve the v1.42.x permission-coded defense.
+
+Regression net: `tests/test-stop-guard-bypass-surface.sh` gains 8 new assertions (6 quoted-must-not-match + 2 mixed-must-still-match). Stop-guard bypass surface umbrella: 122/0 → 130/0.
+
 ### v1.44 follow-up: test-isolation fixes for project-conf walk-up
 
 Closes 4 baseline test files (39 individual assertion failures) the No-Out-of-Scope contract surfaced when the full suite ran. Root cause: tests override `HOME` to a temp dir but don't `cd` into it, so `load_conf`'s project-conf walk-up reaches the test author's real `${HOME}/.claude/oh-my-claude.conf` and applies non-security flags like `lazy_session_start=on` as "project" — silently breaking test isolation. This is the same v1.43 fix that landed only for `tests/test-stop-guard-bypass-surface.sh`, now extended to the four sibling tests with the same shape.
