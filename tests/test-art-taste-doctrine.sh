@@ -38,7 +38,9 @@ DOCTRINE_PATH="${REPO_ROOT}/${DOCTRINE_REL}"
 # Canonical reference path used inside the agents' inlined sections.
 # Tests assert the agents reference THIS exact string so a rename of the
 # on-disk file forces the test to be updated explicitly rather than
-# leaving stale agent pointers.
+# leaving stale agent pointers. The ~ is a literal grep pattern, not a
+# path to expand — SC2088 is intentionally suppressed.
+# shellcheck disable=SC2088
 INSTALLED_REF_PATH="~/.claude/quality-pack/design-craft/art-taste-doctrine.md"
 
 pass=0
