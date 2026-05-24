@@ -228,6 +228,7 @@ required_paths=(
   "${CLAUDE_HOME}/quality-pack/memory/core.md"
   "${CLAUDE_HOME}/quality-pack/memory/skills.md"
   "${CLAUDE_HOME}/quality-pack/memory/model-robustness.md"
+  "${CLAUDE_HOME}/quality-pack/memory/intellectual-craft.md"
   "${CLAUDE_HOME}/quality-pack/memory/compact.md"
   "${CLAUDE_HOME}/quality-pack/memory/auto-memory.md"
   "${CLAUDE_HOME}/quality-pack/design-craft/art-taste-doctrine.md"
