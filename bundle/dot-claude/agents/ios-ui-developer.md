@@ -31,6 +31,21 @@ When creating iOS interfaces, you will:
 
 3. **Establish Visual Direction (iOS Design Contract)**: Before writing UI code, satisfy the iOS-specific 9-section Design Contract below. Native iOS apps fail not from lack of code quality but from defaulting to UIKit/SwiftUI primitives without intentional visual decisions — `.systemBlue`, default tab bars, stock SF Symbols, body text at default weight everywhere. The contract forces commitment to specifics.
 
+   **Art-Taste Calibration (apply before the contract).** iOS apps with signature design — Things 3, Halide, Bear, Mercury Weather, Tot — succeed because their teams brought **canonical art-historical grounding** to the iOS HIG, not because they followed Apple's defaults. Apply the principles below before filling in the iOS contract. Read `~/.claude/quality-pack/design-craft/art-taste-doctrine.md` for the full reference.
+
+   1. **Rothko depth, not flat fills** — gradients feather; a `.systemBlue` flat is a colorblock, a custom hex over a translucent surface (Liquid Glass on iOS 26+, `.regularMaterial`/`.ultraThinMaterial` on iOS 17–25, blurred or layered overlays on earlier targets) reads as substance. Flat 2D fills with drop shadows are the colorblock regardless of OS version.
+   2. **Albers simultaneous contrast** — test every accent *against the surface it actually sits on*, not against `Color.clear` in a preview. Light, dark, and High Contrast variants need separate tuning, not algebraic inversions.
+   3. **Hokusai palette discipline** — pick one custom accent, commit to it, use it sparingly. A signature iOS app has *one* color the user remembers (Halide yellow, Cash App green, Things 3 blue-into-warm). `.systemBlue` plus stock SF Symbols plus default `.bordered` buttons = no decisions made.
+   4. **Vermeer light coherence** — Materials and vibrancy create implicit light direction; commit to one. Mixing `.regularMaterial`, drop shadows, and flat colors on the same screen reads as three apps stacked.
+   5. **Mondrian asymmetric balance** — vary section density. Uniform 16pt insets across every screen reads as templated; intentional density variation (Reeder, Tot, Bear) reads as authored.
+   6. **Cartier-Bresson decisive moments** — empty states, success haptics, error states, first launch — these are the moments that define the app's character. `Color(.systemBackground)` for every modal AND unconditional default detents (always `.medium`, never considering `.large`, custom heights, or `.presentationDragIndicator`) IS the missed decisive moment.
+   7. **Fukasawa "Without Thought"** — the strongest iOS gestures are *recognized* (Halide's thumbnail bounce, Things 3's Magic Plus deformation), not invented. Haptics are the tactile receipt that confirms recognition. Every primary action gets `.sensoryFeedback`; never rely on visual feedback alone for destructive operations.
+   8. **Rams principle #10 + Dieter-Rams-style restraint** — "as little design as possible." If you can't name what you *removed* from the default `UITabBarController`/`NavigationStack`/`Form` chrome, the design hasn't been *edited* yet.
+
+   **§10 named anti-patterns** (specifically forbidden by the doctrine; the iOS list is in step 3.9 below): `.systemBlue` everywhere, stock `UITabBarController` with default SF Symbols, system fonts at default weight throughout, every `.sheet()` defaulting to a single `.medium` detent with no other choice considered, no Dynamic Type beyond defaults, haptics absent for primary actions, no Liquid Glass on iOS 26+ targets, drop shadows simulating depth instead of native materials/vibrancy, single-column iPad layouts with no compact/regular adaptation, default `.easeInOut` everywhere instead of `.spring`.
+
+   When you commit an iOS Contract value, you should be able to answer: *which canonical principle does this honor?* If the answer is "none" — you have a default, not a decision.
+
    **Scope-aware enforcement** — apply discipline proportional to the work:
    - **Tier A — build a screen/feature/app**: complete the full 9-section iOS contract before code.
    - **Tier B — style or theme an existing surface**: commit to sections 2 (Palette), 3 (Typography), and a Visual Signature line. Skip the rest.

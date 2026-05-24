@@ -230,6 +230,7 @@ required_paths=(
   "${CLAUDE_HOME}/quality-pack/memory/model-robustness.md"
   "${CLAUDE_HOME}/quality-pack/memory/compact.md"
   "${CLAUDE_HOME}/quality-pack/memory/auto-memory.md"
+  "${CLAUDE_HOME}/quality-pack/design-craft/art-taste-doctrine.md"
   "${CLAUDE_HOME}/skills/autowork/scripts/stop-guard.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/reflect-after-agent.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/record-advisory-verification.sh"

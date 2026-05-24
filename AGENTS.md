@@ -150,7 +150,7 @@ oh-my-claude/
     settings.patch.json       # Settings merged into user's settings.json
 
   evals/realwork/             # Outcome eval scenarios + scorer for minimal-prompt real-work shipping
-  tests/                      # 113 bash + 1 python test scripts; CLAUDE.md "Testing" lists each one
+  tests/                      # 114 bash + 1 python test scripts; CLAUDE.md "Testing" lists each one
 
   tools/                      # Developer tools (not installed)
     replay-classifier-telemetry.sh
@@ -272,6 +272,16 @@ The capture wiring uses no per-agent matcher (Approach A in the plan), so adding
 **Dual-pipeline participation.** `metis` and `briefing-analyst` participate in **both** the reviewer-dimension pipeline (via `record-reviewer.sh stress_test` / `traceability` matchers) and the discovered-scope ledger (via the universal summary hook). These are independent surfaces: the reviewer pipeline ticks dimensions for the stop-guard's coverage gate; the discovered-scope ledger feeds the completeness gate. They do not deduplicate — when adding or modifying these specialists, update both surfaces deliberately. The same applies to any future advisory specialist that also acts as a verifier.
 
 **Silent-disarm telemetry.** When a whitelisted specialist returns more than 800 characters but the heuristic extractor catches zero findings, `record-subagent-summary.sh` writes a `[anomaly]` row via `log_anomaly`. This makes prose-style drift (specialist drops a `### Findings` heading, switches to prose-only output) visible instead of silently disabling the gate.
+
+#### Design-craft reference surface (`bundle/dot-claude/quality-pack/design-craft/`)
+
+A 6th architectural surface alongside `agents/`, `skills/`, `quality-pack/scripts/`, `quality-pack/memory/`, and `output-styles/`. Contains on-demand reference doctrine consulted by the design-side agents to ground critique and creation in canonical art-historical principles rather than generic vocabulary.
+
+Current contents: `art-taste-doctrine.md` (~4000 words; Rothko, Albers, Rams, Tschichold, Hokusai, Vermeer, Mondrian, Cartier-Bresson, Fukasawa, Vignelli, Müller-Brockmann, Klein, Klimt, Bauhaus, Memphis, the 12 Disney animation principles, Maeda's *Laws of Simplicity*, Tufte's data-ink, Susan Kare, Don Norman, Bret Victor).
+
+**Consumed by 6 design-side surfaces** (5 agents + 1 skill) — `visual-craft-lens`, `design-reviewer`, `frontend-developer`, `ios-ui-developer`, `design-lens` (UX-trimmed 3-principle variant), and the `frontend-design` SKILL (the other 5 receive the visual-craft 8-principle variant). Each agent inlines the load-bearing principles and references the canonical `~/.claude/quality-pack/design-craft/<file>.md` path so the deep doctrine is one tool-call away. **Intentionally NOT in the global `@`-include chain** — loading ~4000 words on every non-UI session is the wrong tax shape; on-demand grounding scoped to design agents is the right shape.
+
+**4-site coordination lockstep** (mirrors the memory-file lockstep): (1) the doctrine file itself, (2) `verify.sh` `required_paths`, (3) inline reference + Art-Taste Calibration section in each consuming agent, (4) `tests/test-art-taste-doctrine.sh` regression net. Adding/removing a design-craft reference requires updating all four; missing any one is a silent failure. Full lockstep is documented at the project root in `CLAUDE.md` Coordination Rules → "Adding or removing a design-craft reference."
 
 #### Bypass-surface taxonomy (v1.42.x-newer, lifted to `docs/bypass-taxonomy.md` in v1.43)
 

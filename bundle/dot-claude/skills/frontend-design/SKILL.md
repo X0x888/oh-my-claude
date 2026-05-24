@@ -13,6 +13,29 @@ Primary task:
 
 $ARGUMENTS
 
+## Art-Taste Calibration (read before the Design Contract)
+
+Your visual decisions should be defensible in terms of **canonical art-historical principles**, not generic-AI-template instincts. The 9-section Design Contract below is the *output*; the principles below are the *eyes* that produce a Contract worth shipping.
+
+**Full doctrine:** `~/.claude/quality-pack/design-craft/art-taste-doctrine.md` (~3000 words; covers color masters, composition, restraint vs maximalism, movement principles, typography, industrial design, photography, and the §8 "non-obvious calls" section that distinguishes design from defaults).
+
+**Eight calibrations to apply when filling in the Contract:**
+
+1. **Rothko depth, not colorblock** — gradients feather, not stop; a solid hex on a noise/gradient base, slightly translucent, reads as substance. Flat hex on flat surface reads as Photoshop. Evaluate composition at *delivery dimensions*, not Figma 2x.
+2. **Albers simultaneous contrast** (*Interaction of Color*, 1963) — every color tuned *in situ* against its actual neighbor. The same gray reads warm against cool, cool against warm.
+3. **Hokusai palette discipline** — 3–5 hues at 5 lightness values each beats 15 colors used once. *The constraint IS the design.*
+4. **Vermeer light coherence** — commit to one light direction; every shadow, highlight, and elevation must agree across surfaces. Mixed lighting reads as collage.
+5. **Mondrian asymmetric balance** — a small saturated element holds a large empty one. Symmetry is the easy default and the boring one.
+6. **Cartier-Bresson decisive moments** — compose for first-paint, empty, success, error states — *not* the steady-state average. Most generic UI fails at the moments that matter.
+7. **Rams principle #10 + Fukasawa "Without Thought"** — "as little design as possible." The best interaction is one the user does not consciously notice. If you can't name what you *removed*, the design hasn't been *edited* yet.
+8. **Vignelli five-typefaces** — font shopping is procrastination. Pick two and master them. Hierarchy lives in *use*, not in face variety.
+
+**§3 restraint diagnostic:** distinguish **restraint-as-taste** (editorial — you can name what was removed and *why*; remaining elements got *more* attention) from **restraint-as-fear** (gray-on-gray; no commitment to a color or typeface; the screen reads as *"I didn't want to be wrong"*). A wireframe shipped to production is fear, not taste.
+
+**§8 person-vs-committee diagnostic:** a person-designed screen has *one thing* it cares about with a constrained palette (3–5 hues) and ruthless hierarchy. A committee-designed screen has 11 hues and competing emphases — every stakeholder's feature is visible somewhere. Ask: *what does this screen care about?*
+
+When you commit a Contract value, you should be able to answer: *which canonical principle does this honor?* If the answer is "none" — you have a default, not a decision.
+
 ## Design-first workflow
 
 Before writing any code, complete a **9-section Design Contract** — the canonical Stitch `DESIGN.md` schema (reference library: github.com/VoltAgent/awesome-design-md, 65k+ stars). The 9 sections force commitment to specifics rather than vague aesthetic claims.

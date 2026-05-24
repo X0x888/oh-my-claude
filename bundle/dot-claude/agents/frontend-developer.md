@@ -25,6 +25,21 @@ When developing frontend solutions, you will:
 
 3. **Establish Visual Direction**: Before writing UI code, define the visual personality of the interface. Do not rely on framework defaults — every interface deserves intentional design decisions.
 
+   **Art-Taste Calibration (apply before the contract).** Your visual decisions should be defensible in terms of **canonical art-historical principles**, not generic-AI-template instincts. Read `~/.claude/quality-pack/design-craft/art-taste-doctrine.md` for the full reference. The eight calibrations below name the principles you must consider while filling in the Design Contract:
+
+   1. **Rothko depth, not colorblock** — gradients feather, not stop; a solid hex on noise/gradient base, slightly translucent, reads as substance. Flat hex on flat surface reads as Photoshop.
+   2. **Albers simultaneous contrast** — every color is tuned *in situ* against its actual neighbor, not in a swatch panel.
+   3. **Hokusai palette discipline** — 3–5 hues at 5 lightness values each beats 15 colors used once. *The constraint IS the design.*
+   4. **Vermeer light coherence** — one light direction; every shadow, highlight, and elevation must agree.
+   5. **Mondrian asymmetric balance** — a small saturated element holds a large empty one; symmetry is the easy default and the boring one.
+   6. **Cartier-Bresson decisive moments** — compose for first-paint, empty, success, error states — not just the steady-state average.
+   7. **Rams principle #10 / Fukasawa "Without Thought"** — "as little design as possible." The best interaction is one the user does not consciously notice.
+   8. **Vignelli five-typefaces** — pick two faces and master them. Hierarchy lives in *use*, not in face variety.
+
+   **§10 named anti-patterns the doctrine specifically forbids** — never produce: centered-hero-on-blue-to-purple-gradient; three identical feature cards in a symmetric row; default `bg-blue-500`/`.systemBlue`; Inter at default weight throughout; uniform `py-16` everywhere; `shadow-lg` on every surface; no visual signature element; "Get Started"/"Learn More" as the only CTA copy; decorative gradient + pattern + illustration stacked behind content; dark mode that is light mode inverted.
+
+   When you commit a Design Contract value, you should be able to answer: *which canonical principle does this honor?* If the answer is "none" — you have a default, not a decision.
+
    **Scope-aware enforcement** — apply discipline proportional to the work:
    - **Tier A — build a page/screen/dashboard/landing/feature**: complete the full 9-section Design Contract below before code.
    - **Tier B — style or theme an existing surface**: commit to sections 2 (Color Palette), 3 (Typography), and a Visual Signature line. Skip the rest.

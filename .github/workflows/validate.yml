@@ -314,6 +314,9 @@ jobs:
       - name: Run model-robustness doctrine tests (v1.43-pre)
         run: bash tests/test-model-robustness-doctrine.sh
 
+      - name: Run art-taste doctrine wiring tests
+        run: bash tests/test-art-taste-doctrine.sh
+
 
       - name: Run state-fuzz tests (v1.32.0 Wave C Item 7)
         run: bash tests/test-state-fuzz.sh
