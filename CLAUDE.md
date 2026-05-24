@@ -18,15 +18,15 @@ If a fact appears here AND in one of the above, that doc is authoritative — ke
 
 ## Key Directories
 
-- `bundle/dot-claude/agents/` — 34 specialist agent definitions with `disallowedTools` permission boundaries (v1.32.1 added `release-reviewer`)
-- `bundle/dot-claude/quality-pack/scripts/` — 13 lifecycle hooks (prompt routing, first-prompt session-init, compaction, session start incl. drift-check + whats-new + watchdog-health, StopFailure capture, resume hint, headless watchdog)
+- `bundle/dot-claude/agents/` — 34 specialist agent definitions with `disallowedTools` permission boundaries
+- `bundle/dot-claude/quality-pack/scripts/` — 13 lifecycle hooks. Per-hook detail in `docs/architecture.md`.
 - `bundle/dot-claude/skills/` — 27 skill definitions, each in `<name>/SKILL.md`
 - `bundle/dot-claude/skills/autowork/scripts/` — 35 autowork hooks + helpers; shared lib `common.sh`; lazy-loaded `lib/{state-io,classifier,verification,timing,canary}.sh`. Per-script detail in `docs/architecture.md`.
 - `bundle/dot-claude/output-styles/` — bundled output styles (`oh-my-claude.md` default, `executive-brief.md`); selected via `output_style=` in `oh-my-claude.conf`
-- `bundle/dot-claude/quality-pack/design-craft/` — art-taste reference doctrine (`art-taste-doctrine.md`); on-demand reference loaded by 6 design-side surfaces (5 agents + 1 skill) — 5 with the visual-craft 8-principle variant (`visual-craft-lens`, `design-reviewer`, `frontend-developer`, `ios-ui-developer`, plus the `frontend-design` SKILL) and 1 with the UX-trimmed 3-principle variant (`design-lens` — only Cartier-Bresson decisive-moments, Fukasawa "Without Thought", §8 person-vs-committee). NOT auto-included via the global @-include chain. Adding/removing the file requires updating: (1) the file itself, (2) `verify.sh` `required_paths`, (3) at least one inline reference + Art-Taste Calibration section in each consuming surface, (4) `tests/test-art-taste-doctrine.sh` regression net.
+- `bundle/dot-claude/quality-pack/design-craft/` — on-demand art-taste reference (`art-taste-doctrine.md`); loaded by 6 design-side surfaces (5 visual-craft 8-principle, 1 UX-trimmed 3-principle), NOT in the global @-include chain. Lockstep contract in Coordination Rules.
 - `config/settings.patch.json` — settings merged into user config on install
 - `evals/realwork/` — outcome-oriented ULW scenarios and scorer for minimal-prompt real-work shipping
-- `tests/` — bash + python test scripts. Authoritative counts: `find tests/ -maxdepth 1 -name 'test-*.sh' | wc -l` (bash) and `find tests/ -maxdepth 1 -name 'test_*.py' | wc -l` (python). All bash tests CI-pinned in `validate.yml`; pin discipline enforced by `tests/test-coordination-rules.sh`. (v1.36.0 #11: replaced the hardcoded "80 bash + 1 python" enumeration with the grep-from-source pattern used in CONTRIBUTING.md to eliminate the recurring drift surface.)
+- `tests/` — bash + python test scripts. Authoritative counts: `find tests/ -maxdepth 1 -name 'test-*.sh' | wc -l` (bash) and `find tests/ -maxdepth 1 -name 'test_*.py' | wc -l` (python). All bash tests CI-pinned in `validate.yml`; pin discipline enforced by `tests/test-coordination-rules.sh`.
 - `tools/` — developer-only tools (telemetry replay, classifier fixtures, defect-cluster review, consumer-contract lint); not installed
 - `docs/` — architecture, customization, FAQ, glossary, prompts, showcase
 

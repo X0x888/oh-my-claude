@@ -24,18 +24,16 @@ A reviewer who flags this file as "another habit list" or "redundant priming" wi
 
 ### Considered and declined (belt-level audit log)
 
-Two adjacent moves were considered for instrument slots during the doctrine's first authoring and declined with reasoning. The decline is recorded here so future sessions see what was weighed, not just what shipped:
+Two adjacent moves were considered for instrument slots and declined. Before re-proposing either, verify the underlying constraint still holds:
 
-- **Hamming's *taste of importance*** — *"What is the most important problem in your field, and why aren't you working on it?"* (You and Your Research, 1986). Declined because the move's natural granularity is *across sessions / across a research life*, not *within a single /ulw prompt*. Where the move IS within-prompt (which surface of the project deserves the deliberation, given a bare imperative) the harness already implements it as the v1.44 god-scope-scan router directive on bare-imperative prompts (see `core.md` "The v1.44 No-Out-of-Scope contract"). A future belt-revision could promote Hamming if the within-prompt application emerges as a recurring miss that the god-scope directive does not catch.
-- **Threading inline calibrations into the domain-executor agents** (`frontend-developer`, `backend-api-developer`, `ios-ui-developer`, etc.). Declined because the seven specialists threaded inline are *deliberative* — their work is to evaluate, plan, critique, or expand the option space, and the instruments are moves of *deliberation*. Domain executors do *execution downstream of deliberation* and inherit the doctrine through the main thread that dispatches them. The criterion for inline threading: the agent's deliverable IS a piece of reasoning (a plan, a critique, a verdict, a framing). Executor agents whose deliverable is code do not meet this bar. A future belt-revision could thread a narrower subset of instruments (#1 Feynman test on training-data API recall; #7 Wittgenstein discipline on certainty about library behavior) into the highest-volume executors if telemetry shows the moves are not being applied there.
-
-The "considered and declined" log is itself an instance of #7 Wittgenstein discipline (do not fake the precision of "I covered everything"; name what you did not cover). When you propose a new instrument or scope expansion, check this log first — the proposal may already have been costed.
+- **Hamming's *taste of importance*** — natural granularity is *across sessions*, not *within a /ulw prompt*. The within-prompt application is already covered by the v1.44 god-scope-scan router directive.
+- **Threading instruments into domain-executor agents** (`frontend-developer`, `backend-api-developer`, etc.) — the threaded specialists are *deliberative*; executors inherit doctrine through the dispatching main thread.
 
 ## The eight instruments
 
 ### 1. The Feynman test — *"You must not fool yourself, and you are the easiest person to fool."*
 
-Feynman's first principle of integrity (Caltech commencement, 1974) is the load-bearing one. A claim feels true because it is *familiar*; familiarity is not evidence. Before treating a claim as load-bearing — your own root-cause hypothesis, your own "this should work," your own pattern-match — name the conditions under which the claim would be **false**. If you cannot name those conditions, you have not understood the claim's content; you have only memorized its shape.
+Feynman's first principle of integrity is the load-bearing one. A claim feels true because it is *familiar*; familiarity is not evidence. Before treating a claim as load-bearing — your own root-cause hypothesis, your own "this should work," your own pattern-match — name the conditions under which the claim would be **false**. If you cannot name those conditions, you have not understood the claim's content; you have only memorized its shape.
 
 **The move:** Before asserting, write the negation. If the negation is unimaginable to you, the assertion is not knowledge — it is conviction borrowed from familiarity. Verify against source.
 
@@ -43,7 +41,7 @@ Feynman's first principle of integrity (Caltech commencement, 1974) is the load-
 
 ### 2. The Wheeler test — *every great problem you can state simply.*
 
-John Wheeler (the physicist who coined "black hole" and "wormhole") taught — as a dictum that recurs across his lecturing rather than as a single canonical line — that refined thinking begins with the sharpest possible statement of the problem. If you cannot say what the question is in a single sentence a competent undergraduate would understand, you do not yet understand the question. You have understood the user's **prompt**; the prompt and the question are not the same thing.
+Wheeler taught that refined thinking begins with the sharpest possible statement of the problem. If you cannot say what the question is in a single sentence a competent undergraduate would understand, you do not yet understand the question. You have understood the user's **prompt**; the prompt and the question are not the same thing.
 
 **The move:** Before answering, write the question — not the prompt, but the question the prompt is pointing at. Define every load-bearing term. Decompose every compound clause. If you cannot, sub-dispatch `prometheus` or pause for an operational clarification per the v1.40.0 contract.
 
@@ -123,17 +121,3 @@ The instruments compound. Wheeler's question (#2) is what Popper (#6) tests agai
 
 When in doubt about which instrument applies, read the table above. When the table runs out, reach for the structural mechanism in `model-robustness.md`. When *that* runs out, the gap is paradigm-shaped (the three Genuine Gaps named there) — and the right response is to sub-dispatch a fresh-context specialist (`Agent` tool, the canonical fresh-perspective compensation), not to invent a ninth instrument.
 
-## Primary sources
-
-- Richard Feynman — *Cargo Cult Science* (Caltech commencement, 1974); *Surely You're Joking, Mr. Feynman!* (1985)
-- John Archibald Wheeler — *Geons, Black Holes, and Quantum Foam: A Life in Physics* (1998); the dictum *"every great problem you can state simply"* recurs across his teaching rather than appearing as a single canonical line
-- Plato — the early Socratic dialogues (*Euthyphro*, *Meno*, *Apology*) for the *elenchus* of premise-examination
-- Enrico Fermi — order-of-magnitude estimation as pedagogy; the "Fermi problem" tradition (Chicago, 1940s)
-- Niels Bohr — the correspondence principle (1923); broader limiting-case discipline in *Atomic Physics and Human Knowledge* (1958)
-- Karl Popper — *The Logic of Scientific Discovery* (1934/1959); *Conjectures and Refutations* (1963)
-- Ludwig Wittgenstein — *Tractatus Logico-Philosophicus* (1921), §7; the brutalist epistemic-honesty rule
-- Imre Lakatos — *The Methodology of Scientific Research Programmes* (1978); the hard-core / protective-belt distinction
-
-### A note on the Cambridge tradition
-
-Two of the eight figures sit in Cambridge directly — Wittgenstein at Trinity, where Russell brought him in 1911 — and Popper sits in the broader Cambridge-LSE analytic tradition. Hardy (*A Mathematician's Apology*, 1940) on mathematical taste, F. P. Ramsey on what cannot be said, and Russell on clarity were considered as additional figures and excluded as belt-revisions of #7 Wittgenstein (the epistemic-honesty rule subsumes "what cannot be said") and #2 Wheeler (the question-sharpening discipline subsumes "clarity"). The lineage is named here because the canonical /ulw user articulated their Cambridge background explicitly (2026-05-24) and a Cambridge-trained reader will recognize the analytic-philosophy spine underneath the doctrine even where the named figure was selected from a different tradition.

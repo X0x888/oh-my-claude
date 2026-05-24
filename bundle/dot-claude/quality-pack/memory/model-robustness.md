@@ -1,12 +1,10 @@
 # Model-Robustness Methodology
 
-The user invokes `/ulw` to get the workflow's best work, not just the model's. The model has predictable failure modes — local optimization, premature convergence, verification theater, anchoring on the prompt's framing — that no amount of "try harder" will eliminate. The Thinking Quality rules in `core.md` ask the model to think harder when it can; this file is the **navigation map for the structural mechanisms** that buy quality **independent** of whether the model is thinking harder.
-
-This is not a new instruction layer. It does not add habits, gates, directives, or regex predicates. It names **existing harness surfaces**, what each catches, and when to escalate to them — so the model has a shared mental model of *which mechanism solves which failure* and doesn't try to substitute reasoning-shaped tokens for the mechanism that already exists.
+The Thinking Quality rules in `core.md` ask the model to think harder; this file is the **navigation map for the structural mechanisms** that buy quality **independent** of model effort. It names existing harness surfaces, what each catches, and when to escalate — so the model doesn't substitute reasoning-shaped tokens for the mechanism that already exists.
 
 ## The Premise
 
-Effort is not the bottleneck. The model can produce reasoning-shaped tokens without doing reasoning, verification-shaped tokens without verifying, alternative-shaped enumerations without considering alternatives. Asking the model to try harder produces more such tokens — not more reasoning. The harness has to be **structurally robust** to a model that is anchoring, drifting, or pattern-matching, because the model often cannot tell when that is what it is doing.
+Effort is not the bottleneck. The model can produce reasoning-shaped, verification-shaped, and alternative-shaped tokens without actually reasoning, verifying, or considering alternatives. The harness has to be **structurally robust** because the model often cannot tell when it is anchoring, drifting, or pattern-matching.
 
 Three principles follow:
 
@@ -114,13 +112,9 @@ In the interim, the closest existing compensation is **sub-dispatch with a fresh
 
 ## What This Doctrine Is NOT
 
-To prevent drift toward the paradigm concerns documented in `project_v1_43_audit_paradigm_concerns.md`:
-
-- **Not a new instruction layer.** This is a navigation map for *existing* mechanisms. Adding habits/rules/directives here would be the regress those paradigm concerns named.
-- **Not adversarial framing.** No "doubt the user" or "challenge the prompt" templates. The model's job is to *use the right mechanism*, not to perform suspicion of the user.
-- **Not a softening of the no-defer contract.** Both no-defer (closes stopping-short) and depth-on-every-prompt (closes shallow-thinking) remain load-bearing; this doctrine is the structural complement, not a softening.
-- **Not optional or consolidate-able.** Future sessions will be tempted to merge this with `core.md` or compress the dual-failure-mode framing. **Resist.** `core.md` "Anti-Patterns" names the consolidation pattern as a forbidden anti-pattern class. A reviewer who flags this file as "redundant priming" is exhibiting the very failure mode the duplication exists to prevent.
-- **Not a substitute for the paradigm-level work.** The three genuine gaps above need paradigm-level moves, not more rules. This doctrine names the gaps honestly and points at the deferred work; it does not pretend to close what only paradigm work can close.
+- **Not a new instruction layer, not adversarial framing, not a softening of the no-defer contract.** This is a navigation map for *existing* mechanisms; adding habits/rules/directives would be the regress `project_v1_43_audit_paradigm_concerns.md` named. The dual-failure-mode contract — no-defer (closes stopping-short) + depth-on-every-prompt (closes shallow-thinking) — remains load-bearing; this file is its structural complement.
+- **Not optional or consolidate-able.** Future sessions will be tempted to merge this with `core.md`. **Resist.** `core.md` "Anti-Patterns" names the consolidation pattern as forbidden. A reviewer who flags this file as "redundant priming" is exhibiting the failure mode the duplication exists to prevent.
+- **Not a substitute for paradigm-level work.** The three genuine gaps need paradigm moves, not more rules.
 
 ## Coupling to Other Doctrine
 
