@@ -1,0 +1,16 @@
+{
+  "id": "operations-plan",
+  "risk": "medium",
+  "fixture": "fixtures/ops-launch-brief",
+  "prompt": "/ulw turn this launch brief into an execution plan with owners, deadlines, and done-conditions",
+  "required_outcomes": [
+    "operations_deliverable_ready",
+    "doc_review_clean",
+    "final_closeout_audit_ready"
+  ],
+  "budgets": {
+    "max_tokens": 50000,
+    "max_tool_calls": 70,
+    "max_elapsed_seconds": 1200
+  }
+}

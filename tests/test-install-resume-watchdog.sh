@@ -118,7 +118,7 @@ case "\$1" in
 esac
 MOCK
 
-  # Mock claude — the binary the watchdog would invoke under --resume.
+# Mock claude — the binary the watchdog would invoke under --resume.
   cat > "${MOCK_BIN}/claude" <<MOCK
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "${MOCK_BIN}/claude.calls"
@@ -157,6 +157,17 @@ assert_eq() {
   fi
 }
 
+assert_contains() {
+  local label="$1" needle="$2" haystack="$3"
+  if [[ "${haystack}" == *"${needle}"* ]]; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: %s\n    expected to contain: %s\n    actual: %s\n' \
+      "${label}" "${needle}" "${haystack}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
 assert_true() {
   local label="$1" cond="$2"
   if eval "${cond}"; then
@@ -165,6 +176,31 @@ assert_true() {
     printf '  FAIL: %s — condition [%s] was false\n' "${label}" "${cond}" >&2
     fail=$((fail + 1))
   fi
+}
+
+install_mock_crontab() {
+  local store_path="${HOME}/mock.crontab"
+  cat > "${MOCK_BIN}/crontab" <<MOCK
+#!/usr/bin/env bash
+store_path="${store_path}"
+case "\${1:-}" in
+  -l|"")
+    if [[ -f "\${store_path}" ]]; then
+      cat "\${store_path}"
+      exit 0
+    fi
+    exit 1
+    ;;
+  -)
+    cat > "\${store_path}"
+    exit 0
+    ;;
+  *)
+    exit 64
+    ;;
+esac
+MOCK
+  chmod +x "${MOCK_BIN}/crontab"
 }
 
 make_artifact() {
@@ -220,25 +256,85 @@ assert_eq "T1: resumed_at_ts not stamped" "" "${resumed_at}"
 teardown_test
 
 # ---------------------------------------------------------------------------
-# T2: code-shape backstop — installer MUST set OMC_WATCHDOG_SELF_TEST=1
+# T2: Linux without systemctl falls back to a MANAGED cron install.
+# The entry should be written automatically, preserve unrelated crontab
+# lines, and remain idempotent across re-runs.
+# ---------------------------------------------------------------------------
+echo "=== T2: linux-without-systemctl installs managed cron entry ==="
+setup_test
+install_mock_crontab
+rm -f "${MOCK_BIN}/systemctl"
+rm -f "${MOCK_BIN}/uname"
+cat > "${MOCK_BIN}/uname" <<'MOCK'
+#!/usr/bin/env bash
+printf 'Linux\n'
+MOCK
+chmod +x "${MOCK_BIN}/uname"
+printf 'MAILTO=ops@example.test\n' > "${HOME}/mock.crontab"
+out="$(PATH="${MOCK_BIN}" bash "${INSTALLER}" 2>&1 || true)"
+out_repeat="$(PATH="${MOCK_BIN}" bash "${INSTALLER}" 2>&1 || true)"
+cron_contents="$(cat "${HOME}/mock.crontab" 2>/dev/null || true)"
+cron_count="$(printf '%s\n' "${cron_contents}" | grep -c 'resume-watchdog\.sh' || true)"
+marker_count="$(printf '%s\n' "${cron_contents}" | grep -c '^# oh-my-claude resume-watchdog$' || true)"
+
+assert_contains "T2: installer announces cron install" "Cron watchdog entry installed via crontab." "${out}"
+assert_contains "T2: repeat install still announces cron install" "Cron watchdog entry installed via crontab." "${out_repeat}"
+assert_contains "T2: unrelated crontab line preserved" "MAILTO=ops@example.test" "${cron_contents}"
+assert_eq "T2: exactly one managed cron command line" "1" "${cron_count}"
+assert_eq "T2: exactly one managed cron marker line" "1" "${marker_count}"
+teardown_test
+
+# ---------------------------------------------------------------------------
+# T3: cron uninstall removes only the managed watchdog block and honors
+# --reset-conf while preserving unrelated crontab lines.
+# ---------------------------------------------------------------------------
+echo "=== T3: cron uninstall removes managed block and resets conf ==="
+setup_test
+install_mock_crontab
+rm -f "${MOCK_BIN}/systemctl"
+rm -f "${MOCK_BIN}/uname"
+cat > "${MOCK_BIN}/uname" <<'MOCK'
+#!/usr/bin/env bash
+printf 'Linux\n'
+MOCK
+chmod +x "${MOCK_BIN}/uname"
+printf 'MAILTO=ops@example.test\n' > "${HOME}/mock.crontab"
+PATH="${MOCK_BIN}" bash "${INSTALLER}" >/dev/null 2>&1 || true
+out_uninstall="$(PATH="${MOCK_BIN}" bash "${INSTALLER}" --uninstall --reset-conf 2>&1 || true)"
+cron_after_uninstall="$(cat "${HOME}/mock.crontab" 2>/dev/null || true)"
+cron_residue="$(printf '%s\n' "${cron_after_uninstall}" | grep -c 'resume-watchdog\.sh' || true)"
+
+assert_contains "T3: uninstall announces cron removal" "Cron watchdog entry removed." "${out_uninstall}"
+assert_contains "T3: unrelated crontab line still present" "MAILTO=ops@example.test" "${cron_after_uninstall}"
+assert_eq "T3: no watchdog cron command line remains" "0" "${cron_residue}"
+if grep -q '^resume_watchdog=off' "${HOME}/.claude/oh-my-claude.conf"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T3: uninstall --reset-conf did not set resume_watchdog=off\n' >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# ---------------------------------------------------------------------------
+# T4: code-shape backstop — installer MUST set OMC_WATCHDOG_SELF_TEST=1
 # when invoking the watchdog. A future "clean up env-var prefix" PR that
 # strips this prefix would re-introduce the v1.41.x bug; this assertion
 # locks the surface even if T1's mock infrastructure ever drifts.
 # ---------------------------------------------------------------------------
-echo "=== T2: installer code shape sets OMC_WATCHDOG_SELF_TEST=1 ==="
+echo "=== T4: installer code shape sets OMC_WATCHDOG_SELF_TEST=1 ==="
 if grep -E 'OMC_WATCHDOG_SELF_TEST=1 bash "\$\{WATCHDOG_SCRIPT\}"' "${INSTALLER}" >/dev/null 2>&1; then
   pass=$((pass + 1))
 else
-  printf '  FAIL: T2: installer must invoke watchdog with OMC_WATCHDOG_SELF_TEST=1 prefix (regression of v1.41.x post-install audit)\n' >&2
+  printf '  FAIL: T4: installer must invoke watchdog with OMC_WATCHDOG_SELF_TEST=1 prefix (regression of v1.41.x post-install audit)\n' >&2
   fail=$((fail + 1))
 fi
 
 # ---------------------------------------------------------------------------
-# T3: install with NO claimable artifact still completes cleanly
+# T5: install with NO claimable artifact still completes cleanly
 # Sanity check that the self-test path doesn't introduce a false-negative
 # on the common case (no artifacts on disk = nothing to consume anyway).
 # ---------------------------------------------------------------------------
-echo "=== T3: install with no claimable artifact succeeds ==="
+echo "=== T5: install with no claimable artifact succeeds ==="
 setup_test
 out="$(bash "${INSTALLER}" 2>&1 || true)"
 # Use case statement instead of assert_true+eval — the installer output
@@ -246,13 +342,13 @@ out="$(bash "${INSTALLER}" 2>&1 || true)"
 if [[ "${out}" == *"self-test: OK"* ]]; then
   pass=$((pass + 1))
 else
-  printf '  FAIL: T3: install output missing "self-test: OK" marker\n' >&2
+  printf '  FAIL: T5: install output missing "self-test: OK" marker\n' >&2
   fail=$((fail + 1))
 fi
 if grep -q '^resume_watchdog=on' "${HOME}/.claude/oh-my-claude.conf"; then
   pass=$((pass + 1))
 else
-  printf '  FAIL: T3: install did not set resume_watchdog=on in conf\n' >&2
+  printf '  FAIL: T5: install did not set resume_watchdog=on in conf\n' >&2
   fail=$((fail + 1))
 fi
 teardown_test

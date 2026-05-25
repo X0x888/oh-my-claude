@@ -2,7 +2,9 @@
 
 This directory defines outcome-oriented evaluations for the question the
 unit tests cannot answer: given a minimal `/ulw` prompt, did Claude Code
-ship real work that is correct, reviewed, verified, and efficient?
+ship real work that is correct, reviewed, verified, and efficient across
+coding, design/UI, mixed code+non-code, writing, research, scholarly,
+operations, and advisory work?
 
 Each scenario in `scenarios/*.json` declares:
 

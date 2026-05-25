@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
-# Tests for the orphan-specialist routing nudges added to the
-# coding-domain hint in prompt-intent-router.sh.
+# Tests for the domain-routing specialist hints in
+# prompt-intent-router.sh.
 #
-# Before this change, the coding-domain hint named only the reasoning
-# specialists (prometheus, quality-planner, quality-researcher,
-# librarian, metis, oracle) and ended with a generic "domain-specific
-# execution → the closest specialist engineering agent" line. The
-# engineering specialists (backend-api-developer,
-# devops-infrastructure-engineer, test-automation-engineer,
-# fullstack-feature-builder, the four ios-* lanes, abstraction-critic)
-# were orphaned: discoverable only through manual slash commands. This test
-# locks in their presence in the routing table so a future router
-# refactor cannot silently drop them again.
+# The original regression net for this file was coding-only: it closed
+# the "orphan engineering specialists" gap where the coding-domain hint
+# named only reasoning helpers and left the implementers discoverable
+# only through manual slash commands. The product claims broader
+# professional coverage than coding, though, so this test now locks the
+# full cross-domain routing contract: coding specialists remain present,
+# and the writing / research / operations / mixed / general branches all
+# carry the load-bearing guidance the README promises to non-coding
+# professionals.
 #
 # Mirrors the sandbox setup of test-bias-defense-directives.sh.
 
@@ -124,14 +123,87 @@ out="$(_run_router "t3-${RANDOM}" "${_CODING_PROMPT}")"
 assert_not_contains "no generic catch-all" "the closest specialist engineering agent" "${out}"
 
 # ----------------------------------------------------------------------
-printf 'Test 4: writing-domain prompt does NOT inject engineering routing\n'
+printf 'Test 4: writing-domain prompt routes through the writing specialist chain\n'
 out="$(_run_router "t4-${RANDOM}" "ulw draft a quarterly business proposal")"
 
-# Writing-domain hint is independent of the coding routing. The new
+assert_contains "writing domain hint present" "Detected likely task domain: writing" "${out}"
+assert_contains "writing names writing-architect" "writing-architect" "${out}"
+assert_contains "writing names librarian factual support" "librarian for factual support" "${out}"
+assert_contains "writing names draft-writer" "draft-writer" "${out}"
+assert_contains "writing names editor-critic" "editor-critic" "${out}"
+assert_contains "writing names no-invent-facts rule" "Do not invent facts, citations, or quotations" "${out}"
+
+# Writing-domain hint is independent of the coding routing. Engineering
 # specialist nudges should not bleed into other domains.
 assert_not_contains "no backend leak in writing"  "backend-api-developer"          "${out}"
 assert_not_contains "no devops leak in writing"   "devops-infrastructure-engineer" "${out}"
 assert_not_contains "no test-auto leak in writing" "test-automation-engineer"      "${out}"
+
+# ----------------------------------------------------------------------
+printf 'Test 5: research-domain prompt routes through the research specialist chain\n'
+out="$(_run_router "t5-${RANDOM}" "ulw compare Redis vs Memcached and summarize tradeoffs")"
+
+assert_contains "research domain hint present" "Detected likely task domain: research or analysis" "${out}"
+assert_contains "research names librarian" "Use librarian for authoritative sources" "${out}"
+assert_contains "research names briefing-analyst" "briefing-analyst to synthesize findings" "${out}"
+assert_contains "research names metis" "metis to challenge weak conclusions" "${out}"
+assert_contains "research names editor-critic" "editor-critic for prose-heavy deliverables" "${out}"
+assert_contains "research names source-quality rule" "primary sources and official documentation rank highest" "${out}"
+
+# ----------------------------------------------------------------------
+printf 'Test 6: operations-domain prompt routes through the operations specialist chain\n'
+out="$(_run_router "t6-${RANDOM}" "ulw create a project plan for the Q3 launch")"
+
+assert_contains "operations domain hint present" "Detected likely task domain: operations or professional-assistant work" "${out}"
+assert_contains "operations names chief-of-staff" "Use chief-of-staff to structure the deliverable" "${out}"
+assert_contains "operations names checklist/plan structuring" "Detect deliverable type: if the task implies a checklist, plan, schedule, decision matrix, or action-item tracker" "${out}"
+assert_contains "operations names owner deadline done-condition" "Every action item should have an owner" "${out}"
+assert_contains "operations names draft-writer pairing" "pair that with draft-writer and editor-critic" "${out}"
+
+# ----------------------------------------------------------------------
+printf 'Test 7: mixed-domain prompt names both coding and non-coding coordination\n'
+out="$(_run_router "t7-${RANDOM}" "ulw implement the login endpoint, research the accessibility tradeoffs, and write the rollout memo")"
+
+assert_contains "mixed domain hint present" "Detected likely task domain: mixed" "${out}"
+assert_contains "mixed names domain-identification rule" "First identify WHICH domains are actually in play" "${out}"
+assert_contains "mixed names code/non-code split rule" "Split the work into coding and non-coding streams" "${out}"
+assert_contains "mixed names engineering specialists" "use the engineering specialists for code work" "${out}"
+assert_contains "mixed names non-coding specialists" "writing, research, or operations specialists" "${out}"
+assert_contains "mixed names coordination rule" "Keep them coordinated" "${out}"
+
+# ----------------------------------------------------------------------
+printf 'Test 8: mixed code-plus-operations prompt preserves chief-of-staff discipline\n'
+out="$(_run_router "t8-${RANDOM}" "ulw fix the deploy-health endpoint, add regression tests, and create a release plan plus cutover checklist with owners, deadlines, and rollback steps")"
+
+assert_contains "mixed ops domain hint present" "Detected likely task domain: mixed" "${out}"
+assert_contains "mixed ops names code/non-code split rule" "Split the work into coding and non-coding streams" "${out}"
+assert_contains "mixed ops names chief-of-staff rule" "use chief-of-staff rather than leaving it as generic prose" "${out}"
+assert_contains "mixed ops names checklist/runbook structuring" "if the output is a checklist, cutover plan, rollout schedule, action tracker, or runbook" "${out}"
+assert_contains "mixed ops names owner/deadline/done-condition rule" "every action item should have an owner, a deadline, and a clear done-condition" "${out}"
+assert_contains "mixed ops names synchronization rule" "Keep the operational artifact synchronized with the implementation and verification state" "${out}"
+
+# ----------------------------------------------------------------------
+printf 'Test 9: scholar-style mixed prompt names evidence-first then drafting chain\n'
+out="$(_run_router "t9-${RANDOM}" "ulw research the literature on spaced repetition in graduate study and draft a short literature review with citations")"
+
+assert_contains "scholar mixed domain hint present" "Detected likely task domain: mixed" "${out}"
+assert_contains "scholar mixed names non-code-only rule" "If the mix is non-code only" "${out}"
+assert_contains "scholar mixed names librarian" "gather evidence first with librarian" "${out}"
+assert_contains "scholar mixed names briefing-analyst" "briefing-analyst as needed" "${out}"
+assert_contains "scholar mixed names drafting chain" "writing-architect / draft-writer" "${out}"
+assert_contains "scholar mixed names editor-critic" "finish with editor-critic" "${out}"
+assert_contains "scholar mixed names evidence-first rule" "Evidence before synthesis, synthesis before polish" "${out}"
+assert_not_contains "scholar mixed no engineering leak" "engineering specialists for code work" "${out}"
+
+# ----------------------------------------------------------------------
+printf 'Test 10: general-domain prompt names the classify-before-proceed contract\n'
+out="$(_run_router "t10-${RANDOM}" "ulw help me with this")"
+
+assert_contains "general domain hint present" "Detected likely task domain: general" "${out}"
+assert_contains "general names classify-it-yourself rule" "classify it yourself before proceeding" "${out}"
+assert_contains "general names deliverable question" "Ask: what is the deliverable?" "${out}"
+assert_contains "general names coding fallback only when repo involved" "If the task involves a repository, treat it as coding" "${out}"
+assert_contains "general names no-code-default rule" "Do not default to code-oriented repo exploration unless the task truly requires it" "${out}"
 
 # ----------------------------------------------------------------------
 printf '\n'

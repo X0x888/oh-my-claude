@@ -1,0 +1,15 @@
+{
+  "id": "advisory-code-guidance",
+  "risk": "medium",
+  "fixture": "fixtures/auth-flow-service",
+  "prompt": "/ulw what do you think about the current auth flow in this codebase and anything else to clean up?",
+  "required_outcomes": [
+    "direct_advisory_answer",
+    "advisory_code_grounded"
+  ],
+  "budgets": {
+    "max_tokens": 35000,
+    "max_tool_calls": 50,
+    "max_elapsed_seconds": 1200
+  }
+}

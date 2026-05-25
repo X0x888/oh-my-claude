@@ -1357,7 +1357,20 @@ Discipline: Make changes incrementally and test after edits for routine additive
         add_directive "domain_routing" "Detected likely task domain: operations or professional-assistant work. Use chief-of-staff to structure the deliverable, surface missing constraints, and turn the request into a clean plan, message, checklist, or action-oriented output. Detect deliverable type: if the task implies a checklist, plan, schedule, decision matrix, or action-item tracker, structure the output accordingly. Every action item should have an owner (even if 'user'), a deadline (even if 'as soon as possible'), and a clear done-condition. If substantial writing is required, pair that with draft-writer and editor-critic."
         ;;
       mixed)
-        add_directive "domain_routing" "Detected likely task domain: mixed. Split the work into coding and non-coding streams. Use the engineering specialists for code work and the writing, research, or operations specialists for the non-code deliverables. Keep the branches coordinated but do not collapse everything into one generic workflow."
+        # `mixed` now has two real sub-shapes:
+        #   1. code + non-code (historical shape)
+        #   2. non-code multi-domain (research+writing, operations+writing)
+        # The project-profile tiebreaker can legitimately promote
+        # scholar-style prompts into mixed, so the user-facing guidance
+        # must not always assume an engineering branch exists.
+        if prompt_has_coding_signal "${PROMPT_TEXT}"; then
+          add_directive "domain_routing" "Detected likely task domain: mixed. First identify WHICH domains are actually in play, then keep them coordinated without collapsing everything into one generic workflow. Split the work into coding and non-coding streams: use the engineering specialists for code work and the writing, research, or operations specialists for the non-code deliverables. Keep them coordinated so research, writing, or operations outputs actually inform the implementation path."
+          if prompt_has_operations_signal "${PROMPT_TEXT}"; then
+            add_directive "domain_routing_mixed_operations" "Mixed code + operations detected. For the operational deliverable, use chief-of-staff rather than leaving it as generic prose. Preserve the operations contract inside the mixed workflow: if the output is a checklist, cutover plan, rollout schedule, action tracker, or runbook, every action item should have an owner, a deadline, and a clear done-condition. Keep the operational artifact synchronized with the implementation and verification state so rollback steps, blockers, and cutover sequencing stay real."
+          fi
+        else
+          add_directive "domain_routing" "Detected likely task domain: mixed. First identify WHICH domains are actually in play, then keep them coordinated without collapsing everything into one generic workflow. If the mix is non-code only (for example research + writing, or operations + writing), stage the work by dependency instead: gather evidence first with librarian and briefing-analyst as needed, then hand off to writing-architect / draft-writer or chief-of-staff for the formal deliverable, and finish with editor-critic. Evidence before synthesis, synthesis before polish."
+        fi
         ;;
       *)
         add_directive "domain_routing" "Detected likely task domain: general. The task did not match coding, writing, research, or operations keywords — classify it yourself before proceeding. Ask: what is the deliverable? Is it code, prose, a decision, a plan, or something else? Then choose the specialist path that fits. If the task involves a repository, treat it as coding. If it involves producing a document, treat it as writing. If it involves gathering information, treat it as research. Do not default to code-oriented repo exploration unless the task truly requires it."

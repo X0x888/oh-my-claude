@@ -194,7 +194,101 @@ result_e2="$(run_producer "sess-E2" "broad-project-eval")"
 assert_eq "E5 deferred without reason → findings_resolved false" "false" "$(jq -r '.outcomes.findings_resolved_or_deferred_with_why' <<<"${result_e2}")"
 
 # ---------------------------------------------------------------
-# Part F: end-to-end pipe into the scorer
+# Part F: non-coding outcome detectors
+# ---------------------------------------------------------------
+sdir_f="$(new_session "sess-F" '{
+  "session_start_ts": "100",
+  "last_doc_edit_ts": "320",
+  "last_doc_review_ts": "340",
+  "last_review_ts": "340",
+  "review_had_findings": "false",
+  "last_assistant_message": "**Changed.** Drafted the memo. **Verification.** editor-critic clean. **Risks.** none. **Next.** Done."
+}')"
+cat >"${sdir_f}/subagent_summaries.jsonl" <<'JSONL'
+{"ts":300,"agent_type":"draft-writer","message":"Memo drafted.\nVERDICT: DELIVERED"}
+{"ts":340,"agent_type":"editor-critic","message":"Looks good.\nVERDICT: CLEAN"}
+JSONL
+result_f="$(run_producer "sess-F" "writing-proposal")"
+assert_eq "F1 writer_deliverable_ready true" "true" "$(jq -r '.outcomes.writer_deliverable_ready' <<<"${result_f}")"
+assert_eq "F2 doc_review_clean true" "true" "$(jq -r '.outcomes.doc_review_clean' <<<"${result_f}")"
+
+sdir_g="$(new_session "sess-G" '{
+  "session_start_ts": "100",
+  "last_doc_edit_ts": "420",
+  "last_doc_review_ts": "450",
+  "last_review_ts": "450",
+  "review_had_findings": "false",
+  "last_assistant_message": "**Changed.** Produced the brief. **Verification.** research and critique complete. **Risks.** none. **Next.** Done."
+}')"
+cat >"${sdir_g}/subagent_summaries.jsonl" <<'JSONL'
+{"ts":310,"agent_type":"librarian","message":"Primary sources grounded.\nVERDICT: REPORT_READY"}
+{"ts":360,"agent_type":"briefing-analyst","message":"Traceability is tight.\nVERDICT: CLEAN"}
+{"ts":410,"agent_type":"metis","message":"Stress-tested and no gaps remain.\nVERDICT: CLEAN"}
+JSONL
+result_g="$(run_producer "sess-G" "research-brief")"
+assert_eq "F3 research_report_ready true" "true" "$(jq -r '.outcomes.research_report_ready' <<<"${result_g}")"
+assert_eq "F4 analysis_specialist_coverage true" "true" "$(jq -r '.outcomes.analysis_specialist_coverage' <<<"${result_g}")"
+assert_eq "F5 research doc_review_clean true" "true" "$(jq -r '.outcomes.doc_review_clean' <<<"${result_g}")"
+
+sdir_h="$(new_session "sess-H" '{
+  "session_start_ts": "100",
+  "last_doc_edit_ts": "260",
+  "last_doc_review_ts": "290",
+  "last_review_ts": "290",
+  "review_had_findings": "false",
+  "last_assistant_message": "**Changed.** Structured the action plan. **Verification.** editor-critic clean. **Risks.** none. **Next.** Done."
+}')"
+cat >"${sdir_h}/subagent_summaries.jsonl" <<'JSONL'
+{"ts":250,"agent_type":"chief-of-staff","message":"Execution plan ready.\nVERDICT: DELIVERED"}
+JSONL
+result_h="$(run_producer "sess-H" "operations-plan")"
+assert_eq "F6 operations_deliverable_ready true" "true" "$(jq -r '.outcomes.operations_deliverable_ready' <<<"${result_h}")"
+assert_eq "F7 operations doc_review_clean true" "true" "$(jq -r '.outcomes.doc_review_clean' <<<"${result_h}")"
+
+# Negative: stale doc review and non-delivered verdicts do not count.
+sdir_h2="$(new_session "sess-H2" '{
+  "session_start_ts": "100",
+  "last_doc_edit_ts": "300",
+  "last_doc_review_ts": "250",
+  "last_review_ts": "250",
+  "review_had_findings": "false"
+}')"
+cat >"${sdir_h2}/subagent_summaries.jsonl" <<'JSONL'
+{"ts":200,"agent_type":"draft-writer","message":"Need facts first.\nVERDICT: NEEDS_RESEARCH"}
+{"ts":210,"agent_type":"librarian","message":"Still unclear.\nVERDICT: INSUFFICIENT_SOURCES"}
+{"ts":220,"agent_type":"chief-of-staff","message":"Need a user call.\nVERDICT: NEEDS_INPUT"}
+JSONL
+result_h2="$(run_producer "sess-H2" "writing-proposal")"
+assert_eq "F8 writer_deliverable_ready false on NEEDS_RESEARCH" "false" "$(jq -r '.outcomes.writer_deliverable_ready' <<<"${result_h2}")"
+assert_eq "F9 research_report_ready false on insufficient sources" "false" "$(jq -r '.outcomes.research_report_ready' <<<"${result_h2}")"
+assert_eq "F10 operations_deliverable_ready false on NEEDS_INPUT" "false" "$(jq -r '.outcomes.operations_deliverable_ready' <<<"${result_h2}")"
+assert_eq "F11 doc_review_clean false when stale" "false" "$(jq -r '.outcomes.doc_review_clean' <<<"${result_h2}")"
+
+# ---------------------------------------------------------------
+# Part G: scholar-grade mixed workflow detector shape
+# ---------------------------------------------------------------
+sdir_i="$(new_session "sess-I" '{
+  "session_start_ts": "100",
+  "last_doc_edit_ts": "520",
+  "last_doc_review_ts": "560",
+  "last_review_ts": "560",
+  "review_had_findings": "false",
+  "last_assistant_message": "**Changed.** Drafted the literature review. **Verification.** sources checked and prose reviewed. **Risks.** none. **Next.** Done."
+}')"
+cat >"${sdir_i}/subagent_summaries.jsonl" <<'JSONL'
+{"ts":300,"agent_type":"librarian","message":"Primary literature gathered.\nVERDICT: REPORT_READY"}
+{"ts":360,"agent_type":"briefing-analyst","message":"Synthesis is decision-ready.\nVERDICT: CLEAN"}
+{"ts":430,"agent_type":"draft-writer","message":"Literature review drafted.\nVERDICT: DELIVERED"}
+{"ts":560,"agent_type":"editor-critic","message":"Citation placeholders are explicit and prose is clean.\nVERDICT: CLEAN"}
+JSONL
+result_i="$(run_producer "sess-I" "scholarly-review")"
+assert_eq "G1 scholarly research_report_ready true" "true" "$(jq -r '.outcomes.research_report_ready' <<<"${result_i}")"
+assert_eq "G2 scholarly analysis_specialist_coverage true" "true" "$(jq -r '.outcomes.analysis_specialist_coverage' <<<"${result_i}")"
+assert_eq "G3 scholarly writer_deliverable_ready true" "true" "$(jq -r '.outcomes.writer_deliverable_ready' <<<"${result_i}")"
+assert_eq "G4 scholarly doc_review_clean true" "true" "$(jq -r '.outcomes.doc_review_clean' <<<"${result_i}")"
+
+# ---------------------------------------------------------------
+# Part H: end-to-end pipe into the scorer
 # ---------------------------------------------------------------
 # Take the perfect targeted-bugfix result from sess-B and score it.
 result_b_full="$(run_producer "sess-B" "targeted-bugfix")"
@@ -207,33 +301,183 @@ pass_value="$(jq -r '.pass' <<<"${score_output}")"
 # review_clean, regression_test_added, final_closeout_audit_ready — all
 # true in sess-B. Budgets: tokens=150 (under 45000), tool_calls=0 (under 55),
 # elapsed=200 (under 900). Score should be 100, pass true.
-assert_eq "F1 perfect session scores 100" "100" "${score_value}"
-assert_eq "F2 perfect session passes" "true" "${pass_value}"
+assert_eq "G1 perfect session scores 100" "100" "${score_value}"
+assert_eq "G2 perfect session passes" "true" "${pass_value}"
+
+# Also prove one non-coding scenario scores cleanly with the producer output.
+tmp_writing_result="${TEST_HOME}/result_f.json"
+printf '%s' "${result_f}" >"${tmp_writing_result}"
+writing_score_output="$(bash "${SCORER}" score "${tmp_writing_result}" 2>&1)"
+assert_eq "G3 writing scenario scores 100" "100" "$(jq -r '.score' <<<"${writing_score_output}")"
+assert_eq "G4 writing scenario passes" "true" "$(jq -r '.pass' <<<"${writing_score_output}")"
+
+tmp_scholarly_result="${TEST_HOME}/result_i.json"
+printf '%s' "${result_i}" >"${tmp_scholarly_result}"
+scholarly_score_output="$(bash "${SCORER}" score "${tmp_scholarly_result}" 2>&1)"
+assert_eq "G5 scholarly scenario scores 100" "100" "$(jq -r '.score' <<<"${scholarly_score_output}")"
+assert_eq "G6 scholarly scenario passes" "true" "$(jq -r '.pass' <<<"${scholarly_score_output}")"
 
 # ---------------------------------------------------------------
-# Part G: CLI contract
+# Part I: mixed code-plus-non-code detector shape
 # ---------------------------------------------------------------
-# G1: missing --scenario errors
+sdir_j="$(new_session "sess-J" '{
+  "session_start_ts": "100",
+  "last_edit_ts": "620",
+  "last_doc_edit_ts": "650",
+  "last_doc_review_ts": "690",
+  "last_review_ts": "690",
+  "last_verify_ts": "680",
+  "last_verify_outcome": "passed",
+  "last_verify_scope": "targeted",
+  "last_verify_method": "test_command",
+  "review_had_findings": "false",
+  "last_assistant_message": "**Changed.** Updated the payment module and drafted the rollout memo. **Verification.** targeted tests passed and sources were checked. **Risks.** none. **Next.** Done."
+}')"
+printf '%s\n' "src/payment/module.ts" "tests/payment/module.test.ts" "docs/rollout-memo.md" >"${sdir_j}/edited_files.log"
+cat >"${sdir_j}/subagent_summaries.jsonl" <<'JSONL'
+{"ts":300,"agent_type":"librarian","message":"Stripe API changes verified.\nVERDICT: REPORT_READY"}
+{"ts":360,"agent_type":"briefing-analyst","message":"Migration tradeoffs synthesized.\nVERDICT: CLEAN"}
+{"ts":520,"agent_type":"draft-writer","message":"Rollout memo drafted.\nVERDICT: DELIVERED"}
+{"ts":690,"agent_type":"editor-critic","message":"Memo is clean and explicit.\nVERDICT: CLEAN"}
+JSONL
+result_j="$(run_producer "sess-J" "mixed-rollout-migration")"
+assert_eq "I1 mixed tests_passed true" "true" "$(jq -r '.outcomes.tests_passed' <<<"${result_j}")"
+assert_eq "I2 mixed targeted_verification true" "true" "$(jq -r '.outcomes.targeted_verification' <<<"${result_j}")"
+assert_eq "I3 mixed regression_test_added true" "true" "$(jq -r '.outcomes.regression_test_added' <<<"${result_j}")"
+assert_eq "I4 mixed review_clean true" "true" "$(jq -r '.outcomes.review_clean' <<<"${result_j}")"
+assert_eq "I5 mixed research_report_ready true" "true" "$(jq -r '.outcomes.research_report_ready' <<<"${result_j}")"
+assert_eq "I6 mixed analysis_specialist_coverage true" "true" "$(jq -r '.outcomes.analysis_specialist_coverage' <<<"${result_j}")"
+assert_eq "I7 mixed writer_deliverable_ready true" "true" "$(jq -r '.outcomes.writer_deliverable_ready' <<<"${result_j}")"
+assert_eq "I8 mixed doc_review_clean true" "true" "$(jq -r '.outcomes.doc_review_clean' <<<"${result_j}")"
+
+tmp_mixed_result="${TEST_HOME}/result_j.json"
+printf '%s' "${result_j}" >"${tmp_mixed_result}"
+mixed_score_output="$(bash "${SCORER}" score "${tmp_mixed_result}" 2>&1)"
+assert_eq "I9 mixed scenario scores 100" "100" "$(jq -r '.score' <<<"${mixed_score_output}")"
+assert_eq "I10 mixed scenario passes" "true" "$(jq -r '.pass' <<<"${mixed_score_output}")"
+
+# ---------------------------------------------------------------
+# Part J: mixed code-plus-operations detector shape
+# ---------------------------------------------------------------
+sdir_o="$(new_session "sess-O" '{
+  "session_start_ts": "100",
+  "last_edit_ts": "540",
+  "last_doc_edit_ts": "590",
+  "last_doc_review_ts": "640",
+  "last_review_ts": "640",
+  "last_verify_ts": "610",
+  "last_verify_outcome": "passed",
+  "last_verify_scope": "targeted",
+  "last_verify_method": "test_command",
+  "review_had_findings": "false",
+  "last_assistant_message": "**Changed.** Patched the deploy-health check and produced the cutover checklist. **Verification.** targeted tests passed and the release checklist was reviewed. **Risks.** none. **Next.** Done."
+}')"
+printf '%s\n' "src/deploy/health-check.ts" "tests/deploy/health-check.test.ts" "docs/cutover-checklist.md" >"${sdir_o}/edited_files.log"
+cat >"${sdir_o}/subagent_summaries.jsonl" <<'JSONL'
+{"ts":420,"agent_type":"chief-of-staff","message":"Cutover checklist delivered with owners, deadlines, and rollback steps.\nVERDICT: DELIVERED"}
+{"ts":640,"agent_type":"editor-critic","message":"Checklist is explicit and clean.\nVERDICT: CLEAN"}
+JSONL
+result_o="$(run_producer "sess-O" "mixed-cutover-checklist")"
+assert_eq "J1 mixed ops tests_passed true" "true" "$(jq -r '.outcomes.tests_passed' <<<"${result_o}")"
+assert_eq "J2 mixed ops targeted_verification true" "true" "$(jq -r '.outcomes.targeted_verification' <<<"${result_o}")"
+assert_eq "J3 mixed ops regression_test_added true" "true" "$(jq -r '.outcomes.regression_test_added' <<<"${result_o}")"
+assert_eq "J4 mixed ops review_clean true" "true" "$(jq -r '.outcomes.review_clean' <<<"${result_o}")"
+assert_eq "J5 mixed ops operations_deliverable_ready true" "true" "$(jq -r '.outcomes.operations_deliverable_ready' <<<"${result_o}")"
+assert_eq "J6 mixed ops doc_review_clean true" "true" "$(jq -r '.outcomes.doc_review_clean' <<<"${result_o}")"
+
+tmp_mixed_ops_result="${TEST_HOME}/result_o.json"
+printf '%s' "${result_o}" >"${tmp_mixed_ops_result}"
+mixed_ops_score_output="$(bash "${SCORER}" score "${tmp_mixed_ops_result}" 2>&1)"
+assert_eq "J7 mixed ops scenario scores 100" "100" "$(jq -r '.score' <<<"${mixed_ops_score_output}")"
+assert_eq "J8 mixed ops scenario passes" "true" "$(jq -r '.pass' <<<"${mixed_ops_score_output}")"
+
+# ---------------------------------------------------------------
+# Part K: advisory outcome detectors
+# ---------------------------------------------------------------
+sdir_k="$(new_session "sess-K" '{
+  "session_start_ts": "100",
+  "last_user_prompt_ts": "150",
+  "task_intent": "advisory",
+  "task_domain": "coding",
+  "task_risk_tier": "medium",
+  "session_outcome": "released",
+  "last_advisory_verify_ts": "220",
+  "advisory_evidence_count": "1"
+}')"
+result_k="$(run_producer "sess-K" "advisory-code-guidance")"
+assert_eq "K1 direct_advisory_answer true" "true" "$(jq -r '.outcomes.direct_advisory_answer' <<<"${result_k}")"
+assert_eq "K2 advisory_code_grounded true with advisory evidence" "true" "$(jq -r '.outcomes.advisory_code_grounded' <<<"${result_k}")"
+
+sdir_l="$(new_session "sess-L" '{
+  "session_start_ts": "100",
+  "last_user_prompt_ts": "150",
+  "last_edit_ts": "180",
+  "task_intent": "advisory",
+  "task_domain": "coding",
+  "task_risk_tier": "high",
+  "session_outcome": "released",
+  "last_advisory_verify_ts": "220",
+  "advisory_evidence_count": "1"
+}')"
+result_l="$(run_producer "sess-L" "advisory-code-guidance")"
+assert_eq "K3 direct_advisory_answer false when edits happened after prompt" "false" "$(jq -r '.outcomes.direct_advisory_answer' <<<"${result_l}")"
+assert_eq "K4 advisory_code_grounded false when not direct advisory" "false" "$(jq -r '.outcomes.advisory_code_grounded' <<<"${result_l}")"
+
+sdir_m="$(new_session "sess-M" '{
+  "session_start_ts": "100",
+  "last_user_prompt_ts": "150",
+  "task_intent": "advisory",
+  "task_domain": "writing",
+  "session_outcome": "released"
+}')"
+cat >"${sdir_m}/subagent_summaries.jsonl" <<'JSONL'
+{"ts":210,"agent_type":"writing-architect","message":"Recommended structure outlined.\nVERDICT: NEEDS_INPUT"}
+{"ts":240,"agent_type":"chief-of-staff","message":"Checklist shape recommended.\nVERDICT: NEEDS_INPUT"}
+JSONL
+result_m="$(run_producer "sess-M" "advisory-writing-guidance")"
+assert_eq "K5 writing_specialist_coverage true on writing-architect participation" "true" "$(jq -r '.outcomes.writing_specialist_coverage' <<<"${result_m}")"
+assert_eq "K6 operations_specialist_coverage true on chief-of-staff participation" "true" "$(jq -r '.outcomes.operations_specialist_coverage' <<<"${result_m}")"
+
+sdir_n="$(new_session "sess-N" '{
+  "session_start_ts": "100",
+  "last_user_prompt_ts": "150",
+  "task_intent": "advisory",
+  "task_domain": "research",
+  "session_outcome": "released"
+}')"
+cat >"${sdir_n}/subagent_summaries.jsonl" <<'JSONL'
+{"ts":210,"agent_type":"librarian","message":"Evidence gathered.\nVERDICT: REPORT_READY"}
+{"ts":230,"agent_type":"briefing-analyst","message":"Tradeoffs synthesized.\nVERDICT: CLEAN"}
+JSONL
+result_n="$(run_producer "sess-N" "advisory-research-guidance")"
+assert_eq "K7 advisory research direct answer true" "true" "$(jq -r '.outcomes.direct_advisory_answer' <<<"${result_n}")"
+assert_eq "K8 advisory research report ready true" "true" "$(jq -r '.outcomes.research_report_ready' <<<"${result_n}")"
+assert_eq "K9 advisory research specialist coverage true" "true" "$(jq -r '.outcomes.analysis_specialist_coverage' <<<"${result_n}")"
+
+# ---------------------------------------------------------------
+# Part L: CLI contract
+# ---------------------------------------------------------------
+# L1: missing --scenario errors
 if bash "${PRODUCER}" --session "sess-B" --state-root "${TEST_STATE_ROOT}" >/dev/null 2>&1; then
-  printf '  FAIL: G1 expected non-zero exit when --scenario omitted\n' >&2
+  printf '  FAIL: L1 expected non-zero exit when --scenario omitted\n' >&2
   fail=$((fail + 1))
 else
   pass=$((pass + 1))
 fi
 
-# G2: nonexistent session errors
+# L2: nonexistent session errors
 if bash "${PRODUCER}" --scenario "x" --session "nope" --state-root "${TEST_STATE_ROOT}" >/dev/null 2>&1; then
-  printf '  FAIL: G2 expected non-zero exit on missing session\n' >&2
+  printf '  FAIL: L2 expected non-zero exit on missing session\n' >&2
   fail=$((fail + 1))
 else
   pass=$((pass + 1))
 fi
 
-# G3: --help is exit 0
+# L3: --help is exit 0
 if bash "${PRODUCER}" --help >/dev/null 2>&1; then
   pass=$((pass + 1))
 else
-  printf '  FAIL: G3 --help should exit 0\n' >&2
+  printf '  FAIL: L3 --help should exit 0\n' >&2
   fail=$((fail + 1))
 fi
 

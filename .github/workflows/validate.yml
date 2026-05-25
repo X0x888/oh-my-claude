@@ -218,6 +218,12 @@ jobs:
       - name: Run real-work eval suite tests
         run: bash tests/test-realwork-eval-suite.sh
 
+      - name: Run professional-readiness tests
+        run: bash tests/test-professional-readiness.sh
+
+      - name: Run project-readiness tests
+        run: bash tests/test-project-readiness.sh
+
       - name: Run mark-deferred tests (v1.32.0 R1 pin)
         run: bash tests/test-mark-deferred.sh
 
@@ -283,6 +289,15 @@ jobs:
 
       - name: Run install-remote tests (v1.32.0 R1 pin)
         run: bash tests/test-install-remote.sh
+
+      - name: Run install-handoff tests (v1.44.x distribution handoff pin)
+        run: bash tests/test-install-handoff.sh
+
+      - name: Run install-recovery tests (v1.44.x recovery-path pin)
+        run: bash tests/test-install-recovery.sh
+
+      - name: Run install-readiness tests
+        run: bash tests/test-install-readiness.sh
 
       - name: Run verify-foreign-hooks tests (v1.32.16 4-attacker review pin)
         run: bash tests/test-verify-foreign-hooks.sh

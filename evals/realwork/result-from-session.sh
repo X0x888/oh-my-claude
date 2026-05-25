@@ -23,9 +23,9 @@
 #     "outcomes": { <key>: <bool>, ... }
 #   }
 #
-# Outcome keys covered (matched against the three shipped scenarios
-# targeted-bugfix / ui-shipping / broad-project-eval, and a small set
-# of generic signals likely to recur):
+# Outcome keys covered (matched against the shipped coding + design/UI +
+# mixed + writing + research + scholarly + operations + advisory
+# scenarios, plus a small set of generic signals likely to recur):
 #   tests_passed                       targeted_verification
 #   full_verification                  review_clean
 #   regression_test_added              final_closeout_audit_ready
@@ -33,7 +33,11 @@
 #   browser_or_visual_verification     design_review_clean
 #   no_layout_overlap                  council_or_lens_coverage
 #   wave_plan_recorded                 findings_resolved_or_deferred_with_why
-#   token_budget_respected
+#   token_budget_respected             doc_review_clean
+#   writer_deliverable_ready           research_report_ready
+#   analysis_specialist_coverage       operations_deliverable_ready
+#   direct_advisory_answer             advisory_code_grounded
+#   writing_specialist_coverage        operations_specialist_coverage
 #
 # Unknown outcome keys (scenarios that mention something this script
 # doesn't detect) are emitted as `false`, which the scoring layer
@@ -94,6 +98,7 @@ STATE_FILE="${SESSION_DIR}/session_state.json"
 TIMING_FILE="${SESSION_DIR}/timing.jsonl"
 FINDINGS_FILE="${SESSION_DIR}/findings.json"
 EDITED_LOG="${SESSION_DIR}/edited_files.log"
+SUBAGENT_SUMMARIES_FILE="${SESSION_DIR}/subagent_summaries.jsonl"
 
 [[ -f "${STATE_FILE}" ]] || {
   printf 'session_state.json not found in: %s\n' "${SESSION_DIR}" >&2
@@ -148,12 +153,41 @@ fi
 last_verify_outcome="$(jq -r '.last_verify_outcome // ""'   "${STATE_FILE}" 2>/dev/null || echo "")"
 last_verify_scope="$(jq -r '.last_verify_scope // ""'       "${STATE_FILE}" 2>/dev/null || echo "")"
 last_verify_method="$(jq -r '.last_verify_method // ""'     "${STATE_FILE}" 2>/dev/null || echo "")"
+last_verify_ts="$(jq -r '.last_verify_ts // ""'             "${STATE_FILE}" 2>/dev/null || echo "")"
 last_review_ts="$(jq -r '.last_review_ts // ""'             "${STATE_FILE}" 2>/dev/null || echo "")"
+last_doc_review_ts="$(jq -r '.last_doc_review_ts // ""'     "${STATE_FILE}" 2>/dev/null || echo "")"
+last_doc_edit_ts="$(jq -r '.last_doc_edit_ts // ""'         "${STATE_FILE}" 2>/dev/null || echo "")"
+last_user_prompt_ts="$(jq -r '.last_user_prompt_ts // ""'   "${STATE_FILE}" 2>/dev/null || echo "")"
+last_edit_ts="$(jq -r '.last_edit_ts // ""'                 "${STATE_FILE}" 2>/dev/null || echo "")"
+task_intent="$(jq -r '.task_intent // ""'                   "${STATE_FILE}" 2>/dev/null || echo "")"
+task_domain="$(jq -r '.task_domain // ""'                   "${STATE_FILE}" 2>/dev/null || echo "")"
+task_risk_tier="$(jq -r '.task_risk_tier // ""'             "${STATE_FILE}" 2>/dev/null || echo "")"
+session_outcome="$(jq -r '.session_outcome // ""'           "${STATE_FILE}" 2>/dev/null || echo "")"
+last_advisory_verify_ts="$(jq -r '.last_advisory_verify_ts // ""' "${STATE_FILE}" 2>/dev/null || echo "")"
+advisory_evidence_count="$(jq -r '.advisory_evidence_count // "0"' "${STATE_FILE}" 2>/dev/null || echo 0)"
 review_had_findings="$(jq -r '.review_had_findings // ""'   "${STATE_FILE}" 2>/dev/null || echo "")"
 design_review_ts="$(jq -r '.design_review_ts // .design_reviewer_ts // ""' "${STATE_FILE}" 2>/dev/null || echo "")"
 design_contract="$(jq -r '.design_contract // .design_contract_recorded_ts // ""' "${STATE_FILE}" 2>/dev/null || echo "")"
 dispatches="$(jq -r '.subagent_dispatch_count // "0"'       "${STATE_FILE}" 2>/dev/null || echo 0)"
 [[ "${dispatches}" =~ ^[0-9]+$ ]] || dispatches=0
+[[ "${advisory_evidence_count}" =~ ^[0-9]+$ ]] || advisory_evidence_count=0
+
+subagent_verdict_seen() {
+  local agent_regex="$1" verdict_regex="$2"
+  [[ -f "${SUBAGENT_SUMMARIES_FILE}" ]] || return 1
+  jq -r --arg agent_regex "${agent_regex}" '
+    select((.agent_type // "") | test($agent_regex))
+    | (try ((.message // "") | capture("(?m)^VERDICT:[[:space:]]*(?<v>[A-Z_]+)").v) catch "")
+  ' "${SUBAGENT_SUMMARIES_FILE}" 2>/dev/null | grep -Eq "^(${verdict_regex})$"
+}
+
+subagent_summary_seen() {
+  local agent_regex="$1"
+  [[ -f "${SUBAGENT_SUMMARIES_FILE}" ]] || return 1
+  jq -e --arg agent_regex "${agent_regex}" '
+    select((.agent_type // "") | test($agent_regex))
+  ' "${SUBAGENT_SUMMARIES_FILE}" >/dev/null 2>&1
+}
 
 # Boolean helpers
 b() { [[ "$1" -eq 1 ]] && printf 'true' || printf 'false'; }
@@ -174,6 +208,18 @@ det_full_verification=0
 # review_clean: a review ran AND its FINDINGS_JSON was not flagged
 det_review_clean=0
 [[ -n "${last_review_ts}" && "${review_had_findings}" != "true" ]] && det_review_clean=1
+
+# doc_review_clean: doc edits exist, the prose-review clock is current,
+# and the latest reviewer state is clean.
+det_doc_review_clean=0
+if [[ -n "${last_doc_edit_ts}" \
+   && -n "${last_doc_review_ts}" \
+   && "${last_doc_review_ts}" =~ ^[0-9]+$ \
+   && "${last_doc_edit_ts}" =~ ^[0-9]+$ \
+   && "${last_doc_review_ts}" -ge "${last_doc_edit_ts}" \
+   && "${review_had_findings}" != "true" ]]; then
+  det_doc_review_clean=1
+fi
 
 # regression_test_added: edited_files.log includes a test-shaped path
 det_regression_test_added=0
@@ -271,6 +317,74 @@ fi
 # true at the producer; budget enforcement happens in the scorer.
 det_token_budget_respected=1
 
+# writer_deliverable_ready: draft-writer or writing-architect returned
+# a delivered verdict in the recorded subagent summaries.
+det_writer_deliverable_ready=0
+if subagent_verdict_seen '(^|:)(draft-writer|writing-architect)$' 'DELIVERED'; then
+  det_writer_deliverable_ready=1
+fi
+
+# research_report_ready: librarian or quality-researcher returned a
+# report-ready verdict.
+det_research_report_ready=0
+if subagent_verdict_seen '(^|:)(librarian|quality-researcher)$' 'REPORT_READY'; then
+  det_research_report_ready=1
+fi
+
+# analysis_specialist_coverage: a research-synthesis specialist ran.
+det_analysis_specialist_coverage=0
+if subagent_summary_seen '(^|:)(briefing-analyst|metis)$'; then
+  det_analysis_specialist_coverage=1
+fi
+
+# operations_deliverable_ready: chief-of-staff returned a delivered verdict.
+det_operations_deliverable_ready=0
+if subagent_verdict_seen '(^|:)(chief-of-staff)$' 'DELIVERED'; then
+  det_operations_deliverable_ready=1
+fi
+
+# direct_advisory_answer: the prompt was classified advisory, the
+# session released without fresh edits, and no implementation path was
+# required to satisfy Stop.
+det_direct_advisory_answer=0
+if [[ "${task_intent}" == "advisory" && "${session_outcome}" == "released" ]]; then
+  if [[ -z "${last_edit_ts}" || -z "${last_user_prompt_ts}" || "${last_edit_ts}" -lt "${last_user_prompt_ts}" ]]; then
+    det_direct_advisory_answer=1
+  fi
+fi
+
+# advisory_code_grounded: direct advisory answer over a code/mixed
+# surface, backed by source inspection or verification. High-risk
+# prompts require 2 distinct advisory evidence paths to mirror the
+# Stop-time gate.
+det_advisory_code_grounded=0
+if [[ "${det_direct_advisory_answer}" -eq 1 ]] \
+  && [[ "${task_domain}" == "coding" || "${task_domain}" == "mixed" ]]; then
+  advisory_evidence_required=1
+  if [[ "${task_risk_tier}" == "high" ]]; then
+    advisory_evidence_required=2
+  fi
+  if [[ -n "${last_verify_ts}" ]]; then
+    det_advisory_code_grounded=1
+  elif [[ -n "${last_advisory_verify_ts}" && "${advisory_evidence_count}" -ge "${advisory_evidence_required}" ]]; then
+    det_advisory_code_grounded=1
+  fi
+fi
+
+# writing_specialist_coverage: a writing specialist participated even if
+# the answer stayed advisory rather than becoming a drafted deliverable.
+det_writing_specialist_coverage=0
+if subagent_summary_seen '(^|:)(draft-writer|writing-architect)$'; then
+  det_writing_specialist_coverage=1
+fi
+
+# operations_specialist_coverage: an operations specialist participated
+# even if the answer stayed advisory rather than becoming a full plan.
+det_operations_specialist_coverage=0
+if subagent_summary_seen '(^|:)(chief-of-staff|atlas)$'; then
+  det_operations_specialist_coverage=1
+fi
+
 # ---------------------------------------------------------------
 # Emit result JSON
 # ---------------------------------------------------------------
@@ -295,6 +409,15 @@ jq -nc \
   --argjson wave_plan_recorded "$([[ "${det_wave_plan_recorded}" -eq 1 ]] && echo true || echo false)" \
   --argjson findings_resolved "$([[ "${det_findings_resolved}" -eq 1 ]] && echo true || echo false)" \
   --argjson token_budget_respected "$([[ "${det_token_budget_respected}" -eq 1 ]] && echo true || echo false)" \
+  --argjson doc_review_clean "$([[ "${det_doc_review_clean}" -eq 1 ]] && echo true || echo false)" \
+  --argjson writer_deliverable_ready "$([[ "${det_writer_deliverable_ready}" -eq 1 ]] && echo true || echo false)" \
+  --argjson research_report_ready "$([[ "${det_research_report_ready}" -eq 1 ]] && echo true || echo false)" \
+  --argjson analysis_specialist_coverage "$([[ "${det_analysis_specialist_coverage}" -eq 1 ]] && echo true || echo false)" \
+  --argjson operations_deliverable_ready "$([[ "${det_operations_deliverable_ready}" -eq 1 ]] && echo true || echo false)" \
+  --argjson direct_advisory_answer "$([[ "${det_direct_advisory_answer}" -eq 1 ]] && echo true || echo false)" \
+  --argjson advisory_code_grounded "$([[ "${det_advisory_code_grounded}" -eq 1 ]] && echo true || echo false)" \
+  --argjson writing_specialist_coverage "$([[ "${det_writing_specialist_coverage}" -eq 1 ]] && echo true || echo false)" \
+  --argjson operations_specialist_coverage "$([[ "${det_operations_specialist_coverage}" -eq 1 ]] && echo true || echo false)" \
   '
     {
       scenario_id: $scenario_id,
@@ -316,7 +439,16 @@ jq -nc \
         council_or_lens_coverage: $council_or_lens_coverage,
         wave_plan_recorded: $wave_plan_recorded,
         findings_resolved_or_deferred_with_why: $findings_resolved,
-        token_budget_respected: $token_budget_respected
+        token_budget_respected: $token_budget_respected,
+        doc_review_clean: $doc_review_clean,
+        writer_deliverable_ready: $writer_deliverable_ready,
+        research_report_ready: $research_report_ready,
+        analysis_specialist_coverage: $analysis_specialist_coverage,
+        operations_deliverable_ready: $operations_deliverable_ready,
+        direct_advisory_answer: $direct_advisory_answer,
+        advisory_code_grounded: $advisory_code_grounded,
+        writing_specialist_coverage: $writing_specialist_coverage,
+        operations_specialist_coverage: $operations_specialist_coverage
       }
     }
   '

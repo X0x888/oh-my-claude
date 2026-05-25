@@ -39,6 +39,30 @@ for arg in "$@"; do
 done
 
 # ---------------------------------------------------------------------------
+# Git checkout helpers
+# ---------------------------------------------------------------------------
+
+is_git_checkout() {
+  local repo_root="${1:-}"
+  [[ -n "${repo_root}" ]] || return 1
+  command -v git >/dev/null 2>&1 || return 1
+  git -C "${repo_root}" rev-parse --show-toplevel >/dev/null 2>&1
+}
+
+git_hooks_dir_for_checkout() {
+  local repo_root="${1:-}"
+  local hooks_dir=""
+
+  is_git_checkout "${repo_root}" || return 1
+  hooks_dir="$(git -C "${repo_root}" rev-parse --git-path hooks 2>/dev/null || true)"
+  [[ -n "${hooks_dir}" ]] || return 1
+  if [[ "${hooks_dir}" != /* ]]; then
+    hooks_dir="${repo_root}/${hooks_dir}"
+  fi
+  printf '%s\n' "${hooks_dir}"
+}
+
+# ---------------------------------------------------------------------------
 # Directories and files installed by oh-my-claude
 # ---------------------------------------------------------------------------
 
@@ -284,15 +308,20 @@ export OMC_BUNDLED_STYLE_NAME_EXECUTIVE
 
 # Remove the oh-my-claude-authored post-merge git hook, if the installer
 # wrote one. We find the source repo via `repo_path` in oh-my-claude.conf
-# (written by install.sh), then remove `<repo>/.git/hooks/post-merge`
-# only if it carries the oh-my-claude signature. A foreign hook stays
-# untouched. Must happen BEFORE oh-my-claude.conf itself is removed from
+# (written by install.sh), resolve the checkout's hooks directory via
+# `git rev-parse --git-path hooks`, then remove `post-merge` only if it
+# carries the oh-my-claude signature. A foreign hook stays untouched.
+# Must happen BEFORE oh-my-claude.conf itself is removed from
 # STANDALONE_FILES below, otherwise repo_path is lost.
 conf_path="${CLAUDE_HOME}/oh-my-claude.conf"
 if [[ -f "${conf_path}" ]]; then
   _repo_path="$(grep -E '^repo_path=' "${conf_path}" 2>/dev/null | head -1 | cut -d= -f2-)" || _repo_path=""
   if [[ -n "${_repo_path}" ]]; then
-    _hook_path="${_repo_path}/.git/hooks/post-merge"
+    _hook_dir="$(git_hooks_dir_for_checkout "${_repo_path}" 2>/dev/null || true)"
+    _hook_path=""
+    if [[ -n "${_hook_dir}" ]]; then
+      _hook_path="${_hook_dir}/post-merge"
+    fi
     if [[ -f "${_hook_path}" ]] && grep -q '# oh-my-claude post-merge auto-sync' "${_hook_path}" 2>/dev/null; then
       rm -f "${_hook_path}"
       removed+=("Removed git hook: ${_hook_path}")

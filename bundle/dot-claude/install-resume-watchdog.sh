@@ -12,7 +12,8 @@
 #        - Linux: copy .service + .timer to ~/.config/systemd/user/,
 #          run `systemctl --user daemon-reload && systemctl --user
 #          enable --now oh-my-claude-resume-watchdog.timer`.
-#        - Other: prints a cron one-liner the user can add manually.
+#        - Other: installs a managed cron entry when `crontab` is
+#          available; otherwise prints the exact line to add manually.
 #   3. Verifies the watchdog can run (single tick, dry).
 #   4. Prints the activation instructions and how to monitor / disable.
 #
@@ -30,6 +31,7 @@ CLAUDE_HOME="${HOME}/.claude"
 CONF_FILE="${CLAUDE_HOME}/oh-my-claude.conf"
 WATCHDOG_SCRIPT="${CLAUDE_HOME}/quality-pack/scripts/resume-watchdog.sh"
 LOG_DIR="${CLAUDE_HOME}/quality-pack/state/.watchdog-logs"
+CRON_MARKER="# oh-my-claude resume-watchdog"
 
 mode="install"
 reset_conf=0
@@ -107,6 +109,67 @@ resolved_path() {
     return 0
   fi
   printf '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
+}
+
+render_cron_line() {
+  local quoted_script=""
+  printf -v quoted_script '%q' "${WATCHDOG_SCRIPT}"
+  printf '*/2 * * * * bash %s >/dev/null 2>&1' "${quoted_script}"
+}
+
+read_crontab_contents() {
+  if ! command -v crontab >/dev/null 2>&1; then
+    return 127
+  fi
+
+  local current=""
+  local rc=0
+  set +e
+  current="$(crontab -l 2>/dev/null)"
+  rc=$?
+  set -e
+
+  case "${rc}" in
+    0)
+      printf '%s' "${current}"
+      return 0
+      ;;
+    1)
+      return 0
+      ;;
+    *)
+      return "${rc}"
+      ;;
+  esac
+}
+
+strip_managed_cron_entries() {
+  local current="${1:-}"
+  printf '%s\n' "${current}" | awk -v marker="${CRON_MARKER}" '
+    $0 == marker { next }
+    /resume-watchdog\.sh/ { next }
+    { print }
+  '
+}
+
+write_crontab_contents() {
+  local next_contents="${1:-}"
+  printf '%s\n' "${next_contents}" | crontab -
+}
+
+cron_install_block() {
+  local current="${1:-}"
+  local stripped=""
+  local cron_line=""
+
+  stripped="$(strip_managed_cron_entries "${current}")"
+  cron_line="$(render_cron_line)"
+
+  if [[ -n "${stripped}" ]]; then
+    printf '%s\n%s\n%s\n' "${stripped}" "${CRON_MARKER}" "${cron_line}"
+  else
+    printf '%s\n%s\n' "${CRON_MARKER}" "${cron_line}"
+  fi
 }
 
 # --- macOS LaunchAgent ---
@@ -212,10 +275,57 @@ linux_uninstall() {
 # --- cron fallback ---
 
 cron_install() {
-  local line="*/2 * * * * bash ${WATCHDOG_SCRIPT} >/dev/null 2>&1"
-  printf 'Cron is the universal fallback. Add this line to your crontab:\n  %s\n\n' "${line}"
-  printf 'Run \`crontab -e\` and paste it. The watchdog will fire every 2 minutes.\n'
-  printf 'To remove later: re-run \`crontab -e\` and delete that line.\n'
+  local line=""
+  local current=""
+  local next_contents=""
+
+  line="$(render_cron_line)"
+  mkdir -p "${LOG_DIR}"
+
+  if ! command -v crontab >/dev/null 2>&1; then
+    printf 'Cron fallback selected, but `crontab` is not available.\n'
+    printf 'Add this line manually:\n  %s\n\n' "${line}"
+    printf 'Once `crontab` is available, re-run this installer to register it automatically.\n'
+    return 0
+  fi
+
+  if ! current="$(read_crontab_contents)"; then
+    printf 'WARNING: could not read current crontab — add this line manually:\n  %s\n' "${line}"
+    return 1
+  fi
+
+  next_contents="$(cron_install_block "${current}")"
+  if ! write_crontab_contents "${next_contents}"; then
+    printf 'WARNING: could not install the watchdog cron entry automatically.\n'
+    printf 'Add this line manually:\n  %s\n' "${line}"
+    return 1
+  fi
+
+  printf 'Cron watchdog entry installed via crontab.\n'
+  printf 'Inspect with: crontab -l\n'
+}
+
+cron_uninstall() {
+  local current=""
+  local next_contents=""
+
+  if ! command -v crontab >/dev/null 2>&1; then
+    printf 'Manual uninstall: remove the crontab line that runs resume-watchdog.sh.\n'
+    return 0
+  fi
+
+  if ! current="$(read_crontab_contents)"; then
+    printf 'WARNING: could not read current crontab — remove the watchdog entry manually.\n'
+    return 1
+  fi
+
+  next_contents="$(strip_managed_cron_entries "${current}")"
+  if ! write_crontab_contents "${next_contents}"; then
+    printf 'WARNING: could not remove the watchdog cron entry automatically.\n'
+    return 1
+  fi
+
+  printf 'Cron watchdog entry removed.\n'
 }
 
 # --- main ---
@@ -225,8 +335,14 @@ require_file "${WATCHDOG_SCRIPT}"
 if [[ "${mode}" == "uninstall" ]]; then
   case "$(platform)" in
     macos) macos_uninstall ;;
-    linux) linux_uninstall ;;
-    other) printf 'Manual uninstall: remove the cron line you added during install.\n' ;;
+    linux)
+      if command -v systemctl >/dev/null 2>&1; then
+        linux_uninstall
+      else
+        cron_uninstall
+      fi
+      ;;
+    other) cron_uninstall ;;
   esac
   if [[ "${reset_conf}" -eq 1 ]]; then
     set_conf_value "resume_watchdog" "off"

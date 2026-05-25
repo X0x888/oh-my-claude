@@ -149,6 +149,33 @@ assert_contains "T3: re-install banner fires again" "oh-my-claude" "${out}"
 teardown_test
 
 # ----------------------------------------------------------------------
+printf 'Test 3b: no-op reinstall report suppresses re-emit and advances marker\n'
+setup_test
+touch "${TEST_HOME}/.claude/.install-stamp"
+printf 'installed_version=1.30.0\n' > "${TEST_HOME}/.claude/oh-my-claude.conf"
+
+_ignored="$(run_hook "t3b1-${RANDOM}")"
+future_ts=$(( $(date +%s) + 10 ))
+touch_ts="$(date -r "${future_ts}" +%Y%m%d%H%M.%S 2>/dev/null \
+  || date -d "@${future_ts}" +%Y%m%d%H%M.%S 2>/dev/null)"
+if [[ -n "${touch_ts}" ]]; then
+  touch -t "${touch_ts}" "${TEST_HOME}/.claude/.install-stamp"
+fi
+
+install_ts="$(stat -f %m "${TEST_HOME}/.claude/.install-stamp" 2>/dev/null \
+  || stat -c %Y "${TEST_HOME}/.claude/.install-stamp" 2>/dev/null || echo "")"
+mkdir -p "${TEST_HOME}/.claude/quality-pack/state"
+cat > "${TEST_HOME}/.claude/quality-pack/state/last-install-report.json" <<EOF
+{"restart_required":false,"install_stamp_epoch":${install_ts}}
+EOF
+
+out="$(run_hook "t3b2-${RANDOM}")"
+assert_eq "T3b: no-op reinstall banner suppressed" "" "${out}"
+marker_after="$(cat "${TEST_HOME}/.claude/.welcome-shown-at" 2>/dev/null || echo "")"
+assert_eq "T3b: marker advanced to new install ts" "${install_ts}" "${marker_after}"
+teardown_test
+
+# ----------------------------------------------------------------------
 printf 'Test 4: recent_prompts.jsonl present → silent (user already engaged)\n'
 setup_test
 touch "${TEST_HOME}/.claude/.install-stamp"

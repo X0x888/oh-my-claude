@@ -27,9 +27,30 @@ Branch on the conf state. (`installed_sha=` may be absent when the harness was i
 | Conf missing, or conf present but `installed_version=` absent | install / "set up" | Go to **Step 1 — Fresh install**. |
 | `installed_version=` present | install / "set up" | Confirm intent: "you already have v$X — reinstall in place, or did you mean update?" If reinstall: skip the clone in Step 1.1 and run `bash "$repo_path/install.sh"` directly. If update: go to **Step 2**. |
 | `installed_version=` present | update / "upgrade" / "pull latest" | Go to **Step 2 — Update**. |
-| Already-current check (after `git -C "$repo_path" fetch origin`): `installed_version=` matches latest tag AND `installed_sha=` matches `git -C "$repo_path" rev-parse origin/main` | install or update | **Tell the user the harness is already current.** Print version and last-install timestamp. Use `stat -f %Sm ~/.claude/.install-stamp` on macOS or `stat -c %y ~/.claude/.install-stamp` on Linux — pick by `uname -s` (`Darwin` → BSD form, anything else → GNU form), or try one and fall back. Recommend `/ulw-demo` if they haven't seen the gates fire. |
+| Install-state helper reports `currentness=already-current` (after the repo clone exists locally) | install or update | **Tell the user the harness is already current.** Print version and last-install timestamp. Recommend `/ulw-demo` if they haven't seen the gates fire. |
 
-The already-current branch needs `repo_path` and a fresh `git fetch` before the comparison resolves — Step 0 is read-only on the conf, so this branch only completes after the agent has cd'd into `$repo_path` (start of Step 2).
+Once `repo_path` is known and the repo exists locally, prefer the helper below over ad-hoc `grep` / `stat` / `git` snippets:
+
+```bash
+bash "$repo_path/tools/install-state-report.sh" --json
+```
+
+It refreshes `origin`, detects the remote default branch, reads `~/.claude/.install-stamp`, and returns `install_status`, `currentness`, `latest_tag`, `origin_default_ref`, and `last_install_at` in one place. The already-current branch only resolves after the repo clone exists locally — Step 0 is read-only on the conf, so that helper path starts once the agent has cd'd into `$repo_path` (start of Step 2).
+
+For the human-facing already-current response, prefer the helper's canonical text mode:
+
+```bash
+bash "$repo_path/tools/install-state-report.sh" --already-current-summary
+```
+
+That emits the exact `Already current: vX.Y.Z (last install: ...)` line used by `install-remote.sh`, so install assistants do not hand-format version/timestamp text.
+
+Failure policy for AI installers — do not improvise around these branches:
+
+- If `installed_version=` is present and the user asked to install, ask whether they mean reinstall or update. Do not assume.
+- If `~/.local/share/oh-my-claude` already exists but is not this repo, stop and ask what to do next. Do not overwrite the path or run a foreign `install.sh`.
+- If `install.sh` or `verify.sh` exits non-zero, stop. Surface the failing command and output, recommend the next rerun command from the same repo path, and do not give restart or `What next?` guidance until `verify.sh` passes with `Errors: 0`.
+- If the user explicitly wants the curl-pipe-bash bootstrapper instead of a manual clone, prefer `OMC_REF=<tag>` plus `OMC_EXPECTED_SHA=<trusted release commit sha/prefix>` over rolling `main`. Source that SHA from the GitHub release's `Verified bootstrap install` / `Trusted release commit` block when available. The bootstrapper accepts any 7-40 char SHA prefix and refuses to run `install.sh` on a mismatch.
 
 ### Step 1 — Fresh install
 
@@ -41,7 +62,7 @@ The already-current branch needs `repo_path` and a fresh `git fetch` before the 
    ```bash
    git -C ~/.local/share/oh-my-claude config --get remote.origin.url 2>/dev/null
    ```
-   If the URL matches `X0x888/oh-my-claude`, treat it as an existing clone — skip clone and continue to step 3 (or run `git pull` first). If it returns a different URL or empty, stop and ask the user — do not overwrite a sibling repo.
+   If the URL resolves to `X0x888/oh-my-claude`, treat it as an existing clone — skip clone and continue to step 3 (or run `git pull` first). Accept equivalent GitHub spellings (`git@github.com:X0x888/oh-my-claude.git`, `https://github.com/X0x888/oh-my-claude`, trailing slash, case differences). If it returns a different repo or empty, stop and ask the user — do not overwrite a sibling repo.
 
 2. **One question, only if useful.** Default to model tier `balanced` unless the user has already expressed a preference. Don't ask if they shrug or are unfamiliar — just use the default. Suggested phrasing if you do ask:
 
@@ -65,7 +86,7 @@ The already-current branch needs `repo_path` and a fresh `git fetch` before the 
 
 ### Step 2 — Update an existing install
 
-1. Read `repo_path=` from `~/.claude/oh-my-claude.conf`. Capture `installed_sha=` first too — you'll need its old value for the changelog summary.
+1. Read `repo_path=` from `~/.claude/oh-my-claude.conf`.
 2. Pull and re-install:
    ```bash
    git -C "$repo_path" pull
@@ -76,22 +97,34 @@ The already-current branch needs `repo_path` and a fresh `git fetch` before the 
    ```bash
    bash "$repo_path/verify.sh"
    ```
-4. Summarize what the pull brought in:
+   If `verify.sh` exits non-zero, stop. Surface the verifier output and recommend re-running `bash "$repo_path/install.sh"` before you offer any restart or `What next?` guidance.
+4. Read the last-install outcome:
    ```bash
-   git -C "$repo_path" log --oneline "$prior_installed_sha"..HEAD
+   bash "$repo_path/tools/install-state-report.sh" --json
    ```
-   (Use the value of `installed_sha=` you captured *before* running `install.sh` — the installer overwrites it.)
-5. Continue to **Step 3 — Restart instruction** (only if any bundle file changed; `verify.sh` prints an `Orphans:` block if files were removed).
+   Use `.last_install.restart_required` as the restart decision. `.last_install.kind`, `.last_install.managed_changes_total`, and `.last_install.settings_changed` explain *why*. For the changelog summary, use `.last_install.previous`, `.last_install.current`, and `.last_install.change_summary` — that artifact is written by `install.sh`, so you do not need a separate `git log` step.
+   For the human-facing update summary, prefer the helper's text mode:
+   ```bash
+   bash "$repo_path/tools/install-state-report.sh" --last-update-summary
+   ```
+   That emits the same standardized update summary `install.sh` and `install-remote.sh` print.
+5. Continue to **Step 3 — Restart instruction** only when `.last_install.restart_required == true`. (`install.sh` still prints an `Orphans:` block in its post-install summary if files were removed.)
 
 ### Step 3 — Tell the user to restart Claude Code
 
 This is the single highest-leverage instruction in the protocol. Claude Code loads hooks at session start; an already-running session keeps its previous wiring until restart. Skip this step and the user types `/ulw <task>` in their current session, sees no behavioral change, and concludes the install is broken.
 
-After install — and after any update that changed bundle files — **explicitly tell the user**:
+After install — and after any update where `.last_install.restart_required == true` — **explicitly tell the user** this exact line. Prefer emitting the helper below and quoting it verbatim:
+
+```bash
+bash "$repo_path/tools/install-state-report.sh" --restart-guidance
+```
+
+Expected output:
 
 > Restart Claude Code (or open a new session) before testing. Already-running sessions keep the previous hook wiring, so `/ulw` will silently no-op until you restart.
 
-If the user is in the same Claude Code session that ran the install, they must start a new session before any harness behavior becomes observable.
+If the user is in the same Claude Code session that ran the install, they must start a new session before any harness behavior becomes observable. If `.last_install.restart_required == false`, the same helper emits the canonical no-restart sentence for no-op reinstalls and doc-only updates.
 
 ### Step 4 — Hand off with the verify "What next?" footer
 
@@ -150,12 +183,47 @@ oh-my-claude/
     settings.patch.json       # Settings merged into user's settings.json
 
   evals/realwork/             # Outcome eval scenarios + scorer for minimal-prompt real-work shipping
-  tests/                      # 115 bash + 1 python test scripts; CLAUDE.md "Testing" lists each one
+  tests/                      # 120 bash + 1 python test scripts; CLAUDE.md "Testing" lists each one
 
-  tools/                      # Developer tools (not installed)
+  tools/                      # Developer tools (not installed; keep exhaustive)
+    audit-published-release-assets.sh
+    audit-published-release-attestations.sh
+    audit-published-release-bodies.sh
+    audit-published-release-states.sh
+    audit-published-release-titles.sh
+    audit-published-releases.sh
+    backfill-project-key.sh
+    bootstrap-gate-events-rollup.sh
+    build-release-assets.sh
+    check-consumer-contracts.sh
+    check-flag-coordination.sh
+    classifier-fixtures/known_misclassified.jsonl
+    classifier-fixtures/regression.jsonl
+    cluster-unknown-defects.sh
+    hotfix-sweep.sh
+    install-state-report.sh
+    install-upgrade-sim.sh
+    list-ci-pinned-tests.sh
+    list-release-automation-surfaces.sh
+    stage-release-automation-surfaces.sh
+    prepare-release-automation-deployment.sh # coherent pre-push deployment candidate prep
+    local-ci.sh
+    release.sh
+    render-release-notes.sh
+    render-release-title.sh
     replay-classifier-telemetry.sh
-    classifier-fixtures/
-      regression.jsonl
+    verify-distribution-readiness.sh         # top-level release/distribution readiness (`--json` available)
+    verify-install-readiness.sh              # top-level install/onboarding readiness (`--json` available)
+    verify-professional-readiness.sh         # top-level cross-domain product-readiness audit (`--json` available)
+    verify-project-readiness.sh              # top-level maintainer release-candidate audit (`--json` available)
+    verify-published-release-assets.sh
+    verify-published-release-attestations.sh
+    verify-published-release-body.sh
+    verify-published-release-state.sh
+    verify-published-release-title.sh
+    verify-published-release.sh              # full published-release audit (`--json` available)
+    verify-release-automation-deployment.sh  # remote deployment audit (`--json` available)
+    wait-for-release-attestations.sh
 
   docs/                       # Extended documentation
     architecture.md

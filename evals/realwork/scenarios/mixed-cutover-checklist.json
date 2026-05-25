@@ -1,0 +1,20 @@
+{
+  "id": "mixed-cutover-checklist",
+  "risk": "high",
+  "fixture": "fixtures/deploy-cutover",
+  "prompt": "/ulw fix the deploy-health endpoint, add regression tests, and create a release plan plus cutover checklist with owners, deadlines, and rollback steps",
+  "required_outcomes": [
+    "tests_passed",
+    "targeted_verification",
+    "regression_test_added",
+    "review_clean",
+    "operations_deliverable_ready",
+    "doc_review_clean",
+    "final_closeout_audit_ready"
+  ],
+  "budgets": {
+    "max_tokens": 100000,
+    "max_tool_calls": 140,
+    "max_elapsed_seconds": 2400
+  }
+}

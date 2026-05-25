@@ -69,6 +69,77 @@ assert_not_contains() {
   fi
 }
 
+assert_contains_block() {
+  local label="$1"
+  local needle="$2"
+  local haystack="$3"
+  if [[ "${haystack}" == *"${needle}"* ]]; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: %s — block not found in output\n' "${label}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
+set_conf_value() {
+  local key="$1"
+  local value="$2"
+  local conf_path="${CLAUDE_HOME}/oh-my-claude.conf"
+  local tmp="${conf_path}.tmp"
+  grep -v -E "^${key}=" "${conf_path}" > "${tmp}" 2>/dev/null || true
+  printf '%s=%s\n' "${key}" "${value}" >> "${tmp}"
+  mv "${tmp}" "${conf_path}"
+}
+
+render_watchdog_template_fixture() {
+  local source_path="$1"
+  local dest_path="$2"
+  local path_value="$3"
+  local claude_home="${TEST_HOME}/.claude"
+  local log_dir="${claude_home}/quality-pack/state/.watchdog-logs"
+  local path_esc="${path_value//&/\\&}"
+  path_esc="${path_esc//|/\\|}"
+  mkdir -p "$(dirname "${dest_path}")"
+  sed \
+    -e "s|__OMC_HOME__|${claude_home}|g" \
+    -e "s|__OMC_USER_HOME__|${TEST_HOME}|g" \
+    -e "s|__OMC_LOG_DIR__|${log_dir}|g" \
+    -e "s|__OMC_PATH__|${path_esc}|g" \
+    "${source_path}" > "${dest_path}"
+}
+
+render_watchdog_cron_fixture() {
+  local dest_path="$1"
+  local quoted_script=""
+  printf -v quoted_script '%q' "${TEST_HOME}/.claude/quality-pack/scripts/resume-watchdog.sh"
+  {
+    printf '# oh-my-claude resume-watchdog\n'
+    printf '*/2 * * * * bash %s >/dev/null 2>&1\n' "${quoted_script}"
+  } > "${dest_path}"
+}
+
+write_verify_crontab_stub() {
+  local stub_bin="$1"
+  local cron_store="$2"
+  cat > "${stub_bin}/crontab" <<EOF
+#!/usr/bin/env bash
+cron_store="${cron_store}"
+case "\${1:-}" in
+  -l|"")
+    if [[ -f "\${cron_store}" ]]; then
+      cat "\${cron_store}"
+      exit 0
+    fi
+    exit 1
+    ;;
+  *)
+    exit 64
+    ;;
+esac
+EOF
+  chmod +x "${stub_bin}/crontab"
+}
+
 run_install() {
   TARGET_HOME="${TEST_HOME}" bash "${REPO_ROOT}/install.sh" 2>&1
 }
@@ -82,6 +153,18 @@ run_verify_with_rc() {
   set +e
   local _out
   _out="$(run_verify "$@")"
+  local _rc=$?
+  set -e
+  printf '%s\n__EXIT__=%s' "${_out}" "${_rc}"
+}
+
+run_verify_env_with_rc() {
+  local path_override="$1"
+  local shell_override="$2"
+  shift 2
+  set +e
+  local _out
+  _out="$(PATH="${path_override}" SHELL="${shell_override}" TARGET_HOME="${TEST_HOME}" bash "${REPO_ROOT}/verify.sh" "$@" 2>&1)"
   local _rc=$?
   set -e
   printf '%s\n__EXIT__=%s' "${_out}" "${_rc}"
@@ -108,6 +191,94 @@ verify_rc_1="$(printf '%s' "${verify_output_1}" | grep -o '__EXIT__=[0-9]*' | cu
 assert_eq "verify.sh exits 0 on clean install" "0" "${verify_rc_1}"
 assert_contains "verify.sh Step 8 passes on clean install" \
   "No foreign hook commands" "${verify_output_1}"
+assert_contains "verify.sh fresh-install footer still requires restart" \
+  "Restart Claude Code (or open a new session)" "${verify_output_1}"
+assert_contains_block "verify.sh prints AGENTS.md What next footer verbatim" \
+  "$(cat <<'EOF'
+What next?
+  /omc-config                             -- inspect/change settings (auto-detects mode)
+  /ulw-demo                               -- see quality gates in action (recommended first step)
+  /ulw fix the failing test and add regression coverage
+                                          -- start real work with full quality enforcement
+EOF
+)" "${verify_output_1}"
+
+run_install >/dev/null
+verify_output_1noop="$(run_verify_with_rc)"
+verify_rc_1noop="$(printf '%s' "${verify_output_1noop}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify.sh exits 0 on no-op reinstall" "0" "${verify_rc_1noop}"
+assert_contains "verify.sh no-op reinstall footer says no restart required" \
+  "No Claude Code restart is required" "${verify_output_1noop}"
+
+printf '\n'
+
+# ---------------------------------------------------------------------------
+# Test 1b: Agent availability uses non-interactive JSON mode
+# ---------------------------------------------------------------------------
+printf '1b. Agent availability uses claude agents --json when CLI is present\n'
+
+STUB_BIN="${TEST_HOME}/stub-bin"
+mkdir -p "${STUB_BIN}"
+cat > "${STUB_BIN}/claude" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "agents" ]] && [[ "${2:-}" == "--json" ]]; then
+  printf '%s\n' '[{"name":"quality-planner"},{"name":"quality-reviewer"},{"name":"prometheus"},{"name":"writing-architect"}]'
+  exit 0
+fi
+printf "'claude agents' requires an interactive terminal (stdout is not a TTY) — use 'claude agents --json' for a machine-readable listing.\n" >&2
+exit 1
+EOF
+chmod +x "${STUB_BIN}/claude"
+
+set +e
+verify_output_1b="$(PATH="${STUB_BIN}:$PATH" TARGET_HOME="${TEST_HOME}" bash "${REPO_ROOT}/verify.sh" 2>&1)"
+verify_rc_1b=$?
+set -e
+assert_eq "verify.sh exits 0 with JSON-capable claude stub" "0" "${verify_rc_1b}"
+assert_contains "verify.sh lists quality-planner from claude agents --json" \
+  "Agent: quality-planner" "${verify_output_1b}"
+assert_not_contains "verify.sh no longer emits legacy no-output warning" \
+  "claude agents returned no output" "${verify_output_1b}"
+assert_not_contains "verify.sh should not skip when JSON listing succeeds" \
+  "skipping agent availability check" "${verify_output_1b}"
+
+# Session listings should degrade to an informational skip — current
+# Claude CLIs can return active sessions here rather than an agent
+# catalog.
+cat > "${STUB_BIN}/claude" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '[{"sessionId":"abc","cwd":"/tmp/proj","status":"idle","kind":"interactive"}]'
+exit 0
+EOF
+chmod +x "${STUB_BIN}/claude"
+
+set +e
+verify_output_1c="$(PATH="${STUB_BIN}:$PATH" TARGET_HOME="${TEST_HOME}" bash "${REPO_ROOT}/verify.sh" 2>&1)"
+verify_rc_1c=$?
+set -e
+assert_eq "verify.sh exits 0 when claude agents --json returns sessions" "0" "${verify_rc_1c}"
+assert_contains "verify.sh surfaces an informational skip for session-list payloads" \
+  "claude agents --json returned active sessions, not an agent catalog; skipping agent availability check" "${verify_output_1c}"
+assert_not_contains "verify.sh no longer treats session-list payloads as actionable warnings" \
+  "claude agents returned no output" "${verify_output_1c}"
+
+# Probe failure should also degrade to an informational skip.
+cat > "${STUB_BIN}/claude" <<'EOF'
+#!/usr/bin/env bash
+printf "claude stub has no machine-readable agents support\n" >&2
+exit 1
+EOF
+chmod +x "${STUB_BIN}/claude"
+
+set +e
+verify_output_1d="$(PATH="${STUB_BIN}:$PATH" TARGET_HOME="${TEST_HOME}" bash "${REPO_ROOT}/verify.sh" 2>&1)"
+verify_rc_1d=$?
+set -e
+assert_eq "verify.sh exits 0 when claude agents --json is unavailable" "0" "${verify_rc_1d}"
+assert_contains "verify.sh surfaces an informational skip for unavailable JSON mode" \
+  "claude agents --json unavailable; skipping agent availability check" "${verify_output_1d}"
+
+rm -rf "${STUB_BIN}"
 
 printf '\n'
 
@@ -409,6 +580,7 @@ assert_contains "install.sh names the pre-install hostile value" \
 
 # Post-install, the file should hold the bundled value (merge overwrites).
 post_install_status="$(jq -r '.statusLine.command' "${SETTINGS}")"
+# shellcheck disable=SC2088 # comparing the literal bundled `~` form shipped in settings.patch.json
 assert_eq "install.sh restores bundled .statusLine.command" \
   "~/.claude/statusline.py" "${post_install_status}"
 
@@ -429,6 +601,278 @@ assert_eq "verify.sh exits 0 after install.sh restores .statusLine" \
 # before reaching the capture if jq is genuinely missing. Test 5
 # above covers the warning-emission path under the real install
 # config (both tools available).
+
+printf '\n'
+
+# ---------------------------------------------------------------------------
+# Test 6: installed resume-watchdog scheduler integrity (A2-MED-5 closure)
+# ---------------------------------------------------------------------------
+#
+# When resume_watchdog=on, verify.sh should audit the rendered scheduler
+# artifact the user actually installed, not just the bundled template in
+# ~/.claude/. This closes the deferred verify-side gap on LaunchAgent /
+# systemd content drift.
+printf '6. Resume-watchdog installed scheduler integrity\n'
+
+# 6a. macOS LaunchAgent matches rendered template → clean pass.
+rm -rf "${TEST_HOME}"
+TEST_HOME="$(mktemp -d)"
+CLAUDE_HOME="${TEST_HOME}/.claude"
+SETTINGS="${CLAUDE_HOME}/settings.json"
+run_install >/dev/null
+set_conf_value "resume_watchdog" "on"
+
+VERIFY_STUB_BIN="${TEST_HOME}/verify-stub-bin"
+mkdir -p "${VERIFY_STUB_BIN}"
+cat > "${VERIFY_STUB_BIN}/uname" <<'EOF'
+#!/usr/bin/env bash
+printf 'Darwin\n'
+EOF
+chmod +x "${VERIFY_STUB_BIN}/uname"
+
+verify_path_mac="${VERIFY_STUB_BIN}:$PATH"
+mac_plist="${TEST_HOME}/Library/LaunchAgents/dev.ohmyclaude.resume-watchdog.plist"
+render_watchdog_template_fixture \
+  "${CLAUDE_HOME}/launchd/dev.ohmyclaude.resume-watchdog.plist" \
+  "${mac_plist}" \
+  "${verify_path_mac}"
+
+verify_watchdog_mac_out="$(run_verify_env_with_rc "${verify_path_mac}" "")"
+verify_watchdog_mac_rc="$(printf '%s' "${verify_watchdog_mac_out}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify.sh exits 0 on matching macOS LaunchAgent" "0" "${verify_watchdog_mac_rc}"
+assert_contains "verify.sh passes matching macOS LaunchAgent" \
+  "resume-watchdog LaunchAgent matches installed render" "${verify_watchdog_mac_out}"
+
+# 6b. macOS LaunchAgent drift warns by default and fails under --strict.
+printf '\n# watchdog tamper\n' >> "${mac_plist}"
+verify_watchdog_mac_drift="$(run_verify_env_with_rc "${verify_path_mac}" "")"
+verify_watchdog_mac_drift_rc="$(printf '%s' "${verify_watchdog_mac_drift}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify.sh default mode exits 0 on LaunchAgent drift" "0" "${verify_watchdog_mac_drift_rc}"
+assert_contains "verify.sh names LaunchAgent drift" \
+  "resume-watchdog LaunchAgent differs from expected render" "${verify_watchdog_mac_drift}"
+
+verify_watchdog_mac_drift_strict="$(run_verify_env_with_rc "${verify_path_mac}" "" --strict)"
+verify_watchdog_mac_drift_strict_rc="$(printf '%s' "${verify_watchdog_mac_drift_strict}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify.sh --strict exits 1 on LaunchAgent drift" "1" "${verify_watchdog_mac_drift_strict_rc}"
+
+# 6c. Linux systemd service+timer match rendered templates → clean pass.
+rm -rf "${TEST_HOME}"
+TEST_HOME="$(mktemp -d)"
+CLAUDE_HOME="${TEST_HOME}/.claude"
+SETTINGS="${CLAUDE_HOME}/settings.json"
+run_install >/dev/null
+set_conf_value "resume_watchdog" "on"
+
+VERIFY_STUB_BIN="${TEST_HOME}/verify-stub-bin"
+mkdir -p "${VERIFY_STUB_BIN}"
+cat > "${VERIFY_STUB_BIN}/uname" <<'EOF'
+#!/usr/bin/env bash
+printf 'Linux\n'
+EOF
+cat > "${VERIFY_STUB_BIN}/systemctl" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "${VERIFY_STUB_BIN}/uname" "${VERIFY_STUB_BIN}/systemctl"
+
+verify_path_linux="${VERIFY_STUB_BIN}:$PATH"
+linux_service="${TEST_HOME}/.config/systemd/user/oh-my-claude-resume-watchdog.service"
+linux_timer="${TEST_HOME}/.config/systemd/user/oh-my-claude-resume-watchdog.timer"
+render_watchdog_template_fixture \
+  "${CLAUDE_HOME}/systemd/oh-my-claude-resume-watchdog.service" \
+  "${linux_service}" \
+  "${verify_path_linux}"
+render_watchdog_template_fixture \
+  "${CLAUDE_HOME}/systemd/oh-my-claude-resume-watchdog.timer" \
+  "${linux_timer}" \
+  "${verify_path_linux}"
+
+verify_watchdog_linux_out="$(run_verify_env_with_rc "${verify_path_linux}" "")"
+verify_watchdog_linux_rc="$(printf '%s' "${verify_watchdog_linux_out}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify.sh exits 0 on matching Linux systemd files" "0" "${verify_watchdog_linux_rc}"
+assert_contains "verify.sh passes matching Linux systemd service" \
+  "resume-watchdog systemd service matches installed render" "${verify_watchdog_linux_out}"
+assert_contains "verify.sh passes matching Linux systemd timer" \
+  "resume-watchdog systemd timer matches installed render" "${verify_watchdog_linux_out}"
+
+# 6d. Missing Linux timer warns by default and fails under --strict.
+rm -f "${linux_timer}"
+verify_watchdog_linux_missing="$(run_verify_env_with_rc "${verify_path_linux}" "")"
+verify_watchdog_linux_missing_rc="$(printf '%s' "${verify_watchdog_linux_missing}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify.sh default mode exits 0 on missing Linux timer" "0" "${verify_watchdog_linux_missing_rc}"
+assert_contains "verify.sh names missing Linux timer" \
+  "resume_watchdog=on but resume-watchdog systemd timer is missing" "${verify_watchdog_linux_missing}"
+
+verify_watchdog_linux_missing_strict="$(run_verify_env_with_rc "${verify_path_linux}" "" --strict)"
+verify_watchdog_linux_missing_strict_rc="$(printf '%s' "${verify_watchdog_linux_missing_strict}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify.sh --strict exits 1 on missing Linux timer" "1" "${verify_watchdog_linux_missing_strict_rc}"
+
+# 6e. macOS stale LaunchAgent warns when resume_watchdog is disabled.
+rm -rf "${TEST_HOME}"
+TEST_HOME="$(mktemp -d)"
+CLAUDE_HOME="${TEST_HOME}/.claude"
+SETTINGS="${CLAUDE_HOME}/settings.json"
+run_install >/dev/null
+set_conf_value "resume_watchdog" "off"
+
+VERIFY_STUB_BIN="${TEST_HOME}/verify-stub-bin"
+mkdir -p "${VERIFY_STUB_BIN}"
+cat > "${VERIFY_STUB_BIN}/uname" <<'EOF'
+#!/usr/bin/env bash
+printf 'Darwin\n'
+EOF
+chmod +x "${VERIFY_STUB_BIN}/uname"
+
+verify_path_mac_off="${VERIFY_STUB_BIN}:$PATH"
+mac_plist_off="${TEST_HOME}/Library/LaunchAgents/dev.ohmyclaude.resume-watchdog.plist"
+render_watchdog_template_fixture \
+  "${CLAUDE_HOME}/launchd/dev.ohmyclaude.resume-watchdog.plist" \
+  "${mac_plist_off}" \
+  "${verify_path_mac_off}"
+
+verify_watchdog_mac_stale="$(run_verify_env_with_rc "${verify_path_mac_off}" "")"
+verify_watchdog_mac_stale_rc="$(printf '%s' "${verify_watchdog_mac_stale}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify.sh default mode exits 0 on stale macOS LaunchAgent" "0" "${verify_watchdog_mac_stale_rc}"
+assert_contains "verify.sh names stale macOS LaunchAgent under disabled conf" \
+  "resume_watchdog is not enabled but installed resume-watchdog LaunchAgent is still present" \
+  "${verify_watchdog_mac_stale}"
+
+verify_watchdog_mac_stale_strict="$(run_verify_env_with_rc "${verify_path_mac_off}" "" --strict)"
+verify_watchdog_mac_stale_strict_rc="$(printf '%s' "${verify_watchdog_mac_stale_strict}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify.sh --strict exits 1 on stale macOS LaunchAgent" "1" "${verify_watchdog_mac_stale_strict_rc}"
+
+# 6f. Linux stale systemd artifacts warn when resume_watchdog is disabled.
+rm -rf "${TEST_HOME}"
+TEST_HOME="$(mktemp -d)"
+CLAUDE_HOME="${TEST_HOME}/.claude"
+SETTINGS="${CLAUDE_HOME}/settings.json"
+run_install >/dev/null
+set_conf_value "resume_watchdog" "off"
+
+VERIFY_STUB_BIN="${TEST_HOME}/verify-stub-bin"
+mkdir -p "${VERIFY_STUB_BIN}"
+cat > "${VERIFY_STUB_BIN}/uname" <<'EOF'
+#!/usr/bin/env bash
+printf 'Linux\n'
+EOF
+chmod +x "${VERIFY_STUB_BIN}/uname"
+
+verify_path_linux_off="${VERIFY_STUB_BIN}:$PATH"
+linux_service_off="${TEST_HOME}/.config/systemd/user/oh-my-claude-resume-watchdog.service"
+linux_timer_off="${TEST_HOME}/.config/systemd/user/oh-my-claude-resume-watchdog.timer"
+render_watchdog_template_fixture \
+  "${CLAUDE_HOME}/systemd/oh-my-claude-resume-watchdog.service" \
+  "${linux_service_off}" \
+  "${verify_path_linux_off}"
+render_watchdog_template_fixture \
+  "${CLAUDE_HOME}/systemd/oh-my-claude-resume-watchdog.timer" \
+  "${linux_timer_off}" \
+  "${verify_path_linux_off}"
+
+verify_watchdog_linux_stale="$(run_verify_env_with_rc "${verify_path_linux_off}" "")"
+verify_watchdog_linux_stale_rc="$(printf '%s' "${verify_watchdog_linux_stale}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify.sh default mode exits 0 on stale Linux systemd artifacts" "0" "${verify_watchdog_linux_stale_rc}"
+assert_contains "verify.sh names stale Linux systemd service under disabled conf" \
+  "resume_watchdog is not enabled but installed resume-watchdog systemd service is still present" \
+  "${verify_watchdog_linux_stale}"
+assert_contains "verify.sh names stale Linux systemd timer under disabled conf" \
+  "resume_watchdog is not enabled but installed resume-watchdog systemd timer is still present" \
+  "${verify_watchdog_linux_stale}"
+
+verify_watchdog_linux_stale_strict="$(run_verify_env_with_rc "${verify_path_linux_off}" "" --strict)"
+verify_watchdog_linux_stale_strict_rc="$(printf '%s' "${verify_watchdog_linux_stale_strict}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify.sh --strict exits 1 on stale Linux systemd artifacts" "1" "${verify_watchdog_linux_stale_strict_rc}"
+
+# 6g. Cron fallback on non-systemd / non-launchd hosts is machine-verified.
+rm -rf "${TEST_HOME}"
+TEST_HOME="$(mktemp -d)"
+CLAUDE_HOME="${TEST_HOME}/.claude"
+SETTINGS="${CLAUDE_HOME}/settings.json"
+run_install >/dev/null
+set_conf_value "resume_watchdog" "on"
+
+VERIFY_STUB_BIN="${TEST_HOME}/verify-stub-bin"
+mkdir -p "${VERIFY_STUB_BIN}"
+cat > "${VERIFY_STUB_BIN}/uname" <<'EOF'
+#!/usr/bin/env bash
+printf 'FreeBSD\n'
+EOF
+chmod +x "${VERIFY_STUB_BIN}/uname"
+cron_store="${TEST_HOME}/mock.crontab"
+write_verify_crontab_stub "${VERIFY_STUB_BIN}" "${cron_store}"
+render_watchdog_cron_fixture "${cron_store}"
+
+verify_path_cron="${VERIFY_STUB_BIN}:$PATH"
+verify_watchdog_cron_out="$(run_verify_env_with_rc "${verify_path_cron}" "")"
+verify_watchdog_cron_rc="$(printf '%s' "${verify_watchdog_cron_out}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify.sh exits 0 on matching cron fallback" "0" "${verify_watchdog_cron_rc}"
+assert_contains "verify.sh passes matching cron fallback" \
+  "resume-watchdog cron entry matches installed render" "${verify_watchdog_cron_out}"
+
+# 6h. Stale or mismatched cron fallback warns by default and fails under --strict.
+cat > "${cron_store}" <<'EOF'
+# oh-my-claude resume-watchdog
+*/2 * * * * bash /tmp/old-home/.claude/quality-pack/scripts/resume-watchdog.sh >/dev/null 2>&1
+EOF
+verify_watchdog_cron_drift="$(run_verify_env_with_rc "${verify_path_cron}" "")"
+verify_watchdog_cron_drift_rc="$(printf '%s' "${verify_watchdog_cron_drift}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify.sh default mode exits 0 on mismatched cron fallback" "0" "${verify_watchdog_cron_drift_rc}"
+assert_contains "verify.sh names stale cron fallback" \
+  "resume_watchdog=on but cron contains a stale or mismatched resume-watchdog entry" \
+  "${verify_watchdog_cron_drift}"
+
+verify_watchdog_cron_drift_strict="$(run_verify_env_with_rc "${verify_path_cron}" "" --strict)"
+verify_watchdog_cron_drift_strict_rc="$(printf '%s' "${verify_watchdog_cron_drift_strict}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify.sh --strict exits 1 on mismatched cron fallback" "1" "${verify_watchdog_cron_drift_strict_rc}"
+
+# 6i. Disabled conf with stale cron entry warns by default and fails under --strict.
+set_conf_value "resume_watchdog" "off"
+verify_watchdog_cron_stale_off="$(run_verify_env_with_rc "${verify_path_cron}" "")"
+verify_watchdog_cron_stale_off_rc="$(printf '%s' "${verify_watchdog_cron_stale_off}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify.sh default mode exits 0 on stale cron entry with disabled conf" "0" "${verify_watchdog_cron_stale_off_rc}"
+assert_contains "verify.sh names stale cron entry under disabled conf" \
+  "resume_watchdog is not enabled but installed resume-watchdog cron entry is still present" \
+  "${verify_watchdog_cron_stale_off}"
+
+verify_watchdog_cron_stale_off_strict="$(run_verify_env_with_rc "${verify_path_cron}" "" --strict)"
+verify_watchdog_cron_stale_off_strict_rc="$(printf '%s' "${verify_watchdog_cron_stale_off_strict}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify.sh --strict exits 1 on stale cron entry with disabled conf" "1" "${verify_watchdog_cron_stale_off_strict_rc}"
+
+# 6j. Unexpected cron entry alongside macOS LaunchAgent warns/fails.
+rm -rf "${TEST_HOME}"
+TEST_HOME="$(mktemp -d)"
+CLAUDE_HOME="${TEST_HOME}/.claude"
+SETTINGS="${CLAUDE_HOME}/settings.json"
+run_install >/dev/null
+set_conf_value "resume_watchdog" "on"
+
+VERIFY_STUB_BIN="${TEST_HOME}/verify-stub-bin"
+mkdir -p "${VERIFY_STUB_BIN}"
+cat > "${VERIFY_STUB_BIN}/uname" <<'EOF'
+#!/usr/bin/env bash
+printf 'Darwin\n'
+EOF
+chmod +x "${VERIFY_STUB_BIN}/uname"
+cron_store="${TEST_HOME}/mock.crontab"
+write_verify_crontab_stub "${VERIFY_STUB_BIN}" "${cron_store}"
+render_watchdog_cron_fixture "${cron_store}"
+mac_plist="${TEST_HOME}/Library/LaunchAgents/dev.ohmyclaude.resume-watchdog.plist"
+verify_path_mac_cron="${VERIFY_STUB_BIN}:$PATH"
+render_watchdog_template_fixture \
+  "${CLAUDE_HOME}/launchd/dev.ohmyclaude.resume-watchdog.plist" \
+  "${mac_plist}" \
+  "${verify_path_mac_cron}"
+
+verify_watchdog_mac_extra_cron="$(run_verify_env_with_rc "${verify_path_mac_cron}" "")"
+verify_watchdog_mac_extra_cron_rc="$(printf '%s' "${verify_watchdog_mac_extra_cron}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify.sh default mode exits 0 on unexpected cron alongside LaunchAgent" "0" "${verify_watchdog_mac_extra_cron_rc}"
+assert_contains "verify.sh names unexpected cron alongside LaunchAgent" \
+  "resume_watchdog=on but unexpected resume-watchdog cron entry is present alongside the primary scheduler" \
+  "${verify_watchdog_mac_extra_cron}"
+
+verify_watchdog_mac_extra_cron_strict="$(run_verify_env_with_rc "${verify_path_mac_cron}" "" --strict)"
+verify_watchdog_mac_extra_cron_strict_rc="$(printf '%s' "${verify_watchdog_mac_extra_cron_strict}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify.sh --strict exits 1 on unexpected cron alongside LaunchAgent" "1" "${verify_watchdog_mac_extra_cron_strict_rc}"
 
 printf '\n'
 

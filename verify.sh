@@ -173,6 +173,259 @@ info_warn() {
   info_warnings=$(( info_warnings + 1 ))
 }
 
+read_conf_value() {
+  local key="${1:-}"
+  local conf_path="${CLAUDE_HOME}/oh-my-claude.conf"
+  [[ -n "${key}" ]] || return 0
+  [[ -f "${conf_path}" ]] || return 0
+  grep -E "^${key}=" "${conf_path}" 2>/dev/null \
+    | tail -n1 | cut -d= -f2- | tr -d '\r' || true
+}
+
+verify_platform() {
+  case "$(uname 2>/dev/null || echo '')" in
+    Darwin) printf 'macos' ;;
+    Linux) printf 'linux' ;;
+    *) printf 'other' ;;
+  esac
+}
+
+watchdog_resolved_path() {
+  local from_shell=""
+  if [[ -n "${SHELL:-}" ]] && [[ -x "${SHELL}" ]]; then
+    if command -v timeout >/dev/null 2>&1; then
+      from_shell="$(timeout 5 "${SHELL}" -ilc 'printf %s "${PATH}"' 2>/dev/null || true)"
+    else
+      from_shell="$("${SHELL}" -ilc 'printf %s "${PATH}"' 2>/dev/null || true)"
+    fi
+  fi
+  if [[ -n "${from_shell}" ]]; then
+    printf '%s' "${from_shell}"
+    return 0
+  fi
+  if [[ -n "${PATH:-}" ]]; then
+    printf '%s' "${PATH}"
+    return 0
+  fi
+  printf '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
+}
+
+render_watchdog_template() {
+  local template_path="${1:-}"
+  local target_home="${2:-${TARGET_HOME}}"
+  local claude_home="${target_home}/.claude"
+  local log_dir="${claude_home}/quality-pack/state/.watchdog-logs"
+  local user_path=""
+  local user_path_esc=""
+
+  [[ -f "${template_path}" ]] || return 1
+
+  user_path="$(watchdog_resolved_path)"
+  user_path_esc="${user_path//&/\\&}"
+  user_path_esc="${user_path_esc//|/\\|}"
+
+  sed \
+    -e "s|__OMC_HOME__|${claude_home}|g" \
+    -e "s|__OMC_USER_HOME__|${target_home}|g" \
+    -e "s|__OMC_LOG_DIR__|${log_dir}|g" \
+    -e "s|__OMC_PATH__|${user_path_esc}|g" \
+    "${template_path}"
+}
+
+render_watchdog_cron_line() {
+  local script_path="${CLAUDE_HOME}/quality-pack/scripts/resume-watchdog.sh"
+  local quoted_script=""
+  printf -v quoted_script '%q' "${script_path}"
+  printf '*/2 * * * * bash %s >/dev/null 2>&1' "${quoted_script}"
+}
+
+read_watchdog_crontab() {
+  if ! command -v crontab >/dev/null 2>&1; then
+    return 127
+  fi
+
+  local current=""
+  local rc=0
+  set +e
+  current="$(crontab -l 2>/dev/null)"
+  rc=$?
+  set -e
+
+  case "${rc}" in
+    0)
+      printf '%s' "${current}"
+      return 0
+      ;;
+    1)
+      return 0
+      ;;
+    *)
+      return "${rc}"
+      ;;
+  esac
+}
+
+verify_resume_watchdog_scheduler() {
+  local resume_watchdog=""
+  local scheduler_issues=0
+  local platform_name=""
+  local expected_tmp=""
+  local dest=""
+  local template=""
+  local remediation_hint=""
+  local cron_line=""
+  local cron_contents=""
+  local cron_rc=0
+
+  resume_watchdog="$(read_conf_value "resume_watchdog")"
+
+  platform_name="$(verify_platform)"
+
+  compare_scheduler_file() {
+    local label="${1:-}"
+    local template_path="${2:-}"
+    local dest_path="${3:-}"
+
+    if [[ ! -f "${dest_path}" ]]; then
+      foreign_report "resume_watchdog=on but ${label} is missing at ${dest_path}"
+      scheduler_issues=$((scheduler_issues + 1))
+      return 0
+    fi
+
+    expected_tmp="$(mktemp)"
+    if ! render_watchdog_template "${template_path}" > "${expected_tmp}"; then
+      rm -f "${expected_tmp}" 2>/dev/null || true
+      fail "Could not render expected ${label} from ${template_path}"
+      return 0
+    fi
+
+    if cmp -s "${expected_tmp}" "${dest_path}"; then
+      pass "${label} matches installed render"
+    else
+      foreign_report "${label} differs from expected render (${dest_path})"
+      scheduler_issues=$((scheduler_issues + 1))
+    fi
+    rm -f "${expected_tmp}" 2>/dev/null || true
+  }
+
+  report_stale_scheduler_file() {
+    local label="${1:-}"
+    local dest_path="${2:-}"
+
+    if [[ -f "${dest_path}" ]]; then
+      foreign_report "resume_watchdog is not enabled but installed ${label} is still present at ${dest_path}"
+      scheduler_issues=$((scheduler_issues + 1))
+    fi
+  }
+
+  verify_cron_scheduler() {
+    local expectation="${1:-forbidden}"
+    cron_line="$(render_watchdog_cron_line)"
+    set +e
+    cron_contents="$(read_watchdog_crontab)"
+    cron_rc=$?
+    set -e
+
+    if [[ "${cron_rc}" -eq 127 ]]; then
+      if [[ "${expectation}" == "required" ]]; then
+        info_warn "resume_watchdog=on but crontab is unavailable; cron fallback cannot be verified automatically"
+      fi
+      return 0
+    fi
+    if [[ "${cron_rc}" -ne 0 ]]; then
+      foreign_report "could not read current crontab to audit the resume-watchdog scheduler"
+      scheduler_issues=$((scheduler_issues + 1))
+      return 0
+    fi
+
+    if [[ "${expectation}" == "required" ]]; then
+      if printf '%s\n' "${cron_contents}" | grep -Fx "${cron_line}" >/dev/null 2>&1; then
+        pass "resume-watchdog cron entry matches installed render"
+      else
+        if printf '%s\n' "${cron_contents}" | grep -F "resume-watchdog.sh" >/dev/null 2>&1; then
+          foreign_report "resume_watchdog=on but cron contains a stale or mismatched resume-watchdog entry"
+        else
+          foreign_report "resume_watchdog=on but resume-watchdog cron entry is missing"
+        fi
+        scheduler_issues=$((scheduler_issues + 1))
+      fi
+
+      if [[ "$(printf '%s\n' "${cron_contents}" | grep -Fc "resume-watchdog.sh" || true)" -gt 1 ]]; then
+        foreign_report "multiple resume-watchdog cron entries are present; expected exactly one managed entry"
+        scheduler_issues=$((scheduler_issues + 1))
+      fi
+    else
+      if printf '%s\n' "${cron_contents}" | grep -F "resume-watchdog.sh" >/dev/null 2>&1; then
+        if [[ "${resume_watchdog}" == "on" ]]; then
+          foreign_report "resume_watchdog=on but unexpected resume-watchdog cron entry is present alongside the primary scheduler"
+        else
+          foreign_report "resume_watchdog is not enabled but installed resume-watchdog cron entry is still present"
+        fi
+        scheduler_issues=$((scheduler_issues + 1))
+      fi
+    fi
+  }
+
+  if [[ "${resume_watchdog}" == "on" ]]; then
+    case "${platform_name}" in
+      macos)
+        template="${CLAUDE_HOME}/launchd/dev.ohmyclaude.resume-watchdog.plist"
+        dest="${TARGET_HOME}/Library/LaunchAgents/dev.ohmyclaude.resume-watchdog.plist"
+        compare_scheduler_file "resume-watchdog LaunchAgent" "${template}" "${dest}"
+        verify_cron_scheduler "forbidden"
+        ;;
+      linux)
+        if command -v systemctl >/dev/null 2>&1; then
+          compare_scheduler_file \
+            "resume-watchdog systemd service" \
+            "${CLAUDE_HOME}/systemd/oh-my-claude-resume-watchdog.service" \
+            "${TARGET_HOME}/.config/systemd/user/oh-my-claude-resume-watchdog.service"
+          compare_scheduler_file \
+            "resume-watchdog systemd timer" \
+            "${CLAUDE_HOME}/systemd/oh-my-claude-resume-watchdog.timer" \
+            "${TARGET_HOME}/.config/systemd/user/oh-my-claude-resume-watchdog.timer"
+          verify_cron_scheduler "forbidden"
+        else
+          verify_cron_scheduler "required"
+        fi
+        ;;
+      *)
+        verify_cron_scheduler "required"
+        ;;
+    esac
+    remediation_hint="refresh"
+  else
+    case "${platform_name}" in
+      macos)
+        report_stale_scheduler_file \
+          "resume-watchdog LaunchAgent" \
+          "${TARGET_HOME}/Library/LaunchAgents/dev.ohmyclaude.resume-watchdog.plist"
+        ;;
+      linux)
+        report_stale_scheduler_file \
+          "resume-watchdog systemd service" \
+          "${TARGET_HOME}/.config/systemd/user/oh-my-claude-resume-watchdog.service"
+        report_stale_scheduler_file \
+          "resume-watchdog systemd timer" \
+          "${TARGET_HOME}/.config/systemd/user/oh-my-claude-resume-watchdog.timer"
+        ;;
+    esac
+    verify_cron_scheduler "forbidden"
+    remediation_hint="remove"
+  fi
+
+  if [[ "${scheduler_issues}" -gt 0 ]] && [[ "${STRICT_MODE}" != "true" ]]; then
+    case "${remediation_hint}" in
+      refresh)
+        printf '  [info] Re-run bash %s/install-resume-watchdog.sh to refresh the installed scheduler files.\n' "${CLAUDE_HOME}"
+        ;;
+      remove)
+        printf '  [info] Re-run bash %s/install-resume-watchdog.sh --uninstall --reset-conf to remove the installed scheduler artifacts.\n' "${CLAUDE_HOME}"
+        ;;
+    esac
+  fi
+}
+
 # ---------------------------------------------------------------------------
 # Version
 # ---------------------------------------------------------------------------
@@ -528,17 +781,48 @@ printf '\n'
 printf '6. Agent availability\n'
 
 if command -v claude >/dev/null 2>&1; then
-  agents_output="$(claude agents 2>/dev/null || true)"
-  if [[ -n "${agents_output}" ]]; then
-    for agent_name in quality-planner quality-reviewer prometheus writing-architect; do
-      if printf '%s' "${agents_output}" | grep -q "${agent_name}"; then
-        pass "Agent: ${agent_name}"
+  # Non-interactive verify runs cannot rely on the TTY-oriented `claude
+  # agents` surface; current Claude CLIs direct users to `--json` in that
+  # case. Probe the machine-readable path and treat probe failure as an
+  # informational skip, not an actionable install warning. Some builds
+  # currently return an ACTIVE-SESSION listing here rather than an agent
+  # catalog; detect that payload shape and skip instead of warning on
+  # every missing bundled agent.
+  set +e
+  agents_output="$(claude agents --json 2>/dev/null)"
+  agents_rc=$?
+  set -e
+  if [[ "${agents_rc}" -eq 0 ]] && [[ -n "${agents_output}" ]]; then
+    agent_names="$(printf '%s' "${agents_output}" | jq -r '
+      if type == "array" then
+        [
+          .[]? |
+          (.name // .id // .slug // .agentName // empty) |
+          tostring
+        ] | map(select(length > 0)) | .[]
       else
-        warn "Agent not listed by claude CLI: ${agent_name}"
-      fi
-    done
+        empty
+      end
+    ' 2>/dev/null || true)"
+    if [[ -n "${agent_names}" ]]; then
+      for agent_name in quality-planner quality-reviewer prometheus writing-architect; do
+        if printf '%s\n' "${agent_names}" | grep -qx "${agent_name}"; then
+          pass "Agent: ${agent_name}"
+        else
+          warn "Agent not listed by claude CLI: ${agent_name}"
+        fi
+      done
+    elif printf '%s' "${agents_output}" | jq -e '
+      type == "array" and any(.[]?; has("sessionId") and has("cwd") and has("status"))
+    ' >/dev/null 2>&1; then
+      info_warn "claude agents --json returned active sessions, not an agent catalog; skipping agent availability check"
+    else
+      info_warn "claude agents --json returned an unrecognized payload; skipping agent availability check"
+    fi
+  elif [[ "${agents_rc}" -eq 0 ]]; then
+    info_warn "claude agents --json returned no output; skipping agent availability check"
   else
-    warn "claude agents returned no output"
+    info_warn "claude agents --json unavailable; skipping agent availability check"
   fi
 else
   info_warn "claude CLI not found; skipping agent availability check"
@@ -736,6 +1020,27 @@ fi
 
 printf '\n'
 
+# ---------------------------------------------------------------------------
+# 10. Installed resume-watchdog scheduler integrity
+# ---------------------------------------------------------------------------
+#
+# The required-path and hash checks above cover the bundled templates in
+# `~/.claude/launchd/` and `~/.claude/systemd/`, but when the optional
+# resume watchdog is enabled the live scheduler artifacts run from
+# `~/Library/LaunchAgents/` (macOS) or `~/.config/systemd/user/`
+# (Linux). Those installed files are rendered with user-specific
+# substitutions at install time; if they drift later, the watchdog can
+# silently stop or run with stale PATH/HOME values while verify still
+# reports the bundle as healthy. Also catch the inverse mismatch: the
+# conf says the feature is not enabled, but a previously-installed live
+# scheduler artifact is still present. Linux hosts without launchd/systemd
+# can now be audited mechanically too via the managed cron fallback.
+
+printf '10. Resume-watchdog scheduler install\n'
+verify_resume_watchdog_scheduler
+
+printf '\n'
+
 # ===========================================================================
 # Result
 # ===========================================================================
@@ -761,29 +1066,10 @@ fi
 
 printf 'oh-my-claude verification passed.\n'
 printf '\n'
-# v1.31.0 Wave 5 (visual-craft F-6 partial): TTY-guard the bold escapes.
-# Log redirects (verify.sh > verify.log) and CI dumps now get plain
-# text instead of literal `\033[1m...` markers.
-if [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]]; then
-  printf '\033[1mRestart Claude Code (or open a new session)\033[0m before testing — already-running\n'
-else
-  printf 'Restart Claude Code (or open a new session) before testing — already-running\n'
+_restart_guidance="$(TARGET_HOME="${TARGET_HOME}" bash "${SCRIPT_DIR}/tools/install-state-report.sh" --restart-guidance 2>/dev/null || true)"
+if [[ -n "${_restart_guidance}" ]]; then
+  printf '%s\n' "${_restart_guidance}"
 fi
-printf '  sessions keep the previous hook wiring. Verify above only confirms the on-disk\n'
-printf '  install, not the live hook activation.\n'
-printf '\n'
-if [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]]; then
-  printf '\033[1mNext: type /ulw-demo\033[0m (about 90 seconds — fires the gates on a real edit so you see them work).\n'
-else
-  printf 'Next: type /ulw-demo (about 90 seconds — fires the gates on a real edit so you see them work).\n'
-fi
-printf '\n'
-printf 'Then, when you are ready:\n'
-printf '  /ulw <your real task>     -- runs work through the full quality gates\n'
-printf '  /omc-config               -- inspect or change settings (optional)\n'
-printf '\n'
-printf 'Tip: specialist agents activate automatically based on your task — just describe\n'
-printf "     what you want to accomplish; you don't need to learn agent names.\n"
 printf '\n'
 printf 'Upgrading from a prior release?\n'
 printf '  The live hooks in ~/.claude/ do not auto-upgrade. After git pull, re-run bash install.sh\n'
@@ -791,3 +1077,15 @@ printf '  to sync agents, skills, and memory files. settings.json merges and omc
 printf '  unedited memory files are refreshed in place. (v1.36.0+) hand-edited memory files trigger a\n'
 printf '  pre-rsync warning so you can migrate edits to %s/omc-user/overrides.md.\n' "${CLAUDE_HOME}"
 printf '  Run /omc-config afterwards to review your current settings — see CHANGELOG.md for the new-flag list.\n'
+printf '\n'
+# Agent-install contract: AGENTS.md Step 4 and the README's AI-assisted
+# install prompt both tell agents to quote this footer verbatim after
+# verify.sh passes. Keep the wording and spacing in lockstep with
+# AGENTS.md so install assistants have a stable, exact handoff block.
+cat <<'EOF'
+What next?
+  /omc-config                             -- inspect/change settings (auto-detects mode)
+  /ulw-demo                               -- see quality gates in action (recommended first step)
+  /ulw fix the failing test and add regression coverage
+                                          -- start real work with full quality enforcement
+EOF

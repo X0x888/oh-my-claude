@@ -1,0 +1,15 @@
+{
+  "id": "advisory-operations-guidance",
+  "risk": "medium",
+  "fixture": "fixtures/ops-launch-brief",
+  "prompt": "/ulw what is the best way to structure this launch checklist?",
+  "required_outcomes": [
+    "direct_advisory_answer",
+    "operations_specialist_coverage"
+  ],
+  "budgets": {
+    "max_tokens": 30000,
+    "max_tool_calls": 45,
+    "max_elapsed_seconds": 900
+  }
+}

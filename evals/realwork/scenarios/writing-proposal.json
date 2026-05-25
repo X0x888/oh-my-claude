@@ -1,0 +1,16 @@
+{
+  "id": "writing-proposal",
+  "risk": "medium",
+  "fixture": "fixtures/proposal-memo",
+  "prompt": "/ulw write a concise proposal memo for adopting the release-readiness audit workflow",
+  "required_outcomes": [
+    "writer_deliverable_ready",
+    "doc_review_clean",
+    "final_closeout_audit_ready"
+  ],
+  "budgets": {
+    "max_tokens": 60000,
+    "max_tool_calls": 85,
+    "max_elapsed_seconds": 1500
+  }
+}

@@ -17,6 +17,7 @@ PRECOMPACT="${REPO_ROOT}/bundle/dot-claude/quality-pack/scripts/pre-compact-snap
 OMC_REPRO="${REPO_ROOT}/bundle/dot-claude/omc-repro.sh"
 RELEASE_SH="${REPO_ROOT}/tools/release.sh"
 README="${REPO_ROOT}/README.md"
+CURRENT_VERSION="$(tr -d '[:space:]' < "${REPO_ROOT}/VERSION")"
 
 pass=0
 fail=0
@@ -38,6 +39,20 @@ assert_contains() {
   else
     printf '  FAIL  %s\n         expected to contain: %s\n' \
       "${description}" "${needle}"
+    fail=$((fail + 1))
+  fi
+}
+
+assert_eq() {
+  local description="$1"
+  local expected="$2"
+  local actual="$3"
+  if [[ "${expected}" == "${actual}" ]]; then
+    printf '  PASS  %s\n' "${description}"
+    pass=$((pass + 1))
+  else
+    printf '  FAIL  %s\n         expected=%s\n         actual=%s\n' \
+      "${description}" "${expected}" "${actual}"
     fail=$((fail + 1))
   fi
 }
@@ -125,11 +140,26 @@ else
 fi
 
 # ----------------------------------------------------------------------
-# F-008: README pins install line to a tagged version.
+# F-008: README pins install line to a tagged version and surfaces the
+# stronger verified-remote path.
 printf '\n## F-008 — README install pin\n'
 readme_contents="$(cat "${README}")"
+readme_exact_pin_count="$(printf '%s' "${readme_contents}" | grep -o "OMC_REF=v${CURRENT_VERSION}" | wc -l | tr -d ' ')"
 assert_contains "README documents a pinned install line" "${readme_contents}" "OMC_REF=v1."
+assert_contains "README badge matches VERSION" "${readme_contents}" "Version-${CURRENT_VERSION}-blue"
+assert_eq "README keeps both OMC_REF pins aligned to VERSION" "2" "${readme_exact_pin_count}"
+assert_contains "README manual clone pin matches VERSION" "${readme_contents}" "git clone --branch v${CURRENT_VERSION} https://github.com/X0x888/oh-my-claude.git"
 assert_contains "README still mentions the rolling-main option" "${readme_contents}" "Rolling install"
+assert_contains "README documents verified remote installs with OMC_EXPECTED_SHA" "${readme_contents}" "OMC_EXPECTED_SHA=<release-commit-sha-or-prefix>"
+assert_contains "README explains OMC_EXPECTED_SHA mismatch blocks install.sh" "${readme_contents}" 'refuses to run `install.sh` unless the cloned tree matches it'
+assert_contains "README names GitHub release body as trusted SHA source" "${readme_contents}" 'GitHub release'"'"'s `Verified bootstrap install` / `Trusted release commit` block'
+assert_contains "README names attached source bundle tarball" "${readme_contents}" 'oh-my-claude-vX.Y.Z.tar.gz'
+assert_contains "README names attached checksum manifest" "${readme_contents}" 'oh-my-claude-vX.Y.Z.SHA256SUMS'
+assert_contains "README names GitHub artifact attestations for release assets" "${readme_contents}" 'GitHub artifact attestations'
+assert_contains "README names the bundled published-release verifier helper" "${readme_contents}" 'tools/verify-published-release.sh'
+assert_contains "README names the release-automation deployment verifier helper" "${readme_contents}" 'tools/verify-release-automation-deployment.sh'
+assert_contains "README names the top-level distribution readiness helper" "${readme_contents}" 'tools/verify-distribution-readiness.sh'
+assert_contains "README documents machine-readable release/distribution audit mode" "${readme_contents}" 'All three release/distribution audit helpers support `--json`'
 
 # ----------------------------------------------------------------------
 # F-009: tools/release.sh defaults to tag-on-green; legacy-eager-tag

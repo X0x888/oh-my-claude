@@ -27,7 +27,7 @@ If a fact appears here AND in one of the above, that doc is authoritative — ke
 - `config/settings.patch.json` — settings merged into user config on install
 - `evals/realwork/` — outcome-oriented ULW scenarios and scorer for minimal-prompt real-work shipping
 - `tests/` — bash + python test scripts. Authoritative counts: `find tests/ -maxdepth 1 -name 'test-*.sh' | wc -l` (bash) and `find tests/ -maxdepth 1 -name 'test_*.py' | wc -l` (python). All bash tests CI-pinned in `validate.yml`; pin discipline enforced by `tests/test-coordination-rules.sh`.
-- `tools/` — developer-only tools (telemetry replay, classifier fixtures, defect-cluster review, consumer-contract lint); not installed
+- `tools/` — developer-only tools (release/distribution verification + deployment audit + manifest-driven staging/candidate helpers + top-level readiness checks, including `tools/verify-professional-readiness.sh` for the cross-domain product-readiness audit, `tools/verify-install-readiness.sh` for first-run install/onboarding proof, `tools/verify-project-readiness.sh` for the one-shot maintainer release-candidate audit, `tools/prepare-release-automation-deployment.sh` for coherent pre-push deployment candidate prep, and `tools/verify-distribution-readiness.sh` for the split local-candidate vs remote-deployment release audit, plus the canonical release-automation surface manifest and `--json` machine-readable audit modes, telemetry replay, classifier fixtures, defect-cluster review, consumer-contract lint); not installed
 - `docs/` — architecture, customization, FAQ, glossary, prompts, showcase
 
 ## Key Files
@@ -56,7 +56,7 @@ bash verify.sh
 ```
 
 The CI-pinned test list lives in `.github/workflows/validate.yml`; extract with:
-`grep -E '^\s+run:\s+bash tests/test-' .github/workflows/validate.yml | awk '{print $NF}'`
+`bash tools/list-ci-pinned-tests.sh .github/workflows/validate.yml`
 
 ## Coding Rules
 
@@ -95,6 +95,7 @@ When making any of these changes, update ALL listed sites in the same commit. Mi
 - **Adding or removing a design-craft reference in `bundle/dot-claude/quality-pack/design-craft/`** → 4 sites: (1) the file itself, (2) `verify.sh` `required_paths`, (3) at least one inline reference (with the canonical `~/.claude/quality-pack/design-craft/<file>.md` path) + Art-Taste Calibration section in each of 6 consuming surfaces (5 agents + 1 skill) — 5 visual-craft consumers (`visual-craft-lens`, `design-reviewer`, `frontend-developer`, `ios-ui-developer`, and the `frontend-design` SKILL) and 1 UX-trimmed consumer (`design-lens`, with a scope-bounded 3-principle variant — Cartier-Bresson, Fukasawa, §8 committee-vs-person — that deliberately excludes visual-craft principles to honor the design-lens/visual-craft-lens scope boundary), (4) `tests/test-art-taste-doctrine.sh` regression net (or sibling test if a new file). NOT in the global `@`-include chain — these references are on-demand reads scoped to design surfaces (avoids loading ~4000 words on every non-UI session). Missing any site is a silent failure: file without verify path → broken install passes silently; surface missing the inline reference → the agent reverts to generic-vocabulary critique; no regression test → all of the above can drift across releases without anyone noticing.
 - **Adding or removing a user-invocable skill** → `README.md` (skill table), `bundle/dot-claude/skills/skills/SKILL.md` (user-facing index), `bundle/dot-claude/quality-pack/memory/skills.md` (in-session memory). Missing causes either a discoverability gap (user can't find the skill) or a memory gap (Claude doesn't know to suggest it).
 - **Adding/removing/renaming agents, skills, scripts, or directories** → `README.md`, `CLAUDE.md`, `AGENTS.md`, `CONTRIBUTING.md`. Counts and directory listings drift fast — keep them accurate.
+- **Adding or removing files under `tools/`** → `AGENTS.md` `tools/` inventory AND `tests/test-coordination-rules.sh` Contract 7 must stay in lockstep with the live `tools/` tree (including nested fixture files such as `classifier-fixtures/*.jsonl`). If the tool participates in release/distribution automation, also update `tools/list-release-automation-surfaces.sh` and the release/doc regression net.
 - **Cutting a release tag or editing release history** → `CHANGELOG.md` headings and semver git tags must stay 1:1. `tests/test-coordination-rules.sh` contract C5 enforces tag-to-heading parity; use a tag-aware clone when running it locally.
 - **Adding a new state key** → `docs/architecture.md` "State keys in `session_state.json`" table.
 - **Changing `/ulw` workflow behavior** (routing, directives, gates, reviewer sequence, auto-dispatch, status/report surfaces) → document four things in the same change: the user failure mode being fixed, the effect on automation/babysitting, the latency/token cost, and the verification proving the tradeoff is worth it. Internal elegance alone does not count as a ULW improvement.

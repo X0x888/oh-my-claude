@@ -101,6 +101,22 @@ if [[ -z "${install_ts}" || "${install_ts}" -le 0 ]]; then
   exit 0
 fi
 
+# v1.44.x install-outcome report: same-version reinstalls after doc-only
+# pulls can leave both the managed installed bundle and settings.json
+# unchanged. In that case, surfacing the welcome banner again is just
+# repeat noise. If the last install report matches the current stamp and
+# says restart_required=false, silently advance the per-install marker
+# and skip the banner.
+install_report="${HOME}/.claude/quality-pack/state/last-install-report.json"
+if [[ -f "${install_report}" ]]; then
+  report_restart_required="$(jq -r '.restart_required' "${install_report}" 2>/dev/null || true)"
+  report_install_ts="$(jq -r '.install_stamp_epoch' "${install_report}" 2>/dev/null || true)"
+  if [[ "${report_restart_required}" == "false" ]] && [[ "${report_install_ts}" == "${install_ts}" ]]; then
+    printf '%s\n' "${install_ts}" > "${HOME}/.claude/.welcome-shown-at" 2>/dev/null || true
+    exit 0
+  fi
+fi
+
 welcome_marker="${HOME}/.claude/.welcome-shown-at"
 if [[ -f "${welcome_marker}" ]]; then
   shown_ts="$(cat "${welcome_marker}" 2>/dev/null || echo "")"

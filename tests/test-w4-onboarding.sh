@@ -5,7 +5,9 @@
 # F-016 (docs/showcase.md replaces synthetic seed with real entries),
 # F-017 (README links ohmyclaude.dev), F-018 (install.sh footer collapsed
 # to single canonical /ulw-demo CTA), F-019 (post-restart welcome banner
-# differentiates the post-install session).
+# differentiates the post-install session), F-020 (install/update docs
+# attribute the `Orphans:` block to install.sh, not verify.sh), and
+# F-022 (AI-assisted install failure policy stays explicit and pinned).
 
 set -uo pipefail
 
@@ -123,6 +125,67 @@ if grep -qE "Claude Code reloaded the hooks" "${welcome_sh}"; then
   ok
 else
   fail_msg "F-019: welcome banner should ack the hook reload (post-restart signal)"
+fi
+
+# ----------------------------------------------------------------------
+# F-020 — install/update docs attribute Orphans: to install.sh.
+# ----------------------------------------------------------------------
+printf '\n--- F-020: install docs attribute Orphans to install.sh ---\n'
+
+if grep -qF 'install.sh` post-install summary' "${readme}" && grep -qF 'lists orphans' "${readme}"; then
+  ok
+else
+  fail_msg "F-020: README should attribute the Orphans block to install.sh post-install summary"
+fi
+
+agents_md="${REPO_ROOT}/AGENTS.md"
+if grep -qF 'install.sh`' "${agents_md}" && grep -qF '`Orphans:` block' "${agents_md}"; then
+  ok
+else
+  fail_msg "F-020: AGENTS.md update protocol should attribute the Orphans block to install.sh"
+fi
+
+# ----------------------------------------------------------------------
+# F-021 — helper-backed install/update text modes are documented.
+# ----------------------------------------------------------------------
+printf '\n--- F-021: helper-backed install/update text modes are documented ---\n'
+
+if grep -qF -- '--already-current-summary' "${agents_md}" \
+  && grep -qF -- '--last-update-summary' "${agents_md}" \
+  && grep -qF -- '--restart-guidance' "${agents_md}"; then
+  ok
+else
+  fail_msg "F-021: AGENTS.md should document install-state-report helper modes for already-current, update summary, and restart guidance"
+fi
+
+if grep -qF -- '--already-current-summary' "${readme}" \
+  && grep -qF -- '--last-update-summary' "${readme}" \
+  && grep -qF -- '--restart-guidance' "${readme}"; then
+  ok
+else
+  fail_msg "F-021: README should surface install-state-report helper modes for human-facing summaries"
+fi
+
+# ----------------------------------------------------------------------
+# F-022 — AI-assisted install failure policy and supply-chain posture stay explicit.
+# ----------------------------------------------------------------------
+printf '\n--- F-022: AI-assisted install failure policy stays explicit ---\n'
+
+if grep -qF 'Failure policy for AI installers' "${agents_md}" \
+  && grep -qF 'Do not overwrite the path or run a foreign `install.sh`.' "${agents_md}" \
+  && grep -qF 'do not give restart or `What next?` guidance until `verify.sh` passes with `Errors: 0`.' "${agents_md}"; then
+  ok
+else
+  fail_msg "F-022: AGENTS.md should pin the AI-installer failure policy for existing installs, foreign clone paths, and verify failures"
+fi
+
+if grep -qF 'If the protocol finds an existing install, ask whether I mean reinstall or update.' "${readme}" \
+  && grep -qF 'If the canonical clone path belongs to another repo, or if `install.sh` / `verify.sh` fails, stop and show me the issue instead of forcing ahead.' "${readme}" \
+  && grep -qF 'If `verify.sh` fails, stop and show me the output; do not give restart advice or the `What next?` footer.' "${readme}" \
+  && grep -qF 'If I explicitly ask for the curl-pipe-bash route instead of a manual clone, use the tag-pinned `install-remote.sh` path with `OMC_EXPECTED_SHA=<trusted release commit sha/prefix>` rather than rolling `main`, and source that SHA from the GitHub release'"'"'s `Verified bootstrap install` / `Trusted release commit` block.' "${readme}"; then
+  ok
+else
+  fail_msg "F-022: README AI-assisted install prompts should preserve the failure/ambiguity handling policy and verified-bootstrap posture"
 fi
 
 # ----------------------------------------------------------------------

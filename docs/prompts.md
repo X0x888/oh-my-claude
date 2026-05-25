@@ -63,6 +63,16 @@ ulw draft a cover letter for the senior engineering manager role at Stripe
 ```
 Professional writing. Claude structures the letter around the role requirements, drafts with appropriate tone, and runs editor-critic to tighten the prose and remove filler.
 
+```
+/ulw what structure should this grant proposal use?
+```
+Writing-domain advisory. Claude answers directly with structural guidance, audience fit, and evidence expectations rather than trying to draft the whole piece unless you explicitly ask it to.
+
+```
+/ulw research the literature on spaced repetition in graduate study and draft a short literature review with citations
+```
+Scholar-style mixed workflow. Claude gathers authoritative sources via librarian, uses briefing-analyst to synthesize the evidence, drafts the review with citation-shaped placeholders where needed, and runs editor-critic before finalizing.
+
 ---
 
 ## Research
@@ -81,6 +91,11 @@ Codebase advisory. Claude reads the actual dependency manifests, checks for know
 ulw evaluate whether we should adopt Turborepo or Nx for our monorepo -- we have 12 packages
 ```
 Comparative research with project context. Claude gathers current docs on both tools, maps them against the stated constraints (12 packages), and delivers a ranked recommendation with tradeoffs.
+
+```
+/ulw what are the tradeoffs between spaced repetition and active recall for graduate study?
+```
+Research-domain advisory. Claude answers directly instead of forcing implementation, but still keeps the research discipline: source quality first, evidence separated from inference, and a decision-oriented comparison rather than generic brainstorming.
 
 ---
 
@@ -101,6 +116,11 @@ ulw draft a stakeholder update email summarizing this week's progress on the pay
 ```
 Professional communication. Claude structures the update (highlights, blockers, next steps), drafts in appropriate tone for stakeholders, and reviews for clarity and completeness.
 
+```
+/ulw what is the best way to structure this launch checklist?
+```
+Operations-domain advisory. Claude answers directly with a recommended checklist shape, sequencing, and ownership discipline instead of turning the question into implementation work.
+
 ---
 
 ## Combined Patterns
@@ -119,6 +139,11 @@ Full codebase audit with deep verification. Claude launches scoped exploration a
 /ulw research the Stripe API changes in v2024-12 then update our payment module to match
 ```
 Mixed domain (research + coding). Claude researches the API changes via librarian, plans the migration, implements the updates, tests, and reviews. The system detects "mixed" domain and uses appropriate specialists for each phase.
+
+```
+/ulw fix the deploy-health endpoint, add regression tests, and create a release plan plus cutover checklist with owners, deadlines, and rollback steps
+```
+Mixed domain (coding + operations). Claude fixes and verifies the implementation work, then uses chief-of-staff to structure the operational artifact so the checklist stays actionable: owners, deadlines, rollback steps, and cutover sequencing stay synchronized with the actual code and verification state.
 
 ---
 

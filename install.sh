@@ -171,6 +171,41 @@ _install_file_mtime() {
   fi
 }
 
+# Stable file-content signature used for install-outcome reporting.
+# `cksum` is POSIX and available on both macOS and Linux, making it a
+# better portability fit than the SHA tools used by verify.sh's optional
+# at-rest drift manifest.
+file_cksum_signature() {
+  local path="$1"
+  [[ -f "${path}" ]] || return 1
+  cksum "${path}" 2>/dev/null | awk '{print $1 ":" $2}'
+}
+
+# Build a sorted snapshot of managed installed files keyed by relative
+# path. Each line is `<path><TAB><checksum:size>`. The manifest limits the
+# snapshot to bundle-managed files only, so user-created content under
+# ~/.claude/ does not affect restart decisions.
+build_signature_snapshot() {
+  local root_dir="$1"
+  local manifest_path="$2"
+  local out_path="$3"
+  local rel_path=""
+  local sig=""
+
+  : > "${out_path}"
+  [[ -f "${manifest_path}" ]] || return 0
+
+  while IFS= read -r rel_path; do
+    [[ -n "${rel_path}" ]] || continue
+    [[ -f "${root_dir}/${rel_path}" ]] || continue
+    sig="$(file_cksum_signature "${root_dir}/${rel_path}" || true)"
+    [[ -n "${sig}" ]] || continue
+    printf '%s\t%s\n' "${rel_path}" "${sig}" >> "${out_path}"
+  done < "${manifest_path}"
+
+  LC_ALL=C sort -o "${out_path}" "${out_path}"
+}
+
 # v1.36.0: warn before overwriting memory files the user has hand-edited.
 # The end-of-install message used to advertise "settings.json merges and
 # omc-user/ are preserved" without mentioning that quality-pack/memory/*.md
@@ -692,8 +727,8 @@ merge_settings_jq() {
     # Non-empty set intersection (any element of $a appears in $b).
     def sets_overlap($a; $b):
       any($a[]; . as $x | ($b | index($x)) != null);
-    # Dedupe an entry''s hooks by script basename, later occurrence wins.
-    # Preserves the position of each basename''s most recent occurrence.
+    # Dedupe entry hooks by script basename, later occurrence wins.
+    # Preserves the position of each basename most recent occurrence.
     # Non-object hooks (explicit null, arrays, scalars) are filtered out
     # to match the Python `isinstance(h, dict)` guard.
     def dedupe_entry_hooks:
@@ -730,7 +765,7 @@ merge_settings_jq() {
         )
       );
     # Normalize base entries before the three-phase merge loop:
-    # 1. Dedupe within each entry''s hooks by script basename (later wins).
+    # 1. Dedupe within each entry hooks list by script basename (later wins).
     # 2. Collapse multiple same-matcher entries whose basename sets
     #    overlap into a single canonical entry. Disjoint same-matcher
     #    entries are left separate (preserves intentional user customization).
@@ -942,6 +977,30 @@ ensure_executable_bits() {
 }
 
 # ---------------------------------------------------------------------------
+# Git checkout helpers
+# ---------------------------------------------------------------------------
+
+is_git_checkout() {
+  local repo_root="${1:-}"
+  [[ -n "${repo_root}" ]] || return 1
+  command -v git >/dev/null 2>&1 || return 1
+  git -C "${repo_root}" rev-parse --show-toplevel >/dev/null 2>&1
+}
+
+git_hooks_dir_for_checkout() {
+  local repo_root="${1:-}"
+  local hooks_dir=""
+
+  is_git_checkout "${repo_root}" || return 1
+  hooks_dir="$(git -C "${repo_root}" rev-parse --git-path hooks 2>/dev/null || true)"
+  [[ -n "${hooks_dir}" ]] || return 1
+  if [[ "${hooks_dir}" != /* ]]; then
+    hooks_dir="${repo_root}/${hooks_dir}"
+  fi
+  printf '%s\n' "${hooks_dir}"
+}
+
+# ---------------------------------------------------------------------------
 # Install the opt-in post-merge git hook
 # ---------------------------------------------------------------------------
 #
@@ -950,24 +1009,23 @@ ensure_executable_bits() {
 # end up running a stale installed harness against a newer source, which
 # defeats the stale-install indicator and produces subtle drift.
 #
-# Enabling `--git-hooks` writes `.git/hooks/post-merge` in the oh-my-claude
-# source checkout. After every merge (which includes `git pull`), the hook
-# compares `installed-manifest.txt` against the current bundle and prompts
-# the user to re-install if any files differ. The prompt is non-blocking and
-# honored via `OMC_AUTO_INSTALL=1` for CI or confident users.
+# Enabling `--git-hooks` writes `post-merge` into the checkout's resolved
+# hooks directory (`git rev-parse --git-path hooks`). In a normal clone this
+# is `.git/hooks`; in a linked worktree Git resolves it to the common hooks
+# directory under the main checkout. After every merge (which includes
+# `git pull`), the hook compares `installed-manifest.txt` against the current
+# bundle and prompts the user to re-install if any files differ. The prompt
+# is non-blocking and honored via `OMC_AUTO_INSTALL=1` for CI or confident
+# users.
 install_git_hooks() {
   local source_repo="${SCRIPT_DIR}"
+  local hooks_dir=""
 
-  if ! command -v git >/dev/null 2>&1; then
-    printf '  Git hooks:     skipped (git not found)\n'
-    return
-  fi
-  if [[ ! -d "${source_repo}/.git" ]]; then
-    printf '  Git hooks:     skipped (%s is not a git worktree)\n' "${source_repo}"
+  if ! hooks_dir="$(git_hooks_dir_for_checkout "${source_repo}")"; then
+    printf '  Git hooks:     skipped (%s is not a git checkout)\n' "${source_repo}"
     return
   fi
 
-  local hooks_dir="${source_repo}/.git/hooks"
   local hook_path="${hooks_dir}/post-merge"
 
   # If something is already at post-merge that isn't ours, do not overwrite
@@ -994,8 +1052,8 @@ install_git_hooks() {
 
 set -euo pipefail
 
-# Locate the repo root. The post-merge hook runs inside .git/hooks/, so
-# git rev-parse gives us the actual worktree.
+# Locate the repo root. The post-merge hook runs inside Git's resolved
+# hooks directory, so git rev-parse gives us the actual checkout root.
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 [[ -n "${repo_root}" ]] || exit 0
 
@@ -1069,7 +1127,11 @@ HOOK
 # by re-running install without the flag).
 # ---------------------------------------------------------------------------
 remove_git_hooks_if_ours() {
-  local hook_path="${SCRIPT_DIR}/.git/hooks/post-merge"
+  local hooks_dir=""
+  local hook_path=""
+
+  hooks_dir="$(git_hooks_dir_for_checkout "${SCRIPT_DIR}")" || return
+  hook_path="${hooks_dir}/post-merge"
   [[ -f "${hook_path}" ]] || return
   if grep -q '# oh-my-claude post-merge auto-sync' "${hook_path}" 2>/dev/null; then
     # Leave it in place silently — users who explicitly installed it once
@@ -1293,6 +1355,10 @@ release_install_lock() {
   rm -rf "${INSTALL_LOCK_DIR}" 2>/dev/null || true
 }
 
+cleanup_install_tmpfiles() {
+  rm -f "${PRE_INSTALL_SIGNATURES:-}" "${POST_INSTALL_SIGNATURES:-}" 2>/dev/null || true
+}
+
 acquire_install_lock
 
 # v1.42.x F-023 (SRE-lens): rollback-aware emergency trap.
@@ -1325,7 +1391,10 @@ _emergency_recovery_msg() {
   return "${_rc}"
 }
 
-trap '_emergency_recovery_msg; release_install_lock' EXIT
+PRE_INSTALL_SIGNATURES=""
+POST_INSTALL_SIGNATURES=""
+
+trap '_emergency_recovery_msg; cleanup_install_tmpfiles; release_install_lock' EXIT
 
 printf 'Installing oh-my-claude into %s ...\n' "${CLAUDE_HOME}"
 
@@ -1349,6 +1418,18 @@ chmod 700 "${BACKUP_DIR}" 2>/dev/null || true
 # fallback, not the contract surfaced in the warn message.
 warn_modified_memory_files
 backup_existing_targets
+
+# Capture the pre-install managed-file snapshot before rsync mutates
+# ~/.claude/. The current manifest enumerates exactly which installed
+# files belonged to the last bundle generation.
+PREVIOUS_MANIFEST_PATH="${CLAUDE_HOME}/quality-pack/state/installed-manifest.txt"
+PREVIOUS_MANIFEST_PRESENT=0
+if [[ -f "${PREVIOUS_MANIFEST_PATH}" ]]; then
+  PREVIOUS_MANIFEST_PRESENT=1
+fi
+PRE_INSTALL_SIGNATURES="$(mktemp)"
+build_signature_snapshot "${CLAUDE_HOME}" "${PREVIOUS_MANIFEST_PATH}" "${PRE_INSTALL_SIGNATURES}"
+PRE_SETTINGS_SIGNATURE="$(file_cksum_signature "${CLAUDE_HOME}/settings.json" 2>/dev/null || true)"
 
 # Step 2 — Copy bundle into ~/.claude/.
 rsync -a --exclude='.DS_Store' "${BUNDLE_CLAUDE}/" "${CLAUDE_HOME}/"
@@ -1379,8 +1460,8 @@ apply_model_tier
 # easy updates. The SHA lets the stale-install indicator detect a
 # commits-ahead state even when VERSION hasn't been bumped (e.g. the
 # repo has unreleased commits on main past the last tag). Silently
-# clears installed_sha when the install source is not a git worktree
-# (tarball, extracted zip) so a prior worktree install's SHA does not
+# clears installed_sha when the install source is not a git checkout
+# (tarball, extracted zip) so a prior checkout-based install's SHA does not
 # linger as a false comparator.
 #
 # v1.30.0: capture the prior installed_version BEFORE overwriting so the
@@ -1388,8 +1469,11 @@ apply_model_tier
 # Empty on first install, on tarball / zip extracts without a prior conf,
 # and on the unusual case where a custom build cleared the conf.
 PRIOR_INSTALLED_VERSION=""
+PRIOR_INSTALLED_SHA=""
 if [[ -f "${CLAUDE_HOME}/oh-my-claude.conf" ]]; then
   PRIOR_INSTALLED_VERSION="$(grep -E '^installed_version=' "${CLAUDE_HOME}/oh-my-claude.conf" 2>/dev/null \
+    | tail -n1 | cut -d= -f2- | tr -d '[:space:]' || true)"
+  PRIOR_INSTALLED_SHA="$(grep -E '^installed_sha=' "${CLAUDE_HOME}/oh-my-claude.conf" 2>/dev/null \
     | tail -n1 | cut -d= -f2- | tr -d '[:space:]' || true)"
 fi
 
@@ -1397,17 +1481,17 @@ set_conf "repo_path" "${SCRIPT_DIR}"
 set_conf "installed_version" "${OMC_VERSION}"
 
 installed_sha=""
-if command -v git >/dev/null 2>&1 && [[ -d "${SCRIPT_DIR}/.git" ]]; then
+if is_git_checkout "${SCRIPT_DIR}"; then
   installed_sha="$(git -C "${SCRIPT_DIR}" rev-parse HEAD 2>/dev/null || true)"
 fi
 if [[ -n "${installed_sha}" ]]; then
   set_conf "installed_sha" "${installed_sha}"
 else
-  # Source is not a git worktree (tarball, extracted zip) — remove any
-  # stale installed_sha left from a previous worktree-based install so
+  # Source is not a git checkout (tarball, extracted zip) — remove any
+  # stale installed_sha left from a previous checkout-based install so
   # the statusline's commit-distance probe fails closed (returns None)
   # instead of reading an orphaned SHA and producing a misleading
-  # `(+?)` marker against the next worktree this repo path maps to.
+  # `(+?)` marker against the next checkout this repo path maps to.
   _conf_path="${CLAUDE_HOME}/oh-my-claude.conf"
   if [[ -f "${_conf_path}" ]] && grep -q '^installed_sha=' "${_conf_path}"; then
     _tmp="${_conf_path}.tmp"
@@ -1752,6 +1836,24 @@ warn_foreign_statusline
 # Step 5 — Set executable bits on scripts.
 ensure_executable_bits
 
+# Snapshot the final managed installed bytes after all post-rsync
+# mutations. This is the source of truth for "did a reinstall/update
+# actually change what a running session would use?"
+POST_INSTALL_SIGNATURES="$(mktemp)"
+build_signature_snapshot "${CLAUDE_HOME}" "${MANIFEST_PATH}" "${POST_INSTALL_SIGNATURES}"
+POST_SETTINGS_SIGNATURE="$(file_cksum_signature "${CLAUDE_HOME}/settings.json" 2>/dev/null || true)"
+
+managed_added_count="$(join -t $'\t' -v 2 "${PRE_INSTALL_SIGNATURES}" "${POST_INSTALL_SIGNATURES}" 2>/dev/null | wc -l | tr -d '[:space:]')"
+managed_removed_count="$(join -t $'\t' -v 1 "${PRE_INSTALL_SIGNATURES}" "${POST_INSTALL_SIGNATURES}" 2>/dev/null | wc -l | tr -d '[:space:]')"
+managed_modified_count="$(join -t $'\t' "${PRE_INSTALL_SIGNATURES}" "${POST_INSTALL_SIGNATURES}" 2>/dev/null \
+  | awk -F $'\t' '$2 != $3 { c++ } END { print c+0 }')"
+managed_change_total=$((managed_added_count + managed_removed_count + managed_modified_count))
+
+settings_changed_json="false"
+if [[ "${PRE_SETTINGS_SIGNATURE}" != "${POST_SETTINGS_SIGNATURE}" ]]; then
+  settings_changed_json="true"
+fi
+
 # Step 6 — Install stamp. Gives users a reliable "what changed in this
 # install" reference (find ~/.claude -newer ~/.claude/.install-stamp).
 # rsync -a preserves the bundle's mtimes rather than setting them to now,
@@ -1759,6 +1861,137 @@ ensure_executable_bits
 # install" from "cloned at this time". Uses `touch` with no flags so both
 # BSD (macOS) and GNU (Linux) touch behave identically (-d is a GNU-ism).
 touch "${CLAUDE_HOME}/.install-stamp"
+
+LAST_INSTALL_REPORT_PATH="${CLAUDE_HOME}/quality-pack/state/last-install-report.json"
+install_stamp_epoch="$(_install_file_mtime "${CLAUDE_HOME}/.install-stamp" || true)"
+fresh_install_json="false"
+update_install_json="false"
+restart_required_json="false"
+install_kind="reinstall"
+restart_reason="No managed bundle or settings changes detected on this reinstall."
+change_summary_available_json="false"
+change_summary_reason="Not an update install."
+change_summary_commit_count="0"
+change_summary_truncated_count="0"
+change_summary_commits_json='[]'
+
+if [[ -z "${PRIOR_INSTALLED_VERSION}" ]] && [[ "${PREVIOUS_MANIFEST_PRESENT}" -eq 0 ]]; then
+  fresh_install_json="true"
+  install_kind="fresh-install"
+  restart_required_json="true"
+  restart_reason="Fresh install — current Claude Code sessions do not have oh-my-claude hook wiring loaded."
+elif [[ "${PRIOR_INSTALLED_VERSION}" != "${OMC_VERSION}" ]] \
+  || { [[ -n "${PRIOR_INSTALLED_SHA}" ]] && [[ -n "${installed_sha}" ]] && [[ "${PRIOR_INSTALLED_SHA}" != "${installed_sha}" ]]; }; then
+  update_install_json="true"
+  install_kind="update"
+fi
+
+if [[ "${fresh_install_json}" != "true" ]]; then
+  if [[ "${managed_change_total}" -gt 0 ]] && [[ "${settings_changed_json}" == "true" ]]; then
+    restart_required_json="true"
+    restart_reason="${managed_change_total} managed installed path(s) changed and settings.json changed."
+  elif [[ "${managed_change_total}" -gt 0 ]]; then
+    restart_required_json="true"
+    restart_reason="${managed_change_total} managed installed path(s) changed."
+  elif [[ "${settings_changed_json}" == "true" ]]; then
+    restart_required_json="true"
+    restart_reason="settings.json changed."
+  elif [[ "${install_kind}" == "update" ]]; then
+    restart_reason="Update completed, but managed bundle files and settings.json were unchanged."
+  elif [[ "${install_kind}" == "reinstall" ]]; then
+    install_kind="reinstall-noop"
+  fi
+fi
+
+if [[ "${install_kind}" == "update" ]]; then
+  change_summary_reason=""
+  if [[ -z "${PRIOR_INSTALLED_SHA}" ]]; then
+    change_summary_reason="Previous install had no installed_sha metadata."
+  elif [[ -z "${installed_sha}" ]]; then
+    change_summary_reason="Current install source is not a git checkout, so commit history is unavailable."
+  elif ! git -C "${SCRIPT_DIR}" rev-parse "${PRIOR_INSTALLED_SHA}^{commit}" >/dev/null 2>&1; then
+    change_summary_reason="Previous installed_sha is not present in the current checkout."
+  else
+    change_summary_commit_count="$(git -C "${SCRIPT_DIR}" rev-list --count "${PRIOR_INSTALLED_SHA}..HEAD" 2>/dev/null || echo 0)"
+    if [[ "${change_summary_commit_count}" =~ ^[0-9]+$ ]]; then
+      change_summary_available_json="true"
+      if [[ "${change_summary_commit_count}" -gt 12 ]]; then
+        change_summary_truncated_count="$((change_summary_commit_count - 12))"
+      fi
+      change_summary_commits_json="$(
+        git -C "${SCRIPT_DIR}" log --format='%H%x09%s' --no-decorate "${PRIOR_INSTALLED_SHA}..HEAD" 2>/dev/null \
+          | sed -n '1,12p' \
+          | jq -Rsc '
+              split("\n")
+              | map(select(length > 0))
+              | map(split("\t"))
+              | map({
+                  sha: .[0],
+                  subject: (.[1] // "")
+                })
+            '
+      )"
+      change_summary_reason="Computed from previous_install.installed_sha..HEAD."
+    else
+      change_summary_reason="Could not determine commit count for previous_install.installed_sha..HEAD."
+      change_summary_commit_count="0"
+    fi
+  fi
+fi
+
+jq -n \
+  --argjson schema_version 1 \
+  --arg install_kind "${install_kind}" \
+  --argjson fresh_install "${fresh_install_json}" \
+  --argjson update_install "${update_install_json}" \
+  --argjson restart_required "${restart_required_json}" \
+  --arg restart_reason "${restart_reason}" \
+  --arg prior_installed_version "${PRIOR_INSTALLED_VERSION}" \
+  --arg prior_installed_sha "${PRIOR_INSTALLED_SHA}" \
+  --arg installed_version "${OMC_VERSION}" \
+  --arg installed_sha "${installed_sha}" \
+  --argjson settings_changed "${settings_changed_json}" \
+  --argjson install_stamp_epoch "${install_stamp_epoch:-0}" \
+  --argjson managed_added "${managed_added_count:-0}" \
+  --argjson managed_removed "${managed_removed_count:-0}" \
+  --argjson managed_modified "${managed_modified_count:-0}" \
+  --argjson managed_total "${managed_change_total:-0}" \
+  --argjson change_summary_available "${change_summary_available_json}" \
+  --arg change_summary_reason "${change_summary_reason}" \
+  --argjson change_summary_commit_count "${change_summary_commit_count:-0}" \
+  --argjson change_summary_truncated_count "${change_summary_truncated_count:-0}" \
+  --argjson change_summary_commits "${change_summary_commits_json}" \
+  '{
+    schema_version: $schema_version,
+    install_kind: $install_kind,
+    fresh_install: $fresh_install,
+    update_install: $update_install,
+    restart_required: $restart_required,
+    restart_reason: $restart_reason,
+    previous_install: {
+      installed_version: (if $prior_installed_version == "" then null else $prior_installed_version end),
+      installed_sha: (if $prior_installed_sha == "" then null else $prior_installed_sha end)
+    },
+    current_install: {
+      installed_version: $installed_version,
+      installed_sha: (if $installed_sha == "" then null else $installed_sha end)
+    },
+    managed_changes: {
+      added: $managed_added,
+      removed: $managed_removed,
+      modified: $managed_modified,
+      total: $managed_total
+    },
+    change_summary: {
+      available: $change_summary_available,
+      reason: (if $change_summary_reason == "" then null else $change_summary_reason end),
+      commit_count: $change_summary_commit_count,
+      truncated_count: $change_summary_truncated_count,
+      commits: $change_summary_commits
+    },
+    settings_changed: $settings_changed,
+    install_stamp_epoch: $install_stamp_epoch
+  }' > "${LAST_INSTALL_REPORT_PATH}"
 
 # Step 7 — Optional: install the post-merge git hook in the source checkout.
 if [[ "${INSTALL_GIT_HOOKS}" == "true" ]]; then
@@ -1969,6 +2202,10 @@ if [[ -n "${PRIOR_INSTALLED_VERSION}" ]] \
   printf '                 shared. The cross-session ledger in this install is already scrubbed.\n'
   printf '                 See CHANGELOG.md v1.34.0 entry for full details.\n'
 fi
+_last_update_summary="$(TARGET_HOME="${TARGET_HOME}" bash "${SCRIPT_DIR}/tools/install-state-report.sh" --last-update-summary 2>/dev/null || true)"
+if [[ -n "${_last_update_summary}" ]]; then
+  printf '%s\n' "${_last_update_summary}"
+fi
 printf '  Destination:   %s\n' "${CLAUDE_HOME}"
 printf '  Backup:        %s\n' "${BACKUP_DIR}"
 if [[ -d "${BUNDLE_GHOSTTY}" ]] && should_install_ghostty; then
@@ -2049,26 +2286,36 @@ printf '\n'
 # canonical next-action is /ulw-demo: it's the highest-leverage
 # activation moment, and Configure / Verify / Real work are all best
 # discovered AFTER the demo (the demo's epilogue routes there).
-if [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]]; then
-  printf '\033[1mRestart Claude Code now (or open a new session).\033[0m Required — hooks load at\n'
+#
+# v1.44.x install-outcome report: same-version reinstalls after doc-only
+# pulls can leave the managed installed bytes AND settings.json unchanged.
+# In that case, forcing a restart is wrong noise. The footer branches on
+# last-install-report.json's computed restart_required signal.
+if [[ "${restart_required_json}" == "true" ]]; then
+  _restart_guidance="$(TARGET_HOME="${TARGET_HOME}" bash "${SCRIPT_DIR}/tools/install-state-report.sh" --restart-guidance 2>/dev/null || true)"
+  if [[ -n "${_restart_guidance}" ]]; then
+    printf '%s\n' "${_restart_guidance}"
+  fi
+  printf '\n'
+  if [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]]; then
+    printf 'Then run \033[1m/ulw-demo\033[0m in the new Claude Code session — under 2 minutes,\n'
+  else
+    printf 'Then run /ulw-demo in the new Claude Code session — under 2 minutes,\n'
+  fi
+  printf '  it fires real gates on a throwaway file in /tmp so you can see the harness\n'
+  printf '  work end-to-end. Its closing card routes you to /omc-config (settings) and\n'
+  printf '  /ulw <task> (real work) when you are ready.\n'
+  printf '\n'
+  if [[ "${BYPASS_PERMISSIONS}" != "true" ]]; then
+    printf 'After the demo confirms the harness is firing, re-run with --bypass-permissions\n'
+    printf "to skip Claude Code's per-tool prompts. Quality gates apply either way.\n"
+  fi
 else
-  printf 'Restart Claude Code now (or open a new session). Required — hooks load at\n'
-fi
-printf '  session start; already-running sessions keep the previous wiring, so /ulw will\n'
-printf '  silently no-op until you restart.\n'
-printf '\n'
-if [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]]; then
-  printf 'Then run \033[1m/ulw-demo\033[0m in the new Claude Code session — under 2 minutes,\n'
-else
-  printf 'Then run /ulw-demo in the new Claude Code session — under 2 minutes,\n'
-fi
-printf '  it fires real gates on a throwaway file in /tmp so you can see the harness\n'
-printf '  work end-to-end. Its closing card routes you to /omc-config (settings) and\n'
-printf '  /ulw <task> (real work) when you are ready.\n'
-printf '\n'
-if [[ "${BYPASS_PERMISSIONS}" != "true" ]]; then
-  printf 'After the demo confirms the harness is firing, re-run with --bypass-permissions\n'
-  printf "to skip Claude Code's per-tool prompts. Quality gates apply either way.\n"
+  _restart_guidance="$(TARGET_HOME="${TARGET_HOME}" bash "${SCRIPT_DIR}/tools/install-state-report.sh" --restart-guidance 2>/dev/null || true)"
+  if [[ -n "${_restart_guidance}" ]]; then
+    printf '%s\n' "${_restart_guidance}"
+  fi
+  printf '  If you only pulled docs or other non-installed repo files, you can keep working.\n'
 fi
 printf '\n'
 printf 'Recovery if something feels off: bash %s/verify.sh\n' "${SCRIPT_DIR}"

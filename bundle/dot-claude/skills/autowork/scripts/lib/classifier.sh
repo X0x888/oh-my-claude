@@ -436,29 +436,18 @@ infer_ui_domain() {
   printf 'unknown'
 }
 
-infer_domain() {
+_coding_signal_score() {
   local text="$1"
-  local project_profile="${2:-}"
 
-  local coding_score
-  local writing_score
-  local research_score
-  local operations_score
-
-  # --- Bigram matching: compound phrases that disambiguate domain ---
-  # Action + coding-object → strong coding signal
   local coding_bigrams
   coding_bigrams=$(count_keyword_matches '\b(writ(e|ing)|add(ing)?|creat(e|ing)|run(ning)?|fix(ing)?|updat(e|ing))\s+((unit|integration|e2e|end.to.end|acceptance)\s+)?(tests?|test\s*suites?|specs?|code|functions?|class(es)?|components?|endpoints?|modules?|handlers?|middleware|routes?|migrations?|schemas?)\b' "${text}")
   coding_bigrams=${coding_bigrams:-0}
 
-  # Action + user-facing UI-object → coding signal.
   local ui_bigrams
   ui_bigrams=$(count_keyword_matches '\b(build(ing)?|create|creat(e|ing)|add(ing)?|make|implement(ing)?|update(ing)?|fix(ing)?|refactor(ing)?)\s+(a\s+|an\s+|the\s+|this\s+|that\s+|these\s+|those\s+|my\s+|our\s+)?(\w+\s+){0,2}(landing.?pages?|home.?pages?|pages?|dashboards?|screens?|modals?|dialogs?|drawers?|heroes?|nav(igation|bar)?|sidebars?|headers?|footers?|menus?|tabs?|panels?|layouts?|components?|empty.?states?|tables?|charts?|filters?|accordions?|wizards?|steppers?|banners?)\b' "${text}")
   ui_bigrams=${ui_bigrams:-0}
   coding_bigrams=$((coding_bigrams + ui_bigrams))
 
-  # Form-building prompts are common UI work, but "form" alone is too
-  # ambiguous, so require a UI-ish qualifier.
   local form_bigrams
   form_bigrams=$(count_keyword_matches '\b(build(ing)?|create|creat(e|ing)|add(ing)?|make|implement(ing)?|update(ing)?|fix(ing)?|refactor(ing)?)\s+(a\s+|an\s+|the\s+|this\s+|that\s+|these\s+|those\s+|my\s+|our\s+)?(login|signup|sign[- ]?up|sign[- ]?in|checkout|contact|search|settings|profile|feedback|payment|registration|onboarding|responsive)\s+forms?\b' "${text}")
   form_bigrams=${form_bigrams:-0}
@@ -469,11 +458,73 @@ infer_domain() {
   motion_bigrams=${motion_bigrams:-0}
   coding_bigrams=$((coding_bigrams + motion_bigrams))
 
-  # Design/style + UI-object → coding signal (not general)
   local design_bigrams
   design_bigrams=$(count_keyword_matches '\b(design(ing)?|style|styl(e|ing)|redesign(ing)?|restyle|theme)\s+(a\s+|an\s+|the\s+|this\s+|that\s+|these\s+|those\s+|my\s+|our\s+)?(\w+\s+){0,2}(pages?|forms?|buttons?|cards?|modals?|dialogs?|drawers?|dropdowns?|nav(igation|bar)?|sidebars?|headers?|footers?|heroes?|layouts?|components?|interfaces?|screens?|dashboards?|landing.?pages?|sections?|menus?|tabs?|panels?|empty.?states?|tables?|charts?|filters?)\b' "${text}")
   design_bigrams=${design_bigrams:-0}
   coding_bigrams=$((coding_bigrams + design_bigrams))
+
+  local coding_strong
+  coding_strong=$(count_keyword_matches '\b(bugs?|fix(es|ed|ing)?|debug(ging)?|refactor(ing)?|implement(ation|ed|ing)?|repos?(itory)?|function|class(es)?|component|endpoints?|apis?|schema|database|quer(y|ies)|migration|lint(ing)?|compile|tsc|typescript|javascript|python|swift|xcode|react|next\.?js|css|html|webhooks?|codebase|source.?code|ci/?cd|docker|container|backend|frontend|fullstack|tailwind|vue(\.?js)?|angular|svelte)\b' "${text}")
+  coding_strong=$(( ${coding_strong:-0} + coding_bigrams ))
+
+  local coding_architecture
+  coding_architecture=$(count_keyword_matches '\b(race[[:space:]]+condition|deadlocks?|livelocks?|memory[[:space:]]+leaks?|idempotenc(y|e|ies)|latenc(y|ies)|tail[[:space:]]+latency|throughputs?|backpressure|backoffs?|retr(y|ies|ying)|exponential[[:space:]]+backoff|circuit[[:space:]]+breakers?|concurrenc(y|ies)|mutexe?s?|semaphores?|atomic(s|ity)?|lock[[:space:]]+contention|connection[[:space:]]+pools?|garbage[[:space:]]+collect(ion|or)?|gc[[:space:]]+pauses?|hot[[:space:]]+path|cold[[:space:]]+path|fan[[:space:]]?out|fan[[:space:]]?in|sharding|shards?|replicas?|leader[[:space:]]+election|consensus|raft|paxos|cap[[:space:]]+theorem|eventual[[:space:]]+consistency|strong[[:space:]]+consistency|isolation[[:space:]]+levels?|read[[:space:]]+committed|serializable|two[[:space:]]?phase[[:space:]]+commit|saga[[:space:]]+pattern|event[[:space:]]+sourcing|cqrs|stale[[:space:]]+reads?|cache[[:space:]]+invalidation|cache[[:space:]]+stampede|thundering[[:space:]]+herd|n\+1[[:space:]]+quer(y|ies)|slow[[:space:]]+quer(y|ies)|index[[:space:]]+scans?|table[[:space:]]+scans?|query[[:space:]]+plans?|memory[[:space:]]+pressure|oom[[:space:]]+kills?|file[[:space:]]+descriptors?|fd[[:space:]]+leaks?|goroutines?|threads?|coroutines?|async/await|promises?|futures?|callbacks?)\b' "${text}")
+  coding_strong=$(( coding_strong + ${coding_architecture:-0} ))
+
+  local coding_weak
+  coding_weak=$(count_keyword_matches '\b(tests?|build|scripts?|config(uration)?|hooks?|deploy(ed|ing|ment)?|server|commit(s|ted|ting)?|push(ed|ing)?|merge[dr]?|rebase[dr]?|branch(es|ed|ing)?|cherry.?pick|stash(ed|ing)?|tag(ged|ging)?)\b' "${text}")
+  coding_weak=${coding_weak:-0}
+
+  if [[ "${coding_strong}" -gt 0 ]]; then
+    printf '%s\n' "$((coding_strong + coding_weak))"
+  elif [[ "${coding_weak}" -ge 3 ]]; then
+    printf '%s\n' "${coding_weak}"
+  else
+    printf '0\n'
+  fi
+}
+
+prompt_has_coding_signal() {
+  local score
+  score="$(_coding_signal_score "$1")"
+  [[ "${score}" -gt 0 ]]
+}
+
+_operations_signal_score() {
+  local text="$1"
+
+  local operations_bigrams
+  operations_bigrams=$(count_keyword_matches '\b(plan|create|build|draft|prepare|make)\s+(a\s+|an\s+|the\s+|my\s+|our\s+)?(project\s+plan|roadmap|timeline|agenda|checklist|action.?plan|schedule|rollout|migration\s+plan|deployment\s+plan|release\s+plan|sprint\s+plan|backlog|kanban|standup|retro)\b' "${text}")
+  operations_bigrams=${operations_bigrams:-0}
+
+  local operations_action_bigrams
+  operations_action_bigrams=$(count_keyword_matches '\b(turn|convert|transform)\s+.{0,30}\s+(into|to)\s+(a\s+|an\s+)?(action.?plan|checklist|task.?list|follow.?up|decision|memo)\b' "${text}")
+  operations_action_bigrams=${operations_action_bigrams:-0}
+  operations_bigrams=$((operations_bigrams + operations_action_bigrams))
+
+  local operations_score
+  operations_score=$(count_keyword_matches '\b(plan(ning)?|roadmap|timeline|agenda|meeting|follow[- ]?up|checklist|prioriti(es|se|ze)|project.?plan|travel.?plan|itinerary|reply(ing)?|respond(ing)?|application|submission)\b' "${text}")
+  operations_score=$(( ${operations_score:-0} + operations_bigrams ))
+
+  printf '%s\n' "${operations_score}"
+}
+
+prompt_has_operations_signal() {
+  local score
+  score="$(_operations_signal_score "$1")"
+  [[ "${score}" -gt 0 ]]
+}
+
+infer_domain() {
+  local text="$1"
+  local project_profile="${2:-}"
+
+  local coding_score
+  local writing_score
+  local research_score
+  local operations_score
+
+  coding_score="$(_coding_signal_score "${text}")"
 
   # Action + writing-object → writing signal. v1.17.0 broadens the
   # pattern to allow optional article words ("a", "the", "my") and
@@ -487,7 +538,7 @@ infer_domain() {
   # because the previous pattern required no article between verb and
   # noun.
   local writing_bigrams
-  writing_bigrams=$(count_keyword_matches '\b(writ(e|ing)|draft(ing)?|compos(e|ing)|author(ing)?|prepar(e|ing))\s+(a\s+|an\s+|the\s+|my\s+|our\s+|this\s+|that\s+|some\s+)?(\w+\s+){0,2}(papers?|essays?|reports?|emails?|memos?|articles?|letters?|proposals?|manuscripts?|blogs?\s*posts?|follow.?ups?|briefs?|responses?|repl(y|ies)|recaps?|summar(y|ies)|status.?updates?|action.?items?|action.?plans?|checklists?|notes?|minutes|updates?|messages?|posts?|wrap.?ups?|read.?outs?)\b' "${text}")
+  writing_bigrams=$(count_keyword_matches '\b(writ(e|ing)|draft(ing)?|compos(e|ing)|author(ing)?|prepar(e|ing))\s+(a\s+|an\s+|the\s+|my\s+|our\s+|this\s+|that\s+|some\s+)?(\w+\s+){0,2}(papers?|essays?|reports?|emails?|memos?|articles?|letters?|proposals?|manuscripts?|blogs?\s*posts?|follow.?ups?|briefs?|responses?|repl(y|ies)|recaps?|summar(y|ies)|status.?updates?|action.?items?|action.?plans?|checklists?|notes?|minutes|updates?|messages?|posts?|wrap.?ups?|read.?outs?|literature\s+reviews?|systematic\s+reviews?)\b' "${text}")
   writing_bigrams=${writing_bigrams:-0}
   local writing_topic_bigrams
   writing_topic_bigrams=$(count_keyword_matches '\b(writ(e|ing)|draft(ing)?|compos(e|ing)|author(ing)?)\s+(about|on)\b' "${text}")
@@ -503,15 +554,6 @@ infer_domain() {
   research_topic_bigrams=${research_topic_bigrams:-0}
   research_bigrams=$((research_bigrams + research_topic_bigrams))
 
-  # Action + operations-object → operations signal
-  local operations_bigrams
-  operations_bigrams=$(count_keyword_matches '\b(plan|create|build|draft|prepare|make)\s+(a\s+|an\s+|the\s+|my\s+|our\s+)?(project\s+plan|roadmap|timeline|agenda|checklist|action.?plan|schedule|rollout|migration\s+plan|deployment\s+plan|release\s+plan|sprint\s+plan|backlog|kanban|standup|retro)\b' "${text}")
-  operations_bigrams=${operations_bigrams:-0}
-  local operations_action_bigrams
-  operations_action_bigrams=$(count_keyword_matches '\b(turn|convert|transform)\s+.{0,30}\s+(into|to)\s+(a\s+|an\s+)?(action.?plan|checklist|task.?list|follow.?up|decision|memo)\b' "${text}")
-  operations_action_bigrams=${operations_action_bigrams:-0}
-  operations_bigrams=$((operations_bigrams + operations_action_bigrams))
-
   # --- Negative keywords: subtract false positives ---
   # "report" after bug/error/test/crash → coding context, not writing
   # "post" in HTTP context → not writing
@@ -519,48 +561,23 @@ infer_domain() {
   writing_negatives=$(count_keyword_matches '\b(bug|error|test|crash|status|coverage)\s+reports?\b|\bpost\s+(requests?|endpoints?|methods?|routes?|data)\b' "${text}")
   writing_negatives=${writing_negatives:-0}
 
-  # --- Unigram scoring ---
-  local coding_strong
-  coding_strong=$(count_keyword_matches '\b(bugs?|fix(es|ed|ing)?|debug(ging)?|refactor(ing)?|implement(ation|ed|ing)?|repos?(itory)?|function|class(es)?|component|endpoints?|apis?|schema|database|quer(y|ies)|migration|lint(ing)?|compile|tsc|typescript|javascript|python|swift|xcode|react|next\.?js|css|html|webhooks?|codebase|source.?code|ci/?cd|docker|container|backend|frontend|fullstack|tailwind|vue(\.?js)?|angular|svelte)\b' "${text}")
-  coding_strong=$(( ${coding_strong:-0} + coding_bigrams ))
-
-  # Architecture / concurrency vocabulary — canonical coding signal even
-  # when no syntax-flavored word is present. Pre-v1.27 this list was
-  # absent so prompts like "what's the right approach for this race
-  # condition?" or "we have a deadlock in the queue worker" scored zero
-  # on coding and fell through to general. Captures concurrency, perf,
-  # reliability, and distributed-systems vocabulary.
-  local coding_architecture
-  coding_architecture=$(count_keyword_matches '\b(race[[:space:]]+condition|deadlocks?|livelocks?|memory[[:space:]]+leaks?|idempotenc(y|e|ies)|latenc(y|ies)|tail[[:space:]]+latency|throughputs?|backpressure|backoffs?|retr(y|ies|ying)|exponential[[:space:]]+backoff|circuit[[:space:]]+breakers?|concurrenc(y|ies)|mutexe?s?|semaphores?|atomic(s|ity)?|lock[[:space:]]+contention|connection[[:space:]]+pools?|garbage[[:space:]]+collect(ion|or)?|gc[[:space:]]+pauses?|hot[[:space:]]+path|cold[[:space:]]+path|fan[[:space:]]?out|fan[[:space:]]?in|sharding|shards?|replicas?|leader[[:space:]]+election|consensus|raft|paxos|cap[[:space:]]+theorem|eventual[[:space:]]+consistency|strong[[:space:]]+consistency|isolation[[:space:]]+levels?|read[[:space:]]+committed|serializable|two[[:space:]]?phase[[:space:]]+commit|saga[[:space:]]+pattern|event[[:space:]]+sourcing|cqrs|stale[[:space:]]+reads?|cache[[:space:]]+invalidation|cache[[:space:]]+stampede|thundering[[:space:]]+herd|n\+1[[:space:]]+quer(y|ies)|slow[[:space:]]+quer(y|ies)|index[[:space:]]+scans?|table[[:space:]]+scans?|query[[:space:]]+plans?|memory[[:space:]]+pressure|oom[[:space:]]+kills?|file[[:space:]]+descriptors?|fd[[:space:]]+leaks?|goroutines?|threads?|coroutines?|async/await|promises?|futures?|callbacks?)\b' "${text}")
-  coding_strong=$(( coding_strong + ${coding_architecture:-0} ))
-
-  local coding_weak
-  coding_weak=$(count_keyword_matches '\b(tests?|build|scripts?|config(uration)?|hooks?|deploy(ed|ing|ment)?|server|commit(s|ted|ting)?|push(ed|ing)?|merge[dr]?|rebase[dr]?|branch(es|ed|ing)?|cherry.?pick|stash(ed|ing)?|tag(ged|ging)?)\b' "${text}")
-  coding_weak=${coding_weak:-0}
-
-  # Weak coding keywords only count when a strong signal is present,
-  # OR when 3+ weak signals cluster together (multiple weak = strong).
-  if [[ "${coding_strong}" -gt 0 ]]; then
-    coding_score=$((coding_strong + coding_weak))
-  elif [[ "${coding_weak}" -ge 3 ]]; then
-    coding_score="${coding_weak}"
-  else
-    coding_score=0
-  fi
-
-  writing_score=$(count_keyword_matches '\b(paper|draft(ing)?|essay|article|report|proposal|email|memo|letter|statement|abstract|introduction|conclusion|outline|rewrite|polish(ing)?|paragraph|manuscript|cover.?letter|sop|personal.?statement|blog|post)\b' "${text}")
+  writing_score=$(count_keyword_matches '\b(paper|draft(ing)?|essay|article|report|proposal|email|memo|letter|statement|abstract|introduction|conclusion|outline|rewrite|polish(ing)?|paragraph|manuscript|cover.?letter|sop|personal.?statement|blog|post|literature\s+review|systematic\s+review)\b' "${text}")
   writing_score=$(( ${writing_score:-0} + writing_bigrams - writing_negatives ))
   if [[ "${writing_score}" -lt 0 ]]; then writing_score=0; fi
 
   research_score=$(count_keyword_matches '\b(research(ing)?|investigate|investigation|analy(sis|ze|zing)|compare|comparison|survey|literature|sources|citations?|references?|benchmark(ing)?|brief(ing)?|recommendations?|summarize|summary|pros.?and.?cons|tradeoffs?|audit(ing)?|assess(ment|ing)?|evaluat(e|ion|ing)|inspect(ion|ing)?)\b' "${text}")
   research_score=$(( ${research_score:-0} + research_bigrams ))
 
-  operations_score=$(count_keyword_matches '\b(plan(ning)?|roadmap|timeline|agenda|meeting|follow[- ]?up|checklist|prioriti(es|se|ze)|project.?plan|travel.?plan|itinerary|reply(ing)?|respond(ing)?|application|submission)\b' "${text}")
-  operations_score=$(( ${operations_score:-0} + operations_bigrams ))
+  operations_score="$(_operations_signal_score "${text}")"
 
   # Project profile boost: when a project has known stack indicators,
   # add a small bonus to coding (if the project is code-heavy) or writing
-  # (if docs-heavy). This acts as a tiebreaker, not a dominant signal.
+  # (if docs-heavy). This must remain a tiebreaker, not a domain
+  # factory: repo context may sharpen an already-detected coding/writing
+  # signal, but it must not manufacture coding/mixed/writing from a
+  # prompt whose text has no such signal. Otherwise non-coding prompts in
+  # code-heavy repos drift into `coding` or `mixed` purely because of
+  # ambient stack metadata.
   if [[ -n "${project_profile}" ]]; then
     local _tag
     local code_boost=0
@@ -571,9 +588,11 @@ infer_domain() {
     done
     # Cap boost at 2 to prevent project-type from overriding clear intent
     if [[ "${code_boost}" -gt 2 ]]; then code_boost=2; fi
-    coding_score=$((coding_score + code_boost))
+    if [[ "${coding_score}" -gt 0 ]]; then
+      coding_score=$((coding_score + code_boost))
+    fi
 
-    if project_profile_has "docs" "${project_profile}"; then
+    if [[ "${writing_score}" -gt 0 ]] && project_profile_has "docs" "${project_profile}"; then
       writing_score=$((writing_score + 1))
     fi
   fi

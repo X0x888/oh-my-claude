@@ -13,7 +13,7 @@
 # We extract the install_git_hooks function from install.sh and call it in
 # isolation against a disposable fake repo, so the test does not touch the
 # real ~/.claude, does not rsync the bundle, and does not mutate the repo's
-# own .git/hooks.
+# own resolved hooks directory.
 
 set -euo pipefail
 
@@ -79,6 +79,18 @@ extract_fn() {
   ' "${src}"
 }
 
+hook_path_for_checkout() {
+  local repo="$1"
+  local hooks_dir=""
+
+  hooks_dir="$(git -C "${repo}" rev-parse --git-path hooks 2>/dev/null || true)"
+  [[ -n "${hooks_dir}" ]] || return 1
+  if [[ "${hooks_dir}" != /* ]]; then
+    hooks_dir="${repo}/${hooks_dir}"
+  fi
+  printf '%s/post-merge\n' "${hooks_dir}"
+}
+
 setup_fake_repo() {
   local repo="$1"
   rm -rf "${repo}"
@@ -90,26 +102,40 @@ setup_fake_repo() {
   # real structure and is cheap.
   git init --quiet --initial-branch=main "${repo}" 2>/dev/null \
     || git init --quiet "${repo}"
+  git -C "${repo}" config user.email test@test.local
+  git -C "${repo}" config user.name test
+  printf 'seed\n' > "${repo}/bundle/dot-claude/.seed"
+  git -C "${repo}" add -A
+  git -C "${repo}" commit --quiet -m "seed"
 }
 
 # ===========================================================================
-# Case 1: --git-hooks writes the signed hook into .git/hooks/post-merge.
+# Case 1: --git-hooks writes the signed hook into the resolved hooks path.
 # ===========================================================================
 printf 'Case 1: --git-hooks writes the signed hook:\n'
 
 REPO1="${TEST_ROOT}/repo1"
 setup_fake_repo "${REPO1}"
 
-# Source the function into a subshell with SCRIPT_DIR pointed at REPO1.
-INSTALL_HOOKS_FN="$(extract_fn install_git_hooks "${INSTALL_SH}")"
+# Source the helper stack + function into a subshell with SCRIPT_DIR
+# pointed at the target checkout.
+INSTALL_HOOKS_SNIPPET="$(
+  {
+    extract_fn is_git_checkout "${INSTALL_SH}"
+    printf '\n'
+    extract_fn git_hooks_dir_for_checkout "${INSTALL_SH}"
+    printf '\n'
+    extract_fn install_git_hooks "${INSTALL_SH}"
+  }
+)"
 (
   set -euo pipefail
   SCRIPT_DIR="${REPO1}"
-  eval "${INSTALL_HOOKS_FN}"
+  eval "${INSTALL_HOOKS_SNIPPET}"
   install_git_hooks >/dev/null 2>&1
 )
 
-HOOK1="${REPO1}/.git/hooks/post-merge"
+HOOK1="$(hook_path_for_checkout "${REPO1}")"
 assert_file_exists "hook written to post-merge" "${HOOK1}"
 assert_file_contains "hook carries the signature line" "# oh-my-claude post-merge auto-sync" "${HOOK1}"
 assert_file_contains "hook references the installer variable" 'installer="${repo_root}/install.sh"' "${HOOK1}"
@@ -123,13 +149,34 @@ else
 fi
 
 # ===========================================================================
+# Case 1b: worktree installs resolve to the shared hooks directory.
+# ===========================================================================
+printf 'Case 1b: worktree checkout resolves the shared hooks path:\n'
+
+REPO1B_MAIN="${TEST_ROOT}/repo1b-main"
+REPO1B_WT="${TEST_ROOT}/repo1b-worktree"
+setup_fake_repo "${REPO1B_MAIN}"
+git -C "${REPO1B_MAIN}" worktree add --quiet "${REPO1B_WT}" -b repo1b-worktree HEAD
+
+(
+  set -euo pipefail
+  SCRIPT_DIR="${REPO1B_WT}"
+  eval "${INSTALL_HOOKS_SNIPPET}"
+  install_git_hooks >/dev/null 2>&1
+)
+
+HOOK1B="$(hook_path_for_checkout "${REPO1B_WT}")"
+assert_file_exists "worktree hook written to resolved path" "${HOOK1B}"
+assert_file_contains "worktree hook carries the signature line" "# oh-my-claude post-merge auto-sync" "${HOOK1B}"
+
+# ===========================================================================
 # Case 2: a foreign (non-oh-my-claude) hook is preserved.
 # ===========================================================================
 printf 'Case 2: foreign hook is preserved:\n'
 
 REPO2="${TEST_ROOT}/repo2"
 setup_fake_repo "${REPO2}"
-HOOK2="${REPO2}/.git/hooks/post-merge"
+HOOK2="$(hook_path_for_checkout "${REPO2}")"
 # Freeze the foreign hook onto disk via a fixture file so diff comparisons
 # can round-trip exactly — $(cat) would strip trailing newlines and lie.
 FOREIGN_FIXTURE="${TEST_ROOT}/foreign-hook.fixture"
@@ -140,7 +187,7 @@ chmod +x "${HOOK2}"
 (
   set -euo pipefail
   SCRIPT_DIR="${REPO2}"
-  eval "${INSTALL_HOOKS_FN}"
+  eval "${INSTALL_HOOKS_SNIPPET}"
   install_git_hooks >/dev/null 2>&1
 )
 
@@ -170,7 +217,7 @@ printf 'Case 3: re-running on a signed hook is idempotent:\n'
 (
   set -euo pipefail
   SCRIPT_DIR="${REPO1}"
-  eval "${INSTALL_HOOKS_FN}"
+  eval "${INSTALL_HOOKS_SNIPPET}"
   install_git_hooks >/dev/null 2>&1
 )
 
@@ -180,7 +227,7 @@ assert_file_contains "signature still present on re-run" "# oh-my-claude post-me
 # Case 4: uninstall.sh's removal clause drops only signed hooks.
 #
 # The uninstall block looks up repo_path from oh-my-claude.conf and deletes
-# <repo>/.git/hooks/post-merge when it carries the signature. We reproduce
+# <repo>'s resolved `post-merge` hook when it carries the signature. We reproduce
 # that exact grep-then-rm sequence since the uninstall.sh block is short
 # and copying it avoids invoking the full uninstaller.
 # ===========================================================================
@@ -193,7 +240,7 @@ CONF="${FAKE_HOME}/.claude/oh-my-claude.conf"
 # Signed hook — should be removed.
 printf 'repo_path=%s\n' "${REPO1}" > "${CONF}"
 _repo_path="$(grep -E '^repo_path=' "${CONF}" 2>/dev/null | head -1 | cut -d= -f2-)"
-_hook_path="${_repo_path}/.git/hooks/post-merge"
+_hook_path="$(hook_path_for_checkout "${_repo_path}")"
 if [[ -f "${_hook_path}" ]] && grep -q '# oh-my-claude post-merge auto-sync' "${_hook_path}" 2>/dev/null; then
   rm -f "${_hook_path}"
 fi
@@ -209,7 +256,7 @@ fi
 # repo2 and assert it stays in place.
 printf 'repo_path=%s\n' "${REPO2}" > "${CONF}"
 _repo_path="$(grep -E '^repo_path=' "${CONF}" 2>/dev/null | head -1 | cut -d= -f2-)"
-_hook_path="${_repo_path}/.git/hooks/post-merge"
+_hook_path="$(hook_path_for_checkout "${_repo_path}")"
 if [[ -f "${_hook_path}" ]] && grep -q '# oh-my-claude post-merge auto-sync' "${_hook_path}" 2>/dev/null; then
   rm -f "${_hook_path}"
 fi
@@ -221,6 +268,20 @@ else
   printf '  FAIL: foreign hook body changed by uninstall clause\n' >&2
   diff "${FOREIGN_FIXTURE}" "${HOOK2}" || true
   fail=$((fail + 1))
+fi
+
+# Worktree repo_path — uninstall should resolve the shared hooks dir too.
+printf 'repo_path=%s\n' "${REPO1B_WT}" > "${CONF}"
+_repo_path="$(grep -E '^repo_path=' "${CONF}" 2>/dev/null | head -1 | cut -d= -f2-)"
+_hook_path="$(hook_path_for_checkout "${_repo_path}")"
+if [[ -f "${_hook_path}" ]] && grep -q '# oh-my-claude post-merge auto-sync' "${_hook_path}" 2>/dev/null; then
+  rm -f "${_hook_path}"
+fi
+if [[ -f "${HOOK1B}" ]]; then
+  printf '  FAIL: worktree-sourced signed hook was not removed at %s\n' "${HOOK1B}" >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
 fi
 
 # ===========================================================================
@@ -244,10 +305,10 @@ printf 'second\n' > "${REPO3}/bundle/dot-claude/second.txt"
 (
   set -euo pipefail
   SCRIPT_DIR="${REPO3}"
-  eval "${INSTALL_HOOKS_FN}"
+  eval "${INSTALL_HOOKS_SNIPPET}"
   install_git_hooks >/dev/null 2>&1
 )
-HOOK3="${REPO3}/.git/hooks/post-merge"
+HOOK3="$(hook_path_for_checkout "${REPO3}")"
 assert_file_exists "repo3 hook installed" "${HOOK3}"
 
 # Run the hook with HOME pointed at an empty dir — no manifest present.

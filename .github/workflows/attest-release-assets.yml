@@ -1,0 +1,85 @@
+name: Attest Release Assets
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to attest (for example: v1.43.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+jobs:
+  attest-release-assets:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Resolve release tag
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then
+            tag="${{ github.event.release.tag_name }}"
+          else
+            tag="${{ inputs.tag }}"
+          fi
+          if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            printf 'invalid release tag: %s\n' "${tag}" >&2
+            exit 1
+          fi
+          version="${tag#v}"
+          asset_stem="oh-my-claude-${tag}"
+          {
+            printf 'tag=%s\n' "${tag}"
+            printf 'version=%s\n' "${version}"
+            printf 'asset_stem=%s\n' "${asset_stem}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout tagged source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: refs/tags/${{ steps.tag.outputs.tag }}
+
+      - name: Build canonical release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/expected
+          bash tools/build-release-assets.sh "${{ steps.tag.outputs.version }}" --out-dir dist/expected >/dev/null
+
+      - name: Download published release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/published
+          gh release download "${{ steps.tag.outputs.tag }}" \
+            --dir dist/published \
+            --pattern "${{ steps.tag.outputs.asset_stem }}.tar.gz" \
+            --pattern "${{ steps.tag.outputs.asset_stem }}.zip" \
+            --pattern "${{ steps.tag.outputs.asset_stem }}.SHA256SUMS"
+
+      - name: Verify published assets match canonical rebuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          stem="${{ steps.tag.outputs.asset_stem }}"
+          cmp -s "dist/expected/${stem}.tar.gz" "dist/published/${stem}.tar.gz"
+          cmp -s "dist/expected/${stem}.zip" "dist/published/${stem}.zip"
+          cmp -s "dist/expected/${stem}.SHA256SUMS" "dist/published/${stem}.SHA256SUMS"
+
+      - name: Generate artifact attestation
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            dist/published/${{ steps.tag.outputs.asset_stem }}.tar.gz
+            dist/published/${{ steps.tag.outputs.asset_stem }}.zip
+            dist/published/${{ steps.tag.outputs.asset_stem }}.SHA256SUMS

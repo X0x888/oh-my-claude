@@ -57,7 +57,7 @@
 #        class of CI-red-tag failures locally in 3-5min instead of
 #        15min of remote CI per failed bump.)
 #   7. Update VERSION
-#   8. Update README badge
+#   8. Update README release pins
 #   9. Promote [Unreleased] in CHANGELOG to [X.Y.Z]
 #   9b. Re-run CHANGELOG-coupled tests (v1.32.7/8 process fix)
 #   10. Commit
@@ -147,6 +147,10 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+RELEASE_ASSET_HELPER="${SCRIPT_DIR}/build-release-assets.sh"
+RELEASE_TITLE_HELPER="${SCRIPT_DIR}/render-release-title.sh"
+RELEASE_NOTES_HELPER="${SCRIPT_DIR}/render-release-notes.sh"
+PUBLISHED_RELEASE_AUDITOR="${SCRIPT_DIR}/verify-published-release.sh"
 cd "${REPO_ROOT}"
 
 # ----------------------------------------------------------------------
@@ -163,6 +167,19 @@ run() {
   fi
 }
 
+preview_release_title() {
+  local tmp out
+  if out="$(bash "${RELEASE_TITLE_HELPER}" "${VERSION_ARG}" 2>/dev/null)"; then
+    printf '%s' "${out}"
+    return 0
+  fi
+  tmp="$(mktemp -t omc-release-title-XXXXXX)"
+  perl -0pe "s|^(## \\[Unreleased\\])\$|\$1\n\n## [${VERSION_ARG}] - ${TODAY}|" CHANGELOG.md > "${tmp}"
+  out="$(OMC_RELEASE_CHANGELOG_PATH="${tmp}" bash "${RELEASE_TITLE_HELPER}" "${VERSION_ARG}")"
+  rm -f "${tmp}"
+  printf '%s' "${out}"
+}
+
 # ----------------------------------------------------------------------
 # Validate input + state
 # ----------------------------------------------------------------------
@@ -175,8 +192,6 @@ if [[ ! "${VERSION_ARG}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 fi
 
 if ! command -v git >/dev/null 2>&1; then err "git not found in PATH"; fi
-if ! command -v jq >/dev/null 2>&1; then err "jq not found in PATH"; fi
-
 if [[ -n "$(git status --porcelain 2>/dev/null)" ]]; then
   err "working tree is not clean — commit or stash first"
 fi
@@ -400,14 +415,14 @@ else
 
   # === SUB-STAGE B: TEST SWEEP ===
   #
-  # Extract the exact test list from the workflow file. Two patterns
-  # cover bare invocations and ones with arg-binding (e.g.,
-  # `OMC_X=y bash tests/test-foo.sh`). De-duplicate across both jobs
-  # (the macOS job pins a subset of the test job's list).
-  ci_tests="$(grep -E '^\s+run:\s+bash tests/test-' "${REPO_ROOT}/.github/workflows/validate.yml" 2>/dev/null \
-    | awk '{for (i=1; i<=NF; i++) if ($i ~ /^tests\/test-/) { print $i; next }}' \
-    | sort -u)"
-  if [[ -z "${ci_tests}" ]]; then
+  # Extract the exact test list from the workflow file via the shared
+  # helper so release.sh, run-sterile.sh, and coordination-rules stay
+  # in lockstep as new validate.yml run shapes appear.
+  set +e
+  ci_tests="$(bash "${REPO_ROOT}/tools/list-ci-pinned-tests.sh" "${REPO_ROOT}/.github/workflows/validate.yml" 2>&1)"
+  ci_tests_rc=$?
+  set -e
+  if [[ "${ci_tests_rc}" -ne 0 ]] || [[ -z "${ci_tests}" ]]; then
     err "could not extract CI-pinned test list from .github/workflows/validate.yml — refusing to bypass the gate silently. Run with --skip-local-sweep if intentional."
   fi
   ci_test_count="$(printf '%s\n' "${ci_tests}" | wc -l | tr -d ' ')"
@@ -495,26 +510,30 @@ if [[ "${CI_PREFLIGHT}" -eq 1 ]]; then
 fi
 
 # ----------------------------------------------------------------------
-# Step 7-9 — VERSION, badge, CHANGELOG promotion
+# Step 7-9 — VERSION, README release pins, CHANGELOG promotion
 # ----------------------------------------------------------------------
 say "Step 7: bump VERSION"
 run sh -c "printf '%s\n' '${VERSION_ARG}' > VERSION"
 ok "VERSION → ${VERSION_ARG}"
 
-say "Step 8: update README badge"
+say "Step 8: update README release pins"
 if [[ "${DRY_RUN}" -eq 1 ]]; then
   # v1.32.15 (G5 fix): match the actual implementation (perl -i -pe
   # not sed -i — perl is portable across macOS BSD-sed and Linux
   # GNU-sed; sed -i differs incompatibly between the two).
-  printf '  [dry-run] perl -i -pe "s/Version-%s-blue/Version-%s-blue/" README.md\n' "${CURRENT_VERSION}" "${VERSION_ARG}"
-  printf '  [dry-run] ✓ README badge → %s (would-emit on real run)\n' "${VERSION_ARG}"
+  printf '  [dry-run] perl -i -pe "s/Version-%s-blue/Version-%s-blue/g; s/OMC_REF=v%s/OMC_REF=v%s/g; s/--branch v%s https:\\/\\/github.com\\/X0x888\\/oh-my-claude\\.git/--branch v%s https:\\/\\/github.com\\/X0x888\\/oh-my-claude.git/g" README.md\n' \
+    "${CURRENT_VERSION}" "${VERSION_ARG}" "${CURRENT_VERSION}" "${VERSION_ARG}" "${CURRENT_VERSION}" "${VERSION_ARG}"
+  printf '  [dry-run] ✓ README release pins → %s (badge + pinned install snippets)\n' "${VERSION_ARG}"
 else
-  if grep -q "Version-${CURRENT_VERSION}-blue" README.md; then
-    perl -i -pe "s/Version-${CURRENT_VERSION}-blue/Version-${VERSION_ARG}-blue/" README.md
-    ok "README badge → ${VERSION_ARG}"
-  else
-    err "README.md does not contain Version-${CURRENT_VERSION}-blue badge — manual update required"
-  fi
+  grep -q "Version-${CURRENT_VERSION}-blue" README.md \
+    || err "README.md does not contain Version-${CURRENT_VERSION}-blue badge — manual update required"
+  grep -q "OMC_REF=v${CURRENT_VERSION}" README.md \
+    || err "README.md does not contain OMC_REF=v${CURRENT_VERSION} pinned install lines — manual update required"
+  grep -q -- "--branch v${CURRENT_VERSION} https://github.com/X0x888/oh-my-claude.git" README.md \
+    || err "README.md does not contain the manual clone line for v${CURRENT_VERSION} — manual update required"
+
+  perl -i -pe "s/Version-${CURRENT_VERSION}-blue/Version-${VERSION_ARG}-blue/g; s/OMC_REF=v${CURRENT_VERSION}/OMC_REF=v${VERSION_ARG}/g; s/--branch v${CURRENT_VERSION} https:\\/\\/github.com\\/X0x888\\/oh-my-claude\\.git/--branch v${VERSION_ARG} https:\\/\\/github.com\\/X0x888\\/oh-my-claude.git/g" README.md
+  ok "README release pins → ${VERSION_ARG}"
 fi
 
 say "Step 9: promote [Unreleased] in CHANGELOG"
@@ -640,27 +659,80 @@ fi
 # the tag to exist). The legacy eager-tag flow runs it inline here.
 # ----------------------------------------------------------------------
 emit_github_release() {
+  local release_sha release_title release_body asset_dir asset_stem
+  release_sha="$(git rev-parse "v${VERSION_ARG}^{commit}" 2>/dev/null || git rev-parse HEAD 2>/dev/null || true)"
+  asset_stem="oh-my-claude-v${VERSION_ARG}"
+  [[ -x "${RELEASE_ASSET_HELPER}" ]] || err "release asset helper missing: ${RELEASE_ASSET_HELPER}"
+  [[ -x "${RELEASE_TITLE_HELPER}" ]] || err "release title helper missing: ${RELEASE_TITLE_HELPER}"
+  [[ -x "${RELEASE_NOTES_HELPER}" ]] || err "release notes helper missing: ${RELEASE_NOTES_HELPER}"
+  [[ -x "${PUBLISHED_RELEASE_AUDITOR}" ]] || err "published release auditor missing: ${PUBLISHED_RELEASE_AUDITOR}"
   if ! command -v gh >/dev/null 2>&1; then
-    printf '  warn: gh CLI not found — skipping release create. Run manually:\n' >&2
-    printf '    awk "/^## \\\\[%s\\\\]/{found=1;next} /^## \\\\[/{if(found)exit} found" CHANGELOG.md \\\n' "${VERSION_ARG}"
-    printf '      | gh release create v%s --title v%s --notes-file -\n' "${VERSION_ARG}" "${VERSION_ARG}"
+    if [[ "${DRY_RUN}" -eq 1 ]]; then
+      release_title="$(preview_release_title)"
+    else
+      release_title="$(bash "${RELEASE_TITLE_HELPER}" "${VERSION_ARG}")"
+    fi
+    printf '  warn: gh CLI not found — skipping release create. Choose one manual fallback:\n' >&2
+    printf '    1. Install/use gh later:\n' >&2
+    printf '       TITLE="$(bash tools/render-release-title.sh %s)"\n' "${VERSION_ARG}" >&2
+    printf '       ASSET_DIR="$(mktemp -d -t omc-release-assets-XXXXXX)"\n' >&2
+    printf '       bash tools/build-release-assets.sh %s --out-dir "$ASSET_DIR"\n' "${VERSION_ARG}" >&2
+    printf '       bash tools/render-release-notes.sh %s --sha %s > /tmp/oh-my-claude-release-notes.md\n' "${VERSION_ARG}" "${release_sha}" >&2
+    printf '       gh release create v%s "$ASSET_DIR/%s.tar.gz" "$ASSET_DIR/%s.zip" "$ASSET_DIR/%s.SHA256SUMS" --title "$TITLE" --notes-file /tmp/oh-my-claude-release-notes.md\n' "${VERSION_ARG}" "${asset_stem}" "${asset_stem}" "${asset_stem}" >&2
+    printf '    2. Use GitHub web UI now:\n' >&2
+    printf '       title: bash tools/render-release-title.sh %s\n' "${VERSION_ARG}" >&2
+    printf '       upload assets from: bash tools/build-release-assets.sh %s --out-dir "$ASSET_DIR"\n' "${VERSION_ARG}" >&2
+    printf '       paste the output of: bash tools/render-release-notes.sh %s --sha %s\n' "${VERSION_ARG}" "${release_sha}" >&2
+    printf '       then prove the full published release with: bash tools/verify-published-release.sh %s --sha %s --attestations wait --trigger-attestations-if-missing\n' "${VERSION_ARG}" "${release_sha}" >&2
     return 0
   fi
   if [[ "${DRY_RUN}" -eq 1 ]]; then
-    printf '  [dry-run] gh release create v%s --title v%s --notes-file <(awk extract)\n' "${VERSION_ARG}" "${VERSION_ARG}"
+    release_title="$(preview_release_title)"
+    printf '  [dry-run] TITLE="$(bash tools/render-release-title.sh %s)"\n' "${VERSION_ARG}"
+    printf '  [dry-run] ASSET_DIR="$(mktemp -d -t omc-release-assets-XXXXXX)"\n'
+    printf '  [dry-run] bash tools/build-release-assets.sh %s --out-dir "$ASSET_DIR"\n' "${VERSION_ARG}"
+    printf '  [dry-run] bash tools/render-release-notes.sh %s --sha %s > /tmp/oh-my-claude-release-notes.md\n' "${VERSION_ARG}" "${release_sha}"
+    printf '            release title: %s\n' "${release_title}"
+    printf '            release assets: %s.tar.gz, %s.zip, %s.SHA256SUMS\n' "${asset_stem}" "${asset_stem}" "${asset_stem}"
+    printf '            verified bootstrap block rendered by shared helper\n'
+    printf '            trusted release commit: %s\n' "${release_sha}"
+    printf '  [dry-run] bash tools/verify-published-release.sh %s --sha %s --attestations skip\n' "${VERSION_ARG}" "${release_sha}"
+    printf '  [dry-run] bash tools/verify-published-release.sh %s --sha %s --attestations wait --trigger-attestations-if-missing\n' "${VERSION_ARG}" "${release_sha}"
     return 0
   fi
-  local release_notes
-  release_notes="$(awk "/^## \\[${VERSION_ARG}\\]/{found=1;next} /^## \\[/{if(found)exit} found" CHANGELOG.md)"
-  if [[ -z "${release_notes}" ]]; then
-    printf '  warn: no CHANGELOG section found for v%s — release will have empty notes\n' "${VERSION_ARG}" >&2
-  fi
-  printf '%s' "${release_notes}" | gh release create "v${VERSION_ARG}" --title "v${VERSION_ARG}" --notes-file - 2>&1 | head -3
+  asset_dir="$(mktemp -d -t omc-release-assets-XXXXXX)"
+  bash "${RELEASE_ASSET_HELPER}" "${VERSION_ARG}" --out-dir "${asset_dir}" >/dev/null
+  release_title="$(bash "${RELEASE_TITLE_HELPER}" "${VERSION_ARG}")"
+  release_body="$(bash "${RELEASE_NOTES_HELPER}" "${VERSION_ARG}" --sha "${release_sha}")"
+  printf '%s' "${release_body}" | gh release create "v${VERSION_ARG}" \
+    "${asset_dir}/${asset_stem}.tar.gz" \
+    "${asset_dir}/${asset_stem}.zip" \
+    "${asset_dir}/${asset_stem}.SHA256SUMS" \
+    --title "${release_title}" --notes-file - 2>&1 | head -3
+  bash "${PUBLISHED_RELEASE_AUDITOR}" "${VERSION_ARG}" --sha "${release_sha}" --attestations skip
+  rm -rf "${asset_dir}"
+  printf '  notice: release asset attestation workflow runs asynchronously after publish\n'
+  printf '          later close the provenance loop with: bash tools/verify-published-release.sh %s --sha %s --attestations wait --trigger-attestations-if-missing\n' "${VERSION_ARG}" "${release_sha}"
   ok "GitHub release created"
 }
 
 if [[ "${TAG_ON_GREEN}" -eq 1 ]]; then
   say "Step 13: GitHub release (deferred — runs after CI green under --tag-on-green)"
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    release_sha="$(git rev-parse HEAD 2>/dev/null || true)"
+    asset_stem="oh-my-claude-v${VERSION_ARG}"
+    release_title="$(preview_release_title)"
+    printf '  [dry-run] TITLE="$(bash tools/render-release-title.sh %s)"\n' "${VERSION_ARG}"
+    printf '  [dry-run] ASSET_DIR="$(mktemp -d -t omc-release-assets-XXXXXX)"\n'
+    printf '  [dry-run] bash tools/build-release-assets.sh %s --out-dir "$ASSET_DIR"\n' "${VERSION_ARG}"
+    printf '  [dry-run] bash tools/render-release-notes.sh %s --sha %s > /tmp/oh-my-claude-release-notes.md\n' "${VERSION_ARG}" "${release_sha}"
+    printf '            release title: %s\n' "${release_title}"
+    printf '            release assets: %s.tar.gz, %s.zip, %s.SHA256SUMS\n' "${asset_stem}" "${asset_stem}" "${asset_stem}"
+    printf '            verified bootstrap block rendered by shared helper after green CI\n'
+    printf '            trusted release commit: %s\n' "${release_sha}"
+    printf '  [dry-run] bash tools/verify-published-release.sh %s --sha %s --attestations skip\n' "${VERSION_ARG}" "${release_sha}"
+    printf '  [dry-run] bash tools/verify-published-release.sh %s --sha %s --attestations wait --trigger-attestations-if-missing\n' "${VERSION_ARG}" "${release_sha}"
+  fi
 else
   say "Step 13: GitHub release"
   emit_github_release
@@ -747,8 +819,17 @@ elif command -v gh >/dev/null 2>&1; then
         printf '\n[recovery] The Release v%s commit is on main without a tag.\n' "${VERSION_ARG}" >&2
         printf '  Push fixup commit(s), watch CI green, then manually:\n' >&2
         printf '    git tag v%s && git push --tags && \\\n' "${VERSION_ARG}" >&2
-        printf '    awk "/^## \\\\[%s\\\\]/{f=1;next} /^## \\\\[/{if(f)exit} f" CHANGELOG.md | \\\n' "${VERSION_ARG}" >&2
-        printf '      gh release create v%s --title v%s --notes-file -\n' "${VERSION_ARG}" "${VERSION_ARG}" >&2
+        printf '    TITLE="$(bash tools/render-release-title.sh %s)" && \\\n' "${VERSION_ARG}" >&2
+        printf '    ASSET_DIR="$(mktemp -d -t omc-release-assets-XXXXXX)" && \\\n' >&2
+        printf '    bash tools/build-release-assets.sh %s --out-dir "$ASSET_DIR" && \\\n' "${VERSION_ARG}" >&2
+        printf '    bash tools/render-release-notes.sh %s --sha "$(git rev-parse v%s^{commit})" | \\\n' "${VERSION_ARG}" "${VERSION_ARG}" >&2
+        printf '      gh release create v%s "$ASSET_DIR/%s.tar.gz" "$ASSET_DIR/%s.zip" "$ASSET_DIR/%s.SHA256SUMS" --title "$TITLE" --notes-file -\n' "${VERSION_ARG}" "oh-my-claude-v${VERSION_ARG}" "oh-my-claude-v${VERSION_ARG}" "oh-my-claude-v${VERSION_ARG}" >&2
+        printf '    bash tools/verify-published-release.sh %s --sha "$(git rev-parse v%s^{commit})" --attestations skip\n' "${VERSION_ARG}" "${VERSION_ARG}" >&2
+        printf '  Or via GitHub web UI, paste:\n' >&2
+        printf '    title: bash tools/render-release-title.sh %s\n' "${VERSION_ARG}" >&2
+        printf '    assets: bash tools/build-release-assets.sh %s --out-dir "$ASSET_DIR"\n' "${VERSION_ARG}" >&2
+        printf '    bash tools/render-release-notes.sh %s --sha "$(git rev-parse v%s^{commit})"\n' "${VERSION_ARG}" "${VERSION_ARG}" >&2
+        printf '    then prove it with: bash tools/verify-published-release.sh %s --sha "$(git rev-parse v%s^{commit})" --attestations wait --trigger-attestations-if-missing\n' "${VERSION_ARG}" "${VERSION_ARG}" >&2
       fi
       err "CI failed on v${VERSION_ARG} — see gh run view ${RUN_ID}"
     fi

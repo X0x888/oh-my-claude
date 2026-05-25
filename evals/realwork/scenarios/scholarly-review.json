@@ -1,0 +1,18 @@
+{
+  "id": "scholarly-review",
+  "risk": "high",
+  "fixture": "fixtures/literature-review",
+  "prompt": "/ulw research the literature on spaced repetition in graduate study and draft a short literature review with citations",
+  "required_outcomes": [
+    "research_report_ready",
+    "analysis_specialist_coverage",
+    "writer_deliverable_ready",
+    "doc_review_clean",
+    "final_closeout_audit_ready"
+  ],
+  "budgets": {
+    "max_tokens": 90000,
+    "max_tool_calls": 120,
+    "max_elapsed_seconds": 2400
+  }
+}

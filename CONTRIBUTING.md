@@ -69,10 +69,21 @@ find . -name '*.json' -not -path './.git/*' -print0 | xargs -0 -n1 python3 -m js
 # Installation verification
 bash verify.sh
 
-# Run every CI-pinned bash test (extracts the canonical list from validate.yml — never drifts)
-for t in $(grep -E '^\s+run:\s+bash tests/test-' .github/workflows/validate.yml | awk '{print $NF}'); do
+# Run every CI-pinned bash test (extracts the canonical list from validate.yml via the shared helper)
+for t in $(bash tools/list-ci-pinned-tests.sh .github/workflows/validate.yml); do
   bash "${t}" || { printf 'FAIL: %s\n' "${t}"; exit 1; }
 done
+
+# Top-level cross-domain product-readiness wrapper around the
+# classification / routing / benchmark / realwork proof surfaces
+bash tools/verify-professional-readiness.sh
+
+# Top-level install/onboarding wrapper around bootstrapper + handoff +
+# recovery + onboarding proof surfaces
+bash tools/verify-install-readiness.sh
+
+# One-shot maintainer release-candidate view (product + install + distribution)
+bash tools/verify-project-readiness.sh
 
 # Statusline widget (Python)
 python3 -m unittest tests.test_statusline -v
@@ -352,7 +363,7 @@ When bumping the version (changing `VERSION`), follow these steps in order. Repl
 2. **CI parity check.** Run locally exactly what `.github/workflows/validate.yml` will run — shellcheck warnings are CI-fatal, so any local warning is a CI red. Do not proceed if any of these exit non-zero or emit any warning:
    - `find bundle/ -name '*.sh' -print0 | xargs -0 shellcheck -x --severity=warning`
    - `find . -name '*.json' -not -path './.git/*' -print0 | xargs -0 -n1 python3 -m json.tool --no-ensure-ascii > /dev/null`
-   - Every test the CI workflow runs. Extract the current list live so this checklist cannot drift: `grep -E '^\s+run:\s+bash tests/test-' .github/workflows/validate.yml | awk '{print $NF}'`. Plus `python3 -m unittest tests.test_statusline -v`.
+   - Every test the CI workflow runs. Extract the current list live with `bash tools/list-ci-pinned-tests.sh .github/workflows/validate.yml` so env-prefixed or compound `run:` lines cannot drift from the local checklist. Plus `python3 -m unittest tests.test_statusline -v`.
 
    *v1.32.0 expanded the CI-pinned set from 33 → 61 tests (release post-mortem R1). Coordination-rules lockstep test (`tests/test-coordination-rules.sh`) now enforces "every test is CI-pinned OR carries a `# UNPINNED: <reason>` token" — adding a new test without explicit pin-or-justify blocks merge.*
 
@@ -369,9 +380,9 @@ When bumping the version (changing `VERSION`), follow these steps in order. Repl
    - **shellcheck on changed `bundle/*.sh`** — catches CI-fatal warnings before tag.
    - **lib-reachability** — every modified `bundle/.../lib/*.sh` since the last tag must have a CI-pinned `tests/test-${name}.sh` (mirrors `tests/test-coordination-rules.sh:C3` as a pre-tag check).
 
-   Fast-path: when only docs/CHANGELOG/VERSION changed since the last tag, the heavy checks skip with a "no fix-shaped changes" message. `--quick` mode skips sterile-env (saves ~1 min) but warns; re-run without `--quick` before tagging. Regression net: `tests/test-hotfix-sweep.sh` (12 assertions, CI-pinned).
+   Fast-path: when only docs/CHANGELOG/VERSION changed since the last tag, the heavy checks skip with a "no fix-shaped changes" message. `--quick` mode skips sterile-env (saves ~1 min) but warns; re-run without `--quick` before tagging. Regression net: `tests/test-hotfix-sweep.sh` (CI-pinned; use the live suite output if you need the current assertion count).
 
-7. **Local Linux CI parity** *(advisory, v1.33.x post-mortem of v1.33.0/.1/.2 cascade).* `bash tools/local-ci.sh` runs the validate.yml CI parity suite inside an Ubuntu container so BSD-vs-GNU coreutils, `mktemp -d` shape (`/var/folders/...` vs `/tmp/tmp.XXX`), and locale defaults are caught BEFORE the GitHub Actions round-trip. Pairs with the sterile-env TMPDIR fix in `tests/lib/sterile-env.sh` — sterile-env handles env-shape divergence on macOS hosts; local-ci handles BSD-vs-GNU coreutils divergence sterile-env can't fully simulate. Requires Docker or podman; gracefully reports the missing runtime if absent. ~30s after first image pull, ~3+ min on cold pull. Regression net: `tests/test-local-ci.sh` (14 assertions, CI-pinned). Skip when working on docs-only changes.
+7. **Local Linux CI parity** *(advisory, v1.33.x post-mortem of v1.33.0/.1/.2 cascade).* `bash tools/local-ci.sh` runs the validate.yml CI parity suite inside an Ubuntu container so BSD-vs-GNU coreutils, `mktemp -d` shape (`/var/folders/...` vs `/tmp/tmp.XXX`), and locale defaults are caught BEFORE the GitHub Actions round-trip. Pairs with the sterile-env TMPDIR fix in `tests/lib/sterile-env.sh` — sterile-env handles env-shape divergence on macOS hosts; local-ci handles BSD-vs-GNU coreutils divergence sterile-env can't fully simulate. Requires Docker or podman; gracefully reports the missing runtime if absent. ~30s after first image pull, ~3+ min on cold pull. Regression net: `tests/test-local-ci.sh` (CI-pinned; use the live suite output if you need the current assertion count). Skip when working on docs-only changes.
 
 ### Bump and tag
 
@@ -381,7 +392,7 @@ When bumping the version (changing `VERSION`), follow these steps in order. Repl
 bash tools/release.sh X.Y.Z
 ```
 
-This runs steps 7-14 below in order, validating preconditions (clean tree, on `main`, X.Y.Z is above current, tag doesn't exist, no leftover `.hotfix-sweep-quick` marker) before any mutation. `--dry-run` previews; `--no-watch` skips the post-flight CI watch (still tags + pushes). Regression net: `tests/test-release.sh` (53 assertions, CI-pinned).
+This runs steps 7-14 below in order, validating preconditions (clean tree, on `main`, X.Y.Z is above current, tag doesn't exist, no leftover `.hotfix-sweep-quick` marker) before any mutation. `--dry-run` previews; `--no-watch` skips the post-flight CI watch (still tags + pushes). Regression net: `tests/test-release.sh` (CI-pinned; use the live suite output if you need the current assertion count).
 
 `--ci-preflight` *(recommended since v1.34.1)* makes `tools/local-ci.sh` (Pre-flight Step 7) the gating artifact for the release. The script runs local-ci as Step 6.5 BEFORE the version bump; on green, the post-flight `gh run watch` is skipped — reclaiming the 6–13 minutes of remote-CI wall-clock per release that `--tag-on-green` spent watching. Remote CI still runs in parallel as a no-op second opinion. **Requires Docker** (or podman via `OMC_LOCAL_CI_RUNTIME=podman`); on a runtime-missing host the script aborts cleanly at Step 6.5 before any state change. Mutually exclusive with `--tag-on-green` (both gate the tag — pick one). Use `--tag-on-green` as the no-Docker fallback.
 
@@ -406,13 +417,70 @@ This runs steps 7-14 below in order, validating preconditions (clean tree, on `m
 10. Commit with a descriptive message summarizing the release.
 11. **Tag the release commit**: `git tag vX.Y.Z` — this is mandatory, not optional.
 12. Push commits and tags: `git push && git push --tags`.
-13. Create a GitHub release from the tag:
+13. Create a GitHub release from the tag. The GitHub release body is the authoritative public source for the verified-bootstrap command and trusted release commit SHA, so include both ahead of the changelog notes:
     ```bash
     VER=$(cat VERSION)
-    awk "/^## \\[$VER\\]/{found=1;next} /^## \\[/{if(found)exit} found" CHANGELOG.md \
-      | gh release create "v$VER" --title "v$VER" --notes-file -
+    SHA=$(git rev-parse "v$VER^{commit}")
+    TITLE=$(bash tools/render-release-title.sh "$VER")
+    ASSET_DIR=$(mktemp -d -t omc-release-assets-XXXXXX)
+    bash tools/build-release-assets.sh "$VER" --out-dir "$ASSET_DIR"
+    bash tools/render-release-notes.sh "$VER" --sha "$SHA" \
+      | gh release create "v$VER" \
+          "$ASSET_DIR/oh-my-claude-v$VER.tar.gz" \
+          "$ASSET_DIR/oh-my-claude-v$VER.zip" \
+          "$ASSET_DIR/oh-my-claude-v$VER.SHA256SUMS" \
+          --title "$TITLE" --notes-file -
     ```
-    If `gh` is unavailable, create the release manually via GitHub's web UI.
+    If `gh` is unavailable, create the release manually via GitHub's web UI: build the attached source bundles first with `bash tools/build-release-assets.sh "$VER" --out-dir "$ASSET_DIR"`, upload `oh-my-claude-v$VER.tar.gz`, `oh-my-claude-v$VER.zip`, and `oh-my-claude-v$VER.SHA256SUMS`, set the title to `bash tools/render-release-title.sh "$VER"`, then paste the output of `bash tools/render-release-notes.sh "$VER" --sha "$SHA"` so the structure stays identical: verified-bootstrap block first, trusted release commit line second, changelog notes after that.
+    In either path, prove the published release end to end before you call it done:
+    ```bash
+    bash tools/verify-published-release.sh "$VER" --sha "$SHA" --attestations wait --trigger-attestations-if-missing
+    ```
+    That helper verifies title, body, published state, and attached source bundles immediately, then waits for the matching attestation workflow run (or dispatches it if none registered) before verifying published asset attestations. For a synchronous-only check right after `gh release create`, use `bash tools/verify-published-release.sh "$VER" --sha "$SHA" --attestations skip`.
+    For the full maintainer view — deployment state, current published release, and recent history together — use:
+    ```bash
+    bash tools/verify-distribution-readiness.sh --release-sha "$SHA"
+    ```
+    That top-level readiness check composes `verify-release-automation-deployment.sh`, `prepare-release-automation-deployment.sh`, `verify-published-release.sh`, and `audit-published-releases.sh`. It defaults to verifying live attestations for the current published release and skipping attestation checks in the history slice for speed; override with `--history-attestations verify|wait` when you want full provenance across the audited window. It also surfaces the local deployment-candidate proof separately from the remote deployment proof, so you can tell whether the only remaining blocker is that `origin/main` is behind. Add `--json` when you want the same audit as a machine-readable artifact for CI, dashboards, or scripted release gates.
+    To audit the first-run install/onboarding experience directly, run:
+    ```bash
+    bash tools/verify-install-readiness.sh
+    ```
+    That helper proves the bootstrapper/update path, fresh-install handoff, recovery-path transcript, and AI-assisted onboarding/install prompts as one professional-distribution contract.
+    To combine that live distribution proof with the local product and install proofs (classification + routing + UI design contracts + benchmark + realwork + install/onboarding), run:
+    ```bash
+    bash tools/verify-project-readiness.sh --release-sha "$SHA"
+    ```
+    That wrapper composes `tools/verify-professional-readiness.sh`, `tools/verify-install-readiness.sh`, and `tools/verify-distribution-readiness.sh` into one maintainer-facing release-candidate verdict, so you can tell whether the repo is both ready for professional users, safe to hand to first-time installers, and ready to ship.
+    When the canonical release-body format changes, or when you need to backfill older releases, audit the published history in one pass:
+    ```bash
+    bash tools/audit-published-releases.sh --limit 100
+    ```
+    When you change release/distribution automation itself (workflow files or the published-release helper stack), prove the remote default branch actually has those surfaces deployed before expecting the live GitHub audits to go green:
+    ```bash
+    bash tools/verify-release-automation-deployment.sh
+    ```
+    Before you commit/push that stack, stage the exact audited surface as one coherent change-set:
+    ```bash
+    bash tools/stage-release-automation-surfaces.sh --dry-run
+    bash tools/stage-release-automation-surfaces.sh
+    ```
+    Or use the higher-level candidate wrapper when you want the helper to both stage and audit the pre-push candidate with the correct semantics:
+    ```bash
+    bash tools/prepare-release-automation-deployment.sh --dry-run --fetch
+    bash tools/prepare-release-automation-deployment.sh --fetch
+    ```
+    The staging helper now fails closed if unrelated files are already staged; clear them first, or rerun with `--allow-extra-staged` only when you intentionally want a wider staged set than the canonical release/distribution surface. When you narrow with `--path`, it also fails closed if other manifest entries are still dirty in the worktree; include them or rerun with `--allow-partial-manifest` only when you intentionally want a partial release/distribution commit.
+    If your worktree also contains unrelated changes, prove the staged deployment set in isolation before you commit:
+    ```bash
+    bash tools/verify-release-automation-deployment.sh --local-ref INDEX --fetch
+    ```
+    That staged-index verifier now also fails closed if unrelated non-manifest files are already staged; clear them first, or rerun with `--allow-extra-staged` only when the wider staged commit is intentional and you understand the deployment audit does not cover those extra paths. `tools/prepare-release-automation-deployment.sh` is the higher-level candidate wrapper over those lower-level tools: it stages (or previews) the canonical surface, audits the pending candidate against the remote deployment branch, and succeeds when the candidate is coherent even though the remote is still behind. The top-level `tools/verify-distribution-readiness.sh` wrapper passes through that same `--allow-extra-staged` escape hatch when you pair it with `--local-ref INDEX`. The audited path set comes from `tools/list-release-automation-surfaces.sh`, so add new release/distribution helpers there in the same change when the deployment contract expands. The staging helper consumes that same manifest, which keeps the deployment audit and the staged publish set in lockstep; add `--path <path>` to narrow to specific manifest entries, `--json` when you need the same staging plan as machine-readable output, `--allow-extra-staged` when extra staged paths are intentional, or `--allow-partial-manifest` when a narrowed selection intentionally leaves other manifest entries dirty in the worktree. The deployment verifier accepts `--local-ref INDEX` (alias `STAGED`) when you want to audit the staged index instead of the whole worktree.
+    If the signer workflow is not yet deployed on the remote default branch and you only want the synchronous surfaces, use `bash tools/audit-published-releases.sh --limit 100 --attestations skip`. For targeted debugging of a single drifting surface, the underlying helpers remain available: `tools/verify-published-release-title.sh`, `tools/verify-published-release-body.sh`, `tools/verify-published-release-state.sh`, `tools/verify-published-release-assets.sh`, `tools/verify-published-release-attestations.sh`, and `tools/wait-for-release-attestations.sh`. The narrow per-surface batch auditors also remain available when you intentionally want only one history slice: `tools/audit-published-release-titles.sh`, `tools/audit-published-release-bodies.sh`, `tools/audit-published-release-states.sh`, `tools/audit-published-release-assets.sh`, and `tools/audit-published-release-attestations.sh`.
+    To backfill or rerun provenance for a specific release tag without waiting:
+    ```bash
+    gh workflow run attest-release-assets.yml -f tag="v$VER"
+    ```
 
 ### Post-flight
 

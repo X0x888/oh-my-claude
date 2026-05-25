@@ -1,0 +1,17 @@
+{
+  "id": "research-brief",
+  "risk": "medium",
+  "fixture": "fixtures/release-tradeoff-brief",
+  "prompt": "/ulw research the tradeoffs between release automation and manual review, then produce a decision brief",
+  "required_outcomes": [
+    "research_report_ready",
+    "analysis_specialist_coverage",
+    "doc_review_clean",
+    "final_closeout_audit_ready"
+  ],
+  "budgets": {
+    "max_tokens": 70000,
+    "max_tool_calls": 95,
+    "max_elapsed_seconds": 1800
+  }
+}

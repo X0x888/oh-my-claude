@@ -19,6 +19,20 @@ sl = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sl)
 
 
+def statusline_subprocess_env(**overrides):
+    """Build a deterministic env for subprocess runs of statusline.py.
+
+    The product intentionally honors NO_COLOR / OMC_PLAIN at import time,
+    but the end-to-end tests should verify the default render shape unless
+    a test explicitly opts into plain mode.
+    """
+    env = dict(os.environ)
+    env.pop("NO_COLOR", None)
+    env.pop("OMC_PLAIN", None)
+    env.update(overrides)
+    return env
+
+
 class TestSafeGet(unittest.TestCase):
     def test_nested_access(self):
         data = {"a": {"b": {"c": 42}}}
@@ -631,8 +645,7 @@ class TestInstallationDrift(unittest.TestCase):
             repo_dir = os.path.join(tmpdir, "repo")
             self._write_conf(claude_dir, repo_path=repo_dir, installed_version="1.5.0")
             self._write_version(repo_dir, "1.7.0")
-            env = dict(os.environ)
-            env["HOME"] = tmpdir
+            env = statusline_subprocess_env(HOME=tmpdir)
             result = subprocess.run(
                 [sys.executable, STATUSLINE_PATH],
                 input="{}",
@@ -653,8 +666,7 @@ class TestInstallationDrift(unittest.TestCase):
             repo_dir = os.path.join(tmpdir, "repo")
             self._write_conf(claude_dir, repo_path=repo_dir, installed_version="1.7.0")
             self._write_version(repo_dir, "1.7.0")
-            env = dict(os.environ)
-            env["HOME"] = tmpdir
+            env = statusline_subprocess_env(HOME=tmpdir)
             result = subprocess.run(
                 [sys.executable, STATUSLINE_PATH],
                 input="{}",
@@ -672,8 +684,7 @@ class TestInstallationDrift(unittest.TestCase):
         """A legacy string return (hypothetical older impl) still renders."""
         orig = sl.installation_drift
         sl.installation_drift = lambda installed: "1.9.0"
-        env = dict(os.environ)
-        env["HOME"] = tempfile.mkdtemp()
+        env = statusline_subprocess_env(HOME=tempfile.mkdtemp())
         try:
             # Set up minimal conf so installed_version is picked up
             claude_dir = os.path.join(env["HOME"], ".claude")
@@ -879,8 +890,7 @@ class TestInstallationDriftCommitDistance(unittest.TestCase):
                 installed_version="1.5.0",
                 installed_sha=initial_sha,
             )
-            env = dict(os.environ)
-            env["HOME"] = tmpdir
+            env = statusline_subprocess_env(HOME=tmpdir)
             result = subprocess.run(
                 [sys.executable, STATUSLINE_PATH],
                 input="{}",
@@ -1195,13 +1205,15 @@ class TestGateSummary(unittest.TestCase):
 class TestMainIntegration(unittest.TestCase):
     """Test the full statusline by running the script as a subprocess."""
 
-    def run_statusline(self, input_data):
+    def run_statusline(self, input_data, env_overrides=None):
+        env = statusline_subprocess_env(**(env_overrides or {}))
         result = subprocess.run(
             [sys.executable, STATUSLINE_PATH],
             input=json.dumps(input_data),
             capture_output=True,
             text=True,
             timeout=5,
+            env=env,
         )
         return result
 
@@ -1392,15 +1404,13 @@ class TestMainIntegration(unittest.TestCase):
             # silently degenerate; the assertion fails loudly instead.
             self.assertIn("Infinity", encoded)
 
-            env = dict(os.environ)
-            env["STATE_ROOT"] = state_root
             result = subprocess.run(
                 [sys.executable, STATUSLINE_PATH],
                 input=encoded,
                 capture_output=True,
                 text=True,
                 timeout=5,
-                env=env,
+                env=statusline_subprocess_env(STATE_ROOT=state_root),
             )
             self.assertEqual(
                 result.returncode, 0,
@@ -1433,6 +1443,7 @@ class TestMainIntegration(unittest.TestCase):
             capture_output=True,
             text=True,
             timeout=5,
+            env=statusline_subprocess_env(),
         )
         self.assertEqual(result.returncode, 0)
 
@@ -1443,6 +1454,7 @@ class TestMainIntegration(unittest.TestCase):
             capture_output=True,
             text=True,
             timeout=5,
+            env=statusline_subprocess_env(),
         )
         self.assertEqual(result.returncode, 0)
         lines = result.stdout.strip().split("\n")

@@ -9,7 +9,7 @@
 # function-coverage) and missed the highest-historical-frequency
 # violation surface (conf-flag 3-site lockstep).
 #
-# This broadened version enforces six lockstep contracts from
+# This broadened version enforces seven lockstep contracts from
 # CLAUDE.md:
 #
 #   1. Conf-flag 3-site lockstep (most-violated). Every flag that
@@ -18,9 +18,12 @@
 #
 #   2. Test-pin discipline. Every `tests/test-*.sh` MUST be either
 #      CI-pinned in `.github/workflows/validate.yml` OR carry a top-
-#      comment `# UNPINNED: <reason>` token. The discipline is
-#      mechanical: a new test added without explicit pin-or-justify
-#      blocks merge.
+#      comment `# UNPINNED: <reason>` token. Maintainer docs that tell
+#      humans how to extract the CI-pinned set MUST use the shared
+#      `tools/list-ci-pinned-tests.sh` helper, not a hand-rolled
+#      `grep | awk` snippet that misses env-prefixed or compound
+#      workflow lines. The discipline is mechanical: a new test or doc
+#      change added without explicit pin-or-helper usage blocks merge.
 #
 #   3. Lib-test 1:1 mapping. Every `bundle/.../lib/*.sh` MUST have a
 #      `tests/test-${name}.sh` (with the `-lib.sh` suffix exception
@@ -39,6 +42,12 @@
 #      `verify.sh` `required_paths`. Missing either → silent failure
 #      (file present but never loaded, or install verification passes
 #      a broken install).
+#
+#   7. AGENTS tools-inventory lockstep. Every file under `tools/`
+#      (depth <= 2, including nested fixture files) MUST be listed in
+#      the `AGENTS.md` architecture tree `tools/` block. Missing or
+#      extra entries create the wrong contributor mental model for the
+#      repo's developer tooling surface.
 #
 # Pinned in CI via .github/workflows/validate.yml; runs on every push.
 
@@ -165,10 +174,13 @@ fi
 printf '\nContract 2: test-pin discipline\n'
 
 VALIDATE_YML="${REPO_ROOT}/.github/workflows/validate.yml"
+CLAUDE_MD="${REPO_ROOT}/CLAUDE.md"
+CONTRIBUTING_MD="${REPO_ROOT}/CONTRIBUTING.md"
+CI_PIN_HELPER_SNIPPET='bash tools/list-ci-pinned-tests.sh .github/workflows/validate.yml'
+LEGACY_CI_PIN_SNIPPET="grep -E '^\\s+run:\\s+bash tests/test-' .github/workflows/validate.yml | awk '{print \$NF}'"
 
-# CI-pinned test list (live extraction).
-ci_pinned_tests="$(grep -E '^\s+run:\s+bash tests/test-' "${VALIDATE_YML}" \
-  | awk '{print $NF}' \
+# CI-pinned test list (live extraction via the shared helper).
+ci_pinned_tests="$(bash "${REPO_ROOT}/tools/list-ci-pinned-tests.sh" "${VALIDATE_YML}" \
   | sed 's|^tests/||' \
   | sort -u)"
 
@@ -201,6 +213,34 @@ while IFS= read -r tfile; do
       "either pin in validate.yml or add a top comment '# UNPINNED: <reason>' explaining why"
   fi
 done <<<"${unpinned}"
+
+if grep -Fq "${CI_PIN_HELPER_SNIPPET}" "${CLAUDE_MD}"; then
+  assert_pass "C2: CLAUDE.md uses shared CI-pin helper"
+else
+  assert_fail "C2: CLAUDE.md missing shared CI-pin helper" \
+    "document CI-pinned test extraction with ${CI_PIN_HELPER_SNIPPET}"
+fi
+
+if grep -Fq "${CI_PIN_HELPER_SNIPPET}" "${CONTRIBUTING_MD}"; then
+  assert_pass "C2: CONTRIBUTING.md uses shared CI-pin helper"
+else
+  assert_fail "C2: CONTRIBUTING.md missing shared CI-pin helper" \
+    "document CI-pinned test extraction with ${CI_PIN_HELPER_SNIPPET}"
+fi
+
+if grep -Fq "${LEGACY_CI_PIN_SNIPPET}" "${CLAUDE_MD}"; then
+  assert_fail "C2: CLAUDE.md still uses legacy grep|awk CI-pin extraction" \
+    "replace the stale regex scrape with ${CI_PIN_HELPER_SNIPPET}"
+else
+  assert_pass "C2: CLAUDE.md no longer uses legacy grep|awk extraction"
+fi
+
+if grep -Fq "${LEGACY_CI_PIN_SNIPPET}" "${CONTRIBUTING_MD}"; then
+  assert_fail "C2: CONTRIBUTING.md still uses legacy grep|awk CI-pin extraction" \
+    "replace the stale regex scrape with ${CI_PIN_HELPER_SNIPPET}"
+else
+  assert_pass "C2: CONTRIBUTING.md no longer uses legacy grep|awk extraction"
+fi
 
 # ----------------------------------------------------------------------
 # Contract 3 — Lib-test 1:1 mapping
@@ -422,12 +462,76 @@ else
     fi
   done
 
-  # Empty-directory guard: zero iterations is indistinguishable from
+# Empty-directory guard: zero iterations is indistinguishable from
   # all-pass without this assertion. If the memory dir ever ends up
   # empty (refactor moved files away, etc.) Contract 6 must fail loud.
   if [[ "${memory_count}" -eq 0 ]]; then
     assert_fail "C6: memory directory contains zero *.md files" \
       "${MEMORY_DIR} exists but has no *.md files — the @-include and required_paths surfaces are silently uncovered. If memory is being relocated, update Contract 6 to point at the new directory"
+  fi
+fi
+
+# ----------------------------------------------------------------------
+# Contract 7 — AGENTS tools-inventory lockstep
+# ----------------------------------------------------------------------
+printf '\nContract 7: AGENTS tools-inventory lockstep\n'
+
+TOOLS_DIR="${REPO_ROOT}/tools"
+
+documented_tools_inventory() {
+  awk '
+    /^  tools\// { in_tools = 1; next }
+    in_tools && /^  docs\// { in_tools = 0; exit }
+    in_tools && /^    [[:alnum:]_.-]/ {
+      line = $0
+      sub(/^[[:space:]]+/, "", line)
+      sub(/[[:space:]]+#.*$/, "", line)
+      print line
+    }
+  ' "${AGENTS_MD}" | LC_ALL=C sort -u
+}
+
+live_tools_inventory() {
+  find "${TOOLS_DIR}" -mindepth 1 -maxdepth 2 -type f \
+    | sed "s#^${TOOLS_DIR}/##" \
+    | LC_ALL=C sort -u
+}
+
+if [[ ! -d "${TOOLS_DIR}" ]]; then
+  assert_fail "C7: tools directory missing" \
+    "${TOOLS_DIR} should exist; if you renamed or relocated it, update Contract 7 and the AGENTS.md architecture tree"
+else
+  documented_tools="$(documented_tools_inventory)"
+  live_tools="$(live_tools_inventory)"
+  documented_tool_count="$(printf '%s\n' "${documented_tools}" | grep -c . || true)"
+  live_tool_count="$(printf '%s\n' "${live_tools}" | grep -c . || true)"
+  printf '  documented: %d  live: %d\n' "${documented_tool_count}" "${live_tool_count}"
+
+  if [[ "${documented_tool_count}" -eq 0 ]]; then
+    assert_fail "C7: AGENTS.md tools inventory is empty" \
+      "the architecture tree tools/ block should enumerate the live tools/ surface"
+  fi
+
+  if [[ "${live_tool_count}" -eq 0 ]]; then
+    assert_fail "C7: tools directory contains zero files" \
+      "${TOOLS_DIR} exists but has no files within depth <= 2 — update Contract 7 if the repo layout changed"
+  fi
+
+  missing_in_agents="$(comm -23 <(printf '%s\n' "${live_tools}") <(printf '%s\n' "${documented_tools}"))"
+  extra_in_agents="$(comm -13 <(printf '%s\n' "${live_tools}") <(printf '%s\n' "${documented_tools}"))"
+
+  if [[ -z "${missing_in_agents}" ]]; then
+    assert_pass "C7: every live tools/ file is documented in AGENTS.md"
+  else
+    assert_fail "C7: AGENTS.md missing live tools/ entries" \
+      "add these tools/ paths to the AGENTS.md architecture tree: $(printf '%s' "${missing_in_agents}" | paste -sd ', ' -)"
+  fi
+
+  if [[ -z "${extra_in_agents}" ]]; then
+    assert_pass "C7: AGENTS.md tools inventory has no stale entries"
+  else
+    assert_fail "C7: AGENTS.md tools inventory has stale entries" \
+      "remove these non-existent tools/ paths from the AGENTS.md architecture tree: $(printf '%s' "${extra_in_agents}" | paste -sd ', ' -)"
   fi
 fi
 

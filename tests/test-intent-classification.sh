@@ -569,6 +569,20 @@ assert_domain() {
   fi
 }
 
+assert_domain_with_profile() {
+  local expected="$1"
+  local input="$2"
+  local profile="$3"
+  local actual
+  actual="$(infer_domain "${input}" "${profile}")"
+  if [[ "${actual}" == "${expected}" ]]; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: infer_domain "%s" with profile "%s"\n    expected=%s actual=%s\n' "${input}" "${profile}" "${expected}" "${actual}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
 printf '\n=== Domain Classification Tests ===\n\n'
 
 # --- Coding: strong unigram signals ---
@@ -636,6 +650,14 @@ printf '\nMixed:\n'
 assert_domain "mixed" "Implement the caching layer and write a report on performance improvements"
 assert_domain "mixed" "Refactor the API and summarize the architecture changes"
 
+# --- Project-profile boost must remain a tiebreaker, not a domain factory ---
+printf '\nProject-profile boost discipline:\n'
+assert_domain_with_profile "research" "Compare Redis vs Memcached and summarize tradeoffs" "node,typescript,react"
+assert_domain_with_profile "operations" "Create a project plan for the Q3 launch" "node,typescript,react"
+assert_domain_with_profile "writing" "Draft the quarterly report for leadership" "node,typescript,react"
+assert_domain_with_profile "general" "Help me with this" "node,typescript,react"
+assert_domain_with_profile "general" "Help me with this" "docs"
+
 # --- Mixed: non-coding pairs (v1.17.0). Both domains must score ≥2 to
 # avoid misclassifying a single dominant domain with a small tangential
 # mention (e.g., "draft a project proposal for an AI-assisted research
@@ -643,6 +665,7 @@ assert_domain "mixed" "Refactor the API and summarize the architecture changes"
 printf '\nMixed (non-coding pairs, v1.17.0):\n'
 assert_domain "mixed" "Draft the memo and prepare the agenda for next week"
 assert_domain "mixed" "Research the alternatives and write the recommendation memo"
+assert_domain "mixed" "Research the literature on spaced repetition in graduate study and draft a short literature review with citations"
 
 # Boundary: writing prompts with operations-shaped DELIVERABLES (v1.17.0
 # broadened writing_bigrams to allow articles + recap/memo/follow-up

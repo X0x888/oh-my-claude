@@ -1,0 +1,22 @@
+{
+  "id": "mixed-rollout-migration",
+  "risk": "high",
+  "fixture": "fixtures/payment-migration",
+  "prompt": "/ulw research the Stripe API changes in v2024-12, update our payment module to match, and draft a rollout memo",
+  "required_outcomes": [
+    "tests_passed",
+    "targeted_verification",
+    "regression_test_added",
+    "review_clean",
+    "research_report_ready",
+    "analysis_specialist_coverage",
+    "writer_deliverable_ready",
+    "doc_review_clean",
+    "final_closeout_audit_ready"
+  ],
+  "budgets": {
+    "max_tokens": 100000,
+    "max_tool_calls": 140,
+    "max_elapsed_seconds": 2400
+  }
+}

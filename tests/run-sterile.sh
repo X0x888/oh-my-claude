@@ -72,14 +72,14 @@ elif [[ "${OMC_STERILE_STRICT:-0}" == "1" ]]; then
   mode="strict"
 fi
 
-# Extract CI-pinned test list LIVE from validate.yml so this can't
-# drift. Mirrors the CONTRIBUTING.md Step 2 grep extraction.
+# Extract CI-pinned test list LIVE from validate.yml via the shared
+# helper so sterile parity stays in lockstep with release.sh and the
+# coordination audit.
 ci_pinned=()
 while IFS= read -r line; do
   ci_pinned+=("${line}")
 done < <(
-  grep -E '^\s+run:\s+bash tests/test-' "${REPO_ROOT}/.github/workflows/validate.yml" 2>/dev/null \
-    | awk '{print $NF}' \
+  bash "${REPO_ROOT}/tools/list-ci-pinned-tests.sh" "${REPO_ROOT}/.github/workflows/validate.yml" 2>/dev/null \
     | sed 's|^tests/||'
 )
 

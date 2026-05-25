@@ -59,8 +59,24 @@ assert_contains() {
   fi
 }
 
+repo_is_git_checkout() {
+  local repo_root="$1"
+  git -C "${repo_root}" rev-parse --show-toplevel >/dev/null 2>&1
+}
+
+run_install_from() {
+  local repo_root="$1"
+  TARGET_HOME="${TEST_HOME}" bash "${repo_root}/install.sh" 2>&1
+}
+
 run_install() {
-  TARGET_HOME="${TEST_HOME}" bash "${REPO_ROOT}/install.sh" 2>&1
+  run_install_from "${REPO_ROOT}"
+}
+
+run_install_state_report_from_home() {
+  local report_home="$1"
+  shift
+  TARGET_HOME="${report_home}" bash "${REPO_ROOT}/tools/install-state-report.sh" "$@"
 }
 
 # ---------------------------------------------------------------------------
@@ -76,6 +92,8 @@ MANIFEST="${CLAUDE_HOME}/quality-pack/state/installed-manifest.txt"
 HASHES="${CLAUDE_HOME}/quality-pack/state/installed-hashes.txt"
 STAMP="${CLAUDE_HOME}/.install-stamp"
 BACKUP_PARENT="${CLAUDE_HOME}/backups"
+INSTALL_STATE_REPORT="${REPO_ROOT}/tools/install-state-report.sh"
+LAST_INSTALL_REPORT="${CLAUDE_HOME}/quality-pack/state/last-install-report.json"
 
 # ---------------------------------------------------------------------------
 # Test 1: First install writes SHA, manifest, and install-stamp
@@ -84,9 +102,12 @@ printf '1. First install artifacts\n'
 
 install_output="$(run_install)"
 assert_true "install exits cleanly" "[[ -d '${CLAUDE_HOME}' ]]"
+assert_true "last-install-report.json exists after install" "[[ -f '${LAST_INSTALL_REPORT}' ]]"
+assert_contains "fresh install summary requires restart" \
+  "Restart Claude Code (or open a new session) before testing." "${install_output}"
 
-# SHA: repo IS a git worktree (the repo itself), so installed_sha must be set.
-if [[ -d "${REPO_ROOT}/.git" ]]; then
+# SHA: repo IS a git checkout (clone or worktree), so installed_sha must be set.
+if repo_is_git_checkout "${REPO_ROOT}"; then
   sha_line="$(grep '^installed_sha=' "${CONF}" 2>/dev/null || true)"
   sha_value="${sha_line#installed_sha=}"
   # 40-char SHA expected. Empty value is a failure.
@@ -97,7 +118,7 @@ if [[ -d "${REPO_ROOT}/.git" ]]; then
     fail=$((fail + 1))
   fi
 else
-  printf '  SKIP: repo is not a git worktree; SHA test not applicable\n'
+  printf '  SKIP: repo is not a git checkout; SHA test not applicable\n'
 fi
 
 # Manifest exists and is non-empty.
@@ -117,6 +138,10 @@ assert_contains "manifest lists common.sh" "skills/autowork/scripts/common.sh" "
 
 # Install stamp exists.
 assert_true ".install-stamp exists" "[[ -f '${STAMP}' ]]"
+assert_eq "fresh install report kind" "fresh-install" \
+  "$(jq -r '.install_kind' "${LAST_INSTALL_REPORT}")"
+assert_eq "fresh install report restart_required" "true" \
+  "$(jq -r '.restart_required' "${LAST_INSTALL_REPORT}")"
 
 # First install produces no orphan warnings (there's no prior manifest).
 if ! printf '%s' "${install_output}" | grep -q 'Orphans:'; then
@@ -160,6 +185,38 @@ if command -v shasum >/dev/null 2>&1 || command -v sha256sum >/dev/null 2>&1; th
   fi
 else
   printf '  SKIP: no shasum/sha256sum on PATH; drift-detection write skipped\n'
+fi
+
+# Explicit worktree path: install.sh must record installed_sha when the
+# source checkout is a linked worktree (`.git` file pointing at the common
+# git dir), not just when `.git` is a directory.
+if repo_is_git_checkout "${REPO_ROOT}"; then
+  fixture_repo="${TEST_HOME}/fixture-repo"
+  fixture_wt="${TEST_HOME}/fixture-worktree"
+  fixture_home="${TEST_HOME}/fixture-home"
+  mkdir -p "${fixture_repo}" "${fixture_home}"
+  rsync -a --exclude '.git' "${REPO_ROOT}/" "${fixture_repo}/" >/dev/null
+  (
+    cd "${fixture_repo}"
+    git init --quiet --initial-branch=main 2>/dev/null || git init --quiet
+    git config user.email test@test.local
+    git config user.name test
+    git add -A
+    git commit --quiet -m "snapshot"
+    git worktree add --quiet "${fixture_wt}" -b install-artifacts-worktree HEAD
+  )
+  TARGET_HOME="${fixture_home}" bash "${fixture_wt}/install.sh" >/dev/null 2>&1
+  fixture_conf="${fixture_home}/.claude/oh-my-claude.conf"
+  fixture_sha_line="$(grep '^installed_sha=' "${fixture_conf}" 2>/dev/null || true)"
+  fixture_sha_value="${fixture_sha_line#installed_sha=}"
+  if [[ "${fixture_sha_value}" =~ ^[0-9a-f]{40}$ ]]; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: worktree install must write a 40-char installed_sha (got: [%s])\n' "${fixture_sha_value}" >&2
+    fail=$((fail + 1))
+  fi
+else
+  printf '  SKIP: repo is not a git checkout; worktree SHA test not applicable\n'
 fi
 
 # v1.32.16 (4-attacker security review, A2-MED-6): backup directory
@@ -241,16 +298,33 @@ else
 fi
 
 # SHA, manifest, stamp all still present.
-# SHA is only written when the source is a regular git clone (`.git` directory);
-# git worktrees have `.git` as a file, so install.sh skips the SHA write and the
-# assertion would fire spuriously. Guard mirrors Test 1 above.
-if [[ -d "${REPO_ROOT}/.git" ]]; then
+# SHA is written for any git checkout, including linked worktrees. Guard
+# mirrors Test 1 above so tarball-source runs still skip cleanly.
+if repo_is_git_checkout "${REPO_ROOT}"; then
   assert_true "installed_sha still set" "grep -q '^installed_sha=' '${CONF}'"
 else
-  printf '  SKIP: repo is not a git worktree; SHA persistence test not applicable\n'
+  printf '  SKIP: repo is not a git checkout; SHA persistence test not applicable\n'
 fi
 assert_true "manifest still exists" "[[ -f '${MANIFEST}' ]]"
 assert_true "install-stamp still exists" "[[ -f '${STAMP}' ]]"
+assert_eq "no-op reinstall report kind" "reinstall-noop" \
+  "$(jq -r '.install_kind' "${LAST_INSTALL_REPORT}")"
+assert_eq "no-op reinstall restart_required" "false" \
+  "$(jq -r '.restart_required' "${LAST_INSTALL_REPORT}")"
+assert_eq "no-op reinstall managed change total" "0" \
+  "$(jq -r '.managed_changes.total' "${LAST_INSTALL_REPORT}")"
+assert_eq "no-op reinstall settings_changed false" "false" \
+  "$(jq -r '.settings_changed' "${LAST_INSTALL_REPORT}")"
+assert_contains "no-op reinstall summary says no restart required" \
+  "No Claude Code restart is required" "${install_output_3}"
+helper_noop_state="$(run_install_state_report_from_home "${TEST_HOME}" --json)"
+assert_eq "install-state-report surfaces last_install restart=false" "false" \
+  "$(printf '%s' "${helper_noop_state}" | jq -r '.last_install.restart_required')"
+assert_eq "install-state-report surfaces last_install kind" "reinstall-noop" \
+  "$(printf '%s' "${helper_noop_state}" | jq -r '.last_install.kind')"
+helper_noop_restart_guidance="$(run_install_state_report_from_home "${TEST_HOME}" --restart-guidance)"
+assert_contains "install-state-report no-op restart guidance says no restart" \
+  "No Claude Code restart is required." "${helper_noop_restart_guidance}"
 
 printf '\n'
 
@@ -298,24 +372,18 @@ printf '\n'
 printf '5. Empty installed_sha cleanup\n'
 
 # Pre-seed the conf with a stale installed_sha from a hypothetical
-# prior worktree install, then simulate a non-git-worktree install by
-# temporarily pointing TARGET_HOME install at a copied-tree source.
-# Simplest repro: manually append `installed_sha=deadbeef...` to the
-# conf, then re-run install from the same repo (which IS a git
-# worktree). The new code keeps the current SHA — but if the source
-# were a tarball, it would strip the key. We simulate the tarball
-# case by moving .git aside temporarily.
-if [[ -d "${REPO_ROOT}/.git" ]]; then
-  # Save + hide the .git dir, run install, then restore. Minimum-
-  # disruptive simulation of a tarball-sourced install.
-  GIT_BACKUP="$(mktemp -d)"
-  mv "${REPO_ROOT}/.git" "${GIT_BACKUP}/.git"
-  trap 'mv "${GIT_BACKUP}/.git" "${REPO_ROOT}/.git" 2>/dev/null; cleanup' EXIT
-
+# prior checkout install, then simulate a non-git install from a copied
+# source tree with `.git` excluded entirely. This avoids mutating the
+# real repo metadata under test while still exercising the tarball/zip
+# path that must scrub stale installed_sha.
+if repo_is_git_checkout "${REPO_ROOT}"; then
+  NON_GIT_SOURCE="${TEST_HOME}/source-no-git"
+  mkdir -p "${NON_GIT_SOURCE}"
+  rsync -a --exclude '.git' "${REPO_ROOT}/" "${NON_GIT_SOURCE}/" >/dev/null
   # Seed a stale SHA into the conf so we can verify it gets cleaned.
   printf 'installed_sha=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\n' >> "${CONF}"
 
-  run_install >/dev/null 2>&1
+  run_install_from "${NON_GIT_SOURCE}" >/dev/null 2>&1
 
   # After install with no .git, the stale sha should be removed from conf.
   if ! grep -q '^installed_sha=' "${CONF}"; then
@@ -326,12 +394,8 @@ if [[ -d "${REPO_ROOT}/.git" ]]; then
     fail=$((fail + 1))
   fi
 
-  # Restore .git for subsequent tests.
-  mv "${GIT_BACKUP}/.git" "${REPO_ROOT}/.git"
-  rmdir "${GIT_BACKUP}"
-  trap cleanup EXIT
 else
-  printf '  SKIP: repo is not a git worktree; non-git cleanup test not applicable\n'
+  printf '  SKIP: repo is not a git checkout; non-git cleanup test not applicable\n'
 fi
 
 printf '\n'
@@ -672,6 +736,288 @@ fi
 # remediation surface.
 assert_contains "warning names core.md"             "core.md"               "${out_warn}"
 assert_contains "warning points to omc-user/"       "omc-user/overrides.md" "${out_warn}"
+
+printf '\n'
+
+# ---------------------------------------------------------------------------
+# Test 11: install-state-report helper (AI-assisted install/update flow)
+# ---------------------------------------------------------------------------
+printf '11. Install-state report helper\n'
+
+assert_true "install-state-report helper exists" "[[ -f '${INSTALL_STATE_REPORT}' ]]"
+
+# 11a — no conf / no installed_version => not-installed.
+blank_home="${TEST_HOME}/install-state-blank"
+mkdir -p "${blank_home}"
+out_state_blank="$(run_install_state_report_from_home "${blank_home}" --json)"
+assert_eq "blank home install_status" "not-installed" \
+  "$(printf '%s' "${out_state_blank}" | jq -r '.install_status')"
+assert_eq "blank home currentness" "not-applicable" \
+  "$(printf '%s' "${out_state_blank}" | jq -r '.currentness')"
+assert_contains "blank home reason mentions installed_version" \
+  "No installed_version recorded" "$(printf '%s' "${out_state_blank}" | jq -r '.reason')"
+
+# Main-branch fixture used for already-current / tag-ahead / commit-ahead
+# / version-only-fallback branches.
+state_root="${TEST_HOME}/install-state-fixtures"
+origin_src_main="${state_root}/origin-src-main"
+origin_bare_main="${state_root}/origin-main.git"
+checkout_main="${state_root}/checkout-main"
+home_main="${state_root}/home-main"
+mkdir -p "${origin_src_main}" "${home_main}/.claude"
+(
+  cd "${origin_src_main}"
+  git init --quiet --initial-branch=main 2>/dev/null || git init --quiet
+  git config user.email test@test.local
+  git config user.name test
+  printf '1.0.0\n' > VERSION
+  git add VERSION
+  git commit --quiet -m "v1.0.0"
+  git tag v1.0.0
+  git branch -m main 2>/dev/null || true
+)
+git clone --quiet --bare "${origin_src_main}" "${origin_bare_main}"
+git clone --quiet "${origin_bare_main}" "${checkout_main}"
+sha_main_v100="$(git -C "${checkout_main}" rev-parse HEAD)"
+touch "${home_main}/.claude/.install-stamp"
+cat > "${home_main}/.claude/oh-my-claude.conf" <<EOF
+installed_version=1.0.0
+repo_path=${checkout_main}
+installed_sha=${sha_main_v100}
+EOF
+
+# 11b — already current: latest tag matches and installed_sha matches origin/main.
+out_state_current="$(run_install_state_report_from_home "${home_main}" --json)"
+assert_eq "current fixture install_status" "installed" \
+  "$(printf '%s' "${out_state_current}" | jq -r '.install_status')"
+assert_eq "current fixture currentness" "already-current" \
+  "$(printf '%s' "${out_state_current}" | jq -r '.currentness')"
+assert_eq "current fixture latest_tag" "1.0.0" \
+  "$(printf '%s' "${out_state_current}" | jq -r '.latest_tag')"
+assert_eq "current fixture default ref" "origin/main" \
+  "$(printf '%s' "${out_state_current}" | jq -r '.origin_default_ref')"
+assert_eq "current fixture origin sha" "${sha_main_v100}" \
+  "$(printf '%s' "${out_state_current}" | jq -r '.origin_default_sha')"
+if [[ -n "$(printf '%s' "${out_state_current}" | jq -r '.last_install_at // empty')" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: install-state-report should expose last_install_at when .install-stamp exists\n' >&2
+  fail=$((fail + 1))
+fi
+current_summary_text="$(run_install_state_report_from_home "${home_main}" --already-current-summary)"
+assert_contains "already-current summary surfaces version" "Already current: v1.0.0" "${current_summary_text}"
+assert_contains "already-current summary surfaces install timestamp" "last install:" "${current_summary_text}"
+
+# 11c — tag-ahead update: latest tag newer than installed_version.
+(
+  cd "${origin_src_main}"
+  printf '1.1.0\n' > VERSION
+  git add VERSION
+  git commit --quiet -m "v1.1.0"
+  git tag v1.1.0
+  git push --quiet "${origin_bare_main}" main --tags
+)
+out_state_tag_ahead="$(run_install_state_report_from_home "${home_main}" --json)"
+assert_eq "tag-ahead currentness" "update-available" \
+  "$(printf '%s' "${out_state_tag_ahead}" | jq -r '.currentness')"
+assert_eq "tag-ahead latest_tag" "1.1.0" \
+  "$(printf '%s' "${out_state_tag_ahead}" | jq -r '.latest_tag')"
+assert_contains "tag-ahead reason names newer tag" \
+  "latest tag v1.1.0 is newer" "$(printf '%s' "${out_state_tag_ahead}" | jq -r '.reason')"
+
+# 11d — commit-ahead update at same tag: origin/main moved past installed_sha
+# without a new release tag.
+sha_main_v110="$(git -C "${origin_src_main}" rev-parse HEAD)"
+cat > "${home_main}/.claude/oh-my-claude.conf" <<EOF
+installed_version=1.1.0
+repo_path=${checkout_main}
+installed_sha=${sha_main_v110}
+EOF
+(
+  cd "${origin_src_main}"
+  printf 'post-tag drift\n' > NOTES.md
+  git add NOTES.md
+  git commit --quiet -m "post-tag drift"
+  git push --quiet "${origin_bare_main}" main
+)
+sha_main_posttag="$(git -C "${origin_src_main}" rev-parse HEAD)"
+out_state_commit_ahead="$(run_install_state_report_from_home "${home_main}" --json)"
+assert_eq "commit-ahead currentness" "update-available" \
+  "$(printf '%s' "${out_state_commit_ahead}" | jq -r '.currentness')"
+assert_eq "commit-ahead latest_tag stays at 1.1.0" "1.1.0" \
+  "$(printf '%s' "${out_state_commit_ahead}" | jq -r '.latest_tag')"
+assert_eq "commit-ahead origin sha" "${sha_main_posttag}" \
+  "$(printf '%s' "${out_state_commit_ahead}" | jq -r '.origin_default_sha')"
+assert_contains "commit-ahead reason names origin/main" \
+  "origin/main is ahead of installed_sha" "$(printf '%s' "${out_state_commit_ahead}" | jq -r '.reason')"
+
+# 11e — tarball / archive fallback: installed_sha absent means
+# installed_version vs latest_tag is authoritative.
+cat > "${home_main}/.claude/oh-my-claude.conf" <<EOF
+installed_version=1.1.0
+repo_path=${checkout_main}
+EOF
+out_state_version_only="$(run_install_state_report_from_home "${home_main}" --json)"
+assert_eq "version-only fallback currentness" "already-current" \
+  "$(printf '%s' "${out_state_version_only}" | jq -r '.currentness')"
+assert_contains "version-only fallback reason is explicit" \
+  "version-only fallback applies" "$(printf '%s' "${out_state_version_only}" | jq -r '.reason')"
+
+# 11f — default-branch detection must not be hardcoded to origin/main.
+origin_src_trunk="${state_root}/origin-src-trunk"
+origin_bare_trunk="${state_root}/origin-trunk.git"
+checkout_trunk="${state_root}/checkout-trunk"
+home_trunk="${state_root}/home-trunk"
+mkdir -p "${origin_src_trunk}" "${home_trunk}/.claude"
+(
+  cd "${origin_src_trunk}"
+  git init --quiet --initial-branch=trunk 2>/dev/null || git init --quiet
+  git config user.email test@test.local
+  git config user.name test
+  printf '2.0.0\n' > VERSION
+  git add VERSION
+  git commit --quiet -m "v2.0.0"
+  git tag v2.0.0
+  git branch -m trunk 2>/dev/null || true
+)
+git clone --quiet --bare "${origin_src_trunk}" "${origin_bare_trunk}"
+git clone --quiet "${origin_bare_trunk}" "${checkout_trunk}"
+sha_trunk_v200="$(git -C "${checkout_trunk}" rev-parse HEAD)"
+touch "${home_trunk}/.claude/.install-stamp"
+cat > "${home_trunk}/.claude/oh-my-claude.conf" <<EOF
+installed_version=2.0.0
+repo_path=${checkout_trunk}
+installed_sha=${sha_trunk_v200}
+EOF
+out_state_trunk="$(run_install_state_report_from_home "${home_trunk}" --json)"
+assert_eq "trunk fixture currentness" "already-current" \
+  "$(printf '%s' "${out_state_trunk}" | jq -r '.currentness')"
+assert_eq "trunk fixture default ref" "origin/trunk" \
+  "$(printf '%s' "${out_state_trunk}" | jq -r '.origin_default_ref')"
+assert_contains "trunk fixture reason names origin/trunk" \
+  "origin/trunk" "$(printf '%s' "${out_state_trunk}" | jq -r '.reason')"
+
+printf '\n'
+
+# ---------------------------------------------------------------------------
+# Test 12: settings-only reinstall still requires restart
+# ---------------------------------------------------------------------------
+printf '12. Settings-only reinstall requires restart\n'
+
+settings_home="${TEST_HOME}/settings-reinstall-home"
+mkdir -p "${settings_home}"
+TARGET_HOME="${settings_home}" bash "${REPO_ROOT}/install.sh" >/dev/null 2>&1
+settings_report="${settings_home}/.claude/quality-pack/state/last-install-report.json"
+out_settings_reinstall="$(TARGET_HOME="${settings_home}" bash "${REPO_ROOT}/install.sh" --bypass-permissions 2>&1)"
+assert_eq "settings-only report kind" "reinstall" \
+  "$(jq -r '.install_kind' "${settings_report}")"
+assert_eq "settings-only restart_required" "true" \
+  "$(jq -r '.restart_required' "${settings_report}")"
+assert_eq "settings-only managed change total stays zero" "0" \
+  "$(jq -r '.managed_changes.total' "${settings_report}")"
+assert_eq "settings-only settings_changed true" "true" \
+  "$(jq -r '.settings_changed' "${settings_report}")"
+assert_contains "settings-only summary requires restart" \
+  "Restart Claude Code (or open a new session) before testing." "${out_settings_reinstall}"
+helper_settings_state="$(run_install_state_report_from_home "${settings_home}" --json)"
+assert_eq "install-state-report surfaces settings-only restart=true" "true" \
+  "$(printf '%s' "${helper_settings_state}" | jq -r '.last_install.restart_required')"
+assert_eq "install-state-report surfaces settings-only settings_changed=true" "true" \
+  "$(printf '%s' "${helper_settings_state}" | jq -r '.last_install.settings_changed')"
+helper_settings_restart_guidance="$(run_install_state_report_from_home "${settings_home}" --restart-guidance)"
+assert_contains "install-state-report settings restart guidance says restart" \
+  "Restart Claude Code (or open a new session) before testing." "${helper_settings_restart_guidance}"
+
+printf '\n'
+
+# ---------------------------------------------------------------------------
+# Test 13: update installs record prior/current refs and changelog summary
+# ---------------------------------------------------------------------------
+printf '13. Update change summary artifact\n'
+
+update_fixture_repo="${TEST_HOME}/update-fixture-repo"
+update_home="${TEST_HOME}/update-fixture-home"
+mkdir -p "${update_fixture_repo}" "${update_home}"
+rsync -a --exclude '.git' "${REPO_ROOT}/" "${update_fixture_repo}/" >/dev/null
+(
+  cd "${update_fixture_repo}"
+  git init --quiet --initial-branch=main 2>/dev/null || git init --quiet
+  git config user.email test@test.local
+  git config user.name test
+  printf '9.9.0\n' > VERSION
+  git add -A
+  git commit --quiet -m "fixture baseline"
+)
+update_baseline_sha="$(git -C "${update_fixture_repo}" rev-parse HEAD)"
+TARGET_HOME="${update_home}" bash "${update_fixture_repo}/install.sh" >/dev/null 2>&1
+
+(
+  cd "${update_fixture_repo}"
+  printf '9.9.1\n' > VERSION
+  printf 'fixture delta\n' > CHANGE_SUMMARY_FIXTURE.md
+  git add VERSION CHANGE_SUMMARY_FIXTURE.md
+  git commit --quiet -m "fixture update delta"
+)
+update_current_sha="$(git -C "${update_fixture_repo}" rev-parse HEAD)"
+update_install_output="$(TARGET_HOME="${update_home}" bash "${update_fixture_repo}/install.sh" 2>&1)"
+
+update_report="${update_home}/.claude/quality-pack/state/last-install-report.json"
+assert_eq "update report kind" "update" \
+  "$(jq -r '.install_kind' "${update_report}")"
+assert_eq "update report previous version" "9.9.0" \
+  "$(jq -r '.previous_install.installed_version' "${update_report}")"
+assert_eq "update report previous sha" "${update_baseline_sha}" \
+  "$(jq -r '.previous_install.installed_sha' "${update_report}")"
+assert_eq "update report current version" "9.9.1" \
+  "$(jq -r '.current_install.installed_version' "${update_report}")"
+assert_eq "update report current sha" "${update_current_sha}" \
+  "$(jq -r '.current_install.installed_sha' "${update_report}")"
+assert_eq "update report change summary available" "true" \
+  "$(jq -r '.change_summary.available' "${update_report}")"
+assert_eq "update report change summary count" "1" \
+  "$(jq -r '.change_summary.commit_count' "${update_report}")"
+assert_eq "update report change summary subject" "fixture update delta" \
+  "$(jq -r '.change_summary.commits[0].subject' "${update_report}")"
+assert_eq "update report restart reason reflects unchanged installed bytes" \
+  "Update completed, but managed bundle files and settings.json were unchanged." \
+  "$(jq -r '.restart_reason' "${update_report}")"
+assert_contains "install.sh prints update summary header" "Update summary:" "${update_install_output}"
+assert_contains "install.sh prints previous install ref" "Previous install: v9.9.0 @ ${update_baseline_sha:0:12}" "${update_install_output}"
+assert_contains "install.sh prints current install ref" "Current install:  v9.9.1 @ ${update_current_sha:0:12}" "${update_install_output}"
+assert_contains "install.sh prints update restart decision" "Restart needed:  no" "${update_install_output}"
+assert_contains "install.sh prints update reason" "Reason:          Update completed, but managed bundle files and settings.json were unchanged." "${update_install_output}"
+assert_contains "install.sh prints update commit subject" "fixture update delta" "${update_install_output}"
+
+helper_update_state="$(run_install_state_report_from_home "${update_home}" --json)"
+assert_eq "install-state-report surfaces previous version" "9.9.0" \
+  "$(printf '%s' "${helper_update_state}" | jq -r '.last_install.previous.installed_version')"
+assert_eq "install-state-report surfaces previous sha" "${update_baseline_sha}" \
+  "$(printf '%s' "${helper_update_state}" | jq -r '.last_install.previous.installed_sha')"
+assert_eq "install-state-report surfaces current version" "9.9.1" \
+  "$(printf '%s' "${helper_update_state}" | jq -r '.last_install.current.installed_version')"
+assert_eq "install-state-report surfaces current sha" "${update_current_sha}" \
+  "$(printf '%s' "${helper_update_state}" | jq -r '.last_install.current.installed_sha')"
+assert_eq "install-state-report surfaces change summary availability" "true" \
+  "$(printf '%s' "${helper_update_state}" | jq -r '.last_install.change_summary.available')"
+assert_eq "install-state-report surfaces change summary count" "1" \
+  "$(printf '%s' "${helper_update_state}" | jq -r '.last_install.change_summary.commit_count')"
+assert_eq "install-state-report surfaces change summary subject" "fixture update delta" \
+  "$(printf '%s' "${helper_update_state}" | jq -r '.last_install.change_summary.commits[0].subject')"
+assert_eq "install-state-report surfaces corrected update reason" \
+  "Update completed, but managed bundle files and settings.json were unchanged." \
+  "$(printf '%s' "${helper_update_state}" | jq -r '.last_install.reason')"
+helper_update_summary="$(run_install_state_report_from_home "${update_home}" --last-update-summary)"
+assert_contains "install-state-report text summary header" "Update summary:" "${helper_update_summary}"
+assert_contains "install-state-report text summary previous ref" \
+  "Previous install: v9.9.0 @ ${update_baseline_sha:0:12}" "${helper_update_summary}"
+assert_contains "install-state-report text summary current ref" \
+  "Current install:  v9.9.1 @ ${update_current_sha:0:12}" "${helper_update_summary}"
+assert_contains "install-state-report text summary restart decision" \
+  "Restart needed:  no" "${helper_update_summary}"
+assert_contains "install-state-report text summary reason" \
+  "Reason:          Update completed, but managed bundle files and settings.json were unchanged." "${helper_update_summary}"
+assert_contains "install-state-report text summary commit subject" \
+  "fixture update delta" "${helper_update_summary}"
 
 printf '\n'
 

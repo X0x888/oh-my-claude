@@ -55,15 +55,24 @@ Requires `jq` and `rsync`. macOS: `brew install jq` (`rsync` is preinstalled). D
 
 ```bash
 # Pinned install (recommended — install-remote.sh prints the current tag tip):
-OMC_REF=v1.39.0 bash -c "$(curl -fsSL https://raw.githubusercontent.com/X0x888/oh-my-claude/main/install-remote.sh)"
+OMC_REF=v1.43.0 bash -c "$(curl -fsSL https://raw.githubusercontent.com/X0x888/oh-my-claude/main/install-remote.sh)"
 
 # Rolling install (tracks main HEAD — fine for trying things; pin a tag for prod):
 curl -fsSL https://raw.githubusercontent.com/X0x888/oh-my-claude/main/install-remote.sh | bash
 
+# Verified remote install (tag pin + expected commit prefix before install.sh runs):
+OMC_REF=v1.43.0 \
+OMC_EXPECTED_SHA=<release-commit-sha-or-prefix> \
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/X0x888/oh-my-claude/main/install-remote.sh)"
+
 # OR manual clone (audit before installing — strongest supply-chain posture):
-git clone --branch v1.39.0 https://github.com/X0x888/oh-my-claude.git ~/.local/share/oh-my-claude
+git clone --branch v1.43.0 https://github.com/X0x888/oh-my-claude.git ~/.local/share/oh-my-claude
 bash ~/.local/share/oh-my-claude/install.sh
 ```
+
+The remote bootstrap path runs `verify.sh` automatically before it exits; a successful run should print `Errors: 0`. Re-running the same one-liner against an already-current canonical install now verifies and exits without a reinstall when nothing changed; set `OMC_FORCE_REINSTALL=1` if you explicitly want to force `install.sh`. If you use the verified remote path, `OMC_EXPECTED_SHA` accepts any 7-40 char commit prefix and `install-remote.sh` refuses to run `install.sh` unless the cloned tree matches it. If you use the manual clone path above, run `bash ~/.local/share/oh-my-claude/verify.sh` yourself before restarting Claude Code.
+
+Use the manual clone path when you want the strongest supply-chain posture. Use the verified remote path when you still want a one-liner but do not want to trust a tag name alone; copy the SHA from the GitHub release's `Verified bootstrap install` / `Trusted release commit` block and pass it via `OMC_EXPECTED_SHA`. That release body is the authoritative user-facing source for the trusted SHA. GitHub releases also ship attached source bundles (`oh-my-claude-vX.Y.Z.tar.gz`, `oh-my-claude-vX.Y.Z.zip`) plus `oh-my-claude-vX.Y.Z.SHA256SUMS` for checksum-based download verification, and the repo publishes GitHub artifact attestations for those assets so professional consumers can verify provenance with `gh attestation verify` or the bundled `tools/verify-published-release.sh` helper (full published-release audit, including optional attestation wait) after the release-attestation workflow completes. Maintainers changing release/distribution automation can also prove that the remote default branch actually has the required workflow/tooling deployed with `tools/verify-release-automation-deployment.sh`, stage the exact audited deployment surface with `tools/stage-release-automation-surfaces.sh`, prepare a coherent pre-push deployment candidate with `tools/prepare-release-automation-deployment.sh --dry-run` and `tools/prepare-release-automation-deployment.sh --fetch`, inspect the raw staged diff with `tools/verify-release-automation-deployment.sh --local-ref INDEX`, and get the full top-level maintainer picture with `tools/verify-distribution-readiness.sh`. That distribution wrapper now separates the live remote deployment proof from the local deployment-candidate proof, so maintainers can see “candidate ready locally” even while `origin/main` is still behind. For first-run distribution quality, `tools/verify-install-readiness.sh` proves the bootstrapper/update path, fresh-install handoff, recovery-path transcript, and AI-assisted onboarding contract together. For the full release-candidate view, `tools/verify-project-readiness.sh` composes that distribution proof with the cross-domain product proof from `tools/verify-professional-readiness.sh` plus the install/onboarding proof from `tools/verify-install-readiness.sh`, so maintainers can see in one command whether the repo is actually ready for professional users, installable by first-time users, and ready to ship. That wrapper covers classification + routing + UI design contracts + benchmark + realwork + install/onboarding before it even reaches the remote release/distribution audit. The staging helper supports a dry-run preview, fails closed when unrelated files are already staged, and supports `--allow-extra-staged` when that wider staged set is intentional; when you narrow it with `--path`, it also fails closed if other manifest entries are still dirty unless you explicitly pass `--allow-partial-manifest`. The new deployment-candidate helper succeeds when that pending staged candidate is coherent even though the remote is still behind, which closes the old ambiguity where `--local-ref INDEX` necessarily failed before push. The staged-index deployment verifier now applies the same fail-closed posture to unrelated non-manifest staged paths unless you explicitly pass `--allow-extra-staged`, and `tools/verify-distribution-readiness.sh` passes that same override through when you audit the staged index via `--local-ref INDEX`. The audit helpers support `--json` when you need the same proof as a machine-readable artifact.
 
 After install, two mandatory steps:
 
@@ -71,7 +80,7 @@ After install, two mandatory steps:
 2. **Try it**: `/ulw-demo` (about 90 seconds, fires the gates on a real edit), then `/ulw <your task>` for real work in any domain.
 
 That's enough to feel the harness work. When you want more:
-- **Configure** with `/omc-config` *inside Claude Code* — the default install is the **Balanced** profile (low-friction defaults; sonnet model). For the strongest opinionated posture, run `/omc-config` and pick **Zero Steering** (opus model, all bias-defense directives, watchdog on, adaptive strict gates for high-risk work). Auto-detects first-time setup vs upgrade.
+- **Configure** with `/omc-config` *inside Claude Code* — the default install is the **Balanced** profile (low-friction defaults; Opus for planning/review, Sonnet for execution). For the strongest opinionated posture, run `/omc-config` and pick **Zero Steering** (opus model, all bias-defense directives, watchdog on, adaptive strict gates for high-risk work). Auto-detects first-time setup vs upgrade.
 - **Verify on-disk install** with `bash ~/.local/share/oh-my-claude/verify.sh` from your terminal — useful when something feels off.
 
 ### When stuck — which deferral verb?
@@ -104,10 +113,12 @@ Already in Claude Code? Paste one of these prompts directly. Each is self-contai
 > 3. Use `--model-tier=balanced` (don't ask me).
 > 4. After `verify.sh` passes, quote its "What next?" footer back to me verbatim — do not paraphrase.
 > 5. Tell me explicitly to restart Claude Code and run `/ulw-demo` in the new session. Hooks won't fire in this current session.
+> 6. If the protocol finds an existing install, ask whether I mean reinstall or update. If the canonical clone path belongs to another repo, or if `install.sh` / `verify.sh` fails, stop and show me the issue instead of forcing ahead.
+> 7. If I explicitly ask for the curl-pipe-bash route instead of a manual clone, use the tag-pinned `install-remote.sh` path with `OMC_EXPECTED_SHA=<trusted release commit sha/prefix>` rather than rolling `main`, and source that SHA from the GitHub release's `Verified bootstrap install` / `Trusted release commit` block.
 
 **Update an existing install:**
 
-> Update oh-my-claude. Read `repo_path=` from `~/.claude/oh-my-claude.conf`, then follow `<repo_path>/AGENTS.md` § "Agent Install Protocol" → Step 2 (Update). After running `install.sh` and `verify.sh`, list the commits the pull brought in and tell me whether to restart Claude Code (only if the bundle changed).
+> Update oh-my-claude. Read `repo_path=` from `~/.claude/oh-my-claude.conf`, then follow `<repo_path>/AGENTS.md` § "Agent Install Protocol" → Step 2 (Update). After running `install.sh` and `verify.sh`, use the helper-backed update summary from the protocol and tell me whether to restart Claude Code only if the helper says it is required. If `verify.sh` fails, stop and show me the output; do not give restart advice or the `What next?` footer.
 
 ## Updating an existing install
 
@@ -117,7 +128,11 @@ git pull && bash install.sh
 bash verify.sh
 ```
 
-Restart Claude Code if any bundle file changed; the `verify.sh` summary lists orphans if files were removed.
+Restart Claude Code only when the install outcome says it is required; the `install.sh` post-install summary now tells you directly, still lists orphans if files were removed, and for real updates prints a standardized summary with prior/current install refs plus commits since the previous installed SHA.
+
+Prefer the one-liner update path? Re-running `install-remote.sh` against the canonical clone now fast-paths the already-current case: it verifies the live install and exits without reinstalling when the repo and installed bundle are already in sync. When it does perform a real update, it now prints an update summary with the prior/current install refs, restart decision, and commits since the prior installed SHA. Set `OMC_FORCE_REINSTALL=1` to bypass the already-current guard.
+
+Need a machine-readable preflight or post-update summary? `bash ~/.local/share/oh-my-claude/tools/install-state-report.sh --json` refreshes `origin` and reports `installed_version`, `latest_tag`, `last_install_at`, whether the clone is already current, the last install's `restart_required` decision, and the installer-recorded previous/current refs plus commit summary for the last update. For standardized human-facing text, the same helper exposes `--already-current-summary`, `--last-update-summary`, and `--restart-guidance`; those are the canonical lines consumed by `install-remote.sh`, `install.sh`, and `verify.sh`.
 
 Your `--model-tier` preference persists in `~/.claude/oh-my-claude.conf` and re-applies automatically. The statusline shows a yellow `↑v<version>` arrow when the source repo is ahead of the installed bundle — re-run `install.sh` to sync.
 
@@ -136,6 +151,9 @@ The first 60 seconds of common failure modes:
 | Symptom | First check |
 |---|---|
 | `install.sh` exits with `jq: command not found` | Install `jq` first (`brew install jq` on macOS, `apt install jq` on Debian/Ubuntu) and re-run `install.sh`. |
+| `install-remote.sh` exits with `missing required command: ...` | Install the named prerequisite and re-run the bootstrapper. For `jq`, the bootstrapper may offer an auto-install on supported systems; otherwise use your package manager. |
+| `install-remote.sh` says `Refusing to run the wrong installer` | The target clone path already points at a different repo. Move/remove that checkout, or re-run with `OMC_SRC_DIR=<different path>` if you intentionally want to keep both. |
+| `install-remote.sh` says `post-install verification failed` | The source repo is still on disk. Fix the verifier errors shown above, then re-run the printed `verify.sh` path (or `install.sh` if you changed bundled files) instead of recloning. |
 | `verify.sh` reports errors | Re-run `bash install.sh`, then `verify.sh` again. Most failures are stale install or missing `jq`/`rsync`. |
 | `/ulw` does nothing in your current session | You skipped the **restart Claude Code** step. Already-running sessions keep the previous hook wiring — open a new session. |
 | `/ulw-demo` doesn't block at Step 3 | Install is stale (re-run `bash install.sh`) or `/ulw-off` was called earlier in the session. |
@@ -279,8 +297,8 @@ oh-my-claude/
 │   ├── output-styles/                       # Two bundled styles: oh-my-claude (default) + executive-brief (see docs/customization.md#output-style)
 │   └── statusline.py                        # Custom statusline widget
 ├── config/settings.patch.json               # Merged into user settings on install
-├── evals/realwork/                           # Outcome eval scenarios for minimal-prompt shipping
-├── tests/               (115 bash + 1 py)   # See AGENTS.md / CONTRIBUTING.md for full list
+├── evals/realwork/                           # Outcome eval scenarios for minimal-prompt shipping across code + design/UI + mixed + writing + research + scholarly + ops + advisory
+├── tests/               (120 bash + 1 py)   # See AGENTS.md / CONTRIBUTING.md for full list
 ├── tools/                                    # Developer-only tools (not installed)
 └── docs/                                    # Architecture, customization, FAQ, prompts
 ```
@@ -363,16 +381,17 @@ Other install options:
 bash install.sh --no-ios                # Skip iOS-specific agents
 bash install.sh --model-tier=economy    # All agents use Sonnet (cheaper)
 bash install.sh --model-tier=quality    # All agents use Opus (max quality)
-bash install.sh --git-hooks             # Install .git/hooks/post-merge auto-sync prompt
+bash install.sh --git-hooks             # Install post-merge auto-sync hook
 bash ~/.claude/switch-tier.sh economy   # Switch tier post-install (from anywhere)
 bash uninstall.sh                       # Cleanly remove the harness
 ```
 
-`--git-hooks` installs a `post-merge` hook inside this repo's `.git/hooks/`
-that detects when `git pull` brings in bundle changes and reminds you to
-re-run `install.sh`. Set `OMC_AUTO_INSTALL=1` when merging to run the
-installer automatically. The hook never overwrites a pre-existing non-
-oh-my-claude `post-merge` hook.
+`--git-hooks` installs a `post-merge` hook into this checkout's Git hooks
+path (normally `.git/hooks/`; linked worktrees resolve to the shared hooks
+directory) so `git pull` can detect bundle drift and remind you to re-run
+`install.sh`. Set `OMC_AUTO_INSTALL=1` when merging to run the installer
+automatically. The hook never overwrites a pre-existing non-oh-my-claude
+`post-merge` hook.
 
 ## Testing
 
@@ -402,19 +421,27 @@ bash tests/test-serendipity-log.sh          # Serendipity Rule analytics logging
 bash tests/test-cross-session-rotation.sh   # Cross-session JSONL aggregate cap helper
 bash tests/test-show-report.sh              # /ulw-report skill backend (cross-session digest)
 bash tests/test-install-remote.sh           # curl-pipe-bash bootstrapper (install-remote.sh)
+bash tests/test-install-handoff.sh          # Fresh-install handoff contract (manual + bootstrap + AI-assisted docs)
+bash tests/test-install-recovery.sh         # First-run recovery contract (missing prereqs + collision + verify failure)
+bash tests/test-install-readiness.sh        # Top-level install/onboarding readiness audit wrapper
 bash tests/test-phase8-integration.sh       # Council Phase 8 wave-cap wiring (record-finding-list ↔ stop-guard)
 bash tests/test-verification-lib.sh         # Extracted lib/verification.sh module (symbol presence + smoke)
 bash tests/test-agent-verdict-contract.sh   # Universal VERDICT contract regression net (all 34 agents)
 bash tests/test-bias-defense-classifier.sh  # Bias-defense prompt-shape classifiers + plan-complexity extraction
 bash tests/test-bias-defense-directives.sh  # prometheus-suggest + intent-verify directive injection
-bash tests/test-ulw-benchmark-suite.sh      # Canonical ULW user-outcome scenarios (quality/automation first, prompt-tax second)
+bash tests/test-ulw-benchmark-suite.sh      # Canonical ULW user-outcome scenarios across core intents + all six routing domains
 bash tests/test-zero-steering-policy.sh     # Adaptive zero-steering Stop/advisory/metis policy
-bash tests/test-realwork-eval-suite.sh      # Outcome-oriented real-work eval schema + scorer
+bash tests/test-realwork-eval-suite.sh      # Outcome-oriented real-work eval schema + scorer across code + design/UI + mixed + writing + research + scholarly + ops + advisory
+bash tests/test-professional-readiness.sh   # Top-level professional-readiness audit wrapper (classification + routing + UI design contracts + benchmark + realwork)
+bash tools/verify-install-readiness.sh      # Canonical install/onboarding audit across bootstrapper + handoff + recovery + onboarding
+bash tests/test-project-readiness.sh        # Top-level maintainer readiness audit wrapper (professional + install + distribution)
+bash tools/verify-professional-readiness.sh # Canonical product-readiness audit across professional user classes
+bash tools/verify-project-readiness.sh      # Canonical maintainer release-candidate audit across product + install + distribution readiness
 bash tests/test-metis-on-plan-gate.sh       # Metis-on-plan stop-guard gate (Check 6, opt-in)
 bash tests/test-gate-events.sh              # Per-event outcome attribution (gate_events.jsonl helper + wiring)
 bash tests/test-discover-session.sh         # Cross-project session-discovery cwd filter (record-finding-list / show-status)
 bash tests/test-design-contract.sh          # 9-section Design Contract regression net (UI agents + skill + router)
-bash tests/test-specialist-routing.sh       # Engineering-specialist routing in coding-domain hint (orphan-specialist regression net)
+bash tests/test-specialist-routing.sh       # Cross-domain specialist routing contract (coding + writing + research + operations + mixed + general)
 bash tests/test-stop-failure-handler.sh     # StopFailure hook captures rate_limit / auth / billing fatal-stop signals into resume_request.json
 bash tests/test-omc-config.sh               # /omc-config skill backend (mode detection, atomic conf writes, presets, validation)
 bash tests/test-output-style-coherence.sh   # All bundled styles: frontmatter parity, hook-injected opener coherence, label regression net, enum coverage
@@ -440,7 +467,7 @@ When Claude Code's 5-hour or 7-day rate-limit window expires mid-task, the sessi
 
 1. **Substrate (always on, privacy-aware)**. The `StopFailure` hook persists `~/.claude/quality-pack/state/<session>/resume_request.json` carrying the original objective, last user prompt, matcher, reset epoch, and project key. Set `stop_failure_capture=off` in `~/.claude/oh-my-claude.conf` to opt out of the capture (shared machines / regulated codebases).
 2. **SessionStart hint (always on)**. The next time you open Claude Code in that project, a SessionStart hook surfaces the unclaimed artifact's objective and reset timing as `additionalContext`. Either invoke `/ulw-resume` to atomically claim and replay the original prompt, or `/ulw-resume --dismiss` to silence the hint without resuming.
-3. **Headless watchdog (opt-in)**. A LaunchAgent (macOS), systemd user-timer (Linux), or cron entry runs every ~2 minutes. When a rate-limit window clears it atomically claims the artifact, then launches `claude --resume <session_id> '<original prompt>'` in a detached `tmux` session named `omc-resume-<sid>` rooted at the original cwd. Attach with `tmux attach -t omc-resume-<sid>`.
+3. **Headless watchdog (opt-in)**. A LaunchAgent (macOS), systemd user-timer (Linux), or managed crontab entry (fallback) runs every ~2 minutes. When a rate-limit window clears it atomically claims the artifact, then launches `claude --resume <session_id> '<original prompt>'` in a detached `tmux` session named `omc-resume-<sid>` rooted at the original cwd. Attach with `tmux attach -t omc-resume-<sid>`.
 
 Activate the watchdog:
 
@@ -448,9 +475,9 @@ Activate the watchdog:
 bash ~/.claude/install-resume-watchdog.sh
 ```
 
-The installer detects your platform, registers the scheduler, sets `resume_watchdog=on`, and runs a dry-tick to confirm health. Tail the log at `~/.claude/quality-pack/state/.watchdog-logs/resume-watchdog.log` (macOS) or `journalctl --user -u oh-my-claude-resume-watchdog.service -f` (Linux).
+The installer detects your platform, registers the scheduler, sets `resume_watchdog=on`, and runs a dry-tick to confirm health. On launchd/systemd hosts it installs the native scheduler; on fallback hosts it writes a managed crontab entry when `crontab` is available and otherwise prints the exact line to add manually. Tail the log at `~/.claude/quality-pack/state/.watchdog-logs/resume-watchdog.log` (macOS) or `journalctl --user -u oh-my-claude-resume-watchdog.service -f` (Linux).
 
-When `tmux` is not available the watchdog falls back to an OS notification — you click the alert, open Claude Code, and run `/ulw-resume` manually. To uninstall the watchdog: `bash ~/.claude/install-resume-watchdog.sh --uninstall [--reset-conf]`.
+When `tmux` is not available the watchdog falls back to an OS notification — you click the alert, open Claude Code, and run `/ulw-resume` manually. For cron fallback hosts, inspect the managed entry with `crontab -l`. To uninstall the watchdog: `bash ~/.claude/install-resume-watchdog.sh --uninstall [--reset-conf]`.
 
 ## Contributing
 

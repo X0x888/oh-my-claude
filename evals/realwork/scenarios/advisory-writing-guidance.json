@@ -1,0 +1,15 @@
+{
+  "id": "advisory-writing-guidance",
+  "risk": "medium",
+  "fixture": "fixtures/proposal-memo",
+  "prompt": "/ulw what structure should this grant proposal use?",
+  "required_outcomes": [
+    "direct_advisory_answer",
+    "writing_specialist_coverage"
+  ],
+  "budgets": {
+    "max_tokens": 30000,
+    "max_tool_calls": 45,
+    "max_elapsed_seconds": 900
+  }
+}
