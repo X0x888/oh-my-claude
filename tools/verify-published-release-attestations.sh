@@ -21,15 +21,18 @@ GitHub artifact attestations issued by the canonical signer workflow.
 Policy enforced by default:
   - repo: current gh repo (or --repo override)
   - signer workflow: <repo>/.github/workflows/attest-release-assets.yml
-  - source ref: refs/tags/vX.Y.Z
   - self-hosted runners are denied
 
 Options:
   --repo <owner/name>            Override the GitHub repo slug.
   --signer-workflow <workflow>   Override the signer workflow identity used
                                  with gh attestation verify.
-  --source-ref <git-ref>         Override the expected source ref. Defaults
-                                 to refs/tags/vX.Y.Z.
+  --source-ref <git-ref>         Optionally enforce the source repository ref
+                                 recorded in the attestation. Unset by
+                                 default because the signer workflow runs on
+                                 its workflow ref (for example refs/heads/main)
+                                 while it may rebuild a different release tag
+                                 internally.
 EOF
 }
 
@@ -83,7 +86,7 @@ REPO_SLUG="${REPO_OVERRIDE:-$(gh repo view --json nameWithOwner --jq '.nameWithO
 [[ -n "${REPO_SLUG}" ]] || err "could not resolve repo slug (pass --repo <owner/name>)"
 
 SIGNER_WORKFLOW="${SIGNER_WORKFLOW_OVERRIDE:-${REPO_SLUG}/.github/workflows/attest-release-assets.yml}"
-SOURCE_REF="${SOURCE_REF_OVERRIDE:-refs/tags/v${VERSION_ARG}}"
+SOURCE_REF="${SOURCE_REF_OVERRIDE:-}"
 asset_stem="oh-my-claude-v${VERSION_ARG}"
 
 TMP_DIR="$(mktemp -d -t omc-release-attestation-verify-XXXXXX)"
@@ -109,11 +112,16 @@ done
 
 failures=()
 for asset in "${assets[@]}"; do
-  if ! out="$(gh attestation verify "${asset}" \
-    --repo "${REPO_SLUG}" \
-    --signer-workflow "${SIGNER_WORKFLOW}" \
-    --source-ref "${SOURCE_REF}" \
-    --deny-self-hosted-runners 2>&1)"; then
+  verify_args=(
+    gh attestation verify "${asset}"
+    --repo "${REPO_SLUG}"
+    --signer-workflow "${SIGNER_WORKFLOW}"
+    --deny-self-hosted-runners
+  )
+  if [[ -n "${SOURCE_REF}" ]]; then
+    verify_args+=(--source-ref "${SOURCE_REF}")
+  fi
+  if ! out="$("${verify_args[@]}" 2>&1)"; then
     failures+=("$(basename "${asset}"): $(printf '%s' "${out}" | head -1)")
   fi
 done

@@ -392,7 +392,7 @@ case "${cmd}" in
         tag="v${version}"
         expected_repo="${GH_STUB_REPO_NAME_WITH_OWNER:-example/fixture}"
         expected_signer="${GH_STUB_ATTESTATION_SIGNER_WORKFLOW:-${expected_repo}/.github/workflows/attest-release-assets.yml}"
-        expected_source_ref="${GH_STUB_ATTESTATION_SOURCE_REF_PREFIX:-refs/tags/}${tag}"
+        expected_source_ref="${GH_STUB_ATTESTATION_SOURCE_REF:-${GH_STUB_ATTESTATION_SOURCE_REF_PREFIX:-refs/tags/}${tag}}"
         if [[ -n "${repo_slug}" && "${repo_slug}" != "${expected_repo}" ]]; then
           printf 'gh stub: attestation repo mismatch\n' >&2
           exit 1
@@ -2229,6 +2229,12 @@ rc=$?
 set -e
 assert_eq "T50: attestation verification exits 0" "0" "${rc}"
 assert_contains "T50: attestation verification reports success" "published release attestations are canonical" "${out}"
+set +e
+out="$(cd "${repo}" && GH_STUB_RELEASE_ASSET_ROOT="${release_asset_root}" GH_STUB_ATTESTED_TAGS_FILE="${attested_tags_file}" GH_STUB_ATTESTATION_SOURCE_REF="refs/heads/main" GH_STUB_REPO_NAME_WITH_OWNER="example/fixture" PATH="${gh_stub_dir}:${PATH}" bash tools/verify-published-release-attestations.sh "1.0.0" --repo "example/fixture" --source-ref "refs/heads/main" 2>&1)"
+rc=$?
+set -e
+assert_eq "T50: attestation verification accepts explicit source-ref override" "0" "${rc}"
+assert_contains "T50: explicit source-ref override still reports success" "published release attestations are canonical" "${out}"
 cleanup_gh_stub "${gh_stub_dir}"
 cleanup_fixture "${repo}"
 
