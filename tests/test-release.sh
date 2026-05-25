@@ -1635,6 +1635,12 @@ assert_contains "T31: attestation workflow downloads release assets" 'gh release
 assert_contains "T31: attestation workflow compares published assets against rebuild" 'cmp -s' "${attest_workflow_contents}"
 assert_contains "T31: attestation workflow uses actions/attest" 'uses: actions/attest@v4' "${attest_workflow_contents}"
 assert_contains "T31: attestation workflow attests all three release assets" 'dist/published/${{ steps.tag.outputs.asset_stem }}.SHA256SUMS' "${attest_workflow_contents}"
+set +e
+workflow_yaml_parse_out="$(ruby -e 'require "yaml"; YAML.load_file(ARGV[0])' "${ATTEST_WORKFLOW_REAL}" 2>&1)"
+workflow_yaml_parse_rc=$?
+set -e
+assert_eq "T31: attestation workflow is valid YAML" "0" "${workflow_yaml_parse_rc}"
+assert_eq "T31: attestation workflow YAML parse is silent" "" "${workflow_yaml_parse_out}"
 
 # ---------------------------------------------------------------------
 printf 'Test 32: published-release verifier detects drift and prints remediation\n'

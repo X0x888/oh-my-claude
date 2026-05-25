@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag to attest (for example: v1.43.0)
+        description: "Release tag to attest (for example: v1.43.0)"
         required: true
         type: string
 
