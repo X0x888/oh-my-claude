@@ -1,0 +1,19 @@
+{
+  "id": "regulated-compliance-memo",
+  "risk": "high",
+  "fixture": "fixtures/compliance-remediation-memo",
+  "prompt": "/ulw draft a HIPAA compliance remediation memo for the patient-data workflow",
+  "required_outcomes": [
+    "research_report_ready",
+    "analysis_specialist_coverage",
+    "writer_deliverable_ready",
+    "doc_review_clean",
+    "regulated_scope_explicit",
+    "final_closeout_audit_ready"
+  ],
+  "budgets": {
+    "max_tokens": 85000,
+    "max_tool_calls": 120,
+    "max_elapsed_seconds": 2400
+  }
+}

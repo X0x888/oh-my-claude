@@ -1,0 +1,16 @@
+{
+  "id": "advisory-data-guidance",
+  "risk": "medium",
+  "fixture": "fixtures/kpi-decision-brief",
+  "prompt": "/ulw what do these quarterly revenue, churn, and acquisition cost trends suggest about the product?",
+  "required_outcomes": [
+    "direct_advisory_answer",
+    "data_specialist_coverage",
+    "analysis_specialist_coverage"
+  ],
+  "budgets": {
+    "max_tokens": 45000,
+    "max_tool_calls": 70,
+    "max_elapsed_seconds": 1200
+  }
+}

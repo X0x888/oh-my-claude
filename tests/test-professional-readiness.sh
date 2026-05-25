@@ -91,15 +91,15 @@ run_tool() {
     bash "${TOOL}" "$@"
 }
 
-classification_ok="$(mk_stub classification-ok 0 'intent-classification: 533 passed, 0 failed')"
-routing_ok="$(mk_stub routing-ok 0 'specialist-routing: 65 passed, 0 failed')"
+classification_ok="$(mk_stub classification-ok 0 'intent-classification: 539 passed, 0 failed')"
+routing_ok="$(mk_stub routing-ok 0 'specialist-routing: 79 passed, 0 failed')"
 design_contract_ok="$(mk_stub design-contract-ok 0 'test-design-contract: 162/162 passed')"
 inline_design_contract_ok="$(mk_stub inline-design-contract-ok 0 'Testing write_session_design_contract...' 'PASS: 68' 'FAIL: 0')"
-benchmark_ok="$(mk_stub benchmark-ok 0 'ULW benchmark suite: 105 passed, 0 failed')"
-realwork_validate_ok="$(mk_stub realwork-validate-ok 0 'Validated 13 real-work scenario(s)')"
-realwork_scoring_ok="$(mk_stub realwork-scoring-ok 0 'Real-work eval suite tests: 39 passed, 0 failed')"
-realwork_producer_ok="$(mk_stub realwork-producer-ok 0 'realwork-producer tests: 73 passed, 0 failed')"
-routing_fail="$(mk_stub routing-fail 1 'routing trace line' 'specialist-routing: 64 passed, 1 failed')"
+routing_fail="$(mk_stub routing-fail 1 'routing trace line' 'specialist-routing: 78 passed, 1 failed')"
+benchmark_ok="$(mk_stub benchmark-ok 0 'ULW benchmark suite: 134 passed, 0 failed')"
+realwork_validate_ok="$(mk_stub realwork-validate-ok 0 'Validated 20 real-work scenario(s)')"
+realwork_scoring_ok="$(mk_stub realwork-scoring-ok 0 'Real-work eval suite tests: 53 passed, 0 failed')"
+realwork_producer_ok="$(mk_stub realwork-producer-ok 0 'realwork-producer tests: 97 passed, 0 failed')"
 
 printf 'Test 1: all-green text mode composes the proof surfaces\n'
 out="$(
@@ -113,14 +113,14 @@ out="$(
     "${realwork_scoring_ok}" \
     "${realwork_producer_ok}" 2>&1
 )"
-assert_contains "T1: classification surface ok" $'OK\tclassification\tintent-classification: 533 passed, 0 failed' "${out}"
-assert_contains "T1: routing surface ok" $'OK\trouting\tspecialist-routing: 65 passed, 0 failed' "${out}"
+assert_contains "T1: classification surface ok" $'OK\tclassification\tintent-classification: 539 passed, 0 failed' "${out}"
+assert_contains "T1: routing surface ok" $'OK\trouting\tspecialist-routing: 79 passed, 0 failed' "${out}"
 assert_contains "T1: design-contract surface ok" $'OK\tdesign_contract\ttest-design-contract: 162/162 passed' "${out}"
 assert_contains "T1: inline design-contract surface ok" $'OK\tinline_design_contract\tPASS: 68, FAIL: 0' "${out}"
-assert_contains "T1: benchmark surface ok" $'OK\tbenchmark\tULW benchmark suite: 105 passed, 0 failed' "${out}"
-assert_contains "T1: realwork validate ok" $'OK\trealwork_validate\tValidated 13 real-work scenario(s)' "${out}"
-assert_contains "T1: realwork scoring ok" $'OK\trealwork_scoring\tReal-work eval suite tests: 39 passed, 0 failed' "${out}"
-assert_contains "T1: realwork producer ok" $'OK\trealwork_producer\trealwork-producer tests: 73 passed, 0 failed' "${out}"
+assert_contains "T1: benchmark surface ok" $'OK\tbenchmark\tULW benchmark suite: 134 passed, 0 failed' "${out}"
+assert_contains "T1: realwork validate ok" $'OK\trealwork_validate\tValidated 20 real-work scenario(s)' "${out}"
+assert_contains "T1: realwork scoring ok" $'OK\trealwork_scoring\tReal-work eval suite tests: 53 passed, 0 failed' "${out}"
+assert_contains "T1: realwork producer ok" $'OK\trealwork_producer\trealwork-producer tests: 97 passed, 0 failed' "${out}"
 assert_contains "T1: summary text" "verify-professional-readiness: summary: 8 OK, 0 SKIP, 0 FAIL" "${out}"
 assert_contains "T1: green message" "verify-professional-readiness: professional readiness is green across classification, routing, UI design-contract, benchmark, and real-work proof surfaces" "${out}"
 
@@ -154,7 +154,7 @@ assert_jq_eq "T2: benchmark status is SKIP" '.surfaces[] | select(.name=="benchm
 assert_jq_eq "T2: producer status is SKIP" '.surfaces[] | select(.name=="realwork_producer") | .status' "SKIP" "${out}"
 assert_jq_eq "T2: inline design-contract status is OK" '.surfaces[] | select(.name=="inline_design_contract") | .status' "OK" "${out}"
 assert_jq_eq "T2: inline design-contract summary is normalized" '.surfaces[] | select(.name=="inline_design_contract") | .summary' "PASS: 68, FAIL: 0" "${out}"
-assert_jq_eq "T2: routing output captured" '.surfaces[] | select(.name=="routing") | .output' $'routing trace line\nspecialist-routing: 64 passed, 1 failed' "${out}"
+assert_jq_eq "T2: routing output captured" '.surfaces[] | select(.name=="routing") | .output' $'routing trace line\nspecialist-routing: 78 passed, 1 failed' "${out}"
 assert_jq_eq "T2: design-contract skip summary captured" '.surfaces[] | select(.name=="design_contract") | .summary' "verify-professional-readiness: design-contract audit skipped by caller" "${out}"
 assert_jq_eq "T2: skip summary captured" '.surfaces[] | select(.name=="benchmark") | .summary' "verify-professional-readiness: benchmark audit skipped by caller" "${out}"
 
@@ -166,6 +166,9 @@ assert_contains "T3: help mentions 9-section design contract" "9-section UI desi
 assert_contains "T3: help mentions inline design contract" "inline UI contract persistence / extraction contract" "${out}"
 assert_contains "T3: help mentions benchmark" "canonical ULW benchmark suite" "${out}"
 assert_contains "T3: help mentions design/UI coverage" "design/UI" "${out}"
+assert_contains "T3: help mentions native artifact coverage" "native spreadsheet/document/presentation artifact workflows" "${out}"
+assert_contains "T3: help mentions quantitative coverage" "quantitative/data-analysis" "${out}"
+assert_contains "T3: help mentions regulated coverage" "regulated/high-stakes" "${out}"
 assert_contains "T3: help mentions producer" "real session -> result producer contract" "${out}"
 
 printf 'Test 4: docs inventory the professional-readiness helper\n'

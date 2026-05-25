@@ -297,7 +297,7 @@ oh-my-claude/
 │   ├── output-styles/                       # Two bundled styles: oh-my-claude (default) + executive-brief (see docs/customization.md#output-style)
 │   └── statusline.py                        # Custom statusline widget
 ├── config/settings.patch.json               # Merged into user settings on install
-├── evals/realwork/                           # Outcome eval scenarios for minimal-prompt shipping across code + design/UI + mixed + writing + research + scholarly + ops + advisory
+├── evals/realwork/                           # Outcome eval scenarios for minimal-prompt shipping across code + design/UI + native artifacts + mixed + quantitative/data-analysis + regulated/high-stakes + writing + research + scholarly + ops + advisory
 ├── tests/               (120 bash + 1 py)   # See AGENTS.md / CONTRIBUTING.md for full list
 ├── tools/                                    # Developer-only tools (not installed)
 └── docs/                                    # Architecture, customization, FAQ, prompts
@@ -429,9 +429,9 @@ bash tests/test-verification-lib.sh         # Extracted lib/verification.sh modu
 bash tests/test-agent-verdict-contract.sh   # Universal VERDICT contract regression net (all 34 agents)
 bash tests/test-bias-defense-classifier.sh  # Bias-defense prompt-shape classifiers + plan-complexity extraction
 bash tests/test-bias-defense-directives.sh  # prometheus-suggest + intent-verify directive injection
-bash tests/test-ulw-benchmark-suite.sh      # Canonical ULW user-outcome scenarios across core intents + all six routing domains
+bash tests/test-ulw-benchmark-suite.sh      # Canonical ULW user-outcome scenarios across core intents + all six routing domains + native spreadsheet/deck/docx contracts
 bash tests/test-zero-steering-policy.sh     # Adaptive zero-steering Stop/advisory/metis policy
-bash tests/test-realwork-eval-suite.sh      # Outcome-oriented real-work eval schema + scorer across code + design/UI + mixed + writing + research + scholarly + ops + advisory
+bash tests/test-realwork-eval-suite.sh      # Outcome-oriented real-work eval schema + scorer across code + design/UI + native spreadsheet/presentation/docx artifacts + mixed + quantitative/data-analysis + regulated/high-stakes + writing + research + scholarly + ops + advisory
 bash tests/test-professional-readiness.sh   # Top-level professional-readiness audit wrapper (classification + routing + UI design contracts + benchmark + realwork)
 bash tools/verify-install-readiness.sh      # Canonical install/onboarding audit across bootstrapper + handoff + recovery + onboarding
 bash tests/test-project-readiness.sh        # Top-level maintainer readiness audit wrapper (professional + install + distribution)

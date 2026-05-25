@@ -40,8 +40,9 @@ Usage: bash tools/verify-professional-readiness.sh [options]
 
 Runs the canonical product-readiness audit for oh-my-claude across the
 proof surfaces that support professional users in coding, design/UI,
-writing, research, scholarly, operations, mixed, advisory, and general
-flows.
+native spreadsheet/document/presentation artifact workflows,
+quantitative/data-analysis, regulated/high-stakes, writing, research,
+scholarly, operations, mixed, advisory, and general flows.
 
 Default surfaces:
   1. intent classification regression net

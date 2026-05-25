@@ -1,0 +1,17 @@
+{
+  "id": "presentation-board-deck",
+  "risk": "medium",
+  "fixture": "fixtures/presentation-board-deck",
+  "prompt": "/ulw turn this quarterly update into a board presentation deck",
+  "required_outcomes": [
+    "presentation_artifact_ready",
+    "operations_deliverable_ready",
+    "doc_review_clean",
+    "final_closeout_audit_ready"
+  ],
+  "budgets": {
+    "max_tokens": 85000,
+    "max_tool_calls": 115,
+    "max_elapsed_seconds": 2100
+  }
+}

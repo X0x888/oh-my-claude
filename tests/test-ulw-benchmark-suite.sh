@@ -10,11 +10,13 @@
 #   - checkpoint/pause preservation
 #   - advisory-over-code handling
 #   - non-code advisory handling (research / writing / operations)
+#   - quantitative / spreadsheet-style analysis handling
 #   - UI/design routing
 #   - writing / scholarly drafting
 #   - research / source-quality synthesis
 #   - mixed code + operations coordination
 #   - operations / professional-assistant structuring
+#   - native artifact delivery contracts (spreadsheet / deck / document)
 #   - general-domain fallback classification
 #   - directive-budget suppression in balanced mode
 #   - maximum-budget parity on the same dense prompt
@@ -186,12 +188,19 @@ _ADVISORY_CODE_PROMPT="ulw what do you think about the current auth flow in this
 _ADVISORY_RESEARCH_PROMPT="ulw what are the tradeoffs between spaced repetition and active recall for graduate study?"
 _ADVISORY_WRITING_PROMPT="ulw what structure should this grant proposal use?"
 _ADVISORY_OPERATIONS_PROMPT="ulw what is the best way to structure this launch checklist?"
+_ADVISORY_DATA_PROMPT="ulw what do these quarterly revenue, churn, and acquisition cost trends suggest about the product?"
+_ADVISORY_REGULATED_PROMPT="ulw what does this contract clause imply for vendor liability in the UK?"
 _UI_PROMPT="ulw redesign the dashboard settings page for better usability"
 _WRITING_PROMPT="ulw write a concise abstract and introduction for a paper on distributed systems"
 _RESEARCH_PROMPT="ulw research the evidence for spaced repetition in graduate study and produce a decision brief"
+_QUANT_MIXED_PROMPT="ulw analyze the spreadsheet of quarterly revenue, churn, and acquisition cost trends and draft a KPI decision memo"
+_REGULATED_MIXED_PROMPT="ulw draft a HIPAA compliance remediation memo for the patient-data workflow"
 _SCHOLAR_MIXED_PROMPT="ulw research the literature on spaced repetition in graduate study and draft a short literature review with citations"
 _MIXED_OPERATIONS_PROMPT="ulw fix the deploy-health endpoint, add regression tests, and create a release plan plus cutover checklist with owners, deadlines, and rollback steps"
 _OPERATIONS_PROMPT="ulw turn this fellowship application timeline into an execution checklist with owners and deadlines"
+_SPREADSHEET_ARTIFACT_PROMPT="ulw build a budget workbook with forecast formulas and variance tabs"
+_PRESENTATION_ARTIFACT_PROMPT="ulw turn this quarterly update into a board presentation deck"
+_DOCUMENT_ARTIFACT_PROMPT="ulw draft a formal policy document in a .docx artifact"
 _GENERAL_PROMPT="ulw help me with this"
 _DENSE_PROMPT="ulw design the auth strategy for a new dashboard in this codebase, for instance onboarding and recovery paths"
 
@@ -309,103 +318,176 @@ assert_not_contains "T8: no execution opener on operations advisory" "**Ultrawor
 assert_not_contains "T8: no coding-specialist leak" "frontend-developer" "${ctx}"
 
 # ----------------------------------------------------------------------
-printf 'Test 9: UI prompt still routes through the design contract\n'
+printf 'Test 9: quantitative advisory stays advisory while preserving data-analysis discipline\n'
+ctx="$(_run_router_context "t9-${RANDOM}" "${_ADVISORY_DATA_PROMPT}")"
+assert_contains "T9: advisory opener present" "advisory or decision support, not direct execution" "${ctx}"
+assert_contains "T9: research domain surfaced" "Detected likely task domain: research or analysis." "${ctx}"
+assert_contains "T9: quantitative directive present" "Quantitative or tabular analysis detected." "${ctx}"
+assert_contains "T9: data-lens surfaced" "dispatch \`data-lens\`" "${ctx}"
+assert_contains "T9: structured output surfaced" "include a compact table, metric summary, or scenario matrix" "${ctx}"
+assert_not_contains "T9: no execution opener on quantitative advisory" "**Ultrawork mode active.**" "${ctx}"
+
+# ----------------------------------------------------------------------
+printf 'Test 9b: regulated advisory stays advisory while preserving authority-boundary discipline\n'
+ctx="$(_run_router_context "t9b-${RANDOM}" "${_ADVISORY_REGULATED_PROMPT}")"
+assert_contains "T9b: advisory opener present" "advisory or decision support, not direct execution" "${ctx}"
+assert_contains "T9b: research domain surfaced" "Detected likely task domain: research or analysis." "${ctx}"
+assert_contains "T9b: regulated directive present" "Regulated or high-stakes professional analysis detected." "${ctx}"
+assert_contains "T9b: governing-source rule surfaced" "Identify the governing source" "${ctx}"
+assert_contains "T9b: jurisdiction rule surfaced" "relevant jurisdiction or operating context" "${ctx}"
+assert_contains "T9b: no-invent-authorities rule surfaced" "Do not invent authorities, legal/clinical obligations, or policy requirements." "${ctx}"
+assert_contains "T9b: librarian surfaced" "Use \`librarian\` for current primary sources" "${ctx}"
+assert_not_contains "T9b: no execution opener on regulated advisory" "**Ultrawork mode active.**" "${ctx}"
+
+# ----------------------------------------------------------------------
+printf 'Test 10: UI prompt still routes through the design contract\n'
 ctx="$(_run_router_context "t9-${RANDOM}" "${_UI_PROMPT}")"
-assert_contains "T9: ui design contract present" "UI/design work detected — context-aware design routing engaged." "${ctx}"
-assert_contains "T9: inline contract heading survives" "## Design Contract" "${ctx}"
+assert_contains "T10: ui design contract present" "UI/design work detected — context-aware design routing engaged." "${ctx}"
+assert_contains "T10: inline contract heading survives" "## Design Contract" "${ctx}"
 
 # ----------------------------------------------------------------------
-printf 'Test 10: scholarly writing prompt preserves the writing specialist chain\n'
+printf 'Test 11: scholarly writing prompt preserves the writing specialist chain\n'
 ctx="$(_run_router_context "t10-${RANDOM}" "${_WRITING_PROMPT}")"
-assert_contains "T10: writing domain surfaced" "Detected likely task domain: writing." "${ctx}"
-assert_contains "T10: formal-document hint survives" "formal (paper, report, proposal)" "${ctx}"
-assert_contains "T10: writing-architect present" "writing-architect" "${ctx}"
-assert_contains "T10: librarian support present" "librarian for factual support" "${ctx}"
-assert_contains "T10: no-invent-facts rule present" "Do not invent facts, citations, or quotations" "${ctx}"
-assert_not_contains "T10: no coding-specialist leak" "backend-api-developer" "${ctx}"
+assert_contains "T11: writing domain surfaced" "Detected likely task domain: writing." "${ctx}"
+assert_contains "T11: formal-document hint survives" "formal (paper, report, proposal)" "${ctx}"
+assert_contains "T11: writing-architect present" "writing-architect" "${ctx}"
+assert_contains "T11: librarian support present" "librarian for factual support" "${ctx}"
+assert_contains "T11: no-invent-facts rule present" "Do not invent facts, citations, or quotations" "${ctx}"
+assert_not_contains "T11: no coding-specialist leak" "backend-api-developer" "${ctx}"
 
 # ----------------------------------------------------------------------
-printf 'Test 11: research prompt preserves source-quality and synthesis routing\n'
+printf 'Test 12: research prompt preserves source-quality and synthesis routing\n'
 ctx="$(_run_router_context "t11-${RANDOM}" "${_RESEARCH_PROMPT}")"
-assert_contains "T11: research domain surfaced" "Detected likely task domain: research or analysis." "${ctx}"
-assert_contains "T11: librarian present" "Use librarian for authoritative sources" "${ctx}"
-assert_contains "T11: briefing-analyst present" "briefing-analyst to synthesize findings" "${ctx}"
-assert_contains "T11: metis present" "metis to challenge weak conclusions" "${ctx}"
-assert_contains "T11: peer-reviewed ranking present" "peer-reviewed publications next" "${ctx}"
-assert_not_contains "T11: no coding execution leak" "backend-api-developer" "${ctx}"
+assert_contains "T12: research domain surfaced" "Detected likely task domain: research or analysis." "${ctx}"
+assert_contains "T12: librarian present" "Use librarian for authoritative sources" "${ctx}"
+assert_contains "T12: briefing-analyst present" "briefing-analyst to synthesize findings" "${ctx}"
+assert_contains "T12: metis present" "metis to challenge weak conclusions" "${ctx}"
+assert_contains "T12: peer-reviewed ranking present" "peer-reviewed publications next" "${ctx}"
+assert_not_contains "T12: no coding execution leak" "backend-api-developer" "${ctx}"
 
 # ----------------------------------------------------------------------
-printf 'Test 12: scholar-style mixed prompt preserves evidence-first then drafting workflow\n'
-ctx="$(_run_router_context "t12-${RANDOM}" "${_SCHOLAR_MIXED_PROMPT}")"
-assert_contains "T12: mixed domain surfaced" "Detected likely task domain: mixed." "${ctx}"
-assert_contains "T12: non-code-only rule surfaced" "If the mix is non-code only" "${ctx}"
-assert_contains "T12: librarian-first rule surfaced" "gather evidence first with librarian" "${ctx}"
-assert_contains "T12: briefing-analyst surfaced" "briefing-analyst as needed" "${ctx}"
-assert_contains "T12: drafting chain surfaced" "writing-architect / draft-writer" "${ctx}"
-assert_contains "T12: evidence-before-synthesis surfaced" "Evidence before synthesis, synthesis before polish." "${ctx}"
-assert_not_contains "T12: no engineering leak in scholar mixed path" "engineering specialists for code work" "${ctx}"
-
-# ----------------------------------------------------------------------
-printf 'Test 13: mixed code-plus-operations prompt preserves chief-of-staff discipline inside mixed routing\n'
-ctx="$(_run_router_context "t13-${RANDOM}" "${_MIXED_OPERATIONS_PROMPT}")"
+printf 'Test 13: quantitative mixed prompt preserves data-analysis plus drafting workflow\n'
+ctx="$(_run_router_context "t12-${RANDOM}" "${_QUANT_MIXED_PROMPT}")"
 assert_contains "T13: mixed domain surfaced" "Detected likely task domain: mixed." "${ctx}"
-assert_contains "T13: code/non-code split surfaced" "Split the work into coding and non-coding streams" "${ctx}"
-assert_contains "T13: chief-of-staff rule surfaced" "use chief-of-staff rather than leaving it as generic prose" "${ctx}"
-assert_contains "T13: checklist/runbook structuring surfaced" "if the output is a checklist, cutover plan, rollout schedule, action tracker, or runbook" "${ctx}"
-assert_contains "T13: owner/deadline/done-condition surfaced" "every action item should have an owner, a deadline, and a clear done-condition" "${ctx}"
-assert_contains "T13: synchronization rule surfaced" "Keep the operational artifact synchronized with the implementation and verification state" "${ctx}"
-assert_not_contains "T13: no non-code-only mixed rule leak" "If the mix is non-code only" "${ctx}"
+assert_contains "T13: non-code-only mixed rule surfaced" "If the mix is non-code only" "${ctx}"
+assert_contains "T13: drafting chain surfaced" "writing-architect / draft-writer" "${ctx}"
+assert_contains "T13: quantitative directive present" "Quantitative or tabular analysis detected." "${ctx}"
+assert_contains "T13: data-lens surfaced" "dispatch \`data-lens\`" "${ctx}"
+assert_contains "T13: structured output surfaced" "include a compact table, metric summary, or scenario matrix" "${ctx}"
+assert_contains "T13: synthesis surfaced" "Use \`briefing-analyst\` to synthesize the numbers into a recommendation." "${ctx}"
+assert_not_contains "T13: no engineering leak in quantitative mixed path" "engineering specialists for code work" "${ctx}"
 
 # ----------------------------------------------------------------------
-printf 'Test 14: operations prompt preserves professional-assistant structuring\n'
+printf 'Test 13b: regulated mixed prompt preserves evidence-first plus remediation drafting workflow\n'
+ctx="$(_run_router_context "t13b-${RANDOM}" "${_REGULATED_MIXED_PROMPT}")"
+assert_contains "T13b: mixed domain surfaced" "Detected likely task domain: mixed." "${ctx}"
+assert_contains "T13b: non-code-only mixed rule surfaced" "If the mix is non-code only" "${ctx}"
+assert_contains "T13b: drafting chain surfaced" "writing-architect / draft-writer" "${ctx}"
+assert_contains "T13b: regulated directive present" "Regulated or high-stakes professional analysis detected." "${ctx}"
+assert_contains "T13b: governing-source rule surfaced" "Identify the governing source" "${ctx}"
+assert_contains "T13b: caveat carry-through surfaced" "carry the caveats, sign-off needs, and unresolved scope assumptions into the final artifact" "${ctx}"
+assert_not_contains "T13b: no engineering leak in regulated mixed path" "engineering specialists for code work" "${ctx}"
+
+# ----------------------------------------------------------------------
+printf 'Test 14: scholar-style mixed prompt preserves evidence-first then drafting workflow\n'
+ctx="$(_run_router_context "t12-${RANDOM}" "${_SCHOLAR_MIXED_PROMPT}")"
+assert_contains "T14: mixed domain surfaced" "Detected likely task domain: mixed." "${ctx}"
+assert_contains "T14: non-code-only rule surfaced" "If the mix is non-code only" "${ctx}"
+assert_contains "T14: librarian-first rule surfaced" "gather evidence first with librarian" "${ctx}"
+assert_contains "T14: briefing-analyst surfaced" "briefing-analyst as needed" "${ctx}"
+assert_contains "T14: drafting chain surfaced" "writing-architect / draft-writer" "${ctx}"
+assert_contains "T14: evidence-before-synthesis surfaced" "Evidence before synthesis, synthesis before polish." "${ctx}"
+assert_not_contains "T14: no engineering leak in scholar mixed path" "engineering specialists for code work" "${ctx}"
+
+# ----------------------------------------------------------------------
+printf 'Test 15: mixed code-plus-operations prompt preserves chief-of-staff discipline inside mixed routing\n'
+ctx="$(_run_router_context "t13-${RANDOM}" "${_MIXED_OPERATIONS_PROMPT}")"
+assert_contains "T15: mixed domain surfaced" "Detected likely task domain: mixed." "${ctx}"
+assert_contains "T15: code/non-code split surfaced" "Split the work into coding and non-coding streams" "${ctx}"
+assert_contains "T15: chief-of-staff rule surfaced" "use chief-of-staff rather than leaving it as generic prose" "${ctx}"
+assert_contains "T15: checklist/runbook structuring surfaced" "if the output is a checklist, cutover plan, rollout schedule, action tracker, or runbook" "${ctx}"
+assert_contains "T15: owner/deadline/done-condition surfaced" "every action item should have an owner, a deadline, and a clear done-condition" "${ctx}"
+assert_contains "T15: synchronization rule surfaced" "Keep the operational artifact synchronized with the implementation and verification state" "${ctx}"
+assert_not_contains "T15: no non-code-only mixed rule leak" "If the mix is non-code only" "${ctx}"
+
+# ----------------------------------------------------------------------
+printf 'Test 16: operations prompt preserves professional-assistant structuring\n'
 ctx="$(_run_router_context "t14-${RANDOM}" "${_OPERATIONS_PROMPT}")"
-assert_contains "T14: operations domain surfaced" "Detected likely task domain: operations or professional-assistant work." "${ctx}"
-assert_contains "T14: chief-of-staff present" "Use chief-of-staff to structure the deliverable" "${ctx}"
-assert_contains "T14: checklist structuring present" "checklist, plan, schedule, decision matrix, or action-item tracker" "${ctx}"
-assert_contains "T14: owner/deadline rule present" "Every action item should have an owner" "${ctx}"
-assert_contains "T14: draft-writer pairing present" "pair that with draft-writer and editor-critic" "${ctx}"
-assert_not_contains "T14: no coding execution leak" "frontend-developer" "${ctx}"
+assert_contains "T16: operations domain surfaced" "Detected likely task domain: operations or professional-assistant work." "${ctx}"
+assert_contains "T16: chief-of-staff present" "Use chief-of-staff to structure the deliverable" "${ctx}"
+assert_contains "T16: checklist structuring present" "checklist, plan, schedule, decision matrix, or action-item tracker" "${ctx}"
+assert_contains "T16: owner/deadline rule present" "Every action item should have an owner" "${ctx}"
+assert_contains "T16: draft-writer pairing present" "pair that with draft-writer and editor-critic" "${ctx}"
+assert_not_contains "T16: no coding execution leak" "frontend-developer" "${ctx}"
 
 # ----------------------------------------------------------------------
-printf 'Test 15: general-domain fallback stays explicit and non-code-default\n'
+printf 'Test 16b: spreadsheet artifact prompt preserves workbook-delivery contract\n'
+ctx="$(_run_router_context "t14b-${RANDOM}" "${_SPREADSHEET_ARTIFACT_PROMPT}")"
+assert_contains "T16b: execution opener present" "**Ultrawork mode active.**" "${ctx}"
+assert_contains "T16b: operations domain surfaced" "Detected likely task domain: operations or professional-assistant work." "${ctx}"
+assert_contains "T16b: quantitative directive present" "Quantitative or tabular analysis detected." "${ctx}"
+assert_contains "T16b: workbook directive present" "Native spreadsheet/workbook deliverable detected." "${ctx}"
+assert_contains "T16b: workbook direct artifact rule surfaced" "The workbook itself is the deliverable" "${ctx}"
+assert_contains "T16b: workbook fallback surfaced" "sheet-by-sheet schema, formula map, assumptions table, and import-ready tab data" "${ctx}"
+
+# ----------------------------------------------------------------------
+printf 'Test 16c: presentation artifact prompt preserves deck-delivery contract\n'
+ctx="$(_run_router_context "t14c-${RANDOM}" "${_PRESENTATION_ARTIFACT_PROMPT}")"
+assert_contains "T16c: execution opener present" "**Ultrawork mode active.**" "${ctx}"
+assert_contains "T16c: operations domain surfaced" "Detected likely task domain: operations or professional-assistant work." "${ctx}"
+assert_contains "T16c: deck directive present" "Native presentation/deck deliverable detected." "${ctx}"
+assert_contains "T16c: deck direct artifact rule surfaced" "The slide deck itself is the deliverable" "${ctx}"
+assert_contains "T16c: deck fallback surfaced" "slide-by-slide outline with title, message, evidence, and presenter notes" "${ctx}"
+
+# ----------------------------------------------------------------------
+printf 'Test 16d: document artifact prompt preserves docx-delivery contract\n'
+ctx="$(_run_router_context "t14d-${RANDOM}" "${_DOCUMENT_ARTIFACT_PROMPT}")"
+assert_contains "T16d: execution opener present" "**Ultrawork mode active.**" "${ctx}"
+assert_contains "T16d: writing domain surfaced" "Detected likely task domain: writing." "${ctx}"
+assert_contains "T16d: document directive present" "Native document deliverable detected." "${ctx}"
+assert_contains "T16d: document direct artifact rule surfaced" "The .docx / Word-style document itself is the deliverable" "${ctx}"
+assert_contains "T16d: document fallback surfaced" "section-by-section draft with headings, table stubs, and formatting notes" "${ctx}"
+
+# ----------------------------------------------------------------------
+printf 'Test 17: general-domain fallback stays explicit and non-code-default\n'
 ctx="$(_run_router_context "t15-${RANDOM}" "${_GENERAL_PROMPT}")"
-assert_contains "T15: execution opener present" "**Ultrawork mode active.**" "${ctx}"
-assert_contains "T15: general domain surfaced" "**Domain:** general | **Intent:** execution" "${ctx}"
-assert_contains "T15: general fallback rule surfaced" "Detected likely task domain: general." "${ctx}"
-assert_contains "T15: classify-it-yourself rule surfaced" "classify it yourself before proceeding" "${ctx}"
-assert_contains "T15: deliverable question surfaced" "what is the deliverable?" "${ctx}"
-assert_contains "T15: repo-only coding fallback surfaced" "If the task involves a repository, treat it as coding." "${ctx}"
-assert_contains "T15: no-code-default rule surfaced" "Do not default to code-oriented repo exploration unless the task truly requires it." "${ctx}"
-assert_not_contains "T15: no specific domain leak" "Detected likely task domain: coding." "${ctx}"
+assert_contains "T17: execution opener present" "**Ultrawork mode active.**" "${ctx}"
+assert_contains "T17: general domain surfaced" "**Domain:** general | **Intent:** execution" "${ctx}"
+assert_contains "T17: general fallback rule surfaced" "Detected likely task domain: general." "${ctx}"
+assert_contains "T17: classify-it-yourself rule surfaced" "classify it yourself before proceeding" "${ctx}"
+assert_contains "T17: deliverable question surfaced" "what is the deliverable?" "${ctx}"
+assert_contains "T17: repo-only coding fallback surfaced" "If the task involves a repository, treat it as coding." "${ctx}"
+assert_contains "T17: no-code-default rule surfaced" "Do not default to code-oriented repo exploration unless the task truly requires it." "${ctx}"
+assert_not_contains "T17: no specific domain leak" "Detected likely task domain: coding." "${ctx}"
 
 # ----------------------------------------------------------------------
-printf 'Test 16: balanced budget suppresses low-priority prompt tax, not core ULW routing\n'
+printf 'Test 18: balanced budget suppresses low-priority prompt tax, not core ULW routing\n'
 _seed_defect_patterns
 sid_16="t16-${RANDOM}"
 ctx="$(_run_router_context "${sid_16}" "${_DENSE_PROMPT}" "OMC_PROMETHEUS_SUGGEST=on" "OMC_DIRECTIVE_BUDGET=balanced")"
-assert_contains "T16: completeness survives balanced budget" "COMPLETENESS / COVERAGE QUERY DETECTED" "${ctx}"
-assert_contains "T16: scope-interpretation directive survives balanced budget" "AMBIGUOUS PRODUCT-SHAPED PROMPT" "${ctx}"
-assert_contains "T16: surface-broadening survives balanced budget" "INTENT-BROADENING DIRECTIVE" "${ctx}"
-assert_contains "T16: divergent framing survives balanced budget" "DIVERGENT-FRAMING DIRECTIVE" "${ctx}"
-assert_not_contains "T16: defect-watch is the trimmed low-priority layer" "Historical defect patterns from prior sessions" "${ctx}"
+assert_contains "T18: completeness survives balanced budget" "COMPLETENESS / COVERAGE QUERY DETECTED" "${ctx}"
+assert_contains "T18: scope-interpretation directive survives balanced budget" "AMBIGUOUS PRODUCT-SHAPED PROMPT" "${ctx}"
+assert_contains "T18: surface-broadening survives balanced budget" "INTENT-BROADENING DIRECTIVE" "${ctx}"
+assert_contains "T18: divergent framing survives balanced budget" "DIVERGENT-FRAMING DIRECTIVE" "${ctx}"
+assert_not_contains "T18: defect-watch is the trimmed low-priority layer" "Historical defect patterns from prior sessions" "${ctx}"
 suppressed_16="$(_gate_count "${sid_16}" "directive-budget" "suppressed" "defect_watch")"
-assert_ge "T16: balanced budget records at least one defect_watch suppression" 1 "${suppressed_16}"
+assert_ge "T18: balanced budget records at least one defect_watch suppression" 1 "${suppressed_16}"
 names_16="$(_timing_names "${sid_16}")"
-assert_not_contains "T16: suppressed directive does not hit timing rows" "defect_watch" "${names_16}"
+assert_not_contains "T18: suppressed directive does not hit timing rows" "defect_watch" "${names_16}"
 fires_16_prom="$(_gate_count "${sid_16}" "bias-defense" "directive_fired" "prometheus-suggest")"
-assert_eq "T16: selected bias-defense directive still records fired telemetry" "1" "${fires_16_prom}"
+assert_eq "T18: selected bias-defense directive still records fired telemetry" "1" "${fires_16_prom}"
 
 # ----------------------------------------------------------------------
-printf 'Test 17: maximum budget preserves the full dense prompt shape\n'
+printf 'Test 19: maximum budget preserves the full dense prompt shape\n'
 _seed_defect_patterns
 sid_17="t17-${RANDOM}"
 ctx="$(_run_router_context "${sid_17}" "${_DENSE_PROMPT}" "OMC_PROMETHEUS_SUGGEST=on" "OMC_DIRECTIVE_BUDGET=maximum")"
-assert_contains "T17: maximum keeps defect-watch" "Historical defect patterns from prior sessions" "${ctx}"
-assert_contains "T17: maximum still keeps divergence" "DIVERGENT-FRAMING DIRECTIVE" "${ctx}"
+assert_contains "T19: maximum keeps defect-watch" "Historical defect patterns from prior sessions" "${ctx}"
+assert_contains "T19: maximum still keeps divergence" "DIVERGENT-FRAMING DIRECTIVE" "${ctx}"
 suppressed_17="$(_gate_count "${sid_17}" "directive-budget" "suppressed")"
-assert_eq "T17: maximum budget records zero suppressions on same prompt" "0" "${suppressed_17}"
+assert_eq "T19: maximum budget records zero suppressions on same prompt" "0" "${suppressed_17}"
 names_17="$(_timing_names "${sid_17}")"
-assert_contains "T17: defect_watch reaches timing rows under maximum" "defect_watch" "${names_17}"
+assert_contains "T19: defect_watch reaches timing rows under maximum" "defect_watch" "${names_17}"
 
 printf '\nULW benchmark suite: %d passed, %d failed\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]] || exit 1

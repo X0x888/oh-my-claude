@@ -3,8 +3,10 @@
 This directory defines outcome-oriented evaluations for the question the
 unit tests cannot answer: given a minimal `/ulw` prompt, did Claude Code
 ship real work that is correct, reviewed, verified, and efficient across
-coding, design/UI, mixed code+non-code, writing, research, scholarly,
-operations, and advisory work?
+coding, design/UI, native artifact workflows (workbook/deck/docx),
+mixed code+non-code,
+quantitative/data-analysis, regulated/high-stakes professional work,
+writing, research, scholarly, operations, and advisory work?
 
 Each scenario in `scenarios/*.json` declares:
 

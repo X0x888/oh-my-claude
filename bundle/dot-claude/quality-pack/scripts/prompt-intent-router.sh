@@ -1377,6 +1377,31 @@ Discipline: Make changes incrementally and test after edits for routine additive
         ;;
     esac
 
+    if [[ "${TASK_DOMAIN}" == "research" || "${TASK_DOMAIN}" == "writing" || "${TASK_DOMAIN}" == "operations" || "${TASK_DOMAIN}" == "mixed" ]] \
+      && prompt_has_quantitative_signal "${PROMPT_TEXT}"; then
+      add_directive "domain_routing_quantitative" "Quantitative or tabular analysis detected. Treat the numbers as evidence, not decoration. Preserve metric definitions, time windows, denominators, cohort boundaries, units, and missing-data caveats. Separate observed data from inference, and state assumptions explicitly when projecting or comparing scenarios. When confidence depends on instrumentation quality, event naming, missing baselines, or dashboard/query trustworthiness, dispatch \`data-lens\` to pressure-test the measurement layer. Use \`briefing-analyst\` to synthesize the numbers into a recommendation. If the deliverable is prose, include a compact table, metric summary, or scenario matrix instead of prose-only conclusions."
+    fi
+
+    if prompt_has_regulated_signal "${PROMPT_TEXT}"; then
+      add_directive "domain_routing_regulated" "Regulated or high-stakes professional analysis detected. Treat current authority and scope boundaries as load-bearing. Identify the governing source (contract text, regulator guidance, org policy, clinical guideline, accounting/tax standard, or equivalent), the relevant jurisdiction or operating context, and the effective-date window before drawing conclusions. Separate what the source says from your inference. Do not invent authorities, legal/clinical obligations, or policy requirements. Use \`librarian\` for current primary sources and \`briefing-analyst\` to synthesize implications; if the deliverable is a memo, remediation plan, policy note, or recommendation brief, carry the caveats, sign-off needs, and unresolved scope assumptions into the final artifact instead of burying them."
+    fi
+
+    _native_artifact_kind="$(infer_native_artifact_kind "${PROMPT_TEXT}")"
+    if [[ "${TASK_INTENT}" == "execution" || "${TASK_INTENT}" == "continuation" ]] \
+      && [[ "${_native_artifact_kind}" != "none" ]]; then
+      case "${_native_artifact_kind}" in
+        spreadsheet)
+          add_directive "domain_routing_native_artifact" "Native spreadsheet/workbook deliverable detected. The workbook itself is the deliverable, not a prose description of what should go into it. If the environment can create the file directly, deliver the spreadsheet/workbook artifact (.xlsx/.xls/.ods or equivalent) with the actual sheets, formulas, units, assumptions, and scenario labels the prompt requires. If native workbook tooling is unavailable, say so explicitly and provide the closest structured intermediate (sheet-by-sheet schema, formula map, assumptions table, and import-ready tab data) rather than pretending the workbook already exists."
+          ;;
+        presentation)
+          add_directive "domain_routing_native_artifact" "Native presentation/deck deliverable detected. The slide deck itself is the deliverable, not a memo about what the slides should say. If the environment can create the file directly, deliver the presentation artifact (.pptx/.key or equivalent) with real slide titles, ordered content, speaker-note assumptions, and the visual structure the prompt implies. If native presentation tooling is unavailable, say so explicitly and provide the closest structured intermediate (slide-by-slide outline with title, message, evidence, and presenter notes) rather than claiming the deck already exists."
+          ;;
+        document)
+          add_directive "domain_routing_native_artifact" "Native document deliverable detected. The .docx / Word-style document itself is the deliverable, not a prose summary of what should go into it. If the environment can create the file directly, deliver the document artifact with the sections, headings, tables, and appendix structure the prompt requires. If native document tooling is unavailable, say so explicitly and provide the closest structured intermediate (section-by-section draft with headings, table stubs, and formatting notes) rather than pretending the document already exists."
+          ;;
+      esac
+    fi
+
     # UI/design-aware coding: when the prompt signals frontend/UI work,
     # augment the coding hint with design-quality guidance so the main thread
     # establishes visual direction and knows about the design-reviewer gate.

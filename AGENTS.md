@@ -144,7 +144,7 @@ What next?
 
 If the user pasted "install oh-my-claude" with no surrounding conversation, they may not know what they just installed. Add a two-sentence summary:
 
-> oh-my-claude is a cognitive quality harness for Claude Code. After you restart, `/ulw <task>` runs any non-trivial work through specialist agents and quality gates that block until testing and review are done — it works for coding, writing, research, and operations. Run `/ulw-demo` first to feel how the gates fire on a quick walkthrough (under 2 minutes).
+> oh-my-claude is a cognitive quality harness for Claude Code. After you restart, `/ulw <task>` runs any non-trivial work through specialist agents and quality gates that block until testing and review are done — it works for coding, native spreadsheet/document/deck workflows, quantitative analysis, writing, research, and operations. Run `/ulw-demo` first to feel how the gates fire on a quick walkthrough (under 2 minutes).
 
 The next section is for repo contributors only.
 
@@ -154,7 +154,7 @@ The next section is for repo contributors only.
 
 > If you're helping a user install or update, the [Agent Install Protocol](#agent-install-protocol--installing-or-updating-oh-my-claude) above is what you want, not this section.
 
-oh-my-claude is a cognitive quality harness for Claude Code. It provides bash hooks, skills, and specialist agents that enforce thinking, testing, and review across coding, writing, research, and operations work. The system is pure bash with zero npm dependencies.
+oh-my-claude is a cognitive quality harness for Claude Code. It provides bash hooks, skills, and specialist agents that enforce thinking, testing, and review across coding, native spreadsheet/document/deck workflows, quantitative analysis, writing, research, and operations work. The system is pure bash with zero npm dependencies.
 
 ## Architecture
 

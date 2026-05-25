@@ -24,8 +24,9 @@
 #   }
 #
 # Outcome keys covered (matched against the shipped coding + design/UI +
-# mixed + writing + research + scholarly + operations + advisory
-# scenarios, plus a small set of generic signals likely to recur):
+# mixed + quantitative-artifact + writing + research + scholarly +
+# operations + advisory scenarios, plus a small set of generic signals
+# likely to recur):
 #   tests_passed                       targeted_verification
 #   full_verification                  review_clean
 #   regression_test_added              final_closeout_audit_ready
@@ -35,7 +36,10 @@
 #   wave_plan_recorded                 findings_resolved_or_deferred_with_why
 #   token_budget_respected             doc_review_clean
 #   writer_deliverable_ready           research_report_ready
-#   analysis_specialist_coverage       operations_deliverable_ready
+#   analysis_specialist_coverage       data_specialist_coverage
+#   spreadsheet_artifact_ready         presentation_artifact_ready
+#   document_artifact_ready            operations_deliverable_ready
+#   regulated_scope_explicit
 #   direct_advisory_answer             advisory_code_grounded
 #   writing_specialist_coverage        operations_specialist_coverage
 #
@@ -337,10 +341,58 @@ if subagent_summary_seen '(^|:)(briefing-analyst|metis)$'; then
   det_analysis_specialist_coverage=1
 fi
 
+# data_specialist_coverage: a quantitative / instrumentation specialist ran.
+det_data_specialist_coverage=0
+if subagent_summary_seen '(^|:)(data-lens)$'; then
+  det_data_specialist_coverage=1
+fi
+
+# spreadsheet_artifact_ready: a native workbook-like spreadsheet artifact
+# was actually emitted, not just described in prose. Intentionally
+# narrow: this proof is for workbook-class deliverables (.xlsx/.xls/.ods/
+# .numbers), not generic tabular mentions or markdown tables.
+det_spreadsheet_artifact_ready=0
+if [[ -f "${EDITED_LOG}" ]] \
+  && grep -Eiq '\.(xlsx|xls|ods|numbers)$' "${EDITED_LOG}"; then
+  det_spreadsheet_artifact_ready=1
+fi
+
+# presentation_artifact_ready: a native deck artifact was emitted. This
+# is intentionally about actual slide-file output (.pptx/.ppt/.key),
+# not a markdown outline or prose speaker notes.
+det_presentation_artifact_ready=0
+if [[ -f "${EDITED_LOG}" ]] \
+  && grep -Eiq '\.(pptx|ppt|key)$' "${EDITED_LOG}"; then
+  det_presentation_artifact_ready=1
+fi
+
+# document_artifact_ready: a native document artifact was emitted. This
+# is intentionally about actual word-processor output (.docx/.doc/.odt),
+# not a markdown draft that merely describes the document.
+det_document_artifact_ready=0
+if [[ -f "${EDITED_LOG}" ]] \
+  && grep -Eiq '\.(docx|doc|odt)$' "${EDITED_LOG}"; then
+  det_document_artifact_ready=1
+fi
+
 # operations_deliverable_ready: chief-of-staff returned a delivered verdict.
 det_operations_deliverable_ready=0
 if subagent_verdict_seen '(^|:)(chief-of-staff)$' 'DELIVERED'; then
   det_operations_deliverable_ready=1
+fi
+
+# regulated_scope_explicit: the closeout makes authority/scope boundaries
+# explicit for regulated or high-stakes professional work — jurisdiction,
+# governing source, effective date, sign-off owner, patient population,
+# contract version, etc. This is intentionally heuristic but still
+# evidence-based: absence means the producer cannot prove the session
+# carried the caveats into the artifact.
+det_regulated_scope_explicit=0
+if [[ -n "${last_assistant_message}" ]]; then
+  if grep -Eiq '(jurisdiction|effective[ -]date|as of|governing source|contract text|contract version|policy owner|patient population|sign-?off|scope assumption|regulator|clinical guideline|accounting standard|tax year)' <<<"${last_assistant_message}" \
+    && grep -Eiq '(contract|clause|policy|guideline|regulator|authority|clinical|evidence|standard|requirement|hipaa|gdpr|liability|compliance)' <<<"${last_assistant_message}"; then
+    det_regulated_scope_explicit=1
+  fi
 fi
 
 # direct_advisory_answer: the prompt was classified advisory, the
@@ -413,7 +465,12 @@ jq -nc \
   --argjson writer_deliverable_ready "$([[ "${det_writer_deliverable_ready}" -eq 1 ]] && echo true || echo false)" \
   --argjson research_report_ready "$([[ "${det_research_report_ready}" -eq 1 ]] && echo true || echo false)" \
   --argjson analysis_specialist_coverage "$([[ "${det_analysis_specialist_coverage}" -eq 1 ]] && echo true || echo false)" \
+  --argjson data_specialist_coverage "$([[ "${det_data_specialist_coverage}" -eq 1 ]] && echo true || echo false)" \
+  --argjson spreadsheet_artifact_ready "$([[ "${det_spreadsheet_artifact_ready}" -eq 1 ]] && echo true || echo false)" \
+  --argjson presentation_artifact_ready "$([[ "${det_presentation_artifact_ready}" -eq 1 ]] && echo true || echo false)" \
+  --argjson document_artifact_ready "$([[ "${det_document_artifact_ready}" -eq 1 ]] && echo true || echo false)" \
   --argjson operations_deliverable_ready "$([[ "${det_operations_deliverable_ready}" -eq 1 ]] && echo true || echo false)" \
+  --argjson regulated_scope_explicit "$([[ "${det_regulated_scope_explicit}" -eq 1 ]] && echo true || echo false)" \
   --argjson direct_advisory_answer "$([[ "${det_direct_advisory_answer}" -eq 1 ]] && echo true || echo false)" \
   --argjson advisory_code_grounded "$([[ "${det_advisory_code_grounded}" -eq 1 ]] && echo true || echo false)" \
   --argjson writing_specialist_coverage "$([[ "${det_writing_specialist_coverage}" -eq 1 ]] && echo true || echo false)" \
@@ -444,7 +501,12 @@ jq -nc \
         writer_deliverable_ready: $writer_deliverable_ready,
         research_report_ready: $research_report_ready,
         analysis_specialist_coverage: $analysis_specialist_coverage,
+        data_specialist_coverage: $data_specialist_coverage,
+        spreadsheet_artifact_ready: $spreadsheet_artifact_ready,
+        presentation_artifact_ready: $presentation_artifact_ready,
+        document_artifact_ready: $document_artifact_ready,
         operations_deliverable_ready: $operations_deliverable_ready,
+        regulated_scope_explicit: $regulated_scope_explicit,
         direct_advisory_answer: $direct_advisory_answer,
         advisory_code_grounded: $advisory_code_grounded,
         writing_specialist_coverage: $writing_specialist_coverage,

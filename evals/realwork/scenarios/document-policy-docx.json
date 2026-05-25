@@ -1,0 +1,17 @@
+{
+  "id": "document-policy-docx",
+  "risk": "medium",
+  "fixture": "fixtures/document-policy-docx",
+  "prompt": "/ulw draft a formal policy document in a .docx artifact",
+  "required_outcomes": [
+    "document_artifact_ready",
+    "writer_deliverable_ready",
+    "doc_review_clean",
+    "final_closeout_audit_ready"
+  ],
+  "budgets": {
+    "max_tokens": 80000,
+    "max_tool_calls": 110,
+    "max_elapsed_seconds": 2100
+  }
+}

@@ -37,7 +37,7 @@ trap cleanup EXIT
 
 printf 'Test 1: scenario validation passes\n'
 out="$(bash "${RUNNER}" validate)"
-assert_contains "validate scenario count" "Validated 13 real-work scenario(s)" "${out}"
+assert_contains "validate scenario count" "Validated 20 real-work scenario(s)" "${out}"
 
 printf 'Test 2: list surfaces scenario ids and risk tiers\n'
 out="$(bash "${RUNNER}" list)"
@@ -48,8 +48,15 @@ assert_contains "list advisory code scenario" "advisory-code-guidance" "${out}"
 assert_contains "list advisory writing scenario" "advisory-writing-guidance" "${out}"
 assert_contains "list advisory research scenario" "advisory-research-guidance" "${out}"
 assert_contains "list advisory operations scenario" "advisory-operations-guidance" "${out}"
+assert_contains "list advisory data scenario" "advisory-data-guidance" "${out}"
+assert_contains "list advisory legal scenario" "advisory-legal-guidance" "${out}"
 assert_contains "list mixed rollout scenario" "mixed-rollout-migration" "${out}"
 assert_contains "list mixed cutover scenario" "mixed-cutover-checklist" "${out}"
+assert_contains "list quantitative brief scenario" "quantitative-kpi-brief" "${out}"
+assert_contains "list quantitative workbook scenario" "quantitative-workbook-model" "${out}"
+assert_contains "list presentation deck scenario" "presentation-board-deck" "${out}"
+assert_contains "list document docx scenario" "document-policy-docx" "${out}"
+assert_contains "list regulated compliance memo scenario" "regulated-compliance-memo" "${out}"
 assert_contains "list writing scenario" "writing-proposal" "${out}"
 assert_contains "list research scenario" "research-brief" "${out}"
 assert_contains "list scholarly scenario" "scholarly-review" "${out}"
@@ -211,6 +218,43 @@ score_json="$(bash "${RUNNER}" score "${tmp}/advisory-research-perfect.json")"
 assert_eq "advisory research perfect score" "100" "$(jq -r '.score' <<<"${score_json}")"
 assert_eq "advisory research perfect pass" "true" "$(jq -r '.pass' <<<"${score_json}")"
 
+printf 'Test 10b: advisory data scenario requires both direct answer and data-specialist coverage\n'
+cat > "${tmp}/advisory-data-imperfect.json" <<'JSON'
+{
+  "scenario_id": "advisory-data-guidance",
+  "tokens": 1000,
+  "tool_calls": 7,
+  "elapsed_seconds": 90,
+  "outcomes": {
+    "direct_advisory_answer": true,
+    "data_specialist_coverage": false,
+    "analysis_specialist_coverage": true
+  }
+}
+JSON
+score_json="$(bash "${RUNNER}" score "${tmp}/advisory-data-imperfect.json")"
+assert_eq "advisory data imperfect pass false" "false" "$(jq -r '.pass' <<<"${score_json}")"
+assert_contains "advisory data missing data-specialist coverage" "data_specialist_coverage" "${score_json}"
+
+printf 'Test 10c: advisory legal scenario requires explicit regulated scope boundaries\n'
+cat > "${tmp}/advisory-legal-imperfect.json" <<'JSON'
+{
+  "scenario_id": "advisory-legal-guidance",
+  "tokens": 1100,
+  "tool_calls": 8,
+  "elapsed_seconds": 100,
+  "outcomes": {
+    "direct_advisory_answer": true,
+    "research_report_ready": true,
+    "analysis_specialist_coverage": true,
+    "regulated_scope_explicit": false
+  }
+}
+JSON
+score_json="$(bash "${RUNNER}" score "${tmp}/advisory-legal-imperfect.json")"
+assert_eq "advisory legal imperfect pass false" "false" "$(jq -r '.pass' <<<"${score_json}")"
+assert_contains "advisory legal missing regulated scope" "regulated_scope_explicit" "${score_json}"
+
 printf 'Test 11: advisory writing scenario exposes missing specialist coverage\n'
 cat > "${tmp}/advisory-writing-imperfect.json" <<'JSON'
 {
@@ -273,6 +317,125 @@ JSON
 score_json="$(bash "${RUNNER}" score "${tmp}/mixed-ops-imperfect.json")"
 assert_eq "mixed ops imperfect pass false" "false" "$(jq -r '.pass' <<<"${score_json}")"
 assert_contains "mixed ops missing delivered operations artifact" "operations_deliverable_ready" "${score_json}"
+
+printf 'Test 13b: quantitative KPI brief requires data-specialist coverage and drafted deliverable\n'
+cat > "${tmp}/quantitative-imperfect.json" <<'JSON'
+{
+  "scenario_id": "quantitative-kpi-brief",
+  "tokens": 2600,
+  "tool_calls": 18,
+  "elapsed_seconds": 180,
+  "outcomes": {
+    "data_specialist_coverage": false,
+    "analysis_specialist_coverage": true,
+    "writer_deliverable_ready": false,
+    "doc_review_clean": true,
+    "final_closeout_audit_ready": true
+  }
+}
+JSON
+score_json="$(bash "${RUNNER}" score "${tmp}/quantitative-imperfect.json")"
+assert_eq "quantitative imperfect pass false" "false" "$(jq -r '.pass' <<<"${score_json}")"
+assert_contains "quantitative missing data-specialist coverage" "data_specialist_coverage" "${score_json}"
+assert_contains "quantitative missing writer proof" "writer_deliverable_ready" "${score_json}"
+
+printf 'Test 13c: quantitative workbook scenario requires a real spreadsheet artifact\n'
+cat > "${tmp}/quantitative-workbook-imperfect.json" <<'JSON'
+{
+  "scenario_id": "quantitative-workbook-model",
+  "tokens": 2500,
+  "tool_calls": 16,
+  "elapsed_seconds": 170,
+  "outcomes": {
+    "data_specialist_coverage": true,
+    "analysis_specialist_coverage": true,
+    "spreadsheet_artifact_ready": false,
+    "final_closeout_audit_ready": true
+  }
+}
+JSON
+score_json="$(bash "${RUNNER}" score "${tmp}/quantitative-workbook-imperfect.json")"
+assert_eq "quantitative workbook imperfect pass false" "false" "$(jq -r '.pass' <<<"${score_json}")"
+assert_contains "quantitative workbook missing spreadsheet artifact" "spreadsheet_artifact_ready" "${score_json}"
+
+printf 'Test 13d: presentation deck scenario requires a real deck artifact\n'
+cat > "${tmp}/presentation-deck-imperfect.json" <<'JSON'
+{
+  "scenario_id": "presentation-board-deck",
+  "tokens": 2200,
+  "tool_calls": 15,
+  "elapsed_seconds": 180,
+  "outcomes": {
+    "presentation_artifact_ready": false,
+    "operations_deliverable_ready": true,
+    "doc_review_clean": true,
+    "final_closeout_audit_ready": true
+  }
+}
+JSON
+score_json="$(bash "${RUNNER}" score "${tmp}/presentation-deck-imperfect.json")"
+assert_eq "presentation deck imperfect pass false" "false" "$(jq -r '.pass' <<<"${score_json}")"
+assert_contains "presentation deck missing artifact" "presentation_artifact_ready" "${score_json}"
+
+printf 'Test 13e: presentation deck scenario requires a clean review pass\n'
+cat > "${tmp}/presentation-deck-review-imperfect.json" <<'JSON'
+{
+  "scenario_id": "presentation-board-deck",
+  "tokens": 2200,
+  "tool_calls": 15,
+  "elapsed_seconds": 180,
+  "outcomes": {
+    "presentation_artifact_ready": true,
+    "operations_deliverable_ready": true,
+    "doc_review_clean": false,
+    "final_closeout_audit_ready": true
+  }
+}
+JSON
+score_json="$(bash "${RUNNER}" score "${tmp}/presentation-deck-review-imperfect.json")"
+assert_eq "presentation deck review imperfect pass false" "false" "$(jq -r '.pass' <<<"${score_json}")"
+assert_contains "presentation deck missing review" "doc_review_clean" "${score_json}"
+
+printf 'Test 13f: document docx scenario requires a real document artifact\n'
+cat > "${tmp}/document-docx-imperfect.json" <<'JSON'
+{
+  "scenario_id": "document-policy-docx",
+  "tokens": 2300,
+  "tool_calls": 16,
+  "elapsed_seconds": 190,
+  "outcomes": {
+    "document_artifact_ready": false,
+    "writer_deliverable_ready": true,
+    "doc_review_clean": true,
+    "final_closeout_audit_ready": true
+  }
+}
+JSON
+score_json="$(bash "${RUNNER}" score "${tmp}/document-docx-imperfect.json")"
+assert_eq "document docx imperfect pass false" "false" "$(jq -r '.pass' <<<"${score_json}")"
+assert_contains "document docx missing artifact" "document_artifact_ready" "${score_json}"
+
+printf 'Test 13g: regulated compliance memo requires explicit regulated scope plus drafted deliverable\n'
+cat > "${tmp}/regulated-imperfect.json" <<'JSON'
+{
+  "scenario_id": "regulated-compliance-memo",
+  "tokens": 2800,
+  "tool_calls": 20,
+  "elapsed_seconds": 220,
+  "outcomes": {
+    "research_report_ready": true,
+    "analysis_specialist_coverage": true,
+    "writer_deliverable_ready": false,
+    "doc_review_clean": true,
+    "regulated_scope_explicit": false,
+    "final_closeout_audit_ready": true
+  }
+}
+JSON
+score_json="$(bash "${RUNNER}" score "${tmp}/regulated-imperfect.json")"
+assert_eq "regulated imperfect pass false" "false" "$(jq -r '.pass' <<<"${score_json}")"
+assert_contains "regulated missing regulated scope" "regulated_scope_explicit" "${score_json}"
+assert_contains "regulated missing writer proof" "writer_deliverable_ready" "${score_json}"
 
 printf '\nReal-work eval suite tests: %d passed, %d failed\n' "${pass}" "${fail}"
 if [[ "${fail}" -gt 0 ]]; then

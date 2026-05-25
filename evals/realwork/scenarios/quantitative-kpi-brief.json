@@ -1,0 +1,18 @@
+{
+  "id": "quantitative-kpi-brief",
+  "risk": "medium",
+  "fixture": "fixtures/kpi-decision-brief",
+  "prompt": "/ulw analyze the spreadsheet of quarterly revenue, churn, and acquisition cost trends and draft a KPI decision memo",
+  "required_outcomes": [
+    "data_specialist_coverage",
+    "analysis_specialist_coverage",
+    "writer_deliverable_ready",
+    "doc_review_clean",
+    "final_closeout_audit_ready"
+  ],
+  "budgets": {
+    "max_tokens": 80000,
+    "max_tool_calls": 110,
+    "max_elapsed_seconds": 2100
+  }
+}

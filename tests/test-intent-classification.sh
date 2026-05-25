@@ -583,6 +583,19 @@ assert_domain_with_profile() {
   fi
 }
 
+assert_artifact_kind() {
+  local expected="$1"
+  local input="$2"
+  local actual
+  actual="$(infer_native_artifact_kind "${input}")"
+  if [[ "${actual}" == "${expected}" ]]; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: infer_native_artifact_kind "%s"\n    expected=%s actual=%s\n' "${input}" "${expected}" "${actual}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
 printf '\n=== Domain Classification Tests ===\n\n'
 
 # --- Coding: strong unigram signals ---
@@ -635,6 +648,9 @@ assert_domain "research" "Evaluate options for the new logging framework"
 assert_domain "research" "Audit the current security posture"
 assert_domain "research" "Research responsive design principles"
 assert_domain "research" "Analyze dashboard adoption trends"
+assert_domain "research" "Review the spreadsheet of monthly spend and summarize the top drivers"
+assert_domain "research" "What do these quarterly revenue and churn trends suggest about the product"
+assert_domain "research" "What does this contract clause imply for vendor liability in the UK"
 assert_domain "research" "Provide UX recommendations for mobile onboarding"
 assert_domain "research" "Evaluate layout options for the homepage"
 
@@ -644,11 +660,17 @@ assert_domain "operations" "Create a project plan for the Q3 launch"
 assert_domain "operations" "Set up the meeting agenda for Monday"
 assert_domain "operations" "Build a checklist for the release process"
 assert_domain "operations" "Prioritize the roadmap items for next sprint"
+assert_domain "operations" "Build a budget workbook with forecast formulas and variance tabs"
+assert_domain "operations" "Turn this quarterly update into a board presentation deck"
 
 # --- Mixed: coding + secondary domain both significant ---
 printf '\nMixed:\n'
 assert_domain "mixed" "Implement the caching layer and write a report on performance improvements"
 assert_domain "mixed" "Refactor the API and summarize the architecture changes"
+assert_domain "mixed" "Analyze the spreadsheet of quarterly revenue, churn, and acquisition cost trends and draft a KPI decision memo"
+assert_domain "mixed" "Analyze this CSV and produce an .xlsx decision model"
+assert_domain "mixed" "Draft a HIPAA compliance remediation memo for the patient-data workflow"
+assert_domain "mixed" "Analyze the clinical evidence for treatment X and draft a recommendation brief"
 
 # --- Project-profile boost must remain a tiebreaker, not a domain factory ---
 printf '\nProject-profile boost discipline:\n'
@@ -676,6 +698,7 @@ printf '\nWriting (broader bigrams: articles + operations-shaped deliverables, v
 assert_domain "writing" "Write the follow-up email to the customer about the delay"
 assert_domain "writing" "Compose a recap of the Q3 review for the leadership update"
 assert_domain "writing" "Draft a brief on the performance numbers for the board"
+assert_domain "writing" "Draft a formal policy document in a .docx artifact"
 
 # Boundary: writing-dominant with secondary topic mention stays writing
 # (operations/research mention is the topic, not separate work).
@@ -702,6 +725,12 @@ assert_domain "coding" "Create a dashboard with charts and filters"
 assert_domain "coding" "Build a responsive navigation component"
 assert_domain "coding" "Style the login form with Tailwind"
 assert_domain "coding" "Add animation to the hero section"
+
+printf '\nNative artifact kind detection:\n'
+assert_artifact_kind "spreadsheet" "Build a budget workbook with forecast formulas and variance tabs"
+assert_artifact_kind "presentation" "Turn this quarterly update into a board presentation deck"
+assert_artifact_kind "document" "Draft a formal policy document in a .docx artifact"
+assert_artifact_kind "none" "Help me think through the launch"
 assert_domain "coding" "Add an animation to the hero section"
 assert_domain "coding" "Add an animation to the cards"
 assert_domain "coding" "Add some animations to the sidebar"

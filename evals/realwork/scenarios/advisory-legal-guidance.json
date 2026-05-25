@@ -1,0 +1,17 @@
+{
+  "id": "advisory-legal-guidance",
+  "risk": "high",
+  "fixture": "fixtures/compliance-remediation-memo",
+  "prompt": "/ulw what does this contract clause imply for vendor liability in the UK?",
+  "required_outcomes": [
+    "direct_advisory_answer",
+    "research_report_ready",
+    "analysis_specialist_coverage",
+    "regulated_scope_explicit"
+  ],
+  "budgets": {
+    "max_tokens": 50000,
+    "max_tool_calls": 75,
+    "max_elapsed_seconds": 1500
+  }
+}

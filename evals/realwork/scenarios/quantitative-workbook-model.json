@@ -1,0 +1,17 @@
+{
+  "id": "quantitative-workbook-model",
+  "risk": "medium",
+  "fixture": "fixtures/quantitative-workbook-model",
+  "prompt": "/ulw analyze this CSV and produce an .xlsx decision model with forecast tabs and a scenario sheet",
+  "required_outcomes": [
+    "data_specialist_coverage",
+    "analysis_specialist_coverage",
+    "spreadsheet_artifact_ready",
+    "final_closeout_audit_ready"
+  ],
+  "budgets": {
+    "max_tokens": 85000,
+    "max_tool_calls": 115,
+    "max_elapsed_seconds": 2100
+  }
+}

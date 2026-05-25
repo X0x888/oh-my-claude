@@ -97,6 +97,21 @@ Comparative research with project context. Claude gathers current docs on both t
 ```
 Research-domain advisory. Claude answers directly instead of forcing implementation, but still keeps the research discipline: source quality first, evidence separated from inference, and a decision-oriented comparison rather than generic brainstorming.
 
+```
+/ulw analyze the spreadsheet of quarterly revenue, churn, and acquisition cost trends and draft a KPI decision memo
+```
+Quantitative mixed workflow. Claude treats the numbers as evidence, uses `data-lens` when metric quality or instrumentation trust is load-bearing, synthesizes with `briefing-analyst`, and drafts a memo that includes a compact metric summary or scenario matrix instead of prose-only conclusions.
+
+```
+/ulw what does this contract clause imply for vendor liability in the UK?
+```
+Regulated advisory workflow. Claude answers directly, but treats current authority and scope boundaries as load-bearing: it grounds the answer in the contract text and current governing sources, names the jurisdiction and effective-date assumptions, and avoids inventing legal obligations or false certainty.
+
+```
+/ulw draft a HIPAA compliance remediation memo for the patient-data workflow
+```
+Regulated mixed workflow. Claude uses librarian and briefing-analyst to ground the requirements and implications, then drafts the memo with sign-off boundaries, unresolved scope assumptions, and governing-source caveats carried into the final artifact instead of buried in reasoning.
+
 ---
 
 ## Operations
@@ -120,6 +135,25 @@ Professional communication. Claude structures the update (highlights, blockers, 
 /ulw what is the best way to structure this launch checklist?
 ```
 Operations-domain advisory. Claude answers directly with a recommended checklist shape, sequencing, and ownership discipline instead of turning the question into implementation work.
+
+---
+
+## Native Artifacts
+
+```
+/ulw build a budget workbook with forecast formulas and variance tabs
+```
+Spreadsheet/workbook execution. Claude treats the workbook itself as the deliverable, not a prose description of the workbook. When native spreadsheet tooling is available it should emit the actual `.xlsx`/workbook artifact; otherwise it must say so explicitly and provide the closest structured intermediate (sheet-by-sheet schema, formula map, assumptions table, import-ready data) instead of pretending the file exists.
+
+```
+/ulw turn this quarterly update into a board presentation deck
+```
+Presentation/deck execution. Claude preserves the slide-deck deliverable contract: real slides when native deck tooling is available, or an explicit slide-by-slide outline with title, message, evidence, and presenter notes when it is not.
+
+```
+/ulw draft a formal policy document in a .docx artifact
+```
+Document-artifact execution. Claude preserves the `.docx` / Word-style deliverable rather than substituting a loose memo. If native document tooling is unavailable it must say so explicitly and provide a section-by-section structured draft with formatting notes.
 
 ---
 

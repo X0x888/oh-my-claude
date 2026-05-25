@@ -230,6 +230,103 @@ assert_eq "F3 research_report_ready true" "true" "$(jq -r '.outcomes.research_re
 assert_eq "F4 analysis_specialist_coverage true" "true" "$(jq -r '.outcomes.analysis_specialist_coverage' <<<"${result_g}")"
 assert_eq "F5 research doc_review_clean true" "true" "$(jq -r '.outcomes.doc_review_clean' <<<"${result_g}")"
 
+sdir_gq="$(new_session "sess-GQ" '{
+  "session_start_ts": "100",
+  "last_doc_edit_ts": "470",
+  "last_doc_review_ts": "520",
+  "last_review_ts": "520",
+  "review_had_findings": "false",
+  "last_assistant_message": "**Changed.** Drafted the KPI memo. **Verification.** numbers reviewed and prose checked. **Risks.** none. **Next.** Done."
+}')"
+cat >"${sdir_gq}/subagent_summaries.jsonl" <<'JSONL'
+{"ts":260,"agent_type":"data-lens","message":"Instrumentation gaps and denominator choices reviewed.\nVERDICT: CLEAN"}
+{"ts":320,"agent_type":"briefing-analyst","message":"Metrics synthesized into a decision-ready brief.\nVERDICT: CLEAN"}
+{"ts":420,"agent_type":"draft-writer","message":"KPI decision memo drafted.\nVERDICT: DELIVERED"}
+{"ts":520,"agent_type":"editor-critic","message":"Memo is explicit about assumptions and caveats.\nVERDICT: CLEAN"}
+JSONL
+result_gq="$(run_producer "sess-GQ" "quantitative-kpi-brief")"
+assert_eq "F5b data_specialist_coverage true" "true" "$(jq -r '.outcomes.data_specialist_coverage' <<<"${result_gq}")"
+assert_eq "F5c quantitative analysis_specialist_coverage true" "true" "$(jq -r '.outcomes.analysis_specialist_coverage' <<<"${result_gq}")"
+assert_eq "F5d quantitative writer_deliverable_ready true" "true" "$(jq -r '.outcomes.writer_deliverable_ready' <<<"${result_gq}")"
+assert_eq "F5e quantitative doc_review_clean true" "true" "$(jq -r '.outcomes.doc_review_clean' <<<"${result_gq}")"
+
+sdir_gw="$(new_session "sess-GW" '{
+  "session_start_ts": "100",
+  "last_doc_edit_ts": "430",
+  "last_review_ts": "470",
+  "review_had_findings": "false",
+  "last_assistant_message": "**Changed.** Produced the decision workbook. **Verification.** metric definitions, assumptions, and scenario tabs were checked. **Risks.** sensitivity assumptions are explicit. **Next.** Done."
+}')"
+printf '%s\n' "deliverables/q3-decision-model.xlsx" >"${sdir_gw}/edited_files.log"
+cat >"${sdir_gw}/subagent_summaries.jsonl" <<'JSONL'
+{"ts":260,"agent_type":"data-lens","message":"Denominators, instrumentation gaps, and forecast assumptions reviewed.\nVERDICT: CLEAN"}
+{"ts":340,"agent_type":"briefing-analyst","message":"Decision scenarios synthesized into workbook structure.\nVERDICT: CLEAN"}
+JSONL
+result_gw="$(run_producer "sess-GW" "quantitative-workbook-model")"
+assert_eq "F5f workbook data_specialist_coverage true" "true" "$(jq -r '.outcomes.data_specialist_coverage' <<<"${result_gw}")"
+assert_eq "F5g workbook analysis_specialist_coverage true" "true" "$(jq -r '.outcomes.analysis_specialist_coverage' <<<"${result_gw}")"
+assert_eq "F5h workbook spreadsheet_artifact_ready true" "true" "$(jq -r '.outcomes.spreadsheet_artifact_ready' <<<"${result_gw}")"
+assert_eq "F5i workbook final_closeout_audit_ready true" "true" "$(jq -r '.outcomes.final_closeout_audit_ready' <<<"${result_gw}")"
+
+sdir_gp="$(new_session "sess-GP" '{
+  "session_start_ts": "100",
+  "last_doc_edit_ts": "410",
+  "last_doc_review_ts": "450",
+  "last_review_ts": "450",
+  "review_had_findings": "false",
+  "last_assistant_message": "**Changed.** Produced the board deck. **Verification.** slide order, evidence hierarchy, and presenter assumptions were reviewed. **Risks.** none. **Next.** Done."
+}')"
+printf '%s\n' "deliverables/q2-board-update.pptx" >"${sdir_gp}/edited_files.log"
+cat >"${sdir_gp}/subagent_summaries.jsonl" <<'JSONL'
+{"ts":320,"agent_type":"chief-of-staff","message":"Board presentation structure delivered.\nVERDICT: DELIVERED"}
+{"ts":450,"agent_type":"editor-critic","message":"Deck narrative and wording are clean.\nVERDICT: CLEAN"}
+JSONL
+result_gp="$(run_producer "sess-GP" "presentation-board-deck")"
+assert_eq "F5j presentation_artifact_ready true" "true" "$(jq -r '.outcomes.presentation_artifact_ready' <<<"${result_gp}")"
+assert_eq "F5k presentation operations_deliverable_ready true" "true" "$(jq -r '.outcomes.operations_deliverable_ready' <<<"${result_gp}")"
+assert_eq "F5l presentation doc_review_clean true" "true" "$(jq -r '.outcomes.doc_review_clean' <<<"${result_gp}")"
+assert_eq "F5m presentation final_closeout_audit_ready true" "true" "$(jq -r '.outcomes.final_closeout_audit_ready' <<<"${result_gp}")"
+
+sdir_gd="$(new_session "sess-GD" '{
+  "session_start_ts": "100",
+  "last_doc_edit_ts": "430",
+  "last_doc_review_ts": "470",
+  "last_review_ts": "470",
+  "review_had_findings": "false",
+  "last_assistant_message": "**Changed.** Drafted the policy document. **Verification.** headings, table structure, and prose were reviewed. **Risks.** none. **Next.** Done."
+}')"
+printf '%s\n' "deliverables/privacy-policy.docx" >"${sdir_gd}/edited_files.log"
+cat >"${sdir_gd}/subagent_summaries.jsonl" <<'JSONL'
+{"ts":310,"agent_type":"draft-writer","message":"Policy document drafted.\nVERDICT: DELIVERED"}
+{"ts":470,"agent_type":"editor-critic","message":"Document structure and prose are clean.\nVERDICT: CLEAN"}
+JSONL
+result_gd="$(run_producer "sess-GD" "document-policy-docx")"
+assert_eq "F5n document_artifact_ready true" "true" "$(jq -r '.outcomes.document_artifact_ready' <<<"${result_gd}")"
+assert_eq "F5o document writer_deliverable_ready true" "true" "$(jq -r '.outcomes.writer_deliverable_ready' <<<"${result_gd}")"
+assert_eq "F5p document doc_review_clean true" "true" "$(jq -r '.outcomes.doc_review_clean' <<<"${result_gd}")"
+assert_eq "F5q document final_closeout_audit_ready true" "true" "$(jq -r '.outcomes.final_closeout_audit_ready' <<<"${result_gd}")"
+
+sdir_gr="$(new_session "sess-GR" '{
+  "session_start_ts": "100",
+  "last_doc_edit_ts": "540",
+  "last_doc_review_ts": "590",
+  "last_review_ts": "590",
+  "review_had_findings": "false",
+  "last_assistant_message": "**Changed.** Drafted the HIPAA remediation memo. **Verification.** governing source is the HIPAA privacy rule as of 2026, jurisdiction is US healthcare operations, and sign-off remains with the compliance owner. **Risks.** patient population assumptions are explicit. **Next.** Done."
+}')"
+cat >"${sdir_gr}/subagent_summaries.jsonl" <<'JSONL'
+{"ts":260,"agent_type":"librarian","message":"HIPAA source material gathered.\nVERDICT: REPORT_READY"}
+{"ts":320,"agent_type":"briefing-analyst","message":"Remediation implications synthesized.\nVERDICT: CLEAN"}
+{"ts":430,"agent_type":"draft-writer","message":"Compliance memo drafted.\nVERDICT: DELIVERED"}
+{"ts":590,"agent_type":"editor-critic","message":"Memo is explicit about authority and sign-off boundaries.\nVERDICT: CLEAN"}
+JSONL
+result_gr="$(run_producer "sess-GR" "regulated-compliance-memo")"
+assert_eq "F5r regulated research_report_ready true" "true" "$(jq -r '.outcomes.research_report_ready' <<<"${result_gr}")"
+assert_eq "F5s regulated analysis_specialist_coverage true" "true" "$(jq -r '.outcomes.analysis_specialist_coverage' <<<"${result_gr}")"
+assert_eq "F5t regulated writer_deliverable_ready true" "true" "$(jq -r '.outcomes.writer_deliverable_ready' <<<"${result_gr}")"
+assert_eq "F5u regulated doc_review_clean true" "true" "$(jq -r '.outcomes.doc_review_clean' <<<"${result_gr}")"
+assert_eq "F5v regulated_scope_explicit true" "true" "$(jq -r '.outcomes.regulated_scope_explicit' <<<"${result_gr}")"
+
 sdir_h="$(new_session "sess-H" '{
   "session_start_ts": "100",
   "last_doc_edit_ts": "260",
@@ -316,6 +413,36 @@ printf '%s' "${result_i}" >"${tmp_scholarly_result}"
 scholarly_score_output="$(bash "${SCORER}" score "${tmp_scholarly_result}" 2>&1)"
 assert_eq "G5 scholarly scenario scores 100" "100" "$(jq -r '.score' <<<"${scholarly_score_output}")"
 assert_eq "G6 scholarly scenario passes" "true" "$(jq -r '.pass' <<<"${scholarly_score_output}")"
+
+tmp_quant_result="${TEST_HOME}/result_gq.json"
+printf '%s' "${result_gq}" >"${tmp_quant_result}"
+quant_score_output="$(bash "${SCORER}" score "${tmp_quant_result}" 2>&1)"
+assert_eq "G7 quantitative scenario scores 100" "100" "$(jq -r '.score' <<<"${quant_score_output}")"
+assert_eq "G8 quantitative scenario passes" "true" "$(jq -r '.pass' <<<"${quant_score_output}")"
+
+tmp_workbook_result="${TEST_HOME}/result_gw.json"
+printf '%s' "${result_gw}" >"${tmp_workbook_result}"
+workbook_score_output="$(bash "${SCORER}" score "${tmp_workbook_result}" 2>&1)"
+assert_eq "G9 workbook scenario scores 100" "100" "$(jq -r '.score' <<<"${workbook_score_output}")"
+assert_eq "G10 workbook scenario passes" "true" "$(jq -r '.pass' <<<"${workbook_score_output}")"
+
+tmp_presentation_result="${TEST_HOME}/result_gp.json"
+printf '%s' "${result_gp}" >"${tmp_presentation_result}"
+presentation_score_output="$(bash "${SCORER}" score "${tmp_presentation_result}" 2>&1)"
+assert_eq "G11 presentation scenario scores 100" "100" "$(jq -r '.score' <<<"${presentation_score_output}")"
+assert_eq "G12 presentation scenario passes" "true" "$(jq -r '.pass' <<<"${presentation_score_output}")"
+
+tmp_document_result="${TEST_HOME}/result_gd.json"
+printf '%s' "${result_gd}" >"${tmp_document_result}"
+document_score_output="$(bash "${SCORER}" score "${tmp_document_result}" 2>&1)"
+assert_eq "G13 document scenario scores 100" "100" "$(jq -r '.score' <<<"${document_score_output}")"
+assert_eq "G14 document scenario passes" "true" "$(jq -r '.pass' <<<"${document_score_output}")"
+
+tmp_regulated_result="${TEST_HOME}/result_gr.json"
+printf '%s' "${result_gr}" >"${tmp_regulated_result}"
+regulated_score_output="$(bash "${SCORER}" score "${tmp_regulated_result}" 2>&1)"
+assert_eq "G15 regulated scenario scores 100" "100" "$(jq -r '.score' <<<"${regulated_score_output}")"
+assert_eq "G16 regulated scenario passes" "true" "$(jq -r '.pass' <<<"${regulated_score_output}")"
 
 # ---------------------------------------------------------------
 # Part I: mixed code-plus-non-code detector shape
@@ -453,6 +580,52 @@ result_n="$(run_producer "sess-N" "advisory-research-guidance")"
 assert_eq "K7 advisory research direct answer true" "true" "$(jq -r '.outcomes.direct_advisory_answer' <<<"${result_n}")"
 assert_eq "K8 advisory research report ready true" "true" "$(jq -r '.outcomes.research_report_ready' <<<"${result_n}")"
 assert_eq "K9 advisory research specialist coverage true" "true" "$(jq -r '.outcomes.analysis_specialist_coverage' <<<"${result_n}")"
+
+sdir_n2="$(new_session "sess-N2" '{
+  "session_start_ts": "100",
+  "last_user_prompt_ts": "150",
+  "task_intent": "advisory",
+  "task_domain": "research",
+  "session_outcome": "released"
+}')"
+cat >"${sdir_n2}/subagent_summaries.jsonl" <<'JSONL'
+{"ts":210,"agent_type":"data-lens","message":"Metric definitions and denominator choices reviewed.\nVERDICT: CLEAN"}
+{"ts":240,"agent_type":"briefing-analyst","message":"The trend story is synthesized.\nVERDICT: CLEAN"}
+JSONL
+result_n2="$(run_producer "sess-N2" "advisory-data-guidance")"
+assert_eq "K10 advisory data direct answer true" "true" "$(jq -r '.outcomes.direct_advisory_answer' <<<"${result_n2}")"
+assert_eq "K11 advisory data specialist coverage true" "true" "$(jq -r '.outcomes.data_specialist_coverage' <<<"${result_n2}")"
+assert_eq "K12 advisory data analysis coverage true" "true" "$(jq -r '.outcomes.analysis_specialist_coverage' <<<"${result_n2}")"
+
+tmp_advisory_data_result="${TEST_HOME}/result_n2.json"
+printf '%s' "${result_n2}" >"${tmp_advisory_data_result}"
+advisory_data_score_output="$(bash "${SCORER}" score "${tmp_advisory_data_result}" 2>&1)"
+assert_eq "K13 advisory data scenario scores 100" "100" "$(jq -r '.score' <<<"${advisory_data_score_output}")"
+assert_eq "K14 advisory data scenario passes" "true" "$(jq -r '.pass' <<<"${advisory_data_score_output}")"
+
+sdir_n3="$(new_session "sess-N3" '{
+  "session_start_ts": "100",
+  "last_user_prompt_ts": "150",
+  "task_intent": "advisory",
+  "task_domain": "research",
+  "session_outcome": "released",
+  "last_assistant_message": "**Changed.** Answered the liability question directly. **Verification.** governing source is the contract text as of the current revision, jurisdiction is the UK, and final sign-off remains with legal counsel. **Risks.** unresolved scope assumptions are explicit. **Next.** None."
+}')"
+cat >"${sdir_n3}/subagent_summaries.jsonl" <<'JSONL'
+{"ts":210,"agent_type":"librarian","message":"Relevant source text gathered.\nVERDICT: REPORT_READY"}
+{"ts":240,"agent_type":"briefing-analyst","message":"Implications synthesized.\nVERDICT: CLEAN"}
+JSONL
+result_n3="$(run_producer "sess-N3" "advisory-legal-guidance")"
+assert_eq "K15 advisory legal direct answer true" "true" "$(jq -r '.outcomes.direct_advisory_answer' <<<"${result_n3}")"
+assert_eq "K16 advisory legal report ready true" "true" "$(jq -r '.outcomes.research_report_ready' <<<"${result_n3}")"
+assert_eq "K17 advisory legal analysis coverage true" "true" "$(jq -r '.outcomes.analysis_specialist_coverage' <<<"${result_n3}")"
+assert_eq "K18 advisory legal regulated scope true" "true" "$(jq -r '.outcomes.regulated_scope_explicit' <<<"${result_n3}")"
+
+tmp_advisory_legal_result="${TEST_HOME}/result_n3.json"
+printf '%s' "${result_n3}" >"${tmp_advisory_legal_result}"
+advisory_legal_score_output="$(bash "${SCORER}" score "${tmp_advisory_legal_result}" 2>&1)"
+assert_eq "K19 advisory legal scenario scores 100" "100" "$(jq -r '.score' <<<"${advisory_legal_score_output}")"
+assert_eq "K20 advisory legal scenario passes" "true" "$(jq -r '.pass' <<<"${advisory_legal_score_output}")"
 
 # ---------------------------------------------------------------
 # Part L: CLI contract

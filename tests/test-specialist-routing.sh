@@ -151,6 +151,18 @@ assert_contains "research names editor-critic" "editor-critic for prose-heavy de
 assert_contains "research names source-quality rule" "primary sources and official documentation rank highest" "${out}"
 
 # ----------------------------------------------------------------------
+printf 'Test 5b: regulated advisory prompt adds source-boundary discipline\n'
+out="$(_run_router "t5b-${RANDOM}" "ulw what does this contract clause imply for vendor liability in the UK?")"
+
+assert_contains "regulated advisory research domain present" "Detected likely task domain: research or analysis" "${out}"
+assert_contains "regulated advisory directive present" "Regulated or high-stakes professional analysis detected." "${out}"
+assert_contains "regulated advisory names governing source" "Identify the governing source" "${out}"
+assert_contains "regulated advisory names jurisdiction/effective-date rule" "effective-date window before drawing conclusions" "${out}"
+assert_contains "regulated advisory names no-invent-authorities rule" "Do not invent authorities, legal/clinical obligations, or policy requirements." "${out}"
+assert_contains "regulated advisory names librarian" "Use \`librarian\` for current primary sources" "${out}"
+assert_contains "regulated advisory names briefing-analyst" "\`briefing-analyst\` to synthesize implications" "${out}"
+
+# ----------------------------------------------------------------------
 printf 'Test 6: operations-domain prompt routes through the operations specialist chain\n'
 out="$(_run_router "t6-${RANDOM}" "ulw create a project plan for the Q3 launch")"
 
@@ -159,6 +171,37 @@ assert_contains "operations names chief-of-staff" "Use chief-of-staff to structu
 assert_contains "operations names checklist/plan structuring" "Detect deliverable type: if the task implies a checklist, plan, schedule, decision matrix, or action-item tracker" "${out}"
 assert_contains "operations names owner deadline done-condition" "Every action item should have an owner" "${out}"
 assert_contains "operations names draft-writer pairing" "pair that with draft-writer and editor-critic" "${out}"
+
+# ----------------------------------------------------------------------
+printf 'Test 6b: workbook prompt preserves native spreadsheet deliverable contract\n'
+out="$(_run_router "t6b-${RANDOM}" "ulw build a budget workbook with forecast formulas and variance tabs")"
+
+assert_contains "workbook domain hint present" "Detected likely task domain: operations or professional-assistant work" "${out}"
+assert_contains "workbook quantitative directive present" "Quantitative or tabular analysis detected." "${out}"
+assert_contains "workbook artifact directive present" "Native spreadsheet/workbook deliverable detected." "${out}"
+assert_contains "workbook names direct artifact rule" "The workbook itself is the deliverable" "${out}"
+assert_contains "workbook names native-file rule" "deliver the spreadsheet/workbook artifact" "${out}"
+assert_contains "workbook names explicit fallback" "sheet-by-sheet schema, formula map, assumptions table, and import-ready tab data" "${out}"
+
+# ----------------------------------------------------------------------
+printf 'Test 6c: presentation prompt preserves native deck deliverable contract\n'
+out="$(_run_router "t6c-${RANDOM}" "ulw turn this quarterly update into a board presentation deck")"
+
+assert_contains "deck domain hint present" "Detected likely task domain: operations or professional-assistant work" "${out}"
+assert_contains "deck artifact directive present" "Native presentation/deck deliverable detected." "${out}"
+assert_contains "deck names direct artifact rule" "The slide deck itself is the deliverable" "${out}"
+assert_contains "deck names native-file rule" "deliver the presentation artifact" "${out}"
+assert_contains "deck names explicit fallback" "slide-by-slide outline with title, message, evidence, and presenter notes" "${out}"
+
+# ----------------------------------------------------------------------
+printf 'Test 6d: docx prompt preserves native document deliverable contract\n'
+out="$(_run_router "t6d-${RANDOM}" "ulw draft a formal policy document in a .docx artifact")"
+
+assert_contains "docx writing domain hint present" "Detected likely task domain: writing" "${out}"
+assert_contains "docx artifact directive present" "Native document deliverable detected." "${out}"
+assert_contains "docx names direct artifact rule" "The .docx / Word-style document itself is the deliverable" "${out}"
+assert_contains "docx names native-file rule" "deliver the document artifact" "${out}"
+assert_contains "docx names explicit fallback" "section-by-section draft with headings, table stubs, and formatting notes" "${out}"
 
 # ----------------------------------------------------------------------
 printf 'Test 7: mixed-domain prompt names both coding and non-coding coordination\n'
@@ -170,6 +213,18 @@ assert_contains "mixed names code/non-code split rule" "Split the work into codi
 assert_contains "mixed names engineering specialists" "use the engineering specialists for code work" "${out}"
 assert_contains "mixed names non-coding specialists" "writing, research, or operations specialists" "${out}"
 assert_contains "mixed names coordination rule" "Keep them coordinated" "${out}"
+
+# ----------------------------------------------------------------------
+printf 'Test 7b: regulated memo prompt preserves mixed evidence-plus-drafting workflow\n'
+out="$(_run_router "t7b-${RANDOM}" "ulw draft a HIPAA compliance remediation memo for the patient-data workflow")"
+
+assert_contains "regulated memo mixed domain present" "Detected likely task domain: mixed" "${out}"
+assert_contains "regulated memo names non-code-only mixed rule" "If the mix is non-code only" "${out}"
+assert_contains "regulated memo names drafting chain" "writing-architect / draft-writer" "${out}"
+assert_contains "regulated memo directive present" "Regulated or high-stakes professional analysis detected." "${out}"
+assert_contains "regulated memo names governing source" "Identify the governing source" "${out}"
+assert_contains "regulated memo names sign-off caveat carry-through" "carry the caveats, sign-off needs, and unresolved scope assumptions into the final artifact" "${out}"
+assert_not_contains "regulated memo no engineering leak" "engineering specialists for code work" "${out}"
 
 # ----------------------------------------------------------------------
 printf 'Test 8: mixed code-plus-operations prompt preserves chief-of-staff discipline\n'

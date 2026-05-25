@@ -11,6 +11,7 @@
 #   is_imperative_request          — P0 imperative detection (regex cascade)
 #   count_keyword_matches          — grep-and-count helper
 #   is_ui_request                  — frontend/UI prompt detector
+#   infer_native_artifact_kind     — spreadsheet/presentation/document noun classifier
 #   infer_domain                   — P1 scoring domain classification
 #   classify_task_intent           — top-level intent dispatcher
 #   record_classifier_telemetry    — per-prompt JSONL telemetry writer
@@ -515,6 +516,87 @@ prompt_has_operations_signal() {
   [[ "${score}" -gt 0 ]]
 }
 
+_quantitative_signal_score() {
+  local text="$1"
+
+  local quantitative_analysis_bigrams
+  quantitative_analysis_bigrams=$(count_keyword_matches '\b(analy[sz]e|review|compare|audit|summari[sz]e|explain|interpret|model|forecast|trend|evaluate)\s+(the\s+|this\s+|that\s+|a\s+|an\s+|our\s+|my\s+)?((csv|tsv|spreadsheet|workbook|sheet|dataset|data\s+set|table|metric|metrics|kpis?|numbers|figures|budget|budgets|forecast|forecasts|revenue|spend|costs?|sales|conversion|retention|churn|cac|ltv|margin|margins|cohorts?|pipeline|funnel)(\s+\w+){0,3})\b' "${text}")
+  quantitative_analysis_bigrams=${quantitative_analysis_bigrams:-0}
+
+  local quantitative_deliverable_bigrams
+  quantitative_deliverable_bigrams=$(count_keyword_matches '\b(csv|tsv|spreadsheet|workbook|sheet|dataset|data\s+set|table|metric|metrics|kpis?|budget|budgets|forecast|forecasts|revenue|spend|costs?|sales|conversion|retention|churn|cac|ltv|margin|margins|cohorts?)\s+(analysis|review|brief|memo|summary|model|forecast|scorecard|dashboard|decision\s+matrix)\b' "${text}")
+  quantitative_deliverable_bigrams=${quantitative_deliverable_bigrams:-0}
+
+  local quantitative_artifact_bigrams
+  quantitative_artifact_bigrams=$(count_keyword_matches '\b(build|create|prepare|produce|deliver|generate|make)\s+(a\s+|an\s+|the\s+|this\s+|that\s+|our\s+|my\s+)?((budget|forecast|financial|scenario|variance|decision)\s+)?(workbook|spreadsheet|model)\b|\b(workbook|spreadsheet|model)\b.{0,40}\b(formulas?|tabs?|sheets?|scenarios?|variance|forecast|budget)\b' "${text}")
+  quantitative_artifact_bigrams=${quantitative_artifact_bigrams:-0}
+
+  local quantitative_question_signals
+  quantitative_question_signals=$(count_keyword_matches '\b(revenue|spend|costs?|sales|conversion|retention|churn|cac|ltv|margin|margins|cohorts?|kpis?|metrics?)\b.{0,80}\b(suggest|imply|mean|indicate|signal)\b' "${text}")
+  quantitative_question_signals=${quantitative_question_signals:-0}
+
+  local quantitative_signal_score
+  quantitative_signal_score=$((quantitative_analysis_bigrams + quantitative_deliverable_bigrams + quantitative_artifact_bigrams + quantitative_question_signals))
+
+  printf '%s\n' "${quantitative_signal_score}"
+}
+
+prompt_has_quantitative_signal() {
+  local score
+  score="$(_quantitative_signal_score "$1")"
+  [[ "${score}" -gt 0 ]]
+}
+
+_regulated_signal_score() {
+  local text="$1"
+
+  local regulated_analysis_bigrams
+  regulated_analysis_bigrams=$(count_keyword_matches '\b(review|audit|draft|prepare|analy[sz]e|assess|evaluate|research|compare|interpret|explain|summari[sz]e)\s+(the\s+|this\s+|that\s+|a\s+|an\s+|our\s+|my\s+)?((hipaa|gdpr|privacy|compliance|regulatory|regulation|contract|clause|liability|jurisdiction|clinical|medical|patient|treatment|diagnosis|trial|guideline|sec|finra|sox|soc\s*2|pci|tax|accounting|board\s+risk|remediation)(\s+\w+){0,3})\b' "${text}")
+  regulated_analysis_bigrams=${regulated_analysis_bigrams:-0}
+
+  local regulated_question_signals
+  regulated_question_signals=$(count_keyword_matches '\b(contract|clause|liability|jurisdiction|compliance|clinical|medical|patient|diagnosis|treatment|guideline|tax|accounting)\b.{0,80}\b(imply|mean|require|allow|prohibit|suggest|indicate)\b' "${text}")
+  regulated_question_signals=${regulated_question_signals:-0}
+
+  local regulated_strong
+  regulated_strong=$(count_keyword_matches '\b(hipaa|gdpr|soc\s*2|pci|sec|finra|sox|contract\s+clause|vendor\s+liability|patient[- ]data|clinical\s+evidence|medical\s+evidence|clinical\s+guideline|regulatory\s+guidance|privacy\s+policy|data[- ]retention\s+policy|tax\s+treatment|accounting\s+standard|board\s+risk|patient\s+safety)\b' "${text}")
+  regulated_strong=${regulated_strong:-0}
+
+  printf '%s\n' "$((regulated_analysis_bigrams + regulated_question_signals + regulated_strong))"
+}
+
+prompt_has_regulated_signal() {
+  local score
+  score="$(_regulated_signal_score "$1")"
+  [[ "${score}" -gt 0 ]]
+}
+
+infer_native_artifact_kind() {
+  local text="$1"
+  [[ -z "${text}" ]] && { printf 'none'; return; }
+
+  if grep -Eiq '\b(build|create|draft|prepare|produce|deliver|generate|make)\b.{0,80}\b(workbook|worksheet|spreadsheet|excel|xlsx|xls|ods|apple\s+numbers|google\s+sheets?|sheet\s+model|decision\s+model|forecast\s+model|financial\s+model|budget\s+model|variance\s+tabs?)\b|\b(turn|convert|transform)\b.{0,40}\b(into|to|as)\b.{0,40}\b(workbook|worksheet|spreadsheet|excel|xlsx|xls|ods|apple\s+numbers|sheet\s+model|decision\s+model|forecast\s+model|financial\s+model|budget\s+model|variance\s+tabs?)\b|\.numbers\b' <<<"${text}"; then
+    printf 'spreadsheet'
+    return
+  fi
+
+  if grep -Eiq '\b(build|create|draft|prepare|produce|deliver|generate|make)\b.{0,80}\b(presentation|presentation\s+deck|slide\s+deck|slides|board\s+deck|pitch\s+deck|pptx|ppt|powerpoint|google\s+slides?|keynote)\b|\b(turn|convert|transform)\b.{0,40}\b(into|to|as)\b.{0,40}\b(presentation|presentation\s+deck|slide\s+deck|slides|board\s+deck|pitch\s+deck|pptx|ppt|powerpoint|google\s+slides?|keynote)\b' <<<"${text}"; then
+    printf 'presentation'
+    return
+  fi
+
+  if grep -Eiq '\b(build|create|draft|prepare|produce|deliver|generate|make|write)\b.{0,80}\b(docx|word\s+document|formal\s+document|policy\s+document|document\s+artifact)\b|\b(turn|convert|transform)\b.{0,40}\b(into|to|as)\b.{0,40}\b(docx|word\s+document|formal\s+document|policy\s+document|document\s+artifact)\b' <<<"${text}"; then
+    printf 'document'
+    return
+  fi
+
+  printf 'none'
+}
+
+prompt_has_native_artifact_signal() {
+  [[ "$(infer_native_artifact_kind "$1")" != "none" ]]
+}
+
 infer_domain() {
   local text="$1"
   local project_profile="${2:-}"
@@ -553,6 +635,14 @@ infer_domain() {
   research_topic_bigrams=$(count_keyword_matches '\b(find|gather|collect)\s+(data|evidence|sources|information|references?)\s+(on|about|for|regarding)\b' "${text}")
   research_topic_bigrams=${research_topic_bigrams:-0}
   research_bigrams=$((research_bigrams + research_topic_bigrams))
+  local quantitative_research_bigrams
+  quantitative_research_bigrams="$(_quantitative_signal_score "${text}")"
+  quantitative_research_bigrams=${quantitative_research_bigrams:-0}
+  research_bigrams=$((research_bigrams + quantitative_research_bigrams))
+  local regulated_research_bigrams
+  regulated_research_bigrams="$(_regulated_signal_score "${text}")"
+  regulated_research_bigrams=${regulated_research_bigrams:-0}
+  research_bigrams=$((research_bigrams + regulated_research_bigrams))
 
   # --- Negative keywords: subtract false positives ---
   # "report" after bug/error/test/crash → coding context, not writing
@@ -569,6 +659,17 @@ infer_domain() {
   research_score=$(( ${research_score:-0} + research_bigrams ))
 
   operations_score="$(_operations_signal_score "${text}")"
+
+  local native_artifact_kind
+  native_artifact_kind="$(infer_native_artifact_kind "${text}")"
+  case "${native_artifact_kind}" in
+    spreadsheet|presentation)
+      operations_score=$((operations_score + 2))
+      ;;
+    document)
+      writing_score=$((writing_score + 2))
+      ;;
+  esac
 
   # Project profile boost: when a project has known stack indicators,
   # add a small bonus to coding (if the project is code-heavy) or writing
