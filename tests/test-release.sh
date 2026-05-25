@@ -1672,6 +1672,8 @@ assert_contains "T31: attestation workflow downloads release assets" 'gh release
 assert_contains "T31: attestation workflow compares published assets against rebuild" 'cmp -s' "${attest_workflow_contents}"
 assert_contains "T31: attestation workflow uses actions/attest" 'uses: actions/attest@v4' "${attest_workflow_contents}"
 assert_contains "T31: attestation workflow attests all three release assets" 'dist/published/${{ steps.tag.outputs.asset_stem }}.SHA256SUMS' "${attest_workflow_contents}"
+assert_contains "T31: attestation workflow rebuilds tagged source via explicit archive ref" '--ref "refs/tags/${{ steps.tag.outputs.tag }}^{commit}"' "${attest_workflow_contents}"
+assert_not_contains "T31: attestation workflow no longer assumes helper exists on historical tag checkout" 'ref: refs/tags/${{ steps.tag.outputs.tag }}' "${attest_workflow_contents}"
 set +e
 workflow_yaml_parse_out="$(ruby -e 'require "yaml"; YAML.load_file(ARGV[0])' "${ATTEST_WORKFLOW_REAL}" 2>&1)"
 workflow_yaml_parse_rc=$?

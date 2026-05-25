@@ -43,18 +43,19 @@ jobs:
             printf 'asset_stem=%s\n' "${asset_stem}"
           } >> "${GITHUB_OUTPUT}"
 
-      - name: Checkout tagged source
+      - name: Checkout workflow source
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: refs/tags/${{ steps.tag.outputs.tag }}
 
       - name: Build canonical release assets
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p dist/expected
-          bash tools/build-release-assets.sh "${{ steps.tag.outputs.version }}" --out-dir dist/expected >/dev/null
+          bash tools/build-release-assets.sh "${{ steps.tag.outputs.version }}" \
+            --ref "refs/tags/${{ steps.tag.outputs.tag }}^{commit}" \
+            --out-dir dist/expected >/dev/null
 
       - name: Download published release assets
         shell: bash
