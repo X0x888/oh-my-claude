@@ -22,7 +22,7 @@ without shifting *actual* risk. The honest move is to publish the line.
 
 The trigger for writing this doc was a real failure mode: the user
 reported that an attention-only rule (`Hygiene: clean up after
-yourself`, `core.md:95`) was violated across multiple sessions —
+yourself` in `core.md`) was violated across multiple sessions —
 producing 4 stuck `omc-resume-*` tmux sessions accumulating 25-51
 CPU-minutes each, plus 56 `/tmp/omc-sterile-tmp-*` dirs — while every
 *gated* rule held its line in the same sessions. The taxonomy below
