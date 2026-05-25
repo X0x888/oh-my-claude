@@ -310,6 +310,44 @@ find_run_id_for_commit() {
   awk -F '\t' -v wf="${workflow}" -v sha="${commit}" '$2 == wf && $3 == sha {id=$1} END {if (id != "") print id}' "${file}"
 }
 
+dispatch_pending_file() {
+  local file
+  file="$(run_registry_file)" || return 1
+  printf '%s.pending' "${file}"
+}
+
+queue_pending_run_record() {
+  local id="$1" workflow="$2" commit="$3" tag="$4" status="$5" conclusion="$6" remaining_polls="$7"
+  local file
+  file="$(dispatch_pending_file)" || return 1
+  mkdir -p "$(dirname "${file}")"
+  touch "${file}"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "${id}" "${workflow}" "${commit}" "${tag}" "${status}" "${conclusion}" "${remaining_polls}" >> "${file}"
+}
+
+materialize_pending_runs() {
+  local file tmp remaining
+  file="$(dispatch_pending_file)" || return 0
+  [[ -f "${file}" ]] || return 0
+  tmp="${file}.tmp"
+  : > "${tmp}"
+  while IFS=$'\t' read -r id workflow commit tag status conclusion remaining; do
+    [[ -n "${id}" ]] || continue
+    if [[ "${remaining:-0}" =~ ^[0-9]+$ ]] && [[ "${remaining}" -gt 0 ]]; then
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "${id}" "${workflow}" "${commit}" "${tag}" "${status}" "${conclusion}" "$((remaining - 1))" >> "${tmp}"
+    else
+      append_run_record "${id}" "${workflow}" "${commit}" "${tag}" "${status}" "${conclusion}"
+    fi
+  done < "${file}"
+  if [[ -s "${tmp}" ]]; then
+    mv "${tmp}" "${file}"
+  else
+    rm -f "${tmp}" "${file}"
+  fi
+}
+
 append_attested_tag() {
   local tag="$1"
   local file
@@ -490,7 +528,17 @@ case "${cmd}" in
           commit="$(read_release_value "GH_STUB_WORKFLOW_DISPATCH_SHA_FILE" "GH_STUB_WORKFLOW_DISPATCH_SHA_DIR" "${tag}" ".txt" "${GH_STUB_TAG_OBJECT_SHA:-1111111111111111111111111111111111111111}")"
         fi
         id="$(next_run_id)"
-        append_run_record "${id}" "${workflow}" "${commit}" "${tag}" "completed" "success" || { printf 'gh stub: run registry not configured\n' >&2; exit 1; }
+        if [[ "${GH_STUB_WORKFLOW_DISPATCH_DELAY_POLLS:-0}" =~ ^[0-9]+$ ]] && [[ "${GH_STUB_WORKFLOW_DISPATCH_DELAY_POLLS:-0}" -gt 0 ]]; then
+          queue_pending_run_record "${id}" "${workflow}" "${commit}" "${tag}" "completed" "success" "${GH_STUB_WORKFLOW_DISPATCH_DELAY_POLLS}" || {
+            printf 'gh stub: pending run registry not configured\n' >&2
+            exit 1
+          }
+        else
+          append_run_record "${id}" "${workflow}" "${commit}" "${tag}" "completed" "success" || {
+            printf 'gh stub: run registry not configured\n' >&2
+            exit 1
+          }
+        fi
         printf 'created workflow run %s\n' "${id}"
         ;;
       *)
@@ -799,6 +847,7 @@ case "${cmd}" in
         workflow=""
         commit=""
         jq_expr=""
+        materialize_pending_runs
         while [[ $# -gt 0 ]]; do
           case "$1" in
             --repo|-R) shift 2 ;;
@@ -2339,6 +2388,38 @@ assert_contains "T54: waiter reports watched dispatched run" "watching workflow 
 assert_contains "T54: waiter reports attestation verification success" "published release attestations are canonical" "${out}"
 assert_true "T54: workflow dispatch created run record" "[[ -s '${run_registry_file}' ]]"
 assert_contains "T54: dispatched wait marks tag attested" "v1.0.0" "$(cat "${attested_tags_file}")"
+cleanup_gh_stub "${gh_stub_dir}"
+cleanup_fixture "${repo}"
+
+# ---------------------------------------------------------------------
+printf 'Test 54b: attestation waiter ignores the pre-dispatch workflow_dispatch baseline until a new run registers\n'
+repo="$(mk_release_fixture)"
+(cd "${repo}" && git tag "v1.0.0")
+printf '\npost-tag branch head\n' >> "${repo}/README.md"
+(cd "${repo}" && git add README.md && git commit -q -m "advance default branch after release tag")
+gh_stub_dir="$(mk_gh_stub)"
+release_asset_root="${repo}/release-assets"
+workflow_list_file="${repo}/workflow-list.tsv"
+run_registry_file="${repo}/run-registry.tsv"
+attested_tags_file="${repo}/attested-tags.txt"
+dispatch_ref_sha_dir="${repo}/dispatch-ref-shas"
+branch_sha_dir="${repo}/branch-shas"
+mkdir -p "${release_asset_root}/v1.0.0" "${dispatch_ref_sha_dir}" "${branch_sha_dir}"
+(cd "${repo}" && bash tools/build-release-assets.sh "1.0.0" --out-dir "${release_asset_root}/v1.0.0" >/dev/null)
+printf 'attest-release-assets.yml\tactive\t1001\t.github/workflows/attest-release-assets.yml\n' > "${workflow_list_file}"
+default_branch_sha="$(git -C "${repo}" rev-parse HEAD)"
+printf '7001\tattest-release-assets.yml\t%s\tv0.9.9\tcompleted\tsuccess\n' "${default_branch_sha}" > "${run_registry_file}"
+printf '%s' "${default_branch_sha}" > "${dispatch_ref_sha_dir}/main.txt"
+printf '%s' "${default_branch_sha}" > "${branch_sha_dir}/main.txt"
+set +e
+out="$(cd "${repo}" && GH_STUB_RELEASE_ASSET_ROOT="${release_asset_root}" GH_STUB_WORKFLOW_LIST_FILE="${workflow_list_file}" GH_STUB_RUN_REGISTRY_FILE="${run_registry_file}" GH_STUB_ATTESTED_TAGS_FILE="${attested_tags_file}" GH_STUB_WORKFLOW_DISPATCH_REF_SHA_DIR="${dispatch_ref_sha_dir}" GH_STUB_BRANCH_SHA_DIR="${branch_sha_dir}" GH_STUB_WORKFLOW_DISPATCH_DELAY_POLLS=1 GH_STUB_REPO_NAME_WITH_OWNER="example/fixture" PATH="${gh_stub_dir}:${PATH}" bash tools/wait-for-release-attestations.sh "1.0.0" --repo "example/fixture" --trigger-if-missing --poll-attempts 2 --poll-interval 1 2>&1)"
+rc=$?
+set -e
+assert_eq "T54b: waiter exits 0 after delayed workflow registration" "0" "${rc}"
+assert_contains "T54b: waiter watches the newly registered run" "watching workflow run 7002" "${out}"
+assert_not_contains "T54b: waiter does not bind to the pre-dispatch baseline run" "watching workflow run 7001" "${out}"
+assert_contains "T54b: delayed wait marks the requested tag attested" "v1.0.0" "$(cat "${attested_tags_file}")"
+assert_not_contains "T54b: delayed wait does not attest the baseline tag" "v0.9.9" "$(cat "${attested_tags_file}")"
 cleanup_gh_stub "${gh_stub_dir}"
 cleanup_fixture "${repo}"
 

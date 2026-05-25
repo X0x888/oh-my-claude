@@ -179,6 +179,24 @@ find_run_id_for_commit() {
   "${args[@]}" --jq '.[0].databaseId' 2>/dev/null || true
 }
 
+find_new_run_id_for_commit() {
+  local commit="$1"
+  local event_filter="$2"
+  local branch_filter="$3"
+  local baseline_run_id="$4"
+  local run_id=""
+
+  run_id="$(find_run_id_for_commit "${commit}" "${event_filter}" "${branch_filter}")"
+  [[ "${run_id}" != "null" ]] || run_id=""
+  if [[ -z "${baseline_run_id}" ]]; then
+    printf '%s' "${run_id}"
+    return 0
+  fi
+  if [[ -n "${run_id}" && "${run_id}" != "${baseline_run_id}" ]]; then
+    printf '%s' "${run_id}"
+  fi
+}
+
 TARGET_SHA="$(resolve_target_sha)"
 [[ -n "${TARGET_SHA}" ]] || err "could not resolve target commit for v${VERSION_ARG}"
 
@@ -195,11 +213,14 @@ done
 
 if [[ -z "${RUN_ID}" || "${RUN_ID}" == "null" ]]; then
   if [[ "${TRIGGER_IF_MISSING}" -eq 1 ]]; then
+    BASELINE_RUN_ID=""
     DEFAULT_BRANCH="$(resolve_default_branch)"
     DISPATCH_SHA="$(resolve_branch_head_sha "${DEFAULT_BRANCH}")"
+    BASELINE_RUN_ID="$(find_run_id_for_commit "${DISPATCH_SHA}" "workflow_dispatch" "${DEFAULT_BRANCH}")"
+    [[ "${BASELINE_RUN_ID}" != "null" ]] || BASELINE_RUN_ID=""
     gh workflow run "${WORKFLOW_FILE}" -R "${REPO_SLUG}" -r "${DEFAULT_BRANCH}" -f "tag=v${VERSION_ARG}" >/dev/null
     for _attempt in $(seq 1 "${POLL_ATTEMPTS}"); do
-      RUN_ID="$(find_run_id_for_commit "${DISPATCH_SHA}" "workflow_dispatch" "${DEFAULT_BRANCH}")"
+      RUN_ID="$(find_new_run_id_for_commit "${DISPATCH_SHA}" "workflow_dispatch" "${DEFAULT_BRANCH}" "${BASELINE_RUN_ID}")"
       [[ -n "${RUN_ID}" && "${RUN_ID}" != "null" ]] && break
       sleep "${POLL_INTERVAL}"
     done
