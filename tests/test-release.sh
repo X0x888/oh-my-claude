@@ -480,7 +480,15 @@ case "${cmd}" in
         done
         tag="${tag_input:-${ref}}"
         [[ -n "${tag}" ]] || { printf 'gh stub: workflow run requires tag/ref\n' >&2; exit 1; }
-        commit="$(read_release_value "GH_STUB_WORKFLOW_DISPATCH_SHA_FILE" "GH_STUB_WORKFLOW_DISPATCH_SHA_DIR" "${tag}" ".txt" "${GH_STUB_TAG_OBJECT_SHA:-1111111111111111111111111111111111111111}")"
+        commit="$(read_release_value "GH_STUB_WORKFLOW_DISPATCH_REF_SHA_FILE" "GH_STUB_WORKFLOW_DISPATCH_REF_SHA_DIR" "${ref:-${tag}}" ".txt" "")"
+        if [[ -z "${commit}" ]]; then
+          if [[ -n "${ref}" ]] && git rev-parse --verify "${ref}^{commit}" >/dev/null 2>&1; then
+            commit="$(git rev-parse "${ref}^{commit}")"
+          fi
+        fi
+        if [[ -z "${commit}" ]]; then
+          commit="$(read_release_value "GH_STUB_WORKFLOW_DISPATCH_SHA_FILE" "GH_STUB_WORKFLOW_DISPATCH_SHA_DIR" "${tag}" ".txt" "${GH_STUB_TAG_OBJECT_SHA:-1111111111111111111111111111111111111111}")"
+        fi
         id="$(next_run_id)"
         append_run_record "${id}" "${workflow}" "${commit}" "${tag}" "completed" "success" || { printf 'gh stub: run registry not configured\n' >&2; exit 1; }
         printf 'created workflow run %s\n' "${id}"
@@ -495,7 +503,27 @@ case "${cmd}" in
     sub="${1:-}"
     shift || true
     [[ "${sub}" == "view" ]] || { printf 'gh stub: unsupported repo subcommand: %s\n' "${sub}" >&2; exit 1; }
-    printf '%s\n' "${GH_STUB_REPO_NAME_WITH_OWNER:-example/fixture}"
+    jq_expr=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --repo|-R) shift 2 ;;
+        --json) shift 2 ;;
+        --jq) jq_expr="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    case "${jq_expr}" in
+      ""|.nameWithOwner)
+        printf '%s\n' "${GH_STUB_REPO_NAME_WITH_OWNER:-example/fixture}"
+        ;;
+      .defaultBranchRef.name)
+        printf '%s\n' "${GH_STUB_DEFAULT_BRANCH_NAME:-main}"
+        ;;
+      *)
+        printf 'gh stub: unsupported repo view jq: %s\n' "${jq_expr}" >&2
+        exit 1
+        ;;
+    esac
     ;;
   api)
     endpoint="${1:-}"
@@ -518,6 +546,15 @@ case "${cmd}" in
       repos/*/git/tags/*)
         [[ "${jq_expr}" == ".object.sha" ]] || { printf 'gh stub: unsupported annotated-tag jq: %s\n' "${jq_expr}" >&2; exit 1; }
         printf '%s\n' "${GH_STUB_ANNOTATED_TAG_TARGET_SHA:-2222222222222222222222222222222222222222}"
+        ;;
+      repos/*/branches/*)
+        [[ "${jq_expr}" == ".commit.sha" ]] || { printf 'gh stub: unsupported branches jq: %s\n' "${jq_expr}" >&2; exit 1; }
+        branch="${endpoint##*/}"
+        branch_sha="$(read_release_value "GH_STUB_BRANCH_SHA_FILE" "GH_STUB_BRANCH_SHA_DIR" "${branch}" ".txt" "")"
+        if [[ -z "${branch_sha}" ]] && git rev-parse --verify "${branch}^{commit}" >/dev/null 2>&1; then
+          branch_sha="$(git rev-parse "${branch}^{commit}")"
+        fi
+        printf '%s\n' "${branch_sha:-${GH_STUB_DEFAULT_BRANCH_SHA:-3333333333333333333333333333333333333333}}"
         ;;
       repos/*/releases/tags/*)
         tag="${endpoint##*/}"
@@ -767,7 +804,7 @@ case "${cmd}" in
             --repo|-R) shift 2 ;;
             --workflow|-w) workflow="$2"; shift 2 ;;
             --commit|-c) commit="$2"; shift 2 ;;
-            --limit|-L|--json) shift 2 ;;
+            --branch|-b|--event|-e|--limit|-L|--json) shift 2 ;;
             --jq|-q) jq_expr="$2"; shift 2 ;;
             *) shift ;;
           esac
@@ -2267,23 +2304,29 @@ cleanup_fixture "${repo}"
 printf 'Test 54: attestation waiter dispatches workflow when missing and then verifies provenance\n'
 repo="$(mk_release_fixture)"
 (cd "${repo}" && git tag "v1.0.0")
+printf '\npost-tag branch head\n' >> "${repo}/README.md"
+(cd "${repo}" && git add README.md && git commit -q -m "advance default branch after release tag")
 gh_stub_dir="$(mk_gh_stub)"
 release_asset_root="${repo}/release-assets"
 workflow_list_file="${repo}/workflow-list.tsv"
 run_registry_file="${repo}/run-registry.tsv"
 attested_tags_file="${repo}/attested-tags.txt"
-dispatch_sha_dir="${repo}/dispatch-shas"
-mkdir -p "${release_asset_root}/v1.0.0" "${dispatch_sha_dir}"
+dispatch_ref_sha_dir="${repo}/dispatch-ref-shas"
+branch_sha_dir="${repo}/branch-shas"
+mkdir -p "${release_asset_root}/v1.0.0" "${dispatch_ref_sha_dir}" "${branch_sha_dir}"
 (cd "${repo}" && bash tools/build-release-assets.sh "1.0.0" --out-dir "${release_asset_root}/v1.0.0" >/dev/null)
 printf 'attest-release-assets.yml\tactive\t1001\t.github/workflows/attest-release-assets.yml\n' > "${workflow_list_file}"
 target_sha="$(git -C "${repo}" rev-parse "v1.0.0^{commit}")"
-printf '%s' "${target_sha}" > "${dispatch_sha_dir}/v1.0.0.txt"
+default_branch_sha="$(git -C "${repo}" rev-parse HEAD)"
+printf '%s' "${default_branch_sha}" > "${dispatch_ref_sha_dir}/main.txt"
+printf '%s' "${default_branch_sha}" > "${branch_sha_dir}/main.txt"
 : > "${run_registry_file}"
 set +e
-out="$(cd "${repo}" && GH_STUB_RELEASE_ASSET_ROOT="${release_asset_root}" GH_STUB_WORKFLOW_LIST_FILE="${workflow_list_file}" GH_STUB_RUN_REGISTRY_FILE="${run_registry_file}" GH_STUB_ATTESTED_TAGS_FILE="${attested_tags_file}" GH_STUB_WORKFLOW_DISPATCH_SHA_DIR="${dispatch_sha_dir}" GH_STUB_REPO_NAME_WITH_OWNER="example/fixture" PATH="${gh_stub_dir}:${PATH}" bash tools/wait-for-release-attestations.sh "1.0.0" --repo "example/fixture" --trigger-if-missing --poll-attempts 1 --poll-interval 1 2>&1)"
+out="$(cd "${repo}" && GH_STUB_RELEASE_ASSET_ROOT="${release_asset_root}" GH_STUB_WORKFLOW_LIST_FILE="${workflow_list_file}" GH_STUB_RUN_REGISTRY_FILE="${run_registry_file}" GH_STUB_ATTESTED_TAGS_FILE="${attested_tags_file}" GH_STUB_WORKFLOW_DISPATCH_REF_SHA_DIR="${dispatch_ref_sha_dir}" GH_STUB_BRANCH_SHA_DIR="${branch_sha_dir}" GH_STUB_REPO_NAME_WITH_OWNER="example/fixture" PATH="${gh_stub_dir}:${PATH}" bash tools/wait-for-release-attestations.sh "1.0.0" --repo "example/fixture" --trigger-if-missing --poll-attempts 1 --poll-interval 1 2>&1)"
 rc=$?
 set -e
 assert_eq "T54: waiter exits 0 after workflow dispatch" "0" "${rc}"
+assert_true "T54: fixture proves default-branch head moved past release tag" "[[ '${default_branch_sha}' != '${target_sha}' ]]"
 assert_contains "T54: waiter reports watched dispatched run" "watching workflow run" "${out}"
 assert_contains "T54: waiter reports attestation verification success" "published release attestations are canonical" "${out}"
 assert_true "T54: workflow dispatch created run record" "[[ -s '${run_registry_file}' ]]"

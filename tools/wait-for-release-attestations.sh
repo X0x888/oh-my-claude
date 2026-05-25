@@ -115,6 +115,16 @@ command -v gh >/dev/null 2>&1 || err "gh CLI not found in PATH"
 REPO_SLUG="${REPO_OVERRIDE:-$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)}"
 [[ -n "${REPO_SLUG}" ]] || err "could not resolve repo slug (pass --repo <owner/name>)"
 
+resolve_default_branch() {
+  local branch
+  branch="$(gh repo view -R "${REPO_SLUG}" --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || true)"
+  if [[ -z "${branch}" ]]; then
+    branch="$(gh api "repos/${REPO_SLUG}" --jq '.default_branch' 2>/dev/null || true)"
+  fi
+  [[ -n "${branch}" ]] || err "could not resolve default branch for ${REPO_SLUG}"
+  printf '%s' "${branch}"
+}
+
 resolve_remote_tag_commit() {
   local ref_type ref_sha
   ref_type="$(gh api "repos/${REPO_SLUG}/git/ref/tags/v${VERSION_ARG}" --jq '.object.type' 2>/dev/null || true)"
@@ -136,18 +146,37 @@ resolve_target_sha() {
   fi
 }
 
+resolve_branch_head_sha() {
+  local branch="$1" sha
+  sha="$(gh api "repos/${REPO_SLUG}/branches/${branch}" --jq '.commit.sha' 2>/dev/null || true)"
+  [[ -n "${sha}" ]] || err "could not resolve branch head sha for ${REPO_SLUG}:${branch}"
+  printf '%s' "${sha}"
+}
+
 workflow_exists() {
   gh workflow view "${WORKFLOW_FILE}" -R "${REPO_SLUG}" >/dev/null 2>&1
 }
 
-find_run_id() {
-  gh run list \
-    --repo "${REPO_SLUG}" \
-    --workflow "${WORKFLOW_FILE}" \
-    --commit "${TARGET_SHA}" \
-    --limit "${RUN_LIMIT}" \
-    --json databaseId \
-    --jq '.[0].databaseId' 2>/dev/null || true
+find_run_id_for_commit() {
+  local commit="$1"
+  local event_filter="${2:-}"
+  local branch_filter="${3:-}"
+  local -a args
+  args=(
+    gh run list
+    --repo "${REPO_SLUG}"
+    --workflow "${WORKFLOW_FILE}"
+    --commit "${commit}"
+    --limit "${RUN_LIMIT}"
+    --json databaseId
+  )
+  if [[ -n "${event_filter}" ]]; then
+    args+=(--event "${event_filter}")
+  fi
+  if [[ -n "${branch_filter}" ]]; then
+    args+=(--branch "${branch_filter}")
+  fi
+  "${args[@]}" --jq '.[0].databaseId' 2>/dev/null || true
 }
 
 TARGET_SHA="$(resolve_target_sha)"
@@ -159,16 +188,18 @@ fi
 
 RUN_ID=""
 for _attempt in $(seq 1 "${POLL_ATTEMPTS}"); do
-  RUN_ID="$(find_run_id)"
+  RUN_ID="$(find_run_id_for_commit "${TARGET_SHA}")"
   [[ -n "${RUN_ID}" && "${RUN_ID}" != "null" ]] && break
   sleep "${POLL_INTERVAL}"
 done
 
 if [[ -z "${RUN_ID}" || "${RUN_ID}" == "null" ]]; then
   if [[ "${TRIGGER_IF_MISSING}" -eq 1 ]]; then
-    gh workflow run "${WORKFLOW_FILE}" -R "${REPO_SLUG}" -r "v${VERSION_ARG}" -f "tag=v${VERSION_ARG}" >/dev/null
+    DEFAULT_BRANCH="$(resolve_default_branch)"
+    DISPATCH_SHA="$(resolve_branch_head_sha "${DEFAULT_BRANCH}")"
+    gh workflow run "${WORKFLOW_FILE}" -R "${REPO_SLUG}" -r "${DEFAULT_BRANCH}" -f "tag=v${VERSION_ARG}" >/dev/null
     for _attempt in $(seq 1 "${POLL_ATTEMPTS}"); do
-      RUN_ID="$(find_run_id)"
+      RUN_ID="$(find_run_id_for_commit "${DISPATCH_SHA}" "workflow_dispatch" "${DEFAULT_BRANCH}")"
       [[ -n "${RUN_ID}" && "${RUN_ID}" != "null" ]] && break
       sleep "${POLL_INTERVAL}"
     done
