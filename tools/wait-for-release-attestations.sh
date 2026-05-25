@@ -187,9 +187,12 @@ workflow_exists() {
 # lookups, so the call exits non-zero and conclusion stays empty).
 run_is_viable() {
   local run_id="$1"
-  local status="" conclusion=""
-  status="$(gh api "repos/${REPO_SLUG}/actions/runs/${run_id}" --jq '.status // empty' 2>/dev/null || true)"
-  conclusion="$(gh api "repos/${REPO_SLUG}/actions/runs/${run_id}" --jq '.conclusion // empty' 2>/dev/null || true)"
+  local status="" conclusion="" run_json=""
+  run_json="$(gh api "repos/${REPO_SLUG}/actions/runs/${run_id}" --jq '{status: (.status // empty), conclusion: (.conclusion // empty)}' 2>/dev/null || true)"
+  if [[ -n "${run_json}" ]]; then
+    status="$(printf '%s' "${run_json}" | grep -o '"status":"[^"]*"' | cut -d'"' -f4 || true)"
+    conclusion="$(printf '%s' "${run_json}" | grep -o '"conclusion":"[^"]*"' | cut -d'"' -f4 || true)"
+  fi
   case "${conclusion}" in
     failure|cancelled|timed_out|action_required|startup_failure|stale|neutral|skipped)
       return 1
@@ -298,17 +301,23 @@ ok "watching workflow run ${RUN_ID} for ${REPO_SLUG} v${VERSION_ARG}"
 # coreutils. When neither is present, fall through with a logged warning
 # so the user knows the wrapper was skipped.
 _run_watch_cmd=(gh run watch --repo "${REPO_SLUG}" --exit-status "${RUN_ID}")
+_watch_rc=0
 if [[ "${WATCH_TIMEOUT}" -gt 0 ]]; then
   if command -v timeout >/dev/null 2>&1; then
-    timeout "${WATCH_TIMEOUT}" "${_run_watch_cmd[@]}" >/dev/null
+    timeout "${WATCH_TIMEOUT}" "${_run_watch_cmd[@]}" >/dev/null || _watch_rc=$?
   elif command -v gtimeout >/dev/null 2>&1; then
-    gtimeout "${WATCH_TIMEOUT}" "${_run_watch_cmd[@]}" >/dev/null
+    gtimeout "${WATCH_TIMEOUT}" "${_run_watch_cmd[@]}" >/dev/null || _watch_rc=$?
   else
     ok "warning: timeout(1)/gtimeout not available; gh run watch will not be time-bounded"
-    "${_run_watch_cmd[@]}" >/dev/null
+    "${_run_watch_cmd[@]}" >/dev/null || _watch_rc=$?
   fi
 else
-  "${_run_watch_cmd[@]}" >/dev/null
+  "${_run_watch_cmd[@]}" >/dev/null || _watch_rc=$?
+fi
+if [[ "${_watch_rc}" -eq 124 ]]; then
+  err "gh run watch timed out after ${WATCH_TIMEOUT}s for run ${RUN_ID}. The workflow may still be running — check https://github.com/${REPO_SLUG}/actions/runs/${RUN_ID}"
+elif [[ "${_watch_rc}" -ne 0 ]]; then
+  err "gh run watch exited ${_watch_rc} for run ${RUN_ID}. The workflow run likely failed — check https://github.com/${REPO_SLUG}/actions/runs/${RUN_ID}"
 fi
 ok "workflow run ${RUN_ID} completed successfully for ${REPO_SLUG} v${VERSION_ARG}"
 
