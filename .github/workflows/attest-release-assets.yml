@@ -44,7 +44,9 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
       - name: Checkout workflow source
-        uses: actions/checkout@v4
+        # Pinned to v4.3.1 SHA — floating-tag attack surface (tj-actions/changed-files Mar 2025)
+        # is the exact compromise vector for OIDC-privileged workflows.
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
 
@@ -70,15 +72,76 @@ jobs:
 
       - name: Verify published assets match canonical rebuild
         shell: bash
+        env:
+          ASSET_STEM: ${{ steps.tag.outputs.asset_stem }}
         run: |
           set -euo pipefail
-          stem="${{ steps.tag.outputs.asset_stem }}"
-          cmp -s "dist/expected/${stem}.tar.gz" "dist/published/${stem}.tar.gz"
-          cmp -s "dist/expected/${stem}.zip" "dist/published/${stem}.zip"
-          cmp -s "dist/expected/${stem}.SHA256SUMS" "dist/published/${stem}.SHA256SUMS"
+          # Walk all three assets in one pass so the step summary names every
+          # divergence in one place rather than aborting on the first one.
+          # On mismatch, emit: file name, expected/actual SHA-256, expected/actual
+          # size, and first-differing byte offset (via `cmp`). GITHUB_STEP_SUMMARY
+          # gets the same diagnostic so a maintainer reading the failed run can
+          # see what diverged without re-running the build locally.
+          stem="${ASSET_STEM}"
+          assets=(
+            "${stem}.tar.gz"
+            "${stem}.zip"
+            "${stem}.SHA256SUMS"
+          )
+          failures=0
+          summary_path="${GITHUB_STEP_SUMMARY:-/dev/null}"
+          {
+            printf '## Canonical-rebuild verification\n\n'
+            printf '| Asset | Result |\n'
+            printf '|---|---|\n'
+          } >> "${summary_path}"
+          for asset in "${assets[@]}"; do
+            expected="dist/expected/${asset}"
+            published="dist/published/${asset}"
+            if [[ ! -f "${expected}" ]]; then
+              printf '%s: expected file missing\n' "${asset}" >&2
+              printf '| `%s` | MISSING canonical rebuild |\n' "${asset}" >> "${summary_path}"
+              failures=$((failures + 1))
+              continue
+            fi
+            if [[ ! -f "${published}" ]]; then
+              printf '%s: published file missing\n' "${asset}" >&2
+              printf '| `%s` | MISSING published download |\n' "${asset}" >> "${summary_path}"
+              failures=$((failures + 1))
+              continue
+            fi
+            if cmp -s "${expected}" "${published}"; then
+              printf '| `%s` | ✅ IDENTICAL |\n' "${asset}" >> "${summary_path}"
+              continue
+            fi
+            # Capture diagnostic — first-differing-byte offset via `cmp` (no -s),
+            # SHA-256 of each side, and file sizes.
+            expected_sha="$(sha256sum "${expected}" | awk '{print $1}')"
+            published_sha="$(sha256sum "${published}" | awk '{print $1}')"
+            expected_size="$(wc -c < "${expected}")"
+            published_size="$(wc -c < "${published}")"
+            first_diff="$(cmp "${expected}" "${published}" 2>&1 | head -1 || true)"
+            {
+              printf '| `%s` | ❌ MISMATCH<br>expected_sha=`%s` (`%s` bytes)<br>published_sha=`%s` (`%s` bytes)<br>first diff: `%s` |\n' \
+                "${asset}" "${expected_sha}" "${expected_size}" \
+                "${published_sha}" "${published_size}" "${first_diff}"
+            } >> "${summary_path}"
+            printf '%s: canonical-rebuild mismatch\n' "${asset}" >&2
+            printf '  expected_sha=%s (%s bytes)\n' "${expected_sha}" "${expected_size}" >&2
+            printf '  published_sha=%s (%s bytes)\n' "${published_sha}" "${published_size}" >&2
+            printf '  %s\n' "${first_diff}" >&2
+            failures=$((failures + 1))
+          done
+          if [[ "${failures}" -gt 0 ]]; then
+            printf '\n**%d asset(s) failed canonical-rebuild check** — see annotations above.\n' "${failures}" >> "${summary_path}"
+            exit 1
+          fi
+          printf '\nAll %d assets matched canonical rebuild.\n' "${#assets[@]}" >> "${summary_path}"
 
       - name: Generate artifact attestation
-        uses: actions/attest@v4
+        # Pinned to v4.1.0 SHA — this step holds id-token: write and attestations: write;
+        # a compromised floating @v4 tag would mint forged attestations.
+        uses: actions/attest@281a49d4cbb0a72c9575a50d18f6deb515a11deb # v4.1.0
         with:
           subject-path: |
             dist/published/${{ steps.tag.outputs.asset_stem }}.tar.gz

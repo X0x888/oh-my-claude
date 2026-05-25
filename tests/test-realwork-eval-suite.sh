@@ -437,6 +437,57 @@ assert_eq "regulated imperfect pass false" "false" "$(jq -r '.pass' <<<"${score_
 assert_contains "regulated missing regulated scope" "regulated_scope_explicit" "${score_json}"
 assert_contains "regulated missing writer proof" "writer_deliverable_ready" "${score_json}"
 
+# ---------------------------------------------------------------------
+# By-design-missing-fixture contract (defect D14 from the post-91fc96b
+# cumulative review).
+#
+# evals/realwork/README.md:18-21 documents that scenario `fixture` paths
+# are user-provided and intentionally NOT bundled — the harness would
+# bloat with project-specific assets that map poorly to anyone else's
+# real work. The schema validator (evals/realwork/run.sh validate)
+# accepts any non-empty `fixture` string, so without an explicit
+# regression net a future contributor could (a) file a "missing fixture
+# directory" bug, or (b) commit synthetic fixtures and shift the
+# realwork suite from outcome-oriented to fixture-coupled.
+#
+# This block pins the contract: every shipped scenario must declare a
+# `fixture` path AND that path must NOT exist as a real directory under
+# evals/realwork/. The negative assertion is the contract — flipping it
+# to a positive assertion (fixtures exist) would itself be the
+# regression we are guarding against.
+printf 'Test 22: every scenario declares a fixture path that does not resolve on disk (by-design contract)\n'
+realwork_dir="${REPO_ROOT}/evals/realwork"
+shopt -s nullglob
+scenarios=("${realwork_dir}"/scenarios/*.json)
+shopt -u nullglob
+if [[ "${#scenarios[@]}" -eq 0 ]]; then
+  fail=$((fail + 1))
+  printf '  FAIL: T22: no scenarios found under evals/realwork/scenarios/\n' >&2
+fi
+declared_count=0
+resolved_count=0
+for scenario_file in "${scenarios[@]}"; do
+  fixture_path="$(jq -r '.fixture // empty' "${scenario_file}")"
+  if [[ -z "${fixture_path}" ]]; then
+    fail=$((fail + 1))
+    printf '  FAIL: T22: scenario missing fixture field: %s\n' "${scenario_file}" >&2
+    continue
+  fi
+  declared_count=$((declared_count + 1))
+  # Resolve fixture relative to evals/realwork/ — same shape the README
+  # documents the user follows.
+  if [[ -e "${realwork_dir}/${fixture_path}" ]]; then
+    resolved_count=$((resolved_count + 1))
+    fail=$((fail + 1))
+    printf '  FAIL: T22: fixture path resolved on disk (violates by-design contract): %s → %s\n' \
+      "$(basename "${scenario_file}")" "${realwork_dir}/${fixture_path}" >&2
+  fi
+done
+if [[ "${declared_count}" -gt 0 && "${resolved_count}" -eq 0 ]]; then
+  pass=$((pass + 1))
+  printf '  PASS: T22: all %d scenarios declare unresolved fixture paths\n' "${declared_count}"
+fi
+
 printf '\nReal-work eval suite tests: %d passed, %d failed\n' "${pass}" "${fail}"
 if [[ "${fail}" -gt 0 ]]; then
   exit 1

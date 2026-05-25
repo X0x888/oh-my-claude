@@ -1719,7 +1719,20 @@ assert_contains "T31: attestation workflow requests id-token write" 'id-token: w
 assert_contains "T31: attestation workflow requests attestations write" 'attestations: write' "${attest_workflow_contents}"
 assert_contains "T31: attestation workflow downloads release assets" 'gh release download' "${attest_workflow_contents}"
 assert_contains "T31: attestation workflow compares published assets against rebuild" 'cmp -s' "${attest_workflow_contents}"
-assert_contains "T31: attestation workflow uses actions/attest" 'uses: actions/attest@v4' "${attest_workflow_contents}"
+# actions/attest is pinned to a 40-char commit SHA with a `# v4.x.y` trailing
+# comment so the floating-tag supply-chain surface (tj-actions/changed-files
+# Mar 2025) cannot reach the id-token-write workflow. Assertion form:
+# `uses: actions/attest@<40-hex> # v4.x.y` — substring `actions/attest@` plus
+# a `# v4` annotation guards the contract without pinning the SHA itself,
+# which rotates when we refresh the pin.
+assert_contains "T31: attestation workflow uses actions/attest (SHA-pinned)" 'uses: actions/attest@' "${attest_workflow_contents}"
+if printf '%s\n' "${attest_workflow_contents}" | grep -Eq '^\s*uses: actions/attest@[0-9a-f]{40} # v4'; then
+  printf '  PASS: T31: actions/attest pinned to 40-char SHA with v4 annotation\n'
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T31: actions/attest not pinned to 40-char SHA with v4 annotation\n' >&2
+  fail=$((fail + 1))
+fi
 assert_contains "T31: attestation workflow attests all three release assets" 'dist/published/${{ steps.tag.outputs.asset_stem }}.SHA256SUMS' "${attest_workflow_contents}"
 assert_contains "T31: attestation workflow rebuilds tagged source via explicit archive ref" '--ref "refs/tags/${{ steps.tag.outputs.tag }}^{commit}"' "${attest_workflow_contents}"
 assert_not_contains "T31: attestation workflow no longer assumes helper exists on historical tag checkout" 'ref: refs/tags/${{ steps.tag.outputs.tag }}' "${attest_workflow_contents}"
@@ -2529,7 +2542,13 @@ rc=$?
 set -e
 assert_eq "T57: unified verifier exits 0 after attestation wait" "0" "${rc}"
 assert_contains "T57: unified verifier reports all-green summary after wait" "summary: 5 OK, 0 FIXED, 0 SKIPPED, 0 FAIL" "${out}"
-assert_contains "T57: wait path reports attestation surface success" $'OK\tattestations\twait-for-release-attestations: watching workflow run' "${out}"
+# Per-tick progress logs ("poll N/M for…", "dispatching…", "dispatch-poll…")
+# now precede the "watching workflow run" message, so the run_surface
+# concatenation no longer puts the "watching" line directly after the
+# OK\tattestations\t header. Assert both the surface header AND the
+# eventual "watching workflow run" announcement independently.
+assert_contains "T57: wait path tagged attestations surface OK" $'OK\tattestations\twait-for-release-attestations:' "${out}"
+assert_contains "T57: wait path reports the watched workflow run" 'watching workflow run' "${out}"
 assert_true "T57: attestation wait dispatches a workflow run" "[[ -s '${run_registry_file}' ]]"
 assert_contains "T57: attestation wait marks tag attested" "v1.0.0" "$(cat "${attested_tags_file}")"
 cleanup_gh_stub "${gh_stub_dir}"

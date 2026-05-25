@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
 
@@ -37,7 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
 
@@ -299,6 +299,9 @@ jobs:
       - name: Run install-readiness tests
         run: bash tests/test-install-readiness.sh
 
+      - name: Run install-state-report contract tests (post-91fc96b D9 pin)
+        run: bash tests/test-install-state-report.sh
+
       - name: Run verify-foreign-hooks tests (v1.32.16 4-attacker review pin)
         run: bash tests/test-verify-foreign-hooks.sh
 
@@ -418,7 +421,7 @@ jobs:
     runs-on: macos-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
 

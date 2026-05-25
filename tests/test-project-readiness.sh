@@ -49,30 +49,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mk_json_stub() {
-  local name="$1" result="$2" ok="$3" skip="$4" fail_count="$5" summary="$6" message="$7" exit_code="$8"
-  local path="${TMP_DIR}/${name}.sh"
-  cat > "${path}" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-cat <<'JSON'
-{
-  "tool": "${name}",
-  "result": "${result}",
-  "counts": {
-    "ok": ${ok},
-    "skip": ${skip},
-    "fail": ${fail_count}
-  },
-  "summary_text": "${summary}",
-  "message": "${message}"
-}
-JSON
-exit ${exit_code}
-EOF
-  chmod +x "${path}"
-  printf '%s' "${path}"
-}
+# mk_json_stub lives in tests/lib/composition-stubs.sh — shared across
+# the readiness-composer test family. See that file's header for contract.
+# shellcheck source=lib/composition-stubs.sh
+. "$(cd "$(dirname "$0")" && pwd)/lib/composition-stubs.sh"
 
 run_tool() {
   local professional_cmd="$1"

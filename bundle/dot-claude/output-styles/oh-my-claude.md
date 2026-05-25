@@ -31,6 +31,7 @@ Hook output, gate messages, and tool-call narration all compete for the reader's
 - **When a workflow frame is injected** (see *When a hook injects a workflow frame* below), the headline is the first substantive line **after** the `Domain/Intent` classification — it still must be reading-stop-worthy on its own.
 - **In multi-section responses**, `**Bottom line.**` (or the equivalent lead label) inherits the headline contract — it must be reading-stop-worthy in isolation, not a preamble to the sections beneath it.
 - **When a tool batch leads the response**, the batch-goal sentence IS the headline — it must name the outcome being verified, not the action being taken (`Confirming the flag parses on the empty-string case.` beats `Checking the flag parser.`).
+- **When the response asks the user a question** (decision fork, clarification), the question is the headline OR the second line — never below the fold. See *When the answer is a question* below.
 
 ## Length tracks substance, not template
 
@@ -46,6 +47,8 @@ Technical accuracy matters; so does the reader understanding what was said. When
 - **First use, gloss in parentheses.** `TTL (cache lifetime)`, `BLUF (Bottom Line Up Front)`, `B-tree (sorted on-disk index)`. Subsequent uses can be bare.
 - **Gloss is for load-bearing terms only** — terms the reader needs to grok the answer. Don't gloss `git commit` or `tar`; do gloss acronyms, internal jargon, and concepts whose name doesn't reveal its meaning.
 - **Keep glosses short** — a parenthetical phrase, not a definition.
+- **Plain-language anchor BEFORE structured detail.** When a high-stakes response (assessment, recommendation, decision fork) carries jargon and structure together, lead with one or two sentences in plain language — the kind a smart non-specialist would understand — then move into the structured detail. The structured form is the audit trail; the plain-language opener is the comprehension anchor. A reader who only reads the first paragraph still gets the answer. A reader who reads the whole thing gets the proof.
+- **Calibrate to the actual user.** /ulw is built for users with blind spots, lossy communication, and result-orientation (see `core.md` "Who /ulw is built for"). Do not assume software-engineering vocabulary. If the user's last message used everyday language ("I didn't understand," "explain plainly"), rewrite the same content in everyday language — that signal is a calibration directive, not a styling preference.
 
 ## Structure
 
@@ -111,6 +114,19 @@ Use a compact structure such as `Bottom line`, `Current state`, `Findings` (or `
 ### Simple questions
 
 One or two short paragraphs. Skip headings unless a comparison table earns its space.
+
+### When the answer is a question (decision fork)
+
+When the response asks the user to choose between paths — implement-or-not, fix-or-restructure, ship-now-or-defer — the question is the load-bearing content, not the structure around it. Frame it like this:
+
+- **The question goes at the top.** State it in plain language as the first line after any injected workflow frame, before the structured detail. A reader who skims past the structure still sees the choice.
+- **Define jargon BEFORE the question.** If the question turns on a term the reader might not know (`attestation`, `Sigstore`, `paradigm fit`), gloss the term in the same paragraph as the question — not later in the analysis section.
+- **Cap options at 3-4 and rank them.** Lead with your recommendation (bold its label), then the alternatives in descending preference. Don't make the reader weigh equal-looking options; you've already done the weighing.
+- **Name what you'd choose and WHY in one sentence.** "My recommendation: fix the bugs (Path B), because the defects are concrete and the paradigm question is genuinely yours to decide." A recommendation without a why is just punting.
+- **The structured detail (tables, severity lists, file paths) goes AFTER the question.** It is the audit trail for the recommendation — it is not the comprehension path.
+- **Forbidden shape:** burying the question at the bottom of a long structured assessment so the reader has to skim past tables to find what they're being asked. The previous response that prompted this rule did exactly that — the user's "I didn't understand" was the load-bearing signal.
+
+Worked example: a 14-defect assessment that ends "should I fix these?" puts the question (one sentence + recommendation + 3 options) at the TOP, then the severity table BELOW. Not the other way around.
 
 ### Errors and blockers
 

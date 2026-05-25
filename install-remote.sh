@@ -44,8 +44,15 @@ PASS_THROUGH_ARG_COUNT=$#
 # pins to a specific upstream commit (documented on the GitHub release
 # page) and gets fail-closed verification before any install.sh code
 # runs. Pre-fix the curl|bash chain had zero supply-chain defense
-# beyond TLS-to-GitHub. Set via env (OMC_EXPECTED_SHA=<hex>) — accepts
-# any prefix length >= 7 chars (shorthand SHA), full 40-char also fine.
+# beyond TLS-to-GitHub. Set via env (OMC_EXPECTED_SHA=<hex>).
+#
+# v1.44 follow-up (security-lens F-3): minimum length is 12 chars. The
+# prior 7-char floor allowed Chromium-class natural-collision risk on
+# large trees; 12 chars (48 bits) carries adequate collision resistance
+# for repos of this size and reasonable headroom for future growth. The
+# 7–11 char band emits a deprecation warning but still proceeds, so
+# existing operators with documented 7-char pins don't get fail-closed
+# on the upgrade boundary — they get a one-line nudge to lengthen.
 OMC_EXPECTED_SHA="${OMC_EXPECTED_SHA:-}"
 
 bold()   { printf '\033[1m%s\033[0m' "$1"; }
@@ -235,6 +242,29 @@ printf '%s oh-my-claude bootstrapper\n' "$(bold '==>')"
 printf '    source repo: %s (ref: %s)\n' "${OMC_REPO_URL}" "${OMC_REF}"
 printf '    clone path:  %s\n' "${OMC_SRC_DIR}"
 
+# Trust-model banner (security-lens F-2, v1.44 follow-up). The
+# curl-pipe-bash path is integrity-anchored to TLS between this script
+# and GitHub. The release-asset attestations published by the
+# attest-release-assets.yml workflow protect MAINTAINERS verifying
+# release downloads via `tools/verify-published-release-attestations.sh`
+# — they do NOT bind this clone path, because this script `git clone`s
+# from main (or OMC_REF) rather than downloading the attested tarball.
+# Without this banner, users could reasonably believe the public
+# one-liner was attestation-verified end-to-end. State the actual
+# guarantees so the user can opt up to a tighter posture (SHA pin) if
+# they want one. Suppressed by OMC_TRUST_BANNER_SUPPRESS=1 for CI.
+if [[ -z "${OMC_TRUST_BANNER_SUPPRESS:-}" ]]; then
+  printf '    %s integrity on this path = TLS to GitHub.\n' "$(yellow 'trust:')"
+  if [[ -z "${OMC_EXPECTED_SHA}" ]]; then
+    printf '             Attestations protect release downloads (not this clone).\n'
+    printf '             For a stronger guarantee, pin to a commit SHA:\n'
+    printf '             OMC_EXPECTED_SHA=<full-40-hex> bash install-remote.sh\n'
+    printf '             (Set OMC_TRUST_BANNER_SUPPRESS=1 to silence in CI.)\n'
+  else
+    printf '             OMC_EXPECTED_SHA set — clone HEAD will be SHA-verified.\n'
+  fi
+fi
+
 # Custom-URL warning. The bootstrapper is the documented curl-pipe-bash
 # entry point — if a user copy-pasted a hostile snippet that overrode
 # OMC_REPO_URL, the override should be visually loud rather than just
@@ -369,6 +399,16 @@ if [[ -n "${OMC_EXPECTED_SHA}" ]]; then
   if ! [[ "${_expected_sha_lc}" =~ ^[0-9a-f]{7,40}$ ]]; then
     err "OMC_EXPECTED_SHA must be a 7-40 char hex string (got: ${OMC_EXPECTED_SHA})"
   fi
+  # Soft deprecation band: 7-11 chars still works but is warned.
+  # Full SHA (40) or 12+ is the recommended posture.
+  _expected_sha_len="${#_expected_sha_lc}"
+  if [[ "${_expected_sha_len}" -lt 12 ]]; then
+    printf '    %s OMC_EXPECTED_SHA=%s is %d chars — short prefixes carry git\n' \
+      "$(yellow 'warning:')" "${_expected_sha_lc}" "${_expected_sha_len}"
+    printf '             collision risk on large trees. Use a 12+ char or full-40\n'
+    printf '             hex pin (recommended: full 40-char SHA from the release page).\n'
+  fi
+  unset _expected_sha_len
   _actual_sha="$(git -C "${OMC_SRC_DIR}" rev-parse HEAD 2>/dev/null | tr '[:upper:]' '[:lower:]')"
   _expected_len="${#_expected_sha_lc}"
   _actual_prefix="${_actual_sha:0:${_expected_len}}"

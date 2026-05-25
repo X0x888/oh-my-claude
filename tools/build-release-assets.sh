@@ -102,7 +102,14 @@ trap cleanup EXIT
 
 root_dir="${stage_dir}/${asset_stem}"
 mkdir -p "${root_dir}"
-git archive --format=tar "${REF_TO_ARCHIVE}" | tar -xf - -C "${root_dir}"
+# Pin the git config knobs whose defaults can drift across platforms and
+# break the deterministic-rebuild contract. Without these, a local maintainer
+# rebuilding on macOS/Windows could produce different bytes than CI:
+#   core.autocrlf=false   — no CRLF translation, source bytes preserved
+#   core.filemode=true    — executable bit honored (not all FS types do by default)
+#   core.symlinks=true    — symlinks archived as symlinks, not file content
+git -c core.autocrlf=false -c core.filemode=true -c core.symlinks=true \
+  archive --format=tar "${REF_TO_ARCHIVE}" | tar -xf - -C "${root_dir}"
 
 python3 - "${root_dir}" "${tar_path}" "${zip_path}" <<'PY'
 import gzip
@@ -207,6 +214,16 @@ with tar_path.open("wb") as raw:
                 add_tar_directory(tf, f"{root_name}/{rel}")
             for rel in file_entries:
                 add_tar_path(tf, src_root / rel, rel)
+
+# Pin the gzip header OS byte (offset 9) to 0x03 (Unix). Python's GzipFile
+# sets this from the host platform — 0x03 on Linux, often 0x07 on macOS
+# (Darwin), 0x0b on Windows. Cross-platform rebuilders would otherwise
+# produce non-byte-identical tar.gz files and break the workflow's `cmp -s`
+# canonical-rebuild gate. mtime=0 above already pins the mtime field; this
+# closes the remaining platform-dependent byte in the 10-byte gzip header.
+with tar_path.open("r+b") as fh:
+    fh.seek(9)
+    fh.write(b"\x03")
 
 with zipfile.ZipFile(zip_path, mode="w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
     zf.writestr(directory_zipinfo(f"{root_name}/"), b"")

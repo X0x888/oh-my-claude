@@ -23,16 +23,38 @@ Policy enforced by default:
   - signer workflow: <repo>/.github/workflows/attest-release-assets.yml
   - self-hosted runners are denied
 
+Trust model — what this script actually verifies:
+  An attestation matches when (a) gh attestation verify finds a Sigstore
+  bundle for the published artifact's SHA-256, (b) the bundle's signing
+  identity matches --signer-workflow, and (c) the runner was not
+  self-hosted. The artifact bytes are bound to the signer workflow's
+  identity, which transitively binds them to whatever commit the workflow
+  archived AT BUILD TIME. The attestation does not include a free-form
+  "this came from tag vX.Y.Z" claim — the binding is through the canonical
+  rebuild step inside attest-release-assets.yml, which uses --ref
+  refs/tags/vX.Y.Z^{commit}.
+
+What --source-ref does NOT do here:
+  The attestation is signed from the workflow's own ref (refs/heads/main),
+  NOT from refs/tags/vX.Y.Z. Setting --source-ref=refs/tags/vX.Y.Z would
+  cause gh attestation verify to fail because it compares against the
+  workflow_ref. The build-time refs/tags/X^{commit} archive checkout is
+  enforced by the workflow source itself, not by the attestation predicate.
+  Use --source-ref ONLY when your signer workflow runs FROM the release
+  tag (uncommon — would require workflows/<file>.yml to be present in the
+  historical tag's source tree). For this project's workflow design,
+  leaving --source-ref unset is the correct (and verified-equivalent)
+  default.
+
 Options:
   --repo <owner/name>            Override the GitHub repo slug.
   --signer-workflow <workflow>   Override the signer workflow identity used
                                  with gh attestation verify.
-  --source-ref <git-ref>         Optionally enforce the source repository ref
-                                 recorded in the attestation. Unset by
-                                 default because the signer workflow runs on
-                                 its workflow ref (for example refs/heads/main)
-                                 while it may rebuild a different release tag
-                                 internally.
+  --source-ref <git-ref>         Optionally enforce a SPECIFIC source ref in
+                                 the attestation. See "Trust model" above —
+                                 the right value here is the WORKFLOW ref
+                                 (refs/heads/main), NOT the release tag. Most
+                                 callers should leave this unset.
 EOF
 }
 

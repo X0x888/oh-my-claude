@@ -17,6 +17,11 @@ POLL_INTERVAL=5
 RUN_LIMIT=20
 TRIGGER_IF_MISSING=0
 NO_VERIFY=0
+# Hard upper bound on `gh run watch` wall-clock. Default 1800s (30 min) is well
+# above the workflow's normal completion time (~3-5 min for build+verify+attest).
+# Closes the failure mode where a hung GH Actions run otherwise blocks the
+# maintainer's terminal indefinitely with no diagnostic. 0 disables.
+WATCH_TIMEOUT=1800
 
 usage() {
   cat <<'EOF'
@@ -39,6 +44,11 @@ Options:
   --trigger-if-missing        If no matching workflow run is found after the
                               polling window, dispatch the workflow via
                               workflow_dispatch and keep waiting.
+  --watch-timeout <seconds>   Hard upper bound on `gh run watch`. Default 1800
+                              (30 min). 0 disables the timeout wrapper.
+                              Requires `timeout(1)` or `gtimeout` in PATH; on
+                              hosts without either, the wrapper is skipped and
+                              a warning is logged.
   --no-verify                 Only wait/watch. Skip the final attestation
                               verification step.
 EOF
@@ -78,6 +88,11 @@ while [[ $# -gt 0 ]]; do
       TRIGGER_IF_MISSING=1
       shift
       ;;
+    --watch-timeout)
+      [[ $# -ge 2 ]] || { usage >&2; exit 2; }
+      WATCH_TIMEOUT="$2"
+      shift 2
+      ;;
     --no-verify)
       NO_VERIFY=1
       shift
@@ -109,6 +124,7 @@ done
 [[ "${POLL_ATTEMPTS}" =~ ^[1-9][0-9]*$ ]] || err "--poll-attempts must be a positive integer, got: ${POLL_ATTEMPTS}"
 [[ "${POLL_INTERVAL}" =~ ^[1-9][0-9]*$ ]] || err "--poll-interval must be a positive integer, got: ${POLL_INTERVAL}"
 [[ "${RUN_LIMIT}" =~ ^[1-9][0-9]*$ ]] || err "--run-limit must be a positive integer, got: ${RUN_LIMIT}"
+[[ "${WATCH_TIMEOUT}" =~ ^[0-9]+$ ]] || err "--watch-timeout must be a non-negative integer, got: ${WATCH_TIMEOUT}"
 command -v gh >/dev/null 2>&1 || err "gh CLI not found in PATH"
 [[ -x "${VERIFY_HELPER}" ]] || err "verify helper missing: ${VERIFY_HELPER}"
 
@@ -155,6 +171,36 @@ resolve_branch_head_sha() {
 
 workflow_exists() {
   gh workflow view "${WORKFLOW_FILE}" -R "${REPO_SLUG}" >/dev/null 2>&1
+}
+
+# Best-effort viability check: returns 0 if the run is either in-progress,
+# queued, or completed with a success conclusion. Returns 1 only when a
+# completed run carries a terminal-failure conclusion (failure, cancelled,
+# timed_out, action_required, startup_failure, neutral, skipped, stale).
+#
+# Closes the stale-failure failure mode where the SHA-anchored poll picks
+# up a prior failed attestation run and `gh run watch --exit-status` then
+# errors immediately, leaving the user without auto-redispatch.
+#
+# Falls through to "viable" when `gh api` lookup fails — preserves existing
+# stub-based test behavior (the gh stub does not implement actions/runs/{id}
+# lookups, so the call exits non-zero and conclusion stays empty).
+run_is_viable() {
+  local run_id="$1"
+  local status="" conclusion=""
+  status="$(gh api "repos/${REPO_SLUG}/actions/runs/${run_id}" --jq '.status // empty' 2>/dev/null || true)"
+  conclusion="$(gh api "repos/${REPO_SLUG}/actions/runs/${run_id}" --jq '.conclusion // empty' 2>/dev/null || true)"
+  case "${conclusion}" in
+    failure|cancelled|timed_out|action_required|startup_failure|stale|neutral|skipped)
+      return 1
+      ;;
+  esac
+  case "${status}" in
+    in_progress|queued|requested|waiting|pending|completed|"")
+      return 0
+      ;;
+  esac
+  return 0
 }
 
 find_run_id_for_commit() {
@@ -205,9 +251,17 @@ if ! workflow_exists; then
 fi
 
 RUN_ID=""
+TARGET_SHA_SHORT="${TARGET_SHA:0:12}"
 for _attempt in $(seq 1 "${POLL_ATTEMPTS}"); do
-  RUN_ID="$(find_run_id_for_commit "${TARGET_SHA}")"
-  [[ -n "${RUN_ID}" && "${RUN_ID}" != "null" ]] && break
+  ok "poll ${_attempt}/${POLL_ATTEMPTS} for ${WORKFLOW_FILE} run on ${TARGET_SHA_SHORT}"
+  candidate_id="$(find_run_id_for_commit "${TARGET_SHA}")"
+  if [[ -n "${candidate_id}" && "${candidate_id}" != "null" ]]; then
+    if run_is_viable "${candidate_id}"; then
+      RUN_ID="${candidate_id}"
+      break
+    fi
+    ok "skipping stale terminal-failure run ${candidate_id} on ${TARGET_SHA_SHORT}"
+  fi
   sleep "${POLL_INTERVAL}"
 done
 
@@ -218,8 +272,10 @@ if [[ -z "${RUN_ID}" || "${RUN_ID}" == "null" ]]; then
     DISPATCH_SHA="$(resolve_branch_head_sha "${DEFAULT_BRANCH}")"
     BASELINE_RUN_ID="$(find_run_id_for_commit "${DISPATCH_SHA}" "workflow_dispatch" "${DEFAULT_BRANCH}")"
     [[ "${BASELINE_RUN_ID}" != "null" ]] || BASELINE_RUN_ID=""
+    ok "dispatching ${WORKFLOW_FILE} for v${VERSION_ARG} on ${DEFAULT_BRANCH}"
     gh workflow run "${WORKFLOW_FILE}" -R "${REPO_SLUG}" -r "${DEFAULT_BRANCH}" -f "tag=v${VERSION_ARG}" >/dev/null
     for _attempt in $(seq 1 "${POLL_ATTEMPTS}"); do
+      ok "dispatch-poll ${_attempt}/${POLL_ATTEMPTS} for new workflow_dispatch run (baseline=${BASELINE_RUN_ID:-none})"
       RUN_ID="$(find_new_run_id_for_commit "${DISPATCH_SHA}" "workflow_dispatch" "${DEFAULT_BRANCH}" "${BASELINE_RUN_ID}")"
       [[ -n "${RUN_ID}" && "${RUN_ID}" != "null" ]] && break
       sleep "${POLL_INTERVAL}"
@@ -235,7 +291,25 @@ if [[ -z "${RUN_ID}" || "${RUN_ID}" == "null" ]]; then
 fi
 
 ok "watching workflow run ${RUN_ID} for ${REPO_SLUG} v${VERSION_ARG}"
-gh run watch --repo "${REPO_SLUG}" --exit-status "${RUN_ID}" >/dev/null
+
+# Wrap `gh run watch` in a timeout when one is available so a hung Actions
+# run doesn't block the caller indefinitely. timeout(1) is GNU-coreutils
+# (Ubuntu CI); macOS dev hosts may have gtimeout via brew install
+# coreutils. When neither is present, fall through with a logged warning
+# so the user knows the wrapper was skipped.
+_run_watch_cmd=(gh run watch --repo "${REPO_SLUG}" --exit-status "${RUN_ID}")
+if [[ "${WATCH_TIMEOUT}" -gt 0 ]]; then
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "${WATCH_TIMEOUT}" "${_run_watch_cmd[@]}" >/dev/null
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "${WATCH_TIMEOUT}" "${_run_watch_cmd[@]}" >/dev/null
+  else
+    ok "warning: timeout(1)/gtimeout not available; gh run watch will not be time-bounded"
+    "${_run_watch_cmd[@]}" >/dev/null
+  fi
+else
+  "${_run_watch_cmd[@]}" >/dev/null
+fi
 ok "workflow run ${RUN_ID} completed successfully for ${REPO_SLUG} v${VERSION_ARG}"
 
 if [[ "${NO_VERIFY}" -eq 0 ]]; then

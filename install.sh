@@ -1351,15 +1351,22 @@ acquire_install_lock() {
   printf '%s\n' "$$" > "${INSTALL_LOCK_DIR}/pid" 2>/dev/null || true
 }
 
+# release_install_lock removes the lock dir ONLY if this process owns it.
+# The pid-match guard matters because the EXIT trap is registered BEFORE
+# acquire_install_lock — if our acquire fails (another install is running),
+# a naive rm -rf would erase the contending process's lock dir and let
+# two installs race. The guard scopes cleanup to locks we actually hold.
 release_install_lock() {
-  rm -rf "${INSTALL_LOCK_DIR}" 2>/dev/null || true
+  local lock_pid=""
+  lock_pid="$(cat "${INSTALL_LOCK_DIR}/pid" 2>/dev/null || true)"
+  if [[ "${lock_pid}" == "$$" ]]; then
+    rm -rf "${INSTALL_LOCK_DIR}" 2>/dev/null || true
+  fi
 }
 
 cleanup_install_tmpfiles() {
   rm -f "${PRE_INSTALL_SIGNATURES:-}" "${POST_INSTALL_SIGNATURES:-}" 2>/dev/null || true
 }
-
-acquire_install_lock
 
 # v1.42.x F-023 (SRE-lens): rollback-aware emergency trap.
 #
@@ -1394,7 +1401,13 @@ _emergency_recovery_msg() {
 PRE_INSTALL_SIGNATURES=""
 POST_INSTALL_SIGNATURES=""
 
+# Register the EXIT trap BEFORE acquire_install_lock so a lock-acquire
+# failure (mid-mkdir crash, exhausted attempts) still triggers tmpfile
+# cleanup. release_install_lock is pid-scoped above — it only removes
+# locks this process owns, so safe to fire even when acquire failed.
 trap '_emergency_recovery_msg; cleanup_install_tmpfiles; release_install_lock' EXIT
+
+acquire_install_lock
 
 printf 'Installing oh-my-claude into %s ...\n' "${CLAUDE_HOME}"
 

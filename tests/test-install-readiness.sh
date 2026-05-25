@@ -49,24 +49,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mk_stub() {
-  local name="$1" exit_code="$2"
-  shift 2
-  local path="${TMP_DIR}/${name}.sh"
-  {
-    printf '#!/usr/bin/env bash\n'
-    printf 'set -euo pipefail\n'
-    printf "cat <<'EOF'\n"
-    while [[ $# -gt 0 ]]; do
-      printf '%s\n' "$1"
-      shift
-    done
-    printf "EOF\n"
-    printf 'exit %s\n' "${exit_code}"
-  } > "${path}"
-  chmod +x "${path}"
-  printf '%s' "${path}"
-}
+# mk_stub lives in tests/lib/composition-stubs.sh — shared across the
+# readiness-composer test family. See that file's header for the contract.
+# shellcheck source=lib/composition-stubs.sh
+. "$(cd "$(dirname "$0")" && pwd)/lib/composition-stubs.sh"
 
 run_tool() {
   local bootstrapper_cmd="$1"
