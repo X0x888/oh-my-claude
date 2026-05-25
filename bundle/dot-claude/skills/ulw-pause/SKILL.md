@@ -10,7 +10,7 @@ Signal that the agent is pausing because of a **missing input or a hard external
 The remaining legitimate pause cases are operational:
 
 - **Credentials or external account access** — login required, API key missing, payment method needed, OAuth flow the agent cannot complete on the user's behalf.
-- **Hard external blocker** — rate limit hit, paid API quota exhausted, dead build/test infrastructure, a dependency upgrade pending in a tracked external ticket the agent cannot resolve.
+- **Hard external blocker** — rate limit hit, paid API quota exhausted, dead build/test infrastructure, a dependency upgrade pending in a tracked external ticket the agent cannot resolve. **3-turn attempts threshold** (v1.46-pre, ported from openai/codex `continuation.md`): retry-applicable external blockers (rate limit, API down, network failure, 5xx, dependency upgrade) must be observed on `pause_external_blocker_threshold` consecutive `/ulw-pause` attempts before the pause is allowed — a transient failure the agent retries twice self-resolves and never spends a pause slot. See the "External-blocker 3-turn threshold" section below.
 - **Destructive shared-state action awaiting confirmation** — force-push to main, prod database modification, deletion of files outside the agent's clear authority. (Dev branches and disposable state: just proceed.)
 - **Unfamiliar in-progress state** — untracked files or unstashed local changes whose intent the agent cannot recover; risk of clobbering the user's in-flight work.
 
@@ -35,10 +35,35 @@ Good reasons name *what is needed* (the missing input) or *what is blocking* (th
 4. After the script returns, write a clean summary that surfaces the question being asked, names the options if relevant, and explicitly invites the user to weigh in. Then stop. The session-handoff gate respects the active pause state for this turn — your stop will not be re-blocked as a lazy session-handoff.
 5. The next user prompt clears the `ulw_pause_active` flag automatically; the session-handoff gate returns to normal behavior on subsequent stops.
 
+## External-blocker 3-turn threshold (v1.46-pre)
+
+For case-2 (hard external blocker) reasons — keywords like *rate limit, API down, service unreachable, network failure, dependency upgrade, 5xx, connection timeout* — the script gates the pause behind a 3-consecutive-attempts threshold. The agent is expected to retry the failing path between attempts. Behavior:
+
+1. **First attempt** with a case-2 reason → exit 4, no pause flag set, refusal printed naming attempt 1/3.
+2. **Second attempt** with the **same blocker** (Jaccard similarity ≥30% on normalized significant tokens) → exit 4, counter incremented to 2/3.
+3. **Third attempt** with the same blocker → exit 0, pause flag set, counter reset to 0 so the next blocker starts fresh.
+4. **Different blocker** mid-stream (Jaccard <30%) → counter resets to 1; the new blocker starts its own 3-attempt count.
+
+Doctrinal source: openai/codex `codex-rs/core/templates/goals/continuation.md` — *"Do not call update_goal with status 'blocked' the first time a blocker appears. Only use status 'blocked' when the same blocking condition has repeated for at least three consecutive goal turns."* The mechanism choice differs (Codex re-injects the rule per turn via a 50-line system message; oh-my-claude enforces it via a mechanical script gate); the contract is the same.
+
+**Cases EXEMPT from this gate** (binary blockers — retry does not help):
+
+- Case #1 credentials / login / API key / oauth / secret
+- Case #3 destructive shared-state action awaiting confirmation
+- Case #4 unfamiliar in-progress state (untracked / stashed)
+- Stakeholder / legal / compliance approval (named external decider)
+- Explicit user authorization / decision / input
+
+The exempt match is evaluated FIRST — a reason like "credentials missing for OpenAI API rate limit endpoint" still bypasses the gate because `credentials` matches the exempt pattern, even though the case-2 pattern would otherwise apply.
+
+**Override:** `OMC_PAUSE_EXTERNAL_BLOCKER_THRESHOLD=0 bash <script>` disables the gate for one invocation; `pause_external_blocker_threshold=0` in `oh-my-claude.conf` disables it project-wide.
+
 ## Cap and audit
 
 - Cap is 2 pauses per session (matches the session-handoff gate's block cap). After the cap, the gate falls back to its normal behavior — at that point a stop is structurally a session-handoff, not a pause, and you should either resume work or ask the user whether to checkpoint.
 - Each invocation writes a `ulw-pause` row to `gate_events.jsonl` with the reason, so `/ulw-report` can audit pause patterns later. Repeated pauses on the same kind of decision are signal: maybe the harness should learn to handle that class of decision differently.
+- The 3-turn gate emits its own gate-event rows: `external-blocker-threshold-refused` (attempt below threshold) and `external-blocker-threshold-met` (pause allowed at threshold).
+- Exit codes: `0` pause set, `2` bad invocation or rejected reason, `3` cap reached, `4` external-blocker attempt threshold not yet met.
 
 ## When NOT to use
 

@@ -114,6 +114,32 @@
 # Env: OMC_ULW_PAUSE_VALIDATOR.
 #ulw_pause_validator=on
 
+# /ulw-pause case-2 (external blocker) attempts threshold (v1.46-pre Codex
+# /goal port). Pauses whose reason names a retry-applicable external block
+# (rate limit, API down, service unreachable, network failure, dependency
+# upgrade, 5xx, connection timeout) must observe the same blocker on N
+# consecutive /ulw-pause attempts before the pause is allowed — the agent
+# is expected to retry the failing path between attempts. Transient
+# failures (DNS flap, brief 503, restart) self-resolve and the pause is
+# never spent. Ported from openai/codex `continuation.md` which uses a
+# 3-consecutive-turn blocked threshold for the same failure mode.
+#
+# Cases exempt from this gate (binary blockers — retry does not help):
+#   - case #1 credentials / login / API key / oauth / secret
+#   - case #3 destructive shared-state action awaiting confirmation
+#   - case #4 unfamiliar in-progress state (untracked / stashed)
+#   - stakeholder / legal / compliance approval (named external decider)
+#   - explicit user authorization / decision / input
+#
+# Setting:
+#   3 (default) — Codex parity. First and second case-2 pauses are
+#                 refused with exit 4; third attempt (same blocker by
+#                 signature overlap of ≥2 significant tokens) is allowed.
+#   1           — gate effectively off but still records telemetry.
+#   0           — gate disabled (legacy v1.40-v1.45 behavior).
+# Env: OMC_PAUSE_EXTERNAL_BLOCKER_THRESHOLD.
+#pause_external_blocker_threshold=3
+
 # --- FORCE overrides (env-only, audited) ---
 # Three env-only escape valves let the user (or test harness) bypass a
 # stop-guard bypass-closure validator on the rare case where the validator

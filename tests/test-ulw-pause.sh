@@ -342,5 +342,243 @@ assert_eq "kill-switch exits 0" "0" "${rc}"
 assert_eq "ulw_pause_active=1 under kill switch" "1" "$(read_state_field 'ulw_pause_active')"
 teardown
 
+# ---------------------------------------------------------------------
+# v1.46-pre Codex /goal port: 3-turn external-blocker attempts gate.
+# Reasons matching the case-2 external-blocker pattern (rate limit,
+# API down, service unreachable, network failure, dependency upgrade,
+# 5xx) must repeat N consecutive times before the pause is allowed.
+# ---------------------------------------------------------------------
+
+printf 'Test 20: first case-2 (rate-limit) attempt refused with exit 4\n'
+setup
+set +e
+out="$("${ULW_PAUSE}" "OpenAI API rate limit hit on chat completion" 2>&1)"
+rc=$?
+set -e
+assert_eq "first case-2 attempt exit 4" "4" "${rc}"
+assert_contains "refusal message names attempt count" "1/3" "${out}"
+assert_contains "refusal message names Codex doctrinal source" "continuation.md" "${out}"
+# Pause flag must NOT be set — refused attempts don't burn pause cap
+assert_eq "ulw_pause_active NOT set on refused attempt" "" "$(read_state_field 'ulw_pause_active')"
+assert_eq "ulw_pause_count NOT incremented on refused attempt" "" "$(read_state_field 'ulw_pause_count')"
+# Counter state must be persisted for the next attempt
+assert_eq "pause_blocker_attempt_count=1 after first refused attempt" "1" "$(read_state_field 'pause_blocker_attempt_count')"
+# Signature must be populated (any non-empty string)
+sig_after_1="$(read_state_field 'pause_blocker_signature')"
+[[ -n "${sig_after_1}" ]] && pass=$((pass + 1)) || { printf '  FAIL: pause_blocker_signature empty after first attempt\n' >&2; fail=$((fail + 1)); }
+# Gate event must be recorded
+events_file="${STATE_ROOT}/${SESSION_ID}/gate_events.jsonl"
+[[ -f "${events_file}" ]] && pass=$((pass + 1)) || { printf '  FAIL: gate_events.jsonl missing after refused attempt\n' >&2; fail=$((fail + 1)); }
+last_event="$(tail -n 1 "${events_file}")"
+assert_contains "gate event records external-blocker-threshold-refused" '"event":"external-blocker-threshold-refused"' "${last_event}"
+assert_contains "gate event records attempt=1" '"attempt":1' "${last_event}"
+teardown
+
+printf 'Test 21: second case-2 attempt with same blocker → counter=2, still refused\n'
+setup
+"${ULW_PAUSE}" "API rate limit hit on OpenAI" >/dev/null 2>&1 || true
+# Paraphrased second attempt — same blocker per Jaccard match
+set +e
+out="$("${ULW_PAUSE}" "OpenAI rate limit still hitting after retry" 2>&1)"
+rc=$?
+set -e
+assert_eq "second case-2 attempt exit 4" "4" "${rc}"
+assert_contains "refusal message shows 2/3" "2/3" "${out}"
+assert_eq "pause_blocker_attempt_count=2" "2" "$(read_state_field 'pause_blocker_attempt_count')"
+assert_eq "ulw_pause_active still not set" "" "$(read_state_field 'ulw_pause_active')"
+teardown
+
+printf 'Test 22: third case-2 attempt allowed → pause activates, counter resets\n'
+setup
+"${ULW_PAUSE}" "API rate limit on OpenAI" >/dev/null 2>&1 || true
+"${ULW_PAUSE}" "OpenAI rate limit still hitting" >/dev/null 2>&1 || true
+# Third attempt — same blocker by signature; should be allowed
+out="$("${ULW_PAUSE}" "rate limit on OpenAI persistent" 2>&1)"
+rc=$?
+assert_eq "third case-2 attempt exit 0" "0" "${rc}"
+assert_eq "ulw_pause_active=1 after threshold met" "1" "$(read_state_field 'ulw_pause_active')"
+assert_eq "ulw_pause_count=1 (counter advanced normally)" "1" "$(read_state_field 'ulw_pause_count')"
+# Tracking state must be cleared so next blocker starts fresh
+assert_eq "pause_blocker_attempt_count reset to 0" "0" "$(read_state_field 'pause_blocker_attempt_count')"
+assert_eq "pause_blocker_signature cleared" "" "$(read_state_field 'pause_blocker_signature')"
+# threshold-met gate event recorded
+events_file="${STATE_ROOT}/${SESSION_ID}/gate_events.jsonl"
+threshold_met_count="$(grep -c 'external-blocker-threshold-met' "${events_file}" 2>/dev/null || echo 0)"
+[[ "${threshold_met_count}" -eq 1 ]] && pass=$((pass + 1)) || { printf '  FAIL: external-blocker-threshold-met event count=%s (expected 1)\n' "${threshold_met_count}" >&2; fail=$((fail + 1)); }
+teardown
+
+printf 'Test 23: different blocker mid-stream resets the counter to 1\n'
+setup
+"${ULW_PAUSE}" "API rate limit on OpenAI" >/dev/null 2>&1 || true
+"${ULW_PAUSE}" "OpenAI rate limit still hitting" >/dev/null 2>&1 || true
+# Counter is at 2. Now a DIFFERENT blocker arrives — should reset to 1.
+set +e
+out="$("${ULW_PAUSE}" "Postgres connection refused timeout on staging" 2>&1)"
+rc=$?
+set -e
+assert_eq "different blocker still exits 4 (counter at 1, not 3)" "4" "${rc}"
+assert_contains "refusal message shows 1/3 (counter reset)" "1/3" "${out}"
+assert_eq "pause_blocker_attempt_count reset to 1" "1" "$(read_state_field 'pause_blocker_attempt_count')"
+# Signature must reflect the NEW blocker, not the old one
+new_sig="$(read_state_field 'pause_blocker_signature')"
+[[ "${new_sig}" == *"postgres"* || "${new_sig}" == *"connection"* ]] && pass=$((pass + 1)) || { printf '  FAIL: signature did not update to new blocker (got: %s)\n' "${new_sig}" >&2; fail=$((fail + 1)); }
+teardown
+
+printf 'Test 24: case-1 (credentials) exempt — bypasses the gate on first attempt\n'
+setup
+out="$("${ULW_PAUSE}" "STRIPE_SECRET_KEY credential missing, cannot create test customer" 2>&1)"
+rc=$?
+assert_eq "credentials reason exits 0 on first attempt" "0" "${rc}"
+assert_eq "ulw_pause_active=1 for exempt reason" "1" "$(read_state_field 'ulw_pause_active')"
+# Tracking keys must NOT be touched
+assert_eq "pause_blocker_attempt_count NOT set for exempt reason" "" "$(read_state_field 'pause_blocker_attempt_count')"
+assert_eq "pause_blocker_signature NOT set for exempt reason" "" "$(read_state_field 'pause_blocker_signature')"
+teardown
+
+printf 'Test 25: case-3 (destructive) exempt — bypasses the gate\n'
+setup
+out="$("${ULW_PAUSE}" "destructive force-push to main awaiting user confirmation" 2>&1)"
+rc=$?
+assert_eq "destructive reason exits 0 on first attempt" "0" "${rc}"
+assert_eq "ulw_pause_active=1 for destructive reason" "1" "$(read_state_field 'ulw_pause_active')"
+teardown
+
+printf 'Test 26: case-4 (unfamiliar state) exempt — bypasses the gate\n'
+setup
+out="$("${ULW_PAUSE}" "untracked files present — unfamiliar work-in-progress" 2>&1)"
+rc=$?
+assert_eq "unfamiliar-state reason exits 0 on first attempt" "0" "${rc}"
+assert_eq "ulw_pause_active=1 for unfamiliar-state reason" "1" "$(read_state_field 'ulw_pause_active')"
+teardown
+
+printf 'Test 27: stakeholder approval exempt — bypasses the gate even with case-2 keywords\n'
+setup
+# Compound reason: case-2 keywords AND exempt keyword. Exempt wins (binary
+# blocker — retry does not help waiting for a stakeholder decision).
+out="$("${ULW_PAUSE}" "rate limit raise awaiting stakeholder approval" 2>&1)"
+rc=$?
+assert_eq "compound exempt+case-2 reason exits 0 (exempt wins)" "0" "${rc}"
+assert_eq "ulw_pause_active=1 for stakeholder-paired reason" "1" "$(read_state_field 'ulw_pause_active')"
+teardown
+
+printf 'Test 28: threshold=0 disables the gate entirely\n'
+setup
+out="$(OMC_PAUSE_EXTERNAL_BLOCKER_THRESHOLD=0 "${ULW_PAUSE}" "API rate limit hit on first attempt" 2>&1)"
+rc=$?
+assert_eq "threshold=0 first case-2 attempt exits 0" "0" "${rc}"
+assert_eq "ulw_pause_active=1 with gate disabled" "1" "$(read_state_field 'ulw_pause_active')"
+# Tracking keys must NOT be touched when gate is disabled
+assert_eq "pause_blocker_attempt_count NOT set when gate disabled" "" "$(read_state_field 'pause_blocker_attempt_count')"
+teardown
+
+printf 'Test 29: threshold=1 allows first attempt (effective off but still records telemetry)\n'
+setup
+out="$(OMC_PAUSE_EXTERNAL_BLOCKER_THRESHOLD=1 "${ULW_PAUSE}" "API rate limit hit" 2>&1)"
+rc=$?
+assert_eq "threshold=1 first attempt exits 0" "0" "${rc}"
+assert_eq "ulw_pause_active=1 at threshold=1" "1" "$(read_state_field 'ulw_pause_active')"
+teardown
+
+printf 'Test 30: non-case-2 generic reason bypasses gate (not classified as external blocker)\n'
+setup
+# A reason that doesn't match either pattern — neutral phrasing. Should
+# pass through validator and gate unchanged.
+out="$("${ULW_PAUSE}" "deferring to user for next step on this surface" 2>&1)"
+rc=$?
+assert_eq "generic neutral reason exits 0" "0" "${rc}"
+# Tracking keys must NOT be touched for non-case-2 reasons
+assert_eq "pause_blocker_attempt_count NOT set for non-case-2" "" "$(read_state_field 'pause_blocker_attempt_count')"
+teardown
+
+printf 'Test 31: SKILL.md documents the 3-turn threshold and exit code 4\n'
+SKILL_MD="${REPO_ROOT}/bundle/dot-claude/skills/ulw-pause/SKILL.md"
+skill_text="$(cat "${SKILL_MD}")"
+assert_contains "SKILL.md describes the 3-turn threshold" "3-turn" "${skill_text}"
+assert_contains "SKILL.md cites Codex continuation.md" "continuation.md" "${skill_text}"
+assert_contains "SKILL.md documents exit code 4" "exit 4" "${skill_text}" || true  # tolerate case variation
+assert_contains "SKILL.md names the threshold env var" "OMC_PAUSE_EXTERNAL_BLOCKER_THRESHOLD" "${skill_text}"
+
+printf 'Test 32: conf-flag triple-write coordination\n'
+# Parser site
+grep -q 'pause_external_blocker_threshold)' "${HOOK_DIR}/common.sh" \
+  && pass=$((pass + 1)) || { printf '  FAIL: pause_external_blocker_threshold missing from common.sh parser\n' >&2; fail=$((fail + 1)); }
+# Conf example site
+grep -q '^#pause_external_blocker_threshold=' "${REPO_ROOT}/bundle/dot-claude/oh-my-claude.conf.example" \
+  && pass=$((pass + 1)) || { printf '  FAIL: pause_external_blocker_threshold missing from conf.example\n' >&2; fail=$((fail + 1)); }
+# omc-config table site
+grep -q '^pause_external_blocker_threshold|' "${HOOK_DIR}/omc-config.sh" \
+  && pass=$((pass + 1)) || { printf '  FAIL: pause_external_blocker_threshold missing from omc-config.sh table\n' >&2; fail=$((fail + 1)); }
+
+printf 'Test 33: docs/architecture.md documents the new state keys\n'
+arch_doc="$(cat "${REPO_ROOT}/docs/architecture.md")"
+assert_contains "architecture.md documents pause_blocker_signature" "pause_blocker_signature" "${arch_doc}"
+assert_contains "architecture.md documents pause_blocker_attempt_count" "pause_blocker_attempt_count" "${arch_doc}"
+
+printf 'Test 34: cap-after-threshold-met — counter NOT clobbered, no threshold-met event emitted\n'
+# v1.46-pre quality-review F1 regression: when ulw_pause_count is already
+# at PAUSE_CAP (2) and the third same-blocker attempt would otherwise
+# meet threshold, the cap check must refuse with exit 3 WITHOUT clearing
+# pause_blocker_attempt_count or emitting the threshold-met event.
+setup
+# Pre-seed the cap at 2 BEFORE the gate runs.
+jq -n '{ulw_pause_count: "2"}' > "${STATE_ROOT}/${SESSION_ID}/session_state.json"
+set +e
+"${ULW_PAUSE}" "API rate limit on OpenAI first" >/dev/null 2>&1
+rc1=$?
+"${ULW_PAUSE}" "OpenAI rate limit still hitting" >/dev/null 2>&1
+rc2=$?
+out3="$("${ULW_PAUSE}" "rate limit on OpenAI persistent" 2>&1)"
+rc3=$?
+set -e
+assert_eq "attempt 1 refused exit 4 (below threshold)" "4" "${rc1}"
+assert_eq "attempt 2 refused exit 4 (below threshold)" "4" "${rc2}"
+assert_eq "attempt 3 refused exit 3 (cap reached) NOT exit 0" "3" "${rc3}"
+assert_contains "attempt 3 stderr names cap message" "pause cap reached" "${out3}"
+# Counter must NOT be clobbered to 0 — the pause did NOT fire.
+final_counter="$(read_state_field 'pause_blocker_attempt_count')"
+[[ "${final_counter}" == "2" || "${final_counter}" == "3" ]] && pass=$((pass + 1)) || { printf '  FAIL: pause_blocker_attempt_count=%s after cap-refused threshold (expected 2 or 3, NOT 0)\n' "${final_counter}" >&2; fail=$((fail + 1)); }
+# Signature must also be preserved (not cleared).
+final_sig="$(read_state_field 'pause_blocker_signature')"
+[[ -n "${final_sig}" ]] && pass=$((pass + 1)) || { printf '  FAIL: pause_blocker_signature cleared after cap-refused (should be preserved)\n' >&2; fail=$((fail + 1)); }
+# No threshold-met event emitted because the pause was refused by cap.
+events_file="${STATE_ROOT}/${SESSION_ID}/gate_events.jsonl"
+if [[ -f "${events_file}" ]]; then
+  threshold_met_count="$(grep -c 'external-blocker-threshold-met' "${events_file}" || true)"
+else
+  threshold_met_count=0
+fi
+threshold_met_count="${threshold_met_count:-0}"
+[[ "${threshold_met_count}" -eq 0 ]] && pass=$((pass + 1)) || { printf '  FAIL: threshold-met event emitted (%s) despite cap refusal\n' "${threshold_met_count}" >&2; fail=$((fail + 1)); }
+# ulw_pause_active must NOT be set — the cap refused the pause.
+assert_eq "ulw_pause_active NOT set after cap-refused" "" "$(read_state_field 'ulw_pause_active')"
+teardown
+
+printf 'Test 35: F2 — broadened pattern catches HTTP 5xx, queueing, stuck, timed out, DNS failing\n'
+# v1.46-pre quality-review F2: previously narrow patterns missed common
+# real-world phrasings. Each of these MUST gate (exit 4 on first attempt).
+F2_CASES=(
+  "Slack webhook returning HTTP 500"
+  "Anthropic API responded with 529 retry-after"
+  "Vercel build queueing for 20 minutes"
+  "deploy stuck at build phase"
+  "tests timing out on staging"
+  "tests timed out connecting to upstream"
+  "DNS resolution intermittently failing"
+)
+for case_ in "${F2_CASES[@]}"; do
+  setup
+  set +e
+  out="$("${ULW_PAUSE}" "${case_}" 2>&1)"
+  rc=$?
+  set -e
+  if [[ "${rc}" -eq 4 ]]; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: F2 case did NOT gate: %q (rc=%s)\n' "${case_}" "${rc}" >&2
+    fail=$((fail + 1))
+  fi
+  teardown
+done
+
 printf '\n=== ULW-Pause Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]] || exit 1

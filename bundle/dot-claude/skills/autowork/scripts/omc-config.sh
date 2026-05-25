@@ -58,6 +58,7 @@ discovered_scope|bool|on|gates|Capture advisory findings + gate stop until addre
 advisory_no_findings_gate|bool|on|gates|Block stop when N+ advisory specialists dispatched but zero findings recorded (closes fail-open of finding-gated gates)
 advisory_no_findings_threshold|int|2|gates|Specialist dispatch count that activates the advisory-no-findings gate
 ulw_pause_validator|bool|on|gates|/ulw-pause validator: reject pause reasons that name technical-judgment categories without an operational signal
+pause_external_blocker_threshold|int|3|gates|/ulw-pause case-2 (external blocker — rate limit / API down / network failure / dependency upgrade) requires N consecutive attempts on the same blocker before allowing the pause. Ported from openai/codex `continuation.md` 3-turn blocked threshold (v1.46-pre). 0 disables; case-1/3/4 (credentials/destructive/unfamiliar-state) and stakeholder/legal/user-auth signals bypass the gate.
 pretool_intent_guard|true_false|true|gates|Block destructive git/gh under non-execution intent
 agent_first_gate|bool|off|gates|Block first /ulw mutation until a fresh-context specialist returns (default off v1.43+; was mandatory pre-v1.43). See conf.example / docs/customization.md for the full rationale and when to turn it on.
 bg_spawn_gate|true_false|true|gates|Block Bash poll-loop + background detach (hygiene; v1.43.x)

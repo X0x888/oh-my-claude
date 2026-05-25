@@ -48,6 +48,7 @@ _omc_env_discovered_scope="${OMC_DISCOVERED_SCOPE:-}"
 _omc_env_advisory_no_findings_gate="${OMC_ADVISORY_NO_FINDINGS_GATE:-}"
 _omc_env_advisory_no_findings_threshold="${OMC_ADVISORY_NO_FINDINGS_THRESHOLD:-}"
 _omc_env_ulw_pause_validator="${OMC_ULW_PAUSE_VALIDATOR:-}"
+_omc_env_pause_external_blocker_threshold="${OMC_PAUSE_EXTERNAL_BLOCKER_THRESHOLD:-}"
 _omc_env_council_deep_default="${OMC_COUNCIL_DEEP_DEFAULT:-}"
 _omc_env_auto_memory="${OMC_AUTO_MEMORY:-}"
 _omc_env_output_style="${OMC_OUTPUT_STYLE:-}"
@@ -584,6 +585,13 @@ _parse_conf_file() {
         [[ -z "${_omc_env_advisory_no_findings_threshold}" && "${value}" =~ ^[0-9]+$ ]] && OMC_ADVISORY_NO_FINDINGS_THRESHOLD="${value}" || true ;;
       ulw_pause_validator)
         [[ -z "${_omc_env_ulw_pause_validator}" && "${value}" =~ ^(on|off)$ ]] && OMC_ULW_PAUSE_VALIDATOR="${value}" || true ;;
+      pause_external_blocker_threshold)
+        # v1.46-pre Codex /goal port: 3-consecutive-attempts threshold for
+        # case-2 (external blocker) pauses. Default 3. 0 = gate disabled
+        # (legacy v1.40-v1.45 first-attempt-pauses behavior). Range gate
+        # is non-negative integer; out-of-range values silently ignored
+        # (mirrors the other int flags in this case statement).
+        [[ -z "${_omc_env_pause_external_blocker_threshold}" && "${value}" =~ ^[0-9]+$ ]] && OMC_PAUSE_EXTERNAL_BLOCKER_THRESHOLD="${value}" || true ;;
       council_deep_default)
         [[ -z "${_omc_env_council_deep_default}" && "${value}" =~ ^(on|off)$ ]] && OMC_COUNCIL_DEEP_DEFAULT="${value}" || true ;;
       auto_memory)
