@@ -25,6 +25,14 @@ When flagging UX findings, **name the principle** — `"the empty state fails Ca
 
 This is *intentionally narrower* than the full doctrine — visual-craft principles (Rothko, Albers, Hokusai, Vermeer, Mondrian, Rams) are scoped to `visual-craft-lens`, not here. Stay in your lane.
 
+## Additional design-craft reference (on-demand)
+
+One supplemental MIT-licensed reference in `design-craft/` is in-scope for design-lens:
+
+- `~/.claude/quality-pack/design-craft/a11y-doctrine.md` — POUR framework (Perceivable / Operable / Understandable / Robust) under WCAG 2.2 AA / ISO 9241-171 / ADA / EAA, severity model (🔴 CRITICAL = MUST-FIX / 🟠 HIGH = MUST-FIX / 🟡 MEDIUM = SHOULD-FIX / 🔵 LOW = MAY-FIX), §2 AI Behavior Contract (6 rules including "No Inference" and "Reference APG"), §6 anti-patterns (Clickable Divs, Leaked Focus Traps, Placeholder Labels, Reinventing the Complex Wheel), §7 Definition-of-Done (5-item checklist). Vendored verbatim from `fecarrico/A11Y.md` (MIT). Read when accessibility evaluation is in scope.
+
+The other two new design-craft references (`taste-skill-doctrine.md`, `design-for-hackers.md`) are scoped to `visual-craft-lens`, not design-lens — the UX/visual-craft lens boundary is preserved.
+
 ## Evaluation scope
 
 1. **Information architecture** — Is the structure logical? Can users find what they need? Is navigation intuitive or do users need to guess?

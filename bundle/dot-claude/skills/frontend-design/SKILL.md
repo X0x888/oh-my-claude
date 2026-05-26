@@ -132,3 +132,11 @@ After establishing the visual direction, implement using the `frontend-developer
 - The design-reviewer quality gate will evaluate visual craft — ensure your output passes
 - If the user provides a reference (screenshot, URL, mood board), match that direction. If not, make opinionated choices and state them.
 - Treat "build a landing page" as "design and build a distinctive landing page" — design is not optional
+
+## Additional design-craft references (on-demand)
+
+Three supplemental MIT-licensed references in `~/.claude/quality-pack/design-craft/`:
+
+- `~/.claude/quality-pack/design-craft/taste-skill-doctrine.md` — Anti-slop dials (`DESIGN_VARIANCE` / `MOTION_INTENSITY` / `VISUAL_DENSITY`, 1-10 each), the **em-dash ban** (§9.G — zero `—` or `–` anywhere visible to the user), Jane Doe / fake-perfect-number / startup-slop-name bans (§9.D), italic-descender clearance, §9.F production-test bans (decorative status dots, fake screenshots, agency-cliché decoration strips, version footers on marketing pages). Vendored verbatim from `Leonxlnx/taste-skill` v2 (MIT). **Read for landing pages, portfolios, and redesigns** — many bans extend the doctrine's §10 catalog.
+- `~/.claude/quality-pack/design-craft/design-for-hackers.md` — 10-category CHECKER + 8-phase APPLIER + Symptom→Chapter lookup + Anti-Rationalization Table. Vendored from `ryanthedev/design-for-ai` (MIT). **The 8-phase APPLIER is a stronger procedural scaffold for greenfield work than the inline 9-section Design Contract.**
+- `~/.claude/quality-pack/design-craft/a11y-doctrine.md` — POUR framework, severity model, AI Behavior Contract, anti-patterns, Definition-of-Done. Vendored from `fecarrico/A11Y.md` (MIT). **Read whenever accessibility is in scope.**

@@ -32,6 +32,14 @@ You are reviewing UI work with **canonical art-historical grounding**, not gener
 
 When emitting findings, **name the principle violated** — `"violates Hokusai palette discipline (doctrine §1)"`, `"restraint-as-fear, not taste (§3)"`, `"clutter maximalism — try removing the gradient (§8)"`. Generic vocabulary produces generic findings; canonical vocabulary produces actionable taste.
 
+## Additional design-craft references (on-demand)
+
+Three supplemental MIT-licensed references live alongside `art-taste-doctrine.md` in the same `design-craft/` directory. Load them when the diff or finding warrants:
+
+- `~/.claude/quality-pack/design-craft/taste-skill-doctrine.md` — Anti-slop dials (`DESIGN_VARIANCE` / `MOTION_INTENSITY` / `VISUAL_DENSITY`, 1-10), the **em-dash ban** (§9.G — zero `—` or `–` anywhere visible), Jane Doe / fake-perfect-number / startup-slop-name bans, italic-descender clearance, §9.F production-test bans (decorative status dots, fake screenshots, agency-portfolio decoration strips, version footers on marketing pages). Vendored from `Leonxlnx/taste-skill` v2 (MIT). Each banned pattern can be cited as a finding directly.
+- `~/.claude/quality-pack/design-craft/design-for-hackers.md` — 10-category CHECKER, **Symptom→Chapter lookup** (`"nothing holds the eye"` → Composition; `"can't tell what's important"` → Visual Hierarchy), **Anti-Rationalization Table** (10 excuse-vs-reality pairs cited to Kadavy's *Design for Hackers*). Vendored from `ryanthedev/design-for-ai` (MIT). Useful for routing user complaints to canonical principles.
+- `~/.claude/quality-pack/design-craft/a11y-doctrine.md` — POUR framework, severity model (🔴/🟠/🟡/🔵), AI Behavior Contract, anti-patterns, Definition-of-Done. Vendored from `fecarrico/A11Y.md` (MIT). Read for any review touching a11y.
+
 ## What to evaluate
 
 Map each lens to the canonical 9-section Design Contract (per VoltAgent/awesome-design-md).

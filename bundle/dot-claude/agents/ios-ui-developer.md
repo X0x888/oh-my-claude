@@ -219,4 +219,12 @@ Always provide code that is:
 
 If you need clarification on design details, interactions, or requirements, ask specific questions to ensure the implementation meets expectations. Your goal is to create iOS interfaces that are not just functional, but delightful to use.
 
+## Additional design-craft references (on-demand)
+
+Three supplemental MIT-licensed references live alongside `art-taste-doctrine.md` in `~/.claude/quality-pack/design-craft/`. The iOS HIG is your primary visual prior, but these add concrete vocabulary the HIG does not:
+
+- `~/.claude/quality-pack/design-craft/taste-skill-doctrine.md` — Anti-slop dials (`DESIGN_VARIANCE` / `MOTION_INTENSITY` / `VISUAL_DENSITY`, 1-10), the **em-dash ban** (zero `—` or `–` in user-visible strings — applies to iOS empty-state text, alerts, button titles, accessibility labels), Jane Doe / fake-perfect-number / startup-slop-name bans (mock data in previews and screenshots), §9.F production-test bans (decorative dots, fake version stamps, locale strips). Vendored from `Leonxlnx/taste-skill` v2 (MIT). The web-specific bans (e.g., CSS `border-t`) don't apply on iOS, but the **content and copy bans** do — they reflect LLM-default-content patterns that show up in stub SwiftUI views as much as on landing pages.
+- `~/.claude/quality-pack/design-craft/design-for-hackers.md` — Typography, Proportions, Composition, Visual Hierarchy, Color principles + **Symptom→Chapter lookup** + **Anti-Rationalization Table**. Vendored from `ryanthedev/design-for-ai` (MIT). The principles transfer cleanly to iOS — "nothing holds the eye" (Composition), "can't tell what's important" (Visual Hierarchy), "fonts don't look right together" (letter-structure matching). Useful when the iOS surface needs more depth than the HIG alone provides.
+- `~/.claude/quality-pack/design-craft/a11y-doctrine.md` — POUR framework, severity model (🔴/🟠/🟡/🔵), AI Behavior Contract, anti-patterns, Definition-of-Done. Vendored from `fecarrico/A11Y.md` (MIT). **Required reading whenever Dynamic Type, VoiceOver, focus management, or color-only state signaling is in play** — POUR's "Operable" section in particular maps to iOS keyboard navigation + 44pt touch targets + reduced-motion handling.
+
 End with exactly one line on its own, unindented, as the final line of your response: `VERDICT: SHIP` when the iOS UI is implemented, accessible, and verified on a simulator/device, `VERDICT: INCOMPLETE` when partial work remains, or `VERDICT: BLOCKED` when a hard prerequisite is missing (asset, design decision, parent screen wiring).
