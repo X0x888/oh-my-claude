@@ -162,8 +162,8 @@ if [[ -n "${touch_ts}" ]]; then
   touch -t "${touch_ts}" "${TEST_HOME}/.claude/.install-stamp"
 fi
 
-install_ts="$(stat -f %m "${TEST_HOME}/.claude/.install-stamp" 2>/dev/null \
-  || stat -c %Y "${TEST_HOME}/.claude/.install-stamp" 2>/dev/null || echo "")"
+install_ts="$(stat -c %Y "${TEST_HOME}/.claude/.install-stamp" 2>/dev/null \
+  || stat -f %m "${TEST_HOME}/.claude/.install-stamp" 2>/dev/null || echo "")"
 mkdir -p "${TEST_HOME}/.claude/quality-pack/state"
 cat > "${TEST_HOME}/.claude/quality-pack/state/last-install-report.json" <<EOF
 {"restart_required":false,"install_stamp_epoch":${install_ts}}

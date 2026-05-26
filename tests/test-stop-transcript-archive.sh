@@ -153,11 +153,11 @@ _init_sid "${sid}"
 _drive "${sid}" on on
 archive_path="$(_find_archive "${sid}")"
 if [[ -f "${archive_path}" ]]; then
-  mtime1="$(stat -f '%m' "${archive_path}" 2>/dev/null || stat -c '%Y' "${archive_path}" 2>/dev/null)"
+  mtime1="$(stat -c '%Y' "${archive_path}" 2>/dev/null || stat -f '%m' "${archive_path}" 2>/dev/null)"
   # Touch with a different mtime to make a re-write detectable.
   sleep 1
   _drive "${sid}" on on
-  mtime2="$(stat -f '%m' "${archive_path}" 2>/dev/null || stat -c '%Y' "${archive_path}" 2>/dev/null)"
+  mtime2="$(stat -c '%Y' "${archive_path}" 2>/dev/null || stat -f '%m' "${archive_path}" 2>/dev/null)"
   assert_eq "T5: archive mtime unchanged on second invocation" "${mtime1}" "${mtime2}"
 else
   printf '  FAIL: T5: first invocation failed to create archive\n' >&2

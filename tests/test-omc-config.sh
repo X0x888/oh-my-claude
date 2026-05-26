@@ -251,18 +251,19 @@ assert_file_lacks_line "atomic batch: auto_memory not written" "${USER_CONF_PATH
 assert_file_lacks_line "atomic batch: discovered_scope not written" "${USER_CONF_PATH}" "^discovered_scope=on\$"
 teardown
 
-# --- Test 13: apply-preset maximum writes all 28 keys (v1.28.0 added
+# --- Test 13: apply-preset maximum writes all 30 keys (v1.28.0 added
 # blindspot_inventory + intent_broadening; v1.30.0 added prompt_persist;
 # v1.32.0 added divergence_directive; v1.33.0 added directive_budget;
 # v1.34.0 added inferred_contract for Delivery Contract v2;
 # v1.35.0 added shortcut_ratio_gate for shortcut-on-big-tasks defense;
 # zero-steering policy added quality_policy; v1.40.0 added
 # no_defer_mode for the no-defer contract; v1.44 added
-# god_scope_on_bare_prompt for the No-Out-of-Scope contract) ---
-printf 'Test 13: apply-preset maximum writes 28 keys\n'
+# god_scope_on_bare_prompt for the No-Out-of-Scope contract;
+# v1.44-pre added circuit_breaker + transcript_archive) ---
+printf 'Test 13: apply-preset maximum writes 30 keys\n'
 setup
 out="$(bash "${HELPER}" apply-preset user maximum 2>&1)"
-assert_contains "apply-preset reports 28 keys" "28 keys" "${out}"
+assert_contains "apply-preset reports 30 keys" "30 keys" "${out}"
 assert_file_has_line "maximum: gate_level=full" "${USER_CONF_PATH}" "^gate_level=full\$"
 assert_file_has_line "maximum: guard_exhaustion_mode=block" "${USER_CONF_PATH}" "^guard_exhaustion_mode=block\$"
 assert_file_has_line "maximum: quality_policy=zero_steering" "${USER_CONF_PATH}" "^quality_policy=zero_steering\$"
