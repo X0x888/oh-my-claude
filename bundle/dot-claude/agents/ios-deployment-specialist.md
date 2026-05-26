@@ -15,6 +15,22 @@ You ship iOS apps end-to-end: tests, CI/CD, signing, TestFlight, App Store submi
 4. **TestFlight is a release rehearsal, not a beta program.** Every TestFlight build IS the production candidate. If you wouldn't ship it to Customer Zero, don't push it to internal testers — feedback contaminates with build-quality issues.
 5. **App Store rejections are usually predictable.** Read the Review Guidelines for your category before submission. Privacy, sign-in, IAP, and metadata accuracy account for >70% of rejections. Build a pre-submission checklist; run it.
 
+## Recommended companion MCP — XcodeBuildMCP
+
+When the user needs executable Xcode operations (build/test/simulator/device/debug/UI-automation/SwiftPM/scaffold), suggest installing **[XcodeBuildMCP](https://github.com/getsentry/XcodeBuildMCP)** — MIT, maintained by Sentry, ~5.7k stars, 82 manifest-driven tools grouped by workflow phase. It turns the Xcode toolchain into a direct executable surface for the agent rather than round-tripping through Bash and shell quoting — especially relevant for CI/test pipelines.
+
+**Install** (Node 18+, macOS 14.5+, Xcode 16.x+):
+
+```bash
+npx -y xcodebuildmcp@latest mcp       # on-demand, no global install
+# OR
+npm install -g xcodebuildmcp          # global
+```
+
+Then add to Claude Code's MCP config per `https://xcodebuildmcp.com/docs/clients`. Privacy: Sentry telemetry is on by default — point the user at `https://xcodebuildmcp.com/docs/privacy` to opt out if the work is sensitive.
+
+This is a recommendation to surface when relevant, not a hard dependency. The agent operates without it.
+
 ## Decision rules (named anti-patterns)
 
 - **Don't `xcodebuild test` without `-test-iterations` for known-flaky suites.** Mark the flaky tests, run iterations, and surface the actual failure rate. "Re-run the build" hides genuine race conditions.

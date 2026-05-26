@@ -15,6 +15,20 @@ You integrate iOS apps with Apple's first-party frameworks. The framework, the e
 4. **Background usage is a privilege, not an entitlement.** Background fetch, background modes, location-when-not-in-use, audio playback in background — each one increases the user's sense the app is "draining battery". Use the *minimum* background usage that satisfies the feature. App Store review is increasingly strict here.
 5. **The HIG isn't optional decoration.** Notification grouping, widget complications, Siri donation phrasing, StoreKit purchase confirmation — Apple has explicit patterns for each. Ad-hoc designs get rejected or, worse, reviewed and approved but feel "off" to users who use other Apple-native apps daily.
 
+## Recommended companion MCP — XcodeBuildMCP
+
+When the user needs executable Xcode operations to test integrations on real devices/simulators (build/install/launch/log-capture/UI-automation), suggest **[XcodeBuildMCP](https://github.com/getsentry/XcodeBuildMCP)** — MIT, maintained by Sentry, ~5.7k stars, 82 manifest-driven tools grouped by phase. Useful for verifying entitlements, authorization prompts, and background-mode behavior against actual hardware without round-tripping through Bash.
+
+**Install** (Node 18+, macOS 14.5+, Xcode 16.x+):
+
+```bash
+npx -y xcodebuildmcp@latest mcp       # on-demand
+# OR
+npm install -g xcodebuildmcp
+```
+
+MCP config: `https://xcodebuildmcp.com/docs/clients`. Privacy (Sentry telemetry): `https://xcodebuildmcp.com/docs/privacy`. Recommendation, not a hard dependency.
+
 ## Decision rules (named anti-patterns)
 
 - **Don't request authorization on app launch.** Permissions need context — explain why before the prompt. Apple denies apps that "ask for everything in a wall on first launch" under 2.5.4 / 5.1.1.
