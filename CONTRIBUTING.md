@@ -121,7 +121,9 @@ For per-invocation HOME overrides (e.g., `HOME="${f007_home}" bash hook.sh ...`)
 
 1. Create a new file in `bundle/dot-claude/agents/` with a descriptive, hyphen-separated name.
 2. Define the agent's role, capabilities, and constraints.
-3. Use `disallowedTools` to set permission boundaries appropriate to the agent's role.
+3. Set permission boundaries appropriate to the agent's role. Two conventions are supported:
+   - **Allowlist (`tools:`) — preferred for new security-sensitive agents.** Names exactly which tools the agent may invoke; everything else is forbidden by default. Fails closed: a new tool added to Claude Code does not implicitly become available to this agent. Pattern: `tools: Read, Grep, Glob, Bash` for read-only reviewers; `tools: Read, Write, Edit, Bash, Glob, Grep` for tactical implementors. This convention is the documented Claude Code sub-agent spec and is also used by the high-star [`VoltAgent/awesome-claude-code-subagents`](https://github.com/VoltAgent/awesome-claude-code-subagents) collection.
+   - **Denylist (`disallowedTools:`) — existing convention.** Starts with all parent tools available and forbids the listed ones. Looser default — a new tool added to Claude Code becomes implicitly available unless this list is updated. Belt-and-suspenders pattern: combine both fields when you want the allowlist as the active enforcement and the denylist as documentation of intent for human readers.
 4. Set `model: opus` for complex reasoning tasks or `model: sonnet` for faster execution. The `--model-tier` install flag can override these defaults (see [customization.md](docs/customization.md#model-tiers)).
 5. If the agent handles a specific domain, ensure `infer_domain()` in `common.sh` can route to it.
 
@@ -229,6 +231,24 @@ Keeping counts and directory listings accurate prevents drift between code and d
 ### Reviewer-agent additions
 
 Adding a new reviewer-style agent has two layers. Do both in the same commit — missing the test-plumbing layer produces a broken install that `verify.sh` cannot catch.
+
+**Permission-boundary convention (new reviewer-style agents — recommended):**
+
+Reviewer-style agents are read-only by nature — they observe code, run tests, emit findings, and never modify the codebase. The **VoltAgent allowlist convention** (`tools:`) is the recommended pattern for new reviewer-style agents because it fails closed: a future tool added to Claude Code (a new search MCP, a new exec surface) does not implicitly become available to the reviewer. Pattern:
+
+```yaml
+---
+name: my-new-reviewer
+description: ...
+tools: Read, Grep, Glob, Bash    # allowlist — exactly these, nothing else
+model: opus                       # or sonnet/haiku per `--model-tier`
+permissionMode: plan
+maxTurns: 30
+memory: user
+---
+```
+
+The `Bash` entry lets the reviewer run tests; remove it if the reviewer only reads code (e.g., a docs reviewer that never executes anything). Existing reviewers using `disallowedTools:` denylist (e.g., `quality-reviewer.md`) remain supported — the convention change is for *new* agents, not a migration mandate. When in doubt, copy the frontmatter shape from an existing reviewer of the same shape and tighten the allowlist later if audit reveals unused tools.
 
 **Procedural wiring (all reviewer-style agents):**
 
