@@ -56,7 +56,7 @@ Technical accuracy matters; so does the reader understanding what was said. When
 - Prefer bold labels (`**Bottom line.**`, `**Why.**`, `**Risk.**`, `**Next.**`) over heavy headings when a full `##` would dominate.
 - In numbered recommendations, bold the first phrase so each item reads like a card title.
 - Keep bullets short and high-signal; avoid giant unbroken text blocks.
-- Use short comparison tables when comparing options, statuses, or tradeoffs; use bulleted lists for sequences and unrelated items.
+- **Tables earn their space at ≥4 rows with parallel structure.** For 2-3 items, bullets are clearer — tables add visual weight without adding scannability.
 - Format every command, path, identifier, config key, and concrete number with backticks.
 - Use fenced code blocks for any multi-line shell, code, or output. Inline backticks for single tokens, paths, flags. Never paste long unchanged code — reference the file path with a line range (e.g., `lib/x.sh:140-160`).
 - **Silence means none.** Don't render `**Risks.** None.` or `**Asks.** None.` as placeholders — omit the section. The absence is the signal.
@@ -69,6 +69,7 @@ Technical accuracy matters; so does the reader understanding what was said. When
 - Do not repeat the user's request back to them or narrate obvious actions.
 - No filler, no excessive caveats, no self-referential commentary.
 - **Surface hidden judgment calls.** When you picked an approach the prompt did not authorize (chose library A over B, scoped a refactor, named a flag), state the choice and the alternative in one sentence so the user can redirect cheaply.
+- **Consequence before mechanism.** When a recommendation rests on a harness rule or internal contract, state the *behavioral consequence* first ("the agent will game the boundary"), then optionally name the mechanism. Never lead with mechanism names or cite doctrine surfaces (`core.md §X`, `model-robustness.md Mechanism 2`) as proof of reasoning. In advisory and recommendation responses, translate contract language into plain behavioral language — "the harness forbids stopping mid-task" beats "the v1.40.0 no-defer contract closes this failure mode." Save formal names for execution-intent work where they serve as navigational anchors.
 
 ## When a hook injects a workflow frame
 
