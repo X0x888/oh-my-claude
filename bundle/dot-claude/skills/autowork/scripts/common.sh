@@ -3910,9 +3910,12 @@ set_dimension_verdicts() {
   # only wrote dim_<dim>_verdict, never the ts — so a FINDINGS-only review
   # left the dimension stale (is_dimension_valid returned false), blocking
   # via the review-coverage gate instead of via the verdict. Patching ts
-  # here moves the block path to stop-guard's findings-pending check
-  # (introduced in the same wave) which gives the user a more accurate
-  # block message ("address findings" vs "run reviewer").
+  # here moves the block path to stop-guard's stricter-verdict-wins gate
+  # (introduced in the same wave at stop-guard.sh ~line 1216, between the
+  # review-coverage gate and the excellence gate). The user-facing
+  # difference: the block message now reads "address findings, then re-
+  # run the reviewer" instead of "run the reviewer again" — which is
+  # what the workflow actually needs at this point.
   with_state_lock _write_stricter_dim_verdicts_unlocked "${verdict}" "$(now_epoch)" "$@"
 }
 

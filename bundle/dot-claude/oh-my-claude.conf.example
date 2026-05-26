@@ -421,6 +421,21 @@
 # When this fires on a legitimate iterative workflow (TDD red-green
 # cycles where the same `npm test` failing IS the workflow), set
 # `circuit_breaker=off` here or per-shell via `OMC_CIRCUIT_BREAKER=off`.
+#
+# Build-tool first-arg collision class. The target hash is
+# `tool_name + first_positional_arg + cwd`, so build-tool dispatchers
+# (`make test`, `make build`, `make lint`; `npm test`, `npm run lint`,
+# `npm run build`; `pnpm`, `yarn`, `cargo`, `just`, `mise`) collapse to
+# a single target hash per cwd. Three distinct sub-commands that each
+# fail once for unrelated reasons will trip the breaker spuriously
+# because the first argv token is identical. If your workflow is
+# dispatcher-heavy (Makefile-driven monorepos, multi-script npm projects),
+# either set `circuit_breaker=off` for those sessions or expect occasional
+# false fires you can clear with /ulw-skip. A finer-grained hash that
+# incorporates more argv tokens would resolve this but at the cost of
+# losing the "even with argument variations" coverage `core.md:128`
+# explicitly requires.
+#
 # Env: OMC_CIRCUIT_BREAKER. Default ON in maximum/balanced presets; OFF
 # in minimal.
 #circuit_breaker=on

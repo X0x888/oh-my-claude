@@ -20,11 +20,20 @@
 #   - **Default OFF.** Disk cost is non-trivial (50-500 KB/session). Users
 #     opt in via `transcript_archive=on` in oh-my-claude.conf or env
 #     `OMC_TRANSCRIPT_ARCHIVE=on`.
-#   - **Fatal-stop guard (metis F-5).** When the matcher names a fatal
-#     condition (rate_limit / authentication_failed / billing_error /
-#     max_output_tokens), skip the archive — `stop-failure-handler.sh`
-#     owns that window and the JSONL is being actively flushed by Claude
-#     Code. The next clean Stop catches up.
+#   - **Defensive fatal-stop guard (metis F-5).** The hook is wired to
+#     Stop, not StopFailure. Per `docs/architecture.md` the `matcher`
+#     field is currently emitted only on StopFailure, not on Stop — so
+#     the case-statement skip below is dead code in production today.
+#     The guard ships anyway as defensive future-proofing: if a future
+#     Claude Code release ever forwards a fatal `matcher` on the Stop
+#     event (e.g., a unified stop-class refactor), the JSONL would be
+#     mid-flush at exactly the moment `stop-failure-handler.sh` owns the
+#     window, and a racing archive read would see a partial last line.
+#     The skip preserves the producer/consumer split that exists on the
+#     StopFailure path today. **If a maintainer ever observes the case
+#     statement matching in production**, that signals Claude Code's
+#     hook surface changed and the rest of `stop-failure-handler.sh`'s
+#     fatal-window logic should be re-audited.
 #   - **Privacy parity with stop_failure_capture (metis F-5).** The
 #     transcript carries the same secrecy surface as `resume_request.json`
 #     (prompt + assistant turns + secrets the user may have pasted). If
