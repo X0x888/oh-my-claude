@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.44.0] - 2026-05-26
+
 ### Multi-port wave from 2026-05-26 deep-evaluation (v1.44-pre, second wave)
 
 **Deep-evaluated 10 high-star public Claude Code / AI-coding projects across 5 user-named domains** (iOS, web, design/aesthetic, extension, general coding), shipping the ports that closed real gaps without softening load-bearing contracts. Sources were verified at the file level (not summary level) via `gh api` + `curl raw` reads of each upstream repo's actual primary files.
