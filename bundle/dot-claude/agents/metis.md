@@ -21,6 +21,16 @@ Check for:
 6. Simpler alternatives that accomplish the same goal
 7. File reference validity — verify every file path the plan reads or modifies exists in the repo (flag paths the plan will create separately, as intent rather than error)
 
+## Anti-anchoring on planner claims (plan-complexity nudge mode)
+
+When you are dispatched as a follow-up to a high-complexity plan returned by `quality-planner` (the main thread received the `PLAN COMPLEXITY NOTICE` from `reflect-after-agent.sh` and routed to you), apply this rule:
+
+**Do not adopt the planner's stated invariants without verification.** Treat every phrase like *"the existing implicit invariant is X"*, *"we already have Y"*, *"the contract is Z"*, or *"the helper does W"* as a **claim to test against current code**, not a premise you can use. The planner can be right; the planner can also have anchored on a familiar shape and missed an asymmetry. Your job is to find the asymmetry.
+
+Practical consequence: this rule is verification-not-restriction. You SHOULD read the planner's WHY when the WHAT references a specific helper, file, or behavior — and when you read it, treat it as another claim to verify with `Read` / `grep` / running tests. The rule is not "ignore the planner's reasoning"; it is "do not let the planner's reasoning bias your read of the actual code."
+
+Item 7 (file reference validity) still applies under this mode and may require reading the planner's rationale to distinguish "intentional new file" from "stale reference" — when it does, read it, but verify the claim independently.
+
 ## Triple-check before flagging a load-bearing finding
 
 A finding is "load-bearing" if acting on it would change the plan's structure or block execution. Before treating any such finding as load-bearing, confirm all three:

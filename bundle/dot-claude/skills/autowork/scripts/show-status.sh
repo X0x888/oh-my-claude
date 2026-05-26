@@ -867,15 +867,25 @@ for dim in bug_hunt code_quality stress_test completeness prose traceability des
   dim_verdict="$(read_state "dim_${dim}_verdict")"
   [[ -n "${dim_ts}" || -n "${dim_verdict}" ]] || continue
 
-  if [[ -n "${dim_ts}" ]]; then
+  # v1.44-pre Port 2: lead with the "findings reported" frame whenever
+  # the verdict is FINDINGS or BLOCK (regardless of whether a ts was
+  # stamped). Pre-Port-2, set_dimension_verdicts did NOT stamp ts, so
+  # the no-ts branch caught FINDINGS naturally; now that ts is stamped
+  # for stricter-wins, we must distinguish "valid clean review" from
+  # "valid review with findings" via the verdict, not the ts presence.
+  if [[ "${dim_verdict}" == FINDINGS* ]]; then
+    dim_line="${dim}: findings reported"
+    [[ -n "${dim_ts}" ]] && dim_line="${dim_line} @ ${dim_ts}"
+  elif [[ "${dim_verdict}" == BLOCK* ]]; then
+    dim_line="${dim}: blocked"
+    [[ -n "${dim_ts}" ]] && dim_line="${dim_line} @ ${dim_ts}"
+  elif [[ -n "${dim_ts}" ]]; then
     if is_dimension_valid "${dim}"; then
       dim_line="${dim}: ticked @ ${dim_ts}"
     else
       dim_line="${dim}: stale @ ${dim_ts}"
     fi
     [[ -n "${dim_verdict}" ]] && dim_line="${dim_line} [${dim_verdict}]"
-  elif [[ "${dim_verdict}" == "FINDINGS" ]]; then
-    dim_line="${dim}: findings reported"
   else
     dim_line="${dim}: ${dim_verdict}"
   fi

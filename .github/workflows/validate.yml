@@ -230,6 +230,18 @@ jobs:
       - name: Run stop-guard bypass-surface umbrella tests (v1.42.x pin)
         run: bash tests/test-stop-guard-bypass-surface.sh
 
+      - name: Run circuit-breaker tests (v1.44-pre Port 1 pin)
+        run: bash tests/test-circuit-breaker.sh
+
+      - name: Run stop-transcript-archive tests (v1.44-pre Port 5 pin)
+        run: bash tests/test-stop-transcript-archive.sh
+
+      - name: Run stricter-verdict-wins tests (v1.44-pre Port 2 pin)
+        run: bash tests/test-stricter-verdict-wins.sh
+
+      - name: Run quality-reviewer zero-finding-rule tests (v1.44-pre Port 3 pin)
+        run: bash tests/test-quality-reviewer-zero-finding-rule.sh
+
       - name: Run finding-list tests (v1.32.0 R1 pin)
         run: bash tests/test-finding-list.sh
 

@@ -156,6 +156,15 @@
         ]
       },
       {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/skills/autowork/scripts/circuit-breaker.sh"
+          }
+        ]
+      },
+      {
         "matcher": "mcp__.*",
         "hooks": [
           {
@@ -334,6 +343,14 @@
           {
             "type": "command",
             "command": "$HOME/.claude/skills/autowork/scripts/canary-claim-audit.sh"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/skills/autowork/scripts/stop-transcript-archive.sh"
           }
         ]
       }

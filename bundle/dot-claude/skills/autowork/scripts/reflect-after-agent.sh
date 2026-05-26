@@ -104,7 +104,7 @@ plan_complexity_nudge=""
 nudge_flag="$(read_state "plan_complexity_nudge_pending")"
 if [[ "${nudge_flag}" == "1" ]]; then
   signals="$(read_state "plan_complexity_signals")"
-  plan_complexity_nudge=" PLAN COMPLEXITY NOTICE: the plan just returned trips the high-complexity threshold (signals: ${signals:-unspecified}). Consider running metis to pressure-test it for hidden assumptions, missing constraints, and weak validation before committing to execution."
+  plan_complexity_nudge=" PLAN COMPLEXITY NOTICE: the plan just returned trips the high-complexity threshold (signals: ${signals:-unspecified}). Consider running metis to pressure-test it for hidden assumptions, missing constraints, and weak validation before committing to execution. Apply the anti-anchoring rule: tell metis to treat every planner-stated invariant ('we already have X', 'the contract is Y') as a claim to verify against current code, not a premise to accept."
   with_state_lock_batch "plan_complexity_nudge_pending" ""
 fi
 

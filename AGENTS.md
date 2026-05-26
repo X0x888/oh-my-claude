@@ -171,7 +171,7 @@ oh-my-claude/
       memory/                 # Core, skills, and compact memory files
       scripts/                # 13 lifecycle scripts (prompt routing, first-prompt session-init, compaction, session start [6 hooks incl. drift-check + whats-new + watchdog-health], stop-failure, resume-watchdog)
     skills/                   # 27 skill definitions, each in <name>/SKILL.md
-      autowork/scripts/       # 35 autowork hook scripts and utilities
+      autowork/scripts/       # 37 autowork hook scripts and utilities
         common.sh             # Shared functions (JSON, classification, scope)
         lib/state-io.sh       # Extracted state I/O subsystem; sourced by common.sh
         lib/classifier.sh     # Extracted prompt classifier (P0 + P1 + telemetry); sourced by common.sh
@@ -183,7 +183,7 @@ oh-my-claude/
     settings.patch.json       # Settings merged into user's settings.json
 
   evals/realwork/             # Outcome eval scenarios + scorer for minimal-prompt real-work shipping
-  tests/                      # 121 bash + 1 python test scripts; CLAUDE.md "Testing" lists each one
+  tests/                      # 125 bash + 1 python test scripts; CLAUDE.md "Testing" lists each one
 
   tools/                      # Developer tools (not installed; keep exhaustive)
     audit-published-release-assets.sh
@@ -283,6 +283,17 @@ Reviewer-style agents (`quality-reviewer`, `editor-critic`, `excellence-reviewer
 - `VERDICT: FINDINGS (N)` or `VERDICT: BLOCK (N)` — N blocking findings, dimension does NOT tick
 
 `N=0` should be rendered as `CLEAN`/`SHIP`, never `FINDINGS (0)` — though the parser accepts and re-maps it to clean for safety. The stop-guard's `record-reviewer.sh` hook reads this line to determine whether to tick the reviewer's dimension. Agents that forget the verdict line fall back to a legacy phrase-based detector, but the structured contract is preferred because it removes ambiguity.
+
+##### Stricter-verdict-wins invariant (v1.44-pre)
+
+When multiple reviewers cover the same dimension and their verdicts disagree, the **stricter verdict is authoritative** — pessimism wins across the reviewer chain. cc10x's F11 names the same rule; oh-my-claude enforces it via two mechanisms working together:
+
+1. **Storage-side preservation (`common.sh` dim helpers).** `tick_dimensions_with_verdict` and `set_dimension_verdicts` route through `_write_stricter_dim_verdicts_unlocked`, which reads each dimension's current verdict and writes the stricter of `(current, new)` on the severity ladder `CLEAN/SHIP (0) < FINDINGS (1) < BLOCK (2)`. A CLEAN from quality-reviewer cannot overwrite a FINDINGS from excellence-reviewer on the same dimension.
+2. **Gate-side enforcement (`stop-guard.sh` stricter-verdict-wins gate).** After the review-coverage gate confirms all required dimensions are ticked, the stricter-verdict-wins gate scans each required dim's verdict and blocks Stop on any fresh `FINDINGS*`/`BLOCK*`. "Fresh" means the dim ts is at-or-after `last_code_edit_ts` — a stale FINDINGS predating the most recent edit does NOT block (the reviewer hadn't seen the fix).
+
+**Edit-aware override.** When the user addresses findings and re-runs the reviewer, the new CLEAN verdict's ts updates past `last_code_edit_ts` and the storage helper detects the prior FINDINGS is now stale — the new CLEAN wins outright. The gate self-clears on the fix-and-re-review path without requiring an explicit reset surface.
+
+**Why this matters.** Before v1.44-pre, the implicit semantics was "last-reviewer-wins" — whichever reviewer wrote last set the dimension's verdict, and stop-guard only consumed the ts. A quality-reviewer reporting CLEAN AFTER a sibling excellence-reviewer's FINDINGS silently dropped the findings (the dimension's ts was already valid from the CLEAN, and the FINDINGS verdict was stored but never read by any gate). The stricter-wins invariant closes that gap; `tests/test-stricter-verdict-wins.sh` is the regression net.
 
 #### Universal VERDICT contract (v1.14.0)
 

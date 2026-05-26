@@ -62,6 +62,8 @@ _omc_env_mark_deferred_strict="${OMC_MARK_DEFERRED_STRICT:-}"
 _omc_env_shortcut_ratio_gate="${OMC_SHORTCUT_RATIO_GATE:-}"
 _omc_env_no_defer_mode="${OMC_NO_DEFER_MODE:-}"
 _omc_env_god_scope_on_bare_prompt="${OMC_GOD_SCOPE_ON_BARE_PROMPT:-}"
+_omc_env_circuit_breaker="${OMC_CIRCUIT_BREAKER:-}"
+_omc_env_transcript_archive="${OMC_TRANSCRIPT_ARCHIVE:-}"
 _omc_env_wave_override_ttl="${OMC_WAVE_OVERRIDE_TTL_SECONDS:-}"
 _omc_env_stop_failure_capture="${OMC_STOP_FAILURE_CAPTURE:-}"
 _omc_env_prompt_persist="${OMC_PROMPT_PERSIST:-}"
@@ -616,6 +618,10 @@ _parse_conf_file() {
         [[ -z "${_omc_env_no_defer_mode}" && "${value}" =~ ^(on|off)$ ]] && OMC_NO_DEFER_MODE="${value}" || true ;;
       god_scope_on_bare_prompt)
         [[ -z "${_omc_env_god_scope_on_bare_prompt}" && "${value}" =~ ^(on|off)$ ]] && OMC_GOD_SCOPE_ON_BARE_PROMPT="${value}" || true ;;
+      circuit_breaker)
+        [[ -z "${_omc_env_circuit_breaker}" && "${value}" =~ ^(on|off)$ ]] && OMC_CIRCUIT_BREAKER="${value}" || true ;;
+      transcript_archive)
+        [[ -z "${_omc_env_transcript_archive}" && "${value}" =~ ^(on|off)$ ]] && OMC_TRANSCRIPT_ARCHIVE="${value}" || true ;;
       wave_override_ttl_seconds)
         [[ -z "${_omc_env_wave_override_ttl}" && "${value}" =~ ^[0-9]+$ ]] && OMC_WAVE_OVERRIDE_TTL_SECONDS="${value}" || true ;;
       stop_failure_capture)
@@ -3813,6 +3819,76 @@ tick_dimension() {
   with_state_lock write_state "${key}" "${ts}"
 }
 
+# v1.44-pre Port 2 (stricter-verdict-wins): returns the stricter of two
+# reviewer verdicts on a severity ladder CLEAN/SHIP (0) < FINDINGS (1) <
+# BLOCK (2). Empty current → new wins; empty new → current wins; tie →
+# current wins (stable tie-break).
+#
+# Used by tick_dimensions_with_verdict + set_dimension_verdicts to
+# enforce cc10x F11's invariant: when multiple reviewers report on the
+# same dimension, the stricter verdict is authoritative. Prior to this,
+# `tick_dimensions_with_verdict CLEAN` could overwrite a sibling
+# reviewer's FINDINGS verdict, silently dropping findings.
+_stricter_verdict() {
+  local current="$1"
+  local new="$2"
+  if [[ -z "${current}" ]]; then
+    printf '%s' "${new}"
+    return 0
+  fi
+  if [[ -z "${new}" ]]; then
+    printf '%s' "${current}"
+    return 0
+  fi
+  local cur_rank new_rank
+  case "${current}" in
+    BLOCK*) cur_rank=2 ;;
+    FINDINGS*) cur_rank=1 ;;
+    *) cur_rank=0 ;;
+  esac
+  case "${new}" in
+    BLOCK*) new_rank=2 ;;
+    FINDINGS*) new_rank=1 ;;
+    *) new_rank=0 ;;
+  esac
+  if (( new_rank > cur_rank )); then
+    printf '%s' "${new}"
+  else
+    printf '%s' "${current}"
+  fi
+}
+
+# v1.44-pre Port 2: locked write body that reads each dimension's
+# current verdict and ts, computes the stricter-wins result against the
+# new verdict, and writes ts + final_verdict atomically. Honors an
+# "edit-aware override": if the current verdict's ts is BEFORE the most
+# recent code edit, the existing verdict is stale and the new verdict
+# wins outright (the reviewer just reviewed code the prior reviewer did
+# not see — fix-and-re-review path must still clear FINDINGS).
+#
+# Use under with_state_lock; re-entrancy-safe via _OMC_STATE_LOCK_HELD.
+_write_stricter_dim_verdicts_unlocked() {
+  local verdict="$1"
+  local ts="$2"
+  shift 2
+  local last_edit dim current_verdict current_ts final_verdict
+  last_edit="$(read_state "last_code_edit_ts")"
+  last_edit="${last_edit:-0}"
+  local args=()
+  for dim in "$@"; do
+    current_verdict="$(read_state "dim_${dim}_verdict")"
+    current_ts="$(read_state "dim_${dim}_ts")"
+    current_ts="${current_ts:-0}"
+    if [[ -n "${current_verdict}" ]] && (( current_ts >= last_edit )); then
+      final_verdict="$(_stricter_verdict "${current_verdict}" "${verdict}")"
+    else
+      final_verdict="${verdict}"
+    fi
+    args+=("$(_dim_key "${dim}")" "${ts}" "dim_${dim}_verdict" "${final_verdict}")
+  done
+  _write_state_batch_unlocked "${args[@]}"
+}
+
 tick_dimensions_with_verdict() {
   local verdict="$1"
   local ts="${2:-$(now_epoch)}"
@@ -3820,13 +3896,7 @@ tick_dimensions_with_verdict() {
 
   [[ "$#" -gt 0 ]] || return 0
 
-  local args=()
-  local dim
-  for dim in "$@"; do
-    args+=("$(_dim_key "${dim}")" "${ts}" "dim_${dim}_verdict" "${verdict}")
-  done
-
-  with_state_lock_batch "${args[@]}"
+  with_state_lock _write_stricter_dim_verdicts_unlocked "${verdict}" "${ts}" "$@"
 }
 
 set_dimension_verdicts() {
@@ -3835,13 +3905,15 @@ set_dimension_verdicts() {
 
   [[ "$#" -gt 0 ]] || return 0
 
-  local args=()
-  local dim
-  for dim in "$@"; do
-    args+=("dim_${dim}_verdict" "${verdict}")
-  done
-
-  with_state_lock_batch "${args[@]}"
+  # v1.44-pre Port 2: stamp ts on every verdict write (parity with
+  # tick_dimensions_with_verdict). Before this patch, set_dimension_verdicts
+  # only wrote dim_<dim>_verdict, never the ts — so a FINDINGS-only review
+  # left the dimension stale (is_dimension_valid returned false), blocking
+  # via the review-coverage gate instead of via the verdict. Patching ts
+  # here moves the block path to stop-guard's findings-pending check
+  # (introduced in the same wave) which gives the user a more accurate
+  # block message ("address findings" vs "run reviewer").
+  with_state_lock _write_stricter_dim_verdicts_unlocked "${verdict}" "$(now_epoch)" "$@"
 }
 
 is_dimension_valid() {

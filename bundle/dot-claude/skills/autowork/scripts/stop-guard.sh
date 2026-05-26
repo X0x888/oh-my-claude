@@ -1213,6 +1213,51 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
   fi
   fi # end gate_level=full (review coverage gate)
 
+  # --- Stricter-verdict-wins gate (Check 4b, v1.44-pre Port 2) ---
+  #
+  # After the review-coverage gate confirms required dimensions are
+  # ticked, this gate blocks Stop when any required dimension's verdict
+  # is FINDINGS or BLOCK AND the verdict is fresh (ts >= last_code_edit_ts).
+  # Closes the cc10x F11 "stricter-verdict-wins" gap: prior to this, a
+  # CLEAN reviewer running AFTER a FINDINGS sibling could let Stop succeed
+  # because review-coverage was ts-only, not verdict-aware. The dim helpers
+  # (tick_dimensions_with_verdict / set_dimension_verdicts) now preserve
+  # stricter verdicts in storage (see common.sh:3816+); this gate is what
+  # actually consumes them at the block boundary.
+  #
+  # /ulw-skip bypass works via the top-of-script gate_skip_reason path
+  # (line 158+), so no per-gate skip check is needed here. One block per
+  # stop attempt; no block_cap because the user can clear by fixing the
+  # findings and re-running the reviewer (the edit-aware override clears
+  # stale FINDINGS post-edit).
+  if [[ "${OMC_GATE_LEVEL}" == "full" || "${OMC_GATE_LEVEL}" == "standard" ]]; then
+    required_dims_svw="$(get_required_dimensions)"
+    if [[ -n "${required_dims_svw}" ]]; then
+      findings_dims_svw=""
+      last_edit_ts_svw="$(read_state "last_code_edit_ts")"
+      last_edit_ts_svw="${last_edit_ts_svw:-0}"
+      for _svw_dim in ${required_dims_svw//,/ }; do
+        _svw_verdict="$(read_state "dim_${_svw_dim}_verdict")"
+        _svw_ts="$(read_state "$(_dim_key "${_svw_dim}")")"
+        _svw_ts="${_svw_ts:-0}"
+        if { [[ "${_svw_verdict}" == FINDINGS* ]] || [[ "${_svw_verdict}" == BLOCK* ]]; } \
+          && (( _svw_ts >= last_edit_ts_svw )); then
+          findings_dims_svw="${findings_dims_svw:+${findings_dims_svw}, }${_svw_dim}"
+        fi
+      done
+      if [[ -n "${findings_dims_svw}" ]]; then
+        record_gate_event "stricter-verdict-wins" "block" \
+          "block_count=1" "block_cap=1" \
+          "findings_dims=${findings_dims_svw}"
+        svw_recovery="$(format_gate_recovery_line "address the findings in the named dimension(s), then re-run the reviewer (its fresh CLEAN clears the stale FINDINGS post-edit). To bypass once with a reason (e.g., findings already triaged out-of-band), run /ulw-skip.")"
+        emit_stop_block "$(format_gate_block_dual \
+          "A reviewer reported FINDINGS on ${findings_dims_svw}; the stricter verdict is authoritative across the reviewer chain — a sibling CLEAN does not downgrade. Address the findings and re-run the reviewer." \
+          "[Stricter-verdict-wins · 1/1] reviewer chain on ${findings_dims_svw} ended with a fresh FINDINGS verdict. Pessimism wins by contract (cc10x F11; see AGENTS.md Reviewer VERDICT contract). Fix the issues, then re-run the reviewer — the dim helpers' edit-aware override will accept the new CLEAN once the code state moves forward.${svw_recovery}")"
+        exit 0
+      fi
+    fi
+  fi
+
   # --- Excellence gate (Check 5) ---
   #
   # Active when gate_level is full or standard. Requires excellence-reviewer

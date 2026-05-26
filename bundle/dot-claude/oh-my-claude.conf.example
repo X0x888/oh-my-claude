@@ -399,6 +399,52 @@
 # OMC_GOD_SCOPE_ON_BARE_PROMPT. Default ON.
 #god_scope_on_bare_prompt=on
 
+# circuit_breaker (v1.44-pre Port 1). PostToolUse:Bash hook that counts
+# consecutive same-target Bash failures (target hash = tool_name + first
+# positional argv + cwd). On the third same-target failure, emits a
+# directive instructing the model to revert and delegate to the `oracle`
+# agent; the breaker then resets the counter and sets a 60-second quiet
+# window suppressing re-fires while the model acts on the directive.
+#
+# Closes the model-judgment gap on `core.md` "3 failed attempts at the
+# same target — even with argument variations — stop. Revert to known-
+# good. Document tries. Switch approach or delegate to oracle." Prior
+# to v1.44-pre the rule was advisory only; the breaker is the mechanical
+# enforcement complement (`model-robustness.md` Mechanism 1 — structure
+# over judgment when judgment is the failure mode).
+#
+# Background bash invocations (`run_in_background:true`) are skipped —
+# spawn success ≠ underlying command success. Failure detection
+# delegates to common.sh `omc_hook_tool_failed` which canonicalizes
+# exit_code / status / success field shapes across Claude Code releases.
+#
+# When this fires on a legitimate iterative workflow (TDD red-green
+# cycles where the same `npm test` failing IS the workflow), set
+# `circuit_breaker=off` here or per-shell via `OMC_CIRCUIT_BREAKER=off`.
+# Env: OMC_CIRCUIT_BREAKER. Default ON in maximum/balanced presets; OFF
+# in minimal.
+#circuit_breaker=on
+
+# transcript_archive (v1.44-pre Port 5). On every Stop, copy the active
+# session JSONL transcript (Claude Code's `transcript_path`) to a
+# normalized JSON array under
+# `~/.claude/quality-pack/state/<project_key>/<session_id>/transcript.json`.
+# Idempotent — re-archives are skipped when the destination already
+# exists. `jq -s .` slurp is preferred; falls back to `cp` (with a
+# `.jsonl` suffix) when jq is unavailable.
+#
+# Use case: when stop-guard fires on a complex turn, replaying the turn
+# currently requires manual JSONL plumbing of
+# `~/.claude/projects/<key>/<session>.jsonl` — the archive turns that
+# into a stable per-session artifact you can grep / pipe / inspect
+# without hunting through Claude Code's session directory.
+#
+# Default OFF because the disk cost is non-trivial (50-500 KB per
+# session, accumulates across the `state_ttl_days` retention window).
+# Turn on when actively debugging gate fires or building harness tools
+# that need transcript replay. Env: OMC_TRANSCRIPT_ARCHIVE.
+#transcript_archive=off
+
 # Statusline shows a yellow `↑v<version>` arrow when the source repo is
 # ahead of the installed bundle. Useful nudge to re-run install.sh after
 # `git pull`. Default true.

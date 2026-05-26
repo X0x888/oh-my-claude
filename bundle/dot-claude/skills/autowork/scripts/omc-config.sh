@@ -78,6 +78,8 @@ mark_deferred_strict|bool|on|gates|Reject low-information defer reasons (out of 
 shortcut_ratio_gate|bool|on|gates|Soft-block when wave plan total≥10 AND deferred-to-decided ratio ≥0.5 (catches shortcut-on-big-tasks)
 no_defer_mode|bool|on|gates|v1.40.0: under ULW execution, /mark-deferred refuses, findings status=deferred rejected, stop-guard hard-blocks on any deferred entry. Agent must ship inline or hit a real external blocker.
 god_scope_on_bare_prompt|bool|on|advisory|v1.44: bare-imperative prompts (single-word "fix"/"audit"/"ship") inject GOD-SCOPE-SCAN directive — identify-and-implement across the whole project, no clarification, no defer to next session.
+circuit_breaker|bool|on|gates|v1.44-pre Port 1: PostToolUse:Bash hook — 3 consecutive same-target failures emit a revert+oracle directive and set a 60s quiet window. Enforces core.md:128 mechanically; ported from Citadel circuit-breaker.js.
+transcript_archive|bool|off|telemetry|v1.44-pre Port 5: archive session JSONL to ~/.claude/quality-pack/state/<project_key>/<session_id>/transcript.json on Stop. Idempotent; disabled by default — disk cost ~50-500 KB/session.
 installation_drift_check|true_false|true|advisory|Statusline yellow arrow when bundle is behind source
 whats_new_session_hint|true_false|true|advisory|SessionStart "you upgraded — run /whats-new" notice (once per version transition)
 lazy_session_start|bool|off|gates|Defer whats-new/drift-check/welcome SessionStart hooks to first UserPromptSubmit. Throwaway sessions skip the work AND preserve dedupe stamps for the next real session.
@@ -162,6 +164,8 @@ mark_deferred_strict=on
 shortcut_ratio_gate=on
 no_defer_mode=on
 god_scope_on_bare_prompt=on
+circuit_breaker=on
+transcript_archive=off
 metis_on_plan_gate=on
 stop_failure_capture=on
 resume_watchdog=on
@@ -194,6 +198,8 @@ mark_deferred_strict=on
 shortcut_ratio_gate=on
 no_defer_mode=on
 god_scope_on_bare_prompt=on
+circuit_breaker=on
+transcript_archive=off
 metis_on_plan_gate=off
 stop_failure_capture=on
 resume_watchdog=off
@@ -226,6 +232,8 @@ mark_deferred_strict=off
 shortcut_ratio_gate=off
 no_defer_mode=off
 god_scope_on_bare_prompt=off
+circuit_breaker=off
+transcript_archive=off
 metis_on_plan_gate=off
 stop_failure_capture=on
 resume_watchdog=off

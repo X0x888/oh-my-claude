@@ -502,6 +502,8 @@ required_paths=(
   "${CLAUDE_HOME}/skills/autowork/scripts/posttool-timing.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/stop-time-summary.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/canary-claim-audit.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/circuit-breaker.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/stop-transcript-archive.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/show-time.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/blindspot-inventory.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/check-latency-budgets.sh"
@@ -657,6 +659,8 @@ hook_scripts=(
   "${CLAUDE_HOME}/skills/autowork/scripts/posttool-timing.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/stop-time-summary.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/canary-claim-audit.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/circuit-breaker.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/stop-transcript-archive.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/show-time.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/blindspot-inventory.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/check-latency-budgets.sh"
@@ -711,6 +715,8 @@ else
     "Stop:stop-guard.sh"
     "Stop:stop-time-summary.sh"
     "Stop:canary-claim-audit.sh"
+    "Stop:stop-transcript-archive.sh"
+    "PostToolUse:circuit-breaker.sh"
   )
 
   # Scoped check: require the command fragment to appear under the correct

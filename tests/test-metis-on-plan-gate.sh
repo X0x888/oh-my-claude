@@ -392,6 +392,11 @@ ra_out1="$(HOME="${_test_home}" STATE_ROOT="${_test_state_root}" \
 assert_contains "T13: reflect-after-agent surfaces PLAN COMPLEXITY NOTICE" "PLAN COMPLEXITY NOTICE" "${ra_out1}"
 assert_contains "T13: notice carries the signals string" "steps=8" "${ra_out1}"
 assert_contains "T13: notice goes via additionalContext (PostToolUse-supported field)" "additionalContext" "${ra_out1}"
+# v1.44-pre Port 4: nudge surfaces the anti-anchoring rule so the main
+# thread tells metis to verify planner claims rather than adopt them.
+# Closes the cc10x F4 doctrinal gap; metis.md carries the rule body.
+assert_contains "T13: notice surfaces anti-anchoring rule" "anti-anchoring" "${ra_out1}"
+assert_contains "T13: notice names the verify-not-adopt frame" "verify against current code" "${ra_out1}"
 assert_eq "T13: plan_complexity_nudge_pending cleared after emission" "" "$(_read_state "${sid}" "plan_complexity_nudge_pending")"
 
 # Run reflect-after-agent.sh AGAIN — no nudge should appear (one-shot).
