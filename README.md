@@ -394,6 +394,29 @@ directory) so `git pull` can detect bundle drift and remind you to re-run
 automatically. The hook never overwrites a pre-existing non-oh-my-claude
 `post-merge` hook.
 
+### Recommended companion tools
+
+These are independent, MIT-licensed tools that pair well with oh-my-claude. They are not bundled — install separately when relevant.
+
+**[`ccusage`](https://github.com/ryoppippi/ccusage)** *(token + cost tracking, 14.7k stars)* — Parses Claude Code's local conversation logs and aggregates token usage and cost against a locked LiteLLM pricing snapshot. The 5-hour-block aggregation (`ccusage blocks`) matches Anthropic's actual rate-limit window. `ccusage statusline` is a Beta hook that renders compactly in Claude Code's statusline if you want cost visibility there.
+
+```bash
+bunx ccusage                      # one-shot: tokens + cost across recent sessions
+bunx ccusage blocks               # 5-hour rate-limit-window aggregation
+bunx ccusage statusline           # Claude Code statusline integration (beta)
+```
+
+Distributed as a native Rust binary via npm — `bunx`/`npx`/`pnpm dlx`/`pnpx`/Nix paths all work; no global install required. The 5-hour window matches Anthropic's rate-limit cap, so `ccusage blocks` is the most useful single command for "how close am I to the cap?". oh-my-claude already surfaces rate-limit status via `~/.claude/quality-pack/state/<session>/rate_limit_status.json` and `statusline.py`, so this is complementary (token-cost) rather than redundant.
+
+**[`XcodeBuildMCP`](https://github.com/getsentry/XcodeBuildMCP)** *(iOS Xcode automation MCP, 5.7k stars, getsentry-maintained)* — MCP server exposing 82 manifest-driven tools grouped by workflow phase (build, test, simulator, device, debug, SwiftPM, scaffold, UI-automation). Recommended in the iOS agents (`ios-ui-developer`, `ios-core-engineer`, `ios-deployment-specialist`, `ios-ecosystem-integrator`) when executable Xcode operations beat shelling out via Bash.
+
+```bash
+npx -y xcodebuildmcp@latest mcp   # on-demand, no global install
+npm install -g xcodebuildmcp      # global
+```
+
+Then add to Claude Code's MCP config per `https://xcodebuildmcp.com/docs/clients`. Requires macOS 14.5+, Xcode 16.x+, Node 18+. Sentry telemetry is on by default — opt out per `https://xcodebuildmcp.com/docs/privacy` if needed.
+
 ## Testing
 
 The harness includes both a post-install verifier and dedicated test scripts:
