@@ -1,3 +1,8 @@
+<!--
+Vendored from twostraws/SwiftUI-Agent-Skill (MIT, © 2026 Paul Hudson).
+See ../SKILL.md and ../LICENSE for upstream provenance + full license.
+-->
+
 # Swift
 
 - Prefer Swift-native string methods over Foundation equivalents: use `replacing("a", with: "b")` not `replacingOccurrences(of: "a", with: "b")`.

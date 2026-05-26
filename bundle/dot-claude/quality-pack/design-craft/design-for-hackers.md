@@ -3,6 +3,7 @@ oh-my-claude design-craft reference — Design-for-Hackers method
 
 Vendored verbatim from ryanthedev/design-for-ai (MIT, © 2026 ryanthedev).
 Upstream: https://github.com/ryanthedev/design-for-ai
+Upstream commit: f8a0ff181e4c8046045900d427237fb5abc3567d
 Vendored: 2026-05-26.
 
 The structural pattern (10-category CHECKER + 8-phase APPLIER + Symptom→Chapter

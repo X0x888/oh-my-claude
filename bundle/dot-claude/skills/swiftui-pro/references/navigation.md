@@ -1,3 +1,8 @@
+<!--
+Vendored from twostraws/SwiftUI-Agent-Skill (MIT, © 2026 Paul Hudson).
+See ../SKILL.md and ../LICENSE for upstream provenance + full license.
+-->
+
 # Navigation and presentation
 
 - Use `NavigationStack` or `NavigationSplitView` as appropriate; flag all use of the deprecated `NavigationView`.

@@ -1,3 +1,8 @@
+<!--
+Vendored from twostraws/SwiftUI-Agent-Skill (MIT, © 2026 Paul Hudson).
+See ../SKILL.md and ../LICENSE for upstream provenance + full license.
+-->
+
 # SwiftUI Views
 
 - Strongly prefer to avoid breaking up view bodies using computed properties or methods that return `some View`, even if `@ViewBuilder` is used. Extract them into separate `View` structs instead, placing each into its own file.

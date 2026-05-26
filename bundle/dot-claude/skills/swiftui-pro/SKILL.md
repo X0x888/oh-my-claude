@@ -7,12 +7,18 @@ metadata:
   version: "1.1"
   bundled-from: twostraws/SwiftUI-Agent-Skill
   bundled-source-url: https://github.com/twostraws/SwiftUI-Agent-Skill
+  upstream-commit: be297ff80dddec529af1f9b1f1f114aab6c9d11c
+  vendored-on: 2026-05-26
 ---
 
 <!--
 Vendored verbatim from twostraws/SwiftUI-Agent-Skill v1.1 (MIT, © 2026 Paul Hudson).
+Upstream commit: be297ff80dddec529af1f9b1f1f114aab6c9d11c
+Vendored: 2026-05-26.
+
 Full upstream LICENSE preserved at ./LICENSE in this directory. Update by
-re-pulling SKILL.md + references/*.md from the upstream main branch; do not
+re-pulling SKILL.md + references/*.md from the upstream main branch (see
+CONTRIBUTING.md "Refreshing vendored content" for the recipe); do not
 hand-edit individual rules without recording the divergence here.
 -->
 

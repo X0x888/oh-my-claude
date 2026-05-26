@@ -133,6 +133,43 @@ For per-invocation HOME overrides (e.g., `HOME="${f007_home}" bash hook.sh ...`)
 2. Add a `SKILL.md` file defining trigger conditions and instructions.
 3. If the skill requires scripts, place them in a `scripts/` subdirectory.
 
+## Refreshing vendored content
+
+oh-my-claude vendors some content verbatim from upstream MIT-licensed repositories — the `swiftui-pro` skill (from `twostraws/SwiftUI-Agent-Skill`), and the `design-craft/` references `taste-skill-doctrine.md`, `design-for-hackers.md`, `a11y-doctrine.md` (from `Leonxlnx/taste-skill`, `ryanthedev/design-for-ai`, `fecarrico/A11Y.md` respectively). Each vendored file carries a leading HTML-comment header naming upstream source, MIT license, vendoring date, and upstream commit SHA. **Do not hand-edit the vendored content.** When upstream releases an update worth picking up, refresh with this recipe:
+
+```bash
+# 1. Confirm upstream HEAD has actually changed since the recorded vendoring SHA.
+#    Each vendored file's header has an "Upstream commit:" line.
+gh api repos/<owner>/<repo>/commits/main --jq '.sha'
+
+# 2. Diff upstream against the vendored copy to scope the change.
+curl -sL "https://raw.githubusercontent.com/<owner>/<repo>/main/<path>" \
+  | diff - bundle/dot-claude/<vendored-path>
+
+# 3. Re-pull (verbatim — do NOT hand-merge or cherry-pick).
+curl -sL "https://raw.githubusercontent.com/<owner>/<repo>/main/<path>" \
+  > bundle/dot-claude/<vendored-path>
+
+# 4. Restore the vendoring HTML-comment header at the top of the file.
+#    Update the "Vendored: YYYY-MM-DD" line to today and "Upstream commit:"
+#    line to the new HEAD SHA. The header is the bookkeeping; the body is
+#    the upstream content.
+
+# 5. Run the regression test for that vendored surface.
+bash tests/test-swiftui-pro-skill.sh           # for the swiftui-pro skill
+bash tests/test-design-craft-additions.sh      # for the design-craft references
+
+# 6. Run the full coordination-rules suite to catch count/lockstep drift.
+bash tests/test-coordination-rules.sh
+
+# 7. Commit with a clear message naming the refresh:
+#    "Refresh <vendored-name> from <upstream> SHA <new-sha>"
+```
+
+The version-pin (`Upstream commit: <SHA>`) in each header is what makes refresh deterministic — without it, six months from now we cannot tell whether upstream has drifted. When a vendored file's regression test asserts specific content (e.g., the SwiftUI api.md test asserts `foregroundStyle`, `clipShape`, `tabItem`), upstream evolution may force you to update the test — that's intended, the test exists to surface upstream-content drift.
+
+**FORBIDDEN: hand-edit a vendored file to "fix" a rule, "improve" wording, or "adapt to oh-my-claude conventions".** If the vendored content is wrong for your use case, either (a) discuss with the upstream maintainer and contribute the change there, then re-pull, or (b) fork the file out of the vendored path into a project-owned file and own it explicitly. Hand-editing a vendored file silently diverges from upstream and breaks the next refresh.
+
 ## Adding Hook Scripts
 
 1. Place the script in the appropriate directory:

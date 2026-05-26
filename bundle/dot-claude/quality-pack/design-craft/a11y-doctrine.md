@@ -3,6 +3,7 @@ oh-my-claude design-craft reference — A11Y doctrine
 
 Vendored verbatim from fecarrico/A11Y.md (MIT, © 2026 fecarrico).
 Upstream: https://github.com/fecarrico/A11Y.md (file: docs/en/A11Y.md)
+Upstream commit: 733dbc899181c0b769b7e9e036606e130dd5f8da
 Vendored: 2026-05-26.
 
 The load-bearing content: §1 Severity & Impact Model (🔴/🟠/🟡/🔵 with MUST/SHOULD/

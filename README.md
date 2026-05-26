@@ -358,6 +358,7 @@ Skills are invoked as slash commands or routed automatically by the intent class
 | Tier | Mechanism | What you get |
 |---|---|---|
 | **Hook-fired (mandatory)** | Fires automatically — you can't bypass it | `quality-reviewer` before stop, `excellence-reviewer` on complex tasks, `design-reviewer` when UI files are edited |
+| **Model-invoked (Claude Code native auto-load)** | Auto-loaded by Claude Code when the open files or prompt match a skill's frontmatter description; no router, no hook | `swiftui-pro` on SwiftUI work (vendored from `twostraws/SwiftUI-Agent-Skill`, see [§Recommended companion tools](#recommended-companion-tools)) |
 | **Router-suggested (reasoning)** under `/ulw` | Injected as a directive when prompt signals match | `prometheus`, `quality-planner`, `quality-researcher`, `librarian`, `metis`, `oracle` |
 | **Router-suggested (engineering)** under `/ulw` | Same mechanism — extended to engineering specialists in this release | `backend-api-developer`, `devops-infrastructure-engineer`, `test-automation-engineer`, `fullstack-feature-builder`, `ios-ui-developer`, `ios-core-engineer`, `ios-deployment-specialist`, `ios-ecosystem-integrator`, `abstraction-critic` |
 | **Auto-dispatched on prompt pattern** | An entire workflow (multi-agent + gates) fires when the router detects the pattern | `/council` for broad project-evaluation prompts, the 9-section Design Contract on UI work |

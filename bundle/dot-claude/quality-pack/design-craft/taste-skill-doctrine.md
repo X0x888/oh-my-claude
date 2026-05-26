@@ -3,6 +3,7 @@ oh-my-claude design-craft reference — taste-skill doctrine
 
 Vendored verbatim from Leonxlnx/taste-skill v2 experimental (MIT, © 2026 Leonxlnx).
 Upstream: https://github.com/Leonxlnx/taste-skill
+Upstream commit: 339afcbf575daeaa61ee89646b3ba8912b308c39
 Vendored: 2026-05-26.
 
 This is an on-demand reference loaded by 6 design-side surfaces (visual-craft-lens,
