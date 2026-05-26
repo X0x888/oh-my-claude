@@ -358,7 +358,7 @@ Skills are invoked as slash commands or routed automatically by the intent class
 | Tier | Mechanism | What you get |
 |---|---|---|
 | **Hook-fired (mandatory)** | Fires automatically — you can't bypass it | `quality-reviewer` before stop, `excellence-reviewer` on complex tasks, `design-reviewer` when UI files are edited |
-| **Model-invoked (Claude Code native auto-load)** | Auto-loaded by Claude Code when the open files or prompt match a skill's frontmatter description; no router, no hook | `swiftui-pro` on SwiftUI work (vendored from `twostraws/SwiftUI-Agent-Skill`, see [§Recommended companion tools](#recommended-companion-tools)) |
+| **Model-invoked (Claude Code native auto-load)** | Auto-loaded by Claude Code when the open files or prompt match a skill's frontmatter description; no router, no hook | `swiftui-pro` on SwiftUI work (vendored from `twostraws/SwiftUI-Agent-Skill`) |
 | **Router-suggested (reasoning)** under `/ulw` | Injected as a directive when prompt signals match | `prometheus`, `quality-planner`, `quality-researcher`, `librarian`, `metis`, `oracle` |
 | **Router-suggested (engineering)** under `/ulw` | Same mechanism — extended to engineering specialists in this release | `backend-api-developer`, `devops-infrastructure-engineer`, `test-automation-engineer`, `fullstack-feature-builder`, `ios-ui-developer`, `ios-core-engineer`, `ios-deployment-specialist`, `ios-ecosystem-integrator`, `abstraction-critic` |
 | **Auto-dispatched on prompt pattern** | An entire workflow (multi-agent + gates) fires when the router detects the pattern | `/council` for broad project-evaluation prompts, the 9-section Design Contract on UI work |
@@ -407,7 +407,7 @@ bunx ccusage blocks               # 5-hour rate-limit-window aggregation
 bunx ccusage statusline           # Claude Code statusline integration (beta)
 ```
 
-Distributed as a native Rust binary via npm — `bunx`/`npx`/`pnpm dlx`/`pnpx`/Nix paths all work; no global install required. The 5-hour window matches Anthropic's rate-limit cap, so `ccusage blocks` is the most useful single command for "how close am I to the cap?". oh-my-claude already surfaces rate-limit status via `~/.claude/quality-pack/state/<session>/rate_limit_status.json` and `statusline.py`, so this is complementary (token-cost) rather than redundant.
+Distributed as a native Rust binary via npm — `bunx`/`npx`/`pnpm dlx`/`pnpx`/Nix paths all work; no global install required. The 5-hour window matches Anthropic's rate-limit cap, so `ccusage blocks` is the most useful single command for "how close am I to the cap?". oh-my-claude already surfaces rate-limit headroom in the statusline; ccusage adds token-cost aggregation — the two are complementary, not redundant.
 
 **[`XcodeBuildMCP`](https://github.com/getsentry/XcodeBuildMCP)** *(iOS Xcode automation MCP, 5.7k stars, getsentry-maintained)* — MCP server exposing 82 manifest-driven tools grouped by workflow phase (build, test, simulator, device, debug, SwiftPM, scaffold, UI-automation). Recommended in the iOS agents (`ios-ui-developer`, `ios-core-engineer`, `ios-deployment-specialist`, `ios-ecosystem-integrator`) when executable Xcode operations beat shelling out via Bash.
 

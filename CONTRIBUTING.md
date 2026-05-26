@@ -269,15 +269,13 @@ Keeping counts and directory listings accurate prevents drift between code and d
 
 Adding a new reviewer-style agent has two layers. Do both in the same commit — missing the test-plumbing layer produces a broken install that `verify.sh` cannot catch.
 
-**Permission-boundary convention (new reviewer-style agents — recommended):**
-
-Reviewer-style agents are read-only by nature — they observe code, run tests, emit findings, and never modify the codebase. The **VoltAgent allowlist convention** (`tools:`) is the recommended pattern for new reviewer-style agents because it fails closed: a future tool added to Claude Code (a new search MCP, a new exec surface) does not implicitly become available to the reviewer. Pattern:
+**Permission-boundary convention:** apply the allowlist convention from `## Adding Agents` step 3; for reviewer-style agents — read-only by nature — the typical shape is:
 
 ```yaml
 ---
 name: my-new-reviewer
 description: ...
-tools: Read, Grep, Glob, Bash    # allowlist — exactly these, nothing else
+tools: Read, Grep, Glob, Bash    # remove Bash if the reviewer never runs tests
 model: opus                       # or sonnet/haiku per `--model-tier`
 permissionMode: plan
 maxTurns: 30
@@ -285,7 +283,7 @@ memory: user
 ---
 ```
 
-The `Bash` entry lets the reviewer run tests; remove it if the reviewer only reads code (e.g., a docs reviewer that never executes anything). Existing reviewers using `disallowedTools:` denylist (e.g., `quality-reviewer.md`) remain supported — the convention change is for *new* agents, not a migration mandate. When in doubt, copy the frontmatter shape from an existing reviewer of the same shape and tighten the allowlist later if audit reveals unused tools.
+When in doubt, copy the frontmatter shape from an existing reviewer of the same role and tighten the allowlist later if audit reveals unused tools.
 
 **Procedural wiring (all reviewer-style agents):**
 
