@@ -92,7 +92,7 @@ platform() {
 # installer indefinitely. On systems without `timeout` the bare probe
 # runs and the user can Ctrl-C if it stalls.
 resolved_path() {
-  local from_shell=""
+  local from_shell="" result=""
   if [[ -n "${SHELL:-}" ]] && [[ -x "${SHELL}" ]]; then
     if command -v timeout >/dev/null 2>&1; then
       from_shell="$(timeout 5 "${SHELL}" -ilc 'printf %s "${PATH}"' 2>/dev/null || true)"
@@ -101,14 +101,21 @@ resolved_path() {
     fi
   fi
   if [[ -n "${from_shell}" ]]; then
-    printf '%s' "${from_shell}"
-    return 0
+    result="${from_shell}"
+  elif [[ -n "${PATH:-}" ]]; then
+    result="${PATH}"
+  else
+    result='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
   fi
-  if [[ -n "${PATH:-}" ]]; then
-    printf '%s' "${PATH}"
-    return 0
-  fi
-  printf '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
+  # security-lens P2: this value is sed-substituted into the launchd
+  # <string> / systemd Environment= line. A newline or CR in $PATH (from a
+  # hostile login-shell rc) would terminate that value and inject arbitrary
+  # additional plist keys / unit directives. A PATH legitimately never
+  # contains line breaks, so strip them before the value leaves this
+  # function (single source for both the macOS and Linux install paths).
+  result="${result//$'\n'/}"
+  result="${result//$'\r'/}"
+  printf '%s' "${result}"
 }
 
 render_cron_line() {

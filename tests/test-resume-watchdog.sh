@@ -273,6 +273,43 @@ assert_eq "T3: artifact unmutated" "0" "$(read_field "${target}" resume_attempts
 teardown_test
 
 # ---------------------------------------------------------------------------
+# T3b: symlinked cwd rejected before launch (security-lens P3)
+# A hostile artifact pointing cwd at an attacker-planted symlink could pass
+# the -d + ownership checks (both follow symlinks) and launch claude in an
+# attacker-controlled tree. The -L check rejects it. The symlink target here
+# is self-owned, so WITHOUT the fix the watchdog would launch — this is a
+# true regression net, not a tautology.
+# ---------------------------------------------------------------------------
+print_test_header "T3b: symlinked cwd rejected"
+setup_test
+install_tmux_mock
+install_mock claude 0
+mkdir -p "${TEST_HOME}/realproj"
+ln -s "${TEST_HOME}/realproj" "${TEST_HOME}/symproj"
+target="$(make_request "sess-3b" "${TEST_HOME}/symproj" "obj" "/ulw foo")"
+bash "${WATCHDOG}" >/dev/null 2>&1
+assert_eq "T3b: tmux NOT launched for symlinked cwd" "0" "$(mock_launch_count)"
+assert_eq "T3b: artifact NOT claimed" "0" "$(read_field "${target}" resume_attempts)"
+teardown_test
+
+# ---------------------------------------------------------------------------
+# T3c: launch path re-validates cwd ownership (security-lens P3)
+# The TOCTOU race between the ownership check and tmux's chdir is not
+# deterministically unit-testable in bash (no injection point between the
+# check and the launch), so this pins the DEFENSE's PRESENCE — the launch
+# must be guarded by an immediate ownership re-check — so a refactor cannot
+# silently drop it. (Mirrors the presence-grep pattern used for other
+# un-simulatable defenses, e.g. coordination-rules Contract 8d.)
+# ---------------------------------------------------------------------------
+print_test_header "T3c: launch re-validates cwd ownership"
+toctou_guarded="no"
+if grep -B5 -F 'launch_in_tmux "${origin_sid}" "${cwd}" "${prompt}"' "${WATCHDOG}" \
+     | grep -q '_cwd_owned_by_self'; then
+  toctou_guarded="yes"
+fi
+assert_eq "T3c: launch_in_tmux guarded by a _cwd_owned_by_self re-check" "yes" "${toctou_guarded}"
+
+# ---------------------------------------------------------------------------
 # T4: no tmux → notification fallback (osascript on macOS, notify-send on Linux)
 # ---------------------------------------------------------------------------
 print_test_header "T4: no tmux falls back to notification"

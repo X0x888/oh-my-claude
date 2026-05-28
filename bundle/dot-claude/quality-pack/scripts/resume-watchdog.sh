@@ -544,6 +544,12 @@ while IFS=$'\t' read -r _scope sid captured_ts artifact_path; do
   cwd_skip_reason=""
   if [[ -z "${cwd}" ]]; then
     cwd_skip_reason="empty"
+  elif [[ -L "${cwd}" ]]; then
+    # security-lens P3: the -d and ownership checks below both follow
+    # symlinks, so a hostile artifact whose cwd points at an attacker-
+    # planted symlink could pass them and launch `claude --resume` inside
+    # an attacker-controlled tree. Reject a symlinked cwd outright.
+    cwd_skip_reason="cwd-symlink"
   elif [[ ! -d "${cwd}" ]]; then
     cwd_skip_reason="missing"
   else
@@ -627,7 +633,15 @@ while IFS=$'\t' read -r _scope sid captured_ts artifact_path; do
       continue
     fi
 
-    if launch_in_tmux "${origin_sid}" "${cwd}" "${prompt}"; then
+    # security-lens P3: re-validate cwd ownership (and the non-symlink
+    # invariant) immediately before launch to narrow the TOCTOU window
+    # between the check above and tmux's chdir — a same-uid attacker could
+    # swap cwd or a path component after the initial check + claim. This
+    # shrinks the window to microseconds rather than fully closing it
+    # (bash has no atomic open-then-chdir); a change drops to the revert
+    # path below so the artifact is re-evaluated cleanly next tick.
+    if _cwd_owned_by_self "${cwd}" && [[ ! -L "${cwd}" ]] \
+       && launch_in_tmux "${origin_sid}" "${cwd}" "${prompt}"; then
       total_launched=$((total_launched + 1))
       record_gate_event "resume-watchdog" "launched-tmux" \
         origin_session="${origin_sid}" \

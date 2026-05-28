@@ -353,6 +353,46 @@ else
 fi
 teardown_test
 
+# ---------------------------------------------------------------------------
+# T-path-inject: a newline/CR in the probed $PATH must NOT break out of the
+# rendered launchd <string> / systemd Environment= value (security-lens P2).
+# A hostile login-shell rc could export a PATH with an embedded newline;
+# resolved_path() strips line breaks before the value is sed-substituted into
+# the unit template. WITHOUT the fix the payload lands on its own line.
+# ---------------------------------------------------------------------------
+echo "=== T-path-inject: PATH newline cannot inject unit directives ==="
+setup_test
+# Mock SHELL to emit a PATH with an embedded newline + injection payload.
+cat > "${MOCK_BIN}/evilshell" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s' '/omc/sentinel/bin
+OMCINJECTEDDIRECTIVE'
+MOCK
+chmod +x "${MOCK_BIN}/evilshell"
+SHELL="${MOCK_BIN}/evilshell" bash "${INSTALLER}" >/dev/null 2>&1 || true
+rendered=""
+if [[ -f "${TEST_HOME}/Library/LaunchAgents/dev.ohmyclaude.resume-watchdog.plist" ]]; then
+  rendered="${TEST_HOME}/Library/LaunchAgents/dev.ohmyclaude.resume-watchdog.plist"
+elif [[ -f "${TEST_HOME}/.config/systemd/user/oh-my-claude-resume-watchdog.service" ]]; then
+  rendered="${TEST_HOME}/.config/systemd/user/oh-my-claude-resume-watchdog.service"
+fi
+if [[ -z "${rendered}" ]]; then
+  printf '  [skip] T-path-inject: no plist/unit rendered on this platform (cron fallback)\n'
+else
+  # With the strip, the embedded newline is removed so the PATH value
+  # renders CONTIGUOUSLY (`/omc/sentinel/bin` + `OMCINJECTEDDIRECTIVE`
+  # joined). Without it, the literal newline either breaks out onto its own
+  # line OR makes sed choke on the unterminated replacement — both mangle
+  # the value. The contiguous form is the precise proof the strip ran and
+  # the substitution still succeeded cleanly.
+  collapsed_present="no"
+  grep -q '/omc/sentinel/binOMCINJECTEDDIRECTIVE' "${rendered}" && collapsed_present="yes"
+  assert_eq "T-path-inject: PATH newline stripped — value rendered contiguously" "yes" "${collapsed_present}"
+  injected_lines="$(grep -c '^OMCINJECTEDDIRECTIVE' "${rendered}" 2>/dev/null || true)"
+  assert_eq "T-path-inject: injection payload never starts its own line" "0" "${injected_lines}"
+fi
+teardown_test
+
 printf '\n=== test-install-resume-watchdog: %d passed, %d failed ===\n' "${pass}" "${fail}"
 if (( fail > 0 )); then
   exit 1
