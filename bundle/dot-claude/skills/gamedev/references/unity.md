@@ -1,6 +1,6 @@
 # Unity (C#) reference
 
-Patterns and pitfalls that survive across Unity versions. For exact API (method signatures, package versions, current best-practice APIs) verify against the installed Unity version's docs — do not rely on training memory.
+Patterns and pitfalls that survive across Unity versions. For exact API (method signatures, package versions, current best-practice APIs) verify against the installed Unity version's docs (via the `librarian` agent or `context7` MCP) — do not rely on training memory.
 
 ## Update loop — where frame budget dies
 

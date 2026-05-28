@@ -16,6 +16,8 @@ Read the ONE reference file for the engine in play, not all of them — the same
 - **Web / HTML5 (Phaser, Babylon.js, PixiJS, Three.js)** → `references/web.md`
 - **Unreal (C++/Blueprint), Bevy (Rust), or another native engine** → no reference file; apply the cross-engine principles below and verify API specifics against current docs.
 
+**If the engine is unclear, detect it first** from project files — `*.unity` or an `Assets/` tree → Unity; `project.godot` → Godot; a `package.json` depending on phaser/babylon/pixi/three → web. **If two engines are genuinely in play** (a port in progress, or a client and a tool in different engines), load both relevant files — but only those, never all.
+
 ## The frame-grounded verification loop (the core technique)
 
 When the work renders or runs, verify against the rendered/running state — never declare game work done from source alone:
@@ -26,7 +28,7 @@ When the work renders or runs, verify against the rendered/running state — nev
 4. **Evaluate visible defects**: clipping, off-scale sprites/meshes, missing or pink/error assets, wrong animation state, physics jitter, z-fighting, frame drops.
 5. **Fix what looks wrong**, then loop.
 
-This is the game embodiment of the harness's verification-over-abstraction rule. When you cannot run the game (no engine, no MCP), do not claim it works — end with a `User-must-verify-UI: <scene or flow>` follow-up line naming exactly what a human must check on screen.
+This is the game embodiment of the harness's verification-over-abstraction rule. When you cannot run the game (no engine, no MCP), do not claim it works — end with a `User-must-verify-UI: <scene or flow>` follow-up line naming exactly what a human must check on screen. (`User-must-verify-UI:` is the harness's standard follow-up token — reuse it for game work; do not invent a `User-must-verify-game:` variant.)
 
 ## Recommended companion MCPs (optional, per engine)
 
@@ -34,6 +36,7 @@ Surface these when the agent needs to *see and run* the game rather than reason 
 
 - **Unity** — [CoplayDev/unity-mcp](https://github.com/CoplayDev/unity-mcp) (MIT): Editor introspection + control, Roslyn compile-check before run, test running, scene/GameObject manipulation. The strongest "close the loop" option for Unity.
 - **Godot** — [Coding-Solo/godot-mcp](https://github.com/Coding-Solo/godot-mcp) (MIT): launch the editor, run projects in debug, capture console + error output. Note: **debug output only, no screenshots** — pair it with an explicit screenshot step (engine screenshot API or OS capture) for the visual-evaluate stage.
+- **Web / HTML5** — [Playwright MCP](https://github.com/microsoft/playwright-mcp) (Microsoft) drives the canvas and reads console errors, and [Chrome DevTools MCP](https://github.com/ChromeDevTools/chrome-devtools-mcp) (Google) captures performance traces; see `references/web.md`.
 - **Greenfield generation across Godot / Bevy / Babylon** — [godogen](https://github.com/htdt/godogen) (MIT, supports `--agent claude`): runs the frame-grounded loop above end-to-end (generate → run → screenshot → evaluate → fix). Study it as the reference workflow.
 
 For engine API specifics (exact node names, method signatures, package versions), **verify against current docs** via the `librarian` agent or `context7` MCP — engine APIs drift hard across major versions, so do not rely on training memory.

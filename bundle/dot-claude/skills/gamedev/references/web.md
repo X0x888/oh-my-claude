@@ -1,6 +1,6 @@
 # Web / HTML5 games reference (Phaser, Babylon.js, PixiJS, Three.js)
 
-Patterns and pitfalls common to browser game engines. JS GC pauses and the single main thread make allocation discipline and the fixed-timestep loop especially load-bearing. Verify engine-specific API (Phaser 3.x scenes, Babylon 7.x, etc.) against current docs.
+Patterns and pitfalls common to browser game engines. JS GC pauses and the single main thread make allocation discipline and the fixed-timestep loop especially load-bearing. Verify engine-specific API (Phaser 3.x scenes, Babylon 7.x, etc.) against current docs (via the `librarian` agent or `context7` MCP).
 
 ## The game loop
 

@@ -1,6 +1,6 @@
 # Godot (GDScript / C#) reference
 
-Patterns and pitfalls that survive across Godot 4.x. Godot 3 → 4 changed a large amount of API (node names, signal syntax, `KinematicBody` → `CharacterBody`, etc.) — verify the exact API against the project's Godot version's docs rather than from memory.
+Patterns and pitfalls that survive across Godot 4.x. Godot 3 → 4 changed a large amount of API (node names, signal syntax, `KinematicBody` → `CharacterBody`, etc.) — verify the exact API against the project's Godot version's docs (via the `librarian` agent or `context7` MCP) rather than from memory.
 
 ## Scene tree & decoupling
 
