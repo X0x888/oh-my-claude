@@ -125,6 +125,7 @@ After establishing the visual direction, implement using the `frontend-developer
 - Verify each section against the anti-patterns list
 - When in doubt between "safe and generic" and "bold and distinctive," choose bold
 - After implementation, review the full page/component as a whole — does it have a cohesive visual identity?
+- **Verify the rendered result, not just the code** — if [Playwright MCP](https://github.com/microsoft/playwright-mcp) is installed, drive the page and read its accessibility-tree snapshot (cheaper and more reliable than screenshots) to confirm the design renders as intended; if not, end with a `User-must-verify-UI: <flow>` follow-up rather than claiming an unverified page looks right
 
 ## Execution rules
 

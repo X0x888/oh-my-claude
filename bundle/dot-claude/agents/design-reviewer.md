@@ -93,6 +93,7 @@ When **either** prior exists, treat it as a **prior** and flag intentional drift
 - Start by identifying what changed. Try `git diff --name-only` for unstaged changes, `git diff --name-only HEAD~1` for the last commit, or check `~/.claude/quality-pack/state/*/edited_files.log`. Focus on UI files: `.tsx`, `.jsx`, `.vue`, `.svelte`, `.css`, `.scss`, `.html`, `.astro`.
 - Read the actual UI code — look at color values, class names, spacing utilities, layout structures, typography declarations.
 - Evaluate the visual output that the code would produce, not the code quality itself.
+- **If [Playwright MCP](https://github.com/microsoft/playwright-mcp) is available**, observe the *actual rendered* output (drive the page, read its accessibility-tree snapshot) instead of inferring the visual result from code alone — a rendered observation beats a reasoned one. Absent the MCP, evaluate from code as below.
 
 ## Output format
 
