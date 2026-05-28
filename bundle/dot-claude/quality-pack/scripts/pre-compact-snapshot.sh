@@ -343,7 +343,3 @@ write_state_batch \
   "last_compact_trigger" "${TRIGGER:-unknown}" \
   "last_compact_request_ts" "$(now_epoch)" \
   "review_pending_at_compact" "${review_pending_flag}"
-
-if [[ -n "${CUSTOM_INSTRUCTIONS}" ]]; then
-  write_state "last_compact_custom_instructions" "${CUSTOM_INSTRUCTIONS}"
-fi
