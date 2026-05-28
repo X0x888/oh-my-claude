@@ -96,6 +96,7 @@ SKILL_DIRS=(
   "${CLAUDE_HOME}/skills/memory-audit"
   "${CLAUDE_HOME}/skills/frontend-design"
   "${CLAUDE_HOME}/skills/swiftui-pro"
+  "${CLAUDE_HOME}/skills/gamedev"
   "${CLAUDE_HOME}/skills/omc-config"
   "${CLAUDE_HOME}/skills/whats-new"
 )

@@ -56,6 +56,9 @@ jobs:
       - name: Run swiftui-pro skill tests (2026-05-26 Wave B pin)
         run: bash tests/test-swiftui-pro-skill.sh
 
+      - name: Run gamedev skill tests
+        run: bash tests/test-gamedev-skill.sh
+
       - name: Run design-craft additions tests (2026-05-26 Wave C pin)
         run: bash tests/test-design-craft-additions.sh
 

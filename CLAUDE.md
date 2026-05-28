@@ -20,7 +20,7 @@ If a fact appears here AND in one of the above, that doc is authoritative — ke
 
 - `bundle/dot-claude/agents/` — 34 specialist agent definitions with `disallowedTools` permission boundaries
 - `bundle/dot-claude/quality-pack/scripts/` — 13 lifecycle hooks. Per-hook detail in `docs/architecture.md`.
-- `bundle/dot-claude/skills/` — 28 skill definitions, each in `<name>/SKILL.md`
+- `bundle/dot-claude/skills/` — 29 skill definitions, each in `<name>/SKILL.md`
 - `bundle/dot-claude/skills/autowork/scripts/` — 37 autowork hooks + helpers; shared lib `common.sh`; lazy-loaded `lib/{state-io,classifier,verification,timing,canary}.sh`. Per-script detail in `docs/architecture.md`.
 - `bundle/dot-claude/output-styles/` — bundled output styles (`oh-my-claude.md` default, `executive-brief.md`); selected via `output_style=` in `oh-my-claude.conf`
 - `bundle/dot-claude/quality-pack/design-craft/` — on-demand art-taste reference (`art-taste-doctrine.md`); loaded by 6 design-side surfaces (5 visual-craft 8-principle, 1 UX-trimmed 3-principle), NOT in the global @-include chain. Lockstep contract in Coordination Rules.

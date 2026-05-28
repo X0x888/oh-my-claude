@@ -292,13 +292,13 @@ oh-my-claude/
 ├── install.sh / uninstall.sh / verify.sh   # Install, remove, and verify
 ├── bundle/dot-claude/                       # Installs to ~/.claude/
 │   ├── agents/          (34 agents)         # Specialist agent definitions
-│   ├── skills/          (28 skills)         # Skill definitions + autowork hooks
+│   ├── skills/          (29 skills)         # Skill definitions + autowork hooks
 │   ├── quality-pack/                        # Lifecycle hooks + memory files
 │   ├── output-styles/                       # Two bundled styles: oh-my-claude (default) + executive-brief (see docs/customization.md#output-style)
 │   └── statusline.py                        # Custom statusline widget
 ├── config/settings.patch.json               # Merged into user settings on install
 ├── evals/realwork/                           # Outcome eval scenarios for minimal-prompt shipping across code + design/UI + native artifacts + mixed + quantitative/data-analysis + regulated/high-stakes + writing + research + scholarly + ops + advisory
-├── tests/               (128 bash + 1 py)   # See AGENTS.md / CONTRIBUTING.md for full list
+├── tests/               (129 bash + 1 py)   # See AGENTS.md / CONTRIBUTING.md for full list
 ├── tools/                                    # Developer-only tools (not installed)
 └── docs/                                    # Architecture, customization, FAQ, prompts
 ```
@@ -329,6 +329,7 @@ Skills are invoked as slash commands or routed automatically by the intent class
 | **Build** | | |
 | frontend-design *(visual craft)* | `/frontend-design <task>` | Distinctive design-first frontend work |
 | swiftui-pro *(SwiftUI review, model-invoked)* | *(no slash command — auto-fires on SwiftUI work)* | Comprehensive SwiftUI review: modern API usage (`foregroundStyle` not `foregroundColor`, `Tab` not `tabItem()`, etc.), accessibility, data flow, navigation, design, performance, Swift idioms, hygiene. Partial-load via topic-scoped requests. Vendored from [`twostraws/SwiftUI-Agent-Skill`](https://github.com/twostraws/SwiftUI-Agent-Skill) v1.1 (MIT, Paul Hudson). |
+| gamedev *(game-dev review, model-invoked)* | *(no slash command — auto-fires on Unity/Godot/web game work)* | Engine-idiomatic review + guidance for Unity (C#), Godot (GDScript/C#), and web engines (Phaser/Babylon/PixiJS/Three.js): frame-budget perf, update-loop hygiene, object pooling, and the frame-grounded run→capture→evaluate→fix loop. Per-engine partial-load references; recommends Unity MCP / Godot MCP / [godogen](https://github.com/htdt/godogen). Original (not vendored). |
 | atlas *(repo bootstrap)* | `/atlas [focus]` | Bootstrap or refresh repo instruction files |
 | **Configure** | | |
 | omc-config *(setup walkthrough)* | `/omc-config [setup\|update\|change]` | Multi-choice walkthrough for `oh-my-claude.conf` flags. Auto-detects first-time setup vs upgrade vs ad-hoc change. Picks a profile (Zero Steering / Balanced / Minimal) or fine-tunes individual flags — no typing required. Triggered by phrases like "help me install", "configure oh-my-claude", "update my settings". |
@@ -358,7 +359,7 @@ Skills are invoked as slash commands or routed automatically by the intent class
 | Tier | Mechanism | What you get |
 |---|---|---|
 | **Hook-fired (mandatory)** | Fires automatically — you can't bypass it | `quality-reviewer` before stop, `excellence-reviewer` on complex tasks, `design-reviewer` when UI files are edited |
-| **Model-invoked (Claude Code native auto-load)** | Auto-loaded by Claude Code when the open files or prompt match a skill's frontmatter description; no router, no hook | `swiftui-pro` on SwiftUI work (vendored from `twostraws/SwiftUI-Agent-Skill`) |
+| **Model-invoked (Claude Code native auto-load)** | Auto-loaded by Claude Code when the open files or prompt match a skill's frontmatter description; no router, no hook | `swiftui-pro` on SwiftUI work (vendored from `twostraws/SwiftUI-Agent-Skill`); `gamedev` on Unity/Godot/web game work |
 | **Router-suggested (reasoning)** under `/ulw` | Injected as a directive when prompt signals match | `prometheus`, `quality-planner`, `quality-researcher`, `librarian`, `metis`, `oracle` |
 | **Router-suggested (engineering)** under `/ulw` | Same mechanism — extended to engineering specialists in this release | `backend-api-developer`, `devops-infrastructure-engineer`, `test-automation-engineer`, `fullstack-feature-builder`, `ios-ui-developer`, `ios-core-engineer`, `ios-deployment-specialist`, `ios-ecosystem-integrator`, `abstraction-critic` |
 | **Auto-dispatched on prompt pattern** | An entire workflow (multi-agent + gates) fires when the router detects the pattern | `/council` for broad project-evaluation prompts, the 9-section Design Contract on UI work |

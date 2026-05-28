@@ -170,7 +170,7 @@ oh-my-claude/
     quality-pack/
       memory/                 # Core, skills, and compact memory files
       scripts/                # 13 lifecycle scripts (prompt routing, first-prompt session-init, compaction, session start [6 hooks incl. drift-check + whats-new + watchdog-health], stop-failure, resume-watchdog)
-    skills/                   # 28 skill definitions, each in <name>/SKILL.md
+    skills/                   # 29 skill definitions, each in <name>/SKILL.md
       autowork/scripts/       # 37 autowork hook scripts and utilities
         common.sh             # Shared functions (JSON, classification, scope)
         lib/state-io.sh       # Extracted state I/O subsystem; sourced by common.sh
@@ -183,7 +183,7 @@ oh-my-claude/
     settings.patch.json       # Settings merged into user's settings.json
 
   evals/realwork/             # Outcome eval scenarios + scorer for minimal-prompt real-work shipping
-  tests/                      # 128 bash + 1 python test scripts; CLAUDE.md "Testing" lists each one
+  tests/                      # 129 bash + 1 python test scripts; CLAUDE.md "Testing" lists each one
 
   tools/                      # Developer tools (not installed; keep exhaustive)
     audit-published-release-assets.sh
