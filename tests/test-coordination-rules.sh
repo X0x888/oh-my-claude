@@ -609,6 +609,16 @@ else
     "verify.sh required_paths only spot-checks a few agents; add the C8 bundle-vs-install loop"
 fi
 
+# (e) verify.sh must ALSO do a bundle-vs-install SKILL completeness check
+#     (mirror of 8d for skill dirs — a partial install missing a skill dir
+#     would otherwise pass verify).
+if grep -q 'C8: bundle skill completeness' "${C8_VERIFY}"; then
+  assert_pass "C8: verify.sh performs a bundle-vs-install skill completeness check"
+else
+  assert_fail "C8: verify.sh has no skill-completeness check" \
+    "verify.sh spot-checks only some skill dirs; add the C8 bundle-vs-install skill loop"
+fi
+
 # ----------------------------------------------------------------------
 printf '\n=== coordination-rules tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]

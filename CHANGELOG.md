@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Ecosystem integration + evaluation-driven hardening
+
+**Web-build MCP verification.** Wired Playwright + Chrome DevTools MCP recommendations into the four web surfaces (`frontend-developer`, `fullstack-feature-builder`, `design-reviewer`, `frontend-design`) — accessibility-tree-snapshot verification over pixel screenshots, with a `User-must-verify-UI` fallback when no MCP is installed.
+
+**`gamedev` skill (model-invoked).** Engine-idiomatic review + the frame-grounded run→capture→evaluate→fix loop for Unity (C#), Godot (GDScript/C#), and web engines (Phaser/Babylon/PixiJS/Three.js), with per-engine partial-load references.
+
+**Comprehensive evaluation pass.** A multi-lens project evaluation (defects, doc-drift, architecture, security, test-coverage) drove four waves of fixes:
+
+- **Doc drift.** `AGENTS.md` universal-VERDICT table gained the missing `divergent-framer` (Framer) row; stale bare reviewer/non-reviewer counts dropped (they contradicted the section's own "8 reviewer-class" sum); `docs/architecture.md` `common.sh` size corrected (~2,600 → ~7,200 lines, three → five extracted libs); `CLAUDE.md` design-craft reference list + stop-guard F-id list refreshed; the `/skills` index now lists the model-invoked skills (`swiftui-pro`, `gamedev`).
+- **Regression nets.** New Contract 8 in `test-coordination-rules.sh` enforces install/uninstall surface parity (every bundle agent in `uninstall.sh` `AGENT_FILES`, every skill dir in `SKILL_DIRS`, no stale orphans); `verify.sh` now runs a bundle-vs-install agent-completeness check (previously only 7 of 34 agents were spot-checked, so a partial install missing the rest passed); new `test-web-verify-mcp-wiring.sh` pins the MCP wiring against silent drop and keeps the recommendation in sync with the verification scorer's recognized tool names.
+- **Cleanup.** Removed vestigial write-only state keys (`god_scope_verb`, `last_compact_custom_instructions`) — the write-path-without-read-path shape the coordination rules warn against.
+- **Security (resume-watchdog).** `resolved_path()` strips CR/LF from the probed `$PATH` before it is rendered into the launchd plist / systemd unit (no unit-directive injection from a hostile login-shell rc); the watchdog rejects a symlinked `cwd` and re-validates ownership immediately before launch (narrows a TOCTOU window on the `claude --resume` spawn). All three carry negative-verified regression nets.
+
 ## [1.44.0] - 2026-05-26
 
 ### Multi-port wave from 2026-05-26 deep-evaluation (v1.44-pre, second wave)

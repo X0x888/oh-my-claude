@@ -904,8 +904,37 @@ if [[ -d "${bundle_agents_dir}" ]]; then
   done
   if [[ -z "${missing_agents# }" ]]; then
     pass "All ${bundle_agent_count} bundle agents present in install"
-  else
+  elif [[ "${STRICT_MODE}" == "true" ]]; then
     fail "Install missing agents present in source bundle:${missing_agents}"
+  else
+    # Warn (not fail) by default: a source tree ahead of the installed
+    # version (active dev before re-install) legitimately has extra agents.
+    # --strict escalates to fail for incident-response / CI integrity audits.
+    warn "Install missing agents from source bundle (stale install? run install.sh):${missing_agents}"
+  fi
+fi
+
+# C8: bundle skill completeness — mirror of the agent check above for skill
+# dirs. required_paths spot-checks only some skills, so a partial install
+# missing a skill dir (e.g. gamedev/) would otherwise pass verify.
+bundle_skills_dir="${SCRIPT_DIR}/bundle/dot-claude/skills"
+if [[ -d "${bundle_skills_dir}" ]]; then
+  missing_skills=""
+  bundle_skill_count=0
+  for skill_dir in "${bundle_skills_dir}"/*/; do
+    [[ -d "${skill_dir}" ]] || continue
+    bundle_skill_count=$(( bundle_skill_count + 1 ))
+    skill_base="$(basename "${skill_dir}")"
+    if [[ ! -d "${CLAUDE_HOME}/skills/${skill_base}" ]]; then
+      missing_skills="${missing_skills} ${skill_base}"
+    fi
+  done
+  if [[ -z "${missing_skills# }" ]]; then
+    pass "All ${bundle_skill_count} bundle skill dirs present in install"
+  elif [[ "${STRICT_MODE}" == "true" ]]; then
+    fail "Install missing skill dirs present in source bundle:${missing_skills}"
+  else
+    warn "Install missing skill dirs from source bundle (stale install? run install.sh):${missing_skills}"
   fi
 fi
 

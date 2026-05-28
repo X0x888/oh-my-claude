@@ -297,7 +297,7 @@ When multiple reviewers cover the same dimension and their verdicts disagree, th
 
 #### Universal VERDICT contract (v1.14.0)
 
-In v1.14.0 the VERDICT contract was extended to all 30 agents so the final-line outcome is structured and uniform across roles. The reviewer-class agents above remain unchanged (their `CLEAN`/`SHIP`/`FINDINGS`/`BLOCK` vocabulary is still what `record-reviewer.sh` parses). v1.15.0 adds `visual-craft-lens` (lens-class) bringing the total to 31. v1.19.0 adds `abstraction-critic` (reviewer-class, manual-dispatch only) bringing the total to 32. The non-reviewer agents gained role-appropriate tokens; planners are read by `record-plan.sh` (which now sets `plan_verdict` state) and the rest are forward-looking — read by humans today, available to future hooks.
+In v1.14.0 the VERDICT contract was extended to all 30 agents so the final-line outcome is structured and uniform across roles. The reviewer-class agents above remain unchanged (their `CLEAN`/`SHIP`/`FINDINGS`/`BLOCK` vocabulary is still what `record-reviewer.sh` parses). v1.15.0 adds `visual-craft-lens` (lens-class) bringing the total to 31. v1.19.0 adds `abstraction-critic` (reviewer-class, manual-dispatch only) bringing the total to 32; `divergent-framer` (v1.31.0, framer-class) and `release-reviewer` (v1.32.1, reviewer-class) bring it to the current 34 (the table footer below is authoritative for the live count). The non-reviewer agents gained role-appropriate tokens; planners are read by `record-plan.sh` (which now sets `plan_verdict` state) and the rest are forward-looking — read by humans today, available to future hooks.
 
 | Role | Agents | Vocabulary | Meaning | Consumer today |
 |---|---|---|---|---|
