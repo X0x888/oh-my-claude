@@ -88,6 +88,7 @@ auto_memory|bool|on|memory|Cross-session auto-memory writes (project/feedback/us
 prompt_persist|bool|on|memory|In-session prompt persistence (recent_prompts.jsonl + last_user_prompt). Off skips writes and degrades prompt-text-override gracefully.
 classifier_telemetry|bool|on|telemetry|Per-turn classifier telemetry to session state
 model_tier|enum:quality/balanced/economy|balanced|cost|Agent model tier (quality=opus, economy=sonnet)
+model_overrides|str||cost|Per-agent model override applied after model_tier and winning over it. Format agent:model,agent:model with model opus/sonnet/haiku (e.g. oracle:opus,librarian:haiku). Install-time; env OMC_MODEL_OVERRIDES.
 council_deep_default|bool|off|cost|Auto-triggered council uses opus per lens (--deep)
 stop_failure_capture|bool|on|watchdog|Capture resume_request.json on rate-limit / fatal stop
 resume_request_ttl_days|int|7|watchdog|Days a resume_request stays claimable

@@ -8,9 +8,11 @@
 #   bash ~/.claude/switch-tier.sh economy    # all agents use Sonnet
 #   bash ~/.claude/switch-tier.sh            # show current tier
 #
-# Reads the repo path from ~/.claude/oh-my-claude.conf and delegates to
-# install.sh --model-tier=<tier>. The installer handles backup, agent
-# rewrite, and config persistence.
+# Rewrites the `model:` frontmatter of installed agent files in place and
+# persists the tier to ~/.claude/oh-my-claude.conf. For `balanced` it
+# restores bundle defaults from the repo copy (repo_path in the conf).
+# Per-agent `model_overrides` from the conf are re-applied after the tier
+# rewrite so a user's pinned agents survive a tier switch.
 
 set -euo pipefail
 
@@ -80,6 +82,58 @@ set_conf() {
   printf '%s=%s\n' "${key}" "${value}" >> "${CONF_PATH}"
 }
 
+# Apply per-agent model overrides on top of the tier rewrite. Mirrors
+# install.sh's apply_model_overrides (kept in lockstep — see the matching
+# function there). Format: model_overrides=agent:model,agent:model where
+# model is opus|sonnet|haiku. Bad pairs are skipped, never fatal.
+apply_model_overrides() {
+  local agents_dir="$1"
+  local conf_path="$2"
+  local raw="${OMC_MODEL_OVERRIDES:-}"
+
+  if [[ -z "${raw}" && -f "${conf_path}" ]]; then
+    raw="$(grep -E '^model_overrides=' "${conf_path}" 2>/dev/null | tail -1 | cut -d= -f2-)" || true
+  fi
+  [[ -z "${raw}" ]] && return 0
+
+  local -a pairs=()
+  IFS=',' read -ra pairs <<< "${raw}"
+  [[ "${#pairs[@]}" -eq 0 ]] && return 0
+
+  local applied=0 skipped=0 pair agent model agent_file tmp
+  for pair in "${pairs[@]}"; do
+    pair="${pair//[[:space:]]/}"
+    [[ -z "${pair}" ]] && continue
+    agent="${pair%%:*}"
+    model="${pair#*:}"   # after the first colon; the opus|sonnet|haiku whitelist below is the real gate
+    if [[ -z "${agent}" || -z "${model}" || "${agent}" == "${pair}" ]]; then
+      printf '  model_overrides: skipping %q — expected agent:model\n' "${pair}" >&2
+      skipped=$((skipped + 1)); continue
+    fi
+    case "${model}" in
+      opus|sonnet|haiku) ;;
+      *)
+        printf '  model_overrides: skipping %s — invalid model %q (use opus|sonnet|haiku)\n' "${agent}" "${model}" >&2
+        skipped=$((skipped + 1)); continue ;;
+    esac
+    agent_file="${agents_dir}/${agent}.md"
+    if [[ ! -f "${agent_file}" ]]; then
+      printf '  model_overrides: skipping %s — no agent file at %s\n' "${agent}" "${agent_file}" >&2
+      skipped=$((skipped + 1)); continue
+    fi
+    if grep -qE '^model: ' "${agent_file}"; then
+      tmp="${agent_file}.tmp"
+      sed "s/^model: .*$/model: ${model}/" "${agent_file}" > "${tmp}"
+      mv "${tmp}" "${agent_file}"
+      applied=$((applied + 1))
+    fi
+  done
+
+  if [[ "${applied}" -gt 0 || "${skipped}" -gt 0 ]]; then
+    printf '  Model overrides: %d applied, %d skipped\n' "${applied}" "${skipped}"
+  fi
+}
+
 # ---------------------------------------------------------------------------
 # Apply tier
 # ---------------------------------------------------------------------------
@@ -128,4 +182,5 @@ else
 fi
 
 set_conf "model_tier" "${TIER}"
+apply_model_overrides "${AGENTS_DIR}" "${CONF_PATH}"
 printf 'Done. %d agent(s) updated to %s tier.\n' "${changed}" "${TIER}"

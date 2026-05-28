@@ -1230,6 +1230,70 @@ apply_model_tier() {
 }
 
 # ---------------------------------------------------------------------------
+# Apply per-agent model overrides (after the bulk tier rewrite)
+# ---------------------------------------------------------------------------
+#
+# `model_overrides` lets a user pin a specific model on a specific agent,
+# overriding whatever the tier assigned. This is the per-agent matrix the
+# `--model-tier` flag (all-or-nothing) cannot express, e.g. opus for the
+# reviewer/planner, sonnet for the researcher, haiku for the librarian.
+#
+#   model_overrides=oracle:opus,librarian:haiku,quality-researcher:sonnet
+#
+# Read from OMC_MODEL_OVERRIDES (env) first, then the conf file. Runs AFTER
+# apply_model_tier so a specific override always wins over the bulk tier
+# rewrite. A bad pair (unknown model, missing agent file) is skipped with a
+# warning, never fatal — one typo must not abort an install. Idempotent:
+# every install re-applies from conf after rsync restores bundle defaults.
+apply_model_overrides() {
+  local agents_dir="$1"
+  local conf_path="$2"
+  local raw="${OMC_MODEL_OVERRIDES:-}"
+
+  if [[ -z "${raw}" && -f "${conf_path}" ]]; then
+    raw="$(grep -E '^model_overrides=' "${conf_path}" 2>/dev/null | tail -1 | cut -d= -f2-)" || true
+  fi
+  [[ -z "${raw}" ]] && return 0
+
+  local -a pairs=()
+  IFS=',' read -ra pairs <<< "${raw}"
+  [[ "${#pairs[@]}" -eq 0 ]] && return 0
+
+  local applied=0 skipped=0 pair agent model agent_file tmp
+  for pair in "${pairs[@]}"; do
+    pair="${pair//[[:space:]]/}"
+    [[ -z "${pair}" ]] && continue
+    agent="${pair%%:*}"
+    model="${pair#*:}"   # after the first colon; the opus|sonnet|haiku whitelist below is the real gate
+    if [[ -z "${agent}" || -z "${model}" || "${agent}" == "${pair}" ]]; then
+      printf '  model_overrides: skipping %q — expected agent:model\n' "${pair}" >&2
+      skipped=$((skipped + 1)); continue
+    fi
+    case "${model}" in
+      opus|sonnet|haiku) ;;
+      *)
+        printf '  model_overrides: skipping %s — invalid model %q (use opus|sonnet|haiku)\n' "${agent}" "${model}" >&2
+        skipped=$((skipped + 1)); continue ;;
+    esac
+    agent_file="${agents_dir}/${agent}.md"
+    if [[ ! -f "${agent_file}" ]]; then
+      printf '  model_overrides: skipping %s — no agent file at %s\n' "${agent}" "${agent_file}" >&2
+      skipped=$((skipped + 1)); continue
+    fi
+    if grep -qE '^model: ' "${agent_file}"; then
+      tmp="${agent_file}.tmp"
+      sed "s/^model: .*$/model: ${model}/" "${agent_file}" > "${tmp}"
+      mv "${tmp}" "${agent_file}"
+      applied=$((applied + 1))
+    fi
+  done
+
+  if [[ "${applied}" -gt 0 || "${skipped}" -gt 0 ]]; then
+    printf '  Model overrides: %d applied, %d skipped\n' "${applied}" "${skipped}"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Install Ghostty theme and config snippet
 # ---------------------------------------------------------------------------
 
@@ -1466,8 +1530,12 @@ if [[ "${EXCLUDE_IOS}" == "true" ]]; then
   done
 fi
 
-# Step 2b — Apply model tier (rewrite agent model assignments if needed).
+# Step 2b — Apply model tier (rewrite agent model assignments if needed),
+# then per-agent overrides on top. Overrides run unconditionally (even when
+# no tier is set) so a user can pin individual agents without opting into a
+# whole-roster tier.
 apply_model_tier
+apply_model_overrides "${CLAUDE_HOME}/agents" "${CLAUDE_HOME}/oh-my-claude.conf"
 
 # Step 2c — Save repo path, installed version, and installed SHA for
 # easy updates. The SHA lets the stale-install indicator detect a

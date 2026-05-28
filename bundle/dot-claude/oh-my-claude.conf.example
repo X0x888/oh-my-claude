@@ -552,7 +552,7 @@
 # Cost & model tier.
 # ---------------------------------------------------------------------------
 
-# Model tier applied to all 32 specialist agents.
+# Model tier applied to all 34 specialist agents.
 #   quality  — all agents use Opus (highest quality, highest cost).
 #   balanced — Opus for planning/review, Sonnet for execution. (Default.)
 #   economy  — all agents use Sonnet (lowest cost).
@@ -562,6 +562,26 @@
 # value here only takes effect on agent files when the tier-switching
 # script runs — editing this line by hand will not rewrite agent files.
 #model_tier=balanced
+
+# Per-agent model overrides — the fine-grained complement to model_tier.
+# Where model_tier is all-or-nothing across the whole roster, this pins a
+# specific model on a specific agent. Applied AFTER the tier rewrite, so an
+# override always wins over the tier. Format is a comma-separated list of
+# `agent:model` pairs; model must be one of opus | sonnet | haiku; agent is
+# the bare agent filename (no .md), e.g. `oracle`, `librarian`.
+#
+#   model_overrides=oracle:opus,quality-reviewer:opus,librarian:haiku
+#
+# A typical use: keep the roster on economy (Sonnet) but lift the agents
+# whose judgment you care most about back to Opus, and drop a cheap
+# lookup agent like the librarian to Haiku — paying for quality only where
+# it moves the needle. Bad pairs (unknown model, or an agent file that does
+# not exist) are skipped with a warning, never fatal.
+#
+# Like model_tier, this is an install-time flag: it takes effect when
+# `install.sh` or `switch-tier.sh` runs, not by editing this line alone.
+# Env: OMC_MODEL_OVERRIDES (takes precedence over this conf value).
+#model_overrides=
 
 # Output style installer behavior. Controls which bundled output-style
 # name `bash install.sh` writes into ~/.claude/settings.json's outputStyle.

@@ -49,6 +49,7 @@ OMC_CONFIG="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/omc-config.sh
 PARSER_EXEMPT_FLAGS=(
   installation_drift_check
   model_tier
+  model_overrides
 )
 
 for f in "${COMMON_SH}" "${CONF_EXAMPLE}" "${OMC_CONFIG}"; do
