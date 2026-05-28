@@ -885,6 +885,30 @@ for agent_file in "${CLAUDE_HOME}/agents/"*.md; do
 done
 printf '  [info] Agent models: %d opus, %d sonnet\n' "${opus_count}" "${sonnet_count}"
 
+# C8: bundle agent completeness — required_paths only spot-checks a few
+# sentinel agents, so a partial install missing the other agents would
+# pass. Compare the installed agent set against the source bundle
+# (SCRIPT_DIR is the repo root); a missing agent is a broken install.
+# Guarded so a standalone run without the source tree degrades cleanly.
+bundle_agents_dir="${SCRIPT_DIR}/bundle/dot-claude/agents"
+if [[ -d "${bundle_agents_dir}" ]]; then
+  missing_agents=""
+  bundle_agent_count=0
+  for bundle_agent in "${bundle_agents_dir}"/*.md; do
+    [[ -f "${bundle_agent}" ]] || continue
+    bundle_agent_count=$(( bundle_agent_count + 1 ))
+    agent_base="$(basename "${bundle_agent}")"
+    if [[ ! -f "${CLAUDE_HOME}/agents/${agent_base}" ]]; then
+      missing_agents="${missing_agents} ${agent_base}"
+    fi
+  done
+  if [[ -z "${missing_agents# }" ]]; then
+    pass "All ${bundle_agent_count} bundle agents present in install"
+  else
+    fail "Install missing agents present in source bundle:${missing_agents}"
+  fi
+fi
+
 printf '\n'
 
 # ---------------------------------------------------------------------------

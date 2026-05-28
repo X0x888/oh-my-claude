@@ -59,6 +59,9 @@ jobs:
       - name: Run gamedev skill tests
         run: bash tests/test-gamedev-skill.sh
 
+      - name: Run web-verify MCP wiring tests
+        run: bash tests/test-web-verify-mcp-wiring.sh
+
       - name: Run design-craft additions tests (2026-05-26 Wave C pin)
         run: bash tests/test-design-craft-additions.sh
 

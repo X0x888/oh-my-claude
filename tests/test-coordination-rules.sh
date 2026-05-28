@@ -536,5 +536,79 @@ else
 fi
 
 # ----------------------------------------------------------------------
+# Contract 8 — install/uninstall surface parity (test-automation-engineer P2)
+#
+# CLAUDE.md "Adding or removing a skill directory or agent file" requires
+# verify.sh AND uninstall.sh to stay parallel with the live bundle, else
+# uninstall silently leaks files or verify passes a broken install. No
+# prior contract enforced membership: Contract 4 checks doc COUNTS, not
+# the uninstall/verify LISTS. This contract closes that gap.
+printf '\nContract 8: install/uninstall surface parity\n'
+
+C8_AGENTS_DIR="${REPO_ROOT}/bundle/dot-claude/agents"
+C8_SKILLS_DIR="${REPO_ROOT}/bundle/dot-claude/skills"
+C8_UNINSTALL="${REPO_ROOT}/uninstall.sh"
+C8_VERIFY="${REPO_ROOT}/verify.sh"
+
+# SKILL_DIRS entries intentionally present in uninstall.sh with no matching
+# bundle skill dir: the /ulw classifier aliases install.sh copies in.
+C8_SKILL_ALIAS_ALLOWLIST="ultrawork sisyphus"
+
+# (a) every bundle agent .md must appear in uninstall.sh AGENT_FILES.
+c8_missing_agents=""
+for _af in "${C8_AGENTS_DIR}"/*.md; do
+  [[ -f "${_af}" ]] || continue
+  _base="$(basename "${_af}")"
+  grep -q "/agents/${_base}\"" "${C8_UNINSTALL}" || c8_missing_agents="${c8_missing_agents} ${_base}"
+done
+if [[ -z "${c8_missing_agents# }" ]]; then
+  assert_pass "C8: every bundle agent is in uninstall.sh AGENT_FILES"
+else
+  assert_fail "C8: uninstall.sh AGENT_FILES missing bundle agents" \
+    "add to uninstall.sh AGENT_FILES:${c8_missing_agents}"
+fi
+
+# (b) every bundle skill dir must appear in uninstall.sh SKILL_DIRS.
+c8_missing_skills=""
+for _sd in "${C8_SKILLS_DIR}"/*/; do
+  [[ -d "${_sd}" ]] || continue
+  _name="$(basename "${_sd}")"
+  grep -q "/skills/${_name}\"" "${C8_UNINSTALL}" || c8_missing_skills="${c8_missing_skills} ${_name}"
+done
+if [[ -z "${c8_missing_skills# }" ]]; then
+  assert_pass "C8: every bundle skill dir is in uninstall.sh SKILL_DIRS"
+else
+  assert_fail "C8: uninstall.sh SKILL_DIRS missing bundle skill dirs" \
+    "add to uninstall.sh SKILL_DIRS:${c8_missing_skills}"
+fi
+
+# (c) every uninstall.sh SKILL_DIRS entry must be a real bundle skill dir
+#     OR an allowlisted classifier alias — else it is a stale orphan.
+c8_orphan_skills=""
+while IFS= read -r _name; do
+  [[ -n "${_name}" ]] || continue
+  [[ -d "${C8_SKILLS_DIR}/${_name}" ]] && continue
+  case " ${C8_SKILL_ALIAS_ALLOWLIST} " in
+    *" ${_name} "*) continue ;;
+  esac
+  c8_orphan_skills="${c8_orphan_skills} ${_name}"
+done < <(grep -oE '/skills/[a-z0-9-]+"' "${C8_UNINSTALL}" | sed -E 's#/skills/##; s#"##' | LC_ALL=C sort -u)
+if [[ -z "${c8_orphan_skills# }" ]]; then
+  assert_pass "C8: uninstall.sh SKILL_DIRS has no stale orphan entries"
+else
+  assert_fail "C8: uninstall.sh SKILL_DIRS references non-existent skill dirs" \
+    "remove (or allowlist as an alias):${c8_orphan_skills}"
+fi
+
+# (d) verify.sh must do a bundle-vs-install agent completeness check, not
+#     just spot-check a handful of sentinel agents in required_paths.
+if grep -q 'C8: bundle agent completeness' "${C8_VERIFY}"; then
+  assert_pass "C8: verify.sh performs a bundle-vs-install agent completeness check"
+else
+  assert_fail "C8: verify.sh has no agent-completeness check" \
+    "verify.sh required_paths only spot-checks a few agents; add the C8 bundle-vs-install loop"
+fi
+
+# ----------------------------------------------------------------------
 printf '\n=== coordination-rules tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]
