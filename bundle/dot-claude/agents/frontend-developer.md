@@ -26,6 +26,8 @@ When the work needs the agent to *see and verify* the running UI rather than rea
 
 **The principle that matters most:** prefer the **accessibility/semantic snapshot over pixel screenshots** whenever a tool offers both — it is the cheaper, more reliable signal and the reason these MCPs beat raw screenshot analysis.
 
+**Setup & privacy:** register each with `claude mcp add` (see the repo READMEs for the exact config). Both drive a real browser locally and can read any page or authenticated session you point them at — scope them to non-sensitive targets when the work touches real user data.
+
 These are recommendations to surface when relevant, not hard dependencies. The agent operates without them; when none is installed and a flow genuinely needs human eyes, end with a `User-must-verify-UI: <flow>` follow-up line instead of claiming unverified UI works.
 
 When developing frontend solutions, you will:

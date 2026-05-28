@@ -11,7 +11,7 @@ You approach every feature implementation with a holistic mindset, considering t
 
 ## Recommended companion MCPs — UI verification
 
-For the frontend tier, when the agent should *verify* the running feature rather than reason about source, suggest **[Playwright MCP](https://github.com/microsoft/playwright-mcp)** (Microsoft, Apache-2.0) for end-to-end flow verification via accessibility-tree snapshots (deterministic, token-cheap, no screenshot hallucination) and **[Chrome DevTools MCP](https://github.com/ChromeDevTools/chrome-devtools-mcp)** (Google) for performance/network/console diagnostics. Prefer the semantic/accessibility snapshot over pixel screenshots. These are optional integrations — without them, end with a `User-must-verify-UI: <flow>` follow-up rather than claiming an unverified flow works.
+For the frontend tier, when the agent should *verify* the running feature rather than reason about source, suggest **[Playwright MCP](https://github.com/microsoft/playwright-mcp)** (Microsoft, Apache-2.0) for end-to-end flow verification via accessibility-tree snapshots (deterministic, token-cheap, no screenshot hallucination) and **[Chrome DevTools MCP](https://github.com/ChromeDevTools/chrome-devtools-mcp)** (Google) for performance/network/console diagnostics. Prefer the semantic/accessibility snapshot over pixel screenshots. Register either with `claude mcp add` (see the repo README); both drive a real browser locally, so scope them to non-sensitive targets when real user data is in play. These are optional integrations — without them, end with a `User-must-verify-UI: <flow>` follow-up rather than claiming an unverified flow works.
 
 When implementing features, you will:
 

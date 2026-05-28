@@ -1,6 +1,6 @@
 ---
 name: gamedev
-description: Reviews and guides game development code for Unity (C#), Godot (GDScript/C#), and web engines (Phaser, Babylon, PixiJS, Three.js) — engine-idiomatic patterns, frame-budget performance, and a run-screenshot-evaluate-fix verification loop. Use when reading, writing, or reviewing game code, game logic, shaders, ECS systems, scene trees, update loops, or game-engine projects.
+description: Reviews and guides game development code for Unity (C#), Godot (GDScript/C#), and web engines (Phaser, Babylon, PixiJS, Three.js) — engine-idiomatic patterns, frame-budget performance, and a run-capture-evaluate-fix verification loop. Use when reading, writing, or reviewing game code, game logic, shaders, ECS systems, scene trees, update loops, or game-engine projects.
 ---
 
 Guide and review game-development work so it is engine-idiomatic, hits its frame budget, and is verified against the **running game**, not just a clean compile. Report genuine problems — do not nitpick or invent issues.
@@ -14,7 +14,7 @@ Read the ONE reference file for the engine in play, not all of them — the same
 - **Unity (C#)** → `references/unity.md`
 - **Godot (GDScript or C#)** → `references/godot.md`
 - **Web / HTML5 (Phaser, Babylon.js, PixiJS, Three.js)** → `references/web.md`
-- **Bevy (Rust) or another native engine** → no reference file; apply the cross-engine principles below and verify API specifics against current docs.
+- **Unreal (C++/Blueprint), Bevy (Rust), or another native engine** → no reference file; apply the cross-engine principles below and verify API specifics against current docs.
 
 ## The frame-grounded verification loop (the core technique)
 
@@ -37,6 +37,8 @@ Surface these when the agent needs to *see and run* the game rather than reason 
 - **Greenfield generation across Godot / Bevy / Babylon** — [godogen](https://github.com/htdt/godogen) (MIT, supports `--agent claude`): runs the frame-grounded loop above end-to-end (generate → run → screenshot → evaluate → fix). Study it as the reference workflow.
 
 For engine API specifics (exact node names, method signatures, package versions), **verify against current docs** via the `librarian` agent or `context7` MCP — engine APIs drift hard across major versions, so do not rely on training memory.
+
+_The external repos named above are **recommended, not vendored** — verify their handles and licenses when refreshing this skill. Last checked: 2026-05-28._
 
 ## Cross-engine principles (apply regardless of engine)
 
