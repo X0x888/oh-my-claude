@@ -169,7 +169,7 @@ oh-my-claude/
     output-styles/            # Two bundled output styles: oh-my-claude.md (compact CLI default) + executive-brief.md (CEO-style status report)
     quality-pack/
       memory/                 # Core, skills, and compact memory files
-      scripts/                # 13 lifecycle scripts (prompt routing, first-prompt session-init, compaction, session start [6 hooks incl. drift-check + whats-new + watchdog-health], stop-failure, resume-watchdog)
+      scripts/                # 13 lifecycle scripts (prompt routing, first-prompt session-init, compaction, session start [7 hooks incl. drift-check + whats-new + watchdog-health + resume-hint], stop-failure, resume-watchdog)
     skills/                   # 29 skill definitions, each in <name>/SKILL.md
       autowork/scripts/       # 37 autowork hook scripts and utilities
         common.sh             # Shared functions (JSON, classification, scope)
@@ -297,7 +297,7 @@ When multiple reviewers cover the same dimension and their verdicts disagree, th
 
 #### Universal VERDICT contract (v1.14.0)
 
-In v1.14.0 the VERDICT contract was extended to all 30 agents so the final-line outcome is structured and uniform across roles. The 6 reviewer-class agents above remain unchanged (their `CLEAN`/`SHIP`/`FINDINGS`/`BLOCK` vocabulary is still what `record-reviewer.sh` parses). v1.15.0 adds `visual-craft-lens` (lens-class) bringing the total to 31. v1.19.0 adds `abstraction-critic` (reviewer-class, manual-dispatch only) bringing the total to 32. The 25 non-reviewer agents gained role-appropriate tokens; planners are read by `record-plan.sh` (which now sets `plan_verdict` state) and the rest are forward-looking — read by humans today, available to future hooks.
+In v1.14.0 the VERDICT contract was extended to all 30 agents so the final-line outcome is structured and uniform across roles. The reviewer-class agents above remain unchanged (their `CLEAN`/`SHIP`/`FINDINGS`/`BLOCK` vocabulary is still what `record-reviewer.sh` parses). v1.15.0 adds `visual-craft-lens` (lens-class) bringing the total to 31. v1.19.0 adds `abstraction-critic` (reviewer-class, manual-dispatch only) bringing the total to 32. The non-reviewer agents gained role-appropriate tokens; planners are read by `record-plan.sh` (which now sets `plan_verdict` state) and the rest are forward-looking — read by humans today, available to future hooks.
 
 | Role | Agents | Vocabulary | Meaning | Consumer today |
 |---|---|---|---|---|
@@ -306,6 +306,7 @@ In v1.14.0 the VERDICT contract was extended to all 30 agents so the final-line 
 | Planner | `prometheus`, `quality-planner` | `PLAN_READY` / `NEEDS_CLARIFICATION` / `BLOCKED` | Plan is decision-complete, needs user input, or blocked. | `record-plan.sh` writes `plan_verdict` to session state. |
 | Researcher | `librarian`, `quality-researcher` | `REPORT_READY` / `INSUFFICIENT_SOURCES` | Research is grounded, or sources are insufficient and the main thread should expect uncertainty. | None — informational. |
 | Debugger / architect | `oracle` | `RESOLVED` / `HYPOTHESIS` / `NEEDS_EVIDENCE` | Root cause identified, best guess offered, or more data needed. | None — informational. |
+| Framer | `divergent-framer` | `FRAMINGS_READY (N)` / `NEEDS_PROBLEM_STATEMENT` / `INSUFFICIENT_OPTIONS` | N candidate framings emitted (3 ≤ N ≤ 5), problem too vague to frame against, or only one credible framing. | None — informational. |
 | Operations | `atlas`, `chief-of-staff` | `DELIVERED` / `NEEDS_INPUT` / `BLOCKED` | Deliverable is ready, awaiting user decision, or blocked. | None — informational. |
 | Writer | `draft-writer`, `writing-architect` | `DELIVERED` / `NEEDS_INPUT` / `NEEDS_RESEARCH` | Draft/structure is ready, awaiting decision, or needs factual research. | None — informational. |
 | Implementer | `backend-api-developer`, `devops-infrastructure-engineer`, `frontend-developer`, `fullstack-feature-builder`, `ios-core-engineer`, `ios-deployment-specialist`, `ios-ecosystem-integrator`, `ios-ui-developer`, `test-automation-engineer` | `SHIP` / `INCOMPLETE` / `BLOCKED` | Implementation is complete and verified, partial, or blocked on a hard prerequisite. | None — informational. |

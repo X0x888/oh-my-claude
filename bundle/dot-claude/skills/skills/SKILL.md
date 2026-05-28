@@ -89,6 +89,15 @@ The symptom-table above is a discovery shortcut. Each row maps to a skill in the
 | **ulw-off** | `/ulw-off` | Deactivate ultrawork mode mid-session without ending the conversation. |
 | **skills** | `/skills` | Show this list. |
 
+### Model-invoked (no slash command)
+
+These two skills auto-fire when Claude detects the matching work — there is no slash command to invoke them. They are listed here for discoverability; you never call them directly.
+
+| Skill | Fires on | What it does |
+|-------|----------|--------------|
+| **swiftui-pro** | SwiftUI code in view | Reviews Swift/SwiftUI for modern-API usage, accessibility, data flow, navigation, performance, and Swift idioms. Partial-loads topic-scoped references. |
+| **gamedev** | Unity / Godot / web-engine game work | Engine-idiomatic review + the frame-grounded run→capture→evaluate→fix loop for Unity (C#), Godot (GDScript/C#), and web engines (Phaser / Babylon / PixiJS / Three.js). |
+
 ## Decision guide
 
 - **Just installed?** Run `/omc-config` for the guided multi-choice configuration walkthrough, then `/ulw-demo` to see the quality gates in action.
