@@ -261,12 +261,14 @@ teardown
 # god_scope_on_bare_prompt for the No-Out-of-Scope contract;
 # v1.44-pre added circuit_breaker + transcript_archive;
 # v1.46-pre added objective_contract_gate for the Codex /goal port
-# objective-completion contract) ---
-printf 'Test 13: apply-preset maximum writes 32 keys\n'
+# objective-completion contract; this wave added workflow_substrate
+# for the Workflow-tool execution substrate) ---
+printf 'Test 13: apply-preset maximum writes 33 keys\n'
 setup
 out="$(bash "${HELPER}" apply-preset user maximum 2>&1)"
-assert_contains "apply-preset reports 32 keys" "32 keys" "${out}"
+assert_contains "apply-preset reports 33 keys" "33 keys" "${out}"
 assert_file_has_line "maximum: gate_level=full" "${USER_CONF_PATH}" "^gate_level=full\$"
+assert_file_has_line "maximum: workflow_substrate=on" "${USER_CONF_PATH}" "^workflow_substrate=on\$"
 assert_file_has_line "maximum: guard_exhaustion_mode=block" "${USER_CONF_PATH}" "^guard_exhaustion_mode=block\$"
 assert_file_has_line "maximum: quality_policy=zero_steering" "${USER_CONF_PATH}" "^quality_policy=zero_steering\$"
 assert_file_has_line "maximum: prometheus_suggest=on" "${USER_CONF_PATH}" "^prometheus_suggest=on\$"
@@ -309,6 +311,7 @@ assert_file_has_line "balanced: exemplifying_scope_gate=on" "${USER_CONF_PATH}" 
 assert_file_has_line "balanced: resume_watchdog=off" "${USER_CONF_PATH}" "^resume_watchdog=off\$"
 assert_file_has_line "balanced: model_tier=balanced" "${USER_CONF_PATH}" "^model_tier=balanced\$"
 assert_file_has_line "balanced: directive_budget=balanced" "${USER_CONF_PATH}" "^directive_budget=balanced\$"
+assert_file_has_line "balanced: workflow_substrate=on" "${USER_CONF_PATH}" "^workflow_substrate=on\$"
 # Counterpart to the Maximum assertion above — Balanced is where the
 # council cost cap lives. If someone ever flips this to `on`, the cap
 # moves and Balanced loses its reason to exist.
@@ -323,6 +326,7 @@ printf 'Test 15: apply-preset minimal writes minimal defaults\n'
 setup
 bash "${HELPER}" apply-preset user minimal > /dev/null
 assert_file_has_line "minimal: gate_level=basic" "${USER_CONF_PATH}" "^gate_level=basic\$"
+assert_file_has_line "minimal: workflow_substrate=off" "${USER_CONF_PATH}" "^workflow_substrate=off\$"
 assert_file_has_line "minimal: guard_exhaustion_mode=silent" "${USER_CONF_PATH}" "^guard_exhaustion_mode=silent\$"
 assert_file_has_line "minimal: quality_policy=balanced" "${USER_CONF_PATH}" "^quality_policy=balanced\$"
 assert_file_has_line "minimal: auto_memory=off" "${USER_CONF_PATH}" "^auto_memory=off\$"

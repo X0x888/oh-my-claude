@@ -907,6 +907,26 @@
 # Env: OMC_DIVERGENCE_DIRECTIVE.
 #divergence_directive=on
 
+# Permit the harness to use Claude Code's Workflow tool (deterministic
+# multi-subagent orchestration — parallel()/pipeline(), per-agent JSON
+# output schemas, token budgets, resume; runs in the background and
+# returns a task id) as an OPT-IN execution SUBSTRATE for HEAVY fan-out:
+# /council Phase 8 execution waves, large audits, migrations (NOT the
+# inline lens-panel dispatch, which needs in-context synthesis). This is
+# NOT the default per-prompt path — oh-my-claude stays a prompt-injected
+# directive substrate that CALLS a workflow engine for heavy work instead
+# of BECOMING one (small work still runs inline). The Workflow tool itself
+# gates on explicit user opt-in; `/ulw` is standing authorization for that
+# opt-in (autonomous multi-agent work is what `/ulw` already grants).
+# Default ON in maximum/balanced; OFF in minimal (background fan-out is
+# the heaviest execution shape — counter to minimal's lightest-footprint
+# stance). Set off to keep all work on the lightweight in-thread path —
+# when off, prompt-intent-router.sh injects a suppression directive on
+# active turns (soft, model-honored enforcement; the Workflow tool is
+# model-invoked, so there is no hard PreToolUse gate).
+# Env: OMC_WORKFLOW_SUBSTRATE.
+#workflow_substrate=on
+
 # Router directive budget mode. Applies only to SOFT directives
 # (bias-defense, project-maturity, memory-drift, defect-watch, and
 # similar contextual nudges) — core routing/openers still emit. This is

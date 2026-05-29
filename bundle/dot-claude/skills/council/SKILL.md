@@ -70,6 +70,8 @@ Launch ALL selected lenses in parallel using the Agent tool in a single message.
 
 **Critical**: dispatch ALL lenses in ONE message so they run concurrently.
 
+**The lens panel stays on the `Agent` tool — do NOT route it through the Workflow tool**, even when `workflow_substrate=on`. The Workflow tool runs in the background and returns a task id; Phase 5/6 synthesis (dedup, rank, copy-paste the exact claim) needs the lens returns *in context*, which a backgrounded task cannot provide. The Workflow tool's place in `/council` is Phase 8 wave *execution* (Step 8), not the lens dispatch.
+
 ### 4. Wait
 
 Do NOT begin synthesis until ALL dispatched lenses have returned their results. While waiting:
@@ -89,13 +91,13 @@ After all lenses return, synthesize their findings:
 
 ### 6. Verify top findings
 
-Before presenting the final assessment, the top 2-3 highest-impact findings drive the user's most consequential actions. Surface-level lens output is not enough on findings that are load-bearing. Verify each one with a focused dispatch:
+Before presenting the final assessment, the top 2-3 highest-impact findings drive the user's most consequential actions. Surface-level lens output is not enough on findings that are load-bearing. Verify each one with a focused dispatch — the verdict-challenge discipline (`intellectual-craft.md` Popper #6, symmetric half) applied to lens output, where a FINDING is an input to **refute against evidence**, not a truth to copy forward:
 
 1. **Pick the top 2-3 findings** by `impact_x_reach`. Skip anything that is already obviously verified by clear file/line citations the lens provided. Skip anything where the user said "advisory only — don't act."
 2. **Dispatch `oracle` per finding** (or, if all top findings are in one domain like security, dispatch the relevant lens once more with a deepening prompt — but `oracle` is the default because it is opus-grade and not bound to a single perspective). Each dispatch must include:
    - The exact claim, copy-pasted from the lens output.
    - The evidence the lens cited (file paths, lines, observed behavior).
-   - The instruction: "Verify this claim against the actual code. Report whether it holds, partially holds, or does not hold. Cite specific files/lines. Note any caveats or context the original lens missed."
+   - The instruction: "**Try to REFUTE this claim** against the actual code — treat it as a possible false positive until the evidence forces otherwise. Re-read the cited source and confirm the issue actually reproduces. Report whether it holds, partially holds, or does not hold, defaulting to *does not hold* when the evidence is thin or you cannot reproduce it. Cite specific files/lines. Note any caveats or context the original lens missed."
 3. **Use the verification output** to either:
    - **Confirm** the finding (most cases): keep it as-is in the final assessment, optionally adding the verification's caveats.
    - **Refine** it: the underlying issue is real but the lens framing was off — restate using the verifier's framing.
@@ -167,6 +169,8 @@ A bash predicate that mirrors this list — `is_exhaustive_authorization_request
    *Numerics are load-bearing across three sites:* the `5–10 findings per wave` target and `<3` floor in this paragraph, the `is_wave_plan_under_segmented()` predicate in `bundle/dot-claude/skills/autowork/scripts/common.sh` (`total < 3 * waves` AND `total ≥ 5` AND `waves ≥ 2`), and the user-facing block reason in `stop-guard.sh`'s wave-shape gate. If you change one, change all three in the same commit — the predicate and the gate copy must agree, and the canonical text here is what the model reads first.
 
 4. **Execute waves sequentially — full cycle per wave.** For each wave N of M:
+
+    *Substrate note: when `workflow_substrate=on` and this is a multi-wave batch, the per-wave cycle below is the fire-and-resume shape that fits Claude Code's **Workflow tool** as a `pipeline()` — one stage per step, one item per wave. The engine carries determinism, a token budget, and resume across the batch; `/ulw` is standing authorization for the tool's explicit opt-in. Hand-sequenced dispatch is the fallback when the tool is unavailable or the list is small. The per-wave steps are identical either way — and each wave's `quality-reviewer`/`excellence-reviewer` verdict is still an input to challenge against evidence, not an auto-accept.*
     1. Dispatch `quality-planner` for the wave's findings (decision-complete plan for the wave's scope only — not the whole project).
     1a. **Surface OPERATIONAL-BLOCKER findings only before executing (v1.40.0).** If the wave contains a finding with `requires_user_decision: true` AND the decision_reason names a real operational block (credentials, missing login, external account, a destructive shared-state action awaiting confirmation), present that finding's summary + decision_reason to the user before continuing into implementation. Under `no_defer_mode=on` (default), do NOT pause on findings marked user-decision for technical-judgment reasons (taste, policy, brand voice, library choice, credible-approach split) — those are the agent's call. Pick the sibling-of-codebase choice with stated reasoning in the wave plan, then ship; the user can redirect on review. If the field's `decision_reason` is ambiguous between operational and technical, default to autonomous execution and surface the choice in the wave commit body for the user to audit. The pause-on-user-decision behavior matches v1.39 only when `no_defer_mode=off`.
     2. Implement using the appropriate domain specialist agent(s).

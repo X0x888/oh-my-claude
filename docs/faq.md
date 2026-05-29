@@ -54,6 +54,12 @@ oh-my-claudecode is a Node.js/TypeScript plugin framework for extending Claude C
 
 Yes. oh-my-claude operates through Claude Code's built-in hooks system (`settings.json`), not through a plugin framework. Hooks and plugins occupy different extension points and do not conflict. If you have plugins installed, they continue to work alongside the harness.
 
+### Does Claude Code's new Workflow tool make oh-my-claude obsolete? Should I use both?
+
+No — they operate at different layers and compose. Claude Code's `Workflow` tool is an **execution primitive**: a tool you (or the model) call to fan out many sub-agents deterministically (`parallel()`/`pipeline()`, per-agent output schemas, a token budget, resume), running in the background and returning a task id. oh-my-claude is a **behavioral contract**: an always-on overlay that governs *whether* the agent thinks deeply, verifies, and refuses to stop short (the no-defer contract, the stop-guard, verification scoring, the reviewer chain). The Workflow tool has none of those, and oh-my-claude does not reimplement the Workflow tool's orchestration ergonomics.
+
+**Use both.** Under `/ulw`, oh-my-claude can *call* the Workflow tool as an opt-in execution substrate for heavy fan-out — `/council` Phase 8 waves, large audits, migrations — gated on `workflow_substrate=on` (default on; `/ulw` is standing authorization for the tool's explicit opt-in). The lens panel and small/inline work deliberately stay on the lightweight in-thread path. In short: the Workflow tool is *how* heavy work fans out; `/ulw` is *how well* it gets done. See the `workflow_substrate` flag in [customization](customization.md) and the "graph-of-roles" row in [architecture](architecture.md).
+
 ### What happens if I already have custom hooks?
 
 The installer merges hook entries from `settings.patch.json` into your existing `settings.json`. If you already have hooks registered for the same events (UserPromptSubmit, Stop, PostToolUse, etc.), the installer adds the harness hooks alongside yours. Multiple hooks on the same event run in the order they appear in the array. Review your `~/.claude/settings.json` after installation to confirm the merge looks correct.

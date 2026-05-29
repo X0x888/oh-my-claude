@@ -87,6 +87,22 @@ assert_file_contains "instrument heading #6 Popper test" "### 6. The Popper test
 assert_file_contains "instrument heading #7 Wittgenstein discipline" "### 7. The Wittgenstein discipline" "${DOCTRINE_PATH}"
 assert_file_contains "instrument heading #8 Lakatos move" "### 8. The Lakatos move" "${DOCTRINE_PATH}"
 
+# Verdict-challenge discipline (this wave): shipped as the SYMMETRIC HALF of
+# Popper #6 (own-PASS-insufficient + incoming-verdict-not-automatic), NOT a 9th
+# instrument — a fresh abstraction-critic ruled the standalone form solving-by-
+# accretion + an anti-finding inversion risk. These nets armor the content AND
+# guard the chosen shape (no "### 9." heading; count stays eight).
+assert_file_contains "Popper #6 incoming-verdict symmetric half present" "symmetric half" "${DOCTRINE_PATH}"
+assert_file_contains "verdict-challenge anti-finding inversion guard present" "anti-finding bypass" "${DOCTRINE_PATH}"
+assert_file_contains "verdict-challenge bounded (not a debate loop)" "not a debate loop" "${DOCTRINE_PATH}"
+assert_file_contains "verdict-challenge carve-out excludes mechanical gate blocks" "does NOT license reasoning around a stop-guard" "${DOCTRINE_PATH}"
+if grep -Eq '^### 9\.' "${DOCTRINE_PATH}"; then
+  printf '  FAIL: verdict-challenge must NOT ship as a 9th instrument heading — the abstraction-critic verdict was extend Popper #6, keep the count at eight\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+
 # Defensive structure — the "What this file is and is NOT" section
 # closes the doctrine-layering regress that model-robustness.md warned
 # against. Removing this section is the same anti-pattern class as

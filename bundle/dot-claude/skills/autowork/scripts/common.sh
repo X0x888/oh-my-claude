@@ -82,6 +82,7 @@ _omc_env_model_drift_canary="${OMC_MODEL_DRIFT_CANARY:-}"
 _omc_env_blindspot_inventory="${OMC_BLINDSPOT_INVENTORY:-}"
 _omc_env_intent_broadening="${OMC_INTENT_BROADENING:-}"
 _omc_env_divergence_directive="${OMC_DIVERGENCE_DIRECTIVE:-}"
+_omc_env_workflow_substrate="${OMC_WORKFLOW_SUBSTRATE:-}"
 _omc_env_directive_budget="${OMC_DIRECTIVE_BUDGET:-}"
 _omc_env_quality_policy="${OMC_QUALITY_POLICY:-}"
 _omc_env_blindspot_ttl="${OMC_BLINDSPOT_TTL_SECONDS:-}"
@@ -684,6 +685,8 @@ _parse_conf_file() {
         [[ -z "${_omc_env_inferred_contract}" && "${value}" =~ ^(on|off)$ ]] && OMC_INFERRED_CONTRACT="${value}" || true ;;
       divergence_directive)
         [[ -z "${_omc_env_divergence_directive}" && "${value}" =~ ^(on|off)$ ]] && OMC_DIVERGENCE_DIRECTIVE="${value}" || true ;;
+      workflow_substrate)
+        [[ -z "${_omc_env_workflow_substrate}" && "${value}" =~ ^(on|off)$ ]] && OMC_WORKFLOW_SUBSTRATE="${value}" || true ;;
       directive_budget)
         [[ -z "${_omc_env_directive_budget}" && "${value}" =~ ^(off|maximum|balanced|minimal)$ ]] && OMC_DIRECTIVE_BUDGET="${value}" || true ;;
       quality_policy)

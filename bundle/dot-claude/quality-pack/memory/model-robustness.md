@@ -34,14 +34,14 @@ Lives in `lib/verification.sh`. Project-test-cmd +40, framework keyword +30, out
 
 ### 2. Sub-dispatch — *fresh context for biased context*
 
-The `Agent` tool. Specialist agents start with no main-thread context — quality-planner, prometheus, metis, oracle, abstraction-critic, the lenses, librarian, the domain specialists. Documented in `skills.md` and listed in `core.md` Workflow.
+The `Agent` tool (one fresh-context specialist) and — for heavy fan-out — Claude Code's **Workflow tool** (deterministic multi-subagent orchestration: `parallel()`/`pipeline()`/`agent()` with JSON I/O schemas, a token budget, background execution returning a task id, and resume). Specialist agents start with no main-thread context — quality-planner, prometheus, metis, oracle, abstraction-critic, the lenses, librarian, the domain specialists. Documented in `skills.md` and listed in `core.md` Workflow.
 
 - **Catches:** main-thread drift, accumulated bias, anchored framing, pattern-match-without-understanding (a fresh specialist sees the specific case, not the template), and the urge to checkpoint into "a fresh session" (sub-dispatch IS fresh context, no session boundary required).
-- **Escalate when:** load-bearing call AND you suspect drift, OR the main thread has been on a single surface for many turns, OR the failure mode is pattern-shaped (template applied without seeing the case-specific difference). The agent-first gate enforces this for `/ulw` execution.
+- **Escalate when:** load-bearing call AND you suspect drift, OR the main thread has been on a single surface for many turns, OR the failure mode is pattern-shaped (template applied without seeing the case-specific difference). The agent-first gate enforces this for `/ulw` execution. **Single fresh read → one `Agent` dispatch; heavy fan-out that is already an *observable* shape — a `/council` Phase 8 wave-batch, a large audit, a migration across many files — → the Workflow tool**, an OPT-IN substrate gated on `workflow_substrate=on` (`/ulw` is standing authorization for the explicit opt-in the tool requires). It is the substrate, not the default per-prompt path: the architecture rejection's latency/cost and ULW-momentum reasons still hold (a `parallel()` of N agents is still N model calls), so small and ad-hoc work stays inline. Reach for the engine on the shapes the harness already names as heavy — never on a *feeling* that a 2-file change is "big" (that is Genuine Gap #1, pattern-match, reintroducing the graph-of-roles momentum tax the architecture rejection names).
 
 ### 3. Council and lens passes — *multi-perspective audit*
 
-`/council` dispatches multiple lenses (product, design, security, data, SRE, growth, visual-craft). Documented in `skills.md`.
+`/council` dispatches multiple lenses (product, design, security, data, SRE, growth, visual-craft). Documented in `skills.md`. The lens panel itself stays on the `Agent` tool's one-message concurrency — its returns must land in context for inline dedup/rank/synthesis, which a backgrounded task id cannot provide. The `/council` Phase 8 wave *execution* (plan → impl → review, per wave) is the fire-and-resume shape that fits the Workflow tool's `pipeline()` when `workflow_substrate=on`; the engine carries the determinism, token budget, and resume the hand-sequenced path lacks.
 
 - **Catches:** single-perspective blind spots that no individual specialist can see.
 - **Escalate when:** broad evaluation, "what's missing?" questions, project-strategic moves, or any time the model alone has been making coverage decisions.
@@ -80,6 +80,7 @@ Auto-fires per `core.md` Workflow. `quality-reviewer` catches defects; `excellen
 
 - **Catches:** premature completion claims, the "I'm done" reflex before the work is actually done.
 - **Escalate when:** any non-trivial change. The chain runs automatically; the model's job is to *act on findings*, not to skim past them.
+- **A FINDING/BLOCK is an input, not an automatic verdict.** The default is still *act on it* — but ground acceptance in the cited evidence: re-read the source the finding names and confirm it reproduces before you act. The sanctioned exit when it does not hold is the reject path (`record-finding-list.sh status <id> rejected <sha> 'not reproducible'|'false positive'`), which passes only on evidence you actually checked — NOT a license to discount findings (that inverts into the anti-finding bypass v1.42.x F-010 closed). The symmetric discipline for your *own* PASS is Popper #6 in `intellectual-craft.md`. **Carve-out: this governs reviewer/critic/sub-agent verdicts, NOT the stop-guard or any mechanical gate block** — those stay under Mechanism 4 (*do not reason around the gate*). The gate emits the literal token `BLOCK`; treating a `BLOCK MODE` gate reason as a "verdict to challenge" and re-reading code to declare its premise un-reproduced is the exact rationalization the v1.42.x bypass surfaces close, not this discipline.
 
 ### 9. Auto-memory and compaction sweep — *context preservation*
 

@@ -155,6 +155,9 @@ jobs:
       - name: Run divergence-directive tests
         run: bash tests/test-divergence-directive.sh
 
+      - name: Run workflow-substrate tests
+        run: bash tests/test-workflow-substrate.sh
+
       - name: Run no-broken-stat-chain regression tests
         run: bash tests/test-no-broken-stat-chain.sh
 

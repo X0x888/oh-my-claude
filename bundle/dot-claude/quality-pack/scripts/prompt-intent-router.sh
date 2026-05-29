@@ -1326,6 +1326,25 @@ ${_spec_safe}
       "bias-defense: divergence-directive fired"
   fi
 
+  # workflow_substrate=off — runtime enforcement of the opt-in execution-
+  # substrate flag. The static @-doctrine (model-robustness Mechanisms 2-3,
+  # autowork SKILL) presents the Workflow tool as "gated on
+  # workflow_substrate=on", but the model cannot evaluate that gate without
+  # the runtime value — so OFF must be communicated, or the model defaults to
+  # the (on) static authorization and the flag is inert in its non-default
+  # position. Inject a suppression directive when OFF (mirrors how
+  # divergence_directive gates its directive); when ON (default) the static
+  # authorization stands and nothing is injected, so the on-path cost is a
+  # single flag check. Soft prompt-level enforcement is the harness paradigm
+  # for a model-invoked tool (no PreToolUse matcher exists for Workflow); the
+  # directive defaults to the hard class (not budget-suppressed) because
+  # honoring an explicit user opt-out is enforcement, not bias-defense noise.
+  if [[ "${OMC_WORKFLOW_SUBSTRATE:-on}" == "off" ]] \
+      && [[ "${session_management_prompt}" -eq 0 ]] \
+      && [[ "${checkpoint_prompt}" -eq 0 ]]; then
+    add_directive "workflow_substrate_off" "WORKFLOW-SUBSTRATE DISABLED (\`workflow_substrate=off\`): do NOT reach for Claude Code's Workflow tool as the default for heavy fan-out — run council Phase 8 waves, large audits, and migrations on the \`Agent\` tool's in-thread concurrency instead. This flag is a standing PREFERENCE, not a hard block: if THIS prompt explicitly and unambiguously requests the Workflow tool, honor that present-intent request over the standing \`off\` and say so in your opener (the harness rule is that an explicit per-prompt request IS the permission). An incidental mention of the word \"workflow\" is NOT such a request."
+  fi
+
   if [[ "${session_management_prompt}" -eq 0 && "${checkpoint_prompt}" -eq 0 ]]; then
     # Project-maturity prior — informational tag biasing advisory framing.
     # Fires once per session (cached) for active modes only. Skipped on

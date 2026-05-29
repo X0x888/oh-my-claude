@@ -202,5 +202,44 @@ else
 fi
 
 # ----------------------------------------------------------------------
+# T9 — v(this wave) Workflow-substrate + verdict-challenge content net.
+#
+# Two coordinated additions must stay present:
+#   (a) the Workflow tool is named as the heavy-fan-out execution
+#       substrate (Mechanisms 2-3), gated on workflow_substrate;
+#   (b) Mechanism 8 names the verdict-challenge discipline — an incoming
+#       FINDING/BLOCK is an input grounded in evidence, NOT a license to
+#       discount findings (the anti-finding inversion guard).
+# Armors the change against silent removal.
+# ----------------------------------------------------------------------
+printf '\nT9: Workflow-substrate + verdict-challenge content present\n'
+if grep -Eq 'Workflow tool' "${DOCTRINE}" \
+  && grep -Eq 'workflow_substrate' "${DOCTRINE}" \
+  && grep -Eiq 'FINDING/BLOCK is an input|input, not an automatic verdict' "${DOCTRINE}" \
+  && grep -Eiq 'not a license to discount|anti-finding' "${DOCTRINE}"; then
+  assert_pass "T9: Workflow tool substrate + verdict-challenge (input-not-verdict, anti-finding guard) present"
+else
+  assert_fail "T9: Workflow-substrate or verdict-challenge content missing" \
+    "Mechanisms 2-3 must name the Workflow tool as the heavy-fan-out substrate (gated on workflow_substrate), and Mechanism 8 must name the verdict-challenge discipline (a FINDING/BLOCK is an input grounded in evidence, NOT license to discount findings — the anti-finding inversion guard)"
+fi
+
+# ----------------------------------------------------------------------
+# T10 — verdict-challenge carve-out (anti-bypass). The "challenge a BLOCK"
+# discipline must explicitly EXCLUDE the stop-guard / mechanical gate blocks
+# (they stay under Mechanism 4 "do not reason around the gate"), or it
+# collides with the stop-guard's literal BLOCK token and reopens the v1.42.x
+# bypass shape (a model rationalizing past a gate as "challenging the verdict").
+# Surfaced by metis stress-test during the workflow_substrate change.
+# ----------------------------------------------------------------------
+printf '\nT10: verdict-challenge carve-out excludes mechanical gate blocks (anti-bypass)\n'
+if grep -Eiq 'NOT the stop-guard or any mechanical gate block|not the stop-guard or any mechanical gate' "${DOCTRINE}" \
+  && grep -Eq 'Mechanism 4' "${DOCTRINE}"; then
+  assert_pass "T10: verdict-challenge carve-out present (stop-guard/gate-block exclusion linked to Mechanism 4)"
+else
+  assert_fail "T10: verdict-challenge carve-out missing" \
+    "Mechanism 8's verdict-challenge bullet must carve out the stop-guard / mechanical gate blocks (they stay under Mechanism 4); without it, 'challenge a BLOCK' collides with the stop-guard BLOCK token and reopens the v1.42.x bypass shape"
+fi
+
+# ----------------------------------------------------------------------
 printf '\n=== model-robustness-doctrine tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]
