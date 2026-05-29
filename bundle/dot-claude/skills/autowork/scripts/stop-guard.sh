@@ -92,6 +92,15 @@ has_closeout_label() {
     verification) pattern='\*\*Verification(\.)?\*\*' ;;
     risks)        pattern='\*\*Risks(\.)?\*\*' ;;
     next)         pattern='\*\*Next(\.)?\*\*' ;;
+    # v1.46-pre Codex /goal port: the objective-completion contract clears
+    # when the model attests it covered the original objective in the
+    # closing region (the same closing-region scan as the other labels).
+    # The "Objective" prefix is REQUIRED — a bare "**Coverage.**" must NOT
+    # clear it, because in this harness "coverage" overwhelmingly means
+    # test/review coverage, and a test-coverage wrap-up note would otherwise
+    # falsely clear the objective gate without any objective attestation
+    # (quality-reviewer F-1).
+    coverage)     pattern='\*\*Objective (coverage|audit)(\.)?\*\*' ;;
     *) return 1 ;;
   esac
   [[ -n "${text}" ]] || return 1
@@ -1350,6 +1359,128 @@ Run excellence-reviewer for fresh-eyes holistic evaluation (completeness, unknow
         "[Metis-on-plan gate · 1/1] plan flagged high-complexity (${plan_complexity_signals}) but no metis stress-test recorded since the plan landed.
 Run metis to pressure-test for wrong-abstraction / missing-constraint risks before execution.${metis_recovery}")"
       exit 0
+    fi
+  fi
+
+  # --- Objective-completion contract gate (v1.46-pre Codex /goal port) ---
+  #
+  # The anti-premature-STOP half of the Codex /goal port (the /ulw-pause
+  # 3-turn threshold is the anti-premature-GIVE-UP half). Every other
+  # completion gate is reactive — deferral language (session-handoff),
+  # exemplifying markers (exemplifying-scope), or specialist-recorded
+  # findings (discovered-scope / no-defer). None holds the PRIMARY
+  # objective's scope, so a large single-objective task done as a SUBSET
+  # passes every gate (correct edits on the subset, no deferral language,
+  # no specialist findings) and Stops half-done. This gate re-anchors the
+  # verbatim original objective + a completion audit on substantive turns.
+  #
+  # Honest division of labor (per the design stress-test): the harness
+  # decides WHEN to force the audit via coarse, precision-calibrated
+  # substantiveness signals (objective_contract_is_substantive); the model
+  # declares WHETHER each part is done (the re-injected audit prose). The
+  # mechanical half is honest because re-presenting a STORED objective is a
+  # fact, not an NLU claim — and it is backstopped by the evidence gates
+  # already passed above (review/verify/excellence), so unlike Codex's
+  # prose-only audit it cannot leak through compaction.
+  #
+  # Fires LATE (clean block, after review/verify/excellence) so "complete"
+  # means "complete AND verified", and BEFORE delivery-contract/final-
+  # closure so the wrap reflects the confirmed-complete state. Self-disarm:
+  # bound to objective_contract_prompt_ts (stamped only on fresh execution
+  # prompts) so a non-execution follow-up turn is inert (no turn-2 false
+  # positive). Intent-flip resistance: gated on _effective_intent (the
+  # F-005 override), so a mid-turn downgrade to advisory cannot bypass it.
+  # Cap 2 then scorecard-release (the model-declared judgment cannot be
+  # mechanically proven, so an uncapped block would risk a hard loop);
+  # clears the instant the model emits an explicit objective-coverage
+  # attestation. Known blind spot (documented in objective_contract_is_
+  # substantive): a short prose imperative implying large scope, done tiny,
+  # with no planner — out of bash's mechanical reach; the gate stays silent
+  # there rather than false-block.
+  if [[ "${OMC_OBJECTIVE_CONTRACT_GATE:-on}" == "on" ]] \
+    && is_execution_intent_value "${_effective_intent}"; then
+    _oc_prompt_ts="$(read_state "objective_contract_prompt_ts")"
+    _oc_prompt_ts="${_oc_prompt_ts:-0}"
+    [[ "${_oc_prompt_ts}" =~ ^[0-9]+$ ]] || _oc_prompt_ts=0
+    _oc_audited_ts="$(read_state "objective_contract_audited_ts")"
+    _oc_audited_ts="${_oc_audited_ts:-0}"
+    [[ "${_oc_audited_ts}" =~ ^[0-9]+$ ]] || _oc_audited_ts=0
+    _oc_last_edit_ts="${last_edit_ts:-0}"
+    [[ "${_oc_last_edit_ts}" =~ ^[0-9]+$ ]] || _oc_last_edit_ts=0
+
+    # Arm only when: a cycle is stamped, work happened THIS cycle
+    # (last_edit_ts past the cycle's prompt_ts), the cycle was not already
+    # audited, current_objective is non-empty to re-anchor against, and the
+    # cycle is substantive by the coarse disjunction.
+    if [[ "${_oc_prompt_ts}" -gt 0 ]] \
+      && [[ "${_oc_last_edit_ts}" -gt "${_oc_prompt_ts}" ]] \
+      && [[ "${_oc_audited_ts}" -le "${_oc_prompt_ts}" ]] \
+      && [[ -n "${current_objective}" ]] \
+      && objective_contract_is_substantive; then
+
+      if has_closeout_label coverage "${last_assistant_message}"; then
+        # Release path: explicit objective-coverage attestation present.
+        # Record the audit ts so the cycle self-clears and stays quiet on
+        # subsequent stop/continuation turns. Falls through to delivery-
+        # contract (no exit).
+        write_state "objective_contract_audited_ts" "$(now_epoch)"
+        record_gate_event "objective-contract" "audited" \
+          "prompt_ts=${_oc_prompt_ts}" \
+          "edits_this_cycle=$(objective_contract_cycle_edit_count)"
+      else
+        _oc_blocks="$(read_state "objective_contract_blocks")"
+        _oc_blocks="${_oc_blocks:-0}"
+        [[ "${_oc_blocks}" =~ ^[0-9]+$ ]] || _oc_blocks=0
+        _oc_cap=2
+        _oc_effective_exhaustion_mode="$(effective_guard_exhaustion_mode 1)"
+        if [[ "${_oc_blocks}" -lt "${_oc_cap}" || "${_oc_effective_exhaustion_mode}" == "block" ]]; then
+          if [[ "${_oc_blocks}" -lt "${_oc_cap}" ]]; then
+            write_state "objective_contract_blocks" "$((_oc_blocks + 1))"
+            _oc_next_block="$((_oc_blocks + 1))"
+          else
+            _oc_next_block="${_oc_blocks}"
+          fi
+          # v1.46-pre FP observability: stamp the block ts so the next
+          # prompt-intent-router invocation can pair the block with the
+          # user's next prompt for directional FP-rate measurement (mirrors
+          # last_no_defer_block_ts). Behavior unchanged; /ulw-report reads it.
+          write_state "last_objective_contract_block_ts" "$(now_epoch)" 2>/dev/null || true
+          record_gate_event "objective-contract" "block" \
+            "block_count=${_oc_next_block}" "block_cap=${_oc_cap}" \
+            "edits_this_cycle=$(objective_contract_cycle_edit_count)" \
+            "plan_complexity_high=$(read_state "plan_complexity_high")"
+          _oc_objective_excerpt="$(printf '%s' "${current_objective}" | head -c 600)"
+          _oc_recovery="$(format_gate_recovery_options \
+            "Re-read the ORIGINAL objective above and verify EACH part against the actual current state of the code (read the files / run the commands) — treat completion as unproven until you have evidence." \
+            "If every part is genuinely done, confirm it with an explicit \`**Objective coverage.**\` line addressing each part of the objective — that attestation clears this gate." \
+            "If a part is NOT done, continue and ship it now — do NOT redefine success around the smaller subset you happened to finish (the no-defer + no-out-of-scope contracts forbid shrinking the objective)." \
+            "Genuinely blocked on an external input only the user can supply? \`/ulw-pause <reason>\` (credentials / rate limit / dead infra). Last-resort audited override: \`/ulw-skip <reason>\`.")"
+          _oc_block_tail=""
+          if [[ "${_oc_effective_exhaustion_mode}" == "block" && "${_oc_blocks}" -ge "${_oc_cap}" ]]; then
+            _oc_block_tail=" BLOCK MODE: strict autonomy keeps blocking after the cap until you attest objective coverage."
+          fi
+          emit_stop_block "$(format_gate_block_dual \
+            "Before stopping: this was a substantive task — re-read your ORIGINAL objective and confirm you covered ALL of it, not just the part you finished. Verify each part against the actual code, then add an \`**Objective coverage.**\` line. If anything is unaddressed, do it now rather than stopping on a subset." \
+            "[Objective-contract gate · ${_oc_next_block}/${_oc_cap}] a substantive objective-cycle reached Stop without a completion audit against the original objective.
+ORIGINAL OBJECTIVE (verbatim, re-anchored):
+${_oc_objective_excerpt}
+Verify each part against the actual current state; do not redefine success around a smaller task.${_oc_block_tail}${_oc_recovery}")"
+          exit 0
+        fi
+        # Cap exhausted (and not in block-mode): release with a scorecard
+        # naming the residual risk so the final summary stays auditable.
+        with_state_lock_batch \
+          "guard_exhausted" "$(now_epoch)" \
+          "guard_exhausted_detail" "objective_contract_unaudited" \
+          "session_outcome" "exhausted"
+        record_gate_event "objective-contract" "exhausted" \
+          "block_count=${_oc_blocks}" "block_cap=${_oc_cap}"
+        emit_scorecard_stop_context \
+          "OBJECTIVE-CONTRACT SCORECARD (gate exhausted after ${_oc_cap} blocks):" \
+          "The objective-completion contract released without an explicit coverage attestation. State in your final summary which parts of the original objective are done vs. outstanding." \
+          "  Original objective: ${current_objective:0:200}"
+        exit 0
+      fi
     fi
   fi
 

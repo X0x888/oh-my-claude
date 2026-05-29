@@ -185,7 +185,7 @@ oh-my-claude/
     settings.patch.json       # Settings merged into user's settings.json
 
   evals/realwork/             # Outcome eval scenarios + scorer for minimal-prompt real-work shipping
-  tests/                      # 130 bash + 1 python test scripts; CLAUDE.md "Testing" lists each one
+  tests/                      # 131 bash + 1 python test scripts; CLAUDE.md "Testing" lists each one
 
   tools/                      # Developer tools (not installed; keep exhaustive)
     audit-published-release-assets.sh

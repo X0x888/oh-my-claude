@@ -73,6 +73,8 @@ prometheus_suggest|bool|off|advisory|Declare-and-proceed scope interpretation on
 intent_verify_directive|bool|off|advisory|Declare-and-proceed goal interpretation on short unanchored prompts
 exemplifying_directive|bool|on|advisory|Completeness/coverage directive — enumerate the search universe, verify each (v1.26.0 broadens to completeness verbs + advisory turns)
 exemplifying_scope_gate|bool|on|gates|Require checklist for example-marker prompts before stop
+objective_contract_gate|bool|on|gates|Re-anchor verbatim original objective + completion audit before stop on substantive turns (Codex /goal port; anti-premature-stop sibling of pause_external_blocker_threshold)
+objective_contract_min_files|int|4|gates|Per-cycle unique-file edit count that marks an objective-cycle substantive (volume arm of the objective-completion gate; 0 disables the volume arm)
 prompt_text_override|bool|on|gates|PreTool guard trusts prompt-text imperative when classifier disagrees
 mark_deferred_strict|bool|on|gates|Reject low-information defer reasons (out of scope / follow-up) AND effort excuses (requires significant effort / blocked by complexity)
 shortcut_ratio_gate|bool|on|gates|Soft-block when wave plan total≥10 AND deferred-to-decided ratio ≥0.5 (catches shortcut-on-big-tasks)
@@ -160,6 +162,7 @@ prometheus_suggest=on
 intent_verify_directive=on
 exemplifying_directive=on
 exemplifying_scope_gate=on
+objective_contract_gate=on
 prompt_text_override=on
 mark_deferred_strict=on
 shortcut_ratio_gate=on
@@ -194,6 +197,7 @@ prometheus_suggest=off
 intent_verify_directive=off
 exemplifying_directive=on
 exemplifying_scope_gate=on
+objective_contract_gate=on
 prompt_text_override=on
 mark_deferred_strict=on
 shortcut_ratio_gate=on
@@ -228,6 +232,7 @@ prometheus_suggest=off
 intent_verify_directive=off
 exemplifying_directive=off
 exemplifying_scope_gate=off
+objective_contract_gate=off
 prompt_text_override=on
 mark_deferred_strict=off
 shortcut_ratio_gate=off

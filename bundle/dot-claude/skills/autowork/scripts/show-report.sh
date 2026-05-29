@@ -2312,6 +2312,31 @@ if [[ -n "${gate_event_rows:-}" ]]; then
   fi
 fi
 
+# v1.46-pre Codex /goal port: objective-completion contract directional FP
+# rate — same shape + caveats as the no-defer reprompt rate above. Pairs
+# `objective-contract/block` (re-anchor blocks) with a near-immediate user
+# reprompt as a calibration cue for the substantiveness threshold.
+if [[ -n "${gate_event_rows:-}" ]]; then
+  _oc_blocks="$(printf '%s\n' "${gate_event_rows}" | jq -c 'select(.gate == "objective-contract" and .event == "block")' | wc -l | tr -d '[:space:]')"
+  _oc_reprompts="$(printf '%s\n' "${gate_event_rows}" | jq -c 'select(.gate == "objective-contract" and .event == "post-block-reprompt")' | wc -l | tr -d '[:space:]')"
+  _oc_blocks="${_oc_blocks:-0}"; _oc_reprompts="${_oc_reprompts:-0}"
+  [[ "${_oc_blocks}" =~ ^[0-9]+$ ]] || _oc_blocks=0
+  [[ "${_oc_reprompts}" =~ ^[0-9]+$ ]] || _oc_reprompts=0
+  if [[ "${_oc_blocks}" -ge 3 ]]; then
+    if [[ "${_oc_reprompts}" -gt "${_oc_blocks}" ]]; then
+      _oc_pct=100
+      _intp_lines+=("**Objective-contract reprompt join-warning.** ${_oc_reprompts} post-block-reprompt events vs ${_oc_blocks} blocks in window — reprompts exceed blocks (cross-window pairing). Rate clamped to 100%; widen the window (\`/ulw-report all\`) for the true ratio.")
+    else
+      _oc_pct=$(( _oc_reprompts * 100 / _oc_blocks ))
+    fi
+    if [[ "${_oc_pct}" -ge 50 ]]; then
+      _intp_lines+=("**Objective-contract block reprompt-rate ${_oc_pct}%.** ${_oc_reprompts} of ${_oc_blocks} objective-completion re-anchor blocks drew a user re-prompt within the window. **Directional, not definitive** — a high rate suggests the gate is re-anchoring on tasks you considered done. Raise \`objective_contract_min_files\` (default 4) or set \`objective_contract_gate=off\` in \`~/.claude/oh-my-claude.conf\` if it over-fires on your prompts.")
+    elif [[ "${_oc_pct}" -le 20 ]] && [[ "${_oc_blocks}" -ge 5 ]]; then
+      _intp_lines+=("**Objective-contract gate calibrated correctly.** ${_oc_reprompts}/${_oc_blocks} re-anchor blocks (${_oc_pct}%) drew an immediate reprompt — the gate rarely surprises you. Intended steady-state; no action needed.")
+    fi
+  fi
+fi
+
 # Heuristic 4b (v1.43 data-lens F-002): classifier fixture candidates
 # ready to promote. /ulw-correct writes promotion-shaped candidate rows
 # to ~/.claude/quality-pack/classifier_fixture_candidates.jsonl every

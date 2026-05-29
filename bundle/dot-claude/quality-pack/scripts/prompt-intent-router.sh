@@ -102,6 +102,7 @@ fi
 # addition to asserted-correct. Function clears the state flag on
 # every call so each block is paired at most once. Single-use.
 no_defer_check_post_block_reprompt || true
+objective_contract_check_post_block_reprompt || true
 
 TASK_INTENT="$(classify_task_intent "${PROMPT_TEXT}")"
 PROMPT_TS="$(now_epoch)"
@@ -280,6 +281,40 @@ if ! is_maintenance_prompt "${PROMPT_TEXT}"; then
     write_state "current_objective" "${normalized_objective}"
   else
     write_state "current_objective" "${PROMPT_TEXT_SAFE}"
+  fi
+fi
+
+# Objective-completion contract (v1.46-pre Codex /goal port): stamp a fresh
+# objective-cycle on every fresh execution prompt so stop-guard can
+# re-anchor the verbatim objective + a completion audit on substantive
+# turns. Mirrors the exemplifying-scope ts-scoping above: prompt_ts + a
+# per-cycle edit baseline (the running unique-edit total now, before this
+# turn's edits) are stamped on fresh EXECUTION intent only. Continuation /
+# advisory / session-management / checkpoint turns deliberately PRESERVE the
+# in-flight cycle (same active objective resuming), and stop-guard's
+# execution-intent guard keeps the gate inert on the non-execution ones.
+# This self-disarm is what prevents the corrosive turn-2 false positive: a
+# "thanks, what's the test count?" follow-up must never re-block a task that
+# was already completed in the prior turn.
+if [[ "${TASK_INTENT}" == "execution" ]]; then
+  if [[ "${OMC_OBJECTIVE_CONTRACT_GATE:-on}" == "on" ]]; then
+    _oc_code_edits="$(read_state "code_edit_count")"; _oc_code_edits="${_oc_code_edits:-0}"
+    _oc_doc_edits="$(read_state "doc_edit_count")"; _oc_doc_edits="${_oc_doc_edits:-0}"
+    [[ "${_oc_code_edits}" =~ ^[0-9]+$ ]] || _oc_code_edits=0
+    [[ "${_oc_doc_edits}" =~ ^[0-9]+$ ]] || _oc_doc_edits=0
+    write_state_batch \
+      "objective_contract_prompt_ts" "${PROMPT_TS}" \
+      "objective_contract_edit_baseline" "$((_oc_code_edits + _oc_doc_edits))" \
+      "objective_contract_audited_ts" "" \
+      "objective_contract_blocks" "0"
+  else
+    # Gate toggled off: clear any stale cycle state on the next fresh
+    # execution prompt so a later re-enable starts from a clean slate.
+    write_state_batch \
+      "objective_contract_prompt_ts" "" \
+      "objective_contract_edit_baseline" "" \
+      "objective_contract_audited_ts" "" \
+      "objective_contract_blocks" ""
   fi
 fi
 

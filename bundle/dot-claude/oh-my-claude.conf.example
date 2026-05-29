@@ -316,6 +316,29 @@
 # Env: OMC_EXEMPLIFYING_SCOPE_GATE.
 #exemplifying_scope_gate=on
 
+# Objective-completion contract (v1.46-pre Codex /goal port). When `on`, a
+# SUBSTANTIVE /ulw execution turn cannot Stop without re-anchoring the
+# verbatim ORIGINAL objective + a completion audit — the anti-premature-stop
+# sibling of the /ulw-pause anti-premature-give-up gate, and the first ship
+# of the "completion contract" input-enrichment paradigm (model-robustness.md).
+# Precision-calibrated: fires only when the cycle is substantive (a quality-
+# planner/prometheus plan flagged high-complexity, OR >= objective_contract_
+# min_files unique files were edited THIS cycle, OR the objective is >= 600
+# chars), and self-disarms on non-execution / follow-up turns (so a "thanks,
+# what's the test count?" turn never re-blocks a completed task). Clears when
+# the model emits an explicit `**Objective coverage.**` line attesting each
+# part of the original objective. Cap 2 then scorecard-release.
+# Env: OMC_OBJECTIVE_CONTRACT_GATE.
+#objective_contract_gate=on
+
+# Per-objective-cycle unique-file edit count at/above which the objective-
+# completion gate treats the turn as substantive (the VOLUME arm; the INTENT
+# arms — plan-complexity, long objective — fire independently). Counted as a
+# per-cycle delta off a baseline snapshot so a big session's cumulative
+# totals don't arm the gate on a tiny follow-up task. Default 4. 0 disables
+# the volume arm. Env: OMC_OBJECTIVE_CONTRACT_MIN_FILES.
+#objective_contract_min_files=4
+
 # PreTool guard's raw-prompt-text trust override. When the classifier
 # mis-routes a prompt as advisory but the most recent user prompt
 # unambiguously authorizes the destructive verb being attempted, allow

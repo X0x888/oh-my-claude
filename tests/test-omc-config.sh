@@ -259,11 +259,13 @@ teardown
 # zero-steering policy added quality_policy; v1.40.0 added
 # no_defer_mode for the no-defer contract; v1.44 added
 # god_scope_on_bare_prompt for the No-Out-of-Scope contract;
-# v1.44-pre added circuit_breaker + transcript_archive) ---
-printf 'Test 13: apply-preset maximum writes 30 keys\n'
+# v1.44-pre added circuit_breaker + transcript_archive;
+# v1.46-pre added objective_contract_gate for the Codex /goal port
+# objective-completion contract) ---
+printf 'Test 13: apply-preset maximum writes 31 keys\n'
 setup
 out="$(bash "${HELPER}" apply-preset user maximum 2>&1)"
-assert_contains "apply-preset reports 30 keys" "30 keys" "${out}"
+assert_contains "apply-preset reports 31 keys" "31 keys" "${out}"
 assert_file_has_line "maximum: gate_level=full" "${USER_CONF_PATH}" "^gate_level=full\$"
 assert_file_has_line "maximum: guard_exhaustion_mode=block" "${USER_CONF_PATH}" "^guard_exhaustion_mode=block\$"
 assert_file_has_line "maximum: quality_policy=zero_steering" "${USER_CONF_PATH}" "^quality_policy=zero_steering\$"

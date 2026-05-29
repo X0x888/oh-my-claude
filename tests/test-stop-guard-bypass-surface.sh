@@ -502,6 +502,7 @@ closeout_check() {
         verification) pattern="\*\*Verification(\.)?\*\*" ;;
         risks)        pattern="\*\*Risks(\.)?\*\*" ;;
         next)         pattern="\*\*Next(\.)?\*\*" ;;
+        coverage)     pattern="\*\*Objective (coverage|audit)(\.)?\*\*" ;;
         *) return 1 ;;
       esac
       [[ -n "${text}" ]] || return 1
@@ -551,6 +552,21 @@ closeout_check changed "${short_close}"
 rc=$?
 set -e
 assert_eq "short message full-scan matches" "0" "${rc}"
+
+# v1.46-pre objective-contract: the `coverage` closeout kind requires the
+# "Objective" prefix. A bare **Coverage.** (test/review coverage) must NOT
+# match — else a test-coverage wrap-up would falsely clear the objective-
+# completion gate (quality-reviewer F-1). Closing-region scan, F-010 family.
+set +e
+closeout_check coverage "All parts done. **Objective coverage.** api/ui/tests shipped."
+rc=$?
+set -e
+assert_eq "coverage kind matches **Objective coverage.**" "0" "${rc}"
+set +e
+closeout_check coverage "Done. **Coverage.** Test suite now at 95% line coverage."
+rc=$?
+set -e
+assert_eq "coverage kind does NOT match bare **Coverage.** (test coverage)" "1" "${rc}"
 
 # ===========================================================================
 # F-011: ulw-skip refusal on unremediated post-edit gates
@@ -840,9 +856,110 @@ else
 fi
 
 # ===========================================================================
+# F-014: objective-completion contract gate (v1.46-pre Codex /goal port).
+# A new hard-block-capable gate is a bypass surface by definition — the
+# model will try to route around it (intent-flip = the F-005 surface). This
+# section asserts (a) it actually blocks a substantive unaudited execution
+# cycle end-to-end, (b) intent-flip to advisory cannot bypass it (reuses the
+# F-005 _effective_intent override), and (c) an explicit objective-coverage
+# attestation clears it. Coordination rule: a relaxation of any of these
+# must update this section consciously.
+# ===========================================================================
+printf '\n=== F-014: objective-completion contract gate ===\n'
+
+# Reach the clean block (after review/verify) on a SUBSTANTIVE objective-cycle:
+# review+verify clocks past the code edit, no findings, 6 unique files this
+# cycle (>= default min_files=4), unaudited. GATE_LEVEL=basic skips the
+# full-only review-coverage/excellence gates so the objective-contract gate
+# is the one that fires.
+_oc_reach_gate_state() {
+  # All numeric clocks/counters are stored as STRINGS — production write_state
+  # stringifies every value (`jq --arg`), and the bulk read_state_keys reader
+  # the stop-guard uses returns empty for raw JSON numbers (it expects the
+  # string form). write_state_int would store real numbers and silently
+  # misframe the bulk read, releasing before the gate. (Confirmed via od -c.)
+  write_state_field "task_intent" "$1"
+  write_state_field "prompt_classified_intent" "execution"
+  write_state_field "current_objective" "ship the big multi-part feature end to end across api, ui, and tests"
+  write_state_field "last_user_prompt_ts" "100"
+  write_state_field "last_edit_ts" "200"
+  write_state_field "last_code_edit_ts" "150"
+  write_state_field "last_review_ts" "300"
+  write_state_field "last_verify_ts" "300"
+  write_state_field "last_verify_outcome" "passed"
+  write_state_field "last_verify_confidence" "80"
+  write_state_field "code_edit_count" "6"
+  write_state_field "doc_edit_count" "0"
+  write_state_field "objective_contract_edit_baseline" "0"
+  write_state_field "objective_contract_prompt_ts" "100"
+  write_state_field "objective_contract_audited_ts" ""
+  write_state_field "objective_contract_blocks" "0"
+}
+
+# (a) blocks a substantive unaudited execution cycle + re-anchors the objective
+setup
+_oc_reach_gate_state "execution"
+out="$(jq -n --arg sid "${SESSION_ID}" --arg msg "Done. Wired the API handler and added a test." \
+  '{session_id:$sid, stop_hook_active:false, last_assistant_message:$msg}' \
+  | OMC_GATE_LEVEL=basic "${HOOK_DIR}/stop-guard.sh")"
+assert_contains "F-014a: blocks substantive unaudited cycle" '"decision":"block"' "${out}"
+assert_contains "F-014a: names the objective-contract gate" "Objective-contract gate" "${out}"
+assert_contains "F-014a: re-anchors the verbatim original objective" "ship the big multi-part feature" "${out}"
+teardown
+
+# (b) intent-flip resistance: task_intent downgraded to advisory mid-turn, but
+# prompt_classified_intent=execution AND edits landed after the prompt, so the
+# F-005 _effective_intent override keeps the gate armed.
+setup
+_oc_reach_gate_state "advisory"
+out="$(jq -n --arg sid "${SESSION_ID}" --arg msg "Done. Wired the handler." \
+  '{session_id:$sid, stop_hook_active:false, last_assistant_message:$msg}' \
+  | OMC_GATE_LEVEL=basic "${HOOK_DIR}/stop-guard.sh")"
+assert_contains "F-014b: intent-flip to advisory cannot bypass (effective_intent override)" "Objective-contract gate" "${out}"
+teardown
+
+# (c) explicit **Objective coverage.** attestation clears the gate (the gate
+# must NOT block when the coverage label is present in the closing region).
+setup
+_oc_reach_gate_state "execution"
+out="$(jq -n --arg sid "${SESSION_ID}" --arg msg "All parts done.
+
+**Objective coverage.** api: shipped; ui: shipped; tests: shipped." \
+  '{session_id:$sid, stop_hook_active:false, last_assistant_message:$msg}' \
+  | OMC_GATE_LEVEL=basic "${HOOK_DIR}/stop-guard.sh")"
+assert_not_contains "F-014c: coverage attestation clears the objective-contract gate" "Objective-contract gate" "${out}"
+teardown
+
+# (d) self-disarm wiring: the router must stamp objective_contract_prompt_ts
+# ONLY on fresh execution intent (so non-execution follow-up turns are inert).
+if grep -q 'objective_contract_prompt_ts' "${ROUTER_PATH}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: F-014d: router does not stamp objective_contract_prompt_ts — self-disarm wiring missing\n' >&2
+  fail=$((fail + 1))
+fi
+# (e) intent-flip resistance wiring: the gate must key on _effective_intent
+# (the F-005 override), not raw task_intent.
+if grep -q 'is_execution_intent_value "${_effective_intent}"' "${HOOK_DIR}/stop-guard.sh" \
+  && grep -A40 'Objective-completion contract gate' "${HOOK_DIR}/stop-guard.sh" | grep -q '_effective_intent'; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: F-014e: objective-contract gate must key on _effective_intent (intent-flip resistance)\n' >&2
+  fail=$((fail + 1))
+fi
+
+# ===========================================================================
 # Sentinel: every coordination rule met (file existence + bundle wiring)
 # ===========================================================================
 printf '\n=== Coordination sentinel: bundle wiring sanity ===\n'
+
+# objective_contract_gate present in all three conf sites (v1.46-pre)
+grep -q '^#objective_contract_gate=on' "${REPO_ROOT}/bundle/dot-claude/oh-my-claude.conf.example" \
+  && pass=$((pass + 1)) || { printf '  FAIL: objective_contract_gate not in conf example\n'; fail=$((fail + 1)); }
+grep -q 'objective_contract_gate)' "${HOOK_DIR}/common.sh" \
+  && pass=$((pass + 1)) || { printf '  FAIL: objective_contract_gate not in parser\n'; fail=$((fail + 1)); }
+grep -q '^objective_contract_gate|' "${HOOK_DIR}/omc-config.sh" \
+  && pass=$((pass + 1)) || { printf '  FAIL: objective_contract_gate not in omc-config\n'; fail=$((fail + 1)); }
 
 # Conf example documents both new flags
 grep -q '^#advisory_no_findings_gate=on' "${REPO_ROOT}/bundle/dot-claude/oh-my-claude.conf.example" \

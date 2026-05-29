@@ -57,6 +57,8 @@ _omc_env_prometheus_suggest="${OMC_PROMETHEUS_SUGGEST:-}"
 _omc_env_intent_verify_directive="${OMC_INTENT_VERIFY_DIRECTIVE:-}"
 _omc_env_exemplifying_directive="${OMC_EXEMPLIFYING_DIRECTIVE:-}"
 _omc_env_exemplifying_scope_gate="${OMC_EXEMPLIFYING_SCOPE_GATE:-}"
+_omc_env_objective_contract_gate="${OMC_OBJECTIVE_CONTRACT_GATE:-}"
+_omc_env_objective_contract_min_files="${OMC_OBJECTIVE_CONTRACT_MIN_FILES:-}"
 _omc_env_prompt_text_override="${OMC_PROMPT_TEXT_OVERRIDE:-}"
 _omc_env_mark_deferred_strict="${OMC_MARK_DEFERRED_STRICT:-}"
 _omc_env_shortcut_ratio_gate="${OMC_SHORTCUT_RATIO_GATE:-}"
@@ -313,6 +315,25 @@ OMC_EXEMPLIFYING_DIRECTIVE="${OMC_EXEMPLIFYING_DIRECTIVE:-on}"
 # soft directive into an auditable deliverable ledger: every sibling
 # item must be shipped or explicitly declined with a concrete WHY.
 OMC_EXEMPLIFYING_SCOPE_GATE="${OMC_EXEMPLIFYING_SCOPE_GATE:-on}"
+# objective_contract_gate (v1.46-pre Codex /goal port): when `on`, a
+# substantive /ulw execution turn cannot Stop without re-anchoring against
+# the verbatim ORIGINAL objective + a completion audit (the anti-premature-
+# stop sibling of the /ulw-pause 3-turn anti-premature-give-up gate). This
+# is the "completion contract" input-enrichment paradigm named in
+# model-robustness.md — Codex /goal re-injects the objective+audit every
+# turn from a durable anchor; we do it once per substantive objective-cycle,
+# mechanically gated (so unlike Codex's prose-only audit it cannot leak
+# through compaction). Default ON; the gate is precision-calibrated (fires
+# only on plan-complexity / edit-fan-out / long-objective signals) and
+# self-disarms on non-execution turns, so it is silent on small + follow-up
+# work. See objective_contract_is_substantive below.
+OMC_OBJECTIVE_CONTRACT_GATE="${OMC_OBJECTIVE_CONTRACT_GATE:-on}"
+# objective_contract_min_files: per-objective-cycle unique-file edit count
+# at or above which the gate treats the turn as substantive (the VOLUME arm
+# of the disjunction). Counted as (code+doc edit total − per-cycle baseline)
+# so a big session's cumulative totals don't arm the gate on a tiny
+# follow-up task. Default 4. 0 disables the volume arm (intent arms remain).
+OMC_OBJECTIVE_CONTRACT_MIN_FILES="${OMC_OBJECTIVE_CONTRACT_MIN_FILES:-4}"
 # prompt_text_override (v1.23.0): when `on`, the PreTool intent guard
 # permits a destructive op when the most recent user prompt
 # unambiguously authorizes the verb being attempted, even if the
@@ -608,6 +629,10 @@ _parse_conf_file() {
         [[ -z "${_omc_env_exemplifying_directive}" && "${value}" =~ ^(on|off)$ ]] && OMC_EXEMPLIFYING_DIRECTIVE="${value}" || true ;;
       exemplifying_scope_gate)
         [[ -z "${_omc_env_exemplifying_scope_gate}" && "${value}" =~ ^(on|off)$ ]] && OMC_EXEMPLIFYING_SCOPE_GATE="${value}" || true ;;
+      objective_contract_gate)
+        [[ -z "${_omc_env_objective_contract_gate}" && "${value}" =~ ^(on|off)$ ]] && OMC_OBJECTIVE_CONTRACT_GATE="${value}" || true ;;
+      objective_contract_min_files)
+        [[ -z "${_omc_env_objective_contract_min_files}" && "${value}" =~ ^[0-9]+$ ]] && OMC_OBJECTIVE_CONTRACT_MIN_FILES="${value}" || true ;;
       prompt_text_override)
         [[ -z "${_omc_env_prompt_text_override}" && "${value}" =~ ^(on|off)$ ]] && OMC_PROMPT_TEXT_OVERRIDE="${value}" || true ;;
       mark_deferred_strict)
@@ -2627,6 +2652,34 @@ no_defer_check_post_block_reprompt() {
   fi
 }
 
+# objective_contract_check_post_block_reprompt — v1.46-pre Codex /goal port.
+# The directional-FP twin of no_defer_check_post_block_reprompt for the
+# objective-completion contract. Pairs each `objective-contract/block` with
+# the user's next prompt: a near-immediate reprompt after a re-anchor block
+# is a directional signal the gate may have fired on a task the user
+# considered done (a calibration cue for OMC_OBJECTIVE_CONTRACT_MIN_FILES /
+# the substantiveness disjunction). Same single-use + clear-on-read
+# semantics; reuses the shared reprompt window so no new flag is added.
+objective_contract_check_post_block_reprompt() {
+  local last_ts current_ts age window
+  last_ts="$(read_state "last_objective_contract_block_ts" 2>/dev/null || echo "")"
+  [[ -z "${last_ts}" ]] && return 0
+  [[ "${last_ts}" =~ ^[0-9]+$ ]] || {
+    write_state "last_objective_contract_block_ts" "" 2>/dev/null || true
+    return 0
+  }
+  current_ts="$(now_epoch)"
+  age=$(( current_ts - last_ts ))
+  window="${OMC_NO_DEFER_REPROMPT_WINDOW_SECS:-60}"
+  [[ "${window}" =~ ^[1-9][0-9]*$ ]] || window=60
+  write_state "last_objective_contract_block_ts" "" 2>/dev/null || true
+  if (( age >= 0 )) && (( age < window )); then
+    record_gate_event "objective-contract" "post-block-reprompt" \
+      "block_age_secs=${age}" \
+      "window_secs=${window}" || true
+  fi
+}
+
 task_domain() {
   read_state "task_domain"
 }
@@ -3183,6 +3236,86 @@ delivery_action_recorded_since() {
   ts="$(read_state "${key}" 2>/dev/null || true)"
   [[ "${ts}" =~ ^[0-9]+$ ]] || return 1
   [[ "${ts}" -ge "${since_ts}" ]]
+}
+
+# --- Objective-completion contract (v1.46-pre Codex /goal port) ---
+#
+# The anti-premature-STOP half of the Codex /goal port (the /ulw-pause
+# 3-turn threshold is the anti-premature-GIVE-UP half). Closes the
+# "blurred boundary" failure: every other completion gate is reactive
+# (deferral language, exemplifying markers, specialist-recorded findings);
+# none holds the PRIMARY objective's scope. current_objective is captured
+# per-prompt but was only ever read for checkpoint-regex matching. These
+# helpers let stop-guard re-anchor the verbatim objective + a completion
+# audit on substantive turns. Mechanically honest: re-presenting a STORED
+# objective is a fact, not an NLU claim — the completion JUDGMENT stays
+# model-declared (as in Codex) but is backstopped by the existing evidence
+# gates (verification scoring, reviewer verdicts) that Codex lacks, so it
+# cannot leak through compaction the way Codex's prose-only audit does.
+
+# objective_contract_cycle_edit_count — unique files edited since the
+# current objective-cycle began. code_edit_count + doc_edit_count is the
+# running unique-file total (mark-edit.sh keeps it in sync with
+# `sort -u edited_files.log | wc -l`). Subtracting the per-cycle baseline
+# (stamped by the router at the fresh execution prompt) yields work done
+# THIS cycle, avoiding the cumulative-count false positive where a big
+# session's totals would arm the gate on a tiny follow-up task.
+objective_contract_cycle_edit_count() {
+  local code doc baseline total
+  code="$(read_state "code_edit_count")"; code="${code:-0}"
+  doc="$(read_state "doc_edit_count")"; doc="${doc:-0}"
+  baseline="$(read_state "objective_contract_edit_baseline")"; baseline="${baseline:-0}"
+  [[ "${code}" =~ ^[0-9]+$ ]] || code=0
+  [[ "${doc}" =~ ^[0-9]+$ ]] || doc=0
+  [[ "${baseline}" =~ ^[0-9]+$ ]] || baseline=0
+  total=$((code + doc - baseline))
+  (( total < 0 )) && total=0
+  printf '%s' "${total}"
+}
+
+# objective_contract_is_substantive — true when the current objective-cycle
+# is large enough to warrant a completion re-anchor at Stop. A precision-
+# calibrated disjunction of INTENT and VOLUME signals:
+#   - plan_complexity_high (INTENT): a quality-planner/prometheus dispatch
+#     judged the plan complex (>5 steps / >3 files / >=2 waves). Fires even
+#     when little has been edited yet — catches "big ask, thin output" but
+#     ONLY when a PLANNER ran: plan_complexity_high is set solely by
+#     record-plan.sh on quality-planner/prometheus output. The agent-first
+#     gate forces a *specialist*, which may be a non-planner (oracle / metis
+#     / abstraction-critic / domain / lens) that does NOT set this flag — in
+#     that case this arm stays silent and the volume/length arms carry. Do
+#     not read this as "a planner always runs on execution work".
+#   - cycle edit fan-out >= OMC_OBJECTIVE_CONTRACT_MIN_FILES (VOLUME):
+#     substantial work landed this cycle -> re-anchor to verify the WHOLE
+#     original objective was covered, not just the part the model recalls.
+#   - objective length >= 600 chars (INTENT): a long, detailed ask.
+# Known blind spot (documented, not papered over): a SHORT prose imperative
+# implying large scope, done as a tiny subset, with no planner dispatch
+# (e.g. "rewrite the auth layer" -> edits 1 file -> stops) arms via NONE of
+# these. Inferring "large implied scope" from short English is an NLU
+# problem bash cannot solve; the gate stays SILENT there rather than
+# false-block (precision over recall — a false block trains /ulw-skip and
+# destroys every gate's credibility).
+#
+# A large-scope-verb INTENT arm (rewrite|overhaul|migrate|redesign + object,
+# reusing is_bare_imperative's verb machinery) to CLOSE this blind spot was
+# proposed (excellence-review F2) and DECLINED for v1: it widens arming
+# before any false-positive data exists, against the precision-over-recall
+# calibration that two shaping specialists converged on. The right trigger
+# to add it is the /ulw-report `objective-contract` block-vs-reprompt rate
+# showing the blind spot actually bites — data, not speculation. Do not add
+# it speculatively.
+objective_contract_is_substantive() {
+  [[ "$(read_state "plan_complexity_high")" == "1" ]] && return 0
+  local files min_files
+  files="$(objective_contract_cycle_edit_count)"
+  min_files="${OMC_OBJECTIVE_CONTRACT_MIN_FILES:-4}"
+  [[ "${min_files}" =~ ^[0-9]+$ ]] || min_files=4
+  [[ "${min_files}" -gt 0 ]] && (( files >= min_files )) && return 0
+  local obj
+  obj="$(read_state "current_objective")"
+  (( ${#obj} >= 600 )) && return 0
+  return 1
 }
 
 delivery_contract_blocking_items() {
