@@ -1441,14 +1441,34 @@ Run metis to pressure-test for wrong-abstraction / missing-constraint risks befo
       && [[ -n "${current_objective}" ]] \
       && objective_contract_is_substantive; then
 
-      if has_closeout_label coverage "${last_assistant_message}"; then
-        # Release path: explicit objective-coverage attestation present.
-        # Record the audit ts so the cycle self-clears and stays quiet on
-        # subsequent stop/continuation turns. Falls through to delivery-
-        # contract (no exit).
+      # v1.46-pre+ (manufactured-finish-line fix): release requires BOTH the
+      # coverage attestation AND a RECORDED fresh-context completeness audit
+      # (excellence-reviewer) this cycle. The attestation alone is the drifted
+      # model's own say-so — the corrupt witness whose silent mandate-
+      # narrowing ("I swapped the open mandate for the closeable subset I
+      # finished") IS the failure this gate exists to catch. Keying release on
+      # last_excellence_review_ts > the cycle's prompt_ts means the model
+      # cannot self-attest past the gate without an independent fresh audit;
+      # that audit (sharpened: excellence-reviewer axes 1+10) asks the
+      # sample-vs-ceiling + cost-vs-evidence question, and if it finds an undone
+      # large item it returns completeness=FINDINGS and the review-coverage gate
+      # blocks separately. Moves release off the corrupt witness (oracle) and
+      # reuses the existing fresh auditor (abstraction-critic) — no new gate.
+      # Honest limit: bash cannot verify the audit's CONTENT was heeded, only
+      # that a fresh reviewer ran; see model-robustness.md genuine-gap #4.
+      _oc_fresh_audit_ts="$(read_state "last_excellence_review_ts")"
+      _oc_fresh_audit_ts="${_oc_fresh_audit_ts:-0}"
+      [[ "${_oc_fresh_audit_ts}" =~ ^[0-9]+$ ]] || _oc_fresh_audit_ts=0
+      if has_closeout_label coverage "${last_assistant_message}" \
+        && [[ "${_oc_fresh_audit_ts}" -gt "${_oc_prompt_ts}" ]]; then
+        # Release path: coverage attestation present AND a fresh completeness
+        # audit ran this cycle. Record audited_ts so the cycle self-clears and
+        # stays quiet on subsequent stop/continuation turns. Falls through to
+        # delivery-contract (no exit).
         write_state "objective_contract_audited_ts" "$(now_epoch)"
         record_gate_event "objective-contract" "audited" \
           "prompt_ts=${_oc_prompt_ts}" \
+          "fresh_audit_ts=${_oc_fresh_audit_ts}" \
           "edits_this_cycle=$(objective_contract_cycle_edit_count)"
       else
         _oc_blocks="$(read_state "objective_contract_blocks")"
@@ -1473,21 +1493,25 @@ Run metis to pressure-test for wrong-abstraction / missing-constraint risks befo
             "edits_this_cycle=$(objective_contract_cycle_edit_count)" \
             "plan_complexity_high=$(read_state "plan_complexity_high")"
           _oc_objective_excerpt="$(printf '%s' "${current_objective}" | head -c 600)"
+          _oc_have_attestation="no"; has_closeout_label coverage "${last_assistant_message}" && _oc_have_attestation="yes"
           _oc_recovery="$(format_gate_recovery_options \
-            "Re-read the ORIGINAL objective above and verify EACH part against the actual current state of the code (read the files / run the commands) — treat completion as unproven until you have evidence." \
-            "If every part is genuinely done, confirm it with an explicit \`**Objective coverage.**\` line addressing each part of the objective — that attestation clears this gate." \
-            "If a part is NOT done, continue and ship it now — do NOT redefine success around the smaller subset you happened to finish (the no-defer + no-out-of-scope contracts forbid shrinking the objective)." \
+            "Get a FRESH-CONTEXT completeness audit THIS cycle — self-attestation no longer clears this gate. Dispatch excellence-reviewer (Agent tool) with the original objective; it now asks the anti-narrowing question: 'what is the LARGEST worthwhile thing NOT done, and for each omission is the reason cost/risk [forbidden] or evidence [tried, measured, made it worse]?' The surfaced findings are a SAMPLE, not the ceiling." \
+            "Ship every cost/risk-deferred item the audit names — cost is never a defer reason, it only makes a thing HARD. 'I can't judge it' is avoidance, not evidence, when an empirical check (bake-and-look / run-and-observe) was available. Only named evidence (you tried it and it regressed X) legitimately de-scopes — and that item must still be named outstanding." \
+            "Once a fresh audit has run and its cost/risk items are shipped, add an explicit \`**Objective coverage.**\` line stating the audit's verdict and your disposition of each omission. Release requires BOTH the recorded fresh audit AND that attestation." \
             "Genuinely blocked on an external input only the user can supply? \`/ulw-pause <reason>\` (credentials / rate limit / dead infra). Last-resort audited override: \`/ulw-skip <reason>\`.")"
           _oc_block_tail=""
           if [[ "${_oc_effective_exhaustion_mode}" == "block" && "${_oc_blocks}" -ge "${_oc_cap}" ]]; then
-            _oc_block_tail=" BLOCK MODE: strict autonomy keeps blocking after the cap until you attest objective coverage."
+            _oc_block_tail=" BLOCK MODE: strict autonomy keeps blocking after the cap until a fresh completeness audit runs and you attest objective coverage."
           fi
+          # Tailor the lead so the model knows which half is missing.
+          _oc_missing_half="a recorded fresh-context completeness audit (excellence-reviewer) this cycle"
+          [[ "${_oc_have_attestation}" == "no" ]] && _oc_missing_half="a recorded fresh-context completeness audit (excellence-reviewer) this cycle AND an \`**Objective coverage.**\` attestation"
           emit_stop_block "$(format_gate_block_dual \
-            "Before stopping: this was a substantive task — re-read your ORIGINAL objective and confirm you covered ALL of it, not just the part you finished. Verify each part against the actual code, then add an \`**Objective coverage.**\` line. If anything is unaddressed, do it now rather than stopping on a subset." \
-            "[Objective-contract gate · ${_oc_next_block}/${_oc_cap}] a substantive objective-cycle reached Stop without a completion audit against the original objective.
+            "Before stopping: this was a substantive task under an open objective. Get a FRESH completeness audit (dispatch excellence-reviewer) — not your own say-so — and confirm you covered ALL of the original objective, not just the part you finished. Self-attestation alone no longer clears this gate; the surfaced findings were a sample, not the ceiling." \
+            "[Objective-contract gate · ${_oc_next_block}/${_oc_cap}] a substantive objective-cycle reached Stop without ${_oc_missing_half}.
 ORIGINAL OBJECTIVE (verbatim, re-anchored):
 ${_oc_objective_excerpt}
-Verify each part against the actual current state; do not redefine success around a smaller task.${_oc_block_tail}${_oc_recovery}")"
+The findings you handled are a sample, not the ceiling — do not redefine success around the subset you finished. Dispatch excellence-reviewer, ship any cost/risk-deferred items it surfaces, then attest **Objective coverage.**${_oc_block_tail}${_oc_recovery}")"
           exit 0
         fi
         # Cap exhausted (and not in block-mode): release with a scorecard

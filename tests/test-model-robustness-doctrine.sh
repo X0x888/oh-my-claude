@@ -185,5 +185,22 @@ else
 fi
 
 # ----------------------------------------------------------------------
+# T8b — v1.46-pre+ : the 4th genuine gap (mandate-narrowing / completion-
+# criteria substitution — the "manufactured finish line") is named, AND the
+# fresh-context-audit mechanism is framed as PARTIALLY compensating, not
+# closing it (the false-comfort guard). Armors the manufactured-finish-line
+# doctrine against silent removal or over-claiming.
+# ----------------------------------------------------------------------
+printf '\nT8b: 4th genuine gap (mandate-narrowing) named + framed as not-closed\n'
+if grep -Eiq 'mandate-narrowing|completion-criteria substitution' "${DOCTRINE}" \
+  && grep -Eiq 'sample for the ceiling|sample.{0,8}ceiling' "${DOCTRINE}" \
+  && grep -Eiq 'does NOT close|not close the gap|bounded once, not broken|false-comfort' "${DOCTRINE}"; then
+  assert_pass "T8b: mandate-narrowing gap named + framed as partially-compensated-not-closed"
+else
+  assert_fail "T8b: 4th gap missing or over-claimed" \
+    "doctrine must name the mandate-narrowing / completion-criteria-substitution gap AND frame the fresh-audit mechanism as lowering-not-closing the miss-rate (false-comfort guard)"
+fi
+
+# ----------------------------------------------------------------------
 printf '\n=== model-robustness-doctrine tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]

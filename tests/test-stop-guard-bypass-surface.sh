@@ -918,16 +918,42 @@ out="$(jq -n --arg sid "${SESSION_ID}" --arg msg "Done. Wired the handler." \
 assert_contains "F-014b: intent-flip to advisory cannot bypass (effective_intent override)" "Objective-contract gate" "${out}"
 teardown
 
-# (c) explicit **Objective coverage.** attestation clears the gate (the gate
-# must NOT block when the coverage label is present in the closing region).
+# (c) coverage attestation + a RECORDED fresh-context audit this cycle
+# (last_excellence_review_ts > prompt_ts) clears the gate.
 setup
 _oc_reach_gate_state "execution"
+write_state_field "last_excellence_review_ts" "350"   # fresh audit, > prompt_ts=100
+out="$(jq -n --arg sid "${SESSION_ID}" --arg msg "All parts done.
+
+**Objective coverage.** api: shipped; ui: shipped; tests: shipped; fresh excellence-review found no cost/risk-deferred omissions." \
+  '{session_id:$sid, stop_hook_active:false, last_assistant_message:$msg}' \
+  | OMC_GATE_LEVEL=basic "${HOOK_DIR}/stop-guard.sh")"
+assert_not_contains "F-014c: coverage attestation + fresh audit clears the gate" "Objective-contract gate" "${out}"
+teardown
+
+# (f) MANUFACTURED-FINISH-LINE FIX: a coverage attestation WITHOUT a recorded
+# fresh-context audit this cycle must NOT clear — self-attestation by the
+# drifted model is the corrupt witness the gate now refuses. This is the
+# bypass-relevant invariant: the model cannot self-attest past the gate.
+setup
+_oc_reach_gate_state "execution"   # note: NO last_excellence_review_ts set
 out="$(jq -n --arg sid "${SESSION_ID}" --arg msg "All parts done.
 
 **Objective coverage.** api: shipped; ui: shipped; tests: shipped." \
   '{session_id:$sid, stop_hook_active:false, last_assistant_message:$msg}' \
   | OMC_GATE_LEVEL=basic "${HOOK_DIR}/stop-guard.sh")"
-assert_not_contains "F-014c: coverage attestation clears the objective-contract gate" "Objective-contract gate" "${out}"
+assert_contains "F-014f: attestation WITHOUT a fresh audit does NOT clear (still blocks)" "Objective-contract gate" "${out}"
+teardown
+# (f2) a STALE prior-cycle audit (ts <= prompt_ts) also does not clear.
+setup
+_oc_reach_gate_state "execution"
+write_state_field "last_excellence_review_ts" "50"    # stale, < prompt_ts=100
+out="$(jq -n --arg sid "${SESSION_ID}" --arg msg "All parts done.
+
+**Objective coverage.** all shipped." \
+  '{session_id:$sid, stop_hook_active:false, last_assistant_message:$msg}' \
+  | OMC_GATE_LEVEL=basic "${HOOK_DIR}/stop-guard.sh")"
+assert_contains "F-014f2: stale prior-cycle audit does NOT clear (still blocks)" "Objective-contract gate" "${out}"
 teardown
 
 # (d) self-disarm wiring: the router must stamp objective_contract_prompt_ts

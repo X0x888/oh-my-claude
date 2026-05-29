@@ -96,7 +96,13 @@ run_objective_contract_gate() {
   [[ -n "$(read_state "current_objective")" ]] || { printf 'allow:no_objective'; return; }
   objective_contract_is_substantive || { printf 'allow:not_substantive'; return; }
 
-  if _coverage_label_present "${last_msg}"; then
+  # v1.46-pre+ (manufactured-finish-line fix): release requires BOTH the
+  # coverage attestation AND a RECORDED fresh-context completeness audit
+  # (excellence-reviewer) this cycle. KEEP IN SYNC with stop-guard.sh.
+  local fresh_audit_ts
+  fresh_audit_ts="$(read_state "last_excellence_review_ts")"; fresh_audit_ts="${fresh_audit_ts:-0}"
+  [[ "${fresh_audit_ts}" =~ ^[0-9]+$ ]] || fresh_audit_ts=0
+  if _coverage_label_present "${last_msg}" && [[ "${fresh_audit_ts}" -gt "${prompt_ts}" ]]; then
     write_state "objective_contract_audited_ts" "$((prompt_ts + 5000))"
     printf 'allow:audited'; return
   fi
@@ -200,15 +206,36 @@ arm_substantive_cycle
 result="$(run_objective_contract_gate advisory "the test count is 47")"
 assert_eq "PROBE2: turn-2 advisory follow-up is INERT (no re-block)" "allow:non_execution" "${result}"
 
-# PROBE 3 (clear): an explicit **Objective coverage.** attestation clears it.
+# PROBE 3 (clear): a coverage attestation PLUS a RECORDED fresh-context
+# completeness audit this cycle (last_excellence_review_ts > prompt_ts)
+# clears it. The fresh audit is the load-bearing half — self-attestation
+# alone no longer clears (PROBE 3c).
 arm_substantive_cycle
+write_state "last_excellence_review_ts" "$((T_PROMPT + 1))"
 result="$(run_objective_contract_gate execution "Done.
 
-**Objective coverage.** All parts of the objective addressed: gate wired, tests added, docs updated.")"
-assert_eq "PROBE3: coverage attestation clears the gate" "allow:audited" "${result}"
+**Objective coverage.** All parts addressed; a fresh excellence-review found no cost/risk-deferred omissions.")"
+assert_eq "PROBE3: coverage attestation + fresh audit clears the gate" "allow:audited" "${result}"
 # ...and the audit ts is now recorded, so a re-stop stays quiet.
 result="$(run_objective_contract_gate execution "stopping now")"
 assert_eq "PROBE3: subsequent stop stays quiet (audited this cycle)" "allow:already_audited" "${result}"
+
+# PROBE 3c (manufactured-finish-line fix): a coverage attestation WITHOUT a
+# recorded fresh-context audit this cycle must NOT clear — self-attestation by
+# the drifted model is the corrupt witness whose silent mandate-narrowing is
+# the failure. This is the core regression for the fix.
+arm_substantive_cycle
+result="$(run_objective_contract_gate execution "Done.
+
+**Objective coverage.** All parts of the objective addressed.")"
+assert_contains "PROBE3c: attestation WITHOUT fresh audit does NOT clear (blocks)" "block:1/2" "${result}"
+# A STALE audit from a prior cycle (ts <= prompt_ts) also does not count.
+arm_substantive_cycle
+write_state "last_excellence_review_ts" "${T_PRE}"
+result="$(run_objective_contract_gate execution "Done.
+
+**Objective coverage.** addressed.")"
+assert_contains "PROBE3c: stale prior-cycle audit does NOT clear (blocks)" "block:1/2" "${result}"
 
 # PROBE 3b (quality-reviewer F-1 regression): a BARE **Coverage.** note (test
 # coverage, not objective coverage) must NOT clear the gate — the "Objective"
@@ -296,6 +323,25 @@ reset_state
 rm -f "${_events_file}"
 objective_contract_check_post_block_reprompt
 assert_eq "no block stamped → no reprompt event" "0" "$(_count_reprompt)"
+
+# =====================================================================
+# Excellence-reviewer anti-narrowing axis (the fresh audit's CONTENT).
+# The gate's release now requires a fresh excellence-review; that audit is
+# only useful if excellence-reviewer asks the sample-vs-ceiling /
+# cost-vs-evidence question. Armor that prose — no other net covers it, and
+# the manufactured-finish-line fix is inert if the audit reverts to a
+# generic "is what shipped good" review.
+# =====================================================================
+printf '## excellence-reviewer anti-narrowing axis (fresh-audit content)\n'
+_ER_MD="$(cd "$(dirname "$0")/.." && pwd)/bundle/dot-claude/agents/excellence-reviewer.md"
+if grep -Eiq 'manufactured-finish-line' "${_ER_MD}" \
+  && grep -Eiq 'sample of what.s worth doing|not the ceiling|largest worthwhile thing NOT done' "${_ER_MD}" \
+  && grep -Eiq 'cost is never|FORBIDDEN deferral grounds|cost-avoidance' "${_ER_MD}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: excellence-reviewer.md missing the anti-narrowing / cost-vs-evidence axis (fix is inert without it)\n' >&2
+  fail=$((fail + 1))
+fi
 
 # =====================================================================
 printf '\n--- objective-contract: %d pass, %d fail ---\n' "${pass}" "${fail}"

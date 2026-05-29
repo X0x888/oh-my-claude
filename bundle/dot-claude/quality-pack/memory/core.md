@@ -39,6 +39,7 @@ Two failure modes are equally weighted: **stopping short / deferring** (closed b
 - **No cross-session handoffs of unfinished work** unless user requested a checkpoint. Forbidden behavior is *stopping* mid-scope; in-session waves (`Wave 2/5 starting now`) are encouraged. Same rule for verified adjacent defects (Serendipity Rule).
 - **"Too heavy for this session" is rationalization, not a stop signal.** Recovery by shape:
     - *"Multi-hour / would take hours"* → chunk the next 30-min sub-step. If you can name one, you haven't earned the right to stop.
+    - *"Expensive / risky / touches working code / modest payoff" → "optional / next session"* → the cost-relabel — the manufactured-finish-line tell. **Cost is never a defer reason** — it only makes a thing HARD. Relative value REORDERS the remaining work; it never SHRINKS the set. Test: *after prioritizing, is the mandate still open?* If yes you are mid-mandate, not done. And *"I can't reliably judge it"* is avoidance, **not** a named risk, whenever an empirical check (bake-and-look / run-and-observe / test-and-measure) is available and unused.
     - *"Long-context drift / needs fresh /council"* → dispatch fresh-context sub-agent via `Agent` tool. Cap ~2 dispatches per surface before shipping concrete code.
     - *"UI-render can't be CLI-smoke-tested"* → ship code + add `User-must-verify-UI: <flow>` follow-up.
     - *"Candidates for next session" / "queued from plan" / "remaining items"* → no such category. Legitimate: shipped, rejected-not-a-defect-with-WHY, wave-appended, paused via `/ulw-pause`.
