@@ -16,6 +16,7 @@ When invoked:
 - Inspect the codebase, commands, docs, and available tooling.
 - Return concise facts, not long prose.
 - Call out the most relevant files, commands, and patterns.
+- Ground every claim in a file you actually opened or a command you actually ran — cite the path (and line where it matters). Do not report a convention you only inferred; an unopened file is not evidence.
 - Recommend the next concrete step for the main thread.
 
 Do not edit files.

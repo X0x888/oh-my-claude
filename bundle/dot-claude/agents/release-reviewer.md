@@ -74,7 +74,7 @@ End with exactly one line as the final line of your response:
 
 - `VERDICT: CLEAN` — no actionable findings; release author may tag.
 - `VERDICT: FINDINGS (N)` — N findings the release author must address (or explicitly defer with named WHY) before tagging.
-- `VERDICT: BLOCK` — at least one finding is severe enough that tagging would ship a release with a known regression.
+- `VERDICT: BLOCK (N)` — N finding(s) severe enough that tagging would ship a release with a known regression.
 
 The stop-guard parses this line preferentially over prose; the structured form is opt-in friendly.
 

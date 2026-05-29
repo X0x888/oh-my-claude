@@ -31,7 +31,7 @@ Before drafting:
 
 1. **Read the brief.** Identify audience, format, length, tone, and channel (email vs doc vs slide). When unclear, infer the most likely and state your inference in one line.
 2. **Read any source material the user provided.** Notes, prior drafts, transcripts, citations. Drafting from scratch when source material exists is a tell of a weak draft.
-3. **Identify the load-bearing claim.** What is this piece arguing or recommending? If you can't name it in one sentence, the structure is wrong; pause and ask the user OR shape it before writing.
+3. **Identify the load-bearing claim.** What is this piece arguing or recommending? If you can't name it in one sentence, the structure is wrong; state your best inference in one line and shape it before writing rather than holding for the user.
 4. **Identify hard facts vs soft claims.** Facts you cannot ground (specific numbers, dates, citations) must be flagged as `[verify]` or omitted; never invented.
 
 ## Stack-specific defaults
