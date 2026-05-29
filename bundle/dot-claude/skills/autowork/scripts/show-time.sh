@@ -198,6 +198,9 @@ case "${MODE}" in
       printf '  agents       %s (%d%%)\n'     "$(timing_fmt_secs "${agent_total}")" "${pct_a}"
       printf '  tools        %s (%d%%)\n'     "$(timing_fmt_secs "${tool_total}")"  "${pct_t}"
       printf '  idle/model   %s (%d%%)\n'     "$(timing_fmt_secs "${idle_total}")"  "${pct_i}"
+      # Token usage across the window (when token capture recorded any).
+      _xs_tok_line="$(timing_token_line "${rollup}")"
+      [[ -n "${_xs_tok_line}" ]] && printf '  %s\n' "${_xs_tok_line}"
     fi
 
     # Skip the entire "Top agents" section when the breakdown is empty

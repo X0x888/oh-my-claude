@@ -784,6 +784,20 @@
 # renders regardless. Env: OMC_TIME_CARD_MIN_SECONDS.
 #time_card_min_seconds=5
 
+# Token-usage capture (v1.46-pre). Sub-toggle within time_tracking: at
+# Stop, parse the rows appended to Claude Code's session transcript since
+# the previous Stop and attribute input/output/cache tokens to the main
+# thread vs sub-agents, riding the same timing.jsonl ledger as the time
+# card. Surfaces a token line in /ulw-time, /ulw-status, and a Token-usage
+# section in /ulw-report.
+#   on  — capture (default); adds ~50ms to the Stop hook on a multi-MB
+#         transcript (cold path, once per Stop; fail-open).
+#   off — skip the transcript parse; wall-time tracking still works.
+# Token COUNTS carry no prompt content (lower privacy surface than prompt
+# persistence). For dollar cost see the statusline or `ccusage`. Requires
+# time_tracking=on. Env: OMC_TOKEN_TRACKING.
+#token_tracking=on
+
 # Privacy note (v1.30.0). The harness has three orthogonal prompt-text
 # horizons; each closes a different scope:
 #

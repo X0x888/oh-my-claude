@@ -262,10 +262,10 @@ teardown
 # v1.44-pre added circuit_breaker + transcript_archive;
 # v1.46-pre added objective_contract_gate for the Codex /goal port
 # objective-completion contract) ---
-printf 'Test 13: apply-preset maximum writes 31 keys\n'
+printf 'Test 13: apply-preset maximum writes 32 keys\n'
 setup
 out="$(bash "${HELPER}" apply-preset user maximum 2>&1)"
-assert_contains "apply-preset reports 31 keys" "31 keys" "${out}"
+assert_contains "apply-preset reports 32 keys" "32 keys" "${out}"
 assert_file_has_line "maximum: gate_level=full" "${USER_CONF_PATH}" "^gate_level=full\$"
 assert_file_has_line "maximum: guard_exhaustion_mode=block" "${USER_CONF_PATH}" "^guard_exhaustion_mode=block\$"
 assert_file_has_line "maximum: quality_policy=zero_steering" "${USER_CONF_PATH}" "^quality_policy=zero_steering\$"

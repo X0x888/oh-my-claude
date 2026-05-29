@@ -1283,6 +1283,37 @@ fi
 # stores codepoint counts and explicitly defers exact tokenization to a
 # tokenizer-aware analysis layer. Relative chars are still valuable for
 # ranking heavy directives and spotting prompt-tax drift.
+printf '## Token usage\n\n'
+if ! is_time_tracking_enabled || ! is_token_tracking_enabled; then
+  printf '_Token tracking is disabled (`time_tracking=off` or `token_tracking=off`), so token usage is unavailable._\n\n'
+else
+  if [[ -z "${_xs_rollup_cache}" ]]; then
+    _xs_rollup_cache="$(timing_xs_aggregate "${cutoff_ts}")"
+  fi
+  _tok_headline="$(timing_token_line "${_xs_rollup_cache}" 2>/dev/null || true)"
+  if [[ -z "${_tok_headline}" ]]; then
+    printf '_No token-usage rows in window. Populates as sessions finalize at Stop (requires `token_tracking=on`)._\n\n'
+  else
+    printf '_Window total: %s_\n\n' "${_tok_headline}"
+    _tk_vals="$(jq -r '[
+        (.tokens_main_in // 0), (.tokens_main_out // 0),
+        (.tokens_main_cache_read // 0), (.tokens_main_cache_creation // 0),
+        (.tokens_agent_in // 0), (.tokens_agent_out // 0),
+        (.tokens_agent_cache_read // 0), (.tokens_agent_cache_creation // 0)
+      ] | @tsv' <<<"${_xs_rollup_cache}" 2>/dev/null || printf '0\t0\t0\t0\t0\t0\t0\t0')"
+    IFS=$'\t' read -r _tmi _tmo _tmcr _tmcw _tai _tao _tacr _tacw <<<"${_tk_vals}"
+    printf '| Source | Input | Output | Cache read | Cache write |\n'
+    printf '|---|---:|---:|---:|---:|\n'
+    printf '| Main thread | %s | %s | %s | %s |\n' \
+      "$(timing_fmt_tokens "${_tmi:-0}")" "$(timing_fmt_tokens "${_tmo:-0}")" \
+      "$(timing_fmt_tokens "${_tmcr:-0}")" "$(timing_fmt_tokens "${_tmcw:-0}")"
+    printf '| Sub-agents | %s | %s | %s | %s |\n' \
+      "$(timing_fmt_tokens "${_tai:-0}")" "$(timing_fmt_tokens "${_tao:-0}")" \
+      "$(timing_fmt_tokens "${_tacr:-0}")" "$(timing_fmt_tokens "${_tacw:-0}")"
+    printf '\n_Cache read = context served from the prompt cache (cheapest); cache write = fresh context cached for reuse. Token counts only — see the statusline / `ccusage` for dollar cost._\n\n'
+  fi
+fi
+
 printf '## Router directive footprint\n\n'
 if ! is_time_tracking_enabled; then
   printf '_Time tracking is disabled (`time_tracking=off`), so directive footprint is unavailable._\n\n'

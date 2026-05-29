@@ -103,6 +103,7 @@ resume_request_per_cwd_cap|int|3|watchdog|Max resume_request artifacts per cwd b
 time_tracking|bool|on|telemetry|Per-tool / per-subagent timing capture; backs Stop epilogue + /ulw-time
 time_tracking_xs_retain_days|pint|30|telemetry|Cross-session timing log retention (days)
 time_card_min_seconds|int|5|telemetry|Min walltime to render the Stop epilogue time card (seconds; 0 = always)
+token_tracking|bool|on|telemetry|Per-prompt token capture (main vs sub-agent) from the transcript; backs /ulw-time + /ulw-status + /ulw-report token surfaces
 state_ttl_days|int|7|cleanup|Days before stale session-state dirs are swept
 output_style|enum:opencode/executive/preserve|opencode|cost|Bundled output style: opencode = oh-my-claude (compact CLI), executive = executive-brief (CEO-style status report), preserve = leave settings.json untouched
 model_drift_canary|bool|on|telemetry|Stop-hook canary detects silent confabulation (claims-vs-tool-calls audit; surfaces in /ulw-report)
@@ -174,6 +175,7 @@ metis_on_plan_gate=on
 stop_failure_capture=on
 resume_watchdog=on
 time_tracking=on
+token_tracking=on
 model_drift_canary=on
 blindspot_inventory=on
 intent_broadening=on
@@ -209,6 +211,7 @@ metis_on_plan_gate=off
 stop_failure_capture=on
 resume_watchdog=off
 time_tracking=on
+token_tracking=on
 model_drift_canary=on
 blindspot_inventory=on
 intent_broadening=on
@@ -244,6 +247,7 @@ metis_on_plan_gate=off
 stop_failure_capture=on
 resume_watchdog=off
 time_tracking=off
+token_tracking=off
 model_drift_canary=off
 blindspot_inventory=off
 intent_broadening=off

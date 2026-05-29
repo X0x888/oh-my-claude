@@ -298,7 +298,7 @@ oh-my-claude/
 │   └── statusline.py                        # Custom statusline widget
 ├── config/settings.patch.json               # Merged into user settings on install
 ├── evals/realwork/                           # Outcome eval scenarios for minimal-prompt shipping across code + design/UI + native artifacts + mixed + quantitative/data-analysis + regulated/high-stakes + writing + research + scholarly + ops + advisory
-├── tests/               (132 bash + 1 py)   # See AGENTS.md / CONTRIBUTING.md for full list
+├── tests/               (133 bash + 1 py)   # See AGENTS.md / CONTRIBUTING.md for full list
 ├── tools/                                    # Developer-only tools (not installed)
 └── docs/                                    # Architecture, customization, FAQ, prompts
 ```
@@ -408,7 +408,7 @@ bunx ccusage blocks               # 5-hour rate-limit-window aggregation
 bunx ccusage statusline           # Claude Code statusline integration (beta)
 ```
 
-Distributed as a native Rust binary via npm — `bunx`/`npx`/`pnpm dlx`/`pnpx`/Nix paths all work; no global install required. The 5-hour window matches Anthropic's rate-limit cap, so `ccusage blocks` is the most useful single command for "how close am I to the cap?". oh-my-claude already surfaces rate-limit headroom in the statusline; ccusage adds token-cost aggregation — the two are complementary, not redundant.
+Distributed as a native Rust binary via npm — `bunx`/`npx`/`pnpm dlx`/`pnpx`/Nix paths all work; no global install required. The 5-hour window matches Anthropic's rate-limit cap, so `ccusage blocks` is the most useful single command for "how close am I to the cap?". oh-my-claude already surfaces rate-limit headroom in the statusline and, as of v1.46-pre, **native token-count tracking** in `/ulw-time`, `/ulw-status`, and `/ulw-report` (per-prompt input/output/cache, split main-thread vs sub-agent — `token_tracking=on` by default); ccusage owns **dollar cost** aggregation. The division is deliberate: oh-my-claude tracks token *counts* (no pricing table to drift), ccusage tracks *cost* — complementary, not redundant.
 
 **[`XcodeBuildMCP`](https://github.com/getsentry/XcodeBuildMCP)** *(iOS Xcode automation MCP, 5.7k stars, getsentry-maintained)* — MCP server exposing 82 manifest-driven tools grouped by workflow phase (build, test, simulator, device, debug, SwiftPM, scaffold, UI-automation). Recommended in the iOS agents (`ios-ui-developer`, `ios-core-engineer`, `ios-deployment-specialist`, `ios-ecosystem-integrator`) when executable Xcode operations beat shelling out via Bash.
 

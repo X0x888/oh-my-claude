@@ -95,6 +95,17 @@ if (( current_seq > 0 )); then
   fi
 fi
 
+# --- Token capture (v1.46-pre) ---
+# Attribute the tokens consumed since the previous Stop (main thread vs
+# sub-agents) by parsing the rows appended to Claude Code's session
+# transcript since the last cursor. Runs before aggregation so the
+# token_delta row is included in the card. Fail-open + gated by
+# token_tracking; never blocks the Stop card.
+TRANSCRIPT_PATH="$(json_get '.transcript_path')"
+if [[ -n "${TRANSCRIPT_PATH}" ]]; then
+  timing_capture_session_tokens "${TRANSCRIPT_PATH}" "${current_seq}" 2>/dev/null || true
+fi
+
 # --- Aggregate + emit ---
 agg="$(timing_aggregate "${log_path}")"
 

@@ -77,6 +77,7 @@ _omc_env_resume_scan_max_sessions="${OMC_RESUME_SCAN_MAX_SESSIONS:-}"
 _omc_env_time_tracking="${OMC_TIME_TRACKING:-}"
 _omc_env_time_tracking_xs_retain="${OMC_TIME_TRACKING_XS_RETAIN_DAYS:-}"
 _omc_env_time_card_min_seconds="${OMC_TIME_CARD_MIN_SECONDS:-}"
+_omc_env_token_tracking="${OMC_TOKEN_TRACKING:-}"
 _omc_env_model_drift_canary="${OMC_MODEL_DRIFT_CANARY:-}"
 _omc_env_blindspot_inventory="${OMC_BLINDSPOT_INVENTORY:-}"
 _omc_env_intent_broadening="${OMC_INTENT_BROADENING:-}"
@@ -669,6 +670,8 @@ _parse_conf_file() {
         [[ -z "${_omc_env_time_tracking_xs_retain}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_TIME_TRACKING_XS_RETAIN_DAYS="${value}" || true ;;
       time_card_min_seconds)
         [[ -z "${_omc_env_time_card_min_seconds}" && "${value}" =~ ^[0-9]+$ ]] && OMC_TIME_CARD_MIN_SECONDS="${value}" || true ;;
+      token_tracking)
+        [[ -z "${_omc_env_token_tracking}" && "${value}" =~ ^(on|off)$ ]] && OMC_TOKEN_TRACKING="${value}" || true ;;
       output_style)
         [[ -z "${_omc_env_output_style}" && "${value}" =~ ^(opencode|executive|preserve)$ ]] && OMC_OUTPUT_STYLE="${value}" || true ;;
       model_drift_canary)
@@ -880,6 +883,18 @@ is_resume_watchdog_enabled() {
 # not accrue to disk.
 is_time_tracking_enabled() {
   [[ "${OMC_TIME_TRACKING:-on}" != "off" ]]
+}
+
+# is_token_tracking_enabled — v1.46-pre. Default ON. Sub-gate within the
+# time-tracking path: token capture parses the session transcript at Stop
+# to attribute per-prompt input/output/cache token counts (main thread vs
+# sub-agents), riding the same timing.jsonl ledger the time card uses.
+# Turn off to skip the transcript parse at Stop while keeping wall-time
+# tracking (the parse adds ~50ms to the Stop hook on a multi-MB
+# transcript). Token COUNTS carry no prompt content, so the privacy
+# surface is lower than prompt persistence.
+is_token_tracking_enabled() {
+  [[ "${OMC_TOKEN_TRACKING:-on}" != "off" ]]
 }
 
 # is_model_drift_canary_enabled — v1.26.0 Wave 2.

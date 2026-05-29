@@ -280,6 +280,127 @@ _cap_per_session_jsonl() {
   fi
 }
 
+# --- Token capture (v1.46-pre) ---
+#
+# timing_capture_session_tokens <transcript_path> <prompt_seq>
+#   Append a `token_delta` row to timing.jsonl attributing the tokens
+#   consumed since the previous Stop to the main thread vs sub-agents.
+#
+#   Source of truth: Claude Code's session transcript JSONL (the hook's
+#   `transcript_path`). Each assistant row carries `message.usage`
+#   (input_tokens / output_tokens / cache_read_input_tokens /
+#   cache_creation_input_tokens); `isSidechain:true` marks sub-agent rows.
+#
+#   Why incremental (cursor-based) rather than boundary-correlated: the
+#   transcript's `type:"user"` rows are mostly harness injections
+#   (task-notifications, Stop-feedback, slash-command sequences), so
+#   "tokens since the last user prompt" cannot be located reliably by
+#   content. Instead we track a row cursor in state (`token_transcript_rows`)
+#   and parse ONLY rows appended since the previous Stop — every usage row
+#   is counted exactly once, with no fragile boundary detection. Cost is
+#   bounded to the new slice (jq parses `tail -n +cursor`, not the whole
+#   multi-MB file): ~50ms on a 3MB transcript, cold-path (once per Stop).
+#
+#   Session cumulative = sum of all token_delta rows (via timing_aggregate),
+#   the same model walltime uses. Mega-sessions exceeding the per-session
+#   row cap lose oldest per-prompt detail (matches existing time-tracking
+#   behavior); the cross-session rollup snapshots the total at each Stop.
+#
+#   Fail-open: any missing dependency (jq, transcript, SESSION_ID) or parse
+#   error returns cleanly without writing — token capture never blocks Stop.
+timing_capture_session_tokens() {
+  is_time_tracking_enabled || return 0
+  is_token_tracking_enabled || return 0
+  [[ -z "${SESSION_ID:-}" ]] && return 0
+
+  local transcript="${1:-}" prompt_seq="${2:-0}"
+  [[ "${prompt_seq}" =~ ^[0-9]+$ ]] || prompt_seq=0
+  [[ -n "${transcript}" && -f "${transcript}" ]] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+
+  local total_rows
+  total_rows="$(wc -l < "${transcript}" 2>/dev/null || echo 0)"
+  total_rows="${total_rows##* }"
+  [[ "${total_rows}" =~ ^[0-9]+$ ]] || total_rows=0
+
+  local cursor cursor_raw
+  cursor_raw="$(read_state "token_transcript_rows" 2>/dev/null || true)"
+  if [[ -z "${cursor_raw}" ]]; then
+    # First capture for this session (key absent, not zero). On a FRESH
+    # session (first prompt) count from row 0 so the first prompt's tokens
+    # are captured. But if prompts already ran before token tracking was
+    # active — the flag was flipped on mid-session, or the feature was
+    # newly installed onto a long-running session (prompt_seq > 1) — seed
+    # the cursor to the current row count and skip this delta, so the
+    # entire pre-tracking backlog is not attributed to one giant delta on
+    # the first post-enable Stop. Subsequent Stops then count incrementally.
+    if (( prompt_seq > 1 )); then
+      write_state "token_transcript_rows" "${total_rows}" 2>/dev/null || true
+      return 0
+    fi
+    cursor=0
+  else
+    cursor="${cursor_raw}"
+    [[ "${cursor}" =~ ^[0-9]+$ ]] || cursor=0
+  fi
+
+  # Compaction / transcript-rewrite guard: a file that shrank below the
+  # cursor means Claude Code rewrote history (a compaction replaces prior
+  # turns with a summary turn). Reset the cursor so we count the
+  # post-compaction file forward, INCLUDING the summary turn (its
+  # generation is a real token cost). Pre-compaction token_delta rows
+  # already persist independently in timing.jsonl, so they are not
+  # re-counted — the session cumulative stays correct.
+  if (( total_rows < cursor )); then
+    cursor=0
+  fi
+  # Nothing appended since the previous Stop.
+  if (( total_rows <= cursor )); then
+    return 0
+  fi
+
+  local ts
+  ts="$(now_epoch)"
+  [[ "${ts}" =~ ^[0-9]+$ ]] || ts=0
+
+  # Parse ONLY the rows appended since the cursor; emit a token_delta row
+  # directly (or nothing, when the new slice carried no usage — e.g. it
+  # was all tool-result rows).
+  local row
+  row="$(tail -n "+$((cursor + 1))" "${transcript}" 2>/dev/null | jq -sc \
+    --argjson ts "${ts}" --argjson ps "${prompt_seq}" '
+      map(select((.message.usage) != null))
+      | reduce .[] as $m (
+          {min:0,mout:0,mcr:0,mcw:0,ain:0,aout:0,acr:0,acw:0};
+          ($m.message.usage) as $u
+          | if ($m.isSidechain == true)
+            then .ain += ($u.input_tokens // 0)
+               | .aout += ($u.output_tokens // 0)
+               | .acr += ($u.cache_read_input_tokens // 0)
+               | .acw += ($u.cache_creation_input_tokens // 0)
+            else .min += ($u.input_tokens // 0)
+               | .mout += ($u.output_tokens // 0)
+               | .mcr += ($u.cache_read_input_tokens // 0)
+               | .mcw += ($u.cache_creation_input_tokens // 0)
+            end
+        )
+      | if ([.min,.mout,.mcr,.mcw,.ain,.aout,.acr,.acw] | add) > 0
+        then {kind:"token_delta", ts:$ts, prompt_seq:$ps,
+              main_in:.min, main_out:.mout, main_cache_read:.mcr, main_cache_creation:.mcw,
+              agent_in:.ain, agent_out:.aout, agent_cache_read:.acr, agent_cache_creation:.acw}
+        else empty end
+  ' 2>/dev/null)"
+
+  # Advance the cursor unconditionally — even a usage-free slice must not
+  # be re-scanned next Stop. Separate from row emission so a zero-token
+  # cycle still moves the cursor forward.
+  write_state "token_transcript_rows" "${total_rows}" 2>/dev/null || true
+
+  [[ -z "${row}" ]] && return 0
+  ensure_session_dir 2>/dev/null || return 0
+  printf '%s\n' "${row}" >> "$(timing_log_path)" 2>/dev/null || true
+}
+
 # --- Aggregator ---
 
 # timing_aggregate [log_path] [prompt_seq_filter]
@@ -343,7 +464,8 @@ timing_aggregate() {
     )] as $rows |
 
     (reduce $rows[] as $r (
-      { pending: [], agent: {}, tool: {}, agent_n: {}, tool_n: {}, dir_chars: {}, dir_n: {}, prompts: [], orphan_end: 0 };
+      { pending: [], agent: {}, tool: {}, agent_n: {}, tool_n: {}, dir_chars: {}, dir_n: {}, prompts: [], orphan_end: 0,
+        tk_min: 0, tk_mout: 0, tk_mcr: 0, tk_mcw: 0, tk_ain: 0, tk_aout: 0, tk_acr: 0, tk_acw: 0 };
       if $r.kind == "prompt_start" then
         .prompts += [{ ps: ($r.prompt_seq // 0), start: $r.ts, end: null, dur: 0 }]
       elif $r.kind == "prompt_end" then
@@ -361,6 +483,11 @@ timing_aggregate() {
           .dir_chars[$name] = ((.dir_chars[$name] // 0) + $chars) |
           .dir_n[$name] = ((.dir_n[$name] // 0) + 1)
         end
+      elif $r.kind == "token_delta" then
+        .tk_min += ($r.main_in // 0) | .tk_mout += ($r.main_out // 0) |
+        .tk_mcr += ($r.main_cache_read // 0) | .tk_mcw += ($r.main_cache_creation // 0) |
+        .tk_ain += ($r.agent_in // 0) | .tk_aout += ($r.agent_out // 0) |
+        .tk_acr += ($r.agent_cache_read // 0) | .tk_acw += ($r.agent_cache_creation // 0)
       elif $r.kind == "start" then
         .pending += [$r]
       elif $r.kind == "end" then
@@ -398,7 +525,15 @@ timing_aggregate() {
       prompt_count:     ([$st.prompts[] | select(.end != null)] | length),
       prompts_seq:      [$st.prompts[] | select(.end != null) | {ps:.ps, dur:.dur}],
       active_pending:   ($st.pending | length),
-      orphan_end_count: $st.orphan_end
+      orphan_end_count: $st.orphan_end,
+      tokens_main_in:            $st.tk_min,
+      tokens_main_out:           $st.tk_mout,
+      tokens_main_cache_read:    $st.tk_mcr,
+      tokens_main_cache_creation: $st.tk_mcw,
+      tokens_agent_in:           $st.tk_ain,
+      tokens_agent_out:          $st.tk_aout,
+      tokens_agent_cache_read:   $st.tk_acr,
+      tokens_agent_cache_creation: $st.tk_acw
     }
     | . + {
         idle_model_s: ((.walltime_s - .agent_total_s - .tool_total_s) | if . < 0 then 0 else . end),
@@ -430,6 +565,67 @@ timing_fmt_secs() {
   else
     printf '%dh %02dm' $(( s / 3600 )) $(( (s % 3600) / 60 ))
   fi
+}
+
+# timing_fmt_tokens <n> — compact token-count formatter (1234567 -> "1.2M",
+# 12345 -> "12.3K", 920 -> "920"). Integer-only math (bash 3.2 safe; no
+# floating point). Used by the token line in the time card, /ulw-status,
+# and /ulw-report.
+timing_fmt_tokens() {
+  local n="${1:-0}"
+  [[ "${n}" =~ ^[0-9]+$ ]] || n=0
+  if (( n >= 1000000 )); then
+    printf '%d.%dM' $(( n / 1000000 )) $(( (n % 1000000) / 100000 ))
+  elif (( n >= 1000 )); then
+    printf '%d.%dK' $(( n / 1000 )) $(( (n % 1000) / 100 ))
+  else
+    printf '%d' "${n}"
+  fi
+}
+
+# timing_token_line <agg_json> — render the one-line token summary for the
+# time card / status / report, or empty string when no token data exists.
+# Shape: "tokens   in 1.2M (89% cached) · out 340K · agents 45%".
+#   in        = input_tokens + cache_read + cache_creation (full input side)
+#   cached %  = cache_read / in  (share of input served from cache)
+#   out       = output_tokens
+#   agents %  = agent token share of the grand total (omitted when no agents)
+# Pure formatter — no I/O. Returns 0 always.
+timing_token_line() {
+  local agg="${1:-}"
+  [[ -z "${agg}" ]] && return 0
+  local m_in m_out m_cr m_cw a_in a_out a_cr a_cw
+  m_in="$(jq -r '.tokens_main_in // 0' <<<"${agg}" 2>/dev/null)"
+  m_out="$(jq -r '.tokens_main_out // 0' <<<"${agg}" 2>/dev/null)"
+  m_cr="$(jq -r '.tokens_main_cache_read // 0' <<<"${agg}" 2>/dev/null)"
+  m_cw="$(jq -r '.tokens_main_cache_creation // 0' <<<"${agg}" 2>/dev/null)"
+  a_in="$(jq -r '.tokens_agent_in // 0' <<<"${agg}" 2>/dev/null)"
+  a_out="$(jq -r '.tokens_agent_out // 0' <<<"${agg}" 2>/dev/null)"
+  a_cr="$(jq -r '.tokens_agent_cache_read // 0' <<<"${agg}" 2>/dev/null)"
+  a_cw="$(jq -r '.tokens_agent_cache_creation // 0' <<<"${agg}" 2>/dev/null)"
+  local v
+  for v in m_in m_out m_cr m_cw a_in a_out a_cr a_cw; do
+    [[ "${!v}" =~ ^[0-9]+$ ]] || printf -v "${v}" '%s' 0
+  done
+
+  local in_total out_total cache_read_total agent_total grand
+  in_total=$(( m_in + m_cr + m_cw + a_in + a_cr + a_cw ))
+  out_total=$(( m_out + a_out ))
+  cache_read_total=$(( m_cr + a_cr ))
+  agent_total=$(( a_in + a_out + a_cr + a_cw ))
+  grand=$(( in_total + out_total ))
+  (( grand == 0 )) && return 0
+
+  local cached_pct=0
+  (( in_total > 0 )) && cached_pct=$(( cache_read_total * 100 / in_total ))
+  local line
+  line="$(printf 'tokens   in %s (%d%% cached) · out %s' \
+    "$(timing_fmt_tokens "${in_total}")" "${cached_pct}" "$(timing_fmt_tokens "${out_total}")")"
+  if (( agent_total > 0 )); then
+    local agent_pct=$(( agent_total * 100 / grand ))
+    line="${line} · agents ${agent_pct}%"
+  fi
+  printf '%s' "${line}"
 }
 
 # timing_format_oneline <agg_json>
@@ -767,16 +963,25 @@ timing_format_full() {
     # before any prompt finalized still produces output on manual
     # /ulw-time. The Stop hook's 5s floor independently suppresses this
     # case automatically.
-    local _orphan _active
+    local _orphan _active _tok0
     _orphan="$(jq -r '.orphan_end_count // 0' <<<"${agg}" 2>/dev/null)"
     _active="$(jq -r '.active_pending // 0' <<<"${agg}" 2>/dev/null)"
     _orphan="${_orphan:-0}"; [[ "${_orphan}" =~ ^[0-9]+$ ]] || _orphan=0
     _active="${_active:-0}"; [[ "${_active}" =~ ^[0-9]+$ ]] || _active=0
-    if (( _orphan > 0 )) || (( _active > 0 )); then
+    # Token line still renders here: a session may have captured token
+    # usage before any prompt finalized (manual /ulw-time mid-turn), so
+    # "no finalized prompts" should not hide the tokens already spent.
+    _tok0="$(timing_token_line "${agg}")"
+    if (( _orphan > 0 )) || (( _active > 0 )) || [[ -n "${_tok0}" ]]; then
       printf '─── %s ─── no finalized prompts yet\n' "${title}"
+    fi
+    if (( _orphan > 0 )) || (( _active > 0 )); then
       printf '  %d unfinished start%s, %d orphan end%s — likely killed mid-flight or still in-flight.\n' \
         "${_active}" "$( (( _active == 1 )) && printf '' || printf 's' )" \
         "${_orphan}" "$( (( _orphan == 1 )) && printf '' || printf 's' )"
+    fi
+    if [[ -n "${_tok0}" ]]; then
+      printf '  %s\n' "${_tok0}"
     fi
     return 0
   fi
@@ -870,6 +1075,16 @@ timing_format_full() {
 
   if (( idle_model > 0 )); then
     printf '    %s\n' "(residual: model thinking, permission waits, hook overhead)"
+  fi
+
+  # Token line (v1.46-pre) — input/output/cache + agent share, when token
+  # capture recorded any usage for this window. Sits below the time
+  # breakdown so the card answers "where did the TOKENS go" alongside
+  # "where did the TIME go". Empty (and skipped) when no token data.
+  local _tok_line
+  _tok_line="$(timing_token_line "${agg}")"
+  if [[ -n "${_tok_line}" ]]; then
+    printf '\n  %s\n' "${_tok_line}"
   fi
 
   if (( active_pending > 0 )) || (( orphan_end > 0 )); then
@@ -1226,6 +1441,14 @@ timing_xs_aggregate() {
         | map({key: .[0].key, value: ([.[].value] | add)})
         | from_entries
       ),
+      tokens_main_in:             ([$rows[] | (.tokens_main_in // 0)] | add // 0),
+      tokens_main_out:            ([$rows[] | (.tokens_main_out // 0)] | add // 0),
+      tokens_main_cache_read:     ([$rows[] | (.tokens_main_cache_read // 0)] | add // 0),
+      tokens_main_cache_creation: ([$rows[] | (.tokens_main_cache_creation // 0)] | add // 0),
+      tokens_agent_in:            ([$rows[] | (.tokens_agent_in // 0)] | add // 0),
+      tokens_agent_out:           ([$rows[] | (.tokens_agent_out // 0)] | add // 0),
+      tokens_agent_cache_read:    ([$rows[] | (.tokens_agent_cache_read // 0)] | add // 0),
+      tokens_agent_cache_creation: ([$rows[] | (.tokens_agent_cache_creation // 0)] | add // 0),
       prompts:        ([$rows[] | (.prompt_count // 0)] | add // 0)
     }
   ' < "${log}" 2>/dev/null || printf '%s\n' '{}'

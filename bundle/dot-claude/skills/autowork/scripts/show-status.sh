@@ -1053,6 +1053,11 @@ if is_time_tracking_enabled; then
     if [[ -n "${_time_oneline}" ]]; then
       printf '%s\n' "${_time_oneline}"
     fi
+    # Session token usage (input/output/cache + agent share), when captured.
+    if is_token_tracking_enabled; then
+      _status_tok_line="$(timing_token_line "${_time_agg}")"
+      [[ -n "${_status_tok_line}" ]] && printf '%s\n' "${_status_tok_line}"
+    fi
   fi
 fi
 
