@@ -287,6 +287,9 @@ jobs:
       - name: Run token-tracking tests (v1.46-pre)
         run: bash tests/test-token-tracking.sh
 
+      - name: Run background-wait-note tests (v1.46-pre)
+        run: bash tests/test-background-wait-note.sh
+
       - name: Run pretool-intent-guard tests (v1.32.0 R1 pin)
         run: bash tests/test-pretool-intent-guard.sh
 

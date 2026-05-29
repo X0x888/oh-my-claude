@@ -1000,5 +1000,27 @@ grep -q 'docs/bypass-taxonomy.md' "${REPO_ROOT}/README.md" \
   && pass=$((pass + 1)) \
   || { printf '  FAIL: README.md docs index no longer links to bypass-taxonomy.md\n'; fail=$((fail + 1)); }
 
+# v1.46-pre: the background-dispatch waiting note (bg_work_dispatched_ts ->
+# format_gate_block_dual) is MESSAGE-ONLY and must NOT become a bypass
+# vector. A block that would fire MUST still fire when the bg marker is set
+# (decision unchanged); the note is purely additive. Full behavioral
+# coverage in tests/test-background-wait-note.sh — this is the cross-cutting
+# invariant the umbrella owns: dispatching background work cannot suppress a
+# gate. If a future edit lets the note path short-circuit a block, this fails.
+printf '\n=== v1.46-pre: bg-dispatch note is message-only (not a bypass) ===\n'
+setup
+write_state_field "task_intent" "execution"
+write_state_field "current_objective" "ship it"
+write_state_int "last_user_prompt_ts" 100
+write_state_int "last_edit_ts" 200
+write_state_field "bg_work_dispatched_ts" "150"
+_bg_block_msg='Next. If you want Wave 7-9 shipped in this session, I can continue -- say "keep going" and name which to prioritize.'
+_bg_out="$(jq -n --arg sid "${SESSION_ID}" --arg msg "${_bg_block_msg}" \
+  '{session_id:$sid, stop_hook_active:false, last_assistant_message:$msg}' \
+  | "${HOOK_DIR}/stop-guard.sh")"
+assert_contains "bg marker does NOT suppress the block (decision unchanged)" '"decision":"block"' "${_bg_out}"
+assert_contains "bg block carries the additive waiting note" 'this block is expected' "${_bg_out}"
+teardown
+
 printf '\n=== Stop-Guard Bypass Surface: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]] || exit 1

@@ -31,6 +31,24 @@ tool_name="$(json_get '.tool_name')"
 
 tool_use_id="$(json_get '.tool_use_id')"
 
+# v1.46-pre: flag a background Bash dispatch so the Stop path can tell the
+# user "waiting, not stopped" (see stop-guard's background-dispatch note +
+# the output-style "Waiting on background work" shape). Two-stage to stay
+# cheap AND precise: (1) a fork-free substring pre-filter on the raw
+# HOOK_JSON, then (2) — only on the rare pre-filter hit — CONFIRM the marker
+# is in `.tool_response` (the dispatch confirmation), not the command text
+# or stdout, so a foreground command that merely prints the phrase does not
+# set the flag. The json_get fork fires only on the pre-filter hit, so the
+# common PostToolUse path stays fork-free. The marker is single-shot —
+# stop-guard consumes it — so it cannot persist into a later turn. This is
+# the Bash background marker specifically; other background tools (e.g. an
+# Agent dispatch) are covered by the behavioral "Waiting on background work"
+# announcement, not this marker.
+if [[ "${HOOK_JSON}" == *"running in background with ID:"* ]] \
+   && [[ "$(json_get '.tool_response' 2>/dev/null || true)" == *"running in background with ID:"* ]]; then
+  write_state "bg_work_dispatched_ts" "$(now_epoch)" 2>/dev/null || true
+fi
+
 prompt_seq="$(timing_current_prompt_seq)"
 
 timing_append_end "${tool_name}" "${tool_use_id}" "${prompt_seq}"

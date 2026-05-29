@@ -4678,10 +4678,22 @@ format_gate_recovery_options() {
 format_gate_block_dual() {
   local human_summary="${1:-}"
   local model_prose="${2:-}"
+  # v1.46-pre: when a background dispatch is in flight this turn (the
+  # stop-guard sets _OMC_BG_WORK_PENDING_NOTE after detecting
+  # bg_work_dispatched_ts), append a conditional waiting note so a block
+  # that fires while the agent is waiting on background work does not read
+  # as a premature stop. Purely additive to the message text — the gate's
+  # block/release decision is unchanged (no bypass). Conditional phrasing
+  # keeps a false positive (the marker string appearing in tool output)
+  # harmless: it only speaks to the reader IF they are in fact waiting.
+  local bg_note=""
+  if [[ -n "${_OMC_BG_WORK_PENDING_NOTE:-}" ]]; then
+    bg_note=$'\n\n'"⏳ If you dispatched background work and are waiting on it, this block is expected — you'll be re-invoked when it completes; nothing to do."
+  fi
   if [[ -n "${human_summary}" ]]; then
-    printf '**FOR YOU:** %s\n\n**FOR MODEL:** %s' "${human_summary}" "${model_prose}"
+    printf '**FOR YOU:** %s%s\n\n**FOR MODEL:** %s' "${human_summary}" "${bg_note}" "${model_prose}"
   else
-    printf '%s' "${model_prose}"
+    printf '%s%s' "${model_prose}" "${bg_note}"
   fi
 }
 

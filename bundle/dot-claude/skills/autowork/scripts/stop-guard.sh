@@ -14,6 +14,29 @@ fi
 
 ensure_session_dir
 
+# v1.46-pre: background-dispatch awareness — read+CONSUME the marker FIRST,
+# before any early-return path below (non-ULW exit, stop_hook_active exit,
+# gate-skip exit). posttool-timing.sh sets `bg_work_dispatched_ts` when a
+# run_in_background tool was dispatched; if set, the agent is likely
+# yielding to WAIT on that work, so format_gate_block_dual appends a
+# "waiting, not stopped" note to any block message this run (otherwise a
+# wait reads as a premature stop, and "quality checks haven't run" is
+# misleading when the checks run in the background). Consuming here —
+# unconditionally, ahead of every exit — is the single-shot expiry: the
+# note fires at most once per dispatch and can NEVER stale into a later,
+# unrelated block (a recency gate would not expire because the
+# background-completion notification re-invokes the model as a synthetic
+# prompt that does not advance last_user_prompt_ts). MESSAGE-ONLY: never
+# changes the block/release decision, so it is not a gate bypass. Coupling:
+# detection lives in posttool-timing (gated by time_tracking), so the
+# backstop no-ops when time_tracking=off — the behavioral "Waiting on
+# background work" announcement still covers that case.
+_OMC_BG_WORK_PENDING_NOTE=""
+if [[ -n "$(read_state "bg_work_dispatched_ts" 2>/dev/null || true)" ]]; then
+  _OMC_BG_WORK_PENDING_NOTE=1
+  write_state "bg_work_dispatched_ts" "" 2>/dev/null || true
+fi
+
 # emit_scorecard_stop_context — Render a guard-exhaustion scorecard to
 # the user via `systemMessage` (the documented user-visible Stop output
 # field). `hookSpecificOutput.additionalContext` is silently dropped by

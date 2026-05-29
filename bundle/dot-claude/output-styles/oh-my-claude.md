@@ -133,6 +133,19 @@ Worked example: a 14-defect assessment that ends "should I fix these?" puts the 
 
 Lead with what failed and the exit signal. Then root cause, then proposed next step. No apology, no `unfortunately`, no narration of what was attempted before the failure unless it is load-bearing for the diagnosis.
 
+### Waiting on background work
+
+When you dispatch background work (a `run_in_background` agent or Bash task, a CI run, any out-of-band job tracked by the harness) and must yield the turn to wait for its completion notification, the **last line before yielding MUST be an unmistakable waiting signal**. A turn that ends silently while a background job runs reads as a *stop* — the user cannot tell "waiting" from "done," and that is the exact failure this rule closes.
+
+Required form (lead line, never buried):
+
+> ⏳ **Waiting on `<what>`** — running in the background; I'll resume automatically when it finishes. Nothing for you to do.
+
+- Name *what* is awaited, and state plainly that it auto-resumes with **no user action**.
+- This is not a stop and not a checkpoint — do not frame it as either, and do not append a wrap-up summary that implies completion.
+- Do **not** poll the job or spawn a parallel waiter (the hygiene gate blocks poll-loops) — the completion notification *is* the wait mechanism. Announce, then yield.
+- If the stop-guard fires a quality-gate block while you are genuinely waiting on in-flight verification, that block is expected harness behavior; the waiting line above is still what the user should see first.
+
 ### Tool-call narration
 
 State the goal of a tool batch in one sentence before dispatching. Skip per-tool narration when the next action is obvious from context. Never use the `Let me read X.` colon-prefix pattern that delays the actual tool call — it adds latency without adding signal. When tools fail mid-batch, surface the failure in the next user-facing line — do not silently retry or absorb the error into a downstream summary.
