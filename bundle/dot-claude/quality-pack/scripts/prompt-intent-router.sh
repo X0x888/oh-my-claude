@@ -179,7 +179,14 @@ detect_classifier_misfire "${PROMPT_TEXT}" "${current_pretool_blocks}" || true
 # `recent_prompts.jsonl`, the resume_request.json, and the
 # omc-repro.sh support tarball.
 if is_prompt_persist_enabled; then
-  _omc_persisted_prompt_safe="$(printf '%s' "${PROMPT_TEXT}" | omc_redact_secrets | tr -d '\000')"
+  # Reuse the redaction already computed for PROMPT_TEXT_SAFE (line ~39):
+  # identical input (PROMPT_TEXT, never reassigned) through the identical
+  # filter chain (omc_redact_secrets | tr -d '\000'), so this is byte-for-
+  # byte equal to recomputing it — and saves the router's heaviest
+  # avoidable per-prompt fork (a multi-pattern `sed -E` plus printf+tr)
+  # on every persist-on prompt. Pure latency optimization, zero behavior
+  # change. Regression: tests/test-prompt-router-latency.sh.
+  _omc_persisted_prompt_safe="${PROMPT_TEXT_SAFE}"
 else
   _omc_persisted_prompt_safe=""
 fi

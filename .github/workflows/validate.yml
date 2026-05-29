@@ -281,6 +281,9 @@ jobs:
       - name: Run prompt-router synthetic-injection tests (v1.34.0 Bug A pin)
         run: bash tests/test-prompt-router-synthetic.sh
 
+      - name: Run prompt-router redact-dedup latency tests (v1.46-pre)
+        run: bash tests/test-prompt-router-latency.sh
+
       - name: Run pretool-intent-guard tests (v1.32.0 R1 pin)
         run: bash tests/test-pretool-intent-guard.sh
 
