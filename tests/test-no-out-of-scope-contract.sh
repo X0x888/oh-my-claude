@@ -185,6 +185,12 @@ run_test "T21a router injects OPEN-MANDATE / INNOVATION-GENERATION directive" \
 run_test "T21b open-mandate block gates on the flag + the exhaustive-auth predicate + god-scope MUTEX" \
   bash -c "grep -Fq 'is_exhaustive_auth_directive_enabled' '${ROUTER}' && grep -Fq 'is_exhaustive_authorization_request' '${ROUTER}' && grep -Fq 'god_scope_required' '${ROUTER}'"
 
+# T21c: recoverability-gated ambition (MuleScore adaptation) — the directive
+# rewards bold RECOVERABLE work but BOUNDS it to the five pause cases so
+# "Explore" can never green-light an irreversible action.
+run_test "T21c open-mandate directive rewards recoverable ambition + bounds it to the five pause cases" \
+  bash -c "grep -Fq 'CALIBRATED TO RECOVERABILITY' '${ROUTER}' && grep -Fq 'irreversibility wins and the pause case governs' '${ROUTER}'"
+
 # Behavioral: the gating predicate fires on the canonical open-mandate
 # prompt (the one that narrowed this session) and stays silent on a narrow
 # code-anchored prompt — proving the directive routes correctly. Mirrors
