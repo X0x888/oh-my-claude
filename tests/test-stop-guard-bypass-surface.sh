@@ -931,6 +931,48 @@ out="$(jq -n --arg sid "${SESSION_ID}" --arg msg "All parts done.
 assert_not_contains "F-014c: coverage attestation + fresh audit clears the gate" "Objective-contract gate" "${out}"
 teardown
 
+# (g) v1.46 would_have_armed telemetry: a NON-substantive open-mandate cycle
+# (open_mandate flag set, real edits this cycle, but code_edit_count < min_files
+# and no planner -> is_substantive false) does NOT block (telemetry-only) but
+# DOES emit a would_have_armed gate event — the tiny-subset blind-spot rate the
+# gate's own decline names as the precondition for ever arming on the detector.
+_oc_wha_state() {
+  write_state_field "task_intent" "execution"
+  write_state_field "prompt_classified_intent" "execution"
+  write_state_field "current_objective" "make it better"
+  write_state_field "last_user_prompt_ts" "100"
+  write_state_field "last_edit_ts" "200"
+  write_state_field "last_code_edit_ts" "150"
+  write_state_field "last_review_ts" "300"
+  write_state_field "last_verify_ts" "300"
+  write_state_field "last_verify_outcome" "passed"
+  write_state_field "last_verify_confidence" "80"
+  write_state_field "code_edit_count" "2"   # < min_files=4 -> NOT substantive
+  write_state_field "doc_edit_count" "0"
+  write_state_field "objective_contract_edit_baseline" "0"
+  write_state_field "objective_contract_prompt_ts" "100"
+  write_state_field "objective_contract_audited_ts" ""
+  write_state_field "objective_contract_blocks" "0"
+}
+setup
+_oc_wha_state
+write_state_field "objective_contract_open_mandate" "1"
+out="$(jq -n --arg sid "${SESSION_ID}" --arg msg "Shipped a small fix." \
+  '{session_id:$sid, stop_hook_active:false, last_assistant_message:$msg}' \
+  | OMC_GATE_LEVEL=basic "${HOOK_DIR}/stop-guard.sh")"
+assert_not_contains "F-014g: would_have_armed does NOT block (telemetry-only)" "Objective-contract gate" "${out}"
+assert_eq "F-014g: would_have_armed event emitted on the tiny-subset open-mandate cycle" "1" "$(gate_event_exists "objective-contract" "would_have_armed")"
+teardown
+
+# control: the SAME tiny cycle WITHOUT the open_mandate flag emits NO event.
+setup
+_oc_wha_state
+out="$(jq -n --arg sid "${SESSION_ID}" --arg msg "Shipped a small fix." \
+  '{session_id:$sid, stop_hook_active:false, last_assistant_message:$msg}' \
+  | OMC_GATE_LEVEL=basic "${HOOK_DIR}/stop-guard.sh")"
+assert_eq "F-014g-control: no would_have_armed without the open_mandate flag" "0" "$(gate_event_exists "objective-contract" "would_have_armed")"
+teardown
+
 # (f) MANUFACTURED-FINISH-LINE FIX: a coverage attestation WITHOUT a recorded
 # fresh-context audit this cycle must NOT clear — self-attestation by the
 # drifted model is the corrupt witness the gate now refuses. This is the

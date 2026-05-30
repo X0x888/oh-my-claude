@@ -1531,6 +1531,32 @@ The findings you handled are a sample, not the ceiling — do not redefine succe
         exit 0
       fi
     fi
+
+    # v1.46 would_have_armed telemetry (abstraction-critic-sanctioned; NOT a
+    # block). Counts how often an OPEN-mandate execution cycle with real work
+    # reaches Stop WITHOUT the gate arming -- the tiny-subset blind spot the
+    # open-mandate detector WOULD catch. The detector is too recall-tuned to
+    # ARM a block on (it false-fires on scoped asks), but it is fine to COUNT:
+    # this gathers the rate the gate's own decline (objective_contract_is_
+    # substantive, common.sh) names as the data-not-speculation precondition
+    # for EVER arming. Telemetry-only, at most once per cycle; /ulw-report
+    # aggregates it. Does not touch the gate's block path above.
+    if [[ "${_oc_prompt_ts}" -gt 0 ]] \
+      && [[ "${_oc_last_edit_ts}" -gt "${_oc_prompt_ts}" ]] \
+      && [[ "${_oc_audited_ts}" -le "${_oc_prompt_ts}" ]] \
+      && [[ -n "${current_objective}" ]] \
+      && [[ "$(read_state "objective_contract_open_mandate")" == "1" ]] \
+      && ! objective_contract_is_substantive; then
+      _oc_wha_ts="$(read_state "objective_contract_would_have_armed_ts")"
+      _oc_wha_ts="${_oc_wha_ts:-0}"
+      [[ "${_oc_wha_ts}" =~ ^[0-9]+$ ]] || _oc_wha_ts=0
+      if [[ "${_oc_wha_ts}" -le "${_oc_prompt_ts}" ]]; then
+        write_state "objective_contract_would_have_armed_ts" "$(now_epoch)" 2>/dev/null || true
+        record_gate_event "objective-contract" "would_have_armed" \
+          "edits_this_cycle=$(objective_contract_cycle_edit_count)" \
+          "open_mandate=1"
+      fi
+    fi
   fi
 
   # --- Delivery-contract gate (prompt-time + inferred contract) ---

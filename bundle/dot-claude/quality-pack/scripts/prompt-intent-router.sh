@@ -313,7 +313,8 @@ if [[ "${TASK_INTENT}" == "execution" ]]; then
       "objective_contract_prompt_ts" "${PROMPT_TS}" \
       "objective_contract_edit_baseline" "$((_oc_code_edits + _oc_doc_edits))" \
       "objective_contract_audited_ts" "" \
-      "objective_contract_blocks" "0"
+      "objective_contract_blocks" "0" \
+      "objective_contract_open_mandate" "$(is_exhaustive_authorization_request "${PROMPT_TEXT}" && printf 1 || printf '')"
   else
     # Gate toggled off: clear any stale cycle state on the next fresh
     # execution prompt so a later re-enable starts from a clean slate.
@@ -321,7 +322,8 @@ if [[ "${TASK_INTENT}" == "execution" ]]; then
       "objective_contract_prompt_ts" "" \
       "objective_contract_edit_baseline" "" \
       "objective_contract_audited_ts" "" \
-      "objective_contract_blocks" ""
+      "objective_contract_blocks" "" \
+      "objective_contract_open_mandate" ""
   fi
 fi
 

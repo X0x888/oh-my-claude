@@ -2366,6 +2366,17 @@ if [[ -n "${gate_event_rows:-}" ]]; then
       _intp_lines+=("**Objective-contract gate calibrated correctly.** ${_oc_reprompts}/${_oc_blocks} re-anchor blocks (${_oc_pct}%) drew an immediate reprompt — the gate rarely surprises you. Intended steady-state; no action needed.")
     fi
   fi
+  # v1.46 would_have_armed telemetry: count open-mandate execution cycles that
+  # reached Stop with real edits but BELOW the gate's substantiveness bar (the
+  # tiny-subset blind spot). The detector is too recall-tuned to ARM a block on
+  # (abstraction-critic ruling), but counting it gathers the rate the gate's own
+  # decline names as the data-not-speculation precondition for ever arming.
+  # Independent of the block count above.
+  _oc_wha="$(printf '%s\n' "${gate_event_rows}" | jq -c 'select(.gate == "objective-contract" and .event == "would_have_armed")' | wc -l | tr -d '[:space:]')"
+  _oc_wha="${_oc_wha:-0}"; [[ "${_oc_wha}" =~ ^[0-9]+$ ]] || _oc_wha=0
+  if [[ "${_oc_wha}" -ge 3 ]]; then
+    _intp_lines+=("**Objective-contract would-have-armed ${_oc_wha}×.** ${_oc_wha} open-mandate execution cycle(s) in window reached Stop with real edits but below the gate's substantiveness bar — the tiny-subset blind spot, telemetry only (no block fired). This is the *data, not speculation* the gate's own decline (\`objective_contract_is_substantive\`) names as the precondition for ever arming on the open-mandate detector; until a sustained rate appears, the non-blocking open-mandate directive carries it.")
+  fi
 fi
 
 # Heuristic 4b (v1.43 data-lens F-002): classifier fixture candidates
