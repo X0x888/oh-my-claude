@@ -64,6 +64,7 @@ _omc_env_mark_deferred_strict="${OMC_MARK_DEFERRED_STRICT:-}"
 _omc_env_shortcut_ratio_gate="${OMC_SHORTCUT_RATIO_GATE:-}"
 _omc_env_no_defer_mode="${OMC_NO_DEFER_MODE:-}"
 _omc_env_god_scope_on_bare_prompt="${OMC_GOD_SCOPE_ON_BARE_PROMPT:-}"
+_omc_env_exhaustive_auth_directive="${OMC_EXHAUSTIVE_AUTH_DIRECTIVE:-}"
 _omc_env_circuit_breaker="${OMC_CIRCUIT_BREAKER:-}"
 _omc_env_transcript_archive="${OMC_TRANSCRIPT_ARCHIVE:-}"
 _omc_env_wave_override_ttl="${OMC_WAVE_OVERRIDE_TTL_SECONDS:-}"
@@ -645,6 +646,8 @@ _parse_conf_file() {
         [[ -z "${_omc_env_no_defer_mode}" && "${value}" =~ ^(on|off)$ ]] && OMC_NO_DEFER_MODE="${value}" || true ;;
       god_scope_on_bare_prompt)
         [[ -z "${_omc_env_god_scope_on_bare_prompt}" && "${value}" =~ ^(on|off)$ ]] && OMC_GOD_SCOPE_ON_BARE_PROMPT="${value}" || true ;;
+      exhaustive_auth_directive)
+        [[ -z "${_omc_env_exhaustive_auth_directive}" && "${value}" =~ ^(on|off)$ ]] && OMC_EXHAUSTIVE_AUTH_DIRECTIVE="${value}" || true ;;
       circuit_breaker)
         [[ -z "${_omc_env_circuit_breaker}" && "${value}" =~ ^(on|off)$ ]] && OMC_CIRCUIT_BREAKER="${value}" || true ;;
       transcript_archive)
@@ -952,6 +955,23 @@ is_intent_broadening_enabled() {
 # `oh-my-claude.conf`.
 is_god_scope_enabled() {
   [[ "${OMC_GOD_SCOPE_ON_BARE_PROMPT:-on}" != "off" ]]
+}
+
+# is_exhaustive_auth_directive_enabled — v1.46.
+# Gate for the OPEN-MANDATE / INNOVATION-GENERATION directive in
+# prompt-intent-router.sh. Default ON. Sibling to is_god_scope_enabled:
+# god-scope fires on bare verb-only imperatives (<=30 chars); this fires on
+# explicit OPEN-mandate prose ("implement all" / "comprehensively" /
+# "exhaustive" — is_exhaustive_authorization_request) that the 30-char
+# bare-imperative cap structurally cannot reach. Both push the model WIDE
+# at prompt time so it generates an improvement set instead of narrowing an
+# open mandate into a closeable defect-audit. Off-mode falls back to the
+# pre-v1.46 behavior where an open-mandate prose prompt got only the soft
+# INFORMATIONAL completeness nudge (which a drifted model reads and defects
+# past). Users who want strict prompt-literal scoping flip it in
+# `oh-my-claude.conf`.
+is_exhaustive_auth_directive_enabled() {
+  [[ "${OMC_EXHAUSTIVE_AUTH_DIRECTIVE:-on}" != "off" ]]
 }
 
 # is_inferred_contract_enabled — v1.34.0.
@@ -6709,6 +6729,28 @@ count_findings_json() {
 #   3. If anchored search yields nothing AND the body has >=3 top-level
 #      numbered items, capture all of them as fallback.
 # Cap output at 10 bullets per single capture.
+# _omc_last_verdict_is_clean <message> — true (0) when the LAST VERDICT line
+# is CLEAN or SHIP (or FINDINGS (0)/(none)). Mirrors record-reviewer.sh's
+# last-VERDICT-wins parse. An advisory / stress-tester agent that emits a
+# clean verdict has asserted "no findings to act on" — so its prose hedges
+# must NOT be prose-scraped into discovered_scope (extract_discovered_findings)
+# AND must NOT be flagged as a zero_capture extractor failure (record-subagent-
+# summary.sh). Fail-closed: no VERDICT line -> return 1 (treat as not-clean, so
+# the prose / zero_capture paths run as before — preserves legacy behavior).
+_omc_last_verdict_is_clean() {
+  local _vline _verdict
+  _vline="$(printf '%s\n' "${1}" \
+    | grep -Ei '^[[:space:]]*\**[[:space:]]*VERDICT:' | tail -n 1 || true)"
+  [[ -z "${_vline}" ]] && return 1
+  _verdict="$(printf '%s' "${_vline}" \
+    | grep -Eiom1 '(CLEAN|SHIP|FINDINGS|BLOCK)' | tr '[:lower:]' '[:upper:]' || true)"
+  if [[ "${_verdict}" == "FINDINGS" ]] \
+      && printf '%s' "${_vline}" | grep -Eq '\([[:space:]]*(0|none)[[:space:]]*\)'; then
+    _verdict="CLEAN"
+  fi
+  [[ "${_verdict}" == "CLEAN" || "${_verdict}" == "SHIP" ]]
+}
+
 extract_discovered_findings() {
   local agent_name="$1"
   local message="$2"
@@ -6762,6 +6804,19 @@ extract_discovered_findings() {
     done <<<"${json_rows}"
     # JSON path produced rows — do not fall through to prose heuristic.
     # The caller already received structured output via the loop above.
+    return 0
+  fi
+
+  # v1.46 VERDICT-clean guard: reached only when NO FINDINGS_JSON was
+  # emitted (json_rows empty). An advisory / stress-tester agent that emits
+  # a CLEAN/SHIP verdict with no FINDINGS_JSON has asserted "no findings to
+  # act on" — its prose hedges ("## Risks", "## Caveats to surface") are
+  # advisory, NOT pending scope. Scraping them manufactures un-clearable
+  # discovered_scope rows that false-block Stop (the metis-CLEAN false-
+  # capture). The FINDINGS_JSON fast-path above still captures anything an
+  # agent explicitly marks as a finding, regardless of verdict. Fail-open:
+  # no VERDICT line -> the helper returns 1 -> prose path runs as before.
+  if _omc_last_verdict_is_clean "${message}"; then
     return 0
   fi
 

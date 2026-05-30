@@ -422,6 +422,23 @@
 # OMC_GOD_SCOPE_ON_BARE_PROMPT. Default ON.
 #god_scope_on_bare_prompt=on
 
+# exhaustive_auth_directive (v1.46). Sibling to god_scope_on_bare_prompt
+# for PROSE open mandates. When `on`, a prompt that explicitly authorizes
+# exhaustive / open-ended improvement — "implement all improvements",
+# "comprehensively evaluate and improve", "make it better", "fix
+# everything" (is_exhaustive_authorization_request) — injects an
+# OPEN-MANDATE / INNOVATION-GENERATION directive: treat the deliverable as
+# the delta to the most powerful version (generate a WIDE improvement set),
+# NOT a defect audit, and do not narrow an open mandate into a closeable
+# subset. Closes the gap where prose open mandates (>30 chars) never
+# reached god-scope's bare-verb path (mandate-narrowing, genuine-gap #4).
+# Non-blocking (a directive, not a gate): the model first judges open-vs-
+# scoped and honors an explicit narrow scope, so a fuzzy match on a scoped
+# ask costs only a mild nudge, never a false Stop-block. Disable
+# (`exhaustive_auth_directive=off`) for strict prompt-literal scoping. Env:
+# OMC_EXHAUSTIVE_AUTH_DIRECTIVE. Default ON.
+#exhaustive_auth_directive=on
+
 # circuit_breaker (v1.44-pre Port 1). PostToolUse:Bash hook that counts
 # consecutive same-target Bash failures (target hash = tool_name + first
 # positional argv + cwd). On the third same-target failure, emits a

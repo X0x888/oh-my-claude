@@ -204,6 +204,42 @@ rows="$(extract_discovered_findings "quality-reviewer" "${msg}")"
 n="$(printf '%s\n' "${rows}" | grep -c source || true)"
 assert_eq "${n}" "1" "empty JSON falls through to prose (1 row from prose)"
 
+# --- T13b-e (v1.46): VERDICT-clean guard ---
+# Same '## Findings' prose as T12 (which captures 2 rows), varying ONLY the
+# verdict, to isolate the guard: a CLEAN/SHIP verdict with no FINDINGS_JSON
+# suppresses prose scraping (the metis-CLEAN false-capture fix); a non-clean
+# or absent verdict preserves capture (fail-open).
+_vc_prose='## Findings
+
+1. The auth middleware fails on token expiry — high
+2. Database queries lack indexing — medium'
+
+printf '\nT13b: VERDICT CLEAN + no FINDINGS_JSON -> zero rows\n'
+rows="$(extract_discovered_findings "metis" "${_vc_prose}
+
+VERDICT: CLEAN")"
+n="$(printf '%s\n' "${rows}" | grep -c source || true)"
+assert_eq "${n}" "0" "CLEAN verdict suppresses prose that T12 would capture"
+
+printf '\nT13c: VERDICT SHIP + no FINDINGS_JSON -> zero rows\n'
+rows="$(extract_discovered_findings "oracle" "${_vc_prose}
+
+VERDICT: SHIP")"
+n="$(printf '%s\n' "${rows}" | grep -c source || true)"
+assert_eq "${n}" "0" "SHIP verdict suppresses prose scraping too"
+
+printf '\nT13d: VERDICT FINDINGS (0) reads as clean -> zero rows\n'
+rows="$(extract_discovered_findings "metis" "${_vc_prose}
+
+VERDICT: FINDINGS (0)")"
+n="$(printf '%s\n' "${rows}" | grep -c source || true)"
+assert_eq "${n}" "0" "FINDINGS (0) reads as clean -> zero rows"
+
+printf '\nT13e: no VERDICT line -> fail-open to prose (still captures)\n'
+rows="$(extract_discovered_findings "quality-reviewer" "${_vc_prose}")"
+n="$(printf '%s\n' "${rows}" | grep -c source || true)"
+assert_eq "${n}" "2" "no VERDICT line preserves prose capture (fail-open)"
+
 # --- T14 ---
 printf '\nT14: JSON path produces stable ids\n'
 msg='FINDINGS_JSON: [{"severity":"high","category":"bug","file":"a.ts","line":1,"claim":"x","evidence":"e","recommended_fix":"r"}]

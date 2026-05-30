@@ -299,6 +299,9 @@ jobs:
       - name: Run discovered-scope tests (v1.32.0 R1 pin)
         run: bash tests/test-discovered-scope.sh
 
+      - name: Run discovered-scope status/resolve-verb tests (v1.46)
+        run: bash tests/test-discovered-scope-status.sh
+
       - name: Run objective-contract tests (v1.46-pre Codex /goal port)
         run: bash tests/test-objective-contract.sh
 

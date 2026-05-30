@@ -158,6 +158,60 @@ run_test "T14 exemplifying-scope workflow restricts declined to genuine non-clas
 run_test "T15 intent-verify directive removes (b) hard-to-reverse pause clause" \
   bash -c "! grep -Fq '(b) the wrong call would be hard to reverse' '${ROUTER}'"
 
+# --- T16-T22: v1.46 open-mandate / innovation-generation directive ---
+# Sibling to god-scope (T8-T12) for PROSE open mandates that exceed the
+# 30-char bare-imperative cap. Closes the mandate-narrowing gap where a
+# prompt like "implement all improvements" never reached god-scope and the
+# model narrowed the open mandate into a closeable defect-audit.
+
+run_test "T16 classifier exports is_exhaustive_authorization_request" \
+  grep -Eq '^is_exhaustive_authorization_request\(\)' "${CLASSIFIER}"
+
+run_test "T17 common.sh exports is_exhaustive_auth_directive_enabled" \
+  grep -Eq '^is_exhaustive_auth_directive_enabled\(\)' "${COMMON_SH}"
+
+run_test "T18 exhaustive_auth_directive default is on" \
+  grep -q 'OMC_EXHAUSTIVE_AUTH_DIRECTIVE:-on' "${COMMON_SH}"
+
+run_test "T19 conf.example documents exhaustive_auth_directive" \
+  grep -q '^#exhaustive_auth_directive=on' "${CONF_EXAMPLE}"
+
+run_test "T20 omc-config emit_known_flags lists exhaustive_auth_directive" \
+  grep -q '^exhaustive_auth_directive|bool|on|' "${OMC_CONFIG}"
+
+run_test "T21a router injects OPEN-MANDATE / INNOVATION-GENERATION directive" \
+  grep -Fq 'OPEN-MANDATE / INNOVATION-GENERATION DIRECTIVE' "${ROUTER}"
+
+run_test "T21b open-mandate block gates on the flag + the exhaustive-auth predicate + god-scope MUTEX" \
+  bash -c "grep -Fq 'is_exhaustive_auth_directive_enabled' '${ROUTER}' && grep -Fq 'is_exhaustive_authorization_request' '${ROUTER}' && grep -Fq 'god_scope_required' '${ROUTER}'"
+
+# Behavioral: the gating predicate fires on the canonical open-mandate
+# prompt (the one that narrowed this session) and stays silent on a narrow
+# code-anchored prompt — proving the directive routes correctly. Mirrors
+# the _bare_check pattern (T5-T7).
+_exhaustive_check() {
+  local prompt="$1"
+  local expect="$2"  # 0 = fires, 1 = silent
+  (
+    set +e
+    export OMC_LAZY_CLASSIFIER=0
+    # shellcheck source=/dev/null
+    . "${COMMON_SH}"
+    if is_exhaustive_authorization_request "${prompt}"; then
+      [[ "${expect}" == "0" ]]
+    else
+      [[ "${expect}" == "1" ]]
+    fi
+  )
+}
+
+run_test "T22a fires on the session's narrowed open mandate" \
+  _exhaustive_check "comprehensively evaluate this project and implement all improvements" 0
+run_test "T22b fires on bare 'implement all improvements'" \
+  _exhaustive_check "implement all improvements" 0
+run_test "T22c silent on narrow 'fix the typo in README.md'" \
+  _exhaustive_check "fix the typo in README.md" 1
+
 echo
 echo "Results: ${passed} passed, ${failed} failed"
 [[ "${failed}" -eq 0 ]] || exit 1

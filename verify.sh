@@ -517,6 +517,7 @@ required_paths=(
   "${CLAUDE_HOME}/skills/autowork/scripts/record-pending-agent.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/record-plan.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/record-scope-checklist.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/record-discovered-scope.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/ulw-deactivate.sh"
   "${CLAUDE_HOME}/skills/autowork/SKILL.md"
   "${CLAUDE_HOME}/skills/ulw/SKILL.md"

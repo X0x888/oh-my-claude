@@ -263,10 +263,10 @@ teardown
 # v1.46-pre added objective_contract_gate for the Codex /goal port
 # objective-completion contract; this wave added workflow_substrate
 # for the Workflow-tool execution substrate) ---
-printf 'Test 13: apply-preset maximum writes 33 keys\n'
+printf 'Test 13: apply-preset maximum writes 34 keys\n'
 setup
 out="$(bash "${HELPER}" apply-preset user maximum 2>&1)"
-assert_contains "apply-preset reports 33 keys" "33 keys" "${out}"
+assert_contains "apply-preset reports 34 keys" "34 keys" "${out}"
 assert_file_has_line "maximum: gate_level=full" "${USER_CONF_PATH}" "^gate_level=full\$"
 assert_file_has_line "maximum: workflow_substrate=on" "${USER_CONF_PATH}" "^workflow_substrate=on\$"
 assert_file_has_line "maximum: guard_exhaustion_mode=block" "${USER_CONF_PATH}" "^guard_exhaustion_mode=block\$"

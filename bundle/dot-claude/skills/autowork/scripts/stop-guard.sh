@@ -598,9 +598,9 @@ fi
 # findings-file signal (silent on the failure case).
 #
 # Cap = 1. Recovery: extract findings via record-finding-list.sh add-finding
-# (preferred — preserves Phase 8 wave structure), or invoke
-# record-discovered-scope manually for the specialist outputs, or /ulw-skip
-# with a reason naming why the specialists' output is non-actionable. Gated
+# (preferred — preserves Phase 8 wave structure), or, when a specialist
+# returned a CLEAN verdict with no findings, /ulw-skip with a reason naming
+# why the specialists' output is non-actionable. Gated
 # by OMC_ADVISORY_NO_FINDINGS_GATE (default on).
 #
 # Threshold: OMC_ADVISORY_NO_FINDINGS_THRESHOLD (default 2). 1 specialist
@@ -670,7 +670,7 @@ if [[ "${OMC_ADVISORY_NO_FINDINGS_GATE}" == "on" ]] \
       fi
       _anf_recovery="$(format_gate_recovery_options \
         "Walk the specialist outputs and record each finding via \`record-finding-list.sh add-finding\` (preferred — feeds Phase 8 wave plan)." \
-        "If the specialists returned strict-format findings, run \`record-discovered-scope.sh\` to extract them into \`discovered_scope.jsonl\` (the gate clears as soon as either file is non-empty)." \
+        "If a specialist returned a CLEAN/SHIP verdict with no structured findings (e.g. a metis stress-test that found no blocking issue), there is genuinely nothing to record — \`/ulw-skip <reason>\` naming the clean verdict clears this gate." \
         "If a specialist response was genuinely non-actionable (e.g., a librarian docs lookup with no findings), \`/ulw-skip <reason>\` naming WHY the dispatch did not produce gate-able output." \
         "Disable the gate entirely (kill switch): \`advisory_no_findings_gate=off\` in oh-my-claude.conf. Lowers the safety floor — recommended only when specialists are routinely consulted for non-finding-emitting work.")"
       emit_stop_block "$(format_gate_block_dual \
@@ -797,8 +797,9 @@ if [[ "${OMC_DISCOVERED_SCOPE}" == "on" ]] \
       # discovered scope mid-session.
       if is_no_defer_active; then
         scope_recovery="$(format_gate_recovery_options \
-          "Ship the fix inline (preferred for same-surface findings)." \
-          "Wave-append: \`record-finding-list.sh add-finding\` + \`assign-wave\` for same-surface follow-on work — executes IN THIS SESSION." \
+          "Ship the fix inline, then RECORD it so the row clears: \`record-discovered-scope.sh status <id-prefix> shipped <commit-sha>\` (id prefixes are the bracketed tags above). The anti-defer verb — always allowed under ULW." \
+          "Not a defect? \`record-discovered-scope.sh status <id-prefix> rejected '<concrete WHY>'\` (false positive / duplicate / obsolete / by design — X). A REJECT, not a defer, so it is allowed; the WHY-validator applies." \
+          "Wave-append same-surface follow-on work: \`record-finding-list.sh add-finding\` + \`assign-wave\` — executes IN THIS SESSION." \
           "Breadth via fresh-context sub-dispatch: \`Agent({subagent_type: \"<lens|specialist>\", description: \"...\", prompt: \"...\"})\`. The sub-agent's fresh context closes main-thread drift WITHOUT a session boundary." \
           "If you fixed a verified adjacent defect on the same code path, log it via \`record-serendipity.sh\` per the Serendipity Rule.")"
       else

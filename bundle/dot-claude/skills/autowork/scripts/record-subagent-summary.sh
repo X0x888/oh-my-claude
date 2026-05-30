@@ -119,7 +119,13 @@ if [[ "${OMC_DISCOVERED_SCOPE}" == "on" ]] && is_ultrawork_mode; then
         # AND emits a `gate=discovered-scope event=zero_capture` row so
         # /ulw-report can aggregate the rate per agent. The anomaly log
         # is preserved for backward compatibility with existing tooling.
-        if [[ "${#LAST_ASSISTANT_MESSAGE}" -gt 500 ]]; then
+        # v1.46: a CLEAN/SHIP verdict is the legitimate no-findings case
+        # (e.g. a metis stress-test that found no blocking issue), NOT a
+        # capture failure — don't flag it as zero_capture or it misframes
+        # a clean verdict as extractor style-drift in the advisory-no-
+        # findings block hint.
+        if [[ "${#LAST_ASSISTANT_MESSAGE}" -gt 500 ]] \
+          && ! _omc_last_verdict_is_clean "${LAST_ASSISTANT_MESSAGE}"; then
           log_anomaly "discovered_scope_capture" "${_agent_short} returned ${#LAST_ASSISTANT_MESSAGE} chars but extractor caught zero findings"
           record_gate_event "discovered-scope" "zero_capture" \
             "agent=${_agent_short}" \

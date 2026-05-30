@@ -1111,6 +1111,39 @@ ${_spec_safe}
     fi
   fi
 
+  # --- v1.46 open-mandate: prose open-improvement mandates (innovation) ---
+  #
+  # The god-scope block above fires only on bare VERB-ONLY imperatives
+  # (is_bare_imperative_prompt, <=30 chars). A prose OPEN mandate like
+  # "comprehensively evaluate this project and implement all improvements"
+  # is >30 chars so it never reaches god-scope — yet it is the SAME "go
+  # wide, no out of scope" signal. Without this block such prompts got only
+  # the soft INFORMATIONAL completeness nudge below, which a drifted model
+  # reads and defects past, narrowing the open mandate into a closeable
+  # defect-audit (mandate-narrowing, model-robustness.md genuine-gap #4).
+  # This injects a GENERATION-framed directive at prompt time — input
+  # enrichment, the named-correct shape (not a new downstream gate).
+  #
+  # is_exhaustive_authorization_request is recall-tuned (7 tiers; fires on
+  # some scoped asks like "make this production-ready"), so this is a
+  # NON-BLOCKING nudge whose body tells the model to FIRST judge open-vs-
+  # scoped and honor an explicit narrow scope — a false match costs only a
+  # mild "consider full scope" prompt, never a Stop-block. The BLOCKING
+  # objective-contract gate deliberately does NOT consume this fuzzy signal
+  # (abstraction-critic ruling, v1.46: a recall-tuned detector on a blocking
+  # edge would false-block and train /ulw-skip). MUTEX with god-scope so a
+  # bare imperative is not double-directed.
+  if is_exhaustive_auth_directive_enabled \
+      && is_exhaustive_authorization_request "${PROMPT_TEXT}" \
+      && is_execution_intent_value "${TASK_INTENT}" \
+      && [[ "${session_management_prompt}" -eq 0 && "${checkpoint_prompt}" -eq 0 ]] \
+      && [[ "$(read_state "god_scope_required")" != "1" ]]; then
+    add_directive "open_mandate_innovation" "**OPEN-MANDATE / INNOVATION-GENERATION DIRECTIVE.** This prompt matched an OPEN improvement mandate (\"implement all\" / \"comprehensively\" / \"make it better\" / \"everything\" / \"exhaustive\"). FIRST judge scope: if the ask is genuinely OPEN / project-wide (not pinned to one named file, feature, or surface), run the wide protocol below; if it is actually scoped to a specific surface (e.g. \"make THE PARSER production-ready\", \"implement all the changes WE DISCUSSED\"), honor that scope — this directive widens an open mandate, it does NOT override an explicit narrow one. For a genuinely open mandate: the deliverable is the DELTA between this project as-is and its most powerful version — NOT a defect audit. A bug list is the FLOOR, not the ceiling. (1) Do NOT narrow to \"find what is broken and fix it\" — a defect audit is a STRICT SUBSET of an improvement mandate; if the project is defect-clean the value is in what is MISSING: capability gaps, friction to remove, paradigm limits to lift, UX / observability / polish. (2) GENERATE a wide candidate set — scan the blindspot inventory (\`~/.claude/quality-pack/blindspots/\`), \`git log -20\` + the CHANGELOG / Unreleased entries, and any \`findings.json\` waves still pending; dispatch a fresh-context audit sub-agent (or the Workflow tool for heavy fan-out) so breadth is not bounded by what is obvious to the main thread. (3) Produce a wave plan via \`record-finding-list.sh init\` (5-10 improvements per wave by surface) and execute every wave end-to-end IN THIS SESSION — plan -> impl -> quality-reviewer -> excellence-reviewer -> verify -> commit. (4) \"I evaluated and found little to do\" is the narrowing failure /ulw exists to prevent — if your candidate set is small your scan was too shallow; widen it before concluding. (5) Lead the opener with: **Open mandate — running innovation-generation scan.** so the routing is user-auditable and the user can redirect cheaply if they meant it narrower. Under \`no_defer_mode=on\` (default), every improvement ships inline or is rejected as not-a-defect; there is no out-of-scope."
+    record_gate_event "bias-defense" "directive_fired" \
+      "directive=open-mandate-innovation"
+    log_hook "prompt-intent-router" "open-mandate-innovation fired"
+  fi
+
   # --- Completeness / coverage / cleanliness directive (v1.26.0) ---
   #
   # Generalizes the v1.23.0 exemplifying-scope widening directive. Fires
