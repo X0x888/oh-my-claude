@@ -1452,8 +1452,9 @@ Run metis to pressure-test for wrong-abstraction / missing-constraint risks befo
       # that audit (sharpened: excellence-reviewer axes 1+10) asks the
       # sample-vs-ceiling + cost-vs-evidence question, and if it finds an undone
       # large item it returns completeness=FINDINGS and the review-coverage gate
-      # blocks separately. Moves release off the corrupt witness (oracle) and
-      # reuses the existing fresh auditor (abstraction-critic) — no new gate.
+      # blocks separately. Moves release off the corrupt witness (the model's own
+      # coverage self-attestation) and reuses the existing fresh auditor
+      # (excellence-reviewer) — no new gate.
       # Honest limit: bash cannot verify the audit's CONTENT was heeded, only
       # that a fresh reviewer ran; see model-robustness.md genuine-gap #4.
       _oc_fresh_audit_ts="$(read_state "last_excellence_review_ts")"
