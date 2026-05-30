@@ -144,7 +144,13 @@ _write_state_unlocked() {
   local state_file
   state_file="$(session_file "${STATE_JSON}")"
   local temp_file
-  temp_file="$(mktemp "${state_file}.XXXXXX")"
+  # Guard mktemp (mirror _append_limited_state_locked at the locked-append path):
+  # on failure (e.g. transient FS pressure) the unguarded form left temp_file
+  # empty and the subsequent `jq >""` produced an ambiguous-redirect error that
+  # still returned 1 but via a noisier path. Returning early is the clean
+  # equivalent. (oracle finding — the write-failure source behind goal.sh's
+  # silent pause/resume state-drop, now loud at both ends.)
+  temp_file="$(mktemp "${state_file}.XXXXXX")" || return 1
 
   _ensure_valid_state
 
@@ -178,7 +184,11 @@ _write_state_batch_unlocked() {
   local state_file
   state_file="$(session_file "${STATE_JSON}")"
   local temp_file
-  temp_file="$(mktemp "${state_file}.XXXXXX")"
+  # Guard mktemp (same fix as _write_state_unlocked at line 153): an unguarded
+  # failure under FS pressure leaves temp_file empty → `jq >""` ambiguous
+  # redirect. with_state_lock_batch (goal.sh set/clear/done, the router's
+  # objective-cycle stamps) routes through here, so it needs the same guard.
+  temp_file="$(mktemp "${state_file}.XXXXXX")" || return 1
 
   _ensure_valid_state
 

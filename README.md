@@ -292,13 +292,13 @@ oh-my-claude/
 ├── install.sh / uninstall.sh / verify.sh   # Install, remove, and verify
 ├── bundle/dot-claude/                       # Installs to ~/.claude/
 │   ├── agents/          (34 agents)         # Specialist agent definitions
-│   ├── skills/          (29 skills)         # Skill definitions + autowork hooks
+│   ├── skills/          (30 skills)         # Skill definitions + autowork hooks
 │   ├── quality-pack/                        # Lifecycle hooks + memory files
 │   ├── output-styles/                       # Two bundled styles: oh-my-claude (default) + executive-brief (see docs/customization.md#output-style)
 │   └── statusline.py                        # Custom statusline widget
 ├── config/settings.patch.json               # Merged into user settings on install
 ├── evals/realwork/                           # Outcome eval scenarios for minimal-prompt shipping across code + design/UI + native artifacts + mixed + quantitative/data-analysis + regulated/high-stakes + writing + research + scholarly + ops + advisory
-├── tests/               (136 bash + 1 py)   # See AGENTS.md / CONTRIBUTING.md for full list
+├── tests/               (137 bash + 1 py)   # See AGENTS.md / CONTRIBUTING.md for full list
 ├── tools/                                    # Developer-only tools (not installed)
 └── docs/                                    # Architecture, customization, FAQ, prompts
 ```
@@ -315,6 +315,7 @@ Skills are invoked as slash commands or routed automatically by the intent class
 |---|---|---|
 | **Run a task** | | |
 | ulw | `/ulw <task>` | Maximum-autonomy professional workflow |
+| goal *(relentless drive)* | `/goal <objective>` | Persistent goal driven relentlessly across turns until verifiably achieved or a no-progress stuck-wall (Codex `/goal` port). Lifecycle: pause/resume/clear/done. |
 | **Think before acting** | | |
 | plan-hard *(plan)* | `/plan-hard <task>` | Decision-complete planning without edits |
 | prometheus *(interview)* | `/prometheus <goal>` | Interview-first planning for ambiguous work |

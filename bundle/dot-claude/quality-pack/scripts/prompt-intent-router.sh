@@ -304,7 +304,13 @@ fi
 # "thanks, what's the test count?" follow-up must never re-block a task that
 # was already completed in the prior turn.
 if [[ "${TASK_INTENT}" == "execution" ]]; then
-  if [[ "${OMC_OBJECTIVE_CONTRACT_GATE:-on}" == "on" ]]; then
+  # v1.46+ /goal: a user-declared goal (goal.sh) rides the SAME objective-cycle
+  # stamps (prompt_ts + edit baseline) so the stop-guard goal driver can detect
+  # work-this-cycle and re-anchor. Stamp when the objective-contract gate is on
+  # OR a goal is active, so /goal works even with objective_contract_gate=off.
+  _oc_goal_on=""
+  [[ "$(read_state "goal_mode_active" 2>/dev/null || true)" == "1" ]] && _oc_goal_on="1"
+  if [[ "${OMC_OBJECTIVE_CONTRACT_GATE:-on}" == "on" || -n "${_oc_goal_on}" ]]; then
     _oc_code_edits="$(read_state "code_edit_count")"; _oc_code_edits="${_oc_code_edits:-0}"
     _oc_doc_edits="$(read_state "doc_edit_count")"; _oc_doc_edits="${_oc_doc_edits:-0}"
     [[ "${_oc_code_edits}" =~ ^[0-9]+$ ]] || _oc_code_edits=0
@@ -316,7 +322,7 @@ if [[ "${TASK_INTENT}" == "execution" ]]; then
       "objective_contract_blocks" "0" \
       "objective_contract_open_mandate" "$(is_exhaustive_authorization_request "${PROMPT_TEXT}" && printf 1 || printf '')"
   else
-    # Gate toggled off: clear any stale cycle state on the next fresh
+    # Both gates off: clear any stale cycle state on the next fresh
     # execution prompt so a later re-enable starts from a clean slate.
     write_state_batch \
       "objective_contract_prompt_ts" "" \
@@ -324,6 +330,15 @@ if [[ "${TASK_INTENT}" == "execution" ]]; then
       "objective_contract_audited_ts" "" \
       "objective_contract_blocks" "" \
       "objective_contract_open_mandate" ""
+  fi
+  # v1.46+ /goal: reset the per-turn goal block counters so each user prompt
+  # grants a fresh stuck-wall attempt budget (only when a goal is active, so
+  # non-goal sessions never accrue goal_* state).
+  if [[ -n "${_oc_goal_on}" ]]; then
+    write_state_batch \
+      "goal_blocks" "0" \
+      "goal_stuck_blocks" "0" \
+      "goal_last_block_edit_ts" ""
   fi
 fi
 

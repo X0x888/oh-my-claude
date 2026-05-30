@@ -59,6 +59,8 @@ _omc_env_exemplifying_directive="${OMC_EXEMPLIFYING_DIRECTIVE:-}"
 _omc_env_exemplifying_scope_gate="${OMC_EXEMPLIFYING_SCOPE_GATE:-}"
 _omc_env_objective_contract_gate="${OMC_OBJECTIVE_CONTRACT_GATE:-}"
 _omc_env_objective_contract_min_files="${OMC_OBJECTIVE_CONTRACT_MIN_FILES:-}"
+_omc_env_goal_gate="${OMC_GOAL_GATE:-}"
+_omc_env_goal_stuck_threshold="${OMC_GOAL_STUCK_THRESHOLD:-}"
 _omc_env_prompt_text_override="${OMC_PROMPT_TEXT_OVERRIDE:-}"
 _omc_env_mark_deferred_strict="${OMC_MARK_DEFERRED_STRICT:-}"
 _omc_env_shortcut_ratio_gate="${OMC_SHORTCUT_RATIO_GATE:-}"
@@ -337,6 +339,11 @@ OMC_OBJECTIVE_CONTRACT_GATE="${OMC_OBJECTIVE_CONTRACT_GATE:-on}"
 # so a big session's cumulative totals don't arm the gate on a tiny
 # follow-up task. Default 4. 0 disables the volume arm (intent arms remain).
 OMC_OBJECTIVE_CONTRACT_MIN_FILES="${OMC_OBJECTIVE_CONTRACT_MIN_FILES:-4}"
+# /goal relentless driver (v1.46+ Codex /goal port): master switch + the
+# consecutive-no-progress stuck-wall threshold. goal_gate is opt-in (inert
+# until the user runs /goal), so it defaults on across all presets.
+OMC_GOAL_GATE="${OMC_GOAL_GATE:-on}"
+OMC_GOAL_STUCK_THRESHOLD="${OMC_GOAL_STUCK_THRESHOLD:-3}"
 # prompt_text_override (v1.23.0): when `on`, the PreTool intent guard
 # permits a destructive op when the most recent user prompt
 # unambiguously authorizes the verb being attempted, even if the
@@ -636,6 +643,10 @@ _parse_conf_file() {
         [[ -z "${_omc_env_objective_contract_gate}" && "${value}" =~ ^(on|off)$ ]] && OMC_OBJECTIVE_CONTRACT_GATE="${value}" || true ;;
       objective_contract_min_files)
         [[ -z "${_omc_env_objective_contract_min_files}" && "${value}" =~ ^[0-9]+$ ]] && OMC_OBJECTIVE_CONTRACT_MIN_FILES="${value}" || true ;;
+      goal_gate)
+        [[ -z "${_omc_env_goal_gate}" && "${value}" =~ ^(on|off)$ ]] && OMC_GOAL_GATE="${value}" || true ;;
+      goal_stuck_threshold)
+        [[ -z "${_omc_env_goal_stuck_threshold}" && "${value}" =~ ^[0-9]+$ ]] && OMC_GOAL_STUCK_THRESHOLD="${value}" || true ;;
       prompt_text_override)
         [[ -z "${_omc_env_prompt_text_override}" && "${value}" =~ ^(on|off)$ ]] && OMC_PROMPT_TEXT_OVERRIDE="${value}" || true ;;
       mark_deferred_strict)

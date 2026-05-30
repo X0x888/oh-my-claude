@@ -92,6 +92,7 @@ SKILL_DIRS=(
   "${CLAUDE_HOME}/skills/ulw-time"
   "${CLAUDE_HOME}/skills/mark-deferred"
   "${CLAUDE_HOME}/skills/ulw-pause"
+  "${CLAUDE_HOME}/skills/goal"
   "${CLAUDE_HOME}/skills/ulw-resume"
   "${CLAUDE_HOME}/skills/memory-audit"
   "${CLAUDE_HOME}/skills/frontend-design"

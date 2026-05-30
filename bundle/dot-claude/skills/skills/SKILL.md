@@ -13,6 +13,7 @@ When you know what you want, jump straight to the verb:
 | If you... | Use |
 |---|---|
 | Want to ship real work end-to-end | `/ulw <task>` |
+| Keep working toward one durable goal across many turns | `/goal <objective>` |
 | Just installed; want to feel the gates fire | `/ulw-demo` |
 | Need to inspect or change configuration | `/omc-config` |
 | Need a plan before you edit | `/plan-hard <task>` |
@@ -51,6 +52,7 @@ The symptom-table above is a discovery shortcut. Each row maps to a skill in the
 | Skill | Command | When to use |
 |-------|---------|-------------|
 | **ulw** | `/ulw <task>` | Any non-trivial task needing full autonomy — coding, writing, research, ops. |
+| **goal** | `/goal <objective>` | Drive a durable objective relentlessly across turns — re-anchored at every Stop until verifiably achieved or a no-progress stuck-wall (Codex `/goal` port). Lifecycle: pause/resume/clear/done. |
 | **plan-hard** | `/plan-hard <task>` | You need a detailed plan *before* editing — scope decisions, architecture, sequencing. |
 | **review-hard** | `/review-hard [focus]` | Review existing code or a worktree diff for bugs, quality, missed requirements. |
 | **research-hard** | `/research-hard <topic>` | Gather repo context, API details, integration points before implementation. |

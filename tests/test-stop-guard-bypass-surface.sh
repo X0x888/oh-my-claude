@@ -16,6 +16,8 @@
 #   F-010: rejected-finding validator — subjective bare-token tightening
 #   F-010b: final-closure label closing-region restriction
 #   F-011: ulw-skip refusal on unremediated post-edit gates
+#   F-014: objective-completion contract gate (substantive arm)
+#   F-015: /goal relentless driver (user-armed arm + stuck-wall escape)
 #
 # Each block runs its defense as a black-box: invoke the script with the
 # bypass shape, assert exit code + telemetry side effects.

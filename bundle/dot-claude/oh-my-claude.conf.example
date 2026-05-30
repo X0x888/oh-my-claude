@@ -338,6 +338,19 @@
 # totals don't arm the gate on a tiny follow-up task. Default 4. 0 disables
 # the volume arm. Env: OMC_OBJECTIVE_CONTRACT_MIN_FILES.
 #objective_contract_min_files=4
+#
+# goal_gate: master switch for the /goal relentless driver (the user-facing
+# Codex /goal port). When on (default), a user-declared goal
+# (/goal "<objective>") re-anchors at every Stop and blocks until the goal
+# is verifiably achieved (fresh excellence audit + **Goal achieved.**
+# attestation) or a no-progress stuck-wall is hit. Purely opt-in — does
+# nothing until you run /goal. Voluntary sibling of objective_contract_gate.
+#goal_gate=on
+#
+# goal_stuck_threshold: consecutive no-progress /goal blocks before the
+# stuck-wall surfaces and releases (the bounded escape that keeps the
+# otherwise-uncapped driver safe). 0 = uncapped (never auto-release).
+#goal_stuck_threshold=3
 
 # PreTool guard's raw-prompt-text trust override. When the classifier
 # mis-routes a prompt as advisory but the most recent user prompt

@@ -123,7 +123,11 @@ has_closeout_label() {
     # test/review coverage, and a test-coverage wrap-up note would otherwise
     # falsely clear the objective gate without any objective attestation
     # (quality-reviewer F-1).
-    coverage)     pattern='\*\*Objective (coverage|audit)(\.)?\*\*' ;;
+    # v1.46+ /goal: goal mode reuses this label; "**Goal achieved.**" is an
+    # accepted alias (Codex-parity, user-intuitive) alongside the objective
+    # forms. KEEP IN SYNC with the inline replica in tests/test-objective-
+    # contract.sh and tests/test-goal.sh.
+    coverage)     pattern='\*\*(Objective (coverage|audit)|Goal achieved)(\.)?\*\*' ;;
     *) return 1 ;;
   esac
   [[ -n "${text}" ]] || return 1
@@ -1421,7 +1425,25 @@ Run metis to pressure-test for wrong-abstraction / missing-constraint risks befo
   # substantive): a short prose imperative implying large scope, done tiny,
   # with no planner — out of bash's mechanical reach; the gate stays silent
   # there rather than false-block.
-  if [[ "${OMC_OBJECTIVE_CONTRACT_GATE:-on}" == "on" ]] \
+  # v1.46+ /goal driver: a user-declared persistent goal (goal.sh) arms this
+  # same re-anchor machinery UNCONDITIONALLY (skipping the substantiveness
+  # detection — the user explicitly armed it) and drives relentlessly via the
+  # progress-aware stuck-wall escape below instead of the cap-2 scorecard. The
+  # goal is the VOLUNTARY sibling of the involuntary objective-contract gate;
+  # both reuse this ONE block (Approach A — no separate gate, so no double-fire
+  # when both would arm). Goal mode is inert while paused or while an
+  # operational /ulw-pause is active for the turn.
+  _goal_active=""
+  _goal_obj=""
+  if [[ "${OMC_GOAL_GATE:-on}" == "on" ]] \
+    && [[ "$(read_state "goal_mode_active" 2>/dev/null || true)" == "1" ]] \
+    && [[ "$(read_state "goal_paused" 2>/dev/null || true)" != "1" ]] \
+    && [[ "$(read_state "ulw_pause_active" 2>/dev/null || true)" != "1" ]]; then
+    _goal_obj="$(read_state "goal_objective" 2>/dev/null || true)"
+    [[ -n "${_goal_obj}" ]] && _goal_active="1"
+  fi
+
+  if { [[ "${OMC_OBJECTIVE_CONTRACT_GATE:-on}" == "on" ]] || [[ -n "${_goal_active}" ]]; } \
     && is_execution_intent_value "${_effective_intent}"; then
     _oc_prompt_ts="$(read_state "objective_contract_prompt_ts")"
     _oc_prompt_ts="${_oc_prompt_ts:-0}"
@@ -1432,15 +1454,25 @@ Run metis to pressure-test for wrong-abstraction / missing-constraint risks befo
     _oc_last_edit_ts="${last_edit_ts:-0}"
     [[ "${_oc_last_edit_ts}" =~ ^[0-9]+$ ]] || _oc_last_edit_ts=0
 
+    # Mode + re-anchor source: goal mode re-anchors the durable goal text;
+    # substantive mode re-anchors the per-prompt current_objective.
+    _oc_mode="substantive"
+    _oc_reanchor="${current_objective}"
+    if [[ -n "${_goal_active}" ]]; then
+      _oc_mode="goal"
+      _oc_reanchor="${_goal_obj}"
+    fi
+
     # Arm only when: a cycle is stamped, work happened THIS cycle
     # (last_edit_ts past the cycle's prompt_ts), the cycle was not already
-    # audited, current_objective is non-empty to re-anchor against, and the
-    # cycle is substantive by the coarse disjunction.
+    # audited, a non-empty objective exists to re-anchor against, and EITHER
+    # goal mode is active (unconditional — user-armed) OR the cycle is
+    # substantive by the coarse disjunction.
     if [[ "${_oc_prompt_ts}" -gt 0 ]] \
       && [[ "${_oc_last_edit_ts}" -gt "${_oc_prompt_ts}" ]] \
       && [[ "${_oc_audited_ts}" -le "${_oc_prompt_ts}" ]] \
-      && [[ -n "${current_objective}" ]] \
-      && objective_contract_is_substantive; then
+      && [[ -n "${_oc_reanchor}" ]] \
+      && { [[ "${_oc_mode}" == "goal" ]] || objective_contract_is_substantive; }; then
 
       # v1.46-pre+ (manufactured-finish-line fix): release requires BOTH the
       # coverage attestation AND a RECORDED fresh-context completeness audit
@@ -1463,16 +1495,82 @@ Run metis to pressure-test for wrong-abstraction / missing-constraint risks befo
       [[ "${_oc_fresh_audit_ts}" =~ ^[0-9]+$ ]] || _oc_fresh_audit_ts=0
       if has_closeout_label coverage "${last_assistant_message}" \
         && [[ "${_oc_fresh_audit_ts}" -gt "${_oc_prompt_ts}" ]]; then
-        # Release path: coverage attestation present AND a fresh completeness
-        # audit ran this cycle. Record audited_ts so the cycle self-clears and
-        # stays quiet on subsequent stop/continuation turns. Falls through to
-        # delivery-contract (no exit).
+        # Release path: coverage/goal-achieved attestation present AND a fresh
+        # completeness audit ran this cycle. Record audited_ts so the cycle
+        # self-clears and stays quiet on subsequent stop/continuation turns.
+        # In goal mode, also reset the no-progress stuck counter (the model
+        # just demonstrated progress + completion); the goal STAYS active and
+        # re-arms next execution turn until the user runs /goal done|clear.
+        # Falls through to delivery-contract (no exit).
         write_state "objective_contract_audited_ts" "$(now_epoch)"
+        [[ "${_oc_mode}" == "goal" ]] && write_state "goal_stuck_blocks" "0"
         record_gate_event "objective-contract" "audited" \
+          "mode=${_oc_mode}" \
           "prompt_ts=${_oc_prompt_ts}" \
           "fresh_audit_ts=${_oc_fresh_audit_ts}" \
           "edits_this_cycle=$(objective_contract_cycle_edit_count)"
       else
+        # v1.46+ /goal driver: goal mode uses a progress-aware stuck-wall
+        # escape, NOT the substantive cap-2 scorecard. It blocks relentlessly
+        # while the model makes progress; only N consecutive NO-PROGRESS stop
+        # attempts (no edit since the previous goal block) trip the wall, which
+        # SURFACES to the user and RELEASES (never traps). This is the Codex
+        # "hits a wall it can't pass alone" semantic, mechanized — the bounded
+        # escape that makes an otherwise-uncapped relentless driver safe.
+        if [[ "${_oc_mode}" == "goal" ]]; then
+          _goal_blocks="$(read_state "goal_blocks")"; _goal_blocks="${_goal_blocks:-0}"
+          [[ "${_goal_blocks}" =~ ^[0-9]+$ ]] || _goal_blocks=0
+          _goal_stuck="$(read_state "goal_stuck_blocks")"; _goal_stuck="${_goal_stuck:-0}"
+          [[ "${_goal_stuck}" =~ ^[0-9]+$ ]] || _goal_stuck=0
+          _goal_prev_edit="$(read_state "goal_last_block_edit_ts")"; _goal_prev_edit="${_goal_prev_edit:-0}"
+          [[ "${_goal_prev_edit}" =~ ^[0-9]+$ ]] || _goal_prev_edit=0
+          _goal_thresh="${OMC_GOAL_STUCK_THRESHOLD:-3}"
+          [[ "${_goal_thresh}" =~ ^[0-9]+$ ]] || _goal_thresh=3
+
+          # Progress detector: an edit since the previous goal block resets the
+          # stuck counter; no edit advances it toward the wall. A model
+          # genuinely grinding forward is NEVER released by the cap — only a
+          # model spinning with zero progress trips the escape.
+          if [[ "${_oc_last_edit_ts}" -gt "${_goal_prev_edit}" ]]; then
+            _goal_stuck=0
+          else
+            _goal_stuck=$((_goal_stuck + 1))
+          fi
+          _goal_blocks=$((_goal_blocks + 1))
+          with_state_lock_batch \
+            "goal_blocks" "${_goal_blocks}" \
+            "goal_stuck_blocks" "${_goal_stuck}" \
+            "goal_last_block_edit_ts" "${_oc_last_edit_ts}"
+          _goal_excerpt="$(printf '%s' "${_oc_reanchor}" | head -c 600)"
+
+          if [[ "${_goal_thresh}" -gt 0 && "${_goal_stuck}" -ge "${_goal_thresh}" ]]; then
+            # Stuck wall: surface + release (never trap). The goal stays active;
+            # the next user prompt resets the counter (fresh attempt budget).
+            record_gate_event "goal" "stuck-wall" \
+              "goal_blocks=${_goal_blocks}" "stuck=${_goal_stuck}" "threshold=${_goal_thresh}"
+            emit_scorecard_stop_context \
+              "GOAL STUCK-WALL (no progress across ${_goal_stuck} consecutive stop attempts):" \
+              "The persistent goal is still open, but the last ${_goal_stuck} drive attempts produced no edits — a wall the relentless driver cannot pass alone. State plainly what is blocking. Options: supply the missing input and re-prompt; \`/ulw-pause <reason>\` if it is an operational block (credentials / rate limit / dead infra); \`/goal clear\` to stand down; \`/goal\` to review status. The goal stays active — your next prompt resets the no-progress counter." \
+              "  Goal: ${_goal_excerpt:0:200}"
+            exit 0
+          fi
+
+          # Below the wall: relentless block, re-anchoring the goal verbatim.
+          record_gate_event "goal" "block" \
+            "goal_blocks=${_goal_blocks}" "stuck=${_goal_stuck}" "threshold=${_goal_thresh}"
+          _goal_recovery="$(format_gate_recovery_options \
+            "Drive the next concrete sub-step toward the goal NOW — it is not done until verifiably achieved." \
+            "When you believe it IS achieved: dispatch excellence-reviewer (Agent tool) with the goal for a FRESH-CONTEXT completeness audit, ship anything it surfaces, then attest \`**Goal achieved.**\` (or \`**Objective coverage.**\`). Release requires BOTH the recorded fresh audit AND that attestation — self-attestation alone does not clear it." \
+            "Genuinely blocked? \`/ulw-pause <reason>\` (operational block) · \`/goal pause\` (suspend the driver) · \`/goal clear\` (stand down). After ${_goal_thresh} consecutive no-progress stops the driver surfaces a stuck-wall and releases on its own.")"
+          emit_stop_block "$(format_gate_block_dual \
+            "Persistent goal active — relentless drive engaged. Not done until you verifiably achieve the goal, run a fresh completeness audit, and attest **Goal achieved.** Keep going." \
+            "[Goal driver · block ${_goal_blocks}, no-progress ${_goal_stuck}/${_goal_thresh}] the persistent goal is still open.
+GOAL (verbatim, re-anchored):
+${_goal_excerpt}
+Drive the next concrete sub-step. When achieved: fresh excellence audit + attest **Goal achieved.**${_goal_recovery}")"
+          exit 0
+        fi
+
         _oc_blocks="$(read_state "objective_contract_blocks")"
         _oc_blocks="${_oc_blocks:-0}"
         [[ "${_oc_blocks}" =~ ^[0-9]+$ ]] || _oc_blocks=0
@@ -1541,7 +1639,8 @@ The findings you handled are a sample, not the ceiling — do not redefine succe
     # substantive, common.sh) names as the data-not-speculation precondition
     # for EVER arming. Telemetry-only, at most once per cycle; /ulw-report
     # aggregates it. Does not touch the gate's block path above.
-    if [[ "${_oc_prompt_ts}" -gt 0 ]] \
+    if [[ -z "${_goal_active}" ]] \
+      && [[ "${_oc_prompt_ts}" -gt 0 ]] \
       && [[ "${_oc_last_edit_ts}" -gt "${_oc_prompt_ts}" ]] \
       && [[ "${_oc_audited_ts}" -le "${_oc_prompt_ts}" ]] \
       && [[ -n "${current_objective}" ]] \

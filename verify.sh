@@ -539,6 +539,7 @@ required_paths=(
   "${CLAUDE_HOME}/skills/ulw-correct/SKILL.md"
   "${CLAUDE_HOME}/skills/mark-deferred/SKILL.md"
   "${CLAUDE_HOME}/skills/ulw-pause/SKILL.md"
+  "${CLAUDE_HOME}/skills/goal/SKILL.md"
   "${CLAUDE_HOME}/skills/memory-audit/SKILL.md"
   "${CLAUDE_HOME}/skills/frontend-design/SKILL.md"
   "${CLAUDE_HOME}/skills/swiftui-pro/SKILL.md"

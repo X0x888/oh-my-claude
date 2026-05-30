@@ -304,6 +304,8 @@ jobs:
 
       - name: Run objective-contract tests (v1.46-pre Codex /goal port)
         run: bash tests/test-objective-contract.sh
+      - name: Test — /goal relentless driver
+        run: bash tests/test-goal.sh
 
       - name: Run canary tests (v1.32.0 R1 pin)
         run: bash tests/test-canary.sh
