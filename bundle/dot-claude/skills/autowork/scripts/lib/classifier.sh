@@ -262,7 +262,25 @@ is_imperative_request() {
 count_keyword_matches() {
   local pattern="$1"
   local text="$2"
-  { grep -oEi "${pattern}" <<<"${text}" 2>/dev/null || true; } | wc -l | tr -d '[:space:]'
+  # grep does the regex match (load-bearing — flags/pattern/semantics are
+  # UNCHANGED); only the match COUNT is now derived in pure bash. grep -o
+  # emits one match per line, so the occurrence count is (newlines in the
+  # command-substitution-trimmed output) + 1, or 0 when empty.
+  #
+  # v1.46-pre perf: this drops the `| wc -l | tr -d` fork PAIR. This helper
+  # is called ~26× per prompt inside classify_task_intent/infer_domain (the
+  # unconditional UserPromptSubmit hot path), and on bash-3.2-macOS a fork
+  # is ~3.5ms — so the prior 3-fork-per-call form spent ~270ms of pure fork
+  # overhead on EVERY prompt before the model even starts. Counting in bash
+  # leaves only grep's single essential fork (~3× fewer forks here).
+  # Verified byte-identical to `grep | wc -l | tr` across single/multi-
+  # occurrence and multi-line inputs; the classifier fixtures pin the
+  # end-to-end classifications unchanged.
+  local out nl
+  out="$(grep -oEi "${pattern}" <<<"${text}" 2>/dev/null || true)"
+  [[ -z "${out}" ]] && { printf '0'; return 0; }
+  nl="${out//[!$'\n']/}"
+  printf '%s' "$(( ${#nl} + 1 ))"
 }
 
 is_ui_request() {
