@@ -549,7 +549,18 @@ _parse_conf_file() {
     # benefit. Internal whitespace is preserved (no flag currently
     # uses pipe-separated values with internal spaces — pipe-separated
     # MCP-tool patterns use literal `|`, not space).
-    value="$(printf '%s' "${value}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    #
+    # Fork-free builtin trim (v1.46-pre perf): load_conf runs at
+    # common.sh source time for EVERY conf line, and common.sh is sourced
+    # by ~50 hooks (SubagentStop alone wires 12/subagent), so a council
+    # turn sources it 30-100+ times. The prior `printf|sed` form forked
+    # 2 procs PER conf line (~0.15s/source on bash 3.2 = the dominant
+    # per-turn latency tax). This parameter-expansion trim is byte-
+    # identical (verified across whitespace / CRLF / empty / internal-
+    # space / path values with extglob OFF) and forkless. POSIX bracket
+    # classes only — no extglob dependency.
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
 
     # Security-load-bearing flags: refuse project-conf overrides so a
     # malicious / unfamiliar repo's `.claude/oh-my-claude.conf` cannot
@@ -598,13 +609,17 @@ _parse_conf_file() {
         [[ -z "${_omc_env_pretool_intent}" && "${value}" =~ ^(true|false)$ ]] && OMC_PRETOOL_INTENT_GUARD="${value}" || true ;;
       agent_first_gate)
         if [[ -z "${_omc_env_agent_first_gate}" ]]; then
-          # v1.43+ (quality-reviewer F1): case-fold the value so `ON`,
-          # `On`, `OFF`, etc. all normalize to lowercase before the
-          # regex check. Previously the regex `^(on|off)$` silently
-          # rejected uppercase and fell back to default-off.
-          local _v
-          _v="$(printf '%s' "${value}" | tr '[:upper:]' '[:lower:]')"
-          [[ "${_v}" =~ ^(on|off)$ ]] && OMC_AGENT_FIRST_GATE="${_v}" || true
+          # v1.43+ (quality-reviewer F1): accept any case (`ON`, `On`,
+          # `OFF`) — previously the regex `^(on|off)$` silently rejected
+          # uppercase and fell back to default-off.
+          # v1.46-pre perf: fork-free case-fold (was `printf|tr`).
+          # Outcome-identical for the on/off domain this arm accepts —
+          # any non-on/off value is rejected either way — and this runs
+          # at source time on every conf-load.
+          case "${value}" in
+            [Oo][Nn]) OMC_AGENT_FIRST_GATE="on" ;;
+            [Oo][Ff][Ff]) OMC_AGENT_FIRST_GATE="off" ;;
+          esac
         fi ;;
       bg_spawn_gate)
         [[ -z "${_omc_env_bg_spawn_gate}" && "${value}" =~ ^(true|false)$ ]] && OMC_BG_SPAWN_GATE="${value}" || true ;;
