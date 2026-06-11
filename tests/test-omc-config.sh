@@ -261,12 +261,12 @@ teardown
 # god_scope_on_bare_prompt for the No-Out-of-Scope contract;
 # v1.44-pre added circuit_breaker + transcript_archive;
 # v1.46-pre added objective_contract_gate for the Codex /goal port
-# objective-completion contract; this wave added workflow_substrate
-# for the Workflow-tool execution substrate) ---
-printf 'Test 13: apply-preset maximum writes 34 keys\n'
+# objective-completion contract; workflow_substrate for the Workflow-
+# tool execution substrate; goal_gate for the /goal relentless driver) ---
+printf 'Test 13: apply-preset maximum writes 35 keys\n'
 setup
 out="$(bash "${HELPER}" apply-preset user maximum 2>&1)"
-assert_contains "apply-preset reports 34 keys" "34 keys" "${out}"
+assert_contains "apply-preset reports 35 keys" "35 keys" "${out}"
 assert_file_has_line "maximum: gate_level=full" "${USER_CONF_PATH}" "^gate_level=full\$"
 assert_file_has_line "maximum: workflow_substrate=on" "${USER_CONF_PATH}" "^workflow_substrate=on\$"
 assert_file_has_line "maximum: guard_exhaustion_mode=block" "${USER_CONF_PATH}" "^guard_exhaustion_mode=block\$"

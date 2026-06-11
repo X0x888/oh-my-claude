@@ -115,7 +115,7 @@ intent_broadening|bool|on|advisory|Inject project-context reconciliation directi
 divergence_directive|bool|on|advisory|Inject divergent-framing directive on paradigm-shape decisions (X-vs-Y, "best way", "how should we", "design the X strategy") — enumerate 2-3 framings inline before commit
 workflow_substrate|bool|on|cost|Permit Claude Code's Workflow tool (deterministic multi-subagent orchestration — parallel/pipeline, JSON output schemas, token budgets, resume; runs in background) as an OPT-IN substrate for HEAVY fan-out (council Phase 8 waves, large audits, migrations) — NOT the default per-prompt path; off keeps all work on the lightweight in-thread path
 inferred_contract|bool|on|gates|Delivery Contract v2: infer required adjacent surfaces (tests/changelog/parser-lockstep/migration-notes) from actual edits, block stop when silently missed
-directive_budget|enum:off/maximum/balanced/minimal|balanced|advisory|Router directive budget mode: suppress lower-priority SOFT directives when prompt-tax gets dense (balanced default)
+directive_budget|enum:off/maximum/balanced/minimal|balanced|advisory|How much injected pre-answer scaffolding you see per prompt: suppresses lower-priority directives when prompt-tax gets dense. minimal = leanest preamble (pick this if every response feels front-loaded), maximum = never suppress, balanced = default
 blindspot_ttl_seconds|pint|86400|gates|Cache TTL (seconds) for blindspot inventory; default 86400 = 24h
 EOF
 }

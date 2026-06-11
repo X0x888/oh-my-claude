@@ -98,6 +98,20 @@ Brief recap — keep it tight; the user just felt the gates work, so don't over-
 - The stop-guard blocked you until verification and review were done. That's what blocks every `/ulw` task.
 - Each gate has a cap (3 blocks). If Claude can't satisfy one, it surfaces the gap instead of spinning forever.
 
+Then show them the *shape* of a gate block, so the first real one is recognition instead of surprise. Print this and name its parts:
+
+```
+[Quality gate] Stop blocked
+
+**FOR YOU:** This change hasn't been verified yet — run your test command (or tell me it's verified) so I can confirm it works before stopping.
+
+**FOR MODEL:** <gate name · what fired · how to clear it>
+
+Recovery: bypass once with a reason — `/ulw-skip <reason>`
+```
+
+One line: "Every block looks like this — the **FOR YOU:** line is the plain-language fix. If a block ever fires on work you *know* is done, `/ulw-skip <reason>` clears it once. Blocks aren't errors; they're the harness doing its job."
+
 Then tell them: "This is what `/ulw` does on every real task. The gates fire automatically — you never need to think about them."
 
 ### Step 9: Bridge to a real first task
@@ -150,6 +164,11 @@ Three concrete first prompts the user can copy-paste, tailored to what you saw. 
 If the directory looks like a fresh oh-my-claude install or you can't tell the project type, fall back to:
 - `/ulw audit this repo and tell me what to do first`
 - `/council` (broad evaluation; will auto-trigger Phase 8 if you ask for fixes)
+
+Finally, plant the two discovery verbs the install funnel otherwise never surfaces — name them now, while the user has just watched the harness work:
+
+- **`/skills`** — the full menu of what the harness can do, anytime you forget a verb.
+- **`/ulw-report`** — after a few real sessions, shows what the gates actually caught for you. This is the "is this paying off?" answer, and most users never find it on their own.
 - `/ulw-status` (peek at session state to see how the harness is tracking your work)
 
 Close with a single sentence: **"Pick one and run it — the harness will route the right specialists automatically."** This is the handoff that closes the post-demo cliff.
