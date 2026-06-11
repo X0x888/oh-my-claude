@@ -1092,5 +1092,39 @@ assert_contains "bg marker does NOT suppress the block (decision unchanged)" '"d
 assert_contains "bg block carries the additive waiting note" 'this block is expected' "${_bg_out}"
 teardown
 
+# ===========================================================================
+# F5 (SRE-lens): stop-guard ERR trap records silent enforcement-loss.
+# stop-guard fails OPEN under `set -e` — a mid-hook crash aborts non-zero,
+# Claude Code does not block, and enforcement is silently lost with no
+# trace. The trap makes that loss observable WITHOUT changing fail-open.
+# The umbrella owns the cross-cutting invariant: the trap is LOG-ONLY
+# (writes to a file, never a decision/stdout) and preserves the exit code,
+# so it can never itself become a bypass or alter the block/release.
+# ===========================================================================
+printf '\n=== F5: stop-guard ERR trap records silent enforcement-loss (log-only) ===\n'
+if grep -q 'trap _omc_stop_guard_on_err ERR' "${HOOK_DIR}/stop-guard.sh" \
+   && grep -q '_omc_stop_guard_on_err()' "${HOOK_DIR}/stop-guard.sh"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: F5 — stop-guard ERR trap not wired\n' >&2
+  fail=$((fail + 1))
+fi
+_f5_log="$(mktemp)"; _f5_stdout="$(mktemp)"
+set +e
+bash -c '
+set -euo pipefail
+log_anomaly() { printf "%s\n" "$*" >> "'"${_f5_log}"'"; }
+_omc_stop_guard_on_err() { local rc=$?; log_anomaly "stop-guard-crash rc=${rc}" 2>/dev/null || true; return "${rc}"; }
+trap _omc_stop_guard_on_err ERR
+false
+echo REACHED
+' >"${_f5_stdout}" 2>/dev/null
+_f5_rc=$?
+set -e
+assert_eq "F5 — ERR trap preserves fail-open exit code" "1" "${_f5_rc}"
+assert_contains "F5 — ERR trap logged the crash to file" "stop-guard-crash rc=1" "$(cat "${_f5_log}")"
+assert_not_contains "F5 — ERR trap logs to file not stdout (no decision contamination)" "stop-guard-crash" "$(cat "${_f5_stdout}")"
+rm -f "${_f5_log}" "${_f5_stdout}"
+
 printf '\n=== Stop-Guard Bypass Surface: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]] || exit 1

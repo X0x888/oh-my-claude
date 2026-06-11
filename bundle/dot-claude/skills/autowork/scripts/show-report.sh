@@ -843,6 +843,29 @@ if [[ "${#_headline_lines[@]}" -lt 3 && "${_hl_serendipity_total}" -gt 0 ]]; the
   _headline_lines+=("**Serendipity caught ${_hl_serendipity_total} adjacent defect$([[ "${_hl_serendipity_total}" -eq 1 ]] && echo "" || echo "s")** in window — bugs found while doing other work, fixed in-session per the Serendipity Rule. Sustained > 0 means the rule is paying for itself.")
 fi
 
+# H5 (SRE-lens F3): discovered-scope capture-miss. A lens/council agent
+# returned a non-clean verdict but the extractor parsed zero structured
+# findings, so the discovered-scope gate under-counts silently. The event
+# IS recorded in gate_events.jsonl (event=zero_capture, written by
+# record-subagent-summary.sh; the VERDICT-clean guard already suppresses the
+# benign clean-verdict case), but the per-gate detail tables below render
+# only `block` events — so without this the signal is invisible in the
+# report. A single hit is usually benign (prose-only caveats); a sustained
+# count points at an extractor-format drift worth a targeted fix.
+_hl_capture_miss=0
+if [[ -f "${GATE_EVENTS_FILE}" ]] && [[ -s "${GATE_EVENTS_FILE}" ]]; then
+  if [[ "${MODE}" == "all" ]]; then
+    _hl_capture_miss="$(jq -s 'map(select(.event == "zero_capture")) | length' "${GATE_EVENTS_FILE}" 2>/dev/null || echo 0)"
+  else
+    _hl_capture_miss="$(jq -s --argjson cutoff "${cutoff_ts}" 'map(select((.ts // 0) >= $cutoff and .event == "zero_capture")) | length' "${GATE_EVENTS_FILE}" 2>/dev/null || echo 0)"
+  fi
+  _hl_capture_miss="${_hl_capture_miss//[!0-9]/}"
+  _hl_capture_miss="${_hl_capture_miss:-0}"
+fi
+if [[ "${_hl_capture_miss}" -ge 5 ]]; then
+  _headline_lines+=("**Discovered-scope capture misses: ${_hl_capture_miss}.** A lens/council agent returned findings the extractor parsed as zero — the discovered-scope gate may be under-counting (the dropped findings never reach the wave ledger). If this is rising, the extractor format needs a look; top emitters historically are product-lens, oracle, and visual-craft-lens.")
+fi
+
 # ----------------------------------------------------------------------
 # Outcomes section (v1.43 product-lens Wave 5)
 #

@@ -175,7 +175,7 @@ assert_contains "defect count" "× 12" "${out}"
 printf 'Test 11: empty dataset renders the v1.17.0 "no patterns" line\n'
 # Wipe the test fixtures so the report runs against a clean quality-pack;
 # heuristics should report cleanly with no warnings.
-rm -rf "${QP}"/*
+rm -rf "${QP:?}"/*
 out="$(run_report week)"
 assert_contains "interpretation header present" "Patterns to consider" "${out}"
 assert_contains "clean-state interpretation copy" "No clear patterns to call out" "${out}"
@@ -883,6 +883,33 @@ else
   pass=$((pass + 1))
 fi
 rm -f "${QP}/session_summary.jsonl"
+
+# ----------------------------------------------------------------------
+# F3 (SRE-lens): discovered-scope capture-miss surfaced in the Headline.
+# zero_capture events live in gate_events.jsonl, but the per-gate detail
+# tables render only `block` events — so without the H5 heuristic the
+# dropped-lens-findings signal is invisible in /ulw-report.
+printf 'Test 37: discovered-scope capture-miss surfaces when zero_capture >= 5\n'
+NOW="$(date +%s)"
+: > "${QP}/gate_events.jsonl"
+for _i in 1 2 3 4 5 6; do
+  printf '{"ts":%s,"gate":"discovered-scope","event":"zero_capture","agent":"product-lens"}\n' "${NOW}" >> "${QP}/gate_events.jsonl"
+done
+out="$(run_report week)"
+assert_contains "T37 — capture-miss headline renders" "Discovered-scope capture misses: 6" "${out}"
+# Below threshold (4 < 5) stays quiet — no false alarm on benign single hits.
+: > "${QP}/gate_events.jsonl"
+for _i in 1 2 3 4; do
+  printf '{"ts":%s,"gate":"discovered-scope","event":"zero_capture","agent":"oracle"}\n' "${NOW}" >> "${QP}/gate_events.jsonl"
+done
+out="$(run_report week)"
+if printf '%s' "${out}" | grep -q "Discovered-scope capture misses"; then
+  printf '  FAIL: T37 — capture-miss fired below threshold (4 < 5)\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+rm -f "${QP}/gate_events.jsonl"
 
 # ----------------------------------------------------------------------
 printf '\n=== Show-Report Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"

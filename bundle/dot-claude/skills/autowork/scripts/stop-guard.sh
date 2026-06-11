@@ -4,6 +4,25 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "${SCRIPT_DIR}/common.sh"
+
+# v1.46-pre (SRE-lens F5): record silent enforcement-loss. stop-guard runs
+# under `set -euo pipefail` and fails OPEN by design — an unhandled mid-hook
+# error aborts non-zero, Claude Code does NOT block, and the user gets a
+# silently-unenforced Stop with no trace (a crashed gate is indistinguishable
+# from a clean pass). This ERR trap records the crash via log_anomaly so the
+# loss is at least observable; it does NOT change the fail-open behavior. The
+# handler captures `$?` first and re-returns it, and the log call is fully
+# `|| true`-guarded, so the trap can never itself abort or alter the exit
+# code. log_anomaly writes to a file, never stdout, so it cannot contaminate
+# the hook's decision JSON. Surfaced via /ulw-report (the H5 capture/crash
+# headline reads the same anomaly channel).
+_omc_stop_guard_on_err() {
+  local rc=$?
+  log_anomaly "stop-guard-crash" "aborted mid-hook rc=${rc} (enforcement silently skipped this Stop)" 2>/dev/null || true
+  return "${rc}"
+}
+trap _omc_stop_guard_on_err ERR
+
 HOOK_JSON="$(_omc_read_hook_stdin)"
 
 SESSION_ID="$(json_get '.session_id')"
