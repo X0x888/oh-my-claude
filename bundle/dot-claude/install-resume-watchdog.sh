@@ -24,6 +24,18 @@
 # disables the scheduler and removes the installed files. The conf
 # flag is left at `resume_watchdog=on` so a re-install picks up the
 # user's stated preference; pass `--reset-conf` to also flip it off.
+#
+# Reregister (self-heal): `--reregister` re-establishes the schedule
+# QUIETLY for an already-installed watchdog whose agent died in the
+# field (laptop sleep, `launchctl bootout`, macOS update). It re-
+# bootstraps the launchd plist / restarts the systemd unit / reports
+# cron-fires-on-schedule, WITHOUT the explicit claiming `kickstart -k`
+# and WITHOUT the conf/claude_bin writes or the activation banner. It
+# is the recovery path the SessionStart watchdog-health hook invokes.
+# SAFETY: it REFUSES (exit 3) when any claimable resume_request.json
+# exists, because re-bootstrap fires a RunAtLoad tick that would claim
+# it and spawn an orphan `claude --resume`. Resolve the artifact via
+# /ulw-resume first.
 
 set -euo pipefail
 
@@ -38,9 +50,10 @@ reset_conf=0
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
     --uninstall) mode="uninstall"; shift ;;
+    --reregister) mode="reregister"; shift ;;
     --reset-conf) reset_conf=1; shift ;;
     -h|--help)
-      sed -n '2,40p' "$0"
+      sed -n '2,55p' "$0"
       exit 0 ;;
     *)
       printf 'install-resume-watchdog: unknown arg: %s\n' "$1" >&2
@@ -335,6 +348,139 @@ cron_uninstall() {
   printf 'Cron watchdog entry removed.\n'
 }
 
+# --- reregister (self-heal) ---
+#
+# The SessionStart watchdog-health hook calls these when a stale watchdog
+# needs reviving. They MUST stay quiet (hook-friendly: minimal stdout, no
+# prompts) and MUST NOT issue the explicit claiming `launchctl kickstart -k`
+# that the install path uses — re-bootstrap already triggers a RunAtLoad
+# tick, and that single guarded tick is enough to refresh the heartbeat.
+# The orphan-prevention guard (reregister_is_safe) runs FIRST so the
+# RunAtLoad tick can never find a claimable artifact to spawn against.
+
+# reregister_is_safe — orphan-prevention backstop.
+#
+# Returns 0 ONLY when it is provably safe to re-bootstrap: the claimable-
+# artifact scan succeeded AND found nothing. Returns 1 (unsafe) when a
+# claimable resume_request.json exists OR the scan could not be run /
+# trusted. Fail-CLOSED: any uncertainty blocks the re-register, because a
+# RunAtLoad tick firing against an unknown claim state is exactly the
+# orphan-spawn foot-gun this guard exists to prevent
+# (project_watchdog_reregister_claims_artifacts.md).
+reregister_is_safe() {
+  local common="${CLAUDE_HOME}/skills/autowork/scripts/common.sh"
+  if [[ ! -f "${common}" ]]; then
+    # Cannot load the canonical claimability helper — refuse rather than
+    # guess. The hook degrades to its warning.
+    return 1
+  fi
+  # Scope the source to this subshell so the installer's other modes are
+  # unaffected by common.sh's globals/side effects. Guard the substitution
+  # with `|| rc=$?` so `set -e` does not abort on a non-zero subshell exit
+  # (we want to inspect rc and fail-CLOSED, not crash).
+  local claimable="" rc=0
+  claimable="$(
+    # shellcheck source=/dev/null
+    . "${common}" 2>/dev/null || exit 99
+    find_claimable_resume_requests 2>/dev/null || exit 98
+  )" || rc=$?
+  if [[ "${rc}" -ne 0 ]]; then
+    # Helper unavailable or errored — treat as unsafe.
+    return 1
+  fi
+  if [[ -n "${claimable}" ]]; then
+    # A claimable artifact exists — re-bootstrapping would claim it.
+    return 1
+  fi
+  return 0
+}
+
+macos_reregister() {
+  local src="${CLAUDE_HOME}/launchd/dev.ohmyclaude.resume-watchdog.plist"
+  require_file "${src}"
+  local dest_dir="${HOME}/Library/LaunchAgents"
+  local dest="${dest_dir}/dev.ohmyclaude.resume-watchdog.plist"
+  mkdir -p "${dest_dir}" "${LOG_DIR}"
+
+  local user_path user_path_esc
+  user_path="$(resolved_path)"
+  user_path_esc="${user_path//&/\\&}"
+  user_path_esc="${user_path_esc//|/\\|}"
+
+  # Re-render the plist — this alone heals plist-signature drift, one of
+  # the documented silent-death causes.
+  sed \
+    -e "s|__OMC_HOME__|${CLAUDE_HOME}|g" \
+    -e "s|__OMC_USER_HOME__|${HOME}|g" \
+    -e "s|__OMC_LOG_DIR__|${LOG_DIR}|g" \
+    -e "s|__OMC_PATH__|${user_path_esc}|g" \
+    "${src}" > "${dest}"
+
+  if ! command -v launchctl >/dev/null 2>&1; then
+    return 1
+  fi
+  # Bootout-if-loaded, then bootstrap. The bootstrap triggers the plist's
+  # RunAtLoad tick (guarded safe by reregister_is_safe). NO explicit
+  # `kickstart -k` — it only widens the claim window for no benefit here.
+  if launchctl print "gui/$(id -u)/dev.ohmyclaude.resume-watchdog" >/dev/null 2>&1; then
+    launchctl bootout "gui/$(id -u)/dev.ohmyclaude.resume-watchdog" 2>/dev/null || true
+  fi
+  launchctl bootstrap "gui/$(id -u)" "${dest}" 2>/dev/null || return 1
+  return 0
+}
+
+linux_reregister() {
+  if ! command -v systemctl >/dev/null 2>&1; then
+    # No systemd — the cron entry (if present) fires on its own schedule;
+    # nothing to restart. Treat as cron.
+    cron_reregister
+    return $?
+  fi
+  local dest_dir="${HOME}/.config/systemd/user"
+  local svc="${dest_dir}/oh-my-claude-resume-watchdog.service"
+  local tmr="${dest_dir}/oh-my-claude-resume-watchdog.timer"
+  # If the units were never installed, there is nothing to reregister via
+  # systemd — fall back to cron semantics.
+  if [[ ! -f "${svc}" ]] || [[ ! -f "${tmr}" ]]; then
+    cron_reregister
+    return $?
+  fi
+  systemctl --user daemon-reload 2>/dev/null || true
+  # `enable --now` re-establishes the timer if it was disabled/stopped and
+  # starts it immediately; idempotent if already active. The .timer's
+  # Persistent=true catch-up tick is the systemd analogue of RunAtLoad and
+  # is guarded safe by reregister_is_safe.
+  systemctl --user enable --now oh-my-claude-resume-watchdog.timer 2>/dev/null || return 1
+  return 0
+}
+
+cron_reregister() {
+  # Cron fires on its own schedule — a "stale" cron watchdog means the
+  # crontab entry is gone, not that a loaded agent died. If the managed
+  # entry is missing, re-install it; otherwise report nothing-to-do. No
+  # claiming tick is triggered either way (the next */2 fire is a normal
+  # guarded tick).
+  if ! command -v crontab >/dev/null 2>&1; then
+    printf 'cron: crontab unavailable; cannot reregister automatically\n'
+    return 1
+  fi
+  local current=""
+  if ! current="$(read_crontab_contents)"; then
+    return 1
+  fi
+  if printf '%s\n' "${current}" | grep -q 'resume-watchdog\.sh'; then
+    printf 'cron: managed entry present; fires on schedule (nothing to restart)\n'
+    return 0
+  fi
+  local next_contents=""
+  next_contents="$(cron_install_block "${current}")"
+  if ! write_crontab_contents "${next_contents}"; then
+    return 1
+  fi
+  printf 'cron: managed entry restored\n'
+  return 0
+}
+
 # --- main ---
 
 require_file "${WATCHDOG_SCRIPT}"
@@ -356,6 +502,31 @@ if [[ "${mode}" == "uninstall" ]]; then
     printf 'Set resume_watchdog=off in %s\n' "${CONF_FILE}"
   fi
   exit 0
+fi
+
+if [[ "${mode}" == "reregister" ]]; then
+  # Quiet self-heal path (invoked by session-start-watchdog-health.sh).
+  # Does NOT touch the conf flag or claude_bin pin and does NOT print the
+  # activation banner — the caller (a SessionStart hook) composes the
+  # user-facing message from the exit code and minimal stdout.
+  #
+  # Exit codes:
+  #   0  reregistered (or cron nothing-to-restart) — heartbeat will refresh
+  #   3  REFUSED: a claimable resume_request.json exists (orphan risk)
+  #   1  reregister attempted but the platform command failed
+  if ! reregister_is_safe; then
+    printf 'reregister: refused — a claimable resume artifact exists (handle via /ulw-resume first)\n' >&2
+    exit 3
+  fi
+  # Capture the platform handler's status without `set -e` aborting on a
+  # non-zero return (a failed restart is exit 1, surfaced to the hook).
+  rr_rc=0
+  case "$(platform)" in
+    macos) macos_reregister || rr_rc=$? ;;
+    linux) linux_reregister || rr_rc=$? ;;
+    other) cron_reregister || rr_rc=$? ;;
+  esac
+  exit "${rr_rc}"
 fi
 
 # Install path.

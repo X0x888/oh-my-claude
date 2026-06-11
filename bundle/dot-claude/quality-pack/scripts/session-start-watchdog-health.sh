@@ -21,17 +21,35 @@
 # auto-resume *should* have fired — which is exactly the 24/7-autonomy
 # break the watchdog exists to prevent.
 #
-# Behavior:
+# Behavior (v1.47 — guarded self-heal, was warn-only in v1.43):
 #   - Skip when resume_watchdog is opt-out (default off; watchdog isn't
 #     expected to be running, so no heartbeat ≠ failure).
 #   - Skip when the heartbeat is fresh (< 3 × StartInterval = 360s).
-#   - Emit a `systemMessage` warning when the heartbeat is stale OR
-#     missing entirely.
-#   - Per-session idempotent: fire once per SESSION_ID via
+#   - When the heartbeat is stale OR missing AND it is SAFE, attempt ONE
+#     guarded auto-re-registration (`install-resume-watchdog.sh
+#     --reregister`) to revive the agent without the user hand-running the
+#     installer. Emits a green "self-healed" notice on success.
+#   - "SAFE" means NO claimable resume_request.json exists. Re-registering
+#     fires a RunAtLoad/Persistent tick that would CLAIM a pending artifact
+#     and spawn an orphan `claude --resume` (the foot-gun documented in
+#     project_watchdog_reregister_claims_artifacts.md). When an artifact
+#     exists the hook does NOT re-register — it warns and tells the user to
+#     handle the artifact via /ulw-resume first. Fail-CLOSED: if the
+#     claimable-artifact check cannot run, treat as unsafe (warn, no
+#     re-register).
+#   - Falls back to the warning (with the right recovery message) when the
+#     re-register fails, is blocked by an artifact, or was already attempted
+#     this session (`watchdog_selfheal_attempted_ts` — once-per-session, so
+#     a persistently-broken scheduler is not churned every SessionStart).
+#   - Output is `hookSpecificOutput.additionalContext` (SessionStart
+#     supports it; unlike Stop/SubagentStop).
+#   - Per-session idempotent message: fire once per SESSION_ID via
 #     `watchdog_health_emitted=1` in session state so a SessionStart
 #     fired multiple times (resume → compact → clear) does not spam.
 #
 # Soft-failure throughout: never blocks Stop, never propagates non-zero.
+# A self-heal failure degrades to the warning — it must never break
+# SessionStart.
 
 set -euo pipefail
 
@@ -142,18 +160,36 @@ if [[ "${stale}" -ne 1 ]]; then
   exit 0
 fi
 
-# Compose the warning. Concrete recovery actions ordered by likelihood:
-# (1) re-register the agent (catches macOS-update / bootout), (2)
-# re-run the installer to fix plist signature drift, (3) opt out if
-# the user no longer wants auto-resume.
-banner_head="─── resume-watchdog appears inactive ───"
+# ─────────────────────────────────────────────────────────────────────
+# v1.47 (SRE-lens): guarded self-heal. The watchdog's whole job is to
+# REDUCE babysitting; requiring the user to hand-run the installer to
+# recover is the exact failure the feature exists to prevent. So instead
+# of warn-only, the hook now attempts ONE guarded re-registration per
+# session when it is SAFE, and falls back to the warning otherwise.
+#
+# THE ORPHAN-PREVENTION GUARD (load-bearing — see
+# project_watchdog_reregister_claims_artifacts.md): re-registering fires a
+# RunAtLoad / Persistent catch-up tick, and a tick CLAIMS any claimable
+# resume_request.json and launches `claude --resume` in tmux. Re-register
+# while a claimable artifact exists → an ORPHAN agent spawns mid-session,
+# burning rate-limit budget and possibly committing unexpected work.
+# Therefore the hook checks find_claimable_resume_requests FIRST and does
+# NOT even invoke the installer when an artifact exists — the user must
+# clear it via /ulw-resume before re-registering. (The installer's
+# --reregister mode ALSO refuses on a claimable artifact as a backstop,
+# but the hook's own check is the primary guard and keeps the installer
+# out of the call path entirely in the unsafe case.)
+# ─────────────────────────────────────────────────────────────────────
+
 if [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]]; then
   warn_open=$'\033[33m'   # yellow
   warn_close=$'\033[0m'
+  ok_open=$'\033[32m'     # green
+  ok_close=$'\033[0m'
   dim_open=$'\033[2m'
   dim_close=$'\033[0m'
 else
-  warn_open=""; warn_close=""; dim_open=""; dim_close=""
+  warn_open=""; warn_close=""; ok_open=""; ok_close=""; dim_open=""; dim_close=""
 fi
 
 case "${reason}" in
@@ -161,26 +197,115 @@ case "${reason}" in
     age_line="${warn_open}No watchdog heartbeat has ever been written.${warn_close} The agent likely is not registered with launchd/systemd."
     ;;
   future-timestamp*)
-    age_line="${warn_open}Watchdog heartbeat is in the future.${warn_close} ${reason}. This usually means a clock step (NTP correction after laptop wake, BIOS clock reset) — and the dead-watchdog signal is hidden behind it. Re-register the agent and confirm \`date\` matches a network time source."
+    age_line="${warn_open}Watchdog heartbeat is in the future.${warn_close} ${reason}. This usually means a clock step (NTP correction after laptop wake, BIOS clock reset) — and the dead-watchdog signal is hidden behind it."
     ;;
   *)
-    age_line="${warn_open}Last watchdog tick was ${reason}.${warn_close} Threshold is ${threshold_secs}s (3× StartInterval=120s). The agent has stopped firing — typically a macOS update, \`launchctl bootout\`, or plist signature drift."
+    age_line="${warn_open}Last watchdog tick was ${reason}.${warn_close} Threshold is ${threshold_secs}s (3× StartInterval=120s). The agent has stopped firing — typically a macOS update, \`launchctl bootout\`, laptop sleep, or plist signature drift."
     ;;
 esac
 
-banner="${banner_head}
+# --- decide the recovery outcome ---
+# outcome ∈ {recovered, attempt-failed, blocked-artifact, attempted-earlier}
+banner_head="─── resume-watchdog appears inactive ───"
+outcome=""
+selfheal_rc=""
+
+selfheal_attempted="$(read_state "watchdog_selfheal_attempted_ts")"
+if [[ -n "${selfheal_attempted}" ]]; then
+  # A self-heal was already attempted this session. Whatever its result,
+  # do NOT churn the platform scheduler on every SessionStart of a session
+  # where the watchdog stays stale — fall back to the warning. (The flag is
+  # per-session state; a new session re-attempts from scratch.)
+  outcome="attempted-earlier"
+else
+  # Orphan-prevention check (PRIMARY GUARD). Fail-CLOSED: if the helper
+  # cannot run or errors, treat as artifact-present and DO NOT re-register.
+  claimable=""
+  claim_rc=0
+  claimable="$(find_claimable_resume_requests 2>/dev/null)" || claim_rc=$?
+  if [[ "${claim_rc}" -ne 0 ]] || [[ -n "${claimable}" ]]; then
+    outcome="blocked-artifact"
+  else
+    # SAFE to re-register. Stamp the attempt BEFORE invoking so a crash or
+    # hang in the installer cannot produce an unstamped retry loop across
+    # SessionStart firings within this session.
+    write_state "watchdog_selfheal_attempted_ts" "$(now_epoch)"
+    installer="${HOME}/.claude/install-resume-watchdog.sh"
+    selfheal_rc=0
+    if [[ -f "${installer}" ]]; then
+      bash "${installer}" --reregister >/dev/null 2>&1 || selfheal_rc=$?
+    else
+      selfheal_rc=127
+    fi
+    if [[ "${selfheal_rc}" -eq 0 ]]; then
+      outcome="recovered"
+    elif [[ "${selfheal_rc}" -eq 3 ]]; then
+      # Installer's backstop refused on a claimable artifact — a race where
+      # one appeared between our check and the installer's. Treat as blocked.
+      outcome="blocked-artifact"
+    else
+      outcome="attempt-failed"
+    fi
+  fi
+fi
+
+# --- compose the outcome-specific message ---
+case "${outcome}" in
+  recovered)
+    banner="─── resume-watchdog self-healed ───
+
+${ok_open}The resume-watchdog was inactive (${reason}) and has been re-registered automatically.${ok_close} 24/7 auto-resume is restored; the next tick will refresh the heartbeat.
+
+${dim_open}No claimable resume artifact was pending, so the re-register tick had nothing to claim. If this recurs every session, the scheduler is not surviving sleep/reboot — inspect: tail \$HOME/.claude/quality-pack/state/.watchdog-logs/resume-watchdog.err${dim_close}"
+    ;;
+  blocked-artifact)
+    banner="${banner_head}
 
 ${age_line}
 
-24/7 auto-resume after a rate-limit kill depends on this agent. To recover:
+${warn_open}A pending resume artifact exists, so the watchdog was NOT auto-re-registered${warn_close} — re-registering now would claim it and spawn an unattended \`claude --resume\`. Handle it first:
 
-  ${dim_open}# Re-register the launchd/systemd agent${dim_close}
+  ${dim_open}# Inspect / claim / dismiss the pending resume${dim_close}
+  /ulw-resume --peek
+  /ulw-resume            ${dim_open}# resume it${dim_close}   ·   /ulw-resume --dismiss   ${dim_open}# shelve it${dim_close}
+
+Then re-register the agent:
+
+  bash \$HOME/.claude/install-resume-watchdog.sh
+
+${dim_open}This warning fires once per session. Threshold tuning: \`OMC_WATCHDOG_HEALTH_STALENESS_SECS\` (default 360).${dim_close}"
+    ;;
+  attempt-failed)
+    banner="${banner_head}
+
+${age_line}
+
+${warn_open}An automatic re-registration was attempted but the platform scheduler command failed${warn_close} (exit ${selfheal_rc}). Recover manually:
+
   bash \$HOME/.claude/install-resume-watchdog.sh
 
 If you no longer want auto-resume, set \`resume_watchdog=off\` in
 \`~/.claude/oh-my-claude.conf\` to silence this warning.
 
-${dim_open}This warning fires once per session when the heartbeat is stale or missing. Threshold tuning: \`OMC_WATCHDOG_HEALTH_STALENESS_SECS\` (default 360).${dim_close}"
+${dim_open}This warning fires once per session. Threshold tuning: \`OMC_WATCHDOG_HEALTH_STALENESS_SECS\` (default 360).${dim_close}"
+    ;;
+  *)
+    # attempted-earlier — a self-heal already ran this session and the
+    # heartbeat is still stale (likely the scheduler needs a manual fix).
+    banner="${banner_head}
+
+${age_line}
+
+${warn_open}An automatic re-registration was already attempted this session and the watchdog is still inactive.${warn_close} A manual recovery is needed:
+
+  bash \$HOME/.claude/install-resume-watchdog.sh
+
+If you no longer want auto-resume, set \`resume_watchdog=off\` in
+\`~/.claude/oh-my-claude.conf\` to silence this warning.
+
+${dim_open}This warning fires once per session. Threshold tuning: \`OMC_WATCHDOG_HEALTH_STALENESS_SECS\` (default 360).${dim_close}"
+    ;;
+esac
 
 payload="$(jq -nc --arg context "${banner}" '{
   hookSpecificOutput: {
@@ -194,35 +319,22 @@ if [[ -z "${payload}" ]]; then
   exit 0
 fi
 
-# v1.43+ (SRE-lens P1a): emit FIRST, stamp LAST. The prior order
-# (stamp-then-print) silently lost the alarm when printf failed: a
-# closed stdout, SIGPIPE, hook-timeout-mid-emit, or any partial-write
-# failure of the payload would leave `watchdog_health_emitted=1` set,
-# and the NEXT SessionStart would skip the alarm entirely because the
-# idempotency stamp said it had already fired. The new order makes the
-# print observable before the stamp commits: if the print fails, the
-# stamp also fails to commit (or commits with the alarm already
-# observable), so the next session re-shows. Trade-off: a near-
-# impossible race where print succeeds but the subsequent stamp
-# fails could double-show the warning on the next session — acceptable
-# vs the prior silent-loss failure mode that the comment claimed but
-# the code order produced.
+# Emit FIRST, stamp the one-shot LAST (SRE-lens P1a ordering, preserved):
+# if the print fails (closed stdout, SIGPIPE, hook timeout), the
+# `watchdog_health_emitted` stamp also fails to commit, so the next
+# SessionStart re-shows rather than silently swallowing the alarm.
 #
-# One-shot-per-session contract (quality-reviewer Wave 2 F-003): the
-# stamp persists until the session ends. If the watchdog dies, the
-# alarm fires once, the user re-registers via install-resume-watchdog.sh,
-# and the heartbeat goes fresh — the stamp does NOT clear, so the user
-# never sees an in-session "recovered" message. This is intentional: a
-# stale-then-fresh transition is fully visible via /ulw-report (next
-# `watchdog-health` gate event will be absent, the heartbeat is fresh,
-# and the patterns layer surfaces the recovery), so the in-session
-# noise budget is better spent on the original alarm. The NEXT
-# SessionStart will see a fresh heartbeat and stay silent — the
-# implicit "recovered" signal.
-
+# Note the two distinct one-shot flags:
+#   - watchdog_selfheal_attempted_ts (stamped above, BEFORE the installer
+#     ran) gates the re-register ACTION so a failing reregister cannot
+#     churn the scheduler every SessionStart.
+#   - watchdog_health_emitted (stamped below, AFTER a successful print)
+#     gates the MESSAGE so the banner shows once per session.
+# They are separate because the action must be guarded even when the
+# message print later fails.
 printf '%s\n' "${payload}"
 
-record_gate_event "watchdog-health" "stale" \
+record_gate_event "watchdog-health" "${outcome}" \
   "reason=${reason}" \
   "threshold_secs=${threshold_secs}" || true
 

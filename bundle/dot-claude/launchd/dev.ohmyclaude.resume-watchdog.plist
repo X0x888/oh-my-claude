@@ -26,7 +26,26 @@ __OMC_LOG_DIR__ tokens before loading.
   </array>
 
   <!-- Poll cadence: every 120 seconds. The watchdog is stateless and
-       cheap — a tick with nothing claimable exits in <100ms. -->
+       cheap — a tick with nothing claimable exits in <100ms.
+
+       KNOWN LIMITATION (v1.47 sre-lens): launchd's StartInterval is not
+       robust across long laptop sleep / `bootout`. After a multi-day
+       suspend, the interval timer can stop re-arming (observed in the
+       field as `runs=1, pended nondemand spawn=interval`, heartbeat
+       stale for 12 days). systemd's analogue uses `Persistent=true` to
+       catch up on missed fires; launchd has no clean single-key
+       equivalent (StartCalendarInterval would change the cadence
+       semantics and needs a 60-element array for sub-hourly granularity;
+       a conditional KeepAlive risks a relaunch storm because each tick
+       exits immediately). The deliberate recovery is therefore NOT a
+       plist change but the SessionStart self-heal in
+       session-start-watchdog-health.sh: on the next Claude Code session
+       (exactly when auto-resume matters — the user is back at the
+       machine) the hook detects the stale heartbeat and re-registers the
+       agent automatically (guarded against the orphan-spawn foot-gun).
+       That recovery is platform-agnostic and covers ALL silent-death
+       causes (sleep, bootout, macOS update, plist drift), so the plist
+       is intentionally left as-is. -->
   <key>StartInterval</key>
   <integer>120</integer>
 

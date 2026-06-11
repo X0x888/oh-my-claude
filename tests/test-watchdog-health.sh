@@ -10,6 +10,15 @@
 # watchdog agent (macOS update, bootout, plist signature drift) and
 # the user discovers the dead agent only the next time auto-resume
 # *should* have fired.
+#
+# Scope note (v1.47): this file covers the DETECTION + WARNING surface.
+# Since this sandbox does not install ~/.claude/install-resume-watchdog.sh,
+# the v1.47 guarded self-heal lands in its `attempt-failed` branch (no
+# installer to invoke), which preserves the original warning text — so
+# these assertions remain valid. The self-heal ACTION (safe re-register,
+# orphan-prevention block, once-per-session) is covered separately in
+# tests/test-watchdog-selfheal.sh, which installs a mocked installer +
+# platform binaries.
 
 set -euo pipefail
 
