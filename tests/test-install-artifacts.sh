@@ -65,8 +65,22 @@ repo_is_git_checkout() {
 }
 
 run_install_from() {
-  local repo_root="$1"
-  TARGET_HOME="${TEST_HOME}" bash "${repo_root}/install.sh" 2>&1
+  # v1.47 CI diagnosability: callers capture via `$(run_install)`, so when
+  # install.sh dies under `set -e` the error output used to die inside the
+  # caller's dead substitution — the 17-day undiagnosable ubuntu-CI sterile
+  # failure hid exactly here. On failure, the tail of install.sh's output
+  # now also goes to STDERR (outside the substitution), where the
+  # run-sterile failing-output capture can see it.
+  local repo_root="$1" _ri_rc=0 _ri_out=""
+  _ri_out="$(TARGET_HOME="${TEST_HOME}" bash "${repo_root}/install.sh" 2>&1)" || _ri_rc=$?
+  printf '%s' "${_ri_out}"
+  if [[ "${_ri_rc}" -ne 0 ]]; then
+    {
+      printf 'run_install: install.sh exited rc=%s — last 25 lines of its output:\n' "${_ri_rc}"
+      printf '%s\n' "${_ri_out}" | tail -25 | sed 's/^/    /'
+    } >&2
+    return "${_ri_rc}"
+  fi
 }
 
 run_install() {
@@ -84,6 +98,17 @@ run_install_state_report_from_home() {
 # ---------------------------------------------------------------------------
 printf 'Install artifacts test\n'
 printf '======================\n\n'
+
+# v1.47 CI diagnosability fingerprint: this test installs FROM the live
+# repo tree, so pollution left by earlier CI-job steps changes install.sh
+# behavior between section 1 and section 2 in ways no clean local repro
+# can reproduce. One line of env truth up front.
+_fp_dirty="$(git -C "${REPO_ROOT}" status --porcelain 2>/dev/null | wc -l | tr -d '[:space:]')"
+printf 'env fingerprint: repo-dirty-paths=%s HOME=%s\n' "${_fp_dirty:-?}" "${HOME:-unset}"
+if [[ "${_fp_dirty:-0}" != "0" ]]; then
+  git -C "${REPO_ROOT}" status --porcelain 2>/dev/null | head -8 | sed 's/^/  dirty: /'
+fi
+printf '\n'
 
 TEST_HOME="$(mktemp -d)"
 CLAUDE_HOME="${TEST_HOME}/.claude"
