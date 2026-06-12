@@ -71,23 +71,33 @@ run_install_from() {
   # failure hid exactly here. On failure, the tail of install.sh's output
   # now also goes to STDERR (outside the substitution), where the
   # run-sterile failing-output capture can see it.
-  local repo_root="$1" _ri_rc=0 _ri_out=""
-  _ri_out="$(TARGET_HOME="${TEST_HOME}" bash "${repo_root}/install.sh" 2>&1)" || _ri_rc=$?
+  # v1.47 CI diagnosability, round 2: the runner-only failure HEALS itself
+  # (a traced RERUN after the failure succeeded end-to-end), so post-hoc
+  # tracing cannot catch it — the FAILING attempt itself must be traced.
+  # BASH_XTRACEFD (bash >=4.1: the runner; macOS 3.2 skips, keeping local
+  # runs byte-identical) routes the xtrace to a side file so the captured
+  # stdout the assertions grep stays clean. On failure, the tail of THIS
+  # attempt's trace names the dying line directly.
+  local repo_root="$1" _ri_rc=0 _ri_out="" _ri_trace="" _ri_traced=0
+  if (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 1) )); then
+    _ri_traced=1
+    _ri_trace="${TEST_HOME}/.install-trace"
+    local _ri_fd
+    exec {_ri_fd}>"${_ri_trace}"
+    _ri_out="$(TARGET_HOME="${TEST_HOME}" BASH_XTRACEFD="${_ri_fd}" bash -x "${repo_root}/install.sh" 2>&1)" || _ri_rc=$?
+    exec {_ri_fd}>&-
+  else
+    _ri_out="$(TARGET_HOME="${TEST_HOME}" bash "${repo_root}/install.sh" 2>&1)" || _ri_rc=$?
+  fi
   printf '%s' "${_ri_out}"
   if [[ "${_ri_rc}" -ne 0 ]]; then
     {
       printf 'run_install: install.sh exited rc=%s — last 25 lines of its output:\n' "${_ri_rc}"
       printf '%s\n' "${_ri_out}" | tail -25 | sed 's/^/    /'
-      # The failure reproduces ONLY on the GitHub runner (ubuntu container
-      # replicas — root/non-root/shasum/full-sequence — all pass), so the
-      # dying line must name itself: re-run traced and ship the tail.
-      # Best-effort; the retraced run may even succeed (flaky-class) —
-      # that result is equally diagnostic.
-      printf 'run_install: re-running under bash -x for the trace tail:\n'
-      local _ri_trace_rc=0
-      TARGET_HOME="${TEST_HOME}" bash -x "${repo_root}/install.sh" >/dev/null 2>"${TEST_HOME}/.install-trace" || _ri_trace_rc=$?
-      printf 'run_install: traced rerun rc=%s — last 50 trace lines:\n' "${_ri_trace_rc}"
-      tail -50 "${TEST_HOME}/.install-trace" 2>/dev/null | sed 's/^/    x /'
+      if [[ "${_ri_traced}" -eq 1 ]]; then
+        printf 'run_install: last 60 trace lines of the FAILING attempt:\n'
+        tail -60 "${_ri_trace}" 2>/dev/null | sed 's/^/    x /'
+      fi
     } >&2
     return "${_ri_rc}"
   fi
