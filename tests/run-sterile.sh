@@ -132,10 +132,13 @@ for t in "${ci_pinned[@]}"; do
     continue
   fi
 
-  # Run under sterile env. Suppress output (test summary at end is
-  # what we care about); a per-test rerun in dev-env happens only
-  # when sterile fails.
-  if env -i "${sterile_env_array[@]}" bash "${test_path}" >/dev/null 2>&1; then
+  # Run under sterile env. Output is captured per test and printed ONLY
+  # on failure (v1.47): the pre-fix `>/dev/null 2>&1` discarded the
+  # failing test's assertions entirely, so a STERILE-FAIL in CI was a
+  # release blocker with zero diagnostic detail — the v1.44.0→v1.47.0
+  # CI redness sat undiagnosable for 17 days because of exactly this.
+  _sterile_out="$(mktemp)"
+  if env -i "${sterile_env_array[@]}" bash "${test_path}" >"${_sterile_out}" 2>&1; then
     printf '  PASS  %s\n' "${t}"
     pass=$((pass + 1))
   else
@@ -149,7 +152,11 @@ for t in "${ci_pinned[@]}"; do
       double_fail=$((double_fail + 1))
       fail_list+=("FAIL: ${t}")
     fi
+    printf '  ── failing output (last 40 lines, sterile run) ───\n'
+    tail -40 "${_sterile_out}" | sed 's/^/  │ /'
+    printf '  ── end failing output ───\n'
   fi
+  rm -f "${_sterile_out}"
 done
 
 printf '\n── Summary ───\n'

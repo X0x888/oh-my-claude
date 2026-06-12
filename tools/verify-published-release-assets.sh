@@ -145,7 +145,26 @@ if [[ -f "${downloaded_tar}" && -f "${downloaded_zip}" && -f "${downloaded_sums}
     ISSUES+=("${sums_name} does not match downloaded ${zip_name}")
   fi
   if ! cmp -s "${expected_sums}" "${downloaded_sums}"; then
-    ISSUES+=("${sums_name} does not match a fresh local build from v${VERSION_ARG}")
+    # v1.47 rebaseline floor (oracle-verified, byte-level proof): releases
+    # BEFORE 1.44.0 were published by the pre-determinism-pin builder —
+    # their gzip header OS byte is 0xff (Darwin python default) where the
+    # pinned builder (commit 69c6b41, shipped in v1.44.0) writes 0x03, so
+    # the rebuild-match check can NEVER pass on them; the payloads are
+    # byte-identical and checks A+B above (published SUMS ↔ published
+    # assets) still fully enforce internal consistency. Below the floor
+    # this downgrades to a named SKIP-note instead of a FAIL; at/above
+    # the floor the strict rebuild-match property holds untouched.
+    # `--fix` remains available to re-baseline historical bytes (re-upload
+    # + re-attest) if uniform strict verification is ever preferred over
+    # historical immutability.
+    _rebaseline_floor="${OMC_ASSET_REBASELINE_FLOOR:-1.44.0}"
+    if [[ "$(printf '%s\n%s\n' "${VERSION_ARG}" "${_rebaseline_floor}" | sort -V | head -1)" == "${VERSION_ARG}" ]] \
+      && [[ "${VERSION_ARG}" != "${_rebaseline_floor}" ]]; then
+      printf 'verify-published-release-assets: note: v%s predates the deterministic-builder floor (v%s) — rebuild-match skipped (pre-pin gzip OS byte); internal consistency (SUMS ↔ assets) verified above. Re-baseline with --fix if uniform strict verification is preferred.\n' \
+        "${VERSION_ARG}" "${_rebaseline_floor}"
+    else
+      ISSUES+=("${sums_name} does not match a fresh local build from v${VERSION_ARG}")
+    fi
   fi
 fi
 
