@@ -100,6 +100,14 @@ DOWNLOAD_DIR="$(mktemp -d -t omc-release-assets-download-XXXXXX)"
 cleanup() { rm -rf "${EXPECTED_DIR}" "${DOWNLOAD_DIR}"; }
 trap cleanup EXIT
 
+# BY DESIGN: the rebuild uses the WORKING-TREE builder script (ASSET_HELPER
+# resolves to SCRIPT_DIR), while `git archive` inside it snapshots the TAG's
+# tree. The verdict therefore means "the published bytes are reproducible
+# with today's canonical builder" — not "with the builder as of the tag".
+# That is the property we want for a living supply chain (a builder fix,
+# e.g. the v1.44 gzip OS-byte pin, deliberately re-baselines history via
+# --fix + re-attest rather than freezing old recipes). Oracle-verified
+# v1.47; do not "fix" this to checkout the tag's builder.
 bash "${ASSET_HELPER}" "${VERSION_ARG}" --out-dir "${EXPECTED_DIR}" >/dev/null
 
 download_out=""
