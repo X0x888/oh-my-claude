@@ -62,6 +62,7 @@ _omc_env_objective_contract_min_files="${OMC_OBJECTIVE_CONTRACT_MIN_FILES:-}"
 _omc_env_objective_contract_arm_on_god_scope="${OMC_OBJECTIVE_CONTRACT_ARM_ON_GOD_SCOPE:-}"
 _omc_env_goal_gate="${OMC_GOAL_GATE:-}"
 _omc_env_goal_stuck_threshold="${OMC_GOAL_STUCK_THRESHOLD:-}"
+_omc_env_goal_auto_arm="${OMC_GOAL_AUTO_ARM:-}"
 _omc_env_prompt_text_override="${OMC_PROMPT_TEXT_OVERRIDE:-}"
 _omc_env_mark_deferred_strict="${OMC_MARK_DEFERRED_STRICT:-}"
 _omc_env_shortcut_ratio_gate="${OMC_SHORTCUT_RATIO_GATE:-}"
@@ -351,9 +352,18 @@ OMC_OBJECTIVE_CONTRACT_MIN_FILES="${OMC_OBJECTIVE_CONTRACT_MIN_FILES:-4}"
 OMC_OBJECTIVE_CONTRACT_ARM_ON_GOD_SCOPE="${OMC_OBJECTIVE_CONTRACT_ARM_ON_GOD_SCOPE:-on}"
 # /goal relentless driver (v1.46+ Codex /goal port): master switch + the
 # consecutive-no-progress stuck-wall threshold. goal_gate is opt-in (inert
-# until the user runs /goal), so it defaults on across all presets.
+# until a goal is armed), so it defaults on across all presets.
 OMC_GOAL_GATE="${OMC_GOAL_GATE:-on}"
 OMC_GOAL_STUCK_THRESHOLD="${OMC_GOAL_STUCK_THRESHOLD:-3}"
+# goal_auto_arm (v1.47 single-entrance embed): when `on`, an explicit
+# goal-declaration phrase on a fresh ULW execution prompt ("don't stop
+# until tests pass", "your goal is …", "keep going until …") auto-arms the
+# /goal relentless driver — no second command needed. High-precision
+# markers only (is_goal_declaration_prompt); open-mandate ambition prose
+# ("make it excellent") deliberately stays a non-blocking nudge per the
+# abstraction-critic no-block-on-fuzzy-signal ruling. Preset sibling is
+# objective_contract_arm_on_god_scope (on/on/off), not goal_gate.
+OMC_GOAL_AUTO_ARM="${OMC_GOAL_AUTO_ARM:-on}"
 # prompt_text_override (v1.23.0): when `on`, the PreTool intent guard
 # permits a destructive op when the most recent user prompt
 # unambiguously authorizes the verb being attempted, even if the
@@ -674,6 +684,8 @@ _parse_conf_file() {
         [[ -z "${_omc_env_goal_gate}" && "${value}" =~ ^(on|off)$ ]] && OMC_GOAL_GATE="${value}" || true ;;
       goal_stuck_threshold)
         [[ -z "${_omc_env_goal_stuck_threshold}" && "${value}" =~ ^[0-9]+$ ]] && OMC_GOAL_STUCK_THRESHOLD="${value}" || true ;;
+      goal_auto_arm)
+        [[ -z "${_omc_env_goal_auto_arm}" && "${value}" =~ ^(on|off)$ ]] && OMC_GOAL_AUTO_ARM="${value}" || true ;;
       prompt_text_override)
         [[ -z "${_omc_env_prompt_text_override}" && "${value}" =~ ^(on|off)$ ]] && OMC_PROMPT_TEXT_OVERRIDE="${value}" || true ;;
       mark_deferred_strict)
@@ -2614,6 +2626,75 @@ workflow_mode() {
 is_ulw_trigger() {
   local prompt="$1"
   grep -Eiq '(^|[^[:alnum:]_-])(ulw-demo|ultrawork|ulw|autowork|sisyphus)([^[:alnum:]_-]|$)' <<<"${prompt}"
+}
+
+# is_goal_set_invocation <prompt> — true when the prompt IS a /goal command
+# invocation with a set-shaped argument (a new objective). v1.47 single-
+# entrance embed: the router treats this as a ULW activation trigger, so a
+# goal can never be born dormant (pre-fix, /goal alone recorded the goal but
+# stop-guard exited at its is_ultrawork_mode guard before the driver ran —
+# a fake entrance). Matches the RAW typed form only ("/goal <objective>"):
+# the skill-expanded `<command-name>` tag form reaches UserPromptSubmit only
+# as a synthetic re-injection, which is_synthetic_prompt already drops
+# before routing (Bug A defense) — detecting it here would be dead code at
+# best and a re-opened corruption surface at worst. Deliberate non-matches:
+# prose mentions ("how does /goal work?" — no activation on discussion),
+# bare "/goal" (status check), and lifecycle verbs (pause|resume|clear|
+# done|status — first-token match, mirroring goal.sh's own subcommand
+# parsing) — none declare a new objective, so none flip the session into
+# ultrawork. Pure bash, zero forks (hot path).
+is_goal_set_invocation() {
+  local prompt="${1:-}"
+  [[ -z "${prompt}" ]] && return 1
+  local trimmed="${prompt#"${prompt%%[![:space:]]*}"}"
+  local args=""
+  case "${trimmed}" in
+    /goal) return 1 ;;
+    /goal[[:space:]]*) args="${trimmed#/goal}" ;;
+    *) return 1 ;;
+  esac
+  args="${args#"${args%%[![:space:]]*}"}"
+  args="${args%"${args##*[![:space:]]}"}"
+  [[ -z "${args}" ]] && return 1
+  local first="${args%%[[:space:]]*}"
+  case "${first}" in
+    pause|resume|clear|done|status) return 1 ;;
+  esac
+  return 0
+}
+
+# goal_arm_objective <objective> [manual|auto] — the SINGLE arming surface
+# for the /goal relentless driver, shared by goal.sh `set` and the router's
+# auto-arm path (v1.47) so the two cannot drift. Collapses newlines (the
+# RS-delimited state reader chokes on multi-line values) and redacts
+# secrets (the objective is persisted on disk + re-injected into context).
+# Counters are zeroed — arming always grants a fresh stuck-wall budget.
+# The source arg distinguishes telemetry rows (goal-set vs goal-auto-armed)
+# — captured now; a future /ulw-report slice can audit auto-arm precision
+# from these rows (the current report groups by gate only). NOTE: arming from the
+# router happens AFTER the objective-cycle stamp block has already run for
+# the prompt, so with objective_contract_gate=off the driver engages from
+# the NEXT execution prompt — the same one-prompt latency as a manual
+# /goal set mid-turn (with the gate on, default, the stamps already exist
+# and the driver is live at this very prompt's Stop).
+goal_arm_objective() {
+  local objective="${1:-}" arm_source="${2:-manual}"
+  objective="$(printf '%s' "${objective}" | tr '\n' ' ')"
+  objective="$(omc_redact_secrets <<<"${objective}")"
+  [[ -z "${objective//[[:space:]]/}" ]] && return 1
+  with_state_lock_batch \
+    "goal_mode_active" "1" \
+    "goal_objective" "${objective}" \
+    "goal_set_ts" "$(now_epoch)" \
+    "goal_paused" "" \
+    "goal_blocks" "0" \
+    "goal_stuck_blocks" "0" \
+    "goal_last_block_edit_ts" ""
+  local _ga_event="goal-set"
+  [[ "${arm_source}" == "auto" ]] && _ga_event="goal-auto-armed"
+  record_gate_event "goal" "${_ga_event}" \
+    "objective_preview=${objective:0:200}" 2>/dev/null || true
+  return 0
 }
 
 is_ultrawork_mode() {

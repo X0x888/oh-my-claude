@@ -351,8 +351,8 @@ Separate from session state, `install.sh` writes four install-time artifacts tha
 | `exemplifying_scope_prompt_ts` | Epoch timestamp of the prompt that armed the exemplifying-scope checklist requirement; `exemplifying_scope.json.source_prompt_ts` must match this to count as current. |
 | `exemplifying_scope_prompt_preview` | Truncated prompt preview used by `record-scope-checklist.sh` when creating `exemplifying_scope.json`. |
 | `objective_contract_prompt_ts` | **v1.46-pre Codex /goal port.** Epoch ts stamped by `prompt-intent-router.sh` on every fresh EXECUTION prompt (not continuation/advisory/checkpoint) — marks the start of an objective-cycle. The objective-completion gate fires only when `last_edit_ts > objective_contract_prompt_ts` (work happened THIS cycle), so a non-execution follow-up turn is inert (self-disarm — prevents the turn-2 false positive where a "thanks, what's the test count?" reply would otherwise re-block a completed task). |
-| `goal_mode_active` | `"1"` while a user-declared `/goal` is armed (the relentless driver engages). |
-| `goal_objective` | verbatim (redacted) `/goal` objective text re-anchored at Stop. |
+| `goal_mode_active` | `"1"` while a goal is armed (the relentless driver engages). Armed by `goal.sh set` (manual) or the router's v1.47 auto-arm (`goal_auto_arm` + `is_goal_declaration_prompt` on a fresh execution prompt) — both through the single `goal_arm_objective` helper in `common.sh`. A set-shaped `/goal` command is itself a ULW activation trigger (`is_goal_set_invocation`), so an armed goal is never dormant. |
+| `goal_objective` | verbatim (redacted) goal objective text re-anchored at Stop. |
 | `goal_set_ts` | epoch the goal was set (informational, status display). |
 | `goal_paused` | `"1"` while the goal driver is suspended (`/goal pause`). |
 | `goal_blocks` | total `/goal` driver blocks this session. |

@@ -76,8 +76,9 @@ exemplifying_scope_gate|bool|on|gates|Require checklist for example-marker promp
 objective_contract_gate|bool|on|gates|Re-anchor verbatim original objective + completion audit before stop on substantive turns (Codex /goal port; anti-premature-stop sibling of pause_external_blocker_threshold)
 objective_contract_min_files|int|4|gates|Per-cycle unique-file edit count that marks an objective-cycle substantive (volume arm of the objective-completion gate; 0 disables the volume arm)
 objective_contract_arm_on_god_scope|bool|on|gates|Arm the objective-completion gate on bare-imperative god-scope prompts ("improve it"/"harden"/"audit everything") as an INTENT signal, so ambitious-but-vague one-word imperatives drive relentlessly instead of stopping at round one (high-precision subset; recall-tuned open_mandate prose stays a nudge — use /goal for it)
-goal_gate|bool|on|gates|Master switch for the /goal relentless driver — re-anchor a user-declared goal and block premature Stop until achieved (fresh audit + **Goal achieved.** attestation) or a no-progress stuck-wall; voluntary sibling of objective_contract_gate (opt-in, inert until /goal is run)
+goal_gate|bool|on|gates|Master switch for the /goal relentless driver — re-anchor a user-declared goal and block premature Stop until achieved (fresh audit + **Goal achieved.** attestation) or a no-progress stuck-wall; voluntary sibling of objective_contract_gate (inert until a goal is armed via /goal or auto-arm)
 goal_stuck_threshold|int|3|gates|Consecutive no-progress /goal blocks before the stuck-wall surfaces and releases (0 = uncapped, never auto-release)
+goal_auto_arm|bool|on|gates|Auto-arm the /goal relentless driver when a fresh /ulw execution prompt carries an explicit goal declaration ("don't stop until tests pass" / "your goal is ..." / "keep going until ...") — the v1.47 single-entrance embed; high-precision markers only, every auto-arm is announced, /goal clear stands down (preset sibling: objective_contract_arm_on_god_scope)
 prompt_text_override|bool|on|gates|PreTool guard trusts prompt-text imperative when classifier disagrees
 mark_deferred_strict|bool|on|gates|Reject low-information defer reasons (out of scope / follow-up) AND effort excuses (requires significant effort / blocked by complexity)
 shortcut_ratio_gate|bool|on|gates|Soft-block when wave plan total≥10 AND deferred-to-decided ratio ≥0.5 (catches shortcut-on-big-tasks)
@@ -171,6 +172,7 @@ exemplifying_scope_gate=on
 objective_contract_gate=on
 objective_contract_arm_on_god_scope=on
 goal_gate=on
+goal_auto_arm=on
 prompt_text_override=on
 mark_deferred_strict=on
 shortcut_ratio_gate=on
@@ -211,6 +213,7 @@ exemplifying_scope_gate=on
 objective_contract_gate=on
 objective_contract_arm_on_god_scope=on
 goal_gate=on
+goal_auto_arm=on
 prompt_text_override=on
 mark_deferred_strict=on
 shortcut_ratio_gate=on
@@ -251,6 +254,7 @@ exemplifying_scope_gate=off
 objective_contract_gate=off
 objective_contract_arm_on_god_scope=off
 goal_gate=on
+goal_auto_arm=off
 prompt_text_override=on
 mark_deferred_strict=off
 shortcut_ratio_gate=off

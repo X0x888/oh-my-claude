@@ -41,6 +41,10 @@ PASS=0; FAIL=0
 pass() { PASS=$((PASS+1)); }
 fail() { FAIL=$((FAIL+1)); printf 'FAIL: %s\n' "$1" >&2; }
 
+# Interrupt hygiene: every section mktemp-roots its own tree and rm -rf's it
+# inline; the trap covers the kill/ctrl-C window so no temp trees leak.
+trap 'rm -rf "${s1_root:-}" "${s7_root:-}" "${E2E_ROOT:-}" "${S8_ROOT:-}"' EXIT
+
 # ===========================================================================
 # Section 1 — goal.sh lifecycle (real script drive)
 # ===========================================================================
@@ -62,6 +66,12 @@ run_goal pause >/dev/null
 [[ "$(goal_state goal_paused)" == "1" ]] && pass || fail "S1: pause did not set goal_paused"
 run_goal resume >/dev/null
 [[ "$(goal_state goal_paused)" == "" ]] && pass || fail "S1: resume did not clear goal_paused"
+
+# v1.47 dormancy honesty: status reports ARMED only inside ultrawork mode.
+# Arm the mode in this fixture (mirrors a real /goal session — the command
+# itself is a ULW activation trigger now); the dormant path is Section 7.
+_s1_state="${s1_root}/goal-test-s1/session_state.json"
+jq '.workflow_mode="ultrawork"' "${_s1_state}" > "${_s1_state}.tmp" && mv "${_s1_state}.tmp" "${_s1_state}"
 
 # Capture-then-match (NOT `run_goal status | grep -q`): goal.sh status prints
 # 3 lines; a `| grep -q` consumer exits on the first match and closes the pipe,
@@ -296,6 +306,254 @@ if is_block "${out}" && fired_goal "${out}" \
 else
   fail "S4: goal+substantive should fire ONE goal block (precedence), not the objective-contract block"
 fi
+
+# ===========================================================================
+# Section 5 — is_goal_set_invocation (v1.47 single-entrance embed: the /goal
+# COMMAND is a ULW activation trigger). Raw typed form only — the
+# <command-name> tag form reaches UserPromptSubmit solely as a synthetic
+# re-injection that is_synthetic_prompt drops (metis B1 / Bug A defense).
+# ===========================================================================
+printf -- '-- Section 5: is_goal_set_invocation matrix --\n'
+
+s5_yes() {
+  if is_goal_set_invocation "$1"; then pass; else fail "S5: should be a set-invocation: $1"; fi
+}
+s5_no() {
+  if is_goal_set_invocation "$1"; then fail "S5: should NOT be a set-invocation: $1"; else pass; fi
+}
+
+s5_yes "/goal migrate billing to Stripe v2"
+s5_yes "  /goal harden the installer"
+s5_yes "/goal set ship v2"
+s5_yes "/goal proceed with the migration"
+s5_no  "/goal"
+s5_no  "/goal pause"
+s5_no  "/goal resume"
+s5_no  "/goal clear"
+s5_no  "/goal status"
+s5_no  "/goal done finished it"
+# Lifecycle first-token wins even with trailing prose — mirrors goal.sh's
+# own subcommand parsing (a user typing "/goal pause ..." means pause).
+s5_no  "/goal pause the queue consumer until drained"
+# Prose mentions and prefix-collisions never activate.
+s5_no  "how does /goal work?"
+s5_no  "tell me about /goal please"
+s5_no  "/goalie save"
+s5_no  ""
+
+# ===========================================================================
+# Section 6 — is_goal_declaration_prompt (v1.47 auto-arm predicate).
+# Precision-first: arms a BLOCK, so every line in the negative half is a
+# documented collision class (metis B2 third-party-subject strings, the
+# imperative-mood system-spec genre, doc-mentions, open-mandate prose).
+# ===========================================================================
+printf -- '-- Section 6: is_goal_declaration_prompt matrix --\n'
+
+s6_yes() {
+  if is_goal_declaration_prompt "$1"; then pass; else fail "S6: should declare a goal: $1"; fi
+}
+s6_no() {
+  if is_goal_declaration_prompt "$1"; then fail "S6: false-positive declaration: $1"; else pass; fi
+}
+
+s6_yes "your goal is to migrate billing and make tests pass"
+s6_yes "/ulw your goal is to fix the parser"
+s6_yes "don't stop until the suite passes"
+s6_yes "don’t stop until tests are green"
+s6_yes "do not stop before the suite passes"
+s6_yes "keep going until it's green"
+s6_yes "fix the parser, then keep iterating until tests pass"
+s6_yes "goal: ship v2 with green CI"
+s6_yes "/ulw goal: harden the installer"
+s6_yes "migrate the schema without stopping until every table is converted"
+s6_yes "never stop until CI is green"
+s6_yes "Refactor X. Don't stop until done"
+s6_yes "ulw refactor the auth module and keep working until all tests pass"
+# excellence F1 recall expansion (safe half of the cluster).
+s6_yes "keep at it until it's green"
+s6_yes "don't quit until the build is green"
+s6_yes "do not give up until every test passes"
+s6_yes "fix the loop, then keep at it until CI is green"
+# metis B2 false-positive class: third-party SUBJECT descriptions.
+s6_no  "the watchdog should never stop until killed by launchd"
+s6_no  "the loop should keep going until the queue drains"
+s6_no  "the daemon should stop only when SIGTERM arrives"
+s6_no  "update the docstring that says 'your goal is X' to be clearer"
+# Imperative-mood system-spec genre — why the stop-only arm was DROPPED.
+s6_no  "Implement graceful shutdown. Stop only when connections drain"
+# Open-mandate ambition prose stays a nudge (abstraction-critic ruling).
+s6_no  "make it excellent"
+s6_no  "improve the code"
+s6_no  "audit everything"
+# Mid-prompt goal: token (repos discussing goal-named code).
+s6_no  "fix the goal: status output"
+# do/don't arm requires a persistence suffix + literal do/don't.
+s6_no  "don't stop the server"
+s6_no  "the service should not stop until drained"
+s6_no  "make sure the cron does not stop until drained"
+s6_no  "what is the goal of this function?"
+# excellence F1: the EXCLUDED fuzzy half of the recall cluster — spec
+# reading indistinguishable from mandate reading, sequencing, spec-genre.
+s6_no  "implement a CI gate that blocks merges until all tests pass"
+s6_no  "flush the cache before stopping the server"
+s6_no  "the worker shouldn't quit until the queue is drained"
+s6_no  "the solver should keep at it until convergence"
+
+# ===========================================================================
+# Section 7 — goal.sh dormancy honesty (v1.47): outside ultrawork mode the
+# driver structurally cannot run (stop-guard exits before any gate), so
+# status must say DORMANT, not "ARMED (driver active)" — the pre-fix lie.
+# Priority: paused → dormant → gate-off → ARMED.
+# ===========================================================================
+printf -- '-- Section 7: dormancy honesty --\n'
+
+s7_root="$(mktemp -d)"
+run_goal7() { HOME="${s7_root}" STATE_ROOT="${s7_root}" SESSION_ID="goal-test-s7" bash "${GOAL_SH}" "$@" 2>&1; }
+_s7_state="${s7_root}/goal-test-s7/session_state.json"
+
+# set in a vanilla session (no workflow_mode) → DORMANT note on the banner.
+_s7_set="$(run_goal7 set "migrate the parser and keep tests green")"
+case "${_s7_set}" in
+  *DORMANT*) pass ;;
+  *) fail "S7: set outside ULW did not print the DORMANT note" ;;
+esac
+
+# status in a vanilla session → SET but DORMANT, never ARMED.
+_s7_status="$(run_goal7 status)"
+case "${_s7_status}" in
+  *"SET but DORMANT"*) pass ;;
+  *) fail "S7: status outside ULW did not report DORMANT (got: ${_s7_status})" ;;
+esac
+case "${_s7_status}" in
+  *"ARMED (driver active"*) fail "S7: status outside ULW still claims the driver is active" ;;
+  *) pass ;;
+esac
+
+# arm ultrawork mode → ARMED again, no dormant note.
+jq '.workflow_mode="ultrawork"' "${_s7_state}" > "${_s7_state}.tmp" && mv "${_s7_state}.tmp" "${_s7_state}"
+_s7_armed="$(run_goal7 status)"
+case "${_s7_armed}" in
+  *"ARMED (driver active"*) pass ;;
+  *) fail "S7: status inside ULW did not report ARMED (got: ${_s7_armed})" ;;
+esac
+
+# paused beats dormant (explicit user choice is the most specific state).
+jq 'del(.workflow_mode)' "${_s7_state}" > "${_s7_state}.tmp" && mv "${_s7_state}.tmp" "${_s7_state}"
+run_goal7 pause >/dev/null
+_s7_paused="$(run_goal7 status)"
+case "${_s7_paused}" in
+  *PAUSED*) pass ;;
+  *) fail "S7: paused+dormant should report PAUSED first (got: ${_s7_paused})" ;;
+esac
+rm -rf "${s7_root}"
+
+# ===========================================================================
+# Section 8 — end-to-end through the REAL prompt-intent-router.sh
+# (symlinked-HOME pattern from test-prompt-router-synthetic.sh): the
+# single-entrance embed's router half. Each case gets a fresh HOME tree.
+# ===========================================================================
+printf -- '-- Section 8: e2e real router (activation + auto-arm) --\n'
+
+ROUTER_SH="${REPO_ROOT}/bundle/dot-claude/quality-pack/scripts/prompt-intent-router.sh"
+S8_ROOT=""
+
+s8_setup() {
+  S8_ROOT="$(mktemp -d)"
+  export HOME="${S8_ROOT}"
+  export STATE_ROOT="${S8_ROOT}/.claude/quality-pack/state"
+  mkdir -p "${STATE_ROOT}"
+  mkdir -p "${S8_ROOT}/.claude/skills" "${S8_ROOT}/.claude/quality-pack"
+  ln -s "${REPO_ROOT}/bundle/dot-claude/skills/autowork" "${S8_ROOT}/.claude/skills/autowork"
+  ln -s "${REPO_ROOT}/bundle/dot-claude/quality-pack/scripts" "${S8_ROOT}/.claude/quality-pack/scripts"
+}
+
+s8_router() { # <sid> <prompt> → router stdout (additionalContext JSON)
+  jq -n --arg sid "$1" --arg p "$2" '{session_id:$sid, prompt:$p}' \
+    | bash "${ROUTER_SH}" 2>/dev/null || true
+}
+
+s8_state() { # <sid> <key>
+  python3 -c "
+import json, sys
+try:
+    d = json.load(open('${STATE_ROOT}/' + sys.argv[1] + '/session_state.json'))
+    print(d.get(sys.argv[2], ''))
+except Exception:
+    print('')
+" "$1" "$2" 2>/dev/null || true
+}
+
+# Case A: /goal <objective> activates ultrawork mode (the entrance half).
+s8_setup
+out="$(s8_router s8a "/goal migrate the parser and make all tests pass")"
+[[ "$(s8_state s8a workflow_mode)" == "ultrawork" ]] && pass || fail "S8: /goal set-invocation did not activate ultrawork mode"
+case "${out}" in
+  *"ULW ACTIVATED BY /goal"*) pass ;;
+  *) fail "S8: goal_command_entrance directive missing from router output" ;;
+esac
+rm -rf "${S8_ROOT}"
+
+# Case B: lifecycle verb does NOT activate.
+s8_setup
+s8_router s8b "/goal pause" >/dev/null
+[[ "$(s8_state s8b workflow_mode)" == "" ]] && pass || fail "S8: /goal pause wrongly activated ultrawork mode"
+rm -rf "${S8_ROOT}"
+
+# Case C: prose MENTION does NOT activate.
+s8_setup
+s8_router s8c "how does /goal work?" >/dev/null
+[[ "$(s8_state s8c workflow_mode)" == "" ]] && pass || fail "S8: prose mention of /goal wrongly activated ultrawork mode"
+rm -rf "${S8_ROOT}"
+
+# Case D: explicit goal declaration on a fresh /ulw execution prompt
+# auto-arms the driver (the auto-arm half) + announces via directive.
+s8_setup
+out="$(s8_router s8d "/ulw migrate the billing module and don't stop until the test suite passes")"
+[[ "$(s8_state s8d goal_mode_active)" == "1" ]] && pass || fail "S8: declaration prompt did not auto-arm the goal"
+[[ -n "$(s8_state s8d goal_objective)" ]] && pass || fail "S8: auto-arm stored an empty goal_objective"
+case "${out}" in
+  *"PERSISTENT GOAL AUTO-ARMED"*) pass ;;
+  *) fail "S8: goal_auto_armed announce directive missing from router output" ;;
+esac
+rm -rf "${S8_ROOT}"
+
+# Case E: plain /ulw execution prompt does NOT auto-arm.
+s8_setup
+s8_router s8e "/ulw fix the typo in the README" >/dev/null
+[[ "$(s8_state s8e workflow_mode)" == "ultrawork" ]] && pass || fail "S8: plain /ulw prompt did not activate ultrawork mode"
+[[ "$(s8_state s8e goal_mode_active)" == "" ]] && pass || fail "S8: plain /ulw prompt wrongly auto-armed a goal"
+rm -rf "${S8_ROOT}"
+
+# Case F: continuation prompt with declaration phrasing does NOT stale-arm
+# (metis S3 — current_objective is overwritten with the PREVIOUS objective
+# on the continuation path, so arming there would lock the goal to stale
+# text; the auto-arm is fresh-execution-only by design).
+s8_setup
+s8_router s8f "/ulw refactor the parser module in lib/parse.sh" >/dev/null
+s8_router s8f "continue, and don't stop until the tests pass" >/dev/null
+[[ "$(s8_state s8f goal_mode_active)" == "" ]] && pass || fail "S8: continuation prompt wrongly auto-armed (stale-objective hazard)"
+rm -rf "${S8_ROOT}"
+
+# Case G: goal_auto_arm=off disables the auto-arm (flag escape hatch).
+s8_setup
+out="$(jq -n --arg sid s8g --arg p "/ulw migrate the billing module and don't stop until the test suite passes" '{session_id:$sid, prompt:$p}' \
+  | OMC_GOAL_AUTO_ARM=off bash "${ROUTER_SH}" 2>/dev/null || true)"
+[[ "$(s8_state s8g goal_mode_active)" == "" ]] && pass || fail "S8: goal_auto_arm=off did not disable the auto-arm"
+rm -rf "${S8_ROOT}"
+
+# Case H (excellence F2): a set-shaped /goal carrying a continuation token
+# ("/goal continue hardening X") must NOT take the continuation branch —
+# that branch pins current_objective to the PREVIOUS objective, leaving the
+# objective-contract gate anchored to stale text while the goal driver
+# tracks the fresh goal. A /goal command always declares a NEW objective.
+s8_setup
+s8_router s8h "/ulw refactor the parser module in lib/parse.sh" >/dev/null
+s8_router s8h "/goal continue hardening the auth path until done" >/dev/null
+case "$(s8_state s8h current_objective)" in
+  *"hardening the auth path"*) pass ;;
+  *) fail "S8: /goal continue-token prompt pinned current_objective to stale text (got: $(s8_state s8h current_objective))" ;;
+esac
+rm -rf "${S8_ROOT}"
 
 # ---------------------------------------------------------------------------
 printf '\n== test-goal: %d passed, %d failed ==\n' "${PASS}" "${FAIL}"

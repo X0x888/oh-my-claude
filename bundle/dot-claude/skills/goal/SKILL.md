@@ -9,6 +9,11 @@ argument-hint: <objective | pause | resume | clear | done | (empty = status)>
 
 It is the deliberate sibling of the involuntary `objective-contract` gate: that gate fires *reactively* on big-task detection and caps at 2 nudges; `/goal` is armed *on purpose* by the user and drives *relentlessly* (uncapped except for the safety escape below).
 
+**Single-entrance embed (v1.47).** Two consequences:
+
+- **`/goal <objective>` is itself a full ULW entrance.** The prompt-intent-router treats a set-shaped `/goal` command as a ULW activation trigger (same branch as `/ulw`), so the driver it arms is never born dormant. Lifecycle invocations (`/goal pause|resume|clear|done|status`, bare `/goal`) and prose *mentions* of /goal do **not** activate.
+- **You usually don't need this command at all.** An explicit goal declaration in a plain `/ulw` prompt — *"don't stop until tests pass"*, *"your goal is …"*, *"keep going until …"*, a prompt starting *"goal: …"* — auto-arms the same driver (`goal_auto_arm=on`, default). The router announces every auto-arm; `/goal clear` stands it down. `/goal` remains the explicit handle and the home of the lifecycle verbs.
+
 ## How it drives
 
 While a goal is active, the stop-guard reuses the objective-contract re-anchor machinery but **unconditionally** (no big-task detection needed — you armed it):
@@ -58,3 +63,8 @@ That boundary is deliberate. The No-Out-of-Scope contract sanctions only `/ulw-r
 
 - `goal_gate=on|off` (default `on`) — master switch for the relentless driver. With a goal set but `goal_gate=off`, the goal is remembered but the driver does not block. Env: `OMC_GOAL_GATE`.
 - `goal_stuck_threshold=N` (default `3`) — consecutive no-progress blocks before the stuck-wall surfaces and releases. `0` disables the wall (fully uncapped — use with care). Env: `OMC_GOAL_STUCK_THRESHOLD`.
+- `goal_auto_arm=on|off` (default `on`) — auto-arm the driver from explicit goal-declaration prose on a fresh `/ulw` execution prompt (v1.47 single-entrance embed). High-precision markers only; continuation prompts and open-mandate ambition prose never auto-arm. Env: `OMC_GOAL_AUTO_ARM`.
+
+## Dormancy honesty (direct goal.sh calls)
+
+The driver lives in the stop-guard, which runs only in ultrawork mode. The `/goal` *command* can no longer produce a dormant goal (it activates ULW itself), but a **direct `goal.sh` invocation** in a vanilla session still can — `set` and `status` print an explicit `DORMANT` note in that case instead of claiming the driver is active. Any `/ulw` prompt activates the session and animates the recorded goal.

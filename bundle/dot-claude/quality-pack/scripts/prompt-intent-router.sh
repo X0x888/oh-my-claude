@@ -794,7 +794,20 @@ render_prior_specialist_summaries() {
   done
 }
 
+# v1.47 single-entrance embed: a /goal command with a set-shaped argument
+# is a full ULW entrance — it activates ultrawork mode exactly like /ulw
+# (same branch), so the relentless driver the goal skill arms can never be
+# born dormant (pre-fix: /goal alone recorded the goal, but stop-guard
+# exits at its is_ultrawork_mode guard before the driver ever runs — a
+# fake entrance with a status line claiming "ARMED"). Raw typed form only;
+# the <command-name> tag form reaches UserPromptSubmit solely as a
+# synthetic re-injection, which is_synthetic_prompt already dropped above
+# (Bug A defense). Pure-bash predicate — zero forks on the hot path.
+_goal_cmd_invocation=""
+is_goal_set_invocation "${PROMPT_TEXT}" && _goal_cmd_invocation="1"
+
 if is_ulw_trigger "${PROMPT_TEXT}" \
+   || [[ -n "${_goal_cmd_invocation}" ]] \
    || [[ "$(read_state 'workflow_mode')" == "ultrawork" ]]; then
   continuation_prompt=0
   continuation_directive=""
@@ -805,7 +818,14 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
   # Detect project profile for domain scoring boost
   _project_profile="$(get_project_profile 2>/dev/null || true)"
 
-  if is_continuation_request "${PROMPT_TEXT}" && [[ -n "${previous_objective}" ]]; then
+  # v1.47: a set-shaped /goal command is never a continuation of the OLD
+  # objective — it declares a NEW one. Without this guard, "/goal continue
+  # hardening X" (continuation token inside the new objective text) would
+  # take this branch and pin current_objective to the PREVIOUS objective,
+  # leaving the objective-contract gate and /ulw-status anchored to stale
+  # text while the goal driver tracks the fresh goal (excellence F2).
+  if is_continuation_request "${PROMPT_TEXT}" && [[ -n "${previous_objective}" ]] \
+    && [[ -z "${_goal_cmd_invocation}" ]]; then
     continuation_prompt=1
     continuation_directive="$(extract_continuation_directive "${PROMPT_TEXT}")"
     TASK_DOMAIN="${previous_domain:-$(infer_domain "${previous_objective}" "${_project_profile}")}"
@@ -829,6 +849,50 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
   write_state "task_domain" "${TASK_DOMAIN}"
   write_state "task_risk_tier" "${TASK_RISK_TIER}"
   write_state "quality_policy" "${OMC_QUALITY_POLICY:-balanced}"
+
+  # v1.47 single-entrance embed (entrance half): tell the model WHY the
+  # ULW frame appeared on a /goal prompt so its opener reads coherently.
+  if [[ -n "${_goal_cmd_invocation}" ]]; then
+    add_directive "goal_command_entrance" "ULW ACTIVATED BY /goal (single-entrance embed): the full harness — routing, specialists, quality gates, and the relentless driver — is live for this session, exactly as if the prompt had been /ulw. Follow the goal skill flow: arm the goal via goal.sh set, announce the armed goal in one line, then start driving it."
+  fi
+
+  # v1.47 single-entrance embed (auto-arm half): explicit goal-declaration
+  # prose on a FRESH execution prompt auto-arms the /goal relentless driver
+  # — "/ulw migrate X and don't stop until tests pass" is the persistence
+  # consent, spoken plainly; the user shouldn't need a second command.
+  # HIGH-PRECISION predicate only (is_goal_declaration_prompt): explicit
+  # persistence markers, never open-mandate ambition prose — the
+  # abstraction-critic ruling that forbids arming a block on fuzzy signals
+  # stands (open_mandate stays a nudge). Guards, cheap→expensive:
+  #   - flag (goal_auto_arm, default on)
+  #   - not the /goal command itself (the skill arms with cleaner text)
+  #   - FRESH execution intent only — NOT continuation (a continuation
+  #     prompt's current_objective was just overwritten with the PREVIOUS
+  #     objective at the branch top, so arming there would lock the goal
+  #     to stale text and silently drop new instructions; metis S3).
+  #     Execution intent also implies current_objective was freshly
+  #     written this turn (the top-level write skips only maintenance
+  #     prompts, which never classify execution), and the fallback chain
+  #     below makes even an empty read safe.
+  #   - the declaration predicate (one grep fork)
+  #   - no goal already active (an explicit /goal always wins)
+  # With objective_contract_gate=on (default) the objective-cycle stamps
+  # for this prompt already exist, so the driver is live at this very
+  # prompt's Stop; with the gate off the driver engages from the next
+  # execution prompt — the same one-prompt latency as a manual /goal.
+  if [[ "${OMC_GOAL_AUTO_ARM:-on}" == "on" ]] \
+    && [[ -z "${_goal_cmd_invocation}" ]] \
+    && [[ "${TASK_INTENT}" == "execution" ]] \
+    && [[ "${continuation_prompt}" -eq 0 ]] \
+    && is_goal_declaration_prompt "${PROMPT_TEXT}" \
+    && [[ "$(read_state "goal_mode_active" 2>/dev/null || true)" != "1" ]]; then
+    _ga_objective="$(trim_whitespace "$(read_state "current_objective")")"
+    [[ -n "${_ga_objective}" ]] || _ga_objective="$(trim_whitespace "$(normalize_task_prompt "${PROMPT_TEXT_SAFE}")")"
+    [[ -n "${_ga_objective}" ]] || _ga_objective="${PROMPT_TEXT_SAFE}"
+    if goal_arm_objective "${_ga_objective}" "auto"; then
+      add_directive "goal_auto_armed" "PERSISTENT GOAL AUTO-ARMED (goal_auto_arm=on) from your prompt's explicit goal declaration: \"${_ga_objective:0:200}\". The relentless driver re-anchors this goal at every Stop and blocks premature stops until a fresh excellence audit + a **Goal achieved.** attestation land, or a no-progress stuck-wall releases it. ANNOUNCE the armed goal in one line in your opener so the user can redirect cheaply. Lifecycle: /goal (status) · /goal pause · /goal clear. Disable auto-arming: goal_auto_arm=off."
+    fi
+  fi
 
   # Delivery contract (v1.33.0): persist the user's "done means this"
   # contract early in the run so Stop, /ulw-status, and resume flows can

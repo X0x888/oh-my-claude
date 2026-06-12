@@ -185,6 +185,59 @@ is_bare_imperative_prompt() {
   return "${result}"
 }
 
+# is_goal_declaration_prompt <prompt> — true when the prompt carries an
+# EXPLICIT goal/persistence declaration ("don't stop until tests pass",
+# "your goal is …", "keep going until …"). v1.47 single-entrance embed:
+# the router auto-arms the /goal relentless driver on this signal so the
+# user never needs a second command for cross-turn persistence.
+#
+# PRECISION-FIRST — this predicate arms a BLOCK (the relentless driver),
+# and the abstraction-critic ruling (see objective_contract_arm_on_god_
+# scope) forbids arming a block on fuzzy signals. Markers, by arm:
+#   A1  prompt STARTS with "goal:" (optionally after a ULW trigger token)
+#   A2  "don't / do not (stop|quit|give up) (until|till|unless|before)" —
+#       second-person by construction (requires literal do/don't, so "the
+#       daemon shouldn't stop until X", "the worker shouldn't quit until
+#       drained", and "does not stop until" never match)
+#   A3  "without stopping until"
+#   A4  boundary-guarded second-person arms: "your goal is", "never stop
+#       until", "keep going/working/iterating/driving/at it until" — only
+#       at a clause boundary (start, .;!?, em/double-dash, after and/then,
+#       or after a ULW trigger token), so third-party SUBJECT descriptions
+#       ("the watchdog should never stop until killed", "the loop should
+#       keep going until the queue drains", a docstring quoting 'your
+#       goal is X') never match.
+# Deliberately EXCLUDED (collision classes, tested as negatives):
+#   - bare mid-prompt "goal:" ("fix the goal: status output" — repos
+#     discussing goal-named code)
+#   - "(the|my) goal is" (objective DESCRIPTION, not persistence consent)
+#   - "stop only (when|once|after)" (imperative-mood SYSTEM-spec genre:
+#     "Implement graceful shutdown. Stop only when connections drain"
+#     survives any boundary guard — describes the code, not the agent)
+#   - bare "until (all|the) tests pass" with no stop/keep verb — the SPEC
+#     reading ("implement a CI gate that blocks merges until all tests
+#     pass") is regex-indistinguishable from the mandate reading; when
+#     precision is arguable, don't arm (named recall gap — the don't-stop
+#     and keep-* forms cover the high-confidence half)
+#   - "before stopping" ("flush the cache before stopping the server" —
+#     SEQUENCING, not persistence)
+#   - bare "iterate until" / "loop until" (spec-genre: "Iterate until
+#     convergence" describes the algorithm, same class as stop-only)
+#   - open-mandate ambition prose ("make it excellent") — stays a
+#     non-blocking nudge (is_exhaustive_authorization_request).
+# The do-n-t bridge `n[^[:alnum:][:space:]]{0,3}t` covers don't / don’t
+# (3-byte typographic apostrophe under C locale) / dont. One grep fork
+# per call; the router invokes it once per fresh ULW execution prompt.
+is_goal_declaration_prompt() {
+  local prompt="${1:-}"
+  [[ -z "${prompt}" ]] && return 1
+  local _ulwtok='/?(ulw|ultrawork|autowork|sisyphus)'
+  local _bnd="(^|[.;!?,]|--|—|(^|[[:space:]])${_ulwtok}[[:space:]]|[[:space:]](and|then)[[:space:]])[[:space:]]*"
+  grep -Eiq \
+    "(^[[:space:]]*(${_ulwtok}[[:space:]]+)?goal[[:space:]]*:[[:space:]]*[^[:space:]])|(do(n[^[:alnum:][:space:]]{0,3}t| not) (stop|quit|give up) (until|till|unless|before))|(without stopping until)|(${_bnd}(your goal( for (this|the) [[:alnum:]]+)? is|never stop (until|till|before)|keep (going|working|iterating|driving|at it) until))" \
+    <<<"${prompt}"
+}
+
 # 7. Tail-position imperative: a prompt that opens with advisory/eval
 # framing but closes with an explicit release-action ask. The CLAUDE.md
 # release checklist prescribes this exact pattern ("comprehensively

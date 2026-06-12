@@ -363,6 +363,16 @@
 # stuck-wall surfaces and releases (the bounded escape that keeps the
 # otherwise-uncapped driver safe). 0 = uncapped (never auto-release).
 #goal_stuck_threshold=3
+#
+# goal_auto_arm (v1.47 single-entrance embed): when on (default), an
+# explicit goal-declaration phrase on a fresh /ulw execution prompt
+# ("don't stop until tests pass", "your goal is ...", "keep going until
+# ...", a prompt starting "goal: ...") auto-arms the /goal relentless
+# driver — no second command needed. High-precision markers only;
+# open-mandate ambition prose ("make it excellent") never auto-arms.
+# The router announces every auto-arm so a wrong guess is one
+# "/goal clear" away. Env: OMC_GOAL_AUTO_ARM.
+#goal_auto_arm=on
 
 # PreTool guard's raw-prompt-text trust override. When the classifier
 # mis-routes a prompt as advisory but the most recent user prompt

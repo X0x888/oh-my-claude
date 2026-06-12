@@ -263,10 +263,10 @@ teardown
 # v1.46-pre added objective_contract_gate for the Codex /goal port
 # objective-completion contract; workflow_substrate for the Workflow-
 # tool execution substrate; goal_gate for the /goal relentless driver) ---
-printf 'Test 13: apply-preset maximum writes 36 keys\n'
+printf 'Test 13: apply-preset maximum writes 37 keys\n'
 setup
 out="$(bash "${HELPER}" apply-preset user maximum 2>&1)"
-assert_contains "apply-preset reports 36 keys" "36 keys" "${out}"
+assert_contains "apply-preset reports 37 keys" "37 keys" "${out}"
 assert_file_has_line "maximum: gate_level=full" "${USER_CONF_PATH}" "^gate_level=full\$"
 assert_file_has_line "maximum: workflow_substrate=on" "${USER_CONF_PATH}" "^workflow_substrate=on\$"
 assert_file_has_line "maximum: guard_exhaustion_mode=block" "${USER_CONF_PATH}" "^guard_exhaustion_mode=block\$"
@@ -301,6 +301,11 @@ assert_file_has_line "maximum: no_defer_mode=on" "${USER_CONF_PATH}" "^no_defer_
 # v1.47: objective_contract_arm_on_god_scope=on in maximum/balanced (bumps the
 # key count 35->36); minimal emits off (god-scope + the gate are off there).
 assert_file_has_line "maximum: objective_contract_arm_on_god_scope=on" "${USER_CONF_PATH}" "^objective_contract_arm_on_god_scope=on\$"
+# v1.47 single-entrance embed: goal_auto_arm=on in maximum/balanced (bumps
+# the key count 36->37); minimal emits off (auto-arm fires on prose, so the
+# lightest-footprint preset opts out — sibling of arm_on_god_scope, NOT of
+# goal_gate which is inert-until-armed and stays on everywhere).
+assert_file_has_line "maximum: goal_auto_arm=on" "${USER_CONF_PATH}" "^goal_auto_arm=on\$"
 teardown
 
 # --- Test 14: apply-preset balanced writes balanced values ---
@@ -322,6 +327,8 @@ assert_file_has_line "balanced: council_deep_default=off" "${USER_CONF_PATH}" "^
 # v1.35.0: shortcut_ratio_gate stays on in balanced (mechanical defense
 # is cheap and catches a real failure mode; no reason to relax in default).
 assert_file_has_line "balanced: shortcut_ratio_gate=on" "${USER_CONF_PATH}" "^shortcut_ratio_gate=on\$"
+# v1.47: goal_auto_arm on in balanced (high-precision, announced, cheap to undo).
+assert_file_has_line "balanced: goal_auto_arm=on" "${USER_CONF_PATH}" "^goal_auto_arm=on\$"
 teardown
 
 # --- Test 15: apply-preset minimal writes minimal values ---
@@ -338,6 +345,8 @@ assert_file_has_line "minimal: model_tier=economy" "${USER_CONF_PATH}" "^model_t
 assert_file_has_line "minimal: directive_budget=minimal" "${USER_CONF_PATH}" "^directive_budget=minimal\$"
 # stop_failure_capture stays on across all presets (privacy + utility).
 assert_file_has_line "minimal: stop_failure_capture stays on" "${USER_CONF_PATH}" "^stop_failure_capture=on\$"
+# v1.47: minimal opts out of prose-triggered auto-arm (lightest footprint).
+assert_file_has_line "minimal: goal_auto_arm=off" "${USER_CONF_PATH}" "^goal_auto_arm=off\$"
 # v1.35.0: shortcut_ratio_gate=off in minimal (matches the minimal posture
 # of releasing as many gates as possible while keeping safety-critical paths).
 assert_file_has_line "minimal: shortcut_ratio_gate=off" "${USER_CONF_PATH}" "^shortcut_ratio_gate=off\$"

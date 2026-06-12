@@ -90,24 +90,29 @@ case "${subcmd}" in
     # RS-delimited state reader. Collapse newlines to spaces, then redact
     # any secrets (the objective is persisted on disk + re-injected into
     # context, same exposure as current_objective which the router redacts).
+    # The display copy is normalized here; goal_arm_objective (common.sh,
+    # v1.47 — the single arming surface shared with the router auto-arm)
+    # re-applies the same normalization idempotently before persisting.
     objective="$(printf '%s' "${objective}" | tr '\n' ' ')"
     objective="$(omc_redact_secrets <<<"${objective}")"
-    now="$(now_epoch)"
-    with_state_lock_batch \
-      "goal_mode_active" "1" \
-      "goal_objective" "${objective}" \
-      "goal_set_ts" "${now}" \
-      "goal_paused" "" \
-      "goal_blocks" "0" \
-      "goal_stuck_blocks" "0" \
-      "goal_last_block_edit_ts" ""
-    record_gate_event "goal" "goal-set" \
-      "objective_preview=${objective:0:200}" 2>/dev/null || true
+    goal_arm_objective "${objective}" "manual"
     printf 'goal: ARMED. The relentless driver will re-anchor this objective and block Stop\n'
     printf '      until you (a) achieve it — fresh excellence audit + attest **Goal achieved.** —\n'
     printf '      or (b) hit a no-progress wall (%s consecutive stalls auto-release with a surface).\n' "${_goal_stuck_threshold}"
     printf '  Goal: %s\n' "${objective}"
     printf '  Lifecycle: /goal (status) · /goal pause · /goal resume · /goal clear · /goal done\n'
+    # v1.47 honesty fix: the driver lives in stop-guard, which exits before
+    # any gate when the session is not in ultrawork mode — an armed goal in
+    # a vanilla session is DORMANT, and the banner above would overpromise.
+    # The /goal COMMAND path can no longer hit this (the router treats it
+    # as a ULW activation trigger); this fires only on direct goal.sh
+    # invocations in a non-ULW session (e.g. the model arming a goal via
+    # bash outside /ulw).
+    if ! is_ultrawork_mode; then
+      printf '  NOTE: DORMANT — this session is not in ultrawork mode, so the stop-guard\n'
+      printf '        driver cannot engage yet. The /goal command activates ULW itself;\n'
+      printf '        a direct goal.sh call does not. Any /ulw prompt activates the session.\n'
+    fi
     ;;
 
   status|"")
@@ -121,8 +126,16 @@ case "${subcmd}" in
     paused="$(read_state "goal_paused" 2>/dev/null || true)"
     blocks="$(read_state "goal_blocks" 2>/dev/null || true)"; blocks="${blocks:-0}"
     stuck="$(read_state "goal_stuck_blocks" 2>/dev/null || true)"; stuck="${stuck:-0}"
+    # Priority: paused (explicit user choice) → dormant (driver structurally
+    # cannot run — stop-guard exits before any gate outside ultrawork mode;
+    # v1.47 honesty fix, the pre-fix status claimed "ARMED (driver active)"
+    # in a vanilla session where the driver provably never fires) →
+    # gate-off → ARMED.
     if [[ "${paused}" == "1" ]]; then
       printf 'goal: PAUSED (driver suspended — /goal resume to re-engage).\n'
+    elif ! is_ultrawork_mode; then
+      printf 'goal: SET but DORMANT (session not in ultrawork mode — the stop-guard driver\n'
+      printf '      cannot engage until a /ulw or /goal prompt activates the session).\n'
     elif [[ "${OMC_GOAL_GATE:-on}" != "on" ]]; then
       printf 'goal: SET but the driver is disabled (goal_gate=off in oh-my-claude.conf).\n'
     else

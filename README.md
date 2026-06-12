@@ -315,7 +315,7 @@ Skills are invoked as slash commands or routed automatically by the intent class
 |---|---|---|
 | **Run a task** | | |
 | ulw | `/ulw <task>` | Maximum-autonomy professional workflow |
-| goal *(relentless drive)* | `/goal <objective>` | Persistent goal driven relentlessly across turns until verifiably achieved or a no-progress stuck-wall (Codex `/goal` port). Lifecycle: pause/resume/clear/done. |
+| goal *(relentless drive)* | `/goal <objective>` | Persistent goal driven relentlessly across turns until verifiably achieved or a no-progress stuck-wall (Codex `/goal` port). Activates the full ULW harness itself (single entrance, v1.47) — and you usually don't need it: a `/ulw` prompt with an explicit goal declaration ("don't stop until tests pass") auto-arms the same driver (`goal_auto_arm`). Lifecycle: pause/resume/clear/done. |
 | **Think before acting** | | |
 | plan-hard *(plan)* | `/plan-hard <task>` | Decision-complete planning without edits |
 | prometheus *(interview)* | `/prometheus <goal>` | Interview-first planning for ambiguous work |
