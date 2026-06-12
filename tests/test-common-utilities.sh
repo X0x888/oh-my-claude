@@ -1377,18 +1377,30 @@ _make_repo_with_commits() {
   git -C "${dir}" config user.email "test@example.com"
   git -C "${dir}" config user.name "Test"
   git -C "${dir}" config commit.gpgsign false
-  # v1.42.0 post-release fix: use --allow-empty to skip the per-iteration
-  # `printf + git add` cycle. The 300-commit test cases were timing-out
-  # on Ubuntu CI (`git rev-list --count HEAD` returned 0, classifier
-  # fell to "unknown"); reducing each iteration from 3 git invocations
-  # to 1 brings the 300-commit setup well under any reasonable per-test
-  # budget. classify_project_maturity itself only inspects commit count
-  # via `git rev-list --count HEAD` — empty vs non-empty commits are
-  # indistinguishable to the function, so test fidelity is preserved.
+  # v1.47 (second CI flake of this fixture's class — the v1.42.0 fix cut
+  # 3 git invocations/commit to 1, but 300 sequential porcelain commits
+  # on a loaded runner still partially failed: the loop had no error
+  # handling under `set -uo pipefail` (no -e), so silently-skipped
+  # commits left the count short and the maturity thresholds
+  # misclassified — 300/300/11-mem landed "shipping"/"mature" instead of
+  # "polish-saturated", flaking run-to-run). ONE `git fast-import`
+  # stream now builds all N commits in a single process — no porcelain,
+  # no hooks, no per-commit forks — and the count is verified loudly so
+  # a short fixture can never silently misclassify again.
   local i
-  for ((i = 0; i < commits; i++)); do
-    git -C "${dir}" commit -q --allow-empty -m "commit ${i}" --no-verify --no-gpg-sign
-  done
+  {
+    for ((i = 0; i < commits; i++)); do
+      printf 'commit refs/heads/master\ncommitter Test <test@example.com> %d +0000\ndata 2\nm\n\n' "$((1600000000 + i))"
+    done
+  } | git -C "${dir}" fast-import --quiet >/dev/null 2>&1
+  git -C "${dir}" symbolic-ref HEAD refs/heads/master
+  local _built
+  _built="$(git -C "${dir}" rev-list --count HEAD 2>/dev/null || echo 0)"
+  if [[ "${_built}" != "${commits}" ]]; then
+    printf '  FATAL: _make_repo_with_commits built %s/%s commits in %s\n' \
+      "${_built}" "${commits}" "${dir}" >&2
+    return 1
+  fi
 }
 
 # Empty / non-git directory → unknown
