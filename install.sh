@@ -1924,10 +1924,27 @@ POST_INSTALL_SIGNATURES="$(mktemp)"
 build_signature_snapshot "${CLAUDE_HOME}" "${MANIFEST_PATH}" "${POST_INSTALL_SIGNATURES}"
 POST_SETTINGS_SIGNATURE="$(file_cksum_signature "${CLAUDE_HOME}/settings.json" 2>/dev/null || true)"
 
-managed_added_count="$(join -t $'\t' -v 2 "${PRE_INSTALL_SIGNATURES}" "${POST_INSTALL_SIGNATURES}" 2>/dev/null | wc -l | tr -d '[:space:]')"
-managed_removed_count="$(join -t $'\t' -v 1 "${PRE_INSTALL_SIGNATURES}" "${POST_INSTALL_SIGNATURES}" 2>/dev/null | wc -l | tr -d '[:space:]')"
-managed_modified_count="$(join -t $'\t' "${PRE_INSTALL_SIGNATURES}" "${POST_INSTALL_SIGNATURES}" 2>/dev/null \
-  | awk -F $'\t' '$2 != $3 { c++ } END { print c+0 }')"
+# v1.47 (the 17-day CI release blocker, traced to THIS line on the GitHub
+# runner): GNU join enforces an input-order check in the AMBIENT locale and
+# exits 1 on perceived disorder — with stderr formerly sent to /dev/null,
+# `set -euo pipefail` killed the whole install silently right here, only on
+# the runner, only on re-installs (the failed attempt's own manifest rewrite
+# healed the retry — the live-fire signature that finally exposed it). The
+# snapshot files are LC_ALL=C-sorted by construction, so the joins now run
+# under LC_ALL=C too (check-locale == sort-locale: the divergence class is
+# gone), stderr is no longer hidden, and the substitutions are guarded:
+# these counts feed the install SUMMARY — telemetry must never abort an
+# install (same fail-open-but-observable contract as the hook ERR-traps).
+managed_added_count="$(LC_ALL=C join -t $'\t' -v 2 "${PRE_INSTALL_SIGNATURES}" "${POST_INSTALL_SIGNATURES}" | wc -l | tr -d '[:space:]' || true)"
+managed_removed_count="$(LC_ALL=C join -t $'\t' -v 1 "${PRE_INSTALL_SIGNATURES}" "${POST_INSTALL_SIGNATURES}" | wc -l | tr -d '[:space:]' || true)"
+managed_modified_count="$(LC_ALL=C join -t $'\t' "${PRE_INSTALL_SIGNATURES}" "${POST_INSTALL_SIGNATURES}" \
+  | awk -F $'\t' '$2 != $3 { c++ } END { print c+0 }' || true)"
+managed_added_count="${managed_added_count:-0}"
+managed_removed_count="${managed_removed_count:-0}"
+managed_modified_count="${managed_modified_count:-0}"
+[[ "${managed_added_count}" =~ ^[0-9]+$ ]] || managed_added_count=0
+[[ "${managed_removed_count}" =~ ^[0-9]+$ ]] || managed_removed_count=0
+[[ "${managed_modified_count}" =~ ^[0-9]+$ ]] || managed_modified_count=0
 managed_change_total=$((managed_added_count + managed_removed_count + managed_modified_count))
 
 settings_changed_json="false"
