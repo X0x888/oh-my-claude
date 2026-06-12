@@ -184,7 +184,13 @@ if [[ "${FIX_SHAPED}" -eq 1 ]]; then
   while IFS= read -r f; do
     [[ -z "${f}" ]] && continue
     case "${f}" in
-      */lib/*.sh)
+      # v1.47: bundle-scoped, matching the C3 contract this check mirrors
+      # (test-coordination-rules.sh:250 pins LIB_DIR to the bundle lib dir).
+      # The former bare `*/lib/*.sh` glob also caught tests/lib/*.sh helper
+      # libs (e.g. composition-stubs.sh, exercised by three CI-pinned
+      # readiness tests, not a runtime lib) — surfaced when the untagged
+      # v1.44.0 stretched the diff window back to v1.43.0.
+      *bundle/*/lib/*.sh)
         libname="$(basename "${f}" .sh)"
         # Codify the verification.sh exception (same as
         # test-coordination-rules.sh:C3).
