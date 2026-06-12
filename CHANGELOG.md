@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.47.0] - 2026-06-12
+
 ### Last-release-grade council audit: 4 waves across security, observability, trust, and release engineering (2026-06-12)
 
 **The mandate.** "Treat this as if it were the last release — what would be better to add and improve? Then implement all." A 5-lens deep council (product, security, SRE, data, growth — all opus) + the repo's own readiness tooling produced a 31-finding master list executed across 4 waves in one session, with the top findings oracle-verified before any code was written. 24 shipped, 1 rejected as already-shipped (the "add a statusline ULW indicator" proposal — `statusline.py:715` has rendered `[ULW:<domain>]` since v1.17), 6 in the release wave that cut this version.
