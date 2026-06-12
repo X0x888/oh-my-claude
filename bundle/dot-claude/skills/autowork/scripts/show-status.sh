@@ -1110,3 +1110,31 @@ if [[ -f "${edits_file}" ]]; then
   printf '\n--- Edited Files ---\n'
   sort -u "${edits_file}" | tail -20
 fi
+
+# v1.47 (sre-lens R-4): enforcement-health probe. Every gate fails open
+# independently — a missing sentinel, a failed common.sh source, or a
+# settings-merge regression silently disarms ALL enforcement with no
+# indication anywhere. This is the one surface that asserts "the gates
+# you think are armed actually are." Three cheap checks, no behavior
+# change: the .ulw_active fast-path sentinel, the latest session's
+# workflow mode, and the settings.json hook wiring count.
+printf '\n--- Enforcement health ---\n'
+if [[ -f "${STATE_ROOT}/.ulw_active" ]]; then
+  printf 'ulw sentinel:   present (.ulw_active — hooks take the armed fast path)\n'
+else
+  printf 'ulw sentinel:   absent (normal outside /ulw; if a /ulw session is active, enforcement is NOT armed)\n'
+fi
+_eh_mode="$(jq -r '.workflow_mode // ""' "${STATE_ROOT}/${latest_session}/session_state.json" 2>/dev/null || true)"
+printf 'workflow mode:  %s\n' "${_eh_mode:-"(unset — vanilla session)"}"
+_eh_settings="${HOME}/.claude/settings.json"
+if [[ -f "${_eh_settings}" ]]; then
+  _eh_wired="$(jq -r '[.. | strings | select(test("autowork/scripts|quality-pack/scripts"))] | length' "${_eh_settings}" 2>/dev/null || echo 0)"
+  [[ "${_eh_wired}" =~ ^[0-9]+$ ]] || _eh_wired=0
+  if [[ "${_eh_wired}" -ge 10 ]]; then
+    printf 'hook wiring:    %s oh-my-claude hook command(s) in settings.json — wired\n' "${_eh_wired}"
+  else
+    printf 'hook wiring:    WARNING — only %s oh-my-claude hook command(s) found in settings.json (expected >=10). Re-run install.sh; enforcement may be silently unwired.\n' "${_eh_wired}"
+  fi
+else
+  printf 'hook wiring:    WARNING — %s missing; no hooks can fire. Re-run install.sh.\n' "${_eh_settings}"
+fi

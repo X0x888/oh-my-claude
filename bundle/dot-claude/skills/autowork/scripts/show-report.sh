@@ -1108,6 +1108,18 @@ fi
 # Section 4b: Gate event outcomes (per-event attribution, v1.14.0)
 printf '## Gate event outcomes\n\n'
 gate_event_rows="$(filter_by_window "${GATE_EVENTS_FILE}" '.ts')"
+# v1.47 (data-lens #5): live implementation of the documented reader-side
+# legacy-row guard `(._v // 0)` from CONTRIBUTING.md "Cross-session schema
+# versioning" — every row is currently _v:1, so a zero count is the
+# steady state; a non-zero count means pre-versioning rows survived a
+# migration and the reader tolerated them (the convention working).
+if [[ -n "${gate_event_rows}" ]]; then
+  _legacy_v_rows="$(printf '%s\n' "${gate_event_rows}" | jq -sc '[ .[] | select((._v // 0) == 0) ] | length' 2>/dev/null || echo 0)"
+  [[ "${_legacy_v_rows}" =~ ^[0-9]+$ ]] || _legacy_v_rows=0
+  if [[ "${_legacy_v_rows}" -gt 0 ]]; then
+    printf '_%s pre-versioning (`_v`-less) gate-event row(s) tolerated in window — legacy schema, counted normally._\n\n' "${_legacy_v_rows}"
+  fi
+fi
 if [[ -z "${gate_event_rows}" ]]; then
   printf '_No gate events recorded in window. Per-event telemetry is new in v1.14.0; populates as sessions sweep._\n\n'
 else
@@ -2402,6 +2414,70 @@ if [[ -n "${gate_event_rows:-}" ]]; then
   fi
 fi
 
+# v1.47 (data-lens #2): goal lifecycle subtype split. Every goal event
+# (goal-set vs goal-auto-armed, goal-achieved, stuck-wall, paused/
+# resumed/cleared, driver blocks) was captured at write time but
+# collapsed to one generic "goal" row at read time — the v1.47
+# single-entrance auto-arm precision question ("do auto-armed goals
+# reach goal-achieved?") was unanswerable despite the bytes existing.
+# Mirrors the objective-contract section pattern above.
+if [[ -n "${gate_event_rows:-}" ]]; then
+  _goal_split="$(printf '%s\n' "${gate_event_rows}" | jq -sr '
+    [ .[] | select(.gate == "goal") ]
+    | group_by(.event) | map({e: .[0].event, n: length})
+    | sort_by(-.n) | map("\(.e) ×\(.n)") | join(", ")' 2>/dev/null || true)"
+  if [[ -n "${_goal_split}" ]]; then
+    _goal_auto="$(printf '%s\n' "${gate_event_rows}" | jq -sc '[ .[] | select(.gate=="goal" and .event=="goal-auto-armed") ] | length' 2>/dev/null || echo 0)"
+    _goal_achieved="$(printf '%s\n' "${gate_event_rows}" | jq -sc '[ .[] | select(.gate=="goal" and .event=="goal-achieved") ] | length' 2>/dev/null || echo 0)"
+    _goal_walls="$(printf '%s\n' "${gate_event_rows}" | jq -sc '[ .[] | select(.gate=="goal" and .event=="stuck-wall") ] | length' 2>/dev/null || echo 0)"
+    _goal_line="**Goal lifecycle (window):** ${_goal_split}."
+    if [[ "${_goal_auto}" =~ ^[0-9]+$ ]] && [[ "${_goal_auto}" -gt 0 ]]; then
+      _goal_line="${_goal_line} Auto-armed goals: ${_goal_auto} (v1.47 single-entrance embed) vs achieved: ${_goal_achieved:-0}, stuck-walls: ${_goal_walls:-0} — a sustained auto-armed≫achieved gap with stuck-walls suggests the auto-arm fired on prompts that didn't want persistence (\`goal_auto_arm=off\` to disable; \`/goal clear\` per instance)."
+    fi
+    _intp_lines+=("${_goal_line}")
+  fi
+
+  # v1.47 (data-lens #1, read half): uniform per-gate block→reprompt
+  # directional-FP table across ALL blocking gates. The two dedicated
+  # gates' rows come from their tuned machinery; every other gate's
+  # reprompt rows come from the generic any_gate pairing (record_gate_
+  # event stamp + any_gate_check_post_block_reprompt). Gates below 3
+  # blocks in window are noise-suppressed, mirroring the dedicated
+  # sections' thresholds.
+  _ag_table="$(printf '%s\n' "${gate_event_rows}" | jq -sr '
+    [ .[] | select(.event=="block" or .event=="stop-block" or .event=="post-block-reprompt") ]
+    | group_by(.gate)
+    | map({gate: .[0].gate,
+           blocks: ([ .[] | select(.event=="block" or .event=="stop-block") ] | length),
+           reprompts: ([ .[] | select(.event=="post-block-reprompt") ] | length)})
+    | map(select(.blocks >= 3))
+    | sort_by(-.blocks)
+    | .[] | "  • `\(.gate)`: \(.blocks) blocks → \(.reprompts) near-immediate reprompt(s) (\((if .reprompts > .blocks then 100 else (.reprompts * 100 / .blocks | floor) end))%)"' 2>/dev/null || true)"
+  if [[ -n "${_ag_table}" ]]; then
+    _intp_lines+=("**Per-gate block→reprompt rates (directional FP signal, ≥3 blocks):**"$'\n'"${_ag_table}"$'\n'"  A high rate on a gate means it often fires on work you considered done — directional, not definitive (see the dedicated no-defer/objective-contract notes for tuning levers).")
+  fi
+fi
+
+# v1.47 (sre-lens R-2): anomaly-log slice. log_anomaly records lock
+# exhaustion, hook crashes (the v1.47 fail-open ERR-traps), dropped
+# writes, and sweep failures to the hooks log — and until now nothing
+# ever read it back. Window-filtered lexicographically (the log's
+# 'YYYY-MM-DD HH:MM:SS' prefix sorts chronologically).
+_anom_log="${STATE_ROOT}/hooks.log"
+if [[ -f "${_anom_log}" ]]; then
+  _anom_cut="$(date -r "${cutoff_ts}" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -d "@${cutoff_ts}" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "")"
+  if [[ -n "${_anom_cut}" ]]; then
+    _anom_rows="$(awk -v cut="${_anom_cut}" -F'  ' '$2 == "[anomaly]" && $1 >= cut' "${_anom_log}" 2>/dev/null || true)"
+  else
+    _anom_rows="$(awk -F'  ' '$2 == "[anomaly]"' "${_anom_log}" 2>/dev/null || true)"
+  fi
+  _anom_count="$(printf '%s' "${_anom_rows}" | grep -c . 2>/dev/null || echo 0)"
+  if [[ "${_anom_count}" =~ ^[0-9]+$ ]] && [[ "${_anom_count}" -gt 0 ]]; then
+    _anom_recent="$(printf '%s\n' "${_anom_rows}" | tail -2 | sed 's/^/  • /')"
+    _intp_lines+=("**${_anom_count} hook anomal$([[ "${_anom_count}" -eq 1 ]] && echo "y" || echo "ies") in window.** Lock exhaustion, mid-hook crashes (fail-open events), or dropped state writes — enforcement/telemetry was silently skipped at these moments. Most recent:"$'\n'"${_anom_recent}"$'\n'"  Full log: \`${_anom_log}\`. Recurring anomalies usually mean FS pressure or a crashing hook worth reporting.")
+  fi
+fi
+
 # Heuristic 4b (v1.43 data-lens F-002): classifier fixture candidates
 # ready to promote. /ulw-correct writes promotion-shaped candidate rows
 # to ~/.claude/quality-pack/classifier_fixture_candidates.jsonl every
@@ -2416,7 +2492,7 @@ if [[ -f "${_fixture_candidates_file}" ]]; then
   _fixture_candidates_count="${_fixture_candidates_count:-0}"
   [[ "${_fixture_candidates_count}" =~ ^[0-9]+$ ]] || _fixture_candidates_count=0
   if [[ "${_fixture_candidates_count}" -gt 0 ]]; then
-    _intp_lines+=("**${_fixture_candidates_count} classifier fixture candidate$([[ "${_fixture_candidates_count}" -eq 1 ]] && echo "" || echo "s") ready to promote.** \`/ulw-correct\` writes promotion-shaped rows (prompt + intent + domain) to \`~/.claude/quality-pack/classifier_fixture_candidates.jsonl\` so the maintainer can vet them in bulk. Cat the file, drop the \`_source\`/\`_session_id\`/\`_ts\` fields, and append vetted rows to \`tools/classifier-fixtures/regression.jsonl\` — then \`tools/replay-classifier-telemetry.sh\` will pin the corrected routing.")
+    _intp_lines+=("**${_fixture_candidates_count} classifier fixture candidate$([[ "${_fixture_candidates_count}" -eq 1 ]] && echo "" || echo "s") ready to promote.** \`/ulw-correct\` writes promotion-shaped rows (prompt + intent + domain) to \`~/.claude/quality-pack/classifier_fixture_candidates.jsonl\`. One command vets + promotes them (v1.47): \`bash tools/promote-classifier-fixtures.sh\` (dry-run preview) then \`--apply\` to append deduped rows to \`tools/classifier-fixtures/regression.jsonl\`; \`tools/replay-classifier-telemetry.sh\` pins the corrected routing. Auto-applying corrections to live thresholds stays deliberately out (a user who \`/ulw-skip\`s impatiently would train the harness to weaken its own gates — tighten-vs-loosen asymmetry must be designed first).")
   fi
 fi
 

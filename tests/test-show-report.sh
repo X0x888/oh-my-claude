@@ -912,5 +912,68 @@ fi
 rm -f "${QP}/gate_events.jsonl"
 
 # ----------------------------------------------------------------------
+# T38 (v1.47 data-lens #2): goal lifecycle subtype split renders — the
+# write-only goal events (set vs auto-armed, achieved, stuck-wall) become
+# a visible line, answering the single-entrance auto-arm precision question.
+printf 'Test 38: goal lifecycle subtypes render with auto-arm precision cue\n'
+NOW="$(date +%s)"
+: > "${QP}/gate_events.jsonl"
+{
+  printf '{"_v":1,"ts":%s,"gate":"goal","event":"goal-auto-armed","details":{}}\n' "${NOW}"
+  printf '{"_v":1,"ts":%s,"gate":"goal","event":"goal-auto-armed","details":{}}\n' "${NOW}"
+  printf '{"_v":1,"ts":%s,"gate":"goal","event":"goal-achieved","details":{}}\n' "${NOW}"
+  printf '{"_v":1,"ts":%s,"gate":"goal","event":"stuck-wall","details":{}}\n' "${NOW}"
+} >> "${QP}/gate_events.jsonl"
+out="$(run_report week)"
+assert_contains "T38 — goal lifecycle line renders" "Goal lifecycle (window)" "${out}"
+assert_contains "T38 — auto-armed count surfaces" "Auto-armed goals: 2" "${out}"
+rm -f "${QP}/gate_events.jsonl"
+
+# ----------------------------------------------------------------------
+# T39 (v1.47 data-lens #1): uniform per-gate block→reprompt table — gates
+# beyond the two dedicated ones get a directional-FP rate once blocks >= 3.
+printf 'Test 39: generic per-gate block-reprompt table renders at >=3 blocks\n'
+: > "${QP}/gate_events.jsonl"
+{
+  for _i in 1 2 3 4; do
+    printf '{"_v":1,"ts":%s,"gate":"review-coverage","event":"block","details":{}}\n' "${NOW}"
+  done
+  printf '{"_v":1,"ts":%s,"gate":"review-coverage","event":"post-block-reprompt","details":{"pairing":"generic"}}\n' "${NOW}"
+  printf '{"_v":1,"ts":%s,"gate":"review-coverage","event":"post-block-reprompt","details":{"pairing":"generic"}}\n' "${NOW}"
+  # a 2-block gate stays noise-suppressed
+  printf '{"_v":1,"ts":%s,"gate":"wave-shape","event":"block","details":{}}\n' "${NOW}"
+  printf '{"_v":1,"ts":%s,"gate":"wave-shape","event":"block","details":{}}\n' "${NOW}"
+} >> "${QP}/gate_events.jsonl"
+out="$(run_report week)"
+assert_contains "T39 — per-gate reprompt table renders" "Per-gate block→reprompt rates" "${out}"
+assert_contains "T39 — review-coverage row with rate" '`review-coverage`: 4 blocks → 2 near-immediate reprompt(s) (50%)' "${out}"
+if printf '%s' "${out}" | grep -q '`wave-shape`:'; then
+  printf '  FAIL: T39 — 2-block gate should be noise-suppressed (<3 blocks)\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+rm -f "${QP}/gate_events.jsonl"
+
+# ----------------------------------------------------------------------
+# T40 (v1.47 sre-lens R-2): anomaly-log slice — log_anomaly rows finally
+# have a reader. Seed window-fresh [anomaly] rows in hooks.log and assert
+# the count + excerpt render; stale rows (older than the window) stay out.
+printf 'Test 40: hook anomaly slice renders window-filtered count\n'
+_t40_log="${QP}/state/hooks.log"
+mkdir -p "${QP}/state"
+_t40_now_str="$(date '+%Y-%m-%d %H:%M:%S')"
+{
+  printf '2020-01-01 00:00:00  [anomaly]  ancient-hook  pre-window row must not count\n'
+  printf '%s  [anomaly]  pretool-intent-guard-crash  aborted mid-hook rc=1 (gate failed open)\n' "${_t40_now_str}"
+  printf '%s  [anomaly]  write_state  mktemp failed for key foo (FS pressure?)\n' "${_t40_now_str}"
+  printf '%s  [debug]  some-hook  debug rows never count\n' "${_t40_now_str}"
+} > "${_t40_log}"
+out="$(run_report week)"
+assert_contains "T40 — anomaly count renders (2 in window)" "2 hook anomalies in window" "${out}"
+assert_contains "T40 — recent anomaly excerpt renders" "mktemp failed for key foo" "${out}"
+rm -f "${_t40_log}"
+
+# ----------------------------------------------------------------------
 printf '\n=== Show-Report Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]] || exit 1

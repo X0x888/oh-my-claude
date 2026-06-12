@@ -209,6 +209,7 @@ oh-my-claude/
     list-release-automation-surfaces.sh
     stage-release-automation-surfaces.sh
     prepare-release-automation-deployment.sh # coherent pre-push deployment candidate prep
+    promote-classifier-fixtures.sh           # one-command /ulw-correct candidate → regression-corpus promotion (v1.47)
     local-ci.sh
     release.sh
     render-release-notes.sh

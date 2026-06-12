@@ -181,10 +181,11 @@ case "${cmd}" in
       exit 2
     fi
 
-    write_state_batch \
-      "exemplifying_scope_checklist_ts" "${ts}" \
-      "exemplifying_scope_pending_count" "$(jq -r '[.items[] | select(.status=="pending")] | length' <<< "${checklist}")" \
-      "exemplifying_scope_satisfied_ts" ""
+    # v1.47 (data-lens): the former exemplifying_scope_pending_count /
+    # exemplifying_scope_satisfied_ts companion writes were removed here and
+    # in the status path below — they were denormalized mirrors no reader
+    # ever consumed (stop-guard reads the checklist JSON directly).
+    write_state "exemplifying_scope_checklist_ts" "${ts}"
 
     printf 'Recorded exemplifying-scope checklist. %s\n' "$(_counts_line)"
     ;;
@@ -252,13 +253,12 @@ EOF
 
     ts="$(_now)"
     _do_status_update() {
-      # `updated` is intentionally NOT declared `local` — line 275 reads
-      # it post-lock to compute `pending` (which drives the
-      # exemplifying_scope_satisfied_ts state write and ultimately
-      # stop-guard's release decision). _with_lockdir runs the body via
-      # `"$@"` (no subshell), so the assignment persists in caller
-      # scope. A well-meaning shellcheck-cleanup pass that adds
-      # `local updated` here would silently break the pending counter.
+      # `updated` is intentionally NOT declared `local` — _with_lockdir
+      # runs the body via `"$@"` (no subshell), so the assignment persists
+      # in caller scope for any post-lock consumer. (The former post-lock
+      # pending-count state write was removed in v1.47 — stop-guard reads
+      # the checklist JSON directly — but the scoping note stays so a
+      # lint-cleanup pass does not add `local` reflexively.)
       updated="$(jq -c \
         --arg id "${id_prefix}" \
         --arg status "${status}" \
@@ -280,14 +280,6 @@ EOF
     if ! with_exemplifying_scope_checklist_lock _do_status_update; then
       printf 'record-scope-checklist: lock acquisition failed for status update on %s\n' "${id_prefix}" >&2
       exit 2
-    fi
-
-    pending="$(jq -r '[.items[] | select(.status=="pending")] | length' <<< "${updated}")"
-    write_state "exemplifying_scope_pending_count" "${pending}"
-    if [[ "${pending}" -eq 0 ]]; then
-      write_state "exemplifying_scope_satisfied_ts" "${ts}"
-    else
-      write_state "exemplifying_scope_satisfied_ts" ""
     fi
 
     printf 'Updated %s to %s. %s\n' "${id_prefix}" "${status}" "$(_counts_line)"

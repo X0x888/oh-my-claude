@@ -107,6 +107,7 @@ fi
 # every call so each block is paired at most once. Single-use.
 no_defer_check_post_block_reprompt || true
 objective_contract_check_post_block_reprompt || true
+any_gate_check_post_block_reprompt || true
 
 TASK_INTENT="$(classify_task_intent "${PROMPT_TEXT}")"
 PROMPT_TS="$(now_epoch)"
@@ -257,18 +258,14 @@ if [[ "${OMC_EXEMPLIFYING_SCOPE_GATE:-on}" == "on" ]]; then
       "exemplifying_scope_prompt_ts" "${PROMPT_TS}" \
       "exemplifying_scope_prompt_preview" "$(truncate_chars 240 "${PROMPT_TEXT_SAFE}")" \
       "exemplifying_scope_blocks" "0" \
-      "exemplifying_scope_checklist_ts" "" \
-      "exemplifying_scope_pending_count" "" \
-      "exemplifying_scope_satisfied_ts" ""
+      "exemplifying_scope_checklist_ts" ""
   elif is_execution_intent_value "${TASK_INTENT}"; then
     write_state_batch \
       "exemplifying_scope_required" "" \
       "exemplifying_scope_prompt_ts" "" \
       "exemplifying_scope_prompt_preview" "" \
       "exemplifying_scope_blocks" "" \
-      "exemplifying_scope_checklist_ts" "" \
-      "exemplifying_scope_pending_count" "" \
-      "exemplifying_scope_satisfied_ts" ""
+      "exemplifying_scope_checklist_ts" ""
   fi
 fi
 

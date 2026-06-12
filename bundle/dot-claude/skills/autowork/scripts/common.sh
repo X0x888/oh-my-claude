@@ -2879,6 +2879,40 @@ objective_contract_check_post_block_reprompt() {
   fi
 }
 
+# any_gate_check_post_block_reprompt — v1.47 (data-lens #1): the GENERIC
+# third sibling. The FP-rate instrument above covered 2 of the blocking
+# gates; record_gate_event now stamps last_any_gate_block_{ts,name} for
+# every OTHER gate's block-shaped event, and this pairs it with the next
+# user prompt exactly like the dedicated twins (single-use, clear-on-read,
+# shared window). The reprompt row is recorded under the ORIGINATING
+# gate's own name with the same post-block-reprompt event, so the report
+# computes one uniform per-gate directional-FP table across all 23 gates.
+# The two dedicated gates never reach this path (excluded at stamp time)
+# — no double counting.
+any_gate_check_post_block_reprompt() {
+  local last_ts gate_name current_ts age window
+  last_ts="$(read_state "last_any_gate_block_ts" 2>/dev/null || echo "")"
+  [[ -z "${last_ts}" ]] && return 0
+  gate_name="$(read_state "last_any_gate_block_name" 2>/dev/null || echo "")"
+  [[ "${last_ts}" =~ ^[0-9]+$ ]] || {
+    write_state "last_any_gate_block_ts" "" 2>/dev/null || true
+    write_state "last_any_gate_block_name" "" 2>/dev/null || true
+    return 0
+  }
+  current_ts="$(now_epoch)"
+  age=$(( current_ts - last_ts ))
+  window="${OMC_NO_DEFER_REPROMPT_WINDOW_SECS:-60}"
+  [[ "${window}" =~ ^[1-9][0-9]*$ ]] || window=60
+  write_state "last_any_gate_block_ts" "" 2>/dev/null || true
+  write_state "last_any_gate_block_name" "" 2>/dev/null || true
+  if [[ -n "${gate_name}" ]] && (( age >= 0 )) && (( age < window )); then
+    record_gate_event "${gate_name}" "post-block-reprompt" \
+      "block_age_secs=${age}" \
+      "window_secs=${window}" \
+      "pairing=generic" || true
+  fi
+}
+
 task_domain() {
   read_state "task_domain"
 }
@@ -5622,9 +5656,11 @@ record_gate_event() {
   # future schema migrations can read both old + new shapes side-by-side.
   # Convention shared with session_summary (`_v` at lib/timing.sh:1077),
   # serendipity-log, classifier_misfires, used-archetypes — see
-  # CONTRIBUTING.md "Cross-session schema versioning". Migration tools
-  # under `tools/migrate-schema.sh` walk every cross-session ledger and
-  # apply per-version transforms; the `_v` field is the discriminator.
+  # CONTRIBUTING.md "Cross-session schema versioning". A migration tool
+  # (`tools/migrate-schema.sh`, when introduced for a future migration —
+  # CONTRIBUTING.md is the honest source here; v1.47 data-lens fixed this
+  # comment's former present-tense claim) would walk every cross-session
+  # ledger and apply per-version transforms; `_v` is the discriminator.
   row="$(jq -nc \
     --argjson ts "$(now_epoch)" \
     --arg gate "${gate}" \
@@ -5641,6 +5677,33 @@ record_gate_event() {
 
   local cap="${OMC_GATE_EVENTS_PER_SESSION_MAX:-500}"
   append_limited_state "gate_events.jsonl" "${row}" "${cap}" 2>/dev/null || true
+
+  # v1.47 (data-lens #1): generic block→reprompt pairing stamp. The
+  # directional-FP instrument (block followed by a near-immediate user
+  # re-prompt) existed for only 2 of the blocking gates (no-defer-mode,
+  # objective-contract) — the other gates had no per-gate false-positive
+  # signal at all. Stamp a generic last-block marker for every OTHER
+  # gate's block-shaped event; the router pairs it on the next prompt
+  # (any_gate_check_post_block_reprompt). The two dedicated gates keep
+  # their tuned machinery and are EXCLUDED here so their reprompt rows
+  # are never double-counted. Stamp cost: two state writes per BLOCK
+  # event only (rare), zero cost on non-block events.
+  case "${event}" in
+    block|stop-block)
+      case "${gate}" in
+        no-defer-mode|objective-contract) : ;;
+        *)
+          # Atomic pair write: a crash between two separate writes could
+          # leave ts-without-name (the pairing fn guards that, but the
+          # batch removes the window entirely). write_state_batch is
+          # re-entrant under a held lock, same as write_state.
+          write_state_batch \
+            "last_any_gate_block_ts" "$(now_epoch)" \
+            "last_any_gate_block_name" "${gate}" 2>/dev/null || true
+          ;;
+      esac
+      ;;
+  esac
 }
 
 # --- end gate event tracking ---

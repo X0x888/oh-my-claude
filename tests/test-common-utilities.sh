@@ -1889,6 +1889,56 @@ assert_eq "push intent: within-sentence negation still forbidden" \
   "forbidden" \
   "$(detect_push_intent_from_prompt "ship it locally but do not push or release anything")"
 
+# ----------------------------------------------------------------------
+# v1.47 (data-lens #1): generic block→reprompt pairing. record_gate_event
+# stamps last_any_gate_block_{ts,name} for block-shaped events on gates
+# OUTSIDE the two dedicated ones; any_gate_check_post_block_reprompt pairs
+# it on the next prompt and emits the reprompt row under the originating
+# gate's own name.
+printf '\ngeneric block-reprompt pairing:\n'
+
+_ag_sid="agp-$$"
+_orig_ag_sid="${SESSION_ID}"
+SESSION_ID="${_ag_sid}"
+mkdir -p "${STATE_ROOT}/${_ag_sid}"
+printf '{}' > "${STATE_ROOT}/${_ag_sid}/session_state.json"
+
+# (a) a non-dedicated gate's block stamps the generic keys.
+record_gate_event "review-coverage" "block" "block_count=1"
+assert_eq "generic stamp: gate name recorded" \
+  "review-coverage" "$(read_state "last_any_gate_block_name")"
+_ag_ts="$(read_state "last_any_gate_block_ts")"
+if [[ "${_ag_ts}" =~ ^[0-9]+$ ]]; then pass=$((pass+1)); else
+  printf '  FAIL: generic stamp ts not numeric (got %s)\n' "${_ag_ts}" >&2; fail=$((fail+1)); fi
+
+# (b) pairing within the window emits post-block-reprompt under the gate's
+# name and clears both keys (single-use).
+any_gate_check_post_block_reprompt
+if grep -q '"gate":"review-coverage","event":"post-block-reprompt"' "${STATE_ROOT}/${_ag_sid}/gate_events.jsonl" 2>/dev/null; then
+  pass=$((pass+1))
+else
+  printf '  FAIL: generic pairing did not emit post-block-reprompt row\n' >&2; fail=$((fail+1))
+fi
+assert_eq "generic pairing: ts key cleared (single-use)" "" "$(read_state "last_any_gate_block_ts")"
+assert_eq "generic pairing: name key cleared (single-use)" "" "$(read_state "last_any_gate_block_name")"
+
+# (c) the two dedicated gates are EXCLUDED from the generic stamp — their
+# tuned machinery owns them; double-counting would inflate their rates.
+record_gate_event "no-defer-mode" "stop-block" "block_count=1"
+assert_eq "dedicated gate excluded from generic stamp (no-defer-mode)" \
+  "" "$(read_state "last_any_gate_block_name")"
+record_gate_event "objective-contract" "block" "block_count=1"
+assert_eq "dedicated gate excluded from generic stamp (objective-contract)" \
+  "" "$(read_state "last_any_gate_block_name")"
+
+# (d) non-block events never stamp.
+record_gate_event "review-coverage" "audited"
+assert_eq "non-block event does not stamp" \
+  "" "$(read_state "last_any_gate_block_name")"
+
+rm -rf "${STATE_ROOT:?}/${_ag_sid}"
+SESSION_ID="${_orig_ag_sid}"
+
 assert_eq "commit intent: 'do not commit' → forbidden" \
   "forbidden" \
   "$(detect_commit_intent_from_prompt "do not commit")"
