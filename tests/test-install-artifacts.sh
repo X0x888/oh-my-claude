@@ -78,6 +78,16 @@ run_install_from() {
     {
       printf 'run_install: install.sh exited rc=%s — last 25 lines of its output:\n' "${_ri_rc}"
       printf '%s\n' "${_ri_out}" | tail -25 | sed 's/^/    /'
+      # The failure reproduces ONLY on the GitHub runner (ubuntu container
+      # replicas — root/non-root/shasum/full-sequence — all pass), so the
+      # dying line must name itself: re-run traced and ship the tail.
+      # Best-effort; the retraced run may even succeed (flaky-class) —
+      # that result is equally diagnostic.
+      printf 'run_install: re-running under bash -x for the trace tail:\n'
+      local _ri_trace_rc=0
+      TARGET_HOME="${TEST_HOME}" bash -x "${repo_root}/install.sh" >/dev/null 2>"${TEST_HOME}/.install-trace" || _ri_trace_rc=$?
+      printf 'run_install: traced rerun rc=%s — last 50 trace lines:\n' "${_ri_trace_rc}"
+      tail -50 "${TEST_HOME}/.install-trace" 2>/dev/null | sed 's/^/    x /'
     } >&2
     return "${_ri_rc}"
   fi
