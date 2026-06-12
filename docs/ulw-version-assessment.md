@@ -1,5 +1,9 @@
 # ULW Version Assessment
 
+> ## ⚠️ HISTORICAL DOCUMENT — frozen at v1.32.15 (2026-05-05)
+>
+> **The version recommendations below are NOT current. Always run the latest release** — the README install commands pin it, and `/whats-new` shows what you'd gain over any older tag. Every "best version to run today" verdict in this file describes the release line *as it stood on 2026-05-05* and is preserved verbatim as a maintainer governance artifact / release-history audit; many releases of gate hardening, the no-defer contract, `/goal`, and the single-entrance embed postdate it. If you found this page by browsing `docs/`, the only actionable takeaway is: install the newest tag.
+
 > **Note (v1.40.0):** This assessment uses the pre-v1.40 framing of `/ulw-pause` and "user-decision pauses" (taste / policy / brand voice / credible-approach split). v1.40.0 narrowed `/ulw-pause` to operational-only blocks; technical-judgment decisions are now the agent's under ULW with default `no_defer_mode=on`. The historical narrative below is preserved as-is for release-history continuity; the current contract lives in `bundle/dot-claude/quality-pack/memory/core.md` ("The v1.40.0 no-defer contract" section).
 
 Date: 2026-05-05

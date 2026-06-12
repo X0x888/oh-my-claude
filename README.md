@@ -70,9 +70,20 @@ git clone --branch v1.44.0 https://github.com/X0x888/oh-my-claude.git ~/.local/s
 bash ~/.local/share/oh-my-claude/install.sh
 ```
 
-The remote bootstrap path runs `verify.sh` automatically before it exits; a successful run should print `Errors: 0`. Re-running the same one-liner against an already-current canonical install now verifies and exits without a reinstall when nothing changed; set `OMC_FORCE_REINSTALL=1` if you explicitly want to force `install.sh`. If you use the verified remote path, `OMC_EXPECTED_SHA` accepts any 7-40 char commit prefix and `install-remote.sh` refuses to run `install.sh` unless the cloned tree matches it. If you use the manual clone path above, run `bash ~/.local/share/oh-my-claude/verify.sh` yourself before restarting Claude Code.
+The remote bootstrap path runs `verify.sh` automatically before it exits; a successful run should print `Errors: 0`.
+
+<details>
+<summary><b>Verified / hardened install</b> — supply-chain posture for the cautious (click to expand)</summary>
+
+Re-running the same one-liner against an already-current canonical install verifies and exits without a reinstall when nothing changed; set `OMC_FORCE_REINSTALL=1` if you explicitly want to force `install.sh`. If you use the verified remote path, `OMC_EXPECTED_SHA` accepts any 7-40 char commit prefix and `install-remote.sh` refuses to run `install.sh` unless the cloned tree matches it. If you use the manual clone path above, run `bash ~/.local/share/oh-my-claude/verify.sh` yourself before restarting Claude Code.
 
 Use the manual clone path when you want the strongest supply-chain posture. Use the verified remote path when you still want a one-liner but do not want to trust a tag name alone; copy the SHA from the GitHub release's `Verified bootstrap install` / `Trusted release commit` block and pass it via `OMC_EXPECTED_SHA`. That release body is the authoritative user-facing source for the trusted SHA. GitHub releases also ship attached source bundles (`oh-my-claude-vX.Y.Z.tar.gz`, `oh-my-claude-vX.Y.Z.zip`) plus `oh-my-claude-vX.Y.Z.SHA256SUMS` for checksum-based download verification, and the repo publishes GitHub artifact attestations for those assets so professional consumers can verify provenance with `gh attestation verify` or the bundled `tools/verify-published-release.sh` helper (full published-release audit, including optional attestation wait) after the release-attestation workflow completes. _Maintainers:_ release + distribution automation tooling (`tools/verify-*-readiness.sh`, surface staging, deployment-candidate prep, `--json` audit modes) lives in [Release & distribution tooling](#release--distribution-tooling-maintainers) below and [`CONTRIBUTING.md` § Release Process](CONTRIBUTING.md#release-process) — not part of the install path.
+
+</details>
+
+### Is this safe?
+
+Fair question for a tool that hooks every prompt and runs bash on your machine. Short answers: **100% local** (no network egress, no telemetry endpoint — the only network activity is the `git clone` you invoke); **agents can't write** (all 34 specialists carry `disallowedTools: Write, Edit, MultiEdit` — only the main thread you watch mutates files); **permission prompts stay on** (bypass is a separate explicit opt-in); **hostile repos can't disarm it** (security flags are deny-listed from project-level conf); **everything it persists is local, redacted, and opt-out** (`/omc-config` → Minimal turns all telemetry off). The full four-question answer — what runs, what leaves, what's persisted, why it's safe to let it gate you — lives in [SECURITY.md](SECURITY.md).
 
 After install, two mandatory steps:
 

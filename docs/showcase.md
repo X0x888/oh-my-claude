@@ -17,7 +17,7 @@ Two minutes is the budget per entry. If a transcript can't be summarized in that
 
 ## Entries
 
-The entries below are real catches from this repo's own development history — moments where the harness's gates intercepted a defect before ship and the diff is in `git log` if you want to verify. Community-contributed entries go above these as they arrive.
+The entries below are real catches from this repo's own development history — which is also the harness's hardest test environment: every gate documented here fired against the very codebase that implements it, under real release pressure, and **each entry is falsifiable** — the commit, the test file, or the CHANGELOG line it cites is in this repo; `git log` settles any doubt. Dogfood evidence is the strongest kind we can offer until external entries arrive: a harness that catches its own author's defects has no demo-day staging. Community-contributed entries go above these as they arrive (format + bar at the bottom — two minutes, concrete, falsifiable).
 
 ### v1.36.x W2 — `_v:1` schema-version gap on the gate-skips writer caught at excellence-review
 
