@@ -3181,7 +3181,7 @@ detect_commit_intent_from_prompt() {
     return
   fi
 
-  if grep -Eiq '\bcommit(s|t?ing|t?ed)?\b[^.!?]{0,24}\b(if[[:space:]]+needed|if[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?|if[[:space:]]+necessary|when[[:space:]]+needed|when[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?)\b|\b(if[[:space:]]+needed|if[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?|if[[:space:]]+necessary|when[[:space:]]+needed|when[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?)\b[^.!?]{0,24}\bcommit(s|t?ing|t?ed)?\b' <<<"${text}"; then
+  if grep -Eiq '\bcommit(s|t?ing|t?ed)?\b[^.!?]{0,24}\b(if[[:space:]]+needed|if[[:space:]]+you[[:space:]]+need([[:space:]]+to)?|if[[:space:]]+necessary|when[[:space:]]+needed|when[[:space:]]+you[[:space:]]+need([[:space:]]+to)?)\b|\b(if[[:space:]]+needed|if[[:space:]]+you[[:space:]]+need([[:space:]]+to)?|if[[:space:]]+necessary|when[[:space:]]+needed|when[[:space:]]+you[[:space:]]+need([[:space:]]+to)?)\b[^.!?]{0,24}\bcommit(s|t?ing|t?ed)?\b' <<<"${text}"; then
     printf 'if_needed'
     return
   fi
@@ -3219,7 +3219,7 @@ detect_push_intent_from_prompt() {
     return
   fi
 
-  if grep -Eiq '\b(push|tag|publish|release|ship)\b[^.!?]{0,24}\b(if[[:space:]]+needed|if[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?|if[[:space:]]+necessary|when[[:space:]]+needed|when[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?)\b|\b(if[[:space:]]+needed|if[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?|if[[:space:]]+necessary|when[[:space:]]+needed|when[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?)\b[^.!?]{0,24}\b(push|tag|publish|release|ship)\b' <<<"${text}"; then
+  if grep -Eiq '\b(push|tag|publish|release|ship)\b[^.!?]{0,24}\b(if[[:space:]]+needed|if[[:space:]]+you[[:space:]]+need([[:space:]]+to)?|if[[:space:]]+necessary|when[[:space:]]+needed|when[[:space:]]+you[[:space:]]+need([[:space:]]+to)?)\b|\b(if[[:space:]]+needed|if[[:space:]]+you[[:space:]]+need([[:space:]]+to)?|if[[:space:]]+necessary|when[[:space:]]+needed|when[[:space:]]+you[[:space:]]+need([[:space:]]+to)?)\b[^.!?]{0,24}\b(push|tag|publish|release|ship)\b' <<<"${text}"; then
     printf 'if_needed'
     return
   fi
