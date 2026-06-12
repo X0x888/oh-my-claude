@@ -150,7 +150,17 @@ _write_state_unlocked() {
   # still returned 1 but via a noisier path. Returning early is the clean
   # equivalent. (oracle finding — the write-failure source behind goal.sh's
   # silent pause/resume state-drop, now loud at both ends.)
-  temp_file="$(mktemp "${state_file}.XXXXXX")" || return 1
+  # v1.47 (sre-lens R-3): record the write-failure SOURCE, not just lock
+  # contention — an FS-full/transient-jq failure was doubly invisible (it
+  # aborts the calling hook under set -e AND left no trace; the only
+  # anomaly fired on lock exhaustion). Defensive command -v: state-io is
+  # sourced by common.sh before log_anomaly's definition point, but these
+  # bodies only RUN at call time when the full source has completed.
+  if ! temp_file="$(mktemp "${state_file}.XXXXXX")"; then
+    command -v log_anomaly >/dev/null 2>&1 \
+      && log_anomaly "write_state" "mktemp failed for key ${key} (FS pressure?)" 2>/dev/null || true
+    return 1
+  fi
 
   _ensure_valid_state
 
@@ -158,6 +168,8 @@ _write_state_unlocked() {
     mv "${temp_file}" "${state_file}"
   else
     rm -f "${temp_file}"
+    command -v log_anomaly >/dev/null 2>&1 \
+      && log_anomaly "write_state" "jq write failed for key ${key} (corrupt state json?)" 2>/dev/null || true
     return 1
   fi
 }
@@ -188,13 +200,20 @@ _write_state_batch_unlocked() {
   # failure under FS pressure leaves temp_file empty → `jq >""` ambiguous
   # redirect. with_state_lock_batch (goal.sh set/clear/done, the router's
   # objective-cycle stamps) routes through here, so it needs the same guard.
-  temp_file="$(mktemp "${state_file}.XXXXXX")" || return 1
+  # v1.47 (sre-lens R-3): same write-failure observability as
+  # _write_state_unlocked above.
+  if ! temp_file="$(mktemp "${state_file}.XXXXXX")"; then
+    command -v log_anomaly >/dev/null 2>&1 \
+      && log_anomaly "write_state_batch" "mktemp failed (first key: ${1:-?}; FS pressure?)" 2>/dev/null || true
+    return 1
+  fi
 
   _ensure_valid_state
 
   local jq_filter="."
   local args=()
   local idx=0
+  local _first_key="${1:-?}"
 
   while [[ $# -ge 2 ]]; do
     args+=(--arg "k${idx}" "$1" --arg "v${idx}" "$2")
@@ -207,6 +226,8 @@ _write_state_batch_unlocked() {
     mv "${temp_file}" "${state_file}"
   else
     rm -f "${temp_file}"
+    command -v log_anomaly >/dev/null 2>&1 \
+      && log_anomaly "write_state_batch" "jq write failed (first key: ${_first_key}; corrupt state json?)" 2>/dev/null || true
     return 1
   fi
 }

@@ -12,6 +12,8 @@ export OMC_LAZY_TIMING=1
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "${SCRIPT_DIR}/common.sh"
+# v1.47 (sre-lens R-1): observable fail-open for verification-evidence capture.
+omc_arm_failopen_err_trap "record-verification" "(verification evidence for this tool result was not recorded)"
 HOOK_JSON="$(_omc_read_hook_stdin)"
 
 SESSION_ID="$(json_get '.session_id')"

@@ -827,12 +827,17 @@ for writer in pretool-intent-guard.sh mark-edit.sh; do
 done
 
 # ===========================================================================
-# F-013: project-conf security flag deny-list (v1.43+ security-lens P1).
+# F-013: project-conf security flag deny-list (v1.43+ security-lens P1;
+# v1.47 adds quality_policy — oracle-verified: a hostile repo's project
+# conf setting quality_policy=balanced silently stripped the zero-steering
+# block-escalation from a user whose zero_steering came from USER conf,
+# the dominant path since /omc-config writes user scope).
 # A malicious or unfamiliar repo's `.claude/oh-my-claude.conf` must NOT
 # be able to disable security-load-bearing gates the user opted into
 # via their user-level `${HOME}/.claude/oh-my-claude.conf`. The deny-
 # list is narrow: pretool_intent_guard, bg_spawn_gate, agent_first_gate,
-# no_defer_mode. All other flags can still be project-overridden.
+# no_defer_mode, quality_policy. All other flags can still be
+# project-overridden.
 # ===========================================================================
 printf '\n=== F-013: project-conf security flag deny-list ===\n'
 
@@ -841,10 +846,10 @@ printf '\n=== F-013: project-conf security flag deny-list ===\n'
 # (case-statement marker) so a refactor that removed the actual
 # case-statement while leaving the bare comment block would NOT pass
 # this regression (quality-reviewer Wave 2 F3 follow-up).
-if grep -q 'pretool_intent_guard|bg_spawn_gate|agent_first_gate|no_defer_mode)' "${HOOK_DIR}/common.sh"; then
+if grep -q 'pretool_intent_guard|bg_spawn_gate|agent_first_gate|no_defer_mode|quality_policy)' "${HOOK_DIR}/common.sh"; then
   pass=$((pass + 1))
 else
-  printf '  FAIL: F-013a: common.sh case-statement must restrict pretool_intent_guard/bg_spawn_gate/agent_first_gate/no_defer_mode from project conf\n' >&2
+  printf '  FAIL: F-013a: common.sh case-statement must restrict pretool_intent_guard/bg_spawn_gate/agent_first_gate/no_defer_mode/quality_policy from project conf\n' >&2
   fail=$((fail + 1))
 fi
 
@@ -854,6 +859,44 @@ if grep -q '_parse_conf_file "\${_dir}/.claude/oh-my-claude.conf" "project"' "${
   pass=$((pass + 1))
 else
   printf '  FAIL: F-013b: load_conf must pass level=project when parsing the project conf\n' >&2
+  fail=$((fail + 1))
+fi
+
+# (c) v1.47 BEHAVIORAL assertion (oracle next-step 3): the string pin in (a)
+# cannot catch a semantic break (e.g. the deny branch being moved after the
+# parse). Prove the property end-to-end: user conf says zero_steering, a
+# hostile project conf says balanced, no env override — after load_conf,
+# is_zero_steering_policy_enabled must still be TRUE.
+_f013c_home="$(mktemp -d)"
+mkdir -p "${_f013c_home}/.claude" "${_f013c_home}/repo/.claude"
+printf 'quality_policy=zero_steering\n' > "${_f013c_home}/.claude/oh-my-claude.conf"
+printf 'quality_policy=balanced\n' > "${_f013c_home}/repo/.claude/oh-my-claude.conf"
+if (cd "${_f013c_home}/repo" \
+    && env -u OMC_QUALITY_POLICY HOME="${_f013c_home}" \
+       OMC_LAZY_CLASSIFIER=1 OMC_LAZY_TIMING=1 \
+       bash -c ". '${HOOK_DIR}/common.sh' >/dev/null 2>&1; is_zero_steering_policy_enabled"); then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: F-013c: project-conf quality_policy=balanced must NOT override user-conf zero_steering (deny-list semantic break)\n' >&2
+  fail=$((fail + 1))
+fi
+rm -rf "${_f013c_home}"
+
+# (d) v1.47 backstop-invariant pin (oracle Q3): guard_exhaustion_mode is
+# deliberately NOT deny-listed because its downgrade is backstopped — the
+# effective_guard_exhaustion_mode escalation forces 'block' whenever
+# is_no_defer_active (which keys off the DENY-LISTED no_defer_mode) and
+# serious_missing hold. That coupling is the load-bearing reason the flag
+# stays project-settable; a future refactor of is_no_defer_active or the
+# escalation body would silently open the hole with no test catching it.
+# Pin the backstop structurally: the escalation must live INSIDE the
+# effective_guard_exhaustion_mode function body and print 'block'.
+_f013d_body="$(sed -n '/^effective_guard_exhaustion_mode()/,/^}/p' "${HOOK_DIR}/stop-guard.sh")"
+if printf '%s' "${_f013d_body}" | grep -q 'is_no_defer_active' \
+  && printf '%s' "${_f013d_body}" | grep -q "printf 'block'"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: F-013d: effective_guard_exhaustion_mode must keep the is_no_defer_active->block backstop (the reason guard_exhaustion_mode is not deny-listed)\n' >&2
   fail=$((fail + 1))
 fi
 

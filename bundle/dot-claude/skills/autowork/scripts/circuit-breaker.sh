@@ -54,6 +54,9 @@ export OMC_LAZY_TIMING=1
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=common.sh
 . "${SCRIPT_DIR}/common.sh"
+# v1.47 (sre-lens R-1): observable fail-open — a silent abort here means the
+# repeated-failure breaker does not fire for this turn.
+omc_arm_failopen_err_trap "circuit-breaker" "(repeated-failure breaker did not evaluate this turn)"
 HOOK_JSON="$(_omc_read_hook_stdin)"
 
 SESSION_ID="$(json_get '.session_id')"

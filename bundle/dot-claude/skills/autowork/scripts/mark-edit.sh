@@ -12,6 +12,9 @@ export OMC_LAZY_TIMING=1
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "${SCRIPT_DIR}/common.sh"
+# v1.47 (sre-lens R-1): observable fail-open for edit-clock/delivery-contract
+# state writes (a silent abort here desyncs review/verify clocks).
+omc_arm_failopen_err_trap "mark-edit" "(edit clocks / delivery-contract inference skipped for this edit)"
 HOOK_JSON="$(_omc_read_hook_stdin)"
 
 SESSION_ID="$(json_get '.session_id')"

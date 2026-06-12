@@ -381,6 +381,13 @@ fi
 
 new_count=$((current_count + 1))
 
+# v1.47 (security-lens C): redact the free-text reason before it persists —
+# session state and the cross-session gate-events ledger both outlive this
+# turn, and a pause reason like "waiting on API key sk-..." must not
+# accumulate there. The user-facing printf below shows the redacted form,
+# which is the honest representation of what was stored.
+reason="$(printf '%s' "${reason}" | omc_redact_secrets)"
+
 # Use the multi-key atomic helper so the three flags land together —
 # stop-guard checks ulw_pause_active, /ulw-status reads the count, and
 # the reason is written for audit visibility. A partial write that set

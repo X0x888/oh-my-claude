@@ -600,7 +600,19 @@ _parse_conf_file() {
     # section, which documents the deny-list explicitly.
     if [[ "${level}" == "project" ]]; then
       case "${key}" in
-        pretool_intent_guard|bg_spawn_gate|agent_first_gate|no_defer_mode)
+        pretool_intent_guard|bg_spawn_gate|agent_first_gate|no_defer_mode|quality_policy)
+          # quality_policy joined v1.47 (security-lens A, oracle-verified):
+          # a hostile repo's project conf setting quality_policy=balanced
+          # silently strips the zero-steering block-escalation
+          # (is_zero_steering_policy_enabled reads OMC_QUALITY_POLICY, and
+          # the user-conf value would be overwritten by the project layer).
+          # Same bucket as no_defer_mode: presets still write it to project
+          # conf harmlessly; it is ignored here by design. The sibling
+          # guard_exhaustion_mode stays settable — its downgrade is
+          # backstopped by is_no_defer_active (deny-listed no_defer_mode)
+          # forcing block-mode on serious-missing ULW stops; an invariant
+          # regression locks that backstop (test-stop-guard-bypass-surface
+          # F-013d).
           continue
           ;;
       esac
@@ -1502,6 +1514,36 @@ _write_hook_log() {
 
 log_anomaly() {
   _write_hook_log "anomaly" "$@"
+}
+
+# omc_arm_failopen_err_trap <hook-name> [consequence-note] — v1.47 (sre-lens
+# R-1): one shared ERR-trap for the fail-open enforcement hooks. Under
+# `set -euo pipefail` a bare write_state/write_state_batch returning 1 (lock
+# exhaustion, jq/mktemp failure) aborts the hook mid-body; Claude Code then
+# fails the hook OPEN — enforcement/telemetry for that event silently
+# vanishes. The trap does NOT change fail-open (it captures and re-returns
+# $?, exit code preserved) — it makes the loss OBSERVABLE by recording an
+# anomaly, the same contract as stop-guard's own `_omc_stop_guard_on_err`.
+# File-only logging (never stdout) so a hook's decision JSON cannot be
+# contaminated. Globals (not args) carry the hook identity because bash ERR
+# traps cannot receive parameters.
+_OMC_ERR_HOOK_NAME=""
+_OMC_ERR_HOOK_NOTE=""
+_omc_hook_on_err() {
+  local rc=$?
+  # NOTE: no apostrophes in the default word — a quote character inside a
+  # ${var:-default} expansion retains quoting significance even within an
+  # enclosing double-quoted string, so "event's" would open an unbalanced
+  # single-quote context and break the whole file's parse (bash 3.2 + POSIX).
+  log_anomaly "${_OMC_ERR_HOOK_NAME:-hook}-crash" \
+    "aborted mid-hook rc=${rc} ${_OMC_ERR_HOOK_NOTE:-(enforcement/telemetry for this event silently skipped)}" \
+    2>/dev/null || true
+  return "${rc}"
+}
+omc_arm_failopen_err_trap() {
+  _OMC_ERR_HOOK_NAME="${1:-hook}"
+  _OMC_ERR_HOOK_NOTE="${2:-}"
+  trap _omc_hook_on_err ERR
 }
 
 log_hook() {
@@ -3092,12 +3134,20 @@ detect_commit_intent_from_prompt() {
   # authorized the commit. Push-side negations now feed
   # `detect_push_intent_from_prompt` instead, which is checked
   # separately by the pretool-intent-guard.
-  if grep -Eiq '\b(do[[:space:]]+not|don'\''t|dont|without|avoid|no)\b.{0,24}\bcommit(s|t?ing|t?ed)?\b|\bwithout\b.{0,16}\bcommitt?ing\b' <<<"${text}"; then
+  #
+  # v1.47 (Bug C, sentence-boundary variant — reproduced live): the gap
+  # windows were `.{0,24}`, which SPANS sentence boundaries, so
+  # "Don't stop until all done. Commit the changes when needed." matched
+  # don't→(21 chars incl. the period)→Commit and derived FORBIDDEN from a
+  # prompt that explicitly authorizes commits. Negation (and direction
+  # qualifiers) practically never cross a sentence terminator — the gaps
+  # are now [^.!?\n]-scoped so each directive is read within its sentence.
+  if grep -Eiq '\b(do[[:space:]]+not|don'\''t|dont|without|avoid|no)\b[^.!?]{0,24}\bcommit(s|t?ing|t?ed)?\b|\bwithout\b[^.!?]{0,16}\bcommitt?ing\b' <<<"${text}"; then
     printf 'forbidden'
     return
   fi
 
-  if grep -Eiq '\bcommit(s|t?ing|t?ed)?\b.{0,24}\b(if[[:space:]]+needed|if[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?|if[[:space:]]+necessary|when[[:space:]]+needed|when[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?)\b|\b(if[[:space:]]+needed|if[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?|if[[:space:]]+necessary|when[[:space:]]+needed|when[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?)\b.{0,24}\bcommit(s|t?ing|t?ed)?\b' <<<"${text}"; then
+  if grep -Eiq '\bcommit(s|t?ing|t?ed)?\b[^.!?]{0,24}\b(if[[:space:]]+needed|if[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?|if[[:space:]]+necessary|when[[:space:]]+needed|when[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?)\b|\b(if[[:space:]]+needed|if[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?|if[[:space:]]+necessary|when[[:space:]]+needed|when[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?)\b[^.!?]{0,24}\bcommit(s|t?ing|t?ed)?\b' <<<"${text}"; then
     printf 'if_needed'
     return
   fi
@@ -3126,12 +3176,16 @@ detect_push_intent_from_prompt() {
     return
   }
 
-  if grep -Eiq '\b(do[[:space:]]+not|don'\''t|dont|without|avoid|no)\b.{0,24}\b(push|pushes|pushed|pushing|tag|tags|tagged|tagging|publish|publishes|published|publishing|release|releases|released|releasing|ship|ships|shipped|shipping)\b|\bwithout\b.{0,16}\b(pushing|tagging|publishing|releasing|shipping)\b' <<<"${text}"; then
+  # v1.47: sentence-scoped gap windows — same Bug-C sentence-boundary fix
+  # as detect_commit_intent_from_prompt above ("…when needed. In the end,
+  # push and release" must read the push directive from ITS sentence, not
+  # inherit the previous sentence's qualifier).
+  if grep -Eiq '\b(do[[:space:]]+not|don'\''t|dont|without|avoid|no)\b[^.!?]{0,24}\b(push|pushes|pushed|pushing|tag|tags|tagged|tagging|publish|publishes|published|publishing|release|releases|released|releasing|ship|ships|shipped|shipping)\b|\bwithout\b[^.!?]{0,16}\b(pushing|tagging|publishing|releasing|shipping)\b' <<<"${text}"; then
     printf 'forbidden'
     return
   fi
 
-  if grep -Eiq '\b(push|tag|publish|release|ship)\b.{0,24}\b(if[[:space:]]+needed|if[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?|if[[:space:]]+necessary|when[[:space:]]+needed|when[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?)\b|\b(if[[:space:]]+needed|if[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?|if[[:space:]]+necessary|when[[:space:]]+needed|when[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?)\b.{0,24}\b(push|tag|publish|release|ship)\b' <<<"${text}"; then
+  if grep -Eiq '\b(push|tag|publish|release|ship)\b[^.!?]{0,24}\b(if[[:space:]]+needed|if[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?|if[[:space:]]+necessary|when[[:space:]]+needed|when[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?)\b|\b(if[[:space:]]+needed|if[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?|if[[:space:]]+necessary|when[[:space:]]+needed|when[[:space:]]+you[[:space:]]+need(?:[[:space:]]+to)?)\b[^.!?]{0,24}\b(push|tag|publish|release|ship)\b' <<<"${text}"; then
     printf 'if_needed'
     return
   fi
@@ -4841,8 +4895,17 @@ format_gate_block_dual() {
   if [[ -n "${_OMC_BG_WORK_PENDING_NOTE:-}" ]]; then
     bg_note=$'\n\n'"⏳ If you dispatched background work and are waiting on it, this block is expected — you'll be re-invoked when it completes; nothing to do."
   fi
+  # v1.47 (product-lens F6): the /ulw-skip escape hatch belongs in the HUMAN
+  # half of every blocking gate, uniformly — pre-fix, several gates named it
+  # only in model-facing prose, so a frustrated user on those gates never saw
+  # the escape in plain language. Appended only when the human summary does
+  # not already mention it (no double-print on gates that migrated earlier).
+  local skip_hint=""
+  if [[ -n "${human_summary}" ]] && [[ "${human_summary}" != *"ulw-skip"* ]]; then
+    skip_hint=$'\n\n'"Confident the work is actually complete? \`/ulw-skip <reason>\` bypasses this gate once (logged)."
+  fi
   if [[ -n "${human_summary}" ]]; then
-    printf '**FOR YOU:** %s%s\n\n**FOR MODEL:** %s' "${human_summary}" "${bg_note}" "${model_prose}"
+    printf '**FOR YOU:** %s%s%s\n\n**FOR MODEL:** %s' "${human_summary}" "${skip_hint}" "${bg_note}" "${model_prose}"
   else
     printf '%s%s' "${model_prose}" "${bg_note}"
   fi

@@ -1860,6 +1860,35 @@ assert_eq "commit intent: bare 'don't push' → unspecified for commit" \
   "unspecified" \
   "$(detect_commit_intent_from_prompt "don't push")"
 
+# v1.47 (Bug C, sentence-boundary variant — reproduced live in a real
+# session): the negation gap window must NOT span a sentence terminator.
+# "Don't stop until all done. Commit the changes when needed." sat don't
+# and Commit 21 chars apart ACROSS the period and derived FORBIDDEN from
+# a prompt that explicitly authorizes commits — which then blocked the
+# session's own wave commits at the commit-contract gate.
+assert_eq "commit intent: negation must not cross sentence boundary (live repro)" \
+  "if_needed" \
+  "$(detect_commit_intent_from_prompt "Don't stop until all done. Commit the changes when needed.")"
+
+assert_eq "commit intent: 'Don't stop until done. Commit it.' → required" \
+  "required" \
+  "$(detect_commit_intent_from_prompt "Don't stop until done. Commit it.")"
+
+# Within-sentence negation still forbids (the fix must not loosen this).
+assert_eq "commit intent: within-sentence negation still forbidden" \
+  "forbidden" \
+  "$(detect_commit_intent_from_prompt "avoid committing until I say so")"
+
+# Push side: the directive is read from ITS sentence — a prior sentence's
+# "when needed" qualifier must not downgrade an unconditional later push.
+assert_eq "push intent: qualifier must not cross sentence boundary" \
+  "required" \
+  "$(detect_push_intent_from_prompt "Commit the changes when needed. In the end, push and release.")"
+
+assert_eq "push intent: within-sentence negation still forbidden" \
+  "forbidden" \
+  "$(detect_push_intent_from_prompt "ship it locally but do not push or release anything")"
+
 assert_eq "commit intent: 'do not commit' → forbidden" \
   "forbidden" \
   "$(detect_commit_intent_from_prompt "do not commit")"

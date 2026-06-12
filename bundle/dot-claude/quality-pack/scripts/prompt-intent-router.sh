@@ -4,6 +4,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "${HOME}/.claude/skills/autowork/scripts/common.sh"
+# v1.47 (sre-lens R-1): observable fail-open — a mid-hook abort (lock
+# exhaustion / jq failure on a bare write_state) now leaves an anomaly
+# trace instead of silently dropping this prompt's routing + state writes.
+omc_arm_failopen_err_trap "prompt-intent-router" "(this prompt's routing directives and contract state writes were skipped)"
 HOOK_JSON="$(_omc_read_hook_stdin)"
 
 SESSION_ID="$(json_get '.session_id')"

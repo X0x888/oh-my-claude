@@ -237,6 +237,16 @@ maybe_auto_install_jq || true
 need_cmd jq
 need_cmd rsync
 
+# --- Main flow (curl-pipe truncation defense, v1.47 security-lens D) ---
+# Everything below executes only when the LAST line of this script has
+# arrived and parsed: a truncated `curl | bash` download would otherwise
+# execute a PREFIX of the flow (standard curl-pipe-bash hazard). Wrapping
+# the mutating body (clone/update, SHA verification, install handoff) in a
+# function deferred until the closing invocation means a partial download
+# does nothing beyond the read-only prereq checks above. Bash allows the
+# unindented body unchanged inside the function.
+_omc_remote_main() {
+
 # --- Clone or update --------------------------------------------------
 printf '%s oh-my-claude bootstrapper\n' "$(bold '==>')"
 printf '    source repo: %s (ref: %s)\n' "${OMC_REPO_URL}" "${OMC_REF}"
@@ -504,3 +514,8 @@ fi
 
 printf '\n%s done. Source repo lives at %s — re-run this bootstrapper to update.\n' \
   "$(green '==>')" "${OMC_SRC_DIR}"
+
+}
+# Single entry point — see the _omc_remote_main banner above for why the
+# body only runs once the full script has downloaded and parsed.
+_omc_remote_main "$@"

@@ -7,6 +7,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "${SCRIPT_DIR}/common.sh"
+# v1.47 (sre-lens R-1): the PreToolUse gate is the security-relevant one —
+# a mid-hook abort fails OPEN (the destructive-command/hygiene gate simply
+# does not fire for that tool call). The trap keeps fail-open but records
+# the loss so it is observable instead of indistinguishable from a pass.
+omc_arm_failopen_err_trap "pretool-intent-guard" "(destructive-command/hygiene gate did NOT evaluate this tool call — failed open)"
 HOOK_JSON="$(_omc_read_hook_stdin)"
 
 SESSION_ID="$(json_get '.session_id')"
@@ -957,6 +962,12 @@ if [[ "${OMC_PROMPT_TEXT_OVERRIDE:-on}" == "on" ]] \
   # text after the TTL sweep lifts rows. The denied_segment is always
   # captured (truncated to 120) because it is the command string the
   # user typed at the model, not the user's verbatim prompt.
+  # v1.47 (security-lens B): redact the denied command segment too — it is
+  # command text (e.g. `git push https://user:TOKEN@host`) and persists to
+  # the same cross-session ledger as prompt_preview. Redact BEFORE
+  # truncating so a truncation boundary cannot split a secret out of the
+  # redaction regex's reach.
+  _pt_denied_redacted="$(printf '%s' "${denied_segment}" | omc_redact_secrets)"
   if is_prompt_persist_enabled; then
     # Redact secret-shaped tokens before persisting prompt text into
     # gate_events.jsonl. The prompt may contain API keys the user
@@ -966,12 +977,12 @@ if [[ "${OMC_PROMPT_TEXT_OVERRIDE:-on}" == "on" ]] \
     _pt_prompt_preview="$(_read_most_recent_prompt | tr '\n' ' ' | omc_redact_secrets)"
     record_gate_event "pretool-intent" "prompt_text_override" \
       "intent=${task_intent}" \
-      "denied_segment=$(truncate_chars 120 "${denied_segment}")" \
+      "denied_segment=$(truncate_chars 120 "${_pt_denied_redacted}")" \
       "prompt_preview=$(truncate_chars 120 "${_pt_prompt_preview}")"
   else
     record_gate_event "pretool-intent" "prompt_text_override" \
       "intent=${task_intent}" \
-      "denied_segment=$(truncate_chars 120 "${denied_segment}")"
+      "denied_segment=$(truncate_chars 120 "${_pt_denied_redacted}")"
   fi
   exit 0
 fi
@@ -1030,10 +1041,12 @@ else
 Attempted: $(truncate_chars 200 "${command_str}")"
 fi
 
+# Redact-then-truncate, same rationale as the override path above (v1.47
+# security-lens B — command text can embed credentials).
 record_gate_event "pretool-intent" "block" \
   "block_count=${block_count}" \
   "intent=${task_intent}" \
-  "denied_segment=$(truncate_chars 120 "${denied_segment}")"
+  "denied_segment=$(truncate_chars 120 "$(printf '%s' "${denied_segment}" | omc_redact_secrets)")"
 
 jq -nc --arg reason "${reason}" '{
   hookSpecificOutput: {

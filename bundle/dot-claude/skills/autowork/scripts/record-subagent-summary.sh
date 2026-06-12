@@ -10,6 +10,9 @@ export OMC_LAZY_TIMING=1
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "${SCRIPT_DIR}/common.sh"
+# v1.47 (sre-lens R-1): observable fail-open — a silent abort drops this
+# subagent's summary + discovered-scope capture.
+omc_arm_failopen_err_trap "record-subagent-summary" "(subagent summary / discovered-scope capture lost for this agent)"
 HOOK_JSON="$(_omc_read_hook_stdin)"
 
 SESSION_ID="$(json_get '.session_id')"
