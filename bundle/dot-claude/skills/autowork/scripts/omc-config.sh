@@ -75,6 +75,7 @@ exemplifying_directive|bool|on|advisory|Completeness/coverage directive — enum
 exemplifying_scope_gate|bool|on|gates|Require checklist for example-marker prompts before stop
 objective_contract_gate|bool|on|gates|Re-anchor verbatim original objective + completion audit before stop on substantive turns (Codex /goal port; anti-premature-stop sibling of pause_external_blocker_threshold)
 objective_contract_min_files|int|4|gates|Per-cycle unique-file edit count that marks an objective-cycle substantive (volume arm of the objective-completion gate; 0 disables the volume arm)
+objective_contract_arm_on_god_scope|bool|on|gates|Arm the objective-completion gate on bare-imperative god-scope prompts ("improve it"/"harden"/"audit everything") as an INTENT signal, so ambitious-but-vague one-word imperatives drive relentlessly instead of stopping at round one (high-precision subset; recall-tuned open_mandate prose stays a nudge — use /goal for it)
 goal_gate|bool|on|gates|Master switch for the /goal relentless driver — re-anchor a user-declared goal and block premature Stop until achieved (fresh audit + **Goal achieved.** attestation) or a no-progress stuck-wall; voluntary sibling of objective_contract_gate (opt-in, inert until /goal is run)
 goal_stuck_threshold|int|3|gates|Consecutive no-progress /goal blocks before the stuck-wall surfaces and releases (0 = uncapped, never auto-release)
 prompt_text_override|bool|on|gates|PreTool guard trusts prompt-text imperative when classifier disagrees
@@ -168,6 +169,7 @@ intent_verify_directive=on
 exemplifying_directive=on
 exemplifying_scope_gate=on
 objective_contract_gate=on
+objective_contract_arm_on_god_scope=on
 goal_gate=on
 prompt_text_override=on
 mark_deferred_strict=on
@@ -207,6 +209,7 @@ intent_verify_directive=off
 exemplifying_directive=on
 exemplifying_scope_gate=on
 objective_contract_gate=on
+objective_contract_arm_on_god_scope=on
 goal_gate=on
 prompt_text_override=on
 mark_deferred_strict=on
@@ -246,6 +249,7 @@ intent_verify_directive=off
 exemplifying_directive=off
 exemplifying_scope_gate=off
 objective_contract_gate=off
+objective_contract_arm_on_god_scope=off
 goal_gate=on
 prompt_text_override=on
 mark_deferred_strict=off

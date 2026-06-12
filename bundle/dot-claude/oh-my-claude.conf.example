@@ -339,6 +339,18 @@
 # the volume arm. Env: OMC_OBJECTIVE_CONTRACT_MIN_FILES.
 #objective_contract_min_files=4
 #
+# objective_contract_arm_on_god_scope: when on (default), a bare-imperative
+# god-scope prompt ("improve it", "harden", "audit everything") arms the
+# objective-completion gate as an INTENT signal — so an ambitious-but-vague
+# one-word imperative drives relentlessly (under strict autonomy it blocks
+# until a fresh completeness audit + coverage attestation) instead of stopping
+# after the first modest round. Closes the high-precision subset of the
+# "short imperative, tiny first round, stops" blind spot; the recall-tuned
+# open_mandate prose half deliberately stays a non-blocking nudge (use /goal
+# for relentless driving on prose mandates). Off reverts to volume/length/
+# plan-complexity arming only. Env: OMC_OBJECTIVE_CONTRACT_ARM_ON_GOD_SCOPE.
+#objective_contract_arm_on_god_scope=on
+#
 # goal_gate: master switch for the /goal relentless driver (the user-facing
 # Codex /goal port). When on (default), a user-declared goal
 # (/goal "<objective>") re-anchors at every Stop and blocks until the goal

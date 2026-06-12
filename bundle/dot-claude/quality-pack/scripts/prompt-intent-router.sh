@@ -214,13 +214,22 @@ write_state_batch \
 # Continuation keeps prior evidence because it is the same active objective
 # resuming; fresh execution clears the floor so a specialist from an earlier
 # unrelated prompt cannot satisfy the invariant for new work.
+# v1.47: also clear the sticky god_scope_required flag here (set in the
+# god-scope directive block below, ONLY on bare-imperative prompts, and never
+# otherwise reset). Clearing it on every fresh execution prompt — before the
+# directive block re-sets it and before the open_mandate MUTEX reads it —
+# stops a stale "1" from a prior bare-imperative turn from wrongly suppressing
+# the open_mandate_innovation nudge on a later prose-mandate prompt. Safe:
+# god_scope_required is read only on execution turns (the open_mandate block
+# is execution-gated), so an execution-only clear covers every read.
 if [[ "${TASK_INTENT}" == "execution" ]]; then
   write_state_batch \
     "agent_first_specialist_ts" "" \
     "agent_first_specialist_type" "" \
     "agent_first_gate_blocks" "" \
     "first_mutation_ts" "" \
-    "first_mutation_tool" ""
+    "first_mutation_tool" "" \
+    "god_scope_required" ""
 fi
 if is_prompt_persist_enabled; then
   append_limited_state \
@@ -315,12 +324,24 @@ if [[ "${TASK_INTENT}" == "execution" ]]; then
     _oc_doc_edits="$(read_state "doc_edit_count")"; _oc_doc_edits="${_oc_doc_edits:-0}"
     [[ "${_oc_code_edits}" =~ ^[0-9]+$ ]] || _oc_code_edits=0
     [[ "${_oc_doc_edits}" =~ ^[0-9]+$ ]] || _oc_doc_edits=0
+    # objective_contract_god_scope (v1.47): a CYCLE-BOUND mirror of the
+    # god-scope bare-imperative signal. The sticky god_scope_required flag
+    # (set at the god-scope directive below, never cleared) cannot be read at
+    # Stop time without leaking onto later prompts; this field rides the
+    # cycle stamp so it self-clears every fresh execution prompt, exactly like
+    # objective_contract_open_mandate. It is the INTENT arm that lets the
+    # objective-contract gate fire on ambitious bare imperatives ("improve it",
+    # "harden", "audit everything") that the volume/length arms miss — the
+    # documented "short imperative, tiny first round, stops" blind spot. Only
+    # the high-precision bare-imperative subset arms a block; the recall-tuned
+    # open_mandate signal stays a non-blocking nudge (a-c ruling, see stop-guard).
     write_state_batch \
       "objective_contract_prompt_ts" "${PROMPT_TS}" \
       "objective_contract_edit_baseline" "$((_oc_code_edits + _oc_doc_edits))" \
       "objective_contract_audited_ts" "" \
       "objective_contract_blocks" "0" \
-      "objective_contract_open_mandate" "$(is_exhaustive_authorization_request "${PROMPT_TEXT}" && printf 1 || printf '')"
+      "objective_contract_open_mandate" "$(is_exhaustive_authorization_request "${PROMPT_TEXT}" && printf 1 || printf '')" \
+      "objective_contract_god_scope" "$(is_god_scope_enabled && is_bare_imperative_prompt "${PROMPT_TEXT}" && printf 1 || printf '')"
   else
     # Both gates off: clear any stale cycle state on the next fresh
     # execution prompt so a later re-enable starts from a clean slate.
@@ -329,7 +350,8 @@ if [[ "${TASK_INTENT}" == "execution" ]]; then
       "objective_contract_edit_baseline" "" \
       "objective_contract_audited_ts" "" \
       "objective_contract_blocks" "" \
-      "objective_contract_open_mandate" ""
+      "objective_contract_open_mandate" "" \
+      "objective_contract_god_scope" ""
   fi
   # v1.46+ /goal: reset the per-turn goal block counters so each user prompt
   # grants a fresh stuck-wall attempt budget (only when a goal is active, so

@@ -59,6 +59,7 @@ _omc_env_exemplifying_directive="${OMC_EXEMPLIFYING_DIRECTIVE:-}"
 _omc_env_exemplifying_scope_gate="${OMC_EXEMPLIFYING_SCOPE_GATE:-}"
 _omc_env_objective_contract_gate="${OMC_OBJECTIVE_CONTRACT_GATE:-}"
 _omc_env_objective_contract_min_files="${OMC_OBJECTIVE_CONTRACT_MIN_FILES:-}"
+_omc_env_objective_contract_arm_on_god_scope="${OMC_OBJECTIVE_CONTRACT_ARM_ON_GOD_SCOPE:-}"
 _omc_env_goal_gate="${OMC_GOAL_GATE:-}"
 _omc_env_goal_stuck_threshold="${OMC_GOAL_STUCK_THRESHOLD:-}"
 _omc_env_prompt_text_override="${OMC_PROMPT_TEXT_OVERRIDE:-}"
@@ -339,6 +340,15 @@ OMC_OBJECTIVE_CONTRACT_GATE="${OMC_OBJECTIVE_CONTRACT_GATE:-on}"
 # so a big session's cumulative totals don't arm the gate on a tiny
 # follow-up task. Default 4. 0 disables the volume arm (intent arms remain).
 OMC_OBJECTIVE_CONTRACT_MIN_FILES="${OMC_OBJECTIVE_CONTRACT_MIN_FILES:-4}"
+# objective_contract_arm_on_god_scope (v1.47): when `on`, a bare-imperative
+# god-scope prompt ("improve it", "harden", "audit everything") arms the
+# objective-contract gate as an INTENT signal — closing the documented
+# "short imperative implying large scope, done as a tiny subset, stops at
+# round one" blind spot. Borrows god-scope's existing high precision (the
+# <=30-char closed-verb-set detector); the recall-tuned open_mandate signal
+# deliberately stays a non-blocking nudge (a-c ruling). Default on. Turn off
+# to revert to volume/length/plan-complexity arming only.
+OMC_OBJECTIVE_CONTRACT_ARM_ON_GOD_SCOPE="${OMC_OBJECTIVE_CONTRACT_ARM_ON_GOD_SCOPE:-on}"
 # /goal relentless driver (v1.46+ Codex /goal port): master switch + the
 # consecutive-no-progress stuck-wall threshold. goal_gate is opt-in (inert
 # until the user runs /goal), so it defaults on across all presets.
@@ -658,6 +668,8 @@ _parse_conf_file() {
         [[ -z "${_omc_env_objective_contract_gate}" && "${value}" =~ ^(on|off)$ ]] && OMC_OBJECTIVE_CONTRACT_GATE="${value}" || true ;;
       objective_contract_min_files)
         [[ -z "${_omc_env_objective_contract_min_files}" && "${value}" =~ ^[0-9]+$ ]] && OMC_OBJECTIVE_CONTRACT_MIN_FILES="${value}" || true ;;
+      objective_contract_arm_on_god_scope)
+        [[ -z "${_omc_env_objective_contract_arm_on_god_scope}" && "${value}" =~ ^(on|off)$ ]] && OMC_OBJECTIVE_CONTRACT_ARM_ON_GOD_SCOPE="${value}" || true ;;
       goal_gate)
         [[ -z "${_omc_env_goal_gate}" && "${value}" =~ ^(on|off)$ ]] && OMC_GOAL_GATE="${value}" || true ;;
       goal_stuck_threshold)
@@ -3353,23 +3365,32 @@ objective_contract_cycle_edit_count() {
 #     substantial work landed this cycle -> re-anchor to verify the WHOLE
 #     original objective was covered, not just the part the model recalls.
 #   - objective length >= 600 chars (INTENT): a long, detailed ask.
-# Known blind spot (documented, not papered over): a SHORT prose imperative
-# implying large scope, done as a tiny subset, with no planner dispatch
-# (e.g. "rewrite the auth layer" -> edits 1 file -> stops) arms via NONE of
-# these. Inferring "large implied scope" from short English is an NLU
-# problem bash cannot solve; the gate stays SILENT there rather than
-# false-block (precision over recall — a false block trains /ulw-skip and
-# destroys every gate's credibility).
-#
-# A large-scope-verb INTENT arm (rewrite|overhaul|migrate|redesign + object,
-# reusing is_bare_imperative's verb machinery) to CLOSE this blind spot was
-# proposed (excellence-review F2) and DECLINED for v1: it widens arming
-# before any false-positive data exists, against the precision-over-recall
-# calibration that two shaping specialists converged on. The right trigger
-# to add it is the /ulw-report `objective-contract` block-vs-reprompt rate
-# showing the blind spot actually bites — data, not speculation. Do not add
-# it speculatively.
+#   - god-scope bare imperative (INTENT, v1.47): a verb-only imperative
+#     ("improve it", "harden", "audit everything") — the canonical ambitious-
+#     but-vague prompt. Stamped per-cycle as objective_contract_god_scope by
+#     the router (is_bare_imperative_prompt: <=30 chars, closed verb set, no
+#     code anchor). Flag objective_contract_arm_on_god_scope (default on).
+# Known blind spot (PARTLY closed by the god-scope arm): a SHORT prose
+# imperative implying large scope, done as a tiny subset, with no planner
+# dispatch (e.g. "rewrite the auth layer" -> edits 1 file -> stops). The
+# high-precision SUBSET of this — a bare verb-only imperative — now arms (the
+# v1.47 god-scope INTENT arm). This was the excellence-review-F2 "large-scope-
+# verb arm" DECLINED for v1 pending "the /ulw-report block-vs-reprompt rate
+# showing the blind spot actually bites — data, not speculation"; the
+# maintainer's field report that ambitious-vague prompts stop at round one IS
+# that data, so the precise subset is armed. The BROADER recall-tuned half
+# (open_mandate prose >30 chars, "comprehensively...", "rewrite the X") stays
+# DECLINED as a blocking arm — that detector false-fires on scoped asks and
+# remains a non-blocking prompt-time nudge (open_mandate_innovation), per the
+# v1.46 abstraction-critic ruling. Precision predicates feed enforcement;
+# recall predicates feed nudges. Inferring "large implied scope" from
+# arbitrary short English is still NLU-hard; the gate stays SILENT there
+# rather than false-block (a false block trains /ulw-skip and destroys gate
+# credibility). The /goal command is the consent-based relentless path for
+# the prose half the auto-arm deliberately won't touch.
 objective_contract_is_substantive() {
+  [[ "${OMC_OBJECTIVE_CONTRACT_ARM_ON_GOD_SCOPE:-on}" == "on" ]] \
+    && [[ "$(read_state "objective_contract_god_scope")" == "1" ]] && return 0
   [[ "$(read_state "plan_complexity_high")" == "1" ]] && return 0
   local files min_files
   files="$(objective_contract_cycle_edit_count)"

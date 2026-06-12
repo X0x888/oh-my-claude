@@ -1440,10 +1440,14 @@ Run metis to pressure-test for wrong-abstraction / missing-constraint risks befo
   # Cap 2 then scorecard-release (the model-declared judgment cannot be
   # mechanically proven, so an uncapped block would risk a hard loop);
   # clears the instant the model emits an explicit objective-coverage
-  # attestation. Known blind spot (documented in objective_contract_is_
-  # substantive): a short prose imperative implying large scope, done tiny,
-  # with no planner — out of bash's mechanical reach; the gate stays silent
-  # there rather than false-block.
+  # attestation. Known blind spot (PARTLY closed in objective_contract_is_
+  # substantive): a short imperative implying large scope, done tiny, with no
+  # planner. The high-precision SUBSET — a bare verb-only god-scope imperative
+  # ("improve it", "harden", "audit everything") — now arms via the v1.47
+  # objective_contract_god_scope INTENT signal (flag arm_on_god_scope). The
+  # broader recall-tuned prose half stays out of bash's mechanical reach; the
+  # gate stays silent there rather than false-block (/goal is the consent-based
+  # relentless path for it).
   # v1.46+ /goal driver: a user-declared persistent goal (goal.sh) arms this
   # same re-anchor machinery UNCONDITIONALLY (skipping the substantiveness
   # detection — the user explicitly armed it) and drives relentlessly via the
@@ -1658,6 +1662,13 @@ The findings you handled are a sample, not the ceiling — do not redefine succe
     # substantive, common.sh) names as the data-not-speculation precondition
     # for EVER arming. Telemetry-only, at most once per cycle; /ulw-report
     # aggregates it. Does not touch the gate's block path above.
+    # v1.47 denominator note: a bare imperative that ALSO matches open_mandate
+    # ("audit everything") now ARMS via objective_contract_god_scope, so
+    # objective_contract_is_substantive returns true and this counter self-
+    # suppresses for that intersection — a small, semantically-correct shift
+    # (those cycles now genuinely arm), NOT zero-impact. The counter keeps
+    # measuring the residual open_mandate-PROSE blind spot the god-scope arm
+    # deliberately does not touch (the >30-char half).
     if [[ -z "${_goal_active}" ]] \
       && [[ "${_oc_prompt_ts}" -gt 0 ]] \
       && [[ "${_oc_last_edit_ts}" -gt "${_oc_prompt_ts}" ]] \

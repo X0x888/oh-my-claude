@@ -187,6 +187,35 @@ OMC_OBJECTIVE_CONTRACT_MIN_FILES=0 objective_contract_is_substantive \
   && assert_eq "min_files=0 disables VOLUME arm" "no" "yes" \
   || assert_eq "min_files=0 disables VOLUME arm" "no" "no"
 
+# INTENT arm: god-scope bare imperative (v1.47). A bare imperative ("improve it")
+# with a TINY first round (1 edit) and a short objective arms via NONE of the
+# volume/length/plan signals — only the god-scope INTENT arm. This is the
+# high-precision subset of the "ambitious-but-vague prompt stops at round one"
+# blind spot. objective_contract_god_scope is stored as a STRING (read_state
+# returns empty for raw JSON numbers — the documented e2e gotcha).
+reset_state
+write_state_batch "current_objective" "improve it" "plan_complexity_high" "" \
+  "code_edit_count" "1" "doc_edit_count" "0" "objective_contract_edit_baseline" "0" \
+  "objective_contract_god_scope" "1"
+OMC_OBJECTIVE_CONTRACT_ARM_ON_GOD_SCOPE=on OMC_OBJECTIVE_CONTRACT_MIN_FILES=4 objective_contract_is_substantive \
+  && assert_eq "substantive via INTENT (god-scope bare imperative, 1 edit)" "yes" "yes" \
+  || assert_eq "substantive via INTENT (god-scope bare imperative, 1 edit)" "yes" "no"
+
+# flag off → the god-scope arm does NOT fire (reverts to volume/length/plan only)
+OMC_OBJECTIVE_CONTRACT_ARM_ON_GOD_SCOPE=off OMC_OBJECTIVE_CONTRACT_MIN_FILES=4 objective_contract_is_substantive \
+  && assert_eq "god-scope arm OFF → not substantive" "no" "yes" \
+  || assert_eq "god-scope arm OFF → not substantive" "no" "no"
+
+# no god-scope signal + tiny task → still silent (the arm does not over-fire on
+# ordinary small tasks — precision is borrowed from is_bare_imperative_prompt).
+reset_state
+write_state_batch "current_objective" "fix typo" "plan_complexity_high" "" \
+  "code_edit_count" "1" "doc_edit_count" "0" "objective_contract_edit_baseline" "0" \
+  "objective_contract_god_scope" ""
+OMC_OBJECTIVE_CONTRACT_ARM_ON_GOD_SCOPE=on OMC_OBJECTIVE_CONTRACT_MIN_FILES=4 objective_contract_is_substantive \
+  && assert_eq "no god-scope + tiny task stays silent" "no" "yes" \
+  || assert_eq "no god-scope + tiny task stays silent" "no" "no"
+
 # =====================================================================
 printf '## objective-contract — gate decision (inline simulation, keep in sync)\n'
 
@@ -197,6 +226,31 @@ arm_substantive_cycle
 OMC_OBJECTIVE_CONTRACT_MIN_FILES=4
 result="$(run_objective_contract_gate execution "working on it")"
 assert_contains "PROBE1: 'fix our failure mode' arms (blocks first stop)" "block:1/2" "${result}"
+
+# PROBE 1b (v1.47 god-scope arm — the user-reported headline): a bare-imperative
+# god-scope cycle ("harden") with a TINY first round (1 edit, short objective,
+# no planner) — the "ambitious-but-vague prompt stops at round one" failure —
+# now ARMS and blocks the first stop instead of releasing. Popper falsifier:
+# if this cycle is ALLOWED to stop, the relentless loop never engages.
+reset_state
+write_state_batch \
+  "current_objective" "harden" \
+  "objective_contract_prompt_ts" "${T_PROMPT}" \
+  "objective_contract_edit_baseline" "0" \
+  "objective_contract_audited_ts" "" \
+  "objective_contract_blocks" "0" \
+  "last_edit_ts" "${T_EDIT}" \
+  "code_edit_count" "1" "doc_edit_count" "0" \
+  "plan_complexity_high" "" \
+  "objective_contract_god_scope" "1"
+OMC_OBJECTIVE_CONTRACT_MIN_FILES=4
+# flag OFF first (exits at not_substantive before any state mutation): the gate
+# stays silent, reproducing the pre-v1.47 "stops at round one" behavior.
+result="$(OMC_OBJECTIVE_CONTRACT_ARM_ON_GOD_SCOPE=off run_objective_contract_gate execution "did one small thing")"
+assert_eq "PROBE1b: god-scope arm OFF → not_substantive (silent, the old bug)" "allow:not_substantive" "${result}"
+# flag ON → arms and blocks the first stop (the fix: relentless drive engages).
+result="$(OMC_OBJECTIVE_CONTRACT_ARM_ON_GOD_SCOPE=on run_objective_contract_gate execution "did one small thing")"
+assert_contains "PROBE1b: god-scope arm ON + tiny round arms (blocks)" "block:1/2" "${result}"
 
 # PROBE 2 (the corrosive false positive): a turn-2 ADVISORY follow-up after a
 # completed task must be INERT — current_objective is preserved across turns,

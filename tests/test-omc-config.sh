@@ -263,10 +263,10 @@ teardown
 # v1.46-pre added objective_contract_gate for the Codex /goal port
 # objective-completion contract; workflow_substrate for the Workflow-
 # tool execution substrate; goal_gate for the /goal relentless driver) ---
-printf 'Test 13: apply-preset maximum writes 35 keys\n'
+printf 'Test 13: apply-preset maximum writes 36 keys\n'
 setup
 out="$(bash "${HELPER}" apply-preset user maximum 2>&1)"
-assert_contains "apply-preset reports 35 keys" "35 keys" "${out}"
+assert_contains "apply-preset reports 36 keys" "36 keys" "${out}"
 assert_file_has_line "maximum: gate_level=full" "${USER_CONF_PATH}" "^gate_level=full\$"
 assert_file_has_line "maximum: workflow_substrate=on" "${USER_CONF_PATH}" "^workflow_substrate=on\$"
 assert_file_has_line "maximum: guard_exhaustion_mode=block" "${USER_CONF_PATH}" "^guard_exhaustion_mode=block\$"
@@ -298,6 +298,9 @@ assert_file_has_line "maximum: directive_budget=maximum" "${USER_CONF_PATH}" "^d
 # load-bearing default for the no-defer contract. Power-user opt-out
 # is no_defer_mode=off (minimal preset emits off — see Test 15).
 assert_file_has_line "maximum: no_defer_mode=on" "${USER_CONF_PATH}" "^no_defer_mode=on\$"
+# v1.47: objective_contract_arm_on_god_scope=on in maximum/balanced (bumps the
+# key count 35->36); minimal emits off (god-scope + the gate are off there).
+assert_file_has_line "maximum: objective_contract_arm_on_god_scope=on" "${USER_CONF_PATH}" "^objective_contract_arm_on_god_scope=on\$"
 teardown
 
 # --- Test 14: apply-preset balanced writes balanced values ---
