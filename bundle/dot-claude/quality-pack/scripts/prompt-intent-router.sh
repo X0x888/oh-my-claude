@@ -1482,6 +1482,22 @@ ${_spec_safe}
     add_directive "workflow_substrate_off" "WORKFLOW-SUBSTRATE DISABLED (\`workflow_substrate=off\`): do NOT reach for Claude Code's Workflow tool as the default for heavy fan-out — run council Phase 8 waves, large audits, and migrations on the \`Agent\` tool's in-thread concurrency instead. This flag is a standing PREFERENCE, not a hard block: if THIS prompt explicitly and unambiguously requests the Workflow tool, honor that present-intent request over the standing \`off\` and say so in your opener (the harness rule is that an explicit per-prompt request IS the permission). An incidental mention of the word \"workflow\" is NOT such a request."
   fi
 
+  # --- Model-tier enforcement directive ---
+  # Agent-definition frontmatter `model: opus` is advisory — Claude Code's
+  # Agent tool `model` parameter is authoritative. When the main thread
+  # omits it, sub-agents may silently run on cheaper models. This directive
+  # makes the tier-correct model name explicit on every turn.
+  if [[ "${session_management_prompt}" -eq 0 && "${checkpoint_prompt}" -eq 0 ]]; then
+    case "${OMC_MODEL_TIER:-balanced}" in
+      quality)
+        add_directive "model_tier_enforcement" "SUBAGENT MODEL ENFORCEMENT: \`model_tier=quality\` is active. On EVERY \`Agent()\` call, pass \`model: \"opus\"\` explicitly — agent-definition frontmatter is advisory; the tool-call \`model\` parameter is authoritative. Omitting it risks silent downgrades." ;;
+      economy)
+        add_directive "model_tier_enforcement" "SUBAGENT MODEL ENFORCEMENT: \`model_tier=economy\` is active. On EVERY \`Agent()\` call, pass \`model: \"sonnet\"\` explicitly — agent-definition frontmatter is advisory; the tool-call \`model\` parameter is authoritative." ;;
+      balanced)
+        add_directive "model_tier_enforcement" "SUBAGENT MODEL ENFORCEMENT: \`model_tier=balanced\` is active. On EVERY \`Agent()\` call, pass the \`model\` parameter explicitly — \`\"opus\"\` for planning/review agents (quality-planner, quality-reviewer, excellence-reviewer, oracle, metis, prometheus, abstraction-critic, council lenses), \`\"sonnet\"\` for execution agents (frontend-developer, backend-api-developer, etc.). Frontmatter is advisory; the tool-call parameter is authoritative." ;;
+    esac
+  fi
+
   if [[ "${session_management_prompt}" -eq 0 && "${checkpoint_prompt}" -eq 0 ]]; then
     # Project-maturity prior — informational tag biasing advisory framing.
     # Fires once per session (cached) for active modes only. Skipped on

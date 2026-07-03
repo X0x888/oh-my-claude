@@ -97,6 +97,7 @@ _omc_env_inferred_contract="${OMC_INFERRED_CONTRACT:-}"
 _omc_env_whats_new_session_hint="${OMC_WHATS_NEW_SESSION_HINT:-}"
 _omc_env_lazy_session_start="${OMC_LAZY_SESSION_START:-}"
 _omc_env_mid_session_memory_checkpoint="${OMC_MID_SESSION_MEMORY_CHECKPOINT:-}"
+_omc_env_model_tier="${OMC_MODEL_TIER:-}"
 
 OMC_STALL_THRESHOLD="${OMC_STALL_THRESHOLD:-12}"
 OMC_EXCELLENCE_FILE_COUNT="${OMC_EXCELLENCE_FILE_COUNT:-3}"
@@ -813,6 +814,8 @@ _parse_conf_file() {
         # idle period, only on execution-class intent, only when
         # auto_memory is on. Default on; opt out for ad-hoc shells.
         [[ -z "${_omc_env_mid_session_memory_checkpoint}" && "${value}" =~ ^(on|off)$ ]] && OMC_MID_SESSION_MEMORY_CHECKPOINT="${value}" || true ;;
+      model_tier)
+        [[ -z "${_omc_env_model_tier}" && "${value}" =~ ^(quality|balanced|economy)$ ]] && OMC_MODEL_TIER="${value}" || true ;;
     esac
   done < "${conf}"
 }

@@ -594,17 +594,23 @@ _omc_conf_loaded=0
 _omc_env_stall=""
 _omc_env_excellence=""
 _omc_env_ttl=""
+_omc_env_model_tier=""
 OMC_STALL_THRESHOLD=12
 OMC_EXCELLENCE_FILE_COUNT=3
 OMC_STATE_TTL_DAYS=7
+OMC_MODEL_TIER=""
 OLD_HOME="${HOME}"
+OLD_PWD="${PWD}"
 HOME="${FAKE_HOME_DIR}"
+cd "${FAKE_HOME_DIR}"
 load_conf
+cd "${OLD_PWD}"
 HOME="${OLD_HOME}"
 
 assert_eq "conf stall_threshold=20" "20" "${OMC_STALL_THRESHOLD}"
 assert_eq "conf excellence_file_count=5" "5" "${OMC_EXCELLENCE_FILE_COUNT}"
 assert_eq "conf state_ttl_days=14" "14" "${OMC_STATE_TTL_DAYS}"
+assert_eq "conf model_tier=balanced" "balanced" "${OMC_MODEL_TIER:-}"
 
 # Test 3: partial conf only overrides specified keys
 _omc_conf_loaded=0

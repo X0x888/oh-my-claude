@@ -212,6 +212,27 @@ assert_eq "system-reminder: commit_mode preserved" "required" \
 assert_eq "system-reminder: last_user_prompt_ts not bumped" "2000" \
   "$(jq -r '.last_user_prompt_ts // ""' "${sdir4}/session_state.json")"
 
+# --- Model-tier enforcement directive ---
+# The router injects a model_tier_enforcement directive gated on
+# OMC_MODEL_TIER. Verify all three tiers produce the correct directive.
+sid5="model-tier-test"
+sdir5="${STATE_ROOT}/${sid5}"
+
+for tier in quality economy balanced; do
+  mkdir -p "${sdir5}"
+  echo '{"workflow_mode":"ultrawork"}' > "${sdir5}/session_state.json"
+  _omc_conf_loaded=0
+  export OMC_MODEL_TIER="${tier}"
+  output="$(run_router '/ulw test the model tier' "${sid5}")"
+  has_directive="no"
+  if printf '%s' "${output}" | grep -qi "SUBAGENT MODEL ENFORCEMENT"; then
+    has_directive="yes"
+  fi
+  assert_eq "model_tier=${tier}: enforcement directive present" "yes" "${has_directive}"
+  rm -rf "${sdir5}"
+done
+unset OMC_MODEL_TIER
+
 # --- Result -------------------------------------------------------------
 
 printf '\n=== Synthetic-Prompt Filter Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
