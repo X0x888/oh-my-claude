@@ -108,6 +108,10 @@ Skip the structure when a single sentence captures both the change and the verif
 
 What this anchors: headline = one sentence with status, not a preamble; layman-aware gloss applied once (`TTL (cache lifetime)`); a judgment call surfaced inline (chose seconds-as-int over a duration string) so the user can redirect cheaply; `**Changed.**` cites the path-and-range, not commit narration; verification names the exact command and the count, not `tests pass`; `**Risks.**` is omitted because there are none (silence-means-none); `**Next.**` closes with `Done.` rather than padding. For a truly trivial fix (a typo, a one-line config change) even this is too much — one sentence suffices.
 
+### Goal criteria close
+
+When a `/goal` is armed, the arming response declares numbered acceptance criteria up front — 3-7 items, derived from the objective, independently checkable. The closing `**Goal achieved.**` attestation restates every criterion as one line: `✅`/`❌` + the criterion + evidence (exact command + result, a `file:line`, or a reviewer VERDICT). **Silence-means-none does not apply to criteria** — each declared criterion must appear in the close, not just the ones that passed. A `❌` line is legitimate only on the stuck-wall release path; never attest achieved with one outstanding.
+
 ### Assessments, reviews, recommendations
 
 Use a compact structure such as `Bottom line`, `Current state`, `Findings` (or `Recommended next steps`), `Recommendation`. Make section titles explicit and easy to skim. Lead the report with `**Bottom line.**` so the reader can stop after one sentence if that is all they need.

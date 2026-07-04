@@ -16,6 +16,7 @@ When you know what you want, jump straight to the verb:
 | Keep working toward one durable goal across many turns | `/goal <objective>` |
 | Just installed; want to feel the gates fire | `/ulw-demo` |
 | Need to inspect or change configuration | `/omc-config` |
+| Harness feels off / gates stopped firing | `/omc-doctor` |
 | Need a plan before you edit | `/plan-hard <task>` |
 | Need to review existing code | `/review-hard [focus]` |
 | Need repo / API context before coding | `/research-hard <topic>` |
@@ -45,6 +46,7 @@ The symptom-table above is a discovery shortcut. Each row maps to a skill in the
 | Skill | Command | When to use |
 |-------|---------|-------------|
 | **omc-config** | `/omc-config [setup\|update\|change]` | Guided multi-choice walkthrough for `oh-my-claude.conf` — pick a profile (Maximum / Balanced / Minimal) or fine-tune individual clusters. Auto-detects first-time setup vs upgrade vs ad-hoc change. |
+| **omc-doctor** | `/omc-doctor` | One-shot install health check against the installed `~/.claude` tree (core files, @-includes, hook wiring, state root) — from any directory, days after install. Use when the harness feels off or gates stopped firing. |
 | **ulw-demo** | `/ulw-demo` | Guided 90-second walkthrough that fires the quality gates on a demo file — best first step after install. |
 
 ### Working — your real tasks

@@ -1520,6 +1520,18 @@ if [[ "$(uname)" == "Darwin" ]] && command -v xattr >/dev/null 2>&1; then
   xattr -dr com.apple.quarantine "${CLAUDE_HOME}/" 2>/dev/null || true
 fi
 
+# omc CLI on PATH (v1.48 W2): the walk-away goal loop ships at
+# ~/.claude/bin/omc via the bundle rsync above. Expose it through
+# ~/.local/bin when that directory already exists — never create the
+# directory ourselves, and never clobber a foreign omc binary (only an
+# absent target or a symlink already pointing at us is fair game).
+if [[ -d "${TARGET_HOME}/.local/bin" && -x "${CLAUDE_HOME}/bin/omc" ]]; then
+  if [[ ! -e "${TARGET_HOME}/.local/bin/omc" ]] \
+    || [[ "$(readlink "${TARGET_HOME}/.local/bin/omc" 2>/dev/null)" == "${CLAUDE_HOME}/bin/omc" ]]; then
+    ln -sf "${CLAUDE_HOME}/bin/omc" "${TARGET_HOME}/.local/bin/omc"
+  fi
+fi
+
 # Remove iOS agents if --no-ios was specified.
 if [[ "${EXCLUDE_IOS}" == "true" ]]; then
   for ios_agent in "${CLAUDE_HOME}/agents/ios-"*.md; do

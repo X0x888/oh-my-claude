@@ -1,0 +1,517 @@
+#!/usr/bin/env bash
+#
+# omc — headless walk-away goal loop for oh-my-claude.
+#
+# v1.48 W2: fire an ambitious goal from a bare shell prompt and come back to
+# finished, verified work — no Claude Code session left open. Harvested from
+# the archived fairlead project's goal loop, rebuilt on one structural
+# advantage fairlead never had: the inner sessions run with the user's REAL
+# oh-my-claude install, so the ambient quality machinery (ULW routing,
+# stop-guard, reviewer chain, no-defer contract) rides along headless. The
+# loop's job shrinks to: derive a checkable finish line, keep sessions
+# running until it holds, verify on ground truth, and record the receipt.
+#
+# fairlead's four documented defects are fixed by construction here:
+#   1. cost undercount   — EVERY claude call (framing, work, verify, review)
+#                          folds its total_cost_usd into the tracked total.
+#   2. unvalidated caps  — --max-cost / --max-iterations / --timeout are
+#                          validated numeric up front and die loudly.
+#   3. acceptEdits in read-only phases — framing, judgment-verify, and the
+#                          final review run under --permission-mode plan.
+#   4. no headless critic — judgment criteria and the final diff review are
+#                          real fresh-context claude calls, not self-grades
+#                          by the session that did the work.
+#
+# Usage:
+#   omc goal "make the error handling in this module actually robust"
+#   omc "fix the flaky test and keep the suite green"     # bare = goal
+#   omc runs [latest|<run-id>]
+#   omc doctor
+#
+# Runs record to ~/.claude/quality-pack/goal-runs/<run-id>.json.
+
+set -euo pipefail
+
+RUNS_DIR="${OMC_GOAL_RUNS_DIR:-${HOME}/.claude/quality-pack/goal-runs}"
+CLAUDE_BIN="${OMC_CLAUDE_BIN:-claude}"
+BACKOFF_BASE="${OMC_GOAL_BACKOFF_BASE:-20}"
+
+usage() {
+  cat <<'EOF'
+omc — headless walk-away goal loop for oh-my-claude
+
+Usage:
+  omc goal "TASK" [options]      run the loop (bare `omc "TASK"` works too)
+  omc runs [latest|<run-id>]     list past runs, or inspect one in full
+  omc doctor                     check dependencies and auth
+  omc help                       this text
+
+Goal options:
+  --max-cost USD        stop when total spend exceeds this (default 10)
+  --max-iterations N    stop after N work passes (default 15)
+  --timeout SECS        per-pass wall clock cap (default 3600)
+  --model MODEL         model for all calls (default: your configured model)
+  --full-auto           work passes use bypassPermissions instead of
+                        acceptEdits (read-only phases stay in plan mode)
+  --force               allow running outside a git repository
+
+The loop: derive acceptance criteria (read-only) → run /ulw-armed work
+passes in one continued session → verify each criterion on ground truth
+(mechanical: run the check; judgment: fresh critic in plan mode) → when all
+hold, a skeptical final diff review must come back clean (its findings
+become new criteria once) → record the run and print the ✅/❌ close.
+Stuck-wall: a pass that changes nothing triggers one fresh re-plan, then an
+honest stop with the unmet list. Ctrl-C is safe — work lands in your repo.
+EOF
+}
+
+log() { printf '%s\n' "$*" >&2; }
+die() { printf 'omc: %s\n' "$*" >&2; exit 2; }
+
+_is_int()   { [[ "$1" =~ ^[0-9]+$ ]]; }
+_is_money() { [[ "$1" =~ ^[0-9]+(\.[0-9]+)?$ ]]; }
+
+require_deps() {
+  command -v jq >/dev/null 2>&1 || die "jq is required"
+  command -v "${CLAUDE_BIN}" >/dev/null 2>&1 || die "claude CLI not found (${CLAUDE_BIN})"
+}
+
+# Portable per-pass timeout (macOS ships no coreutils `timeout`). The
+# killer's sleep child is reaped explicitly — without the pkill, every
+# completed call would orphan one long-lived sleep process.
+_run_with_timeout() {
+  local secs="$1"; shift
+  "$@" &
+  local pid=$!
+  ( sleep "${secs}"; kill -TERM "${pid}" 2>/dev/null ) &
+  local killer=$!
+  local rc=0
+  wait "${pid}" 2>/dev/null || rc=$?
+  pkill -P "${killer}" 2>/dev/null || true
+  kill -TERM "${killer}" 2>/dev/null || true
+  wait "${killer}" 2>/dev/null || true
+  return "${rc}"
+}
+
+# Content-hash progress detector (fairlead lib/common.sh idea, kept): HEAD +
+# porcelain status + unstaged diff. A pass that leaves this unchanged did no
+# observable work, whatever its transcript says.
+_progress_hash() {
+  {
+    git rev-parse HEAD 2>/dev/null || true
+    git status --porcelain 2>/dev/null || true
+    git diff 2>/dev/null || true
+  } | shasum -a 256 | awk '{print $1}'
+}
+
+# Slurp stdin, print the first-{ .. last-} slice (model JSON often arrives
+# fenced or wrapped in prose).
+_extract_json() {
+  awk '{ buf = buf $0 "\n" }
+    END {
+      s = index(buf, "{"); if (s == 0) exit 1
+      for (i = length(buf); i > 0; i--)
+        if (substr(buf, i, 1) == "}") { print substr(buf, s, i - s + 1); exit 0 }
+      exit 1
+    }'
+}
+
+TOTAL_COST="0"
+_add_cost() {
+  TOTAL_COST="$(awk -v a="${TOTAL_COST}" -v b="${1:-0}" 'BEGIN { printf "%.4f", a + b }')"
+}
+_cost_exceeded() {
+  awk -v t="${TOTAL_COST}" -v m="${MAX_COST}" 'BEGIN { exit !(t > m) }'
+}
+
+# One claude invocation: retries transient failures with backoff, captures
+# the CLI's result JSON, and folds its cost into TOTAL_COST (defect #1: no
+# call site is exempt). Args: outfile, permission-mode, timeout, prompt,
+# extra args...
+LAST_SESSION_ID=""
+_claude_call() {
+  local outfile="$1" perm="$2" tmo="$3" prompt="$4"
+  shift 4
+  local attempt rc
+  for attempt in 1 2 3; do
+    rc=0
+    _run_with_timeout "${tmo}" \
+      "${CLAUDE_BIN}" -p "${prompt}" \
+        --output-format json \
+        --permission-mode "${perm}" \
+        ${MODEL:+--model "${MODEL}"} \
+        "$@" \
+        > "${outfile}" 2> "${outfile}.err" || rc=$?
+    local is_error result_text
+    is_error="$(jq -r '.is_error // true' "${outfile}" 2>/dev/null || echo true)"
+    result_text="$(jq -r '.result // ""' "${outfile}" 2>/dev/null || echo "")"
+    if [[ "${rc}" -eq 0 && "${is_error}" != "true" ]]; then
+      break
+    fi
+    if grep -qiE 'rate.?limit|overloaded|529|too many requests' \
+        "${outfile}.err" <(printf '%s' "${result_text}") 2>/dev/null; then
+      local wait_s=$(( BACKOFF_BASE * attempt ))
+      log "transient error (attempt ${attempt}/3) — backing off ${wait_s}s"
+      sleep "${wait_s}"
+      continue
+    fi
+    break
+  done
+  _add_cost "$(jq -r '.total_cost_usd // 0' "${outfile}" 2>/dev/null || echo 0)"
+  LAST_SESSION_ID="$(jq -r '.session_id // ""' "${outfile}" 2>/dev/null || echo "")"
+  return "${rc}"
+}
+
+# ---------------------------------------------------------------------------
+# goal
+# ---------------------------------------------------------------------------
+
+cmd_goal() {
+  require_deps
+
+  local task="" MAX_COST="10" max_iter="15" pass_timeout="3600"
+  MODEL=""
+  local full_auto=0 force=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --max-cost)       MAX_COST="$2";     shift 2 ;;
+      --max-iterations) max_iter="$2";     shift 2 ;;
+      --timeout)        pass_timeout="$2"; shift 2 ;;
+      --model)          MODEL="$2";        shift 2 ;;
+      --full-auto)      full_auto=1;       shift ;;
+      --force)          force=1;           shift ;;
+      -*)               die "unknown goal option: $1" ;;
+      *)
+        [[ -z "${task}" ]] || die "goal takes exactly one TASK argument"
+        task="$1"; shift ;;
+    esac
+  done
+  [[ -n "${task}" ]] || die "goal requires a TASK"
+  # Defect #2: every cap validates loudly, none coerces silently.
+  _is_money "${MAX_COST}"   || die "--max-cost must be numeric (got: ${MAX_COST})"
+  _is_int "${max_iter}"     || die "--max-iterations must be an integer (got: ${max_iter})"
+  _is_int "${pass_timeout}" || die "--timeout must be an integer (got: ${pass_timeout})"
+
+  if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    [[ "${force}" -eq 1 ]] \
+      || die "not a git repository — omc relies on git for revertability and progress detection (pass --force to override)"
+  fi
+
+  mkdir -p "${RUNS_DIR}"
+  local run_id run_dir
+  run_id="$(date +%Y%m%d-%H%M%S)-g$$"
+  run_dir="${RUNS_DIR}/${run_id}"
+  mkdir -p "${run_dir}"
+
+  local started_ts start_ref
+  started_ts="$(date +%s)"
+  start_ref="$(git rev-parse HEAD 2>/dev/null || echo "")"
+
+  local work_perm="acceptEdits"
+  [[ "${full_auto}" -eq 1 ]] && work_perm="bypassPermissions"
+
+  # --- Framing: derive acceptance criteria (read-only, plan mode) ---------
+  log "⛵ deriving acceptance criteria..."
+  local framing_prompt
+  framing_prompt="You are framing a goal for autonomous execution in this repository. Goal: ${task}
+
+Derive the 3-7 acceptance criteria a senior engineer would insist on before calling this goal done in THIS repo (inspect it as needed). Two kinds:
+- mechanical: checkable by a shell command run at the repo root (a test, a build, a grep). Include the exact command.
+- judgment: needs a reviewer's look (scope fully covered, error paths right, nothing half-done).
+
+Reply with STRICT JSON only — no prose, no code fences:
+{\"criteria\":[{\"id\":\"c1\",\"kind\":\"mechanical\",\"text\":\"...\",\"cmd\":\"...\"},{\"id\":\"c2\",\"kind\":\"judgment\",\"text\":\"...\"}]}"
+
+  local criteria_json=""
+  local try
+  for try in 1 2; do
+    _claude_call "${run_dir}/framing.${try}.json" plan "${pass_timeout}" \
+      "${framing_prompt}" || true
+    criteria_json="$(jq -r '.result // ""' "${run_dir}/framing.${try}.json" 2>/dev/null \
+      | _extract_json | jq -c 'select(.criteria | type == "array" and length > 0)' 2>/dev/null || true)"
+    [[ -n "${criteria_json}" ]] && break
+    framing_prompt="Your previous reply was not parseable strict JSON. Reply with ONLY the JSON object, exactly the schema requested. Goal: ${task}"
+  done
+  [[ -n "${criteria_json}" ]] || die "could not derive acceptance criteria (2 attempts; spent \$${TOTAL_COST}) — see ${run_dir}/"
+
+  log ""
+  log "Acceptance criteria:"
+  jq -r '.criteria[] | "  \(.id) [\(.kind)] \(.text)\(if .cmd then "  — check: " + .cmd else "" end)"' \
+    <<<"${criteria_json}" >&2
+  log ""
+
+  # met-map: {"c1": {"met": bool, "evidence": "..."}}
+  local met_map="{}"
+  local passes_json="[]"
+  local outcome="" review_done=0 replans=0 sid=""
+  local i=0
+
+  while :; do
+    i=$((i + 1))
+    if (( i > max_iter )); then outcome="capped-iterations"; break; fi
+    if _cost_exceeded; then outcome="capped-cost"; break; fi
+
+    # --- Work pass (the only phase allowed to edit) ----------------------
+    local unmet_list pass_prompt
+    unmet_list="$(jq -r --argjson met "${met_map}" '
+      .criteria[] | select(($met[.id].met // false) != true)
+      | "- \(.id): \(.text)\(if ($met[.id].evidence // "") != "" then "  (last check: " + $met[.id].evidence + ")" else "" end)"
+    ' <<<"${criteria_json}")"
+
+    if [[ -z "${sid}" ]]; then
+      pass_prompt="/ulw ${task}
+
+Acceptance criteria this run must satisfy (verified externally after each pass — do not self-declare):
+${unmet_list}
+
+Work until every criterion genuinely holds. The oh-my-claude quality gates are active in this session; let them run."
+    else
+      pass_prompt="Continue the same goal. Externally-verified status — these criteria are still UNMET:
+${unmet_list}
+
+Keep executing /ulw until every one genuinely holds."
+    fi
+
+    local hash_before hash_after
+    hash_before="$(_progress_hash)"
+    log "⛵ pass ${i}/${max_iter} (spent \$${TOTAL_COST} of \$${MAX_COST})..."
+    if [[ -z "${sid}" ]]; then
+      _claude_call "${run_dir}/pass.${i}.json" "${work_perm}" "${pass_timeout}" \
+        "${pass_prompt}" || true
+    else
+      _claude_call "${run_dir}/pass.${i}.json" "${work_perm}" "${pass_timeout}" \
+        "${pass_prompt}" --resume "${sid}" || true
+    fi
+    [[ -n "${LAST_SESSION_ID}" ]] && sid="${LAST_SESSION_ID}"
+    hash_after="$(_progress_hash)"
+
+    passes_json="$(jq -c \
+      --argjson n "${i}" \
+      --arg sid "${sid}" \
+      --arg cost "$(jq -r '.total_cost_usd // 0' "${run_dir}/pass.${i}.json" 2>/dev/null || echo 0)" \
+      --argjson turns "$(jq -r '.num_turns // 0' "${run_dir}/pass.${i}.json" 2>/dev/null || echo 0)" \
+      --argjson progressed "$([[ "${hash_before}" != "${hash_after}" ]] && echo true || echo false)" \
+      '. + [{pass: $n, session_id: $sid, cost_usd: ($cost | tonumber), turns: $turns, progressed: $progressed}]' \
+      <<<"${passes_json}")"
+
+    if _cost_exceeded; then outcome="capped-cost"; break; fi
+
+    # --- Verify: mechanical on ground truth ------------------------------
+    local cid cmd rc
+    while IFS=$'\t' read -r cid cmd; do
+      [[ -n "${cid}" ]] || continue
+      rc=0
+      bash -c "${cmd}" >/dev/null 2>&1 || rc=$?
+      met_map="$(jq -c --arg id "${cid}" \
+        --argjson ok "$([[ "${rc}" -eq 0 ]] && echo true || echo false)" \
+        --arg ev "\`${cmd}\` → exit $([[ "${rc}" -eq 0 ]] && echo 0 || echo "${rc}")" \
+        '. + {($id): {met: $ok, evidence: $ev}}' <<<"${met_map}")"
+    done < <(jq -r '.criteria[] | select(.kind == "mechanical") | [.id, .cmd] | @tsv' <<<"${criteria_json}")
+
+    # --- Verify: judgment via fresh critic (plan mode; defect #4) --------
+    local judgment_ids
+    judgment_ids="$(jq -r '[.criteria[] | select(.kind == "judgment") | .id] | join(",")' <<<"${criteria_json}")"
+    if [[ -n "${judgment_ids}" ]]; then
+      local diff_slice critic_prompt verdicts
+      diff_slice="$(git diff "${start_ref:-HEAD}" 2>/dev/null | head -c 60000 || true)"
+      critic_prompt="You are a strict, skeptical reviewer judging whether specific acceptance criteria are MET in this repository. Do NOT modify anything — inspect the working tree and this diff of the run's changes so far.
+
+Task under review: ${task}
+
+Criteria to judge:
+$(jq -r '[.criteria[] | select(.kind == "judgment")] | map("- " + .id + ": " + .text) | join("\n")' <<<"${criteria_json}")
+
+Diff (may be truncated; read files directly when unsure):
+${diff_slice}
+
+Reply with STRICT JSON only: {\"verdicts\":[{\"id\":\"...\",\"met\":true,\"reason\":\"...\"}]}. A criterion you cannot positively confirm is NOT met."
+      _claude_call "${run_dir}/verify.${i}.json" plan "${pass_timeout}" \
+        "${critic_prompt}" || true
+      verdicts="$(jq -r '.result // ""' "${run_dir}/verify.${i}.json" 2>/dev/null \
+        | _extract_json | jq -c 'select(.verdicts | type == "array")' 2>/dev/null || true)"
+      if [[ -n "${verdicts}" ]]; then
+        met_map="$(jq -c --argjson v "${verdicts}" '
+          . as $m | reduce $v.verdicts[] as $x ($m;
+            . + {($x.id): {met: ($x.met // false), evidence: ("critic: " + ($x.reason // ""))}})
+        ' <<<"${met_map}")"
+      fi
+      if _cost_exceeded; then outcome="capped-cost"; break; fi
+    fi
+
+    # --- All met? Final skeptical review gates "done" (once) -------------
+    local unmet_count
+    unmet_count="$(jq -r --argjson met "${met_map}" \
+      '[.criteria[] | select(($met[.id].met // false) != true)] | length' <<<"${criteria_json}")"
+
+    if [[ "${unmet_count}" -eq 0 ]]; then
+      if [[ "${review_done}" -eq 1 ]]; then outcome="done"; break; fi
+      log "⛵ all criteria hold — dispatching final skeptical review..."
+      local review_prompt findings
+      review_prompt="You are a skeptical senior reviewer. All acceptance criteria for this task report met — your job is to find what a senior would still block on: bugs, regressions, missing tests for new behavior, scope the task implied but the criteria missed. Do NOT modify anything.
+
+Task: ${task}
+
+Diff of the run's changes (may be truncated; read files directly):
+$(git diff "${start_ref:-HEAD}" 2>/dev/null | head -c 60000 || true)
+
+Reply with STRICT JSON only: {\"findings\":[{\"text\":\"...\",\"check_cmd\":\"optional shell command that proves the fix\"}]}. An empty findings array means clean."
+      _claude_call "${run_dir}/review.json" plan "${pass_timeout}" \
+        "${review_prompt}" || true
+      review_done=1
+      findings="$(jq -r '.result // ""' "${run_dir}/review.json" 2>/dev/null \
+        | _extract_json | jq -c 'select(.findings | type == "array")' 2>/dev/null || true)"
+      local finding_count=0
+      [[ -n "${findings}" ]] && finding_count="$(jq -r '.findings | length' <<<"${findings}")"
+      if [[ "${finding_count}" -eq 0 ]]; then
+        outcome="done"; break
+      fi
+      log "review found ${finding_count} issue(s) — folding into criteria and continuing"
+      criteria_json="$(jq -c --argjson f "${findings}" '
+        .criteria += [ $f.findings | to_entries[] |
+          if (.value.check_cmd // "") != "" then
+            {id: ("r\(.key + 1)"), kind: "mechanical", text: .value.text, cmd: .value.check_cmd}
+          else
+            {id: ("r\(.key + 1)"), kind: "judgment", text: .value.text}
+          end ]' <<<"${criteria_json}")"
+      if _cost_exceeded; then outcome="capped-cost"; break; fi
+      continue
+    fi
+
+    # --- Stuck-wall: no observable change and still unmet ----------------
+    if [[ "${hash_before}" == "${hash_after}" ]]; then
+      if [[ "${replans}" -eq 0 ]]; then
+        replans=1
+        sid=""   # drop the session: next pass re-plans from scratch
+        log "⛵ no progress this pass — re-planning once from a fresh session"
+        continue
+      fi
+      outcome="stuck"
+      break
+    fi
+  done
+
+  # --- Record + close ----------------------------------------------------
+  local ended_ts criteria_close
+  ended_ts="$(date +%s)"
+  criteria_close="$(jq -c --argjson met "${met_map}" '
+    [.criteria[] | . + {met: ($met[.id].met // false), evidence: ($met[.id].evidence // "unverified")}]
+  ' <<<"${criteria_json}")"
+
+  jq -n \
+    --arg run_id "${run_id}" \
+    --arg task "${task}" \
+    --arg outcome "${outcome}" \
+    --arg model "${MODEL:-default}" \
+    --argjson started "${started_ts}" \
+    --argjson ended "${ended_ts}" \
+    --argjson cost "${TOTAL_COST}" \
+    --argjson max_cost "${MAX_COST}" \
+    --argjson max_iterations "${max_iter}" \
+    --argjson criteria "${criteria_close}" \
+    --argjson passes "${passes_json}" \
+    '{
+      run_id: $run_id, task: $task, outcome: $outcome, model: $model,
+      started_ts: $started, ended_ts: $ended, wall_seconds: ($ended - $started),
+      total_cost_usd: $cost, caps: {max_cost_usd: $max_cost, max_iterations: $max_iterations},
+      criteria: $criteria, passes: $passes
+    }' > "${run_dir}/run.json"
+
+  printf '\n'
+  case "${outcome}" in
+    done)              printf '⛵ Goal achieved — every criterion verified.\n' ;;
+    capped-cost)       printf '⛵ Stopped: cost cap ($%s) reached at $%s.\n' "${MAX_COST}" "${TOTAL_COST}" ;;
+    capped-iterations) printf '⛵ Stopped: iteration cap (%s) reached.\n' "${max_iter}" ;;
+    stuck)             printf '⛵ Stopped: no progress after a fresh re-plan. Unmet criteria below.\n' ;;
+    *)                 printf '⛵ Stopped: %s\n' "${outcome}" ;;
+  esac
+  jq -r '.[] | "  \(if .met then "✅" else "❌" end) \(.id) \(.text)\n      \(.evidence)"' \
+    <<<"${criteria_close}"
+  printf '\n  cost: $%s of $%s · passes: %s · wall: %ss\n' \
+    "${TOTAL_COST}" "${MAX_COST}" "$(jq -r 'length' <<<"${passes_json}")" "$(( ended_ts - started_ts ))"
+  printf '  record: omc runs %s\n' "${run_id}"
+
+  [[ "${outcome}" == "done" ]]
+}
+
+# ---------------------------------------------------------------------------
+# runs
+# ---------------------------------------------------------------------------
+
+cmd_runs() {
+  require_deps
+  local target="${1:-}"
+  [[ -d "${RUNS_DIR}" ]] || die "no runs recorded yet (${RUNS_DIR})"
+
+  local records
+  records="$(find "${RUNS_DIR}" -mindepth 2 -maxdepth 2 -name 'run.json' 2>/dev/null | LC_ALL=C sort -r)"
+  [[ -n "${records}" ]] || die "no runs recorded yet (${RUNS_DIR})"
+
+  if [[ -z "${target}" ]]; then
+    printf '%-28s %-18s %-9s %s\n' 'RUN' 'OUTCOME' 'COST' 'TASK'
+    local f
+    while IFS= read -r f; do
+      jq -r '[.run_id, .outcome, "$" + (.total_cost_usd | tostring), (.task | .[0:60])] | @tsv' "${f}"
+    done <<<"${records}" | awk -F'\t' '{ printf "%-28s %-18s %-9s %s\n", $1, $2, $3, $4 }'
+    return 0
+  fi
+
+  local file=""
+  if [[ "${target}" == "latest" ]]; then
+    file="$(printf '%s\n' "${records}" | head -1)"
+  else
+    local f
+    while IFS= read -r f; do
+      if [[ "$(jq -r '.run_id' "${f}")" == "${target}"* ]]; then file="${f}"; break; fi
+    done <<<"${records}"
+  fi
+  [[ -n "${file}" ]] || die "no run matching: ${target}"
+
+  jq -r '
+    "run:     \(.run_id)",
+    "task:    \(.task)",
+    "outcome: \(.outcome)   cost: $\(.total_cost_usd) of $\(.caps.max_cost_usd)   passes: \(.passes | length)   wall: \(.wall_seconds)s",
+    "",
+    "criteria:",
+    (.criteria[] | "  \(if .met then "✅" else "❌" end) \(.id) [\(.kind)] \(.text)\n      \(.evidence)"),
+    "",
+    "passes:",
+    (.passes[] | "  #\(.pass)  $\(.cost_usd)  \(.turns) turns  progressed=\(.progressed)")
+  ' "${file}"
+}
+
+# ---------------------------------------------------------------------------
+
+cmd_doctor() {
+  local ok=1
+  command -v jq >/dev/null 2>&1 \
+    && log "ok    jq: $(jq --version)" || { log "FAIL  jq: not found"; ok=0; }
+  if command -v "${CLAUDE_BIN}" >/dev/null 2>&1; then
+    log "ok    claude: $("${CLAUDE_BIN}" --version 2>/dev/null | head -1)"
+  else
+    log "FAIL  claude: not found (${CLAUDE_BIN})"; ok=0
+  fi
+  command -v git >/dev/null 2>&1 \
+    && log "ok    git: $(git --version | head -1)" || log "warn  git: not found — goals need --force without it"
+  mkdir -p "${RUNS_DIR}" 2>/dev/null \
+    && log "ok    runs dir: ${RUNS_DIR}" || { log "FAIL  runs dir not writable: ${RUNS_DIR}"; ok=0; }
+  local n
+  n="$(find "${RUNS_DIR}" -mindepth 2 -maxdepth 2 -name 'run.json' 2>/dev/null | grep -c . || true)"
+  log "ok    recorded runs: ${n}"
+  log "note  omc runs headless with YOUR normal Claude Code login and config —"
+  log "      the oh-my-claude gates ride along inside every pass."
+  [[ "${ok}" -eq 1 ]]
+}
+
+main() {
+  local cmd="${1:-}"
+  case "${cmd}" in
+    goal)         shift; cmd_goal "$@" ;;
+    runs)         shift; cmd_runs "$@" ;;
+    doctor)       shift; cmd_doctor "$@" ;;
+    help|-h|--help|"") usage ;;
+    -*)           die "unknown option: ${cmd} (see omc help)" ;;
+    *)            cmd_goal "$@" ;;   # bare `omc "TASK"` = goal
+  esac
+}
+
+main "$@"

@@ -302,6 +302,15 @@ jobs:
       - name: Run realwork counterfactual-arms tests (v1.48 W1)
         run: bash tests/test-realwork-arms.sh
 
+      - name: Run omc goal-loop tests (v1.48 W2)
+        run: bash tests/test-omc-goal.sh
+
+      - name: Run omc-doctor tests (v1.48 W2)
+        run: bash tests/test-omc-doctor.sh
+
+      - name: Run posttool-dispatch tests (v1.48 W3.1)
+        run: bash tests/test-posttool-dispatch.sh
+
       - name: Run discovered-scope tests (v1.32.0 R1 pin)
         run: bash tests/test-discovered-scope.sh
 
@@ -324,6 +333,9 @@ jobs:
 
       - name: Run auto-memory-skip tests (v1.32.0 R1 pin)
         run: bash tests/test-auto-memory-skip.sh
+
+      - name: Run repo-lessons tests (v1.48-pre repo_lessons flag pin)
+        run: bash tests/test-repo-lessons.sh
 
       - name: Run cross-session-rotation tests (v1.32.0 R1 pin)
         run: bash tests/test-cross-session-rotation.sh

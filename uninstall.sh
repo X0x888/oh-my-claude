@@ -100,6 +100,7 @@ SKILL_DIRS=(
   "${CLAUDE_HOME}/skills/gamedev"
   "${CLAUDE_HOME}/skills/omc-config"
   "${CLAUDE_HOME}/skills/whats-new"
+  "${CLAUDE_HOME}/skills/omc-doctor"
 )
 
 # Quality pack (scripts, memory, state, README).
@@ -155,6 +156,7 @@ STANDALONE_FILES=(
   "${CLAUDE_HOME}/oh-my-claude.conf.example"
   "${CLAUDE_HOME}/.install-stamp"
   "${CLAUDE_HOME}/install-resume-watchdog.sh"
+  "${CLAUDE_HOME}/bin/omc"
 )
 
 # Wave 3 resume-watchdog scheduler templates. Removed wholesale during
@@ -365,8 +367,18 @@ for f in "${STANDALONE_FILES[@]}"; do
   fi
 done
 
+# omc CLI symlink (created by install.sh when ~/.local/bin exists) — only
+# remove it when it still points at our installed binary; a foreign omc
+# on the user's PATH is not ours to delete.
+OMC_SYMLINK="${HOME}/.local/bin/omc"
+if [[ -L "${OMC_SYMLINK}" ]] \
+  && [[ "$(readlink "${OMC_SYMLINK}" 2>/dev/null)" == "${CLAUDE_HOME}/bin/omc" ]]; then
+  rm -f "${OMC_SYMLINK}"
+  removed+=("Removed symlink: ${OMC_SYMLINK}")
+fi
+
 # Remove empty parent directories if we emptied them.
-for dir in "${CLAUDE_HOME}/agents" "${CLAUDE_HOME}/output-styles" "${CLAUDE_HOME}/skills"; do
+for dir in "${CLAUDE_HOME}/agents" "${CLAUDE_HOME}/output-styles" "${CLAUDE_HOME}/skills" "${CLAUDE_HOME}/bin"; do
   if [[ -d "${dir}" ]] && [[ -z "$(ls -A "${dir}" 2>/dev/null)" ]]; then
     rmdir "${dir}" 2>/dev/null || true
     removed+=("Removed empty directory: ${dir}")

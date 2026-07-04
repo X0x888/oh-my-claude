@@ -571,6 +571,11 @@ required_paths=(
   "${CLAUDE_HOME}/skills/autowork/scripts/omc-config.sh"
   "${CLAUDE_HOME}/skills/whats-new/SKILL.md"
   "${CLAUDE_HOME}/skills/autowork/scripts/show-whats-new.sh"
+  "${CLAUDE_HOME}/skills/omc-doctor/SKILL.md"
+  "${CLAUDE_HOME}/skills/autowork/scripts/omc-doctor.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/posttool-dispatch.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/record-repo-lesson.sh"
+  "${CLAUDE_HOME}/bin/omc"
   "${CLAUDE_HOME}/oh-my-claude.conf.example"
 )
 

@@ -22,6 +22,12 @@ While a goal is active, the stop-guard reuses the objective-contract re-anchor m
 - **Release only on verified completion.** The driver releases when the agent (a) runs a **fresh-context completeness audit** this cycle (dispatch `excellence-reviewer` with the goal) AND (b) attests **`**Goal achieved.**`** (or `**Objective coverage.**`) in its closing summary. Self-attestation alone does **not** clear it — the fresh audit is required, because a drifted model declaring "done" is exactly the failure this guards against.
 - **Stuck-wall escape (the safety valve).** If the driver blocks `goal_stuck_threshold` times (default `3`) in a row **with no progress** (no edits between blocks), it surfaces a "stuck-wall" message to the user and **releases** — it never traps. Any real edit between blocks resets the counter, so a model genuinely grinding forward is never cut off; only spinning-in-place trips the wall. Mirrors Codex's "stops when it hits a wall it can't get past alone."
 
+## Criteria-first close
+
+The arming response declares more than the goal itself: it also states **numbered acceptance criteria** — a short list, 3-7 items, each derived from the objective and independently checkable. Every later goal-progress response may reference a criterion by number instead of re-deriving it.
+
+The **`**Goal achieved.**`** attestation MUST close with a per-criterion checklist — one line per criterion: `✅`/`❌` + the criterion + concrete evidence (an exact command and its result signal, a `file:line`, or a reviewer VERDICT). `❌` lines are legitimate only on the stuck-wall release path, never alongside a self-declared attestation — a goal cannot attest achieved with any `❌` remaining.
+
 ## Usage / subcommands
 
 The model maps the user's `/goal …` to the backing script:

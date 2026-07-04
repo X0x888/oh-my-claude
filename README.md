@@ -244,6 +244,10 @@ Reviewer findings are machine-readable (single-line `FINDINGS_JSON` block before
 
 **34 specialist agents — every agent that judges work is read-only; the 10 that build are permission-gated.** The 24 advisory, planning, and review specialists carry `disallowedTools: Write, Edit, MultiEdit`, enforced at dispatch: they read, search, analyze, and plan, and the main thread executes what they recommend — the agents that judge work are structurally unable to alter it. The 10 domain builders (frontend-developer, backend-api-developer, the ios-* family, fullstack-feature-builder, devops-infrastructure-engineer, test-automation-engineer, atlas) can edit by design — implementation is their job — and every write still runs under the same Claude Code permission prompts that govern the main thread.
 
+### Walk-away goals (`omc` CLI)
+
+**Fire an ambitious goal from a bare shell prompt and come back to finished, verified work — no Claude Code session left open.** `omc "make the error handling in this module actually robust"` derives the acceptance criteria a senior would insist on, runs `/ulw`-armed headless work passes (the full ambient harness — routing, gates, reviewer chain — rides along inside every pass), verifies each criterion on ground truth (mechanical checks run for real; judgment criteria get a fresh read-only critic), and only declares done after a skeptical final diff review comes back clean. Cost- and iteration-capped, git-required by default, honest ✅/❌ close with evidence per criterion, and every run records to `omc runs` for later inspection. Installed at `~/.claude/bin/omc` (symlinked into `~/.local/bin` when present).
+
 ### Project Council
 
 **Solo developers get the cross-functional perspective of a full product team — without the team.** The `/council` skill dispatches a multi-role evaluation panel: Product Manager, UX Designer, Security Engineer, Data/Analytics Lead, SRE, Growth Lead. Each role-lens agent evaluates independently with a non-overlapping mandate, and findings are synthesized into a single prioritized assessment. The system auto-detects broad evaluation prompts like "evaluate my project" under `/ulw` and triggers the council flow automatically.
@@ -303,13 +307,13 @@ oh-my-claude/
 ├── install.sh / uninstall.sh / verify.sh   # Install, remove, and verify
 ├── bundle/dot-claude/                       # Installs to ~/.claude/
 │   ├── agents/          (34 agents)         # Specialist agent definitions
-│   ├── skills/          (30 skills)         # Skill definitions + autowork hooks
+│   ├── skills/          (31 skills)         # Skill definitions + autowork hooks
 │   ├── quality-pack/                        # Lifecycle hooks + memory files
 │   ├── output-styles/                       # Two bundled styles: oh-my-claude (default) + executive-brief (see docs/customization.md#output-style)
 │   └── statusline.py                        # Custom statusline widget
 ├── config/settings.patch.json               # Merged into user settings on install
 ├── evals/realwork/                           # Outcome eval scenarios for minimal-prompt shipping across code + design/UI + native artifacts + mixed + quantitative/data-analysis + regulated/high-stakes + writing + research + scholarly + ops + advisory
-├── tests/               (139 bash + 1 py)   # See AGENTS.md / CONTRIBUTING.md for full list
+├── tests/               (142 bash + 1 py)   # See AGENTS.md / CONTRIBUTING.md for full list
 ├── tools/                                    # Developer-only tools (not installed)
 └── docs/                                    # Architecture, customization, FAQ, prompts
 ```
@@ -352,6 +356,7 @@ Skills are invoked as slash commands or routed automatically by the intent class
 | ulw-report *(retrospective)* | `/ulw-report [last\|week\|month\|all]` | Markdown digest of cross-session activity — sessions, gate fires, bias-defense fires, router directive footprint, top reviewers, classifier misfires, Serendipity catches, finding/wave outcomes |
 | memory-audit *(memory hygiene)* | `/memory-audit [--memory-dir <path>]` | Classify MEMORY.md entries (load-bearing, archival, superseded, drifted) and propose rollup moves. Read-only. |
 | whats-new *(changelog delta)* | `/whats-new` | Show CHANGELOG entries between your installed version and the source repo HEAD. Surfaces post-install features without `cat CHANGELOG.md`. (v1.36.x) |
+| omc-doctor *(install health)* | `/omc-doctor` | One-shot install health check against the installed `~/.claude` tree — core files, CLAUDE.md @-includes, hook wiring, state-root writability — from any directory, no source clone needed. Claude Code fails open on hook errors, so a broken install is silently inert; this makes it visible. (v1.48) |
 | ulw-skip *(skip a gate)* | `/ulw-skip <reason>` | Skip current quality gate block once |
 | ulw-correct *(fix a misclassification)* | `/ulw-correct <correction>` | Tell the harness "the last turn was misclassified" — records the misfire and updates intent/domain when parseable. (v1.40.x) |
 | mark-deferred *(triage findings)* | `/mark-deferred <reason>` | Bulk-defer pending discovered-scope findings with a one-line reason — legacy soft-defer path. **Refused under ULW execution with default `no_defer_mode=on`** (v1.40.0); the agent ships inline, wave-appends, or rejects as not-a-defect instead. Opt out via `no_defer_mode=off` for the v1.39 behavior |
