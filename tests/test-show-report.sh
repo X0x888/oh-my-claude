@@ -975,5 +975,55 @@ assert_contains "T40 — recent anomaly excerpt renders" "mktemp failed for key 
 rm -f "${_t40_log}"
 
 # ----------------------------------------------------------------------
+printf 'Test 41: --merge folds external machine dirs with host attribution\n'
+NOW="$(date +%s)"
+_t41_local_host="$(hostname -s 2>/dev/null || uname -n 2>/dev/null || printf 'unknown')"
+_t41_local_host="${_t41_local_host//[^A-Za-z0-9._-]/-}"
+# Local ledger: one recent row WITHOUT host (pre-v1.48 shape → backfilled
+# with this machine's identity at read time).
+cat > "${QP}/session_summary.jsonl" <<EOF
+{"session_id":"local1","start_ts":${NOW},"end_ts":${NOW},"domain":"coding","intent":"execution","edit_count":1,"verified":true,"reviewed":true,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":0,"outcome":"shipped","skip_count":0,"serendipity_count":0}
+EOF
+# External #1: extracted-archive shape (root containing .claude/quality-pack);
+# one row without host (backfill → dir basename), one WITH host (preserved).
+EXT1="${TEST_HOME}/ext/Intel-2019"
+mkdir -p "${EXT1}/.claude/quality-pack"
+cat > "${EXT1}/.claude/quality-pack/session_summary.jsonl" <<EOF
+{"session_id":"e1a","start_ts":${NOW},"end_ts":${NOW},"domain":"coding","intent":"execution","edit_count":2,"verified":false,"reviewed":false,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":0,"outcome":"shipped","skip_count":0,"serendipity_count":0}
+{"session_id":"e1b","host":"custom-host","start_ts":${NOW},"end_ts":${NOW},"domain":"coding","intent":"execution","edit_count":3,"verified":false,"reviewed":false,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":0,"outcome":"shipped","skip_count":0,"serendipity_count":0}
+EOF
+printf '{"_v":1,"ts":%s,"gate":"quality","event":"block"}\n' "${NOW}" \
+  > "${EXT1}/.claude/quality-pack/gate_events.jsonl"
+# External #2: bare quality-pack-dir shape, passed via --merge=<dir>.
+EXT2="${TEST_HOME}/ext/mbp-qp"
+mkdir -p "${EXT2}"
+cat > "${EXT2}/session_summary.jsonl" <<EOF
+{"session_id":"e2a","start_ts":${NOW},"end_ts":${NOW},"domain":"coding","intent":"execution","edit_count":4,"verified":false,"reviewed":false,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":0,"outcome":"shipped","skip_count":0,"serendipity_count":0}
+EOF
+_t41_ext1_before="$(cat "${EXT1}/.claude/quality-pack/session_summary.jsonl")"
+out="$(run_report all --merge "${EXT1}" --merge="${EXT2}")"
+assert_contains "T41 — merge banner names 2 dirs" "Including 2 external machine dir(s)" "${out}"
+assert_contains "T41 — banner lists the Intel-2019 label" "Intel-2019" "${out}"
+assert_contains "T41 — sessions count sums local + external" "| Sessions | 4 |" "${out}"
+assert_contains "T41 — by-host attribution line renders" "Sessions by host (all merged rows):" "${out}"
+assert_contains "T41 — external row backfilled with dir label" "Intel-2019: 1" "${out}"
+assert_contains "T41 — preset host preserved (not overwritten)" "custom-host: 1" "${out}"
+assert_contains "T41 — bare-dir shape labeled by basename" "mbp-qp: 1" "${out}"
+assert_contains "T41 — local row backfilled with this machine" "${_t41_local_host}: 1" "${out}"
+_t41_ext1_after="$(cat "${EXT1}/.claude/quality-pack/session_summary.jsonl")"
+assert_eq "T41 — external source unmodified (read-only)" "${_t41_ext1_before}" "${_t41_ext1_after}"
+
+# ----------------------------------------------------------------------
+printf 'Test 42: --merge skips a ledger-less dir gracefully, exit 0\n'
+set +e
+out="$(run_report all --merge "${TEST_HOME}/no-such-machine-dir")"
+rc=$?
+set -e
+assert_eq "T42 — exit 0 despite bad merge dir" "0" "${rc}"
+assert_contains "T42 — skip banner names the dir" "Skipping ${TEST_HOME}/no-such-machine-dir" "${out}"
+rm -rf "${TEST_HOME}/ext"
+rm -f "${QP}/session_summary.jsonl"
+
+# ----------------------------------------------------------------------
 printf '\n=== Show-Report Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]] || exit 1

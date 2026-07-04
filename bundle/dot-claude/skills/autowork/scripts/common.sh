@@ -1788,6 +1788,25 @@ now_epoch() {
   date +%s
 }
 
+# v1.48-pre (2026-07-04 multi-machine correction): machine identity for
+# cross-session ledger rows. The fairlead episode generalized "died of
+# non-use" from ONE machine's ledgers while two other machines carried
+# 700+ sessions — per-machine telemetry with no host attribution made the
+# sampling error invisible. Cross-session rows now carry `host` so
+# `/ulw-report --merge <dir>` can attribute rows across machines.
+# Cached per-process; sanitized to [A-Za-z0-9._-] (jq-safe, path-safe).
+_OMC_HOST_CACHE=""
+omc_host() {
+  if [[ -z "${_OMC_HOST_CACHE}" ]]; then
+    local _h
+    _h="$(hostname -s 2>/dev/null || uname -n 2>/dev/null || printf 'unknown')"
+    _h="${_h//[^A-Za-z0-9._-]/-}"
+    [[ -z "${_h}" ]] && _h="unknown"
+    _OMC_HOST_CACHE="${_h}"
+  fi
+  printf '%s' "${_OMC_HOST_CACHE}"
+}
+
 # --- State directory TTL sweep ---
 # Deletes session state dirs older than OMC_STATE_TTL_DAYS (default 7).
 # Runs at most once per day, gated by a marker file timestamp.
@@ -2041,11 +2060,13 @@ _sweep_stale_sessions_locked() {
             ' "${_sweep_findings_file}" 2>/dev/null || echo 'null')"
           fi
           jq -c --arg sid "${_sweep_sid}" --argjson ec "${_sweep_ec:-0}" \
+            --arg host "$(omc_host)" \
             --argjson findings "${_sweep_findings_block}" \
             --argjson waves "${_sweep_waves_block}" '
             {
               _v: 1,
               session_id: $sid,
+              host: $host,
               project_key: (.project_key // null),
               start_ts: (.session_start_ts // .last_user_prompt_ts // null),
               end_ts: (
@@ -5666,12 +5687,13 @@ record_gate_event() {
   # ledger and apply per-version transforms; `_v` is the discriminator.
   row="$(jq -nc \
     --argjson ts "$(now_epoch)" \
+    --arg host "$(omc_host)" \
     --arg gate "${gate}" \
     --arg event "${event}" \
     --arg block_count "${block_count}" \
     --arg block_cap "${block_cap}" \
     --argjson details "${details_json}" \
-    '{_v:1,ts:$ts,gate:$gate,event:$event} +
+    '{_v:1,ts:$ts,host:$host,gate:$gate,event:$event} +
      (if $block_count != "" then {block_count:($block_count|tonumber? // 0)} else {} end) +
      (if $block_cap != "" then {block_cap:($block_cap|tonumber? // 0)} else {} end) +
      {details:$details}' 2>/dev/null)"

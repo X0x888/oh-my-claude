@@ -2845,6 +2845,21 @@ twice="$(printf '%s' "${once}" | omc_redact_secrets)"
 assert_eq "idempotent: redaction is stable across passes" "${once}" "${twice}"
 
 # ===========================================================================
+# omc_host — machine identity for cross-session rows (v1.48-pre)
+# ===========================================================================
+
+printf 'omc_host:\n'
+_oh1="$(omc_host)"
+_oh2="$(omc_host)"
+if [[ -n "${_oh1}" ]]; then pass=$((pass+1)); else printf '  FAIL: omc_host returned empty\n' >&2; fail=$((fail+1)); fi
+assert_eq "omc_host stable across calls (cached)" "${_oh1}" "${_oh2}"
+if [[ "${_oh1}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  pass=$((pass+1))
+else
+  printf '  FAIL: omc_host not sanitized to [A-Za-z0-9._-]: %q\n' "${_oh1}" >&2; fail=$((fail+1))
+fi
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 

@@ -44,14 +44,25 @@ FIELD_SHAPE_AUDIT=0
 # gate_events.jsonl only populate at the daily TTL sweep.
 SWEEP_MODE=0
 NEW_ARGS=()
+MERGE_DIRS=()
+_merge_expect=0
 for _arg in "$@"; do
+  if [[ "${_merge_expect}" -eq 1 ]]; then
+    MERGE_DIRS+=("${_arg}")
+    _merge_expect=0
+    continue
+  fi
   case "${_arg}" in
     --share)              SHARE_MODE=1 ;;
     --field-shape-audit)  FIELD_SHAPE_AUDIT=1 ;;
     --sweep)              SWEEP_MODE=1 ;;
+    --merge)              _merge_expect=1 ;;
+    --merge=*)            MERGE_DIRS+=("${_arg#--merge=}") ;;
     *)                    NEW_ARGS+=("${_arg}") ;;
   esac
 done
+# Trailing `--merge` with no value falls through harmlessly (no dir queued) —
+# consistent with the script's fail-open posture; bad dirs get a skip banner.
 set -- "${NEW_ARGS[@]+${NEW_ARGS[@]}}"
 
 MODE="${1:-week}"
@@ -70,7 +81,7 @@ case "${MODE}" in
   last|week|month|all) ;;
   --help|-h)
     cat <<'USAGE'
-Usage: show-report.sh [last|week|month|all] [--share] [--sweep] [--field-shape-audit]
+Usage: show-report.sh [last|week|month|all] [--share] [--sweep] [--merge <dir>] [--field-shape-audit]
 
   last     Most recent session only.
   week     Sessions in the last 7 days (default).
@@ -94,6 +105,19 @@ Usage: show-report.sh [last|week|month|all] [--share] [--sweep] [--field-shape-a
            to scope the window. Banner prefaces the report so the
            user knows the cross-session aggregate was extended on
            the fly. (v1.36.0)
+  --merge <dir>
+           Fold ANOTHER MACHINE's quality-pack ledgers into this
+           report's view (repeatable). <dir> may be a quality-pack
+           dir itself, an extracted archive root containing
+           .claude/quality-pack, or a dir with a quality-pack/
+           child. Read-only — sources are never written. Rows
+           lacking `host` are labeled at read time: local rows get
+           this machine's hostname, external rows the merge dir's
+           basename. Composes with --sweep. Motivated by the
+           2026-07-04 sampling error: per-machine ledgers with no
+           aggregation let a one-machine audit ("12 sessions ever")
+           masquerade as the full record (728 across three).
+           Also accepts --merge=<dir>. (v1.48-pre)
   --field-shape-audit
            Run a field-shape sanity audit over
            ~/.claude/quality-pack/gate_events.jsonl. Per-gate-shape
@@ -197,11 +221,13 @@ if [[ "${SWEEP_MODE}" -eq 1 ]]; then
         fi
 
         jq -c --arg sid "${local_basename}" --argjson ec "${local_ec:-0}" \
+          --arg host "$(omc_host)" \
           --argjson findings "${local_findings_block}" \
           --argjson waves "${local_waves_block}" '
           {
             _v: 1,
             session_id: $sid,
+            host: $host,
             project_key: (.project_key // null),
             start_ts: (.session_start_ts // .last_user_prompt_ts // null),
             end_ts: (
@@ -279,6 +305,103 @@ if [[ "${SWEEP_MODE}" -eq 1 ]]; then
   # `/ulw-report --sweep | tee report.md`.
   printf '_[--sweep] Including %d active session(s) in this view (read-only; ledger not modified)._\n\n' \
     "${_omc_sweep_active_count}"
+fi
+
+# v1.48-pre (2026-07-04 multi-machine correction): --merge <dir> folds
+# EXTERNAL machines' quality-pack ledgers into this report's view.
+# Motivated by the fairlead episode: per-machine ledgers with no
+# aggregation surface let a single-machine audit ("12 sessions ever")
+# masquerade as the full record (728 sessions across three machines).
+# Same read-only contract as --sweep: merged temps under mktemp -d,
+# sources never written, cleanup on EXIT. Runs AFTER the sweep block and
+# seeds from the CURRENT view files, so --sweep --merge composes.
+# Backfill rule (docs/architecture.md schema table): rows lacking `host`
+# (pre-v1.48) are labeled at read time — local rows get this machine's
+# omc_host, external rows get the merge dir's sanitized basename.
+_omc_merge_dir_count=0
+_omc_merge_labels=""
+_OMC_MERGE_TMPDIR=""
+if [[ "${#MERGE_DIRS[@]}" -gt 0 ]]; then
+  _OMC_MERGE_TMPDIR="$(mktemp -d 2>/dev/null || true)"
+  if [[ -n "${_OMC_MERGE_TMPDIR}" ]] && [[ -d "${_OMC_MERGE_TMPDIR}" ]]; then
+    _merge_summary="${_OMC_MERGE_TMPDIR}/session_summary.jsonl"
+    _merge_gate="${_OMC_MERGE_TMPDIR}/gate_events.jsonl"
+    _merge_local_host="$(omc_host)"
+    if [[ -f "${SUMMARY_FILE}" ]] && [[ -s "${SUMMARY_FILE}" ]]; then
+      jq -c --arg h "${_merge_local_host}" '.host //= $h' "${SUMMARY_FILE}" \
+        > "${_merge_summary}" 2>/dev/null || : > "${_merge_summary}"
+    else
+      : > "${_merge_summary}"
+    fi
+    if [[ -f "${GATE_EVENTS_FILE}" ]] && [[ -s "${GATE_EVENTS_FILE}" ]]; then
+      jq -c --arg h "${_merge_local_host}" '.host //= $h' "${GATE_EVENTS_FILE}" \
+        > "${_merge_gate}" 2>/dev/null || : > "${_merge_gate}"
+    else
+      : > "${_merge_gate}"
+    fi
+
+    for _merge_dir in "${MERGE_DIRS[@]}"; do
+      # Accept a quality-pack dir itself, an extracted machine-archive
+      # root containing .claude/quality-pack, or a quality-pack/ child.
+      _merge_src=""
+      if [[ -f "${_merge_dir}/session_summary.jsonl" ]] || [[ -f "${_merge_dir}/gate_events.jsonl" ]]; then
+        _merge_src="${_merge_dir}"
+      elif [[ -d "${_merge_dir}/.claude/quality-pack" ]]; then
+        _merge_src="${_merge_dir}/.claude/quality-pack"
+      elif [[ -d "${_merge_dir}/quality-pack" ]]; then
+        _merge_src="${_merge_dir}/quality-pack"
+      fi
+      if [[ -z "${_merge_src}" ]]; then
+        printf '_[--merge] Skipping %s — no session_summary.jsonl / gate_events.jsonl found (pass a quality-pack dir, or an archive root containing .claude/quality-pack)._\n\n' \
+          "${_merge_dir}"
+        continue
+      fi
+      _merge_label="$(basename "${_merge_dir%/}")"
+      _merge_label="${_merge_label//[^A-Za-z0-9._-]/-}"
+      [[ -z "${_merge_label}" ]] && _merge_label="external"
+      if [[ -f "${_merge_src}/session_summary.jsonl" ]]; then
+        jq -c --arg h "${_merge_label}" '.host //= $h' "${_merge_src}/session_summary.jsonl" \
+          >> "${_merge_summary}" 2>/dev/null || true
+      fi
+      if [[ -f "${_merge_src}/gate_events.jsonl" ]]; then
+        jq -c --arg h "${_merge_label}" '.host //= $h' "${_merge_src}/gate_events.jsonl" \
+          >> "${_merge_gate}" 2>/dev/null || true
+      fi
+      _omc_merge_dir_count=$(( _omc_merge_dir_count + 1 ))
+      _omc_merge_labels="${_omc_merge_labels:+${_omc_merge_labels}, }${_merge_label}"
+    done
+
+    # Repoint the report's data sources at the merged temps.
+    SUMMARY_FILE="${_merge_summary}"
+    GATE_EVENTS_FILE="${_merge_gate}"
+  fi
+
+  # Cleanup on EXIT. Chains the sweep cleanup (when --sweep also ran) so
+  # overwriting its trap here never leaks the sweep tmpdir. Both bodies
+  # guard on their own tmpdir vars, so double-fire is harmless.
+  _omc_merge_cleanup() {
+    if [[ -n "${_OMC_MERGE_TMPDIR:-}" ]] && [[ -d "${_OMC_MERGE_TMPDIR}" ]]; then
+      rm -rf "${_OMC_MERGE_TMPDIR:?}" 2>/dev/null || true
+    fi
+    if type _omc_sweep_cleanup >/dev/null 2>&1; then
+      _omc_sweep_cleanup
+    fi
+    return 0
+  }
+  trap _omc_merge_cleanup EXIT
+
+  if [[ "${_omc_merge_dir_count}" -gt 0 ]]; then
+    printf '_[--merge] Including %d external machine dir(s): %s (read-only; sources not modified)._\n\n' \
+      "${_omc_merge_dir_count}" "${_omc_merge_labels}"
+    # At-a-glance host attribution over the merged view — computed on ALL
+    # merged rows (pre-window) so the label set is stable across windows.
+    _merge_host_line="$(jq -r '.host // "unknown"' "${SUMMARY_FILE}" 2>/dev/null \
+      | sort | uniq -c | sort -rn \
+      | awk '{printf "%s%s: %s", (NR>1 ? " · " : ""), $2, $1}')"
+    if [[ -n "${_merge_host_line}" ]]; then
+      printf '_Sessions by host (all merged rows): %s_\n\n' "${_merge_host_line}"
+    fi
+  fi
 fi
 
 # v1.31.0 Wave 8 (growth-lens F-037): --share renders a fully-sanitized

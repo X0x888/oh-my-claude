@@ -333,5 +333,27 @@ assert_contains "user-decision event records decision_reason" \
 teardown_test
 
 # ---------------------------------------------------------------------
+# Host stamp: rows carry machine identity (v1.48-pre multi-machine fix).
+# The 2026-07-04 sampling error — one machine's ledgers read as the full
+# record — is only detectable post-hoc if every row names its machine.
+# ---------------------------------------------------------------------
+printf 'Test host: record_gate_event stamps host (omc_host) on every row\n'
+setup_test
+init_session "gehost"
+SESSION_ID="gehost" STATE_ROOT="${TEST_HOME}/.claude/quality-pack/state" \
+  bash -c "
+    set -euo pipefail
+    . '${HOOK_DIR}/common.sh'
+    SESSION_ID='gehost'
+    record_gate_event 'quality' 'block' 'block_count=1'
+  "
+_host_expected="$(hostname -s 2>/dev/null || uname -n 2>/dev/null || printf 'unknown')"
+_host_expected="${_host_expected//[^A-Za-z0-9._-]/-}"
+row="$(cat "$(events_file_for "gehost")")"
+assert_contains "row contains a host field" '"host":"' "${row}"
+assert_contains "host matches sanitized hostname" "\"host\":\"${_host_expected}\"" "${row}"
+teardown_test
+
+# ---------------------------------------------------------------------
 printf '\n=== Gate Events: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]] || exit 1

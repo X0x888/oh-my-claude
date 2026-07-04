@@ -243,6 +243,7 @@ All seven JSONL caps go through `_cap_cross_session_jsonl` in `common.sh`; the f
 | Field | Type | Source |
 |---|---|---|
 | `session_id` | string | session directory name |
+| `host` | string | Machine identity via `omc_host()` (sanitized `hostname -s`, `uname -n` fallback, cached per-process). Added v1.48-pre after the 2026-07-04 multi-machine sampling error — per-machine ledgers with no host attribution let a one-machine audit ("12 sessions ever") read as the full record (728 across three machines). Also stamped on `gate_events.jsonl` rows by `record_gate_event`. **Backfill rule:** rows written before v1.48 lack `host`; `/ulw-report --merge <dir>` labels them at read time (local rows → current host, external rows → merge-dir basename) and never rewrites the source ledgers. |
 | `start_ts`, `end_ts` | string (epoch) | `session_state.json`. `end_ts` cascades through `last_edit_ts` → `last_review_ts` → `last_user_prompt_ts` → `null` (v1.41 W1). Empty-string fields fall through correctly. |
 | `end_ts_source` | enum \| null | Which fallback fired in the `end_ts` cascade — `"edit"` / `"review"` / `"prompt"` / `null`. Lets readers filter for edit-or-review-grade duration when they want to exclude advisory sessions whose only timestamp is a prompt arrival. Added v1.41 W1. |
 | `domain`, `intent` | string | classifier output stored in state |
