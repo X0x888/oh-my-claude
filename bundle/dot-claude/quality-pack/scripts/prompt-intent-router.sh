@@ -1494,7 +1494,20 @@ ${_spec_safe}
       economy)
         add_directive "model_tier_enforcement" "SUBAGENT MODEL ENFORCEMENT: \`model_tier=economy\` is active. On EVERY \`Agent()\` call, pass \`model: \"sonnet\"\` explicitly — agent-definition frontmatter is advisory; the tool-call \`model\` parameter is authoritative." ;;
       balanced)
-        add_directive "model_tier_enforcement" "SUBAGENT MODEL ENFORCEMENT: \`model_tier=balanced\` is active. On EVERY \`Agent()\` call, pass the \`model\` parameter explicitly — \`\"opus\"\` for planning/review agents (quality-planner, quality-reviewer, excellence-reviewer, oracle, metis, prometheus, abstraction-critic, council lenses), \`\"sonnet\"\` for execution agents (frontend-developer, backend-api-developer, etc.). Frontmatter is advisory; the tool-call parameter is authoritative." ;;
+        # Execution-tier example names must track the detected domain — a
+        # coding-specialist name injected into a writing/research/operations
+        # turn nudges routing toward code (benchmark T7/T8/T11/T12/T16
+        # forbid frontend-developer/backend-api-developer in non-coding
+        # contexts). Domain specialists named here are already asserted
+        # PRESENT by their own domains' routing tests, so no new leak.
+        _mt_exec_examples="the domain execution specialists"
+        case "${TASK_DOMAIN:-coding}" in
+          coding|mixed) _mt_exec_examples="frontend-developer, backend-api-developer, etc." ;;
+          writing)      _mt_exec_examples="draft-writer, etc." ;;
+          research)     _mt_exec_examples="briefing-analyst, etc." ;;
+          operations)   _mt_exec_examples="chief-of-staff, draft-writer, etc." ;;
+        esac
+        add_directive "model_tier_enforcement" "SUBAGENT MODEL ENFORCEMENT: \`model_tier=balanced\` is active. On EVERY \`Agent()\` call, pass the \`model\` parameter explicitly — \`\"opus\"\` for planning/review agents (quality-planner, quality-reviewer, excellence-reviewer, oracle, metis, prometheus, abstraction-critic, council lenses), \`\"sonnet\"\` for execution agents (${_mt_exec_examples}). Frontmatter is advisory; the tool-call parameter is authoritative." ;;
     esac
   fi
 
