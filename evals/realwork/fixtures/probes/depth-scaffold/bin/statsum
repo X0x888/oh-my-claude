@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/lib/sum.sh"
+
+main() {
+  [[ $# -gt 0 ]] || { printf 'usage: statsum <n> [n...]\n' >&2; exit 2; }
+  local total
+  total="$(window_sum "$@")"
+  printf 'total=%s\n' "${total}"
+}
+
+main "$@"

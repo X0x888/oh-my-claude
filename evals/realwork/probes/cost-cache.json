@@ -1,0 +1,17 @@
+{
+  "id": "cost-cache",
+  "question": "What does the always-on doctrine chain actually cost per task — tokens, dollars, turns, wall time — full vs trimmed vs bare, on identical work?",
+  "hypothesis": "Mostly cache-amortized: live telemetry shows 640-1050x cache-read-to-fresh-input ratios, so the marginal dollar cost of the ~15.8k-token chain should be small. If measured cost or latency deltas are large, criterion-6 (fast/low-latency) work should target the chain; if small, hook process overhead is the real latency surface, not doctrine weight.",
+  "prompt": "/ulw fix the two failing tests in this repo and keep the suite green.",
+  "fixture": "fixtures/probes/no-defer-contract",
+  "arms": [
+    { "name": "full", "base": "full" },
+    { "name": "trimmed-scaffold", "base": "full", "remove_includes": ["intellectual-craft.md", "model-robustness.md"] },
+    { "name": "bare", "base": "bare" }
+  ],
+  "checks": [
+    { "id": "tests_pass", "cmd": "bash tests/run-tests.sh" }
+  ],
+  "metrics": ["cost_usd", "num_turns", "duration_ms", "wall_seconds"],
+  "runs_default": 3
+}

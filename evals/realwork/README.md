@@ -28,6 +28,31 @@ Each scenario in `scenarios/*.json` declares:
 | `bash run.sh validate` | Schema-validates every scenario JSON |
 | `bash run.sh score <result.json>` | Scores a result artifact against the matching scenario, prints `{score, pass, missing_outcomes, budget_failures}` |
 | `bash result-from-session.sh --scenario <id> [--session <sid>]` | **v1.39.0 W3** — synthesizes a result artifact from a real session's telemetry (session_state.json + timing.jsonl + findings.json + edited_files.log) |
+| `bash arms.sh doctor / validate / list-probes` | **v1.48 W1** — counterfactual arm runner health, probe schema check, probe inventory |
+| `bash arms.sh campaign --probe <id> [--runs N]` | Runs a probe's prompt through real headless sessions under every arm (full / trimmed-\* / bare) and prints the delta report |
+| `bash arms.sh report [--probe <id>] [--claims]` | Aggregates run records into per-arm outcome rates + cost medians; `--claims` emits a `claims.md`-ready ledger row |
+
+## Counterfactual arms (v1.48 W1)
+
+`run.sh score` answers "did a ULW session hit its own targets?" —
+`arms.sh` answers the question that layer structurally cannot: **did the
+harness beat no-harness on the same task?** Each `probes/*.json` targets
+one mechanism (the no-defer will-contract, the anti-shallow-thinking
+scaffold, the doctrine chain's cost) with a task prompt, a bundled
+fixture, two-or-more arms, and ground-truth checks executed against the
+workspace after the run — never against harness telemetry, which a bare
+arm does not produce. Results accumulate as receipts in
+[`claims.md`](claims.md), the subtraction criterion for future
+doctrine/gate growth.
+
+Arms are sandboxed installs (`TARGET_HOME` + `CLAUDE_CONFIG_DIR` + `HOME`
+isolation — nothing touches your live `~/.claude` or its ledgers).
+Sandboxes never inherit interactive login; real campaigns need a one-time
+`claude setup-token` (then `export CLAUDE_CODE_OAUTH_TOKEN=...`) or an
+`ANTHROPIC_API_KEY`. `tests/test-realwork-arms.sh` exercises the whole
+pipeline with a mock binary — zero spend. Probe fixtures under
+`fixtures/probes/` are bundled (tiny, purpose-built); the 20 realistic
+scenarios' fixtures remain user-provided as documented above.
 
 ## End-to-end usage
 

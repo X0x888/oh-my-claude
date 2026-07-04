@@ -299,6 +299,9 @@ jobs:
       - name: Run pretool-intent-guard tests (v1.32.0 R1 pin)
         run: bash tests/test-pretool-intent-guard.sh
 
+      - name: Run realwork counterfactual-arms tests (v1.48 W1)
+        run: bash tests/test-realwork-arms.sh
+
       - name: Run discovered-scope tests (v1.32.0 R1 pin)
         run: bash tests/test-discovered-scope.sh
 

@@ -11,3 +11,9 @@
 .hotfix-sweep-quick
 __pycache__/
 *.pyc
+
+# realwork counterfactual arms: sandboxed harness installs + run records
+# (workspaces are evidence, potentially large) stay local; the receipt
+# rows they produce get pasted into evals/realwork/claims.md.
+evals/realwork/.arms/
+evals/realwork/runs/
