@@ -48,9 +48,15 @@ MERGE_DIRS=()
 _merge_expect=0
 for _arg in "$@"; do
   if [[ "${_merge_expect}" -eq 1 ]]; then
-    MERGE_DIRS+=("${_arg}")
     _merge_expect=0
-    continue
+    if [[ "${_arg}" == --* ]]; then
+      # `--merge --sweep` shape: the user forgot the dir. Don't swallow
+      # the sibling flag — warn and let this token parse normally.
+      printf '_[--merge] Missing directory value (next token %s is a flag) — --merge ignored._\n' "${_arg}" >&2
+    else
+      MERGE_DIRS+=("${_arg}")
+      continue
+    fi
   fi
   case "${_arg}" in
     --share)              SHARE_MODE=1 ;;
@@ -327,14 +333,20 @@ if [[ "${#MERGE_DIRS[@]}" -gt 0 ]]; then
     _merge_summary="${_OMC_MERGE_TMPDIR}/session_summary.jsonl"
     _merge_gate="${_OMC_MERGE_TMPDIR}/gate_events.jsonl"
     _merge_local_host="$(omc_host)"
+    # `-R + fromjson?` skips unparseable lines instead of aborting the
+    # whole stream — one torn append (rate-limit kill) must never make
+    # the merged view silently drop everything after it, and the plain
+    # `jq -c` form did exactly that (quality-reviewer F-1, verified:
+    # jq exits 4 at the first malformed row and the local fallback
+    # then truncated the entire local ledger from the view).
     if [[ -f "${SUMMARY_FILE}" ]] && [[ -s "${SUMMARY_FILE}" ]]; then
-      jq -c --arg h "${_merge_local_host}" '.host //= $h' "${SUMMARY_FILE}" \
+      jq -Rc --arg h "${_merge_local_host}" 'fromjson? | .host //= $h' "${SUMMARY_FILE}" \
         > "${_merge_summary}" 2>/dev/null || : > "${_merge_summary}"
     else
       : > "${_merge_summary}"
     fi
     if [[ -f "${GATE_EVENTS_FILE}" ]] && [[ -s "${GATE_EVENTS_FILE}" ]]; then
-      jq -c --arg h "${_merge_local_host}" '.host //= $h' "${GATE_EVENTS_FILE}" \
+      jq -Rc --arg h "${_merge_local_host}" 'fromjson? | .host //= $h' "${GATE_EVENTS_FILE}" \
         > "${_merge_gate}" 2>/dev/null || : > "${_merge_gate}"
     else
       : > "${_merge_gate}"
@@ -360,11 +372,11 @@ if [[ "${#MERGE_DIRS[@]}" -gt 0 ]]; then
       _merge_label="${_merge_label//[^A-Za-z0-9._-]/-}"
       [[ -z "${_merge_label}" ]] && _merge_label="external"
       if [[ -f "${_merge_src}/session_summary.jsonl" ]]; then
-        jq -c --arg h "${_merge_label}" '.host //= $h' "${_merge_src}/session_summary.jsonl" \
+        jq -Rc --arg h "${_merge_label}" 'fromjson? | .host //= $h' "${_merge_src}/session_summary.jsonl" \
           >> "${_merge_summary}" 2>/dev/null || true
       fi
       if [[ -f "${_merge_src}/gate_events.jsonl" ]]; then
-        jq -c --arg h "${_merge_label}" '.host //= $h' "${_merge_src}/gate_events.jsonl" \
+        jq -Rc --arg h "${_merge_label}" 'fromjson? | .host //= $h' "${_merge_src}/gate_events.jsonl" \
           >> "${_merge_gate}" 2>/dev/null || true
       fi
       _omc_merge_dir_count=$(( _omc_merge_dir_count + 1 ))

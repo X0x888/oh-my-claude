@@ -992,7 +992,7 @@ cat > "${EXT1}/.claude/quality-pack/session_summary.jsonl" <<EOF
 {"session_id":"e1a","start_ts":${NOW},"end_ts":${NOW},"domain":"coding","intent":"execution","edit_count":2,"verified":false,"reviewed":false,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":0,"outcome":"shipped","skip_count":0,"serendipity_count":0}
 {"session_id":"e1b","host":"custom-host","start_ts":${NOW},"end_ts":${NOW},"domain":"coding","intent":"execution","edit_count":3,"verified":false,"reviewed":false,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":0,"outcome":"shipped","skip_count":0,"serendipity_count":0}
 EOF
-printf '{"_v":1,"ts":%s,"gate":"quality","event":"block"}\n' "${NOW}" \
+printf '{"_v":1,"ts":%s,"gate":"merge-proof-gate","event":"block"}\n' "${NOW}" \
   > "${EXT1}/.claude/quality-pack/gate_events.jsonl"
 # External #2: bare quality-pack-dir shape, passed via --merge=<dir>.
 EXT2="${TEST_HOME}/ext/mbp-qp"
@@ -1010,6 +1010,7 @@ assert_contains "T41 — external row backfilled with dir label" "Intel-2019: 1"
 assert_contains "T41 — preset host preserved (not overwritten)" "custom-host: 1" "${out}"
 assert_contains "T41 — bare-dir shape labeled by basename" "mbp-qp: 1" "${out}"
 assert_contains "T41 — local row backfilled with this machine" "${_t41_local_host}: 1" "${out}"
+assert_contains "T41 — merged gate event surfaces in report" "merge-proof-gate" "${out}"
 _t41_ext1_after="$(cat "${EXT1}/.claude/quality-pack/session_summary.jsonl")"
 assert_eq "T41 — external source unmodified (read-only)" "${_t41_ext1_before}" "${_t41_ext1_after}"
 
@@ -1023,6 +1024,39 @@ assert_eq "T42 — exit 0 despite bad merge dir" "0" "${rc}"
 assert_contains "T42 — skip banner names the dir" "Skipping ${TEST_HOME}/no-such-machine-dir" "${out}"
 rm -rf "${TEST_HOME}/ext"
 rm -f "${QP}/session_summary.jsonl"
+
+# ----------------------------------------------------------------------
+printf 'Test 43: --merge survives malformed rows (fromjson? skip, no truncation)\n'
+NOW="$(date +%s)"
+_t43_local_host="$(hostname -s 2>/dev/null || uname -n 2>/dev/null || printf 'unknown')"
+_t43_local_host="${_t43_local_host//[^A-Za-z0-9._-]/-}"
+# Local ledger: good row, TORN row (simulated rate-limit-kill append), good row.
+{
+  printf '{"session_id":"l1","start_ts":%s,"end_ts":%s,"domain":"coding","intent":"execution","edit_count":1,"verified":false,"reviewed":false,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":0,"outcome":"shipped","skip_count":0,"serendipity_count":0}\n' "${NOW}" "${NOW}"
+  printf '{"session_id":"torn","start_ts":%s,"domai\n' "${NOW}"
+  printf '{"session_id":"l2","start_ts":%s,"end_ts":%s,"domain":"coding","intent":"execution","edit_count":1,"verified":false,"reviewed":false,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":0,"outcome":"shipped","skip_count":0,"serendipity_count":0}\n' "${NOW}" "${NOW}"
+} > "${QP}/session_summary.jsonl"
+# External ledger with the same corruption shape.
+EXT3="${TEST_HOME}/ext3/Corrupt-Machine"
+mkdir -p "${EXT3}/.claude/quality-pack"
+{
+  printf '{"session_id":"c1","start_ts":%s,"end_ts":%s,"domain":"coding","intent":"execution","edit_count":1,"verified":false,"reviewed":false,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":0,"outcome":"shipped","skip_count":0,"serendipity_count":0}\n' "${NOW}" "${NOW}"
+  printf 'not json at all\n'
+  printf '{"session_id":"c2","start_ts":%s,"end_ts":%s,"domain":"coding","intent":"execution","edit_count":1,"verified":false,"reviewed":false,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":0,"outcome":"shipped","skip_count":0,"serendipity_count":0}\n' "${NOW}" "${NOW}"
+} > "${EXT3}/.claude/quality-pack/session_summary.jsonl"
+out="$(run_report all --merge "${EXT3}")"
+assert_contains "T43 — local rows after torn line survive" "${_t43_local_host}: 2" "${out}"
+assert_contains "T43 — external rows after bad line survive" "Corrupt-Machine: 2" "${out}"
+rm -rf "${TEST_HOME}/ext3"
+rm -f "${QP}/session_summary.jsonl"
+
+# ----------------------------------------------------------------------
+printf 'Test 44: --merge followed by a flag does not swallow it\n'
+out="$(run_report all --merge --sweep)"
+rc=$?
+assert_eq "T44 — exit 0" "0" "${rc}"
+assert_contains "T44 — warning names the unconsumed flag" "Missing directory value" "${out}"
+assert_contains "T44 — --sweep still took effect" "[--sweep] Including" "${out}"
 
 # ----------------------------------------------------------------------
 printf '\n=== Show-Report Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
