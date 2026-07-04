@@ -1196,6 +1196,12 @@ if __name__ == "__main__":
         # A rendering bug must never blank the status bar: Claude Code
         # replaces the bar with this script's stdout on every tick, so an
         # uncaught exception (e.g. a wrong-typed payload field reaching a
-        # numeric format) would exit 1 and wipe the line. Fail silent,
-        # keep the bar alive; the next tick retries with fresh payload.
+        # numeric format) would exit 1 and wipe the line — and EMPTY
+        # stdout blanks it just the same, so emit a minimal fallback line
+        # rather than exiting silent. The next tick retries with fresh
+        # payload.
+        try:
+            print("oh-my-claude")
+        except Exception:
+            pass
         sys.exit(0)

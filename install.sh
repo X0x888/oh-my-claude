@@ -875,17 +875,23 @@ merge_settings_jq() {
             | if ($gone | length) == 0 then .
               elif (has("hooks") | not) then .
               else
-                .hooks = [(.hooks // [])[]
-                  | select(
-                      (type != "object")
-                      or (((.command // "") | script_basename) as $b
-                          | ($gone | index($b)) == null))]
+                (.hooks // []) as $orig
+                | [$orig[]
+                   | select(
+                       (type != "object")
+                       or (((.command // "") | script_basename) as $b
+                           | ($gone | index($b)) == null))] as $kept
+                # Drop the entry ONLY when the prune itself emptied it —
+                # a pre-existing empty/null-hooks entry must survive
+                # exactly as the merge always treated it (python parity;
+                # remediation re-review F-A).
+                | if ($kept | length) == ($orig | length) then .
+                  elif ($kept | length) == 0 then null
+                  else .hooks = $kept
+                  end
               end
           end)
-        | map(select(
-            (type != "object")
-            or (has("hooks") | not)
-            or ((.hooks | length) > 0)))
+        | map(select(. != null))
         end;
     # Merge a list of patch entries into a base entries array using the
     # three-phase algorithm: exact match → overlap → append.

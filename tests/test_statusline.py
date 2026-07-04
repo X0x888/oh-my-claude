@@ -2650,16 +2650,29 @@ class TestMalformedPayloadResilience(unittest.TestCase):
                 env=env,
             )
 
-    def test_wrong_typed_cost_exits_zero(self):
+    def test_raising_payload_emits_fallback_line(self):
+        # total_cost_usd:"x" genuinely raises inside format_cost (verified
+        # by bypassing the guard) — the guard must exit 0 AND still emit
+        # a line, because empty stdout blanks the bar exactly like a
+        # crash would.
         result = self._run('{"cost": {"total_cost_usd": "x"}}')
         self.assertEqual(result.returncode, 0)
+        self.assertTrue(
+            result.stdout.strip(),
+            "raising payload must still emit a fallback bar line",
+        )
+        self.assertIn("oh-my-claude", result.stdout)
 
-    def test_wrong_typed_percentage_exits_zero(self):
+    def test_wrong_typed_percentage_renders_without_crash(self):
+        # This payload does NOT raise (the renderer tolerates it) — the
+        # assertion here is bar-health, not guard behavior: rc 0 AND a
+        # real rendered line.
         result = self._run(
             '{"context_window": {"used_percentage": "bad"},'
             ' "cost": {"total_cost_usd": []}}'
         )
         self.assertEqual(result.returncode, 0)
+        self.assertTrue(result.stdout.strip())
 
     def test_guard_does_not_mask_healthy_render(self):
         # Control: a well-formed empty payload still renders real output,
