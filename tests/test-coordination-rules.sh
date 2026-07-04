@@ -283,6 +283,12 @@ QP_SCRIPTS_DIR="${REPO_ROOT}/bundle/dot-claude/quality-pack/scripts"
 AUTOWORK_DIR="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts"
 
 agent_count="$(find "${REPO_ROOT}/bundle/dot-claude/agents" -maxdepth 1 -name '*.md' | wc -l | awk '{print $1}')"
+# Read-only vs builder split (v1.48 honesty fix): the README/SECURITY safety
+# story claims a specific read-only/writable split — derive both counts from
+# the agent files themselves so the docs can never silently drift from the
+# actual permission boundaries again.
+readonly_agent_count="$(grep -l 'disallowedTools' "${REPO_ROOT}/bundle/dot-claude/agents/"*.md | wc -l | awk '{print $1}')"
+writable_agent_count="$((agent_count - readonly_agent_count))"
 skill_count="$(find "${REPO_ROOT}/bundle/dot-claude/skills" -mindepth 2 -maxdepth 2 -name 'SKILL.md' | wc -l | awk '{print $1}')"
 lifecycle_count="$(find "${QP_SCRIPTS_DIR}" -maxdepth 1 -name '*.sh' | wc -l | awk '{print $1}')"
 autowork_count="$(find "${AUTOWORK_DIR}" -maxdepth 1 -name '*.sh' | wc -l | awk '{print $1}')"
@@ -300,9 +306,19 @@ assert_doc_match() {
 }
 
 assert_doc_match "C4: README agent headline count" \
-  "^\\*\\*${agent_count} specialist agents — none can edit files;" \
+  "^\\*\\*${agent_count} specialist agents — every agent that judges work is read-only; the ${writable_agent_count} that build are permission-gated\\." \
   "${README_MD}" \
-  "README.md should describe the live agent count (${agent_count}) in the Permissioned agents section"
+  "README.md should describe the live agent count (${agent_count}) and writable split (${writable_agent_count}) in the Permissioned agents section"
+
+assert_doc_match "C4: README read-only agent count" \
+  "The ${readonly_agent_count} advisory, planning, and review specialists carry \`disallowedTools: Write, Edit, MultiEdit\`" \
+  "${README_MD}" \
+  "README.md Permissioned agents body should state the live read-only specialist count (${readonly_agent_count})"
+
+assert_doc_match "C4: SECURITY read-only agent count" \
+  "The ${readonly_agent_count} advisory/planning/review specialists carry \`disallowedTools: Write, Edit, MultiEdit\`" \
+  "${REPO_ROOT}/SECURITY.md" \
+  "SECURITY.md should state the live read-only specialist count (${readonly_agent_count})"
 
 assert_doc_match "C4: README repository agent count" \
   "^│   ├── agents/[[:space:]]+\\(${agent_count} agents\\)" \

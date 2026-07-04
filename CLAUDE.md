@@ -18,7 +18,7 @@ If a fact appears here AND in one of the above, that doc is authoritative — ke
 
 ## Key Directories
 
-- `bundle/dot-claude/agents/` — 34 specialist agent definitions with `disallowedTools` permission boundaries
+- `bundle/dot-claude/agents/` — 34 specialist agent definitions; the 24 advisory/review agents carry `disallowedTools` permission boundaries, the 10 domain builders can edit
 - `bundle/dot-claude/quality-pack/scripts/` — 13 lifecycle hooks. Per-hook detail in `docs/architecture.md`.
 - `bundle/dot-claude/skills/` — 30 skill definitions, each in `<name>/SKILL.md`
 - `bundle/dot-claude/skills/autowork/scripts/` — 39 autowork hooks + helpers; shared lib `common.sh`; lazy-loaded `lib/{state-io,classifier,verification,timing,canary}.sh`. Per-script detail in `docs/architecture.md`.

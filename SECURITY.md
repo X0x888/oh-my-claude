@@ -30,7 +30,7 @@ One move disables the whole class: `/omc-config` → **Minimal** preset (all tel
 
 ## 4. Why is it safe to let this gate my sessions?
 
-- **Agents cannot write.** All 34 specialist agents carry `disallowedTools: Write, Edit, MultiEdit` — only the main thread (which you watch) mutates files.
+- **Review agents cannot write; builder agents edit under your permission model.** The 24 advisory/planning/review specialists carry `disallowedTools: Write, Edit, MultiEdit` — the agents that judge work are structurally unable to alter it. The 10 domain builders (`frontend-developer`, `backend-api-developer`, the `ios-*` family, `fullstack-feature-builder`, `devops-infrastructure-engineer`, `test-automation-engineer`, `atlas`) can edit; their tool calls run under the same Claude Code permission prompts as the main thread.
 - **Permission prompts stay on.** Installation does not touch Claude Code's permission model; `--bypass-permissions` is a separate, explicit opt-in documented in the README.
 - **Hostile-repo defense.** A cloned repo's `.claude/oh-my-claude.conf` cannot disable security-load-bearing gates: `pretool_intent_guard`, `bg_spawn_gate`, `agent_first_gate`, `no_defer_mode`, and `quality_policy` are deny-listed at the conf parser (project-level lines for them are ignored; see `docs/customization.md` → *Project-conf security restriction*).
 - **Destructive-op gating.** The PreToolUse guard blocks destructive git/gh operations (`push`, `reset --hard`, `rebase`, releases…) unless your prompt's classified intent authorizes them.

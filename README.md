@@ -83,7 +83,7 @@ Use the manual clone path when you want the strongest supply-chain posture. Use 
 
 ### Is this safe?
 
-Fair question for a tool that hooks every prompt and runs bash on your machine. Short answers: **100% local** (no network egress, no telemetry endpoint — the only network activity is the `git clone` you invoke); **agents can't write** (all 34 specialists carry `disallowedTools: Write, Edit, MultiEdit` — only the main thread you watch mutates files); **permission prompts stay on** (bypass is a separate explicit opt-in); **hostile repos can't disarm it** (security flags are deny-listed from project-level conf); **everything it persists is local, redacted, and opt-out** (`/omc-config` → Minimal turns all telemetry off). The full four-question answer — what runs, what leaves, what's persisted, why it's safe to let it gate you — lives in [SECURITY.md](SECURITY.md).
+Fair question for a tool that hooks every prompt and runs bash on your machine. Short answers: **100% local** (no network egress, no telemetry endpoint — the only network activity is the `git clone` you invoke); **review agents can't write** (the 24 advisory/planning/review specialists carry `disallowedTools: Write, Edit, MultiEdit`; the 10 domain builders — `frontend-developer`, the `ios-*` family, etc. — edit only under the same permission prompts that govern the main thread); **permission prompts stay on** (bypass is a separate explicit opt-in); **hostile repos can't disarm it** (security flags are deny-listed from project-level conf); **everything it persists is local, redacted, and opt-out** (`/omc-config` → Minimal turns all telemetry off). The full four-question answer — what runs, what leaves, what's persisted, why it's safe to let it gate you — lives in [SECURITY.md](SECURITY.md).
 
 After install, two mandatory steps:
 
@@ -242,7 +242,7 @@ Reviewer findings are machine-readable (single-line `FINDINGS_JSON` block before
 
 ### Permissioned agents
 
-**34 specialist agents — none can edit files; the main thread owns all mutations.** Each agent's `disallowedTools` is enforced at dispatch. Agents read, search, analyze, and plan; the main thread executes any changes they recommend. This keeps the main thread as the single source of truth and prevents unsupervised writes from agents operating on incomplete context.
+**34 specialist agents — every agent that judges work is read-only; the 10 that build are permission-gated.** The 24 advisory, planning, and review specialists carry `disallowedTools: Write, Edit, MultiEdit`, enforced at dispatch: they read, search, analyze, and plan, and the main thread executes what they recommend — the agents that judge work are structurally unable to alter it. The 10 domain builders (frontend-developer, backend-api-developer, the ios-* family, fullstack-feature-builder, devops-infrastructure-engineer, test-automation-engineer, atlas) can edit by design — implementation is their job — and every write still runs under the same Claude Code permission prompts that govern the main thread.
 
 ### Project Council
 
