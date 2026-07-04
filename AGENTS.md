@@ -169,7 +169,7 @@ oh-my-claude/
     output-styles/            # Two bundled output styles: oh-my-claude.md (compact CLI default) + executive-brief.md (CEO-style status report)
     quality-pack/
       memory/                 # Core, skills, and compact memory files
-      scripts/                # 13 lifecycle scripts (prompt routing, first-prompt session-init, compaction, session start [7 hooks incl. drift-check + whats-new + watchdog-health + resume-hint], stop-failure, resume-watchdog)
+      scripts/                # 16 lifecycle scripts (prompt routing, first-prompt session-init, compaction, session start [9 hooks incl. drift-check + whats-new + watchdog-health + resume-hint + self-audit-nudge + auto-tune], stop-failure, resume-watchdog, self-audit recorder)
     skills/                   # 31 skill definitions, each in <name>/SKILL.md
       autowork/scripts/       # 42 autowork hook scripts and utilities
         common.sh             # Shared functions (JSON, classification, scope)
@@ -185,7 +185,7 @@ oh-my-claude/
     settings.patch.json       # Settings merged into user's settings.json
 
   evals/realwork/             # Outcome eval scenarios + scorer for minimal-prompt real-work shipping
-  tests/                      # 142 bash + 1 python test scripts; CLAUDE.md "Testing" lists each one
+  tests/                      # 145 bash + 1 python test scripts; CLAUDE.md "Testing" lists each one
 
   tools/                      # Developer tools (not installed; keep exhaustive)
     audit-published-release-assets.sh

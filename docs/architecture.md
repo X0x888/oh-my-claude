@@ -405,6 +405,8 @@ Separate from session state, `install.sh` writes four install-time artifacts tha
 | `just_compacted_ts` | Epoch when `just_compacted` was set; 15-minute staleness window |
 | `review_pending_at_compact` | `1` if a quality review was pending when the last compact fired; drives the "MUST run quality-reviewer" directive in the compact-resume injection |
 | `compact_race_count` | Number of back-to-back compactions where the prior snapshot had not yet been consumed (diagnostic telemetry) |
+| `self_audit_nudge_emitted` | (v1.48-pre) Per-session dedupe flag (`1` after first emit) for the SessionStart `self-audit-nudge` hook. Same MESSAGE-guard shape as `whats_new_emitted` — the underlying staleness check (compare two epochs in `~/.claude/quality-pack/last-self-audit.json`) is cheap and re-runs harmlessly on later matcher fires; only the emitted message is deduped. Cross-session dedupe (the 90-day staleness bar and the 7-day re-nudge window) lives in that same JSON file. |
+| `auto_tune_checked` | (v1.48-pre) Per-session guard (`1` after first check) for the SessionStart `auto-tune` hook. Unlike `whats_new_emitted`, this guards the WHOLE evaluation, not just a message emission — reading and jq-parsing `gate_events.jsonl`, and potentially rewriting `~/.claude/oh-my-claude.conf`, are not cheap/side-effect-free the way a version-string compare is, so re-running them on a later same-session matcher fire is worth avoiding even though the cross-session `~/.claude/quality-pack/auto-tune-state.json` 7-day cadence would eventually also short-circuit it. |
 
 ---
 

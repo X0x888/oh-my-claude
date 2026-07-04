@@ -836,13 +836,16 @@ done
 # not an enforcement gate. repo_lessons=on makes the agent write into
 # .claude/lessons.md|backlog.md AT THE REPO ROOT; a hostile repo committing
 # repo_lessons=on in its own project conf must not be able to turn that on
-# for every visitor).
+# for every visitor). v1.48-pre also adds auto_tune — the largest blast
+# radius of any member so far: auto_tune=on lets session-start-auto-tune.sh
+# rewrite the user's GLOBAL ~/.claude/oh-my-claude.conf gate thresholds, a
+# mutation that outlives the current repo entirely.
 # A malicious or unfamiliar repo's `.claude/oh-my-claude.conf` must NOT
 # be able to disable security-load-bearing gates the user opted into
 # via their user-level `${HOME}/.claude/oh-my-claude.conf`. The deny-
 # list is narrow: pretool_intent_guard, bg_spawn_gate, agent_first_gate,
-# no_defer_mode, quality_policy, repo_lessons. All other flags can still
-# be project-overridden.
+# no_defer_mode, quality_policy, repo_lessons, auto_tune. All other
+# flags can still be project-overridden.
 # ===========================================================================
 printf '\n=== F-013: project-conf security flag deny-list ===\n'
 
@@ -851,10 +854,10 @@ printf '\n=== F-013: project-conf security flag deny-list ===\n'
 # (case-statement marker) so a refactor that removed the actual
 # case-statement while leaving the bare comment block would NOT pass
 # this regression (quality-reviewer Wave 2 F3 follow-up).
-if grep -q 'pretool_intent_guard|bg_spawn_gate|agent_first_gate|no_defer_mode|quality_policy|repo_lessons)' "${HOOK_DIR}/common.sh"; then
+if grep -q 'pretool_intent_guard|bg_spawn_gate|agent_first_gate|no_defer_mode|quality_policy|repo_lessons|auto_tune)' "${HOOK_DIR}/common.sh"; then
   pass=$((pass + 1))
 else
-  printf '  FAIL: F-013a: common.sh case-statement must restrict pretool_intent_guard/bg_spawn_gate/agent_first_gate/no_defer_mode/quality_policy/repo_lessons from project conf\n' >&2
+  printf '  FAIL: F-013a: common.sh case-statement must restrict pretool_intent_guard/bg_spawn_gate/agent_first_gate/no_defer_mode/quality_policy/repo_lessons/auto_tune from project conf\n' >&2
   fail=$((fail + 1))
 fi
 
@@ -939,6 +942,42 @@ else
   fail=$((fail + 1))
 fi
 rm -rf "${_f013f_home}"
+
+# (g) v1.48-pre BEHAVIORAL assertion, same shape as (e): auto_tune guards
+# a mutation surface even bigger than repo_lessons's (it rewrites the
+# user's GLOBAL conf, not just files inside the current repo), so the
+# end-to-end proof reads is_auto_tune_enabled. No user conf, no env, a
+# hostile project conf sets auto_tune=on — after load_conf,
+# is_auto_tune_enabled must still be FALSE (self-tuning stays off).
+_f013g_home="$(mktemp -d)"
+mkdir -p "${_f013g_home}/.claude" "${_f013g_home}/repo/.claude"
+printf 'auto_tune=on\n' > "${_f013g_home}/repo/.claude/oh-my-claude.conf"
+if (cd "${_f013g_home}/repo" \
+    && env -u OMC_AUTO_TUNE HOME="${_f013g_home}" \
+       OMC_LAZY_CLASSIFIER=1 OMC_LAZY_TIMING=1 \
+       bash -c ". '${HOOK_DIR}/common.sh' >/dev/null 2>&1; is_auto_tune_enabled"); then
+  printf '  FAIL: F-013g: project-conf auto_tune=on must NOT enable self-tuning (deny-list bypass)\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+rm -rf "${_f013g_home}"
+
+# (h) positive control for (g): the SAME setting at USER-conf scope must
+# actually enable it — proves (g)'s pass isn't just a broken/dead getter.
+_f013h_home="$(mktemp -d)"
+mkdir -p "${_f013h_home}/.claude" "${_f013h_home}/repo"
+printf 'auto_tune=on\n' > "${_f013h_home}/.claude/oh-my-claude.conf"
+if (cd "${_f013h_home}/repo" \
+    && env -u OMC_AUTO_TUNE HOME="${_f013h_home}" \
+       OMC_LAZY_CLASSIFIER=1 OMC_LAZY_TIMING=1 \
+       bash -c ". '${HOOK_DIR}/common.sh' >/dev/null 2>&1; is_auto_tune_enabled"); then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: F-013h: user-level conf auto_tune=on must enable self-tuning (positive control)\n' >&2
+  fail=$((fail + 1))
+fi
+rm -rf "${_f013h_home}"
 
 # ===========================================================================
 # F-014: objective-completion contract gate (v1.46-pre Codex /goal port).

@@ -337,6 +337,12 @@ jobs:
       - name: Run repo-lessons tests (v1.48-pre repo_lessons flag pin)
         run: bash tests/test-repo-lessons.sh
 
+      - name: Run self-audit-nudge tests (v1.48-pre self_audit_nudge flag pin)
+        run: bash tests/test-self-audit-nudge.sh
+
+      - name: Run auto-tune tests (v1.48-pre auto_tune flag pin)
+        run: bash tests/test-auto-tune.sh
+
       - name: Run cross-session-rotation tests (v1.32.0 R1 pin)
         run: bash tests/test-cross-session-rotation.sh
 

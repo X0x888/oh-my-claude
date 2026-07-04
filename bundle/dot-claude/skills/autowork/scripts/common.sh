@@ -114,6 +114,8 @@ _omc_env_lazy_session_start="${OMC_LAZY_SESSION_START:-}"
 _omc_env_mid_session_memory_checkpoint="${OMC_MID_SESSION_MEMORY_CHECKPOINT:-}"
 _omc_env_model_tier="${OMC_MODEL_TIER:-}"
 _omc_env_repo_lessons="${OMC_REPO_LESSONS:-}"
+_omc_env_self_audit_nudge="${OMC_SELF_AUDIT_NUDGE:-}"
+_omc_env_auto_tune="${OMC_AUTO_TUNE:-}"
 
 OMC_STALL_THRESHOLD="${OMC_STALL_THRESHOLD:-12}"
 OMC_EXCELLENCE_FILE_COUNT="${OMC_EXCELLENCE_FILE_COUNT:-3}"
@@ -636,7 +638,7 @@ _parse_conf_file() {
     # section, which documents the deny-list explicitly.
     if [[ "${level}" == "project" ]]; then
       case "${key}" in
-        pretool_intent_guard|bg_spawn_gate|agent_first_gate|no_defer_mode|quality_policy|repo_lessons)
+        pretool_intent_guard|bg_spawn_gate|agent_first_gate|no_defer_mode|quality_policy|repo_lessons|auto_tune)
           # quality_policy joined v1.47 (security-lens A, oracle-verified):
           # a hostile repo's project conf setting quality_policy=balanced
           # silently strips the zero-steering block-escalation
@@ -660,6 +662,18 @@ _parse_conf_file() {
           # can (see CLAUDE.md "Coordination Rules" v1.47 deny-list
           # evaluation and docs/customization.md "Project-conf security
           # restriction").
+          #
+          # auto_tune joined v1.48-pre: the largest blast radius of any
+          # deny-listed member so far. The other five all guard
+          # something scoped to the CURRENT repo (a gate that governs
+          # this session, or a write into this repo's own working
+          # tree); auto_tune=on lets session-start-auto-tune.sh rewrite
+          # the user's GLOBAL `~/.claude/oh-my-claude.conf` gate
+          # thresholds — a mutation that outlives the repo and follows
+          # the user into every future project. A hostile or merely
+          # unfamiliar repo's own committed project conf must not be
+          # able to arm that for itself; only user-level conf or
+          # `OMC_AUTO_TUNE=on` can.
           continue
           ;;
       esac
@@ -864,6 +878,23 @@ _parse_conf_file() {
         [[ -z "${_omc_env_mid_session_memory_checkpoint}" && "${value}" =~ ^(on|off)$ ]] && OMC_MID_SESSION_MEMORY_CHECKPOINT="${value}" || true ;;
       model_tier)
         [[ -z "${_omc_env_model_tier}" && "${value}" =~ ^(quality|balanced|economy)$ ]] && OMC_MODEL_TIER="${value}" || true ;;
+      self_audit_nudge)
+        # v1.48-pre: SessionStart nudge when CONTRIBUTING.md's quarterly
+        # `/council --self-audit` cadence has gone stale (>90 days, or
+        # never). Default on — a one-line additionalContext every 7
+        # days at most is cheap; turn off for shared machines or
+        # regulated codebases where the reminder is noise.
+        [[ -z "${_omc_env_self_audit_nudge}" && "${value}" =~ ^(on|off)$ ]] && OMC_SELF_AUDIT_NUDGE="${value}" || true ;;
+      auto_tune)
+        # v1.48-pre: opt-in self-tuning. When on, session-start-auto-tune.sh
+        # evaluates one mechanical case (objective_contract_min_files)
+        # against show-report.sh's own reprompt-rate signal at most
+        # once per 7 days, and applies a 1-step raise when the evidence
+        # clears the bar. Default off — see the deny-list comment above
+        # and docs/customization.md "Project-conf security restriction"
+        # for the WHY a mechanism that rewrites the user's own conf
+        # ships opt-in.
+        [[ -z "${_omc_env_auto_tune}" && "${value}" =~ ^(on|off)$ ]] && OMC_AUTO_TUNE="${value}" || true ;;
     esac
   done < "${conf}"
 }
@@ -970,6 +1001,18 @@ is_auto_memory_enabled() {
 # level conf cannot set this (deny-listed in _parse_conf_file above).
 is_repo_lessons_enabled() {
   [[ "${OMC_REPO_LESSONS:-off}" == "on" ]]
+}
+
+# Returns 0 (true) when opt-in self-tuning is enabled, 1 (false)
+# otherwise (default). Off by default — this is the harness's first
+# self-modifying case: session-start-auto-tune.sh calls this before
+# reading gate_events.jsonl or writing to the user's own
+# oh-my-claude.conf. Enable via `auto_tune=on` in user-level conf or
+# env OMC_AUTO_TUNE=on — project-level conf cannot set this (deny-
+# listed in _parse_conf_file above; see that comment for the WHY this
+# one has a larger blast radius than the other deny-listed flags).
+is_auto_tune_enabled() {
+  [[ "${OMC_AUTO_TUNE:-off}" == "on" ]]
 }
 
 # Returns 0 (true) when StopFailure capture is enabled, 1 (false) when

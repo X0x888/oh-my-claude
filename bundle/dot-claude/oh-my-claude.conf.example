@@ -355,6 +355,33 @@
 # plan-complexity arming only. Env: OMC_OBJECTIVE_CONTRACT_ARM_ON_GOD_SCOPE.
 #objective_contract_arm_on_god_scope=on
 #
+# auto_tune (v1.48-pre). The harness's first self-modifying case: the
+# observe -> recommend -> now APPLIES loop closed for exactly one
+# tuning target, objective_contract_min_files. When `on`,
+# session-start-auto-tune.sh checks at most once every 7 days whether
+# the objective-contract gate's reprompt-rate (the SAME signal
+# /ulw-report already surfaces as a suggestion — see show-report.sh's
+# "Objective-contract block reprompt-rate" heuristic) clears a >=50%
+# over-firing bar over >=10 qualifying blocks in the last 7 days, and
+# if so raises objective_contract_min_files by exactly one step
+# (clamped to [2,12], and only when the current value is already
+# inside that band — 0 is the documented volume-arm-disable sentinel
+# and is left untouched). Every application appends an audit row to
+# ~/.claude/quality-pack/auto-tune.jsonl and announces itself with the
+# exact revert instruction.
+#
+# SECURITY: this flag is deny-listed at project-conf scope — a hostile
+# repo flipping it on could otherwise rewrite YOUR GLOBAL
+# ~/.claude/oh-my-claude.conf gate thresholds the moment you `cd` in,
+# a mutation that outlives the repo. Only user-level conf or
+# OMC_AUTO_TUNE=on can enable it (see docs/customization.md
+# "Project-conf security restriction").
+#
+# Default OFF. Turn on if you trust the one mechanical case above and
+# want the harness to close its own suggestion loop instead of leaving
+# it for you to read in /ulw-report and hand-edit. Env: OMC_AUTO_TUNE.
+#auto_tune=off
+#
 # goal_gate: master switch for the /goal relentless driver (the user-facing
 # Codex /goal port). When on (default), a user-declared goal
 # (/goal "<objective>") re-anchors at every Stop and blocks until the goal
@@ -576,6 +603,18 @@
 # this surfaces a re-install). Default true.
 # Env: OMC_WHATS_NEW_SESSION_HINT.
 #whats_new_session_hint=true
+
+# Self-audit staleness nudge (v1.48-pre). CONTRIBUTING.md documents a
+# quarterly `/council --self-audit` cadence that nothing enforces or
+# even reminds you about. When on, session-start-self-audit-nudge.sh
+# reads ~/.claude/quality-pack/last-self-audit.json and emits a
+# one-shot "self-audit is stale" notice when the last run is >90 days
+# old (or never happened) AND the nudge itself hasn't fired in the
+# last 7 days. Run `/council --self-audit` (no backing script — a
+# markdown-driven protocol), then `bash
+# ~/.claude/quality-pack/scripts/record-self-audit.sh` to reset the
+# clock. Default on. Env: OMC_SELF_AUDIT_NUDGE.
+#self_audit_nudge=on
 
 # Lazy-init SessionStart hooks (v1.41 W3). When on, three SessionStart
 # hooks — `session-start-whats-new.sh`, `session-start-drift-check.sh`,

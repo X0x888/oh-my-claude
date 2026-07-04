@@ -1059,5 +1059,26 @@ assert_contains "T44 — warning names the unconsumed flag" "Missing directory v
 assert_contains "T44 — --sweep still took effect" "[--sweep] Including" "${out}"
 
 # ----------------------------------------------------------------------
+# v1.48-pre: Auto-tune section (read path for the `auto_tune` conf flag's
+# write path — see tests/test-auto-tune.sh for the write-side coverage).
+printf 'Test 45: Auto-tune section — empty state names both possible causes\n'
+rm -f "${QP}/auto-tune.jsonl"
+out="$(run_report week)"
+assert_contains "T45a — empty-state message present" "No auto-tune applications in window" "${out}"
+assert_contains "T45b — empty-state names the off-by-default flag" "auto_tune=off" "${out}"
+assert_contains "T45c — empty-state names the evidence bar" "50% reprompt-rate" "${out}"
+
+printf 'Test 46: Auto-tune section — populated row renders old -> new, host, evidence\n'
+NOW="$(date +%s)"
+printf '{"_v":1,"ts":%s,"flag":"objective_contract_min_files","old":4,"new":5,"evidence":"reprompt_rate_pct=66 blocks=12 reprompts=8 window_days=7","host":"ci-host"}\n' \
+  "${NOW}" > "${QP}/auto-tune.jsonl"
+out="$(run_report week)"
+assert_contains "T46a — window total rendered" "1 auto-tune application" "${out}"
+assert_contains "T46b — old -> new delta rendered" "4 -> 5" "${out}"
+assert_contains "T46c — host rendered" "ci-host" "${out}"
+assert_contains "T46d — evidence rendered" "reprompt_rate_pct=66" "${out}"
+rm -f "${QP}/auto-tune.jsonl"
+
+# ----------------------------------------------------------------------
 printf '\n=== Show-Report Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]] || exit 1

@@ -133,9 +133,15 @@ for impl in "${implementations[@]}"; do
   # after the installed_version changes. v1.43 sre-lens F-001 added
   # session-start-watchdog-health.sh as the 7th — alarms when the
   # resume-watchdog heartbeat is missing or stale (closes the silent-
-  # dead-watchdog 24/7-break trap).
+  # dead-watchdog 24/7-break trap). v1.48-pre added
+  # session-start-self-audit-nudge.sh as the 8th — nudges the
+  # CONTRIBUTING.md quarterly /council --self-audit cadence when
+  # stale — and session-start-auto-tune.sh as the 9th — opt-in
+  # self-tuning that raises objective_contract_min_files when
+  # show-report.sh's own reprompt-rate signal clears its over-firing
+  # bar.
   assert_json_count "${impl}: fresh — SessionStart hooks" \
-    "${work}/settings.json" '.hooks.SessionStart' "7"
+    "${work}/settings.json" '.hooks.SessionStart' "9"
   assert_json_eq "${impl}: fresh — SessionStart wires session-start-resume-hint.sh" \
     "${work}/settings.json" \
     '[.hooks.SessionStart[] | .hooks[0].command] | any(. | tostring | contains("session-start-resume-hint.sh"))' \
@@ -155,6 +161,14 @@ for impl in "${implementations[@]}"; do
   assert_json_eq "${impl}: fresh — SessionStart wires session-start-watchdog-health.sh" \
     "${work}/settings.json" \
     '[.hooks.SessionStart[] | .hooks[0].command] | any(. | tostring | contains("session-start-watchdog-health.sh"))' \
+    "true"
+  assert_json_eq "${impl}: fresh — SessionStart wires session-start-self-audit-nudge.sh" \
+    "${work}/settings.json" \
+    '[.hooks.SessionStart[] | .hooks[0].command] | any(. | tostring | contains("session-start-self-audit-nudge.sh"))' \
+    "true"
+  assert_json_eq "${impl}: fresh — SessionStart wires session-start-auto-tune.sh" \
+    "${work}/settings.json" \
+    '[.hooks.SessionStart[] | .hooks[0].command] | any(. | tostring | contains("session-start-auto-tune.sh"))' \
     "true"
   assert_json_count "${impl}: fresh — UserPromptSubmit hooks" \
     "${work}/settings.json" '.hooks.UserPromptSubmit' "1"
@@ -221,8 +235,8 @@ for impl in "${implementations[@]}"; do
   # -----------------------------------------------------------------------
   run_merge "${impl}" "${work}/settings.json" "${SETTINGS_PATCH}" "false"
 
-  assert_json_count "${impl}: idempotent — SessionStart hooks still 7" \
-    "${work}/settings.json" '.hooks.SessionStart' "7"
+  assert_json_count "${impl}: idempotent — SessionStart hooks still 9" \
+    "${work}/settings.json" '.hooks.SessionStart' "9"
   assert_json_count "${impl}: idempotent — SubagentStop hooks still 11" \
     "${work}/settings.json" '.hooks.SubagentStop' "12"
   assert_json_count "${impl}: idempotent — PostToolUse hooks still 5" \

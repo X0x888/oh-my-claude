@@ -75,6 +75,22 @@
             "command": "bash $HOME/.claude/quality-pack/scripts/session-start-welcome.sh"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $HOME/.claude/quality-pack/scripts/session-start-self-audit-nudge.sh"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $HOME/.claude/quality-pack/scripts/session-start-auto-tune.sh"
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [

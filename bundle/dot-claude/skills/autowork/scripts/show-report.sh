@@ -29,6 +29,7 @@ GATE_EVENTS_FILE="${QP_ROOT}/gate_events.jsonl"
 ARCHETYPES_FILE="${QP_ROOT}/used-archetypes.jsonl"
 AGENT_METRICS_FILE="${QP_ROOT}/agent-metrics.json"
 DEFECT_PATTERNS_FILE="${QP_ROOT}/defect-patterns.json"
+AUTO_TUNE_FILE="${QP_ROOT}/auto-tune.jsonl"
 
 # v1.31.0 Wave 8 (growth-lens F-037): --share flag emits a privacy-safe
 # numbers-only digest suitable for posting to Slack / PRs / Twitter.
@@ -810,7 +811,7 @@ if [[ "${FIELD_SHAPE_AUDIT}" -eq 1 ]]; then
 
   # ── Render result ────────────────────────────────────────────────
   # v1.42.x F-016: replaced ✅/❌ with semantic words to honor the
-  # no-emoji discipline named in output-styles/oh-my-claude.md (every
+  # no-emoji discipline named in output-styles/executive-brief.md (every
   # other oh-my-claude surface uses semantic words + bold weight, not
   # decorative icons). Caught by the visual-craft lens.
   if [[ "${_violations}" -eq 0 ]]; then
@@ -1710,6 +1711,38 @@ else
     | while IFS=$'\t' read -r _dk_kind _dk_ver _dk_commits _dk_count; do
         [[ -z "${_dk_kind}" ]] && continue
         printf '| `%s` | `%s` | %s | %s |\n' "${_dk_kind}" "${_dk_ver}" "${_dk_commits}" "${_dk_count}"
+      done
+  printf '\n'
+fi
+
+# ----------------------------------------------------------------------
+# Section 4b1.0: Auto-tune (v1.48-pre) — the harness's first self-
+# modifying case. Renders ~/.claude/quality-pack/auto-tune.jsonl the
+# same way the "Installation drift" section above renders its own
+# dedicated cross-session ledger: filter_by_window, explain the empty
+# state (either the flag is off, or the evidence bar hasn't cleared),
+# else a small most-recent-first table.
+printf '## Auto-tune\n\n'
+auto_tune_rows="$(filter_by_window "${AUTO_TUNE_FILE}" '.ts')"
+if [[ -z "${auto_tune_rows}" ]]; then
+  printf '_No auto-tune applications in window. Either `auto_tune=off` (the default), or the evidence bar (>=10 objective-contract blocks AND >=50%% reprompt-rate in a trailing 7-day window) has not cleared yet — see `/omc-config` or `auto_tune` in `docs/customization.md` to opt in._\n\n'
+else
+  _at_total="$(printf '%s\n' "${auto_tune_rows}" | jq -c 'select(.flag != null)' 2>/dev/null | wc -l | tr -d '[:space:]')"
+  printf '_Window total: %s auto-tune application(s). Each row is a mechanical conf write (no LLM judgment call) gated by `auto_tune=on` and the same reprompt-rate signal the Headline section above already surfaces as a suggestion for `objective_contract_min_files`._\n\n' \
+    "${_at_total}"
+  printf '| When | Flag | Old -> New | Host | Evidence |\n'
+  printf '|---|---|---:|---|---|\n'
+  jq -sr '
+    sort_by(-.ts)
+    | .[0:20]
+    | .[]
+    | [(.ts | tostring), .flag, ((.old|tostring) + " -> " + (.new|tostring)), (.host // "unknown"), .evidence]
+    | @tsv
+  ' <<<"${auto_tune_rows}" 2>/dev/null \
+    | while IFS=$'\t' read -r _at_ts _at_flag _at_delta _at_host _at_evidence; do
+        [[ -z "${_at_flag}" ]] && continue
+        _at_when="$(date -r "${_at_ts}" '+%Y-%m-%d' 2>/dev/null || date -d "@${_at_ts}" '+%Y-%m-%d' 2>/dev/null || printf '%s' "${_at_ts}")"
+        printf '| %s | `%s` | %s | %s | %s |\n' "${_at_when}" "${_at_flag}" "${_at_delta}" "${_at_host}" "${_at_evidence}"
       done
   printf '\n'
 fi

@@ -76,6 +76,7 @@ exemplifying_scope_gate|bool|on|gates|Require checklist for example-marker promp
 objective_contract_gate|bool|on|gates|Re-anchor verbatim original objective + completion audit before stop on substantive turns (Codex /goal port; anti-premature-stop sibling of pause_external_blocker_threshold)
 objective_contract_min_files|int|4|gates|Per-cycle unique-file edit count that marks an objective-cycle substantive (volume arm of the objective-completion gate; 0 disables the volume arm)
 objective_contract_arm_on_god_scope|bool|on|gates|Arm the objective-completion gate on bare-imperative god-scope prompts ("improve it"/"harden"/"audit everything") as an INTENT signal, so ambitious-but-vague one-word imperatives drive relentlessly instead of stopping at round one (high-precision subset; recall-tuned open_mandate prose stays a nudge — use /goal for it)
+auto_tune|bool|off|gates|Opt-in self-tuning: at most once per 7 days, raise objective_contract_min_files by 1 step (clamped [2,12]) when show-report.sh's own reprompt-rate signal clears its >=50% over-firing bar over >=10 blocks. Deny-listed at project-conf scope (rewrites your GLOBAL conf, not just this repo's).
 goal_gate|bool|on|gates|Master switch for the /goal relentless driver — re-anchor a user-declared goal and block premature Stop until achieved (fresh audit + **Goal achieved.** attestation) or a no-progress stuck-wall; voluntary sibling of objective_contract_gate (inert until a goal is armed via /goal or auto-arm)
 goal_stuck_threshold|int|3|gates|Consecutive no-progress /goal blocks before the stuck-wall surfaces and releases (0 = uncapped, never auto-release)
 goal_auto_arm|bool|on|gates|Auto-arm the /goal relentless driver when a fresh /ulw execution prompt carries an explicit goal declaration ("don't stop until tests pass" / "your goal is ..." / "keep going until ...") — the v1.47 single-entrance embed; high-precision markers only, every auto-arm is announced, /goal clear stands down (preset sibling: objective_contract_arm_on_god_scope)
@@ -91,6 +92,7 @@ installation_drift_check|true_false|true|advisory|Statusline yellow arrow when b
 statusline_retention|bool|on|advisory|Statusline [gw:N] token — quality-gate blocks across all sessions in the last 7 days
 statusline_width|bool|on|advisory|Statusline width fit — sheds/shrinks lowest-priority tokens until each line fits the terminal
 whats_new_session_hint|true_false|true|advisory|SessionStart "you upgraded — run /whats-new" notice (once per version transition)
+self_audit_nudge|bool|on|advisory|SessionStart nudge when CONTRIBUTING.md's quarterly /council --self-audit cadence is stale (>90 days or never), at most once per 7 days
 lazy_session_start|bool|off|gates|Defer whats-new/drift-check/welcome SessionStart hooks to first UserPromptSubmit. Throwaway sessions skip the work AND preserve dedupe stamps for the next real session.
 mid_session_memory_checkpoint|bool|on|memory|Inject MID-SESSION CHECKPOINT directive when user returns after ≥30 min idle gap. Nudges auto-memory.md sweep on the just-closed stretch before responding.
 auto_memory|bool|on|memory|Cross-session auto-memory writes (project/feedback/user/reference)
