@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 
 
 # v1.42.x F-020: honor NO_COLOR (the cross-tool de-facto standard;
@@ -185,14 +186,17 @@ def cache_path_for(cwd):
 # cached: statusline ticks at ~300ms, gate-event scan is O(N sessions
 # × file read), so we cache the count for 5 minutes per (cwd) — that
 # reduces compute by ~1000x while keeping the user-visible refresh
-# rate within "I just opened a new session" perception. Set
-# OMC_STATUSLINE_RETENTION=off to suppress.
-def gates_blocked_last_7d():
+# rate within "I just opened a new session" perception. Suppress via
+# `statusline_retention=off` in oh-my-claude.conf or
+# OMC_STATUSLINE_RETENTION=off (env wins, matching drift-check).
+def gates_blocked_last_7d(conf=None):
     """Return integer count of `event=='block'` gate events across all
     sessions in the last 7 days, or None on missing data / disabled."""
-    if os.environ.get("OMC_STATUSLINE_RETENTION", "on").lower() in ("off", "false", "0", "no"):
+    conf = _read_conf() if conf is None else conf
+    flag = os.environ.get("OMC_STATUSLINE_RETENTION", conf.get("statusline_retention", "on"))
+    if flag.strip().lower() in ("off", "false", "0", "no"):
         return None
-    state_root = os.path.join(os.path.expanduser("~"), ".claude", "quality-pack", "state")
+    state_root = _sessions_state_root()
     if not os.path.isdir(state_root):
         return None
     # Cache key: tied to the state-root directory (one user = one
@@ -240,13 +244,10 @@ def gates_blocked_last_7d():
     return total
 
 
-# v1.42.x F-017: terminal-width budget. The statusline pre-fix could
-# pile up to ~120 columns at the high end ([Model] dir [ULW:domain]
-# [g:N f:M] git:branch* style:foo v1.42.0 ↑v1.43.0 (+3)). When the
-# terminal is narrow (< 100 cols), drop the lowest-priority tokens
-# (`style:` first; if still over budget, shorten `git:branch*` to
-# `b:branch*`). Returns the COLUMNS env var if set, else os.get_
-# terminal_size's width, else None (unknown — render full line).
+# v1.42.x F-017: terminal-width budget. Returns the COLUMNS env var if
+# set, else os.get_terminal_size's width, else None (unknown — render
+# the full line). v1.48-pre upgraded the consumer from a fixed <100-col
+# breakpoint to a real fit computation — see _fit_line.
 def term_width_budget():
     raw = os.environ.get("COLUMNS")
     if raw:
@@ -258,6 +259,112 @@ def term_width_budget():
         return os.get_terminal_size().columns
     except (OSError, ValueError, AttributeError):
         return None
+
+
+# v1.48-pre width-fit engine (excellence F1 on the F-017 follow-up):
+# the earlier collapse was a fixed <100-col breakpoint, which meant a
+# 120-col terminal still got the full worst-case ~158-col line 1 (ULW +
+# goal + gates + long branch + drift), and at ≤99 cols the line still
+# wrapped because the branch name — the dominant token — was never
+# bounded. Lines are now assembled as [key, plain, colored] token
+# triples and shed/shrunk through an ordered step list until the plain
+# width fits the terminal. Steps run only while the line is over
+# budget; a line that already fits renders in full at ANY width (no
+# more dropping tokens a 90-col terminal had room for). If every step
+# runs and the core identity tokens still exceed the width, we render
+# what remains — the terminal wraps, but nothing sane is left to cut.
+def _visible_width(text):
+    """Terminal display cells for `text`, not codepoints.
+
+    `len()` undercounts CJK/emoji — East-Asian Wide/Fullwidth codepoints
+    render as 2 cells (a branch like `功能/中文分支` measures half its
+    true width and the engine would judge an overflowing line to fit) —
+    and overcounts combining marks (Mn/Me) and format chars like the
+    ZWJ (Cf), which render 0 cells. stdlib heuristic; deliberately no
+    wcwidth dependency, and no grapheme-cluster segmentation (emoji ZWJ
+    sequences still overcount — error is in the safe over-shrink
+    direction).
+    """
+    width = 0
+    for ch in text:
+        if unicodedata.category(ch) in ("Mn", "Me", "Cf"):
+            continue
+        width += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+    return width
+
+
+def _line_width(tokens):
+    """Visible width of a token line: plain cell widths + 2-space joins."""
+    if not tokens:
+        return 0
+    return sum(_visible_width(t[1]) for t in tokens) + 2 * (len(tokens) - 1)
+
+
+def _fit_line(tokens, width, steps):
+    """Apply `steps` (fn(tokens, width) -> tokens) until the line fits.
+
+    `width=None` (unknown terminal) skips fitting entirely — callers
+    gate the `statusline_width=off` opt-out by passing None.
+    """
+    if width is None:
+        return tokens
+    for step in steps:
+        if _line_width(tokens) <= width:
+            return tokens
+        tokens = step(tokens, width)
+    return tokens
+
+
+def _drop_token(key):
+    """Fit step: remove the token with this key (no-op when absent)."""
+    def step(tokens, _width):
+        return [t for t in tokens if t[0] != key]
+    return step
+
+
+def _token(key, plain, code):
+    """Assemble a [key, plain, colored] line token."""
+    return [key, plain, color(plain, code)]
+
+
+def _shorten_git(tokens, _width):
+    """Fit step: `git:branch*` → `b:branch*`."""
+    out = []
+    for t in tokens:
+        if t[0] == "git" and t[1].startswith("git:"):
+            out.append(_token("git", "b:" + t[1][4:], YELLOW))
+        else:
+            out.append(t)
+    return out
+
+
+def _truncate_git(tokens, width):
+    """Fit step: bound the branch name — the dominant line-1 token.
+
+    Trims one codepoint at a time until the LINE fits (cell-accurate
+    for wide CJK/emoji chars, since each pass remeasures via
+    _line_width), floored at 5 branch codepoints; appends an ellipsis
+    and preserves the dirty `*`. Guard: skip entirely when even the
+    floored result would be no narrower than the untrimmed name — in
+    plain mode the ellipsis is ".." (2 cells), so trimming a 6-7 char
+    branch would otherwise WIDEN the token (review F1).
+    """
+    out = list(tokens)
+    for i, t in enumerate(out):
+        if t[0] != "git":
+            continue
+        head, _, name = t[1].partition(":")
+        suffix = "*" if name.endswith("*") else ""
+        if suffix:
+            name = name[:-1]
+        ell = glyph(chr(0x2026), "..")
+        if _visible_width(name) <= _visible_width(name[:5]) + _visible_width(ell):
+            break
+        while len(name) > 5 and _line_width(out) > width:
+            name = name[:-1]
+            out[i] = _token("git", f"{head}:{name}{ell}{suffix}", YELLOW)
+        break
+    return out
 
 
 def read_cache(path, ttl_seconds):
@@ -278,6 +385,82 @@ def write_cache(path, payload):
         pass
 
 
+def _sessions_state_root():
+    return os.path.join(os.path.expanduser("~"), ".claude", "quality-pack", "state")
+
+
+# Distinguishes "caller did not supply a pre-read state" from "caller
+# read the state and it was None" in ulw_info/goal_armed — main() reads
+# session_state.json once per tick and threads it through both, the same
+# single-read discipline as the conf threading.
+_UNSET = object()
+
+
+def _usable_session_id(session_id):
+    """True when the payload's session_id can safely name a state dir.
+
+    v1.48-pre session-attribution fix: `ulw_info` and `gate_summary`
+    previously picked the newest-mtime session directory — with two
+    concurrent Claude Code windows, window B's statusline rendered window
+    A's ULW domain, gate counts, and cost `*` marker (whichever session
+    wrote state last). A usable session_id pins those reads to THIS
+    session's dir; the newest-mtime scan survives only for payloads
+    without one. Rejects ids carrying path separators or a leading dot —
+    a session id is a flat directory name, and the sentinel/hidden-file
+    namespace must stay unreachable from payload data.
+    """
+    if not session_id or not isinstance(session_id, str):
+        return False
+    if os.sep in session_id or session_id.startswith("."):
+        return False
+    return True
+
+
+def read_session_state(session_id):
+    """Parse this session's session_state.json into a dict, or None.
+
+    None covers every no-signal case: missing/foreign session_id, dir not
+    yet created by the bash hooks (first ticks of a brand-new session),
+    unreadable or malformed JSON, or a non-dict top level.
+    """
+    if not _usable_session_id(session_id):
+        return None
+    path = os.path.join(_sessions_state_root(), session_id, "session_state.json")
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            state = json.load(fh)
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+    return state if isinstance(state, dict) else None
+
+
+def _sorted_session_entries(state_root):
+    """Session dir names under state_root, newest-first by mtime; [] on any error.
+
+    Shared by the fallback paths of harness_health / ulw_info /
+    gate_summary — previously each carried its own listdir + mtime-sort
+    copy, i.e. up to three full scans of a state root that can hold
+    hundreds of session dirs, per ~300ms render tick.
+    """
+    try:
+        entries = [
+            name for name in os.listdir(state_root)
+            if not name.startswith(".") and os.path.isdir(os.path.join(state_root, name))
+        ]
+    except OSError:
+        return []
+    if not entries:
+        return []
+    try:
+        entries.sort(
+            key=lambda name: os.path.getmtime(os.path.join(state_root, name)),
+            reverse=True,
+        )
+    except OSError:
+        return []
+    return entries
+
+
 def run_git(cwd, *args):
     try:
         return subprocess.run(
@@ -295,14 +478,21 @@ def run_git(cwd, *args):
 
 
 def git_info(cwd):
-    repo_check = run_git(cwd, "rev-parse", "--show-toplevel")
-    if repo_check.returncode != 0:
-        return {"branch": "", "dirty": False}
-
+    # Cache check FIRST. The previous shape ran `rev-parse --show-toplevel`
+    # before consulting the cache, which meant one git subprocess on every
+    # ~300ms render tick with the cache only saving the branch/status pair.
+    # Caching the not-a-repo answer too means a fresh-cache tick spawns
+    # zero subprocesses regardless of directory kind.
     cache_file = cache_path_for(cwd)
     cached = read_cache(cache_file, ttl_seconds=5)
-    if cached:
+    if isinstance(cached, dict) and "branch" in cached:
         return cached
+
+    repo_check = run_git(cwd, "rev-parse", "--show-toplevel")
+    if repo_check.returncode != 0:
+        payload = {"branch": "", "dirty": False}
+        write_cache(cache_file, payload)
+        return payload
 
     branch = run_git(cwd, "branch", "--show-current").stdout.strip()
     dirty = bool(
@@ -321,6 +511,13 @@ def _read_conf():
     in install.sh (which strips prior occurrences before appending). Blank
     lines and `#` comments are ignored. Returns an empty dict on missing
     or unreadable files.
+
+    Flags parsed HERE (Python-side, user-level conf only — the project
+    overlay never reaches this file): `installation_drift_check`,
+    `statusline_retention`, `statusline_width`. These are intentionally
+    absent from common.sh `_parse_conf_file()` and listed in
+    `tools/check-flag-coordination.sh` PARSER_EXEMPT_FLAGS — keep the
+    three in lockstep when adding a statusline flag.
     """
     conf_path = os.path.join(os.path.expanduser("~"), ".claude", "oh-my-claude.conf")
     result = {}
@@ -337,9 +534,16 @@ def _read_conf():
     return result
 
 
-def installed_version():
-    """Read installed_version from oh-my-claude.conf, or None."""
-    return _read_conf().get("installed_version") or None
+def installed_version(conf=None):
+    """Read installed_version from oh-my-claude.conf, or None.
+
+    `conf` lets main() share one parsed conf across the helpers that need
+    it (installed_version, installation_drift, gates_blocked_last_7d, the
+    width budget) instead of each re-reading the file per render tick.
+    Omitted → self-serve, preserving the standalone call shape.
+    """
+    conf = _read_conf() if conf is None else conf
+    return conf.get("installed_version") or None
 
 
 def _parse_version(value):
@@ -352,7 +556,51 @@ def _parse_version(value):
         return None
 
 
-def installation_drift(installed):
+def _commits_ahead(repo_path, installed_sha):
+    """Cached `git rev-list --count <installed_sha>..HEAD`; None = probe failed.
+
+    The probe result is cached for 5 minutes keyed on (repo_path,
+    installed_sha) — without the cache this subprocess ran on every
+    ~300ms statusline tick in the steady state (VERSION matching is the
+    normal condition on a maintainer's machine; see gates_blocked_last_7d
+    for the same tick-budget reasoning). Failures are cached too: a repo
+    where the probe fails (unreachable SHA after a rebase, hung object
+    store hitting the 2s timeout) must not re-pay the subprocess — or the
+    full timeout — per tick. Staleness tradeoff: a fresh `git pull` can
+    take up to 5 minutes to move the (+N) count; acceptable for an
+    install-drift indicator.
+    """
+    cache_key = hashlib.sha1(f"{repo_path}|{installed_sha}".encode("utf-8")).hexdigest()[:12]
+    cache_path = os.path.join(
+        tempfile.gettempdir(), f"claude-statusline-drift-{cache_key}.json"
+    )
+    cached = read_cache(cache_path, ttl_seconds=300)
+    if isinstance(cached, dict) and "count" in cached:
+        return cached["count"]
+
+    count = None
+    try:
+        result = subprocess.run(
+            ["git", "-C", repo_path, "rev-list", "--count", f"{installed_sha}..HEAD"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+            timeout=2,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        result = None
+    if result is not None and result.returncode == 0:
+        raw = (result.stdout or "").strip()
+        try:
+            count = int(raw or "0")
+        except ValueError:
+            count = None
+    write_cache(cache_path, {"count": count, "computed_at": int(time.time())})
+    return count
+
+
+def installation_drift(installed, conf=None):
     """Return a drift descriptor when the source repo is ahead of the bundle.
 
     Two drift forms are reported:
@@ -382,7 +630,7 @@ def installation_drift(installed):
     """
     if not installed:
         return None
-    conf = _read_conf()
+    conf = _read_conf() if conf is None else conf
     flag = os.environ.get("OMC_INSTALLATION_DRIFT_CHECK", conf.get("installation_drift_check", "true"))
     if flag.strip().lower() in {"false", "0", "no", "off"}:
         return None
@@ -413,34 +661,19 @@ def installation_drift(installed):
     installed_sha = conf.get("installed_sha")
     if not installed_sha:
         return None
-    try:
-        result = subprocess.run(
-            ["git", "-C", repo_path, "rev-list", "--count", f"{installed_sha}..HEAD"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            check=False,
-            timeout=2,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return None
-    if result.returncode != 0:
-        # installed_sha is unreachable from HEAD (history rewritten,
-        # branch force-pushed, SHA from a deleted branch). We earlier
-        # returned a `(+?)` marker here to "signal uncertainty," but in
-        # practice that produces a persistent noisy indicator on the
-        # repo where oh-my-claude itself is developed — any rebase of
-        # main orphans the installed_sha and the statusline reports
-        # `↑v… (+?)` until the user re-runs install. Returning None
-        # aligns with the other fail-closed branches: no drift shown
-        # when the comparator cannot produce a trustworthy answer. The
-        # tag-ahead branch above still surfaces drift for the common
-        # "user forgot to re-install after bumping VERSION" case.
-        return None
-    raw = (result.stdout or "").strip()
-    try:
-        count = int(raw or "0")
-    except ValueError:
+    # None means the probe failed — installed_sha unreachable from HEAD
+    # (history rewritten, branch force-pushed, SHA from a deleted branch),
+    # timeout, or garbage output. We earlier returned a `(+?)` marker for
+    # the unreachable case to "signal uncertainty," but in practice that
+    # produces a persistent noisy indicator on the repo where oh-my-claude
+    # itself is developed — any rebase of main orphans the installed_sha
+    # and the statusline reports `↑v… (+?)` until the user re-runs
+    # install. Returning None aligns with the other fail-closed branches:
+    # no drift shown when the comparator cannot produce a trustworthy
+    # answer. The tag-ahead branch above still surfaces drift for the
+    # common "user forgot to re-install after bumping VERSION" case.
+    count = _commits_ahead(repo_path, installed_sha)
+    if count is None:
         return None
     if count > 0:
         return {"version": upstream, "commits": count}
@@ -466,33 +699,18 @@ def harness_health():
     Returns None when no sessions exist, the newest session's state is
     older than 5 minutes, or the state directory cannot be read.
     """
-    state_root = os.path.join(os.path.expanduser("~"), ".claude", "quality-pack", "state")
+    state_root = _sessions_state_root()
     if not os.path.isdir(state_root):
         return None
 
-    try:
-        entries = [
-            name for name in os.listdir(state_root)
-            if not name.startswith(".") and os.path.isdir(os.path.join(state_root, name))
-        ]
-    except OSError:
-        return None
-
+    # Newest-first by directory mtime: a stale newest means every older
+    # session is older still, so we bail without further I/O once the
+    # freshest session fails the window.
+    entries = _sorted_session_entries(state_root)
     if not entries:
         return None
 
     now = time.time()
-    # Sort by directory mtime so we inspect the newest session first. A
-    # stale newest means every older session is older still, so we bail
-    # without further I/O once the freshest session fails the window.
-    try:
-        entries.sort(
-            key=lambda name: os.path.getmtime(os.path.join(state_root, name)),
-            reverse=True,
-        )
-    except OSError:
-        return None
-
     for name in entries:
         state_file = os.path.join(state_root, name, "session_state.json")
         try:
@@ -508,20 +726,37 @@ def harness_health():
     return None
 
 
-def ulw_info():
-    """Check if ULW mode is active and return the domain, or None."""
-    state_root = os.path.join(os.path.expanduser("~"), ".claude", "quality-pack", "state")
+def ulw_info(session_id=None, state=_UNSET):
+    """Check if ULW mode is active FOR THIS SESSION and return the domain.
+
+    The `.ulw_active` sentinel is a global empty touch-file (any ULW
+    session anywhere creates it; `/ulw-off` removes it), so it can only
+    serve as the cheap fast-path gate. Per-session truth is this
+    session's own `workflow_mode == "ultrawork"` in session_state.json —
+    without it, a non-ULW window rendered `[ULW:…]` (plus the cost `*`
+    marker) whenever any OTHER window was in ULW and happened to be the
+    newest-mtime session.
+
+    A usable session_id is authoritative both ways: state missing or
+    unreadable → no ULW claim (a brand-new session's first ticks must
+    not borrow another window's mode — that is the exact contamination
+    this fix closes). The legacy newest-mtime heuristic survives only
+    for payloads that carry no session_id at all.
+    """
+    state_root = _sessions_state_root()
     sentinel = os.path.join(state_root, ".ulw_active")
     if not os.path.isfile(sentinel):
         return None
+    if _usable_session_id(session_id):
+        if state is _UNSET:
+            state = read_session_state(session_id)
+        if isinstance(state, dict) and state.get("workflow_mode") == "ultrawork":
+            return state.get("task_domain") or "active"
+        return None
     try:
-        entries = [
-            e for e in os.listdir(state_root)
-            if not e.startswith(".") and os.path.isdir(os.path.join(state_root, e))
-        ]
+        entries = _sorted_session_entries(state_root)
         if not entries:
             return "active"
-        entries.sort(key=lambda e: os.path.getmtime(os.path.join(state_root, e)), reverse=True)
         state_file = os.path.join(state_root, entries[0], "session_state.json")
         with open(state_file, "r", encoding="utf-8") as fh:
             state = json.load(fh)
@@ -530,14 +765,42 @@ def ulw_info():
         return "active"
 
 
-def gate_summary():
-    """Count block events in the latest session's gate_events.jsonl.
+def goal_armed(session_id=None, state=_UNSET):
+    """True when this session's /goal relentless driver is armed and not paused.
 
-    Returns a string like ``g:3 f:2`` when the latest session has 3 gate
+    Armed = `goal_objective` non-empty in this session's state and
+    `goal_paused` not set to "1" (the `/goal pause` marker). A paused or
+    cleared goal renders nothing — the statusline shows only the mode
+    that is actively driving; `/goal` (status) covers the rest. No
+    newest-mtime fallback here: goal state is meaningless cross-session,
+    so without a resolvable session_id there is no signal.
+    """
+    if state is _UNSET:
+        state = read_session_state(session_id)
+    if not isinstance(state, dict):
+        return False
+    objective = state.get("goal_objective")
+    if not objective or not str(objective).strip():
+        return False
+    if str(state.get("goal_paused", "")) == "1":
+        return False
+    return True
+
+
+def gate_summary(session_id=None):
+    """Count block events in THIS session's gate_events.jsonl.
+
+    Returns a string like ``g:3 f:2`` when the session has 3 gate
     blocks and 2 finding resolutions (shipped/deferred/rejected); returns
     just ``g:3`` when no findings closed, or ``f:2`` when blocks are
     zero. Returns None when the file is missing, empty, or unreadable —
     the statusline omits the token entirely when there is no signal.
+
+    Session targeting (v1.48-pre): a usable session_id pins the read to
+    that session's dir — a missing dir or missing events file means THIS
+    session is clean and renders no token, never a fall-through to some
+    other session's numbers. The newest-mtime scan remains solely for
+    payloads without a session_id.
 
     Block events are the harness's "I caught something" signal.
     Finding-status-change events with a non-pending status are the
@@ -547,29 +810,19 @@ def gate_summary():
     "reviews" — reviewer invocations are a separate signal not surfaced
     here, see /ulw-report's reviewer activity table for that).
     """
-    state_root = os.path.join(os.path.expanduser("~"), ".claude", "quality-pack", "state")
+    state_root = _sessions_state_root()
     if not os.path.isdir(state_root):
         return None
 
-    try:
-        entries = [
-            e for e in os.listdir(state_root)
-            if not e.startswith(".") and os.path.isdir(os.path.join(state_root, e))
-        ]
-    except OSError:
-        return None
-    if not entries:
-        return None
+    if _usable_session_id(session_id):
+        session_dir = os.path.join(state_root, session_id)
+    else:
+        entries = _sorted_session_entries(state_root)
+        if not entries:
+            return None
+        session_dir = os.path.join(state_root, entries[0])
 
-    try:
-        entries.sort(
-            key=lambda e: os.path.getmtime(os.path.join(state_root, e)),
-            reverse=True,
-        )
-    except OSError:
-        return None
-
-    events_file = os.path.join(state_root, entries[0], "gate_events.jsonl")
+    events_file = os.path.join(session_dir, "gate_events.jsonl")
     blocks = 0
     resolutions = 0
     try:
@@ -703,89 +956,118 @@ def main():
     dirty = git.get("dirty", False)
     branch_text = f"git:{branch}{'*' if dirty else ''}" if branch else ""
 
-    ulw_domain = ulw_info()
-    omc_version = installed_version()
-    omc_drift = installation_drift(omc_version)
+    # One conf parse and one session-state read per tick, shared by every
+    # consumer below; one session_id extraction, threading per-session
+    # attribution through ulw_info / goal_armed / gate_summary
+    # (v1.48-pre fix — see ulw_info).
+    conf = _read_conf()
+    session_id = safe_get(data, "session_id")
+    session_state = read_session_state(session_id)
 
-    line_one_parts = [
-        color(f"[{model_name}]", CYAN),
-        color(dir_name, f"{BOLD}{WHITE}"),
+    ulw_domain = ulw_info(session_id, state=session_state)
+    omc_version = installed_version(conf)
+    omc_drift = installation_drift(omc_version, conf)
+
+    # Lines assemble as [key, plain, colored] triples (_token) so the fit
+    # engine can measure visible width and rewrite tokens (see _fit_line).
+    line_one_tokens = [
+        _token("model", f"[{model_name}]", CYAN),
+        _token("dir", dir_name, f"{BOLD}{WHITE}"),
     ]
     if ulw_domain:
-        line_one_parts.append(color(f"[ULW:{ulw_domain}]", f"{BOLD}{MAGENTA}"))
+        line_one_tokens.append(_token("mode", f"[ULW:{ulw_domain}]", f"{BOLD}{MAGENTA}"))
     elif harness_health() == "active":
-        line_one_parts.append(color("[H:ok]", f"{DIM}{GREEN}"))
+        line_one_tokens.append(_token("mode", "[H:ok]", f"{DIM}{GREEN}"))
+
+    # /goal relentless driver armed for THIS session — the one mode where
+    # the harness behaves most differently (Stop stays blocked until the
+    # goal is attested done), so it earns a glanceable token next to the
+    # ULW mode cluster. Paused/cleared goals render nothing.
+    if goal_armed(session_id, state=session_state):
+        line_one_tokens.append(_token("goal", "[goal]", f"{BOLD}{MAGENTA}"))
 
     # v1.17.0: surface gate-fire / finding-resolution counts at-a-glance
     # so the user can tell whether the harness is actively intervening
     # this session without running /ulw-report. Only renders when there
     # IS signal — silent when the session has been clean.
-    gate_text = gate_summary()
+    gate_text = gate_summary(session_id)
     if gate_text:
-        line_one_parts.append(color(f"[{gate_text}]", f"{DIM}{YELLOW}"))
+        line_one_tokens.append(_token("gates", f"[{gate_text}]", f"{DIM}{YELLOW}"))
 
-    # v1.42.x F-017: width-budget collapse rule. When terminal is
-    # narrow (< 100 cols), drop `style:` first; shorten `git:branch*`
-    # to `b:branch*` for further compression. Unknown width (None) →
-    # render full line (current behavior). Set OMC_STATUSLINE_WIDTH=off
-    # to disable the collapse and always render full.
-    _term_w = term_width_budget()
-    _collapse_off = os.environ.get("OMC_STATUSLINE_WIDTH", "on").lower() in ("off", "false", "0", "no")
-    _narrow = (_term_w is not None) and (_term_w < 100) and (not _collapse_off)
     if branch_text:
-        if _narrow and branch_text.startswith("git:"):
-            line_one_parts.append(color("b:" + branch_text[4:], YELLOW))
-        else:
-            line_one_parts.append(color(branch_text, YELLOW))
-    if not _narrow:
-        line_one_parts.append(color(f"style:{style_name}", f"{DIM}{BLUE}"))
+        line_one_tokens.append(_token("git", branch_text, YELLOW))
+    line_one_tokens.append(_token("style", f"style:{style_name}", f"{DIM}{BLUE}"))
     if omc_version:
-        line_one_parts.append(color(f"v{omc_version}", f"{DIM}{WHITE}"))
+        line_one_tokens.append(_token("version", f"v{omc_version}", f"{DIM}{WHITE}"))
         if isinstance(omc_drift, dict):
             drift_label = f"{glyph(chr(0x2191), '^')}v{omc_drift.get('version', '?')}"
             commits = omc_drift.get("commits")
             if commits is not None:
-                # `commits="?"` is the explicit "comparator failed"
-                # marker set by installation_drift when `installed_sha`
-                # is unreachable from HEAD. Showing (+?) surfaces the
-                # uncertainty instead of silently hiding the signal.
+                # Commits-ahead-at-same-tag drift: `commits` is a
+                # positive int (installation_drift returns None for
+                # failed/zero probes — the historical `(+?)` uncertainty
+                # marker was retired as fail-closed noise).
                 drift_label += f" (+{commits})"
-            line_one_parts.append(color(drift_label, YELLOW))
+            line_one_tokens.append(_token("drift", drift_label, YELLOW))
         elif omc_drift:
             # Defensive: an older installation_drift impl may return a
             # bare string. Preserve backward-compatible rendering so an
             # in-place statusline.py update before a full reinstall does
             # not crash on a legacy return shape.
-            line_one_parts.append(color(f"{glyph(chr(0x2191), '^')}v{omc_drift}", YELLOW))
+            line_one_tokens.append(_token("drift", f"{glyph(chr(0x2191), '^')}v{omc_drift}", YELLOW))
+
+    # Width-fit (v1.48-pre, upgrading v1.42.x F-017): shed/shrink
+    # lowest-priority tokens until each line fits the terminal. Unknown
+    # width (no COLUMNS, no tty) or `statusline_width=off` (env
+    # OMC_STATUSLINE_WIDTH wins) → render everything.
+    _width_flag = os.environ.get("OMC_STATUSLINE_WIDTH", conf.get("statusline_width", "on"))
+    _fit_off = _width_flag.strip().lower() in ("off", "false", "0", "no")
+    _term_w = None if _fit_off else term_width_budget()
+
+    line_one_tokens = _fit_line(
+        line_one_tokens,
+        _term_w,
+        [
+            _drop_token("style"),
+            _shorten_git,
+            _truncate_git,
+            _drop_token("drift"),
+        ],
+    )
 
     total_in = safe_get(data, "context_window", "total_input_tokens", default=0)
     total_out = safe_get(data, "context_window", "total_output_tokens", default=0)
 
-    # Cost: mark with * when ULW active — subagent costs are not included
+    # Cost: mark with * when ULW active — subagent costs are not included.
+    # Composite coloring → build the triple by hand.
     cost_str = format_cost(total_cost)
-    cost_text = (color(cost_str, YELLOW) + color("*", DIM)) if ulw_domain else color(cost_str, YELLOW)
+    if ulw_domain:
+        cost_token = ["cost", cost_str + "*", color(cost_str, YELLOW) + color("*", DIM)]
+    else:
+        cost_token = ["cost", cost_str, color(cost_str, YELLOW)]
 
     usage_color = bar_color(pct)
-    line_two_parts = [
-        color(make_bar(pct), usage_color),
-        color(f"{pct:>3}% ctx", usage_color),
-        color(f"{format_tokens(total_in)}{glyph(chr(0x2191), '^')} {format_tokens(total_out)}{glyph(chr(0x2193), 'v')}", WHITE),
-        cost_text,
-        color(format_duration(total_duration_ms), BLUE),
+    tokens_str = f"{format_tokens(total_in)}{glyph(chr(0x2191), '^')} {format_tokens(total_out)}{glyph(chr(0x2193), 'v')}"
+    line_two_tokens = [
+        _token("bar", make_bar(pct), usage_color),
+        _token("pct", f"{pct:>3}% ctx", usage_color),
+        _token("tokens", tokens_str, WHITE),
+        cost_token,
+        _token("duration", format_duration(total_duration_ms), BLUE),
     ]
     # v1.42.x F-013: retention counter. When the harness has blocked
-    # gates in the last 7d, surface `[7d:N gates]` so the user sees the
+    # gates in the last 7d, surface `[gw:N]` so the user sees the
     # value passively instead of needing /ulw-report. Silent when 0 (no
     # blocks = no value-evidence = no need to render).
-    _g7d = gates_blocked_last_7d()
-    if _g7d is not None and _g7d > 0 and not _narrow:
+    _g7d = gates_blocked_last_7d(conf)
+    if _g7d is not None and _g7d > 0:
         # Token shape `[gw:N]` — gates this week. Distinct from the
         # session-level `[g:N f:M]` token AND the 7-day rate-limit
         # token `7d:NN%` (the test suite asserts the latter's absence
         # by bare-substring match, so any token containing `7d:` would
         # collide). `gw` reads as "gates / week" and keeps line 2
         # compact when retention signal is non-zero.
-        line_two_parts.append(color(f"[gw:{_g7d}]", f"{DIM}{GREEN}"))
+        line_two_tokens.append(_token("gw", f"[gw:{_g7d}]", f"{DIM}{GREEN}"))
 
     # 5-hour window: render whenever Claude Code surfaces a percent. Append
     # `R:<countdown>` (dim) when `resets_at` is in the future — answers the
@@ -795,11 +1077,13 @@ def main():
     if five_hour_pct_raw is not None:
         try:
             rl_pct = int(float(five_hour_pct_raw))
-            rl_token = color(f"RL:{rl_pct}%", bar_color(rl_pct))
+            rl_plain = f"RL:{rl_pct}%"
+            rl_colored = color(rl_plain, bar_color(rl_pct))
             countdown = format_reset_countdown(five_hour_resets)
             if countdown:
-                rl_token += color(f" R:{countdown}", f"{DIM}{WHITE}")
-            line_two_parts.append(rl_token)
+                rl_plain += f" R:{countdown}"
+                rl_colored += color(f" R:{countdown}", f"{DIM}{WHITE}")
+            line_two_tokens.append(["rl", rl_plain, rl_colored])
         except (ValueError, TypeError, OverflowError):
             pass
 
@@ -812,11 +1096,13 @@ def main():
         try:
             d7_pct = int(float(seven_day_pct_raw))
             if d7_pct > 0:
-                d7_token = color(f"7d:{d7_pct}%", bar_color(d7_pct))
+                d7_plain = f"7d:{d7_pct}%"
+                d7_colored = color(d7_plain, bar_color(d7_pct))
                 countdown = format_reset_countdown(seven_day_resets)
                 if countdown:
-                    d7_token += color(f" R:{countdown}", f"{DIM}{WHITE}")
-                line_two_parts.append(d7_token)
+                    d7_plain += f" R:{countdown}"
+                    d7_colored += color(f" R:{countdown}", f"{DIM}{WHITE}")
+                line_two_tokens.append(["d7", d7_plain, d7_colored])
         except (ValueError, TypeError, OverflowError):
             pass
 
@@ -836,7 +1122,7 @@ def main():
     cache_total = cache_create + cache_read
     if cache_total > 0:
         cache_pct = int((cache_read / cache_total) * 100)
-        line_two_parts.append(color(f"C:{cache_pct}%", f"{DIM}{WHITE}"))
+        line_two_tokens.append(_token("cache", f"C:{cache_pct}%", f"{DIM}{WHITE}"))
 
     try:
         api_duration_ms = int(safe_get(data, "cost", "total_api_duration_ms", default=0) or 0)
@@ -846,10 +1132,33 @@ def main():
         wall_duration_ms = 0
     if wall_duration_ms > 0 and api_duration_ms > 0:
         api_pct = min(int((api_duration_ms / wall_duration_ms) * 100), 100)
-        line_two_parts.append(color(f"API:{api_pct}%", f"{DIM}{WHITE}"))
+        line_two_tokens.append(_token("api", f"API:{api_pct}%", f"{DIM}{WHITE}"))
 
-    print("  ".join(line_one_parts))
-    print("  ".join(line_two_parts))
+    def shrink_bar(tokens, _width):
+        """Fit step: last resort before giving up — halve the ctx bar."""
+        out = []
+        for t in tokens:
+            if t[0] == "bar":
+                out.append(_token("bar", make_bar(pct, width=10), usage_color))
+            else:
+                out.append(t)
+        return out
+
+    # Line-2 fit: diagnostics shed first (least actionable), the
+    # rate-limit tokens are never dropped (they answer budget questions).
+    line_two_tokens = _fit_line(
+        line_two_tokens,
+        _term_w,
+        [
+            _drop_token("api"),
+            _drop_token("cache"),
+            _drop_token("gw"),
+            shrink_bar,
+        ],
+    )
+
+    print("  ".join(t[2] for t in line_one_tokens))
+    print("  ".join(t[2] for t in line_two_tokens))
 
 
 if __name__ == "__main__":

@@ -50,6 +50,8 @@ PARSER_EXEMPT_FLAGS=(
   installation_drift_check
   model_tier
   model_overrides
+  statusline_retention
+  statusline_width
 )
 
 for f in "${COMMON_SH}" "${CONF_EXAMPLE}" "${OMC_CONFIG}"; do

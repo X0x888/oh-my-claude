@@ -541,6 +541,26 @@
 # Env: OMC_INSTALLATION_DRIFT_CHECK.
 #installation_drift_check=true
 
+# Statusline retention counter. When on, line 2 appends `[gw:N]` — the
+# count of quality-gate blocks across all sessions in the last 7 days —
+# so the harness's passive value is visible without running /ulw-report.
+# Cached 5 minutes; silent when the count is zero. Parsed by
+# statusline.py (user-level conf only, not the project overlay).
+# Default on. Env: OMC_STATUSLINE_RETENTION.
+#statusline_retention=on
+
+# Statusline width fit. When on, each line sheds/shrinks its
+# lowest-priority tokens until it fits the terminal width — line 1
+# drops `style:`, shortens `git:` to `b:`, truncates long branch names
+# (ellipsis, ≥5 chars kept), then drops the drift arrow; line 2 drops
+# `API:%`, `C:%`, `[gw:N]`, then halves the context bar. Identity/mode
+# tokens and the rate-limit tokens are never shed. A line that already
+# fits renders in full at any width; unknown width (no COLUMNS, no
+# tty) renders everything. Off = never shed. Parsed by statusline.py
+# (user-level conf only, not the project overlay).
+# Default on. Env: OMC_STATUSLINE_WIDTH.
+#statusline_width=on
+
 # Whats-new SessionStart hint. When the installed_version differs from
 # the version the previous session saw (i.e., you just re-ran
 # install.sh), the first SessionStart after the install emits a one-

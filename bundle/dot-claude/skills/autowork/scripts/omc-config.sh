@@ -88,6 +88,8 @@ exhaustive_auth_directive|bool|on|advisory|v1.46: prose open mandates ("implemen
 circuit_breaker|bool|on|gates|v1.44-pre Port 1: PostToolUse:Bash hook — 3 consecutive same-target failures emit a revert+oracle directive and set a 60s quiet window. Enforces core.md:128 mechanically; ported from Citadel circuit-breaker.js.
 transcript_archive|bool|off|telemetry|v1.44-pre Port 5: archive session JSONL to ~/.claude/quality-pack/state/<project_key>/<session_id>/transcript.json on Stop. Idempotent; disabled by default — disk cost ~50-500 KB/session.
 installation_drift_check|true_false|true|advisory|Statusline yellow arrow when bundle is behind source
+statusline_retention|bool|on|advisory|Statusline [gw:N] token — quality-gate blocks across all sessions in the last 7 days
+statusline_width|bool|on|advisory|Statusline width fit — sheds/shrinks lowest-priority tokens until each line fits the terminal
 whats_new_session_hint|true_false|true|advisory|SessionStart "you upgraded — run /whats-new" notice (once per version transition)
 lazy_session_start|bool|off|gates|Defer whats-new/drift-check/welcome SessionStart hooks to first UserPromptSubmit. Throwaway sessions skip the work AND preserve dedupe stamps for the next real session.
 mid_session_memory_checkpoint|bool|on|memory|Inject MID-SESSION CHECKPOINT directive when user returns after ≥30 min idle gap. Nudges auto-memory.md sweep on the just-closed stretch before responding.

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for statusline.py — the Claude Code statusline widget."""
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -19,6 +20,16 @@ sl = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sl)
 
 
+def _remove_file(path):
+    """addCleanup helper: delete a cache artifact tests caused statusline
+    code to write into the real tempfile.gettempdir() (repo hygiene —
+    keys are tmpdir-unique so leaks can't flake, but they accumulate)."""
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+
+
 def statusline_subprocess_env(**overrides):
     """Build a deterministic env for subprocess runs of statusline.py.
 
@@ -29,6 +40,11 @@ def statusline_subprocess_env(**overrides):
     env = dict(os.environ)
     env.pop("NO_COLOR", None)
     env.pop("OMC_PLAIN", None)
+    # Width determinism: an inherited COLUMNS < 100 would trip the narrow
+    # collapse and drop the very tokens tests assert on. Popping it makes
+    # the subprocess width-unknown (stdout is a pipe, so get_terminal_size
+    # fails too) → full render. Narrow-mode tests opt in via overrides.
+    env.pop("COLUMNS", None)
     env.update(overrides)
     return env
 
@@ -344,6 +360,48 @@ class TestGatesBlockedLast7d(unittest.TestCase):
         finally:
             if orig is not None:
                 os.environ["OMC_STATUSLINE_RETENTION"] = orig
+
+    def test_conf_off_suppresses_and_env_wins(self):
+        """v1.48-pre: `statusline_retention=off` in the conf suppresses the
+        counter; the env var still takes precedence over the conf value."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = os.path.join(tmpdir, ".claude")
+            session_dir = os.path.join(
+                claude_dir, "quality-pack", "state", "s1"
+            )
+            os.makedirs(session_dir)
+            with open(os.path.join(session_dir, "gate_events.jsonl"), "w") as fh:
+                fh.write(json.dumps({"event": "block", "ts": time.time()}) + "\n")
+            with open(os.path.join(claude_dir, "oh-my-claude.conf"), "w") as fh:
+                fh.write("statusline_retention=off\n")
+            state_root = os.path.join(claude_dir, "quality-pack", "state")
+            self.addCleanup(
+                _remove_file,
+                os.path.join(
+                    tempfile.gettempdir(),
+                    "claude-statusline-gates7d-"
+                    + hashlib.sha1(state_root.encode()).hexdigest()[:12]
+                    + ".json",
+                ),
+            )
+            orig_expand = os.path.expanduser
+            env_orig = os.environ.pop("OMC_STATUSLINE_RETENTION", None)
+            os.path.expanduser = lambda p: p.replace("~", tmpdir)
+            try:
+                self.assertIsNone(sl.gates_blocked_last_7d())
+                os.environ["OMC_STATUSLINE_RETENTION"] = "on"
+                self.assertEqual(sl.gates_blocked_last_7d(), 1)
+                # Set-but-empty env resolves via get-with-default (the
+                # installation_drift_check convention): "" is returned,
+                # is not in the falsy set, and therefore reads as ON —
+                # it overrides conf=off rather than falling back to it.
+                os.environ["OMC_STATUSLINE_RETENTION"] = ""
+                self.assertEqual(sl.gates_blocked_last_7d(), 1)
+            finally:
+                os.path.expanduser = orig_expand
+                os.environ.pop("OMC_STATUSLINE_RETENTION", None)
+                if env_orig is not None:
+                    os.environ["OMC_STATUSLINE_RETENTION"] = env_orig
 
 
 class TestTermWidthBudget(unittest.TestCase):
@@ -801,6 +859,7 @@ class TestInstallationDriftCommitDistance(unittest.TestCase):
                 installed_version="1.5.0",
                 installed_sha=head_sha,
             )
+            self._cleanup_probe_cache(repo_dir, head_sha)
             orig = os.path.expanduser
             os.path.expanduser = self._patch_expanduser(tmpdir)
             try:
@@ -821,6 +880,7 @@ class TestInstallationDriftCommitDistance(unittest.TestCase):
                 installed_version="1.5.0",
                 installed_sha=initial_sha,
             )
+            self._cleanup_probe_cache(repo_dir, initial_sha)
             orig = os.path.expanduser
             os.path.expanduser = self._patch_expanduser(tmpdir)
             try:
@@ -871,6 +931,7 @@ class TestInstallationDriftCommitDistance(unittest.TestCase):
                 installed_version="1.5.0",
                 installed_sha="0" * 40,
             )
+            self._cleanup_probe_cache(repo_dir, "0" * 40)
             orig = os.path.expanduser
             os.path.expanduser = self._patch_expanduser(tmpdir)
             try:
@@ -890,6 +951,7 @@ class TestInstallationDriftCommitDistance(unittest.TestCase):
                 installed_version="1.5.0",
                 installed_sha=initial_sha,
             )
+            self._cleanup_probe_cache(repo_dir, initial_sha)
             env = statusline_subprocess_env(HOME=tmpdir)
             result = subprocess.run(
                 [sys.executable, STATUSLINE_PATH],
@@ -902,6 +964,88 @@ class TestInstallationDriftCommitDistance(unittest.TestCase):
             self.assertEqual(result.returncode, 0)
             line_one = result.stdout.split("\n")[0]
             self.assertIn("\u2191v1.5.0 (+3)", line_one)
+
+    # ---- v1.48-pre probe cache: the rev-list subprocess must not run
+    # ---- on every ~300ms render tick ---------------------------------
+
+    def _counting_subprocess_run(self, counter):
+        real_run = subprocess.run
+
+        def wrapper(cmd, *args, **kwargs):
+            if isinstance(cmd, list) and "rev-list" in cmd:
+                counter.append(cmd)
+            return real_run(cmd, *args, **kwargs)
+
+        return wrapper
+
+    def _cleanup_probe_cache(self, repo_dir, installed_sha):
+        """Mirror _commits_ahead's cache-key derivation so the artifact
+        the probe writes into the real tempdir is removed after the test."""
+        key = hashlib.sha1(
+            f"{repo_dir}|{installed_sha}".encode("utf-8")
+        ).hexdigest()[:12]
+        self.addCleanup(
+            _remove_file,
+            os.path.join(
+                tempfile.gettempdir(), f"claude-statusline-drift-{key}.json"
+            ),
+        )
+
+    def test_probe_result_cached_across_calls(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = os.path.join(tmpdir, ".claude")
+            repo_dir = os.path.join(tmpdir, "repo")
+            initial_sha, _ = self._init_repo_with_commits(repo_dir, "1.5.0", 3)
+            self._write_conf(
+                claude_dir,
+                repo_path=repo_dir,
+                installed_version="1.5.0",
+                installed_sha=initial_sha,
+            )
+            self._cleanup_probe_cache(repo_dir, initial_sha)
+            calls = []
+            orig_expand = os.path.expanduser
+            orig_run = sl.subprocess.run
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            sl.subprocess.run = self._counting_subprocess_run(calls)
+            try:
+                first = sl.installation_drift("1.5.0")
+                second = sl.installation_drift("1.5.0")
+            finally:
+                os.path.expanduser = orig_expand
+                sl.subprocess.run = orig_run
+            self.assertEqual(first, {"version": "1.5.0", "commits": 2})
+            self.assertEqual(second, {"version": "1.5.0", "commits": 2})
+            self.assertEqual(len(calls), 1, "second call must hit the cache")
+
+    def test_probe_failure_cached_across_calls(self):
+        """An unreachable installed_sha (rebase case) must not re-pay the
+        subprocess per tick \u2014 the failure is cached like a success."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = os.path.join(tmpdir, ".claude")
+            repo_dir = os.path.join(tmpdir, "repo")
+            self._init_repo_with_commits(repo_dir, "1.5.0", 1)
+            self._write_conf(
+                claude_dir,
+                repo_path=repo_dir,
+                installed_version="1.5.0",
+                installed_sha="0" * 40,
+            )
+            self._cleanup_probe_cache(repo_dir, "0" * 40)
+            calls = []
+            orig_expand = os.path.expanduser
+            orig_run = sl.subprocess.run
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            sl.subprocess.run = self._counting_subprocess_run(calls)
+            try:
+                first = sl.installation_drift("1.5.0")
+                second = sl.installation_drift("1.5.0")
+            finally:
+                os.path.expanduser = orig_expand
+                sl.subprocess.run = orig_run
+            self.assertIsNone(first)
+            self.assertIsNone(second)
+            self.assertEqual(len(calls), 1, "failed probe must be cached too")
 
 
 class TestHarnessHealth(unittest.TestCase):
@@ -1201,6 +1345,366 @@ class TestGateSummary(unittest.TestCase):
             finally:
                 os.path.expanduser = orig
 
+    # ---- v1.48-pre session attribution ------------------------------
+
+    def test_targets_own_session_not_newest(self):
+        """A usable session_id pins the count to THIS session's events,
+        even when a foreign session is newer and busier."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = self._make_state_root(tmpdir)
+            own_dir = os.path.join(state_root, "session-own")
+            foreign_dir = os.path.join(state_root, "session-foreign")
+            self._write_events(own_dir, [
+                {"event": "block", "gate": "advisory"},
+                {"event": "block", "gate": "quality"},
+            ])
+            self._write_events(foreign_dir, [
+                {"event": "block", "gate": "advisory"},
+                {"event": "block", "gate": "quality"},
+                {"event": "block", "gate": "excellence"},
+                {"event": "block", "gate": "verify"},
+                {"event": "block", "gate": "stall"},
+            ])
+            now = time.time()
+            os.utime(own_dir, (now - 1000, now - 1000))
+            os.utime(foreign_dir, (now, now))
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                self.assertEqual(sl.gate_summary("session-own"), "g:2")
+            finally:
+                os.path.expanduser = orig
+
+    def test_own_session_without_events_is_none(self):
+        """Own dir exists but has no events file → clean session, no token
+        — never a fall-through to another session's numbers."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = self._make_state_root(tmpdir)
+            os.makedirs(os.path.join(state_root, "session-own"))
+            self._write_events(os.path.join(state_root, "session-foreign"), [
+                {"event": "block", "gate": "advisory"},
+            ])
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                self.assertIsNone(sl.gate_summary("session-own"))
+            finally:
+                os.path.expanduser = orig
+
+    def test_unknown_session_id_is_none(self):
+        """session_id supplied but dir not created yet (first ticks of a
+        brand-new session) → no token, not another session's counts."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = self._make_state_root(tmpdir)
+            self._write_events(os.path.join(state_root, "session-foreign"), [
+                {"event": "block", "gate": "advisory"},
+            ])
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                self.assertIsNone(sl.gate_summary("session-ghost"))
+            finally:
+                os.path.expanduser = orig
+
+    def test_malformed_session_id_uses_legacy_fallback(self):
+        """Path-separator ids are unusable → same behavior as no id."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = self._make_state_root(tmpdir)
+            self._write_events(os.path.join(state_root, "session-abc"), [
+                {"event": "block", "gate": "advisory"},
+            ])
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                self.assertEqual(sl.gate_summary("../escape"), "g:1")
+            finally:
+                os.path.expanduser = orig
+
+
+class TestUsableSessionId(unittest.TestCase):
+    def test_normal_ids_usable(self):
+        self.assertTrue(sl._usable_session_id("abc-123"))
+        self.assertTrue(sl._usable_session_id("36fca718-09f0-4ca0"))
+
+    def test_missing_or_non_string_unusable(self):
+        self.assertFalse(sl._usable_session_id(None))
+        self.assertFalse(sl._usable_session_id(""))
+        self.assertFalse(sl._usable_session_id(42))
+        self.assertFalse(sl._usable_session_id({"id": "x"}))
+
+    def test_traversal_and_hidden_unusable(self):
+        self.assertFalse(sl._usable_session_id("../escape"))
+        self.assertFalse(sl._usable_session_id("a/b"))
+        self.assertFalse(sl._usable_session_id(".ulw_active"))
+        self.assertFalse(sl._usable_session_id(".hidden"))
+
+
+class TestReadSessionState(unittest.TestCase):
+    def _patch_expanduser(self, tmpdir):
+        return lambda p: p.replace("~", tmpdir)
+
+    def _make_session(self, tmpdir, sid, payload):
+        session_dir = os.path.join(
+            tmpdir, ".claude", "quality-pack", "state", sid
+        )
+        os.makedirs(session_dir, exist_ok=True)
+        with open(os.path.join(session_dir, "session_state.json"), "w") as fh:
+            if isinstance(payload, str):
+                fh.write(payload)
+            else:
+                json.dump(payload, fh)
+        return session_dir
+
+    def test_reads_dict_state(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._make_session(tmpdir, "s1", {"workflow_mode": "ultrawork"})
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                state = sl.read_session_state("s1")
+                self.assertEqual(state.get("workflow_mode"), "ultrawork")
+            finally:
+                os.path.expanduser = orig
+
+    def test_missing_session_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                self.assertIsNone(sl.read_session_state("nope"))
+            finally:
+                os.path.expanduser = orig
+
+    def test_corrupt_state_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._make_session(tmpdir, "s1", "{not json")
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                self.assertIsNone(sl.read_session_state("s1"))
+            finally:
+                os.path.expanduser = orig
+
+    def test_non_dict_top_level_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._make_session(tmpdir, "s1", [1, 2, 3])
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                self.assertIsNone(sl.read_session_state("s1"))
+            finally:
+                os.path.expanduser = orig
+
+
+class TestUlwInfo(unittest.TestCase):
+    """v1.48-pre session attribution for the [ULW:domain] token."""
+
+    def _patch_expanduser(self, tmpdir):
+        return lambda p: p.replace("~", tmpdir)
+
+    def _state_root(self, tmpdir):
+        state_root = os.path.join(tmpdir, ".claude", "quality-pack", "state")
+        os.makedirs(state_root, exist_ok=True)
+        return state_root
+
+    def _touch_sentinel(self, state_root):
+        with open(os.path.join(state_root, ".ulw_active"), "w") as fh:
+            fh.write("")
+
+    def _write_session(self, state_root, sid, state, mtime=None):
+        session_dir = os.path.join(state_root, sid)
+        os.makedirs(session_dir, exist_ok=True)
+        with open(os.path.join(session_dir, "session_state.json"), "w") as fh:
+            json.dump(state, fh)
+        if mtime is not None:
+            os.utime(session_dir, (mtime, mtime))
+        return session_dir
+
+    def test_none_when_sentinel_absent(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = self._state_root(tmpdir)
+            self._write_session(state_root, "s1", {
+                "workflow_mode": "ultrawork", "task_domain": "coding",
+            })
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                self.assertIsNone(sl.ulw_info("s1"))
+            finally:
+                os.path.expanduser = orig
+
+    def test_own_ulw_session_returns_domain(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = self._state_root(tmpdir)
+            self._touch_sentinel(state_root)
+            now = time.time()
+            self._write_session(state_root, "s-own", {
+                "workflow_mode": "ultrawork", "task_domain": "coding",
+            }, mtime=now - 1000)
+            # A newer, non-ULW foreign session must not shadow the answer.
+            self._write_session(state_root, "s-foreign", {
+                "workflow_mode": "", "task_domain": "writing",
+            }, mtime=now)
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                self.assertEqual(sl.ulw_info("s-own"), "coding")
+            finally:
+                os.path.expanduser = orig
+
+    def test_non_ulw_session_ignores_foreign_ulw(self):
+        """THE contamination fix: window B (non-ULW) must not render
+        window A's ULW mode just because A wrote state more recently."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = self._state_root(tmpdir)
+            self._touch_sentinel(state_root)
+            now = time.time()
+            self._write_session(state_root, "s-own", {
+                "workflow_mode": "", "task_domain": "general",
+            }, mtime=now - 1000)
+            self._write_session(state_root, "s-foreign", {
+                "workflow_mode": "ultrawork", "task_domain": "coding",
+            }, mtime=now)
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                self.assertIsNone(sl.ulw_info("s-own"))
+            finally:
+                os.path.expanduser = orig
+
+    def test_unknown_session_id_makes_no_claim(self):
+        """Brand-new session whose dir the hooks have not created yet:
+        no ULW claim, even though a foreign ULW session exists."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = self._state_root(tmpdir)
+            self._touch_sentinel(state_root)
+            self._write_session(state_root, "s-foreign", {
+                "workflow_mode": "ultrawork", "task_domain": "coding",
+            })
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                self.assertIsNone(sl.ulw_info("s-new-ghost"))
+            finally:
+                os.path.expanduser = orig
+
+    def test_no_session_id_falls_back_to_newest(self):
+        """Legacy heuristic survives for payloads without a session_id."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = self._state_root(tmpdir)
+            self._touch_sentinel(state_root)
+            self._write_session(state_root, "s1", {
+                "workflow_mode": "ultrawork", "task_domain": "coding",
+            })
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                self.assertEqual(sl.ulw_info(), "coding")
+            finally:
+                os.path.expanduser = orig
+
+    def test_own_ulw_without_domain_returns_active(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = self._state_root(tmpdir)
+            self._touch_sentinel(state_root)
+            self._write_session(state_root, "s-own", {
+                "workflow_mode": "ultrawork",
+            })
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                self.assertEqual(sl.ulw_info("s-own"), "active")
+            finally:
+                os.path.expanduser = orig
+
+    def test_corrupt_own_state_makes_no_claim(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = self._state_root(tmpdir)
+            self._touch_sentinel(state_root)
+            session_dir = os.path.join(state_root, "s-own")
+            os.makedirs(session_dir)
+            with open(os.path.join(session_dir, "session_state.json"), "w") as fh:
+                fh.write("{broken")
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                self.assertIsNone(sl.ulw_info("s-own"))
+            finally:
+                os.path.expanduser = orig
+
+
+class TestGoalArmed(unittest.TestCase):
+    """[goal] token: armed = goal_objective set AND not paused."""
+
+    def _patch_expanduser(self, tmpdir):
+        return lambda p: p.replace("~", tmpdir)
+
+    def _write_session(self, tmpdir, sid, state):
+        session_dir = os.path.join(
+            tmpdir, ".claude", "quality-pack", "state", sid
+        )
+        os.makedirs(session_dir, exist_ok=True)
+        with open(os.path.join(session_dir, "session_state.json"), "w") as fh:
+            json.dump(state, fh)
+
+    def test_false_without_state(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                self.assertFalse(sl.goal_armed("nope"))
+                self.assertFalse(sl.goal_armed(None))
+            finally:
+                os.path.expanduser = orig
+
+    def test_true_when_objective_set(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._write_session(tmpdir, "s1", {
+                "goal_objective": "ship the statusline wave",
+            })
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                self.assertTrue(sl.goal_armed("s1"))
+            finally:
+                os.path.expanduser = orig
+
+    def test_false_when_paused(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._write_session(tmpdir, "s1", {
+                "goal_objective": "ship it",
+                "goal_paused": "1",
+            })
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                self.assertFalse(sl.goal_armed("s1"))
+            finally:
+                os.path.expanduser = orig
+
+    def test_false_when_objective_blank(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._write_session(tmpdir, "s1", {"goal_objective": "   "})
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                self.assertFalse(sl.goal_armed("s1"))
+            finally:
+                os.path.expanduser = orig
+
+    def test_goal_in_foreign_session_does_not_arm(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._write_session(tmpdir, "s-foreign", {
+                "goal_objective": "someone else's goal",
+            })
+            self._write_session(tmpdir, "s-own", {})
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                self.assertFalse(sl.goal_armed("s-own"))
+            finally:
+                os.path.expanduser = orig
+
 
 class TestMainIntegration(unittest.TestCase):
     """Test the full statusline by running the script as a subprocess."""
@@ -1216,6 +1720,21 @@ class TestMainIntegration(unittest.TestCase):
             env=env,
         )
         return result
+
+    def _cleanup_gates7d_cache(self, home_dir):
+        """Fake-HOME subprocess runs make gates_blocked_last_7d write a
+        cache keyed on the (unique) fake state root into the real
+        tempdir; mirror the key derivation and remove it after the test."""
+        state_root = os.path.join(home_dir, ".claude", "quality-pack", "state")
+        self.addCleanup(
+            _remove_file,
+            os.path.join(
+                tempfile.gettempdir(),
+                "claude-statusline-gates7d-"
+                + hashlib.sha1(state_root.encode()).hexdigest()[:12]
+                + ".json",
+            ),
+        )
 
     def test_minimal_input(self):
         result = self.run_statusline({})
@@ -1260,6 +1779,215 @@ class TestMainIntegration(unittest.TestCase):
         self.assertIn("RL:30%", lines[1])
         self.assertIn("C:66%", lines[1])  # 100k read / 150k total = 66%
         self.assertIn("API:66%", lines[1])  # 120k / 180k = 66%
+
+    def test_line_two_fit_sheds_diagnostics(self):
+        """v1.48-pre fit engine: at 60 cols line 2 sheds C:/API: (least
+        actionable) while the rate-limit token stays; line 1 already fits
+        so nothing there is dropped — fit-based, not breakpoint-based."""
+        data = {
+            "workspace": {"current_dir": "/tmp/my-project"},
+            "model": {"display_name": "Opus 4"},
+            "output_style": {"name": "oh-my-claude"},
+            "context_window": {
+                "used_percentage": 45.5,
+                "current_usage": {
+                    "cache_creation_input_tokens": 50000,
+                    "cache_read_input_tokens": 100000,
+                },
+            },
+            "cost": {
+                "total_cost_usd": 2.75,
+                "total_duration_ms": 180000,
+                "total_api_duration_ms": 120000,
+            },
+            "rate_limits": {"five_hour": {"used_percentage": 30}},
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Hermetic HOME: the real user conf must not be able to flip
+            # statusline_width under this assertion. OMC_PLAIN makes
+            # len() == visible width (no ANSI codes).
+            result = self.run_statusline(
+                data,
+                env_overrides={
+                    "COLUMNS": "60", "HOME": tmpdir, "OMC_PLAIN": "1",
+                },
+            )
+        self.assertEqual(result.returncode, 0)
+        lines = result.stdout.strip("\n").split("\n")
+        self.assertNotIn("C:66%", lines[1])
+        self.assertNotIn("API:66%", lines[1])
+        self.assertIn("RL:30%", lines[1])
+        self.assertLessEqual(len(lines[1]), 60)
+        # Line 1 fits at 60 — the fit engine must NOT shed a token the
+        # terminal has room for (the old <100 breakpoint dropped style:
+        # here unconditionally).
+        self.assertIn("style:oh-my-claude", lines[0])
+        self.assertLessEqual(len(lines[0]), 60)
+
+    def test_statusline_width_off_in_conf_disables_collapse(self):
+        """`statusline_width=off` in the user conf keeps the full render
+        even on a terminal far too narrow to fit it."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = os.path.join(tmpdir, ".claude")
+            os.makedirs(claude_dir)
+            with open(os.path.join(claude_dir, "oh-my-claude.conf"), "w") as fh:
+                fh.write("statusline_width=off\n")
+            data = {
+                "workspace": {"current_dir": "/tmp/my-project"},
+                "output_style": {"name": "oh-my-claude"},
+                "cost": {
+                    "total_duration_ms": 180000,
+                    "total_api_duration_ms": 120000,
+                },
+            }
+            result = self.run_statusline(
+                data, env_overrides={"COLUMNS": "40", "HOME": tmpdir}
+            )
+            self.assertEqual(result.returncode, 0)
+            lines = result.stdout.strip().split("\n")
+            self.assertIn("style:oh-my-claude", lines[0])
+            self.assertIn("API:66%", lines[1])
+
+    def test_line_one_fits_terminal_with_full_token_set(self):
+        """Excellence F1 regression: [ULW:]+[goal]+[g: f:]+long branch+
+        style+version together must fit the terminal at every width —
+        the old <100 breakpoint left 100-157-col terminals with the full
+        ~158-col worst case and never bounded the branch name."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = os.path.join(tmpdir, "home")
+            state_root = os.path.join(home, ".claude", "quality-pack", "state")
+            sid = "sess-width"
+            session_dir = os.path.join(state_root, sid)
+            os.makedirs(session_dir)
+            with open(os.path.join(state_root, ".ulw_active"), "w") as fh:
+                fh.write("")
+            with open(os.path.join(session_dir, "session_state.json"), "w") as fh:
+                json.dump({
+                    "workflow_mode": "ultrawork",
+                    "task_domain": "operations",
+                    "goal_objective": "ship it",
+                }, fh)
+            with open(os.path.join(session_dir, "gate_events.jsonl"), "w") as fh:
+                fh.write(json.dumps({"event": "block", "gate": "quality"}) + "\n")
+            with open(os.path.join(home, ".claude", "oh-my-claude.conf"), "w") as fh:
+                fh.write("installed_version=1.47.0\n")
+            self._cleanup_gates7d_cache(home)
+
+            # Repo whose checked-out branch name is 40 chars — the
+            # dominant token the fit engine must truncate.
+            repo = os.path.join(tmpdir, "proj")
+            os.makedirs(repo)
+            branch = "feature/very-long-branch-name-for-width"
+            for cmd in (
+                ["git", "init", "-q"],
+                ["git", "config", "user.email", "t@t.t"],
+                ["git", "config", "user.name", "t"],
+                ["git", "config", "commit.gpgsign", "false"],
+                ["git", "checkout", "-qb", branch],
+            ):
+                subprocess.run(cmd, cwd=repo, check=True,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            with open(os.path.join(repo, "f.txt"), "w") as fh:
+                fh.write("x\n")
+            subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "c"], cwd=repo, check=True,
+                           stdout=subprocess.DEVNULL)
+            self.addCleanup(_remove_file, sl.cache_path_for(repo))
+
+            data = {
+                "session_id": sid,
+                "model": {"display_name": "Opus 4.8"},
+                "workspace": {"current_dir": repo},
+                "output_style": {"name": "oh-my-claude"},
+            }
+            for cols in (80, 100, 120):
+                with self.subTest(columns=cols):
+                    result = self.run_statusline(data, env_overrides={
+                        "COLUMNS": str(cols), "HOME": home, "OMC_PLAIN": "1",
+                    })
+                    self.assertEqual(result.returncode, 0)
+                    lines = result.stdout.strip("\n").split("\n")
+                    self.assertLessEqual(
+                        len(lines[0]), cols,
+                        f"line 1 overflows {cols} cols: {lines[0]!r}",
+                    )
+                    self.assertLessEqual(
+                        len(lines[1]), cols,
+                        f"line 2 overflows {cols} cols: {lines[1]!r}",
+                    )
+                    # Core mode tokens are never shed to make room.
+                    self.assertIn("[ULW:operations]", lines[0])
+                    self.assertIn("[goal]", lines[0])
+                    self.assertIn("[g:1]", lines[0])
+
+    def test_goal_token_renders_when_armed(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sid = "sess-goal-armed"
+            session_dir = os.path.join(
+                tmpdir, ".claude", "quality-pack", "state", sid
+            )
+            os.makedirs(session_dir)
+            with open(os.path.join(session_dir, "session_state.json"), "w") as fh:
+                json.dump({"goal_objective": "ship the wave"}, fh)
+            self._cleanup_gates7d_cache(tmpdir)
+            result = self.run_statusline(
+                {"session_id": sid}, env_overrides={"HOME": tmpdir}
+            )
+            self.assertEqual(result.returncode, 0)
+            lines = result.stdout.strip().split("\n")
+            self.assertIn("[goal]", lines[0])
+
+    def test_goal_token_absent_when_paused(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sid = "sess-goal-paused"
+            session_dir = os.path.join(
+                tmpdir, ".claude", "quality-pack", "state", sid
+            )
+            os.makedirs(session_dir)
+            with open(os.path.join(session_dir, "session_state.json"), "w") as fh:
+                json.dump(
+                    {"goal_objective": "ship the wave", "goal_paused": "1"}, fh
+                )
+            self._cleanup_gates7d_cache(tmpdir)
+            result = self.run_statusline(
+                {"session_id": sid}, env_overrides={"HOME": tmpdir}
+            )
+            self.assertEqual(result.returncode, 0)
+            lines = result.stdout.strip().split("\n")
+            self.assertNotIn("[goal]", lines[0])
+
+    def test_ulw_token_absent_for_non_ulw_session_id(self):
+        """End-to-end contamination fix: a payload whose session is not
+        in ULW renders no [ULW:] token even while a foreign ULW session
+        is the newest on disk."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = os.path.join(tmpdir, ".claude", "quality-pack", "state")
+            own = os.path.join(state_root, "sess-own")
+            foreign = os.path.join(state_root, "sess-foreign")
+            os.makedirs(own)
+            os.makedirs(foreign)
+            with open(os.path.join(state_root, ".ulw_active"), "w") as fh:
+                fh.write("")
+            with open(os.path.join(own, "session_state.json"), "w") as fh:
+                json.dump({"workflow_mode": "", "task_domain": "general"}, fh)
+            with open(os.path.join(foreign, "session_state.json"), "w") as fh:
+                json.dump(
+                    {"workflow_mode": "ultrawork", "task_domain": "coding"}, fh
+                )
+            now = time.time()
+            os.utime(own, (now - 500, now - 500))
+            os.utime(foreign, (now, now))
+            self._cleanup_gates7d_cache(tmpdir)
+            result = self.run_statusline(
+                {"session_id": "sess-own", "cost": {"total_cost_usd": 1.0}},
+                env_overrides={"HOME": tmpdir},
+            )
+            self.assertEqual(result.returncode, 0)
+            lines = result.stdout.strip().split("\n")
+            self.assertNotIn("[ULW:", lines[0])
+            # Cost marker * (subagent costs excluded) keys off ULW — must
+            # also stay clean for the non-ULW window.
+            self.assertNotIn("$1.00*", lines[1])
 
     def test_renders_reset_countdown_for_five_hour(self):
         """5h `resets_at` in the future renders as `RL:N% R:<countdown>`."""
@@ -1729,6 +2457,117 @@ class TestRunGit(unittest.TestCase):
             self.assertEqual(captured["timeout"], 2)
         finally:
             subprocess.run = original_run
+
+
+class TestVisibleWidth(unittest.TestCase):
+    """Cell-accurate width math for the fit engine — CJK/emoji East-Asian
+    Wide codepoints render as 2 terminal cells, not 1."""
+
+    def test_ascii_is_len(self):
+        self.assertEqual(sl._visible_width("git:main*"), len("git:main*"))
+
+    def test_east_asian_wide_counts_double(self):
+        self.assertEqual(sl._visible_width("中文"), 4)
+        self.assertEqual(sl._visible_width("功能/分支"), 9)
+
+    def test_combining_marks_and_zwj_count_zero(self):
+        # e + combining acute renders as one cell.
+        self.assertEqual(sl._visible_width("é"), 1)
+        # ZWJ (Cf) renders zero cells.
+        self.assertEqual(sl._visible_width("a‍b"), 2)
+
+    def test_line_width_sums_cells_plus_joins(self):
+        tokens = [["a", "中文", "中文"], ["b", "xy", "xy"]]
+        # 4 cells + 2-space join + 2 cells
+        self.assertEqual(sl._line_width(tokens), 8)
+
+
+class TestTruncateGit(unittest.TestCase):
+    """_truncate_git fit step: trims the branch until the line fits,
+    floored at 5 codepoints, and skips entirely when even the floored
+    result would be no narrower (review F1 — plain-mode '..' could
+    otherwise WIDEN a 6-7 char branch)."""
+
+    def _git_token(self, plain):
+        return ["git", plain, plain]
+
+    def test_long_branch_trims_to_fit(self):
+        tokens = [self._git_token("b:feature/very-long-branch-name*")]
+        out = sl._truncate_git(tokens, 20)
+        self.assertLessEqual(sl._line_width(out), 20)
+        plain = out[0][1]
+        self.assertTrue(plain.startswith("b:"))
+        self.assertTrue(plain.endswith("*"), plain)
+        self.assertIn("…", plain)
+
+    def test_short_branch_skips_when_trim_cannot_narrow(self):
+        # 6-char branch: floored result (5 + 1-cell ellipsis) is not
+        # narrower — the guard must leave the token untouched even
+        # though the line is over budget.
+        tokens = [self._git_token("b:sixchr")]
+        out = sl._truncate_git(tokens, 4)
+        self.assertEqual(out[0][1], "b:sixchr")
+
+    def test_floor_keeps_five_chars(self):
+        tokens = [self._git_token("b:0123456789abcdef")]
+        out = sl._truncate_git(tokens, 1)  # impossible budget
+        plain = out[0][1]
+        self.assertEqual(plain, "b:01234…")
+
+    def test_no_git_token_is_noop(self):
+        tokens = [["style", "style:default", "style:default"]]
+        self.assertEqual(sl._truncate_git(tokens, 1), tokens)
+
+
+class TestGitInfoCache(unittest.TestCase):
+    """v1.48-pre: git_info consults the cache BEFORE spawning rev-parse.
+
+    The prior shape ran `rev-parse --show-toplevel` on every render tick
+    (~300ms) with the cache only covering branch/status — one guaranteed
+    subprocess per tick. Cache-first means a fresh cache tick spawns zero.
+    """
+
+    def _fail_run_git(self, *args):
+        raise AssertionError("run_git must not be called when cache is fresh")
+
+    def test_fresh_cache_skips_all_subprocesses(self):
+        with tempfile.TemporaryDirectory() as cwd:
+            cache_file = sl.cache_path_for(cwd)
+            self.addCleanup(_remove_file, cache_file)
+            sl.write_cache(
+                cache_file, {"branch": "cached-branch", "dirty": True}
+            )
+            orig = sl.run_git
+            sl.run_git = self._fail_run_git
+            try:
+                info = sl.git_info(cwd)
+            finally:
+                sl.run_git = orig
+            self.assertEqual(info, {"branch": "cached-branch", "dirty": True})
+
+    def test_non_repo_answer_cached(self):
+        """The not-a-repo result is cached too — a non-repo cwd must not
+        re-pay rev-parse per tick."""
+        with tempfile.TemporaryDirectory() as cwd:
+            self.addCleanup(_remove_file, sl.cache_path_for(cwd))
+            calls = []
+
+            def counting_run_git(cwd_arg, *args):
+                calls.append(args)
+                return subprocess.CompletedProcess(
+                    args=list(args), returncode=1, stdout=""
+                )
+
+            orig = sl.run_git
+            sl.run_git = counting_run_git
+            try:
+                first = sl.git_info(cwd)
+                second = sl.git_info(cwd)
+            finally:
+                sl.run_git = orig
+            self.assertEqual(first, {"branch": "", "dirty": False})
+            self.assertEqual(second, {"branch": "", "dirty": False})
+            self.assertEqual(len(calls), 1, "second tick must hit the cache")
 
 
 if __name__ == "__main__":

@@ -9,3 +9,5 @@
 # presence doesn't trip release.sh's clean-working-tree check before
 # the script can detect the marker and refuse to release.
 .hotfix-sweep-quick
+__pycache__/
+*.pyc
