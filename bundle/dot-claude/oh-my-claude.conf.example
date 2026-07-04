@@ -553,8 +553,9 @@
 # lowest-priority tokens until it fits the terminal width — line 1
 # drops `style:`, shortens `git:` to `b:`, truncates long branch names
 # (ellipsis, ≥5 chars kept), then drops the drift arrow; line 2 drops
-# `API:%`, `C:%`, `[gw:N]`, then halves the context bar. Identity/mode
-# tokens and the rate-limit tokens are never shed. A line that already
+# `API:%`, `C:%`, `[gw:N]`, halves the context bar, then trims the
+# rate-limit ` R:` countdowns. Identity/mode tokens and the rate-limit
+# percentages are never shed. A line that already
 # fits renders in full at any width; unknown width (no COLUMNS, no
 # tty) renders everything. Off = never shed. Parsed by statusline.py
 # (user-level conf only, not the project overlay).

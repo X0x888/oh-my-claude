@@ -1824,6 +1824,48 @@ class TestMainIntegration(unittest.TestCase):
         self.assertIn("style:oh-my-claude", lines[0])
         self.assertLessEqual(len(lines[0]), 60)
 
+    def test_hot_rate_limits_trim_countdowns_at_80_cols(self):
+        """With BOTH rate-limit windows hot, line 2 exceeds 80 cols even
+        after diagnostics + bar-shrink; the countdowns trim (timing lost,
+        percentages kept) instead of the ladder giving up into a wrap."""
+        future = int(time.time()) + 4980
+        data = {
+            "workspace": {"current_dir": "/tmp/my-project"},
+            "model": {"display_name": "Opus 4.8"},
+            "output_style": {"name": "oh-my-claude"},
+            "context_window": {
+                "used_percentage": 78,
+                "total_input_tokens": 12100000,
+                "total_output_tokens": 240000,
+                "current_usage": {
+                    "cache_creation_input_tokens": 110000,
+                    "cache_read_input_tokens": 9600000,
+                },
+            },
+            "cost": {
+                "total_cost_usd": 21.40,
+                "total_duration_ms": 16200000,
+                "total_api_duration_ms": 7100000,
+            },
+            "rate_limits": {
+                "five_hour": {"used_percentage": 42, "resets_at": future},
+                "seven_day": {"used_percentage": 12, "resets_at": future + 180000},
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = self.run_statusline(
+                data,
+                env_overrides={
+                    "COLUMNS": "80", "HOME": tmpdir, "OMC_PLAIN": "1",
+                },
+            )
+        self.assertEqual(result.returncode, 0)
+        lines = result.stdout.strip("\n").split("\n")
+        self.assertLessEqual(len(lines[1]), 80, repr(lines[1]))
+        self.assertIn("RL:42%", lines[1])
+        self.assertIn("7d:12%", lines[1])
+        self.assertNotIn(" R:", lines[1])
+
     def test_statusline_width_off_in_conf_disables_collapse(self):
         """`statusline_width=off` in the user conf keeps the full render
         even on a terminal far too narrow to fit it."""
@@ -2517,6 +2559,26 @@ class TestTruncateGit(unittest.TestCase):
     def test_no_git_token_is_noop(self):
         tokens = [["style", "style:default", "style:default"]]
         self.assertEqual(sl._truncate_git(tokens, 1), tokens)
+
+
+class TestTrimCountdowns(unittest.TestCase):
+    """_trim_countdowns fit step: rate-limit countdowns shed, percentages
+    kept — the last line-2 step before the ladder gives up."""
+
+    def test_strips_countdown_keeps_percent(self):
+        tokens = [
+            ["rl", "RL:42% R:1h22m", "colored-rl"],
+            ["d7", "7d:12% R:2d3h", "colored-d7"],
+            ["cost", "$1.00", "$1.00"],
+        ]
+        out = sl._trim_countdowns(tokens, 0)
+        self.assertEqual(out[0][1], "RL:42%")
+        self.assertEqual(out[1][1], "7d:12%")
+        self.assertEqual(out[2][1], "$1.00")
+
+    def test_noop_without_countdown(self):
+        tokens = [["rl", "RL:42%", "RL:42%"]]
+        self.assertEqual(sl._trim_countdowns(tokens, 0), tokens)
 
 
 class TestGitInfoCache(unittest.TestCase):

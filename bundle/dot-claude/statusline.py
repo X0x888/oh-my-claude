@@ -338,6 +338,28 @@ def _shorten_git(tokens, _width):
     return out
 
 
+def _trim_countdowns(tokens, _width):
+    """Fit step: strip the ` R:<countdown>` suffix from the rate-limit
+    tokens, keeping the percentages. Discovered on the 80-col preview:
+    with BOTH windows hot the two countdowns push line 2 to ~84 cells
+    after every other shed step, and the ladder gave up into a wrap.
+    Timing is the first rate-limit data to lose; the percent budget is
+    never shed. Recolors from the percent value (same bar_color rule
+    used at assembly)."""
+    out = []
+    for t in tokens:
+        if t[0] in ("rl", "d7") and " R:" in t[1]:
+            base = t[1].split(" R:", 1)[0]
+            try:
+                pct_val = int(base.split(":", 1)[1].rstrip("%"))
+            except (ValueError, IndexError):
+                pct_val = 0
+            out.append(_token(t[0], base, bar_color(pct_val)))
+        else:
+            out.append(t)
+    return out
+
+
 def _truncate_git(tokens, width):
     """Fit step: bound the branch name — the dominant line-1 token.
 
@@ -1144,8 +1166,9 @@ def main():
                 out.append(t)
         return out
 
-    # Line-2 fit: diagnostics shed first (least actionable), the
-    # rate-limit tokens are never dropped (they answer budget questions).
+    # Line-2 fit: diagnostics shed first (least actionable), then the
+    # bar compresses (lossless-ish), then the rate-limit countdowns trim
+    # (timing before budget). The rate-limit percentages are never shed.
     line_two_tokens = _fit_line(
         line_two_tokens,
         _term_w,
@@ -1154,6 +1177,7 @@ def main():
             _drop_token("cache"),
             _drop_token("gw"),
             shrink_bar,
+            _trim_countdowns,
         ],
     )
 
