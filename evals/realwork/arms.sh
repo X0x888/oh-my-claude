@@ -237,7 +237,9 @@ cmd_build() {
 # ---------------------------------------------------------------------------
 
 # Portable timeout (macOS ships no coreutils `timeout`). Returns the
-# command's exit code, or 124 if the killer fired first.
+# command's exit code, or 124 if the killer fired first. The killer's
+# sleep child is reaped explicitly — without the pkill, every completed
+# call would orphan one long-lived sleep process.
 _run_with_timeout() {
   local secs="$1"; shift
   "$@" &
@@ -246,7 +248,8 @@ _run_with_timeout() {
   local killer=$!
   local rc=0
   wait "${pid}" 2>/dev/null || rc=$?
-  kill -TERM "${killer}" 2>/dev/null
+  pkill -P "${killer}" 2>/dev/null || true
+  kill -TERM "${killer}" 2>/dev/null || true
   wait "${killer}" 2>/dev/null || true
   return "${rc}"
 }
