@@ -540,12 +540,60 @@ def normalize_base_entries(entries):
         target["hooks"] = target_hooks
     return result
 
+# v1.48 W3.1 upgrade prune: hook wirings SUPERSEDED by a consolidation
+# must be removed from the pre-existing base, or every upgrader keeps the
+# old direct wiring alongside its replacement and each consolidated hook
+# double-fires (duplicate timing rows; the circuit-breaker's consecutive-
+# failure counter double-increments and trips at ~2 real failures). The
+# merge is deliberately append/replace-only for FOREIGN entries, so
+# supersessions are declared explicitly per (event, matcher,
+# script-basename) tuple. Keep in lockstep with the jq twin below.
+# NOTE: no line of this embedded python may START with "}" — the test
+# harness extracts these bash functions with `sed '/^name()/,/^}/p'`,
+# and a column-0 brace would truncate the extraction mid-function.
+SUPERSEDED_HOOKS = frozenset([
+    ("PostToolUse", "", "posttool-timing.sh"),
+    ("PostToolUse", "Bash", "record-verification.sh"),
+    ("PostToolUse", "Bash", "record-delivery-action.sh"),
+    ("PostToolUse", "Bash", "circuit-breaker.sh"),
+])
+
+def prune_superseded(event, entries):
+    # Events with no supersessions pass through untouched, and an entry is
+    # only dropped when the prune ITSELF emptied it — a pre-existing
+    # null/empty-hooks entry must survive exactly as the merge always
+    # treated it.
+    if not any(t[0] == event for t in SUPERSEDED_HOOKS):
+        return entries
+    kept = []
+    for e in entries:
+        if not isinstance(e, dict):
+            kept.append(e)
+            continue
+        matcher = entry_matcher(e)
+        original = entry_hooks(e)
+        remaining = [
+            h for h in original
+            if (event, matcher, script_basename(h.get("command"))) not in SUPERSEDED_HOOKS
+        ]
+        if len(remaining) == len(original):
+            kept.append(e)
+            continue
+        if not remaining:
+            continue  # entry fully superseded — drop it
+        e = dict(e)
+        e["hooks"] = remaining
+        kept.append(e)
+    return kept
+
 for event, patch_entries in (patch.get("hooks") or {}).items():
     if hooks.get(event) is None:
         hooks[event] = []
     # Normalize base first so the three-phase loop operates on a
-    # canonical, dedup-free base.
+    # canonical, dedup-free base; then prune wirings this patch version
+    # supersedes (upgrade path — see SUPERSEDED_HOOKS above).
     existing_entries = normalize_base_entries(hooks[event])
+    existing_entries = prune_superseded(event, existing_entries)
     hooks[event] = existing_entries
 
     # Snapshot pre-patch entry count and track which original indices have
@@ -703,13 +751,18 @@ merge_settings_jq() {
     # base version instead of being appended.
     def script_basename:
       . as $cmd
-      # Split on any whitespace run — space, tab, CR, LF, FF, VT — to
-      # match Python `.split()` behavior (which splits on any whitespace
-      # including newlines). A narrower `[ \\t]+` would diverge from
-      # Python for pathological commands containing embedded newlines,
-      # because Python would split on `\n` and jq would not, producing
-      # different basename grouping keys and different merge outcomes.
-      | ($cmd | [splits("[ \\t\\r\\n\\f\\v]+")] | map(select(length > 0))) as $toks
+      # Split on any whitespace run to match Python `.split()` behavior
+      # (which splits on any whitespace including newlines). POSIX
+      # [[:space:]] — NOT an escape-based class: the previous
+      # `[ \t\r\n\f\v]` form hit an Oniguruma character-class quirk where
+      # `\v` matched the LITERAL letter "v", silently tokenizing every
+      # v-containing command ("record-verification.sh" keyed as
+      # "record-") . Invisible for years because patch and base misparsed
+      # identically, so same-key matching still worked — it surfaced the
+      # moment the v1.48 supersession prune compared those keys against
+      # correct literal basenames (and it also meant the python and jq
+      # merge paths keyed entries differently all along).
+      | ($cmd | [splits("[[:space:]]+")] | map(select(length > 0))) as $toks
       | (if ($toks | length) == 0 then ""
          elif $toks[0] == "bash" and ($toks | length) > 1 then $toks[1]
          else $toks[0]
@@ -791,6 +844,49 @@ merge_settings_jq() {
             end
         end
       );
+    # v1.48 W3.1 upgrade prune (jq twin of SUPERSEDED_HOOKS in the python
+    # implementation — keep in lockstep): wirings superseded by a
+    # consolidation are removed from the pre-existing base before the
+    # three-phase merge, or upgraders keep the old direct wiring alongside
+    # its replacement and every consolidated hook double-fires.
+    def superseded_tuples:
+      {"PostToolUse": {
+         "":     ["posttool-timing.sh"],
+         "Bash": ["record-verification.sh",
+                  "record-delivery-action.sh",
+                  "circuit-breaker.sh"]}};
+    def prune_superseded($event):
+      ((superseded_tuples[$event]) // {}) as $by_matcher
+      # Events with no supersessions pass through UNTOUCHED — the trailing
+      # emptiness filter must never drop a pre-existing null/empty-hooks
+      # entry in an unrelated event.
+      | if ($by_matcher | length) == 0 then . else
+        map(
+          if type != "object" then .
+          else
+            # Bind through variables at each step: jq evaluates both
+            # index-bracket and function-argument filters with the
+            # CONTAINER as input, so inline $by_matcher[entry_matcher]
+            # or index(.command|...) silently resolve against the wrong
+            # value (that exact bug shipped twice in the first draft of
+            # this def — keep the bindings).
+            entry_matcher as $m
+            | (($by_matcher[$m]) // []) as $gone
+            | if ($gone | length) == 0 then .
+              elif (has("hooks") | not) then .
+              else
+                .hooks = [(.hooks // [])[]
+                  | select(
+                      (type != "object")
+                      or (((.command // "") | script_basename) as $b
+                          | ($gone | index($b)) == null))]
+              end
+          end)
+        | map(select(
+            (type != "object")
+            or (has("hooks") | not)
+            or ((.hooks | length) > 0)))
+        end;
     # Merge a list of patch entries into a base entries array using the
     # three-phase algorithm: exact match → overlap → append.
     def merge_entries($patch_entries):
@@ -860,7 +956,10 @@ merge_settings_jq() {
       | .entries;
     def merge_hooks($base; $patch):
       reduce ($patch | to_entries[]) as $item ($base;
-        .[$item.key] = ((.[$item.key] // []) | normalize_base_entries | merge_entries($item.value // []))
+        .[$item.key] = ((.[$item.key] // [])
+          | normalize_base_entries
+          | prune_superseded($item.key)
+          | merge_entries($item.value // []))
       );
     .[0] as $base
     | .[1] as $patch

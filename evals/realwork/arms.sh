@@ -237,14 +237,26 @@ cmd_build() {
 # ---------------------------------------------------------------------------
 
 # Portable timeout (macOS ships no coreutils `timeout`). Returns the
-# command's exit code, or 124 if the killer fired first. The killer's
-# sleep child is reaped explicitly — without the pkill, every completed
-# call would orphan one long-lived sleep process.
+# command's exit code (143 after a TERM timeout-kill, 137 after the KILL
+# escalation). The watcher escalates TERM → 5s grace → KILL and also
+# signals the child's direct children, so a signal-trapping `claude` (or
+# its subprocess tree's first tier) cannot outlive the promised cap.
+# Deeper grandchildren may survive a stubborn tree — documented limit of
+# the no-setsid portable approach. The killer's own sleep children are
+# reaped explicitly so completed calls never orphan long-lived sleeps.
+# Kept in deliberate lockstep with the copy in bundle/dot-claude/bin/omc.
 _run_with_timeout() {
   local secs="$1"; shift
   "$@" &
   local pid=$!
-  ( sleep "${secs}"; kill -TERM "${pid}" 2>/dev/null ) &
+  (
+    sleep "${secs}"
+    kill -TERM "${pid}" 2>/dev/null
+    pkill -TERM -P "${pid}" 2>/dev/null
+    sleep 5
+    kill -KILL "${pid}" 2>/dev/null
+    pkill -KILL -P "${pid}" 2>/dev/null
+  ) &
   local killer=$!
   local rc=0
   wait "${pid}" 2>/dev/null || rc=$?
@@ -323,7 +335,9 @@ run_one() {
   done < <(jq -r '.checks[] | [.id, .cmd] | @tsv' "${probe_file}")
 
   local changed_files
-  changed_files="$(cd "${ws}" && git diff --name-only HEAD 2>/dev/null | grep -c . || true)"
+  # status --porcelain (not diff --name-only): a run that completes by
+  # ADDING files must not report 0 changed.
+  changed_files="$(cd "${ws}" && git status --porcelain 2>/dev/null | grep -c . || true)"
   [[ "${changed_files}" =~ ^[0-9]+$ ]] || changed_files=0
 
   jq -nc \
@@ -468,7 +482,7 @@ cmd_report() {
           " | " + (.arms | map(.runs) | add | tostring) + " runs |"
         ) | .[]
       else . end
-  ' ${summaries}
+  '
 }
 
 # ---------------------------------------------------------------------------

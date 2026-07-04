@@ -435,6 +435,10 @@ def _usable_session_id(session_id):
         return False
     if os.sep in session_id or session_id.startswith("."):
         return False
+    # os.altsep too ("/" on Windows) — defense-in-depth: darwin/Linux are
+    # the targets, but a flat-name contract should hold on any platform.
+    if os.altsep and os.altsep in session_id:
+        return False
     return True
 
 
@@ -1186,4 +1190,12 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        # A rendering bug must never blank the status bar: Claude Code
+        # replaces the bar with this script's stdout on every tick, so an
+        # uncaught exception (e.g. a wrong-typed payload field reaching a
+        # numeric format) would exit 1 and wipe the line. Fail silent,
+        # keep the bar alive; the next tick retries with fresh payload.
+        sys.exit(0)

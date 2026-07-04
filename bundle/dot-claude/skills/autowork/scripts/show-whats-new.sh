@@ -20,7 +20,12 @@ CONF="${HOME}/.claude/oh-my-claude.conf"
 read_conf_value() {
   local key="$1"
   [[ -f "${CONF}" ]] || return 0
-  grep -E "^${key}=" "${CONF}" 2>/dev/null | tail -1 | cut -d'=' -f2- | tr -d '[:space:]' || true
+  # Trim edges only — `tr -d '[:space:]'` ate INTERIOR spaces, so a
+  # repo_path like "/Users/x/AI coding - more/repo" collapsed to a
+  # nonexistent path and /whats-new reported the CHANGELOG missing on
+  # every spaced checkout (worked on CI's space-free runners only).
+  grep -E "^${key}=" "${CONF}" 2>/dev/null | tail -1 | cut -d'=' -f2- \
+    | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' || true
 }
 
 installed_version="$(read_conf_value installed_version)"

@@ -238,5 +238,18 @@ assert_contains "T10: doctor counts probes" "probes: 3" "${doctor_out}"
 assert_contains "T10: doctor reports mock override" "mock override" "${doctor_out}"
 
 # ----------------------------------------------------------------------
+printf 'T11: report survives a runs-root containing spaces (release-reviewer F2)\n'
+# The default RUNS_ROOT lives under the repo path, which on the
+# maintainer machine contains spaces — a paid campaign must never end
+# with an unparseable [] report because of word-splitting.
+spaced_root="${WORK}/sp aced runs"
+mkdir -p "${spaced_root}"
+first_run_dir="$(find "${OMC_ARMS_RUNS_ROOT}" -mindepth 1 -maxdepth 1 -type d | head -1)"
+cp -R "${first_run_dir}" "${spaced_root}/copy-run-1"
+report_t11="$(OMC_ARMS_RUNS_ROOT="${spaced_root}" bash "${ARMS_SH}" report --probe no-defer-contract 2>/dev/null)"
+rc=0; jq -e '.[0].arms[0].runs == 1' >/dev/null 2>&1 <<<"${report_t11}" || rc=$?
+assert_true "T11: spaced-path report parses and counts the run" "${rc}"
+
+# ----------------------------------------------------------------------
 printf '\n=== realwork-arms tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]

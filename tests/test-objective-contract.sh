@@ -308,8 +308,10 @@ write_state "last_edit_ts" "${T_PRE}"
 result="$(run_objective_contract_gate execution "nothing edited this cycle")"
 assert_eq "PROBE4: self-disarm when no work happened this cycle" "allow:no_work_this_cycle" "${result}"
 
-# Cap behavior: blocks 1 and 2, then releases (cap reached) under default
-# scorecard exhaustion mode.
+# Cap behavior: blocks 1 and 2, then releases (cap reached). The gate's
+# own block_cap is independent of guard_exhaustion_mode (whose default
+# flipped scorecard→block in v1.48), so this release path holds under
+# either default.
 arm_substantive_cycle
 r1="$(run_objective_contract_gate execution "msg")"
 r2="$(run_objective_contract_gate execution "msg")"

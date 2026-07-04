@@ -370,7 +370,7 @@ done
 # omc CLI symlink (created by install.sh when ~/.local/bin exists) — only
 # remove it when it still points at our installed binary; a foreign omc
 # on the user's PATH is not ours to delete.
-OMC_SYMLINK="${HOME}/.local/bin/omc"
+OMC_SYMLINK="${TARGET_HOME}/.local/bin/omc"
 if [[ -L "${OMC_SYMLINK}" ]] \
   && [[ "$(readlink "${OMC_SYMLINK}" 2>/dev/null)" == "${CLAUDE_HOME}/bin/omc" ]]; then
   rm -f "${OMC_SYMLINK}"

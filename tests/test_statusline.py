@@ -2632,5 +2632,42 @@ class TestGitInfoCache(unittest.TestCase):
             self.assertEqual(len(calls), 1, "second tick must hit the cache")
 
 
+class TestMalformedPayloadResilience(unittest.TestCase):
+    """v1.48 (release-reviewer F5/F9): a rendering bug must never blank the
+    status bar. Claude Code replaces the bar with this script's stdout on
+    every tick, so an uncaught exception exits 1 and wipes the line. The
+    __main__ guard swallows any Exception and exits 0."""
+
+    def _run(self, payload):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env = statusline_subprocess_env(HOME=tmpdir)
+            return subprocess.run(
+                [sys.executable, STATUSLINE_PATH],
+                input=payload,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                env=env,
+            )
+
+    def test_wrong_typed_cost_exits_zero(self):
+        result = self._run('{"cost": {"total_cost_usd": "x"}}')
+        self.assertEqual(result.returncode, 0)
+
+    def test_wrong_typed_percentage_exits_zero(self):
+        result = self._run(
+            '{"context_window": {"used_percentage": "bad"},'
+            ' "cost": {"total_cost_usd": []}}'
+        )
+        self.assertEqual(result.returncode, 0)
+
+    def test_guard_does_not_mask_healthy_render(self):
+        # Control: a well-formed empty payload still renders real output,
+        # so the exception guard cannot silently hide total breakage.
+        result = self._run("{}")
+        self.assertEqual(result.returncode, 0)
+        self.assertTrue(result.stdout.strip(), "healthy render must emit a bar")
+
+
 if __name__ == "__main__":
     unittest.main()

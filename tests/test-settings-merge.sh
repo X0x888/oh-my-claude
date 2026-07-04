@@ -246,6 +246,56 @@ for impl in "${implementations[@]}"; do
   assert_json_count "${impl}: idempotent — StopFailure hooks still 1" \
     "${work}/settings.json" '.hooks.StopFailure' "1"
 
+  # -----------------------------------------------------------------------
+  # Test 2b: UPGRADE prune (v1.48 W3.1, release-reviewer F1) — a base
+  # seeded with the pre-1.48 PostToolUse shape must come out with the old
+  # direct wirings PRUNED, not surviving alongside the dispatcher. Fresh
+  # and idempotent cases start from {} and structurally cannot catch the
+  # upgrade double-execution class (double timing rows; circuit-breaker
+  # tripping at ~2 real failures).
+  # -----------------------------------------------------------------------
+  cat > "${work}/upgrade.json" <<'PRE148'
+{
+  "hooks": {
+    "PostToolUse": [
+      {"hooks": [{"type": "command", "command": "$HOME/.claude/skills/autowork/scripts/posttool-timing.sh"}]},
+      {"matcher": "Edit|Write|MultiEdit", "hooks": [{"type": "command", "command": "$HOME/.claude/skills/autowork/scripts/mark-edit.sh"}]},
+      {"matcher": "Bash", "hooks": [{"type": "command", "command": "$HOME/.claude/skills/autowork/scripts/record-verification.sh"}]},
+      {"matcher": "Bash", "hooks": [{"type": "command", "command": "$HOME/.claude/skills/autowork/scripts/record-delivery-action.sh"}]},
+      {"matcher": "Bash", "hooks": [{"type": "command", "command": "$HOME/.claude/skills/autowork/scripts/circuit-breaker.sh"}]},
+      {"matcher": "mcp__.*", "hooks": [{"type": "command", "command": "$HOME/.claude/skills/autowork/scripts/record-verification.sh"}]},
+      {"matcher": "Agent", "hooks": [{"type": "command", "command": "$HOME/.claude/skills/autowork/scripts/reflect-after-agent.sh"}]},
+      {"matcher": "Grep|Read", "hooks": [{"type": "command", "command": "$HOME/.claude/skills/autowork/scripts/record-advisory-verification.sh"}]}
+    ]
+  }
+}
+PRE148
+  run_merge "${impl}" "${work}/upgrade.json" "${SETTINGS_PATCH}" "false"
+
+  assert_json_count "${impl}: upgrade — PostToolUse pruned to 5" \
+    "${work}/upgrade.json" '.hooks.PostToolUse' "5"
+  assert_json_eq "${impl}: upgrade — no direct posttool-timing wiring survives" \
+    "${work}/upgrade.json" \
+    '[.hooks.PostToolUse[] | .hooks[]? | .command // ""] | any(contains("posttool-timing.sh"))' \
+    "false"
+  assert_json_eq "${impl}: upgrade — no Bash-matcher entries survive" \
+    "${work}/upgrade.json" \
+    '[.hooks.PostToolUse[] | select(.matcher == "Bash")] | length' \
+    "0"
+  assert_json_eq "${impl}: upgrade — exactly one mcp record-verification entry" \
+    "${work}/upgrade.json" \
+    '[.hooks.PostToolUse[] | select(.matcher == "mcp__.*")] | length' \
+    "1"
+  assert_json_eq "${impl}: upgrade — dispatcher wired on the universal entry" \
+    "${work}/upgrade.json" \
+    '[.hooks.PostToolUse[] | select(has("matcher") | not) | .hooks[0].command] | any(. | tostring | contains("posttool-dispatch.sh"))' \
+    "true"
+
+  # Upgrade idempotency: a second merge on the pruned result stays at 5.
+  run_merge "${impl}" "${work}/upgrade.json" "${SETTINGS_PATCH}" "false"
+  assert_json_count "${impl}: upgrade re-merge — PostToolUse still 5" \
+    "${work}/upgrade.json" '.hooks.PostToolUse' "5"
+
   # Verify the new dimension-tracker matchers are present
   assert_json_eq "${impl}: fresh — metis matcher wired" \
     "${work}/settings.json" \
