@@ -632,10 +632,19 @@
 #   balanced — Opus for planning/review, Sonnet for execution. (Default.)
 #   economy  — all agents use Sonnet (lowest cost).
 #
-# Note: this flag is set by `bash install.sh --model-tier=<tier>` and by
-# `bash ~/.claude/switch-tier.sh <tier>`. /omc-config also writes it. The
-# value here only takes effect on agent files when the tier-switching
-# script runs — editing this line by hand will not rewrite agent files.
+# Two halves since v1.47. The AGENT-FILE half is install-time: frontmatter
+# `model:` lines are rewritten when `bash install.sh --model-tier=<tier>`,
+# `bash ~/.claude/switch-tier.sh <tier>`, or /omc-config runs — editing this
+# line by hand does not rewrite agent files. The ROUTER half is runtime:
+# under /ulw the prompt-intent-router reads this flag fresh each prompt and
+# injects a SUBAGENT MODEL ENFORCEMENT directive naming the `model` parameter
+# to pass on every Agent() call — the tool-call parameter is authoritative
+# over frontmatter, so a stale install-time rewrite cannot misroute
+# dispatches. Project-level .claude/oh-my-claude.conf may set this flag
+# (v1.47 deny-list evaluation: flipping it cannot disable an enforcement
+# surface or persist data — worst case is a per-repo cost/quality tier
+# shift, visible in the injected directive; env wins over both scopes).
+# Env: OMC_MODEL_TIER.
 #model_tier=balanced
 
 # Per-agent model overrides — the fine-grained complement to model_tier.
