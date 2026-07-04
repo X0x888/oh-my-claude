@@ -314,14 +314,14 @@ _bash_command_may_mutate_workspace() {
   # `-m/--message`, `-F/--file`, `--cleanup`, `-u/--local-user`,
   # `--no-sign`) falls through to the mutation branch below.
   #
-  # Known limitation (shared with the advisory matcher):
-  # `git tag --format='<fmt>' newtag` — the create form with a custom
-  # format flag — falsely matches list-mode because the regex stops at
-  # the first list-mode flag without checking for a trailing positional
-  # tag name. Deferred; the pattern is uncommon enough that the v1.14
-  # advisory pass shipped without catching it. The mitigation: the Stop
-  # hook's mark-edit tracker and quality-reviewer pass still catch the
-  # mutation downstream.
+  # Known limitation (shared with the advisory matcher; empirically
+  # verified): display flags that do not force list mode — `--sort=<key>`,
+  # `--column`, `--format=<fmt>` — followed by a positional tag name
+  # CREATE a tag yet falsely match list-mode, because the regex stops at
+  # the first flag without checking for a trailing positional. A purely
+  # syntactic tighten cannot separate those from flag-only list forms.
+  # The mitigation: the Stop hook's mark-edit tracker and
+  # quality-reviewer pass still catch the mutation downstream.
   #
   # Case-sensitivity: `-Ei` (case-insensitive) is intentionally different
   # from the advisory matcher's case-sensitive choice in
@@ -536,11 +536,16 @@ _cmd_is_allowed_variant() {
   # `git log --tags && git tag` after segment-split — bounced off the
   # advisory gate; (b) `-v|--verify` (signature check) is read-only per
   # git-tag(1) and is allowed, matching the floor list. The flag must now
-  # be the FIRST token after `tag` (first token decides list-vs-create),
-  # which also closes the `git tag <name> --sort=x` create-with-stray-flag
-  # shape the old intermediate-token regex wrongly allowed. Known
-  # limitation (shared with the floor): `git tag --format='<fmt>' newtag`
-  # still misreads as list-mode.
+  # be the FIRST token after `tag`, which closes the NAME-FIRST create
+  # shape (`git tag <name> --sort=x`) the old intermediate-token regex
+  # wrongly allowed. Known limitation (shared with the floor; empirically
+  # verified in review): display flags that do not force list mode —
+  # `--sort=<key>`, `--column`, `--format=<fmt>` — followed by a
+  # positional tag name CREATE a tag yet still match the allow arm. A
+  # syntactic matcher cannot cleanly separate those from flag-only list
+  # forms; the mark-edit tracker and quality-reviewer pass catch the
+  # mutation downstream. Filter flags (`--contains`, `--points-at`,
+  # `--merged`, `-l`, `-n`) do force list mode and are safe.
   if grep -Eq "${_GUARD_PRE}git[[:space:]]+tag([[:space:]]*$|[[:space:]]+(-l|--list|--sort|--contains|--no-contains|--points-at|--merged|--no-merged|-n[0-9]*|--column|--no-column|--format|-i|--ignore-case|-v|--verify)([[:space:]=]|$))" <<<"${cmd}"; then return 0; fi
   return 1
 }
