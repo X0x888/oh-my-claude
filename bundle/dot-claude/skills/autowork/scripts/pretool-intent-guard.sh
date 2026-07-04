@@ -296,7 +296,7 @@ _bash_command_may_mutate_workspace() {
   # (`git tag` alone, `git tag --list`, `git tag --sort=-creatordate`,
   # `git tag --contains HEAD`, `git tag --points-at v1.13.0`, `git tag -n5`,
   # `git tag -v <name>` for signature verification). The advisory matcher's
-  # `_cmd_is_allowed_variant` at :311 already encodes this discrimination;
+  # `_cmd_is_allowed_variant` (defined below) encodes the same discrimination;
   # the floor matcher needs the same nuance so read-only inspection of tags
   # is allowed before the specialist floor is satisfied — matching the
   # v1.41.0 "Read-only inspection still passes" contract.
@@ -314,7 +314,7 @@ _bash_command_may_mutate_workspace() {
   # `-m/--message`, `-F/--file`, `--cleanup`, `-u/--local-user`,
   # `--no-sign`) falls through to the mutation branch below.
   #
-  # Known limitation (shared with the advisory matcher at :311):
+  # Known limitation (shared with the advisory matcher):
   # `git tag --format='<fmt>' newtag` — the create form with a custom
   # format flag — falsely matches list-mode because the regex stops at
   # the first list-mode flag without checking for a trailing positional
@@ -324,7 +324,8 @@ _bash_command_may_mutate_workspace() {
   # mutation downstream.
   #
   # Case-sensitivity: `-Ei` (case-insensitive) is intentionally different
-  # from the advisory matcher's case-sensitive choice at :320. The advisory
+  # from the advisory matcher's case-sensitive choice in
+  # `_cmd_matches_destructive`. The advisory
   # matcher uses case-sensitivity to distinguish `git branch -D` (force-
   # delete) from `-d` (safe-delete). `git tag` has no such case-distinct
   # flag pair — `-d` is the only delete form — so case-insensitive matching
@@ -501,9 +502,9 @@ readonly _GUARD_PRE='(^|[[:space:];&|(])([^[:space:]]*/)?'
 
 # `_normalize_git_flags` is defined earlier in the file (hoisted in the
 # v1.41.x harness-improvement wave) so the agent-first floor matcher
-# can reuse the same normalization the advisory matcher applies at
-# :366. See the definition above for the rationale and the two flag
-# shapes it handles.
+# can reuse the same normalization the advisory matcher applies before
+# segment-splitting. See the definition above for the rationale and the
+# two flag shapes it handles.
 
 # Recovery and read-only variants of verbs that are otherwise destructive.
 # Runs on already-normalized input so `git -c foo=bar rebase --abort` (which
@@ -526,7 +527,21 @@ _cmd_is_allowed_variant() {
   # original (`-l|--list` only) caused real friction during the v1.14
   # advisory pass — the inspection commands had to be replaced with
   # `ls .git/refs/tags/` plumbing as a workaround.
-  if grep -Eq "${_GUARD_PRE}git[[:space:]]+tag([[:space:]]+[^[:space:]]+)*[[:space:]]+(-l|--list|--sort|--contains|--no-contains|--points-at|--merged|--no-merged|-n[0-9]*|--column|--no-column|--format|-i|--ignore-case)([[:space:]=]|$)" <<<"${cmd}"; then return 0; fi
+  #
+  # Floor-parity (v1.48 false-positive fix, observed live in an advisory
+  # audit session): this arm now mirrors `_bash_command_may_mutate_workspace`'s
+  # tag discrimination — (a) BARE `git tag` (end of segment) is the pure
+  # list form and is allowed; the previous regex required at least one
+  # flag token, so `git tag` alone — and any compound like
+  # `git log --tags && git tag` after segment-split — bounced off the
+  # advisory gate; (b) `-v|--verify` (signature check) is read-only per
+  # git-tag(1) and is allowed, matching the floor list. The flag must now
+  # be the FIRST token after `tag` (first token decides list-vs-create),
+  # which also closes the `git tag <name> --sort=x` create-with-stray-flag
+  # shape the old intermediate-token regex wrongly allowed. Known
+  # limitation (shared with the floor): `git tag --format='<fmt>' newtag`
+  # still misreads as list-mode.
+  if grep -Eq "${_GUARD_PRE}git[[:space:]]+tag([[:space:]]*$|[[:space:]]+(-l|--list|--sort|--contains|--no-contains|--points-at|--merged|--no-merged|-n[0-9]*|--column|--no-column|--format|-i|--ignore-case|-v|--verify)([[:space:]=]|$))" <<<"${cmd}"; then return 0; fi
   return 1
 }
 

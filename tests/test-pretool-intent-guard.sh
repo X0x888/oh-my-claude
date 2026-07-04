@@ -337,6 +337,56 @@ out_t0c11="$(run_guard "t0c11" "git tag --column always v1.0")"
 assert_eq "T0c11: --column flag-then-positional allowed (documented limit)" "" "${out_t0c11}"
 teardown_test
 
+# T0c12..T0c17 (v1.48 advisory-path parity): the ADVISORY matcher's
+# `_cmd_is_allowed_variant` never inherited the floor's tag
+# discrimination — bare `git tag` (pure list form) and `git tag -v`
+# (signature verify) required a list-mode flag token and bounced off
+# the advisory gate. Observed live: a read-only tag/log inspection
+# burst in an advisory-intent session was denied as a "destructive git
+# op". Lock the allowed read-only forms under advisory intent AND the
+# still-denied create forms, plus the floor's bare-list arm (previously
+# untested).
+setup_test
+init_session "t0c12" "advisory"
+out_t0c12="$(run_guard "t0c12" "git tag")"
+assert_eq "T0c12: bare git tag allowed under advisory (live false-positive)" "" "${out_t0c12}"
+teardown_test
+
+setup_test
+init_session "t0c13" "advisory"
+out_t0c13="$(run_guard "t0c13" "git tag --sort=-creatordate | head -5 && git status --short")"
+assert_eq "T0c13: compound tag-list inspection allowed under advisory" "" "${out_t0c13}"
+teardown_test
+
+setup_test
+init_session "t0c14" "advisory"
+out_t0c14="$(run_guard "t0c14" "git tag -v v1.41.0")"
+assert_eq "T0c14: git tag -v allowed under advisory (verify is read-only)" "" "${out_t0c14}"
+teardown_test
+
+setup_test
+init_session "t0c15" "advisory"
+out_t0c15="$(run_guard "t0c15" "git log --tags --simplify-by-decoration --pretty='%d'")"
+assert_eq "T0c15: git log --tags allowed under advisory (control)" "" "${out_t0c15}"
+teardown_test
+
+setup_test
+init_session "t0c16" "advisory"
+out_t0c16="$(run_guard "t0c16" "git tag v9.9.9")"
+if denied "${out_t0c16}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T0c16: git tag <name> (create) must still deny under advisory (got: %s)\n' "${out_t0c16}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+setup_test
+init_session "t0c17" "execution"
+out_t0c17="$(run_guard "t0c17" "git tag")"
+assert_eq "T0c17: bare git tag allowed at agent-first floor" "" "${out_t0c17}"
+teardown_test
+
 # ----------------------------------------------------------------------
 # T0d: execution intent + qualifying specialist completed → Edit allowed and
 # first mutation is recorded for the Stop-hook backstop.
