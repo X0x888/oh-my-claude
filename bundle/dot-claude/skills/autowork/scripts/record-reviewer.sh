@@ -221,13 +221,14 @@ else
 fi
 
 # --- Agent performance metric recording ---
+# Verdict only (v1.48 W3.5): the old third argument was a fabricated
+# confidence (hardcoded 60/80) that made agent-metrics' avg_confidence
+# read as measured signal when it never was. Clean-rate is the real data.
 metric_verdict="findings"
-metric_confidence=60
 if [[ "${has_findings}" == "false" ]]; then
   metric_verdict="clean"
-  metric_confidence=80
 fi
-record_agent_metric "${REVIEWER_TYPE}" "${metric_verdict}" "${metric_confidence}" &
+record_agent_metric "${REVIEWER_TYPE}" "${metric_verdict}" &
 
 # --- Cross-session defect pattern recording ---
 # When findings are detected, extract a *structured* finding bullet and

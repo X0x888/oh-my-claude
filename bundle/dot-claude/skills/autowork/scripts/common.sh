@@ -2,6 +2,21 @@
 
 set -euo pipefail
 
+# Idempotent re-source guard (v1.48 W3.1). The posttool dispatcher sources
+# common.sh once and then pipeline-subshell-sources each handler script;
+# every handler's own `. common.sh` line lands here and returns immediately
+# instead of re-parsing the whole file (the ~25-30ms cold-start tax the
+# consolidation removes). On the short-circuit path, honor the CALLER's
+# lazy-lib flags: a handler that did NOT opt out of a lib expects it eagerly
+# loaded, so top up via the idempotent loaders (defined below — they exist
+# on any re-source because the first pass defined them).
+if [[ -n "${_OMC_COMMON_SOURCED:-}" ]]; then
+  [[ "${OMC_LAZY_TIMING:-}" == "1" ]] || _omc_load_timing
+  [[ "${OMC_LAZY_CLASSIFIER:-}" == "1" ]] || _omc_load_classifier
+  return 0
+fi
+_OMC_COMMON_SOURCED=1
+
 STATE_ROOT="${STATE_ROOT:-${HOME}/.claude/quality-pack/state}"
 STATE_JSON="session_state.json"
 HOOK_LOG="${STATE_ROOT}/hooks.log"
@@ -98,6 +113,7 @@ _omc_env_whats_new_session_hint="${OMC_WHATS_NEW_SESSION_HINT:-}"
 _omc_env_lazy_session_start="${OMC_LAZY_SESSION_START:-}"
 _omc_env_mid_session_memory_checkpoint="${OMC_MID_SESSION_MEMORY_CHECKPOINT:-}"
 _omc_env_model_tier="${OMC_MODEL_TIER:-}"
+_omc_env_repo_lessons="${OMC_REPO_LESSONS:-}"
 
 OMC_STALL_THRESHOLD="${OMC_STALL_THRESHOLD:-12}"
 OMC_EXCELLENCE_FILE_COUNT="${OMC_EXCELLENCE_FILE_COUNT:-3}"
@@ -105,7 +121,12 @@ OMC_STATE_TTL_DAYS="${OMC_STATE_TTL_DAYS:-7}"
 OMC_DIMENSION_GATE_FILE_COUNT="${OMC_DIMENSION_GATE_FILE_COUNT:-3}"
 OMC_TRACEABILITY_FILE_COUNT="${OMC_TRACEABILITY_FILE_COUNT:-6}"
 # Guard exhaustion mode: scorecard (default, legacy: warn), block (legacy: strict), silent (legacy: release)
-OMC_GUARD_EXHAUSTION_MODE="${OMC_GUARD_EXHAUSTION_MODE:-scorecard}"
+# v1.48 W3.3: built-in default flipped scorecard → block. The scorecard
+# release-after-cap default meant every fresh install's gates stopped
+# enforcing after 1-3 blocks — the criterion the harness headlines
+# ("won't stop until really done") only held under the opt-in Zero
+# Steering preset. Softer postures remain one conf line away.
+OMC_GUARD_EXHAUSTION_MODE="${OMC_GUARD_EXHAUSTION_MODE:-block}"
 # Minimum verification confidence (0-100) to satisfy the verify gate.
 # Default 40: blocks lint-only checks (shellcheck=30, bash -n=30) while
 # accepting project test suites (npm test=70+) and framework runs (jest=50+).
@@ -259,6 +280,20 @@ OMC_COUNCIL_DEEP_DEFAULT="${OMC_COUNCIL_DEEP_DEFAULT:-off}"
 # session memory should not accrue across runs. Explicit user requests
 # ("remember that...") still apply regardless of this flag.
 OMC_AUTO_MEMORY="${OMC_AUTO_MEMORY:-on}"
+# Repo-committed lessons/backlog memory (v1.48-pre): when `on`,
+# record-repo-lesson.sh writes team-shareable, git-committable bullets
+# to `.claude/lessons.md` / `.claude/backlog.md` AT THE TARGET REPO
+# ROOT — a deliberate exception to every other memory surface in this
+# file, which all live under `~/.claude` and never touch the user's
+# working tree. Default OFF: the write lands inside a directory the
+# user may `git add`/commit/push, so it must never fire without an
+# explicit opt-in. SECURITY: deny-listed at project-conf scope (see
+# the `level == "project"` case-statement below) — a hostile or
+# unfamiliar repo's committed `.claude/oh-my-claude.conf` cannot turn
+# this on for itself; only user-level `~/.claude/oh-my-claude.conf` or
+# `OMC_REPO_LESSONS=on` can. See docs/customization.md "Project-conf
+# security restriction".
+OMC_REPO_LESSONS="${OMC_REPO_LESSONS:-off}"
 # Whats-new SessionStart hint: when `true` (default), the first
 # SessionStart after the installed_version changes emits a one-shot
 # "oh-my-claude updated. <prev> → <new> — run /whats-new" notice via
@@ -601,7 +636,7 @@ _parse_conf_file() {
     # section, which documents the deny-list explicitly.
     if [[ "${level}" == "project" ]]; then
       case "${key}" in
-        pretool_intent_guard|bg_spawn_gate|agent_first_gate|no_defer_mode|quality_policy)
+        pretool_intent_guard|bg_spawn_gate|agent_first_gate|no_defer_mode|quality_policy|repo_lessons)
           # quality_policy joined v1.47 (security-lens A, oracle-verified):
           # a hostile repo's project conf setting quality_policy=balanced
           # silently strips the zero-steering block-escalation
@@ -614,6 +649,17 @@ _parse_conf_file() {
           # forcing block-mode on serious-missing ULW stops; an invariant
           # regression locks that backstop (test-stop-guard-bypass-surface
           # F-013d).
+          #
+          # repo_lessons joined v1.48-pre: unlike the other four (which
+          # guard an ENFORCEMENT surface), this one guards a DATA-
+          # PERSISTENCE surface — the flag makes the agent write
+          # session-derived text into files under the repo's own
+          # `.claude/` directory, which the user may later commit and
+          # push. A repo the user merely `cd`s into must not be able to
+          # flip that on for itself; only user-level conf or the env var
+          # can (see CLAUDE.md "Coordination Rules" v1.47 deny-list
+          # evaluation and docs/customization.md "Project-conf security
+          # restriction").
           continue
           ;;
       esac
@@ -677,6 +723,8 @@ _parse_conf_file() {
         [[ -z "${_omc_env_council_deep_default}" && "${value}" =~ ^(on|off)$ ]] && OMC_COUNCIL_DEEP_DEFAULT="${value}" || true ;;
       auto_memory)
         [[ -z "${_omc_env_auto_memory}" && "${value}" =~ ^(on|off)$ ]] && OMC_AUTO_MEMORY="${value}" || true ;;
+      repo_lessons)
+        [[ -z "${_omc_env_repo_lessons}" && "${value}" =~ ^(on|off)$ ]] && OMC_REPO_LESSONS="${value}" || true ;;
       metis_on_plan_gate)
         [[ -z "${_omc_env_metis_on_plan_gate}" && "${value}" =~ ^(on|off)$ ]] && OMC_METIS_ON_PLAN_GATE="${value}" || true ;;
       prometheus_suggest)
@@ -911,6 +959,17 @@ esac
 # decide whether to write memory at session-stop and pre-compact moments.
 is_auto_memory_enabled() {
   [[ "${OMC_AUTO_MEMORY:-on}" != "off" ]]
+}
+
+# Returns 0 (true) when repo-committed lessons/backlog memory writes are
+# opted in, 1 (false) otherwise (default). Off by default — unlike
+# auto_memory above (which stays under ~/.claude), this surface writes
+# INTO the target repo's working tree. record-repo-lesson.sh calls this
+# before touching the filesystem. Enable via `repo_lessons=on` in
+# user-level oh-my-claude.conf or env OMC_REPO_LESSONS=on — project-
+# level conf cannot set this (deny-listed in _parse_conf_file above).
+is_repo_lessons_enabled() {
+  [[ "${OMC_REPO_LESSONS:-off}" == "on" ]]
 }
 
 # Returns 0 (true) when StopFailure capture is enabled, 1 (false) when
@@ -1723,18 +1782,24 @@ source "${_omc_self_dir}/lib/verification.sh"
 # eager source but later calls those functions still gets a working
 # classifier — no function-not-found errors. Because the loader is
 # idempotent the per-call cost is one bash arithmetic check.
+# Loaders resolve the lib dir themselves when _omc_self_dir is gone: the
+# first pass unsets it at EOF for namespace hygiene, but loaders are
+# legitimately called AFTER that — by lazy-opted-out hooks reaching a
+# guarded helper, and by the re-source guard at the top of this file
+# (v1.48 W3.1). BASH_SOURCE[0] inside these functions is common.sh's own
+# path at call time, so the fallback is always correct.
 _omc_classifier_loaded=0
 _omc_load_classifier() {
   if [[ "${_omc_classifier_loaded}" -eq 1 ]]; then return 0; fi
   # shellcheck disable=SC1091
-  source "${_omc_self_dir}/lib/classifier.sh"
+  source "${_omc_self_dir:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)}/lib/classifier.sh"
   _omc_classifier_loaded=1
 }
 _omc_timing_loaded=0
 _omc_load_timing() {
   if [[ "${_omc_timing_loaded}" -eq 1 ]]; then return 0; fi
   # shellcheck disable=SC1091
-  source "${_omc_self_dir}/lib/timing.sh"
+  source "${_omc_self_dir:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)}/lib/timing.sh"
   _omc_timing_loaded=1
 }
 
@@ -5059,7 +5124,11 @@ build_quality_scorecard() {
 # --- Agent performance metrics (cross-session) ---
 # Stored in ~/.claude/quality-pack/agent-metrics.json
 # Structure: { "agent_name": { "invocations": N, "clean_verdicts": N,
-#   "finding_verdicts": N, "last_used_ts": N, "avg_confidence": N } }
+#   "finding_verdicts": N, "last_used_ts": N } }
+# (v1.48 W3.5: avg_confidence removed — every writer passed a hardcoded
+# constant, so the field was fabricated data wearing a metric's name.
+# Old files may still carry the key on stale entries; readers use
+# explicit keys and ignore it. Clean-rate is the real signal.)
 
 _AGENT_METRICS_FILE="${_AGENT_METRICS_FILE:-${HOME}/.claude/quality-pack/agent-metrics.json}"
 _AGENT_METRICS_LOCK="${_AGENT_METRICS_LOCK:-${HOME}/.claude/quality-pack/.agent-metrics.lock}"
@@ -5076,11 +5145,12 @@ with_metrics_lock() {
 # Usage: record_agent_metric <agent_name> <verdict> [confidence]
 # verdict: "clean" or "findings"
 record_agent_metric() {
+  # v1.48 W3.5: the former third argument (confidence) is gone — every
+  # caller passed a hardcoded constant, so avg_confidence was fabricated
+  # data wearing a metric's name. Extra positional args are accepted and
+  # ignored for caller compatibility.
   local agent_name="$1"
   local verdict="$2"
-  local confidence="${3:-0}"
-  # Sanitize confidence input (may be float or non-numeric)
-  confidence="${confidence%%.*}"; confidence="${confidence//[!0-9]/}"; confidence="${confidence:-0}"
 
   [[ -z "${agent_name}" ]] && return 0
 
@@ -5095,30 +5165,23 @@ record_agent_metric() {
     fi
 
     local current
-    current="$(jq -c --arg a "${agent_name}" '.[$a] // {invocations:0, clean_verdicts:0, finding_verdicts:0, last_used_ts:0, avg_confidence:0}' "${metrics_file}" 2>/dev/null || printf '{"invocations":0,"clean_verdicts":0,"finding_verdicts":0,"last_used_ts":0,"avg_confidence":0}')"
+    current="$(jq -c --arg a "${agent_name}" '.[$a] // {invocations:0, clean_verdicts:0, finding_verdicts:0, last_used_ts:0}' "${metrics_file}" 2>/dev/null || printf '{"invocations":0,"clean_verdicts":0,"finding_verdicts":0,"last_used_ts":0}')"
 
-    local invocations clean_v finding_v avg_conf
+    local invocations clean_v finding_v
     invocations="$(jq -r '.invocations' <<<"${current}")"
     clean_v="$(jq -r '.clean_verdicts' <<<"${current}")"
     finding_v="$(jq -r '.finding_verdicts' <<<"${current}")"
-    avg_conf="$(jq -r '.avg_confidence' <<<"${current}")"
 
     # Sanitize to integers (jq may return floats or null)
     invocations="${invocations%%.*}"; invocations="${invocations//[!0-9]/}"; invocations="${invocations:-0}"
     clean_v="${clean_v%%.*}"; clean_v="${clean_v//[!0-9]/}"; clean_v="${clean_v:-0}"
     finding_v="${finding_v%%.*}"; finding_v="${finding_v//[!0-9]/}"; finding_v="${finding_v:-0}"
-    avg_conf="${avg_conf%%.*}"; avg_conf="${avg_conf//[!0-9]/}"; avg_conf="${avg_conf:-0}"
 
     invocations=$((invocations + 1))
     if [[ "${verdict}" == "clean" ]]; then
       clean_v=$((clean_v + 1))
     else
       finding_v=$((finding_v + 1))
-    fi
-
-    # Rolling average confidence
-    if [[ "${confidence}" -gt 0 && "${invocations}" -gt 0 ]]; then
-      avg_conf="$(( (avg_conf * (invocations - 1) + confidence) / invocations ))"
     fi
 
     local tmp_file
@@ -5128,9 +5191,8 @@ record_agent_metric() {
        --argjson cv "${clean_v}" \
        --argjson fv "${finding_v}" \
        --argjson ts "${now_ts}" \
-       --argjson ac "${avg_conf}" \
        --arg pid "$(_omc_project_id 2>/dev/null || echo "unknown")" \
-       '.[$a] = {invocations:$inv, clean_verdicts:$cv, finding_verdicts:$fv, last_used_ts:$ts, avg_confidence:$ac, last_project_id:$pid} | ._schema_version = 2' \
+       '.[$a] = {invocations:$inv, clean_verdicts:$cv, finding_verdicts:$fv, last_used_ts:$ts, last_project_id:$pid} | ._schema_version = 2' \
        "${metrics_file}" > "${tmp_file}" 2>/dev/null
     if ! mv "${tmp_file}" "${metrics_file}" 2>/dev/null; then
       rm -f "${tmp_file}"

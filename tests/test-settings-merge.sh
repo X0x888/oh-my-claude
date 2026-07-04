@@ -160,8 +160,12 @@ for impl in "${implementations[@]}"; do
     "${work}/settings.json" '.hooks.UserPromptSubmit' "1"
   assert_json_count "${impl}: fresh — PreToolUse hooks" \
     "${work}/settings.json" '.hooks.PreToolUse' "3"
+  # v1.48 W3.1: the four per-call PostToolUse processes (universal timing +
+  # 3 Bash-matcher recorders) consolidated into one universal dispatcher —
+  # 8 entries became 5 (dispatcher, Edit-family mark-edit, mcp record-
+  # verification, Agent reflect, Grep|Read advisory-verification).
   assert_json_count "${impl}: fresh — PostToolUse hooks" \
-    "${work}/settings.json" '.hooks.PostToolUse' "8"
+    "${work}/settings.json" '.hooks.PostToolUse' "5"
   assert_json_count "${impl}: fresh — SubagentStop hooks" \
     "${work}/settings.json" '.hooks.SubagentStop' "12"
   assert_json_count "${impl}: fresh — PreCompact hooks" \
@@ -190,10 +194,17 @@ for impl in "${implementations[@]}"; do
     "${work}/settings.json" \
     '[.hooks.PreToolUse[] | select((.matcher // "") | test("Bash") and test("Edit") and test("Write") and test("MultiEdit")) | .hooks[0].command] | .[0] | tostring | contains("pretool-intent-guard.sh")' \
     "true"
-  assert_json_eq "${impl}: fresh — PostToolUse Bash wires record-delivery-action.sh" \
+  # v1.48 W3.1: Bash-side recorders run inside posttool-dispatch.sh — the
+  # universal (matcher-less) entry must wire the dispatcher, and no direct
+  # Bash-matcher entry may remain (drift back = double execution).
+  assert_json_eq "${impl}: fresh — PostToolUse universal entry wires posttool-dispatch.sh" \
     "${work}/settings.json" \
-    '[.hooks.PostToolUse[] | select(.matcher == "Bash") | .hooks[0].command] | any(. | tostring | contains("record-delivery-action.sh"))' \
+    '[.hooks.PostToolUse[] | select(has("matcher") | not) | .hooks[0].command] | any(. | tostring | contains("posttool-dispatch.sh"))' \
     "true"
+  assert_json_eq "${impl}: fresh — no direct PostToolUse Bash matcher remains" \
+    "${work}/settings.json" \
+    '[.hooks.PostToolUse[] | select(.matcher == "Bash")] | length' \
+    "0"
   assert_json_eq "${impl}: fresh — PostToolUse broad MCP matcher wires record-verification.sh" \
     "${work}/settings.json" \
     '[.hooks.PostToolUse[] | select(.matcher == "mcp__.*") | .hooks[0].command] | any(. | tostring | contains("record-verification.sh"))' \
@@ -214,8 +225,8 @@ for impl in "${implementations[@]}"; do
     "${work}/settings.json" '.hooks.SessionStart' "7"
   assert_json_count "${impl}: idempotent — SubagentStop hooks still 11" \
     "${work}/settings.json" '.hooks.SubagentStop' "12"
-  assert_json_count "${impl}: idempotent — PostToolUse hooks still 8" \
-    "${work}/settings.json" '.hooks.PostToolUse' "8"
+  assert_json_count "${impl}: idempotent — PostToolUse hooks still 5" \
+    "${work}/settings.json" '.hooks.PostToolUse' "5"
   assert_json_count "${impl}: idempotent — PreToolUse hooks still 3" \
     "${work}/settings.json" '.hooks.PreToolUse' "3"
   assert_json_count "${impl}: idempotent — StopFailure hooks still 1" \

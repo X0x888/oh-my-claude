@@ -831,13 +831,18 @@ done
 # v1.47 adds quality_policy — oracle-verified: a hostile repo's project
 # conf setting quality_policy=balanced silently stripped the zero-steering
 # block-escalation from a user whose zero_steering came from USER conf,
-# the dominant path since /omc-config writes user scope).
+# the dominant path since /omc-config writes user scope. v1.48-pre adds
+# repo_lessons — a different bucket: it guards a DATA-PERSISTENCE surface,
+# not an enforcement gate. repo_lessons=on makes the agent write into
+# .claude/lessons.md|backlog.md AT THE REPO ROOT; a hostile repo committing
+# repo_lessons=on in its own project conf must not be able to turn that on
+# for every visitor).
 # A malicious or unfamiliar repo's `.claude/oh-my-claude.conf` must NOT
 # be able to disable security-load-bearing gates the user opted into
 # via their user-level `${HOME}/.claude/oh-my-claude.conf`. The deny-
 # list is narrow: pretool_intent_guard, bg_spawn_gate, agent_first_gate,
-# no_defer_mode, quality_policy. All other flags can still be
-# project-overridden.
+# no_defer_mode, quality_policy, repo_lessons. All other flags can still
+# be project-overridden.
 # ===========================================================================
 printf '\n=== F-013: project-conf security flag deny-list ===\n'
 
@@ -846,10 +851,10 @@ printf '\n=== F-013: project-conf security flag deny-list ===\n'
 # (case-statement marker) so a refactor that removed the actual
 # case-statement while leaving the bare comment block would NOT pass
 # this regression (quality-reviewer Wave 2 F3 follow-up).
-if grep -q 'pretool_intent_guard|bg_spawn_gate|agent_first_gate|no_defer_mode|quality_policy)' "${HOOK_DIR}/common.sh"; then
+if grep -q 'pretool_intent_guard|bg_spawn_gate|agent_first_gate|no_defer_mode|quality_policy|repo_lessons)' "${HOOK_DIR}/common.sh"; then
   pass=$((pass + 1))
 else
-  printf '  FAIL: F-013a: common.sh case-statement must restrict pretool_intent_guard/bg_spawn_gate/agent_first_gate/no_defer_mode/quality_policy from project conf\n' >&2
+  printf '  FAIL: F-013a: common.sh case-statement must restrict pretool_intent_guard/bg_spawn_gate/agent_first_gate/no_defer_mode/quality_policy/repo_lessons from project conf\n' >&2
   fail=$((fail + 1))
 fi
 
@@ -899,6 +904,41 @@ else
   printf '  FAIL: F-013d: effective_guard_exhaustion_mode must keep the is_no_defer_active->block backstop (the reason guard_exhaustion_mode is not deny-listed)\n' >&2
   fail=$((fail + 1))
 fi
+
+# (e) v1.48-pre BEHAVIORAL assertion, same shape as (c): repo_lessons is a
+# DATA-PERSISTENCE deny-list member rather than an enforcement flag, so the
+# end-to-end proof reads is_repo_lessons_enabled instead of a policy getter.
+# No user conf, no env, a hostile project conf sets repo_lessons=on — after
+# load_conf, is_repo_lessons_enabled must still be FALSE (the write stays off).
+_f013e_home="$(mktemp -d)"
+mkdir -p "${_f013e_home}/.claude" "${_f013e_home}/repo/.claude"
+printf 'repo_lessons=on\n' > "${_f013e_home}/repo/.claude/oh-my-claude.conf"
+if (cd "${_f013e_home}/repo" \
+    && env -u OMC_REPO_LESSONS HOME="${_f013e_home}" \
+       OMC_LAZY_CLASSIFIER=1 OMC_LAZY_TIMING=1 \
+       bash -c ". '${HOOK_DIR}/common.sh' >/dev/null 2>&1; is_repo_lessons_enabled"); then
+  printf '  FAIL: F-013e: project-conf repo_lessons=on must NOT enable repo-lessons persistence (deny-list bypass)\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+rm -rf "${_f013e_home}"
+
+# (f) positive control for (e): the SAME setting at USER-conf scope must
+# actually enable it — proves (e)'s pass isn't just a broken/dead getter.
+_f013f_home="$(mktemp -d)"
+mkdir -p "${_f013f_home}/.claude" "${_f013f_home}/repo"
+printf 'repo_lessons=on\n' > "${_f013f_home}/.claude/oh-my-claude.conf"
+if (cd "${_f013f_home}/repo" \
+    && env -u OMC_REPO_LESSONS HOME="${_f013f_home}" \
+       OMC_LAZY_CLASSIFIER=1 OMC_LAZY_TIMING=1 \
+       bash -c ". '${HOOK_DIR}/common.sh' >/dev/null 2>&1; is_repo_lessons_enabled"); then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: F-013f: user-level conf repo_lessons=on must enable repo-lessons persistence (positive control)\n' >&2
+  fail=$((fail + 1))
+fi
+rm -rf "${_f013f_home}"
 
 # ===========================================================================
 # F-014: objective-completion contract gate (v1.46-pre Codex /goal port).

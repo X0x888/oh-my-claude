@@ -124,7 +124,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "$HOME/.claude/skills/autowork/scripts/posttool-timing.sh"
+            "command": "$HOME/.claude/skills/autowork/scripts/posttool-dispatch.sh"
           }
         ]
       },
@@ -134,33 +134,6 @@
           {
             "type": "command",
             "command": "$HOME/.claude/skills/autowork/scripts/mark-edit.sh"
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$HOME/.claude/skills/autowork/scripts/record-verification.sh"
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$HOME/.claude/skills/autowork/scripts/record-delivery-action.sh"
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$HOME/.claude/skills/autowork/scripts/circuit-breaker.sh"
           }
         ]
       },

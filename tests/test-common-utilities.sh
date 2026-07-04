@@ -1537,21 +1537,28 @@ _AGENT_METRICS_LOCK="${TEST_METRICS_DIR}/.agent-metrics.lock"
 printf '{}' > "${_AGENT_METRICS_FILE}"
 
 # Basic recording
-record_agent_metric "test-reviewer" "clean" 80
+record_agent_metric "test-reviewer" "clean"
 metric="$(cat "${_AGENT_METRICS_FILE}")"
 assert_eq "record_agent_metric invocations" "1" "$(jq -r '.["test-reviewer"].invocations' <<<"${metric}")"
 assert_eq "record_agent_metric clean_verdicts" "1" "$(jq -r '.["test-reviewer"].clean_verdicts' <<<"${metric}")"
-assert_eq "record_agent_metric avg_confidence" "80" "$(jq -r '.["test-reviewer"].avg_confidence' <<<"${metric}")"
+# v1.48 W3.5: avg_confidence was fabricated (writers passed constants) and
+# is no longer written. A legacy extra argument must be ignored, and the
+# field must NOT reappear.
+assert_eq "record_agent_metric writes no avg_confidence" "false" \
+  "$(jq -r '.["test-reviewer"] | has("avg_confidence")' <<<"${metric}")"
 
-# Second recording with findings
+# Second recording with findings (legacy 3rd arg tolerated, ignored)
 record_agent_metric "test-reviewer" "findings" 60
 metric="$(cat "${_AGENT_METRICS_FILE}")"
 assert_eq "record_agent_metric second invocation" "2" "$(jq -r '.["test-reviewer"].invocations' <<<"${metric}")"
 assert_eq "record_agent_metric finding_verdicts" "1" "$(jq -r '.["test-reviewer"].finding_verdicts' <<<"${metric}")"
+assert_eq "record_agent_metric legacy arg leaves no avg_confidence" "false" \
+  "$(jq -r '.["test-reviewer"] | has("avg_confidence")' <<<"${metric}")"
 
-# Regression: float/null values in existing metrics should not crash
+# Regression: float/null values in existing metrics should not crash;
+# stale avg_confidence keys on old entries are dropped on upsert.
 printf '{"float-agent":{"invocations":3.7,"clean_verdicts":2.5,"finding_verdicts":1.2,"last_used_ts":100,"avg_confidence":4.5}}' > "${_AGENT_METRICS_FILE}"
-record_agent_metric "float-agent" "clean" 50
+record_agent_metric "float-agent" "clean"
 metric="$(cat "${_AGENT_METRICS_FILE}")"
 inv="$(jq -r '.["float-agent"].invocations' <<<"${metric}")"
 assert_eq "record_agent_metric survives float values" "4" "${inv}"

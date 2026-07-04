@@ -55,10 +55,14 @@
 # Behavior when a gate's block-cap is reached.
 #   silent    — silently release; gate stops blocking. (Legacy: release.)
 #   scorecard — emit a scorecard summarizing what was missed, then release.
-#               (Default. Legacy: warn.)
-#   block     — keep blocking — strictest posture. (Legacy: strict.)
+#               (Legacy: warn.)
+#   block     — keep blocking until the gap is resolved. (Default as of
+#               v1.48 — the headline "won't stop until really done" claim
+#               now holds out-of-box, not only under the Zero Steering
+#               preset. Legacy: strict.) Escape stays cheap: /ulw-skip
+#               clears a wrong block with a logged reason.
 # Env: OMC_GUARD_EXHAUSTION_MODE.
-#guard_exhaustion_mode=scorecard
+#guard_exhaustion_mode=block
 
 # Adaptive quality posture.
 #   balanced      — low-friction defaults; caps can release with scorecards.
@@ -615,6 +619,26 @@
 # ("remember that…") still apply regardless.
 # Env: OMC_AUTO_MEMORY.
 #auto_memory=on
+
+# repo_lessons (v1.48-pre). Team-shareable, git-committable compounding
+# memory — the deliberate exception to every other memory surface on
+# this page, which all live under ~/.claude and never touch the target
+# repo. When `on`, record-repo-lesson.sh (invoked by the agent per
+# ~/.claude/quality-pack/memory/auto-memory.md) prepends bullets to
+# `.claude/lessons.md` / `.claude/backlog.md` AT THE REPO ROOT — capped
+# at 7 bullets per file, newest first, oldest dropped on overflow. These
+# files are ordinary repo files: commit them (or not) like any other
+# change, and teammates on a different machine inherit the same lessons
+# via normal git history.
+#
+# Default OFF. SECURITY: this flag causes data persistence INTO the
+# repo, so it is deny-listed at project-conf scope (see docs/
+# customization.md "Project-conf security restriction") — a hostile or
+# unfamiliar repo's committed .claude/oh-my-claude.conf cannot turn
+# this on for itself. Only user-level ~/.claude/oh-my-claude.conf or
+# OMC_REPO_LESSONS=on can enable it.
+# Env: OMC_REPO_LESSONS.
+#repo_lessons=off
 
 # In-session prompt persistence — verbatim user prompts written to
 # `<session>/recent_prompts.jsonl` and `session_state.json::last_user_prompt`.

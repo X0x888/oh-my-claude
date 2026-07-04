@@ -79,7 +79,7 @@ emit_scorecard_stop_context() {
 
 effective_guard_exhaustion_mode() {
   local serious_missing="${1:-0}"
-  local configured="${OMC_GUARD_EXHAUSTION_MODE:-scorecard}"
+  local configured="${OMC_GUARD_EXHAUSTION_MODE:-block}"
   # v1.39.0 W2: read session-derived tier so a prompt-time `low` that
   # escalated to high via reviewer findings / sensitive-surface edits /
   # low verify confidence still triggers block-mode exhaustion.

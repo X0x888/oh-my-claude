@@ -51,7 +51,7 @@ get_project_conf() {
 emit_known_flags() {
   cat <<'EOF'
 gate_level|enum:basic/standard/full|full|gates|Quality-gate enforcement depth
-guard_exhaustion_mode|enum:silent/scorecard/block|scorecard|gates|Behavior when gate-block cap is reached
+guard_exhaustion_mode|enum:silent/scorecard/block|block|gates|Behavior when gate-block cap is reached
 verify_confidence_threshold|int|40|gates|Minimum verification confidence (0-100)
 quality_policy|enum:balanced/zero_steering|balanced|gates|Adaptive quality posture for no-steering work
 discovered_scope|bool|on|gates|Capture advisory findings + gate stop until addressed
@@ -94,6 +94,7 @@ whats_new_session_hint|true_false|true|advisory|SessionStart "you upgraded — r
 lazy_session_start|bool|off|gates|Defer whats-new/drift-check/welcome SessionStart hooks to first UserPromptSubmit. Throwaway sessions skip the work AND preserve dedupe stamps for the next real session.
 mid_session_memory_checkpoint|bool|on|memory|Inject MID-SESSION CHECKPOINT directive when user returns after ≥30 min idle gap. Nudges auto-memory.md sweep on the just-closed stretch before responding.
 auto_memory|bool|on|memory|Cross-session auto-memory writes (project/feedback/user/reference)
+repo_lessons|bool|off|memory|Team-shareable, git-committable memory — record-repo-lesson.sh prepends capped bullets to .claude/lessons.md / .claude/backlog.md at the repo root (v1.48-pre). Off by default; deny-listed at project-conf scope (data-persistence-into-repo security restriction) — user-level conf or env only.
 prompt_persist|bool|on|memory|In-session prompt persistence (recent_prompts.jsonl + last_user_prompt). Off skips writes and degrades prompt-text-override gracefully.
 classifier_telemetry|bool|on|telemetry|Per-turn classifier telemetry to session state
 model_tier|enum:quality/balanced/economy|balanced|cost|Agent model tier (quality=opus everywhere, balanced=opus planning/review + sonnet execution, economy=sonnet everywhere). Install-time agent-file rewrite + runtime /ulw router directive since v1.47; env OMC_MODEL_TIER wins over both conf scopes.
