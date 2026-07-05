@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.48.0] - 2026-07-05
+
 ### The fork decision + the receipts instrument: counterfactual arms for the harness itself (2026-07-04)
 
 **The mandate.** After the fairlead arc closed (founding premise falsified by multi-machine telemetry; archived by owner decision), the owner asked the direct question: keep improving oh-my-claude, or revive fairlead? A three-agent assessment (fairlead dossier, skeptical self-audit scoring the harness 3.1/5 against the owner's ten criteria, oracle second opinion at ~80% confidence) settled it: **v1 stays the vehicle; fairlead stays archived as a parts donor.** The decisive analysis: a substantially stronger model *bifurcates* harness value — the will-contracts (no-defer, god-scope, goal driver; the "won't stop until really done" half) rise, while the how-to-think scaffolds (~15.8k measured tokens of per-session doctrine) trend toward inert — and v1 had no instrument that could tell which half is which. That instrument was fairlead's one genuinely novel idea, and it was never built there.
