@@ -702,6 +702,13 @@ assert_scientific "no" "Compare the traces from the distributed tracing spans"
 assert_scientific "no" "Analyze the waveforms in the audio playback buffer"
 assert_scientific "no" "Overlay the traces in the flame graph profiler"
 assert_scientific "no" "Plot the histograms from the Prometheus metrics endpoint"
+# Re-review round 2 (2026-07-05): figure-number pattern must not match
+# 4-digit years ("sales figures 2024"), and the profiling negative must
+# be software-qualified so depth profiling (XPS/SIMS) keeps scoring.
+assert_scientific "no" "Summarize the sales figures 2024 for the board"
+assert_scientific "no" "Review the revenue figures 2023 in the deck"
+assert_scientific "no" "Run the cpu profiler on the ingest service"
+assert_scientific "yes" "Analyze the depth profiling spectra"
 # ...while bare lab usage keeps scoring (the physicist's daily verb).
 assert_scientific "yes" "Cluster the conductance traces from today's run"
 

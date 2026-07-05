@@ -674,7 +674,7 @@ _scientific_signal_score() {
   # usage ("cluster the conductance traces") keeps scoring. Mirrors the
   # writing_negatives subtraction precedent in infer_domain.
   local scientific_negatives
-  scientific_negatives=$(count_keyword_matches '\b(stack|distributed|jaeger|zipkin|opentelemetry|otel)[- ]?trac(e|es|ing)|\btrac(e|es|ing)\s+(spans?|ids?)|\bflame[- ]?graphs?|\bprofil(er|ers|ing)\b|\baudio\s+(buffers?|playback|streams?)|\b(log|logging|request)\s+traces?\b|\bprometheus\b|\bgrafana\b|\bdatadog\b|\bmetrics?\s+(endpoints?|dashboards?|exporters?|servers?)\b' "${text}")
+  scientific_negatives=$(count_keyword_matches '\b(stack|distributed|jaeger|zipkin|opentelemetry|otel)[- ]?trac(e|es|ing)|\btrac(e|es|ing)\s+(spans?|ids?)|\bflame[- ]?graphs?|\b(code|cpu|memory|application|performance)[- ]profil(er|ers|ing)\b|\bprofil(er|ers|ing)\s+(the\s+)?(code|app|service|quer(y|ies))\b|\baudio\s+(buffers?|playback|streams?)|\b(log|logging|request)\s+traces?\b|\bprometheus\b|\bgrafana\b|\bdatadog\b|\bmetrics?\s+(endpoints?|dashboards?|exporters?|servers?)\b' "${text}")
   scientific_negatives=${scientific_negatives:-0}
   scientific_object_bigrams=$((scientific_object_bigrams - scientific_negatives))
   if [[ "${scientific_object_bigrams}" -lt 0 ]]; then scientific_object_bigrams=0; fi
@@ -691,7 +691,7 @@ _scientific_signal_score() {
   # when no analysis verb is present. Bare "latex" is excluded (build
   # tooling flavor); the manuscript-shaped bigrams below cover it.
   local academic_signals
-  academic_signals=$(count_keyword_matches '\b(arxiv|preprints?|dois?|bibtex|bibliograph(y|ies)|zotero|mendeley|overleaf|revtex|crossref|openalex|semantic\s+scholar|supplementary\s+(information|materials?|figures?)|referee\s+(reports?|comments?)|peer[- ]review(ed|ers?)?|journal\s+(submissions?|guidelines?|templates?)|camera[- ]ready|corresponding\s+authors?|latex\s+(manuscripts?|figures?|tables?|sources?)|literature\s+search|publication[- ](ready|quality)|manuscripts?|thes[ie]s|dissertations?|figure\s+captions?|publication\s+figures?|figures?\s+[0-9]+|figures?\s+for\s+(the\s+|a\s+|my\s+|our\s+)?(submission|paper|manuscript|thesis|journal)|respond(ing)?\s+to\s+(the\s+)?(referees?|reviewers?)|referee\s+responses?|reviewer\s+comments?)\b' "${text}")
+  academic_signals=$(count_keyword_matches '\b(arxiv|preprints?|dois?|bibtex|bibliograph(y|ies)|zotero|mendeley|overleaf|revtex|crossref|openalex|semantic\s+scholar|supplementary\s+(information|materials?|figures?)|referee\s+(reports?|comments?)|peer[- ]review(ed|ers?)?|journal\s+(submissions?|guidelines?|templates?)|camera[- ]ready|corresponding\s+authors?|latex\s+(manuscripts?|figures?|tables?|sources?)|literature\s+search|publication[- ](ready|quality)|manuscripts?|thes[ie]s|dissertations?|figure\s+captions?|publication\s+figures?|figures?\s+[0-9]{1,2}\b|figures?\s+for\s+(the\s+|a\s+|my\s+|our\s+)?(submission|paper|manuscript|thesis|journal)|respond(ing)?\s+to\s+(the\s+)?(referees?|reviewers?)|referee\s+responses?|reviewer\s+comments?)\b' "${text}")
   academic_signals=${academic_signals:-0}
 
   # Experiment / instrument context ("measurement data", "lock-in
