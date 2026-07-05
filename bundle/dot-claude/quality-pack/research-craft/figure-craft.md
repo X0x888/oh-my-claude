@@ -75,7 +75,7 @@ fig, ax = plt.subplots(layout="constrained")  # not tight_layout-after-the-fact
 
 ## §7. Submission-readiness check
 
-Run mechanically before calling any figure done — each line is checkable without judgment:
+Run before calling any figure done — lines 1–6 are checkable without judgment; line 7 is a single visual confirmation:
 
 1. Figure width equals the target column width (mm), and it was **designed** at that size, not scaled to it.
 2. Smallest text ≥ the journal minimum (§2) at final size.
