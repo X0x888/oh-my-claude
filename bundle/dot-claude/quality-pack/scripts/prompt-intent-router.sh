@@ -1612,6 +1612,15 @@ Discipline: Make changes incrementally and test after edits for routine additive
       add_directive "domain_routing_regulated" "Regulated or high-stakes professional analysis detected. Treat current authority and scope boundaries as load-bearing. Identify the governing source (contract text, regulator guidance, org policy, clinical guideline, accounting/tax standard, or equivalent), the relevant jurisdiction or operating context, and the effective-date window before drawing conclusions. Separate what the source says from your inference. Do not invent authorities, legal/clinical obligations, or policy requirements. Use \`librarian\` for current primary sources and \`briefing-analyst\` to synthesize implications; if the deliverable is a memo, remediation plan, policy note, or recommendation brief, carry the caveats, sign-off needs, and unresolved scope assumptions into the final artifact instead of burying them."
     fi
 
+    # Scientific/academic sub-directive (v1.49 research pack). Deliberately
+    # NOT domain-gated, unlike the quantitative directive above: scientific
+    # prompts legitimately classify as coding ("write a script to fit the
+    # IV curves"), and the research-trio routing is exactly as load-bearing
+    # there as in the research/writing lanes.
+    if prompt_has_scientific_signal "${PROMPT_TEXT}"; then
+      add_directive "domain_routing_scientific" "Scientific/academic research signal detected. For experimental data analysis (fitting, uncertainty propagation, publication figures) dispatch \`research-data-analyst\` — it follows \`~/.claude/quality-pack/research-craft/scientific-rigor.md\` (provenance manifest, fit-quality disclosure, seeded randomness) and \`figure-craft.md\` (journal column widths, minimum fonts, colorblind-safe palettes, error-bar definitions). For literature work dispatch \`literature-scout\`: every citation must be verified against a live registry (Crossref/OpenAlex/Semantic Scholar/arXiv) before it enters a draft — never cite from model memory (\`citation-integrity.md\`). After substantive analysis or manuscript work, dispatch \`rigor-reviewer\` to audit statistics, fit validity, units, and claim-citation support. Skills: \`/data-analysis\`, \`/lit-review\`, \`/manuscript\`."
+    fi
+
     _native_artifact_kind="$(infer_native_artifact_kind "${PROMPT_TEXT}")"
     if [[ "${TASK_INTENT}" == "execution" || "${TASK_INTENT}" == "continuation" ]] \
       && [[ "${_native_artifact_kind}" != "none" ]]; then

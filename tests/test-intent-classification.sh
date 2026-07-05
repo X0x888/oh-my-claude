@@ -654,6 +654,42 @@ assert_domain "research" "What does this contract clause imply for vendor liabil
 assert_domain "research" "Provide UX recommendations for mobile onboarding"
 assert_domain "research" "Evaluate layout options for the homepage"
 
+# --- Research: scientific/experimental signals (v1.49 research pack) ---
+printf '\nResearch (scientific signals):\n'
+assert_domain "research" "Fit the IV curves and propagate the measurement uncertainties"
+assert_domain "research" "Plot the conductance histograms from the break junction sweeps"
+assert_domain "research" "Analyze the XPS spectra and estimate the signal-to-noise ratio"
+assert_domain "research" "Fit a Simmons model to the tunneling data and report the chi-squared"
+assert_domain "research" "Verify the bibliography against Crossref and fix broken DOIs"
+assert_domain "research" "Analyze the measurement data from the cryostat run"
+assert_domain "research" "Make publication-ready figures with error bars for the Nano Letters draft"
+# Scientific + explicit coding signal → mixed (script IS a code deliverable)
+assert_domain "mixed" "Write a Python script to fit the conductance histograms"
+
+# --- prompt_has_scientific_signal predicate (gates the router's
+#     domain_routing_scientific sub-directive; precision matters more
+#     than recall — business/ops/coding prompts must stay quiet) ---
+printf '\nScientific-signal predicate:\n'
+assert_scientific() {
+  local expected="$1"
+  local input="$2"
+  local actual="no"
+  if prompt_has_scientific_signal "${input}"; then actual="yes"; fi
+  if [[ "${actual}" == "${expected}" ]]; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: prompt_has_scientific_signal "%s"\n    expected=%s actual=%s\n' "${input}" "${expected}" "${actual}" >&2
+    fail=$((fail + 1))
+  fi
+}
+assert_scientific "yes" "Fit the IV curves and propagate the measurement uncertainties"
+assert_scientific "yes" "Polish the manuscript introduction for the journal submission"
+assert_scientific "yes" "Write a Python script to fit the conductance histograms"
+assert_scientific "no" "Fix the login bug in the auth module"
+assert_scientific "no" "Draft the quarterly report for leadership"
+assert_scientific "no" "Build a budget workbook with forecast formulas and variance tabs"
+assert_scientific "no" "Analyze dashboard adoption trends"
+
 # --- Operations ---
 printf '\nOperations:\n'
 assert_domain "operations" "Create a project plan for the Q3 launch"

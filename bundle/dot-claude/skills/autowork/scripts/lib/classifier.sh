@@ -642,6 +642,60 @@ prompt_has_regulated_signal() {
   [[ "${score}" -gt 0 ]]
 }
 
+_scientific_signal_score() {
+  local text="$1"
+
+  # Scientific/experimental analysis signal (v1.49 research pack).
+  # Four component patterns, precision-first: the quantitative scorer
+  # above owns business analytics (KPIs, revenue, cohorts); this one
+  # owns lab/experimental work (fitting, spectra, uncertainties,
+  # publication artifacts). Both feed research_score, so overlap is
+  # additive, never contradictory.
+
+  # Science-only verbs accept generic data nouns ("fit the data",
+  # "calibrate the measurements") — these verbs rarely appear with
+  # business objects, so generic nouns are safe here.
+  local scientific_analysis_bigrams
+  scientific_analysis_bigrams=$(count_keyword_matches '\b(fit(ting)?|refit|calibrat(e|ing)|deconvolv(e|ing)|normali[sz](e|ing)|baseline[- ]correct(ing)?|re[- ]?bin(ning)?)\s+(the\s+|this\s+|that\s+|a\s+|an\s+|our\s+|my\s+|these\s+|all\s+|each\s+)?(\w+\s+){0,2}(data|datasets?|curves?|traces?|spectr(a|um)|peaks?|histograms?|measurements?|sweeps?|scans?|transients?|isotherms?|models?)\b' "${text}")
+  scientific_analysis_bigrams=${scientific_analysis_bigrams:-0}
+
+  # Generic verbs require a science-only object ("plot the spectra",
+  # "analyze the IV curves") so "analyze the sales table" stays in the
+  # quantitative lane.
+  local scientific_object_bigrams
+  scientific_object_bigrams=$(count_keyword_matches '\b(plot(ting)?|replot|analy[sz](e|ing)|process(ing)?|interpret(ing)?|overlay(ing)?|smooth(ing)?|examine|inspect|cluster(ing)?|segment(ing)?|extract(ing)?|compare|comparing)\s+(the\s+|this\s+|that\s+|a\s+|an\s+|our\s+|my\s+|these\s+|all\s+|each\s+)?(\w+\s+){0,2}(spectr(a|um)|traces?|i[- ]?v\s+curves?|conductance|histograms?|residuals?|chromatograms?|diffraction\s+patterns?|interferograms?|waveforms?|raw\s+data|experimental\s+data|measurement\s+data|lab\s+data|instrument\s+(data|outputs?))\b' "${text}")
+  scientific_object_bigrams=${scientific_object_bigrams:-0}
+
+  # Method nouns that rarely appear outside scientific analysis. Bare
+  # "uncertainty" is deliberately excluded ("uncertainty about the
+  # deadline" is operations flavor); only the analysis-noun forms count.
+  local scientific_method_signals
+  scientific_method_signals=$(count_keyword_matches '\b(error\s+bars?|error\s+propagation|uncertaint(y|ies)\s+(propagation|estimates?|analysis|budgets?|quantification)|propagat(e|ing|ion)\s+(the\s+)?(measurement\s+)?uncertaint(y|ies)|measurement\s+uncertaint(y|ies)|standard\s+errors?|confidence\s+intervals?|chi[- ]?squared?|goodness[- ]of[- ]fit|least[- ]squares|curve[- ]fit(ting)?|log[- ]log\s+plots?|residual\s+analysis|signal[- ]to[- ]noise|systematic\s+errors?|control\s+experiments?|calibration\s+curves?|power\s+spectral\s+density|fourier\s+transforms?)\b' "${text}")
+  scientific_method_signals=${scientific_method_signals:-0}
+
+  # Academic-publication artifacts (arXiv, DOIs, BibTeX, referee
+  # reports). These push scholarly work into the research lane even
+  # when no analysis verb is present. Bare "latex" is excluded (build
+  # tooling flavor); the manuscript-shaped bigrams below cover it.
+  local academic_signals
+  academic_signals=$(count_keyword_matches '\b(arxiv|preprints?|dois?|bibtex|bibliograph(y|ies)|zotero|mendeley|overleaf|revtex|crossref|openalex|semantic\s+scholar|supplementary\s+(information|materials?|figures?)|referee\s+(reports?|comments?)|peer[- ]review(ed|ers?)?|journal\s+(submissions?|guidelines?|templates?)|camera[- ]ready|corresponding\s+authors?|latex\s+(manuscripts?|figures?|tables?|sources?)|literature\s+search|publication[- ](ready|quality))\b' "${text}")
+  academic_signals=${academic_signals:-0}
+
+  # Experiment / instrument context ("measurement data", "lock-in
+  # output", "lab notebook").
+  local experimental_bigrams
+  experimental_bigrams=$(count_keyword_matches '\b(experimental?|measurements?|instruments?|beamline|cryostat|spectrometer|oscilloscope|lock[- ]in|microscop(e|y)|stm|afm)\s+(data|results?|runs?|logs?|files?|outputs?|noise|calibrations?|uncertaint(y|ies)|setups?)\b|\blab\s+(notebooks?|data|measurements?|results?)\b' "${text}")
+  experimental_bigrams=${experimental_bigrams:-0}
+
+  printf '%s\n' "$((scientific_analysis_bigrams + scientific_object_bigrams + scientific_method_signals + academic_signals + experimental_bigrams))"
+}
+
+prompt_has_scientific_signal() {
+  local score
+  score="$(_scientific_signal_score "$1")"
+  [[ "${score}" -gt 0 ]]
+}
+
 infer_native_artifact_kind() {
   local text="$1"
   [[ -z "${text}" ]] && { printf 'none'; return; }
@@ -714,6 +768,10 @@ infer_domain() {
   regulated_research_bigrams="$(_regulated_signal_score "${text}")"
   regulated_research_bigrams=${regulated_research_bigrams:-0}
   research_bigrams=$((research_bigrams + regulated_research_bigrams))
+  local scientific_research_bigrams
+  scientific_research_bigrams="$(_scientific_signal_score "${text}")"
+  scientific_research_bigrams=${scientific_research_bigrams:-0}
+  research_bigrams=$((research_bigrams + scientific_research_bigrams))
 
   # --- Negative keywords: subtract false positives ---
   # "report" after bug/error/test/crash → coding context, not writing
