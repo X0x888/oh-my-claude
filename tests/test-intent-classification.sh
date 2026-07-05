@@ -691,6 +691,9 @@ assert_scientific "yes" "Revise my manuscript"
 assert_scientific "yes" "Help me with my thesis chapter"
 assert_scientific "yes" "Help me respond to the referees"
 assert_scientific "yes" "Make figure 2 for the paper"
+# Sub-panel labels (re-review round 3): the digit bound must accept a
+# trailing panel letter (figure 3a) while still rejecting years.
+assert_scientific "yes" "Regenerate figure 3a with the new data"
 assert_scientific "yes" "Polish the figures for submission"
 assert_scientific "no" "Fix the login bug in the auth module"
 assert_scientific "no" "Draft the quarterly report for leadership"
