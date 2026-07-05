@@ -8,6 +8,8 @@ All notable changes to this project will be documented in this file.
 
 Four LOW findings from the scoped review of the v1.48.0 remediation commits, shipped immediately after the tag: the jq prune's emptied-entry marker switched from `null`+filter to `empty` so a literal `null` array element in a user's PostToolUse survives exactly as python (and pre-prune jq) treated it, with a cross-impl fixture pinning the null-element shape (settings-merge 242/0); the statusline fallback test exact-matches the bare fallback line (the substring also appears in normal renders) and the tolerated-payload test now asserts a REAL render distinct from the fallback; the watchdog H9d assertion label caught up with its +3s fixture.
 
+**jq-1.7 number-literal fix (the v1.48.0 tag run's one red).** `test-omc-goal.sh` T3 string-compared `jq -r .total_cost_usd` output — jq 1.7 (ubuntu-latest) preserves the `4.0000` literal awk produced where jq 1.6 (macOS) prints `4`, so the assertion failed ubuntu-only on the pinned tag run while both local and CI macOS stayed green. Numeric comparison (`.total_cost_usd == 4`) is version-proof; v1.48.1 re-tags with the pinned Validate green.
+
 ## [1.48.0] - 2026-07-05
 
 ### Pre-tag hardening: cumulative release review, upgrade prune, spaced-path family (2026-07-05)

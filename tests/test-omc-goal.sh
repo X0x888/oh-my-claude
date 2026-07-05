@@ -153,8 +153,12 @@ assert_contains "T3: judgment criterion checked ✅" "✅ c2" "${out_t3}"
 
 run_json="$(find "${OMC_GOAL_RUNS_DIR}" -name 'run.json' | head -1)"
 assert_eq "T3: outcome recorded done" "done" "$(jq -r '.outcome' "${run_json}")"
-assert_eq "T3: total cost sums ALL four calls (defect #1)" "4" \
-  "$(jq -r '.total_cost_usd' "${run_json}")"
+# Numeric comparison, not string-equal on jq's rendering: jq 1.7
+# (ubuntu-latest) preserves the "4.0000" literal that awk's %.4f
+# produced, while jq 1.6 (macOS) prints "4" — string-equal flaked
+# ubuntu-only on the v1.48.0 tag run.
+assert_eq "T3: total cost sums ALL four calls (defect #1)" "true" \
+  "$(jq -r '.total_cost_usd == 4' "${run_json}")"
 assert_eq "T3: one work pass recorded" "1" "$(jq -r '.passes | length' "${run_json}")"
 assert_eq "T3: pass progressed" "true" "$(jq -r '.passes[0].progressed' "${run_json}")"
 
