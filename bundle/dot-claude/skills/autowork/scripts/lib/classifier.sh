@@ -666,6 +666,19 @@ _scientific_signal_score() {
   scientific_object_bigrams=$(count_keyword_matches '\b(plot(ting)?|replot|analy[sz](e|ing)|process(ing)?|interpret(ing)?|overlay(ing)?|smooth(ing)?|examine|inspect|cluster(ing)?|segment(ing)?|extract(ing)?|compare|comparing)\s+(the\s+|this\s+|that\s+|a\s+|an\s+|our\s+|my\s+|these\s+|all\s+|each\s+)?(\w+\s+){0,2}(spectr(a|um)|traces?|i[- ]?v\s+curves?|conductance|histograms?|residuals?|chromatograms?|diffraction\s+patterns?|interferograms?|waveforms?|raw\s+data|experimental\s+data|measurement\s+data|lab\s+data|instrument\s+(data|outputs?))\b' "${text}")
   scientific_object_bigrams=${scientific_object_bigrams:-0}
 
+  # Negative guard (quality-review 2026-07-05): traces / waveforms /
+  # histograms are shared with software-observability and audio/DSP
+  # vocabulary. Subtract those contexts from the object-bigram count so
+  # "distributed tracing spans" / "flame graph profiler" / "audio
+  # playback buffer" prompts stay in the coding lane, while bare lab
+  # usage ("cluster the conductance traces") keeps scoring. Mirrors the
+  # writing_negatives subtraction precedent in infer_domain.
+  local scientific_negatives
+  scientific_negatives=$(count_keyword_matches '\b(stack|distributed|jaeger|zipkin|opentelemetry|otel)[- ]?trac(e|es|ing)|\btrac(e|es|ing)\s+(spans?|ids?)|\bflame[- ]?graphs?|\bprofil(er|ers|ing)\b|\baudio\s+(buffers?|playback|streams?)|\b(log|logging|request)\s+traces?\b|\bprometheus\b|\bgrafana\b|\bdatadog\b|\bmetrics?\s+(endpoints?|dashboards?|exporters?|servers?)\b' "${text}")
+  scientific_negatives=${scientific_negatives:-0}
+  scientific_object_bigrams=$((scientific_object_bigrams - scientific_negatives))
+  if [[ "${scientific_object_bigrams}" -lt 0 ]]; then scientific_object_bigrams=0; fi
+
   # Method nouns that rarely appear outside scientific analysis. Bare
   # "uncertainty" is deliberately excluded ("uncertainty about the
   # deadline" is operations flavor); only the analysis-noun forms count.
@@ -678,7 +691,7 @@ _scientific_signal_score() {
   # when no analysis verb is present. Bare "latex" is excluded (build
   # tooling flavor); the manuscript-shaped bigrams below cover it.
   local academic_signals
-  academic_signals=$(count_keyword_matches '\b(arxiv|preprints?|dois?|bibtex|bibliograph(y|ies)|zotero|mendeley|overleaf|revtex|crossref|openalex|semantic\s+scholar|supplementary\s+(information|materials?|figures?)|referee\s+(reports?|comments?)|peer[- ]review(ed|ers?)?|journal\s+(submissions?|guidelines?|templates?)|camera[- ]ready|corresponding\s+authors?|latex\s+(manuscripts?|figures?|tables?|sources?)|literature\s+search|publication[- ](ready|quality))\b' "${text}")
+  academic_signals=$(count_keyword_matches '\b(arxiv|preprints?|dois?|bibtex|bibliograph(y|ies)|zotero|mendeley|overleaf|revtex|crossref|openalex|semantic\s+scholar|supplementary\s+(information|materials?|figures?)|referee\s+(reports?|comments?)|peer[- ]review(ed|ers?)?|journal\s+(submissions?|guidelines?|templates?)|camera[- ]ready|corresponding\s+authors?|latex\s+(manuscripts?|figures?|tables?|sources?)|literature\s+search|publication[- ](ready|quality)|manuscripts?|thes[ie]s|dissertations?|figure\s+captions?|publication\s+figures?|figures?\s+[0-9]+|figures?\s+for\s+(the\s+|a\s+|my\s+|our\s+)?(submission|paper|manuscript|thesis|journal)|respond(ing)?\s+to\s+(the\s+)?(referees?|reviewers?)|referee\s+responses?|reviewer\s+comments?)\b' "${text}")
   academic_signals=${academic_signals:-0}
 
   # Experiment / instrument context ("measurement data", "lock-in

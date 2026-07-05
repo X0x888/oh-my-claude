@@ -685,10 +685,25 @@ assert_scientific() {
 assert_scientific "yes" "Fit the IV curves and propagate the measurement uncertainties"
 assert_scientific "yes" "Polish the manuscript introduction for the journal submission"
 assert_scientific "yes" "Write a Python script to fit the conductance histograms"
+# Journey-b recall (excellence-review 2026-07-05): paper-writing prompts
+# must fire without a data-analysis co-trigger.
+assert_scientific "yes" "Revise my manuscript"
+assert_scientific "yes" "Help me with my thesis chapter"
+assert_scientific "yes" "Help me respond to the referees"
+assert_scientific "yes" "Make figure 2 for the paper"
+assert_scientific "yes" "Polish the figures for submission"
 assert_scientific "no" "Fix the login bug in the auth module"
 assert_scientific "no" "Draft the quarterly report for leadership"
 assert_scientific "no" "Build a budget workbook with forecast formulas and variance tabs"
 assert_scientific "no" "Analyze dashboard adoption trends"
+# Observability/audio/monitoring decoys (quality-review 2026-07-05):
+# the negative guard must keep these in the coding lane.
+assert_scientific "no" "Compare the traces from the distributed tracing spans"
+assert_scientific "no" "Analyze the waveforms in the audio playback buffer"
+assert_scientific "no" "Overlay the traces in the flame graph profiler"
+assert_scientific "no" "Plot the histograms from the Prometheus metrics endpoint"
+# ...while bare lab usage keeps scoring (the physicist's daily verb).
+assert_scientific "yes" "Cluster the conductance traces from today's run"
 
 # --- Operations ---
 printf '\nOperations:\n'
