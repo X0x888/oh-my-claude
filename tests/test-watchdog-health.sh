@@ -210,9 +210,14 @@ assert_contains "H9a future-timestamp alarm fires" "resume-watchdog appears inac
 assert_contains "H9b alarm includes clock-skew reason" "future-timestamp" "${out}"
 assert_contains "H9c alarm distinguishes shape (future-in-banner-text)" "in the future" "${out}"
 
-# H9d: even at the negative-but-tiny boundary (heartbeat 1s ahead) the
-# guard fires — there's no benign reason for a forward-skewed heartbeat.
-printf '%s\n' "$(( $(date +%s) + 1 ))" > "${STATE_ROOT}/_watchdog/last_tick_completed_ts"
+# H9d: even at the negative-but-tiny boundary (heartbeat a few seconds
+# ahead) the guard fires — there's no benign reason for a forward-skewed
+# heartbeat. +3s, not +1s: with +1 a single second of scheduler delay
+# between this write and the hook's read collapsed the delta to 0 and
+# the assertion flaked under load (observed: 19/1, 20/0, 19/1 across
+# three solo runs on a busy host). Three seconds keeps the "tiny skew"
+# semantics while giving the test real slack.
+printf '%s\n' "$(( $(date +%s) + 3 ))" > "${STATE_ROOT}/_watchdog/last_tick_completed_ts"
 out="$(run_hook '{"session_id":"'"${SID}-future-tiny"'","source":"startup"}')"
 assert_contains "H9d tiny-future (1s ahead) still alarms" "resume-watchdog appears inactive" "${out}"
 
