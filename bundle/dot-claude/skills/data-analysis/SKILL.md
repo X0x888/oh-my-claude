@@ -42,5 +42,6 @@ The non-negotiable baseline, inline:
 
 - Follow all `/autowork` operating rules: verify, review, don't stop early.
 - Verification here means **running the analysis end-to-end from raw inputs** and confirming the manifest + figures + assumptions log exist and agree with the code — not reasoning that they should.
+- Verification-cost discipline: headless matplotlib (`MPLBACKEND=Agg`, never `plt.show()`); figure checks are mechanical-first (code-assertable width/fonts/format/colors), with **at most one** visual read-back of the final figure — repeated image reads are the slowest loop available.
 - Reproducibility is part of done: a competent stranger (or tomorrow's session) must be able to regenerate every figure with one command.
 - When the data cannot support the question asked (insufficient N, missing calibration, confounded design), say so plainly — that is a result, not a failure.

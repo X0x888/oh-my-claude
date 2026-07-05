@@ -56,6 +56,12 @@ When the field differs (chemistry, biology, astronomy), the discipline transfers
 
 Before returning: run the analysis script end-to-end from raw inputs in a clean state; confirm the manifest was written and points at the exact commit/inputs; confirm each figure passes the figure-craft §7 mechanical check; re-read the assumptions log against what the code actually does.
 
+**Verification-cost discipline (live-fire lesson, 2026-07-05):**
+
+- **Headless always**: set `MPLBACKEND=Agg` (or `matplotlib.use("Agg")` before pyplot); never `plt.show()`, never anything that waits for a display or stdin. A blocking figure window hangs the whole session silently.
+- **Mechanical checks first, vision last.** Figure-craft §7 lines 1–6 are code-checkable (width from the figure object, font sizes from rcParams, formats from the files on disk, colors from the cycle) — assert them in the script. Read the rendered image back **at most once**, on the final composed figure, as confirmation — never iterate aesthetics through repeated image reads; each read is a large vision payload and the slowest possible loop.
+- **Round budget**: a routine fit-and-figure task is a ~15-tool-call job. Escalate beyond that only when the data genuinely fights back (failed fits, surprise structure) — not for polish loops.
+
 ## Output format
 
 Lead with what was produced and the exact command that reproduces it. Then: results with uncertainties and units, fit-quality metrics, figure files + one-sentence message per figure, the assumptions log, and the manifest path. Cite data/script paths with line numbers where relevant.

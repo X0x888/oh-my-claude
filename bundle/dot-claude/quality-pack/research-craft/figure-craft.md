@@ -83,7 +83,7 @@ Run mechanically before calling any figure done — each line is checkable witho
 4. Every axis labeled with unit; every panel labeled; caption defines error bars + N + method in one read.
 5. Vector format for line art; ≥600 dpi for rasters; fonts embedded (fonttype 42).
 6. The run-manifest (`scientific-rigor.md` §1) for this figure exists and points at the exact script + commit + data hash that produced it.
-7. The figure's one-sentence message (§1) is actually visible — show it to a fresh eye (or a fresh agent) and ask what it says.
+7. The figure's one-sentence message (§1) is actually visible — one visual pass on the final composed figure (a fresh eye, a fresh agent, or a single image read-back) confirms it. Lines 1–6 are mechanical and code-checkable — run them in the script first; do not iterate aesthetics through repeated image read-backs (each is a heavyweight vision round; the mechanical checks are the loop, vision is the confirmation).
 
 ## §8. How agents use this file
 

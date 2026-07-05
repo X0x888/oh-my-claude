@@ -189,6 +189,12 @@ assert_file_contains "analyst has calibration header" "Research-Craft Calibratio
 for anchor in "Run-manifest" "absolute_sigma" "Okabe-Ito" "Selection-bias disclosure" "Assumptions log"; do
   assert_file_contains "analyst inlines ${anchor}" "${anchor}" "${ANALYST}"
 done
+# Verification-cost discipline (live-fire lesson 2026-07-05): headless
+# backend + bounded vision must stay pinned in analyst, doctrine, skill.
+assert_file_contains "analyst mandates headless backend" "MPLBACKEND=Agg" "${ANALYST}"
+assert_file_contains "analyst bounds visual read-backs" "at most once" "${ANALYST}"
+assert_file_contains "figure-craft bounds visual pass" "one visual pass" "${FIGURE}"
+assert_file_contains "/data-analysis carries cost discipline" "MPLBACKEND=Agg" "${SK_DATA}"
 
 # literature-scout: citation path, calibration header, iron rule
 assert_file_contains "scout references citation path" "${REF_CITE}" "${SCOUT}"
