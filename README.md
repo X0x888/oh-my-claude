@@ -83,7 +83,7 @@ Use the manual clone path when you want the strongest supply-chain posture. Use 
 
 ### Is this safe?
 
-Fair question for a tool that hooks every prompt and runs bash on your machine. Short answers: **100% local** (no network egress, no telemetry endpoint — the only network activity is the `git clone` you invoke); **review agents can't write** (the 24 advisory/planning/review specialists carry `disallowedTools: Write, Edit, MultiEdit`; the 10 domain builders — `frontend-developer`, the `ios-*` family, etc. — edit only under the same permission prompts that govern the main thread); **permission prompts stay on** (bypass is a separate explicit opt-in); **hostile repos can't disarm it** (security flags are deny-listed from project-level conf); **everything it persists is local, redacted, and opt-out** (`/omc-config` → Minimal turns all telemetry off). The full four-question answer — what runs, what leaves, what's persisted, why it's safe to let it gate you — lives in [SECURITY.md](SECURITY.md).
+Fair question for a tool that hooks every prompt and runs bash on your machine. Short answers: **100% local** (no network egress, no telemetry endpoint — the only network activity is the `git clone` you invoke); **review agents can't write** (the 26 advisory/planning/review specialists carry `disallowedTools: Write, Edit, MultiEdit`; the 11 domain builders — `frontend-developer`, the `ios-*` family, `research-data-analyst`, etc. — edit only under the same permission prompts that govern the main thread); **permission prompts stay on** (bypass is a separate explicit opt-in); **hostile repos can't disarm it** (security flags are deny-listed from project-level conf); **everything it persists is local, redacted, and opt-out** (`/omc-config` → Minimal turns all telemetry off). The full four-question answer — what runs, what leaves, what's persisted, why it's safe to let it gate you — lives in [SECURITY.md](SECURITY.md).
 
 After install, two mandatory steps:
 
@@ -242,7 +242,7 @@ Reviewer findings are machine-readable (single-line `FINDINGS_JSON` block before
 
 ### Permissioned agents
 
-**34 specialist agents — every agent that judges work is read-only; the 10 that build are permission-gated.** The 24 advisory, planning, and review specialists carry `disallowedTools: Write, Edit, MultiEdit`, enforced at dispatch: they read, search, analyze, and plan, and the main thread executes what they recommend — the agents that judge work are structurally unable to alter it. The 10 domain builders (frontend-developer, backend-api-developer, the ios-* family, fullstack-feature-builder, devops-infrastructure-engineer, test-automation-engineer, atlas) can edit by design — implementation is their job — and every write still runs under the same Claude Code permission prompts that govern the main thread.
+**37 specialist agents — every agent that judges work is read-only; the 11 that build are permission-gated.** The 26 advisory, planning, and review specialists carry `disallowedTools: Write, Edit, MultiEdit`, enforced at dispatch: they read, search, analyze, and plan, and the main thread executes what they recommend — the agents that judge work are structurally unable to alter it. The 11 domain builders (frontend-developer, backend-api-developer, the ios-* family, fullstack-feature-builder, devops-infrastructure-engineer, test-automation-engineer, research-data-analyst, atlas) can edit by design — implementation is their job — and every write still runs under the same Claude Code permission prompts that govern the main thread.
 
 ### Walk-away goals (`omc` CLI)
 
@@ -306,8 +306,8 @@ For the full architecture, see [docs/architecture.md](docs/architecture.md).
 oh-my-claude/
 ├── install.sh / uninstall.sh / verify.sh   # Install, remove, and verify
 ├── bundle/dot-claude/                       # Installs to ~/.claude/
-│   ├── agents/          (34 agents)         # Specialist agent definitions
-│   ├── skills/          (31 skills)         # Skill definitions + autowork hooks
+│   ├── agents/          (37 agents)         # Specialist agent definitions
+│   ├── skills/          (34 skills)         # Skill definitions + autowork hooks
 │   ├── quality-pack/                        # Lifecycle hooks + memory files
 │   ├── output-styles/                       # Two bundled styles: oh-my-claude (default) + executive-brief (see docs/customization.md#output-style)
 │   └── statusline.py                        # Custom statusline widget
@@ -344,6 +344,10 @@ Skills are invoked as slash commands or routed automatically by the intent class
 | council *(evaluation panel)* | `/council [focus] [--deep]` | Multi-role project evaluation with top-finding verification, then **Phase 8** wave-by-wave execution when fixes are requested. Recognizes natural authorization vocabulary ("do all", "make X impeccable", "0 or 1", "fix everything", "implement all", etc. — full canonical list in `bundle/dot-claude/skills/council/SKILL.md` Step 8). `--deep` escalates lenses to opus. |
 | **Build** | | |
 | frontend-design *(visual craft)* | `/frontend-design <task>` | Distinctive design-first frontend work |
+| **Research & science** | | |
+| data-analysis *(scientific analysis)* | `/data-analysis <task>` | Experimental data analysis to peer-review standard — fitting with honest uncertainties, provenance run-manifests, publication figures checked against journal specs (backed by the `research-data-analyst` agent + `research-craft/` doctrine) |
+| lit-review *(verified literature)* | `/lit-review <topic>` | Academic literature review where every source is registry-verified (Crossref/OpenAlex/Semantic Scholar/arXiv) before it is returned — the `literature-scout` agent never cites from model memory |
+| manuscript *(papers & theses)* | `/manuscript <task>` | Academic writing workflow: structure (writing-architect) → verified citations (literature-scout) → draft (draft-writer) → prose + rigor critique (editor-critic, rigor-reviewer). Includes referee-response mode |
 | swiftui-pro *(SwiftUI review, model-invoked)* | *(no slash command — auto-fires on SwiftUI work)* | Comprehensive SwiftUI review: modern API usage (`foregroundStyle` not `foregroundColor`, `Tab` not `tabItem()`, etc.), accessibility, data flow, navigation, design, performance, Swift idioms, hygiene. Partial-load via topic-scoped requests. Vendored from [`twostraws/SwiftUI-Agent-Skill`](https://github.com/twostraws/SwiftUI-Agent-Skill) v1.1 (MIT, Paul Hudson). |
 | gamedev *(game-dev review, model-invoked)* | *(no slash command — auto-fires on Unity/Godot/web game work)* | Engine-idiomatic review + guidance for Unity (C#), Godot (GDScript/C#), and web engines (Phaser/Babylon/PixiJS/Three.js): frame-budget perf, update-loop hygiene, object pooling, and the frame-grounded run→capture→evaluate→fix loop. Per-engine partial-load references; recommends Unity MCP / Godot MCP / [godogen](https://github.com/htdt/godogen). Original (not vendored). |
 | atlas *(repo bootstrap)* | `/atlas [focus]` | Bootstrap or refresh repo instruction files |
@@ -469,7 +473,7 @@ bash tests/test-install-recovery.sh         # First-run recovery contract (missi
 bash tests/test-install-readiness.sh        # Top-level install/onboarding readiness audit wrapper
 bash tests/test-phase8-integration.sh       # Council Phase 8 wave-cap wiring (record-finding-list ↔ stop-guard)
 bash tests/test-verification-lib.sh         # Extracted lib/verification.sh module (symbol presence + smoke)
-bash tests/test-agent-verdict-contract.sh   # Universal VERDICT contract regression net (all 34 agents)
+bash tests/test-agent-verdict-contract.sh   # Universal VERDICT contract regression net (all 37 agents)
 bash tests/test-bias-defense-classifier.sh  # Bias-defense prompt-shape classifiers + plan-complexity extraction
 bash tests/test-bias-defense-directives.sh  # prometheus-suggest + intent-verify directive injection
 bash tests/test-ulw-benchmark-suite.sh      # Canonical ULW user-outcome scenarios across core intents + all six routing domains + native spreadsheet/deck/docx contracts

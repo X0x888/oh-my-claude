@@ -170,7 +170,7 @@ oh-my-claude/
     quality-pack/
       memory/                 # Core, skills, and compact memory files
       scripts/                # 16 lifecycle scripts (prompt routing, first-prompt session-init, compaction, session start [9 hooks incl. drift-check + whats-new + watchdog-health + resume-hint + self-audit-nudge + auto-tune], stop-failure, resume-watchdog, self-audit recorder)
-    skills/                   # 31 skill definitions, each in <name>/SKILL.md
+    skills/                   # 34 skill definitions, each in <name>/SKILL.md
       autowork/scripts/       # 42 autowork hook scripts and utilities
         common.sh             # Shared functions (JSON, classification, scope)
         lib/state-io.sh       # Extracted state I/O subsystem; sourced by common.sh

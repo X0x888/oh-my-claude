@@ -18,9 +18,9 @@ If a fact appears here AND in one of the above, that doc is authoritative — ke
 
 ## Key Directories
 
-- `bundle/dot-claude/agents/` — 34 specialist agent definitions; the 24 advisory/review agents carry `disallowedTools` permission boundaries, the 10 domain builders can edit
+- `bundle/dot-claude/agents/` — 37 specialist agent definitions; the 26 advisory/review agents carry `disallowedTools` permission boundaries, the 11 domain builders can edit
 - `bundle/dot-claude/quality-pack/scripts/` — 16 lifecycle hooks. Per-hook detail in `docs/architecture.md`.
-- `bundle/dot-claude/skills/` — 31 skill definitions, each in `<name>/SKILL.md`
+- `bundle/dot-claude/skills/` — 34 skill definitions, each in `<name>/SKILL.md`
 - `bundle/dot-claude/skills/autowork/scripts/` — 42 autowork hooks + helpers; shared lib `common.sh`; lazy-loaded `lib/{state-io,classifier,verification,timing,canary}.sh`. Per-script detail in `docs/architecture.md`.
 - `bundle/dot-claude/output-styles/` — bundled output styles (`oh-my-claude.md` default, `executive-brief.md`); selected via `output_style=` in `oh-my-claude.conf`
 - `bundle/dot-claude/quality-pack/design-craft/` — on-demand design-craft references (`art-taste-doctrine.md`, `a11y-doctrine.md`, `design-for-hackers.md`, `taste-skill-doctrine.md`); loaded by 6 design-side surfaces (5 visual-craft 8-principle, 1 UX-trimmed 3-principle), NOT in the global @-include chain. Lockstep contract in Coordination Rules.

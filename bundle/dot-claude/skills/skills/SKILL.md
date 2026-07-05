@@ -25,6 +25,9 @@ When you know what you want, jump straight to the verb:
 | Stuck debugging — need a second opinion | `/oracle <issue>` |
 | Multiple framings exist — pick consciously | `/diverge <task>` |
 | Need official docs or external API | `/librarian <topic>` |
+| Analyze experimental data / fit with uncertainties | `/data-analysis <task>` |
+| Need verified academic sources / a bibliography | `/lit-review <topic>` |
+| Writing or revising a paper, thesis, or referee response | `/manuscript <task>` |
 | Want a multi-lens project evaluation | `/council [focus]` |
 | Want a design-first frontend pass | `/frontend-design <task>` |
 | A gate fired but the work is complete | `/ulw-skip <reason>` |
@@ -59,6 +62,9 @@ The symptom-table above is a discovery shortcut. Each row maps to a skill in the
 | **review-hard** | `/review-hard [focus]` | Review existing code or a worktree diff for bugs, quality, missed requirements. |
 | **research-hard** | `/research-hard <topic>` | Gather repo context, API details, integration points before implementation. |
 | **frontend-design** | `/frontend-design <task>` | Distinctive, design-first frontend work — establishes palette + typography + layout before code. |
+| **data-analysis** | `/data-analysis <task>` | Scientific data analysis — explore, fit with honest uncertainties, publication-quality figures with provenance manifests. Peer-review standard, not just "the script ran". |
+| **lit-review** | `/lit-review <topic>` | Verified academic literature review — every source registry-verified (Crossref/OpenAlex/S2/arXiv); never cites from memory. |
+| **manuscript** | `/manuscript <task>` | Academic papers, theses, and referee responses — structure → verified citations → draft → rigor critique, in that order. |
 
 ### Stuck — second opinions, validations, escape hatches
 

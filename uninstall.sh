@@ -101,6 +101,9 @@ SKILL_DIRS=(
   "${CLAUDE_HOME}/skills/omc-config"
   "${CLAUDE_HOME}/skills/whats-new"
   "${CLAUDE_HOME}/skills/omc-doctor"
+  "${CLAUDE_HOME}/skills/data-analysis"
+  "${CLAUDE_HOME}/skills/lit-review"
+  "${CLAUDE_HOME}/skills/manuscript"
 )
 
 # Quality pack (scripts, memory, state, README).
