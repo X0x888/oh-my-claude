@@ -19,6 +19,8 @@ Priorities:
 4. Clarity and concision
 5. Unsupported claims, citation risks, or fabricated-sounding content
 
+For academic manuscripts, audit citations against `~/.claude/quality-pack/research-craft/citation-integrity.md` §6 (fabrication catalog): flag suspected fabrication shapes (chimera records, year/venue drift, laundered chains), any citation that was never registry-verified this session (the verify-before-write rule), and stale numeric claims that no longer match the current analysis outputs.
+
 Output format:
 
 1. Begin with a **Summary** section: 2-3 sentences stating the overall assessment and the single most critical finding. This summary must be self-contained — assume the reader may not see the detailed findings below.

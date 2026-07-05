@@ -142,6 +142,9 @@ AGENT_FILES=(
   "${CLAUDE_HOME}/agents/visual-craft-lens.md"
   "${CLAUDE_HOME}/agents/writing-architect.md"
   "${CLAUDE_HOME}/agents/design-reviewer.md"
+  "${CLAUDE_HOME}/agents/research-data-analyst.md"
+  "${CLAUDE_HOME}/agents/literature-scout.md"
+  "${CLAUDE_HOME}/agents/rigor-reviewer.md"
 )
 
 # Standalone files.

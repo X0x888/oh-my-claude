@@ -39,13 +39,13 @@ assert_eq() {
 # match AGENTS.md → "Universal VERDICT contract (v1.14.0)" table.
 role_of_agent() {
   case "$1" in
-    quality-reviewer|editor-critic|excellence-reviewer|release-reviewer|metis|briefing-analyst|design-reviewer|abstraction-critic)
+    quality-reviewer|editor-critic|excellence-reviewer|release-reviewer|metis|briefing-analyst|design-reviewer|abstraction-critic|rigor-reviewer)
       printf 'reviewer' ;;
     data-lens|design-lens|growth-lens|product-lens|security-lens|sre-lens|visual-craft-lens)
       printf 'lens' ;;
     prometheus|quality-planner)
       printf 'planner' ;;
-    librarian|quality-researcher)
+    librarian|quality-researcher|literature-scout)
       printf 'researcher' ;;
     oracle)
       printf 'debugger' ;;
@@ -55,7 +55,7 @@ role_of_agent() {
       printf 'operations' ;;
     draft-writer|writing-architect)
       printf 'writer' ;;
-    backend-api-developer|devops-infrastructure-engineer|frontend-developer|fullstack-feature-builder|ios-core-engineer|ios-deployment-specialist|ios-ecosystem-integrator|ios-ui-developer|test-automation-engineer)
+    backend-api-developer|devops-infrastructure-engineer|frontend-developer|fullstack-feature-builder|ios-core-engineer|ios-deployment-specialist|ios-ecosystem-integrator|ios-ui-developer|test-automation-engineer|research-data-analyst)
       printf 'implementer' ;;
     *)
       printf '' ;;
@@ -99,7 +99,7 @@ shopt -s nullglob
 agent_files=("${AGENTS_DIR}"/*.md)
 shopt -u nullglob
 agent_count="${#agent_files[@]}"
-assert_eq "34 agent files present (v1.32.x added release-reviewer)" "34" "${agent_count}"
+assert_eq "37 agent files present (v1.49-pre added the research trio)" "37" "${agent_count}"
 
 for f in "${agent_files[@]}"; do
   agent_name="$(basename "${f}" .md)"

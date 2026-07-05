@@ -44,6 +44,7 @@ Different deliverables call for different conventions:
 - **Position paper / essay:** Strong thesis at top, anti-thesis acknowledged, structured argument, conclusion that names the change you're proposing.
 - **Status report:** What's done, what's in flight, what's blocked, what's next. Numbers > adjectives. Risks named, not buried.
 - **Statement / public response:** Plain language, lead with the substantive position, do not bury what the audience cares about.
+- **Academic manuscript (IMRaD):** Abstract runs context → gap → approach → key result → implication. The contribution is stated in the introduction, never buried. Methods are written to be reproducible; results are separated from interpretation. Citations follow the **verify-before-write** rule of `~/.claude/quality-pack/research-craft/citation-integrity.md`: only sources from the session's verified-record set (see `literature-scout`) may be cited; recalled-but-unverified sources go in as `[citation needed: <what>]` markers, never as bare citations. Reported numbers come from the current analysis outputs — never from memory of an earlier draft.
 
 When a convention conflicts with the user's brief, follow the brief.
 

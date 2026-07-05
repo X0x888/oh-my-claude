@@ -311,7 +311,7 @@ assert_eq "${out}" "" "prose mention without [ is not extracted"
 
 # --- T18 ---
 printf '\nT18: reviewer agents document FINDINGS_JSON contract\n'
-for agent in quality-reviewer excellence-reviewer oracle abstraction-critic metis design-reviewer briefing-analyst; do
+for agent in quality-reviewer excellence-reviewer oracle abstraction-critic metis design-reviewer briefing-analyst rigor-reviewer; do
   agent_md="${REPO_ROOT}/bundle/dot-claude/agents/${agent}.md"
   if [[ ! -f "${agent_md}" ]]; then
     FAIL=$((FAIL + 1))

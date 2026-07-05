@@ -165,7 +165,7 @@ oh-my-claude/
   verify.sh                   # Post-install integrity checker
 
   bundle/dot-claude/          # Installs to ~/.claude/
-    agents/                   # 34 specialist agent definitions (.md)
+    agents/                   # 37 specialist agent definitions (.md)
     output-styles/            # Two bundled output styles: oh-my-claude.md (compact CLI default) + executive-brief.md (CEO-style status report)
     quality-pack/
       memory/                 # Core, skills, and compact memory files
@@ -280,7 +280,7 @@ Cross-session data is stored alongside the state directory:
 
 #### Reviewer VERDICT contract
 
-Reviewer-style agents (`quality-reviewer`, `editor-critic`, `excellence-reviewer`, `release-reviewer`, `metis`, `briefing-analyst`, `design-reviewer`, `abstraction-critic`) must end their output with exactly one line:
+Reviewer-style agents (`quality-reviewer`, `editor-critic`, `excellence-reviewer`, `release-reviewer`, `metis`, `briefing-analyst`, `design-reviewer`, `abstraction-critic`, `rigor-reviewer`) must end their output with exactly one line:
 
 - `VERDICT: CLEAN` or `VERDICT: SHIP` — no actionable findings, dimension ticks
 - `VERDICT: FINDINGS (N)` or `VERDICT: BLOCK (N)` — N blocking findings, dimension does NOT tick
@@ -307,20 +307,20 @@ In v1.14.0 the VERDICT contract was extended beyond the reviewer agents to all a
 | Reviewer / critic | (see "Reviewer VERDICT contract" above) | `CLEAN` / `SHIP` / `FINDINGS (N)` / `BLOCK (N)` | No findings → ticks dimension; N findings → blocks until addressed. | `record-reviewer.sh` |
 | Lens evaluator | `data-lens`, `design-lens`, `growth-lens`, `product-lens`, `security-lens`, `sre-lens`, `visual-craft-lens` | `CLEAN` / `FINDINGS (N)` | Lens raised N priority findings (or none). | None — informational. The discovered-scope ledger is fed separately by `extract_discovered_findings()` parsing `### Findings`-style headings in the lens body, not by this verdict line. |
 | Planner | `prometheus`, `quality-planner` | `PLAN_READY` / `NEEDS_CLARIFICATION` / `BLOCKED` | Plan is decision-complete, needs user input, or blocked. | `record-plan.sh` writes `plan_verdict` to session state. |
-| Researcher | `librarian`, `quality-researcher` | `REPORT_READY` / `INSUFFICIENT_SOURCES` | Research is grounded, or sources are insufficient and the main thread should expect uncertainty. | None — informational. |
+| Researcher | `librarian`, `quality-researcher`, `literature-scout` | `REPORT_READY` / `INSUFFICIENT_SOURCES` | Research is grounded, or sources are insufficient and the main thread should expect uncertainty. | None — informational. |
 | Debugger / architect | `oracle` | `RESOLVED` / `HYPOTHESIS` / `NEEDS_EVIDENCE` | Root cause identified, best guess offered, or more data needed. | None — informational. |
 | Framer | `divergent-framer` | `FRAMINGS_READY (N)` / `NEEDS_PROBLEM_STATEMENT` / `INSUFFICIENT_OPTIONS` | N candidate framings emitted (3 ≤ N ≤ 5), problem too vague to frame against, or only one credible framing. | None — informational. |
 | Operations | `atlas`, `chief-of-staff` | `DELIVERED` / `NEEDS_INPUT` / `BLOCKED` | Deliverable is ready, awaiting user decision, or blocked. | None — informational. |
 | Writer | `draft-writer`, `writing-architect` | `DELIVERED` / `NEEDS_INPUT` / `NEEDS_RESEARCH` | Draft/structure is ready, awaiting decision, or needs factual research. | None — informational. |
-| Implementer | `backend-api-developer`, `devops-infrastructure-engineer`, `frontend-developer`, `fullstack-feature-builder`, `ios-core-engineer`, `ios-deployment-specialist`, `ios-ecosystem-integrator`, `ios-ui-developer`, `test-automation-engineer` | `SHIP` / `INCOMPLETE` / `BLOCKED` | Implementation is complete and verified, partial, or blocked on a hard prerequisite. | None — informational. |
+| Implementer | `backend-api-developer`, `devops-infrastructure-engineer`, `frontend-developer`, `fullstack-feature-builder`, `ios-core-engineer`, `ios-deployment-specialist`, `ios-ecosystem-integrator`, `ios-ui-developer`, `test-automation-engineer`, `research-data-analyst` | `SHIP` / `INCOMPLETE` / `BLOCKED` | Implementation is complete and verified, partial, or blocked on a hard prerequisite. | None — informational. |
 
-Total: 8 reviewer-class + 7 lens + 2 planner + 2 researcher + 1 debugger + 1 framer + 2 operations + 2 writer + 9 implementer = **34 agents** (as of v1.32.x; release-reviewer added). The contract-presence regression net is `tests/test-agent-verdict-contract.sh` — when adding a new agent or role, extend that test's `role_of_agent()` and `allowed_tokens_of_role()` cases in lockstep with this table.
+Total: 9 reviewer-class + 7 lens + 2 planner + 3 researcher + 1 debugger + 1 framer + 2 operations + 2 writer + 10 implementer = **37 agents** (as of v1.49-pre; the research pack added `rigor-reviewer`, `literature-scout`, `research-data-analyst`). The contract-presence regression net is `tests/test-agent-verdict-contract.sh` — when adding a new agent or role, extend that test's `role_of_agent()` and `allowed_tokens_of_role()` cases in lockstep with this table.
 
 When wiring a new VERDICT vocabulary into a hook consumer, extend the parser regex in `record-reviewer.sh` (or add a new parser as `record-plan.sh` did for `plan_verdict`). Until then, the informational rows above emit the verdict for human readability and forward compatibility — the gate's behavior is unchanged for those agents.
 
 #### Structured FINDINGS_JSON contract (v1.28.0)
 
-Eight finding-emitting agents — `quality-reviewer`, `excellence-reviewer`, `release-reviewer`, `oracle`, `abstraction-critic`, `metis`, `design-reviewer`, `briefing-analyst` — emit a single-line `FINDINGS_JSON: [...]` block immediately before the `VERDICT:` line when findings exist. Each finding object: `{severity, category, file, line, claim, evidence, recommended_fix}`. Severity ∈ `{high, medium, low}`. Category ∈ `{bug, missing_test, completeness, security, performance, docs, integration, design, other}`. Empty array `[]` is valid for clean reviews.
+Nine finding-emitting agents — `quality-reviewer`, `excellence-reviewer`, `release-reviewer`, `oracle`, `abstraction-critic`, `metis`, `design-reviewer`, `briefing-analyst`, `rigor-reviewer` — emit a single-line `FINDINGS_JSON: [...]` block immediately before the `VERDICT:` line when findings exist. Each finding object: `{severity, category, file, line, claim, evidence, recommended_fix}`. Severity ∈ `{high, medium, low}`. Category ∈ `{bug, missing_test, completeness, security, performance, docs, integration, design, other}`. Empty array `[]` is valid for clean reviews.
 
 The `extract_findings_json` helper in `common.sh` parses the line preferentially over the legacy prose heuristic; `normalize_finding_object` coerces severity aliases (`critical`/`p0`/`p1`/`p2`/`blocker` → `high`/`medium`/`low`) and unknown categories → `other`. The discovered-scope pipeline (`extract_discovered_findings`) takes the JSON path when present and emits rows with a `.structured` field carrying the full payload, falling through to the legacy heuristic only when the line is missing/empty/malformed (fail-open). Single-line array form remains preferred for robust grep/debug workflows; the parser also accepts pretty-printed JSON arrays that start on the `FINDINGS_JSON:` line and close before `VERDICT:`.
 
@@ -341,6 +341,7 @@ The prescribed reviewer sequence (Check 4 of stop-guard) enforces distinct dimen
 | `design-reviewer` | `design_quality` (only required when UI files edited: `.tsx`, `.jsx`, `.vue`, `.svelte`, `.astro`, `.css`, `.scss`, `.sass`, `.less`, `.styl`, `.html`, `.htm`) |
 | `abstraction-critic` | None (manual-dispatch only as of v1.19.0; not wired to a stop-guard dimension) |
 | `divergent-framer` | None (manual-dispatch only via `/diverge` skill as of v1.31.0; upstream of planning, not a verifier) |
+| `rigor-reviewer` | None (advisory-dispatch as of v1.49-pre; findings feed the discovered-scope ledger rather than a stop-guard dimension — same wiring shape as `abstraction-critic`) |
 
 Each dimension ticks via `tick_dimension <name>` in `common.sh`, which wraps `write_state` in `with_state_lock` to prevent concurrent-tick races. Dimensions are validated via timestamp comparison against the relevant edit clock (`last_code_edit_ts` for most, `last_doc_edit_ts` for `prose`), so a post-tick edit implicitly invalidates the dimension without needing an explicit clear.
 
@@ -348,7 +349,7 @@ When adding a new reviewer-style agent that should participate in the prescribed
 
 #### Discovered-scope capture (advisory specialists)
 
-Separately from the reviewer dimensions above, the universal SubagentStop hook (`record-subagent-summary.sh`) captures findings from **advisory specialists** into a per-session `discovered_scope.jsonl`. Whitelist: `metis`, `briefing-analyst`, `oracle`, `abstraction-critic`, `editor-critic` (added v1.42.x-newer), and the seven council lenses (`security-lens`, `data-lens`, `product-lens`, `growth-lens`, `sre-lens`, `design-lens`, `visual-craft-lens`). Verifier agents (`quality-reviewer`, `excellence-reviewer`, `design-reviewer`, `release-reviewer`) are intentionally excluded — their findings already feed dedicated dimensions. Note `editor-critic` IS captured because it emits ranked findings on prose drafts; the dimension pipeline ticks `prose` independently. **`prometheus` is deliberately NOT on the list** — it returns `PLAN_READY`/`NEEDS_CLARIFICATION`/`BLOCKED` verdicts, not findings; counting it would over-trigger the advisory-no-findings gate.
+Separately from the reviewer dimensions above, the universal SubagentStop hook (`record-subagent-summary.sh`) captures findings from **advisory specialists** into a per-session `discovered_scope.jsonl`. Whitelist: `metis`, `briefing-analyst`, `oracle`, `abstraction-critic`, `editor-critic` (added v1.42.x-newer), `rigor-reviewer` (added v1.49-pre — scientific-rigor audit findings are severity-anchored discovered scope), and the seven council lenses (`security-lens`, `data-lens`, `product-lens`, `growth-lens`, `sre-lens`, `design-lens`, `visual-craft-lens`). Verifier agents (`quality-reviewer`, `excellence-reviewer`, `design-reviewer`, `release-reviewer`) are intentionally excluded — their findings already feed dedicated dimensions. Note `editor-critic` IS captured because it emits ranked findings on prose drafts; the dimension pipeline ticks `prose` independently. **`prometheus` is deliberately NOT on the list** — it returns `PLAN_READY`/`NEEDS_CLARIFICATION`/`BLOCKED` verdicts, not findings; counting it would over-trigger the advisory-no-findings gate.
 
 The capture wiring uses no per-agent matcher (Approach A in the plan), so adding a new advisory specialist requires updating BOTH `discovered_scope_capture_targets()` in `common.sh` AND `_is_advisory_specialist()` in `record-pending-agent.sh` in lockstep (per the CLAUDE.md coordination rule). The downstream stop-guard reads pending count and blocks (cap: 2) when execution intent is active.
 
