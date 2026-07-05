@@ -219,7 +219,7 @@ assert_contains "H9c alarm distinguishes shape (future-in-banner-text)" "in the 
 # semantics while giving the test real slack.
 printf '%s\n' "$(( $(date +%s) + 3 ))" > "${STATE_ROOT}/_watchdog/last_tick_completed_ts"
 out="$(run_hook '{"session_id":"'"${SID}-future-tiny"'","source":"startup"}')"
-assert_contains "H9d tiny-future (1s ahead) still alarms" "resume-watchdog appears inactive" "${out}"
+assert_contains "H9d tiny-future (3s ahead) still alarms" "resume-watchdog appears inactive" "${out}"
 
 printf '\nwatchdog-health tests: %d passed, %d failed\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]] || exit 1

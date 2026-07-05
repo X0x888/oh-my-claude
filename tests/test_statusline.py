@@ -2657,11 +2657,14 @@ class TestMalformedPayloadResilience(unittest.TestCase):
         # crash would.
         result = self._run('{"cost": {"total_cost_usd": "x"}}')
         self.assertEqual(result.returncode, 0)
-        self.assertTrue(
+        # Exact-match the bare fallback: "oh-my-claude" also appears in
+        # NORMAL line-one renders, so assertIn would stay green if the
+        # raise regressed and this stopped exercising the guard at all.
+        self.assertEqual(
             result.stdout.strip(),
-            "raising payload must still emit a fallback bar line",
+            "oh-my-claude",
+            "raising payload must emit exactly the bare fallback line",
         )
-        self.assertIn("oh-my-claude", result.stdout)
 
     def test_wrong_typed_percentage_renders_without_crash(self):
         # This payload does NOT raise (the renderer tolerates it) — the
@@ -2672,7 +2675,11 @@ class TestMalformedPayloadResilience(unittest.TestCase):
             ' "cost": {"total_cost_usd": []}}'
         )
         self.assertEqual(result.returncode, 0)
+        # Must be a REAL render, not the bare fallback — otherwise this
+        # payload silently regressing into the exception guard would keep
+        # the test green while the "renderer tolerates it" claim died.
         self.assertTrue(result.stdout.strip())
+        self.assertNotEqual(result.stdout.strip(), "oh-my-claude")
 
     def test_guard_does_not_mask_healthy_render(self):
         # Control: a well-formed empty payload still renders real output,

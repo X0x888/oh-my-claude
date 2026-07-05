@@ -267,7 +267,8 @@ for impl in "${implementations[@]}"; do
       {"matcher": "Agent", "hooks": [{"type": "command", "command": "$HOME/.claude/skills/autowork/scripts/reflect-after-agent.sh"}]},
       {"matcher": "Grep|Read", "hooks": [{"type": "command", "command": "$HOME/.claude/skills/autowork/scripts/record-advisory-verification.sh"}]},
       {"matcher": "SoloRead", "hooks": []},
-      {"matcher": "SoloGrep", "hooks": null}
+      {"matcher": "SoloGrep", "hooks": null},
+      null
     ]
   }
 }
@@ -275,15 +276,21 @@ PRE148
   run_merge "${impl}" "${work}/upgrade.json" "${SETTINGS_PATCH}" "false"
 
   # 5 real entries survive the prune; the two vestigial no-op entries
-  # (empty hooks / null hooks) must survive UNTOUCHED in BOTH impls —
-  # cross-impl parity pin from the remediation re-review (F-A: the jq
-  # emptiness filter originally dropped what python kept).
-  assert_json_count "${impl}: upgrade — PostToolUse pruned to 5 real + 2 vestigial" \
-    "${work}/upgrade.json" '.hooks.PostToolUse' "7"
+  # (empty hooks / null hooks) AND a literal null array element must
+  # survive UNTOUCHED in BOTH impls — cross-impl parity pins from the
+  # remediation re-reviews (F-A: the jq emptiness filter originally
+  # dropped what python kept; follow-up: the null-marker approach then
+  # dropped literal null elements python keeps).
+  assert_json_count "${impl}: upgrade — PostToolUse pruned to 5 real + 3 vestigial" \
+    "${work}/upgrade.json" '.hooks.PostToolUse' "8"
   assert_json_eq "${impl}: upgrade — vestigial empty/null-hooks entries survive" \
     "${work}/upgrade.json" \
-    '[.hooks.PostToolUse[] | select(.matcher == "SoloRead" or .matcher == "SoloGrep")] | length' \
+    '[.hooks.PostToolUse[] | select(type == "object") | select(.matcher == "SoloRead" or .matcher == "SoloGrep")] | length' \
     "2"
+  assert_json_eq "${impl}: upgrade — literal null array element survives (python parity)" \
+    "${work}/upgrade.json" \
+    '[.hooks.PostToolUse[] | select(. == null)] | length' \
+    "1"
   assert_json_eq "${impl}: upgrade — no direct posttool-timing wiring survives" \
     "${work}/upgrade.json" \
     '[.hooks.PostToolUse[] | .hooks[]? | .command // ""] | any(contains("posttool-timing.sh"))' \
@@ -303,8 +310,8 @@ PRE148
 
   # Upgrade idempotency: a second merge on the pruned result stays stable.
   run_merge "${impl}" "${work}/upgrade.json" "${SETTINGS_PATCH}" "false"
-  assert_json_count "${impl}: upgrade re-merge — PostToolUse still 5 real + 2 vestigial" \
-    "${work}/upgrade.json" '.hooks.PostToolUse' "7"
+  assert_json_count "${impl}: upgrade re-merge — PostToolUse still 5 real + 3 vestigial" \
+    "${work}/upgrade.json" '.hooks.PostToolUse' "8"
 
   # Verify the new dimension-tracker matchers are present
   assert_json_eq "${impl}: fresh — metis matcher wired" \

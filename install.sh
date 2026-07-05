@@ -884,14 +884,17 @@ merge_settings_jq() {
                 # Drop the entry ONLY when the prune itself emptied it —
                 # a pre-existing empty/null-hooks entry must survive
                 # exactly as the merge always treated it (python parity;
-                # remediation re-review F-A).
+                # remediation re-review F-A). `empty` (not a null marker
+                # + trailing filter): map(f) elides an element whose f
+                # emits nothing, and a LITERAL null array element — which
+                # python and pre-prune jq both keep — passes through the
+                # type-guard branch untouched.
                 | if ($kept | length) == ($orig | length) then .
-                  elif ($kept | length) == 0 then null
+                  elif ($kept | length) == 0 then empty
                   else .hooks = $kept
                   end
               end
           end)
-        | map(select(. != null))
         end;
     # Merge a list of patch entries into a base entries array using the
     # three-phase algorithm: exact match → overlap → append.
