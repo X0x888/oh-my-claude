@@ -60,7 +60,7 @@ Before returning: run the analysis script end-to-end from raw inputs in a clean 
 
 - **Headless always**: set `MPLBACKEND=Agg` (or `matplotlib.use("Agg")` before pyplot); never `plt.show()`, never anything that waits for a display or stdin. A blocking figure window hangs the whole session silently.
 - **Mechanical checks first, vision last.** Figure-craft §7 lines 1–6 are code-checkable (width from the figure object, font sizes from rcParams, formats from the files on disk, colors from the cycle) — assert them in the script. Read the rendered image back **at most once**, on the final composed figure, as confirmation — never iterate aesthetics through repeated image reads; each read is a large vision payload and the slowest possible loop.
-- **Round budget**: a routine fit-and-figure task is a ~15-tool-call job. Escalate beyond that only when the data genuinely fights back (failed fits, surprise structure) — not for polish loops.
+- **Round budget**: a routine fit-and-figure task is a ~15-tool-call job. Escalate beyond that when the data genuinely fights back (failed fits, surprise structure) or when the analysis contract calls for additional depth (alternative candidate models, Monte-Carlo uncertainty propagation, multi-panel figures) — never for aesthetic polish loops.
 
 ## Output format
 
