@@ -19,8 +19,14 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Find the most recent session directory
 latest_session=""
 if [[ -d "${STATE_ROOT}" ]]; then
-  # shellcheck disable=SC2010
-  latest_session="$(ls -t "${STATE_ROOT}" 2>/dev/null | grep -v '^\.' | head -1 || true)"
+  # Pick the newest session DIRECTORY. The `*/` glob (not bare ls) is
+  # load-bearing: the state root also holds files (hooks.log,
+  # gate_events.jsonl) whose mtimes routinely out-sort session dirs —
+  # bare `ls -t | head -1` picked hooks.log and ensure_session_dir
+  # crashed on the file/dir collision (observed live 2026-07-05).
+  # shellcheck disable=SC2012
+  latest_session="$(cd "${STATE_ROOT}" 2>/dev/null && ls -td -- */ 2>/dev/null | head -1 || true)"
+  latest_session="${latest_session%/}"
 fi
 
 if [[ -z "${latest_session}" ]]; then

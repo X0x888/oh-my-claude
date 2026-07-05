@@ -22,8 +22,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 latest_session=""
 if [[ -d "${STATE_ROOT}" ]]; then
-  # shellcheck disable=SC2010
-  latest_session="$(ls -t "${STATE_ROOT}" 2>/dev/null | grep -v '^\.' | head -1 || true)"
+  # Pick the newest session DIRECTORY — the `*/` glob is load-bearing;
+  # state-root files (hooks.log, gate_events.jsonl) out-sort session
+  # dirs under bare `ls -t` (same family as the ulw-skip-register.sh
+  # crash observed 2026-07-05).
+  # shellcheck disable=SC2012
+  latest_session="$(cd "${STATE_ROOT}" 2>/dev/null && ls -td -- */ 2>/dev/null | head -1 || true)"
+  latest_session="${latest_session%/}"
 fi
 if [[ -z "${latest_session}" ]]; then
   printf 'No active ULW session found.\n' >&2

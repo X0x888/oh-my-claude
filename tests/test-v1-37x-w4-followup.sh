@@ -269,5 +269,60 @@ else
 fi
 
 # ----------------------------------------------------------------------
+# Serendipity 2026-07-05 — latest-session pick must skip state-root FILES.
+#
+# The state root also holds files (hooks.log, gate_events.jsonl) whose
+# mtimes routinely out-sort session dirs. Bare `ls -t | head -1` picked
+# hooks.log as the "session", so SESSION_ID became a filename and
+# ensure_session_dir crashed on the file/dir collision (reproduced live).
+# All three latest-session consumers (ulw-skip-register /
+# ulw-correct-record / ulw-deactivate) share the `ls -td -- */` fix.
+# ----------------------------------------------------------------------
+printf '\n--- Serendipity: hooks.log decoy must not win the latest-session pick ---\n'
+
+decoy_root="$(mktemp -d)"
+decoy_session="aaaa-1111-decoy-session"
+mkdir -p "${decoy_root}/${decoy_session}"
+printf '{"workflow_mode":"ultrawork"}\n' > "${decoy_root}/${decoy_session}/session_state.json"
+# Deterministic mtimes (no sleeps): the session dir is OLD, the decoy
+# file is NEW — exactly the shape that broke the bare `ls -t` pick.
+touch -t 202601010000 "${decoy_root}/${decoy_session}/session_state.json"
+touch -t 202601010000 "${decoy_root}/${decoy_session}"
+printf 'hook line\n' > "${decoy_root}/hooks.log"
+
+skip_out="$(STATE_ROOT="${decoy_root}" bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/ulw-skip-register.sh" "decoy regression" 2>&1)"
+skip_rc=$?
+
+if [[ "${skip_rc}" -eq 0 ]]; then
+  ok
+else
+  fail_msg "decoy: ulw-skip-register exited ${skip_rc} (output: ${skip_out})"
+fi
+
+if printf '%s' "${skip_out}" | grep -q "hooks.log"; then
+  fail_msg "decoy: ulw-skip-register still resolved hooks.log as the session"
+else
+  ok
+fi
+
+# The skip must have landed in the REAL session's state.
+if grep -q "gate_skip_reason" "${decoy_root}/${decoy_session}/session_state.json" 2>/dev/null; then
+  ok
+else
+  fail_msg "decoy: gate_skip_reason not written to the session dir's state"
+fi
+
+# Family parity: all three consumers carry the directory-only glob.
+for consumer in ulw-skip-register ulw-correct-record ulw-deactivate; do
+  if grep -q 'ls -td -- \*/' "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/${consumer}.sh"; then
+    ok
+  else
+    fail_msg "decoy family: ${consumer}.sh missing the directory-only latest-session glob"
+  fi
+done
+
+rm -rf "${decoy_root}"
+
+# ----------------------------------------------------------------------
 printf '\n=== v1.37.x W4 follow-up tests: %s passed, %s failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]
