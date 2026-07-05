@@ -406,6 +406,9 @@ jobs:
       - name: Run art-taste doctrine wiring tests
         run: bash tests/test-art-taste-doctrine.sh
 
+      - name: Run research-pack wiring tests
+        run: bash tests/test-research-pack.sh
+
       - name: Run intellectual-craft doctrine wiring tests
         run: bash tests/test-intellectual-craft-doctrine.sh
 
