@@ -3,7 +3,6 @@ name: ulw
 description: Canonical user-facing name for the maximum-autonomy professional workflow (v1.31.0 naming consolidation). Use when you want Claude Code to auto-detect the task domain and run the right specialist path. Legacy aliases `/autowork`, `/ultrawork`, `sisyphus` remain wired for muscle memory.
 argument-hint: "[task]"
 disable-model-invocation: true
-model: opus
 ---
 # ULW
 

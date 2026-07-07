@@ -2,7 +2,7 @@
 name: draft-writer
 description: Use when a polished first draft or substantial rewrite is needed for papers, reports, proposals, memos, emails, statements, or other professional writing deliverables.
 disallowedTools: Write, Edit, MultiEdit
-model: opus
+model: inherit
 maxTurns: 24
 memory: user
 ---

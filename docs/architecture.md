@@ -8,7 +8,7 @@ oh-my-claude is a harness that wraps Claude Code's lifecycle events with bash ho
 
 ### Orchestration
 
-**`skills/autowork/SKILL.md`** -- Master skill definition. Entry point for `/ulw`, `/autowork`, `/ultrawork`, and `/sisyphus` commands. Defines thinking requirements (plan before acting, reflect after results, no mechanical tool chaining), operating rules (classify intent, classify domain, route to specialists), and execution style (incremental changes, mandatory review, no premature stopping). Sets `disable-model-invocation: true` and `model: opus`.
+**`skills/autowork/SKILL.md`** -- Master skill definition. Entry point for `/ulw`, `/autowork`, `/ultrawork`, and `/sisyphus` commands. Defines thinking requirements (plan before acting, reflect after results, no mechanical tool chaining), operating rules (classify intent, classify domain, route to specialists), and execution style (incremental changes, mandatory review, no premature stopping). Sets `disable-model-invocation: true`; carries no `model:` pin (v1.49) so the skill runs on the session's main model instead of demoting a Fable session to opus.
 
 ### Shared Library
 

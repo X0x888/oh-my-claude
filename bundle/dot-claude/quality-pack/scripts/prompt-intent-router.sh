@@ -1490,7 +1490,7 @@ ${_spec_safe}
   if [[ "${session_management_prompt}" -eq 0 && "${checkpoint_prompt}" -eq 0 ]]; then
     case "${OMC_MODEL_TIER:-balanced}" in
       quality)
-        add_directive "model_tier_enforcement" "SUBAGENT MODEL ENFORCEMENT: \`model_tier=quality\` is active. On EVERY \`Agent()\` call, pass \`model: \"opus\"\` explicitly — agent-definition frontmatter is advisory; the tool-call \`model\` parameter is authoritative. Omitting it risks silent downgrades." ;;
+        add_directive "model_tier_enforcement" "SUBAGENT MODEL ENFORCEMENT: \`model_tier=quality\` is active. On \`Agent()\` calls to execution agents and council lenses, pass \`model: \"opus\"\` explicitly — frontmatter is advisory; the tool-call \`model\` parameter is authoritative. For the deliberative planning/review agents (quality-planner, quality-reviewer, excellence-reviewer, oracle, metis, prometheus, divergent-framer, abstraction-critic, release-reviewer, rigor-reviewer, writing-architect, editor-critic, draft-writer, chief-of-staff) OMIT the \`model\` parameter — their frontmatter is \`inherit\`, so they ride the session's main model (never below opus-grade under this tier; on a stale install whose frontmatter still pins opus, omission degrades gracefully to opus)." ;;
       economy)
         add_directive "model_tier_enforcement" "SUBAGENT MODEL ENFORCEMENT: \`model_tier=economy\` is active. On EVERY \`Agent()\` call, pass \`model: \"sonnet\"\` explicitly — agent-definition frontmatter is advisory; the tool-call \`model\` parameter is authoritative." ;;
       balanced)
@@ -1507,7 +1507,7 @@ ${_spec_safe}
           research)     _mt_exec_examples="briefing-analyst, etc." ;;
           operations)   _mt_exec_examples="chief-of-staff, draft-writer, etc." ;;
         esac
-        add_directive "model_tier_enforcement" "SUBAGENT MODEL ENFORCEMENT: \`model_tier=balanced\` is active. On EVERY \`Agent()\` call, pass the \`model\` parameter explicitly — \`\"opus\"\` for planning/review agents (quality-planner, quality-reviewer, excellence-reviewer, oracle, metis, prometheus, abstraction-critic, council lenses), \`\"sonnet\"\` for execution agents (${_mt_exec_examples}). Frontmatter is advisory; the tool-call parameter is authoritative." ;;
+        add_directive "model_tier_enforcement" "SUBAGENT MODEL ENFORCEMENT: \`model_tier=balanced\` is active. On \`Agent()\` calls to execution agents (${_mt_exec_examples}) pass \`model: \"sonnet\"\` explicitly, and pass \`model: \"opus\"\` for council lenses — frontmatter is advisory for those; the tool-call parameter is authoritative. For the deliberative planning/review agents (quality-planner, quality-reviewer, excellence-reviewer, oracle, metis, prometheus, abstraction-critic, and the other inherit-tier deliberators) OMIT the \`model\` parameter — their frontmatter is \`inherit\`, so they ride the session's main model (on a stale install whose frontmatter still pins opus, omission degrades gracefully to opus)." ;;
     esac
   fi
 

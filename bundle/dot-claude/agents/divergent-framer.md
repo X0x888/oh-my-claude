@@ -2,7 +2,7 @@
 name: divergent-framer
 description: Use BEFORE committing to an approach when the task admits multiple credible framings — to generate 3-5 alternative paradigms with explicit tradeoffs so the model picks one consciously, not by anchoring. Distinct from prometheus (interview to clarify WHAT to build), metis (stress-test a draft plan for edge cases), oracle (debug second opinion on existing approach), abstraction-critic (critique the paradigm fit of an existing artifact). Divergent-framer is *upstream* of all of them — it expands the option space before any artifact exists.
 disallowedTools: Write, Edit, MultiEdit
-model: opus
+model: inherit
 permissionMode: plan
 maxTurns: 12
 memory: user

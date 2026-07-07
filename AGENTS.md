@@ -66,7 +66,7 @@ Failure policy for AI installers — do not improvise around these branches:
 
 2. **One question, only if useful.** Default to model tier `balanced` unless the user has already expressed a preference. Don't ask if they shrug or are unfamiliar — just use the default. Suggested phrasing if you do ask:
 
-   > Default model tier is `balanced` (Opus for planning/review, Sonnet for execution). Want all-Opus (`quality`) or all-Sonnet (`economy`) instead?
+   > Default model tier is `balanced` (planning/review agents ride your session's main model, Sonnet for execution). Want execution-on-Opus too (`quality`) or all-Sonnet (`economy`) instead?
 
    **Do NOT ask about `--bypass-permissions`.** The installer prints a notice about it; the user can opt in later via `bash install.sh --bypass-permissions` once they trust the harness. Asking up-front adds friction without value.
 
@@ -395,7 +395,7 @@ four-category table, the current per-category defense inventory, and
 the "when to reach for which category" practical guide — that doc is
 the single source of truth for the live defense counts.
 
-- Agent `model:` assignments (`opus` or `sonnet`) are set in the bundle but can be overridden at install time via `--model-tier`. The installer rewrites the `model:` line after copying. When adding a new agent, assign `model: opus` for complex reasoning tasks or `model: sonnet` for faster execution tasks. See [customization.md](docs/customization.md#model-tiers) for details.
+- Agent `model:` assignments (`inherit`, `opus`, or `sonnet`) are set in the bundle but can be overridden at install time via `--model-tier`. The installer rewrites the `model:` line after copying. When adding a new agent, assign `model: inherit` for complex reasoning tasks (rides the session's main model — Fable/Opus-grade on those sessions) or `model: sonnet` for faster execution tasks; reserve a hard `model: opus` pin for cases that must not float with the session. See [customization.md](docs/customization.md#model-tiers) for details.
 
 ## Testing
 

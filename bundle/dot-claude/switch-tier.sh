@@ -3,8 +3,8 @@
 # switch-tier.sh — Switch oh-my-claude model tier without a full reinstall.
 #
 # Usage:
-#   bash ~/.claude/switch-tier.sh quality    # all agents use Opus
-#   bash ~/.claude/switch-tier.sh balanced   # default split (Opus for planning/review, Sonnet for execution)
+#   bash ~/.claude/switch-tier.sh quality    # execution agents on Opus; deliberators keep `inherit`
+#   bash ~/.claude/switch-tier.sh balanced   # default split (inherit for planning/review, Sonnet for execution)
 #   bash ~/.claude/switch-tier.sh economy    # all agents use Sonnet
 #   bash ~/.claude/switch-tier.sh            # show current tier
 #
@@ -85,7 +85,7 @@ set_conf() {
 # Apply per-agent model overrides on top of the tier rewrite. Mirrors
 # install.sh's apply_model_overrides (kept in lockstep — see the matching
 # function there). Format: model_overrides=agent:model,agent:model where
-# model is opus|sonnet|haiku. Bad pairs are skipped, never fatal.
+# model is opus|sonnet|haiku|inherit. Bad pairs are skipped, never fatal.
 apply_model_overrides() {
   local agents_dir="$1"
   local conf_path="$2"
@@ -105,15 +105,15 @@ apply_model_overrides() {
     pair="${pair//[[:space:]]/}"
     [[ -z "${pair}" ]] && continue
     agent="${pair%%:*}"
-    model="${pair#*:}"   # after the first colon; the opus|sonnet|haiku whitelist below is the real gate
+    model="${pair#*:}"   # after the first colon; the opus|sonnet|haiku|inherit whitelist below is the real gate
     if [[ -z "${agent}" || -z "${model}" || "${agent}" == "${pair}" ]]; then
       printf '  model_overrides: skipping %q — expected agent:model\n' "${pair}" >&2
       skipped=$((skipped + 1)); continue
     fi
     case "${model}" in
-      opus|sonnet|haiku) ;;
+      opus|sonnet|haiku|inherit) ;;
       *)
-        printf '  model_overrides: skipping %s — invalid model %q (use opus|sonnet|haiku)\n' "${agent}" "${model}" >&2
+        printf '  model_overrides: skipping %s — invalid model %q (use opus|sonnet|haiku|inherit)\n' "${agent}" "${model}" >&2
         skipped=$((skipped + 1)); continue ;;
     esac
     agent_file="${agents_dir}/${agent}.md"
@@ -164,17 +164,22 @@ if [[ "${TIER}" == "balanced" ]]; then
     fi
   done
 else
+  # quality lifts sonnet agents to opus; `inherit` deliberators are left
+  # alone (they already ride the session's main model). economy demotes
+  # BOTH opus and inherit to sonnet — an inherit line left behind would
+  # ride an expensive session model on the cost tier. Kept in lockstep
+  # with install.sh's apply_model_tier.
   if [[ "${TIER}" == "quality" ]]; then
-    from="sonnet"; to="opus"
+    from_re="sonnet"; to="opus"
   else
-    from="opus"; to="sonnet"
+    from_re="(opus|inherit)"; to="sonnet"
   fi
 
   for agent_file in "${AGENTS_DIR}/"*.md; do
     [[ -f "${agent_file}" ]] || continue
-    if grep -qE "^model: ${from}$" "${agent_file}"; then
+    if grep -qE "^model: ${from_re}$" "${agent_file}"; then
       tmp="${agent_file}.tmp"
-      sed "s/^model: ${from}$/model: ${to}/" "${agent_file}" > "${tmp}"
+      sed -E "s/^model: ${from_re}$/model: ${to}/" "${agent_file}" > "${tmp}"
       mv "${tmp}" "${agent_file}"
       changed=$((changed + 1))
     fi

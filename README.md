@@ -91,7 +91,7 @@ After install, two mandatory steps:
 2. **Try it**: `/ulw-demo` (about 90 seconds, fires the gates on a real edit), then `/ulw <your task>` for real work in any domain.
 
 That's enough to feel the harness work. When you want more:
-- **Configure** with `/omc-config` *inside Claude Code* — the default install is the **Balanced** profile (low-friction defaults; Opus for planning/review, Sonnet for execution). For the strongest opinionated posture, run `/omc-config` and pick **Zero Steering** (opus model, all bias-defense directives, watchdog on, adaptive strict gates for high-risk work). Auto-detects first-time setup vs upgrade.
+- **Configure** with `/omc-config` *inside Claude Code* — the default install is the **Balanced** profile (low-friction defaults; planning/review agents inherit the session's main model, Sonnet for execution). For the strongest opinionated posture, run `/omc-config` and pick **Zero Steering** (quality model tier, all bias-defense directives, watchdog on, adaptive strict gates for high-risk work). Auto-detects first-time setup vs upgrade.
 - **Verify on-disk install** with `bash ~/.local/share/oh-my-claude/verify.sh` from your terminal — useful when something feels off.
 
 ### When stuck — which deferral verb?
@@ -404,7 +404,7 @@ Other install options:
 ```bash
 bash install.sh --no-ios                # Skip iOS-specific agents
 bash install.sh --model-tier=economy    # All agents use Sonnet (cheaper)
-bash install.sh --model-tier=quality    # All agents use Opus (max quality)
+bash install.sh --model-tier=quality    # Execution agents on Opus; deliberators ride the session model (max quality)
 bash install.sh --git-hooks             # Install post-merge auto-sync hook
 bash ~/.claude/switch-tier.sh economy   # Switch tier post-install (from anywhere)
 bash uninstall.sh                       # Cleanly remove the harness

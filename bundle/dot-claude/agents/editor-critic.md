@@ -2,7 +2,7 @@
 name: editor-critic
 description: Use after a prose draft exists to identify weaknesses in logic, structure, tone, clarity, evidence, and audience fit before the main thread finalizes it.
 disallowedTools: Write, Edit, MultiEdit
-model: opus
+model: inherit
 permissionMode: plan
 maxTurns: 20
 memory: user

@@ -2,7 +2,7 @@
 name: quality-reviewer
 description: Use immediately after non-trivial code changes to find bugs, regressions, missing tests, unsafe assumptions, and validation gaps before the main thread finalizes its answer.
 disallowedTools: Write, Edit, MultiEdit
-model: opus
+model: inherit
 permissionMode: plan
 maxTurns: 30
 memory: user

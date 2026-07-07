@@ -3,7 +3,6 @@ name: frontend-design
 description: Create distinctive, production-grade frontend interfaces with high design quality. Use when building web components, pages, or applications where visual craft matters. Avoids generic AI aesthetics by establishing visual direction before code.
 argument-hint: "<task>"
 disable-model-invocation: true
-model: opus
 ---
 # Frontend Design
 

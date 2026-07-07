@@ -2,7 +2,7 @@
 name: prometheus
 description: Use when the user provides a broad goal, vague feature request, or ambiguous migration and you need interview-first planning that turns intent into acceptance criteria, constraints, edge cases, and an execution-ready plan before editing.
 disallowedTools: Write, Edit, MultiEdit
-model: opus
+model: inherit
 permissionMode: plan
 maxTurns: 30
 memory: user

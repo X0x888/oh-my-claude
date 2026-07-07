@@ -229,6 +229,18 @@ for tier in quality economy balanced; do
     has_directive="yes"
   fi
   assert_eq "model_tier=${tier}: enforcement directive present" "yes" "${has_directive}"
+  # v1.49: quality/balanced must tell the model to OMIT the model param for
+  # inherit-tier deliberators (omission is the only inherit encoding);
+  # economy stays pass-sonnet-everywhere and must NOT mention omission.
+  has_omit="no"
+  if printf '%s' "${output}" | grep -q "OMIT"; then
+    has_omit="yes"
+  fi
+  if [[ "${tier}" == "economy" ]]; then
+    assert_eq "model_tier=${tier}: no OMIT clause" "no" "${has_omit}"
+  else
+    assert_eq "model_tier=${tier}: OMIT clause for inherit deliberators" "yes" "${has_omit}"
+  fi
   rm -rf "${sdir5}"
 done
 unset OMC_MODEL_TIER

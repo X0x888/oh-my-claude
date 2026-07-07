@@ -894,15 +894,18 @@ fi
 # Count current agent model assignments.
 opus_count=0
 sonnet_count=0
+inherit_count=0
 for agent_file in "${CLAUDE_HOME}/agents/"*.md; do
   [[ -f "${agent_file}" ]] || continue
   if grep -qE '^model: opus$' "${agent_file}"; then
     opus_count=$((opus_count + 1))
   elif grep -qE '^model: sonnet$' "${agent_file}"; then
     sonnet_count=$((sonnet_count + 1))
+  elif grep -qE '^model: inherit$' "${agent_file}"; then
+    inherit_count=$((inherit_count + 1))
   fi
 done
-printf '  [info] Agent models: %d opus, %d sonnet\n' "${opus_count}" "${sonnet_count}"
+printf '  [info] Agent models: %d inherit (session model), %d opus, %d sonnet\n' "${inherit_count}" "${opus_count}" "${sonnet_count}"
 
 # C8: bundle agent completeness — required_paths only spot-checks a few
 # sentinel agents, so a partial install missing the other agents would

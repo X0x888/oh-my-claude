@@ -1310,25 +1310,30 @@ apply_model_tier() {
 
   # balanced = bundle defaults, nothing to rewrite.
   if [[ "${tier}" == "balanced" ]]; then
-    printf '  Model tier:    balanced (default — opus for planning/review, sonnet for execution)\n'
+    printf '  Model tier:    balanced (default — planning/review inherit the session model, sonnet for execution)\n'
     return
   fi
 
-  local from to
+  # quality lifts sonnet agents to opus; `inherit` deliberators are left
+  # alone (they already ride the session's main model, never below opus-
+  # grade under this tier). economy must demote BOTH opus and inherit to
+  # sonnet — an inherit line left behind would ride an expensive session
+  # model on a tier whose whole point is cost.
+  local from_re to
   if [[ "${tier}" == "quality" ]]; then
-    from="sonnet"
+    from_re="sonnet"
     to="opus"
   else
-    from="opus"
+    from_re="(opus|inherit)"
     to="sonnet"
   fi
 
   local changed=0
   for agent_file in "${CLAUDE_HOME}/agents/"*.md; do
     [[ -f "${agent_file}" ]] || continue
-    if grep -qE "^model: ${from}$" "${agent_file}"; then
+    if grep -qE "^model: ${from_re}$" "${agent_file}"; then
       local tmp="${agent_file}.tmp"
-      sed "s/^model: ${from}$/model: ${to}/" "${agent_file}" > "${tmp}"
+      sed -E "s/^model: ${from_re}$/model: ${to}/" "${agent_file}" > "${tmp}"
       mv "${tmp}" "${agent_file}"
       changed=$((changed + 1))
     fi
@@ -1372,15 +1377,15 @@ apply_model_overrides() {
     pair="${pair//[[:space:]]/}"
     [[ -z "${pair}" ]] && continue
     agent="${pair%%:*}"
-    model="${pair#*:}"   # after the first colon; the opus|sonnet|haiku whitelist below is the real gate
+    model="${pair#*:}"   # after the first colon; the opus|sonnet|haiku|inherit whitelist below is the real gate
     if [[ -z "${agent}" || -z "${model}" || "${agent}" == "${pair}" ]]; then
       printf '  model_overrides: skipping %q — expected agent:model\n' "${pair}" >&2
       skipped=$((skipped + 1)); continue
     fi
     case "${model}" in
-      opus|sonnet|haiku) ;;
+      opus|sonnet|haiku|inherit) ;;
       *)
-        printf '  model_overrides: skipping %s — invalid model %q (use opus|sonnet|haiku)\n' "${agent}" "${model}" >&2
+        printf '  model_overrides: skipping %s — invalid model %q (use opus|sonnet|haiku|inherit)\n' "${agent}" "${model}" >&2
         skipped=$((skipped + 1)); continue ;;
     esac
     agent_file="${agents_dir}/${agent}.md"

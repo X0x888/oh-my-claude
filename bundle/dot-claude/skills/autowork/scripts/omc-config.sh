@@ -99,8 +99,8 @@ auto_memory|bool|on|memory|Cross-session auto-memory writes (project/feedback/us
 repo_lessons|bool|off|memory|Team-shareable, git-committable memory — record-repo-lesson.sh prepends capped bullets to .claude/lessons.md / .claude/backlog.md at the repo root (v1.48-pre). Off by default; deny-listed at project-conf scope (data-persistence-into-repo security restriction) — user-level conf or env only.
 prompt_persist|bool|on|memory|In-session prompt persistence (recent_prompts.jsonl + last_user_prompt). Off skips writes and degrades prompt-text-override gracefully.
 classifier_telemetry|bool|on|telemetry|Per-turn classifier telemetry to session state
-model_tier|enum:quality/balanced/economy|balanced|cost|Agent model tier (quality=opus everywhere, balanced=opus planning/review + sonnet execution, economy=sonnet everywhere). Install-time agent-file rewrite + runtime /ulw router directive since v1.47; env OMC_MODEL_TIER wins over both conf scopes.
-model_overrides|str||cost|Per-agent model override applied after model_tier and winning over it. Format agent:model,agent:model with model opus/sonnet/haiku (e.g. oracle:opus,librarian:haiku). Install-time; env OMC_MODEL_OVERRIDES.
+model_tier|enum:quality/balanced/economy|balanced|cost|Agent model tier (quality=inherit deliberators + opus execution, balanced=inherit planning/review + sonnet execution, economy=sonnet everywhere; inherit rides the session's main model). Install-time agent-file rewrite + runtime /ulw router directive since v1.47; env OMC_MODEL_TIER wins over both conf scopes.
+model_overrides|str||cost|Per-agent model override applied after model_tier and winning over it. Format agent:model,agent:model with model opus/sonnet/haiku/inherit (e.g. oracle:inherit,librarian:haiku). Install-time; env OMC_MODEL_OVERRIDES.
 council_deep_default|bool|off|cost|Auto-triggered council uses opus per lens (--deep)
 stop_failure_capture|bool|on|watchdog|Capture resume_request.json on rate-limit / fatal stop
 resume_request_ttl_days|int|7|watchdog|Days a resume_request stays claimable

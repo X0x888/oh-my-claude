@@ -711,10 +711,14 @@
 # Cost & model tier.
 # ---------------------------------------------------------------------------
 
-# Model tier applied to all 34 specialist agents.
-#   quality  — all agents use Opus (highest quality, highest cost).
-#   balanced — Opus for planning/review, Sonnet for execution. (Default.)
-#   economy  — all agents use Sonnet (lowest cost).
+# Model tier applied to all 37 specialist agents.
+#   quality  — execution agents use Opus; planning/review deliberators keep
+#              `inherit` and ride the session's main model (highest quality).
+#   balanced — inherit for planning/review, Sonnet for execution. (Default.)
+#   economy  — all agents use Sonnet, inherit demoted too (lowest cost).
+# `inherit` (v1.49) means the agent uses whatever model the main thread
+# runs — a Fable session gets Fable-grade deliberators instead of an
+# opus-pinned downgrade.
 #
 # Two halves since v1.47. The AGENT-FILE half is install-time: frontmatter
 # `model:` lines are rewritten when `bash install.sh --model-tier=<tier>`,
@@ -735,8 +739,9 @@
 # Where model_tier is all-or-nothing across the whole roster, this pins a
 # specific model on a specific agent. Applied AFTER the tier rewrite, so an
 # override always wins over the tier. Format is a comma-separated list of
-# `agent:model` pairs; model must be one of opus | sonnet | haiku; agent is
-# the bare agent filename (no .md), e.g. `oracle`, `librarian`.
+# `agent:model` pairs; model must be one of opus | sonnet | haiku | inherit
+# (inherit = ride the session's main model); agent is the bare agent
+# filename (no .md), e.g. `oracle`, `librarian`.
 #
 #   model_overrides=oracle:opus,quality-reviewer:opus,librarian:haiku
 #

@@ -138,6 +138,61 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Test 4b: `inherit` tier semantics (v1.49). Deliberators ship with
+# `model: inherit` (ride the session's main model). economy must demote
+# inherit -> sonnet (cost tier stays cheap); quality must leave inherit
+# untouched (already >= opus-grade); `inherit` is a valid override value.
+# ---------------------------------------------------------------------------
+H5="${TMP_ROOT}/h5"
+seed_home "${H5}"
+printf -- '---\nname: metis\nmodel: inherit\n---\nbody\n' > "${H5}/.claude/agents/metis.md"
+HOME="${H5}" bash "${SWITCH_TIER}" economy >/dev/null 2>&1 || true
+
+if [[ "$(model_of "${H5}" metis)" == "sonnet" ]]; then
+  ok "economy demotes inherit -> sonnet (metis)"
+else
+  bad "economy left inherit behind: metis = '$(model_of "${H5}" metis)'"
+fi
+
+H6="${TMP_ROOT}/h6"
+seed_home "${H6}"
+printf -- '---\nname: metis\nmodel: inherit\n---\nbody\n' > "${H6}/.claude/agents/metis.md"
+printf 'model_overrides=oracle:inherit\n' > "${H6}/.claude/oh-my-claude.conf"
+HOME="${H6}" bash "${SWITCH_TIER}" quality >/dev/null 2>&1 || true
+
+if [[ "$(model_of "${H6}" metis)" == "inherit" ]]; then
+  ok "quality leaves inherit untouched (metis)"
+else
+  bad "quality rewrote inherit: metis = '$(model_of "${H6}" metis)'"
+fi
+
+if [[ "$(model_of "${H6}" librarian)" == "opus" ]]; then
+  ok "quality still lifts sonnet -> opus (librarian)"
+else
+  bad "quality sonnet lift broken: librarian = '$(model_of "${H6}" librarian)'"
+fi
+
+if [[ "$(model_of "${H6}" oracle)" == "inherit" ]]; then
+  ok "inherit accepted as an override value (oracle -> inherit)"
+else
+  bad "oracle:inherit override rejected: oracle = '$(model_of "${H6}" oracle)'"
+fi
+
+# Balanced restore brings the bundle's inherit default back after a tier
+# flattened it (also pins the bundle default itself: metis IS inherit).
+H7="${TMP_ROOT}/h7"
+seed_home "${H7}"
+printf -- '---\nname: metis\nmodel: opus\n---\nbody\n' > "${H7}/.claude/agents/metis.md"
+printf 'repo_path=%s\n' "${REPO_ROOT}" > "${H7}/.claude/oh-my-claude.conf"
+HOME="${H7}" bash "${SWITCH_TIER}" balanced >/dev/null 2>&1 || true
+
+if [[ "$(model_of "${H7}" metis)" == "inherit" ]]; then
+  ok "balanced restore recovers the bundle inherit default (metis)"
+else
+  bad "balanced restore did not recover inherit: metis = '$(model_of "${H7}" metis)'"
+fi
+
+# ---------------------------------------------------------------------------
 # Test 5: lockstep — both copies of the logic define AND call the helper.
 # ---------------------------------------------------------------------------
 for f in "${INSTALL_SH}" "${SWITCH_TIER}"; do

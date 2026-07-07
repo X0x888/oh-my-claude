@@ -3,7 +3,6 @@ name: council
 description: Multi-role project evaluation that dispatches expert perspectives (PM, design, security, data, SRE, growth) to surface blind spots and unknown unknowns a solo developer would miss.
 argument-hint: "[optional focus or project path] [--deep] [--polish]"
 disable-model-invocation: true
-model: opus
 ---
 # Project Council
 

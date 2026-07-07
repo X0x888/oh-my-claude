@@ -2,7 +2,7 @@
 name: oracle
 description: Use when debugging is hard, root cause is unclear, architecture tradeoffs are non-obvious, or the main thread needs a sharp second opinion before committing to an approach.
 disallowedTools: Write, Edit, MultiEdit
-model: opus
+model: inherit
 permissionMode: plan
 maxTurns: 30
 memory: user

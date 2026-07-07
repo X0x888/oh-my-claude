@@ -2,7 +2,7 @@
 name: release-reviewer
 description: Use ONLY for cumulative-diff cross-wave reviews at release-prep time (the v1.32.0 R2 follow-up). Sized for diffs spanning 5+ wave commits / 30+ files where in-session quality-reviewer's 1000-word/top-8 cap is structurally inadequate. Dispatches surface-sliced (one pass per modified script directory) instead of one mega-review when the diff exceeds 30 files.
 disallowedTools: Write, Edit, MultiEdit
-model: opus
+model: inherit
 permissionMode: plan
 maxTurns: 60
 memory: user

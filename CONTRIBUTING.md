@@ -124,7 +124,7 @@ For per-invocation HOME overrides (e.g., `HOME="${f007_home}" bash hook.sh ...`)
 3. Set permission boundaries appropriate to the agent's role. Two conventions are supported:
    - **Allowlist (`tools:`) — preferred for new security-sensitive agents.** Names exactly which tools the agent may invoke; everything else is forbidden by default. Fails closed: a new tool added to Claude Code does not implicitly become available to this agent. Pattern: `tools: Read, Grep, Glob, Bash` for read-only reviewers; `tools: Read, Write, Edit, Bash, Glob, Grep` for tactical implementors. This convention is the documented Claude Code sub-agent spec and is also used by the high-star [`VoltAgent/awesome-claude-code-subagents`](https://github.com/VoltAgent/awesome-claude-code-subagents) collection.
    - **Denylist (`disallowedTools:`) — existing convention.** Starts with all parent tools available and forbids the listed ones. Looser default — a new tool added to Claude Code becomes implicitly available unless this list is updated. Belt-and-suspenders pattern: combine both fields when you want the allowlist as the active enforcement and the denylist as documentation of intent for human readers.
-4. Set `model: opus` for complex reasoning tasks or `model: sonnet` for faster execution. The `--model-tier` install flag can override these defaults (see [customization.md](docs/customization.md#model-tiers)).
+4. Set `model: inherit` for complex reasoning tasks (rides the session's main model) or `model: sonnet` for faster execution. The `--model-tier` install flag can override these defaults (see [customization.md](docs/customization.md#model-tiers)).
 5. If the agent handles a specific domain, ensure `infer_domain()` in `common.sh` can route to it.
 
 ## Adding Skills
@@ -276,7 +276,7 @@ Adding a new reviewer-style agent has two layers. Do both in the same commit —
 name: my-new-reviewer
 description: ...
 tools: Read, Grep, Glob, Bash    # remove Bash if the reviewer never runs tests
-model: opus                       # or sonnet/haiku per `--model-tier`
+model: inherit                    # or opus/sonnet/haiku per `--model-tier`
 permissionMode: plan
 maxTurns: 30
 memory: user

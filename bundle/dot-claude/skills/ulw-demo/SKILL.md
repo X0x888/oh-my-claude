@@ -2,7 +2,6 @@
 name: ulw-demo
 description: Guided onboarding demo that shows oh-my-claude's quality gates in action. Use after first install to see how stop-guard blocking, review loops, and verification work.
 argument-hint: ""
-model: opus
 ---
 # ULW Demo — See the Quality Gates in Action
 

@@ -114,7 +114,7 @@ Privacy: the entire harness honors `stop_failure_capture=off` in `oh-my-claude.c
 
 Run `/omc-config` inside Claude Code. It auto-detects whether you're doing first-time setup, post-update review, or an ad-hoc change by reading `~/.claude/oh-my-claude.conf`, then walks you through a multi-choice configuration UX. Three preset profiles cover the 95% case:
 
-- **Zero Steering** *(legacy alias: `maximum`)* — full gates + blocking exhaustion + all bias-defense flags + watchdog + `model_tier=quality` (Opus everywhere) + adaptive strict gates for high-risk work via `quality_policy=zero_steering`. Highest cost, slowest, strongest gate enforcement.
+- **Zero Steering** *(legacy alias: `maximum`)* — full gates + blocking exhaustion + all bias-defense flags + watchdog + `model_tier=quality` (execution agents on Opus; deliberators ride the session's main model) + adaptive strict gates for high-risk work via `quality_policy=zero_steering`. Highest cost, slowest, strongest gate enforcement.
 - **Balanced** — close to install-time defaults; tighter on a few quality knobs without the cost of all-Opus.
 - **Minimal** — basic gates, all telemetry off, `model_tier=economy`. For shared-machine or regulated-codebase setups.
 

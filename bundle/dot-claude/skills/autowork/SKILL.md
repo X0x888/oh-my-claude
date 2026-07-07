@@ -3,7 +3,6 @@ name: autowork
 description: Maximum-autonomy professional work mode. Use for non-trivial coding, writing, research, planning, or mixed tasks that should be carried through the right specialist workflow with minimal hand-holding.
 argument-hint: "[task]"
 disable-model-invocation: true
-model: opus
 ---
 # Autowork
 

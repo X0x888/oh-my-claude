@@ -185,10 +185,10 @@ For selected options, emit the corresponding `<flag>=on`. For unselected, do NOT
 question: "Which model tier?"
 header: "Cost"
 options:
-  - label: "Quality (all Opus)"
-    description: "Highest quality, highest cost. model_tier=quality."
+  - label: "Quality (execution on Opus)"
+    description: "Highest quality, highest cost. Deliberators ride the session model; execution agents on Opus. model_tier=quality."
   - label: "Balanced (Recommended)"
-    description: "Opus for planning/review, Sonnet for execution. model_tier=balanced."
+    description: "Planning/review ride the session model, Sonnet for execution. model_tier=balanced."
   - label: "Economy (all Sonnet)"
     description: "Lowest cost, still capable. model_tier=economy."
 ```
