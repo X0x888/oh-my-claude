@@ -4,7 +4,7 @@
 
 *Quality gates that block Claude from claiming "done" until tests pass, review lands, and the work is verified. So you stop babysitting every session.*
 
-[![Version](https://img.shields.io/badge/Version-1.48.1-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-1.49.0-blue.svg)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Shell](https://img.shields.io/badge/Shell-bash-green.svg)]()
 [![Dependencies](https://img.shields.io/badge/Dependencies-jq%20%2B%20rsync-brightgreen.svg)]()
@@ -55,18 +55,18 @@ Requires `jq` and `rsync`. macOS: `brew install jq` (`rsync` is preinstalled). D
 
 ```bash
 # Pinned install (recommended — install-remote.sh prints the current tag tip):
-OMC_REF=v1.48.1 bash -c "$(curl -fsSL https://raw.githubusercontent.com/X0x888/oh-my-claude/main/install-remote.sh)"
+OMC_REF=v1.49.0 bash -c "$(curl -fsSL https://raw.githubusercontent.com/X0x888/oh-my-claude/main/install-remote.sh)"
 
 # Rolling install (tracks main HEAD — fine for trying things; pin a tag for prod):
 curl -fsSL https://raw.githubusercontent.com/X0x888/oh-my-claude/main/install-remote.sh | bash
 
 # Verified remote install (tag pin + expected commit prefix before install.sh runs):
-OMC_REF=v1.48.1 \
+OMC_REF=v1.49.0 \
 OMC_EXPECTED_SHA=<release-commit-sha-or-prefix> \
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/X0x888/oh-my-claude/main/install-remote.sh)"
 
 # OR manual clone (audit before installing — strongest supply-chain posture):
-git clone --branch v1.48.1 https://github.com/X0x888/oh-my-claude.git ~/.local/share/oh-my-claude
+git clone --branch v1.49.0 https://github.com/X0x888/oh-my-claude.git ~/.local/share/oh-my-claude
 bash ~/.local/share/oh-my-claude/install.sh
 ```
 

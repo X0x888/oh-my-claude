@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.49.0] - 2026-07-13
+
 ### Bash + Notebook mutation closure: edit clocks now see non-Edit writes (2026-07-12)
 
 **Why.** The review/verification gate trusted `last_edit_ts`, but only `Edit|Write|MultiEdit` produced that clock. `pretool-intent-guard.sh` already recognized redirects, `sed -i`, formatter fixes, dependency updates, and git worktree operations as Bash mutations, yet the successful Bash dispatcher never called `mark-edit.sh`; `NotebookEdit` was named in the predicate but absent from both hook matchers. Reproduced under `quality_policy=zero_steering`: `printf changed > app.js` stamped `first_mutation_tool=Bash`, left both edit clocks null, then `stop-guard.sh` wrote `session_outcome=released` and returned no block. The identical change through Edit correctly required review + verification. This is a **state-predicate producer-coverage** bypass: the Stop predicate was sound, but a shipped mutation surface never fed it.
