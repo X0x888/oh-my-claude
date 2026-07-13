@@ -389,7 +389,8 @@ if [[ "${OMC_AGENT_FIRST_GATE:-off}" == "on" ]] \
     && _tool_attempts_mutation; then
   # v1.43+: gate the BLOCK on the agent_first_gate conf flag. Default off —
   # the mandate fired ~2.2x/session on the canonical /ulw user under
-  # model_tier=quality, where main thread and specialists are both Opus
+  # model_tier=quality, where execution agents are at least Opus and
+  # deliberators inherit the main model, so there is no reliable smartness gap
   # and the smartness-gap assumption that justified the mandate no longer
   # holds. Depth-on-every-prompt (core.md Thinking Quality) and
   # sub-dispatch-as-tool (model-robustness.md Mechanism 2) carry the

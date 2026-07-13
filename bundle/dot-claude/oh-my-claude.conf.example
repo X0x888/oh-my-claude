@@ -727,10 +727,11 @@
 # `bash ~/.claude/switch-tier.sh <tier>`, or /omc-config runs — editing this
 # line by hand does not rewrite agent files. The ROUTER half is runtime:
 # under /ulw the prompt-intent-router reads this flag fresh each prompt and
-# injects a SUBAGENT MODEL ENFORCEMENT directive naming the `model` parameter
-# to pass on every Agent() call — the tool-call parameter is authoritative
-# over frontmatter, so a stale install-time rewrite cannot misroute
-# dispatches. Project-level .claude/oh-my-claude.conf may set this flag
+# injects a SUBAGENT MODEL ENFORCEMENT directive: pass the `model` parameter
+# for execution agents and council lenses, but omit it for inherit-tier
+# deliberators (omission is the only inherit encoding). The tool-call
+# parameter is authoritative where present, so a stale install-time rewrite
+# cannot misroute those dispatches. Project-level .claude/oh-my-claude.conf may set this flag
 # (v1.47 deny-list evaluation: flipping it cannot disable an enforcement
 # surface or persist data — worst case is a per-repo cost/quality tier
 # shift, visible in the injected directive; env wins over both scopes).

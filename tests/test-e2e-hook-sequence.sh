@@ -2320,9 +2320,11 @@ out_g8t_edit1="$(run_hook "${HOOK_DIR}/pretool-intent-guard.sh" \
   "$(jq -nc --arg s "cg8t" '{session_id:$s,tool_name:"Edit",tool_input:{file_path:"/tmp/x",old_string:"a",new_string:"b"},hook_event_name:"PreToolUse"}')")"
 assert_contains "gap8t: Edit before specialist is denied" "\"permissionDecision\":\"deny\"" "${out_g8t_edit1}"
 assert_contains "gap8t: deny reason names agent-first" "Agent-first gate" "${out_g8t_edit1}"
-run_hook "${HOOK_DIR}/record-subagent-summary.sh" \
-  "$(jq -nc --arg s "cg8t" '{session_id:$s,agent_type:"quality-reviewer",last_assistant_message:"Clean.\nVERDICT: CLEAN"}')"
-assert_empty "gap8t: quality-reviewer does not satisfy agent-first floor" "$(read_st "cg8t" "agent_first_specialist_ts")"
+for post_hoc_reviewer in quality-reviewer rigor-reviewer; do
+  run_hook "${HOOK_DIR}/record-subagent-summary.sh" \
+    "$(jq -nc --arg s "cg8t" --arg a "${post_hoc_reviewer}" '{session_id:$s,agent_type:$a,last_assistant_message:"Clean.\nVERDICT: CLEAN"}')"
+done
+assert_empty "gap8t: post-hoc reviewers do not satisfy agent-first floor" "$(read_st "cg8t" "agent_first_specialist_ts")"
 run_hook "${HOOK_DIR}/record-subagent-summary.sh" \
   "$(jq -nc --arg s "cg8t" '{session_id:$s,agent_type:"quality-planner",last_assistant_message:"Plan ready.\nVERDICT: PLAN_READY"}')"
 assert_eq "gap8t: quality-planner stamps agent-first type" "quality-planner" "$(read_st "cg8t" "agent_first_specialist_type")"

@@ -2530,6 +2530,13 @@ class TestTruncateGit(unittest.TestCase):
     result would be no narrower (review F1 — plain-mode '..' could
     otherwise WIDEN a 6-7 char branch)."""
 
+    def setUp(self):
+        self._original_plain_mode = sl._PLAIN_MODE
+        sl._PLAIN_MODE = False
+
+    def tearDown(self):
+        sl._PLAIN_MODE = self._original_plain_mode
+
     def _git_token(self, plain):
         return ["git", plain, plain]
 
@@ -2555,6 +2562,14 @@ class TestTruncateGit(unittest.TestCase):
         out = sl._truncate_git(tokens, 1)  # impossible budget
         plain = out[0][1]
         self.assertEqual(plain, "b:01234…")
+
+    def test_plain_mode_uses_ascii_fallback_and_preserves_short_branch(self):
+        sl._PLAIN_MODE = True
+        long_tokens = [self._git_token("b:0123456789abcdef")]
+        self.assertEqual(sl._truncate_git(long_tokens, 1)[0][1], "b:01234..")
+
+        short_tokens = [self._git_token("b:sixchr")]
+        self.assertEqual(sl._truncate_git(short_tokens, 4), short_tokens)
 
     def test_no_git_token_is_noop(self):
         tokens = [["style", "style:default", "style:default"]]

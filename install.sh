@@ -1422,7 +1422,11 @@ apply_model_tier() {
     fi
   done
 
-  printf '  Model tier:    %s (all agents → %s, %d changed)\n' "${tier}" "${to}" "${changed}"
+  if [[ "${tier}" == "quality" ]]; then
+    printf '  Model tier:    quality (execution agents → opus; inherit deliberators unchanged, %d changed)\n' "${changed}"
+  else
+    printf '  Model tier:    economy (all agents → sonnet, %d changed)\n' "${changed}"
+  fi
 }
 
 # ---------------------------------------------------------------------------

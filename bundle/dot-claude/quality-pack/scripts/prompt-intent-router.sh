@@ -1503,9 +1503,9 @@ ${_spec_safe}
         _mt_exec_examples="the domain execution specialists"
         case "${TASK_DOMAIN:-coding}" in
           coding|mixed) _mt_exec_examples="frontend-developer, backend-api-developer, etc." ;;
-          writing)      _mt_exec_examples="draft-writer, etc." ;;
+          writing)      _mt_exec_examples="librarian and other sonnet-tier support agents" ;;
           research)     _mt_exec_examples="briefing-analyst, etc." ;;
-          operations)   _mt_exec_examples="chief-of-staff, draft-writer, etc." ;;
+          operations)   _mt_exec_examples="atlas and other sonnet-tier execution agents" ;;
         esac
         add_directive "model_tier_enforcement" "SUBAGENT MODEL ENFORCEMENT: \`model_tier=balanced\` is active. On \`Agent()\` calls to execution agents (${_mt_exec_examples}) pass \`model: \"sonnet\"\` explicitly, and pass \`model: \"opus\"\` for council lenses — frontmatter is advisory for those; the tool-call parameter is authoritative. For the deliberative planning/review agents (quality-planner, quality-reviewer, excellence-reviewer, oracle, metis, prometheus, abstraction-critic, and the other inherit-tier deliberators) OMIT the \`model\` parameter — their frontmatter is \`inherit\`, so they ride the session's main model (on a stale install whose frontmatter still pins opus, omission degrades gracefully to opus)." ;;
     esac

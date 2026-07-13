@@ -115,7 +115,7 @@ Privacy: the entire harness honors `stop_failure_capture=off` in `oh-my-claude.c
 Run `/omc-config` inside Claude Code. It auto-detects whether you're doing first-time setup, post-update review, or an ad-hoc change by reading `~/.claude/oh-my-claude.conf`, then walks you through a multi-choice configuration UX. Three preset profiles cover the 95% case:
 
 - **Zero Steering** *(legacy alias: `maximum`)* — full gates + blocking exhaustion + all bias-defense flags + watchdog + `model_tier=quality` (execution agents on Opus; deliberators ride the session's main model) + adaptive strict gates for high-risk work via `quality_policy=zero_steering`. Highest cost, slowest, strongest gate enforcement.
-- **Balanced** — close to install-time defaults; tighter on a few quality knobs without the cost of all-Opus.
+- **Balanced** — close to install-time defaults; tighter on a few quality knobs without the cost of quality-tier Opus execution.
 - **Minimal** — basic gates, all telemetry off, `model_tier=economy`. For shared-machine or regulated-codebase setups.
 
 Fine-tune mode walks 4 cluster questions (gates, advisory, memory/telemetry, cost) for users who want to mix and match. The skill writes to `~/.claude/oh-my-claude.conf` via atomic tmp+mv, validates flag values against the table in `omc-config.sh`, and chains to `install-resume-watchdog.sh` / `switch-tier.sh` when the chosen profile requires those side effects. For users who prefer hand-editing, `~/.claude/oh-my-claude.conf.example` documents every flag with its default, accepted values, and env-var override.
@@ -151,7 +151,7 @@ Yes, for any file that ships in the `bundle/dot-claude/` directory. This include
 The fastest way is the convenience script installed at `~/.claude/switch-tier.sh`:
 
 ```bash
-bash ~/.claude/switch-tier.sh quality    # all Opus
+bash ~/.claude/switch-tier.sh quality    # Opus execution; deliberators keep inherit
 bash ~/.claude/switch-tier.sh balanced   # default split
 bash ~/.claude/switch-tier.sh economy    # all Sonnet
 bash ~/.claude/switch-tier.sh            # show current tier

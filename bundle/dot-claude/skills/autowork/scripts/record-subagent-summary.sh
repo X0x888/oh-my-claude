@@ -40,7 +40,7 @@ append_limited_state \
 agent_first_specialist_agent() {
   local agent_short="$1"
   case "${agent_short}" in
-    quality-reviewer|excellence-reviewer|editor-critic|design-reviewer|release-reviewer)
+    quality-reviewer|excellence-reviewer|editor-critic|design-reviewer|release-reviewer|rigor-reviewer)
       return 1
       ;;
     *)

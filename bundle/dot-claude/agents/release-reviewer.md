@@ -66,7 +66,7 @@ If the cumulative diff exceeds 30 files, do NOT attempt a single-pass mega-revie
 
 # FINDINGS_JSON contract
 
-Same schema as `quality-reviewer`: `{severity, category, file, line, claim, evidence, recommended_fix}`. Severity ∈ {`high`, `medium`, `low`}. Category ∈ {`bug`, `missing_test`, `completeness`, `security`, `performance`, `docs`, `integration`, `design`, `other`}. **No top-N cap on the array** — emit every finding worth tracking. Single line, no pretty-printing, no fenced block. Emit AFTER prose findings and IMMEDIATELY BEFORE the VERDICT line.
+When findings exist, emit exactly one `FINDINGS_JSON: [...]` line using the same schema as `quality-reviewer`: `{severity, category, file, line, claim, evidence, recommended_fix}`. Severity ∈ {`high`, `medium`, `low`}. Category ∈ {`bug`, `missing_test`, `completeness`, `security`, `performance`, `docs`, `integration`, `design`, `other`}. **No top-N cap on the array** — emit every finding worth tracking. Single line, no pretty-printing, no fenced block. Emit AFTER prose findings and IMMEDIATELY BEFORE the VERDICT line.
 
 # VERDICT contract
 

@@ -245,6 +245,52 @@ for tier in quality economy balanced; do
 done
 unset OMC_MODEL_TIER
 
+# Balanced-tier examples sit inside the explicit-sonnet clause, so they must
+# never name an inherit-tier deliberator. The v1.49 migration initially left
+# draft-writer/chief-of-staff here and silently demoted writing/operations
+# dispatches even though their frontmatter had moved to `model: inherit`.
+balanced_sonnet_examples_for_prompt() {
+  local prompt="$1" sid="$2" output directive examples
+  mkdir -p "${STATE_ROOT}/${sid}"
+  echo '{"workflow_mode":"ultrawork"}' > "${STATE_ROOT}/${sid}/session_state.json"
+  export OMC_MODEL_TIER="balanced"
+  output="$(run_router "${prompt}" "${sid}")"
+  directive="$(printf '%s' "${output}" \
+    | jq -r '.hookSpecificOutput.additionalContext // ""' \
+    | awk '/^SUBAGENT MODEL ENFORCEMENT:/ { print; exit }')"
+  examples="${directive#*execution agents (}"
+  examples="${examples%%) pass *}"
+  printf '%s' "${examples}"
+  rm -rf "${STATE_ROOT:?}/${sid}"
+}
+
+inherit_agents_named_in() {
+  local text="$1" agent_file agent_name leaks=""
+  for agent_file in "${REPO_ROOT}"/bundle/dot-claude/agents/*.md; do
+    if grep -q '^model: inherit$' "${agent_file}"; then
+      agent_name="$(basename "${agent_file}" .md)"
+      if [[ "${text}" == *"${agent_name}"* ]]; then
+        leaks="${leaks}${leaks:+,}${agent_name}"
+      fi
+    fi
+  done
+  printf '%s' "${leaks}"
+}
+
+writing_examples="$(balanced_sonnet_examples_for_prompt \
+  '/ulw draft an executive memo for the board' 'model-tier-writing')"
+operations_examples="$(balanced_sonnet_examples_for_prompt \
+  '/ulw create a rollout schedule with owners, deadlines, and action items' 'model-tier-operations')"
+assert_eq "balanced writing: explicit-sonnet examples exclude inherit agents" "" \
+  "$(inherit_agents_named_in "${writing_examples}")"
+assert_eq "balanced operations: explicit-sonnet examples exclude inherit agents" "" \
+  "$(inherit_agents_named_in "${operations_examples}")"
+assert_true "balanced writing: example is actually sonnet-tier" \
+  "[[ \"${writing_examples}\" == *librarian* ]]"
+assert_true "balanced operations: example is actually sonnet-tier" \
+  "[[ \"${operations_examples}\" == *atlas* ]]"
+unset OMC_MODEL_TIER
+
 # --- Result -------------------------------------------------------------
 
 printf '\n=== Synthetic-Prompt Filter Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
