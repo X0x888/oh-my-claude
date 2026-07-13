@@ -26,6 +26,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 HOOK_SCRIPT="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/pretool-intent-guard.sh"
+COMMON_SH="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh"
 
 ORIG_HOME="${HOME}"
 pass=0
@@ -565,6 +566,211 @@ for nested_case in echo_sub printf_sub shell_c eval_body; do
   done
 done
 
+# Nested delivery actions must be recognized after ordinary launch wrappers,
+# combined shell options, Git top-level options, and env's split-string
+# executor. Exercise advisory intent and the independent agent-first floor:
+# the execution cases intentionally omit a specialist so their denial must
+# name the agent-first gate.
+for nested_variant_case in git_option_sub shell_git_option eval_git_option shell_combined timeout_shell wrapped_env_split assigned_env_split quoted_path_sub; do
+  case "${nested_variant_case}" in
+    git_option_sub) nested_variant_command='echo "$(git -c foo.bar=baz tag nested-tag)"' ;;
+    shell_git_option) nested_variant_command="sh -c 'git -c foo.bar=baz tag shell-tag'" ;;
+    eval_git_option) nested_variant_command="eval 'git -c foo.bar=baz tag eval-tag'" ;;
+    shell_combined) nested_variant_command="bash -lc 'git tag shell-tag'" ;;
+    timeout_shell) nested_variant_command="timeout 5 sh -c 'git tag shell-tag'" ;;
+    wrapped_env_split) nested_variant_command="command env -S 'git tag split-tag'" ;;
+    assigned_env_split) nested_variant_command="FOO=bar env -S 'git tag split-tag'" ;;
+    quoted_path_sub) nested_variant_command="echo \"\$('/usr/bin/git' tag quoted-path-tag)\"" ;;
+  esac
+  for intent_case in advisory execution; do
+    setup_test
+    init_session "t0c-nested-variant-${nested_variant_case}-${intent_case}" "${intent_case}"
+    nested_variant_out="$(run_guard "t0c-nested-variant-${nested_variant_case}-${intent_case}" "${nested_variant_command}")"
+    if denied "${nested_variant_out}"; then
+      pass=$((pass + 1))
+    else
+      printf '  FAIL: T0c nested variant %s must deny under %s (got: %s)\n' \
+        "${nested_variant_case}" "${intent_case}" "${nested_variant_out}" >&2
+      fail=$((fail + 1))
+    fi
+    if [[ "${intent_case}" == "execution" ]]; then
+      assert_contains "T0c nested variant ${nested_variant_case} reaches agent-first gate" \
+        "Agent-first gate" "${nested_variant_out}"
+    fi
+    teardown_test
+  done
+done
+
+# Literal shell text is data, even when it resembles a command substitution,
+# process substitution, or nested delivery action. Safe executor bodies that
+# merely print command-like prose are read-only too. Pin both advisory and
+# agent-first paths so quote handling cannot regress into scanning argv data.
+for literal_case in single_dollar single_process escaped_dollar escaped_backtick eval_prose shell_prose safe_substitution; do
+  case "${literal_case}" in
+    single_dollar) literal_command="echo '\$(git tag literal-tag)'" ;;
+    single_process) literal_command="echo '<(git tag literal-tag)'" ;;
+    escaped_dollar) literal_command='echo "\$(git tag literal-tag)"' ;;
+    escaped_backtick) literal_command='echo "\`git tag literal-tag\`"' ;;
+    eval_prose) literal_command="eval 'echo git tag literal-tag'" ;;
+    shell_prose) literal_command="sh -c 'printf %s \"git tag literal-tag\"'" ;;
+    safe_substitution) literal_command="echo \"\$(printf '%s' 'git tag literal-tag')\"" ;;
+  esac
+  for intent_case in advisory execution; do
+    setup_test
+    init_session "t0c-literal-${literal_case}-${intent_case}" "${intent_case}"
+    literal_out="$(run_guard "t0c-literal-${literal_case}-${intent_case}" "${literal_command}")"
+    assert_eq "T0c quoted/executor literal remains allowed: ${literal_case}/${intent_case}" "" "${literal_out}"
+    teardown_test
+  done
+done
+
+# Keep the structural parser's adversarial surface in one sourced process.
+# The representative advisory/execution cases above prove hook integration;
+# this matrix pins the larger grammar without paying one hook startup per
+# spelling. Every `yes` form is executable mutation syntax (or an opaque
+# executable/verb slot that must fail closed); every `no` form is proven
+# literal/read-only syntax.
+nested_parser_failures="$(
+  . "${COMMON_SH}"
+
+  _matrix_has_action() {
+    _omc_shell_text_has_action_recursive "$1" any 0
+  }
+
+  _matrix_probe() {
+    local expected="$1" label="$2" matrix_command="$3" actual="no"
+    _matrix_has_action "${matrix_command}" && actual="yes"
+    if [[ "${actual}" != "${expected}" ]]; then
+      printf '%s: expected=%s actual=%s command=%q\n' \
+        "${label}" "${expected}" "${actual}" "${matrix_command}"
+    fi
+  }
+
+  # Nested substitution parsing, comments, legacy backticks, and controls.
+  _matrix_probe yes branch_sub 'echo "$(git branch -D victim)"'
+  _matrix_probe yes switch_sub 'echo "$(git switch -C victim)"'
+  _matrix_probe yes checkout_sub 'echo "$(git checkout -B victim)"'
+  _matrix_probe yes legacy_nested 'echo `echo \`git tag nested\``'
+  _matrix_probe yes comment_depth $'echo "$(\n # ) parser trap\n git tag nested\n)"'
+  _matrix_probe yes bang_control 'echo "$(! git tag nested)"'
+  _matrix_probe yes if_control 'echo "$(if true; then git tag nested; fi)"'
+  _matrix_probe yes brace_control 'echo "$({ git tag nested; })"'
+  _matrix_probe yes case_control 'case x in x) git tag nested;; esac'
+
+  # Literal and opaque shell/eval/split-string executors.
+  _matrix_probe yes nice_shell "nice sh -c 'git tag nested'"
+  _matrix_probe yes nohup_shell "nohup sh -c 'git tag nested'"
+  _matrix_probe yes shell_option_value "bash -O extglob -c 'git tag nested'"
+  _matrix_probe yes shell_rcfile "bash --rcfile /dev/null -c 'git tag nested'"
+  _matrix_probe yes ansi_shell "sh -c \$'git tag nested'"
+  _matrix_probe yes escaped_shell $'sh -c git\\ tag\\ nested'
+  _matrix_probe yes dynamic_shell 'sh -c "$PAYLOAD"'
+  _matrix_probe yes builtin_eval "builtin eval 'git tag nested'"
+  _matrix_probe yes bare_eval 'eval git tag nested'
+  _matrix_probe yes multi_eval "eval 'git' 'tag nested'"
+  _matrix_probe yes dynamic_eval 'eval "$PAYLOAD"'
+  _matrix_probe yes env_split_attached "command env -S'git tag nested'"
+  _matrix_probe yes env_split_escape "command env -S 'git\\_tag\\_nested'"
+  _matrix_probe yes env_split_cluster "command env -iS'git tag nested'"
+  _matrix_probe yes env_split_tail "command env -S 'git' tag nested"
+  _matrix_probe yes env_split_dynamic 'command env -S "$PAYLOAD"'
+
+  # Static/dynamic shell-word construction in executable and verb slots.
+  _matrix_probe yes escaped_executable 'g\it tag nested'
+  _matrix_probe yes escaped_verb 'git t\ag nested'
+  _matrix_probe yes ansi_executable "\$'g\\x69t' tag nested"
+  _matrix_probe yes ansi_verb "git \$'t\\x61g' nested"
+  _matrix_probe yes substitution_executable '$(printf git) tag nested'
+  _matrix_probe yes substitution_verb 'git $(printf tag) nested'
+  _matrix_probe yes substitution_join 'g$(printf it) tag nested'
+  _matrix_probe yes backtick_executable '`printf git` tag nested'
+  _matrix_probe yes escaped_assignment 'FOO=a\ b git tag nested'
+  _matrix_probe yes escaped_env_assignment 'env FOO=a\ b git tag nested'
+  _matrix_probe yes line_continuation $'echo "$(git \\\ntag nested)"'
+
+  # Common wrapper option clusters and attached operands.
+  _matrix_probe yes env_cluster 'env -iuFOO git tag nested'
+  _matrix_probe yes env_altpath 'env -P/usr/bin git tag nested'
+  _matrix_probe yes sudo_cluster 'sudo -EHu s git tag nested'
+  _matrix_probe yes sudo_attached_cluster 'sudo -EHus git tag nested'
+  _matrix_probe yes exec_cluster 'exec -cla PROBE git tag nested'
+  _matrix_probe yes exec_attached_cluster 'exec -claPROBE git tag nested'
+  _matrix_probe yes time_cluster '/usr/bin/time -po /tmp/out git tag nested'
+  _matrix_probe yes timeout_option 'timeout -sKILL 5 git tag nested'
+  _matrix_probe yes nice_option 'nice -n5 git tag nested'
+
+  # A safe-looking flag used as an option value must not launder mutation.
+  _matrix_probe yes commit_message_value 'git commit -m --dry-run --allow-empty'
+  _matrix_probe yes commit_cluster_value 'git commit -am --dry-run --allow-empty'
+  _matrix_probe yes push_option_value 'git push -o -n origin main'
+  _matrix_probe yes push_cluster_value 'git push -fo -n origin main'
+
+  # Genuine read-only/recovery modes and command-query wrappers stay allowed.
+  _matrix_probe no command_query "command -v sh -c 'git tag literal'"
+  _matrix_probe no command_query_verbose "command -V eval 'git tag literal'"
+  _matrix_probe no apply_check "sh -c 'git apply --check patch.diff'"
+  _matrix_probe no clean_dry 'echo "$(git clean -n)"'
+  _matrix_probe no recovery "bash -lc 'git rebase --abort'"
+  _matrix_probe no commit_dry_later 'git commit -a --dry-run'
+  _matrix_probe no commit_sign_dry 'git commit -S --dry-run'
+  _matrix_probe no commit_gpg_dry 'git commit --gpg-sign --dry-run'
+  _matrix_probe no push_dry_later 'git push origin main -n'
+  _matrix_probe no push_sign_dry 'git push --signed --dry-run origin main'
+  _matrix_probe no push_recurse_dry 'git push --recurse-submodules --dry-run origin main'
+
+  # The cheap marker tripwire must leave ordinary sibling substitutions and
+  # quoted prose to the quote-aware walker. A quoted heredoc body is the named
+  # conservative intent boundary: it is inert at runtime but still denied.
+  _matrix_probe no sibling_markers 'echo "$(date)" "$(date)" "$(date)" "$(date)" "$(date)"'
+  _matrix_probe no quoted_markers "printf '%s\\n' '\$(one) \$(two) \$(three) \$(four) \$(five)'"
+  matrix_quoted_heredoc="$(printf '%s\n' "cat <<'EOF'" '$(git tag literal)' 'EOF')"
+  _matrix_probe yes quoted_heredoc_boundary "${matrix_quoted_heredoc}"
+
+  # Four ordinary nesting layers remain classifiable; pathological depth
+  # terminates through the fail-closed operation budget.
+  matrix_deep='printf safe'
+  for _matrix_i in 1 2 3 4; do
+    matrix_deep="echo \"\$(${matrix_deep})\""
+  done
+  _matrix_probe no depth_four "${matrix_deep}"
+
+  # Size is an independent fail-closed cap: even marker-free input must not
+  # reach the character-copying continuation normalizer once it is oversized.
+  matrix_oversized="$(printf '%05000d' 0)"$'\\\n''printf safe'
+  matrix_oversized_started="${SECONDS}"
+  _matrix_probe yes oversized_continuation_budget "${matrix_oversized}"
+  matrix_oversized_elapsed=$((SECONDS - matrix_oversized_started))
+  if [[ "${matrix_oversized_elapsed}" -gt 2 ]]; then
+    printf 'oversized_continuation_latency: expected <=2s actual=%ss\n' \
+      "${matrix_oversized_elapsed}"
+  fi
+
+  _matrix_i=0
+  while [[ "${_matrix_i}" -lt 500 ]]; do
+    matrix_deep="echo \"\$(${matrix_deep})\""
+    _matrix_i=$((_matrix_i + 1))
+  done
+  matrix_depth_started="${SECONDS}"
+  _matrix_probe yes depth_budget "${matrix_deep}"
+  matrix_depth_elapsed=$((SECONDS - matrix_depth_started))
+  if [[ "${matrix_depth_elapsed}" -gt 2 ]]; then
+    printf 'depth_budget_latency: expected <=2s actual=%ss\n' "${matrix_depth_elapsed}"
+  fi
+
+  # Known nested bodies preserve commit-vs-publish contract separation.
+  omc_shell_nested_delivery_action_present 'echo "$(git commit -m nested)"' commit \
+    || printf 'kind_commit: expected commit match\n'
+  if omc_shell_nested_delivery_action_present 'echo "$(git commit -m nested)"' publish; then
+    printf 'kind_commit: unexpected publish match\n'
+  fi
+  omc_shell_nested_delivery_action_present 'echo "$(git tag nested)"' publish \
+    || printf 'kind_publish: expected publish match\n'
+  if omc_shell_nested_delivery_action_present 'echo "$(git tag nested)"' commit; then
+    printf 'kind_publish: unexpected commit match\n'
+  fi
+)"
+assert_eq "T0c structural nested-action parser matrix" "" "${nested_parser_failures}"
+
 # ----------------------------------------------------------------------
 # T0d: execution intent + qualifying specialist completed → Edit allowed and
 # first mutation is recorded for the Stop-hook backstop.
@@ -609,6 +815,59 @@ else
 fi
 assert_contains "T2b: deny reason names commit contract" "Commit-contract gate" "${out_t2b}"
 teardown_test
+
+# Git reuses `-n` with different meanings: push `-n` is `--dry-run`, while
+# commit `-n` is `--no-verify` and still creates a commit. Keep the mutating
+# commit form denied without regressing the two genuine dry-run forms.
+setup_test
+init_session "t2c-commit-no-verify-advisory" "advisory"
+out_t2c="$(run_guard "t2c-commit-no-verify-advisory" "git commit -n -m x")"
+if denied "${out_t2c}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T2c: git commit -n is --no-verify and must deny under advisory intent (got: %s)\n' "${out_t2c}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+setup_test
+init_session "t2c-commit-no-verify-contract" "execution"
+set_agent_first_satisfied "t2c-commit-no-verify-contract"
+set_commit_mode "t2c-commit-no-verify-contract" "forbidden"
+out_t2c="$(run_guard "t2c-commit-no-verify-contract" "git commit -n -m x")"
+if denied "${out_t2c}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T2c: forbidden commit contract must deny git commit -n (got: %s)\n' "${out_t2c}" >&2
+  fail=$((fail + 1))
+fi
+assert_contains "T2c: git commit -n denial names commit contract" "Commit-contract gate" "${out_t2c}"
+teardown_test
+
+for dry_run_case in push_short commit_long; do
+  case "${dry_run_case}" in
+    push_short) dry_run_command="git push -n"; dry_run_contract="push" ;;
+    commit_long) dry_run_command="git commit --dry-run"; dry_run_contract="commit" ;;
+  esac
+
+  setup_test
+  init_session "t2c-${dry_run_case}-advisory" "advisory"
+  dry_run_out="$(run_guard "t2c-${dry_run_case}-advisory" "${dry_run_command}")"
+  assert_eq "T2c: genuine dry-run remains allowed under advisory: ${dry_run_case}" "" "${dry_run_out}"
+  teardown_test
+
+  setup_test
+  init_session "t2c-${dry_run_case}-contract" "execution"
+  set_agent_first_satisfied "t2c-${dry_run_case}-contract"
+  if [[ "${dry_run_contract}" == "push" ]]; then
+    set_push_mode "t2c-${dry_run_case}-contract" "forbidden"
+  else
+    set_commit_mode "t2c-${dry_run_case}-contract" "forbidden"
+  fi
+  dry_run_out="$(run_guard "t2c-${dry_run_case}-contract" "${dry_run_command}")"
+  assert_eq "T2c: genuine dry-run remains allowed under forbidden contract: ${dry_run_case}" "" "${dry_run_out}"
+  teardown_test
+done
 
 # ----------------------------------------------------------------------
 # T3 (regression): advisory intent + `git commit` → deny
@@ -1525,6 +1784,77 @@ if denied "${out_t46}"; then
 else
   pass=$((pass + 1))
 fi
+teardown_test
+
+# Nested delivery actions obey the same split commit/publish contract as
+# direct commands. A fresh specialist is recorded so these assertions prove
+# the explicit contract gate fired rather than passing accidentally through
+# the earlier agent-first gate.
+for nested_contract_case in commit_sub commit_eval push_sub tag_shell push_bash_lc push_env_split; do
+  setup_test
+  init_session "t-contract-nested-${nested_contract_case}" "execution"
+  set_agent_first_satisfied "t-contract-nested-${nested_contract_case}"
+  case "${nested_contract_case}" in
+    commit_sub)
+      set_commit_mode "t-contract-nested-${nested_contract_case}" "forbidden"
+      nested_contract_label="Commit"
+      nested_contract_command='echo "$(git commit -m nested)"'
+      ;;
+    commit_eval)
+      set_commit_mode "t-contract-nested-${nested_contract_case}" "forbidden"
+      nested_contract_label="Commit"
+      nested_contract_command="eval 'git commit -m nested'"
+      ;;
+    push_sub)
+      set_push_mode "t-contract-nested-${nested_contract_case}" "forbidden"
+      nested_contract_label="Push"
+      nested_contract_command='echo "$(git push --force)"'
+      ;;
+    tag_shell)
+      set_push_mode "t-contract-nested-${nested_contract_case}" "forbidden"
+      nested_contract_label="Push"
+      nested_contract_command="sh -c 'git tag nested-tag'"
+      ;;
+    push_bash_lc)
+      set_push_mode "t-contract-nested-${nested_contract_case}" "forbidden"
+      nested_contract_label="Push"
+      nested_contract_command="bash -lc 'git push --force'"
+      ;;
+    push_env_split)
+      set_push_mode "t-contract-nested-${nested_contract_case}" "forbidden"
+      nested_contract_label="Push"
+      nested_contract_command="command env -S 'git tag split-tag'"
+      ;;
+  esac
+  nested_contract_out="$(run_guard "t-contract-nested-${nested_contract_case}" "${nested_contract_command}")"
+  if denied "${nested_contract_out}"; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: nested %s action must obey its forbidden contract (got: %s)\n' \
+      "${nested_contract_case}" "${nested_contract_out}" >&2
+    fail=$((fail + 1))
+  fi
+  assert_contains "nested ${nested_contract_case} denial names the correct contract" \
+    "${nested_contract_label}-contract gate" "${nested_contract_out}"
+  teardown_test
+done
+
+# Kind separation is load-bearing: forbidding publish must not also forbid a
+# nested commit, and forbidding commit must not forbid a nested publish.
+setup_test
+init_session "t-contract-nested-kind-push" "execution"
+set_agent_first_satisfied "t-contract-nested-kind-push"
+set_push_mode "t-contract-nested-kind-push" "forbidden"
+kind_separation_out="$(run_guard "t-contract-nested-kind-push" 'echo "$(git commit -m nested)"')"
+assert_eq "nested commit remains allowed when only publish is forbidden" "" "${kind_separation_out}"
+teardown_test
+
+setup_test
+init_session "t-contract-nested-kind-commit" "execution"
+set_agent_first_satisfied "t-contract-nested-kind-commit"
+set_commit_mode "t-contract-nested-kind-commit" "forbidden"
+kind_separation_out="$(run_guard "t-contract-nested-kind-commit" 'echo "$(git push --force)"')"
+assert_eq "nested publish remains allowed when only commit is forbidden" "" "${kind_separation_out}"
 teardown_test
 
 # ----------------------------------------------------------------------

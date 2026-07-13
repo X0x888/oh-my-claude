@@ -519,7 +519,56 @@ run_delivery_action "da3h" 'git tag --list "$(git tag nested-one)"' "created"
 run_delivery_action "da3h" 'git tag --list $(git tag nested-two)' "created"
 run_delivery_action "da3h" 'git tag --list `git tag nested-three`' "created"
 run_delivery_action "da3h" 'git tag --list <(git tag nested-four)' "created"
-assert_eq "delivery: executable substitutions cannot hide publication" "4" "$(read_state_key "da3h" "publish_action_count")"
+assert_eq "delivery: nested actions under read-only outer commands are not evidence" "" "$(read_state_key "da3h" "publish_action_count")"
+
+setup_session "da3h-fail" '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","done_contract_push_mode":"required","done_contract_updated_ts":"100","session_start_ts":"50"}'
+run_delivery_action "da3h-fail" 'git tag --list "$(git tag --delete definitely-missing)"' \
+  "fatal: tag 'definitely-missing' not found"
+assert_eq "delivery: masked nested failure cannot fabricate publication" "" "$(read_state_key "da3h-fail" "publish_action_count")"
+
+setup_session "da3h-direct" '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","done_contract_commit_mode":"required","done_contract_push_mode":"required","done_contract_updated_ts":"100","session_start_ts":"50"}'
+run_delivery_action "da3h-direct" 'git tag --list "$(date +%s)"' ""
+assert_eq "delivery: benign substitution does not make tag listing a publish" "" "$(read_state_key "da3h-direct" "publish_action_count")"
+run_delivery_action "da3h-direct" 'git commit -m "$(date +%s)"' "committed"
+run_delivery_action "da3h-direct" 'git tag "v$(date +%s)"' "created"
+assert_eq "delivery: benign substitution preserves direct commit evidence" "1" "$(read_state_key "da3h-direct" "commit_action_count")"
+assert_eq "delivery: benign substitution preserves direct publish evidence" "1" "$(read_state_key "da3h-direct" "publish_action_count")"
+
+setup_session "da3h-dry" '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","done_contract_commit_mode":"required","done_contract_push_mode":"required","done_contract_updated_ts":"100","session_start_ts":"50"}'
+run_delivery_action "da3h-dry" 'git commit -a --dry-run' "dry run"
+run_delivery_action "da3h-dry" 'git commit -S --dry-run' "dry run"
+run_delivery_action "da3h-dry" 'git commit --gpg-sign --dry-run' "dry run"
+run_delivery_action "da3h-dry" 'git push origin main -n' "dry run"
+run_delivery_action "da3h-dry" 'git push --signed --dry-run origin main' "dry run"
+run_delivery_action "da3h-dry" 'git push --recurse-submodules --dry-run origin main' "dry run"
+assert_eq "delivery: later and optional-argument dry-run flags are not commit evidence" "" "$(read_state_key "da3h-dry" "commit_action_count")"
+assert_eq "delivery: later and optional-argument dry-run flags are not publish evidence" "" "$(read_state_key "da3h-dry" "publish_action_count")"
+
+setup_session "da3h-values" '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","done_contract_commit_mode":"required","done_contract_push_mode":"required","done_contract_updated_ts":"100","session_start_ts":"50"}'
+run_delivery_action "da3h-values" 'git commit -m --dry-run --allow-empty' "committed"
+run_delivery_action "da3h-values" 'git commit -am --dry-run --allow-empty' "committed"
+run_delivery_action "da3h-values" 'git push -o -n origin main' "pushed"
+run_delivery_action "da3h-values" 'git push -fo -n origin main' "pushed"
+assert_eq "delivery: dry-run-looking commit option values remain commit evidence" "2" "$(read_state_key "da3h-values" "commit_action_count")"
+assert_eq "delivery: dry-run-looking push option values remain publish evidence" "2" "$(read_state_key "da3h-values" "publish_action_count")"
+
+setup_session "da3h-status" '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","done_contract_commit_mode":"required","done_contract_push_mode":"required","done_contract_updated_ts":"100","session_start_ts":"50"}'
+run_delivery_action "da3h-status" 'true || git tag skipped-one' ""
+run_delivery_action "da3h-status" 'false && git tag skipped-two; true' ""
+run_delivery_action "da3h-status" 'git tag --delete definitely-missing; true' ""
+run_delivery_action "da3h-status" 'if false; then git tag skipped-three; fi' ""
+run_delivery_action "da3h-status" 'while false; do git commit -m skipped; done' ""
+quoted_heredoc="$(printf '%s\n' "cat <<'EOF'" '$(git tag heredoc-fake)' 'EOF')"
+run_delivery_action "da3h-status" "${quoted_heredoc}" "git tag heredoc-fake"
+assert_eq "delivery: skipped, masked-failure, control, and heredoc actions are not commit evidence" "" "$(read_state_key "da3h-status" "commit_action_count")"
+assert_eq "delivery: skipped, masked-failure, control, and heredoc actions are not publish evidence" "" "$(read_state_key "da3h-status" "publish_action_count")"
+
+setup_session "da3h-wrapper" '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","done_contract_push_mode":"required","done_contract_updated_ts":"100","session_start_ts":"50"}'
+run_delivery_action "da3h-wrapper" 'env -iuFOO git tag env-cluster-new' "created"
+run_delivery_action "da3h-wrapper" 'sudo -EHus git tag sudo-cluster-new' "created"
+run_delivery_action "da3h-wrapper" 'exec -claPROBE git tag exec-cluster-new' "created"
+run_delivery_action "da3h-wrapper" '/usr/bin/time -po /tmp/time.out git tag time-cluster-new' "created"
+assert_eq "delivery: mixed/attached wrapper clusters preserve direct publication evidence" "4" "$(read_state_key "da3h-wrapper" "publish_action_count")"
 
 segment_shapes="$(
   . "${COMMON_SH}"
@@ -562,6 +611,12 @@ run_delivery_action "da3m" 'echo "$(git tag nested-tag)"' "nested-tag"
 run_delivery_action "da3m" 'printf %s "$(git push --force)"' "pushed"
 run_delivery_action "da3m" "sh -c 'git tag shell-tag'" "created"
 run_delivery_action "da3m" "eval 'git tag eval-tag'" "created"
+run_delivery_action "da3m" "bash -lc 'git tag combined-option-tag'" "created"
+run_delivery_action "da3m" "timeout 5 sh -c 'git tag timeout-tag'" "created"
+run_delivery_action "da3m" "sh -c 'git -c foo.bar=baz tag option-tag'" "created"
+run_delivery_action "da3m" "command env -S 'git tag split-tag'" "created"
+run_delivery_action "da3m" '$(printf git) tag substitution-executable' "created"
+run_delivery_action "da3m" 'git $(printf tag) substitution-verb' "created"
 assert_eq "delivery: nested executors do not fabricate direct-action evidence" "" "$(read_state_key "da3m" "last_publish_action_ts")"
 
 setup_session "da3n" '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","done_contract_push_mode":"required","done_contract_updated_ts":"100","session_start_ts":"50"}'

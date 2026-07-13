@@ -250,7 +250,12 @@ readonly _GUARD_PRE="${OMC_SHELL_COMMAND_PREFIX_RE}"
 _bash_command_may_mutate_workspace() {
   local cmd="$1"
   [[ -z "${cmd}" ]] && return 1
+  # The nested predicate owns normalization and applies its fail-closed
+  # depth/size/marker budget first. Run it before any whole-string lexical
+  # copy so adversarial nesting cannot exhaust the PreTool latency budget.
   omc_shell_nested_delivery_action_present "${cmd}" && return 0
+  cmd="$(omc_shell_remove_line_continuations "${cmd}")"
+  _omc_shell_text_has_direct_action "${cmd}" any && return 0
 
   # PreTool denial needs a positive mutation signature; the broader Bash
   # snapshot candidate set also includes opaque tests/scripts and cannot be
@@ -508,7 +513,7 @@ fi
 #
 # Allowed variants (read-only / recovery modes of the above verbs):
 #   git (rebase|merge|cherry-pick|revert|am) --abort|--continue|--skip|--quit
-#   git (push|commit) --dry-run|-n
+#   git push --dry-run|-n; git commit --dry-run
 #   git apply --check|--stat|--numstat|--summary
 #   git tag -l|--list
 #
@@ -537,12 +542,14 @@ _cmd_is_allowed_variant() {
   local cmd="$1"
   omc_shell_has_executable_substitution "${cmd}" && return 1
   # `--abort|--continue|--skip|--quit` on a mid-operation verb.
-  if grep -Eq "${_GUARD_PRE}git[[:space:]]+(rebase|merge|cherry-pick|revert|am)[[:space:]]+.*(--abort|--continue|--skip|--quit)([[:space:]]|$)" <<<"${cmd}"; then return 0; fi
-  # `--dry-run|-n` on push/commit reports intent without mutation.
-  if grep -Eq "${_GUARD_PRE}git[[:space:]]+(push|commit)[[:space:]]+.*(--dry-run|-n)([[:space:]]|$)" <<<"${cmd}"; then return 0; fi
+  omc_git_recovery_segment_is_allowed "${cmd}" && return 0
+  # `git push -n` is dry-run, but `git commit -n` means --no-verify and still
+  # creates a commit. Keep the verb-specific flag semantics separate.
+  omc_git_push_segment_is_dry_run "${cmd}" && return 0
+  omc_git_commit_segment_is_dry_run "${cmd}" && return 0
   # Read-only `git apply` inspection forms. `git apply` itself mutates
   # the worktree/index, but these flags only validate or summarize a patch.
-  if grep -Eq "${_GUARD_PRE}git[[:space:]]+apply[[:space:]]+.*(--check|--stat|--numstat|--summary)([[:space:]]|$)" <<<"${cmd}"; then return 0; fi
+  omc_git_apply_segment_is_read_only "${cmd}" && return 0
   # Read-only `git tag` invocations. The CLI is positional: presence of
   # `<tagname>` without flags is the create form; presence of any of
   # these flags is a list/inspect form. We accept the broader set so
@@ -574,6 +581,7 @@ _cmd_is_allowed_variant() {
 _cmd_matches_destructive() {
   local cmd="$1"
   omc_shell_nested_delivery_action_present "${cmd}" && return 0
+  _omc_shell_text_has_direct_action "${cmd}" any && return 0
   # Case-sensitive matching is intentional: git CLI flags like `-D` (force-delete
   # branch), `-C` (force-create branch), `-B` (force-reuse branch) differ from
   # their lowercase counterparts in destructive semantics, so a prior lowercase
@@ -625,15 +633,27 @@ _cmd_matches_destructive() {
 # `git rebase --abort && git push --force`: the first segment is an allowed
 # recovery op, the second is destructive. A whole-line check would either
 # miss the push or over-block the rebase; splitting keeps both decisions honest.
-normalized_cmd="$(_normalize_git_flags "${command_str}")"
+parse_budget_exceeded=0
+normalized_cmd=""
 denied_segment=""
-while IFS= read -r -d '' _seg; do
-  [[ -z "${_seg// }" ]] && continue
-  if _cmd_matches_destructive "${_seg}" && ! _cmd_is_allowed_variant "${_seg}"; then
-    denied_segment="${_seg}"
-    break
-  fi
-done < <(omc_shell_compound_segments "${normalized_cmd}")
+if _omc_shell_nested_execution_budget_exceeded "${command_str}" 0; then
+  # Over-budget nested syntax is opaque by contract and therefore destructive
+  # for every intent/forbidden-contract kind. Do not feed it through later
+  # normalizers, segment walkers, or authorization overrides: each would both
+  # re-pay the adversarial parse cost and weaken the fail-closed decision.
+  parse_budget_exceeded=1
+  normalized_cmd="${command_str}"
+  denied_segment="${command_str}"
+else
+  normalized_cmd="$(_normalize_git_flags "$(omc_shell_remove_line_continuations "${command_str}")")"
+  while IFS= read -r -d '' _seg; do
+    [[ -z "${_seg// }" ]] && continue
+    if _cmd_matches_destructive "${_seg}" && ! _cmd_is_allowed_variant "${_seg}"; then
+      denied_segment="${_seg}"
+      break
+    fi
+  done < <(omc_shell_compound_segments "${normalized_cmd}")
+fi
 
 if [[ -z "${denied_segment}" ]]; then
   exit 0
@@ -880,6 +900,8 @@ _prompt_text_authorizes_command() {
 # mode so a "commit X. don't push Y." prompt allows the commit.
 _commit_segment_forbidden() {
   local seg
+  omc_shell_nested_delivery_action_present "$1" commit && return 0
+  _omc_shell_text_has_direct_action "$1" commit && return 0
   seg="$(omc_shell_unquoted_control_text "$1")"
   if grep -Eq "${_GUARD_PRE}git[[:space:]]+commit([[:space:]]|$)" <<<"${seg}"; then
     return 0
@@ -889,6 +911,8 @@ _commit_segment_forbidden() {
 
 _push_segment_forbidden() {
   local seg
+  omc_shell_nested_delivery_action_present "$1" publish && return 0
+  _omc_shell_text_has_direct_action "$1" publish && return 0
   seg="$(omc_shell_unquoted_control_text "$1")"
   if grep -Eq "${_GUARD_PRE}git[[:space:]]+(push|tag)([[:space:]]|$)" <<<"${seg}"; then
     return 0
@@ -901,13 +925,17 @@ _push_segment_forbidden() {
 
 if [[ "${commit_contract_mode}" == "forbidden" ]]; then
   _commit_denied_segment=""
-  while IFS= read -r -d '' _seg; do
-    [[ -z "${_seg// }" ]] && continue
-    if _cmd_matches_destructive "${_seg}" && ! _cmd_is_allowed_variant "${_seg}" && _commit_segment_forbidden "${_seg}"; then
-      _commit_denied_segment="${_seg}"
-      break
-    fi
-  done < <(omc_shell_compound_segments "${normalized_cmd}")
+  if [[ "${parse_budget_exceeded}" -eq 1 ]]; then
+    _commit_denied_segment="${command_str}"
+  else
+    while IFS= read -r -d '' _seg; do
+      [[ -z "${_seg// }" ]] && continue
+      if _cmd_matches_destructive "${_seg}" && ! _cmd_is_allowed_variant "${_seg}" && _commit_segment_forbidden "${_seg}"; then
+        _commit_denied_segment="${_seg}"
+        break
+      fi
+    done < <(omc_shell_compound_segments "${normalized_cmd}")
+  fi
 
   if [[ -n "${_commit_denied_segment}" ]]; then
     log_hook "pretool-intent-guard" "blocked by commit contract: cmd=$(truncate_chars 80 "${command_str}")"
@@ -928,13 +956,17 @@ fi
 
 if [[ "${push_contract_mode}" == "forbidden" ]]; then
   _push_denied_segment=""
-  while IFS= read -r -d '' _seg; do
-    [[ -z "${_seg// }" ]] && continue
-    if _cmd_matches_destructive "${_seg}" && ! _cmd_is_allowed_variant "${_seg}" && _push_segment_forbidden "${_seg}"; then
-      _push_denied_segment="${_seg}"
-      break
-    fi
-  done < <(omc_shell_compound_segments "${normalized_cmd}")
+  if [[ "${parse_budget_exceeded}" -eq 1 ]]; then
+    _push_denied_segment="${command_str}"
+  else
+    while IFS= read -r -d '' _seg; do
+      [[ -z "${_seg// }" ]] && continue
+      if _cmd_matches_destructive "${_seg}" && ! _cmd_is_allowed_variant "${_seg}" && _push_segment_forbidden "${_seg}"; then
+        _push_denied_segment="${_seg}"
+        break
+      fi
+    done < <(omc_shell_compound_segments "${normalized_cmd}")
+  fi
 
   if [[ -n "${_push_denied_segment}" ]]; then
     log_hook "pretool-intent-guard" "blocked by push contract: cmd=$(truncate_chars 80 "${command_str}")"
@@ -964,7 +996,9 @@ if [[ "${intent_guard_active}" -eq 0 ]]; then
   exit 0
 fi
 
-if _wave_execution_active && _wave_override_command_safe "${normalized_cmd}"; then
+if [[ "${parse_budget_exceeded}" -eq 0 ]] \
+    && _wave_execution_active \
+    && _wave_override_command_safe "${normalized_cmd}"; then
   # Extract the active wave's metadata for the gate-event details so
   # /ulw-report can attribute each override to a specific wave (which
   # surface it authorized, position in the plan). Without this, the
@@ -1001,7 +1035,8 @@ fi
 # wave path doesn't fire, the prompt-text path is the next line of
 # defense — it converts the user's explicit imperative into authorization
 # even if the classifier said advisory.
-if [[ "${OMC_PROMPT_TEXT_OVERRIDE:-on}" == "on" ]] \
+if [[ "${parse_budget_exceeded}" -eq 0 ]] \
+    && [[ "${OMC_PROMPT_TEXT_OVERRIDE:-on}" == "on" ]] \
     && _prompt_text_authorizes_command "${normalized_cmd}"; then
   log_hook "pretool-intent-guard" \
     "prompt-text override: intent=${task_intent} cmd=$(truncate_chars 80 "${command_str}")"

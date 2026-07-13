@@ -3123,10 +3123,20 @@ _omc_normalize_git_flags_for_mutation() {
 # deliberately anchors at byte zero so an argument such as `echo git tag v1`
 # cannot impersonate an executed delivery action.
 _OMC_SHELL_ASSIGNMENT_RE='[[:alpha:]_][[:alnum:]_]*=[^[:space:]]+'
-_OMC_ENV_OPTION_RE='(-[i0v]|--(ignore-environment|null|debug)|-[uC][[:space:]]+[^[:space:]]+|--(unset|chdir)[[:space:]]+[^[:space:]]+|--(unset|chdir)=[^[:space:]]+)'
-_OMC_SUDO_OPTION_RE='(--|-[nEHKSbisV]|--(non-interactive|preserve-env|reset-timestamp|remove-timestamp|stdin|background|login|shell|version)|-[ughCDRTpcrt][[:space:]]+[^[:space:]]+|--(user|group|host|close-from|chdir|chroot|command-timeout|prompt|role|type|other-user)[[:space:]]+[^[:space:]]+|--[^[:space:]=]+=[^[:space:]]+)'
-_OMC_EXEC_OPTION_RE='(-[cl]|-a[[:space:]]+[^[:space:]]+|--)'
-OMC_SHELL_COMMAND_PREFIX_RE="^[[:space:]]*([(][[:space:]]*)*(${_OMC_SHELL_ASSIGNMENT_RE}[[:space:]]+)*(([^[:space:]]*/)?sudo([[:space:]]+${_OMC_SUDO_OPTION_RE})*[[:space:]]+|([^[:space:]]*/)?command([[:space:]]+(-p|--))*[[:space:]]+|([^[:space:]]*/)?exec([[:space:]]+${_OMC_EXEC_OPTION_RE})*[[:space:]]+|([^[:space:]]*/)?time([[:space:]]+-[^[:space:]]+)*[[:space:]]+|([^[:space:]]*/)?env([[:space:]]+(${_OMC_ENV_OPTION_RE}|${_OMC_SHELL_ASSIGNMENT_RE}))*[[:space:]]+)*([^[:space:]]*/)?"
+_OMC_ENV_OPTION_RE='(--|-[i0v]+|--(ignore-environment|null|debug)|-[i0v]*[uCP][[:space:]]+[^[:space:]]+|-[i0v]*[uCP][^[:space:]]+|--(unset|chdir)[[:space:]]+[^[:space:]]+|--(unset|chdir)=[^[:space:]]+)'
+_OMC_SUDO_OPTION_RE='(--|-[nEHKSbisV]*[ughCDRTpcrt][[:space:]]+[^[:space:]]+|-[nEHKSbisV]*[ughCDRTpcrt][^[:space:]]+|-[nEHKSbisV]+|--(non-interactive|preserve-env|reset-timestamp|remove-timestamp|stdin|background|login|shell|version)|--(user|group|host|close-from|chdir|chroot|command-timeout|prompt|role|type|other-user)[[:space:]]+[^[:space:]]+|--[^[:space:]=]+=[^[:space:]]+)'
+_OMC_EXEC_OPTION_RE='(-[cl]*a[[:space:]]+[^[:space:]]+|-[cl]*a[^[:space:]]+|-[cl]+|--)'
+_OMC_TIMEOUT_OPTION_RE='((-[ks]|--(kill-after|signal))[[:space:]]+[^[:space:]]+|-[ks][^[:space:]]+|-[fpv]|--|--(kill-after|signal)=[^[:space:]]+|--(preserve-status|foreground|verbose))'
+_OMC_TIMEOUT_WRAPPER_RE="([^[:space:]]*/)?timeout([[:space:]]+${_OMC_TIMEOUT_OPTION_RE})*[[:space:]]+[^[:space:]]+[[:space:]]+"
+_OMC_NICE_WRAPPER_RE='([^[:space:]]*/)?nice(([[:space:]]+(-n|--adjustment)[[:space:]]+[^[:space:]]+)|([[:space:]]+(-n[^[:space:]]+|--adjustment=[^[:space:]]+|-[0-9]+|--)))*[[:space:]]+'
+_OMC_NOHUP_WRAPPER_RE='([^[:space:]]*/)?nohup([[:space:]]+--)?[[:space:]]+'
+_OMC_TIME_OPTION_RE='((-[ahlpvq]*[foS]|--(format|output|stack-size))[[:space:]]+[^[:space:]]+|-[foS][^[:space:]]+|--(format|output|stack-size)=[^[:space:]]+|--|-[^[:space:]]+|--[^[:space:]]+)'
+_OMC_COMMAND_WRAPPER_RE='([^[:space:]]*/)?command([[:space:]]+(-p|--))*[[:space:]]+'
+_OMC_SUDO_WRAPPER_RE="([^[:space:]]*/)?sudo([[:space:]]+${_OMC_SUDO_OPTION_RE})*[[:space:]]+"
+_OMC_EXEC_WRAPPER_RE="([^[:space:]]*/)?exec([[:space:]]+${_OMC_EXEC_OPTION_RE})*[[:space:]]+"
+_OMC_TIME_WRAPPER_RE="([^[:space:]]*/)?time([[:space:]]+${_OMC_TIME_OPTION_RE})*[[:space:]]+"
+_OMC_CONTROL_PREFIX_RE='([!]|[{]|if|then|elif|else|while|until|do|coproc)[[:space:]]+'
+OMC_SHELL_COMMAND_PREFIX_RE="^[[:space:]]*([(][[:space:]]*)*(${_OMC_SHELL_ASSIGNMENT_RE}[[:space:]]+)*(${_OMC_SUDO_WRAPPER_RE}|${_OMC_COMMAND_WRAPPER_RE}|${_OMC_EXEC_WRAPPER_RE}|${_OMC_TIME_WRAPPER_RE}|${_OMC_TIMEOUT_WRAPPER_RE}|${_OMC_NICE_WRAPPER_RE}|${_OMC_NOHUP_WRAPPER_RE}|([^[:space:]]*/)?env([[:space:]]+(${_OMC_ENV_OPTION_RE}|${_OMC_SHELL_ASSIGNMENT_RE}))*[[:space:]]+)*([^[:space:]]*/)?"
 
 # Emit NUL-delimited top-level shell command segments separated by `&&`,
 # `||`, `;`, `|`, or background `&`. Operators inside single/double quotes,
@@ -3143,7 +3153,13 @@ omc_shell_compound_segments() {
     prev=""
     (( i + 1 < length )) && next="${input:i+1:1}"
     (( i > 0 )) && prev="${input:i-1:1}"
-    if [[ "${state}" == "single" ]]; then
+    if [[ "${state}" == "comment" ]]; then
+      if [[ "${char}" == $'\n' ]]; then
+        printf '%s\0' "${segment}"
+        segment=""
+        state="plain"
+      fi
+    elif [[ "${state}" == "single" ]]; then
       segment="${segment}${char}"
       [[ "${char}" == "'" ]] && state="plain"
     elif [[ "${state}" == "double" ]]; then
@@ -3163,6 +3179,13 @@ omc_shell_compound_segments() {
     elif [[ "${char}" == '"' ]]; then
       state="double"
       segment="${segment}${char}"
+    elif [[ "${char}" == '#' ]] \
+        && { [[ "${i}" -eq 0 ]] \
+          || { case "${prev}" in [[:space:]]|';'|'&'|'|'|'('|')') true ;; *) false ;; esac; }; }; then
+      state="comment"
+    elif [[ "${char}" == $'\n' ]]; then
+      printf '%s\0' "${segment}"
+      segment=""
     elif [[ "${char}" == ";" ]]; then
       printf '%s\0' "${segment}"
       segment=""
@@ -3227,7 +3250,11 @@ omc_shell_unquoted_control_text() {
         output="${output}${char}"
       fi
     elif [[ "${char}" == "\\" ]] && [[ -n "${next}" ]]; then
-      output="${output}${char}${next}"
+      if [[ "${next}" =~ [[:space:]] ]]; then
+        output="${output}Q"
+      else
+        output="${output}${next}"
+      fi
       i=$((i + 1))
     elif [[ "${char}" == "'" ]]; then
       state="single"
@@ -3276,66 +3303,626 @@ omc_shell_unquoted_structure_text() {
   printf '%s' "${output}"
 }
 
-# Command substitutions remain executable inside double quotes; process
-# substitutions execute at top level. A segment with any such shape cannot be
-# blessed as a read-only/dry-run variant unless its nested program is parsed
-# recursively, which this harness deliberately does not attempt.
-omc_shell_has_executable_substitution() {
-  local input="${1:-}" state="plain" char="" next=""
+# Bash removes backslash-newline pairs before tokenization in plain and
+# double-quoted text (but not inside single quotes). Normalize that lexical
+# continuation before executable matching so `git \\` + newline + `tag` and
+# wrapped `sh \\` + newline + `-c` cannot split a verb across physical lines.
+omc_shell_remove_line_continuations() {
+  local input="${1:-}" state="plain" output="" char="" next=""
   local i=0 length="${#1}"
+  # Nearly every command has no physical continuation. Avoid the Bash 3.2
+  # character-by-character copy in that hot path; the state machine is needed
+  # only when a backslash-newline pair is actually present.
+  [[ "${input}" == *$'\\\n'* ]] || {
+    printf '%s' "${input}"
+    return 0
+  }
   while (( i < length )); do
     char="${input:i:1}"
     next=""
     (( i + 1 < length )) && next="${input:i+1:1}"
+    if [[ "${state}" != "single" && "${char}" == "\\" && "${next}" == $'\n' ]]; then
+      i=$((i + 2))
+      continue
+    fi
+    output="${output}${char}"
     if [[ "${state}" == "single" ]]; then
       [[ "${char}" == "'" ]] && state="plain"
     elif [[ "${state}" == "double" ]]; then
-      if [[ "${char}" == "\\" ]]; then
+      if [[ "${char}" == "\\" ]] && [[ -n "${next}" ]]; then
+        output="${output}${next}"
         i=$((i + 1))
       elif [[ "${char}" == '"' ]]; then
         state="plain"
-      elif [[ "${char}" == '`' ]] \
-          || [[ "${char}" == '$' && "${next}" == '(' ]]; then
-        return 0
       fi
-    elif [[ "${char}" == "\\" ]]; then
+    elif [[ "${char}" == "\\" ]] && [[ -n "${next}" ]]; then
+      output="${output}${next}"
       i=$((i + 1))
     elif [[ "${char}" == "'" ]]; then
       state="single"
     elif [[ "${char}" == '"' ]]; then
       state="double"
-    elif [[ "${char}" == '`' ]] \
-        || [[ ( "${char}" == '$' || "${char}" == '<' || "${char}" == '>' ) \
-              && "${next}" == '(' ]]; then
-      return 0
     fi
     i=$((i + 1))
   done
+  printf '%s' "${output}"
+}
+
+# Command substitutions remain executable inside double quotes; process
+# substitutions execute at top level. A segment with any such shape cannot be
+# blessed as a read-only/dry-run variant unless its nested program is parsed
+# recursively, which this harness deliberately does not attempt.
+omc_shell_has_executable_substitution() {
+  local body=""
+  while IFS= read -r -d '' body; do
+    return 0
+  done < <(omc_shell_executable_substitution_bodies "${1:-}")
   return 1
+}
+
+# Walk executable substitutions without evaluating them. In `bodies` mode the
+# payloads are NUL-delimited; in `mask` mode each complete substitution becomes
+# one inert `Q` token while the direct outer command is preserved. Single-
+# quoted and backslash-escaped markers remain literal data. The parenthesis
+# walker is quote/depth-aware so nested `$()` and grouped commands cannot end a
+# body early on their first `)`.
+_omc_shell_walk_executable_substitutions() {
+  local mode="${1:-bodies}" input="${2:-}" state="plain" output=""
+  local char="" next="" prev="" body="" sub_state="" sub_char="" sub_next="" sub_prev=""
+  local i=0 j=0 depth=0 found=0 comment_boundary=0 sub_comment_boundary=0 length="${#2}"
+  local -a sub_states=() sub_resume_states=()
+
+  while (( i < length )); do
+    char="${input:i:1}"
+    next=""
+    prev=""
+    (( i + 1 < length )) && next="${input:i+1:1}"
+    (( i > 0 )) && prev="${input:i-1:1}"
+
+    if [[ "${state}" == "comment" ]]; then
+      [[ "${mode}" == "mask" ]] && output="${output}${char}"
+      [[ "${char}" == $'\n' ]] && state="plain"
+      i=$((i + 1))
+      continue
+    fi
+
+    if [[ "${state}" == "single" ]]; then
+      [[ "${mode}" == "mask" ]] && output="${output}${char}"
+      [[ "${char}" == "'" ]] && state="plain"
+      i=$((i + 1))
+      continue
+    fi
+
+    if [[ "${char}" == "\\" ]]; then
+      if [[ "${mode}" == "mask" ]]; then
+        output="${output}${char}${next}"
+      fi
+      i=$((i + 2))
+      continue
+    fi
+
+    if [[ "${state}" == "double" && "${char}" == '"' ]]; then
+      [[ "${mode}" == "mask" ]] && output="${output}${char}"
+      state="plain"
+      i=$((i + 1))
+      continue
+    fi
+    if [[ "${state}" == "plain" && "${char}" == "'" ]]; then
+      [[ "${mode}" == "mask" ]] && output="${output}${char}"
+      state="single"
+      i=$((i + 1))
+      continue
+    fi
+    if [[ "${state}" == "plain" && "${char}" == '"' ]]; then
+      [[ "${mode}" == "mask" ]] && output="${output}${char}"
+      state="double"
+      i=$((i + 1))
+      continue
+    fi
+
+    comment_boundary=0
+    if [[ "${i}" -eq 0 ]]; then
+      comment_boundary=1
+    else
+      case "${prev}" in
+        [[:space:]]|';'|'&'|'|'|'('|')') comment_boundary=1 ;;
+      esac
+    fi
+    if [[ "${state}" == "plain" && "${char}" == '#' && "${comment_boundary}" -eq 1 ]]; then
+      [[ "${mode}" == "mask" ]] && output="${output}${char}"
+      state="comment"
+      i=$((i + 1))
+      continue
+    fi
+
+    # Backticks execute in both plain and double-quoted outer text.
+    if [[ "${char}" == '`' ]]; then
+      body=""
+      found=0
+      j=$((i + 1))
+      while (( j < length )); do
+        sub_char="${input:j:1}"
+        sub_next=""
+        (( j + 1 < length )) && sub_next="${input:j+1:1}"
+        if [[ "${sub_char}" == "\\" ]] && [[ -n "${sub_next}" ]]; then
+          # Escaped backticks are the nesting syntax inside legacy backtick
+          # substitutions. Decode that delimiter in the emitted body so the
+          # recursive pass sees the inner executable instead of literal data.
+          if [[ "${sub_next}" == '`' ]]; then
+            body="${body}${sub_next}"
+          else
+            body="${body}${sub_char}${sub_next}"
+          fi
+          j=$((j + 2))
+          continue
+        fi
+        if [[ "${sub_char}" == '`' ]]; then
+          found=1
+          break
+        fi
+        body="${body}${sub_char}"
+        j=$((j + 1))
+      done
+      if [[ "${found}" -eq 1 ]]; then
+        if [[ "${mode}" == "mask" ]]; then output="${output}Q"; else printf '%s\0' "${body}"; fi
+        i=$((j + 1))
+        continue
+      fi
+    fi
+
+    # `$()` executes in plain/double text; process substitution executes only
+    # at plain shell level. Preserve unmatched markers as ordinary text.
+    if [[ "${next}" == "(" ]] \
+        && { [[ "${char}" == '$' ]] \
+          || { [[ "${state}" == "plain" ]] && [[ "${char}" == '<' || "${char}" == '>' ]]; }; }; then
+      body=""
+      depth=1
+      found=0
+      sub_states=("" "plain")
+      sub_resume_states=("" "plain")
+      j=$((i + 2))
+      while (( j < length )); do
+        sub_char="${input:j:1}"
+        sub_next=""
+        sub_prev=""
+        (( j + 1 < length )) && sub_next="${input:j+1:1}"
+        (( j > i + 2 )) && sub_prev="${input:j-1:1}"
+        sub_comment_boundary=0
+        if [[ $((j - i - 2)) -eq 0 ]]; then
+          sub_comment_boundary=1
+        else
+          case "${sub_prev}" in
+            [[:space:]]|';'|'&'|'|'|'('|')') sub_comment_boundary=1 ;;
+          esac
+        fi
+        sub_state="${sub_states[depth]:-plain}"
+
+        if [[ "${sub_state}" == "comment" ]]; then
+          body="${body}${sub_char}"
+          [[ "${sub_char}" == $'\n' ]] && sub_states[depth]="plain"
+        elif [[ "${sub_state}" == "single" ]]; then
+          body="${body}${sub_char}"
+          [[ "${sub_char}" == "'" ]] && sub_states[depth]="plain"
+        elif [[ "${sub_state}" == "double" ]]; then
+          if [[ "${sub_char}" == "\\" ]] && [[ -n "${sub_next}" ]]; then
+            body="${body}${sub_char}${sub_next}"
+            j=$((j + 1))
+          elif [[ "${sub_char}" == '"' ]]; then
+            body="${body}${sub_char}"
+            sub_states[depth]="plain"
+          elif [[ "${sub_char}" == '$' && "${sub_next}" == '(' ]]; then
+            body="${body}${sub_char}${sub_next}"
+            depth=$((depth + 1))
+            sub_states[depth]="plain"
+            sub_resume_states[depth]="plain"
+            j=$((j + 1))
+          elif [[ "${sub_char}" == '`' ]]; then
+            body="${body}${sub_char}"
+            sub_resume_states[depth]="double"
+            sub_states[depth]="backtick"
+          else
+            body="${body}${sub_char}"
+          fi
+        elif [[ "${sub_state}" == "backtick" ]]; then
+          body="${body}${sub_char}"
+          if [[ "${sub_char}" == "\\" ]] && [[ -n "${sub_next}" ]]; then
+            body="${body}${sub_next}"
+            j=$((j + 1))
+          elif [[ "${sub_char}" == '`' ]]; then
+            sub_states[depth]="${sub_resume_states[depth]:-plain}"
+          fi
+        elif [[ "${sub_char}" == "\\" ]] && [[ -n "${sub_next}" ]]; then
+          body="${body}${sub_char}${sub_next}"
+          j=$((j + 1))
+        elif [[ "${sub_char}" == "'" ]]; then
+          body="${body}${sub_char}"
+          sub_states[depth]="single"
+        elif [[ "${sub_char}" == '"' ]]; then
+          body="${body}${sub_char}"
+          sub_states[depth]="double"
+        elif [[ "${sub_char}" == '`' ]]; then
+          body="${body}${sub_char}"
+          sub_resume_states[depth]="plain"
+          sub_states[depth]="backtick"
+        elif [[ "${sub_char}" == '#' && "${sub_comment_boundary}" -eq 1 ]]; then
+          body="${body}${sub_char}"
+          sub_states[depth]="comment"
+        elif [[ "${sub_char}" == '(' ]]; then
+          body="${body}${sub_char}"
+          depth=$((depth + 1))
+          sub_states[depth]="plain"
+          sub_resume_states[depth]="plain"
+        elif [[ "${sub_char}" == ')' ]]; then
+          unset 'sub_states[depth]' 'sub_resume_states[depth]'
+          depth=$((depth - 1))
+          if [[ "${depth}" -eq 0 ]]; then
+            found=1
+            break
+          fi
+          body="${body}${sub_char}"
+        else
+          body="${body}${sub_char}"
+        fi
+        j=$((j + 1))
+      done
+      if [[ "${found}" -eq 1 ]]; then
+        if [[ "${mode}" == "mask" ]]; then output="${output}Q"; else printf '%s\0' "${body}"; fi
+        i=$((j + 1))
+        continue
+      fi
+    fi
+
+    [[ "${mode}" == "mask" ]] && output="${output}${char}"
+    i=$((i + 1))
+  done
+
+  [[ "${mode}" == "mask" ]] && printf '%s' "${output}"
+}
+
+omc_shell_executable_substitution_bodies() {
+  _omc_shell_walk_executable_substitutions bodies "${1:-}"
+}
+
+omc_shell_mask_executable_substitutions() {
+  _omc_shell_walk_executable_substitutions mask "${1:-}"
+}
+
+# Match a real, segment-leading destructive action in already-extracted shell
+# text. Git/gh top-level flags are normalized inside the nested body, and the
+# commit/publish variants preserve the same safe dry-run/list semantics as the
+# direct guard. `kind` is `any`, `commit`, or `publish`.
+_omc_strip_intent_control_prefix() {
+  local text="${1:-}" prefix_re="^[[:space:]]*${_OMC_CONTROL_PREFIX_RE}"
+  while [[ "${text}" =~ ${prefix_re} ]]; do
+    text="${text:${#BASH_REMATCH[0]}}"
+  done
+  printf '%s' "${text}"
+}
+
+_omc_shell_text_has_direct_action() {
+  local text="${1:-}" kind="${2:-any}" skip_case="${3:-0}"
+  local seg="" ansi_seg="" ansi_exec_re="" ansi_verb_re=""
+  local masked_seg="" masked_control="" opaque_exec_re="" opaque_verb_re=""
+  local control="" structure="" case_tail=""
+
+  # This helper is also called directly by the intent guard. Keep the budget
+  # at the parser boundary, not only in the recursive orchestrator, so no
+  # caller can pay quote/substitution masking before the fail-closed cap.
+  _omc_shell_nested_execution_budget_exceeded "${text}" 0 && return 0
+
+  # A case arm's first executable follows its pattern-closing `)`, not an
+  # ordinary command separator. Re-run the direct matcher on each arm suffix;
+  # delivery evidence never calls this intent-only helper.
+  if [[ "${skip_case}" -eq 0 ]]; then
+    structure="$(omc_shell_unquoted_structure_text "${text}")"
+    if grep -Eq '(^|[[:space:];])case[[:space:]].*[[:space:]]in([[:space:];]|$)' <<<"${structure}"; then
+      case_tail="${text}"
+      while [[ "${case_tail}" == *')'* ]]; do
+        case_tail="${case_tail#*)}"
+        _omc_shell_text_has_direct_action "${case_tail}" "${kind}" 1 && return 0
+      done
+    fi
+  fi
+
+  while IFS= read -r -d '' seg; do
+    [[ -z "${seg//[[:space:]]/}" ]] && continue
+    ansi_seg="$(_omc_strip_intent_control_prefix "${seg}")"
+    ansi_exec_re="${OMC_SHELL_COMMAND_PREFIX_RE}[^[:space:]]*[$][']"
+    ansi_verb_re="${OMC_SHELL_COMMAND_PREFIX_RE}(git|gh)[[:space:]]+[^[:space:]]*[$][']"
+    # ANSI-C quoted executable/verb words can synthesize arbitrary bytes
+    # (`$'g\x69t'`, `git $'t\x61g'`). Without evaluating escapes, their action
+    # kind is unknowable; fail closed for every intent-contract kind.
+    if [[ "${ansi_seg}" =~ ${ansi_exec_re} ]] || [[ "${ansi_seg}" =~ ${ansi_verb_re} ]]; then
+      return 0
+    fi
+    if omc_shell_has_executable_substitution "${seg}"; then
+      masked_seg="$(omc_shell_mask_executable_substitutions "${seg}")"
+      masked_control="$(omc_shell_unquoted_control_text "${masked_seg}")"
+      masked_control="$(_omc_strip_intent_control_prefix "${masked_control}")"
+      masked_control="$(_omc_normalize_git_flags_for_mutation "${masked_control}")"
+      opaque_exec_re="${OMC_SHELL_COMMAND_PREFIX_RE}[^[:space:]]*Q[^[:space:]]*([[:space:]]|$)"
+      opaque_verb_re="${OMC_SHELL_COMMAND_PREFIX_RE}(git|gh)[[:space:]]+[^[:space:]]*Q[^[:space:]]*([[:space:]]|$)"
+      # Output-producing substitutions in the executable or git/gh verb slot
+      # can synthesize an action (`g$(printf it)`, `git $(printf tag)`). The
+      # output is unavailable at PreTool time, so every contract kind fails
+      # closed while substitutions in ordinary argument slots remain parsed
+      # recursively on their own merits.
+      if [[ "${masked_control}" =~ ${opaque_exec_re} ]] \
+          || [[ "${masked_control}" =~ ${opaque_verb_re} ]]; then
+        return 0
+      fi
+    fi
+    control="$(omc_shell_unquoted_control_text "${seg}")"
+    control="$(_omc_strip_intent_control_prefix "${control}")"
+    control="$(_omc_normalize_git_flags_for_mutation "${control}")"
+
+    if grep -Eq "${OMC_SHELL_COMMAND_PREFIX_RE}git[[:space:]]+commit([[:space:]]|$)" <<<"${control}"; then
+      omc_git_commit_segment_is_dry_run "${control}" \
+        || { [[ "${kind}" == "any" || "${kind}" == "commit" ]] && return 0; }
+    fi
+    if grep -Eq "${OMC_SHELL_COMMAND_PREFIX_RE}git[[:space:]]+push([[:space:]]|$)" <<<"${control}"; then
+      omc_git_push_segment_is_dry_run "${control}" \
+        || { [[ "${kind}" == "any" || "${kind}" == "publish" ]] && return 0; }
+    fi
+    if grep -Eq "${OMC_SHELL_COMMAND_PREFIX_RE}git[[:space:]]+tag([[:space:]]|$)" <<<"${control}" \
+        && ! omc_git_tag_segment_is_read_only "${control}"; then
+      [[ "${kind}" == "any" || "${kind}" == "publish" ]] && return 0
+    fi
+    if grep -Eq "${OMC_SHELL_COMMAND_PREFIX_RE}gh[[:space:]]+(pr|release|issue)[[:space:]]+(create|merge|edit|close|comment|delete|reopen)([[:space:]]|$)" <<<"${control}"; then
+      [[ "${kind}" == "any" || "${kind}" == "publish" ]] && return 0
+    fi
+    if [[ "${kind}" == "any" ]]; then
+      if grep -Eq "${OMC_SHELL_COMMAND_PREFIX_RE}git[[:space:]]+(revert|rebase|cherry-pick|merge|am)([[:space:]]|$)" <<<"${control}" \
+          && ! omc_git_recovery_segment_is_allowed "${control}"; then return 0; fi
+      if grep -Eq "${OMC_SHELL_COMMAND_PREFIX_RE}git[[:space:]]+apply([[:space:]]|$)" <<<"${control}" \
+          && ! omc_git_apply_segment_is_read_only "${control}"; then return 0; fi
+      if grep -Eq "${OMC_SHELL_COMMAND_PREFIX_RE}git[[:space:]]+(update-ref|symbolic-ref|fast-import|filter-branch|replace)([[:space:]]|$)" <<<"${control}"; then return 0; fi
+      if grep -Eq "${OMC_SHELL_COMMAND_PREFIX_RE}git[[:space:]]+reset[[:space:]]+.*--hard([[:space:]]|$)" <<<"${control}"; then return 0; fi
+      if grep -Eq "${OMC_SHELL_COMMAND_PREFIX_RE}git[[:space:]]+branch[[:space:]]+.*(-D|-M|-C|--delete|--force)([[:space:]]|$)" <<<"${control}"; then return 0; fi
+      if grep -Eq "${OMC_SHELL_COMMAND_PREFIX_RE}git[[:space:]]+switch[[:space:]]+.*(-C|--force)([[:space:]]|$)" <<<"${control}"; then return 0; fi
+      if grep -Eq "${OMC_SHELL_COMMAND_PREFIX_RE}git[[:space:]]+checkout[[:space:]]+.*(-B|--force)([[:space:]]|$)" <<<"${control}"; then return 0; fi
+      if grep -Eq "${OMC_SHELL_COMMAND_PREFIX_RE}git[[:space:]]+clean[[:space:]]+.*(-f|--force)([[:space:]]|$)" <<<"${control}"; then return 0; fi
+    fi
+  done < <(omc_shell_compound_segments "${text}")
+  return 1
+}
+
+_omc_shell_nested_execution_budget_exceeded() {
+  local input="${1:-}" depth="${2:-0}" marker="" marker_probe=""
+  local marker_count=0 marker_limit=16 backtick_limit=32
+
+  [[ "${depth}" =~ ^[0-9]+$ ]] || depth=0
+  if [[ "${#input}" -gt 4096 ]]; then
+    return 0
+  fi
+
+  # Short commands without an execution surface need no marker scan. The size
+  # limit deliberately precedes this fast path: every oversized command is
+  # opaque by contract, and allowing a plain 5 KiB prefix to reach a later
+  # character-copy normalizer would violate the PreTool budget. The recursive
+  # depth limit follows it so a safe leaf reached at depth four remains fully
+  # classifiable; only a fifth executable layer fails closed.
+  case "${input}" in
+    *'$('*|*'`'*|*'<('*|*'>('*|*eval[[:space:]]*|*bash[[:space:]]*|*sh[[:space:]]*|*zsh[[:space:]]*|*dash[[:space:]]*|*ksh[[:space:]]*|*env[[:space:]]*) ;;
+    *) return 1 ;;
+  esac
+  if [[ "${depth}" -ge 4 ]]; then
+    return 0
+  fi
+
+  # Count obvious execution openers before any quote/depth walker or direct
+  # matcher. The generous total-marker tripwire lets ordinary sibling
+  # substitutions and quoted prose reach the quote-aware walker; the separate
+  # recursive depth cap still stops genuinely nested input after four layers.
+  # Beyond this bound, fail closed after an O(prefix) scan instead of paying
+  # the walker's quadratic substring-building cost.
+  for marker in '$(' '<(' '>('; do
+    marker_probe="${input}"
+    while [[ "${marker_probe}" == *"${marker}"* ]]; do
+      marker_probe="${marker_probe#*"${marker}"}"
+      marker_count=$((marker_count + 1))
+      [[ "${marker_count}" -gt "${marker_limit}" ]] && return 0
+    done
+  done
+  marker_probe="${input}"
+  while [[ "${marker_probe}" == *'`'* ]]; do
+    marker_probe="${marker_probe#*'`'}"
+    marker_count=$((marker_count + 1))
+    [[ "${marker_count}" -gt "${backtick_limit}" ]] && return 0
+  done
+  return 1
+}
+
+_omc_shell_text_has_action_recursive() {
+  _omc_shell_nested_execution_budget_exceeded "${1:-}" "${3:-0}" && return 0
+  _omc_shell_text_has_direct_action "${1:-}" "${2:-any}" \
+    || omc_shell_nested_delivery_action_present \
+      "${1:-}" "${2:-any}" "${3:-0}"
 }
 
 # Detect destructive git/gh verbs inside common nested execution surfaces.
 # This is intentionally an intent-time fail-closed predicate, not delivery
 # evidence: an outer echo/sh can mask a nested failure, so Stop still requires
-# a direct successful delivery action.
+# a direct successful delivery action. `kind` lets explicit no-commit/no-push
+# contracts preserve kind separation instead of re-checking only the outer
+# executable.
 omc_shell_nested_delivery_action_present() {
-  local input="${1:-}" control="" nested="" marker=""
-  local sep='[[:space:]Q]+'
-  local action_re="([^[:space:]Q]*/)?git${sep}(commit|push|tag|revert|reset|rebase|cherry-pick|merge|am|apply|clean|update-ref|symbolic-ref|fast-import|filter-branch|replace)([[:space:]Q]|$)|([^[:space:]Q]*/)?gh${sep}(pr|release|issue)${sep}(create|merge|edit|close|comment|delete|reopen)([[:space:]Q]|$)"
-  control="$(omc_shell_unquoted_control_text "${input}")"
+  local input="${1:-}" kind="${2:-any}" depth="${3:-0}"
+  local body="" saw_env_literal=0 next_depth=0
 
-  for marker in '$(' '`' '<(' '>('; do
-    if [[ "${control}" == *"${marker}"* ]]; then
-      nested="${control#*"${marker}"}"
-      grep -Eq "${action_re}" <<<"${nested}" && return 0
-    fi
-  done
+  # Budget the raw text before line-continuation normalization. Without this
+  # ordering, a deeply nested multi-kilobyte command pays the normalizer's
+  # character-copy cost before reaching the fail-closed cap.
+  _omc_shell_nested_execution_budget_exceeded "${input}" "${depth}" && return 0
+  input="$(omc_shell_remove_line_continuations "${input}")"
 
-  if [[ "${control}" =~ ${OMC_SHELL_COMMAND_PREFIX_RE}(bash|sh|zsh|dash|ksh)[[:space:]].*-c[[:space:]] ]] \
-      || [[ "${control}" =~ ${OMC_SHELL_COMMAND_PREFIX_RE}eval[[:space:]] ]]; then
-    grep -Eq "${action_re}" <<<"${control}" && return 0
+  # The walker is Bash-character based and recursive by construction. Keep a
+  # hard security budget so adversarial nesting cannot turn the PreTool hot
+  # path quadratic until Bash exhausts its stack and the hook fails open.
+  # Overflow is itself an opaque executable surface, so every contract kind
+  # fails closed. The recursive entry point performs this check before its
+  # direct matcher; keep it here too for callers of this public predicate.
+  case "${input}" in
+    *'$('*|*'`'*|*'<('*|*'>('*|*eval[[:space:]]*|*bash[[:space:]]*|*sh[[:space:]]*|*zsh[[:space:]]*|*dash[[:space:]]*|*ksh[[:space:]]*|*env[[:space:]]*) ;;
+    *) return 1 ;;
+  esac
+  [[ "${depth}" =~ ^[0-9]+$ ]] || depth=0
+  _omc_shell_nested_execution_budget_exceeded "${input}" "${depth}" && return 0
+  next_depth=$((depth + 1))
+
+  while IFS= read -r -d '' body; do
+    _omc_shell_text_has_action_recursive "${body}" "${kind}" "${next_depth}" && return 0
+  done < <(omc_shell_executable_substitution_bodies "${input}")
+
+  _omc_literal_shell_c_body_matches_predicate \
+    "${input}" _omc_shell_text_has_action_recursive "${kind}" "${next_depth}" && return 0
+  _omc_literal_shell_c_body_matches_predicate \
+    "${input}" _omc_shell_body_is_opaque_action_text && return 0
+  if ! _omc_literal_shell_c_body_matches_predicate \
+      "${input}" _omc_predicate_true \
+      && _omc_top_level_shell_c_present "${input}"; then
+    return 0
+  fi
+  _omc_literal_eval_body_matches_predicate \
+    "${input}" _omc_shell_text_has_action_recursive "${kind}" "${next_depth}" && return 0
+  _omc_literal_eval_body_matches_predicate \
+    "${input}" _omc_shell_body_is_opaque_action_text && return 0
+  if ! _omc_literal_eval_body_matches_predicate \
+      "${input}" _omc_predicate_true \
+      && _omc_top_level_eval_present "${input}"; then
+    return 0
+  fi
+
+  while IFS= read -r -d '' body; do
+    saw_env_literal=1
+    _omc_shell_text_has_action_recursive "${body}" "${kind}" "${next_depth}" && return 0
+  done < <(_omc_literal_env_split_bodies "${input}")
+  # Dynamic/opaque split strings execute a mini command line that cannot be
+  # classified safely. Fail closed for every contract kind; literal bodies
+  # retain commit-vs-publish separation through the loop above.
+  if [[ "${saw_env_literal}" -eq 0 ]] && _omc_top_level_env_split_present "${input}"; then
+    return 0
   fi
   return 1
+}
+
+# Safe variants are accepted only when the mode flag is an actual option to
+# the Git verb. This deliberately conservative grammar prevents an option that
+# consumes the next token (`git commit -m --dry-run`, `git push -o -n`) from
+# laundering a real mutation merely because its VALUE resembles a safe flag.
+_omc_git_control_text() {
+  local control input
+  input="$(omc_shell_remove_line_continuations "${1:-}")"
+  control="$(omc_shell_unquoted_control_text "${input}")"
+  _omc_normalize_git_flags_for_mutation "${control}"
+}
+
+omc_git_commit_segment_is_dry_run() {
+  local rest token consume_next=0
+  local -a argv=()
+  rest="$(_omc_git_segment_rest_after_verb "${1:-}" commit)" || return 1
+  [[ -n "${rest//[[:space:]]/}" ]] || return 1
+  read -r -a argv <<<"${rest}"
+  for token in "${argv[@]}"; do
+    if [[ "${consume_next}" -eq 1 ]]; then
+      consume_next=0
+      continue
+    fi
+    case "${token}" in
+      --) break ;;
+      --dry-run) return 0 ;;
+      -m|-F|-C|-c|-t|--message|--file|--reuse-message|--reedit-message|--template|--author|--date|--cleanup|--fixup|--squash|--trailer|--pathspec-from-file)
+        consume_next=1
+        ;;
+      -?*)
+        _omc_git_commit_short_cluster_consumes_next "${token}" && consume_next=1
+        ;;
+    esac
+  done
+  return 1
+}
+
+omc_git_push_segment_is_dry_run() {
+  local rest token cluster_state="" consume_next=0
+  local -a argv=()
+  rest="$(_omc_git_segment_rest_after_verb "${1:-}" push)" || return 1
+  [[ -n "${rest//[[:space:]]/}" ]] || return 1
+  read -r -a argv <<<"${rest}"
+  for token in "${argv[@]}"; do
+    if [[ "${consume_next}" -eq 1 ]]; then
+      consume_next=0
+      continue
+    fi
+    case "${token}" in
+      --) break ;;
+      -n|--dry-run) return 0 ;;
+      -o|--push-option|--receive-pack|--exec|--repo|--server-option)
+        consume_next=1
+        ;;
+      -?*)
+        cluster_state="$(_omc_git_push_short_cluster_state "${token}")"
+        case "${cluster_state}" in
+          dry) return 0 ;;
+          consume) consume_next=1 ;;
+        esac
+        ;;
+    esac
+  done
+  return 1
+}
+
+_omc_git_commit_short_cluster_consumes_next() {
+  local token="${1:-}" char=""
+  local i=1 length="${#1}"
+  [[ "${token}" == -?* && "${token}" != --* ]] || return 1
+  while (( i < length )); do
+    char="${token:i:1}"
+    case "${char}" in
+      m|F|C|c|t)
+        [[ "${i}" -eq $((length - 1)) ]]
+        return
+        ;;
+    esac
+    i=$((i + 1))
+  done
+  return 1
+}
+
+_omc_git_push_short_cluster_state() {
+  local token="${1:-}" char="" saw_dry=0
+  local i=1 length="${#1}"
+  [[ "${token}" == -?* && "${token}" != --* ]] || { printf 'none'; return; }
+  while (( i < length )); do
+    char="${token:i:1}"
+    if [[ "${char}" == 'o' ]]; then
+      if [[ "${i}" -eq $((length - 1)) ]]; then printf 'consume'; else printf 'none'; fi
+      return
+    fi
+    [[ "${char}" == 'n' ]] && saw_dry=1
+    i=$((i + 1))
+  done
+  if [[ "${saw_dry}" -eq 1 ]]; then printf 'dry'; else printf 'none'; fi
+}
+
+_omc_git_segment_rest_after_verb() {
+  local segment="${1:-}" verb="${2:-}" control="" verb_re=""
+  [[ -n "${verb}" ]] || return 1
+  control="$(_omc_git_control_text "${segment}")"
+  verb_re="${OMC_SHELL_COMMAND_PREFIX_RE}git[[:space:]]+${verb}([[:space:]]*)"
+  [[ "${control}" =~ ${verb_re} ]] || return 1
+  printf '%s' "${control:${#BASH_REMATCH[0]}}"
+}
+
+omc_git_apply_segment_is_read_only() {
+  local control
+  control="$(_omc_git_control_text "${1:-}")"
+  grep -Eq "${OMC_SHELL_COMMAND_PREFIX_RE}git[[:space:]]+apply[[:space:]]+(--check|--stat|--numstat|--summary)([[:space:]]|$)" <<<"${control}"
+}
+
+omc_git_recovery_segment_is_allowed() {
+  local control
+  control="$(_omc_git_control_text "${1:-}")"
+  grep -Eq "${OMC_SHELL_COMMAND_PREFIX_RE}git[[:space:]]+(rebase|merge|cherry-pick|revert|am)[[:space:]]+(--abort|--continue|--skip|--quit)([[:space:]]|$)" <<<"${control}"
 }
 
 # `git tag` is both a list/verification command and a ref-mutating command.
@@ -3415,26 +4002,31 @@ _omc_shell_text_ends_at_top_level() {
   [[ "${state}" == "plain" ]]
 }
 
-_omc_literal_shell_c_body_has_mutation_signature() {
-  local original="${1:-}" remaining="${1:-}" consumed="" prefix=""
+_omc_literal_shell_c_body_matches_predicate() {
+  local original="${1:-}" predicate="${2:-}"
+  local predicate_arg="${3:-}" predicate_arg2="${4:-}"
+  local remaining="${1:-}" consumed="" prefix=""
   local matched="" body="" match_count=0
   local command_prefix='(^[[:space:]]*|[;&|({][[:space:]]*)'
   local assignment_re="[[:alpha:]_][[:alnum:]_]*=('[^']*'|\"(\\\\.|[^\"\\\\])*\"|[^[:space:]]+)"
   local assignment_prefix="(${assignment_re}[[:space:]]+)*"
-  local command_wrapper_re='([^[:space:]]*\/)?command([[:space:]]+(-[pvV]+|--))*[[:space:]]+'
+  local command_wrapper_re="${_OMC_COMMAND_WRAPPER_RE}"
   local env_wrapper_re="([^[:space:]]*\/)?env([[:space:]]+(-[^[:space:]]+|${assignment_re}))*[[:space:]]+"
-  local sudo_wrapper_re='([^[:space:]]*\/)?sudo[[:space:]]+(--[[:space:]]+)?'
-  local timeout_wrapper_re='([^[:space:]]*\/)?timeout([[:space:]]+-[^[:space:]]+)*[[:space:]]+[^[:space:]]+[[:space:]]+'
+  local sudo_wrapper_re="${_OMC_SUDO_WRAPPER_RE}"
+  local timeout_wrapper_re="${_OMC_TIMEOUT_WRAPPER_RE}"
+  local nice_wrapper_re="${_OMC_NICE_WRAPPER_RE}"
+  local nohup_wrapper_re="${_OMC_NOHUP_WRAPPER_RE}"
   local xargs_wrapper_re='([^[:space:]]*\/)?xargs([[:space:]]+[^[:space:]]+)*[[:space:]]+'
-  local exec_wrapper_re='exec[[:space:]]+'
-  local time_wrapper_re='([^[:space:]]*\/)?time([[:space:]]+-[^[:space:]]+)*[[:space:]]+'
-  local wrapper_re="(${command_wrapper_re}|${env_wrapper_re}|${sudo_wrapper_re}|${timeout_wrapper_re}|${xargs_wrapper_re}|${exec_wrapper_re}|${time_wrapper_re})*"
+  local exec_wrapper_re="${_OMC_EXEC_WRAPPER_RE}"
+  local time_wrapper_re="${_OMC_TIME_WRAPPER_RE}"
+  local control_wrapper_re="${_OMC_CONTROL_PREFIX_RE}"
+  local wrapper_re="(${control_wrapper_re}|${command_wrapper_re}|${env_wrapper_re}|${sudo_wrapper_re}|${timeout_wrapper_re}|${nice_wrapper_re}|${nohup_wrapper_re}|${xargs_wrapper_re}|${exec_wrapper_re}|${time_wrapper_re})*"
   local shell_re='([^[:space:]]*\/)?(bash|sh|zsh|dash|ksh)'
-  local options_re='([[:space:]]+-[^[:space:]]+)*'
+  local options_re='(([[:space:]]+(-[oO]|--rcfile|--init-file)[[:space:]]+[^[:space:]]+)|([[:space:]]+--(rcfile|init-file)=[^[:space:]]+)|([[:space:]]+-[^[:space:]]+))*'
   local c_option_re='(-c|-[^-[:space:]]*c[^[:space:]]*)'
   local single_re="${command_prefix}${assignment_prefix}${wrapper_re}${shell_re}${options_re}[[:space:]]+${c_option_re}[[:space:]]+'([^']*)'"
   local double_re="${command_prefix}${assignment_prefix}${wrapper_re}${shell_re}${options_re}[[:space:]]+${c_option_re}[[:space:]]+\"((\\\\.|[^\"\\\\])*)\""
-  [[ -n "${remaining}" ]] || return 1
+  [[ -n "${remaining}" ]] && [[ -n "${predicate}" ]] || return 1
 
   # A literal shell -c body is executable syntax, not quoted data. Inspect it
   # recursively before the general quote scrub below, otherwise
@@ -3458,9 +4050,14 @@ _omc_literal_shell_c_body_has_mutation_signature() {
     match_count="${#BASH_REMATCH[@]}"
     body="${BASH_REMATCH[$((match_count - 1))]}"
     prefix="${remaining%%"${matched}"*}"
-    if _omc_shell_text_ends_at_top_level "${consumed}${prefix}" \
-        && bash_command_has_mutation_signature "${body}"; then
-      return 0
+    if _omc_shell_text_ends_at_top_level "${consumed}${prefix}"; then
+      if [[ -n "${predicate_arg2}" ]]; then
+        "${predicate}" "${body}" "${predicate_arg}" "${predicate_arg2}" && return 0
+      elif [[ -n "${predicate_arg}" ]]; then
+        "${predicate}" "${body}" "${predicate_arg}" && return 0
+      else
+        "${predicate}" "${body}" && return 0
+      fi
     fi
     consumed="${consumed}${prefix}${matched}"
     remaining="${remaining#*"${matched}"}"
@@ -3473,14 +4070,24 @@ _omc_literal_shell_c_body_has_mutation_signature() {
     match_count="${#BASH_REMATCH[@]}"
     body="${BASH_REMATCH[$((match_count - 2))]}"
     prefix="${remaining%%"${matched}"*}"
-    if _omc_shell_text_ends_at_top_level "${consumed}${prefix}" \
-        && bash_command_has_mutation_signature "${body}"; then
-      return 0
+    if _omc_shell_text_ends_at_top_level "${consumed}${prefix}"; then
+      if [[ -n "${predicate_arg2}" ]]; then
+        "${predicate}" "${body}" "${predicate_arg}" "${predicate_arg2}" && return 0
+      elif [[ -n "${predicate_arg}" ]]; then
+        "${predicate}" "${body}" "${predicate_arg}" && return 0
+      else
+        "${predicate}" "${body}" && return 0
+      fi
     fi
     consumed="${consumed}${prefix}${matched}"
     remaining="${remaining#*"${matched}"}"
   done
   return 1
+}
+
+_omc_literal_shell_c_body_has_mutation_signature() {
+  _omc_literal_shell_c_body_matches_predicate \
+    "${1:-}" bash_command_has_mutation_signature
 }
 
 _omc_top_level_executor_present() {
@@ -3497,6 +4104,186 @@ _omc_top_level_executor_present() {
     remaining="${remaining#*"${matched}"}"
   done
   return 1
+}
+
+_omc_shell_suffix_after_match_is_boundary() {
+  local remaining="${1:-}" matched="${2:-}" suffix="" char=""
+  suffix="${remaining#*"${matched}"}"
+  while [[ -n "${suffix}" ]]; do
+    char="${suffix:0:1}"
+    case "${char}" in
+      ' '|$'\t'|$'\r') suffix="${suffix:1}" ;;
+      *) break ;;
+    esac
+  done
+  case "${suffix:0:1}" in
+    ''|';'|'&'|'|'|')'|'#'|$'\n') return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+_omc_predicate_true() {
+  return 0
+}
+
+_omc_shell_body_is_opaque_action_text() {
+  case "${1:-}" in
+    *'$'*|*'`'*|*\\*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+_omc_top_level_shell_c_present() {
+  local cmd="${1:-}"
+  local shell_re='([^[:space:]]*\/)?(bash|sh|zsh|dash|ksh)'
+  local options_re='(([[:space:]]+(-[oO]|--rcfile|--init-file)[[:space:]]+[^[:space:]]+)|([[:space:]]+--(rcfile|init-file)=[^[:space:]]+)|([[:space:]]+-[^[:space:]]+))*'
+  local c_option_re='(-c|-[^-[:space:]]*c[^[:space:]]*)'
+  local shell_c_re="${OMC_SHELL_COMMAND_PREFIX_RE}${shell_re}${options_re}[[:space:]]+${c_option_re}([[:space:]]|$)"
+  _omc_top_level_executor_present "${cmd}" "${shell_c_re}"
+}
+
+_omc_top_level_eval_present() {
+  local cmd="${1:-}"
+  local eval_re="${OMC_SHELL_COMMAND_PREFIX_RE}(builtin([[:space:]]+--)?[[:space:]]+)?eval([[:space:]]|$)"
+  _omc_top_level_executor_present "${cmd}" "${eval_re}"
+}
+
+# Apply a predicate only to literal eval bodies that occur at shell control
+# level. This keeps prose such as `printf '%s' "eval 'git tag x'"` inert and
+# lets callers recursively classify the executable body itself.
+_omc_literal_eval_body_matches_predicate() {
+  local original="${1:-}" predicate="${2:-}"
+  local predicate_arg="${3:-}" predicate_arg2="${4:-}"
+  local remaining="${1:-}" consumed="" prefix="" matched="" body=""
+  local match_count=0
+  local command_prefix='(^[[:space:]]*|[;&|({][[:space:]]*)'
+  local assignment_re="[[:alpha:]_][[:alnum:]_]*=('[^']*'|\"(\\\\.|[^\"\\\\])*\"|[^[:space:]]+)"
+  local assignment_prefix="(${assignment_re}[[:space:]]+)*"
+  local command_wrapper_re="${_OMC_COMMAND_WRAPPER_RE}"
+  local builtin_wrapper_re='builtin([[:space:]]+--)?[[:space:]]+'
+  local time_wrapper_re="${_OMC_TIME_WRAPPER_RE}"
+  local control_wrapper_re="${_OMC_CONTROL_PREFIX_RE}"
+  local wrapper_re="(${control_wrapper_re}|${command_wrapper_re}|${builtin_wrapper_re}|${time_wrapper_re})*"
+  local eval_prefix="${command_prefix}${assignment_prefix}${wrapper_re}eval[[:space:]]+"
+  local single_re="${eval_prefix}'([^']*)'"
+  local double_re="${eval_prefix}\"((\\\\.|[^\"\\\\])*)\""
+  [[ -n "${remaining}" ]] && [[ -n "${predicate}" ]] || return 1
+
+  while [[ "${remaining}" =~ ${single_re} ]]; do
+    matched="${BASH_REMATCH[0]}"
+    match_count="${#BASH_REMATCH[@]}"
+    body="${BASH_REMATCH[$((match_count - 1))]}"
+    prefix="${remaining%%"${matched}"*}"
+    if _omc_shell_text_ends_at_top_level "${consumed}${prefix}" \
+        && _omc_shell_suffix_after_match_is_boundary "${remaining}" "${matched}"; then
+      if [[ -n "${predicate_arg2}" ]]; then
+        "${predicate}" "${body}" "${predicate_arg}" "${predicate_arg2}" && return 0
+      elif [[ -n "${predicate_arg}" ]]; then
+        "${predicate}" "${body}" "${predicate_arg}" && return 0
+      else
+        "${predicate}" "${body}" && return 0
+      fi
+    fi
+    consumed="${consumed}${prefix}${matched}"
+    remaining="${remaining#*"${matched}"}"
+  done
+
+  remaining="${original}"
+  consumed=""
+  while [[ "${remaining}" =~ ${double_re} ]]; do
+    matched="${BASH_REMATCH[0]}"
+    match_count="${#BASH_REMATCH[@]}"
+    body="${BASH_REMATCH[$((match_count - 2))]}"
+    prefix="${remaining%%"${matched}"*}"
+    if _omc_shell_text_ends_at_top_level "${consumed}${prefix}" \
+        && _omc_shell_suffix_after_match_is_boundary "${remaining}" "${matched}"; then
+      if [[ -n "${predicate_arg2}" ]]; then
+        "${predicate}" "${body}" "${predicate_arg}" "${predicate_arg2}" && return 0
+      elif [[ -n "${predicate_arg}" ]]; then
+        "${predicate}" "${body}" "${predicate_arg}" && return 0
+      else
+        "${predicate}" "${body}" && return 0
+      fi
+    fi
+    consumed="${consumed}${prefix}${matched}"
+    remaining="${remaining#*"${matched}"}"
+  done
+  return 1
+}
+
+# Emit NUL-delimited literal env -S/--split-string bodies through common
+# leading assignment/command/sudo/timeout/exec/time wrappers. A separate
+# presence predicate lets intent gates fail closed when the body is dynamic.
+_omc_literal_env_split_bodies() {
+  local original="${1:-}" remaining="${1:-}" consumed="" prefix=""
+  local matched="" body="" match_count=0
+  local command_prefix='(^[[:space:]]*|[;&|({][[:space:]]*)'
+  local assignment_re="[[:alpha:]_][[:alnum:]_]*=('[^']*'|\"(\\\\.|[^\"\\\\])*\"|[^[:space:]]+)"
+  local assignment_prefix="(${assignment_re}[[:space:]]+)*"
+  local command_wrapper_re="${_OMC_COMMAND_WRAPPER_RE}"
+  local sudo_wrapper_re="${_OMC_SUDO_WRAPPER_RE}"
+  local timeout_wrapper_re="${_OMC_TIMEOUT_WRAPPER_RE}"
+  local nice_wrapper_re="${_OMC_NICE_WRAPPER_RE}"
+  local nohup_wrapper_re="${_OMC_NOHUP_WRAPPER_RE}"
+  local exec_wrapper_re="${_OMC_EXEC_WRAPPER_RE}"
+  local time_wrapper_re="${_OMC_TIME_WRAPPER_RE}"
+  local control_wrapper_re="${_OMC_CONTROL_PREFIX_RE}"
+  local wrapper_re="(${control_wrapper_re}|${command_wrapper_re}|${sudo_wrapper_re}|${timeout_wrapper_re}|${nice_wrapper_re}|${nohup_wrapper_re}|${exec_wrapper_re}|${time_wrapper_re})*"
+  local env_re="([^[:space:]]*\/)?env([[:space:]]+(-[^[:space:]]+|${assignment_re}))*[[:space:]]+(-S|--split-string)"
+  local single_re="${command_prefix}${assignment_prefix}${wrapper_re}${env_re}([[:space:]]+|=)?'([^']*)'"
+  local double_re="${command_prefix}${assignment_prefix}${wrapper_re}${env_re}([[:space:]]+|=)?\"((\\\\.|[^\"\\\\])*)\""
+  [[ -n "${remaining}" ]] || return 0
+
+  while [[ "${remaining}" =~ ${single_re} ]]; do
+    matched="${BASH_REMATCH[0]}"
+    match_count="${#BASH_REMATCH[@]}"
+    body="${BASH_REMATCH[$((match_count - 1))]}"
+    prefix="${remaining%%"${matched}"*}"
+    if _omc_shell_text_ends_at_top_level "${consumed}${prefix}" \
+        && _omc_shell_suffix_after_match_is_boundary "${remaining}" "${matched}" \
+        && [[ "${body}" != *\\* && "${body}" != *'$'* && "${body}" != *'`'* ]]; then
+      printf '%s\0' "${body}"
+    fi
+    consumed="${consumed}${prefix}${matched}"
+    remaining="${remaining#*"${matched}"}"
+  done
+
+  remaining="${original}"
+  consumed=""
+  while [[ "${remaining}" =~ ${double_re} ]]; do
+    matched="${BASH_REMATCH[0]}"
+    match_count="${#BASH_REMATCH[@]}"
+    body="${BASH_REMATCH[$((match_count - 2))]}"
+    prefix="${remaining%%"${matched}"*}"
+    # Double-quoted split strings expand before env parses them. Treat any
+    # expansion-bearing body as opaque so the caller's fail-closed branch
+    # remains armed instead of blessing `env -S "$PAYLOAD"` as static text.
+    if _omc_shell_text_ends_at_top_level "${consumed}${prefix}" \
+        && _omc_shell_suffix_after_match_is_boundary "${remaining}" "${matched}" \
+        && [[ "${body}" != *\\* && "${body}" != *'$'* && "${body}" != *'`'* ]]; then
+      printf '%s\0' "${body}"
+    fi
+    consumed="${consumed}${prefix}${matched}"
+    remaining="${remaining#*"${matched}"}"
+  done
+}
+
+_omc_top_level_env_split_present() {
+  local cmd="${1:-}"
+  local assignment_re="[[:alpha:]_][[:alnum:]_]*=('[^']*'|\"(\\\\.|[^\"\\\\])*\"|[^[:space:]]+)"
+  local command_prefix='(^[[:space:]]*|[;&|({][[:space:]]*)'
+  local assignment_prefix="(${assignment_re}[[:space:]]+)*"
+  local command_wrapper_re="${_OMC_COMMAND_WRAPPER_RE}"
+  local sudo_wrapper_re="${_OMC_SUDO_WRAPPER_RE}"
+  local timeout_wrapper_re="${_OMC_TIMEOUT_WRAPPER_RE}"
+  local nice_wrapper_re="${_OMC_NICE_WRAPPER_RE}"
+  local nohup_wrapper_re="${_OMC_NOHUP_WRAPPER_RE}"
+  local exec_wrapper_re="${_OMC_EXEC_WRAPPER_RE}"
+  local time_wrapper_re="${_OMC_TIME_WRAPPER_RE}"
+  local control_wrapper_re="${_OMC_CONTROL_PREFIX_RE}"
+  local wrapper_re="(${control_wrapper_re}|${command_wrapper_re}|${sudo_wrapper_re}|${timeout_wrapper_re}|${nice_wrapper_re}|${nohup_wrapper_re}|${exec_wrapper_re}|${time_wrapper_re})*"
+  local env_split_re="${command_prefix}${assignment_prefix}${wrapper_re}([^[:space:]]*\/)?env([[:space:]]+(-[^[:space:]]+|${assignment_re}))*[[:space:]]+(-[i0v]*S[^[:space:]]*|--split-string([=[:space:]]|$))"
+  _omc_top_level_executor_present "${cmd}" "${env_split_re}"
 }
 
 _omc_eval_has_mutation_signature() {
@@ -3675,12 +4462,12 @@ _omc_literal_python_c_body_has_write_mode() {
   local command_prefix='(^[[:space:]]*|[;&|({][[:space:]]*)'
   local assignment_re="[[:alpha:]_][[:alnum:]_]*=('[^']*'|\"(\\\\.|[^\"\\\\])*\"|[^[:space:]]+)"
   local assignment_prefix="(${assignment_re}[[:space:]]+)*"
-  local command_wrapper_re='([^[:space:]]*\/)?command([[:space:]]+(-[pvV]+|--))*[[:space:]]+'
+  local command_wrapper_re="${_OMC_COMMAND_WRAPPER_RE}"
   local env_wrapper_re="([^[:space:]]*\/)?env([[:space:]]+(-[^[:space:]]+|${assignment_re}))*[[:space:]]+"
-  local sudo_wrapper_re='([^[:space:]]*\/)?sudo[[:space:]]+(--[[:space:]]+)?'
+  local sudo_wrapper_re="${_OMC_SUDO_WRAPPER_RE}"
   local timeout_wrapper_re='([^[:space:]]*\/)?timeout([[:space:]]+-[^[:space:]]+)*[[:space:]]+[^[:space:]]+[[:space:]]+'
-  local exec_wrapper_re='exec[[:space:]]+'
-  local time_wrapper_re='([^[:space:]]*\/)?time([[:space:]]+-[^[:space:]]+)*[[:space:]]+'
+  local exec_wrapper_re="${_OMC_EXEC_WRAPPER_RE}"
+  local time_wrapper_re="${_OMC_TIME_WRAPPER_RE}"
   local wrapper_re="(${command_wrapper_re}|${env_wrapper_re}|${sudo_wrapper_re}|${timeout_wrapper_re}|${exec_wrapper_re}|${time_wrapper_re})*"
   local python_re='([^[:space:]]*\/)?python(3([.][0-9]+)?)?'
   local options_re='([[:space:]]+(-[XW][[:space:]]+[^[:space:]]+|-[XW][^[:space:]]+|--[^[:space:]]+|-[bBdEhiIOPqRsSuvVx?]+))*'
@@ -5084,8 +5871,9 @@ omc_delivery_allowed_variant() {
   local cmd="$1"
   omc_shell_has_executable_substitution "${cmd}" && return 1
 
-  if grep -Eq "${_OMC_DELIVERY_PRE}git[[:space:]]+(push|commit)[[:space:]]+.*(--dry-run|-n)([[:space:]]|$)" <<<"${cmd}"; then return 0; fi
-  if grep -Eq "${_OMC_DELIVERY_PRE}git[[:space:]]+apply[[:space:]]+.*(--check|--stat|--numstat|--summary)([[:space:]]|$)" <<<"${cmd}"; then return 0; fi
+  omc_git_push_segment_is_dry_run "${cmd}" && return 0
+  omc_git_commit_segment_is_dry_run "${cmd}" && return 0
+  omc_git_apply_segment_is_read_only "${cmd}" && return 0
   if grep -Eq "${_OMC_DELIVERY_PRE}git[[:space:]]+tag([[:space:]]|$)" <<<"${cmd}" \
       && omc_git_tag_segment_is_read_only "${cmd}"; then return 0; fi
 
@@ -5103,11 +5891,141 @@ omc_delivery_segment_is_publish() {
   return 1
 }
 
+# A successful Bash tool result proves every command in a pure `&&` chain
+# succeeded. It proves nothing about skipped `||`/conditional branches,
+# pipelines, background jobs, or earlier `;`/newline commands whose failure a
+# later command can mask. Delivery evidence therefore accepts only a direct
+# command or top-level `&&` chain; quote/comment/redirection bytes remain data.
+omc_shell_delivery_success_proving_chain() {
+  local input="${1:-}" state="plain" char="" next="" prev=""
+  local i=0 length="${#1}" comment_boundary=0
+  while (( i < length )); do
+    char="${input:i:1}"
+    next=""
+    prev=""
+    (( i + 1 < length )) && next="${input:i+1:1}"
+    (( i > 0 )) && prev="${input:i-1:1}"
+
+    if [[ "${state}" == "comment" ]]; then
+      [[ "${char}" == $'\n' ]] && return 1
+    elif [[ "${state}" == "single" ]]; then
+      [[ "${char}" == "'" ]] && state="plain"
+    elif [[ "${state}" == "double" ]]; then
+      if [[ "${char}" == "\\" ]] && [[ -n "${next}" ]]; then
+        i=$((i + 1))
+      elif [[ "${char}" == '"' ]]; then
+        state="plain"
+      fi
+    elif [[ "${char}" == "\\" ]] && [[ -n "${next}" ]]; then
+      i=$((i + 1))
+    elif [[ "${char}" == "'" ]]; then
+      state="single"
+    elif [[ "${char}" == '"' ]]; then
+      state="double"
+    else
+      comment_boundary=0
+      if [[ "${i}" -eq 0 ]]; then
+        comment_boundary=1
+      else
+        case "${prev}" in
+          [[:space:]]|';'|'&'|'|'|'('|')') comment_boundary=1 ;;
+        esac
+      fi
+      if [[ "${char}" == '#' && "${comment_boundary}" -eq 1 ]]; then
+        state="comment"
+      elif [[ "${char}" == ';' || "${char}" == '|' || "${char}" == $'\n' ]]; then
+        return 1
+      elif [[ "${char}" == '&' ]]; then
+        if [[ "${prev}" == '>' || "${prev}" == '<' || "${next}" == '>' ]]; then
+          : # redirection: 2>&1, <&0, &>file, &>>file
+        elif [[ "${next}" == '&' ]]; then
+          i=$((i + 1))
+        else
+          return 1
+        fi
+      fi
+    fi
+    i=$((i + 1))
+  done
+  return 0
+}
+
+# Background jobs do not contribute evidence, but a final foreground suffix
+# still does: `read-only & git tag x` returns the foreground tag's status.
+# Keep only the text after the last real top-level background separator; `&&`,
+# `|&`, and redirection ampersands are not such separators.
+omc_shell_foreground_suffix_after_backgrounds() {
+  local input="${1:-}" state="plain" char="" next="" prev=""
+  local i=0 start=0 length="${#1}" comment_boundary=0
+  while (( i < length )); do
+    char="${input:i:1}"
+    next=""
+    prev=""
+    (( i + 1 < length )) && next="${input:i+1:1}"
+    (( i > 0 )) && prev="${input:i-1:1}"
+    if [[ "${state}" == "comment" ]]; then
+      [[ "${char}" == $'\n' ]] && state="plain"
+    elif [[ "${state}" == "single" ]]; then
+      [[ "${char}" == "'" ]] && state="plain"
+    elif [[ "${state}" == "double" ]]; then
+      if [[ "${char}" == "\\" ]] && [[ -n "${next}" ]]; then
+        i=$((i + 1))
+      elif [[ "${char}" == '"' ]]; then
+        state="plain"
+      fi
+    elif [[ "${char}" == "\\" ]] && [[ -n "${next}" ]]; then
+      i=$((i + 1))
+    elif [[ "${char}" == "'" ]]; then
+      state="single"
+    elif [[ "${char}" == '"' ]]; then
+      state="double"
+    else
+      comment_boundary=0
+      if [[ "${i}" -eq 0 ]]; then
+        comment_boundary=1
+      else
+        case "${prev}" in
+          [[:space:]]|';'|'&'|'|'|'('|')') comment_boundary=1 ;;
+        esac
+      fi
+      if [[ "${char}" == '#' && "${comment_boundary}" -eq 1 ]]; then
+        state="comment"
+      elif [[ "${char}" == '&' ]]; then
+        if [[ "${prev}" == '>' || "${prev}" == '<' || "${prev}" == '|' || "${next}" == '>' ]]; then
+          :
+        elif [[ "${next}" == '&' ]]; then
+          i=$((i + 1))
+        else
+          start=$((i + 1))
+        fi
+      fi
+    fi
+    i=$((i + 1))
+  done
+  printf '%s' "${input:start}"
+}
+
 omc_delivery_action_kinds() {
   local command_text="$1"
-  local normalized seg control saw_commit=0 saw_publish=0
+  local direct_text structure normalized seg control saw_commit=0 saw_publish=0
 
-  normalized="$(omc_normalize_git_gh_flags "${command_text}")"
+  # PostTool success proves only the direct outer executable. A command
+  # substitution can fail while a read-only outer command exits zero, so it
+  # may trigger an intent denial but can never fabricate delivery evidence.
+  # Mask complete substitutions before compound splitting as well: unquoted
+  # `$(a && b)` contains inner separators that are not outer commands.
+  # Excessively nested input is deliberately non-evidence; apply the same
+  # security budget before masking so adversarial text cannot make this
+  # PostTool hot path quadratic.
+  _omc_shell_nested_execution_budget_exceeded "${command_text}" 0 && return 0
+  direct_text="$(omc_shell_mask_executable_substitutions \
+    "$(omc_shell_remove_line_continuations "${command_text}")")"
+  direct_text="$(omc_shell_foreground_suffix_after_backgrounds "${direct_text}")"
+  [[ -n "${direct_text//[[:space:]]/}" ]] || return 0
+  structure="$(omc_shell_unquoted_structure_text "${direct_text}")"
+  [[ "${structure}" == *'<<'* ]] && return 0
+  omc_shell_delivery_success_proving_chain "${direct_text}" || return 0
+  normalized="$(omc_normalize_git_gh_flags "${direct_text}")"
   while IFS= read -r -d '' seg; do
     [[ -z "${seg// }" ]] && continue
     control="$(omc_shell_unquoted_control_text "${seg}")"
