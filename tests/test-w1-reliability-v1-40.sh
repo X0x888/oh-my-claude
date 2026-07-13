@@ -74,7 +74,8 @@ else
 fi
 
 # ----------------------------------------------------------------------
-# F-002: _omc_read_hook_stdin helper is defined and bounded by timeout.
+# F-002: _omc_read_hook_stdin helper is defined, bounded by timeout, and
+# resolves its timeout/reader processes through the trusted observer PATH.
 printf '\n## F-002 — _omc_read_hook_stdin helper bounded read\n'
 if grep -q '^_omc_read_hook_stdin()' "${COMMON_SH}"; then
   printf '  PASS  _omc_read_hook_stdin defined in common.sh\n'
@@ -115,6 +116,32 @@ helper_payload="$(bash -c "
   printf 'hello-world' | _omc_read_hook_stdin
 ")"
 assert "helper passes small payload through" "${helper_payload}" "hello-world"
+
+# The caller PATH is repository-controlled input. On Linux, the GNU timeout
+# branch launches its child by name; on macOS a shadowed timeout/gtimeout can
+# force the same branch. Neither the wrapper nor `cat` may come from that PATH.
+shadow_bin="${TEST_TMP}/shadow-bin"
+shadow_marker="${TEST_TMP}/shadow-reader-fired"
+mkdir -p "${shadow_bin}"
+printf '#!/usr/bin/env bash\nprintf intercepted > %q\n' "${shadow_marker}" \
+  > "${shadow_bin}/cat"
+for shadow_timeout in timeout gtimeout; do
+  printf '#!/usr/bin/env bash\nshift\nexec "$@"\n' > "${shadow_bin}/${shadow_timeout}"
+done
+chmod +x "${shadow_bin}/cat" "${shadow_bin}/timeout" "${shadow_bin}/gtimeout"
+helper_shadow_output="$(PATH="${shadow_bin}:${PATH}" bash -c "
+  set -uo pipefail
+  STATE_ROOT='${STATE_ROOT}' \
+    OMC_LAZY_CLASSIFIER=1 OMC_LAZY_TIMING=1 \
+    SESSION_ID='test-helper-shadow-path' \
+    source '${COMMON_SH}' </dev/null
+  printf 'trusted-payload' | _omc_read_hook_stdin
+")"
+assert "helper ignores PATH-shadowed timeout/readers" \
+  "${helper_shadow_output}" "trusted-payload"
+shadow_reader_fired="no"
+[[ -e "${shadow_marker}" ]] && shadow_reader_fired="yes"
+assert "PATH-shadowed reader never executes" "${shadow_reader_fired}" "no"
 
 # Helper's small-payload path must not leak job-control 'Terminated'
 # stderr noise (watchdog kill should be disowned).

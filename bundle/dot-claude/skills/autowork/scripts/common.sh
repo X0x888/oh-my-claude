@@ -1873,6 +1873,13 @@ unset -f _omc_resolve_path
 # delivers on its claim across all installs — not just Linux.
 _omc_read_hook_stdin() {
   local _t="${OMC_HOOK_STDIN_TIMEOUT_S:-5}"
+  # The hook caller's PATH is untrusted input: a repo-local `cat` can shadow
+  # the reader just as it can shadow any command being classified. GNU
+  # `timeout` resolves its child through the inherited PATH, so keep both the
+  # wrapper and reader on the same trusted observer path used by worktree
+  # snapshots. `_OMC_OBSERVER_SAFE_PATH` is initialized by the time any hook
+  # invokes this function; the fallback keeps direct early calls portable.
+  local PATH="${_OMC_OBSERVER_SAFE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin}"
   if command -v timeout >/dev/null 2>&1; then
     timeout "${_t}" cat 2>/dev/null || true
     return 0
