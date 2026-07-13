@@ -14,19 +14,35 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 omc_arm_failopen_err_trap "pretool-intent-guard" "(destructive-command/hygiene gate did NOT evaluate this tool call — failed open)"
 HOOK_JSON="$(_omc_read_hook_stdin)"
 
-SESSION_ID="$(json_get '.session_id')"
+SESSION_ID=""
+tool_name=""
+tool_use_id=""
+tool_cwd=""
+command_str=""
+run_in_background=""
+_pig_hook_idx=0
+while IFS= read -r -d $'\x1e' _pig_hook_value; do
+  case "${_pig_hook_idx}" in
+    0) SESSION_ID="${_pig_hook_value}" ;;
+    1) tool_name="${_pig_hook_value}" ;;
+    2) tool_use_id="${_pig_hook_value}" ;;
+    3) tool_cwd="${_pig_hook_value}" ;;
+    4) command_str="${_pig_hook_value}" ;;
+    5) run_in_background="${_pig_hook_value}" ;;
+  esac
+  _pig_hook_idx=$((_pig_hook_idx + 1))
+done < <(jq -jr '
+  [.session_id, .tool_name, .tool_use_id, .cwd,
+   .tool_input.command, .tool_input.run_in_background]
+  | map(if . == null then "" else tostring end)
+  | .[] | ., "\u001e"
+' <<<"${HOOK_JSON}" 2>/dev/null || true)
+
 if [[ -z "${SESSION_ID}" ]]; then
   exit 0
 fi
 
 ensure_session_dir
-
-# Honour the customization kill-switch. Users who prefer the directive layer
-# alone can set pretool_intent_guard=false in oh-my-claude.conf or
-# OMC_PRETOOL_INTENT_GUARD=false in the environment.
-if [[ "${OMC_PRETOOL_INTENT_GUARD:-true}" == "false" ]]; then
-  exit 0
-fi
 
 # Only act under ULW. The directive layer in session-start-compact-handoff.sh
 # covers the advisory-post-compact case for the main thread; this guard is
@@ -36,19 +52,27 @@ if ! is_ultrawork_mode; then
   exit 0
 fi
 
-tool_name="$(json_get '.tool_name')"
-command_str=""
-run_in_background=""
+tool_cwd="${tool_cwd:-${PWD}}"
+# v1.43.x bg-spawn gate (hygiene class): run_in_background is parsed in the
+# same one-jq bulk read above as the command and identity fields.
+
+# State-predicate producer coverage (F-016): capture the before-worktree
+# fingerprint for mutation-capable Bash calls. This is edit tracking, not an
+# intent-denial feature, so it remains active when the pretool intent guard's
+# user-facing kill switch is off. PostToolUse/Failure consumes the baseline
+# and only advances edit clocks when the git worktree actually changed.
 if [[ "${tool_name}" == "Bash" ]]; then
-  command_str="$(json_get '.tool_input.command')"
-  # v1.43.x bg-spawn gate (hygiene class). The tool_input.run_in_background
-  # parameter is the strongest signal that a poll-loop command will detach
-  # from the harness's process tree — combined with a `(until|while) ...
-  # sleep` shape it reproduces the orphan-loop failure mode that recurred
-  # across sessions despite core.md hygiene-rule prose. Captured here once
-  # so the hygiene check below and the existing intent-guard logic share
-  # one extraction.
-  run_in_background="$(json_get '.tool_input.run_in_background')"
+  record_bash_worktree_baseline \
+    "${tool_use_id}" "${tool_cwd}" "${command_str}" "${run_in_background:-false}" || true
+fi
+
+# Honour the customization kill-switch. Users who prefer the directive layer
+# alone can set pretool_intent_guard=false in oh-my-claude.conf or
+# OMC_PRETOOL_INTENT_GUARD=false in the environment. Bash edit-clock capture
+# above is deliberately independent: disabling an intent gate must not make
+# successful source edits invisible to the Stop gate.
+if [[ "${OMC_PRETOOL_INTENT_GUARD:-true}" == "false" ]]; then
+  exit 0
 fi
 
 # Hygiene gate (v1.43.x): block Bash commands that pair a poll-loop
@@ -73,6 +97,10 @@ _bash_command_orphans_unattended_loop() {
   local cmd="$1"
   local rib="${2:-}"
   [[ -z "${cmd}" ]] && return 1
+  case "${cmd}" in
+    *nohup*|*setsid*|*until*|*while*) ;;
+    *) return 1 ;;
+  esac
 
   # Strip quoted strings before pattern matching. grep has no shell-quoting
   # awareness; without this, prose like `echo "wait until ready"; sleep 1;
@@ -215,9 +243,24 @@ _normalize_git_flags() {
   sed -E 's/(^|[[:space:];&|(])(([^[:space:]]*\/)?(git|gh))(([[:space:]]+(-c|-C|--git-dir|--work-tree|--exec-path|--namespace|--super-prefix|--config-env|--attr-source)[[:space:]]+[^[:space:]]+)|([[:space:]]+-[^[:space:]]+))+/\1\2/g' <<<"$1"
 }
 
+# Shared executable-position anchor from common.sh. Hoisted before the
+# agent-first floor's first call; the advisory matcher below reuses it.
+readonly _GUARD_PRE="${OMC_SHELL_COMMAND_PREFIX_RE}"
+
 _bash_command_may_mutate_workspace() {
   local cmd="$1"
   [[ -z "${cmd}" ]] && return 1
+  omc_shell_nested_delivery_action_present "${cmd}" && return 0
+
+  # PreTool denial needs a positive mutation signature; the broader Bash
+  # snapshot candidate set also includes opaque tests/scripts and cannot be
+  # used here without blocking ordinary verification before it runs. Opaque
+  # mutations are still clocked PostTool and caught by the agent-first Stop
+  # backstop. The broader checks below additionally cover delivery/ref
+  # mutations that should NOT make a completed review stale.
+  if bash_command_has_mutation_signature "${cmd}"; then
+    return 0
+  fi
 
   # v1.41.x harness-improvement wave — quality-reviewer F1 (HIGH).
   # Normalize git/gh top-level flags BEFORE the destructive-verb regex
@@ -232,35 +275,22 @@ _bash_command_may_mutate_workspace() {
   # ones).
   cmd="$(_normalize_git_flags "${cmd}")"
 
-  local cleaned
-  # v1.43+ Serendipity (narrowed per quality-reviewer F3): the quote-strip
-  # below is LOCAL to the redirect-detection branch only. The verb regexes
-  # downstream of this block inspect the un-stripped `cmd` directly so
-  # this narrowing changes nothing about their behavior — same un-stripped
-  # input they have always received.
-  #
-  # Without quote-stripping in the redirect path, literal string content
+  local cleaned structure
+  # Redirect detection needs the quote-free structure view. Without it,
+  # literal string content
   # like `printf "%s" "${var:-<unset>}"` matches the redirect regex
   # (the `>` inside `<unset>` followed by the closing `"` looks like
   # `> path`). Quoted content is data, not control flow — same principle
   # as `_bash_command_orphans_unattended_loop`'s strip at :80.
   #
-  # Pre-existing blind spot (NOT introduced or worsened by this strip,
-  # called out for honesty per the reviewer pass): the verb regexes
-  # require `rm`/`mv`/etc. to be preceded by `(^|[[:space:];&|(])` —
-  # `"` is not in that delimiter class. So `bash -c "rm -rf /"` was
-  # never caught by the verb regex even on un-stripped input, and is
-  # still not caught now. Closing that would need either (a) quote-aware
-  # tokenization or (b) explicit `bash|sh|zsh|eval` wrappers in the verb
-  # regex — out of scope for this Serendipity since it pre-dates the
-  # change and the Edit/Write tool path catches workspace mutation
-  # through a different channel.
+  # Literal shell -c bodies are inspected by the shared mutation-signature
+  # helper before this local quote scrub. Thus executable quoted bodies such
+  # as `bash -c 'rm generated'` remain visible while prose arguments stay data.
+  structure="$(omc_shell_unquoted_structure_text "${cmd}")"
   cleaned="$(sed -E \
-    -e 's/"[^"]*"//g' \
-    -e "s/'[^']*'//g" \
     -e 's/[0-9]*>>?[[:space:]]*\/dev\/null//g' \
     -e 's/[0-9]*>[&][0-9]+//g' \
-    <<<"${cmd}")"
+    <<<"${structure}")"
 
   # Shell redirects to real files are writes. This intentionally ignores
   # input redirects (`<`) and stderr/stdout redirects to /dev/null handled
@@ -270,29 +300,32 @@ _bash_command_may_mutate_workspace() {
   # false-positive.
   if grep -Eq '(^|[^0-9])>>?[[:space:]]*[^[:space:]&|;]+' <<<"${cleaned}"; then return 0; fi
 
-  # Common workspace mutation forms. This is deliberately a floor, not a
-  # sandbox: obscure write paths are still caught by edit tracking and stop
-  # gates, while the common direct-edit and package-manager paths are denied
-  # before they run.
-  if grep -Eiq '(^|[[:space:];&|(])(rm|rmdir|mv|cp|mkdir|touch|chmod|chown|ln|truncate|install|rsync|dd|tee)([[:space:]]|$)' <<<"${cmd}"; then return 0; fi
-  if grep -Eiq '(^|[[:space:];&|(])sed[[:space:]][^;&|]*[[:space:]]-i([^[:alnum:]_-]|$)' <<<"${cmd}"; then return 0; fi
-  if grep -Eiq '(^|[[:space:];&|(])perl[[:space:]][^;&|]*-(p?i|i?p)([^[:alnum:]_-]|$)' <<<"${cmd}"; then return 0; fi
-  if grep -Eiq '(^|[[:space:];&|(])(prettier|eslint|ruff)[[:space:]][^;&|]*(--write|--fix)([[:space:]]|$)' <<<"${cmd}"; then return 0; fi
-  if grep -Eiq '(^|[[:space:];&|(])(black|isort|rustfmt|swiftformat)([[:space:]]|$)' <<<"${cmd}"; then return 0; fi
-  if grep -Eiq '(^|[[:space:];&|(])gofmt[[:space:]][^;&|]*-w([[:space:]]|$)' <<<"${cmd}"; then return 0; fi
-  if grep -Eiq '(^|[[:space:];&|(])(npm|pnpm|yarn)[[:space:]]+(install|i|add|remove|rm|uninstall|update|upgrade|dedupe)([[:space:]]|$)' <<<"${cmd}"; then return 0; fi
-  if grep -Eiq '(^|[[:space:];&|(])npm[[:space:]]+audit[[:space:]]+fix([[:space:]]|$)' <<<"${cmd}"; then return 0; fi
-  if grep -Eiq '(^|[[:space:];&|(])(pip|pip3|poetry|uv|bundle|cargo|gem|brew)[[:space:]]+(install|add|remove|rm|uninstall|update|upgrade|lock|fix)([[:space:]]|$)' <<<"${cmd}"; then return 0; fi
-  if grep -Eiq '(^|[[:space:];&|(])go[[:space:]]+(mod[[:space:]]+tidy|get|install)([[:space:]]|$)' <<<"${cmd}"; then return 0; fi
-  if grep -Eiq '(^|[[:space:];&|(])swift[[:space:]]+package[[:space:]]+(update|resolve)([[:space:]]|$)' <<<"${cmd}"; then return 0; fi
+  # Common workspace mutation forms. Evaluate each top-level segment at its
+  # executable position; quoted/unquoted arguments cannot impersonate a
+  # command. This is deliberately a floor, not a sandbox: snapshots catch
+  # opaque tracked/new-file writes after execution.
+  local _direct_seg _direct_control
+  while IFS= read -r -d '' _direct_seg; do
+    _direct_control="$(omc_shell_unquoted_control_text "${_direct_seg}")"
+    # `env -S/--split-string` executes a command body stored in one argument.
+    # Without recursively parsing env's mini command line, fail closed at
+    # intent time; delivery evidence remains unsatisfied rather than guessed.
+    if grep -Eiq '^[[:space:]]*([^[:space:]]*\/)?env[[:space:]]+(-S|--split-string)([=[:space:]]|$)' <<<"${_direct_control}"; then return 0; fi
+    if grep -Eiq "${_GUARD_PRE}(rm|rmdir|mv|cp|mkdir|touch|chmod|chown|ln|truncate|install|rsync|dd|tee)([[:space:]]|$)" <<<"${_direct_control}"; then return 0; fi
+    if grep -Eiq "${_GUARD_PRE}sed[[:space:]][^;&|]*[[:space:]]-i([^[:alnum:]_-]|$)" <<<"${_direct_control}"; then return 0; fi
+    if grep -Eiq "${_GUARD_PRE}perl[[:space:]][^;&|]*-(p?i|i?p)([^[:alnum:]_-]|$)" <<<"${_direct_control}"; then return 0; fi
+    if grep -Eiq "${_GUARD_PRE}(prettier|eslint|ruff)[[:space:]][^;&|]*(--write|--fix)([[:space:]]|$)" <<<"${_direct_control}"; then return 0; fi
+    if grep -Eiq "${_GUARD_PRE}(black|isort|rustfmt|swiftformat)([[:space:]]|$)" <<<"${_direct_control}"; then return 0; fi
+    if grep -Eiq "${_GUARD_PRE}gofmt[[:space:]][^;&|]*-w([[:space:]]|$)" <<<"${_direct_control}"; then return 0; fi
+    if grep -Eiq "${_GUARD_PRE}(npm|pnpm|yarn)[[:space:]]+(install|i|add|remove|rm|uninstall|update|upgrade|dedupe)([[:space:]]|$)" <<<"${_direct_control}"; then return 0; fi
+    if grep -Eiq "${_GUARD_PRE}npm[[:space:]]+audit[[:space:]]+fix([[:space:]]|$)" <<<"${_direct_control}"; then return 0; fi
+    if grep -Eiq "${_GUARD_PRE}(pip|pip3|poetry|uv|bundle|cargo|gem|brew)[[:space:]]+(install|add|remove|rm|uninstall|update|upgrade|lock|fix)([[:space:]]|$)" <<<"${_direct_control}"; then return 0; fi
+    if grep -Eiq "${_GUARD_PRE}go[[:space:]]+(mod[[:space:]]+tidy|get|install)([[:space:]]|$)" <<<"${_direct_control}"; then return 0; fi
+    if grep -Eiq "${_GUARD_PRE}swift[[:space:]]+package[[:space:]]+(update|resolve)([[:space:]]|$)" <<<"${_direct_control}"; then return 0; fi
+    if grep -Eiq "${_GUARD_PRE}git[[:space:]]+(commit|push|revert|reset[[:space:]]+--hard|rebase|cherry-pick|merge|am|apply|clean|update-ref|symbolic-ref|fast-import|filter-branch|replace|stash[[:space:]]+(push|pop|apply))([[:space:]]|$)" <<<"${_direct_control}"; then return 0; fi
+    if grep -Eiq "${_GUARD_PRE}gh[[:space:]]+(pr|release|issue)[[:space:]]+(create|merge|edit|close|comment|delete|reopen)([[:space:]]|$)" <<<"${_direct_control}"; then return 0; fi
 
-  # Destructive git/gh operations are also mutations. The full advisory-intent
-  # matcher below is stricter; these common forms are enough for the agent-first
-  # floor before that matcher is defined.
-  if grep -Eiq '(^|[[:space:];&|(])([^[:space:]]*/)?git[[:space:]]+(commit|push|revert|reset[[:space:]]+--hard|rebase|cherry-pick|merge|am|apply|clean|update-ref|symbolic-ref|fast-import|filter-branch|replace|stash[[:space:]]+(push|pop|apply))([[:space:]]|$)' <<<"${cmd}"; then return 0; fi
-  if grep -Eiq '(^|[[:space:];&|(])([^[:space:]]*/)?gh[[:space:]]+(pr|release|issue)[[:space:]]+(create|merge|edit|close|comment|delete|reopen)([[:space:]]|$)' <<<"${cmd}"; then return 0; fi
-
-  # `git tag` is the one verb above that has a frequently-used list mode
+    # `git tag` is the one verb above that has a frequently-used list mode
   # (`git tag` alone, `git tag --list`, `git tag --sort=-creatordate`,
   # `git tag --contains HEAD`, `git tag --points-at v1.13.0`, `git tag -n5`,
   # `git tag -v <name>` for signature verification). The advisory matcher's
@@ -306,37 +339,14 @@ _bash_command_may_mutate_workspace() {
   # --short` on a session-start inspection burst, which is exactly the
   # kind of read-only audit the gate is supposed to allow.
   #
-  # Allow-list: any `git tag` whose immediate next token is one of the
-  # documented list-mode flags (including `-v|--verify` for signature
-  # checking, which is read-only per git-tag(1)), or which has no further
-  # token at all (`git tag` alone = list). Anything else (positional name
-  # = create, `-a/-s/-d/-f`, `--annotate/--sign/--delete/--force`,
-  # `-m/--message`, `-F/--file`, `--cleanup`, `-u/--local-user`,
-  # `--no-sign`) falls through to the mutation branch below.
-  #
-  # Known limitation (shared with the advisory matcher; empirically
-  # verified): display flags that do not force list mode — `--sort=<key>`,
-  # `--column`, `--format=<fmt>` — followed by a positional tag name
-  # CREATE a tag yet falsely match list-mode, because the regex stops at
-  # the first flag without checking for a trailing positional. A purely
-  # syntactic tighten cannot separate those from flag-only list forms.
-  # The mitigation: the Stop hook's mark-edit tracker and
-  # quality-reviewer pass still catch the mutation downstream.
-  #
-  # Case-sensitivity: `-Ei` (case-insensitive) is intentionally different
-  # from the advisory matcher's case-sensitive choice in
-  # `_cmd_matches_destructive`. The advisory
-  # matcher uses case-sensitivity to distinguish `git branch -D` (force-
-  # delete) from `-d` (safe-delete). `git tag` has no such case-distinct
-  # flag pair — `-d` is the only delete form — so case-insensitive matching
-  # is safe here and slightly more permissive against `Git Tag` / `GIT TAG`
-  # corner cases. Document this divergence so a future maintainer adding
-  # a case-distinct flag doesn't introduce a silent regression.
-  if grep -Eiq '(^|[[:space:];&|(])([^[:space:]]*/)?git[[:space:]]+tag([[:space:]]|$)' <<<"${cmd}"; then
-    if ! grep -Eiq '(^|[[:space:];&|(])([^[:space:]]*/)?git[[:space:]]+tag([[:space:]]*$|[[:space:]]*[|;&]|[[:space:]]+(-l|--list|--sort|--contains|--no-contains|--points-at|--merged|--no-merged|-n[0-9]*|--column|--no-column|--format|-i|--ignore-case|-v|--verify)([[:space:]=]|$))' <<<"${cmd}"; then
-      return 0
+  # The shared parser requires a real list/filter/verify mode (or a complete
+  # flag-only display form), rejects any create/delete/force option anywhere,
+  # and is also used by delivery recording. In particular, -i/--ignore-case
+  # does not force list mode and cannot hide a later --force or -d.
+    if grep -Eiq "${_GUARD_PRE}git[[:space:]]+tag([[:space:]]|$)" <<<"${_direct_control}"; then
+      omc_git_tag_segment_is_read_only "${_direct_seg}" || return 0
     fi
-  fi
+  done < <(omc_shell_compound_segments "${cmd}")
 
   return 1
 }
@@ -374,22 +384,25 @@ _record_first_mutation_attempt() {
   fi
 }
 
-if _agent_first_gate_active && _tool_attempts_mutation; then
+if [[ "${OMC_AGENT_FIRST_GATE:-off}" == "on" ]] \
+    && _agent_first_gate_active \
+    && _tool_attempts_mutation; then
   # v1.43+: gate the BLOCK on the agent_first_gate conf flag. Default off —
   # the mandate fired ~2.2x/session on the canonical /ulw user under
   # model_tier=quality, where main thread and specialists are both Opus
   # and the smartness-gap assumption that justified the mandate no longer
   # holds. Depth-on-every-prompt (core.md Thinking Quality) and
   # sub-dispatch-as-tool (model-robustness.md Mechanism 2) carry the
-  # actual concern. Telemetry (first_mutation_ts, agent_first_gate_blocks)
-  # is still captured below so cross-session reporting can compare opt-in
-  # vs opt-out outcomes. Users who want the forcing function can opt in
+  # actual concern. When the gate is off, mark-edit records the first actual
+  # mutation after tool completion; there is no need to pay this command-line
+  # mutation classifier on every test/build PreTool event merely for telemetry.
+  # Users who want the forcing function can opt in
   # via `agent_first_gate=on` in oh-my-claude.conf or
   # `OMC_AGENT_FIRST_GATE=on` in the environment.
   #
   # This is removal-of-uniform-tax, NOT softening-of-contract. The
   # no-defer contract (core.md "v1.40.0 no-defer contract") is unaffected.
-  if [[ "${OMC_AGENT_FIRST_GATE:-off}" == "on" ]] && [[ -z "${agent_first_specialist_ts}" ]]; then
+  if [[ -z "${agent_first_specialist_ts}" ]]; then
     # shellcheck disable=SC2329  # invoked indirectly via with_state_lock
     _increment_agent_first_blocks() {
       local _c
@@ -421,6 +434,19 @@ if _agent_first_gate_active && _tool_attempts_mutation; then
   with_state_lock _record_first_mutation_attempt || true
 fi
 
+# Preserve the protected default-off telemetry contract for exact editor
+# tools without running the comparatively expensive Bash command classifier.
+# Bash is stamped by mark-edit after an observed mutation; when the gate is on,
+# the branch above still records recognized mutation attempts before execution.
+if [[ "${OMC_AGENT_FIRST_GATE:-off}" != "on" ]] \
+    && _agent_first_gate_active; then
+  case "${tool_name}" in
+    Edit|Write|MultiEdit|NotebookEdit)
+      with_state_lock _record_first_mutation_attempt || true
+      ;;
+  esac
+fi
+
 if [[ "${tool_name}" != "Bash" ]]; then
   exit 0
 fi
@@ -440,11 +466,10 @@ fi
 # `cd foo && git push`, `/usr/bin/git push`) without false-positives on
 # substrings (e.g. `git merge-base`, `git commit-tree`, `my-git-tool commit`).
 #
-# The prefix `_pre` allows an optional path (e.g. `/usr/bin/`) between the
-# start-of-command anchor and the `git` / `gh` token. This catches absolute-
-# path invocations that would otherwise bypass the guard. `my-git-tool` still
-# fails because the character preceding `m` in `my-git-tool` is whitespace
-# and `my-` is not a path segment (has no trailing `/`).
+# The shared prefix anchors `git` / `gh` at the segment's actual executable
+# position after static assignments and standard `sudo` / `command` / `exec`
+# / `time` / `env` launch wrappers. It accepts absolute paths but not command-
+# like arguments such as `echo git tag v1`.
 #
 # Before matching, `_normalize_git_flags` strips top-level options like
 # `-c foo=bar`, `-C /path`, `--no-pager`, and `--git-dir=/x` from between
@@ -453,10 +478,10 @@ fi
 # `git -c commit.gpgsign=false commit` slipped through because the regex
 # required the verb adjacent to `git`.
 #
-# Compound commands are split on `&&`/`||`/`;`/`|` and each segment is
-# evaluated independently, so a recovery invocation chained with a
-# destructive one (`git rebase --abort && git push --force`) still blocks
-# on the destructive segment.
+# Compound commands are NUL-framed and split quote-aware on `&&`/`||`/`;`/`|`
+# / background `&`; redirection forms and embedded quoted newlines remain
+# data. Each segment is evaluated independently, so a recovery invocation
+# chained with a destructive one still blocks on the destructive segment.
 #
 # Note: this guard is best-effort. A determined bypass (Python subprocess
 # invoking git, editing `.git/` directly) cannot be caught by command-line
@@ -492,14 +517,12 @@ fi
 #   git merge-base / commit-tree / diff-tree (plumbing reads)
 #   git fetch without --prune
 
-# Anchor: start-of-string or [space ; & | ( ] followed by optional path prefix.
-# ([^[:space:]]*/)? matches zero-or-more non-space chars ending in `/`, so:
+# Segment-leading anchor with optional launch wrappers and path prefix. Its
+# final ([^[:space:]]*/)? accepts zero-or-more non-space chars ending in `/`:
 #   - bare `git`                   → matches (zero-length path)
 #   - `/usr/bin/git`               → matches (path = `/usr/bin/`)
 #   - `./git`                      → matches (path = `./`)
 #   - `my-git`                     → does NOT match (no trailing `/` after `my-`)
-readonly _GUARD_PRE='(^|[[:space:];&|(])([^[:space:]]*/)?'
-
 # `_normalize_git_flags` is defined earlier in the file (hoisted in the
 # v1.41.x harness-improvement wave) so the agent-first floor matcher
 # can reuse the same normalization the advisory matcher applies before
@@ -511,6 +534,7 @@ readonly _GUARD_PRE='(^|[[:space:];&|(])([^[:space:]]*/)?'
 # normalizes to `git rebase --abort`) is recognized as a recovery op.
 _cmd_is_allowed_variant() {
   local cmd="$1"
+  omc_shell_has_executable_substitution "${cmd}" && return 1
   # `--abort|--continue|--skip|--quit` on a mid-operation verb.
   if grep -Eq "${_GUARD_PRE}git[[:space:]]+(rebase|merge|cherry-pick|revert|am)[[:space:]]+.*(--abort|--continue|--skip|--quit)([[:space:]]|$)" <<<"${cmd}"; then return 0; fi
   # `--dry-run|-n` on push/commit reports intent without mutation.
@@ -538,20 +562,17 @@ _cmd_is_allowed_variant() {
   # git-tag(1) and is allowed, matching the floor list. The flag must now
   # be the FIRST token after `tag`, which closes the NAME-FIRST create
   # shape (`git tag <name> --sort=x`) the old intermediate-token regex
-  # wrongly allowed. Known limitation (shared with the floor; empirically
-  # verified in review): display flags that do not force list mode —
-  # `--sort=<key>`, `--column`, `--format=<fmt>` — followed by a
-  # positional tag name CREATE a tag yet still match the allow arm. A
-  # syntactic matcher cannot cleanly separate those from flag-only list
-  # forms; the mark-edit tracker and quality-reviewer pass catch the
-  # mutation downstream. Filter flags (`--contains`, `--points-at`,
-  # `--merged`, `-l`, `-n`) do force list mode and are safe.
-  if grep -Eq "${_GUARD_PRE}git[[:space:]]+tag([[:space:]]*$|[[:space:]]+(-l|--list|--sort|--contains|--no-contains|--points-at|--merged|--no-merged|-n[0-9]*|--column|--no-column|--format|-i|--ignore-case|-v|--verify)([[:space:]=]|$))" <<<"${cmd}"; then return 0; fi
+  # wrongly allowed. The shared narrow parser also rejects display-flag then
+  # positional-name forms. Filter flags (`--contains`, `--points-at`,
+  # `--merged`, `-l`, `-n`) force list mode and remain safe.
+  if grep -Eq "${_GUARD_PRE}git[[:space:]]+tag([[:space:]]|$)" <<<"${cmd}" \
+      && omc_git_tag_segment_is_read_only "${cmd}"; then return 0; fi
   return 1
 }
 
 _cmd_matches_destructive() {
   local cmd="$1"
+  omc_shell_nested_delivery_action_present "${cmd}" && return 0
   # Case-sensitive matching is intentional: git CLI flags like `-D` (force-delete
   # branch), `-C` (force-create branch), `-B` (force-reuse branch) differ from
   # their lowercase counterparts in destructive semantics, so a prior lowercase
@@ -559,7 +580,9 @@ _cmd_matches_destructive() {
   # themselves are always lowercase in real invocations — we accept that a
   # `GIT COMMIT` would bypass the guard; that's a theoretical path not worth
   # the flag-case regression.
-  local lc="${cmd}"
+  local lc
+  lc="$(omc_shell_unquoted_control_text "${cmd}")"
+  if grep -Eiq '^[[:space:]]*([^[:space:]]*\/)?env[[:space:]]+(-S|--split-string)([=[:space:]]|$)' <<<"${lc}"; then return 0; fi
 
   # Porcelain: direct local/remote state mutation.
   if grep -Eq "${_GUARD_PRE}git[[:space:]]+commit([[:space:]]|$)" <<<"${lc}"; then return 0; fi
@@ -603,13 +626,13 @@ _cmd_matches_destructive() {
 # miss the push or over-block the rebase; splitting keeps both decisions honest.
 normalized_cmd="$(_normalize_git_flags "${command_str}")"
 denied_segment=""
-while IFS= read -r _seg; do
+while IFS= read -r -d '' _seg; do
   [[ -z "${_seg// }" ]] && continue
   if _cmd_matches_destructive "${_seg}" && ! _cmd_is_allowed_variant "${_seg}"; then
     denied_segment="${_seg}"
     break
   fi
-done < <(sed -E 's/(&&|\|\||;|\|)/\n/g' <<<"${normalized_cmd}")
+done < <(omc_shell_compound_segments "${normalized_cmd}")
 
 if [[ -z "${denied_segment}" ]]; then
   exit 0
@@ -683,7 +706,9 @@ _is_git_commit_segment() {
   # (`sudo git commit`) are recognized identically. Operates on the
   # already-normalized denied_segment so flag-injection bypass forms
   # (`git -c foo=bar commit`) also normalize to `git commit`.
-  grep -Eq "${_GUARD_PRE}git[[:space:]]+commit([[:space:]]|$)" <<<"$1"
+  local control
+  control="$(omc_shell_unquoted_control_text "$1")"
+  grep -Eq "${_GUARD_PRE}git[[:space:]]+commit([[:space:]]|$)" <<<"${control}"
 }
 
 # Override eligibility check. The destructive-matcher loop above stops
@@ -705,14 +730,14 @@ _is_git_commit_segment() {
 _wave_override_command_safe() {
   local cmd_normalized="$1"
   local _seg
-  while IFS= read -r _seg; do
+  while IFS= read -r -d '' _seg; do
     [[ -z "${_seg// }" ]] && continue
     if _cmd_matches_destructive "${_seg}" && ! _cmd_is_allowed_variant "${_seg}"; then
       if ! _is_git_commit_segment "${_seg}"; then
         return 1
       fi
     fi
-  done < <(sed -E 's/(&&|\|\||;|\|)/\n/g' <<<"${cmd_normalized}")
+  done < <(omc_shell_compound_segments "${cmd_normalized}")
   return 0
 }
 
@@ -744,7 +769,8 @@ _wave_override_command_safe() {
 # would say. Same table the destructive matcher uses, in the same
 # order, so a future verb addition only needs one site update.
 _extract_destructive_verb_from_segment() {
-  local seg="$1"
+  local seg
+  seg="$(omc_shell_unquoted_control_text "$1")"
   if grep -Eq "${_GUARD_PRE}git[[:space:]]+commit([[:space:]]|$)"      <<<"${seg}"; then printf 'commit';      return; fi
   if grep -Eq "${_GUARD_PRE}git[[:space:]]+push([[:space:]]|$)"        <<<"${seg}"; then printf 'push';        return; fi
   if grep -Eq "${_GUARD_PRE}git[[:space:]]+revert([[:space:]]|$)"      <<<"${seg}"; then printf 'revert';      return; fi
@@ -834,7 +860,7 @@ _prompt_text_authorizes_command() {
   is_imperative_request "${prompt}" || return 1
 
   local _seg verb
-  while IFS= read -r _seg; do
+  while IFS= read -r -d '' _seg; do
     [[ -z "${_seg// }" ]] && continue
     if _cmd_matches_destructive "${_seg}" && ! _cmd_is_allowed_variant "${_seg}"; then
       verb="$(_extract_destructive_verb_from_segment "${_seg}")"
@@ -843,7 +869,7 @@ _prompt_text_authorizes_command() {
         return 1
       fi
     fi
-  done < <(sed -E 's/(&&|\|\||;|\|)/\n/g' <<<"${cmd_normalized}")
+  done < <(omc_shell_compound_segments "${cmd_normalized}")
   return 0
 }
 
@@ -852,7 +878,8 @@ _prompt_text_authorizes_command() {
 # gh pr/release/issue ops. Each is checked against its own contract
 # mode so a "commit X. don't push Y." prompt allows the commit.
 _commit_segment_forbidden() {
-  local seg="$1"
+  local seg
+  seg="$(omc_shell_unquoted_control_text "$1")"
   if grep -Eq "${_GUARD_PRE}git[[:space:]]+commit([[:space:]]|$)" <<<"${seg}"; then
     return 0
   fi
@@ -860,7 +887,8 @@ _commit_segment_forbidden() {
 }
 
 _push_segment_forbidden() {
-  local seg="$1"
+  local seg
+  seg="$(omc_shell_unquoted_control_text "$1")"
   if grep -Eq "${_GUARD_PRE}git[[:space:]]+(push|tag)([[:space:]]|$)" <<<"${seg}"; then
     return 0
   fi
@@ -872,13 +900,13 @@ _push_segment_forbidden() {
 
 if [[ "${commit_contract_mode}" == "forbidden" ]]; then
   _commit_denied_segment=""
-  while IFS= read -r _seg; do
+  while IFS= read -r -d '' _seg; do
     [[ -z "${_seg// }" ]] && continue
     if _cmd_matches_destructive "${_seg}" && ! _cmd_is_allowed_variant "${_seg}" && _commit_segment_forbidden "${_seg}"; then
       _commit_denied_segment="${_seg}"
       break
     fi
-  done < <(sed -E 's/(&&|\|\||;|\|)/\n/g' <<<"${normalized_cmd}")
+  done < <(omc_shell_compound_segments "${normalized_cmd}")
 
   if [[ -n "${_commit_denied_segment}" ]]; then
     log_hook "pretool-intent-guard" "blocked by commit contract: cmd=$(truncate_chars 80 "${command_str}")"
@@ -899,13 +927,13 @@ fi
 
 if [[ "${push_contract_mode}" == "forbidden" ]]; then
   _push_denied_segment=""
-  while IFS= read -r _seg; do
+  while IFS= read -r -d '' _seg; do
     [[ -z "${_seg// }" ]] && continue
     if _cmd_matches_destructive "${_seg}" && ! _cmd_is_allowed_variant "${_seg}" && _push_segment_forbidden "${_seg}"; then
       _push_denied_segment="${_seg}"
       break
     fi
-  done < <(sed -E 's/(&&|\|\||;|\|)/\n/g' <<<"${normalized_cmd}")
+  done < <(omc_shell_compound_segments "${normalized_cmd}")
 
   if [[ -n "${_push_denied_segment}" ]]; then
     log_hook "pretool-intent-guard" "blocked by push contract: cmd=$(truncate_chars 80 "${command_str}")"

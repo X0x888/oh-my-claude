@@ -1,7 +1,7 @@
 ---
 name: literature-scout
 description: Use for academic literature work — finding papers, building verified bibliographies, checking what a cited work actually claims, and grounding related-work sections. Every reference is verified against a live registry (Crossref/OpenAlex/Semantic Scholar/arXiv) before it is returned; never cites from model memory.
-disallowedTools: Write, Edit, MultiEdit
+disallowedTools: Write, Edit, MultiEdit, NotebookEdit
 model: sonnet
 permissionMode: plan
 maxTurns: 30

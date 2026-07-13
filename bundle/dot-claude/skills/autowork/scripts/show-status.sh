@@ -292,6 +292,10 @@ if [[ "${SUMMARY_MODE}" -eq 1 ]]; then
   # Edit counts
   code_edits="$(jq -r '.code_edit_count // "0"' "${state_file}" 2>/dev/null || echo "0")"
   doc_edits="$(jq -r '.doc_edit_count // "0"' "${state_file}" 2>/dev/null || echo "0")"
+  bash_unknown_edit_scope="$(jq -r '.bash_unknown_edit_scope // "0"' "${state_file}" 2>/dev/null || echo "0")"
+  if [[ "${bash_unknown_edit_scope}" == "1" ]]; then
+    code_edits="${code_edits} exact + unknown Bash scope"
+  fi
 
   # Unique files touched (from edited_files.log if present)
   unique_files=0
@@ -663,6 +667,7 @@ jq -r --arg ellipsis "${_ellipsis}" '
   "--- Edit Counts ---",
   "Code files edited: \( ((.code_edit_count // "") | if . == "" then "0" else . end) )",
   "Doc files edited:  \( ((.doc_edit_count // "") | if . == "" then "0" else . end) )",
+  "Bash edit scope:    \(if (.bash_unknown_edit_scope // "") == "1" then "unknown (count-based gates use a conservative floor)" else "exact-path only" end)",
   "",
   (
     if (.last_compact_trigger // "") == ""

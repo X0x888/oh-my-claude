@@ -16,8 +16,11 @@
 #   F-010: rejected-finding validator — subjective bare-token tightening
 #   F-010b: final-closure label closing-region restriction
 #   F-011: ulw-skip refusal on unremediated post-edit gates
+#   F-012: agent-first-gate opt-in Stop backstop
+#   F-013: project-conf security-flag deny-list
 #   F-014: objective-completion contract gate (substantive arm)
 #   F-015: /goal relentless driver (user-armed arm + stuck-wall escape)
+#   F-016: Bash/Notebook edit-clock producer coverage
 #
 # Each block runs its defense as a black-box: invoke the script with the
 # bypass shape, assert exit code + telemetry side effects.
@@ -1139,6 +1142,149 @@ else
   printf '  FAIL: F-014e: objective-contract gate must key on _effective_intent (intent-flip resistance)\n' >&2
   fail=$((fail + 1))
 fi
+
+# ===========================================================================
+# F-015: /goal relentless driver. A user-armed goal must block a premature
+# close even below the ordinary substantive-file threshold, while the explicit
+# three-strike no-progress stuck wall must surface and release rather than trap
+# the session forever.
+# ===========================================================================
+printf '\n=== F-015: /goal relentless driver + stuck-wall escape ===\n'
+setup
+write_state_field "task_intent" "execution"
+write_state_field "task_domain" "coding"
+write_state_field "current_objective" "migrate auth completely"
+write_state_field "goal_mode_active" "1"
+write_state_field "goal_objective" "migrate auth completely"
+write_state_field "last_user_prompt_ts" "100"
+write_state_field "last_edit_ts" "200"
+write_state_field "last_code_edit_ts" "200"
+write_state_field "last_review_ts" "300"
+write_state_field "last_verify_ts" "300"
+write_state_field "last_verify_outcome" "passed"
+write_state_field "last_verify_confidence" "80"
+write_state_field "code_edit_count" "1"
+write_state_field "objective_contract_edit_baseline" "0"
+write_state_field "objective_contract_prompt_ts" "100"
+_f015_block="$(jq -nc --arg sid "${SESSION_ID}" \
+  '{session_id:$sid,last_assistant_message:"Done. One handler migrated."}' \
+  | OMC_GATE_LEVEL=basic "${HOOK_DIR}/stop-guard.sh" || true)"
+assert_contains "F-015a: armed goal blocks premature completion" '"decision":"block"' "${_f015_block}"
+assert_contains "F-015a: goal block re-anchors persistent objective" "Persistent goal active" "${_f015_block}"
+teardown
+
+setup
+write_state_field "task_intent" "execution"
+write_state_field "task_domain" "coding"
+write_state_field "current_objective" "migrate auth completely"
+write_state_field "goal_mode_active" "1"
+write_state_field "goal_objective" "migrate auth completely"
+write_state_field "last_user_prompt_ts" "100"
+write_state_field "last_edit_ts" "200"
+write_state_field "last_code_edit_ts" "200"
+write_state_field "last_review_ts" "300"
+write_state_field "last_verify_ts" "300"
+write_state_field "last_verify_outcome" "passed"
+write_state_field "last_verify_confidence" "80"
+write_state_field "code_edit_count" "1"
+write_state_field "objective_contract_edit_baseline" "0"
+write_state_field "objective_contract_prompt_ts" "100"
+write_state_field "goal_stuck_blocks" "2"
+write_state_field "goal_last_block_edit_ts" "200"
+_f015_wall="$(jq -nc --arg sid "${SESSION_ID}" \
+  '{session_id:$sid,last_assistant_message:"Still stuck; no progress this round."}' \
+  | OMC_GATE_LEVEL=basic "${HOOK_DIR}/stop-guard.sh" || true)"
+assert_not_contains "F-015b: stuck wall releases instead of trapping" '"decision":"block"' "${_f015_wall}"
+assert_contains "F-015b: stuck wall is surfaced explicitly" "STUCK-WALL" "${_f015_wall}"
+teardown
+
+# ===========================================================================
+# F-016: Bash/Notebook edit-clock producer coverage (v1.49-pre).
+# Category: state-predicate producer coverage. The Stop predicate already
+# blocks stale review/verification after last_edit_ts; this closure ensures
+# Bash and Notebook mutation tools cannot bypass it by leaving that producer
+# empty and falling into the "no edits -> released" early exit.
+# ===========================================================================
+printf '\n=== F-016: Bash/Notebook edits cannot bypass edit clocks ===\n'
+setup
+write_state_field "task_intent" "execution"
+write_state_field "task_domain" "coding"
+write_state_field "current_objective" "change app.js"
+_f016_work="${TEST_HOME}/work"
+mkdir -p "${_f016_work}"
+git -C "${_f016_work}" init --quiet --initial-branch=main 2>/dev/null \
+  || git -C "${_f016_work}" init --quiet
+git -C "${_f016_work}" config user.email test@example.com
+git -C "${_f016_work}" config user.name Test
+printf 'baseline\n' > "${_f016_work}/app.js"
+git -C "${_f016_work}" add app.js
+git -C "${_f016_work}" commit --quiet -m baseline
+_f016_payload="$(jq -nc --arg sid "${SESSION_ID}" --arg cwd "${_f016_work}" '{
+  session_id:$sid,tool_name:"Bash",tool_use_id:"tu-f016",cwd:$cwd,
+  tool_input:{command:"target=app.js; printf changed > \"$target\""},tool_response:{exit_code:0}
+}')"
+printf '%s' "${_f016_payload}" | "${HOOK_DIR}/pretool-intent-guard.sh" >/dev/null
+(cd "${_f016_work}" && target=app.js && printf 'changed\n' > "${target}")
+printf '%s' "${_f016_payload}" | "${HOOK_DIR}/posttool-dispatch.sh" >/dev/null
+assert_eq "F-016a: Bash mutation writes last_edit_ts" "1" \
+  "$(if [[ -n "$(read_state_field "last_edit_ts")" ]]; then printf '1'; else printf '0'; fi)"
+assert_eq "F-016a: Bash mutation writes last_code_edit_ts" "1" \
+  "$(if [[ -n "$(read_state_field "last_code_edit_ts")" ]]; then printf '1'; else printf '0'; fi)"
+_f016_stop="$(jq -nc --arg sid "${SESSION_ID}" '{session_id:$sid,last_assistant_message:"Done."}' \
+  | OMC_QUALITY_POLICY=zero_steering "${HOOK_DIR}/stop-guard.sh")"
+assert_contains "F-016b: Stop blocks instead of taking no-edit release" '"decision":"block"' "${_f016_stop}"
+assert_not_contains "F-016b: changed Bash session is not marked released" "released" \
+  "$(read_state_field "session_outcome")"
+teardown
+
+# Failed Bash may write before returning nonzero: it must drive the same Stop
+# predicate rather than disappearing through PostToolUseFailure.
+setup
+write_state_field "task_intent" "execution"
+write_state_field "task_domain" "coding"
+_f016_fail_payload="$(jq -nc --arg sid "${SESSION_ID}" '{
+  session_id:$sid,hook_event_name:"PostToolUseFailure",tool_name:"Bash",
+  tool_use_id:"tu-f016-fail",cwd:"/work",
+  tool_input:{command:"sed -i s/x/y/ app.js"},tool_response:{exit_code:1}
+}')"
+printf '%s' "${_f016_fail_payload}" | "${HOOK_DIR}/mark-edit.sh" >/dev/null
+assert_eq "F-016c: failed Bash mutation writes code clock" "1" \
+  "$(if [[ -n "$(read_state_field "last_code_edit_ts")" ]]; then printf '1'; else printf '0'; fi)"
+_f016_fail_stop="$(jq -nc --arg sid "${SESSION_ID}" '{session_id:$sid,last_assistant_message:"Done."}' \
+  | OMC_QUALITY_POLICY=zero_steering "${HOOK_DIR}/stop-guard.sh")"
+assert_contains "F-016c: failed Bash mutation still reaches Stop block" '"decision":"block"' "${_f016_fail_stop}"
+teardown
+
+# NotebookEdit is an exact mutation tool and must be behaviorally covered, not
+# inferred from the presence of a broad matcher string.
+setup
+write_state_field "task_intent" "execution"
+write_state_field "task_domain" "coding"
+_f016_nb_payload="$(jq -nc --arg sid "${SESSION_ID}" '{
+  session_id:$sid,tool_name:"NotebookEdit",
+  tool_input:{notebook_path:"/work/analysis.ipynb"}
+}')"
+printf '%s' "${_f016_nb_payload}" | "${HOOK_DIR}/mark-edit.sh" >/dev/null
+assert_eq "F-016d: NotebookEdit writes code clock" "1" \
+  "$(if [[ -n "$(read_state_field "last_code_edit_ts")" ]]; then printf '1'; else printf '0'; fi)"
+_f016_nb_stop="$(jq -nc --arg sid "${SESSION_ID}" '{session_id:$sid,last_assistant_message:"Done."}' \
+  | OMC_QUALITY_POLICY=zero_steering "${HOOK_DIR}/stop-guard.sh")"
+assert_contains "F-016d: NotebookEdit reaches Stop block" '"decision":"block"' "${_f016_nb_stop}"
+teardown
+
+assert_contains "F-016e: shared Bash edit predicate is wired into dispatcher handler" \
+  'bash_worktree_edit_detected' "$(cat "${HOOK_DIR}/mark-edit.sh")"
+assert_contains "F-016f: dispatcher invokes edit writer for Bash" \
+  '_dispatch_one "mark-edit.sh"' "$(cat "${HOOK_DIR}/posttool-dispatch.sh")"
+_f016_patch="${REPO_ROOT}/config/settings.patch.json"
+assert_eq "F-016g: NotebookEdit reaches PreTool mutation guard" "1" \
+  "$(jq '[.hooks.PreToolUse[] | select(.matcher == "Bash|Edit|Write|MultiEdit|NotebookEdit") | .hooks[] | select(.command | contains("pretool-intent-guard.sh"))] | length' "${_f016_patch}")"
+assert_eq "F-016h: NotebookEdit reaches PostTool edit writer" "1" \
+  "$(jq '[.hooks.PostToolUse[] | select(.matcher == "Edit|Write|MultiEdit|NotebookEdit") | .hooks[] | select(.command | contains("mark-edit.sh"))] | length' "${_f016_patch}")"
+assert_eq "F-016i: failed Bash reaches edit writer" "1" \
+  "$(jq '[.hooks.PostToolUseFailure[] | select(.matcher == "Bash") | .hooks[] | select(.command | contains("mark-edit.sh"))] | length' "${_f016_patch}")"
+assert_eq "F-016j: successful Bash dispatcher remains universal" "1" \
+  "$(jq '[.hooks.PostToolUse[] | select((.matcher // "") == "") | .hooks[] | select(.command | contains("posttool-dispatch.sh"))] | length' "${_f016_patch}")"
 
 # ===========================================================================
 # Sentinel: every coordination rule met (file existence + bundle wiring)

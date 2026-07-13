@@ -1,7 +1,7 @@
 ---
 name: metis
 description: Use after a draft plan exists, or when a risky approach is forming, to catch hidden ambiguity, edge cases, missing constraints, weak validation, and unsafe assumptions before execution.
-disallowedTools: Write, Edit, MultiEdit
+disallowedTools: Write, Edit, MultiEdit, NotebookEdit
 model: inherit
 permissionMode: plan
 maxTurns: 20

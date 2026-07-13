@@ -50,12 +50,15 @@ assert_eq() {
 # Mirror of the inline jq at common.sh:1540. The lockstep grep below
 # fails the test if the inline form drifts from this fragment, so the
 # two stay in sync.
-OUTCOME_JQ='(
+OUTCOME_JQ='def has_code_edits:
+  (((.code_edit_count // "0") | tonumber) > 0)
+  or ((.bash_unknown_edit_scope // "") == "1");
+(
   if (.session_outcome // "") != "" then .session_outcome
-  elif ((.last_review_ts // "") != "") and ((.last_verify_ts // "") != "") and (((.code_edit_count // "0") | tonumber) > 0) then "completed_inferred"
-  elif (((.code_edit_count // "0") | tonumber) > 0) and (((.last_review_ts // "") != "") or ((.last_verify_ts // "") != "")) then "completed_inferred_partial"
-  elif (((.code_edit_count // "0") | tonumber) > 0) then "edited_no_quality"
-  elif (((.code_edit_count // "0") | tonumber) == 0) and ((.last_review_ts // "") == "") and ((.last_verify_ts // "") == "") then "idle"
+  elif ((.last_review_ts // "") != "") and ((.last_verify_ts // "") != "") and has_code_edits then "completed_inferred"
+  elif has_code_edits and (((.last_review_ts // "") != "") or ((.last_verify_ts // "") != "")) then "completed_inferred_partial"
+  elif has_code_edits then "edited_no_quality"
+  elif (has_code_edits | not) and ((.last_review_ts // "") == "") and ((.last_verify_ts // "") == "") then "idle"
   else "unclassified_by_sweep"
   end
 )'
@@ -114,6 +117,14 @@ assert_eq "A7a edited_no_quality (edits only)" "edited_no_quality" \
   "$(infer_outcome '{"code_edit_count":"5"}')"
 assert_eq "A7b edited_no_quality (large edits, no quality)" "edited_no_quality" \
   "$(infer_outcome '{"code_edit_count":"42"}')"
+
+# Bash mutations have no authoritative exact path/count. The explicit unknown
+# scope bit is still an edit signal for outcome attribution; otherwise a real
+# Bash-only change is mislabeled idle merely because code_edit_count stays 0.
+assert_eq "A8a Bash-only unknown scope is edited_no_quality, not idle" "edited_no_quality" \
+  "$(infer_outcome '{"code_edit_count":"0","bash_unknown_edit_scope":"1"}')"
+assert_eq "A8b reviewed+verified Bash-only scope is completed_inferred" "completed_inferred" \
+  "$(infer_outcome '{"code_edit_count":"0","bash_unknown_edit_scope":"1","last_review_ts":"ts","last_verify_ts":"ts"}')"
 
 # ---------------------------------------------------------------
 # Part B: apply-rate aggregation tokens (show-report.sh:1150-1190)
@@ -194,6 +205,7 @@ if grep -q '"completed_inferred"' "${COMMON_SH}" \
    && grep -q '"completed_inferred_partial"' "${COMMON_SH}" \
    && grep -q '"edited_no_quality"' "${COMMON_SH}" \
    && grep -q '"unclassified_by_sweep"' "${COMMON_SH}" \
+   && grep -q 'or ((.bash_unknown_edit_scope // "") == "1")' "${COMMON_SH}" \
    && grep -q 'elif ((.last_review_ts // "") != "") and ((.last_verify_ts // "") != "")' "${COMMON_SH}"; then
   pass=$((pass + 1))
 else
@@ -219,6 +231,32 @@ if grep -E '^\s+n_committed:|^\s+n_abandoned:' "${REPORT_SH}" >/dev/null; then
 else
   pass=$((pass + 1))
 fi
+
+# ---------------------------------------------------------------
+# Part D: real stale-session sweep row for Bash-only unknown scope
+# ---------------------------------------------------------------
+
+SWEEP_HOME="$(mktemp -d)"
+sweep_rows="$(HOME="${SWEEP_HOME}" OMC_STATE_TTL_DAYS=1 bash -c '
+  set -euo pipefail
+  export OMC_LAZY_CLASSIFIER=1 OMC_LAZY_TIMING=1
+  . "'"${COMMON_SH}"'"
+  root="${HOME}/.claude/quality-pack/state"
+  mkdir -p "${root}/bash-noq" "${root}/bash-complete"
+  printf '\''%s\n'\'' '\''{"session_start_ts":"1","last_edit_ts":"2","code_edit_count":"0","bash_unknown_edit_scope":"1"}'\'' > "${root}/bash-noq/session_state.json"
+  printf '\''%s\n'\'' '\''{"session_start_ts":"1","last_edit_ts":"2","last_review_ts":"3","last_verify_ts":"4","code_edit_count":"0","bash_unknown_edit_scope":"1"}'\'' > "${root}/bash-complete/session_state.json"
+  touch -t 202001010000 "${root}/bash-noq" "${root}/bash-complete"
+  rm -f "${root}/.last_sweep"
+  _sweep_stale_sessions_locked
+  cat "${HOME}/.claude/quality-pack/session_summary.jsonl"
+')"
+assert_eq "D1 real sweep emits unknown-scope boolean" "true" \
+  "$(jq -sr 'map(select(.session_id == "bash-noq"))[0].bash_unknown_edit_scope' <<<"${sweep_rows}")"
+assert_eq "D2 real sweep classifies Bash-only edit without quality" "edited_no_quality" \
+  "$(jq -sr 'map(select(.session_id == "bash-noq"))[0].outcome' <<<"${sweep_rows}")"
+assert_eq "D3 real sweep classifies reviewed+verified Bash-only edit" "completed_inferred" \
+  "$(jq -sr 'map(select(.session_id == "bash-complete"))[0].outcome' <<<"${sweep_rows}")"
+rm -rf "${SWEEP_HOME}"
 
 printf '\nSession-summary outcome tests: %d passed, %d failed\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]] || exit 1

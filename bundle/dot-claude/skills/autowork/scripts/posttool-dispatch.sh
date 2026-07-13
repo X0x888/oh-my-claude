@@ -19,13 +19,14 @@
 #   - $0 inside a sourced handler resolves to THIS script's path, so each
 #     handler's own SCRIPT_DIR still points at the scripts directory.
 #
-# Output contract: the three recorders are silent; circuit-breaker is the
-# only handler that emits hook JSON, and it runs last with its stdout
+# Output contract: every handler except circuit-breaker is silent;
+# circuit-breaker is the only handler that emits hook JSON, and it runs last with its stdout
 # passing through unmerged. If a future handler starts emitting, it must
 # either stay last-and-alone or grow a real merge step here (pinned by
 # tests/test-posttool-dispatch.sh).
 #
-# Routing: Bash tool calls run all four handlers; every other tool runs
+# Routing: Bash tool calls run the edit-clock writer plus the four folded
+# handlers; every other tool runs
 # timing only — exactly the surface the four separate matchers covered.
 
 set -euo pipefail
@@ -57,6 +58,10 @@ _dispatch_one "posttool-timing.sh"
 if [[ "${HOOK_JSON}" == *'"tool_name":"Bash"'* || "${HOOK_JSON}" == *'"tool_name": "Bash"'* ]]; then
   tool_name="$(json_get '.tool_name')"
   if [[ "${tool_name}" == "Bash" ]]; then
+    # Must precede verification: if this Bash call is recorded as edit-bearing,
+    # mark-edit leaves a per-tool marker and record-verification rejects the
+    # same call entirely. A separate post-edit verification call is required.
+    _dispatch_one "mark-edit.sh"
     _dispatch_one "record-verification.sh"
     _dispatch_one "record-delivery-action.sh"
     _dispatch_one "circuit-breaker.sh"

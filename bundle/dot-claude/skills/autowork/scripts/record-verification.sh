@@ -40,6 +40,21 @@ else
   mcp_verify_type="$(classify_mcp_verification_tool "${tool_name}")"
 fi
 
+# The dispatcher runs mark-edit before this handler. When that handler proved
+# (or conservatively recorded) an edit-bearing Bash call, it leaves a per-tool marker here.
+# A compound `tests; mutate` call must not count as verification of the bytes
+# written after the tests; conservatively require a separate verification
+# call for every edit-bearing Bash invocation, regardless of segment order.
+if [[ "${tool_name}" == "Bash" ]] && [[ -n "${command_text}" ]]; then
+  tool_use_id="$(json_get '.tool_use_id' 2>/dev/null || true)"
+  tool_cwd="$(json_get '.cwd' 2>/dev/null || true)"
+  tool_cwd="${tool_cwd:-${PWD}}"
+  if consume_bash_edit_outcome "${tool_use_id}" "${tool_cwd}" "${command_text}"; then
+    log_hook "record-verification" "skipped compound Bash verification because the same tool call changed the worktree"
+    exit 0
+  fi
+fi
+
 # Exit if neither Bash verification command nor MCP verification tool
 if [[ -z "${command_text}" && -z "${mcp_verify_type}" ]]; then
   exit 0

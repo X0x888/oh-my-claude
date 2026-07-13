@@ -370,5 +370,21 @@ assert_output_contains "T9: all three counters render together" \
 
 teardown_session "${ROOT}"
 
+# ----------------------------------------------------------------------
+printf 'Test 10: unknown Bash edit scope is visible without fabricating a file count\n'
+parts="$(mk_session)"
+ROOT="${parts%|*}"
+SID="${parts##*|}"
+printf '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","code_edit_count":"0","bash_unknown_edit_scope":"1","last_bash_edit_ts":"%s","last_code_edit_ts":"%s","session_start_ts":"%s"}' \
+  "$(date +%s)" "$(date +%s)" "$(date +%s)" > "${ROOT}/${SID}/session_state.json"
+
+assert_output_contains "T10: full status names unknown Bash scope" \
+  "Bash edit scope:    unknown" \
+  env STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}"
+assert_output_contains "T10: summary distinguishes exact count from unknown scope" \
+  "0 exact + unknown Bash scope code edits" \
+  env STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}" --summary
+teardown_session "${ROOT}"
+
 printf '\n=== Show-Status Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]

@@ -1,7 +1,7 @@
 ---
 name: quality-planner
 description: Use at the start of any non-trivial implementation, debugging, refactor, or migration to produce a decision-complete plan with concrete validation steps and explicit risks.
-disallowedTools: Write, Edit, MultiEdit
+disallowedTools: Write, Edit, MultiEdit, NotebookEdit
 model: inherit
 permissionMode: plan
 maxTurns: 30

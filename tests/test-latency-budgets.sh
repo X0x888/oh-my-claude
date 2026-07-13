@@ -91,7 +91,7 @@ done
 printf '\nT2: show-budgets emits documented default for each hook\n'
 out="$(run_script show-budgets)"
 expected_pairs=(
-  "prompt-intent-router.sh|1200"
+  "prompt-intent-router.sh|1500"
   "pretool-intent-guard.sh|300"
   "pretool-timing.sh|200"
   "posttool-timing.sh|200"
@@ -113,7 +113,7 @@ done
 # --- T3 ---
 printf '\nT3: env override surfaces in show-budgets\n'
 out="$(OMC_LATENCY_BUDGET_PROMPT_INTENT_ROUTER_MS=999 run_script show-budgets)"
-if printf '%s' "${out}" | grep -E "^prompt-intent-router\.sh[[:space:]]+999[[:space:]]+\(env override; default 1200\)" >/dev/null; then
+if printf '%s' "${out}" | grep -E "^prompt-intent-router\.sh[[:space:]]+999[[:space:]]+\(env override; default 1500\)" >/dev/null; then
   PASS=$((PASS + 1))
   printf '  PASS: env override surfaces with annotation\n'
 else
@@ -124,7 +124,7 @@ fi
 # --- T4 ---
 printf '\nT4: invalid env override falls back to default\n'
 out="$(OMC_LATENCY_BUDGET_PROMPT_INTENT_ROUTER_MS=not-a-number run_script show-budgets)"
-if printf '%s' "${out}" | grep -E "^prompt-intent-router\.sh[[:space:]]+1200\$" >/dev/null; then
+if printf '%s' "${out}" | grep -E "^prompt-intent-router\.sh[[:space:]]+1500\$" >/dev/null; then
   PASS=$((PASS + 1))
   printf '  PASS: non-numeric override ignored, default applied\n'
 else
@@ -225,6 +225,49 @@ printf '\nT12: unknown subcommand returns 2\n'
 exit_code=0
 HOME="${TEST_HOME}" run_script bogus >/dev/null 2>&1 || exit_code=$?
 assert_eq "${exit_code}" "2" "unknown subcommand exits 2"
+
+# --- T13 ---
+printf '\nT13: source benchmark does not prefer a stale installed hook\n'
+installed_decoy="${TEST_HOME}/.claude/skills/autowork/scripts/pretool-intent-guard.sh"
+decoy_marker="${TEST_HOME}/installed-decoy-ran"
+rm -f "${installed_decoy}"
+printf '#!/bin/sh\n: > "%s"\n' "${decoy_marker}" >"${installed_decoy}"
+chmod +x "${installed_decoy}"
+out="$(run_script benchmark --samples 1 --hook pretool-intent-guard.sh 2>&1 || true)"
+if [[ ! -e "${decoy_marker}" ]] && [[ "${out}" == *'pretool-intent-guard.sh'* ]]; then
+  PASS=$((PASS + 1))
+  printf '  PASS: source-local hook wins over installed decoy\n'
+else
+  FAIL=$((FAIL + 1))
+  printf '  FAIL: benchmark executed stale installed decoy\n%s\n' "${out}"
+fi
+
+# --- T14 ---
+printf '\nT14: warm p95 excludes the separately-budgeted first sample\n'
+if grep -Fq '"${measurements[@]:1}"' "${SCRIPT}"; then
+  PASS=$((PASS + 1))
+  printf '  PASS: warm statistics slice starts after FIRST\n'
+else
+  FAIL=$((FAIL + 1))
+  printf '  FAIL: cold sample is still folded into warm p95\n'
+fi
+
+# --- T15 ---
+printf '\nT15: empty HOME still benchmarks source hook dependencies\n'
+EMPTY_HOME="$(mktemp -d)"
+mkdir -p "${EMPTY_HOME}/state"
+out="$(HOME="${EMPTY_HOME}" STATE_ROOT="${EMPTY_HOME}/state" \
+  bash "${SCRIPT}" benchmark --samples 2 --hook prompt-intent-router.sh 2>&1 || true)"
+if [[ "${out}" == *'prompt-intent-router.sh'* ]] \
+    && [[ "${out}" != *'missing'* ]] \
+    && [[ "${out}" != *'MISSING'* ]]; then
+  PASS=$((PASS + 1))
+  printf '  PASS: source dependency shadow works without an install\n'
+else
+  FAIL=$((FAIL + 1))
+  printf '  FAIL: source benchmark false-greened or missed dependencies\n%s\n' "${out}"
+fi
+rm -rf "${EMPTY_HOME}"
 
 rm -rf "${TEST_HOME}"
 

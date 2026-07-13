@@ -364,6 +364,7 @@ merge_settings_python() {
 import json
 import os
 import pathlib
+import shlex
 import sys
 
 settings_path = pathlib.Path(sys.argv[1])
@@ -441,17 +442,31 @@ hooks = settings["hooks"]
 
 def script_basename(command):
     """Extract the script basename from a hook command, stripping any
-    'bash ' prefix and trailing arguments. Used so that upgrades where
+    supported shell/Python interpreter prefix and trailing arguments. Used so that upgrades where
     only a trailing argument changed (e.g. record-reviewer.sh adding a
     ' prose' suffix) are detected as the same entry and the patch
     version replaces the base version instead of being appended."""
-    tokens = (command or "").strip().split()
+    try:
+        tokens = shlex.split(command or "", posix=True)
+    except ValueError:
+        tokens = (command or "").strip().split()
     if not tokens:
         return ""
-    first = tokens[0]
-    if first == "bash" and len(tokens) > 1:
-        first = tokens[1]
-    return first.rsplit("/", 1)[-1]
+    # Managed hooks are script files. Finding the first script token is more
+    # robust than maintaining a second shell-launcher grammar here: it covers
+    # env/sudo/command/exec, path-qualified interpreters, and options with
+    # separate values (`env -u FOO`, `bash -o errexit`) identically.
+    script_tokens = [
+        token.rsplit("/", 1)[-1]
+        for token in tokens
+        if token.rsplit("/", 1)[-1].endswith((".sh", ".py"))
+    ]
+    if script_tokens:
+        # Launcher option values precede the executed script (`exec -a
+        # decoy.sh bash real-hook.sh`), so the final script token owns the
+        # hook identity.
+        return script_tokens[-1]
+    return tokens[0].rsplit("/", 1)[-1]
 
 def entry_hooks(entry):
     # Filter out non-dict hook entries (explicit `null`, arrays, scalars)
@@ -586,6 +601,46 @@ def prune_superseded(event, entries):
         kept.append(e)
     return kept
 
+def canonicalize_managed_entries(entries, patch_entries):
+    """Remove stale matcher copies of uniquely-owned managed hooks, then
+    collapse duplicates created by a matcher rename.
+
+    A basename used by multiple patch matchers (record-reviewer.sh) is left
+    matcher-scoped. A basename with one patch owner (posttool-dispatch.sh,
+    mark-edit.sh, etc.) may exist only under that canonical matcher. Foreign
+    hooks sharing an entry are preserved."""
+    owners = {}
+    for entry in patch_entries or []:
+        if not isinstance(entry, dict):
+            continue
+        matcher = entry_matcher(entry)
+        for basename in entry_basenames(entry):
+            owners.setdefault(basename, set()).add(matcher)
+    unique_owner = {
+        basename: next(iter(matchers))
+        for basename, matchers in owners.items()
+        if len(matchers) == 1
+    }
+    kept = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            kept.append(entry)
+            continue
+        matcher = entry_matcher(entry)
+        original = entry_hooks(entry)
+        remaining = [
+            hook for hook in original
+            if unique_owner.get(script_basename(hook.get("command")), matcher) == matcher
+        ]
+        if len(remaining) == len(original):
+            kept.append(entry)
+        elif remaining:
+            updated = dict(entry)
+            updated["hooks"] = remaining
+            kept.append(updated)
+        # Drop an entry only when removing stale managed hooks emptied it.
+    return normalize_base_entries(kept)
+
 for event, patch_entries in (patch.get("hooks") or {}).items():
     if hooks.get(event) is None:
         hooks[event] = []
@@ -709,6 +764,12 @@ for event, patch_entries in (patch.get("hooks") or {}).items():
         # Phase 3: disjoint matcher/basenames — append as a new entry.
         existing_entries.append(patch_entry)
 
+    # Phase 0 can rename a stale entry onto a matcher that already has the
+    # canonical patch entry, creating duplicate fires. Coalesce after every
+    # event merge and remove any remaining uniquely-owned managed basename
+    # from stale matchers.
+    hooks[event] = canonicalize_managed_entries(existing_entries, patch_entries)
+
 settings_path.parent.mkdir(parents=True, exist_ok=True)
 with settings_path.open("w") as f:
     json.dump(settings, f, indent=2)
@@ -745,31 +806,22 @@ merge_settings_jq() {
 
   jq -s --arg output_style_pref "${output_style_pref}" '
     # Extract the script basename from a hook command. Strips leading
-    # "bash " prefix and trailing arguments so that upgrades where only
+    # supported interpreter prefixes and trailing arguments so that upgrades where only
     # a trailing argument changed (e.g. record-reviewer.sh → record-reviewer.sh prose)
     # are detected as the same entry and the patch version replaces the
     # base version instead of being appended.
     def script_basename:
-      . as $cmd
-      # Split on any whitespace run to match Python `.split()` behavior
-      # (which splits on any whitespace including newlines). POSIX
-      # [[:space:]] — NOT an escape-based class: the previous
-      # `[ \t\r\n\f\v]` form hit an Oniguruma character-class quirk where
-      # `\v` matched the LITERAL letter "v", silently tokenizing every
-      # v-containing command ("record-verification.sh" keyed as
-      # "record-") . Invisible for years because patch and base misparsed
-      # identically, so same-key matching still worked — it surfaced the
-      # moment the v1.48 supersession prune compared those keys against
-      # correct literal basenames (and it also meant the python and jq
-      # merge paths keyed entries differently all along).
-      | ($cmd | [splits("[[:space:]]+")] | map(select(length > 0))) as $toks
-      | (if ($toks | length) == 0 then ""
-         elif $toks[0] == "bash" and ($toks | length) > 1 then $toks[1]
-         else $toks[0]
-         end)
-      # Coalesce null to "" so empty-command inputs produce "", matching
-      # python `rsplit("/", 1)[-1]` behavior on the empty string.
-      | (split("/") | .[-1] // "");
+      def token_basename: split("/") | last;
+      def shell_tokens:
+        [scan("\u0027[^\u0027]*\u0027|\"(?:\\\\.|[^\"\\\\])*\"|[^[:space:]]+")
+         | if ((startswith("\u0027") and endswith("\u0027")) or
+               (startswith("\"") and endswith("\"")))
+           then .[1:-1] else . end];
+      tostring | shell_tokens
+      | . as $tokens
+      | ([ $tokens[] | token_basename
+           | select(test("\\.(sh|py)$")) ][-1]
+         // (($tokens[0] // "") | token_basename));
     def entry_basenames:
       [(.hooks // [])[] | select(type == "object") | (.command // "") | script_basename];
     def entry_matcher:
@@ -896,6 +948,36 @@ merge_settings_jq() {
               end
           end)
         end;
+    # Remove stale matcher copies of patch-managed basenames that have one
+    # canonical owner, then coalesce duplicates created by Phase 0 matcher
+    # renames. Basenames intentionally installed under multiple matchers are
+    # left matcher-scoped.
+    def canonicalize_managed_entries($patch_entries):
+      ([ $patch_entries[]
+         | select(type == "object")
+         | entry_matcher as $matcher
+         | entry_basenames[]
+         | {basename: ., matcher: $matcher}]
+       | group_by(.basename)
+       | map(select(([.[].matcher] | unique | length) == 1)
+             | {key: .[0].basename, value: .[0].matcher})
+       | from_entries) as $owners
+      | map(
+          if type != "object" then .
+          else
+            entry_matcher as $matcher
+            | (.hooks // []) as $original
+            | [$original[]
+               | select(
+                   (type != "object")
+                   or (((.command // "") | script_basename) as $basename
+                       | (($owners[($basename // "")] // $matcher) == $matcher)))] as $remaining
+            | if ($remaining | length) == ($original | length) then .
+              elif ($remaining | length) == 0 then empty
+              else .hooks = $remaining
+              end
+          end)
+      | normalize_base_entries;
     # Merge a list of patch entries into a base entries array using the
     # three-phase algorithm: exact match → overlap → append.
     def merge_entries($patch_entries):
@@ -968,7 +1050,8 @@ merge_settings_jq() {
         .[$item.key] = ((.[$item.key] // [])
           | normalize_base_entries
           | prune_superseded($item.key)
-          | merge_entries($item.value // []))
+          | merge_entries($item.value // [])
+          | canonicalize_managed_entries($item.value // []))
       );
     .[0] as $base
     | .[1] as $patch
@@ -2012,6 +2095,32 @@ warn_foreign_hooks() {
 
 }
 
+warn_global_hook_disable() {
+  local settings_file="$1"
+  local disabled="false"
+  [[ -f "${settings_file}" ]] || return 0
+  if command -v jq >/dev/null 2>&1; then
+    jq -e '.disableAllHooks == true' "${settings_file}" >/dev/null 2>&1 && disabled="true"
+  elif command -v python3 >/dev/null 2>&1; then
+    disabled="$(python3 -c '
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        value = json.load(f).get("disableAllHooks") is True
+    sys.stdout.write("true" if value else "false")
+except Exception:
+    sys.stdout.write("false")
+' "${settings_file}" 2>/dev/null || printf 'false')"
+  fi
+  if [[ "${disabled}" == "true" ]]; then
+    printf '\n'
+    printf '  [warn] settings.json has disableAllHooks=true.\n'
+    printf '  The bundled hook entries are installed but Claude Code will not run them.\n'
+    printf '  Remove that setting (or set it to false), then re-run verify.sh.\n'
+    printf '\n'
+  fi
+}
+
 # warn_foreign_statusline — paired with warn_foreign_hooks, fires
 # AFTER merge_settings_*. Compares the PRE_MERGE_STATUSLINE_CMD
 # value (captured BEFORE the merge above) against the bundled value;
@@ -2037,6 +2146,7 @@ warn_foreign_statusline() {
 }
 
 warn_foreign_hooks "${CLAUDE_HOME}/settings.json"
+warn_global_hook_disable "${CLAUDE_HOME}/settings.json"
 warn_foreign_statusline
 
 # Step 5 — Set executable bits on scripts.

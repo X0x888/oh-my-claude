@@ -147,6 +147,32 @@ assert_eq "cycle edit count clamps to 0 (baseline > total)" "0" "$(objective_con
 reset_state
 assert_eq "cycle edit count = 0 on empty state" "0" "$(objective_contract_cycle_edit_count)"
 
+# Unknown Bash scope is not a unique-file count, but a Bash edit in the
+# current objective cycle must still arm the completion audit.
+reset_state
+write_state_batch \
+  "current_objective" "short ask" \
+  "objective_contract_prompt_ts" "${T_PROMPT}" \
+  "last_bash_edit_ts" "${T_EDIT}" \
+  "code_edit_count" "0" \
+  "doc_edit_count" "0"
+OMC_OBJECTIVE_CONTRACT_MIN_FILES=4 objective_contract_is_substantive \
+  && assert_eq "substantive via current-cycle unknown Bash edit" "yes" "yes" \
+  || assert_eq "substantive via current-cycle unknown Bash edit" "yes" "no"
+
+reset_state
+write_state_batch \
+  "current_objective" "short ask" \
+  "objective_contract_prompt_ts" "${T_PROMPT}" \
+  "last_bash_edit_ts" "${T_PRE}" \
+  "code_edit_count" "0" \
+  "doc_edit_count" "0"
+if OMC_OBJECTIVE_CONTRACT_MIN_FILES=4 objective_contract_is_substantive; then
+  assert_eq "stale prior-cycle unknown Bash edit does not arm" "no" "yes"
+else
+  assert_eq "stale prior-cycle unknown Bash edit does not arm" "no" "no"
+fi
+
 # --- objective_contract_is_substantive: the disjunction ---
 # VOLUME arm
 arm_substantive_cycle

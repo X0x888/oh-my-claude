@@ -1,7 +1,7 @@
 ---
 name: writing-architect
 description: Use when the deliverable is a paper, report, proposal, essay, email, memo, or other substantial written piece and the main need is to shape the structure, thesis, section plan, audience fit, and evidence requirements before drafting.
-disallowedTools: Write, Edit, MultiEdit
+disallowedTools: Write, Edit, MultiEdit, NotebookEdit
 model: inherit
 permissionMode: plan
 maxTurns: 20

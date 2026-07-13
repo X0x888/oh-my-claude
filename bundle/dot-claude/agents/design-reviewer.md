@@ -1,7 +1,7 @@
 ---
 name: design-reviewer
 description: Use after UI code changes to evaluate visual design quality — color, typography, layout, spacing, and distinctiveness. Catches generic AI-generated patterns before they ship.
-disallowedTools: Write, Edit, MultiEdit
+disallowedTools: Write, Edit, MultiEdit, NotebookEdit
 model: sonnet
 permissionMode: plan
 maxTurns: 20

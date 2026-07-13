@@ -1,7 +1,7 @@
 ---
 name: data-lens
 description: Evaluate a project from a Data/Analytics perspective — instrumentation coverage, data model quality, analytics readiness, measurement strategy, and pipeline architecture. Use as part of a multi-role project council evaluation.
-disallowedTools: Write, Edit, MultiEdit
+disallowedTools: Write, Edit, MultiEdit, NotebookEdit
 model: sonnet
 permissionMode: plan
 maxTurns: 20

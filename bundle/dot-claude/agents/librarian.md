@@ -1,7 +1,7 @@
 ---
 name: librarian
 description: Use when work depends on official docs, third-party APIs, framework conventions, source-of-truth external references, or finding concrete reference implementations to de-risk execution.
-disallowedTools: Write, Edit, MultiEdit
+disallowedTools: Write, Edit, MultiEdit, NotebookEdit
 model: sonnet
 permissionMode: plan
 maxTurns: 30

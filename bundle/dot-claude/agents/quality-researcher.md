@@ -1,7 +1,7 @@
 ---
 name: quality-researcher
 description: Use when implementation depends on discovering repository conventions, API usage, wiring points, commands, or other context that is not yet clear from the main thread.
-disallowedTools: Write, Edit, MultiEdit
+disallowedTools: Write, Edit, MultiEdit, NotebookEdit
 model: sonnet
 permissionMode: plan
 maxTurns: 30

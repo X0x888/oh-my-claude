@@ -83,7 +83,7 @@ Use the manual clone path when you want the strongest supply-chain posture. Use 
 
 ### Is this safe?
 
-Fair question for a tool that hooks every prompt and runs bash on your machine. Short answers: **100% local** (no network egress, no telemetry endpoint — the only network activity is the `git clone` you invoke); **review agents can't write** (the 26 advisory/planning/review specialists carry `disallowedTools: Write, Edit, MultiEdit`; the 11 domain builders — `frontend-developer`, the `ios-*` family, `research-data-analyst`, etc. — edit only under the same permission prompts that govern the main thread); **permission prompts stay on** (bypass is a separate explicit opt-in); **hostile repos can't disarm it** (security flags are deny-listed from project-level conf); **everything it persists is local, redacted, and opt-out** (`/omc-config` → Minimal turns all telemetry off). The full four-question answer — what runs, what leaves, what's persisted, why it's safe to let it gate you — lives in [SECURITY.md](SECURITY.md).
+Fair question for a tool that hooks every prompt and runs bash on your machine. Short answers: **100% local** (no network egress, no telemetry endpoint — the only network activity is the `git clone` you invoke); **inspection/judgment agents cannot use Claude Code's direct editor tools** (all 26 deny `Write`, `Edit`, `MultiEdit`, and `NotebookEdit` and request plan mode; Bash remains available for inspection/tests and follows the active permission mode); **permission prompts stay on** (bypass is a separate explicit opt-in); **repo-owned oh-my-claude conf cannot flip protected flags** (the parser deny-lists them, while `verify.sh` separately checks Claude Code's user and current-project `disableAllHooks` settings); **everything it persists is local, redacted, and opt-out** (`/omc-config` → Minimal turns all telemetry off). Claude Code project settings and administrator-managed policy can intentionally disable user hooks; that platform boundary is stated in [SECURITY.md](SECURITY.md), alongside the full four-question trust answer.
 
 After install, two mandatory steps:
 
@@ -192,19 +192,19 @@ These aren't edge cases. They're the daily experience of anyone using Claude Cod
 
 oh-my-claude enforces cognitive quality through structure, not prompt engineering. Instead of asking Claude to please think harder, it installs bash hooks that intercept Claude Code's lifecycle events -- prompt submission, session compaction, stop attempts -- and injects domain-aware context, quality requirements, and hard gates that Claude cannot bypass.
 
-The result: Claude classifies your intent before acting, routes work to specialist agents, blocks implementation mutations until a fresh-context specialist has shaped the work, thinks between tool calls, and literally cannot mark a task as done until review and verification are complete.
+The result: Claude classifies your intent before acting, routes work to specialist agents, can require a fresh-context specialist before implementation when the opt-in agent-first gate is enabled, thinks between tool calls, and blocks initial completion attempts while active review or verification gates are unresolved. If a safety cap is exhausted, the unresolved gap is surfaced instead of trapping the session indefinitely.
 
 ## Feature highlights
 
 ### Hard quality gates
 
-**Claude can't mark a task done until verification + review are complete.** Skip tests, skip the reviewer, defer work to a "future session" without a checkpoint, miss prompt-stated commit/push obligations, or edit 3+ files without an excellence review — each is a hard stop, not a warning. Caps on each gate prevent infinite loops: if Claude can't satisfy them, it surfaces the gap instead of spinning.
+**Missing verification or review blocks completion attempts.** Skip tests, skip the reviewer, defer work to a "future session" without a checkpoint, miss prompt-stated commit/push obligations, or edit 3+ files without an excellence review — each initially hard-stops completion. Caps prevent infinite loops: if Claude cannot satisfy a gate, it eventually surfaces the unresolved gap instead of spinning.
 
 ### Agent-first execution
 
-**Opt-in (v1.43+).** When `agent_first_gate=on`, `/ulw` execution requires Claude to dispatch and wait for a fresh-context shaping specialist before the first workspace mutation — read-only inspection still works, but `Edit`/`Write`/`MultiEdit` and common mutating Bash commands block until a planner, domain specialist, challenge agent, researcher, writer, or lens has returned. Post-hoc reviewers do not satisfy this floor.
+**Opt-in (v1.43+).** When `agent_first_gate=on`, `/ulw` execution requires Claude to dispatch and wait for a fresh-context shaping specialist before the first workspace mutation — read-only inspection still works, but `Edit`/`Write`/`MultiEdit`/`NotebookEdit` and common mutating Bash commands block until a planner, domain specialist, challenge agent, researcher, writer, or lens has returned. Post-hoc reviewers do not satisfy this floor.
 
-**Default is `off`** because the mandate was firing ~2.2x/session under `model_tier=quality` (where specialists and main thread are both Opus, removing the smartness gap the mandate was buying) and the depth-on-every-prompt rule + sub-dispatch-as-tool guidance in `~/.claude/quality-pack/memory/model-robustness.md` now carry the actual concern. Turn it on via `/omc-config` when training a new workflow habit, running on `model_tier=economy`, or when the active session is drift-prone on a single surface. Telemetry (`first_mutation_ts`, `first_mutation_tool`, `agent_first_gate_state`, `agent_first_gate_blocks`) captures unconditionally regardless of the flag — `/ulw-report` can compare opt-in vs opt-out outcomes per-row.
+**Default is `off`** because the mandate was firing ~2.2x/session under `model_tier=quality` (where specialists and main thread are both Opus, removing the smartness gap the mandate was buying) and the depth-on-every-prompt rule + sub-dispatch-as-tool guidance in `~/.claude/quality-pack/memory/model-robustness.md` now carry the actual concern. Turn it on via `/omc-config` when training a new workflow habit, running on `model_tier=economy`, or when the active session is drift-prone on a single surface. First-mutation telemetry remains available in both modes: exact editor attempts are stamped PreTool, while default-off Bash is stamped after an actual mutation is observed; the block counter increments only when the enabled gate blocks.
 
 ### Prescribed reviewer sequence
 
@@ -242,7 +242,7 @@ Reviewer findings are machine-readable (single-line `FINDINGS_JSON` block before
 
 ### Permissioned agents
 
-**37 specialist agents — every agent that judges work is read-only; the 11 that build are permission-gated.** The 26 advisory, planning, and review specialists carry `disallowedTools: Write, Edit, MultiEdit`, enforced at dispatch: they read, search, analyze, and plan, and the main thread executes what they recommend — the agents that judge work are structurally unable to alter it. The 11 domain builders (frontend-developer, backend-api-developer, the ios-* family, fullstack-feature-builder, devops-infrastructure-engineer, test-automation-engineer, research-data-analyst, atlas) can edit by design — implementation is their job — and every write still runs under the same Claude Code permission prompts that govern the main thread.
+**37 specialist agents — 26 are configured for inspection/judgment; the 11 that build retain editor tools.** The 26 inspection/judgment specialists carry `disallowedTools: Write, Edit, MultiEdit, NotebookEdit` plus `permissionMode: plan`: they cannot invoke Claude Code's direct file/notebook editors. Bash remains available because inspection and verification need `git diff`, targeted tests, and build checks; it is not an OS-level no-write sandbox and remains governed by the active Claude Code permission mode (parent `acceptEdits`, `auto`, or bypass modes can take precedence). The 11 domain builders (frontend-developer, backend-api-developer, the ios-* family, fullstack-feature-builder, devops-infrastructure-engineer, test-automation-engineer, research-data-analyst, atlas) retain editor tools by design, under that same permission model.
 
 ### Walk-away goals (`omc` CLI)
 

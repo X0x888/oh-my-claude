@@ -487,6 +487,90 @@ jq -nc --arg s "da3b" \
   | bash "${RECORD_DELIVERY_ACTION_SH}" 2>/dev/null
 assert_eq "delivery: structured exit_code failure does not record publish" "" "$(read_state_key "da3b" "last_publish_action_ts")"
 
+setup_session "da3c" '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","done_contract_push_mode":"required","done_contract_updated_ts":"100","session_start_ts":"50"}'
+run_delivery_action "da3c" "git tag" "v1.0.0"
+assert_eq "delivery: bare tag listing does not record publish" "" "$(read_state_key "da3c" "last_publish_action_ts")"
+run_delivery_action "da3c" "git tag --ignore-case --force v2.0.0" "created"
+assert_eq "delivery: ignore-case cannot hide forced tag publication" "1" "$(read_state_key "da3c" "publish_action_count")"
+
+setup_session "da3d" '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","done_contract_push_mode":"required","done_contract_updated_ts":"100","session_start_ts":"50"}'
+run_delivery_action "da3d" "git tag v2.0.0 --sort=refname" "created"
+assert_eq "delivery: name-first display option still records tag publication" "1" "$(read_state_key "da3d" "publish_action_count")"
+
+setup_session "da3e" '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","done_contract_push_mode":"required","done_contract_updated_ts":"100","session_start_ts":"50"}'
+run_delivery_action "da3e" "git tag --format='foo|bar;baz&&qux'" "foo|bar;baz&&qux"
+assert_eq "delivery: quoted separators in display format do not record publication" "" "$(read_state_key "da3e" "last_publish_action_ts")"
+run_delivery_action "da3e" "git tag --format='foo|bar;baz&&qux' v2.0.1" "created"
+assert_eq "delivery: quoted separators cannot hide positional tag publication" "1" "$(read_state_key "da3e" "publish_action_count")"
+
+setup_session "da3f" '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","done_contract_push_mode":"required","done_contract_updated_ts":"100","session_start_ts":"50"}'
+run_delivery_action "da3f" "git tag --list & git tag newtag" "created"
+assert_eq "delivery: background separator cannot hide tag publication" "1" "$(read_state_key "da3f" "publish_action_count")"
+
+setup_session "da3g" '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","done_contract_push_mode":"required","done_contract_updated_ts":"100","session_start_ts":"50"}'
+run_delivery_action "da3g" "echo prefix git tag v1" "prefix git tag v1"
+run_delivery_action "da3g" "printf %s git commit -m x" "gitcommit-mx"
+run_delivery_action "da3g" "printf '%s' ' gh release create v1'" " gh release create v1"
+run_delivery_action "da3g" $'printf "%s" "hello\n git tag v1"' $'hello\n git tag v1'
+assert_eq "delivery: command-like arguments cannot spoof delivery evidence" "" "$(read_state_key "da3g" "last_publish_action_ts")$(read_state_key "da3g" "last_commit_action_ts")"
+
+setup_session "da3h" '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","done_contract_push_mode":"required","done_contract_updated_ts":"100","session_start_ts":"50"}'
+run_delivery_action "da3h" 'git tag --list "$(git tag nested-one)"' "created"
+run_delivery_action "da3h" 'git tag --list $(git tag nested-two)' "created"
+run_delivery_action "da3h" 'git tag --list `git tag nested-three`' "created"
+run_delivery_action "da3h" 'git tag --list <(git tag nested-four)' "created"
+assert_eq "delivery: executable substitutions cannot hide publication" "4" "$(read_state_key "da3h" "publish_action_count")"
+
+segment_shapes="$(
+  . "${COMMON_SH}"
+  for command in 'printf x |& sed s/x/y/' 'printf x &>out' 'printf x &>>out' \
+      'printf x >&2' 'printf x 2>&1' 'read x <&0'; do
+    count=0
+    while IFS= read -r -d '' _segment; do count=$((count + 1)); done \
+      < <(omc_shell_compound_segments "${command}")
+    printf '%s,' "${count}"
+  done
+)"
+assert_eq "delivery parser preserves pipe-stderr and redirect operators" "2,1,1,1,1,1," "${segment_shapes}"
+
+setup_session "da3i" '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","done_contract_push_mode":"required","done_contract_updated_ts":"100","session_start_ts":"50"}'
+run_delivery_action "da3i" "sudo git tag --list" "v1.0.0"
+run_delivery_action "da3i" "env git tag --format='foo|bar'" "foo|bar"
+assert_eq "delivery: wrapped read-only tags do not record publication" "" "$(read_state_key "da3i" "last_publish_action_ts")"
+run_delivery_action "da3i" "sudo git tag wrapped-new" "created"
+assert_eq "delivery: wrapped tag creation records publication" "1" "$(read_state_key "da3i" "publish_action_count")"
+
+setup_session "da3j" '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","done_contract_push_mode":"required","done_contract_updated_ts":"100","session_start_ts":"50"}'
+run_delivery_action "da3j" "env -u FOO git tag env-unset-new" "created"
+run_delivery_action "da3j" "env -C /tmp git tag env-chdir-new" "created"
+run_delivery_action "da3j" "command -p git tag command-new" "created"
+run_delivery_action "da3j" "sudo -n git tag sudo-new" "created"
+assert_eq "delivery: standard wrapper options retain publication evidence" "4" "$(read_state_key "da3j" "publish_action_count")"
+
+setup_session "da3k" '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","done_contract_push_mode":"required","done_contract_updated_ts":"100","session_start_ts":"50"}'
+run_delivery_action "da3k" "'/usr/bin/git' tag quoted-path-new" "created"
+run_delivery_action "da3k" "FOO='a b' git tag assignment-new" "created"
+run_delivery_action "da3k" "env 'FOO=a b' git tag env-assignment-new" "created"
+assert_eq "delivery: quoted executable/assignment launch forms retain evidence" "3" "$(read_state_key "da3k" "publish_action_count")"
+
+setup_session "da3l" '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","done_contract_push_mode":"required","done_contract_updated_ts":"100","session_start_ts":"50"}'
+run_delivery_action "da3l" "env -S 'git tag split-new'" "created"
+assert_eq "delivery: opaque env split-string body cannot fabricate evidence" "" "$(read_state_key "da3l" "last_publish_action_ts")"
+
+setup_session "da3m" '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","done_contract_push_mode":"required","done_contract_updated_ts":"100","session_start_ts":"50"}'
+run_delivery_action "da3m" 'echo "$(git tag nested-tag)"' "nested-tag"
+run_delivery_action "da3m" 'printf %s "$(git push --force)"' "pushed"
+run_delivery_action "da3m" "sh -c 'git tag shell-tag'" "created"
+run_delivery_action "da3m" "eval 'git tag eval-tag'" "created"
+assert_eq "delivery: nested executors do not fabricate direct-action evidence" "" "$(read_state_key "da3m" "last_publish_action_ts")"
+
+setup_session "da3n" '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","done_contract_push_mode":"required","done_contract_updated_ts":"100","session_start_ts":"50"}'
+run_delivery_action "da3n" "sudo -- git tag sudo-end-new" "created"
+run_delivery_action "da3n" "sudo --user root git tag sudo-user-new" "created"
+run_delivery_action "da3n" "sudo -i git tag sudo-login-new" "created"
+run_delivery_action "da3n" "sudo -p prompt git tag sudo-prompt-new" "created"
+assert_eq "delivery: standard sudo option forms retain publication evidence" "4" "$(read_state_key "da3n" "publish_action_count")"
+
 setup_session "da4" '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","done_contract_commit_mode":"required","done_contract_updated_ts":"200","session_start_ts":"50","last_commit_action_ts":"150","commit_action_count":"1"}'
 blockers="$(run_delivery_blockers "da4")"
 assert_contains "delivery: stale commit action does not satisfy fresh prompt" "create the requested commit" "${blockers}"

@@ -174,10 +174,10 @@ oh-my-claude/
       autowork/scripts/       # 42 autowork hook scripts and utilities
         common.sh             # Shared functions (JSON, classification, scope)
         lib/state-io.sh       # Extracted state I/O subsystem; sourced by common.sh
-        lib/classifier.sh     # Extracted prompt classifier (P0 + P1 + telemetry); sourced by common.sh
+        lib/classifier.sh     # Extracted prompt classifier (P0 + P1 + telemetry); common.sh loader
         lib/verification.sh   # Extracted verification subsystem (Bash + MCP scoring); sourced by common.sh
-        lib/timing.sh         # Per-tool/subagent timing capture + aggregation (lazy-loaded); sourced by common.sh
-        lib/canary.sh         # Model-drift canary (verification-claim vs tool-call mismatch); sourced by common.sh
+        lib/timing.sh         # Per-tool/subagent timing capture + aggregation; common.sh loader
+        lib/canary.sh         # Model-drift canary; sourced directly by canary-claim-audit.sh
     statusline.py             # Custom statusline with context tracking
     CLAUDE.md                 # Installed user-facing CLAUDE.md
 
@@ -238,11 +238,11 @@ oh-my-claude/
 ### Key Components
 
 - **Hook scripts** (`quality-pack/scripts/`, `autowork/scripts/`): Bash scripts triggered by Claude Code lifecycle events (prompt entry, pre-tool-use, tool completion, compaction, session start). They route intents, manage state, and enforce quality gates.
-- **common.sh** (`autowork/scripts/common.sh`): Shared utility library. Sources `lib/state-io.sh` for the state I/O subsystem (`read_state`, `write_state`, `write_state_batch`, `with_state_lock`, `with_state_lock_batch`, `ensure_session_dir`, `session_file`, `append_state`, `append_limited_state`), `lib/verification.sh` for verification scoring and MCP-tool classification (`verification_matches_project_test_command`, `verification_has_framework_keyword`, `detect_verification_method`, `score_verification_confidence`, `classify_mcp_verification_tool`, `score_mcp_verification_confidence`, `detect_mcp_verification_outcome`), `lib/classifier.sh` for prompt classification (`is_imperative_request`, `count_keyword_matches`, `is_ui_request`, `infer_domain`, `classify_task_intent`, `record_classifier_telemetry`, `detect_classifier_misfire`, `is_execution_intent_value`), `lib/timing.sh` for per-tool/subagent timing capture, and `lib/canary.sh` for model-drift canary signals (the latter two lazy-loaded via `_omc_load_timing` / `_omc_load_classifier`). Continues to provide domain routing, project profile detection (`detect_project_profile`), quality scorecard generation (`build_quality_scorecard`), stall detection helpers (`compute_stall_threshold`, `compute_progress_score`), dimension risk ordering (`order_dimensions_by_risk`), cross-session agent metrics (`record_agent_metric`), defect pattern tracking (`record_defect_pattern`, `get_defect_watch_list`), and the `_cap_cross_session_jsonl` aggregate-rotation helper.
+- **common.sh** (`autowork/scripts/common.sh`): Shared utility library. Eagerly sources `lib/state-io.sh` for the state I/O subsystem (`read_state`, `write_state`, `write_state_batch`, `with_state_lock`, `with_state_lock_batch`, `ensure_session_dir`, `session_file`, `append_state`, `append_limited_state`) and `lib/verification.sh` for verification scoring and MCP-tool classification (`verification_matches_project_test_command`, `verification_has_framework_keyword`, `detect_verification_method`, `score_verification_confidence`, `classify_mcp_verification_tool`, `score_mcp_verification_confidence`, `detect_mcp_verification_outcome`). Idempotent `_omc_load_classifier` / `_omc_load_timing` loaders expose `lib/classifier.sh` (prompt classification) and `lib/timing.sh` (per-tool/subagent timing), allowing selected hot-path callers to defer them. `lib/canary.sh` is not part of the common import surface; `canary-claim-audit.sh` sources it directly. `common.sh` continues to provide domain routing, project profile detection (`detect_project_profile`), quality scorecard generation (`build_quality_scorecard`), stall detection helpers (`compute_stall_threshold`, `compute_progress_score`), dimension risk ordering (`order_dimensions_by_risk`), cross-session agent metrics (`record_agent_metric`), defect pattern tracking (`record_defect_pattern`, `get_defect_watch_list`), and the `_cap_cross_session_jsonl` aggregate-rotation helper.
 - **record-scope-checklist.sh** (`autowork/scripts/record-scope-checklist.sh`): State-backed checklist for example-marker prompts. `prompt-intent-router.sh` arms `exemplifying_scope_required=1` when an execution prompt uses `for instance` / `e.g.` / `such as` / `as needed`; the model records sibling class items in `exemplifying_scope.json`, then marks each `shipped` or `declined` with a concrete WHY. `stop-guard.sh` blocks silent drops while pending items remain.
 - **record-delivery-action.sh** (`autowork/scripts/record-delivery-action.sh`): PostToolUse Bash recorder for successful delivery actions (`git commit`, `git push`, `git tag`, and `gh pr/release/issue` publish-class commands). Feeds the delivery-contract gate so prompts that explicitly require commit or publish actions cannot be satisfied by prose alone.
 - **lib/state-io.sh** (`autowork/scripts/lib/state-io.sh`): Extracted state I/O module. Sourced by `common.sh` after `validate_session_id` and `log_anomaly` are defined. The lib uses portable readlink resolution so it works whether `common.sh` is installed normally, symlinked into a test HOME, or symlinked to a custom location.
-- **lib/classifier.sh** (`autowork/scripts/lib/classifier.sh`): Extracted prompt classification subsystem (~500 lines). Sourced by `common.sh` after every classifier dependency (`project_profile_has`, `is_advisory_request`, `normalize_task_prompt`, etc.) is defined. Behavior identical to the prior in-place definitions; this module exists for clearer ownership and to give the regression suite (`test-intent-classification.sh`, `test-classifier-replay.sh`) a single file of truth for future tuning.
+- **lib/classifier.sh** (`autowork/scripts/lib/classifier.sh`): Extracted prompt classification subsystem (~500 lines). Loaded through `common.sh`'s idempotent `_omc_load_classifier` after every classifier dependency (`project_profile_has`, `is_advisory_request`, `normalize_task_prompt`, etc.) is defined; hot-path callers can request deferred loading. Behavior identical to the prior in-place definitions; this module exists for clearer ownership and to give the regression suite (`test-intent-classification.sh`, `test-classifier-replay.sh`) a single file of truth for future tuning.
 - **lib/verification.sh** (`autowork/scripts/lib/verification.sh`): Extracted verification subsystem (~300 lines). Sourced by `common.sh` immediately after `lib/state-io.sh` (no inter-lib dependencies — pure functions over command text, output, and `OMC_CUSTOM_VERIFY_MCP_TOOLS`). Owns: bash test-command matching (`verification_matches_project_test_command`), framework-keyword detection (`verification_has_framework_keyword`), output-signal heuristics (`verification_output_has_counts`, `verification_output_has_clear_outcome`), the verification-method label and confidence score, plus MCP tool classification, scoring, and outcome detection. Behavior identical to the prior in-place definitions.
 - **Agent definitions** (`agents/*.md`): Markdown files defining specialist agents with role descriptions, capabilities, and `disallowedTools` for permission boundaries.
 - **Skills** (`skills/<name>/SKILL.md`): Self-contained skill definitions invoked by slash commands or automatic routing.
@@ -250,7 +250,7 @@ oh-my-claude/
 
 ### State Management
 
-Session state is stored as JSON in `$HOME/.claude/quality-pack/state/<session_id>/session_state.json`. All state reads and writes go through `read_state` and `write_state` / `write_state_batch` in `common.sh`.
+Primary key/value session state is stored as JSON in `$HOME/.claude/quality-pack/state/<session_id>/session_state.json`; those reads and writes go through `read_state` and `write_state` / `write_state_batch` in `common.sh`. Bounded JSONL/log artifacts and transient per-tool JSON sidecars live in the same session directory and are documented in `docs/architecture.md`.
 
 Cross-session data is stored alongside the state directory:
 - `$HOME/.claude/quality-pack/agent-metrics.json` — agent invocation counts, clean/findings verdicts, rolling confidence averages. Accessed via `record_agent_metric()` / `read_agent_metric()`.
@@ -267,7 +267,7 @@ Cross-session data is stored alongside the state directory:
 
 ### State
 
-- All state is JSON, stored in `session_state.json` per session.
+- Primary key/value state is JSON in `session_state.json`; use documented bounded artifacts/sidecars only when one JSON object cannot represent append-only or per-tool lifecycle state.
 - Use `write_state_batch` for atomic multi-key updates.
 - Use `read_state` for reads; it returns empty string for missing keys.
 - The canonical state-key dictionary lives in `docs/architecture.md` → "State keys in `session_state.json`". When adding a new state key, update that table in the same commit.
@@ -275,7 +275,7 @@ Cross-session data is stored alongside the state directory:
 ### Agents
 
 - Each agent is a single `.md` file in `bundle/dot-claude/agents/`.
-- Agents use `disallowedTools` to enforce permission boundaries (e.g., a reviewer agent cannot edit files).
+- Agents use `disallowedTools` to enforce direct-tool permission boundaries. The 26 inspection/judgment agents deny `Write`, `Edit`, `MultiEdit`, and `NotebookEdit` and request plan mode; Bash remains available for diffs/tests, so do not describe this as an OS-level no-write sandbox.
 - Agent names should be descriptive and hyphen-separated.
 
 #### Reviewer VERDICT contract
@@ -426,11 +426,11 @@ Do not change these without discussion in a GitHub issue:
 
 2. **Stop guard block limits**: Review/verification gate is hard-capped at 3 blocks per session. The excellence gate (for multi-file tasks) is capped at 1 block, controlled by a separate `excellence_guard_triggered` flag. These caps prevent runaway execution while giving enough cycles for completeness-focused review and remediation.
 
-3. **Agent permission boundaries via `disallowedTools`**: Each agent's `.md` file specifies which tools it cannot use. This is the primary security boundary -- do not weaken an agent's restrictions without a clear justification.
+3. **Agent permission boundaries via `disallowedTools`**: Each agent's `.md` file specifies which direct tools it cannot use. This is a tool-surface boundary, not a filesystem sandbox when Bash remains available -- do not weaken an agent's restrictions without a clear justification.
 
 4. **40% threshold for mixed domain classification**: When no single domain exceeds 40% of signal weight, the task is classified as "mixed" and routed to a generalist agent. Changing this threshold affects routing accuracy across all intents.
 
-5. **Agent-first gate is opt-in as of v1.43+** (`agent_first_gate=off` default). The mandate was firing ~2.2×/session under `model_tier=quality` (main thread and specialists both Opus) without paying for itself — `core.md` Thinking Quality + `model-robustness.md` Mechanism 2 carry the actual concern under default-off. **Telemetry capture is unconditional**: `first_mutation_ts`, `first_mutation_tool`, and `agent_first_gate_state` (the gate state AT mutation time, stamped by both `pretool-intent-guard.sh` and `mark-edit.sh`) all record regardless of the flag, so `/ulw-report` can compare opt-in vs opt-out outcomes per-row. The Stop backstop reads `agent_first_gate_state` from session state (not the live env var), so off→on / on→off toggle mid-session does not produce flag-flip footguns. **Do not re-mandate** without verifying all three justifying premises (smartness-gap, no depth-rule, low round-trip cost) hold again — see `~/.claude/projects/.../memory/project_agent_first_mandate_to_tool.md`. Per-conf-source restrictions (security-load-bearing flags refused from project-level conf to defeat malicious-repo flip attempts) apply to this flag too.
+5. **Agent-first gate is opt-in as of v1.43+** (`agent_first_gate=off` default). The mandate was firing ~2.2×/session under `model_tier=quality` (main thread and specialists both Opus) without paying for itself — `core.md` Thinking Quality + `model-robustness.md` Mechanism 2 carry the actual concern under default-off. **Observed-mutation telemetry is unconditional**: `first_mutation_ts`, `first_mutation_tool`, and `agent_first_gate_state` record regardless of the flag, so `/ulw-report` can compare opt-in vs opt-out outcomes per row. Exact editor tools are stamped at PreTool attempt time and again by `mark-edit.sh`; with the gate off, Bash is stamped by `mark-edit.sh` only after the snapshot/fallback observes a mutation (avoiding a mutation-classifier tax on every test/build call). With the gate on, recognized Bash mutation attempts are also stamped PreTool. `agent_first_gate_blocks` increments only when the enabled gate actually blocks. The Stop backstop reads `agent_first_gate_state` from session state (not the live env var), so off→on / on→off toggle mid-session does not produce flag-flip footguns. **Do not re-mandate** without verifying all three justifying premises (smartness-gap, no depth-rule, low round-trip cost) hold again — see `~/.claude/projects/.../memory/project_agent_first_mandate_to_tool.md`. Per-conf-source restrictions (security-load-bearing flags refused from project-level conf to defeat malicious-repo flip attempts) apply to this flag too.
 
 6. **Security-load-bearing flags refuse project-conf overrides** (`pretool_intent_guard`, `bg_spawn_gate`, `agent_first_gate`, `no_defer_mode`). A malicious or unfamiliar repo's `.claude/oh-my-claude.conf` cannot disable defensive gates the user opted into at the user level (`${HOME}/.claude/oh-my-claude.conf`). Env vars still override both as before. When adding a new security-load-bearing flag, add it to the `case` deny-list in `common.sh` `_parse_conf_file` so it can't be project-flipped, and pin a regression test in `tests/test-stop-guard-bypass-surface.sh` F-013.
 
@@ -468,4 +468,4 @@ Counts (agents, skills, scripts) and directory listings go stale fast. Keep them
 2. Begin with `set -euo pipefail`.
 3. Source `common.sh`: `. "${HOME}/.claude/skills/autowork/scripts/common.sh"`
 4. Exit 0 on missing `SESSION_ID`.
-5. Register the hook in `config/settings.patch.json` under the appropriate event (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PreCompact`, `PostCompact`, `SubagentStop`, or `Stop`).
+5. Register the hook in `config/settings.patch.json` under the appropriate event (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `PreCompact`, `PostCompact`, `SubagentStop`, `Stop`, or `StopFailure`).

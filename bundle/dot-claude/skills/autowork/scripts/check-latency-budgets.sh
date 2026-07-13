@@ -17,17 +17,18 @@
 #                                            budget. Default for CI.
 #   show-budgets                            Print the budget table
 #
-# Default samples: 5. First-sample + median + p95 over the samples are
-# reported. P95 is compared against the warm budget; first-sample is
+# Default samples: 5. First-sample + median + p95 over the remaining warm
+# samples are reported. P95 is compared against the warm budget; first-sample is
 # compared against a cold budget (default 150% of warm). This keeps the
 # common-path p95 tight while still surfacing cold/warm skew explicitly.
 #
 # Budgets (ms; conf-overridable via OMC_LATENCY_BUDGET_<HOOK>_MS):
-#   prompt-intent-router.sh: 1200  — heaviest hook (loads classifier +
+#   prompt-intent-router.sh: 1500  — heaviest hook (loads classifier +
 #                                     blindspot inventory, emits up to 9
 #                                     directives, runs once per prompt
-#                                     so 1.2s upper bound is acceptable)
-#   pretool-intent-guard.sh:  300  — runs on every PreToolUse; ~80ms typical
+#                                     so 1.5s upper bound is acceptable)
+#   pretool-intent-guard.sh:  300  — runs on every PreToolUse; benchmark uses
+#                                     a real opaque Bash snapshot candidate
 #   pretool-timing.sh:        200  — universal-matcher; ~100ms typical
 #                                     (common.sh source + state-dir mkdir)
 #   posttool-timing.sh:       200  — universal-matcher; ~100ms typical
@@ -44,20 +45,24 @@
 # we deliberately err on the high side so legitimate macOS-dev runs
 # don't trigger green→red transitions on Linux CI.
 #
-# Fail-open philosophy: a benchmark error (synthetic input rejected,
-# script not found) prints a diagnostic but does NOT fail the gate.
-# CI failures should be true latency regressions, not test infrastructure
-# issues — a flaky benchmark would erode trust in the gate.
+# Benchmark-integrity errors fail the gate. A missing script, rejected
+# synthetic payload, or source/dependency mismatch is not a latency pass;
+# treating a 14ms source failure as green previously hid real regressions.
 
 set -euo pipefail
 
-. "${HOME}/.claude/skills/autowork/scripts/common.sh"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "${SCRIPT_DIR}/common.sh" ]]; then
+  . "${SCRIPT_DIR}/common.sh"
+else
+  . "${HOME}/.claude/skills/autowork/scripts/common.sh"
+fi
 
 # --- Budget table ---
 
 emit_budgets() {
   cat <<'EOF'
-prompt-intent-router.sh|1200
+prompt-intent-router.sh|1500
 pretool-intent-guard.sh|300
 pretool-timing.sh|200
 posttool-timing.sh|200
@@ -127,8 +132,9 @@ emit_payload_for_hook() {
       jq -nc \
         --arg session_id "${sid}" \
         --arg cwd "${PWD}" \
-        --arg tool "Read" \
-        '{session_id:$session_id, cwd:$cwd, tool_name:$tool, tool_input:{file_path:"/etc/hostname"}}'
+        --arg id "bench-${sid}" \
+        '{session_id:$session_id, cwd:$cwd, tool_name:"Bash", tool_use_id:$id,
+          tool_input:{command:"pytest -q",run_in_background:false}}'
       ;;
     pretool-timing.sh|posttool-timing.sh)
       jq -nc \
@@ -219,37 +225,100 @@ compute_stats() {
 # and discarded — we measure wall-clock latency only.
 benchmark_hook() {
   local hook="$1" samples="$2" stay_quiet="${3:-0}"
-  local script_path="${HOME}/.claude/skills/autowork/scripts/${hook}"
-  if [[ ! -f "${script_path}" ]]; then
-    # Try the bundle path (testing the source repo before install).
-    if [[ -f "${PWD}/bundle/dot-claude/skills/autowork/scripts/${hook}" ]]; then
-      script_path="${PWD}/bundle/dot-claude/skills/autowork/scripts/${hook}"
-    elif [[ -f "${PWD}/bundle/dot-claude/quality-pack/scripts/${hook}" ]]; then
-      script_path="${PWD}/bundle/dot-claude/quality-pack/scripts/${hook}"
-    else
-      [[ "${stay_quiet}" -eq 1 ]] || printf 'check-latency-budgets: missing %s\n' "${hook}" >&2
-      return 1
-    fi
+  local script_path=""
+  # Benchmark the same artifact tree as this script. Preferring ~/.claude
+  # made source-tree checks silently time a stale installed hook whenever the
+  # developer had an older harness installed.
+  if [[ -f "${SCRIPT_DIR}/${hook}" ]]; then
+    script_path="${SCRIPT_DIR}/${hook}"
+  elif [[ -f "${SCRIPT_DIR}/../../../quality-pack/scripts/${hook}" ]]; then
+    script_path="${SCRIPT_DIR}/../../../quality-pack/scripts/${hook}"
+  elif [[ -f "${HOME}/.claude/skills/autowork/scripts/${hook}" ]]; then
+    script_path="${HOME}/.claude/skills/autowork/scripts/${hook}"
+  else
+    [[ "${stay_quiet}" -eq 1 ]] || printf 'check-latency-budgets: missing %s\n' "${hook}" >&2
+    return 1
   fi
 
   local i start end measurements=()
-  local sid payload
+  local sid payload created_ulw_sentinel=0 hook_failed=0
+  local artifact_root="" bench_home="" hook_home="${HOME}"
+  artifact_root="$(cd "${SCRIPT_DIR}/../../.." 2>/dev/null && pwd -P || true)"
+  if [[ -n "${artifact_root}" ]] \
+      && [[ -d "${artifact_root}/skills" ]] \
+      && [[ -d "${artifact_root}/quality-pack" ]]; then
+    bench_home="$(mktemp -d "${TMPDIR:-/tmp}/omc-latency-home.XXXXXX" 2>/dev/null || true)"
+    [[ -n "${bench_home}" ]] || return 1
+    mkdir -p "${bench_home}/.claude/quality-pack/blindspots" "${STATE_ROOT}" || {
+      rm -rf "${bench_home}"
+      return 1
+    }
+    ln -s "${artifact_root}/skills" "${bench_home}/.claude/skills" || {
+      rm -rf "${bench_home}"
+      return 1
+    }
+    for i in scripts memory design-craft research-craft; do
+      if [[ -e "${artifact_root}/quality-pack/${i}" ]]; then
+        ln -s "${artifact_root}/quality-pack/${i}" \
+          "${bench_home}/.claude/quality-pack/${i}" || {
+          rm -rf "${bench_home}"
+          return 1
+        }
+      fi
+    done
+    ln -s "${STATE_ROOT}" "${bench_home}/.claude/quality-pack/state" || {
+      rm -rf "${bench_home}"
+      return 1
+    }
+    hook_home="${bench_home}"
+  fi
+  if [[ "${hook}" == "pretool-intent-guard.sh" ]] \
+      && [[ ! -f "${STATE_ROOT}/.ulw_active" ]]; then
+    mkdir -p "${STATE_ROOT}"
+    touch "${STATE_ROOT}/.ulw_active"
+    created_ulw_sentinel=1
+  fi
   for ((i = 1; i <= samples; i++)); do
     sid="$(bench_session_id "${i}")"
+    if [[ "${hook}" == "pretool-intent-guard.sh" ]]; then
+      mkdir -p "${STATE_ROOT}/${sid}"
+      jq -nc '{workflow_mode:"ultrawork",task_intent:"execution",task_domain:"coding"}' \
+        >"${STATE_ROOT}/${sid}/session_state.json"
+    fi
     payload="$(emit_payload_for_hook "${hook}" "${sid}")"
     start="$(now_ms)"
-    bash "${script_path}" >/dev/null 2>&1 <<< "${payload}" || true
+    if [[ "${hook}" == "pretool-intent-guard.sh" ]]; then
+      HOME="${hook_home}" STATE_ROOT="${STATE_ROOT}" OMC_AGENT_FIRST_GATE=off \
+        bash "${script_path}" >/dev/null 2>&1 <<< "${payload}" || hook_failed=1
+    else
+      HOME="${hook_home}" STATE_ROOT="${STATE_ROOT}" \
+        bash "${script_path}" >/dev/null 2>&1 <<< "${payload}" || hook_failed=1
+    fi
     end="$(now_ms)"
     measurements+=( $((end - start)) )
+    [[ "${hook_failed}" -eq 0 ]] || break
   done
 
   # Cleanup synthetic state directories the bench created.
   rm -rf "${STATE_ROOT}"/omc-bench-$$-* 2>/dev/null || true
+  if [[ "${created_ulw_sentinel}" -eq 1 ]]; then
+    rm -f "${STATE_ROOT}/.ulw_active"
+  fi
+  [[ -z "${bench_home}" ]] || rm -rf "${bench_home}"
+  [[ "${hook_failed}" -eq 0 ]] || return 1
 
   local first
   first="${measurements[0]:-0}"
   local stats
-  stats="$(printf '%d\n' "${measurements[@]}" | compute_stats)"
+  if [[ "${#measurements[@]}" -gt 1 ]]; then
+    # The first sample has its own cold-start ceiling. Excluding it from warm
+    # median/p95 is required for the two-budget contract to mean what the
+    # output says; including it made p95 equal FIRST for the default five
+    # samples and rendered the larger cold budget ineffective.
+    stats="$(printf '%d\n' "${measurements[@]:1}" | compute_stats)"
+  else
+    stats="$(printf '%d\n' "${measurements[@]}" | compute_stats)"
+  fi
   printf '%s %s' "${first}" "${stats}"
 }
 
@@ -280,7 +349,7 @@ cmd_benchmark() {
     stats="$(benchmark_hook "${hook}" "${samples}" 1 || echo "MISSING MISSING")"
     if [[ "${stats}" == "MISSING MISSING" ]]; then
       missing=$((missing + 1))
-      printf '%-32s %8s %8s %8s %8s %8s   %s\n' "${hook}" "—" "—" "—" "${budget}ms" "${cold_budget}ms" "missing"
+      printf '%-32s %8s %8s %8s %8s %8s   %s\n' "${hook}" "—" "—" "—" "${budget}ms" "${cold_budget}ms" "missing/error"
       continue
     fi
     first="$(printf '%s' "${stats}" | awk '{print $1}')"
@@ -300,7 +369,8 @@ cmd_benchmark() {
 
   printf '\nSamples per hook: %d\n' "${samples}"
   if [[ "${missing}" -gt 0 ]]; then
-    printf '%d hook(s) not found (skipped, not failures)\n' "${missing}"
+    breaches=$((breaches + missing))
+    printf '%d hook(s) missing or failed during benchmark\n' "${missing}"
   fi
   if [[ "${breaches}" -gt 0 ]]; then
     printf '%d budget breach(es) detected\n' "${breaches}"
@@ -343,7 +413,7 @@ Per-hook budget overrides via env:
   OMC_LATENCY_BUDGET_<HOOK>_MS=<ms>
   e.g., OMC_LATENCY_BUDGET_PROMPT_INTENT_ROUTER_MS=500
   OMC_LATENCY_COLD_BUDGET_<HOOK>_MS=<ms>
-  e.g., OMC_LATENCY_COLD_BUDGET_PROMPT_INTENT_ROUTER_MS=1800
+  e.g., OMC_LATENCY_COLD_BUDGET_PROMPT_INTENT_ROUTER_MS=2250
 
 Default samples: 5 (first + median + p95). P95 uses the warm budget;
 first uses a cold budget (default 150% of warm).

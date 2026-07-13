@@ -89,7 +89,7 @@ harness:
   then, prefer narrow phrasings (preposition-anchored, label-anchored)
   over open-vocabulary catch-alls.
 
-## Current defense inventory (oh-my-claude v1.42.x)
+## Defense inventory (original v1.42.x set + later producer closure)
 
 For reference. The umbrella regression net at
 `tests/test-stop-guard-bypass-surface.sh` is authoritative.
@@ -103,9 +103,14 @@ For reference. The umbrella regression net at
 | F-010 rejected-finding subjective-token tightening | single-call-flip | `record-finding-list status rejected` with `by design` / `wontfix` and no concrete WHY |
 | F-010b final-closure closing-region scan | prose-pattern | Closing prose without label (silent stop) |
 | F-011 `ulw-skip` post-edit refusal | state-predicate | Skip after a reviewer found issues that haven't been re-reviewed |
+| F-012 agent-first-gate Stop backstop | state-predicate | Workspace mutation occurred with the opt-in floor armed but no qualifying specialist returned |
+| F-013 project-conf security-flag deny-list | state-predicate | A hostile repository conf tried to alter security-load-bearing user state |
+| F-014 objective-completion contract | state-predicate | A substantive objective cycle reached Stop without coverage attestation and a fresh completeness audit |
+| F-015 `/goal` relentless driver | state-predicate | A user-armed goal tried to release with unmet criteria before its stuck-wall escape contract was satisfied |
+| F-016 Bash/Notebook edit-clock producer coverage | state-predicate | File mutations through shipped non-Edit tools left `last_edit_ts` empty, so Stop misread changed work as "no edits" and released |
 
-Of the seven defenses listed, **2 are prose-pattern** (under the hard
-cap of 3), **3 are single-call-flip**, **2 are state-predicate**. The
+Of the twelve defenses listed, **2 are prose-pattern** (under the hard
+cap of 3), **3 are single-call-flip**, **7 are state-predicate**. The
 mix is intentionally biased toward the more durable categories.
 
 ## Scope note

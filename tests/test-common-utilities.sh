@@ -1011,7 +1011,29 @@ if is_dimension_valid "prose"; then pass=$((pass + 1)); else
   fail=$((fail + 1))
 fi
 
+# Unknown-scope Bash may have edited prose. Its Bash clock must invalidate a
+# prose review that predates the mutation, while a fresh re-review clears it.
+reset_dim_state
+write_state "last_doc_edit_ts" "1000"
+write_state "last_bash_edit_ts" "2000"
+write_state "bash_unknown_edit_scope" "1"
+tick_dimension "prose" "1500"
+if is_dimension_valid "prose"; then
+  printf '  FAIL: prose should be stale after unknown-scope Bash mutation\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+tick_dimension "prose" "2500"
+if is_dimension_valid "prose"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: fresh prose review should clear unknown-scope Bash staleness\n' >&2
+  fail=$((fail + 1))
+fi
+
 # code dimensions are still invalidated by the code edit at 2000
+write_state "last_code_edit_ts" "2000"
 tick_dimension "code_quality" "1500"
 if is_dimension_valid "code_quality"; then
   printf '  FAIL: code_quality should be stale (1500 < last_code_edit_ts 2000)\n' >&2
@@ -1061,6 +1083,12 @@ reset_dim_state
 write_state "doc_edit_count" "3"
 dims="$(get_required_dimensions)"
 assert_eq "get_required_dimensions 3 docs only = prose + completeness" "prose,completeness" "${dims}"
+
+reset_dim_state
+write_state "bash_unknown_edit_scope" "1"
+dims="$(get_required_dimensions)"
+assert_eq "get_required_dimensions unknown Bash fan-out uses conservative count gates" \
+  "bug_hunt,code_quality,stress_test,completeness,prose,design_quality,traceability" "${dims}"
 
 # Legacy fallback: resumed session with counters cleared but log rehydrated.
 # Must classify log contents, not just count them.

@@ -1,7 +1,7 @@
 ---
 name: chief-of-staff
 description: Use for professional-assistant work such as planning, prioritization, checklists, agendas, follow-ups, applications, responses, and turning vague requests into clean action-oriented deliverables.
-disallowedTools: Write, Edit, MultiEdit
+disallowedTools: Write, Edit, MultiEdit, NotebookEdit
 model: inherit
 permissionMode: plan
 maxTurns: 20

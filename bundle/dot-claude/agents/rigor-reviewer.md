@@ -1,7 +1,7 @@
 ---
 name: rigor-reviewer
 description: Use after scientific analysis or manuscript-methods work to audit statistical and methodological rigor — uncertainty treatment, fit validity, units, selection bias, figure compliance, reproducibility, and whether cited sources actually support the claims. The scientific counterpart to quality-reviewer; advisory-dispatch, findings feed the discovered-scope ledger.
-disallowedTools: Write, Edit, MultiEdit
+disallowedTools: Write, Edit, MultiEdit, NotebookEdit
 model: inherit
 permissionMode: plan
 maxTurns: 30

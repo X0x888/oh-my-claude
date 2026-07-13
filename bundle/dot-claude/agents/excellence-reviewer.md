@@ -1,7 +1,7 @@
 ---
 name: excellence-reviewer
 description: Use after the defect reviewer passes on complex tasks to evaluate the full deliverable with fresh eyes — completeness against the original objective, unknown unknowns, missing polish, and what a veteran would add.
-disallowedTools: Write, Edit, MultiEdit
+disallowedTools: Write, Edit, MultiEdit, NotebookEdit
 model: inherit
 permissionMode: plan
 maxTurns: 30

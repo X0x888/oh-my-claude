@@ -1,7 +1,7 @@
 ---
 name: abstraction-critic
 description: Use when the framing or paradigm fit feels off — to evaluate whether the chosen abstraction, boundary placement, and design model match the problem. Distinct from quality-reviewer (defects), excellence-reviewer (completeness), metis (plan edge cases), and oracle (debug second opinion). Lens is structural — "is this the right shape of solution?" rather than "are there bugs?".
-disallowedTools: Write, Edit, MultiEdit
+disallowedTools: Write, Edit, MultiEdit, NotebookEdit
 model: inherit
 permissionMode: plan
 maxTurns: 20

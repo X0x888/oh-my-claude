@@ -14,7 +14,8 @@
 #   - block-reason text never contains the disturbing rephrasings the user
 #     reported ("say yes", "single yes", "reauthorize", "confirm with yes")
 #     and DOES include the corrective guidance ("propose a concrete imperative")
-#   - kill-switch (OMC_PRETOOL_INTENT_GUARD=false) bypasses the guard entirely
+#   - kill-switch (OMC_PRETOOL_INTENT_GUARD=false) disables intent denial while
+#     leaving the independent mutation-baseline producer active
 #
 # This file complements the broader e2e Gap 8 coverage in
 # test-e2e-hook-sequence.sh; it isolates the gate so failures point at the
@@ -323,18 +324,18 @@ else
 fi
 teardown_test
 
-# T0c11 (quality-reviewer F2 MEDIUM): `git tag --column always v1.0`
-# is the documented-limitation class shared with the advisory matcher.
-# `--column` is a list-mode flag, but a trailing positional tag name
-# would create. The regex stops at the flag without checking for the
-# positional, so this currently ALLOWS. Locking the known shape
-# prevents silent regression in either direction. The mitigation
-# (Stop-hook mark-edit tracker + quality-reviewer pass) catches the
-# mutation downstream even when the floor lets it through.
+# T0c11: a display flag followed by a positional name can create a tag.
+# The old first-token regex called this read-only and the ref-only mutation
+# never reached edit clocks. The narrow tag parser must deny it at PreTool.
 setup_test
 init_session "t0c11" "execution"
 out_t0c11="$(run_guard "t0c11" "git tag --column always v1.0")"
-assert_eq "T0c11: --column flag-then-positional allowed (documented limit)" "" "${out_t0c11}"
+if denied "${out_t0c11}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T0c11: --column flag-then-positional tag create must deny (got: %s)\n' "${out_t0c11}" >&2
+  fail=$((fail + 1))
+fi
 teardown_test
 
 # T0c12..T0c17 (v1.48 advisory-path parity): the ADVISORY matcher's
@@ -386,6 +387,183 @@ init_session "t0c17" "execution"
 out_t0c17="$(run_guard "t0c17" "git tag")"
 assert_eq "T0c17: bare git tag allowed at agent-first floor" "" "${out_t0c17}"
 teardown_test
+
+setup_test
+init_session "t0c18" "advisory"
+out_t0c18="$(run_guard "t0c18" "git tag --sort=-creatordate v9.9.9")"
+if denied "${out_t0c18}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T0c18: --sort flag-then-positional tag create must deny under advisory (got: %s)\n' "${out_t0c18}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+setup_test
+init_session "t0c19" "execution"
+out_t0c19="$(run_guard "t0c19" "git tag --ignore-case --force v9.9.9")"
+if denied "${out_t0c19}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T0c19: --ignore-case must not hide forced tag creation (got: %s)\n' "${out_t0c19}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+setup_test
+init_session "t0c20" "advisory"
+out_t0c20="$(run_guard "t0c20" "git tag -i -d v9.9.9")"
+if denied "${out_t0c20}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T0c20: -i must not hide tag deletion under advisory intent (got: %s)\n' "${out_t0c20}" >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# T0c21..T0c24: shell separators inside a quoted --format value are data,
+# not compound-command boundaries. The pre-v1.50 sed splitter cut the tag
+# segment at those bytes, let the truncated display form through, and hid a
+# following positional tag name. Keep the pure display form friction-free,
+# but deny every quoted-separator create form.
+setup_test
+init_session "t0c21" "advisory"
+out_t0c21="$(run_guard "t0c21" "git tag --format='foo|bar;baz&&qux'")"
+assert_eq "T0c21: quoted separators in display-only tag format stay read-only" "" "${out_t0c21}"
+teardown_test
+
+for tag_case in pipe semicolon andand; do
+  setup_test
+  init_session "t0c-${tag_case}" "advisory"
+  case "${tag_case}" in
+    pipe) tag_command="git tag --format='foo|bar' newtag" ;;
+    semicolon) tag_command="git tag --format='foo;bar' newtag" ;;
+    andand) tag_command="git tag --format='foo&&bar' newtag" ;;
+  esac
+  tag_out="$(run_guard "t0c-${tag_case}" "${tag_command}")"
+  if denied "${tag_out}"; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: T0c quoted-%s format cannot hide positional tag creation (got: %s)\n' \
+      "${tag_case}" "${tag_out}" >&2
+    fail=$((fail + 1))
+  fi
+  teardown_test
+done
+
+for intent_case in advisory execution; do
+  setup_test
+  init_session "t0c-background-${intent_case}" "${intent_case}"
+  background_out="$(run_guard "t0c-background-${intent_case}" "git tag --list & git tag newtag")"
+  if denied "${background_out}"; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: T0c top-level &: background tag creation must deny under %s (got: %s)\n' \
+      "${intent_case}" "${background_out}" >&2
+    fail=$((fail + 1))
+  fi
+  teardown_test
+done
+
+# Command-like prose is not execution evidence. Pin quoted, unquoted, and
+# embedded-newline arguments so matcher regexes cannot drift back to scanning
+# arbitrary argv positions.
+for fake_case in quoted_tag quoted_commit unquoted_tag unquoted_commit newline_tag; do
+  setup_test
+  init_session "t0c-fake-${fake_case}" "advisory"
+  case "${fake_case}" in
+    quoted_tag) fake_command='echo "prefix git tag v1"' ;;
+    quoted_commit) fake_command="printf '%s' ' git commit -m x'" ;;
+    unquoted_tag) fake_command='echo prefix git tag v1' ;;
+    unquoted_commit) fake_command='printf %s git commit -m x' ;;
+    newline_tag) fake_command=$'printf "%s" "hello\n git tag v1"' ;;
+  esac
+  fake_out="$(run_guard "t0c-fake-${fake_case}" "${fake_command}")"
+  assert_eq "T0c executable-position negative: ${fake_case}" "" "${fake_out}"
+  teardown_test
+done
+
+# Read-only/list/dry-run outer commands cannot bless nested executable
+# substitutions. The nested program may mutate even though the outer option
+# is safe, so advisory and agent-first paths both fail closed.
+for substitution_case in dollar_quoted dollar_plain backtick process push_dry; do
+  case "${substitution_case}" in
+    dollar_quoted) substitution_command='git tag --list "$(git tag newtag)"' ;;
+    dollar_plain) substitution_command='git tag --list $(git tag newtag)' ;;
+    backtick) substitution_command='git tag --list `git tag newtag`' ;;
+    process) substitution_command='git tag --list <(git tag newtag)' ;;
+    push_dry) substitution_command='git push --dry-run "$(git push --force)"' ;;
+  esac
+  for intent_case in advisory execution; do
+    setup_test
+    init_session "t0c-sub-${substitution_case}-${intent_case}" "${intent_case}"
+    substitution_out="$(run_guard "t0c-sub-${substitution_case}-${intent_case}" "${substitution_command}")"
+    if denied "${substitution_out}"; then
+      pass=$((pass + 1))
+    else
+      printf '  FAIL: T0c %s substitution must deny under %s (got: %s)\n' \
+        "${substitution_case}" "${intent_case}" "${substitution_out}" >&2
+      fail=$((fail + 1))
+    fi
+    teardown_test
+  done
+done
+
+for wrapper_case in sudo_list env_list sudo_create env_create env_unset env_chdir command_path sudo_noninteractive sudo_end sudo_user_long sudo_login sudo_prompt quoted_path quoted_assignment env_quoted_assignment env_split; do
+  setup_test
+  init_session "t0c-wrapper-${wrapper_case}" "advisory"
+  case "${wrapper_case}" in
+    sudo_list) wrapper_command='sudo git tag --list'; wrapper_expect=allow ;;
+    env_list) wrapper_command="env git tag --format='foo|bar'"; wrapper_expect=allow ;;
+    sudo_create) wrapper_command='sudo git tag wrapped-new'; wrapper_expect=deny ;;
+    env_create) wrapper_command="env git tag --format='foo|bar' wrapped-new"; wrapper_expect=deny ;;
+    env_unset) wrapper_command='env -u FOO git tag wrapped-new'; wrapper_expect=deny ;;
+    env_chdir) wrapper_command='env -C /tmp git tag wrapped-new'; wrapper_expect=deny ;;
+    command_path) wrapper_command='command -p git tag wrapped-new'; wrapper_expect=deny ;;
+    sudo_noninteractive) wrapper_command='sudo -n git tag wrapped-new'; wrapper_expect=deny ;;
+    sudo_end) wrapper_command='sudo -- git tag wrapped-new'; wrapper_expect=deny ;;
+    sudo_user_long) wrapper_command='sudo --user root git tag wrapped-new'; wrapper_expect=deny ;;
+    sudo_login) wrapper_command='sudo -i git tag wrapped-new'; wrapper_expect=deny ;;
+    sudo_prompt) wrapper_command='sudo -p prompt git tag wrapped-new'; wrapper_expect=deny ;;
+    quoted_path) wrapper_command="'/usr/bin/git' tag wrapped-new"; wrapper_expect=deny ;;
+    quoted_assignment) wrapper_command="FOO='a b' git tag wrapped-new"; wrapper_expect=deny ;;
+    env_quoted_assignment) wrapper_command="env 'FOO=a b' git tag wrapped-new"; wrapper_expect=deny ;;
+    env_split) wrapper_command="env -S 'git tag wrapped-new'"; wrapper_expect=deny ;;
+  esac
+  wrapper_out="$(run_guard "t0c-wrapper-${wrapper_case}" "${wrapper_command}")"
+  if [[ "${wrapper_expect}" == "allow" ]]; then
+    assert_eq "T0c wrapped read-only tag remains allowed: ${wrapper_case}" "" "${wrapper_out}"
+  elif denied "${wrapper_out}"; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: T0c wrapped tag creation must deny: %s (got: %s)\n' \
+      "${wrapper_case}" "${wrapper_out}" >&2
+    fail=$((fail + 1))
+  fi
+  teardown_test
+done
+
+for nested_case in echo_sub printf_sub shell_c eval_body; do
+  case "${nested_case}" in
+    echo_sub) nested_command='echo "$(git tag nested-tag)"' ;;
+    printf_sub) nested_command='printf %s "$(git push --force)"' ;;
+    shell_c) nested_command="sh -c 'git tag shell-tag'" ;;
+    eval_body) nested_command="eval 'git tag eval-tag'" ;;
+  esac
+  for intent_case in advisory execution; do
+    setup_test
+    init_session "t0c-nested-${nested_case}-${intent_case}" "${intent_case}"
+    nested_out="$(run_guard "t0c-nested-${nested_case}-${intent_case}" "${nested_command}")"
+    if denied "${nested_out}"; then
+      pass=$((pass + 1))
+    else
+      printf '  FAIL: T0c nested %s action must deny under %s (got: %s)\n' \
+        "${nested_case}" "${intent_case}" "${nested_out}" >&2
+      fail=$((fail + 1))
+    fi
+    teardown_test
+  done
+done
 
 # ----------------------------------------------------------------------
 # T0d: execution intent + qualifying specialist completed → Edit allowed and
@@ -573,7 +751,9 @@ assert_not_contains_ci "T10: reason MUST NOT teach the model to invent paste-bac
 teardown_test
 
 # ----------------------------------------------------------------------
-# T11 (kill switch): OMC_PRETOOL_INTENT_GUARD=false bypasses the guard.
+# T11 (kill switch): OMC_PRETOOL_INTENT_GUARD=false suppresses denial output.
+# Mutation observation is intentionally independent and has an end-to-end
+# regression in test-posttool-dispatch.sh T31.
 setup_test
 init_session "t11" "advisory"
 out_t11="$(OMC_PRETOOL_INTENT_GUARD=false run_guard "t11" "git commit -m 'x'")"

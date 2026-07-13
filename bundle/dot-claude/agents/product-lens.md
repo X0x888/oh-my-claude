@@ -1,7 +1,7 @@
 ---
 name: product-lens
 description: Evaluate a project from a Product Manager's perspective — user needs, feature gaps, prioritization, competitive positioning, and user journey quality. Use as part of a multi-role project council evaluation.
-disallowedTools: Write, Edit, MultiEdit
+disallowedTools: Write, Edit, MultiEdit, NotebookEdit
 model: sonnet
 permissionMode: plan
 maxTurns: 20

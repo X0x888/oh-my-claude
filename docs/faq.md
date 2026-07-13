@@ -94,7 +94,7 @@ Adding `ultrathink` to any prompt injects a deeper investigation directive. It t
 
 ### Why do agents have disallowedTools?
 
-Agent permission boundaries are a safety mechanism. Specialist agents (reviewers, researchers, analysts, planners) can read, search, and reason -- but they cannot edit files. The `disallowedTools: Write, Edit, MultiEdit` setting ensures the main thread retains exclusive control over all file mutations. This prevents unsupervised writes from agents that may be operating on incomplete context, and keeps the main thread as the single source of truth for changes. The 11 domain-builder agents (`frontend-developer`, `backend-api-developer`, the `ios-*` family, `research-data-analyst`, etc.) are the deliberate exception -- implementation is their job -- and their edits run under the same Claude Code permission prompts as the main thread.
+Agent permission boundaries are a safety mechanism. The 26 inspection/judgment agents deny Claude Code's direct mutation tools with `disallowedTools: Write, Edit, MultiEdit, NotebookEdit` and request `permissionMode: plan`. They keep Bash because inspection and verification often require `git diff`, tests, or builds, so this is not an OS-level no-write sandbox: Bash remains subject to the active parent permission mode, which can override a subagent's plan mode in `acceptEdits`, `auto`, or bypass configurations. The 11 domain-builder agents (`frontend-developer`, `backend-api-developer`, the `ios-*` family, `research-data-analyst`, etc.) deliberately retain editor tools because implementation is their job.
 
 ### How does session continuity work?
 

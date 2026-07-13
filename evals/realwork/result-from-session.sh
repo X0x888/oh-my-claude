@@ -188,8 +188,8 @@ subagent_verdict_seen() {
 subagent_summary_seen() {
   local agent_regex="$1"
   [[ -f "${SUBAGENT_SUMMARIES_FILE}" ]] || return 1
-  jq -e --arg agent_regex "${agent_regex}" '
-    select((.agent_type // "") | test($agent_regex))
+  jq -s -e --arg agent_regex "${agent_regex}" '
+    any(.[]; ((.agent_type // "") | test($agent_regex)))
   ' "${SUBAGENT_SUMMARIES_FILE}" >/dev/null 2>&1
 }
 

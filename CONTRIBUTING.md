@@ -122,7 +122,7 @@ For per-invocation HOME overrides (e.g., `HOME="${f007_home}" bash hook.sh ...`)
 1. Create a new file in `bundle/dot-claude/agents/` with a descriptive, hyphen-separated name.
 2. Define the agent's role, capabilities, and constraints.
 3. Set permission boundaries appropriate to the agent's role. Two conventions are supported:
-   - **Allowlist (`tools:`) — preferred for new security-sensitive agents.** Names exactly which tools the agent may invoke; everything else is forbidden by default. Fails closed: a new tool added to Claude Code does not implicitly become available to this agent. Pattern: `tools: Read, Grep, Glob, Bash` for read-only reviewers; `tools: Read, Write, Edit, Bash, Glob, Grep` for tactical implementors. This convention is the documented Claude Code sub-agent spec and is also used by the high-star [`VoltAgent/awesome-claude-code-subagents`](https://github.com/VoltAgent/awesome-claude-code-subagents) collection.
+   - **Allowlist (`tools:`) — preferred for new security-sensitive agents.** Names exactly which tools the agent may invoke; everything else is forbidden by default. Fails closed: a new tool added to Claude Code does not implicitly become available to this agent. Pattern: `tools: Read, Grep, Glob, Bash` for inspection-capable reviewers; `tools: Read, Write, Edit, Bash, Glob, Grep` for tactical implementors. Bash means the former is not an OS-level no-write sandbox; pair it with `permissionMode: plan` and describe the boundary honestly. This convention is the documented Claude Code sub-agent spec and is also used by the high-star [`VoltAgent/awesome-claude-code-subagents`](https://github.com/VoltAgent/awesome-claude-code-subagents) collection.
    - **Denylist (`disallowedTools:`) — existing convention.** Starts with all parent tools available and forbids the listed ones. Looser default — a new tool added to Claude Code becomes implicitly available unless this list is updated. Belt-and-suspenders pattern: combine both fields when you want the allowlist as the active enforcement and the denylist as documentation of intent for human readers.
 4. Set `model: inherit` for complex reasoning tasks (rides the session's main model) or `model: sonnet` for faster execution. The `--model-tier` install flag can override these defaults (see [customization.md](docs/customization.md#model-tiers)).
 5. If the agent handles a specific domain, ensure `infer_domain()` in `common.sh` can route to it.
@@ -178,7 +178,7 @@ The version-pin (`Upstream commit: <SHA>`) in each header is what makes refresh 
 2. Begin with `set -euo pipefail`.
 3. Source `common.sh` for shared utilities.
 4. Exit 0 when `SESSION_ID` is missing or empty.
-5. Register the hook in `config/settings.patch.json` under the appropriate event (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PreCompact`, `PostCompact`, `SubagentStop`, or `Stop`).
+5. Register the hook in `config/settings.patch.json` under the appropriate event (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `PreCompact`, `PostCompact`, `SubagentStop`, `Stop`, or `StopFailure`).
 
 ## Quarterly self-audit cadence
 
@@ -269,7 +269,7 @@ Keeping counts and directory listings accurate prevents drift between code and d
 
 Adding a new reviewer-style agent has two layers. Do both in the same commit — missing the test-plumbing layer produces a broken install that `verify.sh` cannot catch.
 
-**Permission-boundary convention:** apply the allowlist convention from `## Adding Agents` step 3; for reviewer-style agents — read-only by nature — the typical shape is:
+**Permission-boundary convention:** apply the allowlist convention from `## Adding Agents` step 3; for inspection/judgment reviewer agents, the typical shape is:
 
 ```yaml
 ---

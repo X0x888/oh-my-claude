@@ -170,6 +170,17 @@ run_verify_env_with_rc() {
   printf '%s\n__EXIT__=%s' "${_out}" "${_rc}"
 }
 
+run_verify_from_with_rc() {
+  local verify_cwd="$1"
+  shift
+  set +e
+  local _out
+  _out="$(cd "${verify_cwd}" && TARGET_HOME="${TEST_HOME}" bash "${REPO_ROOT}/verify.sh" "$@" 2>&1)"
+  local _rc=$?
+  set -e
+  printf '%s\n__EXIT__=%s' "${_out}" "${_rc}"
+}
+
 printf 'Verify foreign-hook + drift detection test\n'
 printf '===========================================\n\n'
 
@@ -203,7 +214,128 @@ What next?
 EOF
 )" "${verify_output_1}"
 
+# Presence of a bundled command is not enough: a narrowed matcher silently
+# removes the tool surface while basename-only verification still looks green.
+cp "${SETTINGS}" "${SETTINGS}.matcher-pristine"
+jq '
+  (.hooks.PreToolUse[]
+    | select(any(.hooks[]?; (.command // "") | contains("pretool-intent-guard.sh")))
+    | .matcher) = "NotebookEdit"
+  |
+  (.hooks.PostToolUse[]
+    | select(any(.hooks[]?; (.command // "") | contains("mark-edit.sh")))
+    | .matcher) = "NotebookEdit"
+  |
+  (.hooks.PostToolUseFailure[]
+    | select(any(.hooks[]?; (.command // "") | contains("mark-edit.sh")))
+    | .matcher) = "Read"
+  |
+  (.hooks.PostToolUse[]
+    | select(any(.hooks[]?; (.command // "") | contains("posttool-dispatch.sh")))
+    | .matcher) = "Read"
+' "${SETTINGS}" > "${SETTINGS}.tmp" && mv "${SETTINGS}.tmp" "${SETTINGS}"
+
+verify_output_1matcher="$(run_verify_with_rc)"
+verify_rc_1matcher="$(printf '%s' "${verify_output_1matcher}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify.sh exits 1 when mutation matchers are narrowed" "1" "${verify_rc_1matcher}"
+assert_contains "verify catches incomplete PreTool mutation matcher" \
+  "pretool-intent-guard.sh must use Bash|Edit|Write|MultiEdit|NotebookEdit" "${verify_output_1matcher}"
+assert_contains "verify catches incomplete direct PostTool edit matcher" \
+  "mark-edit.sh must use Edit|Write|MultiEdit|NotebookEdit" "${verify_output_1matcher}"
+assert_contains "verify catches wrong failed-Bash matcher" \
+  "PostToolUseFailure -> mark-edit.sh must use Bash" "${verify_output_1matcher}"
+assert_contains "verify catches non-universal successful-Bash dispatcher" \
+  "posttool-dispatch.sh must use a universal matcher" "${verify_output_1matcher}"
+mv "${SETTINGS}.matcher-pristine" "${SETTINGS}"
+
+# One correct entry must not mask a duplicate managed hook under another
+# matcher. Duplicate dispatchers double timing/circuit-breaker side effects.
+cp "${SETTINGS}" "${SETTINGS}.duplicate-pristine"
+jq '.hooks.PostToolUse += [{matcher:"Bash",hooks:[{type:"command",command:"exec -a decoy.sh /usr/bin/bash \"$HOME/.claude/skills/autowork/scripts/posttool-dispatch.sh\""}]}]' \
+  "${SETTINGS}" > "${SETTINGS}.tmp" && mv "${SETTINGS}.tmp" "${SETTINGS}"
+verify_output_1duplicate="$(run_verify_with_rc)"
+verify_rc_1duplicate="$(printf '%s' "${verify_output_1duplicate}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify.sh exits 1 on duplicate managed dispatcher" "1" "${verify_rc_1duplicate}"
+assert_contains "verify catches duplicate/misplaced dispatcher" \
+  "posttool-dispatch.sh must appear exactly once" "${verify_output_1duplicate}"
+mv "${SETTINGS}.duplicate-pristine" "${SETTINGS}"
+
+# A command string under the right event/matcher is still inert if the hook
+# object is not a command handler. Pin the handler type as part of the required
+# hook contract rather than accepting a lookalike object.
+cp "${SETTINGS}" "${SETTINGS}.type-pristine"
+jq '
+  (.hooks.PostToolUse[]
+    | select(any(.hooks[]?; (.command // "") | contains("mark-edit.sh")))
+    | .hooks[]
+    | select((.command // "") | contains("mark-edit.sh"))
+    | .type) = "prompt"
+' "${SETTINGS}" > "${SETTINGS}.tmp" && mv "${SETTINGS}.tmp" "${SETTINGS}"
+
+verify_output_1type="$(run_verify_with_rc)"
+verify_rc_1type="$(printf '%s' "${verify_output_1type}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify.sh exits 1 when required hook handler type is not command" "1" "${verify_rc_1type}"
+assert_contains "verify rejects non-command required handler" \
+  "Missing hook: PostToolUse -> mark-edit.sh" "${verify_output_1type}"
+assert_contains "matcher invariant also requires a command handler" \
+  "PostToolUse -> mark-edit.sh must use Edit|Write|MultiEdit|NotebookEdit" "${verify_output_1type}"
+mv "${SETTINGS}.type-pristine" "${SETTINGS}"
+
+# A substring lookalike must not satisfy required-hook presence. The general
+# bundled-path allowlist intentionally accepts user script names, so Step 4
+# must compare the parsed script basename exactly.
+cp "${SETTINGS}" "${SETTINGS}.basename-pristine"
+jq '
+  (.hooks.PostToolUse[]
+    | select(any(.hooks[]?; (.command // "") | contains("mark-edit.sh")))
+    | .hooks[]
+    | select((.command // "") | contains("mark-edit.sh"))
+    | .command) |= sub("mark-edit\\.sh"; "not-mark-edit.sh")
+' "${SETTINGS}" > "${SETTINGS}.tmp" && mv "${SETTINGS}.tmp" "${SETTINGS}"
+verify_output_1basename="$(run_verify_with_rc)"
+verify_rc_1basename="$(printf '%s' "${verify_output_1basename}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify.sh exits 1 on required-hook basename lookalike" "1" "${verify_rc_1basename}"
+assert_contains "verify rejects not-mark-edit.sh basename spoof" \
+  "Missing hook: PostToolUse -> mark-edit.sh" "${verify_output_1basename}"
+assert_contains "matcher invariant rejects basename spoof too" \
+  "PostToolUse -> mark-edit.sh must use Edit|Write|MultiEdit|NotebookEdit" "${verify_output_1basename}"
+mv "${SETTINGS}.basename-pristine" "${SETTINGS}"
+
+# `disableAllHooks` overrides every structurally correct entry. The installer
+# preserves user settings merge-safely, so it must warn; verify must fail rather
+# than certify an inert harness as Errors: 0.
+jq '.disableAllHooks = true' "${SETTINGS}" > "${SETTINGS}.tmp" && mv "${SETTINGS}.tmp" "${SETTINGS}"
+install_output_1disabled="$(run_install)"
+assert_contains "install warns when Claude Code global hook kill switch survives merge" \
+  "settings.json has disableAllHooks=true" "${install_output_1disabled}"
+assert_eq "installer preserves explicit user hook kill switch" "true" \
+  "$(jq -r '.disableAllHooks' "${SETTINGS}")"
+verify_output_1disabled="$(run_verify_with_rc)"
+verify_rc_1disabled="$(printf '%s' "${verify_output_1disabled}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify.sh exits 1 when user-level hooks are disabled" "1" "${verify_rc_1disabled}"
+assert_contains "verify names the user-level hook kill switch" \
+  "User-level hooks disabled: settings.json has disableAllHooks=true" "${verify_output_1disabled}"
+jq 'del(.disableAllHooks)' "${SETTINGS}" > "${SETTINGS}.tmp" && mv "${SETTINGS}.tmp" "${SETTINGS}"
+
 run_install >/dev/null
+
+# Project and local Claude settings can override the user-level install for the
+# current working tree. Verify resolves those scopes in invocation-cwd context;
+# settings.local.json wins when it explicitly supplies the key.
+project_verify_root="${TEST_HOME}/project-kill-switch"
+mkdir -p "${project_verify_root}/.claude"
+git -C "${project_verify_root}" init --quiet
+printf '{"disableAllHooks":true}\n' > "${project_verify_root}/.claude/settings.json"
+verify_output_1project="$(run_verify_from_with_rc "${project_verify_root}")"
+verify_rc_1project="$(printf '%s' "${verify_output_1project}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify.sh exits 1 when current project disables hooks" "1" "${verify_rc_1project}"
+assert_contains "verify names current-project hook kill switch" \
+  "Hooks disabled for current project" "${verify_output_1project}"
+
+printf '{"disableAllHooks":false}\n' > "${project_verify_root}/.claude/settings.local.json"
+verify_output_1local_override="$(run_verify_from_with_rc "${project_verify_root}")"
+verify_rc_1local_override="$(printf '%s' "${verify_output_1local_override}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "settings.local false overrides project true for current verify scope" "0" "${verify_rc_1local_override}"
 verify_output_1noop="$(run_verify_with_rc)"
 verify_rc_1noop="$(printf '%s' "${verify_output_1noop}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
 assert_eq "verify.sh exits 0 on no-op reinstall" "0" "${verify_rc_1noop}"

@@ -179,7 +179,8 @@
 # rebase, gh pr create, etc.) while task_intent is advisory / session-
 # management / checkpoint. Defense against the 2026-04-17-class incident.
 #   true  — block (default).
-#   false — directive layer only; user accepts the risk.
+#   false — disable denial/hygiene decisions (including agent-first when on);
+#           Bash mutation-baseline capture still feeds later edit clocks.
 # Env: OMC_PRETOOL_INTENT_GUARD.
 #pretool_intent_guard=true
 
@@ -695,7 +696,8 @@
 # cross-session gate_events is suppressed, AND the cross-session
 # resume_request.json + pre-compact snapshots see empty prompt text via
 # the producer's clear. More granular than `pretool_intent_guard=off`
-# (which disables the entire guard); orthogonal to `auto_memory`
+# (which disables every denial/hygiene decision but retains Bash edit
+# observability); orthogonal to `auto_memory`
 # (cross-session memory files). Env: OMC_PROMPT_PERSIST.
 #prompt_persist=on
 
@@ -963,9 +965,9 @@
 #      Cross-session `gate_events.jsonl` rows lifted at sweep have
 #      `prompt_preview` stripped.
 #
-#   3. `pretool_intent_guard=off` — disables the entire PreTool guard
-#      (loses ALL intent-based PreTool blocks, not just the prompt-text
-#      override path).
+#   3. `pretool_intent_guard=off` — disables every PreTool denial/hygiene
+#      decision (loses ALL intent-based blocks, not just the prompt-text
+#      override path). Bash mutation-baseline capture still runs.
 #
 # Files under STATE_ROOT are swept by `state_ttl_days` (default 7). The
 # strongest privacy posture for shared / regulated machines: set

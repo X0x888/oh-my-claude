@@ -255,6 +255,7 @@ if [[ "${SWEEP_MODE}" -eq 1 ]]; then
             intent: (.task_intent // "unknown"),
             edit_count: $ec,
             code_edits: ((.code_edit_count // "0") | tonumber),
+            bash_unknown_edit_scope: ((.bash_unknown_edit_scope // "") == "1"),
             doc_edits: ((.doc_edit_count // "0") | tonumber),
             verified: ((.last_verify_ts // "") != ""),
             verify_outcome: (.last_verify_outcome // null),

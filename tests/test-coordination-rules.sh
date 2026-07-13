@@ -283,12 +283,11 @@ QP_SCRIPTS_DIR="${REPO_ROOT}/bundle/dot-claude/quality-pack/scripts"
 AUTOWORK_DIR="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts"
 
 agent_count="$(find "${REPO_ROOT}/bundle/dot-claude/agents" -maxdepth 1 -name '*.md' | wc -l | awk '{print $1}')"
-# Read-only vs builder split (v1.48 honesty fix): the README/SECURITY safety
-# story claims a specific read-only/writable split — derive both counts from
-# the agent files themselves so the docs can never silently drift from the
-# actual permission boundaries again.
-readonly_agent_count="$(grep -l 'disallowedTools' "${REPO_ROOT}/bundle/dot-claude/agents/"*.md | wc -l | awk '{print $1}')"
-writable_agent_count="$((agent_count - readonly_agent_count))"
+# Inspection/judgment vs builder split: derive the direct-editor-denied count
+# from frontmatter. Bash remains available to these agents, so this metric is
+# deliberately not named/read as an OS-level "read-only" guarantee.
+inspection_agent_count="$(grep -l '^disallowedTools:' "${REPO_ROOT}/bundle/dot-claude/agents/"*.md | wc -l | awk '{print $1}')"
+builder_agent_count="$((agent_count - inspection_agent_count))"
 skill_count="$(find "${REPO_ROOT}/bundle/dot-claude/skills" -mindepth 2 -maxdepth 2 -name 'SKILL.md' | wc -l | awk '{print $1}')"
 lifecycle_count="$(find "${QP_SCRIPTS_DIR}" -maxdepth 1 -name '*.sh' | wc -l | awk '{print $1}')"
 autowork_count="$(find "${AUTOWORK_DIR}" -maxdepth 1 -name '*.sh' | wc -l | awk '{print $1}')"
@@ -306,19 +305,37 @@ assert_doc_match() {
 }
 
 assert_doc_match "C4: README agent headline count" \
-  "^\\*\\*${agent_count} specialist agents — every agent that judges work is read-only; the ${writable_agent_count} that build are permission-gated\\." \
+  "^\\*\\*${agent_count} specialist agents — ${inspection_agent_count} are configured for inspection/judgment; the ${builder_agent_count} that build retain editor tools\\." \
   "${README_MD}" \
-  "README.md should describe the live agent count (${agent_count}) and writable split (${writable_agent_count}) in the Permissioned agents section"
+  "README.md should describe the live agent count (${agent_count}) and builder split (${builder_agent_count}) in the Permissioned agents section"
 
-assert_doc_match "C4: README read-only agent count" \
-  "The ${readonly_agent_count} advisory, planning, and review specialists carry \`disallowedTools: Write, Edit, MultiEdit\`" \
+assert_doc_match "C4: README direct-editor-denied agent count" \
+  "The ${inspection_agent_count} inspection/judgment specialists carry \`disallowedTools: Write, Edit, MultiEdit, NotebookEdit\`" \
   "${README_MD}" \
-  "README.md Permissioned agents body should state the live read-only specialist count (${readonly_agent_count})"
+  "README.md Permissioned agents body should state the live inspection/judgment specialist count (${inspection_agent_count})"
 
-assert_doc_match "C4: SECURITY read-only agent count" \
-  "The ${readonly_agent_count} advisory/planning/review specialists carry \`disallowedTools: Write, Edit, MultiEdit\`" \
+assert_doc_match "C4: SECURITY direct-editor-denied agent count" \
+  "All ${inspection_agent_count} inspection/judgment specialists carry \`disallowedTools: Write, Edit, MultiEdit, NotebookEdit\`" \
   "${REPO_ROOT}/SECURITY.md" \
-  "SECURITY.md should state the live read-only specialist count (${readonly_agent_count})"
+  "SECURITY.md should state the live inspection/judgment specialist count (${inspection_agent_count})"
+
+# Pin every direct editor tool plus plan mode on each inspection/judgment
+# definition. This does not call Bash read-only; the docs explicitly retain
+# it for diffs/tests under the active parent permission mode.
+while IFS= read -r inspection_agent; do
+  if grep -qx 'disallowedTools: Write, Edit, MultiEdit, NotebookEdit' "${inspection_agent}"; then
+    assert_pass "C4: $(basename "${inspection_agent}") denies every direct editor tool"
+  else
+    assert_fail "C4: $(basename "${inspection_agent}") denies every direct editor tool" \
+      "inspection/judgment agents must disallow Write, Edit, MultiEdit, and NotebookEdit"
+  fi
+  if grep -qx 'permissionMode: plan' "${inspection_agent}"; then
+    assert_pass "C4: $(basename "${inspection_agent}") requests plan mode"
+  else
+    assert_fail "C4: $(basename "${inspection_agent}") requests plan mode" \
+      "inspection/judgment agents must request permissionMode: plan"
+  fi
+done < <(grep -l '^disallowedTools:' "${REPO_ROOT}/bundle/dot-claude/agents/"*.md | sort)
 
 assert_doc_match "C4: README repository agent count" \
   "^│   ├── agents/[[:space:]]+\\(${agent_count} agents\\)" \

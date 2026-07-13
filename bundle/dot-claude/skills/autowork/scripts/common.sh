@@ -1033,8 +1033,8 @@ is_stop_failure_capture_enabled() {
 # imperative-tail authorization, classifier widening still works); the
 # cross-session prompt_preview lift in record_gate_event also short-circuits.
 # Default on. Distinct from `auto_memory` (cross-session memory files) and
-# `pretool_intent_guard=off` (full guard disable) — this is the granular
-# in-session prompt-text horizon.
+# `pretool_intent_guard=off` (denial/hygiene disable; Bash edit observability
+# remains active) — this is the granular in-session prompt-text horizon.
 is_prompt_persist_enabled() {
   [[ "${OMC_PROMPT_PERSIST:-on}" != "off" ]]
 }
@@ -2171,6 +2171,9 @@ _sweep_stale_sessions_locked() {
             --arg host "$(omc_host)" \
             --argjson findings "${_sweep_findings_block}" \
             --argjson waves "${_sweep_waves_block}" '
+            def has_code_edits:
+              (((.code_edit_count // "0") | tonumber) > 0)
+              or ((.bash_unknown_edit_scope // "") == "1");
             {
               _v: 1,
               session_id: $sid,
@@ -2195,6 +2198,7 @@ _sweep_stale_sessions_locked() {
               intent: (.task_intent // "unknown"),
               edit_count: $ec,
               code_edits: ((.code_edit_count // "0") | tonumber),
+              bash_unknown_edit_scope: ((.bash_unknown_edit_scope // "") == "1"),
               doc_edits: ((.doc_edit_count // "0") | tonumber),
               verified: ((.last_verify_ts // "") != ""),
               verify_outcome: (.last_verify_outcome // null),
@@ -2219,10 +2223,10 @@ _sweep_stale_sessions_locked() {
               #                                dropped, surfaced in Patterns.
               outcome: (
                 if (.session_outcome // "") != "" then .session_outcome
-                elif ((.last_review_ts // "") != "") and ((.last_verify_ts // "") != "") and (((.code_edit_count // "0") | tonumber) > 0) then "completed_inferred"
-                elif (((.code_edit_count // "0") | tonumber) > 0) and (((.last_review_ts // "") != "") or ((.last_verify_ts // "") != "")) then "completed_inferred_partial"
-                elif (((.code_edit_count // "0") | tonumber) > 0) then "edited_no_quality"
-                elif (((.code_edit_count // "0") | tonumber) == 0) and ((.last_review_ts // "") == "") and ((.last_verify_ts // "") == "") then "idle"
+                elif ((.last_review_ts // "") != "") and ((.last_verify_ts // "") != "") and has_code_edits then "completed_inferred"
+                elif has_code_edits and (((.last_review_ts // "") != "") or ((.last_verify_ts // "") != "")) then "completed_inferred_partial"
+                elif has_code_edits then "edited_no_quality"
+                elif (has_code_edits | not) and ((.last_review_ts // "") == "") and ((.last_verify_ts // "") == "") then "idle"
                 else "unclassified_by_sweep"
                 end
               ),
@@ -3049,6 +3053,1526 @@ task_domain() {
   read_state "task_domain"
 }
 
+_omc_nix_observer_dir_is_trusted() {
+  local canonical="${1:-}" store_object=""
+  case "${canonical}" in
+    /nix/store/*/bin)
+      store_object="${canonical#/nix/store/}"
+      store_object="${store_object%/bin}"
+      [[ -n "${store_object}" ]] && [[ "${store_object}" != */* ]]
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+_omc_build_observer_safe_path() {
+  local result="/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin"
+  local entry="" canonical="" old_ifs="${IFS}"
+  IFS=':'
+  for entry in ${PATH:-}; do
+    case "${entry}" in
+      /run/current-system/sw/bin|/nix/store/*/bin|\
+      "${HOME}"/.nix-profile/bin|"${HOME}"/.local/state/nix/profiles/*/bin|\
+      /etc/profiles/per-user/*/bin)
+        [[ -d "${entry}" ]] || continue
+        canonical="$(cd "${entry}" 2>/dev/null && pwd -P)" || continue
+        _omc_nix_observer_dir_is_trusted "${canonical}" || continue
+        case ":${result}:" in *":${canonical}:"*) ;; *) result="${result}:${canonical}" ;; esac
+        ;;
+    esac
+  done
+  IFS="${old_ifs}"
+  printf '%s' "${result}"
+}
+
+# Observer subprocesses ignore arbitrary PATH entries (especially repo-local
+# shims) but retain immutable/system Nix profiles so NixOS and dev shells do
+# not lose git/jq/sed merely because they are outside FHS locations.
+_OMC_OBSERVER_SAFE_PATH="$(_omc_build_observer_safe_path)"
+
+# --- Bash worktree-edit detection -----------------------------------------
+#
+# Edit/Write/MultiEdit/NotebookEdit have explicit file paths, but Bash is an open-ended
+# mutation surface: redirects, in-place formatters, package managers, and git
+# worktree operations can all change source without ever invoking an edit
+# tool. The Stop gate is driven by last_*_edit_ts, so losing this producer
+# silently turns a real change into the "no edits" release path.
+#
+# Two layers keep the producer useful without trusting an impossible
+# mutation-command allowlist:
+#   1. a narrow, simple-command read-only allowlist skips obvious non-Git
+#      inspection calls; every other foreground Bash call in
+#      a Git worktree receives a before/after snapshot, including opaque
+#      scripts (`./generate.sh`, `python tools/rewrite.py`, `make format`), Git
+#      inspection, and delivery commands whose configured helpers/hooks may
+#      write worktree bytes.
+#   2. recognized write syntax is the conservative fallback for ignored
+#      files and other changes Git cannot prove. Outside Git, ambiguous-root,
+#      and asynchronous calls mark only when that fallback is available (or
+#      when asynchronous execution makes an immediate comparison unsound).
+#
+# Category (docs/bypass-taxonomy.md): state-predicate producer coverage. This
+# does not add a new Stop rule; it makes the existing edit-clock predicate
+# observe the Bash mutations it already claims to gate.
+
+_omc_normalize_git_flags_for_mutation() {
+  sed -E 's/(^|[[:space:];&|(])(([^[:space:]]*\/)?(git|gh))(([[:space:]]+(-c|-C|--git-dir|--work-tree|--exec-path|--namespace|--super-prefix|--config-env|--attr-source)[[:space:]]+[^[:space:]]+)|([[:space:]]+-[^[:space:]]+))+/\1\2/g' <<<"$1"
+}
+
+# Prefix for a real segment-leading command after common launch wrappers. It
+# deliberately anchors at byte zero so an argument such as `echo git tag v1`
+# cannot impersonate an executed delivery action.
+_OMC_SHELL_ASSIGNMENT_RE='[[:alpha:]_][[:alnum:]_]*=[^[:space:]]+'
+_OMC_ENV_OPTION_RE='(-[i0v]|--(ignore-environment|null|debug)|-[uC][[:space:]]+[^[:space:]]+|--(unset|chdir)[[:space:]]+[^[:space:]]+|--(unset|chdir)=[^[:space:]]+)'
+_OMC_SUDO_OPTION_RE='(--|-[nEHKSbisV]|--(non-interactive|preserve-env|reset-timestamp|remove-timestamp|stdin|background|login|shell|version)|-[ughCDRTpcrt][[:space:]]+[^[:space:]]+|--(user|group|host|close-from|chdir|chroot|command-timeout|prompt|role|type|other-user)[[:space:]]+[^[:space:]]+|--[^[:space:]=]+=[^[:space:]]+)'
+_OMC_EXEC_OPTION_RE='(-[cl]|-a[[:space:]]+[^[:space:]]+|--)'
+OMC_SHELL_COMMAND_PREFIX_RE="^[[:space:]]*([(][[:space:]]*)*(${_OMC_SHELL_ASSIGNMENT_RE}[[:space:]]+)*(([^[:space:]]*/)?sudo([[:space:]]+${_OMC_SUDO_OPTION_RE})*[[:space:]]+|([^[:space:]]*/)?command([[:space:]]+(-p|--))*[[:space:]]+|([^[:space:]]*/)?exec([[:space:]]+${_OMC_EXEC_OPTION_RE})*[[:space:]]+|([^[:space:]]*/)?time([[:space:]]+-[^[:space:]]+)*[[:space:]]+|([^[:space:]]*/)?env([[:space:]]+(${_OMC_ENV_OPTION_RE}|${_OMC_SHELL_ASSIGNMENT_RE}))*[[:space:]]+)*([^[:space:]]*/)?"
+
+# Emit NUL-delimited top-level shell command segments separated by `&&`,
+# `||`, `;`, `|`, or background `&`. Operators inside single/double quotes,
+# quoted newlines, plus backslash-escaped bytes remain data. NUL is not a
+# shell command byte, so consumers cannot reinterpret an embedded newline as
+# a new executable segment. Keep this shared: intent authorization and
+# delivery evidence must parse the same boundaries.
+omc_shell_compound_segments() {
+  local input="${1:-}" state="plain" segment="" char="" next="" prev=""
+  local i=0 length="${#1}"
+  while (( i < length )); do
+    char="${input:i:1}"
+    next=""
+    prev=""
+    (( i + 1 < length )) && next="${input:i+1:1}"
+    (( i > 0 )) && prev="${input:i-1:1}"
+    if [[ "${state}" == "single" ]]; then
+      segment="${segment}${char}"
+      [[ "${char}" == "'" ]] && state="plain"
+    elif [[ "${state}" == "double" ]]; then
+      segment="${segment}${char}"
+      if [[ "${char}" == "\\" ]] && [[ -n "${next}" ]]; then
+        segment="${segment}${next}"
+        i=$((i + 1))
+      elif [[ "${char}" == '"' ]]; then
+        state="plain"
+      fi
+    elif [[ "${char}" == "\\" ]] && [[ -n "${next}" ]]; then
+      segment="${segment}${char}${next}"
+      i=$((i + 1))
+    elif [[ "${char}" == "'" ]]; then
+      state="single"
+      segment="${segment}${char}"
+    elif [[ "${char}" == '"' ]]; then
+      state="double"
+      segment="${segment}${char}"
+    elif [[ "${char}" == ";" ]]; then
+      printf '%s\0' "${segment}"
+      segment=""
+    elif [[ "${char}" == "|" ]]; then
+      printf '%s\0' "${segment}"
+      segment=""
+      # `||` and Bash's `|&` are each one separator, not an empty command
+      # followed by a stray operator byte.
+      if [[ "${next}" == "|" || "${next}" == "&" ]]; then
+        i=$((i + 1))
+      fi
+    elif [[ "${char}" == "&" ]]; then
+      if [[ "${prev}" == ">" || "${prev}" == "<" || "${next}" == ">" ]]; then
+        # Redirection syntax (`2>&1`, `<&0`, `&>file`, `&>>file`) is not
+        # background command separation.
+        segment="${segment}${char}"
+      else
+        printf '%s\0' "${segment}"
+        segment=""
+        [[ "${next}" == "&" ]] && i=$((i + 1))
+      fi
+    else
+      segment="${segment}${char}"
+    fi
+    i=$((i + 1))
+  done
+  printf '%s\0' "${segment}"
+}
+
+# Decode static shell-quoted spans for executable-token matching, replacing
+# whitespace inside one shell word with `Q` so it cannot become a new token.
+# This is not argument reconstruction: callers retain the original segment
+# for option semantics after proving the command itself is real.
+omc_shell_unquoted_control_text() {
+  local input="${1:-}" state="plain" output="" char="" next=""
+  local i=0 length="${#1}"
+  while (( i < length )); do
+    char="${input:i:1}"
+    next=""
+    (( i + 1 < length )) && next="${input:i+1:1}"
+    if [[ "${state}" == "single" ]]; then
+      if [[ "${char}" == "'" ]]; then
+        state="plain"
+      elif [[ "${char}" =~ [[:space:]] ]]; then
+        output="${output}Q"
+      else
+        output="${output}${char}"
+      fi
+    elif [[ "${state}" == "double" ]]; then
+      if [[ "${char}" == "\\" ]] && [[ -n "${next}" ]]; then
+        if [[ "${next}" =~ [[:space:]] ]]; then
+          output="${output}Q"
+        else
+          output="${output}${next}"
+        fi
+        i=$((i + 1))
+      elif [[ "${char}" == '"' ]]; then
+        state="plain"
+      elif [[ "${char}" =~ [[:space:]] ]]; then
+        output="${output}Q"
+      else
+        output="${output}${char}"
+      fi
+    elif [[ "${char}" == "\\" ]] && [[ -n "${next}" ]]; then
+      output="${output}${char}${next}"
+      i=$((i + 1))
+    elif [[ "${char}" == "'" ]]; then
+      state="single"
+    elif [[ "${char}" == '"' ]]; then
+      state="double"
+    else
+      output="${output}${char}"
+    fi
+    i=$((i + 1))
+  done
+  printf '%s' "${output}"
+}
+
+# Return only bytes outside shell quotes. Redirect/operator detectors use this
+# stricter view; unlike executable-token matching they must not retain a `>`
+# or `&` that is literal argument data.
+omc_shell_unquoted_structure_text() {
+  local input="${1:-}" state="plain" output="" char="" next=""
+  local i=0 length="${#1}"
+  while (( i < length )); do
+    char="${input:i:1}"
+    next=""
+    (( i + 1 < length )) && next="${input:i+1:1}"
+    if [[ "${state}" == "single" ]]; then
+      [[ "${char}" == "'" ]] && state="plain"
+    elif [[ "${state}" == "double" ]]; then
+      if [[ "${char}" == "\\" ]] && [[ -n "${next}" ]]; then
+        i=$((i + 1))
+      elif [[ "${char}" == '"' ]]; then
+        state="plain"
+      fi
+    elif [[ "${char}" == "\\" ]] && [[ -n "${next}" ]]; then
+      output="${output}${char}${next}"
+      i=$((i + 1))
+    elif [[ "${char}" == "'" ]]; then
+      state="single"
+      output="${output}Q"
+    elif [[ "${char}" == '"' ]]; then
+      state="double"
+      output="${output}Q"
+    else
+      output="${output}${char}"
+    fi
+    i=$((i + 1))
+  done
+  printf '%s' "${output}"
+}
+
+# Command substitutions remain executable inside double quotes; process
+# substitutions execute at top level. A segment with any such shape cannot be
+# blessed as a read-only/dry-run variant unless its nested program is parsed
+# recursively, which this harness deliberately does not attempt.
+omc_shell_has_executable_substitution() {
+  local input="${1:-}" state="plain" char="" next=""
+  local i=0 length="${#1}"
+  while (( i < length )); do
+    char="${input:i:1}"
+    next=""
+    (( i + 1 < length )) && next="${input:i+1:1}"
+    if [[ "${state}" == "single" ]]; then
+      [[ "${char}" == "'" ]] && state="plain"
+    elif [[ "${state}" == "double" ]]; then
+      if [[ "${char}" == "\\" ]]; then
+        i=$((i + 1))
+      elif [[ "${char}" == '"' ]]; then
+        state="plain"
+      elif [[ "${char}" == '`' ]] \
+          || [[ "${char}" == '$' && "${next}" == '(' ]]; then
+        return 0
+      fi
+    elif [[ "${char}" == "\\" ]]; then
+      i=$((i + 1))
+    elif [[ "${char}" == "'" ]]; then
+      state="single"
+    elif [[ "${char}" == '"' ]]; then
+      state="double"
+    elif [[ "${char}" == '`' ]] \
+        || [[ ( "${char}" == '$' || "${char}" == '<' || "${char}" == '>' ) \
+              && "${next}" == '(' ]]; then
+      return 0
+    fi
+    i=$((i + 1))
+  done
+  return 1
+}
+
+# Detect destructive git/gh verbs inside common nested execution surfaces.
+# This is intentionally an intent-time fail-closed predicate, not delivery
+# evidence: an outer echo/sh can mask a nested failure, so Stop still requires
+# a direct successful delivery action.
+omc_shell_nested_delivery_action_present() {
+  local input="${1:-}" control="" nested="" marker=""
+  local sep='[[:space:]Q]+'
+  local action_re="([^[:space:]Q]*/)?git${sep}(commit|push|tag|revert|reset|rebase|cherry-pick|merge|am|apply|clean|update-ref|symbolic-ref|fast-import|filter-branch|replace)([[:space:]Q]|$)|([^[:space:]Q]*/)?gh${sep}(pr|release|issue)${sep}(create|merge|edit|close|comment|delete|reopen)([[:space:]Q]|$)"
+  control="$(omc_shell_unquoted_control_text "${input}")"
+
+  for marker in '$(' '`' '<(' '>('; do
+    if [[ "${control}" == *"${marker}"* ]]; then
+      nested="${control#*"${marker}"}"
+      grep -Eq "${action_re}" <<<"${nested}" && return 0
+    fi
+  done
+
+  if [[ "${control}" =~ ${OMC_SHELL_COMMAND_PREFIX_RE}(bash|sh|zsh|dash|ksh)[[:space:]].*-c[[:space:]] ]] \
+      || [[ "${control}" =~ ${OMC_SHELL_COMMAND_PREFIX_RE}eval[[:space:]] ]]; then
+    grep -Eq "${action_re}" <<<"${control}" && return 0
+  fi
+  return 1
+}
+
+# `git tag` is both a list/verification command and a ref-mutating command.
+# Keep one narrow grammar for the intent guard and delivery recorder so a
+# display flag cannot make a later create/delete operand look read-only.
+omc_git_tag_segment_is_read_only() {
+  local segment="${1:-}" control="" rest="" destructive_scan="" value_re="" tag_prefix_re=""
+  omc_shell_has_executable_substitution "${segment}" && return 1
+  control="$(omc_shell_unquoted_control_text "${segment}")"
+  tag_prefix_re="${OMC_SHELL_COMMAND_PREFIX_RE}git[[:space:]]+tag([[:space:]]*)"
+  [[ "${control}" =~ ${tag_prefix_re} ]] || return 1
+  rest="${control:${#BASH_REMATCH[0]}}"
+  [[ "${rest}" != *$'\n'* ]] || return 1
+  [[ -z "${rest//[[:space:]]/}" ]] && return 0
+
+  # Any create/delete/force option wins over list/display modifiers. Include
+  # combined short flags (`-if`, `-id`) and attached arguments (`-mmsg`).
+  # A descending sort key is data (`--sort -creatordate`), not a cluster of
+  # short tag options. Mask the required value before scanning short flags.
+  destructive_scan="$(sed -E \
+    -e 's/(^|[[:space:]])--sort[[:space:]]+[^[:space:]]+/\1--sort=VALUE/g' \
+    -e 's/(^|[[:space:]])--format[[:space:]]+[^[:space:]]+/\1--format=VALUE/g' \
+    <<<"${rest}")"
+  if grep -Eq '(^|[[:space:]])-[^-[:space:]]*[asufdmF][^-[:space:]]*([[:space:]]|$)|(^|[[:space:]])--(annotate|sign|local-user|force|delete|message|file|cleanup|no-sign|create-reflog)([=[:space:]]|$)' <<<"${destructive_scan}"; then
+    return 1
+  fi
+
+  # These modes force list/filter/verification semantics, so remaining
+  # operands are patterns, commits, or tag names to inspect rather than a new
+  # tag name. `-i/--ignore-case` is deliberately absent: it modifies matching
+  # but does not itself select list mode and is valid alongside --force/-d.
+  if grep -Eq '(^|[[:space:]])(-l|--list|-v|--verify|--contains|--no-contains|--points-at|--merged|--no-merged|-n[0-9]*)([=[:space:]]|$)' <<<"${rest}"; then
+    return 0
+  fi
+
+  # Display-only options are safe only when the complete remainder contains
+  # no positional tag name. Unknown combinations fail closed.
+  value_re="('[^']*'|\"(\\\\.|[^\"\\\\])*\"|[^[:space:]]+)"
+  if [[ "${rest}" =~ ^--sort=${value_re}[[:space:]]*$ ]] \
+      || [[ "${rest}" =~ ^--sort[[:space:]]+${value_re}[[:space:]]*$ ]] \
+      || [[ "${rest}" =~ ^--column(=${value_re})?[[:space:]]*$ ]] \
+      || [[ "${rest}" =~ ^--no-column[[:space:]]*$ ]] \
+      || [[ "${rest}" =~ ^--format=${value_re}[[:space:]]*$ ]] \
+      || [[ "${rest}" =~ ^--format[[:space:]]+${value_re}[[:space:]]*$ ]] \
+      || [[ "${rest}" =~ ^(-i|--ignore-case)[[:space:]]*$ ]]; then
+    return 0
+  fi
+  return 1
+}
+
+_omc_shell_text_ends_at_top_level() {
+  local text="${1:-}" state="plain" char=""
+  local i=0 length="${#text}"
+
+  # This is deliberately a quote-state check, not a shell evaluator. It only
+  # answers whether a regex match starts outside surrounding literal prose.
+  # Backslash escapes are skipped where they can affect quote termination.
+  while (( i < length )); do
+    char="${text:i:1}"
+    if [[ "${state}" == "single" ]]; then
+      [[ "${char}" == "'" ]] && state="plain"
+    elif [[ "${state}" == "double" ]]; then
+      if [[ "${char}" == "\\" ]]; then
+        i=$((i + 1))
+      elif [[ "${char}" == '"' ]]; then
+        state="plain"
+      fi
+    elif [[ "${char}" == "\\" ]]; then
+      i=$((i + 1))
+    elif [[ "${char}" == "'" ]]; then
+      state="single"
+    elif [[ "${char}" == '"' ]]; then
+      state="double"
+    fi
+    i=$((i + 1))
+  done
+  [[ "${state}" == "plain" ]]
+}
+
+_omc_literal_shell_c_body_has_mutation_signature() {
+  local original="${1:-}" remaining="${1:-}" consumed="" prefix=""
+  local matched="" body="" match_count=0
+  local command_prefix='(^[[:space:]]*|[;&|({][[:space:]]*)'
+  local assignment_re="[[:alpha:]_][[:alnum:]_]*=('[^']*'|\"(\\\\.|[^\"\\\\])*\"|[^[:space:]]+)"
+  local assignment_prefix="(${assignment_re}[[:space:]]+)*"
+  local command_wrapper_re='([^[:space:]]*\/)?command([[:space:]]+(-[pvV]+|--))*[[:space:]]+'
+  local env_wrapper_re="([^[:space:]]*\/)?env([[:space:]]+(-[^[:space:]]+|${assignment_re}))*[[:space:]]+"
+  local sudo_wrapper_re='([^[:space:]]*\/)?sudo[[:space:]]+(--[[:space:]]+)?'
+  local timeout_wrapper_re='([^[:space:]]*\/)?timeout([[:space:]]+-[^[:space:]]+)*[[:space:]]+[^[:space:]]+[[:space:]]+'
+  local xargs_wrapper_re='([^[:space:]]*\/)?xargs([[:space:]]+[^[:space:]]+)*[[:space:]]+'
+  local exec_wrapper_re='exec[[:space:]]+'
+  local time_wrapper_re='([^[:space:]]*\/)?time([[:space:]]+-[^[:space:]]+)*[[:space:]]+'
+  local wrapper_re="(${command_wrapper_re}|${env_wrapper_re}|${sudo_wrapper_re}|${timeout_wrapper_re}|${xargs_wrapper_re}|${exec_wrapper_re}|${time_wrapper_re})*"
+  local shell_re='([^[:space:]]*\/)?(bash|sh|zsh|dash|ksh)'
+  local options_re='([[:space:]]+-[^[:space:]]+)*'
+  local c_option_re='(-c|-[^-[:space:]]*c[^[:space:]]*)'
+  local single_re="${command_prefix}${assignment_prefix}${wrapper_re}${shell_re}${options_re}[[:space:]]+${c_option_re}[[:space:]]+'([^']*)'"
+  local double_re="${command_prefix}${assignment_prefix}${wrapper_re}${shell_re}${options_re}[[:space:]]+${c_option_re}[[:space:]]+\"((\\\\.|[^\"\\\\])*)\""
+  [[ -n "${remaining}" ]] || return 1
+
+  # A literal shell -c body is executable syntax, not quoted data. Inspect it
+  # recursively before the general quote scrub below, otherwise
+  # `tests; bash -c 'printf changed > .env'` can alter an ignored file while
+  # both the Git snapshot and same-call verification veto remain unchanged.
+  # Quoted non-shell arguments stay scrubbed, preserving both
+  # `printf '%s' 'a > b'` and `printf "example: bash -c 'rm x'"` as negatives.
+  # Shell options may precede the real -c (`bash --noprofile -c`,
+  # `sh -eu -c`); common execution launchers (`env`, `sudo`, `command`, and
+  # `timeout`, `exec`, and `time`) plus literal environment assignments may
+  # precede the shell; and escaped double quotes stay inside a
+  # double-quoted body. The loop handles multiple shell wrappers in one
+  # compound command.
+  #
+  # ANSI-C and expanded bodies (`$'...'`, "$script") are intentionally not
+  # interpreted here. They remain snapshot candidates via
+  # bash_command_may_edit_worktree, but an ignored-file-only mutation can evade
+  # both Git's snapshot and this literal-signature fallback.
+  while [[ "${remaining}" =~ ${single_re} ]]; do
+    matched="${BASH_REMATCH[0]}"
+    match_count="${#BASH_REMATCH[@]}"
+    body="${BASH_REMATCH[$((match_count - 1))]}"
+    prefix="${remaining%%"${matched}"*}"
+    if _omc_shell_text_ends_at_top_level "${consumed}${prefix}" \
+        && bash_command_has_mutation_signature "${body}"; then
+      return 0
+    fi
+    consumed="${consumed}${prefix}${matched}"
+    remaining="${remaining#*"${matched}"}"
+  done
+
+  remaining="${original}"
+  consumed=""
+  while [[ "${remaining}" =~ ${double_re} ]]; do
+    matched="${BASH_REMATCH[0]}"
+    match_count="${#BASH_REMATCH[@]}"
+    body="${BASH_REMATCH[$((match_count - 2))]}"
+    prefix="${remaining%%"${matched}"*}"
+    if _omc_shell_text_ends_at_top_level "${consumed}${prefix}" \
+        && bash_command_has_mutation_signature "${body}"; then
+      return 0
+    fi
+    consumed="${consumed}${prefix}${matched}"
+    remaining="${remaining#*"${matched}"}"
+  done
+  return 1
+}
+
+_omc_top_level_executor_present() {
+  local original="${1:-}" executor_re="${2:-}" remaining="${1:-}"
+  local consumed="" matched="" prefix=""
+  [[ -n "${remaining}" ]] && [[ -n "${executor_re}" ]] || return 1
+  while [[ "${remaining}" =~ ${executor_re} ]]; do
+    matched="${BASH_REMATCH[0]}"
+    prefix="${remaining%%"${matched}"*}"
+    if _omc_shell_text_ends_at_top_level "${consumed}${prefix}"; then
+      return 0
+    fi
+    consumed="${consumed}${prefix}${matched}"
+    remaining="${remaining#*"${matched}"}"
+  done
+  return 1
+}
+
+_omc_eval_has_mutation_signature() {
+  local cmd="${1:-}" body=""
+  local eval_re='(^[[:space:]]*|[;&|({][[:space:]]*)eval([[:space:]]|$)'
+  _omc_top_level_executor_present "${cmd}" "${eval_re}" || return 1
+
+  # Preserve the useful literal, single-command negative. Compound or dynamic
+  # eval is code execution whose ignored-file effects cannot be recovered from
+  # Git, so it deliberately fails closed.
+  if [[ "${cmd}" =~ ^[[:space:]]*eval[[:space:]]+\'([^\']*)\'[[:space:]]*$ ]]; then
+    body="${BASH_REMATCH[1]}"
+    bash_command_has_mutation_signature "${body}"
+    return
+  fi
+  if [[ "${cmd}" =~ ^[[:space:]]*eval[[:space:]]+\"((\\.|[^\"\\])*)\"[[:space:]]*$ ]]; then
+    body="${BASH_REMATCH[1]}"
+    [[ "${body}" == *'$'* || "${body}" == *'`'* ]] && return 0
+    bash_command_has_mutation_signature "${body}"
+    return
+  fi
+  return 0
+}
+
+_omc_python_mode_value_is_write() {
+  local value="${1:-}" quote="" char="" parsed="" trailing=""
+  local i=0 length=0
+  value="${value#"${value%%[![:space:]]*}"}"
+  [[ -n "${value}" ]] || return 0
+  quote="${value:0:1}"
+  if [[ "${quote}" != "'" && "${quote}" != '"' ]]; then
+    # Dynamic modes cannot be proved read-only; fail closed for ignored files.
+    return 0
+  fi
+  length="${#value}"
+  i=1
+  while (( i < length )); do
+    char="${value:i:1}"
+    if [[ "${char}" == "\\" ]]; then
+      # Decoding Python escapes here would require a Python lexer (`\x77`
+      # becomes `w`, `r\x2b` becomes `r+`). Treat any escaped mode as dynamic.
+      return 0
+    elif [[ "${char}" == "${quote}" ]]; then
+      case "${parsed}" in
+        *w*|*a*|*x*|*+*) return 0 ;;
+        *)
+          trailing="${value:$((i + 1))}"
+          trailing="${trailing#"${trailing%%[![:space:]]*}"}"
+          # A literal read mode is definitive only when the argument ends.
+          # Conditional/concatenated expressions can evaluate writable even
+          # when their first quoted fragment is "r".
+          case "${trailing:0:1}" in
+            ""|","|")") return 1 ;;
+            *) return 0 ;;
+          esac
+          ;;
+      esac
+    else
+      parsed="${parsed}${char}"
+    fi
+    i=$((i + 1))
+  done
+  return 0
+}
+
+_omc_python_body_open_has_write_mode() {
+  local body="${1:-}" state="plain" char="" prev="" rest="" keyword="" context=""
+  local i=0 length="${#1}" open_pos=0 k=0 depth=0 arg_index=0 arg_start=1
+  while (( i < length )); do
+    char="${body:i:1}"
+    if [[ "${state}" == "single" ]]; then
+      if [[ "${char}" == "\\" ]]; then i=$((i + 1));
+      elif [[ "${char}" == "'" ]]; then state="plain"; fi
+      i=$((i + 1)); continue
+    elif [[ "${state}" == "double" ]]; then
+      if [[ "${char}" == "\\" ]]; then i=$((i + 1));
+      elif [[ "${char}" == '"' ]]; then state="plain"; fi
+      i=$((i + 1)); continue
+    elif [[ "${char}" == "'" ]]; then
+      state="single"; i=$((i + 1)); continue
+    elif [[ "${char}" == '"' ]]; then
+      state="double"; i=$((i + 1)); continue
+    elif [[ "${char}" == "#" ]]; then
+      while (( i < length )) && [[ "${body:i:1}" != $'\n' ]]; do i=$((i + 1)); done
+      continue
+    fi
+
+    prev=""
+    (( i > 0 )) && prev="${body:i-1:1}"
+    if [[ "${body:i:4}" == "open" ]] && [[ ! "${prev}" =~ [[:alnum:]_] ]]; then
+      # A declaration names `open` but does not invoke it. Without this guard,
+      # harmless helper definitions fabricate an edit and force needless gates.
+      context="${body:0:i}"
+      if [[ "${context}" =~ (^|[[:space:]])(async[[:space:]]+)?def[[:space:]]*$ ]]; then
+        i=$((i + 4))
+        continue
+      fi
+      open_pos=$((i + 4))
+      while (( open_pos < length )) && [[ "${body:open_pos:1}" =~ [[:space:]] ]]; do
+        open_pos=$((open_pos + 1))
+      done
+      if (( open_pos < length )) && [[ "${body:open_pos:1}" == "(" ]]; then
+        k=$((open_pos + 1))
+        depth=0
+        arg_index=0
+        arg_start=1
+        state="plain"
+        while (( k < length )); do
+          char="${body:k:1}"
+          if [[ "${state}" == "single" ]]; then
+            if [[ "${char}" == "\\" ]]; then k=$((k + 1));
+            elif [[ "${char}" == "'" ]]; then state="plain"; fi
+          elif [[ "${state}" == "double" ]]; then
+            if [[ "${char}" == "\\" ]]; then k=$((k + 1));
+            elif [[ "${char}" == '"' ]]; then state="plain"; fi
+          else
+            if (( depth == 0 && arg_start == 1 )) \
+                && [[ ! "${char}" =~ [[:space:],] ]] \
+                && [[ "${char}" != ")" ]]; then
+              rest="${body:k}"
+              keyword=""
+              if [[ "${rest}" =~ ^([[:alpha:]_][[:alnum:]_]*)[[:space:]]*= ]]; then
+                keyword="${BASH_REMATCH[1]}"
+                if [[ "${keyword}" == "mode" ]]; then
+                  rest="${rest#*=}"
+                  _omc_python_mode_value_is_write "${rest}" && return 0
+                fi
+              elif (( arg_index == 1 )); then
+                _omc_python_mode_value_is_write "${rest}" && return 0
+              fi
+              arg_start=0
+            fi
+            if [[ "${char}" == "'" ]]; then
+              state="single"
+            elif [[ "${char}" == '"' ]]; then
+              state="double"
+            elif [[ "${char}" == "(" || "${char}" == "[" || "${char}" == "{" ]]; then
+              depth=$((depth + 1))
+            elif [[ "${char}" == ")" || "${char}" == "]" || "${char}" == "}" ]]; then
+              if (( depth == 0 )) && [[ "${char}" == ")" ]]; then break; fi
+              (( depth > 0 )) && depth=$((depth - 1))
+            elif (( depth == 0 )) && [[ "${char}" == "," ]]; then
+              arg_index=$((arg_index + 1))
+              arg_start=1
+            fi
+          fi
+          k=$((k + 1))
+        done
+      fi
+    fi
+    i=$((i + 1))
+  done
+  return 1
+}
+
+_omc_unescape_shell_double_body() {
+  local input="${1:-}" output="" char="" next=""
+  local i=0 length="${#1}"
+  while (( i < length )); do
+    char="${input:i:1}"
+    if [[ "${char}" == "\\" ]] && (( i + 1 < length )); then
+      next="${input:i+1:1}"
+      case "${next}" in
+        '"'|'\\'|'$'|'`') output="${output}${next}"; i=$((i + 2)); continue ;;
+        $'\n') i=$((i + 2)); continue ;;
+      esac
+    fi
+    output="${output}${char}"
+    i=$((i + 1))
+  done
+  printf '%s' "${output}"
+}
+
+_omc_literal_python_c_body_has_write_mode() {
+  local original="${1:-}" remaining="${1:-}" consumed="" matched="" prefix="" body=""
+  local command_prefix='(^[[:space:]]*|[;&|({][[:space:]]*)'
+  local assignment_re="[[:alpha:]_][[:alnum:]_]*=('[^']*'|\"(\\\\.|[^\"\\\\])*\"|[^[:space:]]+)"
+  local assignment_prefix="(${assignment_re}[[:space:]]+)*"
+  local command_wrapper_re='([^[:space:]]*\/)?command([[:space:]]+(-[pvV]+|--))*[[:space:]]+'
+  local env_wrapper_re="([^[:space:]]*\/)?env([[:space:]]+(-[^[:space:]]+|${assignment_re}))*[[:space:]]+"
+  local sudo_wrapper_re='([^[:space:]]*\/)?sudo[[:space:]]+(--[[:space:]]+)?'
+  local timeout_wrapper_re='([^[:space:]]*\/)?timeout([[:space:]]+-[^[:space:]]+)*[[:space:]]+[^[:space:]]+[[:space:]]+'
+  local exec_wrapper_re='exec[[:space:]]+'
+  local time_wrapper_re='([^[:space:]]*\/)?time([[:space:]]+-[^[:space:]]+)*[[:space:]]+'
+  local wrapper_re="(${command_wrapper_re}|${env_wrapper_re}|${sudo_wrapper_re}|${timeout_wrapper_re}|${exec_wrapper_re}|${time_wrapper_re})*"
+  local python_re='([^[:space:]]*\/)?python(3([.][0-9]+)?)?'
+  local options_re='([[:space:]]+(-[XW][[:space:]]+[^[:space:]]+|-[XW][^[:space:]]+|--[^[:space:]]+|-[bBdEhiIOPqRsSuvVx?]+))*'
+  local single_re="${command_prefix}${assignment_prefix}${wrapper_re}${python_re}${options_re}[[:space:]]+-c[[:space:]]+'([^']*)'"
+  local double_re="${command_prefix}${assignment_prefix}${wrapper_re}${python_re}${options_re}[[:space:]]+-c[[:space:]]+\"((\\\\.|[^\"\\\\])*)\""
+  [[ -n "${remaining}" ]] || return 1
+  while [[ "${remaining}" =~ ${single_re} ]]; do
+    matched="${BASH_REMATCH[0]}"
+    body="${BASH_REMATCH[$((${#BASH_REMATCH[@]} - 1))]}"
+    prefix="${remaining%%"${matched}"*}"
+    if _omc_shell_text_ends_at_top_level "${consumed}${prefix}" \
+        && _omc_python_body_open_has_write_mode "${body}"; then return 0; fi
+    consumed="${consumed}${prefix}${matched}"
+    remaining="${remaining#*"${matched}"}"
+  done
+  remaining="${original}"
+  consumed=""
+  while [[ "${remaining}" =~ ${double_re} ]]; do
+    matched="${BASH_REMATCH[0]}"
+    body="${BASH_REMATCH[$((${#BASH_REMATCH[@]} - 2))]}"
+    body="$(_omc_unescape_shell_double_body "${body}")"
+    prefix="${remaining%%"${matched}"*}"
+    if _omc_shell_text_ends_at_top_level "${consumed}${prefix}" \
+        && _omc_python_body_open_has_write_mode "${body}"; then return 0; fi
+    consumed="${consumed}${prefix}${matched}"
+    remaining="${remaining#*"${matched}"}"
+  done
+  return 1
+}
+
+_omc_command_resolves_to_trusted_reader() {
+  local token="${1:-}" resolved="" kind=""
+  [[ -n "${token}" ]] || return 1
+  case "${token}" in
+    pwd|echo|printf|true|false)
+      kind="$(type -t "${token}" 2>/dev/null || true)"
+      [[ "${kind}" == "builtin" ]] && return 0
+      ;;
+  esac
+  if [[ "${token}" == /* ]]; then
+    resolved="${token}"
+  elif [[ "${token}" == */* ]]; then
+    return 1
+  else
+    resolved="$(command -v "${token}" 2>/dev/null || true)"
+  fi
+  case "${resolved}" in
+    /bin/*|/usr/bin/*|/usr/local/bin/*|/opt/homebrew/bin/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+bash_command_has_mutation_signature() {
+  local cmd="${1:-}"
+  local PATH="${_OMC_OBSERVER_SAFE_PATH}"
+  local cleaned="" normalized="" rc=1
+  local redirect_re='(^|[^0-9])[0-9]*>(>|\|)?[[:space:]]*[^[:space:]&|;]+'
+  local edit_re='(^|[[:space:];&|(])([^[:space:]]*\/)?(rm|rmdir|mv|cp|mkdir|touch|chmod|chown|ln|truncate|install|rsync|dd|tee|patch)([[:space:]]|$)|(^|[[:space:];&|(])([^[:space:]]*\/)?sed[[:space:]]+([^;&|]*[[:space:]]+)?-i([^[:alnum:]_-]|$)|(^|[[:space:];&|(])([^[:space:]]*\/)?perl[[:space:]]+([^;&|]*[[:space:]]+)?-(p?i|i?p)([^[:alnum:]_-]|$)|(^|[[:space:];&|(])([^[:space:]]*\/)?(prettier|eslint|ruff)[[:space:]][^;&|]*(--write|--fix)([[:space:]]|$)|(^|[[:space:];&|(])([^[:space:]]*\/)?(black|isort|rustfmt|swiftformat)([[:space:]]|$)|(^|[[:space:];&|(])([^[:space:]]*\/)?gofmt[[:space:]][^;&|]*-w([[:space:]]|$)|(^|[[:space:];&|(])find[[:space:]][^;&|]*(-delete|-exec|-execdir)([[:space:]]|$)|(^|[[:space:];&|(])(make|just)[[:space:]]+(format|fmt|fix|generate)([[:space:]]|$)|(^|[[:space:];&|(])(npm|pnpm|yarn)[[:space:]]+(install|i|add|remove|rm|uninstall|update|upgrade|dedupe)([[:space:]]|$)|(^|[[:space:];&|(])npm[[:space:]]+audit[[:space:]]+fix([[:space:]]|$)|(^|[[:space:];&|(])(pip|pip3|poetry|uv|bundle|cargo|gem|brew)[[:space:]]+(install|add|remove|rm|uninstall|update|upgrade|lock|fix)([[:space:]]|$)|(^|[[:space:];&|(])go[[:space:]]+(mod[[:space:]]+tidy|get|install)([[:space:]]|$)|(^|[[:space:];&|(])swift[[:space:]]+package[[:space:]]+(update|resolve)([[:space:]]|$)|(^|[[:space:];&|(])([^[:space:]]*\/)?git[[:space:]]+(checkout|checkout-index|switch|restore|pull|revert|rebase|cherry-pick|merge|am|apply|clean|reset[[:space:]]+(--hard|--merge|--keep)|stash[[:space:]]+(push|pop|apply)|submodule[[:space:]]+(update|deinit))([[:space:]]|$)'
+  local git_stash_bare_re='(^|[[:space:];&|(])([^[:space:]]*\/)?git[[:space:]]+stash[[:space:]]*$'
+  local git_write_option_re='(^|[[:space:];&|(])([^[:space:]]*\/)?git[[:space:]][^;&|]*[[:space:]]--output([=[:space:]]|$)'
+  local inline_write_re='(write_text|write_bytes|writeFile(Sync)?|appendFile(Sync)?|File\.write|FileUtils\.(cp|mv|rm)|shutil\.(copy|copyfile|move|rmtree)|os\.(remove|unlink|rename|replace|makedirs)|fs\.(rm|rename|mkdir|copyFile)(Sync)?)'
+  local interpreter_open_write_re="(^|[[:space:];&|(])ruby[[:space:]]+-e[[:space:]].*open[[:space:]]*\\([^,)]*,[[:space:]]*[\"'][^\"']*[wax+]"
+  local xargs_shell_re='(^[[:space:]]*|[;&|({][[:space:]]*)([^[:space:]]*\/)?xargs([[:space:]]+[^[:space:]]+)*[[:space:]]+([^[:space:]]*\/)?(bash|sh|zsh|dash|ksh)([[:space:]]|$)'
+  [[ -n "${cmd}" ]] || return 1
+
+  if _omc_eval_has_mutation_signature "${cmd}"; then
+    return 0
+  fi
+  if _omc_literal_python_c_body_has_write_mode "${cmd}"; then
+    return 0
+  fi
+  if _omc_literal_shell_c_body_has_mutation_signature "${cmd}"; then
+    return 0
+  fi
+  # A data-driven xargs shell body can arrive through stdin (`-I{}` etc.) and
+  # therefore cannot be proved read-only from the visible command string.
+  if _omc_top_level_executor_present "${cmd}" "${xargs_shell_re}"; then
+    return 0
+  fi
+
+  # Replace quoted spans with a token rather than deleting them. This keeps
+  # quoted redirect operands (`> "app.js"`, `> "$target"`) visible while
+  # still removing literal data such as `echo "a > b"`. Shell -c bodies remain
+  # snapshot candidates through bash_command_may_edit_worktree. Literal -c
+  # bodies were inspected above, but the wrapper alone is not a signature:
+  # otherwise a read-only shell wrapper would always trip the ignored-file
+  # conservative fallback.
+  cleaned="$(sed -E \
+    -e 's/"[^"]*"/Q/g' \
+    -e "s/'[^']*'/Q/g" \
+    -e 's/[0-9]*>>?[[:space:]]*\/dev\/null//g' \
+    -e 's/[0-9]*>[&][0-9]+//g' \
+    <<<"${cmd}")"
+
+  if [[ "${cleaned}" =~ ${redirect_re} ]]; then
+    return 0
+  fi
+
+  normalized="${cleaned}"
+  if [[ "${cleaned}" == *git* || "${cleaned}" == *Git* || "${cleaned}" == *GIT* \
+      || "${cleaned}" == *gh* || "${cleaned}" == *GH* ]]; then
+    normalized="$(_omc_normalize_git_flags_for_mutation "${cleaned}")"
+  fi
+
+  # `nocasematch` applies to [[ =~ ]] on Bash 3.2+. Restore the caller's
+  # setting before returning so this shared library has no ambient side effect.
+  local _restore_nocasematch=0
+  if ! shopt -q nocasematch; then
+    shopt -s nocasematch
+    _restore_nocasematch=1
+  fi
+  if [[ "${normalized}" =~ ${edit_re} ]] \
+      || [[ "${normalized}" =~ ${git_stash_bare_re} ]] \
+      || [[ "${normalized}" =~ ${git_write_option_re} ]] \
+      || [[ "${cmd}" =~ ${inline_write_re} ]] \
+      || [[ "${cmd}" =~ ${interpreter_open_write_re} ]]; then
+    rc=0
+  fi
+  if [[ "${_restore_nocasematch}" -eq 1 ]]; then
+    shopt -u nocasematch
+  fi
+  return "${rc}"
+}
+
+_omc_bash_command_is_proven_read_only() {
+  local cmd="${1:-}" cleaned="" first_token="" rc=1
+  local safe_path="${_OMC_OBSERVER_SAFE_PATH}"
+  local trusted_prefix='(/usr/bin/|/bin/|/usr/local/bin/|/opt/homebrew/bin/)?'
+  local eligible_prefix_re="^([[:space:]]*)${trusted_prefix}(pwd|ls|rg|grep|cat|head|tail|wc|stat|file|which|realpath|readlink|dirname|basename|md5|md5sum|shasum|sha256sum|cksum|true|false|echo|printf|jq|black|isort|rustfmt|swiftformat)([[:space:]]|$)"
+  local simple_read_re="^([[:space:]]*)${trusted_prefix}(pwd|ls|rg|grep|cat|head|tail|wc|stat|file|which|realpath|readlink|dirname|basename|md5|md5sum|shasum|sha256sum|cksum|true|false|echo|printf|jq)([[:space:]]|$)"
+  local formatter_check_re="^([[:space:]]*)${trusted_prefix}(black[[:space:]][^;&|]*--check|isort[[:space:]][^;&|]*(--check-only|--check)|rustfmt[[:space:]][^;&|]*--check|swiftformat[[:space:]][^;&|]*--lint)([=[:space:]]|$)"
+  [[ -n "${cmd}" ]] || return 1
+  # Most snapshot candidates are tests, build tools, or opaque scripts. They
+  # cannot match the narrow skip grammar, so reject them with one fork-free
+  # prefix check instead of paying the quote scrub and four grep processes.
+  [[ "${cmd}" =~ ${eligible_prefix_re} ]] || return 1
+
+  first_token="${cmd#"${cmd%%[![:space:]]*}"}"
+  first_token="${first_token%%[[:space:]]*}"
+  _omc_command_resolves_to_trusted_reader "${first_token}" || return 1
+  local PATH="${safe_path}"
+
+  # Command/process substitution can hide arbitrary execution inside an
+  # otherwise harmless-looking `echo`/`printf`. Never put those shapes on the
+  # skip path. Quoted literal text may contain shell metacharacters, so replace
+  # quoted spans only after checking the execution-bearing substitutions.
+  if [[ "${cmd}" == *'$('* || "${cmd}" == *'`'* || "${cmd}" == *'<('* || "${cmd}" == *'>('* ]]; then
+    return 1
+  fi
+  cleaned="$(sed -E -e 's/"[^"]*"/Q/g' -e "s/'[^']*'/Q/g" <<<"${cmd}")"
+  if [[ "${cleaned}" == *$'\n'* ]] || grep -Eq '[;&|<>]' <<<"${cleaned}"; then
+    return 1
+  fi
+  # ripgrep's preprocessor flag executes an arbitrary program.
+  if grep -Eq '(^|[[:space:]])--pre([=[:space:]]|$)' <<<"${cleaned}"; then
+    return 1
+  fi
+  if [[ "${cleaned}" =~ ${simple_read_re} ]] \
+      || [[ "${cleaned}" =~ ${formatter_check_re} ]]; then
+    rc=0
+  fi
+  return "${rc}"
+}
+
+_omc_bash_command_is_delivery_only() {
+  local cmd="${1:-}" cleaned="" normalized="" structure="" segment="" saw_segment=0
+  local PATH="${_OMC_OBSERVER_SAFE_PATH}"
+  local trusted_prefix='(/usr/bin/|/bin/|/usr/local/bin/|/opt/homebrew/bin/)?'
+  local delivery_prefix_re="^([[:space:]]*)${trusted_prefix}(git|gh)([[:space:]]|$)"
+  local delivery_re="^([[:space:]]*)${trusted_prefix}git[[:space:]]+(add|commit|push|tag)([[:space:]]|$)|^([[:space:]]*)${trusted_prefix}gh[[:space:]]+(pr|release|issue)[[:space:]]+(create|merge|edit|close|delete|reopen|comment)([[:space:]]|$)"
+  [[ -n "${cmd}" ]] || return 1
+  [[ "${cmd}" =~ ${delivery_prefix_re} ]] || return 1
+  if [[ "${cmd}" == *'$('* || "${cmd}" == *'`'* || "${cmd}" == *'<('* || "${cmd}" == *'>('* ]]; then
+    return 1
+  fi
+  cleaned="$(sed -E -e 's/"[^"]*"/Q/g' -e "s/'[^']*'/Q/g" <<<"${cmd}")"
+  if [[ "${cleaned}" == *$'\n'* ]] || grep -Eq '[<>]' <<<"${cleaned}"; then
+    return 1
+  fi
+  # Allow ordinary delivery chains (`git add && git commit && git push`) but
+  # no background jobs or pipelines. This prevents expected index/HEAD
+  # transitions from reopening review while still rejecting a compound that
+  # appends any unrelated command.
+  structure="$(sed -E -e 's/&&//g' -e 's/\|\|//g' <<<"${cleaned}")"
+  grep -Eq '[&|]' <<<"${structure}" && return 1
+  normalized="$(_omc_normalize_git_flags_for_mutation "${cleaned}")"
+  while IFS= read -r segment; do
+    [[ -z "${segment//[[:space:]]/}" ]] && continue
+    [[ "${segment}" =~ ${delivery_re} ]] || return 1
+    saw_segment=1
+  done < <(sed -E 's/(&&|\|\||;)/\
+/g' <<<"${normalized}")
+  [[ "${saw_segment}" -eq 1 ]]
+}
+
+bash_command_may_edit_worktree() {
+  local cmd="${1:-}" sink_stripped=""
+  [[ -n "${cmd}" ]] || return 1
+  _omc_bash_command_is_proven_read_only "${cmd}" && return 1
+  bash_command_has_mutation_signature "${cmd}" && return 0
+  sink_stripped="$(sed -E \
+    -e 's/[0-9]*>>?[[:space:]]*\/dev\/null//g' \
+    -e 's/[0-9]*>[&][0-9]+//g' \
+    <<<"${cmd}")"
+  if [[ "${sink_stripped}" != "${cmd}" ]] \
+      && _omc_bash_command_is_proven_read_only "${sink_stripped}"; then
+    return 1
+  fi
+  _omc_bash_command_is_delivery_only "${cmd}" && return 1
+  return 0
+}
+
+_omc_bash_command_is_async() {
+  local cmd="${1:-}" cleaned="" state="plain" char="" prev="" next=""
+  local PATH="${_OMC_OBSERVER_SAFE_PATH}"
+  local i=0 length=0
+  [[ -n "${cmd}" ]] || return 1
+  case "${cmd}" in
+    *'&'*|*nohup*|*disown*|*setsid*) ;;
+    *) return 1 ;;
+  esac
+  length="${#cmd}"
+  while (( i < length )); do
+    char="${cmd:i:1}"
+    prev=""
+    next=""
+    (( i > 0 )) && prev="${cmd:i-1:1}"
+    (( i + 1 < length )) && next="${cmd:i+1:1}"
+    if [[ "${state}" == "single" ]]; then
+      [[ "${char}" == "'" ]] && state="plain"
+    elif [[ "${state}" == "double" ]]; then
+      if [[ "${char}" == "\\" ]]; then
+        i=$((i + 1))
+      elif [[ "${char}" == '"' ]]; then
+        state="plain"
+      fi
+    elif [[ "${char}" == "\\" ]]; then
+      i=$((i + 1))
+    elif [[ "${char}" == "'" ]]; then
+      state="single"
+      cleaned="${cleaned} "
+    elif [[ "${char}" == '"' ]]; then
+      state="double"
+      cleaned="${cleaned} "
+    elif [[ "${char}" == "&" ]]; then
+      if [[ "${prev}" != "&" && "${next}" != "&" \
+          && "${prev}" != "|" && "${prev}" != ">" \
+          && "${next}" != ">" ]]; then
+        return 0
+      fi
+      cleaned="${cleaned} "
+    else
+      cleaned="${cleaned}${char}"
+    fi
+    i=$((i + 1))
+  done
+  grep -Eiq '(^|[[:space:];|(])(nohup|disown|setsid)([[:space:]]|$)' <<<"${cleaned}"
+}
+
+_omc_path_is_proven_outside_root() {
+  local path="${1:-}" root="${2:-}" parent="" name="" parent_real="" root_real="" resolved=""
+  [[ "${path}" == /* ]] && [[ -n "${root}" ]] || return 1
+  [[ ! -L "${path}" ]] || return 1
+  parent="${path%/*}"
+  name="${path##*/}"
+  [[ -n "${parent}" ]] || parent="/"
+  parent_real="$(cd "${parent}" 2>/dev/null && pwd -P)" || return 1
+  root_real="$(cd "${root}" 2>/dev/null && pwd -P)" || return 1
+  resolved="${parent_real%/}/${name}"
+  case "${resolved}" in
+    "${root_real}"|"${root_real}/"*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+_omc_mutation_targets_proven_outside_root() {
+  local command="${1:-}" root="${2:-}" path="" simplified=""
+  local outside_re='^[[:space:]]*([^[:space:]]*\/)?(touch|rm|rmdir|mkdir|chmod|chown|truncate)[[:space:]]+(/[^[:space:];&|]+)[[:space:]]*$'
+  local redirect_re='^[^;&|<>]*[0-9]*>(>|\|)?[[:space:]]*(/[^[:space:];&|]+)([[:space:]]+[0-9]*[<>][&](-|[0-9]+))*[[:space:]]*$'
+  [[ -n "${command}" ]] && [[ -n "${root}" ]] || return 1
+  if [[ "${command}" =~ ${outside_re} ]]; then
+    path="${BASH_REMATCH[3]}"
+    _omc_path_is_proven_outside_root "${path}" "${root}"
+    return
+  fi
+  # A single foreground command whose only recognized write is a literal
+  # absolute output redirect cannot have changed this worktree. Strip common
+  # trailing FD duplication/close syntax before matching; symlinked targets
+  # remain ambiguous and therefore fail closed.
+  simplified="$(sed -E 's/[[:space:]]+[0-9]*[<>][&](-|[0-9]+)[[:space:]]*$//' <<<"${command}")"
+  if [[ "${simplified}" =~ ${redirect_re} ]]; then
+    path="${BASH_REMATCH[2]}"
+    _omc_path_is_proven_outside_root "${path}" "${root}"
+    return
+  fi
+  return 1
+}
+
+_omc_bash_worktree_target_is_ambiguous() {
+  local command="${1:-}"
+  local cleaned=""
+  [[ -n "${command}" ]] || return 1
+  [[ "${command}" == *git* || "${command}" == *Git* || "${command}" == *GIT* ]] || return 1
+
+  # The snapshot covers the entire hook-cwd Git worktree, so ordinary `cd`
+  # and parent traversal remain observable when they stay inside that root;
+  # writes after `cd /tmp` correctly remain out of scope. Git's own root
+  # overrides can point at a second worktree independently of shell cwd, so
+  # those retain the conservative syntactic fallback. Quote-strip first so a
+  # literal `git -C` in data does not disable the useful snapshot path.
+  cleaned="$(sed -E -e 's/"[^"]*"//g' -e "s/'[^']*'//g" <<<"${command}")"
+  # Case-sensitive by design: top-level `-C <path>` redirects the worktree;
+  # lowercase `-c name=value` changes config and remains observable against
+  # the hook cwd (executor-bearing -c forms are snapshot candidates).
+  if grep -Eq '(^|[[:space:];&|(])([^[:space:]]*\/)?git([^;&|]*[[:space:]])(-C|--git-dir|--work-tree)([=[:space:]]|$)' <<<"${cleaned}"; then return 0; fi
+  return 1
+}
+
+_omc_digest_file() {
+  local file="${1:-}"
+  local PATH="${_OMC_OBSERVER_SAFE_PATH}"
+  [[ -f "${file}" ]] || return 1
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "${file}" 2>/dev/null | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "${file}" 2>/dev/null | awk '{print $1}'
+  else
+    cksum "${file}" 2>/dev/null | awk '{print $1 ":" $2}'
+  fi
+}
+
+_omc_digest_worktree_path() {
+  local path="${1:-}"
+  local PATH="${_OMC_OBSERVER_SAFE_PATH}"
+  [[ -n "${path}" ]] || return 1
+
+  # `-f` follows symlinks, which would hash the target's contents instead of
+  # the tracked link text (and fails for a dangling link). Keep that identity
+  # distinct. `readlink` writes the link text plus its own record terminator;
+  # that is sufficient for change detection without storing the target in a
+  # Bash variable, where trailing newlines would be lost.
+  if [[ -L "${path}" ]]; then
+    if command -v shasum >/dev/null 2>&1; then
+      readlink "${path}" 2>/dev/null | shasum -a 256 2>/dev/null | awk '{print $1}'
+    elif command -v sha256sum >/dev/null 2>&1; then
+      readlink "${path}" 2>/dev/null | sha256sum 2>/dev/null | awk '{print $1}'
+    else
+      readlink "${path}" 2>/dev/null | cksum 2>/dev/null | awk '{print $1 ":" $2}'
+    fi
+  else
+    _omc_digest_file "${path}"
+  fi
+}
+
+_omc_token_digest() {
+  local token="${1:-}"
+  local PATH="${_OMC_OBSERVER_SAFE_PATH}"
+  if command -v shasum >/dev/null 2>&1; then
+    printf '%s' "${token}" | shasum -a 256 2>/dev/null | awk '{print substr($1,1,24)}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "${token}" | sha256sum 2>/dev/null | awk '{print substr($1,1,24)}'
+  else
+    printf '%s' "${token}" | cksum 2>/dev/null | awk '{printf "%08x-%s", $1, $2}'
+  fi
+}
+
+_omc_snapshot_git() (
+  local config_count="${GIT_CONFIG_COUNT:-0}" i=0
+  local index_file="${_OMC_SNAPSHOT_GIT_INDEX_FILE:-}"
+  local object_directory="${_OMC_SNAPSHOT_GIT_OBJECT_DIRECTORY:-}"
+  local alternates="${_OMC_SNAPSHOT_GIT_ALTERNATES:-}"
+  PATH="${_OMC_OBSERVER_SAFE_PATH}"
+  export PATH
+
+  # Snapshot plumbing must not execute repository/user-configured helpers or
+  # inherit a caller's alternate root. Otherwise observing `git status` can
+  # itself run core.fsmonitor, and the before-state may contain bytes written
+  # by the observer. Preserve only the private temp-index/object overrides
+  # supplied by this function's caller.
+  unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
+  unset GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
+  unset GIT_EXTERNAL_DIFF GIT_DIFF_OPTS GIT_PAGER GIT_CONFIG_PARAMETERS
+  unset GIT_CONFIG_COUNT GIT_CEILING_DIRECTORIES GIT_DISCOVERY_ACROSS_FILESYSTEM
+  if [[ "${config_count}" =~ ^[0-9]+$ ]]; then
+    while (( i < config_count )); do
+      unset "GIT_CONFIG_KEY_${i}" "GIT_CONFIG_VALUE_${i}"
+      i=$((i + 1))
+    done
+  fi
+  [[ -n "${index_file}" ]] && export GIT_INDEX_FILE="${index_file}"
+  [[ -n "${object_directory}" ]] && export GIT_OBJECT_DIRECTORY="${object_directory}"
+  [[ -n "${alternates}" ]] && export GIT_ALTERNATE_OBJECT_DIRECTORIES="${alternates}"
+  export GIT_OPTIONAL_LOCKS=0 GIT_NO_REPLACE_OBJECTS=1 GIT_PAGER=cat PAGER=cat
+  command git \
+    -c core.fsmonitor=false \
+    -c core.untrackedCache=false \
+    -c core.hooksPath=/dev/null \
+    -c core.pager=cat \
+    -c diff.external= \
+    "$@"
+)
+
+_omc_git_worktree_snapshot() {
+  local root="${1:-}" comparison_mode="${2:-full}"
+  local PATH="${_OMC_OBSERVER_SAFE_PATH}"
+  local tmp_dir="" status_file="" special_file="" hash_file="" index_info="" temp_index="" temp_objects=""
+  local manifest_file="" fingerprint="" head_sha="" index_tree="" worktree_tree="" object_dir="" size_output=""
+  local record="" original_path="" rest="" xy="" worktree_code="" worktree_mode="" path=""
+  local path_digest="" link_payload="" max_paths="${_OMC_BASH_SNAPSHOT_MAX_PATHS:-256}"
+  local max_bytes="${_OMC_BASH_SNAPSHOT_MAX_BYTES:-67108864}" total_bytes=0 path_size=0
+  local field_count=0 field_index=0 hash_index=0 update_count=0
+  local -a update_paths=() update_names=() update_modes=() remove_names=()
+  local -a regular_paths=() regular_names=() regular_modes=()
+  local -a symlink_paths=() symlink_names=() symlink_modes=()
+  [[ "${max_paths}" =~ ^[1-9][0-9]*$ ]] || max_paths=256
+  [[ "${max_bytes}" =~ ^[1-9][0-9]*$ ]] || max_bytes=67108864
+  [[ -n "${root}" ]] || return 1
+
+  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/omc-worktree-snapshot.XXXXXX" 2>/dev/null)" || return 1
+  status_file="${tmp_dir}/status"
+  special_file="${tmp_dir}/special-index-paths"
+  hash_file="${tmp_dir}/hashes"
+  index_info="${tmp_dir}/index-info"
+  manifest_file="${tmp_dir}/manifest"
+  temp_index="${tmp_dir}/index"
+  temp_objects="${tmp_dir}/objects"
+
+  if ! _omc_snapshot_git -C "${root}" status --porcelain=v2 -z \
+      --untracked-files=all --ignore-submodules=none >"${status_file}" 2>/dev/null; then
+    rm -rf "${tmp_dir}"
+    return 1
+  fi
+  if ! _omc_snapshot_git -C "${root}" ls-files -v -z >"${special_file}" 2>/dev/null; then
+    rm -rf "${tmp_dir}"
+    return 1
+  fi
+  if [[ "${comparison_mode}" == "worktree" ]]; then
+    index_tree="$(_omc_snapshot_git -C "${root}" write-tree 2>/dev/null || true)"
+    if [[ -z "${index_tree}" ]]; then
+      rm -rf "${tmp_dir}"
+      printf 'conservative:unmerged-index'
+      return 0
+    fi
+  else
+    # Porcelain-v2 already carries changed index modes/blob IDs; clean entries
+    # equal HEAD and need no separate index-tree process on the hot path.
+    index_tree="porcelain-v2"
+  fi
+  head_sha="$(_omc_snapshot_git -C "${root}" rev-parse HEAD 2>/dev/null || printf 'unborn')"
+
+  # Build a normalized identity of the current worktree: start from the index
+  # tree, replace unstaged paths with raw no-filter worktree blobs, remove
+  # deletions, and add untracked files. The resulting tree stays identical
+  # across `git add`/commit while changing when a delivery hook rewrites bytes.
+  # NUL-delimited porcelain and arrays preserve spaces/newlines in paths.
+  while IFS= read -r -d '' record; do
+    field_count=0
+    worktree_mode=""
+    case "${record}" in
+      '1 '*) field_count=7 ;;
+      '2 '*) field_count=8 ;;
+      'u '*)
+        rm -rf "${tmp_dir}"
+        printf 'conservative:unmerged-worktree'
+        return 0
+        ;;
+      '? '*)
+        path="${record#'? '}"
+        if [[ -L "${root}/${path}" ]]; then
+          worktree_mode="120000"
+        elif [[ -f "${root}/${path}" ]]; then
+          if [[ -x "${root}/${path}" ]]; then worktree_mode="100755"; else worktree_mode="100644"; fi
+        else
+          rm -rf "${tmp_dir}"
+          printf 'conservative:unsupported-untracked'
+          return 0
+        fi
+        update_paths+=("${root}/${path}")
+        update_names+=("${path}")
+        update_modes+=("${worktree_mode}")
+        continue
+        ;;
+      *) continue ;;
+    esac
+
+    rest="${record#* }"
+    xy="${rest%% *}"
+    worktree_code="${xy#?}"
+    path="${rest}"
+    field_index=0
+    while [[ "${field_index}" -lt "${field_count}" ]]; do
+      path="${path#* }"
+      field_index=$((field_index + 1))
+    done
+    rest="${record#* }"
+    field_index=0
+    while [[ "${field_index}" -lt 4 ]]; do
+      rest="${rest#* }"
+      field_index=$((field_index + 1))
+    done
+    worktree_mode="${rest%% *}"
+    if [[ "${record}" == '2 '* ]]; then
+      IFS= read -r -d '' original_path || true
+    fi
+    [[ "${worktree_code}" != "." ]] || continue
+    if [[ "${worktree_code}" == "D" ]] || [[ ! -e "${root}/${path}" && ! -L "${root}/${path}" ]]; then
+      remove_names+=("${path}")
+    elif [[ -L "${root}/${path}" || -f "${root}/${path}" ]]; then
+      update_paths+=("${root}/${path}")
+      update_names+=("${path}")
+      update_modes+=("${worktree_mode}")
+    else
+      # Dirty submodules/nested worktrees do not expose their inner byte
+      # identity to the parent index. Fail closed rather than pretending their
+      # already-dirty status record can observe a second content edit.
+      rm -rf "${tmp_dir}"
+      printf 'conservative:unsupported-worktree-entry'
+      return 0
+    fi
+  done <"${status_file}"
+
+  # Porcelain intentionally hides materialized skip-worktree and
+  # assume-unchanged paths. Hash those index-flagged paths explicitly so a
+  # sparse-checkout generator cannot alter bytes behind an unchanged status.
+  while IFS= read -r -d '' record; do
+    case "${record:0:1}" in
+      S|[a-z]) ;;
+      *) continue ;;
+    esac
+    path="${record:2}"
+    if [[ -L "${root}/${path}" ]]; then
+      worktree_mode="120000"
+    elif [[ -f "${root}/${path}" ]]; then
+      if [[ -x "${root}/${path}" ]]; then worktree_mode="100755"; else worktree_mode="100644"; fi
+    elif [[ ! -e "${root}/${path}" ]]; then
+      # Preserve absence as part of the worktree identity. This stays stable
+      # for legitimate sparse paths but detects create/delete transitions that
+      # porcelain hides behind the index flag.
+      remove_names+=("${path}")
+      continue
+    else
+      rm -rf "${tmp_dir}"
+      printf 'conservative:unsupported-index-flagged-entry'
+      return 0
+    fi
+    update_paths+=("${root}/${path}")
+    update_names+=("${path}")
+    update_modes+=("${worktree_mode}")
+  done <"${special_file}"
+
+  update_count=$((${#update_paths[@]} + ${#remove_names[@]}))
+  if (( update_count > max_paths )); then
+    rm -rf "${tmp_dir}"
+    printf 'conservative:dirty-path-limit'
+    return 0
+  fi
+  if [[ "${#update_paths[@]}" -gt 0 ]]; then
+    if stat -f '%z' "${update_paths[0]}" >/dev/null 2>&1; then
+      size_output="$(stat -f '%z' "${update_paths[@]}" 2>/dev/null || true)"
+    else
+      size_output="$(stat -c '%s' -- "${update_paths[@]}" 2>/dev/null || true)"
+    fi
+    [[ -n "${size_output}" ]] || { rm -rf "${tmp_dir}"; printf 'conservative:stat-failed'; return 0; }
+    while IFS= read -r path_size; do
+      [[ "${path_size}" =~ ^[0-9]+$ ]] || { rm -rf "${tmp_dir}"; printf 'conservative:stat-invalid'; return 0; }
+      total_bytes=$((total_bytes + path_size))
+      if (( total_bytes > max_bytes )); then
+        rm -rf "${tmp_dir}"
+        printf 'conservative:dirty-byte-limit'
+        return 0
+      fi
+    done <<<"${size_output}"
+  fi
+
+  for ((field_index = 0; field_index < ${#update_paths[@]}; field_index++)); do
+    if [[ -L "${update_paths[${field_index}]}" ]]; then
+      symlink_paths+=("${update_paths[${field_index}]}")
+      symlink_names+=("${update_names[${field_index}]}")
+      symlink_modes+=("${update_modes[${field_index}]}")
+    else
+      regular_paths+=("${update_paths[${field_index}]}")
+      regular_names+=("${update_names[${field_index}]}")
+      regular_modes+=("${update_modes[${field_index}]}")
+    fi
+  done
+
+  # The hot path needs only a format-sensitive full repository fingerprint.
+  # Delivery calls alone need the normalized worktree tree below to discount
+  # expected HEAD/index transitions. Keeping temp-index plumbing off ordinary
+  # tests and Git inspections preserves the 300ms PreTool budget.
+  if [[ "${comparison_mode}" != "worktree" ]]; then
+    printf 'HEAD:%s\0INDEX:%s\0STATUS\0' "${head_sha}" "${index_tree}" >"${manifest_file}"
+    cat "${status_file}" >>"${manifest_file}"
+    if [[ "${#remove_names[@]}" -gt 0 ]]; then
+      for path in "${remove_names[@]}"; do
+        printf 'WORKTREE-ABSENT\0%s\0' "${path}" >>"${manifest_file}"
+      done
+    fi
+    if [[ "${#regular_paths[@]}" -gt 0 ]]; then
+      if ! _omc_snapshot_git -C "${root}" hash-object --no-filters -- \
+          "${regular_paths[@]}" >"${hash_file}" 2>/dev/null; then
+        rm -rf "${tmp_dir}"
+        return 1
+      fi
+      hash_index=0
+      while IFS= read -r path_digest || [[ -n "${path_digest}" ]]; do
+        [[ "${hash_index}" -lt "${#regular_names[@]}" ]] || break
+        printf 'WORKTREE\0%s\0%s\0' "${regular_names[${hash_index}]}" "${path_digest}" \
+          >>"${manifest_file}"
+        hash_index=$((hash_index + 1))
+      done <"${hash_file}"
+      [[ "${hash_index}" -eq "${#regular_names[@]}" ]] \
+        || { rm -rf "${tmp_dir}"; return 1; }
+    fi
+    for ((field_index = 0; field_index < ${#symlink_paths[@]}; field_index++)); do
+      path_digest="$(_omc_digest_worktree_path "${symlink_paths[${field_index}]}" 2>/dev/null || true)"
+      [[ -n "${path_digest}" ]] || { rm -rf "${tmp_dir}"; return 1; }
+      printf 'WORKTREE\0%s\0%s\0' "${symlink_names[${field_index}]}" "${path_digest}" \
+        >>"${manifest_file}"
+    done
+    fingerprint="$(_omc_digest_file "${manifest_file}" 2>/dev/null || true)"
+    rm -rf "${tmp_dir}"
+    [[ -n "${fingerprint}" ]] || return 1
+    printf 'exact:%s:%s:%s' "${head_sha}" "${index_tree}" "${fingerprint}"
+    return 0
+  fi
+
+  object_dir="$(_omc_snapshot_git -C "${root}" rev-parse --git-path objects 2>/dev/null || true)"
+  [[ -n "${object_dir}" ]] || { rm -rf "${tmp_dir}"; return 1; }
+  [[ "${object_dir}" == /* ]] || object_dir="${root}/${object_dir}"
+  object_dir="$(cd "${object_dir}" 2>/dev/null && pwd -P)" || { rm -rf "${tmp_dir}"; return 1; }
+  mkdir -p "${temp_objects}" || { rm -rf "${tmp_dir}"; return 1; }
+
+  if ! _OMC_SNAPSHOT_GIT_INDEX_FILE="${temp_index}" \
+      _OMC_SNAPSHOT_GIT_OBJECT_DIRECTORY="${temp_objects}" \
+      _OMC_SNAPSHOT_GIT_ALTERNATES="${object_dir}" \
+      _omc_snapshot_git -C "${root}" read-tree "${index_tree}" >/dev/null 2>&1; then
+    rm -rf "${tmp_dir}"
+    return 1
+  fi
+
+  : >"${index_info}"
+  if [[ "${#remove_names[@]}" -gt 0 ]]; then
+    for path in "${remove_names[@]}"; do
+      printf '0 %040d\t%s\0' 0 "${path}" >>"${index_info}"
+    done
+  fi
+  if [[ "${#regular_paths[@]}" -gt 0 ]]; then
+    if ! _OMC_SNAPSHOT_GIT_OBJECT_DIRECTORY="${temp_objects}" \
+        _OMC_SNAPSHOT_GIT_ALTERNATES="${object_dir}" \
+        _omc_snapshot_git -C "${root}" hash-object -w --no-filters -- \
+        "${regular_paths[@]}" >"${hash_file}" 2>/dev/null; then
+      rm -rf "${tmp_dir}"
+      return 1
+    fi
+    hash_index=0
+    while IFS= read -r path_digest || [[ -n "${path_digest}" ]]; do
+      [[ "${hash_index}" -lt "${#regular_names[@]}" ]] || break
+      printf '%s %s\t%s\0' "${regular_modes[${hash_index}]}" "${path_digest}" \
+        "${regular_names[${hash_index}]}" >>"${index_info}"
+      hash_index=$((hash_index + 1))
+    done <"${hash_file}"
+    [[ "${hash_index}" -eq "${#regular_names[@]}" ]] \
+      || { rm -rf "${tmp_dir}"; return 1; }
+  fi
+  for ((field_index = 0; field_index < ${#symlink_paths[@]}; field_index++)); do
+    link_payload="${tmp_dir}/link-${field_index}"
+    if ! perl -e 'my $v = readlink($ARGV[0]); defined($v) or exit 1; print $v' \
+        "${symlink_paths[${field_index}]}" >"${link_payload}" 2>/dev/null; then
+      rm -rf "${tmp_dir}"
+      return 1
+    fi
+    path_digest="$(_OMC_SNAPSHOT_GIT_OBJECT_DIRECTORY="${temp_objects}" \
+      _OMC_SNAPSHOT_GIT_ALTERNATES="${object_dir}" \
+      _omc_snapshot_git -C "${root}" hash-object -w --stdin <"${link_payload}" 2>/dev/null || true)"
+    [[ -n "${path_digest}" ]] || { rm -rf "${tmp_dir}"; return 1; }
+    printf '%s %s\t%s\0' "${symlink_modes[${field_index}]}" "${path_digest}" \
+      "${symlink_names[${field_index}]}" >>"${index_info}"
+  done
+
+  if [[ -s "${index_info}" ]] && ! _OMC_SNAPSHOT_GIT_INDEX_FILE="${temp_index}" \
+      _OMC_SNAPSHOT_GIT_OBJECT_DIRECTORY="${temp_objects}" \
+      _OMC_SNAPSHOT_GIT_ALTERNATES="${object_dir}" \
+      _omc_snapshot_git -C "${root}" update-index -z --index-info \
+      <"${index_info}" >/dev/null 2>&1; then
+    rm -rf "${tmp_dir}"
+    return 1
+  fi
+  worktree_tree="$(_OMC_SNAPSHOT_GIT_INDEX_FILE="${temp_index}" \
+    _OMC_SNAPSHOT_GIT_OBJECT_DIRECTORY="${temp_objects}" \
+    _OMC_SNAPSHOT_GIT_ALTERNATES="${object_dir}" \
+    _omc_snapshot_git -C "${root}" write-tree 2>/dev/null || true)"
+  rm -rf "${tmp_dir}"
+  [[ -n "${worktree_tree}" ]] || return 1
+  printf 'exact:%s:%s:%s' "${head_sha}" "${index_tree}" "${worktree_tree}"
+}
+
+_omc_bash_baseline_path() {
+  local tool_use_id="${1:-}" cwd="${2:-}" command="${3:-}"
+  local key=""
+  if [[ -z "${tool_use_id}" ]]; then
+    tool_use_id="anonymous:${cwd}:${command}"
+  fi
+  key="$(_omc_token_digest "${tool_use_id}" 2>/dev/null || true)"
+  [[ -n "${key}" ]] || return 1
+  printf '%s/%s/.bash-mutation-baselines/%s.json' "${STATE_ROOT}" "${SESSION_ID}" "${key}"
+}
+
+record_bash_worktree_baseline() {
+  local tool_use_id="${1:-}" cwd="${2:-${PWD}}" command="${3:-}" run_in_background="${4:-false}"
+  local caller_path="${PATH}"
+  local baseline="" dir="" tmp="" root="" snapshot="" fingerprint="" worktree_fingerprint=""
+  local mode="unobservable" comparison="full"
+  local mutation_signature="0"
+
+  # Classify once. The generic predicate used to call the signature helper and
+  # this function called it again, adding several processes to every opaque
+  # test/build PreTool event before the snapshot even started.
+  _omc_bash_command_is_proven_read_only "${command}" && return 0
+  if bash_command_has_mutation_signature "${command}"; then
+    mutation_signature="1"
+  fi
+  # Reader trust was resolved against the caller's PATH above; every observer
+  # process after that point must use the fixed system path. This includes the
+  # sink-normalization sed, not just Git/digest plumbing.
+  local PATH="${_OMC_OBSERVER_SAFE_PATH}"
+  if [[ "${mutation_signature}" == "0" ]]; then
+    local sink_stripped=""
+    sink_stripped="$(sed -E \
+      -e 's/[0-9]*>>?[[:space:]]*\/dev\/null//g' \
+      -e 's/[0-9]*>[&][0-9]+//g' \
+      <<<"${command}")"
+    PATH="${caller_path}"
+    if [[ "${sink_stripped}" != "${command}" ]] \
+        && _omc_bash_command_is_proven_read_only "${sink_stripped}"; then
+      return 0
+    fi
+    PATH="${_OMC_OBSERVER_SAFE_PATH}"
+    if _omc_bash_command_is_delivery_only "${command}"; then
+      # Delivery legitimately changes HEAD/index. Compare the normalized
+      # current-worktree tree only, so an ordinary add/commit stays quiet while
+      # pre-commit/pre-push hook rewrites still advance the edit clock.
+      comparison="worktree"
+    fi
+  fi
+  baseline="$(_omc_bash_baseline_path "${tool_use_id}" "${cwd}" "${command}" 2>/dev/null || true)"
+  [[ -n "${baseline}" ]] || return 0
+  dir="${baseline%/*}"
+  mkdir -p "${dir}" 2>/dev/null || return 0
+  chmod 700 "${dir}" 2>/dev/null || true
+
+  root="$(git -C "${cwd}" rev-parse --show-toplevel 2>/dev/null || true)"
+  if [[ "${run_in_background}" == "true" ]] || _omc_bash_command_is_async "${command}"; then
+    # PostToolUse may arrive at launch time, before a detached write occurs.
+    # Comparing then consuming an unchanged baseline recreates the bypass, so
+    # asynchronous unknowns are intentionally marked at launch.
+    mode="syntactic"
+  elif [[ -n "${root}" ]] \
+      && ! _omc_bash_worktree_target_is_ambiguous "${command}"; then
+    snapshot="$(_omc_git_worktree_snapshot "${root}" "${comparison}" 2>/dev/null || true)"
+    case "${snapshot}" in
+      exact:*)
+        mode="git"
+        fingerprint="${snapshot}"
+        worktree_fingerprint="${snapshot##*:}"
+        if [[ "${mutation_signature}" == "1" ]] \
+            && _omc_mutation_targets_proven_outside_root "${command}" "${root}"; then
+          # Preserve the useful `/tmp` scratch negative while keeping the
+          # conservative fallback for in-worktree and unresolved targets.
+          mutation_signature="0"
+        fi
+        ;;
+      conservative:*)
+        # A large/conflicted/unsupported dirty shape is intentionally not
+        # sampled. Marking the candidate is safer than letting an attacker or
+        # giant artifact choose which bytes the observer ignores.
+        mode="syntactic"
+        ;;
+      *)
+        if [[ "${mutation_signature}" == "1" ]]; then mode="syntactic"; fi
+        ;;
+    esac
+  elif [[ "${mutation_signature}" == "1" ]]; then
+    mode="syntactic"
+  fi
+
+  tmp="$(mktemp "${baseline}.XXXXXX" 2>/dev/null)" || return 0
+  if jq -nc \
+      --arg mode "${mode}" \
+      --arg root "${root}" \
+      --arg fingerprint "${fingerprint}" \
+      --arg worktree_fingerprint "${worktree_fingerprint}" \
+      --arg comparison "${comparison}" \
+      --arg mutation_signature "${mutation_signature}" \
+      '{mode:$mode,root:$root,fingerprint:$fingerprint,
+        worktree_fingerprint:$worktree_fingerprint,comparison:$comparison,
+        mutation_signature:$mutation_signature}' >"${tmp}" 2>/dev/null; then
+    mv "${tmp}" "${baseline}" 2>/dev/null || rm -f "${tmp}"
+  else
+    rm -f "${tmp}"
+  fi
+
+  # Denied/failed-before-dispatch tool calls can leave a baseline behind.
+  # Best-effort cleanup runs on the next candidate; session retention is the
+  # authoritative lifecycle for files newer than this coarse mtime window.
+  find "${dir}" -type f -mtime +1 -delete >/dev/null 2>&1 || true
+}
+
+bash_worktree_edit_detected() {
+  local tool_use_id="${1:-}" cwd="${2:-${PWD}}" command="${3:-}"
+  local PATH="${_OMC_OBSERVER_SAFE_PATH}"
+  local baseline="" mode="" root="" before="" before_worktree="" comparison="full"
+  local snapshot="" after_worktree="" mutation_signature="0"
+
+  baseline="$(_omc_bash_baseline_path "${tool_use_id}" "${cwd}" "${command}" 2>/dev/null || true)"
+
+  # Missing pre-hook state (older settings or snapshot failure) must not
+  # recreate the original fail-open bypass. Missing tool IDs still pair via a
+  # stable anonymous cwd+command key; true misses fall back syntactically.
+  if [[ -z "${baseline}" ]] || [[ ! -f "${baseline}" ]]; then
+    # Older/stale hook wiring has no pre-state. Preserve fail-closed behavior
+    # for recognized writers, but do not turn every opaque non-Git test call
+    # into an edit merely because pairing metadata is unavailable.
+    bash_command_may_edit_worktree "${command}" || return 1
+    if bash_command_has_mutation_signature "${command}"; then return 0; fi
+    return 1
+  fi
+  mode="$(jq -r '.mode // empty' "${baseline}" 2>/dev/null || true)"
+  root="$(jq -r '.root // empty' "${baseline}" 2>/dev/null || true)"
+  before="$(jq -r '.fingerprint // empty' "${baseline}" 2>/dev/null || true)"
+  before_worktree="$(jq -r '.worktree_fingerprint // empty' "${baseline}" 2>/dev/null || true)"
+  comparison="$(jq -r '.comparison // "full"' "${baseline}" 2>/dev/null || true)"
+  mutation_signature="$(jq -r '.mutation_signature // "0"' "${baseline}" 2>/dev/null || true)"
+  rm -f "${baseline}" 2>/dev/null || true
+
+  [[ "${mode}" == "syntactic" ]] && return 0
+  [[ "${mode}" == "git" ]] || return 1
+  [[ -n "${root}" ]] && [[ -n "${before}" ]] || return 0
+
+  snapshot="$(_omc_git_worktree_snapshot "${root}" "${comparison}" 2>/dev/null || true)"
+  case "${snapshot}" in
+    exact:*) ;;
+    conservative:*) return 0 ;;
+    *) return 0 ;;
+  esac
+  if [[ "${comparison}" == "worktree" ]] && [[ -n "${before_worktree}" ]]; then
+    after_worktree="${snapshot##*:}"
+    [[ "${after_worktree}" != "${before_worktree}" ]] && return 0
+  elif [[ "${snapshot}" != "${before}" ]]; then
+    return 0
+  fi
+
+  # Git intentionally omits ignored files and does not expose content/mode
+  # changes to an already-untracked path. When the command itself has a write
+  # signature, no Git diff is not proof of no workspace mutation; mark it
+  # conservatively. Opaque commands still benefit from exact tracked/new-file
+  # detection without turning every successful test into a false edit.
+  [[ "${mutation_signature}" == "1" ]]
+}
+
+_omc_bash_edit_outcome_path() {
+  local tool_use_id="${1:-}" cwd="${2:-}" command="${3:-}"
+  local key=""
+  if [[ -z "${tool_use_id}" ]]; then
+    tool_use_id="anonymous:${cwd}:${command}"
+  fi
+  key="$(_omc_token_digest "${tool_use_id}" 2>/dev/null || true)"
+  [[ -n "${key}" ]] || return 1
+  printf '%s/%s/.bash-edit-outcomes/%s.json' "${STATE_ROOT}" "${SESSION_ID}" "${key}"
+}
+
+record_bash_edit_outcome() {
+  local tool_use_id="${1:-}" cwd="${2:-}" command="${3:-}"
+  local PATH="${_OMC_OBSERVER_SAFE_PATH}"
+  local path=""
+  path="$(_omc_bash_edit_outcome_path "${tool_use_id}" "${cwd}" "${command}" 2>/dev/null || true)"
+  [[ -n "${path}" ]] || return 1
+  mkdir -p "${path%/*}" 2>/dev/null || return 1
+  chmod 700 "${path%/*}" 2>/dev/null || true
+  printf '{"edit_bearing":true}\n' >"${path}"
+}
+
+consume_bash_edit_outcome() {
+  local tool_use_id="${1:-}" cwd="${2:-}" command="${3:-}"
+  local PATH="${_OMC_OBSERVER_SAFE_PATH}"
+  local path=""
+  path="$(_omc_bash_edit_outcome_path "${tool_use_id}" "${cwd}" "${command}" 2>/dev/null || true)"
+  [[ -n "${path}" ]] && [[ -f "${path}" ]] || return 1
+  rm -f "${path}" 2>/dev/null || true
+  return 0
+}
+
 is_internal_claude_path() {
   local path="$1"
 
@@ -3544,7 +5068,7 @@ session_commit_count() {
 # signal for prompts like "commit and push" instead of merely parsing the
 # intent and trusting the final summary.
 
-_OMC_DELIVERY_PRE='(^|[[:space:];&|(])([^[:space:]]*/)?'
+_OMC_DELIVERY_PRE="${OMC_SHELL_COMMAND_PREFIX_RE}"
 
 omc_normalize_git_gh_flags() {
   sed -E 's/(^|[[:space:];&|(])(([^[:space:]]*\/)?(git|gh))(([[:space:]]+(-c|-C|--git-dir|--work-tree|--exec-path|--namespace|--super-prefix|--config-env|--attr-source)[[:space:]]+[^[:space:]]+)|([[:space:]]+-[^[:space:]]+))+/\1\2/g' <<<"$1"
@@ -3558,10 +5082,12 @@ omc_delivery_command_failed() {
 
 omc_delivery_allowed_variant() {
   local cmd="$1"
+  omc_shell_has_executable_substitution "${cmd}" && return 1
 
   if grep -Eq "${_OMC_DELIVERY_PRE}git[[:space:]]+(push|commit)[[:space:]]+.*(--dry-run|-n)([[:space:]]|$)" <<<"${cmd}"; then return 0; fi
   if grep -Eq "${_OMC_DELIVERY_PRE}git[[:space:]]+apply[[:space:]]+.*(--check|--stat|--numstat|--summary)([[:space:]]|$)" <<<"${cmd}"; then return 0; fi
-  if grep -Eq "${_OMC_DELIVERY_PRE}git[[:space:]]+tag([[:space:]]+[^[:space:]]+)*[[:space:]]+(-l|--list|--sort|--contains|--no-contains|--points-at|--merged|--no-merged|-n[0-9]*|--column|--no-column|--format|-i|--ignore-case)([[:space:]=]|$)" <<<"${cmd}"; then return 0; fi
+  if grep -Eq "${_OMC_DELIVERY_PRE}git[[:space:]]+tag([[:space:]]|$)" <<<"${cmd}" \
+      && omc_git_tag_segment_is_read_only "${cmd}"; then return 0; fi
 
   return 1
 }
@@ -3579,19 +5105,27 @@ omc_delivery_segment_is_publish() {
 
 omc_delivery_action_kinds() {
   local command_text="$1"
-  local normalized seg saw_commit=0 saw_publish=0
+  local normalized seg control saw_commit=0 saw_publish=0
 
   normalized="$(omc_normalize_git_gh_flags "${command_text}")"
-  while IFS= read -r seg; do
+  while IFS= read -r -d '' seg; do
     [[ -z "${seg// }" ]] && continue
+    control="$(omc_shell_unquoted_control_text "${seg}")"
+    # Prove an actual segment-leading delivery executable before inspecting
+    # the original arguments for dry-run/list semantics. This prevents
+    # `echo git tag v1` and quoted prose from satisfying a delivery contract.
+    if ! omc_delivery_segment_is_commit "${control}" \
+        && ! omc_delivery_segment_is_publish "${control}"; then
+      continue
+    fi
     omc_delivery_allowed_variant "${seg}" && continue
-    if omc_delivery_segment_is_commit "${seg}"; then
+    if omc_delivery_segment_is_commit "${control}"; then
       saw_commit=1
     fi
-    if omc_delivery_segment_is_publish "${seg}"; then
+    if omc_delivery_segment_is_publish "${control}"; then
       saw_publish=1
     fi
-  done < <(sed -E 's/(&&|\|\||;|\|)/\n/g' <<<"${normalized}")
+  done < <(omc_shell_compound_segments "${normalized}")
 
   [[ "${saw_commit}" -eq 1 ]] && printf 'commit\n'
   [[ "${saw_publish}" -eq 1 ]] && printf 'publish\n'
@@ -3693,6 +5227,17 @@ objective_contract_is_substantive() {
   [[ "${OMC_OBJECTIVE_CONTRACT_ARM_ON_GOD_SCOPE:-on}" == "on" ]] \
     && [[ "$(read_state "objective_contract_god_scope")" == "1" ]] && return 0
   [[ "$(read_state "plan_complexity_high")" == "1" ]] && return 0
+  # Bash does not disclose a reliable path/fan-out list. If an unknown-scope
+  # Bash edit happened during this objective cycle, precision cannot justify
+  # treating it as a one-file change; require the completion audit.
+  local bash_edit_ts objective_prompt_ts
+  bash_edit_ts="$(read_state "last_bash_edit_ts")"
+  objective_prompt_ts="$(read_state "objective_contract_prompt_ts")"
+  if [[ "${bash_edit_ts}" =~ ^[0-9]+$ ]] \
+      && [[ "${objective_prompt_ts}" =~ ^[0-9]+$ ]] \
+      && [[ "${bash_edit_ts}" -ge "${objective_prompt_ts}" ]]; then
+    return 0
+  fi
   local files min_files
   files="$(objective_contract_cycle_edit_count)"
   min_files="${OMC_OBJECTIVE_CONTRACT_MIN_FILES:-4}"
@@ -4440,9 +5985,10 @@ set_dimension_verdicts() {
 
 is_dimension_valid() {
   # Returns 0 if the dimension was ticked at or after the most recent
-  # edit of the relevant type. For 'prose', compare to last_doc_edit_ts;
-  # all other dimensions compare to last_code_edit_ts (then last_edit_ts
-  # as a legacy fallback for resumed sessions).
+  # edit of the relevant type. For 'prose', compare to last_doc_edit_ts plus
+  # last_bash_edit_ts when Bash scope is unknown (the missing path may be a
+  # document); all other dimensions compare to last_code_edit_ts (then
+  # last_edit_ts as a legacy fallback for resumed sessions).
   #
   # Uses >= (not >) so same-second tick-after-edit sequences count as
   # valid. The production semantics are: "reviewer that ran at time T
@@ -4458,6 +6004,15 @@ is_dimension_valid() {
   local relevant_edit_ts
   if [[ "${dim}" == "prose" ]]; then
     relevant_edit_ts="$(read_state "last_doc_edit_ts")"
+    if [[ "$(read_state "bash_unknown_edit_scope")" == "1" ]]; then
+      local bash_edit_ts
+      bash_edit_ts="$(read_state "last_bash_edit_ts")"
+      relevant_edit_ts="${relevant_edit_ts:-0}"
+      bash_edit_ts="${bash_edit_ts:-0}"
+      [[ "${relevant_edit_ts}" =~ ^[0-9]+$ ]] || relevant_edit_ts=0
+      [[ "${bash_edit_ts}" =~ ^[0-9]+$ ]] || bash_edit_ts=0
+      (( bash_edit_ts > relevant_edit_ts )) && relevant_edit_ts="${bash_edit_ts}"
+    fi
   else
     relevant_edit_ts="$(read_state "last_code_edit_ts")"
     [[ -z "${relevant_edit_ts}" ]] && relevant_edit_ts="$(read_state "last_edit_ts")"
@@ -4507,7 +6062,7 @@ describe_dimension() {
 #   If unique_count >= OMC_TRACEABILITY_FILE_COUNT → append traceability
 
 get_required_dimensions() {
-  local code_count doc_count ui_count unique_count
+  local code_count doc_count ui_count unique_count bash_unknown trace_threshold dimension_threshold
   code_count="$(read_state "code_edit_count")"
   doc_count="$(read_state "doc_edit_count")"
   ui_count="$(read_state "ui_edit_count")"
@@ -4539,6 +6094,27 @@ get_required_dimensions() {
         fi
       done < <(sort -u "${edited_log}")
     fi
+  fi
+
+  # Unknown Bash fan-out cannot honestly be represented in the exact-path
+  # counters. Treat it as reaching the count-based review thresholds rather
+  # than silently taking the small-task path. Exact counters and reporting
+  # remain truthful; this conservative floor exists only for gate selection.
+  bash_unknown="$(read_state "bash_unknown_edit_scope")"
+  if [[ "${bash_unknown}" == "1" ]]; then
+    (( code_count < 1 )) && code_count=1
+    # The missing path can be UI or prose just as easily as generic code.
+    # Require both path-specialized review dimensions rather than silently
+    # under-reviewing a Bash-written .tsx/.css/README. These are gate-local
+    # conservative sentinels; the persisted exact counters remain truthful.
+    (( doc_count < 1 )) && doc_count=1
+    (( ui_count < 1 )) && ui_count=1
+    trace_threshold="${OMC_TRACEABILITY_FILE_COUNT:-6}"
+    dimension_threshold="${OMC_DIMENSION_GATE_FILE_COUNT:-3}"
+    [[ "${trace_threshold}" =~ ^[0-9]+$ ]] || trace_threshold=6
+    [[ "${dimension_threshold}" =~ ^[0-9]+$ ]] || dimension_threshold=3
+    (( unique_count < trace_threshold )) && unique_count="${trace_threshold}"
+    (( unique_count < dimension_threshold )) && unique_count="${dimension_threshold}"
   fi
 
   if [[ "${unique_count}" -lt "${OMC_DIMENSION_GATE_FILE_COUNT}" ]]; then
@@ -6461,6 +8037,13 @@ current_session_risk_tier() {
 
   local escalation_reasons=""
 
+  # Unknown Bash scope may be auth, schema, UI, or ordinary code. Exact-path
+  # consumers cannot prove it is benign, so take the strict risk posture rather
+  # than silently missing every sensitive-surface escalator.
+  if [[ "$(read_state "bash_unknown_edit_scope" 2>/dev/null || true)" == "1" ]]; then
+    escalation_reasons="bash_unknown_edit_scope"
+  fi
+
   # Escalator 1: reviewer findings carry severity high|critical.
   local _csrt_findings_file
   _csrt_findings_file="$(session_file "findings.json")"
@@ -6528,6 +8111,9 @@ current_session_risk_tier() {
     _csrt_code_edits="$(read_state "code_edit_count" 2>/dev/null || true)"
     _csrt_code_edits="${_csrt_code_edits:-0}"
     [[ "${_csrt_code_edits}" =~ ^[0-9]+$ ]] || _csrt_code_edits=0
+    if [[ "$(read_state "bash_unknown_edit_scope" 2>/dev/null || true)" == "1" ]]; then
+      _csrt_code_edits=1
+    fi
     _csrt_doc_edits="$(read_state "doc_edit_count" 2>/dev/null || true)"
     _csrt_doc_edits="${_csrt_doc_edits:-0}"
     [[ "${_csrt_doc_edits}" =~ ^[0-9]+$ ]] || _csrt_doc_edits=0

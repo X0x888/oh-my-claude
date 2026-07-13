@@ -197,6 +197,25 @@ write_state_batch \
   "doc_edit_count" "5"
 assert_eq "F1 medium + 0 code + 5 doc edits de-escalates" "low" "$(current_session_risk_tier)"
 
+fresh_session "F1b"
+write_state_batch \
+  "task_risk_tier" "medium" \
+  "code_edit_count" "0" \
+  "doc_edit_count" "5" \
+  "bash_unknown_edit_scope" "1"
+assert_eq "F1b unknown-scope Bash code edit prevents docs-only de-escalation" \
+  "high" "$(current_session_risk_tier)"
+assert_eq "F1b unknown-scope factor is explicit" \
+  "bash_unknown_edit_scope" "$(read_state "session_risk_factors")"
+
+fresh_session "F1c"
+write_state_batch \
+  "task_risk_tier" "low" \
+  "code_edit_count" "0" \
+  "bash_unknown_edit_scope" "1"
+assert_eq "F1c low-risk prompt with unknown Bash scope escalates high" \
+  "high" "$(current_session_risk_tier)"
+
 fresh_session "F2"
 write_state_batch \
   "task_risk_tier" "medium" \

@@ -46,6 +46,21 @@ contract gates, and now the bg-spawn hygiene gate. Class 6 is the
 **implicit category** every `core.md` rule that has no script enforcement
 falls into; until this doc, it was unnamed.
 
+**Producer coverage is part of a state-predicate's durability.** A correct
+Stop condition over `last_edit_ts` is not mechanically binding if one shipped
+mutation tool never writes that clock. F-016 closes that gap for NotebookEdit
+and Bash: every non-trivially-read-only foreground Bash call in Git receives a
+before/after snapshot, including opaque scripts and Git commands whose ambient
+helpers/hooks may execute. Snapshot plumbing disables those helpers internally;
+delivery compares a normalized worktree identity so expected HEAD/index changes
+stay quiet while hook-written bytes do not. Recognized write syntax is the
+conservative fallback for ignored/unobservable changes, and oversized,
+conflicted, dirty-submodule, and all asynchronous snapshot candidates fail
+closed rather than sampling or comparing an unsound state.
+The existing Stop predicate then applies unchanged. State-ledger audits must
+verify both the consumer predicate and every producer surface, not just grep
+for the Stop condition.
+
 ## Class detail: PreTool boundary
 
 PreToolUse hooks inspect every tool call before it executes. The
@@ -55,9 +70,14 @@ boundary class:
 
 | Gate | Trigger | Disable flag |
 |---|---|---|
-| Agent-first invariant | Workspace mutation under `/ulw` execution before any fresh-context specialist returned | `OMC_PRETOOL_INTENT_GUARD=false` / `pretool_intent_guard=false` |
+| Agent-first invariant | Workspace mutation under `/ulw` execution before any fresh-context specialist returned | Off by default; enable with `agent_first_gate=on`. The master `OMC_PRETOOL_INTENT_GUARD=false` / `pretool_intent_guard=false` kill switch also disables its denial decision. |
 | Commit/push contract | Destructive `git`/`gh` op under `commit_contract_mode=forbidden` or `push_contract_mode=forbidden` | (same as above; gates share the script kill switch) |
 | **bg-spawn hygiene** *(v1.43.x)* | Bash command pairing `(until\|while) ... do ... sleep` (loop body marker required) with `run_in_background:true`, trailing `&`, or `nohup`/`setsid`. Quoted prose is stripped before matching so `echo "wait until ready"` doesn't false-positive. | `OMC_BG_SPAWN_GATE=false` / `bg_spawn_gate=false`; also disabled when `OMC_PRETOOL_INTENT_GUARD=false` (gates share the script kill switch) |
+
+The shared `pretool_intent_guard=false` kill switch disables these denial and
+hygiene decisions, but not Bash mutation-baseline capture. That capture is an
+observability producer for the later edit-clock Stop predicate; turning off an
+intent gate must not make completed workspace edits invisible.
 
 PreTool boundary defenses are **distinct from stop-guard defenses**:
 

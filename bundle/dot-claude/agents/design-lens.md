@@ -1,7 +1,7 @@
 ---
 name: design-lens
 description: Evaluate a project from a UX Designer's perspective — user experience, accessibility, information architecture, error states, and onboarding flow. Use as part of a multi-role project council evaluation.
-disallowedTools: Write, Edit, MultiEdit
+disallowedTools: Write, Edit, MultiEdit, NotebookEdit
 model: sonnet
 permissionMode: plan
 maxTurns: 20

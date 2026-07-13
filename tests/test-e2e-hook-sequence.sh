@@ -2138,6 +2138,7 @@ for cmd in \
   "git rebase -i main" \
   "git cherry-pick abc123" \
   "git tag v1.0.0" \
+  "git tag -i v1.0" \
   "git merge feature-branch" \
   "git am < patch.txt" \
   "git apply patch.txt" \
@@ -2423,7 +2424,7 @@ for cmd in \
   "git tag -n" \
   "git tag --column" \
   "git tag --format='%(refname)'" \
-  "git tag -i 'v1.*'"; do
+  "git tag -l -i 'v1.*'"; do
   out="$(sim_pretool_bash "cg8q" "${cmd}")"
   if [[ -z "${out}" ]]; then
     pass=$((pass + 1))
@@ -2610,6 +2611,25 @@ sim_planner "pv4" "quality-planner" "Step 1. Implement.
 Step 2. Test."
 assert_eq "planner(no VERDICT): plan_verdict defaults to PLAN_READY" "PLAN_READY" "$(read_st "pv4" "plan_verdict")"
 assert_eq "planner(no VERDICT): has_plan still true (legacy compat)" "true" "$(read_st "pv4" "has_plan")"
+teardown_test
+
+# Bash edit-clock producer coverage: a real Bash mutation must enter the same
+# review/verification path as Edit/Write, never the D-001 "no edits" release.
+setup_test
+unset OMC_AGENT_FIRST_GATE
+init_session "bash-edit-stop"
+work="${TEST_HOME}/work"
+mkdir -p "${work}"
+printf 'changed\n' > "${work}/app.js"
+run_hook "${HOOK_DIR}/posttool-dispatch.sh" \
+  "$(jq -nc --arg cwd "${work}" '{
+    session_id:"bash-edit-stop",tool_name:"Bash",tool_use_id:"tu-bash-edit",cwd:$cwd,
+    tool_input:{command:"printf changed > app.js"},tool_response:{exit_code:0}
+  }')" >/dev/null
+assert_not_empty "Bash mutation records last_code_edit_ts" "$(read_st "bash-edit-stop" "last_code_edit_ts")"
+output="$(sim_stop "bash-edit-stop" "Done.")"
+assert_contains "Bash mutation enters quality gate instead of no-edit release" '"decision":"block"' "${output}"
+assert_not_contains "Bash mutation is not marked released" 'released' "$(read_st "bash-edit-stop" "session_outcome")"
 teardown_test
 
 # v1.34.1+ (data-lens D-001): session_outcome must be written on every

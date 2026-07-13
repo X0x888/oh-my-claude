@@ -1,7 +1,7 @@
 ---
 name: visual-craft-lens
 description: Evaluate a project from a visual-craft perspective — palette intent, typography hierarchy, layout & composition, depth & elevation, visual signature, generic-AI-pattern detection, archetype anti-cloning, density rhythm. Use as part of a multi-role project council evaluation for projects with a visible UI surface (web, iOS, macOS, CLI/TUI).
-disallowedTools: Write, Edit, MultiEdit
+disallowedTools: Write, Edit, MultiEdit, NotebookEdit
 model: sonnet
 permissionMode: plan
 maxTurns: 20

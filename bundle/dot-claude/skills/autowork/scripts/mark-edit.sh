@@ -19,6 +19,7 @@ HOOK_JSON="$(_omc_read_hook_stdin)"
 
 SESSION_ID="$(json_get '.session_id')"
 tool_name="$(json_get '.tool_name')"
+hook_event_name="$(json_get '.hook_event_name')"
 
 if [[ -z "${SESSION_ID}" ]]; then
   exit 0
@@ -31,6 +32,31 @@ if ! is_ultrawork_mode; then
 fi
 
 edited_path="$(json_get '.tool_input.file_path')"
+if [[ "${tool_name}" == "NotebookEdit" ]] && [[ -z "${edited_path}" ]]; then
+  edited_path="$(json_get '.tool_input.notebook_path')"
+fi
+
+# Bash has no file_path field. The PreTool hook captured before-state for each
+# non-trivially-read-only candidate; consume it here and advance the generic
+# code clock on a changed snapshot or conservative recognized-write fallback.
+# This includes ignored/unobservable/asynchronous cases where Git cannot prove
+# a diff, so the clock can intentionally fail closed.
+if [[ "${tool_name}" == "Bash" ]]; then
+  bash_command="$(json_get '.tool_input.command')"
+  tool_use_id="$(json_get '.tool_use_id')"
+  tool_cwd="$(json_get '.cwd')"
+  tool_cwd="${tool_cwd:-${PWD}}"
+  if ! bash_worktree_edit_detected "${tool_use_id}" "${tool_cwd}" "${bash_command}"; then
+    exit 0
+  fi
+  # Leave the same-call verification veto before any state write. If a later
+  # clock write fails open, record-verification still cannot certify bytes from
+  # a compound call that this handler already classified as edit-bearing.
+  if [[ "${hook_event_name}" != "PostToolUseFailure" ]]; then
+    record_bash_edit_outcome "${tool_use_id}" "${tool_cwd}" "${bash_command}" || true
+  fi
+fi
+
 if [[ -n "${edited_path}" ]] && is_internal_claude_path "${edited_path}"; then
   append_limited_state "internal_edits.log" "${edited_path}" "20"
   exit 0
@@ -86,6 +112,16 @@ if [[ "${is_doc}" -eq 1 ]]; then
     "session_handoff_blocks" "0" \
     "advisory_guard_blocks" "0" \
     "stall_counter" "0"
+elif [[ "${tool_name}" == "Bash" ]] && [[ -z "${edited_path}" ]]; then
+  with_state_lock_batch \
+    "last_edit_ts" "${now}" \
+    "last_code_edit_ts" "${now}" \
+    "last_bash_edit_ts" "${now}" \
+    "bash_unknown_edit_scope" "1" \
+    "stop_guard_blocks" "0" \
+    "session_handoff_blocks" "0" \
+    "advisory_guard_blocks" "0" \
+    "stall_counter" "0"
 else
   with_state_lock_batch \
     "last_edit_ts" "${now}" \
@@ -94,6 +130,17 @@ else
     "session_handoff_blocks" "0" \
     "advisory_guard_blocks" "0" \
     "stall_counter" "0"
+fi
+
+# Bash worktree scope is unknown: keep exact unique-file counters untouched so
+# a later Edit of the same path cannot turn one real file into count=2. The
+# separate state flag above records uncertainty without lying to count-based
+# gates. Successful PostToolUse already left a per-tool outcome marker before
+# the clock writes so the next dispatcher handler cannot accept a
+# `test; mutate` compound call as post-edit verification. Failed calls have no
+# verification handler.
+if [[ "${tool_name}" == "Bash" ]] && [[ -z "${edited_path}" ]]; then
+  log_hook "mark-edit" "file=(bash-worktree) is_doc=0"
 fi
 
 if [[ -n "${edited_path}" ]]; then

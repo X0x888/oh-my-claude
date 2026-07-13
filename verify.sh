@@ -725,9 +725,57 @@ printf '\n'
 
 printf '4. Required hooks in settings.json\n'
 
+read_disable_all_hooks_value() {
+  local settings_file="${1:-}"
+  [[ -f "${settings_file}" ]] || { printf 'unset'; return 0; }
+  if command -v jq >/dev/null 2>&1; then
+    jq -r '
+      if has("disableAllHooks") and (.disableAllHooks | type) == "boolean"
+      then (.disableAllHooks | tostring)
+      else "unset"
+      end
+    ' "${settings_file}" 2>/dev/null || printf 'unset'
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -c '
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        data = json.load(f)
+    value = data.get("disableAllHooks", None)
+    sys.stdout.write("true" if value is True else "false" if value is False else "unset")
+except Exception:
+    sys.stdout.write("unset")
+' "${settings_file}" 2>/dev/null || printf 'unset'
+  else
+    printf 'unset'
+  fi
+}
+
 if [[ ! -f "${CLAUDE_HOME}/settings.json" ]]; then
   fail "settings.json missing; cannot check hooks"
 else
+  # Claude Code's hook kill switch overrides every correctly installed
+  # event/matcher entry. Check both the user setting (global install health)
+  # and the effective project/local setting for the directory where verify was
+  # invoked. settings.local.json has precedence over settings.json.
+  hooks_user_setting="$(read_disable_all_hooks_value "${CLAUDE_HOME}/settings.json")"
+  if [[ "${hooks_user_setting}" == "true" ]]; then
+    fail "User-level hooks disabled: settings.json has disableAllHooks=true"
+  else
+    pass "User-level hook kill switch is not enabled"
+  fi
+
+  verify_project_root="$(git -C "${PWD}" rev-parse --show-toplevel 2>/dev/null || printf '%s' "${PWD}")"
+  hooks_project_setting="$(read_disable_all_hooks_value "${verify_project_root}/.claude/settings.json")"
+  hooks_local_setting="$(read_disable_all_hooks_value "${verify_project_root}/.claude/settings.local.json")"
+  hooks_project_effective="${hooks_project_setting}"
+  [[ "${hooks_local_setting}" != "unset" ]] && hooks_project_effective="${hooks_local_setting}"
+  if [[ "${hooks_project_effective}" == "true" ]]; then
+    fail "Hooks disabled for current project: ${verify_project_root}/.claude settings resolve disableAllHooks=true"
+  else
+    pass "Current project hook kill switch is not enabled"
+  fi
+
   # Each entry: "event_name:command_fragment"
   required_hooks=(
     "SessionStart:session-start-resume-handoff.sh"
@@ -739,6 +787,7 @@ else
     "PreToolUse:record-pending-agent.sh"
     "PreToolUse:pretool-intent-guard.sh"
     "PostToolUse:mark-edit.sh"
+    "PostToolUseFailure:mark-edit.sh"
     "PostToolUse:record-verification.sh"
     "PostToolUse:reflect-after-agent.sh"
     "PostToolUse:record-advisory-verification.sh"
@@ -768,11 +817,23 @@ else
     hook_found="false"
     if command -v jq >/dev/null 2>&1; then
       hook_found="$(jq -r --arg ev "${event}" --arg frag "${fragment}" '
+        def script_basename:
+          def token_basename: split("/") | last;
+          def shell_tokens:
+            [scan("\u0027[^\u0027]*\u0027|\"(?:\\\\.|[^\"\\\\])*\"|[^[:space:]]+")
+             | if ((startswith("\u0027") and endswith("\u0027")) or
+                   (startswith("\"") and endswith("\"")))
+               then .[1:-1] else . end];
+          tostring | shell_tokens
+          | . as $tokens
+          | ([ $tokens[] | token_basename
+               | select(test("\\.(sh|py)$")) ][-1]
+             // (($tokens[0] // "") | token_basename));
         (.hooks[$ev] // [])
         | map(.hooks // [])
         | flatten
-        | map(.command // "")
-        | any(contains($frag))
+        | map(select((.type // "") == "command") | ((.command // "") | script_basename))
+        | any(. == $frag)
       ' "${CLAUDE_HOME}/settings.json" 2>/dev/null || printf 'false')"
     else
       # Fallback: plain substring match when jq is not available.
@@ -785,6 +846,72 @@ else
       pass "Hook: ${event} -> ${fragment}"
     else
       fail "Missing hook: ${event} -> ${fragment}"
+    fi
+  done
+
+  # Event+basename presence is insufficient for mutation coverage: a stale
+  # matcher can keep the command installed while silently excluding the tool
+  # it must observe. Pin the complete edit-clock matcher invariants plus the
+  # successful-Bash dispatcher's universal matcher explicitly.
+  required_hook_matchers=(
+    "PreToolUse^pretool-intent-guard.sh^Bash|Edit|Write|MultiEdit|NotebookEdit^exact"
+    "PostToolUse^mark-edit.sh^Edit|Write|MultiEdit|NotebookEdit^exact"
+    "PostToolUseFailure^mark-edit.sh^Bash^exact"
+    "PostToolUse^posttool-dispatch.sh^^empty"
+  )
+  for entry in "${required_hook_matchers[@]}"; do
+    IFS='^' read -r event fragment expected_matcher matcher_mode <<<"${entry}"
+    expected_fragment_total=0
+    for required_entry in "${required_hook_matchers[@]}"; do
+      IFS='^' read -r _required_event required_fragment _required_matcher _required_mode <<<"${required_entry}"
+      [[ "${required_fragment}" == "${fragment}" ]] \
+        && expected_fragment_total=$((expected_fragment_total + 1))
+    done
+    matcher_found="false"
+    if command -v jq >/dev/null 2>&1; then
+      matcher_found="$(jq -r \
+        --arg ev "${event}" \
+        --arg frag "${fragment}" \
+        --arg expected "${expected_matcher}" \
+        --arg mode "${matcher_mode}" \
+        --argjson expected_total "${expected_fragment_total}" '
+        def script_basename:
+          def token_basename: split("/") | last;
+          def shell_tokens:
+            [scan("\u0027[^\u0027]*\u0027|\"(?:\\\\.|[^\"\\\\])*\"|[^[:space:]]+")
+             | if ((startswith("\u0027") and endswith("\u0027")) or
+                   (startswith("\"") and endswith("\"")))
+               then .[1:-1] else . end];
+          tostring | shell_tokens
+          | . as $tokens
+          | ([ $tokens[] | token_basename
+               | select(test("\\.(sh|py)$")) ][-1]
+             // (($tokens[0] // "") | token_basename));
+        [(.hooks // {}) | to_entries[] as $event
+          | ($event.value // [])[]? as $entry
+          | ($entry.hooks // [])[]?
+          | select(type == "object")
+          | select(((.command // "") | script_basename) == $frag)
+          | {event: $event.key, matcher: ($entry.matcher // ""), type: (.type // "")}]
+        | (length == $expected_total)
+          and ([.[]
+                | select((.event == $ev)
+                  and (.type == "command")
+                  and (if $mode == "empty"
+                       then (.matcher == "")
+                       else (.matcher == $expected)
+                       end))] | length == 1)
+      ' "${CLAUDE_HOME}/settings.json" 2>/dev/null || printf 'false')"
+    fi
+    if [[ "${matcher_found}" == "true" ]]; then
+      pass "Hook matcher: ${event} -> ${fragment} is ${expected_matcher:-universal}"
+    else
+      if [[ "${expected_fragment_total}" -eq 1 ]]; then
+        uniqueness="${fragment} must appear exactly once with no duplicates"
+      else
+        uniqueness="${fragment} must appear exactly ${expected_fragment_total} times across its required wirings with no duplicates"
+      fi
+      fail "Missing hook matcher coverage: ${event} -> ${fragment} must use ${expected_matcher:-a universal matcher}; ${uniqueness}"
     fi
   done
 fi

@@ -190,6 +190,8 @@ for impl in "${implementations[@]}"; do
     "${work}/settings.json" '.hooks.Stop' "4"
   assert_json_count "${impl}: fresh — StopFailure hooks" \
     "${work}/settings.json" '.hooks.StopFailure' "1"
+  assert_json_count "${impl}: fresh — PostToolUseFailure hooks" \
+    "${work}/settings.json" '.hooks.PostToolUseFailure' "1"
   assert_json_eq "${impl}: fresh — StopFailure wires stop-failure-handler.sh" \
     "${work}/settings.json" \
     '[.hooks.StopFailure[] | .hooks[0].command] | .[0] | tostring | contains("stop-failure-handler.sh")' \
@@ -201,12 +203,21 @@ for impl in "${implementations[@]}"; do
     '[.hooks.PreToolUse[] | select(.matcher == "Agent") | .hooks[0].command] | .[0] | tostring | contains("record-pending-agent.sh")' \
     "true"
 
-  # PreToolUse must wire the Bash/Edit matcher to pretool-intent-guard.sh.
-  # This is the enforcement backstop for advisory/session-management/checkpoint
-  # intent, plus the agent-first floor for /ulw execution mutations.
+  # PreToolUse must wire every direct mutation tool (including notebooks) to
+  # pretool-intent-guard.sh. This is the enforcement backstop for advisory /
+  # session-management / checkpoint intent, plus the agent-first floor for
+  # /ulw execution mutations.
   assert_json_eq "${impl}: fresh — PreToolUse mutation guard matcher wired" \
     "${work}/settings.json" \
-    '[.hooks.PreToolUse[] | select((.matcher // "") | test("Bash") and test("Edit") and test("Write") and test("MultiEdit")) | .hooks[0].command] | .[0] | tostring | contains("pretool-intent-guard.sh")' \
+    '[.hooks.PreToolUse[] | select(.matcher == "Bash|Edit|Write|MultiEdit|NotebookEdit") | .hooks[0].command] | .[0] | tostring | contains("pretool-intent-guard.sh")' \
+    "true"
+  assert_json_eq "${impl}: fresh — complete direct-edit matcher wires mark-edit.sh" \
+    "${work}/settings.json" \
+    '[.hooks.PostToolUse[] | select(.matcher == "Edit|Write|MultiEdit|NotebookEdit") | .hooks[0].command] | .[0] | tostring | contains("mark-edit.sh")' \
+    "true"
+  assert_json_eq "${impl}: fresh — failed Bash matcher wires mark-edit.sh" \
+    "${work}/settings.json" \
+    '[.hooks.PostToolUseFailure[] | select(.matcher == "Bash") | .hooks[0].command] | .[0] | tostring | contains("mark-edit.sh")' \
     "true"
   # v1.48 W3.1: Bash-side recorders run inside posttool-dispatch.sh — the
   # universal (matcher-less) entry must wire the dispatcher, and no direct
@@ -245,6 +256,8 @@ for impl in "${implementations[@]}"; do
     "${work}/settings.json" '.hooks.PreToolUse' "3"
   assert_json_count "${impl}: idempotent — StopFailure hooks still 1" \
     "${work}/settings.json" '.hooks.StopFailure' "1"
+  assert_json_count "${impl}: idempotent — PostToolUseFailure hooks still 1" \
+    "${work}/settings.json" '.hooks.PostToolUseFailure' "1"
 
   # -----------------------------------------------------------------------
   # Test 2b: UPGRADE prune (v1.48 W3.1, release-reviewer F1) — a base
@@ -307,11 +320,45 @@ PRE148
     "${work}/upgrade.json" \
     '[.hooks.PostToolUse[] | select(has("matcher") | not) | .hooks[0].command] | any(. | tostring | contains("posttool-dispatch.sh"))' \
     "true"
+  assert_json_eq "${impl}: upgrade — mark-edit matcher widened exactly once" \
+    "${work}/upgrade.json" \
+    '[.hooks.PostToolUse[] | select(type == "object") | select(.matcher == "Edit|Write|MultiEdit|NotebookEdit") | .hooks[]? | select((.command // "") | contains("mark-edit.sh"))] | length' \
+    "1"
 
   # Upgrade idempotency: a second merge on the pruned result stays stable.
   run_merge "${impl}" "${work}/upgrade.json" "${SETTINGS_PATCH}" "false"
   assert_json_count "${impl}: upgrade re-merge — PostToolUse still 5 real + 3 vestigial" \
     "${work}/upgrade.json" '.hooks.PostToolUse' "8"
+
+  # Phase-0 matcher migration must coalesce with an already-correct entry,
+  # including stale commands launched through every interpreter prefix the
+  # verifier recognizes. This was a real double-dispatch upgrade path.
+  cat > "${work}/duplicate-matcher.json" <<'DUPLICATE_MATCHER'
+{
+  "hooks": {
+    "PostToolUse": [
+      {"hooks": [{"type": "command", "command": "$HOME/.claude/skills/autowork/scripts/posttool-dispatch.sh"}]},
+      {"matcher": "Bash", "hooks": [{"type": "command", "command": "$HOME/.claude/skills/autowork/scripts/posttool-dispatch.sh"}]},
+      {"matcher": "Bash", "hooks": [{"type": "command", "command": "sh $HOME/.claude/skills/autowork/scripts/posttool-dispatch.sh"}]},
+      {"matcher": "Bash", "hooks": [{"type": "command", "command": "env /usr/bin/bash -e \"$HOME/.claude/skills/autowork/scripts/posttool-dispatch.sh\""}]},
+      {"matcher": "Bash", "hooks": [{"type": "command", "command": "/usr/bin/bash $HOME/.claude/skills/autowork/scripts/posttool-dispatch.sh"}]},
+      {"matcher": "Bash", "hooks": [{"type": "command", "command": "command bash $HOME/.claude/skills/autowork/scripts/posttool-dispatch.sh"}]},
+      {"matcher": "Bash", "hooks": [{"type": "command", "command": "exec -a decoy.sh bash $HOME/.claude/skills/autowork/scripts/posttool-dispatch.sh"}]},
+      {"matcher": "Bash", "hooks": [{"type": "command", "command": "sudo bash $HOME/.claude/skills/autowork/scripts/posttool-dispatch.sh"}]},
+      {"matcher": "Bash", "hooks": [{"type": "command", "command": "env -u FOO bash -o errexit $HOME/.claude/skills/autowork/scripts/posttool-dispatch.sh"}]}
+    ]
+  }
+}
+DUPLICATE_MATCHER
+  run_merge "${impl}" "${work}/duplicate-matcher.json" "${SETTINGS_PATCH}" "false"
+  assert_json_eq "${impl}: matcher migration leaves exactly one dispatcher" \
+    "${work}/duplicate-matcher.json" \
+    '[.hooks | to_entries[] | .value[]? | .hooks[]? | select((.command // "") | contains("posttool-dispatch.sh"))] | length' \
+    "1"
+  assert_json_eq "${impl}: surviving dispatcher is universal" \
+    "${work}/duplicate-matcher.json" \
+    '[.hooks.PostToolUse[] | select(any(.hooks[]?; (.command // "") | contains("posttool-dispatch.sh"))) | (.matcher // "")] | unique | join(",")' \
+    ""
 
   # Verify the new dimension-tracker matchers are present
   assert_json_eq "${impl}: fresh — metis matcher wired" \
@@ -1039,7 +1086,7 @@ JSON
   assert_json_eq "${impl}: matcher-rename — entry uses new widened matcher" \
     "${work}/settings.json" \
     '[.hooks.PreToolUse[] | select(.hooks[]?.command | tostring | contains("pretool-intent-guard.sh")) | .matcher] | .[0]' \
-    "Bash|Edit|Write|MultiEdit"
+    "Bash|Edit|Write|MultiEdit|NotebookEdit"
   assert_json_eq "${impl}: matcher-rename — no leftover bare Bash entry for the renamed script" \
     "${work}/settings.json" \
     '[.hooks.PreToolUse[] | select((.matcher // "") == "Bash") | select(.hooks[]?.command | tostring | contains("pretool-intent-guard.sh"))] | length' \
@@ -1099,7 +1146,7 @@ if [[ ${#implementations[@]} -eq 2 ]]; then
   run_merge "jq" "${work_jq}/settings.json" "${SETTINGS_PATCH}" "false"
 
   # Compare hook counts (structural equivalence — key ordering may differ)
-  for event in SessionStart UserPromptSubmit PreToolUse PostToolUse PreCompact PostCompact SubagentStop Stop; do
+  for event in SessionStart UserPromptSubmit PreToolUse PostToolUse PostToolUseFailure PreCompact PostCompact SubagentStop Stop StopFailure; do
     py_count="$(jq ".hooks.${event} | length" "${work_py}/settings.json" 2>/dev/null || echo "-1")"
     jq_count="$(jq ".hooks.${event} | length" "${work_jq}/settings.json" 2>/dev/null || echo "-1")"
     assert_eq "cross: ${event} hook count matches" "${py_count}" "${jq_count}"

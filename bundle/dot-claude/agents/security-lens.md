@@ -1,7 +1,7 @@
 ---
 name: security-lens
 description: Evaluate a project from a Security Engineer's perspective — threat model, attack surface, authentication, data handling, dependency risks, and compliance gaps. Use as part of a multi-role project council evaluation.
-disallowedTools: Write, Edit, MultiEdit
+disallowedTools: Write, Edit, MultiEdit, NotebookEdit
 model: sonnet
 permissionMode: plan
 maxTurns: 20

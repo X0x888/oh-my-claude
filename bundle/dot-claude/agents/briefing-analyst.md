@@ -1,7 +1,7 @@
 ---
 name: briefing-analyst
 description: Use when the task is to synthesize research, compare options, produce a recommendation, or turn scattered information into a clear brief, memo, or decision-ready summary.
-disallowedTools: Write, Edit, MultiEdit
+disallowedTools: Write, Edit, MultiEdit, NotebookEdit
 model: sonnet
 permissionMode: plan
 maxTurns: 20

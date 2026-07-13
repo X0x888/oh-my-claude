@@ -41,7 +41,7 @@ The replacement semantics matter: appending would let both directives fight, and
 
 ### Layer 2 — PreToolUse mutation intent guard
 
-New hook: `pretool-intent-guard.sh`, wired on `PreToolUse` matcher `Bash|Edit|Write|MultiEdit`. When ULW is active and `task_intent` is non-execution, it denies destructive git/gh commands via `hookSpecificOutput.permissionDecision: "deny"`. For execution/continuation turns it also enforces the agent-first floor before mutating tools run.
+New hook: `pretool-intent-guard.sh`, wired on `PreToolUse` matcher `Bash|Edit|Write|MultiEdit|NotebookEdit`. When ULW is active and `task_intent` is non-execution, it denies destructive git/gh commands via `hookSpecificOutput.permissionDecision: "deny"`. For execution/continuation turns it also enforces the specialist-before-mutation floor when the separate `agent_first_gate=on` opt-in is enabled. The Bash path additionally captures candidate worktree baselines for the edit-clock producer; that capture remains active when the intent-denial kill switch is off because edit observability and intent denial are separate contracts.
 
 Coverage:
 
@@ -56,13 +56,13 @@ The anchor accepts optional path prefixes so `/usr/bin/git commit` and `sudo git
 
 **Allow-list.** Another post-review pass found that the original regex also blocked *recovery* and *read-only* invocations that share a verb with a destructive op: `git rebase --abort|--continue|--skip|--quit`, `git merge --abort`, `git push --dry-run|-n`, `git commit --dry-run`, `git tag -l|--list`. These are exactly the commands a model under advisory intent needs when a prior interactive operation left the working tree in a half-applied state. The guard now checks an allow-list (`_cmd_is_allowed_variant`) before the destructive match and lets these through. Regression coverage lives in gap 8q.
 
-**Compound-command correctness.** Commands are split on `&&`, `||`, `;`, and `|`; each segment is evaluated independently. This keeps `git rebase --abort && git push --force` denying on the push (rather than short-circuiting on the allow-listed rebase), and lets `git rebase --abort && git status` pass as the safe compound it is. Regression coverage lives in gap 8r.
+**Compound-command correctness.** Commands are split quote-aware on `&&`, `||`, `;`, `|`, and background `&` (while preserving `|&` and redirection forms); each segment is evaluated independently. This keeps `git rebase --abort && git push --force` denying on the push (rather than short-circuiting on the allow-listed rebase), prevents quoted `git tag --format` data from hiding a later positional tag creation, and lets `git rebase --abort && git status` pass as the safe compound it is. Regression coverage lives in gap 8r and the focused intent/delivery suites.
 
-Read-only ops (`status`, `log`, `diff`, `show`, `branch` list form, `merge-base`, `commit-tree`, `diff-tree`, `fetch`, `stash push|pop|apply`) pass through. Execution intent passes through for all ops. The counter (`pretool_intent_blocks`) is wrapped in `with_state_lock` to survive parallel tool_use blocks in one assistant turn.
+Inspection ops (`status`, `log`, `diff`, `show`, `branch` list form, `merge-base`, `commit-tree`, `diff-tree`, `fetch`) pass through. Local recovery forms such as `stash push|pop|apply` are also allowed by the intent guard, but they alter the worktree and therefore feed Bash edit clocks. Execution intent passes through for all ops. The counter (`pretool_intent_blocks`) is wrapped in `with_state_lock` to survive parallel tool_use blocks in one assistant turn.
 
 ### Configurability
 
-`OMC_PRETOOL_INTENT_GUARD=false` (env) or `pretool_intent_guard=false` (conf) disables enforcement and falls back to directive-only. Default is `true`.
+`OMC_PRETOOL_INTENT_GUARD=false` (env) or `pretool_intent_guard=false` (conf) disables the intent-denial and hygiene gates and falls back to directive-only behavior for those rules. Default is `true`. Bash worktree-baseline capture is observability rather than denial, so it remains active and continues feeding edit clocks for later Stop checks.
 
 ## 4. Why two layers
 
@@ -91,7 +91,7 @@ Oracle's framing: the model already ignored one directive in this incident. Dire
 - Counter increments only on denial, wrapped in `with_state_lock`.
 - `.ulw_active` sentinel absence → hook fast-exits.
 - Non-Bash tool → hook passes through.
-- Kill-switch respected: `OMC_PRETOOL_INTENT_GUARD=false` → guard exits 0.
+- Kill-switch respected: `OMC_PRETOOL_INTENT_GUARD=false` → no denial output (including agent-first/hygiene decisions), after any Bash mutation baseline is captured.
 - Post-compact release path: after the guard blocks, a fresh execution-framed `UserPromptSubmit` reclassifies intent and unblocks subsequent commits.
 - Flag-injection bypass closure (gap 8p): `git -c user.email=x commit`, `git --no-pager commit`, `git --git-dir=/path commit`, `git -C /tmp commit`, stacked `-c` forms, absolute-path plus flag, and `sudo git -c …` all block.
 - Allow-list correctness (gap 8q): recovery forms (`--abort|--continue|--skip|--quit` on rebase/merge/cherry-pick/revert/am), dry-run forms (`push --dry-run`, `push -n`, `commit --dry-run`), and list forms (`tag -l`, `tag --list`) pass through without incrementing the counter.
@@ -150,7 +150,7 @@ Three coordinated changes in `pretool-intent-guard.sh`:
 ### 10.3 Configurability
 
 - `OMC_WAVE_OVERRIDE_TTL_SECONDS` (env) or `wave_override_ttl_seconds` (conf, in `oh-my-claude.conf`). Default `7200` seconds. Lower to tighten; raise if stale-plan authorization is a bigger concern than long autonomous wave cycles.
-- `OMC_PRETOOL_INTENT_GUARD=false` still disables the entire gate (and therefore the override too).
+- `OMC_PRETOOL_INTENT_GUARD=false` disables every denial/hygiene decision in this hook (and therefore the override too), but Bash mutation-baseline capture still runs for later edit-clock checks.
 
 ### 10.4 What was rejected
 
