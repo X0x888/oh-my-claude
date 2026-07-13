@@ -283,8 +283,12 @@ run_terminal_quality_fixture() {
       task_intent:"execution",
       current_objective:"terminal-quality fixture test",
       last_user_prompt_ts:$ts_old,
-      last_edit_ts:$now,
-      last_code_edit_ts:$now
+      # Keep the edit observably before the caller-supplied review/verify
+      # outcomes. Using $now here made Test A cross a one-second boundary
+      # under a loaded sterile sweep: its timestamps were captured just
+      # before this helper, then looked stale against the newer edit.
+      last_edit_ts:$ts_old,
+      last_code_edit_ts:$ts_old
     } + $overrides)' \
     > "${fixture_state}/session_state.json"
   printf '/tmp/project/src/foo.ts\n' > "${fixture_state}/edited_files.log"
