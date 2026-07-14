@@ -86,6 +86,7 @@ esac
 
 run_goal clear >/dev/null
 [[ "$(goal_state goal_mode_active)" == "" ]] && pass || fail "S1: clear did not wipe goal_mode_active"
+[[ "$(goal_state goal_last_block_edit_revision)" == "" ]] && pass || fail "S1: clear did not wipe goal progress revision"
 
 # done clears too + records achievement ("done" quoted: it's a bash keyword).
 run_goal set "ship it" >/dev/null
@@ -132,21 +133,53 @@ _goal_coverage_present() {
 # Echoes: inert | release | wall | block
 # Args: prompt_ts last_edit_ts audited_ts goal_obj coverage_msg fresh_audit_ts
 #       stuck_in last_block_edit_ts threshold paused ulw_pause
+#       [edit_revision edit_revision_base last_block_revision
+#        completeness_verdict completeness_revision]
 run_goal_driver() {
   local prompt_ts="$1" last_edit_ts="$2" audited_ts="$3" goal_obj="$4"
   local coverage_msg="$5" fresh_audit_ts="$6" stuck_in="$7"
   local last_block_edit_ts="$8" threshold="$9" paused="${10}" ulw_pause="${11}"
+  local edit_revision="${12:-}" edit_revision_base="${13:-}"
+  local last_block_revision="${14:-}" completeness_verdict="${15:-}"
+  local completeness_revision="${16:-}" work_this_cycle=0 fresh_clean_audit=0
   [[ -n "${goal_obj}" ]] || { echo inert; return; }
   [[ "${paused}" != "1" ]] || { echo inert; return; }
   [[ "${ulw_pause}" != "1" ]] || { echo inert; return; }
   [[ "${prompt_ts}" -gt 0 ]] || { echo inert; return; }
-  [[ "${last_edit_ts}" -gt "${prompt_ts}" ]] || { echo inert; return; }
+  if [[ "${edit_revision}" =~ ^[0-9]+$ ]] \
+      && [[ "${edit_revision_base}" =~ ^[0-9]+$ ]]; then
+    (( edit_revision > edit_revision_base )) && work_this_cycle=1
+  elif [[ "${last_edit_ts}" -gt "${prompt_ts}" ]]; then
+    work_this_cycle=1
+  fi
+  [[ "${work_this_cycle}" -eq 1 ]] || { echo inert; return; }
   [[ "${audited_ts}" -le "${prompt_ts}" ]] || { echo inert; return; }
-  if _goal_coverage_present "${coverage_msg}" && [[ "${fresh_audit_ts}" -gt "${prompt_ts}" ]]; then
+  case "${completeness_verdict}" in
+    CLEAN|SHIP)
+      if [[ "${edit_revision}" =~ ^[0-9]+$ ]] \
+          && [[ "${edit_revision_base}" =~ ^[0-9]+$ ]] \
+          && [[ "${completeness_revision}" =~ ^[0-9]+$ ]] \
+          && (( completeness_revision >= edit_revision )) \
+          && (( completeness_revision > edit_revision_base )); then
+        fresh_clean_audit=1
+      elif [[ ! "${edit_revision}" =~ ^[0-9]+$ ]] \
+          && [[ "${fresh_audit_ts}" -gt "${prompt_ts}" ]]; then
+        fresh_clean_audit=1
+      fi
+      ;;
+  esac
+  if _goal_coverage_present "${coverage_msg}" && [[ "${fresh_clean_audit}" -eq 1 ]]; then
     echo release; return
   fi
   local stuck="${stuck_in}"
-  if [[ "${last_edit_ts}" -gt "${last_block_edit_ts}" ]]; then
+  if [[ "${edit_revision}" =~ ^[0-9]+$ ]] \
+      && [[ "${last_block_revision}" =~ ^[0-9]+$ ]]; then
+    if (( edit_revision > last_block_revision )); then
+      stuck=0
+    else
+      stuck=$((stuck + 1))
+    fi
+  elif [[ "${last_edit_ts}" -gt "${last_block_edit_ts}" ]]; then
     stuck=0
   else
     stuck=$((stuck + 1))
@@ -158,8 +191,8 @@ run_goal_driver() {
 }
 
 [[ "$(run_goal_driver 100 200 0 "goal" "" 0 0 0 3 "" "")" == "block" ]] && pass || fail "S2: armed-no-coverage should block"
-[[ "$(run_goal_driver 100 200 0 "goal" "**Goal achieved.**" 300 0 0 3 "" "")" == "release" ]] && pass || fail "S2: goal-achieved+audit should release"
-[[ "$(run_goal_driver 100 200 0 "goal" "**Objective coverage.**" 300 0 0 3 "" "")" == "release" ]] && pass || fail "S2: objective-coverage alias should release"
+[[ "$(run_goal_driver 100 200 0 "goal" "**Goal achieved.**" 300 0 0 3 "" "" 1 0 "" CLEAN 1)" == "release" ]] && pass || fail "S2: goal-achieved+clean-audit should release"
+[[ "$(run_goal_driver 100 200 0 "goal" "**Objective coverage.**" 300 0 0 3 "" "" 1 0 "" SHIP 1)" == "release" ]] && pass || fail "S2: objective-coverage+ship-audit alias should release"
 [[ "$(run_goal_driver 100 200 0 "goal" "**Goal achieved.**" 50 0 0 3 "" "")" == "block" ]] && pass || fail "S2: coverage-without-fresh-audit should block"
 [[ "$(run_goal_driver 100 200 0 "goal" "**Goal achieved.**" 100 0 0 3 "" "")" == "block" ]] && pass || fail "S2: self-attestation alone (audit==prompt) should not release"
 # STUCK-WALL: 2 prior no-progress blocks + another no-progress stop = 3 → wall.
@@ -171,6 +204,9 @@ run_goal_driver() {
 [[ "$(run_goal_driver 100 200 0 "goal" "" 0 0 0 3 "1" "")" == "inert" ]] && pass || fail "S2: paused goal should be inert"
 [[ "$(run_goal_driver 100 200 0 "goal" "" 0 0 0 3 "" "1")" == "inert" ]] && pass || fail "S2: ulw_pause should make goal inert"
 [[ "$(run_goal_driver 100 100 0 "goal" "" 0 0 0 3 "" "")" == "inert" ]] && pass || fail "S2: no-work-this-cycle should be inert"
+[[ "$(run_goal_driver 100 100 0 "goal" "" 0 0 0 3 "" "" 1 0)" == "block" ]] && pass || fail "S2: same-second work arms via revision"
+[[ "$(run_goal_driver 100 200 0 "goal" "" 0 2 200 3 "" "" 2 0 1)" == "block" ]] && pass || fail "S2: same-second progress resets via revision"
+[[ "$(run_goal_driver 100 200 0 "goal" "**Goal achieved.**" 300 0 0 3 "" "" 1 0 "" FINDINGS 1)" == "block" ]] && pass || fail "S2: current FINDINGS audit does not release"
 
 # ===========================================================================
 # Section 3 — lockstep grep: stop-guard has_closeout_label accepts the alias.
@@ -205,7 +241,9 @@ e2e_seed() {
   write_state_field "code_edit_count" "1"
   write_state_field "doc_edit_count" "0"
   write_state_field "objective_contract_edit_baseline" "0"
+  write_state_field "objective_contract_edit_revision_base" "0"
   write_state_field "objective_contract_prompt_ts" "100"
+  write_state_field "edit_revision" "1"
   write_state_field "objective_contract_audited_ts" ""
   write_state_field "objective_contract_blocks" "0"
 }
@@ -246,6 +284,9 @@ gb_release() {
   write_state_field "goal_mode_active" "1"
   write_state_field "goal_objective" "Migrate the entire auth subsystem to OAuth2 across all services"
   write_state_field "last_excellence_review_ts" "350"
+  write_state_field "dim_completeness_ts" "350"
+  write_state_field "dim_completeness_revision" "1"
+  write_state_field "dim_completeness_verdict" "CLEAN"
 }
 out="$(drive_goal gb_release "All services migrated, suite green. **Goal achieved.**")"
 fired_goal "${out}" && fail "S4: goal gate still fired despite **Goal achieved.** + fresh audit" || pass
@@ -275,6 +316,7 @@ gb_stuckwall() {
   write_state_field "goal_objective" "Migrate the auth subsystem to OAuth2"
   write_state_field "goal_stuck_blocks" "2"
   write_state_field "goal_last_block_edit_ts" "200"
+  write_state_field "goal_last_block_edit_revision" "1"
 }
 out="$(drive_goal gb_stuckwall "Still stuck, no edits this round.")"
 is_block "${out}" && fail "S4: stuck-wall should release (surface), not block" || pass
@@ -286,10 +328,32 @@ gb_progress() {
   write_state_field "goal_objective" "Migrate the auth subsystem to OAuth2"
   write_state_field "goal_stuck_blocks" "2"
   write_state_field "goal_last_block_edit_ts" "150"
+  write_state_field "goal_last_block_edit_revision" "0"
 }
 out="$(drive_goal gb_progress "Made progress, edited another file.")"
 is_block "${out}" && pass || fail "S4: progress-since-last-block should keep blocking (relentless)"
 fired_goal "${out}" && pass || fail "S4: progress block should be the goal gate"
+
+# Same-second objective arming and goal progress use revisions, not wall time.
+gb_same_second_arm() {
+  write_state_field "goal_mode_active" "1"
+  write_state_field "goal_objective" "Migrate the auth subsystem to OAuth2"
+  write_state_field "last_edit_ts" "100"
+}
+out="$(drive_goal gb_same_second_arm "Same-second edit landed.")"
+is_block "${out}" && pass || fail "S4: same-second edit should arm goal via revision"
+fired_goal "${out}" && pass || fail "S4: same-second revision arm should be the goal gate"
+
+gb_same_second_progress() {
+  write_state_field "goal_mode_active" "1"
+  write_state_field "goal_objective" "Migrate the auth subsystem to OAuth2"
+  write_state_field "goal_stuck_blocks" "2"
+  write_state_field "goal_last_block_edit_ts" "200"
+  write_state_field "goal_last_block_edit_revision" "0"
+}
+out="$(drive_goal gb_same_second_progress "Made a same-second follow-up edit.")"
+is_block "${out}" && pass || fail "S4: same-second revision progress should reset stuck count and keep driving"
+fired_goal "${out}" && pass || fail "S4: same-second progress should not trip stuck-wall"
 
 # NO-DOUBLE-FIRE: goal + substantive both true → goal precedence (one block,
 # the goal message, not the objective-contract message).
@@ -522,6 +586,7 @@ s8_setup
 s8_router s8e "/ulw fix the typo in the README" >/dev/null
 [[ "$(s8_state s8e workflow_mode)" == "ultrawork" ]] && pass || fail "S8: plain /ulw prompt did not activate ultrawork mode"
 [[ "$(s8_state s8e goal_mode_active)" == "" ]] && pass || fail "S8: plain /ulw prompt wrongly auto-armed a goal"
+[[ "$(s8_state s8e objective_contract_edit_revision_base)" == "0" ]] && pass || fail "S8: fresh execution did not snapshot objective edit revision"
 rm -rf "${S8_ROOT}"
 
 # Case F: continuation prompt with declaration phrasing does NOT stale-arm

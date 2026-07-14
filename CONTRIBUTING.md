@@ -187,10 +187,11 @@ self-improve only when run as scheduled, not on-demand:
 
 1. **`/council --self-audit`** — every quarter, run a self-audit
    council against the harness's own state-I/O, prompt-routing, and
-   gate-event surfaces. The fixed lens roster (`abstraction-critic`,
-   `oracle`, `sre-lens`, `quality-researcher`) is sized for
-   contract-shape and lifecycle review of the harness itself, not
-   user projects. Phase 8 is opt-in: surface findings; defer
+   gate-event surfaces. The flag seeds those surfaces as high-priority
+   coverage and offers `abstraction-critic`, `oracle`, `sre-lens`, and
+   `quality-researcher` as strong candidates; they are not a fixed
+   quartet. Council must still explain include/skip choices and select
+   the smallest sufficient team from the full roster. Phase 8 is opt-in: surface findings; defer
    implementation to a separate session unless a finding is
    critical.
 
@@ -207,8 +208,10 @@ self-improve only when run as scheduled, not on-demand:
    into the unknown bucket and silently fall out of review — the
    "unbinned-signal-loss" anti-pattern from the Bug B post-mortem.
 
-Both passes are intentionally cheap to run (a council dispatch + a
-shell-tool invocation) so the quarterly cost is bounded. `/ulw-report`
+Both passes are intentionally bounded (an adaptive council dispatch + a
+shell-tool invocation). A normal self-audit uses only the coverage the
+repository evidence justifies; one optional 0–2-agent gap-fill round is
+the only conditional sequential fan-out. `/ulw-report`
 nudges to run #2 when the unknown bucket exceeds 50 entries; #1 has
 no auto-trigger today and relies on calendar discipline.
 

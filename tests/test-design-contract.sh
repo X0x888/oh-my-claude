@@ -38,6 +38,7 @@ VISUAL_CRAFT_LENS="${REPO_ROOT}/bundle/dot-claude/agents/visual-craft-lens.md"
 COUNCIL_SKILL="${REPO_ROOT}/bundle/dot-claude/skills/council/SKILL.md"
 CLASSIFIER_LIB="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/lib/classifier.sh"
 COMMON_SH="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh"
+COUNCIL_COVERAGE_SCRIPT="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/record-council-coverage.sh"
 
 pass=0
 fail=0
@@ -349,10 +350,21 @@ else
 fi
 assert_grep "design-lens: defers visual craft to visual-craft-lens" "visual-craft-lens" "${DESIGN_LENS}"
 
-# Council selection guide must list visual-craft-lens.
+# Council selection guide must list visual-craft-lens while keeping team
+# construction adaptive to the inspected risks.
 assert_grep "council selection guide: visual-craft-lens row" "visual-craft-lens" "${COUNCIL_SKILL}"
-assert_grep "council selection guide: max 7 lenses" "maximum 7" "${COUNCIL_SKILL}"
-assert_grep "council selection guide: disjoint-scope note" "disjoint" "${COUNCIL_SKILL}"
+assert_grep "council selection guide: coverage map first" "Build the coverage map" "${COUNCIL_SKILL}"
+assert_grep "council selection guide: full available roster" "available Agent roster" "${COUNCIL_SKILL}"
+assert_grep "council selection guide: normally 1-4 specialists" "normally 1–4 specialists" "${COUNCIL_SKILL}"
+assert_grep "council selection guide: one specialist is valid" "One is valid" "${COUNCIL_SKILL}"
+assert_grep "council selection guide: include/skip rationale" "selected.*covered-inline.*skipped.*reason" "${COUNCIL_SKILL}"
+assert_grep "council selection guide: non-overlapping mandates" "non-overlapping question" "${COUNCIL_SKILL}"
+assert_grep "council selection guide: optional gap-fill 0-2" "gap-fill round of 0–2 specialists" "${COUNCIL_SKILL}"
+assert_grep "council selection guide: competence-matched independent verification" "best independent competence" "${COUNCIL_SKILL}"
+assert_file_exists "${COUNCIL_COVERAGE_SCRIPT}"
+assert_grep "council selection guide: persists auditable ledger" "record-council-coverage.sh init" "${COUNCIL_SKILL}"
+assert_grep "council ledger validates non-overlap" "unique.*length" "${COUNCIL_COVERAGE_SCRIPT}"
+assert_grep "Council dispatch hook rejects unlisted selections" "Council coverage gate" "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/record-pending-agent.sh"
 
 # discovered_scope_capture_targets must include visual-craft-lens so its
 # council findings flow into discovered_scope.jsonl (mirrors all 6 prior
@@ -548,8 +560,8 @@ assert_grep "router: invokes get_project_maturity for caching" "get_project_matu
 assert_grep "router: polish-saturated reframes 'what is next'" "what's the next strategic move" "${ROUTER}"
 
 # --- v1.18.0: /council --polish flag in router -------------------------
-# --polish narrows the lens roster to taste/excellence concerns and
-# extends dispatch with the Jobs-grade rubric. Auto-activates when the
+# --polish raises taste/excellence coverage priors without forcing a
+# roster and extends relevant dispatches with the Jobs-grade rubric. Auto-activates when the
 # project-maturity prior emits polish-saturated, OR fires on explicit
 # --polish flag in the prompt. Composes with --deep.
 assert_grep "router: --polish flag detection" "\\-\\-polish" "${ROUTER}"
@@ -564,23 +576,33 @@ assert_grep "router: polish rubric: negative space" "negative space" "${ROUTER}"
 assert_grep "router: polish rubric: first-five-minutes" "first-five-minutes" "${ROUTER}"
 assert_grep "router: polish rubric: AI-as-experience" "AI-as-experience" "${ROUTER}"
 assert_grep "router: polish rubric: no-cloning discipline" "no-cloning discipline" "${ROUTER}"
-# Lens narrowing — the polish hint should narrow to visual-craft + product + design
-assert_grep "router: polish narrows to visual-craft-lens" "visual-craft-lens.*product-lens" "${ROUTER}"
+# Candidate semantics — polish may favor visual-craft/product/design, but
+# evidence still controls inclusion and concrete engineering risks survive.
+assert_grep "router: polish names strong candidates" "visual-craft-lens.*product-lens.*design-lens.*strong candidates" "${ROUTER}"
+assert_grep "router: polish candidates are not forced" "NOT a forced roster" "${ROUTER}"
+assert_grep "router: polish retains engineering risks" "retain any concrete security/data/reliability/architecture risk" "${ROUTER}"
 # log_hook records polish detection alongside deep
 assert_grep "router: log_hook records polish detection" "polish" "${ROUTER}"
 
-# Serendipity fix: visual-craft-lens now appears in the auto-injected
-# council step 2 lens list (was previously missing despite being in
-# council/SKILL.md — the lens existed but was invisible to auto-council).
-assert_grep "router: council step 2 lists visual-craft-lens" \
-  "Select 3-6 relevant role-lenses.*visual-craft-lens" "${ROUTER}"
+# Auto-injected council routing now starts with coverage and the full agent
+# roster, then uses a bounded primary and optional gap-fill round.
+assert_grep "router: council builds coverage map first" "Build a COVERAGE MAP" "${ROUTER}"
+assert_grep "router: council inspects full available roster" "FULL AVAILABLE AGENT ROSTER" "${ROUTER}"
+assert_grep "router: council primary is normally 1-4" "normally 1-4 specialists" "${ROUTER}"
+assert_grep "router: council permits one specialist" "ONE valid for a narrow specialist question" "${ROUTER}"
+assert_grep "router: council records include/skip rationale" "include reason.*why not applicable" "${ROUTER}"
+assert_grep "router: council gap-fill is optional and bounded" "gap-fill round of 0-2" "${ROUTER}"
+assert_grep "router: auto-Council mirrors self-audit coverage prior" "Self-audit prior active" "${ROUTER}"
+assert_grep "router: council verification matches competence" "best INDEPENDENT verifier.*Match competence to claim" "${ROUTER}"
 
 # --- /council SKILL.md documents --polish ----------------------------
 COUNCIL_SKILL="${REPO_ROOT}/bundle/dot-claude/skills/council/SKILL.md"
 assert_grep "council SKILL.md: --polish flag documented" "\\-\\-polish" "${COUNCIL_SKILL}"
 assert_grep "council SKILL.md: --polish auto-activation" "polish-saturated" "${COUNCIL_SKILL}"
-assert_grep "council SKILL.md: --polish narrows lens roster" \
-  "visual-craft-lens.*product-lens.*design-lens" "${COUNCIL_SKILL}"
+assert_grep "council SKILL.md: --polish raises coverage priors" \
+  "Raise taste/excellence coverage" "${COUNCIL_SKILL}"
+assert_grep "council SKILL.md: --polish agents are candidates" \
+  "visual-craft-lens.*product-lens.*design-lens.*candidates.*not a forced roster" "${COUNCIL_SKILL}"
 
 # --- v1.18.0: behavioral regex tests for --deep / --polish flags ------
 # Reviewer F1 — the previous `[^[:alnum:]_-]` boundary leaked `=`
@@ -640,9 +662,8 @@ assert_grep "router: --polish regex uses whitespace boundary" \
   "(\\^|\\[\\[:space:\\]\\])--polish" "${ROUTER}"
 
 # v1.18.x — auto-activation must self-announce so the user sees that
-# their default lens roster was narrowed by maturity heuristics rather
-# than by an explicit flag they typed. Without this, /council on a
-# polish-saturated project silently drops 4 lenses, which is surprising.
+# the maturity heuristic changed the coverage prior rather than an
+# explicit flag they typed.
 assert_grep "router: auto-polish self-announces origin" \
   "auto-activated by polish-saturated" "${ROUTER}"
 assert_grep "router: tracks _polish_explicit / _polish_auto separately" \

@@ -179,6 +179,69 @@ assert_eq "agent metric invocations equal writer count (${METRIC_WRITERS})" \
 rm -rf "${METRICS_TMP}"
 
 # ===========================================================================
+# Test 5: concurrent planner completions keep artifact and state paired.
+#
+# SubagentStop events can finish together. The Markdown plan and plan_agent /
+# plan_revision metadata must be committed under one writer lock; otherwise the
+# last file writer can differ from the last state writer.
+# ===========================================================================
+printf 'record-plan keeps concurrent artifact/state writes consistent:\n'
+
+reset_state
+PLAN_WRITERS=16
+RECORD_PLAN="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/record-plan.sh"
+for i in $(seq 1 "${PLAN_WRITERS}"); do
+  payload="$(jq -nc --arg sid "${SESSION_ID}" --arg agent "planner-${i}" \
+    --arg msg "PLAN_BODY_${i}\nVERDICT: PLAN_READY" \
+    '{session_id:$sid,agent_type:$agent,last_assistant_message:$msg}')"
+  ( printf '%s' "${payload}" | STATE_ROOT="${TEST_STATE_ROOT}" bash "${RECORD_PLAN}" ) &
+done
+wait
+
+plan_revision="$(read_state "plan_revision")"
+plan_agent="$(read_state "plan_agent")"
+plan_file="$(session_file "current_plan.md")"
+file_agent="$(sed -n '1s/^# Plan from //p' "${plan_file}")"
+body_index="${plan_agent#planner-}"
+body_matches=0
+if grep -Fq "PLAN_BODY_${body_index}" "${plan_file}"; then
+  body_matches=1
+fi
+assert_eq "all concurrent plans increment revision" "${PLAN_WRITERS}" "${plan_revision}"
+assert_eq "current_plan.md header matches plan_agent state" "${plan_agent}" "${file_agent}"
+assert_eq "current_plan.md body matches plan_agent state" "1" "${body_matches}"
+
+# ===========================================================================
+# Test 6: plan publication failure is explicit and cannot advance state.
+#
+# A directory at current_plan.md reproduces the pre-fix failure exactly: `mv`
+# treated it as a destination directory, moved the staged file inside it, and
+# the OR-list lock wrapper suppressed errexit so has_plan/plan_revision still
+# advanced. The hook must now fail non-zero before either artifact or state is
+# published.
+# ===========================================================================
+printf 'record-plan fails closed when the artifact target is invalid:\n'
+
+reset_state
+rm -f "${plan_file}"
+mkdir "${plan_file}"
+failure_payload="$(jq -nc --arg sid "${SESSION_ID}" \
+  --arg msg $'PLAN_BODY_FAILURE\nVERDICT: PLAN_READY' \
+  '{session_id:$sid,agent_type:"planner-failure",last_assistant_message:$msg}')"
+plan_failure_rc=0
+printf '%s' "${failure_payload}" \
+  | STATE_ROOT="${TEST_STATE_ROOT}" bash "${RECORD_PLAN}" >/dev/null 2>&1 \
+  || plan_failure_rc=$?
+artifact_children="$(find "${plan_file}" -mindepth 1 -maxdepth 1 -print \
+  | wc -l | tr -d '[:space:]')"
+assert_eq "invalid plan target returns failure" "1" "${plan_failure_rc}"
+assert_eq "failed plan publish leaves has_plan unset" "" "$(read_state "has_plan")"
+assert_eq "failed plan publish leaves plan_revision unset" "" "$(read_state "plan_revision")"
+assert_eq "failed plan publish does not move a staged file into target directory" \
+  "0" "${artifact_children}"
+rmdir "${plan_file}"
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 

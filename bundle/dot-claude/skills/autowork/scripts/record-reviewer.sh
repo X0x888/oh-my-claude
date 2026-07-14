@@ -36,6 +36,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOOK_JSON="$(_omc_read_hook_stdin)"
 
 SESSION_ID="$(json_get '.session_id')"
+AGENT_TYPE="$(json_get '.agent_type')"
 
 if [[ -z "${SESSION_ID}" ]]; then
   exit 0
@@ -139,85 +140,263 @@ fi
 
 now_ts="$(now_epoch)"
 
+if [[ -z "${AGENT_TYPE}" ]]; then
+  case "${REVIEWER_TYPE}" in
+    excellence) AGENT_TYPE="excellence-reviewer" ;;
+    prose) AGENT_TYPE="editor-critic" ;;
+    stress_test) AGENT_TYPE="metis" ;;
+    traceability) AGENT_TYPE="briefing-analyst" ;;
+    design_quality) AGENT_TYPE="design-reviewer" ;;
+    release) AGENT_TYPE="release-reviewer" ;;
+    *) AGENT_TYPE="quality-reviewer" ;;
+  esac
+fi
+
+# Consume the dispatch-generation snapshot for this reviewer. SubagentStop
+# lacks a tool-use id, so record-pending-agent rejects duplicate in-flight
+# instances of the same gate-reviewer role. Distinct roles may still run in
+# parallel, and this separate reviewer-only ledger survives
+# record-subagent-summary removing pending_agents in parallel.
+REVIEW_DISPATCH_CAUSALITY_VERSION=1
+
+_consume_reviewer_dispatch_start_unlocked() {
+  local starts_file tmp line this_type selected=""
+  starts_file="$(session_file "agent_dispatch_starts.jsonl")"
+  _review_dispatch_start_json=""
+  [[ -f "${starts_file}" ]] || return 0
+  tmp="$(mktemp "${starts_file}.XXXXXX")"
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ -n "${line}" ]] || continue
+    this_type="$(jq -r '.agent_type // empty' <<<"${line}" 2>/dev/null || true)"
+    if [[ -z "${selected}" ]] \
+        && { [[ "${this_type}" == "${AGENT_TYPE}" ]] \
+             || [[ "${this_type##*:}" == "${AGENT_TYPE##*:}" ]]; }; then
+      selected="${line}"
+      continue
+    fi
+    printf '%s\n' "${line}" >>"${tmp}"
+  done <"${starts_file}"
+  if [[ -n "${selected}" ]]; then
+    mv "${tmp}" "${starts_file}"
+    _review_dispatch_start_json="${selected}"
+  else
+    rm -f "${tmp}"
+  fi
+}
+
+_review_start_revision() {
+  local row="$1" a b
+  case "${REVIEWER_TYPE}" in
+    standard) jq -r '.code_revision // empty' <<<"${row}" ;;
+    design_quality) jq -r '.ui_revision // .code_revision // empty' <<<"${row}" ;;
+    prose)
+      a="$(jq -r '.doc_revision // 0' <<<"${row}")"
+      b="$(jq -r '.bash_revision // 0' <<<"${row}")"
+      (( b > a )) && a="${b}"
+      printf '%s' "${a}"
+      ;;
+    stress_test) jq -r '.plan_revision // empty' <<<"${row}" ;;
+    excellence|traceability|release) jq -r '.edit_revision // empty' <<<"${row}" ;;
+    *) jq -r '.code_revision // empty' <<<"${row}" ;;
+  esac
+}
+
+_review_versioned_start_revision() {
+  local row="$1"
+  jq -r '.review_revision // empty' <<<"${row}" 2>/dev/null || true
+}
+
+_review_current_revision() {
+  case "${REVIEWER_TYPE}" in
+    standard) dimension_freshness_revision "code_quality" ;;
+    design_quality) dimension_freshness_revision "design_quality" ;;
+    prose) dimension_freshness_revision "prose" ;;
+    stress_test) dimension_freshness_revision "stress_test" ;;
+    excellence) dimension_freshness_revision "completeness" ;;
+    traceability) dimension_freshness_revision "traceability" ;;
+    release) read_state "edit_revision" ;;
+    *) dimension_freshness_revision "code_quality" ;;
+  esac
+}
+
+# Commit reviewer metadata and dimension verdicts under one state lock. The
+# dispatch-start generation must still equal the completion generation. If an
+# edit/plan landed while the reviewer was running, preserve the prior verdict
+# and force a new review rather than stamping old evidence as current. Metadata
+# and dimension state are assembled and written in ONE atomic state batch.
+_commit_reviewer_result() {
+  local dimension_verdict="$1" dimensions_csv="$2"
+  shift 2
+  _review_commit_accepted=0
+  _review_rejection_reason=""
+  _review_rejection_start=""
+  _review_rejection_current=""
+  _consume_reviewer_dispatch_start_unlocked
+  local _current_revision _start_revision="" _tracking_version=""
+  local _row_version="" _strict_tracking=0 _rejection_reason=""
+  local _stale_count=""
+  _current_revision="$(_review_current_revision)"
+  _tracking_version="$(read_state "review_dispatch_tracking_version")"
+
+  if [[ -n "${_tracking_version}" ]]; then
+    _strict_tracking=1
+  fi
+  if [[ -n "${_review_dispatch_start_json}" ]]; then
+    _row_version="$(jq -r '.review_dispatch_causality_version // empty' \
+      <<<"${_review_dispatch_start_json}" 2>/dev/null || true)"
+    [[ -n "${_row_version}" ]] && _strict_tracking=1
+  fi
+
+  if [[ "${_strict_tracking}" -eq 1 ]]; then
+    # Current sessions fail closed. A missing row means the PreTool snapshot
+    # was lost (or replayed); a malformed/unknown version cannot safely prove
+    # which mutation generation the reviewer inspected. Empty canonical
+    # revisions normalize to generation zero for pre-revision state that is
+    # upgraded by a current dispatcher.
+    [[ "${_current_revision}" =~ ^[0-9]+$ ]] || _current_revision=0
+    if [[ -z "${_review_dispatch_start_json}" ]]; then
+      _rejection_reason="missing_start_snapshot"
+    elif [[ "${_tracking_version}" != "${REVIEW_DISPATCH_CAUSALITY_VERSION}" ]] \
+        || [[ "${_row_version}" != "${REVIEW_DISPATCH_CAUSALITY_VERSION}" ]]; then
+      _rejection_reason="invalid_start_snapshot"
+    else
+      _start_revision="$(_review_versioned_start_revision "${_review_dispatch_start_json}")"
+      if [[ ! "${_start_revision}" =~ ^[0-9]+$ ]]; then
+        _rejection_reason="invalid_start_snapshot"
+      elif (( _start_revision != _current_revision )); then
+        _rejection_reason="review_generation_changed"
+      fi
+    fi
+  elif [[ -n "${_review_dispatch_start_json}" ]]; then
+    # Explicit legacy migration path: unversioned sessions may consume their
+    # old per-surface row. Missing/malformed legacy snapshots retain the
+    # historical completion-time behavior; the first current dispatch writes
+    # the marker above and permanently closes this path for the session.
+    _start_revision="$(_review_start_revision "${_review_dispatch_start_json}")"
+    if [[ "${_start_revision}" =~ ^[0-9]+$ ]] \
+        && [[ "${_current_revision}" =~ ^[0-9]+$ ]] \
+        && (( _start_revision != _current_revision )); then
+      _rejection_reason="review_generation_changed"
+    fi
+  fi
+
+  if [[ -n "${_rejection_reason}" ]]; then
+    _stale_count="$(read_state "stale_reviewer_count")"
+    [[ "${_stale_count}" =~ ^[0-9]+$ ]] || _stale_count=0
+    _write_state_batch_unlocked \
+      "last_stale_reviewer_type" "${REVIEWER_TYPE}" \
+      "last_stale_reviewer_ts" "${now_ts}" \
+      "last_stale_reviewer_reason" "${_rejection_reason}" \
+      "last_stale_reviewer_start_revision" "${_start_revision}" \
+      "last_stale_reviewer_current_revision" "${_current_revision}" \
+      "stale_reviewer_count" "$((_stale_count + 1))"
+    _review_rejection_reason="${_rejection_reason}"
+    _review_rejection_start="${_start_revision}"
+    _review_rejection_current="${_current_revision}"
+    return 0
+  fi
+
+  local _metadata_args=("$@")
+  # Legacy stop-time gates consume these role-specific review generations.
+  # Store them in the same atomic batch as the verdict/dimension state so a
+  # concurrent Stop can never observe a new timestamp with an old revision.
+  case "${REVIEWER_TYPE}" in
+    standard)
+      _metadata_args+=("review_code_revision" "${_current_revision}")
+      ;;
+    prose)
+      _metadata_args+=("review_doc_revision" "${_current_revision}")
+      ;;
+  esac
+  if [[ -n "${dimensions_csv}" ]]; then
+    local _saved_ifs="${IFS}"
+    local _dimensions=()
+    IFS=',' read -r -a _dimensions <<<"${dimensions_csv}"
+    IFS="${_saved_ifs}"
+    _prepare_stricter_dim_state_args_unlocked \
+      "${dimension_verdict}" "${now_ts}" "${_dimensions[@]}"
+  else
+    _OMC_DIM_STATE_ARGS=()
+  fi
+  # macOS still ships Bash 3.2, where expanding an empty array under `set -u`
+  # raises "unbound variable". Release reviews intentionally own no quality
+  # dimension, so avoid expanding the empty dimension array on that path.
+  if (( ${#_OMC_DIM_STATE_ARGS[@]} > 0 )); then
+    _write_state_batch_unlocked "${_metadata_args[@]}" "${_OMC_DIM_STATE_ARGS[@]}"
+  else
+    _write_state_batch_unlocked "${_metadata_args[@]}"
+  fi
+  _review_commit_accepted=1
+}
+
+dimension_verdict="FINDINGS"
+[[ "${has_findings}" == "false" ]] && dimension_verdict="CLEAN"
+
 if [[ "${REVIEWER_TYPE}" == "release" ]]; then
   # release-reviewer is a cumulative/manual release-prep reviewer. It is
   # intentionally outside the per-wave quality dimensions; treating it as
   # `standard` would let a clean release review satisfy bug_hunt/code_quality
   # and clear stop-guard counters for ordinary implementation work.
-  with_state_lock_batch \
+  with_state_lock _commit_reviewer_result "${dimension_verdict}" "" \
     "last_release_review_ts" "${now_ts}" \
     "release_review_had_findings" "${has_findings}" \
     "release_review_format_issue" "${review_format_issue}"
 elif [[ "${REVIEWER_TYPE}" == "excellence" ]]; then
-  # Excellence reviews update last_review_ts and their own timestamp, but must
-  # not overwrite review_had_findings from the standard review — the excellence
-  # gate is independent of the remediation gate.
-  with_state_lock_batch \
-    "last_review_ts" "${now_ts}" \
+  # Excellence owns only the completeness clock. It must not satisfy the
+  # universal quality-reviewer clock or overwrite its finding/format state.
+  with_state_lock _commit_reviewer_result "${dimension_verdict}" "completeness" \
     "last_excellence_review_ts" "${now_ts}" \
+    "stop_guard_blocks" "0" \
+    "session_handoff_blocks" "0" \
+    "dimension_guard_blocks" "0"
+elif [[ "${REVIEWER_TYPE}" == "prose" ]]; then
+  # Editor-critic satisfies only the document-review clock. In mixed work it
+  # cannot make a still-missing quality-reviewer appear to have run.
+  with_state_lock _commit_reviewer_result "${dimension_verdict}" "prose" \
+    "last_doc_review_ts" "${now_ts}" \
+    "doc_review_had_findings" "${has_findings}" \
+    "stop_guard_blocks" "0" \
+    "session_handoff_blocks" "0" \
+    "dimension_guard_blocks" "0"
+elif [[ "${REVIEWER_TYPE}" == "stress_test" ]]; then
+  # last_metis_review_ts is consumed by the plan-phase Metis gate. It is
+  # deliberately isolated from implementation-review state.
+  with_state_lock _commit_reviewer_result "${dimension_verdict}" "stress_test" \
+    "last_metis_review_ts" "${now_ts}" \
+    "stop_guard_blocks" "0" \
+    "session_handoff_blocks" "0" \
+    "dimension_guard_blocks" "0"
+elif [[ "${REVIEWER_TYPE}" == "traceability" ]]; then
+  with_state_lock _commit_reviewer_result "${dimension_verdict}" "traceability" \
+    "stop_guard_blocks" "0" \
+    "session_handoff_blocks" "0" \
+    "dimension_guard_blocks" "0"
+elif [[ "${REVIEWER_TYPE}" == "design_quality" ]]; then
+  with_state_lock _commit_reviewer_result "${dimension_verdict}" "design_quality" \
+    "stop_guard_blocks" "0" \
+    "session_handoff_blocks" "0" \
+    "dimension_guard_blocks" "0"
+else
+  # Only a standard quality review owns the generic code-review state.
+  with_state_lock _commit_reviewer_result "${dimension_verdict}" "bug_hunt,code_quality" \
+    "last_review_ts" "${now_ts}" \
+    "review_had_findings" "${has_findings}" \
     "review_format_issue" "${review_format_issue}" \
     "stop_guard_blocks" "0" \
     "session_handoff_blocks" "0" \
     "dimension_guard_blocks" "0"
-  if [[ "${has_findings}" == "false" ]]; then
-    tick_dimensions_with_verdict "CLEAN" "${now_ts}" "completeness"
-  else
-    set_dimension_verdicts "FINDINGS" "completeness"
-  fi
-else
-  batch_args=(
-    "last_review_ts" "${now_ts}"
-    "review_had_findings" "${has_findings}"
-    "review_format_issue" "${review_format_issue}"
-    "stop_guard_blocks" "0"
-    "session_handoff_blocks" "0"
-    "dimension_guard_blocks" "0"
-  )
-  if [[ "${REVIEWER_TYPE}" == "prose" ]]; then
-    batch_args+=("last_doc_review_ts" "${now_ts}")
-  fi
-  if [[ "${REVIEWER_TYPE}" == "stress_test" ]]; then
-    # last_metis_review_ts is the top-level timestamp consumed by the
-    # v1.19.0 metis-on-plan stop-guard gate. The dimension tick below
-    # records the verdict for completeness scoring; the timestamp lets
-    # stop-guard tell whether metis ran *after* the current plan_ts.
-    batch_args+=("last_metis_review_ts" "${now_ts}")
-  fi
-  with_state_lock_batch \
-    "${batch_args[@]}"
+fi
 
-  if [[ "${REVIEWER_TYPE}" == "prose" ]]; then
-    # Editor-critic ticks prose only. Also record a doc-review timestamp so
-    # stop-guard can tell whether the doc side of the session is satisfied
-    # independently of the code side.
-    if [[ "${has_findings}" == "false" ]]; then
-      tick_dimensions_with_verdict "CLEAN" "${now_ts}" "prose"
-    else
-      set_dimension_verdicts "FINDINGS" "prose"
-    fi
-  elif [[ "${has_findings}" == "false" ]]; then
-    case "${REVIEWER_TYPE}" in
-      stress_test)
-        tick_dimensions_with_verdict "CLEAN" "${now_ts}" "stress_test" ;;
-      traceability)
-        tick_dimensions_with_verdict "CLEAN" "${now_ts}" "traceability" ;;
-      design_quality)
-        tick_dimensions_with_verdict "CLEAN" "${now_ts}" "design_quality" ;;
-      standard|*)
-        tick_dimensions_with_verdict "CLEAN" "${now_ts}" "bug_hunt" "code_quality" ;;
-    esac
-  else
-    case "${REVIEWER_TYPE}" in
-      stress_test)
-        set_dimension_verdicts "FINDINGS" "stress_test" ;;
-      traceability)
-        set_dimension_verdicts "FINDINGS" "traceability" ;;
-      design_quality)
-        set_dimension_verdicts "FINDINGS" "design_quality" ;;
-      standard|*)
-        set_dimension_verdicts "FINDINGS" "bug_hunt" "code_quality" ;;
-    esac
-  fi
+if [[ "${_review_commit_accepted:-0}" -ne 1 ]]; then
+  log_hook "record-reviewer" \
+    "discarded ${REVIEWER_TYPE} result reason=${_review_rejection_reason:-unknown} start_revision=${_review_rejection_start:-missing} current_revision=${_review_rejection_current:-missing}"
+  record_gate_event "reviewer" "stale-result-rejected" \
+    "type=${REVIEWER_TYPE}" \
+    "reason=${_review_rejection_reason:-unknown}" \
+    "start_revision=${_review_rejection_start:-}" \
+    "current_revision=${_review_rejection_current:-}" \
+    2>/dev/null || true
+  exit 0
 fi
 
 # --- Agent performance metric recording ---

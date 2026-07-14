@@ -824,6 +824,11 @@ assert_doc "/path/to/guide.mdx"
 assert_doc "/path/to/notes.rst"
 assert_doc "/path/to/spec.adoc"
 assert_doc "/path/to/plain.txt"
+assert_doc "/paper/main.tex"
+assert_doc "/paper/references.bib"
+assert_doc "/paper/article.typ"
+assert_doc "/analysis/report.qmd"
+assert_doc "/analysis/report.Rmd"
 
 # Well-known basenames (case insensitive)
 assert_doc "CHANGELOG"
@@ -901,8 +906,18 @@ assert_ui "/src/App.TSX"
 assert_ui "/src/style.CSS"
 
 # Double extensions (e.g., test files)
-assert_ui "/src/Button.test.tsx"
 assert_ui "/src/Button.stories.jsx"
+
+# High-confidence native UI surfaces (without treating every Swift/Kotlin file
+# as visual work).
+assert_ui "/ios/Sources/ProfileView.swift"
+assert_ui "/ios/Sources/LoginViewController.swift"
+assert_ui "/ios/Views/Profile.swift"
+assert_ui "/ios/Base.lproj/Main.storyboard"
+assert_ui "/ios/Components/Avatar.xib"
+assert_ui "/android/app/src/main/res/layout/activity_main.xml"
+assert_ui "/android/ui/Checkout.kt"
+assert_ui "/android/screens/CheckoutScreen.kt"
 
 # Negative cases
 assert_not_ui "/src/utils.ts"
@@ -913,6 +928,11 @@ assert_not_ui "README.md"
 assert_not_ui "/src/api/handler.py"
 assert_not_ui ""
 assert_not_ui "/src/styles/index.ts"  # TS is not UI even in styles dir
+assert_not_ui "/src/Widget.test.tsx"
+assert_not_ui "/src/theme.generated.css"
+assert_not_ui "/ios/Sources/NetworkClient.swift"
+assert_not_ui "/ios/Models/User.swift"
+assert_not_ui "/android/data/UserRepository.kt"
 
 # ===========================================================================
 # is_ui_request
@@ -980,6 +1000,8 @@ assert_eq "_dim_key traceability" "dim_traceability_ts" "$(_dim_key traceability
 reset_dim_state() {
   rm -f "$(session_file "${STATE_JSON}")"
   printf '{}\n' > "$(session_file "${STATE_JSON}")"
+  rm -f "$(session_file "edited_files.log")"
+  rm -f "$(session_file "findings.json")"
 }
 
 # tick_dimension stores value, is_dimension_valid reads it back
@@ -1042,6 +1064,48 @@ else
   pass=$((pass + 1))
 fi
 
+# Aggregate dimensions follow last_edit_ts, so a document fix invalidates
+# completeness and traceability even when the implementation files are stable.
+reset_dim_state
+write_state "last_edit_ts" "2000"
+tick_dimension "completeness" "1500"
+tick_dimension "traceability" "1500"
+if is_dimension_valid "completeness" || is_dimension_valid "traceability"; then
+  printf '  FAIL: aggregate dimensions should be stale after a later doc/any-surface edit\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+tick_dimension "completeness" "2500"
+tick_dimension "traceability" "2500"
+if is_dimension_valid "completeness" && is_dimension_valid "traceability"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: fresh aggregate reviews should clear last_edit_ts staleness\n' >&2
+  fail=$((fail + 1))
+fi
+
+# Stress-test reviews inspect plans. Implementation edits do not invalidate a
+# completed plan review, but a newer plan does.
+reset_dim_state
+write_state "plan_ts" "1000"
+tick_dimension "stress_test" "1500"
+write_state "last_code_edit_ts" "2000"
+write_state "last_edit_ts" "2000"
+if is_dimension_valid "stress_test"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: implementation edit should not invalidate stress_test\n' >&2
+  fail=$((fail + 1))
+fi
+write_state "plan_ts" "2500"
+if is_dimension_valid "stress_test"; then
+  printf '  FAIL: a newer plan should invalidate stress_test\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+
 # missing_dimensions returns csv of invalid dims
 reset_dim_state
 write_state "last_code_edit_ts" "1000"
@@ -1057,38 +1121,215 @@ assert_eq "missing_dimensions all ticked = empty" "" "${missing}"
 missing="$(missing_dimensions "")"
 assert_eq "missing_dimensions empty required = empty" "" "${missing}"
 
-# get_required_dimensions honors thresholds
+# get_required_dimensions derives coverage from actual surfaces and breadth.
 reset_dim_state
 write_state "code_edit_count" "1"
 dims="$(get_required_dimensions)"
-assert_eq "get_required_dimensions 1 file < threshold 3 = empty" "" "${dims}"
+assert_eq "get_required_dimensions 1 code file = generic quality" "bug_hunt,code_quality" "${dims}"
 
 reset_dim_state
 write_state "code_edit_count" "3"
 dims="$(get_required_dimensions)"
-assert_eq "get_required_dimensions 3 code files = full code set" "bug_hunt,code_quality,stress_test,completeness" "${dims}"
+assert_eq "get_required_dimensions 3 same-surface code files do not summon a panel" "bug_hunt,code_quality" "${dims}"
 
 reset_dim_state
 write_state "code_edit_count" "2"
 write_state "doc_edit_count" "1"
 dims="$(get_required_dimensions)"
-assert_eq "get_required_dimensions code+doc = code set + prose" "bug_hunt,code_quality,stress_test,completeness,prose" "${dims}"
+assert_eq "get_required_dimensions 3 mixed files add prose + completeness" \
+  "bug_hunt,code_quality,prose,completeness" "${dims}"
 
 reset_dim_state
 write_state "code_edit_count" "6"
 dims="$(get_required_dimensions)"
-assert_eq "get_required_dimensions 6 files = code set + traceability" "bug_hunt,code_quality,stress_test,completeness,traceability" "${dims}"
+assert_eq "get_required_dimensions 6 same-surface code files still use generic quality" \
+  "bug_hunt,code_quality" "${dims}"
 
 reset_dim_state
 write_state "doc_edit_count" "3"
 dims="$(get_required_dimensions)"
-assert_eq "get_required_dimensions 3 docs only = prose + completeness" "prose,completeness" "${dims}"
+assert_eq "get_required_dimensions 3 docs only = prose" "prose" "${dims}"
+
+reset_dim_state
+write_state "code_edit_count" "1"
+write_state "ui_edit_count" "1"
+dims="$(get_required_dimensions)"
+assert_eq "get_required_dimensions 1 UI file requires design review" \
+  "bug_hunt,code_quality,design_quality" "${dims}"
+
+reset_dim_state
+write_state "review_cycle_prompt_ts" "1000"
+write_state "review_cycle_ui_semantic" "0"
+write_state "code_edit_count" "1"
+write_state "ui_edit_count" "1"
+dims="$(get_required_dimensions)"
+assert_eq "get_required_dimensions logic-only UI-path edit skips fixed design tax" \
+  "bug_hunt,code_quality" "${dims}"
+
+write_state "review_cycle_ui_semantic" "1"
+dims="$(get_required_dimensions)"
+assert_eq "get_required_dimensions UI-semantic objective requires design review" \
+  "bug_hunt,code_quality,design_quality" "${dims}"
 
 reset_dim_state
 write_state "bash_unknown_edit_scope" "1"
 dims="$(get_required_dimensions)"
-assert_eq "get_required_dimensions unknown Bash fan-out uses conservative count gates" \
-  "bug_hunt,code_quality,stress_test,completeness,prose,design_quality,traceability" "${dims}"
+assert_eq "get_required_dimensions unknown Bash uses generic quality + completeness only" \
+  "bug_hunt,code_quality,completeness" "${dims}"
+
+reset_dim_state
+write_state "bash_unknown_edit_scope" "1"
+write_state "review_cycle_ui_semantic" "1"
+dims="$(get_required_dimensions)"
+assert_eq "get_required_dimensions UI-semantic unknown Bash adds design" \
+  "bug_hunt,code_quality,design_quality,completeness" "${dims}"
+
+reset_dim_state
+write_state "bash_unknown_edit_scope" "1"
+write_state "review_cycle_prose_semantic" "1"
+dims="$(get_required_dimensions)"
+assert_eq "get_required_dimensions prose-semantic unknown Bash adds prose" \
+  "bug_hunt,code_quality,prose,completeness" "${dims}"
+
+# Broad intent and a current complex plan can require completeness without a
+# fabricated post-edit Metis dimension. A stale pre-objective plan cannot.
+reset_dim_state
+write_state "code_edit_count" "1"
+write_state "review_cycle_broad_scope" "1"
+dims="$(get_required_dimensions)"
+assert_eq "get_required_dimensions broad one-file objective adds completeness" \
+  "bug_hunt,code_quality,completeness" "${dims}"
+
+reset_dim_state
+write_state "code_edit_count" "3"
+write_state "review_cycle_prompt_ts" "1000"
+write_state "review_cycle_edit_log_offset" "0"
+printf '%s\n' /src/a.ts /src/b.ts /src/c.ts >"$(session_file "edited_files.log")"
+write_state "plan_complexity_high" "1"
+write_state "plan_ts" "1100"
+dims="$(get_required_dimensions)"
+assert_eq "get_required_dimensions current complex plan adds completeness, not stress_test" \
+  "bug_hunt,code_quality,completeness" "${dims}"
+
+write_state "plan_ts" "900"
+dims="$(get_required_dimensions)"
+assert_eq "get_required_dimensions stale complex plan does not widen current objective" \
+  "bug_hunt,code_quality" "${dims}"
+
+# A live Council wave is also breadth evidence, but only while it is pending or
+# in progress, inside the authorization TTL, and not older than this objective.
+reset_dim_state
+wave_now="$(now_epoch)"
+printf '{"updated_ts":%s,"waves":[{"status":"pending"}]}\n' "${wave_now}" \
+  >"$(session_file "findings.json")"
+write_state "code_edit_count" "3"
+dims="$(get_required_dimensions)"
+assert_eq "get_required_dimensions active wave adds completeness" \
+  "bug_hunt,code_quality,completeness" "${dims}"
+
+write_state "code_edit_count" "6"
+dims="$(get_required_dimensions)"
+assert_eq "get_required_dimensions active wave adds traceability at its file threshold" \
+  "bug_hunt,code_quality,completeness,traceability" "${dims}"
+
+printf '{"updated_ts":%s,"waves":[{"status":"complete"}]}\n' "${wave_now}" \
+  >"$(session_file "findings.json")"
+dims="$(get_required_dimensions)"
+assert_eq "get_required_dimensions completed wave does not widen same-surface work" \
+  "bug_hunt,code_quality" "${dims}"
+
+printf '{"updated_ts":%s,"waves":[{"status":"in_progress"}]}\n' "${wave_now}" \
+  >"$(session_file "findings.json")"
+write_state "review_cycle_prompt_ts" "$((wave_now + 1))"
+write_state "review_cycle_edit_log_offset" "0"
+printf '%s\n' /src/a.ts /src/b.ts /src/c.ts >"$(session_file "edited_files.log")"
+dims="$(get_required_dimensions)"
+assert_eq "get_required_dimensions prior-objective wave does not leak forward" \
+  "bug_hunt,code_quality" "${dims}"
+
+write_state "review_cycle_prompt_ts" ""
+write_state "review_cycle_edit_log_offset" ""
+export OMC_WAVE_OVERRIDE_TTL_SECONDS=10
+printf '{"updated_ts":%s,"waves":[{"status":"pending"}]}\n' "$((wave_now - 11))" \
+  >"$(session_file "findings.json")"
+dims="$(get_required_dimensions)"
+assert_eq "get_required_dimensions expired wave does not widen same-surface work" \
+  "bug_hunt,code_quality" "${dims}"
+unset OMC_WAVE_OVERRIDE_TTL_SECONDS
+
+# Objective boundaries use monotonic events/signatures rather than timestamps,
+# so mutations that happen in the same epoch second cannot leak across turns.
+reset_dim_state
+write_state "review_cycle_prompt_ts" "1000"
+write_state "review_cycle_edit_log_offset" "0"
+write_state "bash_unknown_edit_scope" "1"
+write_state "last_bash_edit_ts" "1000"
+write_state "bash_edit_event_count" "7"
+write_state "review_cycle_bash_event_base" "7"
+assert_eq "review cycle baseline excludes prior same-second unknown Bash" \
+  "stale" "$(review_cycle_unknown_bash_current && printf current || printf stale)"
+write_state "bash_edit_event_count" "8"
+assert_eq "review cycle event delta includes current same-second unknown Bash" \
+  "current" "$(review_cycle_unknown_bash_current && printf current || printf stale)"
+
+reset_dim_state
+write_state "review_cycle_prompt_ts" "2000"
+write_state "review_cycle_edit_log_offset" "0"
+write_state "plan_complexity_high" "1"
+write_state "plan_ts" "2000"
+write_state "plan_revision" "4"
+write_state "review_cycle_plan_revision_base" "4"
+assert_eq "review cycle baseline excludes prior same-second complex plan" \
+  "stale" "$(review_cycle_has_current_complex_plan && printf current || printf stale)"
+write_state "plan_revision" "5"
+assert_eq "review cycle revision delta includes current same-second complex plan" \
+  "current" "$(review_cycle_has_current_complex_plan && printf current || printf stale)"
+
+reset_dim_state
+wave_now="$(now_epoch)"
+printf '{"updated_ts":%s,"waves":[{"status":"pending"}]}\n' "${wave_now}" \
+  >"$(session_file "findings.json")"
+wave_signature="$(_review_cycle_file_signature "$(session_file "findings.json")")"
+write_state "review_cycle_prompt_ts" "${wave_now}"
+write_state "review_cycle_edit_log_offset" "0"
+write_state "review_cycle_findings_signature_base" "${wave_signature}"
+assert_eq "review cycle signature excludes unchanged same-second prior wave" \
+  "stale" "$(review_cycle_has_active_wave_plan && printf current || printf stale)"
+printf '{"updated_ts":%s,"generation":2,"waves":[{"status":"pending"}]}\n' "${wave_now}" \
+  >"$(session_file "findings.json")"
+assert_eq "review cycle signature delta includes current same-second wave" \
+  "current" "$(review_cycle_has_active_wave_plan && printf current || printf stale)"
+
+# Six cross-surface paths require traceability; file count alone above did not.
+reset_dim_state
+printf '%s\n' \
+  /project/src/a.ts /project/src/b.ts /project/src/c.ts /project/src/d.ts \
+  /project/docs/a.md /project/docs/b.md >"$(session_file "edited_files.log")"
+dims="$(get_required_dimensions)"
+assert_eq "get_required_dimensions 6 mixed paths add completeness + traceability" \
+  "bug_hunt,code_quality,prose,completeness,traceability" "${dims}"
+
+# A fresh objective scopes review routing by log offset, not cumulative session
+# counters. Re-editing an old path after the offset still counts as current work,
+# while duplicate edits inside this objective count once for breadth.
+reset_dim_state
+printf '%s\n' /project/src/old.ts /project/docs/old.md >"$(session_file "edited_files.log")"
+write_state "code_edit_count" "25"
+write_state "doc_edit_count" "25"
+write_state "review_cycle_prompt_ts" "2000"
+write_state "review_cycle_edit_log_offset" "2"
+dims="$(get_required_dimensions)"
+assert_eq "get_required_dimensions current objective ignores earlier session edits" "" "${dims}"
+
+printf '%s\n' /project/src/old.ts /project/src/old.ts >>"$(session_file "edited_files.log")"
+dims="$(get_required_dimensions)"
+assert_eq "get_required_dimensions repeat old path after baseline counts as current code" \
+  "bug_hunt,code_quality" "${dims}"
+
+printf '%s\n' /project/src/new.ts /project/docs/current.md >>"$(session_file "edited_files.log")"
+dims="$(get_required_dimensions)"
+assert_eq "get_required_dimensions current-objective dedup still detects 3-path mixed breadth" \
+  "bug_hunt,code_quality,prose,completeness" "${dims}"
 
 # Legacy fallback: resumed session with counters cleared but log rehydrated.
 # Must classify log contents, not just count them.
@@ -1100,7 +1341,7 @@ cat > "${edited_log}" <<'LOG'
 /project/README.md
 LOG
 dims="$(get_required_dimensions)"
-assert_eq "get_required_dimensions fallback: resumed doc-only" "prose,completeness" "${dims}"
+assert_eq "get_required_dimensions fallback: resumed doc-only" "prose" "${dims}"
 
 reset_dim_state
 cat > "${edited_log}" <<'LOG'
@@ -1109,7 +1350,7 @@ cat > "${edited_log}" <<'LOG'
 /project/src/c.ts
 LOG
 dims="$(get_required_dimensions)"
-assert_eq "get_required_dimensions fallback: resumed code-only" "bug_hunt,code_quality,stress_test,completeness" "${dims}"
+assert_eq "get_required_dimensions fallback: resumed code-only" "bug_hunt,code_quality" "${dims}"
 
 reset_dim_state
 cat > "${edited_log}" <<'LOG'
@@ -1118,7 +1359,7 @@ cat > "${edited_log}" <<'LOG'
 /project/docs/c.md
 LOG
 dims="$(get_required_dimensions)"
-assert_eq "get_required_dimensions fallback: resumed mixed" "bug_hunt,code_quality,stress_test,completeness,prose" "${dims}"
+assert_eq "get_required_dimensions fallback: resumed mixed" "bug_hunt,code_quality,prose,completeness" "${dims}"
 
 rm -f "${edited_log}"
 
@@ -1176,9 +1417,13 @@ with_state_lock_batch \
   "dim_bug_hunt_verdict" "FINDINGS"
 scorecard="$(build_quality_scorecard)"
 assert_contains "scorecard reports findings verdict" "bug hunt (correctness, regressions, edge cases): findings reported" "${scorecard}"
-assert_contains "scorecard reports stale dimension" "stress-test (hidden assumptions, unsafe paths): stale after subsequent edits" "${scorecard}"
 assert_contains "scorecard reports clean dimension" "code quality (conventions, dead code, comments)" "${scorecard}"
-assert_contains "scorecard reports skipped dimension" "completeness (fresh-eyes holistic review): skipped" "${scorecard}"
+if [[ "${scorecard}" == *"stress-test"* || "${scorecard}" == *"completeness"* ]]; then
+  printf '  FAIL: scorecard should omit dimensions not selected for same-surface code work\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
 
 # ===========================================================================
 # Project profile detection
@@ -1852,6 +2097,11 @@ assert_exit "css file" "0" is_ui_path "/styles/main.css"
 assert_exit "scss file" "0" is_ui_path "/styles/theme.scss"
 assert_exit "html file" "0" is_ui_path "/public/index.html"
 assert_exit "astro file" "0" is_ui_path "/pages/index.astro"
+assert_exit "SwiftUI view file" "0" is_ui_path "/ios/ProfileView.swift"
+assert_exit "storyboard file" "0" is_ui_path "/ios/Main.storyboard"
+assert_exit "Swift core file: not UI" "1" is_ui_path "/ios/NetworkClient.swift"
+assert_exit "Android layout XML" "0" is_ui_path "/android/res/layout/main.xml"
+assert_exit "Kotlin core file: not UI" "1" is_ui_path "/android/data/Repository.kt"
 assert_exit "ts file: not UI" "1" is_ui_path "/src/utils/parser.ts"
 assert_exit "py file: not UI" "1" is_ui_path "/server/app.py"
 assert_exit "go file: not UI" "1" is_ui_path "/cmd/main.go"

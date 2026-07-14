@@ -63,9 +63,9 @@ pretool_intent_guard|true_false|true|gates|Block destructive git/gh under non-ex
 agent_first_gate|bool|off|gates|Block first /ulw mutation until a fresh-context specialist returns (default off v1.43+; was mandatory pre-v1.43). See conf.example / docs/customization.md for the full rationale and when to turn it on.
 bg_spawn_gate|true_false|true|gates|Block Bash poll-loop + background detach (hygiene; v1.43.x)
 stall_threshold|int|12|gates|Consecutive read/grep before stall fires
-excellence_file_count|int|3|gates|Edited-file count that triggers excellence-reviewer
-dimension_gate_file_count|int|3|gates|Edited-file count that triggers dimension gate
-traceability_file_count|int|6|gates|Edited-file count that requires briefing-analyst
+excellence_file_count|int|3|gates|Breadth floor for cross-surface completeness review
+dimension_gate_file_count|int|3|gates|Breadth floor combined with semantic/cross-surface evidence
+traceability_file_count|int|6|gates|Breadth floor for cross-surface/plan traceability review
 wave_override_ttl_seconds|int|7200|gates|Wave-plan freshness window for pretool guard
 custom_verify_mcp_tools|str||gates|Pipe-separated MCP tool patterns that count as verification
 metis_on_plan_gate|bool|off|advisory|Block stop on complex plan until metis stress-test
@@ -101,7 +101,7 @@ prompt_persist|bool|on|memory|In-session prompt persistence (recent_prompts.json
 classifier_telemetry|bool|on|telemetry|Per-turn classifier telemetry to session state
 model_tier|enum:quality/balanced/economy|balanced|cost|Agent model tier (quality=inherit deliberators + opus execution, balanced=inherit planning/review + sonnet execution, economy=sonnet everywhere; inherit rides the session's main model). Install-time agent-file rewrite + runtime /ulw router directive since v1.47; env OMC_MODEL_TIER wins over both conf scopes.
 model_overrides|str||cost|Per-agent model override applied after model_tier and winning over it. Format agent:model,agent:model with model opus/sonnet/haiku/inherit (e.g. oracle:inherit,librarian:haiku). Install-time; env OMC_MODEL_OVERRIDES.
-council_deep_default|bool|off|cost|Auto-triggered council uses opus per lens (--deep)
+council_deep_default|bool|off|cost|Auto-triggered Council uses --deep routing: selected Sonnet-backed specialists escalate to Opus; inherit deliberators stay on the session model
 stop_failure_capture|bool|on|watchdog|Capture resume_request.json on rate-limit / fatal stop
 resume_request_ttl_days|int|7|watchdog|Days a resume_request stays claimable
 resume_watchdog|bool|off|watchdog|Headless daemon launches claude --resume after cap clears
@@ -132,14 +132,14 @@ EOF
 # `maximum`: quality + max automation (this project's intended posture).
 #   Internally consistent with `model_tier=quality` — every quality lever
 #   is pulled, including `council_deep_default=on` so auto-triggered
-#   council dispatches use opus per lens (matches the user's accepted
-#   "Opus everywhere" stance under model_tier=quality).
+#   Council dispatches use deep routing: selected Sonnet-backed agents
+#   escalate to Opus while inherit deliberators stay on the session model.
 # `zero-steering`: explicit alias for maximum. It exists so a user can
 #   name the outcome they want ("ship without steering") instead of
 #   reverse-engineering which quality levers that implies.
 # `balanced`: close to install-time defaults; safe for most users. Cost
-#   caps live here, not in `maximum` — `council_deep_default=off` keeps
-#   auto-council on sonnet for the typical user.
+#   caps live here, not in `maximum` — `council_deep_default=off` leaves
+#   each auto-Council specialist on its normal tier for the typical user.
 # `minimal`: lightest footprint while keeping core gates working.
 #
 # stop_failure_capture stays on across all presets — it is privacy-aware,

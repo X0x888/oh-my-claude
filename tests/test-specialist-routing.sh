@@ -62,18 +62,175 @@ trap _cleanup_test EXIT
 _run_router() {
   local session_id="$1"
   local prompt_text="$2"
-  local hook_json
-  hook_json="$(jq -nc \
-    --arg sid "${session_id}" \
-    --arg p "${prompt_text}" \
-    '{session_id:$sid, prompt:$p, cwd:env.PWD}')"
-  HOME="${_test_home}" \
-    STATE_ROOT="${_test_state_root}" \
-    bash "${REPO_ROOT}/bundle/dot-claude/quality-pack/scripts/prompt-intent-router.sh" \
-    <<<"${hook_json}" 2>/dev/null \
-    | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null \
-    || true
+  local run_cwd="${3:-${PWD}}"
+  local model_tier="${4:-}"
+  (
+    cd "${run_cwd}"
+    local hook_json
+    hook_json="$(jq -nc \
+      --arg sid "${session_id}" \
+      --arg p "${prompt_text}" \
+      '{session_id:$sid, prompt:$p, cwd:env.PWD}')"
+    if [[ -n "${model_tier}" ]]; then
+      export OMC_MODEL_TIER="${model_tier}"
+    fi
+    HOME="${_test_home}" \
+      STATE_ROOT="${_test_state_root}" \
+      bash "${REPO_ROOT}/bundle/dot-claude/quality-pack/scripts/prompt-intent-router.sh" \
+      <<<"${hook_json}" 2>/dev/null \
+      | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null \
+      || true
+  )
 }
+
+_seed_completed_council_handoff() {
+  local session_id="$1" state_file now
+  _run_router "${session_id}" "ulw evaluate my project" >/dev/null
+  state_file="${_test_state_root}/${session_id}/session_state.json"
+  now="$(date +%s)"
+  jq --arg now "${now}" \
+    '.council_assessment_ready="1"
+     | .council_assessment_ts=$now
+     | .council_assessment_prompt_revision=1' \
+    "${state_file}" >"${state_file}.tmp" \
+    && mv "${state_file}.tmp" "${state_file}"
+}
+
+# Two-turn Council handoff: routing alone is not completion. The completion
+# producer is tested in test-council-coverage.sh; here we seed its state shape
+# and verify that only the immediately adjacent approval restores Phase 8.
+out_council_assess="$(_run_router "t-council-followup" "ulw evaluate my project")"
+assert_contains "Council assessment route detected" "ADAPTIVE COUNCIL EVALUATION DETECTED" "${out_council_assess}"
+assert_not_contains "assessment-only route does not claim implementation" "Step 7's presentation is NOT the finish line" "${out_council_assess}"
+_council_state="${_test_state_root}/t-council-followup/session_state.json"
+if [[ "$(jq -r '.council_assessment_ready // empty' "${_council_state}")" == "" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: routing an unfinished Council armed the handoff\n' >&2
+  fail=$((fail + 1))
+fi
+
+out_council_recommended="$(_run_router "t-council-recommended-fixes" "ulw evaluate my project and implement the recommended fixes")"
+assert_contains "recommended-fixes request stays Council" "ADAPTIVE COUNCIL EVALUATION DETECTED" "${out_council_recommended}"
+assert_contains "recommended-fixes request enters Phase 8" "Step 7's presentation is NOT the finish line" "${out_council_recommended}"
+if [[ "$(jq -r '.council_phase8_prompt_revision // empty' \
+    "${_test_state_root}/t-council-recommended-fixes/session_state.json")" == "1" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: same-turn Phase 8 was not stamped with prompt revision 1\n' >&2
+  fail=$((fail + 1))
+fi
+
+out_council_rubric="$(_run_router "t-council-rubric-only" "ulw evaluate my project and apply a rigorous security checklist")"
+assert_contains "rubric-only request stays Council assessment" "ADAPTIVE COUNCIL EVALUATION DETECTED" "${out_council_rubric}"
+assert_not_contains "rubric-only apply is not workspace mutation" "Step 7's presentation is NOT the finish line" "${out_council_rubric}"
+
+out_council_no_changes="$(_run_router "t-council-global-optout" "ulw evaluate my project and implement fixes, but do not make any changes; report the plan")"
+assert_contains "global no-change request stays Council assessment" "ADAPTIVE COUNCIL EVALUATION DETECTED" "${out_council_no_changes}"
+assert_not_contains "global no-change clause suppresses Phase 8" "Step 7's presentation is NOT the finish line" "${out_council_no_changes}"
+
+# A renamed checkout is recognized from independent repository markers, while
+# an unrelated directory named `oh-my-claude` cannot activate self-audit mode
+# from its basename alone.
+_structural_repo="${_test_home}/renamed-harness-checkout"
+mkdir -p \
+  "${_structural_repo}/config" \
+  "${_structural_repo}/bundle/dot-claude/skills/council"
+ln -s "${REPO_ROOT}/install.sh" "${_structural_repo}/install.sh"
+ln -s "${REPO_ROOT}/verify.sh" "${_structural_repo}/verify.sh"
+ln -s "${REPO_ROOT}/config/settings.patch.json" "${_structural_repo}/config/settings.patch.json"
+ln -s "${REPO_ROOT}/bundle/dot-claude/skills/council/SKILL.md" \
+  "${_structural_repo}/bundle/dot-claude/skills/council/SKILL.md"
+
+for _self_audit_prompt in \
+  "self-audit the harness" \
+  "audit the harness state-io contracts" \
+  "review implicit contracts in the harness" \
+  "run the Bug B self-audit"; do
+  out_self_audit="$(_run_router "t-self-audit-${RANDOM}" "ulw ${_self_audit_prompt}" "${_structural_repo}")"
+  assert_contains "structural self-audit routes Council: ${_self_audit_prompt}" \
+    "ADAPTIVE COUNCIL EVALUATION DETECTED" "${out_self_audit}"
+  assert_contains "structural self-audit activates harness prior: ${_self_audit_prompt}" \
+    "Self-audit prior active" "${out_self_audit}"
+done
+
+_basename_only_repo="${_test_home}/oh-my-claude"
+mkdir -p "${_basename_only_repo}"
+out_false_self_audit="$(_run_router "t-self-audit-false-positive" \
+  "ulw self-audit the harness" "${_basename_only_repo}")"
+assert_not_contains "basename-only directory cannot trigger Council self-audit" \
+  "ADAPTIVE COUNCIL EVALUATION DETECTED" "${out_false_self_audit}"
+
+# Economy normally pins Agent calls to Sonnet, but an explicit Council deep
+# request has a narrow precedence exception for selected Sonnet-backed Council
+# specialists. Inherit-tier deliberators must remain unpinned.
+out_deep_economy="$(_run_router "t-council-deep-economy" \
+  "ulw evaluate my project --deep" "${PWD}" "economy")"
+assert_contains "deep+economy Council route detected" \
+  "ADAPTIVE COUNCIL EVALUATION DETECTED" "${out_deep_economy}"
+assert_contains "deep+economy selected Council exception is explicit" \
+  'selected Sonnet-backed Council specialists MAY instead receive `model: "opus"`' "${out_deep_economy}"
+assert_contains "deep+economy keeps non-Council calls on Sonnet" \
+  'All other economy-tier Agent calls stay on `model: "sonnet"`' "${out_deep_economy}"
+assert_contains "deep+economy preserves inherit omission" \
+  'for `model: inherit` deliberators participating in this deep Council, OMIT the model parameter' "${out_deep_economy}"
+assert_not_contains "deep+economy removes contradictory every-call mandate" \
+  'On EVERY `Agent()` call' "${out_deep_economy}"
+
+_now="$(date +%s)"
+jq --arg now "${_now}" \
+  '.council_assessment_ready="1"
+   | .council_assessment_ts=$now
+   | .council_assessment_prompt_revision=1' \
+  "${_council_state}" >"${_council_state}.tmp" \
+  && mv "${_council_state}.tmp" "${_council_state}"
+out_council_followup="$(_run_router "t-council-followup" "ulw implement all recommendations")"
+assert_contains "Council approval turn restores Phase 8" "COUNCIL PHASE-8 CONTINUATION" "${out_council_followup}"
+assert_contains "Council approval turn preserves exhaustive scope" "EXHAUSTIVE AUTHORIZATION matched" "${out_council_followup}"
+if [[ "$(jq -r '.council_phase8_prompt_revision // empty' "${_council_state}")" == "2" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: follow-up Phase 8 was not stamped with current prompt revision 2\n' >&2
+  fail=$((fail + 1))
+fi
+
+# Bounded and terse immediate approvals still consume the completed handoff as
+# a valid Phase-8 transition. Top-N and severity subsets must not be promoted
+# to exhaustive authorization merely because the prior assessment was broad.
+_seed_completed_council_handoff "t-council-top-n"
+out_council_top_n="$(_run_router "t-council-top-n" "ulw implement the top 3 findings")"
+assert_contains "top-N approval restores Phase 8" "COUNCIL PHASE-8 CONTINUATION" "${out_council_top_n}"
+assert_not_contains "top-N approval remains bounded" "EXHAUSTIVE AUTHORIZATION matched" "${out_council_top_n}"
+
+_seed_completed_council_handoff "t-council-critical"
+out_council_critical="$(_run_router "t-council-critical" "ulw implement only the critical findings")"
+assert_contains "critical-only approval restores Phase 8" "COUNCIL PHASE-8 CONTINUATION" "${out_council_critical}"
+assert_not_contains "critical-only approval remains bounded" "EXHAUSTIVE AUTHORIZATION matched" "${out_council_critical}"
+
+_seed_completed_council_handoff "t-council-fix-all"
+out_council_fix_all="$(_run_router "t-council-fix-all" "ulw fix all")"
+assert_contains "terse fix-all approval restores Phase 8" "COUNCIL PHASE-8 CONTINUATION" "${out_council_fix_all}"
+if [[ "$(jq -r '.council_phase8_active // empty' "${_test_state_root}/t-council-fix-all/session_state.json")" == "1" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: valid fix-all handoff was discarded instead of activating Phase 8\n' >&2
+  fail=$((fail + 1))
+fi
+
+# An intervening prompt consumes a completed handoff. Later domain work with
+# words like gap/recommendation/wave must remain an ordinary focused task.
+_run_router "t-council-expiry" "ulw evaluate my project" >/dev/null
+_expiry_state="${_test_state_root}/t-council-expiry/session_state.json"
+jq --arg now "${_now}" \
+  '.council_assessment_ready="1"
+   | .council_assessment_ts=$now
+   | .council_assessment_prompt_revision=1' \
+  "${_expiry_state}" >"${_expiry_state}.tmp" \
+  && mv "${_expiry_state}.tmp" "${_expiry_state}"
+out_intervening="$(_run_router "t-council-expiry" "ulw explain the deployment setup")"
+assert_not_contains "unrelated adjacent prompt does not enter Phase 8" "COUNCIL PHASE-8 CONTINUATION" "${out_intervening}"
+out_late_gap="$(_run_router "t-council-expiry" "ulw fix the performance gap in the parser")"
+assert_not_contains "non-adjacent gap wording cannot revive Council" "COUNCIL PHASE-8 CONTINUATION" "${out_late_gap}"
 
 # A coding-domain ULW prompt with explicit code-anchored signals so the
 # router consistently selects the `coding` branch (not `mixed`) across

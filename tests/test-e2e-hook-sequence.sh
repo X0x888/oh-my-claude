@@ -100,18 +100,26 @@ sim_verify() {
   local sid="$1"
   local cmd="${2:-npm test}"
   local res="${3:-}"
+  local payload
+  payload="$(jq -nc --arg s "${sid}" --arg c "${cmd}" --arg r "${res}" \
+    --arg id "${sid}-verify" \
+    '{session_id:$s,tool_name:"Bash",tool_use_id:$id,tool_input:{command:$c},tool_response:$r}')"
+  run_hook "${HOOK_DIR}/record-tool-start-revision.sh" "${payload}"
   run_hook "${HOOK_DIR}/record-verification.sh" \
-    "$(jq -nc --arg s "${sid}" --arg c "${cmd}" --arg r "${res}" \
-      '{session_id:$s,tool_name:"Bash",tool_input:{command:$c},tool_response:$r}')"
+    "${payload}"
 }
 
 sim_mcp_verify() {
   local sid="$1"
   local tool_name="${2:-mcp__plugin_playwright_playwright__browser_snapshot}"
   local res="${3:-}"
+  local payload
+  payload="$(jq -nc --arg s "${sid}" --arg t "${tool_name}" --arg r "${res}" \
+    --arg id "${sid}-mcp-verify" \
+    '{session_id:$s,tool_name:$t,tool_use_id:$id,tool_input:{},tool_response:$r}')"
+  run_hook "${HOOK_DIR}/record-tool-start-revision.sh" "${payload}"
   run_hook "${HOOK_DIR}/record-verification.sh" \
-    "$(jq -nc --arg s "${sid}" --arg t "${tool_name}" --arg r "${res}" \
-      '{session_id:$s,tool_name:$t,tool_input:{},tool_response:$r}')"
+    "${payload}"
 }
 
 sim_review() {
@@ -357,9 +365,10 @@ teardown_test
 # -------------------------------------------------------
 setup_test
 init_session "s3a"
-run_hook "${HOOK_DIR}/record-verification.sh" \
-  "$(jq -nc --arg s "s3a" --arg c "npm test" \
-    '{session_id:$s,tool_name:"Bash",tool_input:{command:$c},tool_response:{exit_code:1,output:"Tests: 10 passed"}}')"
+payload_s3a="$(jq -nc --arg s "s3a" --arg c "npm test" \
+  '{session_id:$s,tool_name:"Bash",tool_use_id:"s3a-verify",tool_input:{command:$c},tool_response:{exit_code:1,output:"Tests: 10 passed"}}')"
+run_hook "${HOOK_DIR}/record-tool-start-revision.sh" "${payload_s3a}"
+run_hook "${HOOK_DIR}/record-verification.sh" "${payload_s3a}"
 
 assert_eq "verify(exit_code): outcome is failed" "failed" "$(read_st "s3a" "last_verify_outcome")"
 teardown_test
@@ -373,6 +382,60 @@ init_session "s4"
 sim_verify "s4" "npm test" ""
 
 assert_eq "verify(no output): outcome defaults to passed" "passed" "$(read_st "s4" "last_verify_outcome")"
+teardown_test
+
+
+# -------------------------------------------------------
+# Test 4a: verification is credited to its dispatch revision, not completion
+# -------------------------------------------------------
+setup_test
+init_session "s4a"
+sim_edit "s4a" "/src/before-test.ts"
+timing_off_payload="$(jq -nc '{
+  session_id:"s4a",tool_name:"Bash",tool_use_id:"s4a-timing-off-verify",
+  tool_input:{command:"npm test"},tool_response:"Tests: 10 passed, 0 failed"
+}')"
+printf '%s' "${timing_off_payload}" \
+  | env OMC_TIME_TRACKING=off bash "${HOOK_DIR}/record-tool-start-revision.sh" 2>/dev/null || true
+run_hook "${HOOK_DIR}/record-verification.sh" "${timing_off_payload}"
+assert_eq "verify(causal): ordinary pass records start revision" "1" \
+  "$(read_st "s4a" "last_verify_code_revision")"
+assert_eq "verify(causal): timing opt-out does not disable start capture" "npm test" \
+  "$(read_st "s4a" "last_verify_cmd")"
+
+stale_payload="$(jq -nc '{
+  session_id:"s4a",tool_name:"Bash",tool_use_id:"s4a-stale-verify",
+  tool_input:{command:"pytest -q"},tool_response:"12 passed"
+}')"
+run_hook "${HOOK_DIR}/record-tool-start-revision.sh" "${stale_payload}"
+# A peer edit lands while the test is in flight.
+sim_edit "s4a" "/src/during-test.ts"
+run_hook "${HOOK_DIR}/record-verification.sh" "${stale_payload}"
+
+assert_eq "verify(causal): stale result preserves prior verified revision" "1" \
+  "$(read_st "s4a" "last_verify_code_revision")"
+assert_eq "verify(causal): stale result preserves prior command" "npm test" \
+  "$(read_st "s4a" "last_verify_cmd")"
+assert_eq "verify(causal): rejection reason is revision change" "code_revision_changed" \
+  "$(read_st "s4a" "last_stale_verify_reason")"
+assert_eq "verify(causal): diagnostic records dispatch revision" "1" \
+  "$(read_st "s4a" "last_stale_verify_start_code_revision")"
+assert_eq "verify(causal): diagnostic records completion revision" "2" \
+  "$(read_st "s4a" "last_stale_verify_current_code_revision")"
+
+# A fresh invocation after the edit sees revision 2 and may advance evidence.
+sim_verify "s4a" "pytest -q" "12 passed"
+assert_eq "verify(causal): post-edit rerun is accepted" "2" \
+  "$(read_st "s4a" "last_verify_code_revision")"
+assert_eq "verify(causal): post-edit rerun updates command" "pytest -q" \
+  "$(read_st "s4a" "last_verify_cmd")"
+
+# Replaying a completion cannot reuse consumed dispatch evidence.
+run_hook "${HOOK_DIR}/record-verification.sh" "${stale_payload}"
+assert_eq "verify(causal): missing snapshot fails closed" "missing_start_snapshot" \
+  "$(read_st "s4a" "last_stale_verify_reason")"
+assert_eq "verify(causal): replay does not advance accepted revision" "2" \
+  "$(read_st "s4a" "last_verify_code_revision")"
 teardown_test
 
 
@@ -870,13 +933,15 @@ printf '\nExcellence gate:\n'
 
 
 # -------------------------------------------------------
-# Sequence N: Excellence reviewer records excellence timestamp
+# Sequence N: Excellence reviewer records only its role-specific timestamp
 # -------------------------------------------------------
 setup_test
 init_session "sn"
-sim_excellence_review "sn" "Verdict: Complete and excellent work."
+sim_excellence_review "sn" "Complete and excellent work.
+VERDICT: CLEAN"
 
-assert_not_empty "seq-N: last_review_ts set" "$(read_st "sn" "last_review_ts")"
+assert_empty "seq-N: excellence does not set last_review_ts" "$(read_st "sn" "last_review_ts")"
+assert_empty "seq-N: excellence does not set review_had_findings" "$(read_st "sn" "review_had_findings")"
 assert_not_empty "seq-N: last_excellence_review_ts set" "$(read_st "sn" "last_excellence_review_ts")"
 teardown_test
 
@@ -894,26 +959,21 @@ teardown_test
 
 
 # -------------------------------------------------------
-# Sequence P: Excellence gate blocks on multi-file task (3+ files)
-# Note: seq-P/R/S/T disable the dimension gate via
-# OMC_DIMENSION_GATE_FILE_COUNT=10 to isolate excellence-gate behavior.
-# The dimension gate has its own dedicated tests (seq-U and friends).
+# Sequence P: Same-surface file count alone does not trigger excellence
 # -------------------------------------------------------
 setup_test
 init_session "sp"
-export OMC_DIMENSION_GATE_FILE_COUNT=10
+export OMC_GATE_LEVEL=standard
 sim_edit "sp" "/src/a.ts"
 sim_edit "sp" "/src/b.ts"
 sim_edit "sp" "/src/c.ts"
 sim_verify "sp" "npm test" "Tests: 10 passed"
 sim_review "sp" "Summary: Looks good. No issues."
-output="$(sim_stop "sp")"
+output="$(sim_stop "sp" "$(structured_closeout "sp" "Updated three files on one implementation surface.")")"
 
-assert_contains "seq-P: excellence gate blocks" '"decision":"block"' "${output}"
-assert_contains "seq-P: mentions excellence-reviewer" "excellence-reviewer" "${output}"
-assert_contains "seq-P: mentions file count" "3 files edited" "${output}"
-assert_eq "seq-P: excellence_guard_triggered" "1" "$(read_st "sp" "excellence_guard_triggered")"
-unset OMC_DIMENSION_GATE_FILE_COUNT
+assert_empty "seq-P: same-surface three-file task does not summon excellence" "${output}"
+assert_empty "seq-P: excellence guard remains untriggered" "$(read_st "sp" "excellence_guard_triggered")"
+unset OMC_GATE_LEVEL
 teardown_test
 
 
@@ -932,11 +992,16 @@ teardown_test
 
 
 # -------------------------------------------------------
-# Sequence R: Excellence gate fires only once
+# Sequence R: Broad-objective excellence gate fires only once
 # -------------------------------------------------------
 setup_test
 init_session "sr"
-export OMC_DIMENSION_GATE_FILE_COUNT=10
+export OMC_GATE_LEVEL=standard
+jq '.review_cycle_broad_scope="1"' \
+  "${TEST_HOME}/.claude/quality-pack/state/sr/session_state.json" \
+  >"${TEST_HOME}/.claude/quality-pack/state/sr/session_state.json.tmp" \
+  && mv "${TEST_HOME}/.claude/quality-pack/state/sr/session_state.json.tmp" \
+    "${TEST_HOME}/.claude/quality-pack/state/sr/session_state.json"
 sim_edit "sr" "/src/a.ts"
 sim_edit "sr" "/src/b.ts"
 sim_edit "sr" "/src/c.ts"
@@ -950,16 +1015,21 @@ assert_contains "seq-R: first stop blocks for excellence" '"decision":"block"' "
 # Second stop: excellence_guard_triggered=1, skips excellence check, allows through
 out2="$(sim_stop "sr" "$(structured_closeout "sr" "Updated the three source files for the requested change.")")"
 assert_empty "seq-R: second stop allowed (gate already triggered)" "${out2}"
-unset OMC_DIMENSION_GATE_FILE_COUNT
+unset OMC_GATE_LEVEL
 teardown_test
 
 
 # -------------------------------------------------------
-# Sequence S: Excellence gate satisfied by running excellence reviewer
+# Sequence S: Broad-objective excellence gate is satisfied by its reviewer
 # -------------------------------------------------------
 setup_test
 init_session "ss"
-export OMC_DIMENSION_GATE_FILE_COUNT=10
+export OMC_GATE_LEVEL=standard
+jq '.review_cycle_broad_scope="1"' \
+  "${TEST_HOME}/.claude/quality-pack/state/ss/session_state.json" \
+  >"${TEST_HOME}/.claude/quality-pack/state/ss/session_state.json.tmp" \
+  && mv "${TEST_HOME}/.claude/quality-pack/state/ss/session_state.json.tmp" \
+    "${TEST_HOME}/.claude/quality-pack/state/ss/session_state.json"
 sim_edit "ss" "/src/a.ts"
 sim_edit "ss" "/src/b.ts"
 sim_edit "ss" "/src/c.ts"
@@ -971,13 +1041,45 @@ out1="$(sim_stop "ss")"
 assert_contains "seq-S: blocks for excellence" '"decision":"block"' "${out1}"
 
 # Run excellence review
-sim_excellence_review "ss" "Verdict: Complete and excellent."
+sim_excellence_review "ss" "Complete and excellent.
+VERDICT: CLEAN"
 
 # Stop: should allow through (excellence review recorded)
 out2="$(sim_stop "ss" "$(structured_closeout "ss" "Updated the three source files for the requested change.")")"
 assert_empty "seq-S: stop allowed after excellence review" "${out2}"
 assert_not_empty "seq-S: excellence_review_ts set" "$(read_st "ss" "last_excellence_review_ts")"
-unset OMC_DIMENSION_GATE_FILE_COUNT
+unset OMC_GATE_LEVEL
+teardown_test
+
+
+# -------------------------------------------------------
+# Sequence S2: Excellence's one-shot trigger is revision-scoped
+# -------------------------------------------------------
+setup_test
+init_session "ss2"
+export OMC_GATE_LEVEL=standard
+state_file="${TEST_HOME}/.claude/quality-pack/state/ss2/session_state.json"
+jq '.review_cycle_broad_scope="1"' "${state_file}" >"${state_file}.tmp" \
+  && mv "${state_file}.tmp" "${state_file}"
+sim_edit "ss2" "/src/broad.ts"
+sim_verify "ss2" "npm test" "Tests: 5 passed"
+sim_review "ss2" "Clean.
+VERDICT: CLEAN"
+out1="$(sim_stop "ss2")"
+assert_contains "seq-S2: revision 1 triggers excellence" "excellence-reviewer" "${out1}"
+sim_excellence_review "ss2"
+
+# A new edit generation invalidates completeness. Fresh generic review and
+# verification do not satisfy that specialist dimension, and the prior
+# one-shot block must not suppress the new generation's excellence block.
+sim_edit "ss2" "/src/broad.ts"
+sim_verify "ss2" "npm test" "Tests: 5 passed"
+sim_review "ss2" "Clean after the second edit.
+VERDICT: CLEAN"
+out2="$(sim_stop "ss2")"
+assert_contains "seq-S2: revision 2 re-arms excellence block" '"decision":"block"' "${out2}"
+assert_contains "seq-S2: revision 2 names excellence reviewer again" "excellence-reviewer" "${out2}"
+unset OMC_GATE_LEVEL
 teardown_test
 
 
@@ -988,7 +1090,6 @@ teardown_test
 # -------------------------------------------------------
 setup_test
 init_session "st"
-export OMC_DIMENSION_GATE_FILE_COUNT=10
 sim_edit "st" "/src/a.ts"
 sim_edit "st" "/src/b.ts"
 sim_edit "st" "/src/c.ts"
@@ -998,14 +1099,96 @@ sim_review "st" "Summary: No issues found. Code looks clean."
 assert_eq "seq-T: standard review clean" "false" "$(read_st "st" "review_had_findings")"
 
 # Excellence review: must NOT overwrite review_had_findings
-sim_excellence_review "st" "Verdict: Complete and excellent."
+sim_excellence_review "st" "Complete and excellent.
+VERDICT: CLEAN"
 assert_eq "seq-T: excellence preserves review_had_findings" "false" "$(read_st "st" "review_had_findings")"
 assert_not_empty "seq-T: excellence_review_ts set" "$(read_st "st" "last_excellence_review_ts")"
 
 # Stop: should allow through (no unremediated findings)
 out="$(sim_stop "st" "$(structured_closeout "st" "Updated the three source files for the requested change.")")"
 assert_empty "seq-T: stop allowed" "${out}"
-unset OMC_DIMENSION_GATE_FILE_COUNT
+teardown_test
+
+
+# -------------------------------------------------------
+# Sequence T2: Specialist CLEAN cannot clear standard-review findings
+# -------------------------------------------------------
+setup_test
+init_session "st2"
+sim_edit "st2" "/src/a.ts"
+sim_review "st2" "A defect remains.
+VERDICT: FINDINGS (1)"
+standard_review_ts="$(read_st "st2" "last_review_ts")"
+sim_design_reviewer "st2" "Visual review is clean.
+VERDICT: CLEAN"
+sim_excellence_review "st2" "Completeness review is clean.
+VERDICT: CLEAN"
+assert_eq "seq-T2: specialist CLEAN preserves standard findings" \
+  "true" "$(read_st "st2" "review_had_findings")"
+assert_eq "seq-T2: specialist CLEAN preserves standard review clock" \
+  "${standard_review_ts}" "$(read_st "st2" "last_review_ts")"
+teardown_test
+
+
+# -------------------------------------------------------
+# Sequence T3: Prose findings use doc-specific state and remain enforceable
+# -------------------------------------------------------
+setup_test
+init_session "st3"
+sim_edit_doc "st3" "/docs/guide.md"
+sim_editor_critic "st3" "The guide omits a required migration warning.
+VERDICT: FINDINGS (1)"
+assert_empty "seq-T3: prose findings do not set standard review clock" \
+  "$(read_st "st3" "last_review_ts")"
+assert_empty "seq-T3: prose findings do not set standard findings state" \
+  "$(read_st "st3" "review_had_findings")"
+assert_eq "seq-T3: prose findings are recorded on doc-specific state" \
+  "true" "$(read_st "st3" "doc_review_had_findings")"
+out="$(sim_stop "st3")"
+assert_contains "seq-T3: prose findings still block stop" '"decision":"block"' "${out}"
+sleep 1
+sim_edit_doc "st3" "/docs/guide.md"
+sim_editor_critic "st3" "The migration warning is now complete.
+VERDICT: CLEAN"
+assert_eq "seq-T3: fresh prose CLEAN clears doc-specific findings" \
+  "false" "$(read_st "st3" "doc_review_had_findings")"
+out2="$(sim_stop "st3" "$(structured_closeout "st3" "Updated the migration guide and cleared prose findings.")")"
+assert_empty "seq-T3: doc-only stop allowed after fix + fresh prose review" "${out2}"
+teardown_test
+
+
+# -------------------------------------------------------
+# Sequence T4: Reviewer findings do not leak across fresh objective surfaces
+# -------------------------------------------------------
+setup_test
+setup_prompt_router
+init_session "st4a"
+sim_edit_doc "st4a" "/docs/old-guide.md"
+sim_editor_critic "st4a" "VERDICT: FINDINGS (1)"
+sim_prompt "st4a" "/ulw implement the cache key helper in src/cache.ts" >/dev/null
+sim_edit "st4a" "/src/cache.ts"
+sim_verify "st4a" "npm test" "Tests: 5 passed"
+sim_review "st4a" "The code-only objective is clean.
+VERDICT: CLEAN"
+out="$(sim_stop "st4a" "$(structured_closeout "st4a" "Implemented the cache key helper.")")"
+assert_empty "seq-T4a: prior prose FINDINGS do not block fresh code-only objective" "${out}"
+teardown_test
+
+setup_test
+setup_prompt_router
+init_session "st4b"
+sim_edit "st4b" "/src/old-cache.ts"
+sim_review "st4b" "VERDICT: FINDINGS (1)"
+sim_prompt "st4b" "/ulw update the cache usage guide in docs/cache.md" >/dev/null
+sim_edit_doc "st4b" "/docs/cache.md"
+sim_editor_critic "st4b" "The docs-only objective is clean.
+VERDICT: CLEAN"
+# Keep this regression focused on finding isolation: the legacy universal
+# quality gate can still see the earlier code-edit clock, so provide a fresh
+# validation signal rather than conflating that separate migration behavior.
+sim_verify "st4b" "npm test" "Tests: 5 passed"
+out="$(sim_stop "st4b" "$(structured_closeout "st4b" "Updated the cache usage guide.")")"
+assert_empty "seq-T4b: prior code FINDINGS do not block fresh docs-only objective" "${out}"
 teardown_test
 
 
@@ -1093,7 +1276,6 @@ teardown_test
 # Sequence W3: Doc-only edits don't require verification
 setup_test
 init_session "sw3"
-export OMC_DIMENSION_GATE_FILE_COUNT=10
 sim_edit_doc "sw3" "/docs/a.md"
 # Doc edits route to editor-critic for review, not quality-reviewer
 sim_editor_critic "sw3" "Doc updated.
@@ -1101,7 +1283,6 @@ VERDICT: CLEAN"
 # No sim_verify — doc-only edit should not require it
 output="$(sim_stop "sw3" "$(structured_closeout "sw3" "Updated /docs/a.md with the requested documentation change.")")"
 assert_empty "seq-W3: doc-only edit skips verify gate" "${output}"
-unset OMC_DIMENSION_GATE_FILE_COUNT
 teardown_test
 
 # Sequence W4: Code edit after review still requires re-review
@@ -1135,15 +1316,14 @@ teardown_test
 
 
 # -------------------------------------------------------
-# Dimension tracker tests (Option C: prescribed sequence)
+# Adaptive review-coverage tests
 # -------------------------------------------------------
 printf '\nDimension tracker:\n'
 
 
-# Sequence U1: Full Sugar-Tracker-style complex-task flow = stop allowed
+# Sequence U1: Three same-surface code files need generic quality only
 setup_test
 init_session "su1"
-# 3 code files triggers dimension gate at default threshold
 sim_edit "su1" "/src/a.ts"
 sim_edit "su1" "/src/b.ts"
 sim_edit "su1" "/src/c.ts"
@@ -1151,27 +1331,11 @@ sim_verify "su1" "npm test" "Tests: 10 passed"
 sim_review "su1" "Clean.
 VERDICT: CLEAN"
 
-# After quality-reviewer, standard gate passes but dimension gate blocks for metis
-out1="$(sim_stop "su1")"
-assert_contains "seq-U1: block 1 for missing metis" '"decision":"block"' "${out1}"
-assert_contains "seq-U1: names metis" "metis" "${out1}"
-assert_contains "seq-U1: names stress-test" "stress-test" "${out1}"
-
-sim_metis "su1"
-
-# Now blocks for excellence
-out2="$(sim_stop "su1")"
-assert_contains "seq-U1: block 2 for missing excellence" '"decision":"block"' "${out2}"
-assert_contains "seq-U1: names excellence-reviewer" "excellence-reviewer" "${out2}"
-
-sim_excellence_review "su1"
-
-# All dimensions ticked, stop allowed
-out3="$(sim_stop "su1" "$(structured_closeout "su1" "Updated the three source files and closed the complex-task review loop.")")"
-assert_empty "seq-U1: stop allowed after all dims ticked" "${out3}"
+out1="$(sim_stop "su1" "$(structured_closeout "su1" "Updated three files on one implementation surface.")")"
+assert_empty "seq-U1: same-surface code route stops after generic review" "${out1}"
 assert_not_empty "seq-U1: dim bug_hunt set" "$(read_st "su1" "dim_bug_hunt_ts")"
-assert_not_empty "seq-U1: dim stress_test set" "$(read_st "su1" "dim_stress_test_ts")"
-assert_not_empty "seq-U1: dim completeness set" "$(read_st "su1" "dim_completeness_ts")"
+assert_empty "seq-U1: no post-edit stress_test dimension" "$(read_st "su1" "dim_stress_test_ts")"
+assert_empty "seq-U1: no same-surface completeness dimension" "$(read_st "su1" "dim_completeness_ts")"
 teardown_test
 
 # Sequence U2: Complex task with doc edit requires editor-critic too
@@ -1183,7 +1347,6 @@ sim_edit_doc "su2" "/CHANGELOG.md"
 sim_verify "su2" "npm test" "Tests: 10 passed"
 sim_review "su2" "Clean.
 VERDICT: CLEAN"
-sim_metis "su2"
 sim_excellence_review "su2"
 
 # Dimension gate should now require prose (editor-critic)
@@ -1196,7 +1359,7 @@ out2="$(sim_stop "su2" "$(structured_closeout "su2" "Updated the source files an
 assert_empty "seq-U2: stop allowed after editor-critic" "${out2}"
 teardown_test
 
-# Sequence U3: Very complex task (6+ files) requires briefing-analyst for traceability.
+# Sequence U3: Six-plus cross-surface files require traceability.
 # A doc edit is included so the v1.34.0 R5 (code-no-docs) inferred-contract rule
 # does not block on the 6-file source-only shape — real complete work at this
 # scale touches docs alongside the code.
@@ -1212,7 +1375,6 @@ sim_edit_doc "su3" "/docs/architecture.md"
 sim_verify "su3" "npm test" "Tests: 10 passed"
 sim_review "su3" "Clean.
 VERDICT: CLEAN"
-sim_metis "su3"
 sim_excellence_review "su3"
 sim_editor_critic "su3"
 
@@ -1226,7 +1388,7 @@ out2="$(sim_stop "su3" "$(structured_closeout "su3" "Updated the six source file
 assert_empty "seq-U3: stop allowed after briefing-analyst" "${out2}"
 teardown_test
 
-# Sequence U4: Simple task (below threshold) bypasses dimension gate
+# Sequence U4: Single code file is covered by the generic quality reviewer
 setup_test
 init_session "su4"
 sim_edit "su4" "/src/single.ts"
@@ -1234,7 +1396,7 @@ sim_verify "su4" "npm test" "Tests: 5 passed"
 sim_review "su4" "Clean.
 VERDICT: CLEAN"
 output="$(sim_stop "su4" "$(structured_closeout "su4" "Updated /src/single.ts for the requested change.")")"
-assert_empty "seq-U4: single-file bypass dimension gate" "${output}"
+assert_empty "seq-U4: single-file generic review is sufficient" "${output}"
 teardown_test
 
 # Sequence U5: Post-tick code edit invalidates code dimensions (timestamp-based)
@@ -1246,10 +1408,8 @@ sim_edit "su5" "/src/c.ts"
 sim_verify "su5" "npm test" "Tests: 10 passed"
 sim_review "su5" "Clean.
 VERDICT: CLEAN"
-sim_metis "su5"
-sim_excellence_review "su5"
-
-# All dims ticked; now edit another code file — dimensions should be invalidated
+# Generic code dimensions are ticked; now edit another code file — they should
+# be invalidated
 # by the timestamp-based comparison (no explicit clearing needed)
 sleep 1
 sim_edit "su5" "/src/d.ts"
@@ -1257,6 +1417,120 @@ sim_edit "su5" "/src/d.ts"
 # Stop should block — last_code_edit_ts > dim_bug_hunt_ts etc.
 output="$(sim_stop "su5")"
 assert_contains "seq-U5: post-edit re-blocks" '"decision":"block"' "${output}"
+teardown_test
+
+# Sequence U5B: Revision clocks catch review/verify/edit ordering inside one
+# epoch second. Force the legacy timestamps equal after the real hook calls;
+# only the monotonic revisions can distinguish the final edit.
+setup_test
+init_session "su5b"
+sim_edit "su5b" "/src/same-second.ts"
+sim_verify "su5b" "npm test" "Tests: 5 passed"
+sim_review "su5b" "Clean.
+VERDICT: CLEAN"
+sim_edit "su5b" "/src/same-second.ts"
+state_file="${TEST_HOME}/.claude/quality-pack/state/su5b/session_state.json"
+jq '.last_edit_ts="4242"
+    | .last_code_edit_ts="4242"
+    | .last_review_ts="4242"
+    | .last_verify_ts="4242"' \
+  "${state_file}" >"${state_file}.tmp" && mv "${state_file}.tmp" "${state_file}"
+assert_eq "seq-U5B: reviewer saw revision 1" "1" "$(read_st "su5b" "dim_bug_hunt_revision")"
+assert_eq "seq-U5B: verification saw revision 1" "1" "$(read_st "su5b" "last_verify_code_revision")"
+assert_eq "seq-U5B: final same-second edit advanced revision" "2" "$(read_st "su5b" "last_code_edit_revision")"
+output="$(sim_stop "su5b")"
+assert_contains "seq-U5B: equal timestamps still re-block" '"decision":"block"' "${output}"
+assert_contains "seq-U5B: both review and verification are stale" \
+  "Both review and verification missing" "${output}"
+sim_verify "su5b" "npm test" "Tests: 5 passed"
+sim_review "su5b" "Clean after the final bytes.
+VERDICT: CLEAN"
+output2="$(sim_stop "su5b" "$(structured_closeout "su5b" "Updated the same-second test file and revalidated its final revision.")")"
+assert_empty "seq-U5B: fresh revision-aware review + verify recover" "${output2}"
+teardown_test
+
+# Sequence U5C: A real edit that lands while Stop is evaluating cannot race the
+# clean-release write. Pause Stop inside its current-objective path scan (after
+# the opening generation snapshot), advance the edit clocks through mark-edit,
+# then let evaluation continue. The final CAS must refuse the stale release.
+setup_test
+init_session "su5c"
+OMC_INFERRED_CONTRACT=off sim_edit "su5c" "/src/before-stop.ts"
+sim_verify "su5c" "npm test" "Tests: 5 passed"
+sim_review "su5c" "Clean before concurrent work.
+VERDICT: CLEAN"
+state_file="${TEST_HOME}/.claude/quality-pack/state/su5c/session_state.json"
+jq '.review_cycle_prompt_ts=.last_user_prompt_ts
+    | .review_cycle_edit_log_offset="0"
+    | .review_cycle_bash_event_base="0"
+    | .review_cycle_ui_semantic="0"
+    | .review_cycle_prose_semantic="0"
+    | .review_cycle_broad_scope="0"' \
+  "${state_file}" >"${state_file}.tmp" && mv "${state_file}.tmp" "${state_file}"
+
+cas_shim_dir="${TEST_HOME}/cas-shim"
+cas_ready="${TEST_HOME}/cas-ready"
+cas_release="${TEST_HOME}/cas-release"
+cas_output="${TEST_HOME}/cas-stop-output"
+cas_edit_log="${TEST_HOME}/.claude/quality-pack/state/su5c/edited_files.log"
+mkdir -p "${cas_shim_dir}"
+printf '%s\n' \
+  '#!/bin/sh' \
+  'if [ "${3:-}" = "${OMC_CAS_TEST_LOG:-}" ]; then' \
+  '  /usr/bin/touch "${OMC_CAS_TEST_READY}"' \
+  '  while [ ! -f "${OMC_CAS_TEST_RELEASE}" ]; do /bin/sleep 0.01; done' \
+  'fi' \
+  'exec /usr/bin/tail "$@"' \
+  >"${cas_shim_dir}/tail"
+chmod +x "${cas_shim_dir}/tail"
+
+cas_message="$(structured_closeout "su5c" "Updated /src/before-stop.ts and validated it.")"
+cas_payload="$(jq -nc --arg s "su5c" --arg m "${cas_message}" \
+  '{session_id:$s,last_assistant_message:$m}')"
+(
+  printf '%s' "${cas_payload}" \
+    | env PATH="${cas_shim_dir}:${PATH}" \
+      OMC_CAS_TEST_LOG="${cas_edit_log}" \
+      OMC_CAS_TEST_READY="${cas_ready}" \
+      OMC_CAS_TEST_RELEASE="${cas_release}" \
+      OMC_GATE_LEVEL=basic \
+      OMC_NO_DEFER_MODE=off \
+      OMC_INFERRED_CONTRACT=off \
+      OMC_OBJECTIVE_CONTRACT_GATE=off \
+      bash "${HOOK_DIR}/stop-guard.sh" >"${cas_output}" 2>/dev/null
+) &
+cas_pid=$!
+for _cas_wait in $(seq 1 500); do
+  [[ -f "${cas_ready}" ]] && break
+  kill -0 "${cas_pid}" 2>/dev/null || break
+  sleep 0.01
+done
+if [[ -f "${cas_ready}" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: seq-U5C: Stop did not reach the controlled path-scan barrier\n' >&2
+  fail=$((fail + 1))
+fi
+
+OMC_INFERRED_CONTRACT=off sim_edit "su5c" "/src/during-stop.ts"
+touch "${cas_release}"
+wait "${cas_pid}" 2>/dev/null || true
+cas_result="$(cat "${cas_output}" 2>/dev/null || true)"
+assert_contains "seq-U5C: concurrent edit refuses clean release" '"decision":"block"' "${cas_result}"
+assert_contains "seq-U5C: block identifies generation CAS" "Stop generation CAS" "${cas_result}"
+assert_eq "seq-U5C: raced Stop does not stamp completed" \
+  "" "$(read_st "su5c" "session_outcome")"
+assert_eq "seq-U5C: concurrent edit advanced the code generation" \
+  "2" "$(read_st "su5c" "last_code_edit_revision")"
+
+# The retry path is ordinary: fresh evidence for generation 2 clears it.
+sim_verify "su5c" "npm test" "Tests: 5 passed"
+sim_review "su5c" "Clean after concurrent work settled.
+VERDICT: CLEAN"
+output2="$(OMC_GATE_LEVEL=basic OMC_NO_DEFER_MODE=off \
+  OMC_INFERRED_CONTRACT=off OMC_OBJECTIVE_CONTRACT_GATE=off \
+  sim_stop "su5c" "$(structured_closeout "su5c" "Updated both source files and revalidated the final generation.")")"
+assert_empty "seq-U5C: fresh retry releases normally" "${output2}"
 teardown_test
 
 # Sequence U6: Doc edit does NOT invalidate code dimensions
@@ -1268,7 +1542,8 @@ sim_edit "su6" "/src/c.ts"
 sim_verify "su6" "npm test" "Tests: 10 passed"
 sim_review "su6" "Clean.
 VERDICT: CLEAN"
-sim_metis "su6"
+# An early completeness pass is not required yet, but lets this sequence prove
+# that the later doc edit invalidates aggregate review state.
 sim_excellence_review "su6"
 sleep 1
 # Doc edit: should only invalidate prose (which wasn't ticked yet anyway,
@@ -1279,26 +1554,30 @@ output="$(sim_stop "su6")"
 # Should block for prose only, not for bug_hunt/code_quality/etc
 assert_contains "seq-U6: doc edit blocks for prose" '"decision":"block"' "${output}"
 assert_contains "seq-U6: names editor-critic" "editor-critic" "${output}"
-# Should NOT name metis again — stress_test dimension is still valid
+# Metis is plan-phase only and must not appear in post-edit coverage.
 if [[ "${output}" == *"run \`metis\`"* ]]; then
-  printf '  FAIL: seq-U6: should not re-require metis (stress_test still valid)\n' >&2
+  printf '  FAIL: seq-U6: should not require metis for post-edit coverage\n' >&2
   fail=$((fail + 1))
 else
   pass=$((pass + 1))
 fi
+sim_editor_critic "su6"
+output2="$(sim_stop "su6")"
+assert_contains "seq-U6: doc edit also invalidates completeness" "excellence-reviewer" "${output2}"
+sim_excellence_review "su6"
+output3="$(sim_stop "su6" "$(structured_closeout "su6" "Updated source and documentation with fresh cross-surface reviews.")")"
+assert_empty "seq-U6: stop allowed after fresh prose + completeness reviews" "${output3}"
 teardown_test
 
-# Sequence U7: Dimension gate exhaustion at 3 blocks
+# Sequence U7: Adaptive coverage gate exhaustion at 3 blocks
 setup_test
 init_session "su7"
-sim_edit "su7" "/src/a.ts"
-sim_edit "su7" "/src/b.ts"
-sim_edit "su7" "/src/c.ts"
+sim_edit_ui "su7" "/src/components/Card.tsx"
 sim_verify "su7" "npm test" "Tests: 10 passed"
 sim_review "su7" "Clean.
 VERDICT: CLEAN"
 
-# 3 dimension-gate blocks without running metis
+# 3 coverage blocks without running the selected design reviewer
 out1="$(sim_stop "su7")"
 assert_contains "seq-U7: block 1" '"decision":"block"' "${out1}"
 out2="$(sim_stop "su7")"
@@ -1334,9 +1613,7 @@ teardown_test
 # Sequence U7B: Review coverage gate exhaustion in block mode keeps blocking
 setup_test
 init_session "su7b"
-sim_edit "su7b" "/src/a.ts"
-sim_edit "su7b" "/src/b.ts"
-sim_edit "su7b" "/src/c.ts"
+sim_edit_ui "su7b" "/src/components/Card.tsx"
 sim_verify "su7b" "npm test" "Tests: 10 passed"
 sim_review "su7b" "Clean.
 VERDICT: CLEAN"
@@ -1349,37 +1626,28 @@ assert_contains "seq-U7B: block mode named" "BLOCK MODE" "${out4}"
 assert_contains "seq-U7B: block mode includes scorecard" "QUALITY SCORECARD" "${out4}"
 teardown_test
 
-# Sequence U8: UI file edits require design_quality dimension
+# Sequence U8: One UI file requires design_quality immediately
 setup_test
 init_session "su8"
 sim_edit_ui "su8" "/src/components/Button.tsx"
-sim_edit_ui "su8" "/src/pages/Home.tsx"
-sim_edit "su8" "/src/utils.ts"
 sim_verify "su8" "npm test" "Tests: 10 passed"
 sim_review "su8" "Clean.
 VERDICT: CLEAN"
-# quality-reviewer ticks bug_hunt + code_quality, but stress_test, completeness,
-# and design_quality are still required. Stop should be blocked.
+# quality-reviewer ticks bug_hunt + code_quality, but design_quality remains.
 out1="$(sim_stop "su8")"
 assert_contains "seq-U8: dimension gate blocks" '"decision":"block"' "${out1}"
 assert_contains "seq-U8: design quality in missing reviews" "design quality" "${out1}"
 
-# Run metis — ticks stress_test
-sim_metis "su8"
-
 # Run design-reviewer — should tick design_quality
 sim_design_reviewer "su8"
-
-# Run excellence-reviewer — ticks completeness
-sim_excellence_review "su8"
 
 # Now stop should succeed (all dimensions ticked)
 out2="$(sim_stop "su8" "$(structured_closeout "su8" "Updated the UI components and supporting utility for the requested change.")")"
 assert_empty "seq-U8: stop allowed after design review" "${out2}"
 
 # Verify ui_edit_count was tracked
-assert_eq "seq-U8: ui_edit_count=2" "2" "$(read_st "su8" "ui_edit_count")"
-assert_eq "seq-U8: code_edit_count=3" "3" "$(read_st "su8" "code_edit_count")"
+assert_eq "seq-U8: ui_edit_count=1" "1" "$(read_st "su8" "ui_edit_count")"
+assert_eq "seq-U8: code_edit_count=1" "1" "$(read_st "su8" "code_edit_count")"
 teardown_test
 
 # Sequence U9: Non-UI code edits do NOT require design_quality
@@ -1391,12 +1659,55 @@ sim_edit "su9" "/src/c.ts"
 sim_verify "su9" "npm test" "Tests: 10 passed"
 sim_review "su9" "Clean.
 VERDICT: CLEAN"
-sim_metis "su9"
-sim_excellence_review "su9"
 # No design-reviewer needed — no UI files edited
 out="$(sim_stop "su9" "$(structured_closeout "su9" "Updated the three non-UI source files for the requested change.")")"
 assert_empty "seq-U9: no design gate for non-UI edits" "${out}"
 assert_eq "seq-U9: ui_edit_count=0" "" "$(read_st "su9" "ui_edit_count")"
+teardown_test
+
+
+# -------------------------------------------------------
+# Delivery-contract inferred-rule parser regressions
+# -------------------------------------------------------
+printf '\nDelivery-contract inferred rules:\n'
+
+# R1 carries a colon-bearing detail tag `(R1: ...)`. Stop must emit a normal
+# block instead of letting tag extraction's grep pipeline terminate the hook.
+setup_test
+init_session "sdc-r1"
+sim_edit "sdc-r1" "/src/r1-a.ts"
+sim_edit "sdc-r1" "/src/r1-b.ts"
+sim_verify "sdc-r1" "npm test" "Tests: 5 passed"
+# Keep verification valid for the generic gate while making it non-test proof
+# for inferred R1, which requires full/targeted test scope.
+state_file="${TEST_HOME}/.claude/quality-pack/state/sdc-r1/session_state.json"
+jq '.last_verify_scope="lint"' "${state_file}" >"${state_file}.tmp" \
+  && mv "${state_file}.tmp" "${state_file}"
+sim_review "sdc-r1" "Clean.
+VERDICT: CLEAN"
+out="$(sim_stop "sdc-r1")"
+assert_contains "delivery R1: stop emits a block" '"decision":"block"' "${out}"
+assert_contains "delivery R1: block names R1" "R1:" "${out}"
+assert_contains "delivery R1: block maps tag to tests" "tests" "${out}"
+teardown_test
+
+# A test edit satisfies R1 while four implementation files deliberately leave
+# R5 active. Its `(R5: ...)` detail tag must take the same safe parser path.
+setup_test
+init_session "sdc-r5"
+sim_edit "sdc-r5" "/src/r5-a.ts"
+sim_edit "sdc-r5" "/src/r5-b.ts"
+sim_edit "sdc-r5" "/src/r5-c.ts"
+sim_edit "sdc-r5" "/src/r5-d.ts"
+sim_edit "sdc-r5" "/tests/r5.test.ts"
+sim_verify "sdc-r5" "npm test" "Tests: 5 passed"
+sim_review "sdc-r5" "Clean.
+VERDICT: CLEAN"
+sim_excellence_review "sdc-r5"
+out="$(sim_stop "sdc-r5")"
+assert_contains "delivery R5: stop emits a block" '"decision":"block"' "${out}"
+assert_contains "delivery R5: block names R5" "R5:" "${out}"
+assert_contains "delivery R5: block maps tag to docs" "docs" "${out}"
 teardown_test
 
 
@@ -1498,6 +1809,8 @@ sim_mcp_verify "smv5" "mcp__plugin_playwright_playwright__browser_snapshot" "DOM
 # With UI edit, confidence should be 45 (25 base + 20 UI bonus)
 assert_eq "mcp-v5: UI context boosts confidence" "45" "$(read_st "smv5" "last_verify_confidence")"
 sim_review "smv5" "Summary: The code looks good. No issues found."
+sim_design_reviewer "smv5" "The rendered UI is intentional and coherent.
+VERDICT: CLEAN"
 out="$(sim_stop "smv5" "$(structured_closeout "smv5" "Updated /src/App.tsx for the requested UI change.")")"
 assert_empty "mcp-v5: full MCP cycle allows stop" "${out}"
 teardown_test
@@ -1774,6 +2087,102 @@ assert_contains "gap3: handoff mentions interrupted dispatches" "Interrupted spe
 teardown_test
 
 # -------------------------------------------------------
+# Gap 3 Council: coverage ledger is objective-scoped and dispatch-enforced
+# -------------------------------------------------------
+setup_test
+setup_compact_tests
+init_session "cg3ledger" "coding"
+
+denied_no_ledger="$(sim_pre_agent_dispatch "cg3ledger" "security-lens" \
+  "[council:primary] inspect trust boundaries")"
+assert_contains "gap3-ledger: tagged primary without ledger is denied" \
+  '"permissionDecision":"deny"' "${denied_no_ledger}"
+
+council_ledger_payload="$(jq -nc '{
+  objective:"whole-project trust and usability assessment",
+  coverage_rows:[
+    {id:"security",need:"trust boundaries",evidence:"auth and token handlers are present",impact:"credential exposure",competence:"application security",status:"selected"},
+    {id:"visual",need:"visual polish",evidence:"no user-facing UI in scope",impact:"low",competence:"visual design",status:"skipped",reason:"repository is a CLI harness"}
+  ],
+  selections:[
+    {agent:"security-lens",phase:"primary",coverage_ids:["security"],reason:"owns the evidenced trust boundary",non_goals:["visual styling"]}
+  ]
+}')"
+printf '%s' "${council_ledger_payload}" \
+  | SESSION_ID="cg3ledger" bash "${HOOK_DIR}/record-council-coverage.sh" init >/dev/null
+
+allowed_dispatch="$(sim_pre_agent_dispatch "cg3ledger" "security-lens" \
+  "[council:primary] inspect trust boundaries")"
+assert_empty "gap3-ledger: listed primary dispatch is allowed" "${allowed_dispatch}"
+council_dispatch_file="${TEST_HOME}/.claude/quality-pack/state/cg3ledger/council_dispatches.jsonl"
+assert_eq "gap3-ledger: durable dispatch records Council purpose" "council" \
+  "$(jq -r 'select(.agent_type=="security-lens") | .purpose' "${council_dispatch_file}")"
+assert_eq "gap3-ledger: durable Council record captures primary phase" "primary" \
+  "$(jq -r 'select(.agent_type=="security-lens") | .council_phase' "${council_dispatch_file}")"
+
+# Agent calls are blocking in the real client. Record the selected primary's
+# return before simulating a later user prompt; leaving it in flight would make
+# a same-identity dispatch in the next objective causally ambiguous.
+run_hook "${HOOK_DIR}/record-subagent-summary.sh" \
+  "$(jq -nc --arg s "cg3ledger" '{session_id:$s,agent_type:"security-lens",last_assistant_message:"VERDICT: CLEAN"}')"
+
+denied_unlisted="$(sim_pre_agent_dispatch "cg3ledger" "product-lens" \
+  "[council:primary] inspect product fit")"
+assert_contains "gap3-ledger: unlisted tagged agent is denied" \
+  '"permissionDecision":"deny"' "${denied_unlisted}"
+
+# A new user-prompt generation cannot reuse the previous objective's ledger.
+ledger_state="${TEST_HOME}/.claude/quality-pack/state/cg3ledger/session_state.json"
+jq '.last_user_prompt_ts = ((.last_user_prompt_ts | tonumber) + 1 | tostring)
+    | .prompt_revision = 1' \
+  "${ledger_state}" >"${ledger_state}.tmp" && mv "${ledger_state}.tmp" "${ledger_state}"
+denied_stale="$(sim_pre_agent_dispatch "cg3ledger" "security-lens" \
+  "[council:primary] reuse stale selection")"
+assert_contains "gap3-ledger: prior-objective ledger is denied" \
+  '"permissionDecision":"deny"' "${denied_stale}"
+
+# `update` is only for reconciliation inside the same Council prompt. It must
+# not be usable to restamp a stale selection map as current after the objective
+# changes; a new prompt has to use `init`, which also archives the old map.
+if printf '%s' "${council_ledger_payload}" \
+    | SESSION_ID="cg3ledger" bash "${HOOK_DIR}/record-council-coverage.sh" update \
+      >/dev/null 2>&1; then
+  printf '  FAIL: gap3-ledger: stale map was refreshed across prompt revisions\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+
+# `init` on a genuinely new prompt replaces (and archives) the prior Council
+# map, so repeated Council evaluations in one session are not forced to mutate
+# stale coverage via `update`.
+new_council_ledger_payload="$(printf '%s' "${council_ledger_payload}" \
+  | jq '.objective = "new objective trust assessment"')"
+printf '%s' "${new_council_ledger_payload}" \
+  | SESSION_ID="cg3ledger" bash "${HOOK_DIR}/record-council-coverage.sh" init >/dev/null
+allowed_new_objective="$(sim_pre_agent_dispatch "cg3ledger" "security-lens" \
+  "[council:primary] inspect new-objective trust boundaries")"
+assert_empty "gap3-ledger: new prompt can initialize a fresh Council map" \
+  "${allowed_new_objective}"
+coverage_history="${TEST_HOME}/.claude/quality-pack/state/cg3ledger/council_coverage_history.jsonl"
+assert_eq "gap3-ledger: replaced objective is retained in bounded history" "1" \
+  "$(wc -l <"${coverage_history}" | tr -d '[:space:]')"
+
+# Selection IDs must equal the rows marked selected; assigning a skipped row
+# is not a valid way to make the coverage table look complete.
+invalid_ledger_payload="$(printf '%s' "${council_ledger_payload}" \
+  | jq '.selections[0].coverage_ids += ["visual"]')"
+if printf '%s' "${invalid_ledger_payload}" \
+    | SESSION_ID="cg3ledger" bash "${HOOK_DIR}/record-council-coverage.sh" update \
+      >/dev/null 2>&1; then
+  printf '  FAIL: gap3-ledger: skipped row was accepted as selected coverage\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+teardown_test
+
+# -------------------------------------------------------
 # Gap 3 privacy: subagent summary ledger redacts obvious secrets
 # -------------------------------------------------------
 setup_test
@@ -1935,13 +2344,64 @@ setup_compact_tests
 init_session "culw" "coding"
 sim_edit "culw" "/src/leak.ts"
 sim_pre_agent_dispatch "culw" "quality-researcher" "leaked dispatch"
+sim_pre_agent_dispatch "culw" "quality-reviewer" "review launched before deactivation"
+verification_starts_before="${TEST_HOME}/.claude/quality-pack/state/culw/.verification-starts"
+mkdir -p "${verification_starts_before}"
+printf '%s\n' '{"tool_use_id":"old","code_revision":"1"}' \
+  >"${verification_starts_before}/old.json"
 sim_pre_compact "culw"
 # Confirm pre-compact did set the flags we want to clear
 assert_eq "ulw-off: review flag set before deactivate" "1" "$(read_st "culw" "review_pending_at_compact")"
 pending_before="${TEST_HOME}/.claude/quality-pack/state/culw/pending_agents.jsonl"
+review_starts_before="${TEST_HOME}/.claude/quality-pack/state/culw/agent_dispatch_starts.jsonl"
 [[ -f "${pending_before}" ]] && pass=$((pass + 1)) || { printf '  FAIL: ulw-off: pending file should exist before deactivate\n' >&2; fail=$((fail + 1)); }
+[[ -f "${review_starts_before}" ]] && pass=$((pass + 1)) || { printf '  FAIL: ulw-off: reviewer-start file should exist before deactivate\n' >&2; fail=$((fail + 1)); }
+[[ -f "${verification_starts_before}/old.json" ]] && pass=$((pass + 1)) || { printf '  FAIL: ulw-off: verification start should exist before deactivate\n' >&2; fail=$((fail + 1)); }
+
+# Deterministic lifecycle race: let a verification PreTool hook pass its outer
+# active-mode checks, then pause its state-lock acquisition. Deactivation must
+# clear the sentinel/state first; when the old hook resumes, its in-lock recheck
+# must refuse to recreate .verification-starts.
+deactivate_race_shim="${TEST_HOME}/deactivate-race-shim"
+deactivate_race_ready="${TEST_HOME}/deactivate-race-ready"
+deactivate_race_release="${TEST_HOME}/deactivate-race-release"
+mkdir -p "${deactivate_race_shim}"
+printf '%s\n' \
+  '#!/bin/sh' \
+  'case "${1:-}" in' \
+  '  */.state.lock)' \
+  '    /usr/bin/touch "${OMC_DEACTIVATE_RACE_READY}"' \
+  '    while [ ! -f "${OMC_DEACTIVATE_RACE_RELEASE}" ]; do /bin/sleep 0.01; done' \
+  '    ;;' \
+  'esac' \
+  'exec /bin/mkdir "$@"' \
+  >"${deactivate_race_shim}/mkdir"
+chmod +x "${deactivate_race_shim}/mkdir"
+deactivate_race_payload="$(jq -nc --arg s "culw" \
+  '{session_id:$s,tool_name:"Bash",tool_use_id:"deactivate-race",tool_input:{command:"npm test"}}')"
+(
+  printf '%s' "${deactivate_race_payload}" \
+    | env PATH="${deactivate_race_shim}:${PATH}" \
+      OMC_DEACTIVATE_RACE_READY="${deactivate_race_ready}" \
+      OMC_DEACTIVATE_RACE_RELEASE="${deactivate_race_release}" \
+      bash "${HOOK_DIR}/record-tool-start-revision.sh" >/dev/null 2>&1
+) &
+deactivate_race_pid=$!
+for _deactivate_wait in $(seq 1 500); do
+  [[ -f "${deactivate_race_ready}" ]] && break
+  kill -0 "${deactivate_race_pid}" 2>/dev/null || break
+  sleep 0.01
+done
+if [[ -f "${deactivate_race_ready}" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: ulw-off: verification PreTool did not reach lock barrier\n' >&2
+  fail=$((fail + 1))
+fi
 # Run deactivation
 run_hook "${HOOK_DIR}/ulw-deactivate.sh" '{}' >/dev/null
+touch "${deactivate_race_release}"
+wait "${deactivate_race_pid}" 2>/dev/null || true
 # All the flags should be cleared
 assert_empty "ulw-off: workflow_mode cleared" "$(read_st "culw" "workflow_mode")"
 assert_empty "ulw-off: review_pending_at_compact cleared" "$(read_st "culw" "review_pending_at_compact")"
@@ -1954,6 +2414,27 @@ if [[ -f "${pending_before}" ]]; then
 else
   pass=$((pass + 1))
 fi
+# Reviewer and verification starts belong to the same deactivated interval.
+if [[ -e "${review_starts_before}" || -e "${verification_starts_before}" ]]; then
+  printf '  FAIL: ulw-off: transient reviewer/verification starts should have been deleted\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+# The version marker is intentionally durable: a late completion from the old
+# interval must fail closed rather than entering the legacy migration path.
+assert_eq "ulw-off: reviewer causality version survives cleanup" \
+  "1" "$(read_st "culw" "review_dispatch_tracking_version")"
+
+# Reactivation can dispatch the same reviewer immediately; the old start row
+# must not leave a permanent duplicate-in-flight denial.
+touch "${TEST_HOME}/.claude/quality-pack/state/.ulw_active"
+culw_state="${TEST_HOME}/.claude/quality-pack/state/culw/session_state.json"
+jq '.workflow_mode="ultrawork"' "${culw_state}" >"${culw_state}.tmp" \
+  && mv "${culw_state}.tmp" "${culw_state}"
+reactivated_review="$(sim_pre_agent_dispatch "culw" "quality-reviewer" "fresh review after reactivation")"
+assert_empty "ulw-off: same reviewer can dispatch after reactivation" \
+  "${reactivated_review}"
 teardown_test
 
 # -------------------------------------------------------

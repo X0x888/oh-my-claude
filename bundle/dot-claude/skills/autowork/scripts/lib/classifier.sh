@@ -379,6 +379,18 @@ is_ui_request() {
   return 1
 }
 
+# is_design_review_semantic_request — narrower companion to is_ui_request for
+# post-edit reviewer applicability. It catches visual/accessibility changes
+# that may omit a UI noun ("increase card padding", "fix low contrast") while
+# staying away from logic-only component work.
+is_design_review_semantic_request() {
+  local text="$1"
+  [[ -z "${text}" ]] && return 1
+  is_ui_request "${text}" && return 0
+
+  grep -Eiq '\b(change|increase|decrease|adjust|fix|reduce|update|add|improve|polish|tune|refine|redesign|style)\b[^.!?]{0,60}\b(colou?r|palette|padding|margin|spacing|typograph(y|ic)|font|contrast|responsive|breakpoints?|hover|focus[[:space:]-]+rings?|accent|dynamic[[:space:]]+type|clipping|layout|alignment|animation|motion|dark[[:space:]-]+mode|rtl|accessibility|aria|visual|stylesheet|css|scss|swiftui|uikit|compose)\b' <<<"${text}"
+}
+
 # infer_ui_intent — return the UI verb-class for tier mapping.
 # Output is one of: build | style | polish | fix | none.
 # The router uses this to inject the right tier guidance:
@@ -937,6 +949,12 @@ classify_task_intent() {
   elif is_session_management_request "${normalized}"; then
     printf '%s\n' "session_management"
   elif is_imperative_request "${normalized}"; then
+    printf '%s\n' "execution"
+  # Evaluation-led Council prompts can contain advisory vocabulary inside the
+  # object ("recommended fixes") while still ending in an explicit mutation
+  # request. Keep the Phase-8 mutation predicate authoritative over that
+  # lexical advisory signal.
+  elif is_council_phase8_entry_request "${normalized}"; then
     printf '%s\n' "execution"
   elif is_advisory_request "${normalized}"; then
     printf '%s\n' "advisory"
@@ -1539,6 +1557,155 @@ is_execution_intent_value() {
   esac
 }
 
+# Council assessment imperatives ("evaluate my project") often classify as
+# execution because they ask the model to do work, but they do not authorize
+# workspace mutation. Phase 8 therefore needs its own mutation predicate.
+# Explicit report/read-only language always wins, even when another phrase
+# contains a broad or exhaustive adjective.
+is_council_phase8_entry_request() {
+  local text
+  text="$(normalize_task_prompt "$1")"
+  [[ -z "${text}" ]] && return 1
+
+  local mutation_verbs actionable clause_boundary
+  mutation_verbs='implement|fix|repair|remediate|refactor|modify|change|deploy|publish|apply|address|resolve|ship|land|merge|commit|push'
+  clause_boundary='(^|[.;!?,:]|--|—|[[:space:]](and|then|but|also|now)[[:space:]])'
+
+  # Remove explicitly negated mutation verbs, then look for a surviving
+  # positive request. This allows scoped negatives ("do not change docs; fix
+  # code") without turning "do not repair; evaluate" into implementation.
+  actionable="$(printf '%s' "${text}" | tr '[:upper:]' '[:lower:]' | sed -E \
+    -e "s/(^|[^[:alnum:]_])(do[[:space:]]+not|don.t|never|not([[:space:]]+to)?)[[:space:]]+(${mutation_verbs})([^[:alnum:]_]|$)/\\1 NEGATED_ACTION \\5/g")"
+
+  # Mutation verbs are ambiguous in assessment prose: "report what to
+  # change", "address whether it is ready", "resolve the question", and
+  # "commit to a recommendation" all contain one without authorizing a
+  # workspace edit. Require an imperative/clause-leading action. The three
+  # especially overloaded verbs get concrete implementation objects below.
+  local has_mutation=0
+  if grep -Eiq "${clause_boundary}[[:space:]]*(please[[:space:]]+)?(implement|fix|repair|remediate|refactor|modify|change|deploy|publish|ship|land|merge|push)([[:space:][:punct:]]|$)" <<<"${actionable}"; then
+    has_mutation=1
+  elif grep -Eiq "${clause_boundary}[[:space:]]*(please[[:space:]]+)?(address|resolve|apply)[[:space:]]+([[:alnum:]_-]+[[:space:]]+){0,4}(findings?|issues?|bugs?|defects?|gaps?|recommendations?|remediations?|changes?|fixes?|patch(es)?|risks?|code|implementation)([[:space:][:punct:]]|$)" <<<"${actionable}"; then
+    has_mutation=1
+  elif grep -Eiq "${clause_boundary}[[:space:]]*(please[[:space:]]+)?commit([[:space:]]+((the|these|those|all|this)[[:space:]]+)?(changes?|fix(es)?|code|work|patch(es)?|implementation|wave|result)|[[:space:][:punct:]]*$)" <<<"${actionable}"; then
+    has_mutation=1
+  elif grep -Eiq '\b(i|we)[[:space:]]+(want|need|would[[:space:]]+like)[^.!?]{0,30}[[:space:]]to[[:space:]]+(implement|fix|repair|remediate|refactor|modify|change|deploy|publish|apply|address|resolve|ship|land|merge|commit|push)\b' <<<"${actionable}"; then
+    has_mutation=1
+  elif grep -Eiq '\b(update|build|create)[[:space:]]+(the|this|that|my|our)[[:space:]]+(project|codebase|app(lication)?|product|system|platform|implementation|feature|files?|code)\b' <<<"${actionable}"; then
+    has_mutation=1
+  elif grep -Eiq '\b(do|continue|complete|tackle|cover)[[:space:]]+(all|every|each)[[:space:]]+((of[[:space:]]+)?(it|them)|the[[:space:]]+)?(waves?|gaps?|findings?|items?|tasks?|fixes?|changes?|recommendations?)\b' <<<"${actionable}"; then
+    has_mutation=1
+  fi
+
+  # High-bar "make X ..." language is itself a mutation request. Merely
+  # asking for an exhaustive/thorough assessment is intentionally absent.
+  if grep -Eiq '\bmake[[:space:]]+(my|the|this|our)[[:space:]]+([[:alnum:]_-]+[[:space:]]+){0,3}(impeccable|perfect|world.?class|production.?ready|prod.?ready|production.?grade|polished|enterprise.?grade|excellent|flawless)\b' <<<"${actionable}"; then
+    has_mutation=1
+  fi
+
+  (( has_mutation == 1 )) || return 1
+
+  # "Do not make any changes" is intrinsically global, regardless of where
+  # the user places the clause. In contrast, scoped negatives such as "do not
+  # change docs" were removed above and can coexist with a positive code fix.
+  if grep -Eiq '\b(do[[:space:]]+not|don.t)[[:space:]]+make[[:space:]]+any[[:space:]]+changes\b' <<<"${text}"; then
+    return 1
+  fi
+
+  # A terminal, global no-action clause beats earlier mutation wording. Scope-
+  # limited negatives were removed above and therefore do not trip this veto.
+  if grep -Eiq '\b(do[[:space:]]+not|don.t)[[:space:]]+(act|make[[:space:]]+(any[[:space:]]+)?changes|change[[:space:]]+anything|edit[[:space:]]+anything|implement[[:space:]]+anything|fix[[:space:]]+anything|touch[[:space:]]+anything)[[:space:][:punct:]]*$|\b(no[[:space:]]+(changes|edits|implementation)|read[[:space:]-]+only)[[:space:][:punct:]]*$' <<<"${text}"; then
+    return 1
+  fi
+  return 0
+}
+
+# Follow-up form after an advisory Council assessment. Keep this narrower than
+# the general Phase-8 predicate so an unrelated later "fix this bug" does not
+# accidentally inherit an old Council's scope.
+is_council_phase8_followup_request() {
+  local text
+  text="$(normalize_task_prompt "$1")"
+  is_council_phase8_entry_request "${text}" || return 1
+
+  # Exact terse approvals are safe only because the router additionally
+  # requires this to be the immediate prompt after a completed assessment.
+  grep -Eiq '^[[:space:]]*(implement([[:space:]]+all)?|ship([[:space:]]+(it|them|all))?|fix[[:space:]]+(them|it|all)([[:space:]]+all)?|do[[:space:]]+all([[:space:]]+(of[[:space:]]+)?(it|them|findings?|recommendations?|items?|gaps?))?)[[:space:][:punct:]]*$' <<<"${text}" \
+    && return 0
+
+  # Explicit reference to the completed Council/assessment is unambiguous,
+  # including "fix the issue identified in the assessment".
+  if grep -Eiq '^[[:space:]]*(please[[:space:]]+)?(implement|fix|repair|remediate|apply|address|resolve|ship|complete|tackle|do)\b[^.!?]{0,100}\b(council|assessment)\b' <<<"${text}"; then
+    return 0
+  fi
+
+  # Referential result nouns are accepted, but domain-qualified nouns are
+  # not. Thus "implement all recommendations" is a continuation while
+  # "implement the recommendation from the linter" and "fix the performance
+  # gap" remain ordinary focused work.
+  if grep -Eiq '^[[:space:]]*(please[[:space:]]+)?(implement|fix|repair|remediate|apply|address|resolve|ship|complete|tackle)[[:space:]]+(((every|each)[[:space:]]+(finding|recommendation|item|issue|gap))|(((all|the|those|these|selected)[[:space:]]+)?(findings|recommendations|items|issues|gaps)))([[:space:][:punct:]]|$)' <<<"${text}"; then
+    return 0
+  fi
+
+  # The immediately adjacent assessment supplies the referent for bounded
+  # approvals too. Accept top-N and severity-limited findings here; exhaustive
+  # authorization remains a separate predicate, so these do not widen scope.
+  grep -Eiq '^[[:space:]]*(please[[:space:]]+)?(implement|fix|repair|remediate|apply|address|resolve|ship|complete|tackle)[[:space:]]+((only[[:space:]]+)?(the[[:space:]]+)?(critical|high([[:space:]-]+severity)?|p[0-3]|sev[0-3])[[:space:]]+(findings?|recommendations?|items?|issues?|gaps)|(the[[:space:]]+)?(top|first)[[:space:]]+([0-9]+|one|two|three|four|five)[[:space:]-]+(findings?|recommendations?|items?|issues?|gaps))([[:space:][:punct:]]|$)' <<<"${text}"
+}
+
+# A bounded implementation choice must outrank broad adjectives or totality
+# elsewhere in the prompt. This is deliberately clause-aware and symmetric:
+# users put the subset before or after the action ("only critical findings
+# should be implemented" / "implement critical findings only") and refer to
+# stable Council IDs directly. `is_exhaustive_authorization_request` calls
+# this before considering any exhaustive marker.
+_has_bounded_implementation_scope() {
+  local text="$1"
+  local action action_done object number severity domain
+  action='implement|fix|repair|remediate|address|resolve|apply|ship|complete|tackle|execute|deliver|handle|close'
+  action_done='implemented|fixed|repaired|remediated|addressed|resolved|applied|shipped|completed|tackled|executed|delivered|handled|closed'
+  object='issues?|findings?|gaps?|recommendations?|items?|fixes?|changes?|remediations?'
+  number='[0-9]+|one|two|three|four|five|six|seven|eight|nine|ten'
+  severity='critical|high([[:space:]-]+severity)?|medium([[:space:]-]+severity)?|low([[:space:]-]+severity)?|p[0-3]|sev[0-3]'
+  domain='security|privacy|performance|reliability|accessibility|a11y|design|ux|ui|frontend|backend|api|data|database|architecture|infrastructure|operations?|deployment|compliance|correctness|testing|tests?|documentation|docs|research|product'
+
+  # Action-first singular/top-N/selected scopes, including a singular "top
+  # recommendation" and numeric forms beyond the old one-to-five ceiling.
+  if grep -Eiq "\b(${action})\b[^.!?]{0,70}\b((only|just)[[:space:]]+)?(the[[:space:]]+)?((single|one|highest[[:space:]-]+priority|most[[:space:]]+important|top)[[:space:]-]+(${object})|(top|first)[[:space:]]+(${number})[[:space:]-]+(${object})|(selected|specified|named|listed)[[:space:]]+(${object}))\b" <<<"${text}"; then
+    return 0
+  fi
+  if grep -Eiq "\b((only|just)[[:space:]]+)?(the[[:space:]]+)?((single|one|highest[[:space:]-]+priority|most[[:space:]]+important|top)[[:space:]-]+(${object})|(top|first)[[:space:]]+(${number})[[:space:]-]+(${object})|(selected|specified|named|listed)[[:space:]]+(${object}))\b[^.!?]{0,80}\b(${action}|${action_done})\b" <<<"${text}"; then
+    return 0
+  fi
+
+  # Severity subsets in active or passive order. Optional `all` does not make
+  # "all critical findings" exhaustive; the severity still bounds the set.
+  if grep -Eiq "\b(${action})\b[^.!?]{0,70}\b((only|just)[[:space:]]+)?(the[[:space:]]+)?(all[[:space:]]+)?(${severity})[[:space:]]+(${object})\b|\b((only|just)[[:space:]]+)?(the[[:space:]]+)?(${severity})[[:space:]]+(${object})\b[^.!?]{0,70}\b(${action}|${action_done})\b" <<<"${text}"; then
+    return 0
+  fi
+  if grep -Eiq "\b(${action})\b[^.!?]{0,80}\b(${object})[[:space:]]+(rated|marked|classified([[:space:]]+as)?|with[[:space:]]+severity)[[:space:]]+(${severity})\b" <<<"${text}"; then
+    return 0
+  fi
+
+  # Domain-limited findings require an explicit only/just marker. Support the
+  # marker before the action, between action and domain, or at clause end.
+  if grep -Eiq "\b(${action})\b[^.!?]{0,50}\b(only|just)\b[^.!?]{0,35}\b(${domain})([[:space:]]+(and|or)[[:space:]]+(${domain}))?[[:space:]]+(${object})\b|\b(only|just)\b[^.!?]{0,35}\b(${domain})([[:space:]]+(and|or)[[:space:]]+(${domain}))?[[:space:]]+(${object})\b[^.!?]{0,70}\b(${action}|${action_done})\b|\b(${action})\b[^.!?]{0,60}\b(${domain})([[:space:]]+(and|or)[[:space:]]+(${domain}))?[[:space:]]+(${object})\b[^.!?]{0,25}\b(only|just)\b" <<<"${text}"; then
+    return 0
+  fi
+  if grep -Eiq "\b(${action})\b[^.!?]{0,60}\b(${object})\b[^.!?]{0,35}\b(from|in|for)[[:space:]]+(the[[:space:]]+)?(${domain})\b[^.!?]{0,20}\b(only|just)\b|\b(${action})\b[^.!?]{0,25}\b(only|just)\b[^.!?]{0,60}\b(${object})\b[^.!?]{0,25}\b(from|in|for)[[:space:]]+(the[[:space:]]+)?(${domain})\b" <<<"${text}"; then
+    return 0
+  fi
+
+  # Stable finding IDs are an explicit subset unless the user separately
+  # says every/all finding. Accept F-001-style IDs and "finding 12" forms in
+  # either order relative to the action.
+  if grep -Eiq "\b(${action})\b[^.!?]{0,100}((\b[A-Z][A-Z0-9_]{0,9}-[0-9]{1,6}\b)|\bfindings?[[:space:]]+#[0-9]{1,6}\b)|((\b[A-Z][A-Z0-9_]{0,9}-[0-9]{1,6}\b)|\bfindings?[[:space:]]+#[0-9]{1,6}\b)[^.!?]{0,100}\b(${action}|${action_done})\b" <<<"${text}"; then
+    return 0
+  fi
+
+  return 1
+}
+
 # is_exhaustive_authorization_request — true when the prompt explicitly
 # authorizes exhaustive implementation of the surfaced scope. Used by the
 # council Phase 8 path: when this returns 0, the model should proceed
@@ -1558,10 +1725,17 @@ is_exhaustive_authorization_request() {
   local text="$1"
   [[ -z "${text}" ]] && return 1
 
-  # Tier 1 — canonical exhaustive markers (the historical list).
-  # `exhaustive(ly)?` not `exhaustively?` — the latter parses as "exhaustivel
-  # + optional y", which would miss the bare "exhaustive" form.
-  if grep -Eiq '\b(implement\s+all|exhaustive(ly)?|thorough(ly)?|fix\s+everything|ship\s+it\s+all|address\s+each\s+one|every\s+(item|finding|wave|gap)|every\s+one\s+of\s+them)\b' <<<"${text}"; then
+  # A concrete subset is authoritative even when another clause says
+  # exhaustive/all. "Exhaustive audit, then fix top 3" means three fixes.
+  _has_bounded_implementation_scope "${text}" && return 1
+
+  # Tier 1 — explicit totality markers. Thoroughness is quality/intensity,
+  # not scope permission. Exhaustive language counts only when attached to
+  # implementation/remediation, not an audit or plan.
+  if grep -Eiq '\b(implement\s+all|fix\s+everything|ship\s+it\s+all|address\s+each\s+one|every\s+(item|finding|wave|gap|recommendation|issue|fix|change)|every\s+one\s+of\s+them)\b' <<<"${text}"; then
+    return 0
+  fi
+  if grep -Eiq '\bexhaustive(ly)?[[:space:]]+(implement|implementation|fix|repair|remediat(e|ion)|address|resolve|resolution|complete|completion|improve|improvement)\b|\b(implement|fix|repair|remediate|address|resolve|complete|improve)[^.!?]{0,40}\bexhaustive(ly)?\b' <<<"${text}"; then
     return 0
   fi
 
@@ -1579,21 +1753,26 @@ is_exhaustive_authorization_request() {
   fi
 
   # Tier 4 — action verb + "all/every" + scope-unit object.
-  if grep -Eiq '\b(complete|finish|tackle|cover|address|ship|fix|implement|resolve|handle|close)\s+(all|every)\s+(\w+\s+){0,3}(waves?|gaps?|findings?|items?|of\s+them|of\s+it)\b' <<<"${text}"; then
+  if grep -Eiq '\b(complete|finish|tackle|cover|address|ship|fix|implement|resolve|handle|close)\s+(all|every)\s+(\w+\s+){0,3}(waves?|gaps?|findings?|items?|recommendations?|issues?|fixes?|changes?|of\s+them|of\s+it)\b' <<<"${text}"; then
     return 0
   fi
 
   # Tier 5 — "make X impeccable" implementation-bar markers (Pattern 6
   # vocabulary from is_council_evaluation_request). These phrases imply
   # the user wants the bar set high — proceed without scope-clipping.
-  # Mirrors Pattern 6's filters so semantics stay identical, including
-  # the _has_narrow_scope guard so "make this function impeccable" stays
-  # narrow (the user is authorizing exhaustive work on a narrow target,
-  # which is NOT the whole-project authorization the Phase 8 path uses).
-  if grep -Eiq '\bmake\s+(my|the|this|our|these|all|it)\s+(\w+([[:space:]]+\w+){0,3}\s+)?(impeccable|perfect|world.?class|production.?ready|prod.?ready|production.?grade|polished|enterprise.?grade|excellent|flawless)\b' <<<"${text}" \
+  # Mirrors Pattern 6's lexical filters, but authorization and Council scope
+  # are intentionally separate: an explicit feature/capability/subsystem/
+  # surface can authorize exhaustive work *within that target* without
+  # auto-inflating into a whole-project Council. Low-level artifacts such as a
+  # function or method remain excluded.
+  # Bare "it" is excluded for the same reason as Council Pattern 6: without
+  # an explicit project-level referent this predicate cannot grant exhaustive
+  # authorization or widen the current objective safely.
+  if grep -Eiq '\bmake\s+(my|the|this|our|these|all)\s+(\w+([[:space:]]+\w+){0,3}\s+)?(impeccable|perfect|world.?class|production.?ready|prod.?ready|production.?grade|polished|enterprise.?grade|excellent|flawless)\b' <<<"${text}" \
      && ! grep -Eiq '\bmake\s+(sure|certain)\b' <<<"${text}" \
      && ! grep -Eiq '\b(commit\s+message|pr\s+description|readme|changelog|docstring|comment|test\s+name|variable\s+name)\b' <<<"${text}" \
-     && ! _has_narrow_scope "${text}"; then
+     && { ! _has_narrow_scope "${text}" \
+          || grep -Eiq '\b(this|the|my|our)\s+(feature|capability|subsystem|surface)\b' <<<"${text}"; }; then
     return 0
   fi
 
@@ -1609,4 +1788,36 @@ is_exhaustive_authorization_request() {
   fi
 
   return 1
+}
+
+# is_review_cycle_broad_scope_request — stricter semantic breadth signal for
+# blocking reviewer selection. This predicate requires an explicit
+# whole-project or all-items referent and rejects artifact/subsystem scoping.
+is_review_cycle_broad_scope_request() {
+  local text="$1"
+  _has_narrow_scope "${text}" && return 1
+
+  # Breadth is independent of all-wave authorization. A user can request a
+  # whole-codebase rewrite without saying "every finding", and that still
+  # warrants completeness review even though later scope expansion may need a
+  # separate authorization decision.
+  if grep -Eiq '\b(whole|entire|full|complete)[[:space:]]+(project|codebase|code.?base|app(lication)?|product|repo(sitory)?|system|platform|site|website|library|package|plugin|framework)\b|\b(project|codebase|code.?base|app(lication)?|product|repo(sitory)?|system|platform|site|website|library|package|plugin|framework)[[:space:]]+as[[:space:]]+a[[:space:]]+whole\b|\bacross[[:space:]]+(the[[:space:]]+)?(project|codebase|code.?base|app(lication)?|product|repo(sitory)?|system|platform|site|website)\b|\b(project|codebase|code.?base|app(lication)?|product|repo(sitory)?|system|platform)[^.!?]{0,40}\bend[[:space:]-]+to[[:space:]-]+end\b|\bend[[:space:]-]+to[[:space:]-]+end[^.!?]{0,40}\b(project|codebase|code.?base|app(lication)?|product|repo(sitory)?|system|platform)\b|\ball[[:space:]]+code\b|\beverything\b' <<<"${text}"; then
+    return 0
+  fi
+
+  grep -Eiq '\b(whole|entire|across[[:space:]]+the|implement[[:space:]]+all([[:space:]]+(of[[:space:]]+)?(the[[:space:]]+)?(findings?|gaps?|items?|waves?|tasks?|issues?|improvements?|changes?|recommendations?|remediations?))?|all[[:space:]]+(of[[:space:]]+)?(the[[:space:]]+)?(findings?|gaps?|items?|waves?|tasks?|issues?|improvements?|changes?|recommendations?|remediations?|project|codebase|repo(sitory)?|app(lication)?|product|system|platform)|every[[:space:]]+(item|finding|gap|wave|task|issue|improvement|change|recommendation|remediation)|everything|fix[[:space:]]+everything|ship[[:space:]]+(it|them)[[:space:]]+all|no[[:space:]]+middle[[:space:]]+ground|0[[:space:]]+or[[:space:]]+1)\b' <<<"${text}" \
+    && return 0
+
+  # Project words can be incidental context ("this project uses Bash") or a
+  # location for focused work ("update dependencies in this project"). They
+  # widen review only when an independent exhaustive-action predicate also
+  # establishes scope authorization.
+  if is_exhaustive_authorization_request "${text}" \
+      && grep -Eiq '\b(this|the|my|our|your)[[:space:]]+(project|codebase|repo(sitory)?|app(lication)?|product|system|platform|site|website|library|package|plugin|framework)\b' <<<"${text}"; then
+    return 0
+  fi
+
+  # High-bar wording counts only when its target is explicitly project-level,
+  # not an unnamed parser/function or a focused feature/subsystem.
+  grep -Eiq '\bmake[[:space:]]+(my|the|this|our)[[:space:]]+(project|codebase|repo(sitory)?|app(lication)?|product|system|platform|site|website|library|package|plugin|framework)[[:space:]]+(impeccable|perfect|world.?class|production.?ready|prod.?ready|production.?grade|polished|enterprise.?grade|excellent|flawless)\b' <<<"${text}"
 }

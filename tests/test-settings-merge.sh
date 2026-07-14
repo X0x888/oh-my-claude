@@ -173,7 +173,7 @@ for impl in "${implementations[@]}"; do
   assert_json_count "${impl}: fresh — UserPromptSubmit hooks" \
     "${work}/settings.json" '.hooks.UserPromptSubmit' "1"
   assert_json_count "${impl}: fresh — PreToolUse hooks" \
-    "${work}/settings.json" '.hooks.PreToolUse' "3"
+    "${work}/settings.json" '.hooks.PreToolUse' "4"
   # v1.48 W3.1: the four per-call PostToolUse processes (universal timing +
   # 3 Bash-matcher recorders) consolidated into one universal dispatcher —
   # 8 entries became 5 (dispatcher, Edit-family mark-edit, mcp record-
@@ -201,6 +201,13 @@ for impl in "${implementations[@]}"; do
   assert_json_eq "${impl}: fresh — PreToolUse Agent matcher wired" \
     "${work}/settings.json" \
     '[.hooks.PreToolUse[] | select(.matcher == "Agent") | .hooks[0].command] | .[0] | tostring | contains("record-pending-agent.sh")' \
+    "true"
+
+  # Verification freshness is captured at dispatch independently from the
+  # optional timing subsystem, for both Bash and MCP verification surfaces.
+  assert_json_eq "${impl}: fresh — verification start-revision recorder wired" \
+    "${work}/settings.json" \
+    '[.hooks.PreToolUse[] | select(.matcher == "Bash|mcp__.*") | .hooks[0].command] | .[0] | tostring | contains("record-tool-start-revision.sh")' \
     "true"
 
   # PreToolUse must wire every direct mutation tool (including notebooks) to
@@ -252,8 +259,8 @@ for impl in "${implementations[@]}"; do
     "${work}/settings.json" '.hooks.SubagentStop' "12"
   assert_json_count "${impl}: idempotent — PostToolUse hooks still 5" \
     "${work}/settings.json" '.hooks.PostToolUse' "5"
-  assert_json_count "${impl}: idempotent — PreToolUse hooks still 3" \
-    "${work}/settings.json" '.hooks.PreToolUse' "3"
+  assert_json_count "${impl}: idempotent — PreToolUse hooks still 4" \
+    "${work}/settings.json" '.hooks.PreToolUse' "4"
   assert_json_count "${impl}: idempotent — StopFailure hooks still 1" \
     "${work}/settings.json" '.hooks.StopFailure' "1"
   assert_json_count "${impl}: idempotent — PostToolUseFailure hooks still 1" \

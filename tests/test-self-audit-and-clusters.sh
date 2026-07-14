@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tests/test-self-audit-and-clusters.sh — regression net for the
 # Bug B post-mortem long-term hardening:
-#   • /council --self-audit mode (lens roster + protocol override)
+#   • /council --self-audit mode (coverage priors + protocol override)
 #   • tools/cluster-unknown-defects.sh (defect clustering tool)
 #   • /ulw-report unknown-bucket nudge in the Patterns footer
 #
@@ -12,8 +12,8 @@
 #
 # Tests:
 #   T1  — council/SKILL.md documents `--self-audit` flag
-#   T2  — council/SKILL.md documents the fixed self-audit lens roster
-#   T3  — council/SKILL.md notes Phase 8 is opt-in under self-audit
+#   T2  — council/SKILL.md treats self-audit specialists as candidates
+#   T3  — council/SKILL.md keeps Phase 8 advisory under self-audit
 #   T4  — CONTRIBUTING.md has a "Quarterly self-audit cadence" section
 #   T5  — cluster-unknown-defects.sh script is executable
 #   T6  — cluster tool runs cleanly with --bucket unknown on real data
@@ -61,15 +61,16 @@ assert_contains "T1: --self-audit flag mentioned" "--self-audit" "${council_md}"
 assert_contains "T1: Bug B post-mortem cited as motivator" "Bug B post-mortem" "${council_md}"
 
 # ----------------------------------------------------------------------
-printf 'T2: council/SKILL.md names the fixed self-audit lens roster\n'
-assert_contains "T2: roster names abstraction-critic" "abstraction-critic" "${council_md}"
-assert_contains "T2: roster names oracle"             "oracle"             "${council_md}"
-assert_contains "T2: roster names sre-lens"           "sre-lens"           "${council_md}"
-assert_contains "T2: roster names quality-researcher" "quality-researcher" "${council_md}"
+printf 'T2: council/SKILL.md makes self-audit a coverage prior, not a fixed quartet\n'
+assert_contains "T2: self-audit seeds coverage map" "Seed the coverage map" "${council_md}"
+assert_contains "T2: named specialists are candidates" "strong candidates" "${council_md}"
+assert_contains "T2: quartet is explicitly optional" "not a mandatory quartet" "${council_md}"
+assert_contains "T2: candidate selection requires evidence" "select or skip each with evidence" "${council_md}"
+assert_contains "T2: task-specific replacement is allowed" "add a different specialist" "${council_md}"
 
 # ----------------------------------------------------------------------
-printf 'T3: council/SKILL.md notes Phase 8 opt-in under self-audit\n'
-assert_contains "T3: Phase 8 opt-in language present" "Phase 8 is opt-in" "${council_md}"
+printf 'T3: council/SKILL.md keeps Phase 8 advisory under self-audit\n'
+assert_contains "T3: Phase 8 advisory language present" "Phase 8 is advisory by default" "${council_md}"
 
 # ----------------------------------------------------------------------
 printf 'T4: CONTRIBUTING.md has Quarterly self-audit cadence section\n'

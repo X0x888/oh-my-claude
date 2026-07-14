@@ -206,21 +206,37 @@ read_findings_count_by_status() {
 }
 
 # --- Gate skip check (/ulw-skip) ---
-# If the user registered a gate skip, honor it if the edit clock has not
-# advanced since registration (new edits invalidate the skip). This prevents
-# a user from registering a skip, making more edits, and bypassing gates
-# on the new work.
+# If the user registered a gate skip, honor it only if the monotonic edit
+# revision has not advanced since registration (timestamp migration fallback).
+# This prevents same-second edits after registration from inheriting a waiver
+# granted for earlier work.
 gate_skip_reason="$(read_state "gate_skip_reason")"
 if [[ -n "${gate_skip_reason}" ]]; then
   gate_skip_edit_ts="$(read_state "gate_skip_edit_ts")"
   current_edit_ts_for_skip="$(read_state "last_edit_ts")"
+  gate_skip_edit_revision="$(read_state "gate_skip_edit_revision")"
+  current_edit_revision_for_skip="$(read_state "edit_revision")"
   gate_skip_edit_ts="${gate_skip_edit_ts:-0}"
   current_edit_ts_for_skip="${current_edit_ts_for_skip:-0}"
 
   # Clear the skip flag regardless (single-use)
-  with_state_lock_batch "gate_skip_reason" "" "gate_skip_ts" "" "gate_skip_edit_ts" ""
+  with_state_lock_batch \
+    "gate_skip_reason" "" \
+    "gate_skip_ts" "" \
+    "gate_skip_edit_ts" "" \
+    "gate_skip_edit_revision" ""
 
-  if [[ "${current_edit_ts_for_skip}" -le "${gate_skip_edit_ts}" ]]; then
+  gate_skip_is_fresh=0
+  if [[ "${current_edit_revision_for_skip}" =~ ^[0-9]+$ ]] \
+      && [[ "${gate_skip_edit_revision}" =~ ^[0-9]+$ ]]; then
+    (( current_edit_revision_for_skip <= gate_skip_edit_revision )) \
+      && gate_skip_is_fresh=1
+  elif [[ "${current_edit_ts_for_skip}" -le "${gate_skip_edit_ts}" ]]; then
+    # Migration fallback for a skip registered before revision capture.
+    gate_skip_is_fresh=1
+  fi
+
+  if [[ "${gate_skip_is_fresh}" -eq 1 ]]; then
     # Edit clock unchanged — skip is valid
     record_gate_skip "${gate_skip_reason}" &
     # v1.42.x SRE F-001: this script exits a few lines below via `exit 0`,
@@ -244,14 +260,14 @@ if [[ -n "${gate_skip_reason}" ]]; then
     rm -f "${STATE_ROOT}/.ulw_active"
     exit 0
   else
-    log_hook "stop-guard" "gate skip invalidated: edits occurred after registration (skip_edit_ts=${gate_skip_edit_ts}, current=${current_edit_ts_for_skip})"
+    log_hook "stop-guard" "gate skip invalidated: edits occurred after registration (skip_edit_revision=${gate_skip_edit_revision:-migration}, current_revision=${current_edit_revision_for_skip:-migration}, skip_edit_ts=${gate_skip_edit_ts}, current_ts=${current_edit_ts_for_skip})"
     # Fall through to normal gate logic
   fi
 fi
 
-# v1.27.0 (F-018): bulk-read 5 always-together state keys in one jq fork
-# instead of 5 sequential read_state calls (saves ~30-40ms on macOS bash 3.2).
-# Invariant: argv length === case-branch count (5 keys → 5 branches 0..4).
+# v1.27.0 (F-018): bulk-read the always-together objective state and the
+# mutation generations that bound this Stop evaluation in one jq fork.
+# Invariant: argv length === case-branch count (12 keys → 0..11).
 # Adding a key requires (a) extending the read_state_keys argv below AND
 # (b) extending the case statement above. read_state_keys always emits
 # exactly N lines for N args (jq's // "" + corrupt/missing fallbacks),
@@ -267,6 +283,13 @@ while IFS= read -r -d $'\x1e' _sg_line; do
     2) last_user_prompt_ts="${_sg_line}" ;;
     3) session_handoff_blocks="${_sg_line}" ;;
     4) last_edit_ts="${_sg_line}" ;;
+    5) _sg_start_edit_revision="${_sg_line}" ;;
+    6) _sg_start_code_edit_ts="${_sg_line}" ;;
+    7) _sg_start_code_edit_revision="${_sg_line}" ;;
+    8) _sg_start_doc_edit_ts="${_sg_line}" ;;
+    9) _sg_start_doc_edit_revision="${_sg_line}" ;;
+    10) _sg_start_plan_ts="${_sg_line}" ;;
+    11) _sg_start_plan_revision="${_sg_line}" ;;
   esac
   _sg_idx=$((_sg_idx + 1))
 done < <(read_state_keys \
@@ -274,8 +297,132 @@ done < <(read_state_keys \
   "task_intent" \
   "last_user_prompt_ts" \
   "session_handoff_blocks" \
-  "last_edit_ts")
+  "last_edit_ts" \
+  "edit_revision" \
+  "last_code_edit_ts" \
+  "last_code_edit_revision" \
+  "last_doc_edit_ts" \
+  "last_doc_edit_revision" \
+  "plan_ts" \
+  "plan_revision")
 session_handoff_blocks="${session_handoff_blocks:-0}"
+_sg_start_last_edit_ts="${last_edit_ts}"
+
+# Stop evaluates many independent gates without holding the state writer lock.
+# That is intentional: keeping the mutex across filesystem scans and message
+# rendering would stall edit/reviewer hooks for the full Stop latency. It does,
+# however, require an optimistic compare-and-swap at every clean release. A
+# background edit or planner completion after the snapshot above must make this
+# Stop retry; otherwise old review/verification evidence can be released as if
+# it covered bytes that landed while the hook was still evaluating.
+_sg_note_generation_change() {
+  local _field="$1"
+  if [[ -n "${_sg_release_generation_changes}" ]]; then
+    _sg_release_generation_changes="${_sg_release_generation_changes},${_field}"
+  else
+    _sg_release_generation_changes="${_field}"
+  fi
+}
+
+_sg_compare_generation_unlocked() {
+  local _field="$1" _start_revision="$2" _current_revision="$3"
+  local _start_ts="$4" _current_ts="$5"
+
+  # Revision clocks are authoritative as soon as either side has one. A
+  # missing→numeric transition is itself a generation change. Only sessions
+  # whose producer state predates revisions use the timestamp migration path.
+  if [[ "${_start_revision}" =~ ^[0-9]+$ ]] \
+      || [[ "${_current_revision}" =~ ^[0-9]+$ ]]; then
+    if [[ ! "${_start_revision}" =~ ^[0-9]+$ ]] \
+        || [[ ! "${_current_revision}" =~ ^[0-9]+$ ]] \
+        || (( _start_revision != _current_revision )); then
+      _sg_note_generation_change "${_field}"
+    fi
+  elif [[ "${_start_ts}" != "${_current_ts}" ]]; then
+    _sg_note_generation_change "${_field}"
+  fi
+}
+
+_sg_commit_release_unlocked() {
+  local _outcome="$1"
+  local _current_edit_revision="" _current_last_edit_ts=""
+  local _current_code_revision="" _current_code_ts=""
+  local _current_doc_revision="" _current_doc_ts=""
+  local _current_plan_revision="" _current_plan_ts=""
+  local _cas_idx=0 _cas_value=""
+
+  _sg_release_generation_changes=""
+  while IFS= read -r -d $'\x1e' _cas_value; do
+    case "${_cas_idx}" in
+      0) _current_edit_revision="${_cas_value}" ;;
+      1) _current_last_edit_ts="${_cas_value}" ;;
+      2) _current_code_revision="${_cas_value}" ;;
+      3) _current_code_ts="${_cas_value}" ;;
+      4) _current_doc_revision="${_cas_value}" ;;
+      5) _current_doc_ts="${_cas_value}" ;;
+      6) _current_plan_revision="${_cas_value}" ;;
+      7) _current_plan_ts="${_cas_value}" ;;
+    esac
+    _cas_idx=$((_cas_idx + 1))
+  done < <(read_state_keys \
+    "edit_revision" \
+    "last_edit_ts" \
+    "last_code_edit_revision" \
+    "last_code_edit_ts" \
+    "last_doc_edit_revision" \
+    "last_doc_edit_ts" \
+    "plan_revision" \
+    "plan_ts")
+
+  _sg_compare_generation_unlocked "edit" \
+    "${_sg_start_edit_revision}" "${_current_edit_revision}" \
+    "${_sg_start_last_edit_ts}" "${_current_last_edit_ts}"
+  _sg_compare_generation_unlocked "code" \
+    "${_sg_start_code_edit_revision}" "${_current_code_revision}" \
+    "${_sg_start_code_edit_ts}" "${_current_code_ts}"
+  _sg_compare_generation_unlocked "docs" \
+    "${_sg_start_doc_edit_revision}" "${_current_doc_revision}" \
+    "${_sg_start_doc_edit_ts}" "${_current_doc_ts}"
+  _sg_compare_generation_unlocked "plan" \
+    "${_sg_start_plan_revision}" "${_current_plan_revision}" \
+    "${_sg_start_plan_ts}" "${_current_plan_ts}"
+
+  if [[ -n "${_sg_release_generation_changes}" ]]; then
+    return 0
+  fi
+
+  # Keep the successful comparison and the completed/released stamp in one
+  # critical section. Explicitly propagate write failure: with_state_lock's
+  # guarded invocation suppresses errexit inside function bodies on Bash 3.2.
+  _write_state_batch_unlocked "session_outcome" "${_outcome}"
+}
+
+_sg_commit_release_or_block() {
+  local _outcome="$1" _release_rc=0
+  _sg_release_generation_changes=""
+  with_state_lock _sg_commit_release_unlocked "${_outcome}" || _release_rc=$?
+
+  if [[ "${_release_rc}" -ne 0 ]]; then
+    log_anomaly "stop-generation-cas" \
+      "could not acquire/commit the final generation check; release refused rc=${_release_rc}" \
+      2>/dev/null || true
+    emit_stop_block "$(format_gate_block_dual \
+      "The final quality-state check could not be committed safely. Nothing was released; retry Stop once the active tool/state write finishes." \
+      "[Stop generation CAS] final state lock/write failed (rc=${_release_rc}). Fail closed and retry the Stop evaluation; do not stamp the session completed from an uncommitted snapshot.")"
+    return 1
+  fi
+
+  if [[ -n "${_sg_release_generation_changes}" ]]; then
+    record_gate_event "stop-generation-cas" "block" \
+      "changed=${_sg_release_generation_changes}" || true
+    emit_stop_block "$(format_gate_block_dual \
+      "Work changed while the final quality check was running (${_sg_release_generation_changes}). Wait for the concurrent work to settle, then re-run the relevant review/verification before stopping." \
+      "[Stop generation CAS] mutation generations changed during gate evaluation (${_sg_release_generation_changes}). Release was refused so the next Stop can evaluate the new bytes/plan against fresh evidence.")"
+    return 1
+  fi
+
+  return 0
+}
 
 # v1.42.x stop-guard bypass closure (Bypass-Surface F-005 backstop):
 # If task_intent is non-execution AND `last_edit_ts > last_user_prompt_ts`
@@ -365,8 +512,10 @@ Ground the recommendation in multiple relevant files and cite them in the final 
 
   if [[ -z "${last_edit_ts}" || -z "${last_user_prompt_ts}" || "${last_edit_ts}" -lt "${last_user_prompt_ts}" ]]; then
     # v1.34.1+ (D-001): advisory-clean release (no fresh edits since prompt).
-    # Distinguishes from "abandoned" in cross-session analytics.
-    with_state_lock write_state "session_outcome" "released" || true
+    # Distinguishes from "abandoned" in cross-session analytics. Use the same
+    # generation CAS as execution closeout so a background mutation cannot land
+    # between the advisory clock check and the release stamp.
+    _sg_commit_release_or_block "released" || exit 0
     exit 0
   fi
 fi
@@ -1004,12 +1153,14 @@ fi
 
 if [[ -z "${last_edit_ts}" ]]; then
   # v1.34.1+ (D-001): no edits made — released without work to verify.
-  with_state_lock write_state "session_outcome" "released" || true
+  # The generation CAS also protects this path: a background edit that lands
+  # after the initial empty clock must not be mistaken for a no-work session.
+  _sg_commit_release_or_block "released" || exit 0
   exit 0
 fi
 
-# v1.27.0 (F-018): bulk-read 6 always-together state keys in one jq fork.
-# Invariant: argv length === case-branch count (6 keys → 6 branches 0..5).
+# Bulk-read the always-together review/verification clocks and revisions in one
+# jq fork. Invariant: argv length === case-branch count (11 keys → 0..10).
 # v1.34.0: RS-delimited read protects against multi-line values stored
 # in any of the read clocks (rare today but cheap insurance).
 _sg2_idx=0
@@ -1021,6 +1172,11 @@ while IFS= read -r -d $'\x1e' _sg2_line; do
     3) last_code_edit_ts="${_sg2_line}" ;;
     4) last_doc_edit_ts="${_sg2_line}" ;;
     5) guard_blocks="${_sg2_line}" ;;
+    6) last_code_edit_revision="${_sg2_line}" ;;
+    7) last_doc_edit_revision="${_sg2_line}" ;;
+    8) review_code_revision="${_sg2_line}" ;;
+    9) review_doc_revision="${_sg2_line}" ;;
+    10) last_verify_code_revision="${_sg2_line}" ;;
   esac
   _sg2_idx=$((_sg2_idx + 1))
 done < <(read_state_keys \
@@ -1029,7 +1185,12 @@ done < <(read_state_keys \
   "last_verify_ts" \
   "last_code_edit_ts" \
   "last_doc_edit_ts" \
-  "stop_guard_blocks")
+  "stop_guard_blocks" \
+  "last_code_edit_revision" \
+  "last_doc_edit_revision" \
+  "dim_bug_hunt_revision" \
+  "dim_prose_revision" \
+  "last_verify_code_revision")
 task_domain="$(task_domain)"
 task_domain="${task_domain:-general}"
 guard_blocks="${guard_blocks:-0}"
@@ -1058,12 +1219,22 @@ if [[ -z "${last_code_edit_ts}" && -z "${last_doc_edit_ts}" ]]; then
   fi
 else
   if [[ -n "${last_code_edit_ts}" ]]; then
-    if [[ -z "${last_review_ts}" || "${last_review_ts}" -lt "${last_code_edit_ts}" ]]; then
+    if [[ "${last_code_edit_revision}" =~ ^[0-9]+$ ]]; then
+      if [[ -z "${last_review_ts}" || ! "${review_code_revision}" =~ ^[0-9]+$ ]] \
+          || (( review_code_revision < last_code_edit_revision )); then
+        need_code_review=1
+      fi
+    elif [[ -z "${last_review_ts}" || "${last_review_ts}" -lt "${last_code_edit_ts}" ]]; then
       need_code_review=1
     fi
   fi
   if [[ -n "${last_doc_edit_ts}" ]]; then
-    if [[ -z "${last_doc_review_ts}" || "${last_doc_review_ts}" -lt "${last_doc_edit_ts}" ]]; then
+    if [[ "${last_doc_edit_revision}" =~ ^[0-9]+$ ]]; then
+      if [[ -z "${last_doc_review_ts}" || ! "${review_doc_revision}" =~ ^[0-9]+$ ]] \
+          || (( review_doc_revision < last_doc_edit_revision )); then
+        need_doc_review=1
+      fi
+    elif [[ -z "${last_doc_review_ts}" || "${last_doc_review_ts}" -lt "${last_doc_edit_ts}" ]]; then
       need_doc_review=1
     fi
   fi
@@ -1085,7 +1256,12 @@ case "${task_domain}" in
     # Only require verification if there were code edits at some point.
     # Pure-doc sessions in coding domain (touching only CHANGELOG) skip verify.
     if [[ -n "${last_code_edit_ts}" ]] || [[ -z "${last_doc_edit_ts}" ]]; then
-      if [[ -z "${last_verify_ts}" || "${last_verify_ts}" -lt "${verify_clock}" ]]; then
+      if [[ "${last_code_edit_revision}" =~ ^[0-9]+$ ]]; then
+        if [[ -z "${last_verify_ts}" || ! "${last_verify_code_revision}" =~ ^[0-9]+$ ]] \
+            || (( last_verify_code_revision < last_code_edit_revision )); then
+          missing_verify=1
+        fi
+      elif [[ -z "${last_verify_ts}" || "${last_verify_ts}" -lt "${verify_clock}" ]]; then
         missing_verify=1
       fi
     fi
@@ -1126,12 +1302,55 @@ fi
 # Check if review ran but findings were not addressed (no edits after review).
 # Use the effective edit clock — last_code_edit_ts (preferred) falling back
 # to last_edit_ts so legacy sessions keep behaving correctly.
+# Compute the adaptive review snapshot exactly once for this Stop process.
+# Re-scanning the path log independently for unremediated findings, coverage,
+# stricter verdicts, and excellence made large objectives pay O(4N) work.
+_sg_review_code=0; _sg_review_docs=0; _sg_review_ui=0
+_sg_review_unique=0; _sg_review_unknown=0; _sg_review_surfaces=0
+{
+  IFS= read -r _sg_review_code
+  IFS= read -r _sg_review_docs
+  IFS= read -r _sg_review_ui
+  IFS= read -r _sg_review_unique
+  IFS= read -r _sg_review_unknown
+  IFS= read -r _sg_review_surfaces
+} < <(review_cycle_edit_snapshot)
+_sg_required_dims="$(get_required_dimensions \
+  "${_sg_review_code}" "${_sg_review_docs}" "${_sg_review_ui}" \
+  "${_sg_review_unique}" "${_sg_review_unknown}" "${_sg_review_surfaces}")"
+
 review_unremediated=0
 if [[ "${missing_review}" -eq 0 ]]; then
+  _ru_scoped=0
+  if [[ "$(read_state "review_cycle_prompt_ts")" =~ ^[0-9]+$ ]] \
+      && [[ "$(read_state "review_cycle_edit_log_offset")" =~ ^[0-9]+$ ]]; then
+    _ru_scoped=1
+  fi
   review_had_findings="$(read_state "review_had_findings")"
   effective_edit_ts="${last_code_edit_ts:-${last_edit_ts}}"
-  if [[ "${review_had_findings}" == "true" && -n "${last_review_ts}" && "${effective_edit_ts}" -lt "${last_review_ts}" ]]; then
-    review_unremediated=1
+  if { [[ "${_ru_scoped}" -eq 0 ]] || (( _sg_review_code > 0 || _sg_review_unknown == 1 )); } \
+      && [[ "${review_had_findings}" == "true" && -n "${last_review_ts}" ]]; then
+    if [[ "${last_code_edit_revision}" =~ ^[0-9]+$ ]]; then
+      if [[ "${review_code_revision}" =~ ^[0-9]+$ ]] \
+          && (( review_code_revision >= last_code_edit_revision )); then
+        review_unremediated=1
+      fi
+    elif [[ -n "${effective_edit_ts}" && "${effective_edit_ts}" -le "${last_review_ts}" ]]; then
+      # Conservative migration fallback: equality cannot reveal event order.
+      review_unremediated=1
+    fi
+  fi
+  doc_review_had_findings="$(read_state "doc_review_had_findings")"
+  if { [[ "${_ru_scoped}" -eq 0 ]] || (( _sg_review_docs > 0 )); } \
+      && [[ "${doc_review_had_findings}" == "true" && -n "${last_doc_review_ts}" ]]; then
+    if [[ "${last_doc_edit_revision}" =~ ^[0-9]+$ ]]; then
+      if [[ "${review_doc_revision}" =~ ^[0-9]+$ ]] \
+          && (( review_doc_revision >= last_doc_edit_revision )); then
+        review_unremediated=1
+      fi
+    elif [[ -n "${last_doc_edit_ts}" && "${last_doc_edit_ts}" -le "${last_doc_review_ts}" ]]; then
+      review_unremediated=1
+    fi
   fi
 fi
 
@@ -1144,15 +1363,15 @@ fi
 if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed}" -eq 0 && "${verify_low_confidence}" -eq 0 && "${review_unremediated}" -eq 0 ]]; then
   # --- Review coverage gate (Check 4, formerly "Dimension gate") ---
   #
-  # Standard gates passed. For complex tasks (unique edit count above
-  # the dimension-gate threshold), require the prescribed reviewer
-  # sequence. Each reviewer owns a distinct review dimension; the gate
-  # blocks with a message naming the specific next reviewer to run.
+  # Standard gates passed. Derive additional coverage from the current
+  # objective's changed surfaces and semantic breadth. Each reviewer owns a
+  # distinct dimension, but the route is task-specific rather than a standing
+  # sequence.
   #
   # Only active when gate_level=full. basic and standard skip this gate.
 
   if [[ "${OMC_GATE_LEVEL}" == "full" ]]; then
-  required_dims="$(get_required_dimensions)"
+  required_dims="${_sg_required_dims}"
   if [[ -n "${required_dims}" ]]; then
     missing_dims="$(missing_dimensions "${required_dims}")"
 
@@ -1216,8 +1435,8 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
             fi
           done
 
-          dim_reason="[Review coverage · ${_done_dims}/${_total_dims} dimensions] complex task requires prescribed review coverage. Progress:${_checklist}\nNext step: run \`${next_reviewer}\` to cover ${next_description}. Each reviewer owns a distinct review area — do not substitute or reorder. After the reviewer returns, address any findings, then retry stop."
-          dim_human="Complex task needs ${_total_dims} reviewer dimensions; ${_done_dims} done. Next: \`${next_reviewer}\` covers ${next_description} — each reviewer owns a distinct area, substitutes don't satisfy the gate."
+          dim_reason="[Adaptive review coverage · ${_done_dims}/${_total_dims} dimensions] the current objective's changed surfaces and breadth require this coverage. Progress:${_checklist}\nNext step: run \`${next_reviewer}\` to cover ${next_description}. That reviewer owns this dimension, while route order follows current risk rather than a fixed panel. After it returns, address any findings, then retry stop."
+          dim_human="This objective needs ${_total_dims} evidence-backed review dimensions; ${_done_dims} done. Next: \`${next_reviewer}\` covers ${next_description}. The route was selected from current surfaces, not a standing reviewer chain."
           if [[ "${dim_blocks}" -ge 2 ]]; then
             dim_reason="${dim_reason} NOTE: this is the final review-coverage block — the next stop attempt will bypass this check."
             dim_human="${dim_human} This is the final review-coverage block; next stop attempt will bypass this check."
@@ -1254,7 +1473,7 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
               # of the prior passive "note any gaps".
               emit_scorecard_stop_context \
                 "QUALITY SCORECARD (review coverage gate exhausted after 3 blocks):" \
-                "The review coverage gate released without full completion. Recovery options: (a) restate the missing reviewer dimensions in your final summary so the user can audit them; (b) for each missing dimension shown above, dispatch the corresponding reviewer (quality-reviewer for defects, excellence-reviewer for completeness, design-reviewer for visual craft, editor-critic for prose, metis for plan stress-tests) — even one focused pass converts a scorecard release into a clean release; (c) if the missing dimensions are genuinely out of scope for this task, name the explicit reason in your summary (a session that ships scorecard-released work without naming the gap is the anti-pattern this gate exists to surface)." \
+                "The review coverage gate released without full completion. Recovery options: (a) restate the missing reviewer dimensions in your final summary so the user can audit them; (b) dispatch only the named owner for each missing dimension (quality-reviewer for defects, excellence-reviewer for completeness, design-reviewer for visual craft, editor-critic for prose, briefing-analyst for cross-surface traceability); (c) if a dimension is genuinely inapplicable, name the concrete evidence. Metis remains a separate plan-phase stress test, not part of a post-edit panel." \
                 "${scorecard}"
               exit 0
               ;;
@@ -1273,7 +1492,8 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
   #
   # After the review-coverage gate confirms required dimensions are
   # ticked, this gate blocks Stop when any required dimension's verdict
-  # is FINDINGS or BLOCK AND the verdict is fresh (ts >= last_code_edit_ts).
+  # is FINDINGS or BLOCK AND the verdict is fresh against that dimension's
+  # canonical clock (code, docs, any edit, or plan).
   # Closes the cc10x F11 "stricter-verdict-wins" gap: prior to this, a
   # CLEAN reviewer running AFTER a FINDINGS sibling could let Stop succeed
   # because review-coverage was ts-only, not verdict-aware. The dim helpers
@@ -1287,17 +1507,13 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
   # findings and re-running the reviewer (the edit-aware override clears
   # stale FINDINGS post-edit).
   if [[ "${OMC_GATE_LEVEL}" == "full" || "${OMC_GATE_LEVEL}" == "standard" ]]; then
-    required_dims_svw="$(get_required_dimensions)"
+    required_dims_svw="${_sg_required_dims}"
     if [[ -n "${required_dims_svw}" ]]; then
       findings_dims_svw=""
-      last_edit_ts_svw="$(read_state "last_code_edit_ts")"
-      last_edit_ts_svw="${last_edit_ts_svw:-0}"
       for _svw_dim in ${required_dims_svw//,/ }; do
         _svw_verdict="$(read_state "dim_${_svw_dim}_verdict")"
-        _svw_ts="$(read_state "$(_dim_key "${_svw_dim}")")"
-        _svw_ts="${_svw_ts:-0}"
         if { [[ "${_svw_verdict}" == FINDINGS* ]] || [[ "${_svw_verdict}" == BLOCK* ]]; } \
-          && (( _svw_ts >= last_edit_ts_svw )); then
+          && dimension_state_is_fresh "${_svw_dim}"; then
           findings_dims_svw="${findings_dims_svw:+${findings_dims_svw}, }${_svw_dim}"
         fi
       done
@@ -1317,32 +1533,44 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
   # --- Excellence gate (Check 5) ---
   #
   # Active when gate_level is full or standard. Requires excellence-reviewer
-  # for complex tasks (3+ files edited). On tasks that already satisfied
-  # the review coverage gate (which ticks completeness via excellence-reviewer),
-  # this check is a no-op because last_excellence_review_ts will be current.
+  # only when the adaptive route identifies real breadth: a broad objective,
+  # a current complex plan, unknown Bash fan-out, or enough cross-surface
+  # changes. Same-surface file count alone is not a reason to summon it.
 
   if [[ "${OMC_GATE_LEVEL}" == "full" || "${OMC_GATE_LEVEL}" == "standard" ]]; then
-  edited_files_log="$(session_file "edited_files.log")"
-  unique_edited_count=0
-  if [[ -f "${edited_files_log}" ]]; then
-    unique_edited_count="$(sort -u "${edited_files_log}" | wc -l | tr -d '[:space:]')"
-  fi
-
   last_excellence_review_ts="$(read_state "last_excellence_review_ts")"
   excellence_guard_triggered="$(read_state "excellence_guard_triggered")"
+  excellence_guard_triggered_revision="$(read_state "excellence_guard_triggered_revision")"
+  _ex_current_revision="$(dimension_freshness_revision "completeness")"
+  _ex_trigger_available=0
+  if [[ "${_ex_current_revision}" =~ ^[0-9]+$ ]]; then
+    if [[ ! "${excellence_guard_triggered_revision}" =~ ^[0-9]+$ ]] \
+        || (( excellence_guard_triggered_revision < _ex_current_revision )); then
+      _ex_trigger_available=1
+    fi
+  elif [[ "${excellence_guard_triggered}" != "1" ]]; then
+    # Migration fallback for sessions without edit revisions.
+    _ex_trigger_available=1
+  fi
 
-  if [[ "${unique_edited_count}" -ge "${OMC_EXCELLENCE_FILE_COUNT}" ]] \
-    && [[ -z "${last_excellence_review_ts}" || "${last_excellence_review_ts}" -lt "${last_edit_ts}" ]] \
-    && [[ "${excellence_guard_triggered}" != "1" ]]; then
-    write_state "excellence_guard_triggered" "1"
+  if review_cycle_requires_completeness \
+      "${_sg_review_code}" "${_sg_review_docs}" "${_sg_review_ui}" \
+      "${_sg_review_unique}" "${_sg_review_unknown}" "${_sg_review_surfaces}" \
+    && ! is_dimension_valid "completeness" \
+    && [[ "${_ex_trigger_available}" -eq 1 ]]; then
+    write_state_batch \
+      "excellence_guard_triggered" "1" \
+      "excellence_guard_triggered_revision" "${_ex_current_revision}"
     record_gate_event "excellence" "block" "block_count=1" "block_cap=1" \
-      "edited_count=${unique_edited_count}"
-    excellence_recovery="$(format_gate_recovery_line "dispatch the excellence-reviewer agent on the wave diff. To bypass once with reason (e.g., already self-audited), run /ulw-skip.")"
-    # v1.34.1+ (P-002): tighter excellence-gate block.
+      "edited_count=${_sg_review_unique}" "surface_count=${_sg_review_surfaces}" \
+      "unknown_bash=${_sg_review_unknown}" \
+      "broad_scope=$(read_state "review_cycle_broad_scope")" \
+      "current_complex_plan=$(review_cycle_has_current_complex_plan && printf 1 || printf 0)" \
+      "active_wave_plan=$(review_cycle_has_active_wave_plan && printf 1 || printf 0)"
+    excellence_recovery="$(format_gate_recovery_line "dispatch the excellence-reviewer agent on the current objective's diff. To bypass once with reason (e.g., already self-audited), run /ulw-skip.")"
     emit_stop_block "$(format_gate_block_dual \
-      "Wave touched ${unique_edited_count} files — quality-reviewer catches defects, but excellence-reviewer is the fresh-eyes pass for completeness, unknown unknowns, and polish a veteran would add. Different ground; complex waves need both." \
-      "[Excellence gate · 1/1] review/verify passed, but this is a complex task (${unique_edited_count} files edited).
-Run excellence-reviewer for fresh-eyes holistic evaluation (completeness, unknown unknowns, polish a veteran would add) before finalizing.${excellence_recovery}")"
+      "This objective has breadth evidence (${_sg_review_unique} changed path(s), ${_sg_review_surfaces} contract surface(s), unknown Bash=${_sg_review_unknown}) that defect review alone does not cover. Run \`excellence-reviewer\` for completeness." \
+      "[Adaptive excellence gate · 1/1] review/verify passed, but the current objective is broad or cross-surface — not merely high file-count. Run excellence-reviewer for fresh-eyes completeness and unknown-unknown coverage before finalizing.${excellence_recovery}")"
     exit 0
   fi
   fi # end gate_level full|standard (excellence gate)
@@ -1373,20 +1601,15 @@ Run excellence-reviewer for fresh-eyes holistic evaluation (completeness, unknow
   if [[ "${_metis_gate_enabled}" -eq 1 ]]; then
     plan_complexity_high="$(read_state "plan_complexity_high")"
     has_plan="$(read_state "has_plan")"
-    plan_ts="$(read_state "plan_ts")"
-    last_metis_review_ts="$(read_state "last_metis_review_ts")"
     metis_gate_blocks="$(read_state "metis_gate_blocks")"
     metis_gate_blocks="${metis_gate_blocks:-0}"
 
-    # Treat equality as stale (`<=`, not `<`): if both timestamps fall
-    # in the same second, the metis review either preceded the plan or
-    # was racing it — neither qualifies as a real stress-test of the
-    # current plan. Strictly fresh metis runs land at plan_ts + N where
-    # N >= 1s (a real review takes much longer than that).
+    # The stress_test dimension captures the plan revision Metis inspected.
+    # This preserves true event order when a new plan and its stress-test land
+    # in one epoch second. dimension_state_is_fresh falls back to
+    # dim_stress_test_ts >= plan_ts only for migrated state without revisions.
     metis_stale_or_missing=0
-    if [[ -z "${last_metis_review_ts}" ]]; then
-      metis_stale_or_missing=1
-    elif [[ -n "${plan_ts}" ]] && (( last_metis_review_ts <= plan_ts )); then
+    if ! dimension_state_is_fresh "stress_test"; then
       metis_stale_or_missing=1
     fi
 
@@ -1440,8 +1663,8 @@ Run metis to pressure-test for wrong-abstraction / missing-constraint risks befo
   # Cap 2 then scorecard-release (the model-declared judgment cannot be
   # mechanically proven, so an uncapped block would risk a hard loop);
   # clears the instant the model emits an explicit objective-coverage
-  # attestation. Known blind spot (PARTLY closed in objective_contract_is_
-  # substantive): a short imperative implying large scope, done tiny, with no
+  # attestation. Known blind spot (PARTLY closed in the current-objective
+  # substantiveness predicate): a short imperative implying large scope, done tiny, with no
   # planner. The high-precision SUBSET — a bare verb-only god-scope imperative
   # ("improve it", "harden", "audit everything") — now arms via the v1.47
   # objective_contract_god_scope INTENT signal (flag arm_on_god_scope). The
@@ -1456,6 +1679,27 @@ Run metis to pressure-test for wrong-abstraction / missing-constraint risks befo
   # both reuse this ONE block (Approach A — no separate gate, so no double-fire
   # when both would arm). Goal mode is inert while paused or while an
   # operational /ulw-pause is active for the turn.
+  #
+  # Keep substantiveness scoped to this objective generation. The adaptive
+  # review snapshot includes repeat edits after the route boundary, while the
+  # current-plan and unknown-Bash helpers use monotonic baselines. This avoids
+  # leaking an old complex plan, a sticky Bash bit, or cumulative unique-file
+  # totals into a small follow-up objective.
+  _objective_contract_current_is_substantive() {
+    [[ "${OMC_OBJECTIVE_CONTRACT_ARM_ON_GOD_SCOPE:-on}" == "on" ]] \
+      && [[ "$(read_state "objective_contract_god_scope")" == "1" ]] \
+      && return 0
+    review_cycle_has_current_complex_plan && return 0
+    review_cycle_has_active_wave_plan && return 0
+    (( _sg_review_unknown == 1 )) && return 0
+
+    local _oc_min_files="${OMC_OBJECTIVE_CONTRACT_MIN_FILES:-4}"
+    [[ "${_oc_min_files}" =~ ^[0-9]+$ ]] || _oc_min_files=4
+    (( _oc_min_files > 0 && _sg_review_unique >= _oc_min_files )) && return 0
+    (( ${#current_objective} >= 600 )) && return 0
+    return 1
+  }
+
   _goal_active=""
   _goal_obj=""
   if [[ "${OMC_GOAL_GATE:-on}" == "on" ]] \
@@ -1476,6 +1720,18 @@ Run metis to pressure-test for wrong-abstraction / missing-constraint risks befo
     [[ "${_oc_audited_ts}" =~ ^[0-9]+$ ]] || _oc_audited_ts=0
     _oc_last_edit_ts="${last_edit_ts:-0}"
     [[ "${_oc_last_edit_ts}" =~ ^[0-9]+$ ]] || _oc_last_edit_ts=0
+    _oc_current_edit_revision="$(read_state "edit_revision")"
+    _oc_edit_revision_base="$(read_state "objective_contract_edit_revision_base")"
+    _oc_work_this_cycle=0
+    if [[ "${_oc_current_edit_revision}" =~ ^[0-9]+$ ]] \
+        && [[ "${_oc_edit_revision_base}" =~ ^[0-9]+$ ]]; then
+      (( _oc_current_edit_revision > _oc_edit_revision_base )) \
+        && _oc_work_this_cycle=1
+    elif [[ "${_oc_last_edit_ts}" -gt "${_oc_prompt_ts}" ]]; then
+      # Migration fallback for an objective cycle stamped before revision
+      # baselines existed.
+      _oc_work_this_cycle=1
+    fi
 
     # Mode + re-anchor source: goal mode re-anchors the durable goal text;
     # substantive mode re-anchors the per-prompt current_objective.
@@ -1487,15 +1743,16 @@ Run metis to pressure-test for wrong-abstraction / missing-constraint risks befo
     fi
 
     # Arm only when: a cycle is stamped, work happened THIS cycle
-    # (last_edit_ts past the cycle's prompt_ts), the cycle was not already
+    # (edit_revision advanced past the route snapshot; timestamp migration
+    # fallback), the cycle was not already
     # audited, a non-empty objective exists to re-anchor against, and EITHER
     # goal mode is active (unconditional — user-armed) OR the cycle is
     # substantive by the coarse disjunction.
     if [[ "${_oc_prompt_ts}" -gt 0 ]] \
-      && [[ "${_oc_last_edit_ts}" -gt "${_oc_prompt_ts}" ]] \
+      && [[ "${_oc_work_this_cycle}" -eq 1 ]] \
       && [[ "${_oc_audited_ts}" -le "${_oc_prompt_ts}" ]] \
       && [[ -n "${_oc_reanchor}" ]] \
-      && { [[ "${_oc_mode}" == "goal" ]] || objective_contract_is_substantive; }; then
+      && { [[ "${_oc_mode}" == "goal" ]] || _objective_contract_current_is_substantive; }; then
 
       # v1.46-pre+ (manufactured-finish-line fix): release requires BOTH the
       # coverage attestation AND a RECORDED fresh-context completeness audit
@@ -1507,17 +1764,39 @@ Run metis to pressure-test for wrong-abstraction / missing-constraint risks befo
       # cannot self-attest past the gate without an independent fresh audit;
       # that audit (sharpened: excellence-reviewer axes 1+10) asks the
       # sample-vs-ceiling + cost-vs-evidence question, and if it finds an undone
-      # large item it returns completeness=FINDINGS and the review-coverage gate
-      # blocks separately. Moves release off the corrupt witness (the model's own
-      # coverage self-attestation) and reuses the existing fresh auditor
-      # (excellence-reviewer) — no new gate.
-      # Honest limit: bash cannot verify the audit's CONTENT was heeded, only
-      # that a fresh reviewer ran; see model-robustness.md genuine-gap #4.
+      # large item it returns completeness=FINDINGS. Release therefore requires
+      # the current completeness dimension itself to be revision-fresh AND
+      # CLEAN/SHIP, including on basic gate level where review-coverage does not
+      # separately enforce that verdict. This reuses excellence-reviewer rather
+      # than adding a parallel completion gate.
       _oc_fresh_audit_ts="$(read_state "last_excellence_review_ts")"
       _oc_fresh_audit_ts="${_oc_fresh_audit_ts:-0}"
       [[ "${_oc_fresh_audit_ts}" =~ ^[0-9]+$ ]] || _oc_fresh_audit_ts=0
+      _oc_completeness_verdict="$(read_state "dim_completeness_verdict")"
+      _oc_completeness_revision="$(read_state "dim_completeness_revision")"
+      _oc_fresh_clean_audit=0
+      case "${_oc_completeness_verdict}" in
+        CLEAN|SHIP)
+          if dimension_state_is_fresh "completeness"; then
+            if [[ "${_oc_current_edit_revision}" =~ ^[0-9]+$ ]] \
+                && [[ "${_oc_edit_revision_base}" =~ ^[0-9]+$ ]]; then
+              # A current-cycle audit must have inspected a generation after
+              # the prompt's baseline, not merely be fresh for an unchanged
+              # prior objective.
+              if [[ "${_oc_completeness_revision}" =~ ^[0-9]+$ ]] \
+                  && (( _oc_completeness_revision > _oc_edit_revision_base )); then
+                _oc_fresh_clean_audit=1
+              fi
+            elif [[ "${_oc_fresh_audit_ts}" -gt "${_oc_prompt_ts}" ]]; then
+              # Migration fallback: the dimension verdict/clock is still
+              # required; only its cycle ordering falls back to timestamps.
+              _oc_fresh_clean_audit=1
+            fi
+          fi
+          ;;
+      esac
       if has_closeout_label coverage "${last_assistant_message}" \
-        && [[ "${_oc_fresh_audit_ts}" -gt "${_oc_prompt_ts}" ]]; then
+        && [[ "${_oc_fresh_clean_audit}" -eq 1 ]]; then
         # Release path: coverage/goal-achieved attestation present AND a fresh
         # completeness audit ran this cycle. Record audited_ts so the cycle
         # self-clears and stays quiet on subsequent stop/continuation turns.
@@ -1525,13 +1804,22 @@ Run metis to pressure-test for wrong-abstraction / missing-constraint risks befo
         # just demonstrated progress + completion); the goal STAYS active and
         # re-arms next execution turn until the user runs /goal done|clear.
         # Falls through to delivery-contract (no exit).
-        write_state "objective_contract_audited_ts" "$(now_epoch)"
+        _oc_audited_now="$(now_epoch)"
+        [[ "${_oc_audited_now}" =~ ^[0-9]+$ ]] || _oc_audited_now=0
+        # The audit necessarily followed the route event. Preserve that order
+        # when both occur in one epoch second so the next Stop sees the cycle as
+        # already audited.
+        (( _oc_audited_now <= _oc_prompt_ts )) \
+          && _oc_audited_now=$((_oc_prompt_ts + 1))
+        write_state "objective_contract_audited_ts" "${_oc_audited_now}"
         [[ "${_oc_mode}" == "goal" ]] && write_state "goal_stuck_blocks" "0"
         record_gate_event "objective-contract" "audited" \
           "mode=${_oc_mode}" \
           "prompt_ts=${_oc_prompt_ts}" \
           "fresh_audit_ts=${_oc_fresh_audit_ts}" \
-          "edits_this_cycle=$(objective_contract_cycle_edit_count)"
+          "fresh_audit_verdict=${_oc_completeness_verdict}" \
+          "fresh_audit_revision=${_oc_completeness_revision:-migration}" \
+          "edits_this_cycle=${_sg_review_unique}"
       else
         # v1.46+ /goal driver: goal mode uses a progress-aware stuck-wall
         # escape, NOT the substantive cap-2 scorecard. It blocks relentlessly
@@ -1547,6 +1835,7 @@ Run metis to pressure-test for wrong-abstraction / missing-constraint risks befo
           [[ "${_goal_stuck}" =~ ^[0-9]+$ ]] || _goal_stuck=0
           _goal_prev_edit="$(read_state "goal_last_block_edit_ts")"; _goal_prev_edit="${_goal_prev_edit:-0}"
           [[ "${_goal_prev_edit}" =~ ^[0-9]+$ ]] || _goal_prev_edit=0
+          _goal_prev_edit_revision="$(read_state "goal_last_block_edit_revision")"
           _goal_thresh="${OMC_GOAL_STUCK_THRESHOLD:-3}"
           [[ "${_goal_thresh}" =~ ^[0-9]+$ ]] || _goal_thresh=3
 
@@ -1554,7 +1843,17 @@ Run metis to pressure-test for wrong-abstraction / missing-constraint risks befo
           # stuck counter; no edit advances it toward the wall. A model
           # genuinely grinding forward is NEVER released by the cap — only a
           # model spinning with zero progress trips the escape.
-          if [[ "${_oc_last_edit_ts}" -gt "${_goal_prev_edit}" ]]; then
+          _goal_progressed=0
+          if [[ "${_oc_current_edit_revision}" =~ ^[0-9]+$ ]] \
+              && [[ "${_goal_prev_edit_revision}" =~ ^[0-9]+$ ]]; then
+            (( _oc_current_edit_revision > _goal_prev_edit_revision )) \
+              && _goal_progressed=1
+          elif [[ "${_oc_last_edit_ts}" -gt "${_goal_prev_edit}" ]]; then
+            # Migration/first-block fallback. The first persisted block also
+            # writes the revision, making every later comparison exact.
+            _goal_progressed=1
+          fi
+          if [[ "${_goal_progressed}" -eq 1 ]]; then
             _goal_stuck=0
           else
             _goal_stuck=$((_goal_stuck + 1))
@@ -1563,7 +1862,8 @@ Run metis to pressure-test for wrong-abstraction / missing-constraint risks befo
           with_state_lock_batch \
             "goal_blocks" "${_goal_blocks}" \
             "goal_stuck_blocks" "${_goal_stuck}" \
-            "goal_last_block_edit_ts" "${_oc_last_edit_ts}"
+            "goal_last_block_edit_ts" "${_oc_last_edit_ts}" \
+            "goal_last_block_edit_revision" "${_oc_current_edit_revision}"
           _goal_excerpt="$(printf '%s' "${_oc_reanchor}" | head -c 600)"
 
           if [[ "${_goal_thresh}" -gt 0 && "${_goal_stuck}" -ge "${_goal_thresh}" ]]; then
@@ -1613,7 +1913,7 @@ Drive the next concrete sub-step. When achieved: fresh excellence audit + attest
           write_state "last_objective_contract_block_ts" "$(now_epoch)" 2>/dev/null || true
           record_gate_event "objective-contract" "block" \
             "block_count=${_oc_next_block}" "block_cap=${_oc_cap}" \
-            "edits_this_cycle=$(objective_contract_cycle_edit_count)" \
+            "edits_this_cycle=${_sg_review_unique}" \
             "plan_complexity_high=$(read_state "plan_complexity_high")"
           _oc_objective_excerpt="$(printf '%s' "${current_objective}" | head -c 600)"
           _oc_have_attestation="no"; has_closeout_label coverage "${last_assistant_message}" && _oc_have_attestation="yes"
@@ -1627,8 +1927,8 @@ Drive the next concrete sub-step. When achieved: fresh excellence audit + attest
             _oc_block_tail=" BLOCK MODE: strict autonomy keeps blocking after the cap until a fresh completeness audit runs and you attest objective coverage."
           fi
           # Tailor the lead so the model knows which half is missing.
-          _oc_missing_half="a recorded fresh-context completeness audit (excellence-reviewer) this cycle"
-          [[ "${_oc_have_attestation}" == "no" ]] && _oc_missing_half="a recorded fresh-context completeness audit (excellence-reviewer) this cycle AND an \`**Objective coverage.**\` attestation"
+          _oc_missing_half="a current CLEAN/SHIP completeness audit (excellence-reviewer) this cycle"
+          [[ "${_oc_have_attestation}" == "no" ]] && _oc_missing_half="a current CLEAN/SHIP completeness audit (excellence-reviewer) this cycle AND an \`**Objective coverage.**\` attestation"
           emit_stop_block "$(format_gate_block_dual \
             "Before stopping: this was a substantive task under an open objective. Get a FRESH completeness audit (dispatch excellence-reviewer) — not your own say-so — and confirm you covered ALL of the original objective, not just the part you finished. Self-attestation alone no longer clears this gate; the surfaced findings were a sample, not the ceiling." \
             "[Objective-contract gate · ${_oc_next_block}/${_oc_cap}] a substantive objective-cycle reached Stop without ${_oc_missing_half}.
@@ -1671,18 +1971,18 @@ The findings you handled are a sample, not the ceiling — do not redefine succe
     # deliberately does not touch (the >30-char half).
     if [[ -z "${_goal_active}" ]] \
       && [[ "${_oc_prompt_ts}" -gt 0 ]] \
-      && [[ "${_oc_last_edit_ts}" -gt "${_oc_prompt_ts}" ]] \
+      && [[ "${_oc_work_this_cycle}" -eq 1 ]] \
       && [[ "${_oc_audited_ts}" -le "${_oc_prompt_ts}" ]] \
       && [[ -n "${current_objective}" ]] \
       && [[ "$(read_state "objective_contract_open_mandate")" == "1" ]] \
-      && ! objective_contract_is_substantive; then
+      && ! _objective_contract_current_is_substantive; then
       _oc_wha_ts="$(read_state "objective_contract_would_have_armed_ts")"
       _oc_wha_ts="${_oc_wha_ts:-0}"
       [[ "${_oc_wha_ts}" =~ ^[0-9]+$ ]] || _oc_wha_ts=0
       if [[ "${_oc_wha_ts}" -le "${_oc_prompt_ts}" ]]; then
         write_state "objective_contract_would_have_armed_ts" "$(now_epoch)" 2>/dev/null || true
         record_gate_event "objective-contract" "would_have_armed" \
-          "edits_this_cycle=$(objective_contract_cycle_edit_count)" \
+          "edits_this_cycle=${_sg_review_unique}" \
           "open_mandate=1"
       fi
     fi
@@ -1745,19 +2045,19 @@ The findings you handled are a sample, not the ceiling — do not redefine succe
       # Extract the inferred-rule tags (R1/R2/R3a/R3b/R4/R5) so the
       # FOR YOU names the categories rather than the count alone. Each
       # tag corresponds to a class: R1=tests, R2=changelog, R3a=conf-
-      # parser, R3b=conf-example, R4=docs, R5=migration-notes. See
+      # parser, R3b=conf-example, R4=migration release notes, R5=docs. See
       # inferred_contract_blocking_items in common.sh for the full
       # mapping.
       _icat_tags="$(printf '%s\n' "${contract_blockers_inferred}" \
-        | grep -oE '\(R[0-9]+[a-z]?\)' | sort -u | tr -d '()' \
-        | tr '\n' ',' | sed 's/,$//')"
+        | { grep -oE '\(R[0-9]+[a-z]?' || true; } \
+        | sort -u | tr -d '(' | tr '\n' ',' | sed 's/,$//')"
       _icat_human=()
       [[ "${_icat_tags}" == *"R1"* ]] && _icat_human+=("tests")
       [[ "${_icat_tags}" == *"R2"* ]] && _icat_human+=("CHANGELOG")
       [[ "${_icat_tags}" == *"R3a"* ]] && _icat_human+=("conf parser")
       [[ "${_icat_tags}" == *"R3b"* ]] && _icat_human+=("conf example")
-      [[ "${_icat_tags}" == *"R4"* ]] && _icat_human+=("docs")
-      [[ "${_icat_tags}" == *"R5"* ]] && _icat_human+=("release notes / migration")
+      [[ "${_icat_tags}" == *"R4"* ]] && _icat_human+=("release notes / migration")
+      [[ "${_icat_tags}" == *"R5"* ]] && _icat_human+=("docs")
       if [[ "${#_icat_human[@]}" -gt 0 ]]; then
         inferred_surface_categories="${_icat_human[0]}"
         for _icat_i in "${_icat_human[@]:1}"; do
@@ -1898,10 +2198,11 @@ Missing: ${closure_missing}.${closure_recovery}")"
     exit 0
   fi
 
-  # Record session outcome for cross-session analytics. "completed" means
-  # all quality gates were satisfied — the harness's strongest signal.
-  # Uses locked write for consistency with the exhaustion paths.
-  with_state_lock write_state "session_outcome" "completed"
+  # Record session outcome for cross-session analytics. "completed" means all
+  # gates covered one stable mutation generation. The CAS compares the opening
+  # edit/code/doc/plan snapshot and stamps the outcome under the same lock; a
+  # concurrent mutation emits a retry block instead of releasing stale proof.
+  _sg_commit_release_or_block "completed" || exit 0
   # Remove fast-path sentinel; workflow_mode in session_state.json is
   # intentionally preserved so the prompt-intent-router's sticky gate
   # continues injecting specialist routing for the rest of this session.

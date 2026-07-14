@@ -1,32 +1,32 @@
 ---
 name: council
-description: Multi-role project evaluation that dispatches expert perspectives (PM, design, security, data, SRE, growth) to surface blind spots and unknown unknowns a solo developer would miss.
-argument-hint: "[optional focus or project path] [--deep] [--polish]"
+description: Adaptive project evaluation that maps the task's actual risks, assembles the smallest useful specialist team, and fills material coverage gaps before synthesis.
+argument-hint: "[optional focus or project path] [--deep] [--polish] [--self-audit]"
 disable-model-invocation: true
 ---
 # Project Council
 
-Evaluate this project from multiple professional perspectives to surface blind spots, unknown unknowns, and cross-cutting concerns that no single role would catch alone.
+Evaluate this project with a task-specific team. Start from the risks and unanswered questions in the actual project, not from a standing committee of job titles.
 
 $ARGUMENTS
 
 ## Argument flags
 
-- `--deep` — Escalate all dispatched lenses to `model: opus` for deeper reasoning. Default is the lenses' built-in `model: sonnet`. Use when the project is high-stakes, the user explicitly asked for a thorough audit, or a previous shallow pass missed something. Cost is meaningfully higher (each lens runs on opus instead of sonnet); reserve for cases where depth is the bottleneck. Detection: if `$ARGUMENTS` contains `--deep` as a whitespace-separated standalone token (e.g. `/council security --deep`, including at the end of the args), set DEEP_MODE for the rest of this protocol. Variants like `--deep=true`, `-deep`, or `-d` are NOT recognized — use the bare `--deep` flag.
+- `--deep` — Escalate Sonnet-backed specialists to `model: opus` for deeper reasoning. Do **not** pass an explicit model to `model: inherit` deliberators: they must ride the session model so a Fable-class main thread is never downgraded to Opus. Use when the project is high-stakes, the user explicitly asked for a thorough audit, or a previous shallow pass missed something. Cost is meaningfully higher; reserve it for cases where depth is the bottleneck. Detection: if `$ARGUMENTS` contains `--deep` as a whitespace-separated standalone token (e.g. `/council security --deep`, including at the end of the args), set DEEP_MODE for the rest of this protocol. Variants like `--deep=true`, `-deep`, or `-d` are NOT recognized — use the bare `--deep` flag.
 
-- `--polish` — Narrow the lens roster to taste/excellence concerns and extend dispatch with a Jobs-grade evaluation rubric. Default lens roster becomes `visual-craft-lens` + `product-lens` + `design-lens`; security/data/sre/growth lenses are skipped unless the user named them explicitly — those audits are the wrong tool for a polish-saturated project that has already passed them. Each dispatched lens runs on opus and receives an extension prompt covering: **soul** (single-hand vs. kit-assembled feel), **signature** (one recognizable visual/interaction), **voice** (copy + tone consistency without AI-isms across empty states / errors / settings / onboarding), **negative space** (chrome defers to content), **first-five-minutes** (new-user wow moment), **AI-as-experience** (product feature vs. wrapped API), and the **no-cloning discipline** (≥3 things done differently from the closest archetype). **Auto-activates on polish-saturated projects** (per the project-maturity prior — long-running repos with deep tests and cross-session memory) so a `/council` invocation on a polish-saturated codebase gets the right lens automatically; explicit `/council --polish` invocation works the same on any project. Composes with `--deep` (both flags can apply). Use when the project has already passed engineering pragmatism gates and the next-leverage move is taste, signature, and excellence-bar work. Detection mirrors `--deep`: bare `--polish` token in `$ARGUMENTS`, or auto-activation when the project-maturity prior emits `polish-saturated`.
+- `--polish` — Raise taste/excellence coverage in the risk map and extend the relevant mandates with a Jobs-grade rubric. `visual-craft-lens`, `product-lens`, and `design-lens` become strong **candidates**, not a forced roster; include only the ones that answer a material question, and do not suppress a concrete security, reliability, data, or architecture risk merely because the project is mature. Relevant specialists receive: **soul** (single-hand vs. kit-assembled feel), **signature** (one recognizable visual/interaction), **voice** (copy + tone consistency without AI-isms across empty states / errors / settings / onboarding), **negative space** (chrome defers to content), **first-five-minutes** (new-user wow moment), **AI-as-experience** (product feature vs. wrapped API), and the **no-cloning discipline** (≥3 things done differently from the closest archetype). **Auto-activates on polish-saturated projects**; explicit `/council --polish` works on any project. Composes with `--deep`. Detection mirrors `--deep`: bare `--polish` token in `$ARGUMENTS`, or auto-activation when the project-maturity prior emits `polish-saturated`.
 
-- `--self-audit` — Self-evaluation mode for oh-my-claude itself. The Bug B post-mortem (v1.34.x) identified "self-exemption from our own tools" as a structural failure: we ask council to evaluate user projects, but never aimed it at the harness's own state-I/O contracts, hot-path lifecycle hooks, or implicit-contract surfaces. Self-audit fixes that. Lens roster auto-overrides to `abstraction-critic` + `oracle` + `sre-lens` + `quality-researcher`. Dispatch focus changes from "what does this project do for users" to "is the *shape* of the harness's contracts (delimiter conventions, positional alignment, recovery semantics, classifier categories, gate-event field shapes) the right shape, and where are the implicit assumptions consumers and producers disagree on?". The protocol's Phase 6 verification automatically points `oracle` at the surfaces with the highest blast radius (state-I/O, prompt-routing, Stop-hook lifecycle). Phase 8 may be skipped — the audit is advisory by default; the user re-runs with explicit "implement findings" intent if findings warrant action. Detection mirrors `--deep`: bare `--self-audit` token in `$ARGUMENTS`. Auto-activates if `$PWD` is the oh-my-claude repo root AND the user's prompt explicitly mentions "harness" / "state-io" / "implicit contract" / "self-audit" / "Bug B"-class language. Composes with `--deep` (escalates lens model to opus). Run quarterly; cadence captured in `CONTRIBUTING.md` "Quarterly self-audit cadence". Read-only — surfaces findings, does not edit.
+- `--self-audit` — Self-evaluation mode for oh-my-claude itself. The Bug B post-mortem (v1.34.x) identified "self-exemption from our own tools" as a structural failure. Seed the coverage map with contract shape, producer/consumer alignment, recovery/lifecycle behavior, classifier boundaries, observability, and test realism. `abstraction-critic`, `oracle`, `sre-lens`, and `quality-researcher` are strong candidates for those questions, not a mandatory quartet; select or skip each with evidence and add a different specialist when the inspected surface demands it. Phase 8 is advisory by default; the user re-runs with explicit implementation intent if findings warrant action. Detection mirrors `--deep`: bare `--self-audit` token in `$ARGUMENTS`. Auto-activates if `$PWD` is the oh-my-claude repo root AND the user's prompt explicitly mentions "harness" / "state-io" / "implicit contract" / "self-audit" / "Bug B"-class language. Composes with `--deep`. Run quarterly; cadence captured in `CONTRIBUTING.md`. Read-only — surfaces findings, does not edit.
 
 ## Agentic protocol (load-bearing — re-read after any compaction)
 
 Before any dispatch, anchor on these rules so they survive context pressure:
 
-1. **Ground every finding in evidence.** A finding without a file path, line number, or concrete observed behavior is opinion, not output. Lens agents are instructed to do this; if a returned lens skipped citations, name the gap in the synthesis instead of repeating the unsupported claim.
-2. **Do not synthesize on partial returns.** If any dispatched lens has not returned, report what is in flight and continue waiting. Synthesis on a partial set silently biases the final assessment toward whichever lens responded fastest.
-3. **Verify the top of the stack before presenting.** The top 2-3 findings drive the user's actions. Re-verify each one against the actual code before they ship in the final assessment (Step 6 below). Surface-level lens claims that fail verification are noise, not signal.
-4. **Preserve tensions, do not synthesize them.** When two lenses contradict, surface both in the "Cross-Perspective Tensions" section. A clean synthesis that hides a real disagreement is worse than no synthesis.
-5. **The five-priority rule governs presentation, not execution scope.** A project with 47 findings needs 5 priorities at the top of the assessment, not 47 equal-weight items. If the synthesis emerges with more than 5 critical findings, you have under-prioritized the *headline* — pick the top 5 by impact x reach. **However**, when the user requests exhaustive implementation (canonical exhaustive-authorization vocabulary — see *Phase 8 entry markers* below), all findings flow into the Phase 8 wave plan; the five-priority rank only determines wave ordering. Do not silently clip scope to 5 — clipping is the failure mode this rule's most-common misreading produces.
+1. **Ground every finding in evidence.** A finding without a file path, line number, or concrete observed behavior is opinion, not output. If a specialist skipped citations, name the gap in the synthesis instead of repeating the unsupported claim.
+2. **Do not synthesize on partial returns.** If any dispatched specialist has not returned, report what is in flight and continue waiting. Synthesis on a partial set silently biases the assessment toward whichever specialist responded fastest.
+3. **Verify the top of the stack before presenting.** Up to three load-bearing findings drive the user's actions. Re-verify each against the actual code before it ships in the assessment (Step 6). Unsupported specialist claims are noise, not signal.
+4. **Preserve tensions, do not synthesize them.** When two specialists contradict, verify the factual premise and surface any genuine value tradeoff. A clean synthesis that hides real disagreement is worse than no synthesis.
+5. **The five-priority rule governs presentation, not execution scope.** A project with 47 findings needs 5 priorities at the top of the assessment, not 47 equal-weight items. If the synthesis emerges with more than 5 critical findings, you have under-prioritized the *headline* — pick the top 5 by impact x reach. **However**, when `is_exhaustive_authorization_request()` matches, all findings flow into the Phase 8 wave plan; the five-priority rank only determines wave ordering. Do not silently clip scope to 5.
 
 ## Protocol
 
@@ -39,71 +39,102 @@ Read the project's README, manifest files (package.json, Cargo.toml, pyproject.t
 - **Tech stack**: languages, frameworks, databases, external services
 - **User-facing?**: does this have end users, or is it developer tooling / infrastructure?
 
-### 2. Select lenses
+### 2. Build the coverage map
 
-**`--self-audit` override:** when the self-audit flag is active, skip the per-project lens-selection table below and dispatch the fixed self-audit roster: `abstraction-critic` (paradigm fit and contract-shape), `oracle` (cross-cutting tradeoff and architectural-tension second opinion), `sre-lens` (recovery, lifecycle, observability for the harness's own runtime), `quality-researcher` (implicit-contract surfaces and undocumented assumptions). Phase 8 is opt-in only under self-audit — the user runs an explicit follow-up if findings should be implemented.
+Map **questions and risks before agents**. The council is the temporary team assembled from this map; the named agents are reusable capabilities, not mandatory seats.
 
-Choose 3-6 relevant role-lenses based on what you discovered. Use this guide:
+For each plausible dimension, record: `(a)` concrete applicability evidence from Step 1, `(b)` impact if missed, `(c)` competence needed, and `(d)` `selected`, `covered-inline`, or `skipped` with a reason. Consider all of these, but never dispatch merely to fill the table:
 
-| Lens | When to include | When to skip |
-|------|----------------|--------------|
-| `product-lens` | Any user-facing software, developer tools with adoption goals | Pure infrastructure, internal scripts |
-| `design-lens` | Web apps, mobile apps, desktop apps, CLIs with interactive UX (UX flow / IA / onboarding / accessibility / error states) | Libraries, APIs, backend services, infrastructure |
-| `visual-craft-lens` | Projects with a visible UI surface where visual design quality matters — landing pages, dashboards, native iOS/macOS apps, polished CLIs/TUIs (palette intent, typography hierarchy, depth/elevation, visual signature, generic-AI-pattern detection, archetype anti-cloning) | Pure backend/API/infra without a UI surface; internal tools where visual polish is non-goal |
-| `security-lens` | Anything with auth, user data, external APIs, network exposure | Static sites with no data, read-only tools |
-| `data-lens` | Products needing analytics, data-driven decisions, ML features | Early prototypes, pure infrastructure, CLI utilities |
-| `sre-lens` | Production services, APIs, infrastructure, anything that runs 24/7 | Client-only apps, libraries, documentation |
-| `growth-lens` | Consumer products, SaaS, marketplaces, open-source with adoption goals | Internal tools, infrastructure, scripts |
+| Coverage need | Strong candidate capabilities (examples, not an allowlist) |
+|---|---|
+| User value, journey, prioritization | `product-lens` |
+| UX, accessibility, interaction | `design-lens` |
+| Visual craft, signature, polish | `visual-craft-lens`, `design-reviewer` |
+| Security, privacy, trust boundaries | `security-lens` |
+| Data model, instrumentation, evidence quality | `data-lens`, `rigor-reviewer` |
+| Reliability, performance, deployment, operations | `sre-lens` |
+| Architecture, abstraction, contract shape | `abstraction-critic`, `oracle` |
+| Correctness, tests, edge cases | `quality-reviewer`, `metis` |
+| External APIs, current standards, source truth | `librarian`, `quality-researcher` |
+| Research/citation/methodological rigor | `literature-scout`, `rigor-reviewer` |
+| Prose, messaging, traceability | `editor-critic`, `briefing-analyst` |
+| Adoption/distribution | `growth-lens` |
+| Task-specific expertise not named above | the best matching installed/custom inspection agent, or a `general-purpose` agent with a narrow read-only mandate |
 
-**Minimum 3 lenses, maximum 7.** If fewer than 3 are relevant, include product-lens and security-lens by default — they apply to almost everything. **`design-lens` and `visual-craft-lens` are disjoint by design** (UX flow vs. visual craft) — dispatch both for projects where both surfaces matter; they will not duplicate findings.
+Inspect the available Agent roster and descriptions; do not restrict selection to `*-lens` names. Prefer inspection/judgment agents for the assessment. A builder may participate only when it is the sole source of needed domain competence, and its prompt must say the assessment round is read-only—implementation belongs to Phase 8.
 
-### 3. Dispatch
+Select the **smallest primary set that jointly covers every material high-risk row**: normally 1–4 specialists. One is valid for a narrow, specialist question. Exceed four only when the evidence map contains more than four mutually independent, high-impact competence needs that cannot be combined safely; name that exception and its cost in the selection ledger. There is no minimum-three rule, no hard four-seat ceiling, no product/security fallback, and no reward for panel size. Give every selected specialist one non-overlapping question and explicit non-goals. Before dispatch, show a compact selection ledger: selected specialist → assigned coverage → why; plausible-but-skipped specialist/family → why not applicable.
 
-Launch ALL selected lenses in parallel using the Agent tool in a single message. Each agent call should include:
+Persist that ledger before dispatch with `record-council-coverage.sh init` (JSON on stdin). Use `coverage_rows[] = {id, need, evidence, impact, competence, status: selected|covered-inline|skipped, reason}` and `selections[] = {agent, phase: primary|gap-fill, coverage_ids, reason, non_goals}`. `init` accepts one or more primary selections and **zero gap-fill selections**; the normal primary envelope is one to four. When the evidence truly requires more than four, also provide `primary_exception = {reason, cost, independent_high_impact_coverage_ids}` whose IDs exactly cover the exceptional primary mandates. Selected coverage IDs may appear under only one mandate. Agent identity is exact when namespaced; an unnamespaced installed-agent name may bind once to its runtime identity, but cannot authorize two namespaces that share a short name. The Agent PreTool hook rejects `[council:primary]`/`[council:gap-fill]` dispatches that are absent from this objective-scoped lifecycle, so the coverage map and include/skip reasoning are auditable rather than presentation-only. A later Council prompt in the same session may call `init` again: the writer recognizes the new prompt revision, archives the prior map to bounded history, and starts clean; same-prompt concurrent/duplicate initialization is serialized and exactly one succeeds.
 
-- The project path and what you learned about its type/stack in step 1
-- A brief description of what the project does (from README or your inspection)
-- The instruction: "Evaluate this project from your perspective. Ground every finding in concrete evidence from the codebase."
+`--polish` raises the product/UX/visual/voice rows as priors; it does not force those agents or suppress evidenced engineering risks. `--self-audit` seeds the harness-specific rows described above; its four named candidates remain optional based on the inspected surface.
 
-**If `--deep` was passed**, add the `model: "opus"` parameter to each Agent call to escalate the lens model. Also extend the per-lens instruction with: "This is a deep-mode evaluation. Take more turns to investigate suspicious findings. Read source files carefully rather than relying on directory structure inference. Report uncertainty explicitly when evidence is thin." This does not change the lens's `maxTurns` (that is set in the agent frontmatter and is not overridable from the dispatch), but the opus model uses its turns more effectively.
+### 3. Primary dispatch
 
-**Critical**: dispatch ALL lenses in ONE message so they run concurrently.
+Launch the selected primary specialists concurrently using the Agent tool in one message. Each call should include:
 
-**The lens panel stays on the `Agent` tool — do NOT route it through the Workflow tool**, even when `workflow_substrate=on`. The Workflow tool runs in the background and returns a task id; Phase 5/6 synthesis (dedup, rank, copy-paste the exact claim) needs the lens returns *in context*, which a backgrounded task cannot provide. The Workflow tool's place in `/council` is Phase 8 wave *execution* (Step 8), not the lens dispatch.
+- A description beginning exactly with `[council:primary]` so the dispatch is recorded as Council evidence without relying on the agent's name
+- The project path, type, maturity, stack, and the evidence that made this coverage row material
+- One precise question and explicit non-goals so mandates do not overlap
+- The instruction: "Evaluate this assigned risk only. Ground every finding in concrete code or observed behavior. End with what remains outside your competence or evidence. This assessment round is read-only."
+- For every selected agent: "Before any unsuccessful universal `VERDICT:` token, emit one unindented non-empty `FINDINGS_JSON: [...]` line. Each object must contain actionable `severity`, `category`, `file`, `line`, `claim`, `evidence`, and `recommended_fix` fields." Clean/successful returns need no finding payload. This keeps every role vocabulary auditable without enabling arbitrary-prose scraping.
 
-### 4. Wait
+**If `--deep` was passed**, pass `model: "opus"` to Sonnet-backed selected agents and add: "This is a deep-mode evaluation. Take more turns to investigate suspicious findings. Read source carefully rather than inferring from directory shape. Report uncertainty explicitly." Omit the model parameter for `model: inherit` deliberators so they ride the session model and cannot downgrade a stronger main thread.
 
-Do NOT begin synthesis until ALL dispatched lenses have returned their results. While waiting:
-- Acknowledge which lenses are still running
-- Share any early findings that are immediately actionable
+The primary assessment stays on the Agent tool, not the background Workflow tool: reconciliation needs the actual returns in context. The Workflow tool's place is Phase 8 heavy execution.
+
+### 4. Wait, reconcile, and gap-fill
+
+Do not reconcile a round until **every specialist in that round** has returned. Status updates may name what remains in flight, but do not present a partial assessment.
+
+After the primary round, reconcile every return against the coverage map. Mark each selected row `evidenced`, `partial`, `uncovered`, or `newly-discovered`. Pay special attention to each specialist's "cannot assess" section and to contradictions between specialists.
+
+Run **one gap-fill round of 0–2 specialists** only when:
+
+- a high-impact row remains partial or uncovered;
+- a return exposes a new material risk outside the primary team's competence; or
+- a cross-perspective conflict needs a different competence to resolve the factual premise.
+
+Select gap-fill agents from the full roster by the same rules (including the unsuccessful-verdict structured-output requirement), give them only the missing question, prefix every Agent description with `[council:gap-fill]`, dispatch them concurrently, and wait for every gap-fill return. If none is warranted, say why; do not manufacture a second round.
+
+Persist reconciliation with `record-council-coverage.sh update` even when no gap-fill is needed. Include:
+
+- `reconciliation.status`: `primary-complete` when no second round is needed, otherwise `gap-fill-required`;
+- `reconciliation.evidence`: a concrete cross-return summary;
+- `reconciliation.primary_returns`: the exact ledger identities of every returned primary;
+- `reconciliation.gap_fill_returns`: empty at this stage; and
+- `reconciliation.coverage_results[] = {coverage_id, status, evidence, reason}` for every selected row.
+
+Only that post-primary generation may add gap-fill selections, and there may be at most two total. `primary-complete` is valid only when every selected result is `evidenced`; any partial, uncovered, or newly discovered result must take the sole gap-fill path. Every gap-fill coverage ID must point to such an unresolved result. After every gap-fill returns, call `update` again with status `gap-fill-complete`, exact returns, final results, and explicit residual limitations.
 
 ### 5. Synthesize
 
-After all lenses return, synthesize their findings:
+After all required rounds return:
 
-1. **Deduplicate** — Multiple lenses may flag the same issue from different angles. Combine them.
-2. **Rank by impact** — Score each finding by: severity (how bad if ignored) x breadth (how many users/scenarios affected) x urgency (time-sensitive or not).
-3. **Attribute perspectives** — Note which lens surfaced each finding. Cross-perspective findings (flagged by 2+ lenses) get priority.
-4. **Separate quick wins from strategic work** — Some findings are afternoon fixes; others are multi-week initiatives.
-5. **Reject lens findings that lack evidence.** If a lens flagged "X is a problem" with no file/line/behavior citation, you cannot cleanly include it. Either drop it or name it as "lens raised this concern but did not cite evidence — needs separate investigation."
-6. **Mark user-decision findings narrowly (v1.40.0 contract — LOAD-BEARING, do NOT soften).** Under `no_defer_mode=on` (default), the user-decision criterion is **operational only** — credentials/login required, an external account action, or a destructive shared-state action awaiting confirmation. Tag those with `requires_user_decision: true` and a one-line `decision_reason`. NOT user-decision under v1.40.0: taste, policy, brand voice, pricing, data-retention sane default, release attribution, library choice, refactor scope, credible-approach split — these are the agent's call. Pick the sibling-of-codebase choice with stated reasoning and ship; the user redirects cheaply if wrong, a held-but-undecided session costs them everything. The criterion mirrors `core.md`'s narrowed pause cases (five operational items, two judgmental items REMOVED in v1.40.0). Backwards compatible: omitting the field defaults to `false`. If `no_defer_mode=off` (power-user opt-out), the v1.39-era broader criterion applies and Phase 8 pauses on the wider set. **Do NOT propose to widen this criterion** — proposals like *"add taste/policy back to the user-decision class"* or *"soften the mark-user-decision validator"* are the exact softening anti-pattern `core.md`'s "v1.40.0 no-defer contract" section forbids; see `tests/test-no-defer-contract.sh` for the regression net.
+1. **Deduplicate** — Combine the same issue found from different angles without hiding the contributing perspectives.
+2. **Rank by impact** — Score severity × breadth × urgency.
+3. **Preserve tensions** — Separate factual disagreement from legitimate value tradeoffs; never smooth either away.
+4. **Separate quick wins from strategic work.**
+5. **Reject unsupported findings.** A claim without concrete evidence is either dropped or labeled as an unresolved coverage gap.
+6. **Report residual limitations.** A deliberate skip is honest scope; an unnamed omission is a workflow defect.
+7. **Mark user-decision findings narrowly (v1.40.0 contract — LOAD-BEARING, do NOT soften).** Under `no_defer_mode=on` (default), the criterion is operational only: credentials/login, an external account action, or a destructive shared-state action awaiting confirmation. Taste, policy, brand voice, pricing, data-retention defaults, release attribution, library choice, refactor scope, and credible-approach splits are agent decisions. If `no_defer_mode=off`, the older broader pause behavior applies. Do not widen the default criterion.
 
 ### 6. Verify top findings
 
-Before presenting the final assessment, the top 2-3 highest-impact findings drive the user's most consequential actions. Surface-level lens output is not enough on findings that are load-bearing. Verify each one with a focused dispatch — the verdict-challenge discipline (`intellectual-craft.md` Popper #6, symmetric half) applied to lens output, where a FINDING is an input to **refute against evidence**, not a truth to copy forward:
+Verify up to three load-bearing findings with the **best independent competence**, never automatically with `oracle` and never with the finding's original author:
 
-1. **Pick the top 2-3 findings** by `impact_x_reach`. Skip anything that is already obviously verified by clear file/line citations the lens provided. Skip anything where the user said "advisory only — don't act."
-2. **Dispatch `oracle` per finding** (or, if all top findings are in one domain like security, dispatch the relevant lens once more with a deepening prompt — but `oracle` is the default because it is opus-grade and not bound to a single perspective). Each dispatch must include:
-   - The exact claim, copy-pasted from the lens output.
-   - The evidence the lens cited (file paths, lines, observed behavior).
-   - The instruction: "**Try to REFUTE this claim** against the actual code — treat it as a possible false positive until the evidence forces otherwise. Re-read the cited source and confirm the issue actually reproduces. Report whether it holds, partially holds, or does not hold, defaulting to *does not hold* when the evidence is thin or you cannot reproduce it. Cite specific files/lines. Note any caveats or context the original lens missed."
-3. **Use the verification output** to either:
-   - **Confirm** the finding (most cases): keep it as-is in the final assessment, optionally adding the verification's caveats.
-   - **Refine** it: the underlying issue is real but the lens framing was off — restate using the verifier's framing.
-   - **Demote or drop** it: the verifier could not reproduce the issue, the cited code does not behave as the lens claimed, or the issue is contingent on a context that does not apply.
-4. **Cap verification at 3 findings.** More than that and you are running a second council, not verifying. If the top is a tie at 4+, pick the 3 with the most actionable ship-decisions riding on them.
+- security/privacy claim → a different security-capable reviewer;
+- scientific/statistical claim → `rigor-reviewer`;
+- external API/current-standard claim → `librarian`;
+- correctness/test claim → `quality-reviewer`;
+- architecture/cross-cutting claim → `oracle` or `abstraction-critic`, whichever did not originate it;
+- UX/accessibility claim → `design-lens` or `design-reviewer`, whichever is independent.
 
-This phase noticeably increases the trust the user can place in the final 2-3 findings — the ones they will actually act on — without growing the runtime by an order of magnitude.
+Each verifier receives the exact claim and cited evidence, then: "**Try to REFUTE this claim** against the actual source. Treat it as a possible false positive until evidence forces otherwise. Report holds / partially holds / does not hold, defaulting to does not hold when evidence is thin."
+
+Prefix every verifier Agent description with `[council:verification]` so this independent round remains distinguishable from primary coverage. The runtime accepts it only against the current final-reconciled, not-yet-completed ledger, stamps objective/generation provenance, rejects repeated exact verifier identities, and enforces the three-dispatch cap. Zero verifiers remains valid.
+
+Use the return to confirm, refine, demote, or drop the finding. Skip verification already made mechanically conclusive by direct reproduction. The three-finding cap prevents verification from becoming a second council.
 
 ### 7. Present
 
@@ -116,23 +147,27 @@ Deliver the unified assessment in this format:
 - **Type**: [web app / API / CLI / library / etc.]
 - **Maturity**: [greenfield / MVP / production / mature]
 - **Stack**: [key technologies]
-- **Lenses consulted**: [list of lenses dispatched]
+
+### Coverage and Selection
+- **Consulted**: [specialist → assigned coverage, split by primary / gap-fill / verification]
+- **Deliberate skips**: [plausible perspective → concrete reason it was not applicable]
+- **Residual limitations**: [unresolved evidence or competence gaps]
 
 ### Critical Findings (address first)
 [Findings with high severity — security vulnerabilities, data loss risks, broken core flows]
-Each finding: what it is, which lens found it, why it matters, concrete fix.
+Each finding: what it is, which specialist found it, why it matters, concrete fix.
 Mark verification status: ✓ verified (Step 6), ◑ refined, or ✗ demoted/dropped during verification.
 
 ### High-Impact Improvements
 [Findings that significantly improve the product but aren't emergencies]
-Each finding: what it is, which lens found it, expected impact, effort estimate (quick win / moderate / strategic)
+Each finding: what it is, which specialist found it, expected impact, effort estimate (quick win / moderate / strategic)
 
 ### Strategic Recommendations
 [Longer-term improvements for competitive advantage]
-Each: what to build, which lens identified the need, why it matters for the product's future
+Each: what to build, which specialist identified the need, why it matters for the product's future
 
 ### Cross-Perspective Tensions
-[Where lenses disagree — e.g., "growth wants faster onboarding, security wants stronger auth"]
+[Where specialists disagree — e.g., "growth wants faster onboarding, security wants stronger auth"]
 Present the tension honestly and let the user decide
 
 ### Quick Wins
@@ -143,25 +178,27 @@ Bulleted, actionable, specific
 [Genuine strengths worth preserving — brief, not a praise section]
 ```
 
+Once every selected round and any optional verifier have returned, reconciliation is final, independent checks are incorporated, and this unified assessment is ready to present, run `record-council-coverage.sh complete`. This is the only operation that arms the two-turn “implement the assessment” handoff. It refuses an in-flight or unreconciled Council and records objective provenance.
+
 ### 8. Execute (when implementation was requested)
 
 Step 7 ends with a presentation. Council ends there only if the user asked for advisory output ("just analyze", "report only", "advisory only"). If the user's prompt asked for implementation/fixes (any **Phase 8 entry marker** — see canonical list below), bridge from assessment to execution with this protocol — do not stop after Step 7.
 
-**Phase 8 entry markers** (single source of truth — these phrases enter Phase 8 AND grant exhaustive authorization, so the wave executor proceeds without re-asking):
+**Phase 8 entry markers** (these phrases request implementation and therefore enter Phase 8; they do **not** all authorize an unexpectedly expanded finding set):
 
 - *Imperative scope:* `implement all`, `implement`, `fix all`, `fix everything`, `ship`, `ship it all`, `ship them all`, `address each one`, `address all`, `every item`, `every finding`, `every gap`, `every wave`, `cover all`, `complete all`, `tackle all`
 - *Continuation scope:* `do all` (waves|gaps|findings|of them|of it), `continue all` (gaps|findings|waves|of them)
 - *Quality bar:* `make X impeccable`, `make X perfect`, `make X world-class`, `make X production-ready`, `make X polished`, `make X enterprise-grade`, `make X excellent`, `make X flawless`
 - *Binary-quality framing:* `0 or 1`, `either 0 or 1`, `middle states are 0`, `no middle ground`
-- *Catch-alls:* `exhaustive`, `exhaustively`, `thorough`, `thoroughly`
+- *Catch-alls only when paired with mutation:* `exhaustively fix`, `thoroughly implement`, or equivalent. An exhaustive/thorough **assessment** remains advisory.
 
-A bash predicate that mirrors this list — `is_exhaustive_authorization_request()` in `lib/classifier.sh` — is wired into the prompt-intent-router so the model receives an explicit "EXHAUSTIVE AUTHORIZATION DETECTED" directive when any of these phrases is present.
+**Exhaustive authorization is a stricter, separate contract.** `is_exhaustive_authorization_request()` in `lib/classifier.sh` is authoritative. It recognizes explicit all/every/everything forms, exhaustive language attached to implementation/remediation, high-bar `make X impeccable`-class targets, and binary-quality framing. Thorough assessment wording alone is intensity, not scope authorization; an explicit top-N or selected/severity subset wins over earlier broad adjectives. Bare `implement` or `ship` enters Phase 8 but does not, by itself, authorize every newly discovered finding. The prompt router emits `EXHAUSTIVE AUTHORIZATION DETECTED` only when that predicate succeeds.
 
 1. **Build the master finding list.** Collect every finding from Steps 5/6 with stable IDs (`F-001`, `F-002`, …), severity (critical/high/medium/low), surface area (e.g., `auth/login`, `checkout/payment`, `cli/error-output`), and a rough effort estimate (S/M/L). The five-priority rule clipped the *headline* — execution restores the full set. Persist via `record-finding-list.sh` (writes `<session>/findings.json`); the master list is the source of truth for completion tracking.
 
 2. **Group into waves.** Cluster findings by surface area or dependency, not arbitrary chunks. A wave should be coherent (one feature, one screen, one subsystem) so a single per-wave commit makes sense. Aim for 5–10 findings per wave. Order waves by criticality first, then by dependency (don't fix a UI surface in wave 1 that depends on a backend fix in wave 3).
 
-3. **Surface the wave plan.** Show wave count, per-wave surface area, per-wave finding IDs, and total effort. If the prompt explicitly authorized exhaustive implementation (any **Phase 8 entry marker** above — single source of truth at the top of Step 8), proceed without confirmation. Otherwise apply the *Scope explosion without pre-authorization* pause case from `core.md` — surface the plan and ask whether to address top N, all N, or a different scope.
+3. **Surface the wave plan.** Show wave count, per-wave surface area, per-wave finding IDs, and total effort. If `is_exhaustive_authorization_request()` matches the prompt, proceed without confirmation. Otherwise apply the *Scope explosion without pre-authorization* pause case from `core.md` — surface the plan and ask whether to address top N, all N, or a different scope. Entering Phase 8 and authorizing scope expansion are deliberately different decisions.
 
    **Wave grouping is a structural constraint, not advice.** Aim for 5–10 findings per wave by surface area. If your plan emerges with avg <3 findings per wave on a master list of ≥5 findings, that is over-segmentation — merge adjacent surfaces until each wave is substantive. Single-finding waves are acceptable only when (a) the master list itself has <5 findings, or (b) one finding is critical enough to own its own wave (rare — name the reason in the wave commit body). The harness records wave shape via `record-finding-list.sh assign-wave` and a wave-shape advisory fires on under-segmented plans (see `record-finding-list.sh assign-wave` warnings and the wave-shape gate in `stop-guard.sh`).
 
@@ -169,16 +206,17 @@ A bash predicate that mirrors this list — `is_exhaustive_authorization_request
 
 4. **Execute waves sequentially — full cycle per wave.** For each wave N of M:
 
-    *Substrate note: when `workflow_substrate=on` and this is a multi-wave batch, the per-wave cycle below is the fire-and-resume shape that fits Claude Code's **Workflow tool** as a `pipeline()` — one stage per step, one item per wave. The engine carries determinism, a token budget, and resume across the batch; `/ulw` is standing authorization for the tool's explicit opt-in. Hand-sequenced dispatch is the fallback when the tool is unavailable or the list is small. The per-wave steps are identical either way — and each wave's `quality-reviewer`/`excellence-reviewer` verdict is still an input to challenge against evidence, not an auto-accept.*
+    *Substrate note: when `workflow_substrate=on` and this is a multi-wave batch, the per-wave cycle below is the fire-and-resume shape that fits Claude Code's **Workflow tool** as a `pipeline()` — one stage per step, one item per wave. The engine carries determinism, a token budget, and resume across the batch; `/ulw` is standing authorization for the tool's explicit opt-in. Hand-sequenced dispatch is the fallback when the tool is unavailable or the list is small. The per-wave steps are identical either way — and reviewer verdicts remain inputs to challenge against evidence, not auto-accepts.*
     1. Dispatch `quality-planner` for the wave's findings (decision-complete plan for the wave's scope only — not the whole project).
     1a. **Surface OPERATIONAL-BLOCKER findings only before executing (v1.40.0).** If the wave contains a finding with `requires_user_decision: true` AND the decision_reason names a real operational block (credentials, missing login, external account, a destructive shared-state action awaiting confirmation), present that finding's summary + decision_reason to the user before continuing into implementation. Under `no_defer_mode=on` (default), do NOT pause on findings marked user-decision for technical-judgment reasons (taste, policy, brand voice, library choice, credible-approach split) — those are the agent's call. Pick the sibling-of-codebase choice with stated reasoning in the wave plan, then ship; the user can redirect on review. If the field's `decision_reason` is ambiguous between operational and technical, default to autonomous execution and surface the choice in the wave commit body for the user to audit. The pause-on-user-decision behavior matches v1.39 only when `no_defer_mode=off`.
     2. Implement using the appropriate domain specialist agent(s).
     3. Dispatch `quality-reviewer` on the wave's diff (small enough for real per-line signal — this is the upside of waves over single-shot).
-    4. Dispatch `excellence-reviewer` for the wave's surface area. When the prompt mentioned "impeccable", "enterprise grade", "polished", or similar, extend the dispatch prompt with an explicit enterprise-polish checklist for the reviewer to evaluate against: error states (network failures, validation failures, server errors), empty states (no data, first-run, search-no-results), loading states (skeletons, spinners, optimistic UI), copywriting (tone consistency, clear error messages, no AI-isms like "I'll help you with that"), accessibility (keyboard navigation, screen-reader labels, focus management, color contrast WCAG AA), edge cases (long strings, special characters, slow networks, offline), transitions and motion (respects `prefers-reduced-motion`, no jank), and surface-specific polish (dark mode if relevant, RTL if relevant, responsive breakpoints). Pass this checklist as part of the prompt — `excellence-reviewer` does not have a built-in `enterprise-polish` mode; the framing lives at the dispatch site so the reviewer evaluates against the same bar the user implicitly set.
-    5. Run the strongest meaningful verification for the wave's domain.
-    6. Commit with title `Wave N/M: <surface> (F-xxx, F-yyy, ...)` and a body listing each finding ID and what changed.
-    7. Update each finding's status in `findings.json` (✓ shipped / ⚠ deferred / ✗ rejected) with commit SHA and any notes.
-    8. **If a wave reveals a new finding** (review uncovered something the council missed, or implementation surfaced an adjacent defect that meets the Serendipity Rule), append it to the master list with `record-finding-list.sh add-finding <<< '{"id":"F-NNN","summary":"...","severity":"...","surface":"..."}'` and either fold it into the current wave (if same surface, bounded fix) or assign it to a new follow-on wave with `assign-wave`. Do NOT silently fix it without recording — that breaks the per-finding traceability the protocol exists to provide.
+    4. Revisit the coverage map and satisfy only the semantic risks made material by this wave (for example security, reliability, data integrity, architecture, design, or research rigor). Select the best matching specialist from the full roster and give it that risk explicitly; do not substitute a standing panel or run unrelated specialists "for breadth." The runtime review-coverage gate enforces canonical changed-surface dimensions only—it does not choose semantic lenses for you. Any non-standard/custom specialist should emit `FINDINGS_JSON` so its findings enter discovered-scope enforcement deterministically.
+    5. Dispatch `excellence-reviewer` only when the adaptive route requires completeness (broad/open objective, current complex plan, unknown Bash scope, or qualifying cross-surface work). When the prompt mentioned "impeccable", "enterprise grade", "polished", or similar, extend that dispatch with an explicit enterprise-polish checklist: error, empty, and loading states; copy tone; accessibility; edge cases; motion; and relevant dark-mode/RTL/responsive behavior. `excellence-reviewer` has no built-in `enterprise-polish` mode, so keep the concrete rubric at the dispatch site.
+    6. Run the strongest meaningful verification for the wave's domain.
+    7. Commit with title `Wave N/M: <surface> (F-xxx, F-yyy, ...)` and a body listing each finding ID and what changed.
+    8. Update each finding's status in `findings.json` (✓ shipped / ⚠ deferred / ✗ rejected) with commit SHA and any notes.
+    9. **If a wave reveals a new finding** (review uncovered something the council missed, or implementation surfaced an adjacent defect that meets the Serendipity Rule), append it to the master list with `record-finding-list.sh add-finding <<< '{"id":"F-NNN","summary":"...","severity":"...","surface":"..."}'` and either fold it into the current wave (if same surface, bounded fix) or assign it to a new follow-on wave with `assign-wave`. Do NOT silently fix it without recording — that breaks the per-finding traceability the protocol exists to provide.
 
 5. **Final summary after all waves.** Present:
     - Master finding-list table: every ID → status with commit SHA or deferral reason.
@@ -192,7 +230,7 @@ A bash predicate that mirrors this list — `is_exhaustive_authorization_request
 
 **Anti-patterns Phase 8 exists to prevent:**
 - **Single-shot mega-implementation** — 30 findings in one giant diff; reviewer chokes, real defects slip through.
-- **Five-priority clipping** — "council headline said top 5, I'll only ship those" misreads the rank as scope. The rank is for presentation; execution covers all findings unless the user said otherwise.
+- **Five-priority clipping** — "council headline said top 5, I'll only ship those" misreads the rank as scope. The rank is for presentation; execution covers the scope the user authorized in step 3. Cover every finding only when the exhaustive-authorization predicate succeeds or the user chooses all findings at the scope pause.
 - **Cross-session handoff after wave 1** — "I'll do wave 2 next session" violates the segmentation rule in `core.md`. Waves are in-session structure, not cross-session phasing.
 - **One mega-commit with no per-finding traceability** — kills bisectability, code review, and rollback.
 - **Re-init clobbering on resume** — calling `init` on an already-populated wave plan and losing progress. Use `counts` first; `init --force` only when actually starting over.
@@ -202,6 +240,6 @@ A bash predicate that mirrors this list — `is_exhaustive_authorization_request
 
 - **Challenge the project, don't praise it.** The value is in what's missing or wrong. Strengths get a brief mention, not a celebration.
 - **Be specific.** "Improve error handling" is useless. "The /api/users endpoint returns a 500 with a stack trace when the email field is missing — return a 400 with a clear message" is useful.
-- **When lenses disagree, present the tension.** Don't resolve it — the user decides priorities.
+- **When specialists disagree, present the tension.** Resolve factual premises through independent verification; preserve genuine value tradeoffs for the user.
 - **Ground everything in evidence.** Every finding should reference a file, flow, or concrete observation.
 - **Prioritize ruthlessly.** A project with 47 findings needs 5 priorities, not 47 equal-weight items.

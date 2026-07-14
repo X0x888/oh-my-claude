@@ -226,7 +226,7 @@ write_session_json "${sid}" "$(jq -nc \
     review_had_findings:"false"
   }')"
 printf 'src/app.ts\n' > "${TEST_STATE_ROOT}/${sid}/edited_files.log"
-out="$(run_stop_guard "${sid}" OMC_QUALITY_POLICY=zero_steering OMC_METIS_ON_PLAN_GATE=off)"
+out="$(run_stop_guard "${sid}" OMC_QUALITY_POLICY=zero_steering OMC_METIS_ON_PLAN_GATE=off OMC_GATE_LEVEL=basic)"
 assert_eq "zero-steering metis gate blocks" "block" "$(jq -r '.decision // ""' <<<"${out}")"
 assert_contains "zero-steering metis gate reason" "Metis-on-plan gate" "${out}"
 

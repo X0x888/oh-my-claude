@@ -5,8 +5,8 @@
 #   1. Storage-side: tick_dimensions_with_verdict / set_dimension_verdicts
 #      route through _write_stricter_dim_verdicts_unlocked, which preserves
 #      the stricter of (current, new) verdict on a CLEAN < FINDINGS < BLOCK
-#      severity ladder. Edit-aware: stale FINDINGS (ts < last_code_edit_ts)
-#      is replaced by a fresh CLEAN — fix-and-re-review path must clear.
+#      severity ladder. Edit-aware: a FINDINGS verdict that predates its
+#      dimension-specific freshness clock is replaced by a fresh CLEAN.
 #   2. Gate-side: stop-guard's stricter-verdict-wins gate scans required
 #      dim verdicts and blocks Stop on any fresh FINDINGS*/BLOCK*.
 #
@@ -163,6 +163,57 @@ assert_eq "T3a: FINDINGS, EDIT, fresh CLEAN → CLEAN wins (FINDINGS was stale)"
   "CLEAN" "$(read_state "dim_bug_hunt_verdict")"
 assert_eq "T3a: ts updated to post-edit CLEAN" "$((findings_ts + 200))" "$(read_state "dim_bug_hunt_ts")"
 
+# Prose follows document edits, not implementation edits. A doc fix permits a
+# fresh CLEAN to replace FINDINGS; an unrelated code edit does not.
+reset_session "s3b"
+write_state "last_doc_edit_ts" "100"
+set_dimension_verdicts "FINDINGS" "prose"
+prose_findings_ts="$(read_state "dim_prose_ts")"
+write_state "last_doc_edit_ts" "$((prose_findings_ts + 100))"
+tick_dimensions_with_verdict "CLEAN" "$((prose_findings_ts + 200))" "prose"
+assert_eq "T3b: prose FINDINGS, DOC EDIT, fresh CLEAN → CLEAN" \
+  "CLEAN" "$(read_state "dim_prose_verdict")"
+
+reset_session "s3c"
+write_state "last_doc_edit_ts" "100"
+set_dimension_verdicts "FINDINGS" "prose"
+prose_findings_ts="$(read_state "dim_prose_ts")"
+write_state "last_code_edit_ts" "$((prose_findings_ts + 100))"
+tick_dimensions_with_verdict "CLEAN" "$((prose_findings_ts + 200))" "prose"
+assert_eq "T3c: unrelated CODE EDIT does not erase prose FINDINGS" \
+  "FINDINGS" "$(read_state "dim_prose_verdict")"
+
+# Completeness and traceability cover the whole objective. A document edit is
+# therefore enough to stale their earlier findings and allow a clean re-review.
+reset_session "s3d"
+write_state "last_edit_ts" "100"
+set_dimension_verdicts "FINDINGS" "completeness" "traceability"
+aggregate_findings_ts="$(read_state "dim_completeness_ts")"
+write_state "last_doc_edit_ts" "$((aggregate_findings_ts + 100))"
+write_state "last_edit_ts" "$((aggregate_findings_ts + 100))"
+tick_dimensions_with_verdict "CLEAN" "$((aggregate_findings_ts + 200))" \
+  "completeness" "traceability"
+assert_eq "T3d: doc edit invalidates completeness FINDINGS" \
+  "CLEAN" "$(read_state "dim_completeness_verdict")"
+assert_eq "T3d: doc edit invalidates traceability FINDINGS" \
+  "CLEAN" "$(read_state "dim_traceability_verdict")"
+
+# Stress-test findings belong to the plan. Implementation edits do not make
+# them stale; recording a newer plan does.
+reset_session "s3e"
+write_state "plan_ts" "100"
+set_dimension_verdicts "FINDINGS" "stress_test"
+stress_findings_ts="$(read_state "dim_stress_test_ts")"
+write_state "last_code_edit_ts" "$((stress_findings_ts + 100))"
+write_state "last_edit_ts" "$((stress_findings_ts + 100))"
+tick_dimensions_with_verdict "CLEAN" "$((stress_findings_ts + 200))" "stress_test"
+assert_eq "T3e: implementation edit does not erase stress-test FINDINGS" \
+  "FINDINGS" "$(read_state "dim_stress_test_verdict")"
+write_state "plan_ts" "$((stress_findings_ts + 300))"
+tick_dimensions_with_verdict "CLEAN" "$((stress_findings_ts + 400))" "stress_test"
+assert_eq "T3e: a newer plan lets fresh stress-test CLEAN replace FINDINGS" \
+  "CLEAN" "$(read_state "dim_stress_test_verdict")"
+
 # ---------------------------------------------------------------------------
 # Block 4: end-to-end through record-reviewer.sh (real call path)
 # ---------------------------------------------------------------------------
@@ -175,12 +226,33 @@ printf '\nEnd-to-end via record-reviewer.sh\n'
 # REVIEWER_TYPE="excellence".
 _drive_record_reviewer() {
   local sid="$1" reviewer_type="$2" message="$3"
+  local agent_type="${4:-}"
   local payload
-  payload="$(jq -nc --arg sid "${sid}" --arg msg "${message}" \
-    '{session_id:$sid, last_assistant_message:$msg}')"
+  payload="$(jq -nc --arg sid "${sid}" --arg msg "${message}" --arg agent "${agent_type}" \
+    '{session_id:$sid, last_assistant_message:$msg}
+     + if $agent == "" then {} else {agent_type:$agent} end')"
   HOME="${_test_home}" STATE_ROOT="${_test_state_root}" \
     bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/record-reviewer.sh" "${reviewer_type}" \
     <<<"${payload}" >/dev/null 2>&1 || true
+}
+
+_drive_agent_dispatch() {
+  local sid="$1" agent_type="$2" description="${3:-review current work}"
+  local payload
+  payload="$(jq -nc --arg sid "${sid}" --arg agent "${agent_type}" --arg desc "${description}" '
+    {session_id:$sid,tool_name:"Agent",tool_input:{subagent_type:$agent,description:$desc,prompt:"review"}}')"
+  HOME="${_test_home}" STATE_ROOT="${_test_state_root}" \
+    bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/record-pending-agent.sh" \
+    <<<"${payload}" 2>/dev/null || true
+}
+
+_drive_subagent_summary() {
+  local sid="$1" agent_type="$2" message="$3"
+  jq -nc --arg sid "${sid}" --arg agent "${agent_type}" --arg msg "${message}" \
+    '{session_id:$sid,agent_type:$agent,last_assistant_message:$msg}' \
+    | HOME="${_test_home}" STATE_ROOT="${_test_state_root}" \
+      bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/record-subagent-summary.sh" \
+      >/dev/null 2>&1 || true
 }
 
 # In oh-my-claude's reviewer map, each REVIEWER_TYPE owns its own
@@ -226,6 +298,160 @@ assert_eq "T4b: standard FINDINGS-then-CLEAN → bug_hunt stays FINDINGS (strict
 # stricter-wins on dim_verdict (the prior FINDINGS preserved).
 assert_eq "T4b: review_had_findings reflects latest reviewer (CLEAN)" \
   "false" "$(read_state "review_had_findings")"
+
+# Specialist reviewer state is role-isolated. Specialists may tick their own
+# dimensions, but they must neither manufacture a universal review clock nor
+# clear a standard quality review's findings.
+reset_session "s4c"
+write_state "last_code_edit_ts" "100"
+write_state "last_doc_edit_ts" "100"
+write_state "last_edit_ts" "100"
+write_state "plan_ts" "100"
+for specialist in excellence prose stress_test traceability design_quality release; do
+  _drive_record_reviewer "s4c" "${specialist}" "Specialist pass is clean.
+
+VERDICT: CLEAN"
+done
+assert_eq "T4c: specialists before standard do not set last_review_ts" \
+  "" "$(read_state "last_review_ts")"
+assert_eq "T4c: specialists before standard do not set review_had_findings" \
+  "" "$(read_state "review_had_findings")"
+
+reset_session "s4d"
+write_state "last_code_edit_ts" "100"
+write_state "last_doc_edit_ts" "100"
+write_state "last_edit_ts" "100"
+write_state "plan_ts" "100"
+_drive_record_reviewer "s4d" "standard" "A blocking defect remains.
+
+VERDICT: FINDINGS (1)"
+standard_findings_ts="$(read_state "last_review_ts")"
+for specialist in excellence prose stress_test traceability design_quality release; do
+  _drive_record_reviewer "s4d" "${specialist}" "Specialist pass is clean.
+
+VERDICT: CLEAN"
+done
+assert_eq "T4d: specialist CLEAN does not clear standard review_had_findings" \
+  "true" "$(read_state "review_had_findings")"
+assert_eq "T4d: specialist CLEAN does not replace standard last_review_ts" \
+  "${standard_findings_ts}" "$(read_state "last_review_ts")"
+
+# Review evidence is causal: the accepted generation is captured when Agent
+# starts, not when SubagentStop arrives. An edit during the review invalidates
+# the result without advancing either metadata or dimension state.
+reset_session "s4e"
+with_state_lock_batch \
+  "edit_revision" "1" \
+  "last_code_edit_revision" "1" \
+  "last_code_edit_ts" "100"
+first_dispatch="$(_drive_agent_dispatch "s4e" "quality-reviewer")"
+assert_eq "T4e: first gate-reviewer dispatch is allowed" "" "${first_dispatch}"
+with_state_lock_batch \
+  "edit_revision" "2" \
+  "last_code_edit_revision" "2" \
+  "last_code_edit_ts" "101"
+_drive_record_reviewer "s4e" "standard" $'Review completed.\nVERDICT: CLEAN' "quality-reviewer"
+assert_eq "T4e: edit-during-review does not advance last_review_ts" \
+  "" "$(read_state "last_review_ts")"
+assert_eq "T4e: edit-during-review does not tick bug_hunt" \
+  "" "$(read_state "dim_bug_hunt_ts")"
+assert_eq "T4e: stale diagnostic preserves dispatch generation" \
+  "1" "$(read_state "last_stale_reviewer_start_revision")"
+assert_eq "T4e: stale diagnostic records completion generation" \
+  "2" "$(read_state "last_stale_reviewer_current_revision")"
+
+# Universal SubagentStop cleanup removes the completed pending row; a fresh
+# dispatch at generation 2 is then accepted and atomically stamps the legacy
+# review generation plus both standard dimensions.
+_drive_subagent_summary "s4e" "quality-reviewer" $'Review completed.\nVERDICT: CLEAN'
+fresh_dispatch="$(_drive_agent_dispatch "s4e" "quality-reviewer")"
+assert_eq "T4e: fresh post-edit reviewer dispatch is allowed" "" "${fresh_dispatch}"
+_drive_record_reviewer "s4e" "standard" $'Fresh review completed.\nVERDICT: CLEAN' "quality-reviewer"
+assert_eq "T4e: accepted review stamps legacy code generation" \
+  "2" "$(read_state "review_code_revision")"
+assert_eq "T4e: accepted review stamps bug_hunt generation" \
+  "2" "$(read_state "dim_bug_hunt_revision")"
+assert_eq "T4e: accepted review stamps code_quality generation" \
+  "2" "$(read_state "dim_code_quality_revision")"
+
+# Same-role duplicate reviews are the one shape SubagentStop cannot identify
+# causally (it exposes agent_type but no Agent tool_use_id), so fail closed.
+# Different roles still retain the intended parallelism.
+reset_session "s4f"
+with_state_lock_batch "edit_revision" "1" "last_code_edit_revision" "1"
+first_same_role="$(_drive_agent_dispatch "s4f" "quality-reviewer")"
+second_same_role="$(_drive_agent_dispatch "s4f" "quality-reviewer")"
+different_role="$(_drive_agent_dispatch "s4f" "excellence-reviewer")"
+assert_eq "T4f: initial same-role review is allowed" "" "${first_same_role}"
+assert_contains "T4f: duplicate in-flight same-role review is denied" \
+  '"permissionDecision":"deny"' "${second_same_role}"
+assert_eq "T4f: different reviewer role remains parallel" "" "${different_role}"
+
+# Versioned reviewer tracking fails closed if its causal start row is lost or
+# malformed. The state marker survives the row itself, so queue truncation,
+# deactivation/replay, or manual corruption cannot turn a current completion
+# into completion-time evidence. Unversioned sessions retain one explicit
+# legacy migration path.
+reset_session "s4g"
+with_state_lock_batch \
+  "edit_revision" "3" \
+  "last_code_edit_revision" "3" \
+  "last_code_edit_ts" "103"
+tracked_dispatch="$(_drive_agent_dispatch "s4g" "quality-reviewer")"
+assert_eq "T4g: tracked reviewer dispatch is allowed" "" "${tracked_dispatch}"
+assert_eq "T4g: dispatch arms reviewer causality version" \
+  "1" "$(read_state "review_dispatch_tracking_version")"
+rm -f "$(session_file "agent_dispatch_starts.jsonl")"
+_drive_record_reviewer "s4g" "standard" $'Lost-start review.\nVERDICT: CLEAN' "quality-reviewer"
+assert_eq "T4g: missing tracked start does not tick bug_hunt" \
+  "" "$(read_state "dim_bug_hunt_ts")"
+assert_eq "T4g: missing tracked start records deterministic reason" \
+  "missing_start_snapshot" "$(read_state "last_stale_reviewer_reason")"
+
+reset_session "s4h"
+with_state_lock_batch \
+  "edit_revision" "4" \
+  "last_code_edit_revision" "4" \
+  "last_code_edit_ts" "104" \
+  "review_dispatch_tracking_version" "1"
+printf '%s\n' \
+  '{"agent_type":"quality-reviewer","review_dispatch_causality_version":1,"review_revision":"broken"}' \
+  >"$(session_file "agent_dispatch_starts.jsonl")"
+_drive_record_reviewer "s4h" "standard" $'Malformed-start review.\nVERDICT: CLEAN' "quality-reviewer"
+assert_eq "T4h: malformed tracked start does not tick code_quality" \
+  "" "$(read_state "dim_code_quality_ts")"
+assert_eq "T4h: malformed tracked start records deterministic reason" \
+  "invalid_start_snapshot" "$(read_state "last_stale_reviewer_reason")"
+
+reset_session "s4i"
+write_state "last_code_edit_ts" "100"
+_drive_record_reviewer "s4i" "standard" $'Legacy review.\nVERDICT: CLEAN' "quality-reviewer"
+assert_eq "T4i: unversioned legacy session still accepts completion" \
+  "CLEAN" "$(read_state "dim_bug_hunt_verdict")"
+assert_eq "T4i: legacy migration does not synthesize tracking marker" \
+  "" "$(read_state "review_dispatch_tracking_version")"
+
+# Design freshness canonically falls back to the code generation when a
+# session has not recorded a UI-specific revision. The start row must capture
+# five here, not zero, and the unchanged completion must be accepted.
+reset_session "s4j"
+with_state_lock_batch \
+  "edit_revision" "5" \
+  "last_code_edit_revision" "5" \
+  "last_code_edit_ts" "105"
+design_dispatch="$(_drive_agent_dispatch "s4j" "design-reviewer")"
+assert_eq "T4j: design reviewer dispatch is allowed" "" "${design_dispatch}"
+design_start_file="$(session_file "agent_dispatch_starts.jsonl")"
+assert_eq "T4j: design row snapshots canonical fallback revision" \
+  "5" "$(jq -r '.review_revision' "${design_start_file}")"
+assert_eq "T4j: design row preserves canonical UI audit field" \
+  "5" "$(jq -r '.ui_revision' "${design_start_file}")"
+_drive_record_reviewer "s4j" "design_quality" \
+  $'Design review completed.\nVERDICT: CLEAN' "design-reviewer"
+assert_eq "T4j: unchanged design review ticks code fallback generation" \
+  "5" "$(read_state "dim_design_quality_revision")"
+assert_eq "T4j: unchanged design review is not rejected stale" \
+  "" "$(read_state "last_stale_reviewer_reason")"
 
 # ---------------------------------------------------------------------------
 # Block 5: stop-guard's stricter-verdict-wins gate actually blocks

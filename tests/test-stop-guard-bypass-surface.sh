@@ -592,6 +592,22 @@ assert_contains "rejection names the recovery path" "Re-run the reviewer" "${out
 assert_eq "gate_skip_reason NOT set after refusal" "" "$(read_state_field 'gate_skip_reason')"
 teardown
 
+# Same-second edit ordering comes from monotonic revisions. A post-review edit
+# must make the refusal fire even when the epoch timestamps are equal.
+setup
+write_state_field "review_had_findings" "true"
+write_state_field "last_review_ts" "2000"
+write_state_field "last_edit_ts" "2000"
+write_state_field "edit_revision" "2"
+write_state_field "dim_bug_hunt_revision" "1"
+set +e
+out="$("${HOOK_DIR}/ulw-skip-register.sh" "same-second bypass attempt" 2>&1)"
+rc=$?
+set -e
+assert_eq "same-second post-review edit refuses skip by revision" "4" "${rc}"
+assert_eq "same-second refusal does not register skip" "" "$(read_state_field 'gate_skip_reason')"
+teardown
+
 # OMC_ULW_SKIP_FORCE=1 overrides (audited)
 setup
 write_state_field "review_had_findings" "true"
@@ -612,9 +628,27 @@ teardown
 # No findings → skip works as expected (not gated)
 setup
 write_state_int "last_edit_ts" "2000"
+write_state_field "edit_revision" "5"
 out="$("${HOOK_DIR}/ulw-skip-register.sh" "false-positive gate" 2>&1)"
 rc=$?
 assert_eq "skip with no review_had_findings exits 0" "0" "${rc}"
+assert_eq "skip registration captures edit revision" "5" "$(read_state_field 'gate_skip_edit_revision')"
+teardown
+
+# Stop invalidates a skip after a same-second edit generation advance.
+setup
+write_state_field "gate_skip_reason" "skip before final edit"
+write_state_field "gate_skip_edit_ts" "2000"
+write_state_field "gate_skip_edit_revision" "4"
+write_state_field "last_edit_ts" "2000"
+write_state_field "edit_revision" "5"
+write_state_field "task_intent" "execution"
+write_state_field "task_domain" "coding"
+_skip_stop="$(jq -nc --arg sid "${SESSION_ID}" \
+  '{session_id:$sid,last_assistant_message:"Trying to stop."}' \
+  | OMC_GATE_LEVEL=basic "${HOOK_DIR}/stop-guard.sh" || true)"
+assert_eq "same-second edit invalidates registered skip" "" "$(read_state_field 'session_outcome')"
+assert_eq "invalidated skip remains single-use" "" "$(read_state_field 'gate_skip_reason')"
 teardown
 
 # ===========================================================================
@@ -1018,7 +1052,9 @@ _oc_reach_gate_state() {
   write_state_field "code_edit_count" "6"
   write_state_field "doc_edit_count" "0"
   write_state_field "objective_contract_edit_baseline" "0"
+  write_state_field "objective_contract_edit_revision_base" "0"
   write_state_field "objective_contract_prompt_ts" "100"
+  write_state_field "edit_revision" "1"
   write_state_field "objective_contract_audited_ts" ""
   write_state_field "objective_contract_blocks" "0"
 }
@@ -1045,11 +1081,14 @@ out="$(jq -n --arg sid "${SESSION_ID}" --arg msg "Done. Wired the handler." \
 assert_contains "F-014b: intent-flip to advisory cannot bypass (effective_intent override)" "Objective-contract gate" "${out}"
 teardown
 
-# (c) coverage attestation + a RECORDED fresh-context audit this cycle
-# (last_excellence_review_ts > prompt_ts) clears the gate.
+# (c) coverage attestation + a current CLEAN completeness dimension from a
+# fresh-context audit this cycle clears the gate.
 setup
 _oc_reach_gate_state "execution"
-write_state_field "last_excellence_review_ts" "350"   # fresh audit, > prompt_ts=100
+write_state_field "last_excellence_review_ts" "350"
+write_state_field "dim_completeness_ts" "350"
+write_state_field "dim_completeness_revision" "1"
+write_state_field "dim_completeness_verdict" "CLEAN"
 out="$(jq -n --arg sid "${SESSION_ID}" --arg msg "All parts done.
 
 **Objective coverage.** api: shipped; ui: shipped; tests: shipped; fresh excellence-review found no cost/risk-deferred omissions." \
@@ -1077,7 +1116,9 @@ _oc_wha_state() {
   write_state_field "code_edit_count" "2"   # < min_files=4 -> NOT substantive
   write_state_field "doc_edit_count" "0"
   write_state_field "objective_contract_edit_baseline" "0"
+  write_state_field "objective_contract_edit_revision_base" "0"
   write_state_field "objective_contract_prompt_ts" "100"
+  write_state_field "edit_revision" "1"
   write_state_field "objective_contract_audited_ts" ""
   write_state_field "objective_contract_blocks" "0"
 }
@@ -1125,12 +1166,97 @@ out="$(jq -n --arg sid "${SESSION_ID}" --arg msg "All parts done.
 assert_contains "F-014f2: stale prior-cycle audit does NOT clear (still blocks)" "Objective-contract gate" "${out}"
 teardown
 
+# (f3) A current audit that returned FINDINGS is not completion evidence.
+setup
+_oc_reach_gate_state "execution"
+write_state_field "last_excellence_review_ts" "350"
+write_state_field "dim_completeness_ts" "350"
+write_state_field "dim_completeness_revision" "1"
+write_state_field "dim_completeness_verdict" "FINDINGS"
+out="$(jq -n --arg sid "${SESSION_ID}" --arg msg "All parts done. **Objective coverage.**" \
+  '{session_id:$sid, stop_hook_active:false, last_assistant_message:$msg}' \
+  | OMC_GATE_LEVEL=basic "${HOOK_DIR}/stop-guard.sh")"
+assert_contains "F-014f3: FINDINGS completeness audit does NOT clear" "Objective-contract gate" "${out}"
+teardown
+
+# (h) Revision arming preserves same-second event order.
+setup
+_oc_reach_gate_state "execution"
+write_state_field "last_edit_ts" "100"   # equal to prompt timestamp
+out="$(jq -n --arg sid "${SESSION_ID}" --arg msg "Same-second edit landed." \
+  '{session_id:$sid, stop_hook_active:false, last_assistant_message:$msg}' \
+  | OMC_GATE_LEVEL=basic "${HOOK_DIR}/stop-guard.sh")"
+assert_contains "F-014h: same-second edit arms via revision baseline" "Objective-contract gate" "${out}"
+teardown
+
+# (i) Semantic arms are current-objective scoped: an old complex plan cannot
+# arm a tiny follow-up, while a plan revision recorded after the route can.
+setup
+_oc_wha_state
+write_state_field "plan_complexity_high" "1"
+write_state_field "plan_revision" "5"
+write_state_field "review_cycle_prompt_ts" "100"
+write_state_field "review_cycle_edit_log_offset" "0"
+write_state_field "review_cycle_plan_revision_base" "5"
+out="$(jq -n --arg sid "${SESSION_ID}" --arg msg "Tiny follow-up done." \
+  '{session_id:$sid, stop_hook_active:false, last_assistant_message:$msg}' \
+  | OMC_GATE_LEVEL=basic "${HOOK_DIR}/stop-guard.sh")"
+assert_not_contains "F-014i: stale prior-objective complex plan does not arm" "Objective-contract gate" "${out}"
+teardown
+
+setup
+_oc_wha_state
+write_state_field "plan_complexity_high" "1"
+write_state_field "plan_revision" "6"
+write_state_field "review_cycle_prompt_ts" "100"
+write_state_field "review_cycle_edit_log_offset" "0"
+write_state_field "review_cycle_plan_revision_base" "5"
+out="$(jq -n --arg sid "${SESSION_ID}" --arg msg "Current complex plan work done." \
+  '{session_id:$sid, stop_hook_active:false, last_assistant_message:$msg}' \
+  | OMC_GATE_LEVEL=basic "${HOOK_DIR}/stop-guard.sh")"
+assert_contains "F-014i: current plan revision arms objective contract" "Objective-contract gate" "${out}"
+teardown
+
+# Unknown-path Bash uses the review-cycle event baseline rather than the sticky
+# session bit/timestamp, so only a current objective's event arms.
+setup
+_oc_wha_state
+write_state_field "bash_unknown_edit_scope" "1"
+write_state_field "bash_edit_event_count" "2"
+write_state_field "review_cycle_bash_event_base" "2"
+write_state_field "review_cycle_prompt_ts" "100"
+write_state_field "review_cycle_edit_log_offset" "0"
+out="$(jq -n --arg sid "${SESSION_ID}" --arg msg "Tiny follow-up done." \
+  '{session_id:$sid, stop_hook_active:false, last_assistant_message:$msg}' \
+  | OMC_GATE_LEVEL=basic "${HOOK_DIR}/stop-guard.sh")"
+assert_not_contains "F-014j: stale unknown-Bash bit does not arm" "Objective-contract gate" "${out}"
+teardown
+
+setup
+_oc_wha_state
+write_state_field "bash_unknown_edit_scope" "1"
+write_state_field "bash_edit_event_count" "3"
+write_state_field "review_cycle_bash_event_base" "2"
+write_state_field "review_cycle_prompt_ts" "100"
+write_state_field "review_cycle_edit_log_offset" "0"
+out="$(jq -n --arg sid "${SESSION_ID}" --arg msg "Current Bash mutation done." \
+  '{session_id:$sid, stop_hook_active:false, last_assistant_message:$msg}' \
+  | OMC_GATE_LEVEL=basic "${HOOK_DIR}/stop-guard.sh")"
+assert_contains "F-014j: current unknown-Bash event arms objective contract" "Objective-contract gate" "${out}"
+teardown
+
 # (d) self-disarm wiring: the router must stamp objective_contract_prompt_ts
 # ONLY on fresh execution intent (so non-execution follow-up turns are inert).
 if grep -q 'objective_contract_prompt_ts' "${ROUTER_PATH}"; then
   pass=$((pass + 1))
 else
   printf '  FAIL: F-014d: router does not stamp objective_contract_prompt_ts — self-disarm wiring missing\n' >&2
+  fail=$((fail + 1))
+fi
+if grep -q 'objective_contract_edit_revision_base' "${ROUTER_PATH}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: F-014d: router does not snapshot objective_contract_edit_revision_base\n' >&2
   fail=$((fail + 1))
 fi
 # (e) intent-flip resistance wiring: the gate must key on _effective_intent
@@ -1165,7 +1291,9 @@ write_state_field "last_verify_outcome" "passed"
 write_state_field "last_verify_confidence" "80"
 write_state_field "code_edit_count" "1"
 write_state_field "objective_contract_edit_baseline" "0"
+write_state_field "objective_contract_edit_revision_base" "0"
 write_state_field "objective_contract_prompt_ts" "100"
+write_state_field "edit_revision" "1"
 _f015_block="$(jq -nc --arg sid "${SESSION_ID}" \
   '{session_id:$sid,last_assistant_message:"Done. One handler migrated."}' \
   | OMC_GATE_LEVEL=basic "${HOOK_DIR}/stop-guard.sh" || true)"
@@ -1188,9 +1316,12 @@ write_state_field "last_verify_outcome" "passed"
 write_state_field "last_verify_confidence" "80"
 write_state_field "code_edit_count" "1"
 write_state_field "objective_contract_edit_baseline" "0"
+write_state_field "objective_contract_edit_revision_base" "0"
 write_state_field "objective_contract_prompt_ts" "100"
+write_state_field "edit_revision" "1"
 write_state_field "goal_stuck_blocks" "2"
 write_state_field "goal_last_block_edit_ts" "200"
+write_state_field "goal_last_block_edit_revision" "1"
 _f015_wall="$(jq -nc --arg sid "${SESSION_ID}" \
   '{session_id:$sid,last_assistant_message:"Still stuck; no progress this round."}' \
   | OMC_GATE_LEVEL=basic "${HOOK_DIR}/stop-guard.sh" || true)"

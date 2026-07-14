@@ -71,8 +71,11 @@ fi
 
 now="$(now_epoch)"
 is_doc=0
+is_ui=0
 if [[ -n "${edited_path}" ]] && is_doc_path "${edited_path}"; then
   is_doc=1
+elif [[ -n "${edited_path}" ]] && is_ui_path "${edited_path}"; then
+  is_ui=1
 fi
 
 _record_first_mutation_from_edit() {
@@ -99,38 +102,72 @@ with_state_lock _record_first_mutation_from_edit || true
 # backward compatibility with the legacy review_unremediated path and
 # any pre-dimension-gate tests / consumers.
 #
-# Wrapped in with_state_lock_batch to serialize against concurrent
+# Written by one locked read-modify-write to serialize against concurrent
 # SubagentStop reviewer writes (record-reviewer.sh), which share the
 # stop_guard_blocks / session_handoff_blocks keys. Without the lock,
 # a reviewer batch racing with this batch could lose updates to
-# dimension_guard_blocks and the edit-timestamp clocks.
-if [[ "${is_doc}" -eq 1 ]]; then
-  with_state_lock_batch \
-    "last_edit_ts" "${now}" \
-    "last_doc_edit_ts" "${now}" \
-    "stop_guard_blocks" "0" \
-    "session_handoff_blocks" "0" \
-    "advisory_guard_blocks" "0" \
-    "stall_counter" "0"
-elif [[ "${tool_name}" == "Bash" ]] && [[ -z "${edited_path}" ]]; then
-  with_state_lock_batch \
-    "last_edit_ts" "${now}" \
-    "last_code_edit_ts" "${now}" \
-    "last_bash_edit_ts" "${now}" \
-    "bash_unknown_edit_scope" "1" \
-    "stop_guard_blocks" "0" \
-    "session_handoff_blocks" "0" \
-    "advisory_guard_blocks" "0" \
-    "stall_counter" "0"
-else
-  with_state_lock_batch \
-    "last_edit_ts" "${now}" \
-    "last_code_edit_ts" "${now}" \
-    "stop_guard_blocks" "0" \
-    "session_handoff_blocks" "0" \
-    "advisory_guard_blocks" "0" \
-    "stall_counter" "0"
-fi
+# dimension_guard_blocks, timestamp clocks, and monotonic freshness revisions.
+_record_edit_clocks() {
+  local _edit_revision _next_revision _bash_event_count
+  _edit_revision="$(read_state "edit_revision")"
+  [[ "${_edit_revision}" =~ ^[0-9]+$ ]] || _edit_revision=0
+  _next_revision=$((_edit_revision + 1))
+
+  if [[ "${is_doc}" -eq 1 ]]; then
+    write_state_batch \
+      "last_edit_ts" "${now}" \
+      "last_doc_edit_ts" "${now}" \
+      "edit_revision" "${_next_revision}" \
+      "last_doc_edit_revision" "${_next_revision}" \
+      "stop_guard_blocks" "0" \
+      "session_handoff_blocks" "0" \
+      "advisory_guard_blocks" "0" \
+      "stall_counter" "0"
+  elif [[ "${tool_name}" == "Bash" ]] && [[ -z "${edited_path}" ]]; then
+    # A monotonic event counter, not the second-resolution timestamp, scopes
+    # unknown-path Bash work to a fresh review objective. The global edit
+    # revision independently makes reviews/tests stale even in the same second.
+    _bash_event_count="$(read_state "bash_edit_event_count")"
+    [[ "${_bash_event_count}" =~ ^[0-9]+$ ]] || _bash_event_count=0
+    local _unknown_args=(
+      "last_edit_ts" "${now}"
+      "last_code_edit_ts" "${now}"
+      "last_bash_edit_ts" "${now}"
+      "edit_revision" "${_next_revision}"
+      "last_code_edit_revision" "${_next_revision}"
+      "last_bash_edit_revision" "${_next_revision}"
+      "bash_edit_event_count" "$((_bash_event_count + 1))"
+      "bash_unknown_edit_scope" "1"
+      "stop_guard_blocks" "0"
+      "session_handoff_blocks" "0"
+      "advisory_guard_blocks" "0"
+      "stall_counter" "0"
+    )
+    if [[ "$(read_state "review_cycle_ui_semantic")" == "1" ]]; then
+      _unknown_args+=("last_ui_edit_ts" "${now}" "last_ui_edit_revision" "${_next_revision}")
+    fi
+    if [[ "$(read_state "review_cycle_prose_semantic")" == "1" ]]; then
+      _unknown_args+=("last_doc_edit_ts" "${now}" "last_doc_edit_revision" "${_next_revision}")
+    fi
+    write_state_batch "${_unknown_args[@]}"
+  else
+    local _code_args=(
+      "last_edit_ts" "${now}"
+      "last_code_edit_ts" "${now}"
+      "edit_revision" "${_next_revision}"
+      "last_code_edit_revision" "${_next_revision}"
+      "stop_guard_blocks" "0"
+      "session_handoff_blocks" "0"
+      "advisory_guard_blocks" "0"
+      "stall_counter" "0"
+    )
+    if [[ "${is_ui}" -eq 1 ]]; then
+      _code_args+=("last_ui_edit_ts" "${now}" "last_ui_edit_revision" "${_next_revision}")
+    fi
+    write_state_batch "${_code_args[@]}"
+  fi
+}
+with_state_lock _record_edit_clocks
 
 # Bash worktree scope is unknown: keep exact unique-file counters untouched so
 # a later Edit of the same path cannot turn one real file into count=2. The
@@ -176,7 +213,7 @@ if [[ -n "${edited_path}" ]]; then
         write_state "code_edit_count" "$((_code_count + 1))"
         # Track UI file edits separately for the design_quality dimension.
         # UI is a subset of code — both counters increment.
-        if is_ui_path "${edited_path}"; then
+        if [[ "${is_ui}" -eq 1 ]]; then
           local _ui_count
           _ui_count="$(read_state "ui_edit_count")"
           _ui_count="${_ui_count:-0}"

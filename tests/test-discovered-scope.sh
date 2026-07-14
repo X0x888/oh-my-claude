@@ -716,6 +716,109 @@ else
 fi
 assert_eq "zero_capture not fired below 500 char threshold" "0" "${short_zc_count}"
 
+# A custom/non-prefixed Council specialist can participate safely by emitting
+# the deterministic FINDINGS_JSON contract. Prose heuristics stay allowlisted.
+custom_session_id="zc-custom-$$"
+custom_state_dir="${zc_session_root}/${custom_session_id}"
+mkdir -p "${custom_state_dir}"
+printf '{"workflow_mode":"ultrawork"}\n' > "${custom_state_dir}/session_state.json"
+custom_message='FINDINGS_JSON: [{"severity":"high","category":"security","file":"src/auth.ts","line":9,"claim":"Custom specialist found an auth bypass","evidence":"guard omitted","recommended_fix":"enforce guard"}]'$'\n''VERDICT: FINDINGS (1)'
+custom_payload="$(jq -nc --arg sid "${custom_session_id}" --arg msg "${custom_message}" \
+  '{session_id:$sid,agent_type:"custom-trust-auditor",message:$msg,last_assistant_message:$msg}')"
+OMC_DISCOVERED_SCOPE=on SESSION_ID="${custom_session_id}" STATE_ROOT="${zc_session_root}" HOME="${zc_session_root}" \
+bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/record-subagent-summary.sh" \
+  <<<"${custom_payload}" >/dev/null 2>&1 || true
+custom_scope="${custom_state_dir}/discovered_scope.jsonl"
+assert_eq "custom structured specialist finding is captured" "custom-trust-auditor" \
+  "$(jq -r '.source // empty' "${custom_scope}" 2>/dev/null | head -1)"
+
+custom_prose_session_id="zc-custom-prose-$$"
+custom_prose_state_dir="${zc_session_root}/${custom_prose_session_id}"
+mkdir -p "${custom_prose_state_dir}"
+printf '{"workflow_mode":"ultrawork"}\n' > "${custom_prose_state_dir}/session_state.json"
+custom_prose=$'### Findings\n1. High: prose-only custom finding'
+custom_prose_payload="$(jq -nc --arg sid "${custom_prose_session_id}" --arg msg "${custom_prose}" \
+  '{session_id:$sid,agent_type:"custom-trust-auditor",message:$msg,last_assistant_message:$msg}')"
+OMC_DISCOVERED_SCOPE=on SESSION_ID="${custom_prose_session_id}" STATE_ROOT="${zc_session_root}" HOME="${zc_session_root}" \
+bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/record-subagent-summary.sh" \
+  <<<"${custom_prose_payload}" >/dev/null 2>&1 || true
+if [[ -f "${custom_prose_state_dir}/discovered_scope.jsonl" ]]; then
+  custom_prose_count="$(wc -l < "${custom_prose_state_dir}/discovered_scope.jsonl" | tr -d ' ')"
+else
+custom_prose_count=0
+fi
+assert_eq "custom prose-only output is not heuristic-scraped" "0" "${custom_prose_count}"
+
+seed_current_custom_council_dispatch() {
+  local state_dir="$1" ts="$2"
+  printf '%s\n' '{"objective_prompt_ts":0,"objective_prompt_revision":0}' \
+    > "${state_dir}/council_coverage.json"
+  jq -nc \
+    --argjson ts "${ts}" \
+    '{ts:$ts,agent_type:"custom-trust-auditor",description:"[council:primary] trust audit",
+      purpose:"council",council_phase:"primary",council_selection_agent:"custom-trust-auditor",
+      council_objective_prompt_ts:0,council_objective_prompt_revision:0,council_ledger_generation:1}' \
+    > "${state_dir}/pending_agents.jsonl"
+}
+
+custom_missing_session_id="zc-custom-missing-json-$$"
+custom_missing_state_dir="${zc_session_root}/${custom_missing_session_id}"
+mkdir -p "${custom_missing_state_dir}"
+printf '{"workflow_mode":"ultrawork"}\n' > "${custom_missing_state_dir}/session_state.json"
+seed_current_custom_council_dispatch "${custom_missing_state_dir}" 1
+custom_missing=$'I found an issue but used my native prose format.\nVERDICT: FINDINGS (1)'
+custom_missing_payload="$(jq -nc --arg sid "${custom_missing_session_id}" --arg msg "${custom_missing}" \
+  '{session_id:$sid,agent_type:"custom-trust-auditor",message:$msg,last_assistant_message:$msg}')"
+OMC_DISCOVERED_SCOPE=on SESSION_ID="${custom_missing_session_id}" STATE_ROOT="${zc_session_root}" HOME="${zc_session_root}" \
+bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/record-subagent-summary.sh" \
+  <<<"${custom_missing_payload}" >/dev/null 2>&1 || true
+assert_contains "custom findings verdict without JSON creates actionable placeholder" \
+  "omitted the required FINDINGS_JSON" \
+  "$(jq -r '.summary // empty' "${custom_missing_state_dir}/discovered_scope.jsonl" 2>/dev/null | head -1)"
+
+# Resolving one malformed return must not deduplicate a later malformed
+# Council return from the same custom agent.
+jq '(.status)="shipped" | (.reason)="specialist rerun requested"' \
+  "${custom_missing_state_dir}/discovered_scope.jsonl" \
+  > "${custom_missing_state_dir}/discovered_scope.jsonl.tmp"
+mv "${custom_missing_state_dir}/discovered_scope.jsonl.tmp" \
+  "${custom_missing_state_dir}/discovered_scope.jsonl"
+seed_current_custom_council_dispatch "${custom_missing_state_dir}" 2
+OMC_DISCOVERED_SCOPE=on SESSION_ID="${custom_missing_session_id}" STATE_ROOT="${zc_session_root}" HOME="${zc_session_root}" \
+bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/record-subagent-summary.sh" \
+  <<<"${custom_missing_payload}" >/dev/null 2>&1 || true
+assert_eq "repeat malformed Council return gets a distinct pending placeholder" "2:1" \
+  "$(jq -s -r '[length, ([.[] | select(.status == "pending")] | length)] | map(tostring) | join(":")' \
+      "${custom_missing_state_dir}/discovered_scope.jsonl" 2>/dev/null)"
+
+# Last authoritative verdict wins and fenced examples do not arm the contract.
+custom_clean_session_id="zc-custom-clean-$$"
+custom_clean_state_dir="${zc_session_root}/${custom_clean_session_id}"
+mkdir -p "${custom_clean_state_dir}"
+printf '{"workflow_mode":"ultrawork"}\n' > "${custom_clean_state_dir}/session_state.json"
+seed_current_custom_council_dispatch "${custom_clean_state_dir}" 1
+custom_clean=$'Earlier draft:\n```text\nVERDICT: FINDINGS (2)\n```\nVERDICT: FINDINGS (1)\nEvidence resolved on recheck.\nVERDICT: CLEAN'
+custom_clean_payload="$(jq -nc --arg sid "${custom_clean_session_id}" --arg msg "${custom_clean}" \
+  '{session_id:$sid,agent_type:"custom-trust-auditor",message:$msg,last_assistant_message:$msg}')"
+OMC_DISCOVERED_SCOPE=on SESSION_ID="${custom_clean_session_id}" STATE_ROOT="${zc_session_root}" HOME="${zc_session_root}" \
+bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/record-subagent-summary.sh" \
+  <<<"${custom_clean_payload}" >/dev/null 2>&1 || true
+assert_eq "final CLEAN suppresses earlier/example findings placeholder" "0" \
+  "$([[ -f "${custom_clean_state_dir}/discovered_scope.jsonl" ]] && wc -l < "${custom_clean_state_dir}/discovered_scope.jsonl" | tr -d ' ' || printf 0)"
+
+# Untagged/manual agents were never given Council's structured contract.
+custom_manual_session_id="zc-custom-manual-$$"
+custom_manual_state_dir="${zc_session_root}/${custom_manual_session_id}"
+mkdir -p "${custom_manual_state_dir}"
+printf '{"workflow_mode":"ultrawork"}\n' > "${custom_manual_state_dir}/session_state.json"
+custom_manual_payload="$(jq -nc --arg sid "${custom_manual_session_id}" --arg msg "${custom_missing}" \
+  '{session_id:$sid,agent_type:"custom-trust-auditor",message:$msg,last_assistant_message:$msg}')"
+OMC_DISCOVERED_SCOPE=on SESSION_ID="${custom_manual_session_id}" STATE_ROOT="${zc_session_root}" HOME="${zc_session_root}" \
+bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/record-subagent-summary.sh" \
+  <<<"${custom_manual_payload}" >/dev/null 2>&1 || true
+assert_eq "manual custom findings verdict without Council tag does not hard-block" "0" \
+  "$([[ -f "${custom_manual_state_dir}/discovered_scope.jsonl" ]] && wc -l < "${custom_manual_state_dir}/discovered_scope.jsonl" | tr -d ' ' || printf 0)"
+
 rm -rf "${zc_session_root}"
 
 printf '\n=== Discovered-Scope Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"

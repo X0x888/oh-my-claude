@@ -165,7 +165,7 @@ setup_test
 init_session "ge3c"
 sd="${TEST_HOME}/.claude/quality-pack/state/ge3c"
 jq -nc --arg ts "$(date +%s)" \
-  '{workflow_mode:"ultrawork",task_domain:"coding",task_intent:"execution",current_objective:"closure test",last_user_prompt_ts:$ts,last_edit_ts:$ts,last_code_edit_ts:$ts,last_verify_ts:$ts,last_verify_cmd:"npm test",last_verify_outcome:"passed",last_review_ts:$ts,review_had_findings:"false",subagent_dispatch_count:"1"}' \
+  '{workflow_mode:"ultrawork",task_domain:"coding",task_intent:"execution",current_objective:"closure test",last_user_prompt_ts:$ts,last_edit_ts:$ts,last_code_edit_ts:$ts,last_verify_ts:$ts,last_verify_cmd:"npm test",last_verify_outcome:"passed",last_review_ts:$ts,review_had_findings:"false",subagent_dispatch_count:"1",dim_bug_hunt_ts:$ts,dim_bug_hunt_verdict:"CLEAN",dim_code_quality_ts:$ts,dim_code_quality_verdict:"CLEAN"}' \
   > "${sd}/session_state.json"
 printf '/tmp/project/src/foo.ts\n' > "${sd}/edited_files.log"
 
@@ -190,7 +190,7 @@ setup_test
 init_session "ge3d"
 sd="${TEST_HOME}/.claude/quality-pack/state/ge3d"
 jq -nc --arg ts "$(date +%s)" \
-  '{workflow_mode:"ultrawork",task_domain:"coding",task_intent:"execution",current_objective:"contract test",last_user_prompt_ts:$ts,last_edit_ts:$ts,last_code_edit_ts:$ts,last_verify_ts:$ts,last_verify_cmd:"npm test",last_verify_outcome:"passed",last_verify_confidence:"80",last_review_ts:$ts,review_had_findings:"false",done_contract_prompt_surfaces:"tests",done_contract_test_expectation:"add_or_update_tests",done_contract_commit_mode:"unspecified"}' \
+  '{workflow_mode:"ultrawork",task_domain:"coding",task_intent:"execution",current_objective:"contract test",last_user_prompt_ts:$ts,last_edit_ts:$ts,last_code_edit_ts:$ts,last_verify_ts:$ts,last_verify_cmd:"npm test",last_verify_outcome:"passed",last_verify_confidence:"80",last_review_ts:$ts,review_had_findings:"false",done_contract_prompt_surfaces:"tests",done_contract_test_expectation:"add_or_update_tests",done_contract_commit_mode:"unspecified",dim_bug_hunt_ts:$ts,dim_bug_hunt_verdict:"CLEAN",dim_code_quality_ts:$ts,dim_code_quality_verdict:"CLEAN"}' \
   > "${sd}/session_state.json"
 printf '/tmp/project/src/foo.ts\n' > "${sd}/edited_files.log"
 

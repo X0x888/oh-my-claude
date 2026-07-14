@@ -35,22 +35,44 @@ fi
 SESSION_ID="${latest_session}"
 ensure_session_dir
 
-write_state_batch \
-  "workflow_mode" "" \
-  "just_compacted" "" \
-  "just_compacted_ts" "" \
-  "review_pending_at_compact" "" \
-  "compact_race_count" "" \
-  "pretool_intent_blocks" "" \
-  "agent_first_specialist_ts" "" \
-  "agent_first_specialist_type" "" \
-  "agent_first_gate_blocks" "" \
-  "first_mutation_ts" "" \
-  "first_mutation_tool" ""
+_deactivate_session_unlocked() {
+  local artifact artifact_path verification_starts
 
-# Delete the pending-agents queue so a subsequent compact does not render or
-# re-dispatch agents that were dispatched under the now-deactivated session.
-pending_file="$(session_file "pending_agents.jsonl")"
-[[ -f "${pending_file}" ]] && rm -f "${pending_file}"
+  _write_state_batch_unlocked \
+    "workflow_mode" "" \
+    "just_compacted" "" \
+    "just_compacted_ts" "" \
+    "review_pending_at_compact" "" \
+    "compact_race_count" "" \
+    "pretool_intent_blocks" "" \
+    "agent_first_specialist_ts" "" \
+    "agent_first_specialist_type" "" \
+    "agent_first_gate_blocks" "" \
+    "first_mutation_ts" "" \
+    "first_mutation_tool" "" \
+    "council_phase8_active" "" \
+    "council_phase8_prompt_revision" "" || return 1
+
+  # /ulw-off is a lifecycle boundary. Pending agents, reviewer-generation
+  # starts, and per-tool verification starts all describe work launched under
+  # the old active interval; retaining any of them can block or misattribute a
+  # later dispatch after reactivation. Keep the tracking-version state key:
+  # it makes a late pre-deactivation reviewer completion fail closed instead
+  # of falling back to the explicit legacy migration path.
+  for artifact in pending_agents.jsonl agent_dispatch_starts.jsonl; do
+    artifact_path="$(session_file "${artifact}")"
+    [[ ! -e "${artifact_path}" ]] || rm -f "${artifact_path}" || return 1
+  done
+  verification_starts="$(session_file ".verification-starts")"
+  [[ ! -e "${verification_starts}" ]] \
+    || rm -rf "${verification_starts}" \
+    || return 1
+}
+
+if ! with_state_lock _deactivate_session_unlocked; then
+  printf 'Ultrawork mode deactivation could not clear transient state for session %s.\n' \
+    "${latest_session}" >&2
+  exit 1
+fi
 
 printf 'Ultrawork mode deactivated for session %s.\n' "${latest_session}"

@@ -28,7 +28,7 @@ When you know what you want, jump straight to the verb:
 | Analyze experimental data / fit with uncertainties | `/data-analysis <task>` |
 | Need verified academic sources / a bibliography | `/lit-review <topic>` |
 | Writing or revising a paper, thesis, or referee response | `/manuscript <task>` |
-| Want a multi-lens project evaluation | `/council [focus]` |
+| Want an adaptive multi-specialist project evaluation | `/council [focus]` |
 | Want a design-first frontend pass | `/frontend-design <task>` |
 | A gate fired but the work is complete | `/ulw-skip <reason>` |
 | Discovered-scope flagged real items you defer | `/mark-deferred <reason>` |
@@ -85,7 +85,7 @@ The symptom-table above is a discovery shortcut. Each row maps to a skill in the
 
 | Skill | Command | When to use |
 |-------|---------|-------------|
-| **council** | `/council [focus] [--deep]` | Multi-role project evaluation — PM, design, security, data, SRE, growth lenses + verification pass. `--deep` escalates to opus. |
+| **council** | `/council [focus] [--deep]` | Coverage-map-driven evaluation from the full roster: normally 1–4 primary specialists, optional 0–2 gap-fill, and independent competence-matched verification of up to three findings. `--deep` escalates selected Sonnet-backed agents only. |
 | **atlas** | `/atlas [focus]` | Bootstrap or refresh CLAUDE.md / `.claude/rules` for a repository. |
 
 ### Configuring & inspecting
@@ -115,7 +115,7 @@ These two skills auto-fire when Claude detects the matching work — there is no
 - **Starting real work?** Use `/ulw` (aliases: `/autowork`, `/ultrawork` also work).
 - **Need a plan first?** Use `/plan-hard`. If the goal is vague, use `/prometheus` instead.
 - **Want to validate a plan?** Use `/metis`.
-- **Want a multi-role project evaluation?** Use `/council`. Also auto-triggers under `/ulw` for broad prompts like "evaluate my project."
+- **Want a multi-role project evaluation?** Use `/council`. It selects only the coverage the task needs; it also auto-triggers under `/ulw` for broad prompts like "evaluate my project," not a focused feature or subsystem audit.
 - **Stuck debugging?** Use `/oracle`.
 - **Need docs or references?** Use `/librarian`.
 - **Want a code review?** Use `/review-hard`.

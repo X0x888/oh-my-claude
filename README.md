@@ -198,7 +198,7 @@ The result: Claude classifies your intent before acting, routes work to speciali
 
 ### Hard quality gates
 
-**Missing verification or review blocks completion attempts.** Skip tests, skip the reviewer, defer work to a "future session" without a checkpoint, miss prompt-stated commit/push obligations, or edit 3+ files without an excellence review — each initially hard-stops completion. Caps prevent infinite loops: if Claude cannot satisfy a gate, it eventually surfaces the unresolved gap instead of spinning.
+**Missing verification or review blocks completion attempts.** Skip tests, skip the generic reviewer for an edited code/prose surface, defer work to a "future session" without a checkpoint, miss prompt-stated commit/push obligations, or leave a semantically required specialist review uncovered — each initially hard-stops completion. Caps prevent infinite loops: if Claude cannot satisfy a gate, it eventually surfaces the unresolved gap instead of spinning.
 
 ### Agent-first execution
 
@@ -206,18 +206,17 @@ The result: Claude classifies your intent before acting, routes work to speciali
 
 **Default is `off`** because the mandate was firing ~2.2x/session under `model_tier=quality` (where execution agents are at least Opus and deliberators inherit the main model, so the gate no longer buys a reliable smartness gap) and the depth-on-every-prompt rule + sub-dispatch-as-tool guidance in `~/.claude/quality-pack/memory/model-robustness.md` now carry the actual concern. Turn it on via `/omc-config` when training a new workflow habit, running on `model_tier=economy`, or when the active session is drift-prone on a single surface. First-mutation telemetry remains available in both modes: exact editor attempts are stamped PreTool, while default-off Bash is stamped after an actual mutation is observed; the block counter increments only when the enabled gate blocks.
 
-### Prescribed reviewer sequence
+### Adaptive review coverage
 
-**On complex tasks (3+ edited files), the stop-hook prescribes the next reviewer instead of guessing.** Each reviewer owns one distinct dimension:
+**Review follows the current objective's edited surfaces and semantic risk, not a standing file-count chain.** Generic code quality and prose review remain universal for their respective surfaces. The stop-hook adds specialist dimensions only when they apply:
 
 - `quality-reviewer` — bug hunt, code quality
-- `design-reviewer` — design quality (auto-activates when UI files edited)
-- `metis` — stress-test hidden assumptions
-- `excellence-reviewer` — completeness against the original objective
+- `design-reviewer` — design quality when a current-objective UI-shaped edit is paired with UI/visual intent or broader complex/active-wave scope (web plus high-confidence Apple and Android UI paths)
+- `excellence-reviewer` — completeness for broad/open, cross-surface-at-threshold, current-complex-plan, active Phase 8 wave-plan, or unknown-scope work
 - `editor-critic` — doc clarity and accuracy
-- `briefing-analyst` — traceability (kicks in at 6+ files)
+- `briefing-analyst` — traceability for sufficiently broad cross-surface or active-wave changes
 
-Each gate block message names the specific next reviewer. A `VERDICT: CLEAN|SHIP|FINDINGS (N)` line in each reviewer's output tells the hook whether the dimension was ticked. Doc-only edits route straight to `editor-critic` and skip the code-verification gate, so fixing a typo in CHANGELOG doesn't re-trigger `npm test`.
+Metis stays where its competence belongs: plan-phase pressure testing, optionally enforced by `metis_on_plan_gate`, rather than being forced after an arbitrary number of edited files. Each gate block message names the missing coverage and its best reviewer. A `VERDICT: CLEAN|SHIP|FINDINGS (N)` line tells the hook whether that reviewer's own dimension was ticked; specialist clocks cannot satisfy or erase the generic review. Reviewer dispatches and Bash/MCP verification calls snapshot the relevant code/plan generation at start; an edit that lands while either is in flight makes that result stale instead of letting completion time relabel old evidence as current. A fresh-objective edit-log boundary prevents earlier work from inflating the current review, and each dimension follows its relevant code, document, UI, aggregate edit, or plan revision. UI-looking files do not create a design tax on a new logic-only objective: visual/UI semantics, explicit breadth, a current complex plan, or an active Phase 8 wave must also make design judgment material. Source-form writing and research files (`.tex`, `.bib`, `.typ`, `.qmd`, `.rmd`) route with prose. Doc-only edits route straight to `editor-critic` and skip the code-verification gate, so fixing a typo in CHANGELOG doesn't re-trigger `npm test`.
 
 ### Intent classification
 
@@ -231,7 +230,7 @@ Reviewer findings are machine-readable (single-line `FINDINGS_JSON` block before
 
 **Each domain has its own specialist chain — not a coding tool that happens to accept prose.**
 
-- **Coding** -- quality-planner for scoping, quality-researcher for context, specialist developers (frontend, backend, fullstack, iOS, DevOps, test), quality-reviewer and excellence-reviewer for verification
+- **Coding** -- quality-planner for scoping, quality-researcher for context, specialist developers (frontend, backend, fullstack, iOS, DevOps, test), universal quality-reviewer plus surface/semantic reviewers when applicable
 - **Writing** -- writing-architect for structure, draft-writer for content, editor-critic for polish
 - **Research** -- librarian for source gathering, briefing-analyst for synthesis, metis for stress-testing conclusions
 - **Operations** -- chief-of-staff turns vague asks into structured deliverables, action plans, and decision memos
@@ -250,11 +249,13 @@ Reviewer findings are machine-readable (single-line `FINDINGS_JSON` block before
 
 ### Project Council
 
-**Solo developers get the cross-functional perspective of a full product team — without the team.** The `/council` skill dispatches a multi-role evaluation panel: Product Manager, UX Designer, Security Engineer, Data/Analytics Lead, SRE, Growth Lead. Each role-lens agent evaluates independently with a non-overlapping mandate, and findings are synthesized into a single prioritized assessment. The system auto-detects broad evaluation prompts like "evaluate my project" under `/ulw` and triggers the council flow automatically.
+**Solo developers get the right cross-functional perspective without paying for a standing panel.** `/council` first maps the coverage the question actually needs, considers the full specialist roster, and records why relevant perspectives were included or skipped. It dispatches the smallest sufficient primary team concurrently — normally one to four agents, with one valid for a narrow specialist audit; a larger team is allowed only when the ledger records the cost and every independent high-impact competence need. The locked coverage lifecycle starts primary-only, records exact-objective returns, requires row-by-row reconciliation before it can add up to two gap-fill specialists, and refuses to mark the assessment ready until every selected round has returned and final reconciliation exists. Namespaced identities match exactly; unnamespaced installed names bind once, preventing same-short-name plugins from borrowing each other's mandate. The `[council:primary]`, `[council:gap-fill]`, and `[council:verification]` prefixes are phase/provenance tags, not agent-name templates or a fixed cast. Up to three load-bearing findings are checked by independent, competence-matched verifiers. `--polish` and `--self-audit` bias the coverage map rather than forcing named rosters; `--deep` escalates selected Sonnet-backed agents without downgrading agents that inherit a stronger main model. Broad prompts such as "evaluate my project" still auto-trigger under `/ulw`; a focused feature, capability, surface, or subsystem does not automatically inflate into a whole-project council.
+
+Assessment and implementation are separate decisions. Only a successfully completed, fully reconciled advisory Council arms a handoff, and only the immediately following matching prompt—such as “implement the recommendations”—can consume it; an intervening prompt expires it. Bare `implement` or `ship` authorizes execution of the assessed scope. Full-scope expansion follows the canonical `is_exhaustive_authorization_request()` predicate: explicit all/every/everything forms, exhaustive implementation wording, a high-bar target, or binary-quality framing can authorize it; thorough assessment wording alone cannot. Otherwise the normal scope-expansion pause applies.
 
 ### Distinctive UI by default
 
-**Ask for a landing page or any UI work and you get a 9-section Design Contract — palette with hex values, typography rules, component states, layout, depth, do's & don'ts — before any code is written.** Concrete commitments instead of generic shadcn-default aesthetics. Scope-aware: a "build a page" prompt gets the full contract; a "fix the button padding" prompt preserves existing tokens. Skip with `no design polish` for backend/internal work.
+**Ask for a landing page or semantically visual/UI work and you get a 9-section Design Contract — palette with hex values, typography rules, component states, layout, depth, do's & don'ts — before UI code is written.** Concrete commitments instead of generic shadcn-default aesthetics. Scope-aware: a "build a page" prompt gets the full contract; a "fix the button padding" prompt preserves existing tokens; a logic-only edit in a UI-shaped file does not automatically turn into a redesign. Skip with `no design polish` for backend/internal work.
 
 15 brand archetypes (Linear, Stripe, Vercel, Notion, Apple, Airbnb, Spotify, Tesla, Figma, Discord, Raycast, Anthropic, Webflow, Mintlify, Supabase) are framed as *anti-anchors* — the agent picks a coherent starting point and commits to what it will do *differently*. Cross-session archetype memory prevents the same anchor from being picked twice on the same project. Inline contract emission lets `design-reviewer` and `visual-craft-lens` grade drift even when no `DESIGN.md` exists at the project root. Inspired by [VoltAgent/awesome-design-md](https://github.com/VoltAgent/awesome-design-md).
 
@@ -313,7 +314,7 @@ oh-my-claude/
 │   └── statusline.py                        # Custom statusline widget
 ├── config/settings.patch.json               # Merged into user settings on install
 ├── evals/realwork/                           # Outcome eval scenarios for minimal-prompt shipping across code + design/UI + native artifacts + mixed + quantitative/data-analysis + regulated/high-stakes + writing + research + scholarly + ops + advisory
-├── tests/               (146 bash + 1 py)   # See AGENTS.md / CONTRIBUTING.md for full list
+├── tests/               (147 bash + 1 py)   # See CLAUDE.md for canonical commands
 ├── tools/                                    # Developer-only tools (not installed)
 └── docs/                                    # Architecture, customization, FAQ, prompts
 ```
@@ -341,7 +342,7 @@ Skills are invoked as slash commands or routed automatically by the intent class
 | **Review & evaluate** | | |
 | review-hard *(review)* | `/review-hard [focus]` | Findings-first code review |
 | research-hard *(research)* | `/research-hard <topic>` | Targeted context gathering |
-| council *(evaluation panel)* | `/council [focus] [--deep]` | Multi-role project evaluation with top-finding verification, then **Phase 8** wave-by-wave execution when fixes are requested. Recognizes natural authorization vocabulary ("do all", "make X impeccable", "0 or 1", "fix everything", "implement all", etc. — full canonical list in `bundle/dot-claude/skills/council/SKILL.md` Step 8). `--deep` escalates lenses to opus. |
+| council *(adaptive evaluation)* | `/council [focus] [--deep]` | Coverage-map-driven evaluation from the full agent roster: normally 1–4 concurrent primary specialists (larger only for evidenced independent needs), optional 0–2 gap-fill, and competence-matched verification of up to 3 findings. A same-turn request or the immediate follow-up to a completed assessment can enter **Phase 8**; exhaustive scope still requires explicit authorization. `--deep` escalates selected Sonnet-backed agents only. |
 | **Build** | | |
 | frontend-design *(visual craft)* | `/frontend-design <task>` | Distinctive design-first frontend work |
 | **Research & science** | | |
@@ -379,7 +380,7 @@ Skills are invoked as slash commands or routed automatically by the intent class
 
 | Tier | Mechanism | What you get |
 |---|---|---|
-| **Hook-fired (mandatory)** | Fires automatically — you can't bypass it | `quality-reviewer` before stop, `excellence-reviewer` on complex tasks, `design-reviewer` when UI files are edited |
+| **Hook-fired (mandatory)** | Fires automatically — you can't bypass it | `quality-reviewer` before code stop; `editor-critic` for prose/source-doc edits; `design-reviewer` when UI-shaped changes are semantically design-relevant (including native UI); `excellence-reviewer` for broad/open, cross-surface-at-threshold, current-complex-plan, active Phase 8 wave-plan, or unknown-scope work |
 | **Model-invoked (Claude Code native auto-load)** | Auto-loaded by Claude Code when the open files or prompt match a skill's frontmatter description; no router, no hook | `swiftui-pro` on SwiftUI work (vendored from `twostraws/SwiftUI-Agent-Skill`); `gamedev` on Unity/Godot/web game work |
 | **Router-suggested (reasoning)** under `/ulw` | Injected as a directive when prompt signals match | `prometheus`, `quality-planner`, `quality-researcher`, `librarian`, `metis`, `oracle` |
 | **Router-suggested (engineering)** under `/ulw` | Same mechanism — extended to engineering specialists in this release | `backend-api-developer`, `devops-infrastructure-engineer`, `test-automation-engineer`, `fullstack-feature-builder`, `ios-ui-developer`, `ios-core-engineer`, `ios-deployment-specialist`, `ios-ecosystem-integrator`, `abstraction-critic` |

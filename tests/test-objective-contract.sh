@@ -82,16 +82,25 @@ run_objective_contract_gate() {
   if ! is_execution_intent_value "${effective_intent}"; then
     printf 'allow:non_execution'; return
   fi
-  local prompt_ts audited_ts last_edit_ts
+  local prompt_ts audited_ts last_edit_ts edit_revision edit_revision_base work_this_cycle=0
   prompt_ts="$(read_state "objective_contract_prompt_ts")"; prompt_ts="${prompt_ts:-0}"
   audited_ts="$(read_state "objective_contract_audited_ts")"; audited_ts="${audited_ts:-0}"
   last_edit_ts="$(read_state "last_edit_ts")"; last_edit_ts="${last_edit_ts:-0}"
+  edit_revision="$(read_state "edit_revision")"
+  edit_revision_base="$(read_state "objective_contract_edit_revision_base")"
   [[ "${prompt_ts}" =~ ^[0-9]+$ ]] || prompt_ts=0
   [[ "${audited_ts}" =~ ^[0-9]+$ ]] || audited_ts=0
   [[ "${last_edit_ts}" =~ ^[0-9]+$ ]] || last_edit_ts=0
 
+  if [[ "${edit_revision}" =~ ^[0-9]+$ ]] \
+      && [[ "${edit_revision_base}" =~ ^[0-9]+$ ]]; then
+    (( edit_revision > edit_revision_base )) && work_this_cycle=1
+  elif [[ "${last_edit_ts}" -gt "${prompt_ts}" ]]; then
+    work_this_cycle=1
+  fi
+
   [[ "${prompt_ts}" -gt 0 ]] || { printf 'allow:no_cycle'; return; }
-  [[ "${last_edit_ts}" -gt "${prompt_ts}" ]] || { printf 'allow:no_work_this_cycle'; return; }
+  [[ "${work_this_cycle}" -eq 1 ]] || { printf 'allow:no_work_this_cycle'; return; }
   [[ "${audited_ts}" -le "${prompt_ts}" ]] || { printf 'allow:already_audited'; return; }
   [[ -n "$(read_state "current_objective")" ]] || { printf 'allow:no_objective'; return; }
   objective_contract_is_substantive || { printf 'allow:not_substantive'; return; }
@@ -99,10 +108,26 @@ run_objective_contract_gate() {
   # v1.46-pre+ (manufactured-finish-line fix): release requires BOTH the
   # coverage attestation AND a RECORDED fresh-context completeness audit
   # (excellence-reviewer) this cycle. KEEP IN SYNC with stop-guard.sh.
-  local fresh_audit_ts
+  local fresh_audit_ts completeness_verdict completeness_revision fresh_clean_audit=0
   fresh_audit_ts="$(read_state "last_excellence_review_ts")"; fresh_audit_ts="${fresh_audit_ts:-0}"
   [[ "${fresh_audit_ts}" =~ ^[0-9]+$ ]] || fresh_audit_ts=0
-  if _coverage_label_present "${last_msg}" && [[ "${fresh_audit_ts}" -gt "${prompt_ts}" ]]; then
+  completeness_verdict="$(read_state "dim_completeness_verdict")"
+  completeness_revision="$(read_state "dim_completeness_revision")"
+  case "${completeness_verdict}" in
+    CLEAN|SHIP)
+      if dimension_state_is_fresh "completeness"; then
+        if [[ "${edit_revision}" =~ ^[0-9]+$ ]] \
+            && [[ "${edit_revision_base}" =~ ^[0-9]+$ ]]; then
+          [[ "${completeness_revision}" =~ ^[0-9]+$ ]] \
+            && (( completeness_revision > edit_revision_base )) \
+            && fresh_clean_audit=1
+        elif [[ "${fresh_audit_ts}" -gt "${prompt_ts}" ]]; then
+          fresh_clean_audit=1
+        fi
+      fi
+      ;;
+  esac
+  if _coverage_label_present "${last_msg}" && [[ "${fresh_clean_audit}" -eq 1 ]]; then
     write_state "objective_contract_audited_ts" "$((prompt_ts + 5000))"
     printf 'allow:audited'; return
   fi
@@ -124,9 +149,11 @@ arm_substantive_cycle() {
     "current_objective" "fix our failure mode" \
     "objective_contract_prompt_ts" "${T_PROMPT}" \
     "objective_contract_edit_baseline" "0" \
+    "objective_contract_edit_revision_base" "0" \
     "objective_contract_audited_ts" "" \
     "objective_contract_blocks" "0" \
     "last_edit_ts" "${T_EDIT}" \
+    "edit_revision" "8" \
     "code_edit_count" "8" \
     "doc_edit_count" "0" \
     "plan_complexity_high" ""
@@ -263,9 +290,11 @@ write_state_batch \
   "current_objective" "harden" \
   "objective_contract_prompt_ts" "${T_PROMPT}" \
   "objective_contract_edit_baseline" "0" \
+  "objective_contract_edit_revision_base" "0" \
   "objective_contract_audited_ts" "" \
   "objective_contract_blocks" "0" \
   "last_edit_ts" "${T_EDIT}" \
+  "edit_revision" "1" \
   "code_edit_count" "1" "doc_edit_count" "0" \
   "plan_complexity_high" "" \
   "objective_contract_god_scope" "1"
@@ -287,11 +316,15 @@ result="$(run_objective_contract_gate advisory "the test count is 47")"
 assert_eq "PROBE2: turn-2 advisory follow-up is INERT (no re-block)" "allow:non_execution" "${result}"
 
 # PROBE 3 (clear): a coverage attestation PLUS a RECORDED fresh-context
-# completeness audit this cycle (last_excellence_review_ts > prompt_ts)
-# clears it. The fresh audit is the load-bearing half — self-attestation
+# completeness audit this cycle with a current CLEAN/SHIP completeness
+# dimension clears it. The fresh clean audit is the load-bearing half — self-attestation
 # alone no longer clears (PROBE 3c).
 arm_substantive_cycle
-write_state "last_excellence_review_ts" "$((T_PROMPT + 1))"
+write_state_batch \
+  "last_excellence_review_ts" "$((T_PROMPT + 1))" \
+  "dim_completeness_ts" "$((T_PROMPT + 1))" \
+  "dim_completeness_revision" "8" \
+  "dim_completeness_verdict" "CLEAN"
 result="$(run_objective_contract_gate execution "Done.
 
 **Objective coverage.** All parts addressed; a fresh excellence-review found no cost/risk-deferred omissions.")"
@@ -317,6 +350,29 @@ result="$(run_objective_contract_gate execution "Done.
 **Objective coverage.** addressed.")"
 assert_contains "PROBE3c: stale prior-cycle audit does NOT clear (blocks)" "block:1/2" "${result}"
 
+# A current audit that reported findings is not completion evidence. This is
+# deliberately enforced even at basic gate level, where review-coverage does
+# not independently inspect completeness verdicts.
+arm_substantive_cycle
+write_state_batch \
+  "last_excellence_review_ts" "$((T_PROMPT + 1))" \
+  "dim_completeness_ts" "$((T_PROMPT + 1))" \
+  "dim_completeness_revision" "8" \
+  "dim_completeness_verdict" "FINDINGS"
+result="$(run_objective_contract_gate execution "Done. **Objective coverage.**")"
+assert_contains "PROBE3d: current FINDINGS audit does NOT clear" "block:1/2" "${result}"
+
+# Nor may a clean audit from the previous edit generation clear after a
+# same-second follow-up edit.
+arm_substantive_cycle
+write_state_batch \
+  "last_excellence_review_ts" "$((T_PROMPT + 1))" \
+  "dim_completeness_ts" "$((T_PROMPT + 1))" \
+  "dim_completeness_revision" "7" \
+  "dim_completeness_verdict" "CLEAN"
+result="$(run_objective_contract_gate execution "Done. **Objective coverage.**")"
+assert_contains "PROBE3e: stale CLEAN audit does NOT clear current generation" "block:1/2" "${result}"
+
 # PROBE 3b (quality-reviewer F-1 regression): a BARE **Coverage.** note (test
 # coverage, not objective coverage) must NOT clear the gate — the "Objective"
 # prefix is required, else a routine test-coverage wrap-up would falsely clear
@@ -331,8 +387,16 @@ assert_contains "PROBE3b: bare **Coverage.** (test coverage) does NOT clear the 
 # (stale edit from a prior cycle) does not arm — last_edit_ts <= prompt_ts.
 arm_substantive_cycle
 write_state "last_edit_ts" "${T_PRE}"
+write_state "edit_revision" "0"
 result="$(run_objective_contract_gate execution "nothing edited this cycle")"
 assert_eq "PROBE4: self-disarm when no work happened this cycle" "allow:no_work_this_cycle" "${result}"
+
+# Revision ordering wins over timestamp equality: a prompt and its first edit
+# may share one epoch second but still form a real objective generation.
+arm_substantive_cycle
+write_state "last_edit_ts" "${T_PROMPT}"
+result="$(run_objective_contract_gate execution "same-second edit landed")"
+assert_contains "PROBE4b: same-second edit arms via revision" "block:1/2" "${result}"
 
 # Cap behavior: blocks 1 and 2, then releases (cap reached). The gate's
 # own block_cap is independent of guard_exhaustion_mode (whose default

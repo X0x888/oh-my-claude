@@ -103,6 +103,24 @@ printf '\nT3: malformed JSON returns nothing (fail-open)\n'
 out="$(extract_findings_json $'FINDINGS_JSON: [not valid json\nVERDICT: FINDINGS (1)' || true)"
 assert_eq "${out}" "" "fail-open on malformed JSON"
 
+printf '\nT3b: structurally incomplete finding objects reject the whole payload\n'
+out="$(extract_findings_json $'FINDINGS_JSON: [{}]\nVERDICT: FINDINGS (1)' || true)"
+assert_eq "${out}" "" "empty object is not normalized into a synthetic finding"
+n="$(count_findings_json $'FINDINGS_JSON: [{}]\nVERDICT: FINDINGS (1)' || true)"
+assert_eq "${n}" "" "count rejects an incomplete finding object too"
+mixed_incomplete=$'FINDINGS_JSON: [{"severity":"critical","category":"bug","file":"a.ts","line":"7","claim":"valid","evidence":"e","recommended_fix":"r"},{}]\nVERDICT: FINDINGS (2)'
+out="$(extract_findings_json "${mixed_incomplete}" || true)"
+assert_eq "${out}" "" "one incomplete row rejects the array atomically"
+complete_alias=$'FINDINGS_JSON: [{"severity":"critical","category":"novel","file":"a.ts","line":"7","claim":"valid","evidence":"e","recommended_fix":"r"}]\nVERDICT: FINDINGS (1)'
+# Exercise validation and normalization separately so supported vocabulary
+# aliases remain intentionally forgiving after structural hardening.
+raw_alias="$(extract_findings_json "${complete_alias}")"
+normalized_alias="$(normalize_finding_object "${raw_alias}")"
+assert_eq "$(jq -r '.severity' <<<"${normalized_alias}")" "high" \
+  "complete critical alias remains supported"
+assert_eq "$(jq -r '.category' <<<"${normalized_alias}")" "other" \
+  "complete unknown category still normalizes to other"
+
 # --- T4 ---
 printf '\nT4: multiple FINDINGS_JSON lines — last one wins\n'
 multi=$'FINDINGS_JSON: [{"severity":"low","category":"other","file":"a","line":1,"claim":"old","evidence":"e","recommended_fix":"f"}]\nSome more prose.\nFINDINGS_JSON: [{"severity":"high","category":"bug","file":"b","line":2,"claim":"new","evidence":"e","recommended_fix":"f"}]\nVERDICT: FINDINGS (1)'
@@ -298,6 +316,10 @@ out="$(extract_findings_json "${fenced_msg}")"
 assert_eq "${out}" "" "fenced FINDINGS_JSON not extracted (phantom-finding fix)"
 n="$(count_findings_json "${fenced_msg}")"
 assert_eq "${n}" "" "count returns empty when only fenced match exists"
+
+tilde_fenced_msg=$'Real findings prose.\n\n~~~json\nFINDINGS_JSON: [{"severity":"high","category":"bug","file":"phantom.ts","line":1,"claim":"PHANTOM","evidence":"e","recommended_fix":"f"}]\n~~~\n\nVERDICT: CLEAN'
+out="$(extract_findings_json "${tilde_fenced_msg}")"
+assert_eq "${out}" "" "tilde-fenced FINDINGS_JSON is ignored too"
 
 printf '\nT18b: real FINDINGS_JSON outside fences still works alongside fenced example\n'
 mixed_msg=$'Example block (not real):\n\n```\nFINDINGS_JSON: [{"severity":"low","category":"other","file":"x","line":1,"claim":"PHANTOM","evidence":"e","recommended_fix":"f"}]\n```\n\nFINDINGS_JSON: [{"severity":"high","category":"bug","file":"r.ts","line":42,"claim":"REAL","evidence":"e","recommended_fix":"f"}]\n\nVERDICT: FINDINGS (1)'

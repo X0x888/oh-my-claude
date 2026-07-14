@@ -42,9 +42,13 @@ assert_eq() {
 # ----------------------------------------------------------------------
 printf 'Test 1: lib/classifier.sh exports the contracted functions\n'
 for fn in is_imperative_request count_keyword_matches is_ui_request \
+          is_design_review_semantic_request \
           infer_domain classify_task_intent record_classifier_telemetry \
           detect_classifier_misfire is_execution_intent_value \
+          is_council_phase8_entry_request \
+          is_council_phase8_followup_request \
           is_exhaustive_authorization_request \
+          is_review_cycle_broad_scope_request \
           is_product_shaped_request is_ambiguous_execution_request \
           is_exemplifying_request; do
   assert_function_defined "${fn}"
@@ -134,6 +138,8 @@ got_exec="$(classify_task_intent "Implement OAuth login on the web app")"
 assert_eq "execution prompt classifies as execution" "execution" "${got_exec}"
 got_advisory="$(classify_task_intent "Should we use OAuth or SAML?")"
 assert_eq "advisory question classifies as advisory" "advisory" "${got_advisory}"
+got_eval_then_exec="$(classify_task_intent "evaluate my project and implement the recommended fixes")"
+assert_eq "recommended-fixes mutation outranks advisory vocabulary" "execution" "${got_eval_then_exec}"
 
 # ----------------------------------------------------------------------
 printf 'Test 7: is_execution_intent_value contract\n'
@@ -141,6 +147,99 @@ is_execution_intent_value execution && pass=$((pass + 1)) || { printf '  FAIL: e
 is_execution_intent_value continuation && pass=$((pass + 1)) || { printf '  FAIL: continuation should be true\n' >&2; fail=$((fail + 1)); }
 ! is_execution_intent_value advisory && pass=$((pass + 1)) || { printf '  FAIL: advisory should be false\n' >&2; fail=$((fail + 1)); }
 ! is_execution_intent_value checkpoint && pass=$((pass + 1)) || { printf '  FAIL: checkpoint should be false\n' >&2; fail=$((fail + 1)); }
+
+# Council evaluation and Council implementation are separate contracts.
+is_council_phase8_entry_request "evaluate my project and fix all findings" \
+  && pass=$((pass + 1)) || { printf '  FAIL: fix-all Council request should enter Phase 8\n' >&2; fail=$((fail + 1)); }
+is_council_phase8_entry_request "make this project impeccable" \
+  && pass=$((pass + 1)) || { printf '  FAIL: high-bar make request should enter Phase 8\n' >&2; fail=$((fail + 1)); }
+! is_council_phase8_entry_request "evaluate my project" \
+  && pass=$((pass + 1)) || { printf '  FAIL: assessment imperative alone must remain advisory\n' >&2; fail=$((fail + 1)); }
+! is_council_phase8_entry_request "perform an exhaustive audit of my project" \
+  && pass=$((pass + 1)) || { printf '  FAIL: exhaustive audit alone must remain advisory\n' >&2; fail=$((fail + 1)); }
+! is_council_phase8_entry_request "evaluate my project; report only" \
+  && pass=$((pass + 1)) || { printf '  FAIL: report-only veto must suppress Phase 8\n' >&2; fail=$((fail + 1)); }
+! is_council_phase8_entry_request "review the product and update me" \
+  && pass=$((pass + 1)) || { printf '  FAIL: update-me must not be treated as mutation\n' >&2; fail=$((fail + 1)); }
+for advisory_council in \
+  "Do not repair the project; evaluate it" \
+  "Do not refactor the app; audit only" \
+  "Do not publish the changes; review the project" \
+  "Review the app, not implement the findings" \
+  "Evaluate the project and do not address the findings" \
+  "Evaluate this project and report what to change" \
+  "Evaluate my project and address whether it is ready" \
+  "Review my app and resolve the question of product-market fit" \
+  "Review my project and commit to a recommendation" \
+  "Evaluate my project and apply a rigorous security rubric" \
+  "Assess the codebase and apply a rigorous security checklist" \
+  "Evaluate my project, fix every issue, then do not make any changes" \
+  "Evaluate my project and implement fixes, but do not make any changes; report the plan" \
+  "What changes would make this project better?"; do
+  ! is_council_phase8_entry_request "${advisory_council}" \
+    && pass=$((pass + 1)) \
+    || { printf '  FAIL: negated mutation must remain advisory: %q\n' "${advisory_council}" >&2; fail=$((fail + 1)); }
+done
+for implementation_council in \
+  "implement" \
+  "ship" \
+  "fix everything" \
+  "review the project and implement" \
+  "evaluate and ship" \
+  "review the project and ship fixes" \
+  "evaluate my project and implement the recommended fixes" \
+  "evaluate my project and apply the recommended fixes" \
+  "Review only the backend, then fix all findings" \
+  "Just review auth, then implement recommendations" \
+  "Do not change docs; fix all code issues" \
+  "No edits to tests, but repair the app" \
+  "Evaluate and fix all findings; report only the final result"; do
+  is_council_phase8_entry_request "${implementation_council}" \
+    && pass=$((pass + 1)) \
+    || { printf '  FAIL: explicit mutation must enter Phase 8: %q\n' "${implementation_council}" >&2; fail=$((fail + 1)); }
+done
+
+for design_prompt in \
+  "change the button color to red" \
+  "increase padding on the cards" \
+  "adjust the typography scale" \
+  "fix low contrast text" \
+  "fix responsive breakpoints" \
+  "improve keyboard focus rings" \
+  "change the SwiftUI accent color" \
+  "fix Dynamic Type clipping"; do
+  is_design_review_semantic_request "${design_prompt}" \
+    && pass=$((pass + 1)) \
+    || { printf '  FAIL: visual prompt should require design semantics: %q\n' "${design_prompt}" >&2; fail=$((fail + 1)); }
+done
+! is_design_review_semantic_request "change the authentication provider in Widget.tsx" \
+  && pass=$((pass + 1)) || { printf '  FAIL: logic-only TSX prompt should not require design semantics\n' >&2; fail=$((fail + 1)); }
+
+is_council_phase8_followup_request "implement all recommendations" \
+  && pass=$((pass + 1)) || { printf '  FAIL: Council recommendations follow-up should enter Phase 8\n' >&2; fail=$((fail + 1)); }
+is_council_phase8_followup_request "ship" \
+  && pass=$((pass + 1)) || { printf '  FAIL: terse ship follow-up should enter Phase 8\n' >&2; fail=$((fail + 1)); }
+is_council_phase8_followup_request "fix the issue identified in the assessment" \
+  && pass=$((pass + 1)) || { printf '  FAIL: explicit assessment-result follow-up should enter Phase 8\n' >&2; fail=$((fail + 1)); }
+is_council_phase8_followup_request "address every finding" \
+  && pass=$((pass + 1)) || { printf '  FAIL: referential every-finding follow-up should enter Phase 8\n' >&2; fail=$((fail + 1)); }
+is_council_phase8_followup_request "ulw implement the top 3 findings" \
+  && pass=$((pass + 1)) || { printf '  FAIL: bounded top-N Council follow-up should enter Phase 8\n' >&2; fail=$((fail + 1)); }
+is_council_phase8_followup_request "ulw implement only the critical findings" \
+  && pass=$((pass + 1)) || { printf '  FAIL: severity-bounded Council follow-up should enter Phase 8\n' >&2; fail=$((fail + 1)); }
+is_council_phase8_followup_request "ulw fix all" \
+  && pass=$((pass + 1)) || { printf '  FAIL: terse fix-all Council follow-up should enter Phase 8\n' >&2; fail=$((fail + 1)); }
+! is_council_phase8_followup_request "fix this unrelated parser bug" \
+  && pass=$((pass + 1)) || { printf '  FAIL: unrelated later fix must not inherit Council scope\n' >&2; fail=$((fail + 1)); }
+for unrelated_followup in \
+  "fix the performance gap in the parser" \
+  "address the test gaps in this feature" \
+  "implement the recommendation from the linter" \
+  "ship the wave animation fix"; do
+  ! is_council_phase8_followup_request "${unrelated_followup}" \
+    && pass=$((pass + 1)) \
+    || { printf '  FAIL: focused work must not inherit Council scope: %q\n' "${unrelated_followup}" >&2; fail=$((fail + 1)); }
+done
 
 # ----------------------------------------------------------------------
 printf 'Test 8: is_exhaustive_authorization_request — vocabulary coverage\n'
@@ -167,7 +266,9 @@ assert_no_auth() {
 
 # Tier 1 — canonical exhaustive markers
 assert_auth "implement all" "implement all the findings from the council"
-assert_auth "exhaustive"    "evaluate the project and produce an exhaustive plan"
+assert_no_auth "exhaustive assessment artifact" "evaluate the project and produce an exhaustive plan"
+assert_no_auth "intensity adverb is not exhaustive auth" "evaluate my project thoroughly"
+assert_no_auth "deep flag is not exhaustive auth" "evaluate my project --deep"
 assert_auth "fix everything" "review and fix everything the lens flagged"
 assert_auth "ship it all"   "address the issues then ship it all"
 assert_auth "address each one" "go through and address each one in turn"
@@ -187,6 +288,9 @@ assert_auth "continue all findings" "continue all remaining findings"
 assert_auth "complete all waves"  "we need to complete all waves before stopping"
 assert_auth "tackle every finding" "tackle every finding the lens surfaced"
 assert_auth "close all gaps"       "close all gaps from the audit"
+
+# Tier 5 must not infer a whole-scope authorization from an unresolved pronoun.
+assert_no_auth "ambiguous impeccable pronoun" "make it impeccable"
 
 # Tier 5 — "make X impeccable" implementation-bar markers
 assert_auth "make X impeccable" "Make this feature impeccable to use"
@@ -211,9 +315,94 @@ assert_no_auth "single finding"     "address this finding from the security revi
 assert_no_auth "advisory"           "what should we do next about the auth module"
 assert_no_auth "make this function" "make this function impeccable"
 assert_no_auth "templating"         "make the docstring polished and the readme excellent"
+assert_no_auth "bounded top N"      "Thoroughly assess the project, then implement the top 3 fixes"
+assert_no_auth "bounded severity subset" "Exhaustively review the project and implement only the critical findings"
+assert_no_auth "selected subset"    "implement selected findings from the assessment"
+assert_no_auth "top-N before action" "For the top 3 findings, implement them all exhaustively"
+assert_no_auth "severity before passive action" "Only the critical findings should be implemented, even after an exhaustive audit"
+assert_no_auth "all severity subset" "Exhaustively assess the project, then implement all high-severity findings"
+assert_no_auth "severity after object" "Implement all findings classified as P1 after the exhaustive review"
+assert_no_auth "domain-only action-first" "Exhaustively review everything, then implement only the security findings"
+assert_no_auth "domain-only suffix" "Implement the performance findings only, despite the exhaustive assessment"
+assert_no_auth "domain-only reverse" "Only the accessibility findings should be fixed after the exhaustive audit"
+assert_no_auth "domain source qualifier" "Exhaustively audit the project, then implement only findings from security"
+assert_no_auth "explicit IDs action-first" "Exhaustively review the project, then implement F-001 and F-003"
+assert_no_auth "explicit IDs before action" "F-002 and SEC-17 are the findings to fix after the exhaustive audit"
+assert_auth "thorough explicit every" "thoroughly implement every recommendation"
 
 # The user's verbatim prompt body — load-bearing fixture
 assert_auth "user verbatim prompt body" "At this stage, what should we do next to further improve the agent memory wall feature? Remember, think what Steve Jobs would do. Make this feature impeccable to use. As a product, it is either 0 or 1. Middle states are basically 0. Continue all identified gaps in Waves. Do all waves."
+
+# Blocking review breadth is stricter than authorization. Intensity alone or
+# a focused target must not summon excellence-reviewer; explicit whole/all
+# scope still does.
+is_review_cycle_broad_scope_request "fix everything in the repository" \
+  && pass=$((pass + 1)) \
+  || { printf '  FAIL: explicit repository-wide scope should be broad\n' >&2; fail=$((fail + 1)); }
+is_review_cycle_broad_scope_request "implement all findings from the audit" \
+  && pass=$((pass + 1)) \
+  || { printf '  FAIL: all-findings scope should be broad\n' >&2; fail=$((fail + 1)); }
+is_review_cycle_broad_scope_request "implement all improvements" \
+  && pass=$((pass + 1)) \
+  || { printf '  FAIL: all-improvements scope should be broad\n' >&2; fail=$((fail + 1)); }
+is_review_cycle_broad_scope_request "implement all" \
+  && pass=$((pass + 1)) \
+  || { printf '  FAIL: canonical bare implement-all should be broad\n' >&2; fail=$((fail + 1)); }
+is_review_cycle_broad_scope_request "exhaustively improve this project" \
+  && pass=$((pass + 1)) \
+  || { printf '  FAIL: exhaustive explicit project target should be broad\n' >&2; fail=$((fail + 1)); }
+is_review_cycle_broad_scope_request "comprehensively evaluate this project and implement all improvements" \
+  && pass=$((pass + 1)) \
+  || { printf '  FAIL: open project mandate should be broad\n' >&2; fail=$((fail + 1)); }
+! is_review_cycle_broad_scope_request "thoroughly fix this function" \
+  && pass=$((pass + 1)) \
+  || { printf '  FAIL: focused thorough function fix should not be broad\n' >&2; fail=$((fail + 1)); }
+! is_review_cycle_broad_scope_request "thoroughly fix the parser" \
+  && pass=$((pass + 1)) \
+  || { printf '  FAIL: intensity without whole-scope referent should not be broad\n' >&2; fail=$((fail + 1)); }
+! is_review_cycle_broad_scope_request "make this feature impeccable" \
+  && pass=$((pass + 1)) \
+  || { printf '  FAIL: focused high-bar feature should not be broad\n' >&2; fail=$((fail + 1)); }
+is_review_cycle_broad_scope_request "make this project impeccable" \
+  && pass=$((pass + 1)) \
+  || { printf '  FAIL: explicit high-bar project scope should be broad\n' >&2; fail=$((fail + 1)); }
+for focused_context_prompt in \
+  "Fix the typo. This project uses Bash." \
+  "Update dependencies in this project." \
+  "Review the login flow in this project."; do
+  ! is_review_cycle_broad_scope_request "${focused_context_prompt}" \
+    && pass=$((pass + 1)) \
+    || { printf '  FAIL: incidental project context must not widen review: %q\n' "${focused_context_prompt}" >&2; fail=$((fail + 1)); }
+done
+for broad_prompt in \
+  "rewrite the whole codebase" \
+  "refactor the entire application" \
+  "overhaul the whole system" \
+  "modernize the codebase end to end" \
+  "fix issues across the repository" \
+  "improve the project as a whole" \
+  "harden the entire platform" \
+  "update all code" \
+  "rebuild the application from end to end" \
+  "clean up the whole repo" \
+  "make the entire product reliable"; do
+  is_review_cycle_broad_scope_request "${broad_prompt}" \
+    && pass=$((pass + 1)) \
+    || { printf '  FAIL: whole-scope implementation should be broad: %q\n' "${broad_prompt}" >&2; fail=$((fail + 1)); }
+done
+
+! is_exhaustive_authorization_request "Thoroughly review my app, then fix the highest-priority issue" \
+  && pass=$((pass + 1)) \
+  || { printf '  FAIL: top-one mutation must override thorough assessment adjective\n' >&2; fail=$((fail + 1)); }
+! is_exhaustive_authorization_request "Perform an exhaustive audit, then implement the top recommendation" \
+  && pass=$((pass + 1)) \
+  || { printf '  FAIL: top recommendation must not authorize all waves\n' >&2; fail=$((fail + 1)); }
+! is_exhaustive_authorization_request "Thoroughly assess the project, then implement the top 3 fixes" \
+  && pass=$((pass + 1)) \
+  || { printf '  FAIL: top-N fixes must not authorize all waves\n' >&2; fail=$((fail + 1)); }
+! is_exhaustive_authorization_request "Exhaustively review the project and implement only the critical findings" \
+  && pass=$((pass + 1)) \
+  || { printf '  FAIL: severity-bounded fixes must not authorize all waves\n' >&2; fail=$((fail + 1)); }
 
 # ----------------------------------------------------------------------
 # v1.42.x security: record_classifier_telemetry must redact secret-shaped

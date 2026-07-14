@@ -16,7 +16,7 @@ what — search by what you want to do.
 | **`/oracle`** | the wise consultant | Deep debugging help or architectural second opinion. Use when root cause is unclear or two credible approaches exist and choosing wrong would cost rework. |
 | **`/prometheus`** | the planner | Interview-first planning for vague or product-shaped requests. Prometheus thought ahead; this skill thinks ahead too — by asking you the right questions before any code is written. |
 | **`/librarian`** | the reference desk | Pulls official docs, third-party APIs, and concrete reference implementations. Use when training data may be stale and the right answer is on someone else's docs site. |
-| **`/council`** | the evaluation panel | Multi-role project evaluation (PM, design, security, data, SRE, growth). Includes Phase 7 verification of the top findings and Phase 8 wave-by-wave execution when fixes are requested. Add `--deep` to escalate lenses to opus for high-stakes audits. |
+| **`/council`** | the adaptive evaluation team | Builds and persists a task-specific coverage map from the full specialist roster, dispatches the smallest sufficient primary team (normally 1–4, with an evidenced exception path), optionally fills one concrete coverage gap with 0–2 more agents, and independently verifies up to three load-bearing findings. A same-turn request or short-lived follow-up can enter Phase 8; exhaustive scope requires separate explicit authorization. `--deep` escalates selected Sonnet-backed agents only; inherited stronger models are not downgraded. |
 | **`/plan-hard`** | "plan, but properly" | Produces a decision-complete plan without editing files. The hyphenated `-hard` suffix marks it as the rigorous variant of "make a plan". |
 | **`/review-hard`** | "review, but properly" | Findings-first code review of the current branch or a focused area. Same naming convention as `plan-hard`. |
 | **`/research-hard`** | "research, but properly" | Targeted repository, tool, or API context gathering before implementation. Same naming convention. |
@@ -36,20 +36,20 @@ These are specialist sub-agents that the skills above dispatch automatically. Yo
 |---|---|---|
 | **`quality-planner`** | the planner | Produces decision-complete plans; called by most execution paths. |
 | **`quality-reviewer`** | the line reviewer | Reviews diffs for defects, regressions, and missing tests. |
-| **`excellence-reviewer`** | the fresh-eyes reviewer | Evaluates completeness, unknown unknowns, and what a senior would add. Runs after `quality-reviewer` on complex tasks. |
+| **`excellence-reviewer`** | the fresh-eyes reviewer | Evaluates completeness, unknown unknowns, and what a senior would add when the current objective is broad/open, cross-surface at the configured breadth, current-complex-plan, backed by an active Phase 8 wave plan, or unknown-scope. Not triggered by cumulative file count alone. |
 | **`quality-researcher`** | the context gatherer | Surfaces repo conventions, APIs, and integration points. |
 | **`design-reviewer`** | the visual-craft reviewer | Catches generic AI-generated UI patterns before they ship. |
 | **`editor-critic`** | the prose reviewer | Pre-finalization critique of written deliverables. |
 | **`briefing-analyst`** | the synthesizer | Turns scattered research into a brief / memo / decision-ready summary. |
-| **`*-lens`** | the role evaluators | `product-lens`, `design-lens`, `security-lens`, `data-lens`, `sre-lens`, `growth-lens` — one perspective each, dispatched by `/council`. |
+| **`*-lens`** | the role evaluators | `product-lens`, `design-lens`, `security-lens`, `data-lens`, `sre-lens`, `growth-lens`, and `visual-craft-lens` — focused candidates in Council's wider specialist roster, selected only when their perspective covers a real need. |
 | **`chief-of-staff`** | the assistant | Turns vague asks into a clean checklist, agenda, message, or follow-up plan. |
 | **specialist developers** | the builders | `frontend-developer`, `backend-api-developer`, `fullstack-feature-builder`, `devops-infrastructure-engineer`, `test-automation-engineer`, plus the iOS family — invoked by `/ulw` when the task domain matches. |
 
 ## Internal terms
 
 - **Quality gate** — a stop-time check the harness enforces. Fires when the deliverable is incomplete (missing tests, missing review, unverified). The bracketed prefix in a block message names the gate (`[Quality gate · 1/3]`, `[Excellence gate · 1/1]`, `[Review coverage · 1/3]`).
-- **Wave** — a 5–10-finding chunk of work in a Council Phase 8 execution plan. Each wave is planned, implemented, reviewed (quality + excellence), verified, and committed before the next starts.
-- **Council Phase 8** — the bridge from "council surfaced 30 findings" to "now ship them all with rigor". Activates when the prompt asks for fixes and the council found enough findings to warrant a wave plan.
+- **Wave** — a 5–10-finding chunk of work in a Council Phase 8 execution plan. Each wave is planned, implemented, generically reviewed, specialist-reviewed where its changed surfaces or risk require it, verified, and committed before the next starts.
+- **Council Phase 8** — the bridge from assessment to implementation. It can activate in the assessment turn or from a matching short-lived follow-up that reuses the recorded coverage/findings. Entering Phase 8 authorizes the assessed scope; absorbing every finding or newly expanded scope without a pause requires the separate exhaustive-authorization predicate.
 - **Discovered scope** — findings that surface during execution but weren't in the original plan. Tracked in `<session>/discovered_scope.jsonl` and gated at session-stop so they don't get silently dropped.
 - **Serendipity Rule** — when a verified adjacent defect is discovered on the same code path during unrelated work, fix it in-session instead of deferring. Logged via `record-serendipity.sh` and surfaced in `/ulw-report`.
 - **ULW mode** — the active state created when a `/ulw`/`/autowork`/`/ultrawork` (or any `is_ulw_trigger` match like `/ulw-demo`, `/ulw-status`) prompt is detected. Activates the gate enforcement, classifier telemetry, and specialist routing.

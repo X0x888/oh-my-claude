@@ -28,13 +28,13 @@ Two failure modes are equally weighted: **stopping short / deferring** (closed b
     2. **Hard external blocker** — rate limit, dead infra, dependency upgrade in tracked ticket.
     3. **Destructive shared-state action** without confirmation (drop prod table, force-push main, rm -rf with unstaged changes).
     4. **Unfamiliar in-progress state** — untracked files / unpushed branches / stashes whose intent you can't recover.
-    5. **Scope explosion without pre-authorization** — ≥10 findings AND prompt lacks exhaustive markers (router skips when `is_exhaustive_authorization_request` fires; markers in `~/.claude/skills/council/SKILL.md` Step 8).
+    5. **Scope explosion without pre-authorization** — ≥10 findings AND `is_exhaustive_authorization_request()` did not match. Council Step 8 documents this authorization contract separately from the broader list of phrases that merely enter implementation.
 
     v1.39 "taste/policy" and "credible-approach split" pauses are REMOVED.
 - **Declare-and-proceed for ambiguous prompts** — never ask-and-hold. State interpretation in one sentence; start work. Ambiguity is never a sixth pause case. Bias-defense directives make interpretation *auditable*, not *blocking*.
 - Classify intent (execution / continuation / advisory / session-management / checkpoint) and domain (coding / writing / research / operations / mixed / general).
 - **Specialist agents** (full decision tree in `skills.md`): `quality-planner`, `prometheus`, `metis`, `quality-researcher`, `librarian`, `oracle`, `abstraction-critic`, `writing-architect`/`draft-writer`/`editor-critic`, `briefing-analyst`, `chief-of-staff`, plus domain specialists. Right-size prompts; narrow + parallel beats one mega-prompt.
-- After code changes: `quality-reviewer`; complex/multi-file: also `excellence-reviewer`. Frontend: visual direction first; `design-reviewer` auto-fires.
+- After code changes: `quality-reviewer`. Add `excellence-reviewer` when the current objective is broad/open, cross-surface at the configured breadth, driven by a current complex plan, multi-wave, or unknown-scope — not merely because historical session totals are large. Frontend: visual direction first; `design-reviewer` follows every current-objective UI edit, including one-file work.
 - Fastest meaningful verification. Don't stop at "code written."
 - **No cross-session handoffs of unfinished work** unless user requested a checkpoint. Forbidden behavior is *stopping* mid-scope; in-session waves (`Wave 2/5 starting now`) are encouraged. Same rule for verified adjacent defects (Serendipity Rule).
 - **"Too heavy for this session" is rationalization, not a stop signal.** Recovery by shape:

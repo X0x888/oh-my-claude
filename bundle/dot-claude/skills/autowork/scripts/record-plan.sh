@@ -22,18 +22,6 @@ fi
 ensure_session_dir
 
 plan_file="$(session_file "current_plan.md")"
-# v1.34.1+ (security-lens Z-004): strip C0/C1 control bytes at the
-# WRITE site, not only at re-render boundaries. The Wave 3 protected
-# router fences and show-report renders, but current_plan.md is the
-# durable artifact; any future tool/skill that reads + renders this
-# file (debug viewer, ulw-status detail mode, council planner that
-# reloads) would re-deliver attacker bytes from a malicious planner
-# output. Defense-in-depth: bytes never touch disk = bytes can never
-# resurface. _omc_strip_render_unsafe is the canonical helper.
-{
-  printf '# Plan from %s\n\n' "${AGENT_TYPE:-planner}"
-  printf '%s\n' "${LAST_ASSISTANT_MESSAGE}" | _omc_strip_render_unsafe
-} >"${plan_file}"
 
 # Parse the v1.14 universal VERDICT contract for planner-class agents
 # (prometheus, quality-planner). The reviewer-class parser in
@@ -143,12 +131,62 @@ if [[ "${_plan_complexity_high}" == "1" ]]; then
   nudge_flag="1"
 fi
 
-with_state_lock_batch \
-  "has_plan" "true" \
-  "plan_verdict" "${plan_verdict}" \
-  "plan_agent" "${AGENT_TYPE:-planner}" \
-  "plan_ts" "$(now_epoch)" \
-  "plan_complexity_high" "${_plan_complexity_high}" \
-  "plan_complexity_signals" "${_plan_complexity_signals}" \
-  "plan_complexity_nudge_pending" "${nudge_flag}" \
-  "metis_gate_blocks" ""
+_record_plan_state() {
+  local _plan_revision _plan_tmp=""
+  _plan_revision="$(read_state "plan_revision")"
+  [[ "${_plan_revision}" =~ ^[0-9]+$ ]] || _plan_revision=0
+
+  # current_plan.md and its state metadata form one logical record. Build the
+  # sanitized artifact and publish it while holding the same writer lock as
+  # plan_revision; otherwise two concurrent planner completions can leave the
+  # file from planner A paired with planner B's state. Atomic rename prevents
+  # readers from observing a partial Markdown file.
+  if [[ -e "${plan_file}" && ! -f "${plan_file}" ]]; then
+    log_anomaly "record-plan" \
+      "refusing to replace non-regular plan artifact at ${plan_file}"
+    return 1
+  fi
+  if ! _plan_tmp="$(mktemp "${plan_file}.XXXXXX")"; then
+    log_anomaly "record-plan" \
+      "could not allocate staged plan artifact at ${plan_file}.XXXXXX"
+    return 1
+  fi
+  if ! {
+    printf '# Plan from %s\n\n' "${AGENT_TYPE:-planner}"
+    # v1.34.1+ (security-lens Z-004): strip C0/C1 control bytes at the
+    # durable write site so future renderers cannot revive attacker bytes.
+    printf '%s\n' "${LAST_ASSISTANT_MESSAGE}" | _omc_strip_render_unsafe
+  } >"${_plan_tmp}"; then
+    rm -f "${_plan_tmp}"
+    log_anomaly "record-plan" "failed to render staged plan artifact"
+    return 1
+  fi
+  if ! mv -f "${_plan_tmp}" "${plan_file}"; then
+    rm -f "${_plan_tmp}"
+    log_anomaly "record-plan" \
+      "failed to publish staged plan artifact at ${plan_file}"
+    return 1
+  fi
+
+  # State is authoritative only after the artifact rename succeeds. Explicit
+  # error propagation is required here: with_state_lock invokes its body in an
+  # OR-list, which suppresses Bash 3.2's errexit behavior inside this function.
+  if ! _write_state_batch_unlocked \
+    "has_plan" "true" \
+    "plan_verdict" "${plan_verdict}" \
+    "plan_agent" "${AGENT_TYPE:-planner}" \
+    "plan_ts" "$(now_epoch)" \
+    "plan_revision" "$((_plan_revision + 1))" \
+    "plan_complexity_high" "${_plan_complexity_high}" \
+    "plan_complexity_signals" "${_plan_complexity_signals}" \
+    "plan_complexity_nudge_pending" "${nudge_flag}" \
+    "metis_gate_blocks" ""; then
+    log_anomaly "record-plan" \
+      "plan artifact published but state metadata commit failed"
+    return 1
+  fi
+}
+if ! with_state_lock _record_plan_state; then
+  log_hook "record-plan" "plan artifact/state publication failed"
+  exit 1
+fi

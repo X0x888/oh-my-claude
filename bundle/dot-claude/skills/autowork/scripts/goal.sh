@@ -36,7 +36,8 @@
 #   goal_paused             "1" while paused
 #   goal_blocks             total goal-driver blocks this session
 #   goal_stuck_blocks       consecutive no-progress blocks (escape counter)
-#   goal_last_block_edit_ts last_edit_ts at the previous goal block
+#   goal_last_block_edit_ts / goal_last_block_edit_revision
+#                           edit generation at the previous goal block
 #
 # Exit codes:
 #   0 — ok
@@ -96,6 +97,10 @@ case "${subcmd}" in
     objective="$(printf '%s' "${objective}" | tr '\n' ' ')"
     objective="$(omc_redact_secrets <<<"${objective}")"
     goal_arm_objective "${objective}" "manual"
+    # goal_arm_objective predates monotonic edit generations. Clear the
+    # adjacent revision marker here so re-arming cannot inherit progress from
+    # a previous goal; the Stop driver persists it on the first block.
+    write_state "goal_last_block_edit_revision" ""
     printf 'goal: ARMED. The relentless driver will re-anchor this objective and block Stop\n'
     printf '      until you (a) achieve it — fresh excellence audit + attest **Goal achieved.** —\n'
     printf '      or (b) hit a no-progress wall (%s consecutive stalls auto-release with a surface).\n' "${_goal_stuck_threshold}"
@@ -191,7 +196,8 @@ case "${subcmd}" in
       "goal_paused" "" \
       "goal_blocks" "" \
       "goal_stuck_blocks" "" \
-      "goal_last_block_edit_ts" ""
+      "goal_last_block_edit_ts" "" \
+      "goal_last_block_edit_revision" ""
     record_gate_event "goal" "goal-cleared" 2>/dev/null || true
     printf 'goal: CLEARED. The relentless driver has stood down.\n'
     ;;
@@ -205,7 +211,8 @@ case "${subcmd}" in
       "goal_paused" "" \
       "goal_blocks" "" \
       "goal_stuck_blocks" "" \
-      "goal_last_block_edit_ts" ""
+      "goal_last_block_edit_ts" "" \
+      "goal_last_block_edit_revision" ""
     record_gate_event "goal" "goal-achieved" \
       "reason=${reason:0:200}" 2>/dev/null || true
     if [[ -n "${reason//[[:space:]]/}" ]]; then

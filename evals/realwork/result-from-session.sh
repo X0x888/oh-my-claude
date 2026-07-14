@@ -170,10 +170,15 @@ session_outcome="$(jq -r '.session_outcome // ""'           "${STATE_FILE}" 2>/d
 last_advisory_verify_ts="$(jq -r '.last_advisory_verify_ts // ""' "${STATE_FILE}" 2>/dev/null || echo "")"
 advisory_evidence_count="$(jq -r '.advisory_evidence_count // "0"' "${STATE_FILE}" 2>/dev/null || echo 0)"
 review_had_findings="$(jq -r '.review_had_findings // ""'   "${STATE_FILE}" 2>/dev/null || echo "")"
-design_review_ts="$(jq -r '.design_review_ts // .design_reviewer_ts // ""' "${STATE_FILE}" 2>/dev/null || echo "")"
+doc_review_had_findings="$(jq -r '.doc_review_had_findings // ""' "${STATE_FILE}" 2>/dev/null || echo "")"
+design_dimension_ts="$(jq -r '.dim_design_quality_ts // ""' "${STATE_FILE}" 2>/dev/null || echo "")"
+design_legacy_ts="$(jq -r '.design_review_ts // .design_reviewer_ts // ""' "${STATE_FILE}" 2>/dev/null || echo "")"
+design_review_ts="${design_dimension_ts:-${design_legacy_ts}}"
+design_review_verdict="$(jq -r '.dim_design_quality_verdict // ""' "${STATE_FILE}" 2>/dev/null || echo "")"
+design_review_revision="$(jq -r '.dim_design_quality_revision // ""' "${STATE_FILE}" 2>/dev/null || echo "")"
+last_code_edit_revision="$(jq -r '.last_code_edit_revision // ""' "${STATE_FILE}" 2>/dev/null || echo "")"
+last_code_edit_ts="$(jq -r '.last_code_edit_ts // ""' "${STATE_FILE}" 2>/dev/null || echo "")"
 design_contract="$(jq -r '.design_contract // .design_contract_recorded_ts // ""' "${STATE_FILE}" 2>/dev/null || echo "")"
-dispatches="$(jq -r '.subagent_dispatch_count // "0"'       "${STATE_FILE}" 2>/dev/null || echo 0)"
-[[ "${dispatches}" =~ ^[0-9]+$ ]] || dispatches=0
 [[ "${advisory_evidence_count}" =~ ^[0-9]+$ ]] || advisory_evidence_count=0
 
 subagent_verdict_seen() {
@@ -214,14 +219,15 @@ det_review_clean=0
 [[ -n "${last_review_ts}" && "${review_had_findings}" != "true" ]] && det_review_clean=1
 
 # doc_review_clean: doc edits exist, the prose-review clock is current,
-# and the latest reviewer state is clean.
+# and the latest prose-review state is clean. Standard code-review findings
+# are intentionally isolated from this outcome.
 det_doc_review_clean=0
 if [[ -n "${last_doc_edit_ts}" \
    && -n "${last_doc_review_ts}" \
    && "${last_doc_review_ts}" =~ ^[0-9]+$ \
    && "${last_doc_edit_ts}" =~ ^[0-9]+$ \
    && "${last_doc_review_ts}" -ge "${last_doc_edit_ts}" \
-   && "${review_had_findings}" != "true" ]]; then
+   && "${doc_review_had_findings}" != "true" ]]; then
   det_doc_review_clean=1
 fi
 
@@ -254,7 +260,7 @@ det_design_contract_recorded=0
 # ui_files_changed: edited_files.log includes a UI/web-shaped path
 det_ui_files_changed=0
 if [[ -f "${EDITED_LOG}" ]]; then
-  if grep -Eiq '\.(tsx|jsx|vue|svelte|css|scss|sass|less|html?|astro)$' "${EDITED_LOG}" 2>/dev/null; then
+  if grep -Eiq '\.(tsx|jsx|vue|svelte|css|scss|sass|less|html?|astro|storyboard|xib)$|(^|/)(views?|screens?|ui|presentation)/[^/]+\.swift$|(^|/)[^/]*(view(controller)?|screen|cell|row)\.swift$|(^|/)res/layout(-[^/]*)?/[^/]+\.xml$|(^|/)(ui|compose|screens?|presentation)/[^/]+\.kt$|(^|/)[^/]*(activity|fragment|screen|view)\.kt$' "${EDITED_LOG}" 2>/dev/null; then
     det_ui_files_changed=1
   fi
 fi
@@ -265,10 +271,28 @@ case "${last_verify_method}" in
   *browser*|*playwright*|*chrome*|mcp_*) det_browser_or_visual_verification=1 ;;
 esac
 
-# design_review_clean: a design review ran AND it was clean
+# design_review_clean: the canonical design dimension is clean and covers the
+# current code generation. Legacy pre-dimension keys remain a migration-only
+# fallback; production record-reviewer writes dim_design_quality_*.
 det_design_review_clean=0
 design_review_had_findings="$(jq -r '.design_review_had_findings // ""' "${STATE_FILE}" 2>/dev/null || echo "")"
-[[ -n "${design_review_ts}" && "${design_review_had_findings}" != "true" ]] && det_design_review_clean=1
+design_review_is_clean=0
+if [[ -n "${design_dimension_ts}" ]]; then
+  case "${design_review_verdict}" in
+    CLEAN|SHIP) design_review_is_clean=1 ;;
+  esac
+elif [[ -n "${design_legacy_ts}" && "${design_review_had_findings}" != "true" ]]; then
+  design_review_is_clean=1
+fi
+design_review_is_fresh=1
+if [[ "${design_review_revision}" =~ ^[0-9]+$ ]] \
+    && [[ "${last_code_edit_revision}" =~ ^[0-9]+$ ]]; then
+  (( design_review_revision >= last_code_edit_revision )) || design_review_is_fresh=0
+elif [[ "${design_review_ts}" =~ ^[0-9]+$ ]] \
+    && [[ "${last_code_edit_ts}" =~ ^[0-9]+$ ]]; then
+  (( design_review_ts >= last_code_edit_ts )) || design_review_is_fresh=0
+fi
+(( design_review_is_clean == 1 && design_review_is_fresh == 1 )) && det_design_review_clean=1
 
 # no_layout_overlap: design_review_layout_issue NOT flagged (defaults
 # to "passing" — only fires false when reviewer explicitly recorded
@@ -277,20 +301,49 @@ det_no_layout_overlap=1
 design_review_layout_issue="$(jq -r '.design_review_layout_issue // ""' "${STATE_FILE}" 2>/dev/null || echo "")"
 [[ "${design_review_layout_issue}" == "true" ]] && det_no_layout_overlap=0
 
-# council_or_lens_coverage: ≥3 subagent dispatches AND any *-lens dispatch
-# recorded in dispatch_log (best effort; falls back to dispatch count only).
+# council_or_lens_coverage: one relevant evaluator is sufficient. Team size
+# is not quality evidence, so raw dispatch count never satisfies this outcome.
+# Prefer the historical dispatch log when present, then the live pending-agent
+# ledger and completed subagent summaries used by current hook versions.
 det_council_or_lens_coverage=0
 dispatch_log="${SESSION_DIR}/dispatch_log.jsonl"
-if [[ "${dispatches}" -ge 3 ]]; then
-  if [[ -f "${dispatch_log}" ]]; then
-    if grep -Eq '"-lens"|"abstraction-critic"|"oracle"|"product-lens"|"sre-lens"|"data-lens"|"security-lens"|"design-lens"|"growth-lens"|"visual-craft-lens"' "${dispatch_log}" 2>/dev/null; then
-      det_council_or_lens_coverage=1
-    fi
-  else
-    # Without a dispatch_log we can only check the count — soft signal.
-    det_council_or_lens_coverage=1
-  fi
+pending_agents="${SESSION_DIR}/pending_agents.jsonl"
+council_evaluator_seen() {
+  local jsonl="$1"
+  [[ -f "${jsonl}" ]] || return 1
+  jq -s -e '
+    any(.[];
+      ((.agent // .agent_type // .subagent_type // "")
+       | split(":") | last) as $agent
+      | ($agent | test("-lens$|^(oracle|librarian|quality-researcher|literature-scout|abstraction-critic|divergent-framer|rigor-reviewer)$"))
+    )
+  ' "${jsonl}" >/dev/null 2>&1
+}
+
+explicit_council_dispatch_seen() {
+  local jsonl="$1"
+  [[ -f "${jsonl}" ]] || return 1
+  jq -s -e '
+    any(.[];
+      (.purpose // "") == "council"
+      and ((.council_phase // "") == "primary" or (.council_phase // "") == "gap-fill")
+    )
+  ' "${jsonl}" >/dev/null 2>&1
+}
+
+council_dispatches="${SESSION_DIR}/council_dispatches.jsonl"
+if explicit_council_dispatch_seen "${council_dispatches}" \
+    || explicit_council_dispatch_seen "${pending_agents}"; then
+  det_council_or_lens_coverage=1
 fi
+
+for evaluator_log in "${dispatch_log}" "${pending_agents}" "${SUBAGENT_SUMMARIES_FILE}"; do
+  [[ "${det_council_or_lens_coverage}" -eq 0 ]] || break
+  if council_evaluator_seen "${evaluator_log}"; then
+    det_council_or_lens_coverage=1
+    break
+  fi
+done
 
 # wave_plan_recorded: findings.json has a waves array with ≥1 wave
 det_wave_plan_recorded=0

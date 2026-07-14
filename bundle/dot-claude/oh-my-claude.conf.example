@@ -77,8 +77,12 @@
 # Env: OMC_VERIFY_CONFIDENCE_THRESHOLD.
 #verify_confidence_threshold=40
 
-# Capture advisory specialists' findings (council lenses, metis,
-# briefing-analyst) and gate Stop until each is shipped or deferred.
+# Capture advisory findings: prose extraction stays allowlisted to the
+# known lenses/critics, while any installed/custom non-dimension specialist
+# can opt into deterministic capture with valid FINDINGS_JSON. Selected
+# non-allowlisted Council finders are required to use that structured path.
+# Gate Stop until each captured item is resolved under the active execution
+# contract.
 #   on  — capture + gate. (Default.)
 #   off — kill switch; useful when heuristic extraction is noisy on a
 #         specific project's prose style.
@@ -242,9 +246,9 @@
 
 # Internal gate tuning. Most users never touch these.
 #stall_threshold=12              # consecutive Read/Grep before stall fires
-#excellence_file_count=3         # edited files that trigger excellence-reviewer
-#dimension_gate_file_count=3     # edited files that trigger dimension gate
-#traceability_file_count=6       # edited files that require briefing-analyst
+#excellence_file_count=3         # breadth floor for cross-surface completeness review
+#dimension_gate_file_count=3     # breadth floor used with semantic/cross-surface evidence
+#traceability_file_count=6       # breadth floor for cross-surface/plan traceability review
 
 # Pipe-separated glob patterns of MCP tools that count as verification.
 # Example: mcp__cypress__*|mcp__custom_api_tester__*
@@ -784,11 +788,13 @@
 # Env: OMC_OUTPUT_STYLE.
 #output_style=opencode
 
-# Auto-triggered council dispatches inherit `--deep` semantics — every
-# lens uses opus instead of sonnet. Default off; meaningfully more
-# expensive per run. Explicit `/council --deep` always escalates
-# regardless. Quality-first users on `model_tier=quality` are the
-# typical opt-in.
+# Auto-triggered Council dispatches inherit `--deep` semantics: selected
+# Sonnet-backed specialists escalate to Opus, while `model: inherit`
+# deliberators stay on the session model (so a stronger main model is not
+# downgraded). Default off; meaningfully more expensive when selected
+# Sonnet agents are involved. Explicit `/council --deep` always applies
+# the same selective escalation. Quality-first users on
+# `model_tier=quality` are the typical opt-in.
 # Env: OMC_COUNCIL_DEEP_DEFAULT.
 #council_deep_default=off
 
@@ -1129,7 +1135,9 @@
 #     have no portable "rest of the system" partner site to lockstep.
 #   • UI state coverage — framework-specific (snapshot tests, Storybook,
 #     Playwright fixtures, XCUITest) and would need per-project signals.
-#     Track via existing `design_review` dimension when UI files edited.
+#     The existing `design_quality` dimension reviews visual/design judgment
+#     only when a UI-shaped change is semantically material; it is not a
+#     substitute for framework-specific state tests.
 #
 # First-session aggressiveness: R1's verify-suppression requires both
 # `last_verify_ts` and `last_code_edit_ts` to be present and numeric.

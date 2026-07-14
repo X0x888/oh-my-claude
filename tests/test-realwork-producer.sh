@@ -138,8 +138,11 @@ sdir_d="$(new_session "sess-D" '{
   "last_verify_method": "mcp_playwright",
   "review_had_findings": "false",
   "design_contract": "{\"palette\":\"warm\"}",
-  "design_review_ts": "495",
-  "design_review_had_findings": "false",
+  "last_code_edit_ts": "480",
+  "last_code_edit_revision": "3",
+  "dim_design_quality_ts": "495",
+  "dim_design_quality_revision": "3",
+  "dim_design_quality_verdict": "CLEAN",
   "last_assistant_message": "**Changed.** Redesigned. **Verification.** browser_snapshot ok. **Risks.** none. **Next.** Done."
 }')"
 printf '%s\n' "src/Dashboard.tsx" "src/Dashboard.module.css" >"${sdir_d}/edited_files.log"
@@ -149,6 +152,18 @@ assert_eq "D2 ui_files_changed true" "true" "$(jq -r '.outcomes.ui_files_changed
 assert_eq "D3 browser_or_visual_verification true" "true" "$(jq -r '.outcomes.browser_or_visual_verification' <<<"${result_d}")"
 assert_eq "D4 design_review_clean true" "true" "$(jq -r '.outcomes.design_review_clean' <<<"${result_d}")"
 assert_eq "D5 no_layout_overlap default true" "true" "$(jq -r '.outcomes.no_layout_overlap' <<<"${result_d}")"
+
+# Canonical design verdict and generation are both load-bearing.
+jq '.dim_design_quality_verdict="FINDINGS"' "${sdir_d}/session_state.json" >"${sdir_d}/session_state.json.tmp" \
+  && mv "${sdir_d}/session_state.json.tmp" "${sdir_d}/session_state.json"
+result_d_findings="$(run_producer "sess-D" "ui-shipping")"
+assert_eq "D6 findings verdict is not clean design evidence" "false" \
+  "$(jq -r '.outcomes.design_review_clean' <<<"${result_d_findings}")"
+jq '.dim_design_quality_verdict="CLEAN" | .last_code_edit_revision="4"' "${sdir_d}/session_state.json" >"${sdir_d}/session_state.json.tmp" \
+  && mv "${sdir_d}/session_state.json.tmp" "${sdir_d}/session_state.json"
+result_d_stale="$(run_producer "sess-D" "ui-shipping")"
+assert_eq "D7 stale design generation is not clean design evidence" "false" \
+  "$(jq -r '.outcomes.design_review_clean' <<<"${result_d_stale}")"
 
 # ---------------------------------------------------------------
 # Part E: broad-project-eval detectors
@@ -161,7 +176,7 @@ sdir_e="$(new_session "sess-E" '{
   "last_verify_outcome": "passed",
   "last_verify_scope": "full",
   "review_had_findings": "false",
-  "subagent_dispatch_count": "5"
+  "subagent_dispatch_count": "1"
 }')"
 cat >"${sdir_e}/findings.json" <<'JSON'
 {
@@ -176,14 +191,52 @@ cat >"${sdir_e}/findings.json" <<'JSON'
 JSON
 cat >"${sdir_e}/dispatch_log.jsonl" <<'JSONL'
 {"agent": "product-lens", "ts": 200}
-{"agent": "sre-lens", "ts": 250}
-{"agent": "oracle", "ts": 300}
 JSONL
 result_e="$(run_producer "sess-E" "broad-project-eval")"
 assert_eq "E1 full_verification true" "true" "$(jq -r '.outcomes.full_verification' <<<"${result_e}")"
-assert_eq "E2 council_or_lens_coverage true (lens dispatched)" "true" "$(jq -r '.outcomes.council_or_lens_coverage' <<<"${result_e}")"
+assert_eq "E2 council_or_lens_coverage true (one relevant lens dispatched)" "true" "$(jq -r '.outcomes.council_or_lens_coverage' <<<"${result_e}")"
 assert_eq "E3 wave_plan_recorded true" "true" "$(jq -r '.outcomes.wave_plan_recorded' <<<"${result_e}")"
 assert_eq "E4 findings_resolved (all terminal w/ reasons)" "true" "$(jq -r '.outcomes.findings_resolved_or_deferred_with_why' <<<"${result_e}")"
+
+# E2b negative: raw panel size is not evidence when every dispatch is an
+# unrelated implementation agent.
+sdir_e_unrelated="$(new_session "sess-E-unrelated" '{"subagent_dispatch_count":"7"}')"
+cat >"${sdir_e_unrelated}/dispatch_log.jsonl" <<'JSONL'
+{"agent": "frontend-developer", "ts": 200}
+{"agent": "backend-api-developer", "ts": 210}
+{"agent": "test-automation-engineer", "ts": 220}
+JSONL
+result_e_unrelated="$(run_producer "sess-E-unrelated" "broad-project-eval")"
+assert_eq "E2b unrelated agents do not satisfy council coverage" "false" "$(jq -r '.outcomes.council_or_lens_coverage' <<<"${result_e_unrelated}")"
+
+# E2c negative: the mandatory generic code reviewer is a quality gate, not
+# evidence that Council selected a task-specific evaluator.
+sdir_e_generic_review="$(new_session "sess-E-generic-review" '{}')"
+cat >"${sdir_e_generic_review}/subagent_summaries.jsonl" <<'JSONL'
+{"agent_type": "quality-reviewer", "ts": 230, "message": "No code defects.\nVERDICT: CLEAN"}
+JSONL
+result_e_generic_review="$(run_producer "sess-E-generic-review" "broad-project-eval")"
+assert_eq "E2c generic quality review does not satisfy council coverage" "false" "$(jq -r '.outcomes.council_or_lens_coverage' <<<"${result_e_generic_review}")"
+
+# Surface/traceability reviewers are ordinary adaptive quality gates. Their
+# presence alone is not proof that Council built a task-specific coverage map.
+sdir_e_surface_reviews="$(new_session "sess-E-surface-reviews" '{}')"
+cat >"${sdir_e_surface_reviews}/subagent_summaries.jsonl" <<'JSONL'
+{"agent_type": "editor-critic", "ts": 240, "message": "Prose clean.\nVERDICT: CLEAN"}
+{"agent_type": "design-reviewer", "ts": 250, "message": "UI clean.\nVERDICT: CLEAN"}
+{"agent_type": "briefing-analyst", "ts": 260, "message": "Traceability clean.\nVERDICT: CLEAN"}
+JSONL
+result_e_surface_reviews="$(run_producer "sess-E-surface-reviews" "broad-project-eval")"
+assert_eq "E2d ordinary surface reviewers do not satisfy council coverage" "false" "$(jq -r '.outcomes.council_or_lens_coverage' <<<"${result_e_surface_reviews}")"
+
+# Full-roster Council evidence is explicit, not inferred from a name prefix.
+sdir_e_custom="$(new_session "sess-E-custom" '{}')"
+cat >"${sdir_e_custom}/council_dispatches.jsonl" <<'JSONL'
+{"agent_type":"custom-trust-auditor","description":"[council:primary] inspect trust boundary","purpose":"council","council_phase":"primary","ts":270}
+JSONL
+result_e_custom="$(run_producer "sess-E-custom" "broad-project-eval")"
+assert_eq "E2e explicit custom Council primary satisfies coverage" "true" \
+  "$(jq -r '.outcomes.council_or_lens_coverage' <<<"${result_e_custom}")"
 
 # E5 negative: deferred finding without reason → false
 sdir_e2="$(new_session "sess-E2" '{}')"
@@ -211,6 +264,28 @@ JSONL
 result_f="$(run_producer "sess-F" "writing-proposal")"
 assert_eq "F1 writer_deliverable_ready true" "true" "$(jq -r '.outcomes.writer_deliverable_ready' <<<"${result_f}")"
 assert_eq "F2 doc_review_clean true" "true" "$(jq -r '.outcomes.doc_review_clean' <<<"${result_f}")"
+
+# Prose and standard review findings have separate state. Whichever reviewer
+# happened to finish last must not overwrite the other domain's outcome.
+sdir_f_doc_findings="$(new_session "sess-F-doc-findings" '{
+  "last_doc_edit_ts": "320",
+  "last_doc_review_ts": "340",
+  "last_review_ts": "350",
+  "doc_review_had_findings": "true",
+  "review_had_findings": "false"
+}')"
+result_f_doc_findings="$(run_producer "sess-F-doc-findings" "writing-proposal")"
+assert_eq "F2a prose findings survive later clean standard review" "false" "$(jq -r '.outcomes.doc_review_clean' <<<"${result_f_doc_findings}")"
+
+sdir_f_code_findings="$(new_session "sess-F-code-findings" '{
+  "last_doc_edit_ts": "320",
+  "last_doc_review_ts": "350",
+  "last_review_ts": "340",
+  "doc_review_had_findings": "false",
+  "review_had_findings": "true"
+}')"
+result_f_code_findings="$(run_producer "sess-F-code-findings" "writing-proposal")"
+assert_eq "F2b standard findings do not contaminate clean prose review" "true" "$(jq -r '.outcomes.doc_review_clean' <<<"${result_f_code_findings}")"
 
 sdir_g="$(new_session "sess-G" '{
   "session_start_ts": "100",

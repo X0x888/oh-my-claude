@@ -195,6 +195,9 @@ if is_prompt_persist_enabled; then
 else
   _omc_persisted_prompt_safe=""
 fi
+_prompt_revision="$(read_state "prompt_revision" 2>/dev/null || true)"
+[[ "${_prompt_revision}" =~ ^[0-9]+$ ]] || _prompt_revision=0
+_prompt_revision=$((_prompt_revision + 1))
 write_state_batch \
   "stop_guard_blocks" "0" \
   "session_handoff_blocks" "0" \
@@ -204,6 +207,7 @@ write_state_batch \
   "prompt_classified_intent" "${TASK_INTENT}" \
   "last_user_prompt" "${_omc_persisted_prompt_safe}" \
   "last_user_prompt_ts" "${PROMPT_TS}" \
+  "prompt_revision" "${_prompt_revision}" \
   "stall_counter" "0" \
   "ulw_pause_active" ""
 
@@ -314,6 +318,65 @@ fi
 # "thanks, what's the test count?" follow-up must never re-block a task that
 # was already completed in the prior turn.
 if [[ "${TASK_INTENT}" == "execution" ]]; then
+  # Adaptive review routing is scoped to the current execution objective, not
+  # to cumulative session history. edited_files.log records every path-bearing
+  # mutation (including repeat edits to a file seen in an earlier objective),
+  # so its current line count is a lossless start offset for this cycle.
+  # Monotonic baselines scope unknown-path Bash edits and newly recorded plans
+  # without relying on second-resolution timestamps. A content signature does
+  # the same for the separate findings.json wave ledger.
+  _review_cycle_log="$(session_file "edited_files.log")"
+  _review_cycle_log_offset=0
+  if [[ -f "${_review_cycle_log}" ]]; then
+    _review_cycle_log_offset="$(wc -l < "${_review_cycle_log}" | tr -d '[:space:]')"
+  fi
+  [[ "${_review_cycle_log_offset}" =~ ^[0-9]+$ ]] || _review_cycle_log_offset=0
+
+  _review_cycle_bash_event_base="$(read_state "bash_edit_event_count")"
+  _review_cycle_bash_event_base="${_review_cycle_bash_event_base:-0}"
+  [[ "${_review_cycle_bash_event_base}" =~ ^[0-9]+$ ]] || _review_cycle_bash_event_base=0
+  _review_cycle_plan_revision_base="$(read_state "plan_revision")"
+  _review_cycle_plan_revision_base="${_review_cycle_plan_revision_base:-0}"
+  [[ "${_review_cycle_plan_revision_base}" =~ ^[0-9]+$ ]] || _review_cycle_plan_revision_base=0
+  _review_cycle_findings_signature_base="$(_review_cycle_file_signature "$(session_file "findings.json")")"
+
+  _review_cycle_broad_scope=""
+  if is_review_cycle_broad_scope_request "${PROMPT_TEXT}" \
+      || { is_god_scope_enabled && is_bare_imperative_prompt "${PROMPT_TEXT}"; }; then
+    _review_cycle_broad_scope="1"
+  fi
+
+  _review_cycle_design_opt_out="0"
+  _review_cycle_ui_semantic="0"
+  _review_cycle_prose_semantic="0"
+  if grep -Eiq '(no design polish|functional only|backend only|skip design|skip the design|bare.?minimum ui|minimal ui|no ui polish|no visual polish)' <<<"${PROMPT_TEXT}"; then
+    _review_cycle_design_opt_out="1"
+  elif is_design_review_semantic_request "${PROMPT_TEXT}"; then
+    _review_cycle_ui_semantic="1"
+  fi
+  # TASK_DOMAIN is finalized later, after continuation/advisory handling and
+  # project-profile loading. This cycle snapshot runs before that branch, so
+  # derive only the prompt-local semantic domain here; using TASK_DOMAIN would
+  # abort every fresh execution prompt under `set -u`.
+  _review_cycle_prompt_domain="$(infer_domain "${PROMPT_TEXT}" "")"
+  case "${_review_cycle_prompt_domain}" in
+    writing|research|operations) _review_cycle_prose_semantic="1" ;;
+  esac
+
+  write_state_batch \
+    "review_cycle_prompt_ts" "${PROMPT_TS}" \
+    "review_cycle_edit_log_offset" "${_review_cycle_log_offset}" \
+    "review_cycle_bash_event_base" "${_review_cycle_bash_event_base}" \
+    "review_cycle_plan_revision_base" "${_review_cycle_plan_revision_base}" \
+    "review_cycle_findings_signature_base" "${_review_cycle_findings_signature_base}" \
+    "review_cycle_broad_scope" "${_review_cycle_broad_scope}" \
+    "review_cycle_ui_semantic" "${_review_cycle_ui_semantic}" \
+    "review_cycle_design_opt_out" "${_review_cycle_design_opt_out}" \
+    "review_cycle_prose_semantic" "${_review_cycle_prose_semantic}" \
+    "dimension_guard_blocks" "0" \
+    "excellence_guard_triggered" "" \
+    "excellence_guard_triggered_revision" ""
+
   # v1.46+ /goal: a user-declared goal (goal.sh) rides the SAME objective-cycle
   # stamps (prompt_ts + edit baseline) so the stop-guard goal driver can detect
   # work-this-cycle and re-anchor. Stamp when the objective-contract gate is on
@@ -323,8 +386,10 @@ if [[ "${TASK_INTENT}" == "execution" ]]; then
   if [[ "${OMC_OBJECTIVE_CONTRACT_GATE:-on}" == "on" || -n "${_oc_goal_on}" ]]; then
     _oc_code_edits="$(read_state "code_edit_count")"; _oc_code_edits="${_oc_code_edits:-0}"
     _oc_doc_edits="$(read_state "doc_edit_count")"; _oc_doc_edits="${_oc_doc_edits:-0}"
+    _oc_edit_revision="$(read_state "edit_revision")"; _oc_edit_revision="${_oc_edit_revision:-0}"
     [[ "${_oc_code_edits}" =~ ^[0-9]+$ ]] || _oc_code_edits=0
     [[ "${_oc_doc_edits}" =~ ^[0-9]+$ ]] || _oc_doc_edits=0
+    [[ "${_oc_edit_revision}" =~ ^[0-9]+$ ]] || _oc_edit_revision=0
     # objective_contract_god_scope (v1.47): a CYCLE-BOUND mirror of the
     # god-scope bare-imperative signal. The sticky god_scope_required flag
     # (set at the god-scope directive below, never cleared) cannot be read at
@@ -339,6 +404,7 @@ if [[ "${TASK_INTENT}" == "execution" ]]; then
     write_state_batch \
       "objective_contract_prompt_ts" "${PROMPT_TS}" \
       "objective_contract_edit_baseline" "$((_oc_code_edits + _oc_doc_edits))" \
+      "objective_contract_edit_revision_base" "${_oc_edit_revision}" \
       "objective_contract_audited_ts" "" \
       "objective_contract_blocks" "0" \
       "objective_contract_open_mandate" "$(is_exhaustive_authorization_request "${PROMPT_TEXT}" && printf 1 || printf '')" \
@@ -349,6 +415,7 @@ if [[ "${TASK_INTENT}" == "execution" ]]; then
     write_state_batch \
       "objective_contract_prompt_ts" "" \
       "objective_contract_edit_baseline" "" \
+      "objective_contract_edit_revision_base" "" \
       "objective_contract_audited_ts" "" \
       "objective_contract_blocks" "" \
       "objective_contract_open_mandate" "" \
@@ -361,7 +428,8 @@ if [[ "${TASK_INTENT}" == "execution" ]]; then
     write_state_batch \
       "goal_blocks" "0" \
       "goal_stuck_blocks" "0" \
-      "goal_last_block_edit_ts" ""
+      "goal_last_block_edit_ts" "" \
+      "goal_last_block_edit_revision" ""
   fi
 fi
 
@@ -891,6 +959,9 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
     [[ -n "${_ga_objective}" ]] || _ga_objective="$(trim_whitespace "$(normalize_task_prompt "${PROMPT_TEXT_SAFE}")")"
     [[ -n "${_ga_objective}" ]] || _ga_objective="${PROMPT_TEXT_SAFE}"
     if goal_arm_objective "${_ga_objective}" "auto"; then
+      # The shared arming helper predates monotonic progress tracking. Prevent
+      # a newly auto-armed goal from inheriting the prior goal's generation.
+      write_state "goal_last_block_edit_revision" ""
       add_directive "goal_auto_armed" "PERSISTENT GOAL AUTO-ARMED (goal_auto_arm=on) from your prompt's explicit goal declaration: \"${_ga_objective:0:200}\". The relentless driver re-anchors this goal at every Stop and blocks premature stops until a fresh excellence audit + a **Goal achieved.** attestation land, or a no-progress stuck-wall releases it. ANNOUNCE the armed goal in one line in your opener so the user can redirect cheaply. Lifecycle: /goal (status) · /goal pause · /goal clear. Disable auto-arming: goal_auto_arm=off."
     fi
   fi
@@ -1242,7 +1313,7 @@ ${_spec_safe}
       && is_execution_intent_value "${TASK_INTENT}" \
       && [[ "${session_management_prompt}" -eq 0 && "${checkpoint_prompt}" -eq 0 ]] \
       && [[ "$(read_state "god_scope_required")" != "1" ]]; then
-    add_directive "open_mandate_innovation" "**OPEN-MANDATE / INNOVATION-GENERATION DIRECTIVE.** This prompt matched an OPEN improvement mandate (\"implement all\" / \"comprehensively\" / \"make it better\" / \"everything\" / \"exhaustive\"). FIRST judge scope: if the ask is genuinely OPEN / project-wide (not pinned to one named file, feature, or surface), run the wide protocol below; if it is actually scoped to a specific surface (e.g. \"make THE PARSER production-ready\", \"implement all the changes WE DISCUSSED\"), honor that scope — this directive widens an open mandate, it does NOT override an explicit narrow one. For a genuinely open mandate: the deliverable is the DELTA between this project as-is and its most powerful version — NOT a defect audit. A bug list is the FLOOR, not the ceiling. (1) Do NOT narrow to \"find what is broken and fix it\" — a defect audit is a STRICT SUBSET of an improvement mandate; if the project is defect-clean the value is in what is MISSING: capability gaps, friction to remove, paradigm limits to lift, UX / observability / polish. AMBITION IS CALIBRATED TO RECOVERABILITY, never penalized for difficulty: prefer the bold, RECOVERABLE move (a flag-gated capability defaulting off, a refactor with a clean revert, a paradigm lift behind a toggle) over the safe-trivial one — this directive is non-blocking and you work on a branch, so boldness here is cheap, and a defect-clean repo's value IS the bold recoverable move, not the rename / README-tweak / tiny-test an Exploit-only agent reaches for. Penalize difficulty ONLY for IRREVERSIBILITY, never for ambition: any action that trips the five pause cases (\`core.md\` — destructive shared-state, credentials/secrets, anything you cannot verify or revert) is NOT \"bold,\" it is the irreversible class this directive never green-lights; when ambition and irreversibility conflict, irreversibility wins and the pause case governs. (2) GENERATE a wide candidate set — scan the blindspot inventory (\`~/.claude/quality-pack/blindspots/\`), \`git log -20\` + the CHANGELOG / Unreleased entries, and any \`findings.json\` waves still pending; dispatch a fresh-context audit sub-agent (or the Workflow tool for heavy fan-out) so breadth is not bounded by what is obvious to the main thread. (3) Produce a wave plan via \`record-finding-list.sh init\` (5-10 improvements per wave by surface) and execute every wave end-to-end IN THIS SESSION — plan -> impl -> quality-reviewer -> excellence-reviewer -> verify -> commit. (4) \"I evaluated and found little to do\" is the narrowing failure /ulw exists to prevent — if your candidate set is small your scan was too shallow; widen it before concluding. (5) Lead the opener with: **Open mandate — running innovation-generation scan.** so the routing is user-auditable and the user can redirect cheaply if they meant it narrower. Under \`no_defer_mode=on\` (default), every improvement ships inline or is rejected as not-a-defect; there is no out-of-scope."
+    add_directive "open_mandate_innovation" "**OPEN-MANDATE / INNOVATION-GENERATION DIRECTIVE.** This prompt matched an exhaustive-action signal (for example \"implement all\", \"fix everything\", exhaustive implementation wording, a high-bar target, or binary-quality framing). FIRST judge scope: if the ask is genuinely OPEN / project-wide (not pinned to one named file, feature, or surface), run the wide protocol below; if it is actually scoped to a specific surface (e.g. \"make THE PARSER production-ready\", \"implement all the changes WE DISCUSSED\"), honor that scope — this directive widens an open mandate, it does NOT override an explicit narrow one. For a genuinely open mandate: the deliverable is the DELTA between this project as-is and its most powerful version — NOT a defect audit. A bug list is the FLOOR, not the ceiling. (1) Do NOT narrow to \"find what is broken and fix it\" — a defect audit is a STRICT SUBSET of an improvement mandate; if the project is defect-clean the value is in what is MISSING: capability gaps, friction to remove, paradigm limits to lift, UX / observability / polish. AMBITION IS CALIBRATED TO RECOVERABILITY, never penalized for difficulty: prefer the bold, RECOVERABLE move (a flag-gated capability defaulting off, a refactor with a clean revert, a paradigm lift behind a toggle) over the safe-trivial one — this directive is non-blocking and you work on a branch, so boldness here is cheap, and a defect-clean repo's value IS the bold recoverable move, not the rename / README-tweak / tiny-test an Exploit-only agent reaches for. Penalize difficulty ONLY for IRREVERSIBILITY, never for ambition: any action that trips the five pause cases (\`core.md\` — destructive shared-state, credentials/secrets, anything you cannot verify or revert) is NOT \"bold,\" it is the irreversible class this directive never green-lights; when ambition and irreversibility conflict, irreversibility wins and the pause case governs. (2) GENERATE a wide candidate set — scan the blindspot inventory (\`~/.claude/quality-pack/blindspots/\`), \`git log -20\` + the CHANGELOG / Unreleased entries, and any \`findings.json\` waves still pending; dispatch a fresh-context audit sub-agent (or the Workflow tool for heavy fan-out) so breadth is not bounded by what is obvious to the main thread. (3) Produce a wave plan via \`record-finding-list.sh init\` (5-10 improvements per wave by surface) and execute every wave end-to-end IN THIS SESSION — plan -> impl -> quality-reviewer -> excellence-reviewer -> verify -> commit. (4) \"I evaluated and found little to do\" is the narrowing failure /ulw exists to prevent — if your candidate set is small your scan was too shallow; widen it before concluding. (5) Lead the opener with: **Open mandate — running innovation-generation scan.** so the routing is user-auditable and the user can redirect cheaply if they meant it narrower. Under \`no_defer_mode=on\` (default), every improvement ships inline or is rejected as not-a-defect; there is no out-of-scope."
     record_gate_event "bias-defense" "directive_fired" \
       "directive=open-mandate-innovation"
     log_hook "prompt-intent-router" "open-mandate-innovation fired"
@@ -1488,11 +1559,28 @@ ${_spec_safe}
   # omits it, sub-agents may silently run on cheaper models. This directive
   # makes the tier-correct model name explicit on every turn.
   if [[ "${session_management_prompt}" -eq 0 && "${checkpoint_prompt}" -eq 0 ]]; then
+    # Economy normally pins every Agent call to Sonnet. The only exception is
+    # an ACTUAL deep Council turn: there the explicit per-prompt depth request
+    # outranks the standing economy preference for selected Council calls.
+    # Compute that exception here instead of advertising it on unrelated
+    # economy prompts (which would weaken their simple all-Sonnet contract).
+    _economy_deep_council_override=0
+    if [[ "${OMC_MODEL_TIER:-balanced}" == "economy" ]] \
+        && { [[ "${OMC_COUNCIL_DEEP_DEFAULT}" == "on" ]] \
+             || [[ "${PROMPT_TEXT}" =~ (^|[[:space:]])--deep([[:space:]]|$) ]]; } \
+        && { is_council_evaluation_request "${PROMPT_TEXT}" \
+             || is_oh_my_claude_self_audit_request "${PROMPT_TEXT}" "${PWD}"; }; then
+      _economy_deep_council_override=1
+    fi
     case "${OMC_MODEL_TIER:-balanced}" in
       quality)
         add_directive "model_tier_enforcement" "SUBAGENT MODEL ENFORCEMENT: \`model_tier=quality\` is active. On \`Agent()\` calls to execution agents and council lenses, pass \`model: \"opus\"\` explicitly — frontmatter is advisory; the tool-call \`model\` parameter is authoritative. For the deliberative planning/review agents (quality-planner, quality-reviewer, excellence-reviewer, oracle, metis, prometheus, divergent-framer, abstraction-critic, release-reviewer, rigor-reviewer, writing-architect, editor-critic, draft-writer, chief-of-staff) OMIT the \`model\` parameter — their frontmatter is \`inherit\`, so they ride the session's main model (never below opus-grade under this tier; on a stale install whose frontmatter still pins opus, omission degrades gracefully to opus)." ;;
       economy)
-        add_directive "model_tier_enforcement" "SUBAGENT MODEL ENFORCEMENT: \`model_tier=economy\` is active. On EVERY \`Agent()\` call, pass \`model: \"sonnet\"\` explicitly — agent-definition frontmatter is advisory; the tool-call \`model\` parameter is authoritative." ;;
+        if [[ "${_economy_deep_council_override}" -eq 1 ]]; then
+          add_directive "model_tier_enforcement" "SUBAGENT MODEL ENFORCEMENT: \`model_tier=economy\` is active. Normally, pass \`model: \"sonnet\"\` explicitly on \`Agent()\` calls — agent-definition frontmatter is advisory; the tool-call \`model\` parameter is authoritative. Explicit precedence for this deep Council turn: selected Sonnet-backed Council specialists MAY instead receive \`model: \"opus\"\`; for \`model: inherit\` deliberators participating in this deep Council, OMIT the model parameter so they ride the session model. All other economy-tier Agent calls stay on \`model: \"sonnet\"\`."
+        else
+          add_directive "model_tier_enforcement" "SUBAGENT MODEL ENFORCEMENT: \`model_tier=economy\` is active. On EVERY \`Agent()\` call, pass \`model: \"sonnet\"\` explicitly — agent-definition frontmatter is advisory; the tool-call \`model\` parameter is authoritative."
+        fi ;;
       balanced)
         # Execution-tier example names must track the detected domain — a
         # coding-specialist name injected into a writing/research/operations
@@ -1739,10 +1827,16 @@ Discipline: Make changes incrementally and test after edits for routine additive
     fi
 
     # Council evaluation detection: broad whole-project evaluation requests
-    # get additional guidance to dispatch multi-role perspective lenses.
-    if is_council_evaluation_request "${PROMPT_TEXT}"; then
+    # get adaptive coverage-map and specialist-selection guidance.
+    _council_self_audit_auto=0
+    if is_oh_my_claude_self_audit_request "${PROMPT_TEXT}" "${PWD}"; then
+      _council_self_audit_auto=1
+    fi
+    if is_council_evaluation_request "${PROMPT_TEXT}" \
+        || [[ "${_council_self_audit_auto}" -eq 1 ]]; then
       _council_deep_hint=""
       _council_polish_hint=""
+      _council_self_audit_hint=""
       _council_phase7_hint=""
       _council_phase8_hint=""
       # Flag detection regex requires whitespace boundaries on both
@@ -1753,17 +1847,17 @@ Discipline: Make changes incrementally and test after edits for routine additive
       # `=` is none of alnum/underscore/hyphen) and matched `--deep=true`.
       if [[ "${OMC_COUNCIL_DEEP_DEFAULT}" == "on" ]] \
           || [[ "${PROMPT_TEXT}" =~ (^|[[:space:]])--deep([[:space:]]|$) ]]; then
-        _council_deep_hint=" Use --deep mode: pass \`model: \"opus\"\` to each Agent dispatch call to escalate the lens model from sonnet to opus, and extend each lens's instruction with: 'This is a deep-mode evaluation. Take more turns to investigate suspicious findings. Read source files carefully rather than relying on directory structure inference. Report uncertainty explicitly when evidence is thin.'"
+        _council_deep_hint=" Use --deep mode: pass \`model: \"opus\"\` to Sonnet-backed selected specialists, but OMIT the model parameter for \`model: inherit\` deliberators so they ride the session model and never downgrade a Fable-class main thread. Extend each mandate with: 'This is a deep-mode evaluation. Take more turns to investigate suspicious findings. Read source files carefully rather than relying on directory structure inference. Report uncertainty explicitly when evidence is thin.'"
       fi
-      # --polish flag — narrows the lens roster to taste/excellence
-      # concerns and extends dispatch with a Jobs-grade evaluation
+      # --polish flag — raises taste/excellence coverage priors and extends
+      # relevant dispatches with a Jobs-grade evaluation
       # rubric. Auto-activates on polish-saturated projects (the
-      # standard ship-readiness audit is the wrong lens for a project
+      # standard ship-readiness audit is a weaker prior for a project
       # that's already past those gates). Composes with --deep — both
       # flags can apply to the same dispatch. When auto-activated by
       # the maturity prior, the announcement clause prefixes the hint
-      # so the user sees in their first response that the lens roster
-      # was narrowed automatically rather than by their explicit flag.
+      # so the user sees in their first response that the coverage prior
+      # changed automatically rather than by their explicit flag.
       _polish_explicit=0
       _polish_auto=0
       if [[ "${PROMPT_TEXT}" =~ (^|[[:space:]])--polish([[:space:]]|$) ]]; then
@@ -1776,17 +1870,24 @@ Discipline: Make changes incrementally and test after edits for routine additive
         if [[ "${_polish_explicit}" -eq 1 ]]; then
           _polish_origin="explicit --polish flag"
         else
-          _polish_origin="auto-activated by polish-saturated project-maturity prior — surface this in your opening response so the user knows their default lens roster was narrowed"
+          _polish_origin="auto-activated by polish-saturated project-maturity prior — surface this in your opening response so the user knows the coverage prior changed"
         fi
-        _council_polish_hint=" **--polish mode active** (origin: ${_polish_origin}): narrow the lens roster to \`visual-craft-lens\` + \`product-lens\` + \`design-lens\` (skip security/data/sre/growth unless the user named them explicitly — those audits are the wrong tool for a polish-saturated project that has already passed them). Pass \`model: \"opus\"\` to each Agent dispatch (escalate the lens model). Extend each lens's instruction with the Jobs-grade rubric: **soul** (does this feel like a single hand designed it, or a kit assembled?), **signature** (one specific visual or interaction the user would recognize across products), **voice** (copy + tone consistency at every micro-surface — empty states, errors, settings, onboarding — without AI-isms like 'I'll help you with that' / 'something went wrong' / 'try again'), **negative space** (does the chrome defer to the content?), **first-five-minutes** (what is the experience for a brand-new user opening this for the first time? where does the wow moment land, or does it not?), **AI-as-experience** (does the AI behavior feel like a product feature with its own voice, or a wrapped API call?), **no-cloning discipline** (commit to ≥3 specific things you'd do differently from the closest archetype). Report findings against this rubric explicitly — do not collapse it into a generic 'design quality' verdict."
+        _council_polish_hint=" **--polish mode active** (origin: ${_polish_origin}): raise product experience, UX, visual craft, voice, signature, and first-five-minutes in the coverage map. \`visual-craft-lens\`, \`product-lens\`, and \`design-lens\` are strong candidates, NOT a forced roster; include only the ones that answer a material question, and retain any concrete security/data/reliability/architecture risk the inspection reveals. Extend relevant mandates with the Jobs-grade rubric: **soul** (does this feel like a single hand designed it, or a kit assembled?), **signature** (one specific visual or interaction the user would recognize across products), **voice** (copy + tone consistency at every micro-surface — empty states, errors, settings, onboarding — without AI-isms like 'I'll help you with that' / 'something went wrong' / 'try again'), **negative space** (does the chrome defer to the content?), **first-five-minutes** (what is the experience for a brand-new user opening this for the first time? where does the wow moment land, or does it not?), **AI-as-experience** (does the AI behavior feel like a product feature with its own voice, or a wrapped API call?), **no-cloning discipline** (commit to ≥3 specific things you'd do differently from the closest archetype). Report findings against this rubric explicitly — do not collapse it into a generic 'design quality' verdict."
+      fi
+      _self_audit_explicit=0
+      _self_audit_auto="${_council_self_audit_auto}"
+      [[ "${PROMPT_TEXT}" =~ (^|[[:space:]])--self-audit([[:space:]]|$) ]] && _self_audit_explicit=1
+      if [[ "${_self_audit_explicit}" -eq 1 || "${_self_audit_auto}" -eq 1 ]]; then
+        _council_self_audit_hint=" **Self-audit prior active**: seed coverage with contract shape, producer/consumer alignment, hook recovery/lifecycle behavior, classifier boundary symmetry, observability, and test realism. \`abstraction-critic\`, \`oracle\`, \`sre-lens\`, and \`quality-researcher\` are candidates, not a mandatory quartet; select/skip each from evidence and include a different competence when the inspected surface requires it."
       fi
       _council_phase7_hint="
-7. Verify the top of the stack: pick the 2-3 highest-impact findings and re-dispatch \`oracle\` per finding to verify each claim against the actual code before presenting. Mark each as ✓ verified, ◑ refined, or ✗ demoted/dropped. Cap at 3."
+7. Verify the top of the stack: after final reconciliation, pick 0-3 load-bearing findings and dispatch a unique best INDEPENDENT verifier for each claim — never default every claim to \`oracle\`, and never ask the finding's original author to verify itself. Prefix each verifier description with \`[council:verification]\`; the runtime stamps current-objective provenance, rejects duplicate identities or a fourth verifier, and blocks completion while one is in flight. Match competence to claim (security→security specialist, source/API→librarian, correctness→quality-reviewer, scientific→rigor-reviewer, architecture/cross-cutting→oracle or abstraction-critic). Mark each as ✓ verified, ◑ refined, or ✗ demoted/dropped."
       _council_authorization_hint=""
       if is_exhaustive_authorization_request "${PROMPT_TEXT}"; then
-        _council_authorization_hint=" **EXHAUSTIVE AUTHORIZATION DETECTED**: the prompt explicitly authorizes exhaustive implementation (one of the canonical Phase 8 entry markers fired — see council/SKILL.md Step 8 for the full vocabulary). Skip the Scope-explosion pre-authorization pause; proceed through ALL waves end-to-end without a confirmation gate; do NOT clip scope to the five-priority headline. Wave grouping: 5–10 findings per wave by surface area is a HARD bar — never produce a plan with avg <3 findings/wave when total findings ≥5; merge adjacent surfaces if needed."
+        _council_authorization_hint=" **EXHAUSTIVE AUTHORIZATION DETECTED**: the authoritative exhaustive-authorization predicate matched. Skip the Scope-explosion pre-authorization pause; proceed through ALL waves end-to-end without a confirmation gate; do NOT clip scope to the five-priority headline. Phase 8 entry and authorization are separate: bare implementation wording enters execution but does not expand scope. Wave grouping: 5–10 findings per wave by surface area is a HARD bar — never produce a plan with avg <3 findings/wave when total findings ≥5; merge adjacent surfaces if needed."
       fi
-      if is_execution_intent_value "${TASK_INTENT}"; then
+      if is_execution_intent_value "${TASK_INTENT}" \
+          && is_council_phase8_entry_request "${PROMPT_TEXT}"; then
         # Phase 8 directive — restructured (v1.22.0) from a single ~800-word
         # paragraph to a scannable ordered checklist. The wave-grouping rule
         # is promoted to bullet 1 because it was previously buried mid-
@@ -1801,23 +1902,76 @@ Discipline: Make changes incrementally and test after edits for routine additive
 
    **C. Otherwise bootstrap** the master finding list with stable IDs (F-001, F-002, ...): \`echo '[{\"id\":\"F-001\",\"summary\":\"...\",\"severity\":\"critical\",\"surface\":\"...\",\"effort\":\"S\"}, ...]' | record-finding-list.sh init\` (auto-discovers the active session). Under v1.40.0 \`no_defer_mode=on\` (default), do NOT mark findings as \`requires_user_decision: true\` for taste, policy, brand voice, or credible-approach splits — the agent owns those decisions and picks the sane default. The field is reserved for findings that name a real operational block only the user can resolve (credentials/login, an external account, a destructive shared-state action awaiting confirmation). Then \`record-finding-list.sh assign-wave <idx> <total> <surface> F-xxx F-yyy ...\` per wave.
 
-   **D. Per-wave cycle (every wave, end-to-end):** quality-planner → implementation specialist → quality-reviewer on the wave's diff → excellence-reviewer for the wave's surface → verification → per-wave commit titled \`Wave N/M: <surface> (F-xxx, ...)\` → \`record-finding-list.sh status F-xxx shipped <commit-sha>\` per finding. If a wave reveals a NEW finding that the master list missed, append it via \`record-finding-list.sh add-finding\` and assign-wave it; do NOT silently fix outside the master list.
+   **D. Per-wave cycle (every wave, end-to-end):** quality-planner → implementation specialist → quality-reviewer on the wave's diff → any specialist review justified by the wave's recorded coverage/risk map → excellence-reviewer when completeness coverage is required → verification → per-wave commit titled \`Wave N/M: <surface> (F-xxx, ...)\` → \`record-finding-list.sh status F-xxx shipped <commit-sha>\` per finding. Do NOT run unrelated specialists just to recreate a standing panel. If a wave reveals a NEW finding that the master list missed, append it via \`record-finding-list.sh add-finding\` and assign-wave it; do NOT silently fix outside the master list.
 
    **E. Pause on OPERATIONAL-BLOCKER findings only:** when a wave contains a finding with \`requires_user_decision: true\` AND the decision_reason names a real operational block (credentials, missing login, external account, a destructive shared-state action awaiting confirmation), surface that finding before executing. Under v1.40.0 \`no_defer_mode=on\`, technical decisions (taste / policy / library choice / credible-approach split) do NOT pause the wave — the agent picks with stated reasoning and ships. If a finding was marked user-decision for a technical reason, treat it as autonomous and pick the sibling-of-codebase choice. The \`record-finding-list.sh mark-user-decision\` subcommand remains available for genuine operational blockers only.
 
-   **F. Authorization check before scope-clipping:** if the prompt did NOT explicitly authorize exhaustive implementation (no canonical Phase 8 entry marker fired — the marker list is in council/SKILL.md Step 8 and the predicate \`is_exhaustive_authorization_request()\` mirrors it), surface the wave plan first and apply the Scope explosion pause case from core.md. Otherwise proceed through ALL waves end-to-end. Do NOT clip scope to the five-priority headline (that rule is presentation-only); do NOT collapse waves into one mega-commit; do NOT defer waves to a future session.
+   **F. Authorization check before scope-clipping:** if \`is_exhaustive_authorization_request()\` did NOT match, surface the wave plan first and apply the Scope explosion pause case from core.md. Otherwise proceed through ALL waves end-to-end. Entering Phase 8 and authorizing newly discovered scope are separate decisions. Do NOT clip scope to the five-priority headline (that rule is presentation-only); do NOT collapse waves into one mega-commit; do NOT defer waves to a future session.
 
    **G. Final summary:** run \`record-finding-list.sh summary\` for the markdown finding-status table — USER-DECISION findings appear in their own column AND are surfaced separately for visibility. Restate the key deliverable in the response so the user does not have to scroll."
       fi
-      add_directive "council_evaluation" "COUNCIL EVALUATION DETECTED: This is a broad project evaluation request. Use the /council protocol to dispatch multi-role expert perspectives:
-1. Inspect the project to determine its type, maturity, and tech stack.
-2. Select 3-6 relevant role-lenses from: product-lens, design-lens, visual-craft-lens, security-lens, data-lens, sre-lens, growth-lens. Use the selection guide in the council skill to decide which lenses fit this project. design-lens and visual-craft-lens are disjoint by design (UX flow vs. visual craft) — dispatch both for projects where both surfaces matter.
-3. Dispatch ALL selected lenses in parallel using the Agent tool in a single message. Each gets the project context and its evaluation mandate.${_council_deep_hint}${_council_polish_hint}
-4. Wait for ALL lenses to return before synthesizing — do NOT begin synthesis early.
-5. Synthesize findings: deduplicate, rank by severity x breadth, attribute to perspectives, separate quick wins from strategic work. Reject findings that lack file/line evidence. **Mark user-decision findings narrowly:** under v1.40.0 \`no_defer_mode=on\` (default), the criterion is operational-only — credentials/login required, an external account action, or a destructive shared-state action awaiting confirmation. Taste, policy, brand voice, pricing, data-retention sane default, release attribution, library choice, refactor scope, credible-approach split: NOT user-decision findings — the agent picks the sibling-of-codebase choice with stated reasoning and ships. Tag findings with \`requires_user_decision: true\` and a one-line \`decision_reason\` ONLY for the operational class. The criterion mirrors core.md's narrowed pause cases.
-6. Present a unified Project Council Assessment with: critical findings, high-impact improvements, strategic recommendations, cross-perspective tensions, and quick wins.${_council_phase7_hint}${_council_phase8_hint}
-Challenge the project — the value is in what is missing or wrong, not in what is already good."
-      log_hook "prompt-intent-router" "council evaluation detected${_council_deep_hint:+ (deep)}${_council_polish_hint:+ (polish)}${_council_phase8_hint:+ (execute)}${_council_authorization_hint:+ (exhaustive-auth)}"
+      add_directive "council_evaluation" "ADAPTIVE COUNCIL EVALUATION DETECTED: This is a broad evaluation request. Use the /council protocol to assemble a task-specific team from the risks, not a standing panel:
+1. Inspect the project to determine its type, maturity, stack, scope, and concrete risk surfaces.
+2. Build a COVERAGE MAP before selecting agents. For each plausible dimension record applicability evidence, impact if missed, competence needed, and selected / covered-inline / skipped with reason. Consider product, correctness/tests, architecture/contracts, security/privacy, reliability/performance/operations, UX/accessibility/visual craft, data/evidence, delivery/adoption, research/prose, and task-specific risks — but never dispatch merely to fill the list.${_council_self_audit_hint}
+3. Inspect the FULL AVAILABLE AGENT ROSTER and descriptions, including custom inspection agents; do not restrict selection to \`*-lens\`. Select the smallest non-overlapping primary team that covers material high-risk rows: normally 1-4 specialists, with ONE valid for a narrow specialist question. Exceed four only when more than four independent high-impact competencies are evidenced and cannot be combined; state the exception and cost. There is no minimum-three rule, no hard four-seat ceiling, and no product/security fallback. Show selected agent → assigned coverage → include reason, plus plausible skipped agent/family → why not applicable. Before dispatch, persist a machine-auditable PRIMARY-ONLY map with \`record-council-coverage.sh init\`: every row needs evidence/status/reason, and every selection needs phase, coverage_ids, reason, and explicit non_goals. Do not predeclare gap-fill agents. The hook rejects tagged Council agents not listed in the current lifecycle generation.
+4. Dispatch the primary team concurrently in one Agent-tool message. Prefix each Agent description exactly with \`[council:primary]\`. Give each a precise question, explicit non-goals, evidence requirement, and a read-only assessment mandate. For every selected agent, require one unindented non-empty \`FINDINGS_JSON: [...]\` line before any unsuccessful universal VERDICT; each object needs actionable severity, category, file, line, claim, evidence, and recommended_fix fields.${_council_deep_hint}${_council_polish_hint}
+5. Wait for EVERY primary return. Reconcile returns against the coverage map as evidenced / partial / uncovered / newly discovered, then ALWAYS call \`record-council-coverage.sh update\` with \`reconciliation={status,evidence,primary_returns,gap_fill_returns,coverage_results}\`. Use status \`primary-complete\` only when every selected result is evidenced. Any unresolved result must use \`gap-fill-required\`, which may add ONE gap-fill round of 0-2 best-fit specialists. Prefix those descriptions with \`[council:gap-fill]\`. Wait for every gap-fill return, then call \`update\` again with status \`gap-fill-complete\`, exact returns, final results, and explicit residual limitations before synthesis. The runtime checks actual recorded returns and refuses a premature or second gap-fill round.
+6. Synthesize findings: deduplicate, rank by severity x breadth, preserve tensions, separate quick wins from strategic work, reject claims without file/line/behavior evidence, and report residual limitations. **Mark user-decision findings narrowly:** under v1.40.0 \`no_defer_mode=on\` (default), only credentials/login, external-account actions, or destructive shared-state confirmation qualify. Taste, policy, brand voice, pricing, data-retention defaults, release attribution, library choice, refactor scope, and credible-approach splits are agent decisions.
+${_council_phase7_hint}
+7b. After independent checks are incorporated and every selected return is reconciled, call \`record-council-coverage.sh complete\`; this is the sole producer of a two-turn handoff and refuses in-flight or unreconciled work. Then present a unified Project Council Assessment with Coverage and Selection (primary, gap-fill, deliberate skips, residual limitations), critical findings, high-impact improvements, strategic recommendations, cross-perspective tensions, and quick wins.${_council_phase8_hint}
+Challenge the project, but spend calls only where another competence can change the answer."
+      if [[ -n "${_council_phase8_hint}" ]]; then
+        write_state_batch \
+          "council_assessment_ready" "" \
+          "council_phase8_active" "1" \
+          "council_phase8_prompt_revision" "${_prompt_revision}"
+      else
+        # Routing is not completion evidence. Clear any older handoff now;
+        # record-council-coverage.sh complete is the sole ready=1 producer
+        # after every selected round and the synthesis have finished.
+        write_state_batch \
+          "council_assessment_ready" "" \
+          "council_phase8_active" "" \
+          "council_phase8_prompt_revision" "" \
+          "council_assessment_ts" "" \
+          "council_assessment_prompt_revision" "" \
+          "council_assessment_objective_prompt_ts" ""
+      fi
+      log_hook "prompt-intent-router" "council evaluation detected${_council_deep_hint:+ (deep)}${_council_polish_hint:+ (polish)}${_council_self_audit_hint:+ (self-audit)}${_council_phase8_hint:+ (execute)}${_council_authorization_hint:+ (exhaustive-auth)}"
+    elif [[ "$(read_state "council_assessment_ready")" == "1" ]]; then
+      _council_assessment_ts="$(read_state "council_assessment_ts")"
+      _council_assessment_revision="$(read_state "council_assessment_prompt_revision")"
+      _council_followup_age=999999
+      if [[ "${_council_assessment_ts}" =~ ^[0-9]+$ ]]; then
+        _council_followup_age=$((PROMPT_TS - _council_assessment_ts))
+      fi
+      _council_followup_adjacent=0
+      if [[ "${_council_assessment_revision}" =~ ^[0-9]+$ ]] \
+          && (( _prompt_revision == _council_assessment_revision + 1 )); then
+        _council_followup_adjacent=1
+      fi
+      if (( _council_followup_adjacent == 1 \
+            && _council_followup_age >= 0 \
+            && _council_followup_age <= 7200 )) \
+          && is_execution_intent_value "${TASK_INTENT}" \
+          && is_council_phase8_followup_request "${PROMPT_TEXT}"; then
+        _council_followup_scope="The approval authorizes the assessment's stated findings only. If implementation reveals materially new scope, apply the normal scope-explosion pause."
+        if is_exhaustive_authorization_request "${PROMPT_TEXT}"; then
+          _council_followup_scope="EXHAUSTIVE AUTHORIZATION matched: execute every recorded assessment finding through all waves without clipping to the headline priorities."
+        fi
+        add_directive "council_phase8_followup" "COUNCIL PHASE-8 CONTINUATION: The immediately preceding Council assessment is ready and this prompt authorizes implementation. Do not re-run a standing panel. Reuse the prior coverage map and unified findings; bootstrap the full master list with stable IDs in findings.json, group coherent 5–10-item waves, then run each wave end-to-end: quality-planner → appropriate implementer(s) → quality-reviewer → only risk-map specialists material to that wave → adaptive completeness review when required → verification → per-wave commit/status update. ${_council_followup_scope} Preserve new findings in the ledger rather than silently expanding or dropping them."
+        write_state_batch \
+          "council_assessment_ready" "" \
+          "council_phase8_active" "1" \
+          "council_phase8_prompt_revision" "${_prompt_revision}"
+        log_hook "prompt-intent-router" "council Phase-8 follow-up activated"
+      else
+        # Readiness is single-use and prompt-adjacent. Any intervening or
+        # unrelated prompt consumes it, so later domain work cannot inherit a
+        # stale Council merely because it mentions a gap/recommendation/wave.
+        write_state "council_assessment_ready" ""
+        log_hook "prompt-intent-router" "council Phase-8 handoff expired or not applicable"
+      fi
     elif [[ "${advisory_prompt}" -eq 1 ]]; then
       # Advisory prompt that did NOT trigger council → inject code-grounding guidance.
       # Council dispatch is a superset of "inspect before recommending", so this only

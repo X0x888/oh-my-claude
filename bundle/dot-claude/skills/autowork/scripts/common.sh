@@ -118,6 +118,8 @@ _omc_env_self_audit_nudge="${OMC_SELF_AUDIT_NUDGE:-}"
 _omc_env_auto_tune="${OMC_AUTO_TUNE:-}"
 
 OMC_STALL_THRESHOLD="${OMC_STALL_THRESHOLD:-12}"
+# Cross-surface breadth floors for adaptive completeness/traceability. Surface-
+# specific quality, prose, and design coverage does not wait for these counts.
 OMC_EXCELLENCE_FILE_COUNT="${OMC_EXCELLENCE_FILE_COUNT:-3}"
 OMC_STATE_TTL_DAYS="${OMC_STATE_TTL_DAYS:-7}"
 OMC_DIMENSION_GATE_FILE_COUNT="${OMC_DIMENSION_GATE_FILE_COUNT:-3}"
@@ -1128,8 +1130,9 @@ is_god_scope_enabled() {
 # Gate for the OPEN-MANDATE / INNOVATION-GENERATION directive in
 # prompt-intent-router.sh. Default ON. Sibling to is_god_scope_enabled:
 # god-scope fires on bare verb-only imperatives (<=30 chars); this fires on
-# explicit OPEN-mandate prose ("implement all" / "comprehensively" /
-# "exhaustive" — is_exhaustive_authorization_request) that the 30-char
+# explicit OPEN-mandate prose ("implement all" / "fix everything" /
+# exhaustive implementation, high-bar, or binary-quality language —
+# is_exhaustive_authorization_request) that the 30-char
 # bare-imperative cap structurally cannot reach. Both push the model WIDE
 # at prompt time so it generates an improvement set instead of narrowing an
 # open mandate into a closeable defect-audit. Off-mode falls back to the
@@ -5396,7 +5399,8 @@ is_internal_claude_path() {
 # full code-review loop.
 #
 # Rules:
-#   - Extensions match case-insensitively: md, mdx, txt, rst, adoc, markdown
+#   - Extensions match case-insensitively: md, mdx, txt, rst, adoc, markdown,
+#     plus source-form writing/research artifacts tex, bib, typ, qmd, rmd
 #   - Basename patterns match well-known doc files (lowercased):
 #     changelog*, release*, readme*, authors*, contributing*,
 #     license*, notice*, copying*
@@ -5410,10 +5414,15 @@ is_doc_path() {
   # Lowercase basename for case-insensitive matching
   local base="${path##*/}"
   local base_lc
-  base_lc="$(printf '%s' "${base}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${_OMC_PATH_CASE_NORMALIZED:-0}" == "1" ]]; then
+    base_lc="${base}"
+  else
+    base_lc="$(printf '%s' "${base}" | tr '[:upper:]' '[:lower:]')"
+  fi
 
   case "${base_lc}" in
     *.md|*.mdx|*.txt|*.rst|*.adoc|*.markdown) return 0 ;;
+    *.tex|*.bib|*.typ|*.qmd|*.rmd) return 0 ;;
     changelog*|release*|readme*|authors*|contributing*|license*|notice*|copying*) return 0 ;;
   esac
 
@@ -5429,6 +5438,8 @@ is_doc_path() {
 #   - Component files: tsx, jsx, vue, svelte, astro
 #   - Stylesheets: css, scss, sass, less, styl
 #   - Markup: html, htm
+#   - Apple UI: storyboard/xib; high-confidence Swift UI names/directories
+#   - Android UI: res/layout XML; high-confidence Compose/UI Kotlin names/dirs
 # UI paths are a subset of code paths (not docs). A file can be both
 # "code" (for code_edit_count) and "ui" (for ui_edit_count).
 
@@ -5436,14 +5447,39 @@ is_ui_path() {
   local path="$1"
   [[ -z "${path}" ]] && return 1
 
-  local base="${path##*/}"
-  local base_lc
-  base_lc="$(printf '%s' "${base}" | tr '[:upper:]' '[:lower:]')"
+  local path_lc base_lc
+  if [[ "${_OMC_PATH_CASE_NORMALIZED:-0}" == "1" ]]; then
+    path_lc="${path}"
+  else
+    path_lc="$(printf '%s' "${path}" | tr '[:upper:]' '[:lower:]')"
+  fi
+  base_lc="${path_lc##*/}"
+
+  case "/${path_lc}/" in
+    */__tests__/*|*/tests/*|*/test/*) return 1 ;;
+  esac
+  case "${base_lc}" in
+    *.test.tsx|*.spec.tsx|*.test.jsx|*.spec.jsx|*.generated.css|*.min.css) return 1 ;;
+  esac
 
   case "${base_lc}" in
     *.tsx|*.jsx|*.vue|*.svelte|*.astro) return 0 ;;
     *.css|*.scss|*.sass|*.less|*.styl) return 0 ;;
     *.html|*.htm) return 0 ;;
+    *.storyboard|*.xib) return 0 ;;
+    *viewcontroller.swift|*view.swift|*screen.swift|*cell.swift|*row.swift) return 0 ;;
+    *activity.kt|*fragment.kt|*screen.kt|*view.kt) return 0 ;;
+  esac
+
+  # Directory evidence lets native projects use descriptive filenames while
+  # avoiding the false-positive of treating every Swift/Kotlin source as UI.
+  case "/${path_lc}/" in
+    */views/*.swift/*|*/view/*.swift/*|*/screens/*.swift/*|*/ui/*.swift/*|*/presentation/*.swift/*)
+      return 0 ;;
+    */ui/*.kt/*|*/compose/*.kt/*|*/screens/*.kt/*|*/presentation/*.kt/*)
+      return 0 ;;
+    */res/layout/*.xml/*|*/res/layout-*/*.xml/*)
+      return 0 ;;
   esac
 
   return 1
@@ -5484,7 +5520,11 @@ is_test_path() {
 
   local base="${path##*/}"
   local base_lc
-  base_lc="$(printf '%s' "${base}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${_OMC_PATH_CASE_NORMALIZED:-0}" == "1" ]]; then
+    base_lc="${base}"
+  else
+    base_lc="$(printf '%s' "${base}" | tr '[:upper:]' '[:lower:]')"
+  fi
 
   case "/${path}/" in
     */__tests__/*|*/tests/*|*/test/*|*/spec/*|*/features/*) return 0 ;;
@@ -5505,7 +5545,11 @@ is_config_path() {
 
   local base="${path##*/}"
   local base_lc
-  base_lc="$(printf '%s' "${base}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${_OMC_PATH_CASE_NORMALIZED:-0}" == "1" ]]; then
+    base_lc="${base}"
+  else
+    base_lc="$(printf '%s' "${base}" | tr '[:upper:]' '[:lower:]')"
+  fi
 
   case "/${path}/" in
     */config/*|*/configs/*|*/.github/workflows/*|*/.circleci/*|*/.devcontainer/*|*/charts/*|*/helm/*)
@@ -5533,7 +5577,11 @@ is_release_path() {
 
   local base="${path##*/}"
   local base_lc
-  base_lc="$(printf '%s' "${base}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${_OMC_PATH_CASE_NORMALIZED:-0}" == "1" ]]; then
+    base_lc="${base}"
+  else
+    base_lc="$(printf '%s' "${base}" | tr '[:upper:]' '[:lower:]')"
+  fi
 
   case "/${path}/" in
     */releases/*|*/release-notes/*) return 0 ;;
@@ -5556,7 +5604,11 @@ is_migration_path() {
 
   local base="${path##*/}"
   local base_lc
-  base_lc="$(printf '%s' "${base}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${_OMC_PATH_CASE_NORMALIZED:-0}" == "1" ]]; then
+    base_lc="${base}"
+  else
+    base_lc="$(printf '%s' "${base}" | tr '[:upper:]' '[:lower:]')"
+  fi
 
   case "/${path}/" in
     */supabase/migrations/*|*/prisma/migrations/*|*/alembic/versions/*|*/db/migrate/*|*/migrations/*|*/migration/*)
@@ -6781,9 +6833,9 @@ inferred_contract_summary() {
 #
 # Dimensions are stored as individual state keys of the form
 # `dim_<name>_ts` holding the epoch at which the reviewer ticked them.
-# Validity is determined by comparing that epoch to the relevant edit
-# clock (last_code_edit_ts for code dims, last_doc_edit_ts for prose).
-# This gives implicit invalidation — no mark-edit clearing needed.
+# Validity is determined by comparing that epoch to the dimension's canonical
+# freshness clock: code, docs, any edit, or the plan timestamp. This gives
+# implicit invalidation — no mark-edit clearing needed.
 #
 # The canonical dimension set:
 #   bug_hunt       — quality-reviewer (code correctness, regressions, edge cases)
@@ -6798,14 +6850,408 @@ _dim_key() {
   printf 'dim_%s_ts' "$1"
 }
 
+_dim_revision_key() {
+  printf 'dim_%s_revision' "$1"
+}
+
+# review_cycle_edit_snapshot — describe mutations made for the current
+# execution objective. Output is six newline-delimited integers:
+#   code_count, doc_count, ui_count, unique_count, unknown_bash, surface_count
+#
+# Fresh router state uses an edited_files.log line offset instead of the
+# cumulative counters. The log records every path-bearing mutation, so editing
+# a file that an earlier objective already touched is still visible here. A
+# monotonic event baseline scopes unknown-path Bash writes, which deliberately
+# do not invent file paths. Resumed pre-route sessions fall back to cumulative
+# counters, the full log, and legacy timestamps for migration safety.
+_review_cycle_file_signature() {
+  local file="$1"
+  if [[ ! -f "${file}" ]]; then
+    printf 'absent\n'
+    return 0
+  fi
+  # POSIX cksum is sufficient here: this is an objective-generation marker,
+  # not a security boundary. Include byte length to make accidental collisions
+  # still less likely while keeping the helper portable across macOS/Linux.
+  local signature
+  signature="$(cksum <"${file}" 2>/dev/null | awk '{print $1 ":" $2}' || true)"
+  printf '%s\n' "${signature:-unreadable}"
+}
+
+review_cycle_edit_snapshot() {
+  local prompt_ts offset edited_log scoped=0
+  prompt_ts="$(read_state "review_cycle_prompt_ts")"
+  offset="$(read_state "review_cycle_edit_log_offset")"
+  edited_log="$(session_file "edited_files.log")"
+
+  if [[ "${prompt_ts}" =~ ^[0-9]+$ ]] && [[ "${offset}" =~ ^[0-9]+$ ]]; then
+    scoped=1
+  fi
+
+  local code_count=0 doc_count=0 ui_count=0 unique_count=0
+  local saw_docs=0 saw_ui=0 saw_tests=0 saw_config=0 saw_release=0 saw_migration=0 saw_code=0
+  local _path
+  # All path classifiers normally lowercase their basename defensively. This
+  # scan can call six classifiers per path, so lowercase the sorted stream
+  # once and dynamically tell those helpers not to fork `tr` again.
+  local _OMC_PATH_CASE_NORMALIZED=1
+
+  if [[ "${scoped}" -eq 1 ]]; then
+    if [[ -f "${edited_log}" ]]; then
+      while IFS= read -r _path; do
+        [[ -z "${_path}" ]] && continue
+        unique_count=$((unique_count + 1))
+        if is_doc_path "${_path}"; then
+          doc_count=$((doc_count + 1))
+        else
+          code_count=$((code_count + 1))
+          if is_ui_path "${_path}"; then
+            ui_count=$((ui_count + 1))
+          fi
+        fi
+
+        if is_release_path "${_path}"; then
+          saw_release=1
+        elif is_migration_path "${_path}"; then
+          saw_migration=1
+        elif is_test_path "${_path}"; then
+          saw_tests=1
+        elif is_config_path "${_path}" || is_conf_example_path "${_path}"; then
+          saw_config=1
+        elif is_doc_path "${_path}"; then
+          saw_docs=1
+        elif is_ui_path "${_path}"; then
+          saw_ui=1
+        else
+          saw_code=1
+        fi
+      done < <(tail -n "+$((offset + 1))" "${edited_log}" 2>/dev/null \
+        | sort -u | tr '[:upper:]' '[:lower:]')
+    fi
+  else
+    code_count="$(read_state "code_edit_count")"; code_count="${code_count:-0}"
+    doc_count="$(read_state "doc_edit_count")"; doc_count="${doc_count:-0}"
+    ui_count="$(read_state "ui_edit_count")"; ui_count="${ui_count:-0}"
+    [[ "${code_count}" =~ ^[0-9]+$ ]] || code_count=0
+    [[ "${doc_count}" =~ ^[0-9]+$ ]] || doc_count=0
+    [[ "${ui_count}" =~ ^[0-9]+$ ]] || ui_count=0
+    unique_count=$((code_count + doc_count))
+
+    # The full log provides better surface evidence when it exists. If it is
+    # absent (older synthetic/resumed state), derive the coarser categories
+    # from the persisted counters rather than dropping coverage entirely.
+    if [[ -f "${edited_log}" ]]; then
+      while IFS= read -r _path; do
+        [[ -z "${_path}" ]] && continue
+        if is_release_path "${_path}"; then
+          saw_release=1
+        elif is_migration_path "${_path}"; then
+          saw_migration=1
+        elif is_test_path "${_path}"; then
+          saw_tests=1
+        elif is_config_path "${_path}" || is_conf_example_path "${_path}"; then
+          saw_config=1
+        elif is_doc_path "${_path}"; then
+          saw_docs=1
+        elif is_ui_path "${_path}"; then
+          saw_ui=1
+        else
+          saw_code=1
+        fi
+      done < <(sort -u "${edited_log}" | tr '[:upper:]' '[:lower:]')
+
+      # Legacy state may have a log but no counters. Rehydrate exact counts.
+      if [[ "${unique_count}" -eq 0 ]]; then
+        while IFS= read -r _path; do
+          [[ -z "${_path}" ]] && continue
+          unique_count=$((unique_count + 1))
+          if is_doc_path "${_path}"; then
+            doc_count=$((doc_count + 1))
+          else
+            code_count=$((code_count + 1))
+            is_ui_path "${_path}" && ui_count=$((ui_count + 1))
+          fi
+        done < <(sort -u "${edited_log}" | tr '[:upper:]' '[:lower:]')
+      fi
+    else
+      (( doc_count > 0 )) && saw_docs=1
+      (( ui_count > 0 )) && saw_ui=1
+      (( code_count > ui_count )) && saw_code=1
+    fi
+  fi
+
+  local unknown_bash=0
+  if review_cycle_unknown_bash_current; then
+    unknown_bash=1
+    saw_code=1
+  fi
+
+  local surface_count=0
+  surface_count=$((saw_docs + saw_ui + saw_tests + saw_config + saw_release + saw_migration + saw_code))
+  printf '%s\n%s\n%s\n%s\n%s\n%s\n' \
+    "${code_count}" "${doc_count}" "${ui_count}" "${unique_count}" "${unknown_bash}" "${surface_count}"
+}
+
+review_cycle_unknown_bash_current() {
+  [[ "$(read_state "bash_unknown_edit_scope")" == "1" ]] || return 1
+  local prompt_ts offset bash_ts bash_event_count bash_event_base
+  prompt_ts="$(read_state "review_cycle_prompt_ts")"
+  offset="$(read_state "review_cycle_edit_log_offset")"
+  # Resumed sessions without a route boundary retain the conservative signal.
+  if [[ ! "${prompt_ts}" =~ ^[0-9]+$ ]] || [[ ! "${offset}" =~ ^[0-9]+$ ]]; then
+    return 0
+  fi
+  bash_event_count="$(read_state "bash_edit_event_count")"
+  bash_event_base="$(read_state "review_cycle_bash_event_base")"
+  if [[ "${bash_event_count}" =~ ^[0-9]+$ ]] \
+      && [[ "${bash_event_base}" =~ ^[0-9]+$ ]]; then
+    (( bash_event_count > bash_event_base ))
+    return
+  fi
+  # Migration fallback for cycles stamped before event baselines existed.
+  bash_ts="$(read_state "last_bash_edit_ts")"
+  [[ "${bash_ts}" =~ ^[0-9]+$ ]] && (( bash_ts >= prompt_ts ))
+}
+
+review_cycle_has_current_complex_plan() {
+  [[ "$(read_state "plan_complexity_high")" == "1" ]] || return 1
+  local route_ts plan_ts plan_revision plan_revision_base
+  route_ts="$(read_state "review_cycle_prompt_ts")"
+  plan_ts="$(read_state "plan_ts")"
+  # Legacy sessions have no route marker; retain their existing plan signal.
+  [[ "${route_ts}" =~ ^[0-9]+$ ]] || return 0
+  plan_revision="$(read_state "plan_revision")"
+  plan_revision_base="$(read_state "review_cycle_plan_revision_base")"
+  if [[ "${plan_revision}" =~ ^[0-9]+$ ]] \
+      && [[ "${plan_revision_base}" =~ ^[0-9]+$ ]]; then
+    (( plan_revision > plan_revision_base ))
+    return
+  fi
+  # Migration fallback for review cycles stamped before revision baselines
+  # existed. New cycles never take this ambiguous same-second path.
+  [[ "${plan_ts}" =~ ^[0-9]+$ ]] && (( plan_ts >= route_ts ))
+}
+
+# A recent pending/in-progress Council wave plan is direct breadth evidence.
+# Use the same TTL contract as pretool-intent-guard's wave authorization so an
+# abandoned findings.json cannot leak specialist requirements into later work.
+review_cycle_has_active_wave_plan() {
+  local findings_file updated_ts route_ts now_ts age max_age baseline_signature current_signature
+  findings_file="$(session_file "findings.json")"
+  [[ -f "${findings_file}" ]] || return 1
+  updated_ts="$(jq -r '.updated_ts // 0' "${findings_file}" 2>/dev/null || printf '0')"
+  [[ "${updated_ts}" =~ ^[0-9]+$ ]] || return 1
+  route_ts="$(read_state "review_cycle_prompt_ts")"
+  baseline_signature="$(read_state "review_cycle_findings_signature_base")"
+  if [[ -n "${baseline_signature}" ]]; then
+    current_signature="$(_review_cycle_file_signature "${findings_file}")"
+    [[ "${current_signature}" != "${baseline_signature}" ]] || return 1
+  elif [[ "${route_ts}" =~ ^[0-9]+$ ]] && (( updated_ts < route_ts )); then
+    # Migration fallback for review cycles stamped before content signatures
+    # existed. New cycles never take this ambiguous same-second path.
+    return 1
+  fi
+  max_age="${OMC_WAVE_OVERRIDE_TTL_SECONDS:-7200}"
+  [[ "${max_age}" =~ ^[0-9]+$ ]] || max_age=7200
+  (( max_age > 0 )) || return 1
+  now_ts="$(now_epoch)"
+  age=$((now_ts - updated_ts))
+  (( age >= 0 && age <= max_age )) || return 1
+  jq -e '[.waves[]? | select(.status == "pending" or .status == "in_progress")] | length > 0' \
+    "${findings_file}" >/dev/null 2>&1
+}
+
+review_cycle_requires_completeness() {
+  local code_count doc_count ui_count unique_count unknown_bash surface_count
+  if [[ "$#" -eq 6 ]]; then
+    code_count="$1"; doc_count="$2"; ui_count="$3"
+    unique_count="$4"; unknown_bash="$5"; surface_count="$6"
+  else
+    {
+      IFS= read -r code_count
+      IFS= read -r doc_count
+      IFS= read -r ui_count
+      IFS= read -r unique_count
+      IFS= read -r unknown_bash
+      IFS= read -r surface_count
+    } < <(review_cycle_edit_snapshot)
+  fi
+
+  (( unique_count > 0 || unknown_bash == 1 )) || return 1
+  [[ "$(read_state "review_cycle_broad_scope")" == "1" ]] && return 0
+  review_cycle_has_current_complex_plan && return 0
+  review_cycle_has_active_wave_plan && return 0
+  (( unknown_bash == 1 )) && return 0
+
+  local threshold="${OMC_DIMENSION_GATE_FILE_COUNT:-3}"
+  local excellence_threshold="${OMC_EXCELLENCE_FILE_COUNT:-3}"
+  [[ "${threshold}" =~ ^[0-9]+$ ]] || threshold=3
+  [[ "${excellence_threshold}" =~ ^[0-9]+$ ]] || excellence_threshold=3
+  (( excellence_threshold > threshold )) && threshold="${excellence_threshold}"
+  (( unique_count >= threshold && surface_count >= 2 ))
+}
+
+review_cycle_requires_traceability() {
+  local code_count doc_count ui_count unique_count unknown_bash surface_count
+  if [[ "$#" -eq 6 ]]; then
+    code_count="$1"; doc_count="$2"; ui_count="$3"
+    unique_count="$4"; unknown_bash="$5"; surface_count="$6"
+  else
+    {
+      IFS= read -r code_count
+      IFS= read -r doc_count
+      IFS= read -r ui_count
+      IFS= read -r unique_count
+      IFS= read -r unknown_bash
+      IFS= read -r surface_count
+    } < <(review_cycle_edit_snapshot)
+  fi
+
+  local threshold="${OMC_TRACEABILITY_FILE_COUNT:-6}"
+  local dimension_threshold="${OMC_DIMENSION_GATE_FILE_COUNT:-3}"
+  [[ "${threshold}" =~ ^[0-9]+$ ]] || threshold=6
+  [[ "${dimension_threshold}" =~ ^[0-9]+$ ]] || dimension_threshold=3
+  (( dimension_threshold > threshold )) && threshold="${dimension_threshold}"
+  (( unique_count >= threshold )) || return 1
+  (( surface_count >= 2 )) && return 0
+  review_cycle_has_current_complex_plan && return 0
+  review_cycle_has_active_wave_plan
+}
+
+# UI-shaped files are evidence of a changed surface, not by themselves proof
+# that visual/design judgment is material. New objectives require design
+# review when the prompt was UI-semantic, or when broad/complex/wave execution
+# makes a UI edit part of a larger assessed change. Migrated sessions without
+# a route-time semantic marker retain the conservative legacy behavior.
+review_cycle_requires_design() {
+  local ui_count="${1:-0}" unknown_bash="${2:-0}" semantic opt_out
+  [[ "${ui_count}" =~ ^[0-9]+$ ]] || ui_count=0
+  [[ "${unknown_bash}" =~ ^[0-9]+$ ]] || unknown_bash=0
+
+  opt_out="$(read_state "review_cycle_design_opt_out")"
+  [[ "${opt_out}" == "1" ]] && return 1
+  semantic="$(read_state "review_cycle_ui_semantic")"
+  (( ui_count > 0 || (unknown_bash == 1 && semantic == 1) )) || return 1
+  [[ "${semantic}" == "1" ]] && return 0
+  [[ "$(read_state "review_cycle_broad_scope")" == "1" ]] && return 0
+  review_cycle_has_current_complex_plan && return 0
+  review_cycle_has_active_wave_plan && return 0
+
+  # Explicit 0 is written by every new non-UI execution objective. Missing is
+  # a pre-migration/resumed session, where fail-conservative is safer.
+  [[ "${semantic}" != "0" ]]
+}
+
+# Canonical invalidation clock for each review dimension. Keeping this in one
+# helper prevents storage-side stricter-wins, validity checks, and stop-time
+# enforcement from disagreeing about what kind of change makes a verdict old.
+dimension_freshness_clock() {
+  local dim="$1" relevant=""
+  case "${dim}" in
+    prose)
+      relevant="$(read_state "last_doc_edit_ts")"
+      local bash_ts
+      if review_cycle_unknown_bash_current; then
+        bash_ts="$(read_state "last_bash_edit_ts")"
+        relevant="${relevant:-0}"
+        [[ "${relevant}" =~ ^[0-9]+$ ]] || relevant=0
+        [[ "${bash_ts}" =~ ^[0-9]+$ ]] || bash_ts=0
+        (( bash_ts > relevant )) && relevant="${bash_ts}"
+      fi
+      ;;
+    stress_test)
+      relevant="$(read_state "plan_ts")"
+      ;;
+    completeness|traceability)
+      relevant="$(read_state "last_edit_ts")"
+      ;;
+    design_quality)
+      relevant="$(read_state "last_ui_edit_ts")"
+      [[ -z "${relevant}" ]] && relevant="$(read_state "last_code_edit_ts")"
+      [[ -z "${relevant}" ]] && relevant="$(read_state "last_edit_ts")"
+      ;;
+    bug_hunt|code_quality|*)
+      relevant="$(read_state "last_code_edit_ts")"
+      [[ -z "${relevant}" ]] && relevant="$(read_state "last_edit_ts")"
+      ;;
+  esac
+  [[ "${relevant}" =~ ^[0-9]+$ ]] || relevant=0
+  printf '%s' "${relevant}"
+}
+
+# Monotonic counterpart to dimension_freshness_clock. Timestamp equality is
+# ambiguous when review and edit occur within one epoch second; edit revisions
+# preserve actual ordering. Empty means migrated state with no revision data,
+# in which case callers deliberately fall back to timestamps.
+dimension_freshness_revision() {
+  local dim="$1" relevant="" doc_revision bash_revision
+  case "${dim}" in
+    prose)
+      doc_revision="$(read_state "last_doc_edit_revision")"
+      if [[ "${doc_revision}" =~ ^[0-9]+$ ]]; then
+        relevant="${doc_revision}"
+      fi
+      if review_cycle_unknown_bash_current; then
+        bash_revision="$(read_state "last_bash_edit_revision")"
+        if [[ "${bash_revision}" =~ ^[0-9]+$ ]] \
+            && { [[ ! "${relevant}" =~ ^[0-9]+$ ]] || (( bash_revision > relevant )); }; then
+          relevant="${bash_revision}"
+        fi
+      fi
+      ;;
+    stress_test)
+      relevant="$(read_state "plan_revision")"
+      ;;
+    completeness|traceability)
+      relevant="$(read_state "edit_revision")"
+      ;;
+    design_quality)
+      relevant="$(read_state "last_ui_edit_revision")"
+      [[ -z "${relevant}" ]] && relevant="$(read_state "last_code_edit_revision")"
+      ;;
+    bug_hunt|code_quality|*)
+      relevant="$(read_state "last_code_edit_revision")"
+      ;;
+  esac
+  # Empty is a valid migration signal: callers then fall back to timestamps.
+  # Do not leak the false status of `[[ ... ]]` to command substitutions under
+  # `set -e` (stop-guard would otherwise abort mid-hook on pre-revision state).
+  if [[ "${relevant}" =~ ^[0-9]+$ ]]; then
+    printf '%s' "${relevant}"
+  fi
+  return 0
+}
+
+dimension_state_is_fresh() {
+  local dim="$1" tick_revision relevant_revision tick_ts relevant_ts
+  tick_revision="$(read_state "$(_dim_revision_key "${dim}")")"
+  relevant_revision="$(dimension_freshness_revision "${dim}")"
+  if [[ "${relevant_revision}" =~ ^[0-9]+$ ]]; then
+    [[ "${tick_revision}" =~ ^[0-9]+$ ]] \
+      && (( tick_revision >= relevant_revision ))
+    return
+  fi
+
+  # Migration path: both the edit and review predate revision tracking.
+  tick_ts="$(read_state "$(_dim_key "${dim}")")"
+  [[ "${tick_ts}" =~ ^[0-9]+$ ]] || return 1
+  relevant_ts="$(dimension_freshness_clock "${dim}")"
+  (( tick_ts >= relevant_ts ))
+}
+
 tick_dimension() {
   # Records a dimension tick under the state lock to prevent lost updates
   # when multiple reviewer SubagentStop hooks fire concurrently.
   local dim="$1"
   local ts="${2:-$(now_epoch)}"
-  local key
-  key="$(_dim_key "${dim}")"
-  with_state_lock write_state "${key}" "${ts}"
+  _tick_dimension_unlocked() {
+    local key revision_key revision
+    key="$(_dim_key "${dim}")"
+    revision_key="$(_dim_revision_key "${dim}")"
+    revision="$(dimension_freshness_revision "${dim}")"
+    _write_state_batch_unlocked "${key}" "${ts}" "${revision_key}" "${revision}"
+  }
+  with_state_lock _tick_dimension_unlocked
 }
 
 # v1.44-pre Port 2 (stricter-verdict-wins): returns the stricter of two
@@ -6850,32 +7296,35 @@ _stricter_verdict() {
 # v1.44-pre Port 2: locked write body that reads each dimension's
 # current verdict and ts, computes the stricter-wins result against the
 # new verdict, and writes ts + final_verdict atomically. Honors an
-# "edit-aware override": if the current verdict's ts is BEFORE the most
-# recent code edit, the existing verdict is stale and the new verdict
-# wins outright (the reviewer just reviewed code the prior reviewer did
-# not see — fix-and-re-review path must still clear FINDINGS).
+# "edit-aware override": if the current verdict's ts is BEFORE that
+# dimension's canonical freshness clock, the existing verdict is stale and
+# the new verdict wins outright. This permits fix-and-re-review without letting
+# an unrelated edit erase a finding.
 #
 # Use under with_state_lock; re-entrancy-safe via _OMC_STATE_LOCK_HELD.
-_write_stricter_dim_verdicts_unlocked() {
+_prepare_stricter_dim_state_args_unlocked() {
   local verdict="$1"
   local ts="$2"
   shift 2
-  local last_edit dim current_verdict current_ts final_verdict
-  last_edit="$(read_state "last_code_edit_ts")"
-  last_edit="${last_edit:-0}"
-  local args=()
+  local dim current_verdict final_verdict revision
+  _OMC_DIM_STATE_ARGS=()
   for dim in "$@"; do
     current_verdict="$(read_state "dim_${dim}_verdict")"
-    current_ts="$(read_state "dim_${dim}_ts")"
-    current_ts="${current_ts:-0}"
-    if [[ -n "${current_verdict}" ]] && (( current_ts >= last_edit )); then
+    if [[ -n "${current_verdict}" ]] && dimension_state_is_fresh "${dim}"; then
       final_verdict="$(_stricter_verdict "${current_verdict}" "${verdict}")"
     else
       final_verdict="${verdict}"
     fi
-    args+=("$(_dim_key "${dim}")" "${ts}" "dim_${dim}_verdict" "${final_verdict}")
+    revision="$(dimension_freshness_revision "${dim}")"
+    _OMC_DIM_STATE_ARGS+=("$(_dim_key "${dim}")" "${ts}" \
+      "$(_dim_revision_key "${dim}")" "${revision}" \
+      "dim_${dim}_verdict" "${final_verdict}")
   done
-  _write_state_batch_unlocked "${args[@]}"
+}
+
+_write_stricter_dim_verdicts_unlocked() {
+  _prepare_stricter_dim_state_args_unlocked "$@"
+  _write_state_batch_unlocked "${_OMC_DIM_STATE_ARGS[@]}"
 }
 
 tick_dimensions_with_verdict() {
@@ -6909,44 +7358,9 @@ set_dimension_verdicts() {
 }
 
 is_dimension_valid() {
-  # Returns 0 if the dimension was ticked at or after the most recent
-  # edit of the relevant type. For 'prose', compare to last_doc_edit_ts plus
-  # last_bash_edit_ts when Bash scope is unknown (the missing path may be a
-  # document); all other dimensions compare to last_code_edit_ts (then
-  # last_edit_ts as a legacy fallback for resumed sessions).
-  #
-  # Uses >= (not >) so same-second tick-after-edit sequences count as
-  # valid. The production semantics are: "reviewer that ran at time T
-  # saw the edit at time T", which is the natural interpretation. In
-  # tests, this lets single-second sequences work without sleep calls.
-  # Post-tick edits in strict ordering (edit clearly after tick) still
-  # invalidate because the edit clock advances at least one second.
-  local dim="$1"
-  local tick_ts
-  tick_ts="$(read_state "$(_dim_key "${dim}")")"
-  [[ -z "${tick_ts}" ]] && return 1
-
-  local relevant_edit_ts
-  if [[ "${dim}" == "prose" ]]; then
-    relevant_edit_ts="$(read_state "last_doc_edit_ts")"
-    if [[ "$(read_state "bash_unknown_edit_scope")" == "1" ]]; then
-      local bash_edit_ts
-      bash_edit_ts="$(read_state "last_bash_edit_ts")"
-      relevant_edit_ts="${relevant_edit_ts:-0}"
-      bash_edit_ts="${bash_edit_ts:-0}"
-      [[ "${relevant_edit_ts}" =~ ^[0-9]+$ ]] || relevant_edit_ts=0
-      [[ "${bash_edit_ts}" =~ ^[0-9]+$ ]] || bash_edit_ts=0
-      (( bash_edit_ts > relevant_edit_ts )) && relevant_edit_ts="${bash_edit_ts}"
-    fi
-  else
-    relevant_edit_ts="$(read_state "last_code_edit_ts")"
-    [[ -z "${relevant_edit_ts}" ]] && relevant_edit_ts="$(read_state "last_edit_ts")"
-  fi
-
-  # No relevant edit recorded: tick is valid by default.
-  [[ -z "${relevant_edit_ts}" ]] && return 0
-
-  [[ "${tick_ts}" -ge "${relevant_edit_ts}" ]]
+  # Revision-first freshness preserves event ordering inside one epoch second.
+  # Timestamp >= is used only when both sides predate revision tracking.
+  dimension_state_is_fresh "$1"
 }
 
 reviewer_for_dimension() {
@@ -6974,107 +7388,50 @@ describe_dimension() {
   esac
 }
 
-# Computes the set of required dimensions for the current session based
-# on the edit counters (maintained by mark-edit.sh at write time — no
-# O(N) re-classification at stop time). Echoes a csv. Empty string
-# means no dimension requirement (legacy path for simple tasks).
-#
-# Thresholds:
-#   unique_count < OMC_DIMENSION_GATE_FILE_COUNT → empty (simple task)
-#   Otherwise:                                   → bug_hunt,code_quality,stress_test,completeness
-#   If doc_count > 0 or task_domain=writing:     → append prose
-#   If ui_count > 0:                             → append design_quality
-#   If unique_count >= OMC_TRACEABILITY_FILE_COUNT → append traceability
+# Computes review coverage from the current objective's actual changed
+# surfaces and semantic complexity. Baseline quality/prose/design dimensions
+# follow the surface they inspect. Completeness and traceability are added only
+# when breadth evidence warrants them. Metis remains a plan-phase gate and is
+# never summoned merely because an implementation touched N files.
 
+# The Stop hook passes a precomputed six-field snapshot to avoid rescanning;
+# other callers intentionally use the zero-argument state-backed form.
+# shellcheck disable=SC2120
 get_required_dimensions() {
-  local code_count doc_count ui_count unique_count bash_unknown trace_threshold dimension_threshold
-  code_count="$(read_state "code_edit_count")"
-  doc_count="$(read_state "doc_edit_count")"
-  ui_count="$(read_state "ui_edit_count")"
-  code_count="${code_count:-0}"
-  doc_count="${doc_count:-0}"
-  ui_count="${ui_count:-0}"
-  unique_count=$((code_count + doc_count))
-
-  # Legacy fallback: if the counters are not populated (resumed session
-  # from pre-dimension-gate state), derive counts AND classification
-  # from edited_files.log by scanning each unique path. Without this
-  # classification, a resumed doc-only session would route to the code
-  # dimension set.
-  if [[ "${unique_count}" -eq 0 ]]; then
-    local edited_log
-    edited_log="$(session_file "edited_files.log")"
-    if [[ -f "${edited_log}" ]]; then
-      local _path
-      while IFS= read -r _path; do
-        [[ -z "${_path}" ]] && continue
-        unique_count=$((unique_count + 1))
-        if is_doc_path "${_path}"; then
-          doc_count=$((doc_count + 1))
-        else
-          code_count=$((code_count + 1))
-          if is_ui_path "${_path}"; then
-            ui_count=$((ui_count + 1))
-          fi
-        fi
-      done < <(sort -u "${edited_log}")
-    fi
-  fi
-
-  # Unknown Bash fan-out cannot honestly be represented in the exact-path
-  # counters. Treat it as reaching the count-based review thresholds rather
-  # than silently taking the small-task path. Exact counters and reporting
-  # remain truthful; this conservative floor exists only for gate selection.
-  bash_unknown="$(read_state "bash_unknown_edit_scope")"
-  if [[ "${bash_unknown}" == "1" ]]; then
-    (( code_count < 1 )) && code_count=1
-    # The missing path can be UI or prose just as easily as generic code.
-    # Require both path-specialized review dimensions rather than silently
-    # under-reviewing a Bash-written .tsx/.css/README. These are gate-local
-    # conservative sentinels; the persisted exact counters remain truthful.
-    (( doc_count < 1 )) && doc_count=1
-    (( ui_count < 1 )) && ui_count=1
-    trace_threshold="${OMC_TRACEABILITY_FILE_COUNT:-6}"
-    dimension_threshold="${OMC_DIMENSION_GATE_FILE_COUNT:-3}"
-    [[ "${trace_threshold}" =~ ^[0-9]+$ ]] || trace_threshold=6
-    [[ "${dimension_threshold}" =~ ^[0-9]+$ ]] || dimension_threshold=3
-    (( unique_count < trace_threshold )) && unique_count="${trace_threshold}"
-    (( unique_count < dimension_threshold )) && unique_count="${dimension_threshold}"
-  fi
-
-  if [[ "${unique_count}" -lt "${OMC_DIMENSION_GATE_FILE_COUNT}" ]]; then
-    printf ''
-    return
+  local code_count doc_count ui_count unique_count bash_unknown surface_count
+  if [[ "$#" -eq 6 ]]; then
+    code_count="$1"; doc_count="$2"; ui_count="$3"
+    unique_count="$4"; bash_unknown="$5"; surface_count="$6"
+  else
+    {
+      IFS= read -r code_count
+      IFS= read -r doc_count
+      IFS= read -r ui_count
+      IFS= read -r unique_count
+      IFS= read -r bash_unknown
+      IFS= read -r surface_count
+    } < <(review_cycle_edit_snapshot)
   fi
 
   local dims=""
-  if [[ "${code_count}" -gt 0 ]] || [[ "${unique_count}" -gt 0 && "${doc_count}" -eq 0 ]]; then
-    dims="bug_hunt,code_quality,stress_test,completeness"
+  if (( code_count > 0 || bash_unknown == 1 )); then
+    dims="bug_hunt,code_quality"
   fi
-
-  local td
-  td="$(task_domain)"
-  if [[ "${doc_count}" -gt 0 ]] || [[ "${td}" == "writing" ]]; then
-    if [[ -n "${dims}" ]]; then
-      dims="${dims},prose"
-    else
-      dims="prose,completeness"
-    fi
+  if (( doc_count > 0 )) \
+      || { (( bash_unknown == 1 )) \
+           && [[ "$(read_state "review_cycle_prose_semantic")" == "1" ]]; }; then
+    dims="${dims:+${dims},}prose"
   fi
-
-  # design_quality: appended when UI files (tsx, jsx, vue, css, etc.) were
-  # edited. Since UI is a subset of code (both counters increment), dims
-  # will always be non-empty when ui_count > 0.
-  if [[ "${ui_count}" -gt 0 && -n "${dims}" ]]; then
-    dims="${dims},design_quality"
+  if review_cycle_requires_design "${ui_count}" "${bash_unknown}"; then
+    dims="${dims:+${dims},}design_quality"
   fi
-
-  if [[ "${unique_count}" -ge "${OMC_TRACEABILITY_FILE_COUNT}" ]]; then
-    if [[ -n "${dims}" ]]; then
-      dims="${dims},traceability"
-    else
-      dims="traceability"
-    fi
+  if review_cycle_requires_completeness \
+      "${code_count}" "${doc_count}" "${ui_count}" "${unique_count}" "${bash_unknown}" "${surface_count}"; then
+    dims="${dims:+${dims},}completeness"
+  fi
+  if review_cycle_requires_traceability \
+      "${code_count}" "${doc_count}" "${ui_count}" "${unique_count}" "${bash_unknown}" "${surface_count}"; then
+    dims="${dims:+${dims},}traceability"
   fi
 
   printf '%s' "${dims}"
@@ -9253,11 +9610,47 @@ has_unfinished_session_handoff() {
 
 
 # --- P2: Council evaluation detection ---
-# Detects broad whole-project evaluation requests that benefit from
-# multi-role perspective dispatch (product, design, security, data, SRE, growth).
+# Detects broad whole-project evaluation requests that benefit from an
+# adaptive coverage map and a task-specific specialist team.
 # Intentionally strict: must reference the project/codebase/app as a whole,
 # or use holistic qualifiers, or ask "what should I improve" type questions.
 # Does NOT match focused requests like "evaluate this function" or "review this PR."
+
+# A bare `system` can name the whole product ("review our system"), while a
+# compound ending in `system` usually names one internal surface ("design
+# system", "build system", "recommendation system").  Treating `system` as an
+# unconditional project noun made every new compound another deny-list bug.
+# This parser therefore defaults modified system heads to focused scope and
+# keeps only syntax that actually declares the whole target: an unmodified
+# system (which does not match here), an explicit whole/entire/full target, or
+# established whole-product/category forms such as `operating system`,
+# `production system`, and `legacy system`.
+_has_focused_compound_system_target() {
+  local text="$1"
+  local review_prefix
+  review_prefix='\b(evaluat|assess|audit|review|inspect|analy[sz])\w*[[:space:]]+(of[[:space:]]+)?((my|the|this|our|your)[[:space:]]+)?'
+
+  # Pin the zero-modifier form before the optional determiner can be consumed
+  # by the generic modifier repetition below.
+  if grep -Eiq '\b(evaluat|assess|audit|review|inspect|analy[sz])\w*[[:space:]]+(of[[:space:]]+)?((my|the|this|our|your)[[:space:]]+)?systems?\b' <<<"${text}"; then
+    return 1
+  fi
+
+  # Require at least one modifier before the `system` head. Generic
+  # "review our system" deliberately falls through as a project target.
+  grep -Eiq "${review_prefix}([[:alnum:]_.-]+[[:space:]]+){1,3}systems?\b" <<<"${text}" \
+    || return 1
+
+  # Explicit total-target syntax outranks the compound default. The category
+  # and lifecycle qualifiers below describe a whole deployed product when
+  # they sit immediately before `system`; `production build system` still
+  # remains focused because it has a second compound modifier.
+  if grep -Eiq "${review_prefix}((whole|entire|full|complete|overall)[[:space:]]+([[:alnum:]_.-]+[[:space:]]+){0,2}|(operating|legacy|production|live|deployed|existing|current|distributed|embedded)[[:space:]]+)systems?\b" <<<"${text}"; then
+    return 1
+  fi
+
+  return 0
+}
 
 # Helper for is_council_evaluation_request: detects narrowing qualifiers that
 # scope a request to a specific code artifact or subsystem concept, signaling
@@ -9265,24 +9658,62 @@ has_unfinished_session_handoff() {
 # Three tiers:
 #   A: [preposition] [demonstrative] [artifact] — "in this function", "to the handler"
 #   B: [this|that] [artifact] — "this function", "that endpoint" (no preposition)
-#   C: [preposition] [subsystem concept] — "in error handling", "about architecture"
+#   C: [preposition] [subsystem concept] — "in error handling", "of architecture"
 #      (no demonstrative needed for well-known subsystem scoping)
+#   E: guarded generic prepositional target — "in checkout", "of upload flow"
+#      (project-level referents remain broad)
 _has_narrow_scope() {
   local text="$1"
 
+  _has_focused_compound_system_target "${text}" && return 0
+
   # Tier A + B: preposition+demonstrative+artifact, or bare this/that+artifact
   # Note: "pr" replaced with "pull.?requests?" to avoid matching "project" via pr\w*
-  grep -Eiq '(\b(to|in|from|about|with)\s+(this|the|that|my)|\b(this|that))\s+(function|method|class|module|component|endpoint|file|handler|test|route|flow|section|line|block|hook|script|page|view|query|model|schema|table|api|service|controller|middleware|error|auth|database|config|pull.?requests?|commit|branch|migration|architecture|design|handling|layer|logic|workflow|pipeline|infrastructure|deployment|navigation|layout|rendering|setup)\w*\b' <<<"${text}" \
+  grep -Eiq '(\b(to|in|from|about|with|of)\s+(this|the|that|my)|\b(this|that))\s+(function|method|class|module|component|feature|capability|subsystem|surface|endpoint|file|handler|test|route|flow|section|line|block|hook|script|page|view|query|model|schema|table|api|service|controller|middleware|error|auth|database|config|pull.?requests?|commit|branch|migration|architecture|design|handling|layer|logic|workflow|pipeline|infrastructure|deployment|navigation|layout|rendering|setup)\w*\b' <<<"${text}" \
     && return 0
 
   # Tier C: preposition + subsystem concept (no demonstrative required)
   # Catches "in error handling", "about authentication", "from architecture"
-  grep -Eiq '\b(to|in|from|about|with)\s+(error|auth|api|security|data|cache|session|payment|frontend|backend|infrastructure|architecture|performance|reliability|deployment|navigation|rendering|logging|caching|routing|networking|authentication|authorization|observability|monitoring|testing|validation|serialization|scheduling)\w*\b' <<<"${text}" \
+  grep -Eiq '\b(to|in|from|about|with|of|within)\s+(error|auth|api|security|data|cache|session|payment|frontend|backend|infrastructure|architecture|performance|reliability|deployment|navigation|rendering|logging|caching|routing|networking|authentication|authorization|observability|monitoring|testing|validation|serialization|scheduling)\w*\b' <<<"${text}" \
     && return 0
 
   # Tier D: Short abbreviations (too short for the \w*-suffixed artifact list)
   # "this PR", "in this PR", "that PR" — exact word match to avoid matching "project"
   grep -Eiq '(\b(to|in|from|about|with)\s+(this|the|that|my)|\b(this|that))\s+prs?\b' <<<"${text}" \
+    && return 0
+
+  # Explicit totality outranks only *incidental* prepositions later in the
+  # sentence ("implement all findings from the audit"). It must not outrank a
+  # concrete Tier A-D scope anchor: "review everything in this PR" is still a
+  # focused PR review, not a whole-project Council request.
+  if grep -Eiq '\b(everything|whole[[:space:]]+thing|all[[:space:]]+(aspects?|areas?|surfaces?|subsystems?|features?|code|findings?|items?|recommendations?)|every[[:space:]]+(aspect|area|surface|subsystem|feature))\b' <<<"${text}"; then
+    return 1
+  fi
+
+  # Tier E: natural focused objects are open-vocabulary. The earlier tiers
+  # cannot enumerate every product flow (checkout, onboarding, upload, ...),
+  # so a generic prepositional target is narrow unless its immediate referent
+  # explicitly names the whole project. Keep `with` out of this generic form:
+  # in "full review with recommendations" it is an adjunct, not scope.
+  # Open-vocabulary scope after `in/about/within` is normally a focused
+  # product surface. `of` and `from` are excluded here because they often
+  # introduce a broad assessment complement/source ("review of readiness",
+  # "findings from the audit"); their focused forms are handled by Tier C
+  # and the flow/journey suffix rule below.
+  if grep -Eiq '\b(in|about|within)\s+((the|this|that|my|our|your)\s+)?[[:alnum:]_]' <<<"${text}"; then
+    # A project-level possessive followed by a particular dimension is still
+    # focused ("audit the app's security"). Only the bare project referent is
+    # the whole-project control.
+    if grep -Eiq '\b(in|about|within)\s+((the|this|that|my|our|your)\s+)?(projects?|codebase|code.?base|app(lication)?|products?|repo(sitory)?|software|systems?|extensions?|sites?|websites?|platforms?|librar(y|ies)|packages?|plugins?|frameworks?)([^[:alnum:][:space:]]s)?\s+(security|architecture|performance|reliability|integration|configuration|flow|journey|validation|logging|caching|deployment|api|data|ui|ux)\b' <<<"${text}"; then
+      return 0
+    fi
+    if ! grep -Eiq '\b(in|about|within)\s+((the|this|that|my|our|your)\s+)?((whole|entire|full|complete)\s+)?(projects?|codebase|code.?base|app(lication)?|products?|repo(sitory)?|software|systems?|extensions?|sites?|websites?|platforms?|librar(y|ies)|packages?|plugins?|frameworks?)(\s+as\s+a\s+whole)?\b' <<<"${text}"; then
+      return 0
+    fi
+  fi
+
+  # Open-vocabulary focused noun phrases with a concrete scoped head.
+  grep -Eiq '\b(in|of|from|about|within)\s+((the|this|that|my|our|your)\s+)?([[:alnum:]_-]+[[:space:]]+){0,4}(flow|journey|screen|page|endpoint|module|integration|configuration|pipeline|layer)\b' <<<"${text}" \
     && return 0
 
   return 1
@@ -9316,26 +9747,114 @@ _has_scoped_improve_target() {
   return 1
 }
 
-is_council_evaluation_request() {
+# Structural whole-project targets for Council routing. Project nouns are
+# accepted only when they are the head of the review object, not the first word
+# of a focused compound ("system prompt", "application form", "product page",
+# "platform roadmap"). Generic adjective slots admit real stacks/verticals
+# such as "fintech app", "customer-facing application", and "iPhone app"
+# without maintaining a brittle qualifier dictionary.
+_has_direct_project_review_target() {
   local text="$1"
+  _has_focused_compound_system_target "${text}" && return 1
+  grep -Eiq '\b(evaluat|assess|audit|review|inspect|analy[sz])\w*[[:space:]]+(my|the|this|our|your)[[:space:]]+((whole|entire|full|complete)[[:space:]]+)?([[:alnum:]_.-]+[[:space:]]+){0,3}(projects?|codebase|code.?base|app(lication)?s?|products?|repo(sitor(y|ies))?|software|systems?|extensions?|sites?|websites?|platforms?|librar(y|ies)|packages?|plugins?|frameworks?)([[:space:]]+(as[[:space:]]+a[[:space:]]+whole|and|then|but|with|without|for|against|before|after|using|including|especially|focusing|focused)\b|[[:space:]]*[,;:]|[[:space:]]*[.!?]?[[:space:]]*$)' <<<"${text}"
+}
 
-  # Pattern 1: "[evaluate|assess|audit|review] [my|the|this|our] [entire|whole]? [project|codebase|app|product|repo|extension|site|feature|capability|...]"
-  # Guarded: reject if the project-level word is part of a compound noun
-  # (e.g., "project manager", "project plan", "product team", "extension manager")
-  # Noun list extended with `features?|capabilit(y|ies)|surfaces?|subsystems?` —
-  # high-level scopes. Words like `module|component|flow|area` are intentionally
-  # absent: they live in `_has_narrow_scope` Tier B as narrow-scope markers, so
-  # adding them here would flip "evaluate this module" / "improve the flow" tests.
-  if grep -Eiq '(evaluat|assess|audit|review|inspect|analyz)\w*\s+(my|the|this|our|entire|whole|full)\s+((\w+\s+){0,3})?(projects?|codebase|code.?base|app(lication)?|products?|repo(sitory)?|software|system|extensions?|sites?|websites?|platforms?|librar(y|ies)|packages?|plugins?|frameworks?|features?|capabilit(y|ies)|surfaces?|subsystems?)\b' <<<"${text}" \
-     && ! grep -Eiq '\b(project|product)\s+(manager|management|plan|planning|structure|timeline|scope|lead|owner|director|description|proposal|requirements?|specification|charter|budget|schedule|board|team|files?|folders?|documentation|dependencies|configuration|roadmap|backlog|strategy|design|review)\b' <<<"${text}" \
-     && ! grep -Eiq '\b(extension|package|plugin|site|platform|framework|library)\s+(manager|management|registry|store|marketplace|directory|map|version|settings|manifest)\b' <<<"${text}" \
-     && ! grep -Eiq '\b(feature|capability|subsystem|surface)\s+(manager|management|flag|flags|toggle|toggles|request|requests|map|matrix|spec|specs|specification|specifications|plan|plans|description|descriptions|documentation|area|areas|boundary|boundaries)\b' <<<"${text}"; then
+_has_explicit_total_project_review() {
+  local text="$1"
+  grep -Eiq '\b(full|holistic|comprehensive|complete|whole|broad|overall)[[:space:]]+project[[:space:]]+(review|evaluation|assessment|audit|analysis)\b' <<<"${text}" \
+    && return 0
+  if _has_focused_compound_system_target "${text}"; then
+    return 1
+  fi
+  grep -Eiq '\b(full|holistic|comprehensive|complete|whole|broad|overall)[[:space:]]+(review|evaluation|assessment|audit|analysis)[[:space:]]+of[[:space:]]+(my|the|this|our|your)[[:space:]]+((whole|entire|full|complete)[[:space:]]+)?([[:alnum:]_.-]+[[:space:]]+){0,3}(projects?|codebase|code.?base|app(lication)?s?|products?|repo(sitor(y|ies))?|software|systems?|extensions?|sites?|websites?|platforms?|librar(y|ies)|packages?|plugins?|frameworks?)([[:space:]]+(as[[:space:]]+a[[:space:]]+whole|and|then|but|with|without|for|against|before|after|using|including|especially|focusing|focused)\b|[[:space:]]*[,;:]|[[:space:]]*[.!?]?[[:space:]]*$)' <<<"${text}"
+}
+
+# Normalize only the input used by Council routing. Slash-command wrappers and
+# trailing evaluation controls are transport/presentation syntax, not part of
+# the project target. Keeping this local to Council classification is
+# important: words such as "thoroughly" and flags such as `--deep` must not
+# accidentally become exhaustive implementation authorization.
+_normalize_council_evaluation_text() {
+  local text previous
+  text="$(normalize_task_prompt "$1")"
+
+  # Accept any ordering/composition of the three bare Council flags and a
+  # small set of harmless intensity adverbs at the end of the request. Loop so
+  # `evaluate my project --deep --polish` strips both tokens. Near-miss flag
+  # forms (`--deep=true`, `--deeper`) deliberately remain in place.
+  while :; do
+    previous="${text}"
+    text="$(sed -E 's/[[:space:]]+(--(deep|polish|self-audit)|thoroughly|carefully|deeply)[[:space:]]*[.!?]?[[:space:]]*$//I' <<<"${text}")"
+    [[ "${text}" == "${previous}" ]] && break
+  done
+
+  printf '%s' "${text}"
+}
+
+# Structural repository identity for the harness's in-repo self-audit route.
+# Do not key this behavior off a directory basename: users commonly rename a
+# checkout, while an unrelated directory can just as easily be named
+# `oh-my-claude`. Requiring independent project-owned markers makes both cases
+# deterministic without network or Git-remote access.
+is_oh_my_claude_repo_root() {
+  local root="${1:-${PWD}}"
+
+  [[ -f "${root}/install.sh" \
+     && -f "${root}/verify.sh" \
+     && -f "${root}/config/settings.patch.json" \
+     && -f "${root}/bundle/dot-claude/skills/council/SKILL.md" ]] \
+    || return 1
+
+  grep -Fq '# oh-my-claude installer' "${root}/install.sh" 2>/dev/null \
+    && grep -Fq '# oh-my-claude verifier' "${root}/verify.sh" 2>/dev/null \
+    && grep -Fq '"outputStyle": "oh-my-claude"' "${root}/config/settings.patch.json" 2>/dev/null \
+    && grep -Fq 'name: council' "${root}/bundle/dot-claude/skills/council/SKILL.md" 2>/dev/null
+}
+
+# True only for an audit-shaped harness prompt in a structurally identified
+# oh-my-claude checkout. A bare mention such as "fix the harness bug" is not
+# enough to widen focused implementation into Council.
+is_oh_my_claude_self_audit_request() {
+  local text root
+  text="$(normalize_task_prompt "$1")"
+  root="${2:-${PWD}}"
+
+  is_oh_my_claude_repo_root "${root}" || return 1
+
+  grep -Eiq '(^|[[:space:]])--self-audit([[:space:]]|$)|\bself[[:space:]-]+audit\b|\bbug[[:space:]]+b\b[^.!?]{0,40}\bself[[:space:]-]+audit\b' <<<"${text}" \
+    && return 0
+
+  grep -Eiq '\b(evaluat|assess|audit|review|inspect|analy[sz])\w*\b' <<<"${text}" \
+    && grep -Eiq '\b(harness|state[[:space:]-]*io|implicit[[:space:]-]+contracts?)\b' <<<"${text}"
+}
+
+is_council_evaluation_request() {
+  local text
+  text="$(_normalize_council_evaluation_text "$1")"
+
+  # An explicit total-project review remains broad when a subordinate clause
+  # names an area of special attention. The focus is a priority inside the
+  # review, not a replacement for its declared whole-project scope.
+  _has_explicit_total_project_review "${text}" && return 0
+
+  # Pattern 0: explicit whole-scope/totality forms. This is deliberately
+  # high-precision and runs before narrower prepositional parsing.
+  if grep -Eiq '\b(audit|review|inspect|assess|evaluate|evaluation|analysis|analy[sz]e)\b[^.!?]{0,80}\b(everything|all[[:space:]]+(aspects?|areas?|surfaces?|subsystems?|features?|code)|every[[:space:]]+(aspect|area|surface|subsystem|feature)|end[[:space:]-]+to[[:space:]-]+end|as[[:space:]]+a[[:space:]]+whole)\b|\bend[[:space:]-]+to[[:space:]-]+end[[:space:]]+(project[[:space:]]+)?(audit|review|assessment|evaluation|analysis)\b' <<<"${text}" \
+      && ! _has_narrow_scope "${text}"; then
+    return 0
+  fi
+
+  # Pattern 1: direct project-object review. Structural head parsing replaces
+  # the old qualifier and compound-deny lists.
+  if _has_direct_project_review_target "${text}"; then
     return 0
   fi
 
   # Pattern 2: "[full|holistic|comprehensive] [review|evaluation|assessment]"
-  grep -Eiq '\b(full|holistic|comprehensive|complete|whole|broad|overall)\s+(project\s+)?(review|evaluation|assessment|audit|analysis)\b' <<<"${text}" \
-    && return 0
+  if grep -Eiq '\b(full|holistic|comprehensive|complete|whole|broad|overall)\s+(project\s+)?(review|evaluation|assessment|audit|analysis)\b' <<<"${text}" \
+      && ! _has_narrow_scope "${text}"; then
+    return 0
+  fi
 
   # Pattern 3: "what [should I improve | needs improvement | am I missing]"
   # The "should I/we improve" sub-pattern allows up to 8 intermediary words
@@ -9350,7 +9869,14 @@ is_council_evaluation_request() {
   fi
 
   # Pattern 4: "[find|surface|identify] [blind spots|gaps|weaknesses|what is missing]"
-  if grep -Eiq '\b(find|surface|identify|spot|uncover)\s+(blind\s+spots?|gaps?|weaknesses?|what\s+(is|are)\s+missing)\b' <<<"${text}" \
+  if grep -Eiq '\b(find|surface|identify|spot|uncover)\s+((all|any|every|the)\s+)?(blind\s+spots?|gaps?|weaknesses?|what\s+(is|are)\s+missing)\b' <<<"${text}" \
+     && ! _has_narrow_scope "${text}"; then
+    return 0
+  fi
+
+  # Pattern 4b: natural whole-product improvement/gap questions that do not
+  # use the exact "what should I improve" wording above.
+  if grep -Eiq '\b(where|how)\s+can\s+(i|we)\s+improve\b[^.!?]{0,60}\b(project|codebase|app(lication)?|product|repo(sitory)?|system|platform|site|website)\b|\bwhat\s+(is\s+missing\s+from|are\s+(our|the)\s+(biggest|main|critical)\s+weaknesses)\b|\bare\s+there\s+(any\s+)?gaps\b[^.!?]{0,60}\b(project|codebase|app(lication)?|product|repo(sitory)?|system|platform)\b' <<<"${text}" \
      && ! _has_narrow_scope "${text}"; then
     return 0
   fi
@@ -9376,14 +9902,12 @@ is_council_evaluation_request() {
   # Determiner is required (my/the/this/our/these/all) so copular phrasings
   # ("make sure …", "make a perfect commit message", "make an excellent
   # README") do NOT match — those are templating instructions, not project-
-  # level quality asks. _has_narrow_scope still filters Tier-B narrow targets
-  # ("this function", "this method"). The (sure|certain) negative guard
-  # below is belt-and-suspenders for the "make sure X is …" idiom which
-  # technically matches the article "the" but should never trigger council.
-  if grep -Eiq '\bmake\s+(my|the|this|our|these|all|it)\s+(\w+([[:space:]]+\w+){0,3}\s+)?(impeccable|perfect|world.?class|production.?ready|prod.?ready|production.?grade|polished|enterprise.?grade|excellent|flawless)\b' <<<"${text}" \
+  # level quality asks. Require the target head itself to be project-level;
+  # arbitrary 0–3-word direct objects made parsers, checkout flows, payment
+  # integrations, and API clients look like whole projects.
+  if grep -Eiq '\bmake[[:space:]]+(my|the|this|our|these|all)[[:space:]]+((whole|entire|full|complete)[[:space:]]+)?([[:alnum:]_-]+[[:space:]]+){0,3}(projects?|codebase|code.?base|app(lication)?s?|products?|repo(sitor(y|ies))?|software|systems?|extensions?|sites?|websites?|platforms?|librar(y|ies)|packages?|plugins?|frameworks?)[[:space:]]+(impeccable|perfect|world.?class|production.?ready|prod.?ready|production.?grade|polished|enterprise.?grade|excellent|flawless)\b' <<<"${text}" \
      && ! grep -Eiq '\bmake\s+(sure|certain)\b' <<<"${text}" \
-     && ! grep -Eiq '\b(commit\s+message|pr\s+description|readme|changelog|docstring|comment|test\s+name|variable\s+name)\b' <<<"${text}" \
-     && ! _has_narrow_scope "${text}"; then
+     && ! grep -Eiq '\b(commit\s+message|pr\s+description|readme|changelog|docstring|comment|test\s+name|variable\s+name)\b' <<<"${text}"; then
     return 0
   fi
 
@@ -9531,18 +10055,47 @@ _extract_findings_json_payload() {
   printf '%s' "${last_payload}"
 }
 
+# _findings_json_payload_is_contract_valid <json-array>
+#
+# The normalization layer is intentionally forgiving about vocabulary
+# aliases (critical/p0/etc.) and unknown categories, but the wire contract is
+# not allowed to manufacture a finding from an empty object.  Every emitted
+# row must carry the seven documented fields with actionable string content;
+# file may be empty and line may be null or any number/string that jq can
+# coerce to a number.  Validate the whole array atomically so a mixed
+# `[valid, {}]` payload cannot silently drop only the malformed row.
+_findings_json_payload_is_contract_valid() {
+  jq -e '
+    type == "array"
+    and all(.[];
+      type == "object"
+      and has("severity") and (.severity | type == "string" and length > 0)
+      and has("category") and (.category | type == "string" and length > 0)
+      and has("file") and (.file | type == "string")
+      and has("line")
+      and (.line == null
+           or (.line | type == "number")
+           or ((.line | type == "string") and ((.line | tonumber?) != null)))
+      and has("claim") and (.claim | type == "string" and length > 0)
+      and has("evidence") and (.evidence | type == "string" and length > 0)
+      and has("recommended_fix")
+      and (.recommended_fix | type == "string" and length > 0)
+    )
+  ' >/dev/null 2>&1
+}
+
 extract_findings_json() {
   local message="$1"
   [[ -z "${message}" ]] && return 0
 
   # Strip fenced code blocks BEFORE grepping. Reviewer agents now carry
   # FINDINGS_JSON examples in their system prompts; an LLM that quotes
-  # the example verbatim inside a ```code``` fence would otherwise inject
+  # the example verbatim inside a Markdown code fence would otherwise inject
   # phantom findings into discovered_scope.jsonl. Same awk pre-pass that
   # extract_discovered_findings uses.
   local cleaned
   cleaned="$(printf '%s\n' "${message}" | awk '
-    /^```/ { in_code = !in_code; next }
+    /^(```|~~~)/ { in_code = !in_code; next }
     !in_code { print }
   ')"
 
@@ -9553,6 +10106,12 @@ extract_findings_json() {
   local json_line
   json_line="$(_extract_findings_json_payload "${cleaned}")"
   [[ -z "${json_line}" ]] && return 0
+
+  # Reject the entire block when any row is structurally incomplete.  The
+  # caller can then surface one contract violation instead of accepting a
+  # synthetic `[medium/other]` finding with no claim or evidence.
+  printf '%s' "${json_line}" | _findings_json_payload_is_contract_valid \
+    || return 0
 
   # Validate as JSON array; emit each element as NDJSON.
   printf '%s' "${json_line}" \
@@ -9603,12 +10162,14 @@ count_findings_json() {
   [[ -z "${message}" ]] && return 0
   local cleaned
   cleaned="$(printf '%s\n' "${message}" | awk '
-    /^```/ { in_code = !in_code; next }
+    /^(```|~~~)/ { in_code = !in_code; next }
     !in_code { print }
   ')"
   local json_line
   json_line="$(_extract_findings_json_payload "${cleaned}")"
   [[ -z "${json_line}" ]] && return 0
+  printf '%s' "${json_line}" | _findings_json_payload_is_contract_valid \
+    || return 0
   printf '%s' "${json_line}" \
     | jq -r 'if type == "array" then length else 0 end' 2>/dev/null \
     || true

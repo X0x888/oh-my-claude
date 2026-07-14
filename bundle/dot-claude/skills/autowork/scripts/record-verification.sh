@@ -32,6 +32,7 @@ fi
 tool_name="$(json_get '.tool_name' 2>/dev/null || true)"
 command_text=""
 mcp_verify_type=""
+tool_use_id="$(json_get '.tool_use_id' 2>/dev/null || true)"
 
 if [[ "${tool_name}" == "Bash" || -z "${tool_name}" ]]; then
   command_text="$(json_get '.tool_input.command' 2>/dev/null || true)"
@@ -40,16 +41,113 @@ else
   mcp_verify_type="$(classify_mcp_verification_tool "${tool_name}")"
 fi
 
+_verification_start_path() {
+  local _id="$1" _digest=""
+  [[ -n "${_id}" ]] || return 1
+  _digest="$(_omc_token_digest "${_id}" 2>/dev/null || true)"
+  [[ -n "${_digest}" ]] || return 1
+  printf '%s/%s/.verification-starts/%s.json\n' \
+    "${STATE_ROOT}" "${SESSION_ID}" "${_digest}"
+}
+
+_discard_verification_start_locked() {
+  local _path=""
+  _path="$(_verification_start_path "${tool_use_id}" 2>/dev/null || true)"
+  [[ -n "${_path}" ]] && rm -f "${_path}" 2>/dev/null || true
+}
+
+# Consume the PreToolUse snapshot and persist the result under one state lock.
+# Return codes 10-13 are expected fail-closed rejections, not hook crashes.
+# In every rejection path, prior last_verify_* evidence stays untouched.
+_record_verification_state() {
+  local _path="" _start_revision="" _stored_id="" _stored_tool=""
+  local _current_revision="" _reason="" _stale_count=""
+
+  _path="$(_verification_start_path "${tool_use_id}" 2>/dev/null || true)"
+  _current_revision="$(read_state "last_code_edit_revision")"
+  [[ "${_current_revision}" =~ ^[0-9]+$ ]] || _current_revision="0"
+
+  if [[ -z "${tool_use_id}" ]] || [[ -z "${_path}" ]] || [[ ! -f "${_path}" ]]; then
+    _reason="missing_start_snapshot"
+  else
+    _stored_id="$(jq -r '.tool_use_id // empty' "${_path}" 2>/dev/null || true)"
+    _stored_tool="$(jq -r '.tool_name // empty' "${_path}" 2>/dev/null || true)"
+    _start_revision="$(jq -r '.code_revision // empty' "${_path}" 2>/dev/null || true)"
+    # Consume before any state write so a duplicate completion cannot replay
+    # the same dispatch evidence. The enclosing state lock serializes peers.
+    rm -f "${_path}" 2>/dev/null || true
+
+    if [[ "${_stored_id}" != "${tool_use_id}" ]] \
+        || [[ "${_stored_tool}" != "${tool_name}" ]]; then
+      _reason="start_snapshot_identity_mismatch"
+    elif [[ ! "${_start_revision}" =~ ^[0-9]+$ ]]; then
+      _reason="invalid_start_snapshot"
+    elif [[ "${_start_revision}" != "${_current_revision}" ]]; then
+      _reason="code_revision_changed"
+    fi
+  fi
+
+  if [[ -n "${_reason}" ]]; then
+    _stale_count="$(read_state "stale_verify_count")"
+    [[ "${_stale_count}" =~ ^[0-9]+$ ]] || _stale_count="0"
+    _stale_count=$((_stale_count + 1))
+    _write_state_batch_unlocked \
+      "last_stale_verify_ts" "$(now_epoch)" \
+      "last_stale_verify_tool" "${tool_name}" \
+      "last_stale_verify_reason" "${_reason}" \
+      "last_stale_verify_start_code_revision" "${_start_revision}" \
+      "last_stale_verify_current_code_revision" "${_current_revision}" \
+      "stale_verify_count" "${_stale_count}"
+    _OMC_VERIFY_REJECTION_REASON="${_reason}"
+    _OMC_VERIFY_REJECTION_START="${_start_revision}"
+    _OMC_VERIFY_REJECTION_CURRENT="${_current_revision}"
+    case "${_reason}" in
+      missing_start_snapshot) return 10 ;;
+      code_revision_changed) return 11 ;;
+      invalid_start_snapshot) return 12 ;;
+      *) return 13 ;;
+    esac
+  fi
+
+  _write_state_batch_unlocked "$@" \
+    "last_verify_code_revision" "${_start_revision}"
+}
+
+_persist_verification_state() {
+  local _rc=0
+  _OMC_VERIFY_REJECTION_REASON=""
+  _OMC_VERIFY_REJECTION_START=""
+  _OMC_VERIFY_REJECTION_CURRENT=""
+  with_state_lock _record_verification_state "$@" || _rc=$?
+
+  if [[ "${_rc}" -ge 10 && "${_rc}" -le 13 ]]; then
+    log_hook "record-verification" \
+      "rejected result tool=${tool_name} reason=${_OMC_VERIFY_REJECTION_REASON} start_revision=${_OMC_VERIFY_REJECTION_START} current_revision=${_OMC_VERIFY_REJECTION_CURRENT}"
+    record_gate_event "verification" "stale-result-rejected" \
+      "tool=${tool_name}" \
+      "reason=${_OMC_VERIFY_REJECTION_REASON}" \
+      "start_revision=${_OMC_VERIFY_REJECTION_START}" \
+      "current_revision=${_OMC_VERIFY_REJECTION_CURRENT}" \
+      2>/dev/null || true
+    return 1
+  elif [[ "${_rc}" -ne 0 ]]; then
+    log_anomaly "record-verification" \
+      "failed to atomically consume start snapshot and persist result rc=${_rc}"
+    return 1
+  fi
+  return 0
+}
+
 # The dispatcher runs mark-edit before this handler. When that handler proved
 # (or conservatively recorded) an edit-bearing Bash call, it leaves a per-tool marker here.
 # A compound `tests; mutate` call must not count as verification of the bytes
 # written after the tests; conservatively require a separate verification
 # call for every edit-bearing Bash invocation, regardless of segment order.
 if [[ "${tool_name}" == "Bash" ]] && [[ -n "${command_text}" ]]; then
-  tool_use_id="$(json_get '.tool_use_id' 2>/dev/null || true)"
   tool_cwd="$(json_get '.cwd' 2>/dev/null || true)"
   tool_cwd="${tool_cwd:-${PWD}}"
   if consume_bash_edit_outcome "${tool_use_id}" "${tool_cwd}" "${command_text}"; then
+    with_state_lock _discard_verification_start_locked || true
     log_hook "record-verification" "skipped compound Bash verification because the same tool call changed the worktree"
     exit 0
   fi
@@ -57,6 +155,7 @@ fi
 
 # Exit if neither Bash verification command nor MCP verification tool
 if [[ -z "${command_text}" && -z "${mcp_verify_type}" ]]; then
+  with_state_lock _discard_verification_start_locked || true
   exit 0
 fi
 
@@ -119,7 +218,7 @@ if [[ -n "${command_text}" ]]; then
     # omc-repro bundles it for support tarballs. Cap to 500 chars too.
     last_verify_cmd_safe="$(printf '%s' "${command_text}" | omc_redact_secrets | tr -d '\000')"
     last_verify_cmd_safe="$(truncate_chars 500 "${last_verify_cmd_safe}")"
-    with_state_lock_batch \
+    if _persist_verification_state \
       "last_verify_ts" "$(now_epoch)" \
       "last_verify_cmd" "${last_verify_cmd_safe}" \
       "last_verify_outcome" "${verify_outcome}" \
@@ -130,8 +229,14 @@ if [[ -n "${command_text}" ]]; then
       "project_test_cmd" "${project_test_cmd}" \
       "stop_guard_blocks" "0" \
       "session_handoff_blocks" "0" \
-      "stall_counter" "0"
-    log_hook "record-verification" "cmd=${command_text} outcome=${verify_outcome} confidence=${verify_confidence} method=${verify_method} scope=${verify_scope}"
+      "stall_counter" "0"; then
+      log_hook "record-verification" "cmd=${command_text} outcome=${verify_outcome} confidence=${verify_confidence} method=${verify_method} scope=${verify_scope}"
+    fi
+  else
+    # The PreToolUse recorder snapshots all Bash calls because command
+    # classification can evolve independently. Non-verification completions
+    # consume their snapshot so long sessions do not accumulate sidecars.
+    with_state_lock _discard_verification_start_locked || true
   fi
 
 # --- Path 2: MCP tool verification ---
@@ -159,7 +264,7 @@ elif [[ -n "${mcp_verify_type}" ]]; then
     project_test_cmd="$(detect_project_test_command "." 2>/dev/null || true)"
   fi
 
-  with_state_lock_batch \
+  if _persist_verification_state \
     "last_verify_ts" "$(now_epoch)" \
     "last_verify_cmd" "${tool_name}" \
     "last_verify_outcome" "${verify_outcome}" \
@@ -169,6 +274,7 @@ elif [[ -n "${mcp_verify_type}" ]]; then
     "project_test_cmd" "${project_test_cmd}" \
     "stop_guard_blocks" "0" \
     "session_handoff_blocks" "0" \
-    "stall_counter" "0"
-  log_hook "record-verification" "mcp_tool=${tool_name} type=${mcp_verify_type} outcome=${verify_outcome} confidence=${verify_confidence} scope=${verify_scope}"
+    "stall_counter" "0"; then
+    log_hook "record-verification" "mcp_tool=${tool_name} type=${mcp_verify_type} outcome=${verify_outcome} confidence=${verify_confidence} scope=${verify_scope}"
+  fi
 fi

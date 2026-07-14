@@ -4,7 +4,8 @@
 # Gate semantics:
 #   Fires when OMC_METIS_ON_PLAN_GATE=on AND a complex plan exists
 #   (plan_complexity_high=1, has_plan=true) AND metis has not run since
-#   the plan was recorded (last_metis_review_ts < plan_ts) AND the
+#   the plan was recorded (the stress_test dimension is stale against the
+#   current plan revision, with timestamps used for migrated state) AND the
 #   per-plan block cap (1) is not exhausted.
 #
 #   Block cap resets on every fresh plan because record-plan.sh writes
@@ -86,6 +87,8 @@ _setup_session() {
   local plan_ts="$3"
   local last_metis_review_ts="$4"
   local metis_gate_blocks="${5:-}"
+  local plan_revision="${6:-}"
+  local stress_test_revision="${7:-}"
 
   local sdir="${_test_state_root}/${sid}"
   mkdir -p "${sdir}"
@@ -98,8 +101,10 @@ _setup_session() {
     --arg has_plan "true" \
     --arg pch "${plan_complexity_high}" \
     --arg pts "${plan_ts}" \
+    --arg prev "${plan_revision}" \
     --arg pcs "steps=8,files=5,waves=3,keywords=migration" \
     --arg lmrt "${last_metis_review_ts}" \
+    --arg dstr "${stress_test_revision}" \
     --arg mgb "${metis_gate_blocks}" \
     --arg lrt "${last_edit}" \
     --arg lvt "${last_edit}" \
@@ -112,8 +117,12 @@ _setup_session() {
       has_plan: $has_plan,
       plan_complexity_high: $pch,
       plan_ts: $pts,
+      plan_revision: $prev,
       plan_complexity_signals: $pcs,
       last_metis_review_ts: $lmrt,
+      dim_stress_test_ts: $lmrt,
+      dim_stress_test_revision: $dstr,
+      dim_stress_test_verdict: (if $lmrt == "" then "" else "CLEAN" end),
       metis_gate_blocks: $mgb,
       last_review_ts: $lrt,
       last_verify_ts: $lvt,
@@ -144,7 +153,7 @@ _run_stop_guard() {
     cd "${_test_home}" || exit 1
     HOME="${_test_home}" \
       STATE_ROOT="${_test_state_root}" \
-      env OMC_METIS_ON_PLAN_GATE=off ${env_args[@]+"${env_args[@]}"} \
+      env OMC_GATE_LEVEL=basic OMC_METIS_ON_PLAN_GATE=off ${env_args[@]+"${env_args[@]}"} \
       bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/stop-guard.sh" \
       <<<"${hook_json}" 2>/dev/null \
       || true
@@ -183,18 +192,20 @@ out="$(_run_stop_guard "${sid}" "OMC_METIS_ON_PLAN_GATE=on")"
 assert_not_contains "no block on simple plan" "Metis-on-plan gate" "${out}"
 
 # ----------------------------------------------------------------------
-printf 'Test 4: gate ON + complex plan + metis ran AFTER plan_ts → no block\n'
+printf 'Test 4: gate ON + complex plan + Metis covered current plan revision → no block\n'
 sid="t4-${RANDOM}"
-# plan_ts=1000, metis_ts=2000 (after) → satisfied, no block
-_setup_session "${sid}" "1" "1000" "2000" ""
+# Same-second timestamps are unambiguous: both plan and dimension are revision
+# 4, so the stress-test covered the current plan.
+_setup_session "${sid}" "1" "1000" "1000" "" "4" "4"
 out="$(_run_stop_guard "${sid}" "OMC_METIS_ON_PLAN_GATE=on")"
 assert_not_contains "no block when metis ran after plan" "Metis-on-plan gate" "${out}"
 
 # ----------------------------------------------------------------------
-printf 'Test 5: gate ON + complex plan + metis ran BEFORE plan_ts → block (stale)\n'
+printf 'Test 5: gate ON + complex plan + Metis covered older plan revision → block\n'
 sid="t5-${RANDOM}"
-# plan_ts=2000, metis_ts=1000 (before) → stale, must re-run metis
-_setup_session "${sid}" "1" "2000" "1000" ""
+# Equal timestamps cannot hide the stale ordering: plan revision 4 supersedes
+# the stress-test's revision 3.
+_setup_session "${sid}" "1" "1000" "1000" "" "4" "3"
 out="$(_run_stop_guard "${sid}" "OMC_METIS_ON_PLAN_GATE=on")"
 assert_contains "block on stale metis" "Metis-on-plan gate" "${out}"
 
@@ -230,7 +241,8 @@ touch "${sentinel_dir}/.ulw_active"
 sid="t8-${RANDOM}"
 sdir="${_test_state_root}/${sid}"
 mkdir -p "${sdir}"
-jq -nc --arg wfm "ultrawork" '{workflow_mode: $wfm}' >"${sdir}/session_state.json"
+jq -nc --arg wfm "ultrawork" \
+  '{workflow_mode: $wfm, plan_revision: "7"}' >"${sdir}/session_state.json"
 
 reviewer_payload="$(jq -nc \
   --arg sid "${sid}" \
@@ -247,6 +259,8 @@ HOME="${_test_home}" \
 assert_contains "last_metis_review_ts present" \
   "$(date +%s | head -c 4)" \
   "$(_read_state "${sid}" "last_metis_review_ts")"
+assert_eq "stress_test captures current plan revision" \
+  "7" "$(_read_state "${sid}" "dim_stress_test_revision")"
 rm -f "${sentinel_dir}/.ulw_active"
 
 # ----------------------------------------------------------------------
@@ -285,14 +299,14 @@ out="$(_run_stop_guard "${sid}" "OMC_METIS_ON_PLAN_GATE=on" "OMC_GATE_LEVEL=basi
 assert_contains "metis fires on basic gate level" "Metis-on-plan gate" "${out}"
 
 # ----------------------------------------------------------------------
-printf 'Test 11: last_metis_review_ts == plan_ts → block (treated as stale)\n'
-# Reviewer-flagged equality case: metis at the same epoch second as the
-# plan is either a same-second race or a metis run on a prior plan
-# whose ts happens to match. Either way, require a fresh metis run.
+printf 'Test 11: migrated timestamp equality is accepted by dimension fallback\n'
+# Without revision state, dimension freshness uses the migration contract
+# dim_stress_test_ts >= plan_ts. Equality cannot be reconstructed and remains
+# accepted for backward compatibility; new state uses Tests 4/5 instead.
 sid="t11-${RANDOM}"
 _setup_session "${sid}" "1" "1000" "1000" ""
 out="$(_run_stop_guard "${sid}" "OMC_METIS_ON_PLAN_GATE=on")"
-assert_contains "block when metis_ts == plan_ts" "Metis-on-plan gate" "${out}"
+assert_not_contains "migration fallback accepts equal dimension timestamp" "Metis-on-plan gate" "${out}"
 
 # ----------------------------------------------------------------------
 printf 'Test 12: full lifecycle — block → run metis → re-stop passes\n'

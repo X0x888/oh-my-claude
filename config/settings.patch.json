@@ -117,6 +117,15 @@
         ]
       },
       {
+        "matcher": "Bash|mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/skills/autowork/scripts/record-tool-start-revision.sh"
+          }
+        ]
+      },
+      {
         "matcher": "Agent",
         "hooks": [
           {

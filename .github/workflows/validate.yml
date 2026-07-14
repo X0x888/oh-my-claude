@@ -53,6 +53,9 @@ jobs:
       - name: Run end-to-end hook sequence tests
         run: bash tests/test-e2e-hook-sequence.sh
 
+      - name: Run adaptive Council coverage lifecycle tests
+        run: bash tests/test-council-coverage.sh
+
       - name: Run swiftui-pro skill tests (2026-05-26 Wave B pin)
         run: bash tests/test-swiftui-pro-skill.sh
 

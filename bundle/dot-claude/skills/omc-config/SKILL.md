@@ -65,7 +65,7 @@ Call `AskUserQuestion` once with both questions in the same tool invocation. The
 question: "Which profile should I apply? (To make no changes, pick Other and type 'cancel'.)"
 options:
   - label: "Zero Steering (Recommended)"
-    description: "Adaptive strict autonomous shipping: maximum automation, opus model, and high-risk work keeps blocking until proof is green."
+    description: "Maximum automation, Opus execution, inherited deliberation, and high-risk gates that block until proof is green."
   - label: "Balanced"
     description: "Standard gates + low-friction bias-defense, sonnet model, watchdog off. Good for daily use."
   - label: "Minimal"
@@ -179,7 +179,7 @@ options:
 
 For selected options, emit the corresponding `<flag>=on`. For unselected, do NOT emit `=off`.
 
-**Cluster 4 — Cost ceiling** (single-select)
+**Cluster 4 — Model cost tier** (single-select)
 
 ```
 question: "Which model tier?"

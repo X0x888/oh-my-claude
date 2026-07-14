@@ -39,12 +39,12 @@ The `Agent` tool (one fresh-context specialist) and — for heavy fan-out — Cl
 - **Catches:** main-thread drift, accumulated bias, anchored framing, pattern-match-without-understanding (a fresh specialist sees the specific case, not the template), and the urge to checkpoint into "a fresh session" (sub-dispatch IS fresh context, no session boundary required).
 - **Escalate when:** load-bearing call AND you suspect drift, OR the main thread has been on a single surface for many turns, OR the failure mode is pattern-shaped (template applied without seeing the case-specific difference). The agent-first gate enforces this for `/ulw` execution. **Single fresh read → one `Agent` dispatch; heavy fan-out that is already an *observable* shape — a `/council` Phase 8 wave-batch, a large audit, a migration across many files — → the Workflow tool**, an OPT-IN substrate gated on `workflow_substrate=on` (`/ulw` is standing authorization for the explicit opt-in the tool requires). It is the substrate, not the default per-prompt path: the architecture rejection's latency/cost and ULW-momentum reasons still hold (a `parallel()` of N agents is still N model calls), so small and ad-hoc work stays inline. Reach for the engine on the shapes the harness already names as heavy — never on a *feeling* that a 2-file change is "big" (that is Genuine Gap #1, pattern-match, reintroducing the graph-of-roles momentum tax the architecture rejection names).
 
-### 3. Council and lens passes — *multi-perspective audit*
+### 3. Adaptive council passes — *coverage-matched audit*
 
-`/council` dispatches multiple lenses (product, design, security, data, SRE, growth, visual-craft). Documented in `skills.md`. The lens panel itself stays on the `Agent` tool's one-message concurrency — its returns must land in context for inline dedup/rank/synthesis, which a backgrounded task id cannot provide. The `/council` Phase 8 wave *execution* (plan → impl → review, per wave) is the fire-and-resume shape that fits the Workflow tool's `pipeline()` when `workflow_substrate=on`; the engine carries the determinism, token budget, and resume the hand-sequenced path lacks.
+`/council` maps the task's coverage needs against the full specialist roster, records relevant include/skip reasons, and dispatches the smallest sufficient primary team (normally 1–4) concurrently. One specialist is enough for a narrow specialist question; after all primary returns are reconciled, a single optional gap-fill round may add 0–2 agents for a concrete uncovered question. The selected team stays on the `Agent` tool's one-message concurrency because its returns must land in context for inline dedup/rank/synthesis. Up to three load-bearing findings then receive an independent competence-matched check. `/council` Phase 8 wave *execution* (plan → impl → adaptive review → verify, per wave) is the fire-and-resume shape that fits the Workflow tool's `pipeline()` when `workflow_substrate=on`; the engine carries the determinism, token budget, and resume the hand-sequenced path lacks.
 
 - **Catches:** single-perspective blind spots that no individual specialist can see.
-- **Escalate when:** broad evaluation, "what's missing?" questions, project-strategic moves, or any time the model alone has been making coverage decisions.
+- **Escalate when:** broad evaluation, "what's missing?" questions, project-strategic moves, or any time the model alone has been making coverage decisions. Do not manufacture breadth for a focused feature, capability, surface, or subsystem; use one well-matched specialist when that is the complete coverage map.
 
 ### 4. Stop-guard — *mechanical refusal at named failure shapes*
 
@@ -69,17 +69,17 @@ Lives in `core.md` "The v1.40.0 no-defer contract." Under ULW execution with `no
 
 ### 7. Wave execution — *chunk big work without segmenting cross-session*
 
-Documented in `skills.md` under `/council` Phase 8. Group findings into 5-10-finding waves by surface area; execute each wave fully (plan → impl → quality-reviewer → excellence-reviewer → verify → commit) before the next.
+Documented in `skills.md` under `/council` Phase 8. Group findings into 5-10-finding waves by surface area; execute each wave fully (plan → impl → generic quality review → risk-relevant specialist review when applicable → verify → commit) before the next.
 
 - **Catches:** "too heavy for this session" rationalization, the cross-session-handoff anti-pattern named in `core.md` Workflow.
 - **Escalate when:** ≥10 findings need execution, or the work would otherwise produce "wave N done, wave N+1 next session" prose.
 
-### 8. Excellence + quality reviewer chain — *two-pass review*
+### 8. Adaptive post-edit review — *universal baseline, relevant depth*
 
-Auto-fires per `core.md` Workflow. `quality-reviewer` catches defects; `excellence-reviewer` catches completeness, polish, and unknown-unknowns with fresh eyes.
+Auto-fires per `core.md` Workflow. `quality-reviewer` catches defects on code changes and `editor-critic` covers prose changes. Surface and semantic risk then add only the dimensions that apply: design quality for UI, completeness for broad/cross-surface/open-mandate or multi-wave work, and traceability for sufficiently broad cross-surface work. Metis remains a plan-phase pressure test. Reviewer clocks are isolated and freshness uses each dimension's relevant edit or plan clock, so one specialist cannot satisfy or erase another review.
 
 - **Catches:** premature completion claims, the "I'm done" reflex before the work is actually done.
-- **Escalate when:** any non-trivial change. The chain runs automatically; the model's job is to *act on findings*, not to skim past them.
+- **Escalate when:** any non-trivial change. Generic review runs automatically; specialist depth follows the current objective's surfaces and risk rather than historical edit totals or a standing cast. The model's job is to *act on findings*, not to skim past them.
 - **A FINDING/BLOCK is an input, not an automatic verdict.** The default is still *act on it* — but ground acceptance in the cited evidence: re-read the source the finding names and confirm it reproduces before you act. The sanctioned exit when it does not hold is the reject path (`record-finding-list.sh status <id> rejected <sha> 'not reproducible'|'false positive'`), which passes only on evidence you actually checked — NOT a license to discount findings (that inverts into the anti-finding bypass v1.42.x F-010 closed). The symmetric discipline for your *own* PASS is Popper #6 in `intellectual-craft.md`. **Carve-out: this governs reviewer/critic/sub-agent verdicts, NOT the stop-guard or any mechanical gate block** — those stay under Mechanism 4 (*do not reason around the gate*). The gate emits the literal token `BLOCK`; treating a `BLOCK MODE` gate reason as a "verdict to challenge" and re-reading code to declare its premise un-reproduced is the exact rationalization the v1.42.x bypass surfaces close, not this discipline.
 
 ### 9. Auto-memory and compaction sweep — *context preservation*

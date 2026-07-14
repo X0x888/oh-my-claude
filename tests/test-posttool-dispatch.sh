@@ -22,6 +22,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DISPATCH="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/posttool-dispatch.sh"
 PRETOOL="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/pretool-intent-guard.sh"
+VERIFY_START="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/record-tool-start-revision.sh"
 MARK_EDIT="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/mark-edit.sh"
 COMMON="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh"
 PATCH_JSON="${REPO_ROOT}/config/settings.patch.json"
@@ -88,6 +89,7 @@ run_dispatch() {
 run_pretool() {
   local payload="$1"
   printf '%s' "${payload}" | bash "${PRETOOL}" 2>/dev/null || true
+  printf '%s' "${payload}" | bash "${VERIFY_START}" 2>/dev/null || true
 }
 
 run_mark_edit() {
@@ -124,7 +126,9 @@ fail_payload() {
 # ----------------------------------------------------------------------
 printf 'T1: Bash call runs timing AND verification recorder in one process\n'
 setup_session "d1"
-out_t1="$(run_dispatch "$(bash_payload d1 'bash tests/test-sample.sh' '12 passed, 0 failed')")"
+payload_t1="$(bash_payload d1 'bash tests/test-sample.sh' '12 passed, 0 failed')"
+run_pretool "${payload_t1}" >/dev/null
+out_t1="$(run_dispatch "${payload_t1}")"
 assert_eq "T1: recorders stay silent on stdout" "" "${out_t1}"
 timing_file="${TEST_HOME}/.claude/quality-pack/state/d1/timing.jsonl"
 rc=0; [[ -f "${timing_file}" ]] && grep -q '"kind":"end"' "${timing_file}" || rc=1
@@ -211,6 +215,8 @@ assert_eq "T6: failed Bash calls are wired to the edit-clock writer" "1" \
   "$(jq -r '[.hooks.PostToolUseFailure[] | select(.matcher == "Bash") | .hooks[] | select(.command | contains("mark-edit.sh"))] | length' "${PATCH_JSON}")"
 assert_eq "T6: complete mutation matcher reaches the pretool guard" "1" \
   "$(jq -r '[.hooks.PreToolUse[] | select(.matcher == "Bash|Edit|Write|MultiEdit|NotebookEdit") | .hooks[] | select(.command | contains("pretool-intent-guard.sh"))] | length' "${PATCH_JSON}")"
+assert_eq "T6: Bash/MCP dispatch revisions have a dedicated PreToolUse recorder" "1" \
+  "$(jq -r '[.hooks.PreToolUse[] | select(.matcher == "Bash|mcp__.*") | .hooks[] | select(.command | contains("record-tool-start-revision.sh"))] | length' "${PATCH_JSON}")"
 assert_eq "T6: complete direct-edit matcher reaches the clock writer" "1" \
   "$(jq -r '[.hooks.PostToolUse[] | select(.matcher == "Edit|Write|MultiEdit|NotebookEdit") | .hooks[] | select(.command | contains("mark-edit.sh"))] | length' "${PATCH_JSON}")"
 assert_eq "T6: successful Bash dispatcher remains universal" "1" \
