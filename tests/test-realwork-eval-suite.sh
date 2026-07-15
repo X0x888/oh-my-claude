@@ -282,7 +282,7 @@ cat > "${tmp}/mixed-imperfect.json" <<'JSON'
   "outcomes": {
     "tests_passed": true,
     "targeted_verification": true,
-    "regression_test_added": true,
+    "regression_test_added": false,
     "review_clean": true,
     "research_report_ready": true,
     "analysis_specialist_coverage": true,
@@ -295,6 +295,8 @@ JSON
 score_json="$(bash "${RUNNER}" score "${tmp}/mixed-imperfect.json")"
 assert_eq "mixed imperfect pass false" "false" "$(jq -r '.pass' <<<"${score_json}")"
 assert_contains "mixed missing writer proof" "writer_deliverable_ready" "${score_json}"
+assert_eq "mixed rollout does not require an unrequested new test" "false" \
+  "$(jq -r '.missing_outcomes | index("regression_test_added") != null' <<<"${score_json}")"
 
 printf 'Test 13: mixed code-plus-operations scenario requires delivered operations artifact\n'
 cat > "${tmp}/mixed-ops-imperfect.json" <<'JSON'

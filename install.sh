@@ -9,7 +9,7 @@
 # Usage:
 #   bash install.sh                    # standard install
 #   bash install.sh --bypass-permissions  # also enable bypass-permissions mode
-#   bash install.sh --model-tier=economy  # all agents use Sonnet (cheaper)
+#   bash install.sh --model-tier=economy  # inherit deliberators; Sonnet specialists; live risk escalation
 #   bash install.sh --no-ghostty         # skip Ghostty theme/config (v1.36.0)
 #   bash install.sh --with-ghostty       # force-install Ghostty even if not detected (v1.36.0)
 #   bash install.sh --keep-backups=N     # prune oh-my-claude-* backups, keep N newest (default 10; v1.36.0)
@@ -31,7 +31,9 @@ BUNDLE_GHOSTTY="${SCRIPT_DIR}/config/ghostty"
 GHOSTTY_HOME="${TARGET_HOME}/.config/ghostty"
 SETTINGS_PATCH="${SCRIPT_DIR}/config/settings.patch.json"
 STAMP="$(date +%Y%m%d-%H%M%S)"
-BACKUP_DIR="${CLAUDE_HOME}/backups/oh-my-claude-${STAMP}"
+BACKUP_DIR_BASE="${CLAUDE_HOME}/backups/oh-my-claude-${STAMP}"
+BACKUP_DIR="${BACKUP_DIR_BASE}"
+BACKUP_DIR_ALLOCATED=0
 
 # ---------------------------------------------------------------------------
 # Version (read from VERSION file, fallback to CHANGELOG.md)
@@ -353,6 +355,29 @@ prune_old_backups() {
 
 # ---------------------------------------------------------------------------
 # Settings merge — Python implementation
+# ---------------------------------------------------------------------------
+
+# Allocate one invocation-owned backup directory. The timestamp is deliberately
+# human-readable but has only one-second resolution; rapid reinstalls must not
+# reuse an earlier directory because rsync's size/mtime quick check can leave a
+# stale same-length backup in place. The install lock serializes cooperating
+# installers, and plain mkdir is the final atomic collision check.
+allocate_backup_dir() {
+  local candidate="${BACKUP_DIR_BASE}" suffix="" attempt=0
+  mkdir -p "${CLAUDE_HOME}/backups"
+  while [[ -e "${candidate}" || -L "${candidate}" ]]; do
+    attempt=$((attempt + 1))
+    (( attempt <= 9999 )) \
+      || { printf 'Unable to allocate a unique install backup directory.\n' >&2; return 1; }
+    suffix="$(printf '%04d' "${attempt}")"
+    candidate="${BACKUP_DIR_BASE}-${suffix}"
+  done
+  mkdir "${candidate}"
+  BACKUP_DIR="${candidate}"
+  BACKUP_DIR_ALLOCATED=1
+  chmod 700 "${BACKUP_DIR}" 2>/dev/null || true
+}
+
 # ---------------------------------------------------------------------------
 
 merge_settings_python() {
@@ -1112,7 +1137,7 @@ backup_existing_targets() {
     target_path="${CLAUDE_HOME}/${rel_path}"
     backup_path="${BACKUP_DIR}/${rel_path}"
 
-    if [[ -f "${target_path}" ]]; then
+    if [[ -f "${target_path}" || -L "${target_path}" ]]; then
       mkdir -p "$(dirname "${backup_path}")"
       rsync -a "${target_path}" "${backup_path}"
     fi
@@ -1122,6 +1147,18 @@ backup_existing_targets() {
   if [[ -f "${CLAUDE_HOME}/settings.json" ]]; then
     mkdir -p "${BACKUP_DIR}"
     rsync -a "${CLAUDE_HOME}/settings.json" "${BACKUP_DIR}/settings.json"
+  fi
+
+  # Back up the live config separately too. It is not a bundle file, but the
+  # model transaction writes model_tier plus install provenance into it. The
+  # emergency recovery text has always named this backup path; keeping the
+  # bytes here makes that recovery command truthful and lets the automatic
+  # model/config rollback restore an exact pre-install configuration.
+  if [[ -f "${CLAUDE_HOME}/oh-my-claude.conf" \
+      || -L "${CLAUDE_HOME}/oh-my-claude.conf" ]]; then
+    mkdir -p "${BACKUP_DIR}"
+    rsync -a "${CLAUDE_HOME}/oh-my-claude.conf" \
+      "${BACKUP_DIR}/oh-my-claude.conf"
   fi
 
   # Back up any Ghostty files that will be touched. v1.36.0: respect
@@ -1369,6 +1406,355 @@ set_conf() {
 # Apply model tier to installed agent definitions
 # ---------------------------------------------------------------------------
 
+# Canonical shipped declaration classes. Keep these embedded rosters in
+# lockstep with bundle frontmatter, common.sh:omc_agent_declared_model, and the
+# installed switcher. Exact reconstruction is important even for Economy:
+# runtime routing represents an inherited deliberator by omitting the Agent
+# model parameter, so its installed definition must still say `inherit`.
+SHIPPED_INHERIT_AGENTS='abstraction-critic chief-of-staff divergent-framer draft-writer editor-critic excellence-reviewer metis oracle prometheus quality-planner quality-reviewer release-reviewer rigor-reviewer writing-architect'
+SHIPPED_FIXED_AGENTS='atlas backend-api-developer briefing-analyst data-lens design-lens design-reviewer devops-infrastructure-engineer frontend-developer fullstack-feature-builder growth-lens ios-core-engineer ios-deployment-specialist ios-ecosystem-integrator ios-ui-developer librarian literature-scout product-lens quality-researcher research-data-analyst security-lens sre-lens test-automation-engineer visual-craft-lens'
+SHIPPED_OPTIONAL_IOS_AGENTS='ios-core-engineer ios-deployment-specialist ios-ecosystem-integrator ios-ui-developer'
+
+installed_shipped_agent_is_known() {
+  local wanted="$1" agent
+  for agent in ${SHIPPED_INHERIT_AGENTS} ${SHIPPED_FIXED_AGENTS}; do
+    [[ "${wanted}" == "${agent}" ]] && return 0
+  done
+  return 1
+}
+
+installed_agent_has_exact_valid_model() {
+  local agent_file="${CLAUDE_HOME}/agents/$1.md" model_count model_value
+  [[ -f "${agent_file}" ]] || return 1
+  model_count="$(grep -cE '^model: ' "${agent_file}" 2>/dev/null || true)"
+  model_value="$(sed -n 's/^model: //p' "${agent_file}" | head -1)"
+  [[ "${model_count}" == "1" \
+      && "${model_value}" =~ ^(inherit|opus|sonnet|haiku)$ ]]
+}
+
+installed_agent_has_exact_inherit_model() {
+  local agent_file="${CLAUDE_HOME}/agents/$1.md"
+  [[ -f "${agent_file}" ]] || return 1
+  [[ "$(grep -cE '^model: ' "${agent_file}" 2>/dev/null || true)" == "1" \
+      && "$(grep -cE '^model: inherit$' "${agent_file}" 2>/dev/null || true)" == "1" ]]
+}
+
+# Parse the two roster-owned frontmatter fields without spawning awk/grep/sed
+# for every file. Install tests exercise this proof many times, so a single
+# Bash pass per definition keeps fail-fast integrity from becoming a steady
+# reinstall tax. Results are returned through the AGENT_FRONTMATTER_* globals.
+parse_agent_frontmatter() {
+  local agent_file="$1"
+  local line line_number=0 closed=0
+  AGENT_FRONTMATTER_NAME_COUNT=0
+  AGENT_FRONTMATTER_NAME_VALUE=""
+  AGENT_FRONTMATTER_MODEL_COUNT=0
+  AGENT_FRONTMATTER_MODEL_VALUE=""
+
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    line_number=$((line_number + 1))
+    if [[ "${line_number}" -eq 1 ]]; then
+      [[ "${line}" == "---" ]] || return 1
+      continue
+    fi
+    if [[ "${line}" == "---" ]]; then
+      closed=1
+      break
+    fi
+    case "${line}" in
+      'name: '*)
+        AGENT_FRONTMATTER_NAME_COUNT=$((AGENT_FRONTMATTER_NAME_COUNT + 1))
+        [[ "${AGENT_FRONTMATTER_NAME_COUNT}" -eq 1 ]] \
+          && AGENT_FRONTMATTER_NAME_VALUE="${line#name: }"
+        ;;
+      'model: '*)
+        AGENT_FRONTMATTER_MODEL_COUNT=$((AGENT_FRONTMATTER_MODEL_COUNT + 1))
+        [[ "${AGENT_FRONTMATTER_MODEL_COUNT}" -eq 1 ]] \
+          && AGENT_FRONTMATTER_MODEL_VALUE="${line#model: }"
+        ;;
+    esac
+  done < "${agent_file}"
+  [[ "${closed}" -eq 1 ]]
+}
+
+# Validate the immutable source bundle before acquiring the install lock or
+# creating anything below CLAUDE_HOME. A post-copy check cannot distinguish a
+# missing source file from a stale installed orphan when rsync runs without
+# --delete, and it reports malformed source only after unrelated installed
+# files have already been overwritten. The source distribution must always
+# contain the complete 37-agent roster, including iOS definitions when the
+# caller selected --no-ios; that flag changes the destination shape, not what
+# constitutes a coherent release artifact.
+preflight_source_shipped_model_roster() {
+  local agents_dir="${BUNDLE_CLAUDE}/agents"
+  local agent agent_file expected_model
+  local name_count name_value model_count model_value source_file source_agent
+  local failures=0
+
+  if [[ ! -d "${agents_dir}" ]]; then
+    printf '  [error] Missing bundled agent directory: %s\n' "${agents_dir}" >&2
+    return 1
+  fi
+
+  for agent in ${SHIPPED_INHERIT_AGENTS} ${SHIPPED_FIXED_AGENTS}; do
+    agent_file="${agents_dir}/${agent}.md"
+    if [[ ! -f "${agent_file}" || -L "${agent_file}" ]]; then
+      printf '  [error] Missing bundled shipped agent definition: %s\n' \
+        "${agent_file}" >&2
+      failures=$((failures + 1))
+      continue
+    fi
+
+    if ! parse_agent_frontmatter "${agent_file}"; then
+      printf '  [error] Malformed bundled agent frontmatter fences: %s\n' \
+        "${agent_file}" >&2
+      failures=$((failures + 1))
+      continue
+    fi
+
+    name_count="${AGENT_FRONTMATTER_NAME_COUNT}"
+    name_value="${AGENT_FRONTMATTER_NAME_VALUE}"
+    model_count="${AGENT_FRONTMATTER_MODEL_COUNT}"
+    model_value="${AGENT_FRONTMATTER_MODEL_VALUE}"
+    expected_model="sonnet"
+    case " ${SHIPPED_INHERIT_AGENTS} " in
+      *" ${agent} "*) expected_model="inherit" ;;
+    esac
+
+    if [[ "${name_count}" != "1" || "${name_value}" != "${agent}" ]]; then
+      printf '  [error] Malformed bundled agent name frontmatter: %s (expected exactly one name: %s line).\n' \
+        "${agent_file}" "${agent}" >&2
+      failures=$((failures + 1))
+    fi
+    if [[ "${model_count}" != "1" || "${model_value}" != "${expected_model}" ]]; then
+      printf '  [error] Malformed bundled agent model frontmatter: %s (expected exactly one model: %s line).\n' \
+        "${agent_file}" "${expected_model}" >&2
+      failures=$((failures + 1))
+    fi
+  done
+
+  # Fail closed on a new bundled definition whose filename was not added to
+  # the declaration rosters. Otherwise model-tier reconstruction would copy
+  # the file but silently leave it outside the quality/economy policy.
+  while IFS= read -r source_file; do
+    [[ -n "${source_file}" ]] || continue
+    source_agent="${source_file#"${agents_dir}"/}"
+    source_agent="${source_agent%.md}"
+    if [[ "${source_agent}" == */* ]] \
+        || ! installed_shipped_agent_is_known "${source_agent}"; then
+      printf '  [error] Unexpected bundled agent definition outside the shipped roster: %s\n' \
+        "${source_file}" >&2
+      failures=$((failures + 1))
+    fi
+  done < <(find "${agents_dir}" \( -type f -o -type l \) -name '*.md' -print 2>/dev/null | LC_ALL=C sort)
+
+  if [[ "${failures}" -ne 0 ]]; then
+    printf '  [error] Source bundle agent preflight failed; installed files were not changed.\n' >&2
+    return 1
+  fi
+}
+
+preflight_installed_shipped_model_roster() {
+  local agent optional agent_file name_count name_value model_count model_value
+  local ios_present=0 expected_ios=4 failures=0 is_optional
+  [[ "${EXCLUDE_IOS}" == "true" ]] && expected_ios=0
+  for optional in ${SHIPPED_OPTIONAL_IOS_AGENTS}; do
+    [[ -f "${CLAUDE_HOME}/agents/${optional}.md" ]] \
+      && ios_present=$((ios_present + 1))
+  done
+  if [[ "${ios_present}" -ne "${expected_ios}" ]]; then
+    printf '  [error] Installed iOS agent pack does not match this install mode (%d present, expected %d); refusing model rewrites.\n' \
+      "${ios_present}" "${expected_ios}" >&2
+    failures=$((failures + 1))
+  fi
+
+  for agent in ${SHIPPED_INHERIT_AGENTS} ${SHIPPED_FIXED_AGENTS}; do
+    is_optional=0
+    for optional in ${SHIPPED_OPTIONAL_IOS_AGENTS}; do
+      [[ "${agent}" == "${optional}" ]] && is_optional=1
+    done
+    [[ "${EXCLUDE_IOS}" == "true" && "${is_optional}" -eq 1 ]] && continue
+    agent_file="${CLAUDE_HOME}/agents/${agent}.md"
+    if [[ ! -f "${agent_file}" ]]; then
+      printf '  [error] Missing shipped agent definition: %s\n' \
+        "${agent_file}" >&2
+      failures=$((failures + 1))
+      continue
+    fi
+    if ! parse_agent_frontmatter "${agent_file}"; then
+      printf '  [error] Malformed installed shipped agent frontmatter fences: %s\n' \
+        "${agent_file}" >&2
+      failures=$((failures + 1))
+      continue
+    fi
+    name_count="${AGENT_FRONTMATTER_NAME_COUNT}"
+    name_value="${AGENT_FRONTMATTER_NAME_VALUE}"
+    model_count="${AGENT_FRONTMATTER_MODEL_COUNT}"
+    model_value="${AGENT_FRONTMATTER_MODEL_VALUE}"
+    if [[ "${name_count}" != "1" || "${name_value}" != "${agent}" ]]; then
+      printf '  [error] Malformed installed shipped agent name frontmatter: %s\n' \
+        "${agent_file}" >&2
+      failures=$((failures + 1))
+    fi
+    if [[ "${model_count}" != "1" ]] \
+        || [[ ! "${model_value}" =~ ^(inherit|opus|sonnet|haiku)$ ]]; then
+      printf '  [error] Malformed shipped agent model frontmatter: %s (expected exactly one valid model: line).\n' \
+        "${agent_file}" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  [[ "${failures}" -eq 0 ]]
+}
+
+# Capture which transaction-owned paths existed before the backup/copy. A
+# same-second backup-directory collision must not make a stale backup look like
+# a path that existed at the start of this invocation, so rollback authority
+# comes from this in-memory snapshot rather than backup-file existence alone.
+SHIPPED_MODEL_ROSTER_PRESENT_BEFORE=""
+MODEL_CONFIG_CONF_PRESENT_BEFORE=0
+MODEL_CONFIG_ROLLBACK_ARMED=0
+
+snapshot_prior_model_configuration() {
+  local agent agent_file
+  SHIPPED_MODEL_ROSTER_PRESENT_BEFORE=""
+  for agent in ${SHIPPED_INHERIT_AGENTS} ${SHIPPED_FIXED_AGENTS}; do
+    agent_file="${CLAUDE_HOME}/agents/${agent}.md"
+    if [[ -e "${agent_file}" || -L "${agent_file}" ]]; then
+      if [[ ! -f "${agent_file}" && ! -L "${agent_file}" ]]; then
+        printf '  [error] Unsupported pre-install shipped-agent path type: %s\n' \
+          "${agent_file}" >&2
+        return 1
+      fi
+      SHIPPED_MODEL_ROSTER_PRESENT_BEFORE="${SHIPPED_MODEL_ROSTER_PRESENT_BEFORE} ${agent}"
+    fi
+  done
+  if [[ -e "${CLAUDE_HOME}/oh-my-claude.conf" \
+      || -L "${CLAUDE_HOME}/oh-my-claude.conf" ]]; then
+    if [[ ! -f "${CLAUDE_HOME}/oh-my-claude.conf" \
+        && ! -L "${CLAUDE_HOME}/oh-my-claude.conf" ]]; then
+      printf '  [error] Unsupported pre-install config path type: %s\n' \
+        "${CLAUDE_HOME}/oh-my-claude.conf" >&2
+      return 1
+    fi
+    MODEL_CONFIG_CONF_PRESENT_BEFORE=1
+  else
+    MODEL_CONFIG_CONF_PRESENT_BEFORE=0
+  fi
+}
+
+# Roll back the shipped agent roster to its exact pre-install shape. Custom
+# agent files remain untouched; shipped files are restored from this run's
+# backup or removed when the in-memory pre-install snapshot says they were
+# absent. This is used by the install-wide model/config transaction, not only
+# by the defensive post-copy proof.
+rollback_installed_shipped_model_roster() {
+  local agent agent_file backup_file rollback_failures=0
+  for agent in ${SHIPPED_INHERIT_AGENTS} ${SHIPPED_FIXED_AGENTS}; do
+    agent_file="${CLAUDE_HOME}/agents/${agent}.md"
+    backup_file="${BACKUP_DIR}/agents/${agent}.md"
+    rm -f "${agent_file}.tmp" 2>/dev/null || true
+    if [[ " ${SHIPPED_MODEL_ROSTER_PRESENT_BEFORE} " == *" ${agent} "* ]]; then
+      if [[ ! -e "${backup_file}" && ! -L "${backup_file}" ]]; then
+        printf '  [error] Missing pre-install backup for shipped agent: %s\n' \
+          "${backup_file}" >&2
+        rollback_failures=$((rollback_failures + 1))
+      elif ! restore_backup_path_exact "${backup_file}" "${agent_file}"; then
+        rollback_failures=$((rollback_failures + 1))
+      fi
+    elif ! rm -f "${agent_file}"; then
+      rollback_failures=$((rollback_failures + 1))
+    fi
+  done
+  [[ "${rollback_failures}" -eq 0 ]]
+}
+
+# Restore through a fresh path and rename it into place. A direct `rsync -a`
+# can quick-check two files as identical when a same-second mutation preserves
+# byte length (for example `model_tier=economy` -> `model_tier=quality`) even
+# though their contents differ. Copying to a nonexistent path forces a byte
+# transfer; the rename then makes the replacement atomic for readers. This
+# also preserves a backed-up symlink as a symlink rather than following it.
+restore_backup_path_exact() {
+  local backup_path="$1" target_path="$2"
+  local restore_path="${target_path}.rollback.$$"
+  local backup_is_symlink=0 backup_link=""
+  if [[ -L "${backup_path}" ]]; then
+    backup_is_symlink=1
+    backup_link="$(readlink "${backup_path}")" || return 1
+  fi
+  rm -f "${restore_path}" 2>/dev/null || return 1
+  if ! rsync -a "${backup_path}" "${restore_path}"; then
+    rm -f "${restore_path}" 2>/dev/null || true
+    return 1
+  fi
+  # BSD/macOS mv follows a destination symlink-to-directory. Unlink any
+  # destination symlink first so replacement applies to the path itself, not
+  # its referent. A real directory remains an explicit rollback failure.
+  if [[ -L "${target_path}" ]] && ! rm -f "${target_path}"; then
+    rm -f "${restore_path}" 2>/dev/null || true
+    return 1
+  fi
+  if [[ -d "${target_path}" ]]; then
+    rm -f "${restore_path}" 2>/dev/null || true
+    return 1
+  fi
+  if ! mv -f "${restore_path}" "${target_path}"; then
+    rm -f "${restore_path}" 2>/dev/null || true
+    return 1
+  fi
+  # Defensive postcondition for a non-cooperating filesystem race between the
+  # directory check and rename. Remove only our nested temp file if `mv`
+  # followed a newly-created directory; never remove the unexpected directory.
+  if [[ -d "${target_path}" && ! -L "${target_path}" ]]; then
+    rm -f "${target_path}/${restore_path##*/}" 2>/dev/null || true
+    return 1
+  fi
+  if [[ "${backup_is_symlink}" -eq 1 ]]; then
+    [[ -L "${target_path}" \
+        && "$(readlink "${target_path}" 2>/dev/null || true)" == "${backup_link}" ]] \
+      || return 1
+  else
+    [[ -f "${target_path}" && ! -L "${target_path}" ]] || return 1
+  fi
+}
+
+rollback_model_configuration_transaction() {
+  local rollback_failures=0
+  if ! rollback_installed_shipped_model_roster; then
+    rollback_failures=$((rollback_failures + 1))
+  fi
+
+  rm -f "${CLAUDE_HOME}/oh-my-claude.conf.tmp" 2>/dev/null || true
+  if [[ "${MODEL_CONFIG_CONF_PRESENT_BEFORE}" -eq 1 ]]; then
+    if [[ ! -e "${BACKUP_DIR}/oh-my-claude.conf" \
+        && ! -L "${BACKUP_DIR}/oh-my-claude.conf" ]]; then
+      printf '  [error] Missing pre-install config backup: %s\n' \
+        "${BACKUP_DIR}/oh-my-claude.conf" >&2
+      rollback_failures=$((rollback_failures + 1))
+    elif ! restore_backup_path_exact "${BACKUP_DIR}/oh-my-claude.conf" \
+        "${CLAUDE_HOME}/oh-my-claude.conf"; then
+      rollback_failures=$((rollback_failures + 1))
+    fi
+  elif ! rm -f "${CLAUDE_HOME}/oh-my-claude.conf"; then
+    rollback_failures=$((rollback_failures + 1))
+  fi
+
+  [[ "${rollback_failures}" -eq 0 ]]
+}
+
+set_installed_shipped_agent_model() {
+  local agent="$1" model="$2" agent_file tmp
+  agent_file="${CLAUDE_HOME}/agents/${agent}.md"
+  [[ -f "${agent_file}" ]] || return 0
+  [[ "$(grep -cE '^model: ' "${agent_file}" 2>/dev/null || true)" == "1" ]] \
+    || return 1
+  grep -qE "^model: ${model}$" "${agent_file}" && return 0
+  tmp="${agent_file}.tmp"
+  sed "s/^model: .*$/model: ${model}/" "${agent_file}" > "${tmp}"
+  mv "${tmp}" "${agent_file}"
+  [[ "$(grep -cE "^model: ${model}$" "${agent_file}" 2>/dev/null || true)" == "1" ]]
+}
+
 apply_model_tier() {
   local conf_path="${CLAUDE_HOME}/oh-my-claude.conf"
   local tier="${MODEL_TIER}"
@@ -1376,11 +1762,10 @@ apply_model_tier() {
   # If no flag was passed, read from config file. Use `tail -1` (last-
   # write-wins) to match common.sh's runtime parser and omc-config.sh's
   # writer — both append on update, so the most-recent value is the
-  # source of truth. (Pre-existing `head -1` was inconsistent with the
-  # rest of the codebase; fixed alongside the same-pattern fix at the
-  # output_style conf-read site introduced in v1.24.0 wave 3.)
+  # source of truth. Pre-existing `head -1` behavior was inconsistent with
+  # the rest of the codebase and could select a stale hand-edited duplicate.
   if [[ -z "${tier}" && -f "${conf_path}" ]]; then
-    tier="$(grep -E '^model_tier=' "${conf_path}" 2>/dev/null | tail -1 | cut -d= -f2)" || true
+    tier="$(grep -E '^model_tier=' "${conf_path}" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '\r')" || true
   fi
 
   # If still empty, the user never opted in — use bundle defaults silently.
@@ -1388,44 +1773,54 @@ apply_model_tier() {
     return
   fi
 
+  # The CLI path is validated before installation starts, but a hand-edited
+  # or older saved config can still contain an unknown value. Never let an
+  # unknown value fall through to the economy rewrite below: that would turn
+  # a typo into a silent quality demotion. Repair the saved value to the safe
+  # balanced default so runtime routing, future installs, and status surfaces
+  # all agree on the effective tier.
+  case "${tier}" in
+    quality|balanced|economy)
+      ;;
+    *)
+      printf '  [info] Invalid saved model tier "%s"; using balanced and repairing oh-my-claude.conf.\n' "${tier}" >&2
+      tier="balanced"
+      ;;
+  esac
+
   # Persist the tier for future installs.
   set_conf "model_tier" "${tier}"
 
-  # balanced = bundle defaults, nothing to rewrite.
-  if [[ "${tier}" == "balanced" ]]; then
-    printf '  Model tier:    balanced (default — planning/review inherit the session model, sonnet for execution)\n'
-    return
-  fi
-
-  # quality lifts sonnet agents to opus; `inherit` deliberators are left
-  # alone (they already ride the session's main model, never below opus-
-  # grade under this tier). economy must demote BOTH opus and inherit to
-  # sonnet — an inherit line left behind would ride an expensive session
-  # model on a tier whose whole point is cost.
-  local from_re to
+  # Reconstruct every shipped filename from its declaration class instead of
+  # performing a one-way regex rewrite. This clears stale pins and old
+  # flattened Economy installs on every reinstall while never touching a
+  # custom/plugin definition. Economy and Balanced intentionally share the
+  # same installed composition; their cost/quality difference is live routing.
+  local inherit_model="inherit" fixed_model="sonnet" agent before after
   if [[ "${tier}" == "quality" ]]; then
-    from_re="sonnet"
-    to="opus"
-  else
-    from_re="(opus|inherit)"
-    to="sonnet"
+    fixed_model="opus"
   fi
 
   local changed=0
-  for agent_file in "${CLAUDE_HOME}/agents/"*.md; do
-    [[ -f "${agent_file}" ]] || continue
-    if grep -qE "^model: ${from_re}$" "${agent_file}"; then
-      local tmp="${agent_file}.tmp"
-      sed -E "s/^model: ${from_re}$/model: ${to}/" "${agent_file}" > "${tmp}"
-      mv "${tmp}" "${agent_file}"
-      changed=$((changed + 1))
-    fi
+  for agent in ${SHIPPED_INHERIT_AGENTS}; do
+    before="$(grep -E '^model: ' "${CLAUDE_HOME}/agents/${agent}.md" 2>/dev/null | head -1 | sed 's/^model: //' || true)"
+    set_installed_shipped_agent_model "${agent}" "${inherit_model}"
+    after="$(grep -E '^model: ' "${CLAUDE_HOME}/agents/${agent}.md" 2>/dev/null | head -1 | sed 's/^model: //' || true)"
+    [[ "${after}" != "${before}" ]] && changed=$((changed + 1))
+  done
+  for agent in ${SHIPPED_FIXED_AGENTS}; do
+    before="$(grep -E '^model: ' "${CLAUDE_HOME}/agents/${agent}.md" 2>/dev/null | head -1 | sed 's/^model: //' || true)"
+    set_installed_shipped_agent_model "${agent}" "${fixed_model}"
+    after="$(grep -E '^model: ' "${CLAUDE_HOME}/agents/${agent}.md" 2>/dev/null | head -1 | sed 's/^model: //' || true)"
+    [[ "${after}" != "${before}" ]] && changed=$((changed + 1))
   done
 
   if [[ "${tier}" == "quality" ]]; then
     printf '  Model tier:    quality (execution agents → opus; inherit deliberators unchanged, %d changed)\n' "${changed}"
+  elif [[ "${tier}" == "balanced" ]]; then
+    printf '  Model tier:    balanced (default — inherit deliberators, sonnet specialists, %d repaired)\n' "${changed}"
   else
-    printf '  Model tier:    economy (all agents → sonnet, %d changed)\n' "${changed}"
+    printf '  Model tier:    economy (inherit deliberators, sonnet specialists; adaptive live escalation, %d changed)\n' "${changed}"
   fi
 }
 
@@ -1448,8 +1843,44 @@ apply_model_tier() {
 apply_model_overrides() {
   local agents_dir="$1"
   local conf_path="$2"
-  local raw="${OMC_MODEL_OVERRIDES:-}"
+  local env_raw="${OMC_MODEL_OVERRIDES:-}" raw="${OMC_MODEL_OVERRIDES:-}"
 
+  # Environment precedence is earned by at least one resolver-valid pin. A
+  # wholly malformed environment value must not shadow valid saved pins. A
+  # valid explicit-model namespaced pin still establishes environment
+  # precedence, but remains runtime-only because there is no safe one-file
+  # materialization for plugin identities in ~/.claude/agents. Namespaced
+  # inherit is not valid authority: omission cannot change a plugin definition.
+  if [[ -n "${env_raw}" ]]; then
+    local env_pair env_agent env_model env_has_valid=0
+    local -a env_pairs=()
+    IFS=',' read -ra env_pairs <<< "${env_raw}"
+    for env_pair in "${env_pairs[@]}"; do
+      env_pair="${env_pair//[[:space:]]/}"
+      [[ "${env_pair}" == *:* ]] || continue
+      env_agent="${env_pair%:*}"
+      env_model="${env_pair##*:}"
+      [[ "${env_agent}" =~ ^[A-Za-z0-9_.-]+(:[A-Za-z0-9_.-]+)?$ ]] \
+        || continue
+      case "${env_model}" in
+        opus|sonnet|haiku) env_has_valid=1; break ;;
+        inherit)
+          if [[ "${env_agent}" != *:* ]] \
+              && { { installed_shipped_agent_is_known "${env_agent}" \
+                    && installed_agent_has_exact_valid_model "${env_agent}"; } \
+                || { ! installed_shipped_agent_is_known "${env_agent}" \
+                    && installed_agent_has_exact_inherit_model "${env_agent}"; }; }; then
+            env_has_valid=1
+            break
+          fi
+          ;;
+      esac
+    done
+    if [[ "${env_has_valid}" -eq 0 ]]; then
+      printf '  model_overrides: OMC_MODEL_OVERRIDES has no valid pins; falling back to saved overrides\n' >&2
+      raw=""
+    fi
+  fi
   if [[ -z "${raw}" && -f "${conf_path}" ]]; then
     raw="$(grep -E '^model_overrides=' "${conf_path}" 2>/dev/null | tail -1 | cut -d= -f2-)" || true
   fi
@@ -1459,12 +1890,13 @@ apply_model_overrides() {
   IFS=',' read -ra pairs <<< "${raw}"
   [[ "${#pairs[@]}" -eq 0 ]] && return 0
 
-  local applied=0 skipped=0 pair agent model agent_file tmp
+  local applied=0 runtime_only=0 definition_backed=0 skipped=0
+  local pair agent model agent_file model_count model_value
   for pair in "${pairs[@]}"; do
     pair="${pair//[[:space:]]/}"
     [[ -z "${pair}" ]] && continue
-    agent="${pair%%:*}"
-    model="${pair#*:}"   # after the first colon; the opus|sonnet|haiku|inherit whitelist below is the real gate
+    agent="${pair%:*}"
+    model="${pair##*:}"
     if [[ -z "${agent}" || -z "${model}" || "${agent}" == "${pair}" ]]; then
       printf '  model_overrides: skipping %q — expected agent:model\n' "${pair}" >&2
       skipped=$((skipped + 1)); continue
@@ -1475,21 +1907,62 @@ apply_model_overrides() {
         printf '  model_overrides: skipping %s — invalid model %q (use opus|sonnet|haiku|inherit)\n' "${agent}" "${model}" >&2
         skipped=$((skipped + 1)); continue ;;
     esac
+    if [[ ! "${agent}" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+      if [[ "${agent}" =~ ^[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+$ ]]; then
+        if [[ "${model}" == "inherit" ]]; then
+          printf '  model_overrides: skipping %s — namespaced inherit is unenforceable because Agent model omission uses the plugin definition\n' "${agent}" >&2
+          skipped=$((skipped + 1))
+        else
+          printf '  model_overrides: runtime-only %s — namespaced pin is enforced at dispatch; plugin definitions are never rewritten\n' "${agent}" >&2
+          runtime_only=$((runtime_only + 1))
+        fi
+      else
+        printf '  model_overrides: skipping %q — invalid bare agent id\n' "${agent}" >&2
+        skipped=$((skipped + 1))
+      fi
+      continue
+    fi
+    if ! installed_shipped_agent_is_known "${agent}"; then
+      if [[ "${model}" == "inherit" ]]; then
+        if installed_agent_has_exact_inherit_model "${agent}"; then
+          printf '  model_overrides: definition-backed %s — custom file already declares inherit and remains untouched\n' \
+            "${agent}" >&2
+          definition_backed=$((definition_backed + 1))
+        else
+          printf '  model_overrides: skipping %s — custom inherit is definition-backed only; the custom file must already contain exactly one model: inherit line\n' \
+            "${agent}" >&2
+          skipped=$((skipped + 1))
+        fi
+      else
+        printf '  model_overrides: runtime-only %s — custom bare pin is enforced at dispatch; custom definitions are never rewritten\n' \
+          "${agent}" >&2
+        runtime_only=$((runtime_only + 1))
+      fi
+      continue
+    fi
     agent_file="${agents_dir}/${agent}.md"
     if [[ ! -f "${agent_file}" ]]; then
       printf '  model_overrides: skipping %s — no agent file at %s\n' "${agent}" "${agent_file}" >&2
       skipped=$((skipped + 1)); continue
     fi
-    if grep -qE '^model: ' "${agent_file}"; then
-      tmp="${agent_file}.tmp"
-      sed "s/^model: .*$/model: ${model}/" "${agent_file}" > "${tmp}"
-      mv "${tmp}" "${agent_file}"
-      applied=$((applied + 1))
+    model_count="$(grep -cE '^model: ' "${agent_file}" 2>/dev/null || true)"
+    model_value="$(sed -n 's/^model: //p' "${agent_file}" | head -1)"
+    if [[ "${model_count}" != "1" ]] \
+        || [[ ! "${model_value}" =~ ^(inherit|opus|sonnet|haiku)$ ]]; then
+      printf '  model_overrides: skipping %s — agent definition must contain exactly one valid model: line\n' \
+        "${agent}" >&2
+      skipped=$((skipped + 1)); continue
     fi
+    # Reuse the checked tier writer so a short/failed write cannot be counted
+    # as a materialized override and then escape to later config stages.
+    set_installed_shipped_agent_model "${agent}" "${model}"
+    applied=$((applied + 1))
   done
 
-  if [[ "${applied}" -gt 0 || "${skipped}" -gt 0 ]]; then
-    printf '  Model overrides: %d applied, %d skipped\n' "${applied}" "${skipped}"
+  if [[ "${applied}" -gt 0 || "${runtime_only}" -gt 0 \
+      || "${definition_backed}" -gt 0 || "${skipped}" -gt 0 ]]; then
+    printf '  Model overrides: %d materialized, %d runtime-only, %d definition-backed, %d skipped\n' \
+      "${applied}" "${runtime_only}" "${definition_backed}" "${skipped}"
   fi
 }
 
@@ -1562,6 +2035,13 @@ fi
 
 if [[ ! -f "${SETTINGS_PATCH}" ]]; then
   printf 'Missing settings patch: %s\n' "${SETTINGS_PATCH}" >&2
+  exit 1
+fi
+
+# This proof intentionally runs before acquire_install_lock: a malformed or
+# incomplete release must not create ~/.claude, a backup, or a lock, and must
+# never be able to hide a missing source file behind a stale installed orphan.
+if ! preflight_source_shipped_model_roster; then
   exit 1
 fi
 
@@ -1641,25 +2121,58 @@ cleanup_install_tmpfiles() {
 # specific backup path on this run so the user has a one-line rollback
 # at the bottom of their terminal scroll.
 #
-# The trap does NOT auto-restore (auto-restore could be wrong if the
-# user wants partial state, e.g., new bundle + old settings). The
-# explicit-restore-instructions pattern is "fail loud with recovery"
-# rather than "fail silent with assumed recovery."
+# The shipped-model/config transaction below is narrow enough to restore
+# automatically: its exact prior roster shape and conf bytes are captured
+# before rsync, and custom agents are outside its ownership. Other installed
+# bundle files and settings remain explicit/manual recovery surfaces because
+# restoring those wholesale could erase unrelated user state.
 _emergency_recovery_msg() {
-  local _rc=$?
+  local _rc="${1:-$?}"
   if [[ ${_rc} -eq 0 ]]; then
     return 0
   fi
   printf >&2 '\n'
   printf >&2 'install.sh exited with status %d. Partial install possible.\n' "${_rc}"
-  if [[ -d "${BACKUP_DIR}" ]]; then
+  if [[ "${BACKUP_DIR_ALLOCATED:-0}" -eq 1 && -d "${BACKUP_DIR}" ]]; then
     printf >&2 'Backup of pre-install state: %s\n' "${BACKUP_DIR}"
-    printf >&2 'Recovery: restore prior settings.json and conf with:\n'
+    printf >&2 'Recovery: restore prior settings.json (and conf if the automatic model/config rollback above was incomplete) with:\n'
     printf >&2 '  cp -a "%s/settings.json" "%s/settings.json" 2>/dev/null\n' "${BACKUP_DIR}" "${CLAUDE_HOME}"
     printf >&2 '  cp -a "%s/oh-my-claude.conf" "%s/oh-my-claude.conf" 2>/dev/null\n' "${BACKUP_DIR}" "${CLAUDE_HOME}"
     printf >&2 'Or re-run `bash install.sh` after fixing the underlying error.\n'
   fi
   return "${_rc}"
+}
+
+# Preserve the install's status while making cleanup unconditional. Calling
+# the nonzero-returning reporter directly in a semicolon-delimited EXIT trap
+# under `set -e` can stop the trap before temp-file and lock cleanup, leaving a
+# failed install wedged behind its own stale lock.
+_install_exit_handler() {
+  local _rc=$?
+  set +e
+  if [[ "${_rc}" -ne 0 ]] \
+      && [[ "${MODEL_CONFIG_ROLLBACK_ARMED:-0}" -eq 1 ]]; then
+    printf >&2 'Model/config install transaction failed; restoring the exact pre-install shipped agent roster and config.\n'
+    if rollback_model_configuration_transaction; then
+      MODEL_CONFIG_ROLLBACK_ARMED=0
+      printf >&2 'Model/config rollback complete. Custom agent definitions were left untouched.\n'
+    else
+      printf >&2 '  [error] Model/config rollback was incomplete; restore the backup at %s and rerun install.sh.\n' \
+        "${BACKUP_DIR}"
+    fi
+  fi
+  _emergency_recovery_msg "${_rc}"
+  cleanup_install_tmpfiles
+  release_install_lock
+  return "${_rc}"
+}
+
+_install_signal_handler() {
+  local _status="$1"
+  # Prevent a repeated shutdown signal from interrupting the rollback that the
+  # EXIT handler is about to perform. `exit` still runs that EXIT handler.
+  trap '' HUP INT TERM
+  exit "${_status}"
 }
 
 PRE_INSTALL_SIGNATURES=""
@@ -1669,7 +2182,10 @@ POST_INSTALL_SIGNATURES=""
 # failure (mid-mkdir crash, exhausted attempts) still triggers tmpfile
 # cleanup. release_install_lock is pid-scoped above — it only removes
 # locks this process owns, so safe to fire even when acquire failed.
-trap '_emergency_recovery_msg; cleanup_install_tmpfiles; release_install_lock' EXIT
+trap '_install_exit_handler' EXIT
+trap '_install_signal_handler 129' HUP
+trap '_install_signal_handler 130' INT
+trap '_install_signal_handler 143' TERM
 
 acquire_install_lock
 
@@ -1684,8 +2200,8 @@ printf 'Installing oh-my-claude into %s ...\n' "${CLAUDE_HOME}"
 # is not blanket-700 (Claude Code itself reads files there), so harden the
 # backup directly. The chmod runs before backup_existing_targets writes to
 # the dir so the perms apply to the freshly-created tree.
-mkdir -p "${CLAUDE_HOME}" "${BACKUP_DIR}"
-chmod 700 "${BACKUP_DIR}" 2>/dev/null || true
+mkdir -p "${CLAUDE_HOME}"
+allocate_backup_dir
 # v1.36.0: surface user edits in memory/ before rsync overwrites them.
 # Runs BEFORE backup_existing_targets and BEFORE rsync — the warning
 # fires while the live edit is still untouched on disk, so a Ctrl-C
@@ -1694,7 +2210,12 @@ chmod 700 "${BACKUP_DIR}" 2>/dev/null || true
 # preserve a copy under ${BACKUP_DIR}, but that recovery path is the
 # fallback, not the contract surfaced in the warn message.
 warn_modified_memory_files
+snapshot_prior_model_configuration
 backup_existing_targets
+# From this point until the final successful installer line, every nonzero or
+# signal exit restores the exact prior shipped roster and config. Arm only
+# after every required backup completed, and before the first bundle mutation.
+MODEL_CONFIG_ROLLBACK_ARMED=1
 
 # Capture the pre-install managed-file snapshot before rsync mutates
 # ~/.claude/. The current manifest enumerates exactly which installed
@@ -1746,8 +2267,16 @@ fi
 # then per-agent overrides on top. Overrides run unconditionally (even when
 # no tier is set) so a user can pin individual agents without opting into a
 # whole-roster tier.
+if ! preflight_installed_shipped_model_roster; then
+  printf '  [error] Model setup aborted before changing declarations; restoring the prior shipped agent roster and config through the install transaction.\n' >&2
+  exit 1
+fi
 apply_model_tier
 apply_model_overrides "${CLAUDE_HOME}/agents" "${CLAUDE_HOME}/oh-my-claude.conf"
+if ! preflight_installed_shipped_model_roster; then
+  printf '  [error] Model setup verification failed after tier/override materialization; the install transaction will restore prior state.\n' >&2
+  exit 1
+fi
 
 # Step 2c — Save repo path, installed version, and installed SHA for
 # easy updates. The SHA lets the stale-install indicator detect a
@@ -2656,3 +3185,8 @@ else
 fi
 printf '\n'
 printf 'Recovery if something feels off: bash %s/verify.sh\n' "${SCRIPT_DIR}"
+# This is deliberately the final mutating statement. Any failure before this
+# point—including tier/override writes, config provenance writes, final model
+# verification, or HUP/INT/TERM—keeps rollback armed. A zero-status install
+# commits the model/config transaction here.
+MODEL_CONFIG_ROLLBACK_ARMED=0

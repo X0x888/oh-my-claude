@@ -33,7 +33,34 @@ jobs:
       - name: Check flag coordination (3-site SoT parity)
         run: bash tools/check-flag-coordination.sh
 
-  test:
+      - name: Run statusline Python tests
+        run: python3 -m unittest tests.test_statusline -v
+
+  # Native correctness is exhaustive but sharded. The runner discovers every
+  # tests/test-*.sh dynamically, so adding a test does not require another
+  # 450-line workflow step list or a second pin registry.
+  test-native:
+    name: Native Bash tests (shard ${{ matrix.shard }}/4)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+
+      - name: Run full native shard
+        run: bash tools/run-tests.sh --full --shard "${{ matrix.shard }}/4" --no-record
+
+  # Sterile execution is proportional on pull requests. Pushes are integration
+  # boundaries and remain exhaustive, matching the historical `test` context.
+  # Keeping both profiles in one always-present job gives the aggregate below a
+  # single unambiguous result instead of event-dependent skipped dependencies.
+  test-sterile:
+    name: Sterile environment tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -41,458 +68,50 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Run intent classification tests
-        run: bash tests/test-intent-classification.sh
-
-      - name: Run quality gate tests
-        run: bash tests/test-quality-gates.sh
-
-      - name: Run stall detection tests
-        run: bash tests/test-stall-detection.sh
-
-      - name: Run end-to-end hook sequence tests
-        run: bash tests/test-e2e-hook-sequence.sh
-
-      - name: Run adaptive Council coverage lifecycle tests
-        run: bash tests/test-council-coverage.sh
-
-      - name: Run swiftui-pro skill tests (2026-05-26 Wave B pin)
-        run: bash tests/test-swiftui-pro-skill.sh
-
-      - name: Run gamedev skill tests
-        run: bash tests/test-gamedev-skill.sh
-
-      - name: Run web-verify MCP wiring tests
-        run: bash tests/test-web-verify-mcp-wiring.sh
-
-      - name: Run design-craft additions tests (2026-05-26 Wave C pin)
-        run: bash tests/test-design-craft-additions.sh
-
-      - name: Run common utilities tests
-        run: bash tests/test-common-utilities.sh
-
-      - name: Run settings merge tests
-        run: bash tests/test-settings-merge.sh
-
-      - name: Run uninstall merge tests
-        run: bash tests/test-uninstall-merge.sh
-
-      - name: Run session resume tests
-        run: bash tests/test-session-resume.sh
-
-      - name: Run verification lib tests
-        run: bash tests/test-verification-lib.sh
-
-      - name: Run Phase 8 integration tests
-        run: bash tests/test-phase8-integration.sh
-
-      - name: Run wave-shape tests
-        run: bash tests/test-wave-shape.sh
-
-      - name: Run exemplifying-scope gate tests
-        run: bash tests/test-exemplifying-scope-gate.sh
-
-      - name: Run agent VERDICT contract tests
-        run: bash tests/test-agent-verdict-contract.sh
-
-      - name: Run gate events tests
-        run: bash tests/test-gate-events.sh
-
-      - name: Run discover-session tests
-        run: bash tests/test-discover-session.sh
-
-      - name: Run stop-failure handler tests
-        run: bash tests/test-stop-failure-handler.sh
-
-      - name: Run session-start resume-hint tests
-        run: bash tests/test-session-start-resume-hint.sh
-
-      - name: Run session-start welcome tests
-        run: bash tests/test-session-start-welcome.sh
-
-      - name: Run install whats-new tests
-        run: bash tests/test-install-whats-new.sh
-
-      - name: Run claim-resume-request tests
-        run: bash tests/test-claim-resume-request.sh
-
-      - name: Run resume-watchdog tests
-        run: bash tests/test-resume-watchdog.sh
-
-      - name: Run verify-health tests
-        run: bash tests/test-verify-health.sh
-
-      - name: Run install-resume-watchdog tests
-        run: bash tests/test-install-resume-watchdog.sh
-
-      - name: Run omc-config tests
-        run: bash tests/test-omc-config.sh
-
-      - name: Run model_overrides tests
-        run: bash tests/test-model-overrides.sh
-
-      - name: Run prompt-persist tests
-        run: bash tests/test-prompt-persist.sh
-
-      - name: Run output-style coherence tests
-        run: bash tests/test-output-style-coherence.sh
-
-      - name: Run timing tests
-        run: bash tests/test-timing.sh
-
-      - name: Run blindspot-inventory tests
-        run: bash tests/test-blindspot-inventory.sh
-
-      - name: Run findings-json tests
-        run: bash tests/test-findings-json.sh
-
-      - name: Run latency-budgets tests
-        run: bash tests/test-latency-budgets.sh
-
-      - name: Run show-status tests
-        run: bash tests/test-show-status.sh
-
-      - name: Run memory-audit tests
-        run: bash tests/test-memory-audit.sh
-
-      - name: Run divergence-directive tests
-        run: bash tests/test-divergence-directive.sh
-
-      - name: Run workflow-substrate tests
-        run: bash tests/test-workflow-substrate.sh
-
-      - name: Run no-broken-stat-chain regression tests
-        run: bash tests/test-no-broken-stat-chain.sh
-
-      - name: Run classifier-replay regression tests
-        run: bash tests/test-classifier-replay.sh
-
-      - name: Run state-io regression tests (v1.32.0 R1 pin)
-        run: bash tests/test-state-io.sh
-
-      - name: Run consumer-contract lint tests (Bug B post-mortem hardening)
-        run: bash tests/test-consumer-contracts.sh
-
-      - name: Run field-shape-audit tests (Bug B post-mortem hardening)
-        run: bash tests/test-field-shape-audit.sh
-
-      - name: Run recovery-rate-alarm tests (Bug B post-mortem hardening)
-        run: bash tests/test-recovery-rate-alarm.sh
-
-      - name: Run self-audit + unknown-cluster tests (Bug B post-mortem hardening)
-        run: bash tests/test-self-audit-and-clusters.sh
-
-      - name: Run show-report regression tests (v1.32.0 R1 pin)
-        run: bash tests/test-show-report.sh
-
-      - name: Run cross-session-lock regression tests (v1.32.0 R1 pin)
-        run: bash tests/test-cross-session-lock.sh
-
-      - name: Run concurrency regression tests (v1.32.0 R1 pin)
-        run: bash tests/test-concurrency.sh
-
-      - name: Run classifier-lib tests (v1.32.0 R1 pin)
-        run: bash tests/test-classifier.sh
-
-      - name: Run bias-defense-classifier tests (v1.32.0 R1 pin)
-        run: bash tests/test-bias-defense-classifier.sh
-
-      - name: Run bias-defense-directives tests (v1.32.0 R1 pin)
-        run: bash tests/test-bias-defense-directives.sh
-
-      - name: Run ULW benchmark suite (v1.33.0 consolidation pin)
-        run: bash tests/test-ulw-benchmark-suite.sh
-
-      - name: Run zero-steering policy tests
-        run: bash tests/test-zero-steering-policy.sh
-
-      - name: Run session-summary outcome tests (v1.39.0 W1)
-        run: bash tests/test-session-summary-outcome.sh
-
-      - name: Run data-lens W1 telemetry-truthing tests (v1.43)
-        run: bash tests/test-data-lens-w1.sh
-
-      - name: Run watchdog-health hook tests (v1.43 sre-lens F-001)
-        run: bash tests/test-watchdog-health.sh
-
-      - name: Run watchdog self-heal tests (v1.47 sre-lens)
-        run: bash tests/test-watchdog-selfheal.sh
-
-      - name: Run no-defer FP observability tests (v1.43 oracle Wave 3)
-        run: bash tests/test-no-defer-fp-observability.sh
-
-      - name: Run ulw-report Outcomes section tests (v1.43 product-lens Wave 5)
-        run: bash tests/test-ulw-report-outcomes.sh
-
-      - name: Run session-summary end_ts cascade tests (v1.41 W1)
-        run: bash tests/test-session-summary-end-ts.sh
-
-      - name: Run lazy SessionStart tests (v1.41 W3)
-        run: bash tests/test-lazy-session-start.sh
-
-      - name: Run mid-session memory checkpoint tests (v1.41 W4)
-        run: bash tests/test-mid-session-checkpoint.sh
-
-      - name: Run session risk-tier tests (v1.39.0 W2)
-        run: bash tests/test-session-risk-tier.sh
-
-      - name: Run realwork producer tests (v1.39.0 W3)
-        run: bash tests/test-realwork-producer.sh
-
-      - name: Run real-work eval suite tests
-        run: bash tests/test-realwork-eval-suite.sh
-
-      - name: Run professional-readiness tests
-        run: bash tests/test-professional-readiness.sh
-
-      - name: Run project-readiness tests
-        run: bash tests/test-project-readiness.sh
-
-      - name: Run mark-deferred tests (v1.32.0 R1 pin)
-        run: bash tests/test-mark-deferred.sh
-
-      - name: Run stop-guard bypass-surface umbrella tests (v1.42.x pin)
-        run: bash tests/test-stop-guard-bypass-surface.sh
-
-      - name: Run circuit-breaker tests (v1.44-pre Port 1 pin)
-        run: bash tests/test-circuit-breaker.sh
-
-      - name: Run stop-transcript-archive tests (v1.44-pre Port 5 pin)
-        run: bash tests/test-stop-transcript-archive.sh
-
-      - name: Run stricter-verdict-wins tests (v1.44-pre Port 2 pin)
-        run: bash tests/test-stricter-verdict-wins.sh
-
-      - name: Run quality-reviewer zero-finding-rule tests (v1.44-pre Port 3 pin)
-        run: bash tests/test-quality-reviewer-zero-finding-rule.sh
-
-      - name: Run finding-list tests (v1.32.0 R1 pin)
-        run: bash tests/test-finding-list.sh
-
-      - name: Run shortcut-ratio gate tests (v1.35.0 Concern-2 pin)
-        run: bash tests/test-shortcut-ratio-gate.sh
-
-      - name: Run no_defer_mode tests (v1.40.0 ULW no-defer pin)
-        run: bash tests/test-no-defer-mode.sh
-
-      - name: Run no-defer-contract regression net (v1.40.0 Wave 9 pin)
-        run: bash tests/test-no-defer-contract.sh
-
-      - name: Run No-Out-of-Scope contract regression net (v1.44 pin)
-        run: bash tests/test-no-out-of-scope-contract.sh
-
-      - name: Run depth-prime regression net (v1.40.x depth-on-every-prompt pin)
-        run: bash tests/test-depth-prime-contract.sh
-
-      - name: Run inferred-contract tests (v1.34.0 Delivery Contract v2 pin)
-        run: bash tests/test-inferred-contract.sh
-
-      - name: Run prompt-router synthetic-injection tests (v1.34.0 Bug A pin)
-        run: bash tests/test-prompt-router-synthetic.sh
-
-      - name: Run prompt-router redact-dedup latency tests (v1.46-pre)
-        run: bash tests/test-prompt-router-latency.sh
-
-      - name: Run token-tracking tests (v1.46-pre)
-        run: bash tests/test-token-tracking.sh
-
-      - name: Run background-wait-note tests (v1.46-pre)
-        run: bash tests/test-background-wait-note.sh
-
-      - name: Run pretool-intent-guard tests (v1.32.0 R1 pin)
-        run: bash tests/test-pretool-intent-guard.sh
-
-      - name: Run realwork counterfactual-arms tests (v1.48 W1)
-        run: bash tests/test-realwork-arms.sh
-
-      - name: Run omc goal-loop tests (v1.48 W2)
-        run: bash tests/test-omc-goal.sh
-
-      - name: Run omc-doctor tests (v1.48 W2)
-        run: bash tests/test-omc-doctor.sh
-
-      - name: Run posttool-dispatch tests (v1.48 W3.1)
-        run: bash tests/test-posttool-dispatch.sh
-
-      - name: Run discovered-scope tests (v1.32.0 R1 pin)
-        run: bash tests/test-discovered-scope.sh
-
-      - name: Run discovered-scope status/resolve-verb tests (v1.46)
-        run: bash tests/test-discovered-scope-status.sh
-
-      - name: Run objective-contract tests (v1.46-pre Codex /goal port)
-        run: bash tests/test-objective-contract.sh
-      - name: Test — /goal relentless driver
-        run: bash tests/test-goal.sh
-
-      - name: Run canary tests (v1.32.0 R1 pin)
-        run: bash tests/test-canary.sh
-
-      - name: Run serendipity-log tests (v1.32.0 R1 pin)
-        run: bash tests/test-serendipity-log.sh
-
-      - name: Run archetype-memory tests (v1.32.0 R1 pin)
-        run: bash tests/test-archetype-memory.sh
-
-      - name: Run auto-memory-skip tests (v1.32.0 R1 pin)
-        run: bash tests/test-auto-memory-skip.sh
-
-      - name: Run repo-lessons tests (v1.48-pre repo_lessons flag pin)
-        run: bash tests/test-repo-lessons.sh
-
-      - name: Run self-audit-nudge tests (v1.48-pre self_audit_nudge flag pin)
-        run: bash tests/test-self-audit-nudge.sh
-
-      - name: Run auto-tune tests (v1.48-pre auto_tune flag pin)
-        run: bash tests/test-auto-tune.sh
-
-      - name: Run cross-session-rotation tests (v1.32.0 R1 pin)
-        run: bash tests/test-cross-session-rotation.sh
-
-      - name: Run design-contract tests (v1.32.0 R1 pin)
-        run: bash tests/test-design-contract.sh
-
-      - name: Run directive-instrumentation tests (v1.32.0 R1 pin)
-        run: bash tests/test-directive-instrumentation.sh
-
-      - name: Run inline-design-contract tests (v1.32.0 R1 pin)
-        run: bash tests/test-inline-design-contract.sh
-
-      - name: Run install-artifacts tests (v1.32.0 R1 pin)
-        run: bash tests/test-install-artifacts.sh
-
-      - name: Run install-remote tests (v1.32.0 R1 pin)
-        run: bash tests/test-install-remote.sh
-
-      - name: Run install-handoff tests (v1.44.x distribution handoff pin)
-        run: bash tests/test-install-handoff.sh
-
-      - name: Run install-recovery tests (v1.44.x recovery-path pin)
-        run: bash tests/test-install-recovery.sh
-
-      - name: Run install-readiness tests
-        run: bash tests/test-install-readiness.sh
-
-      - name: Run install-state-report contract tests (post-91fc96b D9 pin)
-        run: bash tests/test-install-state-report.sh
-
-      - name: Run verify-foreign-hooks tests (v1.32.16 4-attacker review pin)
-        run: bash tests/test-verify-foreign-hooks.sh
-
-      - name: Run fenced-untrusted-directives tests (v1.32.16 4-attacker review pin)
-        run: bash tests/test-fenced-untrusted-directives.sh
-
-      - name: Run memory-drift-hint tests (v1.32.0 R1 pin)
-        run: bash tests/test-memory-drift-hint.sh
-
-      - name: Run metis-on-plan-gate tests (v1.32.0 R1 pin)
-        run: bash tests/test-metis-on-plan-gate.sh
-
-      - name: Run post-merge-hook tests (v1.32.0 R1 pin)
-        run: bash tests/test-post-merge-hook.sh
-
-      - name: Run repro-redaction tests (v1.32.0 R1 pin)
-        run: bash tests/test-repro-redaction.sh
-
-      - name: Run specialist-routing tests (v1.32.0 R1 pin)
-        run: bash tests/test-specialist-routing.sh
-
-      - name: Run ulw-pause tests (v1.32.0 R1 pin)
-        run: bash tests/test-ulw-pause.sh
-
-      - name: Run coordination-rules lockstep tests (v1.32.0 R7)
-        run: bash tests/test-coordination-rules.sh
-
-      - name: Run model-robustness doctrine tests (v1.43-pre)
-        run: bash tests/test-model-robustness-doctrine.sh
-
-      - name: Run art-taste doctrine wiring tests
-        run: bash tests/test-art-taste-doctrine.sh
-
-      - name: Run research-pack wiring tests
-        run: bash tests/test-research-pack.sh
-
-      - name: Run intellectual-craft doctrine wiring tests
-        run: bash tests/test-intellectual-craft-doctrine.sh
-
-      - name: Run state-fuzz tests (v1.32.0 Wave C Item 7)
-        run: bash tests/test-state-fuzz.sh
-
-      - name: Run chaos-concurrency tests (v1.32.0 Wave C Item 5)
-        run: bash tests/test-chaos-concurrency.sh
-
-      - name: Run sterile-env helper regression tests (v1.32.3)
-        run: bash tests/test-sterile-env.sh
-
-      - name: Run bootstrap-gate-events tests (v1.32.5 reviewer-driven fixes)
-        run: bash tests/test-bootstrap-gate-events.sh
-
-      - name: Run project-key-write tests (v1.32.6 wiring closure)
-        run: bash tests/test-project-key-write.sh
-
-      - name: Run backfill-project-key tests (v1.32.9 historical-data closure)
-        run: bash tests/test-backfill-project-key.sh
-
-      - name: Run hotfix-sweep tests (v1.32.11 R5 closure)
-        run: bash tests/test-hotfix-sweep.sh
-
-      - name: Run release-tool tests (v1.32.14 R4 closure)
-        run: bash tests/test-release.sh
-
-      - name: Run local-ci tool tests (v1.33.x post-mortem)
-        run: bash tests/test-local-ci.sh
-
-      - name: Run sterile-env CI-parity check (v1.32.2 R3 promoted to strict)
-        run: bash tests/run-sterile.sh
-
-      - name: W1 reliability hardening regression (v1.36.x)
-        run: bash tests/test-w1-reliability.sh
-
-      - name: W2 telemetry attribution regression (v1.36.x)
-        run: bash tests/test-w2-telemetry.sh
-
-      - name: W3 gate-block UX regression (v1.36.x)
-        run: bash tests/test-w3-gate-ux.sh
-
-      - name: W4 onboarding funnel regression (v1.36.x)
-        run: bash tests/test-w4-onboarding.sh
-
-      - name: W5 discovery surfaces regression (v1.36.x)
-        run: bash tests/test-w5-discovery.sh
-
-      - name: v1.37.x W2 follow-up regression
-        run: bash tests/test-v1-37x-w2-followup.sh
-
-      - name: v1.37.x W4 follow-up regression
-        run: bash tests/test-v1-37x-w4-followup.sh
-
-      - name: Run W1 reliability v1.40 regression
-        run: bash tests/test-w1-reliability-v1-40.sh
-
-      - name: Run W2 privacy + supply chain v1.40 regression
-        run: bash tests/test-w2-privacy-supply-chain.sh
-
-      - name: Run W3 user surfaces v1.40 regression
-        run: bash tests/test-w3-user-surfaces.sh
-
-      - name: Run W4 flag coordination v1.40 regression
-        run: bash tests/test-w4-flag-coordination.sh
-
-      - name: Run cross-ledger ts-typing regression (F-010)
-        run: bash tests/test-ts-typing.sh
-
-      - name: Run schema-versioning regression (F-009 + F-012 closeout)
-        run: bash tests/test-schema-versioning.sh
-
-      - name: Run statusline tests
-        run: python3 -m unittest tests.test_statusline -v
+      - name: Run change-proportional sterile tests
+        if: github.event_name == 'pull_request'
+        run: bash tests/run-sterile.sh --changed --base "origin/${{ github.base_ref }}"
+
+      - name: Run full sterile push suite
+        if: github.event_name == 'push'
+        run: bash tests/run-sterile.sh --full
+
+  # Preserve the historical required-check context `test` and its semantic
+  # coverage while execution is parallelized behind it. Python lives in lint;
+  # Bash lives in the native matrix; sterile has the event-appropriate profile.
+  # `always()` turns a failed/cancelled dependency into an explicit red check.
+  test:
+    name: test
+    needs: [lint, test-native, test-sterile]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every historical test surface to pass
+        env:
+          LINT_RESULT: ${{ needs.lint.result }}
+          NATIVE_RESULT: ${{ needs.test-native.result }}
+          STERILE_RESULT: ${{ needs.test-sterile.result }}
+        run: |
+          failed=0
+          for result in "lint:${LINT_RESULT}" "native:${NATIVE_RESULT}" "sterile:${STERILE_RESULT}"; do
+            surface="${result%%:*}"
+            status="${result#*:}"
+            if [[ "${status}" != "success" ]]; then
+              printf '%s result: %s\n' "${surface}" "${status}" >&2
+              failed=1
+            fi
+          done
+          if [[ "${failed}" -ne 0 ]]; then
+            exit 1
+          fi
+          printf 'Lint/Python, native Bash, and sterile surfaces passed.\n'
 
   # v1.40.x SRE-5 F-005: macOS parity job. CI runs on ubuntu-latest by
   # default, but the primary dev platform is macOS — BSD vs GNU coreutils
   # divergence (the v1.28 Linux portability cascade documented in memory)
   # historically only surfaced post-tag. This job runs the portability-
   # sensitive subset on macos-latest to catch BSD/GNU regressions in CI.
-  # Subset rationale: full suite (~85 tests) would balloon CI minutes;
+  # Subset rationale: a second full-suite pass would balloon CI minutes;
   # these tests exercise stat, regex, lock, and shell-builtin variance.
   test-macos:
     runs-on: macos-latest

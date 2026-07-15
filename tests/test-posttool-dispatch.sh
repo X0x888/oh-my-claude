@@ -191,9 +191,14 @@ bash -c "
   export OMC_LAZY_CLASSIFIER=1
   . '${COMMON}'
   [[ -n \"\${_OMC_COMMON_SOURCED}\" ]] || exit 1
-  # Re-source with classifier wanted eagerly: guard must load it.
+  # Re-source with classifier wanted eagerly after a hostile PATH change:
+  # the guard must repin before the loader runs.
+  safe_path=\"\${_OMC_OBSERVER_SAFE_PATH}\"
+  PATH='/tmp/omc-untrusted-path'
+  _OMC_PIN_OBSERVER_PATH_ON_SOURCE=1
   unset OMC_LAZY_CLASSIFIER
   . '${COMMON}'
+  [[ \"\${PATH}\" == \"\${safe_path}\" ]] || exit 3
   # classifier symbol must now exist
   declare -F is_imperative_request >/dev/null || exit 2
 " 2>/dev/null || rc=$?
@@ -1046,51 +1051,49 @@ teardown_session
 
 # ----------------------------------------------------------------------
 printf 'T38: PATH-shadowed bare reader cannot impersonate a trusted binary\n'
-setup_session "d38"
-work="${TEST_HOME}/repo"
-init_git_worktree "${work}"
-printf '#!/usr/bin/env bash\nprintf shadow-mutated > tracked.txt\n' > "${work}/cat"
-chmod +x "${work}/cat"
-git -C "${work}" add cat
-git -C "${work}" commit --quiet -m shadow-cat
-payload_t38="$(jq -nc --arg cwd "${work}" '{
-  session_id:"d38",tool_name:"Bash",tool_use_id:"tu-shadow-cat",cwd:$cwd,
-  tool_input:{command:"cat tracked.txt"},tool_response:{exit_code:0}
-}')"
-printf '%s' "${payload_t38}" | PATH="${work}:${PATH}" bash "${PRETOOL}" 2>/dev/null || true
-(cd "${work}" && "${work}/cat" tracked.txt)
-run_dispatch "${payload_t38}" >/dev/null
-state="${TEST_HOME}/.claude/quality-pack/state/d38/session_state.json"
-rc=0; [[ -n "$(jq -r '.last_code_edit_ts // ""' "${state}")" ]] || rc=1
-assert_true "T38: PATH-shadowed reader mutation advances code clock" "${rc}"
-teardown_session
-
-setup_session "d38c"
-work="${TEST_HOME}/repo"
-init_git_worktree "${work}"
-printf '#!/usr/bin/env bash\nprintf shadow-sink-mutated > tracked.txt\n' > "${work}/cat"
-chmod +x "${work}/cat"
-git -C "${work}" add cat
-git -C "${work}" commit --quiet -m shadow-sink-cat
-payload_t38c="$(jq -nc --arg cwd "${work}" '{
-  session_id:"d38c",tool_name:"Bash",tool_use_id:"tu-shadow-sink-cat",cwd:$cwd,
-  tool_input:{command:"cat tracked.txt > /dev/null"},tool_response:{exit_code:0}
-}')"
-printf '%s' "${payload_t38c}" | PATH="${work}:${PATH}" bash "${PRETOOL}" 2>/dev/null || true
-(cd "${work}" && "${work}/cat" tracked.txt > /dev/null)
-run_dispatch "${payload_t38c}" >/dev/null
-state="${TEST_HOME}/.claude/quality-pack/state/d38c/session_state.json"
-rc=0; [[ -n "$(jq -r '.last_code_edit_ts // ""' "${state}")" ]] || rc=1
-assert_true "T38: PATH-shadowed reader with dev-null sink advances code clock" "${rc}"
-teardown_session
+for path_shape in direct traversal; do
+  for command_shape in plain dev-null; do
+    sid_t38="d38-${path_shape}-${command_shape}"
+    setup_session "${sid_t38}"
+    work="${TEST_HOME}/repo"
+    init_git_worktree "${work}"
+    printf '#!/usr/bin/env bash\nprintf shadow-mutated > tracked.txt\n' > "${work}/cat"
+    chmod +x "${work}/cat"
+    git -C "${work}" add cat
+    git -C "${work}" commit --quiet -m shadow-cat
+    command_t38="cat tracked.txt"
+    [[ "${command_shape}" == "dev-null" ]] && command_t38="${command_t38} > /dev/null"
+    payload_t38="$(jq -nc --arg sid "${sid_t38}" --arg cwd "${work}" \
+      --arg cmd "${command_t38}" '{
+        session_id:$sid,tool_name:"Bash",tool_use_id:("tu-" + $sid),cwd:$cwd,
+        tool_input:{command:$cmd},tool_response:{exit_code:0}
+      }')"
+    shadow_path="${work}"
+    if [[ "${path_shape}" == "traversal" ]]; then
+      shadow_path="/usr/bin/../../${work#/}"
+    fi
+    printf '%s' "${payload_t38}" \
+      | PATH="${shadow_path}:${PATH}" bash "${PRETOOL}" 2>/dev/null || true
+    if [[ "${command_shape}" == "dev-null" ]]; then
+      (cd "${work}" && "${work}/cat" tracked.txt > /dev/null)
+    else
+      (cd "${work}" && "${work}/cat" tracked.txt)
+    fi
+    run_dispatch "${payload_t38}" >/dev/null
+    state="${TEST_HOME}/.claude/quality-pack/state/${sid_t38}/session_state.json"
+    rc=0; [[ -n "$(jq -r '.last_code_edit_ts // ""' "${state}")" ]] || rc=1
+    assert_true "T38: ${path_shape} PATH shadow + ${command_shape} reader advances code clock" "${rc}"
+    teardown_session
+  done
+done
 
 setup_session "d38b"
 work="${TEST_HOME}/repo"
 init_git_worktree "${work}"
 mkdir -p "${work}/fake-bin"
-printf '#!/usr/bin/env bash\nprintf observer-mutated > "%s/tracked.txt"\nexec /usr/bin/shasum "$@"\n' \
+printf '#!/usr/bin/env bash\nprintf observer-shasum > "%s/tracked.txt"\nexec /usr/bin/shasum "$@"\n' \
   "${work}" > "${work}/fake-bin/shasum"
-printf '#!/usr/bin/env bash\nprintf observer-mutated > "%s/tracked.txt"\nexec /usr/bin/sed "$@"\n' \
+printf '#!/usr/bin/env bash\nprintf observer-sed > "%s/tracked.txt"\nexec /usr/bin/sed "$@"\n' \
   "${work}" > "${work}/fake-bin/sed"
 chmod +x "${work}/fake-bin/shasum" "${work}/fake-bin/sed"
 payload_t38b="$(jq -nc --arg cwd "${work}" '{

@@ -198,12 +198,12 @@
 #
 # Default `off`. This is *removal of a uniform tax*, NOT a softening of
 # the no-defer contract (which remains load-bearing per core.md).
-# The mandate was the right shape when (a) specialists ran on a
-# smarter tier than main, (b) the depth-on-every-prompt rule did not
-# exist yet, and (c) reflexive-dispatch round-trip cost less than
-# drift-failure cost. Under model_tier=quality + depth-on-every-prompt,
-# none of the three premises hold — the gate was firing ~2.2x/session
-# on the canonical /ulw user without paying for itself.
+# Live routing is risk-adaptive and inherited specialists ride whichever
+# temporary/current session model the user chose, so the harness cannot
+# promise a stable capability ordering in which the first specialist is
+# categorically smarter than the main thread. With depth-on-every-prompt now
+# load-bearing, the unconditional gate was firing ~2.2x/session on the
+# canonical /ulw user without paying for itself.
 #
 # The gap that remains uncovered when off: long-session main-thread
 # drift on a single surface where the model doesn't notice it's
@@ -216,9 +216,8 @@
 #
 # Set to `on` to restore the legacy mandate. Recommended when:
 #   * training a new workflow habit (the block is scaffolding)
-#   * running with `model_tier=economy` (Sonnet specialists vs Sonnet
-#     main — the smartness-gap assumption that justified the mandate
-#     still holds)
+#   * explicitly wanting an independent fresh-context checkpoint before
+#     mutation regardless of the live model ordering
 #   * active session is drift-prone on a single surface and the
 #     forcing function is genuinely worth the latency
 # Env: OMC_AGENT_FIRST_GATE.
@@ -717,49 +716,71 @@
 # Cost & model tier.
 # ---------------------------------------------------------------------------
 
-# Model tier applied to all 37 specialist agents.
+# Model tier applied to the 37 shipped specialist agents.
 #   quality  — execution agents use Opus; planning/review deliberators keep
-#              `inherit` and ride the session's main model (highest quality).
+#              `inherit` and ride the user's selected session model.
 #   balanced — inherit for planning/review, Sonnet for execution. (Default.)
-#   economy  — all agents use Sonnet, inherit demoted too (lowest cost).
+#   economy  — inherit deliberators + Sonnet specialists; live routing adapts
+#              reasoning-heavy risk.
 # `inherit` (v1.49) means the agent uses whatever model the main thread
-# runs — a Fable session gets Fable-grade deliberators instead of an
-# opus-pinned downgrade.
+# runs. No temporary/current model name is hard-coded and no Opus ceiling is
+# placed on a stronger present or future session model.
 #
 # Two halves since v1.47. The AGENT-FILE half is install-time: frontmatter
 # `model:` lines are rewritten when `bash install.sh --model-tier=<tier>`,
 # `bash ~/.claude/switch-tier.sh <tier>`, or /omc-config runs — editing this
-# line by hand does not rewrite agent files. The ROUTER half is runtime:
+# line by hand does not rewrite agent files. Run the switcher afterward; it
+# validates all 37 shipped declarations against the base tier plus pins. Its
+# embedded, regression-locked rosters make every transition source-independent
+# and repair legacy flattened Economy installs. Tier and override
+# materialization rewrite shipped files only. Explicit named-model custom and
+# plugin pins are runtime-only; their user-owned definitions stay untouched.
+# The ROUTER half is runtime:
 # under /ulw the prompt-intent-router reads this flag fresh each prompt and
-# injects a SUBAGENT MODEL ENFORCEMENT directive: pass the `model` parameter
-# for execution agents and council lenses, but omit it for inherit-tier
-# deliberators (omission is the only inherit encoding). The tool-call
-# parameter is authoritative where present, so a stale install-time rewrite
-# cannot misroute those dispatches. Project-level .claude/oh-my-claude.conf may set this flag
-# (v1.47 deny-list evaluation: flipping it cannot disable an enforcement
-# surface or persist data — worst case is a per-repo cost/quality tier
-# shift, visible in the injected directive; env wins over both scopes).
+# resolves tier + reasoning risk + Council deep mode + shipped declaration +
+# per-agent override. Explicit overrides win. Economy sends low-risk live work
+# to Sonnet, keeps medium-risk deliberators inherited, and uses the quality
+# posture for high-risk/uncertain standard work. Normal balanced Council lenses
+# stay Sonnet unless --deep is active. `inherit` is encoded only by omitting the
+# Agent model parameter; keeping inherited frontmatter under Economy makes that
+# omission real for both routed work and direct-skill fallback. The Agent
+# PreTool hook enforces the same resolver.
+# User authority only: project-level .claude/oh-my-claude.conf cannot set this
+# flag. A repository must not silently demote a user's quality posture or force
+# a more expensive tier merely because the user entered its directory. For an
+# intentional one-session/per-project choice, launch with OMC_MODEL_TIER.
+# Invalid env values are ignored so a typo cannot demote a saved Quality tier;
+# Balanced is used only when no valid environment or user-conf tier exists.
 # Env: OMC_MODEL_TIER.
 #model_tier=balanced
 
 # Per-agent model overrides — the fine-grained complement to model_tier.
-# Where model_tier is all-or-nothing across the whole roster, this pins a
+# Where model_tier selects a global quality/cost routing posture, this pins a
 # specific model on a specific agent. Applied AFTER the tier rewrite, so an
 # override always wins over the tier. Format is a comma-separated list of
 # `agent:model` pairs; model must be one of opus | sonnet | haiku | inherit
-# (inherit = ride the session's main model); agent is the bare agent
-# filename (no .md), e.g. `oracle`, `librarian`.
+# (inherit = ride the session's main model). Agent may be a bare filename (no
+# .md), e.g. `oracle` or `librarian`; a one-colon namespaced identity is also
+# accepted for explicit named models but remains runtime-only.
 #
 #   model_overrides=oracle:opus,quality-reviewer:opus,librarian:haiku
 #
-# A typical use: keep the roster on economy (Sonnet) but lift the agents
-# whose judgment you care most about back to Opus, and drop a cheap
-# lookup agent like the librarian to Haiku — paying for quality only where
-# it moves the needle. Bad pairs (unknown model, or an agent file that does
-# not exist) are skipped with a warning, never fatal.
+# A typical use: keep the live posture on economy while pinning a judgment
+# agent to Opus or a deterministic lookup agent to Haiku. An explicit pin
+# always wins, including over risk escalation and Council --deep. Bad pairs
+# are skipped independently, never fatal.
 #
-# Like model_tier, this is an install-time flag: it takes effect when
-# `install.sh` or `switch-tier.sh` runs, not by editing this line alone.
+# Install/switch materialize shipped bare pins into agent frontmatter for
+# direct skills. Named-model pins are live on the next /ulw prompt. `inherit`
+# has no Agent-tool enum: it works by model omission and is accepted live only
+# when a bare agent definition already says inherit. /omc-config can
+# materialize a valid shipped target; a custom target is accepted only when its
+# untouched definition already contains exactly one `model: inherit` line.
+# Hand-edited/unmaterialized and namespaced inherit pins are ignored rather
+# than falsely claimed. A bare inherit pin never applies through a namespaced
+# plugin short-name collision. Explicit-model custom/plugin pins remain
+# runtime-only. The PreTool hook checks the same resolved Agent call.
+# User authority only; project-level conf cannot set this flag.
 # Env: OMC_MODEL_OVERRIDES (takes precedence over this conf value).
 #model_overrides=
 
@@ -944,14 +965,15 @@
 #time_card_min_seconds=5
 
 # Token-usage capture (v1.46-pre). Sub-toggle within time_tracking: at
-# Stop, parse the rows appended to Claude Code's session transcript since
-# the previous Stop and attribute input/output/cache tokens to the main
-# thread vs sub-agents, riding the same timing.jsonl ledger as the time
-# card. Surfaces a token line in /ulw-time, /ulw-status, and a Token-usage
-# section in /ulw-report.
-#   on  — capture (default); adds ~50ms to the Stop hook on a multi-MB
-#         transcript (cold path, once per Stop; fail-open).
-#   off — skip the transcript parse; wall-time tracking still works.
+# Stop, incrementally parse new bytes from the root session transcript and its
+# discovered nested sub-agent sidechains. High-water component dedupe prevents
+# repeated/partial usage snapshots from double-counting, while native agent IDs
+# join tokens to dispatch/timing rows. Main, sub-agent, input, output, and cache
+# totals ride the same timing ledger as the time card and surface in /ulw-time,
+# /ulw-status, and /ulw-report.
+#   on  — capture (default); byte cursors and one batched sidechain manifest
+#         keep repeat Stops bounded on large transcripts (cold path; fail-open).
+#   off — skip transcript/sidechain parsing; wall-time tracking still works.
 # Token COUNTS carry no prompt content (lower privacy surface than prompt
 # persistence). For dollar cost see the statusline or `ccusage`. Requires
 # time_tracking=on. Env: OMC_TOKEN_TRACKING.
@@ -1086,18 +1108,18 @@
 # Env: OMC_WORKFLOW_SUBSTRATE.
 #workflow_substrate=on
 
-# Router directive budget mode. Applies only to SOFT directives
-# (bias-defense, project-maturity, memory-drift, defect-watch, and
-# similar contextual nudges) — core routing/openers still emit. This is
-# the consolidation control that prevents quality improvements from
-# silently turning into prompt tax on dense `/ulw` prompts.
+# Router directive budget mode. Applies a total assembled-context ceiling plus
+# tighter optional-directive limits. Mandatory safety/gate/user-delta and
+# explicitly triggered Council/UI/model/high-stakes contracts emit fail-safe;
+# the budget never silently buys savings by dropping a load-bearing contract.
+# Stable routing frames collapse to a compact delta until behavior changes.
 #
 # Modes:
-#   maximum  — widest aperture; allows the most SOFT directives to stack
+#   maximum  — widest aperture; allows the most optional directives to stack
 #   balanced — trims dense co-fire cases while preserving the high-value
 #              layers (default; used by the Balanced preset)
 #   minimal  — aggressive suppression; pairs with Minimal preset
-#   off      — legacy/unbounded behavior; emit every eligible directive
+#   off      — very high legacy-style aperture, still with a runaway ceiling
 #
 # The budget is observable: suppressed directives write telemetry that
 # surfaces in `/ulw-report`, and emitted directive footprint is visible
@@ -1110,13 +1132,8 @@
 # ---------------------------------------------------------------------------
 
 # Delivery Contract v2 (v1.34.0) extends v1's prompt-stated surfaces with
-# inference from the actual edits in the session. It catches:
+# five active inferences from the actual edits in the session:
 #
-#   R1  — code edited (≥2 files) but no test edited → block on missing test.
-#         Suppressed when fresh passing high-confidence verification ran
-#         AFTER the last code edit (`last_verify_outcome=passed`,
-#         confidence ≥ verify_confidence_threshold) — the existing test
-#         suite is acting as proof.
 #   R2  — VERSION bumped without CHANGELOG.md / RELEASE_NOTES.md touched
 #         → block on missing changelog (release lockstep).
 #   R3a — oh-my-claude.conf.example edited without common.sh `_parse_conf_file`
@@ -1139,11 +1156,11 @@
 #     only when a UI-shaped change is semantically material; it is not a
 #     substitute for framework-specific state tests.
 #
-# First-session aggressiveness: R1's verify-suppression requires both
-# `last_verify_ts` and `last_code_edit_ts` to be present and numeric.
-# A brand-new session where 2 code files are edited BEFORE the first
-# verification will reliably trip R1 — run a quick verification once
-# (test suite or framework run) to populate the suppression baseline.
+# Historical note: R1_missing_tests inferred a new test obligation from a
+# two-code-file threshold. It is retired. Fresh verification remains mandatory
+# through the independent verification gate, and an explicit user request for
+# tests remains a blocking prompt contract; file count alone does not require a
+# new test file. `/ulw-report` still accepts historical R1 telemetry.
 #
 # Inferred surfaces fold into `delivery_contract_blocking_items`
 # alongside v1's prompt-stated surfaces. `/ulw-status` surfaces both,
@@ -1151,9 +1168,9 @@
 # contract fires". Re-evaluated lazily on each unique-path mark-edit
 # event AND once at stop-guard.
 #
-# Default ON because the historical defect categories `missing_test ×151`
-# and `docs_stale ×62` directly motivate this layer. Opt out on free-form
-# prototyping projects where the missing-test inference would be noisy.
+# Default ON because release/config/docs lockstep defects remain silent and
+# expensive. Opt out only where those five adjacent-surface inferences are not
+# meaningful for the project.
 # Env: OMC_INFERRED_CONTRACT.
 #inferred_contract=on
 

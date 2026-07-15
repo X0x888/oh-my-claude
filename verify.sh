@@ -523,6 +523,7 @@ required_paths=(
   "${CLAUDE_HOME}/skills/autowork/scripts/record-reviewer.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/record-subagent-summary.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/record-pending-agent.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/resolve-agent-model.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/record-plan.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/record-council-coverage.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/record-scope-checklist.sh"
@@ -556,6 +557,7 @@ required_paths=(
   "${CLAUDE_HOME}/skills/ulw-pause/SKILL.md"
   "${CLAUDE_HOME}/skills/goal/SKILL.md"
   "${CLAUDE_HOME}/skills/memory-audit/SKILL.md"
+  "${CLAUDE_HOME}/skills/test-audit/SKILL.md"
   "${CLAUDE_HOME}/skills/frontend-design/SKILL.md"
   "${CLAUDE_HOME}/skills/swiftui-pro/SKILL.md"
   "${CLAUDE_HOME}/skills/swiftui-pro/LICENSE"
@@ -686,6 +688,7 @@ hook_scripts=(
   "${CLAUDE_HOME}/skills/autowork/scripts/record-reviewer.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/record-subagent-summary.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/record-pending-agent.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/resolve-agent-model.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/record-tool-start-revision.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/record-verification.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/record-delivery-action.sh"
@@ -800,6 +803,7 @@ else
     "PreCompact:pre-compact-snapshot.sh"
     "PostCompact:post-compact-summary.sh"
     "StopFailure:stop-failure-handler.sh"
+    "SubagentStart:record-pending-agent.sh"
     "SubagentStop:record-subagent-summary.sh"
     "SubagentStop:record-plan.sh"
     "SubagentStop:record-reviewer.sh"
@@ -1013,12 +1017,19 @@ printf '7. Model tier\n'
 
 conf_path="${CLAUDE_HOME}/oh-my-claude.conf"
 if [[ -f "${conf_path}" ]]; then
-  active_tier="$(grep -E '^model_tier=' "${conf_path}" 2>/dev/null | head -1 | cut -d= -f2)" || true
-  if [[ -n "${active_tier:-}" ]]; then
-    pass "Active model tier: ${active_tier}"
-  else
-    pass "No model tier set (using default: balanced)"
-  fi
+  active_tier="$(read_conf_value model_tier)"
+  case "${active_tier:-}" in
+    quality|balanced|economy)
+      pass "Active model tier: ${active_tier}"
+      ;;
+    "")
+      pass "No model tier set (using default: balanced)"
+      ;;
+    *)
+      info_warn "Invalid saved model tier '${active_tier}' ignored; using default: balanced"
+      pass "Active model tier: balanced (default)"
+      ;;
+  esac
 else
   pass "No config file (using default: balanced)"
 fi
@@ -1027,17 +1038,29 @@ fi
 opus_count=0
 sonnet_count=0
 inherit_count=0
+haiku_count=0
+invalid_model_count=0
+model_agent_count=0
 for agent_file in "${CLAUDE_HOME}/agents/"*.md; do
   [[ -f "${agent_file}" ]] || continue
-  if grep -qE '^model: opus$' "${agent_file}"; then
-    opus_count=$((opus_count + 1))
-  elif grep -qE '^model: sonnet$' "${agent_file}"; then
-    sonnet_count=$((sonnet_count + 1))
-  elif grep -qE '^model: inherit$' "${agent_file}"; then
-    inherit_count=$((inherit_count + 1))
+  model_agent_count=$((model_agent_count + 1))
+  model_line_count="$(grep -cE '^model: ' "${agent_file}" 2>/dev/null || true)"
+  if [[ "${model_line_count}" != "1" ]]; then
+    invalid_model_count=$((invalid_model_count + 1))
+    continue
   fi
+  agent_model="$(sed -n 's/^model: //p' "${agent_file}" | head -1)"
+  case "${agent_model}" in
+    opus) opus_count=$((opus_count + 1)) ;;
+    sonnet) sonnet_count=$((sonnet_count + 1)) ;;
+    inherit) inherit_count=$((inherit_count + 1)) ;;
+    haiku) haiku_count=$((haiku_count + 1)) ;;
+    *) invalid_model_count=$((invalid_model_count + 1)) ;;
+  esac
 done
-printf '  [info] Agent models: %d inherit (session model), %d opus, %d sonnet\n' "${inherit_count}" "${opus_count}" "${sonnet_count}"
+printf '  [info] Agent models: %d inherit (session model), %d opus, %d sonnet, %d haiku, %d invalid/other (total %d)\n' \
+  "${inherit_count}" "${opus_count}" "${sonnet_count}" "${haiku_count}" \
+  "${invalid_model_count}" "${model_agent_count}"
 
 # C8: bundle agent completeness — required_paths only spot-checks a few
 # sentinel agents, so a partial install missing the other agents would

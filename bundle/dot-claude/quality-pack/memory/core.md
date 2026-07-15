@@ -53,12 +53,12 @@ Two failure modes are equally weighted: **stopping short / deferring** (closed b
 
 ## Code & Deliverable Quality
 
-- Test rigorously. Run existing tests; add targeted tests for new behavior. Shipping untested new behavior is incomplete.
+- Treat tests as maintained evidence, not an append-only inventory. Before adding one, name the behavior or failure it uniquely protects and inspect existing proof. Choose `KEEP`, `EXTEND`, `MERGE`, `REPLACE`, `DELETE`, or `ADD`; prefer the cheapest stable layer and extend an owner before creating a parallel test. Delete only when a contract is gone or stronger proof supersedes it, with counterfactual/mutation-equivalent evidence. Age, slowness, or always-green status alone is not deletion evidence; never delete a test just to make red green. Run affected proof first, then the broad suite once when risk or a release boundary warrants it.
 - Re-read changed files before declaring done.
 - Comments explain WHY, not what. No decorative/restating comments. No placeholder stubs (`// TODO`).
 - Debug: reproduce → hypothesize → evidence → verify → fix.
 - Step back before stopping. Excellence ≠ gold-plating:
-    - **Keep going** for implied error handling, tests new behavior requires, **siblings of a class the user exemplified** (`for instance` / `e.g.` / `such as` → the *class* is the scope).
+    - **Keep going** for implied error handling, fresh proof for new behavior, **siblings of a class the user exemplified** (`for instance` / `e.g.` / `such as` → the *class* is the scope).
     - **Stop** at new capabilities, new config surfaces, refactors of untouched code.
     Under ULW, expand to the exemplified class before sharpening. Veteran question: *"would the user be disappointed if a senior shipped only the literal example?"*
 - **No-defer under ULW execution** — findings collapse to three options:

@@ -445,6 +445,12 @@ if [[ -s "${_clf_file}" ]]; then
     *"Ship Wave 1"*|*"ship Wave 1"*) pass=$((pass + 1)) ;;
     *) printf '  FAIL: classifier non-secret prose dropped from prompt_preview\n    row=%s\n' "${_row}" >&2; fail=$((fail + 1)) ;;
   esac
+  if [[ "$(jq -r '._v // empty' <<<"${_row}" 2>/dev/null)" == "1" ]]; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: classifier telemetry row missing _v=1\n    row=%s\n' "${_row}" >&2
+    fail=$((fail + 1))
+  fi
 else
   printf '  FAIL: classifier telemetry file not created (%s)\n' "${_clf_file}" >&2
   fail=$((fail + 1))

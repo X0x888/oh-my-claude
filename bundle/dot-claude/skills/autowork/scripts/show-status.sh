@@ -712,7 +712,11 @@ fi
 # Pending specialist count (jsonl file is separate from session_state.json)
 pending_file="${STATE_ROOT}/${latest_session}/pending_agents.jsonl"
 if [[ -f "${pending_file}" ]]; then
-  pending_count="$(wc -l <"${pending_file}" 2>/dev/null | tr -d '[:space:]')"
+  pending_count="$(jq -Rsr '
+      [split("\n")[] | fromjson?
+       | select((.review_dispatch_abandoned // false) != true)]
+      | length
+    ' "${pending_file}" 2>/dev/null || printf '0')"
 else
   pending_count="0"
 fi
@@ -1062,6 +1066,29 @@ if is_time_tracking_enabled; then
     if is_token_tracking_enabled; then
       _status_tok_line="$(timing_token_line "${_time_agg}")"
       [[ -n "${_status_tok_line}" ]] && printf '%s\n' "${_status_tok_line}"
+      _status_tok_drivers="$(jq -r '
+        # Cache reads are useful volume but normally the cheapest tokens. Rank
+        # optimization targets by fresh work, matching /ulw-report, so a large
+        # healthy cache hit cannot be mislabeled as the cost driver.
+        def fresh: (.input // 0) + (.output // 0) + (.cache_creation // 0);
+        def safe_label:
+          if type == "string" then
+            (gsub("[\u0000-\u001f\u007f]"; "") | .[0:96])
+          else "unknown" end;
+        [((.agent_tokens_by_role // {}) | to_entries
+            | map(. + {n:(.value|fresh)}) | map(select(.n > 0))
+            | sort_by(-.n) | first // null),
+         ((.agent_tokens_by_model // {}) | to_entries
+            | map(. + {n:(.value|fresh)}) | map(select(.n > 0))
+            | sort_by(-.n) | first // null)]
+        | if .[0] == null and .[1] == null then ""
+          else "fresh-token drivers: "
+            + (if .[0] != null then "role \(.[0].key | safe_label)" else "" end)
+            + (if .[0] != null and .[1] != null then " · " else "" end)
+            + (if .[1] != null then "model \(.[1].key | safe_label)" else "" end)
+          end
+      ' <<<"${_time_agg}" 2>/dev/null || true)"
+      [[ -n "${_status_tok_drivers}" ]] && printf '%s\n' "${_status_tok_drivers}"
     fi
   fi
 fi
@@ -1070,7 +1097,10 @@ fi
 metrics_file="${HOME}/.claude/quality-pack/agent-metrics.json"
 if [[ -f "${metrics_file}" ]]; then
   metrics_output="$(jq -r '
-    to_entries | map(select(.key | startswith("_") | not)) | map(select(.value | type == "object")) |
+    def agents:
+      ((with_entries(select((.key | startswith("_") | not) and .key != "agents" and (.value | type) == "object")))
+       + (.agents // {}));
+    agents | to_entries |
     sort_by(-.value.invocations) |
     if length > 0 then
       [.[] | "\(.key): \(.value.invocations) runs, \(.value.clean_verdicts) clean, \(.value.finding_verdicts) findings"] | join("\n")

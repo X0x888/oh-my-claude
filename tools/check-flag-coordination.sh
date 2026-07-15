@@ -48,8 +48,6 @@ OMC_CONFIG="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/omc-config.sh
 # append here AND in the corresponding non-parser path's comment.
 PARSER_EXEMPT_FLAGS=(
   installation_drift_check
-  model_tier
-  model_overrides
   statusline_retention
   statusline_width
 )

@@ -53,15 +53,15 @@ emit_known_flags() {
 gate_level|enum:basic/standard/full|full|gates|Quality-gate enforcement depth
 guard_exhaustion_mode|enum:silent/scorecard/block|block|gates|Behavior when gate-block cap is reached
 verify_confidence_threshold|int|40|gates|Minimum verification confidence (0-100)
-quality_policy|enum:balanced/zero_steering|balanced|gates|Adaptive quality posture for no-steering work
+quality_policy|enum:balanced/zero_steering|balanced|gates|User-only adaptive quality posture for no-steering work; project conf cannot weaken it
 discovered_scope|bool|on|gates|Capture advisory findings + gate stop until addressed
 advisory_no_findings_gate|bool|on|gates|Block stop when N+ advisory specialists dispatched but zero findings recorded (closes fail-open of finding-gated gates)
 advisory_no_findings_threshold|int|2|gates|Specialist dispatch count that activates the advisory-no-findings gate
 ulw_pause_validator|bool|on|gates|/ulw-pause validator: reject pause reasons that name technical-judgment categories without an operational signal
 pause_external_blocker_threshold|int|3|gates|/ulw-pause case-2 (external blocker — rate limit / API down / network failure / dependency upgrade) requires N consecutive attempts on the same blocker before allowing the pause. Ported from openai/codex `continuation.md` 3-turn blocked threshold (v1.46-pre). 0 disables; case-1/3/4 (credentials/destructive/unfamiliar-state) and stakeholder/legal/user-auth signals bypass the gate.
-pretool_intent_guard|true_false|true|gates|Block destructive git/gh under non-execution intent
-agent_first_gate|bool|off|gates|Block first /ulw mutation until a fresh-context specialist returns (default off v1.43+; was mandatory pre-v1.43). See conf.example / docs/customization.md for the full rationale and when to turn it on.
-bg_spawn_gate|true_false|true|gates|Block Bash poll-loop + background detach (hygiene; v1.43.x)
+pretool_intent_guard|true_false|true|gates|User-only: block destructive git/gh under non-execution intent; project conf cannot disable it
+agent_first_gate|bool|off|gates|User-only: block first /ulw mutation until a fresh-context specialist returns (default off v1.43+; was mandatory pre-v1.43). See conf.example / docs/customization.md for the full rationale and when to turn it on.
+bg_spawn_gate|true_false|true|gates|User-only: block Bash poll-loop + background detach (hygiene; v1.43.x); project conf cannot disable it
 stall_threshold|int|12|gates|Consecutive read/grep before stall fires
 excellence_file_count|int|3|gates|Breadth floor for cross-surface completeness review
 dimension_gate_file_count|int|3|gates|Breadth floor combined with semantic/cross-surface evidence
@@ -83,7 +83,7 @@ goal_auto_arm|bool|on|gates|Auto-arm the /goal relentless driver when a fresh /u
 prompt_text_override|bool|on|gates|PreTool guard trusts prompt-text imperative when classifier disagrees
 mark_deferred_strict|bool|on|gates|Reject low-information defer reasons (out of scope / follow-up) AND effort excuses (requires significant effort / blocked by complexity)
 shortcut_ratio_gate|bool|on|gates|Soft-block when wave plan total≥10 AND deferred-to-decided ratio ≥0.5 (catches shortcut-on-big-tasks)
-no_defer_mode|bool|on|gates|v1.40.0: under ULW execution, /mark-deferred refuses, findings status=deferred rejected, stop-guard hard-blocks on any deferred entry. Agent must ship inline or hit a real external blocker.
+no_defer_mode|bool|on|gates|User-only v1.40.0 contract: under ULW execution, /mark-deferred refuses, findings status=deferred rejected, stop-guard hard-blocks on any deferred entry. Project conf cannot disable it.
 god_scope_on_bare_prompt|bool|on|advisory|v1.44: bare-imperative prompts (single-word "fix"/"audit"/"ship") inject GOD-SCOPE-SCAN directive — identify-and-implement across the whole project, no clarification, no defer to next session.
 exhaustive_auth_directive|bool|on|advisory|v1.46: prose open mandates ("implement all"/"comprehensively"/"make it better") inject an OPEN-MANDATE / INNOVATION-GENERATION directive — generate the delta to the most powerful version, not a defect audit; non-blocking, model honors explicit narrow scope.
 circuit_breaker|bool|on|gates|v1.44-pre Port 1: PostToolUse:Bash hook — 3 consecutive same-target failures emit a revert+oracle directive and set a 60s quiet window. Enforces core.md:128 mechanically; ported from Citadel circuit-breaker.js.
@@ -99,8 +99,8 @@ auto_memory|bool|on|memory|Cross-session auto-memory writes (project/feedback/us
 repo_lessons|bool|off|memory|Team-shareable, git-committable memory — record-repo-lesson.sh prepends capped bullets to .claude/lessons.md / .claude/backlog.md at the repo root (v1.48-pre). Off by default; deny-listed at project-conf scope (data-persistence-into-repo security restriction) — user-level conf or env only.
 prompt_persist|bool|on|memory|In-session prompt persistence (recent_prompts.jsonl + last_user_prompt). Off skips writes and degrades prompt-text-override gracefully.
 classifier_telemetry|bool|on|telemetry|Per-turn classifier telemetry to session state
-model_tier|enum:quality/balanced/economy|balanced|cost|Agent model tier (quality=inherit deliberators + opus execution, balanced=inherit planning/review + sonnet execution, economy=sonnet everywhere; inherit rides the session's main model). Install-time agent-file rewrite + runtime /ulw router directive since v1.47; env OMC_MODEL_TIER wins over both conf scopes.
-model_overrides|str||cost|Per-agent model override applied after model_tier and winning over it. Format agent:model,agent:model with model opus/sonnet/haiku/inherit (e.g. oracle:inherit,librarian:haiku). Install-time; env OMC_MODEL_OVERRIDES.
+model_tier|enum:quality/balanced/economy|balanced|cost|User-only quality-first model posture: quality=inherit deliberators + Opus specialists; balanced=default split with high-risk escalation; economy=Sonnet-first with adaptive reasoning-risk escalation. Council lenses escalate only with deep. Inherit means omit model and ride the current session. Project conf cannot set this flag.
+model_overrides|str||cost|User-only highest-precedence per-agent pin. Format agent:model,agent:model with opus/sonnet/haiku/inherit (e.g. oracle:inherit,librarian:haiku). Shipped bare inherit pins are materialized before live omission; custom inherit must already be definition-backed, and custom/plugin named-model pins stay runtime-only. Namespaced inherit is rejected. Env OMC_MODEL_OVERRIDES wins for enforceable pins; project conf cannot set this flag.
 council_deep_default|bool|off|cost|Auto-triggered Council uses --deep routing: selected Sonnet-backed specialists escalate to Opus; inherit deliberators stay on the session model
 stop_failure_capture|bool|on|watchdog|Capture resume_request.json on rate-limit / fatal stop
 resume_request_ttl_days|int|7|watchdog|Days a resume_request stays claimable
@@ -113,7 +113,7 @@ resume_request_per_cwd_cap|int|3|watchdog|Max resume_request artifacts per cwd b
 time_tracking|bool|on|telemetry|Per-tool / per-subagent timing capture; backs Stop epilogue + /ulw-time
 time_tracking_xs_retain_days|pint|30|telemetry|Cross-session timing log retention (days)
 time_card_min_seconds|int|5|telemetry|Min walltime to render the Stop epilogue time card (seconds; 0 = always)
-token_tracking|bool|on|telemetry|Per-prompt token capture (main vs sub-agent) from the transcript; backs /ulw-time + /ulw-status + /ulw-report token surfaces
+token_tracking|bool|on|telemetry|Incremental token capture from parent + nested sidechain transcripts with main/sub-agent and role/model/native-dispatch attribution; backs /ulw-time + /ulw-status + /ulw-report
 state_ttl_days|int|7|cleanup|Days before stale session-state dirs are swept
 output_style|enum:opencode/executive/preserve|opencode|cost|Bundled output style: opencode = oh-my-claude (compact CLI), executive = executive-brief (CEO-style status report), preserve = leave settings.json untouched
 model_drift_canary|bool|on|telemetry|Stop-hook canary detects silent confabulation (claims-vs-tool-calls audit; surfaces in /ulw-report)
@@ -122,7 +122,7 @@ intent_broadening|bool|on|advisory|Inject project-context reconciliation directi
 divergence_directive|bool|on|advisory|Inject divergent-framing directive on paradigm-shape decisions (X-vs-Y, "best way", "how should we", "design the X strategy") — enumerate 2-3 framings inline before commit
 workflow_substrate|bool|on|cost|Permit Claude Code's Workflow tool (deterministic multi-subagent orchestration — parallel/pipeline, JSON output schemas, token budgets, resume; runs in background) as an OPT-IN substrate for HEAVY fan-out (council Phase 8 waves, large audits, migrations) — NOT the default per-prompt path; off keeps all work on the lightweight in-thread path
 inferred_contract|bool|on|gates|Delivery Contract v2: infer required adjacent surfaces (tests/changelog/parser-lockstep/migration-notes) from actual edits, block stop when silently missed
-directive_budget|enum:off/maximum/balanced/minimal|balanced|advisory|How much injected pre-answer scaffolding you see per prompt: suppresses lower-priority directives when prompt-tax gets dense. minimal = leanest preamble (pick this if every response feels front-loaded), maximum = never suppress, balanced = default
+directive_budget|enum:off/maximum/balanced/minimal|balanced|advisory|How much injected pre-answer scaffolding you see per prompt: whole-payload + optional caps trim lower-priority repetition while mandatory quality contracts remain fail-safe. minimal = leanest optional layer, maximum = widest bounded aperture, off = very high aperture with runaway ceiling, balanced = default
 blindspot_ttl_seconds|pint|86400|gates|Cache TTL (seconds) for blindspot inventory; default 86400 = 24h
 EOF
 }
@@ -315,21 +315,261 @@ find_project_conf() {
   return 1
 }
 
-# Read a value with project-overrides-user precedence, matching the
-# behavior of `load_conf` in common.sh. Used by `show` so the table
-# reflects what the harness will actually see at runtime, not just what
-# the user wrote at user scope.
+# Project-conf restrictions are one contract across the runtime and config UX.
+# Keep this exact list aligned with common.sh's `_parse_conf_file` deny-list and
+# reuse this single local registry for reads, writes, source markers, warnings,
+# and preset filtering so /omc-config cannot drift internally.
+PROJECT_DENIED_FLAGS=(
+  pretool_intent_guard
+  bg_spawn_gate
+  agent_first_gate
+  no_defer_mode
+  quality_policy
+  model_tier
+  model_overrides
+  repo_lessons
+  auto_tune
+)
+
+flag_is_project_denied() {
+  local requested="${1:-}" denied_flag
+  for denied_flag in "${PROJECT_DENIED_FLAGS[@]}"; do
+    [[ "${requested}" == "${denied_flag}" ]] && return 0
+  done
+  return 1
+}
+
+flag_is_model_user_only() {
+  case "${1:-}" in
+    model_tier|model_overrides) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Keep the write-time `inherit` authority boundary independent of custom file
+# names. Shipped definitions can be reconstructed by switch-tier.sh; custom
+# definitions are user-owned and must never be rewritten as a side effect of
+# saving a pin. Keep these rosters lockstep with the bundle, install.sh, and
+# switch-tier.sh; tests/test-omc-config.sh regression-locks their union.
+OMC_CONFIG_SHIPPED_INHERIT_AGENTS='abstraction-critic chief-of-staff divergent-framer draft-writer editor-critic excellence-reviewer metis oracle prometheus quality-planner quality-reviewer release-reviewer rigor-reviewer writing-architect'
+OMC_CONFIG_SHIPPED_FIXED_AGENTS='atlas backend-api-developer briefing-analyst data-lens design-lens design-reviewer devops-infrastructure-engineer frontend-developer fullstack-feature-builder growth-lens ios-core-engineer ios-deployment-specialist ios-ecosystem-integrator ios-ui-developer librarian literature-scout product-lens quality-researcher research-data-analyst security-lens sre-lens test-automation-engineer visual-craft-lens'
+
+model_agent_is_shipped() {
+  local wanted="${1:-}" agent
+  for agent in ${OMC_CONFIG_SHIPPED_INHERIT_AGENTS} \
+      ${OMC_CONFIG_SHIPPED_FIXED_AGENTS}; do
+    [[ "${wanted}" == "${agent}" ]] && return 0
+  done
+  return 1
+}
+
+# `inherit` is represented by Agent-model omission, so it can only be a live
+# override when the bare installed definition already declares inherit. The
+# official set path materializes shipped bare pins immediately. Custom and
+# plugin definitions are never rewritten; custom inherit is valid only when
+# the custom file already declares it exactly once, while namespaced plugin
+# inherit cannot be proven or materialized.
+inherit_override_is_materialized() {
+  local name="${1:-}" agent_file line model_count=0 model_value=""
+  [[ "${name}" =~ ^[A-Za-z0-9_.-]+$ ]] || return 1
+  agent_file="${HOME}/.claude/agents/${name}.md"
+  [[ -f "${agent_file}" ]] || return 1
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    case "${line}" in
+      model:*)
+        model_count=$((model_count + 1))
+        model_value="${line#model: }"
+        ;;
+    esac
+  done < "${agent_file}"
+  [[ "${model_count}" -eq 1 && "${model_value}" == "inherit" ]]
+}
+
+inherit_override_is_materializable() {
+  local name="${1:-}" agent_file model_count model_value
+  [[ "${name}" =~ ^[A-Za-z0-9_.-]+$ ]] || return 1
+  agent_file="${HOME}/.claude/agents/${name}.md"
+  [[ -f "${agent_file}" ]] || return 1
+  model_count="$(grep -cE '^model: ' "${agent_file}" 2>/dev/null || true)"
+  model_value="$(sed -n 's/^model: //p' "${agent_file}" | head -1)"
+  [[ "${model_count}" == "1" \
+      && "${model_value}" =~ ^(inherit|opus|sonnet|haiku)$ ]]
+}
+
+# Keep this parser in lockstep with common.sh's
+# `omc_valid_model_overrides_summary`: `show` must not present a malformed or
+# unenforceable environment entry as an active pin when the live resolver will
+# ignore it. Namespaced plugin identities contain one additional colon, so
+# split on the final colon rather than the first.
+valid_model_overrides_summary() {
+  local raw="${1:-}" pair name model summary=""
+  local -a pairs=()
+  [[ -z "${raw}" ]] && return 0
+  IFS=',' read -ra pairs <<< "${raw}"
+  for pair in "${pairs[@]}"; do
+    pair="${pair//[[:space:]]/}"
+    [[ "${pair}" == *:* ]] || continue
+    name="${pair%:*}"
+    model="${pair##*:}"
+    [[ "${name}" =~ ^[A-Za-z0-9_.-]+(:[A-Za-z0-9_.-]+)?$ ]] || continue
+    case "${model}" in
+      opus|sonnet|haiku|inherit) ;;
+      *) continue ;;
+    esac
+    if [[ "${model}" == "inherit" ]] \
+        && ! inherit_override_is_materialized "${name}"; then
+      continue
+    fi
+    summary="${summary}${summary:+,}${name}:${model}"
+  done
+  printf '%s' "${summary}"
+}
+
+model_overrides_have_invalid_entries() {
+  local raw="${1:-}" normalized pair name model
+  local -a pairs=()
+  [[ -z "${raw}" ]] && return 1
+  normalized="${raw//[[:space:]]/}"
+  [[ -n "${normalized}" ]] || return 0
+  case "${normalized}" in
+    ,*|*,|*,,*) return 0 ;;
+  esac
+  IFS=',' read -ra pairs <<< "${normalized}"
+  for pair in "${pairs[@]}"; do
+    [[ -n "${pair}" ]] || return 0
+    if [[ "${pair}" != *:* ]]; then
+      return 0
+    fi
+    name="${pair%:*}"
+    model="${pair##*:}"
+    if [[ ! "${name}" =~ ^[A-Za-z0-9_.-]+(:[A-Za-z0-9_.-]+)?$ ]]; then
+      return 0
+    fi
+    case "${model}" in
+      opus|sonnet|haiku|inherit) ;;
+      *) return 0 ;;
+    esac
+    if [[ "${model}" == "inherit" ]] \
+        && ! inherit_override_is_materialized "${name}"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Strict write-time validator. Runtime and `show` intentionally fail soft for
+# hand-edited legacy config, but `/omc-config set` must not persist a value the
+# resolver will partly or wholly discard. Empty is the supported clear action.
+# Shipped bare inherit is accepted because the write path can materialize it.
+# Custom bare inherit is accepted only when the user-owned definition already
+# declares inherit exactly once. Namespaced inherit is rejected because
+# Agent-model omission cannot rewrite or prove a plugin definition. Explicit
+# named-model custom/plugin pins remain valid runtime-only pins.
+model_overrides_value_is_valid() {
+  local raw="${1-}" normalized pair name model
+  local -a pairs=()
+  [[ -z "${raw}" ]] && return 0
+  normalized="${raw//[[:space:]]/}"
+  [[ -n "${normalized}" ]] || return 1
+  case "${normalized}" in
+    ,*|*,|*,,*) return 1 ;;
+  esac
+  IFS=',' read -ra pairs <<< "${normalized}"
+  [[ "${#pairs[@]}" -gt 0 ]] || return 1
+  for pair in "${pairs[@]}"; do
+    [[ "${pair}" == *:* ]] || return 1
+    name="${pair%:*}"
+    model="${pair##*:}"
+    [[ "${name}" =~ ^[A-Za-z0-9_.-]+(:[A-Za-z0-9_.-]+)?$ ]] \
+      || return 1
+    case "${model}" in
+      opus|sonnet|haiku|inherit) ;;
+      *) return 1 ;;
+    esac
+    if [[ "${model}" == "inherit" ]]; then
+      [[ "${name}" != *:* ]] || return 1
+      if model_agent_is_shipped "${name}"; then
+        inherit_override_is_materializable "${name}" || return 1
+      else
+        inherit_override_is_materialized "${name}" || return 1
+      fi
+    fi
+  done
+  return 0
+}
+
+# User-conf values as the runtime actually consumes them. This is deliberately
+# fail-soft: manually edited malformed rows remain on disk for diagnosis, but
+# never appear as active values in `show`/`list-flags`.
+read_effective_user_conf_value() {
+  local key="$1" raw
+  raw="$(read_conf_value "${USER_CONF}" "${key}")"
+  case "${key}" in
+    model_tier)
+      case "${raw}" in
+        quality|balanced|economy) printf '%s' "${raw}" ;;
+      esac
+      ;;
+    model_overrides)
+      valid_model_overrides_summary "${raw}"
+      ;;
+    *) printf '%s' "${raw}" ;;
+  esac
+}
+
+# The common runtime gives valid environment values precedence over both conf
+# scopes. `/omc-config show` reproduces that for the user-facing model controls.
+# A malformed tier is ignored so it cannot silently demote a saved Quality
+# posture; user conf wins, or Balanced remains the no-valid-source default.
+model_env_override_value() {
+  case "${1:-}" in
+    model_tier)
+      [[ -n "${OMC_MODEL_TIER:-}" ]] || return 1
+      case "${OMC_MODEL_TIER}" in
+        quality|balanced|economy) printf '%s' "${OMC_MODEL_TIER}" ;;
+        *) return 1 ;;
+      esac
+      ;;
+    model_overrides)
+      [[ -n "${OMC_MODEL_OVERRIDES:-}" ]] || return 1
+      local valid_overrides
+      valid_overrides="$(valid_model_overrides_summary \
+        "${OMC_MODEL_OVERRIDES}")"
+      [[ -n "${valid_overrides}" ]] || return 1
+      printf '%s' "${valid_overrides}"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+warn_model_env_shadow() {
+  local env_tier="" env_overrides=""
+  env_tier="$(model_env_override_value model_tier 2>/dev/null || true)"
+  env_overrides="$(model_env_override_value model_overrides 2>/dev/null || true)"
+  if [[ -n "${env_tier}" || -n "${env_overrides}" ]]; then
+    printf 'omc-config: WARNING: active OMC_MODEL_TIER/OMC_MODEL_OVERRIDES still govern this process at runtime. Saved config was materialized for persistent/direct-skill use; remove the environment override and start a new session to use the saved posture.\n' >&2
+  fi
+}
+
+# Read a value with environment > allowed-project > user precedence, matching
+# `load_conf` in common.sh. Denied project rows are deliberately invisible:
+# the table reflects what the harness actually sees, not merely what a file
+# contains.
 read_effective_value() {
   local key="$1"
-  local proj_conf proj_val user_val
-  if proj_conf="$(find_project_conf)"; then
+  local proj_conf proj_val user_val env_val
+  if env_val="$(model_env_override_value "${key}")"; then
+    printf '%s' "${env_val}"
+    return 0
+  fi
+  if ! flag_is_project_denied "${key}" && proj_conf="$(find_project_conf)"; then
     proj_val="$(read_conf_value "${proj_conf}" "${key}")"
     if [[ -n "${proj_val}" ]]; then
       printf '%s' "${proj_val}"
       return 0
     fi
   fi
-  user_val="$(read_conf_value "${USER_CONF}" "${key}")"
+  user_val="$(read_effective_user_conf_value "${key}")"
   printf '%s' "${user_val}"
 }
 
@@ -450,6 +690,12 @@ validate_kv() {
             return 2
             ;;
         esac
+      fi
+      if [[ "${key}" == "model_overrides" ]] \
+          && ! model_overrides_value_is_valid "${value}"; then
+        printf 'omc-config: model_overrides must be empty or comma-separated agent:model pins; agent is a bare or one-colon namespaced id, model is opus|sonnet|haiku|inherit, and inherit requires a bare materializable agent (got: %s)\n' \
+          "${value}" >&2
+        return 2
       fi
       ;;
   esac
@@ -581,7 +827,55 @@ cmd_show() {
   printf 'oh-my-claude config\n'
   printf '  user conf:    %s%s\n' "${USER_CONF}" "${conf_marker}"
   if [[ -n "${proj_conf}" ]]; then
-    printf '  project conf: %s (overrides user)\n' "${proj_conf}"
+    printf '  project conf: %s (overrides user except user-only flags)\n' "${proj_conf}"
+    local ignored_project_flags="" denied_flag
+    for denied_flag in "${PROJECT_DENIED_FLAGS[@]}"; do
+      if [[ -n "$(read_conf_value "${proj_conf}" "${denied_flag}")" ]]; then
+        ignored_project_flags="${ignored_project_flags}${ignored_project_flags:+,}${denied_flag}"
+      fi
+    done
+    if [[ -n "${ignored_project_flags}" ]]; then
+      printf '  ! ignored project entries for user-only flags: %s\n' "${ignored_project_flags}"
+    fi
+    if [[ "${ignored_project_flags}" == *model_tier* ]] \
+        || [[ "${ignored_project_flags}" == *model_overrides* ]]; then
+      printf '  ! project model_tier/model_overrides entries are ignored; model strength and cost remain user-controlled.\n'
+    fi
+  fi
+  if [[ -n "${OMC_MODEL_TIER:-}" ]] \
+      && [[ ! "${OMC_MODEL_TIER}" =~ ^(quality|balanced|economy)$ ]]; then
+    printf '  ! invalid OMC_MODEL_TIER=%s is ignored; saved user tier or the balanced default remains effective.\n' \
+      "${OMC_MODEL_TIER}"
+  fi
+  if [[ -n "${OMC_MODEL_OVERRIDES:-}" ]] \
+      && model_overrides_have_invalid_entries "${OMC_MODEL_OVERRIDES}"; then
+    local valid_env_overrides=""
+    valid_env_overrides="$(valid_model_overrides_summary \
+      "${OMC_MODEL_OVERRIDES}")"
+    if [[ -n "${valid_env_overrides}" ]]; then
+      printf '  ! OMC_MODEL_OVERRIDES contains invalid entries; rejected pairs are ignored and only the accepted environment pins govern.\n'
+    else
+      printf '  ! OMC_MODEL_OVERRIDES contains no valid pins and is ignored; saved user pins remain effective.\n'
+    fi
+  fi
+  local saved_model_tier_raw saved_model_overrides_raw valid_saved_overrides
+  saved_model_tier_raw="$(read_conf_value "${USER_CONF}" model_tier)"
+  if [[ -n "${saved_model_tier_raw}" ]] \
+      && [[ ! "${saved_model_tier_raw}" =~ ^(quality|balanced|economy)$ ]]; then
+    printf '  ! saved model_tier=%s is invalid and ignored; a valid environment tier or the balanced default remains effective.\n' \
+      "${saved_model_tier_raw}"
+  fi
+  saved_model_overrides_raw="$(read_conf_value \
+    "${USER_CONF}" model_overrides)"
+  if [[ -n "${saved_model_overrides_raw}" ]] \
+      && model_overrides_have_invalid_entries "${saved_model_overrides_raw}"; then
+    valid_saved_overrides="$(valid_model_overrides_summary \
+      "${saved_model_overrides_raw}")"
+    if [[ -n "${valid_saved_overrides}" ]]; then
+      printf '  ! saved model_overrides contains invalid entries; rejected pairs are ignored by the live resolver.\n'
+    else
+      printf '  ! saved model_overrides contains no valid pins and is ignored by the live resolver.\n'
+    fi
   fi
   printf '  installed:    %s\n' "${installed_v:-unknown}"
   printf '  bundle:       %s\n' "${bundle_v:-unknown}"
@@ -596,10 +890,8 @@ cmd_show() {
   local name flag_type default category desc
   while IFS='|' read -r name flag_type default category desc; do
     [[ -z "${name}" ]] && continue
-    # Effective value uses project>user>default precedence (matches
-    # load_conf in common.sh). Without this, project-scope users would
-    # see the wrong "current value" — the user-conf value masking the
-    # project override they actually wrote.
+    # Effective value uses environment>allowed-project>user>default
+    # precedence (matches load_conf in common.sh).
     local val
     val="$(read_effective_value "${name}")"
     [[ -z "${val}" ]] && val="${default}"
@@ -607,13 +899,17 @@ cmd_show() {
       printf '  -- %s --\n' "${category}"
       prev_category="${category}"
     fi
-    # Build the source annotation (P=project, U=user, D=default) so the
-    # user can see *where* the effective value comes from when both
-    # confs have entries.
+    # Build the source annotation so users can see which authority supplied
+    # the effective value. Malformed tiers and wholly invalid override sets are
+    # ignored; mixed override sets retain [E] precedence for their valid subset.
     local marker="  " source_tag=""
-    if [[ -n "${proj_conf}" ]] && [[ -n "$(read_conf_value "${proj_conf}" "${name}")" ]]; then
+    if model_env_override_value "${name}" >/dev/null 2>&1; then
+      source_tag=" [E]"
+    elif [[ -n "${proj_conf}" ]] \
+        && ! flag_is_project_denied "${name}" \
+        && [[ -n "$(read_conf_value "${proj_conf}" "${name}")" ]]; then
       source_tag=" [P]"
-    elif [[ -n "$(read_conf_value "${USER_CONF}" "${name}")" ]]; then
+    elif [[ -n "$(read_effective_user_conf_value "${name}")" ]]; then
       source_tag=" [U]"
     fi
     if [[ -n "${val}" && "${val}" != "${default}" ]]; then
@@ -623,7 +919,16 @@ cmd_show() {
   done < <(emit_known_flags)
 
   printf '\n  Marked * = differs from default.'
-  if [[ -n "${proj_conf}" ]]; then
+  local has_effective_model_env=0
+  if model_env_override_value model_tier >/dev/null 2>&1 \
+      || model_env_override_value model_overrides >/dev/null 2>&1; then
+    has_effective_model_env=1
+  fi
+  if (( has_effective_model_env == 1 )) && [[ -n "${proj_conf}" ]]; then
+    printf '   [E]=environment override, [P]=project override, [U]=user setting'
+  elif (( has_effective_model_env == 1 )); then
+    printf '   [E]=environment override, [U]=user setting'
+  elif [[ -n "${proj_conf}" ]]; then
     printf '   [P]=project override, [U]=user setting'
   fi
   printf '\n'
@@ -639,7 +944,7 @@ cmd_list_flags_json() {
   while IFS='|' read -r name flag_type default category desc; do
     [[ -z "${name}" ]] && continue
     local val
-    val="$(read_conf_value "${USER_CONF}" "${name}")"
+    val="$(read_effective_user_conf_value "${name}")"
     [[ -z "${val}" ]] && val="${default}"
     out="$(printf '%s' "${out}" | jq \
       --arg name "${name}" \
@@ -670,19 +975,40 @@ cmd_set() {
     validate_kv "${kv}"
   done
 
-  # Mirror `apply-preset`'s defense-in-depth: if this batch sets a new
-  # `model_tier`, capture the prior value before the write so we can
-  # auto-invoke `apply-tier` after. Without this, a fine-tune flow that
-  # writes `model_tier=quality` via `set` (rather than via a preset)
-  # would leave the conf claiming quality while agent files still say
-  # sonnet — silent quality regression. The SKILL flow's "explicitly
-  # call apply-tier" instruction relies on the model remembering across
-  # turns; this backstops that.
+  # A project-scoped write here would be worse than a no-op: common.sh would
+  # ignore the line, while the historical model_tier side effect below could
+  # still rewrite the machine-wide installed agent fallbacks. Reject the whole
+  # batch before touching either config or agent files.
+  if [[ "${scope}" == "project" ]]; then
+    for kv in "$@"; do
+      if flag_is_project_denied "${kv%%=*}"; then
+        if flag_is_model_user_only "${kv%%=*}"; then
+          printf 'omc-config: %s is user-only; use `set user %s` (project config cannot choose model strength or cost)\n' \
+            "${kv%%=*}" "${kv}" >&2
+        else
+          printf 'omc-config: %s is user-only and ignored by project config; use `set user %s`\n' \
+            "${kv%%=*}" "${kv}" >&2
+        fi
+        return 2
+      fi
+    done
+  fi
+
+  # Mirror `apply-preset`'s defense-in-depth for both halves of model config.
+  # A tier change must rewrite declarations, and an override-only change must
+  # reapply the current tier so direct-skill frontmatter matches the live ULW
+  # resolver immediately. One switch call handles a batch that changes both.
   local prior_tier="" new_tier=""
+  local prior_overrides="" new_overrides="" has_new_overrides=0
+  local overrides_changed=0
   local prior_style="" new_style=""
   for kv in "$@"; do
     case "${kv%%=*}" in
       model_tier) new_tier="${kv#*=}" ;;
+      model_overrides)
+        new_overrides="${kv#*=}"
+        has_new_overrides=1
+        ;;
       output_style) new_style="${kv#*=}" ;;
     esac
   done
@@ -692,19 +1018,62 @@ cmd_set() {
   if [[ -n "${new_style}" ]]; then
     prior_style="$(read_conf_value "${conf}" output_style)"
   fi
+  if (( has_new_overrides == 1 )); then
+    prior_overrides="$(read_conf_value "${conf}" model_overrides)"
+    if [[ "${new_overrides}" != "${prior_overrides}" ]]; then
+      overrides_changed=1
+    fi
+  fi
 
   write_conf_atomic "${conf}" "$@"
   printf 'omc-config: wrote %d key(s) to %s\n' "$#" "${conf}"
 
+  local model_apply_tier="" model_apply_reason=""
   if [[ -n "${new_tier}" && "${new_tier}" != "${prior_tier}" ]]; then
     printf 'omc-config: model_tier changed (%s -> %s); rewriting agents...\n' \
       "${prior_tier:-unset}" "${new_tier}"
+    model_apply_tier="${new_tier}"
+    model_apply_reason="tier"
+  elif (( overrides_changed == 1 )); then
+    model_apply_tier="$(read_conf_value "${USER_CONF}" model_tier)"
+    case "${model_apply_tier}" in
+      quality|balanced|economy) ;;
+      *) model_apply_tier="balanced" ;;
+    esac
+    model_apply_reason="overrides"
+    printf 'omc-config: model_overrides changed; reapplying %s tier to direct-skill agent fallbacks...\n' \
+      "${model_apply_tier}"
+  fi
+
+  if [[ -n "${model_apply_tier}" ]]; then
+    # A changed quality override can leave an old pin indistinguishable from
+    # the tier's own materialized frontmatter (oracle:opus, librarian:haiku,
+    # etc.). The switcher reconstructs both shipped declaration classes on
+    # every tier, so Economy also repairs legacy flattened installs before
+    # pins are reapplied. --force-reconstruct remains a compatibility signal
+    # for older installed switchers on Quality transitions.
+    local force_reconstruct=0
+    if [[ "${model_apply_tier}" == "quality" ]]; then
+      if (( overrides_changed == 1 )) || [[ "${prior_tier}" == "economy" ]]; then
+        force_reconstruct=1
+      fi
+    fi
     if [[ -x "${HOME}/.claude/switch-tier.sh" ]]; then
-      cmd_apply_tier "${new_tier}" || \
-        printf 'omc-config: WARNING: apply-tier failed; agent files may be out of sync with conf\n' >&2
+      cmd_apply_saved_tier "${model_apply_tier}" "${force_reconstruct}" || {
+        printf 'omc-config: WARNING: apply-tier failed after model %s change; saved config was written, but agent files and live routing may be out of sync. An inherit pin is active only when its bare definition already says inherit; repair the switcher and rerun this tier to materialize shipped pins.\n' \
+          "${model_apply_reason}" >&2
+        if (( force_reconstruct == 1 )); then
+          printf 'omc-config: Restore or reinstall ~/.claude/switch-tier.sh, then rerun the saved tier; its embedded rosters reconstruct canonical declarations without the source clone.\n' >&2
+        fi
+      }
+      warn_model_env_shadow
     else
-      printf 'omc-config: WARNING: switch-tier.sh not installed; run `bash %s/.claude/switch-tier.sh %s` manually\n' \
-        "${HOME}" "${new_tier}" >&2
+      if (( force_reconstruct == 1 )); then
+        printf 'omc-config: WARNING: switch-tier.sh is missing; saved config was written, but an inherit pin is active only when its bare definition already says inherit. Reinstall the switcher, then rerun the saved tier to reconstruct canonical declarations and materialize the current quality overrides.\n' >&2
+      else
+        printf 'omc-config: WARNING: switch-tier.sh not installed; saved config was written, but an inherit pin is active only when its bare definition already says inherit. Reinstall it, then run `bash %s/.claude/switch-tier.sh %s` manually\n' \
+          "${HOME}" "${model_apply_tier}" >&2
+      fi
     fi
   fi
 
@@ -773,9 +1142,15 @@ cmd_apply_preset() {
   conf="$(resolve_scope_conf "${scope}")"
 
   local pairs=()
-  local line
+  local omitted_user_only=()
+  local line key
   while IFS= read -r line; do
     [[ -z "${line}" ]] && continue
+    key="${line%%=*}"
+    if [[ "${scope}" == "project" ]] && flag_is_project_denied "${key}"; then
+      omitted_user_only+=( "${key}" )
+      continue
+    fi
     pairs+=( "${line}" )
   done < <(emit_preset "${profile}")
 
@@ -807,6 +1182,13 @@ cmd_apply_preset() {
 
   write_conf_atomic "${conf}" "${pairs[@]}"
   printf 'omc-config: applied preset "%s" (%d keys) to %s\n' "${profile}" "${#pairs[@]}" "${conf}"
+  if [[ ${#omitted_user_only[@]} -gt 0 ]]; then
+    printf 'omc-config: project scope preserved user-wide restricted settings; omitted user-only preset key(s): %s\n' \
+      "$(IFS=,; printf '%s' "${omitted_user_only[*]}")"
+    if printf '%s\n' "${omitted_user_only[@]}" | grep -qE '^model_(tier|overrides)$'; then
+      printf 'omc-config: model strength and cost are unchanged at the active user/environment setting.\n'
+    fi
+  fi
 
   # Auto-fire the agent-file rewrite when the tier changed. Skip when
   # unchanged or when the switcher is missing (apply-tier surfaces its
@@ -816,8 +1198,18 @@ cmd_apply_preset() {
     printf 'omc-config: model_tier changed (%s -> %s); rewriting agents...\n' \
       "${prior_tier:-unset}" "${new_tier}"
     if [[ -x "${HOME}/.claude/switch-tier.sh" ]]; then
-      cmd_apply_tier "${new_tier}" || \
+      # The preset write above has already changed conf, so switch-tier cannot
+      # infer the old materialized tier from disk. Economy erased the shipped
+      # inherit split, and a surviving `agent:inherit` override can otherwise
+      # make the new Quality state look canonical. Pass the captured prior tier
+      # through as an explicit reconstruction decision.
+      local force_reconstruct=0
+      if [[ "${new_tier}" == "quality" && "${prior_tier}" == "economy" ]]; then
+        force_reconstruct=1
+      fi
+      cmd_apply_saved_tier "${new_tier}" "${force_reconstruct}" || \
         printf 'omc-config: WARNING: apply-tier failed; agent files may be out of sync with conf\n' >&2
+      warn_model_env_shadow
     else
       printf 'omc-config: WARNING: switch-tier.sh not installed; run `bash %s/.claude/switch-tier.sh %s` manually\n' \
         "${HOME}" "${new_tier}" >&2
@@ -843,6 +1235,7 @@ cmd_mark_completed() {
 
 cmd_apply_tier() {
   local tier="${1:-}"
+  local force_reconstruct="${2:-0}"
   if [[ -z "${tier}" ]]; then
     printf 'omc-config: apply-tier requires <quality|balanced|economy>\n' >&2
     return 2
@@ -851,13 +1244,36 @@ cmd_apply_tier() {
     printf 'omc-config: tier must be quality|balanced|economy (got: %s)\n' "${tier}" >&2
     return 2
   fi
+  case "${force_reconstruct}" in
+    0|1) ;;
+    *)
+      printf 'omc-config: internal force-reconstruct value must be 0|1 (got: %s)\n' \
+        "${force_reconstruct}" >&2
+      return 2
+      ;;
+  esac
   local switcher="${HOME}/.claude/switch-tier.sh"
   if [[ ! -x "${switcher}" ]]; then
     printf 'omc-config: switch-tier.sh not found at %s\n' "${switcher}" >&2
     printf '            Re-run install.sh to refresh the bundle, then retry.\n' >&2
     return 1
   fi
-  bash "${switcher}" "${tier}"
+  if [[ "${force_reconstruct}" == "1" ]]; then
+    bash "${switcher}" "${tier}" --force-reconstruct
+  else
+    bash "${switcher}" "${tier}"
+  fi
+}
+
+# Persistent `set user` / user-preset writes materialize the value just saved
+# to disk. A launch-time environment override still governs live routing, but
+# must not silently rewrite direct-skill frontmatter to a different value than
+# the persistent config the user requested.
+cmd_apply_saved_tier() {
+  (
+    unset OMC_MODEL_TIER OMC_MODEL_OVERRIDES
+    cmd_apply_tier "$@"
+  )
 }
 
 cmd_install_watchdog() {
@@ -888,6 +1304,7 @@ Subcommands:
 Conventions:
   user scope    -> ~/.claude/oh-my-claude.conf
   project scope -> $(pwd)/.claude/oh-my-claude.conf
+                   (security/persistence/model authority flags are user-only)
 
 Exit codes:
   0 success | 1 runtime failure | 2 invalid invocation

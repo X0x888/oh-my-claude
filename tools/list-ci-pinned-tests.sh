@@ -9,6 +9,8 @@
 #   - compound lines with multiple tests
 #   - block forms (`run: |` / `run: >`) whose indented body contains
 #     one or more bash test invocations
+#   - `bash tools/run-tests.sh --full ...`, which dynamically represents every
+#     current `tests/test-*.sh` file without maintaining a second CI list
 
 set -euo pipefail
 
@@ -20,6 +22,9 @@ if [[ ! -f "${VALIDATE_YML}" ]]; then
   printf 'validate workflow not found: %s\n' "${VALIDATE_YML}" >&2
   exit 1
 fi
+
+scan_tmp="$(mktemp "${TMPDIR:-/tmp}/omc-ci-pins.XXXXXX")"
+trap 'rm -f "${scan_tmp}"' EXIT
 
 awk '
 function leading_spaces(line, pos) {
@@ -34,6 +39,10 @@ function emit_tests(text, remaining) {
   while (match(remaining, /tests\/test-[A-Za-z0-9._-]+\.sh/)) {
     print substr(remaining, RSTART, RLENGTH)
     remaining = substr(remaining, RSTART + RLENGTH)
+  }
+  if (text ~ /(^|[[:space:]])(bash[[:space:]]+)?tools\/run-tests\.sh([[:space:]]|$)/ &&
+      text ~ /(^|[[:space:]])--full([[:space:]]|$)/) {
+    print "__OMC_FULL_BASH_SUITE__"
   }
 }
 
@@ -57,9 +66,9 @@ BEGIN {
     }
   }
 
-  if ($0 ~ /^[[:space:]]+run:[[:space:]]*/) {
+  if ($0 ~ /^[[:space:]]+(-[[:space:]]+)?run:[[:space:]]*/) {
     run_text = $0
-    sub(/^[[:space:]]+run:[[:space:]]*/, "", run_text)
+    sub(/^[[:space:]]+(-[[:space:]]+)?run:[[:space:]]*/, "", run_text)
     if (run_text ~ /^(\||>)[-+]?$/) {
       in_block = 1
       block_indent = leading_spaces($0)
@@ -68,4 +77,14 @@ BEGIN {
     emit_tests(run_text)
   }
 }
-' "${VALIDATE_YML}" | sort -u
+' "${VALIDATE_YML}" > "${scan_tmp}"
+
+{
+  awk '/^tests\/test-[A-Za-z0-9._-]*\.sh$/{print}' "${scan_tmp}"
+  if grep -qx '__OMC_FULL_BASH_SUITE__' "${scan_tmp}"; then
+    for test_path in "${REPO_ROOT}"/tests/test-*.sh; do
+      [[ -f "${test_path}" ]] || continue
+      printf '%s\n' "${test_path#"${REPO_ROOT}/"}"
+    done
+  fi
+} | LC_ALL=C sort -u

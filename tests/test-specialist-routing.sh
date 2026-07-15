@@ -84,8 +84,8 @@ _run_router() {
 }
 
 _seed_completed_council_handoff() {
-  local session_id="$1" state_file now
-  _run_router "${session_id}" "ulw evaluate my project" >/dev/null
+  local session_id="$1" model_tier="${2:-}" state_file now
+  _run_router "${session_id}" "ulw evaluate my project" "${PWD}" "${model_tier}" >/dev/null
   state_file="${_test_state_root}/${session_id}/session_state.json"
   now="$(date +%s)"
   jq --arg now "${now}" \
@@ -161,21 +161,73 @@ out_false_self_audit="$(_run_router "t-self-audit-false-positive" \
 assert_not_contains "basename-only directory cannot trigger Council self-audit" \
   "ADAPTIVE COUNCIL EVALUATION DETECTED" "${out_false_self_audit}"
 
-# Economy normally pins Agent calls to Sonnet, but an explicit Council deep
-# request has a narrow precedence exception for selected Sonnet-backed Council
-# specialists. Inherit-tier deliberators must remain unpinned.
+# Explicit Council deep is resolved by the same runtime matrix as ordinary
+# dispatches. It lifts selected shipped-Sonnet specialists, keeps inherit as
+# omission, and remains below explicit per-agent overrides in precedence.
 out_deep_economy="$(_run_router "t-council-deep-economy" \
   "ulw evaluate my project --deep" "${PWD}" "economy")"
 assert_contains "deep+economy Council route detected" \
   "ADAPTIVE COUNCIL EVALUATION DETECTED" "${out_deep_economy}"
-assert_contains "deep+economy selected Council exception is explicit" \
-  'selected Sonnet-backed Council specialists MAY instead receive `model: "opus"`' "${out_deep_economy}"
-assert_contains "deep+economy keeps non-Council calls on Sonnet" \
-  'All other economy-tier Agent calls stay on `model: "sonnet"`' "${out_deep_economy}"
+assert_contains "deep+economy resolver sees Council deep context" \
+  'context=`council`, deep=`1`' "${out_deep_economy}"
+assert_contains "deep+economy shipped-Sonnet specialists resolve Opus" \
+  'pass `model: "opus"`' "${out_deep_economy}"
 assert_contains "deep+economy preserves inherit omission" \
-  'for `model: inherit` deliberators participating in this deep Council, OMIT the model parameter' "${out_deep_economy}"
-assert_not_contains "deep+economy removes contradictory every-call mandate" \
-  'On EVERY `Agent()` call' "${out_deep_economy}"
+  'OMIT the `model` parameter (inherit the current session model)' "${out_deep_economy}"
+assert_contains "deep+economy keeps explicit override precedence" \
+  'explicit user/env override > Council deep' "${out_deep_economy}"
+
+# Explicit reasoning uncertainty is deliberately narrower than generic task
+# breadth/risk. It buys one inherited deliberation before fixed-model
+# implementation and auto-deepens a Council even when the user does not know
+# about --deep. Preserve that requirement across a genuine continuation, but
+# never leak it into the next unrelated objective.
+_uncertainty_sid="t-model-explicit-uncertainty"
+out_uncertain_standard="$(_run_router "${_uncertainty_sid}" \
+  "ulw fix this tricky intermittent failure with an unknown root cause" \
+  "${PWD}" "economy")"
+assert_contains "explicit uncertainty emits inherited-deliberation directive" \
+  "EXPLICIT REASONING UNCERTAINTY DETECTED" "${out_uncertain_standard}"
+assert_contains "focused uncertainty remains standard context" \
+  'reasoning-risk=`high`, context=`standard`, deep=`0`' "${out_uncertain_standard}"
+assert_contains "uncertainty names a declaration-inherit reasoning path" \
+  "best-fit role whose shipped declaration is inherit" "${out_uncertain_standard}"
+_uncertainty_state="${_test_state_root}/${_uncertainty_sid}/session_state.json"
+if [[ "$(jq -r '.model_routing_uncertainty // empty' "${_uncertainty_state}")" == "1" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: explicit uncertainty was not persisted in turn-scoped state\n' >&2
+  fail=$((fail + 1))
+fi
+
+out_uncertain_continue="$(_run_router "${_uncertainty_sid}" \
+  "ulw continue fixing it" "${PWD}" "economy")"
+assert_contains "true continuation preserves uncertainty deliberation" \
+  "EXPLICIT REASONING UNCERTAINTY DETECTED" "${out_uncertain_continue}"
+out_uncertain_fresh="$(_run_router "${_uncertainty_sid}" \
+  "ulw fix the README typo" "${PWD}" "economy")"
+assert_not_contains "fresh objective clears uncertainty deliberation" \
+  "EXPLICIT REASONING UNCERTAINTY DETECTED" "${out_uncertain_fresh}"
+
+out_uncertain_council="$(_run_router "t-council-auto-deep-uncertainty" \
+  "ulw evaluate my project for this tricky intermittent unknown root cause" \
+  "${PWD}" "economy")"
+assert_contains "explicit uncertainty still routes Council" \
+  "ADAPTIVE COUNCIL EVALUATION DETECTED" "${out_uncertain_council}"
+assert_contains "explicit uncertainty auto-deepens Council" \
+  'reasoning-risk=`high`, context=`council`, deep=`1`' "${out_uncertain_council}"
+assert_contains "auto-deep Council raises shipped-Sonnet specialists" \
+  'For every other bundled specialist, pass `model: "opus"`' "${out_uncertain_council}"
+assert_contains "auto-deep Council requires an inherited selection" \
+  "EXPLICIT UNCERTAINTY MODE" "${out_uncertain_council}"
+
+out_generic_high_risk_council="$(_run_router "t-council-generic-high-risk" \
+  "ulw evaluate my project for a large high-risk migration across every service" \
+  "${PWD}" "economy")"
+assert_contains "generic high risk keeps ordinary Council depth" \
+  'reasoning-risk=`high`, context=`council`, deep=`0`' "${out_generic_high_risk_council}"
+assert_not_contains "generic high risk does not manufacture uncertainty" \
+  "EXPLICIT UNCERTAINTY MODE" "${out_generic_high_risk_council}"
 
 _now="$(date +%s)"
 jq --arg now "${_now}" \
@@ -193,6 +245,138 @@ else
   printf '  FAIL: follow-up Phase 8 was not stamped with current prompt revision 2\n' >&2
   fail=$((fail + 1))
 fi
+
+# Model routing must classify the same stateful approval as Council before it
+# renders the directive. Before this regression, the router advertised a
+# high-risk standard builder (Opus) while record-pending reclassified the
+# [council:*] call and demanded Sonnet, forcing a paid deny/retry. Exercise
+# both adaptive tiers where standard/high-risk and Council/high-risk differ.
+mkdir -p "${_test_home}/.claude/quality-pack/state"
+touch "${_test_home}/.claude/quality-pack/state/.ulw_active"
+_pending_hook="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/record-pending-agent.sh"
+for _followup_tier in balanced economy; do
+  _followup_sid="t-council-model-followup-${_followup_tier}"
+  _seed_completed_council_handoff "${_followup_sid}" "${_followup_tier}"
+  _followup_out="$(_run_router "${_followup_sid}" \
+    "ulw implement all recommendations" "${PWD}" "${_followup_tier}")"
+  _followup_state="${_test_state_root}/${_followup_sid}/session_state.json"
+
+  assert_contains "${_followup_tier} high-risk approval uses Council context" \
+    'reasoning-risk=`high`, context=`council`, deep=`0`' "${_followup_out}"
+  assert_contains "${_followup_tier} high-risk Council builder stays Sonnet" \
+    'For every other bundled specialist, pass `model: "sonnet"`' "${_followup_out}"
+  if [[ "$(jq -r '.model_routing_context // empty' "${_followup_state}")" == "council" ]] \
+      && [[ "$(jq -r '.model_routing_risk_tier // empty' "${_followup_state}")" == "high" ]]; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: %s follow-up did not persist council/high model context\n' \
+      "${_followup_tier}" >&2
+    fail=$((fail + 1))
+  fi
+
+  _accepted_payload="$(jq -nc --arg sid "${_followup_sid}" '{
+    session_id:$sid,
+    tool_name:"Agent",
+    tool_input:{
+      subagent_type:"frontend-developer",
+      description:"[council:primary] implement the authorized wave",
+      model:"sonnet"
+    }
+  }')"
+  _accepted_out="$(HOME="${_test_home}" STATE_ROOT="${_test_state_root}" \
+    OMC_MODEL_TIER="${_followup_tier}" bash "${_pending_hook}" \
+    <<<"${_accepted_payload}" 2>/dev/null || true)"
+  assert_not_contains "${_followup_tier} router-recommended model has no deny/retry" \
+    "[Model routing]" "${_accepted_out}"
+
+  _wrong_payload="$(jq -nc --arg sid "${_followup_sid}" '{
+    session_id:$sid,
+    tool_name:"Agent",
+    tool_input:{
+      subagent_type:"frontend-developer",
+      description:"[council:primary] implement the authorized wave",
+      model:"opus"
+    }
+  }')"
+  _wrong_out="$(HOME="${_test_home}" STATE_ROOT="${_test_state_root}" \
+    OMC_MODEL_TIER="${_followup_tier}" bash "${_pending_hook}" \
+    <<<"${_wrong_payload}" 2>/dev/null || true)"
+  assert_contains "${_followup_tier} PreTool reproduces stored Council resolution" \
+    "resolved to sonnet" "${_wrong_out}"
+done
+
+# Once activated, an actual continuation retains Council routing. A fresh,
+# unrelated objective must not inherit the sticky Phase-8 bit.
+_active_followup_out="$(_run_router "${_followup_sid}" "ulw continue" "${PWD}" "economy")"
+assert_contains "active Phase 8 continuation retains Council model context" \
+  'context=`council`' "${_active_followup_out}"
+_unrelated_after_active="$(_run_router "${_followup_sid}" \
+  "ulw fix the README typo" "${PWD}" "economy")"
+assert_contains "fresh objective after active Phase 8 returns to standard context" \
+  'context=`standard`' "${_unrelated_after_active}"
+
+# Resolver v2 snapshots mutable config at prompt time. Simulate a user running
+# /omc-config (or editing the conf directly) after receiving the quality-tier
+# directive but before dispatching an Agent. The current call must still use
+# the old snapshot; the following prompt must refresh to the new economy tier
+# and explicit override.
+_config_sid="t-model-config-generation"
+_config_file="${_test_home}/.claude/oh-my-claude.conf"
+rm -f "${_config_file}"
+_config_initial="$(_run_router "${_config_sid}" \
+  "ulw fix the typo in README.md" "${PWD}" "quality")"
+assert_contains "initial config-generation route is quality" \
+  'tier=`quality`' "${_config_initial}"
+_config_state="${_test_state_root}/${_config_sid}/session_state.json"
+if [[ "$(jq -r '.model_routing_resolver_version // empty' "${_config_state}")" == "2" ]] \
+    && [[ "$(jq -r '.model_routing_tier // empty' "${_config_state}")" == "quality" ]] \
+    && [[ "$(jq -r '.model_routing_overrides // "missing"' "${_config_state}")" == "" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: router did not atomically snapshot quality tier and empty overrides\n' >&2
+  fail=$((fail + 1))
+fi
+
+printf 'model_tier=economy\nmodel_overrides=backend-api-developer:haiku\n' > "${_config_file}"
+_snapshot_payload="$(jq -nc --arg sid "${_config_sid}" '{
+  session_id:$sid,
+  tool_name:"Agent",
+  tool_input:{
+    subagent_type:"backend-api-developer",
+    description:"implement the focused fix",
+    model:"opus"
+  }
+}')"
+_snapshot_out="$(HOME="${_test_home}" STATE_ROOT="${_test_state_root}" \
+  bash "${_pending_hook}" <<<"${_snapshot_payload}" 2>/dev/null || true)"
+assert_not_contains "mid-turn config change cannot contradict prompt snapshot" \
+  "[Model routing]" "${_snapshot_out}"
+
+_config_refreshed="$(_run_router "${_config_sid}" "ulw continue")"
+assert_contains "next prompt refreshes economy tier" 'tier=`economy`' "${_config_refreshed}"
+assert_contains "next prompt refreshes explicit override" \
+  'backend-api-developer:haiku' "${_config_refreshed}"
+if [[ "$(jq -r '.model_routing_tier // empty' "${_config_state}")" == "economy" ]] \
+    && [[ "$(jq -r '.model_routing_overrides // empty' "${_config_state}")" == "backend-api-developer:haiku" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: next prompt did not refresh snapshotted tier/overrides\n' >&2
+  fail=$((fail + 1))
+fi
+_refresh_payload="$(jq -nc --arg sid "${_config_sid}" '{
+  session_id:$sid,
+  tool_name:"Agent",
+  tool_input:{
+    subagent_type:"backend-api-developer",
+    description:"continue the focused fix",
+    model:"haiku"
+  }
+}')"
+_refresh_out="$(HOME="${_test_home}" STATE_ROOT="${_test_state_root}" \
+  bash "${_pending_hook}" <<<"${_refresh_payload}" 2>/dev/null || true)"
+assert_not_contains "refreshed prompt and PreTool agree on new override" \
+  "[Model routing]" "${_refresh_out}"
+rm -f "${_config_file}"
 
 # Bounded and terse immediate approvals still consume the completed handoff as
 # a valid Phase-8 transition. Top-N and severity subsets must not be promoted
@@ -247,12 +431,20 @@ assert_contains "names backend-api-developer"    "backend-api-developer"        
 assert_contains "names frontend-developer (v1.27.0 F-016)" "frontend-developer"        "${out}"
 assert_contains "names devops-infrastructure"    "devops-infrastructure-engineer"      "${out}"
 assert_contains "names test-automation"          "test-automation-engineer"            "${out}"
+assert_contains "test portfolio route names stale/redundant signals" \
+  "flaky/slow/stale/redundant/brittle tests" "${out}"
+assert_contains "test portfolio route covers consolidation/retirement" \
+  "portfolio consolidation or retirement" "${out}"
 assert_contains "names fullstack-feature"        "fullstack-feature-builder"           "${out}"
 assert_contains "names ios-ui-developer"         "ios-ui-developer"                    "${out}"
 assert_contains "names ios-core-engineer"        "ios-core-engineer"                   "${out}"
 assert_contains "names ios-deployment"           "ios-deployment-specialist"           "${out}"
 assert_contains "names ios-ecosystem"            "ios-ecosystem-integrator"            "${out}"
 assert_contains "names abstraction-critic"       "abstraction-critic"                  "${out}"
+assert_contains "coding discipline runs affected proof first" \
+  "run affected proof after edits" "${out}"
+assert_contains "coding discipline inspects existing test owners" \
+  "inspect existing test owners before adding another" "${out}"
 
 # ----------------------------------------------------------------------
 printf 'Test 2: existing reasoning specialists are still routed\n'

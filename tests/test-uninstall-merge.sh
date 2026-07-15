@@ -92,6 +92,12 @@ for impl in "${implementations[@]}"; do
   # Confirm the install landed
   assert_json_eq "${impl}: fresh install — SubagentStop count is 12" \
     "${SETTINGS}" '.hooks.SubagentStop | length' "12"
+  assert_json_eq "${impl}: fresh install — native SubagentStart binder count is 1" \
+    "${SETTINGS}" '.hooks.SubagentStart | length' "1"
+  assert_json_eq "${impl}: fresh install — native binder command is present" \
+    "${SETTINGS}" \
+    '[.hooks.SubagentStart[].hooks[].command | select(contains("record-pending-agent.sh start"))] | length' \
+    "1"
 
   run_clean "${impl}" "${SETTINGS}"
   assert_json_eq "${impl}: valid uninstall — hooks removed" \

@@ -166,7 +166,9 @@ fi
 
 if [[ "${SKIP_STERILE:-0}" != "1" ]]; then
   printf '── sterile-env CI parity ───\n'
-  bash tests/run-sterile.sh
+  # Local/release parity is exhaustive. Only pull-request CI opts into the
+  # change-proportional sterile profile.
+  bash tests/run-sterile.sh --full
 fi
 
 printf '── python tests ───\n'

@@ -38,6 +38,16 @@ assert_contains() {
   fi
 }
 
+assert_not_contains() {
+  local label="$1" needle="$2" haystack="$3"
+  if [[ "${haystack}" != *"${needle}"* ]]; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: %s — unexpected needle %q found in output\n' "${label}" "${needle}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
 run_report() {
   HOME="${TEST_HOME}" bash "${SHOW_REPORT}" "$@" 2>&1
 }
@@ -155,6 +165,134 @@ out="$(run_report week)"
 assert_contains "reviewer table header" "Reviewer | Invocations" "${out}"
 assert_contains "quality-reviewer row" "quality-reviewer" "${out}"
 assert_contains "find rate computed" "33%" "${out}"  # 4/12 = 33
+
+# Exercise the real writer -> report reader contract. This caught the v2
+# regression where record_agent_metric wrote flat keys while show-report
+# only inspected `.agents` and therefore claimed there was no activity.
+printf 'Test 9b: record_agent_metric output is visible to report reader\n'
+rm -f "${QP}/agent-metrics.json"
+HOME="${TEST_HOME}" \
+STATE_ROOT="${TEST_HOME}/.claude/quality-pack/state" \
+SESSION_ID="metrics-integration" \
+bash -c 'set -euo pipefail; mkdir -p "${STATE_ROOT}/${SESSION_ID}"; . "$1"; record_agent_metric "writer-reader-reviewer" "findings"' \
+  _ "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh"
+out="$(run_report week)"
+assert_contains "writer-reader reviewer row" "writer-reader-reviewer" "${out}"
+assert_contains "writer-reader find rate" "100%" "${out}"
+
+printf 'Test 9c: stale-review waste and role/model token economics\n'
+cat > "${QP}/timing.jsonl" <<EOF
+{"_v":1,"ts":${NOW},"session_id":"economics-s1","project_key":"p","walltime_s":2,"prompt_count":1,"stale_reviewer_count":2,"tokens_agent_in":100,"tokens_agent_out":200,"tokens_agent_cache_read":300,"tokens_agent_cache_creation":400,"agent_tokens_by_role":{"quality-reviewer":{"input":100,"output":200,"cache_read":300,"cache_creation":400}},"agent_tokens_by_model":{"claude-sonnet-test":{"input":100,"output":200,"cache_read":300,"cache_creation":400}},"agent_tokens_by_id":{"native-1":{"input":100,"output":200,"cache_read":300,"cache_creation":400}}}
+EOF
+cat > "${QP}/gate_events.jsonl" <<EOF
+{"_v":1,"ts":${NOW},"session_id":"economics-s1","gate":"reviewer","event":"stale-result-rejected","details":{"type":"standard","agent_id":"native-1"}}
+{"_v":1,"ts":${NOW},"gate":"reviewer","event":"stale-result-rejected","details":{"type":"standard"}}
+{"_v":1,"ts":${NOW},"gate":"review-mutation-freeze","event":"block","details":{"reviewers":"quality-reviewer"}}
+EOF
+out="$(run_report week)"
+assert_contains "stale review run surfaced" "Wasted review runs rejected as stale: **2**" "${out}"
+assert_contains "mutation freeze avoided retry surfaced" "Mutations blocked while reviewers were in flight: **1**" "${out}"
+assert_contains "native stale review tokens are exact" "Exact wasted reviewer tokens: **1.0K** across **1** native-bound stale run" "${out}"
+assert_contains "legacy stale review count remains explicit" "**1** legacy/unbound stale run" "${out}"
+assert_contains "waste token upper bound labelled" "upper bound; includes successful runs" "${out}"
+assert_contains "role token breakdown surfaced" "Sub-agent role breakdown" "${out}"
+assert_contains "model token breakdown surfaced" "claude-sonnet-test" "${out}"
+
+printf 'Test 9d: last mode aligns summary, gate-event, and timing session windows\n'
+cat > "${QP}/session_summary.jsonl" <<EOF
+{"session_id":"old-s","start_ts":$((NOW - 100)),"end_ts":$((NOW - 90)),"domain":"coding","intent":"execution","edit_count":1,"verified":true,"reviewed":true,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":1,"outcome":"shipped","skip_count":0,"serendipity_count":0}
+{"session_id":"latest-s","start_ts":${NOW},"end_ts":${NOW},"domain":"coding","intent":"execution","edit_count":1,"verified":true,"reviewed":true,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":2,"outcome":"shipped","skip_count":0,"serendipity_count":0}
+EOF
+cat > "${QP}/timing.jsonl" <<EOF
+{"_v":1,"ts":$((NOW - 100)),"session_id":"old-s","stale_reviewer_count":7,"agent_tokens_by_id":{"old":{"output":7000}}}
+{"_v":1,"ts":${NOW},"session_id":"latest-s","stale_reviewer_count":2,"agent_tokens_by_id":{"n1":{"output":1000},"n2":{"output":2000}}}
+EOF
+cat > "${QP}/gate_events.jsonl" <<EOF
+{"_v":1,"ts":$((NOW - 100)),"session_id":"old-s","gate":"reviewer","event":"stale-result-rejected","details":{"type":"standard","agent_id":"old"}}
+{"_v":1,"ts":${NOW},"session_id":"latest-s","gate":"reviewer","event":"stale-result-rejected","details":{"type":"standard","agent_id":"n1"}}
+{"_v":1,"ts":${NOW},"session_id":"latest-s","gate":"reviewer","event":"stale-result-rejected","details":{"type":"standard","agent_id":"n2"}}
+EOF
+out="$(run_report last)"
+assert_contains "last economics uses latest session stale count" \
+  "Wasted review runs rejected as stale: **2**" "${out}"
+assert_contains "last economics joins every latest-session native run" \
+  "Exact wasted reviewer tokens: **3.0K** across **2** native-bound stale run" "${out}"
+assert_not_contains "last economics excludes old timing total" \
+  "Wasted review runs rejected as stale: **7**" "${out}"
+assert_not_contains "last economics does not invent a legacy run" \
+  "legacy/unbound stale run" "${out}"
+
+printf 'Test 9e: merge includes external timing ledger for exact joins\n'
+: > "${QP}/timing.jsonl"
+: > "${QP}/gate_events.jsonl"
+EXT_ECON="${TEST_HOME}/economics-external"
+mkdir -p "${EXT_ECON}"
+cat > "${EXT_ECON}/session_summary.jsonl" <<EOF
+{"session_id":"ext-s","start_ts":${NOW},"end_ts":${NOW},"domain":"coding","intent":"execution","edit_count":1,"verified":true,"reviewed":true,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":1,"outcome":"shipped","skip_count":0,"serendipity_count":0}
+EOF
+cat > "${EXT_ECON}/gate_events.jsonl" <<EOF
+{"_v":1,"ts":${NOW},"session_id":"ext-s","gate":"reviewer","event":"stale-result-rejected","details":{"type":"standard","agent_id":"ext-a"}}
+EOF
+cat > "${EXT_ECON}/timing.jsonl" <<EOF
+{"_v":1,"ts":${NOW},"session_id":"ext-s","walltime_s":42,"prompt_count":1,"stale_reviewer_count":1,"agent_tokens_by_id":{"ext-a":{"input":100,"output":200,"cache_read":300,"cache_creation":400}}}
+EOF
+_ext_timing_before="$(cat "${EXT_ECON}/timing.jsonl")"
+out="$(run_report all --merge "${EXT_ECON}")"
+assert_contains "merged stale run counted" "Wasted review runs rejected as stale: **1**" "${out}"
+assert_contains "merged timing joins exact native tokens" \
+  "Exact wasted reviewer tokens: **1.0K** across **1** native-bound stale run" "${out}"
+assert_not_contains "merged timing is not reported unavailable" \
+  "exact token telemetry was unavailable" "${out}"
+assert_contains "merged timing powers the cross-session time panel" \
+  "Window: 1 sessions · 1 prompts · 42s walltime" "${out}"
+assert_not_contains "merged timing is not contradicted by local-only empty state" \
+  "No cross-session timing rows yet" "${out}"
+assert_eq "merged external timing source remains read-only" \
+  "${_ext_timing_before}" "$(cat "${EXT_ECON}/timing.jsonl")"
+rm -rf "${EXT_ECON}"
+
+printf 'Test 9f: stale gate events survive missing timing telemetry\n'
+cat > "${QP}/session_summary.jsonl" <<EOF
+{"session_id":"missing-s","start_ts":${NOW},"end_ts":${NOW},"domain":"coding","intent":"execution","edit_count":1,"verified":true,"reviewed":true,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":2,"outcome":"shipped","skip_count":0,"serendipity_count":0}
+EOF
+cat > "${QP}/gate_events.jsonl" <<EOF
+{"_v":1,"ts":${NOW},"session_id":"missing-s","gate":"reviewer","event":"stale-result-rejected","details":{"type":"standard","agent_id":"missing-a"}}
+{"_v":1,"ts":${NOW},"session_id":"missing-s","gate":"reviewer","event":"stale-result-rejected","details":{"type":"standard"}}
+EOF
+rm -f "${QP}/timing.jsonl"
+out="$(run_report week)"
+assert_contains "missing timing does not hide stale run count" \
+  "Wasted review runs rejected as stale: **2**" "${out}"
+assert_contains "missing native timing is explicit" \
+  "Native-bound stale runs: **1**; exact token telemetry was unavailable" "${out}"
+assert_contains "missing timing preserves legacy run count" \
+  "**1** legacy/unbound stale run" "${out}"
+
+printf 'Test 9g: partial native timing coverage is never overstated\n'
+cat > "${QP}/gate_events.jsonl" <<EOF
+{"_v":1,"ts":${NOW},"session_id":"missing-s","gate":"reviewer","event":"stale-result-rejected","details":{"type":"standard","agent_id":"n1"}}
+{"_v":1,"ts":${NOW},"session_id":"missing-s","gate":"reviewer","event":"stale-result-rejected","details":{"type":"standard","agent_id":"n2"}}
+EOF
+cat > "${QP}/timing.jsonl" <<EOF
+{"_v":1,"ts":${NOW},"session_id":"missing-s","stale_reviewer_count":2,"agent_tokens_by_id":{"n1":{"input":100,"output":200,"cache_read":300,"cache_creation":400}}}
+EOF
+out="$(run_report week)"
+assert_contains "partial coverage reports exact matched run only" \
+  "Exact wasted reviewer tokens: **1.0K** across **1** native-bound stale run" "${out}"
+assert_contains "partial coverage reports unmatched native run" \
+  "Native-bound stale runs: **1**; exact token telemetry was unavailable" "${out}"
+assert_not_contains "partial coverage never claims both runs exact" \
+  "Exact wasted reviewer tokens: **1.0K** across **2**" "${out}"
+
+# Key presence, not a positive token sum, defines telemetry availability.
+cat > "${QP}/timing.jsonl" <<EOF
+{"_v":1,"ts":${NOW},"session_id":"missing-s","stale_reviewer_count":2,"agent_tokens_by_id":{"n1":{"input":100,"output":200,"cache_read":300,"cache_creation":400},"n2":{"input":0,"output":0,"cache_read":0,"cache_creation":0}}}
+EOF
+out="$(run_report week)"
+assert_contains "zero-token bucket still counts as exact telemetry" \
+  "Exact wasted reviewer tokens: **1.0K** across **2** native-bound stale run" "${out}"
+assert_not_contains "zero-token bucket is not called unavailable" \
+  "exact token telemetry was unavailable" "${out}"
 
 # ----------------------------------------------------------------------
 printf 'Test 10: defect patterns histogram\n'
@@ -390,6 +528,42 @@ assert_contains "show-report: intent_classification avg chars rendered" \
   "| \`intent_classification\` | 2 | 80 | 40 |" "${out}"
 rm -f "${QP}/timing.jsonl"
 rm -f "${QP}/session_summary.jsonl"
+
+# ----------------------------------------------------------------------
+printf 'Test 21b.1: imported timing labels are terminal- and Markdown-safe\n'
+NOW="$(date +%s)"
+cat > "${QP}/session_summary.jsonl" <<EOF
+{"session_id":"test-hostile-timing-labels","start_ts":${NOW},"end_ts":${NOW},"domain":"coding","intent":"execution","edit_count":1,"verified":true,"reviewed":true,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":1,"outcome":"shipped","skip_count":0,"serendipity_count":0}
+EOF
+cat > "${QP}/timing.jsonl" <<EOF
+{"ts":${NOW},"session_id":"test-hostile-timing-labels","walltime_s":9,"agent_total_s":8,"tool_total_s":7,"idle_model_s":2,"agent_breakdown":{"agent\u0007|\u0060bad":4,"agent\n0\trow1\n0\trow2":4},"tool_breakdown":{"tool\u001b]8;;x\u0007|\u0060bad":3,"tool\n0\trow1\n0\trow2":4},"directive_total_chars":9,"directive_count":1,"directive_breakdown":{"directive\u001b[31m|\u0060bad":9},"directive_counts":{"directive\u001b[31m|\u0060bad":1},"prompt_count":1}
+EOF
+out="$(run_report all)"
+assert_contains "show-report: imported directive label is Markdown-safe" \
+  '| `directive[31m__bad` | 1 | 9 | 9 |' "${out}"
+assert_contains "show-report: imported agent label is Markdown-safe" \
+  '- `agent__bad` — 4s' "${out}"
+assert_contains "show-report: imported tool label is Markdown-safe" \
+  '- `tool]8;;x__bad` — 3s' "${out}"
+assert_contains "show-report: newline agent key stays one sanitized row" \
+  '- `agent_n0_trow1_n0_trow2` — 4s' "${out}"
+assert_contains "show-report: newline tool key stays one sanitized row" \
+  '- `tool_n0_trow1_n0_trow2` — 4s' "${out}"
+assert_not_contains "show-report: newline key cannot inject a numeric row" \
+  $'- `row1` — 0s' "${out}"
+if printf '%s' "${out}" | LC_ALL=C grep -q $'\x1b'; then
+  printf '  FAIL: imported timing label emitted a terminal escape byte\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+if printf '%s' "${out}" | LC_ALL=C grep -q $'\a'; then
+  printf '  FAIL: imported timing label emitted a bell byte\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+rm -f "${QP}/timing.jsonl" "${QP}/session_summary.jsonl"
 
 # ----------------------------------------------------------------------
 printf 'Test 21c: directive-budget suppressions surface in their own section\n'
@@ -1078,6 +1252,376 @@ assert_contains "T46b — old -> new delta rendered" "4 -> 5" "${out}"
 assert_contains "T46c — host rendered" "ci-host" "${out}"
 assert_contains "T46d — evidence rendered" "reprompt_rate_pct=66" "${out}"
 rm -f "${QP}/auto-tune.jsonl"
+
+# ----------------------------------------------------------------------
+# The newest summary identity, not physical ledger order or timestamp alone,
+# owns every session-aware `last` slice. S1 rows are deliberately newer and
+# physically last to catch both historical failure modes. One identity-less
+# serendipity row exercises the explicitly-labelled legacy approximation path.
+printf 'Test 47: last mode scopes every session-aware ledger by exact identity\n'
+NOW47="$(date +%s)"
+cat > "${QP}/session_summary.jsonl" <<EOF
+{"session_id":"S2-exact","start_ts":${NOW47},"end_ts":$((NOW47 + 60)),"domain":"coding","intent":"execution","edit_count":2,"verified":true,"reviewed":true,"guard_blocks":1,"dim_blocks":0,"exhausted":false,"dispatches":2,"outcome":"shipped","skip_count":0,"serendipity_count":1}
+{"session_id":"S1-foreign","start_ts":$((NOW47 - 1000)),"end_ts":$((NOW47 - 900)),"domain":"coding","intent":"execution","edit_count":99,"verified":true,"reviewed":true,"guard_blocks":9,"dim_blocks":0,"exhausted":false,"dispatches":9,"outcome":"shipped","skip_count":0,"serendipity_count":9}
+EOF
+cat > "${QP}/gate_events.jsonl" <<EOF
+{"_v":1,"ts":${NOW47},"session_id":"S2-exact","gate":"delivery-contract","event":"block","details":{}}
+{"_v":1,"ts":${NOW47},"session":"S2-exact","gate":"state-corruption","event":"recovered","details":{"archive_path":"state.corrupt.${NOW47}","recovered_ts":"${NOW47}"}}
+{"_v":1,"ts":$((NOW47 + 200)),"session_id":"S1-foreign","gate":"FOREIGN-GATE-MUST-NOT-LEAK","event":"block","details":{}}
+{"_v":1,"ts":$((NOW47 + 201)),"session":"S1-foreign","gate":"state-corruption","event":"recovered","details":{"archive_path":"INVALID-FOREIGN-PATH","recovered_ts":"bad"}}
+EOF
+cat > "${QP}/serendipity-log.jsonl" <<EOF
+{"ts":${NOW47},"session":"S2-exact","fix":"EXACT-S2-SERENDIPITY","original_task":"selected"}
+{"ts":$((NOW47 + 50)),"fix":"LEGACY-APPROX-SERENDIPITY","original_task":"legacy"}
+{"ts":$((NOW47 + 200)),"session_id":"S1-foreign","fix":"FOREIGN-S1-SERENDIPITY-MUST-NOT-LEAK","original_task":"foreign"}
+EOF
+cat > "${QP}/classifier_misfires.jsonl" <<EOF
+{"ts":${NOW47},"session_id":"S2-exact","reason":"EXACT-S2-MISFIRE","corrected_by_user":false}
+{"ts":$((NOW47 + 200)),"session":"S1-foreign","reason":"FOREIGN-S1-MISFIRE-MUST-NOT-LEAK","corrected_by_user":true}
+EOF
+cat > "${QP}/used-archetypes.jsonl" <<EOF
+{"ts":${NOW47},"session":"S2-exact","project_key":"selected","archetype":"Exact-S2-Archetype"}
+{"ts":$((NOW47 + 200)),"session_id":"S1-foreign","project_key":"foreign","archetype":"Foreign-S1-Archetype-Must-Not-Leak"}
+EOF
+
+out="$(run_report last)"
+assert_contains "T47a — latest summary chosen by timestamp, not physical tail" "| Files edited | 2 |" "${out}"
+assert_contains "T47b — exact-session serendipity included" "EXACT-S2-SERENDIPITY" "${out}"
+assert_contains "T47c — bounded legacy serendipity included" "LEGACY-APPROX-SERENDIPITY" "${out}"
+assert_contains "T47d — approximation is explicitly labelled" "1 legacy auxiliary row(s) lacked a session identity" "${out}"
+assert_contains "T47e — exact-session misfire included" "EXACT-S2-MISFIRE" "${out}"
+assert_contains "T47f — exact-session archetype included" "Exact-S2-Archetype" "${out}"
+assert_contains "T47g — headline correction count uses exact session" "| Classifier corrections absorbed | 0 |" "${out}"
+assert_not_contains "T47h — foreign serendipity excluded" "FOREIGN-S1-SERENDIPITY-MUST-NOT-LEAK" "${out}"
+assert_not_contains "T47i — foreign misfire excluded" "FOREIGN-S1-MISFIRE-MUST-NOT-LEAK" "${out}"
+assert_not_contains "T47j — foreign archetype excluded" "Foreign-S1-Archetype-Must-Not-Leak" "${out}"
+assert_not_contains "T47k — foreign gate excluded" "FOREIGN-GATE-MUST-NOT-LEAK" "${out}"
+
+share_out="$(run_report last --share)"
+assert_contains "T47l — share exact + legacy serendipity count" "Serendipity Rule fires (adjacent defects caught):** 2" "${share_out}"
+assert_contains "T47m — share weighted savings use exact gate slice" "Estimated time saved: ~20m 00s of debugging" "${share_out}"
+assert_contains "T47n — share gate distribution uses exact session" "delivery-contract: 1" "${share_out}"
+assert_contains "T47o — share labels legacy approximation" "1 legacy auxiliary row(s) lacked a session identity" "${share_out}"
+assert_not_contains "T47p — share excludes foreign gate distribution" "FOREIGN-GATE-MUST-NOT-LEAK" "${share_out}"
+
+audit_out="$(run_report last --field-shape-audit)"
+assert_contains "T47q — field audit is exact-session scoped" "Audited 2 row(s) in window" "${audit_out}"
+assert_contains "T47r — invalid foreign field shape excluded" "## Result: clean" "${audit_out}"
+
+rm -f "${QP}/session_summary.jsonl" "${QP}/gate_events.jsonl" \
+  "${QP}/serendipity-log.jsonl" "${QP}/classifier_misfires.jsonl" \
+  "${QP}/used-archetypes.jsonl"
+
+# ----------------------------------------------------------------------
+# Legacy sweeps could emit outcome="abandoned" rows. They are excluded from
+# every report cohort, so they must also be excluded while electing the `last`
+# session identity; otherwise a newer abandoned row empties the session panel
+# while steering every auxiliary ledger to the wrong session.
+printf 'Test 48: last mode elects newest non-abandoned session identity\n'
+NOW48="$(date +%s)"
+cat > "${QP}/session_summary.jsonl" <<EOF
+{"session_id":"valid-session","start_ts":$((NOW48 - 100)),"end_ts":$((NOW48 - 50)),"domain":"coding","intent":"execution","edit_count":3,"verified":true,"reviewed":true,"guard_blocks":1,"dim_blocks":0,"exhausted":false,"dispatches":1,"outcome":"completed_inferred","skip_count":0,"serendipity_count":1}
+{"session_id":"abandoned-session","start_ts":${NOW48},"end_ts":${NOW48},"domain":"coding","intent":"execution","edit_count":99,"verified":false,"reviewed":false,"guard_blocks":9,"dim_blocks":0,"exhausted":false,"dispatches":9,"outcome":"abandoned","skip_count":0,"serendipity_count":9}
+EOF
+cat > "${QP}/gate_events.jsonl" <<EOF
+{"_v":1,"ts":$((NOW48 - 90)),"session_id":"valid-session","gate":"delivery-contract","event":"block","details":{}}
+{"_v":1,"ts":$((NOW48 - 89)),"session":"valid-session","gate":"state-corruption","event":"recovered","details":{"archive_path":"state.corrupt.${NOW48}","recovered_ts":"${NOW48}"}}
+{"_v":1,"ts":$((NOW48 + 10)),"session_id":"abandoned-session","gate":"ABANDONED-GATE-MUST-NOT-LEAK","event":"block","details":{}}
+{"_v":1,"ts":$((NOW48 + 11)),"session":"abandoned-session","gate":"state-corruption","event":"recovered","details":{"archive_path":"INVALID-ABANDONED-PATH","recovered_ts":"bad"}}
+{"_v":1,"ts":$((NOW48 + 20)),"gate":"FUTURE-LEGACY-GATE-MUST-NOT-LEAK","event":"block","details":{}}
+EOF
+cat > "${QP}/serendipity-log.jsonl" <<EOF
+{"ts":$((NOW48 - 88)),"session":"valid-session","fix":"VALID-SESSION-SERENDIPITY","original_task":"selected"}
+{"ts":$((NOW48 + 12)),"session_id":"abandoned-session","fix":"ABANDONED-SERENDIPITY-MUST-NOT-LEAK","original_task":"abandoned"}
+{"ts":$((NOW48 + 21)),"fix":"FUTURE-LEGACY-SERENDIPITY-MUST-NOT-LEAK","original_task":"newer-unreported"}
+EOF
+cat > "${QP}/classifier_misfires.jsonl" <<EOF
+{"ts":$((NOW48 - 87)),"session_id":"valid-session","reason":"VALID-SESSION-MISFIRE","corrected_by_user":false}
+{"ts":$((NOW48 + 13)),"session":"abandoned-session","reason":"ABANDONED-MISFIRE-MUST-NOT-LEAK","corrected_by_user":true}
+EOF
+cat > "${QP}/used-archetypes.jsonl" <<EOF
+{"ts":$((NOW48 - 86)),"session":"valid-session","project_key":"valid","archetype":"Valid-Session-Archetype"}
+{"ts":$((NOW48 + 14)),"session_id":"abandoned-session","project_key":"abandoned","archetype":"Abandoned-Archetype-Must-Not-Leak"}
+EOF
+
+out="$(run_report last)"
+assert_contains "T48a — valid session remains visible" "| Files edited | 3 |" "${out}"
+assert_contains "T48b — valid auxiliary identity selected" "VALID-SESSION-SERENDIPITY" "${out}"
+assert_contains "T48c — valid misfire selected" "VALID-SESSION-MISFIRE" "${out}"
+assert_contains "T48d — valid archetype selected" "Valid-Session-Archetype" "${out}"
+assert_contains "T48e — abandoned correction excluded from headline pre-pass" "| Classifier corrections absorbed | 0 |" "${out}"
+assert_not_contains "T48f — abandoned serendipity excluded" "ABANDONED-SERENDIPITY-MUST-NOT-LEAK" "${out}"
+assert_not_contains "T48g — abandoned misfire excluded" "ABANDONED-MISFIRE-MUST-NOT-LEAK" "${out}"
+assert_not_contains "T48h — abandoned archetype excluded" "Abandoned-Archetype-Must-Not-Leak" "${out}"
+assert_not_contains "T48i — abandoned gate excluded" "ABANDONED-GATE-MUST-NOT-LEAK" "${out}"
+assert_not_contains "T48i2 — post-end legacy serendipity excluded" "FUTURE-LEGACY-SERENDIPITY-MUST-NOT-LEAK" "${out}"
+assert_not_contains "T48i3 — post-end legacy gate excluded" "FUTURE-LEGACY-GATE-MUST-NOT-LEAK" "${out}"
+
+share_out="$(run_report last --share)"
+assert_contains "T48j — share uses valid summary block count" "Quality-gate blocks (caught issues):** 1" "${share_out}"
+assert_contains "T48k — share uses valid auxiliary weighting" "Estimated time saved: ~15m 00s of debugging" "${share_out}"
+assert_contains "T48l — share distribution uses valid gate identity" "delivery-contract: 1" "${share_out}"
+assert_not_contains "T48m — share excludes abandoned gate identity" "ABANDONED-GATE-MUST-NOT-LEAK" "${share_out}"
+assert_not_contains "T48m2 — share excludes post-end legacy gate" "FUTURE-LEGACY-GATE-MUST-NOT-LEAK" "${share_out}"
+
+audit_out="$(run_report last --field-shape-audit)"
+assert_contains "T48n — audit uses valid identity only" "Audited 2 row(s) in window" "${audit_out}"
+assert_contains "T48o — invalid abandoned shape excluded" "## Result: clean" "${audit_out}"
+
+rm -f "${QP}/session_summary.jsonl" "${QP}/gate_events.jsonl" \
+  "${QP}/serendipity-log.jsonl" "${QP}/classifier_misfires.jsonl" \
+  "${QP}/used-archetypes.jsonl"
+
+# Missing/non-numeric end_ts is a real in-flight/legacy shape. Preserve the
+# start-only fallback, but make that weaker attribution explicit everywhere.
+printf 'Test 49: last legacy approximation labels start-only fallback without end_ts\n'
+NOW49="$(date +%s)"
+cat > "${QP}/session_summary.jsonl" <<EOF
+{"session_id":"open-session","start_ts":${NOW49},"domain":"coding","intent":"execution","edit_count":1,"verified":true,"reviewed":true,"guard_blocks":0,"dim_blocks":0,"exhausted":false,"dispatches":1,"outcome":"completed_inferred","skip_count":0,"serendipity_count":1}
+EOF
+cat > "${QP}/serendipity-log.jsonl" <<EOF
+{"ts":$((NOW49 + 10)),"fix":"START-ONLY-LEGACY-SERENDIPITY","original_task":"legacy-open-session"}
+EOF
+
+out="$(run_report last)"
+assert_contains "T49a — start-only legacy row retained" "START-ONLY-LEGACY-SERENDIPITY" "${out}"
+assert_contains "T49b — verbose report labels missing-end fallback" \
+  "by the selected session start time because a numeric end time was unavailable" "${out}"
+share_out="$(run_report last --share)"
+assert_contains "T49c — share retains start-only legacy count" "Serendipity Rule fires (adjacent defects caught):** 1" "${share_out}"
+assert_contains "T49d — share labels missing-end fallback" \
+  "by the selected session start time because a numeric end time was unavailable" "${share_out}"
+
+rm -f "${QP}/session_summary.jsonl" "${QP}/serendipity-log.jsonl"
+
+# ----------------------------------------------------------------------
+# Share-mode gate names cross a privacy boundary. Gate producers and --merge
+# inputs do not enforce an enum, so identifier-shaped secrets, Markdown, ANSI,
+# and even non-string JSON must never reach the public card verbatim.
+printf 'Test 50: share gate distribution allowlists structural labels locally and under merge\n'
+NOW50="$(date +%s)"
+cat > "${QP}/session_summary.jsonl" <<EOF
+{"session_id":"share-security-local","start_ts":${NOW50},"end_ts":$((NOW50 + 60)),"domain":"coding","intent":"execution","edit_count":1,"verified":true,"reviewed":true,"guard_blocks":6,"dim_blocks":0,"exhausted":false,"dispatches":1,"outcome":"shipped","skip_count":0,"serendipity_count":0}
+EOF
+cat > "${QP}/gate_events.jsonl" <<EOF
+{"_v":1,"ts":${NOW50},"session_id":"share-security-local","gate":"delivery-contract","event":"block","details":{}}
+{"_v":1,"ts":$((NOW50 + 1)),"session_id":"share-security-local","gate":"SECRET-password=hunter2","event":"block","details":{}}
+{"_v":1,"ts":$((NOW50 + 2)),"session_id":"share-security-local","gate":"[MARKDOWN-SECRET](javascript:alert('hunter2'))","event":"block","details":{}}
+{"_v":1,"ts":$((NOW50 + 3)),"session_id":"share-security-local","gate":"\u001b[31mANSI-SECRET\u001b[0m","event":"block","details":{}}
+{"_v":1,"ts":$((NOW50 + 4)),"session_id":"share-security-local","gate":"identifierSecretToken42","event":"block","details":{}}
+{"_v":1,"ts":$((NOW50 + 5)),"session_id":"share-security-local","gate":"pretool-intent","event":"block","details":{}}
+EOF
+
+# Non-share mode remains a diagnostic surface and keeps the raw local value.
+diag_out="$(run_report last)"
+assert_contains "T50a — non-share diagnostics preserve raw custom gate" "SECRET-password=hunter2" "${diag_out}"
+
+share_out="$(run_report last --share)"
+assert_contains "T50b — canonical gate label remains visible" "delivery-contract: 1" "${share_out}"
+assert_contains "T50b2 — canonical pretool gate label remains visible" "pretool-intent: 1" "${share_out}"
+assert_contains "T50c — all local unknown gates share one safe bucket" "other/unknown: 4" "${share_out}"
+assert_contains "T50d — sanitized and pretool gates retain documented weighting" "Estimated time saved: ~34m 00s of debugging" "${share_out}"
+assert_not_contains "T50e — identifier-shaped secret suppressed" "identifierSecretToken42" "${share_out}"
+assert_not_contains "T50f — password suppressed" "hunter2" "${share_out}"
+assert_not_contains "T50g — Markdown payload suppressed" "MARKDOWN-SECRET" "${share_out}"
+assert_not_contains "T50h — ANSI payload text suppressed" "ANSI-SECRET" "${share_out}"
+if printf '%s' "${share_out}" | LC_ALL=C grep -q $'\x1b'; then
+  printf '  FAIL: T50i — share card leaked a literal ANSI escape\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+
+EXT50="${TEST_HOME}/SECRET-MERGE-BASENAME-hunter2"
+BAD_EXT50="${TEST_HOME}/INVALID-MERGE-PATH-secret-api-key"
+mkdir -p "${EXT50}"
+cat > "${EXT50}/session_summary.jsonl" <<EOF
+{"session_id":"share-security-merged","host":"\u001b]52;c;SECRET-HOST-password=hunter2\u0007","start_ts":${NOW50},"end_ts":$((NOW50 + 60)),"domain":"coding","intent":"execution","edit_count":1,"verified":true,"reviewed":true,"guard_blocks":4,"dim_blocks":0,"exhausted":false,"dispatches":1,"outcome":"shipped","skip_count":0,"serendipity_count":0}
+EOF
+cat > "${EXT50}/gate_events.jsonl" <<EOF
+{"_v":1,"ts":${NOW50},"session_id":"share-security-merged","gate":"MERGED-SECRET-token=sk-live-123","event":"block","details":{}}
+{"_v":1,"ts":$((NOW50 + 1)),"session_id":"share-security-merged","gate":"\u0060MERGED-MARKDOWN-SECRET\u0060","event":"block","details":{}}
+{"_v":1,"ts":$((NOW50 + 2)),"session_id":"share-security-merged","gate":"\u001b]0;MERGED-ANSI-SECRET\u0007","event":"block","details":{}}
+{"_v":1,"ts":$((NOW50 + 3)),"session_id":"share-security-merged","gate":{"secret":"MERGED-OBJECT-SECRET"},"event":"block","details":{}}
+EOF
+
+merged_diag="$(run_report all --merge "${EXT50}")"
+assert_contains "T50i2 — printable custom host diagnostic retained" "SECRET-HOST-password=hunter2" "${merged_diag}"
+assert_contains "T50i3 — printable custom gate diagnostic retained" "MERGED-ANSI-SECRET" "${merged_diag}"
+if printf '%s' "${merged_diag}" | LC_ALL=C grep -q $'\x1b' \
+    || printf '%s' "${merged_diag}" | LC_ALL=C grep -q $'\x07'; then
+  printf '  FAIL: T50i4 — merged non-share diagnostics leaked ESC/BEL\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+CONTROL_BAD_EXT50="${TEST_HOME}/BAD-PATH"$'\x1b]52;c;PATH-CONTROL-CANARY\x07'
+control_path_diag="$(run_report all --merge "${CONTROL_BAD_EXT50}")"
+assert_contains "T50i5 — printable invalid-path diagnostic retained" "PATH-CONTROL-CANARY" "${control_path_diag}"
+if printf '%s' "${control_path_diag}" | LC_ALL=C grep -q $'\x1b' \
+    || printf '%s' "${control_path_diag}" | LC_ALL=C grep -q $'\x07'; then
+  printf '  FAIL: T50i6 — invalid merge-path diagnostic leaked ESC/BEL\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+
+merged_share="$(run_report all --share --merge "${EXT50}" --merge "${BAD_EXT50}")"
+assert_contains "T50j0 — share merge banner is anonymous" "Including 1 external machine dir(s) (paths and host labels suppressed" "${merged_share}"
+assert_contains "T50j1 — invalid share merge input is counted anonymously" "Skipped 1 invalid merge input(s) (paths suppressed)" "${merged_share}"
+assert_contains "T50j — merged unknown gates join the safe bucket" "other/unknown: 8" "${merged_share}"
+assert_contains "T50k — merged sanitized gates retain documented weighting" "Estimated time saved: ~54m 00s of debugging" "${merged_share}"
+assert_not_contains "T50l — merged token suppressed" "sk-live-123" "${merged_share}"
+assert_not_contains "T50m — merged Markdown suppressed" "MERGED-MARKDOWN-SECRET" "${merged_share}"
+assert_not_contains "T50n — merged ANSI text suppressed" "MERGED-ANSI-SECRET" "${merged_share}"
+assert_not_contains "T50o — merged object value suppressed" "MERGED-OBJECT-SECRET" "${merged_share}"
+assert_not_contains "T50o2 — merged directory basename suppressed" "SECRET-MERGE-BASENAME-hunter2" "${merged_share}"
+assert_not_contains "T50o3 — arbitrary merged host suppressed" "SECRET-HOST-password=hunter2" "${merged_share}"
+assert_not_contains "T50o4 — invalid merge path suppressed" "INVALID-MERGE-PATH-secret-api-key" "${merged_share}"
+assert_not_contains "T50o5 — no shared surface retains password token" "hunter2" "${merged_share}"
+if printf '%s' "${merged_share}" | LC_ALL=C grep -q $'\x1b\|\x07'; then
+  printf '  FAIL: T50p — merged share card leaked a literal control byte\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+set +e
+missing_merge_share="$(run_report --merge --SECRET-NEXT-FLAG-hunter2 --share)"
+missing_merge_rc=$?
+set -e
+assert_eq "T50q — redacted invalid share invocation retains usage rc" "2" "${missing_merge_rc}"
+assert_not_contains "T50r — deferred missing-merge diagnostic suppresses next token" \
+  "SECRET-NEXT-FLAG-hunter2" "${missing_merge_share}"
+
+rm -rf "${EXT50}"
+rm -f "${QP}/session_summary.jsonl" "${QP}/gate_events.jsonl"
+
+# ----------------------------------------------------------------------
+# Every summary scalar crossing into Bash arithmetic must be typed first.
+# Command-shaped strings previously caused arithmetic parse/fallthrough and
+# exposed the verbose report; dispatch strings also leaked directly in a
+# share bullet. Exercise both local and merged rows and prove no side effect.
+printf 'Test 51: share summary numerics fail closed under local and merged poison\n'
+NOW51="$(date +%s)"
+SENTINEL51_LOCAL="${TEST_HOME}/share-local-arithmetic-fired"
+SENTINEL51_MERGED="${TEST_HOME}/share-merged-arithmetic-fired"
+cat > "${QP}/session_summary.jsonl" <<EOF
+{"session_id":"numeric-poison-local","start_ts":${NOW51},"end_ts":$((NOW51 + 60)),"guard_blocks":"arr[\$(touch ${SENTINEL51_LOCAL})]","dim_blocks":"","dispatches":"SECRET-DISPATCH-password=hunter2\u001b[31m","skip_count":"arr[\$(touch ${SENTINEL51_LOCAL})]","outcome":"shipped"}
+EOF
+
+set +e
+poison_share="$(run_report all --share)"
+poison_rc=$?
+set -e
+assert_eq "T51a — poisoned local share exits successfully" "0" "${poison_rc}"
+assert_contains "T51b — poisoned local share still renders fixed card" "## oh-my-claude" "${poison_share}"
+assert_contains "T51c — poisoned local blocks normalize to zero" "Quality-gate blocks (caught issues):** 0" "${poison_share}"
+assert_contains "T51d — poisoned local dispatches normalize to zero" "Specialist dispatches:** 0" "${poison_share}"
+assert_not_contains "T51e — poison never falls through to verbose report" "# Harness report" "${poison_share}"
+assert_not_contains "T51f — poisoned dispatch secret suppressed" "hunter2" "${poison_share}"
+assert_not_contains "T51g — arithmetic payload suppressed" "arr[" "${poison_share}"
+if [[ -e "${SENTINEL51_LOCAL}" ]]; then
+  printf '  FAIL: T51h — local arithmetic payload executed\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+if printf '%s' "${poison_share}" | LC_ALL=C grep -q $'\x1b'; then
+  printf '  FAIL: T51i — poisoned local share leaked control bytes\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+
+EXT51="${TEST_HOME}/numeric-poison-merged"
+mkdir -p "${EXT51}"
+cat > "${EXT51}/session_summary.jsonl" <<EOF
+{"session_id":"numeric-poison-merged","start_ts":${NOW51},"end_ts":$((NOW51 + 60)),"guard_blocks":"arr[\$(touch ${SENTINEL51_MERGED})]","dim_blocks":"SECRET-DIM-password=merged","dispatches":"SECRET-MERGED-DISPATCH","skip_count":"arr[\$(touch ${SENTINEL51_MERGED})]","outcome":"shipped"}
+EOF
+set +e
+poison_merged_share="$(run_report all --share --merge "${EXT51}")"
+poison_merged_rc=$?
+set -e
+assert_eq "T51j — poisoned merged share exits successfully" "0" "${poison_merged_rc}"
+assert_contains "T51k — merged poison still renders fixed card" "## oh-my-claude" "${poison_merged_share}"
+assert_contains "T51l — both poisoned summaries remain countable" "Sessions:** 2" "${poison_merged_share}"
+assert_not_contains "T51m — merged poison never falls through to verbose" "# Harness report" "${poison_merged_share}"
+assert_not_contains "T51n — merged numeric secrets suppressed" "SECRET-MERGED-DISPATCH" "${poison_merged_share}"
+assert_not_contains "T51o — merged dimension secret suppressed" "SECRET-DIM-password=merged" "${poison_merged_share}"
+if [[ -e "${SENTINEL51_LOCAL}" ]] || [[ -e "${SENTINEL51_MERGED}" ]]; then
+  printf '  FAIL: T51p — merged arithmetic payload executed\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+rm -rf "${EXT51}"
+rm -f "${QP}/session_summary.jsonl"
+
+# ----------------------------------------------------------------------
+# Share cohorts use the same current-schema contract as verbose reports:
+# legacy abandoned summaries never count in all/week/month aggregates.
+printf 'Test 52: non-last share excludes legacy abandoned summaries\n'
+NOW52="$(date +%s)"
+cat > "${QP}/session_summary.jsonl" <<EOF
+{"session_id":"share-valid","start_ts":${NOW52},"end_ts":$((NOW52 + 60)),"guard_blocks":2,"dim_blocks":1,"dispatches":4,"skip_count":0,"outcome":"shipped"}
+{"session_id":"share-abandoned","start_ts":$((NOW52 + 1)),"end_ts":$((NOW52 + 61)),"guard_blocks":99,"dim_blocks":99,"dispatches":99,"skip_count":0,"outcome":"abandoned"}
+EOF
+abandoned_share="$(run_report all --share)"
+assert_contains "T52a — only valid summary counts" "Sessions:** 1" "${abandoned_share}"
+assert_contains "T52b — abandoned blocks excluded" "Quality-gate blocks (caught issues):** 3" "${abandoned_share}"
+assert_contains "T52c — abandoned dispatches excluded" "Specialist dispatches:** 4" "${abandoned_share}"
+rm -f "${QP}/session_summary.jsonl"
+
+# ----------------------------------------------------------------------
+# A native --resume copies the logical session's findings/gates/state into B
+# and fences A.  Every live state-root consumer must skip A or --sweep, the
+# user-decision queue, and pending-aging all double the same work.
+printf 'Test 53: transferred resume sources are excluded from every live scan\n'
+NOW53="$(date +%s)"
+STATE53="${QP}/state"
+SOURCE53="resume-source-T53"
+TARGET53="resume-target-T53"
+mkdir -p "${STATE53}/${SOURCE53}" "${STATE53}/${TARGET53}"
+cat > "${STATE53}/${SOURCE53}/session_state.json" <<EOF
+{"session_start_ts":${NOW53},"last_user_prompt_ts":${NOW53},"task_domain":"coding","task_intent":"execution","subagent_dispatch_count":"7","resume_transferred_to":"${TARGET53}"}
+EOF
+cat > "${STATE53}/${TARGET53}/session_state.json" <<EOF
+{"session_start_ts":${NOW53},"last_user_prompt_ts":${NOW53},"task_domain":"coding","task_intent":"execution","subagent_dispatch_count":"7","resume_source_session_id":"${SOURCE53}"}
+EOF
+cat > "${STATE53}/${SOURCE53}/findings.json" <<EOF
+{"findings":[{"id":"F-T53","status":"pending","requires_user_decision":true,"surface":"api","decision_reason":"choose owner","ts":$((NOW53 - 2 * 86400))}]}
+EOF
+cp "${STATE53}/${SOURCE53}/findings.json" "${STATE53}/${TARGET53}/findings.json"
+# A failed resume may retain copied state under the hidden, TTL-bounded
+# quarantine. Recursive findings scans must not surface its pending work.
+QUARANTINE53="${STATE53}/.resume-quarantine/resume-target-T53.1234.test/session"
+mkdir -p "${QUARANTINE53}"
+cat > "${QUARANTINE53}/findings.json" <<EOF
+{"findings":[{"id":"F-Q53","status":"pending","requires_user_decision":true,"surface":"quarantine","decision_reason":"must stay hidden","ts":$((NOW53 - 9 * 86400))}]}
+EOF
+printf '{"ts":%s,"gate":"source-only-resume-gate","event":"block"}\n' "${NOW53}" \
+  > "${STATE53}/${SOURCE53}/gate_events.jsonl"
+printf '{"ts":%s,"gate":"target-owned-resume-gate","event":"block"}\n' "${NOW53}" \
+  > "${STATE53}/${TARGET53}/gate_events.jsonl"
+: > "${QP}/session_summary.jsonl"
+: > "${QP}/gate_events.jsonl"
+
+out53="$(run_report all --sweep)"
+assert_contains "T53a — only target contributes a live session summary" "| Sessions | 1 |" "${out53}"
+assert_contains "T53b — target-owned gate remains visible" "target-owned-resume-gate" "${out53}"
+assert_not_contains "T53c — source gate is excluded" "source-only-resume-gate" "${out53}"
+assert_contains "T53d — copied user-decision finding counted once" \
+  "1 currently awaiting input" "${out53}"
+assert_contains "T53e — copied pending finding ages once" \
+  "1 pending/in-progress finding(s) across all sessions" "${out53}"
+assert_not_contains "T53f — quarantined decision finding stays hidden" \
+  "F-Q53" "${out53}"
+assert_not_contains "T53g — quarantined decision reason stays hidden" \
+  "must stay hidden" "${out53}"
+
+rm -rf "${STATE53:?}/${SOURCE53:?}" "${STATE53:?}/${TARGET53:?}" \
+  "${STATE53:?}/.resume-quarantine"
+rm -f "${QP}/session_summary.jsonl" "${QP}/gate_events.jsonl"
 
 # ----------------------------------------------------------------------
 printf '\n=== Show-Report Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"

@@ -33,6 +33,21 @@ fi
 
 ensure_session_dir
 
+# Allocate one causal sequence per Stop attempt. `emit_stop_block` stamps the
+# same value only if this guard really emits decision:block. The following
+# stop-time-summary hook can then distinguish this Stop from a recent PreTool
+# block and from a fast successful retry of an earlier blocked Stop.
+OMC_STOP_ATTEMPT_SEQ=0
+_begin_stop_attempt_unlocked() {
+  local _seq
+  _seq="$(read_state "stop_guard_attempt_seq" 2>/dev/null || true)"
+  [[ "${_seq}" =~ ^[0-9]+$ ]] || _seq=0
+  _seq=$((_seq + 1))
+  write_state "stop_guard_attempt_seq" "${_seq}" 2>/dev/null || return 1
+  OMC_STOP_ATTEMPT_SEQ="${_seq}"
+}
+with_state_lock _begin_stop_attempt_unlocked 2>/dev/null || OMC_STOP_ATTEMPT_SEQ=0
+
 # v1.46-pre: background-dispatch awareness — read+CONSUME the marker FIRST,
 # before any early-return path below (non-ULW exit, stop_hook_active exit,
 # gate-skip exit). posttool-timing.sh sets `bg_work_dispatched_ts` when a
@@ -1319,6 +1334,34 @@ _sg_required_dims="$(get_required_dimensions \
   "${_sg_review_code}" "${_sg_review_docs}" "${_sg_review_ui}" \
   "${_sg_review_unique}" "${_sg_review_unknown}" "${_sg_review_surfaces}")"
 
+reviewer_set_for_dimensions() {
+  local dims="${1:-}" result="" dim reviewer
+  for dim in ${dims//,/ }; do
+    reviewer="$(reviewer_for_dimension "${dim}")"
+    case ",${result}," in
+      *,${reviewer},*) ;;
+      *) result="${result:+${result},}${reviewer}" ;;
+    esac
+  done
+  printf '%s' "${result}"
+}
+
+# Compute the complete current-objective review route before the universal
+# quality block. This lets the first Stop name every independent reviewer that
+# can run on the same settled revision; otherwise the universal review gate and
+# adaptive coverage gate form a serial waterfall even though they inspect the
+# same diff.
+_sg_missing_dims_all=""
+_sg_missing_reviewers_all=""
+if [[ "${OMC_GATE_LEVEL}" == "full" && -n "${_sg_required_dims}" ]]; then
+  _sg_missing_dims_all="$(missing_dimensions "${_sg_required_dims}")"
+  if [[ -n "${_sg_missing_dims_all}" ]]; then
+    _sg_profile="$(get_project_profile 2>/dev/null || true)"
+    _sg_missing_dims_all="$(order_dimensions_by_risk "${_sg_missing_dims_all}" "${_sg_profile}")"
+    _sg_missing_reviewers_all="$(reviewer_set_for_dimensions "${_sg_missing_dims_all}")"
+  fi
+fi
+
 review_unremediated=0
 if [[ "${missing_review}" -eq 0 ]]; then
   _ru_scoped=0
@@ -1373,13 +1416,7 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
   if [[ "${OMC_GATE_LEVEL}" == "full" ]]; then
   required_dims="${_sg_required_dims}"
   if [[ -n "${required_dims}" ]]; then
-    missing_dims="$(missing_dimensions "${required_dims}")"
-
-    # Reorder missing dims by risk priority
-    if [[ -n "${missing_dims}" ]]; then
-      _profile="$(get_project_profile 2>/dev/null || true)"
-      missing_dims="$(order_dimensions_by_risk "${missing_dims}" "${_profile}")"
-    fi
+    missing_dims="${_sg_missing_dims_all}"
 
     if [[ -n "${missing_dims}" ]]; then
       # Build human-readable descriptions for the missing reviews
@@ -1415,6 +1452,13 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
           next_reviewer="$(reviewer_for_dimension "${next_dim}")"
           next_description="$(describe_dimension "${next_dim}")"
 
+          # Missing dimensions are independent evidence obligations. Report the
+          # whole minimal reviewer set so the main thread can launch distinct
+          # roles concurrently against one frozen revision instead of paying a
+          # Stop -> one reviewer -> Stop waterfall. Deduplicate roles because
+          # quality-reviewer owns both bug_hunt and code_quality.
+          _missing_reviewers="$(reviewer_set_for_dimensions "${missing_dims}")"
+
           # Build a progress checklist so the block message shows where
           # the session stands, not just what is missing. This transforms
           # "you are blocked again" into visible progress.
@@ -1429,14 +1473,14 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
               _done_dims=$((_done_dims + 1))
               _checklist="${_checklist}\n  [done] ${_rd_desc}"
             elif [[ "${_rd}" == "${next_dim}" ]]; then
-              _checklist="${_checklist}\n  [NEXT] ${_rd_desc} -> run \`${_rd_reviewer}\`"
+              _checklist="${_checklist}\n  [RUN ] ${_rd_desc} -> \`${_rd_reviewer}\` (highest risk)"
             else
-              _checklist="${_checklist}\n  [    ] ${_rd_desc}"
+              _checklist="${_checklist}\n  [RUN ] ${_rd_desc} -> \`${_rd_reviewer}\`"
             fi
           done
 
-          dim_reason="[Adaptive review coverage · ${_done_dims}/${_total_dims} dimensions] the current objective's changed surfaces and breadth require this coverage. Progress:${_checklist}\nNext step: run \`${next_reviewer}\` to cover ${next_description}. That reviewer owns this dimension, while route order follows current risk rather than a fixed panel. After it returns, address any findings, then retry stop."
-          dim_human="This objective needs ${_total_dims} evidence-backed review dimensions; ${_done_dims} done. Next: \`${next_reviewer}\` covers ${next_description}. The route was selected from current surfaces, not a standing reviewer chain."
+          dim_reason="[Adaptive review coverage · ${_done_dims}/${_total_dims} dimensions] the current objective's changed surfaces and breadth require this coverage. Progress:${_checklist}\nNext step: dispatch the distinct missing roles concurrently in one Agent batch: ${_missing_reviewers}. Keep the diff frozen until every role returns, reconcile all findings once, then make one remediation pass. The highest-risk first role is \`${next_reviewer}\` (${next_description}), but do not serialize independent reviewers behind repeated Stop attempts."
+          dim_human="This objective needs ${_total_dims} evidence-backed review dimensions; ${_done_dims} done. Run the minimal missing reviewer set together against one frozen diff: ${_missing_reviewers}. Reconcile their results before editing so no review is invalidated and repeated."
           if [[ "${dim_blocks}" -ge 2 ]]; then
             dim_reason="${dim_reason} NOTE: this is the final review-coverage block — the next stop attempt will bypass this check."
             dim_human="${dim_human} This is the final review-coverage block; next stop attempt will bypass this check."
@@ -1445,6 +1489,7 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
             "block_count=$((dim_blocks + 1))" "block_cap=3" \
             "missing_dims=${missing_dims}" \
             "next_reviewer=${next_reviewer}" \
+            "reviewers=${_missing_reviewers}" \
             "done_dims=${_done_dims}" "total_dims=${_total_dims}"
           emit_stop_block "$(format_gate_block_dual "${dim_human}" "${dim_reason}")"
           exit 0
@@ -1993,9 +2038,10 @@ The findings you handled are a sample, not the ceiling — do not redefine succe
   # v1 (prompt-time, v1.33.0): the router records explicit adjacent
   # deliverables and commit expectations from the prompt wording.
   # v2 (inferred, v1.34.0): refresh inferred surfaces from the actual
-  # edits — `code edited but no test`, `VERSION bumped without
-  # CHANGELOG`, `conf flag added without parser touched`, `migration
-  # without release notes`. Both layers feed the same gate so the model
+  # edits — `VERSION bumped without CHANGELOG`, `conf flag added without
+  # parser/config-table lockstep`, `migration without release notes`, and
+  # broad code work without docs. Test proof remains an independent gate;
+  # the retired R1 file-count heuristic no longer creates test work. Both layers feed the same gate so the model
   # gets a single audit-ready blocker list instead of two narrowly-
   # framed ones.
   refresh_inferred_contract || true
@@ -2024,7 +2070,7 @@ The findings you handled are a sample, not the ceiling — do not redefine succe
       "prompt_surfaces=$(read_state "done_contract_prompt_surfaces")" \
       "test_expectation=$(read_state "done_contract_test_expectation")" \
       "inferred_rules=$(read_state "inferred_contract_rules")"
-    contract_recovery="$(format_gate_recovery_line "finish the missing surface(s) — items tagged with (R1/R2/R3a/R3b/R4/R5) were inferred from your edits and are silent misses unless addressed. If the repo genuinely cannot support one of them, name that constraint explicitly in your wrap before stopping. For explicit commits or publish actions, do the action now or explain why it is impossible in this repo.")"
+    contract_recovery="$(format_gate_recovery_line "finish the missing surface(s) — items tagged with (R2/R3a/R3b/R4/R5) were inferred from your edits and are silent misses unless addressed. If the repo genuinely cannot support one of them, name that constraint explicitly in your wrap before stopping. For explicit tests, commits, or publish actions, do the requested action now or explain why it is impossible in this repo.")"
     # v1.34.1+ (P-002): tighter delivery-contract block; the
     # contract_blockers list already names what's missing.
     #
@@ -2032,7 +2078,7 @@ The findings you handled are a sample, not the ceiling — do not redefine succe
     # (prompt-stated vs inferred from edits) AND surfaces the
     # commit_mode=forbidden + inferred-blocker shape explicitly. Pre-
     # fix, a user who said "do X but don't commit" then triggered the
-    # inferred-contract gate (because edits implied tests/docs) saw
+    # inferred-contract gate (because edits implied release/config/docs) saw
     # only "[Delivery-contract gate] work drifting from prompt-stated
     # contract..." — the connection between the user's "don't commit"
     # constraint and the inferred blockers wasn't surfaced. Now the
@@ -2042,9 +2088,9 @@ The findings you handled are a sample, not the ceiling — do not redefine succe
     commit_mode_state="$(read_state "done_contract_commit_mode")"
     inferred_surface_categories=""
     if [[ -n "${contract_blockers_inferred}" ]]; then
-      # Extract the inferred-rule tags (R1/R2/R3a/R3b/R4/R5) so the
+      # Extract the active inferred-rule tags (R2/R3a/R3b/R4/R5) so the
       # FOR YOU names the categories rather than the count alone. Each
-      # tag corresponds to a class: R1=tests, R2=changelog, R3a=conf-
+      # tag corresponds to a class: R2=changelog, R3a=conf-
       # parser, R3b=conf-example, R4=migration release notes, R5=docs. See
       # inferred_contract_blocking_items in common.sh for the full
       # mapping.
@@ -2052,7 +2098,6 @@ The findings you handled are a sample, not the ceiling — do not redefine succe
         | { grep -oE '\(R[0-9]+[a-z]?' || true; } \
         | sort -u | tr -d '(' | tr '\n' ',' | sed 's/,$//')"
       _icat_human=()
-      [[ "${_icat_tags}" == *"R1"* ]] && _icat_human+=("tests")
       [[ "${_icat_tags}" == *"R2"* ]] && _icat_human+=("CHANGELOG")
       [[ "${_icat_tags}" == *"R3a"* ]] && _icat_human+=("conf parser")
       [[ "${_icat_tags}" == *"R3b"* ]] && _icat_human+=("conf example")
@@ -2287,6 +2332,49 @@ else
   review_domain_verbose="coding"
 fi
 
+review_batch_label="${review_target_label}"
+if [[ "${missing_review}" -eq 1 && -n "${_sg_missing_reviewers_all}" ]]; then
+  review_batch_label="${_sg_missing_reviewers_all}"
+fi
+review_batch_instruction="${review_batch_label}"
+review_mode_hint=""
+if [[ "${review_batch_label}" == *,* ]]; then
+  review_batch_instruction="the distinct reviewers concurrently in one frozen diff Agent batch (${review_batch_label})"
+fi
+if [[ ",${review_batch_label}," == *,quality-reviewer,* ]] \
+    && [[ ",${review_batch_label}," == *,excellence-reviewer,* ]]; then
+  review_mode_hint=" Give quality-reviewer \`REVIEW MODE: defects-only\`; excellence-reviewer owns completeness and polish in this batch."
+fi
+
+# quality-reviewer's explicit remediation mode can start from accepted
+# structured findings instead of repaying the whole repository-discovery cost.
+# Other reviewer definitions do not promise this input contract (notably
+# editor-critic remains prose-native), so never hand them a generic sidecar
+# instruction. The history remains useful as generic evidence/reporting data.
+review_history_hint=""
+_review_history_file="$(session_file "review_history.jsonl")"
+_review_history_objective_ts="$(read_state "review_cycle_prompt_ts")"
+[[ "${_review_history_objective_ts}" =~ ^[0-9]+$ ]] || _review_history_objective_ts=0
+_review_history_cycle_id="$(read_state "review_cycle_id")"
+[[ "${_review_history_cycle_id}" =~ ^[0-9]+$ ]] || _review_history_cycle_id=0
+if [[ ",${review_batch_label}," == *,quality-reviewer,* ]] \
+    && [[ -s "${_review_history_file}" ]] \
+    && jq -s -e \
+      --argjson objective_ts "${_review_history_objective_ts}" \
+      --argjson objective_cycle_id "${_review_history_cycle_id}" '
+      any(.[]?;
+        (.objective_prompt_ts // -1) == $objective_ts
+        and ($objective_cycle_id == 0
+          or (.objective_cycle_id // -1) == $objective_cycle_id)
+        and ((.agent_type // "") == "quality-reviewer"
+          or ((.agent_type // "") | endswith(":quality-reviewer")))
+        and ((.verdict // "") == "FINDINGS" or (.verdict // "") == "BLOCK")
+        and ((.findings // []) | length) > 0)
+    ' "${_review_history_file}" >/dev/null 2>&1; then
+  review_history_hint=" For quality-reviewer's remediation re-review, include \`REVIEW HISTORY: \$HOME/.claude/quality-pack/state/${SESSION_ID}/review_history.jsonl; objective_cycle_id=${_review_history_cycle_id}; objective_prompt_ts=${_review_history_objective_ts}\` so it proves its newest same-role anchors first and widens only when the changed risk requires it. Do not give this anchor-mode instruction to the other reviewers in the batch."
+fi
+review_mode_hint="${review_mode_hint}${review_history_hint}"
+
 verify_action=""
 review_action=""
 
@@ -2338,9 +2426,9 @@ if [[ "${guard_blocks}" -eq 0 ]]; then
   # rule that ships in the same release.
   if [[ "${missing_review}" -eq 1 ]]; then
     if [[ "${task_domain}" == "writing" || "${task_domain}" == "research" || "${task_domain}" == "operations" || "${task_domain}" == "general" ]]; then
-      review_action="delegate to editor-critic or another relevant reviewer to evaluate the work for correctness AND completeness — the lens is both \"does this read well as written?\" and \"does this deliver what was asked?\". Address its findings or explain why they don't apply"
+      review_action="delegate to ${review_batch_instruction} to evaluate the work for correctness AND completeness — the lens is both \"does this read well as written?\" and \"does this deliver what was asked?\".${review_mode_hint} Wait for every reviewer, reconcile findings once, then address them in one remediation pass"
     else
-      review_action="delegate to ${review_target_label} to evaluate the work for correctness AND completeness — the lens is both \"does this work as built?\" and \"does this deliver what was asked?\". Address its findings or explain why they don't apply"
+      review_action="delegate to ${review_batch_instruction} to evaluate the work for correctness AND completeness — the lens is both \"does this work as built?\" and \"does this deliver what was asked?\".${review_mode_hint} Wait for every reviewer, reconcile findings once, then address them in one remediation pass"
     fi
   elif [[ "${review_unremediated}" -eq 1 ]]; then
     review_action="the reviewer flagged issues that were not addressed — fix them or explain why they do not apply, then re-evaluate whether the deliverable is complete"
@@ -2364,7 +2452,7 @@ else
   # concrete action that unblocks them, so we repeat it every block.
   missing_items=""
   if [[ "${missing_review}" -eq 1 ]]; then
-    missing_items="${missing_items:+${missing_items}, }review (${review_target_label})"
+    missing_items="${missing_items:+${missing_items}, }review (${review_batch_label})"
   fi
   if [[ "${review_unremediated}" -eq 1 ]]; then
     missing_items="${missing_items:+${missing_items}, }unremediated findings"
@@ -2386,9 +2474,9 @@ else
   next_action=""
   if [[ "${missing_verify}" -eq 1 ]]; then
     if [[ -n "${project_test_cmd}" ]]; then
-      next_action="run \`${project_test_cmd}\` (detected project test command), then delegate ${review_target_label}"
+      next_action="run \`${project_test_cmd}\` (detected project test command), then delegate ${review_batch_instruction}"
     else
-      next_action="run the smallest meaningful validation, then delegate ${review_target_label}"
+      next_action="run the smallest meaningful validation, then delegate ${review_batch_instruction}"
     fi
   elif [[ "${verify_failed}" -eq 1 ]]; then
     next_action="fix the failing tests and re-run validation"
@@ -2399,7 +2487,7 @@ else
       next_action="run the project's test suite for proper validation (current confidence: ${last_verify_confidence}/100)"
     fi
   elif [[ "${missing_review}" -eq 1 ]]; then
-    next_action="delegate ${review_target_label}"
+    next_action="delegate ${review_batch_instruction}"
   elif [[ "${review_unremediated}" -eq 1 ]]; then
     next_action="address the flagged findings or explain why they do not apply"
   fi
@@ -2437,9 +2525,9 @@ elif [[ "${verify_low_confidence}" -eq 1 ]]; then
     quality_human="Verification ran but with low confidence (${last_verify_confidence}/100). Run a more comprehensive test command (project test suite) before stopping (block ${human_block_count}/3)."
   fi
 elif [[ "${missing_review}" -eq 1 && "${missing_verify}" -eq 1 ]]; then
-  quality_human="Both review and verification missing — code shipped without either signal. Run validation, then ${review_target_label} (block ${human_block_count}/3)."
+  quality_human="Both review and verification missing — code shipped without either signal. Run validation, then ${review_batch_instruction}.${review_mode_hint} (block ${human_block_count}/3)."
 elif [[ "${missing_review}" -eq 1 ]]; then
-  quality_human="Review missing — run ${review_target_label} on the diff before stopping (block ${human_block_count}/3)."
+  quality_human="Review missing — run ${review_batch_instruction} before stopping.${review_mode_hint} (block ${human_block_count}/3)."
 elif [[ "${missing_verify}" -eq 1 ]]; then
   if [[ -n "${project_test_cmd}" ]]; then
     quality_human="Verification missing — run \`${project_test_cmd}\` before stopping (block ${human_block_count}/3)."

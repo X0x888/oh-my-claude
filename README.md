@@ -91,7 +91,7 @@ After install, two mandatory steps:
 2. **Try it**: `/ulw-demo` (about 90 seconds, fires the gates on a real edit), then `/ulw <your task>` for real work in any domain.
 
 That's enough to feel the harness work. When you want more:
-- **Configure** with `/omc-config` *inside Claude Code* — the default install is the **Balanced** profile (low-friction defaults; planning/review agents inherit the session's main model, Sonnet for execution). For the strongest opinionated posture, run `/omc-config` and pick **Zero Steering** (quality model tier, all bias-defense directives, watchdog on, adaptive strict gates for high-risk work). Auto-detects first-time setup vs upgrade.
+- **Configure** with `/omc-config` *inside Claude Code* — the default install is the **Balanced** profile (low-friction defaults; planning/review judgment inherits the session model, normal execution uses Sonnet, and genuinely tricky or uncertain specialist work escalates instead of paying for rework from an inferior model). For the strongest opinionated posture, run `/omc-config` and pick **Zero Steering** (quality model tier, all bias-defense directives, watchdog on, adaptive strict gates for high-risk work). Auto-detects first-time setup vs upgrade.
 - **Verify on-disk install** with `bash ~/.local/share/oh-my-claude/verify.sh` from your terminal — useful when something feels off.
 
 ### When stuck — which deferral verb?
@@ -104,7 +104,7 @@ Three skills, three different "I can't keep going" cases. NOT interchangeable:
 | Discovered-scope flagged real findings *(under ULW with default `no_defer_mode=on`: agent ships inline; opt out via `no_defer_mode=off` for legacy soft-defer)* | `/mark-deferred <named-WHY>` |
 | Blocked on a real operational input — credentials, login, infra down, rate limit hit | `/ulw-pause <reason>` |
 
-Escalation order before any of these fires (v1.40.0): ship inline → wave-append → reject-as-not-a-defect → pause-for-operational-block. Taste/policy/credible-approach calls are the agent's under ULW (`no_defer_mode=on`). The full decision tree (symptoms, when-NOT-to-use, validator-acceptable WHY shapes) is the single source of truth in `~/.claude/quality-pack/memory/skills.md` — loaded into every session, so the model already has it; also surfaced via [`/skills`](#available-skills).
+Escalation order before any of these fires (v1.40.0): ship inline → wave-append → reject-as-not-a-defect → pause-for-operational-block. Taste/policy/credible-approach calls are the agent's under ULW (`no_defer_mode=on`). The compact routing index in `~/.claude/quality-pack/memory/skills.md` is loaded into every session; it preserves this decision boundary and points to the relevant on-demand `SKILL.md` for detailed syntax and edge cases. The same catalog is surfaced via [`/skills`](#available-skills).
 
 Both install paths keep Claude Code's permission prompts on; once you trust the harness, [`--bypass-permissions`](#power-user-setup) removes them. Quality gates apply either way.
 
@@ -204,7 +204,7 @@ The result: Claude classifies your intent before acting, routes work to speciali
 
 **Opt-in (v1.43+).** When `agent_first_gate=on`, `/ulw` execution requires Claude to dispatch and wait for a fresh-context shaping specialist before the first workspace mutation — read-only inspection still works, but `Edit`/`Write`/`MultiEdit`/`NotebookEdit` and common mutating Bash commands block until a planner, domain specialist, challenge agent, researcher, writer, or lens has returned. Post-hoc reviewers do not satisfy this floor.
 
-**Default is `off`** because the mandate was firing ~2.2x/session under `model_tier=quality` (where execution agents are at least Opus and deliberators inherit the main model, so the gate no longer buys a reliable smartness gap) and the depth-on-every-prompt rule + sub-dispatch-as-tool guidance in `~/.claude/quality-pack/memory/model-robustness.md` now carry the actual concern. Turn it on via `/omc-config` when training a new workflow habit, running on `model_tier=economy`, or when the active session is drift-prone on a single surface. First-mutation telemetry remains available in both modes: exact editor attempts are stamped PreTool, while default-off Bash is stamped after an actual mutation is observed; the block counter increments only when the enabled gate blocks.
+**Default is `off`** because the mandate was firing ~2.2x/session while live routing is risk-adaptive and inherited specialists ride the user's temporary/current session model; the harness cannot promise that a mandatory first specialist is categorically smarter than the main thread. The depth-on-every-prompt rule + sub-dispatch-as-tool guidance in `~/.claude/quality-pack/memory/model-robustness.md` now carry the actual concern. Turn it on via `/omc-config` when training a new workflow habit, when you explicitly want an independent fresh-context checkpoint before mutation regardless of model ordering, or when the active session is drift-prone on a single surface. First-mutation telemetry remains available in both modes: exact editor attempts are stamped PreTool, while default-off Bash is stamped after an actual mutation is observed; the block counter increments only when the enabled gate blocks.
 
 ### Adaptive review coverage
 
@@ -222,7 +222,7 @@ Metis stays where its competence belongs: plan-phase pressure testing, optionall
 
 **Every prompt is classified by intent and domain before Claude acts.** Five intent categories (execution, continuation, advisory, checkpoint, session-management) crossed with six domains (coding, writing, research, operations, mixed, general). Advisory questions get answered directly; execution prompts get the full specialist pipeline. A **prompt-text trust override** in the PreTool guard re-reads the user's prompt when the classifier disagrees, so destructive ops the prompt clearly authorized aren't blocked by mis-routing.
 
-Five **bias-defense directive layers** (conf-gated) defend against under- and over-interpretation: `prometheus_suggest` and `intent_verify_directive` (declare-and-proceed on short unanchored prompts); `exemplifying_directive` (treat example-marked items as one of a class, enumerate siblings); `intent_broadening` (project-surface inventory reference so a prompt that names some surfaces doesn't silently miss the rest); `divergence_directive` (enumerate 2-3 paradigm framings inline before committing on shape-decisions). All compose under `directive_budget` (`balanced` default — trims lower-priority directives when prompt tax gets dense). `quality_policy=zero_steering` adds adaptive strictness for users who want minimal-prompt autonomous shipping: high-risk work keeps blocking until proof is green, while small work stays compact. ULW's default `no_defer_mode=on` also keeps serious missing work blocking after gate caps, so complex tasks cannot end by scorecard-release, narrowed scope, or future-session handoff. Hard backstops: `exemplifying_scope_gate` blocks Stop until each enumerated sibling is marked shipped or consciously declined. Per-flag detail and tuning lives in [`docs/customization.md`](docs/customization.md).
+Five **bias-defense directive layers** (conf-gated) defend against under- and over-interpretation: `prometheus_suggest` and `intent_verify_directive` (declare-and-proceed on short unanchored prompts); `exemplifying_directive` (treat example-marked items as one of a class, enumerate siblings); `intent_broadening` (project-surface inventory reference so a prompt that names some surfaces doesn't silently miss the rest); `divergence_directive` (enumerate 2-3 paradigm framings inline before committing on shape-decisions). All compose under `directive_budget` (`balanced` default): a registry and whole-payload ceiling trim lower-priority repetition, while mandatory safety/gate and explicitly triggered Council/UI/model contracts emit fail-safe. Stable routing frames collapse to a compact delta until behavior changes, compact/resume fires, or the TTL expires. `quality_policy=zero_steering` adds adaptive strictness for users who want minimal-prompt autonomous shipping: high-risk work keeps blocking until proof is green, while small work stays compact. ULW's default `no_defer_mode=on` also keeps serious missing work blocking after gate caps, so complex tasks cannot end by scorecard-release, narrowed scope, or future-session handoff. Hard backstops: `exemplifying_scope_gate` blocks Stop until each enumerated sibling is marked shipped or consciously declined. Per-flag detail and tuning lives in [`docs/customization.md`](docs/customization.md).
 
 Reviewer findings are machine-readable (single-line `FINDINGS_JSON` block before each VERDICT). Hot-path hook latency is budgeted in `check-latency-budgets.sh` so speed regressions surface before merge.
 
@@ -249,7 +249,7 @@ Reviewer findings are machine-readable (single-line `FINDINGS_JSON` block before
 
 ### Project Council
 
-**Solo developers get the right cross-functional perspective without paying for a standing panel.** `/council` first maps the coverage the question actually needs, considers the full specialist roster, and records why relevant perspectives were included or skipped. It dispatches the smallest sufficient primary team concurrently — normally one to four agents, with one valid for a narrow specialist audit; a larger team is allowed only when the ledger records the cost and every independent high-impact competence need. The locked coverage lifecycle starts primary-only, records exact-objective returns, requires row-by-row reconciliation before it can add up to two gap-fill specialists, and refuses to mark the assessment ready until every selected round has returned and final reconciliation exists. Namespaced identities match exactly; unnamespaced installed names bind once, preventing same-short-name plugins from borrowing each other's mandate. The `[council:primary]`, `[council:gap-fill]`, and `[council:verification]` prefixes are phase/provenance tags, not agent-name templates or a fixed cast. Up to three load-bearing findings are checked by independent, competence-matched verifiers. `--polish` and `--self-audit` bias the coverage map rather than forcing named rosters; `--deep` escalates selected Sonnet-backed agents without downgrading agents that inherit a stronger main model. Broad prompts such as "evaluate my project" still auto-trigger under `/ulw`; a focused feature, capability, surface, or subsystem does not automatically inflate into a whole-project council.
+**Solo developers get the right cross-functional perspective without paying for a standing panel.** `/council` first maps the coverage the question actually needs, considers the full specialist roster, and records why relevant perspectives were included or skipped. It dispatches the smallest sufficient primary team concurrently — normally one to four agents, with one valid for a narrow specialist audit; a larger team is allowed only when the ledger records the cost and every independent high-impact competence need. The locked coverage lifecycle starts primary-only, records exact-objective returns, requires row-by-row reconciliation before it can add up to two gap-fill specialists, and refuses to mark the assessment ready until every selected round has returned and final reconciliation exists. Namespaced identities match exactly; unnamespaced installed names bind once, preventing same-short-name plugins from borrowing each other's mandate. The `[council:primary]`, `[council:gap-fill]`, and `[council:verification]` prefixes are phase/provenance tags, not agent-name templates or a fixed cast. Up to three load-bearing findings are checked by independent, competence-matched verifiers. `--polish` and `--self-audit` bias the coverage map rather than forcing named rosters; `--deep` escalates selected Sonnet-backed agents without downgrading agents that inherit a stronger main model. A request that explicitly names a tricky/intermittent/unknown-root-cause uncertainty auto-enables that depth and includes one best-fit inherited deliberator, so users do not need to know the flag and the harness does not pay for repeated inferior attempts. Generic breadth or high risk alone does not. Broad prompts such as "evaluate my project" still auto-trigger under `/ulw`; a focused feature, capability, surface, or subsystem does not automatically inflate into a whole-project council.
 
 Assessment and implementation are separate decisions. Only a successfully completed, fully reconciled advisory Council arms a handoff, and only the immediately following matching prompt—such as “implement the recommendations”—can consume it; an intervening prompt expires it. Bare `implement` or `ship` authorizes execution of the assessed scope. Full-scope expansion follows the canonical `is_exhaustive_authorization_request()` predicate: explicit all/every/everything forms, exhaustive implementation wording, a high-bar target, or binary-quality framing can authorize it; thorough assessment wording alone cannot. Otherwise the normal scope-expansion pause applies.
 
@@ -308,13 +308,13 @@ oh-my-claude/
 ├── install.sh / uninstall.sh / verify.sh   # Install, remove, and verify
 ├── bundle/dot-claude/                       # Installs to ~/.claude/
 │   ├── agents/          (37 agents)         # Specialist agent definitions
-│   ├── skills/          (34 skills)         # Skill definitions + autowork hooks
+│   ├── skills/          (35 skills)         # Skill definitions + autowork hooks
 │   ├── quality-pack/                        # Lifecycle hooks + memory files
 │   ├── output-styles/                       # Two bundled styles: oh-my-claude (default) + executive-brief (see docs/customization.md#output-style)
 │   └── statusline.py                        # Custom statusline widget
 ├── config/settings.patch.json               # Merged into user settings on install
 ├── evals/realwork/                           # Outcome eval scenarios for minimal-prompt shipping across code + design/UI + native artifacts + mixed + quantitative/data-analysis + regulated/high-stakes + writing + research + scholarly + ops + advisory
-├── tests/               (147 bash + 1 py)   # See CLAUDE.md for canonical commands
+├── tests/               (148 bash + 1 py)   # See CLAUDE.md for canonical commands
 ├── tools/                                    # Developer-only tools (not installed)
 └── docs/                                    # Architecture, customization, FAQ, prompts
 ```
@@ -341,8 +341,9 @@ Skills are invoked as slash commands or routed automatically by the intent class
 | librarian *(docs lookup)* | `/librarian <topic>` | Official docs and reference research |
 | **Review & evaluate** | | |
 | review-hard *(review)* | `/review-hard [focus]` | Findings-first code review |
+| test-audit *(test portfolio)* | `/test-audit [scope] [--apply]` | Decide which tests to keep, extend, merge, replace, retire, or add by unique behavioral confidence, runtime, stability, and maintenance cost. Read-only unless `--apply` is explicit. |
 | research-hard *(research)* | `/research-hard <topic>` | Targeted context gathering |
-| council *(adaptive evaluation)* | `/council [focus] [--deep]` | Coverage-map-driven evaluation from the full agent roster: normally 1–4 concurrent primary specialists (larger only for evidenced independent needs), optional 0–2 gap-fill, and competence-matched verification of up to 3 findings. A same-turn request or the immediate follow-up to a completed assessment can enter **Phase 8**; exhaustive scope still requires explicit authorization. `--deep` escalates selected Sonnet-backed agents only. |
+| council *(adaptive evaluation)* | `/council [focus] [--deep]` | Coverage-map-driven evaluation from the full agent roster: normally 1–4 concurrent primary specialists (larger only for evidenced independent needs), optional 0–2 gap-fill, and competence-matched verification of up to 3 findings. A same-turn request or the immediate follow-up to a completed assessment can enter **Phase 8**; exhaustive scope still requires explicit authorization. `--deep` escalates selected Sonnet-backed agents only; explicit tricky/intermittent/unknown-root-cause uncertainty auto-enables it and requires one inherited deliberator. |
 | **Build** | | |
 | frontend-design *(visual craft)* | `/frontend-design <task>` | Distinctive design-first frontend work |
 | **Research & science** | | |
@@ -356,9 +357,9 @@ Skills are invoked as slash commands or routed automatically by the intent class
 | omc-config *(setup walkthrough)* | `/omc-config [setup\|update\|change]` | Multi-choice walkthrough for `oh-my-claude.conf` flags. Auto-detects first-time setup vs upgrade vs ad-hoc change. Picks a profile (Zero Steering / Balanced / Minimal) or fine-tunes individual flags — no typing required. Triggered by phrases like "help me install", "configure oh-my-claude", "update my settings". |
 | **Workflow control** (mid-session) | | |
 | ulw-demo *(onboarding)* | `/ulw-demo` | Guided walkthrough with real quality gates |
-| ulw-status *(diagnostics)* | `/ulw-status` | Show current session state, the persisted done-contract and remaining obligations, Council Phase 8 wave-plan progress, and live timing/directive-surface totals. `summary` / `classifier` arguments swap modes. |
-| ulw-time *(time distribution)* | `/ulw-time [current\|last\|last-prompt\|week\|month\|all]` | Polished end-of-turn time card — stacked top bar (`█` agents · `▒` tools · `░` idle), per-bucket ASCII chart, and a one-line insight (anomaly / dominance / reassurance / fun fact). The same card auto-emits as Stop `systemMessage` above the 5s noise floor; manual invocations slice a different window or bypass the floor. |
-| ulw-report *(retrospective)* | `/ulw-report [last\|week\|month\|all]` | Markdown digest of cross-session activity — sessions, gate fires, bias-defense fires, router directive footprint, top reviewers, classifier misfires, Serendipity catches, finding/wave outcomes |
+| ulw-status *(diagnostics)* | `/ulw-status` | Show current session state, the persisted done-contract and remaining obligations, Council Phase 8 wave-plan progress, and live timing/token/directive totals. Its compact summary includes token/cache totals and top role/model economics drivers. `summary` / `classifier` arguments swap modes. |
+| ulw-time *(time + token distribution)* | `/ulw-time [current\|last\|last-prompt\|week\|month\|all]` | Polished end-of-turn card — stacked top bar (`█` agents · `▒` tools · `░` idle), per-bucket chart, input/output/cache + agent-token share, and a one-line insight. The same card auto-emits as Stop `systemMessage` above the 5s display floor; blocked and shorter token-bearing turns are still checkpointed. Manual invocations slice a different window or bypass the floor. |
+| ulw-report *(retrospective)* | `/ulw-report [last\|week\|month\|all]` | Markdown digest of cross-session activity — sessions, gate fires, bias-defense fires, router directive footprint, token economics by role/model/native dispatch, stale-review cost, top reviewers, classifier misfires, Serendipity catches, and finding/wave outcomes |
 | memory-audit *(memory hygiene)* | `/memory-audit [--memory-dir <path>]` | Classify MEMORY.md entries (load-bearing, archival, superseded, drifted) and propose rollup moves. Read-only. |
 | whats-new *(changelog delta)* | `/whats-new` | Show CHANGELOG entries between your installed version and the source repo HEAD. Surfaces post-install features without `cat CHANGELOG.md`. (v1.36.x) |
 | omc-doctor *(install health)* | `/omc-doctor` | One-shot install health check against the installed `~/.claude` tree — core files, CLAUDE.md @-includes, hook wiring, state-root writability — from any directory, no source clone needed. Claude Code fails open on hook errors, so a broken install is silently inert; this makes it visible. (v1.48) |
@@ -386,7 +387,7 @@ Skills are invoked as slash commands or routed automatically by the intent class
 | **Router-suggested (engineering)** under `/ulw` | Same mechanism — extended to engineering specialists in this release | `backend-api-developer`, `devops-infrastructure-engineer`, `test-automation-engineer`, `fullstack-feature-builder`, `ios-ui-developer`, `ios-core-engineer`, `ios-deployment-specialist`, `ios-ecosystem-integrator`, `abstraction-critic` |
 | **Auto-dispatched on prompt pattern** | An entire workflow (multi-agent + gates) fires when the router detects the pattern | `/council` for broad project-evaluation prompts, the 9-section Design Contract on UI work |
 | **Manual control/diagnostic** *(by design)* | You declare intent — auto-firing would be wrong | `/ulw-skip`, `/ulw-pause`, `/mark-deferred`, `/ulw-status`, `/ulw-time`, `/ulw-report`, `/ulw-off`, `/skills` |
-| **Manual setup/audit** | One-time or occasional | `/atlas`, `/memory-audit`, `/ulw-demo`, `/omc-config` |
+| **Manual setup/audit** | One-time or occasional | `/atlas`, `/memory-audit`, `/test-audit`, `/ulw-demo`, `/omc-config` |
 
 Most quality-boosting specialists are auto-suggested by the prompt-intent-router under `/ulw` based on prompt signals — `/ulw fix the auth bug` automatically nudges toward `oracle` for hard debugging, `librarian` for unfamiliar APIs, `quality-reviewer` before stop, and so on. You don't have to type `/oracle` to get Oracle — the slash command is the standalone escape hatch, not the only path in.
 
@@ -404,7 +405,7 @@ Other install options:
 
 ```bash
 bash install.sh --no-ios                # Skip iOS-specific agents
-bash install.sh --model-tier=economy    # All agents use Sonnet (cheaper)
+bash install.sh --model-tier=economy    # Inherit deliberators + Sonnet specialists; adaptive live routing
 bash install.sh --model-tier=quality    # Execution agents on Opus; deliberators ride the session model (max quality)
 bash install.sh --git-hooks             # Install post-merge auto-sync hook
 bash ~/.claude/switch-tier.sh economy   # Switch tier post-install (from anywhere)
@@ -430,7 +431,7 @@ bunx ccusage blocks               # 5-hour rate-limit-window aggregation
 bunx ccusage statusline           # Claude Code statusline integration (beta)
 ```
 
-Distributed as a native Rust binary via npm — `bunx`/`npx`/`pnpm dlx`/`pnpx`/Nix paths all work; no global install required. The 5-hour window matches Anthropic's rate-limit cap, so `ccusage blocks` is the most useful single command for "how close am I to the cap?". oh-my-claude already surfaces rate-limit headroom in the statusline and, as of v1.46-pre, **native token-count tracking** in `/ulw-time`, `/ulw-status`, and `/ulw-report` (per-prompt input/output/cache, split main-thread vs sub-agent — `token_tracking=on` by default); ccusage owns **dollar cost** aggregation. The division is deliberate: oh-my-claude tracks token *counts* (no pricing table to drift), ccusage tracks *cost* — complementary, not redundant.
+Distributed as a native Rust binary via npm — `bunx`/`npx`/`pnpm dlx`/`pnpx`/Nix paths all work; no global install required. The 5-hour window matches Anthropic's rate-limit cap, so `ccusage blocks` is the most useful single command for "how close am I to the cap?". oh-my-claude already surfaces rate-limit headroom in the statusline and **native token-count tracking** in `/ulw-time`, `/ulw-status`, and `/ulw-report` (input/output/cache split main-thread vs sub-agent, with sub-agent role/model attribution — `token_tracking=on` by default); ccusage owns **dollar cost** aggregation. The division is deliberate: oh-my-claude tracks token *counts* without a pricing table that can drift, while ccusage tracks *cost* — complementary, not redundant.
 
 **[`XcodeBuildMCP`](https://github.com/getsentry/XcodeBuildMCP)** *(iOS Xcode automation MCP, 5.7k stars, getsentry-maintained)* — MCP server exposing 82 manifest-driven tools grouped by workflow phase (build, test, simulator, device, debug, SwiftPM, scaffold, UI-automation). Recommended in the iOS agents (`ios-ui-developer`, `ios-core-engineer`, `ios-deployment-specialist`, `ios-ecosystem-integrator`) when executable Xcode operations beat shelling out via Bash.
 
@@ -447,6 +448,9 @@ The harness includes both a post-install verifier and dedicated test scripts:
 
 ```bash
 bash verify.sh                              # Installation integrity check
+bash tools/run-tests.sh                     # Change-affected tests for fast iteration
+bash tools/run-tests.sh --list              # Explain the selection without running it
+bash tools/run-tests.sh --full              # Exhaustive Bash pass at a release boundary
 bash tests/test-intent-classification.sh    # Intent routing logic
 bash tests/test-quality-gates.sh            # Stop guard enforcement
 bash tests/test-stall-detection.sh          # Loop detection
@@ -496,6 +500,8 @@ bash tests/test-output-style-coherence.sh   # All bundled styles: frontmatter pa
 bash tests/test-timing.sh                   # Per-prompt time-distribution capture, aggregator, format helpers, /ulw-time empty-states
 python3 -m unittest tests.test_statusline   # Statusline widget
 ```
+
+The suite is a maintained evidence portfolio, not an append-only score. New behavior needs fresh proof but not necessarily a new file: inspect current owners, extend or merge when possible, and retire only when a contract is gone or stronger retained proof is demonstrated. `/test-audit [scope]` returns an evidence table with `KEEP` / `EXTEND` / `MERGE` / `REPLACE` / `DELETE` / `ADD` decisions; pass `--apply` to implement proven changes. Test age, slowness, or always-green history alone never justifies deletion.
 
 ## Customization
 

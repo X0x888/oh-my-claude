@@ -5,8 +5,15 @@ set -euo pipefail
 # Fast-path: skip if ULW was never activated in this environment.
 [[ -f "${HOME}/.claude/quality-pack/state/.ulw_active" ]] || exit 0
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+_OMC_HOOK_CALLER_PATH="${PATH:-}"
+_omc_hook_source="${BASH_SOURCE[0]}"
+SCRIPT_DIR="${_omc_hook_source%/*}"
+[[ "${SCRIPT_DIR}" == "${_omc_hook_source}" ]] && SCRIPT_DIR="."
+SCRIPT_DIR="$(cd "${SCRIPT_DIR}" && pwd -P)"
+unset _omc_hook_source
+_OMC_PIN_OBSERVER_PATH_ON_SOURCE=1
 . "${SCRIPT_DIR}/common.sh"
+unset _OMC_PIN_OBSERVER_PATH_ON_SOURCE
 # v1.47 (sre-lens R-1): the PreToolUse gate is the security-relevant one —
 # a mid-hook abort fails OPEN (the destructive-command/hygiene gate simply
 # does not fire for that tool call). The trap keeps fail-open but records
@@ -65,6 +72,7 @@ if [[ "${tool_name}" == "Bash" ]]; then
   record_bash_worktree_baseline \
     "${tool_use_id}" "${tool_cwd}" "${command_str}" "${run_in_background:-false}" || true
 fi
+unset _OMC_HOOK_CALLER_PATH
 
 # Honour the customization kill-switch. Users who prefer the directive layer
 # alone can set pretool_intent_guard=false in oh-my-claude.conf or
@@ -389,15 +397,93 @@ _record_first_mutation_attempt() {
   fi
 }
 
+# Keep the reviewed generation stable while a frozen review batch runs in
+# parallel. Gate reviewers carry generation-causality metadata. Council Phase 8
+# can also mark a task-selected semantic specialist with `review_batch_id`; that
+# explicit per-dispatch marker extends the same freeze without maintaining a
+# permanent broad role list. Rejecting stale work is safe but wasteful: one eager
+# edit can invalidate several expensive fresh-context reviews at once. Read-only
+# inspection and verification remain allowed; only mutation waits for every
+# marked role in the active batch to settle.
+_active_frozen_review_roles() {
+  local pending_file now objective_ts objective_cycle_id
+  pending_file="$(session_file "pending_agents.jsonl")"
+  [[ -s "${pending_file}" ]] || return 0
+  now="$(now_epoch)"
+  [[ "${now}" =~ ^[0-9]+$ ]] || now=0
+  objective_ts="$(read_state "review_cycle_prompt_ts")"
+  if [[ ! "${objective_ts}" =~ ^[0-9]+$ ]]; then
+    objective_ts="$(read_state "last_user_prompt_ts")"
+  fi
+  [[ "${objective_ts}" =~ ^[0-9]+$ ]] || objective_ts=0
+  objective_cycle_id="$(read_state "review_cycle_id")"
+  [[ "${objective_cycle_id}" =~ ^[0-9]+$ ]] || objective_cycle_id=0
+
+  jq -Rsr --argjson now "${now}" --argjson ttl 7200 \
+    --argjson objective_ts "${objective_ts}" \
+    --argjson objective_cycle_id "${objective_cycle_id}" '
+    [ split("\n")[]
+      | fromjson?
+      | select((.review_dispatch_causality_version // 0) > 0
+          or (((.review_batch_id // "") | type) == "string"
+            and ((.review_batch_id // "") | length) > 0))
+      # Rebound/prior-objective tombstones remain only to suppress a late
+      # completion. They no longer represent live work and must not keep the
+      # settled revision frozen after the replacement has returned.
+      | select((.review_dispatch_abandoned // false) != true)
+      | select((.objective_prompt_ts // $objective_ts) == $objective_ts)
+      | select($objective_cycle_id == 0
+          or (.objective_cycle_id // -1) == $objective_cycle_id)
+      # A reviewer summary may finish before the reviewer-specific hook. Keep
+      # the revision frozen for the short completion lease, but do not let a
+      # crashed second hook freeze all mutation for the two-hour row TTL.
+      | select((.completion_claim_effects_complete // false) != true
+          or ((.completion_claim_ts // 0) >= ($now - 120)))
+      # Pending rows normally disappear at SubagentStop. A killed runtime can
+      # leave one behind, however; it must not freeze every future edit
+      # forever. Two hours is far beyond an ordinary reviewer call while still
+      # letting genuinely live long reviews protect their paid generation.
+      | select((.ts | type) == "number" and .ts >= ($now - $ttl))
+      | .agent_type
+      | select(type == "string" and length > 0)
+    ]
+    | unique
+    | join(",")
+  ' "${pending_file}" 2>/dev/null || true
+}
+
+if _tool_attempts_mutation; then
+  _review_roles_in_flight="$(_active_frozen_review_roles)"
+  if [[ -n "${_review_roles_in_flight}" ]]; then
+    _attempted_review_mutation="${tool_name}"
+    if [[ "${tool_name}" == "Bash" ]]; then
+      _attempted_review_mutation="Bash: $(truncate_chars 160 "${command_str}")"
+    fi
+    record_gate_event "review-mutation-freeze" "block" \
+      "reviewers=${_review_roles_in_flight}" \
+      "tool=${tool_name}" \
+      "attempted=$(truncate_chars 180 "${_attempted_review_mutation}")"
+    jq -nc --arg reason "[Review batch stability] Frozen review-batch roles are still inspecting the current revision (${_review_roles_in_flight}). Wait for every in-flight role to return before editing; otherwise its revision evidence becomes stale and the same review work must be paid for again. Read-only inspection and verification are still allowed. After all returns, reconcile findings once, make one remediation pass, then re-run only reviewers whose surfaces changed. Attempted mutation: ${_attempted_review_mutation}" '{
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason: $reason
+      }
+    }'
+    exit 0
+  fi
+fi
+
 if [[ "${OMC_AGENT_FIRST_GATE:-off}" == "on" ]] \
     && _agent_first_gate_active \
     && _tool_attempts_mutation; then
   # v1.43+: gate the BLOCK on the agent_first_gate conf flag. Default off —
-  # the mandate fired ~2.2x/session on the canonical /ulw user under
-  # model_tier=quality, where execution agents are at least Opus and
-  # deliberators inherit the main model, so there is no reliable smartness gap
-  # and the smartness-gap assumption that justified the mandate no longer
-  # holds. Depth-on-every-prompt (core.md Thinking Quality) and
+  # the mandate fired ~2.2x/session on the canonical /ulw user, while live
+  # tier routing is risk-adaptive and inherited specialists ride the user's
+  # main-session model. The harness therefore cannot promise a stable
+  # capability ordering in which a mandatory first specialist is always
+  # smarter than the main thread. Depth-on-every-prompt (core.md Thinking
+  # Quality) and
   # sub-dispatch-as-tool (model-robustness.md Mechanism 2) carry the
   # actual concern. When the gate is off, mark-edit records the first actual
   # mutation after tool completion; there is no need to pay this command-line

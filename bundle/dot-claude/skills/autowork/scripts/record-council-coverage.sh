@@ -162,16 +162,22 @@ _current_prompt_numbers_unlocked() {
   [[ "${_coverage_prompt_ts}" =~ ^[0-9]+$ ]] || _coverage_prompt_ts=0
   _coverage_prompt_revision="$(read_state "prompt_revision")"
   [[ "${_coverage_prompt_revision}" =~ ^[0-9]+$ ]] || _coverage_prompt_revision=0
+  _coverage_cycle_id="$(read_state "review_cycle_id")"
+  [[ "${_coverage_cycle_id}" =~ ^[0-9]+$ ]] || _coverage_cycle_id=0
 }
 
 _ledger_is_current_unlocked() {
-  local ledger_prompt_ts ledger_prompt_revision
+  local ledger_prompt_ts ledger_prompt_revision ledger_cycle_id
   [[ -f "${LEDGER_FILE}" ]] || return 1
   ledger_prompt_ts="$(jq -r '.objective_prompt_ts // 0' "${LEDGER_FILE}" 2>/dev/null || true)"
   ledger_prompt_revision="$(jq -r '.objective_prompt_revision // 0' "${LEDGER_FILE}" 2>/dev/null || true)"
+  ledger_cycle_id="$(jq -r '.objective_cycle_id // 0' "${LEDGER_FILE}" 2>/dev/null || true)"
   [[ "${ledger_prompt_ts}" =~ ^[0-9]+$ ]] || ledger_prompt_ts=0
   [[ "${ledger_prompt_revision}" =~ ^[0-9]+$ ]] || ledger_prompt_revision=0
-  (( ledger_prompt_ts == _coverage_prompt_ts && ledger_prompt_revision == _coverage_prompt_revision ))
+  [[ "${ledger_cycle_id}" =~ ^[0-9]+$ ]] || ledger_cycle_id=0
+  (( ledger_prompt_ts == _coverage_prompt_ts
+     && ledger_prompt_revision == _coverage_prompt_revision
+     && (_coverage_cycle_id == 0 || ledger_cycle_id == _coverage_cycle_id) ))
 }
 
 _selection_returns_complete_unlocked() {
@@ -181,11 +187,14 @@ _selection_returns_complete_unlocked() {
     --slurpfile ledger "${LEDGER_FILE}" \
     --arg phase "${phase}" \
     --argjson objective_ts "${_coverage_prompt_ts}" \
-    --argjson prompt_revision "${_coverage_prompt_revision}" '
+    --argjson prompt_revision "${_coverage_prompt_revision}" \
+    --argjson cycle_id "${_coverage_cycle_id}" '
       [$ledger[0].selections[] | select(.phase == $phase) | .agent] as $expected
       | [.[]
           | select((.objective_prompt_ts // -1) == $objective_ts)
           | select((.objective_prompt_revision // -1) == $prompt_revision)
+          | select($cycle_id == 0 or (.objective_cycle_id // -1) == $cycle_id)
+          | select((.contract_valid // true) == true)
           | select((.council_phase // "") == $phase)
           | .selection_agent] | unique as $returned
       | ($expected | length) > 0
@@ -199,13 +208,18 @@ _no_current_council_pending_unlocked() {
   [[ -f "${pending_file}" ]] || return 0
   if ! has_pending="$(jq -s -r \
       --argjson objective_ts "${_coverage_prompt_ts}" \
-      --argjson prompt_revision "${_coverage_prompt_revision}" '
+      --argjson prompt_revision "${_coverage_prompt_revision}" \
+      --argjson cycle_id "${_coverage_cycle_id}" '
         any(.[]?;
           (.purpose // "") == "council"
           and ((.council_phase // "")
                | IN("primary", "gap-fill", "verification"))
           and (.council_objective_prompt_ts // -1) == $objective_ts
           and (.council_objective_prompt_revision // -1) == $prompt_revision
+          and ($cycle_id == 0
+            or (.objective_cycle_id // -1) == $cycle_id)
+          and (.review_dispatch_abandoned // false) != true
+          and (.completion_claim_effects_complete // false) != true
         )
       ' "${pending_file}" 2>/dev/null)"; then
     # A corrupt pending ledger cannot prove that all selected work returned.
@@ -231,26 +245,40 @@ _write_ledger_unlocked() {
 }
 
 _drop_prior_objective_council_pending_unlocked() {
-  local pending_file tmp line keep_line artifact
+  local pending_file tmp line updated artifact abandoned_ts
+  abandoned_ts="$(now_epoch)"
+  [[ "${abandoned_ts}" =~ ^[0-9]+$ ]] || abandoned_ts=0
   for artifact in pending_agents.jsonl agent_dispatch_starts.jsonl; do
     pending_file="$(session_file "${artifact}")"
     [[ -s "${pending_file}" ]] || continue
     tmp="$(mktemp "${pending_file}.XXXXXX")"
     while IFS= read -r line || [[ -n "${line}" ]]; do
       [[ -n "${line}" ]] || continue
-      keep_line=1
       if jq -e \
           --argjson objective_ts "${_coverage_prompt_ts}" \
-          --argjson prompt_revision "${_coverage_prompt_revision}" '
+          --argjson prompt_revision "${_coverage_prompt_revision}" \
+          --argjson cycle_id "${_coverage_cycle_id}" '
             (.purpose // "") == "council"
             and (
               (.council_objective_prompt_ts // -1) != $objective_ts
               or (.council_objective_prompt_revision // -1) != $prompt_revision
+              or ($cycle_id > 0
+                and (.objective_cycle_id // -1) != $cycle_id)
             )
           ' <<<"${line}" >/dev/null 2>&1; then
-        keep_line=0
+        # Keep a bounded suppression tombstone instead of deleting provenance.
+        # A late prior-objective SubagentStop must bind here and be ignored, not
+        # fall through as a trusted untracked/legacy completion.
+        updated="$(jq -c --argjson abandoned_ts "${abandoned_ts}" '
+          . + {
+            review_dispatch_abandoned:true,
+            review_dispatch_abandonment_reason:"prior-objective",
+            review_dispatch_abandoned_ts:$abandoned_ts
+          }
+        ' <<<"${line}" 2>/dev/null || true)"
+        [[ -n "${updated}" ]] && line="${updated}"
       fi
-      [[ "${keep_line}" -eq 1 ]] && printf '%s\n' "${line}" >>"${tmp}"
+      printf '%s\n' "${line}" >>"${tmp}"
     done <"${pending_file}"
     mv -f "${tmp}" "${pending_file}"
   done
@@ -273,8 +301,9 @@ _init_unlocked() {
   normalized="$(printf '%s' "${payload}" | jq -c \
     --argjson now "${now}" \
     --argjson prompt_ts "${_coverage_prompt_ts}" \
-    --argjson prompt_revision "${_coverage_prompt_revision}" '
-      del(.version,.created_ts,.updated_ts,.objective_prompt_ts,.objective_prompt_revision,
+    --argjson prompt_revision "${_coverage_prompt_revision}" \
+    --argjson cycle_id "${_coverage_cycle_id}" '
+      del(.version,.created_ts,.updated_ts,.objective_prompt_ts,.objective_prompt_revision,.objective_cycle_id,
           .generation,.lifecycle,.completion)
       | .selections |= map(del(.resolved_agent,.added_generation) + {added_generation:1})
       | . + {
@@ -284,13 +313,14 @@ _init_unlocked() {
           created_ts:$now,
           updated_ts:$now,
           objective_prompt_ts:$prompt_ts,
-          objective_prompt_revision:$prompt_revision
+          objective_prompt_revision:$prompt_revision,
+          objective_cycle_id:$cycle_id
         }
     ')"
   _write_ledger_unlocked "${normalized}" "${archive_previous}"
-  # A new objective cannot ever accept an old Council return. Remove those
-  # obsolete compact-tracking rows now so an interrupted prior dispatch does
-  # not permanently reserve the same exact identity in the new Council.
+  # A new objective cannot ever accept an old Council return. Retain bounded
+  # abandoned tombstones so a late return is suppressed, while dispatch logic
+  # requires an ID-bound replacement when reusing that exact identity.
   _drop_prior_objective_council_pending_unlocked
   # Starting a new assessment invalidates any older two-turn handoff. This
   # script remains the sole producer of a ready=1 state; init only clears it.
@@ -388,9 +418,10 @@ _update_unlocked() {
     --argjson created "${created}" \
     --argjson generation "${next_generation}" \
     --argjson prompt_ts "${_coverage_prompt_ts}" \
-    --argjson prompt_revision "${_coverage_prompt_revision}" '
+    --argjson prompt_revision "${_coverage_prompt_revision}" \
+    --argjson cycle_id "${_coverage_cycle_id}" '
       ($old[0].selections // []) as $old_selections
-      | del(.version,.created_ts,.updated_ts,.objective_prompt_ts,.objective_prompt_revision,
+      | del(.version,.created_ts,.updated_ts,.objective_prompt_ts,.objective_prompt_revision,.objective_cycle_id,
             .generation,.lifecycle,.completion)
       | .selections |= map(
           . as $selection
@@ -409,7 +440,8 @@ _update_unlocked() {
           created_ts:$created,
           updated_ts:$now,
           objective_prompt_ts:$prompt_ts,
-          objective_prompt_revision:$prompt_revision
+          objective_prompt_revision:$prompt_revision,
+          objective_cycle_id:$cycle_id
         }
     ')"
   _write_ledger_unlocked "${normalized}" "0"
@@ -452,12 +484,14 @@ _complete_unlocked() {
   normalized="$(jq -c \
     --argjson now "${now}" \
     --argjson prompt_ts "${_coverage_prompt_ts}" \
-    --argjson prompt_revision "${_coverage_prompt_revision}" '
+    --argjson prompt_revision "${_coverage_prompt_revision}" \
+    --argjson cycle_id "${_coverage_cycle_id}" '
       .updated_ts = $now
       | .completion = {
           ts:$now,
           objective_prompt_ts:$prompt_ts,
-          objective_prompt_revision:$prompt_revision
+          objective_prompt_revision:$prompt_revision,
+          objective_cycle_id:$cycle_id
         }
     ' "${LEDGER_FILE}")"
   _write_ledger_unlocked "${normalized}" "0"

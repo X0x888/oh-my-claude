@@ -106,6 +106,8 @@ printf 'installed_version=1.30.0\n' > "${TEST_HOME}/.claude/oh-my-claude.conf"
 out="$(run_hook "t1-${RANDOM}")"
 assert_contains "T1: banner mentions oh-my-claude" "oh-my-claude" "${out}"
 assert_contains "T1: banner mentions version" "v1.30.0" "${out}"
+assert_contains "T1: banner confirms hooks were reloaded" \
+  "Claude Code reloaded the hooks" "${out}"
 assert_contains "T1: banner recommends /ulw-demo" "/ulw-demo" "${out}"
 assert_contains "T1: banner mentions /omc-config" "/omc-config" "${out}"
 [[ -f "${TEST_HOME}/.claude/.welcome-shown-at" ]] && pass=$((pass + 1)) \

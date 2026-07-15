@@ -100,7 +100,7 @@ Edit `~/.claude/skills/autowork/scripts/stop-guard.sh`. Each gate is an independ
 
 ### Why is my prompt slow? Where did the time go?
 
-Run `/ulw-time` to see a breakdown of the active session's wall time by bucket — agents (per-subagent), tools (per-tool, with call counts), and idle/model (residual: model thinking, permission-prompt waits, hook overhead). For a single-prompt slice, run `/ulw-time last-prompt`. For a cross-session view answering "which agents are most expensive in my workflow?", run `/ulw-time week` (or `month` / `all`). The `/ulw-status` and `/ulw-report` skills also surface a summary line.
+Run `/ulw-time` to see the active session's wall time by bucket — agents (per-subagent), tools (per-tool, with call counts), and idle/model — plus input/output/cache totals and agent-token share. For a single-prompt slice, run `/ulw-time last-prompt`. For a cross-session view answering "which agents are most expensive in my workflow?", run `/ulw-time week` (or `month` / `all`). `/ulw-status summary` adds the top role/model token drivers, while `/ulw-report` provides the deeper economics and stale-review attribution.
 
 Capture is on by default (`time_tracking=on`). The Stop hook also emits a one-line `Time: ...` summary into the next turn's context — that's how the model sees workflow shape between turns. You'll find the same data interactively via the skills above.
 
@@ -148,7 +148,7 @@ No, that is the v1.24.0 contract working as designed. Both flags were originally
 
 The audit principle: gate-blocks should correlate with reviewer-found defects you actually fixed. Gate-blocks without a downstream finding-shipped row are friction, not value. Skip-rates above ~40% suggest a misconfigured threshold or a task class the gate wasn't designed for.
 
-`/ulw-status` shows the current session's state — workflow mode, domain, intent, gate counters, active flags. For cross-session visibility, `/ulw-report [last|week|month|all]` (default 7 days) renders a markdown digest of: sessions completed, gate fires per category (block / override / status-change), top reviewers by invocation, classifier misfires, Serendipity Rule applications, finding/wave outcomes, bias-defense directive fires (`exemplifying` / `prometheus-suggest` / `intent-verify`), wave-shape distribution, and `mark-deferred` strict-bypass audit rows. The report's interpretation footers name the heuristics that triggered (high gate density, skip-rate, archetype convergence).
+`/ulw-status` shows the current session's state — workflow mode, domain, intent, gate counters, active flags, and compact timing/token economics. For cross-session visibility, `/ulw-report [last|week|month|all]` (default 7 days) renders a markdown digest of: sessions completed, gate fires per category (block / override / status-change), role/model/native-dispatch token economics and stale-review cost, top reviewers by invocation, classifier misfires, Serendipity Rule applications, finding/wave outcomes, bias-defense directive fires (`exemplifying` / `prometheus-suggest` / `intent-verify`), wave-shape distribution, and `mark-deferred` strict-bypass audit rows. The report's interpretation footers name the heuristics that triggered (high gate density, skip-rate, archetype convergence).
 
 ### What is the intent classification system?
 
@@ -173,11 +173,11 @@ The fastest way is the convenience script installed at `~/.claude/switch-tier.sh
 ```bash
 bash ~/.claude/switch-tier.sh quality    # Opus execution; deliberators keep inherit
 bash ~/.claude/switch-tier.sh balanced   # default split
-bash ~/.claude/switch-tier.sh economy    # all Sonnet
+bash ~/.claude/switch-tier.sh economy    # inherit deliberators + Sonnet specialists; adaptive live routing
 bash ~/.claude/switch-tier.sh            # show current tier
 ```
 
-For the quality and economy tiers, the script updates agent files in-place without re-running the full installer. For the balanced tier, it restores bundle defaults from the repo. The choice is saved to `oh-my-claude.conf` and re-applied on future installs. For per-agent control, edit individual agent files in `~/.claude/agents/` after installation. See [customization.md](customization.md#model-tiers) for details.
+The script updates shipped agent files without re-running the full installer and saves the choice to `oh-my-claude.conf` for future installs. Every transition reconstructs the 37 shipped declarations from regression-locked rosters embedded in the installed switcher, so Economy → Balanced/Quality still works if the source clone moved. Custom and plugin definitions are never rewritten: explicit named-model pins for them are runtime-only, and custom `inherit` is valid only when the definition already declares it exactly once. These files are direct-skill fallbacks; during `/ulw`, the live resolver raises reasoning-heavy Economy work when a weaker retry loop would cost more. For durable per-agent control, use user-level `model_overrides` or `/omc-config`; hand-edited shipped agent files can be overwritten and do not outrank live routing. See [customization.md](customization.md#model-tiers) for details.
 
 ### Can I ask Claude to modify the harness?
 

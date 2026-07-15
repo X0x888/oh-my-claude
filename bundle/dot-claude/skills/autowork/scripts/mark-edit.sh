@@ -10,8 +10,14 @@ set -euo pipefail
 export OMC_LAZY_CLASSIFIER=1
 export OMC_LAZY_TIMING=1
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+_omc_hook_source="${BASH_SOURCE[0]}"
+SCRIPT_DIR="${_omc_hook_source%/*}"
+[[ "${SCRIPT_DIR}" == "${_omc_hook_source}" ]] && SCRIPT_DIR="."
+SCRIPT_DIR="$(cd "${SCRIPT_DIR}" && pwd -P)"
+unset _omc_hook_source
+_OMC_PIN_OBSERVER_PATH_ON_SOURCE=1
 . "${SCRIPT_DIR}/common.sh"
+unset _OMC_PIN_OBSERVER_PATH_ON_SOURCE
 # v1.47 (sre-lens R-1): observable fail-open for edit-clock/delivery-contract
 # state writes (a silent abort here desyncs review/verify clocks).
 omc_arm_failopen_err_trap "mark-edit" "(edit clocks / delivery-contract inference skipped for this edit)"

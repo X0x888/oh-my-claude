@@ -114,7 +114,9 @@ else
 fi
 
 # ----------------------------------------------------------------------
-# Test 4: run-sterile.sh env-var precedence (v1.32.3 gap 1 fix)
+# Test 4: run-sterile.sh env-var precedence (v1.32.3 gap 1 fix).
+# Use planning mode: parser tests must not pay to execute test-state-io.sh four
+# times merely to inspect the resolved mode.
 # ----------------------------------------------------------------------
 printf 'Test 4: run-sterile.sh env-var precedence with both flags set\n'
 
@@ -125,7 +127,7 @@ printf 'Test 4: run-sterile.sh env-var precedence with both flags set\n'
 # upstream is still writing — kills the test under `set -e`. Capture
 # full output then grep is the correct shape.
 out="$(OMC_STERILE_STRICT=1 OMC_STERILE_ADVISORY=1 \
-  bash "${REPO_ROOT}/tests/run-sterile.sh" --only test-state-io.sh 2>&1)"
+  bash "${REPO_ROOT}/tests/run-sterile.sh" --plan --only test-state-io.sh 2>&1)"
 
 assert_contains "T4: warn fires when both flags set" "warn:" "${out}"
 assert_contains "T4: warn names both flags" "OMC_STERILE_ADVISORY" "${out}"
@@ -133,17 +135,19 @@ assert_contains "T4: warn names both flags" "OMC_STERILE_STRICT" "${out}"
 assert_contains "T4: mode resolves to advisory" "mode: advisory" "${out}"
 
 # Only STRICT=1 → strict (backward-compat path)
-out_strict="$(OMC_STERILE_STRICT=1 bash "${REPO_ROOT}/tests/run-sterile.sh" --only test-state-io.sh 2>&1)"
+out_strict="$(OMC_STERILE_STRICT=1 bash "${REPO_ROOT}/tests/run-sterile.sh" --plan --only test-state-io.sh 2>&1)"
 assert_contains "T4: STRICT=1 alone resolves to strict" "mode: strict" "${out_strict}"
 
 # Only ADVISORY=1 → advisory
-out_adv="$(OMC_STERILE_ADVISORY=1 bash "${REPO_ROOT}/tests/run-sterile.sh" --only test-state-io.sh 2>&1)"
+out_adv="$(OMC_STERILE_ADVISORY=1 bash "${REPO_ROOT}/tests/run-sterile.sh" --plan --only test-state-io.sh 2>&1)"
 assert_contains "T4: ADVISORY=1 alone resolves to advisory" "mode: advisory" "${out_adv}"
 
 # Neither set → strict (v1.32.2 default)
 unset OMC_STERILE_STRICT OMC_STERILE_ADVISORY
-out_default="$(bash "${REPO_ROOT}/tests/run-sterile.sh" --only test-state-io.sh 2>&1)"
+out_default="$(bash "${REPO_ROOT}/tests/run-sterile.sh" --plan --only test-state-io.sh 2>&1)"
 assert_contains "T4: neither flag set → strict default" "mode: strict" "${out_default}"
+assert_contains "T4: parser checks do not execute the selected test" \
+  "Planning only; no tests executed." "${out_default}"
 
 # ----------------------------------------------------------------------
 # Test 5: run-sterile.sh CLI-flag precedence
@@ -151,12 +155,70 @@ assert_contains "T4: neither flag set → strict default" "mode: strict" "${out_
 printf 'Test 5: run-sterile.sh CLI-flag precedence\n'
 
 # --advisory flag wins over default
-out_adv_flag="$(bash "${REPO_ROOT}/tests/run-sterile.sh" --advisory --only test-state-io.sh 2>&1)"
+out_adv_flag="$(bash "${REPO_ROOT}/tests/run-sterile.sh" --plan --advisory --only test-state-io.sh 2>&1)"
 assert_contains "T5: --advisory flag → advisory" "mode: advisory" "${out_adv_flag}"
 
 # --strict flag explicit (redundant but should work)
-out_strict_flag="$(bash "${REPO_ROOT}/tests/run-sterile.sh" --strict --only test-state-io.sh 2>&1)"
+out_strict_flag="$(bash "${REPO_ROOT}/tests/run-sterile.sh" --plan --strict --only test-state-io.sh 2>&1)"
 assert_contains "T5: --strict flag → strict" "mode: strict" "${out_strict_flag}"
+
+# Change-aware selection is the PR-CI path. `--only` keeps this unit check
+# deterministic even when the surrounding developer worktree is broad.
+out_changed="$(bash "${REPO_ROOT}/tests/run-sterile.sh" \
+  --plan --changed --only test-state-io.sh 2>&1)"
+assert_contains "T5: --changed selects the proportional profile" \
+  "selection: changed" "${out_changed}"
+assert_contains "T5: change-aware plan names selected test" \
+  "tests/test-state-io.sh" "${out_changed}"
+sterile_runner_source="$(cat "${REPO_ROOT}/tests/run-sterile.sh")"
+assert_contains "T5: proportional planner invokes authoritative selector explicitly" \
+  'runner_args=(--changed --list --no-record)' "${sterile_runner_source}"
+
+set +e
+missing_only_out="$(bash "${REPO_ROOT}/tests/run-sterile.sh" --plan --only 2>&1)"
+missing_only_rc=$?
+set -e
+if [[ "${missing_only_rc}" -eq 2 ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T5: missing --only value should exit 2 (got %s)\n' \
+    "${missing_only_rc}" >&2
+  fail=$((fail + 1))
+fi
+assert_contains "T5: missing --only value is explained" \
+  "--only requires a test filename" "${missing_only_out}"
+
+# A test that fails in both environments is still a real test failure. The
+# sterile classification is diagnostic; strict release/local gates must not
+# turn ordinary breakage green merely because it is not environment-specific.
+double_fixture="${_t1_tmp_path}/double-failure-fixture"
+mkdir -p "${double_fixture}/tests/lib" "${double_fixture}/tools" \
+  "${double_fixture}/.github/workflows"
+cp "${REPO_ROOT}/tests/run-sterile.sh" "${double_fixture}/tests/"
+cp "${REPO_ROOT}/tests/lib/sterile-env.sh" "${double_fixture}/tests/lib/"
+cp "${REPO_ROOT}/tools/list-ci-pinned-tests.sh" "${double_fixture}/tools/"
+cat > "${double_fixture}/.github/workflows/validate.yml" <<'YAML'
+jobs:
+  test:
+    steps:
+      - run: bash tests/test-always-fails.sh
+YAML
+cat > "${double_fixture}/tests/test-always-fails.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'intentional fixture failure\n' >&2
+exit 9
+SH
+set +e
+double_out="$(cd "${double_fixture}" \
+  && bash tests/run-sterile.sh --strict --full 2>&1)"
+double_rc=$?
+set -e
+assert_eq "T5: strict mode blocks a test failing in both environments" \
+  "1" "${double_rc}"
+assert_contains "T5: double failure remains diagnostically classified" \
+  "also fails dev env" "${double_out}"
+assert_contains "T5: strict failure explains release is blocked" \
+  "release blocked" "${double_out}"
 
 # ----------------------------------------------------------------------
 # Test 6 (v1.33.x): sterile TMPDIR is forced under /tmp/.

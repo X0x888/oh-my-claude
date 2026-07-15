@@ -1,6 +1,6 @@
 ---
 name: ulw-time
-description: Show where this prompt's (or session's) wall time went — polished end-of-turn card with a stacked-segment top bar (`█` agents · `▒` tools · `░` idle), per-bucket per-row chart, and a closing insight line. No argument (or `current`) is the active session; pass `last-prompt` to slice the most recently finalized prompt, `last` for the most recent session, `week` / `month` / `all` for cross-session rollups. Use to answer "why did that prompt take so long?" and "which agents are the most expensive in my workflow?". The same card renders automatically at the end of every Stop hook above the 5s noise floor (`time_card_min_seconds`, env `OMC_TIME_CARD_MIN_SECONDS`) — invoke this skill when you want it on demand or want to slice a different window.
+description: Show where this prompt's (or session's) wall time and tokens went — polished end-of-turn card with a stacked-segment top bar (`█` agents · `▒` tools · `░` idle), per-bucket rows, input/output/cache and agent-token share, and a closing insight. No argument (or `current`) is the active session; pass `last-prompt` to slice the most recently finalized prompt, `last` for the most recent session, `week` / `month` / `all` for cross-session rollups. Use to answer "why did that prompt take so long?" and "which agents are the most expensive in my workflow?". The same card renders automatically at the end of every Stop hook above the 5s noise floor (`time_card_min_seconds`, env `OMC_TIME_CARD_MIN_SECONDS`) — invoke this skill when you want it on demand or want to slice a different window.
 ---
 
 # ULW Time
@@ -66,10 +66,14 @@ The card layout, top to bottom:
    followed by sub-rows for each subagent / tool name with their own
    sub-bar and call count. Sub-row names over 22 chars are truncated
    with U+2026 (`…`) so column alignment stays locked.
-5. **Anomaly note** (only when calls were killed mid-flight) — surfaces
+5. **Token line** (when usage exists) — input volume, cache-hit share,
+   output volume, and the share attributable to subagents. Capture includes
+   the parent transcript and nested subagent transcripts; durable checkpoints
+   keep cumulative totals monotonic when detailed timing rows rotate.
+6. **Anomaly note** (only when calls were killed mid-flight) — surfaces
    the count of unfinished starts and orphan ends so the user knows the
    aggregates may underestimate.
-6. **Insight line** (always one when a rule fires) — at most one
+7. **Insight line** (always one when a rule fires) — at most one
    observation per turn, picked by priority: anomaly first, then
    single-agent / single-tool dominance (>=60%), idle-heavy reassurance
    (>=60% idle on a >=30s turn), tool-churn parallelization hint
@@ -95,17 +99,23 @@ Definitions:
   thinking time, user-permission-prompt waits, and hook overhead. A
   large idle/model bucket on a long prompt usually means the model
   spent significant time thinking, OR there was a long permission-prompt
-  delay; tool spans don't account for it because no tool call was active.
+   delay; tool spans don't account for it because no tool call was active.
+- **Tokens** split main-thread and subagent input, output, cache-read, and
+  cache-creation usage. The compact card shows totals and agent share; the
+  retrospective report adds bounded role/model/native-dispatch attribution.
 
 ## Always-on epilogue
 
 The same card renders automatically as Stop `systemMessage` at the end
 of every turn whose walltime is `>= 5 seconds` (the noise floor that keeps
-trivial answers off the transcript). Below the floor, the hook stays
-silent. A recent stop-guard block within the last 3 seconds also
-suppresses the epilogue so the user-facing block message isn't cluttered.
-Manual `/ulw-time` invocations bypass the noise floor — if you ask, the
-script shows whatever data exists.
+trivial answers off the transcript). Below the floor, the card stays silent.
+A Stop block suppresses the card only when its exact attempt sequence matches
+the current Stop and the stamp is still fresh; an earlier PreTool denial or a
+later successful retry cannot suppress it accidentally. Token capture and the
+cross-session economics checkpoint still run for blocked and below-floor
+turns, because invisible retries consume real tokens. Manual `/ulw-time`
+invocations bypass the display floor — if you ask, the script shows whatever
+data exists.
 
 ## When the data is empty
 
@@ -116,3 +126,4 @@ again after at least one tool call has completed.
 If `time_tracking=off` in `~/.claude/oh-my-claude.conf` (or
 `OMC_TIME_TRACKING=off` in the environment), capture is disabled and no
 data is recorded. Re-enable in `oh-my-claude.conf` or via `/omc-config`.
+Token capture also has its own `token_tracking` / `OMC_TOKEN_TRACKING` switch.

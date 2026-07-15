@@ -59,7 +59,7 @@ If a change improves internal elegance but cannot answer those four items, descr
 
 ## Testing
 
-Before submitting a pull request, run the full CI-parity suite. The canonical command list lives in `CLAUDE.md` "Testing" — keep this section pointing at that single source of truth so the lists cannot drift.
+During implementation, run change-affected proof instead of repeatedly paying for the entire suite. Before submitting a pull request or cutting a release, run one full CI-parity pass. The canonical command list lives in `CLAUDE.md` "Testing" — keep this section pointing at that single source of truth so the lists cannot drift.
 
 ```bash
 # Syntax + lint (CI parity — shellcheck warnings ARE fatal)
@@ -69,27 +69,33 @@ find . -name '*.json' -not -path './.git/*' -print0 | xargs -0 -n1 python3 -m js
 # Installation verification
 bash verify.sh
 
-# Run every CI-pinned bash test (extracts the canonical list from validate.yml via the shared helper)
-for t in $(bash tools/list-ci-pinned-tests.sh .github/workflows/validate.yml); do
-  bash "${t}" || { printf 'FAIL: %s\n' "${t}"; exit 1; }
-done
+# Fast feedback while editing; inspect the selection with --list
+bash tools/run-tests.sh
 
-# Top-level cross-domain product-readiness wrapper around the
-# classification / routing / benchmark / realwork proof surfaces
-bash tools/verify-professional-readiness.sh
+# One exhaustive Bash pass at the PR/release boundary
+bash tools/run-tests.sh --full
 
-# Top-level install/onboarding wrapper around bootstrapper + handoff +
-# recovery + onboarding proof surfaces
-bash tools/verify-install-readiness.sh
-
-# One-shot maintainer release-candidate view (product + install + distribution)
-bash tools/verify-project-readiness.sh
+# One-shot maintainer release-candidate view after the fresh full receipt
+# above. The professional/install surfaces are exact Bash-suite subsets, so
+# reuse that proof and run only the remaining distribution surface.
+bash tools/verify-project-readiness.sh --skip-professional --skip-install
 
 # Statusline widget (Python)
 python3 -m unittest tests.test_statusline -v
 ```
 
-All checks must pass cleanly. The pin-discipline contract (`tests/test-coordination-rules.sh:C2`) blocks adding a new `tests/test-*.sh` without either CI-pinning it in `validate.yml` or marking it `# UNPINNED: <reason>` — this keeps the list exhaustive without manual upkeep here.
+Without a fresh full-suite receipt, run `tools/verify-project-readiness.sh`
+unqualified so it composes every surface. When diagnosing one surface, run
+`tools/verify-professional-readiness.sh` or
+`tools/verify-install-readiness.sh` directly instead of the composite. Running
+both components and then `verify-project-readiness.sh` repeats the same proof
+without increasing confidence.
+
+All checks must pass cleanly. The pin-discipline contract (`tests/test-coordination-rules.sh:C2`) keeps the CI full-suite surface aligned with the live test tree.
+
+### Test-portfolio stewardship
+
+Tests are production assets with runtime and maintenance costs. Before adding one, name the live behavior or failure it uniquely protects and inspect the current owner. Prefer `EXTEND` or `MERGE` over a parallel file; prefer the cheapest stable layer that catches the real defect. `REPLACE` or `DELETE` requires a retired contract or stronger retained owner plus deliberate mutation/counterfactual, historical-defect replay, or equivalent semantic evidence. Age, slowness, flakiness, and always-green history are investigation signals, not deletion proof; never remove a test simply to make a failing run pass. `/test-audit [scope]` produces the portfolio table read-only, and `--apply` implements only evidenced decisions.
 
 ### Test isolation: `cd` into TEST_HOME (load_conf walk-up safety)
 

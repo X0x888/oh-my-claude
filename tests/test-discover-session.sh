@@ -15,6 +15,8 @@
 #   5. Two cwd matches: newest of the matches wins.
 #   6. Empty STATE_ROOT directory: returns empty.
 #   7. Missing STATE_ROOT: returns empty (no error).
+#   8. Dormant resume sources and synthetic watchdog state are never selected.
+#   9. Malformed ownership markers fail open instead of hiding a live session.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -39,6 +41,7 @@ assert_eq() {
 setup_test() {
   TEST_STATE_ROOT="$(mktemp -d)"
   STATE_ROOT="${TEST_STATE_ROOT}"
+  bump_clock=0
 }
 
 teardown_test() {
@@ -60,10 +63,13 @@ make_session() {
   fi
 }
 
-# Bump session mtime via touch + sleep to control discovery ordering.
+# Bump session mtime deterministically. Fixed mtimes make this test instant and
+# avoid turning five ordering assertions into five seconds of wall-clock sleep.
 bump_session() {
-  sleep 1.05
-  touch "${STATE_ROOT}/$1"
+  bump_clock=$((bump_clock + 1))
+  local stamp
+  printf -v stamp '2024010100%02d.%02d' "${bump_clock}" "${bump_clock}"
+  touch -t "${stamp}" "${STATE_ROOT}/$1"
 }
 
 # ---------------------------------------------------------------------
@@ -131,6 +137,41 @@ setup_test
 rm -rf "${STATE_ROOT}"
 got="$(PWD=/anywhere discover_latest_session)"
 assert_eq "missing STATE_ROOT" "" "${got}"
+teardown_test
+
+# ---------------------------------------------------------------------
+printf "Test 8: dormant resume sources and watchdog state are excluded\n"
+setup_test
+make_session "live-resume-target" "/tmp/repo-resumed"
+make_session "dormant-resume-source" "/tmp/repo-resumed"
+jq '.resume_transferred_to = "live-resume-target"' \
+  "${STATE_ROOT}/dormant-resume-source/${STATE_JSON}" \
+  > "${STATE_ROOT}/dormant-resume-source/${STATE_JSON}.tmp"
+mv "${STATE_ROOT}/dormant-resume-source/${STATE_JSON}.tmp" \
+  "${STATE_ROOT}/dormant-resume-source/${STATE_JSON}"
+bump_session "dormant-resume-source"
+mkdir -p "${STATE_ROOT}/_watchdog"
+bump_session "_watchdog"
+got="$(PWD=/tmp/repo-resumed discover_latest_session)"
+assert_eq "newer dormant/watchdog dirs cannot beat live resume target" \
+  "live-resume-target" "${got}"
+teardown_test
+
+# ---------------------------------------------------------------------
+printf "Test 9: malformed transfer marker fails open\n"
+setup_test
+make_session "older-valid-session" "/tmp/repo-malformed"
+bump_session "older-valid-session"
+make_session "newer-malformed-marker" "/tmp/repo-malformed"
+jq '.resume_transferred_to = "../not-a-session"' \
+  "${STATE_ROOT}/newer-malformed-marker/${STATE_JSON}" \
+  > "${STATE_ROOT}/newer-malformed-marker/${STATE_JSON}.tmp"
+mv "${STATE_ROOT}/newer-malformed-marker/${STATE_JSON}.tmp" \
+  "${STATE_ROOT}/newer-malformed-marker/${STATE_JSON}"
+bump_session "newer-malformed-marker"
+got="$(PWD=/tmp/repo-malformed discover_latest_session)"
+assert_eq "malformed fence cannot hide newest live session" \
+  "newer-malformed-marker" "${got}"
 teardown_test
 
 # ---------------------------------------------------------------------

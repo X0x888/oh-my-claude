@@ -119,6 +119,25 @@ assert_output_NOT_contains "T2: no model-drift header on empty file" \
 teardown_session "${ROOT}"
 
 # ----------------------------------------------------------------------
+printf 'Test 2b: pending specialist count excludes abandoned tombstones\n'
+parts="$(mk_session)"
+ROOT="${parts%|*}"
+SID="${parts##*|}"
+printf '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","session_start_ts":"%s"}' \
+  "$(date +%s)" > "${ROOT}/${SID}/session_state.json"
+{
+  printf '%s\n' '{"agent_type":"live-specialist"}'
+  printf '%s\n' '{"agent_type":"abandoned-old","review_dispatch_abandoned":true}'
+} >"${ROOT}/${SID}/pending_agents.jsonl"
+assert_output_contains "T2b: status counts only live pending specialists" \
+  "Pending specialists:       1" \
+  env STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}"
+assert_output_NOT_contains "T2b: status does not count tombstone as second live specialist" \
+  "Pending specialists:       2" \
+  env STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}"
+teardown_session "${ROOT}"
+
+# ----------------------------------------------------------------------
 printf 'Test 3: populated canary.jsonl renders the verdict-distribution panel\n'
 parts="$(mk_session)"
 ROOT="${parts%|*}"
@@ -201,6 +220,60 @@ assert_output_contains "T5b: directive surface totals rendered in status timing 
   env STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}"
 
 teardown_session "${ROOT}"
+
+# ----------------------------------------------------------------------
+printf 'Test 5c: token drivers and canonical agent-metrics schema surface\n'
+STATUS_HOME="$(mktemp -d -t show-status-home-XXXXXX)"
+ROOT="${STATUS_HOME}/.claude/quality-pack/state"
+SID="status-economics"
+mkdir -p "${ROOT}/${SID}" "${STATUS_HOME}/.claude/quality-pack"
+printf '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","session_start_ts":"%s"}' \
+  "$(date +%s)" > "${ROOT}/${SID}/session_state.json"
+cat > "${ROOT}/${SID}/timing.jsonl" <<'EOF'
+{"kind":"prompt_start","ts":100,"prompt_seq":1}
+{"kind":"prompt_end","ts":106,"prompt_seq":1,"duration_s":6}
+{"kind":"token_checkpoint","ts":106,"prompt_seq":1,"agent_in":30,"agent_out":50,"agent_cache_read":100030,"agent_cache_creation":50,"agent_by_role":{"cache-heavy":{"input":1,"output":1,"cache_read":100000,"cache_creation":1},"quality-reviewer\u001b[31m":{"input":29,"output":49,"cache_read":30,"cache_creation":49}},"agent_by_model":{"cached-model":{"input":1,"output":1,"cache_read":100000,"cache_creation":1},"claude-sonnet-test\u0007":{"input":29,"output":49,"cache_read":30,"cache_creation":49}}}
+EOF
+cat > "${STATUS_HOME}/.claude/quality-pack/agent-metrics.json" <<'EOF'
+{"_schema_version":3,"agents":{"quality-reviewer":{"invocations":2,"clean_verdicts":1,"finding_verdicts":1}}}
+EOF
+assert_output_contains "T5c: top token role surfaced" \
+  "fresh-token drivers: role quality-reviewer" \
+  env HOME="${STATUS_HOME}" STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}"
+assert_output_contains "T5c: top token model surfaced" \
+  "model claude-sonnet-test" \
+  env HOME="${STATUS_HOME}" STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}"
+assert_output_NOT_contains "T5c: legacy token labels cannot emit terminal ESC" \
+  $'\033' \
+  env HOME="${STATUS_HOME}" STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}"
+assert_output_NOT_contains "T5c: legacy token labels cannot emit bell controls" \
+  $'\a' \
+  env HOME="${STATUS_HOME}" STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}"
+assert_output_NOT_contains "T5c: cheap cache volume is not mislabeled as cost driver" \
+  "fresh-token drivers: role cache-heavy" \
+  env HOME="${STATUS_HOME}" STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}"
+assert_output_contains "T5c: canonical nested metrics visible" \
+  "quality-reviewer: 2 runs, 1 clean, 1 findings" \
+  env HOME="${STATUS_HOME}" STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}"
+rm -rf "${STATUS_HOME}"
+
+# ----------------------------------------------------------------------
+printf 'Test 5d: cache-only agent buckets are not labeled fresh-token drivers\n'
+STATUS_HOME="$(mktemp -d -t show-status-cache-only-XXXXXX)"
+ROOT="${STATUS_HOME}/.claude/quality-pack/state"
+SID="status-cache-only"
+mkdir -p "${ROOT}/${SID}" "${STATUS_HOME}/.claude/quality-pack"
+printf '{"workflow_mode":"ultrawork","task_intent":"execution","task_domain":"coding","session_start_ts":"%s"}' \
+  "$(date +%s)" > "${ROOT}/${SID}/session_state.json"
+cat > "${ROOT}/${SID}/timing.jsonl" <<'EOF'
+{"kind":"prompt_start","ts":100,"prompt_seq":1}
+{"kind":"prompt_end","ts":106,"prompt_seq":1,"duration_s":6}
+{"kind":"token_checkpoint","ts":106,"prompt_seq":1,"agent_cache_read":100000,"agent_by_role":{"cache-only":{"input":0,"output":0,"cache_read":100000,"cache_creation":0}},"agent_by_model":{"cached-model":{"input":0,"output":0,"cache_read":100000,"cache_creation":0}}}
+EOF
+assert_output_NOT_contains "T5d: cache-only buckets emit no fresh-driver label" \
+  "fresh-token drivers:" \
+  env HOME="${STATUS_HOME}" STATE_ROOT="${ROOT}" SESSION_ID="${SID}" bash "${SHOW_STATUS}"
+rm -rf "${STATUS_HOME}"
 
 # ----------------------------------------------------------------------
 printf 'Test 6: --explain renders per-flag rationale (v1.30.0 Wave 7)\n'

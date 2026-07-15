@@ -86,7 +86,7 @@ options:
   - label: "User-wide (Recommended)"
     description: "~/.claude/oh-my-claude.conf — applies to every project on this machine."
   - label: "This project only"
-    description: "./.claude/oh-my-claude.conf — overrides the user-wide settings only for the current project."
+    description: "./.claude/oh-my-claude.conf — overrides project-safe settings here. Security, persistence, auto-tune, and model authority remain user-wide."
 ```
 
 Map the user's answers back to short tokens:
@@ -115,13 +115,11 @@ If `$PROFILE` is `zero-steering`, `maximum`, `balanced`, or `minimal`:
 bash ~/.claude/skills/autowork/scripts/omc-config.sh apply-preset "$SCOPE" "$PROFILE"
 ```
 
-This writes all preset keys atomically. Validation runs first, so a bad value never half-writes the conf.
-
-Capture the previous `model_tier` value (from `cmd_show` in Step 1) so Step 5 can decide whether to invoke `apply-tier`.
+This writes the preset atomically. Validation runs first, so a bad value never half-writes the conf. At `project` scope the backend deliberately omits every user-only key in the runtime deny-list (security/enforcement, repository persistence, auto-tune, and model authority) and says so in its output; the user's existing tier remains active and no installed agent files are rewritten.
 
 ### Path B — fine-tune
 
-Walk the five cluster questions below. Use one `AskUserQuestion` call per cluster — clusters are conceptually distinct, and batching all of them at once would overload the user.
+Walk the clusters below (five at user scope, four at project scope). Use one `AskUserQuestion` call per cluster — clusters are conceptually distinct, and batching all of them at once would overload the user.
 
 **Cluster 1 — Quality gates** (single-select)
 
@@ -179,21 +177,29 @@ options:
 
 For selected options, emit the corresponding `<flag>=on`. For unselected, do NOT emit `=off`.
 
-**Cluster 4 — Model cost tier** (single-select)
+**Cluster 4 — Model cost tier** (single-select, user scope only)
+
+If `$SCOPE` is `project`, skip this cluster and emit no `model_tier` or
+`model_overrides` pair. Briefly note that model strength/cost is user-controlled
+and the current user-wide tier remains active. Do not silently redirect a
+project-scoped choice into global config.
+
+If `$SCOPE` is `user`, ask:
 
 ```
 question: "Which model tier?"
 header: "Cost"
 options:
   - label: "Quality (execution on Opus)"
-    description: "Highest quality, highest cost. Deliberators ride the session model; execution agents on Opus. model_tier=quality."
+    description: "Opus-execution posture, highest fixed-agent cost. Deliberators ride the user-selected session model. model_tier=quality."
   - label: "Balanced (Recommended)"
     description: "Planning/review ride the session model, Sonnet for execution. model_tier=balanced."
-  - label: "Economy (all Sonnet)"
-    description: "Lowest cost, still capable. model_tier=economy."
+  - label: "Economy (adaptive Sonnet-first)"
+    description: "Inherited deliberators plus Sonnet specialists, with Sonnet low-risk routing and high-risk escalation when weaker retries would cost more. model_tier=economy."
 ```
 
-Always emit `model_tier=<value>` (single-select — user has explicitly chosen).
+At user scope, always emit `model_tier=<value>` (single-select — the user has
+explicitly chosen). At project scope, emit neither model flag.
 
 **Cluster 5 — Output style** (single-select)
 
@@ -211,7 +217,7 @@ options:
 
 Always emit `output_style=<value>` (single-select — user has explicitly chosen).
 
-After all five clusters:
+After all applicable clusters:
 
 ```bash
 bash ~/.claude/skills/autowork/scripts/omc-config.sh set "$SCOPE" <each k=v collected above>
@@ -227,15 +233,16 @@ Several flags need action beyond writing the conf. Run these after Step 4 commit
 
 ### 5a — Tier change
 
-`apply-preset` already invokes `apply-tier` automatically when the preset's `model_tier` differs from the current value (defense-in-depth — agent files stay in sync with the conf even if this step is skipped). You do NOT need to call `apply-tier` explicitly after `apply-preset`.
-
-For the **fine-tune** path, you DO need to call it explicitly when the user chose a different tier in Cluster 4:
-
-```bash
-bash ~/.claude/skills/autowork/scripts/omc-config.sh apply-tier <new-tier>
-```
-
-This rewrites `~/.claude/agents/*.md` so the tier takes effect on the next session. Skip if the tier was unchanged.
+Both `apply-preset user` and `set user model_tier=...` invoke `apply-tier`
+automatically when the tier changes. `set user model_overrides=...` also
+reapplies the current tier when the override set changes, so direct-skill
+frontmatter and next-prompt live routing agree without a reinstall or second
+command; a batch changing both model keys still invokes the switcher once.
+Project presets omit all runtime-denied user-only keys, and direct project
+writes of any such key are rejected before any config or agent-file mutation.
+For model controls specifically, changing or clearing overrides under the
+quality tier forces a canonical declaration restore before applying the new
+set, preventing a removed pin from lingering in direct-skill frontmatter.
 
 ### 5b — Watchdog scheduler
 
@@ -280,14 +287,15 @@ oh-my-claude configured.
   Profile:   <zero-steering|maximum|balanced|minimal|custom>
   Scope:     <user|project>
   Watchdog:  <installed|flag set|off>
-  Tier:      <tier> (agents <rewritten|unchanged>)
+  Tier:      <tier> (agents <rewritten|unchanged>; `user-wide preserved` for project scope)
   Conf:      <path>
 ```
 
 Add a one-line restart hint when needed:
 
 - If `gate_level`, `guard_exhaustion_mode`, `quality_policy`, or any `*_file_count` changed → "Restart Claude Code to pick up the new gate level."
-- If `model_tier` changed → "Tier change applied to agent files; new sessions use the new tier automatically."
+- If user-scope `model_tier` changed → "Tier change applied to agent files; new sessions use the new tier automatically."
+- If project scope was selected → "Security, persistence, auto-tune, and model authority remain user-wide; this project cannot weaken enforcement, write team memory, self-tune global policy, or silently change model strength/spend."
 - If only watchdog/memory/telemetry flags changed → no restart needed.
 
 Then offer one follow-up:
@@ -308,6 +316,8 @@ Then offer one follow-up:
 ## Edge cases
 
 - **Project scope without `.claude/` dir.** `set`/`apply-preset` create the directory. Note this in the summary so the user knows.
+- **User-only flags at project scope.** Direct writes fail atomically for `pretool_intent_guard`, `bg_spawn_gate`, `agent_first_gate`, `no_defer_mode`, `quality_policy`, `model_tier`, `model_overrides`, `repo_lessons`, and `auto_tune`. Project presets omit those keys. Use user scope; for model controls, a deliberate launch-time `OMC_MODEL_TIER` / `OMC_MODEL_OVERRIDES` environment value is also supported.
+- **Inherit pins are definition-backed, not a hidden model enum.** Claude Code's Agent call accepts named model enums only; `inherit` means omit the model and use the selected definition. Accept shipped bare inherit when its installed file can be reconstructed, run the tier switch immediately, and report failure truthfully. Accept custom bare inherit only when its untouched definition already contains exactly one `model: inherit` line. Reject namespaced inherit and missing bare targets; explicit Opus/Sonnet/Haiku custom and namespaced pins remain runtime-only and never rewrite their definitions.
 - **Stale `repo_path`.** If `cmd_show` reports `bundle: unknown`, the conf's `repo_path` doesn't point to a checkout with `VERSION`. Tell the user to re-run `install.sh` from the source repo so `repo_path` refreshes, then retry.
 - **Conf file has hand-written comments.** `write_conf_atomic` only strips lines matching `^<key>=` for the keys being written. Unrelated lines (including `#` comments) are preserved.
 - **AskUserQuestion unavailable.** Fall back to printing the options as a numbered list and asking the user to type a number. The skill is designed around the tool, so this is a degraded path — note it explicitly.

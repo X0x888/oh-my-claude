@@ -261,6 +261,8 @@ stripe_platform="$(jq -r 'select(.archetype == "Stripe") | .platform' "${cross_l
 assert_eq "row platform field" "web" "${stripe_platform}"
 stripe_domain="$(jq -r 'select(.archetype == "Stripe") | .domain' "${cross_log}" 2>/dev/null)"
 assert_eq "row domain field" "fintech" "${stripe_domain}"
+stripe_schema="$(jq -r 'select(.archetype == "Stripe") | ._v' "${cross_log}" 2>/dev/null)"
+assert_eq "row schema version" "1" "${stripe_schema}"
 
 # Multi-row stdin (one archetype per line)
 multi_input='{"archetype":"Linear","platform":"web","domain":"devtool","agent":"frontend-developer"}

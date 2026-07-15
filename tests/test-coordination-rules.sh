@@ -9,7 +9,7 @@
 # function-coverage) and missed the highest-historical-frequency
 # violation surface (conf-flag 3-site lockstep).
 #
-# This broadened version enforces seven lockstep contracts from
+# This broadened version enforces ten lockstep contracts from
 # CLAUDE.md:
 #
 #   1. Conf-flag 3-site lockstep (most-violated). Every flag that
@@ -48,6 +48,19 @@
 #      the `AGENTS.md` architecture tree `tools/` block. Missing or
 #      extra entries create the wrong contributor mental model for the
 #      repo's developer tooling surface.
+#
+#   8. Install/uninstall surface parity. Every bundled agent and skill is
+#      removed by uninstall, and verify performs complete bundle membership
+#      checks instead of relying only on sentinels.
+#
+#   9. Stable-context budgets. The always-loaded memory chain, default
+#      output style, and invoked autowork shell have explicit word ceilings.
+#      Crossing one requires an intentional budget update rather than silent
+#      instruction accretion.
+#
+#  10. Test-portfolio doctrine. Core orchestration, planner/reviewer/test
+#      specialist behavior, the user-facing skill, and discovery surfaces
+#      must preserve evidence-based keep/merge/retire decisions.
 #
 # Pinned in CI via .github/workflows/validate.yml; runs on every push.
 
@@ -178,6 +191,7 @@ CLAUDE_MD="${REPO_ROOT}/CLAUDE.md"
 CONTRIBUTING_MD="${REPO_ROOT}/CONTRIBUTING.md"
 CI_PIN_HELPER_SNIPPET='bash tools/list-ci-pinned-tests.sh .github/workflows/validate.yml'
 LEGACY_CI_PIN_SNIPPET="grep -E '^\\s+run:\\s+bash tests/test-' .github/workflows/validate.yml | awk '{print \$NF}'"
+CI_FULL_RUNNER_SNIPPET='tools/run-tests.sh --full --shard'
 
 # CI-pinned test list (live extraction via the shared helper).
 ci_pinned_tests="$(bash "${REPO_ROOT}/tools/list-ci-pinned-tests.sh" "${VALIDATE_YML}" \
@@ -199,6 +213,29 @@ unpinned_count="$(printf '%s\n' "${unpinned}" | grep -c . || true)"
 printf '  CI-pinned: %d  unpinned: %d\n' \
   "$(printf '%s\n' "${ci_pinned_tests}" | grep -c . || true)" \
   "${unpinned_count}"
+
+ci_pinned_count="$(printf '%s\n' "${ci_pinned_tests}" | grep -c . || true)"
+all_test_count="$(printf '%s\n' "${all_tests}" | grep -c . || true)"
+if grep -Fq "${CI_FULL_RUNNER_SNIPPET}" "${VALIDATE_YML}"; then
+  assert_pass "C2: CI uses the dynamic full-suite sharded runner"
+else
+  assert_fail "C2: CI missing dynamic full-suite sharded runner" \
+    "use ${CI_FULL_RUNNER_SNIPPET}; do not restore one workflow step per test"
+fi
+if [[ "${ci_pinned_count}" -eq "${all_test_count}" ]]; then
+  assert_pass "C2: dynamic CI pin expansion covers all ${all_test_count} Bash tests"
+else
+  assert_fail "C2: dynamic CI pin expansion is incomplete" \
+    "helper emitted ${ci_pinned_count}/${all_test_count}; a full runner must represent every current test"
+fi
+direct_test_steps="$(grep -cE '^[[:space:]]+run:[[:space:]]+bash tests/test-' \
+  "${VALIDATE_YML}" || true)"
+if (( direct_test_steps <= 16 )); then
+  assert_pass "C2: workflow has no duplicate full per-test registry (${direct_test_steps} portability step(s))"
+else
+  assert_fail "C2: workflow rebuilt a duplicate per-test registry" \
+    "found ${direct_test_steps} direct test steps; keep only a small platform-specific subset beside the sharded runner"
+fi
 
 while IFS= read -r tfile; do
   [[ -z "${tfile}" ]] && continue
@@ -651,6 +688,113 @@ else
   assert_fail "C8: verify.sh has no skill-completeness check" \
     "verify.sh spot-checks only some skill dirs; add the C8 bundle-vs-install skill loop"
 fi
+
+# ----------------------------------------------------------------------
+# Contract 9 — stable-context word budgets
+#
+# Static instructions are mostly prompt-cache reads, so this is primarily a
+# context-window/compaction guard rather than a simplistic dollar proxy. The
+# detailed model-robustness and intellectual-craft doctrines remain intact;
+# compact routing/index surfaces absorb future catalog growth.
+printf '\nContract 9: stable-context word budgets\n'
+
+C9_MEMORY_DIR="${REPO_ROOT}/bundle/dot-claude/quality-pack/memory"
+C9_OUTPUT_STYLE="${REPO_ROOT}/bundle/dot-claude/output-styles/oh-my-claude.md"
+C9_AUTOWORK="${REPO_ROOT}/bundle/dot-claude/skills/autowork/SKILL.md"
+C9_MEMORY_WORD_CAP=10000
+C9_OUTPUT_WORD_CAP=1500
+C9_AUTOWORK_WORD_CAP=800
+
+c9_memory_words="$(wc -w "${C9_MEMORY_DIR}"/*.md | awk '/total$/ {print $1}')"
+c9_output_words="$(wc -w <"${C9_OUTPUT_STYLE}" | tr -d '[:space:]')"
+c9_autowork_words="$(wc -w <"${C9_AUTOWORK}" | tr -d '[:space:]')"
+
+if (( c9_memory_words <= C9_MEMORY_WORD_CAP )); then
+  assert_pass "C9: always-loaded memory chain stays within ${C9_MEMORY_WORD_CAP} words"
+else
+  assert_fail "C9: always-loaded memory chain exceeds word budget" \
+    "${c9_memory_words} > ${C9_MEMORY_WORD_CAP}; compress the routing/index layer or update this cap with receipt-backed justification"
+fi
+
+if (( c9_output_words <= C9_OUTPUT_WORD_CAP )); then
+  assert_pass "C9: default output style stays within ${C9_OUTPUT_WORD_CAP} words"
+else
+  assert_fail "C9: default output style exceeds word budget" \
+    "${c9_output_words} > ${C9_OUTPUT_WORD_CAP}; move worked examples to docs instead of taxing every response"
+fi
+
+if (( c9_autowork_words <= C9_AUTOWORK_WORD_CAP )); then
+  assert_pass "C9: autowork orchestration shell stays within ${C9_AUTOWORK_WORD_CAP} words"
+else
+  assert_fail "C9: autowork skill exceeds word budget" \
+    "${c9_autowork_words} > ${C9_AUTOWORK_WORD_CAP}; core/router/output-style rules should not be duplicated here"
+fi
+
+# ----------------------------------------------------------------------
+# Contract 10 — test-portfolio doctrine and discovery
+# ----------------------------------------------------------------------
+printf '\nContract 10: test-portfolio doctrine and discovery\n'
+
+C10_CORE="${REPO_ROOT}/bundle/dot-claude/quality-pack/memory/core.md"
+C10_AUTOWORK="${REPO_ROOT}/bundle/dot-claude/skills/autowork/SKILL.md"
+C10_SKILL="${REPO_ROOT}/bundle/dot-claude/skills/test-audit/SKILL.md"
+C10_PLANNER="${REPO_ROOT}/bundle/dot-claude/agents/quality-planner.md"
+C10_REVIEWER="${REPO_ROOT}/bundle/dot-claude/agents/quality-reviewer.md"
+C10_TEST_AGENT="${REPO_ROOT}/bundle/dot-claude/agents/test-automation-engineer.md"
+
+if grep -q 'KEEP.*,.*EXTEND.*,.*MERGE.*,.*REPLACE.*,.*DELETE.*,.*ADD' "${C10_CORE}"; then
+  assert_pass "C10: core requires explicit test-portfolio actions"
+else
+  assert_fail "C10: core lost test-portfolio action contract" \
+    "restore KEEP/EXTEND/MERGE/REPLACE/DELETE/ADD in core.md"
+fi
+
+if grep -q 'Age, slowness, or always-green status alone is not deletion evidence' "${C10_CORE}" \
+    && grep -q 'never delete a test just to make red green' "${C10_CORE}"; then
+  assert_pass "C10: core rejects evidence-free test deletion"
+else
+  assert_fail "C10: core lost test-retirement safety" \
+    "age/slowness/green status must not authorize deletion or manufactured green"
+fi
+
+if grep -q 'Run affected proof' "${C10_CORE}" \
+    && grep -q 'Run affected proof' "${C10_AUTOWORK}"; then
+  assert_pass "C10: core and autowork require affected-first verification"
+else
+  assert_fail "C10: affected-first verification drifted" \
+    "core.md and autowork/SKILL.md must preserve affected-first, broad-once sequencing"
+fi
+
+for _c10_surface in "${C10_PLANNER}" "${C10_REVIEWER}" "${C10_TEST_AGENT}"; do
+  if grep -Eq 'KEEP|EXTEND|MERGE|REPLACE|DELETE|ADD' "${_c10_surface}"; then
+    assert_pass "C10: $(basename "${_c10_surface}") reflects on test portfolio value"
+  else
+    assert_fail "C10: $(basename "${_c10_surface}") lost portfolio reflection" \
+      "planner, reviewer, and test specialist must question whether a test should exist"
+  fi
+done
+
+if [[ -f "${C10_SKILL}" ]] \
+    && grep -q '^name: test-audit$' "${C10_SKILL}" \
+    && grep -q 'read-only' "${C10_SKILL}" \
+    && grep -q -- '--apply' "${C10_SKILL}"; then
+  assert_pass "C10: /test-audit has read-only default and explicit apply mode"
+else
+  assert_fail "C10: /test-audit skill contract incomplete" \
+    "skill must exist, be read-only by default, and require --apply for mutations"
+fi
+
+for _c10_index in \
+  "${REPO_ROOT}/README.md" \
+  "${REPO_ROOT}/bundle/dot-claude/skills/skills/SKILL.md" \
+  "${REPO_ROOT}/bundle/dot-claude/quality-pack/memory/skills.md"; do
+  if grep -q '/test-audit' "${_c10_index}"; then
+    assert_pass "C10: $(basename "${_c10_index}") discovers /test-audit"
+  else
+    assert_fail "C10: $(basename "${_c10_index}") missing /test-audit" \
+      "user-invocable skill must stay in all three discovery surfaces"
+  fi
+done
 
 # ----------------------------------------------------------------------
 printf '\n=== coordination-rules tests: %d passed, %d failed ===\n' "${pass}" "${fail}"

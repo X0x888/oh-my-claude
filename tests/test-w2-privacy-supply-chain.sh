@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # v1.40.x Wave 2 privacy + supply chain + release safety regression tests.
 #
-# Covers F-007 (omc_redact_secrets wired into prompt-intent-router,
-# pre-compact-snapshot, and omc-repro tarball), F-008 (README pins the
-# install line to a tagged version), F-009 (tools/release.sh defaults
-# to --tag-on-green; --legacy-eager-tag opts back into the pre-v1.40
-# flow).
+# Covers F-007 (secret redaction across prompt persistence plus the
+# pre-compact snapshot path), F-008 (README pins the install line to a tagged
+# version), and F-009 (tools/release.sh defaults to --tag-on-green;
+# --legacy-eager-tag opts back into the pre-v1.40 flow). Router wiring and the
+# omc-repro tarball have stronger behavioral owners in test-prompt-persist.sh,
+# test-prompt-router-latency.sh, and test-repro-redaction.sh.
 
 set -uo pipefail
 
@@ -14,7 +15,6 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 COMMON_SH="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh"
 ROUTER="${REPO_ROOT}/bundle/dot-claude/quality-pack/scripts/prompt-intent-router.sh"
 PRECOMPACT="${REPO_ROOT}/bundle/dot-claude/quality-pack/scripts/pre-compact-snapshot.sh"
-OMC_REPRO="${REPO_ROOT}/bundle/dot-claude/omc-repro.sh"
 RELEASE_SH="${REPO_ROOT}/tools/release.sh"
 README="${REPO_ROOT}/README.md"
 CURRENT_VERSION="$(tr -d '[:space:]' < "${REPO_ROOT}/VERSION")"
@@ -74,38 +74,12 @@ assert_not_contains() {
 # F-007: prompt redaction across persistence paths.
 printf '\n## F-007 — prompt redaction wired into persistence\n'
 
-# Router persistence path uses PROMPT_TEXT_SAFE (the redacted variant)
-if grep -q 'PROMPT_TEXT_SAFE="\$(printf' "${ROUTER}"; then
-  printf '  PASS  prompt-intent-router defines PROMPT_TEXT_SAFE via omc_redact_secrets\n'
-  pass=$((pass + 1))
-else
-  printf '  FAIL  PROMPT_TEXT_SAFE not defined in prompt-intent-router\n'
-  fail=$((fail + 1))
-fi
-
-if grep -q 'last_user_prompt" "\${_omc_persisted_prompt_safe}"' "${ROUTER}"; then
-  printf '  PASS  last_user_prompt write uses redacted value\n'
-  pass=$((pass + 1))
-else
-  printf '  FAIL  last_user_prompt does not use redacted persist value\n'
-  fail=$((fail + 1))
-fi
-
 # pre-compact-snapshot pipes meta/last/recent through omc_redact_secrets
 if grep -q 'omc_redact_secrets' "${PRECOMPACT}"; then
   printf '  PASS  pre-compact-snapshot.sh wires omc_redact_secrets\n'
   pass=$((pass + 1))
 else
   printf '  FAIL  pre-compact-snapshot.sh missing omc_redact_secrets call\n'
-  fail=$((fail + 1))
-fi
-
-# omc-repro.sh sources common.sh and post-processes truncated fields
-if grep -q 'omc_redact_secrets' "${OMC_REPRO}"; then
-  printf '  PASS  omc-repro.sh applies omc_redact_secrets post-truncation\n'
-  pass=$((pass + 1))
-else
-  printf '  FAIL  omc-repro.sh missing omc_redact_secrets call\n'
   fail=$((fail + 1))
 fi
 

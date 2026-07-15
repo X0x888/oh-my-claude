@@ -65,6 +65,26 @@ assert_false() {
   fi
 }
 
+assert_contains_text() {
+  local label="$1" needle="$2" haystack="$3"
+  if [[ "${haystack}" == *"${needle}"* ]]; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: %s — missing %q\n' "${label}" "${needle}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
+assert_not_contains_text() {
+  local label="$1" needle="$2" haystack="$3"
+  if [[ "${haystack}" != *"${needle}"* ]]; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: %s — unexpected %q\n' "${label}" "${needle}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
 # --- is_synthetic_prompt unit cases -------------------------------------
 
 printf '\n--- is_synthetic_prompt unit cases ---\n'
@@ -164,6 +184,94 @@ assert_true "real prompt: task_intent populated" \
 assert_true "real prompt: current_objective updated" \
   "[[ \"${real_objective}\" == *'payment refund'* ]]"
 
+# Monotonic objective identity is produced in the same locked transition that
+# tombstones prior live dispatches. Freeze `date +%s` to prove two genuinely
+# fresh prompts in one epoch second still receive distinct cycle IDs, while a
+# true continuation preserves both the ID and its current live row.
+fake_bin="${TEST_HOME}/fake-bin"
+mkdir -p "${fake_bin}"
+printf '%s\n' '#!/bin/sh' \
+  'if [ "${1:-}" = "+%s" ]; then printf "424242\\n"; else exec /bin/date "$@"; fi' \
+  >"${fake_bin}/date"
+chmod +x "${fake_bin}/date"
+run_router_same_second() {
+  local prompt="$1" cycle_sid="$2" input
+  input="$(jq -nc --arg sid "${cycle_sid}" --arg p "${prompt}" \
+    '{session_id:$sid,prompt:$p,transcript_path:"/tmp/none.jsonl"}')"
+  printf '%s' "${input}" | PATH="${fake_bin}:${PATH}" bash "${ROUTER_SH}" \
+    2>&1 || true
+}
+cycle_sid="review-cycle-producer"
+cycle_dir="${STATE_ROOT}/${cycle_sid}"
+mkdir -p "${cycle_dir}"
+jq -nc '{workflow_mode:"ultrawork",task_intent:"execution",
+  current_objective:"old objective",review_cycle_id:"4",
+  review_cycle_prompt_ts:"424242"}' >"${cycle_dir}/session_state.json"
+jq -nc '{ts:424242,agent_type:"old-cycle-worker",objective_cycle_id:4,
+  review_dispatch_abandoned:false}' >"${cycle_dir}/pending_agents.jsonl"
+run_router_same_second '/ulw implement the new export path completely' \
+  "${cycle_sid}" >/dev/null
+assert_eq "fresh producer increments the monotonic review cycle" "5" \
+  "$(jq -r '.review_cycle_id // ""' "${cycle_dir}/session_state.json")"
+assert_eq "fresh producer keeps the frozen same-second timestamp diagnostic" \
+  "424242" \
+  "$(jq -r '.review_cycle_prompt_ts // ""' "${cycle_dir}/session_state.json")"
+assert_eq "cycle publication atomically tombstones the prior live row" "true" \
+  "$(jq -s -r '[.[] | select(.agent_type == "old-cycle-worker")][0].review_dispatch_abandoned' \
+    "${cycle_dir}/pending_agents.jsonl")"
+jq -nc '{ts:424242,agent_type:"current-cycle-worker",objective_cycle_id:5,
+  review_dispatch_abandoned:false}' >>"${cycle_dir}/pending_agents.jsonl"
+run_router_same_second 'continue' "${cycle_sid}" >/dev/null
+assert_eq "true continuation preserves the review cycle" "5" \
+  "$(jq -r '.review_cycle_id // ""' "${cycle_dir}/session_state.json")"
+assert_eq "true continuation does not retombstone current live work" "false" \
+  "$(jq -s -r '[.[] | select(.agent_type == "current-cycle-worker")][0].review_dispatch_abandoned' \
+    "${cycle_dir}/pending_agents.jsonl")"
+run_router_same_second '/ulw implement a separate audit-log exporter' \
+  "${cycle_sid}" >/dev/null
+assert_eq "second fresh same-second prompt receives a new cycle" "6" \
+  "$(jq -r '.review_cycle_id // ""' "${cycle_dir}/session_state.json")"
+assert_eq "second fresh transition tombstones former current work" "true" \
+  "$(jq -s -r '[.[] | select(.agent_type == "current-cycle-worker")][0].review_dispatch_abandoned' \
+    "${cycle_dir}/pending_agents.jsonl")"
+
+# The cycle ID is the publication point for a fresh objective. A failed
+# pending-ledger rewrite must not be masked merely because the following start
+# ledger is absent and the function's caller is inside an `if ! ...` context
+# (which suppresses Bash errexit inside the call tree). Inject a targeted
+# mktemp failure after taint staging and prove the transition fails closed.
+printf '%s\n' '#!/bin/sh' \
+  'case "${OMC_TEST_FAIL_OBJECTIVE_LEDGER_REWRITE:-}:$*" in' \
+  '  1:*pending_agents.jsonl.XXXXXX*) exit 1 ;;' \
+  'esac' \
+  'exec /usr/bin/mktemp "$@"' \
+  >"${fake_bin}/mktemp"
+chmod +x "${fake_bin}/mktemp"
+failure_sid="review-cycle-rewrite-failure"
+failure_dir="${STATE_ROOT}/${failure_sid}"
+mkdir -p "${failure_dir}"
+jq -nc '{workflow_mode:"ultrawork",task_intent:"execution",
+  current_objective:"old objective",review_cycle_id:"9",
+  review_cycle_prompt_ts:"424242"}' >"${failure_dir}/session_state.json"
+jq -nc '{ts:424242,agent_type:"rewrite-failure-worker",objective_cycle_id:9,
+  review_dispatch_abandoned:false}' >"${failure_dir}/pending_agents.jsonl"
+failure_input="$(jq -nc --arg sid "${failure_sid}" \
+  --arg p '/ulw implement the separate failed-transition exporter' \
+  '{session_id:$sid,prompt:$p,transcript_path:"/tmp/none.jsonl"}')"
+set +e
+printf '%s' "${failure_input}" \
+  | PATH="${fake_bin}:${PATH}" OMC_TEST_FAIL_OBJECTIVE_LEDGER_REWRITE=1 \
+    bash "${ROUTER_SH}" >/dev/null 2>&1
+failure_rc=$?
+set -e
+assert_true "ledger rewrite failure rejects fresh objective transition" \
+  "[[ ${failure_rc} -ne 0 ]]"
+assert_eq "ledger rewrite failure does not publish a new review cycle" "9" \
+  "$(jq -r '.review_cycle_id // ""' "${failure_dir}/session_state.json")"
+assert_eq "ledger rewrite failure leaves prior row live for a safe retry" "false" \
+  "$(jq -r '.review_dispatch_abandoned // false' \
+    "${failure_dir}/pending_agents.jsonl")"
+
 # A bash-stdout injection must also be skipped.
 sid3="bash-stdout-test"
 sdir3="${STATE_ROOT}/${sid3}"
@@ -212,9 +320,9 @@ assert_eq "system-reminder: commit_mode preserved" "required" \
 assert_eq "system-reminder: last_user_prompt_ts not bumped" "2000" \
   "$(jq -r '.last_user_prompt_ts // ""' "${sdir4}/session_state.json")"
 
-# --- Model-tier enforcement directive ---
-# The router injects a model_tier_enforcement directive gated on
-# OMC_MODEL_TIER. Verify all three tiers produce the correct directive.
+# --- Quality-first model-routing directive ---
+# The router renders common.sh's authoritative resolver decision. Verify every
+# tier surfaces the live decision and the expected shipped-Sonnet class.
 sid5="model-tier-test"
 sdir5="${STATE_ROOT}/${sid5}"
 
@@ -224,72 +332,102 @@ for tier in quality economy balanced; do
   _omc_conf_loaded=0
   export OMC_MODEL_TIER="${tier}"
   output="$(run_router '/ulw test the model tier' "${sid5}")"
+  context="$(printf '%s' "${output}" | jq -r '.hookSpecificOutput.additionalContext // ""' 2>/dev/null || true)"
   has_directive="no"
-  if printf '%s' "${output}" | grep -qi "SUBAGENT MODEL ENFORCEMENT"; then
+  if [[ "${context}" == *"SUBAGENT MODEL ROUTING"* ]]; then
     has_directive="yes"
   fi
-  assert_eq "model_tier=${tier}: enforcement directive present" "yes" "${has_directive}"
-  # v1.49: quality/balanced must tell the model to OMIT the model param for
-  # inherit-tier deliberators (omission is the only inherit encoding);
-  # economy stays pass-sonnet-everywhere and must NOT mention omission.
-  has_omit="no"
-  if printf '%s' "${output}" | grep -q "OMIT"; then
-    has_omit="yes"
-  fi
+  assert_eq "model_tier=${tier}: routing directive present" "yes" "${has_directive}"
+  case "${tier}" in
+    quality)
+      assert_contains_text "quality: shipped-Sonnet class resolves opus" \
+        'pass `model: "opus"`' "${context}"
+      ;;
+    balanced|economy)
+      assert_contains_text "${tier}: ordinary shipped-Sonnet class resolves sonnet" \
+        'pass `model: "sonnet"`' "${context}"
+      ;;
+  esac
   if [[ "${tier}" == "economy" ]]; then
-    assert_eq "model_tier=${tier}: no OMIT clause" "no" "${has_omit}"
+    assert_contains_text "model_tier=economy low-risk inherit class stays sonnet" \
+      'For shipped inherit deliberators (quality-planner' "${context}"
+    assert_contains_text "model_tier=economy low-risk inherit instruction" \
+      'chief-of-staff), pass `model: "sonnet"`' "${context}"
   else
-    assert_eq "model_tier=${tier}: OMIT clause for inherit deliberators" "yes" "${has_omit}"
+    assert_contains_text "model_tier=${tier}: inherit is represented by omission" \
+      'chief-of-staff), OMIT the `model` parameter' "${context}"
   fi
   rm -rf "${sdir5}"
 done
 unset OMC_MODEL_TIER
 
-# Balanced-tier examples sit inside the explicit-sonnet clause, so they must
-# never name an inherit-tier deliberator. The v1.49 migration initially left
-# draft-writer/chief-of-staff here and silently demoted writing/operations
-# dispatches even though their frontmatter had moved to `model: inherit`.
-balanced_sonnet_examples_for_prompt() {
-  local prompt="$1" sid="$2" output directive examples
+# Invalid explicit environment values are one effective Balanced posture on
+# every surface: rendered directive, persisted turn snapshot, and cache key.
+sid5_invalid="model-tier-invalid"
+sdir5_invalid="${STATE_ROOT}/${sid5_invalid}"
+mkdir -p "${sdir5_invalid}"
+echo '{"workflow_mode":"ultrawork"}' > "${sdir5_invalid}/session_state.json"
+printf 'model_tier=quality\n' > "${TEST_HOME}/.claude/oh-my-claude.conf"
+_omc_conf_loaded=0
+export OMC_MODEL_TIER="not-a-model"
+invalid_output="$(run_router '/ulw test invalid model tier normalization' "${sid5_invalid}")"
+invalid_context="$(printf '%s' "${invalid_output}" \
+  | jq -r '.hookSpecificOutput.additionalContext // ""' 2>/dev/null || true)"
+assert_contains_text "invalid env tier preserves saved quality" \
+  'tier=`quality`' "${invalid_context}"
+assert_not_contains_text "invalid model tier never reaches directive metadata" \
+  'not-a-model' "${invalid_context}"
+assert_eq "invalid env tier snapshot preserves quality" "quality" \
+  "$(jq -r '.model_routing_tier // ""' "${sdir5_invalid}/session_state.json")"
+unset OMC_MODEL_TIER
+rm -rf "${sdir5_invalid}"
+rm -f "${TEST_HOME}/.claude/oh-my-claude.conf"
+
+# The model-routing directive is domain-neutral: it must not inject coding
+# specialists into writing/operations prompts merely to illustrate the tier.
+model_routing_for_prompt() {
+  local prompt="$1" sid="$2" output directive
   mkdir -p "${STATE_ROOT}/${sid}"
   echo '{"workflow_mode":"ultrawork"}' > "${STATE_ROOT}/${sid}/session_state.json"
   export OMC_MODEL_TIER="balanced"
   output="$(run_router "${prompt}" "${sid}")"
   directive="$(printf '%s' "${output}" \
     | jq -r '.hookSpecificOutput.additionalContext // ""' \
-    | awk '/^SUBAGENT MODEL ENFORCEMENT:/ { print; exit }')"
-  examples="${directive#*execution agents (}"
-  examples="${examples%%) pass *}"
-  printf '%s' "${examples}"
+    | awk '/^SUBAGENT MODEL ROUTING / { print; exit }')"
+  printf '%s' "${directive}"
   rm -rf "${STATE_ROOT:?}/${sid}"
 }
 
-inherit_agents_named_in() {
-  local text="$1" agent_file agent_name leaks=""
-  for agent_file in "${REPO_ROOT}"/bundle/dot-claude/agents/*.md; do
-    if grep -q '^model: inherit$' "${agent_file}"; then
-      agent_name="$(basename "${agent_file}" .md)"
-      if [[ "${text}" == *"${agent_name}"* ]]; then
-        leaks="${leaks}${leaks:+,}${agent_name}"
-      fi
-    fi
-  done
-  printf '%s' "${leaks}"
-}
-
-writing_examples="$(balanced_sonnet_examples_for_prompt \
+writing_route="$(model_routing_for_prompt \
   '/ulw draft an executive memo for the board' 'model-tier-writing')"
-operations_examples="$(balanced_sonnet_examples_for_prompt \
+operations_route="$(model_routing_for_prompt \
   '/ulw create a rollout schedule with owners, deadlines, and action items' 'model-tier-operations')"
-assert_eq "balanced writing: explicit-sonnet examples exclude inherit agents" "" \
-  "$(inherit_agents_named_in "${writing_examples}")"
-assert_eq "balanced operations: explicit-sonnet examples exclude inherit agents" "" \
-  "$(inherit_agents_named_in "${operations_examples}")"
-assert_true "balanced writing: example is actually sonnet-tier" \
-  "[[ \"${writing_examples}\" == *librarian* ]]"
-assert_true "balanced operations: example is actually sonnet-tier" \
-  "[[ \"${operations_examples}\" == *atlas* ]]"
+assert_not_contains_text "balanced writing route does not inject frontend agent" \
+  "frontend-developer" "${writing_route}"
+assert_not_contains_text "balanced operations route does not inject backend agent" \
+  "backend-api-developer" "${operations_route}"
+assert_contains_text "balanced writing route retains override precedence" \
+  "explicit user/env override > Council deep" "${writing_route}"
+assert_contains_text "balanced operations route retains unknown/custom fallback" \
+  "unknown/custom agents" "${operations_route}"
 unset OMC_MODEL_TIER
+
+# Test-portfolio reflection is part of the real coding directive, not only an
+# agent-description promise. A maintenance-shaped prompt should receive the
+# owner-first and affected-first guidance without requiring a separate mode.
+sid6="test-portfolio-routing"
+mkdir -p "${STATE_ROOT}/${sid6}"
+echo '{"workflow_mode":"ultrawork"}' > "${STATE_ROOT}/${sid6}/session_state.json"
+portfolio_output="$(run_router '/ulw consolidate stale redundant flaky tests in tests/test-router.sh' "${sid6}")"
+portfolio_context="$(printf '%s' "${portfolio_output}" \
+  | jq -r '.hookSpecificOutput.additionalContext // ""' 2>/dev/null || true)"
+assert_contains_text "test portfolio route includes consolidation/retirement" \
+  "portfolio consolidation or retirement" "${portfolio_context}"
+assert_contains_text "test portfolio route inspects existing owners" \
+  "inspect existing test owners before adding another" "${portfolio_context}"
+assert_contains_text "test portfolio route runs affected proof" \
+  "run affected proof after edits" "${portfolio_context}"
+rm -rf "${STATE_ROOT:?}/${sid6}"
 
 # --- Result -------------------------------------------------------------
 

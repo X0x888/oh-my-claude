@@ -31,6 +31,7 @@ cat <<'EOF'
 .github/workflows/validate.yml
 tools/local-ci.sh
 tools/list-ci-pinned-tests.sh
+tools/run-tests.sh
 tools/list-release-automation-surfaces.sh
 tools/stage-release-automation-surfaces.sh
 tools/prepare-release-automation-deployment.sh

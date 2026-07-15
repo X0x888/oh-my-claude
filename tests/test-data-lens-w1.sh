@@ -114,6 +114,12 @@ assert_eq "F3b corrected domain landed on fixture row" "coding" "${parsed_domain
 assert_eq "F3c prompt_preview captured" "How do I switch the date library to dayjs?" "${parsed_prompt}"
 assert_eq "F3d _source provenance tag" "ulw-correct" "${parsed_source}"
 
+# The promotion candidate deliberately matches regression.jsonl and therefore
+# has no telemetry envelope. Assert schema versioning on the runtime misfire
+# ledger emitted by the same correction instead.
+misfire_row="$(tail -1 "${HOME}/.claude/quality-pack/classifier_misfires.jsonl")"
+assert_eq "F3e runtime misfire schema version stamped" "1" "$(jq -r '._v' <<<"${misfire_row}")"
+
 # F4: note describes the transition
 parsed_note="$(jq -r '.note' <<<"${fixture_row}")"
 case "${parsed_note}" in

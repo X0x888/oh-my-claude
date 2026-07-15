@@ -183,6 +183,7 @@ _init_project_repo
 
 _TARGETED_EXEC_PROMPT="ulw fix the off-by-one bug in src/app.ts and add regression coverage"
 _COUNCIL_PROMPT="ulw evaluate this codebase and plan for improvements"
+_COUNCIL_EXEC_PROMPT="ulw evaluate this codebase and implement all improvements"
 _EXEMPLIFY_PROMPT="ulw enhance the dashboard, for instance adding filter chips"
 _ADVISORY_CODE_PROMPT="ulw what do you think about the current auth flow in this codebase and anything else to clean up?"
 _ADVISORY_RESEARCH_PROMPT="ulw what are the tradeoffs between spaced repetition and active recall for graduate study?"
@@ -224,7 +225,7 @@ assert_contains "T2: primary team is normally 1-4" "normally 1-4 specialists" "$
 assert_contains "T2: one specialist is valid" "ONE valid for a narrow specialist question" "${ctx}"
 assert_contains "T2: include and skip rationale is required" "include reason, plus plausible skipped agent/family → why not applicable" "${ctx}"
 assert_contains "T2: gap-fill is optional and bounded" "ONE gap-fill round of 0-2 best-fit specialists" "${ctx}"
-assert_contains "T2: verification is independent and competence-matched" "best INDEPENDENT verifier" "${ctx}"
+assert_contains "T2: verification is grouped and normally bounded" "Normal mode uses 0-1 verifier dispatch" "${ctx}"
 assert_contains "T2: verification names competence matching" "Match competence to claim" "${ctx}"
 assert_not_contains "T2: no fixed 3-6 role-lens panel" "Select 3-6 relevant role-lenses" "${ctx}"
 assert_contains "T2: mixed-domain routing still surfaced" "Detected likely task domain: mixed." "${ctx}"
@@ -241,6 +242,21 @@ assert_contains "T2b: zero-steering directive present" "ZERO-STEERING POLICY" "$
 assert_contains "T2b: high-risk wording present" "high-risk autonomous shipping work" "${ctx}"
 policy_2b="$(jq -r '.quality_policy // ""' "${_test_state_root}/${sid_2b}/session_state.json")"
 assert_eq "T2b: quality policy persisted" "zero_steering" "${policy_2b}"
+
+# ----------------------------------------------------------------------
+printf 'Test 2c: Council Phase 8 batches preselected semantic review with gate reviewers\n'
+sid_2c="t2c-${RANDOM}"
+ctx="$(_run_router_context "${sid_2c}" "${_COUNCIL_EXEC_PROMPT}")"
+assert_contains "T2c: implementation request enters Phase 8" \
+  "Execute the assessment (Phase 8)" "${ctx}"
+assert_contains "T2c: semantic specialists share the frozen reviewer batch" \
+  "all already-selected semantic risk specialists in the same concurrent frozen-revision batch" "${ctx}"
+assert_contains "T2c: waits for the complete batch before reconciliation" \
+  "wait for every role → reconcile exactly once → one remediation pass" "${ctx}"
+assert_contains "T2c: later specialist calls need new evidence or invalidation" \
+  "Reserve any later semantic-specialist dispatch for genuinely new evidence or an invalidated risk-map premise" "${ctx}"
+assert_contains "T2c: every frozen dispatch gets the producer marker" \
+  'Prefix EVERY Agent description in this frozen batch with exact `[review-batch]`' "${ctx}"
 
 # ----------------------------------------------------------------------
 printf 'Test 3: example-marker execution preserves widening + checklist discipline\n'
@@ -497,6 +513,167 @@ suppressed_17="$(_gate_count "${sid_17}" "directive-budget" "suppressed")"
 assert_eq "T19: maximum budget records zero suppressions on same prompt" "0" "${suppressed_17}"
 names_17="$(_timing_names "${sid_17}")"
 assert_contains "T19: defect_watch reaches timing rows under maximum" "defect_watch" "${names_17}"
+
+# ----------------------------------------------------------------------
+printf 'Test 20: stable routing emits a compact delta and refreshes on force\n'
+sid_20="t20-${RANDOM}"
+ctx_full="$(_run_router_context "${sid_20}" "${_TARGETED_EXEC_PROMPT}" "OMC_DIRECTIVE_BUDGET=balanced")"
+ctx_delta="$(_run_router_context "${sid_20}" "${_TARGETED_EXEC_PROMPT}" "OMC_DIRECTIVE_BUDGET=balanced")"
+assert_contains "T20: repeated objective gets routing delta" "ROUTING STATE UNCHANGED" "${ctx_delta}"
+assert_not_contains "T20: repeated objective omits full domain essay" "frontend-developer" "${ctx_delta}"
+assert_not_contains "T20: repeated objective omits full model-tier essay" "SUBAGENT MODEL ROUTING" "${ctx_delta}"
+full_chars="${#ctx_full}"
+delta_chars="${#ctx_delta}"
+if (( delta_chars < full_chars )); then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T20 delta is not smaller (full=%d delta=%d)\n' "${full_chars}" "${delta_chars}" >&2
+  fail=$((fail + 1))
+fi
+SESSION_ID="${sid_20}"
+write_state "directive_context_force_full" "1"
+ctx_forced="$(_run_router_context "${sid_20}" "${_TARGETED_EXEC_PROMPT}" "OMC_DIRECTIVE_BUDGET=balanced")"
+assert_contains "T20: compact/resume force restores full domain frame" "frontend-developer" "${ctx_forced}"
+assert_not_contains "T20: forced full frame omits delta marker" "ROUTING STATE UNCHANGED" "${ctx_forced}"
+
+assembled_20="$(_gate_count "${sid_20}" "directive-budget" "assembled")"
+assert_ge "T20: every routing turn records assembled-budget telemetry" 3 "${assembled_20}"
+
+# ----------------------------------------------------------------------
+printf 'Test 20b: same-objective edge-frame changes force a full refresh\n'
+sid_20b="t20b-${RANDOM}"
+_run_router_context "${sid_20b}" "${_TARGETED_EXEC_PROMPT}" >/dev/null
+_run_router_context "${sid_20b}" "continue" >/dev/null
+ctx_steady="$(_run_router_context "${sid_20b}" "continue")"
+assert_contains "T20b: identical continuation reaches delta state" "ROUTING STATE UNCHANGED" "${ctx_steady}"
+ctx_ui_change="$(_run_router_context "${sid_20b}" "continue and also update the UI")"
+assert_contains "T20b: newly applicable UI contract is emitted" "UI/design work detected" "${ctx_ui_change}"
+assert_not_contains "T20b: changed edge frame is not deduped" "ROUTING STATE UNCHANGED" "${ctx_ui_change}"
+ctx_ui_steady="$(_run_router_context "${sid_20b}" "continue and also update the UI")"
+assert_contains "T20b: identical UI frame returns to delta" "ROUTING STATE UNCHANGED" "${ctx_ui_steady}"
+assert_not_contains "T20b: repeated UI frame omits full design essay" "9-section Design Contract" "${ctx_ui_steady}"
+
+# ----------------------------------------------------------------------
+printf 'Test 20bb: budget-policy changes invalidate the routing delta cache\n'
+sid_20bb="t20bb-${RANDOM}"
+ctx_budget_min="$(_run_router_context "${sid_20bb}" "${_DENSE_PROMPT}" \
+  "OMC_PROMETHEUS_SUGGEST=on" "OMC_DIRECTIVE_BUDGET=minimal")"
+ctx_budget_max="$(_run_router_context "${sid_20bb}" "${_DENSE_PROMPT}" \
+  "OMC_PROMETHEUS_SUGGEST=on" "OMC_DIRECTIVE_BUDGET=maximum")"
+ctx_budget_max_delta="$(_run_router_context "${sid_20bb}" "${_DENSE_PROMPT}" \
+  "OMC_PROMETHEUS_SUGGEST=on" "OMC_DIRECTIVE_BUDGET=maximum")"
+assert_not_contains "T20bb: minimal to maximum forces a full refresh" \
+  "ROUTING STATE UNCHANGED" "${ctx_budget_max}"
+assert_contains "T20bb: maximum refresh restores optional guidance" \
+  "Historical defect patterns from prior sessions" "${ctx_budget_max}"
+assert_contains "T20bb: unchanged maximum policy returns to delta" \
+  "ROUTING STATE UNCHANGED" "${ctx_budget_max_delta}"
+assert_not_contains "T20bb: maximum delta omits replayed optional guidance" \
+  "Historical defect patterns from prior sessions" "${ctx_budget_max_delta}"
+assert_not_contains "T20bb: minimal frame is genuinely policy-trimmed" \
+  "Historical defect patterns from prior sessions" "${ctx_budget_min}"
+
+# ----------------------------------------------------------------------
+printf 'Test 20c: total caps never drop load-bearing triggered contracts\n'
+sid_20c="t20c-${RANDOM}"
+ctx_min_quality="$(_run_router_context "${sid_20c}" \
+  "ulw evaluate this codebase and redesign the dashboard UI for production" \
+  "OMC_DIRECTIVE_BUDGET=minimal")"
+assert_contains "T20c: minimal keeps explicit Council workflow" "ADAPTIVE COUNCIL EVALUATION DETECTED" "${ctx_min_quality}"
+assert_contains "T20c: minimal keeps explicit UI design contract" "9-section Design Contract" "${ctx_min_quality}"
+assert_contains "T20c: minimal keeps authoritative model routing" "SUBAGENT MODEL ROUTING" "${ctx_min_quality}"
+assert_eq "T20c: Council is never budget-suppressed" "0" \
+  "$(_gate_count "${sid_20c}" "directive-budget" "suppressed" "council_evaluation")"
+assert_eq "T20c: UI contract is never budget-suppressed" "0" \
+  "$(_gate_count "${sid_20c}" "directive-budget" "suppressed" "ui_design_contract")"
+assert_eq "T20c: model routing is never budget-suppressed" "0" \
+  "$(_gate_count "${sid_20c}" "directive-budget" "suppressed" "model_tier_enforcement")"
+assert_ge "T20c: quality-first overflow is explicit when mandatory frame exceeds cap" 1 \
+  "$(_gate_count "${sid_20c}" "directive-budget" "mandatory_overflow")"
+assert_contains "T20c: overflow still emits the core execution opener" \
+  "**Ultrawork mode active.**" "${ctx_min_quality}"
+SESSION_ID="${sid_20c}"
+assert_eq "T20c: assembled full frame clears the forced-refresh bit" "" \
+  "$(read_state "directive_context_force_full")"
+ctx_min_quality_delta="$(_run_router_context "${sid_20c}" \
+  "ulw evaluate this codebase and redesign the dashboard UI for production" \
+  "OMC_DIRECTIVE_BUDGET=minimal")"
+assert_contains "T20c: complete overflow frame amortizes to a next-turn delta" \
+  "ROUTING STATE UNCHANGED" "${ctx_min_quality_delta}"
+assert_not_contains "T20c: delta does not replay the expensive Council body" \
+  "ADAPTIVE COUNCIL EVALUATION DETECTED" "${ctx_min_quality_delta}"
+
+# ----------------------------------------------------------------------
+printf 'Test 20d: directive registry is closed and unknowns are bounded\n'
+registry_fixture="$(mktemp -t omc-directive-registry-XXXXXX)"
+awk '/^directive_registry_row\(\)/ {capture=1}
+     /^directive_axis_is_bias\(\)/ {capture=0}
+     capture {print}' \
+  "${REPO_ROOT}/bundle/dot-claude/quality-pack/scripts/prompt-intent-router.sh" \
+  >"${registry_fixture}"
+unknown_class="$(bash -c 'source "$1"; directive_meta_class future_unregistered_directive' _ "${registry_fixture}")"
+assert_eq "T20d: unknown directive defaults to optional" "optional" "${unknown_class}"
+unregistered_names=0
+while IFS= read -r directive_name; do
+  if ! bash -c 'source "$1"; directive_registry_row "$2" >/dev/null' \
+      _ "${registry_fixture}" "${directive_name}"; then
+    unregistered_names=$((unregistered_names + 1))
+  fi
+done < <(rg -o 'add_directive "[^"]+"' \
+  "${REPO_ROOT}/bundle/dot-claude/quality-pack/scripts/prompt-intent-router.sh" \
+  | sed 's/add_directive "//; s/"$//' | sort -u)
+assert_eq "T20d: every current router directive is registered" "0" "${unregistered_names}"
+rm -f "${registry_fixture}"
+
+# ----------------------------------------------------------------------
+printf 'Test 20e: directive-cache commit failure is fail-open\n'
+cache_fail_home="$(mktemp -d -t omc-directive-cache-fail-XXXXXX)"
+cache_fail_state="${cache_fail_home}/state"
+cache_fail_sid="t20e-${RANDOM}"
+mkdir -p \
+  "${cache_fail_home}/.claude/skills/autowork/scripts" \
+  "${cache_fail_home}/.claude/quality-pack" \
+  "${cache_fail_state}"
+ln -s "${REPO_ROOT}/bundle/dot-claude/quality-pack/memory" \
+  "${cache_fail_home}/.claude/quality-pack/memory"
+cat > "${cache_fail_home}/.claude/skills/autowork/scripts/common.sh" <<'EOF'
+# shellcheck shell=bash
+# shellcheck disable=SC1090
+. "${OMC_TEST_REAL_COMMON}"
+eval "$(declare -f write_state_batch \
+  | sed '1s/^write_state_batch /_omc_test_real_write_state_batch /')"
+write_state_batch() {
+  if [[ "${1:-}" == "directive_context_signature" ]]; then
+    return 1
+  fi
+  _omc_test_real_write_state_batch "$@"
+}
+EOF
+cache_fail_payload="$(jq -nc \
+  --arg sid "${cache_fail_sid}" \
+  --arg p "${_TARGETED_EXEC_PROMPT}" \
+  --arg cwd "${_test_project}" \
+  '{session_id:$sid,prompt:$p,cwd:$cwd}')"
+cache_fail_output="$(
+  HOME="${cache_fail_home}" \
+  STATE_ROOT="${cache_fail_state}" \
+  OMC_TEST_REAL_COMMON="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh" \
+  bash -c 'cd "$1" && bash "$2"' _ "${_test_project}" \
+    "${REPO_ROOT}/bundle/dot-claude/quality-pack/scripts/prompt-intent-router.sh" \
+    <<<"${cache_fail_payload}" 2>/dev/null || true
+)"
+cache_fail_context="$(jq -r '.hookSpecificOutput.additionalContext // empty' \
+  <<<"${cache_fail_output}" 2>/dev/null || true)"
+assert_contains "T20e: cache failure still emits assembled routing context" \
+  "**Ultrawork mode active.**" "${cache_fail_context}"
+assert_eq "T20e: cache failure leaves a full-frame retry marker" "1" \
+  "$(jq -r '.directive_context_force_full // empty' \
+    "${cache_fail_state}/${cache_fail_sid}/session_state.json" 2>/dev/null || true)"
+assert_eq "T20e: cache failure is observable" "1" \
+  "$(jq -c 'select(.gate=="directive-budget" and .event=="cache_commit_failed")' \
+    "${cache_fail_state}/${cache_fail_sid}/gate_events.jsonl" 2>/dev/null \
+    | wc -l | tr -d ' ')"
+rm -rf "${cache_fail_home}"
 
 printf '\nULW benchmark suite: %d passed, %d failed\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]] || exit 1

@@ -2471,5 +2471,353 @@ assert_eq "T_aff_project_conf_allowed_flag: project conf classifier_telemetry=of
 teardown_test
 
 # ----------------------------------------------------------------------
+# Review-batch stability: distinct reviewer roles are intentionally allowed to
+# run in parallel, but a workspace mutation while any is in flight would make
+# their generation-stamped results stale. The guard freezes mutation only;
+# read-only work remains available and ordinary builder agents do not trigger it.
+setup_test
+export OMC_AGENT_FIRST_GATE=off
+init_session "t_review_freeze" "execution"
+set_agent_first_satisfied "t_review_freeze"
+review_pending_dir="${TEST_HOME}/.claude/quality-pack/state/t_review_freeze"
+review_pending_now="$(date +%s)"
+printf '%s\n' \
+  "{\"ts\":${review_pending_now},\"agent_type\":\"quality-reviewer\",\"review_dispatch_causality_version\":1,\"review_revision\":1}" \
+  '{malformed-json' \
+  "{\"ts\":${review_pending_now},\"agent_type\":\"excellence-reviewer\",\"review_dispatch_causality_version\":1,\"review_revision\":1}" \
+  >"${review_pending_dir}/pending_agents.jsonl"
+out_review_edit="$(run_guard "t_review_freeze" "" "Edit")"
+if denied "${out_review_edit}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T_review_freeze: Edit during reviewer batch must be denied (got: %s)\n' "${out_review_edit}" >&2
+  fail=$((fail + 1))
+fi
+assert_contains "T_review_freeze: reason names both active gate roles" \
+  "excellence-reviewer,quality-reviewer" "${out_review_edit}"
+assert_contains "T_review_freeze: reason explains token-preserving wait" \
+  "same review work must be paid for again" "${out_review_edit}"
+out_review_read="$(run_guard "t_review_freeze" "git status --short")"
+assert_eq "T_review_freeze: read-only Bash remains allowed" "" "${out_review_read}"
+
+rm -f "${review_pending_dir}/pending_agents.jsonl"
+out_review_settled="$(run_guard "t_review_freeze" "" "Edit")"
+assert_eq "T_review_freeze: mutation resumes after reviewers settle" "" "${out_review_settled}"
+teardown_test
+
+# Council Phase 8's explicit marker has a real producer: record-pending-agent
+# stamps every marked role with the same deterministic objective+revision ID.
+# Quality may return before a slower namespaced semantic specialist; cleanup of
+# that one row must not release mutation until the final marked role settles.
+setup_test
+export OMC_AGENT_FIRST_GATE=off
+init_session "t_phase8_batch_producer" "execution"
+set_agent_first_satisfied "t_phase8_batch_producer"
+phase8_batch_dir="${TEST_HOME}/.claude/quality-pack/state/t_phase8_batch_producer"
+jq '. + {
+      council_phase8_active:"1",
+      review_cycle_prompt_ts:"12345",
+      last_user_prompt_ts:"12345",
+      prompt_revision:"9",
+      edit_revision:"7",
+      last_code_edit_revision:"7"
+    }' "${phase8_batch_dir}/session_state.json" \
+  >"${phase8_batch_dir}/session_state.json.tmp"
+mv "${phase8_batch_dir}/session_state.json.tmp" \
+  "${phase8_batch_dir}/session_state.json"
+
+_dispatch_phase8_batch_role() {
+  local agent="$1" description="$2"
+  jq -nc --arg sid "t_phase8_batch_producer" --arg agent "${agent}" \
+    --arg description "${description}" \
+    '{session_id:$sid,tool_name:"Agent",tool_input:{subagent_type:$agent,description:$description}}' \
+    | bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/record-pending-agent.sh" \
+      2>/dev/null
+}
+
+_return_phase8_batch_role() {
+  local agent="$1" dispatch_id="${2:-}" message
+  message="Review complete."
+  if [[ -n "${dispatch_id}" ]]; then
+    message="${message}"$'\n'"REVIEW_DISPATCH_ID: ${dispatch_id}"
+  fi
+  message="${message}"$'\n'"VERDICT: CLEAN"
+  jq -nc --arg sid "t_phase8_batch_producer" --arg agent "${agent}" \
+    --arg message "${message}" \
+    '{session_id:$sid,agent_type:$agent,last_assistant_message:$message}' \
+    | OMC_DISCOVERED_SCOPE=off \
+      bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/record-subagent-summary.sh" \
+      >/dev/null
+  if [[ "${agent##*:}" == "quality-reviewer" ]]; then
+    jq -nc --arg sid "t_phase8_batch_producer" --arg agent "${agent}" \
+      --arg message "${message}" \
+      '{session_id:$sid,agent_type:$agent,last_assistant_message:$message}' \
+      | bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/record-reviewer.sh" \
+        standard >/dev/null 2>&1 || true
+  fi
+}
+
+_dispatch_phase8_batch_role "quality-reviewer" \
+  "[review-batch] REVIEW MODE: defects-only; inspect the settled wave"
+_dispatch_phase8_batch_role "acme:security-lens" \
+  "[review-batch] inspect the settled wave's authentication risk"
+phase8_pending_file="${phase8_batch_dir}/pending_agents.jsonl"
+assert_eq "T_phase8_batch: producer stamps both marked dispatches" "2" \
+  "$(jq -s 'length' "${phase8_pending_file}")"
+assert_eq "T_phase8_batch: deterministic objective+revision ID is shared" \
+  "phase8-12345-p9-e7" \
+  "$(jq -s -r 'map(.review_batch_id) | unique | if length == 1 then .[0] else "mismatch" end' \
+    "${phase8_pending_file}")"
+assert_eq "T_phase8_batch: namespaced semantic identity is preserved" \
+  "acme:security-lens" \
+  "$(jq -s -r 'map(select(.agent_type == "acme:security-lens"))[0].agent_type // ""' \
+    "${phase8_pending_file}")"
+
+_return_phase8_batch_role "quality-reviewer"
+assert_eq "T_phase8_batch: quality return clears only its own pending row" \
+  "acme:security-lens" \
+  "$(jq -s -r 'map(.agent_type) | join(",")' "${phase8_pending_file}")"
+out_phase8_semantic_pending="$(run_guard "t_phase8_batch_producer" "" "Edit")"
+if denied "${out_phase8_semantic_pending}"; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T_phase8_batch: Edit after quality returned but semantic review remained must be denied (got: %s)\n' \
+    "${out_phase8_semantic_pending}" >&2
+  fail=$((fail + 1))
+fi
+assert_contains "T_phase8_batch: remaining namespaced semantic role keeps freeze active" \
+  "acme:security-lens" "${out_phase8_semantic_pending}"
+
+_return_phase8_batch_role "acme:security-lens"
+out_phase8_settled="$(run_guard "t_phase8_batch_producer" "" "Edit")"
+assert_eq "T_phase8_batch: final marked return releases mutation" "" \
+  "${out_phase8_settled}"
+
+# Re-dispatch and age the real producer row past the abandoned-call TTL. A
+# killed semantic review must not trap the user forever.
+_dispatch_phase8_batch_role "acme:security-lens" \
+  "[review-batch] inspect a retried settled wave"
+phase8_stale_ts="$(( $(date +%s) - 7201 ))"
+jq -c --argjson stale "${phase8_stale_ts}" '.ts=$stale' \
+  "${phase8_pending_file}" >"${phase8_pending_file}.tmp"
+mv "${phase8_pending_file}.tmp" "${phase8_pending_file}"
+out_phase8_stale="$(run_guard "t_phase8_batch_producer" "" "Edit")"
+assert_eq "T_phase8_batch: abandoned marked semantic row expires" "" \
+  "${out_phase8_stale}"
+unbound_semantic_retry="$(_dispatch_phase8_batch_role "acme:security-lens" \
+  '[review-batch] inspect the retried settled wave')"
+assert_contains "T_phase8_batch: stale semantic retry requires explicit binding" \
+  '[review-rebind:' "${unbound_semantic_retry}"
+bound_semantic_retry="$(_dispatch_phase8_batch_role "acme:security-lens" \
+  '[review-batch] [review-rebind:semantic-retry] inspect the retried wave; emit REVIEW_DISPATCH_ID: semantic-retry immediately before VERDICT')"
+assert_eq "T_phase8_batch: explicitly bound semantic retry is allowed" "" \
+  "${bound_semantic_retry}"
+assert_eq "T_phase8_batch: abandoned semantic row is preserved for a late return" \
+  "true" "$(head -n 1 "${phase8_pending_file}" | jq -r '.review_dispatch_abandoned')"
+assert_eq "T_phase8_batch: bound semantic retry carries its unique ID" \
+  "semantic-retry" "$(tail -n 1 "${phase8_pending_file}" | jq -r '.review_dispatch_id')"
+_return_phase8_batch_role "acme:security-lens" "semantic-retry"
+assert_eq "T_phase8_batch: bound return clears only the bound retry" "1" \
+  "$(jq -s 'length' "${phase8_pending_file}")"
+out_phase8_abandoned_only="$(run_guard "t_phase8_batch_producer" "" "Edit")"
+assert_eq "T_phase8_batch: abandoned old tombstone does not freeze mutation after replacement" "" \
+  "${out_phase8_abandoned_only}"
+_return_phase8_batch_role "acme:security-lens"
+assert_eq "T_phase8_batch: late old return clears only the abandoned row" "0" \
+  "$(jq -s 'length' "${phase8_pending_file}")"
+
+# Confirmed interruption can rebind immediately; TTL is only the automatic
+# mutation-freeze expiry. Exercise old-first completion order for the semantic
+# queue (the stale fixture above exercised new-first).
+semantic_active_dispatch="$(_dispatch_phase8_batch_role "acme:security-lens" \
+  '[review-batch] [review-rebind:semantic-active] inspect an active semantic wave')"
+assert_eq "T_phase8_batch: explicitly bound active semantic call is admitted" \
+  "" "${semantic_active_dispatch}"
+# Reserve the same-second base and -2 candidates in both bounded ledgers. The
+# denial must scan both and allocate -3 (or later), never hand out a colliding
+# recovery ID merely because two requests landed in one second.
+suggestion_epoch="$(date +%s)"
+suggestion_starts="${phase8_batch_dir}/agent_dispatch_starts.jsonl"
+suggestion_ts=$((suggestion_epoch - 2))
+while (( suggestion_ts <= suggestion_epoch + 60 )); do
+  printf '%s\n' \
+    "{\"agent_type\":\"suggestion-reservation\",\"review_dispatch_id\":\"rebind-${suggestion_ts}-r0-2\"}" \
+    >>"${suggestion_starts}"
+  printf '%s\n' \
+    "{\"agent_type\":\"suggestion-reservation\",\"review_dispatch_id\":\"rebind-${suggestion_ts}-r0\"}" \
+    >>"${phase8_pending_file}"
+  suggestion_ts=$((suggestion_ts + 1))
+done
+active_semantic_duplicate="$(_dispatch_phase8_batch_role "acme:security-lens" \
+  '[review-batch] ordinary duplicate semantic wave')"
+assert_contains "T_phase8_batch: active semantic denial offers killed-call recovery" \
+  '[review-rebind:' "${active_semantic_duplicate}"
+assert_contains "T_phase8_batch: same-second suggestion skips pending/start collisions" \
+  '-3]' "${active_semantic_duplicate}"
+jq -c 'select(.agent_type != "suggestion-reservation")' \
+  "${phase8_pending_file}" >"${phase8_pending_file}.tmp"
+mv "${phase8_pending_file}.tmp" "${phase8_pending_file}"
+jq -c 'select(.agent_type != "suggestion-reservation")' \
+  "${suggestion_starts}" >"${suggestion_starts}.tmp"
+mv "${suggestion_starts}.tmp" "${suggestion_starts}"
+immediate_semantic_retry="$(_dispatch_phase8_batch_role "acme:security-lens" \
+  '[review-batch] [review-rebind:semantic-immediate] confirmed interrupted; emit REVIEW_DISPATCH_ID: semantic-immediate immediately before VERDICT')"
+assert_eq "T_phase8_batch: confirmed semantic interruption rebinds before TTL" "" \
+  "${immediate_semantic_retry}"
+_return_phase8_batch_role "acme:security-lens" "semantic-active"
+assert_eq "T_phase8_batch: old-first semantic return leaves bound retry" \
+  "semantic-immediate" \
+  "$(jq -s -r '.[0].review_dispatch_id // ""' "${phase8_pending_file}")"
+_return_phase8_batch_role "acme:security-lens" "semantic-immediate"
+assert_eq "T_phase8_batch: new-after-old semantic return clears its own row" "0" \
+  "$(jq -s 'length' "${phase8_pending_file}")"
+
+# Forced bind/effects interleaving: once SubagentStop owns a durable completion
+# claim, even an explicit killed-call rebind must wait instead of abandoning a
+# result whose authoritative side effects are already being committed.
+claim_target_dispatch="$(_dispatch_phase8_batch_role "acme:security-lens" \
+  '[review-batch] [review-rebind:claim-target] claim interleaving target')"
+assert_eq "T_phase8_claim: explicitly bound claim target is admitted" \
+  "" "${claim_target_dispatch}"
+claim_ready="${TEST_HOME}/claim-ready"
+claim_release="${TEST_HOME}/claim-release"
+rm -f "${claim_ready}" "${claim_release}"
+claim_payload="$(jq -nc --arg sid "t_phase8_batch_producer" \
+  --arg agent "acme:security-lens" \
+  --arg message $'Claimed result.\nREVIEW_DISPATCH_ID: claim-target\nVERDICT: CLEAN' \
+  '{session_id:$sid,agent_type:$agent,last_assistant_message:$message}')"
+OMC_TEST_SUMMARY_CLAIM_READY_FILE="${claim_ready}" \
+OMC_TEST_SUMMARY_CLAIM_RELEASE_FILE="${claim_release}" \
+OMC_DISCOVERED_SCOPE=off \
+  bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/record-subagent-summary.sh" \
+  <<<"${claim_payload}" >/dev/null 2>&1 &
+claim_pid=$!
+for _claim_wait in $(seq 1 100); do
+  [[ -f "${claim_ready}" ]] && break
+  sleep 0.05
+done
+assert_eq "T_phase8_claim: completion claim reaches deterministic barrier" "yes" \
+  "$([[ -f "${claim_ready}" ]] && printf yes || printf no)"
+claim_race_retry="$(_dispatch_phase8_batch_role "acme:security-lens" \
+  '[review-batch] [review-rebind:claim-race] confirmed interrupted race')"
+assert_contains "T_phase8_claim: rebind waits for in-progress completion claim" \
+  'completion is being recorded' "${claim_race_retry}"
+assert_eq "T_phase8_claim: racing rebind cannot abandon claimed row" "false" \
+  "$(jq -r '.review_dispatch_abandoned // false' "${phase8_pending_file}")"
+touch "${claim_release}"
+wait "${claim_pid}"
+assert_eq "T_phase8_claim: accepted claimed completion consumes pending row" "0" \
+  "$(jq -s 'length' "${phase8_pending_file}")"
+assert_eq "T_phase8_claim: mutation resumes after atomic claim finalizes" "" \
+  "$(run_guard "t_phase8_batch_producer" "" "Edit")"
+
+# Claim-owner crash recovery: kill at the barrier before any side effect, age
+# the lease past its bounded 120s window, then explicitly rebind. The crashed
+# owner cannot have appended a summary, and the old claim becomes a suppression
+# tombstone while the replacement proceeds.
+claim_crash_dispatch="$(_dispatch_phase8_batch_role "acme:security-lens" \
+  '[review-batch] [review-rebind:claim-crash-target] crash-recovery target')"
+assert_eq "T_phase8_claim: explicitly bound crash target is admitted" \
+  "" "${claim_crash_dispatch}"
+crash_ready="${TEST_HOME}/crash-ready"
+crash_release="${TEST_HOME}/crash-release"
+rm -f "${crash_ready}" "${crash_release}"
+crash_summary_before="$(jq -s 'length' "${phase8_batch_dir}/subagent_summaries.jsonl")"
+crash_claim_payload="$(jq -nc --arg sid "t_phase8_batch_producer" \
+  --arg agent "acme:security-lens" \
+  --arg message $'Claimed result.\nREVIEW_DISPATCH_ID: claim-crash-target\nVERDICT: CLEAN' \
+  '{session_id:$sid,agent_type:$agent,last_assistant_message:$message}')"
+OMC_TEST_SUMMARY_CLAIM_READY_FILE="${crash_ready}" \
+OMC_TEST_SUMMARY_CLAIM_RELEASE_FILE="${crash_release}" \
+OMC_DISCOVERED_SCOPE=off \
+  bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/record-subagent-summary.sh" \
+  <<<"${crash_claim_payload}" >/dev/null 2>&1 &
+crash_pid=$!
+for _crash_wait in $(seq 1 100); do
+  [[ -f "${crash_ready}" ]] && break
+  sleep 0.05
+done
+kill -9 "${crash_pid}" 2>/dev/null || true
+wait "${crash_pid}" 2>/dev/null || true
+assert_eq "T_phase8_claim: barrier kill occurs before summary side effects" \
+  "${crash_summary_before}" \
+  "$(jq -s 'length' "${phase8_batch_dir}/subagent_summaries.jsonl")"
+expired_claim_ts="$(( $(date +%s) - 121 ))"
+jq -c --argjson expired "${expired_claim_ts}" '.completion_claim_ts=$expired' \
+  "${phase8_pending_file}" >"${phase8_pending_file}.tmp"
+mv "${phase8_pending_file}.tmp" "${phase8_pending_file}"
+expired_claim_denied="$(_dispatch_phase8_batch_role "acme:security-lens" \
+  '[review-batch] recover expired completion claim')"
+assert_contains "T_phase8_claim: expired claim still requires explicit binding" \
+  '[review-rebind:' "${expired_claim_denied}"
+expired_claim_retry="$(_dispatch_phase8_batch_role "acme:security-lens" \
+  '[review-batch] [review-rebind:claim-recovery] recover expired completion claim; emit REVIEW_DISPATCH_ID: claim-recovery immediately before VERDICT')"
+assert_eq "T_phase8_claim: explicit retry recovers expired claim lease" "" \
+  "${expired_claim_retry}"
+_return_phase8_batch_role "acme:security-lens" "claim-recovery"
+assert_eq "T_phase8_claim: old crashed claim tombstone no longer freezes edits" "" \
+  "$(run_guard "t_phase8_batch_producer" "" "Edit")"
+_return_phase8_batch_role "acme:security-lens" "claim-crash-target"
+
+# A Council-tagged Phase-8 role uses the same safe recovery path. Preparation
+# must mark the confirmed-killed row before Council's same-identity ambiguity
+# check, while the late abandoned return must not create Council provenance.
+jq -n '{
+  objective_prompt_ts:12345,
+  objective_prompt_revision:9,
+  generation:1,
+  lifecycle:"primary",
+  selections:[{agent:"acme:security-lens",phase:"primary"}]
+}' >"${phase8_batch_dir}/council_coverage.json"
+council_active_dispatch="$(_dispatch_phase8_batch_role "acme:security-lens" \
+  '[council:primary] [review-batch] [review-rebind:council-active] active Council semantic review')"
+assert_eq "T_phase8_batch: explicitly bound Council target is admitted" \
+  "" "${council_active_dispatch}"
+council_retry="$(_dispatch_phase8_batch_role "acme:security-lens" \
+  '[council:primary] [review-batch] [review-rebind:council-immediate] confirmed interrupted; emit REVIEW_DISPATCH_ID: council-immediate immediately before VERDICT')"
+assert_eq "T_phase8_batch: tagged Council role rebinds before TTL" "" \
+  "${council_retry}"
+council_summary_before=0
+if [[ -f "${phase8_batch_dir}/subagent_summaries.jsonl" ]]; then
+  council_summary_before="$(jq -s 'length' "${phase8_batch_dir}/subagent_summaries.jsonl")"
+fi
+_return_phase8_batch_role "acme:security-lens" "council-active"
+assert_eq "T_phase8_batch: abandoned Council return adds no summary" \
+  "${council_summary_before}" \
+  "$(jq -s 'length' "${phase8_batch_dir}/subagent_summaries.jsonl")"
+_return_phase8_batch_role "acme:security-lens" "council-immediate"
+assert_eq "T_phase8_batch: only bound retry records Council return" "1" \
+  "$(jq -s 'length' "${phase8_batch_dir}/council_returns.jsonl")"
+assert_eq "T_phase8_batch: Council return is bound to replacement identity" \
+  "acme:security-lens" \
+  "$(tail -n 1 "${phase8_batch_dir}/council_returns.jsonl" | jq -r '.actual_agent')"
+teardown_test
+
+setup_test
+export OMC_AGENT_FIRST_GATE=off
+init_session "t_stale_review_freeze" "execution"
+set_agent_first_satisfied "t_stale_review_freeze"
+stale_pending_dir="${TEST_HOME}/.claude/quality-pack/state/t_stale_review_freeze"
+stale_pending_ts="$(( $(date +%s) - 7201 ))"
+printf '%s\n' \
+  "{\"ts\":${stale_pending_ts},\"agent_type\":\"quality-reviewer\",\"review_dispatch_causality_version\":1,\"review_revision\":1}" \
+  >"${stale_pending_dir}/pending_agents.jsonl"
+out_stale_review_edit="$(run_guard "t_stale_review_freeze" "" "Edit")"
+assert_eq "T_stale_review_freeze: abandoned reviewer row cannot freeze edits forever" "" "${out_stale_review_edit}"
+teardown_test
+
+setup_test
+export OMC_AGENT_FIRST_GATE=off
+init_session "t_builder_no_freeze" "execution"
+set_agent_first_satisfied "t_builder_no_freeze"
+builder_pending_dir="${TEST_HOME}/.claude/quality-pack/state/t_builder_no_freeze"
+printf '%s\n' \
+  '{"agent_type":"frontend-developer","edit_revision":1}' \
+  >"${builder_pending_dir}/pending_agents.jsonl"
+out_builder_edit="$(run_guard "t_builder_no_freeze" "" "Edit")"
+assert_eq "T_builder_no_freeze: ordinary specialist does not freeze mutation" "" "${out_builder_edit}"
+teardown_test
+
+# ----------------------------------------------------------------------
 printf '\n%s passed, %s failed\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]] || exit 1

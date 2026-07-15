@@ -15,8 +15,9 @@
 # the Stop array. If stop-guard JUST emitted a `decision:block`, we do
 # NOT emit a time summary on top of the user-facing block message —
 # the prompt is not finished and showing partial totals is misleading.
-# Detection: read the tail of `<session>/gate_events.jsonl` and check
-# for an `event=block` row within the last few seconds. (stop-guard
+# Detection: match stop-guard's monotonic attempt sequence to the exact
+# blocked attempt, with a bounded timestamp sanity check. A recent PreTool
+# denial or a later successful Stop must not suppress the card. (stop-guard
 # always exit 0s; the block decision is in the JSON payload, not the
 # exit code, so the kernel-level "skip subsequent hooks on exit 2"
 # semantics doesn't apply here.)
@@ -42,36 +43,34 @@ SESSION_ID="$(json_get '.session_id')"
 [[ -z "${SESSION_ID}" ]] && exit 0
 
 ensure_session_dir 2>/dev/null || exit 0
+gate_events_path="$(session_file "gate_events.jsonl")"
 
-# --- Self-suppression on recent block ---
-gate_events_path="$(session_file 'gate_events.jsonl')"
-if [[ -f "${gate_events_path}" ]]; then
-  recent_block_ts="$(tail -n 5 "${gate_events_path}" 2>/dev/null \
-    | jq -rs --argjson now "$(now_epoch)" '
-        [.[] | select(.event == "block")]
-        | sort_by(.ts // 0)
-        | last
-        | (.ts // 0)
-      ' 2>/dev/null || printf '0')"
-  recent_block_ts="${recent_block_ts:-0}"
-  [[ "${recent_block_ts}" =~ ^[0-9]+$ ]] || recent_block_ts=0
-  now_ts="$(now_epoch)"
-  if (( recent_block_ts > 0 )) && (( now_ts - recent_block_ts <= 3 )); then
-    # stop-guard just blocked. Stay quiet.
-    exit 0
-  fi
+# --- Detect a block from this exact Stop attempt (card suppression only) ---
+# Token capture and the economics rollup still run on blocked Stop attempts:
+# a gate retry consumed real tokens even though it is not a finalized prompt.
+# A generic "recent block event" is unsound because PreTool gates emit the same
+# event shape. stop-guard allocates `stop_guard_attempt_seq`; emit_stop_block
+# stamps the matching blocked attempt only for a real decision:block.
+recent_gate_block=0
+stop_attempt_seq="$(read_state "stop_guard_attempt_seq" 2>/dev/null || true)"
+blocked_attempt_seq="$(read_state "last_stop_block_attempt_seq" 2>/dev/null || true)"
+last_stop_block_ts="$(read_state "last_stop_block_ts" 2>/dev/null || true)"
+[[ "${stop_attempt_seq}" =~ ^[0-9]+$ ]] || stop_attempt_seq=0
+[[ "${blocked_attempt_seq}" =~ ^[0-9]+$ ]] || blocked_attempt_seq=0
+[[ "${last_stop_block_ts}" =~ ^[0-9]+$ ]] || last_stop_block_ts=0
+now_ts="$(now_epoch)"
+if (( stop_attempt_seq > 0 && stop_attempt_seq == blocked_attempt_seq )) \
+    && (( last_stop_block_ts > 0 && now_ts - last_stop_block_ts >= 0 \
+          && now_ts - last_stop_block_ts <= 300 )); then
+  recent_gate_block=1
 fi
 
 # --- Finalize the current prompt's walltime (idempotent) ---
 log_path="$(timing_log_path)"
-if [[ ! -f "${log_path}" ]]; then
-  exit 0
-fi
-
 current_seq="$(timing_current_prompt_seq)"
 [[ "${current_seq}" =~ ^[0-9]+$ ]] || current_seq=0
 
-if (( current_seq > 0 )); then
+if (( recent_gate_block == 0 && current_seq > 0 )) && [[ -f "${log_path}" ]]; then
   needs_end="$(jq -sr --argjson seq "${current_seq}" '
     ([.[] | select(.kind=="prompt_end" and (.prompt_seq // 0) == $seq)] | length) as $end_count
     | ([.[] | select(.kind=="prompt_start" and (.prompt_seq // 0) == $seq)] | length) as $start_count
@@ -108,6 +107,22 @@ fi
 
 # --- Aggregate + emit ---
 agg="$(timing_aggregate "${log_path}")"
+# Reviewer causality rejections are economically meaningful even though they
+# intentionally do not tick a quality dimension. Snapshot the monotonic state
+# counter into the per-session rollup so /ulw-report can show wasted-review
+# runs and the mutation-freeze gate's avoided-rework outcome.
+_stale_reviewer_count="$(read_state "stale_reviewer_count" 2>/dev/null || true)"
+[[ "${_stale_reviewer_count}" =~ ^[0-9]+$ ]] || _stale_reviewer_count=0
+agg="$(jq -c --argjson n "${_stale_reviewer_count}" '. + {stale_reviewer_count:$n}' \
+  <<<"${agg}" 2>/dev/null || printf '%s' "${agg}")"
+
+# A blocked attempt is deliberately invisible as a user-facing time card,
+# but it must reach the deduplicated cross-session economics ledger. A later
+# successful Stop replaces this row with the session's larger checkpoint.
+if (( recent_gate_block == 1 )); then
+  timing_record_session_summary "${agg}" 2>/dev/null || true
+  exit 0
+fi
 
 # Apply the 5s noise floor locally so timing_format_full stays a pure
 # formatter. timing_format_oneline used to do this internally; moving it

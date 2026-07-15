@@ -26,10 +26,48 @@ SUMMARY_FILE="${QP_ROOT}/session_summary.jsonl"
 SERENDIPITY_FILE="${QP_ROOT}/serendipity-log.jsonl"
 MISFIRES_FILE="${QP_ROOT}/classifier_misfires.jsonl"
 GATE_EVENTS_FILE="${QP_ROOT}/gate_events.jsonl"
+TIMING_FILE="${QP_ROOT}/timing.jsonl"
 ARCHETYPES_FILE="${QP_ROOT}/used-archetypes.jsonl"
 AGENT_METRICS_FILE="${QP_ROOT}/agent-metrics.json"
 DEFECT_PATTERNS_FILE="${QP_ROOT}/defect-patterns.json"
 AUTO_TUNE_FILE="${QP_ROOT}/auto-tune.jsonl"
+
+# A native --resume copies the logical session's live ledgers into its target
+# and atomically fences the dormant source with resume_transferred_to.  Every
+# direct state-root scan must honor that ownership marker or the live report
+# counts the same summary/gates/findings once under A and again under B.
+# Malformed/manual markers fail open so telemetry is never hidden by corrupt
+# state.
+session_state_is_resume_transferred() {
+  local state_file="${1:-}" transferred_to=""
+  [[ -f "${state_file}" ]] || return 1
+  transferred_to="$(jq -r '
+    (.resume_transferred_to // "")
+    | if type == "string" then . else "" end
+  ' "${state_file}" 2>/dev/null || true)"
+  [[ -n "${transferred_to}" ]] || return 1
+  validate_session_id "${transferred_to}" 2>/dev/null
+}
+
+# Dynamic labels from local or merged ledgers are untrusted render input.
+# Keep them useful while preventing terminal control sequences and Markdown
+# delimiters from escaping a code span/table cell. This is intentionally a
+# render-boundary helper: stored telemetry remains byte-faithful for forensics.
+report_safe_dynamic_label() {
+  local value="${1:-}"
+  value="$(printf '%s' "${value}" | LC_ALL=C tr -d '\000-\010\013\014\016-\037\177')"
+  value="${value//$'\n'/ }"
+  value="${value//$'\r'/ }"
+  value="${value//$'\t'/ }"
+  value="${value//\\/_}"
+  value="${value//|/_}"
+  value="${value//\`/_}"
+  [[ -n "${value}" ]] || value="unknown"
+  if (( ${#value} > 96 )); then
+    value="${value:0:95}…"
+  fi
+  printf '%s' "${value}"
+}
 
 # v1.31.0 Wave 8 (growth-lens F-037): --share flag emits a privacy-safe
 # numbers-only digest suitable for posting to Slack / PRs / Twitter.
@@ -47,13 +85,15 @@ SWEEP_MODE=0
 NEW_ARGS=()
 MERGE_DIRS=()
 _merge_expect=0
+_merge_missing_value_count=0
 for _arg in "$@"; do
   if [[ "${_merge_expect}" -eq 1 ]]; then
     _merge_expect=0
     if [[ "${_arg}" == --* ]]; then
       # `--merge --sweep` shape: the user forgot the dir. Don't swallow
-      # the sibling flag — warn and let this token parse normally.
-      printf '_[--merge] Missing directory value (next token %s is a flag) — --merge ignored._\n' "${_arg}" >&2
+      # the sibling flag. Defer diagnostics until all args are parsed so a
+      # later --share can suppress the user-controlled token completely.
+      _merge_missing_value_count=$(( _merge_missing_value_count + 1 ))
     else
       MERGE_DIRS+=("${_arg}")
       continue
@@ -68,6 +108,10 @@ for _arg in "$@"; do
     *)                    NEW_ARGS+=("${_arg}") ;;
   esac
 done
+if [[ "${_merge_missing_value_count}" -gt 0 ]] && [[ "${SHARE_MODE}" -ne 1 ]]; then
+  printf '_[--merge] Missing directory value before a flag (%d occurrence(s)) — --merge ignored._\n' \
+    "${_merge_missing_value_count}" >&2
+fi
 # Trailing `--merge` with no value falls through harmlessly (no dir queued) —
 # consistent with the script's fail-open posture; bad dirs get a skip banner.
 set -- "${NEW_ARGS[@]+${NEW_ARGS[@]}}"
@@ -144,7 +188,11 @@ USAGE
     exit 0
     ;;
   *)
-    printf 'show-report: unknown mode %q (expected: last|week|month|all)\n' "${MODE}" >&2
+    if [[ "${SHARE_MODE}" -eq 1 ]]; then
+      printf 'show-report: invalid mode (value suppressed in share mode; expected: last|week|month|all)\n' >&2
+    else
+      printf 'show-report: unknown mode %q (expected: last|week|month|all)\n' "${MODE}" >&2
+    fi
     exit 2
     ;;
 esac
@@ -200,6 +248,7 @@ if [[ "${SWEEP_MODE}" -eq 1 ]]; then
         [[ "${local_basename}" == "_watchdog" ]] && continue
         local_state="${_sweep_dir}/session_state.json"
         [[ -f "${local_state}" ]] || continue
+        session_state_is_resume_transferred "${local_state}" && continue
 
         # session_summary row — same jq formula as sweep_stale_sessions
         # (common.sh:1278). Kept inline rather than extracting a helper
@@ -287,7 +336,8 @@ if [[ "${SWEEP_MODE}" -eq 1 ]]; then
 
         _omc_sweep_active_count=$(( _omc_sweep_active_count + 1 ))
       done < <(find "${_sweep_state_root}" -maxdepth 1 -type d \
-                  ! -name '.' ! -name '..' ! -path "${_sweep_state_root}" 2>/dev/null)
+                  ! -name '.' ! -name '..' ! -name '.*' \
+                  ! -path "${_sweep_state_root}" 2>/dev/null)
     fi
 
     # Repoint the report's data sources at the merged temps.
@@ -327,6 +377,7 @@ fi
 # (pre-v1.48) are labeled at read time — local rows get this machine's
 # omc_host, external rows get the merge dir's sanitized basename.
 _omc_merge_dir_count=0
+_omc_merge_skipped_count=0
 _omc_merge_labels=""
 _OMC_MERGE_TMPDIR=""
 if [[ "${#MERGE_DIRS[@]}" -gt 0 ]]; then
@@ -334,6 +385,7 @@ if [[ "${#MERGE_DIRS[@]}" -gt 0 ]]; then
   if [[ -n "${_OMC_MERGE_TMPDIR}" ]] && [[ -d "${_OMC_MERGE_TMPDIR}" ]]; then
     _merge_summary="${_OMC_MERGE_TMPDIR}/session_summary.jsonl"
     _merge_gate="${_OMC_MERGE_TMPDIR}/gate_events.jsonl"
+    _merge_timing="${_OMC_MERGE_TMPDIR}/timing.jsonl"
     _merge_local_host="$(omc_host)"
     # `-R + fromjson?` skips unparseable lines instead of aborting the
     # whole stream — one torn append (rate-limit kill) must never make
@@ -353,12 +405,20 @@ if [[ "${#MERGE_DIRS[@]}" -gt 0 ]]; then
     else
       : > "${_merge_gate}"
     fi
+    if [[ -f "${TIMING_FILE}" ]] && [[ -s "${TIMING_FILE}" ]]; then
+      jq -Rc --arg h "${_merge_local_host}" 'fromjson? | .host //= $h' "${TIMING_FILE}" \
+        > "${_merge_timing}" 2>/dev/null || : > "${_merge_timing}"
+    else
+      : > "${_merge_timing}"
+    fi
 
     for _merge_dir in "${MERGE_DIRS[@]}"; do
       # Accept a quality-pack dir itself, an extracted machine-archive
       # root containing .claude/quality-pack, or a quality-pack/ child.
       _merge_src=""
-      if [[ -f "${_merge_dir}/session_summary.jsonl" ]] || [[ -f "${_merge_dir}/gate_events.jsonl" ]]; then
+      if [[ -f "${_merge_dir}/session_summary.jsonl" ]] \
+          || [[ -f "${_merge_dir}/gate_events.jsonl" ]] \
+          || [[ -f "${_merge_dir}/timing.jsonl" ]]; then
         _merge_src="${_merge_dir}"
       elif [[ -d "${_merge_dir}/.claude/quality-pack" ]]; then
         _merge_src="${_merge_dir}/.claude/quality-pack"
@@ -366,8 +426,12 @@ if [[ "${#MERGE_DIRS[@]}" -gt 0 ]]; then
         _merge_src="${_merge_dir}/quality-pack"
       fi
       if [[ -z "${_merge_src}" ]]; then
-        printf '_[--merge] Skipping %s — no session_summary.jsonl / gate_events.jsonl found (pass a quality-pack dir, or an archive root containing .claude/quality-pack)._\n\n' \
-          "${_merge_dir}"
+        _omc_merge_skipped_count=$(( _omc_merge_skipped_count + 1 ))
+        if [[ "${SHARE_MODE}" -ne 1 ]]; then
+          _safe_merge_dir="$(printf '%s' "${_merge_dir}" | _omc_strip_render_unsafe)"
+          printf '_[--merge] Skipping %s — no session_summary.jsonl / gate_events.jsonl / timing.jsonl found (pass a quality-pack dir, or an archive root containing .claude/quality-pack)._\n\n' \
+            "${_safe_merge_dir}"
+        fi
         continue
       fi
       _merge_label="$(basename "${_merge_dir%/}")"
@@ -381,6 +445,10 @@ if [[ "${#MERGE_DIRS[@]}" -gt 0 ]]; then
         jq -Rc --arg h "${_merge_label}" 'fromjson? | .host //= $h' "${_merge_src}/gate_events.jsonl" \
           >> "${_merge_gate}" 2>/dev/null || true
       fi
+      if [[ -f "${_merge_src}/timing.jsonl" ]]; then
+        jq -Rc --arg h "${_merge_label}" 'fromjson? | .host //= $h' "${_merge_src}/timing.jsonl" \
+          >> "${_merge_timing}" 2>/dev/null || true
+      fi
       _omc_merge_dir_count=$(( _omc_merge_dir_count + 1 ))
       _omc_merge_labels="${_omc_merge_labels:+${_omc_merge_labels}, }${_merge_label}"
     done
@@ -388,6 +456,7 @@ if [[ "${#MERGE_DIRS[@]}" -gt 0 ]]; then
     # Repoint the report's data sources at the merged temps.
     SUMMARY_FILE="${_merge_summary}"
     GATE_EVENTS_FILE="${_merge_gate}"
+    TIMING_FILE="${_merge_timing}"
   fi
 
   # Cleanup on EXIT. Chains the sweep cleanup (when --sweep also ran) so
@@ -404,12 +473,24 @@ if [[ "${#MERGE_DIRS[@]}" -gt 0 ]]; then
   }
   trap _omc_merge_cleanup EXIT
 
-  if [[ "${_omc_merge_dir_count}" -gt 0 ]]; then
+  if [[ "${SHARE_MODE}" -eq 1 ]]; then
+    if [[ "${_omc_merge_dir_count}" -gt 0 ]]; then
+      printf '_[--merge] Including %d external machine dir(s) (paths and host labels suppressed; read-only)._\n\n' \
+        "${_omc_merge_dir_count}"
+    fi
+    if [[ "${_omc_merge_skipped_count}" -gt 0 ]]; then
+      printf '_[--merge] Skipped %d invalid merge input(s) (paths suppressed)._\n\n' \
+        "${_omc_merge_skipped_count}"
+    fi
+  elif [[ "${_omc_merge_dir_count}" -gt 0 ]]; then
     printf '_[--merge] Including %d external machine dir(s): %s (read-only; sources not modified)._\n\n' \
       "${_omc_merge_dir_count}" "${_omc_merge_labels}"
     # At-a-glance host attribution over the merged view — computed on ALL
     # merged rows (pre-window) so the label set is stable across windows.
-    _merge_host_line="$(jq -r '.host // "unknown"' "${SUMMARY_FILE}" 2>/dev/null \
+    _merge_host_line="$(jq -r '
+        (.host // "unknown")
+        | if type == "string" then gsub("[\u0000-\u001f\u007f]"; "") else "unknown" end
+      ' "${SUMMARY_FILE}" 2>/dev/null \
       | sort | uniq -c | sort -rn \
       | awk '{printf "%s%s: %s", (NR>1 ? " · " : ""), $2, $1}')"
     if [[ -n "${_merge_host_line}" ]]; then
@@ -417,6 +498,140 @@ if [[ "${#MERGE_DIRS[@]}" -gt 0 ]]; then
     fi
   fi
 fi
+
+# Resolve `last` once from the newest valid summary timestamp and use that
+# exact identity for every ledger that can carry a session ID. Physical JSONL
+# order is not a reliable recency signal after --merge, and cutoff=0 would
+# otherwise turn token economics into an all-time total under a last-session
+# heading.
+_last_summary_row=""
+_last_session_id=""
+_last_session_start_ts=0
+_last_session_end_ts=0
+_last_session_has_end=0
+if [[ "${MODE}" == "last" ]] && [[ -f "${SUMMARY_FILE}" ]] && [[ -s "${SUMMARY_FILE}" ]]; then
+  _last_summary_row="$(jq -Rsc '
+    split("\n") | map(fromjson?) | map(select(. != null))
+    | map(select((.outcome // "") != "abandoned"))
+    | if length == 0 then empty
+      else max_by(((.start_ts // .end_ts // 0) | tonumber?) // 0)
+      end
+  ' "${SUMMARY_FILE}" 2>/dev/null || true)"
+  if [[ -n "${_last_summary_row}" ]]; then
+    _last_session_id="$(jq -r '
+      ((.session_id // "") | tostring) as $primary
+      | if $primary != "" then $primary else ((.session // "") | tostring) end
+    ' \
+      <<<"${_last_summary_row}" 2>/dev/null || true)"
+    _last_session_start_ts="$(jq -r '((.start_ts // .end_ts // 0) | tonumber?) // 0' \
+      <<<"${_last_summary_row}" 2>/dev/null || printf '0')"
+    _last_session_end_value="$(jq -r '
+      (.end_ts | tonumber?) as $selected_end
+      | if $selected_end == null then empty else $selected_end end
+    ' <<<"${_last_summary_row}" 2>/dev/null || true)"
+    if [[ -n "${_last_session_end_value}" ]]; then
+      _last_session_end_ts="${_last_session_end_value}"
+      _last_session_has_end=1
+    fi
+  fi
+fi
+
+# Filter a session-aware cross-session ledger to the resolved `last` session.
+# Current rows use `session_id` or `session`; older rows that predate identity
+# attribution can only be bounded by the selected session's timestamps.
+# Prefer the closed [start,end] interval; when end_ts is absent/non-numeric,
+# retain the start-only compatibility path and label it at render time.
+# The latter are deliberately retained for backwards compatibility and are
+# counted below so every report surface can label that approximation.
+_last_session_ledger_rows() {
+  local file="$1"
+  [[ -n "${_last_summary_row}" ]] || return 0
+  [[ -f "${file}" ]] || return 0
+  jq -Rc --arg sid "${_last_session_id}" \
+    --argjson start "${_last_session_start_ts}" \
+    --argjson selected_end "${_last_session_end_ts}" \
+    --argjson has_end "${_last_session_has_end}" '
+    fromjson?
+    | ((.session_id // "") | tostring) as $primary_sid
+    | (if $primary_sid != "" then $primary_sid else ((.session // "") | tostring) end) as $row_sid
+    | (((.ts // .start_ts // .end_ts // 0) | tonumber?) // 0) as $row_ts
+    | select(
+        (($sid != "") and ($row_sid == $sid))
+        or (($row_sid == "") and ($row_ts >= $start)
+            and (($has_end == 0) or ($row_ts <= $selected_end)))
+      )
+  ' "${file}" 2>/dev/null || true
+}
+
+_last_legacy_rows_in_ledger() {
+  local file="$1"
+  [[ -n "${_last_summary_row}" ]] || { printf '0\n'; return 0; }
+  [[ -f "${file}" ]] || { printf '0\n'; return 0; }
+  jq -Rsc --argjson start "${_last_session_start_ts}" \
+    --argjson selected_end "${_last_session_end_ts}" \
+    --argjson has_end "${_last_session_has_end}" '
+    [split("\n")[] | fromjson?
+      | ((.session_id // "") | tostring) as $primary_sid
+      | (if $primary_sid != "" then $primary_sid else ((.session // "") | tostring) end) as $row_sid
+      | select($row_sid == "")
+      | (((.ts // .start_ts // .end_ts // 0) | tonumber?) // 0) as $row_ts
+      | select(($row_ts >= $start) and (($has_end == 0) or ($row_ts <= $selected_end)))]
+    | length
+  ' "${file}" 2>/dev/null || printf '0\n'
+}
+
+# Helper: filter JSONL rows by a timestamp field within the cutoff window.
+# `last` is identity-exact for every ledger whose schema carries a session;
+# identity-less legacy rows in those ledgers use the documented timestamp
+# compatibility path. Other modes retain their existing time-window behavior.
+filter_by_window() {
+  local file="$1" ts_path="$2"
+  [[ -f "${file}" ]] || return 0
+  if [[ "${MODE}" == "all" ]]; then
+    cat "${file}"
+  elif [[ "${MODE}" == "last" ]]; then
+    if [[ "${file}" == "${SUMMARY_FILE}" ]]; then
+      [[ -n "${_last_summary_row}" ]] && printf '%s\n' "${_last_summary_row}"
+    elif [[ "${file}" == "${GATE_EVENTS_FILE}" ]] \
+      || [[ "${file}" == "${SERENDIPITY_FILE}" ]] \
+      || [[ "${file}" == "${MISFIRES_FILE}" ]] \
+      || [[ "${file}" == "${ARCHETYPES_FILE}" ]]; then
+      _last_session_ledger_rows "${file}"
+    else
+      # Ledgers that are not session-shaped (for example auto-tune) keep
+      # their historical most-recent-row semantics under `last`.
+      tail -n 1 "${file}"
+    fi
+  else
+    jq -c --argjson cutoff "${cutoff_ts}" \
+      "select((${ts_path} // 0 | tonumber) >= \$cutoff)" "${file}" 2>/dev/null || true
+  fi
+}
+
+_last_approximate_ledger_rows=0
+if [[ "${MODE}" == "last" ]] && [[ -n "${_last_summary_row}" ]]; then
+  for _last_identity_file in \
+    "${GATE_EVENTS_FILE}" "${SERENDIPITY_FILE}" "${MISFIRES_FILE}" "${ARCHETYPES_FILE}"; do
+    _last_legacy_count="$(_last_legacy_rows_in_ledger "${_last_identity_file}")"
+    [[ "${_last_legacy_count}" =~ ^[0-9]+$ ]] || _last_legacy_count=0
+    _last_approximate_ledger_rows=$(( _last_approximate_ledger_rows + _last_legacy_count ))
+  done
+fi
+if [[ "${_last_session_has_end}" -eq 1 ]]; then
+  _last_approximation_label="by the selected session time bounds"
+else
+  _last_approximation_label="by the selected session start time because a numeric end time was unavailable"
+fi
+
+report_timing_xs_aggregate() {
+  local dispatch_keys="${_report_dispatch_filter_keys:-[]}"
+  if [[ "${MODE}" == "last" ]]; then
+    [[ -n "${_last_session_id}" ]] || { printf '%s\n' '{}'; return 0; }
+    timing_xs_aggregate 0 "${TIMING_FILE}" "${_last_session_id}" "${dispatch_keys}"
+  else
+    timing_xs_aggregate "${cutoff_ts}" "${TIMING_FILE}" "" "${dispatch_keys}"
+  fi
+}
 
 # v1.31.0 Wave 8 (growth-lens F-037): --share renders a fully-sanitized
 # digest. Numbers, distributions, and structural counts only — no
@@ -434,13 +649,89 @@ if [[ "${SHARE_MODE}" -eq 1 ]]; then
   # was lying. Materialize the rows the share queries should
   # consider into a temp jsonl and re-point the cutoff: under
   # MODE=last, that's the most recent session_summary row only.
-  _share_sessions_src="${SUMMARY_FILE}"
-  if [[ "${MODE}" == "last" ]] && [[ -f "${SUMMARY_FILE}" ]] && [[ -s "${SUMMARY_FILE}" ]]; then
-    _share_sessions_src="$(mktemp)"
-    tail -n 1 "${SUMMARY_FILE}" > "${_share_sessions_src}" 2>/dev/null || true
-    # Compute the gate_events cutoff from the last-session start_ts
-    # so gate-event distribution is also scoped correctly.
-    cutoff_ts="$(jq -r '.start_ts // 0 | tonumber? // 0' "${_share_sessions_src}" 2>/dev/null || echo 0)"
+  _share_sessions_window_src="${SUMMARY_FILE}"
+  _share_gate_window_src="${GATE_EVENTS_FILE}"
+  _share_serendipity_src="${SERENDIPITY_FILE}"
+  _share_ledger_cutoff="${cutoff_ts}"
+  if [[ "${MODE}" == "last" ]]; then
+    _share_sessions_window_src="$(mktemp)"
+    if [[ -n "${_last_summary_row}" ]]; then
+      printf '%s\n' "${_last_summary_row}" > "${_share_sessions_window_src}" 2>/dev/null || true
+    fi
+    # Materialize identity-exact auxiliary ledgers. The helper has already
+    # bounded identity-less legacy rows by start_ts, so downstream queries use
+    # a zero cutoff and do not accidentally drop exact rows with clock skew.
+    _share_gate_window_src="$(mktemp)"
+    _share_serendipity_src="$(mktemp)"
+    filter_by_window "${GATE_EVENTS_FILE}" '.ts' > "${_share_gate_window_src}"
+    filter_by_window "${SERENDIPITY_FILE}" '.ts' > "${_share_serendipity_src}"
+    _share_ledger_cutoff=0
+    cutoff_ts="${_last_session_start_ts}"
+  fi
+
+  # Materialize a minimal, typed summary ledger before any share query. This
+  # simultaneously removes every free-text field, excludes the legacy
+  # outcome="abandoned" cohort used nowhere else in the report, and prevents
+  # Bash arithmetic from ever receiving a ledger-controlled string.
+  _share_sessions_src="$(mktemp)"
+  if [[ -f "${_share_sessions_window_src}" ]] && [[ -s "${_share_sessions_window_src}" ]]; then
+    jq -Rc '
+      def count: (tonumber? // 0) | if . < 0 then 0 else floor end;
+      fromjson?
+      | select(type == "object" and ((.outcome // "") != "abandoned"))
+      | {
+          start_ts: ((.start_ts | tonumber?) // 0),
+          end_ts: ((.end_ts | tonumber?) // null),
+          guard_blocks: (.guard_blocks | count),
+          dim_blocks: (.dim_blocks | count),
+          dispatches: (.dispatches | count),
+          skip_count: (.skip_count | count)
+        }
+    ' "${_share_sessions_window_src}" > "${_share_sessions_src}" 2>/dev/null \
+      || : > "${_share_sessions_src}"
+  fi
+
+  # `.gate` is not a trusted enum at the write boundary: custom hooks,
+  # hand-edited ledgers, and --merge inputs can place arbitrary free text in
+  # it. The share card promises a numbers/structural-label-only surface, so
+  # normalize through a finite vocabulary before either weighting or
+  # rendering. Unknown, custom, non-string, and malformed values share one
+  # non-sensitive bucket; do not use grammar filtering (a secret can look like
+  # a perfectly ordinary identifier).
+  _share_gate_src="$(mktemp)"
+  if [[ -f "${_share_gate_window_src}" ]] && [[ -s "${_share_gate_window_src}" ]]; then
+    jq -Rc '
+      def share_gate_name:
+        . as $gate
+        | if ($gate | type) != "string" then "other/unknown"
+          elif $gate == "discovered_scope" then "discovered-scope"
+          elif ([
+            "advisory", "advisory-no-findings", "agent-first", "auto-tune",
+            "bg-spawn", "bias-defense", "blindspot", "canary",
+            "circuit-breaker", "commit-contract", "council-coverage",
+            "council-provenance", "delivery-contract", "dim_block",
+            "directive-budget", "discovered-scope", "excellence",
+            "exemplifying-scope", "final-closure", "finding-status", "goal",
+            "installation-drift", "intent-downgrade-blocked",
+            "intent-flip-overridden", "mark-deferred", "metis-on-plan",
+            "model-routing", "no-defer-mode", "objective-contract",
+            "pretool-intent", "push-contract", "quality", "resume-watchdog",
+            "review-batch-causality", "review-coverage",
+            "review-mutation-freeze", "reviewer",
+            "reviewer-dispatch-causality", "self-audit-nudge",
+            "session-handoff", "session-start-resume", "session-start-welcome",
+            "shortcut-ratio", "state-corruption", "stop-failure",
+            "stop-generation-cas", "stop-guard", "stricter-verdict-wins",
+            "subagent-dispatch-causality", "subagent-summary",
+            "transcript-archive", "ulw-pause", "ulw-resume", "ulw-skip",
+            "verification", "watchdog-health", "wave-plan", "wave-shape",
+            "wave-status", "whats-new"
+          ] | index($gate)) != null then $gate
+          else "other/unknown"
+          end;
+      fromjson? | select(type == "object") | .gate = (.gate | share_gate_name)
+    ' "${_share_gate_window_src}" > "${_share_gate_src}" 2>/dev/null \
+      || : > "${_share_gate_src}"
   fi
 
   # v1.34.1+ (growth-lens G-002): make --share a real shareable card.
@@ -449,6 +740,17 @@ if [[ "${SHARE_MODE}" -eq 1 ]]; then
   # ledger has rows). The new shape leads with a one-line headline,
   # adds a time-saved estimate, and ends with a copy-paste-to-Twitter
   # line. Suppresses bullets entirely when sessions=0 (no signal).
+  # Keep every scalar that will reach Bash arithmetic on a deliberately small
+  # decimal-only domain. Bash recursively interprets arithmetic variable
+  # contents, so merely quoting a poisoned ledger string is not sufficient.
+  _share_safe_uint() {
+    local value="${1:-}"
+    if [[ "${value}" =~ ^[0-9]+$ ]] && [[ "${#value}" -le 15 ]]; then
+      printf '%s' "${value}"
+    else
+      printf '0'
+    fi
+  }
   _share_sessions=0
   _share_blocks=0
   _share_dispatches=0
@@ -462,17 +764,25 @@ if [[ "${SHARE_MODE}" -eq 1 ]]; then
     # are real "caught issues" and the verbose mode (line 189) sums
     # both. The publicly-shareable headline number must agree.
     _share_blocks="$(jq -s --argjson cutoff "${cutoff_ts}" \
-      'map(select((.start_ts // 0 | tonumber? // 0) >= $cutoff) | (.guard_blocks // 0) + (.dim_blocks // 0)) | add // 0' \
+      'def count: (tonumber? // 0) | if . < 0 then 0 else floor end;
+       map(select((.start_ts // 0 | tonumber? // 0) >= $cutoff)
+           | ((.guard_blocks | count) + (.dim_blocks | count))) | add // 0' \
       "${_share_sessions_src}" 2>/dev/null || echo 0)"
     _share_dispatches="$(jq -s --argjson cutoff "${cutoff_ts}" \
-      'map(select((.start_ts // 0 | tonumber? // 0) >= $cutoff) | .dispatches // 0) | add // 0' \
+      'def count: (tonumber? // 0) | if . < 0 then 0 else floor end;
+       map(select((.start_ts // 0 | tonumber? // 0) >= $cutoff)
+           | (.dispatches | count)) | add // 0' \
       "${_share_sessions_src}" 2>/dev/null || echo 0)"
   fi
-  if [[ -f "${SERENDIPITY_FILE}" ]] && [[ -s "${SERENDIPITY_FILE}" ]]; then
-    _share_serendipity="$(jq -s --argjson cutoff "${cutoff_ts}" \
+  _share_sessions="$(_share_safe_uint "${_share_sessions}")"
+  _share_blocks="$(_share_safe_uint "${_share_blocks}")"
+  _share_dispatches="$(_share_safe_uint "${_share_dispatches}")"
+  if [[ -f "${_share_serendipity_src}" ]] && [[ -s "${_share_serendipity_src}" ]]; then
+    _share_serendipity="$(jq -s --argjson cutoff "${_share_ledger_cutoff}" \
       'map(select(((.ts // 0) | tonumber? // 0) >= $cutoff)) | length' \
-      "${SERENDIPITY_FILE}" 2>/dev/null || echo 0)"
+      "${_share_serendipity_src}" 2>/dev/null || echo 0)"
   fi
+  _share_serendipity="$(_share_safe_uint "${_share_serendipity}")"
 
   # Time-saved heuristic (v1.36.x W2 F-009 — weighted by gate type).
   #
@@ -492,7 +802,7 @@ if [[ "${SHARE_MODE}" -eq 1 ]]; then
   #     e.g. publish requirements / missing tests / failed excellence.
   #   - discovered-scope / wave-shape / shortcut-ratio: 360s (6 min)
   #     — coverage / segmentation defenses.
-  #   - advisory / session-handoff / pretool: 240s (4 min)
+  #   - advisory / session-handoff / pretool-intent: 240s (4 min)
   #     — early-redirect defenses; saved a misroute cycle.
   #   - everything else: 300s (5 min) — middle of the road.
   # Serendipity stays at 300s (5 min) — bugs caught while doing other
@@ -500,22 +810,22 @@ if [[ "${SHARE_MODE}" -eq 1 ]]; then
   # SUBTRACTED: each /ulw-skip is 60s (1 min) — the false-positive
   # cost the user paid because the gate fired on legitimate work.
   _share_blocks_weighted_secs=0
-  if [[ -f "${GATE_EVENTS_FILE}" ]] && [[ -s "${GATE_EVENTS_FILE}" ]]; then
-    _share_blocks_weighted_secs="$(jq -s --argjson cutoff "${cutoff_ts}" '
+  if [[ -f "${_share_gate_src}" ]] && [[ -s "${_share_gate_src}" ]]; then
+    _share_blocks_weighted_secs="$(jq -s --argjson cutoff "${_share_ledger_cutoff}" '
         map(select((.ts // 0) >= $cutoff and .event == "block"))
         | map(
             .gate as $g
             | (
                 if ($g == "delivery-contract" or $g == "dim_block") then 600
                 elif ($g == "discovered-scope" or $g == "wave-shape" or $g == "shortcut-ratio") then 360
-                elif ($g == "advisory" or $g == "session-handoff" or $g == "pretool") then 240
+                elif ($g == "advisory" or $g == "session-handoff" or $g == "pretool-intent") then 240
                 else 300
                 end
               )
           )
         | add // 0
-      ' "${GATE_EVENTS_FILE}" 2>/dev/null || echo 0)"
-    [[ "${_share_blocks_weighted_secs}" =~ ^[0-9]+$ ]] || _share_blocks_weighted_secs=0
+      ' "${_share_gate_src}" 2>/dev/null || echo 0)"
+    _share_blocks_weighted_secs="$(_share_safe_uint "${_share_blocks_weighted_secs}")"
   fi
   # If we have no per-event signal (e.g. early sessions before
   # gate_events.jsonl was populated), fall back to the legacy
@@ -530,10 +840,12 @@ if [[ "${SHARE_MODE}" -eq 1 ]]; then
   _share_skip_count=0
   if [[ -f "${_share_sessions_src}" ]] && [[ -s "${_share_sessions_src}" ]]; then
     _share_skip_count="$(jq -s --argjson cutoff "${cutoff_ts}" \
-      'map(select((.start_ts // 0 | tonumber? // 0) >= $cutoff) | .skip_count // 0) | add // 0' \
+      'def count: (tonumber? // 0) | if . < 0 then 0 else floor end;
+       map(select((.start_ts // 0 | tonumber? // 0) >= $cutoff)
+           | (.skip_count | count)) | add // 0' \
       "${_share_sessions_src}" 2>/dev/null || echo 0)"
-    [[ "${_share_skip_count}" =~ ^[0-9]+$ ]] || _share_skip_count=0
   fi
+  _share_skip_count="$(_share_safe_uint "${_share_skip_count}")"
   _share_skip_cost_secs=$(( _share_skip_count * 60 ))
 
   _share_caught_total=$(( _share_blocks + _share_serendipity ))
@@ -569,6 +881,10 @@ if [[ "${SHARE_MODE}" -eq 1 ]]; then
   fi
 
   printf '_Privacy-safe digest. Numbers and distributions only._\n\n'
+  if [[ "${MODE}" == "last" ]] && [[ "${_last_approximate_ledger_rows}" -gt 0 ]]; then
+    printf '_Scope note: %s legacy auxiliary row(s) lacked a session identity and were included approximately %s._\n\n' \
+      "${_last_approximate_ledger_rows}" "${_last_approximation_label}"
+  fi
 
   # Detail bullets — only when there's actual session activity.
   if [[ "${_share_sessions}" -gt 0 ]]; then
@@ -593,21 +909,21 @@ if [[ "${SHARE_MODE}" -eq 1 ]]; then
       | sort
       | if length == 0 then 0 else .[(length / 2 | floor)] end
     ' "${_share_sessions_src}" 2>/dev/null || echo 0)"
-    [[ "${_share_median_dur}" =~ ^[0-9]+$ ]] || _share_median_dur=0
+    _share_median_dur="$(_share_safe_uint "${_share_median_dur}")"
     if (( _share_median_dur > 0 )); then
       printf -- '- **Median session length (wall-clock):** %s\n' \
         "$(timing_fmt_secs "${_share_median_dur}")"
     fi
     # Gate-event distribution — gate names + counts only, never the
     # `reason` / `details` payloads (which can carry arbitrary text).
-    if [[ -f "${GATE_EVENTS_FILE}" ]] && [[ -s "${GATE_EVENTS_FILE}" ]]; then
-      _share_gate_distrib="$(jq -sr --argjson cutoff "${cutoff_ts}" \
+    if [[ -f "${_share_gate_src}" ]] && [[ -s "${_share_gate_src}" ]]; then
+      _share_gate_distrib="$(jq -sr --argjson cutoff "${_share_ledger_cutoff}" \
         'map(select((.ts // 0) >= $cutoff))
          | map(.gate)
          | group_by(.) | map({gate: .[0], n: length})
          | sort_by(-.n) | .[0:10]
          | .[] | "  • \(.gate): \(.n)"' \
-        "${GATE_EVENTS_FILE}" 2>/dev/null || true)"
+        "${_share_gate_src}" 2>/dev/null || true)"
       if [[ -n "${_share_gate_distrib}" ]]; then
         printf '\n**Top gates by fire count:**\n'
         printf '%s\n' "${_share_gate_distrib}"
@@ -635,10 +951,31 @@ if [[ "${SHARE_MODE}" -eq 1 ]]; then
   fi
 
   printf '\n_Generated by [oh-my-claude](https://github.com/X0x888/oh-my-claude). All free-text fields suppressed; numbers and gate-name distribution only._\n'
-  # Clean up the MODE=last temp file (if we created one).
-  if [[ "${_share_sessions_src}" != "${SUMMARY_FILE}" ]] && [[ -f "${_share_sessions_src}" ]]; then
+  # Clean up share-only materializations. Sanitized ledgers are always
+  # temporary; the raw window ledgers are temporary only for `last`.
+  if [[ -f "${_share_sessions_src}" ]]; then
     rm -f "${_share_sessions_src}" 2>/dev/null || true
   fi
+  if [[ "${_share_sessions_window_src}" != "${SUMMARY_FILE}" ]] && [[ -f "${_share_sessions_window_src}" ]]; then
+    rm -f "${_share_sessions_window_src}" 2>/dev/null || true
+  fi
+  if [[ -f "${_share_gate_src}" ]]; then
+    rm -f "${_share_gate_src}" 2>/dev/null || true
+  fi
+  if [[ "${_share_gate_window_src}" != "${GATE_EVENTS_FILE}" ]] && [[ -f "${_share_gate_window_src}" ]]; then
+    rm -f "${_share_gate_window_src}" 2>/dev/null || true
+  fi
+  if [[ "${_share_serendipity_src}" != "${SERENDIPITY_FILE}" ]] && [[ -f "${_share_serendipity_src}" ]]; then
+    rm -f "${_share_serendipity_src}" 2>/dev/null || true
+  fi
+  exit 0
+fi
+
+# Privacy fail-closed backstop: any unexpected control-flow escape from the
+# share renderer must never fall through into the verbose diagnostic report,
+# whose free-text fields are intentionally unsanitized for local debugging.
+if [[ "${SHARE_MODE}" -eq 1 ]]; then
+  printf '_Share digest unavailable because telemetry could not be normalized; verbose diagnostics suppressed._\n'
   exit 0
 fi
 
@@ -685,6 +1022,14 @@ fi
 if [[ "${FIELD_SHAPE_AUDIT}" -eq 1 ]]; then
   printf '# Field-shape audit — %s\n\n' "${window_label}"
   printf '_Source: `%s` · cutoff_ts=%s_\n\n' "${GATE_EVENTS_FILE}" "${cutoff_ts}"
+  if [[ "${MODE}" == "last" ]]; then
+    _audit_approximate_rows="$(_last_legacy_rows_in_ledger "${GATE_EVENTS_FILE}")"
+    [[ "${_audit_approximate_rows}" =~ ^[0-9]+$ ]] || _audit_approximate_rows=0
+    if [[ "${_audit_approximate_rows}" -gt 0 ]]; then
+      printf '_Scope note: %s legacy gate row(s) lacked a session identity and were included approximately %s._\n\n' \
+        "${_audit_approximate_rows}" "${_last_approximation_label}"
+    fi
+  fi
 
   if [[ ! -f "${GATE_EVENTS_FILE}" ]] || [[ ! -s "${GATE_EVENTS_FILE}" ]]; then
     printf '_No `gate_events.jsonl` ledger to audit._\n'
@@ -698,7 +1043,7 @@ if [[ "${FIELD_SHAPE_AUDIT}" -eq 1 ]]; then
   if [[ "${MODE}" == "all" ]]; then
     cp "${GATE_EVENTS_FILE}" "${_audit_window_jsonl}"
   elif [[ "${MODE}" == "last" ]]; then
-    tail -n 200 "${GATE_EVENTS_FILE}" > "${_audit_window_jsonl}"
+    filter_by_window "${GATE_EVENTS_FILE}" '.ts' > "${_audit_window_jsonl}"
   else
     jq -c --argjson cutoff "${cutoff_ts}" 'select((.ts // 0) >= $cutoff)' \
       "${GATE_EVENTS_FILE}" > "${_audit_window_jsonl}" 2>/dev/null || true
@@ -836,24 +1181,10 @@ fi
 
 printf '# Harness report — %s\n\n' "${window_label}"
 printf '_Generated %s. Source: `~/.claude/quality-pack/`._\n\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')"
-
-# ----------------------------------------------------------------------
-# Helper: filter JSONL rows by a timestamp field within the cutoff window.
-# Reads file path from $1, ts field jq path from $2 (e.g. '.start_ts' or '.ts').
-# Hoisted above the Headline pre-pass (v1.36.x W2 F-008) so the headline
-# heuristics can call it before the detail sections.
-filter_by_window() {
-  local file="$1" ts_path="$2"
-  [[ -f "${file}" ]] || return 0
-  if [[ "${MODE}" == "all" ]]; then
-    cat "${file}"
-  elif [[ "${MODE}" == "last" ]]; then
-    tail -n 1 "${file}"
-  else
-    jq -c --argjson cutoff "${cutoff_ts}" \
-      "select((${ts_path} // 0 | tonumber) >= \$cutoff)" "${file}" 2>/dev/null || true
-  fi
-}
+if [[ "${MODE}" == "last" ]] && [[ "${_last_approximate_ledger_rows}" -gt 0 ]]; then
+  printf '_Scope note: %s legacy auxiliary row(s) lacked a session identity and were included approximately %s._\n\n' \
+    "${_last_approximate_ledger_rows}" "${_last_approximation_label}"
+fi
 
 # Interpretation footer accumulators (v1.17.0). Each section below
 # updates these as it computes its own metrics; the bottom "Patterns to
@@ -930,12 +1261,11 @@ fi
 # ledger so we capture corrections even from sessions that don't have a
 # session_summary row yet — recently-finished sessions sweep on a 24h
 # cadence, but /ulw-correct writes immediately).
-if [[ -f "${HOME}/.claude/quality-pack/classifier_misfires.jsonl" ]]; then
-  if [[ "${MODE}" == "all" ]]; then
-    _hl_corrected_misfires="$(jq -c 'select(.corrected_by_user == true)' "${HOME}/.claude/quality-pack/classifier_misfires.jsonl" 2>/dev/null | grep -c . || echo 0)"
-  else
-    _hl_corrected_misfires="$(jq -c --argjson cutoff "${cutoff_ts}" 'select((.ts // 0 | tonumber) >= $cutoff and .corrected_by_user == true)' "${HOME}/.claude/quality-pack/classifier_misfires.jsonl" 2>/dev/null | grep -c . || echo 0)"
-  fi
+_hl_misfire_rows="$(filter_by_window "${MISFIRES_FILE}" '.ts' 2>/dev/null || true)"
+if [[ -n "${_hl_misfire_rows}" ]]; then
+  _hl_corrected_misfires="$(printf '%s\n' "${_hl_misfire_rows}" \
+    | jq -c 'select(.corrected_by_user == true)' 2>/dev/null \
+    | grep -c . || true)"
   _hl_corrected_misfires="${_hl_corrected_misfires//[!0-9]/}"
   _hl_corrected_misfires="${_hl_corrected_misfires:-0}"
 fi
@@ -960,12 +1290,8 @@ fi
 
 # H3: classifier misfire trend.
 _hl_misfires=0
-if [[ -f "${HOME}/.claude/quality-pack/classifier_misfires.jsonl" ]]; then
-  if [[ "${MODE}" == "all" ]]; then
-    _hl_misfires="$(grep -c . "${HOME}/.claude/quality-pack/classifier_misfires.jsonl" 2>/dev/null || echo 0)"
-  else
-    _hl_misfires="$(jq -c --argjson cutoff "${cutoff_ts}" 'select((.ts // 0 | tonumber) >= $cutoff)' "${HOME}/.claude/quality-pack/classifier_misfires.jsonl" 2>/dev/null | grep -c . || echo 0)"
-  fi
+if [[ -n "${_hl_misfire_rows}" ]]; then
+  _hl_misfires="$(printf '%s\n' "${_hl_misfire_rows}" | grep -c . || true)"
   _hl_misfires="${_hl_misfires//[!0-9]/}"
   _hl_misfires="${_hl_misfires:-0}"
 fi
@@ -990,12 +1316,10 @@ fi
 # report. A single hit is usually benign (prose-only caveats); a sustained
 # count points at an extractor-format drift worth a targeted fix.
 _hl_capture_miss=0
-if [[ -f "${GATE_EVENTS_FILE}" ]] && [[ -s "${GATE_EVENTS_FILE}" ]]; then
-  if [[ "${MODE}" == "all" ]]; then
-    _hl_capture_miss="$(jq -s 'map(select(.event == "zero_capture")) | length' "${GATE_EVENTS_FILE}" 2>/dev/null || echo 0)"
-  else
-    _hl_capture_miss="$(jq -s --argjson cutoff "${cutoff_ts}" 'map(select((.ts // 0) >= $cutoff and .event == "zero_capture")) | length' "${GATE_EVENTS_FILE}" 2>/dev/null || echo 0)"
-  fi
+_hl_gate_event_rows="$(filter_by_window "${GATE_EVENTS_FILE}" '.ts' 2>/dev/null || true)"
+if [[ -n "${_hl_gate_event_rows}" ]]; then
+  _hl_capture_miss="$(printf '%s\n' "${_hl_gate_event_rows}" \
+    | jq -s 'map(select(.event == "zero_capture")) | length' 2>/dev/null || echo 0)"
   _hl_capture_miss="${_hl_capture_miss//[!0-9]/}"
   _hl_capture_miss="${_hl_capture_miss:-0}"
 fi
@@ -1244,7 +1568,35 @@ fi
 # ----------------------------------------------------------------------
 # Section 4b: Gate event outcomes (per-event attribution, v1.14.0)
 printf '## Gate event outcomes\n\n'
-gate_event_rows="$(filter_by_window "${GATE_EVENTS_FILE}" '.ts')"
+# Gate names remain printable custom diagnostics in the full report, but C0
+# controls/DEL are never useful label content and can drive terminal OSC/ANSI
+# sequences. Sanitize the parsed JSON rows once so every downstream gate table
+# and heuristic inherits the same terminal-safe labels.
+gate_event_rows="$(filter_by_window "${GATE_EVENTS_FILE}" '.ts' \
+  | jq -Rc '
+      def safe_diag_label:
+        if type == "string" then gsub("[\u0000-\u001f\u007f]"; "") else "unknown" end;
+      fromjson? | select(type == "object")
+      | .gate = ((.gate // "unknown") | safe_diag_label)
+      | if ((.details // null) | type) == "object" and (.details | has("skipped_gate"))
+        then .details.skipped_gate = (.details.skipped_gate | safe_diag_label)
+        else .
+        end
+    ' 2>/dev/null || true)"
+# Exact reviewer-waste attribution only needs dispatches present in stale
+# gate events. Pass that small key set into the timing rollup so reports do
+# not expand every retained per-session ID bucket merely to discard it.
+_report_dispatch_filter_keys='[]'
+if [[ -n "${gate_event_rows}" ]]; then
+  _report_dispatch_filter_keys="$(printf '%s\n' "${gate_event_rows}" | jq -sc '
+    [.[] | select(.gate == "reviewer" and .event == "stale-result-rejected")
+      | select(((((.session_id // .session) // "") | tostring) != ""))
+      | select((((.details.agent_id // "") | tostring) != ""))
+      | (((((.session_id // .session) // "") | tostring)
+          + "::" + (.details.agent_id | tostring)))]
+    | unique
+  ' 2>/dev/null || printf '[]')"
+fi
 # v1.47 (data-lens #5): live implementation of the documented reader-side
 # legacy-row guard `(._v // 0)` from CONTRIBUTING.md "Cross-session schema
 # versioning" — every row is currently _v:1, so a zero count is the
@@ -1460,11 +1812,11 @@ if ! is_time_tracking_enabled || ! is_token_tracking_enabled; then
   printf '_Token tracking is disabled (`time_tracking=off` or `token_tracking=off`), so token usage is unavailable._\n\n'
 else
   if [[ -z "${_xs_rollup_cache}" ]]; then
-    _xs_rollup_cache="$(timing_xs_aggregate "${cutoff_ts}")"
+    _xs_rollup_cache="$(report_timing_xs_aggregate)"
   fi
   _tok_headline="$(timing_token_line "${_xs_rollup_cache}" 2>/dev/null || true)"
   if [[ -z "${_tok_headline}" ]]; then
-    printf '_No token-usage rows in window. Populates as sessions finalize at Stop (requires `token_tracking=on`)._\n\n'
+    printf '_No token-usage observations in window. Populates as sessions finalize at Stop (requires `token_tracking=on`)._\n\n'
   else
     printf '_Window total: %s_\n\n' "${_tok_headline}"
     _tk_vals="$(jq -r '[
@@ -1483,6 +1835,41 @@ else
       "$(timing_fmt_tokens "${_tai:-0}")" "$(timing_fmt_tokens "${_tao:-0}")" \
       "$(timing_fmt_tokens "${_tacr:-0}")" "$(timing_fmt_tokens "${_tacw:-0}")"
     printf '\n_Cache read = context served from the prompt cache (cheapest); cache write = fresh context cached for reuse. Token counts only — see the statusline / `ccusage` for dollar cost._\n\n'
+
+    # Current Claude Code stores sidechains in nested transcript files. The
+    # capture path retains their attributionAgent and model so economics can
+    # be optimized without guessing which role/model created the spend.
+    for _token_dim in role model; do
+      if [[ "${_token_dim}" == "role" ]]; then
+        _token_key="agent_tokens_by_role"; _token_label="Sub-agent role"
+      else
+        _token_key="agent_tokens_by_model"; _token_label="Sub-agent model"
+      fi
+      _token_dim_rows="$(jq -r --arg k "${_token_key}" '
+        (.[$k] // {}) | to_entries
+        | map(. + {fresh: ((.value.input // 0) + (.value.output // 0) + (.value.cache_creation // 0))})
+        | sort_by(-.fresh) | .[0:10] | .[]
+        | [.key, (.value.input // 0), (.value.output // 0),
+           (.value.cache_read // 0), (.value.cache_creation // 0)] | @tsv
+      ' <<<"${_xs_rollup_cache}" 2>/dev/null || true)"
+      if [[ -n "${_token_dim_rows}" ]]; then
+        printf '**%s breakdown** _(top 10 by direct input + output + cache write)_\n\n' "${_token_label}"
+        printf '| %s | Input | Output | Cache read | Cache write |\n' "${_token_label}"
+        printf '|---|---:|---:|---:|---:|\n'
+        while IFS=$'\t' read -r _td_name _td_in _td_out _td_read _td_write; do
+          [[ -z "${_td_name}" ]] && continue
+          # Legacy/imported ledgers predate capture-side key sanitization.
+          # Keep a hostile custom role/model from breaking the Markdown table
+          # or growing one row without bound.
+          _td_name="$(report_safe_dynamic_label "${_td_name}")"
+          printf '| `%s` | %s | %s | %s | %s |\n' \
+            "${_td_name}" "$(timing_fmt_tokens "${_td_in:-0}")" \
+            "$(timing_fmt_tokens "${_td_out:-0}")" "$(timing_fmt_tokens "${_td_read:-0}")" \
+            "$(timing_fmt_tokens "${_td_write:-0}")"
+        done <<<"${_token_dim_rows}"
+        printf '\n'
+      fi
+    done
   fi
 fi
 
@@ -1491,7 +1878,7 @@ if ! is_time_tracking_enabled; then
   printf '_Time tracking is disabled (`time_tracking=off`), so directive footprint is unavailable._\n\n'
 else
   if [[ -z "${_xs_rollup_cache}" ]]; then
-    _xs_rollup_cache="$(timing_xs_aggregate "${cutoff_ts}")"
+    _xs_rollup_cache="$(report_timing_xs_aggregate)"
   fi
   _directive_total_chars="$(jq -r '.directive_total_chars // 0' <<<"${_xs_rollup_cache}" 2>/dev/null)"
   _directive_total_fires="$(jq -r '.directive_count // 0' <<<"${_xs_rollup_cache}" 2>/dev/null)"
@@ -1524,6 +1911,7 @@ else
     ' <<<"${_xs_rollup_cache}" 2>/dev/null \
       | while IFS=$'\t' read -r _d_name _d_fires _d_chars _d_avg; do
           [[ -z "${_d_name}" ]] && continue
+          _d_name="$(report_safe_dynamic_label "${_d_name}")"
           printf '| `%s` | %s | %s | %s |\n' "${_d_name}" "${_d_fires}" "${_d_chars}" "${_d_avg}"
         done
     printf '\n'
@@ -1758,8 +2146,9 @@ fi
 # can answer "is v2 catching real misses, or chiming on noise?"
 #
 # The aggregation splits prompt-side blockers (v1) from inferred-side
-# blockers (v2) and groups by inferred rule ID (R1/R2/R3a/R3b/R4/R5)
-# so each inference rule's value is observable.
+# blockers (v2) and groups by active inferred rule ID (R2/R3a/R3b/R4/R5)
+# so each inference rule's value is observable. Legacy R1 rows remain readable
+# for longitudinal reports but are no longer emitted by current derivation.
 printf '## Delivery contract fires\n\n'
 delivery_contract_rows="$(printf '%s\n' "${gate_event_rows}" | jq -c \
     'select(.gate == "delivery-contract" and .event == "block")' 2>/dev/null || true)"
@@ -1774,8 +2163,8 @@ else
   printf '_Window total: %s delivery-contract block(s) — %s prompt-only (v1) + %s inferred (v2)._\n\n' \
     "${_dc_total}" "${_dc_prompt_only}" "${_dc_with_inferred}"
 
-  # Per-rule fire counts. inferred_rules is a CSV ("R1_missing_tests,
-  # R3a_conf_no_parser") so we split each row into one record per
+  # Per-rule fire counts. inferred_rules is a CSV (for example,
+  # "R3a_conf_no_parser,R5_code_no_docs") so we split each row into one record per
   # rule before grouping.
   printf '| Inference rule | Fires | Avg blocker count |\n'
   printf '|---|---:|---:|\n'
@@ -1994,6 +2383,8 @@ pending_ud_rows=""
 if [[ -d "${state_root_for_decisions}" ]]; then
   while IFS= read -r findings_path; do
     [[ -f "${findings_path}" ]] || continue
+    session_state_is_resume_transferred \
+      "$(dirname "${findings_path}")/session_state.json" && continue
     session_id_for_row="$(basename "$(dirname "${findings_path}")")"
     rows="$(jq -c --arg sid "${session_id_for_row}" \
       '.findings[]
@@ -2006,7 +2397,8 @@ if [[ -d "${state_root_for_decisions}" ]]; then
     if [[ -n "${rows}" ]]; then
       pending_ud_rows="${pending_ud_rows:+${pending_ud_rows}$'\n'}${rows}"
     fi
-  done < <(find "${state_root_for_decisions}" -name 'findings.json' -type f 2>/dev/null)
+  done < <(find "${state_root_for_decisions}" -mindepth 2 -maxdepth 2 \
+    -name 'findings.json' -type f 2>/dev/null)
   if [[ -n "${pending_ud_rows}" ]]; then
     pending_ud_count="$(printf '%s\n' "${pending_ud_rows}" | wc -l | tr -d '[:space:]')"
   fi
@@ -2045,6 +2437,8 @@ if [[ -d "${state_root_for_decisions}" ]]; then
   _aging_now="$(date +%s)"
   while IFS= read -r findings_path; do
     [[ -f "${findings_path}" ]] || continue
+    session_state_is_resume_transferred \
+      "$(dirname "${findings_path}")/session_state.json" && continue
     # Per-file: for each pending/in_progress finding, compute age in days
     # and bucket it. jq returns a JSON object {b0:N,b1:N,b3:N,b7:N,oldest:N,total:N}
     # which we sum across files in shell.
@@ -2076,7 +2470,8 @@ if [[ -d "${state_root_for_decisions}" ]]; then
     if (( _oldest > aging_oldest_days )); then
       aging_oldest_days=${_oldest}
     fi
-  done < <(find "${state_root_for_decisions}" -name 'findings.json' -type f 2>/dev/null)
+  done < <(find "${state_root_for_decisions}" -mindepth 2 -maxdepth 2 \
+    -name 'findings.json' -type f 2>/dev/null)
 fi
 
 if [[ "${aging_total}" -eq 0 ]]; then
@@ -2097,13 +2492,131 @@ fi
 # ----------------------------------------------------------------------
 # Section 5: Reviewer activity (top by invocations)
 printf '## Reviewer activity\n\n'
+# Causality-rejected returns are paid work that could not contribute evidence.
+# Current Claude Code SubagentStop payloads carry a native agent ID. Timing
+# capture buckets each nested transcript by that same ID, namespaced by session
+# in the cross-session rollup, so native-bound stale runs can be joined exactly.
+# Legacy/update-in-place sessions without native binding retain the deliberately
+# conservative affected-role upper bound rather than inventing precision.
+if [[ -z "${_xs_rollup_cache}" ]]; then
+  _xs_rollup_cache="$(report_timing_xs_aggregate 2>/dev/null || printf '{}')"
+fi
+_timing_wasted_review_runs="$(jq -r '.stale_reviewer_count // 0' <<<"${_xs_rollup_cache}" 2>/dev/null || printf '0')"
+[[ "${_timing_wasted_review_runs}" =~ ^[0-9]+$ ]] || _timing_wasted_review_runs=0
+_wasted_review_runs=0
+_wasted_count_source="gate-events"
+_freeze_blocks=0
+_wasted_roles='[]'
+_wasted_dispatch_keys='[]'
+_native_wasted_runs=0
+_legacy_wasted_runs=0
+if [[ -n "${gate_event_rows:-}" ]]; then
+  _freeze_blocks="$(printf '%s\n' "${gate_event_rows}" | jq -sc '[.[] | select(.gate == "review-mutation-freeze" and .event == "block")] | length' 2>/dev/null || printf '0')"
+  _wasted_roles="$(printf '%s\n' "${gate_event_rows}" | jq -sc '
+    [.[] | select(.gate == "reviewer" and .event == "stale-result-rejected")
+      | (.details.type // "unknown")
+      | if . == "standard" then "quality-reviewer"
+        elif . == "excellence" then "excellence-reviewer"
+        elif . == "prose" then "editor-critic"
+        elif . == "stress_test" then "metis"
+        elif . == "traceability" then "briefing-analyst"
+        elif . == "design_quality" then "design-reviewer"
+        elif . == "release" then "release-reviewer"
+        else . end]
+    | unique
+  ' 2>/dev/null || printf '[]')"
+  _wasted_dispatch_keys="${_report_dispatch_filter_keys}"
+  _native_wasted_runs="$(jq -r 'length' <<<"${_wasted_dispatch_keys}" 2>/dev/null || printf '0')"
+  _legacy_wasted_runs="$(printf '%s\n' "${gate_event_rows}" | jq -sc '
+    [.[] | select(.gate == "reviewer" and .event == "stale-result-rejected")
+      | select(
+          ((((.session_id // .session) // "") | tostring) == "")
+          or (((.details.agent_id // "") | tostring) == "")
+        )]
+    | length
+  ' 2>/dev/null || printf '0')"
+fi
+[[ "${_freeze_blocks}" =~ ^[0-9]+$ ]] || _freeze_blocks=0
+[[ "${_native_wasted_runs}" =~ ^[0-9]+$ ]] || _native_wasted_runs=0
+[[ "${_legacy_wasted_runs}" =~ ^[0-9]+$ ]] || _legacy_wasted_runs=0
+_wasted_review_runs=$(( _native_wasted_runs + _legacy_wasted_runs ))
+# Old timing summaries predate the detailed gate-event ledger. Preserve their
+# count as an explicitly labelled fallback only when no stale event survives
+# in this report window; never combine two independently retained ledgers.
+if (( _wasted_review_runs == 0 && _timing_wasted_review_runs > 0 )); then
+  _wasted_review_runs=${_timing_wasted_review_runs}
+  _legacy_wasted_runs=${_timing_wasted_review_runs}
+  _wasted_count_source="timing-summary-fallback"
+fi
+if (( _wasted_review_runs > 0 || _freeze_blocks > 0 )); then
+  printf '**Review-batch economics**\n\n'
+  if [[ "${_wasted_count_source}" == "timing-summary-fallback" ]]; then
+    printf -- '- Wasted review runs rejected as stale: **%s** _(timing-summary fallback; per-run gate details unavailable)_\n' \
+      "${_wasted_review_runs}"
+  else
+    printf -- '- Wasted review runs rejected as stale: **%s**\n' "${_wasted_review_runs}"
+  fi
+  printf -- '- Mutations blocked while reviewers were in flight: **%s** _(avoided stale-review retries)_\n' "${_freeze_blocks}"
+  _exact_waste_stats="$(jq -c --argjson keys "${_wasted_dispatch_keys}" '
+    def n: tonumber? // 0;
+    (.agent_tokens_by_dispatch // {}) as $b
+    | reduce $keys[] as $key ({matched:0,tokens:0};
+        if ($b | has($key)) then
+          .matched += 1
+          | .tokens += (($b[$key].input | n)
+                        + ($b[$key].output | n)
+                        + ($b[$key].cache_read | n)
+                        + ($b[$key].cache_creation | n))
+        else . end)
+  ' <<<"${_xs_rollup_cache}" 2>/dev/null || printf '{"matched":0,"tokens":0}')"
+  _matched_native_runs="$(jq -r '.matched // 0' <<<"${_exact_waste_stats}" 2>/dev/null || printf '0')"
+  _exact_wasted_tokens="$(jq -r '.tokens // 0' <<<"${_exact_waste_stats}" 2>/dev/null || printf '0')"
+  [[ "${_matched_native_runs}" =~ ^[0-9]+$ ]] || _matched_native_runs=0
+  [[ "${_exact_wasted_tokens}" =~ ^[0-9]+$ ]] || _exact_wasted_tokens=0
+  _unmatched_native_runs=$(( _native_wasted_runs - _matched_native_runs ))
+  (( _unmatched_native_runs < 0 )) && _unmatched_native_runs=0
+  if (( _native_wasted_runs > 0 )); then
+    if (( _matched_native_runs > 0 )); then
+      printf -- '- Exact wasted reviewer tokens: **%s** across **%s** native-bound stale run(s).\n' \
+        "$(timing_fmt_tokens "${_exact_wasted_tokens}")" "${_matched_native_runs}"
+    fi
+    if (( _unmatched_native_runs > 0 )); then
+      printf -- '- Native-bound stale runs: **%s**; exact token telemetry was unavailable for those transcript(s).\n' \
+        "${_unmatched_native_runs}"
+    fi
+  fi
+  _wasted_role_token_upper="$(jq -r --argjson roles "${_wasted_roles}" '
+    (.agent_tokens_by_role // {}) as $b
+    | [$roles[] as $r | ($b[$r] // {})
+       | (.input // 0) + (.output // 0) + (.cache_read // 0) + (.cache_creation // 0)]
+    | add // 0
+  ' <<<"${_xs_rollup_cache}" 2>/dev/null || printf '0')"
+  [[ "${_wasted_role_token_upper}" =~ ^[0-9]+$ ]] || _wasted_role_token_upper=0
+  if (( _legacy_wasted_runs > 0 && _wasted_role_token_upper > 0 )); then
+    printf -- '- **%s** legacy/unbound stale run(s) remain token-unattributed; affected roles consumed **%s** tokens in this window _(upper bound; includes successful runs)._\n' \
+      "${_legacy_wasted_runs}" \
+      "$(timing_fmt_tokens "${_wasted_role_token_upper}")"
+  elif (( _legacy_wasted_runs > 0 )); then
+    printf -- '- **%s** legacy/unbound stale run(s) remain token-unattributed; run count remains exact.\n' \
+      "${_legacy_wasted_runs}"
+  fi
+  printf '\n'
+fi
 if [[ -f "${AGENT_METRICS_FILE}" ]]; then
-  has_data="$(jq 'if type == "object" then ((.agents // {}) | length) > 0 else false end' "${AGENT_METRICS_FILE}" 2>/dev/null || echo false)"
+  has_data="$(jq '
+    def agents:
+      ((with_entries(select((.key | startswith("_") | not) and .key != "agents" and (.value | type) == "object")))
+       + (.agents // {}));
+    if type == "object" then (agents | length) > 0 else false end
+  ' "${AGENT_METRICS_FILE}" 2>/dev/null || echo false)"
   if [[ "${has_data}" == "true" ]]; then
     printf '| Reviewer | Invocations | Clean | Findings | Find rate |\n'
     printf '|---|---:|---:|---:|---:|\n'
     jq -r '
-      .agents // {} | to_entries
+      def agents:
+        ((with_entries(select((.key | startswith("_") | not) and .key != "agents" and (.value | type) == "object")))
+         + (.agents // {}));
+      agents | to_entries
       | map({
           name: .key,
           inv: (.value.invocations // 0),
@@ -2119,7 +2632,10 @@ if [[ -f "${AGENT_METRICS_FILE}" ]]; then
     printf '\n'
     # Aggregate find rate across all reviewers — used by interpretation footer.
     _intp_reviewer_rate="$(jq -r '
-      .agents // {} | to_entries
+      def agents:
+        ((with_entries(select((.key | startswith("_") | not) and .key != "agents" and (.value | type) == "object")))
+         + (.agents // {}));
+      agents | to_entries
       | map({inv: (.value.invocations // 0), finds: (.value.finding_verdicts // 0)})
       | map(select(.inv > 0))
       | (map(.finds) | add // 0) as $f
@@ -2138,7 +2654,7 @@ if [[ -f "${AGENT_METRICS_FILE}" ]]; then
     # zero-find --deep calls. Time-per-invocation high AND find rate
     # low is the candidate-for-balanced/minimal pattern.
     if [[ -z "${_xs_rollup_cache}" ]]; then
-      _xs_rollup_cache="$(timing_xs_aggregate "${cutoff_ts}" 2>/dev/null || printf '{}')"
+      _xs_rollup_cache="$(report_timing_xs_aggregate 2>/dev/null || printf '{}')"
     fi
     # v1.40.x data-lens F-006: do NOT gate on _roi_breakdown being non-empty.
     # _xs_rollup_cache.agent_breakdown is window-scoped (paired Agent timing
@@ -2154,7 +2670,10 @@ if [[ -f "${AGENT_METRICS_FILE}" ]]; then
     printf '| Reviewer | Inv | Finds | Find rate | Total time | Avg/inv |\n'
     printf '|---|---:|---:|---:|---:|---:|\n'
     jq -r --argjson breakdown "${_roi_breakdown}" '
-      .agents // {} | to_entries
+      def agents:
+        ((with_entries(select((.key | startswith("_") | not) and .key != "agents" and (.value | type) == "object")))
+         + (.agents // {}));
+      agents | to_entries
       | map({
           name: .key,
           inv: (.value.invocations // 0),
@@ -2177,10 +2696,11 @@ if [[ -f "${AGENT_METRICS_FILE}" ]]; then
     ' "${AGENT_METRICS_FILE}" 2>/dev/null \
       | while IFS=$'\t' read -r _roi_name _roi_inv _roi_finds _roi_rate _roi_total _roi_avg; do
           [[ -z "${_roi_name}" ]] && continue
+          _roi_name="$(report_safe_dynamic_label "${_roi_name}")"
           printf '| `%s` | %s | %s | %s | %s | %s |\n' \
             "${_roi_name}" "${_roi_inv}" "${_roi_finds}" "${_roi_rate}" "${_roi_total}" "${_roi_avg}"
         done
-    printf '\n_Sorted by total time when window timing is available, else by invocations. A reviewer with high `Avg/inv` and low `Find rate` is a candidate for `reviewer_budget=balanced` or removal — runs often, finds little. A reviewer with low cost and high find rate is paying for itself even at low invocation count._\n\n'
+    printf '\n_Sorted by total time when window timing is available, else by invocations. A reviewer with high `Avg/inv` and low `Find rate` is a candidate for a routing/overlap review; a low-cost reviewer with a high confirmed-find rate is likely paying for itself._\n\n'
     printf '_Note: invocations and find rate are LIFETIME counts from `agent-metrics.json`; total time is WINDOW-scoped from the timing rollup and shows `—` when no paired Agent timing rows exist for the window (e.g., `time_tracking=off`, short window, or sessions whose timing flush did not run). Find rate is directional, not within-window precision._\n\n'
   else
     printf '_No reviewer activity recorded yet._\n\n'
@@ -2218,12 +2738,11 @@ printf '## Time spent across sessions\n\n'
 if ! is_time_tracking_enabled; then
   printf '_Time tracking is disabled (`time_tracking=off`)._\n\n'
 else
-  _xs_time_log="$(timing_xs_log_path)"
-  if [[ ! -f "${_xs_time_log}" ]] || [[ ! -s "${_xs_time_log}" ]]; then
+  if [[ ! -f "${TIMING_FILE}" ]] || [[ ! -s "${TIMING_FILE}" ]]; then
     printf '_No cross-session timing rows yet._\n\n'
   else
     if [[ -z "${_xs_rollup_cache}" ]]; then
-      _xs_rollup_cache="$(timing_xs_aggregate "${cutoff_ts}")"
+      _xs_rollup_cache="$(report_timing_xs_aggregate)"
     fi
     _xs_rollup="${_xs_rollup_cache}"
     _xs_sessions="$(jq -r '.sessions // 0' <<<"${_xs_rollup}" 2>/dev/null)"
@@ -2262,11 +2781,15 @@ else
         | to_entries | sort_by(-.value)
         | .[0:10]
         | .[]
-        | "\(.value)\t\(.key)"
+        # @tsv escapes embedded tabs/newlines before the shell splits rows.
+        # A legacy/imported key must never amplify one map entry into many
+        # rendered lines before report_safe_dynamic_label() sees it.
+        | [.value, .key] | @tsv
       ' <<<"${_xs_rollup}" 2>/dev/null || true)"
       if [[ -n "${_xs_top_agents}" ]]; then
         while IFS=$'\t' read -r _xs_secs _xs_name; do
           [[ -z "${_xs_name}" ]] && continue
+          _xs_name="$(report_safe_dynamic_label "${_xs_name}")"
           printf -- '- `%s` — %s\n' "${_xs_name}" "$(timing_fmt_secs "${_xs_secs}")"
         done <<<"${_xs_top_agents}"
       else
@@ -2280,11 +2803,12 @@ else
         | to_entries | sort_by(-.value)
         | .[0:10]
         | .[]
-        | "\(.value)\t\(.key)"
+        | [.value, .key] | @tsv
       ' <<<"${_xs_rollup}" 2>/dev/null || true)"
       if [[ -n "${_xs_top_tools}" ]]; then
         while IFS=$'\t' read -r _xs_secs _xs_name; do
           [[ -z "${_xs_name}" ]] && continue
+          _xs_name="$(report_safe_dynamic_label "${_xs_name}")"
           printf -- '- `%s` — %s\n' "${_xs_name}" "$(timing_fmt_secs "${_xs_secs}")"
         done <<<"${_xs_top_tools}"
       else

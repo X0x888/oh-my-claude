@@ -1294,9 +1294,14 @@ sim_review "sw4" "Clean.
 VERDICT: CLEAN"
 sleep 1
 sim_edit "sw4" "/src/b.ts"
-output="$(sim_stop "sw4")"
+cat >"${TEST_HOME}/.claude/quality-pack/state/sw4/review_history.jsonl" <<'EOF'
+{"ts":1,"objective_prompt_ts":0,"reviewer_type":"standard","agent_type":"quality-reviewer","verdict":"FINDINGS","revision":1,"findings":[{"claim":"Prior code defect"}]}
+EOF
+output="$(OMC_GATE_LEVEL=basic sim_stop "sw4")"
 assert_contains "seq-W4: code edit after review blocks" '"decision":"block"' "${output}"
 assert_contains "seq-W4: mentions quality-reviewer" "quality-reviewer" "${output}"
+assert_contains "seq-W4: quality re-review receives its anchor contract" \
+  "REVIEW HISTORY:" "${output}"
 teardown_test
 
 # Sequence W5: Doc edit after code review does not require code re-review
@@ -1308,10 +1313,17 @@ sim_review "sw5" "Clean.
 VERDICT: CLEAN"
 sleep 1
 sim_edit_doc "sw5" "/docs/notes.md"
-output="$(sim_stop "sw5")"
+cat >"${TEST_HOME}/.claude/quality-pack/state/sw5/review_history.jsonl" <<'EOF'
+{"ts":1,"objective_prompt_ts":0,"reviewer_type":"prose","agent_type":"editor-critic","verdict":"FINDINGS","revision":1,"findings":[{"claim":"Prior prose concern"}]}
+EOF
+output="$(OMC_GATE_LEVEL=basic sim_stop "sw5")"
 # Should still block (missing doc review), but for editor-critic not quality-reviewer
 assert_contains "seq-W5: doc edit after code review blocks" '"decision":"block"' "${output}"
 assert_contains "seq-W5: routes to editor-critic" "editor-critic" "${output}"
+assert_not_contains "seq-W5: prose reviewer is not given unsupported anchor mode" \
+  "REVIEW HISTORY:" "${output}"
+assert_not_contains "seq-W5: editor-critic contract remains prose-native" \
+  "review_history.jsonl" "$(cat "${REPO_ROOT}/bundle/dot-claude/agents/editor-critic.md")"
 teardown_test
 
 
@@ -1554,6 +1566,8 @@ output="$(sim_stop "su6")"
 # Should block for prose only, not for bug_hunt/code_quality/etc
 assert_contains "seq-U6: doc edit blocks for prose" '"decision":"block"' "${output}"
 assert_contains "seq-U6: names editor-critic" "editor-critic" "${output}"
+assert_contains "seq-U6: batches completeness owner in same block" "excellence-reviewer" "${output}"
+assert_contains "seq-U6: instructs one frozen-diff batch" "one frozen diff" "${output}"
 # Metis is plan-phase only and must not appear in post-edit coverage.
 if [[ "${output}" == *"run \`metis\`"* ]]; then
   printf '  FAIL: seq-U6: should not require metis for post-edit coverage\n' >&2
@@ -1562,11 +1576,9 @@ else
   pass=$((pass + 1))
 fi
 sim_editor_critic "su6"
-output2="$(sim_stop "su6")"
-assert_contains "seq-U6: doc edit also invalidates completeness" "excellence-reviewer" "${output2}"
 sim_excellence_review "su6"
-output3="$(sim_stop "su6" "$(structured_closeout "su6" "Updated source and documentation with fresh cross-surface reviews.")")"
-assert_empty "seq-U6: stop allowed after fresh prose + completeness reviews" "${output3}"
+output2="$(sim_stop "su6" "$(structured_closeout "su6" "Updated source and documentation with fresh cross-surface reviews.")")"
+assert_empty "seq-U6: one retry suffices after batched prose + completeness reviews" "${output2}"
 teardown_test
 
 # Sequence U7: Adaptive coverage gate exhaustion at 3 blocks
@@ -1671,28 +1683,29 @@ teardown_test
 # -------------------------------------------------------
 printf '\nDelivery-contract inferred rules:\n'
 
-# R1 carries a colon-bearing detail tag `(R1: ...)`. Stop must emit a normal
-# block instead of letting tag extraction's grep pipeline terminate the hook.
+# Retired R1 must stay retired end to end: two implementation edits with fresh
+# proof must not manufacture a test-file obligation merely from file count.
+# The independent verification and closeout gates remain in force.
 setup_test
 init_session "sdc-r1"
 sim_edit "sdc-r1" "/src/r1-a.ts"
 sim_edit "sdc-r1" "/src/r1-b.ts"
 sim_verify "sdc-r1" "npm test" "Tests: 5 passed"
-# Keep verification valid for the generic gate while making it non-test proof
-# for inferred R1, which requires full/targeted test scope.
+# Keep verification valid for the generic gate while retaining the legacy
+# scope shape that used to trigger inferred R1.
 state_file="${TEST_HOME}/.claude/quality-pack/state/sdc-r1/session_state.json"
 jq '.last_verify_scope="lint"' "${state_file}" >"${state_file}.tmp" \
   && mv "${state_file}.tmp" "${state_file}"
 sim_review "sdc-r1" "Clean.
 VERDICT: CLEAN"
-out="$(sim_stop "sdc-r1")"
-assert_contains "delivery R1: stop emits a block" '"decision":"block"' "${out}"
-assert_contains "delivery R1: block names R1" "R1:" "${out}"
-assert_contains "delivery R1: block maps tag to tests" "tests" "${out}"
+out="$(sim_stop "sdc-r1" "$(structured_closeout "sdc-r1" "Updated both implementation files and verified the behavior.")")"
+assert_empty "delivery retired R1: no inferred test-file block" "${out}"
+assert_not_contains "delivery retired R1: state never restores rule" \
+  "R1_missing_tests" "$(read_st "sdc-r1" "inferred_contract_rules")"
 teardown_test
 
-# A test edit satisfies R1 while four implementation files deliberately leave
-# R5 active. Its `(R5: ...)` detail tag must take the same safe parser path.
+# Four implementation files deliberately leave R5 active. Its `(R5: ...)`
+# detail tag exercises the colon-bearing safe parser path.
 setup_test
 init_session "sdc-r5"
 sim_edit "sdc-r5" "/src/r5-a.ts"
@@ -2057,10 +2070,14 @@ init_session "cg3" "coding"
 sim_pre_agent_dispatch "cg3" "quality-researcher" "check repo conventions"
 sim_pre_agent_dispatch "cg3" "librarian" "verify API docs"
 pending_file="${TEST_HOME}/.claude/quality-pack/state/cg3/pending_agents.jsonl"
-if [[ -f "${pending_file}" ]] && [[ "$(wc -l <"${pending_file}")" -eq 2 ]]; then
+printf '%s\n' \
+  '{"ts":1,"agent_type":"abandoned-old","description":"must stay hidden","review_dispatch_abandoned":true}' \
+  >>"${pending_file}"
+if [[ -f "${pending_file}" ]] \
+    && [[ "$(jq -s '[.[] | select((.review_dispatch_abandoned // false) != true)] | length' "${pending_file}")" -eq 2 ]]; then
   pass=$((pass + 1))
 else
-  printf '  FAIL: gap3: pending_agents.jsonl should have 2 entries\n' >&2
+  printf '  FAIL: gap3: pending_agents.jsonl should have 2 live entries\n' >&2
   fail=$((fail + 1))
 fi
 # Snapshot should list both pending agents
@@ -2069,10 +2086,12 @@ snapshot="$(cat "${TEST_HOME}/.claude/quality-pack/state/cg3/precompact_snapshot
 assert_contains "gap3: snapshot lists quality-researcher" "quality-researcher" "${snapshot}"
 assert_contains "gap3: snapshot lists librarian" "librarian" "${snapshot}"
 assert_contains "gap3: snapshot section header" "Pending Specialists" "${snapshot}"
+assert_not_contains "gap3: snapshot hides abandoned tombstones" "abandoned-old" "${snapshot}"
 # SubagentStop for librarian should remove exactly one librarian entry
 run_hook "${HOOK_DIR}/record-subagent-summary.sh" \
   "$(jq -nc --arg s "cg3" '{session_id:$s,agent_type:"librarian",last_assistant_message:"Done."}')"
-if [[ -f "${pending_file}" ]] && [[ "$(wc -l <"${pending_file}")" -eq 1 ]] \
+if [[ -f "${pending_file}" ]] \
+  && [[ "$(jq -s '[.[] | select((.review_dispatch_abandoned // false) != true)] | length' "${pending_file}")" -eq 1 ]] \
   && grep -q "quality-researcher" "${pending_file}" \
   && ! grep -q "librarian" "${pending_file}"; then
   pass=$((pass + 1))
@@ -2084,6 +2103,7 @@ fi
 sim_post_compact "cg3" "auto" "Summary"
 out_g3="$(sim_session_start_compact "cg3")"
 assert_contains "gap3: handoff mentions interrupted dispatches" "Interrupted specialist dispatches" "${out_g3}"
+assert_not_contains "gap3: compact handoff hides abandoned tombstones" "abandoned-old" "${out_g3}"
 teardown_test
 
 # -------------------------------------------------------
@@ -2231,24 +2251,23 @@ fi
 teardown_test
 
 # -------------------------------------------------------
-# Gap 3 edge case: FIFO-oldest removal for same-type concurrent dispatches
+# Gap 3 edge case: same-exact-type concurrency is denied before FIFO ambiguity
 # -------------------------------------------------------
 setup_test
 setup_compact_tests
 init_session "cg3b" "coding"
-sim_pre_agent_dispatch "cg3b" "quality-researcher" "first dispatch"
-sim_pre_agent_dispatch "cg3b" "quality-researcher" "second dispatch"
+sim_pre_agent_dispatch "cg3b" "quality-researcher" "first dispatch" >/dev/null
+same_type_duplicate="$(sim_pre_agent_dispatch "cg3b" "quality-researcher" "second dispatch")"
+assert_contains "gap3: same-exact active duplicate is denied" \
+  "[Dispatch causality]" "${same_type_duplicate}"
 run_hook "${HOOK_DIR}/record-subagent-summary.sh" \
   "$(jq -nc --arg s "cg3b" '{session_id:$s,agent_type:"quality-researcher",last_assistant_message:"Done."}')"
 pending_file_b="${TEST_HOME}/.claude/quality-pack/state/cg3b/pending_agents.jsonl"
-# The "first dispatch" (oldest FIFO entry) should be removed
-if [[ -f "${pending_file_b}" ]] \
-  && [[ "$(wc -l <"${pending_file_b}")" -eq 1 ]] \
-  && grep -q "second dispatch" "${pending_file_b}" \
-  && ! grep -q "first dispatch" "${pending_file_b}"; then
+# The one admitted call is removed; there is no second row to misattribute.
+if [[ ! -s "${pending_file_b}" ]]; then
   pass=$((pass + 1))
 else
-  printf '  FAIL: gap3: FIFO-oldest removal did not keep newest entry\n    contents: %s\n' "$(cat "${pending_file_b}" 2>/dev/null)" >&2
+  printf '  FAIL: gap3: admitted exact-identity row did not settle\n    contents: %s\n' "$(cat "${pending_file_b}" 2>/dev/null)" >&2
   fail=$((fail + 1))
 fi
 teardown_test
@@ -2426,14 +2445,19 @@ fi
 assert_eq "ulw-off: reviewer causality version survives cleanup" \
   "1" "$(read_st "culw" "review_dispatch_tracking_version")"
 
-# Reactivation can dispatch the same reviewer immediately; the old start row
-# must not leave a permanent duplicate-in-flight denial.
+# Reactivation permanently remembers that the old call can still return. The
+# same identity therefore requires a fresh explicit binding; distinct roles
+# remain frictionless.
 touch "${TEST_HOME}/.claude/quality-pack/state/.ulw_active"
 culw_state="${TEST_HOME}/.claude/quality-pack/state/culw/session_state.json"
 jq '.workflow_mode="ultrawork"' "${culw_state}" >"${culw_state}.tmp" \
   && mv "${culw_state}.tmp" "${culw_state}"
-reactivated_review="$(sim_pre_agent_dispatch "culw" "quality-reviewer" "fresh review after reactivation")"
-assert_empty "ulw-off: same reviewer can dispatch after reactivation" \
+reactivated_unbound="$(sim_pre_agent_dispatch "culw" "quality-reviewer" "fresh review after reactivation")"
+assert_contains "ulw-off: same reviewer requires a post-reactivation binding" \
+  "[review-rebind:" "${reactivated_unbound}"
+reactivated_review="$(sim_pre_agent_dispatch "culw" "quality-reviewer" \
+  '[review-rebind:reactivated-review] fresh review; emit REVIEW_DISPATCH_ID: reactivated-review immediately before VERDICT')"
+assert_empty "ulw-off: bound same reviewer dispatches after reactivation" \
   "${reactivated_review}"
 teardown_test
 
@@ -3076,7 +3100,7 @@ sim_planner "pv2" "prometheus" "Need user input on rate-limit policy.
 
 VERDICT: NEEDS_CLARIFICATION"
 assert_eq "planner(NEEDS_CLARIFICATION): plan_verdict set" "NEEDS_CLARIFICATION" "$(read_st "pv2" "plan_verdict")"
-assert_eq "planner(NEEDS_CLARIFICATION): has_plan still true" "true" "$(read_st "pv2" "has_plan")"
+assert_eq "planner(NEEDS_CLARIFICATION): has_plan false" "false" "$(read_st "pv2" "has_plan")"
 teardown_test
 
 setup_test

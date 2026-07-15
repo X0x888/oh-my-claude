@@ -109,6 +109,17 @@ assert_eq "writer key is prompt_preview" "1" "${WRITER_FIELD}"
 WRITER_LEN="$(jq -r '.prompt_preview | length' < "${TEL_FILE}")"
 assert_eq "writer truncates at 200 chars" "200" "${WRITER_LEN}"
 
+# Dispatch descriptions are verbatim Agent tool input. Seed every ledger that
+# carries the field with a credential-shaped value so the support bundle must
+# both truncate and scrub it.
+DISPATCH_SECRET="sk-ant-ABCDEFGHIJKLMNOPQRSTUV"
+DISPATCH_DESCRIPTION="Investigate dispatch race using ${DISPATCH_SECRET} then $(printf 'Z%.0s' {1..120})"
+for ledger in pending_agents.jsonl agent_dispatch_starts.jsonl council_dispatches.jsonl; do
+  jq -nc --arg description "${DISPATCH_DESCRIPTION}" \
+    '{agent_type:"quality-reviewer",description:$description}' \
+    > "${SANDBOX_STATE}/${SESSION_ID}/${ledger}"
+done
+
 # ---------------------------------------------------------------------------
 # Case 2: run the real omc-repro.sh and inspect the bundled tarball. The
 # prompt_preview field must be truncated to REDACT_CHARS (80) — this is
@@ -162,6 +173,21 @@ assert_eq "bundled prompt_preview is exactly 80 chars" "80" "${BUNDLED_LEN}"
 # schema fields — redaction should not drop the row entirely.
 BUNDLED_INTENT="$(jq -r '.intent' < "${BUNDLED_TEL}")"
 assert_eq "bundled row preserves intent" "advisory" "${BUNDLED_INTENT}"
+
+for ledger in pending_agents.jsonl agent_dispatch_starts.jsonl council_dispatches.jsonl; do
+  bundled_ledger="$(find "${EXTRACT_DIR}" -name "${ledger}" -print -quit)"
+  assert_eq "bundled ${ledger} is retained" "1" \
+    "$([[ -n "${bundled_ledger}" && -s "${bundled_ledger}" ]] && echo 1 || echo 0)"
+  bundled_description="$(jq -r '.description' < "${bundled_ledger}")"
+  assert_le "bundled ${ledger} description is truncated" "80" \
+    "${#bundled_description}"
+  if [[ "${bundled_description}" == *"${DISPATCH_SECRET}"* ]]; then
+    printf '  FAIL: bundled %s leaked the raw dispatch credential\n' "${ledger}" >&2
+    fail=$((fail + 1))
+  else
+    pass=$((pass + 1))
+  fi
+done
 
 # ---------------------------------------------------------------------------
 # Case 3 (v1.40.0 F-008): the fallback path must FAIL-CLOSED, not silently

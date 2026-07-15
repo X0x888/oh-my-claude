@@ -22,10 +22,17 @@ ensure_session_dir
 # runtime guarantee the field is populated. On absence, emit a visible
 # fallback marker and surface a warning in hooks.log so the gap is
 # diagnosable instead of silently empty in the handoff file.
+compact_summary_missing=0
 if [[ -z "${COMPACT_SUMMARY}" ]]; then
+  compact_summary_missing=1
   COMPACT_SUMMARY="(compact summary not provided by runtime — see compact_debug.log if HOOK_DEBUG is enabled)"
   log_hook "post-compact-summary" "warn: .compact_summary field empty or missing"
 fi
+
+# The runtime supplies its native summary to the resumed model directly. Keep
+# only a bounded diagnostic copy in state; duplicating the full body inside our
+# SessionStart handoff spends context without adding continuity information.
+COMPACT_SUMMARY_STATE="$(truncate_chars 1800 "$(printf '%s' "${COMPACT_SUMMARY}" | tr -d '\000-\010\013-\014\016-\037\177' | omc_redact_secrets)")"
 
 # Optional raw-hook-JSON debug log — enabled via HOOK_DEBUG=1 env var or
 # hook_debug=true in oh-my-claude.conf. Useful when diagnosing schema
@@ -42,7 +49,7 @@ fi
 # prompt-intent-router can bias classification toward continuation.
 write_state_batch \
   "last_compact_trigger" "${TRIGGER:-unknown}" \
-  "last_compact_summary" "${COMPACT_SUMMARY}" \
+  "last_compact_summary" "${COMPACT_SUMMARY_STATE}" \
   "last_compact_summary_ts" "$(now_epoch)" \
   "just_compacted" "1" \
   "just_compacted_ts" "$(now_epoch)"
@@ -52,10 +59,13 @@ snapshot_file="$(session_file "precompact_snapshot.md")"
 
 {
   printf '# Compact Handoff\n\n'
-  printf '## Native Compact Summary\n%s\n' "${COMPACT_SUMMARY}"
+  printf 'The runtime native compact summary is already present and is not duplicated here.\n'
+  if [[ "${compact_summary_missing}" -eq 1 ]]; then
+    printf '\n## Runtime Summary Diagnostic\n%s\n' "${COMPACT_SUMMARY_STATE}"
+  fi
 
   if [[ -f "${snapshot_file}" ]]; then
-    printf '\n## Preserved Live State\n'
+    printf '\n## Preserved Priority State\n'
     cat "${snapshot_file}"
     printf '\n'
   fi

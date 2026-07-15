@@ -95,6 +95,24 @@ make_stub_repo() {
   printf '%s\n' "${version}" > "${repo}/VERSION"
 }
 
+install_real_model_switch_fixture() {
+  cp -R "${REPO_ROOT}/bundle/dot-claude/agents" "${TEST_HOME}/.claude/agents"
+  cp "${REPO_ROOT}/bundle/dot-claude/switch-tier.sh" \
+    "${TEST_HOME}/.claude/switch-tier.sh"
+  chmod +x "${TEST_HOME}/.claude/switch-tier.sh"
+}
+
+count_installed_model() {
+  local model="$1"
+  { grep -hE "^model: ${model}$" "${TEST_HOME}/.claude/agents/"*.md 2>/dev/null || true; } \
+    | wc -l | tr -d '[:space:]'
+}
+
+installed_agent_model() {
+  local agent="$1"
+  sed -n 's/^model: //p' "${TEST_HOME}/.claude/agents/${agent}.md" | head -1
+}
+
 # --- Test 1: detect-mode handles missing conf ---
 printf 'Test 1: detect-mode without conf returns not-installed\n'
 setup
@@ -960,6 +978,522 @@ written="$(grep '^claude_bin=' "${TEST_HOME}/.claude/oh-my-claude.conf" 2>/dev/n
   | head -1 | cut -d= -f2-)"
 assert_eq "Test 57: legit claude_bin written to conf" "/usr/local/bin/claude" "${written}"
 teardown
+
+# --- User-only authority + model materialization ---------------------------
+# common.sh deliberately ignores a narrow deny-list from project config. The
+# config UX must reproduce that rule exactly: show cannot present ignored
+# values as effective, direct project writes fail atomically, and a project
+# preset cannot mutate machine-wide enforcement/model state.
+
+printf 'Test 58: show ignores project model values and marks user values effective\n'
+setup
+{
+  printf 'installed_version=1.22.0\n'
+  printf 'quality_policy=zero_steering\n'
+  printf 'repo_lessons=off\n'
+  printf 'model_tier=quality\n'
+  printf 'model_overrides=quality-reviewer:opus\n'
+} > "${USER_CONF_PATH}"
+project_dir="${TEST_HOME}/model-project"
+mkdir -p "${project_dir}/.claude"
+{
+  printf 'quality_policy=balanced\n'
+  printf 'repo_lessons=on\n'
+  printf 'model_tier=economy\n'
+  printf 'model_overrides=quality-reviewer:haiku\n'
+} > "${project_dir}/.claude/oh-my-claude.conf"
+out="$(cd "${project_dir}" && bash "${HELPER}" show 2>&1)"
+tier_row="$(printf '%s\n' "${out}" | grep -E '^[[:space:]*]+model_tier[[:space:]]' || true)"
+override_row="$(printf '%s\n' "${out}" | grep -E '^[[:space:]*]+model_overrides[[:space:]]' || true)"
+tier_value="$(awk '{print $3}' <<<"${tier_row}")"
+override_value="$(awk '{print $3}' <<<"${override_row}")"
+assert_contains "Test 58: ignored project model rows are explained" \
+  "project model_tier/model_overrides entries are ignored" "${out}"
+assert_eq "Test 58: user tier remains effective" "quality" "${tier_value}"
+assert_contains "Test 58: user tier carries [U] provenance" "[U]" "${tier_row}"
+assert_eq "Test 58: user override remains effective" \
+  "quality-reviewer:opus" "${override_value}"
+assert_contains "Test 58: user override carries [U] provenance" "[U]" "${override_row}"
+assert_not_contains "Test 58: project override is not shown as effective" \
+  "quality-reviewer:haiku" "${override_row}"
+quality_policy_row="$(printf '%s\n' "${out}" | grep -E '^[[:space:]*]+quality_policy[[:space:]]' || true)"
+repo_lessons_row="$(printf '%s\n' "${out}" | grep -E '^[[:space:]*]+repo_lessons[[:space:]]' || true)"
+assert_contains "Test 58: full deny-list warning names enforcement row" \
+  "quality_policy" "${out}"
+assert_contains "Test 58: denied quality policy remains user-controlled" \
+  "zero_steering" "${quality_policy_row}"
+assert_contains "Test 58: denied quality policy carries [U]" "[U]" "${quality_policy_row}"
+assert_contains "Test 58: denied persistence flag remains user-controlled" \
+  "off" "${repo_lessons_row}"
+assert_contains "Test 58: denied persistence flag carries [U]" "[U]" "${repo_lessons_row}"
+teardown
+
+printf 'Test 59: direct project model writes fail atomically without tier side effects\n'
+setup
+cat > "${TEST_HOME}/.claude/switch-tier.sh" <<'MOCK'
+#!/usr/bin/env bash
+printf 'INVOKED: %s\n' "$*" >> "${HOME}/.claude/.project-model-switch.invocations"
+MOCK
+chmod +x "${TEST_HOME}/.claude/switch-tier.sh"
+project_dir="${TEST_HOME}/model-project"
+mkdir -p "${project_dir}"
+set +e
+out="$(cd "${project_dir}" && bash "${HELPER}" set project \
+  gate_level=basic model_tier=economy 2>&1)"
+rc=$?
+set -e
+assert_eq "Test 59: project model_tier write exits 2" "2" "${rc}"
+assert_contains "Test 59: rejection names user-only authority" "model_tier is user-only" "${out}"
+assert_file_lacks_line "Test 59: safe sibling is not half-written" \
+  "${project_dir}/.claude/oh-my-claude.conf" '^gate_level='
+if [[ ! -f "${TEST_HOME}/.claude/.project-model-switch.invocations" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: Test 59: rejected project model_tier invoked switch-tier.sh\n' >&2
+  fail=$((fail + 1))
+fi
+set +e
+out="$(cd "${project_dir}" && bash "${HELPER}" set project \
+  model_overrides=quality-reviewer:haiku 2>&1)"
+rc=$?
+set -e
+assert_eq "Test 59: project model_overrides write exits 2" "2" "${rc}"
+assert_contains "Test 59: override rejection names user-only authority" \
+  "model_overrides is user-only" "${out}"
+assert_file_lacks_line "Test 59: rejected override is absent" \
+  "${project_dir}/.claude/oh-my-claude.conf" '^model_overrides='
+
+denied_pairs=(
+  'pretool_intent_guard=false'
+  'bg_spawn_gate=false'
+  'agent_first_gate=on'
+  'no_defer_mode=off'
+  'quality_policy=balanced'
+  'model_tier=economy'
+  'model_overrides=quality-reviewer:haiku'
+  'repo_lessons=on'
+  'auto_tune=on'
+)
+for denied_pair in "${denied_pairs[@]}"; do
+  denied_key="${denied_pair%%=*}"
+  set +e
+  denied_out="$(cd "${project_dir}" && bash "${HELPER}" set project "${denied_pair}" 2>&1)"
+  denied_rc=$?
+  set -e
+  assert_eq "Test 59: project ${denied_key} is rejected" "2" "${denied_rc}"
+  assert_contains "Test 59: ${denied_key} rejection explains authority" \
+    "user-only" "${denied_out}"
+  assert_file_lacks_line "Test 59: ${denied_key} is never written" \
+    "${project_dir}/.claude/oh-my-claude.conf" "^${denied_key}="
+done
+teardown
+
+printf 'Test 60: project presets omit model keys and never invoke switch-tier\n'
+setup
+{
+  printf 'installed_version=1.22.0\n'
+  printf 'model_tier=quality\n'
+  printf 'model_overrides=quality-reviewer:opus\n'
+} > "${USER_CONF_PATH}"
+cat > "${TEST_HOME}/.claude/switch-tier.sh" <<'MOCK'
+#!/usr/bin/env bash
+printf 'INVOKED: %s\n' "$*" >> "${HOME}/.claude/.project-preset-switch.invocations"
+MOCK
+chmod +x "${TEST_HOME}/.claude/switch-tier.sh"
+project_dir="${TEST_HOME}/preset-project"
+mkdir -p "${project_dir}"
+out="$(cd "${project_dir}" && bash "${HELPER}" apply-preset project minimal 2>&1)"
+project_conf="${project_dir}/.claude/oh-my-claude.conf"
+assert_contains "Test 60: preset reports preserved user-wide settings" \
+  "omitted user-only preset key(s):" "${out}"
+assert_contains "Test 60: preset reports omitted quality policy" \
+  "quality_policy" "${out}"
+assert_contains "Test 60: preset reports omitted no-defer authority" \
+  "no_defer_mode" "${out}"
+assert_contains "Test 60: preset reports omitted model tier" \
+  "model_tier" "${out}"
+assert_file_has_line "Test 60: project-safe preset key is written" \
+  "${project_conf}" '^gate_level=basic$'
+assert_file_lacks_line "Test 60: project preset omits model_tier" \
+  "${project_conf}" '^model_tier='
+assert_file_lacks_line "Test 60: project preset omits model_overrides" \
+  "${project_conf}" '^model_overrides='
+assert_file_lacks_line "Test 60: project preset omits quality_policy" \
+  "${project_conf}" '^quality_policy='
+assert_file_lacks_line "Test 60: project preset omits no_defer_mode" \
+  "${project_conf}" '^no_defer_mode='
+assert_file_has_line "Test 60: user tier remains unchanged" \
+  "${USER_CONF_PATH}" '^model_tier=quality$'
+assert_file_has_line "Test 60: user override remains unchanged" \
+  "${USER_CONF_PATH}" '^model_overrides=quality-reviewer:opus$'
+if [[ ! -f "${TEST_HOME}/.claude/.project-preset-switch.invocations" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: Test 60: project preset invoked switch-tier.sh\n' >&2
+  fail=$((fail + 1))
+fi
+teardown
+
+printf 'Test 61: model flag metadata describes user-only adaptive economy\n'
+setup
+flags_json="$(bash "${HELPER}" list-flags)"
+tier_desc="$(jq -r '.[] | select(.name == "model_tier") | .description' <<<"${flags_json}")"
+override_desc="$(jq -r '.[] | select(.name == "model_overrides") | .description' <<<"${flags_json}")"
+token_desc="$(jq -r '.[] | select(.name == "token_tracking") | .description' <<<"${flags_json}")"
+assert_contains "Test 61: economy wording is adaptive" "adaptive reasoning-risk escalation" "${tier_desc}"
+assert_contains "Test 61: tier metadata names project restriction" \
+  "Project conf cannot set" "${tier_desc}"
+assert_contains "Test 61: override metadata names project restriction" \
+  "project conf cannot set" "${override_desc}"
+assert_contains "Test 61: token metadata names parent and nested sidechains" \
+  "parent + nested sidechain transcripts" "${token_desc}"
+assert_contains "Test 61: token metadata names dispatch attribution" \
+  "role/model/native-dispatch attribution" "${token_desc}"
+json_document_count="$(jq -s 'length' <<<"${flags_json}")"
+assert_eq "Test 61: list-flags emits exactly one JSON document" "1" "${json_document_count}"
+teardown
+
+printf 'Test 62: environment model display is sanitized and marked [E]\n'
+setup
+install_real_model_switch_fixture
+{
+  printf 'installed_version=1.22.0\n'
+  printf 'model_tier=quality\n'
+  printf 'model_overrides=quality-reviewer:opus\n'
+} > "${USER_CONF_PATH}"
+out="$(cd "${TEST_HOME}" && OMC_MODEL_TIER=economy \
+  OMC_MODEL_OVERRIDES=' oracle:inherit,broken,plugin-x:reviewer:opus,librarian:not-a-model ' \
+  bash "${HELPER}" show 2>&1)"
+tier_row="$(printf '%s\n' "${out}" | grep -E '^[[:space:]*]+model_tier[[:space:]]' || true)"
+override_row="$(printf '%s\n' "${out}" | grep -E '^[[:space:]*]+model_overrides[[:space:]]' || true)"
+assert_eq "Test 62: env tier is effective" "economy" "$(awk '{print $3}' <<<"${tier_row}")"
+assert_contains "Test 62: env tier carries [E]" "[E]" "${tier_row}"
+assert_eq "Test 62: only resolver-valid env pins are displayed" \
+  "oracle:inherit,plugin-x:reviewer:opus" "$(awk '{print $3}' <<<"${override_row}")"
+assert_contains "Test 62: env pins carry [E]" "[E]" "${override_row}"
+assert_not_contains "Test 62: invalid pin is not overclaimed" "librarian:not-a-model" "${override_row}"
+assert_contains "Test 62: invalid entries are explained" \
+  "rejected pairs are ignored and only the accepted environment pins govern" "${out}"
+assert_contains "Test 62: no-project footer defines [E]" \
+  "[E]=environment override, [U]=user setting" "${out}"
+teardown
+
+printf 'Test 62b: wholly invalid environment overrides fall back to saved pins\n'
+setup
+{
+  printf 'installed_version=1.22.0\n'
+  printf 'model_overrides=quality-reviewer:opus\n'
+} > "${USER_CONF_PATH}"
+out="$(cd "${TEST_HOME}" && \
+  OMC_MODEL_OVERRIDES='broken,quality-reviewer:not-a-model,../victim:opus' \
+  bash "${HELPER}" show 2>&1)"
+override_row="$(printf '%s\n' "${out}" \
+  | grep -E '^[[:space:]*]+model_overrides[[:space:]]' || true)"
+assert_eq "Test 62b: saved pins remain effective" \
+  "quality-reviewer:opus" "$(awk '{print $3}' <<<"${override_row}")"
+assert_contains "Test 62b: saved pins retain [U] provenance" "[U]" \
+  "${override_row}"
+assert_not_contains "Test 62b: invalid env is not claimed as [E]" "[E]" \
+  "${override_row}"
+assert_contains "Test 62b: invalid-all fallback warning is explicit" \
+  "contains no valid pins and is ignored; saved user pins remain effective" \
+  "${out}"
+teardown
+
+printf 'Test 63: invalid environment tier preserves valid saved quality\n'
+setup
+printf 'model_tier=quality\n' > "${USER_CONF_PATH}"
+out="$(cd "${TEST_HOME}" && OMC_MODEL_TIER=not-a-model bash "${HELPER}" show 2>&1)"
+tier_row="$(printf '%s\n' "${out}" | grep -E '^[[:space:]*]+model_tier[[:space:]]' || true)"
+assert_eq "Test 63: invalid env tier leaves saved quality effective" "quality" "$(awk '{print $3}' <<<"${tier_row}")"
+assert_contains "Test 63: saved tier retains user provenance" "[U]" "${tier_row}"
+assert_not_contains "Test 63: invalid env is not claimed as provenance" "[E]" "${tier_row}"
+assert_contains "Test 63: ignored invalid override warning is explicit" \
+  "is ignored; saved user tier or the balanced default remains effective" "${out}"
+teardown
+
+printf 'Test 63b: mixed saved overrides show only the resolver-valid subset\n'
+setup
+printf 'installed_version=1.22.0\nmodel_overrides=oracle:oppus,librarian:haiku\n' \
+  > "${USER_CONF_PATH}"
+out="$(cd "${TEST_HOME}" && bash "${HELPER}" show 2>&1)"
+override_row="$(printf '%s\n' "${out}" \
+  | grep -E '^[[:space:]*]+model_overrides[[:space:]]' || true)"
+assert_eq "Test 63b: valid saved subset is displayed" "librarian:haiku" \
+  "$(awk '{print $3}' <<<"${override_row}")"
+assert_contains "Test 63b: valid saved subset retains [U]" "[U]" \
+  "${override_row}"
+assert_not_contains "Test 63b: invalid saved pin is not overclaimed" \
+  "oracle:oppus" "${override_row}"
+assert_contains "Test 63b: rejected saved pair warning is explicit" \
+  "saved model_overrides contains invalid entries; rejected pairs are ignored" \
+  "${out}"
+teardown
+
+printf 'Test 63c: invalid-all saved overrides show no effective user pins\n'
+setup
+printf 'installed_version=1.22.0\nmodel_overrides=oracle:oppus,broken\n' \
+  > "${USER_CONF_PATH}"
+out="$(cd "${TEST_HOME}" && bash "${HELPER}" show 2>&1)"
+override_row="$(printf '%s\n' "${out}" \
+  | grep -E '^[[:space:]*]+model_overrides[[:space:]]' || true)"
+assert_contains "Test 63c: invalid-all saved pins render unset" "(unset)" \
+  "${override_row}"
+assert_not_contains "Test 63c: invalid-all saved pins have no [U]" "[U]" \
+  "${override_row}"
+assert_contains "Test 63c: invalid-all saved warning is explicit" \
+  "saved model_overrides contains no valid pins and is ignored" "${out}"
+flags_json="$(bash "${HELPER}" list-flags)"
+assert_eq "Test 63c: list-flags also sanitizes invalid-all saved pins" "" \
+  "$(jq -r '.[] | select(.name == "model_overrides") | .current' \
+    <<<"${flags_json}")"
+teardown
+
+printf 'Test 63d: invalid saved tier displays balanced runtime fallback\n'
+setup
+printf 'installed_version=1.22.0\nmodel_tier=not-a-model\n' \
+  > "${USER_CONF_PATH}"
+out="$(cd "${TEST_HOME}" && bash "${HELPER}" show 2>&1)"
+tier_row="$(printf '%s\n' "${out}" \
+  | grep -E '^[[:space:]*]+model_tier[[:space:]]' || true)"
+tier_value="$(awk '{for (i=1; i<=NF; i++) if ($i == "model_tier") {print $(i+1); exit}}' \
+  <<<"${tier_row}")"
+assert_eq "Test 63d: invalid saved tier displays balanced" "balanced" \
+  "${tier_value}"
+assert_not_contains "Test 63d: invalid saved tier has no [U]" "[U]" \
+  "${tier_row}"
+assert_contains "Test 63d: invalid saved tier warning is explicit" \
+  "saved model_tier=not-a-model is invalid and ignored" "${out}"
+flags_json="$(bash "${HELPER}" list-flags)"
+assert_eq "Test 63d: list-flags also normalizes invalid saved tier" \
+  "balanced" \
+  "$(jq -r '.[] | select(.name == "model_tier") | .current' \
+    <<<"${flags_json}")"
+teardown
+
+printf 'Test 63e: set rejects malformed model overrides atomically\n'
+setup
+mkdir -p "${TEST_HOME}/.claude/agents"
+printf -- '---\nname: custom-fixed\nmodel: sonnet\n---\nbody\n' \
+  > "${TEST_HOME}/.claude/agents/custom-fixed.md"
+printf 'gate_level=full\nmodel_overrides=librarian:haiku\n' \
+  > "${USER_CONF_PATH}"
+invalid_override_values=(
+  'oracle:oppus'
+  'broken'
+  '../victim:opus'
+  'too:many:colons:opus'
+  'oracle:opus,'
+  'ghost:inherit'
+  'custom-fixed:inherit'
+  'plugin-x:reviewer:inherit'
+)
+for invalid_override in "${invalid_override_values[@]}"; do
+  set +e
+  out="$(bash "${HELPER}" set user gate_level=basic \
+    "model_overrides=${invalid_override}" 2>&1)"
+  rc=$?
+  set -e
+  assert_eq "Test 63e: invalid override rejected (${invalid_override})" \
+    "2" "${rc}"
+  assert_contains "Test 63e: rejection explains grammar (${invalid_override})" \
+    "model_overrides must be empty or comma-separated agent:model pins" \
+    "${out}"
+done
+assert_file_has_line "Test 63e: failed batch preserves prior override" \
+  "${USER_CONF_PATH}" '^model_overrides=librarian:haiku$'
+assert_file_has_line "Test 63e: failed batch preserves sibling flag" \
+  "${USER_CONF_PATH}" '^gate_level=full$'
+teardown
+
+printf 'Test 63f: set accepts valid namespaced and bare pins\n'
+setup
+install_real_model_switch_fixture
+printf -- '---\nname: custom-inherited\nmodel: inherit\n---\nbody\n' \
+  > "${TEST_HOME}/.claude/agents/custom-inherited.md"
+out="$(bash "${HELPER}" set user \
+  model_overrides=plugin-x:reviewer:opus,librarian:inherit,custom-inherited:inherit 2>&1)"
+rc=$?
+assert_eq "Test 63f: valid namespaced override set exits 0" "0" "${rc}"
+assert_file_has_line "Test 63f: valid namespaced and bare pins persist" \
+  "${USER_CONF_PATH}" \
+  '^model_overrides=plugin-x:reviewer:opus,librarian:inherit,custom-inherited:inherit$'
+assert_eq "Test 63f: bare inherit pin is materialized before live omission" \
+  "inherit" "$(installed_agent_model librarian)"
+assert_eq "Test 63f: already-inherited custom definition remains untouched" \
+  "inherit" "$(installed_agent_model custom-inherited)"
+teardown
+
+printf 'Test 64: changed quality override forces one canonical reconstruction\n'
+setup
+cat > "${TEST_HOME}/.claude/switch-tier.sh" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${HOME}/.claude/.override-switch.invocations"
+MOCK
+chmod +x "${TEST_HOME}/.claude/switch-tier.sh"
+printf 'model_tier=quality\nmodel_overrides=oracle:opus\n' > "${USER_CONF_PATH}"
+bash "${HELPER}" set user model_overrides=librarian:haiku >/dev/null 2>&1
+invocations="$(cat "${TEST_HOME}/.claude/.override-switch.invocations")"
+assert_eq "Test 64: quality override change passes force flag" \
+  "quality --force-reconstruct" "${invocations}"
+assert_eq "Test 64: switcher called exactly once" "1" \
+  "$(wc -l < "${TEST_HOME}/.claude/.override-switch.invocations" | tr -d ' ')"
+teardown
+
+printf 'Test 65: clearing a quality override also forces reconstruction\n'
+setup
+cat > "${TEST_HOME}/.claude/switch-tier.sh" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${HOME}/.claude/.override-clear.invocations"
+MOCK
+chmod +x "${TEST_HOME}/.claude/switch-tier.sh"
+printf 'model_tier=quality\nmodel_overrides=oracle:opus\n' > "${USER_CONF_PATH}"
+bash "${HELPER}" set user model_overrides= >/dev/null 2>&1
+assert_eq "Test 65: empty replacement still passes force flag" \
+  "quality --force-reconstruct" \
+  "$(cat "${TEST_HOME}/.claude/.override-clear.invocations")"
+teardown
+
+printf 'Test 66: economy override refresh stays source-independent\n'
+setup
+cat > "${TEST_HOME}/.claude/switch-tier.sh" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${HOME}/.claude/.override-economy.invocations"
+MOCK
+chmod +x "${TEST_HOME}/.claude/switch-tier.sh"
+printf 'model_tier=economy\nmodel_overrides=oracle:opus\n' > "${USER_CONF_PATH}"
+bash "${HELPER}" set user model_overrides=librarian:haiku >/dev/null 2>&1
+assert_eq "Test 66: economy reapply does not force source reconstruction" \
+  "economy" "$(cat "${TEST_HOME}/.claude/.override-economy.invocations")"
+teardown
+
+printf 'Test 67: tier plus override batch invokes quality reconstruction once\n'
+setup
+cat > "${TEST_HOME}/.claude/switch-tier.sh" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${HOME}/.claude/.override-batch.invocations"
+MOCK
+chmod +x "${TEST_HOME}/.claude/switch-tier.sh"
+printf 'model_tier=balanced\nmodel_overrides=oracle:inherit\n' > "${USER_CONF_PATH}"
+bash "${HELPER}" set user model_tier=quality model_overrides=librarian:haiku >/dev/null 2>&1
+assert_eq "Test 67: target quality receives force flag" \
+  "quality --force-reconstruct" \
+  "$(cat "${TEST_HOME}/.claude/.override-batch.invocations")"
+assert_eq "Test 67: combined batch calls switcher once" "1" \
+  "$(wc -l < "${TEST_HOME}/.claude/.override-batch.invocations" | tr -d ' ')"
+teardown
+
+printf 'Test 68: set economy to quality reconstructs despite an inherit override\n'
+setup
+install_real_model_switch_fixture
+printf 'repo_path=%s\nmodel_tier=balanced\nmodel_overrides=oracle:inherit\n' \
+  "${REPO_ROOT}" > "${USER_CONF_PATH}"
+bash "${TEST_HOME}/.claude/switch-tier.sh" economy >/dev/null 2>&1
+assert_eq "Test 68: economy fixture retains every shipped inherit deliberator" \
+  "14" "$(count_installed_model inherit)"
+bash "${HELPER}" set user model_tier=quality >/dev/null 2>&1
+assert_eq "Test 68: quality restores all shipped inherit deliberators" \
+  "14" "$(count_installed_model inherit)"
+assert_eq "Test 68: quality lifts only shipped fixed specialists" \
+  "23" "$(count_installed_model opus)"
+assert_eq "Test 68: representative reviewer rides the session model" \
+  "inherit" "$(installed_agent_model quality-reviewer)"
+assert_eq "Test 68: representative planner rides the session model" \
+  "inherit" "$(installed_agent_model quality-planner)"
+teardown
+
+printf 'Test 69: quality preset reconstructs economy despite an inherit override\n'
+setup
+install_real_model_switch_fixture
+printf 'repo_path=%s\nmodel_tier=balanced\nmodel_overrides=oracle:inherit\n' \
+  "${REPO_ROOT}" > "${USER_CONF_PATH}"
+bash "${TEST_HOME}/.claude/switch-tier.sh" economy >/dev/null 2>&1
+assert_eq "Test 69: economy fixture retains every shipped inherit deliberator" \
+  "14" "$(count_installed_model inherit)"
+bash "${HELPER}" apply-preset user maximum >/dev/null 2>&1
+assert_eq "Test 69: maximum preset restores all shipped inherit deliberators" \
+  "14" "$(count_installed_model inherit)"
+assert_eq "Test 69: maximum preset lifts only shipped fixed specialists" \
+  "23" "$(count_installed_model opus)"
+assert_eq "Test 69: representative critic rides the session model" \
+  "inherit" "$(installed_agent_model metis)"
+assert_eq "Test 69: representative executor uses Opus" \
+  "opus" "$(installed_agent_model frontend-developer)"
+teardown
+
+printf 'Test 70: persistent model writes materialize saved values despite environment shadows\n'
+setup
+cat > "${TEST_HOME}/.claude/switch-tier.sh" <<'MOCK'
+#!/usr/bin/env bash
+printf 'args=%s|tier=%s|overrides=%s\n' "$*" \
+  "${OMC_MODEL_TIER:-}" "${OMC_MODEL_OVERRIDES:-}" \
+  > "${HOME}/.claude/.saved-model-materialization"
+MOCK
+chmod +x "${TEST_HOME}/.claude/switch-tier.sh"
+printf 'model_tier=balanced\nmodel_overrides=\n' > "${USER_CONF_PATH}"
+out="$(OMC_MODEL_TIER=economy OMC_MODEL_OVERRIDES=oracle:haiku \
+  bash "${HELPER}" set user model_tier=quality model_overrides=oracle:opus 2>&1)"
+assert_eq "Test 70: switcher sees saved target without environment tier or overrides" \
+  "args=quality --force-reconstruct|tier=|overrides=" \
+  "$(cat "${TEST_HOME}/.claude/.saved-model-materialization")"
+assert_eq "Test 70: saved tier is quality" \
+  "quality" "$(awk -F= '$1 == "model_tier" { print $2 }' "${USER_CONF_PATH}")"
+assert_eq "Test 70: saved override is Opus" \
+  "oracle:opus" "$(awk -F= '$1 == "model_overrides" { print $2 }' "${USER_CONF_PATH}")"
+assert_contains "Test 70: live environment precedence is explained" \
+  "remove the environment override and start a new session" "${out}"
+teardown
+
+printf 'Test 71: failed inherit materialization never claims live activation\n'
+setup
+mkdir -p "${TEST_HOME}/.claude/agents"
+printf -- '---\nname: librarian\nmodel: sonnet\n---\nbody\n' \
+  > "${TEST_HOME}/.claude/agents/librarian.md"
+cat > "${TEST_HOME}/.claude/switch-tier.sh" <<'MOCK'
+#!/usr/bin/env bash
+exit 1
+MOCK
+chmod +x "${TEST_HOME}/.claude/switch-tier.sh"
+printf 'model_tier=balanced\nmodel_overrides=\n' > "${USER_CONF_PATH}"
+out="$(bash "${HELPER}" set user model_overrides=librarian:inherit 2>&1)"
+assert_file_has_line "Test 71: materializable pin remains saved for repair" \
+  "${USER_CONF_PATH}" '^model_overrides=librarian:inherit$'
+assert_contains "Test 71: failure warning says inherit remains inactive" \
+  "inherit pin is active only when its bare definition already says inherit" "${out}"
+assert_eq "Test 71: failed switch leaves fixed definition unchanged" \
+  "sonnet" "$(installed_agent_model librarian)"
+teardown
+
+printf 'Test 72: omc-config shipped materialization rosters match the bundle\n'
+bundle_inherit_roster="$({
+  for agent_file in "${REPO_ROOT}"/bundle/dot-claude/agents/*.md; do
+    if [[ "$(sed -n 's/^model: //p' "${agent_file}" | head -1)" == "inherit" ]]; then
+      basename "${agent_file}" .md
+    fi
+  done
+} | sort | tr '\n' ' ' | sed 's/ $//')"
+bundle_fixed_roster="$({
+  for agent_file in "${REPO_ROOT}"/bundle/dot-claude/agents/*.md; do
+    if [[ "$(sed -n 's/^model: //p' "${agent_file}" | head -1)" == "sonnet" ]]; then
+      basename "${agent_file}" .md
+    fi
+  done
+} | sort | tr '\n' ' ' | sed 's/ $//')"
+config_inherit_roster="$(sed -n \
+  "s/^OMC_CONFIG_SHIPPED_INHERIT_AGENTS='\\(.*\\)'$/\\1/p" "${HELPER}" \
+  | tr ' ' '\n' | sort | tr '\n' ' ' | sed 's/ $//')"
+config_fixed_roster="$(sed -n \
+  "s/^OMC_CONFIG_SHIPPED_FIXED_AGENTS='\\(.*\\)'$/\\1/p" "${HELPER}" \
+  | tr ' ' '\n' | sort | tr '\n' ' ' | sed 's/ $//')"
+assert_eq "Test 72: omc-config inherit roster matches bundle" \
+  "${bundle_inherit_roster}" "${config_inherit_roster}"
+assert_eq "Test 72: omc-config fixed roster matches bundle" \
+  "${bundle_fixed_roster}" "${config_fixed_roster}"
+config_roster_count="$(printf '%s\n%s\n' \
+  "${config_inherit_roster}" "${config_fixed_roster}" \
+  | tr ' ' '\n' | sed '/^$/d' | sort -u | wc -l | tr -d '[:space:]')"
+assert_eq "Test 72: omc-config materialization authority covers 37 agents" \
+  "37" "${config_roster_count}"
 
 # --- Summary ---
 printf '\n=== test-omc-config: %d passed, %d failed ===\n' "${pass}" "${fail}"

@@ -180,6 +180,12 @@ for impl in "${implementations[@]}"; do
   # verification, Agent reflect, Grep|Read advisory-verification).
   assert_json_count "${impl}: fresh — PostToolUse hooks" \
     "${work}/settings.json" '.hooks.PostToolUse' "5"
+  assert_json_count "${impl}: fresh — SubagentStart hooks" \
+    "${work}/settings.json" '.hooks.SubagentStart' "1"
+  assert_json_eq "${impl}: fresh — SubagentStart binds native agent IDs" \
+    "${work}/settings.json" \
+    '[.hooks.SubagentStart[] | .hooks[0].command] | .[0] | tostring | contains("record-pending-agent.sh start")' \
+    "true"
   assert_json_count "${impl}: fresh — SubagentStop hooks" \
     "${work}/settings.json" '.hooks.SubagentStop' "12"
   assert_json_count "${impl}: fresh — PreCompact hooks" \
@@ -261,6 +267,8 @@ for impl in "${implementations[@]}"; do
     "${work}/settings.json" '.hooks.PostToolUse' "5"
   assert_json_count "${impl}: idempotent — PreToolUse hooks still 4" \
     "${work}/settings.json" '.hooks.PreToolUse' "4"
+  assert_json_count "${impl}: idempotent — SubagentStart hooks still 1" \
+    "${work}/settings.json" '.hooks.SubagentStart' "1"
   assert_json_count "${impl}: idempotent — StopFailure hooks still 1" \
     "${work}/settings.json" '.hooks.StopFailure' "1"
   assert_json_count "${impl}: idempotent — PostToolUseFailure hooks still 1" \
@@ -1153,7 +1161,7 @@ if [[ ${#implementations[@]} -eq 2 ]]; then
   run_merge "jq" "${work_jq}/settings.json" "${SETTINGS_PATCH}" "false"
 
   # Compare hook counts (structural equivalence — key ordering may differ)
-  for event in SessionStart UserPromptSubmit PreToolUse PostToolUse PostToolUseFailure PreCompact PostCompact SubagentStop Stop StopFailure; do
+  for event in SessionStart UserPromptSubmit PreToolUse PostToolUse PostToolUseFailure PreCompact PostCompact SubagentStart SubagentStop Stop StopFailure; do
     py_count="$(jq ".hooks.${event} | length" "${work_py}/settings.json" 2>/dev/null || echo "-1")"
     jq_count="$(jq ".hooks.${event} | length" "${work_jq}/settings.json" 2>/dev/null || echo "-1")"
     assert_eq "cross: ${event} hook count matches" "${py_count}" "${jq_count}"

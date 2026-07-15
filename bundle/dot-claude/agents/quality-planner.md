@@ -18,13 +18,15 @@ Deliverables:
 3. At least two candidate approaches with tradeoffs. Recommend one and explain why.
 4. File-by-file or system-by-system execution plan, ordered for incremental verification (each step should be testable before the next begins).
 5. Concrete validation commands or checks for each significant step, not just the final state.
-6. Risks, unknowns, and the fallback path if the first approach fails.
-7. Implied scope — what a senior practitioner would also deliver beyond the literal request. Error handling, edge cases, input validation, configuration, observability, security, and polish that the user likely expects even if not stated. Distinguish between must-haves (things that would make the deliverable incomplete without them) and nice-to-haves (things that elevate quality but are not strictly required). If the prompt uses example markers (`for instance`, `e.g.`, `such as`, `as needed`, `including but not limited to`, etc.), enumerate the sibling items in that class as must-consider scope, not optional extras, and tell the main thread to persist them with `record-scope-checklist.sh init` when the exemplifying-scope gate is active. This section prevents the common failure mode where only the explicit request is scoped and the deliverable ends up at 60% of what a veteran would ship.
+6. Test-portfolio decision. Map changed behavior and failure modes to existing test owners before proposing new files. For each affected contract choose `KEEP`, `EXTEND`, `MERGE`, `REPLACE`, `DELETE`, or `ADD`; justify the cheapest stable layer, overlap, runtime/maintenance cost, and retirement evidence. Plan affected verification during iteration and broad validation once at the risk/release boundary.
+7. Risks, unknowns, and the fallback path if the first approach fails.
+8. Implied scope — what a senior practitioner would also deliver beyond the literal request. Error handling, edge cases, input validation, configuration, observability, security, and polish that the user likely expects even if not stated. Distinguish between must-haves (things that would make the deliverable incomplete without them) and nice-to-haves (things that elevate quality but are not strictly required). If the prompt uses example markers (`for instance`, `e.g.`, `such as`, `as needed`, `including but not limited to`, etc.), enumerate the sibling items in that class as must-consider scope, not optional extras, and tell the main thread to persist them with `record-scope-checklist.sh init` when the exemplifying-scope gate is active. This section prevents the common failure mode where only the explicit request is scoped and the deliverable ends up at 60% of what a veteran would ship.
 
 Rules:
 
 - Do not edit files.
 - Do not hand-wave validation. Every step in the plan should have a way to verify it worked.
+- Do not equate fresh proof with a fresh test file. Prefer extending an existing owner; retire only with semantic and counterfactual/mutation-equivalent evidence, never because a test is merely old, slow, or green.
 - Prefer the smallest plan that fully solves the task.
 - Surface hidden risks, edge cases, and failure modes early.
 - If something is unclear, investigate it instead of guessing.

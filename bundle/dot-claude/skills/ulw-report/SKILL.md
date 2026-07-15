@@ -38,6 +38,7 @@ The report joins data from `~/.claude/quality-pack/`:
 - `session_summary.jsonl` — per-session outcome rows (gates fired, skips, serendipity, finding/wave outcomes)
 - `serendipity-log.jsonl` — Serendipity Rule applications
 - `classifier_misfires.jsonl` — classifier misfire annotations
+- `timing.jsonl` — per-session walltime, token categories, and bounded role/model/native-dispatch attribution
 - `agent-metrics.json` — reviewer invocation counts and verdicts
 - `defect-patterns.json` — defect category histogram
 

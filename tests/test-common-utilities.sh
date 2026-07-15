@@ -1812,29 +1812,40 @@ printf '{}' > "${_AGENT_METRICS_FILE}"
 # Basic recording
 record_agent_metric "test-reviewer" "clean"
 metric="$(cat "${_AGENT_METRICS_FILE}")"
-assert_eq "record_agent_metric invocations" "1" "$(jq -r '.["test-reviewer"].invocations' <<<"${metric}")"
-assert_eq "record_agent_metric clean_verdicts" "1" "$(jq -r '.["test-reviewer"].clean_verdicts' <<<"${metric}")"
+assert_eq "record_agent_metric canonical schema v3" "3" "$(jq -r '._schema_version' <<<"${metric}")"
+assert_eq "record_agent_metric invocations" "1" "$(jq -r '.agents["test-reviewer"].invocations' <<<"${metric}")"
+assert_eq "record_agent_metric clean_verdicts" "1" "$(jq -r '.agents["test-reviewer"].clean_verdicts' <<<"${metric}")"
 # v1.48 W3.5: avg_confidence was fabricated (writers passed constants) and
 # is no longer written. A legacy extra argument must be ignored, and the
 # field must NOT reappear.
 assert_eq "record_agent_metric writes no avg_confidence" "false" \
-  "$(jq -r '.["test-reviewer"] | has("avg_confidence")' <<<"${metric}")"
+  "$(jq -r '.agents["test-reviewer"] | has("avg_confidence")' <<<"${metric}")"
 
 # Second recording with findings (legacy 3rd arg tolerated, ignored)
 record_agent_metric "test-reviewer" "findings" 60
 metric="$(cat "${_AGENT_METRICS_FILE}")"
-assert_eq "record_agent_metric second invocation" "2" "$(jq -r '.["test-reviewer"].invocations' <<<"${metric}")"
-assert_eq "record_agent_metric finding_verdicts" "1" "$(jq -r '.["test-reviewer"].finding_verdicts' <<<"${metric}")"
+assert_eq "record_agent_metric second invocation" "2" "$(jq -r '.agents["test-reviewer"].invocations' <<<"${metric}")"
+assert_eq "record_agent_metric finding_verdicts" "1" "$(jq -r '.agents["test-reviewer"].finding_verdicts' <<<"${metric}")"
 assert_eq "record_agent_metric legacy arg leaves no avg_confidence" "false" \
-  "$(jq -r '.["test-reviewer"] | has("avg_confidence")' <<<"${metric}")"
+  "$(jq -r '.agents["test-reviewer"] | has("avg_confidence")' <<<"${metric}")"
 
 # Regression: float/null values in existing metrics should not crash;
 # stale avg_confidence keys on old entries are dropped on upsert.
 printf '{"float-agent":{"invocations":3.7,"clean_verdicts":2.5,"finding_verdicts":1.2,"last_used_ts":100,"avg_confidence":4.5}}' > "${_AGENT_METRICS_FILE}"
 record_agent_metric "float-agent" "clean"
 metric="$(cat "${_AGENT_METRICS_FILE}")"
-inv="$(jq -r '.["float-agent"].invocations' <<<"${metric}")"
+inv="$(jq -r '.agents["float-agent"].invocations' <<<"${metric}")"
 assert_eq "record_agent_metric survives float values" "4" "${inv}"
+assert_eq "legacy flat metric migrated away" "false" "$(jq -r 'has("float-agent")' <<<"${metric}")"
+assert_eq "read_agent_metric reads migrated canonical entry" "4" \
+  "$(read_agent_metric "float-agent" | jq -r '.invocations')"
+
+# Reader compatibility before the next writer migration.
+printf '{"legacy-reader":{"invocations":7,"clean_verdicts":6,"finding_verdicts":1}}' > "${_AGENT_METRICS_FILE}"
+assert_eq "read_agent_metric reads legacy flat entry" "7" \
+  "$(read_agent_metric "legacy-reader" | jq -r '.invocations')"
+assert_eq "get_all_agent_metrics normalizes legacy flat entry" "7" \
+  "$(get_all_agent_metrics | jq -r '.agents["legacy-reader"].invocations')"
 
 rm -rf "${TEST_METRICS_DIR}"
 _AGENT_METRICS_FILE="${_ORIG_METRICS_FILE}"

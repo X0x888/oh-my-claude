@@ -172,7 +172,7 @@ for _ in $(seq 1 "${METRIC_WRITERS}"); do
 done
 wait
 
-invocations="$(jq -r '."concurrency-test-agent".invocations // 0' "${_AGENT_METRICS_FILE}")"
+invocations="$(jq -r '.agents["concurrency-test-agent"].invocations // 0' "${_AGENT_METRICS_FILE}")"
 assert_eq "agent metric invocations equal writer count (${METRIC_WRITERS})" \
   "${METRIC_WRITERS}" "${invocations}"
 

@@ -19,19 +19,12 @@ if [[ ! -f "${VALIDATOR}" ]]; then
   exit 1
 fi
 
-# ----------------------------------------------------------------------
-# Test 1: validator exits 0 on the current repo (no drift)
 printf '\n## F-014 — flag coordination validator\n'
-if bash "${VALIDATOR}" >/dev/null 2>&1; then
-  printf '  PASS  current repo: validator exits 0\n'
-  pass=$((pass + 1))
-else
-  printf '  FAIL  validator says drift exists in the committed tree — fix the lockstep BEFORE landing this test\n'
-  bash "${VALIDATOR}" 2>&1 | sed 's/^/    /'
-  fail=$((fail + 1))
-fi
+# The workflow invokes the current-tree validator directly, and Test 3 below
+# also requires a clean current-tree result while checking exempt flags. Keep
+# one stronger owner here instead of paying for an identical smoke invocation.
 
-# Test 2: validator exits 1 when a fixture has drift.
+# Test 1: validator exits 1 when a fixture has drift.
 # Create a synthetic temp repo skeleton that mimics the SoT shape but
 # omits a flag in one site.
 TEST_TMP="$(mktemp -d)"
@@ -99,13 +92,14 @@ else
   fail=$((fail + 1))
 fi
 
-# Test 3: validator handles the parser-exempt set correctly.
-# `installation_drift_check` and `model_tier` are in the
+# Test 2: validator handles the parser-exempt set correctly and exits cleanly
+# on the current repository.
+# `installation_drift_check` and `statusline_retention` are in the
 # PARSER_EXEMPT_FLAGS list; they're documented in conf.example and
 # omc-config but NOT in the canonical parser. Validator must NOT
 # report them as drift.
 real_out="$(bash "${VALIDATOR}" 2>&1)" || true
-if [[ "${real_out}" == *"flag coordination OK"* ]] && [[ "${real_out}" != *"installation_drift_check"* ]] && [[ "${real_out}" != *"model_tier"* ]]; then
+if [[ "${real_out}" == *"flag coordination OK"* ]] && [[ "${real_out}" != *"installation_drift_check"* ]] && [[ "${real_out}" != *"statusline_retention"* ]]; then
   printf '  PASS  parser-exempt flags not reported as drift\n'
   pass=$((pass + 1))
 else

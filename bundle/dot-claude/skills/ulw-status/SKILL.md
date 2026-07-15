@@ -36,8 +36,9 @@ Treat the arguments case-insensitively.
 Display the output as-is.
 
 The `--summary` form is the right choice at end-of-session — it folds session
-duration, edit counts, guard blocks, classifier misfires, reviewer verdicts,
-and commits made during the session onto ~8 lines. It surfaces "invisible
+duration, token/cache totals, top positive-fresh-token role/model drivers,
+edit counts, guard blocks, classifier misfires, reviewer verdicts, and commits
+made during the session onto a compact view. It surfaces "invisible
 friction" signals that the full dump buries, so the user can see patterns
 (e.g. "3 sessions in a row with mostly-misfire PreTool blocks → tune the
 classifier") that would otherwise live only in memory.

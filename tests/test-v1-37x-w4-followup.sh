@@ -168,19 +168,8 @@ printf '\n--- Item 10: backup pruning preview + interactive Ctrl-C window ---\n'
 
 INSTALL_SH="${REPO_ROOT}/install.sh"
 
-# Source-level checks: pre-prune list, interactive sleep.
-if grep -q "Backup retention: keeping" "${INSTALL_SH}"; then
-  ok
-else
-  fail_msg "Item 10: install.sh missing 'Backup retention: keeping' pre-prune line"
-fi
-
-if grep -q "will prune.*older:" "${INSTALL_SH}"; then
-  ok
-else
-  fail_msg "Item 10: install.sh missing 'will prune N older:' preview line"
-fi
-
+# The runtime fixture below owns the preview-list contract. Keep a focused
+# source check only for the interactive delay, which CI deliberately skips.
 if grep -q "Continuing prune in 5 seconds" "${INSTALL_SH}"; then
   ok
 else

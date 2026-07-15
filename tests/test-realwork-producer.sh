@@ -91,8 +91,8 @@ assert_eq "A3 elapsed_seconds (250-100)" "150" "${elapsed_a}"
 sdir_b="$(new_session "sess-B" '{
   "session_start_ts": "100",
   "last_edit_ts": "300",
-  "last_review_ts": "290",
-  "last_verify_ts": "295",
+  "last_review_ts": "320",
+  "last_verify_ts": "310",
   "last_verify_outcome": "passed",
   "last_verify_scope": "targeted",
   "last_verify_method": "test_command",
@@ -109,7 +109,7 @@ assert_eq "B4 regression_test_added true" "true" "$(jq -r '.outcomes.regression_
 assert_eq "B5 final_closeout_audit_ready true" "true" "$(jq -r '.outcomes.final_closeout_audit_ready' <<<"${result_b}")"
 
 # ---------------------------------------------------------------
-# Part C: negative cases — wrong scope, no review, no test file
+# Part C: negative cases — a test-shaped edit alone earns no credit
 # ---------------------------------------------------------------
 sdir_c="$(new_session "sess-C" '{
   "session_start_ts": "100",
@@ -118,12 +118,29 @@ sdir_c="$(new_session "sess-C" '{
   "last_verify_scope": "lint",
   "code_edit_count": "1"
 }')"
-printf '%s\n' "src/counter.ts" >"${sdir_c}/edited_files.log"
+printf '%s\n' "src/counter.ts" "src/counter.test.ts" >"${sdir_c}/edited_files.log"
 result_c="$(run_producer "sess-C" "targeted-bugfix")"
 assert_eq "C1 lint scope does NOT count as tests_passed" "false" "$(jq -r '.outcomes.tests_passed' <<<"${result_c}")"
 assert_eq "C2 lint scope does NOT count as targeted_verification" "false" "$(jq -r '.outcomes.targeted_verification' <<<"${result_c}")"
 assert_eq "C3 missing last_review_ts → review_clean false" "false" "$(jq -r '.outcomes.review_clean' <<<"${result_c}")"
-assert_eq "C4 no test file in edits → regression_test_added false" "false" "$(jq -r '.outcomes.regression_test_added' <<<"${result_c}")"
+assert_eq "C4 unverified test-shaped edit → regression_test_added false" "false" "$(jq -r '.outcomes.regression_test_added' <<<"${result_c}")"
+
+sdir_c2="$(new_session "sess-C2" '{
+  "session_start_ts": "100",
+  "last_code_edit_ts": "200",
+  "last_edit_ts": "300",
+  "last_verify_ts": "250",
+  "last_verify_outcome": "passed",
+  "last_verify_scope": "targeted",
+  "last_verify_method": "test_command",
+  "code_edit_count": "1"
+}')"
+printf '%s\n' "src/counter.ts" "src/counter.test.ts" >"${sdir_c2}/edited_files.log"
+result_c2="$(run_producer "sess-C2" "targeted-bugfix")"
+assert_eq "C5 targeted pass is recognized independently" "true" \
+  "$(jq -r '.outcomes.tests_passed' <<<"${result_c2}")"
+assert_eq "C6 verification before the later test edit earns no regression credit" "false" \
+  "$(jq -r '.outcomes.regression_test_added' <<<"${result_c2}")"
 
 # ---------------------------------------------------------------
 # Part D: ui-shipping scenario detectors
@@ -472,7 +489,7 @@ pass_value="$(jq -r '.pass' <<<"${score_output}")"
 # targeted-bugfix required_outcomes: tests_passed, targeted_verification,
 # review_clean, regression_test_added, final_closeout_audit_ready — all
 # true in sess-B. Budgets: tokens=150 (under 45000), tool_calls=0 (under 55),
-# elapsed=200 (under 900). Score should be 100, pass true.
+# elapsed=220 (under 900). Score should be 100, pass true.
 assert_eq "G1 perfect session scores 100" "100" "${score_value}"
 assert_eq "G2 perfect session passes" "true" "${pass_value}"
 
@@ -535,7 +552,7 @@ sdir_j="$(new_session "sess-J" '{
   "review_had_findings": "false",
   "last_assistant_message": "**Changed.** Updated the payment module and drafted the rollout memo. **Verification.** targeted tests passed and sources were checked. **Risks.** none. **Next.** Done."
 }')"
-printf '%s\n' "src/payment/module.ts" "tests/payment/module.test.ts" "docs/rollout-memo.md" >"${sdir_j}/edited_files.log"
+printf '%s\n' "src/payment/module.ts" "docs/rollout-memo.md" >"${sdir_j}/edited_files.log"
 cat >"${sdir_j}/subagent_summaries.jsonl" <<'JSONL'
 {"ts":300,"agent_type":"librarian","message":"Stripe API changes verified.\nVERDICT: REPORT_READY"}
 {"ts":360,"agent_type":"briefing-analyst","message":"Migration tradeoffs synthesized.\nVERDICT: CLEAN"}
@@ -545,7 +562,7 @@ JSONL
 result_j="$(run_producer "sess-J" "mixed-rollout-migration")"
 assert_eq "I1 mixed tests_passed true" "true" "$(jq -r '.outcomes.tests_passed' <<<"${result_j}")"
 assert_eq "I2 mixed targeted_verification true" "true" "$(jq -r '.outcomes.targeted_verification' <<<"${result_j}")"
-assert_eq "I3 mixed regression_test_added true" "true" "$(jq -r '.outcomes.regression_test_added' <<<"${result_j}")"
+assert_eq "I3 mixed rollout does not invent regression-test credit" "false" "$(jq -r '.outcomes.regression_test_added' <<<"${result_j}")"
 assert_eq "I4 mixed review_clean true" "true" "$(jq -r '.outcomes.review_clean' <<<"${result_j}")"
 assert_eq "I5 mixed research_report_ready true" "true" "$(jq -r '.outcomes.research_report_ready' <<<"${result_j}")"
 assert_eq "I6 mixed analysis_specialist_coverage true" "true" "$(jq -r '.outcomes.analysis_specialist_coverage' <<<"${result_j}")"

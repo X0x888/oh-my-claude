@@ -12,7 +12,6 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SHOW_REPORT="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/show-report.sh"
-COMMON_SH="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh"
 
 pass=0
 fail=0
@@ -102,60 +101,6 @@ else
 fi
 
 # ----------------------------------------------------------------------
-# F-010 — gate_events writer emits _v:1 schema version field.
-# ----------------------------------------------------------------------
-printf '\n--- F-010: cross-session JSONL writers emit _v:1 ---\n'
-
-# Inspect the source — every cross-session emitter should write _v:1.
-if grep -qE "_v:1.*ts.*gate.*event" "${COMMON_SH}"; then
-  ok
-else
-  fail_msg "F-010: record_gate_event source missing _v:1 in row literal"
-fi
-
-if grep -qF "{_v:1, ts:" "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/record-serendipity.sh"; then
-  ok
-else
-  fail_msg "F-010: record-serendipity row missing _v:1"
-fi
-
-if grep -qF "{_v:1, ts:" "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/record-archetype.sh"; then
-  ok
-else
-  fail_msg "F-010: record-archetype row missing _v:1"
-fi
-
-if grep -qE "_v: 1" "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/lib/classifier.sh"; then
-  ok
-else
-  fail_msg "F-010: classifier_telemetry record missing _v:1"
-fi
-
-# Functional check — write a gate event and verify _v field is present.
-TEST_STATE_ROOT="${TEST_TMP}/state"
-mkdir -p "${TEST_STATE_ROOT}/test-session"
-echo '{}' > "${TEST_STATE_ROOT}/test-session/session_state.json"
-
-bash -c "
-  set +e
-  STATE_ROOT='${TEST_STATE_ROOT}'
-  SESSION_ID='test-session'
-  source '${COMMON_SH}'
-  record_gate_event 'test-gate' 'block' 'detail=foo'
-"
-
-if [[ -f "${TEST_STATE_ROOT}/test-session/gate_events.jsonl" ]]; then
-  emitted_v="$(jq -r '._v // empty' "${TEST_STATE_ROOT}/test-session/gate_events.jsonl" 2>/dev/null | head -1)"
-  if [[ "${emitted_v}" == "1" ]]; then
-    ok
-  else
-    fail_msg "F-010: emitted gate event missing _v=1 (got: ${emitted_v})"
-  fi
-else
-  fail_msg "F-010: gate event was not written"
-fi
-
-# ----------------------------------------------------------------------
 # F-006 — Directive value attribution joins bias-defense × session outcomes.
 # ----------------------------------------------------------------------
 printf '\n--- F-006: Directive value attribution section appears in /ulw-report ---\n'
@@ -238,14 +183,11 @@ else
 fi
 
 # ----------------------------------------------------------------------
-# v1.37.x W3 follow-up (Item 5): runtime regression for F-010 schema
-# versioning. The source-greps above (lines ~110-128) test that the
-# `_v:1` literal exists in record-serendipity.sh / record-archetype.sh.
-# But that's the F-023-class blindspot — a typo in the variable
-# referenced by the row-emit jq expression would still leave the
-# literal `_v:1` in source while the actual JSONL row written at
-# runtime omits it. These fixtures invoke each writer with synthetic
-# input and assert the OUTPUT row carries `_v:1`.
+# Runtime regression for F-010 schema versioning. Literal source checks were
+# removed because they stayed green when the emitted row was malformed. The
+# remaining serendipity writer is exercised here. Gate-event schema is owned
+# by the stronger runtime check in test-schema-versioning.sh, while archetype,
+# classifier, and ulw-correct rows have dedicated behavioral suites.
 # ----------------------------------------------------------------------
 printf '\n--- F-010 runtime: schema-version field actually written by writers ---\n'
 
@@ -278,37 +220,6 @@ if [[ -f "${f010_serendipity_log}" ]]; then
   fi
 else
   fail_msg "F-010 runtime (serendipity): writer did not produce serendipity-log.jsonl at ${f010_serendipity_log}"
-fi
-
-# B. record_gate_event from common.sh — the cross-session writer for
-# gate_events.jsonl. This is the highest-traffic writer in the system,
-# so a missing _v on emit would cascade through every consumer in
-# /ulw-report.
-F010B_HOME="${TEST_TMP}/f010b-rt-home"
-mkdir -p "${F010B_HOME}/.claude/quality-pack/state"
-ln -sf "${REPO_ROOT}/bundle/dot-claude/skills" "${F010B_HOME}/.claude/skills"
-mkdir -p "${F010B_HOME}/.claude/quality-pack/state/${f010_sid}"
-printf '{}\n' > "${F010B_HOME}/.claude/quality-pack/state/${f010_sid}/session_state.json"
-
-HOME="${F010B_HOME}" \
-  STATE_ROOT="${F010B_HOME}/.claude/quality-pack/state" \
-  SESSION_ID="${f010_sid}" \
-  bash -c "
-    set -euo pipefail
-    . '${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh'
-    record_gate_event 'F010-runtime' 'block' 'detail=test'
-  " 2>/dev/null || true
-
-f010b_events="${F010B_HOME}/.claude/quality-pack/state/${f010_sid}/gate_events.jsonl"
-if [[ -f "${f010b_events}" ]]; then
-  f010b_row="$(tail -1 "${f010b_events}")"
-  if [[ "${f010b_row}" == *'"_v":1'* ]] || [[ "${f010b_row}" == *'"_v": 1'* ]]; then
-    ok
-  else
-    fail_msg "F-010 runtime (record_gate_event): row missing _v field. Row: ${f010b_row}"
-  fi
-else
-  fail_msg "F-010 runtime (record_gate_event): writer did not produce gate_events.jsonl"
 fi
 
 # ----------------------------------------------------------------------

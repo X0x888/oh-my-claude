@@ -8,7 +8,7 @@
 # rather than after.
 #
 # Mode: STRICT by default (v1.32.2 promotion) — exits non-zero on any
-# sterile-only failure. Override to ADVISORY by passing --advisory or
+# test failure. Override to ADVISORY by passing --advisory or
 # setting OMC_STERILE_ADVISORY=1.
 #
 # Phase 1 (v1.32.0) — ADVISORY mode for one release cycle, observed
@@ -23,10 +23,12 @@
 #   STRICT default for CONTRIBUTING.md Step 3.
 #
 # Usage:
-#   bash tests/run-sterile.sh                    # strict, exit non-zero on any sterile-only failure
+#   bash tests/run-sterile.sh                    # strict, exit non-zero on any test failure
 #   bash tests/run-sterile.sh --advisory         # report-only
 #   OMC_STERILE_ADVISORY=1 bash tests/run-sterile.sh
 #   bash tests/run-sterile.sh --only test-show-status.sh    # single test
+#   bash tests/run-sterile.sh --changed --base origin/main  # impacted PR tests only
+#   bash tests/run-sterile.sh --plan --changed --base origin/main  # list, do not execute
 #
 # Output: one line per test
 #   PASS   test-foo.sh         (passes both env-scrubbed and dev env)
@@ -44,11 +46,27 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # Args
 mode="strict"  # v1.32.2: strict by default
 only=""
+selection="full"
+base_ref=""
+plan_only=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --strict) mode="strict"; shift ;;
     --advisory) mode="advisory"; shift ;;
-    --only) only="$2"; shift 2 ;;
+    --full) selection="full"; base_ref=""; shift ;;
+    --changed) selection="changed"; shift ;;
+    --base)
+      [[ $# -ge 2 ]] || { printf '%s\n' '--base requires a git ref' >&2; exit 2; }
+      selection="changed"
+      base_ref="$2"
+      shift 2
+      ;;
+    --plan) plan_only=1; shift ;;
+    --only)
+      [[ $# -ge 2 ]] || { printf '%s\n' '--only requires a test filename' >&2; exit 2; }
+      only="$2"
+      shift 2
+      ;;
     -h|--help) sed -n '/^#/p' "$0" | sed 's/^#//' ; exit 0 ;;
     *) printf 'Unknown arg: %s\n' "$1" >&2; exit 2 ;;
   esac
@@ -88,6 +106,45 @@ if [[ ${#ci_pinned[@]} -eq 0 ]]; then
   exit 2
 fi
 
+# Pull-request sterile coverage is change-proportional: reuse the authoritative
+# change-aware selector in tools/run-tests.sh, but execute the selected tests
+# under the scrubbed environment here. A broad or unmapped production change
+# makes that selector fail closed to the full suite; a narrow PR pays only for
+# its impacted tests. The default remains full so release and local workflows
+# retain exhaustive sterile coverage.
+if [[ "${selection}" == "changed" ]]; then
+  runner_args=(--changed --list --no-record)
+  [[ -n "${base_ref}" ]] && runner_args+=(--base "${base_ref}")
+  set +e
+  changed_plan="$(bash "${REPO_ROOT}/tools/run-tests.sh" "${runner_args[@]}" 2>&1)"
+  changed_plan_rc=$?
+  set -e
+  if [[ "${changed_plan_rc}" -ne 0 ]]; then
+    printf 'Could not plan change-aware sterile tests:\n%s\n' "${changed_plan}" >&2
+    exit 2
+  fi
+
+  changed_selected=()
+  while IFS= read -r line; do
+    [[ -n "${line}" ]] && changed_selected+=("${line}")
+  done < <(
+    printf '%s\n' "${changed_plan}" \
+      | sed -n 's|^[[:space:]]*tests/\(test-[A-Za-z0-9._-]*\.sh\).*|\1|p' \
+      | LC_ALL=C sort -u
+  )
+
+  proportional=()
+  for selected_test in "${changed_selected[@]}"; do
+    for pinned_test in "${ci_pinned[@]}"; do
+      if [[ "${selected_test}" == "${pinned_test}" ]]; then
+        proportional+=("${selected_test}")
+        break
+      fi
+    done
+  done
+  ci_pinned=("${proportional[@]}")
+fi
+
 # Filter
 if [[ -n "${only}" ]]; then
   filtered=()
@@ -95,6 +152,24 @@ if [[ -n "${only}" ]]; then
     [[ "${t}" == "${only}" ]] && filtered+=("${t}")
   done
   ci_pinned=("${filtered[@]}")
+fi
+
+if [[ ${#ci_pinned[@]} -eq 0 ]]; then
+  printf 'No sterile tests selected (selection=%s%s).\n' \
+    "${selection}" "${only:+, only=${only}}" >&2
+  exit 2
+fi
+
+if [[ "${plan_only}" -eq 1 ]]; then
+  printf '── sterile-env plan (mode: %s; selection: %s) ───\n' \
+    "${mode}" "${selection}"
+  [[ -n "${base_ref}" ]] && printf 'Base: %s\n' "${base_ref}"
+  printf 'Tests: %d\n' "${#ci_pinned[@]}"
+  for t in "${ci_pinned[@]}"; do
+    printf '  tests/%s\n' "${t}"
+  done
+  printf 'Planning only; no tests executed.\n'
+  exit 0
 fi
 
 # Run each pinned test under sterile env. Compare with dev-env run
@@ -122,7 +197,8 @@ sterile_fail=0
 double_fail=0
 fail_list=()
 
-printf '── sterile-env CI-parity run (mode: %s) ───\n' "${mode}"
+printf '── sterile-env CI-parity run (mode: %s; selection: %s) ───\n' \
+  "${mode}" "${selection}"
 printf 'Tests: %d  PATH preview: %s\n\n' "${#ci_pinned[@]}" "$(printf '%s\n' "${sterile_env}" | grep '^PATH=' | head -1)"
 
 for t in "${ci_pinned[@]}"; do
@@ -174,15 +250,18 @@ if [[ ${#fail_list[@]} -gt 0 ]]; then
 fi
 
 # Exit code semantics:
-#   advisory mode (default) — always exit 0, report only
-#   strict mode             — exit 1 on any sterile-only failure
-if [[ "${mode}" == "strict" && ${sterile_fail} -gt 0 ]]; then
-  printf '\n[strict] %d sterile-only failure(s) — release blocked.\n' "${sterile_fail}" >&2
+#   advisory mode — always exit 0, report only
+#   strict mode   — exit 1 on any sterile-only or ordinary test failure
+failure_total=$((sterile_fail + double_fail))
+if [[ "${mode}" == "strict" && ${failure_total} -gt 0 ]]; then
+  printf '\n[strict] %d test failure(s) (%d sterile-only, %d in both environments) — release blocked.\n' \
+    "${failure_total}" "${sterile_fail}" "${double_fail}" >&2
   exit 1
 fi
 
-if [[ ${sterile_fail} -gt 0 ]]; then
-  printf '\n[advisory] %d sterile-only failure(s) — review before promoting to mandatory.\n' "${sterile_fail}"
+if [[ ${failure_total} -gt 0 ]]; then
+  printf '\n[advisory] %d test failure(s) (%d sterile-only, %d in both environments) — review before release.\n' \
+    "${failure_total}" "${sterile_fail}" "${double_fail}"
 fi
 
 exit 0

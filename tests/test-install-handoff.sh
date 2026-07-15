@@ -141,5 +141,95 @@ assert_contains "AGENTS protocol embeds the canonical restart instruction" \
   "Restart Claude Code (or open a new session) before testing. Already-running sessions keep the previous hook wiring, so \`/ulw\` will silently no-op until you restart." \
   "${agents_md}"
 
+printf '\n'
+printf '4. Invalid saved model tier is reported and repaired without demotion\n'
+
+# Last-row semantics matter for append-updated config files: an invalid newest
+# value must not expose an older valid row as though it were still effective.
+cat >> "${manual_home}/.claude/oh-my-claude.conf" <<'EOF'
+model_tier=quality
+model_tier=qualtiy
+EOF
+
+set +e
+invalid_verify_output="$(TARGET_HOME="${manual_home}" bash "${REPO_ROOT}/verify.sh" 2>&1)"
+invalid_verify_rc=$?
+set -e
+
+assert_eq "verify accepts invalid saved tier as informational" "0" "${invalid_verify_rc}"
+assert_contains "verify warns about invalid last saved tier" \
+  "Invalid saved model tier 'qualtiy' ignored; using default: balanced" "${invalid_verify_output}"
+assert_contains "verify reports balanced as the effective tier" \
+  "Active model tier: balanced (default)" "${invalid_verify_output}"
+
+invalid_install_output="$(TARGET_HOME="${manual_home}" bash "${REPO_ROOT}/install.sh" 2>&1)"
+assert_contains "install warns while repairing invalid saved tier" \
+  'Invalid saved model tier "qualtiy"; using balanced and repairing oh-my-claude.conf.' \
+  "${invalid_install_output}"
+assert_eq "install persists one normalized balanced tier" \
+  "model_tier=balanced" \
+  "$(grep -E '^model_tier=' "${manual_home}/.claude/oh-my-claude.conf" || true)"
+assert_eq "invalid saved tier never demotes inherit quality reviewer" \
+  "inherit" \
+  "$(sed -n 's/^model:[[:space:]]*//p' "${manual_home}/.claude/agents/quality-reviewer.md" | head -1)"
+
+printf '\n'
+printf '5. Economy install and reinstall preserve inherited composition\n'
+
+economy_home="${WORK_DIR}/economy-home"
+mkdir -p "${economy_home}"
+economy_install_output="$(TARGET_HOME="${economy_home}" \
+  bash "${REPO_ROOT}/install.sh" --model-tier=economy 2>&1)"
+economy_inherit_count="$({ grep -h '^model: inherit$' \
+  "${economy_home}/.claude/agents/"*.md || true; } | wc -l | tr -d '[:space:]')"
+economy_sonnet_count="$({ grep -h '^model: sonnet$' \
+  "${economy_home}/.claude/agents/"*.md || true; } | wc -l | tr -d '[:space:]')"
+assert_eq "economy fresh install keeps inherited deliberators" \
+  "14" "${economy_inherit_count}"
+assert_eq "economy fresh install keeps Sonnet specialists" \
+  "23" "${economy_sonnet_count}"
+assert_contains "economy install summary describes composed fallback" \
+  "economy (inherit deliberators, sonnet specialists; adaptive live escalation" \
+  "${economy_install_output}"
+
+# Simulate a legacy flattened declaration, add a user custom definition, and
+# persist a valid bare inherit pin. Reinstall reads the saved Economy tier,
+# repairs the shipped roster, materializes the shipped pin, and leaves custom
+# files outside the embedded rosters untouched even when explicitly pinned.
+sed 's/^model: inherit$/model: sonnet/' \
+  "${economy_home}/.claude/agents/quality-reviewer.md" \
+  > "${economy_home}/.claude/agents/quality-reviewer.md.tmp"
+mv "${economy_home}/.claude/agents/quality-reviewer.md.tmp" \
+  "${economy_home}/.claude/agents/quality-reviewer.md"
+cat >> "${economy_home}/.claude/oh-my-claude.conf" <<'EOF'
+model_overrides=librarian:inherit,duplicate-custom:opus
+EOF
+printf -- '---\nname: custom-economy\nmodel: haiku\n---\nbody\n' \
+  > "${economy_home}/.claude/agents/custom-economy.md"
+printf -- '---\nname: duplicate-custom\nmodel: sonnet\nmodel: haiku\n---\nbody\n' \
+  > "${economy_home}/.claude/agents/duplicate-custom.md"
+economy_reinstall_output="$(TARGET_HOME="${economy_home}" \
+  bash "${REPO_ROOT}/install.sh" 2>&1)"
+assert_eq "economy reinstall repairs flattened reviewer" "inherit" \
+  "$(sed -n 's/^model:[[:space:]]*//p' \
+    "${economy_home}/.claude/agents/quality-reviewer.md" | head -1)"
+assert_eq "economy reinstall materializes bare inherit override" "inherit" \
+  "$(sed -n 's/^model:[[:space:]]*//p' \
+    "${economy_home}/.claude/agents/librarian.md" | head -1)"
+assert_eq "economy reinstall preserves custom agent model" "haiku" \
+  "$(sed -n 's/^model:[[:space:]]*//p' \
+    "${economy_home}/.claude/agents/custom-economy.md" | head -1)"
+assert_contains "economy reinstall keeps custom pins runtime-only" \
+  "runtime-only duplicate-custom — custom bare pin is enforced at dispatch; custom definitions are never rewritten" \
+  "${economy_reinstall_output}"
+assert_eq "runtime-only duplicate custom definition remains unmodified" "2" \
+  "$(grep -c '^model: ' \
+    "${economy_home}/.claude/agents/duplicate-custom.md")"
+economy_verify_output="$(TARGET_HOME="${economy_home}" \
+  bash "${REPO_ROOT}/verify.sh" 2>&1)"
+assert_contains "verify census includes Haiku and invalid/other models" \
+  "Agent models: 15 inherit (session model), 0 opus, 22 sonnet, 1 haiku, 1 invalid/other (total 39)" \
+  "${economy_verify_output}"
+
 printf '\n=== Install handoff tests: %s passed, %s failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]]

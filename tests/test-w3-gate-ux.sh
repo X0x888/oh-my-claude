@@ -142,19 +142,6 @@ fi
 # ----------------------------------------------------------------------
 printf '\n--- F-013: objective truncation handles long prompts ---\n'
 
-if grep -qE "current_objective.*240.*ellipsis" "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/show-status.sh"; then
-  ok
-else
-  fail_msg "F-013: show-status.sh does not truncate at 240 with ellipsis variable"
-fi
-
-# OMC_PLAIN ellipsis fallback should switch from … to ...
-if grep -qE '_ellipsis="\.\.\."' "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/show-status.sh"; then
-  ok
-else
-  fail_msg "F-013: OMC_PLAIN should swap … for ... in the ellipsis variable"
-fi
-
 # ----------------------------------------------------------------------
 # F-014 — OMC_PLAIN=1 falls back to ASCII glyphs.
 # ----------------------------------------------------------------------
@@ -348,14 +335,10 @@ else
 fi
 
 # ----------------------------------------------------------------------
-# F-013 follow-up (Item 5): runtime regression for objective truncation.
-# The source-greps above (lines 145-152) test that the literal `240` and
-# `_ellipsis="..."` strings exist in show-status.sh, but a typo in the
-# variable referenced by the jq filter would still leave those literals
-# in source while the actual rendered output skipped truncation. This
-# fixture seeds a long current_objective (>240 chars), invokes
-# show-status, and asserts the output is truncated AND contains the
-# ellipsis suffix.
+# F-013 runtime regression for objective truncation. Source-string checks were
+# removed because they stayed green when the rendered path was broken. This
+# fixture seeds a long current_objective (>240 chars), invokes show-status, and
+# proves truncation plus both Unicode and plain-mode suffix behavior.
 # ----------------------------------------------------------------------
 printf '\n--- F-013 runtime: objective truncation actually fires ---\n'
 

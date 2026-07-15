@@ -36,8 +36,14 @@ set -euo pipefail
 # the four.
 export OMC_LAZY_CLASSIFIER=1
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+_omc_hook_source="${BASH_SOURCE[0]}"
+SCRIPT_DIR="${_omc_hook_source%/*}"
+[[ "${SCRIPT_DIR}" == "${_omc_hook_source}" ]] && SCRIPT_DIR="."
+SCRIPT_DIR="$(cd "${SCRIPT_DIR}" && pwd -P)"
+unset _omc_hook_source
+_OMC_PIN_OBSERVER_PATH_ON_SOURCE=1
 . "${SCRIPT_DIR}/common.sh"
+unset _OMC_PIN_OBSERVER_PATH_ON_SOURCE
 
 HOOK_JSON="$(_omc_read_hook_stdin)"
 [[ -n "${HOOK_JSON}" ]] || exit 0

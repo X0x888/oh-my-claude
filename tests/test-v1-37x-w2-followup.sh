@@ -19,7 +19,7 @@
 #           saw fewer directives than expected.
 #   Item 4 — delivery-contract gate names commit_mode=forbidden + inferred-
 #           blocker shape explicitly ("you said don't commit, but edits
-#           imply tests/docs are needed").
+#           imply another live delivery surface is needed").
 #   Item 8 — discovered-scope FOR YOU explicitly says "wave-append
 #           preferred over defer for same-surface findings".
 
@@ -265,9 +265,10 @@ else
   fail_msg "Item 4: stop-guard.sh missing inferred_surface_categories naming"
 fi
 
-# Inferred-rule-tag → human-name mapping must include all R-tags currently
-# emitted by inferred_contract_blocking_items.
-for tag in R1 R2 R3a R3b R4 R5; do
+# Inferred-rule-tag → human-name mapping must include all five live R-tags
+# currently emitted by inferred_contract_blocking_items. R1 is intentionally
+# retired; fresh proof remains the independent verification gate's job.
+for tag in R2 R3a R3b R4 R5; do
   if grep -qE "\"${tag}\"" "${GUARD}"; then
     ok
   else

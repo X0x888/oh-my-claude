@@ -37,6 +37,55 @@ ensure_session_dir
 
 _deactivate_session_unlocked() {
   local artifact artifact_path verification_starts
+  local taint_file taint_tmp taint_dedup txn
+
+  # Every deleted live identity remains capable of returning after reactivation.
+  # Persist the taint before removing causal rows so a later same-agent launch
+  # must use a never-reused echoed ID instead of accepting the old result.
+  taint_file="$(session_file "dispatch_tainted_identities.log")"
+  [[ ! -L "${taint_file}" ]] \
+    && { [[ ! -e "${taint_file}" ]] || [[ -f "${taint_file}" ]]; } \
+    || return 1
+  taint_tmp="$(mktemp "${taint_file}.XXXXXX")" || return 1
+  [[ ! -f "${taint_file}" ]] || cp "${taint_file}" "${taint_tmp}" || {
+    rm -f "${taint_tmp}"
+    return 1
+  }
+  for artifact in pending_agents.jsonl agent_dispatch_starts.jsonl; do
+    artifact_path="$(session_file "${artifact}")"
+    [[ -s "${artifact_path}" ]] || continue
+    jq -Rr '
+      fromjson?
+      | select((.review_dispatch_abandoned // false) != true)
+      | (.agent_type // empty)
+      | select(type == "string" and test("^[A-Za-z0-9_.:-]{1,128}$"))
+    ' "${artifact_path}" >>"${taint_tmp}" || {
+      rm -f "${taint_tmp}"
+      return 1
+    }
+  done
+  taint_dedup="$(mktemp "${taint_file}.dedup.XXXXXX")" || {
+    rm -f "${taint_tmp}"
+    return 1
+  }
+  if ! awk 'NF && !seen[$0]++' "${taint_tmp}" >"${taint_dedup}" \
+      || ! mv -f "${taint_dedup}" "${taint_file}"; then
+    rm -f "${taint_tmp}" "${taint_dedup}"
+    return 1
+  fi
+  rm -f "${taint_tmp}"
+
+  # Interrupted dispatch/native-bind/plan journals are never replayed over
+  # newer state.
+  # Once every live identity above is tainted, deactivation is the safe reset
+  # point for removing those fail-closed recovery sentinels.
+  for txn in "$(session_file ".dispatch-txn.")"* \
+             "$(session_file ".native-bind-txn.")"* \
+             "$(session_file ".plan-txn.")"*; do
+    [[ -d "${txn}" ]] || continue
+    rm -f "${txn}/.ready" "${txn}"/* 2>/dev/null || return 1
+    rmdir "${txn}" 2>/dev/null || return 1
+  done
 
   _write_state_batch_unlocked \
     "workflow_mode" "" \

@@ -14,6 +14,8 @@
 #   - edited_files.log (if present)
 #   - subagent_summaries.jsonl (if present)
 #   - pending_agents.jsonl (if present)
+#   - native_agent_bindings.jsonl (committed platform completion IDs; if present)
+#   - dispatch_tainted_identities.log / dispatch_rebind_ids.log (if present)
 #   - discovered_scope.jsonl (council Phase 8 advisory-specialist findings; if present)
 #   - findings.json (council Phase 8 master finding list and wave plan; if present)
 #   - gate_events.jsonl (per-event outcome attribution rows; if present, added v1.14.0)
@@ -27,6 +29,7 @@
 #                          current_objective, last_meta_request
 #   classifier_telemetry — prompt_preview (was 200, becomes 80)
 #   recent_prompts       — text
+#   dispatch ledgers      — description (pending/start/Council rows)
 # Redaction is applied per-row with jq's try/catch so a malformed row
 # falls through to `empty` (dropped) rather than leaking the unredacted
 # original. The fallback-to-copy-on-jq-failure path was removed: a jq
@@ -272,7 +275,11 @@ mkdir -p "${REPRO_DIR}"
 for name in \
     edited_files.log \
     stall_paths.log \
-    pending_agents.jsonl \
+    native_agent_bindings.jsonl \
+    dispatch_tainted_identities.log \
+    dispatch_rebind_ids.log \
+    agent_completion_outcomes.jsonl \
+    council_returns.jsonl \
     subagent_summaries.jsonl \
     discovered_scope.jsonl \
     findings.json \
@@ -280,6 +287,18 @@ for name in \
     serendipity_log.jsonl; do
   if [[ -f "${SESSION_DIR}/${name}" ]]; then
     cp "${SESSION_DIR}/${name}" "${REPRO_DIR}/${name}"
+  fi
+done
+
+# Agent descriptions originate in Agent tool input and may contain verbatim
+# task text or credentials. Redact the three ledgers that carry the field;
+# malformed rows are dropped by redact_jsonl_field rather than copied raw.
+for name in pending_agents.jsonl agent_dispatch_starts.jsonl council_dispatches.jsonl; do
+  if [[ -f "${SESSION_DIR}/${name}" ]]; then
+    redact_jsonl_field \
+      "${SESSION_DIR}/${name}" \
+      "${REPRO_DIR}/${name}" \
+      "description" || true
   fi
 done
 

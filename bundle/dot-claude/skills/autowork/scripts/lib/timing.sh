@@ -283,31 +283,954 @@ _cap_per_session_jsonl() {
 # --- Token capture (v1.46-pre) ---
 #
 # timing_capture_session_tokens <transcript_path> <prompt_seq>
-#   Append a `token_delta` row to timing.jsonl attributing the tokens
-#   consumed since the previous Stop to the main thread vs sub-agents.
+#   Append a `token_delta` row plus a durable `token_checkpoint` to
+#   timing.jsonl, attributing tokens consumed since the previous Stop to
+#   the main thread vs sub-agents.
 #
 #   Source of truth: Claude Code's session transcript JSONL (the hook's
-#   `transcript_path`). Each assistant row carries `message.usage`
-#   (input_tokens / output_tokens / cache_read_input_tokens /
-#   cache_creation_input_tokens); `isSidechain:true` marks sub-agent rows.
+#   `transcript_path`) AND the real sidechain layout used by current Claude
+#   Code releases: `<transcript-stem>/subagents/*.jsonl`. Each assistant row
+#   carries `message.usage` (input_tokens / output_tokens /
+#   cache_read_input_tokens / cache_creation_input_tokens). Sidechain rows
+#   also carry `message.model` and normally `attributionAgent`, which are
+#   retained as per-model and per-role token buckets.
 #
-#   Why incremental (cursor-based) rather than boundary-correlated: the
+#   Why incremental (per-file cursor-based) rather than boundary-correlated: the
 #   transcript's `type:"user"` rows are mostly harness injections
 #   (task-notifications, Stop-feedback, slash-command sequences), so
 #   "tokens since the last user prompt" cannot be located reliably by
-#   content. Instead we track a row cursor in state (`token_transcript_rows`)
-#   and parse ONLY rows appended since the previous Stop — every usage row
-#   is counted exactly once, with no fragile boundary detection. Cost is
-#   bounded to the new slice (jq parses `tail -n +cursor`, not the whole
-#   multi-MB file): ~50ms on a 3MB transcript, cold-path (once per Stop).
+#   content. Instead we track identity-aware per-file byte cursors in state
+#   (`token_transcript_cursors`; `token_transcript_rows` remains a legacy
+#   parent-transcript mirror) and parse ONLY complete rows appended since the
+#   previous Stop. Reads are capped at a stat snapshot, and partial JSON tails
+#   retain the prior complete-line offset. Cursors are keyed by absolute path
+#   and carry a device/inode identity, so a replaced file cannot inherit a
+#   stale offset. Cost is bounded to new slices after one-time migration.
 #
-#   Session cumulative = sum of all token_delta rows (via timing_aggregate),
-#   the same model walltime uses. Mega-sessions exceeding the per-session
-#   row cap lose oldest per-prompt detail (matches existing time-tracking
-#   behavior); the cross-session rollup snapshots the total at each Stop.
+#   Session cumulative lives in `token_totals` state and is emitted as the
+#   latest token_checkpoint. Mega-sessions may lose old token_delta detail
+#   when timing.jsonl is trimmed, but their cumulative token totals therefore
+#   remain monotonic. The checkpoint also repairs a prior interrupted append
+#   on the next Stop.
 #
 #   Fail-open: any missing dependency (jq, transcript, SESSION_ID) or parse
 #   error returns cleanly without writing — token capture never blocks Stop.
+_timing_file_identity() {
+  local file="${1:-}" ident=""
+  [[ -f "${file}" ]] || return 1
+  # BSD/macOS stat first, then GNU stat. The path fallback remains stable
+  # across appends; row-count shrink detection still protects rewrites on an
+  # exotic platform without either stat dialect.
+  ident="$(stat -f '%d:%i' "${file}" 2>/dev/null || true)"
+  [[ -n "${ident}" ]] || ident="$(stat -c '%d:%i' "${file}" 2>/dev/null || true)"
+  [[ -n "${ident}" ]] || ident="path:${file}"
+  printf '%s' "${ident}"
+}
+
+_timing_file_size() {
+  local file="${1:-}" size=""
+  [[ -f "${file}" ]] || return 1
+  size="$(stat -f '%z' "${file}" 2>/dev/null || true)"
+  [[ "${size}" =~ ^[0-9]+$ ]] \
+    || size="$(stat -c '%s' "${file}" 2>/dev/null || true)"
+  [[ "${size}" =~ ^[0-9]+$ ]] || return 1
+  printf '%s' "${size}"
+}
+
+# Test whether a previously-stat'ed byte snapshot ends at a JSONL record
+# boundary. Read byte N rather than live EOF: the transcript may keep growing
+# while Stop telemetry is being captured, and a live-EOF check would make the
+# earlier size snapshot meaningless.
+_timing_snapshot_ends_line() {
+  local file="${1:-}" size="${2:-}" newline_count=""
+  [[ -f "${file}" && "${size}" =~ ^[0-9]+$ ]] || return 1
+  (( size == 0 )) && return 0
+  # POSIX dd seeks over regular-file input for skipped blocks. Reading the
+  # stat'ed final byte avoids a live-EOF race and needs only one-byte output.
+  newline_count="$(dd if="${file}" bs=1 skip="$((size - 1))" count=1 \
+    2>/dev/null | wc -l)"
+  newline_count="${newline_count//[[:space:]]/}"
+  [[ "${newline_count}" == "1" ]]
+}
+
+# Count complete JSONL rows in exactly the first N bytes. This is used only by
+# legacy row-cursor migration; steady state is byte-cursored and never scans
+# old transcript history.
+_timing_snapshot_line_count() {
+  local file="${1:-}" size="${2:-}" lines=""
+  [[ -f "${file}" && "${size}" =~ ^[0-9]+$ ]] || return 1
+  lines="$(head -c "${size}" "${file}" 2>/dev/null | wc -l | tr -d ' ')"
+  [[ "${lines}" =~ ^[0-9]+$ ]] || return 1
+  printf '%s' "${lines}"
+}
+
+# One process-batched snapshot of the nested sidechain directory. A session
+# can leave hundreds of completed `subagents/*.jsonl` files behind. Walking
+# every historical file through stat/wc/jq on every Stop made an unchanged
+# second capture take seconds. The manifest includes path, device/inode, size,
+# and mtime; an exact match means no nested file was added, replaced, shrunk,
+# or appended, so the expensive per-file cursor path can be skipped entirely.
+# Parent transcript handling remains independent because it normally grows on
+# every turn. Transcript filenames are Claude-controlled UUIDs; tab/newline
+# path ambiguity is therefore outside the source format.
+_timing_agent_transcript_manifest() {
+  local dir="${1:-}"
+  [[ -d "${dir}" ]] || return 0
+  if stat -f '%d:%i:%z:%m' "${dir}" >/dev/null 2>&1; then
+    find "${dir}" -maxdepth 1 -type f -name '*.jsonl' \
+      -exec stat -f $'%N\t%d:%i\t%z\t%m' {} + 2>/dev/null \
+      | LC_ALL=C sort
+  else
+    find "${dir}" -maxdepth 1 -type f -name '*.jsonl' \
+      -exec stat -c $'%n\t%d:%i\t%s\t%Y' {} + 2>/dev/null \
+      | LC_ALL=C sort
+  fi
+}
+
+# Add two normalized token-total objects. Kept as a helper because capture
+# merges one independently-cursored file at a time and jq integer arithmetic
+# avoids bash overflow/format surprises from malformed telemetry.
+_timing_add_token_totals() {
+  local left="${1:-}" right="${2:-}"
+  [[ -n "${left}" ]] || left='{}'
+  [[ -n "${right}" ]] || right='{}'
+  jq -nc --argjson a "${left}" --argjson b "${right}" '
+    # Session state is durable but cooperative, so an interrupted older writer,
+    # a hand edit, or a pre-schema value can leave a valid top-level object with
+    # poisoned nested maps. Normalize at this transaction boundary: malformed
+    # historical detail is unrecoverable, but it must never erase the fresh
+    # slice whose cursor is about to advance. The ceiling matches
+    # timing_normalize_uint and also keeps every value exactly representable by
+    # jq before later Bash arithmetic consumes it.
+    def n($v):
+      (if ($v | type) == "number" then $v
+       elif (($v | type) == "string" and ($v | test("^[0-9]+$")))
+       then (try ($v | tonumber) catch 0)
+       else 0 end) as $n
+      | if (($n | type) == "number"
+            and $n >= 0
+            and $n <= 999999999999999
+            and $n == ($n | floor))
+        then $n else 0 end;
+    def object_or_empty($v):
+      if ($v | type) == "object" then $v else {} end;
+    def bucket($v):
+      object_or_empty($v) as $o
+      | {
+          input: n($o.input),
+          output: n($o.output),
+          cache_read: n($o.cache_read),
+          cache_creation: n($o.cache_creation)
+        };
+    def add_n($x; $y):
+      (n($x) + n($y)) as $sum
+      | if $sum > 999999999999999 then 999999999999999 else $sum end;
+    def normalize_buckets($x):
+      reduce (object_or_empty($x) | to_entries[]) as $e ({};
+        # Scalar/array bucket entries carry no trustworthy attribution. Drop
+        # them instead of retaining a fake zero-valued label indefinitely.
+        if ($e.value | type) == "object"
+        then .[$e.key] = bucket($e.value)
+        else . end
+      );
+    def add_bucket($x; $y):
+      bucket($x) as $old
+      | bucket($y) as $new
+      | {
+          input:          add_n($old.input;          $new.input),
+          output:         add_n($old.output;         $new.output),
+          cache_read:     add_n($old.cache_read;     $new.cache_read),
+          cache_creation: add_n($old.cache_creation; $new.cache_creation)
+        };
+    def merge_buckets($x; $y):
+      reduce (object_or_empty($y) | to_entries[]) as $e (normalize_buckets($x);
+        if ($e.value | type) == "object"
+        then .[$e.key] = add_bucket(.[$e.key]; $e.value)
+        else . end
+      );
+    # Per-dispatch attribution is diagnostic detail, not the session total.
+    # Bound it so a very long session cannot grow session_state.json without
+    # limit. Re-touching an ID moves it to the recent tail; 512 retained IDs
+    # comfortably exceed the 64-live-dispatch ceiling while keeping the rare
+    # late/background update exact. A rotated stale run is reported as having
+    # unavailable token telemetry, never assigned an invented value.
+    def merge_recent_id_buckets($x; $y):
+      (reduce (object_or_empty($y) | to_entries[]) as $e (normalize_buckets($x);
+        if ($e.value | type) == "object" then
+          add_bucket(.[$e.key]; $e.value) as $merged
+          | del(.[$e.key])
+          | .[$e.key] = $merged
+        else . end
+      )) | to_entries
+      | if length > 512 then .[-512:] else . end
+      | from_entries;
+    {
+      main_in:             add_n($a.main_in;             $b.main_in),
+      main_out:            add_n($a.main_out;            $b.main_out),
+      main_cache_read:     add_n($a.main_cache_read;     $b.main_cache_read),
+      main_cache_creation: add_n($a.main_cache_creation; $b.main_cache_creation),
+      agent_in:             add_n($a.agent_in;             $b.agent_in),
+      agent_out:            add_n($a.agent_out;            $b.agent_out),
+      agent_cache_read:     add_n($a.agent_cache_read;     $b.agent_cache_read),
+      agent_cache_creation: add_n($a.agent_cache_creation; $b.agent_cache_creation),
+      usage_rows:           add_n($a.usage_rows;           $b.usage_rows),
+      agent_by_role:  merge_buckets($a.agent_by_role;  $b.agent_by_role),
+      agent_by_model: merge_buckets($a.agent_by_model; $b.agent_by_model),
+      agent_by_id:    merge_recent_id_buckets($a.agent_by_id; $b.agent_by_id)
+    }
+  ' 2>/dev/null
+}
+
+# Sum one newly-appended transcript slice. `source=agent` is authoritative
+# for files below subagents/ even if a Claude Code version omits isSidechain.
+#
+# Claude Code writes one transcript row per assistant content block. Those
+# rows can repeat the SAME API request's cumulative `message.usage` several
+# times (thinking, text, and tool-use blocks commonly share requestId and
+# message.id). Summing rows therefore overstates real tokens by 3-7x. Collapse
+# identifiable rows by request, retain the component-wise maximum cumulative
+# usage, and subtract the prior trailing request when it spans a Stop cursor.
+# The return shape is `{totals,last_request}`; `last_request` is persisted in
+# that file's cursor entry. API requests are sequential within one transcript,
+# so only the trailing request can cross an append boundary. Rows from older
+# transcript versions with neither requestId nor message.id remain independent
+# observations: guessing that two identical anonymous usages are duplicates
+# would silently undercount legitimate calls.
+_timing_sum_token_slice() {
+  local file="$1" first_row="$2" source="$3" prior="${4:-null}" last_row="${5:-0}"
+  local first_byte="${6:-}" last_byte="${7:-}" byte_count=0 agent_id_hint=""
+  if [[ "${source}" == "agent" ]]; then
+    agent_id_hint="${file##*/}"
+    agent_id_hint="${agent_id_hint%.jsonl}"
+    agent_id_hint="${agent_id_hint#agent-}"
+  fi
+  jq -e 'type == "object" or . == null' <<<"${prior}" >/dev/null 2>&1 || prior='null'
+  [[ "${last_row}" =~ ^[0-9]+$ ]] || last_row=0
+  {
+    if [[ "${first_byte}" =~ ^[0-9]+$ && "${last_byte}" =~ ^[0-9]+$ ]] \
+        && (( last_byte >= first_byte )); then
+      # Byte cursors make steady-state parent capture proportional to appended
+      # JSONL bytes. BSD tail can seek regular files for `-c +N`; unlike
+      # `tail -n +ROW`, it does not rescan a multi-million-line transcript to
+      # discover the requested line boundary. Cap the read at the stat'ed
+      # snapshot: the live transcript can append while this pipeline runs.
+      byte_count=$((last_byte - first_byte))
+      if (( byte_count > 0 )); then
+        (
+          set +o pipefail
+          tail -c "+$((first_byte + 1))" "${file}" 2>/dev/null \
+            | head -c "${byte_count}"
+        )
+      fi
+    elif (( last_row >= first_row && last_row > 0 )); then
+      sed -n "${first_row},${last_row}p" "${file}" 2>/dev/null
+    else
+      tail -n "+${first_row}" "${file}" 2>/dev/null
+    fi
+  } | jq -sc --arg source "${source}" --arg agent_id_hint "${agent_id_hint}" --argjson prior "${prior}" '
+    def n($v): ($v | tonumber? // 0);
+    def usage($u): {
+      input: n($u.input_tokens),
+      output: n($u.output_tokens),
+      cache_read: n($u.cache_read_input_tokens),
+      cache_creation: n($u.cache_creation_input_tokens)
+    };
+    def max_usage($a; $b): {
+      input:          ([n($a.input),          n($b.input)]          | max),
+      output:         ([n($a.output),         n($b.output)]         | max),
+      cache_read:     ([n($a.cache_read),     n($b.cache_read)]     | max),
+      cache_creation: ([n($a.cache_creation), n($b.cache_creation)] | max)
+    };
+    def usage_delta($new; $old): {
+      input:          ([n($new.input)          - n($old.input),          0] | max),
+      output:         ([n($new.output)         - n($old.output),         0] | max),
+      cache_read:     ([n($new.cache_read)     - n($old.cache_read),     0] | max),
+      cache_creation: ([n($new.cache_creation) - n($old.cache_creation), 0] | max)
+    };
+    def safe_key($v; $fallback):
+      (($v // $fallback) | tostring
+       | explode | map(if . < 32 or . == 127 then 63 else . end) | implode
+       | gsub("[|`]"; "_")) as $s
+      | if ($s | length) == 0 then $fallback
+        elif ($s | length) > 96 then ($s[0:95] + "…")
+        else $s end;
+    def safe_agent_id($v):
+      (($v // "") | tostring
+       | explode | map(if . < 32 or . == 127 then 63 else . end) | implode
+       | gsub("[|`]"; "_")) as $s
+      | if ($s | length) > 128 then $s[0:128] else $s end;
+    def zero_bucket: {input:0, output:0, cache_read:0, cache_creation:0};
+    def first_nonempty($values):
+      [$values[] | select(. != null) | tostring | select(length > 0)]
+      | first // "";
+    def request_key($m):
+      (first_nonempty([$m.requestId, $m.request_id, $m.message.id])
+       | explode | map(if . < 32 or . == 127 then 63 else . end) | implode
+       | if length > 160 then .[0:160] else . end);
+    def zero_totals:
+      {main_in:0,main_out:0,main_cache_read:0,main_cache_creation:0,
+       agent_in:0,agent_out:0,agent_cache_read:0,agent_cache_creation:0,
+       usage_rows:0,agent_by_role:{},agent_by_model:{},agent_by_id:{}};
+    def add_bucket($obj; $key; $u):
+      $obj + {($key): (($obj[$key] // zero_bucket) |
+        .input          += n($u.input) |
+        .output         += n($u.output) |
+        .cache_read     += n($u.cache_read) |
+        .cache_creation += n($u.cache_creation))};
+    def add_record($state; $r; $u; $request_inc):
+      $state | .usage_rows += $request_inc |
+      if $r.agent then
+        .agent_in             += n($u.input) |
+        .agent_out            += n($u.output) |
+        .agent_cache_read     += n($u.cache_read) |
+        .agent_cache_creation += n($u.cache_creation) |
+        .agent_by_role  = add_bucket(.agent_by_role;  $r.role;  $u) |
+        .agent_by_model = add_bucket(.agent_by_model; $r.model; $u) |
+        if $r.agent_id_known then
+          .agent_by_id = add_bucket(.agent_by_id; $r.agent_id; $u)
+        else . end
+      else
+        .main_in             += n($u.input) |
+        .main_out            += n($u.output) |
+        .main_cache_read     += n($u.cache_read) |
+        .main_cache_creation += n($u.cache_creation)
+      end;
+    def record($m; $id):
+      first_nonempty([$m.attributionAgent, $m.agentType]) as $role |
+      first_nonempty([$m.message.model]) as $model |
+      first_nonempty([$m.agentId, $m.agent_id, $agent_id_hint]) as $agent_id |
+      {id:$id,
+       usage:usage($m.message.usage),
+       agent:($source == "agent" or $m.isSidechain == true),
+       role:safe_key($role; "general-purpose"),
+       model:safe_key($model; "unknown"),
+       agent_id:safe_agent_id($agent_id),
+       role_known:($role != ""),
+       model_known:($model != ""),
+       agent_id_known:($agent_id != "")};
+    def merge_prior_metadata($r; $p):
+      if (($p.id // "") == ($r.id // "")) then
+        $r + {
+          # A later transcript slice can contain a partial or regressed
+          # cumulative snapshot for the same API request. Persist the
+          # component-wise high-water mark, not that lower tail row, or a
+          # subsequent recovery would be charged twice across Stop cursors.
+          usage:max_usage(($p.usage // {}); ($r.usage // {})),
+          agent:(($r.agent // false) or ($p.agent // false)),
+          role:(if ($r.role_known // false) then $r.role
+                elif ($p.role_known // false) then $p.role else $r.role end),
+          model:(if ($r.model_known // false) then $r.model
+                 elif ($p.model_known // false) then $p.model else $r.model end),
+          agent_id:(if ($r.agent_id_known // false) then $r.agent_id
+                   elif ($p.agent_id_known // false) then $p.agent_id else $r.agent_id end),
+          role_known:(($r.role_known // false) or ($p.role_known // false)),
+          model_known:(($r.model_known // false) or ($p.model_known // false)),
+          agent_id_known:(($r.agent_id_known // false) or ($p.agent_id_known // false))
+        }
+      else $r end;
+
+    (. | length) as $rows_scanned |
+    (reduce .[] as $m ({order:[], by_id:{}, anonymous:[], last_id:null};
+      if (($m.message.usage // null) == null) then . else
+        request_key($m) as $id |
+        record($m; $id) as $r |
+        if $id == "" then
+          .anonymous += [$r]
+        else
+          if .by_id[$id] == null then
+            .order += [$id] | .by_id[$id] = $r
+          else
+            .by_id[$id] as $old |
+            .by_id[$id] = ($r + {
+              agent:($r.agent or ($old.agent // false)),
+              usage:max_usage($old.usage; $r.usage),
+              role:(if $r.role_known then $r.role else $old.role end),
+              model:(if $r.model_known then $r.model else $old.model end),
+              agent_id:(if $r.agent_id_known then $r.agent_id else $old.agent_id end),
+              role_known:($r.role_known or ($old.role_known // false)),
+              model_known:($r.model_known or ($old.model_known // false)),
+              agent_id_known:($r.agent_id_known or ($old.agent_id_known // false))
+            })
+          end |
+          .last_id = $id
+        end
+      end
+    )) as $scan |
+    (reduce $scan.order[] as $id (zero_totals;
+      merge_prior_metadata($scan.by_id[$id]; $prior) as $r |
+      if (($prior.id // "") == $id) then
+        add_record(.; $r; usage_delta($r.usage; ($prior.usage // {})); 0)
+      else
+        add_record(.; $r; $r.usage; 1)
+      end
+    )) as $identified |
+    (reduce $scan.anonymous[] as $r ($identified;
+      add_record(.; $r; $r.usage; 1)
+    )) as $totals |
+    {
+      totals: $totals,
+      rows_scanned: $rows_scanned,
+      last_request: (
+        if $scan.last_id != null then
+          merge_prior_metadata($scan.by_id[$scan.last_id]; $prior)
+        else $prior
+        end
+      )
+    }
+  ' 2>/dev/null
+}
+
+# Parse stat-snapshot specs for newly discovered sidechain files in one jq
+# process. Each argument is one manifest line (`path<TAB>identity<TAB>size...`).
+# A large
+# Council run can create 100+ tiny files; paying one sed+jq pair per file made
+# the first economics capture take tens of seconds even though the data itself
+# was tiny. We copy exactly the stat'ed prefix of each file before parsing, so
+# an agent transcript that appends during capture cannot be charged now and
+# then re-read from the older cursor on the next Stop. `input_filename` plus a
+# bounded temp-path map keeps request dedupe and trailing-request cursors
+# isolated per original transcript. The caller falls back to the conservative
+# per-file path if any snapshot is partial, replaced, or cannot be parsed.
+_timing_sum_new_agent_files() {
+  (( $# > 0 )) || { printf '%s\n' '{"totals":{},"files":{}}'; return 0; }
+  local snapshot_dir="" map_file="" spec="" file="" rest="" identity="" size=""
+  local snapshot="" snapshot_meta='{}' snapshot_stat_meta='{}' current_meta='{}' result=""
+  local agent_dir="" current_manifest="" stat_lines=""
+  local snapshot_files=()
+  snapshot_dir="$(mktemp -d "${TMPDIR:-/tmp}/omc-token-snapshot.XXXXXX" 2>/dev/null)" \
+    || return 1
+  map_file="${snapshot_dir}/files.tsv"
+  : > "${map_file}" || { rm -rf "${snapshot_dir}"; return 1; }
+  local index=0
+  for spec in "$@"; do
+    file="${spec%%$'\t'*}"
+    rest="${spec#*$'\t'}"
+    identity="${rest%%$'\t'*}"
+    rest="${rest#*$'\t'}"
+    size="${rest%%$'\t'*}"
+    if [[ -z "${file}" || -z "${identity}" || ! "${size}" =~ ^[0-9]+$ ]] \
+        || ! _timing_snapshot_ends_line "${file}" "${size}"; then
+      rm -rf "${snapshot_dir}"
+      return 1
+    fi
+    snapshot="${snapshot_dir}/${index}.jsonl"
+    if ! head -c "${size}" "${file}" > "${snapshot}" 2>/dev/null; then
+      rm -rf "${snapshot_dir}"
+      return 1
+    fi
+    printf '%s\t%s\t%s\t%s\n' "${snapshot}" "${file}" "${identity}" "${size}" \
+      >> "${map_file}" || { rm -rf "${snapshot_dir}"; return 1; }
+    snapshot_files[${#snapshot_files[@]}]="${snapshot}"
+    index=$((index + 1))
+  done
+  snapshot_meta="$(jq -Rn '
+    [inputs | split("\t")
+      | select(length == 4)
+      | {key:.[0], value:{original:.[1], identity:.[2], bytes:(.[3] | tonumber)}}]
+    | from_entries
+  ' < "${map_file}" 2>/dev/null || printf '{}')"
+  if ! jq -e --argjson expected "${#snapshot_files[@]}" \
+      'type == "object" and length == $expected' \
+      <<<"${snapshot_meta}" >/dev/null 2>&1; then
+    rm -rf "${snapshot_dir}"
+    return 1
+  fi
+
+  # Validate every copied prefix in one stat process rather than paying two
+  # stat forks per sidechain. Then validate the original identities/sizes with
+  # one directory manifest walk. Appends are allowed (`current >= snapshot`):
+  # they remain after the stored byte cursor for the next Stop.
+  if stat -f '%z' "${snapshot_files[0]}" >/dev/null 2>&1; then
+    stat_lines="$(stat -f $'%N\t%z' "${snapshot_files[@]}" 2>/dev/null || true)"
+  else
+    stat_lines="$(stat -c $'%n\t%s' "${snapshot_files[@]}" 2>/dev/null || true)"
+  fi
+  snapshot_stat_meta="$(printf '%s\n' "${stat_lines}" | jq -Rsc '
+    split("\n") | map(select(length > 0) | split("\t"))
+    | map(select(length == 2) | {key:.[0],value:(.[1] | tonumber? // -1)})
+    | from_entries
+  ' 2>/dev/null || printf '{}')"
+  agent_dir="${file%/*}"
+  current_manifest="$(_timing_agent_transcript_manifest "${agent_dir}" 2>/dev/null || true)"
+  current_meta="$(printf '%s\n' "${current_manifest}" | jq -Rsc '
+    split("\n") | map(select(length > 0) | split("\t"))
+    | map(select(length >= 3)
+      | {key:.[0],value:{identity:.[1],bytes:(.[2] | tonumber? // -1)}})
+    | from_entries
+  ' 2>/dev/null || printf '{}')"
+  if ! jq -e --argjson actual "${snapshot_stat_meta}" \
+      --argjson current "${current_meta}" '
+        all(to_entries[];
+          ($actual[.key] // -1) == .value.bytes
+          and ($current[.value.original].identity // "") == .value.identity
+          and ($current[.value.original].bytes // -1) >= .value.bytes)
+      ' <<<"${snapshot_meta}" >/dev/null 2>&1; then
+    rm -rf "${snapshot_dir}"
+    return 1
+  fi
+
+  if result="$(jq -n --argjson snapshots "${snapshot_meta}" '
+    def n($v): ($v | tonumber? // 0);
+    def usage($u): {
+      input: n($u.input_tokens),
+      output: n($u.output_tokens),
+      cache_read: n($u.cache_read_input_tokens),
+      cache_creation: n($u.cache_creation_input_tokens)
+    };
+    def max_usage($a; $b): {
+      input:          ([n($a.input),          n($b.input)]          | max),
+      output:         ([n($a.output),         n($b.output)]         | max),
+      cache_read:     ([n($a.cache_read),     n($b.cache_read)]     | max),
+      cache_creation: ([n($a.cache_creation), n($b.cache_creation)] | max)
+    };
+    def safe_key($v; $fallback):
+      (($v // $fallback) | tostring
+       | explode | map(if . < 32 or . == 127 then 63 else . end) | implode
+       | gsub("[|`]"; "_")) as $s
+      | if ($s | length) == 0 then $fallback
+        elif ($s | length) > 96 then ($s[0:95] + "…")
+        else $s end;
+    def safe_agent_id($v):
+      (($v // "") | tostring
+       | explode | map(if . < 32 or . == 127 then 63 else . end) | implode
+       | gsub("[|`]"; "_")) as $s
+      | if ($s | length) > 128 then $s[0:128] else $s end;
+    def first_nonempty($values):
+      [$values[] | select(. != null) | tostring | select(length > 0)]
+      | first // "";
+    def request_key($m):
+      (first_nonempty([$m.requestId, $m.request_id, $m.message.id])
+       | explode | map(if . < 32 or . == 127 then 63 else . end) | implode
+       | if length > 160 then .[0:160] else . end);
+    def zero_bucket: {input:0, output:0, cache_read:0, cache_creation:0};
+    def zero_totals:
+      {main_in:0,main_out:0,main_cache_read:0,main_cache_creation:0,
+       agent_in:0,agent_out:0,agent_cache_read:0,agent_cache_creation:0,
+       usage_rows:0,agent_by_role:{},agent_by_model:{},agent_by_id:{}};
+    def add_bucket($obj; $key; $u):
+      $obj + {($key): (($obj[$key] // zero_bucket) |
+        .input          += n($u.input) |
+        .output         += n($u.output) |
+        .cache_read     += n($u.cache_read) |
+        .cache_creation += n($u.cache_creation))};
+    def add_record($state; $r):
+      $state |
+      .usage_rows += 1 |
+      .agent_in             += n($r.usage.input) |
+      .agent_out            += n($r.usage.output) |
+      .agent_cache_read     += n($r.usage.cache_read) |
+      .agent_cache_creation += n($r.usage.cache_creation) |
+      .agent_by_role  = add_bucket(.agent_by_role;  $r.role;  $r.usage) |
+      .agent_by_model = add_bucket(.agent_by_model; $r.model; $r.usage) |
+      if $r.agent_id_known then
+        .agent_by_id = add_bucket(.agent_by_id; $r.agent_id; $r.usage)
+      else . end;
+    def merge_buckets($x; $y):
+      reduce (($y // {}) | to_entries[]) as $e (($x // {});
+        .[$e.key] = {
+          input:          (n(.[$e.key].input)          + n($e.value.input)),
+          output:         (n(.[$e.key].output)         + n($e.value.output)),
+          cache_read:     (n(.[$e.key].cache_read)     + n($e.value.cache_read)),
+          cache_creation: (n(.[$e.key].cache_creation) + n($e.value.cache_creation))
+        });
+    def add_totals($a; $b): {
+      main_in:             (n($a.main_in)             + n($b.main_in)),
+      main_out:            (n($a.main_out)            + n($b.main_out)),
+      main_cache_read:     (n($a.main_cache_read)     + n($b.main_cache_read)),
+      main_cache_creation: (n($a.main_cache_creation) + n($b.main_cache_creation)),
+      agent_in:             (n($a.agent_in)             + n($b.agent_in)),
+      agent_out:            (n($a.agent_out)            + n($b.agent_out)),
+      agent_cache_read:     (n($a.agent_cache_read)     + n($b.agent_cache_read)),
+      agent_cache_creation: (n($a.agent_cache_creation) + n($b.agent_cache_creation)),
+      usage_rows:           (n($a.usage_rows)           + n($b.usage_rows)),
+      agent_by_role:  merge_buckets($a.agent_by_role;  $b.agent_by_role),
+      agent_by_model: merge_buckets($a.agent_by_model; $b.agent_by_model),
+      agent_by_id:    merge_buckets($a.agent_by_id;    $b.agent_by_id)
+    };
+    def agent_id_from_path($path):
+      ($path | split("/") | last | sub("[.]jsonl$"; "") | sub("^agent-"; ""));
+    def summarize($s):
+      (reduce $s.order[] as $id (zero_totals;
+        add_record(.; $s.by_id[$id]))) as $identified |
+      (reduce $s.anonymous[] as $r ($identified; add_record(.; $r))) as $totals |
+      {totals:$totals, rows:$s.rows, identity:$s.identity, bytes:$s.bytes,
+       last_request:(if $s.last_id == null then null else $s.by_id[$s.last_id] end)};
+
+    (reduce inputs as $m ({files:{}};
+      (input_filename) as $snapshot |
+      ($snapshots[$snapshot] // {}) as $filemeta |
+      ($filemeta.original // $snapshot) as $f |
+      .files[$f] = (.files[$f] // {
+        rows:0,order:[],by_id:{},anonymous:[],last_id:null,
+        identity:($filemeta.identity // ("path:" + $f)),
+        bytes:($filemeta.bytes // 0)
+      }) |
+      .files[$f].rows += 1 |
+      if (($m.message.usage // null) == null) then . else
+        request_key($m) as $id |
+        first_nonempty([$m.attributionAgent, $m.agentType]) as $role |
+        first_nonempty([$m.message.model]) as $model |
+        first_nonempty([$m.agentId, $m.agent_id, agent_id_from_path($f)]) as $agent_id |
+        {id:$id,usage:usage($m.message.usage),
+         role:safe_key($role; "general-purpose"),
+         model:safe_key($model; "unknown"),
+         agent_id:safe_agent_id($agent_id),
+         role_known:($role != ""),
+         model_known:($model != ""),
+         agent_id_known:($agent_id != "")} as $r |
+        if $id == "" then
+          .files[$f].anonymous += [$r]
+        else
+          if .files[$f].by_id[$id] == null then
+            .files[$f].order += [$id] |
+            .files[$f].by_id[$id] = $r
+          else
+            .files[$f].by_id[$id] as $old |
+            .files[$f].by_id[$id] = ($r + {
+              usage:max_usage($old.usage; $r.usage),
+              role:(if $r.role_known then $r.role else $old.role end),
+              model:(if $r.model_known then $r.model else $old.model end),
+              agent_id:(if $r.agent_id_known then $r.agent_id else $old.agent_id end),
+              role_known:($r.role_known or ($old.role_known // false)),
+              model_known:($r.model_known or ($old.model_known // false)),
+              agent_id_known:($r.agent_id_known or ($old.agent_id_known // false))
+            })
+          end |
+          .files[$f].last_id = $id
+        end
+      end
+    )) as $scan |
+    reduce ($scan.files | to_entries[]) as $entry
+      ({totals:zero_totals,files:{}};
+       summarize($entry.value) as $sum |
+       .totals = add_totals(.totals; $sum.totals) |
+       .files[$entry.key] = ({rows:$sum.rows,identity:$sum.identity,bytes:$sum.bytes}
+         + if $sum.last_request == null then {}
+           else {last_request:$sum.last_request} end))
+  ' -- "${snapshot_files[@]}" 2>/dev/null)"; then
+    rm -rf "${snapshot_dir}"
+    printf '%s\n' "${result}"
+    return 0
+  fi
+  rm -rf "${snapshot_dir}"
+  return 1
+}
+
+_timing_capture_session_tokens_locked() {
+  local transcript="$1" prompt_seq="$2"
+  local files=("${transcript}") file agent_dir
+  agent_dir="${transcript%.jsonl}/subagents"
+
+  local cursors totals initialized legacy_cursor
+  cursors="$(read_state "token_transcript_cursors" 2>/dev/null || true)"
+  jq -e 'type == "object"' <<<"${cursors:-null}" >/dev/null 2>&1 || cursors='{}'
+  totals="$(read_state "token_totals" 2>/dev/null || true)"
+  jq -e 'type == "object"' <<<"${totals:-null}" >/dev/null 2>&1 || totals='{}'
+  initialized="$(read_state "token_tracking_initialized" 2>/dev/null || true)"
+  legacy_cursor="$(read_state "token_transcript_rows" 2>/dev/null || true)"
+  [[ "${legacy_cursor}" =~ ^[0-9]+$ ]] || legacy_cursor=""
+
+  local agent_manifest previous_agent_manifest agent_manifest_to_store
+  local cursor_keys_wrapped previous_manifest_wrapped manifest_line manifest_file
+  local new_agent_files=() new_agent_specs=()
+  agent_manifest="$(_timing_agent_transcript_manifest "${agent_dir}" 2>/dev/null || true)"
+  previous_agent_manifest="$(read_state "token_agent_transcript_manifest" 2>/dev/null || true)"
+  agent_manifest_to_store="${agent_manifest}"
+  if [[ "${agent_manifest}" != "${previous_agent_manifest}" && -d "${agent_dir}" ]]; then
+    cursor_keys_wrapped=$'\n'"$(jq -r 'keys[]' <<<"${cursors}" 2>/dev/null || true)"$'\n'
+    previous_manifest_wrapped=$'\n'"${previous_agent_manifest}"$'\n'
+    while IFS= read -r manifest_line; do
+      [[ -n "${manifest_line}" ]] || continue
+      # Exact stat line already covered by the prior manifest: another file
+      # changed, but this completed sidechain did not. Skip it without stat,
+      # wc, cursor jq, or a parser process.
+      if [[ "${previous_manifest_wrapped}" == *$'\n'"${manifest_line}"$'\n'* ]]; then
+        continue
+      fi
+      manifest_file="${manifest_line%%$'\t'*}"
+      [[ -n "${manifest_file}" ]] || continue
+      if [[ "${cursor_keys_wrapped}" == *$'\n'"${manifest_file}"$'\n'* ]]; then
+        # Existing file grew or was replaced: preserve its trailing-request
+        # delta semantics through the normal single-file path.
+        files[${#files[@]}]="${manifest_file}"
+      else
+        # Brand-new completed sidechains share one batch parser below.
+        new_agent_files[${#new_agent_files[@]}]="${manifest_file}"
+        new_agent_specs[${#new_agent_specs[@]}]="${manifest_line}"
+      fi
+    done <<<"${agent_manifest}"
+  fi
+
+  local first_initialization=0
+  [[ "${initialized}" == "1" ]] || first_initialization=1
+
+  local delta='{}' identity total_rows total_bytes entry prior_identity cursor byte_cursor source
+  local prior_request last_request slice_result slice seed_result rows_scanned
+  local row_scan_mode parse_needed cursor_bytes_to_write snapshot_complete current_size current_identity
+  local batch_result batch_slice merged_cursors updated_cursors merged_token_totals
+  local agent_manifest_complete=1
+
+  if (( ${#new_agent_files[@]} > 0 )); then
+    if batch_result="$(_timing_sum_new_agent_files "${new_agent_specs[@]}")" \
+        && jq -e '(.totals | type == "object") and (.files | type == "object")' \
+          <<<"${batch_result}" >/dev/null 2>&1; then
+      batch_slice="$(jq -c '.totals' <<<"${batch_result}" 2>/dev/null || printf '{}')"
+      merged_cursors="$(jq -c --argjson batch "${batch_result}" '
+          reduce ($batch.files | to_entries[]) as $entry (.;
+            .[$entry.key] = ({
+              identity:($entry.value.identity // ("path:" + $entry.key)),
+              rows:($entry.value.rows // 0),
+              bytes:($entry.value.bytes // 0)
+            } + if ($entry.value.last_request // null) == null then {}
+                else {last_request:$entry.value.last_request} end)
+          )
+        ' <<<"${cursors}" 2>/dev/null || true)"
+      if jq -e 'type == "object"' <<<"${merged_cursors:-null}" >/dev/null 2>&1; then
+        cursors="${merged_cursors}"
+        # Upgrade/mid-session enable seeds cursors and trailing request state
+        # but deliberately does not backfill historical economics. Merge the
+        # delta only after its cursor update exists: cursor+totals are one
+        # transaction, so a local merge failure can never count without a
+        # dedupe boundary (or advance without counting).
+        if (( first_initialization == 0 || prompt_seq <= 1 )); then
+          if ! merged_token_totals="$(_timing_add_token_totals "${delta}" "${batch_slice}")"; then
+            return 1
+          fi
+          delta="${merged_token_totals}"
+        fi
+      else
+        for file in "${new_agent_files[@]}"; do
+          files[${#files[@]}]="${file}"
+        done
+      fi
+    else
+      # A partially written row makes the all-file jq fail. Retry each file
+      # independently so healthy sidechains still advance and the incomplete
+      # one remains retryable on the next capture.
+      for file in "${new_agent_files[@]}"; do
+        files[${#files[@]}]="${file}"
+      done
+    fi
+  fi
+
+  for file in "${files[@]}"; do
+    [[ -f "${file}" ]] || continue
+    identity="$(_timing_file_identity "${file}" 2>/dev/null || true)"
+    [[ -n "${identity}" ]] || continue
+    total_bytes="$(_timing_file_size "${file}" 2>/dev/null || true)"
+    [[ "${total_bytes}" =~ ^[0-9]+$ ]] || continue
+    snapshot_complete=0
+    _timing_snapshot_ends_line "${file}" "${total_bytes}" && snapshot_complete=1
+    entry="$(jq -c --arg f "${file}" '.[$f] // {}' <<<"${cursors}" 2>/dev/null || printf '{}')"
+    prior_identity="$(jq -r '.identity // ""' <<<"${entry}" 2>/dev/null || true)"
+    cursor="$(jq -r '.rows // 0' <<<"${entry}" 2>/dev/null || printf '0')"
+    [[ "${cursor}" =~ ^[0-9]+$ ]] || cursor=0
+    byte_cursor="$(jq -r '.bytes // empty' <<<"${entry}" 2>/dev/null || true)"
+    [[ "${byte_cursor}" =~ ^[0-9]+$ ]] || byte_cursor=""
+    prior_request="$(jq -c '.last_request // null' <<<"${entry}" 2>/dev/null || printf 'null')"
+    jq -e 'type == "object" or . == null' <<<"${prior_request}" >/dev/null 2>&1 || prior_request='null'
+
+    source="main"
+    [[ "${file}" == "${transcript}" ]] || source="agent"
+    row_scan_mode=0
+    total_rows="${cursor}"
+
+    if [[ -z "${prior_identity}" ]]; then
+      if [[ "${file}" == "${transcript}" && -n "${legacy_cursor}" ]]; then
+        # One-time migration from the old row-only parent cursor. Bound the
+        # extraction by the already-computed final row so BSD tail never walks
+        # the entire transcript looking for an open-ended line boundary.
+        row_scan_mode=1
+        total_rows="$(_timing_snapshot_line_count "${file}" "${total_bytes}" 2>/dev/null || echo 0)"
+        [[ "${total_rows}" =~ ^[0-9]+$ ]] || total_rows=0
+        cursor="${legacy_cursor}"
+      elif (( first_initialization == 1 && prompt_seq > 1 )); then
+        # Tracking enabled/upgraded mid-session: seed all files that already
+        # exist. Files created after this initialization start at row zero.
+        seed_result=""
+        if (( snapshot_complete == 1 )); then
+          seed_result="$(_timing_sum_token_slice "${file}" 1 "${source}" null 0 0 \
+            "${total_bytes}" 2>/dev/null || true)"
+        fi
+        rows_scanned="$(jq -r '.rows_scanned // empty' <<<"${seed_result:-null}" 2>/dev/null || true)"
+        if [[ "${rows_scanned}" =~ ^[0-9]+$ ]]; then
+          cursor="${rows_scanned}"
+          total_rows="${rows_scanned}"
+          byte_cursor="${total_bytes}"
+          prior_request="$(jq -c '.last_request // null' <<<"${seed_result}" 2>/dev/null || printf 'null')"
+        else
+          # A partial trailing JSON row is not a reason to back-charge history
+          # on the next Stop. Seed only complete rows and leave the byte cursor
+          # absent; the migration path retries the completed line later.
+          total_rows="$(_timing_snapshot_line_count "${file}" "${total_bytes}" 2>/dev/null || echo 0)"
+          [[ "${total_rows}" =~ ^[0-9]+$ ]] || total_rows=0
+          cursor="${total_rows}"
+          byte_cursor=""
+        fi
+      else
+        cursor=0
+        total_rows=0
+        byte_cursor=0
+      fi
+      # Upgrade/mid-enable seeding skips historical token totals, but still
+      # records the request that straddles the seeded cursor. Otherwise the
+      # next content-block row for that already-running request would be
+      # misclassified as a brand-new API call.
+      if (( cursor > total_rows )); then
+        cursor=0
+        total_rows=0
+        byte_cursor=0
+        row_scan_mode=0
+      elif (( cursor > 0 )); then
+        if [[ "${prior_request}" == "null" ]]; then
+          seed_result="$(_timing_sum_token_slice "${file}" 1 "${source}" null "${cursor}" 2>/dev/null || true)"
+          prior_request="$(jq -c '.last_request // null' <<<"${seed_result:-null}" 2>/dev/null || printf 'null')"
+        fi
+      fi
+    elif [[ "${prior_identity}" != "${identity}" ]] \
+        || { [[ -n "${byte_cursor}" ]] && (( total_bytes < byte_cursor )); }; then
+      # Replacement or compaction rewrite: the new content is real work and
+      # must be counted from its beginning.
+      cursor=0
+      total_rows=0
+      byte_cursor=0
+      prior_request='null'
+    elif [[ -z "${byte_cursor}" ]]; then
+      # Upgrade path for cursors written before byte offsets existed. This is
+      # the only steady-state branch that pays for wc/sed over old history.
+      row_scan_mode=1
+      total_rows="$(_timing_snapshot_line_count "${file}" "${total_bytes}" 2>/dev/null || echo 0)"
+      [[ "${total_rows}" =~ ^[0-9]+$ ]] || total_rows=0
+      if (( total_rows < cursor )); then
+        cursor=0
+        total_rows=0
+        byte_cursor=0
+        row_scan_mode=0
+        prior_request='null'
+      fi
+    fi
+
+    last_request="${prior_request}"
+    parse_needed=0
+    if (( row_scan_mode == 1 && total_rows > cursor )); then
+      parse_needed=1
+      slice_result="$(_timing_sum_token_slice "${file}" "$((cursor + 1))" \
+        "${source}" "${prior_request}" "${total_rows}" 2>/dev/null || true)"
+    elif (( row_scan_mode == 0 )) \
+        && [[ "${byte_cursor}" =~ ^[0-9]+$ ]] \
+        && (( total_bytes > byte_cursor && snapshot_complete == 1 )); then
+      parse_needed=1
+      slice_result="$(_timing_sum_token_slice "${file}" 1 \
+        "${source}" "${prior_request}" 0 "${byte_cursor}" "${total_bytes}" 2>/dev/null || true)"
+    fi
+    if (( parse_needed == 1 )); then
+      # Do not advance this file's cursor on a parse failure. That makes a
+      # partially-written final JSONL row retryable at the next Stop.
+      if ! jq -e '(.totals | type == "object") and ((.rows_scanned // -1) >= 0)' \
+          <<<"${slice_result:-null}" >/dev/null 2>&1; then
+        [[ "${source}" == "agent" ]] && agent_manifest_complete=0
+        continue
+      fi
+      slice="$(jq -c '.totals' <<<"${slice_result}" 2>/dev/null || true)"
+      rows_scanned="$(jq -r '.rows_scanned' <<<"${slice_result}" 2>/dev/null || printf '0')"
+      [[ "${rows_scanned}" =~ ^[0-9]+$ ]] || rows_scanned=0
+      if (( row_scan_mode == 0 )); then
+        total_rows=$((cursor + rows_scanned))
+      fi
+      last_request="$(jq -c '.last_request // null' <<<"${slice_result}" 2>/dev/null || printf 'null')"
+    fi
+    # Reject a shrink/replacement that raced the bounded read. Appends are
+    # safe: only bytes through total_bytes were parsed and the later suffix is
+    # intentionally left for the next Stop.
+    if (( parse_needed == 1 )); then
+      current_size="$(_timing_file_size "${file}" 2>/dev/null || true)"
+      current_identity="$(_timing_file_identity "${file}" 2>/dev/null || true)"
+      if [[ ! "${current_size}" =~ ^[0-9]+$ ]] || (( current_size < total_bytes )) \
+          || [[ "${current_identity}" != "${identity}" ]]; then
+        [[ "${source}" == "agent" ]] && agent_manifest_complete=0
+        continue
+      fi
+    fi
+
+    if (( snapshot_complete == 1 )); then
+      cursor_bytes_to_write="${total_bytes}"
+    elif (( row_scan_mode == 1 )); then
+      # A legacy row cursor can advance through complete records before a
+      # partial tail, but no byte offset may point into that unfinished JSON.
+      # Stay in bounded row-migration mode until the fragment completes.
+      cursor_bytes_to_write=""
+    else
+      # Do not parse or advance beyond a partial suffix. Keeping the prior
+      # complete-line byte offset makes the entire suffix retryable.
+      cursor_bytes_to_write="${byte_cursor}"
+      [[ "${source}" == "agent" ]] && agent_manifest_complete=0
+    fi
+    updated_cursors="$(jq -c --arg f "${file}" --arg ident "${identity}" --argjson rows "${total_rows}" \
+      --arg bytes "${cursor_bytes_to_write}" --argjson last "${last_request}" \
+      '.[$f] = ({identity:$ident, rows:$rows}
+        + if ($bytes | test("^[0-9]+$")) then {bytes:($bytes | tonumber)} else {} end
+        + if $last == null then {} else {last_request:$last} end)' \
+      <<<"${cursors}" 2>/dev/null || true)"
+    if ! jq -e 'type == "object"' <<<"${updated_cursors:-null}" >/dev/null 2>&1; then
+      [[ "${source}" == "agent" ]] && agent_manifest_complete=0
+      continue
+    fi
+    cursors="${updated_cursors}"
+    if (( parse_needed == 1 )); then
+      if ! merged_token_totals="$(_timing_add_token_totals "${delta}" "${slice}")"; then
+        return 1
+      fi
+      delta="${merged_token_totals}"
+    fi
+  done
+
+  if (( agent_manifest_complete == 0 )); then
+    agent_manifest_to_store="${previous_agent_manifest}"
+  fi
+
+  if ! merged_token_totals="$(_timing_add_token_totals "${totals}" "${delta}")"; then
+    return 1
+  fi
+  totals="${merged_token_totals}"
+  local main_rows=0
+  main_rows="$(jq -r --arg f "${transcript}" '.[$f].rows // 0' <<<"${cursors}" 2>/dev/null || printf '0')"
+  [[ "${main_rows}" =~ ^[0-9]+$ ]] || main_rows=0
+  # State is the durable side of the transaction. Never append a delta after
+  # a failed cursor/totals commit: the next Stop would retry the same slice and
+  # double-count prompt detail. Conversely, if a later JSONL append fails, the
+  # committed totals are safe and the next Stop re-emits a self-healing
+  # checkpoint even with no new transcript rows.
+  if ! write_state_batch \
+      "token_transcript_cursors" "${cursors}" \
+      "token_agent_transcript_manifest" "${agent_manifest_to_store}" \
+      "token_tracking_initialized" "1" \
+      "token_transcript_rows" "${main_rows}" \
+      "token_totals" "${totals}" 2>/dev/null; then
+    return 1
+  fi
+
+  local ts delta_sum row checkpoint
+  ts="$(now_epoch)"; [[ "${ts}" =~ ^[0-9]+$ ]] || ts=0
+  delta_sum="$(jq -r '[.main_in,.main_out,.main_cache_read,.main_cache_creation,.agent_in,.agent_out,.agent_cache_read,.agent_cache_creation] | map(. // 0) | add // 0' <<<"${delta}" 2>/dev/null || printf '0')"
+  [[ "${delta_sum}" =~ ^[0-9]+$ ]] || delta_sum=0
+  ensure_session_dir 2>/dev/null || return 0
+  if (( delta_sum > 0 )); then
+    row="$(jq -nc --argjson ts "${ts}" --argjson ps "${prompt_seq}" --argjson d "${delta}" \
+      '{kind:"token_delta",ts:$ts,prompt_seq:$ps} + $d' 2>/dev/null || true)"
+    [[ -n "${row}" ]] && printf '%s\n' "${row}" >> "$(timing_log_path)" 2>/dev/null || true
+  fi
+  # Always refresh a non-zero checkpoint, even when no file had new rows.
+  # This makes a state-write/log-append interruption self-healing.
+  local total_sum
+  total_sum="$(jq -r '[.main_in,.main_out,.main_cache_read,.main_cache_creation,.agent_in,.agent_out,.agent_cache_read,.agent_cache_creation] | map(. // 0) | add // 0' <<<"${totals}" 2>/dev/null || printf '0')"
+  [[ "${total_sum}" =~ ^[0-9]+$ ]] || total_sum=0
+  if (( total_sum > 0 )); then
+    checkpoint="$(jq -nc --argjson ts "${ts}" --argjson ps "${prompt_seq}" --argjson t "${totals}" \
+      '{kind:"token_checkpoint",ts:$ts,prompt_seq:$ps} + $t' 2>/dev/null || true)"
+    [[ -n "${checkpoint}" ]] && printf '%s\n' "${checkpoint}" >> "$(timing_log_path)" 2>/dev/null || true
+  fi
+}
+
 timing_capture_session_tokens() {
   is_time_tracking_enabled || return 0
   is_token_tracking_enabled || return 0
@@ -318,87 +1241,9 @@ timing_capture_session_tokens() {
   [[ -n "${transcript}" && -f "${transcript}" ]] || return 0
   command -v jq >/dev/null 2>&1 || return 0
 
-  local total_rows
-  total_rows="$(wc -l < "${transcript}" 2>/dev/null || echo 0)"
-  total_rows="${total_rows##* }"
-  [[ "${total_rows}" =~ ^[0-9]+$ ]] || total_rows=0
-
-  local cursor cursor_raw
-  cursor_raw="$(read_state "token_transcript_rows" 2>/dev/null || true)"
-  if [[ -z "${cursor_raw}" ]]; then
-    # First capture for this session (key absent, not zero). On a FRESH
-    # session (first prompt) count from row 0 so the first prompt's tokens
-    # are captured. But if prompts already ran before token tracking was
-    # active — the flag was flipped on mid-session, or the feature was
-    # newly installed onto a long-running session (prompt_seq > 1) — seed
-    # the cursor to the current row count and skip this delta, so the
-    # entire pre-tracking backlog is not attributed to one giant delta on
-    # the first post-enable Stop. Subsequent Stops then count incrementally.
-    if (( prompt_seq > 1 )); then
-      write_state "token_transcript_rows" "${total_rows}" 2>/dev/null || true
-      return 0
-    fi
-    cursor=0
-  else
-    cursor="${cursor_raw}"
-    [[ "${cursor}" =~ ^[0-9]+$ ]] || cursor=0
-  fi
-
-  # Compaction / transcript-rewrite guard: a file that shrank below the
-  # cursor means Claude Code rewrote history (a compaction replaces prior
-  # turns with a summary turn). Reset the cursor so we count the
-  # post-compaction file forward, INCLUDING the summary turn (its
-  # generation is a real token cost). Pre-compaction token_delta rows
-  # already persist independently in timing.jsonl, so they are not
-  # re-counted — the session cumulative stays correct.
-  if (( total_rows < cursor )); then
-    cursor=0
-  fi
-  # Nothing appended since the previous Stop.
-  if (( total_rows <= cursor )); then
-    return 0
-  fi
-
-  local ts
-  ts="$(now_epoch)"
-  [[ "${ts}" =~ ^[0-9]+$ ]] || ts=0
-
-  # Parse ONLY the rows appended since the cursor; emit a token_delta row
-  # directly (or nothing, when the new slice carried no usage — e.g. it
-  # was all tool-result rows).
-  local row
-  row="$(tail -n "+$((cursor + 1))" "${transcript}" 2>/dev/null | jq -sc \
-    --argjson ts "${ts}" --argjson ps "${prompt_seq}" '
-      map(select((.message.usage) != null))
-      | reduce .[] as $m (
-          {min:0,mout:0,mcr:0,mcw:0,ain:0,aout:0,acr:0,acw:0};
-          ($m.message.usage) as $u
-          | if ($m.isSidechain == true)
-            then .ain += ($u.input_tokens // 0)
-               | .aout += ($u.output_tokens // 0)
-               | .acr += ($u.cache_read_input_tokens // 0)
-               | .acw += ($u.cache_creation_input_tokens // 0)
-            else .min += ($u.input_tokens // 0)
-               | .mout += ($u.output_tokens // 0)
-               | .mcr += ($u.cache_read_input_tokens // 0)
-               | .mcw += ($u.cache_creation_input_tokens // 0)
-            end
-        )
-      | if ([.min,.mout,.mcr,.mcw,.ain,.aout,.acr,.acw] | add) > 0
-        then {kind:"token_delta", ts:$ts, prompt_seq:$ps,
-              main_in:.min, main_out:.mout, main_cache_read:.mcr, main_cache_creation:.mcw,
-              agent_in:.ain, agent_out:.aout, agent_cache_read:.acr, agent_cache_creation:.acw}
-        else empty end
-  ' 2>/dev/null)"
-
-  # Advance the cursor unconditionally — even a usage-free slice must not
-  # be re-scanned next Stop. Separate from row emission so a zero-token
-  # cycle still moves the cursor forward.
-  write_state "token_transcript_rows" "${total_rows}" 2>/dev/null || true
-
-  [[ -z "${row}" ]] && return 0
-  ensure_session_dir 2>/dev/null || return 0
-  printf '%s\n' "${row}" >> "$(timing_log_path)" 2>/dev/null || true
+  # Stop and SubagentStop events can overlap. Cursor advancement, cumulative
+  # total update, and JSONL append form one per-session transaction.
+  with_state_lock _timing_capture_session_tokens_locked "${transcript}" "${prompt_seq}" 2>/dev/null || true
 }
 
 # --- Aggregator ---
@@ -441,7 +1286,54 @@ timing_aggregate() {
     return 0
   fi
 
-  jq -sc --argjson pfilter "${prompt_filter}" '
+  # Read raw lines and parse them independently. A killed append can leave one
+  # truncated JSON value in the middle/tail; valid later checkpoints must still
+  # self-heal the aggregate instead of the whole session collapsing to `{}`.
+  jq -Rsc --argjson pfilter "${prompt_filter}" '
+    def uint:
+      if type == "number" and . >= 0 then
+        (floor | if . > 999999999999999 then 999999999999999 else . end)
+      else 0 end;
+    def safe_bucket_map:
+      if type != "object" then {}
+      else with_entries(
+        .value = ((.value // {}) |
+          if type == "object" then {
+            input: ((.input // 0) | uint),
+            output: ((.output // 0) | uint),
+            cache_read: ((.cache_read // 0) | uint),
+            cache_creation: ((.cache_creation // 0) | uint)
+          } else {input:0,output:0,cache_read:0,cache_creation:0} end)
+      ) end;
+    def numeric_fields_valid:
+      . as $o
+      | all([
+          "ts","prompt_seq","duration_s","chars",
+          "main_in","main_out","main_cache_read","main_cache_creation",
+          "agent_in","agent_out","agent_cache_read","agent_cache_creation",
+          "usage_rows"
+        ][]; . as $k
+          | (($o | has($k) | not)
+             or (($o[$k] | type) == "number"
+                 and $o[$k] >= 0 and $o[$k] <= 999999999999999)));
+    def normalize_row:
+      . as $raw
+      | reduce [
+          "ts","prompt_seq","duration_s","chars",
+          "main_in","main_out","main_cache_read","main_cache_creation",
+          "agent_in","agent_out","agent_cache_read","agent_cache_creation",
+          "usage_rows"
+        ][] as $k (.;
+          if has($k) then .[$k] = (.[$k] | uint) else . end)
+      | .kind = ((.kind // "") | if type == "string" then . else "" end)
+      | .tool = ((.tool // "") | if type == "string" then . else "" end)
+      | .subagent = ((.subagent // "") | if type == "string" then . else "" end)
+      | .name = ((.name // "") | if type == "string" then . else "" end)
+      | .agent_by_role = ((.agent_by_role // {}) | safe_bucket_map)
+      | .agent_by_model = ((.agent_by_model // {}) | safe_bucket_map)
+      | .agent_by_id = ((.agent_by_id // {}) | safe_bucket_map)
+      | ._timing_numeric_valid = ($raw | numeric_fields_valid);
+
     def find_match($pending; $r):
       [$pending | to_entries[] | select(
         if (($r.tool_use_id // "") != "") and ((.value.tool_use_id // "") != "") then
@@ -456,16 +1348,40 @@ timing_aggregate() {
       else .[0]
       end;
 
+    def merge_token_buckets($x; $y):
+      reduce (($y | safe_bucket_map) | to_entries[]) as $e (($x | safe_bucket_map);
+        .[$e.key] = {
+          input:          ((.[$e.key].input // 0)          + ($e.value.input // 0)),
+          output:         ((.[$e.key].output // 0)         + ($e.value.output // 0)),
+          cache_read:     ((.[$e.key].cache_read // 0)     + ($e.value.cache_read // 0)),
+          cache_creation: ((.[$e.key].cache_creation // 0) + ($e.value.cache_creation // 0))
+        }
+      );
+    def checkpoint_key($x):
+      [($x.prompt_seq // 0), ($x.ts // 0),
+       ([($x.main_in // 0), ($x.main_out // 0),
+         ($x.main_cache_read // 0), ($x.main_cache_creation // 0),
+         ($x.agent_in // 0), ($x.agent_out // 0),
+         ($x.agent_cache_read // 0), ($x.agent_cache_creation // 0)] | add // 0)];
+
+    [split("\n")[]
+      | select(length > 0)
+      | (try fromjson catch empty)
+      | select(type == "object")
+      | normalize_row
+    ] as $parsed |
+
     # Optional prompt_seq slice: only retain rows tagged with the requested
     # prompt_seq when pfilter > 0. Untagged rows (legacy / pre-router
     # captures) are dropped from a slice but kept in whole-session aggregation.
-    [.[] | select(
+    [$parsed[] | select(
       ($pfilter == 0) or ((.prompt_seq // 0) == $pfilter)
     )] as $rows |
 
     (reduce $rows[] as $r (
       { pending: [], agent: {}, tool: {}, agent_n: {}, tool_n: {}, dir_chars: {}, dir_n: {}, prompts: [], orphan_end: 0,
-        tk_min: 0, tk_mout: 0, tk_mcr: 0, tk_mcw: 0, tk_ain: 0, tk_aout: 0, tk_acr: 0, tk_acw: 0 };
+        tk_min: 0, tk_mout: 0, tk_mcr: 0, tk_mcw: 0, tk_ain: 0, tk_aout: 0, tk_acr: 0, tk_acw: 0,
+        tk_usage_rows: 0, tk_roles: {}, tk_models: {}, tk_ids: {}, tk_checkpoint: null };
       if $r.kind == "prompt_start" then
         .prompts += [{ ps: ($r.prompt_seq // 0), start: $r.ts, end: null, dur: 0 }]
       elif $r.kind == "prompt_end" then
@@ -487,7 +1403,20 @@ timing_aggregate() {
         .tk_min += ($r.main_in // 0) | .tk_mout += ($r.main_out // 0) |
         .tk_mcr += ($r.main_cache_read // 0) | .tk_mcw += ($r.main_cache_creation // 0) |
         .tk_ain += ($r.agent_in // 0) | .tk_aout += ($r.agent_out // 0) |
-        .tk_acr += ($r.agent_cache_read // 0) | .tk_acw += ($r.agent_cache_creation // 0)
+        .tk_acr += ($r.agent_cache_read // 0) | .tk_acw += ($r.agent_cache_creation // 0) |
+        .tk_usage_rows += ($r.usage_rows // 0) |
+        .tk_roles = merge_token_buckets(.tk_roles; $r.agent_by_role) |
+        .tk_models = merge_token_buckets(.tk_models; $r.agent_by_model) |
+        .tk_ids = merge_token_buckets(.tk_ids; $r.agent_by_id)
+      elif $r.kind == "token_checkpoint" and $pfilter == 0
+          and ($r._timing_numeric_valid == true) then
+        # Checkpoints are cumulative and supersede detail rows for whole-
+        # session aggregation. Prompt slices deliberately continue to use
+        # token_delta rows so /ulw-time last-prompt is not inflated. Select
+        # chronologically by prompt_seq/ts (total breaks same-second ties),
+        # rather than trusting physical JSONL order after recovery/rotation.
+        if .tk_checkpoint == null or checkpoint_key($r) > checkpoint_key(.tk_checkpoint)
+        then .tk_checkpoint = $r else . end
       elif $r.kind == "start" then
         .pending += [$r]
       elif $r.kind == "end" then
@@ -510,6 +1439,15 @@ timing_aggregate() {
       else .
       end
     )) as $st |
+    (if $st.tk_checkpoint != null then $st.tk_checkpoint else {
+      main_in:$st.tk_min, main_out:$st.tk_mout,
+      main_cache_read:$st.tk_mcr, main_cache_creation:$st.tk_mcw,
+      agent_in:$st.tk_ain, agent_out:$st.tk_aout,
+      agent_cache_read:$st.tk_acr, agent_cache_creation:$st.tk_acw,
+      usage_rows:$st.tk_usage_rows,
+      agent_by_role:$st.tk_roles, agent_by_model:$st.tk_models,
+      agent_by_id:$st.tk_ids
+    } end) as $tk |
     {
       walltime_s:       ([$st.prompts[] | select(.end != null) | .dur] | add // 0),
       agent_total_s:    ([$st.agent[]] | add // 0),
@@ -526,14 +1464,18 @@ timing_aggregate() {
       prompts_seq:      [$st.prompts[] | select(.end != null) | {ps:.ps, dur:.dur}],
       active_pending:   ($st.pending | length),
       orphan_end_count: $st.orphan_end,
-      tokens_main_in:            $st.tk_min,
-      tokens_main_out:           $st.tk_mout,
-      tokens_main_cache_read:    $st.tk_mcr,
-      tokens_main_cache_creation: $st.tk_mcw,
-      tokens_agent_in:           $st.tk_ain,
-      tokens_agent_out:          $st.tk_aout,
-      tokens_agent_cache_read:   $st.tk_acr,
-      tokens_agent_cache_creation: $st.tk_acw
+      tokens_main_in:             ($tk.main_in // 0),
+      tokens_main_out:            ($tk.main_out // 0),
+      tokens_main_cache_read:     ($tk.main_cache_read // 0),
+      tokens_main_cache_creation: ($tk.main_cache_creation // 0),
+      tokens_agent_in:             ($tk.agent_in // 0),
+      tokens_agent_out:            ($tk.agent_out // 0),
+      tokens_agent_cache_read:     ($tk.agent_cache_read // 0),
+      tokens_agent_cache_creation: ($tk.agent_cache_creation // 0),
+      token_usage_rows:             ($tk.usage_rows // 0),
+      agent_tokens_by_role:         (($tk.agent_by_role // {}) | safe_bucket_map),
+      agent_tokens_by_model:        (($tk.agent_by_model // {}) | safe_bucket_map),
+      agent_tokens_by_id:           (($tk.agent_by_id // {}) | safe_bucket_map)
     }
     | . + {
         idle_model_s: ((.walltime_s - .agent_total_s - .tool_total_s) | if . < 0 then 0 else . end),
@@ -553,11 +1495,27 @@ timing_aggregate() {
 
 # --- Format helpers ---
 
+# Canonical bounded decimal for Bash arithmetic. JSON imports and legacy state
+# may contain digit strings such as "08" (octal syntax to Bash) or values large
+# enough to wrap signed arithmetic. Strip leading zeroes without a subprocess
+# and cap at 15 digits so the eight-field token sums and percentage products
+# remain below signed 64-bit limits.
+timing_normalize_uint() {
+  local n="${1:-0}"
+  [[ "${n}" =~ ^[0-9]+$ ]] || { printf '0'; return 0; }
+  n="${n#"${n%%[!0]*}"}"
+  [[ -n "${n}" ]] || n=0
+  if (( ${#n} > 15 )); then
+    n=999999999999999
+  fi
+  printf '%s' "${n}"
+}
+
 # Format integer seconds as a compact human string ("0s", "12s", "3m 04s",
 # "1h 23m"). Used by every surface (Stop epilogue, /ulw-time, status, report).
 timing_fmt_secs() {
-  local s="${1:-0}"
-  [[ "${s}" =~ ^[0-9]+$ ]] || s=0
+  local s
+  s="$(timing_normalize_uint "${1:-0}")"
   if (( s < 60 )); then
     printf '%ds' "${s}"
   elif (( s < 3600 )); then
@@ -572,8 +1530,8 @@ timing_fmt_secs() {
 # floating point). Used by the token line in the time card, /ulw-status,
 # and /ulw-report.
 timing_fmt_tokens() {
-  local n="${1:-0}"
-  [[ "${n}" =~ ^[0-9]+$ ]] || n=0
+  local n
+  n="$(timing_normalize_uint "${1:-0}")"
   if (( n >= 1000000 )); then
     printf '%d.%dM' $(( n / 1000000 )) $(( (n % 1000000) / 100000 ))
   elif (( n >= 1000 )); then
@@ -605,7 +1563,7 @@ timing_token_line() {
   a_cw="$(jq -r '.tokens_agent_cache_creation // 0' <<<"${agg}" 2>/dev/null)"
   local v
   for v in m_in m_out m_cr m_cw a_in a_out a_cr a_cw; do
-    [[ "${!v}" =~ ^[0-9]+$ ]] || printf -v "${v}" '%s' 0
+    printf -v "${v}" '%s' "$(timing_normalize_uint "${!v}")"
   done
 
   local in_total out_total cache_read_total agent_total grand
@@ -1318,20 +2276,107 @@ _timing_bar() {
 # timing_record_session_summary <agg_json>
 #   Append a finalized session summary to the cross-session timing log.
 #   Called from stop-time-summary.sh after a successful aggregate run.
-#   Capped via append_limited_state (10000 rows).
+#   Deduplicated and capped under one cross-session log lock transaction.
 timing_record_session_summary() {
   is_time_tracking_enabled || return 0
   local agg="${1:-}"
   [[ -z "${agg}" ]] && return 0
 
-  local walltime
+  local walltime token_total stale_reviewer_count
   walltime="$(jq -r '.walltime_s // 0' <<<"${agg}" 2>/dev/null)"
   walltime="${walltime:-0}"
   [[ "${walltime}" =~ ^[0-9]+$ ]] || walltime=0
-  (( walltime < 5 )) && return 0
+  # Do not throw away short, token-bearing turns. The 5-second threshold is
+  # a presentation noise floor, not an economics-data threshold.
+  token_total="$(jq -r '[
+      (.tokens_main_in // 0), (.tokens_main_out // 0),
+      (.tokens_main_cache_read // 0), (.tokens_main_cache_creation // 0),
+      (.tokens_agent_in // 0), (.tokens_agent_out // 0),
+      (.tokens_agent_cache_read // 0), (.tokens_agent_cache_creation // 0)
+    ] | add // 0' <<<"${agg}" 2>/dev/null || printf '0')"
+  [[ "${token_total}" =~ ^[0-9]+$ ]] || token_total=0
+  stale_reviewer_count="$(jq -r '.stale_reviewer_count // 0' <<<"${agg}" 2>/dev/null || printf '0')"
+  [[ "${stale_reviewer_count}" =~ ^[0-9]+$ ]] || stale_reviewer_count=0
+  # Stale-review causality rejections are an economics signal even when token
+  # tracking is disabled or the transcript did not expose usage rows.
+  (( walltime < 5 && token_total == 0 && stale_reviewer_count == 0 )) && return 0
 
   local sid="${SESSION_ID:-}"
   [[ -z "${sid}" ]] && return 0
+  # Dormant resume sources carry an ownership fence and must never publish a
+  # cross-session checkpoint: the named target owns their cumulative state,
+  # and writing here would reintroduce a second copy after live/TTL scans
+  # correctly suppressed the source directory.  A concurrency-losing target
+  # is instead stripped and reset fresh, so any later unique work remains
+  # reportable under its own session ID.
+  local transferred_session_owner=""
+  transferred_session_owner="$(read_state "resume_transferred_to" 2>/dev/null || true)"
+  if [[ -n "${transferred_session_owner}" ]] \
+      && [[ "${transferred_session_owner}" != "${sid}" ]] \
+      && validate_session_id "${transferred_session_owner}" 2>/dev/null; then
+    return 0
+  fi
+  # Walk the validated transfer chain, not just its immediate predecessor.
+  # A can have a global summary, A→B can die before B writes one, and B→C can
+  # then finish with a cumulative checkpoint.  Removing only B would leave A
+  # beside C and double-count the inherited tokens.  Every traversed edge
+  # must be proven by source.resume_transferred_to == child; corrupt/manual
+  # provenance stops the walk without deleting anything beyond the last
+  # validated edge.  The watchdog's production chain cap is 3; 16 is a
+  # defensive bound for legacy/manual state.
+  local current_resume_state
+  current_resume_state="$(session_file "${STATE_JSON}")"
+  local resume_ancestor_sids='[]' resume_walk_seen_sids='[]'
+  # Versioned ancestry is written only by the transactional resume handoff.
+  # Sanitize again at the accounting boundary and cap it defensively. Unlike
+  # the live edge walk below, this evidence deliberately survives deletion of
+  # dormant source directories by the state TTL.
+  if [[ -f "${current_resume_state}" ]]; then
+    resume_ancestor_sids="$(jq -c '
+      def valid_sid:
+        type == "string"
+        and (length >= 1 and length <= 128)
+        and test("^[a-zA-Z0-9_.-]+$")
+        and (contains("..") | not)
+        and (test("^\\.+$") | not);
+      if .resume_ancestry_version == 1
+          and ((.resume_ancestor_session_ids // null) | type) == "array" then
+        reduce (.resume_ancestor_session_ids[] | select(valid_sid)) as $ancestor
+          ([]; if index($ancestor) == null then . + [$ancestor] else . end)
+        | .[-16:]
+      else [] end
+    ' "${current_resume_state}" 2>/dev/null || printf '[]')"
+  fi
+  jq -e 'type == "array"' <<<"${resume_ancestor_sids}" >/dev/null 2>&1 \
+    || resume_ancestor_sids='[]'
+  local resume_child_sid="${sid}"
+  local resume_candidate_sid="" resume_candidate_owner="" resume_next_sid=""
+  resume_candidate_sid="$(read_state "resume_source_session_id" 2>/dev/null || true)"
+  local resume_chain_steps=0
+  while (( resume_chain_steps < 16 )); do
+    [[ -n "${resume_candidate_sid}" ]] || break
+    validate_session_id "${resume_candidate_sid}" 2>/dev/null || break
+    [[ "${resume_candidate_sid}" != "${resume_child_sid}" ]] || break
+    jq -e --arg sid "${resume_candidate_sid}" 'index($sid) == null' \
+      <<<"${resume_walk_seen_sids}" >/dev/null 2>&1 || break
+    resume_candidate_owner="$(jq -r '
+      (.resume_transferred_to // "")
+      | if type == "string" then . else "" end
+    ' "${STATE_ROOT}/${resume_candidate_sid}/${STATE_JSON}" 2>/dev/null || true)"
+    [[ "${resume_candidate_owner}" == "${resume_child_sid}" ]] || break
+    resume_walk_seen_sids="$(jq -c --arg sid "${resume_candidate_sid}" '. + [$sid]' \
+      <<<"${resume_walk_seen_sids}" 2>/dev/null || printf '[]')"
+    resume_ancestor_sids="$(jq -c --arg sid "${resume_candidate_sid}" \
+      'if index($sid) == null then . + [$sid] else . end | .[-16:]' \
+      <<<"${resume_ancestor_sids}" 2>/dev/null || printf '[]')"
+    resume_next_sid="$(jq -r '
+      (.resume_source_session_id // "")
+      | if type == "string" then . else "" end
+    ' "${STATE_ROOT}/${resume_candidate_sid}/${STATE_JSON}" 2>/dev/null || true)"
+    resume_child_sid="${resume_candidate_sid}"
+    resume_candidate_sid="${resume_next_sid}"
+    resume_chain_steps=$((resume_chain_steps + 1))
+  done
 
   local row
   # v1.31.0 Wave 4 (data-lens F-3 + F-5): rename `session` field to
@@ -1360,98 +2405,253 @@ timing_record_session_summary() {
   # without rows whose .session matches us, then appending. Cost is O(file
   # size) per Stop, but the file is capped at 10000 rows and shrinks to
   # one-row-per-session under this rule, so steady-state is small.
-  if [[ -f "${target}" ]] && [[ -s "${target}" ]]; then
-    local tmp
-    tmp="$(mktemp "${target}.XXXXXX" 2>/dev/null)" || tmp=""
-    if [[ -n "${tmp}" ]]; then
-      # v1.31.0 Wave 4: backwards-compat dedup over BOTH the legacy
-      # `.session` and the new `.session_id` field — old rows from
-      # pre-v1.31.0 timing.jsonl still need to be deduped against
-      # the current sid until they age out via the cross-session cap.
-      if jq -c --arg sid "${sid}" 'select(((.session_id // .session) // "") != $sid)' \
-          "${target}" > "${tmp}" 2>/dev/null; then
-        printf '%s\n' "${row}" >> "${tmp}"
-        mv "${tmp}" "${target}" 2>/dev/null || rm -f "${tmp}"
-      else
-        rm -f "${tmp}"
-        printf '%s\n' "${row}" >> "${target}" 2>/dev/null || true
-      fi
-    else
-      printf '%s\n' "${row}" >> "${target}" 2>/dev/null || true
-    fi
-  else
-    printf '%s\n' "${row}" >> "${target}" 2>/dev/null || true
-  fi
+  # The complete read-filter-append-rotate transaction is locked. Previously
+  # only the cap helper locked, so two Stop hooks could both rewrite from the
+  # same snapshot and silently lose one session summary.
+  with_cross_session_log_lock "${target}" \
+    _timing_record_session_summary_locked \
+      "${target}" "${sid}" "${resume_ancestor_sids}" "${row}" 2>/dev/null || true
+}
 
-  _cap_cross_session_jsonl "${target}" 10000 8000 2>/dev/null || true
+_timing_record_session_summary_locked() {
+  local target="$1" sid="$2" resume_ancestor_sids="$3" row="$4" tmp lines trim
+  tmp="$(mktemp "${target}.XXXXXX" 2>/dev/null)" || return 1
+  if [[ -f "${target}" ]] && [[ -s "${target}" ]]; then
+    # Parse one JSON value per raw line so a single malformed legacy row is
+    # skipped rather than aborting the entire dedup transaction.
+    # A native --resume is one logical accounting chain.  Replacing the
+    # target checkpoint removes every validated ancestor in this same locked
+    # rewrite; otherwise A can remain beside cumulative C when intermediate B
+    # dies before writing a summary, counting inherited tokens twice.
+    jq -Rrc --arg sid "${sid}" --argjson ancestors "${resume_ancestor_sids}" '
+      fromjson?
+      | (((.session_id // .session) // "") | tostring) as $row_sid
+      | select($row_sid != $sid and (($ancestors | index($row_sid)) == null))
+    ' "${target}" > "${tmp}" 2>/dev/null || { rm -f "${tmp}"; return 1; }
+  else
+    : > "${tmp}"
+  fi
+  printf '%s\n' "${row}" >> "${tmp}" || { rm -f "${tmp}"; return 1; }
+  lines="$(wc -l < "${tmp}" 2>/dev/null || echo 0)"; lines="${lines##* }"
+  if [[ "${lines}" =~ ^[0-9]+$ ]] && (( lines > 10000 )); then
+    trim="$(mktemp "${target}.trim.XXXXXX" 2>/dev/null)" || { rm -f "${tmp}"; return 1; }
+    if tail -n 8000 "${tmp}" > "${trim}" 2>/dev/null; then
+      rm -f "${tmp}"
+      tmp="${trim}"
+    else
+      rm -f "${trim}"
+    fi
+  fi
+  mv "${tmp}" "${target}" 2>/dev/null || { rm -f "${tmp}"; return 1; }
 }
 
 # --- Helpers used by show-time / report ---
 
-# timing_xs_aggregate <cutoff_epoch>
-#   Reads cross-session log; returns aggregated rollup over rows with ts >= cutoff.
+# timing_xs_aggregate <cutoff_epoch> [log_path] [session_id] [dispatch_keys_json]
+#   Reads the cross-session log (or an explicit read-only merged view) and
+#   returns an aggregate over rows with ts >= cutoff. When session_id is
+#   supplied, only that exact session contributes; this keeps `report last`
+#   aligned across summaries, gate events, and token economics. An explicit
+#   dispatch-key array limits per-native-ID materialization to those joins;
+#   omitted/null retains every ID for compatibility with direct consumers.
 #   Output: {sessions:N, walltime_s:T, agent_breakdown:{...}, tool_breakdown:{...},
 #            directive_breakdown:{...}, directive_counts:{...}}
 timing_xs_aggregate() {
   local cutoff="${1:-0}"
+  local log="${2:-}" session_filter="${3:-}" dispatch_keys_json="${4:-null}"
   [[ "${cutoff}" =~ ^[0-9]+$ ]] || cutoff=0
+  jq -e '(type == "array" and all(.[]; type == "string")) or . == null' \
+    <<<"${dispatch_keys_json}" >/dev/null 2>&1 \
+    || dispatch_keys_json='null'
 
-  local log
-  log="$(timing_xs_log_path)"
+  [[ -n "${log}" ]] || log="$(timing_xs_log_path)"
   if [[ ! -f "${log}" ]] || [[ ! -s "${log}" ]]; then
     printf '%s\n' '{}'
     return 0
   fi
 
-  jq -sc --argjson cutoff "${cutoff}" '
-    [.[] | select((.ts // 0) >= $cutoff)] as $rows |
+  local aggregate_log="${log}" aggregate_cutoff="${cutoff}"
+  local aggregate_session="${session_filter}" filtered_log="" aggregate_result=""
+  if [[ "${dispatch_keys_json}" != "null" ]]; then
+    # Report callers normally need only the handful of IDs rejected as stale.
+    # Stream-filter each JSONL row before the aggregate slurp so a retained
+    # 10k-session ledger with 512 recent IDs per row cannot inflate into a
+    # multi-million-object in-memory dispatch map. Malformed/torn JSONL rows
+    # are skipped just like the report merge path rather than aborting every
+    # otherwise valid session.
+    filtered_log="$(mktemp "${TMPDIR:-/tmp}/omc-timing-rollup.XXXXXX" 2>/dev/null || true)"
+    if [[ -n "${filtered_log}" ]] && jq -Rc \
+        --argjson dispatch_keys "${dispatch_keys_json}" '
+      fromjson?
+      | select(type == "object")
+      | (((.session_id // .session) // "unknown")
+          | if type == "string" then .[0:128] else "unknown" end
+          | . + "::") as $prefix
+      | ((.agent_tokens_by_id // {})
+          | if type == "object" then . else {} end) as $ids
+      | .agent_tokens_by_id = (
+          reduce $dispatch_keys[] as $key ({};
+            if ($key | startswith($prefix)) then
+              ($key | ltrimstr($prefix)) as $id
+              | if ($ids | has($id)) then .[$id] = $ids[$id] else . end
+            else . end))
+    ' "${log}" > "${filtered_log}" 2>/dev/null; then
+      aggregate_log="${filtered_log}"
+    else
+      [[ -n "${filtered_log}" ]] && rm -f "${filtered_log}"
+      filtered_log=""
+    fi
+  fi
+
+  aggregate_result="$(jq -Rsc --argjson cutoff "${aggregate_cutoff}" --arg session "${aggregate_session}" \
+    --argjson dispatch_keys "${dispatch_keys_json}" '
+    def uint:
+      if type == "number" and . >= 0 then
+        (floor | if . > 999999999999999 then 999999999999999 else . end)
+      else 0 end;
+    def sum_uint: (add // 0) | uint;
+    def safe_num_map:
+      if type != "object" then {}
+      else to_entries | .[-512:] | map(.value |= uint) | from_entries end;
+    def safe_bucket_map:
+      if type != "object" then {}
+      else to_entries | .[-512:] | map(
+        .value = ((.value // {}) |
+          if type == "object" then {
+            input: ((.input // 0) | uint),
+            output: ((.output // 0) | uint),
+            cache_read: ((.cache_read // 0) | uint),
+            cache_creation: ((.cache_creation // 0) | uint)
+          } else {input:0,output:0,cache_read:0,cache_creation:0} end)
+      ) | from_entries end;
+    def normalize_xs_row:
+      reduce ([
+        "ts","walltime_s","agent_total_s","tool_total_s","idle_model_s",
+        "concurrent_overhead_s","directive_total_chars","directive_count",
+        "tokens_main_in","tokens_main_out","tokens_main_cache_read",
+        "tokens_main_cache_creation","tokens_agent_in","tokens_agent_out",
+        "tokens_agent_cache_read","tokens_agent_cache_creation",
+        "token_usage_rows","stale_reviewer_count","prompt_count"
+      ][]) as $key (.;
+        if has($key) then .[$key] = (.[$key] | uint) else .[$key] = 0 end)
+      | .session_id = (((.session_id // .session) // "") |
+          if type == "string" then .[0:128] else "" end)
+      | .agent_breakdown = ((.agent_breakdown // {}) | safe_num_map)
+      | .tool_breakdown = ((.tool_breakdown // {}) | safe_num_map)
+      | .directive_breakdown = ((.directive_breakdown // {}) | safe_num_map)
+      | .directive_counts = ((.directive_counts // {}) | safe_num_map)
+      | .agent_tokens_by_role = ((.agent_tokens_by_role // {}) | safe_bucket_map)
+      | .agent_tokens_by_model = ((.agent_tokens_by_model // {}) | safe_bucket_map)
+      | .agent_tokens_by_id = ((.agent_tokens_by_id // {}) | safe_bucket_map);
+
+    [split("\n")[]
+      | select(length > 0)
+      | (try fromjson catch empty)
+      | select(type == "object")
+      | normalize_xs_row
+      | select(.ts >= $cutoff)
+      | select($session == "" or .session_id == $session)
+    ] as $rows |
     {
       sessions:        ($rows | length),
-      walltime_s:      ([$rows[] | (.walltime_s // 0)] | add // 0),
-      agent_total_s:   ([$rows[] | (.agent_total_s // 0)] | add // 0),
-      tool_total_s:    ([$rows[] | (.tool_total_s // 0)] | add // 0),
-      idle_model_s:    ([$rows[] | (.idle_model_s // 0)] | add // 0),
-      # v1.34.1+ (D-002): sum the parallelism overhead so the renderer
-      # can disclose "X minutes saved by parallel work" across the window.
-      # Pre-Wave-1 rows lack the field; default to 0 keeps math clean.
-      concurrent_overhead_s: ([$rows[] | (.concurrent_overhead_s // 0)] | add // 0),
-      directive_total_chars: ([$rows[] | (.directive_total_chars // 0)] | add // 0),
-      directive_count: ([$rows[] | (.directive_count // 0)] | add // 0),
+      walltime_s:      ([$rows[] | .walltime_s] | sum_uint),
+      agent_total_s:   ([$rows[] | .agent_total_s] | sum_uint),
+      tool_total_s:    ([$rows[] | .tool_total_s] | sum_uint),
+      idle_model_s:    ([$rows[] | .idle_model_s] | sum_uint),
+      # Sum parallelism overhead so the renderer can disclose time saved by
+      # parallel work. Legacy rows simply normalize the missing field to zero.
+      concurrent_overhead_s: ([$rows[] | .concurrent_overhead_s] | sum_uint),
+      directive_total_chars: ([$rows[] | .directive_total_chars] | sum_uint),
+      directive_count: ([$rows[] | .directive_count] | sum_uint),
       agent_breakdown: (
-        [$rows[] | (.agent_breakdown // {}) | to_entries[]]
+        [$rows[] | .agent_breakdown | to_entries[]]
         | group_by(.key)
-        | map({key: .[0].key, value: ([.[].value] | add)})
+        | map({key: .[0].key, value: ([.[].value] | sum_uint)})
         | from_entries
       ),
       tool_breakdown: (
-        [$rows[] | (.tool_breakdown // {}) | to_entries[]]
+        [$rows[] | .tool_breakdown | to_entries[]]
         | group_by(.key)
-        | map({key: .[0].key, value: ([.[].value] | add)})
+        | map({key: .[0].key, value: ([.[].value] | sum_uint)})
         | from_entries
       ),
       directive_breakdown: (
-        [$rows[] | (.directive_breakdown // {}) | to_entries[]]
+        [$rows[] | .directive_breakdown | to_entries[]]
         | group_by(.key)
-        | map({key: .[0].key, value: ([.[].value] | add)})
+        | map({key: .[0].key, value: ([.[].value] | sum_uint)})
         | from_entries
       ),
       directive_counts: (
-        [$rows[] | (.directive_counts // {}) | to_entries[]]
+        [$rows[] | .directive_counts | to_entries[]]
         | group_by(.key)
-        | map({key: .[0].key, value: ([.[].value] | add)})
+        | map({key: .[0].key, value: ([.[].value] | sum_uint)})
         | from_entries
       ),
-      tokens_main_in:             ([$rows[] | (.tokens_main_in // 0)] | add // 0),
-      tokens_main_out:            ([$rows[] | (.tokens_main_out // 0)] | add // 0),
-      tokens_main_cache_read:     ([$rows[] | (.tokens_main_cache_read // 0)] | add // 0),
-      tokens_main_cache_creation: ([$rows[] | (.tokens_main_cache_creation // 0)] | add // 0),
-      tokens_agent_in:            ([$rows[] | (.tokens_agent_in // 0)] | add // 0),
-      tokens_agent_out:           ([$rows[] | (.tokens_agent_out // 0)] | add // 0),
-      tokens_agent_cache_read:    ([$rows[] | (.tokens_agent_cache_read // 0)] | add // 0),
-      tokens_agent_cache_creation: ([$rows[] | (.tokens_agent_cache_creation // 0)] | add // 0),
-      prompts:        ([$rows[] | (.prompt_count // 0)] | add // 0)
+      tokens_main_in:              ([$rows[] | .tokens_main_in] | sum_uint),
+      tokens_main_out:             ([$rows[] | .tokens_main_out] | sum_uint),
+      tokens_main_cache_read:      ([$rows[] | .tokens_main_cache_read] | sum_uint),
+      tokens_main_cache_creation:  ([$rows[] | .tokens_main_cache_creation] | sum_uint),
+      tokens_agent_in:             ([$rows[] | .tokens_agent_in] | sum_uint),
+      tokens_agent_out:            ([$rows[] | .tokens_agent_out] | sum_uint),
+      tokens_agent_cache_read:     ([$rows[] | .tokens_agent_cache_read] | sum_uint),
+      tokens_agent_cache_creation: ([$rows[] | .tokens_agent_cache_creation] | sum_uint),
+      token_usage_rows:            ([$rows[] | .token_usage_rows] | sum_uint),
+      stale_reviewer_count:        ([$rows[] | .stale_reviewer_count] | sum_uint),
+      agent_tokens_by_role: (
+        [$rows[] | .agent_tokens_by_role | to_entries[]]
+        | group_by(.key)
+        | map({key: .[0].key, value: {
+            input: ([.[].value.input] | sum_uint),
+            output: ([.[].value.output] | sum_uint),
+            cache_read: ([.[].value.cache_read] | sum_uint),
+            cache_creation: ([.[].value.cache_creation] | sum_uint)
+          }})
+        | from_entries
+      ),
+      agent_tokens_by_model: (
+        [$rows[] | .agent_tokens_by_model | to_entries[]]
+        | group_by(.key)
+        | map({key: .[0].key, value: {
+            input: ([.[].value.input] | sum_uint),
+            output: ([.[].value.output] | sum_uint),
+            cache_read: ([.[].value.cache_read] | sum_uint),
+            cache_creation: ([.[].value.cache_creation] | sum_uint)
+          }})
+        | from_entries
+      ),
+      # Native Claude Code IDs are unique per invocation. Namespace them by
+      # session so stale-review joins identify exactly one sidechain.
+      agent_tokens_by_dispatch: (
+        [$rows[] as $row
+          | (($row.session_id | if . == "" then "unknown" else . end) + "::") as $prefix
+          | $row.agent_tokens_by_id as $ids
+          | if $dispatch_keys == null then
+              $ids | to_entries[] | .key = ($prefix + .key)
+            else
+              $dispatch_keys[] as $key
+              | select($key | startswith($prefix))
+              | ($key | ltrimstr($prefix)) as $id
+              | select($ids | has($id))
+              | {key:$key,value:$ids[$id]}
+            end]
+        | group_by(.key)
+        | map({key: .[0].key, value: {
+            input: ([.[].value.input] | sum_uint),
+            output: ([.[].value.output] | sum_uint),
+            cache_read: ([.[].value.cache_read] | sum_uint),
+            cache_creation: ([.[].value.cache_creation] | sum_uint)
+          }})
+        | from_entries
+      ),
+      prompts: ([$rows[] | .prompt_count] | sum_uint)
     }
-  ' < "${log}" 2>/dev/null || printf '%s\n' '{}'
+  ' < "${aggregate_log}" 2>/dev/null || printf '%s' '{}')"
+  [[ -n "${filtered_log}" ]] && rm -f "${filtered_log}"
+  if [[ -n "${aggregate_result}" ]]; then
+    printf '%s\n' "${aggregate_result}"
+  else
+    printf '%s\n' '{}'
+  fi
 }
 
 # timing_next_prompt_seq

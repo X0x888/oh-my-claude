@@ -6,7 +6,6 @@
   "required_outcomes": [
     "tests_passed",
     "targeted_verification",
-    "regression_test_added",
     "review_clean",
     "research_report_ready",
     "analysis_specialist_coverage",

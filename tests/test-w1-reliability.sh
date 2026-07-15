@@ -426,26 +426,10 @@ fi
 # ----------------------------------------------------------------------
 printf '\n--- F-024: harness health section surfaces watchdog tombstone ---\n'
 
-if grep -q "Harness Health" "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/show-status.sh"; then
-  ok
-else
-  fail_msg "F-024: show-status.sh missing 'Harness Health' header"
-fi
-
-if grep -q "watchdog-last-error" "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/show-status.sh"; then
-  ok
-else
-  fail_msg "F-024: show-status.sh does not reference the tombstone path"
-fi
-
-# v1.37.x W3 follow-up (Item 5): runtime regression net for F-024. The
-# two source-greps above test that the literal strings exist in source,
-# but they don't catch the F-023-class blindspot — a typo in the
-# variable referenced inside the printf would still leave "Harness
-# Health" in source while the runtime path skipped or crashed. This
-# fixture writes a tombstone, invokes show-status, asserts the section
-# emits the EXPECTED runtime content (not just that the string is
-# somewhere in the file).
+# Runtime regression net for F-024. A source-string check stayed green when a
+# variable typo made the rendered path skip or crash, so retain only the
+# stronger behavior test: write a tombstone, invoke show-status, and assert the
+# expected section and reason are actually emitted.
 f024_runtime_home="${TEST_TMP}/f024-runtime-home"
 mkdir -p "${f024_runtime_home}/.cache/omc"
 # Tombstone format per resume-watchdog.sh: `ts=<epoch>\nreason=<msg>`.

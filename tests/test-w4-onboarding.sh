@@ -3,11 +3,11 @@
 #
 # Covers F-015 (README ordering: Comparison/proof above Install/procedure),
 # F-016 (docs/showcase.md replaces synthetic seed with real entries),
-# F-017 (README links ohmyclaude.dev), F-018 (install.sh footer collapsed
-# to single canonical /ulw-demo CTA), F-019 (post-restart welcome banner
-# differentiates the post-install session), F-020 (install/update docs
-# attribute the `Orphans:` block to install.sh, not verify.sh), and
-# F-022 (AI-assisted install failure policy stays explicit and pinned).
+# F-017 (README links ohmyclaude.dev), F-020 (install/update docs attribute
+# the `Orphans:` block to install.sh, not verify.sh), and F-022 (AI-assisted
+# install failure policy stays explicit and pinned). F-018/F-019 now live in
+# their stronger behavioral owners: test-install-handoff.sh and
+# test-session-start-welcome.sh.
 
 set -uo pipefail
 
@@ -87,45 +87,9 @@ else
   fail_msg "F-017: nav line should link ohmyclaude.dev (found: ${nav_has_dev})"
 fi
 
-# ----------------------------------------------------------------------
-# F-018 — install.sh footer collapsed to single /ulw-demo CTA.
-# ----------------------------------------------------------------------
-printf '\n--- F-018: install footer single canonical CTA ---\n'
-
-install_sh="${REPO_ROOT}/install.sh"
-
-# Old format had "Then:\n  1. Verify... 2. Configure... 3. See gates... 4. Real work..."
-# New format has "Then run /ulw-demo in the new Claude Code session"
-if grep -qE "Then run /ulw-demo" "${install_sh}"; then
-  ok
-else
-  fail_msg "F-018: install.sh footer missing single /ulw-demo CTA"
-fi
-
-# The 4-numbered-step format should be gone.
-if grep -qE "1\. Verify the install:.*2\. Configure" "${install_sh}"; then
-  fail_msg "F-018: install.sh still has the 4-step staircase format"
-else
-  ok
-fi
-
-# ----------------------------------------------------------------------
-# F-019 — Post-restart welcome banner differentiates the session.
-# ----------------------------------------------------------------------
-printf '\n--- F-019: welcome banner has post-install differentiation ---\n'
-
-welcome_sh="${REPO_ROOT}/bundle/dot-claude/quality-pack/scripts/session-start-welcome.sh"
-if grep -qE "You.*re now running oh-my-claude" "${welcome_sh}"; then
-  ok
-else
-  fail_msg "F-019: welcome banner missing 'You're now running oh-my-claude vX.Y.Z' framing"
-fi
-
-if grep -qE "Claude Code reloaded the hooks" "${welcome_sh}"; then
-  ok
-else
-  fail_msg "F-019: welcome banner should ack the hook reload (post-restart signal)"
-fi
+# F-018/F-019 source-only checks were retired: test-install-handoff.sh executes
+# install.sh and asserts the canonical /ulw-demo CTA, while
+# test-session-start-welcome.sh executes the hook and asserts the reload banner.
 
 # ----------------------------------------------------------------------
 # F-020 — install/update docs attribute Orphans: to install.sh.

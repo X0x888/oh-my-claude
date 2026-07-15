@@ -1,7 +1,7 @@
 {
   "id": "depth-scaffold",
   "question": "Does the anti-shallow-thinking doctrine (intellectual-craft.md + model-robustness.md, ~5.5k words of the per-session chain) change root-cause behavior on a symptom-vs-cause task, or does a strong model root-cause natively?",
-  "hypothesis": "Null delta on Fable-5-class models: the visible CLI test can be passed with a symptom patch in bin/statsum, but a natively-deep model fixes lib/sum.sh anyway. A large delta means the scaffold is still load-bearing and must not be trimmed.",
+  "hypothesis": "Null delta on natively deep current/future session models: the visible CLI test can be passed with a symptom patch in bin/statsum, but a sufficiently capable model fixes lib/sum.sh anyway. A large delta means the scaffold is still load-bearing and must not be trimmed.",
   "prompt": "/ulw statsum prints the wrong total — find the real cause and fix it properly.",
   "fixture": "fixtures/probes/depth-scaffold",
   "arms": [

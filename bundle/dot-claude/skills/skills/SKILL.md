@@ -19,6 +19,7 @@ When you know what you want, jump straight to the verb:
 | Harness feels off / gates stopped firing | `/omc-doctor` |
 | Need a plan before you edit | `/plan-hard <task>` |
 | Need to review existing code | `/review-hard [focus]` |
+| Wonder whether tests still earn their cost | `/test-audit [scope] [--apply]` |
 | Need repo / API context before coding | `/research-hard <topic>` |
 | Have a vague goal — need clarification | `/prometheus <goal>` |
 | Have a draft plan — want it stress-tested | `/metis <plan>` |
@@ -86,6 +87,7 @@ The symptom-table above is a discovery shortcut. Each row maps to a skill in the
 | Skill | Command | When to use |
 |-------|---------|-------------|
 | **council** | `/council [focus] [--deep]` | Coverage-map-driven evaluation from the full roster: normally 1–4 primary specialists, optional 0–2 gap-fill, and independent competence-matched verification of up to three findings. `--deep` escalates selected Sonnet-backed agents only. |
+| **test-audit** | `/test-audit [scope] [--apply]` | Map behavior contracts to test owners and decide `KEEP`, `EXTEND`, `MERGE`, `REPLACE`, `DELETE`, or `ADD` by unique confidence, runtime, stability, and maintenance cost. Read-only unless `--apply` is passed. |
 | **atlas** | `/atlas [focus]` | Bootstrap or refresh CLAUDE.md / `.claude/rules` for a repository. |
 
 ### Configuring & inspecting
@@ -119,6 +121,7 @@ These two skills auto-fire when Claude detects the matching work — there is no
 - **Stuck debugging?** Use `/oracle`.
 - **Need docs or references?** Use `/librarian`.
 - **Want a code review?** Use `/review-hard`.
+- **Wonder whether a test suite is stale, redundant, or too slow?** Use `/test-audit`; add `--apply` only when you want evidence-backed portfolio changes implemented.
 - **Need repo context before building?** Use `/research-hard`.
 - **Gate blocking but you're confident?** Use `/ulw-skip <reason>` to pass once.
 - **Discovered-scope gate flagging findings you've consciously deferred?** Use `/mark-deferred <reason>` to bulk-defer all pending advisory findings with a recorded reason — keeps `/ulw-report` audits accurate.

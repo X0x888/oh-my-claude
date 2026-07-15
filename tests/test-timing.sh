@@ -3,7 +3,8 @@
 # hooks + Stop epilogue + show-time). Cover the load-bearing behaviors:
 # lock-free append correctness, FIFO/LIFO pairing, prompt-seq epoch
 # isolation, opt-out fast-path, aggregator math, format helpers, Stop
-# self-suppression on recent block, and show-time empty-state vs populated.
+# self-suppression on the exact blocked Stop attempt, and show-time
+# empty-state vs populated.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -12,6 +13,19 @@ SCRIPTS_DIR="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts"
 
 # shellcheck source=../bundle/dot-claude/skills/autowork/scripts/common.sh
 source "${SCRIPTS_DIR}/common.sh"
+
+# Timing contracts need ordered whole-second timestamps, not wall-clock
+# waiting. Override the sourced helper in this test process so every former
+# one-second sleep becomes a deterministic logical-clock advance. Hook-level
+# integration still exercises the production clock in the dedicated hook
+# suites.
+TEST_NOW_EPOCH="$(date +%s)"
+now_epoch() {
+  printf '%s' "${TEST_NOW_EPOCH}"
+}
+advance_test_epoch() {
+  TEST_NOW_EPOCH=$((TEST_NOW_EPOCH + ${1:-1}))
+}
 
 pass=0
 fail=0
@@ -69,9 +83,9 @@ printf 'Test 2: simple Bash start+end pair aggregates correctly\n'
 reset_log
 timing_append_prompt_start 1
 timing_append_start "Bash" "" "" 1
-sleep 1
+advance_test_epoch
 timing_append_end "Bash" "" 1
-sleep 1
+advance_test_epoch
 timing_append_prompt_end 1 2
 
 agg="$(timing_aggregate "$(timing_log_path)")"
@@ -88,10 +102,10 @@ reset_log
 timing_append_prompt_start 2
 timing_append_start "Bash" "id-A" "" 2
 timing_append_start "Bash" "id-B" "" 2
-sleep 1
+advance_test_epoch
 # Ends arrive in REVERSE order (end-B before end-A) — tool_use_id must rescue
 timing_append_end "Bash" "id-B" 2
-sleep 1
+advance_test_epoch
 timing_append_end "Bash" "id-A" 2
 timing_append_prompt_end 2 2
 
@@ -109,10 +123,10 @@ printf 'Test 4: Agent subagent attribution buckets correctly\n'
 reset_log
 timing_append_prompt_start 3
 timing_append_start "Agent" "ag-1" "quality-reviewer" 3
-sleep 1
+advance_test_epoch
 timing_append_end "Agent" "ag-1" 3
 timing_append_start "Agent" "ag-2" "metis" 3
-sleep 1
+advance_test_epoch
 timing_append_end "Agent" "ag-2" 3
 timing_append_prompt_end 3 2
 
@@ -129,13 +143,13 @@ printf 'Test 5: prompt_seq isolates calls across epochs\n'
 reset_log
 timing_append_prompt_start 10
 timing_append_start "Bash" "" "" 10
-sleep 1
+advance_test_epoch
 timing_append_end "Bash" "" 10
 timing_append_prompt_end 10 1
 # Next prompt
 timing_append_prompt_start 11
 timing_append_start "Bash" "" "" 11
-sleep 1
+advance_test_epoch
 timing_append_end "Bash" "" 11
 timing_append_prompt_end 11 1
 
@@ -183,7 +197,7 @@ printf 'Test 7: oneline format renders bucket totals\n'
 reset_log
 timing_append_prompt_start 20
 timing_append_start "Bash" "" "" 20
-sleep 1
+advance_test_epoch
 timing_append_end "Bash" "" 20
 timing_append_prompt_end 20 10
 
@@ -237,7 +251,7 @@ printf 'Test 9: full format renders bar chart with %% breakdown\n'
 reset_log
 timing_append_prompt_start 40
 timing_append_start "Agent" "" "quality-reviewer" 40
-sleep 1
+advance_test_epoch
 timing_append_end "Agent" "" 40
 timing_append_prompt_end 40 10
 
@@ -336,22 +350,23 @@ completeness_fires="$(jq -r '.directive_counts.bias_defense_completeness // 0' <
 assert_eq "merged completeness directive fires" "2" "${completeness_fires}"
 
 # ----------------------------------------------------------------------
-printf 'Test 14: Stop self-suppression detects recent block\n'
-gates="$(session_file "gate_events.jsonl")"
-rm -f "${gates}"
-record_gate_event "quality" "block" "block_count=1" "block_cap=1"
-# stop-time-summary.sh suppresses when last block ts is within 3s. Verify
-# the heuristic on the file we just wrote by reading it the same way.
-recent="$(tail -n 5 "${gates}" 2>/dev/null \
-  | jq -rs '[.[] | select(.event=="block")] | sort_by(.ts // 0) | last | (.ts // 0)')"
-now_ts="$(now_epoch)"
-delta=$(( now_ts - recent ))
-if (( delta <= 3 )); then
-  pass=$((pass + 1))
-else
-  printf '  FAIL: recent-block detection failed: delta=%s\n' "${delta}" >&2
-  fail=$((fail + 1))
-fi
+printf 'Test 14: Stop self-suppression matches the exact blocked attempt\n'
+block_root="$(mktemp -d)"
+block_session="exact-block-session"
+block_dir="${block_root}/${block_session}"
+mkdir -p "${block_dir}"
+# This timestamp is consumed by a fresh hook process, which intentionally uses
+# the production wall clock rather than this test process's logical clock.
+now_ts="$(date +%s)"
+jq -nc --argjson ts "$(( now_ts - 12 ))" --argjson seq 1 \
+  '{kind:"prompt_start",ts:$ts,prompt_seq:$seq}' > "${block_dir}/timing.jsonl"
+jq -nc --arg sid "${block_session}" --argjson now "${now_ts}" \
+  '{session_id:$sid,prompt_seq:1,stop_guard_attempt_seq:7,last_stop_block_attempt_seq:7,last_stop_block_ts:$now}' \
+  > "${block_dir}/session_state.json"
+block_payload="$(jq -nc --arg sid "${block_session}" '{session_id:$sid}')"
+block_out="$(STATE_ROOT="${block_root}" HOME="${HOME}" OMC_TIME_CARD_MIN_SECONDS=0 \
+  bash "${SCRIPTS_DIR}/stop-time-summary.sh" <<<"${block_payload}" 2>&1 || true)"
+assert_eq "exact blocked attempt suppresses the card" "" "${block_out}"
 
 # ----------------------------------------------------------------------
 printf 'Test 15: show-time.sh empty state for fresh session\n'
@@ -434,6 +449,135 @@ assert_eq "two sessions yield two rows" "2" "${total_rows}"
 rollup="$(timing_xs_aggregate 0)"
 xs_walltime="$(jq -r '.walltime_s // 0' <<<"${rollup}")"
 assert_eq "xs sum across distinct sessions" "102" "${xs_walltime}"
+
+# The dedup rewrite and append must be one lock transaction. Distinct
+# concurrent Stop hooks previously could both rewrite from the same snapshot
+# and lose a peer's row even though the later cap itself was locked.
+for _cw in $(seq 1 20); do
+  (
+    SESSION_ID="concurrent-summary-${_cw}"
+    timing_record_session_summary '{"walltime_s":5,"prompt_count":1,"tokens_main_out":1}'
+  ) &
+done
+wait
+assert_eq "concurrent summary transactions lose no rows" "22" \
+  "$(wc -l < "${xs_log}" | tr -d '[:space:]')"
+assert_eq "concurrent summary ledger remains valid JSONL" "22" \
+  "$(jq -c . "${xs_log}" 2>/dev/null | wc -l | tr -d '[:space:]')"
+
+# A resumed target carries a cumulative checkpoint.  Its locked replacement
+# must remove every validated source-chain row in the same transaction or
+# inherited tokens are counted once under an ancestor and again inside the
+# final owner.  This block covers both normal multi-hop replacement and an
+# intermediate that dies before it ever writes a global summary.
+SESSION_ID="resume-source-summary"
+mkdir -p "${STATE_ROOT}/${SESSION_ID}"
+printf '{}\n' > "${STATE_ROOT}/${SESSION_ID}/session_state.json"
+timing_record_session_summary \
+  '{"walltime_s":10,"prompt_count":1,"tokens_main_out":100,"stale_reviewer_count":2}'
+printf '{"resume_transferred_to":"resume-target-summary"}\n' \
+  > "${STATE_ROOT}/resume-source-summary/session_state.json"
+# A late Stop from the now-dormant source cannot republish a newer checkpoint
+# after the transfer fence lands.  The target's cumulative row will replace
+# the original source checkpoint below.
+timing_record_session_summary \
+  '{"walltime_s":99,"prompt_count":9,"tokens_main_out":999,"stale_reviewer_count":9}'
+assert_eq "transferred source cannot republish a checkpoint" "100" \
+  "$(jq -sr '[.[] | select(.session_id == "resume-source-summary") | .tokens_main_out] | first // 0' "${xs_log}")"
+SESSION_ID="resume-target-summary"
+mkdir -p "${STATE_ROOT}/${SESSION_ID}"
+printf '{"resume_source_session_id":"resume-source-summary"}\n' \
+  > "${STATE_ROOT}/${SESSION_ID}/session_state.json"
+timing_record_session_summary \
+  '{"walltime_s":15,"prompt_count":2,"tokens_main_out":150,"stale_reviewer_count":3}'
+assert_eq "resume summary removes immediate source row" "0" \
+  "$(jq -sr '[.[] | select(.session_id == "resume-source-summary")] | length' "${xs_log}")"
+assert_eq "resume summary retains one cumulative target row" "1" \
+  "$(jq -sr '[.[] | select(.session_id == "resume-target-summary" and .tokens_main_out == 150 and .stale_reviewer_count == 3)] | length' "${xs_log}")"
+assert_eq "resume source tokens counted exactly once under target" "150" \
+  "$(jq -sr '[.[] | select(.session_id == "resume-source-summary" or .session_id == "resume-target-summary") | (.tokens_main_out // 0)] | add // 0' "${xs_log}")"
+
+tmp_resume_state="${STATE_ROOT}/resume-target-summary/session_state.json.tmp"
+jq '.resume_transferred_to = "resume-third-summary"' \
+  "${STATE_ROOT}/resume-target-summary/session_state.json" > "${tmp_resume_state}"
+mv "${tmp_resume_state}" "${STATE_ROOT}/resume-target-summary/session_state.json"
+SESSION_ID="resume-third-summary"
+mkdir -p "${STATE_ROOT}/${SESSION_ID}"
+printf '{"resume_source_session_id":"resume-target-summary"}\n' \
+  > "${STATE_ROOT}/${SESSION_ID}/session_state.json"
+timing_record_session_summary \
+  '{"walltime_s":20,"prompt_count":3,"tokens_main_out":175,"stale_reviewer_count":4}'
+assert_eq "multi-hop resume removes immediate prior owner" "0" \
+  "$(jq -sr '[.[] | select(.session_id == "resume-target-summary")] | length' "${xs_log}")"
+assert_eq "multi-hop resume has one cumulative chain owner" "1" \
+  "$(jq -sr '[.[] | select(.session_id == "resume-third-summary" and .tokens_main_out == 175)] | length' "${xs_log}")"
+
+# Intermediate B may be killed by StopFailure before it ever records a global
+# timing row.  C still has to remove A through the validated A→B→C state chain.
+SESSION_ID="nointermediate-source-summary"
+mkdir -p "${STATE_ROOT}/${SESSION_ID}"
+printf '{}\n' > "${STATE_ROOT}/${SESSION_ID}/session_state.json"
+timing_record_session_summary \
+  '{"walltime_s":8,"prompt_count":1,"tokens_main_out":80}'
+printf '{"resume_transferred_to":"nointermediate-middle-summary"}\n' \
+  > "${STATE_ROOT}/nointermediate-source-summary/session_state.json"
+mkdir -p "${STATE_ROOT}/nointermediate-middle-summary"
+printf '%s\n' \
+  '{"resume_source_session_id":"nointermediate-source-summary","resume_transferred_to":"nointermediate-final-summary"}' \
+  > "${STATE_ROOT}/nointermediate-middle-summary/session_state.json"
+SESSION_ID="nointermediate-final-summary"
+mkdir -p "${STATE_ROOT}/${SESSION_ID}"
+printf '{"resume_source_session_id":"nointermediate-middle-summary"}\n' \
+  > "${STATE_ROOT}/${SESSION_ID}/session_state.json"
+timing_record_session_summary \
+  '{"walltime_s":12,"prompt_count":2,"tokens_main_out":120}'
+assert_eq "multi-hop without intermediate summary removes oldest owner" "0" \
+  "$(jq -sr '[.[] | select(.session_id == "nointermediate-source-summary")] | length' "${xs_log}")"
+assert_eq "multi-hop without intermediate summary leaves one cumulative row" "1" \
+  "$(jq -sr '[.[] | select(.session_id == "nointermediate-final-summary" and .tokens_main_out == 120)] | length' "${xs_log}")"
+
+# State TTL can delete A before C publishes its cumulative summary. Durable
+# versioned ancestry on C must still retire A's older global row even though
+# no source directory remains available for the live fence walk.
+SESSION_ID="expired-ancestor-summary"
+mkdir -p "${STATE_ROOT}/${SESSION_ID}"
+printf '{}\n' > "${STATE_ROOT}/${SESSION_ID}/session_state.json"
+timing_record_session_summary \
+  '{"walltime_s":7,"prompt_count":1,"tokens_main_out":70}'
+rm -rf "${STATE_ROOT}/expired-ancestor-summary"
+SESSION_ID="ttl-surviving-final-summary"
+mkdir -p "${STATE_ROOT}/${SESSION_ID}"
+printf '%s\n' \
+  '{"resume_ancestry_version":1,"resume_ancestor_session_ids":["expired-ancestor-summary","expired-ancestor-summary","../invalid"],"resume_source_session_id":"missing-middle-summary"}' \
+  > "${STATE_ROOT}/${SESSION_ID}/session_state.json"
+timing_record_session_summary \
+  '{"walltime_s":11,"prompt_count":2,"tokens_main_out":110}'
+assert_eq "durable ancestry removes summary after source-state TTL" "0" \
+  "$(jq -sr '[.[] | select(.session_id == "expired-ancestor-summary")] | length' "${xs_log}")"
+assert_eq "TTL resume chain leaves exactly one cumulative owner" "1" \
+  "$(jq -sr '[.[] | select(.session_id == "ttl-surviving-final-summary" and .tokens_main_out == 110)] | length' "${xs_log}")"
+
+SESSION_ID="protected-unrelated-summary"
+mkdir -p "${STATE_ROOT}/${SESSION_ID}"
+printf '{}\n' > "${STATE_ROOT}/${SESSION_ID}/session_state.json"
+timing_record_session_summary \
+  '{"walltime_s":5,"prompt_count":1,"tokens_main_out":20}'
+SESSION_ID="forged-resume-target"
+mkdir -p "${STATE_ROOT}/${SESSION_ID}"
+printf '{"resume_source_session_id":"protected-unrelated-summary","resume_ancestor_session_ids":["protected-unrelated-summary"]}\n' \
+  > "${STATE_ROOT}/${SESSION_ID}/session_state.json"
+timing_record_session_summary \
+  '{"walltime_s":5,"prompt_count":1,"tokens_main_out":30}'
+assert_eq "unfenced resume provenance cannot erase unrelated timing row" "1" \
+  "$(jq -sr '[.[] | select(.session_id == "protected-unrelated-summary")] | length' "${xs_log}")"
+
+# A causality-rejected review is economically meaningful even if token
+# tracking is disabled or no usage-bearing transcript rows were available.
+# It must therefore survive the same short-session presentation floor.
+SESSION_ID="stale-review-short-session"
+timing_record_session_summary '{"walltime_s":1,"prompt_count":0,"stale_reviewer_count":1}'
+assert_eq "stale-review-only short session retained" "1" \
+  "$(jq -sr --arg sid "${SESSION_ID}" '[.[] | select(.session_id == $sid and .stale_reviewer_count == 1)] | length' "${xs_log}" 2>/dev/null)"
 SESSION_ID="timing-test-session"  # restore
 
 # ----------------------------------------------------------------------
@@ -472,7 +616,7 @@ SESSION_ID="timing-test-session"
 # Prompt 100: 1 Bash call, 1s
 timing_append_prompt_start 100
 timing_append_start "Bash" "" "" 100
-sleep 1
+advance_test_epoch
 timing_append_end "Bash" "" 100
 timing_append_prompt_end 100 1
 # Prompt 101: 2 Read calls + 1 Agent call
@@ -480,7 +624,7 @@ timing_append_prompt_start 101
 timing_append_start "Read" "" "" 101
 timing_append_end "Read" "" 101
 timing_append_start "Agent" "" "metis" 101
-sleep 1
+advance_test_epoch
 timing_append_end "Agent" "" 101
 timing_append_prompt_end 101 2
 
@@ -511,7 +655,7 @@ timing_append_end "Read" "" 200
 timing_append_start "Read" "" "" 200
 timing_append_end "Read" "" 200
 timing_append_start "Bash" "" "" 200
-sleep 1
+advance_test_epoch
 timing_append_end "Bash" "" 200
 timing_append_prompt_end 200 1
 
@@ -522,26 +666,30 @@ assert_eq "Read call count" "2" "${read_calls}"
 assert_eq "Bash call count" "1" "${bash_calls}"
 
 # ----------------------------------------------------------------------
-printf 'Test 19: Stop self-suppression does NOT fire when block is stale\n'
-# stop-time-summary.sh's heuristic must skip suppression when the most
-# recent block in gate_events.jsonl is older than 3 seconds. Otherwise a
-# session that blocked 30 minutes ago would silently lose every subsequent
-# Stop's time summary.
-gates="$(session_file "gate_events.jsonl")"
-rm -f "${gates}"
-old_block_ts=$(( $(now_epoch) - 60 ))
-jq -nc --argjson ts "${old_block_ts}" \
-  '{ts:$ts,gate:"quality",event:"block",block_count:1,block_cap:1,details:{}}' >> "${gates}"
+printf 'Test 19: unrelated or expired blocks do NOT suppress a successful Stop\n'
+# A current timestamp is insufficient: the attempt identity must match.
+now_ts="$(date +%s)"
+jq -nc --arg sid "${block_session}" --argjson now "${now_ts}" \
+  '{session_id:$sid,prompt_seq:1,stop_guard_attempt_seq:8,last_stop_block_attempt_seq:7,last_stop_block_ts:$now}' \
+  > "${block_dir}/session_state.json"
+unrelated_out="$(STATE_ROOT="${block_root}" HOME="${HOME}" OMC_TIME_CARD_MIN_SECONDS=0 \
+  bash "${SCRIPTS_DIR}/stop-time-summary.sh" <<<"${block_payload}" 2>&1 || true)"
+case "${unrelated_out}" in
+  *"Time breakdown"*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: unrelated recent block suppressed the card:\n%s\n' "${unrelated_out}" >&2; fail=$((fail + 1)) ;;
+esac
 
-recent_block_ts="$(tail -n 5 "${gates}" 2>/dev/null \
-  | jq -rs '[.[] | select(.event=="block")] | sort_by(.ts // 0) | last | (.ts // 0)')"
-delta=$(( $(now_epoch) - recent_block_ts ))
-if (( delta > 3 )); then
-  pass=$((pass + 1))
-else
-  printf '  FAIL: stale block treated as recent: delta=%s\n' "${delta}" >&2
-  fail=$((fail + 1))
-fi
+# Even an exact sequence is rejected after the 300-second compatibility bound.
+jq -nc --arg sid "${block_session}" --argjson old "$(( now_ts - 301 ))" \
+  '{session_id:$sid,prompt_seq:1,stop_guard_attempt_seq:9,last_stop_block_attempt_seq:9,last_stop_block_ts:$old}' \
+  > "${block_dir}/session_state.json"
+expired_out="$(STATE_ROOT="${block_root}" HOME="${HOME}" OMC_TIME_CARD_MIN_SECONDS=0 \
+  bash "${SCRIPTS_DIR}/stop-time-summary.sh" <<<"${block_payload}" 2>&1 || true)"
+case "${expired_out}" in
+  *"Time breakdown"*) pass=$((pass + 1)) ;;
+  *) printf '  FAIL: expired exact block suppressed the card:\n%s\n' "${expired_out}" >&2; fail=$((fail + 1)) ;;
+esac
+rm -rf "${block_root}"
 
 # ----------------------------------------------------------------------
 printf 'Test 20: timing_format_full renders polished epilogue scaffold\n'
@@ -551,10 +699,10 @@ printf 'Test 20: timing_format_full renders polished epilogue scaffold\n'
 reset_log
 timing_append_prompt_start 300
 timing_append_start "Agent" "" "excellence-reviewer" 300
-sleep 1
+advance_test_epoch
 timing_append_end "Agent" "" 300
 timing_append_start "Bash" "" "" 300
-sleep 1
+advance_test_epoch
 timing_append_end "Bash" "" 300
 timing_append_prompt_end 300 60
 agg="$(timing_aggregate "$(timing_log_path)")"
@@ -1230,6 +1378,57 @@ jq -nc --arg session "s1" --argjson now "$(now_epoch)" \
     prompt_count:1}' > "${xs_log}"
 xs_overhead="$(timing_xs_aggregate 0 | jq -r '.concurrent_overhead_s // -1')"
 assert_eq "cross-session rollup propagates concurrent_overhead_s" "50" "${xs_overhead}"
+
+# ----------------------------------------------------------------------
+# TTL ownership: a resume-transferred source must not export its copied
+# summary/findings/gates, but its classifier telemetry is source-only (the
+# handoff deliberately does not copy it) and must be exported before cleanup.
+printf 'Test 44: TTL sweep honors resume ownership without losing source-only classifier telemetry\n'
+saved_state_root="${STATE_ROOT}"
+saved_ttl_days="${OMC_STATE_TTL_DAYS}"
+STATE_ROOT="${TEST_STATE_ROOT}/resume-sweep-state"
+OMC_STATE_TTL_DAYS=-1
+source_sid="resume-sweep-source"
+target_sid="resume-sweep-target"
+mkdir -p "${STATE_ROOT}/${source_sid}" "${STATE_ROOT}/${target_sid}"
+cat > "${STATE_ROOT}/${source_sid}/session_state.json" <<EOF
+{"session_start_ts":"100","last_user_prompt_ts":"110","task_domain":"coding","task_intent":"execution","subagent_dispatch_count":"9","project_key":"p-resume","resume_transferred_to":"${target_sid}"}
+EOF
+cat > "${STATE_ROOT}/${target_sid}/session_state.json" <<EOF
+{"session_start_ts":"100","last_user_prompt_ts":"120","task_domain":"coding","task_intent":"execution","subagent_dispatch_count":"9","project_key":"p-resume","resume_source_session_id":"${source_sid}"}
+EOF
+printf '{"misfire":true,"intent":"advisory"}\n' \
+  > "${STATE_ROOT}/${source_sid}/classifier_telemetry.jsonl"
+printf '{"ts":101,"gate":"source-gate","event":"block"}\n' \
+  > "${STATE_ROOT}/${source_sid}/gate_events.jsonl"
+printf '{"ts":111,"gate":"target-gate","event":"block"}\n' \
+  > "${STATE_ROOT}/${target_sid}/gate_events.jsonl"
+printf '{"findings":[{"id":"F-source","status":"pending"}]}\n' \
+  > "${STATE_ROOT}/${source_sid}/findings.json"
+printf '{"findings":[{"id":"F-target","status":"pending"}]}\n' \
+  > "${STATE_ROOT}/${target_sid}/findings.json"
+
+summary44="${HOME}/.claude/quality-pack/session_summary.jsonl"
+gates44="${HOME}/.claude/quality-pack/gate_events.jsonl"
+misfires44="${HOME}/.claude/quality-pack/classifier_misfires.jsonl"
+rm -f "${summary44}" "${gates44}" "${misfires44}" "${STATE_ROOT}/.last_sweep"
+_sweep_stale_sessions_locked
+
+assert_eq "TTL transferred source summary suppressed" "0" \
+  "$(jq -sr --arg sid "${source_sid}" '[.[] | select(.session_id == $sid)] | length' "${summary44}" 2>/dev/null || printf 0)"
+assert_eq "TTL target summary exported once" "1" \
+  "$(jq -sr --arg sid "${target_sid}" '[.[] | select(.session_id == $sid)] | length' "${summary44}" 2>/dev/null || printf 0)"
+assert_eq "TTL transferred source gate suppressed" "0" \
+  "$(jq -sr --arg sid "${source_sid}" '[.[] | select(.session_id == $sid)] | length' "${gates44}" 2>/dev/null || printf 0)"
+assert_eq "TTL target gate exported once" "1" \
+  "$(jq -sr --arg sid "${target_sid}" '[.[] | select(.session_id == $sid)] | length' "${gates44}" 2>/dev/null || printf 0)"
+assert_eq "TTL source-only classifier telemetry preserved" "1" \
+  "$(jq -sr --arg sid "${source_sid}" '[.[] | select(.session_id == $sid and .misfire == true)] | length' "${misfires44}" 2>/dev/null || printf 0)"
+assert_eq "TTL source directory claimed after export" "0" \
+  "$([[ -d "${STATE_ROOT}/${source_sid}" ]] && printf 1 || printf 0)"
+
+STATE_ROOT="${saved_state_root}"
+OMC_STATE_TTL_DAYS="${saved_ttl_days}"
 
 # ----------------------------------------------------------------------
 printf '\n=== Timing Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"

@@ -881,7 +881,8 @@ done
 # be able to disable security-load-bearing gates the user opted into
 # via their user-level `${HOME}/.claude/oh-my-claude.conf`. The deny-
 # list is narrow: pretool_intent_guard, bg_spawn_gate, agent_first_gate,
-# no_defer_mode, quality_policy, repo_lessons, auto_tune. All other
+# no_defer_mode, quality_policy, model_tier, model_overrides, repo_lessons,
+# auto_tune. All other
 # flags can still be project-overridden.
 # ===========================================================================
 printf '\n=== F-013: project-conf security flag deny-list ===\n'
@@ -891,10 +892,10 @@ printf '\n=== F-013: project-conf security flag deny-list ===\n'
 # (case-statement marker) so a refactor that removed the actual
 # case-statement while leaving the bare comment block would NOT pass
 # this regression (quality-reviewer Wave 2 F3 follow-up).
-if grep -q 'pretool_intent_guard|bg_spawn_gate|agent_first_gate|no_defer_mode|quality_policy|repo_lessons|auto_tune)' "${HOOK_DIR}/common.sh"; then
+if grep -q 'pretool_intent_guard|bg_spawn_gate|agent_first_gate|no_defer_mode|quality_policy|model_tier|model_overrides|repo_lessons|auto_tune)' "${HOOK_DIR}/common.sh"; then
   pass=$((pass + 1))
 else
-  printf '  FAIL: F-013a: common.sh case-statement must restrict pretool_intent_guard/bg_spawn_gate/agent_first_gate/no_defer_mode/quality_policy/repo_lessons/auto_tune from project conf\n' >&2
+  printf '  FAIL: F-013a: common.sh case-statement must restrict pretool_intent_guard/bg_spawn_gate/agent_first_gate/no_defer_mode/quality_policy/model_tier/model_overrides/repo_lessons/auto_tune from project conf\n' >&2
   fail=$((fail + 1))
 fi
 
@@ -1015,6 +1016,95 @@ else
   fail=$((fail + 1))
 fi
 rm -rf "${_f013h_home}"
+
+# (i) model_overrides has absolute resolver precedence, so a repository must
+# not be able to demote a critical reviewer. User conf remains authoritative
+# when a hostile project conf tries quality-reviewer:haiku.
+_f013i_home="$(mktemp -d)"
+mkdir -p "${_f013i_home}/.claude" "${_f013i_home}/repo/.claude"
+printf 'model_overrides=quality-reviewer:opus\n' > "${_f013i_home}/.claude/oh-my-claude.conf"
+printf 'model_overrides=quality-reviewer:haiku\n' > "${_f013i_home}/repo/.claude/oh-my-claude.conf"
+_f013i_value="$(cd "${_f013i_home}/repo" \
+  && env -u OMC_MODEL_OVERRIDES HOME="${_f013i_home}" \
+     OMC_LAZY_CLASSIFIER=1 OMC_LAZY_TIMING=1 \
+     bash -c ". '${HOOK_DIR}/common.sh' >/dev/null 2>&1; printf '%s' \"\${OMC_MODEL_OVERRIDES:-}\"")"
+if [[ "${_f013i_value}" == "quality-reviewer:opus" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: F-013i: project model_overrides demoted user-pinned quality-reviewer (%s)\n' "${_f013i_value}" >&2
+  fail=$((fail + 1))
+fi
+rm -rf "${_f013i_home}"
+
+# (j) environment remains the explicit top-level user override.
+_f013j_home="$(mktemp -d)"
+mkdir -p "${_f013j_home}/.claude/agents" "${_f013j_home}/repo/.claude"
+printf -- '---\nname: quality-reviewer\nmodel: inherit\n---\nbody\n' \
+  > "${_f013j_home}/.claude/agents/quality-reviewer.md"
+printf 'model_overrides=quality-reviewer:haiku\n' > "${_f013j_home}/repo/.claude/oh-my-claude.conf"
+_f013j_value="$(cd "${_f013j_home}/repo" \
+  && HOME="${_f013j_home}" OMC_MODEL_OVERRIDES='quality-reviewer:inherit' \
+     OMC_LAZY_CLASSIFIER=1 OMC_LAZY_TIMING=1 \
+     bash -c ". '${HOOK_DIR}/common.sh' >/dev/null 2>&1; printf '%s' \"\${OMC_MODEL_OVERRIDES:-}\"")"
+if [[ "${_f013j_value}" == "quality-reviewer:inherit" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: F-013j: materialized environment model override lost precedence (%s)\n' "${_f013j_value}" >&2
+  fail=$((fail + 1))
+fi
+rm -rf "${_f013j_home}"
+
+# (k-l) model_tier controls the whole roster and is mechanically enforced by
+# Agent PreTool. A project may neither demote the user's quality posture nor
+# promote economy to an unexpectedly expensive tier merely by being entered.
+_f013k_home="$(mktemp -d)"
+mkdir -p "${_f013k_home}/.claude" "${_f013k_home}/repo/.claude"
+printf 'model_tier=quality\n' > "${_f013k_home}/.claude/oh-my-claude.conf"
+printf 'model_tier=economy\n' > "${_f013k_home}/repo/.claude/oh-my-claude.conf"
+_f013k_value="$(cd "${_f013k_home}/repo" \
+  && env -u OMC_MODEL_TIER HOME="${_f013k_home}" \
+     OMC_LAZY_CLASSIFIER=1 OMC_LAZY_TIMING=1 \
+     bash -c ". '${HOOK_DIR}/common.sh' >/dev/null 2>&1; printf '%s' \"\${OMC_MODEL_TIER:-}\"")"
+if [[ "${_f013k_value}" == "quality" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: F-013k: project model_tier demoted user quality posture (%s)\n' "${_f013k_value}" >&2
+  fail=$((fail + 1))
+fi
+rm -rf "${_f013k_home}"
+
+_f013l_home="$(mktemp -d)"
+mkdir -p "${_f013l_home}/.claude" "${_f013l_home}/repo/.claude"
+printf 'model_tier=economy\n' > "${_f013l_home}/.claude/oh-my-claude.conf"
+printf 'model_tier=quality\n' > "${_f013l_home}/repo/.claude/oh-my-claude.conf"
+_f013l_value="$(cd "${_f013l_home}/repo" \
+  && env -u OMC_MODEL_TIER HOME="${_f013l_home}" \
+     OMC_LAZY_CLASSIFIER=1 OMC_LAZY_TIMING=1 \
+     bash -c ". '${HOOK_DIR}/common.sh' >/dev/null 2>&1; printf '%s' \"\${OMC_MODEL_TIER:-}\"")"
+if [[ "${_f013l_value}" == "economy" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: F-013l: project model_tier forced unexpected user spend (%s)\n' "${_f013l_value}" >&2
+  fail=$((fail + 1))
+fi
+rm -rf "${_f013l_home}"
+
+# (m) Explicit environment authority still wins both conf scopes.
+_f013m_home="$(mktemp -d)"
+mkdir -p "${_f013m_home}/.claude" "${_f013m_home}/repo/.claude"
+printf 'model_tier=economy\n' > "${_f013m_home}/.claude/oh-my-claude.conf"
+printf 'model_tier=economy\n' > "${_f013m_home}/repo/.claude/oh-my-claude.conf"
+_f013m_value="$(cd "${_f013m_home}/repo" \
+  && HOME="${_f013m_home}" OMC_MODEL_TIER=balanced \
+     OMC_LAZY_CLASSIFIER=1 OMC_LAZY_TIMING=1 \
+     bash -c ". '${HOOK_DIR}/common.sh' >/dev/null 2>&1; printf '%s' \"\${OMC_MODEL_TIER:-}\"")"
+if [[ "${_f013m_value}" == "balanced" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: F-013m: environment model tier lost precedence (%s)\n' "${_f013m_value}" >&2
+  fail=$((fail + 1))
+fi
+rm -rf "${_f013m_home}"
 
 # ===========================================================================
 # F-014: objective-completion contract gate (v1.46-pre Codex /goal port).

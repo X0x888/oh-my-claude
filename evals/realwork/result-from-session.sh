@@ -231,12 +231,29 @@ if [[ -n "${last_doc_edit_ts}" \
   det_doc_review_clean=1
 fi
 
-# regression_test_added: edited_files.log includes a test-shaped path
+# regression_test_added: a test-shaped path was edited AND fresh
+# changed-behavior verification passed after the relevant edit. A filename
+# alone is not outcome evidence: an unrun, stale, or lint-only test edit must
+# not earn regression-coverage credit.
 det_regression_test_added=0
+test_path_edited=0
 if [[ -f "${EDITED_LOG}" ]]; then
   if grep -Eiq '(^|/)(tests?|spec|__tests__)/|[._-](test|spec)\.(js|jsx|ts|tsx|py|rb|go|rs|swift|php|java|cs|sh)$' "${EDITED_LOG}" 2>/dev/null; then
-    det_regression_test_added=1
+    test_path_edited=1
   fi
+fi
+# The edited-path log has no per-row timestamp, so use the aggregate edit
+# clock rather than preferring the code-only clock. This is deliberately
+# conservative: verification that ran after production code but before the
+# test edit must not earn regression-coverage credit. A later unrelated edit
+# may require one extra verification pass; false credit is the costlier error.
+regression_coverage_clock="${last_edit_ts:-${last_code_edit_ts}}"
+if [[ "${test_path_edited}" -eq 1 \
+   && "${det_tests_passed}" -eq 1 \
+   && "${last_verify_ts}" =~ ^[0-9]+$ \
+   && "${regression_coverage_clock}" =~ ^[0-9]+$ \
+   && "${last_verify_ts}" -ge "${regression_coverage_clock}" ]]; then
+  det_regression_test_added=1
 fi
 
 # final_closeout_audit_ready: closeout label signals (Changed./Verification./Risks./Next.)

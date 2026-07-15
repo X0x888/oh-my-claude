@@ -117,6 +117,13 @@ run_delivery_blockers() {
     delivery_contract_blocking_items )
 }
 
+run_delivery_remaining() {
+  local sid="$1"
+  ( export SESSION_ID="${sid}"
+    . "${COMMON_SH}"
+    delivery_contract_remaining_items )
+}
+
 run_refresh() {
   local sid="$1"
   ( export SESSION_ID="${sid}"
@@ -218,7 +225,7 @@ assert_contains "is_inference_skip_path skips .turbo" "turbo:skip" "$(cat "${TES
 assert_contains "is_inference_skip_path skips .cache" "cache:skip" "$(cat "${TEST_HOME}/skip_results")"
 assert_contains "is_inference_skip_path skips target" "target:skip" "$(cat "${TEST_HOME}/skip_results")"
 
-# Vendor/build paths should not pollute R1 code count.
+# Vendor/build paths should not pollute inferred-rule code counts.
 setup_session "skip_vendor" "${EXEC_STATE}"
 write_edits "skip_vendor" \
   /repo/node_modules/foo/index.js \
@@ -226,56 +233,64 @@ write_edits "skip_vendor" \
   /repo/dist/main.js \
   /repo/src/real_only.go
 result="$(run_derive "skip_vendor")"
-[[ "${result}" != *R1_missing_tests* ]] && pass=$((pass + 1)) || { fail=$((fail + 1)); echo "  FAIL: vendor/dist paths bypass R1 (1 real code file is below threshold) — actual=${result}" >&2; }
+assert_eq "vendor/dist paths do not create an inferred rule" "|" "${result}"
 
-# --- R1 missing tests --------------------------------------------------------
+# --- Test anti-accumulation -------------------------------------------------
 
-printf '\n--- R1: code edited but no test edited ---\n'
+printf '\n--- tests: code fan-out does not imply a new test file ---\n'
 
 setup_session "r1a" "${EXEC_STATE}"
 write_edits "r1a" /repo/src/auth.go /repo/src/payment.go
 result="$(run_derive "r1a")"
-assert_eq "R1 fires on 2 code, 0 test, no verify" "tests|R1_missing_tests" "${result}"
+assert_eq "2 code files do not infer a missing-test blocker" "|" "${result}"
 
 setup_session "r1b" "${EXEC_STATE}"
 write_edits "r1b" /repo/src/auth.go
 result="$(run_derive "r1b")"
-assert_eq "R1 silent on 1 code (under threshold)" "|" "${result}"
+assert_eq "1 code file does not infer a missing-test blocker" "|" "${result}"
 
 setup_session "r1c" "${EXEC_STATE}"
 write_edits "r1c" /repo/src/auth.go /repo/src/payment.go /repo/tests/test-auth.go
 result="$(run_derive "r1c")"
-assert_eq "R1 silent when test file edited too" "|" "${result}"
+assert_eq "a test edit does not manufacture an inferred rule" "|" "${result}"
 
-setup_session "r1d" '{"task_intent":"execution","task_domain":"coding","last_code_edit_ts":"100","last_verify_ts":"200","last_verify_outcome":"passed","last_verify_confidence":"70"}'
-write_edits "r1d" /repo/src/auth.go /repo/src/payment.go
-result="$(run_derive "r1d")"
-assert_eq "R1 satisfied by passing high-conf verify after edits" "|" "${result}"
+# Explicit requests remain a hard Delivery Contract surface. This is
+# intentionally separate from inference: the user asked for the test.
+explicit_expectation="$(
+  . "${COMMON_SH}"
+  derive_done_contract_test_expectation \
+    "fix the auth bug and add regression coverage" "coding"
+)"
+assert_eq "explicit regression coverage derives a test-edit contract" \
+  "add_or_update_tests" "${explicit_expectation}"
 
-setup_session "r1d_scope" '{"task_intent":"execution","task_domain":"coding","last_code_edit_ts":"100","last_verify_ts":"200","last_verify_outcome":"passed","last_verify_confidence":"70","last_verify_scope":"lint"}'
-write_edits "r1d_scope" /repo/src/auth.go /repo/src/payment.go
-result="$(run_derive "r1d_scope")"
-assert_eq "R1 fires when fresh high-conf verification is lint scope" "tests|R1_missing_tests" "${result}"
+generic_expectation="$(
+  . "${COMMON_SH}"
+  derive_done_contract_test_expectation "fix the auth bug" "coding"
+)"
+assert_eq "ordinary code work still derives a verification contract" \
+  "verify" "${generic_expectation}"
 
-setup_session "r1d_targeted" '{"task_intent":"execution","task_domain":"coding","last_code_edit_ts":"100","last_verify_ts":"200","last_verify_outcome":"passed","last_verify_confidence":"70","last_verify_scope":"targeted"}'
-write_edits "r1d_targeted" /repo/src/auth.go /repo/src/payment.go
-result="$(run_derive "r1d_targeted")"
-assert_eq "R1 satisfied by targeted verification scope" "|" "${result}"
+setup_session "r1-explicit" '{"task_intent":"execution","task_domain":"coding","done_contract_test_expectation":"add_or_update_tests","done_contract_commit_mode":"unspecified","done_contract_push_mode":"unspecified","session_start_ts":"100","done_contract_updated_ts":"100"}'
+write_edits "r1-explicit" /repo/src/auth.go /repo/src/payment.go
+blockers="$(run_delivery_blockers "r1-explicit")"
+assert_contains "explicit test request still blocks without a test edit" \
+  "add or update the requested tests/regression coverage" "${blockers}"
+write_edits "r1-explicit" /repo/src/auth.go /repo/src/payment.go /repo/tests/test-auth.go
+blockers="$(run_delivery_blockers "r1-explicit")"
+assert_empty "explicit test request clears only after a test edit" "${blockers}"
 
-setup_session "r1e" '{"task_intent":"execution","task_domain":"coding","last_code_edit_ts":"300","last_verify_ts":"200","last_verify_outcome":"passed","last_verify_confidence":"70"}'
-write_edits "r1e" /repo/src/auth.go /repo/src/payment.go
-result="$(run_derive "r1e")"
-assert_eq "R1 fires when verify is stale (predates edit)" "tests|R1_missing_tests" "${result}"
-
-setup_session "r1f" '{"task_intent":"execution","task_domain":"coding","last_code_edit_ts":"100","last_verify_ts":"200","last_verify_outcome":"failed","last_verify_confidence":"70"}'
-write_edits "r1f" /repo/src/auth.go /repo/src/payment.go
-result="$(run_derive "r1f")"
-assert_eq "R1 fires when verify failed" "tests|R1_missing_tests" "${result}"
-
-setup_session "r1g" '{"task_intent":"execution","task_domain":"coding","last_code_edit_ts":"100","last_verify_ts":"200","last_verify_outcome":"passed","last_verify_confidence":"30"}'
-write_edits "r1g" /repo/src/auth.go /repo/src/payment.go
-result="$(run_derive "r1g")"
-assert_eq "R1 fires when verify confidence below threshold" "tests|R1_missing_tests" "${result}"
+setup_session "verify-fresh" '{"task_intent":"execution","task_domain":"coding","done_contract_test_expectation":"verify","done_contract_commit_mode":"unspecified","done_contract_push_mode":"unspecified","session_start_ts":"100","done_contract_updated_ts":"100","last_code_edit_ts":"200","last_review_ts":"220","last_verify_ts":"150","last_verify_outcome":"passed","last_verify_confidence":"80"}'
+write_edits "verify-fresh" /repo/src/auth.go
+remaining="$(run_delivery_remaining "verify-fresh")"
+assert_contains "stale verification still blocks after a code edit" \
+  "run verification after the latest code edits" "${remaining}"
+jq '.last_verify_ts="230"' "${STATE_ROOT}/verify-fresh/session_state.json" \
+  >"${STATE_ROOT}/verify-fresh/session_state.json.tmp"
+mv "${STATE_ROOT}/verify-fresh/session_state.json.tmp" \
+  "${STATE_ROOT}/verify-fresh/session_state.json"
+remaining="$(run_delivery_remaining "verify-fresh")"
+[[ "${remaining}" != *"run verification after the latest code edits"* ]] && pass=$((pass + 1)) || { fail=$((fail + 1)); echo "  FAIL: fresh verification should clear its gate — actual=${remaining}" >&2; }
 
 # --- R2 VERSION without CHANGELOG --------------------------------------------
 
@@ -383,11 +398,10 @@ write_edits "multi" \
   /repo/VERSION \
   /repo/bundle/dot-claude/oh-my-claude.conf.example
 result="$(run_derive "multi")"
-assert_contains "multi: R1 in surfaces" "tests" "${result}"
 assert_contains "multi: R2 in rules" "R2_version_no_changelog" "${result}"
 assert_contains "multi: R3a in rules" "R3a_conf_no_parser" "${result}"
 assert_contains "multi: R3b in rules" "R3b_conf_no_config_table" "${result}"
-assert_contains "multi: R1 in rules" "R1_missing_tests" "${result}"
+[[ "${result}" != *R1_missing_tests* ]] && pass=$((pass + 1)) || { fail=$((fail + 1)); echo "  FAIL: multi-rule inference must not restore retired R1 — actual=${result}" >&2; }
 
 # --- Refresh gating: skip when not execution-intent --------------------------
 
@@ -407,13 +421,13 @@ assert_eq "refresh skipped on writing domain" "" "$(read_state_key "writ" "infer
 setup_session "fbd" '{"task_intent":"execution","task_domain":"coding","done_contract_commit_mode":"forbidden"}'
 write_edits "fbd" /repo/src/a.go /repo/src/b.go
 run_refresh "fbd"
-assert_eq "refresh still applies when commit_mode=forbidden" "R1_missing_tests" "$(read_state_key "fbd" "inferred_contract_rules")"
+assert_eq "refresh with commit_mode=forbidden keeps tests non-inferred" "" "$(read_state_key "fbd" "inferred_contract_rules")"
 
 setup_session "exec" "${EXEC_STATE}"
 write_edits "exec" /repo/src/a.go /repo/src/b.go
 run_refresh "exec"
-assert_eq "refresh applies on execution intent (surfaces)" "tests" "$(read_state_key "exec" "inferred_contract_surfaces")"
-assert_eq "refresh applies on execution intent (rules)" "R1_missing_tests" "$(read_state_key "exec" "inferred_contract_rules")"
+assert_eq "refresh does not infer a test surface from code fan-out" "" "$(read_state_key "exec" "inferred_contract_surfaces")"
+assert_eq "refresh does not infer a missing-test rule" "" "$(read_state_key "exec" "inferred_contract_rules")"
 assert_not_empty "refresh stamps timestamp" "$(read_state_key "exec" "inferred_contract_ts")"
 
 # --- Conf-flag opt-out -------------------------------------------------------
@@ -452,9 +466,8 @@ setup_session "msg" "${EXEC_STATE}"
 write_edits "msg" /repo/src/a.go /repo/src/b.go /repo/VERSION
 run_refresh "msg"
 blockers="$(run_blockers "msg")"
-assert_contains "blocker: R1 message names count" "R1: 2 code files, 0 test files" "${blockers}"
-assert_contains "blocker: R1 message names files (auditability)" "e.g. /repo/src/a.go" "${blockers}"
 assert_contains "blocker: R2 message" "VERSION bumped without release lockstep (R2)" "${blockers}"
+[[ "${blockers}" != *"add or update tests"* ]] && pass=$((pass + 1)) || { fail=$((fail + 1)); echo "  FAIL: blocker must not infer a test edit — actual=${blockers}" >&2; }
 
 # --- Delivery action contract -----------------------------------------------
 
@@ -644,7 +657,7 @@ HOOK_INPUT_2=$(jq -nc '{session_id:"me",tool_input:{file_path:"/repo/src/bar.go"
 printf '%s' "${HOOK_INPUT_1}" | bash "${MARK_EDIT_SH}" 2>/dev/null
 printf '%s' "${HOOK_INPUT_2}" | bash "${MARK_EDIT_SH}" 2>/dev/null
 
-assert_eq "mark-edit: 2 unique edits → R1 in state" "R1_missing_tests" "$(read_state_key "me" "inferred_contract_rules")"
+assert_eq "mark-edit: 2 unique code edits do not infer tests" "" "$(read_state_key "me" "inferred_contract_rules")"
 
 # Re-edit the same path — should NOT refresh (no new unique path)
 prior_ts="$(read_state_key "me" "inferred_contract_ts")"
@@ -660,11 +673,12 @@ assert_eq "mark-edit: dup path does NOT refresh ts" "${prior_ts}" "${new_ts}"
 
 printf '\n--- real-user-task simulations ---\n'
 
-# Task 1: "Fix the auth bug." Two files edited, no test added.
+# Task 1: "Fix the auth bug." Two files edited; fresh verification is
+# still required elsewhere, but a new test file is not inferred.
 setup_session "rt1" '{"task_intent":"execution","task_domain":"coding","done_contract_prompt_surfaces":"","done_contract_commit_mode":"unspecified","last_user_prompt_ts":"100"}'
 write_edits "rt1" /repo/src/auth/login.go /repo/src/auth/session.go
 run_refresh "rt1"
-assert_eq "real-task 'fix bug' → R1 fires" "R1_missing_tests" "$(read_state_key "rt1" "inferred_contract_rules")"
+assert_eq "real-task 'fix bug' does not force a new test file" "" "$(read_state_key "rt1" "inferred_contract_rules")"
 
 # Task 2: "Bump to v1.34.0." User edits VERSION but forgets CHANGELOG.
 setup_session "rt2" '{"task_intent":"execution","task_domain":"coding","done_contract_prompt_surfaces":"","done_contract_commit_mode":"required","last_user_prompt_ts":"100"}'
@@ -693,11 +707,9 @@ run_refresh "rt5"
 assert_eq "real-task 'doc-only' → no rule fires" "" "$(read_state_key "rt5" "inferred_contract_rules")"
 
 # --- F10 — verify the brief premise: prompt does NOT name surface --------
-# These cases pipe natural-language prompts through the v1 deriver
-# (`derive_done_contract_prompt_surfaces`) to confirm v1 extracts NO
-# surface from the wording, then verify v2's inference fills the gap.
-# Without this layer the rt1-rt5 simulations only assert state, not
-# the "prompt does not name the surface" premise the user asked for.
+# These cases pipe natural-language prompts through the prompt-surface
+# deriver, then verify that inferred lockstep rules do not invent a test
+# edit when the prompt did not request one.
 
 printf '\n--- F10: prompt-NL did not name the surface, v2 catches it ---\n'
 
@@ -710,11 +722,12 @@ derive_prompt_surfaces() {
 nl_prompt_1="fix the auth bug in login and session"
 prompt_surfaces_1="$(derive_prompt_surfaces "${nl_prompt_1}")"
 assert_eq "F10: prompt 'fix bug' yields no prompt-side surfaces" "" "${prompt_surfaces_1}"
-# Now simulate the work — 2 code files, no test. v2 R1 should fill the gap.
+# Now simulate the work — 2 code files, no test. No inferred test
+# surface should be created.
 setup_session "f10a" "${EXEC_STATE}"
 write_edits "f10a" /repo/src/auth/login.go /repo/src/auth/session.go
 run_refresh "f10a"
-assert_eq "F10: v2 inference fills the gap (R1 fires)" "R1_missing_tests" "$(read_state_key "f10a" "inferred_contract_rules")"
+assert_eq "F10: inference does not manufacture test work" "" "$(read_state_key "f10a" "inferred_contract_rules")"
 
 # "bump the version" — prompt names release/version but not changelog
 # (depending on regex). Run the actual prompt deriver to see what
@@ -752,7 +765,7 @@ write_edits "skip" \
   /repo/src/real_a.go \
   /repo/src/real_b.go
 result="$(run_derive "skip")"
-assert_eq "skip-paths excluded from code count" "tests|R1_missing_tests" "${result}"
+assert_eq "skip-paths plus two code files do not infer tests" "|" "${result}"
 
 # --- Final ------------------------------------------------------------------
 
