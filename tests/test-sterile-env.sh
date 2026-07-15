@@ -165,14 +165,28 @@ assert_contains "T5: --strict flag → strict" "mode: strict" "${out_strict_flag
 # Change-aware selection is the PR-CI path. `--only` keeps this unit check
 # deterministic even when the surrounding developer worktree is broad.
 out_changed="$(bash "${REPO_ROOT}/tests/run-sterile.sh" \
-  --plan --changed --only test-state-io.sh 2>&1)"
+  --plan --changed --only test-consumer-contracts.sh 2>&1)"
 assert_contains "T5: --changed selects the proportional profile" \
   "selection: changed" "${out_changed}"
 assert_contains "T5: change-aware plan names selected test" \
-  "tests/test-state-io.sh" "${out_changed}"
+  "tests/test-consumer-contracts.sh" "${out_changed}"
 sterile_runner_source="$(cat "${REPO_ROOT}/tests/run-sterile.sh")"
 assert_contains "T5: proportional planner invokes authoritative selector explicitly" \
   'runner_args=(--changed --list --no-record)' "${sterile_runner_source}"
+
+# Empty intersections are a normal result of combining `--changed` and
+# `--only`. Bash 3.2 treats an empty declared array expansion as unbound under
+# `set -u`, so pin the intended diagnostic instead of an array-expansion crash.
+set +e
+empty_changed_out="$(bash "${REPO_ROOT}/tests/run-sterile.sh" \
+  --plan --changed --only test-definitely-not-ci-pinned.sh 2>&1)"
+empty_changed_rc=$?
+set -e
+assert_eq "T5: empty changed/only intersection exits 2" "2" "${empty_changed_rc}"
+assert_contains "T5: empty changed/only intersection is explained" \
+  "No sterile tests selected" "${empty_changed_out}"
+assert_not_contains "T5: empty changed/only avoids Bash 3.2 nounset crash" \
+  "unbound variable" "${empty_changed_out}"
 
 set +e
 missing_only_out="$(bash "${REPO_ROOT}/tests/run-sterile.sh" --plan --only 2>&1)"

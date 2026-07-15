@@ -115,6 +115,17 @@ mk_response() {
     > "${out}"
 }
 
+find_run_for_task() {
+  local wanted="$1" candidate
+  while IFS= read -r candidate; do
+    if [[ "$(jq -r '.task // ""' "${candidate}" 2>/dev/null)" == "${wanted}" ]]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done < <(find "${OMC_GOAL_RUNS_DIR}" -name 'run.json' 2>/dev/null)
+  return 1
+}
+
 # ----------------------------------------------------------------------
 printf 'T1: malformed --max-cost dies loudly (defect #2)\n'
 rc=0; out_t1="$(cd "${WORK}" && bash "${OMC_BIN}" goal "x" --max-cost abc 2>&1)" || rc=$?
@@ -134,7 +145,7 @@ new_mock "${WORK}/mock3"
 export OMC_GOAL_RUNS_DIR="${WORK}/runs"
 
 mk_response "${MOCK_DIR}/response.1.json" 1.5 "sid-frame" \
-  '{"criteria":[{"id":"c1","kind":"mechanical","text":"marker file exists","cmd":"test -f done.txt"},{"id":"c2","kind":"judgment","text":"change is coherent"}]}'
+  '{"criteria":[{"id":"c1","kind":"mechanical","text":"marker file exists","cmd":"test -f done.txt"},{"id":"c2","kind":"judgment","text":"rate-limit handling is coherent"}]}'
 cat > "${MOCK_DIR}/behave.2.sh" <<'BEOF'
 #!/usr/bin/env bash
 printf 'done\n' > done.txt
@@ -151,7 +162,7 @@ assert_contains "T3: goal achieved close" "Goal achieved" "${out_t3}"
 assert_contains "T3: mechanical criterion checked ✅" "✅ c1" "${out_t3}"
 assert_contains "T3: judgment criterion checked ✅" "✅ c2" "${out_t3}"
 
-run_json="$(find "${OMC_GOAL_RUNS_DIR}" -name 'run.json' | head -1)"
+run_json="$(find_run_for_task "create the marker")"
 assert_eq "T3: outcome recorded done" "done" "$(jq -r '.outcome' "${run_json}")"
 # Numeric comparison, not string-equal on jq's rendering: jq 1.7
 # (ubuntu-latest) preserves the "4.0000" literal that awk's %.4f
@@ -159,6 +170,8 @@ assert_eq "T3: outcome recorded done" "done" "$(jq -r '.outcome' "${run_json}")"
 # ubuntu-only on the v1.48.0 tag run.
 assert_eq "T3: total cost sums ALL four calls (defect #1)" "true" \
   "$(jq -r '.total_cost_usd == 4' "${run_json}")"
+assert_eq "T3: successful rate-limit prose does not trigger a retry" \
+  "4" "$(cat "${MOCK_DIR}/counter")"
 assert_eq "T3: one work pass recorded" "1" "$(jq -r '.passes | length' "${run_json}")"
 assert_eq "T3: pass progressed" "true" "$(jq -r '.passes[0].progressed' "${run_json}")"
 
@@ -177,6 +190,34 @@ assert_true "T3: first work pass is a fresh session (no --resume)" \
   "$(grep 'CALL 2: ' "${MOCK_DIR}/args.log" | grep -c -- '--resume' | awk '{print ($1==0)?0:1}')"
 
 # ----------------------------------------------------------------------
+printf 'T3b: a genuine transient retry is charged before success\n'
+new_repo "${WORK}/repo3b"
+new_mock "${WORK}/mock3b"
+jq -n --arg r "rate limit: retry this request" --argjson c 0.4 \
+  '{type:"result", is_error:true, total_cost_usd:$c, num_turns:1, duration_ms:100, session_id:"", result:$r}' \
+  > "${MOCK_DIR}/response.1.json"
+mk_response "${MOCK_DIR}/response.2.json" 0.6 "sid-frame" \
+  '{"criteria":[{"id":"c1","kind":"mechanical","text":"marker file exists","cmd":"test -f done.txt"}]}'
+cat > "${MOCK_DIR}/behave.3.sh" <<'BEOF'
+#!/usr/bin/env bash
+printf 'done\n' > done.txt
+BEOF
+mk_response "${MOCK_DIR}/response.3.json" 1.0 "sid-work" 'worked after retry'
+mk_response "${MOCK_DIR}/response.4.json" 0.5 "sid-review" '{"findings":[]}'
+
+rc=0
+out_t3b="$(cd "${WORK}/repo3b" && bash "${OMC_BIN}" goal "retry framing once" 2>&1)" || rc=$?
+assert_eq "T3b: retry path exits 0" "0" "${rc}"
+assert_contains "T3b: transient retry is announced" "transient error (attempt 1/3)" "${out_t3b}"
+assert_eq "T3b: one retry plus three successful phase calls" \
+  "4" "$(cat "${MOCK_DIR}/counter")"
+run_json_t3b="$(find_run_for_task "retry framing once")"
+assert_eq "T3b: total includes failed and successful framing attempts" "true" \
+  "$(jq -r '.total_cost_usd == 2.5' "${run_json_t3b}")"
+assert_true "T3b: retry remains in plan mode" \
+  "$(grep -c 'CALL 2: .*--permission-mode plan' "${MOCK_DIR}/args.log" | awk '{print ($1==1)?0:1}')"
+
+# ----------------------------------------------------------------------
 printf 'T4: cost cap trips mid-run\n'
 new_repo "${WORK}/repo4"
 new_mock "${WORK}/mock4"
@@ -188,7 +229,7 @@ rc=0
 out_t4="$(cd "${WORK}/repo4" && bash "${OMC_BIN}" goal "expensive goal" --max-cost 10 2>&1)" || rc=$?
 assert_eq "T4: exit 1 on capped run" "1" "${rc}"
 assert_contains "T4: cap named in close" "cost cap" "${out_t4}"
-run_json_t4="$(find "${OMC_GOAL_RUNS_DIR}" -name 'run.json' -newer "${run_json}" | head -1)"
+run_json_t4="$(find_run_for_task "expensive goal")"
 assert_eq "T4: outcome capped-cost" "capped-cost" "$(jq -r '.outcome' "${run_json_t4}")"
 assert_eq "T4: only two calls happened" "2" "$(cat "${MOCK_DIR}/counter")"
 
@@ -234,7 +275,7 @@ assert_contains "T5b: honest stuck close" "no progress after a fresh re-plan" "$
 assert_contains "T5b: unmet criterion shown ❌" "❌ c1" "${out_t5b}"
 assert_true "T5b: re-planned pass is a fresh session (no --resume)" \
   "$(grep 'CALL 3: ' "${MOCK_DIR}/args.log" | grep -cv -- '--resume' | awk '{print ($1==1)?0:1}')"
-run_json_t5b="$(find "${OMC_GOAL_RUNS_DIR}" -name 'run.json' -newer "${run_json_t4}" | while IFS= read -r f; do jq -r 'select(.outcome == "stuck") | input_filename' "$f" 2>/dev/null; done | head -1)"
+run_json_t5b="$(find_run_for_task "impossible ask")"
 if [[ -n "${run_json_t5b}" ]]; then
   assert_eq "T5b: two passes recorded" "2" "$(jq -r '.passes | length' "${run_json_t5b}")"
   assert_eq "T5b: second pass did not progress" "false" "$(jq -r '.passes[1].progressed' "${run_json_t5b}")"

@@ -144,7 +144,8 @@ LAST_SESSION_ID=""
 _claude_call() {
   local outfile="$1" perm="$2" tmo="$3" prompt="$4"
   shift 4
-  local attempt rc
+  local attempt rc result_text attempt_cost
+  LAST_SESSION_ID=""
   for attempt in 1 2 3; do
     rc=0
     _run_with_timeout "${tmo}" \
@@ -154,24 +155,38 @@ _claude_call() {
         ${MODEL:+--model "${MODEL}"} \
         "$@" \
         > "${outfile}" 2> "${outfile}.err" || rc=$?
-    local is_error result_text
-    is_error="$(jq -r '.is_error // true' "${outfile}" 2>/dev/null || echo true)"
-    result_text="$(jq -r '.result // ""' "${outfile}" 2>/dev/null || echo "")"
-    if [[ "${rc}" -eq 0 && "${is_error}" != "true" ]]; then
-      break
+
+    # Every invocation is paid work, including a failed attempt that is
+    # retried. Charge it before deciding whether another attempt is needed.
+    attempt_cost="$(jq -r '.total_cost_usd // 0' "${outfile}" 2>/dev/null || echo 0)"
+    _add_cost "${attempt_cost}"
+
+    # jq's alternative operator treats `false` as absent, so
+    # `.is_error // true` turns a valid `is_error:false` envelope into true.
+    # Match the success contract explicitly and return before scanning a
+    # successful result's prose for transient-error words.
+    if [[ "${rc}" -eq 0 ]] \
+        && jq -e 'type == "object" and .is_error == false' \
+          "${outfile}" >/dev/null 2>&1; then
+      LAST_SESSION_ID="$(jq -r '.session_id // ""' "${outfile}" 2>/dev/null || echo "")"
+      return 0
     fi
+
+    result_text="$(jq -r '.result // ""' "${outfile}" 2>/dev/null || echo "")"
     if grep -qiE 'rate.?limit|overloaded|529|too many requests' \
         "${outfile}.err" <(printf '%s' "${result_text}") 2>/dev/null; then
-      local wait_s=$(( BACKOFF_BASE * attempt ))
-      log "transient error (attempt ${attempt}/3) — backing off ${wait_s}s"
-      sleep "${wait_s}"
-      continue
+      if (( attempt < 3 )); then
+        local wait_s=$(( BACKOFF_BASE * attempt ))
+        log "transient error (attempt ${attempt}/3) — backing off ${wait_s}s"
+        sleep "${wait_s}"
+        continue
+      fi
     fi
-    break
+
+    [[ "${rc}" -ne 0 ]] && return "${rc}"
+    return 1
   done
-  _add_cost "$(jq -r '.total_cost_usd // 0' "${outfile}" 2>/dev/null || echo 0)"
-  LAST_SESSION_ID="$(jq -r '.session_id // ""' "${outfile}" 2>/dev/null || echo "")"
-  return "${rc}"
+  return 1
 }
 
 # ---------------------------------------------------------------------------

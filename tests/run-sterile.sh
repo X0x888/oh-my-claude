@@ -134,24 +134,36 @@ if [[ "${selection}" == "changed" ]]; then
   )
 
   proportional=()
-  for selected_test in "${changed_selected[@]}"; do
-    for pinned_test in "${ci_pinned[@]}"; do
-      if [[ "${selected_test}" == "${pinned_test}" ]]; then
-        proportional+=("${selected_test}")
-        break
-      fi
+  if [[ ${#changed_selected[@]} -gt 0 ]]; then
+    for selected_test in "${changed_selected[@]}"; do
+      for pinned_test in "${ci_pinned[@]}"; do
+        if [[ "${selected_test}" == "${pinned_test}" ]]; then
+          proportional+=("${selected_test}")
+          break
+        fi
+      done
     done
-  done
-  ci_pinned=("${proportional[@]}")
+  fi
+  if [[ ${#proportional[@]} -gt 0 ]]; then
+    ci_pinned=("${proportional[@]}")
+  else
+    ci_pinned=()
+  fi
 fi
 
 # Filter
 if [[ -n "${only}" ]]; then
   filtered=()
-  for t in "${ci_pinned[@]}"; do
-    [[ "${t}" == "${only}" ]] && filtered+=("${t}")
-  done
-  ci_pinned=("${filtered[@]}")
+  if [[ ${#ci_pinned[@]} -gt 0 ]]; then
+    for t in "${ci_pinned[@]}"; do
+      [[ "${t}" == "${only}" ]] && filtered+=("${t}")
+    done
+  fi
+  if [[ ${#filtered[@]} -gt 0 ]]; then
+    ci_pinned=("${filtered[@]}")
+  else
+    ci_pinned=()
+  fi
 fi
 
 if [[ ${#ci_pinned[@]} -eq 0 ]]; then
