@@ -25,6 +25,7 @@ ensure_session_dir
 if ! is_ultrawork_mode; then
   exit 0
 fi
+capture_ulw_enforcement_interval || exit 0
 
 task_intent="$(read_state "task_intent")"
 
@@ -56,22 +57,27 @@ fi
 # state file. Without the lock, this write can be lost when a sibling
 # hook's write_state_batch races the temp-file rename.
 if [[ "${task_intent}" == "advisory" && -n "${target_path}" && "${is_internal_path}" -eq 0 ]]; then
-  append_limited_state "advisory_evidence_paths.log" "${target_path}" "80"
-  advisory_evidence_count="1"
-  advisory_evidence_file="$(session_file "advisory_evidence_paths.log")"
-  if [[ -f "${advisory_evidence_file}" ]]; then
-    advisory_evidence_count="$(sort -u "${advisory_evidence_file}" 2>/dev/null | wc -l | tr -d '[:space:]')"
-  fi
-  advisory_evidence_count="${advisory_evidence_count:-1}"
-  with_state_lock_batch \
-    "last_advisory_verify_ts" "$(now_epoch)" \
-    "advisory_evidence_count" "${advisory_evidence_count}"
+  _record_advisory_evidence_locked() {
+    local advisory_evidence_count="1" advisory_evidence_file
+    is_ultrawork_mode || return 0
+    append_limited_state "advisory_evidence_paths.log" "${target_path}" "80"
+    advisory_evidence_file="$(session_file "advisory_evidence_paths.log")"
+    if [[ -f "${advisory_evidence_file}" ]]; then
+      advisory_evidence_count="$(sort -u "${advisory_evidence_file}" 2>/dev/null | wc -l | tr -d '[:space:]')"
+    fi
+    advisory_evidence_count="${advisory_evidence_count:-1}"
+    _write_state_batch_unlocked \
+      "last_advisory_verify_ts" "$(now_epoch)" \
+      "advisory_evidence_count" "${advisory_evidence_count}"
+  }
+  with_state_lock _record_advisory_evidence_locked
 fi
 
 # P4: Stall detection — track call count and unique file paths
 # Wrapped in state lock to prevent concurrent Read/Grep from racing.
 _increment_stall_counter() {
   local stall_counter
+  is_ultrawork_mode || return 0
   stall_counter="$(read_state "stall_counter")"
   stall_counter="${stall_counter:-0}"
 
@@ -85,6 +91,7 @@ _increment_stall_counter() {
   printf '%s' "${stall_counter}"
 }
 stall_counter="$(with_state_lock _increment_stall_counter)"
+[[ -n "${stall_counter}" ]] || exit 0
 
 # Track file path for unique-path analysis (skip internal paths)
 if [[ -n "${target_path}" && "${is_internal_path}" -eq 0 ]]; then
@@ -113,7 +120,7 @@ if [[ "${stall_counter}" -ge "${effective_threshold}" ]]; then
 
   # Reset under lock — races with the concurrent _increment_stall_counter
   # path (which is itself already locked) otherwise drop the reset.
-  with_state_lock write_state "stall_counter" "0"
+  with_active_ulw_state_lock_batch "stall_counter" "0"
   : > "${paths_file}" 2>/dev/null || true
 
   # Compute progress score for context-aware messaging

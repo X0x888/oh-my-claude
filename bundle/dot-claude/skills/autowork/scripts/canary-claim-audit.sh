@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # canary-claim-audit.sh — Stop hook: model-drift canary (v1.26.0 Wave 2).
 #
-# Runs at Stop time AFTER stop-guard.sh (which captures
-# last_assistant_message into session state) and AFTER stop-time-summary
-# (which doesn't touch state). Reads the model's last response and
+# Runs after an accepted stop-guard disposition inside stop-dispatch.sh
+# (which has captured last_assistant_message into session state), after the
+# timing checkpoint. Reads the model's last response and
 # audits assertive verification claims against the turn's actual
 # verification tool calls. Records per-event canary rows to
 # `<session>/canary.jsonl` and `~/.claude/quality-pack/canary.jsonl`,
@@ -22,9 +22,8 @@
 # scope stays bounded and the backtest gate can validate it before
 # expanding.
 #
-# Always exit 0. The canary is INFORMATIONAL — it must never block
-# Stop, even if the audit itself errors out. Hook ordering ensures it
-# runs after stop-guard's last_assistant_message capture.
+# Always exit 0. The canary is INFORMATIONAL — it must never block Stop,
+# even if the audit itself errors out. The dispatcher provides ordering.
 
 set -euo pipefail
 
@@ -57,7 +56,7 @@ fi
 # Skip outside ULW mode — the canary tracks ULW sessions only because
 # only ULW sessions accrue the time-tracking and gate-events
 # infrastructure that powers /ulw-report's drift surface.
-if ! is_ultrawork_mode; then
+if [[ "${OMC_STOP_ACCEPTED:-0}" != "1" ]] && ! is_ultrawork_mode; then
   exit 0
 fi
 

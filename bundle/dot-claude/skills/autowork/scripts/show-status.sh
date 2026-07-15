@@ -1151,16 +1151,18 @@ fi
 # settings-merge regression silently disarms ALL enforcement with no
 # indication anywhere. This is the one surface that asserts "the gates
 # you think are armed actually are." Three cheap checks, no behavior
-# change: the .ulw_active fast-path sentinel, the latest session's
+# change: the process-wide .ulw_active fast-path latch, the latest session's
 # workflow mode, and the settings.json hook wiring count.
 printf '\n--- Enforcement health ---\n'
 if [[ -f "${STATE_ROOT}/.ulw_active" ]]; then
-  printf 'ulw sentinel:   present (.ulw_active — hooks take the armed fast path)\n'
+  printf 'ulw latch:      present (.ulw_active — hooks take the cheap mode-check path)\n'
 else
-  printf 'ulw sentinel:   absent (normal outside /ulw; if a /ulw session is active, enforcement is NOT armed)\n'
+  printf 'ulw latch:      absent (no /ulw activation observed in this state root)\n'
 fi
 _eh_mode="$(jq -r '.workflow_mode // ""' "${STATE_ROOT}/${latest_session}/session_state.json" 2>/dev/null || true)"
 printf 'workflow mode:  %s\n' "${_eh_mode:-"(unset — vanilla session)"}"
+_eh_active="$(jq -r '.ulw_enforcement_active // "migration"' "${STATE_ROOT}/${latest_session}/session_state.json" 2>/dev/null || true)"
+printf 'enforcement:    %s\n' "${_eh_active:-migration}"
 _eh_settings="${HOME}/.claude/settings.json"
 if [[ -f "${_eh_settings}" ]]; then
   _eh_wired="$(jq -r '[.. | strings | select(test("autowork/scripts|quality-pack/scripts"))] | length' "${_eh_settings}" 2>/dev/null || echo 0)"

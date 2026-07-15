@@ -24,6 +24,7 @@ tool_use_id="$(json_get '.tool_use_id')"
 [[ -n "${SESSION_ID}" ]] || exit 0
 ensure_session_dir
 is_ultrawork_mode || exit 0
+capture_ulw_enforcement_interval || exit 0
 
 case "${tool_name}" in
   Bash|mcp__*) ;;
@@ -50,10 +51,8 @@ _verification_start_path() {
 _record_tool_start_revision_locked() {
   local _path="" _dir="" _tmp="" _revision=""
 
-  # /ulw-off clears the sentinel before taking this same lock and deleting
-  # transient starts. Recheck under the lock so a PreToolUse hook that was
-  # already waiting cannot recreate a verification snapshot after cleanup.
-  [[ -f "${HOME}/.claude/quality-pack/state/.ulw_active" ]] || return 0
+  # Recheck addressed-session authority under the lock so a PreToolUse hook
+  # already waiting cannot recreate a verification start after release/off.
   is_ultrawork_mode || return 0
 
   _path="$(_verification_start_path "${tool_use_id}")" || return 1

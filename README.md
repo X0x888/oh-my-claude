@@ -51,7 +51,7 @@ See real catches in [`docs/showcase.md`](docs/showcase.md) — sessions where th
 
 ## Quick start
 
-Requires `jq` and `rsync`. macOS: `brew install jq` (`rsync` is preinstalled). Debian/Ubuntu: `apt install jq rsync`. `install.sh` hard-fails if `jq` is missing.
+Requires Claude Code 2.1.163+, `jq`, and `rsync`. macOS: `brew install jq` (`rsync` is preinstalled). Debian/Ubuntu: `apt install jq rsync`. `install.sh` hard-fails before mutation when Claude Code is older or `jq` is missing.
 
 ```bash
 # Pinned install (recommended — install-remote.sh prints the current tag tip):
@@ -83,7 +83,7 @@ Use the manual clone path when you want the strongest supply-chain posture. Use 
 
 ### Is this safe?
 
-Fair question for a tool that hooks every prompt and runs bash on your machine. Short answers: **100% local** (no network egress, no telemetry endpoint — the only network activity is the `git clone` you invoke); **inspection/judgment agents cannot use Claude Code's direct editor tools** (all 26 deny `Write`, `Edit`, `MultiEdit`, and `NotebookEdit` and request plan mode; Bash remains available for inspection/tests and follows the active permission mode); **permission prompts stay on** (bypass is a separate explicit opt-in); **repo-owned oh-my-claude conf cannot flip protected flags** (the parser deny-lists them, while `verify.sh` separately checks Claude Code's user and current-project `disableAllHooks` settings); **everything it persists is local, redacted, and opt-out** (`/omc-config` → Minimal turns all telemetry off). Claude Code project settings and administrator-managed policy can intentionally disable user hooks; that platform boundary is stated in [SECURITY.md](SECURITY.md), alongside the full four-question trust answer.
+Fair question for a tool that hooks every prompt and runs bash on your machine. Short answers: **100% local** (no network egress, no telemetry endpoint — the only network activity is the `git clone` you invoke); **inspection/judgment agents cannot use Claude Code's direct editor tools** (all 26 deny `Write`, `Edit`, `MultiEdit`, and `NotebookEdit` and request plan mode; Bash remains available for inspection/tests and follows the active permission mode); **permission prompts stay on** (bypass is a separate explicit opt-in); **repo-owned oh-my-claude conf cannot flip protected flags** (the parser deny-lists them, while `verify.sh` separately checks Claude Code's user and current-project `disableAllHooks` settings); and **durable prompt-derived state is local and secret-redacted**. The closeout display never stores or replays accepted response text across streamed batches. `/omc-config` → Minimal turns optional telemetry off; operational gate state remains while a task is active. Claude Code project settings and administrator-managed policy can intentionally disable user hooks; that platform boundary is stated in [SECURITY.md](SECURITY.md).
 
 After install, two mandatory steps:
 
@@ -295,7 +295,9 @@ ulw turn these meeting notes into an action plan and follow-up email
 
 ## How it works
 
-When you submit a prompt, the intent router (`prompt-intent-router.sh`) classifies it by intent category and domain, then injects the appropriate context and specialist instructions into Claude's working memory. Claude processes the task using the routed specialist agents -- each scoped to its domain and constrained by permission boundaries. When Claude attempts to stop, the stop guard (`stop-guard.sh`) checks whether review, verification, and final-closeout obligations are met. If they aren't, the stop is blocked and Claude is told exactly what's missing.
+When you submit a prompt, the intent router (`prompt-intent-router.sh`) classifies it by intent category and domain, then injects the appropriate context and specialist instructions into Claude's working memory. Claude processes the task using the routed specialist agents -- each scoped to its domain and constrained by permission boundaries. After likely terminal evidence, a hidden PostToolBatch preflight runs the real quality guard against isolated shadow state. If work is incomplete, Claude receives the exact recovery privately and keeps working without printing a provisional final; when the generation is READY, it receives one bounded cumulative manifest and writes one complete replacement summary.
+
+Before READY, `MessageDisplay` leaves ordinary progress untouched but replaces a completion-shaped streamed message with one compact checking-gates marker and suppresses the rest of that message. After READY, every response batch passes through byte-for-byte; the single Stop dispatcher performs the exact live validation and sequences guard → timing → canary → archive deterministically. A clean close gets the compact `✓ oh-my-claude · quality checks passed` receipt; a platform-cap or configured scorecard release is explicitly labeled and preserves a bounded uncertified candidate instead of hiding the user's details.
 
 The core state machine (`common.sh`) handles intent classification, domain scoring, session state tracking, and the quality gate logic. All state is managed in bash -- no external services, no databases, no background processes.
 
@@ -314,7 +316,7 @@ oh-my-claude/
 │   └── statusline.py                        # Custom statusline widget
 ├── config/settings.patch.json               # Merged into user settings on install
 ├── evals/realwork/                           # Outcome eval scenarios for minimal-prompt shipping across code + design/UI + native artifacts + mixed + quantitative/data-analysis + regulated/high-stakes + writing + research + scholarly + ops + advisory
-├── tests/               (148 bash + 1 py)   # See CLAUDE.md for canonical commands
+├── tests/               (151 bash + 1 py)   # See CLAUDE.md for canonical commands
 ├── tools/                                    # Developer-only tools (not installed)
 └── docs/                                    # Architecture, customization, FAQ, prompts
 ```

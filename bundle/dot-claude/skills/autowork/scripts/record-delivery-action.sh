@@ -25,6 +25,7 @@ ensure_session_dir
 if ! is_ultrawork_mode; then
   exit 0
 fi
+capture_ulw_enforcement_interval || exit 0
 
 tool_name="$(json_get '.tool_name' 2>/dev/null || true)"
 if [[ "${tool_name}" != "Bash" && -n "${tool_name}" ]]; then
@@ -54,6 +55,7 @@ command_safe="$(truncate_chars 500 "${command_safe}")"
 
 _record_delivery_actions_locked() {
   local kind count
+  is_ultrawork_mode || return 0
   while IFS= read -r kind || [[ -n "${kind}" ]]; do
     case "${kind}" in
       commit)

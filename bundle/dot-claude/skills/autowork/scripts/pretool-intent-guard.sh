@@ -58,6 +58,7 @@ ensure_session_dir
 if ! is_ultrawork_mode; then
   exit 0
 fi
+capture_ulw_enforcement_interval || exit 0
 
 tool_cwd="${tool_cwd:-${PWD}}"
 # v1.43.x bg-spawn gate (hygiene class): run_in_background is parsed in the
@@ -381,6 +382,7 @@ _tool_attempts_mutation() {
 
 _record_first_mutation_attempt() {
   local existing
+  is_ultrawork_mode || return 0
   existing="$(read_state "first_mutation_ts")"
   if [[ -z "${existing}" ]]; then
     # v1.43+ (data-lens P0): stamp the gate state AT THE MOMENT of
@@ -498,6 +500,7 @@ if [[ "${OMC_AGENT_FIRST_GATE:-off}" == "on" ]] \
     # shellcheck disable=SC2329  # invoked indirectly via with_state_lock
     _increment_agent_first_blocks() {
       local _c
+      is_ultrawork_mode || return 0
       _c="$(read_state "agent_first_gate_blocks")"
       _c="${_c:-0}"
       _c=$((_c + 1))
@@ -1172,6 +1175,7 @@ intent_label="${task_intent//_/-}"
 # race — the caller sees exactly the counter value that this hook wrote.
 _increment_pretool_blocks() {
   local _c
+  is_ultrawork_mode || return 0
   _c="$(read_state "pretool_intent_blocks")"
   _c="${_c:-0}"
   _c=$((_c + 1))

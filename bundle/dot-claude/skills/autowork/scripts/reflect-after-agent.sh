@@ -25,6 +25,7 @@ ensure_session_dir
 if ! is_ultrawork_mode; then
   exit 0
 fi
+capture_ulw_enforcement_interval || exit 0
 
 tool_name="$(json_get '.tool_name')"
 if [[ "${tool_name}" != "Agent" ]]; then
@@ -39,6 +40,7 @@ fi
 # Wrapped in state lock to prevent concurrent agent returns from racing.
 _halve_stall_counter() {
   local stall_counter
+  is_ultrawork_mode || return 0
   stall_counter="$(read_state "stall_counter")"
   stall_counter="${stall_counter:-0}"
   write_state "stall_counter" "$(( stall_counter / 2 ))"
@@ -71,6 +73,7 @@ _completion_outcome_json=""
 _completion_outcomes_present=0
 _consume_completion_outcome_unlocked() {
   local outcomes_file bundle temp selected
+  is_ultrawork_mode || return 0
   outcomes_file="$(session_file "agent_completion_outcomes.jsonl")"
   [[ -f "${outcomes_file}" ]] || return 0
   _completion_outcomes_present=1

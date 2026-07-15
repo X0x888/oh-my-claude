@@ -264,8 +264,10 @@ fi
 # mtimes routinely out-sort session dirs. Bare `ls -t | head -1` picked
 # hooks.log as the "session", so SESSION_ID became a filename and
 # ensure_session_dir crashed on the file/dir collision (reproduced live).
-# All three latest-session consumers (ulw-skip-register /
-# ulw-correct-record / ulw-deactivate) share the `ls -td -- */` fix.
+# The two legacy latest-session writers share the `ls -td -- */` fix.
+# ulw-deactivate is stricter now: it prefers an exact session identity and its
+# ID-less compatibility path considers only `STATE_ROOT/*/` directories with
+# one active same-cwd match. Both shapes exclude state-root files.
 # ----------------------------------------------------------------------
 printf '\n--- Serendipity: hooks.log decoy must not win the latest-session pick ---\n'
 
@@ -301,14 +303,20 @@ else
   fail_msg "decoy: gate_skip_reason not written to the session dir's state"
 fi
 
-# Family parity: all three consumers carry the directory-only glob.
-for consumer in ulw-skip-register ulw-correct-record ulw-deactivate; do
+# Family parity: latest-session consumers carry the directory-only `ls` glob.
+for consumer in ulw-skip-register ulw-correct-record; do
   if grep -q 'ls -td -- \*/' "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/${consumer}.sh"; then
     ok
   else
     fail_msg "decoy family: ${consumer}.sh missing the directory-only latest-session glob"
   fi
 done
+if grep -Fq 'for candidate_dir in "${STATE_ROOT}"/*/; do' \
+    "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/ulw-deactivate.sh"; then
+  ok
+else
+  fail_msg "decoy family: ulw-deactivate.sh missing directory-only compatibility iteration"
+fi
 
 rm -rf "${decoy_root}"
 

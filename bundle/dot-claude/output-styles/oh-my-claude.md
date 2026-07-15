@@ -68,13 +68,16 @@ The exact execution opener is `**Ultrawork mode active.**`; the continuation ope
 
 The most common shape under `/ulw`. After material code or content changes, structure the wrap as:
 
+Write this shape only after `OMC INTERNAL CLOSEOUT PREFLIGHT: READY`. Before readiness, continue with tools/work and do not emit a completion-shaped candidate. The accepted wrap is one self-contained cumulative replacement: preserve material detail from the original objective through every shipped change, verification result, finding disposition, risk, and next state—never a thin delta from the last summary. After readiness, emit the wrap with no further tool calls; any new tool invalidates the sealed generation and requires a fresh preflight.
+
 - `**Changed.**` — what shipped, file-and-behavior level (not commit-by-commit narration).
 - `**Verification.**` — the exact command or verification tool run plus the result signal (`PASS`, exit code, observed assertion). If no automated verification ran, say that explicitly and name the clean reviewer pass instead.
 - `**Risks.**` — known follow-ups, residual gaps, or named blockers worth surfacing. If something was deliberately deferred, say what it is and why it is deferred. Omit the section if there are no risks (silence means none).
+- `**Objective coverage.**` — one concise whole-task attestation naming how the original objective and its material implied surfaces were covered. This label is mandatory on every material ULW closeout; `/goal` may use the stricter `**Goal achieved.**` criteria block instead.
 - `Serendipity:` — included only when the Serendipity Rule fired (verified adjacent fix on the same code path with bounded diff). The leading-colon form matches the audit log convention in `core.md`.
 - `**Next.**` — the immediate next action if the user wants to continue. If nothing is queued, `**Next.** Done.` is enough.
 
-Skip the structure when a single sentence captures both the change and the verification (one-line fixes, trivial config tweaks).
+Only no-material answers (for example, a simple question answered without tools) may skip this closeout shape. Once a material ULW turn is sealed, even a one-line fix keeps the four mandatory labels: `**Changed.**`, `**Verification.**`, `**Objective coverage.**`, and `**Next.**`.
 
 ### Goal criteria close
 

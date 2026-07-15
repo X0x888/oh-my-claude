@@ -247,6 +247,7 @@ structured_closeout() {
   if [[ -n "${risks_text}" ]]; then
     printf '\n**Risks.** %s\n' "${risks_text}"
   fi
+  printf '\n**Objective coverage.** Covered the complete original objective; no requested work was omitted.\n'
   printf '\n**Next.** %s' "${next_text}"
 }
 
@@ -1170,7 +1171,7 @@ sim_edit "st4a" "/src/cache.ts"
 sim_verify "st4a" "npm test" "Tests: 5 passed"
 sim_review "st4a" "The code-only objective is clean.
 VERDICT: CLEAN"
-out="$(sim_stop "st4a" "$(structured_closeout "st4a" "Implemented the cache key helper.")")"
+out="$(OMC_CLOSEOUT_PREFLIGHT_PROBE=1 sim_stop "st4a" "$(structured_closeout "st4a" "Implemented the cache key helper.")")"
 assert_empty "seq-T4a: prior prose FINDINGS do not block fresh code-only objective" "${out}"
 teardown_test
 
@@ -1187,7 +1188,7 @@ VERDICT: CLEAN"
 # quality gate can still see the earlier code-edit clock, so provide a fresh
 # validation signal rather than conflating that separate migration behavior.
 sim_verify "st4b" "npm test" "Tests: 5 passed"
-out="$(sim_stop "st4b" "$(structured_closeout "st4b" "Updated the cache usage guide.")")"
+out="$(OMC_CLOSEOUT_PREFLIGHT_PROBE=1 sim_stop "st4b" "$(structured_closeout "st4b" "Updated the cache usage guide.")")"
 assert_empty "seq-T4b: prior code FINDINGS do not block fresh docs-only objective" "${out}"
 teardown_test
 
@@ -2417,8 +2418,13 @@ else
   printf '  FAIL: ulw-off: verification PreTool did not reach lock barrier\n' >&2
   fail=$((fail + 1))
 fi
+# Generation-scoped closeout nonces belong to the interval being deactivated
+# and must be quarantined with the other transient callback evidence.
+mkdir -p "${TEST_HOME}/.claude/quality-pack/state/culw/.closeout-material-generations"
+printf '1|deactivate-fixture\n' \
+  >"${TEST_HOME}/.claude/quality-pack/state/culw/.closeout-material-generations/1.nonce"
 # Run deactivation
-run_hook "${HOOK_DIR}/ulw-deactivate.sh" '{}' >/dev/null
+printf '{}' | bash "${HOOK_DIR}/ulw-deactivate.sh" "culw" >/dev/null 2>&1 || true
 touch "${deactivate_race_release}"
 wait "${deactivate_race_pid}" 2>/dev/null || true
 # All the flags should be cleared
@@ -2429,6 +2435,12 @@ assert_empty "ulw-off: compact_race_count cleared" "$(read_st "culw" "compact_ra
 # pending_agents.jsonl should be deleted
 if [[ -f "${pending_before}" ]]; then
   printf '  FAIL: ulw-off: pending_agents.jsonl should have been deleted\n' >&2
+  fail=$((fail + 1))
+else
+  pass=$((pass + 1))
+fi
+if [[ -e "${TEST_HOME}/.claude/quality-pack/state/culw/.closeout-material-generations" ]]; then
+  printf '  FAIL: ulw-off: closeout material nonce directory should have been deleted\n' >&2
   fail=$((fail + 1))
 else
   pass=$((pass + 1))
@@ -2450,7 +2462,11 @@ assert_eq "ulw-off: reviewer causality version survives cleanup" \
 # remain frictionless.
 touch "${TEST_HOME}/.claude/quality-pack/state/.ulw_active"
 culw_state="${TEST_HOME}/.claude/quality-pack/state/culw/session_state.json"
-jq '.workflow_mode="ultrawork"' "${culw_state}" >"${culw_state}.tmp" \
+jq '.workflow_mode="ultrawork"
+  | .ulw_enforcement_active="1"
+  | .ulw_enforcement_generation = (
+      ((((.ulw_enforcement_generation // "0") | tonumber?) // 0) + 1) | tostring
+    )' "${culw_state}" >"${culw_state}.tmp" \
   && mv "${culw_state}.tmp" "${culw_state}"
 reactivated_unbound="$(sim_pre_agent_dispatch "culw" "quality-reviewer" "fresh review after reactivation")"
 assert_contains "ulw-off: same reviewer requires a post-reactivation binding" \
@@ -2459,6 +2475,252 @@ reactivated_review="$(sim_pre_agent_dispatch "culw" "quality-reviewer" \
   '[review-rebind:reactivated-review] fresh review; emit REVIEW_DISPATCH_ID: reactivated-review immediately before VERDICT')"
 assert_empty "ulw-off: bound same reviewer dispatches after reactivation" \
   "${reactivated_review}"
+teardown_test
+
+# -------------------------------------------------------
+# ulw-off addresses an exact session and fails closed on ambiguity/failure
+# -------------------------------------------------------
+setup_test
+init_session "off-arg-target" "coding"
+init_session "off-env-target" "coding"
+for off_sid in off-arg-target off-env-target; do
+  off_state="${TEST_HOME}/.claude/quality-pack/state/${off_sid}/session_state.json"
+  jq --arg generation "${off_sid}-generation" \
+    '.ulw_enforcement_active="1" | .ulw_enforcement_generation=$generation' \
+    "${off_state}" >"${off_state}.tmp" && mv "${off_state}.tmp" "${off_state}"
+  touch "${TEST_HOME}/.claude/quality-pack/state/${off_sid}/.ulw_active"
+done
+
+off_arg_rc=0
+off_arg_out="$(env CLAUDE_CODE_SESSION_ID="off-env-target" \
+  bash "${HOOK_DIR}/ulw-deactivate.sh" "off-arg-target" 2>&1)" || off_arg_rc=$?
+assert_eq "ulw-off exact argument succeeds" "0" "${off_arg_rc}"
+assert_contains "ulw-off argument reports the addressed session" \
+  "session off-arg-target" "${off_arg_out}"
+assert_empty "ulw-off argument clears only its target workflow" \
+  "$(read_st "off-arg-target" "workflow_mode")"
+assert_eq "ulw-off argument takes precedence over environment" "ultrawork" \
+  "$(read_st "off-env-target" "workflow_mode")"
+
+off_env_rc=0
+off_env_out="$(env -u SESSION_ID CLAUDE_CODE_SESSION_ID="off-env-target" \
+  bash "${HOOK_DIR}/ulw-deactivate.sh" 2>&1)" || off_env_rc=$?
+assert_eq "ulw-off exact Claude session environment succeeds" "0" "${off_env_rc}"
+assert_contains "ulw-off environment reports the addressed session" \
+  "session off-env-target" "${off_env_out}"
+assert_empty "ulw-off environment clears its exact target" \
+  "$(read_st "off-env-target" "workflow_mode")"
+teardown_test
+
+setup_test
+init_session "off-ambiguous-a" "coding"
+init_session "off-ambiguous-b" "coding"
+for off_sid in off-ambiguous-a off-ambiguous-b; do
+  off_state="${TEST_HOME}/.claude/quality-pack/state/${off_sid}/session_state.json"
+  jq --arg cwd "${PWD}" \
+    '.cwd=$cwd | .ulw_enforcement_active="1"' \
+    "${off_state}" >"${off_state}.tmp" && mv "${off_state}.tmp" "${off_state}"
+done
+off_ambiguous_rc=0
+off_ambiguous_out="$(env -u CLAUDE_CODE_SESSION_ID -u SESSION_ID \
+  bash "${HOOK_DIR}/ulw-deactivate.sh" 2>&1)" || off_ambiguous_rc=$?
+assert_eq "ulw-off refuses two active sessions in the same cwd" "1" \
+  "${off_ambiguous_rc}"
+assert_contains "ulw-off ambiguity names the exact-ID recovery" \
+  "pass the exact session id" "${off_ambiguous_out}"
+assert_eq "ulw-off ambiguity leaves session A active" "1" \
+  "$(read_st "off-ambiguous-a" "ulw_enforcement_active")"
+assert_eq "ulw-off ambiguity leaves session B active" "1" \
+  "$(read_st "off-ambiguous-b" "ulw_enforcement_active")"
+
+missing_off_sid="off-does-not-exist"
+missing_off_dir="${TEST_HOME}/.claude/quality-pack/state/${missing_off_sid}"
+off_missing_rc=0
+off_missing_out="$(bash "${HOOK_DIR}/ulw-deactivate.sh" \
+  "${missing_off_sid}" 2>&1)" || off_missing_rc=$?
+assert_eq "ulw-off missing exact ID fails" "1" "${off_missing_rc}"
+assert_contains "ulw-off missing exact ID reports no state" \
+  "No state exists" "${off_missing_out}"
+assert_eq "ulw-off missing exact ID creates no phantom session directory" "no" \
+  "$([[ -e "${missing_off_dir}" ]] && printf yes || printf no)"
+
+init_session "off-cleanup-failure" "coding"
+cleanup_failure_dir="${TEST_HOME}/.claude/quality-pack/state/off-cleanup-failure"
+cleanup_failure_state="${cleanup_failure_dir}/session_state.json"
+jq '.ulw_enforcement_active="1" | .ulw_enforcement_generation="cleanup-generation"' \
+  "${cleanup_failure_state}" >"${cleanup_failure_state}.tmp" \
+  && mv "${cleanup_failure_state}.tmp" "${cleanup_failure_state}"
+touch "${cleanup_failure_dir}/.ulw_active"
+printf '%s\n' '{"agent_type":"quality-researcher"}' \
+  >"${TEST_HOME}/cleanup-failure-pending.jsonl"
+ln -s "${TEST_HOME}/cleanup-failure-pending.jsonl" \
+  "${cleanup_failure_dir}/pending_agents.jsonl"
+off_cleanup_rc=0
+off_cleanup_out="$(bash "${HOOK_DIR}/ulw-deactivate.sh" \
+  "off-cleanup-failure" 2>&1)" || off_cleanup_rc=$?
+assert_eq "ulw-off transient cleanup failure returns non-zero" "1" \
+  "${off_cleanup_rc}"
+assert_contains "ulw-off transient cleanup failure is explicit" \
+  "could not clear transient state" "${off_cleanup_out}"
+assert_eq "ulw-off cleanup failure keeps workflow active" "ultrawork" \
+  "$(read_st "off-cleanup-failure" "workflow_mode")"
+assert_eq "ulw-off cleanup failure keeps enforcement active" "1" \
+  "$(read_st "off-cleanup-failure" "ulw_enforcement_active")"
+assert_eq "ulw-off cleanup failure retains the session marker" "yes" \
+  "$([[ -f "${cleanup_failure_dir}/.ulw_active" ]] && printf yes || printf no)"
+teardown_test
+
+# -------------------------------------------------------
+# ulw-off refuses a live subagent completion lease, then succeeds on retry
+# -------------------------------------------------------
+setup_test
+init_session "off-summary-lease" "coding"
+summary_lease_dir="${TEST_HOME}/.claude/quality-pack/state/off-summary-lease"
+summary_lease_state="${summary_lease_dir}/session_state.json"
+jq '.ulw_enforcement_active="1" | .ulw_enforcement_generation="summary-generation"' \
+  "${summary_lease_state}" >"${summary_lease_state}.tmp" \
+  && mv "${summary_lease_state}.tmp" "${summary_lease_state}"
+touch "${summary_lease_dir}/.ulw_active"
+sim_pre_agent_dispatch "off-summary-lease" "quality-researcher" \
+  "research the exact lifecycle contract" >/dev/null
+summary_claim_ready="${TEST_HOME}/summary-claim-ready"
+summary_claim_release="${TEST_HOME}/summary-claim-release"
+summary_claim_payload="$(jq -nc --arg sid "off-summary-lease" \
+  --arg message $'Lifecycle research is complete.\nVERDICT: REPORT_READY' \
+  '{session_id:$sid,agent_type:"quality-researcher",last_assistant_message:$message}')"
+(
+  printf '%s' "${summary_claim_payload}" \
+    | env OMC_TEST_SUMMARY_CLAIM_READY_FILE="${summary_claim_ready}" \
+      OMC_TEST_SUMMARY_CLAIM_RELEASE_FILE="${summary_claim_release}" \
+      OMC_DISCOVERED_SCOPE=off \
+      bash "${HOOK_DIR}/record-subagent-summary.sh" >/dev/null 2>&1
+) &
+summary_claim_pid=$!
+for _summary_claim_wait in $(seq 1 500); do
+  [[ -f "${summary_claim_ready}" ]] && break
+  kill -0 "${summary_claim_pid}" 2>/dev/null || break
+  sleep 0.01
+done
+assert_eq "ulw-off lease: summary reaches post-claim barrier" "yes" \
+  "$([[ -f "${summary_claim_ready}" ]] && printf yes || printf no)"
+assert_eq "ulw-off lease: pending row carries a live incomplete claim" "1" \
+  "$(jq -s '[.[] | select((.completion_claim_id // "") != "" and
+      (.completion_claim_effects_complete // false) != true)] | length' \
+    "${summary_lease_dir}/pending_agents.jsonl")"
+
+summary_lease_off_rc=0
+summary_lease_off_out="$(bash "${HOOK_DIR}/ulw-deactivate.sh" \
+  "off-summary-lease" 2>&1)" || summary_lease_off_rc=$?
+assert_eq "ulw-off lease: deactivation refuses a live claim" "1" \
+  "${summary_lease_off_rc}"
+assert_contains "ulw-off lease: refusal is explicit" \
+  "could not clear transient state" "${summary_lease_off_out}"
+assert_eq "ulw-off lease: failed attempt leaves enforcement active" "1" \
+  "$(read_st "off-summary-lease" "ulw_enforcement_active")"
+
+touch "${summary_claim_release}"
+summary_claim_rc=0
+wait "${summary_claim_pid}" || summary_claim_rc=$?
+assert_eq "ulw-off lease: claimed summary finishes successfully" "0" \
+  "${summary_claim_rc}"
+summary_lease_summary_count=0
+if [[ -f "${summary_lease_dir}/subagent_summaries.jsonl" ]]; then
+  summary_lease_summary_count="$(jq -s \
+    '[.[] | select(.agent_type == "quality-researcher")] | length' \
+    "${summary_lease_dir}/subagent_summaries.jsonl")"
+fi
+assert_eq "ulw-off lease: summary publishes exactly once" "1" \
+  "${summary_lease_summary_count}"
+summary_lease_accepted_count=0
+if [[ -f "${summary_lease_dir}/agent_completion_outcomes.jsonl" ]]; then
+  summary_lease_accepted_count="$(jq -s \
+    '[.[] | select(.agent_type == "quality-researcher" and .status == "accepted")] | length' \
+    "${summary_lease_dir}/agent_completion_outcomes.jsonl")"
+fi
+assert_eq "ulw-off lease: accepted outcome publishes exactly once" "1" \
+  "${summary_lease_accepted_count}"
+assert_eq "ulw-off lease: completed summary consumes its claim row" "0" \
+  "$(jq -s 'length' "${summary_lease_dir}/pending_agents.jsonl")"
+
+summary_lease_retry_rc=0
+summary_lease_retry_out="$(bash "${HOOK_DIR}/ulw-deactivate.sh" \
+  "off-summary-lease" 2>&1)" || summary_lease_retry_rc=$?
+assert_eq "ulw-off lease: retry succeeds after summary commit" "0" \
+  "${summary_lease_retry_rc}"
+assert_contains "ulw-off lease: retry reports exact session" \
+  "session off-summary-lease" "${summary_lease_retry_out}"
+assert_empty "ulw-off lease: retry clears workflow" \
+  "$(read_st "off-summary-lease" "workflow_mode")"
+assert_eq "ulw-off lease: retry closes enforcement" "0" \
+  "$(read_st "off-summary-lease" "ulw_enforcement_active")"
+teardown_test
+
+# The reciprocal interleaving is fail-closed too: if an interval is forcibly
+# closed and its claimed row removed while the completion is paused, the
+# summary hook must revalidate after the barrier and publish no authoritative
+# effect—not even an ignored outcome or an inline design/scope artifact.
+setup_test
+init_session "off-summary-forced-close" "coding"
+forced_summary_dir="${TEST_HOME}/.claude/quality-pack/state/off-summary-forced-close"
+forced_summary_state="${forced_summary_dir}/session_state.json"
+jq '.ulw_enforcement_active="1" | .ulw_enforcement_generation="forced-summary-generation"' \
+  "${forced_summary_state}" >"${forced_summary_state}.tmp" \
+  && mv "${forced_summary_state}.tmp" "${forced_summary_state}"
+touch "${forced_summary_dir}/.ulw_active"
+sim_pre_agent_dispatch "off-summary-forced-close" "frontend-developer" \
+  "return a UI contract with one discovered finding" >/dev/null
+forced_summary_ready="${TEST_HOME}/forced-summary-ready"
+forced_summary_release="${TEST_HOME}/forced-summary-release"
+forced_summary_payload="$(jq -nc --arg sid "off-summary-forced-close" \
+  --arg message $'## Design Contract\n### Direction\nHigh-contrast utility UI.\nFINDINGS_JSON: [{"claim":"A sibling UI path also needs coverage","severity":"medium","category":"completeness"}]\nVERDICT: SHIP' \
+  '{session_id:$sid,agent_type:"frontend-developer",last_assistant_message:$message}')"
+(
+  printf '%s' "${forced_summary_payload}" \
+    | env OMC_TEST_SUMMARY_CLAIM_READY_FILE="${forced_summary_ready}" \
+      OMC_TEST_SUMMARY_CLAIM_RELEASE_FILE="${forced_summary_release}" \
+      OMC_DISCOVERED_SCOPE=on \
+      bash "${HOOK_DIR}/record-subagent-summary.sh" >/dev/null 2>&1
+) &
+forced_summary_pid=$!
+for _forced_summary_wait in $(seq 1 500); do
+  [[ -f "${forced_summary_ready}" ]] && break
+  kill -0 "${forced_summary_pid}" 2>/dev/null || break
+  sleep 0.01
+done
+assert_eq "forced close: summary reaches post-claim barrier" "yes" \
+  "$([[ -f "${forced_summary_ready}" ]] && printf yes || printf no)"
+assert_eq "forced close: barrier owns one incomplete claim" "1" \
+  "$(jq -s '[.[] | select((.completion_claim_id // "") != "" and
+      (.completion_claim_effects_complete // false) != true)] | length' \
+    "${forced_summary_dir}/pending_agents.jsonl")"
+
+jq '.ulw_enforcement_active="0" | .session_outcome="completed"' \
+  "${forced_summary_state}" >"${forced_summary_state}.tmp" \
+  && mv "${forced_summary_state}.tmp" "${forced_summary_state}"
+rm -f "${forced_summary_dir}/pending_agents.jsonl" \
+  "${forced_summary_dir}/.ulw_active"
+touch "${forced_summary_release}"
+forced_summary_rc=0
+wait "${forced_summary_pid}" || forced_summary_rc=$?
+assert_eq "forced close: stale claimed callback exits quietly" "0" \
+  "${forced_summary_rc}"
+forced_summary_count=0
+[[ ! -f "${forced_summary_dir}/subagent_summaries.jsonl" ]] \
+  || forced_summary_count="$(jq -s 'length' \
+    "${forced_summary_dir}/subagent_summaries.jsonl")"
+assert_eq "forced close: no summary side effect" "0" "${forced_summary_count}"
+forced_outcome_count=0
+[[ ! -f "${forced_summary_dir}/agent_completion_outcomes.jsonl" ]] \
+  || forced_outcome_count="$(jq -s 'length' \
+    "${forced_summary_dir}/agent_completion_outcomes.jsonl")"
+assert_eq "forced close: no accepted or ignored outcome side effect" "0" \
+  "${forced_outcome_count}"
+assert_eq "forced close: no inline design contract side effect" "no" \
+  "$([[ -e "${forced_summary_dir}/design_contract.md" ]] && printf yes || printf no)"
+assert_eq "forced close: no discovered-scope side effect" "no" \
+  "$([[ -e "${forced_summary_dir}/discovered_scope.jsonl" ]] && printf yes || printf no)"
+assert_eq "forced close: terminal authority remains closed" "0" \
+  "$(read_st "off-summary-forced-close" "ulw_enforcement_active")"
 teardown_test
 
 # -------------------------------------------------------
@@ -2724,7 +2986,7 @@ sim_pretool_bash "cg8o" "git commit -m 'seed the counter'" >/dev/null
 assert_eq "gap8o: counter seeded" "1" "$(read_st "cg8o" "pretool_intent_blocks")"
 set_agent_first_satisfied "cg8o" "quality-planner"
 # Deactivate — must clear the counter
-run_hook "${HOOK_DIR}/ulw-deactivate.sh" '{}' >/dev/null
+printf '{}' | bash "${HOOK_DIR}/ulw-deactivate.sh" "cg8o" >/dev/null 2>&1 || true
 assert_empty "gap8o: counter cleared by ulw-deactivate" "$(read_st "cg8o" "pretool_intent_blocks")"
 assert_empty "gap8o: agent-first stamp cleared by ulw-deactivate" "$(read_st "cg8o" "agent_first_specialist_ts")"
 teardown_test

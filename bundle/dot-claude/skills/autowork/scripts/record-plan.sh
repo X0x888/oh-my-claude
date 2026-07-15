@@ -33,6 +33,15 @@ fi
 
 ensure_session_dir
 
+# Preserve direct non-ULW planner behavior, but once this session has entered
+# an OMC enforcement interval the completion must belong to the exact active
+# generation that dispatched it.
+if [[ "$(workflow_mode)" == "ultrawork" \
+    || -n "$(read_state "ulw_enforcement_generation" 2>/dev/null || true)" ]]; then
+  is_ultrawork_mode || exit 0
+  capture_ulw_enforcement_interval || exit 0
+fi
+
 plan_file="$(session_file "current_plan.md")"
 
 # Parse only the exact final non-empty planner VERDICT. A rebound completion
@@ -135,11 +144,10 @@ _compute_plan_complexity "${LAST_ASSISTANT_MESSAGE}"
 #
 # When the plan is high-complexity, set `plan_complexity_nudge_pending="1"`
 # so the PostToolUse Agent hook (`reflect-after-agent.sh`) can surface
-# the notice as `additionalContext` — the documented context-injection
-# mechanism for that event. SubagentStop does NOT support
-# `additionalContext` (silently dropped by Claude Code), so emitting
-# from this hook directly does not reach the model. See CLAUDE.md
-# "Stop hook output schema" rule.
+# the notice as `additionalContext`. This PostToolUse handoff remains the
+# compatibility path for clients predating SubagentStop continuation context
+# and keeps the nudge adjacent to the returned Agent tool result. See CLAUDE.md
+# "Stop orchestration and output schema" rule.
 #
 # `reflect-after-agent.sh` clears the flag after emitting (one-shot
 # semantics per high-complexity plan).
@@ -284,6 +292,11 @@ _record_plan_state_unlocked() {
   local _start_cycle_id=0 _current_cycle_id=0 _ready=false
   _plan_commit_accepted=0
   _plan_rejection_reason=""
+  if [[ -n "${_OMC_ULW_CAPTURED_GENERATION+x}" ]] \
+      && ! is_ultrawork_mode; then
+    _plan_rejection_reason="enforcement_interval_closed"
+    return 0
+  fi
   _consume_planner_dispatch_start_unlocked || return 1
 
   _tracking_version="$(read_state "plan_dispatch_tracking_version")"

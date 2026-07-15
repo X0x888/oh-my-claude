@@ -242,6 +242,81 @@ assert_eq "failed plan publish does not move a staged file into target directory
 rmdir "${plan_file}"
 
 # ===========================================================================
+# Test 7: a planner waiting on the state lock cannot publish after /ulw-off.
+#
+# Pause record-plan at its first state-lock mkdir, after it has captured the
+# active enforcement generation but before the artifact/state transaction.
+# Deactivation wins the real session lock; when the planner resumes, its
+# in-lock interval check must reject the stale callback without creating either
+# current_plan.md or executable plan state.
+# ===========================================================================
+printf 'record-plan rejects a callback whose ULW interval closes while waiting:\n'
+
+reset_state
+rm -f "$(session_file "current_plan.md")"
+with_state_lock_batch \
+  "workflow_mode" "ultrawork" \
+  "ulw_enforcement_active" "1" \
+  "ulw_enforcement_generation" "7" \
+  "task_intent" "execution" \
+  "last_user_prompt_ts" "700" \
+  "plan_revision" "0"
+touch "$(session_file ".ulw_active")"
+
+plan_race_shim="${TEST_STATE_ROOT}/plan-race-shim"
+plan_race_ready="${TEST_STATE_ROOT}/plan-race-ready"
+plan_race_release="${TEST_STATE_ROOT}/plan-race-release"
+mkdir -p "${plan_race_shim}"
+printf '%s\n' \
+  '#!/bin/sh' \
+  'case "${1:-}" in' \
+  '  */.state.lock)' \
+  '    /usr/bin/touch "${OMC_PLAN_RACE_READY}"' \
+  '    while [ ! -f "${OMC_PLAN_RACE_RELEASE}" ]; do /bin/sleep 0.01; done' \
+  '    ;;' \
+  'esac' \
+  'exec /bin/mkdir "$@"' \
+  >"${plan_race_shim}/mkdir"
+chmod +x "${plan_race_shim}/mkdir"
+
+plan_race_payload="$(jq -nc --arg sid "${SESSION_ID}" \
+  --arg msg $'STALE_PLAN_BODY\nVERDICT: PLAN_READY' \
+  '{session_id:$sid,agent_type:"quality-planner",last_assistant_message:$msg}')"
+(
+  printf '%s' "${plan_race_payload}" \
+    | env PATH="${plan_race_shim}:${PATH}" \
+      OMC_PLAN_RACE_READY="${plan_race_ready}" \
+      OMC_PLAN_RACE_RELEASE="${plan_race_release}" \
+      STATE_ROOT="${TEST_STATE_ROOT}" \
+      bash "${RECORD_PLAN}" >/dev/null 2>&1
+) &
+plan_race_pid=$!
+for _plan_race_wait in $(seq 1 500); do
+  [[ -f "${plan_race_ready}" ]] && break
+  kill -0 "${plan_race_pid}" 2>/dev/null || break
+  sleep 0.01
+done
+assert_eq "record-plan reaches deterministic state-lock barrier" "yes" \
+  "$([[ -f "${plan_race_ready}" ]] && printf yes || printf no)"
+
+deactivate_rc=0
+STATE_ROOT="${TEST_STATE_ROOT}" \
+  bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/ulw-deactivate.sh" \
+    "${SESSION_ID}" >/dev/null 2>&1 || deactivate_rc=$?
+assert_eq "/ulw-off wins the lock while planner is paused" "0" "${deactivate_rc}"
+touch "${plan_race_release}"
+plan_race_rc=0
+wait "${plan_race_pid}" || plan_race_rc=$?
+assert_eq "stale planner callback exits without publication failure" "0" "${plan_race_rc}"
+assert_eq "stale planner creates no current_plan.md" "no" \
+  "$([[ -e "$(session_file "current_plan.md")" ]] && printf yes || printf no)"
+assert_eq "stale planner leaves has_plan unset" "" "$(read_state "has_plan")"
+assert_eq "stale planner leaves plan_verdict unset" "" "$(read_state "plan_verdict")"
+assert_eq "stale planner cannot advance plan_revision" "0" "$(read_state "plan_revision")"
+assert_eq "planner race finishes with enforcement inactive" "0" \
+  "$(read_state "ulw_enforcement_active")"
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 

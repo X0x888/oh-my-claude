@@ -98,6 +98,14 @@ for impl in "${implementations[@]}"; do
     "${SETTINGS}" \
     '[.hooks.SubagentStart[].hooks[].command | select(contains("record-pending-agent.sh start"))] | length' \
     "1"
+  assert_json_eq "${impl}: fresh install — one closeout display hook" \
+    "${SETTINGS}" '.hooks.MessageDisplay | length' "1"
+  assert_json_eq "${impl}: fresh install — one closeout preflight hook" \
+    "${SETTINGS}" '.hooks.PostToolBatch | length' "1"
+  assert_json_eq "${impl}: fresh install — one ordered Stop dispatcher" \
+    "${SETTINGS}" \
+    '[.hooks.Stop[].hooks[].command | select(contains("stop-dispatch.sh"))] | length' \
+    "1"
 
   run_clean "${impl}" "${SETTINGS}"
   assert_json_eq "${impl}: valid uninstall — hooks removed" \

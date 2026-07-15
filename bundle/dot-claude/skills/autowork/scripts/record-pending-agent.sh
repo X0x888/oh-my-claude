@@ -22,6 +22,8 @@ if [[ -z "${SESSION_ID}" ]]; then
 fi
 
 ensure_session_dir
+is_ultrawork_mode || exit 0
+capture_ulw_enforcement_interval || exit 0
 
 # Claude Code 2.0.43+ supplies a native agent_id on SubagentStart and
 # SubagentStop. PreToolUse cannot know that ID, so SubagentStart binds it to
@@ -1673,11 +1675,10 @@ _append_pending() {
   local _review_batch_id="" _objective_prompt_ts=0 _objective_prompt_revision=0
   local _objective_cycle_id=0
 
-  # The sentinel is cleared before /ulw-off takes the state lock. Recheck it
-  # inside that lock so a PreToolUse hook that was already waiting cannot
-  # recreate a transient dispatch row after deactivation cleaned the session.
-  if [[ ! -f "${HOME}/.claude/quality-pack/state/.ulw_active" ]] \
-      || ! is_ultrawork_mode; then
+  # Recheck per-session authority inside the lock so a PreToolUse hook that
+  # was already waiting cannot recreate a row after /ulw-off or Stop closed
+  # this session while another ULW session keeps the global fast-path latch.
+  if ! is_ultrawork_mode; then
     return 0
   fi
   _validate_dispatch_registry_artifacts_unlocked || return 1

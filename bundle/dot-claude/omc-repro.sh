@@ -26,7 +26,8 @@
 # assistant-message text is truncated to REDACT_CHARS (default 80) chars
 # before bundling. Covered fields:
 #   session_state.json   — last_user_prompt, last_assistant_message,
-#                          current_objective, last_meta_request
+#                          current_objective, last_meta_request, and closeout
+#                          manifest/feedback/anchor text fields
 #   classifier_telemetry — prompt_preview (was 200, becomes 80)
 #   recent_prompts       — text
 #   dispatch ledgers      — description (pending/start/Council rows)
@@ -93,7 +94,9 @@ redact_session_state() {
   local _tmp_truncated _tmp_safe k v
   _tmp_truncated="$(mktemp "${dst}.trunc.XXXXXX")" || { printf '{}\n' > "${dst}"; return 1; }
   jq --argjson n "${REDACT_CHARS}" '
-    reduce ("last_user_prompt","last_assistant_message","current_objective","last_meta_request") as $k (.;
+    reduce ("last_user_prompt","last_assistant_message","current_objective","last_meta_request",
+            "closeout_seal_manifest","closeout_preflight_feedback",
+            "closeout_last_stop_feedback","closeout_seal_required_anchors") as $k (.;
       if has($k) and (.[$k] | type == "string")
         then .[$k] = (.[$k] | .[0:$n])
         else .
@@ -107,14 +110,16 @@ redact_session_state() {
       printf '{}\n' > "${dst}"
       return 1
     }
-  # v1.40.x F-007: post-process the four redacted fields through
+  # v1.40.x F-007: post-process every truncated text field through
   # omc_redact_secrets so a secret in the first REDACT_CHARS chars
   # (e.g. "/ulw fix bug, key=sk-ant-XYZ...") is scrubbed before the
   # tarball ships. Each pass extracts the raw field value, pipes it
   # through omc_redact_secrets, and writes it back via jq --arg.
   cp "${_tmp_truncated}" "${dst}"
   rm -f "${_tmp_truncated}"
-  for k in last_user_prompt last_assistant_message current_objective last_meta_request; do
+  for k in last_user_prompt last_assistant_message current_objective last_meta_request \
+      closeout_seal_manifest closeout_preflight_feedback \
+      closeout_last_stop_feedback closeout_seal_required_anchors; do
     v="$(jq -r --arg k "${k}" 'if has($k) then .[$k] else "" end' "${dst}" 2>/dev/null)"
     [[ -z "${v}" || "${v}" == "null" ]] && continue
     v_safe="$(printf '%s' "${v}" | omc_redact_secrets)"
@@ -302,7 +307,7 @@ for name in pending_agents.jsonl agent_dispatch_starts.jsonl council_dispatches.
   fi
 done
 
-# session_state.json: redact the four user-prompt / assistant-message fields
+# session_state.json: redact every prompt/assistant-derived closeout field
 # before copying. If jq fails for any reason, we emit an empty object rather
 # than fall back to the raw original — an unredacted leak is worse than a
 # missing file in a bug-report bundle.

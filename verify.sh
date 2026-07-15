@@ -455,6 +455,25 @@ printf 'Checking installation under %s\n\n' "${CLAUDE_HOME}"
 
 printf '1. Required paths\n'
 
+if command -v claude >/dev/null 2>&1; then
+  claude_version_raw="$(claude --version 2>/dev/null || true)"
+  claude_version="$(printf '%s' "${claude_version_raw}" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
+  if [[ "${claude_version}" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+    claude_major="${BASH_REMATCH[1]}"
+    claude_minor="${BASH_REMATCH[2]}"
+    claude_patch="${BASH_REMATCH[3]}"
+    if (( claude_major > 2 || (claude_major == 2 && claude_minor > 1) || (claude_major == 2 && claude_minor == 1 && claude_patch >= 163) )); then
+      pass "Claude Code supports the complete closeout hook stack (${claude_version})"
+    else
+      fail "Claude Code ${claude_version} is too old; 2.1.163+ is required for complete closeout hook handling"
+    fi
+  else
+    info_warn "Could not parse Claude Code version; 2.1.163+ is required"
+  fi
+else
+  info_warn "Claude Code binary not found on PATH; runtime version check skipped (2.1.163+ required)"
+fi
+
 required_paths=(
   "${CLAUDE_HOME}/settings.json"
   "${CLAUDE_HOME}/CLAUDE.md"
@@ -495,6 +514,9 @@ required_paths=(
   "${CLAUDE_HOME}/quality-pack/research-craft/citation-integrity.md"
   "${CLAUDE_HOME}/quality-pack/research-craft/figure-craft.md"
   "${CLAUDE_HOME}/skills/autowork/scripts/stop-guard.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/closeout-preflight.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/closeout-display.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/stop-dispatch.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/reflect-after-agent.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/record-advisory-verification.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/record-tool-start-revision.sh"
@@ -697,6 +719,9 @@ hook_scripts=(
   "${CLAUDE_HOME}/skills/autowork/scripts/posttool-dispatch.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/reflect-after-agent.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/stop-guard.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/closeout-preflight.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/closeout-display.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/stop-dispatch.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/show-status.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/record-plan.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/record-council-coverage.sh"
@@ -807,10 +832,9 @@ else
     "SubagentStop:record-subagent-summary.sh"
     "SubagentStop:record-plan.sh"
     "SubagentStop:record-reviewer.sh"
-    "Stop:stop-guard.sh"
-    "Stop:stop-time-summary.sh"
-    "Stop:canary-claim-audit.sh"
-    "Stop:stop-transcript-archive.sh"
+    "MessageDisplay:closeout-display.sh"
+    "PostToolBatch:closeout-preflight.sh"
+    "Stop:stop-dispatch.sh"
     "PostToolUse:posttool-dispatch.sh"
   )
 
@@ -826,7 +850,7 @@ else
     hook_found="false"
     if command -v jq >/dev/null 2>&1; then
       hook_found="$(jq -r --arg ev "${event}" --arg frag "${fragment}" '
-        def script_basename:
+        def script_token:
           def token_basename: split("/") | last;
           def shell_tokens:
             [scan("\u0027[^\u0027]*\u0027|\"(?:\\\\.|[^\"\\\\])*\"|[^[:space:]]+")
@@ -835,14 +859,28 @@ else
                then .[1:-1] else . end];
           tostring | shell_tokens
           | . as $tokens
-          | ([ $tokens[] | token_basename
-               | select(test("\\.(sh|py)$")) ][-1]
-             // (($tokens[0] // "") | token_basename));
+          | ([ $tokens[] | select((token_basename | test("\\.(sh|py)$"))) ][-1]
+             // ($tokens[0] // ""));
+        def script_basename:
+          def token_basename: split("/") | last;
+          script_token | token_basename;
+        def path_owned_closeout:
+          ["closeout-display.sh", "closeout-preflight.sh", "stop-dispatch.sh"];
+        def required_command_matches($frag):
+          . as $command
+          | ($command | script_token) as $token
+          | ($command | script_basename) as $basename
+          | ($basename == $frag)
+            and (if (path_owned_closeout | index($frag)) == null then true
+                 else ($token == (".claude/skills/autowork/scripts/" + $frag))
+                   or ($token | endswith("/.claude/skills/autowork/scripts/" + $frag))
+                 end);
         (.hooks[$ev] // [])
         | map(.hooks // [])
         | flatten
-        | map(select((.type // "") == "command") | ((.command // "") | script_basename))
-        | any(. == $frag)
+        | any(.[];
+            ((.type // "") == "command")
+            and ((.command // "") | required_command_matches($frag)))
       ' "${CLAUDE_HOME}/settings.json" 2>/dev/null || printf 'false')"
     else
       # Fallback: plain substring match when jq is not available.
@@ -867,6 +905,9 @@ else
     "PostToolUse^mark-edit.sh^Edit|Write|MultiEdit|NotebookEdit^exact"
     "PostToolUseFailure^mark-edit.sh^Bash^exact"
     "PostToolUse^posttool-dispatch.sh^^empty"
+    "MessageDisplay^closeout-display.sh^^empty"
+    "PostToolBatch^closeout-preflight.sh^^empty"
+    "Stop^stop-dispatch.sh^^empty"
   )
   for entry in "${required_hook_matchers[@]}"; do
     IFS='^' read -r event fragment expected_matcher matcher_mode <<<"${entry}"
@@ -884,7 +925,7 @@ else
         --arg expected "${expected_matcher}" \
         --arg mode "${matcher_mode}" \
         --argjson expected_total "${expected_fragment_total}" '
-        def script_basename:
+        def script_token:
           def token_basename: split("/") | last;
           def shell_tokens:
             [scan("\u0027[^\u0027]*\u0027|\"(?:\\\\.|[^\"\\\\])*\"|[^[:space:]]+")
@@ -893,14 +934,27 @@ else
                then .[1:-1] else . end];
           tostring | shell_tokens
           | . as $tokens
-          | ([ $tokens[] | token_basename
-               | select(test("\\.(sh|py)$")) ][-1]
-             // (($tokens[0] // "") | token_basename));
+          | ([ $tokens[] | select((token_basename | test("\\.(sh|py)$"))) ][-1]
+             // ($tokens[0] // ""));
+        def script_basename:
+          def token_basename: split("/") | last;
+          script_token | token_basename;
+        def path_owned_closeout:
+          ["closeout-display.sh", "closeout-preflight.sh", "stop-dispatch.sh"];
+        def required_command_matches($frag):
+          . as $command
+          | ($command | script_token) as $token
+          | ($command | script_basename) as $basename
+          | ($basename == $frag)
+            and (if (path_owned_closeout | index($frag)) == null then true
+                 else ($token == (".claude/skills/autowork/scripts/" + $frag))
+                   or ($token | endswith("/.claude/skills/autowork/scripts/" + $frag))
+                 end);
         [(.hooks // {}) | to_entries[] as $event
           | ($event.value // [])[]? as $entry
           | ($entry.hooks // [])[]?
           | select(type == "object")
-          | select(((.command // "") | script_basename) == $frag)
+          | select((.command // "") | required_command_matches($frag))
           | {event: $event.key, matcher: ($entry.matcher // ""), type: (.type // "")}]
         | (length == $expected_total)
           and ([.[]
@@ -923,6 +977,43 @@ else
       fail "Missing hook matcher coverage: ${event} -> ${fragment} must use ${expected_matcher:-a universal matcher}; ${uniqueness}"
     fi
   done
+
+  # The dispatcher is the sole oh-my-claude Stop owner. Upgrade pruning must
+  # remove legacy direct children regardless of whatever matcher an older or
+  # hand-edited settings file put them under; foreign co-hooks remain valid.
+  if command -v jq >/dev/null 2>&1; then
+    legacy_stop_count="$(jq -r '
+      def script_token:
+        def token_basename: split("/") | last;
+        def shell_tokens:
+          [scan("\u0027[^\u0027]*\u0027|\"(?:\\\\.|[^\"\\\\])*\"|[^[:space:]]+")
+           | if ((startswith("\u0027") and endswith("\u0027")) or
+                 (startswith("\"") and endswith("\"")))
+             then .[1:-1] else . end];
+        tostring | shell_tokens
+        | . as $tokens
+        | ([ $tokens[] | select((token_basename | test("\\.(sh|py)$"))) ][-1]
+           // ($tokens[0] // ""));
+      def script_basename:
+        def token_basename: split("/") | last;
+        script_token | token_basename;
+      def is_managed_legacy_stop_command:
+        . as $command
+        | ($command | script_token) as $token
+        | ($command | script_basename) as $basename
+        | (["stop-guard.sh", "stop-time-summary.sh", "canary-claim-audit.sh", "stop-transcript-archive.sh"] | index($basename)) != null
+          and (($token == (".claude/skills/autowork/scripts/" + $basename))
+               or ($token | endswith("/.claude/skills/autowork/scripts/" + $basename)));
+      [(.hooks.Stop // [])[]? | (.hooks // [])[]?
+       | (.command // "")
+       | select(is_managed_legacy_stop_command)] | length
+    ' "${CLAUDE_HOME}/settings.json" 2>/dev/null || printf '1')"
+    if [[ "${legacy_stop_count}" == "0" ]]; then
+      pass "Stop dispatcher has no legacy direct managed co-hooks"
+    else
+      fail "Stop dispatcher has ${legacy_stop_count} legacy direct managed co-hook(s); reinstall to prune them"
+    fi
+  fi
 fi
 
 printf '\n'

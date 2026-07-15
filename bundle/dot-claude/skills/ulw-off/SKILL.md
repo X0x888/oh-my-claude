@@ -1,14 +1,16 @@
 ---
 name: ulw-off
-description: Deactivate ultrawork mode mid-session. Clears the workflow state and removes the ULW sentinel so quality gates and domain routing stop firing.
+description: Deactivate ultrawork mode for the addressed session. Clears its workflow and enforcement state without affecting concurrent Claude sessions.
 ---
 # Deactivate Ultrawork
 
 Run the deactivation script:
 
 ```
-bash ~/.claude/skills/autowork/scripts/ulw-deactivate.sh
+bash ~/.claude/skills/autowork/scripts/ulw-deactivate.sh "${CLAUDE_SESSION_ID}"
 ```
+
+The session-id argument is required: never select a session by newest mtime.
 
 After running:
 1. Confirm to the user that ultrawork mode has been deactivated.

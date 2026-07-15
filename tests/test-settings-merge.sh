@@ -174,12 +174,16 @@ for impl in "${implementations[@]}"; do
     "${work}/settings.json" '.hooks.UserPromptSubmit' "1"
   assert_json_count "${impl}: fresh — PreToolUse hooks" \
     "${work}/settings.json" '.hooks.PreToolUse' "4"
+  assert_json_count "${impl}: fresh — MessageDisplay hooks" \
+    "${work}/settings.json" '.hooks.MessageDisplay' "1"
   # v1.48 W3.1: the four per-call PostToolUse processes (universal timing +
   # 3 Bash-matcher recorders) consolidated into one universal dispatcher —
   # 8 entries became 5 (dispatcher, Edit-family mark-edit, mcp record-
   # verification, Agent reflect, Grep|Read advisory-verification).
   assert_json_count "${impl}: fresh — PostToolUse hooks" \
     "${work}/settings.json" '.hooks.PostToolUse' "5"
+  assert_json_count "${impl}: fresh — PostToolBatch hooks" \
+    "${work}/settings.json" '.hooks.PostToolBatch' "1"
   assert_json_count "${impl}: fresh — SubagentStart hooks" \
     "${work}/settings.json" '.hooks.SubagentStart' "1"
   assert_json_eq "${impl}: fresh — SubagentStart binds native agent IDs" \
@@ -193,7 +197,11 @@ for impl in "${implementations[@]}"; do
   assert_json_count "${impl}: fresh — PostCompact hooks" \
     "${work}/settings.json" '.hooks.PostCompact' "1"
   assert_json_count "${impl}: fresh — Stop hooks" \
-    "${work}/settings.json" '.hooks.Stop' "4"
+    "${work}/settings.json" '.hooks.Stop' "1"
+  assert_json_eq "${impl}: fresh — Stop uses ordered dispatcher" \
+    "${work}/settings.json" \
+    '[.hooks.Stop[] | .hooks[0].command] | .[0] | tostring | contains("stop-dispatch.sh")' \
+    "true"
   assert_json_count "${impl}: fresh — StopFailure hooks" \
     "${work}/settings.json" '.hooks.StopFailure' "1"
   assert_json_count "${impl}: fresh — PostToolUseFailure hooks" \
@@ -275,12 +283,10 @@ for impl in "${implementations[@]}"; do
     "${work}/settings.json" '.hooks.PostToolUseFailure' "1"
 
   # -----------------------------------------------------------------------
-  # Test 2b: UPGRADE prune (v1.48 W3.1, release-reviewer F1) — a base
-  # seeded with the pre-1.48 PostToolUse shape must come out with the old
-  # direct wirings PRUNED, not surviving alongside the dispatcher. Fresh
-  # and idempotent cases start from {} and structurally cannot catch the
-  # upgrade double-execution class (double timing rows; circuit-breaker
-  # tripping at ~2 real failures).
+  # Test 2b: UPGRADE prune — bases seeded with the pre-dispatch PostToolUse
+  # and Stop shapes must come out with old direct wirings PRUNED, not
+  # surviving alongside either dispatcher. Fresh/idempotent cases start from
+  # {} and cannot catch the upgrade double-execution/racing-owner class.
   # -----------------------------------------------------------------------
   cat > "${work}/upgrade.json" <<'PRE148'
 {
@@ -297,6 +303,21 @@ for impl in "${implementations[@]}"; do
       {"matcher": "SoloRead", "hooks": []},
       {"matcher": "SoloGrep", "hooks": null},
       null
+    ],
+    "Stop": [
+      {"matcher": "*", "hooks": [{"type": "command", "command": "$HOME/.claude/skills/autowork/scripts/stop-guard.sh"}]},
+      {"matcher": "Stop", "hooks": [{"type": "command", "command": "bash $HOME/.claude/skills/autowork/scripts/stop-time-summary.sh"}]},
+      {"matcher": ".*", "hooks": [{"type": "command", "command": "/usr/bin/bash $HOME/.claude/skills/autowork/scripts/canary-claim-audit.sh"}]},
+      {"matcher": "custom-drift", "hooks": [{"type": "command", "command": "env bash $HOME/.claude/skills/autowork/scripts/stop-transcript-archive.sh"}]},
+      {"hooks": [{"type": "command", "command": "/opt/acme/stop-guard.sh --foreign-policy"}]},
+      {"hooks": [{"type": "command", "command": "/opt/acme/stop-dispatch.sh --foreign-closeout"}]},
+      {"hooks": [{"type": "command", "command": "$HOME/.claude/user-stop-note.sh"}]}
+    ],
+    "MessageDisplay": [
+      {"hooks": [{"type": "command", "command": "/opt/acme/closeout-display.sh --foreign-closeout"}]}
+    ],
+    "PostToolBatch": [
+      {"hooks": [{"type": "command", "command": "/opt/acme/closeout-preflight.sh --foreign-closeout"}]}
     ]
   }
 }
@@ -339,11 +360,53 @@ PRE148
     "${work}/upgrade.json" \
     '[.hooks.PostToolUse[] | select(type == "object") | select(.matcher == "Edit|Write|MultiEdit|NotebookEdit") | .hooks[]? | select((.command // "") | contains("mark-edit.sh"))] | length' \
     "1"
+  assert_json_eq "${impl}: upgrade — no direct managed Stop wiring survives" \
+    "${work}/upgrade.json" \
+    '[.hooks.Stop[] | .hooks[]? | (.command // "") | select(contains("/.claude/skills/autowork/scripts/") and test("(stop-guard|stop-time-summary|canary-claim-audit|stop-transcript-archive)\\.sh"))] | length' \
+    "0"
+  assert_json_eq "${impl}: upgrade — ordered Stop dispatcher wired exactly once" \
+    "${work}/upgrade.json" \
+    '[.hooks.Stop[] | .hooks[]? | (.command // "") | select(contains("/.claude/skills/autowork/scripts/stop-dispatch.sh"))] | length' \
+    "1"
+  assert_json_eq "${impl}: upgrade — foreign Stop hook preserved" \
+    "${work}/upgrade.json" \
+    '[.hooks.Stop[] | .hooks[]? | (.command // "") | select(contains("user-stop-note.sh"))] | length' \
+    "1"
+  assert_json_eq "${impl}: upgrade — foreign same-basename Stop hook preserved" \
+    "${work}/upgrade.json" \
+    '[.hooks.Stop[] | .hooks[]? | (.command // "") | select(. == "/opt/acme/stop-guard.sh --foreign-policy")] | length' \
+    "1"
+  assert_json_eq "${impl}: upgrade — foreign same-basename dispatcher preserved" \
+    "${work}/upgrade.json" \
+    '[.hooks.Stop[] | .hooks[]? | (.command // "") | select(. == "/opt/acme/stop-dispatch.sh --foreign-closeout")] | length' \
+    "1"
+  assert_json_eq "${impl}: upgrade — foreign same-basename display hook preserved" \
+    "${work}/upgrade.json" \
+    '[.hooks.MessageDisplay[] | .hooks[]? | (.command // "") | select(. == "/opt/acme/closeout-display.sh --foreign-closeout")] | length' \
+    "1"
+  assert_json_eq "${impl}: upgrade — managed display hook still installed" \
+    "${work}/upgrade.json" \
+    '[.hooks.MessageDisplay[] | .hooks[]? | (.command // "") | select(contains("/.claude/skills/autowork/scripts/closeout-display.sh"))] | length' \
+    "1"
+  assert_json_eq "${impl}: upgrade — foreign same-basename preflight hook preserved" \
+    "${work}/upgrade.json" \
+    '[.hooks.PostToolBatch[] | .hooks[]? | (.command // "") | select(. == "/opt/acme/closeout-preflight.sh --foreign-closeout")] | length' \
+    "1"
+  assert_json_eq "${impl}: upgrade — managed preflight hook still installed" \
+    "${work}/upgrade.json" \
+    '[.hooks.PostToolBatch[] | .hooks[]? | (.command // "") | select(contains("/.claude/skills/autowork/scripts/closeout-preflight.sh"))] | length' \
+    "1"
 
   # Upgrade idempotency: a second merge on the pruned result stays stable.
   run_merge "${impl}" "${work}/upgrade.json" "${SETTINGS_PATCH}" "false"
   assert_json_count "${impl}: upgrade re-merge — PostToolUse still 5 real + 3 vestigial" \
     "${work}/upgrade.json" '.hooks.PostToolUse' "8"
+  assert_json_count "${impl}: upgrade re-merge — Stop stays dispatcher + three foreign hooks" \
+    "${work}/upgrade.json" '.hooks.Stop' "4"
+  assert_json_count "${impl}: upgrade re-merge — display keeps managed and foreign owners" \
+    "${work}/upgrade.json" '.hooks.MessageDisplay' "2"
+  assert_json_count "${impl}: upgrade re-merge — preflight keeps managed and foreign owners" \
+    "${work}/upgrade.json" '.hooks.PostToolBatch' "2"
 
   # Phase-0 matcher migration must coalesce with an already-correct entry,
   # including stale commands launched through every interpreter prefix the

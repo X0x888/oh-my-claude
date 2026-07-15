@@ -7,12 +7,12 @@
 # the summary into the cross-session log under
 # ~/.claude/quality-pack/timing.jsonl.
 #
-# Schema note: Stop hooks do NOT support hookSpecificOutput.additionalContext
-# (it is silently dropped). The documented user-visible Stop output field
-# is `systemMessage`. See CLAUDE.md "Stop hook output schema" rule.
+# Schema note: current clients support model-only Stop additionalContext, but
+# the stable user-visible Stop output field across supported clients remains
+# `systemMessage`. See CLAUDE.md "Stop hook output schema" rule.
 #
-# Self-suppression: stop-guard.sh is registered ahead of this hook in
-# the Stop array. If stop-guard JUST emitted a `decision:block`, we do
+# Self-suppression: stop-dispatch.sh invokes this after stop-guard. If the
+# guard JUST emitted a continuation response, we do
 # NOT emit a time summary on top of the user-facing block message —
 # the prompt is not finished and showing partial totals is misleading.
 # Detection: match stop-guard's monotonic attempt sequence to the exact
@@ -230,12 +230,10 @@ if (( walltime_s >= _card_threshold )); then
       done
       _outcome_line="─── Outcome ─── ${_outcome_joined}"$'\n'
     fi
-    # emit_stop_message (common.sh, v1.30.0) encodes the contract: Stop
-    # hooks render via top-level `systemMessage`; `hookSpecificOutput.
-    # additionalContext` is silently dropped by Claude Code at Stop /
-    # SubagentStop. Centralizing the schema in a primitive prevents the
-    # next Stop-hook author from accidentally repeating the v1.24.0 /
-    # v1.25.0 bug. See CLAUDE.md "Stop hook output schema".
+    # emit_stop_message keeps user-visible cards on the cross-version
+    # top-level `systemMessage` path. Model-only continuation context belongs
+    # to stop-dispatch.sh, which version-gates additionalContext and retains a
+    # legacy decision:block fallback. See CLAUDE.md "Stop hook output schema".
     emit_stop_message "${_outcome_line}${epilogue}"
   fi
 fi

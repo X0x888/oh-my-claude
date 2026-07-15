@@ -825,13 +825,11 @@ printf 'Test 29: stop-time-summary emits multi-line epilogue above 5s floor\n'
 # `systemMessage` when walltime >= 5s. Below 5s, no JSON. This is the
 # always-show contract — every meaningful turn surfaces the polished card.
 #
-# Schema regression net: Stop hooks do NOT support
-# `hookSpecificOutput.additionalContext` (silently dropped by Claude Code).
-# The documented user-visible Stop output field is `systemMessage`. v1.24.0
-# and v1.25.0 shipped using the wrong field; the bug surfaced when a
-# user noticed the polished card never appeared. Both the positive
-# `systemMessage` assertion and the negative `hookSpecificOutput` assertion
-# are required to catch a future regression.
+# Visible-card schema regression net: the time card must use top-level
+# `systemMessage` on every supported client. Modern Stop additionalContext is
+# model-only continuation feedback owned by stop-dispatch.sh, not the card
+# transport. Both the positive `systemMessage` assertion and the negative
+# `hookSpecificOutput` assertion remain required for this script.
 hook_root="$(mktemp -d)"
 hook_session="hook-test-session"
 hook_session_dir="${hook_root}/${hook_session}"

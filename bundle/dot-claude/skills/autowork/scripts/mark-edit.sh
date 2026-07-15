@@ -36,6 +36,7 @@ ensure_session_dir
 if ! is_ultrawork_mode; then
   exit 0
 fi
+capture_ulw_enforcement_interval || exit 0
 
 edited_path="$(json_get '.tool_input.file_path')"
 if [[ "${tool_name}" == "NotebookEdit" ]] && [[ -z "${edited_path}" ]]; then
@@ -86,6 +87,7 @@ fi
 
 _record_first_mutation_from_edit() {
   local existing
+  is_ultrawork_mode || return 0
   existing="$(read_state "first_mutation_ts")"
   if [[ -z "${existing}" ]]; then
     # v1.43+ (data-lens P0): stamp the gate state AT THE MOMENT of
@@ -115,6 +117,7 @@ with_state_lock _record_first_mutation_from_edit || true
 # dimension_guard_blocks, timestamp clocks, and monotonic freshness revisions.
 _record_edit_clocks() {
   local _edit_revision _next_revision _bash_event_count
+  is_ultrawork_mode || return 0
   _edit_revision="$(read_state "edit_revision")"
   [[ "${_edit_revision}" =~ ^[0-9]+$ ]] || _edit_revision=0
   _next_revision=$((_edit_revision + 1))
@@ -201,6 +204,7 @@ if [[ -n "${edited_path}" ]]; then
   # and potentially preventing the dimension gate from activating.
   _increment_edit_counter() {
     local _seen=0
+    is_ultrawork_mode || return 0
     if [[ -f "${log_path}" ]] && grep -Fxq -- "${edited_path}" "${log_path}"; then
       _seen=1
     fi

@@ -107,6 +107,16 @@
         ]
       }
     ],
+    "MessageDisplay": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/skills/autowork/scripts/closeout-display.sh"
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "hooks": [
@@ -186,6 +196,16 @@
           {
             "type": "command",
             "command": "$HOME/.claude/skills/autowork/scripts/record-advisory-verification.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolBatch": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/skills/autowork/scripts/closeout-preflight.sh --posttool-batch"
           }
         ]
       }
@@ -345,31 +365,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "$HOME/.claude/skills/autowork/scripts/stop-guard.sh"
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$HOME/.claude/skills/autowork/scripts/stop-time-summary.sh"
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$HOME/.claude/skills/autowork/scripts/canary-claim-audit.sh"
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$HOME/.claude/skills/autowork/scripts/stop-transcript-archive.sh"
+            "command": "$HOME/.claude/skills/autowork/scripts/stop-dispatch.sh"
           }
         ]
       }

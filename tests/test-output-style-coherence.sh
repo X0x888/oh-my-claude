@@ -300,6 +300,14 @@ for sf in "${STYLE_FILES[@]}"; do
       bad "${sf_basename}: Implementation summary missing label '${label}'"
     fi
   done
+
+  if grep -qF 'OMC INTERNAL CLOSEOUT PREFLIGHT: READY' "${sf}" \
+      && grep -Eiq 'self-contained cumulative replacement' "${sf}" \
+      && grep -Eiq 'never a (thin )?delta' "${sf}"; then
+    ok
+  else
+    bad "${sf_basename}: closeout must wait for READY and be one cumulative replacement, never a retry delta"
+  fi
 done
 
 # Serendipity uses the colon form to match core.md:72's audit-log

@@ -127,7 +127,8 @@ printf -- '-- Section 2: goal-driver decision simulation --\n'
 
 # Mirror has_closeout_label coverage (with the **Goal achieved.** alias).
 _goal_coverage_present() {
-  printf '%s' "$1" | grep -Eiq '\*\*(Objective (coverage|audit)|Goal achieved)(\.)?\*\*'
+  printf '%s\n' "$1" | grep -Eiq \
+    '^[[:space:]]{0,3}\*\*(Objective (coverage|audit)|Goal achieved)(\.)?\*\*[[:space:]]*'
 }
 
 # Echoes: inert | release | wall | block
@@ -288,7 +289,7 @@ gb_release() {
   write_state_field "dim_completeness_revision" "1"
   write_state_field "dim_completeness_verdict" "CLEAN"
 }
-out="$(drive_goal gb_release "All services migrated, suite green. **Goal achieved.**")"
+out="$(drive_goal gb_release $'All services migrated, suite green.\n\n**Goal achieved.**')"
 fired_goal "${out}" && fail "S4: goal gate still fired despite **Goal achieved.** + fresh audit" || pass
 
 # Paused goal → goal gate inert.

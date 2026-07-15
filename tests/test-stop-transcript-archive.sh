@@ -68,6 +68,7 @@ _drive() {
   HOME="${_test_home}" STATE_ROOT="${_test_state_root}" \
     OMC_TRANSCRIPT_ARCHIVE="${archive_flag}" \
     OMC_STOP_FAILURE_CAPTURE="${stop_failure_flag}" \
+    OMC_STOP_ACCEPTED=1 \
     bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/stop-transcript-archive.sh" \
     <<<"${payload}" 2>/dev/null || true
 }
@@ -128,6 +129,7 @@ _init_sid "${sid}"
 payload="$(jq -nc --arg sid "${sid}" '{session_id:$sid}')"
 out="$(HOME="${_test_home}" STATE_ROOT="${_test_state_root}" \
   OMC_TRANSCRIPT_ARCHIVE=on OMC_STOP_FAILURE_CAPTURE=on \
+  OMC_STOP_ACCEPTED=1 \
   bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/stop-transcript-archive.sh" \
   <<<"${payload}" 2>/dev/null || true)"
 assert_eq "T3: empty output" "" "${out}"

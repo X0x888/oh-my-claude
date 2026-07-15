@@ -260,6 +260,69 @@ assert_contains "verify catches duplicate/misplaced dispatcher" \
   "posttool-dispatch.sh must appear exactly once" "${verify_output_1duplicate}"
 mv "${SETTINGS}.duplicate-pristine" "${SETTINGS}"
 
+# Basenames are not ownership. A legitimate custom Stop hook may share an old
+# OMC filename; default verify can warn that it is foreign, but the dispatcher
+# migration check must not mislabel it as a stale managed co-hook and fail.
+cp "${SETTINGS}" "${SETTINGS}.foreign-basename-pristine"
+jq '.hooks.Stop += [{hooks:[{type:"command",command:"/opt/acme/stop-guard.sh --foreign-policy"}]}]' \
+  "${SETTINGS}" > "${SETTINGS}.tmp" && mv "${SETTINGS}.tmp" "${SETTINGS}"
+verify_output_foreign_basename="$(run_verify_with_rc)"
+verify_rc_foreign_basename="$(printf '%s' "${verify_output_foreign_basename}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify preserves same-basename foreign Stop hook in default mode" \
+  "0" "${verify_rc_foreign_basename}"
+assert_contains "verify still reports the custom hook as foreign" \
+  "Foreign hook command: /opt/acme/stop-guard.sh --foreign-policy" \
+  "${verify_output_foreign_basename}"
+assert_contains "verify does not count foreign basename as legacy managed" \
+  "Stop dispatcher has no legacy direct managed co-hooks" \
+  "${verify_output_foreign_basename}"
+mv "${SETTINGS}.foreign-basename-pristine" "${SETTINGS}"
+
+# The three closeout owners use path-aware identity. Foreign hooks may reuse
+# their filenames without being collapsed into, counted as, or substituted for
+# the managed commands.
+cp "${SETTINGS}" "${SETTINGS}.closeout-owner-pristine"
+jq '
+  .hooks.MessageDisplay += [{hooks:[{type:"command",command:"/opt/acme/closeout-display.sh --foreign-closeout"}]}]
+  | .hooks.PostToolBatch += [{hooks:[{type:"command",command:"/opt/acme/closeout-preflight.sh --foreign-closeout"}]}]
+  | .hooks.Stop += [{hooks:[{type:"command",command:"/opt/acme/stop-dispatch.sh --foreign-closeout"}]}]
+' "${SETTINGS}" > "${SETTINGS}.tmp" && mv "${SETTINGS}.tmp" "${SETTINGS}"
+verify_output_closeout_both="$(run_verify_with_rc)"
+verify_rc_closeout_both="$(printf '%s' "${verify_output_closeout_both}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify allows foreign same-basename closeout hooks beside managed owners" \
+  "0" "${verify_rc_closeout_both}"
+assert_contains "verify still finds the managed MessageDisplay owner" \
+  "Hook: MessageDisplay -> closeout-display.sh" "${verify_output_closeout_both}"
+assert_contains "verify still finds the managed PostToolBatch owner" \
+  "Hook: PostToolBatch -> closeout-preflight.sh" "${verify_output_closeout_both}"
+assert_contains "verify still finds the managed Stop owner" \
+  "Hook: Stop -> stop-dispatch.sh" "${verify_output_closeout_both}"
+mv "${SETTINGS}.closeout-owner-pristine" "${SETTINGS}"
+
+cp "${SETTINGS}" "${SETTINGS}.closeout-spoof-pristine"
+jq '
+  (.hooks.MessageDisplay[] | .hooks[]?
+    | select((.command // "") | contains("/.claude/skills/autowork/scripts/closeout-display.sh"))
+    | .command) = "/opt/acme/closeout-display.sh --foreign-closeout"
+  | (.hooks.PostToolBatch[] | .hooks[]?
+    | select((.command // "") | contains("/.claude/skills/autowork/scripts/closeout-preflight.sh"))
+    | .command) = "/opt/acme/closeout-preflight.sh --foreign-closeout"
+  | (.hooks.Stop[] | .hooks[]?
+    | select((.command // "") | contains("/.claude/skills/autowork/scripts/stop-dispatch.sh"))
+    | .command) = "/opt/acme/stop-dispatch.sh --foreign-closeout"
+' "${SETTINGS}" > "${SETTINGS}.tmp" && mv "${SETTINGS}.tmp" "${SETTINGS}"
+verify_output_closeout_spoof="$(run_verify_with_rc)"
+verify_rc_closeout_spoof="$(printf '%s' "${verify_output_closeout_spoof}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "foreign same-basename closeout hooks cannot satisfy managed ownership" \
+  "1" "${verify_rc_closeout_spoof}"
+assert_contains "verify rejects foreign-only MessageDisplay owner" \
+  "Missing hook: MessageDisplay -> closeout-display.sh" "${verify_output_closeout_spoof}"
+assert_contains "verify rejects foreign-only PostToolBatch owner" \
+  "Missing hook: PostToolBatch -> closeout-preflight.sh" "${verify_output_closeout_spoof}"
+assert_contains "verify rejects foreign-only Stop owner" \
+  "Missing hook: Stop -> stop-dispatch.sh" "${verify_output_closeout_spoof}"
+mv "${SETTINGS}.closeout-spoof-pristine" "${SETTINGS}"
+
 # A command string under the right event/matcher is still inert if the hook
 # object is not a command handler. Pin the handler type as part of the required
 # hook contract rather than accepting a lookalike object.

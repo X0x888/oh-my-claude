@@ -171,7 +171,7 @@ oh-my-claude/
       memory/                 # Core, skills, and compact memory files
       scripts/                # 16 lifecycle scripts (prompt routing, first-prompt session-init, compaction, session start [9 hooks incl. drift-check + whats-new + watchdog-health + resume-hint + self-audit-nudge + auto-tune], stop-failure, resume-watchdog, self-audit recorder)
     skills/                   # 35 skill definitions, each in <name>/SKILL.md
-      autowork/scripts/       # 45 autowork hook scripts and utilities
+      autowork/scripts/       # 48 autowork hook scripts and utilities
         common.sh             # Shared functions (JSON, classification, scope)
         lib/state-io.sh       # Extracted state I/O subsystem; sourced by common.sh
         lib/classifier.sh     # Extracted prompt classifier (P0 + P1 + telemetry); common.sh loader
@@ -185,7 +185,7 @@ oh-my-claude/
     settings.patch.json       # Settings merged into user's settings.json
 
   evals/realwork/             # Outcome eval scenarios + scorer for minimal-prompt real-work shipping
-  tests/                      # 148 bash + 1 python test scripts; CLAUDE.md "Testing" gives the canonical commands
+  tests/                      # 151 bash + 1 python test scripts; CLAUDE.md "Testing" gives the canonical commands
 
   tools/                      # Developer tools (not installed; keep exhaustive)
     audit-published-release-assets.sh
@@ -239,6 +239,7 @@ oh-my-claude/
 ### Key Components
 
 - **Hook scripts** (`quality-pack/scripts/`, `autowork/scripts/`): Bash scripts triggered by Claude Code lifecycle events (prompt entry, pre-tool-use, tool completion, compaction, session start). They route intents, manage state, and enforce quality gates.
+- **Closeout orchestration** (`closeout-preflight.sh`, `closeout-display.sh`, `stop-dispatch.sh`): `PostToolBatch` evaluates the live guard against isolated shadow state and seals a stable work/evidence generation before completion prose; `MessageDisplay` hides a premature completion-shaped candidate without changing the transcript; the single Stop dispatcher then re-runs the live guard and sequences timing, canary, and archive finalizers. Final user prose is one cumulative replacement, never a gate-by-gate delta.
 - **common.sh** (`autowork/scripts/common.sh`): Shared utility library. Eagerly sources `lib/state-io.sh` for the state I/O subsystem (`read_state`, `write_state`, `write_state_batch`, `with_state_lock`, `with_state_lock_batch`, `ensure_session_dir`, `session_file`, `append_state`, `append_limited_state`) and `lib/verification.sh` for verification scoring and MCP-tool classification (`verification_matches_project_test_command`, `verification_has_framework_keyword`, `detect_verification_method`, `score_verification_confidence`, `classify_mcp_verification_tool`, `score_mcp_verification_confidence`, `detect_mcp_verification_outcome`). Idempotent `_omc_load_classifier` / `_omc_load_timing` loaders expose `lib/classifier.sh` (prompt classification) and `lib/timing.sh` (per-tool/subagent timing), allowing selected hot-path callers to defer them. `lib/canary.sh` is not part of the common import surface; `canary-claim-audit.sh` sources it directly. `common.sh` continues to provide domain routing, project profile detection (`detect_project_profile`), quality scorecard generation (`build_quality_scorecard`), stall detection helpers (`compute_stall_threshold`, `compute_progress_score`), dimension risk ordering (`order_dimensions_by_risk`), cross-session agent metrics (`record_agent_metric`), defect pattern tracking (`record_defect_pattern`, `get_defect_watch_list`), and the `_cap_cross_session_jsonl` aggregate-rotation helper.
 - **record-scope-checklist.sh** (`autowork/scripts/record-scope-checklist.sh`): State-backed checklist for example-marker prompts. `prompt-intent-router.sh` arms `exemplifying_scope_required=1` when an execution prompt uses `for instance` / `e.g.` / `such as` / `as needed`; the model records sibling class items in `exemplifying_scope.json`, then marks each `shipped` or `declined` with a concrete WHY. `stop-guard.sh` blocks silent drops while pending items remain.
 - **record-delivery-action.sh** (`autowork/scripts/record-delivery-action.sh`): PostToolUse Bash recorder for successful delivery actions (`git commit`, `git push`, `git tag`, and `gh pr/release/issue` publish-class commands). Feeds the delivery-contract gate so prompts that explicitly require commit or publish actions cannot be satisfied by prose alone.

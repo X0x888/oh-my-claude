@@ -59,6 +59,7 @@ ensure_session_dir
 if ! is_ultrawork_mode; then
   exit 0
 fi
+capture_ulw_enforcement_interval || exit 0
 
 review_message="$(json_get '.last_assistant_message')"
 
@@ -357,6 +358,14 @@ _review_current_revision() {
 _commit_reviewer_result() {
   local dimension_verdict="$1" dimensions_csv="$2"
   shift 2
+
+  # A SubagentStop callback can outlive the interval that dispatched it.
+  # Recheck authority under the same lock as causal consumption + verdict
+  # publication so a completed/off session cannot gain late review evidence.
+  if ! is_ultrawork_mode; then
+    _review_rejection_reason="enforcement_interval_closed"
+    return 0
+  fi
   _review_commit_accepted=0
   _review_rejection_reason=""
   _review_rejection_start=""

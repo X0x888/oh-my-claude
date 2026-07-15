@@ -125,12 +125,12 @@ assert_eq "at limit: passthrough" \
   "1234567890" \
   "$(truncate_chars 10 "1234567890")"
 
-assert_eq "over limit: truncated with ellipsis" \
-  "1234567890..." \
+assert_eq "over limit: hard cap includes ellipsis" \
+  "1234567..." \
   "$(truncate_chars 10 "12345678901234")"
 
-assert_eq "limit 0: just ellipsis" \
-  "..." \
+assert_eq "limit 0: hard cap is empty" \
+  "" \
   "$(truncate_chars 0 "hello")"
 
 assert_eq "empty string: passthrough" \

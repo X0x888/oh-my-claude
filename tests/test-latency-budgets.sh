@@ -3,7 +3,7 @@
 # hook-latency budget framework.
 #
 # What this proves:
-#   T1.  show-budgets prints all 6 hot-path hooks with budgets
+#   T1.  show-budgets prints all 9 hot-path hooks with budgets
 #   T2.  budget_for_hook returns the documented default
 #   T3.  budget_for_hook honors env override (OMC_LATENCY_BUDGET_*_MS)
 #   T4.  Invalid env override (non-numeric) falls back to default
@@ -74,10 +74,11 @@ assert_true() {
 }
 
 # --- T1 ---
-printf '\nT1: show-budgets prints all 6 hot-path hooks\n'
+printf '\nT1: show-budgets prints all 9 hot-path hooks\n'
 out="$(run_script show-budgets)"
 for hook in prompt-intent-router.sh pretool-intent-guard.sh pretool-timing.sh \
-            posttool-timing.sh stop-guard.sh stop-time-summary.sh; do
+            posttool-timing.sh stop-guard.sh stop-time-summary.sh \
+            closeout-display.sh closeout-preflight.sh stop-dispatch.sh; do
   if [[ "${out}" == *"${hook}"* ]]; then
     PASS=$((PASS + 1))
     printf '  PASS: lists %s\n' "${hook}"
@@ -97,6 +98,9 @@ expected_pairs=(
   "posttool-timing.sh|200"
   "stop-guard.sh|1000"
   "stop-time-summary.sh|400"
+  "closeout-display.sh|600"
+  "closeout-preflight.sh|600"
+  "stop-dispatch.sh|1800"
 )
 for pair in "${expected_pairs[@]}"; do
   hook="${pair%|*}"
@@ -196,6 +200,9 @@ out="$(OMC_LATENCY_BUDGET_PROMPT_INTENT_ROUTER_MS=99999 \
   OMC_LATENCY_BUDGET_POSTTOOL_TIMING_MS=99999 \
   OMC_LATENCY_BUDGET_STOP_GUARD_MS=99999 \
   OMC_LATENCY_BUDGET_STOP_TIME_SUMMARY_MS=99999 \
+  OMC_LATENCY_BUDGET_CLOSEOUT_DISPLAY_MS=99999 \
+  OMC_LATENCY_BUDGET_CLOSEOUT_PREFLIGHT_MS=99999 \
+  OMC_LATENCY_BUDGET_STOP_DISPATCH_MS=99999 \
   HOME="${TEST_HOME}" \
   STATE_ROOT="${TEST_HOME}/.claude/quality-pack/state" \
   bash "${SCRIPT}" check --samples 1 2>&1)"
@@ -206,6 +213,9 @@ OMC_LATENCY_BUDGET_PROMPT_INTENT_ROUTER_MS=99999 \
   OMC_LATENCY_BUDGET_POSTTOOL_TIMING_MS=99999 \
   OMC_LATENCY_BUDGET_STOP_GUARD_MS=99999 \
   OMC_LATENCY_BUDGET_STOP_TIME_SUMMARY_MS=99999 \
+  OMC_LATENCY_BUDGET_CLOSEOUT_DISPLAY_MS=99999 \
+  OMC_LATENCY_BUDGET_CLOSEOUT_PREFLIGHT_MS=99999 \
+  OMC_LATENCY_BUDGET_STOP_DISPATCH_MS=99999 \
   HOME="${TEST_HOME}" \
   STATE_ROOT="${TEST_HOME}/.claude/quality-pack/state" \
   bash "${SCRIPT}" check --samples 1 >/dev/null 2>&1 || exit_code=$?

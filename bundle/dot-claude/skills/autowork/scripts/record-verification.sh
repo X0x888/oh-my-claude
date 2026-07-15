@@ -27,6 +27,7 @@ ensure_session_dir
 if ! is_ultrawork_mode; then
   exit 0
 fi
+capture_ulw_enforcement_interval || exit 0
 
 # Determine verification source: Bash command or MCP tool
 tool_name="$(json_get '.tool_name' 2>/dev/null || true)"
@@ -62,6 +63,10 @@ _discard_verification_start_locked() {
 _record_verification_state() {
   local _path="" _start_revision="" _stored_id="" _stored_tool=""
   local _current_revision="" _reason="" _stale_count=""
+
+  # Stop or /ulw-off may have finalized this interval while the PostToolUse
+  # callback waited for the session lock. Never publish late proof.
+  is_ultrawork_mode || return 20
 
   _path="$(_verification_start_path "${tool_use_id}" 2>/dev/null || true)"
   _current_revision="$(read_state "last_code_edit_revision")"
@@ -136,6 +141,33 @@ _persist_verification_state() {
     return 1
   fi
   return 0
+}
+
+_record_verification_receipt() {
+  local command_safe="${1:-}" outcome="${2:-unknown}" confidence="${3:-unknown}"
+  local method="${4:-unknown}" scope="${5:-unknown}" result_raw="${6:-}" result_excerpt row
+  command_safe="$(printf '%s' "${command_safe}" | omc_redact_secrets | tr -d '\000')"
+  command_safe="$(truncate_chars 500 "${command_safe}")"
+  result_excerpt="$(printf '%s\n' "${result_raw}" \
+    | omc_redact_secrets \
+    | tr -d '\000' \
+    | grep -Ei '([0-9]+[[:space:]]+(passed|failed|errors?|tests?|specs?|checks?)|pass(ed)?|fail(ed)?|error|exit (code|status)|success)' 2>/dev/null \
+    | tail -5 \
+    | tr '\n\r\t' '   ' \
+    | sed -E 's/[[:space:]]+/ /g' || true)"
+  result_excerpt="$(truncate_chars 500 "${result_excerpt:-${outcome}}")"
+  row="$(jq -nc \
+    --argjson ts "$(now_epoch)" \
+    --arg cycle "$(read_state "review_cycle_id" 2>/dev/null || true)" \
+    --arg command "${command_safe}" \
+    --arg outcome "${outcome}" \
+    --arg confidence "${confidence}" \
+    --arg method "${method}" \
+    --arg scope "${scope}" \
+    --arg result "${result_excerpt}" \
+    --arg revision "$(read_state "last_code_edit_revision" 2>/dev/null || true)" \
+    '{ts:$ts,review_cycle_id:$cycle,command:$command,outcome:$outcome,confidence:$confidence,method:$method,scope:$scope,result:$result,code_revision:$revision}')" || return 0
+  append_limited_state "verification_receipts.jsonl" "${row}" "20" 2>/dev/null || true
 }
 
 # The dispatcher runs mark-edit before this handler. When that handler proved
@@ -230,6 +262,8 @@ if [[ -n "${command_text}" ]]; then
       "stop_guard_blocks" "0" \
       "session_handoff_blocks" "0" \
       "stall_counter" "0"; then
+      _record_verification_receipt "${last_verify_cmd_safe}" "${verify_outcome}" \
+        "${verify_confidence}" "${verify_method}" "${verify_scope}" "${tool_output}"
       log_hook "record-verification" "cmd=${command_text} outcome=${verify_outcome} confidence=${verify_confidence} method=${verify_method} scope=${verify_scope}"
     fi
   else
@@ -275,6 +309,8 @@ elif [[ -n "${mcp_verify_type}" ]]; then
     "stop_guard_blocks" "0" \
     "session_handoff_blocks" "0" \
     "stall_counter" "0"; then
+    _record_verification_receipt "${tool_name}" "${verify_outcome}" \
+      "${verify_confidence}" "mcp_${mcp_verify_type}" "${verify_scope}" "${tool_output}"
     log_hook "record-verification" "mcp_tool=${tool_name} type=${mcp_verify_type} outcome=${verify_outcome} confidence=${verify_confidence} scope=${verify_scope}"
   fi
 fi

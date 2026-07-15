@@ -140,6 +140,28 @@ gate_event_exists() {
     "${file}" 2>/dev/null
 }
 
+write_second_state_lock_barrier() {
+  local shim_dir="$1"
+  mkdir -p "${shim_dir}"
+  printf '%s\n' \
+    '#!/bin/sh' \
+    'case "${1:-}" in' \
+    '  */.state.lock)' \
+    '    count=0' \
+    '    [ ! -f "${OMC_CAS_LOCK_COUNT}" ] || count=$(/bin/cat "${OMC_CAS_LOCK_COUNT}")' \
+    '    count=$((count + 1))' \
+    '    printf "%s\n" "${count}" >"${OMC_CAS_LOCK_COUNT}"' \
+    '    if [ "${count}" -eq 2 ]; then' \
+    '      /usr/bin/touch "${OMC_CAS_LOCK_READY}"' \
+    '      while [ ! -f "${OMC_CAS_LOCK_RELEASE}" ]; do /bin/sleep 0.01; done' \
+    '    fi' \
+    '    ;;' \
+    'esac' \
+    'exec /bin/mkdir "$@"' \
+    >"${shim_dir}/mkdir"
+  chmod +x "${shim_dir}/mkdir"
+}
+
 # ===========================================================================
 # F-001: handoff regex (v1.42.x expanded slots + idioms)
 # ===========================================================================
@@ -649,6 +671,129 @@ _skip_stop="$(jq -nc --arg sid "${SESSION_ID}" \
   | OMC_GATE_LEVEL=basic "${HOOK_DIR}/stop-guard.sh" || true)"
 assert_eq "same-second edit invalidates registered skip" "" "$(read_state_field 'session_outcome')"
 assert_eq "invalidated skip remains single-use" "" "$(read_state_field 'gate_skip_reason')"
+teardown
+
+# A skip can become stale after Stop caches its revision but before the
+# terminal state lock. Pause the second lock (the single-use skip clear), land
+# a competing edit, then resume. The final commit must revalidate and refuse to
+# stamp skip-released or close enforcement from the cached pre-edit waiver.
+setup
+skip_cas_state="${STATE_ROOT}/${SESSION_ID}/session_state.json"
+jq -n '{
+  workflow_mode:"ultrawork", ulw_enforcement_active:"1",
+  ulw_enforcement_generation:"1",
+  gate_skip_reason:"approved before edit", gate_skip_edit_revision:"0",
+  gate_skip_edit_ts:"1", edit_revision:"0", last_edit_ts:"1"
+}' >"${skip_cas_state}"
+touch "${STATE_ROOT}/${SESSION_ID}/.ulw_active"
+skip_cas_shim="${TEST_HOME}/skip-cas-shim"
+skip_cas_count="${TEST_HOME}/skip-cas-count"
+skip_cas_ready="${TEST_HOME}/skip-cas-ready"
+skip_cas_release="${TEST_HOME}/skip-cas-release"
+skip_cas_output="${TEST_HOME}/skip-cas-output"
+write_second_state_lock_barrier "${skip_cas_shim}"
+skip_cas_payload="$(jq -nc --arg sid "${SESSION_ID}" '{session_id:$sid}')"
+(
+  printf '%s' "${skip_cas_payload}" \
+    | env PATH="${skip_cas_shim}:${PATH}" \
+      OMC_CAS_LOCK_COUNT="${skip_cas_count}" \
+      OMC_CAS_LOCK_READY="${skip_cas_ready}" \
+      OMC_CAS_LOCK_RELEASE="${skip_cas_release}" \
+      OMC_NO_DEFER_MODE=off \
+      bash "${HOOK_DIR}/stop-guard.sh" >"${skip_cas_output}" 2>/dev/null
+) &
+skip_cas_pid=$!
+for _skip_cas_wait in $(seq 1 500); do
+  [[ -f "${skip_cas_ready}" ]] && break
+  kill -0 "${skip_cas_pid}" 2>/dev/null || break
+  sleep 0.01
+done
+assert_eq "cached skip race reaches second state-lock barrier" "yes" \
+  "$([[ -f "${skip_cas_ready}" ]] && printf yes || printf no)"
+jq '.edit_revision="1" | .last_edit_ts="2"' \
+  "${skip_cas_state}" >"${skip_cas_state}.tmp" \
+  && mv "${skip_cas_state}.tmp" "${skip_cas_state}"
+touch "${skip_cas_release}"
+skip_cas_rc=0
+wait "${skip_cas_pid}" || skip_cas_rc=$?
+skip_cas_result="$(cat "${skip_cas_output}" 2>/dev/null || true)"
+assert_eq "cached skip race hook exits normally" "0" "${skip_cas_rc}"
+assert_contains "cached skip race fails closed" '"decision":"block"' \
+  "${skip_cas_result}"
+assert_eq "cached skip race writes no terminal outcome" "" \
+  "$(read_state_field 'session_outcome')"
+assert_eq "cached skip race cannot close enforcement" "1" \
+  "$(read_state_field 'ulw_enforcement_active')"
+assert_not_contains "cached skip race never reports skip-released" \
+  "skip-released" "${skip_cas_result}"
+teardown
+
+# Exhaustion scorecards have the same optimistic-CAS obligation. Pause the
+# terminal exhaustion lock after evaluation, advance both generic and code edit
+# revisions, and require a retry block with no scorecard or exhausted stamp.
+setup
+exhaust_cas_state="${STATE_ROOT}/${SESSION_ID}/session_state.json"
+jq -n '{
+  workflow_mode:"ultrawork", ulw_enforcement_active:"1",
+  ulw_enforcement_generation:"1", task_intent:"execution",
+  task_domain:"coding", last_user_prompt_ts:"100",
+  exemplifying_scope_required:"1", exemplifying_scope_blocks:"2",
+  edit_revision:"0", last_edit_ts:"1",
+  last_code_edit_revision:"0", last_code_edit_ts:"1"
+}' >"${exhaust_cas_state}"
+touch "${STATE_ROOT}/${SESSION_ID}/.ulw_active"
+exhaust_cas_shim="${TEST_HOME}/exhaust-cas-shim"
+exhaust_cas_count="${TEST_HOME}/exhaust-cas-count"
+exhaust_cas_ready="${TEST_HOME}/exhaust-cas-ready"
+exhaust_cas_release="${TEST_HOME}/exhaust-cas-release"
+exhaust_cas_output="${TEST_HOME}/exhaust-cas-output"
+write_second_state_lock_barrier "${exhaust_cas_shim}"
+exhaust_cas_payload="$(jq -nc --arg sid "${SESSION_ID}" '{session_id:$sid}')"
+(
+  printf '%s' "${exhaust_cas_payload}" \
+    | env PATH="${exhaust_cas_shim}:${PATH}" \
+      OMC_CAS_LOCK_COUNT="${exhaust_cas_count}" \
+      OMC_CAS_LOCK_READY="${exhaust_cas_ready}" \
+      OMC_CAS_LOCK_RELEASE="${exhaust_cas_release}" \
+      OMC_NO_DEFER_MODE=off \
+      OMC_GUARD_EXHAUSTION_MODE=scorecard \
+      bash "${HOOK_DIR}/stop-guard.sh" >"${exhaust_cas_output}" 2>/dev/null
+) &
+exhaust_cas_pid=$!
+for _exhaust_cas_wait in $(seq 1 500); do
+  [[ -f "${exhaust_cas_ready}" ]] && break
+  kill -0 "${exhaust_cas_pid}" 2>/dev/null || break
+  sleep 0.01
+done
+assert_eq "exhaustion race reaches terminal state-lock barrier" "yes" \
+  "$([[ -f "${exhaust_cas_ready}" ]] && printf yes || printf no)"
+jq '.edit_revision="1" | .last_edit_ts="2"
+    | .last_code_edit_revision="1" | .last_code_edit_ts="2"' \
+  "${exhaust_cas_state}" >"${exhaust_cas_state}.tmp" \
+  && mv "${exhaust_cas_state}.tmp" "${exhaust_cas_state}"
+touch "${exhaust_cas_release}"
+exhaust_cas_rc=0
+wait "${exhaust_cas_pid}" || exhaust_cas_rc=$?
+exhaust_cas_result="$(cat "${exhaust_cas_output}" 2>/dev/null || true)"
+assert_eq "exhaustion race hook exits normally" "0" "${exhaust_cas_rc}"
+assert_contains "exhaustion race fails closed" '"decision":"block"' \
+  "${exhaust_cas_result}"
+if [[ "${exhaust_cas_result}" == *"generation"* \
+    || "${exhaust_cas_result}" == *"atomically close"* ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: exhaustion race block does not identify terminal CAS refusal\n    actual: %s\n' \
+    "${exhaust_cas_result}" >&2
+  fail=$((fail + 1))
+fi
+assert_not_contains "exhaustion race emits no scorecard" \
+  "QUALITY SCORECARD" "${exhaust_cas_result}"
+assert_eq "exhaustion race writes no terminal outcome" "" \
+  "$(read_state_field 'session_outcome')"
+assert_eq "exhaustion race writes no exhausted stamp" "" \
+  "$(read_state_field 'guard_exhausted')"
+assert_eq "exhaustion race keeps enforcement active" "1" \
+  "$(read_state_field 'ulw_enforcement_active')"
 teardown
 
 # ===========================================================================

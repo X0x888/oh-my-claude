@@ -155,6 +155,20 @@ need_cmd() {
   fi
 }
 
+claude_code_version_at_least() {
+  local required_patch="$1" raw version major minor patch
+  raw="$(claude --version 2>/dev/null || true)"
+  version="$(printf '%s' "${raw}" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
+  [[ -n "${version}" ]] || return 2
+  IFS=. read -r major minor patch <<<"${version}"
+  [[ "${major}" =~ ^[0-9]+$ && "${minor}" =~ ^[0-9]+$ && "${patch}" =~ ^[0-9]+$ ]] || return 2
+  (( major > 2 )) && return 0
+  (( major < 2 )) && return 1
+  (( minor > 1 )) && return 0
+  (( minor < 1 )) && return 1
+  (( patch >= required_patch ))
+}
+
 # Two-hop stat helper (BSD then GNU) — same portability shape as
 # session-start-welcome.sh:_lock_mtime / common.sh state-io. Returns
 # the file's mtime epoch on stdout, empty string when unsupported.
@@ -465,33 +479,55 @@ if settings.get("hooks") is None:
     settings["hooks"] = {}
 hooks = settings["hooks"]
 
-def script_basename(command):
-    """Extract the script basename from a hook command, stripping any
-    supported shell/Python interpreter prefix and trailing arguments. Used so that upgrades where
-    only a trailing argument changed (e.g. record-reviewer.sh adding a
-    ' prose' suffix) are detected as the same entry and the patch
-    version replaces the base version instead of being appended."""
+def script_token(command):
+    """Return the final script-shaped token from a hook command."""
     try:
         tokens = shlex.split(command or "", posix=True)
     except ValueError:
         tokens = (command or "").strip().split()
     if not tokens:
         return ""
-    # Managed hooks are script files. Finding the first script token is more
-    # robust than maintaining a second shell-launcher grammar here: it covers
-    # env/sudo/command/exec, path-qualified interpreters, and options with
-    # separate values (`env -u FOO`, `bash -o errexit`) identically.
     script_tokens = [
-        token.rsplit("/", 1)[-1]
+        token
         for token in tokens
         if token.rsplit("/", 1)[-1].endswith((".sh", ".py"))
     ]
-    if script_tokens:
-        # Launcher option values precede the executed script (`exec -a
-        # decoy.sh bash real-hook.sh`), so the final script token owns the
-        # hook identity.
-        return script_tokens[-1]
-    return tokens[0].rsplit("/", 1)[-1]
+    return script_tokens[-1] if script_tokens else tokens[0]
+
+def script_basename(command):
+    """Extract the script basename from a hook command, stripping any
+    supported shell/Python interpreter prefix and trailing arguments. Used so that upgrades where
+    only a trailing argument changed (e.g. record-reviewer.sh adding a
+    ' prose' suffix) are detected as the same entry and the patch
+    version replaces the base version instead of being appended."""
+    # Managed hooks are script files. Finding the script token is more
+    # robust than maintaining a second shell-launcher grammar here: it covers
+    # env/sudo/command/exec, path-qualified interpreters, and options with
+    # separate values (`env -u FOO`, `bash -o errexit`) identically.
+    token = script_token(command)
+    return token.rsplit("/", 1)[-1] if token else ""
+
+PATH_OWNED_HOOK_BASENAMES = frozenset([
+    "closeout-display.sh",
+    "closeout-preflight.sh",
+    "stop-dispatch.sh",
+])
+
+def script_identity(command):
+    """Return the merge identity for a hook command.
+
+    Most historical hooks intentionally use basename identity for compatible
+    upgrades. The closeout owners are new and uniquely managed, so a foreign
+    command that merely reuses one of those filenames must remain distinct.
+    """
+    token = script_token(command)
+    basename = script_basename(command)
+    if basename not in PATH_OWNED_HOOK_BASENAMES:
+        return basename
+    managed_relative = ".claude/skills/autowork/scripts/" + basename
+    if token == managed_relative or token.endswith("/" + managed_relative):
+        return "omc-managed:" + basename
+    return "foreign:" + token
 
 def entry_hooks(entry):
     # Filter out non-dict hook entries (explicit `null`, arrays, scalars)
@@ -500,7 +536,7 @@ def entry_hooks(entry):
     return [h for h in (entry.get("hooks") or []) if isinstance(h, dict)]
 
 def entry_basenames(entry):
-    return [script_basename(hook.get("command")) for hook in entry_hooks(entry)]
+    return [script_identity(hook.get("command")) for hook in entry_hooks(entry)]
 
 def entry_matcher(entry):
     # Coalesce missing, explicit-None, and any falsy matcher to "". Matches
@@ -516,7 +552,7 @@ def dedupe_entry_hooks(entry):
     Phase 2's hook-level merge where stale duplicates survived a patch."""
     seen = {}
     for hook in entry_hooks(entry):
-        seen[script_basename(hook.get("command"))] = hook
+        seen[script_identity(hook.get("command"))] = hook
     new_entry = dict(entry)
     new_entry["hooks"] = list(seen.values())
     return new_entry
@@ -569,9 +605,9 @@ def normalize_base_entries(entries):
         target_hooks = list(entry_hooks(target))
         basename_to_index = {}
         for j, h in enumerate(target_hooks):
-            basename_to_index[script_basename(h.get("command"))] = j
+            basename_to_index[script_identity(h.get("command"))] = j
         for hook in entry_hooks(entry):
-            b = script_basename(hook.get("command"))
+            b = script_identity(hook.get("command"))
             if b in basename_to_index:
                 target_hooks[basename_to_index[b]] = hook
             else:
@@ -596,7 +632,30 @@ SUPERSEDED_HOOKS = frozenset([
     ("PostToolUse", "Bash", "record-verification.sh"),
     ("PostToolUse", "Bash", "record-delivery-action.sh"),
     ("PostToolUse", "Bash", "circuit-breaker.sh"),
+    ("Stop", "", "stop-guard.sh"),
+    ("Stop", "", "stop-time-summary.sh"),
+    ("Stop", "", "canary-claim-audit.sh"),
+    ("Stop", "", "stop-transcript-archive.sh"),
 ])
+SUPERSEDED_STOP_BASENAMES = frozenset([
+    "stop-guard.sh",
+    "stop-time-summary.sh",
+    "canary-claim-audit.sh",
+    "stop-transcript-archive.sh",
+])
+
+def is_managed_legacy_stop_command(command):
+    """Recognize only OMC's installed legacy Stop scripts.
+
+    Basenames are not ownership. A user may legitimately wire an unrelated
+    `/opt/acme/stop-guard.sh`; upgrade cleanup must preserve it.
+    """
+    token = script_token(command)
+    basename = script_basename(command)
+    if basename not in SUPERSEDED_STOP_BASENAMES:
+        return False
+    managed_relative = ".claude/skills/autowork/scripts/" + basename
+    return token == managed_relative or token.endswith("/" + managed_relative)
 
 def prune_superseded(event, entries):
     # Events with no supersessions pass through untouched, and an entry is
@@ -612,10 +671,15 @@ def prune_superseded(event, entries):
             continue
         matcher = entry_matcher(e)
         original = entry_hooks(e)
-        remaining = [
-            h for h in original
-            if (event, matcher, script_basename(h.get("command"))) not in SUPERSEDED_HOOKS
-        ]
+        remaining = []
+        for h in original:
+            basename = script_basename(h.get("command"))
+            if event == "Stop" and basename in SUPERSEDED_STOP_BASENAMES:
+                if is_managed_legacy_stop_command(h.get("command")):
+                    continue
+            elif (event, matcher, basename) in SUPERSEDED_HOOKS:
+                continue
+            remaining.append(h)
         if len(remaining) == len(original):
             kept.append(e)
             continue
@@ -655,7 +719,7 @@ def canonicalize_managed_entries(entries, patch_entries):
         original = entry_hooks(entry)
         remaining = [
             hook for hook in original
-            if unique_owner.get(script_basename(hook.get("command")), matcher) == matcher
+            if unique_owner.get(script_identity(hook.get("command")), matcher) == matcher
         ]
         if len(remaining) == len(original):
             kept.append(entry)
@@ -775,9 +839,9 @@ for event, patch_entries in (patch.get("hooks") or {}).items():
             merged_hooks = list(entry_hooks(target))
             basename_to_index = {}
             for i, hook in enumerate(merged_hooks):
-                basename_to_index[script_basename(hook.get("command"))] = i
+                basename_to_index[script_identity(hook.get("command"))] = i
             for patch_hook in entry_hooks(patch_entry):
-                b = script_basename(patch_hook.get("command"))
+                b = script_identity(patch_hook.get("command"))
                 if b in basename_to_index:
                     merged_hooks[basename_to_index[b]] = patch_hook
                 else:
@@ -835,7 +899,7 @@ merge_settings_jq() {
     # a trailing argument changed (e.g. record-reviewer.sh → record-reviewer.sh prose)
     # are detected as the same entry and the patch version replaces the
     # base version instead of being appended.
-    def script_basename:
+    def script_token:
       def token_basename: split("/") | last;
       def shell_tokens:
         [scan("\u0027[^\u0027]*\u0027|\"(?:\\\\.|[^\"\\\\])*\"|[^[:space:]]+")
@@ -844,11 +908,27 @@ merge_settings_jq() {
            then .[1:-1] else . end];
       tostring | shell_tokens
       | . as $tokens
-      | ([ $tokens[] | token_basename
-           | select(test("\\.(sh|py)$")) ][-1]
-         // (($tokens[0] // "") | token_basename));
+      | ([ $tokens[] | select((token_basename | test("\\.(sh|py)$"))) ][-1]
+         // ($tokens[0] // ""));
+    def script_basename:
+      def token_basename: split("/") | last;
+      script_token | token_basename;
+    def path_owned_hook_basenames:
+      ["closeout-display.sh", "closeout-preflight.sh", "stop-dispatch.sh"];
+    def script_identity:
+      . as $command
+      | ($command | script_token) as $token
+      | ($command | script_basename) as $basename
+      | if (path_owned_hook_basenames | index($basename)) == null then
+          $basename
+        elif ($token == (".claude/skills/autowork/scripts/" + $basename))
+          or ($token | endswith("/.claude/skills/autowork/scripts/" + $basename)) then
+          "omc-managed:" + $basename
+        else
+          "foreign:" + $token
+        end;
     def entry_basenames:
-      [(.hooks // [])[] | select(type == "object") | (.command // "") | script_basename];
+      [(.hooks // [])[] | select(type == "object") | (.command // "") | script_identity];
     def entry_matcher:
       (.matcher // "");
     # Set equality via unique list compare (order- and dup-independent).
@@ -864,9 +944,9 @@ merge_settings_jq() {
     def dedupe_entry_hooks:
       .hooks = (
         reduce ((.hooks // [])[] | select(type == "object")) as $h ([];
-          ($h.command // "" | script_basename) as $b
+          ($h.command // "" | script_identity) as $b
           | [range(0; length) as $i
-             | select((.[$i].command // "" | script_basename) == $b)
+             | select((.[$i].command // "" | script_identity) == $b)
              | $i] as $matches
           | if ($matches | length) > 0 then
               .[$matches[0]] = $h
@@ -883,9 +963,9 @@ merge_settings_jq() {
     def merge_hook_level($patch_hooks):
       .hooks = (
         reduce ($patch_hooks[] | select(type == "object")) as $p_hook ((.hooks // []);
-          ($p_hook.command // "" | script_basename) as $p_base
+          ($p_hook.command // "" | script_identity) as $p_base
           | [range(0; length) as $i
-             | select((.[$i].command // "" | script_basename) == $p_base)
+             | select((.[$i].command // "" | script_identity) == $p_base)
              | $i] as $matches
           | if ($matches | length) > 0 then
               .[$matches[0]] = $p_hook
@@ -931,7 +1011,24 @@ merge_settings_jq() {
          "":     ["posttool-timing.sh"],
          "Bash": ["record-verification.sh",
                   "record-delivery-action.sh",
-                  "circuit-breaker.sh"]}};
+                  "circuit-breaker.sh"]},
+       "Stop": {
+         "": ["stop-guard.sh",
+              "stop-time-summary.sh",
+              "canary-claim-audit.sh",
+              "stop-transcript-archive.sh"]}};
+    def superseded_stop_basenames:
+      ["stop-guard.sh",
+       "stop-time-summary.sh",
+       "canary-claim-audit.sh",
+       "stop-transcript-archive.sh"];
+    def is_managed_legacy_stop_command:
+      . as $command
+      | ($command | script_token) as $token
+      | ($command | script_basename) as $basename
+      | (superseded_stop_basenames | index($basename)) != null
+        and (($token == (".claude/skills/autowork/scripts/" + $basename))
+             or ($token | endswith("/.claude/skills/autowork/scripts/" + $basename)));
     def prune_superseded($event):
       ((superseded_tuples[$event]) // {}) as $by_matcher
       # Events with no supersessions pass through UNTOUCHED — the trailing
@@ -949,15 +1046,21 @@ merge_settings_jq() {
             # this def — keep the bindings).
             entry_matcher as $m
             | (($by_matcher[$m]) // []) as $gone
-            | if ($gone | length) == 0 then .
-              elif (has("hooks") | not) then .
+            | if (has("hooks") | not) then .
               else
                 (.hooks // []) as $orig
                 | [$orig[]
                    | select(
                        (type != "object")
-                       or (((.command // "") | script_basename) as $b
-                           | ($gone | index($b)) == null))] as $kept
+                       or (
+                         ((.command // "") | script_basename) as $b
+                         | if $event == "Stop"
+                              and ((superseded_stop_basenames | index($b)) != null)
+                           then ((.command // "") | is_managed_legacy_stop_command | not)
+                           else (($gone | index($b)) == null)
+                           end
+                       )
+                   )] as $kept
                 # Drop the entry ONLY when the prune itself emptied it —
                 # a pre-existing empty/null-hooks entry must survive
                 # exactly as the merge always treated it (python parity;
@@ -995,7 +1098,7 @@ merge_settings_jq() {
             | [$original[]
                | select(
                    (type != "object")
-                   or (((.command // "") | script_basename) as $basename
+                   or (((.command // "") | script_identity) as $basename
                        | (($owners[($basename // "")] // $matcher) == $matcher)))] as $remaining
             | if ($remaining | length) == ($original | length) then .
               elif ($remaining | length) == 0 then empty
@@ -2026,6 +2129,21 @@ if ! command -v jq >/dev/null 2>&1; then
   printf 'jq is required for runtime hook scripts but was not found.\n' >&2
   printf 'Install it with your package manager (e.g. brew install jq, apt install jq).\n' >&2
   exit 1
+fi
+
+# The complete closeout stack needs both MessageDisplay and Stop
+# additionalContext. MessageDisplay arrived in 2.1.152; the latter arrived in
+# 2.1.163, so fail before filesystem mutation on older installed clients.
+if command -v claude >/dev/null 2>&1; then
+  _claude_version_rc=0
+  claude_code_version_at_least 163 || _claude_version_rc=$?
+  if [[ "${_claude_version_rc}" -eq 1 ]]; then
+    printf 'Claude Code 2.1.163 or newer is required (complete closeout hook support).\n' >&2
+    printf 'Upgrade Claude Code, then re-run: bash "%s/install.sh"\n' "${SCRIPT_DIR}" >&2
+    exit 1
+  elif [[ "${_claude_version_rc}" -eq 2 ]]; then
+    printf 'Could not parse `claude --version`; continuing, but Claude Code 2.1.163+ is required.\n' >&2
+  fi
 fi
 
 if [[ ! -d "${BUNDLE_CLAUDE}" ]]; then

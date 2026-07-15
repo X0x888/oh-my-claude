@@ -433,6 +433,20 @@ assert_true "T15: canary.jsonl row written by hook" \
 assert_eq "T15: hook produced unverified verdict" "unverified" \
   "$(_read_canary_field "${sid}" verdict)"
 
+# Dispatcher ordering removes the live sentinel during guard acceptance before
+# invoking the canary. Its explicit accepted-release disposition must preserve
+# ULW attribution; otherwise every ordered canary run would silently skip.
+sid="t15b-$$"
+_setup_session "${sid}" 20 "I read /path/A.swift. I verified /path/B.ts. I checked /path/C.go."
+_init_timing "${sid}" 20
+rm -f "${STATE_ROOT}/.ulw_active"
+hook_payload="$(jq -nc --arg sid "${sid}" '{session_id:$sid}')"
+printf '%s' "${hook_payload}" \
+  | OMC_STOP_ACCEPTED=1 bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/canary-claim-audit.sh" \
+      >/dev/null 2>&1 || true
+assert_true "T15b: accepted dispatcher handoff audits after sentinel removal" \
+  '[[ -f "${_test_state_root}/${sid}/canary.jsonl" ]]'
+
 # ----------------------------------------------------------------------
 printf 'Test 16: Stop-hook short-circuits when OMC_MODEL_DRIFT_CANARY=off\n'
 sid="t16-$$"

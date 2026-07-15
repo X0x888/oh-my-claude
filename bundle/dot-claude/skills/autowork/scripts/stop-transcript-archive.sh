@@ -48,8 +48,11 @@
 
 set -euo pipefail
 
-# Fast-path: skip if ULW was never activated in this environment.
-[[ -f "${HOME}/.claude/quality-pack/state/.ulw_active" ]] || exit 0
+# Archiving a transcript is a privacy-sensitive terminal side effect. The
+# process-wide activation latch is intentionally sticky and cannot authorize a
+# particular Stop; only the deterministic dispatcher invokes this script with
+# an explicit accepted disposition after certification.
+[[ "${OMC_STOP_ACCEPTED:-0}" == "1" ]] || exit 0
 
 # v1.27.0 lazy-load gates: archive hook does not need classifier/timing.
 export OMC_LAZY_CLASSIFIER=1

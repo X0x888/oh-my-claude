@@ -49,8 +49,8 @@ _begin_stop_attempt_unlocked() {
 with_state_lock _begin_stop_attempt_unlocked 2>/dev/null || OMC_STOP_ATTEMPT_SEQ=0
 
 # v1.46-pre: background-dispatch awareness — read+CONSUME the marker FIRST,
-# before any early-return path below (non-ULW exit, stop_hook_active exit,
-# gate-skip exit). posttool-timing.sh sets `bg_work_dispatched_ts` when a
+# before any early-return path below (non-ULW exit or gate-skip exit).
+# posttool-timing.sh sets `bg_work_dispatched_ts` when a
 # run_in_background tool was dispatched; if set, the agent is likely
 # yielding to WAIT on that work, so format_gate_block_dual appends a
 # "waiting, not stopped" note to any block message this run (otherwise a
@@ -71,16 +71,15 @@ if [[ -n "$(read_state "bg_work_dispatched_ts" 2>/dev/null || true)" ]]; then
   write_state "bg_work_dispatched_ts" "" 2>/dev/null || true
 fi
 
-# emit_scorecard_stop_context — Render a guard-exhaustion scorecard to
-# the user via `systemMessage` (the documented user-visible Stop output
-# field). `hookSpecificOutput.additionalContext` is silently dropped by
-# Claude Code on Stop. See CLAUDE.md "Stop hook output schema".
+# emit_scorecard_stop_context — Render a guard-exhaustion scorecard to the
+# user via cross-version `systemMessage`. Model-only modern Stop continuation
+# feedback is owned and version-gated by stop-dispatch.sh. See CLAUDE.md
+# "Stop orchestration and output schema".
 emit_scorecard_stop_context() {
   local header="$1"
   local footer="$2"
   local scorecard="$3"
 
-  rm -f "${STATE_ROOT}/.ulw_active"
   # `printf -v` is required for real newlines: bash double-quoted `\n`
   # is two literal characters (backslash + n), and jq's `--arg` passes
   # them through verbatim — the user would otherwise see `\n` glyphs at
@@ -90,6 +89,39 @@ emit_scorecard_stop_context() {
   local body
   printf -v body '%s\n%s\n%s' "${header}" "${scorecard}" "${footer}"
   emit_stop_message "${body}"
+}
+
+_sg_has_live_completion_claim_unlocked() {
+  local pending_file cutoff
+  pending_file="$(session_file "pending_agents.jsonl")"
+  [[ -s "${pending_file}" ]] || return 1
+  cutoff="$(( $(now_epoch) - 120 ))"
+  jq -Rse --argjson cutoff "${cutoff}" '
+    any(split("\n")[] | select(length > 0);
+      (try fromjson catch {}) as $row
+      | (($row.completion_claim_id // "") | length) > 0
+      and (($row.completion_claim_effects_complete // false) != true)
+      and (($row.completion_claim_ts // 0) >= $cutoff))
+  ' "${pending_file}" >/dev/null 2>&1
+}
+
+_sg_commit_exhausted_unlocked() {
+  local detail="$1"
+  _sg_commit_release_unlocked "exhausted" "0" "${detail}"
+}
+
+_commit_exhausted_release_or_block() {
+  local detail="$1"
+  _sg_release_generation_changes=""
+  if with_state_lock _sg_commit_exhausted_unlocked "${detail}" \
+      && [[ -z "${_sg_release_generation_changes}" ]]; then
+    return 0
+  fi
+  log_anomaly "stop-exhaustion-commit" \
+    "could not atomically close exhausted interval; release refused" \
+    2>/dev/null || true
+  emit_stop_block "[Stop certification] Could not atomically close the exhausted quality interval. Continue working and retry Stop; release was refused."
+  return 1
 }
 
 effective_guard_exhaustion_mode() {
@@ -130,15 +162,14 @@ if [[ -n "${last_assistant_message}" ]]; then
 fi
 
 if ! is_ultrawork_mode; then
-  # Clean up sentinel when a non-ULW session ends
-  rm -f "${STATE_ROOT}/.ulw_active"
   exit 0
 fi
 
-stop_hook_active="$(json_get '.stop_hook_active')"
-if [[ "${stop_hook_active}" == "true" ]]; then
-  exit 0
-fi
+# `stop_hook_active=true` means this Stop follows hook feedback; it is not an
+# authorization to bypass certification. stop-dispatch.sh ends explicitly one
+# attempt before Claude Code's consecutive-continuation ceiling, while the
+# gate-specific caps below handle genuine no-progress exhaustion. Every retry
+# must therefore re-evaluate live state.
 
 has_closeout_label() {
   local kind="$1"
@@ -165,33 +196,11 @@ has_closeout_label() {
     *) return 1 ;;
   esac
   [[ -n "${text}" ]] || return 1
-  # v1.42.x stop-guard bypass closure (Bypass-Surface F-010): only match
-  # closeout labels in the CLOSING REGION (last 40% of the message). The
-  # pre-fix regex matched anywhere, so meta-mentions ("To pass the
-  # closure gate I'd need to write **Changed.**...") and quoted echoes
-  # of earlier turn content satisfied the gate without an actual close.
-  # The 40% threshold is generous — closing wraps are typically the last
-  # 10-20% of a multi-section message, so legitimate closures pass; the
-  # cutoff filters out meta/quoted occurrences from the body discussion.
-  #
-  # v1.43+ (CI regression fix): short-message threshold raised from 200
-  # → 400. Pre-fix, legitimate structured closeouts produced by the
-  # canonical `structured_closeout` shape (≥4 sections at ~200-300
-  # chars) tripped the closing-region path with their `**Changed.**`
-  # label out of the 40% window, blocking even when all required
-  # labels were present. Caught when CI seq-A1 broke after F-010
-  # landed without a parallel test-helper threshold sync. F-010 tests
-  # use ≥600-char fixtures so the bump preserves bypass-closure
-  # behavior; the test helper at tests/test-stop-guard-bypass-surface.sh
-  # inlines the same constant.
-  local len="${#text}"
-  if [[ "${len}" -lt 400 ]]; then
-    printf '%s' "${text}" | grep -Eiq "${pattern}"
-    return $?
-  fi
-  local closing_start=$((len * 6 / 10))
-  local closing_region="${text:${closing_start}}"
-  printf '%s' "${closing_region}" | grep -Eiq "${pattern}"
+  # Match a real standalone Markdown heading, not an inline meta-mention or a
+  # quoted prior answer. This preserves the F-010 anti-echo boundary without
+  # rejecting a detailed cumulative response whose Changed heading correctly
+  # appears at the top (the old last-40% heuristic did exactly that).
+  printf '%s\n' "${text}" | grep -Eiq "^[[:space:]]{0,3}${pattern}[[:space:]]*"
 }
 
 has_closeout_signal() {
@@ -225,34 +234,63 @@ read_findings_count_by_status() {
 # revision has not advanced since registration (timestamp migration fallback).
 # This prevents same-second edits after registration from inheriting a waiver
 # granted for earlier work.
-gate_skip_reason="$(read_state "gate_skip_reason")"
-if [[ -n "${gate_skip_reason}" ]]; then
-  gate_skip_edit_ts="$(read_state "gate_skip_edit_ts")"
-  current_edit_ts_for_skip="$(read_state "last_edit_ts")"
-  gate_skip_edit_revision="$(read_state "gate_skip_edit_revision")"
-  current_edit_revision_for_skip="$(read_state "edit_revision")"
-  gate_skip_edit_ts="${gate_skip_edit_ts:-0}"
-  current_edit_ts_for_skip="${current_edit_ts_for_skip:-0}"
+_sg_claim_skip_release_unlocked() {
+  local stored_reason stored_edit_ts current_edit_ts
+  local stored_revision current_revision fresh=0
+  _sg_skip_status="missing"
+  stored_reason="$(read_state "gate_skip_reason")"
+  [[ -n "${stored_reason}" ]] || return 0
+  stored_edit_ts="$(read_state "gate_skip_edit_ts")"
+  current_edit_ts="$(read_state "last_edit_ts")"
+  stored_revision="$(read_state "gate_skip_edit_revision")"
+  current_revision="$(read_state "edit_revision")"
+  stored_edit_ts="${stored_edit_ts:-0}"
+  current_edit_ts="${current_edit_ts:-0}"
 
-  # Clear the skip flag regardless (single-use)
-  with_state_lock_batch \
+  if [[ "${current_revision}" =~ ^[0-9]+$ \
+      && "${stored_revision}" =~ ^[0-9]+$ ]]; then
+    (( current_revision <= stored_revision )) && fresh=1
+  elif [[ "${current_edit_ts}" -le "${stored_edit_ts}" ]]; then
+    fresh=1
+  fi
+
+  _sg_skip_reason="${stored_reason}"
+  _sg_skip_stored_revision="${stored_revision:-migration}"
+  _sg_skip_current_revision="${current_revision:-migration}"
+  _sg_skip_stored_ts="${stored_edit_ts}"
+  _sg_skip_current_ts="${current_edit_ts}"
+  if [[ "${fresh}" -ne 1 ]]; then
+    _sg_skip_status="stale"
+    _write_state_batch_unlocked \
+      "gate_skip_reason" "" \
+      "gate_skip_ts" "" \
+      "gate_skip_edit_ts" "" \
+      "gate_skip_edit_revision" ""
+    return
+  fi
+  if _sg_has_live_completion_claim_unlocked; then
+    _sg_skip_status="completion-busy"
+    return 0
+  fi
+  _write_state_batch_unlocked \
     "gate_skip_reason" "" \
     "gate_skip_ts" "" \
     "gate_skip_edit_ts" "" \
-    "gate_skip_edit_revision" ""
+    "gate_skip_edit_revision" "" \
+    "session_outcome" "skip-released" \
+    "ulw_enforcement_active" "0" || return 1
+  _sg_skip_status="honored"
+}
 
-  gate_skip_is_fresh=0
-  if [[ "${current_edit_revision_for_skip}" =~ ^[0-9]+$ ]] \
-      && [[ "${gate_skip_edit_revision}" =~ ^[0-9]+$ ]]; then
-    (( current_edit_revision_for_skip <= gate_skip_edit_revision )) \
-      && gate_skip_is_fresh=1
-  elif [[ "${current_edit_ts_for_skip}" -le "${gate_skip_edit_ts}" ]]; then
-    # Migration fallback for a skip registered before revision capture.
-    gate_skip_is_fresh=1
+gate_skip_reason="$(read_state "gate_skip_reason")"
+if [[ -n "${gate_skip_reason}" ]]; then
+  _sg_skip_status=""
+  if ! with_state_lock _sg_claim_skip_release_unlocked; then
+    emit_stop_block "[Stop certification] Could not atomically validate the registered /ulw-skip against the current edit generation. Release was refused; retry Stop."
+    exit 0
   fi
-
-  if [[ "${gate_skip_is_fresh}" -eq 1 ]]; then
-    # Edit clock unchanged — skip is valid
+  if [[ "${_sg_skip_status}" == "honored" ]]; then
+    gate_skip_reason="${_sg_skip_reason}"
     record_gate_skip "${gate_skip_reason}" &
     # v1.42.x SRE F-001: this script exits a few lines below via `exit 0`,
     # so the backgrounded `record_gate_skip` child can be SIGHUPed
@@ -263,20 +301,18 @@ if [[ -n "${gate_skip_reason}" ]]; then
     # wait and contained to the skip-honored path.
     wait $! 2>/dev/null || true
     log_hook "stop-guard" "gate skip honored: ${gate_skip_reason}"
-    # v1.34.1+ (data-lens D-001): mark outcome so cross-session
-    # session_summary.jsonl distinguishes a clean skip-honored release
-    # from a true model abandonment. v1.34.2 (release-reviewer F-1):
-    # use "skip-released" specifically for the gate-skip path so the
-    # P-004 outcome card downstream does NOT claim credit for gates
-    # the user explicitly bypassed via /ulw-skip — those gates fired
-    # but were NOT resolved by the model. "released" is now reserved
-    # for the truly-clean exit paths (advisory pass, no-edits release).
-    with_state_lock write_state "session_outcome" "skip-released" || true
-    rm -f "${STATE_ROOT}/.ulw_active"
+    exit 0
+  elif [[ "${_sg_skip_status}" == "completion-busy" ]]; then
+    emit_stop_block "[Stop certification] A subagent completion is still publishing claim-scoped evidence. Wait for it to finish; the registered /ulw-skip remains available for the next Stop attempt."
     exit 0
   else
-    log_hook "stop-guard" "gate skip invalidated: edits occurred after registration (skip_edit_revision=${gate_skip_edit_revision:-migration}, current_revision=${current_edit_revision_for_skip:-migration}, skip_edit_ts=${gate_skip_edit_ts}, current_ts=${current_edit_ts_for_skip})"
-    # Fall through to normal gate logic
+    log_hook "stop-guard" "gate skip invalidated: edits occurred after registration (skip_edit_revision=${_sg_skip_stored_revision:-migration}, current_revision=${_sg_skip_current_revision:-migration}, skip_edit_ts=${_sg_skip_stored_ts:-0}, current_ts=${_sg_skip_current_ts:-0})"
+    # This Stop began with a waiver but the lock observed a newer generation.
+    # Do not continue through gates using the mixed pre-lock/post-lock snapshot:
+    # a cheap release path could otherwise finalize the newly edited interval.
+    # The stale waiver is already consumed, so the next Stop evaluates normally.
+    emit_stop_block "[Stop certification] The registered /ulw-skip was invalidated by newer work. Release was refused for this attempt; retry closeout against the current generation."
+    exit 0
   fi
 fi
 
@@ -322,6 +358,7 @@ done < <(read_state_keys \
   "plan_revision")
 session_handoff_blocks="${session_handoff_blocks:-0}"
 _sg_start_last_edit_ts="${last_edit_ts}"
+_sg_start_readiness_fingerprint="$(closeout_readiness_fingerprint 2>/dev/null || true)"
 
 # Stop evaluates many independent gates without holding the state writer lock.
 # That is intentional: keeping the mutex across filesystem scans and message
@@ -359,7 +396,7 @@ _sg_compare_generation_unlocked() {
 }
 
 _sg_commit_release_unlocked() {
-  local _outcome="$1"
+  local _outcome="$1" _require_seal="${2:-1}" _exhaustion_detail="${3:-}"
   local _current_edit_revision="" _current_last_edit_ts=""
   local _current_code_revision="" _current_code_ts=""
   local _current_doc_revision="" _current_doc_ts=""
@@ -402,14 +439,50 @@ _sg_commit_release_unlocked() {
     "${_sg_start_plan_revision}" "${_current_plan_revision}" \
     "${_sg_start_plan_ts}" "${_current_plan_ts}"
 
+  # The readiness seal covers more than edit clocks: reviewer verdicts,
+  # finding/scope ledgers, verification receipts, delivery evidence, and
+  # material non-file tool generations. Recheck that full contract at the
+  # final commit boundary so a concurrent stricter verdict or connector batch
+  # cannot land after the earlier seal gate and still be stamped completed.
+  _sg_current_fingerprint="$(closeout_readiness_fingerprint 2>/dev/null || true)"
+  if [[ -n "${_sg_start_readiness_fingerprint:-}" \
+      && "${_sg_current_fingerprint}" != "${_sg_start_readiness_fingerprint}" ]]; then
+    _sg_release_generation_changes="${_sg_release_generation_changes}${_sg_release_generation_changes:+, }readiness-evidence"
+  fi
+
+  if [[ "${_require_seal}" == "1" \
+      && "${OMC_CLOSEOUT_PREFLIGHT_PROBE:-0}" != "1" ]] \
+      && closeout_seal_is_required; then
+    _sg_sealed_fingerprint="$(read_state "closeout_seal_fingerprint" 2>/dev/null || true)"
+    if [[ -z "${_sg_sealed_fingerprint}" \
+        || "${_sg_current_fingerprint}" != "${_sg_sealed_fingerprint}" ]]; then
+      _sg_release_generation_changes="${_sg_release_generation_changes}${_sg_release_generation_changes:+, }closeout-readiness"
+    fi
+  fi
+
   if [[ -n "${_sg_release_generation_changes}" ]]; then
+    return 0
+  fi
+
+  if _sg_has_live_completion_claim_unlocked; then
+    _sg_release_generation_changes="subagent-completion"
     return 0
   fi
 
   # Keep the successful comparison and the completed/released stamp in one
   # critical section. Explicitly propagate write failure: with_state_lock's
   # guarded invocation suppresses errexit inside function bodies on Bash 3.2.
-  _write_state_batch_unlocked "session_outcome" "${_outcome}"
+  if [[ -n "${_exhaustion_detail}" ]]; then
+    _write_state_batch_unlocked \
+      "guard_exhausted" "$(now_epoch)" \
+      "guard_exhausted_detail" "${_exhaustion_detail}" \
+      "session_outcome" "${_outcome}" \
+      "ulw_enforcement_active" "0"
+  else
+    _write_state_batch_unlocked \
+      "session_outcome" "${_outcome}" \
+      "ulw_enforcement_active" "0"
+  fi
 }
 
 _sg_commit_release_or_block() {
@@ -750,10 +823,8 @@ ${_es_recovery}"
       exit 0
     fi
 
-    with_state_lock_batch \
-      "guard_exhausted" "$(now_epoch)" \
-      "guard_exhausted_detail" "exemplifying_scope_missing=${_es_missing},pending=${_es_pending}" \
-      "session_outcome" "exhausted"
+    _commit_exhausted_release_or_block \
+      "exemplifying_scope_missing=${_es_missing},pending=${_es_pending}" || exit 0
     record_gate_event "exemplifying-scope" "exhausted" \
       "block_count=${_es_blocks}" \
       "block_cap=${_es_cap}" \
@@ -1166,7 +1237,8 @@ ${_sr_scorecard}${_sr_recovery}")"
   fi
 fi
 
-if [[ -z "${last_edit_ts}" ]]; then
+if [[ -z "${last_edit_ts}" ]] \
+    && [[ "$(read_state "closeout_material_activity" 2>/dev/null || true)" != "1" ]]; then
   # v1.34.1+ (D-001): no edits made — released without work to verify.
   # The generation CAS also protects this path: a background edit that lands
   # after the initial empty clock must not be mistaken for a no-work session.
@@ -1495,22 +1567,24 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
           exit 0
         else
           # Review coverage gate exhaustion: handle based on mode
-          with_state_lock_batch \
-            "guard_exhausted" "$(now_epoch)" \
-            "guard_exhausted_detail" "dimensions_missing=${missing_dims}" \
-            "session_outcome" "exhausted"
           log_hook "stop-guard" "review coverage gate exhausted after 3 blocks: missing=${missing_dims}"
           scorecard="$(build_quality_scorecard)"
 
           _dim_effective_exhaustion_mode="$(effective_guard_exhaustion_mode 1)"
           case "${_dim_effective_exhaustion_mode}" in
             block)
+              with_state_lock_batch \
+                "guard_exhausted" "$(now_epoch)" \
+                "guard_exhausted_detail" "dimensions_missing=${missing_dims}" \
+                2>/dev/null || true
               dim_reason="[Review coverage · BLOCK MODE] Guard exhaustion reached but block mode prevents release. QUALITY SCORECARD:\n${scorecard}\nMissing: ${_missing_descriptions}. Address the remaining reviews or explicitly opt out of the strict-autonomy policy that is keeping this gate hard-blocking."
               dim_human="Review coverage exhausted but the effective policy keeps blocking instead of releasing. Run the missing reviewers (${_missing_descriptions}) — even one focused pass usually clears the gate — or deliberately opt out of strict autonomy in \`oh-my-claude.conf\` if you want scorecard releases."
               emit_stop_block "$(format_gate_block_dual "${dim_human}" "${dim_reason}")"
               exit 0
               ;;
             scorecard)
+              _commit_exhausted_release_or_block \
+                "dimensions_missing=${missing_dims}" || exit 0
               log_hook "stop-guard" "review coverage gate exhausted (scorecard mode): emitting scorecard"
               # v1.27.0 (F-024): scorecard footer is now actionable.
               # Names the concrete recoveries the user/model can take
@@ -1523,7 +1597,8 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
               exit 0
               ;;
             *)
-              rm -f "${STATE_ROOT}/.ulw_active"
+              _commit_exhausted_release_or_block \
+                "dimensions_missing=${missing_dims}" || exit 0
               exit 0
               ;;
           esac
@@ -1916,6 +1991,7 @@ Run metis to pressure-test for wrong-abstraction / missing-constraint risks befo
             # the next user prompt resets the counter (fresh attempt budget).
             record_gate_event "goal" "stuck-wall" \
               "goal_blocks=${_goal_blocks}" "stuck=${_goal_stuck}" "threshold=${_goal_thresh}"
+            _sg_commit_release_or_block "exhausted" || exit 0
             emit_scorecard_stop_context \
               "GOAL STUCK-WALL (no progress across ${_goal_stuck} consecutive stop attempts):" \
               "The persistent goal is still open, but the last ${_goal_stuck} drive attempts produced no edits — a wall the relentless driver cannot pass alone. State plainly what is blocking. Options: supply the missing input and re-prompt; \`/ulw-pause <reason>\` if it is an operational block (credentials / rate limit / dead infra); \`/goal clear\` to stand down; \`/goal\` to review status. The goal stays active — your next prompt resets the no-progress counter." \
@@ -1984,10 +2060,8 @@ The findings you handled are a sample, not the ceiling — do not redefine succe
         fi
         # Cap exhausted (and not in block-mode): release with a scorecard
         # naming the residual risk so the final summary stays auditable.
-        with_state_lock_batch \
-          "guard_exhausted" "$(now_epoch)" \
-          "guard_exhausted_detail" "objective_contract_unaudited" \
-          "session_outcome" "exhausted"
+        _commit_exhausted_release_or_block \
+          "objective_contract_unaudited" || exit 0
         record_gate_event "objective-contract" "exhausted" \
           "block_count=${_oc_blocks}" "block_cap=${_oc_cap}"
         emit_scorecard_stop_context \
@@ -2140,6 +2214,31 @@ Remaining before Stop:
     exit 0
   fi
 
+  # --- Closeout-preflight seal (pre-final readiness) ---
+  #
+  # PostToolBatch evaluates this same guard in an isolated state tree before
+  # Claude writes completion prose. A generation-bound seal is the handshake
+  # proving the final response was written only after work/evidence gates were
+  # ready. Stop still re-evaluates every gate above and recomputes the live
+  # fingerprint here, so a forged/stale/prior-objective seal cannot bypass
+  # enforcement. The isolated evaluator opts out to avoid recursion.
+  if [[ "${OMC_CLOSEOUT_PREFLIGHT_PROBE:-0}" != "1" ]] \
+      && closeout_seal_is_required \
+      && ! closeout_seal_is_current; then
+    closeout_preflight_blocks="$(read_state "closeout_preflight_blocks" 2>/dev/null || true)"
+    [[ "${closeout_preflight_blocks}" =~ ^[0-9]+$ ]] || closeout_preflight_blocks=0
+    closeout_preflight_blocks=$((closeout_preflight_blocks + 1))
+    write_state "closeout_preflight_blocks" "${closeout_preflight_blocks}" 2>/dev/null || true
+    record_gate_event "closeout-preflight" "block" \
+      "block_count=${closeout_preflight_blocks}" \
+      "seal_status=$(read_state "closeout_preflight_status" 2>/dev/null || true)" \
+      "review_cycle_id=$(read_state "review_cycle_id" 2>/dev/null || true)"
+    emit_stop_block "$(format_gate_block_dual \
+      "The work checks are ready, but the detailed completion summary was attempted before the hidden closeout preflight sealed this exact generation. The provisional summary is being held so the eventual answer can be complete and cumulative." \
+      "[Closeout-preflight gate] do not emit another summary yet. Run \`bash \"\$HOME/.claude/skills/autowork/scripts/closeout-preflight.sh\" \"${SESSION_ID}\"\`; resolve any privately injected blocker. When it reports READY, write one self-contained replacement covering the whole original objective, all shipped changes, exact verification, findings/dispositions, risks, and next state — never a delta from the prior attempt.")"
+    exit 0
+  fi
+
   # --- Final-closure gate (user-facing auditability) ---
   #
   # Once the work itself is clean, the final response must let the user
@@ -2179,6 +2278,8 @@ Remaining before Stop:
   has_closeout_label risks "${last_assistant_message}" && closure_has_risks=1
   closure_has_next=0
   has_closeout_label next "${last_assistant_message}" && closure_has_next=1
+  closure_has_objective=0
+  has_closeout_label coverage "${last_assistant_message}" && closure_has_objective=1
 
   last_verify_cmd="$(read_state "last_verify_cmd")"
   last_verify_method="$(read_state "last_verify_method")"
@@ -2193,6 +2294,7 @@ Remaining before Stop:
   if [[ "${closure_has_changed}" -eq 1 ]] \
     && [[ "${closure_has_verification}" -eq 1 ]] \
     && [[ "${closure_has_next}" -eq 1 ]] \
+    && [[ "${closure_has_objective}" -eq 1 ]] \
     && [[ "${closure_verify_cmd_missing}" -eq 0 ]] \
     && { [[ "${closure_needs_risks}" -eq 0 ]] || [[ "${closure_has_risks}" -eq 1 ]]; }; then
     closure_structured_ok=1
@@ -2206,8 +2308,35 @@ Remaining before Stop:
     closure_compact_ok=1
   fi
 
+  # If an earlier completion attempt was held, require its durable fact
+  # anchors rather than using response length as a proxy. Padding could satisfy
+  # the old 40%-of-prior threshold while omitting the one load-bearing path or
+  # finding ID; a dense complete response could fail it for being concise.
+  closure_anchor_missing=0
+  closure_missing_anchors=""
+  closure_required_anchors="$(read_state "closeout_seal_required_anchors" 2>/dev/null || true)"
+  while IFS= read -r closure_anchor || [[ -n "${closure_anchor}" ]]; do
+    [[ -n "${closure_anchor}" ]] || continue
+    if [[ "${last_assistant_message}" != *"${closure_anchor}"* ]]; then
+      closure_anchor_missing=1
+      closure_missing_anchors="${closure_missing_anchors}${closure_missing_anchors:+, }${closure_anchor}"
+    fi
+  done <<<"${closure_required_anchors}"
+
+  closure_prior_chars=0
+  if [[ "${OMC_CLOSEOUT_PREFLIGHT_PROBE:-0}" != "1" ]] \
+      && [[ -f "$(session_file "provisional_closeouts.jsonl")" ]]; then
+    closure_cycle="$(read_state "review_cycle_id" 2>/dev/null || true)"
+    closure_prior_chars="$(jq -rs --arg cycle "${closure_cycle}" '
+      [ .[] | select((.review_cycle_id // "") == $cycle) | ((.message // "") | length) ]
+      | max // 0
+    ' "$(session_file "provisional_closeouts.jsonl")" 2>/dev/null || printf '0')"
+    [[ "${closure_prior_chars}" =~ ^[0-9]+$ ]] || closure_prior_chars=0
+  fi
   if [[ "${closure_structured_required}" -eq 1 && "${closure_structured_ok}" -ne 1 ]] \
-    || [[ "${closure_structured_required}" -eq 0 && "${closure_structured_ok}" -ne 1 && "${closure_compact_ok}" -ne 1 ]]; then
+    || [[ "${closure_structured_required}" -eq 0 && "${closure_structured_ok}" -ne 1 && "${closure_compact_ok}" -ne 1 ]] \
+    || [[ "${closure_has_objective}" -ne 1 ]] \
+    || [[ "${closure_anchor_missing}" -eq 1 ]]; then
     closure_missing=""
     if [[ "${closure_has_changed}" -ne 1 ]]; then
       closure_missing="${closure_missing:+${closure_missing}, }\`Changed\`/\`Shipped\`"
@@ -2223,6 +2352,12 @@ Remaining before Stop:
     if [[ "${closure_structured_required}" -eq 1 && "${closure_has_next}" -ne 1 ]]; then
       closure_missing="${closure_missing:+${closure_missing}, }\`Next\`"
     fi
+    if [[ "${closure_has_objective}" -ne 1 ]]; then
+      closure_missing="${closure_missing:+${closure_missing}, }\`Objective coverage\` whole-task attestation"
+    fi
+    if [[ "${closure_anchor_missing}" -eq 1 ]]; then
+      closure_missing="${closure_missing:+${closure_missing}, }literal fact anchor(s): ${closure_missing_anchors}"
+    fi
     [[ -n "${closure_missing}" ]] || closure_missing="an audit-ready closeout"
 
     record_gate_event "final-closure" "block" \
@@ -2232,12 +2367,15 @@ Remaining before Stop:
       "missing_verify_cmd=${closure_verify_cmd_missing}" \
       "missing_risks=$((closure_needs_risks == 1 && closure_has_risks != 1 ? 1 : 0))" \
       "missing_next=$((closure_structured_required == 1 && closure_has_next != 1 ? 1 : 0))" \
+      "missing_cumulative=${closure_anchor_missing}" \
+      "prior_closeout_chars=${closure_prior_chars}" \
+      "final_closeout_chars=${#last_assistant_message}" \
       "deferred_scope_count=${closure_deferred_scope_count}" \
       "deferred_finding_count=${closure_deferred_finding_count}"
-    closure_recovery="$(format_gate_recovery_line "restate the final wrap using \`**Changed.**\` (or \`**Shipped.**\`), \`**Verification.**\`, and \`**Next.**\`. Name the exact verification command when one ran. If anything was deferred, add \`**Risks.**\` and state the WHY. If no further action is queued, \`**Next.** Done.\` is enough.")"
+    closure_recovery="$(format_gate_recovery_line "rewrite the WHOLE final answer, not just the latest gate delta. Preserve material detail from the prior suppressed candidate and use \`**Changed.**\` (or \`**Shipped.**\`), \`**Verification.**\`, and \`**Next.**\`. Name the exact verification command when one ran. If anything was deferred, add \`**Risks.**\` and state the WHY. If no further action is queued, \`**Next.** Done.\` is enough.")"
     # v1.34.1+ (P-002): tighter final-closure block.
     emit_stop_block "$(format_gate_block_dual \
-      "Work is clean but the wrap-up isn't audit-ready — restate using **Changed.** / **Verification.** / **Next.** (and **Risks.** if anything's deferred) so you don't have to interrogate the model for what shipped." \
+      "Work is clean but the wrap-up isn't a complete audit-ready replacement — restate the whole task using **Changed.** / **Verification.** / **Next.** (and **Risks.** if anything's deferred) so no important detail is stranded in an earlier summary." \
       "[Final-closure gate] work is clean but the final response isn't audit-ready.
 Missing: ${closure_missing}.${closure_recovery}")"
     exit 0
@@ -2248,20 +2386,14 @@ Missing: ${closure_missing}.${closure_recovery}")"
   # edit/code/doc/plan snapshot and stamps the outcome under the same lock; a
   # concurrent mutation emits a retry block instead of releasing stale proof.
   _sg_commit_release_or_block "completed" || exit 0
-  # Remove fast-path sentinel; workflow_mode in session_state.json is
-  # intentionally preserved so the prompt-intent-router's sticky gate
-  # continues injecting specialist routing for the rest of this session.
-  rm -f "${STATE_ROOT}/.ulw_active"
+  # workflow_mode remains sticky for the next user prompt, while the
+  # per-session enforcement interval is closed atomically by the release CAS.
   log_hook "stop-guard" "pass: all gates satisfied"
   exit 0
 fi
 
 if [[ "${guard_blocks}" -ge 3 ]]; then
   scorecard="$(build_quality_scorecard)"
-  with_state_lock_batch \
-    "guard_exhausted" "$(now_epoch)" \
-    "guard_exhausted_detail" "review=${missing_review},verify=${missing_verify},verify_failed=${verify_failed},unremediated=${review_unremediated},low_confidence=${verify_low_confidence}" \
-    "session_outcome" "exhausted"
   log_hook "stop-guard" "exhausted after 3 blocks: review=${missing_review} verify=${missing_verify} failed=${verify_failed} unremediated=${review_unremediated} low_conf=${verify_low_confidence}"
 
   _main_serious_missing=0
@@ -2272,6 +2404,10 @@ if [[ "${guard_blocks}" -ge 3 ]]; then
 
   case "${_main_effective_exhaustion_mode}" in
     block)
+      with_state_lock_batch \
+        "guard_exhausted" "$(now_epoch)" \
+        "guard_exhausted_detail" "review=${missing_review},verify=${missing_verify},verify_failed=${verify_failed},unremediated=${review_unremediated},low_confidence=${verify_low_confidence}" \
+        2>/dev/null || true
       # Never release — keep blocking with scorecard. Translates the
       # operator-language ("guard exhaustion reached but block mode
       # prevents release") into user-meaning: WHY it keeps blocking
@@ -2282,19 +2418,22 @@ if [[ "${guard_blocks}" -ge 3 ]]; then
       exit 0
       ;;
     scorecard)
+      _commit_exhausted_release_or_block \
+        "review=${missing_review},verify=${missing_verify},verify_failed=${verify_failed},unremediated=${review_unremediated},low_confidence=${verify_low_confidence}" || exit 0
       # Release but inject scorecard as context
       # v1.27.0 (F-024): see review-coverage scorecard above for the
       # rationale behind the actionable footer. Same pattern: name the
       # concrete next-step shapes instead of "note any gaps".
       emit_scorecard_stop_context \
         "QUALITY SCORECARD (guard exhausted after 3 blocks):" \
-        "**FOR YOU:** The quality gate released without full completion — work shipped without all gates satisfied. The model's next response will summarize what shipped vs. what's missing so you can audit. **FOR MODEL:** Recovery options: (a) restate WHICH gates released without satisfaction so the user can audit them; (b) run a fresh quality-reviewer pass on the diff and address the findings (one short pass usually converts scorecard release into clean release); (c) run the project test suite (\`/ulw-status\` shows the detected command) and commit on green; (d) if the work is genuinely paused on user input, run /ulw-pause <reason> instead of letting the gate scorecard-release." \
+        "**FOR YOU:** The quality gate released without full completion. The Stop receipt below preserves the strongest available candidate and names the missing gates for audit. **FOR MODEL:** Recovery options: (a) state WHICH gates released without satisfaction; (b) run a fresh quality-reviewer pass on the diff and address the findings (one short pass usually converts scorecard release into clean release); (c) run the project test suite (\`/ulw-status\` shows the detected command) and commit on green; (d) if the work is genuinely paused on user input, run /ulw-pause <reason> instead of letting the gate scorecard-release." \
         "${scorecard}"
       exit 0
       ;;
     *)
       # silent (default legacy behavior) — silent release
-      rm -f "${STATE_ROOT}/.ulw_active"
+      _commit_exhausted_release_or_block \
+        "review=${missing_review},verify=${missing_verify},verify_failed=${verify_failed},unremediated=${review_unremediated},low_confidence=${verify_low_confidence}" || exit 0
       exit 0
       ;;
   esac

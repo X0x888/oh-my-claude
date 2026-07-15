@@ -220,6 +220,7 @@ select_matching_owner_test() {
       select_test "tests/test-verification-lib.sh" "owns verification library"
       ;;
   esac
+  return 0
 }
 
 select_meta_contracts() {

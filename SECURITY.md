@@ -24,9 +24,11 @@ Telemetry exists to answer "is this harness helping me?" (`/ulw-report`) and liv
 | Timing/token cards | wall-clock + token counts (no message text) | `time_tracking=off` |
 | Auto-memory | cross-session project notes | `auto_memory=off` |
 | Resume capture | objective + last prompt (redacted) on a rate-limit kill | `stop_failure_capture=off` |
+| Closeout evidence | up to 3 redacted 6K provisional candidates + 20 redacted verification receipts; cleared on fresh execution, and candidates clear after a finalized clean close | core to cumulative closeout |
+| Closeout presentation state | message IDs and timestamps only; no response text is buffered across MessageDisplay batches | core to quiet closeout presentation |
 | Transcript archive | full transcript copies | **off by default** (`transcript_archive=on` to enable) |
 
-One move disables the whole class: `/omc-config` → **Minimal** preset (all telemetry off, basic gates). Secret redaction (`omc_redact_secrets`) scrubs provider-key shapes (`sk-ant-…`, `ghp_…`, `AKIA…`, bearer tokens) from every prompt-derived value before it is persisted; v1.47 extended this to denied command segments and pause reasons.
+One move disables optional telemetry: `/omc-config` → **Minimal** preset (optional telemetry off, basic gates). Operational closeout state remains while a material task is active. Secret redaction (`omc_redact_secrets`) scrubs provider-key shapes (`sk-ant-…`, `ghp_…`, `AKIA…`, bearer tokens) before durable prompt-derived values are persisted. MessageDisplay stores only operational message IDs/timestamps; accepted response text is never copied into a cross-batch display buffer.
 
 ## 4. Why is it safe to let this gate my sessions?
 

@@ -34,6 +34,9 @@
 #   posttool-timing.sh:       200  — universal-matcher; ~100ms typical
 #   stop-guard.sh:           1000  — gate enforcement; ~110ms typical
 #   stop-time-summary.sh:     400  — formats per-prompt timing card; ~80ms
+#   closeout-display.sh:      600  — ordinary material MessageDisplay batch
+#   closeout-preflight.sh:    600  — non-terminal PostToolBatch fast path
+#   stop-dispatch.sh:        1800  — guard dispatch + compact continuation
 #
 # Budgets are upper bounds — typical runs land 30-60% below — so a
 # regression measurable to the user (>50% increase) trips the gate
@@ -68,6 +71,9 @@ pretool-timing.sh|200
 posttool-timing.sh|200
 stop-guard.sh|1000
 stop-time-summary.sh|400
+closeout-display.sh|600
+closeout-preflight.sh|600
+stop-dispatch.sh|1800
 EOF
 }
 
@@ -154,6 +160,27 @@ emit_payload_for_hook() {
       jq -nc \
         --arg session_id "${sid}" \
         '{session_id:$session_id}'
+      ;;
+    closeout-display.sh)
+      jq -nc \
+        --arg session_id "${sid}" \
+        '{session_id:$session_id,hook_event_name:"MessageDisplay",
+          message_id:"bench-message",index:0,final:true,
+          delta:"I am continuing the implementation and checking the remaining evidence."}'
+      ;;
+    closeout-preflight.sh)
+      jq -nc \
+        --arg session_id "${sid}" \
+        '{session_id:$session_id,hook_event_name:"PostToolBatch",
+          tool_calls:[{tool_name:"Read",tool_input:{file_path:"README.md"},tool_response:"ok"}]}'
+      ;;
+    stop-dispatch.sh)
+      jq -nc \
+        --arg session_id "${sid}" \
+        --arg cwd "${PWD}" \
+        '{session_id:$session_id,cwd:$cwd,hook_event_name:"Stop",
+          stop_hook_active:false,last_assistant_message:"Still working.",
+          background_tasks:[],session_crons:[]}'
       ;;
     *)
       jq -nc --arg session_id "${sid}" '{session_id:$session_id}'
@@ -243,6 +270,7 @@ benchmark_hook() {
   local i start end measurements=()
   local sid payload created_ulw_sentinel=0 hook_failed=0
   local artifact_root="" bench_home="" hook_home="${HOME}"
+  local -a hook_args=()
   artifact_root="$(cd "${SCRIPT_DIR}/../../.." 2>/dev/null && pwd -P || true)"
   if [[ -n "${artifact_root}" ]] \
       && [[ -d "${artifact_root}/skills" ]] \
@@ -272,7 +300,10 @@ benchmark_hook() {
     }
     hook_home="${bench_home}"
   fi
-  if [[ "${hook}" == "pretool-intent-guard.sh" ]] \
+  if [[ "${hook}" == "pretool-intent-guard.sh" \
+      || "${hook}" == "closeout-display.sh" \
+      || "${hook}" == "closeout-preflight.sh" \
+      || "${hook}" == "stop-dispatch.sh" ]] \
       && [[ ! -f "${STATE_ROOT}/.ulw_active" ]]; then
     mkdir -p "${STATE_ROOT}"
     touch "${STATE_ROOT}/.ulw_active"
@@ -284,12 +315,35 @@ benchmark_hook() {
       mkdir -p "${STATE_ROOT}/${sid}"
       jq -nc '{workflow_mode:"ultrawork",task_intent:"execution",task_domain:"coding"}' \
         >"${STATE_ROOT}/${sid}/session_state.json"
+    elif [[ "${hook}" == "closeout-display.sh" \
+        || "${hook}" == "closeout-preflight.sh" \
+        || "${hook}" == "stop-dispatch.sh" ]]; then
+      mkdir -p "${STATE_ROOT}/${sid}"
+      jq -nc --arg cwd "${PWD}" '{
+        workflow_mode:"ultrawork",task_intent:"execution",task_domain:"coding",
+        cwd:$cwd,current_objective:"Latency benchmark closeout",
+        closeout_preflight_required:"1",closeout_material_activity:"1",
+        review_cycle_id:"1",prompt_revision:"1"
+      }' >"${STATE_ROOT}/${sid}/session_state.json"
     fi
     payload="$(emit_payload_for_hook "${hook}" "${sid}")"
     start="$(now_ms)"
     if [[ "${hook}" == "pretool-intent-guard.sh" ]]; then
       HOME="${hook_home}" STATE_ROOT="${STATE_ROOT}" OMC_AGENT_FIRST_GATE=off \
         bash "${script_path}" >/dev/null 2>&1 <<< "${payload}" || hook_failed=1
+    elif [[ "${hook}" == "stop-dispatch.sh" || "${hook}" == "closeout-preflight.sh" ]]; then
+      hook_args=()
+      [[ "${hook}" == "closeout-preflight.sh" ]] && hook_args=(--posttool-batch)
+      # Bash 3.2 treats an empty array expansion as an unbound variable under
+      # `set -u`. The + form expands to nothing when stop-dispatch has no
+      # positional arguments, while still forwarding --posttool-batch for
+      # closeout-preflight.
+      HOME="${hook_home}" STATE_ROOT="${STATE_ROOT}" \
+        OMC_INFERRED_CONTRACT=off OMC_OBJECTIVE_CONTRACT_GATE=off \
+        OMC_AGENT_FIRST_GATE=off OMC_NO_DEFER_MODE=off OMC_TIME_TRACKING=off \
+        OMC_MODEL_DRIFT_CANARY=off OMC_STOP_FEEDBACK_MODE=legacy \
+        bash "${script_path}" ${hook_args[@]+"${hook_args[@]}"} \
+        >/dev/null 2>&1 <<< "${payload}" || hook_failed=1
     else
       HOME="${hook_home}" STATE_ROOT="${STATE_ROOT}" \
         bash "${script_path}" >/dev/null 2>&1 <<< "${payload}" || hook_failed=1

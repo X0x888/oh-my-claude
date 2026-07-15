@@ -120,6 +120,17 @@ for ledger in pending_agents.jsonl agent_dispatch_starts.jsonl council_dispatche
     > "${SANDBOX_STATE}/${SESSION_ID}/${ledger}"
 done
 
+# Closeout state deliberately carries cumulative objective/candidate context.
+# Seed long secret-bearing values so the support bundle proves these newer
+# fields obey the same 80-character + secret-redaction contract.
+CLOSEOUT_SECRET="sk-ant-ZYXWVUTSRQPONMLKJIHGFE"
+CLOSEOUT_TEXT="Closeout evidence ${CLOSEOUT_SECRET} $(printf 'C%.0s' {1..180})"
+write_state_batch \
+  "closeout_seal_manifest" "${CLOSEOUT_TEXT}" \
+  "closeout_preflight_feedback" "${CLOSEOUT_TEXT}" \
+  "closeout_last_stop_feedback" "${CLOSEOUT_TEXT}" \
+  "closeout_seal_required_anchors" "${CLOSEOUT_TEXT}"
+
 # ---------------------------------------------------------------------------
 # Case 2: run the real omc-repro.sh and inspect the bundled tarball. The
 # prompt_preview field must be truncated to REDACT_CHARS (80) — this is
@@ -173,6 +184,21 @@ assert_eq "bundled prompt_preview is exactly 80 chars" "80" "${BUNDLED_LEN}"
 # schema fields — redaction should not drop the row entirely.
 BUNDLED_INTENT="$(jq -r '.intent' < "${BUNDLED_TEL}")"
 assert_eq "bundled row preserves intent" "advisory" "${BUNDLED_INTENT}"
+
+BUNDLED_STATE="$(find "${EXTRACT_DIR}" -name 'session_state.json' -print -quit)"
+assert_eq "bundled tarball contains session_state.json" "1" \
+  "$([[ -n "${BUNDLED_STATE}" && -s "${BUNDLED_STATE}" ]] && echo 1 || echo 0)"
+for field in closeout_seal_manifest closeout_preflight_feedback \
+    closeout_last_stop_feedback closeout_seal_required_anchors; do
+  bundled_closeout="$(jq -r --arg field "${field}" '.[$field] // ""' "${BUNDLED_STATE}")"
+  assert_le "bundled ${field} is truncated" "80" "${#bundled_closeout}"
+  if [[ "${bundled_closeout}" == *"${CLOSEOUT_SECRET}"* ]]; then
+    printf '  FAIL: bundled %s leaked the raw closeout credential\n' "${field}" >&2
+    fail=$((fail + 1))
+  else
+    pass=$((pass + 1))
+  fi
+done
 
 for ledger in pending_agents.jsonl agent_dispatch_starts.jsonl council_dispatches.jsonl; do
   bundled_ledger="$(find "${EXTRACT_DIR}" -name "${ledger}" -print -quit)"

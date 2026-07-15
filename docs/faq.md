@@ -82,7 +82,7 @@ No — they operate at different layers and compose. Claude Code's `Workflow` to
 
 ### What happens if I already have custom hooks?
 
-The installer merges hook entries from `settings.patch.json` into your existing `settings.json`. If you already have hooks registered for the same events (UserPromptSubmit, Stop, PostToolUse, etc.), the installer adds the harness hooks alongside yours. Multiple hooks on the same event run in the order they appear in the array. Review your `~/.claude/settings.json` after installation to confirm the merge looks correct.
+The installer merges hook entries from `settings.patch.json` into your existing `settings.json`. If you already have hooks registered for the same events (UserPromptSubmit, Stop, PostToolUse, etc.), the installer adds the harness hooks alongside yours. Claude Code runs matching handlers for one event concurrently, not in array order. oh-my-claude therefore owns its internal guard → timing → canary → archive sequence behind one managed `stop-dispatch.sh`; foreign Stop hooks remain valid and run in parallel. Review your `~/.claude/settings.json` after installation to confirm the merge looks correct.
 
 ### Can I use this with a different output style?
 
@@ -92,7 +92,7 @@ Yes. oh-my-claude ships two bundled styles (`oh-my-claude` — compact CLI, defa
 2. **Copy and rename for full customization** — `cp ~/.claude/output-styles/oh-my-claude.md ~/.claude/output-styles/my-style.md` (or copy `executive-brief.md`), change the frontmatter `name:`, then point `outputStyle` in `~/.claude/settings.json` at the new name. Survives `bash install.sh` upgrades.
 3. **Opt out of the bundled style entirely via `output_style=preserve`** — set it in `~/.claude/oh-my-claude.conf` (or via `/omc-config`) and re-run install. The installer leaves your `outputStyle` setting untouched (including a pre-existing custom value, or its absence — Claude Code's built-in `Default` style takes over). Both bundled style files are still copied to `~/.claude/output-styles/` for reference.
 
-Avoid editing the bundled style files in place — `install.sh` rsyncs the bundle on every upgrade and overwrites in-place edits. The harness hooks do not depend on which output style is active; the only requirement is that whatever is set in `outputStyle` resolves to a real file.
+Avoid editing the bundled style files in place — `install.sh` rsyncs the bundle on every upgrade and overwrites in-place edits. A custom style must resolve to a real file and preserve the material-closeout contract after READY: standalone `Changed`/`Shipped`, `Verification`, `Objective coverage` (or `/goal`'s `Goal achieved`), and `Next`, plus `Risks` when anything is deferred. Those labels let the final guard protect cumulative detail regardless of voice or layout.
 
 ### How do I disable a specific quality gate?
 
@@ -102,7 +102,7 @@ Edit `~/.claude/skills/autowork/scripts/stop-guard.sh`. Each gate is an independ
 
 Run `/ulw-time` to see the active session's wall time by bucket — agents (per-subagent), tools (per-tool, with call counts), and idle/model — plus input/output/cache totals and agent-token share. For a single-prompt slice, run `/ulw-time last-prompt`. For a cross-session view answering "which agents are most expensive in my workflow?", run `/ulw-time week` (or `month` / `all`). `/ulw-status summary` adds the top role/model token drivers, while `/ulw-report` provides the deeper economics and stale-review attribution.
 
-Capture is on by default (`time_tracking=on`). The Stop hook also emits a one-line `Time: ...` summary into the next turn's context — that's how the model sees workflow shape between turns. You'll find the same data interactively via the skills above.
+Capture is on by default (`time_tracking=on`). On an accepted Stop, the dispatcher merges the polished time card into the user-visible `systemMessage` above its noise floor; blocked attempts checkpoint timing and token economics silently without ending the prompt. You'll find the same data interactively via the skills above.
 
 ### How do I turn off time tracking?
 

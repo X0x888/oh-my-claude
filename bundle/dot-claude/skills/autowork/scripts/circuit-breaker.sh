@@ -73,6 +73,7 @@ ensure_session_dir
 if ! is_ultrawork_mode; then
   exit 0
 fi
+capture_ulw_enforcement_interval || exit 0
 
 tool_name="$(json_get '.tool_name')"
 # Match only Bash — MCP and other tool failures have different recovery
@@ -129,6 +130,15 @@ prev_target="$(read_state "circuit_target")"
 prev_count="$(read_state "circuit_count")"
 prev_count="${prev_count:-0}"
 
+_circuit_interval_closed=0
+_circuit_write_active_unlocked() {
+  if ! is_ultrawork_mode; then
+    _circuit_interval_closed=1
+    return 0
+  fi
+  _write_state_batch_unlocked "$@"
+}
+
 # Determine whether this is a failure.
 if omc_hook_tool_failed "${HOOK_JSON}"; then
   # Failure on the current target.
@@ -145,11 +155,12 @@ if omc_hook_tool_failed "${HOOK_JSON}"; then
   if (( new_count >= 3 )); then
     # Fire the circuit breaker — reset counter, set quiet window, emit
     # additionalContext via PostToolUse output schema.
-    with_state_lock_batch \
+    with_state_lock _circuit_write_active_unlocked \
       "circuit_target" "" \
       "circuit_count" "" \
       "circuit_quiet_until" "$((now_ts + 60))" \
       "circuit_last_fire_ts" "${now_ts}"
+    [[ "${_circuit_interval_closed}" -eq 0 ]] || exit 0
 
     # Record telemetry. record_gate_event is fire-and-forget; if it
     # fails the breaker still emits its directive (graceful degradation).
@@ -169,14 +180,14 @@ if omc_hook_tool_failed "${HOOK_JSON}"; then
     }'
   else
     # Below threshold — increment counter and keep silent.
-    with_state_lock_batch \
+    with_state_lock _circuit_write_active_unlocked \
       "circuit_target" "${target_hash}" \
       "circuit_count" "${new_count}"
   fi
 else
   # Success — reset counter if it was on this target.
   if [[ "${prev_target}" == "${target_hash}" ]] && [[ -n "${prev_count}" ]]; then
-    with_state_lock_batch \
+    with_state_lock _circuit_write_active_unlocked \
       "circuit_target" "" \
       "circuit_count" ""
   fi

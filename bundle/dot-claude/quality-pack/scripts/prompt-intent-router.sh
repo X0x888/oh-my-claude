@@ -213,6 +213,8 @@ write_state_batch \
   "last_user_prompt" "${_omc_persisted_prompt_safe}" \
   "last_user_prompt_ts" "${PROMPT_TS}" \
   "prompt_revision" "${_prompt_revision}" \
+  "session_outcome" "" \
+  "closeout_dispatch_continuations" "0" \
   "stall_counter" "0" \
   "ulw_pause_active" ""
 
@@ -247,7 +249,32 @@ if [[ "${TASK_INTENT}" == "execution" ]]; then
     "model_uncertainty_deliberator_cycle_id" "" \
     "first_mutation_ts" "" \
     "first_mutation_tool" "" \
-    "god_scope_required" ""
+    "god_scope_required" "" \
+    "closeout_preflight_required" "1" \
+    "closeout_preflight_status" "" \
+    "closeout_preflight_fingerprint" "" \
+    "closeout_preflight_feedback" "" \
+    "closeout_preflight_context_fingerprint" "" \
+    "closeout_seal_fingerprint" "" \
+    "closeout_seal_manifest" "" \
+    "closeout_seal_required_anchors" "" \
+    "closeout_seal_review_cycle_id" "" \
+    "closeout_preflight_blocks" "0" \
+    "closeout_finalized_token" "" \
+    "closeout_finalization_status" "" \
+    "closeout_finalization_claimed_ts" "" \
+    "closeout_display_active_message_id" "" \
+    "closeout_display_watch_message_id" "" \
+    "closeout_display_buffer_message_id" "" \
+    "closeout_display_buffer_overflow" "" \
+    "closeout_display_passthrough_message_id" "" \
+    "closeout_material_activity" "0" \
+    "work_material_generation" "0"
+  rm -f \
+    "$(session_file "provisional_closeouts.jsonl")" \
+    "$(session_file ".closeout-material-generation")" \
+    "$(session_file "closeout-display-buffer.txt")" 2>/dev/null || true
+  rm -rf "$(session_file ".closeout-material-generations")" 2>/dev/null || true
 fi
 if is_prompt_persist_enabled; then
   append_limited_state \
@@ -1340,7 +1367,23 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
 
   TASK_RISK_TIER="$(classify_task_risk_tier "${PROMPT_TEXT}" "${TASK_INTENT}" "${TASK_DOMAIN}")"
 
-  write_state "workflow_mode" "ultrawork"
+  _activate_ulw_interval_unlocked() {
+    local _active _generation
+    _active="$(read_state "ulw_enforcement_active" 2>/dev/null || true)"
+    _generation="$(read_state "ulw_enforcement_generation" 2>/dev/null || true)"
+    [[ "${_generation}" =~ ^[0-9]+$ ]] || _generation=0
+    # A Stop closes every assistant turn. The next real ULW prompt opens a new
+    # generation; duplicate router delivery while already active is idempotent.
+    if [[ "${_active}" != "1" ]]; then
+      _generation=$((_generation + 1))
+    fi
+    _write_state_batch_unlocked \
+      "workflow_mode" "ultrawork" \
+      "ulw_enforcement_active" "1" \
+      "ulw_enforcement_generation" "${_generation}"
+    _OMC_ACTIVE_ULW_GENERATION="${_generation}"
+  }
+  with_state_lock _activate_ulw_interval_unlocked
   write_state "task_domain" "${TASK_DOMAIN}"
   write_state "task_risk_tier" "${TASK_RISK_TIER}"
   write_state "quality_policy" "${OMC_QUALITY_POLICY:-balanced}"
@@ -1469,8 +1512,12 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
     "${PROMPT_TEXT_SAFE}" \
     "${current_pretool_blocks}" || true
 
-  # Sentinel for fast-path exit in PostToolUse hooks (zero-cost check)
+  # Process-wide activation latch for zero-cost hook fast paths. It is not
+  # per-session authority and deliberately remains after a turn releases;
+  # ulw_enforcement_active + workflow_mode decide the addressed session.
   touch "${STATE_ROOT}/.ulw_active"
+  printf '%s\n' "${_OMC_ACTIVE_ULW_GENERATION:-migration}" \
+    >"$(session_file ".ulw_active")"
 
   log_hook "prompt-intent-router" "ulw=on domain=${TASK_DOMAIN} intent=${TASK_INTENT} risk=${TASK_RISK_TIER} policy=${OMC_QUALITY_POLICY:-balanced}"
 

@@ -85,6 +85,8 @@ For advisory, session-management, and checkpoint intents the hook does NOT injec
 
 The dominant `/ulw` shape. After material code or content changes, structure the wrap as:
 
+Render this brief only after `OMC INTERNAL CLOSEOUT PREFLIGHT: READY`. Before readiness, keep working without a completion-shaped candidate. The accepted brief is a self-contained cumulative replacement covering the original objective, every material shipped change, exact verification, finding dispositions, residual risks, and next state—never a thin delta from an earlier Stop attempt. Make no tool calls after the sealed brief begins; new work invalidates readiness and requires a fresh preflight.
+
 ```
 **Headline.** <one sentence: status + what shipped + what is at risk>
 
@@ -96,6 +98,8 @@ The dominant `/ulw` shape. After material code or content changes, structure the
 
 **Verification.**
 - `<command or verification tool>` → `<result>` (exit `0`, `N tests pass`, observed assertion). If no automated verification ran, say so explicitly and name the clean review pass instead.
+
+**Objective coverage.** <one concise whole-task attestation; `/goal` may use its stricter `**Goal achieved.**` criteria block instead>
 
 **Risks.**
 - <named risk or open item; if something was deferred, name the WHY>
@@ -110,7 +114,7 @@ Use the horizontal rule between Headline and the body when the report has more t
 
 For verified adjacent fixes the Serendipity Rule allows, emit a `Serendipity:` line above `**Next.**` so the audit-log convention in `core.md` is preserved (the colon form is intentional).
 
-Skip the structure entirely when a single sentence captures both the change and the verification — a one-line config tweak does not need a six-section brief.
+Only no-material answers may skip the structure. Once a material ULW turn is sealed, even a one-line change retains `**Shipped.**`, `**Verification.**`, `**Objective coverage.**`, and `**Next.**`; optional Headline, Risks, and Asks still earn their space normally.
 
 ### Status update — multi-wave or in-flight work
 

@@ -349,9 +349,9 @@ rm -f "${sentinel_dir2}/.ulw_active"
 
 # ----------------------------------------------------------------------
 printf 'Test 13: soft-nudge handoff — record-plan sets pending flag, reflect-after-agent surfaces it as PostToolUse additionalContext, then clears it (one-shot)\n'
-# Regression net for the SubagentStop additionalContext silent-drop bug:
-# record-plan.sh used to emit `hookSpecificOutput.additionalContext` from
-# a SubagentStop hook (which Claude Code drops silently). The fix moves
+# Regression net for the legacy-client SubagentStop context gap:
+# record-plan.sh once emitted the nudge directly from SubagentStop, which
+# older Claude Code clients dropped. The compatibility path moves
 # the soft nudge to a state handoff: record-plan sets
 # plan_complexity_nudge_pending="1", and reflect-after-agent.sh (a
 # PostToolUse Agent hook where additionalContext IS supported) reads

@@ -37,6 +37,15 @@ fi
 
 ensure_session_dir
 
+# Direct non-ULW Agent use keeps its historical summary behavior. Once a
+# session has entered OMC, however, all authoritative completion effects are
+# bound to the exact enforcement generation that dispatched the agent.
+if [[ "$(workflow_mode)" == "ultrawork" \
+    || -n "$(read_state "ulw_enforcement_generation" 2>/dev/null || true)" ]]; then
+  is_ultrawork_mode || exit 0
+  capture_ulw_enforcement_interval || exit 0
+fi
+
 # A stale frozen-batch retry may carry an explicit dispatch binding. Trust it
 # only when the exact bounded ID line immediately precedes the final universal
 # VERDICT. Without that tail contract, cleanup deliberately removes only an
@@ -125,6 +134,12 @@ _claim_summary_pending_unlocked() {
   _summary_claim_owned=0
   _summary_cleanup_allowed=0
   _current_council_pending_json=""
+
+  if [[ -n "${_OMC_ULW_CAPTURED_GENERATION+x}" ]] \
+      && ! is_ultrawork_mode; then
+    _summary_dispatch_suppression_reason="enforcement-interval-closed"
+    return 0
+  fi
 
   local native_tracking_version bindings_file
   native_tracking_version="$(read_state "native_agent_id_tracking_version")"
@@ -571,6 +586,33 @@ if [[ "${_summary_claim_owned}" -eq 1 \
   done
 fi
 
+# Revalidate the exact generation and durable claim after the test/real-world
+# scheduling gap, before any summary, design, scope, Council, or uncertainty
+# side effect. `/ulw-off` refuses a live claim under this same state lock.
+_summary_claim_still_authorized_unlocked() {
+  local pending_file claim_id
+  [[ "${_summary_claim_owned}" -eq 1 ]] || return 1
+  if [[ -n "${_OMC_ULW_CAPTURED_GENERATION+x}" ]] \
+      && ! is_ultrawork_mode; then
+    return 1
+  fi
+  pending_file="$(session_file "pending_agents.jsonl")"
+  claim_id="${_summary_completion_claim_id}"
+  [[ -n "${claim_id}" && -s "${pending_file}" ]] || return 1
+  jq -Rse --arg claim "${claim_id}" '
+    any(split("\n")[] | select(length > 0);
+      (try fromjson catch {})
+      | (.completion_claim_id // "") == $claim)
+  ' "${pending_file}" >/dev/null 2>&1
+}
+if [[ "${_summary_dispatch_suppressed}" -ne 1 \
+    && "${_summary_claim_owned}" -eq 1 ]] \
+    && ! with_state_lock _summary_claim_still_authorized_unlocked; then
+  log_hook "record-subagent-summary" \
+    "discarded ${AGENT_TYPE} result reason=enforcement-interval-closed-or-claim-lost"
+  exit 0
+fi
+
 if [[ "${_summary_dispatch_suppressed}" -ne 1 ]]; then
 SUMMARY_MESSAGE_SAFE="$(printf '%s' "${LAST_ASSISTANT_MESSAGE}" | omc_redact_secrets | tr -d '\000')"
 append_limited_state \
@@ -852,8 +894,16 @@ _append_current_council_return_unlocked() {
 _finalize_summary_completion_unlocked() {
   local pending_file matched_pending_json="" keep_claim=0
   pending_file="$(session_file "pending_agents.jsonl")"
-  [[ -f "${pending_file}" ]] || return 0
-  [[ -s "${pending_file}" ]] || return 0
+  if [[ "${_summary_claim_owned}" -eq 1 ]]; then
+    if [[ -n "${_OMC_ULW_CAPTURED_GENERATION+x}" ]] \
+        && ! is_ultrawork_mode; then
+      return 1
+    fi
+    [[ -s "${pending_file}" ]] || return 1
+  else
+    [[ -f "${pending_file}" ]] || return 0
+    [[ -s "${pending_file}" ]] || return 0
+  fi
 
   [[ "${_summary_cleanup_allowed}" -eq 1 ]] || return 0
 
@@ -908,6 +958,7 @@ _finalize_summary_completion_unlocked() {
 
   if [[ "${skipped}" -ne 1 ]]; then
     rm -f "${temp_file}"
+    [[ "${_summary_claim_owned}" -eq 1 ]] && return 1
     return 0
   fi
 
