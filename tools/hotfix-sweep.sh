@@ -23,7 +23,9 @@
 #      are CI-fatal under --severity=warning.
 #
 #   4. Lib-reachability check: every modified bundle/.../lib/*.sh
-#      since the last tag must have a CI-pinned tests/test-${name}.sh
+#      since the last tag must have a CI-pinned tests/test-${name}.sh.
+#      Pin membership comes from the shared extractor so dynamic
+#      `tools/run-tests.sh --full` workflows count correctly
 #      (test-coordination-rules.sh contract C3, regressed here as
 #      a pre-tag check rather than a post-CI block).
 #
@@ -181,33 +183,41 @@ fi
 if [[ "${FIX_SHAPED}" -eq 1 ]]; then
   printf '  [run]  lib-reachability ...'
   lib_orphans=()
-  while IFS= read -r f; do
-    [[ -z "${f}" ]] && continue
-    case "${f}" in
-      # v1.47: bundle-scoped, matching the C3 contract this check mirrors
-      # (test-coordination-rules.sh:250 pins LIB_DIR to the bundle lib dir).
-      # The former bare `*/lib/*.sh` glob also caught tests/lib/*.sh helper
-      # libs (e.g. composition-stubs.sh, exercised by three CI-pinned
-      # readiness tests, not a runtime lib) — surfaced when the untagged
-      # v1.44.0 stretched the diff window back to v1.43.0.
-      *bundle/*/lib/*.sh)
-        libname="$(basename "${f}" .sh)"
-        # Codify the verification.sh exception (same as
-        # test-coordination-rules.sh:C3).
-        if [[ "${libname}" == "verification" ]]; then
-          expected_test="${REPO_ROOT}/tests/test-verification-lib.sh"
-        else
-          expected_test="${REPO_ROOT}/tests/test-${libname}.sh"
-        fi
-        if [[ ! -f "${expected_test}" ]]; then
-          lib_orphans+=("${f}")
-        elif ! grep -qE "^\s+run:\s+bash tests/test-${libname}(-lib)?\.sh" \
-              "${REPO_ROOT}/.github/workflows/validate.yml" 2>/dev/null; then
-          lib_orphans+=("${f} (test exists but not CI-pinned)")
-        fi
-        ;;
-    esac
-  done <<<"${CHANGED_FILES}"
+  if ! ci_pinned_tests="$(
+    bash "${REPO_ROOT}/tools/list-ci-pinned-tests.sh" \
+      "${REPO_ROOT}/.github/workflows/validate.yml" \
+      2>/tmp/hotfix-sweep-ci-pins.log
+  )"; then
+    lib_orphans+=("CI-pin extraction failed (see /tmp/hotfix-sweep-ci-pins.log)")
+  else
+    while IFS= read -r f; do
+      [[ -z "${f}" ]] && continue
+      case "${f}" in
+        # v1.47: bundle-scoped, matching the C3 contract this check mirrors
+        # (test-coordination-rules.sh:250 pins LIB_DIR to the bundle lib dir).
+        # The former bare `*/lib/*.sh` glob also caught tests/lib/*.sh helper
+        # libs (e.g. composition-stubs.sh, exercised by three CI-pinned
+        # readiness tests, not a runtime lib) — surfaced when the untagged
+        # v1.44.0 stretched the diff window back to v1.43.0.
+        *bundle/*/lib/*.sh)
+          libname="$(basename "${f}" .sh)"
+          # Codify the verification.sh exception (same as
+          # test-coordination-rules.sh:C3).
+          if [[ "${libname}" == "verification" ]]; then
+            expected_test="${REPO_ROOT}/tests/test-verification-lib.sh"
+          else
+            expected_test="${REPO_ROOT}/tests/test-${libname}.sh"
+          fi
+          expected_test_rel="${expected_test#"${REPO_ROOT}/"}"
+          if [[ ! -f "${expected_test}" ]]; then
+            lib_orphans+=("${f}")
+          elif ! grep -Fxq "${expected_test_rel}" <<<"${ci_pinned_tests}"; then
+            lib_orphans+=("${f} (test exists but not CI-pinned)")
+          fi
+          ;;
+      esac
+    done <<<"${CHANGED_FILES}"
+  fi
   if [[ "${#lib_orphans[@]}" -eq 0 ]]; then
     printf ' OK\n'
   else

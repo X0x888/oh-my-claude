@@ -21,6 +21,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT_REAL="$(cd "${SCRIPT_DIR}/.." && pwd)"
 TOOL_REAL="${REPO_ROOT_REAL}/tools/hotfix-sweep.sh"
+CI_PIN_HELPER_REAL="${REPO_ROOT_REAL}/tools/list-ci-pinned-tests.sh"
 
 pass=0
 fail=0
@@ -59,12 +60,11 @@ mk_fixture_repo() {
     mkdir -p tools tests bundle/dot-claude/skills/autowork/scripts/lib \
              .github/workflows
     cp "${TOOL_REAL}" "tools/hotfix-sweep.sh"
-    chmod +x "tools/hotfix-sweep.sh"
-    # Minimal validate.yml so lib-reachability check has a workflow
-    # to grep. Pin one fake test so we can test pinned vs unpinned.
-    # Format MUST match the real repo's pattern: `run:` on its own
-    # line, 8-space indented, no leading `-`. The lib-reachability
-    # regex `^\s+run:\s+bash tests/test-X` depends on that shape.
+    cp "${CI_PIN_HELPER_REAL}" "tools/list-ci-pinned-tests.sh"
+    chmod +x tools/hotfix-sweep.sh tools/list-ci-pinned-tests.sh
+    # Minimal validate.yml so lib-reachability has one directly pinned
+    # fake test. The shared extractor also accepts env-prefixed,
+    # compound, block, and dynamic full-suite forms.
     cat > .github/workflows/validate.yml <<'YAML'
 name: Validate
 on:
@@ -185,6 +185,65 @@ assert_contains "T5: All checks passed" "All checks passed" "${out}"
 cleanup_fixture "${repo}"
 
 # ---------------------------------------------------------------------
+printf 'Test 5b: dynamic full-suite runner counts a matching test as CI-pinned\n'
+repo="$(mk_fixture_repo)"
+cat > "${repo}/.github/workflows/validate.yml" <<'YAML'
+name: Validate
+on:
+  push:
+    branches: [main]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run full native suite
+        run: bash tools/run-tests.sh --full --shard "1/4"
+YAML
+cat > "${repo}/bundle/dot-claude/skills/autowork/scripts/lib/dynamic.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "dynamic"
+SH
+cat > "${repo}/tests/test-dynamic.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "test-dynamic"
+SH
+chmod +x "${repo}/tests/test-dynamic.sh"
+(cd "${repo}" && git add -A && git commit -q -m "lib + dynamically pinned test")
+set +e
+out="$(cd "${repo}" && bash tools/hotfix-sweep.sh --quick 2>&1)"
+rc=$?
+set -e
+assert_eq "T5b: dynamic full-suite pin exits 0" "0" "${rc}"
+assert_contains "T5b: dynamic full-suite pin passes reachability" "lib-reachability ... OK" "${out}"
+cleanup_fixture "${repo}"
+
+# ---------------------------------------------------------------------
+printf 'Test 5c: CI-pin extractor failure blocks the sweep explicitly\n'
+repo="$(mk_fixture_repo)"
+cat > "${repo}/bundle/dot-claude/skills/autowork/scripts/lib/foo.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "foo"
+SH
+cat > "${repo}/tests/test-foo.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "test-foo"
+SH
+chmod +x "${repo}/tests/test-foo.sh"
+rm "${repo}/tools/list-ci-pinned-tests.sh"
+(cd "${repo}" && git add -A && git commit -q -m "lib + missing CI-pin extractor")
+set +e
+out="$(cd "${repo}" && bash tools/hotfix-sweep.sh --quick 2>&1)"
+rc=$?
+set -e
+assert_eq "T5c: missing CI-pin extractor exits non-zero" "1" "${rc}"
+assert_contains "T5c: extractor failure is explicit" "CI-pin extraction failed" "${out}"
+cleanup_fixture "${repo}"
+
+# ---------------------------------------------------------------------
 printf 'Test 6: --quick mode skips sterile-env with warning\n'
 repo="$(mk_fixture_repo)"
 # Just create some change so it's not no-op
@@ -221,7 +280,8 @@ no_tag_repo="$(mktemp -d -t hotfix-sweep-notag-XXXXXX)"
   mkdir -p tools tests bundle/dot-claude/skills/autowork/scripts/lib \
            .github/workflows
   cp "${TOOL_REAL}" "tools/hotfix-sweep.sh"
-  chmod +x "tools/hotfix-sweep.sh"
+  cp "${CI_PIN_HELPER_REAL}" "tools/list-ci-pinned-tests.sh"
+  chmod +x tools/hotfix-sweep.sh tools/list-ci-pinned-tests.sh
   cat > .github/workflows/validate.yml <<'YAML'
 name: Validate
 on:
