@@ -84,6 +84,35 @@ assert_eq "token line normalizes numeric JSON strings" \
   "tokens   in 8 (0% cached) · out 8" \
   "$(timing_token_line '{"tokens_main_in":"08","tokens_main_out":"08"}')"
 
+# GNU `stat -f` is filesystem mode: with a bogus FORMAT operand it can emit a
+# filesystem report for the valid file and still fail. Identity capture must
+# prefer GNU `-c` and must never accept that failed probe's stdout as an inode.
+printf '\n--- portable stat identity probes ---\n'
+: > "${TRANSCRIPT}"
+# shellcheck disable=SC2329
+stat() {
+  if [[ "${1:-}" == "-c" ]]; then
+    printf '%s\n' '123:456'
+    return 0
+  fi
+  printf '%s\n' 'GNU filesystem report'
+  return 1
+}
+assert_eq "GNU stat identity ignores BSD-probe filesystem output" \
+  "123:456" "$(_timing_file_identity "${TRANSCRIPT}")"
+# shellcheck disable=SC2329
+stat() {
+  if [[ "${1:-}" == "-c" ]]; then
+    printf '%s\n' 'unsupported GNU probe output'
+    return 1
+  fi
+  printf '%s\n' '789:1011'
+  return 0
+}
+assert_eq "BSD stat identity replaces failed GNU-probe stdout" \
+  "789:1011" "$(_timing_file_identity "${TRANSCRIPT}")"
+unset -f stat
+
 # --- capture: first call on a FRESH session (seq 1, cursor 0 -> 5) --------
 printf '\n--- timing_capture_session_tokens: first capture ---\n'
 new_session
@@ -818,14 +847,12 @@ assert_eq "many sidechains: manifest is persisted" "1" \
   "$([[ -n "$(read_state token_agent_transcript_manifest)" ]] && printf '1' || printf '0')"
 
 _identity_probe="${TEST_HOME}/identity-probe.log"
+eval "$(declare -f _timing_file_identity \
+  | sed '1s/^_timing_file_identity /_timing_file_identity_probe_real /')"
 _timing_file_identity() {
-  local _probe_file="${1:-}" _probe_identity=""
+  local _probe_file="${1:-}"
   printf '%s\n' "${_probe_file}" >> "${_identity_probe}"
-  _probe_identity="$(stat -f '%d:%i' "${_probe_file}" 2>/dev/null || true)"
-  [[ -n "${_probe_identity}" ]] \
-    || _probe_identity="$(stat -c '%d:%i' "${_probe_file}" 2>/dev/null || true)"
-  [[ -n "${_probe_identity}" ]] || _probe_identity="path:${_probe_file}"
-  printf '%s' "${_probe_identity}"
+  _timing_file_identity_probe_real "${_probe_file}"
 }
 timing_capture_session_tokens "${TRANSCRIPT}" 2
 assert_eq "many sidechains: unchanged recapture stats only the parent" "1" \

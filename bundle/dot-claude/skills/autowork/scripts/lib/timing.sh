@@ -318,11 +318,17 @@ _cap_per_session_jsonl() {
 _timing_file_identity() {
   local file="${1:-}" ident=""
   [[ -f "${file}" ]] || return 1
-  # BSD/macOS stat first, then GNU stat. The path fallback remains stable
-  # across appends; row-count shrink detection still protects rewrites on an
-  # exotic platform without either stat dialect.
-  ident="$(stat -f '%d:%i' "${file}" 2>/dev/null || true)"
-  [[ -n "${ident}" ]] || ident="$(stat -c '%d:%i' "${file}" 2>/dev/null || true)"
+  # GNU stat must be tried first: on Linux `stat -f FORMAT FILE` means
+  # filesystem mode and can emit a mutable filesystem report for FILE even
+  # while returning failure for FORMAT. Keep each probe in its own assignment
+  # so failed-command stdout can never contaminate the fallback value.
+  ident="$(stat -c '%d:%i' "${file}" 2>/dev/null)" || ident=""
+  if [[ ! "${ident}" =~ ^[0-9]+:[0-9]+$ ]]; then
+    ident="$(stat -f '%d:%i' "${file}" 2>/dev/null)" || ident=""
+  fi
+  [[ "${ident}" =~ ^[0-9]+:[0-9]+$ ]] || ident=""
+  # The path fallback remains stable across appends; row-count shrink
+  # detection still protects rewrites on an exotic stat implementation.
   [[ -n "${ident}" ]] || ident="path:${file}"
   printf '%s' "${ident}"
 }
@@ -330,9 +336,10 @@ _timing_file_identity() {
 _timing_file_size() {
   local file="${1:-}" size=""
   [[ -f "${file}" ]] || return 1
-  size="$(stat -f '%z' "${file}" 2>/dev/null || true)"
-  [[ "${size}" =~ ^[0-9]+$ ]] \
-    || size="$(stat -c '%s' "${file}" 2>/dev/null || true)"
+  size="$(stat -c '%s' "${file}" 2>/dev/null)" || size=""
+  if [[ ! "${size}" =~ ^[0-9]+$ ]]; then
+    size="$(stat -f '%z' "${file}" 2>/dev/null)" || size=""
+  fi
   [[ "${size}" =~ ^[0-9]+$ ]] || return 1
   printf '%s' "${size}"
 }
@@ -376,13 +383,13 @@ _timing_snapshot_line_count() {
 _timing_agent_transcript_manifest() {
   local dir="${1:-}"
   [[ -d "${dir}" ]] || return 0
-  if stat -f '%d:%i:%z:%m' "${dir}" >/dev/null 2>&1; then
+  if stat -c '%d:%i:%s:%Y' "${dir}" >/dev/null 2>&1; then
     find "${dir}" -maxdepth 1 -type f -name '*.jsonl' \
-      -exec stat -f $'%N\t%d:%i\t%z\t%m' {} + 2>/dev/null \
+      -exec stat -c $'%n\t%d:%i\t%s\t%Y' {} + 2>/dev/null \
       | LC_ALL=C sort
   else
     find "${dir}" -maxdepth 1 -type f -name '*.jsonl' \
-      -exec stat -c $'%n\t%d:%i\t%s\t%Y' {} + 2>/dev/null \
+      -exec stat -f $'%N\t%d:%i\t%z\t%m' {} + 2>/dev/null \
       | LC_ALL=C sort
   fi
 }
@@ -740,10 +747,10 @@ _timing_sum_new_agent_files() {
   # stat forks per sidechain. Then validate the original identities/sizes with
   # one directory manifest walk. Appends are allowed (`current >= snapshot`):
   # they remain after the stored byte cursor for the next Stop.
-  if stat -f '%z' "${snapshot_files[0]}" >/dev/null 2>&1; then
-    stat_lines="$(stat -f $'%N\t%z' "${snapshot_files[@]}" 2>/dev/null || true)"
-  else
+  if stat -c '%s' "${snapshot_files[0]}" >/dev/null 2>&1; then
     stat_lines="$(stat -c $'%n\t%s' "${snapshot_files[@]}" 2>/dev/null || true)"
+  else
+    stat_lines="$(stat -f $'%N\t%z' "${snapshot_files[@]}" 2>/dev/null || true)"
   fi
   snapshot_stat_meta="$(printf '%s\n' "${stat_lines}" | jq -Rsc '
     split("\n") | map(select(length > 0) | split("\t"))
