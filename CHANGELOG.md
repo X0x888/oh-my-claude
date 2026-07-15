@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.50.0] - 2026-07-15
+
 ### Quiet closeout certification: one cumulative final instead of a Stop-summary waterfall
 
 **Why.** A detailed first completion could be displayed before Stop found an unmet gate. Claude then did the missing work and emitted a shorter retry, leaving the user's most useful explanation stranded in an earlier summary. Four separately configured Stop handlers also appeared ordered in settings even though Claude Code runs matching handlers concurrently, so timing, canary, archive, and guard output could race.
