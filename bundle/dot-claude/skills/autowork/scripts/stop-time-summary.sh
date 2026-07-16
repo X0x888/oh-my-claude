@@ -43,6 +43,7 @@ SESSION_ID="$(json_get '.session_id')"
 [[ -z "${SESSION_ID}" ]] && exit 0
 
 ensure_session_dir 2>/dev/null || exit 0
+omc_enforcement_generation_matches_capture || exit 0
 gate_events_path="$(session_file "gate_events.jsonl")"
 
 # --- Detect a block from this exact Stop attempt (card suppression only) ---

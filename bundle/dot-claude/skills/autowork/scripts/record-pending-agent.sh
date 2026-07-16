@@ -1673,7 +1673,8 @@ _append_pending() {
   local _edit_rev _code_rev _doc_rev _bash_rev _ui_rev _plan_rev pending_entry
   local _is_stateful=0 _review_revision=0
   local _review_batch_id="" _objective_prompt_ts=0 _objective_prompt_revision=0
-  local _objective_cycle_id=0
+  local _objective_cycle_id=0 _enforcement_generation="migration"
+  local _lifecycle_dispatch_id=""
 
   # Recheck per-session authority inside the lock so a PreToolUse hook that
   # was already waiting cannot recreate a row after /ulw-off or Stop closed
@@ -1682,6 +1683,10 @@ _append_pending() {
     return 0
   fi
   _validate_dispatch_registry_artifacts_unlocked || return 1
+  # Finish any cleanup transaction whose durable ignored outcome was committed
+  # before its producer died. Admission must see the converged ledgers, not
+  # deny a mandatory replacement on a row already retired in durable intent.
+  omc_reconcile_all_ignored_completion_cleanups_unlocked || return 1
   _backfill_abandoned_dispatch_taints_unlocked || return 1
   # Once an identity has ever been abandoned in this session, an arbitrarily
   # late no-ID result remains possible even after bounded tombstones rotate.
@@ -1782,6 +1787,7 @@ _append_pending() {
     || _objective_prompt_revision=0
   _objective_cycle_id="$(read_state "review_cycle_id")"
   [[ "${_objective_cycle_id}" =~ ^[0-9]+$ ]] || _objective_cycle_id=0
+  _enforcement_generation="${_OMC_ULW_CAPTURED_GENERATION:-migration}"
   if [[ "${review_batch_requested}" -eq 1 ]] \
       && [[ "$(read_state "council_phase8_active")" == "1" ]]; then
     # Every dispatch on the same settled objective/edit generation receives
@@ -1793,6 +1799,11 @@ _append_pending() {
     _is_stateful=1
     _review_revision="$(_gate_reviewer_start_revision "${subagent_type}")"
   fi
+  _lifecycle_dispatch_id="dispatch-$(_omc_token_digest \
+    "${SESSION_ID}|${subagent_type}|$(now_epoch)|$$|${RANDOM}" \
+    2>/dev/null || true)"
+  [[ "${_lifecycle_dispatch_id}" =~ ^dispatch-[A-Za-z0-9._:-]{8,80}$ ]] \
+    || return 1
   pending_entry="$(jq -nc \
     --argjson ts "$(now_epoch)" \
     --arg agent_type "${subagent_type}" \
@@ -1811,18 +1822,22 @@ _append_pending() {
     --argjson objective_prompt_ts "${_objective_prompt_ts}" \
     --argjson objective_prompt_revision "${_objective_prompt_revision}" \
     --argjson objective_cycle_id "${_objective_cycle_id}" \
+    --arg enforcement_generation "${_enforcement_generation}" \
+    --arg lifecycle_dispatch_id "${_lifecycle_dispatch_id}" \
     --arg review_batch_id "${_review_batch_id}" \
     --arg review_dispatch_id "${review_rebind_id}" \
     --argjson is_stateful "${_is_stateful}" \
     --argjson review_dispatch_causality_version "${REVIEW_DISPATCH_CAUSALITY_VERSION}" \
     --argjson review_revision "${_review_revision}" \
     '{ts:$ts,agent_type:$agent_type,description:$description,
+      lifecycle_dispatch_id:$lifecycle_dispatch_id,
       edit_revision:$edit_revision,code_revision:$code_revision,
       doc_revision:$doc_revision,bash_revision:$bash_revision,
       ui_revision:$ui_revision,plan_revision:$plan_revision,
       objective_prompt_ts:$objective_prompt_ts,
       objective_prompt_revision:$objective_prompt_revision,
-      objective_cycle_id:$objective_cycle_id}
+      objective_cycle_id:$objective_cycle_id,
+      ulw_enforcement_generation:$enforcement_generation}
      + if $is_stateful == 1 then {
          review_dispatch_causality_version:$review_dispatch_causality_version,
          review_revision:$review_revision

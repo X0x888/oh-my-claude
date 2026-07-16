@@ -15,9 +15,10 @@
 #      bg_work_dispatched_ts.
 #   2. format_gate_block_dual appends a conditional waiting note when
 #      _OMC_BG_WORK_PENDING_NOTE is set.
-#   3. stop-guard consumes the marker single-shot (so it cannot stale into
-#      a later turn) and the note is MESSAGE-ONLY — the block/release
-#      decision is unchanged (no bypass).
+#   3. stop-guard consumes the marker single-shot and emits the note only when
+#      the Stop registry still reports live work (or the field is omitted by
+#      an old client). Present-empty is authoritative and cannot promise a
+#      notification. The note remains message-only, never a gate bypass.
 
 set -euo pipefail
 
@@ -61,6 +62,57 @@ state_get() { jq -r --arg k "$1" '.[$k] // ""' "${STATE_ROOT}/${SESSION_ID}/sess
 # --- Layer 2: format_gate_block_dual note injection ----------------------
 printf '\n--- format_gate_block_dual waiting note ---\n'
 unset _OMC_BG_WORK_PENDING_NOTE
+
+# --- Runtime registry: absent is not empty; terminal rows are not live -----
+printf '\n--- Stop runtime registry classification ---\n'
+assert_eq "runtime field omitted -> unknown/absent" "absent" \
+  "$(omc_stop_runtime_array_state '{}' 'background_tasks')"
+assert_eq "present empty registry -> authoritative empty" "empty" \
+  "$(omc_stop_runtime_array_state '{"background_tasks":[]}' 'background_tasks')"
+assert_eq "running task -> live" "live" \
+  "$(omc_stop_runtime_array_state \
+    '{"background_tasks":[{"id":"a","status":"running"}]}' \
+    'background_tasks')"
+assert_eq "terminal task rows -> empty" "empty" \
+  "$(omc_stop_runtime_array_state \
+    '{"background_tasks":[{"id":"a","status":"completed"}]}' \
+    'background_tasks')"
+assert_eq "killed task row -> empty" "empty" \
+  "$(omc_stop_runtime_array_state \
+    '{"background_tasks":[{"id":"a","status":"killed"}]}' \
+    'background_tasks')"
+assert_eq "malformed registry remains unknown" "malformed" \
+  "$(omc_stop_runtime_array_state '{"background_tasks":null}' 'background_tasks')"
+assert_eq "object without task status remains unknown" "malformed" \
+  "$(omc_stop_runtime_array_state '{"background_tasks":[{}]}' 'background_tasks')"
+assert_eq "null task status remains unknown" "malformed" \
+  "$(omc_stop_runtime_array_state \
+    '{"background_tasks":[{"id":"a","status":null}]}' \
+    'background_tasks')"
+
+canonical_wait_line="⏳ Waiting on the quality-reviewer — running in the background; I'll resume automatically when it finishes. Nothing for you to do."
+assert_eq "structural final auto-resume line -> background wait" "background" \
+  "$(omc_stop_wait_claim_kind "${canonical_wait_line}")"
+assert_eq "quoted wait example followed by ordinary prose -> not a wait" "" \
+  "$(omc_stop_wait_claim_kind \
+    $'> ⏳ Waiting on example — I\'ll resume automatically. Nothing for you to do.\nThis documentation update is complete.' 2>/dev/null || true)"
+assert_eq "auto-resume words in report body -> not a wait" "" \
+  "$(omc_stop_wait_claim_kind \
+    $'The worker said it would resume automatically in the background.\nVerification is complete.' 2>/dev/null || true)"
+assert_eq "progress-only waiting line -> not a promised wake" "" \
+  "$(omc_stop_wait_claim_kind '⏳ Waiting on review evidence.' 2>/dev/null || true)"
+assert_eq "scheduled-wake shape remains distinct" "scheduled" \
+  "$(omc_stop_wait_claim_kind \
+    '⏳ Waiting for the scheduled fallback — this session will wake for the next check. Nothing for you to do.')"
+assert_eq "final blockquoted wait example -> not a wait" "" \
+  "$(omc_stop_wait_claim_kind \
+    "> ${canonical_wait_line}" 2>/dev/null || true)"
+assert_eq "unknown namespaced reviewer keeps custom behavior" "" \
+  "$(omc_enforced_terminal_contract_kind \
+    'thirdparty:quality-reviewer' 2>/dev/null || true)"
+assert_eq "official plugin reviewer keeps its own output contract" "" \
+  "$(omc_enforced_terminal_contract_kind \
+    'feature-dev:code-reviewer' 2>/dev/null || true)"
 assert_eq "no flag -> no note" "0" \
   "$(format_gate_block_dual "you stopped" "do X" | grep -c 'this block is expected' || true)"
 _OMC_BG_WORK_PENDING_NOTE=1
@@ -101,13 +153,25 @@ write_state last_edit_ts "200"
 write_state bg_work_dispatched_ts "150"
 _blockmsg='Next. If you want Wave 7-9 shipped in this session, I can continue -- say "keep going" and name which to prioritize. Otherwise this is a clean stopping point.'
 out="$(jq -n --arg sid "${SESSION_ID}" --arg msg "${_blockmsg}" \
-  '{session_id:$sid, stop_hook_active:false, last_assistant_message:$msg}' \
+  '{session_id:$sid, stop_hook_active:false, last_assistant_message:$msg,
+    background_tasks:[{id:"bg-1",type:"bash",status:"running"}],session_crons:[]}' \
   | bash "${HOOK_DIR}/stop-guard.sh" 2>/dev/null || true)"
 assert_eq "block STILL fires with bg marker (decision unchanged)" "1" \
   "$(printf '%s' "${out}" | grep -c '"decision":"block"' || true)"
 assert_eq "block message carries the waiting note" "1" \
   "$(printf '%s' "${out}" | grep -c 'this block is expected' || true)"
 assert_eq "bg marker consumed single-shot" "" "$(state_get bg_work_dispatched_ts)"
+
+# A stale dispatch marker plus a present-empty level registry must not make the
+# exact promise implicated in the incident.
+write_state bg_work_dispatched_ts "151"
+empty_runtime_out="$(jq -n --arg sid "${SESSION_ID}" --arg msg "${_blockmsg}" \
+  '{session_id:$sid, stop_hook_active:false, last_assistant_message:$msg,
+    background_tasks:[],session_crons:[]}' \
+  | bash "${HOOK_DIR}/stop-guard.sh" 2>/dev/null || true)"
+assert_eq "authoritative empty registry suppresses waiting note" "0" \
+  "$(printf '%s' "${empty_runtime_out}" | grep -c 'this block is expected' || true)"
+assert_eq "empty-registry marker still consumed" "" "$(state_get bg_work_dispatched_ts)"
 
 # Second Stop, marker now empty (consumed): same block, NO note -> proves
 # the note cannot stale into a later, unrelated block.

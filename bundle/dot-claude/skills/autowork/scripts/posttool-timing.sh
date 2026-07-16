@@ -31,9 +31,10 @@ tool_name="$(json_get '.tool_name')"
 
 tool_use_id="$(json_get '.tool_use_id')"
 
-# v1.46-pre: flag a background Bash dispatch so the Stop path can tell the
-# user "waiting, not stopped" (see stop-guard's background-dispatch note +
-# the output-style "Waiting on background work" shape). Two-stage to stay
+# Retain the legacy background-Bash edge marker for old-client/message-only
+# hints. It is never proof that work remains live: current Stop processing
+# reconciles the level `background_tasks` registry before promising a wake.
+# Two-stage detection stays
 # cheap AND precise: (1) a fork-free substring pre-filter on the raw
 # HOOK_JSON, then (2) — only on the rare pre-filter hit — CONFIRM the marker
 # is in `.tool_response` (the dispatch confirmation), not the command text
@@ -41,9 +42,8 @@ tool_use_id="$(json_get '.tool_use_id')"
 # set the flag. The json_get fork fires only on the pre-filter hit, so the
 # common PostToolUse path stays fork-free. The marker is single-shot —
 # stop-guard consumes it — so it cannot persist into a later turn. This is
-# the Bash background marker specifically; other background tools (e.g. an
-# Agent dispatch) are covered by the behavioral "Waiting on background work"
-# announcement, not this marker.
+# the Bash background marker specifically; all tool types use the Stop-level
+# registry for first-class WAIT/dead-wait decisions.
 if [[ "${HOOK_JSON}" == *"running in background with ID:"* ]] \
    && [[ "$(json_get '.tool_response' 2>/dev/null || true)" == *"running in background with ID:"* ]]; then
   write_state "bg_work_dispatched_ts" "$(now_epoch)" 2>/dev/null || true

@@ -95,19 +95,34 @@ SESSION_ID="$(jq -r '.session_id // ""' <<<"${HOOK_JSON}" 2>/dev/null || true)"
 _dispatch_state_root="${STATE_ROOT:-${HOME}/.claude/quality-pack/state}"
 _dispatch_state_file="${_dispatch_state_root}/${SESSION_ID}/session_state.json"
 _dispatch_session_marker="${_dispatch_state_root}/${SESSION_ID}/.ulw_active"
-_dispatch_authority="$(jq -r '
-  ((.ulw_enforcement_active // "") | tostring) as $active
-  | if (.workflow_mode // "") == "ultrawork" then
+_dispatch_snapshot_valid=0
+_dispatch_snapshot="$(jq -r '
+  . as $state
+  | (($state.ulw_enforcement_active // "") | tostring) as $active
+  | (if ($state.workflow_mode // "") == "ultrawork" then
       if $active == "1" then "on"
       elif $active == "0" then "off"
-      elif (.session_outcome // "") == "" then "on"
+      elif ($state.session_outcome // "") == "" then "on"
       else "off"
       end
     elif $active == "0" then "off"
-    elif (.workflow_mode // "") == "" and (.session_outcome // "") == "" then "unknown"
+    elif ($state.workflow_mode // "") == ""
+        and ($state.session_outcome // "") == "" then "unknown"
     else "off"
-    end
-' "${_dispatch_state_file}" 2>/dev/null || printf 'unknown')"
+    end) as $authority
+  | [$authority,
+     (($state.ulw_enforcement_generation // "migration") | tostring)]
+  | @tsv
+' "${_dispatch_state_file}" 2>/dev/null \
+  || printf '__OMC_INVALID_STATE__')"
+if [[ "${_dispatch_snapshot}" != "__OMC_INVALID_STATE__" ]]; then
+  _dispatch_snapshot_valid=1
+else
+  _dispatch_snapshot=$'unknown\tmigration'
+fi
+IFS=$'\t' read -r _dispatch_authority _dispatch_initial_generation \
+  <<<"${_dispatch_snapshot}"
+_dispatch_initial_generation="${_dispatch_initial_generation:-migration}"
 if [[ "${_dispatch_authority}" == "on" \
     || ("${_dispatch_authority}" == "unknown" && -f "${_dispatch_session_marker}") ]]; then
   _OMC_DISPATCH_ULW=1
@@ -141,24 +156,87 @@ for _dispatch_bootstrap_file in "${_dispatch_bootstrap_files[@]}"; do
 done
 . "${SCRIPT_DIR}/common.sh"
 ensure_session_dir
+if [[ "${_dispatch_authority}" == "unknown" ]]; then
+  # The exact per-session marker authorizes fail-closed recovery, but a
+  # missing/corrupt/recovered metadata object is not authority to bind this old
+  # Stop payload to whichever interval may exist now. Preserve the candidate
+  # for audit and stop visibly without touching continuation/gate state.
+  _ensure_valid_state
+  _dispatch_unknown_candidate="$(json_get '.last_assistant_message')"
+  closeout_record_provisional "${_dispatch_unknown_candidate}" "1" \
+    2>/dev/null || true
+  jq -nc \
+    --arg reason "oh-my-claude Stop certification is unavailable because the addressed session authority is missing or recovered; this response is not certified. Continue in the same session after authority recovery." \
+    --arg message "oh-my-claude paused closeout because its addressed session authority needs recovery." \
+    '{decision:"block",reason:$reason,systemMessage:$message}'
+  exit 0
+fi
+if [[ "${_dispatch_snapshot_valid}" -eq 1 ]]; then
+  _OMC_ULW_CAPTURED_GENERATION="${_dispatch_initial_generation}"
+  is_ultrawork_mode || exit 0
+else
+  # A malformed/missing addressed state with an exact session marker enters
+  # the existing fail-closed recovery path. Shared state I/O may reconstruct a
+  # safe active object while sourcing; freeze that recovered interval rather
+  # than comparing it to the pre-recovery synthetic `migration` placeholder.
+  capture_ulw_enforcement_interval || _stop_dispatch_fail_closed 1
+fi
 _ulw_before=1
+
+# Deterministic test-only barrier for a queued old Stop callback crossing a
+# release/reactivation boundary after it froze authority but before guard work.
+if [[ -n "${OMC_TEST_STOP_CAPTURE_READY_FILE:-}" \
+    && -n "${OMC_TEST_STOP_CAPTURE_RELEASE_FILE:-}" ]]; then
+  printf 'ready\n' >"${OMC_TEST_STOP_CAPTURE_READY_FILE}"
+  _dispatch_test_wait=0
+  while [[ ! -f "${OMC_TEST_STOP_CAPTURE_RELEASE_FILE}" \
+      && "${_dispatch_test_wait}" -lt 200 ]]; do
+    sleep 0.05
+    _dispatch_test_wait=$((_dispatch_test_wait + 1))
+  done
+fi
 
 _run_stop_child() {
   local script="$1"
   shift
   if [[ "${script}" == "stop-guard.sh" ]]; then
-    printf '%s' "${HOOK_JSON}" | OMC_LAZY_CLASSIFIER=0 OMC_LAZY_TIMING=0 \
+    printf '%s' "${HOOK_JSON}" \
+      | _OMC_ULW_CAPTURED_GENERATION="${_OMC_ULW_CAPTURED_GENERATION}" \
+        OMC_LAZY_CLASSIFIER=0 OMC_LAZY_TIMING=0 \
       bash "${SCRIPT_DIR}/${script}" "$@"
   else
-    printf '%s' "${HOOK_JSON}" | bash "${SCRIPT_DIR}/${script}" "$@"
+    printf '%s' "${HOOK_JSON}" \
+      | _OMC_ULW_CAPTURED_GENERATION="${_OMC_ULW_CAPTURED_GENERATION}" \
+        bash "${SCRIPT_DIR}/${script}" "$@"
   fi
 }
 
 _run_accepted_stop_child() {
   local script="$1"
   shift
-  printf '%s' "${HOOK_JSON}" | OMC_STOP_ACCEPTED=1 \
+  printf '%s' "${HOOK_JSON}" \
+    | _OMC_ULW_CAPTURED_GENERATION="${_OMC_ULW_CAPTURED_GENERATION}" \
+      OMC_STOP_ACCEPTED=1 \
     bash "${SCRIPT_DIR}/${script}" "$@"
+}
+
+_dispatch_write_stop_feedback_unlocked() {
+  local feedback="$1"
+  omc_enforcement_generation_matches_capture || return 1
+  _write_state_batch_unlocked \
+    "closeout_last_stop_feedback" "$(truncate_chars 7600 "${feedback}")" \
+    "closeout_last_stop_feedback_ts" "$(now_epoch)"
+}
+
+_dispatch_remove_session_marker_unlocked() {
+  omc_enforcement_generation_matches_capture || return 1
+  rm -f "$(session_file ".ulw_active")" 2>/dev/null || true
+}
+
+_dispatch_remove_provisional_unlocked() {
+  omc_enforcement_generation_matches_capture || return 1
+  rm -f "$(session_file "provisional_closeouts.jsonl")" \
+    2>/dev/null || true
 }
 
 _stop_modern_feedback_supported() {
@@ -184,10 +262,14 @@ _stop_modern_feedback_supported() {
 }
 
 _emit_compact_continuation() {
-  local full_reason="$1" compact context continuation_result continuation_count continuation_status continuation_rc=0
+  local full_reason="$1" candidate_policy="${2:-preserve}" context_override="${3:-}" user_message="${4:-}"
+  local compact context continuation_result continuation_count continuation_status continuation_rc=0
   local degraded_candidate exhausted_message current_candidate latest_candidate platform_cap terminal_at expected_generation
-  current_candidate="$(json_get '.last_assistant_message')"
-  closeout_record_provisional "${current_candidate}" "1" || true
+  current_candidate=""
+  if [[ "${candidate_policy}" == "preserve" ]]; then
+    current_candidate="$(json_get '.last_assistant_message')"
+    closeout_record_provisional "${current_candidate}" "1" || true
+  fi
   expected_generation="$(closeout_readiness_fingerprint 2>/dev/null || true)"
   platform_cap="${CLAUDE_CODE_STOP_HOOK_BLOCK_CAP:-8}"
   if [[ "${platform_cap}" =~ ^[0-9]+$ ]]; then
@@ -211,9 +293,15 @@ _emit_compact_continuation() {
   fi
   IFS='|' read -r continuation_count continuation_status <<<"${continuation_result}"
   [[ "${continuation_count}" =~ ^[0-9]+$ ]] || continuation_count=1
+  if [[ "${continuation_status}" == "interval-changed" ]]; then
+    return 0
+  fi
   if (( continuation_count >= terminal_at )); then
-    latest_candidate="$(_closeout_latest_provisional)"
-    [[ -n "${latest_candidate}" ]] || latest_candidate="${current_candidate}"
+    latest_candidate=""
+    if [[ "${candidate_policy}" == "preserve" ]]; then
+      latest_candidate="$(_closeout_latest_provisional)"
+      [[ -n "${latest_candidate}" ]] || latest_candidate="${current_candidate}"
+    fi
     degraded_candidate="$(_closeout_degraded_candidate_block "${latest_candidate}")"
     if [[ "${continuation_status}" == "completion-busy" ]]; then
       printf -v exhausted_message '%s\n%s\n%s' \
@@ -239,7 +327,8 @@ _emit_compact_continuation() {
       emit_stop_message "$(truncate_chars 9800 "${exhausted_message}")"
       return 0
     fi
-    rm -f "$(session_file ".ulw_active")" 2>/dev/null || true
+    with_state_lock _dispatch_remove_session_marker_unlocked \
+      >/dev/null 2>&1 || return 0
     printf -v exhausted_message '%s\n%s\n%s' \
       "oh-my-claude · closeout ended explicitly before Claude Code's Stop-continuation ceiling" \
       "Unresolved: $(closeout_compact_gate_feedback "${full_reason}")" \
@@ -248,12 +337,22 @@ _emit_compact_continuation() {
     return 0
   fi
   compact="$(closeout_compact_gate_feedback "${full_reason}")"
-  context="oh-my-claude closeout check: ${compact} Continue working; do NOT emit another completion summary. Run \`bash \"\$HOME/.claude/skills/autowork/scripts/closeout-preflight.sh\" \"${SESSION_ID}\"\` if exact recovery context was not already injected. When it reports READY, write one complete cumulative replacement covering the whole original objective—not a delta from an earlier summary."
+  if [[ -n "${context_override}" ]]; then
+    context="${context_override}"
+  else
+    context="oh-my-claude closeout check: ${compact} Continue working; do NOT emit another completion summary. Run \`bash \"\$HOME/.claude/skills/autowork/scripts/closeout-preflight.sh\" \"${SESSION_ID}\"\` if exact recovery context was not already injected. When it reports READY, write one complete cumulative replacement covering the whole original objective—not a delta from an earlier summary."
+  fi
   context="$(truncate_chars 900 "${context}")"
   if _stop_modern_feedback_supported; then
-    jq -nc --arg ctx "${context}" '{hookSpecificOutput:{hookEventName:"Stop",additionalContext:$ctx}}'
+    jq -nc --arg ctx "${context}" --arg msg "${user_message}" '
+      {hookSpecificOutput:{hookEventName:"Stop",additionalContext:$ctx}}
+      + if $msg == "" then {} else {systemMessage:$msg} end
+    '
   else
-    jq -nc --arg reason "${context}" '{decision:"block",reason:$reason}'
+    jq -nc --arg reason "${context}" --arg msg "${user_message}" '
+      {decision:"block",reason:$reason}
+      + if $msg == "" then {} else {systemMessage:$msg} end
+    '
   fi
 }
 
@@ -268,6 +367,10 @@ _closeout_increment_dispatch_continuations_unlocked() {
   if [[ "${platform_cap}" =~ ^[0-9]+$ ]]; then platform_cap=$((10#${platform_cap})); else platform_cap=8; fi
   (( terminal_at > 0 )) || terminal_at=7
   (( platform_cap > 0 )) || platform_cap=8
+  if ! is_ultrawork_mode; then
+    printf '0|interval-changed'
+    return 0
+  fi
   count="$(read_state "closeout_dispatch_continuations" 2>/dev/null || true)"
   [[ "${count}" =~ ^[0-9]+$ ]] || count=0
   count=$((count + 1))
@@ -328,9 +431,322 @@ _closeout_degraded_candidate_block() {
   printf 'UNCERTIFIED CUMULATIVE CANDIDATE (preserved for audit; quality gaps remain):\n%s' "${candidate}"
 }
 
+_stop_wait_final_line() {
+  printf '%s\n' "$1" \
+    | tr -d '\r' \
+    | awk 'NF { current = $0 } END { print current }' \
+    | _omc_strip_render_unsafe
+}
+
+_false_wait_recovery_context() {
+  local wait_kind="$1" wait_message="${2:-}" pending_file pending_row="" agent_type="" native_id=""
+  local claim_id="" claim_ts=0 claim_effects_complete=false now label="the required worker"
+  local current_cycle_id current_objective_ts
+  is_ultrawork_mode || return 1
+  if [[ "${wait_kind}" == "scheduled" ]]; then
+    printf 'Claude Code reports no scheduled wake matching the promised check, so this session will not resume on that schedule. Continue now by running the check or registering the intended wake. Do not wait, poll, resume an unrelated agent, or ask the user to intervene.'
+    return 0
+  fi
+  wait_message="$(printf '%s' "${wait_message}" \
+    | _omc_strip_render_unsafe | tr '[:upper:]' '[:lower:]')"
+  wait_message="$(truncate_chars 1600 "${wait_message}")"
+  current_cycle_id="$(read_state "review_cycle_id")"
+  [[ "${current_cycle_id}" =~ ^[0-9]+$ ]] || current_cycle_id=0
+  current_objective_ts="$(read_state "review_cycle_prompt_ts")"
+  if [[ ! "${current_objective_ts}" =~ ^[0-9]+$ ]]; then
+    current_objective_ts="$(read_state "last_user_prompt_ts")"
+  fi
+  [[ "${current_objective_ts}" =~ ^[0-9]+$ ]] || current_objective_ts=0
+  pending_file="$(session_file "pending_agents.jsonl")"
+  if [[ -s "${pending_file}" && ! -L "${pending_file}" ]]; then
+    pending_row="$(jq -Rsc --arg wait "${wait_message}" \
+      --argjson cycle "${current_cycle_id}" \
+      --argjson objective_ts "${current_objective_ts}" '
+      ([split("\n")[] | select(length > 0)
+        | (try fromjson catch {})
+        | select((.review_dispatch_abandoned // false) != true)
+        | select($cycle == 0 or (.objective_cycle_id // -1) == $cycle)
+        | select($objective_ts == 0 or (.objective_prompt_ts // -1) == $objective_ts)]
+       | sort_by(.ts // 0)) as $rows
+      | ([$rows[]
+          | ((.agent_type // "") | split(":") | last | ascii_downcase) as $short
+          | ($short | gsub("-"; " ")) as $spaced
+          | select(($short | length) > 0
+              and (($wait | contains($short)) or ($wait | contains($spaced))))]
+         | last) // {}
+    ' "${pending_file}" 2>/dev/null || true)"
+  fi
+  if [[ -n "${pending_row}" && "${pending_row}" != "{}" ]] \
+      && ! omc_pending_stateful_generation_current "${pending_row}"; then
+    pending_row=""
+  fi
+  if [[ -n "${pending_row}" && "${pending_row}" != "{}" ]]; then
+    agent_type="$(jq -r '.agent_type // empty' <<<"${pending_row}" 2>/dev/null || true)"
+    native_id="$(jq -r '.native_agent_id // empty' <<<"${pending_row}" 2>/dev/null || true)"
+    agent_type="$(printf '%s' "${agent_type}" | _omc_strip_render_unsafe | tr '\r\n' '  ')"
+    native_id="$(printf '%s' "${native_id}" | _omc_strip_render_unsafe | tr '\r\n' '  ')"
+    agent_type="$(truncate_chars 80 "${agent_type}")"
+    native_id="$(truncate_chars 128 "${native_id}")"
+    [[ "${agent_type}" =~ ^[A-Za-z0-9._:-]{1,80}$ ]] || agent_type=""
+    [[ "${native_id}" =~ ^[A-Za-z0-9._:-]{1,128}$ ]] || native_id=""
+    if [[ -n "${agent_type}" && -n "${native_id}" ]]; then
+      label="the pending ${agent_type} (native agent ${native_id})"
+    elif [[ -n "${agent_type}" ]]; then
+      label="the pending ${agent_type}"
+    fi
+    claim_id="$(jq -r '.completion_claim_id // empty' \
+      <<<"${pending_row}" 2>/dev/null || true)"
+    claim_ts="$(jq -r '.completion_claim_ts // 0' \
+      <<<"${pending_row}" 2>/dev/null || true)"
+    claim_effects_complete="$(jq -r '.completion_claim_effects_complete // false' \
+      <<<"${pending_row}" 2>/dev/null || true)"
+  fi
+  [[ "${claim_ts}" =~ ^[0-9]+$ ]] || claim_ts=0
+  now="$(now_epoch)"
+  if [[ -n "${claim_id}" && "${claim_effects_complete}" != "true" \
+      && "${claim_ts}" -gt 0 \
+      && "${now}" -ge "${claim_ts}" && $((now - claim_ts)) -le 120 ]]; then
+    printf 'Claude Code reports no live %s wake source matching the promised worker, but %s is still publishing its SubagentStop evidence. Continue now without abandoning or rebinding that call; re-evaluate its reviewer/plan state after hook settlement. Do not repeat the auto-resume promise, poll, or ask the user to intervene.' \
+      "${wait_kind}" "${label}"
+  elif [[ -n "${claim_id}" && "${claim_effects_complete}" == "true" ]]; then
+    printf 'Claude Code reports no live %s wake source matching the promised worker, but %s has already published its claim-scoped effects. Do not resume, rebind, or dispatch from this stale wait. Re-evaluate the committed reviewer/plan state and continue from the current gate.' \
+      "${wait_kind}" "${label}"
+  elif [[ -n "${claim_id}" ]]; then
+    printf 'Claude Code reports no live %s wake source matching the promised worker, and %s retains an expired incomplete completion claim. Do not resume that call. Continue through the explicit rebind path and dispatch a fresh equivalent only if the current gate still requires the role.' \
+      "${wait_kind}" "${label}"
+  elif [[ -n "${native_id}" ]]; then
+    printf 'Claude Code reports no live %s wake source matching the promised worker, so no relevant notification will arrive. Continue now: resume %s with SendMessage using the retained native ID; if that transcript cannot resume, explicitly rebind and dispatch a fresh equivalent. Do not wait, poll, repeat the auto-resume promise, or ask the user to intervene.' \
+      "${wait_kind}" "${label}"
+  else
+    printf 'Claude Code reports no live %s wake source matching the promised worker, so no relevant notification will arrive. Continue now by dispatching the fresh reviewer or worker required by the current gate. Do not wait, poll, repeat the auto-resume promise, or ask the user to intervene.' \
+      "${wait_kind}"
+  fi
+}
+
+_wait_expected_pending_identity() {
+  local wait_message="$1" pending_file row agent_type native_id
+  local current_cycle_id current_objective_ts
+  is_ultrawork_mode || return 1
+  wait_message="$(printf '%s' "${wait_message}" \
+    | _omc_strip_render_unsafe | tr '[:upper:]' '[:lower:]')"
+  wait_message="$(truncate_chars 1600 "${wait_message}")"
+  current_cycle_id="$(read_state "review_cycle_id")"
+  [[ "${current_cycle_id}" =~ ^[0-9]+$ ]] || current_cycle_id=0
+  current_objective_ts="$(read_state "review_cycle_prompt_ts")"
+  if [[ ! "${current_objective_ts}" =~ ^[0-9]+$ ]]; then
+    current_objective_ts="$(read_state "last_user_prompt_ts")"
+  fi
+  [[ "${current_objective_ts}" =~ ^[0-9]+$ ]] || current_objective_ts=0
+  pending_file="$(session_file "pending_agents.jsonl")"
+  [[ -s "${pending_file}" && ! -L "${pending_file}" ]] || return 1
+  row="$(jq -Rsc --arg wait "${wait_message}" \
+    --argjson cycle "${current_cycle_id}" \
+    --argjson objective_ts "${current_objective_ts}" '
+    [split("\n")[] | select(length > 0)
+      | (try fromjson catch {})
+      | select((.review_dispatch_abandoned // false) != true)
+      | select($cycle == 0 or (.objective_cycle_id // -1) == $cycle)
+      | select($objective_ts == 0 or (.objective_prompt_ts // -1) == $objective_ts)
+      | ((.agent_type // "") | split(":") | last | ascii_downcase) as $short
+      | ($short | gsub("-"; " ")) as $spaced
+      | select(($short | length) > 0
+          and (($wait | contains($short)) or ($wait | contains($spaced))))]
+    | sort_by(.ts // 0) | last // {}
+  ' "${pending_file}" 2>/dev/null || true)"
+  [[ -n "${row}" && "${row}" != "{}" ]] || return 1
+  omc_pending_stateful_generation_current "${row}" || return 1
+  agent_type="$(jq -r '.agent_type // empty | split(":") | last' \
+    <<<"${row}" 2>/dev/null || true)"
+  native_id="$(jq -r '.native_agent_id // empty' \
+    <<<"${row}" 2>/dev/null || true)"
+  [[ "${agent_type}" =~ ^[A-Za-z0-9._-]{1,80}$ ]] || return 1
+  [[ -z "${native_id}" || "${native_id}" =~ ^[A-Za-z0-9._:-]{1,128}$ ]] \
+    || return 1
+  printf '%s|%s' "${agent_type}" "${native_id}"
+}
+
+_wait_named_omc_agent() {
+  local message="$1" lower agent spaced
+  lower="$(printf '%s' "${message}" \
+    | _omc_strip_render_unsafe | tr '[:upper:]' '[:lower:]')"
+  lower="$(truncate_chars 1600 "${lower}")"
+  for agent in quality-reviewer editor-critic excellence-reviewer \
+      release-reviewer metis briefing-analyst design-reviewer \
+      abstraction-critic rigor-reviewer quality-planner prometheus \
+      code-reviewer; do
+    spaced="${agent//-/ }"
+    if [[ "${lower}" == *"${agent}"* || "${lower}" == *"${spaced}"* ]]; then
+      printf '%s' "${agent}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+_scheduled_wait_has_matching_cron() {
+  local message="$1" lower
+  lower="$(printf '%s' "${message}" \
+    | _omc_strip_render_unsafe | tr '[:upper:]' '[:lower:]')"
+  lower="$(truncate_chars 1600 "${lower}")"
+  jq -e --arg wait "${lower}" '
+    def significant_words:
+      [scan("[a-z0-9][a-z0-9_-]{4,}")
+       | select(IN("scheduled","waiting","session","check","every",
+                   "please") | not)];
+    ($wait | [scan("[a-z0-9][a-z0-9_-]{4,}")]) as $wait_words
+    | any(.session_crons[];
+      ((.id // "") | ascii_downcase) as $id
+      | ((.prompt // "") | ascii_downcase | significant_words) as $words
+      | (($id | length) > 0 and ($wait | contains($id)))
+        or (($words | length) > 0
+          and all($words[]; . as $word | ($wait_words | index($word)) != null)))
+  ' <<<"${HOOK_JSON}" >/dev/null 2>&1
+}
+
+_background_wait_has_matching_task() {
+  local message="$1" lower
+  lower="$(printf '%s' "${message}" \
+    | _omc_strip_render_unsafe | tr '[:upper:]' '[:lower:]')"
+  lower="$(truncate_chars 1600 "${lower}")"
+  jq -e --arg wait "${lower}" '
+    def terminal:
+      ((.status // "") | ascii_downcase)
+      | IN("completed","complete","done","failed","error","killed",
+           "stopped","cancelled","canceled","idle");
+    def significant_words:
+      [scan("[a-z0-9][a-z0-9_-]{3,}")
+       | select(IN("waiting","resume","automatically","nothing","action",
+                   "running","background","finish","finishes","when",
+                   "will","work","task","needed","please","user",
+                   "done","wave") | not)];
+    ($wait | significant_words) as $words
+    | ($words | length) > 0
+      and any(.background_tasks[];
+        (terminal | not)
+        and ([.id // "", .task_id // "", .description // "",
+              .command // "", .agent_type // ""]
+             | join(" ") | ascii_downcase
+             | [scan("[a-z0-9][a-z0-9_-]{3,}")]) as $corpus_words
+        | all($words[]; . as $word | ($corpus_words | index($word)) != null))
+  ' <<<"${HOOK_JSON}" >/dev/null 2>&1
+}
+
+# A waiting sentence is nonterminal only when the same Stop payload proves a
+# real future wake. Present-empty registries are authoritative: pending ledger
+# rows preserve recovery identity, but cannot promise a notification from an
+# idle task. Omitted fields retain the old-client guard path.
+_wait_claim_line="$(_stop_wait_final_line \
+  "$(json_get '.last_assistant_message')")"
+_wait_claim_line="$(truncate_chars 1600 "${_wait_claim_line}")"
+_wait_claim_kind="$(omc_stop_wait_claim_kind \
+  "${_wait_claim_line}" 2>/dev/null || true)"
+if [[ -n "${_wait_claim_kind}" ]]; then
+  _background_state="$(omc_stop_runtime_array_state \
+    "${HOOK_JSON}" "background_tasks")"
+  _cron_state="$(omc_stop_runtime_array_state "${HOOK_JSON}" "session_crons")"
+  [[ "${_background_state}" != "malformed" ]] || \
+    log_anomaly "stop-dispatch" "malformed Stop background_tasks registry" 2>/dev/null || true
+  [[ "${_cron_state}" != "malformed" ]] || \
+    log_anomaly "stop-dispatch" "malformed Stop session_crons registry" 2>/dev/null || true
+
+  _wait_runtime_state="${_background_state}"
+  [[ "${_wait_claim_kind}" != "scheduled" ]] \
+    || _wait_runtime_state="${_cron_state}"
+  if [[ "${_wait_claim_kind}" == "scheduled" \
+      && "${_wait_runtime_state}" == "live" ]] \
+      && ! _scheduled_wait_has_matching_cron \
+        "${_wait_claim_line}"; then
+    _wait_runtime_state="empty"
+    log_anomaly "stop-dispatch" \
+      "scheduled wait claim did not match any registered cron" \
+      2>/dev/null || true
+  fi
+  if [[ "${_wait_claim_kind}" == "background" \
+      && "${_wait_runtime_state}" == "live" ]]; then
+    _wait_named_agent="$(_wait_named_omc_agent \
+      "${_wait_claim_line}" 2>/dev/null || true)"
+    _wait_expected_identity="$(with_state_lock \
+      _wait_expected_pending_identity \
+      "${_wait_claim_line}" 2>/dev/null || true)"
+    if [[ -n "${_wait_named_agent}" \
+        && -z "${_wait_expected_identity}" ]]; then
+      _wait_runtime_state="empty"
+      log_anomaly "stop-dispatch" \
+        "named OMC wait had no current causal pending identity" \
+        2>/dev/null || true
+    elif [[ -n "${_wait_expected_identity}" ]]; then
+      IFS='|' read -r _wait_expected_type _wait_expected_native_id \
+        <<<"${_wait_expected_identity}"
+      if ! jq -e --arg type "${_wait_expected_type}" \
+          --arg id "${_wait_expected_native_id}" '
+          any(.background_tasks[];
+            ((((.status // "") | ascii_downcase)
+              | IN("completed","complete","done","failed","error","killed",
+                   "stopped","cancelled","canceled","idle")) | not)
+            and (if $id != "" then
+                   ((.id // .task_id // "") as $runtime_id
+                    | if $runtime_id != "" then $runtime_id == $id
+                      else (((.agent_type // "") | split(":") | last)
+                            == $type)
+                      end)
+                 else
+                   (((.agent_type // "") | split(":") | last) == $type)
+                 end))
+        ' <<<"${HOOK_JSON}" >/dev/null 2>&1; then
+        _wait_runtime_state="empty"
+        log_anomaly "stop-dispatch" \
+          "wait claim named ${_wait_expected_type}, but only unrelated background tasks were live" \
+          2>/dev/null || true
+      fi
+    elif ! _background_wait_has_matching_task "${_wait_claim_line}"; then
+      _wait_runtime_state="empty"
+      log_anomaly "stop-dispatch" \
+        "background wait claim did not match any live task" \
+        2>/dev/null || true
+    fi
+  fi
+  # The Stop payload may have queued across release/reactivation. Recheck the
+  # captured enforcement interval after correlation and before any wait-state
+  # mutation; a stale callback is inert in the newer interval.
+  is_ultrawork_mode || exit 0
+  if [[ "${_wait_runtime_state}" == "live" ]]; then
+    write_state "bg_work_dispatched_ts" "" 2>/dev/null || true
+    record_gate_event "stop-wait" "verified-live" \
+      "kind=${_wait_claim_kind}" 2>/dev/null || true
+    # First-class WAIT: no quality gates, prompt-end accounting, continuation
+    # slot, finalizer, provisional closeout, or terminal outcome runs here.
+    exit 0
+  elif [[ "${_wait_runtime_state}" == "empty" ]]; then
+    write_state "bg_work_dispatched_ts" "" 2>/dev/null || true
+    if ! _false_wait_context="$(with_state_lock \
+        _false_wait_recovery_context \
+        "${_wait_claim_kind}" "${_wait_claim_line}")"; then
+      is_ultrawork_mode || exit 0
+      _false_wait_context="Claude Code reports no matching live wake, but oh-my-claude could not acquire the session-state lock to resolve the retained worker safely. Do not wait, poll, integrate an unverified result, or ask the user to intervene. Re-evaluate the current gate after the lock clears."
+    fi
+    if [[ "${_wait_claim_kind}" == "scheduled" ]]; then
+      _false_wait_system_message="oh-my-claude noticed the scheduled check was not registered and is recovering automatically."
+    else
+      _false_wait_system_message="oh-my-claude could not find live background work matching this wait and is recovering automatically."
+    fi
+    record_gate_event "stop-wait" "dead-wait-recovered" \
+      "kind=${_wait_claim_kind}" 2>/dev/null || true
+    _emit_compact_continuation \
+      "[Dead wait] no live ${_wait_claim_kind} wake source exists." \
+      "discard" "${_false_wait_context}" \
+      "${_false_wait_system_message}"
+    exit 0
+  fi
+fi
+
 guard_out=""
 guard_rc=0
 guard_out="$(_run_stop_child "stop-guard.sh")" || guard_rc=$?
+
+# The child inherits the frozen generation, and the parent verifies it again
+# after the child returns. A G1 Stop callback that queued across release→G2 is
+# therefore inert even when the old guard returned an empty/no-op response.
+omc_enforcement_generation_matches_capture || exit 0
 
 if [[ "${guard_rc}" -ne 0 ]]; then
   log_anomaly "stop-dispatch" "stop-guard crashed rc=${guard_rc}; release refused" 2>/dev/null || true
@@ -353,9 +769,13 @@ fi
 
 if [[ "${guard_is_block}" -eq 1 ]]; then
   full_reason="$(jq -r '.reason // .hookSpecificOutput.additionalContext // "Closeout is not ready."' <<<"${guard_out}" 2>/dev/null || printf 'Closeout is not ready.')"
-  write_state_batch \
-    "closeout_last_stop_feedback" "$(truncate_chars 7600 "${full_reason}")" \
-    "closeout_last_stop_feedback_ts" "$(now_epoch)" 2>/dev/null || true
+  if ! with_state_lock _dispatch_write_stop_feedback_unlocked \
+      "${full_reason}" 2>/dev/null; then
+    omc_enforcement_generation_matches_capture || exit 0
+    _emit_compact_continuation \
+      "[Stop certification] the guard result could not be recorded safely, so this response is not certified."
+    exit 0
+  fi
   # The guard stamped this exact attempt. stop-time-summary therefore captures
   # token/economics deltas but suppresses prompt_end and the visible card.
   _run_stop_child "stop-time-summary.sh" >/dev/null 2>&1 || true
@@ -366,13 +786,15 @@ fi
 # Empty guard output is a normal clean pass. A non-empty object may carry a
 # scorecard/degraded-release systemMessage; preserve it, but never relabel an
 # exhausted/skip release as "all gates passed".
+omc_enforcement_generation_matches_capture || exit 0
 outcome="$(read_state "session_outcome" 2>/dev/null || true)"
 guard_message=""
 if [[ -n "${guard_out}" ]]; then
   guard_message="$(jq -r '.systemMessage // empty' <<<"${guard_out}" 2>/dev/null || true)"
 fi
 if [[ -n "${outcome}" ]]; then
-  rm -f "$(session_file ".ulw_active")" 2>/dev/null || true
+  with_state_lock _dispatch_remove_session_marker_unlocked \
+    >/dev/null 2>&1 || exit 0
 fi
 
 # MessageDisplay intentionally withholds unsealed completion prose. If a
@@ -428,7 +850,8 @@ if [[ "${_ulw_before}" -eq 1 ]] && closeout_claim_finalization 2>/dev/null; then
     log_anomaly "stop-dispatch" "accepted-release best-effort finalizer incomplete canary_rc=${canary_rc} archive_rc=${archive_rc}; provisional evidence retained until fresh execution" 2>/dev/null || true
   fi
   if [[ "${outcome}" == "completed" && "${finalizer_rc}" -eq 0 ]]; then
-    rm -f "$(session_file "provisional_closeouts.jsonl")" 2>/dev/null || true
+    with_state_lock _dispatch_remove_provisional_unlocked \
+      >/dev/null 2>&1 || true
   fi
 fi
 
@@ -443,6 +866,7 @@ for fragment in "${receipt}" "${degraded_candidate}" "${guard_message}" "${time_
 done
 
 if [[ -n "${merged}" ]]; then
+  omc_enforcement_generation_matches_capture || exit 0
   emit_stop_message "$(truncate_chars 9800 "${merged}")"
 fi
 exit 0

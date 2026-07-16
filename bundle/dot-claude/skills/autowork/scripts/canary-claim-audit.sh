@@ -48,6 +48,7 @@ fi
 if ! validate_session_id "${SESSION_ID}" 2>/dev/null; then
   exit 0
 fi
+omc_enforcement_generation_matches_capture || exit 0
 
 if ! is_model_drift_canary_enabled; then
   exit 0

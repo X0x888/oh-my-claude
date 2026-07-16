@@ -31,7 +31,7 @@ if [[ -n "${_summary_native_agent_id_raw}" ]]; then
 fi
 LAST_ASSISTANT_MESSAGE="$(json_get '.last_assistant_message')"
 
-if [[ -z "${SESSION_ID}" || -z "${AGENT_TYPE}" || -z "${LAST_ASSISTANT_MESSAGE}" ]]; then
+if [[ -z "${SESSION_ID}" || -z "${AGENT_TYPE}" ]]; then
   exit 0
 fi
 
@@ -60,6 +60,23 @@ _summary_final_line="$(printf '%s\n' "${_summary_tail}" | sed -n '2p')"
 _summary_terminal_verdict=""
 _summary_informative_verdict=0
 _summary_valid_universal_verdict=0
+_summary_enforced_contract_kind="$(omc_enforced_terminal_contract_kind \
+  "${AGENT_TYPE}" 2>/dev/null || true)"
+# The prior empty-message no-op remains intact for informational/custom agents
+# and untracked migration sessions. Only a current tracked state-changing
+# contract needs to inspect an empty callback so it can keep that call alive.
+if [[ -z "${LAST_ASSISTANT_MESSAGE}" ]] \
+    && { [[ -z "${_summary_enforced_contract_kind}" ]] \
+      || { [[ "$(read_state "subagent_dispatch_tracking_version")" != "1" ]] \
+        && [[ "$(read_state "native_agent_id_tracking_version")" != "1" ]]; }; }; then
+  exit 0
+fi
+_summary_valid_enforced_contract=0
+if [[ -n "${_summary_enforced_contract_kind}" ]] \
+    && omc_enforced_terminal_verdict_valid \
+      "${AGENT_TYPE}" "${_summary_final_line}"; then
+  _summary_valid_enforced_contract=1
+fi
 if printf '%s\n' "${_summary_final_line}" | grep -Eq \
     '^VERDICT:[[:space:]]*(CLEAN|SHIP|PLAN_READY|NEEDS_CLARIFICATION|BLOCKED|REPORT_READY|INSUFFICIENT_SOURCES|RESOLVED|HYPOTHESIS|NEEDS_EVIDENCE|NEEDS_PROBLEM_STATEMENT|INSUFFICIENT_OPTIONS|DELIVERED|NEEDS_INPUT|NEEDS_RESEARCH|INCOMPLETE|FINDINGS[[:space:]]*\([[:space:]]*[0-9]+[[:space:]]*\)|BLOCK[[:space:]]*\([[:space:]]*[0-9]+[[:space:]]*\)|FRAMINGS_READY[[:space:]]*\([[:space:]]*[3-5][[:space:]]*\))[[:space:]]*$'; then
   _summary_valid_universal_verdict=1
@@ -121,6 +138,7 @@ _summary_reviewer_current_revision() {
 _claim_summary_pending_unlocked() {
   local pending_file ledger current_ts current_revision line this_type row_id row_native_id
   local existing_claim claim_ts claim_id temp_file updated selected="" replaced=0
+  local contract_retry_count=0 contract_retry_cap=3
   local pending_objective_ts current_objective_ts
   local pending_cycle_id current_cycle_id
   local reviewer_current_revision reviewer_start_revision row_version
@@ -133,7 +151,18 @@ _claim_summary_pending_unlocked() {
   _summary_completion_claim_id=""
   _summary_claim_owned=0
   _summary_cleanup_allowed=0
+  _summary_contract_retry_required=0
+  _summary_contract_retry_exhausted=0
   _current_council_pending_json=""
+
+  # A prior cleanup-only completion may have committed its exact outcome
+  # journal before this replay acquired the lock. Converge that transaction
+  # first; the replay must never claim or publish a second result for a row
+  # whose durable intent is retirement.
+  if ! omc_reconcile_all_ignored_completion_cleanups_unlocked; then
+    _summary_cleanup_reconcile_failed=1
+    return 1
+  fi
 
   if [[ -n "${_OMC_ULW_CAPTURED_GENERATION+x}" ]] \
       && ! is_ultrawork_mode; then
@@ -208,6 +237,12 @@ _claim_summary_pending_unlocked() {
   fi
 
   if [[ -n "${selected}" ]] \
+      && ! omc_row_enforcement_generation_current "${selected}"; then
+    _summary_pending_json="${selected}"
+    _summary_dispatch_suppression_reason="enforcement-interval-closed"
+    _summary_cleanup_allowed=1
+    return 0
+  elif [[ -n "${selected}" ]] \
       && [[ "$(jq -r '.review_dispatch_abandoned // false' \
         <<<"${selected}" 2>/dev/null || true)" == "true" ]]; then
     _summary_pending_json="${selected}"
@@ -290,6 +325,80 @@ _claim_summary_pending_unlocked() {
         return 0
       fi
     fi
+  fi
+
+  # An invalid planner contract has not advanced plan_revision, so its frozen
+  # generation can be checked without the valid-plan hook-order ambiguity
+  # (record-plan may publish and increment before summary sees a valid return).
+  # Never revive a partial planner whose plan generation already changed.
+  if [[ -n "${selected}" \
+      && "${_summary_enforced_contract_kind}" == "planner" \
+      && "${_summary_valid_enforced_contract}" -ne 1 ]] \
+      && ! omc_pending_stateful_generation_current "${selected}"; then
+    _summary_pending_json="${selected}"
+    _summary_dispatch_suppression_reason="plan-generation-changed"
+    _summary_cleanup_allowed=1
+    return 0
+  fi
+
+  # Current OMC reviewer/planner calls do not terminate on narration such as
+  # "Tests pass. Let me typecheck…". Preserve both causal ledgers and ask
+  # Claude Code's SubagentStop continuation channel to keep this exact native
+  # call running. The check belongs after identity/objective/generation
+  # validation and before the completion claim, so stale or abandoned work is
+  # never revived and neither parallel completion hook can publish partial
+  # evidence.
+  if [[ -n "${selected}" \
+      && -n "${_summary_enforced_contract_kind}" \
+      && "${_summary_valid_enforced_contract}" -ne 1 ]] \
+      && { [[ "$(read_state "subagent_dispatch_tracking_version")" == "1" ]] \
+        || [[ "$(read_state "native_agent_id_tracking_version")" == "1" ]] \
+        || [[ "$(jq -r '.review_dispatch_causality_version // 0' \
+          <<<"${selected}" 2>/dev/null || true)" =~ ^[1-9][0-9]*$ ]]; }; then
+    contract_retry_count="$(jq -r '.terminal_contract_retry_count // 0' \
+      <<<"${selected}" 2>/dev/null || true)"
+    [[ "${contract_retry_count}" =~ ^[0-9]+$ ]] || contract_retry_count=0
+    contract_retry_count=$((contract_retry_count + 1))
+    updated="$(jq -c --argjson count "${contract_retry_count}" '
+      .terminal_contract_retry_count = $count
+    ' <<<"${selected}" 2>/dev/null || true)"
+    [[ -n "${updated}" ]] || return 1
+    temp_file="$(mktemp "${pending_file}.XXXXXX")" || return 1
+    replaced=0
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+      [[ -n "${line}" ]] || continue
+      if [[ "${replaced}" -eq 0 && "${line}" == "${selected}" ]]; then
+        printf '%s\n' "${updated}" >>"${temp_file}" || {
+          rm -f "${temp_file}"
+          return 1
+        }
+        replaced=1
+      else
+        printf '%s\n' "${line}" >>"${temp_file}" || {
+          rm -f "${temp_file}"
+          return 1
+        }
+      fi
+    done <"${pending_file}"
+    [[ "${replaced}" -eq 1 ]] || {
+      rm -f "${temp_file}"
+      return 1
+    }
+    mv -f "${temp_file}" "${pending_file}" || return 1
+    _summary_pending_json="${updated}"
+    if (( contract_retry_count < contract_retry_cap )); then
+      _summary_contract_retry_required=1
+      _summary_dispatch_suppression_reason="incomplete-terminal-contract"
+    else
+      _summary_contract_retry_exhausted=1
+      _summary_dispatch_suppression_reason="terminal-contract-retry-exhausted"
+      # The exact call has now ignored two in-agent continuations and returned
+      # malformed a third time. Let it reach the parent once, retire both
+      # causal rows in the cleanup-only finalizer, and require a fresh dispatch
+      # rather than creating an unbounded SendMessage loop on the same call.
+      _summary_cleanup_allowed=1
+    fi
+    return 0
   fi
 
   if [[ -n "${selected}" ]]; then
@@ -394,7 +503,40 @@ _summary_dispatch_suppression_reason="completion-claim-transition-failed"
 _summary_completion_claim_id=""
 _summary_claim_owned=0
 _summary_cleanup_allowed=0
+_summary_contract_retry_required=0
+_summary_contract_retry_exhausted=0
+_summary_cleanup_reconcile_failed=0
 with_state_lock _claim_summary_pending_unlocked || true
+
+if [[ "${_summary_cleanup_reconcile_failed}" -eq 1 ]]; then
+  record_gate_event "subagent-summary" "cleanup-journal-reconcile-failed" \
+    "agent=${AGENT_TYPE}" \
+    "native_agent_id=${_summary_native_agent_id:-none}" 2>/dev/null || true
+  log_anomaly "record-subagent-summary" \
+    "cleanup journal could not reconcile before completion claim for ${AGENT_TYPE}"
+  # Leave the unresolved journal first in FIFO and publish no generic outcome:
+  # foreground PostTool/background notification recovery owns the explicit
+  # degraded directive and must not lose this WAL to seven-day outcome pruning.
+  exit 0
+fi
+
+if [[ "${_summary_contract_retry_required}" -eq 1 ]]; then
+  _summary_contract_hint="$(omc_enforced_terminal_contract_hint \
+    "${AGENT_TYPE}")"
+  _summary_retry_context="Your response ended at an intermediate checkpoint without the required final ${_summary_enforced_contract_kind} verdict. Continue from the retained context now, finish every outstanding check, and return the complete self-contained ${_summary_enforced_contract_kind} result—not only the missing verdict. Do not stop at another future-tense progress update. Reserve the final turn for exactly one role-valid line: ${_summary_contract_hint}."
+  record_gate_event "subagent-summary" "terminal-contract-retry" \
+    "agent=${AGENT_TYPE}" \
+    "native_agent_id=${_summary_native_agent_id:-none}" 2>/dev/null || true
+  jq -nc --arg ctx "$(truncate_chars 1200 "${_summary_retry_context}")" \
+    '{hookSpecificOutput:{hookEventName:"SubagentStop",additionalContext:$ctx}}'
+  exit 0
+fi
+
+if [[ "${_summary_contract_retry_exhausted}" -eq 1 ]]; then
+  record_gate_event "subagent-summary" "terminal-contract-retry-exhausted" \
+    "agent=${AGENT_TYPE}" \
+    "native_agent_id=${_summary_native_agent_id:-none}" 2>/dev/null || true
+fi
 
 # A selected Council primary/gap result without an exact final universal
 # verdict is not a return. Release its claim but retain the live pending/audit
@@ -469,10 +611,18 @@ if [[ "${_summary_dispatch_suppressed}" -eq 1 ]]; then
     "reason=${_summary_dispatch_suppression_reason}" 2>/dev/null || true
 fi
 
+_summary_deferred_outcome_row=""
 _record_completion_outcome() {
-  local status="$1" reason="$2" message="$3" row verdict="UNREPORTED"
+  local status="$1" reason="$2" message="$3" mode="${4:-commit}"
+  local row verdict="UNREPORTED"
   local findings_count=0 finding_ids="" finding_index=0 finding_row finding_claim finding_id
   local outcome_native_agent_id="" outcome_dispatch_id=""
+  local outcome_objective_cycle_id=0 outcome_objective_prompt_ts=0
+  local outcome_review_revision=0
+  local outcome_enforcement_generation="${_OMC_ULW_CAPTURED_GENERATION:-migration}"
+  local cleanup_pending_fingerprint=""
+  local cleanup_lifecycle_dispatch_id=""
+  local cleanup_journal_version=0
   [[ "${_summary_use_native_agent_id:-0}" -eq 1 ]] \
     && outcome_native_agent_id="${_summary_native_agent_id}"
   # Correlation coordinates come from the row selected under the session lock,
@@ -483,10 +633,46 @@ _record_completion_outcome() {
   if [[ -n "${_summary_pending_json:-}" ]]; then
     outcome_dispatch_id="$(jq -r '.review_dispatch_id // empty' \
       <<<"${_summary_pending_json}" 2>/dev/null || true)"
+    outcome_objective_cycle_id="$(jq -r '.objective_cycle_id // 0' \
+      <<<"${_summary_pending_json}" 2>/dev/null || true)"
+    outcome_objective_prompt_ts="$(jq -r '.objective_prompt_ts // 0' \
+      <<<"${_summary_pending_json}" 2>/dev/null || true)"
+    outcome_review_revision="$(jq -r '.review_revision // 0' \
+      <<<"${_summary_pending_json}" 2>/dev/null || true)"
+    outcome_enforcement_generation="$(jq -r \
+      '.ulw_enforcement_generation // "migration"' \
+      <<<"${_summary_pending_json}" 2>/dev/null || true)"
   elif [[ "${status}" == "accepted" \
       && "$(read_state "subagent_dispatch_tracking_version")" != "1" \
       && "$(read_state "native_agent_id_tracking_version")" != "1" ]]; then
     outcome_dispatch_id="${_summary_review_dispatch_id}"
+  fi
+  [[ "${outcome_objective_cycle_id}" =~ ^[0-9]+$ ]] \
+    || outcome_objective_cycle_id=0
+  [[ "${outcome_objective_prompt_ts}" =~ ^[0-9]+$ ]] \
+    || outcome_objective_prompt_ts=0
+  [[ "${outcome_review_revision}" =~ ^[0-9]+$ ]] \
+    || outcome_review_revision=0
+  if [[ "${mode}" == "defer" && -n "${_summary_pending_json:-}" ]]; then
+    cleanup_pending_fingerprint="$(_omc_token_digest \
+      "${_summary_pending_json}" 2>/dev/null || true)"
+    cleanup_lifecycle_dispatch_id="$(jq -r \
+      '.lifecycle_dispatch_id // empty' \
+      <<<"${_summary_pending_json}" 2>/dev/null || true)"
+    if [[ "${cleanup_lifecycle_dispatch_id}" \
+        =~ ^dispatch-[A-Za-z0-9._:-]{8,80}$ ]]; then
+      cleanup_journal_version=2
+    else
+      cleanup_lifecycle_dispatch_id=""
+      cleanup_journal_version=1
+    fi
+  fi
+  # Every cleanup journal needs the exact selected bytes. Current dispatches
+  # also carry a harness-generated immutable lifecycle ID so later abandonment
+  # metadata rewrites cannot make the committed row unrecognizable.
+  if [[ "${mode}" == "defer" \
+      && -z "${cleanup_pending_fingerprint}" ]]; then
+    return 1
   fi
   if [[ "${status}" == "accepted" && "${_summary_valid_universal_verdict}" -eq 1 ]]; then
     verdict="$(printf '%s' "${_summary_final_line}" \
@@ -507,6 +693,10 @@ _record_completion_outcome() {
       finding_ids="unstructured"
     fi
   fi
+  if [[ "${mode}" == "defer" \
+      && "${OMC_TEST_SUMMARY_FAIL_OUTCOME_BUILD:-0}" == "1" ]]; then
+    return 1
+  fi
   row="$(jq -nc \
     --argjson ts "$(now_epoch)" \
     --arg agent_type "${AGENT_TYPE}" \
@@ -517,15 +707,38 @@ _record_completion_outcome() {
     --arg finding_ids "${finding_ids:-none}" \
     --arg review_dispatch_id "${outcome_dispatch_id}" \
     --arg native_agent_id "${outcome_native_agent_id}" \
+    --argjson objective_cycle_id "${outcome_objective_cycle_id}" \
+    --argjson objective_prompt_ts "${outcome_objective_prompt_ts}" \
+    --argjson review_revision "${outcome_review_revision}" \
+    --arg enforcement_generation "${outcome_enforcement_generation}" \
+    --arg cleanup_pending_fingerprint "${cleanup_pending_fingerprint}" \
+    --arg cleanup_lifecycle_dispatch_id \
+      "${cleanup_lifecycle_dispatch_id}" \
+    --argjson cleanup_journal_version "${cleanup_journal_version}" \
     '{ts:$ts,agent_type:$agent_type,status:$status,reason:$reason,
       verdict:$verdict,findings_count:$findings_count,
-      finding_ids:$finding_ids}
+      finding_ids:$finding_ids,
+      objective_cycle_id:$objective_cycle_id,
+      objective_prompt_ts:$objective_prompt_ts,
+      review_revision:$review_revision,
+      ulw_enforcement_generation:$enforcement_generation}
      + if $review_dispatch_id == "" then {} else {
          review_dispatch_id:$review_dispatch_id
        } end
      + if $native_agent_id == "" then {} else {
          native_agent_id:$native_agent_id
+       } end
+     + if $cleanup_pending_fingerprint == "" then {} else {
+         cleanup_journal_version:$cleanup_journal_version,
+         cleanup_pending_fingerprint:$cleanup_pending_fingerprint
+       } end
+     + if $cleanup_lifecycle_dispatch_id == "" then {} else {
+         cleanup_lifecycle_dispatch_id:$cleanup_lifecycle_dispatch_id
        } end')"
+  if [[ -z "${row}" ]] \
+      || ! jq -e 'type == "object"' <<<"${row}" >/dev/null 2>&1; then
+    return 1
+  fi
   _append_completion_outcome_unlocked() {
     local entry="$1" outcomes_file source temp cutoff
     outcomes_file="$(session_file "agent_completion_outcomes.jsonl")"
@@ -536,10 +749,11 @@ _record_completion_outcome() {
     [[ -f "${source}" ]] || source="/dev/null"
     temp="$(mktemp "${outcomes_file}.XXXXXX")" || return 1
     cutoff="$(( $(now_epoch) - 604800 ))"
-    # Outcomes are one-shot correlation records, not history. Keep every
-    # unconsumed valid row for seven days so high fan-out cannot make a late
-    # PostToolUse event fall back to a historical summary. Parse once and
-    # publish only after the complete staged file exists.
+    # Outcomes are one-shot correlation records, not history. Keep ordinary
+    # unconsumed rows for seven days so high fan-out cannot make a late
+    # PostToolUse event fall back to history; keep every versioned cleanup WAL
+    # until its consumer converges it. Parse once and publish only after the
+    # complete staged file exists.
     if ! jq -Rsr \
         --arg entry "${entry}" \
         --argjson cutoff "${cutoff}" '
@@ -548,7 +762,9 @@ _record_completion_outcome() {
             | . as $raw
             | (try fromjson catch null) as $row
             | select(($row | type) == "object")
-            | select(($row.ts | type) == "number" and $row.ts >= $cutoff)
+            | select(($row | has("cleanup_journal_version"))
+                     or (($row.ts | type) == "number"
+                         and $row.ts >= $cutoff))
             | $raw]
           + [$entry]
           | .[]
@@ -561,15 +777,32 @@ _record_completion_outcome() {
       return 1
     fi
   }
+  if [[ "${mode}" == "defer" ]]; then
+    _summary_deferred_outcome_row="${row}"
+    return 0
+  fi
   with_state_lock _append_completion_outcome_unlocked "${row}"
 }
 
 if [[ "${_summary_dispatch_suppressed}" -eq 1 \
     && "${_summary_invalid_contract_replay}" -ne 1 ]]; then
   # A one-shot ignored outcome prevents PostToolUse from reaching backward to
-  # a historical same-agent summary and presenting it as this completion.
-  _record_completion_outcome \
-    "ignored" "${_summary_dispatch_suppression_reason}" "" || true
+  # a historical same-agent summary and presenting it as this completion. Any
+  # cleanup-only suppression must publish that outcome in the same locked
+  # transaction that retires pending/start rows: otherwise a failed cleanup
+  # can tell the parent to dispatch a replacement while the surviving row still
+  # blocks it. On any outcome construction/publication failure, retain both
+  # causal rows so foreground/background recovery can resume the exact call.
+  if [[ "${_summary_cleanup_allowed}" -eq 1 ]]; then
+    if ! _record_completion_outcome "ignored" \
+        "${_summary_dispatch_suppression_reason}" "" "defer"; then
+      _summary_deferred_outcome_row=""
+      _summary_cleanup_allowed=0
+    fi
+  else
+    _record_completion_outcome \
+      "ignored" "${_summary_dispatch_suppression_reason}" "" || true
+  fi
 fi
 
 # Deterministic test-only barrier for the adversarial interleaving regression:
@@ -893,6 +1126,13 @@ _append_current_council_return_unlocked() {
 # cleanup-only path and never execute authoritative side effects.
 _finalize_summary_completion_unlocked() {
   local pending_file matched_pending_json="" keep_claim=0
+  local cleanup_starts_backup="" cleanup_starts_changed=0
+  local cleanup_starts_committed=0 cleanup_pending_fingerprint=""
+  local cleanup_start_fingerprint=""
+  local cleanup_lifecycle_dispatch_id="" cleanup_journal_version=1
+  local starts_file="" starts_temp=""
+  local outcomes_file="" outcomes_source="" outcomes_temp=""
+  local outcomes_changed=0
   pending_file="$(session_file "pending_agents.jsonl")"
   if [[ "${_summary_claim_owned}" -eq 1 ]]; then
     if [[ -n "${_OMC_ULW_CAPTURED_GENERATION+x}" ]] \
@@ -908,9 +1148,9 @@ _finalize_summary_completion_unlocked() {
   [[ "${_summary_cleanup_allowed}" -eq 1 ]] || return 0
 
   local temp_file
-  temp_file="$(mktemp "${pending_file}.XXXXXX")"
+  temp_file="$(mktemp "${pending_file}.XXXXXX")" || return 1
 
-  local skipped=0 matched_this_line=0 line this_type row_id row_native_id line_claim updated
+  local skipped=0 matched_this_line=0 line line_claim updated
   while IFS= read -r line || [[ -n "${line}" ]]; do
     matched_this_line=0
     if [[ -z "${line}" ]]; then
@@ -926,27 +1166,15 @@ _finalize_summary_completion_unlocked() {
           matched_this_line=1
         fi
       else
-        # Cleanup-only abandoned completion: preserve malformed lines and remove
-        # only the exact native binding (or bounded legacy fallback row).
-        this_type="$(jq -r '.agent_type // empty' <<<"${line}" 2>/dev/null || printf '')"
-        if [[ "${this_type}" == "${AGENT_TYPE}" ]]; then
-          row_id="$(jq -r '.review_dispatch_id // empty' \
-            <<<"${line}" 2>/dev/null || printf '')"
-          row_native_id="$(jq -r '.native_agent_id // empty' \
-            <<<"${line}" 2>/dev/null || printf '')"
-          if { [[ "${_summary_use_native_agent_id}" -eq 1 \
-                  && "${row_native_id}" == "${_summary_native_agent_id}" ]]; } \
-              || { [[ "${_summary_use_native_agent_id}" -eq 0 \
-                    && -n "${_summary_review_dispatch_id}" \
-                && "${row_id}" == "${_summary_review_dispatch_id}" \
-                && -z "${row_native_id}" ]]; } \
-              || { [[ "${_summary_use_native_agent_id}" -eq 0 \
-                   && -z "${_summary_review_dispatch_id}" \
-                   && -z "${row_id}" && -z "${row_native_id}" ]]; }; then
-            matched_pending_json="${line}"
-            skipped=1
-            matched_this_line=1
-          fi
+        # Cleanup-only rows are unclaimed between classification and this
+        # finalizer. Match the exact frozen bytes selected under the prior lock;
+        # a concurrent rebind/tombstone mutation must win rather than letting
+        # this late callback retire a different same-role row.
+        if [[ -n "${_summary_pending_json:-}" \
+            && "${line}" == "${_summary_pending_json}" ]]; then
+          matched_pending_json="${line}"
+          skipped=1
+          matched_this_line=1
         fi
       fi
     fi
@@ -960,6 +1188,138 @@ _finalize_summary_completion_unlocked() {
     rm -f "${temp_file}"
     [[ "${_summary_claim_owned}" -eq 1 ]] && return 1
     return 0
+  fi
+
+  if [[ "${_summary_claim_owned}" -ne 1 ]]; then
+    cleanup_pending_fingerprint="$(_omc_token_digest \
+      "${matched_pending_json}" 2>/dev/null || true)"
+    [[ -n "${cleanup_pending_fingerprint}" ]] || {
+      rm -f "${temp_file}"
+      return 1
+    }
+    cleanup_lifecycle_dispatch_id="$(jq -r \
+      '.lifecycle_dispatch_id // empty' \
+      <<<"${matched_pending_json}" 2>/dev/null || true)"
+    if [[ "${cleanup_lifecycle_dispatch_id}" \
+        =~ ^dispatch-[A-Za-z0-9._:-]{8,80}$ ]]; then
+      cleanup_journal_version=2
+    else
+      cleanup_lifecycle_dispatch_id=""
+      cleanup_journal_version=1
+    fi
+    _summary_deferred_outcome_row="$(jq -c \
+      --arg fingerprint "${cleanup_pending_fingerprint}" \
+      --arg lifecycle_id "${cleanup_lifecycle_dispatch_id}" \
+      --argjson version "${cleanup_journal_version}" '
+        .cleanup_journal_version = $version
+        | .cleanup_pending_fingerprint = $fingerprint
+        | if $lifecycle_id == "" then
+            del(.cleanup_lifecycle_dispatch_id)
+          else .cleanup_lifecycle_dispatch_id = $lifecycle_id end
+      ' <<<"${_summary_deferred_outcome_row}" 2>/dev/null || true)"
+    [[ -n "${_summary_deferred_outcome_row}" ]] || {
+      rm -f "${temp_file}"
+      return 1
+    }
+  fi
+
+  # Cleanup-only stale/abandoned returns must release both halves of the
+  # causal pair. The role-specific hook now deliberately leaves an invalid
+  # terminal contract untouched so the universal hook can decide whether it
+  # is a current retry or a stale completion. Once this hook has classified it
+  # stale, retaining the native-bound start would block the mandatory fresh
+  # reviewer/planner for up to the abandonment TTL. Stage the exact start now;
+  # its content fingerprint joins the cleanup journal before either causal row
+  # is published as removed.
+  if [[ "${_summary_claim_owned}" -ne 1 && -n "${matched_pending_json}" ]]; then
+    local start_line start_type start_native_id start_dispatch_id
+    local wanted_type wanted_native_id wanted_dispatch_id start_removed=0
+    local start_match_count=0
+    starts_file="$(session_file "agent_dispatch_starts.jsonl")"
+    wanted_type="$(jq -r '.agent_type // empty' \
+      <<<"${matched_pending_json}" 2>/dev/null || true)"
+    wanted_native_id="$(jq -r '.native_agent_id // empty' \
+      <<<"${matched_pending_json}" 2>/dev/null || true)"
+    wanted_dispatch_id="$(jq -r '.review_dispatch_id // empty' \
+      <<<"${matched_pending_json}" 2>/dev/null || true)"
+    if [[ -s "${starts_file}" && ! -L "${starts_file}" ]]; then
+      cleanup_starts_backup="$(mktemp "${starts_file}.rollback.XXXXXX")" || {
+        rm -f "${temp_file}"
+        return 1
+      }
+      if ! cp "${starts_file}" "${cleanup_starts_backup}"; then
+        rm -f "${cleanup_starts_backup}" "${temp_file}"
+        return 1
+      fi
+      starts_temp="$(mktemp "${starts_file}.XXXXXX")" || {
+        rm -f "${cleanup_starts_backup}" "${temp_file}"
+        return 1
+      }
+      while IFS= read -r start_line || [[ -n "${start_line}" ]]; do
+        [[ -n "${start_line}" ]] || continue
+        start_type="$(jq -r '.agent_type // empty' \
+          <<<"${start_line}" 2>/dev/null || true)"
+        start_native_id="$(jq -r '.native_agent_id // empty' \
+          <<<"${start_line}" 2>/dev/null || true)"
+        start_dispatch_id="$(jq -r '.review_dispatch_id // empty' \
+          <<<"${start_line}" 2>/dev/null || true)"
+        if [[ "${start_type}" == "${wanted_type}" ]] \
+            && jq -e --argjson target "${matched_pending_json}" '
+              def frozen:
+                {ts:(.ts // -1),agent_type:(.agent_type // ""),
+                 description:(.description // ""),
+                 lifecycle_dispatch_id:(.lifecycle_dispatch_id // ""),
+                 review_dispatch_id:(.review_dispatch_id // ""),
+                 native_agent_id:(.native_agent_id // ""),
+                 edit_revision:(.edit_revision // 0),
+                 code_revision:(.code_revision // 0),
+                 doc_revision:(.doc_revision // 0),
+                 bash_revision:(.bash_revision // 0),
+                 ui_revision:(.ui_revision // 0),
+                 plan_revision:(.plan_revision // 0),
+                 review_revision:(.review_revision // 0),
+                 objective_prompt_ts:(.objective_prompt_ts // 0),
+                 objective_prompt_revision:(.objective_prompt_revision // 0),
+                 objective_cycle_id:(.objective_cycle_id // 0),
+                 ulw_enforcement_generation:
+                   (.ulw_enforcement_generation // "migration")};
+              frozen == ($target | frozen)
+            ' <<<"${start_line}" >/dev/null 2>&1; then
+          start_match_count=$((start_match_count + 1))
+          cleanup_start_fingerprint="$(_omc_token_digest \
+            "${start_line}" 2>/dev/null || true)"
+          [[ -n "${cleanup_start_fingerprint}" ]] || {
+            rm -f "${starts_temp}" "${cleanup_starts_backup}" "${temp_file}"
+            return 1
+          }
+          start_removed=1
+          continue
+        fi
+        printf '%s\n' "${start_line}" >>"${starts_temp}" || {
+          rm -f "${starts_temp}" "${cleanup_starts_backup}" "${temp_file}"
+          return 1
+        }
+      done <"${starts_file}"
+      if (( start_match_count > 1 )); then
+        rm -f "${starts_temp}" "${cleanup_starts_backup}" "${temp_file}"
+        return 1
+      fi
+      if [[ "${start_removed}" -eq 1 ]]; then
+        _summary_deferred_outcome_row="$(jq -c \
+          --arg fingerprint "${cleanup_start_fingerprint}" \
+          '. + {cleanup_start_fingerprint:$fingerprint}' \
+          <<<"${_summary_deferred_outcome_row}" 2>/dev/null || true)"
+        [[ -n "${_summary_deferred_outcome_row}" ]] || {
+          rm -f "${starts_temp}" "${cleanup_starts_backup}" "${temp_file}"
+          return 1
+        }
+        cleanup_starts_changed=1
+      else
+        rm -f "${starts_temp}" "${cleanup_starts_backup}"
+        starts_temp=""
+        cleanup_starts_backup=""
+      fi
+    fi
   fi
 
   if [[ "${_summary_claim_owned}" -eq 1 ]]; then
@@ -1054,7 +1414,84 @@ _finalize_summary_completion_unlocked() {
     fi
   fi
 
-  mv "${temp_file}" "${pending_file}"
+  # A rejected cleanup-only return is one causal publication: the parent
+  # recovery outcome and retirement of both pending/start rows must become
+  # visible together.
+  # Publish the outcome first: it is the durable roll-forward journal and the
+  # cleanup transaction's commit point. Before this rename both causal rows are
+  # intact. After it, no failure path removes the outcome or restores only one
+  # row; foreground/background/admission consumers converge exact fingerprints.
+  if [[ -n "${_summary_deferred_outcome_row}" ]]; then
+    outcomes_file="$(session_file "agent_completion_outcomes.jsonl")"
+    if [[ -L "${outcomes_file}" ]] \
+        || { [[ -e "${outcomes_file}" ]] \
+          && [[ ! -f "${outcomes_file}" ]]; }; then
+      rm -f "${starts_temp}" "${cleanup_starts_backup}" \
+        "${temp_file}" 2>/dev/null || true
+      return 1
+    fi
+    outcomes_source="${outcomes_file}"
+    [[ -f "${outcomes_source}" ]] || outcomes_source="/dev/null"
+    outcomes_temp="$(mktemp "${outcomes_file}.XXXXXX")" || {
+      rm -f "${starts_temp}" "${cleanup_starts_backup}" \
+        "${temp_file}" 2>/dev/null || true
+      return 1
+    }
+    if ! jq -Rsr --arg entry "${_summary_deferred_outcome_row}" \
+        --argjson cutoff "$(( $(now_epoch) - 604800 ))" '
+          [split("\n")[] | select(length > 0)
+           | . as $raw
+           | (try fromjson catch null) as $row
+           | select(($row | type) == "object")
+          | select(($row | has("cleanup_journal_version"))
+                   or (($row.ts | type) == "number"
+                       and $row.ts >= $cutoff))
+           | $raw]
+          + [$entry] | .[]
+        ' "${outcomes_source}" >"${outcomes_temp}" \
+        || ! mv -f "${outcomes_temp}" "${outcomes_file}"; then
+      rm -f "${outcomes_temp}" "${starts_temp}" \
+        "${cleanup_starts_backup}" "${temp_file}" \
+        2>/dev/null || true
+      return 1
+    fi
+    outcomes_changed=1
+  fi
+
+  if [[ "${OMC_TEST_SUMMARY_KILL_AFTER_OUTCOME_STAGE:-0}" == "1" \
+      && "${outcomes_changed}" -eq 1 ]]; then
+    kill -9 "$$"
+  fi
+  if [[ "${OMC_TEST_SUMMARY_FAIL_AFTER_OUTCOME_STAGE:-0}" == "1" \
+      && "${outcomes_changed}" -eq 1 ]]; then
+    rm -f "${starts_temp}" "${cleanup_starts_backup}" \
+      "${temp_file}" 2>/dev/null || true
+    return 1
+  fi
+
+  if [[ "${cleanup_starts_changed}" -eq 1 ]]; then
+    if ! mv -f "${starts_temp}" "${starts_file}"; then
+      rm -f "${starts_temp}" "${cleanup_starts_backup}" \
+        "${temp_file}" 2>/dev/null || true
+      return 1
+    fi
+    starts_temp=""
+    cleanup_starts_committed=1
+  fi
+  if [[ "${OMC_TEST_SUMMARY_KILL_AFTER_START_CLEANUP:-0}" == "1" \
+      && "${cleanup_starts_committed}" -eq 1 ]]; then
+    kill -9 "$$"
+  fi
+
+  if ! mv "${temp_file}" "${pending_file}"; then
+    rm -f "${temp_file}" "${cleanup_starts_backup}" 2>/dev/null || true
+    return 1
+  fi
+  if [[ "${OMC_TEST_SUMMARY_KILL_AFTER_PENDING_CLEANUP:-0}" == "1" \
+      && "${outcomes_changed}" -eq 1 ]]; then
+    kill -9 "$$"
+  fi
+  rm -f "${cleanup_starts_backup}" 2>/dev/null || true
 }
 _summary_finalize_rc=0
 with_state_lock _finalize_summary_completion_unlocked \

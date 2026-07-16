@@ -141,6 +141,11 @@ _ensure_valid_state() {
 _write_state_unlocked() {
   local key="$1"
   local value="$2"
+  if declare -F omc_enforcement_generation_matches_capture \
+      >/dev/null 2>&1 \
+      && ! omc_enforcement_generation_matches_capture; then
+    return 1
+  fi
   local state_file
   state_file="$(session_file "${STATE_JSON}")"
   local temp_file
@@ -190,6 +195,11 @@ write_state() {
 _write_state_batch_unlocked() {
   if [[ $(( $# % 2 )) -ne 0 ]]; then
     printf 'write_state_batch: odd number of arguments (%d)\n' "$#" >&2
+    return 1
+  fi
+  if declare -F omc_enforcement_generation_matches_capture \
+      >/dev/null 2>&1 \
+      && ! omc_enforcement_generation_matches_capture; then
     return 1
   fi
 

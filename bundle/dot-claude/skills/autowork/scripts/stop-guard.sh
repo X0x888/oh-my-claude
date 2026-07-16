@@ -32,6 +32,7 @@ if [[ -z "${SESSION_ID}" ]]; then
 fi
 
 ensure_session_dir
+omc_enforcement_generation_matches_capture || exit 0
 
 # Allocate one causal sequence per Stop attempt. `emit_stop_block` stamps the
 # same value only if this guard really emits decision:block. The following
@@ -40,6 +41,7 @@ ensure_session_dir
 OMC_STOP_ATTEMPT_SEQ=0
 _begin_stop_attempt_unlocked() {
   local _seq
+  omc_enforcement_generation_matches_capture || return 1
   _seq="$(read_state "stop_guard_attempt_seq" 2>/dev/null || true)"
   [[ "${_seq}" =~ ^[0-9]+$ ]] || _seq=0
   _seq=$((_seq + 1))
@@ -48,26 +50,25 @@ _begin_stop_attempt_unlocked() {
 }
 with_state_lock _begin_stop_attempt_unlocked 2>/dev/null || OMC_STOP_ATTEMPT_SEQ=0
 
-# v1.46-pre: background-dispatch awareness — read+CONSUME the marker FIRST,
-# before any early-return path below (non-ULW exit or gate-skip exit).
-# posttool-timing.sh sets `bg_work_dispatched_ts` when a
-# run_in_background tool was dispatched; if set, the agent is likely
-# yielding to WAIT on that work, so format_gate_block_dual appends a
-# "waiting, not stopped" note to any block message this run (otherwise a
-# wait reads as a premature stop, and "quality checks haven't run" is
-# misleading when the checks run in the background). Consuming here —
-# unconditionally, ahead of every exit — is the single-shot expiry: the
-# note fires at most once per dispatch and can NEVER stale into a later,
-# unrelated block (a recency gate would not expire because the
-# background-completion notification re-invokes the model as a synthetic
-# prompt that does not advance last_user_prompt_ts). MESSAGE-ONLY: never
-# changes the block/release decision, so it is not a gate bypass. Coupling:
-# detection lives in posttool-timing (gated by time_tracking), so the
-# backstop no-ops when time_tracking=off — the behavioral "Waiting on
-# background work" announcement still covers that case.
+# Consume the legacy Bash-dispatch marker before every early return. Current
+# Stop payloads provide the level-authoritative `background_tasks` registry:
+# present-empty means no notification can arrive, so it must never produce an
+# auto-resume promise. An omitted field is the explicit old-client fallback
+# where the marker remains the best available signal. MESSAGE-ONLY: this note
+# never changes the block/release decision; first-class genuine waits are
+# handled by stop-dispatch.sh before the guard runs.
 _OMC_BG_WORK_PENDING_NOTE=""
 if [[ -n "$(read_state "bg_work_dispatched_ts" 2>/dev/null || true)" ]]; then
-  _OMC_BG_WORK_PENDING_NOTE=1
+  _omc_bg_runtime_state="$(omc_stop_runtime_array_state \
+    "${HOOK_JSON}" "background_tasks")"
+  case "${_omc_bg_runtime_state}" in
+    live|absent) _OMC_BG_WORK_PENDING_NOTE=1 ;;
+    malformed)
+      log_anomaly "stop-guard" \
+        "malformed background_tasks field; legacy marker cannot promise a wake" \
+        2>/dev/null || true
+      ;;
+  esac
   write_state "bg_work_dispatched_ts" "" 2>/dev/null || true
 fi
 
@@ -237,6 +238,7 @@ read_findings_count_by_status() {
 _sg_claim_skip_release_unlocked() {
   local stored_reason stored_edit_ts current_edit_ts
   local stored_revision current_revision fresh=0
+  omc_enforcement_generation_matches_capture || return 1
   _sg_skip_status="missing"
   stored_reason="$(read_state "gate_skip_reason")"
   [[ -n "${stored_reason}" ]] || return 0
@@ -402,6 +404,8 @@ _sg_commit_release_unlocked() {
   local _current_doc_revision="" _current_doc_ts=""
   local _current_plan_revision="" _current_plan_ts=""
   local _cas_idx=0 _cas_value=""
+
+  omc_enforcement_generation_matches_capture || return 1
 
   _sg_release_generation_changes=""
   while IFS= read -r -d $'\x1e' _cas_value; do

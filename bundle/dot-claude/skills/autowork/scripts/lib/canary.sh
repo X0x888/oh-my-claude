@@ -217,6 +217,11 @@ canary_get_current_prompt_seq() {
 canary_run_audit() {
   local session_id="$1"
   [[ -z "${session_id}" ]] && return 0
+  if declare -F omc_enforcement_generation_matches_capture \
+      >/dev/null 2>&1 \
+      && ! omc_enforcement_generation_matches_capture; then
+    return 0
+  fi
 
   # Hard-dependency check: the audit needs timing.jsonl to count tool
   # calls per prompt_seq. When time_tracking is off (minimal preset
@@ -283,6 +288,12 @@ canary_run_audit() {
 
   if [[ -z "${row}" ]]; then
     log_hook "canary" "skip: jq encoding failed"
+    return 0
+  fi
+
+  if declare -F omc_enforcement_generation_matches_capture \
+      >/dev/null 2>&1 \
+      && ! omc_enforcement_generation_matches_capture; then
     return 0
   fi
 

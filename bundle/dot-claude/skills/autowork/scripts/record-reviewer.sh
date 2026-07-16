@@ -63,6 +63,18 @@ capture_ulw_enforcement_interval || exit 0
 
 review_message="$(json_get '.last_assistant_message')"
 
+if [[ -z "${AGENT_TYPE}" ]]; then
+  case "${REVIEWER_TYPE}" in
+    excellence) AGENT_TYPE="excellence-reviewer" ;;
+    prose) AGENT_TYPE="editor-critic" ;;
+    stress_test) AGENT_TYPE="metis" ;;
+    traceability) AGENT_TYPE="briefing-analyst" ;;
+    design_quality) AGENT_TYPE="design-reviewer" ;;
+    release) AGENT_TYPE="release-reviewer" ;;
+    *) AGENT_TYPE="quality-reviewer" ;;
+  esac
+fi
+
 # Native agent_id is authoritative on current Claude Code. The echoed binding
 # below is retained only for unversioned/older clients and is accepted at the
 # trusted structural tail immediately before the final reviewer VERDICT.
@@ -88,9 +100,10 @@ fi
 # --- VERDICT parsing (structured contract with regex fallback) ---
 #
 # Reviewers emit a final line of the form `VERDICT: CLEAN|SHIP|FINDINGS|BLOCK`
-# (optionally with a trailing count like `FINDINGS (2)`). When present, the
-# VERDICT line is authoritative. If absent, fall through to the legacy
-# phrase-based regex so older reviewer configurations still work.
+# (with a count on FINDINGS/BLOCK). When present, the VERDICT line is
+# authoritative. Only untracked migration sessions may fall through to the
+# legacy phrase-based regex; current tracked calls are continued by the
+# universal SubagentStop hook and must leave both causal ledgers untouched.
 #
 # The VERDICT line must be the LAST `VERDICT:` line in the message and must
 # not be a quoted excerpt (leading `>` or whitespace indentation rules it out,
@@ -113,6 +126,24 @@ if [[ -n "${review_message}" ]]; then
       verdict_token="CLEAN"
     fi
   fi
+fi
+
+# Matching SubagentStop hooks run in parallel. In current tracked sessions the
+# universal hook owns the continuation response, while this role-specific hook
+# must remain silent and, critically, must not consume its start snapshot or
+# stamp a partial review as findings. A later valid return from the same native
+# call will traverse the normal commit path below. Pre-tracking sessions retain
+# the explicit phrase-fallback migration behavior. Third-party code-reviewer
+# integrations keep their own output contracts and therefore also retain the
+# phrase parser under causal identity/generation checks.
+_review_enforced_contract_kind="$(omc_enforced_terminal_contract_kind \
+  "${AGENT_TYPE}" 2>/dev/null || true)"
+if [[ -n "${_review_enforced_contract_kind}" ]] \
+    && ! omc_enforced_terminal_verdict_valid \
+    "${AGENT_TYPE}" "${_review_final_line:-}" \
+    && { [[ "$(read_state "review_dispatch_tracking_version")" == "1" ]] \
+      || [[ "$(read_state "native_agent_id_tracking_version")" == "1" ]]; }; then
+  exit 0
 fi
 
 has_findings=""
@@ -180,18 +211,6 @@ fi
 # --- State writes and dimension ticking ---
 
 now_ts="$(now_epoch)"
-
-if [[ -z "${AGENT_TYPE}" ]]; then
-  case "${REVIEWER_TYPE}" in
-    excellence) AGENT_TYPE="excellence-reviewer" ;;
-    prose) AGENT_TYPE="editor-critic" ;;
-    stress_test) AGENT_TYPE="metis" ;;
-    traceability) AGENT_TYPE="briefing-analyst" ;;
-    design_quality) AGENT_TYPE="design-reviewer" ;;
-    release) AGENT_TYPE="release-reviewer" ;;
-    *) AGENT_TYPE="quality-reviewer" ;;
-  esac
-fi
 
 # Consume the dispatch-generation snapshot for this reviewer. Current
 # SubagentStop payloads carry the platform-issued agent_id bound atomically by
@@ -413,6 +432,9 @@ _commit_reviewer_result() {
       _rejection_reason="native_agent_id_mismatch"
     elif [[ -z "${_review_dispatch_start_json}" ]]; then
       _rejection_reason="missing_start_snapshot"
+    elif ! omc_row_enforcement_generation_current \
+        "${_review_dispatch_start_json}"; then
+      _rejection_reason="enforcement_interval_closed"
     elif [[ "$(jq -r '.review_dispatch_abandoned // false' \
         <<<"${_review_dispatch_start_json}" 2>/dev/null || true)" == "true" ]]; then
       _start_revision="$(_review_versioned_start_revision \

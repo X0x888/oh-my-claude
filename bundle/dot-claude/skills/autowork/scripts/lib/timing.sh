@@ -225,6 +225,11 @@ timing_append_directive() {
 
 # timing_append_prompt_end <prompt_seq> <duration_s>
 timing_append_prompt_end() {
+  if declare -F omc_enforcement_generation_matches_capture \
+      >/dev/null 2>&1 \
+      && ! omc_enforcement_generation_matches_capture; then
+    return 0
+  fi
   is_time_tracking_enabled || return 0
   [[ -z "${SESSION_ID:-}" ]] && return 0
 
@@ -925,6 +930,11 @@ _timing_sum_new_agent_files() {
 
 _timing_capture_session_tokens_locked() {
   local transcript="$1" prompt_seq="$2"
+  if declare -F omc_enforcement_generation_matches_capture \
+      >/dev/null 2>&1 \
+      && ! omc_enforcement_generation_matches_capture; then
+    return 0
+  fi
   local files=("${transcript}") file agent_dir
   agent_dir="${transcript%.jsonl}/subagents"
 
@@ -1239,6 +1249,11 @@ _timing_capture_session_tokens_locked() {
 }
 
 timing_capture_session_tokens() {
+  if declare -F omc_enforcement_generation_matches_capture \
+      >/dev/null 2>&1 \
+      && ! omc_enforcement_generation_matches_capture; then
+    return 0
+  fi
   is_time_tracking_enabled || return 0
   is_token_tracking_enabled || return 0
   [[ -z "${SESSION_ID:-}" ]] && return 0
@@ -2285,6 +2300,11 @@ _timing_bar() {
 #   Called from stop-time-summary.sh after a successful aggregate run.
 #   Deduplicated and capped under one cross-session log lock transaction.
 timing_record_session_summary() {
+  if declare -F omc_enforcement_generation_matches_capture \
+      >/dev/null 2>&1 \
+      && ! omc_enforcement_generation_matches_capture; then
+    return 0
+  fi
   is_time_tracking_enabled || return 0
   local agg="${1:-}"
   [[ -z "${agg}" ]] && return 0

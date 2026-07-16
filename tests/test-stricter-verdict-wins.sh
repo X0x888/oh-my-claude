@@ -69,6 +69,17 @@ assert_contains() {
   fi
 }
 
+assert_not_contains() {
+  local label="$1" needle="$2" haystack="$3"
+  if [[ "${haystack}" != *"${needle}"* ]]; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: %s\n    unexpected=%q\n    haystack=%q\n' \
+      "${label}" "${needle}" "${haystack:0:300}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
 _cleanup() {
   export HOME="${ORIG_HOME}"
   rm -rf "${_test_home}"
@@ -251,13 +262,40 @@ _drive_agent_dispatch() {
 
 _drive_subagent_summary() {
   local sid="$1" agent_type="$2" message="$3" native_agent_id="${4:-}"
+  _drive_subagent_summary_out "${sid}" "${agent_type}" "${message}" \
+    "${native_agent_id}" >/dev/null 2>&1 || true
+}
+
+_drive_subagent_summary_out() {
+  local sid="$1" agent_type="$2" message="$3" native_agent_id="${4:-}"
+  local stop_hook_active="${5:-false}"
+  local fail_after_outcome_stage="${6:-0}"
+  local fail_outcome_build="${7:-0}"
+  local kill_after_outcome_stage="${8:-0}"
+  local kill_after_start_cleanup="${9:-0}"
+  local kill_after_pending_cleanup="${10:-0}"
   jq -nc --arg sid "${sid}" --arg agent "${agent_type}" --arg msg "${message}" \
-    --arg native_id "${native_agent_id}" \
+    --arg native_id "${native_agent_id}" --argjson active "${stop_hook_active}" \
     '{session_id:$sid,agent_type:$agent,last_assistant_message:$msg}
+     + {stop_hook_active:$active}
      + if $native_id == "" then {} else {agent_id:$native_id} end' \
     | HOME="${_test_home}" STATE_ROOT="${_test_state_root}" \
+      OMC_TEST_SUMMARY_FAIL_AFTER_OUTCOME_STAGE="${fail_after_outcome_stage}" \
+      OMC_TEST_SUMMARY_FAIL_OUTCOME_BUILD="${fail_outcome_build}" \
+      OMC_TEST_SUMMARY_KILL_AFTER_OUTCOME_STAGE="${kill_after_outcome_stage}" \
+      OMC_TEST_SUMMARY_KILL_AFTER_START_CLEANUP="${kill_after_start_cleanup}" \
+      OMC_TEST_SUMMARY_KILL_AFTER_PENDING_CLEANUP="${kill_after_pending_cleanup}" \
       bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/record-subagent-summary.sh" \
-      >/dev/null 2>&1 || true
+      2>/dev/null || true
+}
+
+_jsonl_count() {
+  local path="$1"
+  if [[ -f "${path}" ]]; then
+    jq -s 'length' "${path}"
+  else
+    printf '0'
+  fi
 }
 
 _drive_agent_start() {
@@ -280,6 +318,29 @@ _drive_record_plan() {
       >/dev/null 2>&1 || true
 }
 
+_drive_reflect_after_agent() {
+  local sid="$1" agent_type="$2" run_in_background="${3:-false}"
+  local response_status="${4:-}" native_agent_id="${5:-}"
+  local response_is_async="${6:-false}"
+  jq -nc --arg sid "${sid}" --arg agent "${agent_type}" \
+    --argjson background "${run_in_background}" \
+    --arg response_status "${response_status}" \
+    --arg native_id "${native_agent_id}" \
+    --argjson is_async "${response_is_async}" '
+    {session_id:$sid,tool_name:"Agent",
+     tool_input:{subagent_type:$agent,description:"review current work",
+       run_in_background:$background}}
+    + if $response_status == "" and $native_id == "" then {}
+      else {tool_response:
+        ((if $response_status == "" then {} else {status:$response_status} end)
+         + (if $is_async then {isAsync:true} else {} end)
+         + (if $native_id == "" then {} else {agentId:$native_id} end))}
+      end
+  ' | HOME="${_test_home}" STATE_ROOT="${_test_state_root}" \
+    bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/reflect-after-agent.sh" \
+    2>/dev/null || true
+}
+
 # In oh-my-claude's reviewer map, each REVIEWER_TYPE owns its own
 # dimension(s). The cross-reviewer-same-dim overlap that cc10x F11
 # names exists when third-party code-reviewers (`superpowers:code-reviewer`,
@@ -288,6 +349,23 @@ _drive_record_plan() {
 #
 # Test the SAME REVIEWER_TYPE dispatched twice (e.g., a sibling code-reviewer
 # running after quality-reviewer on the same code state).
+reset_session "s4_external_contract"
+with_state_lock_batch \
+  "edit_revision" "1" "last_code_edit_revision" "1" \
+  "review_cycle_id" "1" "review_cycle_prompt_ts" "99" \
+  "last_user_prompt_ts" "99" "prompt_revision" "1"
+_drive_agent_dispatch "s4_external_contract" \
+  "feature-dev:code-reviewer" >/dev/null
+_drive_agent_start "s4_external_contract" \
+  "feature-dev:code-reviewer" "native-feature-review"
+_drive_record_reviewer "s4_external_contract" "standard" \
+  "The implementation looks clean with no issues." \
+  "feature-dev:code-reviewer" "native-feature-review"
+assert_eq "T4-external: plugin review keeps its own prose contract" "false" \
+  "$(read_state "review_had_findings")"
+assert_eq "T4-external: plugin prose can tick standard review" "CLEAN" \
+  "$(read_state "dim_code_quality_verdict")"
+
 reset_session "s4a"
 write_state "last_code_edit_ts" "100"
 _drive_record_reviewer "s4a" "standard" "Looks clean.
@@ -839,6 +917,16 @@ _drive_subagent_summary "s4s_native_summary_first" "quality-reviewer" \
 assert_eq "T4s: summary-first native claim waits for reviewer hook" "true" \
   "$(jq -r '.completion_claim_effects_complete // false' \
     "$(session_file "pending_agents.jsonl")")"
+accepted_reviewer_parent_out="$(_drive_reflect_after_agent \
+  "s4s_native_summary_first" "quality-reviewer" false \
+  "completed" "native-review-a")"
+assert_contains "T4s: accepted reviewer outcome reaches parent" \
+  "verdict=CLEAN" "${accepted_reviewer_parent_out}"
+assert_eq "T4s: accepted outcome consumption preserves pending claim" "true" \
+  "$(jq -r '.completion_claim_effects_complete // false' \
+    "$(session_file "pending_agents.jsonl")")"
+assert_eq "T4s: accepted outcome consumption preserves reviewer start" "1" \
+  "$(jq -s 'length' "$(session_file "agent_dispatch_starts.jsonl")")"
 _drive_record_reviewer "s4s_native_summary_first" "standard" \
   $'Native summary first.\nVERDICT: CLEAN' "quality-reviewer" "native-review-a"
 assert_eq "T4s: reviewer consumes the same native start" "CLEAN" \
@@ -860,6 +948,904 @@ _drive_subagent_summary "s4t_native_reviewer_first" "quality-reviewer" \
 assert_eq "T4t: reviewer-first native pair records one summary" "1" \
   "$(jq -s 'length' "$(session_file "subagent_summaries.jsonl")")"
 assert_eq "T4t: reviewer-first native pair fully settles" "0" \
+  "$(jq -s 'length' "$(session_file "pending_agents.jsonl")")"
+
+# A terminal-looking native callback that ends at an intermediate checkpoint
+# is not a reviewer completion. Before this regression fix the dedicated hook
+# consumed agent_dispatch_starts, stamped last_review_ts, and the universal
+# hook accepted an UNREPORTED summary—leaving no notification or resume handle.
+reset_session "s4t_partial_summary_first"
+with_state_lock_batch \
+  "edit_revision" "13" "last_code_edit_revision" "13" \
+  "review_cycle_id" "1" "review_cycle_prompt_ts" "1550" \
+  "last_user_prompt_ts" "1550" "prompt_revision" "72"
+_drive_agent_dispatch "s4t_partial_summary_first" "quality-reviewer" >/dev/null
+_drive_agent_start "s4t_partial_summary_first" "quality-reviewer" "native-partial-a"
+partial_out="$(_drive_subagent_summary_out "s4t_partial_summary_first" \
+  "quality-reviewer" 'Tests pass. Let me typecheck…' "native-partial-a")"
+_drive_record_reviewer "s4t_partial_summary_first" "standard" \
+  'Tests pass. Let me typecheck…' "quality-reviewer" "native-partial-a"
+assert_contains "T4t-partial: universal hook continues the same subagent" \
+  '"hookEventName":"SubagentStop"' "${partial_out}"
+assert_contains "T4t-partial: continuation names intermediate checkpoint" \
+  "intermediate checkpoint" "${partial_out}"
+assert_eq "T4t-partial: pending native row is retained" "1" \
+  "$(jq -s '[.[] | select(.native_agent_id == "native-partial-a")] | length' \
+    "$(session_file "pending_agents.jsonl")")"
+assert_eq "T4t-partial: reviewer start is retained" "1" \
+  "$(jq -s '[.[] | select(.native_agent_id == "native-partial-a")] | length' \
+    "$(session_file "agent_dispatch_starts.jsonl")")"
+assert_eq "T4t-partial: no completion claim is created" "" \
+  "$(jq -r '.completion_claim_id // empty' \
+    "$(session_file "pending_agents.jsonl")")"
+assert_eq "T4t-partial: no review clock is stamped" "" \
+  "$(read_state "last_review_ts")"
+assert_eq "T4t-partial: no dimension is ticked" "" \
+  "$(read_state "dim_code_quality_verdict")"
+assert_eq "T4t-partial: no summary is accepted" "0" \
+  "$(_jsonl_count "$(session_file "subagent_summaries.jsonl")")"
+assert_eq "T4t-partial: no completion outcome is recorded" "0" \
+  "$(_jsonl_count "$(session_file "agent_completion_outcomes.jsonl")")"
+
+# Empty and malformed/non-final retries remain idempotent; neither hook order
+# can consume the causal rows before the exact same native call returns valid.
+empty_retry_out="$(_drive_subagent_summary_out "s4t_partial_summary_first" \
+  "quality-reviewer" '' "native-partial-a")"
+assert_contains "T4t-partial: empty callback also continues" \
+  '"hookEventName":"SubagentStop"' "${empty_retry_out}"
+assert_eq "T4t-partial: repeated retry stays one pending row" "1" \
+  "$(jq -s 'length' "$(session_file "pending_agents.jsonl")")"
+
+_drive_record_reviewer "s4t_partial_summary_first" "standard" \
+  $'Typecheck passes; complete review follows.\nVERDICT: CLEAN' \
+  "quality-reviewer" "native-partial-a"
+_drive_subagent_summary "s4t_partial_summary_first" "quality-reviewer" \
+  $'Typecheck passes; complete review follows.\nVERDICT: CLEAN' "native-partial-a"
+assert_eq "T4t-partial: resumed same native call records CLEAN" "CLEAN" \
+  "$(read_state "dim_code_quality_verdict")"
+assert_eq "T4t-partial: resumed call fully settles pending" "0" \
+  "$(jq -s 'length' "$(session_file "pending_agents.jsonl")")"
+assert_eq "T4t-partial: resumed call fully settles start" "0" \
+  "$(jq -s 'length' "$(session_file "agent_dispatch_starts.jsonl")")"
+assert_eq "T4t-partial: resumed call records exactly one summary" "1" \
+  "$(_jsonl_count "$(session_file "subagent_summaries.jsonl")")"
+assert_eq "T4t-partial: resumed call records exactly one accepted outcome" "1" \
+  "$(jq -s '[.[] | select(.status == "accepted")] | length' \
+    "$(session_file "agent_completion_outcomes.jsonl")")"
+
+reset_session "s4t_partial_reviewer_first"
+with_state_lock_batch \
+  "edit_revision" "14" "last_code_edit_revision" "14" \
+  "review_cycle_id" "1" "review_cycle_prompt_ts" "1575" \
+  "last_user_prompt_ts" "1575" "prompt_revision" "73"
+_drive_agent_dispatch "s4t_partial_reviewer_first" "quality-reviewer" >/dev/null
+_drive_agent_start "s4t_partial_reviewer_first" "quality-reviewer" "native-partial-b"
+_drive_record_reviewer "s4t_partial_reviewer_first" "standard" \
+  $'VERDICT: CLEAN\nTests pass. Let me typecheck…' \
+  "quality-reviewer" "native-partial-b"
+partial_out="$(_drive_subagent_summary_out "s4t_partial_reviewer_first" \
+  "quality-reviewer" $'VERDICT: CLEAN\nTests pass. Let me typecheck…' \
+  "native-partial-b")"
+assert_contains "T4t-partial-order: non-final verdict continues" \
+  "intermediate checkpoint" "${partial_out}"
+assert_eq "T4t-partial-order: opposite hook order retains both rows" "2" \
+  "$(( $(jq -s 'length' "$(session_file "pending_agents.jsonl")") \
+      + $(jq -s 'length' "$(session_file "agent_dispatch_starts.jsonl")") ))"
+
+reset_session "s4t_partial_stale"
+with_state_lock_batch \
+  "edit_revision" "15" "last_code_edit_revision" "15" \
+  "review_cycle_id" "1" "review_cycle_prompt_ts" "1580" \
+  "last_user_prompt_ts" "1580" "prompt_revision" "74"
+_drive_agent_dispatch "s4t_partial_stale" "quality-reviewer" >/dev/null
+_drive_agent_start "s4t_partial_stale" "quality-reviewer" "native-partial-stale"
+write_state "last_code_edit_revision" "16"
+_drive_record_reviewer "s4t_partial_stale" "standard" \
+  'Tests pass. Let me typecheck…' "quality-reviewer" "native-partial-stale"
+stale_partial_out="$(_drive_subagent_summary_out "s4t_partial_stale" \
+  "quality-reviewer" 'Tests pass. Let me typecheck…' "native-partial-stale")"
+assert_eq "T4t-partial-stale: stale partial is not revived" "" \
+  "${stale_partial_out}"
+assert_eq "T4t-partial-stale: stale pending row is cleaned" "0" \
+  "$(jq -s 'length' "$(session_file "pending_agents.jsonl")")"
+assert_eq "T4t-partial-stale: stale reviewer start is cleaned" "0" \
+  "$(jq -s 'length' "$(session_file "agent_dispatch_starts.jsonl")")"
+assert_eq "T4t-partial-stale: fresh same-role review is admitted" "" \
+  "$(_drive_agent_dispatch "s4t_partial_stale" "quality-reviewer")"
+
+# Repeated malformed returns are bounded before Claude Code's own continuation
+# ceiling. The third return reaches the parent with a one-shot ignored outcome,
+# and PostToolUse immediately tells the parent to resume/rebind instead of wait.
+reset_session "s4t_partial_retry_cap"
+with_state_lock_batch \
+  "edit_revision" "17" "last_code_edit_revision" "17" \
+  "review_cycle_id" "1" "review_cycle_prompt_ts" "1585" \
+  "last_user_prompt_ts" "1585" "prompt_revision" "75"
+_drive_agent_dispatch "s4t_partial_retry_cap" "quality-reviewer" >/dev/null
+_drive_agent_start "s4t_partial_retry_cap" "quality-reviewer" "native-partial-cap"
+cap_out_1="$(_drive_subagent_summary_out "s4t_partial_retry_cap" \
+  "quality-reviewer" 'VERDICT: PLAN_READY' "native-partial-cap" false)"
+cap_out_2="$(_drive_subagent_summary_out "s4t_partial_retry_cap" \
+  "quality-reviewer" 'Still checking…' "native-partial-cap" true)"
+cap_out_3="$(_drive_subagent_summary_out "s4t_partial_retry_cap" \
+  "quality-reviewer" 'Still checking again…' "native-partial-cap" true)"
+assert_contains "T4t-retry-cap: wrong-role verdict is continued" \
+  '"hookEventName":"SubagentStop"' "${cap_out_1}"
+assert_contains "T4t-retry-cap: active retry is continued below cap" \
+  '"hookEventName":"SubagentStop"' "${cap_out_2}"
+assert_eq "T4t-retry-cap: third malformed return reaches parent" "" \
+  "${cap_out_3}"
+assert_eq "T4t-retry-cap: exhausted return is ignored, not accepted" \
+  "terminal-contract-retry-exhausted" \
+  "$(jq -r 'select(.status == "ignored") | .reason' \
+    "$(session_file "agent_completion_outcomes.jsonl")")"
+cap_parent_out="$(_drive_reflect_after_agent \
+  "s4t_partial_retry_cap" "quality-reviewer")"
+assert_contains "T4t-retry-cap: parent receives explicit recovery" \
+  "TERMINAL CONTRACT RECOVERY" "${cap_parent_out}"
+assert_contains "T4t-retry-cap: parent recovery names retired native ID" \
+  "native-partial-cap" "${cap_parent_out}"
+assert_contains "T4t-retry-cap: parent is told not to wait" \
+  "Do not wait" "${cap_parent_out}"
+assert_contains "T4t-retry-cap: parent is told not to resume exhausted call" \
+  "Do not wait for another notification or resume that call" "${cap_parent_out}"
+assert_eq "T4t-retry-cap: exhausted pending row is retired" "0" \
+  "$(jq -s 'length' "$(session_file "pending_agents.jsonl")")"
+assert_eq "T4t-retry-cap: exhausted start row is retired" "0" \
+  "$(jq -s 'length' "$(session_file "agent_dispatch_starts.jsonl")")"
+assert_eq "T4t-retry-cap: fresh same-role dispatch is admitted" "" \
+  "$(_drive_agent_dispatch "s4t_partial_retry_cap" "quality-reviewer")"
+
+# Outcome publication is the cleanup transaction's durable commit point. A
+# pre-commit build failure retains both rows and publishes nothing. Any failure
+# after the outcome rename leaves that versioned fingerprint journal in place;
+# a consumer rolls the exact start/pending pair forward before recovery prose.
+reset_session "s4t_retry_transaction_stage_fail"
+with_state_lock_batch \
+  "edit_revision" "18" "last_code_edit_revision" "18" \
+  "review_cycle_id" "1" "review_cycle_prompt_ts" "1586" \
+  "last_user_prompt_ts" "1586" "prompt_revision" "76"
+_drive_agent_dispatch "s4t_retry_transaction_stage_fail" \
+  "quality-reviewer" >/dev/null
+_drive_agent_start "s4t_retry_transaction_stage_fail" \
+  "quality-reviewer" "native-stage-fail"
+_drive_subagent_summary_out "s4t_retry_transaction_stage_fail" \
+  "quality-reviewer" 'Still checking one…' "native-stage-fail" false \
+  >/dev/null
+_drive_subagent_summary_out "s4t_retry_transaction_stage_fail" \
+  "quality-reviewer" 'Still checking two…' "native-stage-fail" true \
+  >/dev/null
+_drive_subagent_summary_out "s4t_retry_transaction_stage_fail" \
+  "quality-reviewer" 'Still checking three…' "native-stage-fail" true 1 \
+  >/dev/null
+assert_eq "T4t-retry-transaction: stage failure retains pending row" "1" \
+  "$(jq -s 'length' "$(session_file "pending_agents.jsonl")")"
+assert_eq "T4t-retry-transaction: stage failure restores start row" "1" \
+  "$(jq -s 'length' "$(session_file "agent_dispatch_starts.jsonl")")"
+assert_eq "T4t-retry-transaction: post-commit failure retains journal" "1" \
+  "$(_jsonl_count "$(session_file "agent_completion_outcomes.jsonl")")"
+assert_eq "T4t-retry-transaction: journal is versioned" "2" \
+  "$(jq -r '.cleanup_journal_version // 0' \
+    "$(session_file "agent_completion_outcomes.jsonl")")"
+assert_eq "T4t-retry-transaction: journal freezes both causal rows" "2" \
+  "$(jq -r '[.cleanup_pending_fingerprint,.cleanup_start_fingerprint]
+      | map(select(type == "string" and length > 0)) | length' \
+    "$(session_file "agent_completion_outcomes.jsonl")")"
+stage_fail_parent_out="$(_drive_reflect_after_agent \
+  "s4t_retry_transaction_stage_fail" "quality-reviewer" false \
+  "completed" "native-stage-fail")"
+assert_contains "T4t-retry-transaction: consumer emits recovery after convergence" \
+  "TERMINAL CONTRACT RECOVERY" "${stage_fail_parent_out}"
+assert_eq "T4t-retry-transaction: consumer removes exact pending row" "0" \
+  "$(jq -s 'length' "$(session_file "pending_agents.jsonl")")"
+assert_eq "T4t-retry-transaction: consumer removes exact start row" "0" \
+  "$(jq -s 'length' "$(session_file "agent_dispatch_starts.jsonl")")"
+assert_eq "T4t-retry-transaction: journal is consumed once" "0" \
+  "$(_jsonl_count "$(session_file "agent_completion_outcomes.jsonl")")"
+assert_eq "T4t-retry-transaction: converged replacement is admitted" "" \
+  "$(_drive_agent_dispatch "s4t_retry_transaction_stage_fail" \
+    "quality-reviewer")"
+
+reset_session "s4t_retry_transaction_build_fail"
+with_state_lock_batch \
+  "edit_revision" "19" "last_code_edit_revision" "19" \
+  "review_cycle_id" "1" "review_cycle_prompt_ts" "1587" \
+  "last_user_prompt_ts" "1587" "prompt_revision" "77"
+_drive_agent_dispatch "s4t_retry_transaction_build_fail" \
+  "quality-reviewer" >/dev/null
+_drive_agent_start "s4t_retry_transaction_build_fail" \
+  "quality-reviewer" "native-build-fail"
+_drive_subagent_summary_out "s4t_retry_transaction_build_fail" \
+  "quality-reviewer" 'Still checking one…' "native-build-fail" false \
+  >/dev/null
+_drive_subagent_summary_out "s4t_retry_transaction_build_fail" \
+  "quality-reviewer" 'Still checking two…' "native-build-fail" true \
+  >/dev/null
+_drive_subagent_summary_out "s4t_retry_transaction_build_fail" \
+  "quality-reviewer" 'Still checking three…' "native-build-fail" true 0 1 \
+  >/dev/null
+assert_eq "T4t-retry-transaction: build failure retains pending row" "1" \
+  "$(jq -s 'length' "$(session_file "pending_agents.jsonl")")"
+assert_eq "T4t-retry-transaction: build failure retains start row" "1" \
+  "$(jq -s 'length' "$(session_file "agent_dispatch_starts.jsonl")")"
+assert_eq "T4t-retry-transaction: build failure publishes no outcome" "0" \
+  "$(_jsonl_count "$(session_file "agent_completion_outcomes.jsonl")")"
+
+_prepare_cleanup_crash_window() {
+  local sid="$1" native_id="$2" edit_revision="$3" objective_ts="$4"
+  reset_session "${sid}"
+  with_state_lock_batch \
+    "edit_revision" "${edit_revision}" \
+    "last_code_edit_revision" "${edit_revision}" \
+    "review_cycle_id" "1" "review_cycle_prompt_ts" "${objective_ts}" \
+    "last_user_prompt_ts" "${objective_ts}" "prompt_revision" "78"
+  _drive_agent_dispatch "${sid}" "quality-reviewer" >/dev/null
+  _drive_agent_start "${sid}" "quality-reviewer" "${native_id}"
+  _drive_subagent_summary_out "${sid}" "quality-reviewer" \
+    'Still checking one…' "${native_id}" false >/dev/null
+  _drive_subagent_summary_out "${sid}" "quality-reviewer" \
+    'Still checking two…' "${native_id}" true >/dev/null
+}
+
+_assert_cleanup_crash_converges() {
+  local sid="$1" native_id="$2" label="$3" parent_out
+  assert_eq "${label}: durable journal survives kill" "1" \
+    "$(_jsonl_count "$(session_file "agent_completion_outcomes.jsonl")")"
+  parent_out="$(_drive_reflect_after_agent "${sid}" "quality-reviewer" \
+    false "completed" "${native_id}")"
+  assert_contains "${label}: foreground consumer recovers explicitly" \
+    "TERMINAL CONTRACT RECOVERY" "${parent_out}"
+  assert_eq "${label}: exact pending row converges" "0" \
+    "$(jq -s 'length' "$(session_file "pending_agents.jsonl")")"
+  assert_eq "${label}: exact start row converges" "0" \
+    "$(jq -s 'length' "$(session_file "agent_dispatch_starts.jsonl")")"
+  assert_eq "${label}: journal consumes once" "0" \
+    "$(_jsonl_count "$(session_file "agent_completion_outcomes.jsonl")")"
+  assert_eq "${label}: fresh reviewer is admitted" "" \
+    "$(_drive_agent_dispatch "${sid}" "quality-reviewer")"
+}
+
+# Real process death at each post-commit rename boundary must converge to the
+# same state. The journal is never rolled back after it becomes visible.
+_prepare_cleanup_crash_window \
+  "s4t_kill_after_outcome" "native-kill-outcome" "20" "1588"
+_drive_subagent_summary_out "s4t_kill_after_outcome" "quality-reviewer" \
+  'Still checking three…' "native-kill-outcome" true 0 0 1 0 0 \
+  >/dev/null 2>&1
+assert_eq "T4t-kill-outcome: both rows precede roll-forward" "2" \
+  "$(( $(jq -s 'length' "$(session_file "pending_agents.jsonl")") \
+      + $(jq -s 'length' "$(session_file "agent_dispatch_starts.jsonl")") ))"
+_assert_cleanup_crash_converges "s4t_kill_after_outcome" \
+  "native-kill-outcome" "T4t-kill-outcome"
+
+_prepare_cleanup_crash_window \
+  "s4t_kill_after_start" "native-kill-start" "21" "1589"
+_drive_subagent_summary_out "s4t_kill_after_start" "quality-reviewer" \
+  'Still checking three…' "native-kill-start" true 0 0 0 1 0 \
+  >/dev/null 2>&1
+assert_eq "T4t-kill-start: only pending remains before roll-forward" "1" \
+  "$(( $(jq -s 'length' "$(session_file "pending_agents.jsonl")") \
+      + $(jq -s 'length' "$(session_file "agent_dispatch_starts.jsonl")") ))"
+_assert_cleanup_crash_converges "s4t_kill_after_start" \
+  "native-kill-start" "T4t-kill-start"
+
+_prepare_cleanup_crash_window \
+  "s4t_kill_after_pending" "native-kill-pending" "22" "1590"
+_drive_subagent_summary_out "s4t_kill_after_pending" "quality-reviewer" \
+  'Still checking three…' "native-kill-pending" true 0 0 0 0 1 \
+  >/dev/null 2>&1
+assert_eq "T4t-kill-pending: both rows already retired" "0" \
+  "$(( $(jq -s 'length' "$(session_file "pending_agents.jsonl")") \
+      + $(jq -s 'length' "$(session_file "agent_dispatch_starts.jsonl")") ))"
+_assert_cleanup_crash_converges "s4t_kill_after_pending" \
+  "native-kill-pending" "T4t-kill-pending"
+
+# Two start rows can be field-identical except for the harness lifecycle ID.
+# Cleanup must fingerprint/remove only the start paired to the selected pending
+# row and preserve the unrelated lifecycle, even though every legacy frozen
+# coordinate collides.
+_prepare_cleanup_crash_window \
+  "s4t_start_lifecycle_collision" "native-start-target" "23" "1591"
+collision_starts="$(session_file "agent_dispatch_starts.jsonl")"
+unrelated_collision_start="$(jq -c \
+  '.lifecycle_dispatch_id = "dispatch-unrelated-start"' \
+  "${collision_starts}")"
+printf '%s\n' "${unrelated_collision_start}" >>"${collision_starts}"
+_drive_subagent_summary_out "s4t_start_lifecycle_collision" \
+  "quality-reviewer" 'Still checking three…' "native-start-target" true \
+  >/dev/null
+assert_eq "T4t-start-lifecycle: target pending retires" "0" \
+  "$(jq -s 'length' "$(session_file "pending_agents.jsonl")")"
+assert_eq "T4t-start-lifecycle: cleanup journal publishes" "1" \
+  "$(_jsonl_count "$(session_file "agent_completion_outcomes.jsonl")")"
+assert_eq "T4t-start-lifecycle: unrelated start is preserved" \
+  "dispatch-unrelated-start" \
+  "$(jq -s -r 'map(.lifecycle_dispatch_id) | join(",")' \
+    "${collision_starts}")"
+_drive_reflect_after_agent "s4t_start_lifecycle_collision" \
+  "quality-reviewer" false "completed" "native-start-target" >/dev/null
+assert_eq "T4t-start-lifecycle: outcome consumer preserves unrelated start" \
+  "dispatch-unrelated-start" \
+  "$(jq -s -r 'map(.lifecycle_dispatch_id) | join(",")' \
+    "${collision_starts}")"
+
+# A ledger mutator may legitimately add abandonment metadata after journal
+# commit. Raw bytes then differ, but the immutable harness lifecycle ID must
+# still identify and retire exactly that old pair.
+_prepare_cleanup_crash_window \
+  "s4t_mutated_after_journal" "native-mutated-journal" "23" "1591"
+_drive_subagent_summary_out "s4t_mutated_after_journal" \
+  "quality-reviewer" 'Still checking three…' "native-mutated-journal" \
+  true 0 0 1 0 0 >/dev/null 2>&1
+for mutated_ledger in pending_agents.jsonl agent_dispatch_starts.jsonl; do
+  jq -c '. + {review_dispatch_abandoned:true,
+               review_dispatch_abandonment_reason:"concurrent-rewrite",
+               review_dispatch_abandoned_ts:999}' \
+    "$(session_file "${mutated_ledger}")" \
+    >"$(session_file "${mutated_ledger}").mutated"
+  mv "$(session_file "${mutated_ledger}").mutated" \
+    "$(session_file "${mutated_ledger}")"
+done
+mutated_journal_out="$(_drive_reflect_after_agent \
+  "s4t_mutated_after_journal" "quality-reviewer" false \
+  "completed" "native-mutated-journal")"
+assert_contains "T4t-mutated-journal: immutable ID recovers rewritten row" \
+  "TERMINAL CONTRACT RECOVERY" "${mutated_journal_out}"
+assert_eq "T4t-mutated-journal: rewritten pair converges" "0" \
+  "$(( $(jq -s 'length' "$(session_file "pending_agents.jsonl")") \
+      + $(jq -s 'length' "$(session_file "agent_dispatch_starts.jsonl")") ))"
+assert_eq "T4t-mutated-journal: journal consumes once" "0" \
+  "$(_jsonl_count "$(session_file "agent_completion_outcomes.jsonl")")"
+
+# Admission can race ahead of the old parent wake after a crash. It must roll
+# the journal forward before duplicate checks, admit exactly one replacement,
+# leave the journal for its one-shot consumer, and preserve that replacement
+# when the old recovery capsule is finally rendered.
+_prepare_cleanup_crash_window \
+  "s4t_admission_first_recovery" "native-admission-old" "23" "1591"
+_drive_subagent_summary_out "s4t_admission_first_recovery" \
+  "quality-reviewer" 'Still checking three…' "native-admission-old" \
+  true 0 0 1 0 0 >/dev/null 2>&1
+admission_first_out="$(_drive_agent_dispatch \
+  "s4t_admission_first_recovery" "quality-reviewer" \
+  "replacement admitted before old wake")"
+assert_eq "T4t-admission-first: replacement is admitted after convergence" \
+  "" "${admission_first_out}"
+assert_eq "T4t-admission-first: only replacement pending row remains" \
+  "replacement admitted before old wake" \
+  "$(jq -s -r 'map(.description) | join(",")' \
+    "$(session_file "pending_agents.jsonl")")"
+assert_eq "T4t-admission-first: only replacement start row remains" \
+  "replacement admitted before old wake" \
+  "$(jq -s -r 'map(.description) | join(",")' \
+    "$(session_file "agent_dispatch_starts.jsonl")")"
+assert_eq "T4t-admission-first: old journal remains one-shot" "1" \
+  "$(_jsonl_count "$(session_file "agent_completion_outcomes.jsonl")")"
+admission_first_parent_out="$(_drive_reflect_after_agent \
+  "s4t_admission_first_recovery" "quality-reviewer" false \
+  "completed" "native-admission-old")"
+assert_contains "T4t-admission-first: old wake warns against duplication" \
+  "replacement is already tracked" "${admission_first_parent_out}"
+assert_eq "T4t-admission-first: old wake preserves replacement pending" "1" \
+  "$(jq -s 'length' "$(session_file "pending_agents.jsonl")")"
+assert_eq "T4t-admission-first: old wake preserves replacement start" "1" \
+  "$(jq -s 'length' "$(session_file "agent_dispatch_starts.jsonl")")"
+assert_eq "T4t-admission-first: old journal then consumes" "0" \
+  "$(_jsonl_count "$(session_file "agent_completion_outcomes.jsonl")")"
+
+# An ambiguous exact target is a fail-closed state, not permission to resume
+# the retired transcript or discard its journal. Once the artifact is repaired,
+# the next callback converges and consumes the same one-shot outcome.
+_prepare_cleanup_crash_window \
+  "s4t_reconcile_failure" "native-reconcile-failure" "24" "1592"
+_drive_subagent_summary_out "s4t_reconcile_failure" "quality-reviewer" \
+  'Still checking three…' "native-reconcile-failure" true 0 0 1 0 0 \
+  >/dev/null 2>&1
+reconcile_pending="$(session_file "pending_agents.jsonl")"
+head -n 1 "${reconcile_pending}" >>"${reconcile_pending}"
+reconcile_outcomes="$(session_file "agent_completion_outcomes.jsonl")"
+jq -c '.ts = 1' "${reconcile_outcomes}" \
+  >"${reconcile_outcomes}.aged"
+mv "${reconcile_outcomes}.aged" "${reconcile_outcomes}"
+reconcile_failure_out="$(_drive_reflect_after_agent \
+  "s4t_reconcile_failure" "quality-reviewer" false \
+  "completed" "native-reconcile-failure")"
+assert_contains "T4t-reconcile-failure: degraded recovery is explicit" \
+  "LIFECYCLE RECOVERY DEGRADED" "${reconcile_failure_out}"
+assert_not_contains "T4t-reconcile-failure: retired call is never resumed" \
+  "Resume that exact call" "${reconcile_failure_out}"
+assert_not_contains "T4t-reconcile-failure: duplicate target gets no replacement" \
+  "Dispatch a fresh equivalent now" "${reconcile_failure_out}"
+assert_eq "T4t-reconcile-failure: journal remains unconsumed" "1" \
+  "$(_jsonl_count "$(session_file "agent_completion_outcomes.jsonl")")"
+assert_eq "T4t-reconcile-failure: ambiguous pending rows remain" "2" \
+  "$(jq -s 'length' "${reconcile_pending}")"
+_drive_subagent_summary_out "s4t_reconcile_failure" "quality-reviewer" \
+  'Replayed while cleanup is unresolved.' "native-reconcile-failure" true \
+  >/dev/null
+assert_eq "T4t-reconcile-failure: replay appends no generic outcome" "1" \
+  "$(_jsonl_count "${reconcile_outcomes}")"
+assert_eq "T4t-reconcile-failure: aged unresolved WAL is retained" \
+  "terminal-contract-retry-exhausted" \
+  "$(jq -r '.reason' "${reconcile_outcomes}")"
+head -n 1 "${reconcile_pending}" >"${reconcile_pending}.repair"
+mv "${reconcile_pending}.repair" "${reconcile_pending}"
+reconcile_repaired_out="$(_drive_reflect_after_agent \
+  "s4t_reconcile_failure" "quality-reviewer" false \
+  "completed" "native-reconcile-failure")"
+assert_contains "T4t-reconcile-failure: repaired target recovers" \
+  "TERMINAL CONTRACT RECOVERY" "${reconcile_repaired_out}"
+assert_eq "T4t-reconcile-failure: repaired pending/start converge" "0" \
+  "$(( $(jq -s 'length' "$(session_file "pending_agents.jsonl")") \
+      + $(jq -s 'length' "$(session_file "agent_dispatch_starts.jsonl")") ))"
+assert_eq "T4t-reconcile-failure: repaired journal consumes once" "0" \
+  "$(_jsonl_count "$(session_file "agent_completion_outcomes.jsonl")")"
+
+# A pre-native legacy call has neither causal ID. Dual exact fingerprints still
+# let the outcome journal recover it without broad same-role deletion.
+reset_session "s4t_kill_legacy_no_id"
+with_state_lock_batch \
+  "edit_revision" "23" "last_code_edit_revision" "23" \
+  "review_cycle_id" "1" "review_cycle_prompt_ts" "1591" \
+  "last_user_prompt_ts" "1591" "prompt_revision" "79"
+_drive_agent_dispatch "s4t_kill_legacy_no_id" "quality-reviewer" >/dev/null
+_drive_subagent_summary_out "s4t_kill_legacy_no_id" "quality-reviewer" \
+  'Still checking one…' "" false >/dev/null
+_drive_subagent_summary_out "s4t_kill_legacy_no_id" "quality-reviewer" \
+  'Still checking two…' "" true >/dev/null
+_drive_subagent_summary_out "s4t_kill_legacy_no_id" "quality-reviewer" \
+  'Still checking three…' "" true 0 0 1 0 0 >/dev/null 2>&1
+legacy_kill_parent_out="$(_drive_reflect_after_agent \
+  "s4t_kill_legacy_no_id" "quality-reviewer")"
+assert_contains "T4t-kill-legacy: exact no-ID journal recovers" \
+  "TERMINAL CONTRACT RECOVERY" "${legacy_kill_parent_out}"
+assert_eq "T4t-kill-legacy: pending and start both converge" "0" \
+  "$(( $(jq -s 'length' "$(session_file "pending_agents.jsonl")") \
+      + $(jq -s 'length' "$(session_file "agent_dispatch_starts.jsonl")") ))"
+assert_eq "T4t-kill-legacy: fresh same-role dispatch is admitted" "" \
+  "$(_drive_agent_dispatch "s4t_kill_legacy_no_id" "quality-reviewer")"
+
+# Multiple pre-native no-ID outcomes are intentionally unattributable to one
+# PostTool callback. Retiring that ambiguous outcome set must first reconcile
+# each exact fingerprinted pair and preserve an unrelated current no-ID row.
+reset_session "s4t_ambiguous_legacy_journals"
+with_state_lock_batch \
+  "edit_revision" "24" "last_code_edit_revision" "24" \
+  "review_cycle_id" "1" "review_cycle_prompt_ts" "1592" \
+  "last_user_prompt_ts" "1592" "prompt_revision" "80"
+legacy_row_a="$(jq -nc '{ts:101,agent_type:"quality-reviewer",
+  description:"retired legacy A",lifecycle_dispatch_id:"dispatch-legacy-a",
+  edit_revision:24,code_revision:24,
+  doc_revision:0,bash_revision:0,ui_revision:0,plan_revision:0,
+  review_revision:24,objective_prompt_ts:1592,
+  objective_prompt_revision:80,objective_cycle_id:1,
+  ulw_enforcement_generation:"migration"}')"
+legacy_row_b="$(jq -nc '{ts:102,agent_type:"quality-reviewer",
+  description:"retired legacy B",lifecycle_dispatch_id:"dispatch-legacy-b",
+  edit_revision:24,code_revision:24,
+  doc_revision:0,bash_revision:0,ui_revision:0,plan_revision:0,
+  review_revision:24,objective_prompt_ts:1592,
+  objective_prompt_revision:80,objective_cycle_id:1,
+  ulw_enforcement_generation:"migration"}')"
+legacy_row_current="$(jq -nc '{ts:103,agent_type:"quality-reviewer",
+  description:"current legacy C",lifecycle_dispatch_id:"dispatch-legacy-c",
+  edit_revision:24,code_revision:24,
+  doc_revision:0,bash_revision:0,ui_revision:0,plan_revision:0,
+  review_revision:24,objective_prompt_ts:1592,
+  objective_prompt_revision:80,objective_cycle_id:1,
+  ulw_enforcement_generation:"migration"}')"
+printf '%s\n%s\n%s\n' "${legacy_row_a}" "${legacy_row_b}" \
+  "${legacy_row_current}" >"$(session_file "pending_agents.jsonl")"
+printf '%s\n%s\n%s\n' "${legacy_row_a}" "${legacy_row_b}" \
+  "${legacy_row_current}" >"$(session_file "agent_dispatch_starts.jsonl")"
+for legacy_cleanup_row in "${legacy_row_a}" "${legacy_row_b}"; do
+  legacy_cleanup_fp="$(_omc_token_digest "${legacy_cleanup_row}")"
+  legacy_cleanup_id="$(jq -r '.lifecycle_dispatch_id' \
+    <<<"${legacy_cleanup_row}")"
+  jq -nc --arg fp "${legacy_cleanup_fp}" \
+    --arg lifecycle_id "${legacy_cleanup_id}" \
+    --argjson ts "$(date +%s)" '{
+    ts:$ts,agent_type:"quality-reviewer",status:"ignored",
+    reason:"terminal-contract-retry-exhausted",verdict:"UNREPORTED",
+    findings_count:0,finding_ids:"none",objective_cycle_id:1,
+    objective_prompt_ts:1592,review_revision:24,
+    ulw_enforcement_generation:"migration",cleanup_journal_version:2,
+    cleanup_lifecycle_dispatch_id:$lifecycle_id,
+    cleanup_pending_fingerprint:$fp,cleanup_start_fingerprint:$fp
+  }' >>"$(session_file "agent_completion_outcomes.jsonl")"
+done
+_drive_reflect_after_agent "s4t_ambiguous_legacy_journals" \
+  "quality-reviewer" >/dev/null
+assert_eq "T4t-legacy-ambiguous: both cleanup journals consume" "0" \
+  "$(_jsonl_count "$(session_file "agent_completion_outcomes.jsonl")")"
+assert_eq "T4t-legacy-ambiguous: only unrelated pending row survives" \
+  "current legacy C" \
+  "$(jq -s -r 'map(.description) | join(",")' \
+    "$(session_file "pending_agents.jsonl")")"
+assert_eq "T4t-legacy-ambiguous: only unrelated start row survives" \
+  "current legacy C" \
+  "$(jq -s -r 'map(.description) | join(",")' \
+    "$(session_file "agent_dispatch_starts.jsonl")")"
+
+# A foreground Agent hard-limit exit can occur before SubagentStop. Its
+# synchronous PostToolUse carries the native agentId, sees the exact current
+# retained pending row, and wakes the parent.
+reset_session "s4t_partial_hard_cap"
+with_state_lock_batch \
+  "edit_revision" "18" "last_code_edit_revision" "18" \
+  "review_cycle_id" "1" "review_cycle_prompt_ts" "1587" \
+  "last_user_prompt_ts" "1587" "prompt_revision" "76"
+_drive_agent_dispatch "s4t_partial_hard_cap" "quality-reviewer" >/dev/null
+_drive_agent_start "s4t_partial_hard_cap" "quality-reviewer" "native-hard-cap"
+wrong_hard_cap_parent_out="$(_drive_reflect_after_agent \
+  "s4t_partial_hard_cap" "quality-reviewer" false \
+  "completed" "different-native")"
+assert_not_contains "T4t-hard-cap: wrong native completion cannot borrow pending row" \
+  "TERMINAL CONTRACT RECOVERY" "${wrong_hard_cap_parent_out}"
+hard_cap_parent_out="$(_drive_reflect_after_agent \
+  "s4t_partial_hard_cap" "quality-reviewer" false \
+  "completed" "native-hard-cap")"
+assert_contains "T4t-hard-cap: no-outcome return triggers parent recovery" \
+  "TERMINAL CONTRACT RECOVERY" "${hard_cap_parent_out}"
+assert_contains "T4t-hard-cap: recovery resumes exact retained transcript" \
+  "native-hard-cap" "${hard_cap_parent_out}"
+assert_eq "T4t-hard-cap: parent recovery preserves pending handle" "1" \
+  "$(jq -s 'length' "$(session_file "pending_agents.jsonl")")"
+assert_eq "T4t-hard-cap: first parent recovery spends one bounded retry" "1" \
+  "$(jq -r '.terminal_contract_retry_count // 0' \
+    "$(session_file "pending_agents.jsonl")")"
+hard_cap_parent_out_2="$(_drive_reflect_after_agent \
+  "s4t_partial_hard_cap" "quality-reviewer" false \
+  "completed" "native-hard-cap")"
+assert_contains "T4t-hard-cap: second no-outcome return still resumes" \
+  "Resume that exact call now" "${hard_cap_parent_out_2}"
+hard_cap_parent_out_3="$(_drive_reflect_after_agent \
+  "s4t_partial_hard_cap" "quality-reviewer" false \
+  "completed" "native-hard-cap")"
+assert_contains "T4t-hard-cap: third no-outcome return retires call" \
+  "bounded parent-recovery budget is exhausted" "${hard_cap_parent_out_3}"
+assert_contains "T4t-hard-cap: exhausted return supplies exact rebind token" \
+  "[review-rebind:hard-limit-" "${hard_cap_parent_out_3}"
+assert_not_contains "T4t-hard-cap: exhausted return never resumes old call" \
+  "Resume that exact call now" "${hard_cap_parent_out_3}"
+assert_eq "T4t-hard-cap: exhausted pending row becomes tombstone" "true" \
+  "$(jq -r '.review_dispatch_abandoned // false' \
+    "$(session_file "pending_agents.jsonl")")"
+hard_cap_background_out="$(_drive_reflect_after_agent \
+  "s4t_partial_hard_cap" "quality-reviewer" true)"
+if [[ "${hard_cap_background_out}" != *"TERMINAL CONTRACT RECOVERY"* ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T4t-hard-cap: background launch was mistaken for a terminal return\n' >&2
+  fail=$((fail + 1))
+fi
+hard_cap_is_async_out="$(_drive_reflect_after_agent \
+  "s4t_partial_hard_cap" "quality-reviewer" false \
+  "" "native-hard-cap" true)"
+if [[ "${hard_cap_is_async_out}" != *"TERMINAL CONTRACT RECOVERY"* ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T4t-hard-cap: isAsync response was mistaken for a terminal return\n' >&2
+  fail=$((fail + 1))
+fi
+hard_cap_async_status_out="$(_drive_reflect_after_agent \
+  "s4t_partial_hard_cap" "quality-reviewer" false \
+  "async_launched" "native-hard-cap")"
+if [[ "${hard_cap_async_status_out}" != *"TERMINAL CONTRACT RECOVERY"* ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T4t-hard-cap: async response status was mistaken for a terminal return\n' >&2
+  fail=$((fail + 1))
+fi
+hard_cap_rebind_id="$(printf '%s' "${hard_cap_parent_out_3}" \
+  | sed -n 's/.*\[review-rebind:\([^]]*\)\].*/\1/p')"
+if [[ -n "${hard_cap_rebind_id}" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T4t-hard-cap: recovery exposes a parseable rebind ID\n' >&2
+  fail=$((fail + 1))
+fi
+assert_eq "T4t-hard-cap: exact rebound replacement is admitted" "" \
+  "$(_drive_agent_dispatch "s4t_partial_hard_cap" "quality-reviewer" \
+    "[review-rebind:${hard_cap_rebind_id}] replace exhausted review")"
+
+# A retained completion claim is not a malformed terminal contract. Foreground
+# PostTool replay must distinguish active settlement, committed effects, and an
+# expired incomplete owner without incrementing/resuming the wrong call.
+reset_session "s4t_hard_cap_claim_settling"
+with_state_lock_batch \
+  "edit_revision" "22" "last_code_edit_revision" "22" \
+  "review_cycle_id" "1" "review_cycle_prompt_ts" "1595" \
+  "last_user_prompt_ts" "1595" "prompt_revision" "78"
+_drive_agent_dispatch "s4t_hard_cap_claim_settling" \
+  "quality-reviewer" >/dev/null
+_drive_agent_start "s4t_hard_cap_claim_settling" \
+  "quality-reviewer" "native-claim-settling"
+claim_now="$(date +%s)"
+jq -c --argjson now "${claim_now}" '
+  .completion_claim_id="claim-settling"
+  | .completion_claim_ts=$now
+  | .completion_claim_effects_complete=false
+' "$(session_file "pending_agents.jsonl")" \
+  >"$(session_file "pending_agents.jsonl").tmp"
+mv "$(session_file "pending_agents.jsonl").tmp" \
+  "$(session_file "pending_agents.jsonl")"
+claim_settling_out="$(_drive_reflect_after_agent \
+  "s4t_hard_cap_claim_settling" "quality-reviewer" false \
+  "completed" "native-claim-settling")"
+assert_contains "T4t-hard-cap-claim: fresh claim is settling" \
+  "COMPLETION SETTLING" "${claim_settling_out}"
+assert_not_contains "T4t-hard-cap-claim: fresh claim is never resumed" \
+  "Resume that exact call" "${claim_settling_out}"
+assert_eq "T4t-hard-cap-claim: settling claim spends no retry" "0" \
+  "$(jq -r '.terminal_contract_retry_count // 0' \
+    "$(session_file "pending_agents.jsonl")")"
+
+reset_session "s4t_hard_cap_effects_complete"
+with_state_lock_batch \
+  "edit_revision" "23" "last_code_edit_revision" "23" \
+  "review_cycle_id" "1" "review_cycle_prompt_ts" "1596" \
+  "last_user_prompt_ts" "1596" "prompt_revision" "79"
+_drive_agent_dispatch "s4t_hard_cap_effects_complete" \
+  "quality-reviewer" >/dev/null
+_drive_agent_start "s4t_hard_cap_effects_complete" \
+  "quality-reviewer" "native-effects-complete"
+jq -c --argjson now "$(date +%s)" '
+  .completion_claim_id="claim-complete"
+  | .completion_claim_ts=$now
+  | .completion_claim_effects_complete=true
+' "$(session_file "pending_agents.jsonl")" \
+  >"$(session_file "pending_agents.jsonl").tmp"
+mv "$(session_file "pending_agents.jsonl").tmp" \
+  "$(session_file "pending_agents.jsonl")"
+effects_complete_out="$(_drive_reflect_after_agent \
+  "s4t_hard_cap_effects_complete" "quality-reviewer" false \
+  "completed" "native-effects-complete")"
+assert_contains "T4t-hard-cap-claim: effects-complete replay is recognized" \
+  "COMPLETION ALREADY RECORDED" "${effects_complete_out}"
+assert_not_contains "T4t-hard-cap-claim: completed call is never resumed" \
+  "Resume that exact call" "${effects_complete_out}"
+assert_eq "T4t-hard-cap-claim: effects-complete spends no retry" "0" \
+  "$(jq -r '.terminal_contract_retry_count // 0' \
+    "$(session_file "pending_agents.jsonl")")"
+
+reset_session "s4t_hard_cap_expired_claim"
+with_state_lock_batch \
+  "edit_revision" "24" "last_code_edit_revision" "24" \
+  "review_cycle_id" "1" "review_cycle_prompt_ts" "1597" \
+  "last_user_prompt_ts" "1597" "prompt_revision" "80"
+_drive_agent_dispatch "s4t_hard_cap_expired_claim" \
+  "quality-reviewer" >/dev/null
+_drive_agent_start "s4t_hard_cap_expired_claim" \
+  "quality-reviewer" "native-expired-claim"
+jq -c '
+  .completion_claim_id="claim-expired"
+  | .completion_claim_ts=1
+  | .completion_claim_effects_complete=false
+' "$(session_file "pending_agents.jsonl")" \
+  >"$(session_file "pending_agents.jsonl").tmp"
+mv "$(session_file "pending_agents.jsonl").tmp" \
+  "$(session_file "pending_agents.jsonl")"
+expired_claim_out="$(_drive_reflect_after_agent \
+  "s4t_hard_cap_expired_claim" "quality-reviewer" false \
+  "completed" "native-expired-claim")"
+assert_contains "T4t-hard-cap-claim: expired owner is retired" \
+  "expired incomplete completion claim" "${expired_claim_out}"
+assert_contains "T4t-hard-cap-claim: expired owner supplies rebind token" \
+  "[review-rebind:hard-limit-" "${expired_claim_out}"
+assert_not_contains "T4t-hard-cap-claim: expired owner is never resumed" \
+  "Resume that exact call" "${expired_claim_out}"
+assert_eq "T4t-hard-cap-claim: expired owner becomes tombstone" "true" \
+  "$(jq -r '.review_dispatch_abandoned // false' \
+    "$(session_file "pending_agents.jsonl")")"
+
+# Modern Agent PostTool schema supplies agentId on both async launch and
+# synchronous completion. Launch must consume nothing; completion selects the
+# exact native row. A legacy no-ID synchronous completion may consume one
+# unambiguous same-role outcome, but retires multiple candidates without
+# attribution rather than binding the oldest verdict to the current call.
+reset_session "s4t_outcome_native_correlation"
+outcome_file="$(session_file "agent_completion_outcomes.jsonl")"
+printf '%s\n' \
+  '{"agent_type":"quality-reviewer","native_agent_id":"native-outcome-a","review_dispatch_id":"","status":"accepted","verdict":"FINDINGS (1)","findings_count":1,"finding_ids":"AAAA"}' \
+  '{"agent_type":"quality-reviewer","native_agent_id":"native-outcome-b","review_dispatch_id":"","status":"accepted","verdict":"CLEAN","findings_count":0,"finding_ids":"none"}' \
+  >"${outcome_file}"
+printf '%s\n' \
+  '{"ts":1,"agent_type":"quality-reviewer","message":"Historical review.\nVERDICT: CLEAN"}' \
+  >"$(session_file "subagent_summaries.jsonl")"
+outcome_launch_out="$(_drive_reflect_after_agent \
+  "s4t_outcome_native_correlation" "quality-reviewer" false \
+  "async_launched" "native-outcome-b")"
+assert_eq "T4t-outcome-correlation: async launch consumes no outcome" "2" \
+  "$(_jsonl_count "${outcome_file}")"
+if [[ "${outcome_launch_out}" != *"verdict=CLEAN"* \
+    && "${outcome_launch_out}" != *"verdict=FINDINGS"* ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T4t-outcome-correlation: async launch emitted a completion capsule\n' >&2
+  fail=$((fail + 1))
+fi
+assert_not_contains "T4t-outcome-correlation: async launch ignores historical summary" \
+  "agent=quality-reviewer; verdict=CLEAN" "${outcome_launch_out}"
+outcome_complete_out="$(_drive_reflect_after_agent \
+  "s4t_outcome_native_correlation" "quality-reviewer" false \
+  "completed" "native-outcome-b")"
+assert_contains "T4t-outcome-correlation: sync native B gets B capsule" \
+  "verdict=CLEAN" "${outcome_complete_out}"
+assert_not_contains "T4t-outcome-correlation: sync native B does not get A capsule" \
+  "verdict=FINDINGS" "${outcome_complete_out}"
+assert_eq "T4t-outcome-correlation: exact sync completion leaves only native A" "1" \
+  "$(_jsonl_count "${outcome_file}")"
+assert_eq "T4t-outcome-correlation: unmatched native A remains" \
+  "native-outcome-a" "$(jq -r '.native_agent_id' "${outcome_file}")"
+
+reset_session "s4t_outcome_legacy_ambiguous"
+legacy_ambiguous_file="$(session_file "agent_completion_outcomes.jsonl")"
+printf '%s\n' \
+  '{"agent_type":"quality-reviewer","native_agent_id":"native-legacy-a","review_dispatch_id":"","status":"accepted","verdict":"FINDINGS (1)","findings_count":1,"finding_ids":"AAAA"}' \
+  '{"agent_type":"quality-reviewer","native_agent_id":"native-legacy-b","review_dispatch_id":"","status":"accepted","verdict":"CLEAN","findings_count":0,"finding_ids":"none"}' \
+  >"${legacy_ambiguous_file}"
+legacy_ambiguous_out="$(_drive_reflect_after_agent \
+  "s4t_outcome_legacy_ambiguous" "quality-reviewer" false "completed")"
+assert_not_contains "T4t-outcome-correlation: legacy ambiguity emits no clean capsule" \
+  "verdict=CLEAN" "${legacy_ambiguous_out}"
+assert_not_contains "T4t-outcome-correlation: legacy ambiguity emits no findings capsule" \
+  "verdict=FINDINGS" "${legacy_ambiguous_out}"
+assert_eq "T4t-outcome-correlation: legacy ambiguous outcomes are retired" "0" \
+  "$(_jsonl_count "${legacy_ambiguous_file}")"
+
+reset_session "s4t_outcome_single_sync"
+single_outcome_file="$(session_file "agent_completion_outcomes.jsonl")"
+printf '%s\n' \
+  '{"agent_type":"quality-reviewer","native_agent_id":"native-sync","review_dispatch_id":"","status":"accepted","verdict":"CLEAN","findings_count":0,"finding_ids":"none"}' \
+  >"${single_outcome_file}"
+single_sync_out="$(_drive_reflect_after_agent \
+  "s4t_outcome_single_sync" "quality-reviewer" false "completed")"
+assert_contains "T4t-outcome-correlation: unambiguous sync completion gets capsule" \
+  "verdict=CLEAN" "${single_sync_out}"
+assert_eq "T4t-outcome-correlation: unambiguous sync outcome is one-shot" "0" \
+  "$(_jsonl_count "${single_outcome_file}")"
+
+# A delayed old-interval PostTool event must consume the earliest exact-native
+# outcome and explicitly reject its parent-visible raw result. It cannot skip
+# forward to the newer current-interval outcome for that resumed native task.
+reset_session "s4t_outcome_cross_interval_fifo"
+with_state_lock_batch \
+  "ulw_enforcement_active" "1" "ulw_enforcement_generation" "2" \
+  "edit_revision" "21" "last_code_edit_revision" "21" \
+  "review_cycle_id" "1" "review_cycle_prompt_ts" "1600" \
+  "last_user_prompt_ts" "1600" "prompt_revision" "80"
+cross_interval_file="$(session_file "agent_completion_outcomes.jsonl")"
+printf '%s\n' \
+  '{"agent_type":"quality-reviewer","native_agent_id":"native-cross","review_dispatch_id":"","status":"accepted","verdict":"CLEAN","findings_count":0,"finding_ids":"none","objective_cycle_id":1,"objective_prompt_ts":1600,"review_revision":21,"ulw_enforcement_generation":"1"}' \
+  '{"agent_type":"quality-reviewer","native_agent_id":"native-cross","review_dispatch_id":"","status":"accepted","verdict":"CLEAN","findings_count":0,"finding_ids":"none","objective_cycle_id":1,"objective_prompt_ts":1600,"review_revision":21,"ulw_enforcement_generation":"2"}' \
+  >"${cross_interval_file}"
+cross_interval_old_out="$(_drive_reflect_after_agent \
+  "s4t_outcome_cross_interval_fifo" "quality-reviewer" false \
+  "completed" "native-cross")"
+assert_contains "T4t-outcome-cross-interval: old event is explicit IGNORED" \
+  "verdict=IGNORED" "${cross_interval_old_out}"
+assert_contains "T4t-outcome-cross-interval: old raw result is rejected" \
+  "STALE AGENT RETURN REJECTED" "${cross_interval_old_out}"
+assert_not_contains "T4t-outcome-cross-interval: old event never gets CLEAN capsule" \
+  "agent=quality-reviewer; verdict=CLEAN" "${cross_interval_old_out}"
+assert_eq "T4t-outcome-cross-interval: newer outcome remains after old event" \
+  "2" "$(jq -r '.ulw_enforcement_generation' "${cross_interval_file}")"
+cross_interval_current_out="$(_drive_reflect_after_agent \
+  "s4t_outcome_cross_interval_fifo" "quality-reviewer" false \
+  "completed" "native-cross")"
+assert_contains "T4t-outcome-cross-interval: next event gets current CLEAN" \
+  "agent=quality-reviewer; verdict=CLEAN" "${cross_interval_current_out}"
+assert_eq "T4t-outcome-cross-interval: current outcome is one-shot" "0" \
+  "$(_jsonl_count "${cross_interval_file}")"
+
+# Planner outcomes are accepted only after the dedicated record-plan state is
+# visibly committed. Revision equality alone cannot publish a non-ready plan.
+reset_session "s4t_outcome_unpublished_nonready_plan"
+with_state_lock_batch \
+  "ulw_enforcement_active" "1" "ulw_enforcement_generation" "2" \
+  "plan_revision" "5" "has_plan" "false" "plan_verdict" "" \
+  "plan_agent" "" "review_cycle_id" "1" \
+  "review_cycle_prompt_ts" "1601" "last_user_prompt_ts" "1601"
+unpublished_plan_file="$(session_file "agent_completion_outcomes.jsonl")"
+printf '%s\n' \
+  '{"agent_type":"quality-planner","native_agent_id":"native-plan-unpublished","review_dispatch_id":"","status":"accepted","verdict":"NEEDS_CLARIFICATION","findings_count":0,"finding_ids":"none","objective_cycle_id":1,"objective_prompt_ts":1601,"review_revision":5,"ulw_enforcement_generation":"2"}' \
+  >"${unpublished_plan_file}"
+unpublished_plan_out="$(_drive_reflect_after_agent \
+  "s4t_outcome_unpublished_nonready_plan" "quality-planner" false \
+  "completed" "native-plan-unpublished")"
+assert_contains "T4t-plan-outcome: unpublished non-ready plan is rejected" \
+  "reason=plan-generation-changed" "${unpublished_plan_out}"
+assert_not_contains "T4t-plan-outcome: unpublished plan is never accepted" \
+  "verdict=NEEDS_CLARIFICATION" "${unpublished_plan_out}"
+
+reset_session "s4t_outcome_published_nonready_plan"
+with_state_lock_batch \
+  "ulw_enforcement_active" "1" "ulw_enforcement_generation" "2" \
+  "plan_revision" "5" "has_plan" "false" "plan_verdict" "BLOCKED" \
+  "plan_agent" "quality-planner" "review_cycle_id" "1" \
+  "review_cycle_prompt_ts" "1602" "last_user_prompt_ts" "1602"
+published_plan_file="$(session_file "agent_completion_outcomes.jsonl")"
+printf '%s\n' \
+  '{"agent_type":"quality-planner","native_agent_id":"native-plan-published","review_dispatch_id":"","status":"accepted","verdict":"BLOCKED","findings_count":0,"finding_ids":"none","objective_cycle_id":1,"objective_prompt_ts":1602,"review_revision":5,"ulw_enforcement_generation":"2"}' \
+  >"${published_plan_file}"
+published_plan_out="$(_drive_reflect_after_agent \
+  "s4t_outcome_published_nonready_plan" "quality-planner" false \
+  "completed" "native-plan-published")"
+assert_contains "T4t-plan-outcome: committed non-ready plan is accepted" \
+  "verdict=BLOCKED" "${published_plan_out}"
+
+# Planner publication is the sibling state-changing terminal contract. A
+# tracked partial planner cannot consume its start or publish current_plan.md;
+# the same native call resumes and publishes once after PLAN_READY.
+reset_session "s4t_partial_planner"
+with_state_lock_batch \
+  "plan_revision" "4" "review_cycle_id" "1" \
+  "review_cycle_prompt_ts" "1590" "last_user_prompt_ts" "1590" \
+  "prompt_revision" "74"
+_drive_agent_dispatch "s4t_partial_planner" "quality-planner" >/dev/null
+_drive_agent_start "s4t_partial_planner" "quality-planner" "native-plan-partial"
+_drive_record_plan "s4t_partial_planner" "quality-planner" \
+  'VERDICT: CLEAN' \
+  "native-plan-partial"
+planner_partial_out="$(_drive_subagent_summary_out "s4t_partial_planner" \
+  "quality-planner" 'VERDICT: CLEAN' \
+  "native-plan-partial")"
+assert_contains "T4t-plan-partial: wrong-role planner verdict is continued" \
+  '"hookEventName":"SubagentStop"' "${planner_partial_out}"
+assert_eq "T4t-plan-partial: plan artifact is not published" "0" \
+  "$([[ -e "$(session_file "current_plan.md")" ]] && echo 1 || echo 0)"
+assert_eq "T4t-plan-partial: plan state is not stamped" "" \
+  "$(read_state "plan_verdict")"
+assert_eq "T4t-plan-partial: both causal rows remain" "2" \
+  "$(( $(jq -s 'length' "$(session_file "pending_agents.jsonl")") \
+      + $(jq -s 'length' "$(session_file "agent_dispatch_starts.jsonl")") ))"
+valid_plan=$'1. Implement the recovery.\n2. Run focused and full verification.\n\nVERDICT: PLAN_READY'
+_drive_record_plan "s4t_partial_planner" "quality-planner" \
+  "${valid_plan}" "native-plan-partial"
+_drive_subagent_summary "s4t_partial_planner" "quality-planner" \
+  "${valid_plan}" "native-plan-partial"
+assert_eq "T4t-plan-partial: resumed planner publishes PLAN_READY" \
+  "PLAN_READY" "$(read_state "plan_verdict")"
+assert_eq "T4t-plan-partial: resumed planner fully settles pending" "0" \
+  "$(jq -s 'length' "$(session_file "pending_agents.jsonl")")"
+assert_eq "T4t-plan-partial: resumed planner fully settles start" "0" \
+  "$(jq -s 'length' "$(session_file "agent_dispatch_starts.jsonl")")"
+
+reset_session "s4t_partial_planner_stale"
+with_state_lock_batch \
+  "plan_revision" "8" "review_cycle_id" "1" \
+  "review_cycle_prompt_ts" "1592" "last_user_prompt_ts" "1592" \
+  "prompt_revision" "75"
+_drive_agent_dispatch "s4t_partial_planner_stale" "quality-planner" >/dev/null
+_drive_agent_start "s4t_partial_planner_stale" "quality-planner" \
+  "native-plan-stale"
+write_state "plan_revision" "9"
+_drive_record_plan "s4t_partial_planner_stale" "quality-planner" \
+  'I mapped the old plan. Let me finish…' "native-plan-stale"
+stale_plan_out="$(_drive_subagent_summary_out \
+  "s4t_partial_planner_stale" "quality-planner" \
+  'I mapped the old plan. Let me finish…' "native-plan-stale")"
+assert_eq "T4t-plan-stale: stale partial planner is not revived" "" \
+  "${stale_plan_out}"
+assert_eq "T4t-plan-stale: stale planner pending is cleaned" "0" \
+  "$(jq -s 'length' "$(session_file "pending_agents.jsonl")")"
+assert_eq "T4t-plan-stale: stale planner start is cleaned" "0" \
+  "$(jq -s 'length' "$(session_file "agent_dispatch_starts.jsonl")")"
+
+reset_session "s4t_empty_informational"
+with_state_lock_batch \
+  "review_cycle_id" "1" "review_cycle_prompt_ts" "1595" \
+  "last_user_prompt_ts" "1595" "prompt_revision" "75"
+_drive_agent_dispatch "s4t_empty_informational" "frontend-developer" >/dev/null
+_drive_agent_start "s4t_empty_informational" "frontend-developer" \
+  "native-empty-informational"
+informational_empty_out="$(_drive_subagent_summary_out \
+  "s4t_empty_informational" "frontend-developer" '' \
+  "native-empty-informational")"
+assert_eq "T4t-empty-info: non-enforced empty callback remains silent" "" \
+  "${informational_empty_out}"
+assert_eq "T4t-empty-info: legacy empty behavior leaves pending intact" "1" \
   "$(jq -s 'length' "$(session_file "pending_agents.jsonl")")"
 
 reset_session "s4u_native_parallel"
@@ -991,6 +1977,16 @@ _drive_subagent_summary "s4zb_native_plan_summary_first" "prometheus" \
 assert_eq "T4zb: summary-first planner claim waits for plan hook" "true" \
   "$(jq -r '.completion_claim_effects_complete // false' \
     "$(session_file "pending_agents.jsonl")")"
+accepted_planner_parent_out="$(_drive_reflect_after_agent \
+  "s4zb_native_plan_summary_first" "prometheus" false \
+  "completed" "native-plan-b")"
+assert_contains "T4zb: unpublished accepted planner is rejected, not cleaned" \
+  "STALE AGENT RETURN REJECTED" "${accepted_planner_parent_out}"
+assert_eq "T4zb: accepted planner outcome preserves pending claim" "true" \
+  "$(jq -r '.completion_claim_effects_complete // false' \
+    "$(session_file "pending_agents.jsonl")")"
+assert_eq "T4zb: accepted planner outcome preserves plan start" "1" \
+  "$(jq -s 'length' "$(session_file "agent_dispatch_starts.jsonl")")"
 _drive_record_plan "s4zb_native_plan_summary_first" "prometheus" \
   $'Decision-complete plan.\nVERDICT: PLAN_READY' "native-plan-b"
 assert_eq "T4zb: summary-first native planner publishes plan" "PLAN_READY" \

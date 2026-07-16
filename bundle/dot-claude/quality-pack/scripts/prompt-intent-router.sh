@@ -25,9 +25,649 @@ fi
 # as user prompts overwrites `last_user_prompt`, `current_objective`,
 # and the entire `done_contract_*` block with notification body text,
 # corrupting the active task contract. Skip routing entirely on a
-# detected synthetic injection — preserve the prior contract and let
-# the next real user prompt drive classification.
+# detected synthetic injection — preserve the prior contract. Task-completion
+# notifications get one narrow exception: they may carry a model-only recovery
+# directive for an exact native-bound bundled reviewer/planner whose terminal
+# contract never settled. This is the background-Agent counterpart to the
+# foreground PostTool safeguard in reflect-after-agent.sh.
 if is_synthetic_prompt "${PROMPT_TEXT}"; then
+  _task_notification_recovery_context=""
+  _task_notification_id=""
+  _task_notification_tool_use_id=""
+  _task_notification_status=""
+  _task_notification_key=""
+  _task_notification_duplicate=0
+  _task_notification_outcome_json=""
+  _task_notification_pending_json=""
+  _task_notification_rejected_pending_reason=""
+  _task_notification_retry_exhausted=0
+  _task_notification_rebind_id=""
+  _task_notification_current_pending_preserved=0
+  _task_notification_recovery_failed=0
+  _task_notification_cleanup_reconcile_failed=0
+
+  if [[ "${PROMPT_TEXT}" =~ \<task-id\>([A-Za-z0-9._:-]{1,128})\</task-id\> ]]; then
+    _task_notification_id="${BASH_REMATCH[1]}"
+  fi
+  if [[ "${PROMPT_TEXT}" =~ \<status\>(completed|failed|stopped|cancelled|canceled)\</status\> ]]; then
+    _task_notification_status="${BASH_REMATCH[1]}"
+  fi
+  if [[ "${PROMPT_TEXT}" =~ \<tool-use-id\>([A-Za-z0-9._:-]{1,128})\</tool-use-id\> ]]; then
+    _task_notification_tool_use_id="${BASH_REMATCH[1]}"
+  fi
+
+  _recover_task_notification_unlocked() {
+    local native_id="$1" notification_key="$2" notification_status="$3"
+    local bindings_file binding_json agent_type outcomes_file bundle selected
+    local matches foreign temp receipt pending_file pending_temp line candidate=""
+    local current_cycle current_objective_ts row_cycle row_objective_ts row_generation
+    local row_claim_id row_claim_ts row_claim_effects row_claim_now
+    local rejected_reason="" exact_count=0 foreign_pending_count=0
+    local selected_generation="" candidate_original="" retry_count=0
+    local tombstone_mode="" tombstone_reason="" tombstone_count=0
+    local pending_backup="" pending_changed=0
+
+    _restore_task_notification_pending() {
+      if [[ "${pending_changed}" -eq 1 \
+          && -n "${pending_backup}" && -f "${pending_backup}" ]]; then
+        mv -f "${pending_backup}" "${pending_file}" 2>/dev/null || true
+      else
+        rm -f "${pending_backup}" 2>/dev/null || true
+      fi
+      pending_backup=""
+    }
+
+    bindings_file="$(session_file "native_agent_bindings.jsonl")"
+    [[ -s "${bindings_file}" && -f "${bindings_file}" \
+        && ! -L "${bindings_file}" ]] || return 0
+    binding_json="$(jq -Rsc --arg id "${native_id}" '
+      [split("\n")[] | select(length > 0)
+       | (try fromjson catch {})
+       | select((.native_agent_id // "") == $id)]
+      | last // {}
+    ' "${bindings_file}" 2>/dev/null || true)"
+    agent_type="$(jq -r '.agent_type // empty' \
+      <<<"${binding_json}" 2>/dev/null || true)"
+    [[ -n "$(omc_enforced_terminal_contract_kind \
+      "${agent_type}" 2>/dev/null || true)" ]] || return 0
+    # The synthetic prompt may have queued behind release, /ulw-off, or a new
+    # active interval. Recheck the captured authority under the session lock
+    # before consuming any one-shot outcome or publishing recovery context.
+    is_ultrawork_mode || return 0
+    local captured_generation="${_OMC_ULW_CAPTURED_GENERATION:-migration}"
+
+    # Background completions have no second PostToolUse:Agent callback. Consume
+    # their exact native-ID outcome here so it cannot be mistaken for a later
+    # foreground call of the same role. One native task can notify again after
+    # SendMessage/resume, so consume exactly one FIFO outcome per notification;
+    # later rows belong to later notifications for that same native ID.
+    outcomes_file="$(session_file "agent_completion_outcomes.jsonl")"
+    [[ ! -L "${outcomes_file}" ]] \
+      && { [[ ! -e "${outcomes_file}" ]] \
+        || [[ -f "${outcomes_file}" ]]; } || return 1
+    if [[ -s "${outcomes_file}" && -f "${outcomes_file}" \
+        && ! -L "${outcomes_file}" ]]; then
+      bundle="$(jq -Rsc --arg id "${native_id}" \
+        --arg key "${notification_key}" \
+        --arg generation "${captured_generation}" \
+        --arg notification_status "${notification_status}" '
+        [split("\n")[] | select(length > 0)
+         | (try fromjson catch null)
+         | select(type == "object")] as $rows
+        | (any($rows[];
+             (.notification_receipt // false) == true
+             and (.notification_key // "") == $key)) as $duplicate
+        | ([$rows | to_entries[]
+            | select((.value.notification_receipt // false) != true)
+            | select((.value.native_agent_id // "") == $id)
+            | select($notification_status
+                     | IN("completed","failed","stopped",
+                          "cancelled","canceled"))
+            | select((.value.status // "") | IN("accepted","ignored"))]) as $matches
+        | (any($rows[];
+             (.notification_receipt // false) != true
+             and (.native_agent_id // "") == $id
+             and ((.ulw_enforcement_generation // "migration")
+                  != $generation)
+             and ((.status // "") | IN("accepted","ignored")))) as $foreign
+        | ($matches[0].key // null) as $idx
+        | {duplicate:$duplicate,foreign:$foreign,matches:($matches | length),
+           selected:(if $idx == null then null else $rows[$idx] end),
+           remaining:[$rows | to_entries[]
+                      | select(.key != $idx) | .value]}
+      ' "${outcomes_file}" 2>/dev/null || true)"
+      [[ -n "${bundle}" ]] || return 1
+    else
+      bundle='{"duplicate":false,"foreign":false,"matches":0,"selected":null,"remaining":[]}'
+    fi
+    if [[ "$(jq -r '.duplicate // false' \
+        <<<"${bundle}" 2>/dev/null || true)" == "true" ]]; then
+      _task_notification_duplicate=1
+      return 0
+    fi
+    matches="$(jq -r '.matches // 0' <<<"${bundle}" 2>/dev/null || true)"
+    foreign="$(jq -r '.foreign // false' <<<"${bundle}" 2>/dev/null || true)"
+    [[ "${matches}" =~ ^[0-9]+$ ]] || matches=0
+    if (( matches > 0 )); then
+      selected="$(jq -c '.selected // empty' \
+        <<<"${bundle}" 2>/dev/null || true)"
+    else
+      selected=""
+    fi
+    # The ignored outcome is also the durable roll-forward record if its
+    # SubagentStop producer was killed between publishing that outcome and
+    # retiring the exact causal rows. Finish that cleanup before this wake can
+    # consume the outcome or tell the parent to dispatch a replacement.
+    if [[ -n "${selected}" ]]; then
+      if ! omc_reconcile_ignored_completion_cleanup_unlocked "${selected}"; then
+        _task_notification_cleanup_reconcile_failed=1
+        return 1
+      fi
+    fi
+    case "${notification_status}" in
+      failed)
+        rejected_reason="task-failed"
+        ;;
+      stopped|cancelled|canceled)
+        rejected_reason="task-stopped"
+        ;;
+    esac
+
+    if [[ -n "${selected}" ]]; then
+      selected_generation="$(jq -r \
+        '.ulw_enforcement_generation // "migration"' \
+        <<<"${selected}" 2>/dev/null || true)"
+      if [[ "${selected_generation}" != "${captured_generation}" \
+          && "${rejected_reason}" != "task-stopped" \
+          && "${rejected_reason}" != "task-failed" ]]; then
+        rejected_reason="enforcement-interval-changed"
+      fi
+    elif [[ "${foreign}" == "true" \
+        && "${rejected_reason}" != "task-stopped" \
+        && "${rejected_reason}" != "task-failed" ]]; then
+      rejected_reason="enforcement-interval-changed"
+    fi
+
+    if [[ -z "${selected}" || -n "${rejected_reason}" ]]; then
+      pending_file="$(session_file "pending_agents.jsonl")"
+      if [[ -s "${pending_file}" && -f "${pending_file}" \
+          && ! -L "${pending_file}" ]]; then
+        current_cycle="$(read_state "review_cycle_id")"
+        [[ "${current_cycle}" =~ ^[0-9]+$ ]] || current_cycle=0
+        current_objective_ts="$(read_state "review_cycle_prompt_ts")"
+        if [[ ! "${current_objective_ts}" =~ ^[0-9]+$ ]]; then
+          current_objective_ts="$(read_state "last_user_prompt_ts")"
+        fi
+        [[ "${current_objective_ts}" =~ ^[0-9]+$ ]] \
+          || current_objective_ts=0
+        while IFS= read -r line || [[ -n "${line}" ]]; do
+          [[ -n "${line}" ]] || continue
+          [[ "$(jq -r '.native_agent_id // empty' \
+            <<<"${line}" 2>/dev/null || true)" == "${native_id}" ]] \
+            || continue
+          [[ "$(jq -r '.agent_type // empty' \
+            <<<"${line}" 2>/dev/null || true)" == "${agent_type}" ]] \
+            || continue
+          row_generation="$(jq -r \
+            '.ulw_enforcement_generation // "migration"' \
+            <<<"${line}" 2>/dev/null || true)"
+          if [[ "${row_generation}" != "${captured_generation}" ]]; then
+            foreign_pending_count=$((foreign_pending_count + 1))
+            if [[ "${rejected_reason}" != "task-stopped" \
+                && "${rejected_reason}" != "task-failed" ]]; then
+              rejected_reason="enforcement-interval-changed"
+            fi
+            continue
+          fi
+          exact_count=$((exact_count + 1))
+          case "${notification_status}" in
+            failed|stopped|cancelled|canceled)
+              continue
+              ;;
+          esac
+          if [[ "$(jq -r '.review_dispatch_abandoned // false' \
+              <<<"${line}" 2>/dev/null || true)" == "true" ]]; then
+            rejected_reason="abandoned-dispatch-completion"
+            continue
+          fi
+          row_claim_id="$(jq -r '.completion_claim_id // empty' \
+            <<<"${line}" 2>/dev/null || true)"
+          if [[ -n "${row_claim_id}" ]]; then
+            row_claim_ts="$(jq -r '.completion_claim_ts // 0' \
+              <<<"${line}" 2>/dev/null || true)"
+            row_claim_effects="$(jq -r \
+              '.completion_claim_effects_complete // false' \
+              <<<"${line}" 2>/dev/null || true)"
+            [[ "${row_claim_ts}" =~ ^[0-9]+$ ]] || row_claim_ts=0
+            row_claim_now="$(now_epoch)"
+            [[ "${row_claim_now}" =~ ^[0-9]+$ ]] || row_claim_now=0
+            if [[ "${row_claim_effects}" != "true" \
+                && "${row_claim_ts}" -gt 0 \
+                && "${row_claim_now}" -ge "${row_claim_ts}" \
+                && $((row_claim_now - row_claim_ts)) -le 120 ]]; then
+              rejected_reason="completion-claim-settling"
+            elif [[ "${row_claim_effects}" == "true" ]]; then
+              rejected_reason="completion-effects-complete"
+            else
+              rejected_reason="expired-completion-claim"
+            fi
+            continue
+          fi
+          row_cycle="$(jq -r '.objective_cycle_id // 0' \
+            <<<"${line}" 2>/dev/null || true)"
+          row_objective_ts="$(jq -r '.objective_prompt_ts // 0' \
+            <<<"${line}" 2>/dev/null || true)"
+          [[ "${row_cycle}" =~ ^[0-9]+$ ]] || row_cycle=0
+          [[ "${row_objective_ts}" =~ ^[0-9]+$ ]] \
+            || row_objective_ts=0
+          if (( current_cycle != 0 && row_cycle != current_cycle )) \
+              || (( current_objective_ts != 0 \
+                    && row_objective_ts != current_objective_ts )); then
+            rejected_reason="prior-objective-completion"
+            continue
+          fi
+          if ! omc_pending_stateful_generation_current "${line}"; then
+            case "$(omc_enforced_terminal_contract_kind \
+              "${agent_type}" 2>/dev/null || true)" in
+              planner) rejected_reason="plan-generation-changed" ;;
+              *) rejected_reason="review-generation-changed" ;;
+            esac
+            continue
+          fi
+          # A foreign FIFO outcome belongs to an earlier interval. Never bind
+          # that wake to a current pending row that happens to reuse the same
+          # native task ID after resume; preserve the validated current row and
+          # make the parent reconcile its runtime liveness separately.
+          if [[ -n "${selected}" ]]; then
+            _task_notification_current_pending_preserved=1
+            continue
+          fi
+          candidate="${line}"
+        done <"${pending_file}"
+        if (( exact_count > 1 )); then
+          candidate=""
+          rejected_reason="ambiguous-native-pending"
+        fi
+      fi
+    fi
+
+    # Parent-side hard-limit recovery shares the SubagentStop retry budget.
+    # This keeps repeated max-turn escapes bounded even when SubagentStop never
+    # fires: two exact-transcript resumes are allowed; the third terminal wake
+    # becomes an abandoned row that requires a fresh explicit rebind.
+    if [[ -n "${candidate}" ]]; then
+      pending_backup="$(mktemp "${pending_file}.rollback.XXXXXX")" \
+        || return 1
+      cp "${pending_file}" "${pending_backup}" || {
+        rm -f "${pending_backup}"
+        pending_backup=""
+        return 1
+      }
+      candidate_original="${candidate}"
+      retry_count="$(jq -r '.terminal_contract_retry_count // 0' \
+        <<<"${candidate}" 2>/dev/null || true)"
+      [[ "${retry_count}" =~ ^[0-9]+$ ]] || retry_count=0
+      retry_count=$((retry_count + 1))
+      if (( retry_count >= 3 )); then
+        candidate="$(jq -c --argjson count "${retry_count}" \
+          --argjson abandoned_ts "$(now_epoch)" '
+            .terminal_contract_retry_count = $count
+            | .review_dispatch_abandoned = true
+            | .review_dispatch_abandonment_reason =
+                "terminal-contract-parent-retry-exhausted"
+            | .review_dispatch_abandoned_ts = $abandoned_ts
+          ' <<<"${candidate}" 2>/dev/null || true)"
+        rejected_reason="terminal-contract-parent-retry-exhausted"
+        _task_notification_retry_exhausted=1
+      else
+        candidate="$(jq -c --argjson count "${retry_count}" \
+          '.terminal_contract_retry_count = $count' \
+          <<<"${candidate}" 2>/dev/null || true)"
+      fi
+      if [[ -z "${candidate}" ]]; then
+        _restore_task_notification_pending
+        return 1
+      fi
+      pending_temp="$(mktemp "${pending_file}.XXXXXX")" || {
+        _restore_task_notification_pending
+        return 1
+      }
+      while IFS= read -r line || [[ -n "${line}" ]]; do
+        [[ -n "${line}" ]] || continue
+        if [[ "${line}" == "${candidate_original}" ]]; then
+          printf '%s\n' "${candidate}" >>"${pending_temp}" || {
+            rm -f "${pending_temp}"
+            _restore_task_notification_pending
+            return 1
+          }
+        else
+          printf '%s\n' "${line}" >>"${pending_temp}" || {
+            rm -f "${pending_temp}"
+            _restore_task_notification_pending
+            return 1
+          }
+        fi
+      done <"${pending_file}"
+      mv -f "${pending_temp}" "${pending_file}" || {
+        rm -f "${pending_temp}"
+        _restore_task_notification_pending
+        return 1
+      }
+      pending_changed=1
+      if [[ "${_task_notification_retry_exhausted}" -eq 1 ]]; then
+        candidate=""
+      fi
+    fi
+
+    # A runtime-failed/stopped task cannot be resumed. Likewise, a completion
+    # from a closed enforcement interval must not leave its exact foreign row
+    # live, because that row would deny the fresh current-interval dispatch.
+    # Preserve ended rows as canonical tombstones for late-return rejection.
+    case "${rejected_reason}" in
+      task-stopped|task-failed)
+        tombstone_mode="all"
+        tombstone_reason="${rejected_reason}-notification"
+        ;;
+      enforcement-interval-changed)
+        tombstone_mode="foreign"
+        tombstone_reason="enforcement-interval-task-ended"
+        ;;
+      review-generation-changed|plan-generation-changed|prior-objective-completion|expired-completion-claim)
+        tombstone_mode="current"
+        tombstone_reason="${rejected_reason}-task-ended"
+        ;;
+    esac
+    if [[ -n "${tombstone_mode}" \
+        && $((exact_count + foreign_pending_count)) -gt 0 ]]; then
+      if [[ -z "${pending_backup}" ]]; then
+        pending_backup="$(mktemp "${pending_file}.rollback.XXXXXX")" \
+          || return 1
+        cp "${pending_file}" "${pending_backup}" || {
+          rm -f "${pending_backup}"
+          pending_backup=""
+          return 1
+        }
+      fi
+      pending_temp="$(mktemp "${pending_file}.XXXXXX")" || {
+        _restore_task_notification_pending
+        return 1
+      }
+      while IFS= read -r line || [[ -n "${line}" ]]; do
+        [[ -n "${line}" ]] || continue
+        if [[ "$(jq -r '.native_agent_id // empty' \
+              <<<"${line}" 2>/dev/null || true)" == "${native_id}" \
+            && "$(jq -r '.agent_type // empty' \
+              <<<"${line}" 2>/dev/null || true)" == "${agent_type}" ]] \
+            && { [[ "${tombstone_mode}" == "all" ]] \
+              || { [[ "${tombstone_mode}" == "foreign" ]] \
+                && [[ "$(jq -r \
+                '.ulw_enforcement_generation // "migration"' \
+                <<<"${line}" 2>/dev/null || true)" != \
+                "${captured_generation}" ]]; } \
+              || { [[ "${tombstone_mode}" == "current" ]] \
+                && [[ "$(jq -r \
+                  '.ulw_enforcement_generation // "migration"' \
+                  <<<"${line}" 2>/dev/null || true)" == \
+                  "${captured_generation}" ]]; }; }; then
+          if ! jq -c --arg reason "${tombstone_reason}" \
+              --argjson abandoned_ts "$(now_epoch)" '
+              .review_dispatch_abandoned = true
+              | .review_dispatch_abandonment_reason = $reason
+              | .review_dispatch_abandoned_ts = $abandoned_ts
+            ' <<<"${line}" >>"${pending_temp}"; then
+            rm -f "${pending_temp}"
+            _restore_task_notification_pending
+            return 1
+          fi
+          tombstone_count=$((tombstone_count + 1))
+        else
+          printf '%s\n' "${line}" >>"${pending_temp}" || {
+            rm -f "${pending_temp}"
+            _restore_task_notification_pending
+            return 1
+          }
+        fi
+      done <"${pending_file}"
+      if ! mv -f "${pending_temp}" "${pending_file}"; then
+        rm -f "${pending_temp}"
+        _restore_task_notification_pending
+        return 1
+      fi
+      pending_changed=1
+    fi
+    if [[ "${_task_notification_retry_exhausted}" -eq 1 \
+        || "${tombstone_count}" -gt 0 ]] \
+        || { [[ "${rejected_reason}" == \
+          "abandoned-dispatch-completion" ]] \
+          && (( exact_count > 0 )); }; then
+      _task_notification_rebind_id="task-end-$(_omc_token_digest \
+        "${notification_key}|${native_id}" 2>/dev/null \
+        | cut -c1-16)"
+    fi
+
+    # No causal data means this task notification is unrelated to OMC's live
+    # reviewer/plan contract. Do not fill the receipt ledger for ordinary
+    # background tasks that happen to reuse an old binding.
+    [[ -n "${selected}" || -n "${candidate}" \
+        || -n "${rejected_reason}" ]] || return 0
+
+    receipt="$(jq -nc --argjson ts "$(now_epoch)" \
+      --arg native_id "${native_id}" --arg key "${notification_key}" \
+      --arg status "${notification_status}" --arg agent "${agent_type}" '{
+        ts:$ts,notification_receipt:true,native_agent_id:$native_id,
+        notification_key:$key,notification_status:$status,
+        notification_agent_type:$agent
+      }')" || {
+        _restore_task_notification_pending
+        return 1
+      }
+    if [[ "${OMC_TEST_TASK_NOTIFICATION_FAIL_RECEIPT:-0}" == "1" ]]; then
+      _restore_task_notification_pending
+      return 1
+    fi
+    temp="$(mktemp "${outcomes_file}.XXXXXX")" || {
+      _restore_task_notification_pending
+      return 1
+    }
+    if ! jq -cr --argjson receipt "${receipt}" '
+        ([.remaining[] | select((.notification_receipt // false) != true)]
+         + ([.remaining[] | select((.notification_receipt // false) == true)]
+            | if length > 127 then .[-127:] else . end)
+         + [$receipt])[]
+      ' <<<"${bundle}" >"${temp}" \
+        || ! mv -f "${temp}" "${outcomes_file}"; then
+      rm -f "${temp}"
+      _restore_task_notification_pending
+      return 1
+    fi
+    rm -f "${pending_backup}" 2>/dev/null || true
+    pending_backup=""
+    _task_notification_outcome_json="${selected}"
+    _task_notification_pending_json="${candidate}"
+    _task_notification_rejected_pending_reason="${rejected_reason}"
+  }
+
+  if [[ -n "${_task_notification_id}" \
+      && -n "${_task_notification_status}" ]]; then
+    ensure_session_dir
+    if capture_ulw_enforcement_interval; then
+      if [[ -n "${_task_notification_tool_use_id}" ]]; then
+        _task_notification_wake_key="${_task_notification_tool_use_id}"
+      else
+        _task_notification_wake_key="body-$(_omc_token_digest \
+          "${PROMPT_TEXT}" 2>/dev/null || printf 'unknown')"
+      fi
+      # Platform event identity is stable across ULW intervals: the same queued
+      # notification can replay after reactivation. Generation belongs on the
+      # causal outcome/pending rows, not in this dedupe key.
+      _task_notification_key="${_task_notification_id}|${_task_notification_wake_key}|${_task_notification_status}"
+      if ! with_state_lock _recover_task_notification_unlocked \
+          "${_task_notification_id}" "${_task_notification_key}" \
+          "${_task_notification_status}"; then
+        _task_notification_recovery_failed=1
+      fi
+    fi
+    if [[ "${_task_notification_duplicate}" -eq 1 ]]; then
+      _task_notification_recovery_context="DUPLICATE BACKGROUND NOTIFICATION: this exact task wake was already processed. Do not integrate its result again, issue another resume, or wait for another copy. Continue from the current review/plan state."
+    elif [[ "${_task_notification_cleanup_reconcile_failed}" -eq 1 ]]; then
+      _task_notification_recovery_context="BACKGROUND RECOVERY DEGRADED: oh-my-claude retained this task notification and its durable cleanup journal because the exact pending/start artifacts could not be reconciled safely. Do not integrate the raw result, wait for another copy, resume or rebind this call, or dispatch a duplicate. Re-evaluate the lifecycle state and retry journal convergence; if it still fails, surface the concrete hook/state error instead of promising automatic resume."
+    elif [[ "${_task_notification_recovery_failed}" -eq 1 ]]; then
+      _task_notification_recovery_context="BACKGROUND RECOVERY DEGRADED: oh-my-claude could not atomically record this task notification, so it rolled back any pending-row retry or retirement. Do not integrate the raw result or wait for another copy. Re-evaluate the current reviewer/plan gate; resume native call ${_task_notification_id} only if its retained pending row is still current, otherwise explicitly rebind a fresh equivalent."
+    elif [[ -n "${_task_notification_rejected_pending_reason}" ]]; then
+      case "${_task_notification_rejected_pending_reason}" in
+        terminal-contract-parent-retry-exhausted)
+          _task_notification_recovery_context="BACKGROUND REVIEW RECOVERY: the exact native call ${_task_notification_id} repeatedly ended before a valid final verdict could settle, so its bounded parent-recovery budget is exhausted. Do not wait for or resume that call. Re-evaluate current pending work first. If a replacement is already tracked, do not dispatch another. Otherwise: Dispatch a fresh equivalent now with description token [review-rebind:${_task_notification_rebind_id}]. The partial result is not accepted evidence."
+          ;;
+        task-stopped)
+          _notification_rebind_clause="dispatch a fresh equivalent"
+          if [[ -n "${_task_notification_rebind_id}" ]]; then
+            _notification_rebind_clause="dispatch a fresh equivalent with description token [review-rebind:${_task_notification_rebind_id}]"
+          fi
+          _task_notification_recovery_context="BACKGROUND RESULT REJECTED: native call ${_task_notification_id} was stopped (task-stopped) and its pending review/plan record was retired when present. Do not integrate or resume that result. Re-evaluate the current gate and, if the role is still required, ${_notification_rebind_clause}."
+          ;;
+        task-failed)
+          _notification_rebind_clause="dispatch a fresh equivalent"
+          if [[ -n "${_task_notification_rebind_id}" ]]; then
+            _notification_rebind_clause="dispatch a fresh equivalent with description token [review-rebind:${_task_notification_rebind_id}]"
+          fi
+          _task_notification_recovery_context="BACKGROUND RESULT REJECTED: native call ${_task_notification_id} failed (task-failed) and its pending review/plan record was retired when present. Do not wait for or resume that call. Inspect the native failure for a concrete credential, access, or external-service blocker; otherwise ${_notification_rebind_clause}."
+          ;;
+        enforcement-interval-changed)
+          _notification_rebind_clause=""
+          if [[ "${_task_notification_current_pending_preserved}" -eq 1 ]]; then
+            _task_notification_recovery_context="BACKGROUND RESULT REJECTED: native call ${_task_notification_id} delivered a delayed result from a closed oh-my-claude enforcement interval (enforcement-interval-changed). A separately validated current-interval row for that same native task remains pending. Do not integrate the old result, rebind, or dispatch a duplicate from this wake. Reconcile the current runtime task registry: keep waiting only if it proves this exact task live; otherwise recover the retained current transcript."
+          elif [[ -n "${_task_notification_rebind_id}" ]]; then
+            _notification_rebind_clause=" If the current gate still needs this role, dispatch a fresh equivalent with description token [review-rebind:${_task_notification_rebind_id}]."
+            _task_notification_recovery_context="BACKGROUND RESULT REJECTED: native call ${_task_notification_id} belongs to a closed oh-my-claude enforcement interval (enforcement-interval-changed). Its ended foreign pending row was tombstoned when present; do not integrate or resume the result.${_notification_rebind_clause} Re-evaluate the current gate instead of waiting for another notification."
+          else
+            _task_notification_recovery_context="BACKGROUND RESULT REJECTED: native call ${_task_notification_id} belongs to a closed oh-my-claude enforcement interval (enforcement-interval-changed). Do not integrate or resume the result. Re-evaluate the current gate instead of waiting for another notification."
+          fi
+          ;;
+        completion-claim-settling)
+          _task_notification_recovery_context="BACKGROUND RESULT REJECTED: native call ${_task_notification_id} delivered an old or duplicate wake while its validated current completion claim is still settling. Do not integrate the old result, resume, rebind, or dispatch a duplicate. Let the current SubagentStop publication finish, then re-evaluate the gate."
+          ;;
+        completion-effects-complete)
+          _task_notification_recovery_context="BACKGROUND RESULT REJECTED: native call ${_task_notification_id} delivered an old or duplicate wake after its completion effects were already recorded. Do not integrate, resume, rebind, or dispatch from this wake. Re-evaluate the committed reviewer/plan state."
+          ;;
+        expired-completion-claim)
+          _task_notification_recovery_context="BACKGROUND RESULT REJECTED: native call ${_task_notification_id} matched an expired incomplete completion claim. The unusable row was retired; do not integrate or resume the result. If the role remains required, dispatch a fresh equivalent with description token [review-rebind:${_task_notification_rebind_id}]."
+          ;;
+        abandoned-dispatch-completion|review-generation-changed|plan-generation-changed|prior-objective-completion)
+          _task_notification_recovery_context="BACKGROUND RESULT REJECTED: native call ${_task_notification_id} matched a pending review/plan record that cannot satisfy the current gate (${_task_notification_rejected_pending_reason}). The unusable row is retained as or converted to an abandonment tombstone. Do not integrate or resume that result. If the role remains required, dispatch a fresh equivalent with description token [review-rebind:${_task_notification_rebind_id}]."
+          ;;
+        *)
+          _task_notification_recovery_context="BACKGROUND RESULT REJECTED: native call ${_task_notification_id} ended, but its pending review/plan record is not valid for the current gate (${_task_notification_rejected_pending_reason}). Do not integrate the result or resume that call. Re-evaluate the current gate and dispatch only the role still required for the current objective."
+          ;;
+      esac
+    elif [[ -n "${_task_notification_outcome_json}" ]]; then
+      _notification_status="$(jq -r '.status // empty' \
+        <<<"${_task_notification_outcome_json}" 2>/dev/null || true)"
+      _notification_reason="$(jq -r '.reason // empty' \
+        <<<"${_task_notification_outcome_json}" 2>/dev/null || true)"
+      _notification_outcome_cycle="$(jq -r '.objective_cycle_id // 0' \
+        <<<"${_task_notification_outcome_json}" 2>/dev/null || true)"
+      _notification_outcome_ts="$(jq -r '.objective_prompt_ts // 0' \
+        <<<"${_task_notification_outcome_json}" 2>/dev/null || true)"
+      _notification_current_cycle="$(read_state "review_cycle_id")"
+      _notification_current_ts="$(read_state "review_cycle_prompt_ts")"
+      if [[ ! "${_notification_current_ts}" =~ ^[0-9]+$ ]]; then
+        _notification_current_ts="$(read_state "last_user_prompt_ts")"
+      fi
+      [[ "${_notification_outcome_cycle}" =~ ^[0-9]+$ ]] \
+        || _notification_outcome_cycle=0
+      [[ "${_notification_outcome_ts}" =~ ^[0-9]+$ ]] \
+        || _notification_outcome_ts=0
+      [[ "${_notification_current_cycle}" =~ ^[0-9]+$ ]] \
+        || _notification_current_cycle=0
+      [[ "${_notification_current_ts}" =~ ^[0-9]+$ ]] \
+        || _notification_current_ts=0
+      _notification_agent="$(jq -r '.agent_type // "reviewer"' \
+        <<<"${_task_notification_outcome_json}" 2>/dev/null || true)"
+      _notification_verdict="$(jq -r '.verdict // empty' \
+        <<<"${_task_notification_outcome_json}" 2>/dev/null || true)"
+      _notification_contract_kind="$(omc_enforced_terminal_contract_kind \
+        "${_notification_agent}" 2>/dev/null || true)"
+      _notification_generation_current=0
+      if [[ "${_notification_status}" == "accepted" \
+          && "${_notification_contract_kind}" == "planner" ]]; then
+        _notification_plan_revision="$(read_state "plan_revision")"
+        _notification_start_revision="$(jq -r '.review_revision // -1' \
+          <<<"${_task_notification_outcome_json}" 2>/dev/null || true)"
+        [[ "${_notification_plan_revision}" =~ ^[0-9]+$ ]] \
+          || _notification_plan_revision=0
+        [[ "${_notification_start_revision}" =~ ^[0-9]+$ ]] \
+          || _notification_start_revision=-1
+        case "${_notification_verdict}" in
+          PLAN_READY)
+            if (( _notification_start_revision >= 0 \
+                  && _notification_plan_revision \
+                    == _notification_start_revision + 1 )) \
+                && [[ "$(read_state "has_plan")" == "true" \
+                  && "$(read_state "plan_verdict")" == "PLAN_READY" \
+                  && "$(read_state "plan_agent")" == \
+                    "${_notification_agent}" ]]; then
+              _notification_generation_current=1
+            fi
+            ;;
+          NEEDS_CLARIFICATION|BLOCKED)
+            if (( _notification_start_revision >= 0 \
+                  && _notification_plan_revision \
+                    == _notification_start_revision )) \
+                && [[ "$(read_state "has_plan")" == "false" \
+                  && "$(read_state "plan_verdict")" == \
+                    "${_notification_verdict}" \
+                  && "$(read_state "plan_agent")" == \
+                    "${_notification_agent}" ]]; then
+              _notification_generation_current=1
+            fi
+            ;;
+        esac
+      elif omc_pending_stateful_generation_current \
+          "${_task_notification_outcome_json}"; then
+        _notification_generation_current=1
+      fi
+      _notification_outcome_current=0
+      if { (( _notification_current_cycle == 0 \
+                || _notification_outcome_cycle == _notification_current_cycle )) \
+          && (( _notification_current_ts == 0 \
+                || _notification_outcome_ts == _notification_current_ts )); } \
+          && [[ "${_notification_generation_current}" -eq 1 ]]; then
+        _notification_outcome_current=1
+      fi
+      if [[ "${_notification_status}" == "ignored" \
+          && "${_notification_reason}" == \
+          "terminal-contract-retry-exhausted" ]] \
+          && [[ "${_notification_outcome_current}" -eq 1 ]]; then
+        _task_notification_recovery_context="BACKGROUND REVIEW RECOVERY: ${_notification_agent} repeatedly ended without its required final verdict, so native call ${_task_notification_id} was retired. Do not wait for or resume that call. Re-evaluate current pending work first. If a replacement is already tracked, do not dispatch another. Otherwise: Dispatch a fresh equivalent now. The partial result is not accepted evidence."
+      elif [[ "${_notification_status}" == "ignored" ]]; then
+        case "${_notification_reason}" in
+          prior-objective-completion|review-generation-changed|plan-generation-changed|abandoned-dispatch-completion|enforcement-interval-closed|native-agent-id-mismatch|dispatch-id-mismatch|completion-already-claimed)
+            _notification_action="Do not integrate the notification result or resume that call. Re-evaluate the current gate and dispatch only the reviewer or planner still required for the current objective."
+            ;;
+          *)
+            _notification_action="Do not integrate the notification result as review or plan evidence. If the current gate still requires this role, explicitly rebind and dispatch a fresh equivalent."
+            ;;
+        esac
+        _task_notification_recovery_context="BACKGROUND RESULT REJECTED: oh-my-claude rejected ${_notification_agent} native call ${_task_notification_id} (${_notification_reason:-causal-validation-failed}). ${_notification_action} Do not wait for another notification or ask the user to intervene."
+      elif [[ "${_notification_status}" == "accepted" \
+          && "${_notification_outcome_current}" -ne 1 ]]; then
+        _task_notification_recovery_context="BACKGROUND RESULT REJECTED: ${_notification_agent} native call ${_task_notification_id} completed, but its accepted outcome no longer matches the current objective or review/plan generation. Do not integrate the notification result or resume that call. Re-evaluate the current gate and dispatch only the role still required for the current objective."
+      fi
+    elif [[ -n "${_task_notification_pending_json}" ]]; then
+      _notification_agent="$(jq -r '.agent_type // "reviewer"' \
+        <<<"${_task_notification_pending_json}" 2>/dev/null || true)"
+      _task_notification_recovery_context="BACKGROUND REVIEW RECOVERY: the ${_notification_agent} task ended without a valid final verdict, but its exact transcript is retained as native agent ${_task_notification_id}. Do not wait for another notification or ask the user to intervene. Resume that exact call now with Agent resume or SendMessage; if it cannot resume, explicitly rebind and dispatch a fresh equivalent."
+    fi
+  fi
+
+  if [[ -n "${_task_notification_recovery_context}" ]]; then
+    jq -nc --arg context "$(truncate_chars 1200 \
+      "${_task_notification_recovery_context}")" '{
+      hookSpecificOutput:{
+        hookEventName:"UserPromptSubmit",additionalContext:$context
+      }
+    }'
+  fi
   log_hook "prompt-intent-router" "skip: synthetic injection (first 60 chars: ${PROMPT_TEXT:0:60})"
   exit 0
 fi

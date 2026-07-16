@@ -106,6 +106,11 @@ run_dispatch() {
   hook_env bash "${HOOK_DIR}/stop-dispatch.sh" <<<"$(stop_payload "${sid}" "${msg}" "${active}")"
 }
 
+run_dispatch_payload() {
+  local payload="$1"
+  hook_env bash "${HOOK_DIR}/stop-dispatch.sh" <<<"${payload}"
+}
+
 run_dispatch_with_cap() {
   local sid="$1" msg="$2" cap="$3" active="${4:-true}"
   hook_env CLAUDE_CODE_STOP_HOOK_BLOCK_CAP="${cap}" \
@@ -180,6 +185,533 @@ if jq -e '.hookSpecificOutput.hookEventName == "Stop" and (.hookSpecificOutput.a
 # stop_hook_active=true still evaluates stale/missing readiness; it cannot
 # bypass certification on the continuation retry.
 assert_contains "active retry remains blocked" "closeout check" "${modern_out}"
+
+# A wait sentence is a first-class nonterminal state only when the Stop
+# payload's level registry proves a future wake exists. This is separate from
+# closeout gating: verified waits consume no continuation slot or finalizer,
+# while present-empty registries recover immediately instead of promising a
+# notification that can never fire.
+canonical_wait='⏳ **Waiting on the Wave 3 quality-reviewer to finish its verdict** — running in the background; I'"'"'ll resume automatically when it finishes. Nothing for you to do.'
+
+seed_ready wait_live
+wait_live_objective_ts="$(jq -r '.review_cycle_prompt_ts' \
+  "${STATE_ROOT}/wait_live/session_state.json")"
+jq -nc --argjson objective_ts "${wait_live_objective_ts}" '{
+  agent_type:"quality-reviewer",native_agent_id:"a571",ts:1,
+  review_dispatch_abandoned:false,objective_cycle_id:1,
+  objective_prompt_ts:$objective_ts,review_revision:1
+}' >"${STATE_ROOT}/wait_live/pending_agents.jsonl"
+wait_live_payload="$(jq -nc --arg sid wait_live --arg msg "${canonical_wait}" '{
+  session_id:$sid,hook_event_name:"Stop",stop_hook_active:false,
+  last_assistant_message:$msg,
+  background_tasks:[{id:"a571",type:"subagent",status:"running",
+    description:"Wave 3 quality-reviewer",agent_type:"quality-reviewer"}],
+  session_crons:[]
+}')"
+wait_live_out="$(run_dispatch_payload "${wait_live_payload}")"
+assert_empty "verified live wait emits no Stop continuation" "${wait_live_out}"
+assert_empty "verified live wait writes no terminal outcome" \
+  "$(jq -r '.session_outcome // empty' "${STATE_ROOT}/wait_live/session_state.json")"
+assert_empty "verified live wait consumes no continuation slot" \
+  "$(jq -r '.closeout_dispatch_continuations // empty' "${STATE_ROOT}/wait_live/session_state.json")"
+[[ ! -e "${STATE_ROOT}/wait_live/provisional_closeouts.jsonl" ]] \
+  && ok || bad "verified live wait was recorded as a provisional closeout"
+[[ ! -e "${STATE_ROOT}/wait_live/prompt_timing.jsonl" ]] \
+  && ok || bad "verified live wait wrote prompt-end timing"
+
+seed_ready wait_dead
+wait_dead_objective_ts="$(jq -r '.review_cycle_prompt_ts' \
+  "${STATE_ROOT}/wait_dead/session_state.json")"
+jq -nc --argjson objective_ts "${wait_dead_objective_ts}" '{
+  agent_type:"quality-reviewer",native_agent_id:"a571",ts:1,
+  review_dispatch_abandoned:false,objective_cycle_id:1,
+  objective_prompt_ts:$objective_ts,review_revision:1
+}' >"${STATE_ROOT}/wait_dead/pending_agents.jsonl"
+wait_dead_payload="$(jq -nc --arg sid wait_dead --arg msg "${canonical_wait}" '{
+  session_id:$sid,hook_event_name:"Stop",stop_hook_active:false,
+  last_assistant_message:$msg,background_tasks:[],session_crons:[]
+}')"
+OMC_STOP_FEEDBACK_MODE=modern wait_dead_out="$(run_dispatch_payload "${wait_dead_payload}")"
+assert_single_json "dead wait emits one recovery object" "${wait_dead_out}"
+if jq -e '
+    .hookSpecificOutput.hookEventName == "Stop"
+    and (.hookSpecificOutput.additionalContext | contains("no live background wake source"))
+    and (.hookSpecificOutput.additionalContext | contains("SendMessage"))
+    and (.hookSpecificOutput.additionalContext | contains("a571"))
+    and (.systemMessage == "oh-my-claude could not find live background work matching this wait and is recovering automatically.")
+  ' <<<"${wait_dead_out}" >/dev/null; then
+  ok
+else
+  bad "dead wait recovery did not name the missing wake and retained agent"
+fi
+assert_not_contains "dead wait does not repeat auto-resume promise" \
+  "resume automatically" "${wait_dead_out}"
+assert_not_contains "dead wait does not tell user there is nothing to do" \
+  "Nothing for you to do" "${wait_dead_out}"
+assert_contains "dead wait increments exactly one continuation slot" '"1"' \
+  "$(jq -c '.closeout_dispatch_continuations' "${STATE_ROOT}/wait_dead/session_state.json")"
+[[ ! -e "${STATE_ROOT}/wait_dead/provisional_closeouts.jsonl" ]] \
+  && ok || bad "dead wait prose was retained as a completion candidate"
+assert_empty "dead wait keeps the quality interval nonterminal" \
+  "$(jq -r '.session_outcome // empty' "${STATE_ROOT}/wait_dead/session_state.json")"
+
+seed_ready wait_claim_settling
+claim_now="$(date +%s)"
+claim_objective_ts="$(jq -r '.review_cycle_prompt_ts' \
+  "${STATE_ROOT}/wait_claim_settling/session_state.json")"
+jq -nc --argjson ts "${claim_now}" \
+  --argjson objective_ts "${claim_objective_ts}" '{
+  agent_type:"quality-reviewer",native_agent_id:"a571",ts:1,
+  review_dispatch_abandoned:false,completion_claim_id:"claim-live",
+  completion_claim_ts:$ts,completion_claim_effects_complete:false,
+  objective_cycle_id:1,objective_prompt_ts:$objective_ts,review_revision:1
+}' >"${STATE_ROOT}/wait_claim_settling/pending_agents.jsonl"
+claim_wait_payload="$(jq -nc --arg sid wait_claim_settling \
+  --arg msg "${canonical_wait}" '{
+    session_id:$sid,hook_event_name:"Stop",stop_hook_active:false,
+    last_assistant_message:$msg,background_tasks:[],session_crons:[]
+  }')"
+OMC_STOP_FEEDBACK_MODE=modern claim_wait_out="$(run_dispatch_payload \
+  "${claim_wait_payload}")"
+assert_contains "fresh completion claim gets settle/re-evaluate recovery" \
+  "still publishing its SubagentStop evidence" "${claim_wait_out}"
+assert_not_contains "fresh completion claim is not abandoned via SendMessage" \
+  "SendMessage" "${claim_wait_out}"
+assert_contains "fresh completion claim remains intact" "claim-live" \
+  "$(cat "${STATE_ROOT}/wait_claim_settling/pending_agents.jsonl")"
+
+seed_ready wait_claim_effects_complete
+effects_objective_ts="$(jq -r '.review_cycle_prompt_ts' \
+  "${STATE_ROOT}/wait_claim_effects_complete/session_state.json")"
+jq -nc --argjson objective_ts "${effects_objective_ts}" \
+  --argjson ts "$(date +%s)" '{
+  agent_type:"quality-reviewer",native_agent_id:"effects-native",ts:1,
+  review_dispatch_abandoned:false,completion_claim_id:"claim-complete",
+  completion_claim_ts:$ts,completion_claim_effects_complete:true,
+  objective_cycle_id:1,objective_prompt_ts:$objective_ts,review_revision:1
+}' >"${STATE_ROOT}/wait_claim_effects_complete/pending_agents.jsonl"
+effects_wait_payload="$(jq -nc --arg sid wait_claim_effects_complete \
+  --arg msg "${canonical_wait}" '{
+    session_id:$sid,hook_event_name:"Stop",stop_hook_active:false,
+    last_assistant_message:$msg,background_tasks:[],session_crons:[]
+  }')"
+OMC_STOP_FEEDBACK_MODE=modern effects_wait_out="$(run_dispatch_payload \
+  "${effects_wait_payload}")"
+assert_contains "effects-complete dead wait re-evaluates committed state" \
+  "already published its claim-scoped effects" "${effects_wait_out}"
+assert_not_contains "effects-complete dead wait never resumes native task" \
+  "SendMessage" "${effects_wait_out}"
+assert_not_contains "effects-complete dead wait never rebinds" \
+  "explicit rebind" "${effects_wait_out}"
+
+seed_ready wait_claim_expired
+expired_objective_ts="$(jq -r '.review_cycle_prompt_ts' \
+  "${STATE_ROOT}/wait_claim_expired/session_state.json")"
+jq -nc --argjson objective_ts "${expired_objective_ts}" '{
+  agent_type:"quality-reviewer",native_agent_id:"expired-native",ts:1,
+  review_dispatch_abandoned:false,completion_claim_id:"claim-expired",
+  completion_claim_ts:1,completion_claim_effects_complete:false,
+  objective_cycle_id:1,objective_prompt_ts:$objective_ts,review_revision:1
+}' >"${STATE_ROOT}/wait_claim_expired/pending_agents.jsonl"
+expired_wait_payload="$(jq -nc --arg sid wait_claim_expired \
+  --arg msg "${canonical_wait}" '{
+    session_id:$sid,hook_event_name:"Stop",stop_hook_active:false,
+    last_assistant_message:$msg,background_tasks:[],session_crons:[]
+  }')"
+OMC_STOP_FEEDBACK_MODE=modern expired_wait_out="$(run_dispatch_payload \
+  "${expired_wait_payload}")"
+assert_contains "expired-claim dead wait chooses explicit rebind" \
+  "expired incomplete completion claim" "${expired_wait_out}"
+assert_contains "expired-claim dead wait names rebind path" \
+  "explicit rebind path" "${expired_wait_out}"
+assert_not_contains "expired-claim dead wait never resumes native task" \
+  "SendMessage" "${expired_wait_out}"
+
+seed_ready wait_unrelated_task
+wait_unrelated_objective_ts="$(jq -r '.review_cycle_prompt_ts' \
+  "${STATE_ROOT}/wait_unrelated_task/session_state.json")"
+jq -nc --argjson objective_ts "${wait_unrelated_objective_ts}" '{
+  agent_type:"quality-reviewer",native_agent_id:"a571",ts:1,
+  review_dispatch_abandoned:false,objective_cycle_id:1,
+  objective_prompt_ts:$objective_ts,review_revision:1
+}' >"${STATE_ROOT}/wait_unrelated_task/pending_agents.jsonl"
+unrelated_wait_payload="$(jq -nc --arg sid wait_unrelated_task \
+  --arg msg "${canonical_wait}" '{
+    session_id:$sid,hook_event_name:"Stop",stop_hook_active:false,
+    last_assistant_message:$msg,
+    background_tasks:[{id:"bash-1",type:"bash",status:"running",
+      description:"development server",command:"npm run dev"}],session_crons:[]
+  }')"
+OMC_STOP_FEEDBACK_MODE=modern unrelated_wait_out="$(run_dispatch_payload \
+  "${unrelated_wait_payload}")"
+assert_contains "unrelated live task cannot validate the named reviewer wait" \
+  "no live background wake source matching the promised worker" \
+  "${unrelated_wait_out}"
+
+seed_ready wait_wrong_same_type
+wrong_same_type_objective_ts="$(jq -r '.review_cycle_prompt_ts' \
+  "${STATE_ROOT}/wait_wrong_same_type/session_state.json")"
+jq -nc --argjson objective_ts "${wrong_same_type_objective_ts}" '{
+  agent_type:"quality-reviewer",native_agent_id:"expected-id",ts:1,
+  review_dispatch_abandoned:false,objective_cycle_id:1,
+  objective_prompt_ts:$objective_ts,review_revision:1
+}' >"${STATE_ROOT}/wait_wrong_same_type/pending_agents.jsonl"
+wrong_same_type_payload="$(jq -nc --arg sid wait_wrong_same_type \
+  --arg msg "${canonical_wait}" '{
+    session_id:$sid,hook_event_name:"Stop",stop_hook_active:false,
+    last_assistant_message:$msg,
+    background_tasks:[{id:"other-id",type:"subagent",status:"running",
+      description:"other quality review",agent_type:"quality-reviewer"}],
+    session_crons:[]
+  }')"
+OMC_STOP_FEEDBACK_MODE=modern wrong_same_type_out="$(run_dispatch_payload \
+  "${wrong_same_type_payload}")"
+assert_contains "same-role task with a different native ID cannot validate wait" \
+  "no live background wake source matching the promised worker" \
+  "${wrong_same_type_out}"
+
+seed_ready wait_legacy_role_only
+legacy_role_objective_ts="$(jq -r '.review_cycle_prompt_ts' \
+  "${STATE_ROOT}/wait_legacy_role_only/session_state.json")"
+jq -nc --argjson objective_ts "${legacy_role_objective_ts}" '{
+  agent_type:"quality-reviewer",native_agent_id:"legacy-native",ts:1,
+  review_dispatch_abandoned:false,objective_cycle_id:1,
+  objective_prompt_ts:$objective_ts,review_revision:1
+}' >"${STATE_ROOT}/wait_legacy_role_only/pending_agents.jsonl"
+legacy_role_payload="$(jq -nc --arg sid wait_legacy_role_only \
+  --arg msg "${canonical_wait}" '{
+    session_id:$sid,hook_event_name:"Stop",stop_hook_active:false,
+    last_assistant_message:$msg,
+    background_tasks:[{type:"subagent",status:"running",
+      description:"legacy quality review",agent_type:"quality-reviewer"}],
+    session_crons:[]
+  }')"
+legacy_role_out="$(run_dispatch_payload "${legacy_role_payload}")"
+assert_empty "legacy role-only task can validate its one current pending wait" \
+  "${legacy_role_out}"
+
+seed_ready wait_unrelated_without_pending
+unrelated_no_pending_payload="$(jq -nc --arg sid wait_unrelated_without_pending \
+  --arg msg "${canonical_wait}" '{
+    session_id:$sid,hook_event_name:"Stop",stop_hook_active:false,
+    last_assistant_message:$msg,
+    background_tasks:[{id:"shell-1",type:"shell",status:"running",
+      description:"development server",command:"npm run dev"}],session_crons:[]
+  }')"
+OMC_STOP_FEEDBACK_MODE=modern unrelated_no_pending_out="$(run_dispatch_payload \
+  "${unrelated_no_pending_payload}")"
+assert_contains "named reviewer wait without a ledger cannot borrow a shell wake" \
+  "no live background wake source matching the promised worker" \
+  "${unrelated_no_pending_out}"
+
+seed_ready wait_wrong_pending
+wrong_pending_objective_ts="$(jq -r '.review_cycle_prompt_ts' \
+  "${STATE_ROOT}/wait_wrong_pending/session_state.json")"
+jq -nc --argjson objective_ts "${wrong_pending_objective_ts}" '{
+  agent_type:"excellence-reviewer",native_agent_id:"wrong-native",ts:1,
+  review_dispatch_abandoned:false,objective_cycle_id:1,
+  objective_prompt_ts:$objective_ts,review_revision:1
+}' >"${STATE_ROOT}/wait_wrong_pending/pending_agents.jsonl"
+wrong_pending_payload="$(jq -nc --arg sid wait_wrong_pending \
+  --arg msg "${canonical_wait}" '{
+    session_id:$sid,hook_event_name:"Stop",stop_hook_active:false,
+    last_assistant_message:$msg,background_tasks:[],session_crons:[]
+  }')"
+OMC_STOP_FEEDBACK_MODE=modern wrong_pending_out="$(run_dispatch_payload \
+  "${wrong_pending_payload}")"
+assert_not_contains "dead named wait never resumes an unrelated pending agent" \
+  "wrong-native" "${wrong_pending_out}"
+
+seed_ready wait_stale_pending
+stale_pending_objective_ts="$(jq -r '.review_cycle_prompt_ts' \
+  "${STATE_ROOT}/wait_stale_pending/session_state.json")"
+jq -nc --argjson objective_ts "${stale_pending_objective_ts}" '{
+  agent_type:"quality-reviewer",native_agent_id:"stale-native",ts:1,
+  review_dispatch_abandoned:false,objective_cycle_id:1,
+  objective_prompt_ts:$objective_ts,review_revision:0
+}' >"${STATE_ROOT}/wait_stale_pending/pending_agents.jsonl"
+stale_pending_payload="$(jq -nc --arg sid wait_stale_pending \
+  --arg msg "${canonical_wait}" '{
+    session_id:$sid,hook_event_name:"Stop",stop_hook_active:false,
+    last_assistant_message:$msg,background_tasks:[],session_crons:[]
+  }')"
+OMC_STOP_FEEDBACK_MODE=modern stale_pending_out="$(run_dispatch_payload \
+  "${stale_pending_payload}")"
+assert_not_contains "dead wait never resumes a generation-stale agent" \
+  "stale-native" "${stale_pending_out}"
+
+seed_ready wait_prior_objective
+jq -nc '{
+  agent_type:"quality-reviewer",native_agent_id:"prior-native",ts:1,
+  review_dispatch_abandoned:false,objective_cycle_id:2,
+  objective_prompt_ts:1,review_revision:1
+}' >"${STATE_ROOT}/wait_prior_objective/pending_agents.jsonl"
+prior_pending_payload="$(jq -nc --arg sid wait_prior_objective \
+  --arg msg "${canonical_wait}" '{
+    session_id:$sid,hook_event_name:"Stop",stop_hook_active:false,
+    last_assistant_message:$msg,
+    background_tasks:[{id:"prior-runtime-task",type:"subagent",status:"running",
+      description:"Wave 3 quality-reviewer",agent_type:"quality-reviewer"}],
+    session_crons:[]
+  }')"
+OMC_STOP_FEEDBACK_MODE=modern prior_pending_out="$(run_dispatch_payload \
+  "${prior_pending_payload}")"
+assert_not_contains "dead wait never resumes a prior-objective agent" \
+  "prior-native" "${prior_pending_out}"
+assert_contains "prior-objective same-role task cannot validate current wait" \
+  "no live background wake source matching the promised worker" \
+  "${prior_pending_out}"
+
+seed_ready wait_foreign_interval
+jq '. + {ulw_enforcement_active:"1",ulw_enforcement_generation:"2"}' \
+  "${STATE_ROOT}/wait_foreign_interval/session_state.json" \
+  >"${STATE_ROOT}/wait_foreign_interval/session_state.json.tmp"
+mv "${STATE_ROOT}/wait_foreign_interval/session_state.json.tmp" \
+  "${STATE_ROOT}/wait_foreign_interval/session_state.json"
+foreign_interval_objective_ts="$(jq -r '.review_cycle_prompt_ts' \
+  "${STATE_ROOT}/wait_foreign_interval/session_state.json")"
+jq -nc --argjson objective_ts "${foreign_interval_objective_ts}" '{
+  agent_type:"quality-reviewer",native_agent_id:"old-interval-native",ts:1,
+  review_dispatch_abandoned:false,objective_cycle_id:1,
+  objective_prompt_ts:$objective_ts,review_revision:1,
+  ulw_enforcement_generation:"1"
+}' >"${STATE_ROOT}/wait_foreign_interval/pending_agents.jsonl"
+foreign_interval_payload="$(jq -nc --arg sid wait_foreign_interval \
+  --arg msg "${canonical_wait}" '{
+    session_id:$sid,hook_event_name:"Stop",stop_hook_active:false,
+    last_assistant_message:$msg,
+    background_tasks:[{id:"old-interval-native",type:"subagent",
+      status:"running",description:"Wave 3 quality-reviewer",
+      agent_type:"quality-reviewer"}],session_crons:[]
+  }')"
+OMC_STOP_FEEDBACK_MODE=modern foreign_interval_out="$(run_dispatch_payload \
+  "${foreign_interval_payload}")"
+assert_contains "foreign-interval pending row cannot validate a live wait" \
+  "no live background wake source matching the promised worker" \
+  "${foreign_interval_out}"
+assert_not_contains "dead-wait recovery never resumes foreign-interval row" \
+  "old-interval-native" "${foreign_interval_out}"
+
+# Freeze a G1 Stop callback, reactivate G2 with the same objective/revision,
+# then release the old callback. Both child and parent must honor the original
+# generation snapshot: no guard, continuation, outcome, finalizer, or receipt
+# from the old payload may touch or describe G2.
+seed_ready stop_cross_interval_callback
+jq '. + {ulw_enforcement_active:"1",ulw_enforcement_generation:"1"}' \
+  "${STATE_ROOT}/stop_cross_interval_callback/session_state.json" \
+  >"${STATE_ROOT}/stop_cross_interval_callback/session_state.json.tmp"
+mv "${STATE_ROOT}/stop_cross_interval_callback/session_state.json.tmp" \
+  "${STATE_ROOT}/stop_cross_interval_callback/session_state.json"
+cross_stop_ready="${TEST_HOME}/cross-stop.ready"
+cross_stop_release="${TEST_HOME}/cross-stop.release"
+cross_stop_output="${TEST_HOME}/cross-stop.output"
+cross_stop_payload="$(stop_payload stop_cross_interval_callback \
+  "$(closeout_message 'OLD-G1-CANDIDATE')")"
+export OMC_TEST_STOP_CAPTURE_READY_FILE="${cross_stop_ready}"
+export OMC_TEST_STOP_CAPTURE_RELEASE_FILE="${cross_stop_release}"
+run_dispatch_payload "${cross_stop_payload}" >"${cross_stop_output}" 2>&1 &
+cross_stop_pid=$!
+for _cross_wait in $(seq 1 200); do
+  [[ -f "${cross_stop_ready}" ]] && break
+  sleep 0.02
+done
+if [[ -f "${cross_stop_ready}" ]]; then
+  ok
+else
+  bad "old Stop callback did not reach capture barrier"
+fi
+jq '.ulw_enforcement_generation="2"
+    | .ulw_enforcement_active="1"
+    | .session_outcome=""
+    | .closeout_dispatch_continuations="0"
+    | .stop_guard_attempt_seq="0"
+    | .bg_work_dispatched_ts="777"' \
+  "${STATE_ROOT}/stop_cross_interval_callback/session_state.json" \
+  >"${STATE_ROOT}/stop_cross_interval_callback/session_state.json.tmp"
+mv "${STATE_ROOT}/stop_cross_interval_callback/session_state.json.tmp" \
+  "${STATE_ROOT}/stop_cross_interval_callback/session_state.json"
+touch "${cross_stop_release}"
+wait "${cross_stop_pid}"
+unset OMC_TEST_STOP_CAPTURE_READY_FILE OMC_TEST_STOP_CAPTURE_RELEASE_FILE
+assert_empty "old G1 Stop callback is inert after G2 reactivation" \
+  "$(cat "${cross_stop_output}")"
+assert_empty "old G1 callback stamps no G2 terminal outcome" \
+  "$(jq -r '.session_outcome // empty' \
+    "${STATE_ROOT}/stop_cross_interval_callback/session_state.json")"
+assert_contains "G2 remains active after old callback exits" \
+  '"ulw_enforcement_active": "1"' \
+  "$(jq . "${STATE_ROOT}/stop_cross_interval_callback/session_state.json")"
+assert_contains "G2 continuation counter remains untouched" \
+  '"closeout_dispatch_continuations": "0"' \
+  "$(jq . "${STATE_ROOT}/stop_cross_interval_callback/session_state.json")"
+assert_contains "old guard increments no G2 Stop attempt sequence" \
+  '"stop_guard_attempt_seq": "0"' \
+  "$(jq . "${STATE_ROOT}/stop_cross_interval_callback/session_state.json")"
+assert_contains "old guard consumes no G2 background marker" \
+  '"bg_work_dispatched_ts": "777"' \
+  "$(jq . "${STATE_ROOT}/stop_cross_interval_callback/session_state.json")"
+
+generic_wait='⏳ Waiting on npm test — running in the background; I'"'"'ll resume automatically when it finishes. Nothing for you to do.'
+seed_ready wait_generic_live
+generic_live_payload="$(jq -nc --arg sid wait_generic_live \
+  --arg msg "${generic_wait}" '{
+    session_id:$sid,hook_event_name:"Stop",stop_hook_active:false,
+    last_assistant_message:$msg,
+    background_tasks:[{id:"shell-test",type:"shell",status:"running",
+      description:"npm test",command:"npm test"}],session_crons:[]
+  }')"
+generic_live_out="$(run_dispatch_payload "${generic_live_payload}")"
+assert_empty "generic wait correlates to its live shell task" "${generic_live_out}"
+
+seed_ready wait_generic_unrelated
+generic_unrelated_payload="$(jq -nc --arg sid wait_generic_unrelated \
+  --arg msg "${generic_wait}" '{
+    session_id:$sid,hook_event_name:"Stop",stop_hook_active:false,
+    last_assistant_message:$msg,
+    background_tasks:[{id:"shell-dev",type:"shell",status:"running",
+      description:"development server",command:"npm run dev"}],session_crons:[]
+  }')"
+OMC_STOP_FEEDBACK_MODE=modern generic_unrelated_out="$(run_dispatch_payload \
+  "${generic_unrelated_payload}")"
+assert_contains "generic wait cannot borrow an unrelated shell task" \
+  "no live background wake source matching the promised worker" \
+  "${generic_unrelated_out}"
+
+near_collision_wait='⏳ Waiting on the frontend build — running in the background; I'"'"'ll resume automatically when it finishes. Nothing for you to do.'
+seed_ready wait_generic_near_collision
+near_collision_payload="$(jq -nc --arg sid wait_generic_near_collision \
+  --arg msg "${near_collision_wait}" '{
+    session_id:$sid,hook_event_name:"Stop",stop_hook_active:false,
+    last_assistant_message:$msg,
+    background_tasks:[{id:"frontend-dev",type:"shell",status:"running",
+      description:"frontend development server",command:"npm run dev"}],
+    session_crons:[]
+  }')"
+OMC_STOP_FEEDBACK_MODE=modern near_collision_out="$(run_dispatch_payload \
+  "${near_collision_payload}")"
+assert_contains "one shared task word cannot validate generic wait" \
+  "no live background wake source matching the promised worker" \
+  "${near_collision_out}"
+
+seed_ready wait_body_role_final_shell
+body_role_message=$'quality-reviewer completed earlier.\n'"${generic_wait}"
+body_role_payload="$(jq -nc --arg sid wait_body_role_final_shell \
+  --arg msg "${body_role_message}" '{
+    session_id:$sid,hook_event_name:"Stop",stop_hook_active:false,
+    last_assistant_message:$msg,
+    background_tasks:[{id:"shell-test",type:"shell",status:"running",
+      description:"npm test",command:"npm test"}],session_crons:[]
+  }')"
+body_role_out="$(run_dispatch_payload "${body_role_payload}")"
+assert_empty "body role mention cannot override final shell wait identity" \
+  "${body_role_out}"
+
+scheduled_wait='⏳ **Waiting for the scheduled 20-minute fallback check** — this session is scheduled to wake for the next check. Nothing for you to do.'
+seed_ready wait_scheduled
+scheduled_payload="$(jq -nc --arg sid wait_scheduled --arg msg "${scheduled_wait}" '{
+  session_id:$sid,hook_event_name:"Stop",stop_hook_active:false,
+  last_assistant_message:$msg,background_tasks:[],
+  session_crons:[{id:"cron-1",schedule:"*/20 * * * *",recurring:true,
+    prompt:"fallback check"}]
+}')"
+scheduled_out="$(run_dispatch_payload "${scheduled_payload}")"
+assert_empty "compatible scheduled wake is a nonterminal wait" "${scheduled_out}"
+assert_empty "scheduled wait consumes no continuation slot" \
+  "$(jq -r '.closeout_dispatch_continuations // empty' \
+    "${STATE_ROOT}/wait_scheduled/session_state.json")"
+
+seed_ready wait_scheduled_empty
+scheduled_empty_payload="$(jq -nc --arg sid wait_scheduled_empty \
+  --arg msg "${scheduled_wait}" '{
+    session_id:$sid,hook_event_name:"Stop",stop_hook_active:false,
+    last_assistant_message:$msg,background_tasks:[],session_crons:[]
+  }')"
+OMC_STOP_FEEDBACK_MODE=modern scheduled_empty_out="$(run_dispatch_payload \
+  "${scheduled_empty_payload}")"
+assert_contains "missing scheduled wake gets schedule-specific recovery" \
+  "no scheduled wake matching the promised check" \
+  "${scheduled_empty_out}"
+assert_not_contains "scheduled recovery never resumes an unrelated worker" \
+  "SendMessage" "${scheduled_empty_out}"
+
+seed_ready wait_scheduled_unrelated
+scheduled_unrelated_payload="$(jq -nc --arg sid wait_scheduled_unrelated \
+  --arg msg "${scheduled_wait}" '{
+    session_id:$sid,hook_event_name:"Stop",stop_hook_active:false,
+    last_assistant_message:$msg,background_tasks:[],
+    session_crons:[{id:"weekly-report",schedule:"0 9 * * 1",recurring:true,
+      prompt:"publish weekly revenue report"}]
+  }')"
+OMC_STOP_FEEDBACK_MODE=modern scheduled_unrelated_out="$(run_dispatch_payload \
+  "${scheduled_unrelated_payload}")"
+assert_contains "unrelated cron cannot validate a scheduled wait" \
+  "no scheduled wake matching the promised check" \
+  "${scheduled_unrelated_out}"
+
+seed_ready wait_scheduled_near_collision
+scheduled_near_payload="$(jq -nc --arg sid wait_scheduled_near_collision \
+  --arg msg "${scheduled_wait}" '{
+    session_id:$sid,hook_event_name:"Stop",stop_hook_active:false,
+    last_assistant_message:$msg,background_tasks:[],
+    session_crons:[{id:"deploy-fallback",schedule:"*/20 * * * *",
+      recurring:true,prompt:"fallback deployment"}]
+  }')"
+OMC_STOP_FEEDBACK_MODE=modern scheduled_near_out="$(run_dispatch_payload \
+  "${scheduled_near_payload}")"
+assert_contains "single shared cron word cannot validate scheduled wait" \
+  "no scheduled wake matching the promised check" \
+  "${scheduled_near_out}"
+
+seed_ready wait_cron_not_task
+cron_not_task_payload="$(jq -nc --arg sid wait_cron_not_task \
+  --arg msg "${canonical_wait}" '{
+    session_id:$sid,hook_event_name:"Stop",stop_hook_active:false,
+    last_assistant_message:$msg,background_tasks:[],
+    session_crons:[{id:"cron-1",schedule:"*/20 * * * *",recurring:true,
+      prompt:"fallback check"}]
+  }')"
+OMC_STOP_FEEDBACK_MODE=modern cron_not_task_out="$(run_dispatch_payload \
+  "${cron_not_task_payload}")"
+assert_contains "cron cannot validate a background completion promise" \
+  "no live background wake source" "${cron_not_task_out}"
+
+# Omitted fields mean old-client/unknown, not authoritative emptiness. The
+# normal closeout guard may still continue, but it must not claim the task is
+# dead. Conversely, a completion report with live tasks is never a wait claim
+# and still traverses the ordinary quality gates.
+seed_ready wait_legacy_unknown
+legacy_wait_payload="$(jq -nc --arg sid wait_legacy_unknown --arg msg "${canonical_wait}" '{
+  session_id:$sid,hook_event_name:"Stop",stop_hook_active:false,
+  last_assistant_message:$msg
+}')"
+legacy_wait_out="$(run_dispatch_payload "${legacy_wait_payload}")"
+assert_not_contains "absent runtime registry is not asserted dead" \
+  "no live background wake source" "${legacy_wait_out}"
+
+seed_ready wait_malformed_unknown
+malformed_wait_payload="$(jq -nc --arg sid wait_malformed_unknown \
+  --arg msg "${canonical_wait}" '{
+    session_id:$sid,hook_event_name:"Stop",stop_hook_active:false,
+    last_assistant_message:$msg,background_tasks:[{status:null}],session_crons:[]
+  }')"
+malformed_wait_out="$(run_dispatch_payload "${malformed_wait_payload}")"
+assert_not_contains "malformed runtime registry is not asserted dead" \
+  "no live background wake source" "${malformed_wait_out}"
+assert_not_contains "malformed runtime registry never takes verified WAIT bypass" \
+  "verified-live" \
+  "$(cat "${STATE_ROOT}/wait_malformed_unknown/gate_events.jsonl" 2>/dev/null || true)"
+
+seed_ready completion_with_live_task
+completion_live_payload="$(jq -nc --arg sid completion_with_live_task \
+  --arg msg "$(closeout_message)" '{
+    session_id:$sid,hook_event_name:"Stop",stop_hook_active:false,
+    last_assistant_message:$msg,
+    background_tasks:[{id:"shell-1",type:"shell",status:"running",
+      description:"npm test",command:"npm test"}],session_crons:[]
+  }')"
+completion_live_out="$(run_dispatch_payload "${completion_live_payload}")"
+assert_contains "live task cannot turn completion prose into a WAIT bypass" \
+  "closeout check" "${completion_live_out}"
 
 # Auto mode follows the Claude Code runtime boundary: 2.1.162 needs the
 # compatibility decision:block form, while 2.1.163 supports non-error Stop

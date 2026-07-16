@@ -139,6 +139,18 @@ run_router() {
   printf '%s' "${input}" | bash "${ROUTER_SH}" 2>&1 || true
 }
 
+run_agent_dispatch() {
+  local dispatch_sid="$1" agent_type="$2" description="$3" payload
+  payload="$(jq -nc --arg sid "${dispatch_sid}" --arg agent "${agent_type}" \
+    --arg description "${description}" '
+      {session_id:$sid,tool_name:"Agent",
+       tool_input:{subagent_type:$agent,description:$description,prompt:"review"}}
+    ')"
+  printf '%s' "${payload}" \
+    | bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/record-pending-agent.sh" \
+      2>/dev/null || true
+}
+
 # Pre-populate a session with a known contract — synthetic injection
 # must NOT overwrite these fields.
 sid="bug-a-test"
@@ -151,14 +163,24 @@ jq -nc '{
   current_objective: "fix the auth bug",
   done_contract_primary: "fix the auth bug",
   done_contract_commit_mode: "required",
-  last_user_prompt_ts: "1000"
+  last_user_prompt_ts: "1000",
+  review_cycle_id: "1",
+  review_cycle_prompt_ts: "1000",
+  last_code_edit_revision: "3",
+  plan_revision: "5",
+  has_plan: "true",
+  plan_verdict: "PLAN_READY",
+  plan_agent: "quality-planner"
 }' > "${sdir}/session_state.json"
 
-run_router '<task-notification>
+unbound_notification_out="$(run_router '<task-notification>
 <task-id>abc</task-id>
+<tool-use-id>toolu_unbound</tool-use-id>
 <status>completed</status>
 <summary>Agent X completed</summary>
-</task-notification>' "${sid}" >/dev/null
+</task-notification>' "${sid}")"
+assert_eq "unbound task notification is inert" "" \
+  "${unbound_notification_out}"
 
 # Contract must be preserved.
 assert_eq "task-notification: current_objective unchanged" "fix the auth bug" \
@@ -167,6 +189,765 @@ assert_eq "task-notification: task_intent unchanged" "execution" \
   "$(jq -r '.task_intent // ""' "${sdir}/session_state.json")"
 assert_eq "task-notification: commit_mode unchanged" "required" \
   "$(jq -r '.done_contract_commit_mode // ""' "${sdir}/session_state.json")"
+
+# Background Agent completion arrives as a synthetic UserPromptSubmit, not a
+# second PostToolUse:Agent. If a max-turn return left an exact current pending
+# reviewer without a causal outcome, this event must wake the parent with that
+# retained native ID while still preserving the user's active contract.
+jq -nc '{native_agent_id:"a-recover",agent_type:"quality-reviewer",
+  review_dispatch_id:"",ts:1001}' >"${sdir}/native_agent_bindings.jsonl"
+jq -nc '{agent_type:"quality-reviewer",native_agent_id:"a-recover",ts:1001,
+  review_dispatch_abandoned:false,objective_cycle_id:1,
+  objective_prompt_ts:1000,review_revision:3}' \
+  >"${sdir}/pending_agents.jsonl"
+recovery_notification_out="$(run_router '<task-notification>
+<task-id>a-recover</task-id>
+<tool-use-id>toolu_background_review</tool-use-id>
+<output-file>/tmp/tasks/a-recover.output</output-file>
+<status>completed</status>
+<summary>Agent "Wave 3 quality-reviewer" finished</summary>
+<note>A task-notification fires each time this agent stops.</note>
+<result>Tests pass. Let me typecheck…</result>
+<usage><subagent_tokens>123</subagent_tokens><tool_uses>8</tool_uses><duration_ms>5000</duration_ms></usage>
+</task-notification>' "${sid}")"
+recovery_notification_context="$(jq -r \
+  '.hookSpecificOutput.additionalContext // ""' \
+  <<<"${recovery_notification_out}" 2>/dev/null || true)"
+assert_contains_text "background partial notification wakes parent" \
+  "BACKGROUND REVIEW RECOVERY" "${recovery_notification_context}"
+assert_contains_text "background partial recovery names retained native ID" \
+  "a-recover" "${recovery_notification_context}"
+assert_contains_text "background partial recovery forbids passive waiting" \
+  "Do not wait" "${recovery_notification_context}"
+assert_eq "background recovery leaves active objective unchanged" \
+  "fix the auth bug" \
+  "$(jq -r '.current_objective // ""' "${sdir}/session_state.json")"
+replayed_recovery_out="$(run_router '<task-notification>
+<task-id>a-recover</task-id>
+<tool-use-id>toolu_background_review</tool-use-id>
+<status>completed</status>
+<summary>Agent "Wave 3 quality-reviewer" finished</summary>
+<result>Tests pass. Let me typecheck…</result>
+</task-notification>' "${sid}")"
+replayed_recovery_context="$(jq -r \
+  '.hookSpecificOutput.additionalContext // ""' \
+  <<<"${replayed_recovery_out}" 2>/dev/null || true)"
+assert_contains_text "exact notification replay is recognized" \
+  "DUPLICATE BACKGROUND NOTIFICATION" "${replayed_recovery_context}"
+assert_not_contains_text "exact replay does not resume twice" \
+  "Resume that exact call" "${replayed_recovery_context}"
+second_recovery_out="$(run_router '<task-notification>
+<task-id>a-recover</task-id>
+<tool-use-id>toolu_background_review_2</tool-use-id>
+<status>completed</status>
+<summary>The resumed reviewer hit another hard limit.</summary>
+</task-notification>' "${sid}")"
+second_recovery_context="$(jq -r \
+  '.hookSpecificOutput.additionalContext // ""' \
+  <<<"${second_recovery_out}" 2>/dev/null || true)"
+assert_contains_text "second background hard limit still resumes exact call" \
+  "Resume that exact call now" "${second_recovery_context}"
+third_recovery_out="$(run_router '<task-notification>
+<task-id>a-recover</task-id>
+<tool-use-id>toolu_background_review_3</tool-use-id>
+<status>completed</status>
+<summary>The reviewer hit the bounded hard limit again.</summary>
+</task-notification>' "${sid}")"
+third_recovery_context="$(jq -r \
+  '.hookSpecificOutput.additionalContext // ""' \
+  <<<"${third_recovery_out}" 2>/dev/null || true)"
+assert_contains_text "third background hard limit retires native call" \
+  "bounded parent-recovery budget is exhausted" "${third_recovery_context}"
+assert_contains_text "background exhaustion supplies exact rebind token" \
+  "[review-rebind:task-end-" "${third_recovery_context}"
+assert_not_contains_text "background exhaustion never resumes old call" \
+  "Resume that exact call now" "${third_recovery_context}"
+
+# Runtime cancellation is terminal, not another invitation to resume. Retire
+# the exact pending row with the canonical abandonment fields and steer the
+# parent toward the current gate instead of SendMessage on a dead task.
+jq -nc '{native_agent_id:"a-stopped",agent_type:"quality-reviewer",
+  review_dispatch_id:"",ts:1001}' >>"${sdir}/native_agent_bindings.jsonl"
+jq -nc '{agent_type:"quality-reviewer",native_agent_id:"a-stopped",ts:1001,
+  review_dispatch_abandoned:false,objective_cycle_id:1,
+  objective_prompt_ts:1000,review_revision:3}' \
+  >>"${sdir}/pending_agents.jsonl"
+jq -nc '{ts:1001,agent_type:"quality-reviewer",status:"accepted",
+  reason:"",verdict:"CLEAN",findings_count:0,finding_ids:"none",
+  native_agent_id:"a-stopped",objective_cycle_id:1,
+  objective_prompt_ts:1000,review_revision:3}' \
+  >>"${sdir}/agent_completion_outcomes.jsonl"
+stopped_notification_out="$(run_router '<task-notification>
+<task-id>a-stopped</task-id>
+<tool-use-id>toolu_stopped_review</tool-use-id>
+<status>stopped</status>
+<summary>Task was stopped by the runtime.</summary>
+</task-notification>' "${sid}")"
+stopped_notification_context="$(jq -r \
+  '.hookSpecificOutput.additionalContext // ""' \
+  <<<"${stopped_notification_out}" 2>/dev/null || true)"
+assert_contains_text "stopped background task is explicitly rejected" \
+  "BACKGROUND RESULT REJECTED" "${stopped_notification_context}"
+assert_contains_text "stopped task preserves terminal reason" \
+  "task-stopped" "${stopped_notification_context}"
+assert_not_contains_text "stopped task is never resumed" \
+  "Resume that exact call" "${stopped_notification_context}"
+assert_not_contains_text "stopped task never suggests SendMessage" \
+  "SendMessage" "${stopped_notification_context}"
+assert_eq "stopped pending row is tombstoned" "true" \
+  "$(jq -s -r '[.[] | select(.native_agent_id == "a-stopped")][0]
+    .review_dispatch_abandoned' "${sdir}/pending_agents.jsonl")"
+assert_eq "stopped tombstone records canonical reason" \
+  "task-stopped-notification" \
+  "$(jq -s -r '[.[] | select(.native_agent_id == "a-stopped")][0]
+    .review_dispatch_abandonment_reason' "${sdir}/pending_agents.jsonl")"
+assert_true "stopped tombstone records abandonment timestamp" \
+  "jq -se '[.[] | select(.native_agent_id == \"a-stopped\")][0]
+    .review_dispatch_abandoned_ts | type == \"number\"' \
+    \"${sdir}/pending_agents.jsonl\" >/dev/null"
+assert_eq "stopped notification consumes one same-native FIFO outcome" "0" \
+  "$(jq -s '[.[] | select(.native_agent_id == "a-stopped" and
+      (.notification_receipt // false) != true)] | length' \
+    "${sdir}/agent_completion_outcomes.jsonl")"
+
+# A valid background completion outcome is consumed by the exact notification
+# task/native ID. One native task may notify again after SendMessage, so FIFO
+# consumes one outcome per notification rather than deleting later resumptions.
+# The accepted first return is silent; the later exhausted return recovers.
+rm -f "${sdir}/pending_agents.jsonl"
+jq -nc '{ts:1002,agent_type:"quality-reviewer",status:"accepted",
+  reason:"",verdict:"CLEAN",findings_count:0,finding_ids:"none",
+  native_agent_id:"a-recover",objective_cycle_id:1,
+  objective_prompt_ts:1000,review_revision:3}' \
+  >"${sdir}/agent_completion_outcomes.jsonl"
+jq -nc '{ts:1003,agent_type:"quality-reviewer",status:"ignored",
+  reason:"terminal-contract-retry-exhausted",verdict:"UNREPORTED",
+  findings_count:0,finding_ids:"none",native_agent_id:"a-recover",
+  objective_cycle_id:1,objective_prompt_ts:1000,review_revision:3}' \
+  >>"${sdir}/agent_completion_outcomes.jsonl"
+jq -nc '{ts:1004,agent_type:"quality-reviewer",status:"accepted",
+  reason:"",verdict:"CLEAN",findings_count:0,finding_ids:"none",
+  native_agent_id:"a-other",objective_cycle_id:1,
+  objective_prompt_ts:1000,review_revision:3}' \
+  >>"${sdir}/agent_completion_outcomes.jsonl"
+accepted_notification_out="$(run_router '<task-notification>
+<task-id>a-recover</task-id>
+<tool-use-id>toolu_accepted_review</tool-use-id>
+<status>completed</status>
+<summary>Review complete.</summary>
+</task-notification>' "${sid}")"
+assert_eq "accepted background notification needs no recovery directive" "" \
+  "${accepted_notification_out}"
+assert_eq "first same-native notification leaves later and other outcomes" "2" \
+  "$(jq -s '[.[] | select((.notification_receipt // false) != true)] | length' \
+    "${sdir}/agent_completion_outcomes.jsonl")"
+assert_eq "later same-native outcome remains ordered for next notification" \
+  "terminal-contract-retry-exhausted" \
+  "$(jq -s -r '[.[] | select(.native_agent_id == "a-recover" and
+      (.notification_receipt // false) != true)][0].reason' \
+    "${sdir}/agent_completion_outcomes.jsonl")"
+accepted_replay_out="$(run_router '<task-notification>
+<task-id>a-recover</task-id>
+<tool-use-id>toolu_accepted_review</tool-use-id>
+<status>completed</status>
+<summary>Review complete.</summary>
+</task-notification>' "${sid}")"
+accepted_replay_context="$(jq -r \
+  '.hookSpecificOutput.additionalContext // ""' \
+  <<<"${accepted_replay_out}" 2>/dev/null || true)"
+assert_contains_text "accepted notification replay uses its receipt" \
+  "DUPLICATE BACKGROUND NOTIFICATION" "${accepted_replay_context}"
+assert_eq "accepted replay does not consume the next same-native outcome" "1" \
+  "$(jq -s '[.[] | select(.native_agent_id == "a-recover" and
+      (.notification_receipt // false) != true)] | length' \
+    "${sdir}/agent_completion_outcomes.jsonl")"
+
+# After the bounded retry cap, the exact background notification consumes the
+# ignored outcome and tells the parent to make a fresh dispatch, not to resume
+# the retired call. Simulate a producer killed immediately after its journal
+# rename: both exact causal rows still exist and must be rolled forward before
+# the notification receipt or replacement guidance is published.
+background_crash_row="$(jq -nc '{ts:1003,agent_type:"quality-reviewer",
+  description:"background crashed cleanup",edit_revision:3,
+  lifecycle_dispatch_id:"dispatch-background-recover",
+  code_revision:3,doc_revision:0,bash_revision:0,ui_revision:0,
+  plan_revision:0,review_revision:3,objective_prompt_ts:1000,
+  objective_prompt_revision:4,objective_cycle_id:1,
+  ulw_enforcement_generation:"migration",native_agent_id:"a-recover"}')"
+printf '%s\n' "${background_crash_row}" >"${sdir}/pending_agents.jsonl"
+printf '%s\n' "${background_crash_row}" \
+  >"${sdir}/agent_dispatch_starts.jsonl"
+background_crash_fp="$(
+  . "${COMMON_SH}"
+  _omc_token_digest "${background_crash_row}"
+)"
+jq -c --arg fp "${background_crash_fp}" '
+  if (.native_agent_id // "") == "a-recover"
+      and (.reason // "") == "terminal-contract-retry-exhausted"
+      and (.notification_receipt // false) != true
+  then . + {cleanup_journal_version:2,
+             cleanup_lifecycle_dispatch_id:
+               "dispatch-background-recover",
+             cleanup_pending_fingerprint:$fp,
+             cleanup_start_fingerprint:$fp}
+  else . end
+' "${sdir}/agent_completion_outcomes.jsonl" \
+  >"${sdir}/agent_completion_outcomes.jsonl.tmp"
+mv "${sdir}/agent_completion_outcomes.jsonl.tmp" \
+  "${sdir}/agent_completion_outcomes.jsonl"
+exhausted_notification_out="$(run_router '<task-notification>
+<task-id>a-recover</task-id>
+<tool-use-id>toolu_exhausted_review</tool-use-id>
+<status>completed</status>
+<summary>Still checking…</summary>
+</task-notification>' "${sid}")"
+exhausted_notification_context="$(jq -r \
+  '.hookSpecificOutput.additionalContext // ""' \
+  <<<"${exhausted_notification_out}" 2>/dev/null || true)"
+assert_contains_text "exhausted background call triggers fresh dispatch" \
+  "Dispatch a fresh equivalent now" "${exhausted_notification_context}"
+assert_contains_text "exhausted background call is not resumed" \
+  "Do not wait for or resume that call" "${exhausted_notification_context}"
+assert_eq "exhausted same-native outcome is retired exactly once" "0" \
+  "$(jq -s '[.[] | select(.native_agent_id == "a-recover" and
+      (.notification_receipt // false) != true)] | length' \
+    "${sdir}/agent_completion_outcomes.jsonl")"
+assert_eq "background crash journal retires exact pending row" "0" \
+  "$(jq -s 'length' "${sdir}/pending_agents.jsonl")"
+assert_eq "background crash journal retires exact start row" "0" \
+  "$(jq -s 'length' "${sdir}/agent_dispatch_starts.jsonl")"
+assert_eq "different native same-role outcome remains untouched" "1" \
+  "$(jq -s '[.[] | select(.native_agent_id == "a-other" and
+      (.notification_receipt // false) != true)] | length' \
+    "${sdir}/agent_completion_outcomes.jsonl")"
+
+# Modern task notifications carry tool-use-id. The compatibility fallback
+# hashes the complete body: an exact replay dedupes, while a genuinely distinct
+# wake for the same resumed native task consumes the next FIFO outcome.
+jq -nc '{native_agent_id:"a-no-tool-id",agent_type:"quality-reviewer",
+  review_dispatch_id:"",ts:1004}' >>"${sdir}/native_agent_bindings.jsonl"
+jq -nc '{ts:1004,agent_type:"quality-reviewer",status:"accepted",
+  reason:"",verdict:"CLEAN",findings_count:0,finding_ids:"none",
+  native_agent_id:"a-no-tool-id",objective_cycle_id:1,
+  objective_prompt_ts:1000,review_revision:3}' \
+  >>"${sdir}/agent_completion_outcomes.jsonl"
+jq -nc '{ts:1004,agent_type:"quality-reviewer",status:"ignored",
+  reason:"terminal-contract-retry-exhausted",verdict:"UNREPORTED",
+  findings_count:0,finding_ids:"none",native_agent_id:"a-no-tool-id",
+  objective_cycle_id:1,objective_prompt_ts:1000,review_revision:3}' \
+  >>"${sdir}/agent_completion_outcomes.jsonl"
+no_id_body='<task-notification>
+<task-id>a-no-tool-id</task-id>
+<status>completed</status>
+<summary>First completion without a tool ID.</summary>
+</task-notification>'
+no_id_first_out="$(run_router "${no_id_body}" "${sid}")"
+assert_eq "no-tool-id first accepted wake is silent" "" "${no_id_first_out}"
+no_id_replay_out="$(run_router "${no_id_body}" "${sid}")"
+no_id_replay_context="$(jq -r \
+  '.hookSpecificOutput.additionalContext // ""' \
+  <<<"${no_id_replay_out}" 2>/dev/null || true)"
+assert_contains_text "no-tool-id exact-body replay dedupes" \
+  "DUPLICATE BACKGROUND NOTIFICATION" "${no_id_replay_context}"
+no_id_second_out="$(run_router '<task-notification>
+<task-id>a-no-tool-id</task-id>
+<status>completed</status>
+<summary>Second completion after native resume.</summary>
+</task-notification>' "${sid}")"
+no_id_second_context="$(jq -r \
+  '.hookSpecificOutput.additionalContext // ""' \
+  <<<"${no_id_second_out}" 2>/dev/null || true)"
+assert_contains_text "distinct no-tool-id body consumes next FIFO outcome" \
+  "Dispatch a fresh equivalent now" "${no_id_second_context}"
+
+# A failed runtime wake is terminal even if a completion hook already produced
+# an outcome and removed the pending row. Reject it without emitting an empty
+# rebind token; no tombstone means a plain fresh dispatch is already admissible.
+jq -nc '{native_agent_id:"a-failed-outcome",agent_type:"quality-reviewer",
+  review_dispatch_id:"",ts:1004}' >>"${sdir}/native_agent_bindings.jsonl"
+jq -nc '{ts:1004,agent_type:"quality-reviewer",status:"accepted",
+  reason:"",verdict:"CLEAN",findings_count:0,finding_ids:"none",
+  native_agent_id:"a-failed-outcome",objective_cycle_id:1,
+  objective_prompt_ts:1000,review_revision:3}' \
+  >>"${sdir}/agent_completion_outcomes.jsonl"
+failed_outcome_out="$(run_router '<task-notification>
+<task-id>a-failed-outcome</task-id>
+<tool-use-id>toolu_failed_outcome</tool-use-id>
+<status>failed</status>
+<summary>Runtime marked this task failed.</summary>
+</task-notification>' "${sid}")"
+failed_outcome_context="$(jq -r \
+  '.hookSpecificOutput.additionalContext // ""' \
+  <<<"${failed_outcome_out}" 2>/dev/null || true)"
+assert_contains_text "failed wake with selected outcome is rejected" \
+  "native call a-failed-outcome failed" "${failed_outcome_context}"
+assert_not_contains_text "failed wake never emits an empty rebind token" \
+  "[review-rebind:]" "${failed_outcome_context}"
+assert_not_contains_text "failed wake never tells parent to resume" \
+  "Resume that exact call" "${failed_outcome_context}"
+
+# A max-turn notification with an exact bound row from an older code
+# generation must reject the raw result; it may not resume or accept evidence.
+jq -nc '{native_agent_id:"a-stale",agent_type:"quality-reviewer",
+  review_dispatch_id:"",ts:1005}' >>"${sdir}/native_agent_bindings.jsonl"
+jq -nc '{agent_type:"quality-reviewer",native_agent_id:"a-stale",ts:1005,
+  review_dispatch_abandoned:false,objective_cycle_id:1,
+  objective_prompt_ts:1000,review_revision:2}' \
+  >"${sdir}/pending_agents.jsonl"
+stale_notification_out="$(run_router '<task-notification>
+<task-id>a-stale</task-id>
+<tool-use-id>toolu_stale_review</tool-use-id>
+<status>completed</status>
+<summary>Agent "stale quality-reviewer" finished</summary>
+<result>VERDICT: CLEAN</result>
+</task-notification>' "${sid}")"
+stale_notification_context="$(jq -r \
+  '.hookSpecificOutput.additionalContext // ""' \
+  <<<"${stale_notification_out}" 2>/dev/null || true)"
+assert_contains_text "stale background result is explicitly rejected" \
+  "BACKGROUND RESULT REJECTED" "${stale_notification_context}"
+assert_contains_text "stale rejection names generation change" \
+  "review-generation-changed" "${stale_notification_context}"
+assert_not_contains_text "stale background result is never resumed" \
+  "Resume that exact call" "${stale_notification_context}"
+
+# Ignored outcomes other than retry exhaustion also need an explicit rejection
+# directive so the parent cannot treat raw notification prose as accepted.
+jq -nc '{native_agent_id:"a-ignored",agent_type:"quality-reviewer",
+  review_dispatch_id:"",ts:1006}' >>"${sdir}/native_agent_bindings.jsonl"
+jq -nc '{ts:1006,agent_type:"quality-reviewer",status:"ignored",
+  reason:"prior-objective-completion",verdict:"UNREPORTED",
+  findings_count:0,finding_ids:"none",native_agent_id:"a-ignored",
+  objective_cycle_id:0,objective_prompt_ts:1,review_revision:2}' \
+  >>"${sdir}/agent_completion_outcomes.jsonl"
+ignored_notification_out="$(run_router '<task-notification>
+<task-id>a-ignored</task-id>
+<tool-use-id>toolu_ignored_review</tool-use-id>
+<status>completed</status>
+<summary>Agent "old quality-reviewer" finished</summary>
+<result>VERDICT: CLEAN</result>
+</task-notification>' "${sid}")"
+ignored_notification_context="$(jq -r \
+  '.hookSpecificOutput.additionalContext // ""' \
+  <<<"${ignored_notification_out}" 2>/dev/null || true)"
+assert_contains_text "ignored background outcome is explicitly rejected" \
+  "BACKGROUND RESULT REJECTED" "${ignored_notification_context}"
+assert_contains_text "ignored rejection preserves causal reason" \
+  "prior-objective-completion" "${ignored_notification_context}"
+
+jq -nc '{native_agent_id:"a-accepted-stale",agent_type:"quality-reviewer",
+  review_dispatch_id:"",ts:1007}' >>"${sdir}/native_agent_bindings.jsonl"
+jq -nc '{ts:1007,agent_type:"quality-reviewer",status:"accepted",
+  reason:"",verdict:"CLEAN",findings_count:0,finding_ids:"none",
+  native_agent_id:"a-accepted-stale",objective_cycle_id:1,
+  objective_prompt_ts:1000,review_revision:2}' \
+  >>"${sdir}/agent_completion_outcomes.jsonl"
+accepted_stale_out="$(run_router '<task-notification>
+<task-id>a-accepted-stale</task-id>
+<tool-use-id>toolu_accepted_stale</tool-use-id>
+<status>completed</status>
+<summary>Agent "stale accepted quality-reviewer" finished</summary>
+<result>VERDICT: CLEAN</result>
+</task-notification>' "${sid}")"
+accepted_stale_context="$(jq -r \
+  '.hookSpecificOutput.additionalContext // ""' \
+  <<<"${accepted_stale_out}" 2>/dev/null || true)"
+assert_contains_text "accepted-but-stale outcome is explicitly rejected" \
+  "BACKGROUND RESULT REJECTED" "${accepted_stale_context}"
+assert_contains_text "accepted-but-stale rejection names currentness" \
+  "no longer matches the current objective" "${accepted_stale_context}"
+
+# Event receipts are platform identities, not enforcement-interval identities.
+# A queued replay after /ulw-off -> /ulw must not consume a current-generation
+# outcome, while a new wake for the resumed native task may consume it.
+generation_sid="task-notification-generation"
+generation_dir="${STATE_ROOT}/${generation_sid}"
+mkdir -p "${generation_dir}"
+jq -nc '{workflow_mode:"ultrawork",ulw_enforcement_active:"1",
+  ulw_enforcement_generation:"1",review_cycle_id:"1",
+  review_cycle_prompt_ts:"3000",last_user_prompt_ts:"3000",
+  last_code_edit_revision:"3",edit_revision:"3",plan_revision:"0"}' \
+  >"${generation_dir}/session_state.json"
+jq -nc '{native_agent_id:"a-generation",agent_type:"quality-reviewer",
+  review_dispatch_id:"",ts:3000}' \
+  >"${generation_dir}/native_agent_bindings.jsonl"
+jq -nc '{ts:3000,agent_type:"quality-reviewer",status:"accepted",
+  reason:"",verdict:"CLEAN",findings_count:0,finding_ids:"none",
+  native_agent_id:"a-generation",objective_cycle_id:1,
+  objective_prompt_ts:3000,review_revision:3,
+  ulw_enforcement_generation:"1"}' \
+  >"${generation_dir}/agent_completion_outcomes.jsonl"
+jq -nc '{ts:3001,agent_type:"quality-reviewer",status:"ignored",
+  reason:"terminal-contract-retry-exhausted",verdict:"UNREPORTED",
+  findings_count:0,finding_ids:"none",native_agent_id:"a-generation",
+  objective_cycle_id:1,objective_prompt_ts:3000,review_revision:3,
+  ulw_enforcement_generation:"2"}' \
+  >>"${generation_dir}/agent_completion_outcomes.jsonl"
+generation_event='<task-notification>
+<task-id>a-generation</task-id>
+<tool-use-id>toolu_generation_event</tool-use-id>
+<status>completed</status>
+<summary>Generation-one completion.</summary>
+</task-notification>'
+assert_eq "generation-one accepted wake is silent" "" \
+  "$(run_router "${generation_event}" "${generation_sid}")"
+jq '.ulw_enforcement_generation = "2"' \
+  "${generation_dir}/session_state.json" \
+  >"${generation_dir}/session_state.json.tmp"
+mv "${generation_dir}/session_state.json.tmp" \
+  "${generation_dir}/session_state.json"
+generation_replay_out="$(run_router "${generation_event}" \
+  "${generation_sid}")"
+generation_replay_context="$(jq -r \
+  '.hookSpecificOutput.additionalContext // ""' \
+  <<<"${generation_replay_out}" 2>/dev/null || true)"
+assert_contains_text "cross-generation replay remains a duplicate" \
+  "DUPLICATE BACKGROUND NOTIFICATION" "${generation_replay_context}"
+assert_eq "cross-generation replay leaves current outcome unconsumed" "1" \
+  "$(jq -s '[.[] | select(.native_agent_id == "a-generation" and
+      (.notification_receipt // false) != true)] | length' \
+    "${generation_dir}/agent_completion_outcomes.jsonl")"
+generation_second_out="$(run_router '<task-notification>
+<task-id>a-generation</task-id>
+<tool-use-id>toolu_generation_event_2</tool-use-id>
+<status>completed</status>
+<summary>Generation-two completion.</summary>
+</task-notification>' "${generation_sid}")"
+generation_second_context="$(jq -r \
+  '.hookSpecificOutput.additionalContext // ""' \
+  <<<"${generation_second_out}" 2>/dev/null || true)"
+assert_contains_text "new generation wake consumes current FIFO outcome" \
+  "Dispatch a fresh equivalent now" "${generation_second_context}"
+
+# More adversarial ordering: the generation-one event is delivered for the
+# first time only after generation two is active and has already produced a
+# later same-native outcome. FIFO must consume/reject the old row, never steal
+# the newer outcome merely because it matches the captured generation.
+delayed_sid="task-notification-delayed-first-delivery"
+delayed_dir="${STATE_ROOT}/${delayed_sid}"
+mkdir -p "${delayed_dir}"
+jq -nc '{workflow_mode:"ultrawork",ulw_enforcement_active:"1",
+  ulw_enforcement_generation:"2",review_cycle_id:"1",
+  review_cycle_prompt_ts:"3100",last_user_prompt_ts:"3100",
+  last_code_edit_revision:"3",edit_revision:"3",plan_revision:"0"}' \
+  >"${delayed_dir}/session_state.json"
+jq -nc '{native_agent_id:"a-delayed",agent_type:"quality-reviewer",
+  review_dispatch_id:"",ts:3100}' \
+  >"${delayed_dir}/native_agent_bindings.jsonl"
+jq -nc '{ts:3099,agent_type:"quality-reviewer",status:"accepted",
+  reason:"",verdict:"CLEAN",findings_count:0,finding_ids:"none",
+  native_agent_id:"a-delayed",objective_cycle_id:1,
+  objective_prompt_ts:3100,review_revision:3,
+  ulw_enforcement_generation:"1"}' \
+  >"${delayed_dir}/agent_completion_outcomes.jsonl"
+jq -nc '{ts:3100,agent_type:"quality-reviewer",status:"ignored",
+  reason:"terminal-contract-retry-exhausted",verdict:"UNREPORTED",
+  findings_count:0,finding_ids:"none",native_agent_id:"a-delayed",
+  objective_cycle_id:1,objective_prompt_ts:3100,review_revision:3,
+  ulw_enforcement_generation:"2"}' \
+  >>"${delayed_dir}/agent_completion_outcomes.jsonl"
+delayed_first_out="$(run_router '<task-notification>
+<task-id>a-delayed</task-id>
+<tool-use-id>toolu_delayed_gen1</tool-use-id>
+<status>completed</status>
+<summary>Delayed generation-one notification.</summary>
+</task-notification>' "${delayed_sid}")"
+delayed_first_context="$(jq -r \
+  '.hookSpecificOutput.additionalContext // ""' \
+  <<<"${delayed_first_out}" 2>/dev/null || true)"
+assert_contains_text "delayed old first delivery is rejected" \
+  "closed oh-my-claude enforcement interval" "${delayed_first_context}"
+assert_eq "delayed old wake leaves only generation-two outcome" "2" \
+  "$(jq -s -r '[.[] | select((.notification_receipt // false) != true)][0]
+    .ulw_enforcement_generation' \
+    "${delayed_dir}/agent_completion_outcomes.jsonl")"
+delayed_second_out="$(run_router '<task-notification>
+<task-id>a-delayed</task-id>
+<tool-use-id>toolu_delayed_gen2</tool-use-id>
+<status>completed</status>
+<summary>Generation-two notification.</summary>
+</task-notification>' "${delayed_sid}")"
+delayed_second_context="$(jq -r \
+  '.hookSpecificOutput.additionalContext // ""' \
+  <<<"${delayed_second_out}" 2>/dev/null || true)"
+assert_contains_text "next distinct wake consumes generation-two outcome" \
+  "Dispatch a fresh equivalent now" "${delayed_second_context}"
+
+# If that delayed old wake arrives while a validated current same-native row is
+# live, preserve it and forbid a duplicate dispatch based on the stale event.
+preserved_sid="task-notification-preserved-current"
+preserved_dir="${STATE_ROOT}/${preserved_sid}"
+mkdir -p "${preserved_dir}"
+jq -nc '{workflow_mode:"ultrawork",ulw_enforcement_active:"1",
+  ulw_enforcement_generation:"2",review_cycle_id:"1",
+  review_cycle_prompt_ts:"3200",last_user_prompt_ts:"3200",
+  last_code_edit_revision:"3",edit_revision:"3",plan_revision:"0"}' \
+  >"${preserved_dir}/session_state.json"
+jq -nc '{native_agent_id:"a-preserved",agent_type:"quality-reviewer",
+  review_dispatch_id:"",ts:3200}' \
+  >"${preserved_dir}/native_agent_bindings.jsonl"
+jq -nc '{ts:3199,agent_type:"quality-reviewer",status:"accepted",
+  reason:"",verdict:"CLEAN",findings_count:0,finding_ids:"none",
+  native_agent_id:"a-preserved",objective_cycle_id:1,
+  objective_prompt_ts:3200,review_revision:3,
+  ulw_enforcement_generation:"1"}' \
+  >"${preserved_dir}/agent_completion_outcomes.jsonl"
+jq -nc '{agent_type:"quality-reviewer",native_agent_id:"a-preserved",
+  ts:3200,review_dispatch_abandoned:false,objective_cycle_id:1,
+  objective_prompt_ts:3200,review_revision:3,
+  ulw_enforcement_generation:"2"}' \
+  >"${preserved_dir}/pending_agents.jsonl"
+preserved_out="$(run_router '<task-notification>
+<task-id>a-preserved</task-id>
+<tool-use-id>toolu_preserved_old</tool-use-id>
+<status>completed</status>
+<summary>Delayed old wake while resumed task is current.</summary>
+</task-notification>' "${preserved_sid}")"
+preserved_context="$(jq -r \
+  '.hookSpecificOutput.additionalContext // ""' \
+  <<<"${preserved_out}" 2>/dev/null || true)"
+assert_contains_text "delayed wake preserves current native task" \
+  "current-interval row for that same native task remains pending" \
+  "${preserved_context}"
+assert_contains_text "delayed wake forbids duplicate dispatch" \
+  "Do not integrate the old result, rebind, or dispatch a duplicate" \
+  "${preserved_context}"
+assert_eq "current same-native pending row remains live" "false" \
+  "$(jq -r '.review_dispatch_abandoned // false' \
+    "${preserved_dir}/pending_agents.jsonl")"
+
+# The preservation branch is deliberately after every validity check. An
+# abandoned, revision-stale, or actively settling current-generation row may
+# share the native ID, but none may be advertised as a validated live task.
+for invalid_kind in abandoned stale claimed expired effects; do
+  invalid_sid="task-notification-invalid-current-${invalid_kind}"
+  invalid_dir="${STATE_ROOT}/${invalid_sid}"
+  mkdir -p "${invalid_dir}"
+  jq -nc '{workflow_mode:"ultrawork",ulw_enforcement_active:"1",
+    ulw_enforcement_generation:"2",review_cycle_id:"1",
+    review_cycle_prompt_ts:"3250",last_user_prompt_ts:"3250",
+    last_code_edit_revision:"3",edit_revision:"3",plan_revision:"0"}' \
+    >"${invalid_dir}/session_state.json"
+  jq -nc --arg id "a-invalid-${invalid_kind}" \
+    '{native_agent_id:$id,agent_type:"quality-reviewer",
+      review_dispatch_id:"",ts:3250}' \
+    >"${invalid_dir}/native_agent_bindings.jsonl"
+  jq -nc --arg id "a-invalid-${invalid_kind}" \
+    '{ts:3249,agent_type:"quality-reviewer",status:"accepted",
+      reason:"",verdict:"CLEAN",findings_count:0,finding_ids:"none",
+      native_agent_id:$id,objective_cycle_id:1,
+      objective_prompt_ts:3250,review_revision:3,
+      ulw_enforcement_generation:"1"}' \
+    >"${invalid_dir}/agent_completion_outcomes.jsonl"
+  jq -nc --arg id "a-invalid-${invalid_kind}" --arg kind "${invalid_kind}" \
+    --argjson claim_now "$(date +%s)" '
+    {agent_type:"quality-reviewer",native_agent_id:$id,ts:3250,
+     review_dispatch_abandoned:($kind == "abandoned"),
+     objective_cycle_id:1,objective_prompt_ts:3250,
+     review_revision:(if $kind == "stale" then 2 else 3 end),
+     ulw_enforcement_generation:"2"}
+    + if ($kind == "claimed" or $kind == "expired" or $kind == "effects") then {
+        completion_claim_id:("completion-" + $kind),
+        completion_claim_ts:(if $kind == "expired" then 1 else $claim_now end),
+        completion_claim_effects_complete:($kind == "effects")
+      } else {} end
+  ' >"${invalid_dir}/pending_agents.jsonl"
+  invalid_out="$(run_router "<task-notification>
+<task-id>a-invalid-${invalid_kind}</task-id>
+<tool-use-id>toolu_invalid_${invalid_kind}</tool-use-id>
+<status>completed</status>
+<summary>Delayed old wake beside invalid current row.</summary>
+</task-notification>" "${invalid_sid}")"
+  invalid_context="$(jq -r \
+    '.hookSpecificOutput.additionalContext // ""' \
+    <<<"${invalid_out}" 2>/dev/null || true)"
+  assert_not_contains_text "${invalid_kind} row is never called validated current" \
+    "separately validated current-interval row" "${invalid_context}"
+  if [[ "${invalid_kind}" == "claimed" ]]; then
+    assert_contains_text "settling claim forbids a duplicate dispatch" \
+      "Do not integrate the old result, resume, rebind, or dispatch a duplicate" \
+      "${invalid_context}"
+  elif [[ "${invalid_kind}" == "expired" ]]; then
+    assert_contains_text "expired claim is not described as settling" \
+      "expired incomplete completion claim" "${invalid_context}"
+  elif [[ "${invalid_kind}" == "effects" ]]; then
+    assert_contains_text "effects-complete claim is not described as settling" \
+      "completion effects were already recorded" "${invalid_context}"
+  else
+    assert_contains_text "${invalid_kind} current row produces rejection" \
+      "BACKGROUND RESULT REJECTED" "${invalid_context}"
+  fi
+  case "${invalid_kind}" in
+    abandoned|stale|expired)
+      invalid_rebind_id="$(printf '%s' "${invalid_context}" \
+        | sed -n 's/.*\[review-rebind:\([^]]*\)\].*/\1/p')"
+      assert_true "${invalid_kind} rejection exposes a rebind ID" \
+        "[[ -n \"${invalid_rebind_id}\" ]]"
+      assert_eq "${invalid_kind} exact rebound dispatch is admitted" "" \
+        "$(run_agent_dispatch "${invalid_sid}" "quality-reviewer" \
+          "[review-rebind:${invalid_rebind_id}] replace invalid current row")"
+      ;;
+  esac
+done
+
+# A hard-cap return can have no outcome because SubagentStop never fired. An
+# exact old-interval pending row must still reject the raw notification rather
+# than disappearing as unrelated input or being resumed in the new interval.
+jq -nc '{native_agent_id:"a-foreign-pending",
+  agent_type:"quality-reviewer",review_dispatch_id:"",ts:3002}' \
+  >>"${generation_dir}/native_agent_bindings.jsonl"
+jq -nc '{agent_type:"quality-reviewer",native_agent_id:"a-foreign-pending",
+  ts:3002,review_dispatch_abandoned:false,objective_cycle_id:1,
+  objective_prompt_ts:3000,review_revision:3,
+  ulw_enforcement_generation:"1"}' \
+  >"${generation_dir}/pending_agents.jsonl"
+foreign_pending_out="$(run_router '<task-notification>
+<task-id>a-foreign-pending</task-id>
+<tool-use-id>toolu_foreign_pending</tool-use-id>
+<status>completed</status>
+<summary>Late old-interval max-turn return.</summary>
+</task-notification>' "${generation_sid}")"
+foreign_pending_context="$(jq -r \
+  '.hookSpecificOutput.additionalContext // ""' \
+  <<<"${foreign_pending_out}" 2>/dev/null || true)"
+assert_contains_text "foreign-generation pending return is rejected" \
+  "BACKGROUND RESULT REJECTED" "${foreign_pending_context}"
+assert_contains_text "foreign pending rejection names interval change" \
+  "enforcement-interval-changed" "${foreign_pending_context}"
+assert_not_contains_text "foreign pending return is never resumed" \
+  "Resume that exact call" "${foreign_pending_context}"
+assert_eq "foreign pending row becomes an audit tombstone" "true" \
+  "$(jq -r '.review_dispatch_abandoned // false' \
+    "${generation_dir}/pending_agents.jsonl")"
+assert_eq "foreign tombstone records interval-ended reason" \
+  "enforcement-interval-task-ended" \
+  "$(jq -r '.review_dispatch_abandonment_reason // ""' \
+    "${generation_dir}/pending_agents.jsonl")"
+foreign_rebind_id="$(printf '%s' "${foreign_pending_context}" \
+  | sed -n 's/.*\[review-rebind:\([^]]*\)\].*/\1/p')"
+assert_true "foreign pending rejection exposes a parseable rebind ID" \
+  "[[ -n \"${foreign_rebind_id}\" ]]"
+assert_eq "foreign pending exact rebound dispatch is admitted" "" \
+  "$(run_agent_dispatch "${generation_sid}" "quality-reviewer" \
+    "[review-rebind:${foreign_rebind_id}] replace ended old interval")"
+assert_eq "rebound dispatch targets current enforcement generation" "2" \
+  "$(jq -s -r '[.[] | select(
+      (.review_dispatch_abandoned // false) != true)][0]
+      .ulw_enforcement_generation' \
+    "${generation_dir}/pending_agents.jsonl")"
+
+# Once enforcement is inactive, a late notification is wholly inert and must
+# not consume the outcome that belongs to the closed interval.
+inactive_sid="task-notification-inactive"
+inactive_dir="${STATE_ROOT}/${inactive_sid}"
+mkdir -p "${inactive_dir}"
+jq -nc '{workflow_mode:"ultrawork",ulw_enforcement_active:"0",
+  ulw_enforcement_generation:"7",session_outcome:"released",
+  review_cycle_id:"1",review_cycle_prompt_ts:"4000",
+  last_user_prompt_ts:"4000",last_code_edit_revision:"3"}' \
+  >"${inactive_dir}/session_state.json"
+jq -nc '{native_agent_id:"a-inactive",agent_type:"quality-reviewer",
+  review_dispatch_id:"",ts:4000}' \
+  >"${inactive_dir}/native_agent_bindings.jsonl"
+jq -nc '{ts:4000,agent_type:"quality-reviewer",status:"ignored",
+  reason:"terminal-contract-retry-exhausted",verdict:"UNREPORTED",
+  findings_count:0,finding_ids:"none",native_agent_id:"a-inactive",
+  objective_cycle_id:1,objective_prompt_ts:4000,review_revision:3,
+  ulw_enforcement_generation:"7"}' \
+  >"${inactive_dir}/agent_completion_outcomes.jsonl"
+inactive_out="$(run_router '<task-notification>
+<task-id>a-inactive</task-id>
+<tool-use-id>toolu_inactive</tool-use-id>
+<status>completed</status>
+<summary>Late completion after release.</summary>
+</task-notification>' "${inactive_sid}")"
+assert_eq "inactive-interval notification is inert" "" "${inactive_out}"
+assert_eq "inactive notification does not consume closed-interval outcome" \
+  "1" "$(jq -s 'length' \
+    "${inactive_dir}/agent_completion_outcomes.jsonl")"
+
+# Pending retry/retirement and the one-shot outcome receipt publish as one
+# recoverable transaction. A receipt-stage failure restores the exact pending
+# bytes and still gives the parent conservative no-wait guidance.
+receipt_fail_sid="task-notification-receipt-failure"
+receipt_fail_dir="${STATE_ROOT}/${receipt_fail_sid}"
+mkdir -p "${receipt_fail_dir}"
+jq -nc '{workflow_mode:"ultrawork",review_cycle_id:"1",
+  review_cycle_prompt_ts:"4100",last_user_prompt_ts:"4100",
+  last_code_edit_revision:"3",edit_revision:"3",plan_revision:"0"}' \
+  >"${receipt_fail_dir}/session_state.json"
+jq -nc '{native_agent_id:"a-receipt-fail",agent_type:"quality-reviewer",
+  review_dispatch_id:"",ts:4100}' \
+  >"${receipt_fail_dir}/native_agent_bindings.jsonl"
+jq -nc '{agent_type:"quality-reviewer",native_agent_id:"a-receipt-fail",
+  ts:4100,review_dispatch_abandoned:false,objective_cycle_id:1,
+  objective_prompt_ts:4100,review_revision:3}' \
+  >"${receipt_fail_dir}/pending_agents.jsonl"
+export OMC_TEST_TASK_NOTIFICATION_FAIL_RECEIPT=1
+receipt_fail_out="$(run_router '<task-notification>
+<task-id>a-receipt-fail</task-id>
+<tool-use-id>toolu_receipt_fail</tool-use-id>
+<status>completed</status>
+<summary>Hard-limit completion whose receipt publication fails.</summary>
+</task-notification>' "${receipt_fail_sid}")"
+unset OMC_TEST_TASK_NOTIFICATION_FAIL_RECEIPT
+receipt_fail_context="$(jq -r \
+  '.hookSpecificOutput.additionalContext // ""' \
+  <<<"${receipt_fail_out}" 2>/dev/null || true)"
+assert_contains_text "receipt failure surfaces conservative recovery" \
+  "BACKGROUND RECOVERY DEGRADED" "${receipt_fail_context}"
+assert_contains_text "receipt failure forbids passive wait" \
+  "Do not integrate the raw result or wait for another copy" \
+  "${receipt_fail_context}"
+assert_eq "receipt failure rolls back retry counter" "0" \
+  "$(jq -r '.terminal_contract_retry_count // 0' \
+    "${receipt_fail_dir}/pending_agents.jsonl")"
+assert_eq "receipt failure keeps exact pending row live" "false" \
+  "$(jq -r '.review_dispatch_abandoned // false' \
+    "${receipt_fail_dir}/pending_agents.jsonl")"
+assert_false "receipt failure commits no receipt ledger" \
+  "[[ -e \"${receipt_fail_dir}/agent_completion_outcomes.jsonl\" ]]"
+
+# PLAN_READY is the one accepted outcome whose dedicated recorder advances its
+# own freshness generation: dispatch N publishes plan revision N+1. The task
+# notification is current only when the committed plan state proves that exact
+# transition and agent.
+jq -nc '{native_agent_id:"a-plan-ready",agent_type:"quality-planner",
+  review_dispatch_id:"",ts:1008}' >>"${sdir}/native_agent_bindings.jsonl"
+jq -nc '{ts:1008,agent_type:"quality-planner",status:"accepted",
+  reason:"",verdict:"PLAN_READY",findings_count:0,finding_ids:"none",
+  native_agent_id:"a-plan-ready",objective_cycle_id:1,
+  objective_prompt_ts:1000,review_revision:4}' \
+  >>"${sdir}/agent_completion_outcomes.jsonl"
+plan_ready_notification_out="$(run_router '<task-notification>
+<task-id>a-plan-ready</task-id>
+<tool-use-id>toolu_plan_ready</tool-use-id>
+<status>completed</status>
+<summary>Agent "quality-planner" finished</summary>
+<result>VERDICT: PLAN_READY</result>
+</task-notification>' "${sid}")"
+assert_eq "committed PLAN_READY N-to-N+1 notification is current" "" \
+  "${plan_ready_notification_out}"
+
+jq -nc '{native_agent_id:"a-plan-unpublished",agent_type:"quality-planner",
+  review_dispatch_id:"",ts:1009}' >>"${sdir}/native_agent_bindings.jsonl"
+jq -nc '{ts:1009,agent_type:"quality-planner",status:"accepted",
+  reason:"",verdict:"PLAN_READY",findings_count:0,finding_ids:"none",
+  native_agent_id:"a-plan-unpublished",objective_cycle_id:1,
+  objective_prompt_ts:1000,review_revision:5}' \
+  >>"${sdir}/agent_completion_outcomes.jsonl"
+plan_unpublished_out="$(run_router '<task-notification>
+<task-id>a-plan-unpublished</task-id>
+<tool-use-id>toolu_plan_unpublished</tool-use-id>
+<status>completed</status>
+<summary>Agent "quality-planner" finished</summary>
+<result>VERDICT: PLAN_READY</result>
+</task-notification>' "${sid}")"
+plan_unpublished_context="$(jq -r \
+  '.hookSpecificOutput.additionalContext // ""' \
+  <<<"${plan_unpublished_out}" 2>/dev/null || true)"
+assert_contains_text "unpublished PLAN_READY outcome is rejected" \
+  "BACKGROUND RESULT REJECTED" "${plan_unpublished_context}"
 
 # A real user prompt re-fired must update — verify the contrast with
 # the synthetic case above. Set workflow_mode so the router's ULW

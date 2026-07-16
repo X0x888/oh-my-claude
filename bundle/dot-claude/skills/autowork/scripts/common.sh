@@ -3539,6 +3539,19 @@ capture_ulw_enforcement_interval() {
   _OMC_ULW_CAPTURED_GENERATION="${_OMC_ULW_CAPTURED_GENERATION:-migration}"
 }
 
+# Compare only the monotonic enforcement interval, not active/inactive state.
+# Stop certification legitimately flips `ulw_enforcement_active` to 0 before
+# accepted finalizers run, but an old callback must never cross a later
+# release/reactivation generation and mutate that new interval.
+omc_enforcement_generation_matches_capture() {
+  local current_generation
+  [[ -n "${_OMC_ULW_CAPTURED_GENERATION+x}" ]] || return 0
+  current_generation="$(read_state "ulw_enforcement_generation" \
+    2>/dev/null || true)"
+  current_generation="${current_generation:-migration}"
+  [[ "${current_generation}" == "${_OMC_ULW_CAPTURED_GENERATION}" ]]
+}
+
 # Atomic state mutation for lifecycle callbacks. The outer fast-path check
 # avoids work for ordinary sessions; this under-lock check closes the release
 # race where a callback passed that check, waited behind Stop, then wrote fresh
@@ -8506,17 +8519,12 @@ format_gate_recovery_options() {
 format_gate_block_dual() {
   local human_summary="${1:-}"
   local model_prose="${2:-}"
-  # v1.46-pre: when a background dispatch is in flight this turn (the
-  # stop-guard sets _OMC_BG_WORK_PENDING_NOTE after detecting
-  # bg_work_dispatched_ts), append a conditional waiting note so a block
-  # that fires while the agent is waiting on background work does not read
-  # as a premature stop. Purely additive to the message text — the gate's
-  # block/release decision is unchanged (no bypass). Conditional phrasing
-  # keeps a false positive (the marker string appearing in tool output)
-  # harmless: it only speaks to the reader IF they are in fact waiting.
+  # The stop-guard sets this flag only when the Stop payload still reports a
+  # live task (or on the explicit old-client marker fallback). Purely additive
+  # to message text: the gate's block/release decision is unchanged.
   local bg_note=""
   if [[ -n "${_OMC_BG_WORK_PENDING_NOTE:-}" ]]; then
-    bg_note=$'\n\n'"⏳ If you dispatched background work and are waiting on it, this block is expected — you'll be re-invoked when it completes; nothing to do."
+    bg_note=$'\n\n'"⏳ Claude Code still reports live background work; this block is expected, and its completion notification will resume the session automatically."
   fi
   # v1.47 (product-lens F6): the /ulw-skip escape hatch belongs in the HUMAN
   # half of every blocking gate, uniformly — pre-fix, several gates named it
@@ -8620,6 +8628,326 @@ build_quality_scorecard() {
 }
 
 # --- end quality scorecard ---
+
+# Current OMC reviewers and planners have state-changing terminal contracts.
+# A partial native return from one of these roles is an intermediate checkpoint,
+# not a completion: SubagentStop must keep the exact call alive until its final
+# non-empty line carries the role's structured verdict. Other/custom agents keep
+# the universal-summary migration behavior and are not forced into an OMC-only
+# vocabulary.
+omc_enforced_terminal_contract_kind() {
+  case "$1" in
+    quality-reviewer|editor-critic|excellence-reviewer|release-reviewer|metis|briefing-analyst|design-reviewer|abstraction-critic|rigor-reviewer)
+      printf 'reviewer'
+      ;;
+    quality-planner|prometheus)
+      printf 'planner'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+omc_enforced_terminal_verdict_valid() {
+  local agent_type="$1" final_line="$2" contract_kind
+  contract_kind="$(omc_enforced_terminal_contract_kind "${agent_type}" 2>/dev/null)" \
+    || return 1
+  case "${contract_kind}" in
+    reviewer)
+      [[ "${final_line}" =~ ^VERDICT:[[:space:]]*(CLEAN|SHIP|FINDINGS[[:space:]]*\([[:space:]]*[0-9]+[[:space:]]*\)|BLOCK[[:space:]]*\([[:space:]]*[0-9]+[[:space:]]*\))[[:space:]]*$ ]]
+      ;;
+    planner)
+      [[ "${final_line}" =~ ^VERDICT:[[:space:]]*(PLAN_READY|NEEDS_CLARIFICATION|BLOCKED)[[:space:]]*$ ]]
+      ;;
+  esac
+}
+
+omc_enforced_terminal_contract_hint() {
+  case "$(omc_enforced_terminal_contract_kind "$1" 2>/dev/null || true)" in
+    reviewer) printf 'VERDICT: CLEAN, VERDICT: SHIP, VERDICT: FINDINGS (N), or VERDICT: BLOCK (N)' ;;
+    planner) printf 'VERDICT: PLAN_READY, VERDICT: NEEDS_CLARIFICATION, or VERDICT: BLOCKED' ;;
+  esac
+}
+
+# Return success when a current state-changing pending row still targets the
+# generation it inspected. Non-stateful/custom rows are outside this helper's
+# contract and pass through unchanged.
+omc_row_enforcement_generation_current() {
+  local row="$1" row_generation
+  if [[ -n "${_OMC_ULW_CAPTURED_GENERATION+x}" ]]; then
+    row_generation="$(jq -r \
+      '.ulw_enforcement_generation // "migration"' \
+      <<<"${row}" 2>/dev/null || true)"
+    [[ "${row_generation}" == "${_OMC_ULW_CAPTURED_GENERATION}" ]] \
+      || return 1
+  fi
+  return 0
+}
+
+omc_pending_stateful_generation_current() {
+  local row="$1" agent_type start_revision current_revision
+  omc_row_enforcement_generation_current "${row}" || return 1
+  agent_type="$(jq -r '.agent_type // empty' <<<"${row}" 2>/dev/null || true)"
+  case "${agent_type}" in
+    quality-reviewer|superpowers:code-reviewer|feature-dev:code-reviewer)
+      current_revision="$(dimension_freshness_revision "code_quality")" ;;
+    editor-critic)
+      current_revision="$(dimension_freshness_revision "prose")" ;;
+    excellence-reviewer)
+      current_revision="$(dimension_freshness_revision "completeness")" ;;
+    release-reviewer)
+      current_revision="$(read_state "edit_revision")" ;;
+    metis)
+      current_revision="$(dimension_freshness_revision "stress_test")" ;;
+    briefing-analyst)
+      current_revision="$(dimension_freshness_revision "traceability")" ;;
+    design-reviewer)
+      current_revision="$(dimension_freshness_revision "design_quality")" ;;
+    quality-planner|prometheus)
+      current_revision="$(read_state "plan_revision")" ;;
+    *)
+      return 0 ;;
+  esac
+  start_revision="$(jq -r '.review_revision // empty' \
+    <<<"${row}" 2>/dev/null || true)"
+  [[ "${start_revision}" =~ ^[0-9]+$ ]] || return 1
+  [[ "${current_revision}" =~ ^[0-9]+$ ]] || current_revision=0
+  (( start_revision == current_revision ))
+}
+
+# Cleanup-only ignored completion outcomes are the durable recovery journal for
+# a retired reviewer/planner call. The producer commits that outcome first,
+# then removes pending/start under the same session lock; the three artifact
+# renames cannot be one filesystem syscall. If the producer is killed between
+# renames, consumers remove only the separately fingerprinted exact rows before
+# consuming the journal. Because the outcome remains until this function
+# returns, a second consumer can converge after interruption at any boundary.
+omc_reconcile_ignored_completion_cleanup_unlocked() {
+  local outcome="$1" status reason version artifact file backup temp line
+  local pending_fingerprint start_fingerprint target_fingerprint line_fingerprint
+  local lifecycle_dispatch_id line_lifecycle_dispatch_id matches changed
+  local pending_file starts_file pending_backup="" starts_backup=""
+  local pending_temp="" starts_temp="" pending_changed=0 starts_changed=0
+  status="$(jq -r '.status // empty' <<<"${outcome}" 2>/dev/null || true)"
+  reason="$(jq -r '.reason // empty' <<<"${outcome}" 2>/dev/null || true)"
+  [[ "${status}" == "ignored" ]] || return 0
+  case "${reason}" in
+    enforcement-interval-closed|abandoned-dispatch-completion|prior-objective-completion|invalid-review-start-snapshot|review-generation-changed|plan-generation-changed|terminal-contract-retry-exhausted)
+      ;;
+    *) return 0 ;;
+  esac
+  version="$(jq -r '.cleanup_journal_version // 0' \
+    <<<"${outcome}" 2>/dev/null || true)"
+  [[ "${version}" =~ ^(1|2)$ ]] || return 0
+  pending_fingerprint="$(jq -r '.cleanup_pending_fingerprint // empty' \
+    <<<"${outcome}" 2>/dev/null || true)"
+  start_fingerprint="$(jq -r '.cleanup_start_fingerprint // empty' \
+    <<<"${outcome}" 2>/dev/null || true)"
+  [[ "${pending_fingerprint}" =~ ^[A-Za-z0-9._:-]{8,80}$ ]] \
+    || return 1
+  if [[ -n "${start_fingerprint}" \
+      && ! "${start_fingerprint}" =~ ^[A-Za-z0-9._:-]{8,80}$ ]]; then
+    return 1
+  fi
+  lifecycle_dispatch_id="$(jq -r \
+    '.cleanup_lifecycle_dispatch_id // empty' \
+    <<<"${outcome}" 2>/dev/null || true)"
+  if [[ "${version}" == "2" \
+      && ! "${lifecycle_dispatch_id}" \
+        =~ ^dispatch-[A-Za-z0-9._:-]{8,80}$ ]]; then
+    return 1
+  fi
+  pending_file="$(session_file "pending_agents.jsonl")"
+  starts_file="$(session_file "agent_dispatch_starts.jsonl")"
+
+  for artifact in pending starts; do
+    if [[ "${artifact}" == "pending" ]]; then
+      file="${pending_file}"
+      target_fingerprint="${pending_fingerprint}"
+    else
+      file="${starts_file}"
+      target_fingerprint="${start_fingerprint}"
+    fi
+    # No start fingerprint means no start row existed when the producer wrote
+    # the journal. Preserve any later row instead of guessing by role/ID.
+    [[ -n "${target_fingerprint}" ]] || continue
+    [[ ! -L "${file}" ]] \
+      && { [[ ! -e "${file}" ]] || [[ -f "${file}" ]]; } || {
+        rm -f "${pending_temp}" "${pending_backup}" \
+          "${starts_temp}" "${starts_backup}" 2>/dev/null || true
+        return 1
+      }
+    [[ -s "${file}" ]] || continue
+    backup="$(mktemp "${file}.reconcile.rollback.XXXXXX")" || {
+      rm -f "${pending_temp}" "${pending_backup}" \
+        "${starts_temp}" "${starts_backup}" 2>/dev/null || true
+      return 1
+    }
+    cp "${file}" "${backup}" || {
+      rm -f "${backup}" "${pending_temp}" "${pending_backup}" \
+        "${starts_temp}" "${starts_backup}" 2>/dev/null || true
+      return 1
+    }
+    temp="$(mktemp "${file}.reconcile.XXXXXX")" || {
+      rm -f "${backup}" "${pending_temp}" "${pending_backup}" \
+        "${starts_temp}" "${starts_backup}" 2>/dev/null || true
+      return 1
+    }
+    matches=0
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+      [[ -n "${line}" ]] || continue
+      line_fingerprint="$(_omc_token_digest "${line}" 2>/dev/null || true)"
+      line_lifecycle_dispatch_id=""
+      if [[ "${version}" == "2" ]]; then
+        if ! jq -e 'type == "object"' \
+            <<<"${line}" >/dev/null 2>&1; then
+          rm -f "${temp}" "${backup}" "${pending_temp}" \
+            "${pending_backup}" "${starts_temp}" "${starts_backup}" \
+            2>/dev/null || true
+          return 1
+        fi
+        line_lifecycle_dispatch_id="$(jq -r \
+          '.lifecycle_dispatch_id // empty' \
+          <<<"${line}" 2>/dev/null || true)"
+      fi
+      if [[ "${line_fingerprint}" == "${target_fingerprint}" ]] \
+          || { [[ "${version}" == "2" ]] \
+            && [[ "${line_lifecycle_dispatch_id}" == \
+              "${lifecycle_dispatch_id}" ]]; }; then
+        matches=$((matches + 1))
+        continue
+      fi
+      printf '%s\n' "${line}" >>"${temp}" || {
+        rm -f "${temp}" "${backup}" "${pending_temp}" \
+          "${pending_backup}" "${starts_temp}" "${starts_backup}" \
+          2>/dev/null || true
+        return 1
+      }
+    done <"${file}"
+    # A duplicated exact row is ambiguous even with a content digest. Leave
+    # the journal and both ledgers untouched for a later explicit recovery.
+    if (( matches > 1 )); then
+      rm -f "${temp}" "${backup}" "${pending_temp}" \
+        "${pending_backup}" "${starts_temp}" "${starts_backup}"
+      return 1
+    fi
+    changed=0
+    (( matches == 0 )) || changed=1
+    if [[ "${artifact}" == "pending" ]]; then
+      pending_backup="${backup}"
+      pending_temp="${temp}"
+      pending_changed="${changed}"
+    else
+      starts_backup="${backup}"
+      starts_temp="${temp}"
+      starts_changed="${changed}"
+    fi
+  done
+
+  if [[ "${pending_changed}" -eq 1 ]]; then
+    mv -f "${pending_temp}" "${pending_file}" || {
+      rm -f "${pending_temp}" "${pending_backup}" \
+        "${starts_temp}" "${starts_backup}"
+      return 1
+    }
+    pending_temp=""
+  fi
+  if [[ "${starts_changed}" -eq 1 ]]; then
+    if ! mv -f "${starts_temp}" "${starts_file}"; then
+      [[ -z "${pending_backup}" ]] \
+        || mv -f "${pending_backup}" "${pending_file}" 2>/dev/null || true
+      rm -f "${starts_temp}" "${starts_backup}" "${pending_temp}"
+      return 1
+    fi
+    starts_temp=""
+  fi
+  rm -f "${pending_temp}" "${starts_temp}" \
+    "${pending_backup}" "${starts_backup}" 2>/dev/null || true
+}
+
+# Admission/claim paths can run after a cleanup producer was interrupted but
+# before the parent receives PostToolUse or a background notification. Roll
+# every versioned cleanup journal forward first so replay cannot duplicate an
+# outcome and a fresh replacement cannot be denied by a row already retired in
+# durable intent. Outcomes remain one-shot for their foreground/background
+# consumer; this function only converges their exact fingerprinted artifacts.
+omc_reconcile_all_ignored_completion_cleanups_unlocked() {
+  local outcomes_file line
+  outcomes_file="$(session_file "agent_completion_outcomes.jsonl")"
+  [[ ! -L "${outcomes_file}" ]] \
+    && { [[ ! -e "${outcomes_file}" ]] \
+      || [[ -f "${outcomes_file}" ]]; } || return 1
+  [[ -s "${outcomes_file}" ]] || return 0
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ -n "${line}" ]] || continue
+    jq -e 'type == "object"' <<<"${line}" >/dev/null 2>&1 || continue
+    omc_reconcile_ignored_completion_cleanup_unlocked "${line}" || return 1
+  done <"${outcomes_file}"
+}
+
+# Stop payloads on current Claude Code expose a level snapshot of background
+# tasks and scheduled wakes. Preserve the distinction between an omitted field
+# (older client / unknown) and a present empty array (authoritative none): that
+# distinction is what prevents an orphaned pending ledger row from manufacturing
+# an automatic-resume promise.
+omc_stop_runtime_array_state() {
+  local payload="$1" field="$2"
+  jq -r --arg field "${field}" '
+    if has($field) | not then "absent"
+    elif (.[$field] | type) != "array" then "malformed"
+    elif $field == "background_tasks" then
+      if any(.[$field][];
+             if type != "object" then true
+             else ((.status | type) != "string" or (.status | length) == 0)
+             end)
+      then "malformed"
+      else ([.[$field][]
+             | select(((.status | ascii_downcase)
+                       | IN("completed","complete","done","failed","error","killed",
+                            "stopped","cancelled","canceled","idle")) | not)]
+            | if length > 0 then "live" else "empty" end)
+      end
+    elif any(.[$field][]; type != "object") then "malformed"
+    elif (.[$field] | length) > 0 then "live"
+    else "empty"
+    end
+  ' <<<"${payload}" 2>/dev/null || printf 'malformed'
+}
+
+# Only a structural final wait line can pause Stop orchestration. Mentions in a
+# report body, quoted examples, and progress notes without an automatic wake
+# promise continue through normal closeout gates.
+omc_stop_wait_claim_kind() {
+  local message="$1" final_line lower trimmed
+  final_line="$(printf '%s\n' "${message}" \
+    | tr -d '\r' \
+    | awk 'NF { current = $0 } END { print current }' \
+    | _omc_strip_render_unsafe)"
+  final_line="$(truncate_chars 1600 "${final_line}")"
+  trimmed="${final_line#"${final_line%%[![:space:]]*}"}"
+  # A quoted/indented example at the structural tail is inert prose, not a
+  # declaration that the current turn is waiting.
+  [[ "${trimmed}" != \>* && "${final_line}" != [[:space:]]* ]] || return 1
+  lower="$(printf '%s' "${final_line}" | tr '[:upper:]' '[:lower:]')"
+  [[ "${lower}" == *"waiting"* ]] || return 1
+  if [[ "${lower}" == *"scheduled"* \
+      && ("${lower}" == *"wake"* || "${lower}" == *"next check"*) \
+      && ("${lower}" == *"nothing for you to do"* \
+          || "${lower}" == *"no action"*) ]]; then
+    printf 'scheduled'
+    return 0
+  fi
+  if [[ ("${lower}" == *"resume automatically"* \
+          || "${lower}" == *"re-invoked"* \
+          || "${lower}" == *"you'll be notified"*) \
+      && ("${lower}" == *"nothing for you to do"* \
+          || "${lower}" == *"no action"*) ]]; then
+    printf 'background'
+    return 0
+  fi
+  return 1
+}
 
 # --- Agent performance metrics (cross-session) ---
 # Stored in ~/.claude/quality-pack/agent-metrics.json
@@ -12011,6 +12339,7 @@ closeout_build_manifest() {
 # shellcheck disable=SC2329 # invoked indirectly through with_state_lock
 _closeout_record_provisional_unlocked() {
   local row="$1" file tmp
+  omc_enforcement_generation_matches_capture || return 1
   file="$(session_file "provisional_closeouts.jsonl")"
   tmp="$(mktemp "${file}.XXXXXX")" || return 0
   # Keep three semantic slots for the current cycle: earliest, richest, and
@@ -12051,6 +12380,7 @@ closeout_record_provisional() {
 # shellcheck disable=SC2329 # invoked indirectly through with_state_lock
 _closeout_claim_finalization_unlocked() {
   local token previous status claimed_ts now
+  omc_enforcement_generation_matches_capture || return 1
   token="$(read_state "review_cycle_id" 2>/dev/null || true):$(read_state "prompt_revision" 2>/dev/null || true):$(read_state "session_outcome" 2>/dev/null || true)"
   previous="$(read_state "closeout_finalized_token" 2>/dev/null || true)"
   status="$(read_state "closeout_finalization_status" 2>/dev/null || true)"
@@ -12077,6 +12407,7 @@ closeout_claim_finalization() {
 
 # shellcheck disable=SC2329 # invoked indirectly through with_state_lock
 _closeout_complete_finalization_unlocked() {
+  omc_enforcement_generation_matches_capture || return 1
   [[ "$(read_state "closeout_finalization_status" 2>/dev/null || true)" == "claimed" ]] || return 1
   _write_state_batch_unlocked \
     "closeout_finalization_status" "complete" \
@@ -12089,6 +12420,7 @@ closeout_complete_finalization() {
 
 # shellcheck disable=SC2329 # invoked indirectly through with_state_lock
 _closeout_abandon_finalization_unlocked() {
+  omc_enforcement_generation_matches_capture || return 1
   [[ "$(read_state "closeout_finalization_status" 2>/dev/null || true)" == "claimed" ]] || return 0
   _write_state_batch_unlocked \
     "closeout_finalization_status" "" \

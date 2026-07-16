@@ -90,6 +90,7 @@ case "${matcher}" in
 esac
 
 ensure_session_dir
+omc_enforcement_generation_matches_capture || exit 0
 
 transcript_path="$(json_get '.transcript_path')"
 if [[ -z "${transcript_path}" || ! -r "${transcript_path}" ]]; then
@@ -125,20 +126,26 @@ if command -v jq >/dev/null 2>&1; then
   # incomplete) line — better to ship a partial archive than nothing
   # when a session ends mid-flush.
   if jq -s '.' "${transcript_path}" >"${dest}.tmp" 2>/dev/null; then
+    omc_enforcement_generation_matches_capture || {
+      rm -f "${dest}.tmp"
+      exit 0
+    }
     mv "${dest}.tmp" "${dest}"
     record_gate_event "transcript-archive" "captured" \
       "dest=${dest}" "format=json" 2>/dev/null || true
   else
     rm -f "${dest}.tmp"
     # jq failed — fall back to cp so the user still has something to grep.
-    if cp "${transcript_path}" "${dest_fallback}" 2>/dev/null; then
+    if omc_enforcement_generation_matches_capture \
+        && cp "${transcript_path}" "${dest_fallback}" 2>/dev/null; then
       record_gate_event "transcript-archive" "captured" \
         "dest=${dest_fallback}" "format=jsonl-fallback" 2>/dev/null || true
     fi
   fi
 else
   # jq missing — copy the raw JSONL.
-  if cp "${transcript_path}" "${dest_fallback}" 2>/dev/null; then
+  if omc_enforcement_generation_matches_capture \
+      && cp "${transcript_path}" "${dest_fallback}" 2>/dev/null; then
     record_gate_event "transcript-archive" "captured" \
       "dest=${dest_fallback}" "format=jsonl-no-jq" 2>/dev/null || true
   fi

@@ -62,6 +62,19 @@ if [[ "${_plan_final_line}" =~ ^VERDICT:[[:space:]]*(PLAN_READY|NEEDS_CLARIFICAT
   fi
 fi
 
+# The universal SubagentStop hook owns continuation feedback. In a current
+# tracked session this recorder stays silent on an intermediate planner return
+# and, most importantly, exits before staging/publishing a plan or consuming
+# the native-bound start row. The same planner call can then continue and land
+# one valid terminal contract. Untracked migration sessions retain PLAN_READY
+# fallback below.
+if ! omc_enforced_terminal_verdict_valid \
+    "${AGENT_TYPE:-quality-planner}" "${_plan_final_line}" \
+    && { [[ "$(read_state "plan_dispatch_tracking_version")" == "1" ]] \
+      || [[ "$(read_state "native_agent_id_tracking_version")" == "1" ]]; }; then
+  exit 0
+fi
+
 # --- Plan-complexity computation (v1.19.0) ---
 #
 # Centralized in a function so the bias-defense layer (stop-guard's
@@ -365,6 +378,9 @@ _record_plan_state_unlocked() {
       _plan_rejection_reason="native_agent_id_mismatch"
     elif [[ -z "${_plan_dispatch_start_json}" ]]; then
       _plan_rejection_reason="missing_start_snapshot"
+    elif ! omc_row_enforcement_generation_current \
+        "${_plan_dispatch_start_json}"; then
+      _plan_rejection_reason="enforcement_interval_closed"
     elif [[ "$(jq -r '.review_dispatch_abandoned // false' \
         <<<"${_plan_dispatch_start_json}" 2>/dev/null || true)" == "true" ]]; then
       _plan_rejection_reason="abandoned_dispatch_completion"

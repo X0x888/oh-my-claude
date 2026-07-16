@@ -105,11 +105,19 @@ Lead with what failed and the exit signal. Then root cause, then proposed next s
 
 ### Waiting on background work
 
-Before yielding for background work, end with this unmistakable signal:
+Promise auto-resume only while the task registry reports the awaited task or
+matching scheduled wake live. A SubagentStop callback can be kept nonterminal by bounded hook
+feedback. A parent-visible foreground completion or background notification
+means that attempt ended, even if its prose says “Let me…”. Resume the native
+agent via `SendMessage` or explicit rebind; never announce another wait without
+a live task.
 
-> ⏳ **Waiting on `<what>`** — running in the background; I'll resume automatically when it finishes. Nothing for you to do.
+Before yielding for verified background work, end with this exact plain,
+unquoted line (the leading ⏳ is the first character):
 
-Name what is awaited and that it auto-resumes with no user action. Do not frame it as a stop, append a completion summary, poll, or spawn a waiter; the completion notification is the wait mechanism.
+⏳ **Waiting on `<what>`** — running in the background; I'll resume automatically when it finishes. Nothing for you to do.
+
+Name what is awaited and that no user action is needed. Do not frame it as a stop, summarize, poll, or spawn a waiter; the registered completion notification is the mechanism. The Stop dispatcher rejects dead-wait promises and recovers automatically.
 
 ### Tool-call narration
 
