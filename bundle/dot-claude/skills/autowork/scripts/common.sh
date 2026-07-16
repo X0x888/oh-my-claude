@@ -8748,9 +8748,9 @@ _DEFECT_PATTERNS_LOCK="${_DEFECT_PATTERNS_LOCK:-${HOME}/.claude/quality-pack/.de
 # with_metrics_lock (per-file) — the claim races across sessions
 # (Wave 1 hint hook in session A vs. Wave 3 watchdog vs. /ulw-resume in
 # session B), so the lock must be globally scoped, not session-scoped.
-# Uses the same mkdir + stale-mtime recovery shape; a missing or stuck
-# lock recovers within OMC_STATE_LOCK_STALE_SECS so a crashed claimer
-# does not deadlock the resume system.
+# Uses the shared atomic-owner lock shape. A dead sentinel owner is reclaimed
+# immediately; a pre-sentinel legacy directory retains the bounded stale-mtime
+# fallback so an older crashed claimer cannot deadlock the resume system.
 _RESUME_REQUEST_LOCK="${_RESUME_REQUEST_LOCK:-${HOME}/.claude/quality-pack/.resume-request.lock}"
 
 # with_defect_lock: Run a command under the defect patterns file lock.
@@ -8766,8 +8766,8 @@ with_defect_lock() {
 # (Wave 1 hint hook in session A, Wave 3 watchdog daemon, and Wave 2's
 # /ulw-resume claim in session B can all reach the same artifact). The
 # claim sequence is read-current-state → decide-to-claim → atomic-write,
-# which is non-atomic without a lock. mkdir-as-mutex + PID-based stale
-# recovery (centralized in _with_lockdir) is the established pattern;
+# which is non-atomic without a lock. Atomic hard-link ownership plus
+# dead-PID recovery (centralized in _with_lockdir) is the established pattern;
 # flock is avoided because its behavior over networked filesystems is
 # platform-dependent. Stale window: OMC_STATE_LOCK_STALE_SECS (default 5s,
 # comfortably longer than a healthy claim — one re-read + one tmp+mv —
@@ -9068,7 +9068,7 @@ with_skips_lock() {
 # derived from the log path (<log_path>.lock) so distinct logs never
 # contend with each other and the same lock site can serve any
 # cross-session writer (used-archetypes.jsonl, serendipity-log.jsonl, …).
-# Same mkdir + stale-recovery semantics as with_skips_lock; only the
+# Same atomic-owner + stale-legacy semantics as with_skips_lock; only the
 # lock target is parameterized.
 #
 # Bare `printf >> file` is POSIX-atomic per write(2) only when the

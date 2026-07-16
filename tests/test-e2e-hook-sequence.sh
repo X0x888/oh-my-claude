@@ -2388,15 +2388,17 @@ deactivate_race_release="${TEST_HOME}/deactivate-race-release"
 mkdir -p "${deactivate_race_shim}"
 printf '%s\n' \
   '#!/bin/sh' \
-  'case "${1:-}" in' \
-  '  */.state.lock)' \
+  'dest=""' \
+  'for arg in "$@"; do dest="$arg"; done' \
+  'case "${dest}" in' \
+  '  */.state.lock.owner)' \
   '    /usr/bin/touch "${OMC_DEACTIVATE_RACE_READY}"' \
   '    while [ ! -f "${OMC_DEACTIVATE_RACE_RELEASE}" ]; do /bin/sleep 0.01; done' \
   '    ;;' \
   'esac' \
-  'exec /bin/mkdir "$@"' \
-  >"${deactivate_race_shim}/mkdir"
-chmod +x "${deactivate_race_shim}/mkdir"
+  'exec /bin/ln "$@"' \
+  >"${deactivate_race_shim}/ln"
+chmod +x "${deactivate_race_shim}/ln"
 deactivate_race_payload="$(jq -nc --arg s "culw" \
   '{session_id:$s,tool_name:"Bash",tool_use_id:"deactivate-race",tool_input:{command:"npm test"}}')"
 (

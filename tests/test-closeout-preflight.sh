@@ -425,21 +425,27 @@ assert_empty "incomplete does not increment attempts" "$(jq -r '.stop_guard_atte
 
 # A live state mutex can exist during the directory copy and disappear before
 # the preflight commits its seal. The detached shadow must not retain that
-# holder PID: no live process can unlock a copied mutex directory.
+# owner sentinel/holder PID: no live process can unlock a copied mutex.
 seed_ready copied_lock
 copied_lock_tmp="${TEST_HOME}/copied-lock-tmp"
 mkdir -p "${copied_lock_tmp}"
 mkdir "${STATE_ROOT}/copied_lock/.state.lock"
 printf '%s\n' "$$" >"${STATE_ROOT}/copied_lock/.state.lock/holder.pid"
+copied_lock_claim="${STATE_ROOT}/copied_lock/.state.lock.owner.claim.fixture"
+printf '%s\n' "$$:${copied_lock_claim##*/}:1" >"${copied_lock_claim}"
+ln "${copied_lock_claim}" "${STATE_ROOT}/copied_lock/.state.lock.owner"
 (
   sleep 0.1
-  rm -rf "${STATE_ROOT}/copied_lock/.state.lock"
+  rm -rf "${STATE_ROOT}/copied_lock/.state.lock" \
+    "${STATE_ROOT}/copied_lock/.state.lock.owner" "${copied_lock_claim}"
 ) &
 copied_lock_remover=$!
 copied_lock_out="$(TMPDIR="${copied_lock_tmp}" run_posttool copied_lock)"
 wait "${copied_lock_remover}"
 assert_contains "preflight discards copied live mutex" "READY" "${copied_lock_out}"
 [[ ! -e "${STATE_ROOT}/copied_lock/.state.lock" ]] && ok || bad "copied-lock fixture left live mutex behind"
+[[ ! -e "${STATE_ROOT}/copied_lock/.state.lock.owner" ]] && ok || bad "copied-lock fixture left owner sentinel behind"
+[[ ! -e "${copied_lock_claim}" ]] && ok || bad "copied-lock fixture left owner claim behind"
 if [[ -z "$(find "${copied_lock_tmp}" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
   ok
 else

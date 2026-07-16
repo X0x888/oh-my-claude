@@ -279,7 +279,7 @@ append_limited_state() {
   # the tail snapshot that did NOT see row_b — row_b is silently
   # dropped. Council Phase 8 fan-out (5 parallel reviewers writing
   # 30+ gate_events) is the worst-case workload. with_state_lock
-  # serializes the cycle; the lock is mkdir-as-mutex (~5ms) and the
+  # serializes the cycle; the atomic-owner lock is short-lived and the
   # contention window is bounded by the per-session gate-event cap
   # (default 500). When SESSION_ID is unset (test rigs, /omc-config
   # without a session), fall through to the unlocked path so callers
@@ -488,13 +488,13 @@ read_state_keys() {
     }
 }
 
-# --- Portable state lock (mkdir primitive, BSD/GNU stat compat) ---
+# --- Portable state lock (atomic owner + mkdir compatibility) ---
 #
 # Wraps a function call with a mutex held against the session's state
-# directory. Uses mkdir as the atomic lock primitive (portable across
-# macOS and Linux — flock is non-standard on BSD). A dead holder PID is
-# reclaimed immediately; pidless legacy locks wait for the stale-lock
-# timeout first.
+# directory. A populated owner sentinel is hard-linked into place before the
+# compatibility lock directory is created, so ownership appears atomically on
+# both macOS and Linux without flock. A dead holder PID is reclaimed
+# immediately; pidless pre-sentinel legacy locks wait for the stale timeout.
 #
 # Usage: with_state_lock my_function arg1 arg2 ...
 #
@@ -531,9 +531,103 @@ _lock_mtime() {
   printf '%s' "${ts:-0}"
 }
 
+# Best-effort garbage collection for crash residue that is no longer part of
+# an ownership/reaper chain. Every contender needs a unique claim before it
+# can publish the canonical owner, so SIGKILL while waiting can strand that
+# file. A reaper killed after canonical unlink can likewise strand its reap
+# hard-link. Reclaim only dead, structurally self-identifying artifacts that
+# are neither the current canonical token nor referenced by a live recovery
+# edge; ambiguity always fails closed.
+_cleanup_orphan_lock_claims() {
+  local ownerfile="$1"
+  local lock_parent canonical_record candidate candidate_name candidate_record
+  local candidate_pid candidate_record_claim referenced reap reaper_claim_name
+  local reaper_claim reaper_record reaper_pid reaper_record_claim current_record
+  local scanned=0
+  lock_parent="$(dirname "${ownerfile}")"
+  canonical_record=""
+  IFS= read -r canonical_record <"${ownerfile}" 2>/dev/null \
+    || canonical_record=""
+
+  # Reap artifacts first. Once their exact owner token is no longer
+  # canonical, only a live elected reaper can still be using them.
+  for reap in "${ownerfile}.claim."*.reap.*; do
+    [[ -f "${reap}" && ! -L "${reap}" ]] || continue
+    scanned=$((scanned + 1))
+    [[ "${scanned}" -le 256 ]] || break
+    candidate_record=""
+    IFS= read -r candidate_record <"${reap}" 2>/dev/null \
+      || candidate_record=""
+    [[ -n "${candidate_record}" && "${candidate_record}" != "${canonical_record}" ]] \
+      || continue
+    reaper_claim_name="${reap##*.reap.}"
+    [[ "${reaper_claim_name}" == "${ownerfile##*/}.claim."* \
+        && "${reaper_claim_name}" != */* ]] || continue
+    reaper_claim="${lock_parent}/${reaper_claim_name}"
+    reaper_record=""
+    IFS= read -r reaper_record <"${reaper_claim}" 2>/dev/null \
+      || reaper_record=""
+    reaper_pid="${reaper_record%%:*}"
+    reaper_record_claim="${reaper_record#*:}"
+    reaper_record_claim="${reaper_record_claim%%:*}"
+    if [[ -n "${reaper_record}" ]]; then
+      [[ "${reaper_pid}" =~ ^[1-9][0-9]*$ \
+          && "${reaper_record_claim}" == "${reaper_claim_name}" ]] || continue
+      kill -0 "${reaper_pid}" 2>/dev/null && continue
+    fi
+    current_record=""
+    IFS= read -r current_record <"${ownerfile}" 2>/dev/null \
+      || current_record=""
+    [[ "${current_record}" != "${candidate_record}" ]] || continue
+    current_record=""
+    IFS= read -r current_record <"${reap}" 2>/dev/null \
+      || current_record=""
+    [[ "${current_record}" == "${candidate_record}" ]] || continue
+    rm -f "${reap}" 2>/dev/null || true
+  done
+
+  # Direct claims are removable only when their recorded process is dead and
+  # no canonical owner or elected-reaper artifact still names them.
+  scanned=0
+  for candidate in "${ownerfile}.claim."*; do
+    [[ -f "${candidate}" && ! -L "${candidate}" ]] || continue
+    candidate_name="${candidate##*/}"
+    [[ "${candidate_name}" != *.reap.* ]] || continue
+    scanned=$((scanned + 1))
+    [[ "${scanned}" -le 256 ]] || break
+    candidate_record=""
+    IFS= read -r candidate_record <"${candidate}" 2>/dev/null \
+      || candidate_record=""
+    candidate_pid="${candidate_record%%:*}"
+    candidate_record_claim="${candidate_record#*:}"
+    candidate_record_claim="${candidate_record_claim%%:*}"
+    [[ "${candidate_pid}" =~ ^[1-9][0-9]*$ \
+        && "${candidate_record_claim}" == "${candidate_name}" ]] || continue
+    kill -0 "${candidate_pid}" 2>/dev/null && continue
+    [[ "${candidate_record}" != "${canonical_record}" ]] || continue
+    referenced=0
+    for reap in "${ownerfile}.claim."*.reap."${candidate_name}"; do
+      if [[ -e "${reap}" || -L "${reap}" ]]; then
+        referenced=1
+        break
+      fi
+    done
+    [[ "${referenced}" -eq 0 ]] || continue
+    current_record=""
+    IFS= read -r current_record <"${ownerfile}" 2>/dev/null \
+      || current_record=""
+    [[ "${current_record}" != "${candidate_record}" ]] || continue
+    current_record=""
+    IFS= read -r current_record <"${candidate}" 2>/dev/null \
+      || current_record=""
+    [[ "${current_record}" == "${candidate_record}" ]] || continue
+    rm -f "${candidate}" 2>/dev/null || true
+  done
+}
+
 # _with_lockdir <lockdir> <tag> <cmd> [args...]
 #
-# Run `<cmd> args...` while holding an mkdir-mutex on <lockdir>.
+# Run `<cmd> args...` while holding the atomic owner for <lockdir>.
 # Centralizes the locking primitive used by every with_*_lock helper in
 # the harness: with_state_lock, with_metrics_lock, with_defect_lock,
 # with_resume_lock, with_skips_lock, with_cross_session_log_lock,
@@ -541,14 +635,14 @@ _lock_mtime() {
 # their names + signatures so call sites and tests are unchanged.
 #
 # Behavior:
-#   - mkdir-as-mutex with PID-based stale recovery (v1.29.0 metis F-6
-#     pattern, generalized in v1.30.0). Records holder PID into
-#     <lockdir>/holder.pid; dead recorded PIDs are reclaimed immediately.
-#     Pidless locks are reclaimed only after stale-mtime because a live
-#     process may have created the lockdir but not written holder.pid yet.
-#     Defeats the false-recovery race where a slow-but-live writer (jq
-#     parsing 100KB+ state under heavy IO) would otherwise lose its lock
-#     to a peer that timed out on mtime alone.
+#   - PID-based stale recovery (v1.29.0 metis F-6 pattern, generalized in
+#     v1.30.0). A unique, fully populated temp file is
+#     hard-linked atomically to <lockdir>.owner; only that owner then creates
+#     <lockdir>/holder.pid for compatibility and observability. Waiters trust
+#     the sentinel first and never stale-recover a live owner merely because
+#     the scheduler paused it between filesystem operations. Dead sentinel
+#     owners are reclaimed immediately. A lock directory without a sentinel
+#     is a pre-sentinel legacy/crash shape and retains mtime-based recovery.
 #   - Caps acquisition at OMC_STATE_LOCK_MAX_ATTEMPTS polls; stale window
 #     is OMC_STATE_LOCK_STALE_SECS (default 5s).
 #   - On exhaustion: log_anomaly "${tag}" "lock not acquired after N
@@ -568,39 +662,178 @@ _with_lockdir() {
   local tag="$2"
   shift 2
   local pidfile="${lockdir}/holder.pid"
+  local ownerfile="${lockdir}.owner"
   local lock_parent
   lock_parent="$(dirname "${lockdir}")"
   mkdir -p "${lock_parent}" 2>/dev/null || true
-  local attempts=0
+  local owner_pid="" claimfile="" claim_name="" owner_token=""
+  local owner_record="" holder_pid="" legacy_pid=""
+  local _lock_held_since="" _lock_now=""
+  local observed_claim="" observed_claim_name="" reap_claim="" cleanup_ok=0
+  local prior_reap="" prior_reap_record="" prior_reaper_claim_name=""
+  local prior_reaper_claim="" prior_reaper_record="" prior_reaper_pid=""
+  local prior_reaper_record_claim="" elected_reaper=0
+  claimfile="$(mktemp "${ownerfile}.claim.XXXXXX")" || {
+    log_anomaly "${tag}" "lock owner staging failed"
+    return 1
+  }
+  claim_name="${claimfile##*/}"
+  # Bash 3.2 keeps `$$` equal to the parent shell inside `( ... ) &`, and does
+  # not expose BASHPID. Linux exposes the actual current process as field one
+  # of /proc/self/stat, readable with a builtin (no fork per contender).
+  # Top-level macOS hooks can use $$ directly. Only a macOS Bash-3 subshell
+  # needs a direct child to write its PPID; avoid command substitution there,
+  # since that would record a short-lived intermediary.
+  if [[ -r /proc/self/stat ]] \
+      && IFS=' ' read -r owner_pid _ </proc/self/stat \
+      && [[ "${owner_pid}" =~ ^[1-9][0-9]*$ ]]; then
+    :
+  elif [[ "${BASH_SUBSHELL:-0}" -eq 0 && "$$" =~ ^[1-9][0-9]*$ ]]; then
+    owner_pid="$$"
+  elif /bin/sh -c 'printf "%s\n" "$PPID" >"$1"' sh "${claimfile}"; then
+    owner_pid="$(cat "${claimfile}" 2>/dev/null | tr -d '[:space:]' || true)"
+  else
+    owner_pid=""
+  fi
+  if [[ ! "${owner_pid}" =~ ^[1-9][0-9]*$ ]]; then
+    rm -f "${claimfile}" 2>/dev/null || true
+    log_anomaly "${tag}" "lock owner PID capture failed"
+    return 1
+  fi
+  owner_token="${owner_pid}:${claim_name}:${RANDOM:-0}"
+  if ! printf '%s\n' "${owner_token}" >"${claimfile}" \
+      || ! chmod 600 "${claimfile}" 2>/dev/null; then
+    rm -f "${claimfile}" 2>/dev/null || true
+    log_anomaly "${tag}" "lock owner staging failed"
+    return 1
+  fi
+
+  local attempts=0 acquired=0
   while true; do
-    if mkdir "${lockdir}" 2>/dev/null; then
-      printf '%s\n' "$$" > "${pidfile}" 2>/dev/null || true
-      break
+    # `ln` publishes already-populated ownership atomically. A regular-file
+    # destination makes this an O_EXCL-like claim on both BSD and GNU. The
+    # content check also rejects the odd existing-directory `ln src dir`
+    # behavior without mistaking the nested link for ownership.
+    if ln "${claimfile}" "${ownerfile}" 2>/dev/null; then
+      owner_record="$(cat "${ownerfile}" 2>/dev/null || true)"
+      if [[ "${owner_record}" == "${owner_token}" ]]; then
+        if mkdir "${lockdir}" 2>/dev/null; then
+          printf '%s\n' "${owner_pid}" >"${pidfile}" 2>/dev/null || true
+          acquired=1
+          break
+        fi
+        # A pre-sentinel/older process owns the directory. Release only our
+        # exact sentinel and fall through to legacy-holder inspection.
+        owner_record="$(cat "${ownerfile}" 2>/dev/null || true)"
+        if [[ "${owner_record}" == "${owner_token}" ]]; then
+          rm -f "${ownerfile}" 2>/dev/null || true
+        fi
+      else
+        rm -f "${ownerfile}/${claim_name}" 2>/dev/null || true
+      fi
     fi
     attempts=$((attempts + 1))
-    if [[ -d "${lockdir}" ]]; then
-      local now held_since
-      now="$(date +%s)"
-      held_since="$(_lock_mtime "${lockdir}")"
-      local holder_pid=""
-      if [[ -f "${pidfile}" ]]; then
-        holder_pid="$(cat "${pidfile}" 2>/dev/null | tr -d '[:space:]' || true)"
+    owner_record=""
+    if [[ -f "${ownerfile}" && ! -L "${ownerfile}" ]]; then
+      owner_record="$(cat "${ownerfile}" 2>/dev/null || true)"
+      holder_pid="${owner_record%%:*}"
+      observed_claim_name="${owner_record#*:}"
+      observed_claim_name="${observed_claim_name%%:*}"
+      if [[ "${holder_pid}" =~ ^[1-9][0-9]*$ \
+          && "${observed_claim_name}" == "${ownerfile##*/}.claim."* \
+          && "${observed_claim_name}" != */* \
+          && "${owner_record}" == "${holder_pid}:${observed_claim_name}:"* ]]; then
+        if ! kill -0 "${holder_pid}" 2>/dev/null; then
+          # The owner's unique claim hard-link lives for the full critical
+          # section. Atomically renaming it elects exactly one dead-owner
+          # reaper. A stale observer that slept across normal release cannot
+          # touch a successor: it can elect only the prior owner's uniquely
+          # named claim, then must still match that prior canonical token
+          # before removing any shared artifact.
+          observed_claim="${lock_parent}/${observed_claim_name}"
+          reap_claim="${observed_claim}.reap.${claim_name}"
+          elected_reaper=0
+          if mv "${observed_claim}" "${reap_claim}" 2>/dev/null; then
+            elected_reaper=1
+          else
+            # If an elected reaper itself was killed, its retained unique
+            # claim names its real PID. A later waiter atomically takes over
+            # the reap artifact only after that PID is dead, so recovery never
+            # becomes permanently wedged at the election boundary.
+            for prior_reap in "${observed_claim}.reap."*; do
+              [[ -f "${prior_reap}" && ! -L "${prior_reap}" ]] || continue
+              prior_reap_record="$(cat "${prior_reap}" 2>/dev/null || true)"
+              [[ "${prior_reap_record}" == "${owner_record}" ]] || continue
+              prior_reaper_claim_name="${prior_reap#"${observed_claim}".reap.}"
+              prior_reaper_claim="${lock_parent}/${prior_reaper_claim_name}"
+              prior_reaper_record="$(cat "${prior_reaper_claim}" 2>/dev/null || true)"
+              prior_reaper_pid="${prior_reaper_record%%:*}"
+              prior_reaper_record_claim="${prior_reaper_record#*:}"
+              prior_reaper_record_claim="${prior_reaper_record_claim%%:*}"
+              if [[ "${prior_reaper_pid}" =~ ^[1-9][0-9]*$ \
+                  && "${prior_reaper_claim_name}" == "${ownerfile##*/}.claim."* \
+                  && "${prior_reaper_record_claim}" == "${prior_reaper_claim_name}" ]] \
+                  && ! kill -0 "${prior_reaper_pid}" 2>/dev/null \
+                  && mv "${prior_reap}" "${reap_claim}" 2>/dev/null; then
+                rm -f "${prior_reaper_claim}" 2>/dev/null || true
+                elected_reaper=1
+                break
+              fi
+            done
+          fi
+          if [[ "${elected_reaper}" -eq 1 ]]; then
+            cleanup_ok=1
+            if [[ "$(cat "${reap_claim}" 2>/dev/null || true)" != "${owner_record}" \
+                || "$(cat "${ownerfile}" 2>/dev/null || true)" != "${owner_record}" ]]; then
+              cleanup_ok=0
+            fi
+            if [[ "${cleanup_ok}" -eq 1 && -d "${lockdir}" ]]; then
+              legacy_pid="$(cat "${pidfile}" 2>/dev/null | tr -d '[:space:]' || true)"
+              if [[ "${legacy_pid}" == "${holder_pid}" ]]; then
+                rm -f "${pidfile}" 2>/dev/null || true
+                rmdir "${lockdir}" 2>/dev/null || cleanup_ok=0
+              fi
+            fi
+            if [[ "${cleanup_ok}" -eq 1 \
+                && "$(cat "${ownerfile}" 2>/dev/null || true)" == "${owner_record}" ]] \
+                && rm -f "${ownerfile}" 2>/dev/null; then
+              rm -f "${reap_claim}" 2>/dev/null || true
+              continue
+            fi
+            # Preserve a recoverable owner shape if an unexpected artifact or
+            # external mutation prevented the elected reaper from finishing.
+            if [[ -f "${reap_claim}" && ! -e "${observed_claim}" ]]; then
+              mv "${reap_claim}" "${observed_claim}" 2>/dev/null || true
+            fi
+          fi
+        fi
+        # A live atomic owner is authoritative regardless of mtime. In
+        # particular, never reclaim the directory during the scheduler gap
+        # before that owner gets to publish holder.pid.
       fi
+    elif [[ ! -e "${ownerfile}" && ! -L "${ownerfile}" \
+        && -d "${lockdir}" ]]; then
+      # Compatibility recovery for a lock created before atomic sentinels (or
+      # a crash that predates sentinel publication). New acquisitions never
+      # produce this pidless interval.
+      _lock_now="$(date +%s)"
+      _lock_held_since="$(_lock_mtime "${lockdir}")"
+      holder_pid="$(cat "${pidfile}" 2>/dev/null | tr -d '[:space:]' || true)"
       if [[ -n "${holder_pid}" ]] && ! kill -0 "${holder_pid}" 2>/dev/null; then
         rm -f "${pidfile}" 2>/dev/null || true
         rmdir "${lockdir}" 2>/dev/null || true
         continue
       fi
-      if [[ "${held_since}" -gt 0 ]] \
-          && [[ $(( now - held_since )) -gt "${OMC_STATE_LOCK_STALE_SECS}" ]]; then
-        if [[ -z "${holder_pid}" ]]; then
+      if [[ "${_lock_held_since}" -gt 0 ]] \
+          && [[ $(( _lock_now - _lock_held_since )) -gt "${OMC_STATE_LOCK_STALE_SECS}" ]] \
+          && [[ -z "${holder_pid}" ]]; then
           rm -f "${pidfile}" 2>/dev/null || true
           rmdir "${lockdir}" 2>/dev/null || true
           continue
-        fi
       fi
     fi
     if [[ "${attempts}" -ge "${OMC_STATE_LOCK_MAX_ATTEMPTS}" ]]; then
+      rm -f "${claimfile}" 2>/dev/null || true
       log_anomaly "${tag}" "lock not acquired after ${OMC_STATE_LOCK_MAX_ATTEMPTS} attempts"
       return 1
     fi
@@ -617,8 +850,30 @@ _with_lockdir() {
   done
   local rc=0
   "$@" || rc=$?
-  rm -f "${pidfile}" 2>/dev/null || true
-  rmdir "${lockdir}" 2>/dev/null || true
+  if [[ "${acquired}" -eq 1 \
+      && "$(cat "${ownerfile}" 2>/dev/null || true)" == "${owner_token}" ]]; then
+    _cleanup_orphan_lock_claims "${ownerfile}"
+    cleanup_ok=1
+    if [[ -d "${lockdir}" ]]; then
+      rm -f "${pidfile}" 2>/dev/null || true
+      rmdir "${lockdir}" 2>/dev/null || cleanup_ok=0
+    fi
+    # Canonical ownership blocks successors until release is complete. Remove
+    # the election claim last: a crash before canonical unlink remains
+    # recoverable; a crash after it leaves only an inert orphan claim.
+    if [[ "${cleanup_ok}" -eq 1 \
+        && "$(cat "${ownerfile}" 2>/dev/null || true)" == "${owner_token}" ]] \
+        && rm -f "${ownerfile}" 2>/dev/null; then
+      rm -f "${claimfile}" 2>/dev/null || true
+    else
+      log_anomaly "${tag}" "lock release cleanup failed"
+      rc=1
+    fi
+  else
+    rm -f "${claimfile}" 2>/dev/null || true
+    log_anomaly "${tag}" "lock ownership changed before release"
+    rc=1
+  fi
   return "${rc}"
 }
 

@@ -145,8 +145,10 @@ write_second_state_lock_barrier() {
   mkdir -p "${shim_dir}"
   printf '%s\n' \
     '#!/bin/sh' \
-    'case "${1:-}" in' \
-    '  */.state.lock)' \
+    'dest=""' \
+    'for arg in "$@"; do dest="$arg"; done' \
+    'case "${dest}" in' \
+    '  */.state.lock.owner)' \
     '    count=0' \
     '    [ ! -f "${OMC_CAS_LOCK_COUNT}" ] || count=$(/bin/cat "${OMC_CAS_LOCK_COUNT}")' \
     '    count=$((count + 1))' \
@@ -157,9 +159,9 @@ write_second_state_lock_barrier() {
     '    fi' \
     '    ;;' \
     'esac' \
-    'exec /bin/mkdir "$@"' \
-    >"${shim_dir}/mkdir"
-  chmod +x "${shim_dir}/mkdir"
+    'exec /bin/ln "$@"' \
+    >"${shim_dir}/ln"
+  chmod +x "${shim_dir}/ln"
 }
 
 # ===========================================================================

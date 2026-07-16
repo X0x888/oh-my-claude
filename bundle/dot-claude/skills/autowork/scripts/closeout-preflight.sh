@@ -157,7 +157,7 @@ _closeout_evaluate() {
   # Readiness is still guarded by the live start/end fingerprint and the
   # commit-time state lock; only this non-state synchronization artifact is
   # discarded from the isolated copy.
-  rm -rf "${shadow_session}/.state.lock"
+  rm -rf "${shadow_session}/.state.lock" "${shadow_session}/.state.lock.owner"
   touch "${shadow_state}/.ulw_active"
   conf_file="${HOME}/.claude/oh-my-claude.conf"
   if [[ -f "${conf_file}" ]]; then

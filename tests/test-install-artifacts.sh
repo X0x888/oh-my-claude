@@ -216,7 +216,10 @@ if command -v shasum >/dev/null 2>&1 || command -v sha256sum >/dev/null 2>&1; th
     fi
 
     # First non-blank line must match `<sha256>  <path>` shape.
-    first_line="$(grep -v '^[[:space:]]*$' "${HASHES}" | head -1)"
+    # Ask grep itself to stop after the first match. Under `pipefail`, GNU
+    # grep can report EPIPE when `head -1` closes a large hash-manifest pipe,
+    # aborting this test even though the matching line was valid.
+    first_line="$(grep -m1 -v '^[[:space:]]*$' "${HASHES}")"
     if [[ "${first_line}" =~ ^[0-9a-f]{64}\ \ .+ ]]; then
       pass=$((pass + 1))
     else

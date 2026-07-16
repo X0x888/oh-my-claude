@@ -140,6 +140,46 @@ _compute_plan_complexity() {
 
 _compute_plan_complexity "${LAST_ASSISTANT_MESSAGE}"
 
+# Render the immutable plan body before entering the shared session mutex.
+# Secret redaction can be comparatively expensive, and keeping it inside the
+# lock made a simultaneous planner fan-out convoy long enough for late hooks
+# to exhaust the generic three-second hot-path budget. The unique 0600 stage
+# is unpublished evidence: only the locked transaction may rename it to the
+# canonical artifact, and every rejection/failure path removes it at EXIT.
+_plan_stage=""
+_cleanup_plan_stage() {
+  if [[ -n "${_plan_stage:-}" ]]; then
+    rm -f -- "${_plan_stage}" 2>/dev/null || true
+    _plan_stage=""
+  fi
+}
+trap _cleanup_plan_stage EXIT
+
+_prepare_plan_stage() {
+  _plan_stage="$(mktemp "$(session_file ".current-plan-stage.XXXXXX")")" \
+    || return 1
+  chmod 600 "${_plan_stage}" 2>/dev/null || {
+    _cleanup_plan_stage
+    return 1
+  }
+  if ! {
+    printf '# Plan from %s\n\n' "${AGENT_TYPE:-planner}"
+    # Strip controls before secret matching so a C0 byte cannot split a token,
+    # evade redaction, and then be removed to reconstitute the secret on disk.
+    printf '%s\n' "${LAST_ASSISTANT_MESSAGE}" \
+      | _omc_strip_render_unsafe \
+      | omc_redact_secrets
+  } >"${_plan_stage}"; then
+    _cleanup_plan_stage
+    return 1
+  fi
+}
+
+if ! _prepare_plan_stage; then
+  log_anomaly "record-plan" "plan artifact staging failed"
+  exit 1
+fi
+
 # Soft-nudge handoff to PostToolUse:
 #
 # When the plan is high-complexity, set `plan_complexity_nudge_pending="1"`
@@ -287,7 +327,7 @@ _consume_planner_dispatch_start_unlocked() {
 }
 
 _record_plan_state_unlocked() {
-  local _plan_revision _plan_tmp="" _tracking_version _row_version
+  local _plan_revision _tracking_version _row_version
   local _strict_tracking=0 _start_revision _start_ts _current_ts
   local _start_cycle_id=0 _current_cycle_id=0 _ready=false
   _plan_commit_accepted=0
@@ -369,27 +409,21 @@ _record_plan_state_unlocked() {
   fi
 
   [[ "${plan_verdict}" == "PLAN_READY" ]] && _ready=true
-  if [[ -e "${plan_file}" && ! -f "${plan_file}" ]]; then
+  if [[ -L "${plan_file}" ]] \
+      || { [[ -e "${plan_file}" ]] && [[ ! -f "${plan_file}" ]]; }; then
     log_anomaly "record-plan" \
       "refusing to replace non-regular plan artifact at ${plan_file}"
     return 1
   fi
-  _plan_tmp="$(mktemp "${plan_file}.XXXXXX")" || return 1
-  if ! {
-    printf '# Plan from %s\n\n' "${AGENT_TYPE:-planner}"
-    # Strip controls before secret matching so a C0 byte cannot split a token,
-    # evade redaction, and then be removed to reconstitute the secret on disk.
-    printf '%s\n' "${LAST_ASSISTANT_MESSAGE}" \
-      | _omc_strip_render_unsafe \
-      | omc_redact_secrets
-  } >"${_plan_tmp}"; then
-    rm -f "${_plan_tmp}"
+  if [[ -z "${_plan_stage:-}" || -L "${_plan_stage}" \
+      || ! -f "${_plan_stage}" ]]; then
+    log_anomaly "record-plan" "plan artifact stage disappeared before publication"
     return 1
   fi
-  if ! mv -f "${_plan_tmp}" "${plan_file}"; then
-    rm -f "${_plan_tmp}"
+  if ! mv -f "${_plan_stage}" "${plan_file}"; then
     return 1
   fi
+  _plan_stage=""
 
   if [[ "${_ready}" == "true" ]]; then
     if ! _write_state_batch_unlocked \
@@ -439,6 +473,20 @@ _snapshot_plan_transaction_unlocked() {
   done
 }
 
+_validate_plan_transaction_targets_unlocked() {
+  local artifact path
+  for artifact in session_state.json pending_agents.jsonl \
+      agent_dispatch_starts.jsonl current_plan.md; do
+    path="$(session_file "${artifact}")"
+    if [[ -L "${path}" ]] \
+        || { [[ -e "${path}" ]] && [[ ! -f "${path}" ]]; }; then
+      log_anomaly "record-plan" \
+        "refusing non-regular transaction artifact at ${path}"
+      return 1
+    fi
+  done
+}
+
 _restore_plan_transaction_unlocked() {
   local dir="$1" artifact path tmp rc=0
   for artifact in session_state.json pending_agents.jsonl \
@@ -471,6 +519,7 @@ _restore_plan_transaction_unlocked() {
 
 _record_plan_transaction_unlocked() {
   local snapshot_dir rc=0 restore_rc=0
+  _validate_plan_transaction_targets_unlocked || return 1
   snapshot_dir="$(mktemp -d "$(session_file ".plan-txn.XXXXXX")")" \
     || return 1
   if ! _snapshot_plan_transaction_unlocked "${snapshot_dir}"; then
@@ -488,8 +537,23 @@ _record_plan_transaction_unlocked() {
   return "${rc}"
 }
 
-if ! with_state_lock _record_plan_transaction_unlocked; then
-  log_hook "record-plan" "plan artifact/state publication failed"
+# Planner completion is durable evidence, unlike best-effort hot-path
+# telemetry. Give only this publication a ten-second bounded acquisition
+# budget while retaining the shared lock's default three-second cap elsewhere.
+# The local is dynamically visible to with_state_lock/_with_lockdir and cannot
+# leak into later hook work in this process.
+_record_plan_lock_attempts="${OMC_RECORD_PLAN_LOCK_MAX_ATTEMPTS:-200}"
+if [[ ! "${_record_plan_lock_attempts}" =~ ^[1-9][0-9]*$ \
+    || "${_record_plan_lock_attempts}" -gt 2000 ]]; then
+  _record_plan_lock_attempts=200
+fi
+_with_record_plan_state_lock() {
+  local OMC_STATE_LOCK_MAX_ATTEMPTS="${_record_plan_lock_attempts}"
+  with_state_lock "$@"
+}
+
+if ! _with_record_plan_state_lock _record_plan_transaction_unlocked; then
+  log_anomaly "record-plan" "plan artifact/state publication failed"
   exit 1
 fi
 if [[ "${_plan_commit_accepted:-0}" -ne 1 ]]; then

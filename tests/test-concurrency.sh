@@ -190,13 +190,18 @@ printf 'record-plan keeps concurrent artifact/state writes consistent:\n'
 reset_state
 PLAN_WRITERS=16
 RECORD_PLAN="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/record-plan.sh"
+plan_pids=()
 for i in $(seq 1 "${PLAN_WRITERS}"); do
   payload="$(jq -nc --arg sid "${SESSION_ID}" --arg agent "planner-${i}" \
     --arg msg "PLAN_BODY_${i}\nVERDICT: PLAN_READY" \
     '{session_id:$sid,agent_type:$agent,last_assistant_message:$msg}')"
   ( printf '%s' "${payload}" | STATE_ROOT="${TEST_STATE_ROOT}" bash "${RECORD_PLAN}" ) &
+  plan_pids+=("$!")
 done
-wait
+plan_hook_failures=0
+for plan_pid in "${plan_pids[@]}"; do
+  wait "${plan_pid}" || plan_hook_failures=$((plan_hook_failures + 1))
+done
 
 plan_revision="$(read_state "plan_revision")"
 plan_agent="$(read_state "plan_agent")"
@@ -207,9 +212,62 @@ body_matches=0
 if grep -Fq "PLAN_BODY_${body_index}" "${plan_file}"; then
   body_matches=1
 fi
+assert_eq "all concurrent planner hooks publish successfully" "0" "${plan_hook_failures}"
 assert_eq "all concurrent plans increment revision" "${PLAN_WRITERS}" "${plan_revision}"
 assert_eq "current_plan.md header matches plan_agent state" "${plan_agent}" "${file_agent}"
 assert_eq "current_plan.md body matches plan_agent state" "1" "${body_matches}"
+
+# ===========================================================================
+# Test 5b: authoritative plan publication gets its dedicated wait budget.
+#
+# Force six failed lock claims. The generic two-attempt budget would drop this
+# callback; record-plan's bounded durable-evidence budget must keep polling and
+# publish exactly once. This avoids a wall-clock sleep and pins the override
+# independently from the 16-writer scheduler stress above.
+# ===========================================================================
+printf 'record-plan uses the durable publication lock budget:\n'
+
+reset_state
+rm -f "${plan_file}"
+plan_budget_shim="${TEST_STATE_ROOT}/plan-budget-shim"
+plan_budget_count="${TEST_STATE_ROOT}/plan-budget-count"
+mkdir -p "${plan_budget_shim}"
+printf '0\n' >"${plan_budget_count}"
+printf '%s\n' \
+  '#!/bin/sh' \
+  'dest=""' \
+  'for arg in "$@"; do dest="$arg"; done' \
+  'case "${dest}" in' \
+  '  */.state.lock.owner)' \
+  '    count="$(cat "${OMC_PLAN_BUDGET_COUNT}" 2>/dev/null || printf 0)"' \
+  '    count=$((count + 1))' \
+  '    printf "%s\n" "${count}" >"${OMC_PLAN_BUDGET_COUNT}"' \
+  '    if [ "${count}" -le 6 ]; then exit 1; fi' \
+  '    ;;' \
+  'esac' \
+  'exec /bin/ln "$@"' \
+  >"${plan_budget_shim}/ln"
+chmod +x "${plan_budget_shim}/ln"
+plan_budget_payload="$(jq -nc --arg sid "${SESSION_ID}" \
+  --arg msg $'PLAN_BODY_BUDGET\nVERDICT: PLAN_READY' \
+  '{session_id:$sid,agent_type:"planner-budget",last_assistant_message:$msg}')"
+plan_budget_rc=0
+printf '%s' "${plan_budget_payload}" \
+  | env PATH="${plan_budget_shim}:${PATH}" \
+    OMC_PLAN_BUDGET_COUNT="${plan_budget_count}" \
+    OMC_STATE_LOCK_MAX_ATTEMPTS=2 \
+    OMC_RECORD_PLAN_LOCK_MAX_ATTEMPTS=20 \
+    STATE_ROOT="${TEST_STATE_ROOT}" \
+    bash "${RECORD_PLAN}" >/dev/null 2>&1 \
+  || plan_budget_rc=$?
+assert_eq "plan-specific budget survives the generic two-attempt cap" \
+  "0" "${plan_budget_rc}"
+assert_eq "plan-specific budget keeps polling through six denied claims" \
+  "7" "$(cat "${plan_budget_count}")"
+assert_eq "durably-waited plan advances revision once" \
+  "1" "$(read_state "plan_revision")"
+assert_eq "durably-waited plan publishes matching artifact" \
+  "1" "$(grep -Fc 'PLAN_BODY_BUDGET' "${plan_file}" 2>/dev/null || echo 0)"
 
 # ===========================================================================
 # Test 6: plan publication failure is explicit and cannot advance state.
@@ -241,6 +299,30 @@ assert_eq "failed plan publish does not move a staged file into target directory
   "0" "${artifact_children}"
 rmdir "${plan_file}"
 
+# A symlink is not an owned regular artifact. Replacing it would mutate an
+# external target and make transaction rollback unable to restore the prior
+# shape, so publication must fail before any canonical mutation.
+printf 'record-plan rejects a symlink artifact target:\n'
+reset_state
+plan_symlink_target="${TEST_STATE_ROOT}/external-plan-target.md"
+printf '%s\n' 'EXTERNAL_PLAN_SENTINEL' >"${plan_symlink_target}"
+ln -s "${plan_symlink_target}" "${plan_file}"
+plan_symlink_rc=0
+printf '%s' "${failure_payload}" \
+  | STATE_ROOT="${TEST_STATE_ROOT}" bash "${RECORD_PLAN}" >/dev/null 2>&1 \
+  || plan_symlink_rc=$?
+assert_eq "symlink plan target returns failure" "1" "${plan_symlink_rc}"
+assert_eq "symlink plan target remains a symlink" "yes" \
+  "$([[ -L "${plan_file}" ]] && printf yes || printf no)"
+assert_eq "symlink external target remains untouched" "EXTERNAL_PLAN_SENTINEL" \
+  "$(cat "${plan_symlink_target}")"
+assert_eq "symlink rejection leaves plan_revision unset" "" \
+  "$(read_state "plan_revision")"
+assert_eq "symlink rejection leaves no unpublished stage" "0" \
+  "$(find "$(dirname "${plan_file}")" -maxdepth 1 \
+      -name '.current-plan-stage.*' -print | wc -l | tr -d '[:space:]')"
+rm -f "${plan_file}" "${plan_symlink_target}"
+
 # ===========================================================================
 # Test 7: a planner waiting on the state lock cannot publish after /ulw-off.
 #
@@ -269,15 +351,17 @@ plan_race_release="${TEST_STATE_ROOT}/plan-race-release"
 mkdir -p "${plan_race_shim}"
 printf '%s\n' \
   '#!/bin/sh' \
-  'case "${1:-}" in' \
-  '  */.state.lock)' \
+  'dest=""' \
+  'for arg in "$@"; do dest="$arg"; done' \
+  'case "${dest}" in' \
+  '  */.state.lock.owner)' \
   '    /usr/bin/touch "${OMC_PLAN_RACE_READY}"' \
   '    while [ ! -f "${OMC_PLAN_RACE_RELEASE}" ]; do /bin/sleep 0.01; done' \
   '    ;;' \
   'esac' \
-  'exec /bin/mkdir "$@"' \
-  >"${plan_race_shim}/mkdir"
-chmod +x "${plan_race_shim}/mkdir"
+  'exec /bin/ln "$@"' \
+  >"${plan_race_shim}/ln"
+chmod +x "${plan_race_shim}/ln"
 
 plan_race_payload="$(jq -nc --arg sid "${SESSION_ID}" \
   --arg msg $'STALE_PLAN_BODY\nVERDICT: PLAN_READY' \

@@ -171,6 +171,8 @@ done
 # Lock dir cleaned up
 assert_eq "lock dir released after concurrent writers" "no" \
   "$([[ -d "$(session_file ".state.lock")" ]] && echo yes || echo no)"
+assert_eq "atomic owner sentinel released after concurrent writers" "no" \
+  "$([[ -e "$(session_file ".state.lock.owner")" ]] && echo yes || echo no)"
 
 # ----------------------------------------------------------------------
 printf 'Test 8b: standalone write_state serializes concurrent writers by default\n'
@@ -207,6 +209,340 @@ _acquire_after_stale() { write_state "after_stale" "ok"; }
 with_state_lock _acquire_after_stale
 got="$(read_state "after_stale")"
 assert_eq "stale-lock recovery permits write" "ok" "${got}"
+
+# ----------------------------------------------------------------------
+printf 'Test 9b: live atomic owner is never reclaimed by stale mtime\n'
+reset_state
+lockdir="$(session_file ".state.lock")"
+ownerfile="${lockdir}.owner"
+_make_atomic_owner_fixture() {
+  local fixture_pid="$1" fixture_label="$2"
+  _fixture_claim="${ownerfile}.claim.${fixture_label}"
+  _fixture_token="${fixture_pid}:${_fixture_claim##*/}:1"
+  printf '%s\n' "${_fixture_token}" >"${_fixture_claim}"
+  ln "${_fixture_claim}" "${ownerfile}"
+  mkdir -p "${lockdir}"
+  printf '%s\n' "${fixture_pid}" >"${lockdir}/holder.pid"
+}
+_make_atomic_owner_fixture "$$" "livefixture"
+_live_claim="${_fixture_claim}"
+_live_token="${_fixture_token}"
+if [[ -n "${backdate}" ]]; then
+  touch -t "${backdate}" "${lockdir}" "${ownerfile}" "${_live_claim}"
+fi
+_stale_before="${OMC_STATE_LOCK_STALE_SECS}"
+_attempts_before="${OMC_STATE_LOCK_MAX_ATTEMPTS}"
+OMC_STATE_LOCK_STALE_SECS=1
+OMC_STATE_LOCK_MAX_ATTEMPTS=2
+_live_owner_body() { write_state "false_recovery" "bad"; }
+_live_owner_rc=0
+with_state_lock _live_owner_body || _live_owner_rc=$?
+OMC_STATE_LOCK_STALE_SECS="${_stale_before}"
+OMC_STATE_LOCK_MAX_ATTEMPTS="${_attempts_before}"
+assert_eq "stale mtime cannot recover a live atomic owner" "1" "${_live_owner_rc}"
+assert_eq "live-owner rejection executes no competing body" "" \
+  "$(read_state "false_recovery")"
+assert_eq "live atomic owner remains authoritative" "${_live_token}" \
+  "$(cat "${ownerfile}")"
+rm -f "${ownerfile}" "${_live_claim}" "${lockdir}/holder.pid"
+rmdir "${lockdir}"
+
+# ----------------------------------------------------------------------
+printf 'Test 9c: dead atomic owner is reclaimed immediately\n'
+reset_state
+_dead_owner_pid=999999
+while kill -0 "${_dead_owner_pid}" 2>/dev/null; do
+  _dead_owner_pid=$((_dead_owner_pid + 1))
+done
+_make_atomic_owner_fixture "${_dead_owner_pid}" "deadfixture"
+_dead_claim="${_fixture_claim}"
+_acquire_after_dead_owner() { write_state "after_dead_owner" "ok"; }
+with_state_lock _acquire_after_dead_owner
+assert_eq "dead atomic owner recovery permits write" "ok" \
+  "$(read_state "after_dead_owner")"
+assert_eq "dead atomic owner sentinel is cleaned" "no" \
+  "$([[ -e "${ownerfile}" ]] && echo yes || echo no)"
+assert_eq "dead atomic owner claim is cleaned" "no" \
+  "$([[ -e "${_dead_claim}" ]] && echo yes || echo no)"
+
+# ----------------------------------------------------------------------
+printf 'Test 9d: Bash 3 background owner PID is reclaimable after crash\n'
+reset_state
+_crash_ready="${TEST_STATE_ROOT}/crash-owner-ready"
+_crash_owner_body() {
+  : >"${_crash_ready}"
+  while true; do sleep 1; done
+}
+( with_state_lock _crash_owner_body ) &
+_crash_owner_pid=$!
+for _crash_wait in $(seq 1 500); do
+  [[ -f "${_crash_ready}" ]] && break
+  kill -0 "${_crash_owner_pid}" 2>/dev/null || break
+  sleep 0.01
+done
+assert_eq "background owner reaches locked body" "yes" \
+  "$([[ -f "${_crash_ready}" ]] && printf yes || printf no)"
+assert_eq "atomic sentinel records the real Bash 3 subshell PID" \
+  "${_crash_owner_pid}" "$(cut -d: -f1 "${ownerfile}")"
+kill -9 "${_crash_owner_pid}" 2>/dev/null || true
+wait "${_crash_owner_pid}" 2>/dev/null || true
+_acquire_after_crashed_subshell() { write_state "after_crashed_subshell" "ok"; }
+with_state_lock _acquire_after_crashed_subshell
+assert_eq "crashed background owner is reclaimed immediately" "ok" \
+  "$(read_state "after_crashed_subshell")"
+assert_eq "crashed background owner leaves no sentinel" "no" \
+  "$([[ -e "${ownerfile}" ]] && echo yes || echo no)"
+
+# ----------------------------------------------------------------------
+printf 'Test 9e: dead-owner observer cannot remove a successor lock\n'
+reset_state
+_old_dead_pid=999999
+while kill -0 "${_old_dead_pid}" 2>/dev/null; do
+  _old_dead_pid=$((_old_dead_pid + 1))
+done
+_make_atomic_owner_fixture "${_old_dead_pid}" "oldracefixture"
+_old_race_claim="${_fixture_claim}"
+_successor_claim="${ownerfile}.claim.successorfixture"
+_successor_token="$$:${_successor_claim##*/}:1"
+_owner_race_shim="${TEST_STATE_ROOT}/owner-race-shim"
+mkdir -p "${_owner_race_shim}"
+printf '%s\n' \
+  '#!/bin/sh' \
+  'case "${1:-}:${2:-}" in' \
+  '  "${OMC_OWNER_RACE_OLD_CLAIM}:"*".reap."*)' \
+  '    /bin/rm -f "${OMC_OWNER_RACE_OLD_CLAIM}" "${OMC_OWNER_RACE_FILE}"' \
+  '    printf "%s\n" "${OMC_OWNER_RACE_SUCCESSOR}" >"${OMC_OWNER_RACE_SUCCESSOR_CLAIM}"' \
+  '    /bin/ln "${OMC_OWNER_RACE_SUCCESSOR_CLAIM}" "${OMC_OWNER_RACE_FILE}"' \
+  '    printf "%s\n" "${OMC_OWNER_RACE_SUCCESSOR_PID}" >"${OMC_OWNER_RACE_PIDFILE}"' \
+  '    ;;' \
+  'esac' \
+  'exec /bin/mv "$@"' \
+  >"${_owner_race_shim}/mv"
+chmod +x "${_owner_race_shim}/mv"
+_attempts_before="${OMC_STATE_LOCK_MAX_ATTEMPTS}"
+OMC_STATE_LOCK_MAX_ATTEMPTS=1
+_owner_race_rc=0
+PATH="${_owner_race_shim}:${PATH}" \
+  OMC_OWNER_RACE_FILE="${ownerfile}" \
+  OMC_OWNER_RACE_OLD_CLAIM="${_old_race_claim}" \
+  OMC_OWNER_RACE_SUCCESSOR="${_successor_token}" \
+  OMC_OWNER_RACE_SUCCESSOR_CLAIM="${_successor_claim}" \
+  OMC_OWNER_RACE_SUCCESSOR_PID="$$" \
+  OMC_OWNER_RACE_PIDFILE="${lockdir}/holder.pid" \
+  _with_lockdir "${lockdir}" "owner-race-test" true \
+  || _owner_race_rc=$?
+OMC_STATE_LOCK_MAX_ATTEMPTS="${_attempts_before}"
+assert_eq "waiter declines acquisition after successor wins" "1" \
+  "${_owner_race_rc}"
+assert_eq "successor atomic owner survives stale observer" \
+  "${_successor_token}" "$(cat "${ownerfile}")"
+assert_eq "successor compatibility PID survives stale observer" "$$" \
+  "$(cat "${lockdir}/holder.pid")"
+rm -f "${ownerfile}" "${_old_race_claim}" "${_successor_claim}" \
+  "${lockdir}/holder.pid"
+rmdir "${lockdir}"
+
+# ----------------------------------------------------------------------
+printf 'Test 9f: a dead elected reaper can be taken over\n'
+reset_state
+_takeover_owner_pid=$((_old_dead_pid + 1))
+while kill -0 "${_takeover_owner_pid}" 2>/dev/null; do
+  _takeover_owner_pid=$((_takeover_owner_pid + 1))
+done
+_make_atomic_owner_fixture "${_takeover_owner_pid}" "takeoverowner"
+_takeover_owner_claim="${_fixture_claim}"
+_takeover_reaper_pid=$((_takeover_owner_pid + 1))
+while kill -0 "${_takeover_reaper_pid}" 2>/dev/null; do
+  _takeover_reaper_pid=$((_takeover_reaper_pid + 1))
+done
+_takeover_reaper_claim="${ownerfile}.claim.deadreaper"
+_takeover_reaper_token="${_takeover_reaper_pid}:${_takeover_reaper_claim##*/}:1"
+printf '%s\n' "${_takeover_reaper_token}" >"${_takeover_reaper_claim}"
+_takeover_reap="${_takeover_owner_claim}.reap.${_takeover_reaper_claim##*/}"
+mv "${_takeover_owner_claim}" "${_takeover_reap}"
+_acquire_after_dead_reaper() { write_state "after_dead_reaper" "ok"; }
+with_state_lock _acquire_after_dead_reaper
+assert_eq "dead reaper takeover permits write" "ok" \
+  "$(read_state "after_dead_reaper")"
+assert_eq "dead reaper claim is cleaned" "no" \
+  "$([[ -e "${_takeover_reaper_claim}" ]] && echo yes || echo no)"
+assert_eq "dead reaper artifact is cleaned" "0" \
+  "$(find "${lockdir%/*}" -maxdepth 1 \
+      -name "${_takeover_owner_claim##*/}.reap.*" -print | wc -l | tr -d '[:space:]')"
+
+# ----------------------------------------------------------------------
+printf 'Test 9g: killed waiters leave no orphan claims after owner release\n'
+reset_state
+_claim_gc_ready="${TEST_STATE_ROOT}/claim-gc-ready"
+_claim_gc_release="${TEST_STATE_ROOT}/claim-gc-release"
+_claim_gc_owner_body() {
+  : >"${_claim_gc_ready}"
+  while [[ ! -f "${_claim_gc_release}" ]]; do sleep 0.01; done
+}
+( with_state_lock _claim_gc_owner_body ) &
+_claim_gc_owner_pid=$!
+for _claim_gc_wait in $(seq 1 500); do
+  [[ -f "${_claim_gc_ready}" ]] && break
+  sleep 0.01
+done
+assert_eq "claim-GC owner reaches locked body" "yes" \
+  "$([[ -f "${_claim_gc_ready}" ]] && printf yes || printf no)"
+( with_state_lock true ) &
+_claim_gc_waiter_pid=$!
+for _claim_gc_wait in $(seq 1 500); do
+  _claim_gc_count="$(find "${lockdir%/*}" -maxdepth 1 \
+    -name "${ownerfile##*/}.claim.*" ! -name '*.reap.*' -print \
+    | wc -l | tr -d '[:space:]')"
+  [[ "${_claim_gc_count}" -ge 2 ]] && break
+  sleep 0.01
+done
+assert_eq "waiting contender publishes a unique claim" "yes" \
+  "$([[ "${_claim_gc_count:-0}" -ge 2 ]] && printf yes || printf no)"
+kill -9 "${_claim_gc_waiter_pid}" 2>/dev/null || true
+wait "${_claim_gc_waiter_pid}" 2>/dev/null || true
+: >"${_claim_gc_release}"
+wait "${_claim_gc_owner_pid}"
+# If the waiter was still observable during the first owner's final scan, the
+# next successful owner must make the same bounded sweep and collect it.
+with_state_lock true
+assert_eq "later acquisition scavenges killed-waiter claim" "0" \
+  "$(find "${lockdir%/*}" -maxdepth 1 \
+      -name "${ownerfile##*/}.claim.*" -print | wc -l | tr -d '[:space:]')"
+
+# ----------------------------------------------------------------------
+printf 'Test 9h: post-unlink reaper crash residue is scavenged\n'
+reset_state
+_orphan_owner_pid=$((_takeover_reaper_pid + 1))
+while kill -0 "${_orphan_owner_pid}" 2>/dev/null; do
+  _orphan_owner_pid=$((_orphan_owner_pid + 1))
+done
+_orphan_reaper_pid=$((_orphan_owner_pid + 1))
+while kill -0 "${_orphan_reaper_pid}" 2>/dev/null; do
+  _orphan_reaper_pid=$((_orphan_reaper_pid + 1))
+done
+_orphan_owner_claim="${ownerfile}.claim.orphanowner"
+_orphan_reaper_claim="${ownerfile}.claim.orphanreaper"
+_orphan_owner_token="${_orphan_owner_pid}:${_orphan_owner_claim##*/}:1"
+_orphan_reaper_token="${_orphan_reaper_pid}:${_orphan_reaper_claim##*/}:1"
+printf '%s\n' "${_orphan_reaper_token}" >"${_orphan_reaper_claim}"
+_orphan_reap="${_orphan_owner_claim}.reap.${_orphan_reaper_claim##*/}"
+printf '%s\n' "${_orphan_owner_token}" >"${_orphan_reap}"
+with_state_lock true
+assert_eq "orphan post-unlink reap artifact is removed" "no" \
+  "$([[ -e "${_orphan_reap}" ]] && printf yes || printf no)"
+assert_eq "orphan post-unlink reaper claim is removed" "no" \
+  "$([[ -e "${_orphan_reaper_claim}" ]] && printf yes || printf no)"
+
+# ----------------------------------------------------------------------
+printf 'Test 9i: stale reap with a reused claim name cannot block takeover\n'
+reset_state
+_reuse_owner_pid=$((_orphan_reaper_pid + 1))
+while kill -0 "${_reuse_owner_pid}" 2>/dev/null; do
+  _reuse_owner_pid=$((_reuse_owner_pid + 1))
+done
+_reuse_old_reaper_pid=$((_reuse_owner_pid + 1))
+while kill -0 "${_reuse_old_reaper_pid}" 2>/dev/null; do
+  _reuse_old_reaper_pid=$((_reuse_old_reaper_pid + 1))
+done
+_reuse_current_reaper_pid=$((_reuse_old_reaper_pid + 1))
+while kill -0 "${_reuse_current_reaper_pid}" 2>/dev/null; do
+  _reuse_current_reaper_pid=$((_reuse_current_reaper_pid + 1))
+done
+_reuse_owner_claim="${ownerfile}.claim.reused"
+_reuse_owner_token="${_reuse_owner_pid}:${_reuse_owner_claim##*/}:2"
+_reuse_old_reaper_claim="${ownerfile}.claim.aaa"
+_reuse_current_reaper_claim="${ownerfile}.claim.zzz"
+printf '%s\n' "${_reuse_old_reaper_pid}:${_reuse_old_reaper_claim##*/}:1" \
+  >"${_reuse_old_reaper_claim}"
+printf '%s\n' "${_reuse_current_reaper_pid}:${_reuse_current_reaper_claim##*/}:1" \
+  >"${_reuse_current_reaper_claim}"
+printf '%s\n' "${_reuse_owner_token}" >"${_reuse_owner_claim}"
+ln "${_reuse_owner_claim}" "${ownerfile}"
+mkdir -p "${lockdir}"
+printf '%s\n' "${_reuse_owner_pid}" >"${lockdir}/holder.pid"
+_reuse_old_reap="${_reuse_owner_claim}.reap.${_reuse_old_reaper_claim##*/}"
+_reuse_current_reap="${_reuse_owner_claim}.reap.${_reuse_current_reaper_claim##*/}"
+printf '%s\n' "${_orphan_owner_token}" >"${_reuse_old_reap}"
+mv "${_reuse_owner_claim}" "${_reuse_current_reap}"
+(
+  # Exercise the takeover content bind itself; the production orphan sweep is
+  # independently pinned by Test 9h and would otherwise remove the old row.
+  _cleanup_orphan_lock_claims() { :; }
+  _acquire_after_reused_claim() { write_state "after_reused_claim" "ok"; }
+  with_state_lock _acquire_after_reused_claim
+)
+assert_eq "matching current reap wins past stale reused-name residue" "ok" \
+  "$(read_state "after_reused_claim")"
+rm -f "${_reuse_old_reap}" "${_reuse_old_reaper_claim}"
+
+# ----------------------------------------------------------------------
+printf 'Test 9j: mixed legacy/new crash shapes recover without harming live legacy owners\n'
+reset_state
+_mixed_atomic_pid=$((_reuse_current_reaper_pid + 1))
+while kill -0 "${_mixed_atomic_pid}" 2>/dev/null; do
+  _mixed_atomic_pid=$((_mixed_atomic_pid + 1))
+done
+_mixed_legacy_dead_pid=$((_mixed_atomic_pid + 1))
+while kill -0 "${_mixed_legacy_dead_pid}" 2>/dev/null; do
+  _mixed_legacy_dead_pid=$((_mixed_legacy_dead_pid + 1))
+done
+_make_atomic_owner_fixture "${_mixed_atomic_pid}" "mixeddead"
+printf '%s\n' "${_mixed_legacy_dead_pid}" >"${lockdir}/holder.pid"
+_acquire_after_mixed_dead() { write_state "after_mixed_dead" "ok"; }
+with_state_lock _acquire_after_mixed_dead
+assert_eq "dead mismatched legacy holder becomes recoverable" "ok" \
+  "$(read_state "after_mixed_dead")"
+assert_eq "mixed dead recovery leaves no lock directory" "no" \
+  "$([[ -d "${lockdir}" ]] && printf yes || printf no)"
+
+reset_state
+_make_atomic_owner_fixture "${_mixed_atomic_pid}" "mixedlive"
+_mixed_live_claim="${_fixture_claim}"
+printf '%s\n' "$$" >"${lockdir}/holder.pid"
+_attempts_before="${OMC_STATE_LOCK_MAX_ATTEMPTS}"
+OMC_STATE_LOCK_MAX_ATTEMPTS=2
+_mixed_live_rc=0
+with_state_lock true || _mixed_live_rc=$?
+OMC_STATE_LOCK_MAX_ATTEMPTS="${_attempts_before}"
+assert_eq "live mismatched legacy holder is not acquired over" "1" \
+  "${_mixed_live_rc}"
+assert_eq "dead overlay sentinel is cleared to expose legacy recovery" "no" \
+  "$([[ -e "${ownerfile}" ]] && printf yes || printf no)"
+assert_eq "live mismatched legacy directory remains authoritative" "$$" \
+  "$(cat "${lockdir}/holder.pid")"
+rm -f "${_mixed_live_claim}" "${lockdir}/holder.pid"
+rmdir "${lockdir}"
+
+# ----------------------------------------------------------------------
+printf 'Test 9k: orphan GC rechecks canonical ownership at deletion boundary\n'
+reset_state
+_gc_turn_owner_claim="${ownerfile}.claim.turn-a"
+_gc_turn_candidate_claim="${ownerfile}.claim.turn-b"
+_gc_turn_candidate_pid=$((_mixed_legacy_dead_pid + 1))
+while kill -0 "${_gc_turn_candidate_pid}" 2>/dev/null; do
+  _gc_turn_candidate_pid=$((_gc_turn_candidate_pid + 1))
+done
+_gc_turn_owner_token="$$:${_gc_turn_owner_claim##*/}:1"
+_gc_turn_candidate_token="${_gc_turn_candidate_pid}:${_gc_turn_candidate_claim##*/}:1"
+printf '%s\n' "${_gc_turn_owner_token}" >"${_gc_turn_owner_claim}"
+printf '%s\n' "${_gc_turn_candidate_token}" >"${_gc_turn_candidate_claim}"
+ln "${_gc_turn_owner_claim}" "${ownerfile}"
+(
+  kill() {
+    if [[ "${1:-}" == "-0" && "${2:-}" == "${_gc_turn_candidate_pid}" ]]; then
+      rm -f "${ownerfile}"
+      ln "${_gc_turn_candidate_claim}" "${ownerfile}"
+      return 1
+    fi
+    builtin kill "$@"
+  }
+  _cleanup_orphan_lock_claims "${ownerfile}"
+)
+assert_eq "turnover candidate becomes the canonical token" \
+  "${_gc_turn_candidate_token}" "$(cat "${ownerfile}")"
+assert_eq "GC preserves a candidate that became canonical after snapshot" "yes" \
+  "$([[ -f "${_gc_turn_candidate_claim}" ]] && printf yes || printf no)"
+rm -f "${ownerfile}" "${_gc_turn_owner_claim}" "${_gc_turn_candidate_claim}"
 
 # ----------------------------------------------------------------------
 printf 'Test 10: with_state_lock_batch is one-shot atomic\n'

@@ -299,7 +299,14 @@ Session state is stored at:
   resume_request.json          # Written by stop-failure-handler.sh when Claude Code emits StopFailure: {rate_limited, matcher, original_objective, last_user_prompt, resets_at_ts, project_key, rate_limit_snapshot, resumed_at_ts, dismissed_at_ts, resume_attempts, last_attempt_ts, last_attempt_outcome, last_attempt_pid, ...}. project_key (added Wave 1) is the git-remote-first / cwd-hash _omc_project_key for the cwd at write time — used by Wave 1's resume-hint hook to match worktrees and clone-anywhere paths. Wave 2 `/ulw-resume` claim flow stamps resumed_at_ts (or dismissed_at_ts via --dismiss). Wave 3 watchdog stamps last_attempt_* on each launch attempt and increments resume_attempts. **Chain-depth cap (formula `origin_chain_depth + resume_attempts >= 3`)**: `claim-resume-request.sh --watchdog-launch` refuses to launch when the cumulative depth reaches 3. `session-start-resume-handoff.sh` propagates `origin_session_id` (the first session in the chain) and `origin_chain_depth` (incremented per resume) from the source artifact into the resumed session's state; `stop-failure-handler.sh` stamps both fields onto every new `resume_request.json` so the cap accumulates across the chain. Without this propagation, a watchdog-launched session that itself rate-limits would write a fresh artifact with `resume_attempts: 0` and the cap would silently reset — the chain could then run forever. Read by session-start-resume-hint.sh (Wave 1 hint), claim-resume-request.sh (Wave 2 atomic claim), and resume-watchdog.sh (Wave 3 daemon).
   resume_hint.md               # Markdown sidecar written by session-start-resume-hint.sh on emit (Wave 1). Frontmatter: origin_session_id, artifact_path, match_scope, matcher, emitted_at_ts, source. Body: the rendered additionalContext that was injected. Provides /ulw-status visibility and a paper trail the future Wave 3 watchdog can inspect without re-deriving from gate events.
   timing.jsonl                 # Per-call timing plus token deltas/checkpoints. Token rows retain main/agent categories, role/model buckets, and newest-512 native agent_by_id attribution; per-file identity/byte/trailing-request cursors prevent recount and preserve component high-waters.
+  .state.lock/                 # Compatibility/observability directory for the live session mutex; contains holder.pid while owned
+  .state.lock.owner            # Atomically published hard-link sentinel containing PID + unique claim identity
+  .state.lock.owner.claim.*    # Per-contender claim/reaper-election links; normally removed on release, retained across a crash only to make dead-owner recovery safe
 ```
+
+The same adjacent `.owner` and `.owner.claim.*` ownership artifacts apply to
+every cross-session lock routed through `_with_lockdir`; only the lock basename
+and parent directory differ.
 
 Cross-session ledgers (in `~/.claude/quality-pack/`, not per-session):
 
