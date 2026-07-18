@@ -1,0 +1,47 @@
+{
+  "schema_version": 2,
+  "id": "quality-scenario-model",
+  "domain": "quantitative",
+  "risk": "high",
+  "fixture": "fixtures/quality/scenario-model",
+  "prompt": "/ulw build a decision-ready scenario model from these inputs and make a defensible recommendation under uncertainty",
+  "candidate_artifacts": [
+    {"kind": "files", "globs": ["model.xlsx", "model.csv", "methodology.md"]},
+    {"kind": "rendered_images", "globs": ["rendered/**"]}
+  ],
+  "hard_checks": [
+    {"id": "recalculation", "description": "Formula outputs recalculate to the expected fixture values without hard-coded result cells.", "critical": true},
+    {"id": "input_fidelity", "description": "All source inputs, units, dates, and missing-value treatments remain traceable and correct.", "critical": true},
+    {"id": "scenario_integrity", "description": "Base, upside, downside, and sensitivity logic obey the supplied constraints and identities.", "critical": true}
+  ],
+  "rubric": {
+    "version": "ddccv-1",
+    "audience": "An operating leader choosing a course of action from uncertain financial and operational inputs.",
+    "constraints": ["Preserve source units and time bases.", "Make assumptions editable and visibly separate from observations.", "Use formulas for derived values."],
+    "non_goals": ["Create false numerical precision", "Add unsupported forecast drivers", "Optimize presentation at the expense of auditability"],
+    "task_specific_anchors": [
+      "A decision-maker can trace recommendation, threshold, driver, formula, and source without reverse engineering the workbook.",
+      "Sensitivity and scenario structure expose where the decision changes, not just a range of outputs.",
+      "The model becomes a living decision instrument rather than a one-off calculation."
+    ],
+    "dimensions": [
+      {"id": "deliberate", "weight": 1},
+      {"id": "distinctive", "weight": 1},
+      {"id": "coherent", "weight": 1},
+      {"id": "visionary", "weight": 1},
+      {"id": "complete", "weight": 1}
+    ]
+  },
+  "campaign": {
+    "runs_per_arm": 3,
+    "model_tiers": ["balanced", "economy"],
+    "max_candidate_cost_ratio": 1.75,
+    "max_candidate_wall_ratio": 1.75,
+    "candidate_summary_contract": {
+      "schema_version": 3,
+      "required_top_level": ["probe_id", "provenance", "artifact_dir", "economics"],
+      "required_provenance": ["prompt_hash", "fixture_hash", "source_hash", "model", "model_tier", "harness_role", "harness_hash"],
+      "required_token_economics": ["input", "output", "cache_read", "cache_creation"]
+    }
+  }
+}

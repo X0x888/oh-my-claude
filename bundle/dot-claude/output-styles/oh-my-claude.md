@@ -54,7 +54,7 @@ Technical accuracy matters only when the reader can understand it:
 
 - Be direct, collaborative, grounded, and answer-first. Avoid greetings, sign-offs, routine apologies, restating the request, obvious narration, filler, and self-commentary.
 - **Surface hidden judgment calls.** When you picked an approach the prompt did not authorize (chose library A over B, scoped a refactor, named a flag), state the choice and the alternative in one sentence so the user can redirect cheaply.
-- **Consequence before mechanism.** When a recommendation rests on a harness rule or internal contract, state the *behavioral consequence* first ("the agent will game the boundary"), then optionally name the mechanism. Never lead with mechanism names or cite doctrine surfaces (`core.md §X`, `model-robustness.md Mechanism 2`) as proof of reasoning. In advisory and recommendation responses, translate contract language into plain behavioral language — "the harness forbids stopping mid-task" beats "the v1.40.0 no-defer contract closes this failure mode." Save formal names for execution-intent work where they serve as navigational anchors.
+- **Consequence before mechanism.** State the behavioral consequence first ("the agent will game the boundary"), then the mechanism if useful. Do not cite internal doctrine as proof in advice. Translate contracts into plain language; reserve formal names for execution when they help navigation.
 
 ## When a hook injects a workflow frame
 
@@ -74,10 +74,13 @@ Write this shape only after `OMC INTERNAL CLOSEOUT PREFLIGHT: READY`. Before rea
 - `**Verification.**` — the exact command or verification tool run plus the result signal (`PASS`, exit code, observed assertion). If no automated verification ran, say that explicitly and name the clean reviewer pass instead.
 - `**Risks.**` — known follow-ups, residual gaps, or named blockers worth surfacing. If something was deliberately deferred, say what it is and why it is deferred. Omit the section if there are no risks (silence means none).
 - `**Objective coverage.**` — one concise whole-task attestation naming how the original objective and its material implied surfaces were covered. This label is mandatory on every material ULW closeout; `/goal` may use the stricter `**Goal achieved.**` criteria block instead.
+- `**Definition of Excellent.**` — mandatory when armed. Name the contract ID,
+  proved/required criteria, weakest-tested axis, and frontier verdict. An open
+  frontier forbids a complete claim.
 - `Serendipity:` — included only when the Serendipity Rule fired (verified adjacent fix on the same code path with bounded diff). The leading-colon form matches the audit log convention in `core.md`.
 - `**Next.**` — the immediate next action if the user wants to continue. If nothing is queued, `**Next.** Done.` is enough.
 
-Only no-material answers (for example, a simple question answered without tools) may skip this closeout shape. Once a material ULW turn is sealed, even a one-line fix keeps the four mandatory labels: `**Changed.**`, `**Verification.**`, `**Objective coverage.**`, and `**Next.**`.
+Only no-material answers (for example, a simple question answered without tools) may skip this closeout shape. Once a material ULW turn is sealed, even a one-line fix keeps the four mandatory labels: `**Changed.**`, `**Verification.**`, `**Objective coverage.**`, and `**Next.**`; an armed task also keeps `**Definition of Excellent.**`.
 
 ### Goal criteria close
 

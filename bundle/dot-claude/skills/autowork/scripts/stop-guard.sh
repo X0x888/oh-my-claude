@@ -318,9 +318,92 @@ if [[ -n "${gate_skip_reason}" ]]; then
   fi
 fi
 
+# Definition certification is the first non-waived execution Stop gate. The
+# function is declared immediately after /ulw-skip, then invoked as soon as the
+# effective per-turn intent has been established below. That intent boundary is
+# load-bearing: advisory/checkpoint/session-management turns preserve an
+# in-flight Definition for a later continuation but must remain Stop-inert. No
+# older capped gate, no no-edit shortcut, and no scorecard/exhaustion path runs
+# before the invocation on an execution turn.
+_sg_definition_precedence_gate() {
+  [[ "$(read_state "quality_contract_required" 2>/dev/null || true)" == "1" ]] || return 0
+  local gate_json="" ready=0 status required_count satisfied_count frontier_status
+  local missing stale verify_current counter_key count recovery
+  if _omc_load_quality_contract 2>/dev/null \
+    && gate_json="$(quality_contract_gate_status_json 2>/dev/null)"; then
+    ready=1
+  fi
+  if [[ -z "${gate_json}" ]] \
+    || ! jq -e '.status | type == "string"' <<<"${gate_json}" >/dev/null 2>&1; then
+    gate_json='{"status":"invalid_contract_engine","required_count":0,"satisfied_count":0,"missing_ids":[],"stale_ids":[],"verification_current":false,"frontier_status":"unknown"}'
+    ready=0
+  fi
+  status="$(jq -r '.status' <<<"${gate_json}")"
+  required_count="$(jq -r '.required_count // 0' <<<"${gate_json}")"
+  satisfied_count="$(jq -r '.satisfied_count // 0' <<<"${gate_json}")"
+  frontier_status="$(jq -r '.frontier_status // "unknown"' <<<"${gate_json}")"
+  missing="$(jq -r '(.missing_ids // []) | join(",")' <<<"${gate_json}")"
+  stale="$(jq -r '(.stale_ids // []) | join(",")' <<<"${gate_json}")"
+  verify_current="$(jq -r '.verification_current // false' <<<"${gate_json}")"
+  if [[ "${ready}" -eq 1 ]]; then
+    write_state_batch \
+      "quality_contract_status" "proved" \
+      "quality_evidence_required_count" "${required_count}" \
+      "quality_evidence_current_count" "${satisfied_count}" \
+      "quality_frontier_status" "${frontier_status}" 2>/dev/null || true
+    return 0
+  fi
+
+  counter_key="quality_contract_blocks"
+  case "${status}" in
+    missing_evidence|stale_evidence|invalid_evidence|invalid_receipts) counter_key="quality_evidence_blocks" ;;
+    missing_frontier|stale_frontier|invalid_frontier|open_frontier) counter_key="quality_frontier_blocks" ;;
+  esac
+  _sg_increment_definition_precedence_unlocked() {
+    count="$(read_state "${counter_key}" 2>/dev/null || true)"
+    [[ "${count}" =~ ^[0-9]+$ ]] || count=0
+    count=$((count + 1))
+    _write_state_batch_unlocked \
+      "${counter_key}" "${count}" \
+      "quality_contract_status" "${status}" \
+      "quality_evidence_required_count" "${required_count}" \
+      "quality_evidence_current_count" "${satisfied_count}" \
+      "quality_frontier_status" "${frontier_status}"
+  }
+  count=1
+  with_state_lock _sg_increment_definition_precedence_unlocked 2>/dev/null || true
+  case "${status}" in
+    missing_contract|stale_contract|invalid_contract_engine)
+      recovery="Dispatch quality-planner (prometheus only for genuine ambiguity), preserve the frozen floor, and land a current QUALITY_CONTRACT_JSON before implementation."
+      ;;
+    late_contract)
+      recovery="A contract first appeared after mutation and cannot certify a pre-implementation bar. Restore/restart from the pre-mutation objective state, or use the explicit user-owned /ulw-skip escape with a reason."
+      ;;
+    missing_evidence|stale_evidence|invalid_evidence|invalid_receipts)
+      recovery="Run the frozen artifact-specific proof methods so the hooks record current verification receipts, then dispatch excellence-reviewer on the settled revision."
+      ;;
+    missing_frontier|stale_frontier|invalid_frontier)
+      recovery="Freeze the current artifact and dispatch excellence-reviewer for a fresh blind-first frontier search; self-review and historical receipts do not count."
+      ;;
+    open_frontier)
+      recovery="Implement or empirically disprove the recorded dominating move, re-verify, and re-run excellence-reviewer. Cost, time, or difficulty alone cannot clear it."
+      ;;
+    *) recovery="Repair the first invalid Definition artifact, then re-run its independent planner or excellence authority." ;;
+  esac
+  record_gate_event "definition-of-excellent/stop" "block" \
+    "status=${status}" "block_count=${count}" \
+    "criteria=${satisfied_count}/${required_count}" \
+    "missing=${missing:-none}" "stale=${stale:-none}" \
+    "frontier=${frontier_status}" "verification_current=${verify_current}"
+  emit_stop_block "$(format_gate_block_dual \
+    "Definition-of-Excellent certification is incomplete (${status}). ${recovery}" \
+    "[Definition of Excellent · ${status} · uncapped block ${count}] The frozen pre-implementation bar is first-class across deliberate, distinctive, coherent, visionary, and complete. Proof=${satisfied_count}/${required_count}; missing=${missing:-none}; stale=${stale:-none}; frontier=${frontier_status}; current verification=${verify_current}. ${recovery} Explicit user escape: /ulw-skip <reason>.")"
+  exit 0
+}
+
 # v1.27.0 (F-018): bulk-read the always-together objective state and the
 # mutation generations that bound this Stop evaluation in one jq fork.
-# Invariant: argv length === case-branch count (12 keys → 0..11).
+# Invariant: argv length === case-branch count (15 keys → 0..14).
 # Adding a key requires (a) extending the read_state_keys argv below AND
 # (b) extending the case statement above. read_state_keys always emits
 # exactly N lines for N args (jq's // "" + corrupt/missing fallbacks),
@@ -343,6 +426,9 @@ while IFS= read -r -d $'\x1e' _sg_line; do
     9) _sg_start_doc_edit_revision="${_sg_line}" ;;
     10) _sg_start_plan_ts="${_sg_line}" ;;
     11) _sg_start_plan_revision="${_sg_line}" ;;
+    12) _sg_prompt_revision="${_sg_line}" ;;
+    13) _sg_last_edit_prompt_revision="${_sg_line}" ;;
+    14) _sg_quality_contract_required="${_sg_line}" ;;
   esac
   _sg_idx=$((_sg_idx + 1))
 done < <(read_state_keys \
@@ -357,7 +443,10 @@ done < <(read_state_keys \
   "last_doc_edit_ts" \
   "last_doc_edit_revision" \
   "plan_ts" \
-  "plan_revision")
+  "plan_revision" \
+  "prompt_revision" \
+  "last_edit_prompt_revision" \
+  "quality_contract_required")
 session_handoff_blocks="${session_handoff_blocks:-0}"
 _sg_start_last_edit_ts="${last_edit_ts}"
 _sg_start_readiness_fingerprint="$(closeout_readiness_fingerprint 2>/dev/null || true)"
@@ -533,7 +622,24 @@ _sg_commit_release_or_block() {
 _effective_intent="${task_intent}"
 if ! is_execution_intent_value "${task_intent}"; then
   _prompt_classified_intent="$(read_state "prompt_classified_intent" 2>/dev/null || true)"
-  if [[ "${_prompt_classified_intent}" == "execution" ]] \
+  if [[ "${_sg_quality_contract_required}" == "1" \
+      && "${_sg_prompt_revision}" =~ ^[1-9][0-9]*$ \
+      && "${_sg_last_edit_prompt_revision}" == "${_sg_prompt_revision}" ]]; then
+    # Advisory/checkpoint/session-management is a behavioral promise, not a
+    # bypass label. mark-edit stamps the exact prompt revision after every
+    # observed mutation. If a nominally non-execution turn changed an artifact
+    # while a Definition remains armed, promote only this Stop evaluation so
+    # the current evidence/frontier must cover those bytes. A denied or failed
+    # non-mutating attempt leaves no stamp and the interlude stays inert.
+    _effective_intent="execution"
+    record_gate_event "definition-of-excellent/stop" \
+      "nonexecution-mutation-promoted" \
+      "router_intent=${_prompt_classified_intent:-${task_intent}}" \
+      "current_intent=${task_intent}" \
+      "prompt_revision=${_sg_prompt_revision}" \
+      "edit_revision=${_sg_start_edit_revision}" || true
+    log_hook "stop-guard" "Definition promoted mutated non-execution turn: intent=${task_intent} prompt_revision=${_sg_prompt_revision}"
+  elif [[ "${_prompt_classified_intent}" == "execution" ]] \
     && [[ -n "${last_edit_ts}" && -n "${last_user_prompt_ts}" ]] \
     && [[ "${last_edit_ts}" -gt "${last_user_prompt_ts}" ]]; then
     _effective_intent="execution"
@@ -544,6 +650,13 @@ if ! is_execution_intent_value "${task_intent}"; then
       "last_user_prompt_ts=${last_user_prompt_ts}" || true
     log_hook "stop-guard" "intent-flip overridden: router=execution but task_intent=${task_intent} after edits"
   fi
+fi
+
+# Keep the persistent Definition armed across genuinely read-only non-execution
+# interludes. Apply its uncapped certification to execution/continuation, an
+# intent-flip backstop, or a nominal non-execution turn that actually mutated.
+if is_execution_intent_value "${_effective_intent}"; then
+  _sg_definition_precedence_gate
 fi
 
 if ! is_execution_intent_value "${_effective_intent}"; then

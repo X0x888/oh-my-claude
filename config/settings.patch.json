@@ -127,7 +127,7 @@
         ]
       },
       {
-        "matcher": "Bash|mcp__.*",
+        "matcher": "Bash|Read|Grep|mcp__.*",
         "hooks": [
           {
             "type": "command",
@@ -145,7 +145,16 @@
         ]
       },
       {
-        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit",
+        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/skills/autowork/scripts/quality-constitution-authority-guard.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__.*",
         "hooks": [
           {
             "type": "command",
@@ -164,7 +173,7 @@
         ]
       },
       {
-        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|mcp__.*",
         "hooks": [
           {
             "type": "command",
@@ -174,6 +183,15 @@
       },
       {
         "matcher": "mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/skills/autowork/scripts/record-verification.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Grep",
         "hooks": [
           {
             "type": "command",
@@ -232,11 +250,20 @@
     ],
     "PostToolUseFailure": [
       {
-        "matcher": "Bash",
+        "matcher": "Bash|mcp__.*",
         "hooks": [
           {
             "type": "command",
             "command": "$HOME/.claude/skills/autowork/scripts/mark-edit.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|Read|Grep|mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/skills/autowork/scripts/record-verification.sh"
           }
         ]
       }

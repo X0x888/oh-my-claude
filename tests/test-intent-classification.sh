@@ -459,6 +459,8 @@ assert_not_checkpoint "for now let's move on"
 assert_not_checkpoint "just the API for now"
 assert_checkpoint "stop here"
 assert_checkpoint "let's stop here"
+assert_checkpoint "Pause implementation and only summarize the current contract."
+assert_checkpoint "Please pause work and recap the current status."
 
 # --- Continuation/resume at prompt boundaries ---
 printf '\nCheckpoint boundary-scoped keywords:\n'
@@ -483,6 +485,8 @@ assert_not_checkpoint "Fix the header bug, then stop for now"
 assert_not_checkpoint "Implement the feature, we can continue later"
 assert_not_checkpoint "Deploy the update and pause for now"
 assert_not_checkpoint "Please fix the bug and stop for now"
+assert_not_checkpoint "Pause implementation and summarize the current contract, then update the tests"
+assert_not_checkpoint "Pause implementation and fix the rollback path"
 
 # --- "for now" at start-of-text: scope qualifier, not checkpoint ---
 printf '\nCheckpoint for-now scope qualifier:\n'

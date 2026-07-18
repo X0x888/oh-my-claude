@@ -28,6 +28,7 @@ TRIGGER_ATTESTATIONS_IF_MISSING=0
 ATTESTATION_POLL_ATTEMPTS=""
 ATTESTATION_POLL_INTERVAL=""
 ATTESTATION_RUN_LIMIT=""
+PAIRWISE_RECEIPTS=()
 SKIP_PROFESSIONAL=0
 SKIP_INSTALL=0
 SKIP_DISTRIBUTION=0
@@ -82,6 +83,8 @@ Options:
   --attestation-poll-attempts <N>   Passed through to distribution audit.
   --attestation-poll-interval <N>   Passed through to distribution audit.
   --attestation-run-limit <N>       Passed through to distribution audit.
+  --pairwise-receipt <file>         Pass one sealed raw pair receipt to the
+                                    professional claim gate. Repeat per pair.
   --skip-professional               Skip the product-readiness surface.
   --skip-install                    Skip the install/onboarding surface.
   --skip-distribution               Skip the distribution-readiness surface.
@@ -339,6 +342,15 @@ while [[ $# -gt 0 ]]; do
       ATTESTATION_RUN_LIMIT="$2"
       shift 2
       ;;
+    --pairwise-receipt)
+      [[ $# -ge 2 && -n "${2:-}" ]] || { usage >&2; exit 2; }
+      PAIRWISE_RECEIPTS+=("$2")
+      shift 2
+      ;;
+    --pairwise-report)
+      printf 'verify-project-readiness: aggregate reports are not evidence; pass raw --pairwise-receipt files\n' >&2
+      exit 2
+      ;;
     --skip-professional)
       SKIP_PROFESSIONAL=1
       shift
@@ -384,10 +396,30 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ "${#PAIRWISE_RECEIPTS[@]}" -gt 0 ]]; then
+  [[ "${SKIP_PROFESSIONAL}" -eq 0 ]] || {
+    printf 'verify-project-readiness: --pairwise-receipt cannot be combined with --skip-professional\n' >&2
+    exit 2
+  }
+  for pairwise_index in "${!PAIRWISE_RECEIPTS[@]}"; do
+    pairwise_receipt="${PAIRWISE_RECEIPTS[$pairwise_index]}"
+    [[ -f "${pairwise_receipt}" ]] || {
+      printf 'verify-project-readiness: pairwise receipt not found: %s\n' "${pairwise_receipt}" >&2
+      exit 2
+    }
+    PAIRWISE_RECEIPTS[pairwise_index]="$(cd "$(dirname "${pairwise_receipt}")" && pwd -P)/$(basename "${pairwise_receipt}")"
+  done
+fi
+
 if [[ "${SKIP_PROFESSIONAL}" -eq 1 ]]; then
   record_skip "professional" "verify-project-readiness: professional-readiness audit skipped by caller"
 else
   professional_cmd="${PROFESSIONAL_READINESS_CMD}"
+  if [[ "${#PAIRWISE_RECEIPTS[@]}" -gt 0 ]]; then
+    for pairwise_receipt in "${PAIRWISE_RECEIPTS[@]}"; do
+      professional_cmd+=" --pairwise-receipt $(printf '%q' "${pairwise_receipt}")"
+    done
+  fi
   if [[ "${JSON_MODE}" -eq 1 ]]; then
     professional_cmd+=" --json"
   fi

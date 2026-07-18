@@ -13,8 +13,8 @@
 #   4. One handler's early `exit` (or failure) cannot starve the others.
 #   5. settings.patch.json wires exactly one universal PostToolUse entry to
 #      the dispatcher and none to the three folded Bash-matcher scripts —
-#      while the mcp__.* record-verification matcher survives (that path
-#      still invokes the script standalone).
+#      while the success and failure record-verification matchers survive
+#      (those paths still invoke the script standalone).
 
 set -euo pipefail
 
@@ -216,16 +216,61 @@ assert_eq "T6: mcp record-verification matcher survives" "1" \
   "$(jq -r '[.hooks.PostToolUse[] | select(.matcher == "mcp__.*")] | length' "${PATCH_JSON}")"
 rc=0; grep -q 'posttool-timing.sh' "${PATCH_JSON}" && rc=1
 assert_true "T6: no direct posttool-timing wiring remains" "${rc}"
-assert_eq "T6: failed Bash calls are wired to the edit-clock writer" "1" \
-  "$(jq -r '[.hooks.PostToolUseFailure[] | select(.matcher == "Bash") | .hooks[] | select(.command | contains("mark-edit.sh"))] | length' "${PATCH_JSON}")"
+assert_eq "T6: failed Bash/MCP calls are wired to the edit-clock writer" "1" \
+  "$(jq -r '[.hooks.PostToolUseFailure[] | select(.matcher == "Bash|mcp__.*") | .hooks[] | select(.command | contains("mark-edit.sh"))] | length' "${PATCH_JSON}")"
+assert_eq "T6: failed verification-capable calls are wired to negative receipts" "1" \
+  "$(jq -r '[.hooks.PostToolUseFailure[] | select(.matcher == "Bash|Read|Grep|mcp__.*") | .hooks[] | select(.command | contains("record-verification.sh"))] | length' "${PATCH_JSON}")"
 assert_eq "T6: complete mutation matcher reaches the pretool guard" "1" \
-  "$(jq -r '[.hooks.PreToolUse[] | select(.matcher == "Bash|Edit|Write|MultiEdit|NotebookEdit") | .hooks[] | select(.command | contains("pretool-intent-guard.sh"))] | length' "${PATCH_JSON}")"
-assert_eq "T6: Bash/MCP dispatch revisions have a dedicated PreToolUse recorder" "1" \
-  "$(jq -r '[.hooks.PreToolUse[] | select(.matcher == "Bash|mcp__.*") | .hooks[] | select(.command | contains("record-tool-start-revision.sh"))] | length' "${PATCH_JSON}")"
+  "$(jq -r '[.hooks.PreToolUse[] | select(.matcher == "Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__.*") | .hooks[] | select(.command | contains("pretool-intent-guard.sh"))] | length' "${PATCH_JSON}")"
+assert_eq "T6: Bash/read/MCP dispatch revisions have a dedicated PreToolUse recorder" "1" \
+  "$(jq -r '[.hooks.PreToolUse[] | select(.matcher == "Bash|Read|Grep|mcp__.*") | .hooks[] | select(.command | contains("record-tool-start-revision.sh"))] | length' "${PATCH_JSON}")"
 assert_eq "T6: complete direct-edit matcher reaches the clock writer" "1" \
-  "$(jq -r '[.hooks.PostToolUse[] | select(.matcher == "Edit|Write|MultiEdit|NotebookEdit") | .hooks[] | select(.command | contains("mark-edit.sh"))] | length' "${PATCH_JSON}")"
+  "$(jq -r '[.hooks.PostToolUse[] | select(.matcher == "Edit|Write|MultiEdit|NotebookEdit|mcp__.*") | .hooks[] | select(.command | contains("mark-edit.sh"))] | length' "${PATCH_JSON}")"
 assert_eq "T6: successful Bash dispatcher remains universal" "1" \
   "$(jq -r '[.hooks.PostToolUse[] | select((.matcher // "") == "") | .hooks[] | select(.command | contains("posttool-dispatch.sh"))] | length' "${PATCH_JSON}")"
+
+# ----------------------------------------------------------------------
+printf 'T6b: document connectors advance both document and external clocks\n'
+setup_session "d6b"
+payload_t6b="$(jq -nc '{
+  session_id:"d6b",tool_name:"mcp__documents__update_document",
+  tool_use_id:"tu-doc-external",cwd:"/tmp",
+  tool_input:{document_id:"doc-1",content:"updated"},
+  tool_response:{status:"updated"}
+}')"
+run_mark_edit "${payload_t6b}" >/dev/null
+state="${TEST_HOME}/.claude/quality-pack/state/d6b/session_state.json"
+assert_eq "T6b: aggregate revision advances" "1" \
+  "$(jq -r '.edit_revision // ""' "${state}")"
+assert_eq "T6b: document revision advances" "1" \
+  "$(jq -r '.last_doc_edit_revision // ""' "${state}")"
+assert_eq "T6b: external revision advances on same generation" "1" \
+  "$(jq -r '.last_external_edit_revision // ""' "${state}")"
+assert_eq "T6b: external scope identifies document surface" "doc" \
+  "$(jq -r '.external_edit_scope // ""' "${state}")"
+teardown_session
+
+# ----------------------------------------------------------------------
+printf 'T6c: a failed document connector still invalidates external proof\n'
+setup_session "d6c"
+payload_t6c="$(jq -nc '{
+  session_id:"d6c",hook_event_name:"PostToolUseFailure",
+  tool_name:"mcp__documents__update_document",
+  tool_use_id:"tu-doc-partial",cwd:"/tmp",
+  tool_input:{document_id:"doc-partial",content:"partially applied"},
+  tool_response:{is_error:true,error:"remote timeout after partial write"}
+}')"
+run_mark_edit "${payload_t6c}" >/dev/null
+state="${TEST_HOME}/.claude/quality-pack/state/d6c/session_state.json"
+assert_eq "T6c: failed connector advances aggregate revision" "1" \
+  "$(jq -r '.edit_revision // ""' "${state}")"
+assert_eq "T6c: failed connector advances document revision" "1" \
+  "$(jq -r '.last_doc_edit_revision // ""' "${state}")"
+assert_eq "T6c: failed connector advances external revision" "1" \
+  "$(jq -r '.last_external_edit_revision // ""' "${state}")"
+assert_eq "T6c: failed connector records external document scope" "doc" \
+  "$(jq -r '.external_edit_scope // ""' "${state}")"
+teardown_session
 
 # ----------------------------------------------------------------------
 printf 'T7: mutation-capable Bash advances edit clocks through dispatcher\n'
@@ -393,7 +438,6 @@ for command in \
   'git -c diff.external=./mutator diff -- tracked.txt' \
   'git --paginate status' \
   'git fetch --upload-pack=./mutator .' \
-  'git status --short' \
   'git apply --check fix.patch' \
   'black --check .' \
   'isort --check-only .' \
@@ -414,6 +458,7 @@ done
 for command in \
   'git commit -m "fix touch handling"' \
   'git push origin main' \
+  'git status --short' \
   'echo "a > b"' \
   'printf x > /dev/null'; do
   rc=0; predicate_matches "${command}" && rc=1 || rc=0

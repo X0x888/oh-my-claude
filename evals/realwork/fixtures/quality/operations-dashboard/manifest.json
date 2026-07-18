@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "probe_id": "quality-operations-dashboard",
+  "checks": [
+    {
+      "id": "data_fidelity",
+      "rules": [
+        {"type": "json_equals", "path": "dashboard.json", "key_path": ["primary_incident", "id"], "value": "INC-104"},
+        {"type": "json_equals", "path": "dashboard.json", "key_path": ["primary_incident", "severity"], "value": "SEV-1"},
+        {"type": "json_equals", "path": "dashboard.json", "key_path": ["primary_incident", "owner"], "value": "payments-oncall"}
+      ]
+    },
+    {
+      "id": "primary_action",
+      "rules": [
+        {"type": "json_equals", "path": "dashboard.json", "key_path": ["primary_incident", "next_safe_action"], "value": "Fail over to eu-west replica"}
+      ]
+    },
+    {
+      "id": "accessibility",
+      "rules": [
+        {"type": "json_equals", "path": "accessibility.json", "key_path": ["keyboard_flow"], "value": true},
+        {"type": "json_equals", "path": "accessibility.json", "key_path": ["non_color_status"], "value": true},
+        {"type": "json_equals", "path": "accessibility.json", "key_path": ["contrast_aa"], "value": true}
+      ]
+    }
+  ]
+}

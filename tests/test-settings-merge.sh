@@ -173,15 +173,16 @@ for impl in "${implementations[@]}"; do
   assert_json_count "${impl}: fresh — UserPromptSubmit hooks" \
     "${work}/settings.json" '.hooks.UserPromptSubmit' "1"
   assert_json_count "${impl}: fresh — PreToolUse hooks" \
-    "${work}/settings.json" '.hooks.PreToolUse' "4"
+    "${work}/settings.json" '.hooks.PreToolUse' "5"
   assert_json_count "${impl}: fresh — MessageDisplay hooks" \
     "${work}/settings.json" '.hooks.MessageDisplay' "1"
   # v1.48 W3.1: the four per-call PostToolUse processes (universal timing +
-  # 3 Bash-matcher recorders) consolidated into one universal dispatcher —
-  # 8 entries became 5 (dispatcher, Edit-family mark-edit, mcp record-
-  # verification, Agent reflect, Grep|Read advisory-verification).
+  # 3 Bash-matcher recorders) consolidated into one universal dispatcher.
+  # Definition receipts later added a dedicated Read|Grep verifier, so the
+  # managed set is now 6 (dispatcher, Edit/MCP mark-edit, MCP verifier,
+  # Read/Grep receipt verifier, Agent reflect, Read/Grep advisory verifier).
   assert_json_count "${impl}: fresh — PostToolUse hooks" \
-    "${work}/settings.json" '.hooks.PostToolUse' "5"
+    "${work}/settings.json" '.hooks.PostToolUse' "6"
   assert_json_count "${impl}: fresh — PostToolBatch hooks" \
     "${work}/settings.json" '.hooks.PostToolBatch' "1"
   assert_json_count "${impl}: fresh — SubagentStart hooks" \
@@ -205,7 +206,7 @@ for impl in "${implementations[@]}"; do
   assert_json_count "${impl}: fresh — StopFailure hooks" \
     "${work}/settings.json" '.hooks.StopFailure' "1"
   assert_json_count "${impl}: fresh — PostToolUseFailure hooks" \
-    "${work}/settings.json" '.hooks.PostToolUseFailure' "1"
+    "${work}/settings.json" '.hooks.PostToolUseFailure' "2"
   assert_json_eq "${impl}: fresh — StopFailure wires stop-failure-handler.sh" \
     "${work}/settings.json" \
     '[.hooks.StopFailure[] | .hooks[0].command] | .[0] | tostring | contains("stop-failure-handler.sh")' \
@@ -221,7 +222,7 @@ for impl in "${implementations[@]}"; do
   # optional timing subsystem, for both Bash and MCP verification surfaces.
   assert_json_eq "${impl}: fresh — verification start-revision recorder wired" \
     "${work}/settings.json" \
-    '[.hooks.PreToolUse[] | select(.matcher == "Bash|mcp__.*") | .hooks[0].command] | .[0] | tostring | contains("record-tool-start-revision.sh")' \
+    '[.hooks.PreToolUse[] | select(.matcher == "Bash|Read|Grep|mcp__.*") | .hooks[0].command] | .[0] | tostring | contains("record-tool-start-revision.sh")' \
     "true"
 
   # PreToolUse must wire every direct mutation tool (including notebooks) to
@@ -230,15 +231,23 @@ for impl in "${implementations[@]}"; do
   # /ulw execution mutations.
   assert_json_eq "${impl}: fresh — PreToolUse mutation guard matcher wired" \
     "${work}/settings.json" \
-    '[.hooks.PreToolUse[] | select(.matcher == "Bash|Edit|Write|MultiEdit|NotebookEdit") | .hooks[0].command] | .[0] | tostring | contains("pretool-intent-guard.sh")' \
+    '[.hooks.PreToolUse[] | select(.matcher == "Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__.*") | .hooks[0].command] | any(. | tostring | contains("pretool-intent-guard.sh"))' \
+    "true"
+  assert_json_eq "${impl}: fresh — Constitution authority guard matcher wired" \
+    "${work}/settings.json" \
+    '[.hooks.PreToolUse[] | select(.matcher == "Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__.*") | .hooks[0].command] | any(. | tostring | contains("quality-constitution-authority-guard.sh"))' \
     "true"
   assert_json_eq "${impl}: fresh — complete direct-edit matcher wires mark-edit.sh" \
     "${work}/settings.json" \
-    '[.hooks.PostToolUse[] | select(.matcher == "Edit|Write|MultiEdit|NotebookEdit") | .hooks[0].command] | .[0] | tostring | contains("mark-edit.sh")' \
+    '[.hooks.PostToolUse[] | select(.matcher == "Edit|Write|MultiEdit|NotebookEdit|mcp__.*") | .hooks[0].command] | .[0] | tostring | contains("mark-edit.sh")' \
     "true"
-  assert_json_eq "${impl}: fresh — failed Bash matcher wires mark-edit.sh" \
+  assert_json_eq "${impl}: fresh — failed Bash/MCP matcher wires mark-edit.sh" \
     "${work}/settings.json" \
-    '[.hooks.PostToolUseFailure[] | select(.matcher == "Bash") | .hooks[0].command] | .[0] | tostring | contains("mark-edit.sh")' \
+    '[.hooks.PostToolUseFailure[] | select(.matcher == "Bash|mcp__.*") | .hooks[0].command] | .[0] | tostring | contains("mark-edit.sh")' \
+    "true"
+  assert_json_eq "${impl}: fresh — failed verification-capable tools wire negative receipts" \
+    "${work}/settings.json" \
+    '[.hooks.PostToolUseFailure[] | select(.matcher == "Bash|Read|Grep|mcp__.*") | .hooks[0].command] | .[0] | tostring | contains("record-verification.sh")' \
     "true"
   # v1.48 W3.1: Bash-side recorders run inside posttool-dispatch.sh — the
   # universal (matcher-less) entry must wire the dispatcher, and no direct
@@ -254,6 +263,10 @@ for impl in "${implementations[@]}"; do
   assert_json_eq "${impl}: fresh — PostToolUse broad MCP matcher wires record-verification.sh" \
     "${work}/settings.json" \
     '[.hooks.PostToolUse[] | select(.matcher == "mcp__.*") | .hooks[0].command] | any(. | tostring | contains("record-verification.sh"))' \
+    "true"
+  assert_json_eq "${impl}: fresh — PostToolUse Read|Grep matcher wires receipt verifier" \
+    "${work}/settings.json" \
+    '[.hooks.PostToolUse[] | select(.matcher == "Read|Grep") | .hooks[0].command] | any(. | tostring | contains("record-verification.sh"))' \
     "true"
 
   # No bypass keys should be set
@@ -271,16 +284,16 @@ for impl in "${implementations[@]}"; do
     "${work}/settings.json" '.hooks.SessionStart' "9"
   assert_json_count "${impl}: idempotent — SubagentStop hooks still 11" \
     "${work}/settings.json" '.hooks.SubagentStop' "12"
-  assert_json_count "${impl}: idempotent — PostToolUse hooks still 5" \
-    "${work}/settings.json" '.hooks.PostToolUse' "5"
-  assert_json_count "${impl}: idempotent — PreToolUse hooks still 4" \
-    "${work}/settings.json" '.hooks.PreToolUse' "4"
+  assert_json_count "${impl}: idempotent — PostToolUse hooks still 6" \
+    "${work}/settings.json" '.hooks.PostToolUse' "6"
+  assert_json_count "${impl}: idempotent — PreToolUse hooks still 5" \
+    "${work}/settings.json" '.hooks.PreToolUse' "5"
   assert_json_count "${impl}: idempotent — SubagentStart hooks still 1" \
     "${work}/settings.json" '.hooks.SubagentStart' "1"
   assert_json_count "${impl}: idempotent — StopFailure hooks still 1" \
     "${work}/settings.json" '.hooks.StopFailure' "1"
-  assert_json_count "${impl}: idempotent — PostToolUseFailure hooks still 1" \
-    "${work}/settings.json" '.hooks.PostToolUseFailure' "1"
+  assert_json_count "${impl}: idempotent — PostToolUseFailure hooks still 2" \
+    "${work}/settings.json" '.hooks.PostToolUseFailure' "2"
 
   # -----------------------------------------------------------------------
   # Test 2b: UPGRADE prune — bases seeded with the pre-dispatch PostToolUse
@@ -324,14 +337,14 @@ for impl in "${implementations[@]}"; do
 PRE148
   run_merge "${impl}" "${work}/upgrade.json" "${SETTINGS_PATCH}" "false"
 
-  # 5 real entries survive the prune; the two vestigial no-op entries
+  # 6 real entries survive the prune; the two vestigial no-op entries
   # (empty hooks / null hooks) AND a literal null array element must
   # survive UNTOUCHED in BOTH impls — cross-impl parity pins from the
   # remediation re-reviews (F-A: the jq emptiness filter originally
   # dropped what python kept; follow-up: the null-marker approach then
   # dropped literal null elements python keeps).
-  assert_json_count "${impl}: upgrade — PostToolUse pruned to 5 real + 3 vestigial" \
-    "${work}/upgrade.json" '.hooks.PostToolUse' "8"
+  assert_json_count "${impl}: upgrade — PostToolUse pruned to 6 real + 3 vestigial" \
+    "${work}/upgrade.json" '.hooks.PostToolUse' "9"
   assert_json_eq "${impl}: upgrade — vestigial empty/null-hooks entries survive" \
     "${work}/upgrade.json" \
     '[.hooks.PostToolUse[] | select(type == "object") | select(.matcher == "SoloRead" or .matcher == "SoloGrep")] | length' \
@@ -358,7 +371,7 @@ PRE148
     "true"
   assert_json_eq "${impl}: upgrade — mark-edit matcher widened exactly once" \
     "${work}/upgrade.json" \
-    '[.hooks.PostToolUse[] | select(type == "object") | select(.matcher == "Edit|Write|MultiEdit|NotebookEdit") | .hooks[]? | select((.command // "") | contains("mark-edit.sh"))] | length' \
+    '[.hooks.PostToolUse[] | select(type == "object") | select(.matcher == "Edit|Write|MultiEdit|NotebookEdit|mcp__.*") | .hooks[]? | select((.command // "") | contains("mark-edit.sh"))] | length' \
     "1"
   assert_json_eq "${impl}: upgrade — no direct managed Stop wiring survives" \
     "${work}/upgrade.json" \
@@ -399,8 +412,8 @@ PRE148
 
   # Upgrade idempotency: a second merge on the pruned result stays stable.
   run_merge "${impl}" "${work}/upgrade.json" "${SETTINGS_PATCH}" "false"
-  assert_json_count "${impl}: upgrade re-merge — PostToolUse still 5 real + 3 vestigial" \
-    "${work}/upgrade.json" '.hooks.PostToolUse' "8"
+  assert_json_count "${impl}: upgrade re-merge — PostToolUse still 6 real + 3 vestigial" \
+    "${work}/upgrade.json" '.hooks.PostToolUse' "9"
   assert_json_count "${impl}: upgrade re-merge — Stop stays dispatcher + three foreign hooks" \
     "${work}/upgrade.json" '.hooks.Stop' "4"
   assert_json_count "${impl}: upgrade re-merge — display keeps managed and foreign owners" \
@@ -1164,7 +1177,7 @@ JSON
   assert_json_eq "${impl}: matcher-rename — entry uses new widened matcher" \
     "${work}/settings.json" \
     '[.hooks.PreToolUse[] | select(.hooks[]?.command | tostring | contains("pretool-intent-guard.sh")) | .matcher] | .[0]' \
-    "Bash|Edit|Write|MultiEdit|NotebookEdit"
+    "Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__.*"
   assert_json_eq "${impl}: matcher-rename — no leftover bare Bash entry for the renamed script" \
     "${work}/settings.json" \
     '[.hooks.PreToolUse[] | select((.matcher // "") == "Bash") | select(.hooks[]?.command | tostring | contains("pretool-intent-guard.sh"))] | length' \

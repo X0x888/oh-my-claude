@@ -2819,5 +2819,82 @@ assert_eq "T_builder_no_freeze: ordinary specialist does not freeze mutation" ""
 teardown_test
 
 # ----------------------------------------------------------------------
+# Definition session-authority boundary. The main model may inspect causal
+# ledgers, but it cannot invoke their publisher hooks or write receipt/contract
+# state through Bash, direct file tools, or connectors.
+setup_test
+export OMC_AGENT_FIRST_GATE=off
+init_session "t_definition_authority" "execution"
+definition_authority_dir="${TEST_HOME}/.claude/quality-pack/state/t_definition_authority"
+jq '. + {quality_contract_required:"1"}' \
+  "${definition_authority_dir}/session_state.json" \
+  >"${definition_authority_dir}/session_state.json.tmp"
+mv "${definition_authority_dir}/session_state.json.tmp" \
+  "${definition_authority_dir}/session_state.json"
+
+out_authority_hook="$(run_guard "t_definition_authority" \
+  "bash ${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/record-verification.sh")"
+assert_contains "T_definition_authority: direct recorder invocation is denied" \
+  '"permissionDecision":"deny"' "${out_authority_hook}"
+assert_contains "T_definition_authority: denial names harness-owned causal state" \
+  'authority boundary' "${out_authority_hook}"
+
+out_authority_redirect="$(run_guard "t_definition_authority" \
+  "printf forged > ${definition_authority_dir}/verification_receipts.jsonl")"
+assert_contains "T_definition_authority: Bash write into session state is denied" \
+  '"permissionDecision":"deny"' "${out_authority_redirect}"
+
+write_payload="$(jq -nc --arg sid "t_definition_authority" \
+  --arg path "${definition_authority_dir}/quality_contract.json" '{
+    session_id:$sid,tool_name:"Write",hook_event_name:"PreToolUse",
+    tool_input:{file_path:$path,content:"{}"}
+  }')"
+out_authority_write="$(printf '%s' "${write_payload}" \
+  | bash "${HOOK_SCRIPT}" 2>/dev/null || true)"
+assert_contains "T_definition_authority: direct Write into session state is denied" \
+  '"permissionDecision":"deny"' "${out_authority_write}"
+
+mcp_payload="$(jq -nc --arg sid "t_definition_authority" \
+  --arg path "${definition_authority_dir}/quality_frontier.json" '{
+    session_id:$sid,tool_name:"mcp__filesystem__write_file",
+    hook_event_name:"PreToolUse",tool_input:{path:$path,content:"{}"}
+  }')"
+out_authority_mcp="$(printf '%s' "${mcp_payload}" \
+  | bash "${HOOK_SCRIPT}" 2>/dev/null || true)"
+assert_contains "T_definition_authority: connector write into session state is denied" \
+  '"permissionDecision":"deny"' "${out_authority_mcp}"
+
+out_authority_read="$(run_guard "t_definition_authority" \
+  "jq . ${definition_authority_dir}/session_state.json")"
+assert_eq "T_definition_authority: read-only inspection remains allowed" \
+  "" "${out_authority_read}"
+teardown_test
+
+# A non-execution label is valid only while the turn is actually read-only.
+# Once an objective has an armed Definition, every recognized mutation surface
+# must pass the same frozen-contract gate; otherwise an advisory Write could
+# create bytes that its inert Stop path never certifies.
+setup_test
+export OMC_AGENT_FIRST_GATE=off
+init_session "t_definition_advisory_mutation" "advisory"
+definition_advisory_dir="${TEST_HOME}/.claude/quality-pack/state/t_definition_advisory_mutation"
+jq '. + {quality_contract_required:"1",prompt_classified_intent:"advisory",prompt_revision:1}' \
+  "${definition_advisory_dir}/session_state.json" \
+  >"${definition_advisory_dir}/session_state.json.tmp"
+mv "${definition_advisory_dir}/session_state.json.tmp" \
+  "${definition_advisory_dir}/session_state.json"
+out_definition_advisory_write="$(run_guard \
+  "t_definition_advisory_mutation" "" "Write")"
+assert_contains "T_definition_advisory_mutation: advisory Write cannot bypass missing frozen contract" \
+  '"permissionDecision":"deny"' "${out_definition_advisory_write}"
+assert_contains "T_definition_advisory_mutation: denial names pre-mutation Definition gate" \
+  'pre-mutation block' "${out_definition_advisory_write}"
+out_definition_advisory_read="$(run_guard \
+  "t_definition_advisory_mutation" "jq . README.md")"
+assert_eq "T_definition_advisory_mutation: genuinely read-only advisory inspection stays inert" \
+  "" "${out_definition_advisory_read}"
+teardown_test
+
+# ----------------------------------------------------------------------
 printf '\n%s passed, %s failed\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]] || exit 1

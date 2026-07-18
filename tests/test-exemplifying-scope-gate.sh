@@ -16,6 +16,11 @@ ln -s "${REPO_ROOT}/bundle/dot-claude/quality-pack/memory" "${TEST_HOME}/.claude
 ORIG_HOME="${HOME}"
 export HOME="${TEST_HOME}"
 export STATE_ROOT="${TEST_STATE_ROOT}"
+# This focused suite exercises the exemplifying-scope gate in isolation. A
+# serious example-bearing prompt also correctly arms the Definition-of-Excellent
+# protocol under its adaptive default, whose earlier Stop gate would otherwise
+# mask the checklist behavior this suite is responsible for.
+export OMC_DEFINITION_OF_EXCELLENT=off
 
 # shellcheck source=../bundle/dot-claude/skills/autowork/scripts/common.sh
 source "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh"

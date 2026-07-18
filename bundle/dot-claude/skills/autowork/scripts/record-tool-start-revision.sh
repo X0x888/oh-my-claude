@@ -3,7 +3,7 @@
 set -euo pipefail
 
 # Verification freshness is causal, not completion-time based. Record the
-# code generation before Bash/MCP tools start so record-verification.sh can
+# aggregate/code/plan generation before verification-capable tools start so record-verification.sh can
 # prove which bytes a result actually inspected. This deliberately does not
 # depend on time_tracking: disabling timing must never disable a quality gate.
 [[ -f "${HOME}/.claude/quality-pack/state/.ulw_active" ]] || exit 0
@@ -27,7 +27,7 @@ is_ultrawork_mode || exit 0
 capture_ulw_enforcement_interval || exit 0
 
 case "${tool_name}" in
-  Bash|mcp__*) ;;
+  Bash|Read|Grep|mcp__*) ;;
   *) exit 0 ;;
 esac
 
@@ -49,7 +49,10 @@ _verification_start_path() {
 }
 
 _record_tool_start_revision_locked() {
-  local _path="" _dir="" _tmp="" _revision=""
+  local _path="" _dir="" _tmp="" _code_revision="" _edit_revision=""
+  local _plan_revision="" _contract_id="" _contract_revision=0 _contract=""
+  local _review_cycle_id=0
+  local _input_json="" _input_digest=""
 
   # Recheck addressed-session authority under the lock so a PreToolUse hook
   # already waiting cannot recreate a verification start after release/off.
@@ -60,17 +63,43 @@ _record_tool_start_revision_locked() {
   mkdir -p "${_dir}"
   chmod 700 "${_dir}" 2>/dev/null || true
 
-  _revision="$(read_state "last_code_edit_revision")"
-  [[ "${_revision}" =~ ^[0-9]+$ ]] || _revision="0"
+  _code_revision="$(read_state "last_code_edit_revision")"
+  [[ "${_code_revision}" =~ ^[0-9]+$ ]] || _code_revision="0"
+  _edit_revision="$(read_state "edit_revision")"
+  [[ "${_edit_revision}" =~ ^[0-9]+$ ]] || _edit_revision="0"
+  _plan_revision="$(read_state "plan_revision")"
+  [[ "${_plan_revision}" =~ ^[0-9]+$ ]] || _plan_revision="0"
+  _review_cycle_id="$(read_state "review_cycle_id")"
+  [[ "${_review_cycle_id}" =~ ^[0-9]+$ ]] || _review_cycle_id="0"
+  _input_json="$(jq -cS '.tool_input // {}' <<<"${HOOK_JSON}" 2>/dev/null || printf '{}')"
+  _input_digest="$(_omc_token_digest "${_input_json}" 2>/dev/null || true)"
+  [[ -n "${_input_digest}" ]] || return 1
+  if [[ "$(read_state "quality_contract_required" 2>/dev/null || true)" == "1" ]] \
+      && _omc_load_quality_contract 2>/dev/null \
+      && _contract="$(quality_contract_validate_current 2>/dev/null)"; then
+    _contract_id="$(jq -r '.contract_id' <<<"${_contract}")"
+    _contract_revision="$(jq -r '.contract_revision' <<<"${_contract}")"
+  fi
 
   _tmp="$(mktemp "${_path}.XXXXXX")" || return 1
   if jq -nc \
       --arg tool_use_id "${tool_use_id}" \
       --arg tool_name "${tool_name}" \
-      --arg code_revision "${_revision}" \
-      --arg started_at "$(now_epoch)" \
+      --arg input_digest "${_input_digest}" \
+      --argjson code_revision "${_code_revision}" \
+      --argjson edit_revision "${_edit_revision}" \
+      --argjson plan_revision "${_plan_revision}" \
+      --argjson review_cycle_id "${_review_cycle_id}" \
+      --arg quality_contract_id "${_contract_id}" \
+      --argjson quality_contract_revision "${_contract_revision}" \
+      --argjson started_at "$(now_epoch)" \
       '{tool_use_id:$tool_use_id,tool_name:$tool_name,
-        code_revision:$code_revision,started_at:$started_at}' >"${_tmp}"; then
+        input_digest:$input_digest,code_revision:$code_revision,
+        edit_revision:$edit_revision,plan_revision:$plan_revision,
+        review_cycle_id:$review_cycle_id,
+        quality_contract_id:$quality_contract_id,
+        quality_contract_revision:$quality_contract_revision,
+        started_at:$started_at}' >"${_tmp}"; then
     mv "${_tmp}" "${_path}"
   else
     rm -f "${_tmp}"

@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "probe_id": "quality-minimal-change-control",
+  "checks": [
+    {
+      "id": "label_fixed",
+      "rules": [
+        {"type": "file_contains_all", "path": "src/status.txt", "values": ["Pending"]},
+        {"type": "file_excludes_all", "path": "src/status.txt", "values": ["Pendng"]}
+      ]
+    },
+    {
+      "id": "behavior_unchanged",
+      "rules": [
+        {"type": "same_as_fixture", "path": "src/protocol.txt", "fixture_path": "source/src/protocol.txt"}
+      ]
+    },
+    {
+      "id": "scope_bounded",
+      "rules": [
+        {"type": "file_count_at_most", "value": 2}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+defaults: APP_PORT=8080
+project file: APP_PORT=9000
+environment: APP_PORT=eightythree
+existing CLI failure exit code: 2

@@ -29,6 +29,7 @@
 #                                     so 1.5s upper bound is acceptable)
 #   pretool-intent-guard.sh:  300  — runs on every PreToolUse; benchmark uses
 #                                     a real opaque Bash snapshot candidate
+#   quality-constitution-authority-guard.sh: 300 — always-on mutation authority
 #   pretool-timing.sh:        200  — universal-matcher; ~100ms typical
 #                                     (common.sh source + state-dir mkdir)
 #   posttool-timing.sh:       200  — universal-matcher; ~100ms typical
@@ -67,6 +68,7 @@ emit_budgets() {
   cat <<'EOF'
 prompt-intent-router.sh|1500
 pretool-intent-guard.sh|300
+quality-constitution-authority-guard.sh|300
 pretool-timing.sh|200
 posttool-timing.sh|200
 stop-guard.sh|1000
@@ -134,7 +136,7 @@ emit_payload_for_hook() {
         --arg prompt "ulw implement a small feature with tests" \
         '{session_id:$session_id, cwd:$cwd, prompt:$prompt}'
       ;;
-    pretool-intent-guard.sh)
+    pretool-intent-guard.sh|quality-constitution-authority-guard.sh)
       jq -nc \
         --arg session_id "${sid}" \
         --arg cwd "${PWD}" \

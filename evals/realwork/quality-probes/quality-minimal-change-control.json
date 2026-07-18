@@ -1,0 +1,47 @@
+{
+  "schema_version": 2,
+  "id": "quality-minimal-change-control",
+  "domain": "control",
+  "risk": "low",
+  "fixture": "fixtures/quality/minimal-change-control",
+  "prompt": "/ulw make the smallest compatible fix for the misspelled status label; do not redesign or add behavior",
+  "candidate_artifacts": [
+    {"kind": "git_diff"},
+    {"kind": "files", "globs": ["src/**", "tests/**"]}
+  ],
+  "hard_checks": [
+    {"id": "label_fixed", "description": "The misspelled status label is corrected.", "critical": true},
+    {"id": "behavior_unchanged", "description": "Public behavior and snapshots beyond the label remain unchanged.", "critical": true},
+    {"id": "scope_bounded", "description": "No unrelated files, dependencies, or features are added.", "critical": true}
+  ],
+  "rubric": {
+    "version": "ddccv-1",
+    "audience": "Maintainers who explicitly requested a minimal, compatibility-preserving correction.",
+    "constraints": ["Make the smallest compatible change", "Do not redesign", "Do not add behavior"],
+    "non_goals": ["Visual refresh", "New configuration", "New workflow", "Broader cleanup"],
+    "task_specific_anchors": [
+      "Restraint is treated as an intentional quality choice.",
+      "The patch is exact, locally coherent, and immediately verifiable.",
+      "Visionary quality appears as unusually clear restraint and future maintainability, not extra scope."
+    ],
+    "dimensions": [
+      {"id": "deliberate", "weight": 1},
+      {"id": "distinctive", "weight": 1},
+      {"id": "coherent", "weight": 1},
+      {"id": "visionary", "weight": 1},
+      {"id": "complete", "weight": 1}
+    ]
+  },
+  "campaign": {
+    "runs_per_arm": 3,
+    "model_tiers": ["balanced", "economy"],
+    "max_candidate_cost_ratio": 1.25,
+    "max_candidate_wall_ratio": 1.25,
+    "candidate_summary_contract": {
+      "schema_version": 3,
+      "required_top_level": ["probe_id", "provenance", "artifact_dir", "economics"],
+      "required_provenance": ["prompt_hash", "fixture_hash", "source_hash", "model", "model_tier", "harness_role", "harness_hash"],
+      "required_token_economics": ["input", "output", "cache_read", "cache_creation"]
+    }
+  }
+}

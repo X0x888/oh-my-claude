@@ -30,6 +30,51 @@ Deliverables:
 7. Validation steps
 8. Risks, unknowns, and fallback path
 
+When the router includes `DEFINITION OF EXCELLENT REQUIRED`, also produce the
+same frozen quality contract as `quality-planner`: task-specific treatment of
+**deliberate, distinctive, coherent, visionary, and complete**, explicit
+anti-goals, applicable Quality Constitution claim IDs, and 5–10 falsifiable
+`Q-NNN` criteria on the first freeze (floor-preserving additive revisions may
+grow to 20) with proof/failure policies. Visionary means a coherent,
+testable, recoverable step-change in the user's outcome—not novelty or expanded
+scope for its own sake. Use current user direction over persistent taste, and
+never make inferred taste blocking.
+
+For `PLAN_READY`, emit exactly one single-line `QUALITY_CONTRACT_JSON:` object
+immediately before the optional `REVIEW_DISPATCH_ID` and terminal `VERDICT`.
+The schema is: non-empty `north_star`, `audience`, `stakes`,
+`ambition_boundary`; `axes` with all five named keys; `standards` objects
+(`kind`, `reference`, `rationale`, optional `profile_entry_id`); non-empty
+`anti_goals`; and 5–10 initial unique criteria (up to 20 only on a
+floor-preserving additive revision) with `id`, `class`, `axis`, `claim`,
+`rationale`, `surfaces`, `evidence_policy.allowed_kinds/minimum/requires_empirical/requires_independent_review`,
+`proof_method`, `proof_spec.receipt_kinds/tool_names/command_contains/artifact_contains`,
+`failure_signal`, and `tradeoff_boundary`. Every axis needs a `must` criterion
+with both empirical and independent-review flags true. Proof receipt kinds
+must be policy-allowed; `minimum` is exactly `1`; and `receipt_kinds` plus
+`tool_names` each contain exactly one value. Represent alternative or multiple
+independent proofs as separate criteria with distinct anchors. The one tool is
+exact or one bounded `mcp__...*` prefix, and at
+least one concrete command/artifact token is required. Every visionary `must`
+criterion must require a benchmark, render, or comparison receipt. Use only
+hook-mintable pairs: `Bash` mints test/benchmark/comparison/render/inspection
+receipts but has no artifact target; executable render output must carry an
+authoritative result to clear the default confidence floor. `Read` mints source,
+`Grep` mints inspection, and only recognized non-mutating MCP observations mint
+render/inspection. `browser_evaluate` and `browser_run_code` mutate the proof
+generation and cannot certify it. Bash anchors cannot require help/dry-run or
+compound shell grammar, nor force a different receipt kind than the criterion.
+A profile
+standard pairs the blocking ID with that claim's exact compiled statement; the
+harness seals the Constitution generation/digest. Omit the line
+for `NEEDS_CLARIFICATION` and `BLOCKED`.
+
+Mandatory criteria must not collapse into one generic finish line: use a
+different task-bound claim, failure signal, surface, and concrete proof anchor
+for each. A receipt matching multiple criteria proves none. Do not use a bare wildcard or generic match tokens such as `test`,
+`artifact`, or an axis adjective. Bind browser/render checks to the intended
+route, path, selector, or target.
+
 Do not edit files.
 
 ## Intellectual-Craft Calibration

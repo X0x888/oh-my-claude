@@ -1,0 +1,426 @@
+#!/usr/bin/env bash
+# Causal-authority, compile-snapshot, and bypass regressions for the
+# user-owned Quality Constitution.
+# shellcheck disable=SC2016  # Adversarial command strings must remain literal.
+
+set -euo pipefail
+
+TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO_ROOT="$(cd "${TEST_DIR}/.." && pwd -P)"
+HELPER="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/quality-constitution.sh"
+COMMON="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh"
+AUTH_LIB="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/lib/quality-constitution-authority.sh"
+GUARD="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/quality-constitution-authority-guard.sh"
+ROUTER="${REPO_ROOT}/bundle/dot-claude/quality-pack/scripts/prompt-intent-router.sh"
+PRECOMPACT="${REPO_ROOT}/bundle/dot-claude/quality-pack/scripts/pre-compact-snapshot.sh"
+
+TEST_ROOT="$(mktemp -d -t quality-constitution-authority-XXXXXX)"
+TEST_HOME="${TEST_ROOT}/home"
+STATE_ROOT="${TEST_HOME}/.claude/quality-pack/state"
+PROJECT="${TEST_ROOT}/project"
+OTHER_PROJECT="${TEST_ROOT}/other-project"
+mkdir -p "${STATE_ROOT}" "${PROJECT}" "${OTHER_PROJECT}"
+ln -s "${REPO_ROOT}/bundle/dot-claude/skills" "${TEST_HOME}/.claude/skills"
+ln -s "${REPO_ROOT}/bundle/dot-claude/quality-pack/scripts" "${TEST_HOME}/.claude/quality-pack/scripts"
+ln -s "${REPO_ROOT}/bundle/dot-claude/quality-pack/memory" "${TEST_HOME}/.claude/quality-pack/memory"
+git -C "${PROJECT}" init -q
+git -C "${OTHER_PROJECT}" init -q
+printf 'Original exemplar bytes.\n' >"${PROJECT}/exemplar.md"
+trap 'rm -rf "${TEST_ROOT}"' EXIT
+
+pass=0
+fail=0
+
+ok() { printf '  PASS: %s\n' "$1"; pass=$((pass + 1)); }
+not_ok() { printf '  FAIL: %s\n' "$1" >&2; fail=$((fail + 1)); }
+
+assert_eq() {
+  local label="$1" expected="$2" actual="$3"
+  if [[ "${expected}" == "${actual}" ]]; then ok "${label}"; else
+    not_ok "${label} (expected=${expected} actual=${actual})"
+  fi
+}
+
+assert_contains() {
+  local label="$1" needle="$2" haystack="$3"
+  if [[ "${haystack}" == *"${needle}"* ]]; then ok "${label}"; else
+    not_ok "${label} (missing=${needle})"
+  fi
+}
+
+assert_file_absent() {
+  local label="$1" path="$2"
+  if [[ ! -e "${path}" && ! -L "${path}" ]]; then ok "${label}"; else
+    not_ok "${label} (still present=${path})"
+  fi
+}
+
+run_router() {
+  local sid="$1" prompt="$2"
+  shift 2
+  local payload
+  payload="$(jq -nc --arg sid "${sid}" --arg prompt "${prompt}" --arg cwd "${PROJECT}" \
+    '{session_id:$sid,prompt:$prompt,cwd:$cwd}')"
+  (
+    cd "${PROJECT}"
+    env HOME="${TEST_HOME}" STATE_ROOT="${STATE_ROOT}" \
+      OMC_QUALITY_CONSTITUTION=off "$@" bash "${ROUTER}" <<<"${payload}"
+  )
+}
+
+router_context() {
+  jq -r '.hookSpecificOutput.additionalContext // empty' <<<"$1"
+}
+
+grant_path() { printf '%s/%s/quality_constitution_authorization.json' "${STATE_ROOT}" "$1"; }
+
+grant_id() { jq -r '.grant_id' "$(grant_path "$1")"; }
+
+operation_b64() {
+  local context="$1"
+  printf '%s\n' "${context}" | sed -n 's/.*--operation-b64 "\([A-Za-z0-9+\/=]*\)".*/\1/p' | head -1
+}
+
+apply_authorized() {
+  local project="$1" sid="$2" grant="$3" encoded="$4"
+  (
+    cd "${project}"
+    HOME="${TEST_HOME}" STATE_ROOT="${STATE_ROOT}" \
+      bash "${HELPER}" apply-authorized \
+        --session-id "${sid}" --grant "${grant}" --operation-b64 "${encoded}"
+  )
+}
+
+compile_json() {
+  (cd "${PROJECT}" && HOME="${TEST_HOME}" bash "${HELPER}" compile --json)
+}
+
+show_json() {
+  (cd "${PROJECT}" && HOME="${TEST_HOME}" bash "${HELPER}" show --json)
+}
+
+parse_prompt() {
+  local prompt="$1"
+  (
+    cd "${PROJECT}"
+    HOME="${TEST_HOME}" STATE_ROOT="${STATE_ROOT}" SESSION_ID="parser-session" \
+      bash -c '. "$1"; . "$2"; qc_authority_operation_from_prompt "$3"' \
+        bash "${COMMON}" "${AUTH_LIB}" "${prompt}"
+  )
+}
+
+guard_bash() {
+  local command="$1" payload
+  payload="$(jq -nc --arg command "${command}" \
+    '{session_id:"guard-session",tool_name:"Bash",tool_input:{command:$command}}')"
+  HOME="${TEST_HOME}" STATE_ROOT="${STATE_ROOT}" bash "${GUARD}" <<<"${payload}"
+}
+
+guard_payload() {
+  local payload="$1"
+  HOME="${TEST_HOME}" STATE_ROOT="${STATE_ROOT}" bash "${GUARD}" <<<"${payload}"
+}
+
+shell_quote() {
+  local value="$1"
+  value="${value//\'/\'\\\'\'}"
+  printf "'%s'" "${value}"
+}
+
+printf 'Test 1: advertised slash grammar is exact and complete\n'
+assert_eq "remember is advisory prefer" "prefer/advisory" \
+  "$(parse_prompt '/quality-constitution remember Keep it crisp' | jq -r '.arguments | .polarity + "/" + .enforcement')"
+assert_eq "must is blocking must" "must/blocking" \
+  "$(parse_prompt '/quality-constitution must Preserve rollback' | jq -r '.arguments | .polarity + "/" + .enforcement')"
+assert_eq "must-not is blocking must_not" "must_not/blocking" \
+  "$(parse_prompt '/quality-constitution must-not Hide verification failures' | jq -r '.arguments | .polarity + "/" + .enforcement')"
+assert_eq "avoid is advisory avoid" "avoid/advisory" \
+  "$(parse_prompt '/quality-constitution avoid Generic defaults' | jq -r '.arguments | .polarity + "/" + .enforcement')"
+assert_eq "accept blocking grammar" "accept/blocking" \
+  "$(parse_prompt '/quality-constitution accept qk_example blocking' | jq -r '.action + "/" + .arguments.enforcement')"
+assert_eq "reject because grammar" "reject/Too narrow" \
+  "$(parse_prompt '/quality-constitution reject qk_example because Too narrow' | jq -r '.action + "/" + .arguments.reason')"
+assert_eq "reference recognizes current repo artifact" "add-reference/repo_path/exemplar" \
+  "$(parse_prompt '/quality-constitution reference exemplar.md because Preserve causal density' | jq -r '.action + "/" + .arguments.kind + "/" + .arguments.polarity')"
+assert_eq "anti-reference grammar" "add-reference/anti_exemplar" \
+  "$(parse_prompt '/quality-constitution anti-reference Generic modal because It erases product voice' | jq -r '.action + "/" + .arguments.polarity')"
+assert_eq "remove grammar" "remove/qc_example" \
+  "$(parse_prompt '/quality-constitution remove qc_example because Superseded' | jq -r '.action + "/" + .arguments.id')"
+
+printf 'Test 2: router mints one exact current-prompt grant without raw prompt text\n'
+SID="authority-main"
+statement='Preserve migration reversibility'
+router_out="$(run_router "${SID}" "/quality-constitution must ${statement}")"
+context="$(router_context "${router_out}")"
+grant_file="$(grant_path "${SID}")"
+if [[ -f "${grant_file}" && ! -L "${grant_file}" ]]; then ok "regular grant sidecar created"; else not_ok "grant sidecar missing"; fi
+assert_eq "grant mode is owner-only" "600" "$(stat -c '%a' "${grant_file}" 2>/dev/null || stat -f '%Lp' "${grant_file}")"
+assert_eq "grant stores no raw statement" "0" "$(grep -F -c "${statement}" "${grant_file}" || true)"
+assert_eq "grant binds prompt revision" "1" "$(jq -r '.prompt_revision' "${grant_file}")"
+assert_contains "directive freezes literal session id" "--session-id \"${SID}\"" "${context}"
+if [[ "${context}" != *'$CLAUDE_SESSION_ID'* ]]; then ok "directive does not depend on unsettable session env"; else not_ok "directive uses session env"; fi
+GRANT="$(grant_id "${SID}")"
+ENCODED="$(operation_b64 "${context}")"
+if [[ -n "${ENCODED}" ]]; then ok "router emitted immutable encoded operation"; else not_ok "missing encoded operation"; fi
+
+claim_id="$(apply_authorized "${PROJECT}" "${SID}" "${GRANT}" "${ENCODED}")"
+assert_file_absent "successful apply consumes grant first" "${grant_file}"
+shown="$(show_json)"
+assert_eq "authorized claim persisted exactly once" "1" \
+  "$(jq --arg statement "${statement}" '[.claims[] | select(.statement == $statement and .enforcement == "blocking" and .authority == "user_confirmed")] | length' <<<"${shown}")"
+constitution_path="$(cd "${PROJECT}" && HOME="${TEST_HOME}" bash "${HELPER}" resolve --json | jq -r '.path')"
+audit_file="${constitution_path%/constitution.json}/audit.jsonl"
+assert_eq "audit records causal grant id" "${GRANT}" "$(tail -1 "${audit_file}" | jq -r '.authority_grant_id')"
+assert_eq "audit records prompt revision" "1" "$(tail -1 "${audit_file}" | jq -r '.authority_prompt_revision')"
+
+printf 'Test 3: replay, substitution, project mismatch, and concurrent double-spend fail closed\n'
+generation_before="$(jq -r '.generation' <<<"${shown}")"
+set +e
+replay_out="$(apply_authorized "${PROJECT}" "${SID}" "${GRANT}" "${ENCODED}" 2>&1)"
+replay_rc=$?
+set -e
+if (( replay_rc != 0 )); then ok "spent grant cannot replay"; else not_ok "spent grant replayed"; fi
+assert_contains "replay failure names authorization" "authorization" "${replay_out}"
+assert_eq "replay cannot advance generation" "${generation_before}" "$(show_json | jq -r '.generation')"
+
+router_out="$(run_router "${SID}" '/quality-constitution avoid Generic default chrome')"
+context="$(router_context "${router_out}")"
+GRANT="$(grant_id "${SID}")"
+ENCODED="$(operation_b64 "${context}")"
+decoded="$(printf '%s' "${ENCODED}" | (base64 --decode 2>/dev/null || base64 -D))"
+wrong="$(jq -cS '.arguments.statement = "Different durable claim"' <<<"${decoded}")"
+wrong_b64="$(printf '%s' "${wrong}" | base64 | tr -d '\r\n')"
+set +e
+wrong_out="$(apply_authorized "${PROJECT}" "${SID}" "${GRANT}" "${wrong_b64}" 2>&1)"
+wrong_rc=$?
+set -e
+if (( wrong_rc != 0 )); then ok "operation substitution rejected"; else not_ok "operation substitution accepted"; fi
+if [[ -f "$(grant_path "${SID}")" ]]; then ok "mismatch does not consume the exact grant"; else not_ok "mismatch consumed grant"; fi
+set +e
+project_out="$(apply_authorized "${OTHER_PROJECT}" "${SID}" "${GRANT}" "${ENCODED}" 2>&1)"
+project_rc=$?
+set -e
+if (( project_rc != 0 )); then ok "grant is project-bound"; else not_ok "grant crossed projects"; fi
+apply_authorized "${PROJECT}" "${SID}" "${GRANT}" "${ENCODED}" >/dev/null
+
+router_out="$(run_router "${SID}" '/quality-constitution must Ship the concurrency invariant once')"
+context="$(router_context "${router_out}")"
+GRANT="$(grant_id "${SID}")"
+ENCODED="$(operation_b64 "${context}")"
+for worker in 1 2; do
+  (
+    set +e
+    apply_authorized "${PROJECT}" "${SID}" "${GRANT}" "${ENCODED}" \
+      >"${TEST_ROOT}/worker-${worker}.out" 2>"${TEST_ROOT}/worker-${worker}.err"
+    printf '%s\n' "$?" >"${TEST_ROOT}/worker-${worker}.rc"
+    exit 0
+  ) &
+done
+wait
+successes=0
+for worker in 1 2; do
+  [[ "$(<"${TEST_ROOT}/worker-${worker}.rc")" == "0" ]] && successes=$((successes + 1))
+done
+assert_eq "only one concurrent consumer succeeds" "1" "${successes}"
+assert_eq "double-spend creates one claim" "1" \
+  "$(show_json | jq '[.claims[] | select(.statement == "Ship the concurrency invariant once")] | length')"
+
+printf 'Test 4: privacy and lifecycle boundaries invalidate unused authority\n'
+router_out="$(run_router "${SID}" '/quality-constitution remember An unused one-turn preference')"
+if [[ -f "$(grant_path "${SID}")" ]]; then ok "unused grant exists in issuing turn"; else not_ok "issuing grant absent"; fi
+run_router "${SID}" 'Explain the current profile without changing it' >/dev/null
+assert_file_absent "next real prompt invalidates unused grant" "$(grant_path "${SID}")"
+
+PRIVATE_SID="authority-private"
+private_statement='Never persist this raw private statement in state'
+run_router "${PRIVATE_SID}" "/quality-constitution must ${private_statement}" OMC_PROMPT_PERSIST=off >/dev/null
+private_grant="$(grant_path "${PRIVATE_SID}")"
+if rg -F -q "${private_statement}" "${STATE_ROOT}/${PRIVATE_SID}"; then
+  private_raw_count=1
+else
+  private_raw_count=0
+fi
+assert_eq "prompt_persist=off state and grant contain no raw statement" "0" "${private_raw_count}"
+precompact_payload="$(jq -nc --arg sid "${PRIVATE_SID}" --arg cwd "${PROJECT}" \
+  '{session_id:$sid,trigger:"auto",custom_instructions:"",cwd:$cwd}')"
+(cd "${PROJECT}" && HOME="${TEST_HOME}" STATE_ROOT="${STATE_ROOT}" \
+  bash "${PRECOMPACT}" <<<"${precompact_payload}" >/dev/null)
+assert_file_absent "pre-compact invalidates unused grant" "${private_grant}"
+
+synthetic_payload="$(jq -nc --arg cwd "${PROJECT}" \
+  '{session_id:"authority-synthetic",prompt:"<task-notification>done</task-notification>",cwd:$cwd}')"
+(cd "${PROJECT}" && HOME="${TEST_HOME}" STATE_ROOT="${STATE_ROOT}" \
+  bash "${ROUTER}" <<<"${synthetic_payload}" >/dev/null)
+assert_file_absent "synthetic prompt cannot mint authority" "$(grant_path authority-synthetic)"
+
+for lifecycle in \
+  bundle/dot-claude/quality-pack/scripts/pre-compact-snapshot.sh \
+  bundle/dot-claude/quality-pack/scripts/session-start-compact-handoff.sh \
+  bundle/dot-claude/quality-pack/scripts/session-start-resume-handoff.sh \
+  bundle/dot-claude/skills/autowork/scripts/stop-dispatch.sh; do
+  if rg -q 'quality_constitution_authorization\.json' "${REPO_ROOT}/${lifecycle}"; then
+    ok "lifecycle invalidation wired: ${lifecycle##*/}"
+  else
+    not_ok "lifecycle invalidation missing: ${lifecycle##*/}"
+  fi
+done
+
+printf 'Test 5: helper and always-on guard reject raw, compound, split, connector, and PATH-shim bypasses\n'
+set +e
+raw_out="$(cd "${PROJECT}" && HOME="${TEST_HOME}" bash "${HELPER}" \
+  add-claim --statement Raw --authority user_confirmed 2>&1)"
+raw_rc=$?
+direct_out="$(cd "${PROJECT}" && HOME="${TEST_HOME}" bash "${HELPER}" \
+  direct add-claim --statement Raw --authority user_confirmed 2>&1)"
+direct_rc=$?
+set -e
+if (( raw_rc != 0 )); then ok "raw helper mutator is closed"; else not_ok "raw helper mutator open"; fi
+if (( direct_rc != 0 )); then ok "noninteractive direct entrance is closed"; else not_ok "noninteractive direct entrance open"; fi
+assert_contains "direct failure requires human TTY" "interactive human terminal" "${direct_out}"
+
+managed='bash "$HOME/.claude/skills/autowork/scripts/quality-constitution.sh" apply-authorized --session-id "guard-session" --grant "qca_example" --operation-b64 "e30="'
+assert_eq "exact managed shape passes guard" "" "$(guard_bash "${managed}")"
+assert_eq "ordinary quality/constitution prose inspection is not a false positive" "" \
+  "$(guard_bash 'rg -n "quality constitution" README.md')"
+assert_eq "canonical profile inspection remains read-only available" "" \
+  "$(guard_bash 'jq . "$HOME/.claude/omc-user/quality-constitutions/profiles/x/constitution.json"')"
+variable_raw='A=add-claim; H="$HOME/.claude/skills/autowork/scripts/quality-constitution.sh"; env -u CLAUDE_SESSION_ID -u CLAUDE_CODE_SESSION_ID "$H" "$A" --statement Minted --authority user_confirmed --enforcement advisory'
+assert_contains "variable/env-unset raw helper denied" '"permissionDecision":"deny"' "$(guard_bash "${variable_raw}")"
+compound_read='/tmp/quality-constitution.sh show && /tmp/quality-constitution.sh direct remove qc_example'
+assert_contains "allowlisted read cannot hide compound direct" '"permissionDecision":"deny"' "$(guard_bash "${compound_read}")"
+compound_apply='bash "$HOME/.claude/skills/autowork/scripts/quality-constitution.sh" apply-authorized --session-id "s" --grant "qca_x" --operation-b64 "e30=" || true; bash "$HOME/.claude/skills/autowork/scripts/quality-constitution.sh" direct add-claim --statement x'
+assert_contains "managed prefix cannot hide compound direct" '"permissionDecision":"deny"' "$(guard_bash "${compound_apply}")"
+split_helper='H=/tmp/quality-"constitution.sh"; "$H" direct add-claim --statement x'
+assert_contains "split helper name denied" '"permissionDecision":"deny"' "$(guard_bash "${split_helper}")"
+split_storage='R="$HOME/.claude/omc-user"; printf x > "$R/quality-constitutions/profiles/x/constitution.json"'
+assert_contains "split canonical storage write denied" '"permissionDecision":"deny"' "$(guard_bash "${split_storage}")"
+grant_write='printf "%s\n" forged > "$HOME/.claude/quality-pack/state/guard-session/quality_constitution_authorization.json"'
+assert_contains "Bash cannot forge the authority receipt" '"permissionDecision":"deny"' "$(guard_bash "${grant_write}")"
+grant_editor="$(jq -nc '{session_id:"guard-session",tool_name:"Write",tool_input:{file_path:"/tmp/.claude/quality-pack/state/guard-session/quality_constitution_authorization.json",content:"{}"}}')"
+assert_contains "editor cannot forge the authority receipt" '"permissionDecision":"deny"' "$(guard_payload "${grant_editor}")"
+
+mcp_write="$(jq -nc '{session_id:"guard-session",tool_name:"mcp__filesystem__write_file",tool_input:{path:"/tmp/.claude/omc-user/quality-constitutions/profiles/x/constitution.json",content:"x"}}')"
+mcp_split="$(jq -nc '{session_id:"guard-session",tool_name:"mcp__filesystem__write_file",tool_input:{directory:"/tmp/.claude/omc-user",path:"quality-constitutions/profiles/x/constitution.json",content:"x"}}')"
+mcp_unknown="$(jq -nc '{session_id:"guard-session",tool_name:"mcp__filesystem__mystery",tool_input:{path:"/tmp/.claude/omc-user/quality-constitutions/x"}}')"
+mcp_read="$(jq -nc '{session_id:"guard-session",tool_name:"mcp__filesystem__read_text_file",tool_input:{path:"/tmp/.claude/omc-user/quality-constitutions/x"}}')"
+mcp_grant="$(jq -nc '{session_id:"guard-session",tool_name:"mcp__filesystem__write_file",tool_input:{path:"/tmp/.claude/quality-pack/state/guard-session/quality_constitution_authorization.json",content:"{}"}}')"
+assert_contains "connector write denied" '"permissionDecision":"deny"' "$(guard_payload "${mcp_write}")"
+assert_contains "split connector path denied" '"permissionDecision":"deny"' "$(guard_payload "${mcp_split}")"
+assert_contains "unknown connector fails closed" '"permissionDecision":"deny"' "$(guard_payload "${mcp_unknown}")"
+assert_contains "connector cannot forge the authority receipt" '"permissionDecision":"deny"' "$(guard_payload "${mcp_grant}")"
+assert_eq "classified connector read remains available" "" "$(guard_payload "${mcp_read}")"
+assert_eq "settings matcher covers every MCP tool" "1" \
+  "$(jq '[.hooks.PreToolUse[] | select(any(.hooks[]; .command | endswith("quality-constitution-authority-guard.sh"))) | select(.matcher == "Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__.*")] | length' "${REPO_ROOT}/config/settings.patch.json")"
+
+FAKE_BIN="${TEST_ROOT}/fake-bin"
+SHIM_MARKER="${TEST_ROOT}/shim-ran"
+mkdir -p "${FAKE_BIN}"
+for shim in cat jq grep; do
+  printf '#!/bin/sh\nprintf "%%s\\n" "%s" >>"$OMC_SHIM_MARKER"\nexit 97\n' "${shim}" >"${FAKE_BIN}/${shim}"
+  chmod +x "${FAKE_BIN}/${shim}"
+done
+guard_payload_json="$(jq -nc --arg command "${managed}" \
+  '{session_id:"guard-session",tool_name:"Bash",tool_input:{command:$command}}')"
+shim_out="$(HOME="${TEST_HOME}" STATE_ROOT="${STATE_ROOT}" OMC_SHIM_MARKER="${SHIM_MARKER}" \
+  PATH="${FAKE_BIN}:${PATH}" bash "${GUARD}" <<<"${guard_payload_json}")"
+assert_eq "PATH-poisoned guard still recognizes managed command" "" "${shim_out}"
+assert_file_absent "guard pins observers before cat/jq/grep" "${SHIM_MARKER}"
+
+printf 'Test 6: compile uses one generation snapshot and quarantines changed exemplars\n'
+REF_SID="authority-reference"
+router_out="$(run_router "${REF_SID}" '/quality-constitution reference exemplar.md because Preserve the causal density')"
+context="$(router_context "${router_out}")"
+REF_GRANT="$(grant_id "${REF_SID}")"
+REF_B64="$(operation_b64 "${context}")"
+reference_id="$(apply_authorized "${PROJECT}" "${REF_SID}" "${REF_GRANT}" "${REF_B64}")"
+compiled="$(compile_json)"
+assert_eq "unchanged repo exemplar is verified and included" "verified" \
+  "$(jq -r --arg id "${reference_id}" '.references[] | select(.id == $id) | .integrity' <<<"${compiled}")"
+pre_drift_digest="$(jq -r '.digest' <<<"${compiled}")"
+pre_drift_profile_digest="$(jq -r '.profile_digest' <<<"${compiled}")"
+pre_drift_reference_digest="$(jq -r '.reference_integrity_digest' <<<"${compiled}")"
+printf 'Mutated exemplar bytes.\n' >"${PROJECT}/exemplar.md"
+compiled="$(compile_json)"
+assert_eq "drifted exemplar is excluded from trusted references" "0" \
+  "$(jq --arg id "${reference_id}" '[.references[] | select(.id == $id)] | length' <<<"${compiled}")"
+assert_eq "drifted exemplar is explicitly quarantined" "drifted" \
+  "$(jq -r --arg id "${reference_id}" '.quarantined_references[] | select(.id == $id) | .integrity' <<<"${compiled}")"
+assert_contains "rendered frame tells model not to use drifted exemplar" "do not use until the user reconfirms" \
+  "$(jq -r '.rendered_context' <<<"${compiled}")"
+assert_eq "reference drift does not masquerade as a profile write" "${pre_drift_profile_digest}" \
+  "$(jq -r '.profile_digest' <<<"${compiled}")"
+assert_eq "reference drift changes its integrity identity" "true" \
+  "$([[ "${pre_drift_reference_digest}" != "$(jq -r '.reference_integrity_digest' <<<"${compiled}")" ]] && printf true || printf false)"
+assert_eq "reference drift invalidates the contract-facing compiled digest" "true" \
+  "$([[ "${pre_drift_digest}" != "$(jq -r '.digest' <<<"${compiled}")" ]] && printf true || printf false)"
+compact_drift="$(cd "${PROJECT}" && HOME="${TEST_HOME}" bash "${HELPER}" compile --max-chars 512)"
+assert_contains "compact frame also preserves quarantine warning" "quarantined exemplars: 1" "${compact_drift}"
+
+COMPACT_SID="authority-compact-planner"
+compact_router_out="$(run_router "${COMPACT_SID}" \
+  '/ulw make the migration workflow visionary and complete' \
+  OMC_QUALITY_CONSTITUTION=on OMC_DEFINITION_OF_EXCELLENT=always \
+  OMC_QUALITY_CONSTITUTION_MAX_CONTEXT_CHARS=512)"
+compact_router_context="$(router_context "${compact_router_out}")"
+compact_snapshot="${STATE_ROOT}/${COMPACT_SID}/quality_constitution_snapshot.json"
+assert_contains "forced compact frame preserves blocking claim ID" \
+  "${claim_id}" "${compact_router_context}"
+assert_contains "planner directive names exact compiled snapshot path" \
+  "${compact_snapshot}" "${compact_router_context}"
+assert_contains "planner directive names exact blocker extraction" \
+  ".blocking_claims[] | {id,statement}" "${compact_router_context}"
+assert_eq "compiled snapshot preserves exact blocking statement" \
+  "${statement}" \
+  "$(jq -r --arg id "${claim_id}" '.blocking_claims[] | select(.id == $id) | .statement' \
+    "${compact_snapshot}")"
+
+router_out="$(run_router "${REF_SID}" "/quality-constitution remove ${reference_id} because The artifact changed")"
+apply_authorized "${PROJECT}" "${REF_SID}" "$(grant_id "${REF_SID}")" \
+  "$(operation_b64 "$(router_context "${router_out}")")" >/dev/null
+assert_eq "advertised remove archives the reference" "archived" \
+  "$(show_json | jq -r --arg id "${reference_id}" '.references[] | select(.id == $id) | .status')"
+
+router_out="$(run_router "${REF_SID}" '/quality-constitution anti-reference Generic modal because It erases product voice')"
+anti_id="$(apply_authorized "${PROJECT}" "${REF_SID}" "$(grant_id "${REF_SID}")" \
+  "$(operation_b64 "$(router_context "${router_out}")")")"
+assert_eq "advertised anti-reference persists exact polarity" "anti_exemplar" \
+  "$(show_json | jq -r --arg id "${anti_id}" '.references[] | select(.id == $id) | .polarity')"
+
+RACE_HOME="${TEST_ROOT}/race-home"
+RACE_PROJECT="${TEST_ROOT}/race-project"
+RACE_MAP="${TEST_ROOT}/race-map.txt"
+RACE_OUTPUT="${TEST_ROOT}/race-compiles.jsonl"
+mkdir -p "${RACE_HOME}" "${RACE_PROJECT}"
+git -C "${RACE_PROJECT}" init -q
+printf '0 none\n' >"${RACE_MAP}"
+writer_command="cd $(shell_quote "${RACE_PROJECT}") && for i in 1 2 3 4 5 6; do HOME=$(shell_quote "${RACE_HOME}") bash $(shell_quote "${HELPER}") direct add-claim --statement \"race-\${i}\" --authority user_confirmed --enforcement advisory >/dev/null || exit 1; generation=\$(HOME=$(shell_quote "${RACE_HOME}") bash $(shell_quote "${HELPER}") show --json | jq -r .generation) || exit 1; digest=\$(HOME=$(shell_quote "${RACE_HOME}") bash $(shell_quote "${HELPER}") digest) || exit 1; printf '%s %s\\n' \"\${generation}\" \"\${digest}\" >>$(shell_quote "${RACE_MAP}"); sleep 0.02; done"
+(
+  set +e
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    script -q /dev/null /bin/bash -c "${writer_command}" >/dev/null 2>&1
+  else
+    script -q -e -c "${writer_command}" /dev/null >/dev/null 2>&1
+  fi
+  printf '%s\n' "$?" >"${TEST_ROOT}/race-writer.rc"
+  exit 0
+) &
+writer_pid=$!
+for _ in $(seq 1 30); do
+  (cd "${RACE_PROJECT}" && HOME="${RACE_HOME}" bash "${HELPER}" compile --json) >>"${RACE_OUTPUT}"
+done
+wait "${writer_pid}"
+assert_eq "concurrent standalone writer completed" "0" "$(<"${TEST_ROOT}/race-writer.rc")"
+assert_eq "all concurrent compiles are valid single-generation snapshots" "true" \
+  "$(jq -s 'all(.[]; .schema_version == 1 and (.rendered_context | type == "string") and (.generation == (.advisory_claims | length)))' "${RACE_OUTPUT}")"
+mixed_pairs=0
+while read -r generation digest; do
+  if ! grep -Fqx "${generation} ${digest}" "${RACE_MAP}"; then
+    mixed_pairs=$((mixed_pairs + 1))
+  fi
+done < <(jq -r '[.generation,.profile_digest] | @tsv' "${RACE_OUTPUT}")
+assert_eq "profile digest and generation always come from one writer snapshot" "0" "${mixed_pairs}"
+assert_eq "router calls compile exactly once in Constitution block" "1" \
+  "$(grep -c '"${_quality_constitution_script}" compile' "${ROUTER}")"
+
+printf '\n=== Quality Constitution Authority Tests: %s passed, %s failed ===\n' "${pass}" "${fail}"
+(( fail == 0 ))

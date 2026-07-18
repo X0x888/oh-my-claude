@@ -54,6 +54,10 @@ gate_level|enum:basic/standard/full|full|gates|Quality-gate enforcement depth
 guard_exhaustion_mode|enum:silent/scorecard/block|block|gates|Behavior when gate-block cap is reached
 verify_confidence_threshold|int|40|gates|Minimum verification confidence (0-100)
 quality_policy|enum:balanced/zero_steering|balanced|gates|User-only adaptive quality posture for no-steering work; project conf cannot weaken it
+definition_of_excellent|enum:adaptive/always/off|adaptive|gates|User-only frozen five-axis quality contract (deliberate, distinctive, coherent, visionary, complete); adaptive arms serious/ambitious work, always arms every execution objective
+quality_constitution|bool|on|memory|User-only consumption of explicit project/global quality standards stored under ~/.claude/omc-user; project conf cannot disable it
+taste_learning|enum:off/review/adaptive|review|memory|User-only exact-user taste learning: review records candidates for approval; adaptive may activate repeated signals as advisory only
+quality_constitution_max_context_chars|pint|2400|memory|User-only cap for compiled Constitution context; raw evidence/reference content is never injected
 discovered_scope|bool|on|gates|Capture advisory findings + gate stop until addressed
 advisory_no_findings_gate|bool|on|gates|Block stop when N+ advisory specialists dispatched but zero findings recorded (closes fail-open of finding-gated gates)
 advisory_no_findings_threshold|int|2|gates|Specialist dispatch count that activates the advisory-no-findings gate
@@ -165,6 +169,10 @@ emit_preset() {
 gate_level=full
 guard_exhaustion_mode=block
 quality_policy=zero_steering
+definition_of_excellent=always
+quality_constitution=on
+taste_learning=adaptive
+quality_constitution_max_context_chars=4000
 auto_memory=on
 prompt_persist=on
 classifier_telemetry=on
@@ -206,6 +214,10 @@ EOF
 gate_level=full
 guard_exhaustion_mode=scorecard
 quality_policy=balanced
+definition_of_excellent=adaptive
+quality_constitution=on
+taste_learning=review
+quality_constitution_max_context_chars=2400
 auto_memory=on
 prompt_persist=on
 classifier_telemetry=on
@@ -247,6 +259,10 @@ EOF
 gate_level=basic
 guard_exhaustion_mode=silent
 quality_policy=balanced
+definition_of_excellent=off
+quality_constitution=off
+taste_learning=off
+quality_constitution_max_context_chars=1200
 auto_memory=off
 prompt_persist=off
 classifier_telemetry=off
@@ -325,6 +341,10 @@ PROJECT_DENIED_FLAGS=(
   agent_first_gate
   no_defer_mode
   quality_policy
+  definition_of_excellent
+  quality_constitution
+  taste_learning
+  quality_constitution_max_context_chars
   model_tier
   model_overrides
   repo_lessons
@@ -542,6 +562,30 @@ model_env_override_value() {
   esac
 }
 
+runtime_env_override_value() {
+  local key="${1:-}" value=""
+  case "${key}" in
+    definition_of_excellent)
+      value="${OMC_DEFINITION_OF_EXCELLENT:-}"
+      case "${value}" in adaptive|always|off) printf '%s' "${value}" ;; *) return 1 ;; esac
+      ;;
+    quality_constitution)
+      value="${OMC_QUALITY_CONSTITUTION:-}"
+      case "${value}" in on|off) printf '%s' "${value}" ;; *) return 1 ;; esac
+      ;;
+    taste_learning)
+      value="${OMC_TASTE_LEARNING:-}"
+      case "${value}" in off|review|adaptive) printf '%s' "${value}" ;; *) return 1 ;; esac
+      ;;
+    quality_constitution_max_context_chars)
+      value="${OMC_QUALITY_CONSTITUTION_MAX_CONTEXT_CHARS:-}"
+      [[ "${value}" =~ ^[1-9][0-9]*$ && "${value}" -le 12000 ]] || return 1
+      printf '%s' "${value}"
+      ;;
+    *) model_env_override_value "${key}" ;;
+  esac
+}
+
 warn_model_env_shadow() {
   local env_tier="" env_overrides=""
   env_tier="$(model_env_override_value model_tier 2>/dev/null || true)"
@@ -558,7 +602,7 @@ warn_model_env_shadow() {
 read_effective_value() {
   local key="$1"
   local proj_conf proj_val user_val env_val
-  if env_val="$(model_env_override_value "${key}")"; then
+  if env_val="$(runtime_env_override_value "${key}")"; then
     printf '%s' "${env_val}"
     return 0
   fi
@@ -645,6 +689,12 @@ validate_kv() {
       # silent-fallback footgun the strict validator prevents.
       if [[ ! "${value}" =~ ^[1-9][0-9]*$ ]]; then
         printf 'omc-config: %s must be a positive integer (got: %s)\n' "${key}" "${value}" >&2
+        return 2
+      fi
+      if [[ "${key}" == "quality_constitution_max_context_chars" ]] \
+          && (( value > 12000 )); then
+        printf 'omc-config: %s must be at most 12000 (got: %s)\n' \
+          "${key}" "${value}" >&2
         return 2
       fi
       ;;
@@ -903,7 +953,7 @@ cmd_show() {
     # the effective value. Malformed tiers and wholly invalid override sets are
     # ignored; mixed override sets retain [E] precedence for their valid subset.
     local marker="  " source_tag=""
-    if model_env_override_value "${name}" >/dev/null 2>&1; then
+    if runtime_env_override_value "${name}" >/dev/null 2>&1; then
       source_tag=" [E]"
     elif [[ -n "${proj_conf}" ]] \
         && ! flag_is_project_denied "${name}" \
@@ -919,14 +969,18 @@ cmd_show() {
   done < <(emit_known_flags)
 
   printf '\n  Marked * = differs from default.'
-  local has_effective_model_env=0
-  if model_env_override_value model_tier >/dev/null 2>&1 \
-      || model_env_override_value model_overrides >/dev/null 2>&1; then
-    has_effective_model_env=1
+  local has_effective_env=0
+  if runtime_env_override_value model_tier >/dev/null 2>&1 \
+      || runtime_env_override_value model_overrides >/dev/null 2>&1 \
+      || runtime_env_override_value definition_of_excellent >/dev/null 2>&1 \
+      || runtime_env_override_value quality_constitution >/dev/null 2>&1 \
+      || runtime_env_override_value taste_learning >/dev/null 2>&1 \
+      || runtime_env_override_value quality_constitution_max_context_chars >/dev/null 2>&1; then
+    has_effective_env=1
   fi
-  if (( has_effective_model_env == 1 )) && [[ -n "${proj_conf}" ]]; then
+  if (( has_effective_env == 1 )) && [[ -n "${proj_conf}" ]]; then
     printf '   [E]=environment override, [P]=project override, [U]=user setting'
-  elif (( has_effective_model_env == 1 )); then
+  elif (( has_effective_env == 1 )); then
     printf '   [E]=environment override, [U]=user setting'
   elif [[ -n "${proj_conf}" ]]; then
     printf '   [P]=project override, [U]=user setting'

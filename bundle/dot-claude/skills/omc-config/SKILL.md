@@ -119,7 +119,10 @@ This writes the preset atomically. Validation runs first, so a bad value never h
 
 ### Path B — fine-tune
 
-Walk the clusters below (five at user scope, four at project scope). Use one `AskUserQuestion` call per cluster — clusters are conceptually distinct, and batching all of them at once would overload the user.
+Walk the clusters below (six at user scope, four at project scope). Use one
+`AskUserQuestion` call per cluster. The Definition & Taste cluster deliberately
+uses one call containing four short questions because its controls form one
+authority boundary and must still be independently selectable.
 
 **Cluster 1 — Quality gates** (single-select)
 
@@ -139,7 +142,62 @@ options:
 
 Emit `gate_level=<value>` and (if option 1 or 2) `guard_exhaustion_mode=<value>`.
 
-**Cluster 2 — Advisory routing** (multi-select)
+**Cluster 2 — Definition of Excellent & Taste** (four single-select questions,
+user scope only)
+
+If `$SCOPE` is `project`, skip this cluster and emit none of its four flags.
+Briefly note that the frozen quality bar and learned taste are user-owned and a
+project cannot weaken or rewrite them.
+
+If `$SCOPE` is `user`, send one `AskUserQuestion` call with these four questions:
+
+```
+question: "When should the five-axis Definition of Excellent be mandatory?"
+header: "Definition"
+options:
+  - label: "Adaptive (Recommended)"
+    description: "Freeze the deliberate, distinctive, coherent, visionary, and complete bar for serious, broad, risky, or explicitly ambitious execution. definition_of_excellent=adaptive."
+  - label: "Always"
+    description: "Require a frozen five-axis contract for every execution objective, including small routine work. definition_of_excellent=always."
+  - label: "Off"
+    description: "Disable the Definition contract and its mutation/Stop gates. definition_of_excellent=off."
+
+question: "Should approved Quality Constitution standards shape new contracts?"
+header: "Constitution"
+options:
+  - label: "Consume standards (Recommended)"
+    description: "Compile applicable user-approved project/global standards into the frozen contract. quality_constitution=on."
+  - label: "Ignore standards"
+    description: "Keep approved standards stored but do not consume them when planning. quality_constitution=off."
+
+question: "How should repeated taste signals be learned?"
+header: "Taste"
+options:
+  - label: "Review candidates (Recommended)"
+    description: "Record candidates, but require explicit user approval before they become active standards. taste_learning=review."
+  - label: "Adaptive advisory"
+    description: "Repeated signals may activate as advisory taste; they never become blocking authority without explicit approval. taste_learning=adaptive."
+  - label: "Do not learn"
+    description: "Do not record or activate inferred taste candidates. Explicit Constitution entries remain available. taste_learning=off."
+
+question: "How much compiled Constitution context may a planner receive?"
+header: "Taste budget"
+options:
+  - label: "Balanced 2400 (Recommended)"
+    description: "Enough room for applicable standards while bounding prompt tax. quality_constitution_max_context_chars=2400."
+  - label: "Compact 1200"
+    description: "Prefer a smaller prompt footprint for simple standards sets. quality_constitution_max_context_chars=1200."
+  - label: "Expanded 4000"
+    description: "Preserve more applicable standards for dense professional workflows. quality_constitution_max_context_chars=4000."
+```
+
+Always emit all four selected values at user scope:
+`definition_of_excellent=<adaptive|always|off>`,
+`quality_constitution=<on|off>`,
+`taste_learning=<off|review|adaptive>`, and
+`quality_constitution_max_context_chars=<1200|2400|4000>`.
+
+**Cluster 3 — Advisory routing** (multi-select)
 
 ```
 question: "Which advisory directives should I inject? (multi-select)"
@@ -156,7 +214,7 @@ options:
 
 For each selected option, emit `<flag>=on`. For unselected options, do NOT emit `<flag>=off` — leave the user's prior value alone unless they explicitly want to disable. (If the user wants to disable, they can re-run the skill and pick a profile.)
 
-**Cluster 3 — Memory & telemetry** (multi-select)
+**Cluster 4 — Memory & telemetry** (multi-select)
 
 ```
 question: "Which memory and telemetry features should be enabled? (multi-select)"
@@ -177,7 +235,7 @@ options:
 
 For selected options, emit the corresponding `<flag>=on`. For unselected, do NOT emit `=off`.
 
-**Cluster 4 — Model cost tier** (single-select, user scope only)
+**Cluster 5 — Model cost tier** (single-select, user scope only)
 
 If `$SCOPE` is `project`, skip this cluster and emit no `model_tier` or
 `model_overrides` pair. Briefly note that model strength/cost is user-controlled
@@ -201,7 +259,7 @@ options:
 At user scope, always emit `model_tier=<value>` (single-select — the user has
 explicitly chosen). At project scope, emit neither model flag.
 
-**Cluster 5 — Output style** (single-select)
+**Cluster 6 — Output style** (single-select)
 
 ```
 question: "Output style installer behavior?"
@@ -286,6 +344,7 @@ Then print a final summary:
 oh-my-claude configured.
   Profile:   <zero-steering|maximum|balanced|minimal|custom>
   Scope:     <user|project>
+  Definition:<adaptive|always|off> (Constitution <on|off>; taste <off|review|adaptive>)
   Watchdog:  <installed|flag set|off>
   Tier:      <tier> (agents <rewritten|unchanged>; `user-wide preserved` for project scope)
   Conf:      <path>
@@ -296,6 +355,7 @@ Add a one-line restart hint when needed:
 - If `gate_level`, `guard_exhaustion_mode`, `quality_policy`, or any `*_file_count` changed → "Restart Claude Code to pick up the new gate level."
 - If user-scope `model_tier` changed → "Tier change applied to agent files; new sessions use the new tier automatically."
 - If project scope was selected → "Security, persistence, auto-tune, and model authority remain user-wide; this project cannot weaken enforcement, write team memory, self-tune global policy, or silently change model strength/spend."
+- If any Definition/Constitution control changed → "Definition and taste changes apply on the next real user prompt; no restart is required."
 - If only watchdog/memory/telemetry flags changed → no restart needed.
 
 Then offer one follow-up:
@@ -316,7 +376,7 @@ Then offer one follow-up:
 ## Edge cases
 
 - **Project scope without `.claude/` dir.** `set`/`apply-preset` create the directory. Note this in the summary so the user knows.
-- **User-only flags at project scope.** Direct writes fail atomically for `pretool_intent_guard`, `bg_spawn_gate`, `agent_first_gate`, `no_defer_mode`, `quality_policy`, `model_tier`, `model_overrides`, `repo_lessons`, and `auto_tune`. Project presets omit those keys. Use user scope; for model controls, a deliberate launch-time `OMC_MODEL_TIER` / `OMC_MODEL_OVERRIDES` environment value is also supported.
+- **User-only flags at project scope.** Direct writes fail atomically for `pretool_intent_guard`, `bg_spawn_gate`, `agent_first_gate`, `no_defer_mode`, `quality_policy`, `definition_of_excellent`, `quality_constitution`, `taste_learning`, `quality_constitution_max_context_chars`, `model_tier`, `model_overrides`, `repo_lessons`, and `auto_tune`. Project presets omit those keys. Use user scope; for model controls, a deliberate launch-time `OMC_MODEL_TIER` / `OMC_MODEL_OVERRIDES` environment value is also supported.
 - **Inherit pins are definition-backed, not a hidden model enum.** Claude Code's Agent call accepts named model enums only; `inherit` means omit the model and use the selected definition. Accept shipped bare inherit when its installed file can be reconstructed, run the tier switch immediately, and report failure truthfully. Accept custom bare inherit only when its untouched definition already contains exactly one `model: inherit` line. Reject namespaced inherit and missing bare targets; explicit Opus/Sonnet/Haiku custom and namespaced pins remain runtime-only and never rewrite their definitions.
 - **Stale `repo_path`.** If `cmd_show` reports `bundle: unknown`, the conf's `repo_path` doesn't point to a checkout with `VERSION`. Tell the user to re-run `install.sh` from the source repo so `repo_path` refreshes, then retry.
 - **Conf file has hand-written comments.** `write_conf_atomic` only strips lines matching `^<key>=` for the keys being written. Unrelated lines (including `#` comments) are preserved.

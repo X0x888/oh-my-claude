@@ -35,7 +35,7 @@ accept, refine, or ignore. Do not paraphrase or re-summarize above the
 script's output — the report itself is the deliverable.
 
 The report joins data from `~/.claude/quality-pack/`:
-- `session_summary.jsonl` — per-session outcome rows (gates fired, skips, serendipity, finding/wave outcomes)
+- `session_summary.jsonl` — per-session outcome rows (gates fired, skips, serendipity, finding/wave outcomes, and available Definition frontier-history episode counts). Frontier episodes follow ordered objective review cycles across additive contract revisions, so a superseded contract ID cannot remain falsely unresolved after the strengthened contract passes review.
 - `serendipity-log.jsonl` — Serendipity Rule applications
 - `classifier_misfires.jsonl` — classifier misfire annotations
 - `timing.jsonl` — per-session walltime, token categories, and bounded role/model/native-dispatch attribution

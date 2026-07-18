@@ -71,6 +71,19 @@
 # Env: OMC_QUALITY_POLICY.
 #quality_policy=balanced
 
+# Definition of Excellent protocol. Qualifying /ulw objectives must freeze a
+# task-specific quality contract before mutation, prove it on the current
+# revision, and clear a blind frontier review across deliberate, distinctive,
+# coherent, visionary, and complete.
+#   adaptive — arm medium/high-risk, broad/cross-domain, open-mandate, and
+#              explicitly ambitious craft work (default)
+#   always   — arm every execution objective (advisory/read-only turns inert)
+#   off      — explicit user escape; existing quality gates remain
+# Zero Steering promotes adaptive to always at runtime. User authority only:
+# project .claude/oh-my-claude.conf cannot weaken this setting.
+# Env: OMC_DEFINITION_OF_EXCELLENT.
+#definition_of_excellent=adaptive
+
 # Minimum verification confidence (0–100) to satisfy the verify gate.
 # Default 40 blocks lint-only checks (shellcheck=30, bash -n=30) while
 # accepting project test suites (npm test=70+) and framework runs (jest=50+).
@@ -662,6 +675,24 @@
 # ("remember that…") still apply regardless.
 # Env: OMC_AUTO_MEMORY.
 #auto_memory=on
+
+# User-owned Quality Constitution. Explicit project/global standards live under
+# ~/.claude/omc-user/quality-constitutions and survive update/uninstall. Turning
+# consumption off does not delete them. Project conf cannot disable this flag.
+# Env: OMC_QUALITY_CONSTITUTION.
+#quality_constitution=on
+
+# Exact-user taste learning. `review` records auditable candidates that require
+# user acceptance; `adaptive` may activate repeated threshold-clearing signals
+# as advisory only; `off` suppresses automatic proposals. Only explicit user
+# claims may block. Project conf cannot arm persistence. Env: OMC_TASTE_LEARNING.
+#taste_learning=review
+
+# Maximum characters in the role-specific compiled Constitution context. Raw
+# evidence and reference contents are never injected. User authority only so a
+# repo cannot hide blocking standards by lowering the cap.
+# Env: OMC_QUALITY_CONSTITUTION_MAX_CONTEXT_CHARS.
+#quality_constitution_max_context_chars=2400
 
 # repo_lessons (v1.48-pre). Team-shareable, git-committable compounding
 # memory — the deliberate exception to every other memory surface on

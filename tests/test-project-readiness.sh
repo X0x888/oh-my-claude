@@ -108,30 +108,50 @@ assert_contains "T3: help mentions distribution readiness" "distribution readine
 assert_contains "T3: help mentions skip-professional" "--skip-professional" "${out}"
 assert_contains "T3: help mentions skip-install" "--skip-install" "${out}"
 assert_contains "T3: help mentions skip-distribution" "--skip-distribution" "${out}"
+assert_contains "T3: help mentions empirical receipt" "--pairwise-receipt <file>" "${out}"
 
-printf 'Test 4: candidate-aware failure message surfaces the real blocker\n'
+printf 'Test 4: pairwise campaign receipt reaches the professional release gate\n'
+pairwise_receipt="${TMP_DIR}/campaign receipt.json"
+printf '{}\n' > "${pairwise_receipt}"
+out="$(
+  run_tool "${professional_ok}" "${install_ok}" "${distribution_ok}" \
+    --pairwise-receipt "${pairwise_receipt}" --json
+)"
+professional_command="$(printf '%s' "${out}" | jq -r '.surfaces[] | select(.name=="professional") | .command')"
+assert_contains "T4: professional command receives pairwise flag" "--pairwise-receipt" "${professional_command}"
+assert_contains "T4: spaced receipt path remains one argument" "campaign\\ receipt.json" "${professional_command}"
+
+set +e
+out="$(run_tool "${professional_ok}" "${install_ok}" "${distribution_ok}" \
+  --pairwise-receipt "${pairwise_receipt}" --skip-professional 2>&1)"
+rc="$?"
+set -e
+assert_eq "T4: receipt cannot be silently skipped" "2" "${rc}"
+assert_contains "T4: contradictory flags are named" "cannot be combined with --skip-professional" "${out}"
+
+printf 'Test 5: candidate-aware failure message surfaces the real blocker\n'
 set +e
 out="$(
   run_tool "${professional_ok}" "${install_ok}" "${distribution_pending_remote}" --json 2>&1
 )"
 rc="$?"
 set -e
-assert_eq "T4: candidate-aware failure exits non-zero" "1" "${rc}"
-assert_jq_eq "T4: candidate-aware message names remote deployment as the remaining blocker" '.message' "verify-project-readiness: professional and install readiness are green; remaining blocker is remote deployment while the local distribution candidate is coherent" "${out}"
+assert_eq "T5: candidate-aware failure exits non-zero" "1" "${rc}"
+assert_jq_eq "T5: candidate-aware message names remote deployment as the remaining blocker" '.message' "verify-project-readiness: professional and install readiness are green; remaining blocker is remote deployment while the local distribution candidate is coherent" "${out}"
 
-printf 'Test 5: docs inventory the project-readiness helper\n'
+printf 'Test 6: docs inventory the project-readiness helper\n'
 readme_contents="$(cat "${README_REAL}")"
 contributing_contents="$(cat "${CONTRIBUTING_REAL}")"
 claude_contents="$(cat "${CLAUDE_REAL}")"
 agents_contents="$(cat "${AGENTS_REAL}")"
-assert_contains "T5: README mentions helper" 'tools/verify-project-readiness.sh' "${readme_contents}"
-assert_contains "T5: README mentions install helper" 'tools/verify-install-readiness.sh' "${readme_contents}"
-assert_contains "T5: CONTRIBUTING mentions helper" 'tools/verify-project-readiness.sh' "${contributing_contents}"
-assert_contains "T5: CONTRIBUTING mentions install helper" 'tools/verify-install-readiness.sh' "${contributing_contents}"
-assert_contains "T5: CLAUDE mentions helper" 'verify-project-readiness.sh' "${claude_contents}"
-assert_contains "T5: CLAUDE mentions install helper" 'verify-install-readiness.sh' "${claude_contents}"
-assert_contains "T5: AGENTS mentions helper" 'verify-project-readiness.sh' "${agents_contents}"
-assert_contains "T5: AGENTS mentions install helper" 'verify-install-readiness.sh' "${agents_contents}"
+assert_contains "T6: README mentions helper" 'tools/verify-project-readiness.sh' "${readme_contents}"
+assert_contains "T6: README mentions install helper" 'tools/verify-install-readiness.sh' "${readme_contents}"
+assert_contains "T6: CONTRIBUTING mentions helper" 'tools/verify-project-readiness.sh' "${contributing_contents}"
+assert_contains "T6: CONTRIBUTING mentions install helper" 'tools/verify-install-readiness.sh' "${contributing_contents}"
+assert_contains "T6: CLAUDE mentions helper" 'verify-project-readiness.sh' "${claude_contents}"
+assert_contains "T6: CLAUDE mentions install helper" 'verify-install-readiness.sh' "${claude_contents}"
+assert_contains "T6: AGENTS mentions helper" 'verify-project-readiness.sh' "${agents_contents}"
+assert_contains "T6: AGENTS mentions install helper" 'verify-install-readiness.sh' "${agents_contents}"
 
 printf '\nproject-readiness tests: %d passed, %d failed\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]] || exit 1

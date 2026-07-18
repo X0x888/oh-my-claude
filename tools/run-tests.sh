@@ -540,10 +540,14 @@ while IFS= read -r test_path; do
   test_log="${tmp_root}/$(basename "${test_path}").log"
   if (( verbose == 1 )); then
     test_rc=0
-    bash "${test_path}" || test_rc=$?
+    # The selection loop itself reads from the shard manifest. Never let a
+    # child suite inherit that descriptor as stdin: a test that legitimately
+    # probes terminal/EOF behavior could otherwise consume later test paths,
+    # pollute its own output, and make the runner silently skip coverage.
+    bash "${test_path}" </dev/null || test_rc=$?
   else
     test_rc=0
-    bash "${test_path}" > "${test_log}" 2>&1 || test_rc=$?
+    bash "${test_path}" </dev/null > "${test_log}" 2>&1 || test_rc=$?
   fi
   if (( test_rc == 0 )); then
     ended="$(date +%s)"

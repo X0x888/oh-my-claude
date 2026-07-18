@@ -319,6 +319,90 @@ if [[ ${#implementations[@]} -eq 2 ]]; then
 fi
 
 # ===========================================================================
+# User-owned Quality Constitution lifecycle
+# ===========================================================================
+
+printf 'Testing Quality Constitution preservation and explicit purge...\n'
+constitution_home="${TEST_DIR}/constitution-lifecycle"
+constitution_file="${constitution_home}/.claude/omc-user/quality-constitutions/profiles/default/constitution.json"
+mkdir -p "$(dirname "${constitution_file}")" \
+  "${constitution_home}/.claude/quality-pack"
+printf '%s\n' '{"schema_version":1,"profile":"default"}' > "${constitution_file}"
+
+ordinary_out="$(HOME="${constitution_home}" \
+  bash "${REPO_ROOT}/uninstall.sh" --yes 2>&1)"
+assert_eq "ordinary uninstall removes managed quality-pack" "false" \
+  "$([[ -e "${constitution_home}/.claude/quality-pack" ]] && printf true || printf false)"
+assert_eq "ordinary uninstall preserves user-owned Constitution" "true" \
+  "$([[ -f "${constitution_file}" ]] && printf true || printf false)"
+assert_eq "ordinary uninstall summary tells the truth" "1" \
+  "$(grep -c 'Quality Constitution data was preserved' <<<"${ordinary_out}" || true)"
+
+# The managed harness is now gone. A later explicit purge must still work as
+# a first-class operation rather than returning the generic Nothing-to-do path.
+purge_out="$(HOME="${constitution_home}" \
+  bash "${REPO_ROOT}/uninstall.sh" --yes --purge-quality-constitutions 2>&1)"
+assert_eq "purge-only after uninstall removes Constitution root" "false" \
+  "$([[ -e "${constitution_home}/.claude/omc-user/quality-constitutions" ]] && printf true || printf false)"
+assert_eq "purge-only summary tells the truth" "1" \
+  "$(grep -c 'Quality Constitution data was explicitly purged' <<<"${purge_out}" || true)"
+assert_eq "purge-only path does not claim Nothing to do" "0" \
+  "$(grep -c 'Nothing to do' <<<"${purge_out}" || true)"
+
+# Purge refusal must happen before any managed uninstall mutation, and no
+# ancestor symlink may redirect the recursive delete outside ~/.claude.
+ancestor_home="${TEST_DIR}/constitution-ancestor-symlink"
+ancestor_external="${TEST_DIR}/constitution-ancestor-external"
+mkdir -p "${ancestor_home}/.claude/quality-pack" \
+  "${ancestor_external}/quality-constitutions/profiles/default"
+printf 'managed\n' >"${ancestor_home}/.claude/quality-pack/marker"
+printf 'external\n' \
+  >"${ancestor_external}/quality-constitutions/profiles/default/constitution.json"
+ln -s "${ancestor_external}" "${ancestor_home}/.claude/omc-user"
+ancestor_rc=0
+ancestor_out="$(HOME="${ancestor_home}" bash "${REPO_ROOT}/uninstall.sh" \
+  --yes --purge-quality-constitutions 2>&1)" || ancestor_rc=$?
+assert_eq "ancestor symlink purge is refused" "1" "${ancestor_rc}"
+assert_eq "ancestor symlink cannot delete external Constitution" "true" \
+  "$([[ -f "${ancestor_external}/quality-constitutions/profiles/default/constitution.json" ]] \
+    && printf true || printf false)"
+assert_eq "ancestor refusal leaves managed harness untouched" "true" \
+  "$([[ -f "${ancestor_home}/.claude/quality-pack/marker" ]] && printf true || printf false)"
+assert_eq "ancestor refusal names unsafe component" "1" \
+  "$(grep -c 'symlinked path component' <<<"${ancestor_out}" || true)"
+
+leaf_home="${TEST_DIR}/constitution-leaf-symlink"
+leaf_external="${TEST_DIR}/constitution-leaf-external"
+mkdir -p "${leaf_home}/.claude/omc-user" "${leaf_home}/.claude/quality-pack" \
+  "${leaf_external}/profiles/default"
+printf 'managed\n' >"${leaf_home}/.claude/quality-pack/marker"
+printf 'external\n' >"${leaf_external}/profiles/default/constitution.json"
+ln -s "${leaf_external}" "${leaf_home}/.claude/omc-user/quality-constitutions"
+leaf_rc=0
+leaf_out="$(HOME="${leaf_home}" bash "${REPO_ROOT}/uninstall.sh" \
+  --yes --purge-quality-constitutions 2>&1)" || leaf_rc=$?
+assert_eq "leaf symlink purge is refused" "1" "${leaf_rc}"
+assert_eq "leaf symlink cannot delete external Constitution" "true" \
+  "$([[ -f "${leaf_external}/profiles/default/constitution.json" ]] && printf true || printf false)"
+assert_eq "leaf refusal leaves managed harness untouched" "true" \
+  "$([[ -f "${leaf_home}/.claude/quality-pack/marker" ]] && printf true || printf false)"
+assert_eq "leaf refusal names unsafe component" "1" \
+  "$(grep -c 'symlinked path component' <<<"${leaf_out}" || true)"
+
+nondir_home="${TEST_DIR}/constitution-leaf-file"
+mkdir -p "${nondir_home}/.claude/omc-user" "${nondir_home}/.claude/quality-pack"
+printf 'managed\n' >"${nondir_home}/.claude/quality-pack/marker"
+printf 'not a directory\n' >"${nondir_home}/.claude/omc-user/quality-constitutions"
+nondir_rc=0
+nondir_out="$(HOME="${nondir_home}" bash "${REPO_ROOT}/uninstall.sh" \
+  --yes --purge-quality-constitutions 2>&1)" || nondir_rc=$?
+assert_eq "non-directory purge is refused" "1" "${nondir_rc}"
+assert_eq "non-directory refusal leaves managed harness untouched" "true" \
+  "$([[ -f "${nondir_home}/.claude/quality-pack/marker" ]] && printf true || printf false)"
+assert_eq "non-directory refusal names unsafe component" "1" \
+  "$(grep -c 'non-directory path component' <<<"${nondir_out}" || true)"
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 

@@ -969,6 +969,8 @@ assert_contains "T4t-partial: universal hook continues the same subagent" \
   '"hookEventName":"SubagentStop"' "${partial_out}"
 assert_contains "T4t-partial: continuation names intermediate checkpoint" \
   "intermediate checkpoint" "${partial_out}"
+assert_not_contains "T4t-partial: ordinary reviewer is not assigned a JSON envelope" \
+  "structural JSON" "${partial_out}"
 assert_eq "T4t-partial: pending native row is retained" "1" \
   "$(jq -s '[.[] | select(.native_agent_id == "native-partial-a")] | length' \
     "$(session_file "pending_agents.jsonl")")"

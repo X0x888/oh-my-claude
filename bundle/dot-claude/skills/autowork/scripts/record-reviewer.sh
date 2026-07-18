@@ -146,6 +146,35 @@ if [[ -n "${_review_enforced_contract_kind}" ]] \
   exit 0
 fi
 
+# Excellence is the independent evidence authority for an armed Definition of
+# Excellent. Validate its complete structural review against the current
+# frozen contract before consuming any causal row. The universal SubagentStop
+# hook supplies bounded continuation feedback in either hook order.
+_review_quality_required="$(read_state "quality_contract_required" 2>/dev/null || true)"
+_review_quality_payload=""
+_review_quality_contract=""
+_quality_review_receipt_failure=""
+_quality_review_frontier_event=""
+_quality_review_frontier_contract_id=""
+_quality_review_frontier_contract_revision=""
+_quality_review_frontier_cycle=""
+_quality_review_frontier_status=""
+_quality_review_frontier_materiality=""
+if [[ "${REVIEWER_TYPE}" == "excellence" \
+    && "${_review_quality_required}" == "1" ]]; then
+  if ! _omc_load_quality_contract 2>/dev/null \
+    || ! _review_quality_contract="$(quality_contract_validate_current 2>/dev/null)" \
+    || ! _review_quality_payload="$(quality_review_extract_json \
+      "${review_message}" 2>/dev/null)" \
+    || ! quality_review_validate_against_contract \
+      "${_review_quality_payload}" "${_review_quality_contract}" \
+      "${_review_final_line:-}" 2>/dev/null; then
+    record_gate_event "definition-of-excellent/review" "invalid-review" \
+      "agent=${AGENT_TYPE}" "reason=missing-stale-or-contradictory-envelope" 2>/dev/null || true
+    exit 0
+  fi
+fi
+
 has_findings=""
 case "${verdict_token}" in
   CLEAN|SHIP)
@@ -369,6 +398,552 @@ _review_current_revision() {
   esac
 }
 
+# Publish one current, artifact-grounded evidence row per reviewer reference
+# and a translated frontier receipt. This runs only after causal reviewer
+# validation, under the session lock. The surrounding transaction snapshots
+# all touched files so a later state-write failure rolls the whole publication
+# back instead of leaving proof without an accepted reviewer dimension.
+_publish_quality_review_unlocked() {
+  local current_revision="$1" contract_id contract_revision cycle plan_revision
+  local evidence_file frontier_file history_file evidence_tmp frontier_tmp history_tmp
+  local receipts_file receipts receipt used_receipts='[]' used_proofs='[]' threshold
+  local assessment criterion_id criterion axis criterion_class status result kind basis
+  local ref ref_index evidence_id receipt_id proof_identity matching_criterion_ids
+  local receipt_outcome receipt_tool observation_bearing
+  local evidence_row all_evidence_ids='[]'
+  local review_open material bar materiality weakest_axis required_count current_count
+  local frontier_json reviewed_at lifecycle_id prior_frontier_status=""
+  local _history_frontier_status=""
+  local _staged_evidence="" _weak_id=""
+  local prior_frontier="" prior_frontier_source="" prior_evidence=""
+  local prior_history="" prior_history_row="" prior_open_ids='[]'
+  local prior_review_receipt_ids='[]' prior_criterion_receipts='{}'
+  local prior_receipt_ids='[]' prior_receipt_id="" prior_receipt=""
+  local prior_proof_identity="" new_receipt_id="" new_receipt=""
+  local new_proof_identity="" prior_receipt_index=-1 new_receipt_index=-1
+
+  [[ "${REVIEWER_TYPE}" == "excellence" \
+      && "${_review_quality_required}" == "1" ]] || {
+    _quality_review_state_args=()
+    return 0
+  }
+  [[ -n "${_review_quality_payload}" && -n "${_review_quality_contract}" ]] || return 1
+
+  contract_id="$(jq -r '.contract_id' <<<"${_review_quality_contract}")"
+  contract_revision="$(jq -r '.contract_revision' <<<"${_review_quality_contract}")"
+  cycle="$(jq -r '.review_cycle_id' <<<"${_review_quality_contract}")"
+  plan_revision="$(jq -r '.plan_revision' <<<"${_review_quality_contract}")"
+  reviewed_at="${now_ts}"
+  lifecycle_id="$(jq -r '.lifecycle_dispatch_id // empty' \
+    <<<"${_review_dispatch_start_json}" 2>/dev/null || true)"
+  [[ "${current_revision}" =~ ^[0-9]+$ \
+      && "${contract_revision}" =~ ^[0-9]+$ \
+      && "${cycle}" =~ ^[0-9]+$ \
+      && "${plan_revision}" =~ ^[0-9]+$ ]] || return 1
+
+  evidence_file="$(session_file "quality_evidence.jsonl")"
+  frontier_file="$(session_file "quality_frontier.json")"
+  history_file="$(session_file "quality_frontier_history.jsonl")"
+  for _quality_target in "${evidence_file}" "${frontier_file}" "${history_file}"; do
+    [[ ! -L "${_quality_target}" ]] || return 1
+    [[ ! -e "${_quality_target}" || -f "${_quality_target}" ]] || return 1
+  done
+  receipts_file="$(session_file "verification_receipts.jsonl")"
+  receipts="$(_quality_contract_read_jsonl_array "${receipts_file}" 524288 512)" || {
+    _quality_review_receipt_failure="receipt-ledger-missing-or-invalid"; return 1;
+  }
+  _quality_contract_receipts_schema_valid "${receipts}" || {
+    _quality_review_receipt_failure="receipt-ledger-schema-invalid"; return 1;
+  }
+  threshold="${OMC_VERIFY_CONFIDENCE_THRESHOLD:-40}"
+  [[ "${threshold}" =~ ^[0-9]+$ && "${threshold}" -le 100 ]] || threshold=40
+  evidence_tmp="$(mktemp "${evidence_file}.tmp.XXXXXX")" || return 1
+  frontier_tmp="$(mktemp "${frontier_file}.tmp.XXXXXX")" || {
+    rm -f "${evidence_tmp}"; return 1;
+  }
+  history_tmp="$(mktemp "${history_file}.tmp.XXXXXX")" || {
+    rm -f "${evidence_tmp}" "${frontier_tmp}"; return 1;
+  }
+  chmod 600 "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}" 2>/dev/null || true
+
+  while IFS= read -r assessment; do
+    [[ -n "${assessment}" ]] || continue
+    criterion_id="$(jq -r '.id' <<<"${assessment}")"
+    criterion="$(jq -c --arg id "${criterion_id}" \
+      '.definition.criteria[] | select(.id == $id)' \
+      <<<"${_review_quality_contract}")"
+    [[ -n "${criterion}" ]] || {
+      rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"; return 1;
+    }
+    axis="$(jq -r '.axis' <<<"${criterion}")"
+    criterion_class="$(jq -r '.class' <<<"${criterion}")"
+    status="$(jq -r '.status' <<<"${assessment}")"
+    kind="$(jq -r '.evidence_kind' <<<"${assessment}")"
+    basis="$(jq -r '.basis' <<<"${assessment}")"
+    result="failed"
+    [[ "${status}" == "met" ]] && result="passed"
+    ref_index=0
+    while IFS= read -r ref; do
+      [[ -n "${ref}" ]] || continue
+      ref_index=$((ref_index + 1))
+      receipt="$(jq -c --arg id "${ref}" \
+        '[.[] | select(.receipt_id == $id)]
+         | if length == 1 then .[0] else empty end' \
+        <<<"${receipts}" 2>/dev/null || true)"
+      [[ -n "${receipt}" ]] || {
+        _quality_review_receipt_failure="receipt-not-found:${ref}"
+        rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"; return 1;
+      }
+      if jq -e --arg id "${ref}" 'index($id) != null' \
+          <<<"${used_receipts}" >/dev/null 2>&1; then
+        _quality_review_receipt_failure="receipt-reused:${ref}"
+        rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"; return 1
+      fi
+      used_receipts="$(jq -c --arg id "${ref}" '. + [$id]' \
+        <<<"${used_receipts}")" || {
+        rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"; return 1;
+      }
+      proof_identity="$(jq -r '.proof_identity // empty' \
+        <<<"${receipt}" 2>/dev/null || true)"
+      [[ -n "${proof_identity}" && "${proof_identity}" != "null" ]] || {
+        _quality_review_receipt_failure="receipt-proof-identity-invalid:${ref}"
+        rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"; return 1;
+      }
+      if jq -e --arg id "${proof_identity}" 'index($id) != null' \
+          <<<"${used_proofs}" >/dev/null 2>&1; then
+        # Re-running one semantic proof under a fresh tool ID does not create
+        # independent evidence for another criterion (or another minimum).
+        _quality_review_receipt_failure="receipt-proof-reused:${proof_identity}"
+        rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"; return 1
+      fi
+      used_proofs="$(jq -c --arg id "${proof_identity}" '. + [$id]' \
+        <<<"${used_proofs}")" || {
+        rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"; return 1;
+      }
+      [[ "$(jq -r '.quality_contract_id' <<<"${receipt}")" == "${contract_id}" \
+          && "$(jq -r '.quality_contract_revision' <<<"${receipt}")" == "${contract_revision}" \
+          && "$(jq -r '.review_cycle_id' <<<"${receipt}")" == "${cycle}" \
+          && "$(jq -r '.edit_revision' <<<"${receipt}")" == "${current_revision}" \
+          && "$(jq -r '.plan_revision' <<<"${receipt}")" == "${plan_revision}" \
+          && "$(jq -r '.evidence_kind' <<<"${receipt}")" == "${kind}" \
+          && "$(jq -r '.confidence' <<<"${receipt}")" -ge "${threshold}" ]] || {
+        _quality_review_receipt_failure="receipt-stale-or-below-threshold:${ref}"
+        rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"; return 1;
+      }
+      matching_criterion_ids="$(quality_contract_receipt_matching_criterion_ids \
+        "${receipt}" "${_review_quality_contract}" 2>/dev/null || true)"
+      if [[ "$(jq -r 'length' <<<"${matching_criterion_ids:-[]}" 2>/dev/null || true)" != "1" \
+          || "$(jq -r '.[0] // empty' <<<"${matching_criterion_ids:-[]}" 2>/dev/null || true)" \
+            != "${criterion_id}" ]]; then
+        _quality_review_receipt_failure="receipt-criterion-ambiguous:${ref}:${criterion_id}"
+        rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"; return 1
+      fi
+      quality_contract_receipt_matches_criterion "${receipt}" "${criterion}" || {
+        _quality_review_receipt_failure="receipt-does-not-match-criterion:${ref}:${criterion_id}"
+        rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"; return 1;
+      }
+      receipt_id="${ref}"
+      receipt_outcome="$(jq -r '.outcome' <<<"${receipt}")"
+      receipt_tool="$(jq -r '.tool_name' <<<"${receipt}")"
+      observation_bearing=0
+      case "${kind}:${receipt_tool}" in
+        source:*) observation_bearing=1 ;;
+        inspection:Read|inspection:Grep|inspection:mcp__*) observation_bearing=1 ;;
+        render:mcp__*) observation_bearing=1 ;;
+      esac
+
+      # A receipt proves that the named observation happened; for Read/Grep
+      # and observational MCP inspection/render calls, a successful tool
+      # outcome does not assert that the criterion itself is met. The
+      # independent reviewer may therefore use a successful observation to
+      # report an honest semantic `unmet`. A failed observation establishes
+      # neither `met` nor `unmet` and cannot support a fresh assessment.
+      # Assertion-bearing test/benchmark/comparison receipts
+      # (and Bash render/inspection checks) retain strict outcome congruence.
+      result="failed"
+      [[ "${status}" == "met" ]] && result="passed"
+      if [[ "${observation_bearing}" -eq 1 ]]; then
+        if [[ "${receipt_outcome}" != "passed" ]]; then
+          _quality_review_receipt_failure="receipt-outcome-contradicts-review:${ref}"
+          rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"; return 1
+        fi
+      elif ! { { [[ "${status}" == "met" && "${receipt_outcome}" == "passed" ]]; } \
+          || { [[ "${status}" == "unmet" && "${receipt_outcome}" == "failed" ]]; }; }; then
+        _quality_review_receipt_failure="receipt-outcome-contradicts-review:${ref}"
+        rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"; return 1;
+      fi
+      evidence_id="qe-$(_quality_contract_digest \
+        "${receipt_id}|${current_revision}|${plan_revision}|${lifecycle_id}|${ref_index}")"
+      evidence_row="$(jq -cnS \
+        --arg contract_id "${contract_id}" \
+        --argjson contract_revision "${contract_revision}" \
+        --argjson review_cycle_id "${cycle}" \
+        --arg criterion_id "${criterion_id}" \
+        --arg axis "${axis}" --arg class "${criterion_class}" \
+        --arg evidence_id "${evidence_id}" --arg receipt_id "${receipt_id}" \
+        --arg result "${result}" --arg evidence_kind "${kind}" \
+        --arg claim "${basis}" --arg reference "${ref}" \
+        --argjson edit_revision "${current_revision}" \
+        --argjson plan_revision "${plan_revision}" \
+        --argjson reviewed_at "${reviewed_at}" \
+        --arg reviewer "${AGENT_TYPE}" \
+        --arg native_agent_id "${_review_native_agent_id}" \
+        --arg lifecycle_dispatch_id "${lifecycle_id}" \
+        '{_v:1,contract_id:$contract_id,contract_revision:$contract_revision,
+          review_cycle_id:$review_cycle_id,criterion_id:$criterion_id,axis:$axis,
+          class:$class,evidence_id:$evidence_id,receipt_id:$receipt_id,
+          result:$result,evidence_kind:$evidence_kind,claim:$claim,reference:$reference,
+          edit_revision:$edit_revision,plan_revision:$plan_revision,
+          reviewed_at:$reviewed_at,reviewer:$reviewer,
+          native_agent_id:$native_agent_id,lifecycle_dispatch_id:$lifecycle_dispatch_id}')" || {
+        rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"; return 1;
+      }
+      printf '%s\n' "${evidence_row}" >>"${evidence_tmp}" || {
+        rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"; return 1;
+      }
+      all_evidence_ids="$(jq -c --arg id "${evidence_id}" '. + [$id]' \
+        <<<"${all_evidence_ids}")"
+    done < <(jq -r '.refs[]' <<<"${assessment}")
+  done < <(jq -c '.criteria[]' <<<"${_review_quality_payload}")
+
+  material="$(jq -r '.frontier.material' <<<"${_review_quality_payload}")"
+  bar="$(jq -r '.frontier.bar_quality' <<<"${_review_quality_payload}")"
+  review_open=false
+  if [[ "${material}" == "true" || "${bar}" == "weak" ]] \
+    || jq -e --argjson contract "${_review_quality_contract}" '
+      [.criteria[] | select(.status == "unmet") | .id] as $unmet
+      | any($contract.definition.criteria[]; . as $criterion
+          | $criterion.class == "must"
+            and ($unmet | index($criterion.id)) != null)
+    ' <<<"${_review_quality_payload}" >/dev/null 2>&1; then
+    review_open=true
+  fi
+  materiality="none"
+  if [[ "${review_open}" == "true" ]]; then
+    materiality="medium"
+    [[ "${material}" == "true" && "${bar}" == "weak" ]] && materiality="high"
+  fi
+  if [[ "${review_open}" == "true" ]]; then
+    weakest_axis="none"
+    _weak_id="$(jq -r '[.criteria[] | select(.status == "unmet")][0].id // .frontier.criterion_ids[0] // empty' \
+      <<<"${_review_quality_payload}")"
+    if [[ -n "${_weak_id}" ]]; then
+      weakest_axis="$(jq -r --arg id "${_weak_id}" \
+        '.definition.criteria[] | select(.id == $id) | .axis' \
+        <<<"${_review_quality_contract}")"
+    fi
+  else
+    # A clear review still has a weakest tested axis. Derive it from the
+    # harness-stamped receipt confidences rather than reviewer prose. The stable
+    # axis order makes equal-confidence portfolios deterministic across jq/Bash
+    # versions and gives closeout/status a truthful non-"none" result.
+    weakest_axis="$(jq -nr \
+      --argjson review "${_review_quality_payload}" \
+      --argjson contract "${_review_quality_contract}" \
+      --argjson receipts "${receipts}" '
+        ["deliberate","distinctive","coherent","visionary","complete"] as $axis_order
+        | [ $review.criteria[] as $assessment
+            | ($contract.definition.criteria[]
+                | select(.id == $assessment.id)) as $criterion
+            | $assessment.refs[] as $receipt_id
+            | ($receipts[]
+                | select(.receipt_id == $receipt_id)) as $receipt
+            | {axis:$criterion.axis, confidence:$receipt.confidence,
+               axis_rank:($axis_order | index($criterion.axis))} ]
+        | sort_by(.confidence, .axis_rank)
+        | .[0].axis // "none"
+      ' 2>/dev/null)" || {
+        rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"
+        return 1
+      }
+    case "${weakest_axis}" in
+      deliberate|distinctive|coherent|visionary|complete) ;;
+      *)
+        rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"
+        return 1
+        ;;
+    esac
+  fi
+  required_count="$(jq -r '[.definition.criteria[] | select(.class == "must")] | length' \
+    <<<"${_review_quality_contract}")"
+  current_count="$(jq -r --argjson c "${_review_quality_contract}" '
+    [.criteria[] | select(.status == "met") | .id] as $met
+    | [$c.definition.criteria[] | . as $criterion
+        | select(.class == "must" and ($met | index($criterion.id)) != null)] | length
+  ' <<<"${_review_quality_payload}")"
+  frontier_json="$(jq -cnS \
+    --arg contract_id "${contract_id}" \
+    --argjson contract_revision "${contract_revision}" \
+    --argjson review_cycle_id "${cycle}" \
+    --argjson edit_revision "${current_revision}" \
+    --argjson plan_revision "${plan_revision}" \
+    --arg status "$([[ "${review_open}" == "true" ]] && printf open || printf clear)" \
+    --arg materiality "${materiality}" \
+    --argjson dominates_current "${review_open}" \
+    --argjson evidence_ids "${all_evidence_ids}" \
+    --argjson receipt_ids "${used_receipts}" \
+    --argjson review "${_review_quality_payload}" \
+    --argjson reviewed_at "${reviewed_at}" \
+    --arg reviewer "${AGENT_TYPE}" \
+    --arg native_agent_id "${_review_native_agent_id}" \
+    --arg lifecycle_dispatch_id "${lifecycle_id}" \
+    '{_v:1,contract_id:$contract_id,contract_revision:$contract_revision,
+      review_cycle_id:$review_cycle_id,edit_revision:$edit_revision,
+      plan_revision:$plan_revision,status:$status,materiality:$materiality,
+      dominates_current:$dominates_current,
+      criterion_ids:$review.frontier.criterion_ids,evidence_ids:$evidence_ids,
+      title:$review.frontier.title,why:$review.frontier.why,
+      recommended_move:$review.frontier.recommended_move,
+      experiment:$review.frontier.experiment,evidence:$receipt_ids,
+      alternatives_searched:$review.alternatives_searched,limits:$review.limits,
+      reviewed_at:$reviewed_at,reviewer:$reviewer,
+      native_agent_id:$native_agent_id,lifecycle_dispatch_id:$lifecycle_dispatch_id}')" || {
+    rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"; return 1;
+  }
+  printf '%s\n' "${frontier_json}" >"${frontier_tmp}" || {
+    rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"; return 1;
+  }
+  _staged_evidence="$(jq -sc . "${evidence_tmp}" 2>/dev/null || true)"
+  if [[ -z "${_staged_evidence}" ]] \
+      || ! _quality_contract_evidence_schema_valid "${_staged_evidence}" \
+      || ! _quality_contract_frontier_schema_valid "${frontier_json}"; then
+    rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"
+    return 1
+  fi
+
+  # An accepted material frontier is durable authority, not a reviewer opinion
+  # that a second reviewer may erase by re-citing the same proof. When the last
+  # authoritative row in this objective cycle is open, every criterion named by
+  # that frontier must receive a later ledger receipt with a different
+  # proof_identity before a clear publication can replace it. The current
+  # frontier/evidence pair is preferred; after an additive re-contract removes
+  # those current files, the bounded history row plus its normalized receipt
+  # portfolio provides the same causal predecessor.
+  if [[ "${review_open}" != "true" ]]; then
+    if [[ -f "${frontier_file}" ]]; then
+      prior_frontier="$(_quality_contract_read_json_file \
+        "${frontier_file}" 65536 2>/dev/null || true)"
+      if [[ -n "${prior_frontier}" ]] \
+          && _quality_contract_frontier_schema_valid "${prior_frontier}" \
+          && [[ "$(jq -r '.review_cycle_id' <<<"${prior_frontier}")" == "${cycle}" ]] \
+          && [[ "$(jq -r '.status' <<<"${prior_frontier}")" == "open" ]]; then
+        prior_frontier_source="current"
+        prior_evidence="$(_quality_contract_read_jsonl_array \
+          "${evidence_file}" 2>/dev/null || true)"
+        if [[ -z "${prior_evidence}" ]] \
+            || ! _quality_contract_evidence_schema_valid "${prior_evidence}" \
+            || ! jq -e --argjson frontier "${prior_frontier}" '
+              all(.[];
+                .contract_id == $frontier.contract_id
+                and .contract_revision == $frontier.contract_revision
+                and .review_cycle_id == $frontier.review_cycle_id
+                and .edit_revision == $frontier.edit_revision
+                and .plan_revision == $frontier.plan_revision
+                and .reviewed_at == $frontier.reviewed_at
+                and .reviewer == $frontier.reviewer
+                and .native_agent_id == $frontier.native_agent_id
+                and .lifecycle_dispatch_id == $frontier.lifecycle_dispatch_id)
+            ' <<<"${prior_evidence}" >/dev/null 2>&1; then
+          _quality_review_receipt_failure="open-frontier-evidence-invalid"
+          rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"
+          return 1
+        fi
+        prior_review_receipt_ids="$(jq -c \
+          '[.[].receipt_id] | unique' <<<"${prior_evidence}")" || {
+          rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"
+          return 1
+        }
+      else
+        prior_frontier=""
+      fi
+    fi
+
+    if [[ -z "${prior_frontier}" && -f "${history_file}" ]]; then
+      prior_history="$(_quality_frontier_history_parse \
+        "${history_file}" 2>/dev/null || true)"
+      if [[ -n "${prior_history}" ]]; then
+        prior_history_row="$(jq -c --argjson cycle "${cycle}" '
+          [.rows[] | select(.review_cycle_id == $cycle)]
+          | if length > 0 then .[-1] else empty end
+        ' <<<"${prior_history}" 2>/dev/null || true)"
+        if [[ -n "${prior_history_row}" \
+            && "$(jq -r '.status' <<<"${prior_history_row}")" == "open" ]]; then
+          prior_frontier="${prior_history_row}"
+          prior_frontier_source="history"
+          prior_review_receipt_ids="$(jq -c '.evidence | unique' \
+            <<<"${prior_frontier}")" || {
+            rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"
+            return 1
+          }
+        else
+          prior_frontier=""
+        fi
+      fi
+    fi
+
+    if [[ -n "${prior_frontier}" ]]; then
+      prior_frontier_status="open"
+      prior_open_ids="$(jq -c '.criterion_ids | unique' \
+        <<<"${prior_frontier}")" || {
+        rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"
+        return 1
+      }
+      if [[ "$(jq -r 'length' <<<"${prior_open_ids}")" -lt 1 \
+          || "$(jq -r 'length' <<<"${prior_review_receipt_ids}")" -lt 1 ]]; then
+        _quality_review_receipt_failure="open-frontier-causal-proof-missing"
+        rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"
+        return 1
+      fi
+
+      while IFS= read -r prior_receipt_id; do
+        [[ -n "${prior_receipt_id}" ]] || continue
+        prior_receipt_index="$(jq -r --arg id "${prior_receipt_id}" '
+          map(.receipt_id) | index($id) // -1
+        ' <<<"${receipts}" 2>/dev/null || printf '%s' -1)"
+        if [[ ! "${prior_receipt_index}" =~ ^[0-9]+$ ]]; then
+          _quality_review_receipt_failure="open-frontier-receipt-missing:${prior_receipt_id}"
+          rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"
+          return 1
+        fi
+      done < <(jq -r '.[]' <<<"${prior_review_receipt_ids}")
+
+      while IFS= read -r criterion_id; do
+        [[ -n "${criterion_id}" ]] || continue
+        if [[ "${prior_frontier_source}" == "current" ]]; then
+          prior_receipt_ids="$(jq -c --arg id "${criterion_id}" '
+            [.[] | select(.criterion_id == $id) | .receipt_id] | unique
+          ' <<<"${prior_evidence}" 2>/dev/null || printf '[]')"
+        else
+          prior_receipt_ids='[]'
+          while IFS= read -r prior_receipt_id; do
+            [[ -n "${prior_receipt_id}" ]] || continue
+            prior_receipt="$(jq -c --arg id "${prior_receipt_id}" '
+              [.[] | select(.receipt_id == $id)]
+              | if length == 1 then .[0] else empty end
+            ' <<<"${receipts}" 2>/dev/null || true)"
+            [[ -n "${prior_receipt}" ]] || continue
+            matching_criterion_ids="$(quality_contract_receipt_matching_criterion_ids \
+              "${prior_receipt}" "${_review_quality_contract}" 2>/dev/null || true)"
+            if [[ "$(jq -r --arg id "${criterion_id}" \
+                'index($id) != null' <<<"${matching_criterion_ids:-[]}" \
+                2>/dev/null || true)" == "true" ]]; then
+              prior_receipt_ids="$(jq -c --arg id "${prior_receipt_id}" \
+                '. + [$id] | unique' <<<"${prior_receipt_ids}")" || {
+                rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"
+                return 1
+              }
+            fi
+          done < <(jq -r '.[]' <<<"${prior_review_receipt_ids}")
+        fi
+
+        if [[ "$(jq -r 'length' <<<"${prior_receipt_ids}" 2>/dev/null || true)" != "1" ]]; then
+          _quality_review_receipt_failure="open-frontier-criterion-proof-missing:${criterion_id}"
+          rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"
+          return 1
+        fi
+        prior_receipt_id="$(jq -r '.[0]' <<<"${prior_receipt_ids}")"
+        prior_criterion_receipts="$(jq -c \
+          --arg criterion "${criterion_id}" --arg receipt "${prior_receipt_id}" \
+          '. + {($criterion):$receipt}' <<<"${prior_criterion_receipts}")" || {
+          rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"
+          return 1
+        }
+      done < <(jq -r '.[]' <<<"${prior_open_ids}")
+
+      while IFS= read -r criterion_id; do
+        [[ -n "${criterion_id}" ]] || continue
+        prior_receipt_id="$(jq -r --arg id "${criterion_id}" \
+          '.[$id] // empty' <<<"${prior_criterion_receipts}")"
+        new_receipt_id="$(jq -r --arg id "${criterion_id}" '
+          [.[] | select(.criterion_id == $id) | .receipt_id]
+          | if length == 1 then .[0] else empty end
+        ' <<<"${_staged_evidence}" 2>/dev/null || true)"
+        prior_receipt="$(jq -c --arg id "${prior_receipt_id}" '
+          [.[] | select(.receipt_id == $id)]
+          | if length == 1 then .[0] else empty end
+        ' <<<"${receipts}" 2>/dev/null || true)"
+        new_receipt="$(jq -c --arg id "${new_receipt_id}" '
+          [.[] | select(.receipt_id == $id)]
+          | if length == 1 then .[0] else empty end
+        ' <<<"${receipts}" 2>/dev/null || true)"
+        if [[ -z "${prior_receipt}" || -z "${new_receipt}" ]]; then
+          _quality_review_receipt_failure="open-frontier-counterproof-missing:${criterion_id}"
+          rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"
+          return 1
+        fi
+        prior_receipt_index="$(jq -r --arg id "${prior_receipt_id}" \
+          'map(.receipt_id) | index($id) // -1' <<<"${receipts}")"
+        new_receipt_index="$(jq -r --arg id "${new_receipt_id}" \
+          'map(.receipt_id) | index($id) // -1' <<<"${receipts}")"
+        prior_proof_identity="$(jq -r '.proof_identity // empty' \
+          <<<"${prior_receipt}")"
+        new_proof_identity="$(jq -r '.proof_identity // empty' \
+          <<<"${new_receipt}")"
+        if [[ ! "${prior_receipt_index}" =~ ^[0-9]+$ \
+            || ! "${new_receipt_index}" =~ ^[0-9]+$ \
+            || "${new_receipt_index}" -le "${prior_receipt_index}" \
+            || -z "${prior_proof_identity}" \
+            || -z "${new_proof_identity}" \
+            || "${new_proof_identity}" == "${prior_proof_identity}" ]]; then
+          _quality_review_receipt_failure="open-frontier-counterproof-not-new:${criterion_id}"
+          rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"
+          return 1
+        fi
+      done < <(jq -r '.[]' <<<"${prior_open_ids}")
+    fi
+  fi
+
+  if [[ -f "${history_file}" ]]; then
+    _history_frontier_status="$(quality_frontier_history_last_status_for_cycle \
+      "${history_file}" "${cycle}" 2>/dev/null || true)"
+    [[ -n "${_history_frontier_status}" ]] \
+      && prior_frontier_status="${_history_frontier_status}"
+    tail -n 63 "${history_file}" >"${history_tmp}" 2>/dev/null || true
+  fi
+  printf '%s\n' "${frontier_json}" >>"${history_tmp}" || {
+    rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"; return 1;
+  }
+  mv -f "${evidence_tmp}" "${evidence_file}" \
+    && mv -f "${frontier_tmp}" "${frontier_file}" \
+    && mv -f "${history_tmp}" "${history_file}" || {
+      rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"; return 1;
+    }
+
+  # Release-visible taxonomy: classify the accepted frontier transition only
+  # after every authoritative artifact landed. The caller emits the event
+  # after the encompassing state transaction succeeds, so a rollback cannot
+  # advertise a discovery/remediation that was never committed.
+  if [[ "${review_open}" == "true" ]]; then
+    if [[ "${prior_frontier_status}" == "open" ]]; then
+      _quality_review_frontier_event="material-frontier-confirmed"
+    else
+      _quality_review_frontier_event="material-frontier-discovered"
+    fi
+  elif [[ "${prior_frontier_status}" == "open" ]]; then
+    _quality_review_frontier_event="material-frontier-remediated"
+  else
+    _quality_review_frontier_event="frontier-clear"
+  fi
+  _quality_review_frontier_contract_id="${contract_id}"
+  _quality_review_frontier_contract_revision="${contract_revision}"
+  _quality_review_frontier_cycle="${cycle}"
+  _quality_review_frontier_status="$([[ "${review_open}" == "true" ]] && printf open || printf clear)"
+  _quality_review_frontier_materiality="${materiality}"
+
+  _quality_review_state_args=(
+    "quality_contract_status" "$([[ "${review_open}" == "true" ]] && printf review-findings || printf proved)"
+    "quality_evidence_required_count" "${required_count}"
+    "quality_evidence_current_count" "${current_count}"
+    "quality_evidence_blocks" "0"
+    "quality_frontier_status" "$([[ "${review_open}" == "true" ]] && printf open || printf clear)"
+    "quality_frontier_revision" "${current_revision}"
+    "quality_frontier_plan_revision" "${plan_revision}"
+    "quality_frontier_blocks" "0"
+    "quality_weakest_axis" "${weakest_axis}"
+    "quality_last_review_ts" "${reviewed_at}"
+  )
+}
+
 # Commit reviewer metadata and dimension verdicts under one state lock. The
 # dispatch-start generation must still equal the completion generation. If an
 # edit/plan landed while the reviewer was running, preserve the prior verdict
@@ -487,6 +1062,37 @@ _commit_reviewer_result() {
     fi
   fi
 
+  # Re-resolve the Definition under the commit lock and require the exact
+  # contract identity frozen into the dispatch row. The earlier parse is only a
+  # cheap continuation filter; it cannot authorize publication because a
+  # planner revision may land while the reviewer is running.
+  if [[ -z "${_rejection_reason}" \
+      && "${REVIEWER_TYPE}" == "excellence" \
+      && "${_review_quality_required}" == "1" ]]; then
+    local _commit_contract="" _start_contract_id="" _start_contract_revision=""
+    if ! _commit_contract="$(quality_contract_validate_current 2>/dev/null)"; then
+      _rejection_reason="quality_contract_stale"
+    else
+      _start_contract_id="$(jq -r '.quality_contract_id // empty' \
+        <<<"${_review_dispatch_start_json}" 2>/dev/null || true)"
+      _start_contract_revision="$(jq -r '.quality_contract_revision // empty' \
+        <<<"${_review_dispatch_start_json}" 2>/dev/null || true)"
+      if [[ -z "${_start_contract_id}" \
+          || ! "${_start_contract_revision}" =~ ^[1-9][0-9]*$ ]]; then
+        _rejection_reason="quality_contract_dispatch_unbound"
+      elif [[ "${_start_contract_id}" != "$(jq -r '.contract_id' <<<"${_commit_contract}")" \
+          || "${_start_contract_revision}" != "$(jq -r '.contract_revision' <<<"${_commit_contract}")" ]]; then
+        _rejection_reason="quality_contract_changed"
+      elif ! quality_review_validate_against_contract \
+          "${_review_quality_payload}" "${_commit_contract}" \
+          "${_review_final_line:-}" 2>/dev/null; then
+        _rejection_reason="quality_review_contract_mismatch"
+      else
+        _review_quality_contract="${_commit_contract}"
+      fi
+    fi
+  fi
+
   if [[ -n "${_rejection_reason}" ]]; then
     _stale_count="$(read_state "stale_reviewer_count")"
     [[ "${_stale_count}" =~ ^[0-9]+$ ]] || _stale_count=0
@@ -525,15 +1131,121 @@ _commit_reviewer_result() {
   else
     _OMC_DIM_STATE_ARGS=()
   fi
+  _quality_review_state_args=()
+  _publish_quality_review_unlocked "${_current_revision}" || return 1
   # macOS still ships Bash 3.2, where expanding an empty array under `set -u`
-  # raises "unbound variable". Release reviews intentionally own no quality
-  # dimension, so avoid expanding the empty dimension array on that path.
+  # raises "unbound variable". Assemble one non-empty metadata array and append
+  # optional dimension/quality args only after checking their lengths.
+  local _all_state_args=("${_metadata_args[@]}")
   if (( ${#_OMC_DIM_STATE_ARGS[@]} > 0 )); then
-    _write_state_batch_unlocked "${_metadata_args[@]}" "${_OMC_DIM_STATE_ARGS[@]}"
-  else
-    _write_state_batch_unlocked "${_metadata_args[@]}"
+    _all_state_args+=("${_OMC_DIM_STATE_ARGS[@]}")
   fi
+  if (( ${#_quality_review_state_args[@]} > 0 )); then
+    _all_state_args+=("${_quality_review_state_args[@]}")
+  fi
+  _write_state_batch_unlocked "${_all_state_args[@]}"
   _review_commit_accepted=1
+}
+
+_quality_review_transaction_artifacts() {
+  printf '%s\n' \
+    session_state.json \
+    pending_agents.jsonl \
+    agent_dispatch_starts.jsonl \
+    quality_evidence.jsonl \
+    quality_frontier.json \
+    quality_frontier_history.jsonl
+}
+
+_snapshot_quality_review_transaction_unlocked() {
+  local dir="$1" artifact path
+  while IFS= read -r artifact; do
+    [[ -n "${artifact}" ]] || continue
+    path="$(session_file "${artifact}")"
+    if [[ -L "${path}" ]]; then
+      : >"${dir}/${artifact}.other" || return 1
+    elif [[ -f "${path}" ]]; then
+      cp "${path}" "${dir}/${artifact}.file" || return 1
+    elif [[ ! -e "${path}" ]]; then
+      : >"${dir}/${artifact}.absent" || return 1
+    else
+      : >"${dir}/${artifact}.other" || return 1
+    fi
+  done < <(_quality_review_transaction_artifacts)
+}
+
+_validate_quality_review_transaction_targets_unlocked() {
+  local artifact path
+  while IFS= read -r artifact; do
+    [[ -n "${artifact}" ]] || continue
+    path="$(session_file "${artifact}")"
+    if [[ -L "${path}" ]] \
+      || { [[ -e "${path}" ]] && [[ ! -f "${path}" ]]; }; then
+      log_anomaly "record-reviewer" \
+        "refusing non-regular Definition transaction artifact at ${path}"
+      return 1
+    fi
+  done < <(_quality_review_transaction_artifacts)
+}
+
+_restore_quality_review_transaction_unlocked() {
+  local dir="$1" artifact path tmp rc=0
+  while IFS= read -r artifact; do
+    [[ -n "${artifact}" ]] || continue
+    path="$(session_file "${artifact}")"
+    if [[ -f "${dir}/${artifact}.file" ]]; then
+      if [[ -L "${path}" ]] \
+        || { [[ -e "${path}" ]] && [[ ! -f "${path}" ]]; }; then
+        rc=1
+        continue
+      fi
+      tmp="$(mktemp "${path}.restore.XXXXXX")" || { rc=1; continue; }
+      chmod 600 "${tmp}" 2>/dev/null || true
+      if ! cp "${dir}/${artifact}.file" "${tmp}" \
+        || ! mv -f "${tmp}" "${path}"; then
+        rm -f "${tmp}" 2>/dev/null || true
+        rc=1
+      fi
+    elif [[ -f "${dir}/${artifact}.absent" ]]; then
+      if [[ -L "${path}" ]]; then
+        rc=1
+      elif [[ -f "${path}" ]]; then
+        rm -f "${path}" || rc=1
+      elif [[ -e "${path}" ]]; then
+        rc=1
+      fi
+    else
+      rc=1
+    fi
+  done < <(_quality_review_transaction_artifacts)
+  return "${rc}"
+}
+
+_commit_reviewer_transaction_unlocked() {
+  # Existing reviewers retain their lean single-file path. Only an armed
+  # excellence return owns the multi-artifact Definition transaction.
+  if [[ "${REVIEWER_TYPE}" != "excellence" \
+      || "${_review_quality_required}" != "1" ]]; then
+    _commit_reviewer_result "$@"
+    return
+  fi
+  local snapshot_dir rc=0 restore_rc=0
+  _validate_quality_review_transaction_targets_unlocked || return 1
+  snapshot_dir="$(mktemp -d "$(session_file ".quality-review-txn.XXXXXX")")" \
+    || return 1
+  if ! _snapshot_quality_review_transaction_unlocked "${snapshot_dir}"; then
+    rm -f "${snapshot_dir}"/* 2>/dev/null || true
+    rmdir "${snapshot_dir}" 2>/dev/null || true
+    return 1
+  fi
+  _commit_reviewer_result "$@" || rc=$?
+  if [[ "${rc}" -ne 0 ]]; then
+    _restore_quality_review_transaction_unlocked "${snapshot_dir}" || restore_rc=$?
+  fi
+  rm -f "${snapshot_dir}"/* 2>/dev/null || true
+  rmdir "${snapshot_dir}" 2>/dev/null || true
+  [[ "${restore_rc}" -eq 0 ]] || return "${restore_rc}"
+  return "${rc}"
 }
 
 dimension_verdict="FINDINGS"
@@ -544,22 +1256,49 @@ if [[ "${REVIEWER_TYPE}" == "release" ]]; then
   # intentionally outside the per-wave quality dimensions; treating it as
   # `standard` would let a clean release review satisfy bug_hunt/code_quality
   # and clear stop-guard counters for ordinary implementation work.
-  with_state_lock _commit_reviewer_result "${dimension_verdict}" "" \
+  with_state_lock _commit_reviewer_transaction_unlocked "${dimension_verdict}" "" \
     "last_release_review_ts" "${now_ts}" \
     "release_review_had_findings" "${has_findings}" \
     "release_review_format_issue" "${review_format_issue}"
 elif [[ "${REVIEWER_TYPE}" == "excellence" ]]; then
   # Excellence owns only the completeness clock. It must not satisfy the
   # universal quality-reviewer clock or overwrite its finding/format state.
-  with_state_lock _commit_reviewer_result "${dimension_verdict}" "completeness" \
+  # An armed Definition's material frontier has its own earlier, uncapped
+  # authority gate. Do not also persist that frontier as generic completeness
+  # FINDINGS: a same-artifact empirical counterexample can legitimately clear
+  # the frontier without an edit, while generic stricter-verdict-wins is
+  # revision-based and would otherwise deadlock forever. Genuine non-Definition
+  # completeness findings and every sibling reviewer remain pessimistic.
+  _excellence_dimensions="completeness"
+  if [[ "${_review_quality_required}" == "1" \
+      && "${dimension_verdict}" == "FINDINGS" ]]; then
+    _excellence_dimensions=""
+  fi
+  _quality_review_commit_rc=0
+  with_state_lock _commit_reviewer_transaction_unlocked "${dimension_verdict}" "${_excellence_dimensions}" \
     "last_excellence_review_ts" "${now_ts}" \
     "stop_guard_blocks" "0" \
     "session_handoff_blocks" "0" \
-    "dimension_guard_blocks" "0"
+    "dimension_guard_blocks" "0" || _quality_review_commit_rc=$?
+  if [[ "${_quality_review_commit_rc}" -ne 0 ]]; then
+    if [[ -n "${_quality_review_receipt_failure:-}" ]]; then
+      record_gate_event "definition-of-excellent/review" \
+        "receipt-authority-rejected" \
+        "agent=${AGENT_TYPE}" \
+        "reason=${_quality_review_receipt_failure}" 2>/dev/null || true
+      log_hook "record-reviewer" \
+        "retained excellence call after receipt rejection: ${_quality_review_receipt_failure}"
+      _quality_review_retry_context="The Definition review could not be accepted because one or more verification receipt references were missing, stale, reused, bound to the wrong criterion, matched more than one criterion, shared the same proof identity, or attempted to clear an open frontier without causally newer distinct proof for every affected criterion. The causal reviewer call is retained. Re-read the current contract, open frontier, and verification receipt ledger; run the frontier experiment/remediation as needed, then cite exactly one distinct current vr-* receipt per criterion that uniquely matches that criterion's tool, target, outcome, and proof anchor before returning the complete QUALITY_REVIEW_JSON and final VERDICT again."
+      jq -nc --arg ctx "$(truncate_chars 1200 "${_quality_review_retry_context}")" \
+        '{hookSpecificOutput:{hookEventName:"SubagentStop",additionalContext:$ctx}}'
+      exit 0
+    fi
+    exit "${_quality_review_commit_rc}"
+  fi
 elif [[ "${REVIEWER_TYPE}" == "prose" ]]; then
   # Editor-critic satisfies only the document-review clock. In mixed work it
   # cannot make a still-missing quality-reviewer appear to have run.
-  with_state_lock _commit_reviewer_result "${dimension_verdict}" "prose" \
+  with_state_lock _commit_reviewer_transaction_unlocked "${dimension_verdict}" "prose" \
     "last_doc_review_ts" "${now_ts}" \
     "doc_review_had_findings" "${has_findings}" \
     "stop_guard_blocks" "0" \
@@ -568,24 +1307,24 @@ elif [[ "${REVIEWER_TYPE}" == "prose" ]]; then
 elif [[ "${REVIEWER_TYPE}" == "stress_test" ]]; then
   # last_metis_review_ts is consumed by the plan-phase Metis gate. It is
   # deliberately isolated from implementation-review state.
-  with_state_lock _commit_reviewer_result "${dimension_verdict}" "stress_test" \
+  with_state_lock _commit_reviewer_transaction_unlocked "${dimension_verdict}" "stress_test" \
     "last_metis_review_ts" "${now_ts}" \
     "stop_guard_blocks" "0" \
     "session_handoff_blocks" "0" \
     "dimension_guard_blocks" "0"
 elif [[ "${REVIEWER_TYPE}" == "traceability" ]]; then
-  with_state_lock _commit_reviewer_result "${dimension_verdict}" "traceability" \
+  with_state_lock _commit_reviewer_transaction_unlocked "${dimension_verdict}" "traceability" \
     "stop_guard_blocks" "0" \
     "session_handoff_blocks" "0" \
     "dimension_guard_blocks" "0"
 elif [[ "${REVIEWER_TYPE}" == "design_quality" ]]; then
-  with_state_lock _commit_reviewer_result "${dimension_verdict}" "design_quality" \
+  with_state_lock _commit_reviewer_transaction_unlocked "${dimension_verdict}" "design_quality" \
     "stop_guard_blocks" "0" \
     "session_handoff_blocks" "0" \
     "dimension_guard_blocks" "0"
 else
   # Only a standard quality review owns the generic code-review state.
-  with_state_lock _commit_reviewer_result "${dimension_verdict}" "bug_hunt,code_quality" \
+  with_state_lock _commit_reviewer_transaction_unlocked "${dimension_verdict}" "bug_hunt,code_quality" \
     "last_review_ts" "${now_ts}" \
     "review_had_findings" "${has_findings}" \
     "review_format_issue" "${review_format_issue}" \
@@ -605,6 +1344,18 @@ if [[ "${_review_commit_accepted:-0}" -ne 1 ]]; then
     "current_revision=${_review_rejection_current:-}" \
     2>/dev/null || true
   exit 0
+fi
+
+if [[ "${REVIEWER_TYPE}" == "excellence" \
+    && -n "${_quality_review_frontier_event:-}" ]]; then
+  record_gate_event "definition-of-excellent/frontier" \
+    "${_quality_review_frontier_event}" \
+    "contract_id=${_quality_review_frontier_contract_id}" \
+    "contract_revision=${_quality_review_frontier_contract_revision}" \
+    "cycle=${_quality_review_frontier_cycle}" \
+    "status=${_quality_review_frontier_status}" \
+    "materiality=${_quality_review_frontier_materiality}" \
+    2>/dev/null || true
 fi
 
 # Keep bounded, structured evidence for reporting and future role-aware

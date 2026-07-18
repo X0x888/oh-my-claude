@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "campaign_id": "definition-of-excellent-v1",
+  "repository": {
+    "slug": "x0x888/oh-my-claude"
+  },
+  "baseline": {
+    "label": "pre-definition-of-excellent",
+    "boundary": "committed task-start source before Definition-of-Excellent implementation",
+    "git_commit": "14680a955e1ae0e427dbfa641de13051b0cad47d",
+    "git_tree": "fcb391c3004368d15a264ff16b513733935e0f18",
+    "absent_paths": [
+      "docs/definition-of-excellent.md",
+      "bundle/dot-claude/skills/autowork/scripts/lib/quality-contract.sh",
+      "bundle/dot-claude/skills/autowork/scripts/quality-constitution.sh",
+      "evals/realwork/pairwise.sh"
+    ]
+  },
+  "challenger": {
+    "label": "definition-of-excellent",
+    "policy": "evaluator-checkout-descendant",
+    "required_paths": [
+      "docs/definition-of-excellent.md",
+      "bundle/dot-claude/skills/autowork/scripts/lib/quality-contract.sh",
+      "bundle/dot-claude/skills/autowork/scripts/quality-constitution.sh",
+      "evals/realwork/pairwise.sh"
+    ]
+  }
+}

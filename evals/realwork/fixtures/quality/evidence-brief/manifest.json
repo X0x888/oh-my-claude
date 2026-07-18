@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "probe_id": "quality-evidence-brief",
+  "checks": [
+    {
+      "id": "citation_traceability",
+      "rules": [
+        {"type": "path_exists", "path": "brief.md"},
+        {"type": "file_contains_all", "path": "brief.md", "values": ["[S1]", "[S2]", "[S3]"]}
+      ]
+    },
+    {
+      "id": "claim_bounding",
+      "rules": [
+        {"type": "file_contains_all", "path": "brief.md", "values": ["Confidence: bounded", "inference"]},
+        {"type": "file_excludes_all", "path": "brief.md", "values": ["guaranteed", "proves causation"]}
+      ]
+    },
+    {
+      "id": "contrary_evidence",
+      "rules": [
+        {"type": "file_contains_all", "path": "brief.md", "values": ["Contrary evidence", "reversal condition"]}
+      ]
+    }
+  ]
+}

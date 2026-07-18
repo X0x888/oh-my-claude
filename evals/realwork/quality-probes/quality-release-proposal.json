@@ -1,0 +1,47 @@
+{
+  "schema_version": 2,
+  "id": "quality-release-proposal",
+  "domain": "writing",
+  "risk": "medium",
+  "fixture": "fixtures/quality/release-proposal",
+  "prompt": "/ulw write a concise decision proposal for adopting the release-readiness audit workflow",
+  "candidate_artifacts": [
+    {"kind": "files", "globs": ["proposal.md", "proposal.docx"]},
+    {"kind": "rendered_document", "globs": ["rendered/**"]}
+  ],
+  "hard_checks": [
+    {"id": "required_facts", "description": "Every supplied cost, constraint, and decision fact remains accurate.", "critical": true},
+    {"id": "decision_present", "description": "The proposal makes an explicit recommendation for the named audience.", "critical": true},
+    {"id": "render_clean", "description": "The delivered artifact renders without clipping or missing content.", "critical": true}
+  ],
+  "rubric": {
+    "version": "ddccv-1",
+    "audience": "An engineering leadership team deciding whether and how to adopt a release-readiness audit.",
+    "constraints": ["Stay concise", "Do not invent unsupported savings or incident data"],
+    "non_goals": ["Generic release-management tutorial", "Unbounded process expansion"],
+    "task_specific_anchors": [
+      "The recommendation is organized around the decision rather than around background summary.",
+      "Risks and objections change the proposal instead of appearing as ceremonial caveats.",
+      "A reversible adoption path, decision trigger, or kill criterion makes the proposal operationally forward-looking."
+    ],
+    "dimensions": [
+      {"id": "deliberate", "weight": 1},
+      {"id": "distinctive", "weight": 1},
+      {"id": "coherent", "weight": 1},
+      {"id": "visionary", "weight": 1},
+      {"id": "complete", "weight": 1}
+    ]
+  },
+  "campaign": {
+    "runs_per_arm": 3,
+    "model_tiers": ["balanced", "economy"],
+    "max_candidate_cost_ratio": 1.75,
+    "max_candidate_wall_ratio": 1.75,
+    "candidate_summary_contract": {
+      "schema_version": 3,
+      "required_top_level": ["probe_id", "provenance", "artifact_dir", "economics"],
+      "required_provenance": ["prompt_hash", "fixture_hash", "source_hash", "model", "model_tier", "harness_role", "harness_hash"],
+      "required_token_economics": ["input", "output", "cache_read", "cache_creation"]
+    }
+  }
+}

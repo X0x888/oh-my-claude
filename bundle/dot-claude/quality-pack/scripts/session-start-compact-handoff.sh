@@ -15,6 +15,11 @@ fi
 
 ensure_session_dir
 
+_clear_quality_constitution_authorization_unlocked() {
+  rm -f "$(session_file "quality_constitution_authorization.json")" 2>/dev/null || true
+}
+with_state_lock _clear_quality_constitution_authorization_unlocked || true
+
 # Marker lines are a readability aid, not a collision-proof boundary. Quote
 # every attacker-influenced payload line so an embedded END marker stays nested
 # data and cannot promote the following text to a top-level directive.
@@ -173,6 +178,9 @@ if [[ -n "${contract_primary_value}" ]]; then
 fi
 if [[ -n "${contract_remaining_items_value}" ]]; then
   context_parts+=("Outstanding obligations before Stop:\n- ${contract_remaining_items_value//$'\n'/$'\n- '}")
+fi
+if [[ "$(read_state "quality_contract_required" 2>/dev/null || true)" == "1" ]]; then
+  context_parts+=("Definition of Excellent remains binding across compaction: contract=$(read_state "quality_contract_id" 2>/dev/null || printf 'missing') status=$(read_state "quality_contract_status" 2>/dev/null || printf 'missing'); proof=$(read_state "quality_evidence_current_count" 2>/dev/null || printf '0')/$(read_state "quality_evidence_required_count" 2>/dev/null || printf '?'); frontier=$(read_state "quality_frontier_status" 2>/dev/null || printf 'missing'). Do not re-author or weaken it. Read $(session_file "quality_contract.json"), the immutable floor at $(session_file "quality_contract_floor.json"), receipts at $(session_file "verification_receipts.jsonl"), $(session_file "quality_evidence.jsonl"), and $(session_file "quality_frontier.json"); missing authoritative sidecars fail closed.")
 fi
 
 # Gap 3c — pending specialist re-dispatch. If agents were in flight when the

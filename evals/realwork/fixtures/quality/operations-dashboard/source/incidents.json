@@ -1,0 +1,7 @@
+{
+  "generated_at": "2026-06-01T12:00:00Z",
+  "incidents": [
+    {"id": "INC-104", "severity": "SEV-1", "owner": "payments-oncall", "next_safe_action": "Fail over to eu-west replica"},
+    {"id": "INC-103", "severity": "SEV-3", "owner": "search-oncall", "next_safe_action": "Continue observation"}
+  ]
+}

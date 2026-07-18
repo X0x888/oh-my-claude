@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oh-my-claude.local/schemas/realwork-pairwise-judge.json",
+  "title": "oh-my-claude blind pairwise judge response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "rubric_version",
+    "artifact_hashes",
+    "dimensions",
+    "overall",
+    "scope_creep",
+    "hard_quality_warning"
+  ],
+  "properties": {
+    "rubric_version": {"type": "string", "minLength": 1},
+    "artifact_hashes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["A", "B"],
+      "properties": {
+        "A": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "B": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "dimensions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deliberate", "distinctive", "coherent", "visionary", "complete"],
+      "properties": {
+        "deliberate": {"$ref": "#/$defs/dimension"},
+        "distinctive": {"$ref": "#/$defs/dimension"},
+        "coherent": {"$ref": "#/$defs/dimension"},
+        "visionary": {"$ref": "#/$defs/dimension"},
+        "complete": {"$ref": "#/$defs/dimension"}
+      }
+    },
+    "overall": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["winner", "material", "confidence", "reason"],
+      "properties": {
+        "winner": {"type": "string", "enum": ["A", "B", "tie"]},
+        "material": {"type": "boolean"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "reason": {"type": "string", "minLength": 1}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"winner": {"const": "tie"}}, "required": ["winner"]},
+          "then": {"properties": {"material": {"const": false}}}
+        },
+        {
+          "if": {"properties": {"winner": {"enum": ["A", "B"]}}, "required": ["winner"]},
+          "then": {"properties": {"material": {"const": true}}}
+        }
+      ]
+    },
+    "scope_creep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["A", "B"],
+      "properties": {
+        "A": {"type": "boolean"},
+        "B": {"type": "boolean"}
+      }
+    },
+    "hard_quality_warning": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "maxItems": 10
+    }
+  },
+  "$defs": {
+    "dimension": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["winner", "confidence", "evidence"],
+      "properties": {
+        "winner": {"type": "string", "enum": ["A", "B", "tie"]},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 5,
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  }
+}

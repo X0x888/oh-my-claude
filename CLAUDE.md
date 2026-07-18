@@ -10,6 +10,7 @@ This file is intentionally short. For implementation-level depth, read the sourc
 |---|---|
 | Components, state-key dictionary, request flow, intent classification, FINDINGS_JSON parser, Wave 3 watchdog, timing-row shapes | `docs/architecture.md` |
 | Conf flags — defaults, env vars, behavior (full table) | `docs/customization.md` |
+| Frozen five-axis quality contract, evidence/frontier protocol, Quality Constitution authority, blind A/B claim | `docs/definition-of-excellent.md` |
 | Reviewer VERDICT contract, universal verdict tokens, FINDINGS_JSON schema, dimension mapping, discovered-scope capture targets | `AGENTS.md` |
 | Release process (full pre-flight, bump, post-flight CI verification), code standards, adding new components | `CONTRIBUTING.md` |
 | Conf-flag examples with inline defaults | `bundle/dot-claude/oh-my-claude.conf.example` |
@@ -20,8 +21,8 @@ If a fact appears here AND in one of the above, that doc is authoritative — ke
 
 - `bundle/dot-claude/agents/` — 37 specialist agent definitions; the 26 inspection/judgment agents deny the four direct editor tools and request plan mode (Bash remains available), while the 11 domain builders retain editor tools
 - `bundle/dot-claude/quality-pack/scripts/` — 16 lifecycle hooks. Per-hook detail in `docs/architecture.md`.
-- `bundle/dot-claude/skills/` — 35 skill definitions, each in `<name>/SKILL.md`
-- `bundle/dot-claude/skills/autowork/scripts/` — 48 autowork hooks + helpers; shared lib `common.sh`; eager `lib/{state-io,verification}.sh`, common-loader `lib/{classifier,timing}.sh`, and directly consumed `lib/canary.sh`. Per-script detail in `docs/architecture.md`.
+- `bundle/dot-claude/skills/` — 36 skill definitions, each in `<name>/SKILL.md`
+- `bundle/dot-claude/skills/autowork/scripts/` — 50 autowork hooks + helpers; shared lib `common.sh`; eager `lib/{state-io,verification}.sh`, lazy common-loaders `lib/{classifier,timing,quality-contract}.sh`, directly consumed `lib/canary.sh`, and the exact-operation Constitution authority library. Per-script detail in `docs/architecture.md`.
 - `bundle/dot-claude/output-styles/` — bundled output styles (`oh-my-claude.md` default, `executive-brief.md`); selected via `output_style=` in `oh-my-claude.conf`
 - `bundle/dot-claude/quality-pack/design-craft/` — on-demand design-craft references (`art-taste-doctrine.md`, `a11y-doctrine.md`, `design-for-hackers.md`, `taste-skill-doctrine.md`); loaded by 6 design-side surfaces (5 visual-craft 8-principle, 1 UX-trimmed 3-principle), NOT in the global @-include chain. Lockstep contract in Coordination Rules.
 - `bundle/dot-claude/quality-pack/research-craft/` — on-demand research-craft references (`scientific-rigor.md`, `citation-integrity.md`, `figure-craft.md`); loaded by the research-side surfaces (`research-data-analyst`, `literature-scout`, `rigor-reviewer`, `draft-writer`, `editor-critic` + the `data-analysis`/`lit-review`/`manuscript` skills), NOT in the global @-include chain. Lockstep contract in Coordination Rules.

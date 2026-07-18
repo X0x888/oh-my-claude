@@ -53,3 +53,7 @@ actually do?" gap that previously required reading the 422-line
 
 If the session shows issues (guard exhausted, high stall counter, missing
 verification, many classifier misfires), briefly note what it means.
+When a Definition of Excellent is armed, the full status also distinguishes
+current in-scope Constitution claims from pending learned candidates (or says
+the candidate source is unavailable), while preserving every blocking taste
+ID needed to diagnose the frozen contract.

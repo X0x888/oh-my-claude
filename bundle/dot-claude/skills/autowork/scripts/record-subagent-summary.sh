@@ -60,6 +60,7 @@ _summary_final_line="$(printf '%s\n' "${_summary_tail}" | sed -n '2p')"
 _summary_terminal_verdict=""
 _summary_informative_verdict=0
 _summary_valid_universal_verdict=0
+_summary_structured_contract_error=""
 _summary_enforced_contract_kind="$(omc_enforced_terminal_contract_kind \
   "${AGENT_TYPE}" 2>/dev/null || true)"
 # The prior empty-message no-op remains intact for informational/custom agents
@@ -96,6 +97,72 @@ if [[ "${_summary_id_line}" =~ ^REVIEW_DISPATCH_ID:[[:space:]]*([A-Za-z0-9][A-Za
   _summary_review_dispatch_id="${_summary_id_line#REVIEW_DISPATCH_ID:}"
   _summary_review_dispatch_id="$(printf '%s' "${_summary_review_dispatch_id}" \
     | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+fi
+
+# A role-valid VERDICT is necessary but no longer sufficient for the two
+# Definition-of-Excellent authorities. Validate the structural semantic
+# envelope before either parallel SubagentStop hook may claim the causal row.
+# Invalid returns therefore use the existing bounded native continuation path
+# and cannot publish a summary, plan, reviewer dimension, or proof side effect.
+if [[ "$(read_state "quality_contract_required" 2>/dev/null || true)" == "1" ]]; then
+  _summary_agent_basename="${AGENT_TYPE##*:}"
+  if [[ "${_summary_enforced_contract_kind}" == "planner" \
+      && "${_summary_terminal_verdict}" == "PLAN_READY" ]]; then
+    _summary_quality_payload=""
+    if ! _omc_load_quality_contract 2>/dev/null \
+      || ! _summary_quality_payload="$(quality_contract_extract_json \
+        "${LAST_ASSISTANT_MESSAGE}" 2>/dev/null)"; then
+      _summary_valid_enforced_contract=0
+      _summary_structured_contract_error="PLAN_READY is missing a valid structural QUALITY_CONTRACT_JSON immediately before the dispatch ID/verdict."
+    elif [[ "$(read_state "quality_constitution_status" 2>/dev/null || true)" == "invalid" ]]; then
+      _summary_valid_enforced_contract=0
+      _summary_structured_contract_error="The user-owned Quality Constitution is invalid; repair/audit it before proposing an authoritative contract."
+    else
+      _summary_required_profile_ids="$(read_state "quality_constitution_blocking_ids" 2>/dev/null || true)"
+      if [[ -n "${_summary_required_profile_ids}" ]] \
+        && ! jq -e --arg ids "${_summary_required_profile_ids}" '
+          ($ids | split(",") | map(select(length > 0)) | sort) as $required
+          | ([.standards[]? | .profile_entry_id? // empty] | unique | sort) as $present
+          | all($required[]; . as $id | ($present | index($id)) != null)
+        ' <<<"${_summary_quality_payload}" >/dev/null 2>&1; then
+        _summary_valid_enforced_contract=0
+        _summary_structured_contract_error="QUALITY_CONTRACT_JSON omits one or more explicit blocking Quality Constitution IDs."
+      fi
+      if [[ "${_summary_valid_enforced_contract}" -eq 1 \
+          && -n "$(read_state "first_mutation_ts" 2>/dev/null || true)" ]]; then
+        _summary_old_contract_file="$(session_file "quality_contract.json")"
+        if [[ -f "${_summary_old_contract_file}" \
+            && ! -L "${_summary_old_contract_file}" ]]; then
+          _summary_old_contract="$(jq -ce . "${_summary_old_contract_file}" 2>/dev/null || true)"
+          if [[ -z "${_summary_old_contract}" ]] \
+            || ! quality_contract_validate_envelope \
+              "${_summary_old_contract}" 2>/dev/null \
+            || ! quality_contract_revision_preserves_floor \
+              "${_summary_quality_payload}" "${_summary_old_contract}" 2>/dev/null; then
+            _summary_valid_enforced_contract=0
+            _summary_structured_contract_error="The proposed post-mutation contract deletes or weakens the frozen mandatory criterion/anti-goal/user-standard floor. Preserve it exactly and make only additive strengthening changes."
+          fi
+        else
+          _summary_valid_enforced_contract=0
+          _summary_structured_contract_error="Implementation already started without a frozen Definition. A late first contract cannot certify prior work; restart the objective or use the user's explicit /ulw-skip escape."
+        fi
+      fi
+    fi
+  elif [[ "${_summary_agent_basename}" == "excellence-reviewer" \
+      && "${_summary_terminal_verdict}" =~ ^(CLEAN|SHIP|FINDINGS|BLOCK)$ ]]; then
+    _summary_quality_review=""
+    _summary_quality_contract=""
+    if ! _omc_load_quality_contract 2>/dev/null \
+      || ! _summary_quality_contract="$(quality_contract_validate_current 2>/dev/null)" \
+      || ! _summary_quality_review="$(quality_review_extract_json \
+        "${LAST_ASSISTANT_MESSAGE}" 2>/dev/null)" \
+      || ! quality_review_validate_against_contract \
+        "${_summary_quality_review}" "${_summary_quality_contract}" \
+        "${_summary_final_line}" 2>/dev/null; then
+      _summary_valid_enforced_contract=0
+      _summary_structured_contract_error="The excellence return lacks a current, contract-complete QUALITY_REVIEW_JSON or its criteria/frontier contradict the terminal verdict."
+    fi
+  fi
 fi
 
 # Return the current mutation generation for roles whose dedicated reviewer
@@ -327,6 +394,30 @@ _claim_summary_pending_unlocked() {
     fi
   fi
 
+  # Match the excellence return to the exact contract revision bound into its
+  # pending row. This repeats the role-specific hook's decision under the
+  # universal claim lock so either SubagentStop hook order rejects a stale bar
+  # before summaries, scope, or Council effects can land.
+  if [[ -n "${selected}" \
+      && "${AGENT_TYPE##*:}" == "excellence-reviewer" \
+      && "$(read_state "quality_contract_required" 2>/dev/null || true)" == "1" ]]; then
+    local_quality_contract=""
+    if ! _omc_load_quality_contract 2>/dev/null \
+        || ! local_quality_contract="$(quality_contract_validate_current 2>/dev/null)" \
+        || [[ "$(jq -r '.quality_contract_id // empty' <<<"${selected}" 2>/dev/null || true)" \
+          != "$(jq -r '.contract_id' <<<"${local_quality_contract}" 2>/dev/null || true)" ]] \
+        || [[ "$(jq -r '.quality_contract_revision // empty' <<<"${selected}" 2>/dev/null || true)" \
+          != "$(jq -r '.contract_revision' <<<"${local_quality_contract}" 2>/dev/null || true)" ]] \
+        || ! quality_review_validate_against_contract \
+          "${_summary_quality_review:-}" "${local_quality_contract}" \
+          "${_summary_final_line}" 2>/dev/null; then
+      _summary_valid_enforced_contract=0
+      _summary_structured_contract_error="The excellence return is not bound to the current frozen Definition revision. Continue or redispatch the reviewer against the current contract."
+    else
+      _summary_quality_contract="${local_quality_contract}"
+    fi
+  fi
+
   # An invalid planner contract has not advanced plan_revision, so its frozen
   # generation can be checked without the valid-plan hook-order ambiguity
   # (record-plan may publish and increment before summary sees a valid return).
@@ -523,7 +614,11 @@ fi
 if [[ "${_summary_contract_retry_required}" -eq 1 ]]; then
   _summary_contract_hint="$(omc_enforced_terminal_contract_hint \
     "${AGENT_TYPE}")"
-  _summary_retry_context="Your response ended at an intermediate checkpoint without the required final ${_summary_enforced_contract_kind} verdict. Continue from the retained context now, finish every outstanding check, and return the complete self-contained ${_summary_enforced_contract_kind} result—not only the missing verdict. Do not stop at another future-tense progress update. Reserve the final turn for exactly one role-valid line: ${_summary_contract_hint}."
+  if [[ -n "${_summary_structured_contract_error}" ]]; then
+    _summary_retry_context="Your response ended at an intermediate checkpoint without the complete required ${_summary_enforced_contract_kind} contract. ${_summary_structured_contract_error} Continue from the retained context now, finish every outstanding check, and return the complete self-contained ${_summary_enforced_contract_kind} result—not only the missing line. Do not stop at another future-tense progress update. Reserve the final turn for the required structural JSON line, optional dispatch ID, then exactly one role-valid line: ${_summary_contract_hint}."
+  else
+    _summary_retry_context="Your response ended at an intermediate checkpoint without the required final ${_summary_enforced_contract_kind} verdict. Continue from the retained context now, finish every outstanding check, and return the complete self-contained ${_summary_enforced_contract_kind} result—not only the missing verdict. Do not stop at another future-tense progress update. Reserve the final turn for exactly one role-valid line: ${_summary_contract_hint}."
+  fi
   record_gate_event "subagent-summary" "terminal-contract-retry" \
     "agent=${AGENT_TYPE}" \
     "native_agent_id=${_summary_native_agent_id:-none}" 2>/dev/null || true

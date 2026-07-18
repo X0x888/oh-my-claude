@@ -43,6 +43,26 @@ if [[ "${tool_name}" == "NotebookEdit" ]] && [[ -z "${edited_path}" ]]; then
   edited_path="$(json_get '.tool_input.notebook_path')"
 fi
 
+# Connector tools are pathless. Ignore only operations the shared classifier
+# can prove observational; unknown calls fail closed and advance the relevant
+# native/document/UI generations so review cannot certify pre-mutation bytes.
+is_external_mcp=0
+external_surface=""
+if [[ "${tool_name}" == mcp__* ]]; then
+  tool_input_json="$(jq -c '.tool_input // {}' <<<"${HOOK_JSON}" 2>/dev/null || printf '{}')"
+  if ! mcp_tool_attempts_artifact_mutation "${tool_name}" "${tool_input_json}"; then
+    exit 0
+  fi
+  is_external_mcp=1
+  _mcp_lower="$(printf '%s' "${tool_name}" | tr '[:upper:]-' '[:lower:]_')"
+  case "${_mcp_lower}" in
+    *sheet*|*workbook*|*excel*) external_surface="native" ;;
+    *doc*|*word*|*notion*|*confluence*) external_surface="doc" ;;
+    *slide*|*deck*|*powerpoint*|*figma*|*canvas*|*browser*|*playwright*|*computer_use*) external_surface="ui" ;;
+    *) external_surface="unknown" ;;
+  esac
+fi
+
 # Bash has no file_path field. The PreTool hook captured before-state for each
 # non-trivially-read-only candidate; consume it here and advance the generic
 # code clock on a changed snapshot or conservative recognized-write fallback.
@@ -79,7 +99,11 @@ fi
 now="$(now_epoch)"
 is_doc=0
 is_ui=0
-if [[ -n "${edited_path}" ]] && is_doc_path "${edited_path}"; then
+if [[ "${external_surface}" == "doc" ]]; then
+  is_doc=1
+elif [[ "${external_surface}" == "ui" ]]; then
+  is_ui=1
+elif [[ -n "${edited_path}" ]] && is_doc_path "${edited_path}"; then
   is_doc=1
 elif [[ -n "${edited_path}" ]] && is_ui_path "${edited_path}"; then
   is_ui=1
@@ -116,23 +140,36 @@ with_state_lock _record_first_mutation_from_edit || true
 # a reviewer batch racing with this batch could lose updates to
 # dimension_guard_blocks, timestamp clocks, and monotonic freshness revisions.
 _record_edit_clocks() {
-  local _edit_revision _next_revision _bash_event_count
+  local _edit_revision _next_revision _bash_event_count _prompt_revision
   is_ultrawork_mode || return 0
   _edit_revision="$(read_state "edit_revision")"
   [[ "${_edit_revision}" =~ ^[0-9]+$ ]] || _edit_revision=0
   _next_revision=$((_edit_revision + 1))
+  _prompt_revision="$(read_state "prompt_revision")"
+  [[ "${_prompt_revision}" =~ ^[0-9]+$ ]] || _prompt_revision=0
 
   if [[ "${is_doc}" -eq 1 ]]; then
-    write_state_batch \
-      "last_edit_ts" "${now}" \
-      "last_doc_edit_ts" "${now}" \
-      "edit_revision" "${_next_revision}" \
-      "last_doc_edit_revision" "${_next_revision}" \
-      "stop_guard_blocks" "0" \
-      "session_handoff_blocks" "0" \
-      "advisory_guard_blocks" "0" \
+    local _doc_args=(
+      "last_edit_ts" "${now}"
+      "last_doc_edit_ts" "${now}"
+      "edit_revision" "${_next_revision}"
+      "last_edit_prompt_revision" "${_prompt_revision}"
+      "last_doc_edit_revision" "${_next_revision}"
+      "stop_guard_blocks" "0"
+      "session_handoff_blocks" "0"
+      "advisory_guard_blocks" "0"
       "stall_counter" "0"
-  elif [[ "${tool_name}" == "Bash" ]] && [[ -z "${edited_path}" ]]; then
+    )
+    if [[ "${is_external_mcp}" -eq 1 ]]; then
+      _doc_args+=(
+        "last_external_edit_ts" "${now}"
+        "last_external_edit_revision" "${_next_revision}"
+        "external_edit_scope" "${external_surface}"
+      )
+    fi
+    write_state_batch "${_doc_args[@]}"
+  elif { [[ "${tool_name}" == "Bash" ]] || [[ "${is_external_mcp}" -eq 1 ]]; } \
+      && [[ -z "${edited_path}" ]]; then
     # A monotonic event counter, not the second-resolution timestamp, scopes
     # unknown-path Bash work to a fresh review objective. The global edit
     # revision independently makes reviews/tests stale even in the same second.
@@ -143,6 +180,7 @@ _record_edit_clocks() {
       "last_code_edit_ts" "${now}"
       "last_bash_edit_ts" "${now}"
       "edit_revision" "${_next_revision}"
+      "last_edit_prompt_revision" "${_prompt_revision}"
       "last_code_edit_revision" "${_next_revision}"
       "last_bash_edit_revision" "${_next_revision}"
       "bash_edit_event_count" "$((_bash_event_count + 1))"
@@ -158,12 +196,22 @@ _record_edit_clocks() {
     if [[ "$(read_state "review_cycle_prose_semantic")" == "1" ]]; then
       _unknown_args+=("last_doc_edit_ts" "${now}" "last_doc_edit_revision" "${_next_revision}")
     fi
+    if [[ "${external_surface}" == "doc" || "${external_surface}" == "native" ]]; then
+      _unknown_args+=("last_doc_edit_ts" "${now}" "last_doc_edit_revision" "${_next_revision}")
+    fi
+    if [[ "${external_surface}" == "ui" || "${external_surface}" == "native" ]]; then
+      _unknown_args+=("last_ui_edit_ts" "${now}" "last_ui_edit_revision" "${_next_revision}")
+    fi
+    if [[ "${is_external_mcp}" -eq 1 ]]; then
+      _unknown_args+=("last_external_edit_ts" "${now}" "last_external_edit_revision" "${_next_revision}" "external_edit_scope" "${external_surface}")
+    fi
     write_state_batch "${_unknown_args[@]}"
   else
     local _code_args=(
       "last_edit_ts" "${now}"
       "last_code_edit_ts" "${now}"
       "edit_revision" "${_next_revision}"
+      "last_edit_prompt_revision" "${_prompt_revision}"
       "last_code_edit_revision" "${_next_revision}"
       "stop_guard_blocks" "0"
       "session_handoff_blocks" "0"

@@ -126,19 +126,27 @@ _run_router_json() {
   shift 2
   local env_args=("$@")
 
-  local hook_json
+  local hook_json router_output router_rc=0
   hook_json="$(jq -nc \
     --arg sid "${session_id}" \
     --arg p "${prompt_text}" \
     --arg cwd "${_test_project}" \
     '{session_id:$sid, prompt:$p, cwd:$cwd}')"
 
-  HOME="${_test_home}" \
+  set +e
+  router_output="$(HOME="${_test_home}" \
     STATE_ROOT="${_test_state_root}" \
     env ${env_args[@]+"${env_args[@]}"} \
     bash -c 'cd "$1" && bash "$2"' _ "${_test_project}" "${REPO_ROOT}/bundle/dot-claude/quality-pack/scripts/prompt-intent-router.sh" \
-    <<<"${hook_json}" 2>/dev/null \
-    || true
+    <<<"${hook_json}" 2>"${_test_home}/router.stderr")"
+  router_rc=$?
+  set -e
+  if [[ "${router_rc}" -ne 0 ]]; then
+    printf '  diagnostic: router rc=%d sid=%s prompt=%q stderr=%s\n' \
+      "${router_rc}" "${session_id}" "${prompt_text}" \
+      "$(head -c 500 "${_test_home}/router.stderr")" >&2
+  fi
+  printf '%s' "${router_output}"
 }
 
 _run_router_context() {
@@ -636,6 +644,12 @@ mkdir -p \
   "${cache_fail_state}"
 ln -s "${REPO_ROOT}/bundle/dot-claude/quality-pack/memory" \
   "${cache_fail_home}/.claude/quality-pack/memory"
+# The router sources the Constitution authority helper directly from the
+# installed autowork tree before it reaches directive assembly. Mirror that
+# installed `lib/` sibling here; otherwise this fixture aborts at bootstrap and
+# never exercises the injected directive-cache commit failure below.
+ln -s "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/lib" \
+  "${cache_fail_home}/.claude/skills/autowork/scripts/lib"
 cat > "${cache_fail_home}/.claude/skills/autowork/scripts/common.sh" <<'EOF'
 # shellcheck shell=bash
 # shellcheck disable=SC1090
@@ -660,8 +674,12 @@ cache_fail_output="$(
   OMC_TEST_REAL_COMMON="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh" \
   bash -c 'cd "$1" && bash "$2"' _ "${_test_project}" \
     "${REPO_ROOT}/bundle/dot-claude/quality-pack/scripts/prompt-intent-router.sh" \
-    <<<"${cache_fail_payload}" 2>/dev/null || true
+    <<<"${cache_fail_payload}" 2>"${cache_fail_home}/router.stderr" || true
 )"
+if [[ -z "${cache_fail_output}" && -s "${cache_fail_home}/router.stderr" ]]; then
+  printf '  diagnostic: T20e router stderr: %s\n' \
+    "$(head -c 500 "${cache_fail_home}/router.stderr")" >&2
+fi
 cache_fail_context="$(jq -r '.hookSpecificOutput.additionalContext // empty' \
   <<<"${cache_fail_output}" 2>/dev/null || true)"
 assert_contains "T20e: cache failure still emits assembled routing context" \

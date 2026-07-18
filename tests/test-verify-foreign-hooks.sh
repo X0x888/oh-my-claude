@@ -214,6 +214,23 @@ What next?
 EOF
 )" "${verify_output_1}"
 
+# Definition-of-Excellent release is impossible without the fresh-eyes
+# excellence reviewer. It is therefore a hard install requirement, not merely
+# bundle drift that default verify may warn about. A just-installed harness
+# missing this agent must fail the canonical Errors: 0 boundary.
+EXCELLENCE_AGENT="${CLAUDE_HOME}/agents/excellence-reviewer.md"
+mv "${EXCELLENCE_AGENT}" "${EXCELLENCE_AGENT}.missing-fixture"
+verify_output_1missing_excellence="$(run_verify_with_rc)"
+verify_rc_1missing_excellence="$(printf '%s' "${verify_output_1missing_excellence}" \
+  | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify.sh exits 1 when excellence-reviewer is missing" \
+  "1" "${verify_rc_1missing_excellence}"
+assert_contains "verify hard-fails the missing excellence reviewer" \
+  "Missing: ${EXCELLENCE_AGENT}" "${verify_output_1missing_excellence}"
+assert_contains "missing excellence reviewer increments Errors" \
+  "Errors:        1" "${verify_output_1missing_excellence}"
+mv "${EXCELLENCE_AGENT}.missing-fixture" "${EXCELLENCE_AGENT}"
+
 # Presence of a bundled command is not enough: a narrowed matcher silently
 # removes the tool surface while basename-only verification still looks green.
 cp "${SETTINGS}" "${SETTINGS}.matcher-pristine"
@@ -230,6 +247,10 @@ jq '
     | select(any(.hooks[]?; (.command // "") | contains("mark-edit.sh")))
     | .matcher) = "Read"
   |
+  (.hooks.PostToolUseFailure[]
+    | select(any(.hooks[]?; (.command // "") | contains("record-verification.sh")))
+    | .matcher) = "Bash"
+  |
   (.hooks.PostToolUse[]
     | select(any(.hooks[]?; (.command // "") | contains("posttool-dispatch.sh")))
     | .matcher) = "Read"
@@ -244,6 +265,8 @@ assert_contains "verify catches incomplete direct PostTool edit matcher" \
   "mark-edit.sh must use Edit|Write|MultiEdit|NotebookEdit" "${verify_output_1matcher}"
 assert_contains "verify catches wrong failed-Bash matcher" \
   "PostToolUseFailure -> mark-edit.sh must use Bash" "${verify_output_1matcher}"
+assert_contains "verify catches incomplete failed-verification matcher" \
+  "PostToolUseFailure -> record-verification.sh must use Bash|Read|Grep|mcp__.*" "${verify_output_1matcher}"
 assert_contains "verify catches non-universal successful-Bash dispatcher" \
   "posttool-dispatch.sh must use a universal matcher" "${verify_output_1matcher}"
 mv "${SETTINGS}.matcher-pristine" "${SETTINGS}"

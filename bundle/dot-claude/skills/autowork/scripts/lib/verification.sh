@@ -20,6 +20,8 @@
 #   classify_mcp_verification_tool             — map an MCP tool name to a verify category
 #   score_mcp_verification_confidence          — 0-100 confidence score for an MCP call
 #   detect_mcp_verification_outcome            — pass/fail from MCP tool output
+#   mcp_tool_attempts_artifact_mutation         — conservative connector-write classifier
+#   verification_receipt_evidence_kind         — derive a non-model proof kind
 #
 # Required dependencies (must be defined BEFORE this lib is sourced):
 #   environment: OMC_CUSTOM_VERIFY_MCP_TOOLS (with default — set in common.sh)
@@ -120,7 +122,17 @@ verification_has_framework_keyword() {
   # name. `\b` requires a non-word→word transition before `t`, which is
   # satisfied by `/tests/` (slash → word) and ` tests/` (space → word) but
   # not by `contests/` (n → t). Applies to `test[-_]` and `_test` already.
-  printf '%s' "${cmd}" | grep -Eiq '(^|[[:space:]]|;|&|\||\()(bash|sh|\./)[[:space:]]*[^[:space:]]*(\btests?/|\btest[-_]|_test\b)[^[:space:]]*\.sh\b'
+  if printf '%s' "${cmd}" | grep -Eiq '(^|[[:space:]]|;|&|\||\()(bash|sh|\./)[[:space:]]*[^[:space:]]*(\btests?/|\btest[-_]|_test\b)[^[:space:]]*\.sh\b'; then
+    return 0
+  fi
+
+  # Definition proof also admits one plain, directly executed verifier script
+  # whose filename states the operation it performs. Keep this narrower than a
+  # generic `*.sh`: the name must carry a check/verify/audit/benchmark/compare/
+  # render token, and the ordinary output factors still have to supply the
+  # remaining confidence needed to cross the gate. A silent `render.sh` earns
+  # only 30/100; it is not promoted merely because its name sounds authoritative.
+  printf '%s' "${cmd}" | grep -Eiq '(^|[[:space:]]|;|&|\||\()(bash|sh|\./)[[:space:]]*([^[:space:]]*/)?([^[:space:]]*[_-])?(check|verify|audit|benchmark|compare|render)([_-][^[:space:]]*)?\.sh\b'
 }
 
 verification_output_has_counts() {
@@ -418,6 +430,155 @@ classify_verification_scope() {
   else
     printf 'unknown'
   fi
+}
+
+# Connector/app mutations do not pass through Edit/Write and historically
+# escaped both the pre-contract gate and edit-generation clocks. The Definition
+# boundary is deliberately fail-closed: only a small, syntactically
+# observational operation set is exempt. Unknown wrappers, browser interaction,
+# code evaluation, navigation, and generic request/call tools may mutate remote
+# state and therefore advance the mutation generation.
+mcp_tool_attempts_artifact_mutation() {
+  local tool_name="${1:-}" tool_input_json="${2:-{}}" lower operation="" joined
+  local tool_operation="" graphql_document=""
+  [[ "${tool_name}" == mcp__* ]] || return 1
+  lower="$(printf '%s' "${tool_name}" | tr '[:upper:]-' '[:lower:]_')"
+
+  if command -v jq >/dev/null 2>&1; then
+    operation="$(jq -r '
+      [(.action? // empty),(.operation? // empty),(.method? // empty),
+       (.verb? // empty),(.request_type? // empty),(.mode? // empty)]
+      | map(select(type == "string" and length > 0)) | join("_")
+    ' <<<"${tool_input_json}" 2>/dev/null || true)"
+    operation="$(printf '%s' "${operation}" | tr '[:upper:]-' '[:lower:]_')"
+    graphql_document="$(jq -r '.query? // .document? // empty' \
+      <<<"${tool_input_json}" 2>/dev/null || true)"
+  fi
+  joined="${lower}_${operation}"
+  tool_operation="${lower##*__}"
+
+  # Any explicit interaction/write/evaluation verb wins over an observational
+  # token elsewhere in the name (for example browser_get_and_click).
+  if grep -Eiq '(^|_)(create|update|edit|write|delete|remove|archive|restore|move|copy|rename|append|insert|replace|format|clear|upload|download|export|sync|publish|send|reply|comment|share|grant|revoke|permission|batch|set|add|import|apply|submit|commit|click|type|fill|select|press|drag|drop|navigate|open|goto|evaluate|execute|run|code|request|call|post|put|patch)(_|$)' <<<"${joined}"; then
+    return 0
+  fi
+
+  # GraphQL hides its mutation verb inside the document rather than the tool
+  # name. Inspect only the operation prefix, not arbitrary prose/content.
+  if [[ "${lower}" == *graphql* ]] \
+      && grep -Eiq '^[[:space:]]*mutation([[:space:]({]|$)' \
+        <<<"${graphql_document}"; then
+    return 0
+  fi
+
+  # If the wrapper declares an action/method, every declared value must be a
+  # known observational operation. This prevents a safe noun elsewhere in the
+  # tool name from laundering a generic call.
+  if [[ -n "${operation}" ]] \
+      && ! grep -Eq '^(read|get|head|options|list|search|find|query|fetch|inspect|status|schema|describe|metadata|preview|validate|verify|check|snapshot|screenshot)(_(read|get|head|options|list|search|find|query|fetch|inspect|status|schema|describe|metadata|preview|validate|verify|check|snapshot|screenshot))*$' \
+        <<<"${operation}"; then
+    return 0
+  fi
+
+  # Only a terminal MCP function whose family is explicitly observational is
+  # exempt. Unknown prefixes/suffixes such as sync_status or query_and_sync are
+  # mutations because they do not begin with an allowed reader and mutation
+  # tokens above win even when an allowed reader is also present.
+  case "${tool_operation}" in
+    snapshot|snapshot_*|screenshot|screenshot_*|browser_snapshot|browser_take_screenshot|browser_console_messages|browser_network_requests|console_messages|network_requests|read|read_*|get|get_*|list|list_*|search|search_*|find|find_*|query|query_*|fetch|fetch_*|inspect|inspect_*|status|status_*|schema|schema_*|describe|describe_*|metadata|metadata_*|preview|preview_*|validate|validate_*|verify|verify_*|check|check_*)
+      return 1 ;;
+  esac
+  return 0
+}
+
+# Derive the quality-contract evidence kind from the hook-observed tool, not
+# from reviewer prose. The planner may permit several kinds, but a reviewer can
+# only cite the kind actually stamped into the authoritative verification
+# receipt.
+verification_receipt_evidence_kind() {
+  local method="${1:-}" scope="${2:-}" command_text="${3:-}" lower
+  lower="$(printf '%s' "${command_text}" | tr '[:upper:]' '[:lower:]')"
+  case "${method}" in
+    mcp_browser_visual_check|mcp_computer_visual_check) printf 'render'; return ;;
+    mcp_*) printf 'inspection'; return ;;
+  esac
+  if printf '%s' "${lower}" | grep -Eiq \
+    '(^|[^[:alnum:]_])(benchmark|bench|hyperfine|performance|latency|throughput)([^[:alnum:]_]|$)'; then
+    printf 'benchmark'
+  elif printf '%s' "${lower}" | grep -Eiq \
+    '(^|[^[:alnum:]_])(compare|comparison|golden|snapshot[-_ ]diff|visual[-_ ]diff)([^[:alnum:]_]|$)'; then
+    printf 'comparison'
+  elif printf '%s' "${lower}" | grep -Eiq \
+    '(^|[^[:alnum:]_])(render|rendering|rendered)([^[:alnum:]_]|$)'; then
+    printf 'render'
+  elif [[ "${scope}" == "lint" ]] && printf '%s' "${lower}" | grep -Eiq \
+    '(^|[[:space:]])(vale|textlint|alex|write-good|markdownlint|mdl)([[:space:]]|$)'; then
+    printf 'inspection'
+  else
+    printf 'test'
+  fi
+}
+
+# Definition-of-Excellent proof is a stricter authority surface than the
+# legacy "did this look test-like?" score. A compound shell command can print
+# its own success text, hide a failure behind `|| true`, or use a diagnostic
+# flag that never executes the suite. Admit only one plain invocation of a
+# known execution family (or the repository's detected test command). This is
+# intentionally conservative: an unusual verifier can still be run, but it
+# cannot certify a Definition criterion until it is made a project command or
+# wrapped by a clearly named test/check/verify/benchmark script.
+verification_command_is_authoritative_execution() {
+  local command_text="${1:-}" project_test_cmd="${2:-}" normalized project=""
+  normalized="$(printf '%s' "${command_text}" \
+    | tr '\t\r\n' '   ' \
+    | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s/[[:space:]]+/ /g')"
+  [[ -n "${normalized}" ]] || return 1
+
+  # No shell grammar beyond a single argv vector. Quoting is allowed; shell
+  # composition, substitutions, redirections, comments, and backgrounding are
+  # not. This closes `pytest --version; printf "10 passed"` and its variants.
+  [[ "${command_text}" != *$'\n'* && "${command_text}" != *$'\r'* ]] || return 1
+  case "${normalized}" in
+    *';'*|*'&&'*|*'||'*|*'|'*|*'>'*|*'<'*|*'`'*|*'$('*|*'${'*|*'#'*|*'&') return 1 ;;
+  esac
+
+  # Discovery/help/configuration modes do not execute the claimed proof.
+  if grep -Eiq '(^|[[:space:]])(--version|-V|--help|-h|--collect-only|--list(-tests)?|--dry-run|--showconfig|--print-config|--print-only|--no-run)([=[:space:]]|$)' \
+      <<<"${normalized}"; then
+    return 1
+  fi
+
+  if [[ -n "${project_test_cmd}" ]]; then
+    project="$(printf '%s' "${project_test_cmd}" \
+      | tr '\t\r\n' '   ' \
+      | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s/[[:space:]]+/ /g')"
+    if [[ -n "${project}" ]] \
+        && { [[ "${normalized}" == "${project}" ]] \
+          || [[ "${normalized}" == "${project} "* ]]; }; then
+      return 0
+    fi
+  fi
+
+  # shellcheck disable=SC2254
+  case "${normalized}" in
+    pytest|pytest\ *|python\ -m\ pytest|python\ -m\ pytest\ *|python3\ -m\ pytest|python3\ -m\ pytest\ *|uv\ run\ pytest|uv\ run\ pytest\ *|vitest|vitest\ *|jest|jest\ *|npx\ vitest|npx\ vitest\ *|npx\ jest|npx\ jest\ *) return 0 ;;
+    cargo\ test|cargo\ test\ *|go\ test|go\ test\ *|swift\ test|swift\ test\ *|swift\ build|swift\ build\ *|ruff\ check\ *|mypy\ *|eslint\ *|tsc|tsc\ *|phpunit|phpunit\ *|rspec|rspec\ *|bundle\ exec\ rspec|bundle\ exec\ rspec\ *|rake\ test|rake\ test\ *|zig\ build|zig\ build\ *|deno\ test|deno\ test\ *|nix\ build|nix\ build\ *) return 0 ;;
+    shellcheck\ *|bash\ -n\ *|zsh\ -n\ *|sh\ -n\ *) return 0 ;;
+    npm\ test|npm\ test\ *|npm\ run\ test|npm\ run\ test\ *|npm\ run\ check|npm\ run\ check\ *|npm\ run\ lint|npm\ run\ lint\ *|npm\ run\ build|npm\ run\ build\ *|pnpm\ test|pnpm\ test\ *|pnpm\ run\ test|pnpm\ run\ test\ *|pnpm\ run\ check|pnpm\ run\ check\ *|pnpm\ run\ lint|pnpm\ run\ lint\ *|pnpm\ run\ build|pnpm\ run\ build\ *|yarn\ test|yarn\ test\ *|yarn\ run\ test|yarn\ run\ test\ *|yarn\ run\ check|yarn\ run\ check\ *|yarn\ run\ lint|yarn\ run\ lint\ *|yarn\ run\ build|yarn\ run\ build\ *|bun\ test|bun\ test\ *|bun\ run\ test|bun\ run\ test\ *|bun\ run\ check|bun\ run\ check\ *|bun\ run\ lint|bun\ run\ lint\ *|bun\ run\ build|bun\ run\ build\ *) return 0 ;;
+    make\ test|make\ test\ *|make\ check|make\ check\ *|make\ lint|make\ lint\ *|make\ verify|make\ verify\ *|make\ build|make\ build\ *|just\ test|just\ test\ *|just\ check|just\ check\ *|just\ lint|just\ lint\ *|just\ verify|just\ verify\ *|just\ build|just\ build\ *) return 0 ;;
+    gradle\ *test*|./gradlew\ *test*|xcodebuild\ *test*|xcodebuild\ *build*|mvn\ test|mvn\ test\ *|mvn\ verify|mvn\ verify\ *|dotnet\ test|dotnet\ test\ *|mix\ test|mix\ test\ *) return 0 ;;
+    docker\ build\ *|docker\ compose\ build\ *|terraform\ plan|terraform\ plan\ *|terraform\ validate|terraform\ validate\ *|ansible-lint\ *|helm\ lint\ *) return 0 ;;
+  esac
+
+  if grep -Eq '^(bash|zsh|sh)[[:space:]]+([^[:space:]]*/)?[^[:space:]]*(test|check|verify|audit|benchmark|compare|render)[^[:space:]]*([[:space:]]|$)' \
+      <<<"${normalized}"; then
+    return 0
+  fi
+  if grep -Eq '^([^[:space:]]*/)?[^[:space:]]*(test|check|verify|audit|benchmark|compare|render)[^[:space:]]*([[:space:]]|$)' \
+      <<<"${normalized}"; then
+    return 0
+  fi
+  return 1
 }
 
 # --- end verification helpers ---

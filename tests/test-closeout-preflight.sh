@@ -201,6 +201,23 @@ assert_empty "preflight does not stamp session outcome" "$(jq -r '.session_outco
 assert_empty "preflight does not increment Stop attempts" "$(jq -r '.stop_guard_attempt_seq // empty' "${STATE_ROOT}/ready/session_state.json")"
 [[ ! -e "${STATE_ROOT}/ready/gate_events.jsonl" ]] && ok || bad "preflight wrote real gate events"
 
+# Definition verification receipts are causal authority, not presentation.
+# Any ledger mutation must invalidate the seal fingerprint even when ordinary
+# edit/review clocks remain unchanged.
+seed_ready receipt_fingerprint
+receipt_fp_before="$(hook_env SESSION_ID=receipt_fingerprint bash -c \
+  '. "$1"; closeout_readiness_fingerprint' -- "${HOOK_DIR}/common.sh")"
+printf '%s\n' '{"_v":2,"receipt_id":"vr-new-causal-proof"}' \
+  >"${STATE_ROOT}/receipt_fingerprint/verification_receipts.jsonl"
+receipt_fp_after="$(hook_env SESSION_ID=receipt_fingerprint bash -c \
+  '. "$1"; closeout_readiness_fingerprint' -- "${HOOK_DIR}/common.sh")"
+if [[ -n "${receipt_fp_before}" && -n "${receipt_fp_after}" \
+    && "${receipt_fp_before}" != "${receipt_fp_after}" ]]; then
+  ok
+else
+  bad "verification receipt ledger did not invalidate readiness fingerprint"
+fi
+
 # Preserve summary 1 by semantic value, not FIFO recency. Several thin Stop
 # retries must never evict the richest current-cycle candidate or its ending
 # caveat from the cumulative READY manifest.
@@ -251,6 +268,39 @@ anchor_slots_contract="$(hook_env SESSION_ID=anchor_slots bash -c \
   '. "$1"; closeout_build_required_anchors' -- "${HOOK_DIR}/common.sh")"
 assert_contains "earliest semantic slot contributes a required anchor" \
   "proof/SUMMARY-ONE-ONLY.anchor" "${anchor_slots_contract}"
+
+# Definition closeout is not allowed to collapse back to generic "quality"
+# prose. The accepted reviewer publishes a deterministic weakest tested axis;
+# both the protocol name and that exact axis must survive into final prose.
+seed_ready definition_axis_anchor
+jq '.quality_contract_required="1" | .quality_weakest_axis="visionary"' \
+  "${STATE_ROOT}/definition_axis_anchor/session_state.json" \
+  >"${STATE_ROOT}/definition_axis_anchor/session_state.json.tmp"
+mv "${STATE_ROOT}/definition_axis_anchor/session_state.json.tmp" \
+  "${STATE_ROOT}/definition_axis_anchor/session_state.json"
+definition_axis_required="$(hook_env SESSION_ID=definition_axis_anchor bash -c \
+  '. "$1"; closeout_build_required_anchors' -- "${HOOK_DIR}/common.sh")"
+assert_contains "Definition closeout requires the protocol name" \
+  "Definition of Excellent" "${definition_axis_required}"
+assert_contains "Definition closeout requires the deterministic weakest tested axis" \
+  "Weakest tested axis: visionary" "${definition_axis_required}"
+if hook_env SESSION_ID=definition_axis_anchor bash -c \
+    '. "$1"; closeout_response_has_required_anchors "$2" "$3"' -- \
+    "${HOOK_DIR}/common.sh" \
+    "Definition of Excellent certified." "${definition_axis_required}"; then
+  bad "Definition-only prose passed without its weakest tested axis"
+else
+  ok
+fi
+if hook_env SESSION_ID=definition_axis_anchor bash -c \
+    '. "$1"; closeout_response_has_required_anchors "$2" "$3"' -- \
+    "${HOOK_DIR}/common.sh" \
+    "${definition_axis_required}" \
+    "${definition_axis_required}"; then
+  ok
+else
+  bad "Definition prose with its weakest tested axis was rejected"
+fi
 
 # The maximum mechanical contract (8 deferred IDs + 8 paths + 4 candidate
 # tokens) must be shown unabridged in the same READY context that asks Claude

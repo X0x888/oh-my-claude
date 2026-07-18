@@ -260,6 +260,8 @@ if [[ "${SWEEP_MODE}" -eq 1 ]]; then
         local_findings_file="${_sweep_dir}/findings.json"
         local_findings_block='null'
         local_waves_block='null'
+        local_quality_frontier_history="${_sweep_dir}/quality_frontier_history.jsonl"
+        local_quality_frontiers='null'
         if [[ -f "${local_findings_file}" ]]; then
           local_findings_block="$(jq -c '
             (.findings // []) | {
@@ -275,11 +277,17 @@ if [[ "${SWEEP_MODE}" -eq 1 ]]; then
             (.waves // []) | { total: length, completed: ([.[] | select(.status=="completed")] | length) }
           ' "${local_findings_file}" 2>/dev/null || echo 'null')"
         fi
+        if [[ -f "${local_quality_frontier_history}" \
+            && ! -L "${local_quality_frontier_history}" ]]; then
+          local_quality_frontiers="$(quality_frontier_history_summary \
+            "${local_quality_frontier_history}" 2>/dev/null || printf 'null')"
+        fi
 
         jq -c --arg sid "${local_basename}" --argjson ec "${local_ec:-0}" \
           --arg host "$(omc_host)" \
           --argjson findings "${local_findings_block}" \
-          --argjson waves "${local_waves_block}" '
+          --argjson waves "${local_waves_block}" \
+          --argjson quality_frontiers "${local_quality_frontiers}" '
           {
             _v: 1,
             session_id: $sid,
@@ -319,6 +327,7 @@ if [[ "${SWEEP_MODE}" -eq 1 ]]; then
             serendipity_count: ((.serendipity_count // "0") | tonumber),
             findings: $findings,
             waves: $waves,
+            quality_frontiers: $quality_frontiers,
             _live: true
           }
         ' "${local_state}" >> "${_sweep_merged_summary}" 2>/dev/null || true
@@ -1765,7 +1774,104 @@ else
 fi
 
 # ----------------------------------------------------------------------
-# Section 4c: Bias-defense directive fires (v1.23.0; broadened v1.26.0)
+# Section 4c: Definition-of-Excellent quality loop.
+#
+# Gate events expose the actual producer taxonomy (definition-of-excellent and
+# definition-of-excellent/*). Frontier rates come from the bounded authoritative
+# history summary persisted in session_summary, not from event counts: events
+# are diagnostic and may be retained on a different cadence. Missing history is
+# reported as unavailable rather than converted to a zero discovery rate.
+printf '## Definition of Excellent quality loop\n\n'
+definition_event_rows="$(printf '%s\n' "${gate_event_rows}" | jq -c '
+  select(.gate == "definition-of-excellent" or
+    (.gate | startswith("definition-of-excellent/")))
+' 2>/dev/null || true)"
+definition_history_rows="$(printf '%s\n' "${sessions_rows}" | jq -c '
+  select((.quality_frontiers // null) | type == "object")
+  | select(.quality_frontiers.source_available == true)
+' 2>/dev/null || true)"
+
+if [[ -z "${definition_event_rows}" && -z "${definition_history_rows}" ]]; then
+  printf '_No Definition gate events or available frontier-history summaries in window. History-backed rates populate after an accepted excellence review and session sweep (or immediately with `--sweep`)._\n\n'
+else
+  if [[ -n "${definition_history_rows}" ]]; then
+    definition_history_sessions="$(printf '%s\n' "${definition_history_rows}" | grep -c . || true)"
+    definition_history_sessions="${definition_history_sessions//[!0-9]/}"
+    definition_history_sessions="${definition_history_sessions:-0}"
+    definition_accepted="$(printf '%s\n' "${definition_history_rows}" | jq -s '
+      map(.quality_frontiers.accepted_reviews | tonumber? // 0) | add // 0
+    ' 2>/dev/null || echo 0)"
+    definition_discovered="$(printf '%s\n' "${definition_history_rows}" | jq -s '
+      map(.quality_frontiers.material_discoveries | tonumber? // 0) | add // 0
+    ' 2>/dev/null || echo 0)"
+    definition_remediated="$(printf '%s\n' "${definition_history_rows}" | jq -s '
+      map(.quality_frontiers.remediations | tonumber? // 0) | add // 0
+    ' 2>/dev/null || echo 0)"
+    definition_unresolved="$(printf '%s\n' "${definition_history_rows}" | jq -s '
+      map(.quality_frontiers.unresolved_frontiers | tonumber? // 0) | add // 0
+    ' 2>/dev/null || echo 0)"
+    definition_invalid_rows="$(printf '%s\n' "${definition_history_rows}" | jq -s '
+      map(.quality_frontiers.invalid_rows | tonumber? // 0) | add // 0
+    ' 2>/dev/null || echo 0)"
+    [[ "${definition_accepted}" =~ ^[0-9]+$ ]] || definition_accepted=0
+    [[ "${definition_discovered}" =~ ^[0-9]+$ ]] || definition_discovered=0
+    [[ "${definition_remediated}" =~ ^[0-9]+$ ]] || definition_remediated=0
+    [[ "${definition_unresolved}" =~ ^[0-9]+$ ]] || definition_unresolved=0
+    [[ "${definition_invalid_rows}" =~ ^[0-9]+$ ]] || definition_invalid_rows=0
+
+    definition_discovery_rate="n/a (no accepted frontier reviews)"
+    if [[ "${definition_accepted}" -gt 0 ]]; then
+      definition_discovery_pct=$(( definition_discovered * 100 / definition_accepted ))
+      definition_discovery_rate="${definition_discovered}/${definition_accepted} (${definition_discovery_pct}%)"
+    fi
+    definition_remediation_rate="n/a (no material frontier discoveries)"
+    if [[ "${definition_discovered}" -gt 0 ]]; then
+      definition_remediation_pct=$(( definition_remediated * 100 / definition_discovered ))
+      definition_remediation_rate="${definition_remediated}/${definition_discovered} (${definition_remediation_pct}%)"
+    fi
+
+    printf '| Frontier-history metric | Window |\n'
+    printf '|---|---:|\n'
+    printf '| Sessions with available history | %s |\n' "${definition_history_sessions}"
+    printf '| Accepted frontier reviews | %s |\n' "${definition_accepted}"
+    printf '| Material frontier episodes discovered | %s |\n' "${definition_discovered}"
+    printf '| Material frontier episodes remediated | %s |\n' "${definition_remediated}"
+    printf '| Material frontiers unresolved at session snapshot | %s |\n' "${definition_unresolved}"
+    printf '| Material-frontier discovery rate | %s |\n' "${definition_discovery_rate}"
+    printf '| Material-frontier remediation rate | %s |\n' "${definition_remediation_rate}"
+    printf '\n'
+    if [[ "${definition_invalid_rows}" -gt 0 ]]; then
+      printf '_Source-quality note: %s malformed/unrecognized frontier-history row(s) were excluded; counts and rates use only structurally recognized rows._\n\n' \
+        "${definition_invalid_rows}"
+    fi
+  else
+    printf '_Frontier-history rates unavailable in this window; gate-event telemetry below is diagnostic and is not used as a substitute denominator._\n\n'
+  fi
+
+  if [[ -n "${definition_event_rows}" ]]; then
+    printf 'Actual `definition-of-excellent/*` gate-event taxonomy observed:\n\n'
+    printf '| Gate / stage | Event | Count |\n'
+    printf '|---|---|---:|\n'
+    printf '%s\n' "${definition_event_rows}" | jq -rs '
+      group_by([.gate,.event])
+      | map({gate:.[0].gate,event:(.[0].event // "unknown"),count:length})
+      | sort_by(.gate,.event)
+      | .[] | [.gate,.event,(.count|tostring)] | @tsv
+    ' 2>/dev/null | while IFS=$'\t' read -r _definition_gate _definition_event _definition_count; do
+      [[ -n "${_definition_gate}" ]] || continue
+      _definition_gate="$(report_safe_dynamic_label "${_definition_gate}")"
+      _definition_event="$(report_safe_dynamic_label "${_definition_event}")"
+      printf '| `%s` | `%s` | %s |\n' \
+        "${_definition_gate}" "${_definition_event}" "${_definition_count}"
+    done
+    printf '\n'
+  else
+    printf '_No Definition gate-event taxonomy rows in window; frontier counts above came from authoritative history summaries only._\n\n'
+  fi
+fi
+
+# ----------------------------------------------------------------------
+# Section 4d: Bias-defense directive fires (v1.23.0; broadened v1.26.0)
 #
 # The router emits gate events with gate="bias-defense" when a
 # directive fires (prometheus-suggest, intent-verify, exemplifying,

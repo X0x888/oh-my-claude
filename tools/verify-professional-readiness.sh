@@ -17,6 +17,8 @@ BENCHMARK_CMD="${OMC_PRO_READINESS_BENCHMARK_CMD:-bash tests/test-ulw-benchmark-
 REALWORK_VALIDATE_CMD="${OMC_PRO_READINESS_REALWORK_VALIDATE_CMD:-bash evals/realwork/run.sh validate}"
 REALWORK_SCORING_CMD="${OMC_PRO_READINESS_REALWORK_SCORING_CMD:-bash tests/test-realwork-eval-suite.sh}"
 REALWORK_PRODUCER_CMD="${OMC_PRO_READINESS_REALWORK_PRODUCER_CMD:-bash tests/test-realwork-producer.sh}"
+REALWORK_PAIRWISE_CMD="${OMC_PRO_READINESS_REALWORK_PAIRWISE_CMD:-bash tests/test-realwork-pairwise.sh}"
+PAIRWISE_RECEIPT_CHECK_CMD="${OMC_PRO_READINESS_PAIRWISE_RECEIPT_CHECK_CMD:-bash evals/realwork/pairwise.sh claim-check}"
 
 SKIP_CLASSIFICATION=0
 SKIP_ROUTING=0
@@ -26,6 +28,8 @@ SKIP_BENCHMARK=0
 SKIP_REALWORK_VALIDATE=0
 SKIP_REALWORK_SCORING=0
 SKIP_REALWORK_PRODUCER=0
+SKIP_REALWORK_PAIRWISE=0
+PAIRWISE_RECEIPTS=()
 JSON_MODE=0
 
 ok_count=0
@@ -53,6 +57,12 @@ Default surfaces:
   6. real-work scenario schema validation
   7. real-work scorer contract
   8. real session -> result producer contract
+  9. blind pairwise quality-evaluator contract
+
+Optional empirical claim surface:
+  --pairwise-receipt FILE      Add one sealed raw pair receipt to the
+                               preregistered claim gate. Repeat for every pair;
+                               aggregates are deliberately not accepted.
 
 Options:
   --skip-classification       Skip intent-classification coverage.
@@ -64,6 +74,7 @@ Options:
   --skip-realwork-validate    Skip scenario schema validation.
   --skip-realwork-scoring     Skip the scorer regression net.
   --skip-realwork-producer    Skip the producer regression net.
+  --skip-realwork-pairwise    Skip the zero-spend pairwise evaluator net.
   --json                      Emit a machine-readable JSON report.
 EOF
 }
@@ -147,7 +158,16 @@ run_surface() {
     overall_rc=1
   fi
 
-  summary="$(summarize_command_output "${output}")"
+  if [[ "${name}" == "pairwise_receipt" ]] \
+      && printf '%s' "${output}" | jq -e '.pass | type == "boolean"' >/dev/null 2>&1; then
+    summary="$(printf '%s' "${output}" | jq -r '
+      if .pass then "pairwise claim gate: PASS"
+      else "pairwise claim gate: FAIL (" + ((.failures // []) | join(", ")) + ")"
+      end
+    ')"
+  else
+    summary="$(summarize_command_output "${output}")"
+  fi
   if [[ -z "${summary}" ]]; then
     if [[ "${rc}" -eq 0 ]]; then
       summary="command completed without output"
@@ -200,6 +220,22 @@ while [[ $# -gt 0 ]]; do
       SKIP_REALWORK_PRODUCER=1
       shift
       ;;
+    --skip-realwork-pairwise)
+      SKIP_REALWORK_PAIRWISE=1
+      shift
+      ;;
+    --pairwise-receipt)
+      [[ $# -ge 2 && -n "${2:-}" ]] || {
+        printf 'verify-professional-readiness: --pairwise-receipt requires a file\n' >&2
+        exit 2
+      }
+      PAIRWISE_RECEIPTS+=("$2")
+      shift 2
+      ;;
+    --pairwise-report)
+      printf 'verify-professional-readiness: aggregate reports are not evidence; pass every raw receipt with --pairwise-receipt\n' >&2
+      exit 2
+      ;;
     --json)
       JSON_MODE=1
       shift
@@ -220,6 +256,17 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ "${#PAIRWISE_RECEIPTS[@]}" -gt 0 ]]; then
+  for pairwise_index in "${!PAIRWISE_RECEIPTS[@]}"; do
+    pairwise_receipt="${PAIRWISE_RECEIPTS[$pairwise_index]}"
+    [[ -f "${pairwise_receipt}" ]] || {
+    printf 'verify-professional-readiness: pairwise receipt not found: %s\n' "${pairwise_receipt}" >&2
+    exit 2
+    }
+    PAIRWISE_RECEIPTS[pairwise_index]="$(cd "$(dirname "${pairwise_receipt}")" && pwd -P)/$(basename "${pairwise_receipt}")"
+  done
+fi
 
 if [[ "${SKIP_CLASSIFICATION}" -eq 1 ]]; then
   record_skip "classification" "verify-professional-readiness: classification audit skipped by caller"
@@ -267,6 +314,20 @@ if [[ "${SKIP_REALWORK_PRODUCER}" -eq 1 ]]; then
   record_skip "realwork_producer" "verify-professional-readiness: realwork producer audit skipped by caller"
 else
   run_surface "realwork_producer" "${REALWORK_PRODUCER_CMD}"
+fi
+
+if [[ "${SKIP_REALWORK_PAIRWISE}" -eq 1 ]]; then
+  record_skip "realwork_pairwise" "verify-professional-readiness: realwork pairwise audit skipped by caller"
+else
+  run_surface "realwork_pairwise" "${REALWORK_PAIRWISE_CMD}"
+fi
+
+if [[ "${#PAIRWISE_RECEIPTS[@]}" -gt 0 ]]; then
+  pairwise_receipt_args=""
+  for pairwise_receipt in "${PAIRWISE_RECEIPTS[@]}"; do
+    pairwise_receipt_args+=" $(printf '%q' "${pairwise_receipt}")"
+  done
+  run_surface "pairwise_receipt" "${PAIRWISE_RECEIPT_CHECK_CMD}${pairwise_receipt_args}"
 fi
 
 summary_text="verify-professional-readiness: summary: ${ok_count} OK, ${skip_count} SKIP, ${fail_count} FAIL"

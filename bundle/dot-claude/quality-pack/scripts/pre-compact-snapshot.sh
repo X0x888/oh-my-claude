@@ -17,6 +17,12 @@ fi
 
 ensure_session_dir
 
+# A compacted model context must never inherit an unused durable-taste grant.
+_clear_quality_constitution_authorization_unlocked() {
+  rm -f "$(session_file "quality_constitution_authorization.json")" 2>/dev/null || true
+}
+with_state_lock _clear_quality_constitution_authorization_unlocked || true
+
 snapshot_file="$(session_file "precompact_snapshot.md")"
 optional_narrative_boundary='<!-- OMC_OPTIONAL_NARRATIVE_BOUNDARY_V1 -->'
 
@@ -250,6 +256,26 @@ render_pending_agents() {
     printf -- '- Prompt surfaces: %s\n' "${contract_prompt_surfaces_value}"
     printf -- '- Proof contract: %s\n' "${contract_verify_required_value}"
     printf -- '- Touched surfaces so far: %s\n' "${contract_touched_surfaces_value}"
+  fi
+
+  if [[ "$(read_state "quality_contract_required" 2>/dev/null || true)" == "1" ]]; then
+    printf '\n## Definition of Excellent\n'
+    printf -- '- Contract: `%s` (%s; revision %s; cycle %s)\n' \
+      "$(read_state "quality_contract_id" 2>/dev/null || printf 'missing')" \
+      "$(read_state "quality_contract_status" 2>/dev/null || printf 'missing')" \
+      "$(read_state "quality_contract_revision" 2>/dev/null || printf '?')" \
+      "$(read_state "quality_contract_cycle_id" 2>/dev/null || printf '?')"
+    printf -- '- Proof: %s/%s current; weakest axis: %s\n' \
+      "$(read_state "quality_evidence_current_count" 2>/dev/null || printf '0')" \
+      "$(read_state "quality_evidence_required_count" 2>/dev/null || printf '?')" \
+      "$(read_state "quality_weakest_axis" 2>/dev/null || printf 'unknown')"
+    printf -- '- Frontier: %s; contract=`%s`; floor=`%s`; receipts=`%s`; evidence=`%s`; frontier=`%s`\n' \
+      "$(read_state "quality_frontier_status" 2>/dev/null || printf 'missing')" \
+      "$(session_file "quality_contract.json")" \
+      "$(session_file "quality_contract_floor.json")" \
+      "$(session_file "verification_receipts.jsonl")" \
+      "$(session_file "quality_evidence.jsonl")" \
+      "$(session_file "quality_frontier.json")"
   fi
 
   # Completion and obligation state is load-bearing. Keep it before narrative

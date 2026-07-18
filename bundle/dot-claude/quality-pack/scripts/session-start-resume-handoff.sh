@@ -87,6 +87,12 @@ trap 'release_resume_init_lock' EXIT
 
 ensure_session_dir
 
+# Resume is a new authority boundary even when it reuses a session id.
+_clear_quality_constitution_authorization_unlocked() {
+  rm -f "$(session_file "quality_constitution_authorization.json")" 2>/dev/null || true
+}
+with_state_lock _clear_quality_constitution_authorization_unlocked || true
+
 # Keep attacker-influenced state structurally nested even when it contains an
 # exact copy of a human-readable END marker.
 render_inert_payload() {
@@ -109,12 +115,47 @@ if [[ -n "${resume_source_id}" ]] \
   resume_state_dir="${STATE_ROOT}/${resume_source_id}"
 fi
 
+# Resume turns source bytes into current-session authority. Refuse a symlinked
+# source directory or any non-regular/symlinked artifact we may read or copy;
+# otherwise an invalid source sidecar can be followed and laundered into a
+# regular target file that downstream validators would trust. Per-file checks
+# below repeat this validation at the copy/fence boundary to narrow races.
+resume_source_bundle_is_safe() {
+  local source_dir="$1" key path
+  [[ -d "${source_dir}" && ! -L "${source_dir}" ]] || return 1
+  for key in \
+      "${STATE_JSON}" workflow_mode task_domain task_intent current_objective \
+      last_meta_request last_assistant_message last_verify_cmd \
+      subagent_summaries.jsonl recent_prompts.jsonl edited_files.log \
+      current_plan.md timing.jsonl findings.json gate_events.jsonl \
+      discovered_scope.jsonl quality_contract.json \
+      quality_contract_floor.json quality_contract_history.jsonl \
+      quality_constitution_snapshot.json verification_receipts.jsonl \
+      quality_evidence.jsonl quality_frontier.json \
+      quality_frontier_history.jsonl resume_request.json; do
+    path="${source_dir}/${key}"
+    if [[ -L "${path}" ]] \
+        || { [[ -e "${path}" ]] && [[ ! -f "${path}" ]]; }; then
+      return 1
+    fi
+  done
+}
+
+if [[ -n "${resume_state_dir}" ]] \
+    && ! resume_source_bundle_is_safe "${resume_state_dir}"; then
+  log_anomaly "session-start-resume-handoff" \
+    "source bundle contains unsafe path; refusing copy (${resume_source_id})" 2>/dev/null || true
+  resume_ownership_conflict_message="Resume source state is invalid, so ownership could not be established and the source session remains authoritative. This session started with fresh state and did not inherit the prior objective, ledgers, or token/timing totals. Continue only with new user-provided work; do not reconstruct or claim the prior session from this empty handoff."
+  resume_state_dir=""
+fi
+
 # Re-open a source only when its prior target disappeared or became invalid.
 # Normal same-target SessionStart replay never calls this: it keeps the live
 # target as-is so later objective/token/timing progress is not overwritten by
 # the dormant source snapshot.
 clear_resume_source_transfer_if_owned() {
   local source_state="$1" expected_owner="$2" temp_file
+  [[ -f "${source_state}" && ! -L "${source_state}" ]] || return 1
   temp_file="$(mktemp "${source_state}.XXXXXX" 2>/dev/null)" || return 1
   if jq --arg owner "${expected_owner}" '
       ((.resume_transferred_to // "") | if type == "string" then . else "" end) as $current
@@ -135,7 +176,8 @@ clear_resume_source_transfer_if_owned() {
 # into a second live owner.  Re-running the same target is idempotent; a
 # distinct validated owner makes this handoff a no-copy resume.
 if [[ -n "${resume_state_dir}" ]] \
-    && [[ -f "${resume_state_dir}/${STATE_JSON}" ]]; then
+    && [[ -f "${resume_state_dir}/${STATE_JSON}" ]] \
+    && [[ ! -L "${resume_state_dir}/${STATE_JSON}" ]]; then
   existing_resume_owner="$(jq -r '
     (.resume_transferred_to // "")
     | if type == "string" then . else "" end
@@ -198,6 +240,7 @@ fi
 # render a fresh-target recovery notice instead.
 if [[ -n "${resume_state_dir}" ]] \
     && [[ -f "${resume_state_dir}/${STATE_JSON}" ]] \
+    && [[ ! -L "${resume_state_dir}/${STATE_JSON}" ]] \
     && ! jq -e 'type == "object"' "${resume_state_dir}/${STATE_JSON}" >/dev/null 2>&1; then
   log_anomaly "session-start-resume-handoff" \
     "source state invalid; refusing speculative copy (${resume_source_id})" 2>/dev/null || true
@@ -208,10 +251,24 @@ fi
 copy_state_if_present() {
   local source_dir="$1"
   local key="$2"
+  local source_path="${source_dir}/${key}" target_path temp_path
 
-  if [[ -f "${source_dir}/${key}" ]]; then
-    cp "${source_dir}/${key}" "$(session_file "${key}")"
+  if [[ -L "${source_path}" ]] \
+      || { [[ -e "${source_path}" ]] && [[ ! -f "${source_path}" ]]; }; then
+    return 1
   fi
+  [[ -f "${source_path}" ]] || return 0
+  target_path="$(session_file "${key}")"
+  [[ ! -L "${target_path}" ]] \
+    && { [[ ! -e "${target_path}" ]] || [[ -f "${target_path}" ]]; } \
+    || return 1
+  temp_path="$(mktemp "${target_path}.resume.XXXXXX" 2>/dev/null)" || return 1
+  if cp "${source_path}" "${temp_path}" \
+      && mv -f "${temp_path}" "${target_path}"; then
+    return 0
+  fi
+  rm -f "${temp_path}" 2>/dev/null || true
+  return 1
 }
 
 # Persist the complete logical resume ancestry on every successfully
@@ -271,10 +328,12 @@ mark_resume_source_transferred() {
   # consolidated source state from the fully initialized target so a repeated
   # idempotent SessionStart still has the complete continuity payload rather
   # than a marker-only object.
-  if [[ ! -f "${marker_seed}" ]]; then
+  if [[ -e "${marker_seed}" || -L "${marker_seed}" ]]; then
+    [[ -f "${marker_seed}" && ! -L "${marker_seed}" ]] || return 1
+  else
     marker_seed="${initialized_target_state}"
   fi
-  [[ -f "${marker_seed}" ]] || return 1
+  [[ -f "${marker_seed}" && ! -L "${marker_seed}" ]] || return 1
   temp_file="$(mktemp "${source_state}.XXXXXX" 2>/dev/null)" || return 1
   if jq --arg target "${target_session}" '
       ((.resume_transferred_to // "") | if type == "string" then . else "" end) as $owner
@@ -317,7 +376,10 @@ reset_losing_resume_target() {
 
   for key in subagent_summaries.jsonl recent_prompts.jsonl edited_files.log \
       current_plan.md timing.jsonl findings.json gate_events.jsonl \
-      discovered_scope.jsonl; do
+      discovered_scope.jsonl quality_contract.json quality_evidence.jsonl \
+      quality_contract_floor.json quality_contract_history.jsonl \
+      quality_constitution_snapshot.json verification_receipts.jsonl \
+      quality_frontier.json quality_frontier_history.jsonl; do
     path="$(session_file "${key}")"
     if [[ -e "${path}" || -L "${path}" ]]; then
       rm -f "${path}" 2>/dev/null || cleanup_failed=1
@@ -437,12 +499,14 @@ resume_transfer_ready=0
 if [[ -n "${resume_state_dir}" ]]; then
   resume_initialization_active=1
   # Copy consolidated JSON state (new format)
-  if [[ -f "${resume_state_dir}/${STATE_JSON}" ]]; then
-    cp "${resume_state_dir}/${STATE_JSON}" "$(session_file "${STATE_JSON}")"
+  if [[ -e "${resume_state_dir}/${STATE_JSON}" \
+      || -L "${resume_state_dir}/${STATE_JSON}" ]]; then
+    copy_state_if_present "${resume_state_dir}" "${STATE_JSON}"
   else
     # Backwards compat: migrate individual files from pre-JSON sessions
     for key in workflow_mode task_domain task_intent current_objective last_meta_request last_assistant_message last_verify_cmd; do
-      if [[ -f "${resume_state_dir}/${key}" ]]; then
+      if [[ -f "${resume_state_dir}/${key}" ]] \
+          && [[ ! -L "${resume_state_dir}/${key}" ]]; then
         write_state "${key}" "$(cat "${resume_state_dir}/${key}")"
       fi
     done
@@ -469,6 +533,17 @@ if [[ -n "${resume_state_dir}" ]]; then
   copy_state_if_present "${resume_state_dir}" "findings.json"
   copy_state_if_present "${resume_state_dir}" "gate_events.jsonl"
   copy_state_if_present "${resume_state_dir}" "discovered_scope.jsonl"
+  # Definition of Excellent evidence is causal state, not narrative memory.
+  # Copy every authoritative sidecar with session_state.json so a resumed Stop
+  # cannot trust mirrors whose contract/proof/frontier disappeared in transit.
+  copy_state_if_present "${resume_state_dir}" "quality_contract.json"
+  copy_state_if_present "${resume_state_dir}" "quality_contract_floor.json"
+  copy_state_if_present "${resume_state_dir}" "quality_contract_history.jsonl"
+  copy_state_if_present "${resume_state_dir}" "quality_constitution_snapshot.json"
+  copy_state_if_present "${resume_state_dir}" "verification_receipts.jsonl"
+  copy_state_if_present "${resume_state_dir}" "quality_evidence.jsonl"
+  copy_state_if_present "${resume_state_dir}" "quality_frontier.json"
+  copy_state_if_present "${resume_state_dir}" "quality_frontier_history.jsonl"
 
   # Defense-in-depth for the SessionStart resume-hint hook: clear any
   # `resume_hint_emitted*` flags carried over from the source session.
@@ -503,7 +578,8 @@ if [[ -n "${resume_state_dir}" ]]; then
   # rate-limited link in the chain writes resume_attempts:0 and the cap
   # resets indefinitely.
   source_resume_artifact="${resume_state_dir}/resume_request.json"
-  if [[ -f "${source_resume_artifact}" ]] && jq -e . "${source_resume_artifact}" >/dev/null 2>&1; then
+  if [[ -f "${source_resume_artifact}" && ! -L "${source_resume_artifact}" ]] \
+      && jq -e . "${source_resume_artifact}" >/dev/null 2>&1; then
     parent_origin_sid="$(jq -r '(.origin_session_id // .session_id // "")' "${source_resume_artifact}" 2>/dev/null || true)"
     parent_chain_depth="$(jq -r '((.origin_chain_depth // 0) | tonumber? // 0)' "${source_resume_artifact}" 2>/dev/null || echo 0)"
     parent_chain_depth="${parent_chain_depth%%.*}"
@@ -678,6 +754,10 @@ fi
 
 if [[ -n "${contract_primary_value}" ]]; then
   context_parts+=("Preserved delivery contract: primary=${contract_primary_value}; commit=${contract_commit_mode_value}; push=${contract_push_mode_value}; prompt surfaces=${contract_prompt_surfaces_value}; proof contract=${contract_verify_required_value}; touched surfaces so far=${contract_touched_surfaces_value}.")
+fi
+if [[ -z "${resume_ownership_conflict_message}" ]] \
+    && [[ "$(read_state "quality_contract_required" 2>/dev/null || true)" == "1" ]]; then
+  context_parts+=("Preserved Definition of Excellent: contract=$(read_state "quality_contract_id" 2>/dev/null || printf 'missing') status=$(read_state "quality_contract_status" 2>/dev/null || printf 'missing'); proof=$(read_state "quality_evidence_current_count" 2>/dev/null || printf '0')/$(read_state "quality_evidence_required_count" 2>/dev/null || printf '?'); frontier=$(read_state "quality_frontier_status" 2>/dev/null || printf 'missing'). Continue against the frozen five-axis bar (deliberate, distinctive, coherent, visionary, complete); do not manufacture a replacement from the summary. Authoritative files: $(session_file "quality_contract.json"), $(session_file "quality_contract_floor.json"), $(session_file "verification_receipts.jsonl"), $(session_file "quality_evidence.jsonl"), $(session_file "quality_frontier.json").")
 fi
 
 # v1.32.16 Wave 6 (release-reviewer follow-up): the resume-handoff

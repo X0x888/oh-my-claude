@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "probe_id": "quality-config-diagnostics",
+  "checks": [
+    {
+      "id": "diagnostic_contract",
+      "rules": [
+        {"type": "json_equals", "path": "diagnostic.json", "key_path": ["status"], "value": "invalid_configuration"},
+        {"type": "json_equals", "path": "diagnostic.json", "key_path": ["exit_code"], "value": 2}
+      ]
+    },
+    {
+      "id": "layered_source_case",
+      "rules": [
+        {"type": "json_equals", "path": "diagnostic.json", "key_path": ["source"], "value": "environment:APP_PORT"},
+        {"type": "json_equals", "path": "diagnostic.json", "key_path": ["raw_value"], "value": "eightythree"}
+      ]
+    },
+    {
+      "id": "cli_compatibility",
+      "rules": [
+        {"type": "json_equals", "path": "diagnostic.json", "key_path": ["command"], "value": "config validate"},
+        {"type": "json_equals", "path": "diagnostic.json", "key_path": ["stdout"], "value": ""}
+      ]
+    }
+  ]
+}

@@ -1039,10 +1039,10 @@ printf '\n=== F-013: project-conf security flag deny-list ===\n'
 # (case-statement marker) so a refactor that removed the actual
 # case-statement while leaving the bare comment block would NOT pass
 # this regression (quality-reviewer Wave 2 F3 follow-up).
-if grep -q 'pretool_intent_guard|bg_spawn_gate|agent_first_gate|no_defer_mode|quality_policy|model_tier|model_overrides|repo_lessons|auto_tune)' "${HOOK_DIR}/common.sh"; then
+if grep -q 'pretool_intent_guard|bg_spawn_gate|agent_first_gate|no_defer_mode|quality_policy|definition_of_excellent|quality_constitution|taste_learning|quality_constitution_max_context_chars|model_tier|model_overrides|repo_lessons|auto_tune)' "${HOOK_DIR}/common.sh"; then
   pass=$((pass + 1))
 else
-  printf '  FAIL: F-013a: common.sh case-statement must restrict pretool_intent_guard/bg_spawn_gate/agent_first_gate/no_defer_mode/quality_policy/model_tier/model_overrides/repo_lessons/auto_tune from project conf\n' >&2
+  printf '  FAIL: F-013a: common.sh case-statement must restrict enforcement, Definition/Constitution, model, and persistence authority flags from project conf\n' >&2
   fail=$((fail + 1))
 fi
 
@@ -1646,11 +1646,13 @@ assert_contains "F-016f: dispatcher invokes edit writer for Bash" \
   '_dispatch_one "mark-edit.sh"' "$(cat "${HOOK_DIR}/posttool-dispatch.sh")"
 _f016_patch="${REPO_ROOT}/config/settings.patch.json"
 assert_eq "F-016g: NotebookEdit reaches PreTool mutation guard" "1" \
-  "$(jq '[.hooks.PreToolUse[] | select(.matcher == "Bash|Edit|Write|MultiEdit|NotebookEdit") | .hooks[] | select(.command | contains("pretool-intent-guard.sh"))] | length' "${_f016_patch}")"
+  "$(jq '[.hooks.PreToolUse[] | select(.matcher == "Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__.*") | .hooks[] | select(.command | contains("pretool-intent-guard.sh"))] | length' "${_f016_patch}")"
 assert_eq "F-016h: NotebookEdit reaches PostTool edit writer" "1" \
-  "$(jq '[.hooks.PostToolUse[] | select(.matcher == "Edit|Write|MultiEdit|NotebookEdit") | .hooks[] | select(.command | contains("mark-edit.sh"))] | length' "${_f016_patch}")"
-assert_eq "F-016i: failed Bash reaches edit writer" "1" \
-  "$(jq '[.hooks.PostToolUseFailure[] | select(.matcher == "Bash") | .hooks[] | select(.command | contains("mark-edit.sh"))] | length' "${_f016_patch}")"
+  "$(jq '[.hooks.PostToolUse[] | select(.matcher == "Edit|Write|MultiEdit|NotebookEdit|mcp__.*") | .hooks[] | select(.command | contains("mark-edit.sh"))] | length' "${_f016_patch}")"
+assert_eq "F-016i: failed Bash/MCP reaches edit writer" "1" \
+  "$(jq '[.hooks.PostToolUseFailure[] | select(.matcher == "Bash|mcp__.*") | .hooks[] | select(.command | contains("mark-edit.sh"))] | length' "${_f016_patch}")"
+assert_eq "F-016i2: failed verification-capable tools reach receipt writer" "1" \
+  "$(jq '[.hooks.PostToolUseFailure[] | select(.matcher == "Bash|Read|Grep|mcp__.*") | .hooks[] | select(.command | contains("record-verification.sh"))] | length' "${_f016_patch}")"
 assert_eq "F-016j: successful Bash dispatcher remains universal" "1" \
   "$(jq '[.hooks.PostToolUse[] | select((.matcher // "") == "") | .hooks[] | select(.command | contains("posttool-dispatch.sh"))] | length' "${_f016_patch}")"
 

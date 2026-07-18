@@ -4,6 +4,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "${HOME}/.claude/skills/autowork/scripts/common.sh"
+# shellcheck source=../../skills/autowork/scripts/lib/quality-constitution-authority.sh
+. "${HOME}/.claude/skills/autowork/scripts/lib/quality-constitution-authority.sh"
 # v1.47 (sre-lens R-1): observable fail-open — a mid-hook abort (lock
 # exhaustion / jq failure on a bare write_state) now leaves an anomaly
 # trace instead of silently dropping this prompt's routing + state writes.
@@ -939,7 +941,10 @@ if [[ "${OMC_EXEMPLIFYING_SCOPE_GATE:-on}" == "on" ]]; then
       "exemplifying_scope_prompt_preview" "$(truncate_chars 240 "${PROMPT_TEXT_SAFE}")" \
       "exemplifying_scope_blocks" "0" \
       "exemplifying_scope_checklist_ts" ""
-  elif is_execution_intent_value "${TASK_INTENT}"; then
+  # A continuation inherits the active objective's sibling-scope obligation.
+  # Only a genuinely new execution objective may clear it; advisory,
+  # checkpoint, session-management, and bare continuation turns are inert.
+  elif [[ "${TASK_INTENT}" == "execution" ]]; then
     write_state_batch \
       "exemplifying_scope_required" "" \
       "exemplifying_scope_prompt_ts" "" \
@@ -949,7 +954,14 @@ if [[ "${OMC_EXEMPLIFYING_SCOPE_GATE:-on}" == "on" ]]; then
   fi
 fi
 
-if ! is_maintenance_prompt "${PROMPT_TEXT}"; then
+if [[ "${PROMPT_TEXT}" == "/quality-constitution" \
+    || "${PROMPT_TEXT}" == /quality-constitution\ * ]]; then
+  # Constitution curation changes durable taste, not the active work
+  # objective. Keeping the slash payload out of current_objective also closes
+  # the last verbatim persistence path when prompt_persist=off; the causal
+  # authorization sidecar stores only its operation digest.
+  write_state "current_objective" "${previous_objective}"
+elif ! is_maintenance_prompt "${PROMPT_TEXT}"; then
   # v1.40.x F-007: normalize the redacted variant for current_objective.
   # Persisted on disk; should never carry credentials.
   normalized_objective="$(normalize_task_prompt "${PROMPT_TEXT_SAFE}")"
@@ -1373,7 +1385,7 @@ directive_registry_row() {
       printf 'safety|0|mandatory|always' ;;
     guard_exhausted_warning)
       printf 'gate|1|mandatory|always' ;;
-    goal_command_entrance|goal_auto_armed|continuation_directive_explicit|phase8_resume_hint|resume_request_hint|council_phase8_followup|ultrathink)
+    goal_command_entrance|goal_auto_armed|continuation_directive_explicit|phase8_resume_hint|resume_request_hint|council_phase8_followup|ultrathink|definition_of_excellent|quality_constitution_authorization|quality_constitution_authorization_invalid)
       printf 'contract|2|mandatory|always' ;;
     routing_state_delta)
       printf 'routing|3|mandatory|always' ;;
@@ -1878,6 +1890,52 @@ flush_directives() {
     "total_count_limit=${total_count_limit}"
 }
 
+# Durable taste authority is independent of ULW. A real user slash command
+# mints one exact-operation grant for this prompt revision; every other real
+# prompt invalidates any unused grant. The grant stores only a digest, never
+# the prompt or claim text, so prompt_persist=off remains truthful.
+_qc_authority_operation=""
+_qc_authority_grant_json=""
+_qc_authority_grant_id=""
+_qc_authority_operation_b64=""
+_qc_authority_project_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)"
+_qc_authority_project_key="$(qc_authority_project_key "${_qc_authority_project_root}")"
+_qc_authority_operation="$(qc_authority_operation_from_prompt "${PROMPT_TEXT}" 2>/dev/null || true)"
+
+if [[ -n "${_qc_authority_operation}" ]]; then
+  _qc_authority_grant_json="$(with_state_lock \
+    qc_authority_issue_grant_unlocked \
+    "${_qc_authority_operation}" \
+    "${_qc_authority_project_key}" \
+    "${_prompt_revision}" \
+    "${PROMPT_TS}" 2>/dev/null || true)"
+  if [[ -n "${_qc_authority_grant_json}" ]] \
+      && jq -e '._v == 1 and (.grant_id | startswith("qca_"))' \
+        <<<"${_qc_authority_grant_json}" >/dev/null 2>&1; then
+    _qc_authority_grant_id="$(jq -r '.grant_id' <<<"${_qc_authority_grant_json}")"
+    _qc_authority_operation_b64="$(qc_authority_base64_encode "${_qc_authority_operation}")"
+    add_directive "quality_constitution_authorization" \
+      "**QUALITY CONSTITUTION — EXACT USER AUTHORIZATION.** This real user prompt authorizes exactly one durable Constitution mutation, bound to prompt revision \`${_prompt_revision}\`, project \`${_qc_authority_project_key}\`, and grant \`${_qc_authority_grant_id}\`. Execute it once with the exact deterministic backend call below; do not translate it into a raw \`add-claim\`/\`accept\`/\`reject\`/\`add-reference\`/\`remove\` call and do not alter the encoded operation:\n\`bash \"\$HOME/.claude/skills/autowork/scripts/quality-constitution.sh\" apply-authorized --session-id \"${SESSION_ID}\" --grant \"${_qc_authority_grant_id}\" --operation-b64 \"${_qc_authority_operation_b64}\"\`\nThe session identity is frozen into this command and the grant is one-use and exact-operation-bound. If the command fails, surface the error; never substitute an unrestricted mutation path."
+    record_gate_event "quality-constitution-authority" "issued" \
+      "grant_id=${_qc_authority_grant_id}" \
+      "action=$(jq -r '.action' <<<"${_qc_authority_operation}")" \
+      "prompt_revision=${_prompt_revision}" \
+      "project_key=${_qc_authority_project_key}"
+  else
+    with_state_lock qc_authority_clear_grant_unlocked >/dev/null 2>&1 || true
+    add_directive "quality_constitution_authorization_invalid" \
+      "**QUALITY CONSTITUTION AUTHORIZATION FAILED CLOSED.** The explicit mutation request could not be sealed into a one-use grant. Do not invoke any Constitution mutator. Surface this failure and ask the user to repeat the exact \`/quality-constitution\` command."
+  fi
+else
+  with_state_lock qc_authority_clear_grant_unlocked >/dev/null 2>&1 || true
+  case "$(qc_authority_sanitize_text "${PROMPT_TEXT}" 4000)" in
+    /quality-constitution\ remember*|/quality-constitution\ must-not*|/quality-constitution\ must_not*|/quality-constitution\ must*|/quality-constitution\ avoid*|/quality-constitution\ accept*|/quality-constitution\ reject*|/quality-constitution\ reference*|/quality-constitution\ anti-reference*|/quality-constitution\ remove*)
+      add_directive "quality_constitution_authorization_invalid" \
+        "**QUALITY CONSTITUTION REQUEST NOT AUTHORIZED.** The mutation syntax was ambiguous or incomplete, so no durable write grant was issued. Do not call a raw mutator. Use one exact form: \`/quality-constitution remember <statement>\`, \`must <statement>\`, \`must-not <statement>\`, \`avoid <statement>\`, \`accept qk_ID [blocking]\`, \`reject qk_ID [because <reason>]\`, \`reference|anti-reference <locator> because <reason>\`, or \`remove qc_ID|qr_ID [because <reason>]\`."
+      ;;
+  esac
+fi
+
 # State-corruption recovery surface (v1.29.0). lib/state-io.sh archives
 # session_state.json on detected JSON corruption and stamps two sticky
 # markers (recovered_from_corrupt_ts + recovered_from_corrupt_archive).
@@ -1989,7 +2047,9 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
   if is_continuation_request "${PROMPT_TEXT}" && [[ -n "${previous_objective}" ]] \
     && [[ -z "${_goal_cmd_invocation}" ]]; then
     continuation_prompt=1
-    continuation_directive="$(extract_continuation_directive "${PROMPT_TEXT}")"
+    # Classification may inspect raw prompt shape, but anything persisted into
+    # current_objective must come from the redacted variant (F-007).
+    continuation_directive="$(extract_continuation_directive "${PROMPT_TEXT_SAFE}")"
     TASK_DOMAIN="${previous_domain:-$(infer_domain "${previous_objective}" "${_project_profile}")}"
     write_state "current_objective" "${previous_objective}"
   elif [[ "${TASK_INTENT}" == "session_management" ]]; then
@@ -2027,6 +2087,336 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
   write_state "task_domain" "${TASK_DOMAIN}"
   write_state "task_risk_tier" "${TASK_RISK_TIER}"
   write_state "quality_policy" "${OMC_QUALITY_POLICY:-balanced}"
+
+  # Definition of Excellent (v1.49-pre). This is intentionally established
+  # after objective/cycle identity and risk are known, but before any model
+  # implementation tool can run. Advisory, checkpoint, and session-management
+  # turns preserve the in-flight objective/cycle, so they must also preserve
+  # its Definition state byte-for-byte. Recomputing arming from their low-risk
+  # prose would silently disarm the next continuation.
+  # Rolling installs must not retroactively impose a pre-mutation contract on
+  # an objective that began before this tracking protocol existed. A legacy
+  # continuation remains on legacy behavior until the user supplies a fresh
+  # execution objective; that fresh boundary is where tracking can be armed
+  # before any new mutation. If required=1 already exists, a missing marker is
+  # corruption rather than migration and must not become a bypass.
+  _quality_legacy_continuation=0
+  if [[ "${continuation_prompt}" -eq 1 ]] \
+    && [[ "$(read_state "quality_contract_tracking_version" 2>/dev/null || true)" != "1" ]] \
+    && [[ "$(read_state "quality_contract_required" 2>/dev/null || true)" != "1" ]]; then
+    _quality_legacy_continuation=1
+    record_gate_event "definition-of-excellent" "legacy-continuation" \
+      "activation=fresh-execution-objective-required"
+  fi
+  if is_execution_intent_value "${TASK_INTENT}" \
+    && [[ "${_quality_legacy_continuation}" -eq 0 ]]; then
+    _quality_contract_intent="${TASK_INTENT}"
+    [[ "${continuation_prompt}" -eq 1 ]] && _quality_contract_intent="continuation"
+  _quality_contract_broad="$(read_state "review_cycle_broad_scope" 2>/dev/null || true)"
+  [[ "${_quality_contract_broad}" == "1" ]] || _quality_contract_broad=0
+  _quality_contract_explicit=0
+  if is_exhaustive_authorization_request "${PROMPT_TEXT}" \
+    || printf '%s' "${PROMPT_TEXT}" | grep -Eiq \
+      '(^|[^[:alnum:]_])(perfectionist|whole new level|world[- ]class|best[- ]in[- ]class|production[- ]quality|production[- ]ready|exceptional|excellent|excellence|visionary|distinctive|deliberate|coherent|complete|polished|highest (possible )?(bar|quality)|no compromises?)([^[:alnum:]_]|$)'; then
+    _quality_contract_explicit=1
+  fi
+
+  _omc_load_quality_contract
+  _quality_arm_json="$(quality_contract_arm_decision_json \
+    "${OMC_DEFINITION_OF_EXCELLENT:-adaptive}" \
+    "${_quality_contract_intent}" \
+    "${TASK_RISK_TIER}" \
+    "${_quality_contract_broad}" \
+    "${_quality_contract_explicit}")"
+  _quality_required="$(jq -r 'if .required then "1" else "0" end' <<<"${_quality_arm_json}")"
+  _quality_reason="$(jq -r '.reason' <<<"${_quality_arm_json}")"
+
+  # A continuation cannot silently downgrade the already-frozen quality bar
+  # merely because the word "continue" itself classifies low-risk.
+  if [[ "${continuation_prompt}" -eq 1 ]] \
+    && [[ "${OMC_DEFINITION_OF_EXCELLENT:-adaptive}" != "off" ]] \
+    && [[ "$(read_state "quality_contract_required" 2>/dev/null || true)" == "1" ]]; then
+    _quality_required=1
+    _quality_reason="continued-frozen-contract"
+  fi
+
+  _quality_contract_file="$(session_file "quality_contract.json")"
+  _quality_evidence_file="$(session_file "quality_evidence.jsonl")"
+  _quality_frontier_file="$(session_file "quality_frontier.json")"
+  _quality_constitution_snapshot="$(session_file "quality_constitution_snapshot.json")"
+
+  # A fresh objective gets a fresh contract generation. Archive a valid prior
+  # envelope for audit, then remove only current-proof artifacts; frontier and
+  # contract histories remain bounded, non-authoritative receipts.
+  if [[ "${TASK_INTENT}" == "execution" && "${continuation_prompt}" -eq 0 ]]; then
+    if [[ -f "${_quality_contract_file}" && ! -L "${_quality_contract_file}" ]] \
+      && _quality_old_contract="$(jq -ce . "${_quality_contract_file}" 2>/dev/null)"; then
+      _quality_archived_contract="$(jq -c \
+        --argjson archived_at "${PROMPT_TS}" \
+        '. + {archived_at:$archived_at,archive_reason:"new-objective"}' \
+        <<<"${_quality_old_contract}")"
+      append_limited_state "quality_contract_history.jsonl" \
+        "${_quality_archived_contract}" "24" || true
+    fi
+    rm -f \
+      "${_quality_contract_file}" \
+      "${_quality_evidence_file}" \
+      "${_quality_frontier_file}" \
+      "${_quality_constitution_snapshot}" 2>/dev/null || true
+    write_state_batch \
+      "quality_contract_tracking_version" "1" \
+      "quality_contract_id" "" \
+      "quality_contract_revision" "" \
+      "quality_contract_cycle_id" "$(read_state "review_cycle_id")" \
+      "quality_contract_prompt_revision" "$(read_state "prompt_revision")" \
+      "quality_contract_plan_revision" "" \
+      "quality_contract_enforcement_generation" "" \
+      "quality_contract_status" "" \
+      "quality_contract_late" "0" \
+      "quality_contract_recheck_required" "" \
+      "quality_contract_scope_addition_digests" "" \
+      "quality_contract_blocks" "0" \
+      "quality_evidence_required_count" "0" \
+      "quality_evidence_current_count" "0" \
+      "quality_evidence_blocks" "0" \
+      "quality_frontier_status" "" \
+      "quality_frontier_blocks" "0" \
+      "quality_weakest_axis" ""
+  fi
+
+  _quality_constitution_context=""
+  _quality_constitution_json=""
+  _quality_constitution_status="disabled"
+  _quality_constitution_digest="none"
+  _quality_constitution_generation="0"
+  _quality_constitution_blocking_ids=""
+  _quality_constitution_script="${HOME}/.claude/skills/autowork/scripts/quality-constitution.sh"
+  # Pass only selectors the deterministic router can know without semantic
+  # invention. Missing audience/path selectors safely defer narrowly scoped
+  # claims; they never globalize them. A single explicit prompt surface is
+  # usable, while a multi-surface prompt remains unselected so the planner can
+  # inspect the deferred set rather than receive a falsely exact match.
+  case "${TASK_DOMAIN}" in
+    coding) _quality_constitution_task_type="implementation" ;;
+    writing) _quality_constitution_task_type="drafting" ;;
+    research) _quality_constitution_task_type="research" ;;
+    operations) _quality_constitution_task_type="operations" ;;
+    mixed) _quality_constitution_task_type="implementation" ;;
+    *) _quality_constitution_task_type="execution" ;;
+  esac
+  _quality_constitution_surface=""
+  _quality_prompt_surfaces="$(derive_done_contract_prompt_surfaces "${PROMPT_TEXT}")"
+  if is_ui_request "${PROMPT_TEXT}"; then
+    _quality_constitution_surface="ui"
+  elif printf '%s' "${PROMPT_TEXT}" | grep -Eiq \
+    '(^|[^[:alnum:]_])(cli|command[- ]line|terminal (command|interface)|subcommand)([^[:alnum:]_]|$)'; then
+    _quality_constitution_surface="cli"
+  elif [[ -n "${_quality_prompt_surfaces}" \
+      && "${_quality_prompt_surfaces}" != *,* ]]; then
+    _quality_constitution_surface="${_quality_prompt_surfaces%_surface}"
+  fi
+  _quality_constitution_compile_args=(
+    --role planner
+    --domain "${TASK_DOMAIN}"
+    --task-type "${_quality_constitution_task_type}"
+    --surface "${_quality_constitution_surface}"
+    --max-chars "${OMC_QUALITY_CONSTITUTION_MAX_CONTEXT_CHARS:-2400}"
+  )
+  if [[ "${OMC_QUALITY_CONSTITUTION:-on}" != "on" ]]; then
+    rm -f "${_quality_constitution_snapshot}" 2>/dev/null || true
+  fi
+  if [[ "${_quality_required}" == "1" && "${OMC_QUALITY_CONSTITUTION:-on}" == "on" ]]; then
+    _quality_constitution_status="invalid"
+    if [[ -x "${_quality_constitution_script}" ]] \
+      && _quality_constitution_json="$("${_quality_constitution_script}" compile \
+        "${_quality_constitution_compile_args[@]}" --json 2>/dev/null)" \
+      && jq -e '.schema_version == 1 and (.blocking_claims | type == "array")' \
+        <<<"${_quality_constitution_json}" >/dev/null 2>&1; then
+      _quality_constitution_status="current"
+      _quality_constitution_digest="$(jq -r '.digest // "none"' <<<"${_quality_constitution_json}")"
+      _quality_constitution_generation="$(jq -r '.generation // 0' <<<"${_quality_constitution_json}")"
+      _quality_constitution_blocking_ids="$(jq -r '[.blocking_claims[].id] | join(",")' <<<"${_quality_constitution_json}")"
+      _quality_constitution_context="$(jq -r '.rendered_context // empty' \
+        <<<"${_quality_constitution_json}" 2>/dev/null || true)"
+      [[ -n "${_quality_constitution_context}" ]] \
+        || _quality_constitution_status="invalid"
+      if [[ ! -L "${_quality_constitution_snapshot}" ]]; then
+        _quality_constitution_tmp="${_quality_constitution_snapshot}.tmp.$$"
+        if (umask 077; printf '%s\n' "${_quality_constitution_json}" >"${_quality_constitution_tmp}"); then
+          mv -f "${_quality_constitution_tmp}" "${_quality_constitution_snapshot}"
+        else
+          rm -f "${_quality_constitution_tmp}" 2>/dev/null || true
+          _quality_constitution_status="invalid"
+        fi
+      else
+        _quality_constitution_status="invalid"
+      fi
+    fi
+  fi
+
+  _quality_prior_constitution_digest="$(read_state "quality_constitution_digest" 2>/dev/null || true)"
+  write_state_batch \
+    "quality_contract_tracking_version" "1" \
+    "quality_contract_required" "${_quality_required}" \
+    "quality_contract_tier" "${OMC_DEFINITION_OF_EXCELLENT:-adaptive}" \
+    "quality_contract_reason" "${_quality_reason}" \
+    "quality_contract_cycle_id" "$(read_state "review_cycle_id")" \
+    "quality_constitution_status" "${_quality_constitution_status}" \
+    "quality_constitution_digest" "${_quality_constitution_digest}" \
+    "quality_constitution_generation" "${_quality_constitution_generation}" \
+    "quality_constitution_blocking_ids" "${_quality_constitution_blocking_ids}"
+
+  # Only a truly bare resume preserves the current contract. Any substantive
+  # continuation text may alter scope/constraints and therefore fails closed
+  # into re-contracting; keyword guessing left real additions such as
+  # "continue — support CSV output too" outside the frozen bar.
+  _quality_scope_expanded=0
+  if [[ "${continuation_prompt}" -eq 1 && "${_quality_required}" == "1" ]] \
+    && [[ -n "${continuation_directive//[[:space:]]/}" ]]; then
+    # User interfaces and retrying clients may deliver the same substantive
+    # continuation more than once. Re-appending identical text would mutate
+    # current_objective on every delivery, manufacture endless contract
+    # revisions, and defeat the routing delta cache. Keep a bounded digest-only
+    # ledger for this objective cycle: exact normalized repeats are already
+    # bound scope, while every genuinely new addition still fails closed into
+    # additive re-contracting. No prompt text is persisted in this key.
+    _quality_scope_digest="$(_omc_token_digest \
+      "$(trim_whitespace "${continuation_directive}")")"
+    _quality_scope_history="$(read_state \
+      "quality_contract_scope_addition_digests" 2>/dev/null || true)"
+    _quality_scope_seen=0
+    _quality_scope_history_next=""
+    _quality_scope_history_count=0
+    _quality_scope_history_remaining="${_quality_scope_history}"
+    while [[ -n "${_quality_scope_history_remaining}" ]]; do
+      _quality_scope_token="${_quality_scope_history_remaining%%,*}"
+      if [[ "${_quality_scope_history_remaining}" == *,* ]]; then
+        _quality_scope_history_remaining="${_quality_scope_history_remaining#*,}"
+      else
+        _quality_scope_history_remaining=""
+      fi
+      # Ignore malformed state instead of allowing it to suppress a recheck.
+      [[ "${_quality_scope_token}" =~ ^[[:xdigit:]-]{8,40}$ ]] || continue
+      [[ "${_quality_scope_token}" == "${_quality_scope_digest}" ]] \
+        && _quality_scope_seen=1
+      _quality_scope_history_next+="${_quality_scope_history_next:+,}${_quality_scope_token}"
+      _quality_scope_history_count=$((_quality_scope_history_count + 1))
+    done
+
+    if [[ "${_quality_scope_seen}" -eq 0 ]]; then
+      _quality_scope_expanded=1
+      _quality_scope_history_next+="${_quality_scope_history_next:+,}${_quality_scope_digest}"
+      _quality_scope_history_count=$((_quality_scope_history_count + 1))
+      while (( _quality_scope_history_count > 20 )); do
+        _quality_scope_history_next="${_quality_scope_history_next#*,}"
+        _quality_scope_history_count=$((_quality_scope_history_count - 1))
+      done
+
+      _quality_scope_marker=$'\n\nScope addition (authoritative):\n'
+      _quality_scope_available=$((4000 - ${#_quality_scope_marker} - 16))
+      _quality_previous_budget=${#previous_objective}
+      _quality_addition_budget=${#continuation_directive}
+      if (( _quality_previous_budget + _quality_addition_budget > _quality_scope_available )); then
+        # Preserve the entire addition when possible. When both sides are long,
+        # reserve a meaningful prior-objective capsule and retain the addition's
+        # own head *and* tail; this keeps both an opening scope noun and ending
+        # rollback/recovery qualifiers inside the digest-bound objective.
+        _quality_previous_floor=1400
+        (( _quality_previous_budget < _quality_previous_floor )) \
+          && _quality_previous_floor=${_quality_previous_budget}
+        _quality_addition_budget=$((_quality_scope_available - _quality_previous_floor))
+        if (( _quality_addition_budget > ${#continuation_directive} )); then
+          _quality_addition_budget=${#continuation_directive}
+        fi
+        _quality_previous_budget=$((_quality_scope_available - _quality_addition_budget))
+        (( _quality_previous_budget > ${#previous_objective} )) \
+          && _quality_previous_budget=${#previous_objective}
+      fi
+      _quality_previous_capsule="$(closeout_preserve_ends \
+        "${previous_objective}" "${_quality_previous_budget}")"
+      _quality_addition_capsule="$(closeout_preserve_ends \
+        "${continuation_directive}" "${_quality_addition_budget}")"
+      _quality_merged_objective="${_quality_previous_capsule}${_quality_scope_marker}${_quality_addition_capsule}"
+      # Scope identity, merged objective, and the re-contract latch are one
+      # atomic transition. A hook interruption cannot publish only half of the
+      # new authority and accidentally admit mutation against the old bar.
+      write_state_batch \
+        "current_objective" "${_quality_merged_objective}" \
+        "quality_contract_scope_addition_digests" "${_quality_scope_history_next}" \
+        "quality_contract_recheck_required" "1" \
+        "quality_contract_prompt_revision" "$(read_state "prompt_revision")" \
+        "quality_contract_status" "recheck-required"
+      # Downstream continuation directives are assembled after this block.
+      # Point them at the just-committed authoritative objective so the first
+      # delivery and an exact retry have the same edge frame; otherwise the
+      # first frame described the stale pre-addition objective and forced one
+      # unnecessary full-frame replay on the retry.
+      previous_objective="${_quality_merged_objective}"
+    fi
+  fi
+  # A bare continuation is the recovery turn on which a missing-contract or
+  # already-armed re-contract planner may be dispatched. Advance only the
+  # prompt binding so the native start row and PLAN_READY publisher agree.
+  # The objective, existing contract, and immutable post-mutation floor remain
+  # untouched. A settled current contract still keeps its mirror immutable.
+  _quality_existing_recheck="$(read_state \
+    "quality_contract_recheck_required" 2>/dev/null || true)"
+  if [[ "${_quality_required}" == "1" \
+      && "${continuation_prompt}" -eq 1 \
+      && "${_quality_scope_expanded}" -eq 0 ]] \
+    && { { [[ ! -e "${_quality_contract_file}" ]] \
+          && [[ ! -L "${_quality_contract_file}" ]]; } \
+      || { [[ "${_quality_existing_recheck}" == "1" ]] \
+          && [[ -f "${_quality_contract_file}" ]] \
+          && [[ ! -L "${_quality_contract_file}" ]]; }; }; then
+    write_state_batch \
+      "quality_contract_prompt_revision" "$(read_state "prompt_revision")" \
+      "quality_contract_status" \
+        "$([[ "${_quality_existing_recheck}" == "1" ]] \
+          && printf recheck-required || printf missing)"
+  fi
+  if [[ "${_quality_required}" == "1" ]] \
+    && [[ "${continuation_prompt}" -eq 1 ]] \
+    && { [[ "${_quality_scope_expanded}" -eq 1 ]] \
+      || { [[ -n "${_quality_prior_constitution_digest}" ]] \
+        && [[ "${_quality_prior_constitution_digest}" != "${_quality_constitution_digest}" ]]; }; }; then
+    write_state_batch \
+      "quality_contract_recheck_required" "1" \
+      "quality_contract_prompt_revision" "$(read_state "prompt_revision")" \
+      "quality_contract_status" "recheck-required"
+  fi
+
+  if [[ "${_quality_required}" == "1" \
+      && -z "$(read_state "quality_contract_prompt_revision" 2>/dev/null || true)" ]]; then
+    write_state "quality_contract_prompt_revision" "$(read_state "prompt_revision")"
+  fi
+
+  if [[ "${_quality_required}" == "1" ]]; then
+    [[ -n "$(read_state "quality_contract_status" 2>/dev/null || true)" ]] \
+      || write_state "quality_contract_status" "missing"
+    _quality_constitution_clause="${_quality_constitution_context:-Quality Constitution: universal five-axis baseline only.}"
+    if [[ "${_quality_constitution_status}" == "current" ]]; then
+      _quality_constitution_clause="${_quality_constitution_clause}"$'\n'"Authoritative compiled Constitution snapshot: ${_quality_constitution_snapshot}. Before emitting QUALITY_CONTRACT_JSON, read that regular file and extract every exact blocking binding with jq '.blocking_claims[] | {id,statement}'; compact prose is never authority for omitted text."
+    fi
+    if [[ "${_quality_constitution_status}" == "invalid" ]]; then
+      _quality_constitution_clause="QUALITY CONSTITUTION ERROR: the user-owned profile could not be compiled or snapshotted. Treat the contract as blocked; run quality-constitution.sh audit and repair the exact user-owned data. Never ignore a corrupt profile or substitute repository prose."
+    fi
+    add_directive "definition_of_excellent" "**DEFINITION OF EXCELLENT REQUIRED -- mutation stays blocked until a frozen bar exists.** Before implementation, dispatch and wait for **quality-planner** (prometheus only for genuine scope ambiguity). It must define what **deliberate, distinctive, coherent, visionary, and complete** mean for this exact objective, then end with one structural \`QUALITY_CONTRACT_JSON:\` line and \`VERDICT: PLAN_READY\`. The initial contract needs 5-10 falsifiable criteria and at least one mandatory empirical + independent-review criterion per axis. Each criterion needs its own claim, failure signal, surface, tradeoff, and exactly one installed-hook-mintable proof kind/tool/command-or-target language; alternative proofs become separate criteria. Visionary uses benchmark, render, or comparison. Bind exact blocking Constitution entries plus explicit anti-goals. The main thread cannot author, self-approve, infer from implementation, or lower this frozen floor. After implementation, collect current target-bound \`vr-...\` receipts and dispatch a fresh **excellence-reviewer**. It independently searches credible alternatives before emitting criterion-level \`QUALITY_REVIEW_JSON:\` and the strongest remaining frontier. One receipt or proof identity satisfies at most one criterion. Stop stays blocked until every mandatory criterion proves the current artifact and no material scope-fitting move dominates it. Arming: ${_quality_reason}; mode=${OMC_DEFINITION_OF_EXCELLENT:-adaptive}; cycle=$(read_state "review_cycle_id").\n\n${_quality_constitution_clause}"
+    record_gate_event "definition-of-excellent" "armed" \
+      "reason=${_quality_reason}" \
+      "mode=${OMC_DEFINITION_OF_EXCELLENT:-adaptive}" \
+      "risk=${TASK_RISK_TIER}" \
+      "cycle=$(read_state "review_cycle_id")" \
+      "constitution=${_quality_constitution_status}"
+    else
+      write_state_batch \
+        "quality_contract_status" "not-required" \
+        "quality_contract_recheck_required" "" \
+        "quality_evidence_required_count" "0" \
+        "quality_evidence_current_count" "0" \
+        "quality_frontier_status" "not-required"
+    fi
+  fi
 
   # v1.47 single-entrance embed (entrance half): tell the model WHY the
   # ULW frame appeared on a /goal prompt so its opener reads coherently.

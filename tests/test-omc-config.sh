@@ -269,7 +269,7 @@ assert_file_lacks_line "atomic batch: auto_memory not written" "${USER_CONF_PATH
 assert_file_lacks_line "atomic batch: discovered_scope not written" "${USER_CONF_PATH}" "^discovered_scope=on\$"
 teardown
 
-# --- Test 13: apply-preset maximum writes all 30 keys (v1.28.0 added
+# --- Test 13: apply-preset maximum writes all keys (v1.28.0 added
 # blindspot_inventory + intent_broadening; v1.30.0 added prompt_persist;
 # v1.32.0 added divergence_directive; v1.33.0 added directive_budget;
 # v1.34.0 added inferred_contract for Delivery Contract v2;
@@ -281,14 +281,18 @@ teardown
 # v1.46-pre added objective_contract_gate for the Codex /goal port
 # objective-completion contract; workflow_substrate for the Workflow-
 # tool execution substrate; goal_gate for the /goal relentless driver) ---
-printf 'Test 13: apply-preset maximum writes 37 keys\n'
+printf 'Test 13: apply-preset maximum writes 41 keys\n'
 setup
 out="$(bash "${HELPER}" apply-preset user maximum 2>&1)"
-assert_contains "apply-preset reports 37 keys" "37 keys" "${out}"
+assert_contains "apply-preset reports 41 keys" "41 keys" "${out}"
 assert_file_has_line "maximum: gate_level=full" "${USER_CONF_PATH}" "^gate_level=full\$"
 assert_file_has_line "maximum: workflow_substrate=on" "${USER_CONF_PATH}" "^workflow_substrate=on\$"
 assert_file_has_line "maximum: guard_exhaustion_mode=block" "${USER_CONF_PATH}" "^guard_exhaustion_mode=block\$"
 assert_file_has_line "maximum: quality_policy=zero_steering" "${USER_CONF_PATH}" "^quality_policy=zero_steering\$"
+assert_file_has_line "maximum: definition_of_excellent=always" "${USER_CONF_PATH}" "^definition_of_excellent=always\$"
+assert_file_has_line "maximum: quality_constitution=on" "${USER_CONF_PATH}" "^quality_constitution=on\$"
+assert_file_has_line "maximum: taste_learning=adaptive" "${USER_CONF_PATH}" "^taste_learning=adaptive\$"
+assert_file_has_line "maximum: Constitution context=4000" "${USER_CONF_PATH}" "^quality_constitution_max_context_chars=4000\$"
 assert_file_has_line "maximum: prometheus_suggest=on" "${USER_CONF_PATH}" "^prometheus_suggest=on\$"
 assert_file_has_line "maximum: metis_on_plan_gate=on" "${USER_CONF_PATH}" "^metis_on_plan_gate=on\$"
 assert_file_has_line "maximum: resume_watchdog=on" "${USER_CONF_PATH}" "^resume_watchdog=on\$"
@@ -332,6 +336,10 @@ setup
 bash "${HELPER}" apply-preset user balanced > /dev/null
 assert_file_has_line "balanced: guard_exhaustion_mode=scorecard" "${USER_CONF_PATH}" "^guard_exhaustion_mode=scorecard\$"
 assert_file_has_line "balanced: quality_policy=balanced" "${USER_CONF_PATH}" "^quality_policy=balanced\$"
+assert_file_has_line "balanced: definition_of_excellent=adaptive" "${USER_CONF_PATH}" "^definition_of_excellent=adaptive\$"
+assert_file_has_line "balanced: quality_constitution=on" "${USER_CONF_PATH}" "^quality_constitution=on\$"
+assert_file_has_line "balanced: taste_learning=review" "${USER_CONF_PATH}" "^taste_learning=review\$"
+assert_file_has_line "balanced: Constitution context=2400" "${USER_CONF_PATH}" "^quality_constitution_max_context_chars=2400\$"
 assert_file_has_line "balanced: prometheus_suggest=off" "${USER_CONF_PATH}" "^prometheus_suggest=off\$"
 assert_file_has_line "balanced: exemplifying_scope_gate=on" "${USER_CONF_PATH}" "^exemplifying_scope_gate=on\$"
 assert_file_has_line "balanced: resume_watchdog=off" "${USER_CONF_PATH}" "^resume_watchdog=off\$"
@@ -357,6 +365,10 @@ assert_file_has_line "minimal: gate_level=basic" "${USER_CONF_PATH}" "^gate_leve
 assert_file_has_line "minimal: workflow_substrate=off" "${USER_CONF_PATH}" "^workflow_substrate=off\$"
 assert_file_has_line "minimal: guard_exhaustion_mode=silent" "${USER_CONF_PATH}" "^guard_exhaustion_mode=silent\$"
 assert_file_has_line "minimal: quality_policy=balanced" "${USER_CONF_PATH}" "^quality_policy=balanced\$"
+assert_file_has_line "minimal: definition_of_excellent=off" "${USER_CONF_PATH}" "^definition_of_excellent=off\$"
+assert_file_has_line "minimal: quality_constitution=off" "${USER_CONF_PATH}" "^quality_constitution=off\$"
+assert_file_has_line "minimal: taste_learning=off" "${USER_CONF_PATH}" "^taste_learning=off\$"
+assert_file_has_line "minimal: Constitution context=1200" "${USER_CONF_PATH}" "^quality_constitution_max_context_chars=1200\$"
 assert_file_has_line "minimal: auto_memory=off" "${USER_CONF_PATH}" "^auto_memory=off\$"
 assert_file_has_line "minimal: exemplifying_scope_gate=off" "${USER_CONF_PATH}" "^exemplifying_scope_gate=off\$"
 assert_file_has_line "minimal: model_tier=economy" "${USER_CONF_PATH}" "^model_tier=economy\$"
@@ -990,6 +1002,10 @@ setup
 {
   printf 'installed_version=1.22.0\n'
   printf 'quality_policy=zero_steering\n'
+  printf 'definition_of_excellent=always\n'
+  printf 'quality_constitution=on\n'
+  printf 'taste_learning=review\n'
+  printf 'quality_constitution_max_context_chars=4000\n'
   printf 'repo_lessons=off\n'
   printf 'model_tier=quality\n'
   printf 'model_overrides=quality-reviewer:opus\n'
@@ -998,6 +1014,10 @@ project_dir="${TEST_HOME}/model-project"
 mkdir -p "${project_dir}/.claude"
 {
   printf 'quality_policy=balanced\n'
+  printf 'definition_of_excellent=off\n'
+  printf 'quality_constitution=off\n'
+  printf 'taste_learning=adaptive\n'
+  printf 'quality_constitution_max_context_chars=512\n'
   printf 'repo_lessons=on\n'
   printf 'model_tier=economy\n'
   printf 'model_overrides=quality-reviewer:haiku\n'
@@ -1018,6 +1038,10 @@ assert_not_contains "Test 58: project override is not shown as effective" \
   "quality-reviewer:haiku" "${override_row}"
 quality_policy_row="$(printf '%s\n' "${out}" | grep -E '^[[:space:]*]+quality_policy[[:space:]]' || true)"
 repo_lessons_row="$(printf '%s\n' "${out}" | grep -E '^[[:space:]*]+repo_lessons[[:space:]]' || true)"
+definition_row="$(printf '%s\n' "${out}" | grep -E '^[[:space:]*]+definition_of_excellent[[:space:]]' || true)"
+constitution_row="$(printf '%s\n' "${out}" | grep -E '^[[:space:]*]+quality_constitution[[:space:]]' || true)"
+taste_row="$(printf '%s\n' "${out}" | grep -E '^[[:space:]*]+taste_learning[[:space:]]' || true)"
+context_row="$(printf '%s\n' "${out}" | grep -E '^[[:space:]*]+quality_constitution_max_context_chars[[:space:]]' || true)"
 assert_contains "Test 58: full deny-list warning names enforcement row" \
   "quality_policy" "${out}"
 assert_contains "Test 58: denied quality policy remains user-controlled" \
@@ -1026,6 +1050,10 @@ assert_contains "Test 58: denied quality policy carries [U]" "[U]" "${quality_po
 assert_contains "Test 58: denied persistence flag remains user-controlled" \
   "off" "${repo_lessons_row}"
 assert_contains "Test 58: denied persistence flag carries [U]" "[U]" "${repo_lessons_row}"
+assert_contains "Test 58: Definition remains user-controlled" "always" "${definition_row}"
+assert_contains "Test 58: Constitution remains user-controlled" "on" "${constitution_row}"
+assert_contains "Test 58: taste learning remains user-controlled" "review" "${taste_row}"
+assert_contains "Test 58: Constitution cap remains user-controlled" "4000" "${context_row}"
 teardown
 
 printf 'Test 59: direct project model writes fail atomically without tier side effects\n'
@@ -1069,6 +1097,10 @@ denied_pairs=(
   'agent_first_gate=on'
   'no_defer_mode=off'
   'quality_policy=balanced'
+  'definition_of_excellent=off'
+  'quality_constitution=off'
+  'taste_learning=adaptive'
+  'quality_constitution_max_context_chars=512'
   'model_tier=economy'
   'model_overrides=quality-reviewer:haiku'
   'repo_lessons=on'
@@ -1108,6 +1140,8 @@ assert_contains "Test 60: preset reports preserved user-wide settings" \
   "omitted user-only preset key(s):" "${out}"
 assert_contains "Test 60: preset reports omitted quality policy" \
   "quality_policy" "${out}"
+assert_contains "Test 60: preset reports omitted Definition authority" \
+  "definition_of_excellent" "${out}"
 assert_contains "Test 60: preset reports omitted no-defer authority" \
   "no_defer_mode" "${out}"
 assert_contains "Test 60: preset reports omitted model tier" \
@@ -1120,6 +1154,14 @@ assert_file_lacks_line "Test 60: project preset omits model_overrides" \
   "${project_conf}" '^model_overrides='
 assert_file_lacks_line "Test 60: project preset omits quality_policy" \
   "${project_conf}" '^quality_policy='
+assert_file_lacks_line "Test 60: project preset omits definition_of_excellent" \
+  "${project_conf}" '^definition_of_excellent='
+assert_file_lacks_line "Test 60: project preset omits quality_constitution" \
+  "${project_conf}" '^quality_constitution='
+assert_file_lacks_line "Test 60: project preset omits taste_learning" \
+  "${project_conf}" '^taste_learning='
+assert_file_lacks_line "Test 60: project preset omits Constitution context cap" \
+  "${project_conf}" '^quality_constitution_max_context_chars='
 assert_file_lacks_line "Test 60: project preset omits no_defer_mode" \
   "${project_conf}" '^no_defer_mode='
 assert_file_has_line "Test 60: user tier remains unchanged" \
@@ -1494,6 +1536,79 @@ config_roster_count="$(printf '%s\n%s\n' \
   | tr ' ' '\n' | sed '/^$/d' | sort -u | wc -l | tr -d '[:space:]')"
 assert_eq "Test 72: omc-config materialization authority covers 37 agents" \
   "37" "${config_roster_count}"
+
+printf 'Test 73: Definition and Constitution environment shadows are effective and visible\n'
+setup
+{
+  printf 'installed_version=1.50.0\n'
+  printf 'definition_of_excellent=always\n'
+  printf 'quality_constitution=on\n'
+  printf 'taste_learning=off\n'
+  printf 'quality_constitution_max_context_chars=2400\n'
+} > "${USER_CONF_PATH}"
+out="$(cd "${TEST_HOME}" \
+  && OMC_DEFINITION_OF_EXCELLENT=off \
+  OMC_QUALITY_CONSTITUTION=off \
+  OMC_TASTE_LEARNING=adaptive \
+  OMC_QUALITY_CONSTITUTION_MAX_CONTEXT_CHARS=7777 \
+  bash "${HELPER}" show 2>&1)"
+for expected in \
+  'definition_of_excellent off' \
+  'quality_constitution off' \
+  'taste_learning adaptive' \
+  'quality_constitution_max_context_chars 7777'; do
+  key="${expected%% *}"
+  value="${expected#* }"
+  row="$(printf '%s\n' "${out}" \
+    | grep -E "^[[:space:]*]+${key}[[:space:]]" || true)"
+  assert_eq "Test 73: ${key} environment value is effective" \
+    "${value}" "$(awk '{print $3}' <<<"${row}")"
+  assert_contains "Test 73: ${key} carries environment provenance" "[E]" "${row}"
+done
+assert_contains "Test 73: footer explains new runtime environment authority" \
+  "[E]=environment override, [U]=user setting" "${out}"
+teardown
+
+printf 'Test 74: Constitution context cap rejects impossible saved and environment values\n'
+setup
+printf 'quality_constitution_max_context_chars=2400\n' > "${USER_CONF_PATH}"
+set +e
+out="$(bash "${HELPER}" set user quality_constitution_max_context_chars=12001 2>&1)"
+rc=$?
+set -e
+assert_eq "Test 74: >12000 set exits 2" "2" "${rc}"
+assert_contains "Test 74: >12000 error names hard cap" "must be at most 12000" "${out}"
+assert_file_has_line "Test 74: rejected write preserves saved value" \
+  "${USER_CONF_PATH}" '^quality_constitution_max_context_chars=2400$'
+out="$(cd "${TEST_HOME}" \
+  && OMC_QUALITY_CONSTITUTION_MAX_CONTEXT_CHARS=12001 \
+  bash "${HELPER}" show 2>&1)"
+row="$(printf '%s\n' "${out}" \
+  | grep -E '^[[:space:]*]+quality_constitution_max_context_chars[[:space:]]' || true)"
+assert_eq "Test 74: invalid env cap falls back to saved value" \
+  "2400" "$(awk '{print $3}' <<<"${row}")"
+assert_contains "Test 74: saved fallback retains user provenance" "[U]" "${row}"
+assert_not_contains "Test 74: invalid env cap is not claimed as effective" "[E]" "${row}"
+teardown
+
+printf 'Test 75: fine-tune skill exposes every user-owned Definition control\n'
+config_skill="${REPO_ROOT}/bundle/dot-claude/skills/omc-config/SKILL.md"
+assert_contains "Test 75: fine-tune documents six user clusters" \
+  "six at user scope, four at project scope" "$(cat "${config_skill}")"
+for definition_flag in \
+  definition_of_excellent \
+  quality_constitution \
+  taste_learning \
+  quality_constitution_max_context_chars; do
+  definition_cluster="$(sed -n \
+    '/Cluster 2 — Definition of Excellent & Taste/,/Cluster 3 — Advisory routing/p' \
+    "${config_skill}")"
+  assert_contains "Test 75: interactive Definition cluster exposes ${definition_flag}" \
+    "${definition_flag}=" "${definition_cluster}"
+  assert_contains "Test 75: project deny-list documents ${definition_flag}" \
+    "\`${definition_flag}\`" \
+    "$(sed -n '/User-only flags at project scope/,$p' "${config_skill}")"
+done
 
 # --- Summary ---
 printf '\n=== test-omc-config: %d passed, %d failed ===\n' "${pass}" "${fail}"

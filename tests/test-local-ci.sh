@@ -211,6 +211,13 @@ cat > "${runner_fixture}/tests/test-alpha.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 # Owner: src/alpha.sh
+# A child suite must see EOF, not the runner's remaining shard-manifest rows.
+# Consuming one row here would both corrupt this test and silently skip the next
+# selected suite in the outer loop.
+if IFS= read -r leaked_stdin; then
+  printf 'STDIN_LEAK:%s\n' "${leaked_stdin}" >&2
+  exit 9
+fi
 printf 'ALPHA_BODY_NOISE\n'
 SH
 cat > "${runner_fixture}/tests/test-beta.sh" <<'SH'
@@ -268,6 +275,13 @@ assert_not_contains "T11: execution omits verbose ownership reasons" \
   "explicit full suite" "${out}"
 assert_not_contains "T11: execution avoids duplicate per-test PASS receipts" \
   "PASS tests/test-alpha.sh" "${out}"
+
+verbose_out="$(cd "${runner_fixture}" \
+  && bash tools/run-tests.sh --full --verbose --no-record)"
+assert_contains "T11: verbose run also completes every selected test" \
+  "Test run passed: 4/4" "${verbose_out}"
+assert_contains "T11: verbose run streams passing test bodies" \
+  "ALPHA_BODY_NOISE" "${verbose_out}"
 
 audit_out="$(cd "${runner_fixture}" && bash tools/run-tests.sh --audit)"
 assert_contains "T11: audit names evidence-first principle" \

@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "probe_id": "quality-scenario-model",
+  "checks": [
+    {
+      "id": "recalculation",
+      "rules": [
+        {"type": "file_contains_all", "path": "model.csv", "values": ["base,120,30,90", "upside,145,34,111", "downside,95,29,66"]},
+        {"type": "file_contains_all", "path": "methodology.md", "values": ["output = revenue - variable_cost", "derived values are formulas"]}
+      ]
+    },
+    {
+      "id": "input_fidelity",
+      "rules": [
+        {"type": "file_contains_all", "path": "methodology.md", "values": ["USD thousands", "FY2027", "missing values: none"]}
+      ]
+    },
+    {
+      "id": "scenario_integrity",
+      "rules": [
+        {"type": "file_contains_all", "path": "methodology.md", "values": ["base", "upside", "downside", "sensitivity threshold"]}
+      ]
+    }
+  ]
+}

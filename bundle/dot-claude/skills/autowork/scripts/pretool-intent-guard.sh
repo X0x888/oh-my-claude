@@ -27,6 +27,7 @@ tool_use_id=""
 tool_cwd=""
 command_str=""
 run_in_background=""
+tool_input_json="{}"
 _pig_hook_idx=0
 while IFS= read -r -d $'\x1e' _pig_hook_value; do
   case "${_pig_hook_idx}" in
@@ -36,11 +37,13 @@ while IFS= read -r -d $'\x1e' _pig_hook_value; do
     3) tool_cwd="${_pig_hook_value}" ;;
     4) command_str="${_pig_hook_value}" ;;
     5) run_in_background="${_pig_hook_value}" ;;
+    6) tool_input_json="${_pig_hook_value}" ;;
   esac
   _pig_hook_idx=$((_pig_hook_idx + 1))
 done < <(jq -jr '
   [.session_id, .tool_name, .tool_use_id, .cwd,
-   .tool_input.command, .tool_input.run_in_background]
+   .tool_input.command, .tool_input.run_in_background,
+   ((.tool_input // {}) | tojson)]
   | map(if . == null then "" else tostring end)
   | .[] | ., "\u001e"
 ' <<<"${HOOK_JSON}" 2>/dev/null || true)
@@ -75,13 +78,13 @@ if [[ "${tool_name}" == "Bash" ]]; then
 fi
 unset _OMC_HOOK_CALLER_PATH
 
-# Honour the customization kill-switch. Users who prefer the directive layer
-# alone can set pretool_intent_guard=false in oh-my-claude.conf or
-# OMC_PRETOOL_INTENT_GUARD=false in the environment. Bash edit-clock capture
-# above is deliberately independent: disabling an intent gate must not make
-# successful source edits invisible to the Stop gate.
+# Honour the customization kill-switch for the legacy intent/hygiene gates.
+# The Definition-of-Excellent pre-mutation gate is a separate user-selected
+# quality contract and deliberately remains live; otherwise an unrelated
+# advisory-safety toggle could silently remove its strongest causal invariant.
+_omc_intent_guard_enabled=1
 if [[ "${OMC_PRETOOL_INTENT_GUARD:-true}" == "false" ]]; then
-  exit 0
+  _omc_intent_guard_enabled=0
 fi
 
 # Hygiene gate (v1.43.x): block Bash commands that pair a poll-loop
@@ -156,6 +159,7 @@ _bash_command_orphans_unattended_loop() {
 
 if [[ "${tool_name}" == "Bash" ]] \
     && [[ -n "${command_str}" ]] \
+    && [[ "${_omc_intent_guard_enabled}" -eq 1 ]] \
     && [[ "${OMC_BG_SPAWN_GATE:-true}" != "false" ]] \
     && _bash_command_orphans_unattended_loop "${command_str}" "${run_in_background}"; then
   log_hook "pretool-intent-guard" \
@@ -379,6 +383,244 @@ _tool_attempts_mutation() {
       ;;
   esac
 }
+
+# Before the Definition contract exists, Bash uses a strict read-only
+# allowlist. The legacy gate intentionally waits for positive write signatures
+# so ordinary tests are not blocked; that is insufficient here because an
+# opaque `./generate.sh` or `python tools/rewrite.py` could manufacture the
+# artifact before its finish line. Unknown executables therefore fail closed
+# only for this pre-contract interval.
+_definition_bash_is_provably_read_only() {
+  local cmd="${1:-}" seg control
+  [[ -n "${cmd//[[:space:]]/}" ]] || return 1
+  _bash_command_may_mutate_workspace "${cmd}" && return 1
+  # A harmless-looking reader can execute an opaque mutator through command or
+  # process substitution. The shared proof helper also checks this per segment,
+  # but reject it before parsing so no shell grammar edge can split it away.
+  # shellcheck disable=SC2016  # literal shell-syntax sentinels
+  if [[ "${cmd}" == *'$('* || "${cmd}" == *'`'* \
+      || "${cmd}" == *'<('* || "${cmd}" == *'>('* ]]; then
+    return 1
+  fi
+  while IFS= read -r -d '' seg; do
+    control="$(omc_shell_unquoted_control_text "${seg}")"
+    [[ -n "${control//[[:space:]]/}" ]] || continue
+    _omc_bash_command_is_proven_read_only "${control}" "${tool_cwd}" || return 1
+  done < <(omc_shell_compound_segments "${cmd}")
+  return 0
+}
+
+_definition_tool_attempts_mutation() {
+  case "${tool_name}" in
+    Edit|Write|MultiEdit|NotebookEdit) return 0 ;;
+    Bash)
+      _definition_bash_is_provably_read_only "${command_str}" && return 1
+      return 0
+      ;;
+    mcp__*)
+      mcp_tool_attempts_artifact_mutation "${tool_name}" "${tool_input_json}"
+      return
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+_definition_targets_session_authority() {
+  local protected_root target raw_targets=""
+  protected_root="$(session_file "")"
+  case "${tool_name}" in
+    Bash)
+      # Model tools may read the causal ledgers, but may not invoke their hook
+      # publishers or write the session authority directory directly. The
+      # command has already been classified mutation-capable by the caller.
+      if grep -Eiq '(quality-pack/state|\.verification-starts|autowork/scripts/(record-(verification|reviewer|plan|tool-start-revision)|pretool-intent-guard)\.sh)' \
+          <<<"${command_str}"; then
+        return 0
+      fi
+      ;;
+    Edit|Write|MultiEdit|NotebookEdit|mcp__*)
+      raw_targets="$(jq -r '
+        [paths(scalars) as $p
+          | select(($p[-1] | tostring | ascii_downcase)
+              | test("(^|_)(path|file|file_path|notebook_path|target|destination|dest)$"))
+          | (getpath($p) | tostring)] | .[]
+      ' <<<"${tool_input_json}" 2>/dev/null || true)"
+      while IFS= read -r target; do
+        [[ -n "${target}" ]] || continue
+        if [[ "${target}" != /* ]]; then
+          target="${tool_cwd%/}/${target}"
+        fi
+        case "${target}" in
+          "${protected_root}"*|*"/.claude/quality-pack/state/"*) return 0 ;;
+        esac
+      done <<<"${raw_targets}"
+      ;;
+  esac
+  return 1
+}
+
+# The Definition artifacts are harness authority, not implementation output.
+# Ordinary model tools can inspect them for planning/review, but a mutation may
+# not self-mint a contract, receipt, evidence row, or frontier. This is a
+# cooperative guard against normal tool use; the documented same-user-process
+# boundary still applies to deliberately obfuscated filesystem tampering.
+if [[ "$(read_state "quality_contract_required" 2>/dev/null || true)" == "1" ]] \
+    && _definition_tool_attempts_mutation \
+    && _definition_targets_session_authority; then
+  record_gate_event "definition-of-excellent/authority" "block" \
+    "tool=${tool_name}" "reason=session-authority-is-harness-owned" 2>/dev/null || true
+  jq -nc --arg reason "[Definition of Excellent · authority boundary] The current contract, frozen floor, verification receipts, evidence, frontier, and their hook publishers are harness-owned causal state. Model tools may read them but may not invoke the recorder hooks or mutate the session authority directory. Run the real project proof command or return a valid planner/reviewer envelope through its native agent lifecycle instead." '{
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: $reason
+    }
+  }'
+  exit 0
+fi
+
+# Definition of Excellent — causal pre-mutation gate. A model-authored plan is
+# not evidence merely because it exists in the transcript: the authoritative
+# contract must be structurally valid, bound to this objective/cycle, and
+# published by the planner recorder before any mutation-capable tool may run.
+# There is intentionally no retry cap. The user can explicitly configure the
+# feature off or use /ulw-skip; the model cannot age or narrate its way around
+# a missing quality bar.
+if [[ "$(read_state "quality_contract_required" 2>/dev/null || true)" == "1" ]] \
+  && _definition_tool_attempts_mutation; then
+  _definition_contract_failure="missing-or-stale"
+  _definition_contract_block_count=1
+
+  # Validate the exact current contract and freeze its immutable floor under
+  # the same session mutex that publishes planner revisions. This makes
+  # "validated contract -> first mutation" one causal transition: a planner
+  # cannot swap in a different bar between the check and the mutation stamp.
+  # shellcheck disable=SC2329  # invoked indirectly via with_state_lock
+  _definition_authorize_mutation_unlocked() {
+    local contract first_ts floor_file floor temp blocks
+    contract="$(quality_contract_validate_current 2>/dev/null)" || {
+      _definition_contract_failure="missing-or-stale"
+      return 1
+    }
+    [[ "$(jq -r '.late' <<<"${contract}")" == "false" ]] || {
+      _definition_contract_failure="late-contract"
+      return 1
+    }
+    first_ts="$(read_state "first_mutation_ts" 2>/dev/null || true)"
+    floor_file="$(session_file "quality_contract_floor.json")"
+    [[ ! -L "${floor_file}" ]] || {
+      _definition_contract_failure="unsafe-floor-artifact"
+      return 1
+    }
+
+    if [[ -z "${first_ts}" ]]; then
+      # No prior floor may silently survive a reset/objective transition. A
+      # stale regular file is replaced only while the state still proves that
+      # no mutation has begun.
+      [[ ! -e "${floor_file}" || -f "${floor_file}" ]] || {
+        _definition_contract_failure="unsafe-floor-artifact"
+        return 1
+      }
+      temp="$(mktemp "${floor_file}.tmp.XXXXXX")" || {
+        _definition_contract_failure="floor-write-failed"
+        return 1
+      }
+      chmod 600 "${temp}" 2>/dev/null || true
+      if ! printf '%s\n' "${contract}" >"${temp}" \
+          || ! mv -f "${temp}" "${floor_file}"; then
+        rm -f "${temp}" 2>/dev/null || true
+        _definition_contract_failure="floor-write-failed"
+        return 1
+      fi
+      if ! _write_state_batch_unlocked \
+          "first_mutation_ts" "$(now_epoch)" \
+          "first_mutation_tool" "${tool_name}" \
+          "agent_first_gate_state" "${OMC_AGENT_FIRST_GATE:-off}" \
+          "quality_contract_frozen_id" "$(jq -r '.contract_id' <<<"${contract}")" \
+          "quality_contract_frozen_revision" "$(jq -r '.contract_revision' <<<"${contract}")" \
+          "quality_contract_frozen_payload_digest" "$(jq -r '.payload_digest' <<<"${contract}")"; then
+        rm -f "${floor_file}" 2>/dev/null || true
+        _definition_contract_failure="floor-state-write-failed"
+        return 1
+      fi
+    else
+      [[ -f "${floor_file}" ]] || {
+        _definition_contract_failure="missing-frozen-floor"
+        return 1
+      }
+      floor="$(_quality_contract_read_json_file "${floor_file}" 65536 2>/dev/null)" || {
+        _definition_contract_failure="invalid-frozen-floor"
+        return 1
+      }
+      quality_contract_validate_envelope "${floor}" 2>/dev/null || {
+        _definition_contract_failure="invalid-frozen-floor"
+        return 1
+      }
+      [[ "$(jq -r '.late' <<<"${floor}")" == "false" ]] || {
+        _definition_contract_failure="late-frozen-floor"
+        return 1
+      }
+      [[ "$(read_state "quality_contract_frozen_id" 2>/dev/null || true)" \
+          == "$(jq -r '.contract_id' <<<"${floor}")" ]] || {
+        _definition_contract_failure="frozen-floor-identity-mismatch"
+        return 1
+      }
+      [[ "$(read_state "quality_contract_frozen_payload_digest" 2>/dev/null || true)" \
+          == "$(jq -r '.payload_digest' <<<"${floor}")" ]] || {
+        _definition_contract_failure="frozen-floor-digest-mismatch"
+        return 1
+      }
+      quality_contract_revision_preserves_floor \
+        "$(jq -c '.definition' <<<"${contract}")" "${floor}" 2>/dev/null || {
+        _definition_contract_failure="frozen-floor-weakened"
+        return 1
+      }
+    fi
+    _definition_contract_failure=""
+    return 0
+  }
+
+  if ! _omc_load_quality_contract 2>/dev/null \
+      || ! with_state_lock _definition_authorize_mutation_unlocked; then
+    # shellcheck disable=SC2329  # invoked indirectly via with_state_lock
+    _increment_quality_contract_blocks_unlocked() {
+      local blocks
+      blocks="$(read_state "quality_contract_blocks" 2>/dev/null || true)"
+      [[ "${blocks}" =~ ^[0-9]+$ ]] || blocks=0
+      blocks=$((blocks + 1))
+      _write_state_batch_unlocked \
+        "quality_contract_blocks" "${blocks}" \
+        "quality_contract_status" "${_definition_contract_failure:-missing-or-stale}"
+      printf '%s' "${blocks}"
+    }
+    _definition_contract_block_count="$(with_state_lock _increment_quality_contract_blocks_unlocked 2>/dev/null || true)"
+    _definition_contract_block_count="${_definition_contract_block_count:-1}"
+    _quality_attempted_mutation="${tool_name}"
+    if [[ "${tool_name}" == "Bash" ]]; then
+      _quality_attempted_mutation="Bash: $(truncate_chars 160 "${command_str}")"
+    fi
+    record_gate_event "definition-of-excellent/pre-mutation" "block" \
+      "block_count=${_definition_contract_block_count}" \
+      "reason=${_definition_contract_failure:-missing-or-stale}" \
+      "tool=${tool_name}" \
+      "attempted=$(truncate_chars 180 "${_quality_attempted_mutation}")"
+    jq -nc --arg reason "[Definition of Excellent · pre-mutation block ${_definition_contract_block_count}] This objective requires a frozen five-axis quality contract before implementation. The current contract/floor is unavailable or invalid (${_definition_contract_failure:-missing-or-stale}). Dispatch quality-planner or prometheus now with the Definition-of-Excellent directive, wait for PLAN_READY plus one structural QUALITY_CONTRACT_JSON line covering deliberate, distinctive, coherent, visionary, and complete, then retry the mutation. A late first contract cannot certify work already begun; restart or explicitly /ulw-skip that objective instead. Do not draft the contract in the main thread and do not weaken a criterion to make the gate pass. Read-only inspection and planner dispatch remain allowed. Attempted mutation: ${_quality_attempted_mutation}" '{
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason: $reason
+      }
+    }'
+    exit 0
+  fi
+fi
+
+# Nothing below this point belongs to the Definition contract. Preserve the
+# historical pretool_intent_guard=false behavior for advisory, hygiene,
+# review-freeze, agent-first, and delivery-intent enforcement.
+if [[ "${_omc_intent_guard_enabled}" -eq 0 ]]; then
+  exit 0
+fi
 
 _record_first_mutation_attempt() {
   local existing

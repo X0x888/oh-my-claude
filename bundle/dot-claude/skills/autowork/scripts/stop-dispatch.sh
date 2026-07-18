@@ -788,6 +788,15 @@ fi
 # exhausted/skip release as "all gates passed".
 omc_enforcement_generation_matches_capture || exit 0
 outcome="$(read_state "session_outcome" 2>/dev/null || true)"
+
+# The guard accepted this Stop. Unused durable-taste authority belongs only to
+# the turn that just ended; a later wake/resume needs a fresh user command.
+_dispatch_clear_quality_constitution_authorization_unlocked() {
+  rm -f "$(session_file "quality_constitution_authorization.json")" 2>/dev/null || true
+}
+with_state_lock _dispatch_clear_quality_constitution_authorization_unlocked \
+  >/dev/null 2>&1 || true
+
 guard_message=""
 if [[ -n "${guard_out}" ]]; then
   guard_message="$(jq -r '.systemMessage // empty' <<<"${guard_out}" 2>/dev/null || true)"

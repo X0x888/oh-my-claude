@@ -72,6 +72,17 @@ assert_file_exists() {
   fi
 }
 
+assert_files_equal() {
+  local label="$1" expected="$2" actual="$3"
+  if cmp -s "${expected}" "${actual}"; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: %s\n    files differ: %s %s\n' \
+      "${label}" "${expected}" "${actual}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
 # Helper: run the resume script with given JSON, overriding STATE_ROOT.
 # Writes output to _resume_output; sets _resume_exit.
 _resume_output_file="${TEST_TMP}/.resume_output"
@@ -111,7 +122,13 @@ setup_source_session() {
   "last_assistant_message": "I finished refactoring the token validator. Next step is updating the middleware.",
   "last_verify_cmd": "bash tests/test-auth.sh",
   "plan_revision": "7",
-  "plan_verdict": "PLAN_READY"
+  "plan_verdict": "PLAN_READY",
+  "quality_contract_required": "1",
+  "quality_contract_id": "qc-resume",
+  "quality_contract_status": "proved",
+  "quality_evidence_current_count": "5",
+  "quality_evidence_required_count": "5",
+  "quality_frontier_status": "clear"
 }
 STATEJSON
 
@@ -122,6 +139,25 @@ STATEJSON
     > "${source_dir}/recent_prompts.jsonl"
   printf '/src/auth/validator.ts\n/src/middleware/auth.ts\n' \
     > "${source_dir}/edited_files.log"
+  # Definition-of-Excellent state is causal proof, not reconstructible prose.
+  # Include every sidecar in the resume fixture so additions to the copy list
+  # cannot silently strand a frozen floor or its authoritative receipts.
+  printf '%s\n' '{"schema_version":2,"contract_id":"qc-resume","revision":1}' \
+    > "${source_dir}/quality_contract.json"
+  cp "${source_dir}/quality_contract.json" \
+    "${source_dir}/quality_contract_floor.json"
+  printf '%s\n' '{"event":"frozen","contract_id":"qc-resume"}' \
+    > "${source_dir}/quality_contract_history.jsonl"
+  printf '%s\n' '{"schema_version":1,"generation":3,"digest":"constitution-resume"}' \
+    > "${source_dir}/quality_constitution_snapshot.json"
+  printf '%s\n' '{"_v":2,"receipt_id":"vr-resume","quality_contract_id":"qc-resume"}' \
+    > "${source_dir}/verification_receipts.jsonl"
+  printf '%s\n' '{"criterion_id":"Q-001","receipt_id":"vr-resume","result":"met"}' \
+    > "${source_dir}/quality_evidence.jsonl"
+  printf '%s\n' '{"status":"clear","contract_id":"qc-resume"}' \
+    > "${source_dir}/quality_frontier.json"
+  printf '%s\n' '{"status":"clear","contract_id":"qc-resume"}' \
+    > "${source_dir}/quality_frontier_history.jsonl"
   {
     printf '# Auth Refactor Plan\n\n## Wave 1 — complete\n'
     local i
@@ -187,6 +223,17 @@ assert_file_exists "subagent_summaries.jsonl copied" "${target_dir}/subagent_sum
 assert_file_exists "recent_prompts.jsonl copied" "${target_dir}/recent_prompts.jsonl"
 assert_file_exists "edited_files.log copied" "${target_dir}/edited_files.log"
 assert_file_exists "current_plan.md copied" "${target_dir}/current_plan.md"
+for definition_sidecar in \
+  quality_contract.json quality_contract_floor.json \
+  quality_contract_history.jsonl quality_constitution_snapshot.json \
+  verification_receipts.jsonl quality_evidence.jsonl \
+  quality_frontier.json quality_frontier_history.jsonl; do
+  assert_file_exists "${definition_sidecar} copied" \
+    "${target_dir}/${definition_sidecar}"
+  assert_files_equal "${definition_sidecar} remains byte-identical" \
+    "${TEST_STATE_ROOT}/${source_id}/${definition_sidecar}" \
+    "${target_dir}/${definition_sidecar}"
+done
 
 # Verify state content was preserved
 state_json="$(cat "${target_dir}/session_state.json")"
@@ -204,6 +251,9 @@ context="$(jq -r '.hookSpecificOutput.additionalContext // empty' <<<"${output}"
 assert_contains "context has workflow mode" "Preserved workflow mode: ultrawork" "${context}"
 assert_contains "context has task domain" "Preserved task domain: coding" "${context}"
 assert_contains "context has objective" "Preserved objective: Implement the auth refactor" "${context}"
+assert_contains "context has Definition contract" "Preserved Definition of Excellent: contract=qc-resume status=proved; proof=5/5; frontier=clear" "${context}"
+assert_contains "Definition capsule names immutable floor" "${target_dir}/quality_contract_floor.json" "${context}"
+assert_contains "Definition capsule names receipt authority" "${target_dir}/verification_receipts.jsonl" "${context}"
 assert_contains "context has delivery contract" "Preserved delivery contract: primary=Implement the auth refactor; commit=required; push=unspecified; prompt surfaces=tests · docs; proof contract=code_review · code_verify · prose_review · test_surface · commit_record;" "${context}"
 assert_contains "context has last meta request" "explain the token flow" "${context}"
 assert_contains "context has last assistant message" "refactoring the token validator" "${context}"
@@ -368,7 +418,66 @@ for malformed_key in timing.jsonl findings.json gate_events.jsonl; do
 done
 
 # ------------------------------------------------------------------
-# Test 5c: a deterministic mid-copy failure rolls back every speculative
+# Test 5c: source symlinks cannot be laundered into regular target authority.
+# Reject both the consolidated state itself and any separately copied causal
+# sidecar before speculative transfer or the source ownership fence.
+# ------------------------------------------------------------------
+printf '\nResume rejects symlinked source authority:\n'
+
+symlink_state_source="symlink-state-source-552"
+symlink_state_target="symlink-state-target-553"
+symlink_state_source_dir="${TEST_STATE_ROOT}/${symlink_state_source}"
+symlink_state_target_dir="${TEST_STATE_ROOT}/${symlink_state_target}"
+external_state="${TEST_TMP}/external-resume-state.json"
+mkdir -p "${symlink_state_source_dir}"
+printf '%s\n' '{"workflow_mode":"ultrawork","current_objective":"must not transfer"}' \
+  > "${external_state}"
+ln -s "${external_state}" "${symlink_state_source_dir}/session_state.json"
+printf '%s\n' '{"contract_id":"must-not-copy"}' \
+  > "${symlink_state_source_dir}/quality_contract.json"
+
+run_resume "{\"session_id\":\"${symlink_state_target}\",\"source\":\"resume\",\"transcript_path\":\"/transcripts/${symlink_state_source}.jsonl\"}"
+symlink_state_context="$(jq -r '.hookSpecificOutput.additionalContext // empty' <<<"$(resume_output)")"
+assert_eq "symlinked state: hook recovers cleanly" "0" "${_resume_exit}"
+assert_contains "symlinked state: recovery is explicit" \
+  "Resume source state is invalid" "${symlink_state_context}"
+assert_eq "symlinked state: source link remains a link" "1" \
+  "$([[ -L "${symlink_state_source_dir}/session_state.json" ]] && printf 1 || printf 0)"
+assert_eq "symlinked state: target inherits no objective" "" \
+  "$(jq -r '.current_objective // empty' "${symlink_state_target_dir}/session_state.json")"
+assert_eq "symlinked state: target copies no contract" "0" \
+  "$([[ -e "${symlink_state_target_dir}/quality_contract.json" ]] && printf 1 || printf 0)"
+assert_eq "symlinked state: external bytes remain untouched" \
+  '{"workflow_mode":"ultrawork","current_objective":"must not transfer"}' \
+  "$(tr -d '\n' < "${external_state}")"
+
+symlink_sidecar_source="symlink-sidecar-source-554"
+symlink_sidecar_target="symlink-sidecar-target-555"
+symlink_sidecar_source_dir="${TEST_STATE_ROOT}/${symlink_sidecar_source}"
+symlink_sidecar_target_dir="${TEST_STATE_ROOT}/${symlink_sidecar_target}"
+external_contract="${TEST_TMP}/external-quality-contract.json"
+mkdir -p "${symlink_sidecar_source_dir}"
+printf '%s\n' '{"workflow_mode":"ultrawork","current_objective":"also must not transfer"}' \
+  > "${symlink_sidecar_source_dir}/session_state.json"
+printf '%s\n' '{"schema_version":2,"contract_id":"external-contract"}' \
+  > "${external_contract}"
+ln -s "${external_contract}" \
+  "${symlink_sidecar_source_dir}/quality_contract.json"
+
+run_resume "{\"session_id\":\"${symlink_sidecar_target}\",\"source\":\"resume\",\"transcript_path\":\"/transcripts/${symlink_sidecar_source}.jsonl\"}"
+symlink_sidecar_context="$(jq -r '.hookSpecificOutput.additionalContext // empty' <<<"$(resume_output)")"
+assert_eq "symlinked sidecar: hook recovers cleanly" "0" "${_resume_exit}"
+assert_contains "symlinked sidecar: recovery is explicit" \
+  "Resume source state is invalid" "${symlink_sidecar_context}"
+assert_eq "symlinked sidecar: source link remains a link" "1" \
+  "$([[ -L "${symlink_sidecar_source_dir}/quality_contract.json" ]] && printf 1 || printf 0)"
+assert_eq "symlinked sidecar: target inherits no objective" "" \
+  "$(jq -r '.current_objective // empty' "${symlink_sidecar_target_dir}/session_state.json")"
+assert_eq "symlinked sidecar: target has no laundered contract" "0" \
+  "$([[ -e "${symlink_sidecar_target_dir}/quality_contract.json" ]] && printf 1 || printf 0)"
+
+# ------------------------------------------------------------------
+# Test 5d: a deterministic mid-copy failure rolls back every speculative
 # target surface before the nonzero hook exit.  PATH injects a cp wrapper that
 # fails only on timing.jsonl, after consolidated state and an earlier ledger
 # have already copied.

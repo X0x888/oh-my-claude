@@ -142,8 +142,26 @@ jobs:
       - name: Run quality gate tests
         run: bash tests/test-quality-gates.sh
 
+      - name: Run Definition of Excellent contract tests
+        run: bash tests/test-quality-contract.sh
+
+      - name: Run Definition of Excellent lifecycle tests
+        run: bash tests/test-definition-of-excellent-e2e.sh
+
+      - name: Run Definition of Excellent observability tests
+        run: bash tests/test-definition-observability.sh
+
+      - name: Run Quality Constitution tests
+        run: bash tests/test-quality-constitution.sh
+
+      - name: Run Quality Constitution authority tests
+        run: bash tests/test-quality-constitution-authority.sh
+
       - name: Run w1-reliability v1.40 regression
         run: bash tests/test-w1-reliability-v1-40.sh
+
+      - name: Run blind real-work pairwise evaluator tests
+        run: bash tests/test-realwork-pairwise.sh
 
       - name: Check bash syntax (BSD vs GNU shape)
         run: find bundle/ -name '*.sh' -print0 | xargs -0 -n1 bash -n

@@ -1,0 +1,47 @@
+{
+  "schema_version": 2,
+  "id": "quality-evidence-brief",
+  "domain": "research",
+  "risk": "high",
+  "fixture": "fixtures/quality/evidence-brief",
+  "prompt": "/ulw turn this mixed evidence packet into a decision brief that makes a defensible recommendation and shows what could change it",
+  "candidate_artifacts": [
+    {"kind": "files", "globs": ["brief.md", "brief.docx", "sources.json"]},
+    {"kind": "rendered_document", "globs": ["rendered/**"]}
+  ],
+  "hard_checks": [
+    {"id": "citation_traceability", "description": "Every material factual claim traces to the supplied evidence packet.", "critical": true},
+    {"id": "claim_bounding", "description": "Confidence and causal language do not exceed what the sources support.", "critical": true},
+    {"id": "contrary_evidence", "description": "Material contradictory evidence is represented rather than silently discarded.", "critical": true}
+  ],
+  "rubric": {
+    "version": "ddccv-1",
+    "audience": "A senior decision-maker who needs a recommendation, its evidentiary basis, and its reversal conditions.",
+    "constraints": ["Use only the supplied evidence packet.", "Separate observed fact, inference, and recommendation.", "Preserve material uncertainty."],
+    "non_goals": ["Perform unsourced external research", "Manufacture consensus", "Turn the brief into a literature dump"],
+    "task_specific_anchors": [
+      "The recommendation follows from an explicit decision frame rather than source-counting.",
+      "Evidence conflicts and uncertainty change the recommendation or its conditions visibly.",
+      "The brief creates a reusable decision model, not merely a polished synopsis."
+    ],
+    "dimensions": [
+      {"id": "deliberate", "weight": 1},
+      {"id": "distinctive", "weight": 1},
+      {"id": "coherent", "weight": 1},
+      {"id": "visionary", "weight": 1},
+      {"id": "complete", "weight": 1}
+    ]
+  },
+  "campaign": {
+    "runs_per_arm": 3,
+    "model_tiers": ["balanced", "economy"],
+    "max_candidate_cost_ratio": 1.75,
+    "max_candidate_wall_ratio": 1.75,
+    "candidate_summary_contract": {
+      "schema_version": 3,
+      "required_top_level": ["probe_id", "provenance", "artifact_dir", "economics"],
+      "required_provenance": ["prompt_hash", "fixture_hash", "source_hash", "model", "model_tier", "harness_role", "harness_hash"],
+      "required_token_economics": ["input", "output", "cache_read", "cache_creation"]
+    }
+  }
+}

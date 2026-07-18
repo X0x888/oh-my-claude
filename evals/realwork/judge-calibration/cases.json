@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "identical-artifacts",
+      "purpose": "Position and verbosity bias control.",
+      "expected": {"basis": "identical-artifact", "winner": "tie", "judge_calls": 0}
+    },
+    {
+      "id": "broken-but-flashy",
+      "purpose": "Functional ground truth must veto surface polish.",
+      "expected": {"basis": "hard-check-veto", "winner": "baseline", "judge_calls": 0}
+    },
+    {
+      "id": "visionary-overreach",
+      "purpose": "Unrequested novelty that violates a frozen non-goal is not visionary quality.",
+      "expected": {"basis": "judge", "winner": "baseline", "scope_creep": {"challenger": true}}
+    },
+    {
+      "id": "material-quality-gain",
+      "purpose": "A grounded, higher-leverage artifact should win in both presentation orders.",
+      "expected": {"basis": "judge", "winner": "challenger", "position_consistent": true}
+    }
+  ]
+}

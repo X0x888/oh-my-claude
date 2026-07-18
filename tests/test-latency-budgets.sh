@@ -3,7 +3,7 @@
 # hook-latency budget framework.
 #
 # What this proves:
-#   T1.  show-budgets prints all 9 hot-path hooks with budgets
+#   T1.  show-budgets prints all 10 hot-path hooks with budgets
 #   T2.  budget_for_hook returns the documented default
 #   T3.  budget_for_hook honors env override (OMC_LATENCY_BUDGET_*_MS)
 #   T4.  Invalid env override (non-numeric) falls back to default
@@ -74,9 +74,10 @@ assert_true() {
 }
 
 # --- T1 ---
-printf '\nT1: show-budgets prints all 9 hot-path hooks\n'
+printf '\nT1: show-budgets prints all 10 hot-path hooks\n'
 out="$(run_script show-budgets)"
-for hook in prompt-intent-router.sh pretool-intent-guard.sh pretool-timing.sh \
+for hook in prompt-intent-router.sh pretool-intent-guard.sh \
+            quality-constitution-authority-guard.sh pretool-timing.sh \
             posttool-timing.sh stop-guard.sh stop-time-summary.sh \
             closeout-display.sh closeout-preflight.sh stop-dispatch.sh; do
   if [[ "${out}" == *"${hook}"* ]]; then
@@ -94,6 +95,7 @@ out="$(run_script show-budgets)"
 expected_pairs=(
   "prompt-intent-router.sh|1500"
   "pretool-intent-guard.sh|300"
+  "quality-constitution-authority-guard.sh|300"
   "pretool-timing.sh|200"
   "posttool-timing.sh|200"
   "stop-guard.sh|1000"
@@ -163,7 +165,8 @@ assert_eq "${missing_count}" "0" "no hooks reported as missing (synthetic payloa
 printf '\nT7: benchmark subcommand runs all hooks\n'
 out="$(run_script benchmark --samples 1 2>&1 || true)"
 all_listed=1
-for hook in prompt-intent-router.sh pretool-intent-guard.sh; do
+for hook in prompt-intent-router.sh pretool-intent-guard.sh \
+            quality-constitution-authority-guard.sh; do
   if [[ "${out}" != *"${hook}"* ]]; then
     all_listed=0
   fi
@@ -196,6 +199,7 @@ printf '\nT10: check exits 0 when all within budget\n'
 # Use generous overrides to ensure no breach.
 out="$(OMC_LATENCY_BUDGET_PROMPT_INTENT_ROUTER_MS=99999 \
   OMC_LATENCY_BUDGET_PRETOOL_INTENT_GUARD_MS=99999 \
+  OMC_LATENCY_BUDGET_QUALITY_CONSTITUTION_AUTHORITY_GUARD_MS=99999 \
   OMC_LATENCY_BUDGET_PRETOOL_TIMING_MS=99999 \
   OMC_LATENCY_BUDGET_POSTTOOL_TIMING_MS=99999 \
   OMC_LATENCY_BUDGET_STOP_GUARD_MS=99999 \

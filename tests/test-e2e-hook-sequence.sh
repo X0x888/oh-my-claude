@@ -29,12 +29,18 @@ setup_test() {
   # flags (lazy_session_start, etc.) as "project". Without this cd, the
   # whole e2e sequence inherits the user's conf as a project layer.
   cd "${TEST_HOME}"
+  # This suite owns the pre-existing hook interactions below, not the
+  # Definition-of-Excellent lifecycle. Keep that orthogonal gate disabled so
+  # a newly armed contract cannot mask the behavior each sequence is proving;
+  # tests/test-definition-of-excellent-e2e.sh owns the default/adaptive path.
+  export OMC_DEFINITION_OF_EXCELLENT=off
 }
 
 teardown_test() {
   cd "${ORIG_PWD:-${REPO_ROOT}}" 2>/dev/null || true
   export HOME="${ORIG_HOME}"
   unset OMC_AGENT_FIRST_GATE
+  unset OMC_DEFINITION_OF_EXCELLENT
   local attempt
   for attempt in 1 2 3 4 5; do
     rm -rf "${TEST_HOME}" 2>/dev/null || true
@@ -374,6 +380,59 @@ run_hook "${HOOK_DIR}/record-verification.sh" "${payload_s3a}"
 assert_eq "verify(exit_code): outcome is failed" "failed" "$(read_st "s3a" "last_verify_outcome")"
 teardown_test
 
+
+# -------------------------------------------------------
+# Test 4: record-verification.sh — no tool_response defaults to passed
+# -------------------------------------------------------
+setup_test
+init_session "s3b"
+start_s3b="$(jq -nc '{
+  session_id:"s3b",tool_name:"Bash",tool_use_id:"s3b-failed-hook",
+  tool_input:{command:"npm test"}}')"
+failure_s3b="$(jq -c '. + {
+  hook_event_name:"PostToolUseFailure",error:"runner process terminated"}' \
+  <<<"${start_s3b}")"
+run_hook "${HOOK_DIR}/record-tool-start-revision.sh" "${start_s3b}"
+run_hook "${HOOK_DIR}/record-verification.sh" "${failure_s3b}"
+assert_eq "verify(failure hook): sparse Bash envelope is failed" "failed" \
+  "$(read_st "s3b" "last_verify_outcome")"
+teardown_test
+
+setup_test
+init_session "s3c"
+start_s3c="$(jq -nc '{
+  session_id:"s3c",
+  tool_name:"mcp__plugin_playwright_playwright__browser_snapshot",
+  tool_use_id:"s3c-failed-hook",
+  tool_input:{url:"https://app.test/checkout",selector:"#checkout"}}')"
+failure_s3c="$(jq -c '. + {
+  hook_event_name:"PostToolUseFailure",error:"browser connection closed"}' \
+  <<<"${start_s3c}")"
+run_hook "${HOOK_DIR}/record-tool-start-revision.sh" "${start_s3c}"
+run_hook "${HOOK_DIR}/record-verification.sh" "${failure_s3c}"
+assert_eq "verify(failure hook): sparse MCP envelope is failed" "failed" \
+  "$(read_st "s3c" "last_verify_outcome")"
+teardown_test
+
+setup_test
+init_session "s3d"
+printf 'authoritative source\n' > "${TEST_HOME}/source.txt"
+start_s3d="$(jq -nc --arg path "${TEST_HOME}/source.txt" --arg cwd "${TEST_HOME}" '{
+  session_id:"s3d",tool_name:"Read",tool_use_id:"s3d-failed-hook",cwd:$cwd,
+  tool_input:{file_path:$path}}')"
+failure_s3d="$(jq -c '. + {
+  hook_event_name:"PostToolUseFailure",error:"source read was interrupted"}' \
+  <<<"${start_s3d}")"
+run_hook "${HOOK_DIR}/record-tool-start-revision.sh" "${start_s3d}"
+run_hook "${HOOK_DIR}/record-verification.sh" "${failure_s3d}"
+receipt_s3d="${TEST_HOME}/.claude/quality-pack/state/s3d/verification_receipts.jsonl"
+assert_eq "verify(failure hook): source failure does not overwrite executable-test state" "" \
+  "$(read_st "s3d" "last_verify_outcome")"
+assert_eq "verify(failure hook): source failure mints a negative receipt" "failed" \
+  "$(jq -sr '.[-1].outcome // empty' "${receipt_s3d}")"
+assert_eq "verify(failure hook): source receipt retains evidence kind" "source" \
+  "$(jq -sr '.[-1].evidence_kind // empty' "${receipt_s3d}")"
+teardown_test
 
 # -------------------------------------------------------
 # Test 4: record-verification.sh — no tool_response defaults to passed
@@ -820,10 +879,16 @@ printf '\nPrompt routing:\n'
 ROUTER="${REPO_ROOT}/bundle/dot-claude/quality-pack/scripts/prompt-intent-router.sh"
 
 setup_prompt_router() {
-  # prompt-intent-router.sh sources common.sh from HOME path
-  mkdir -p "${TEST_HOME}/.claude/skills/autowork/scripts"
+  # prompt-intent-router.sh sources both shared libraries from HOME paths.
+  # Mirror the installed layout so a new direct dependency cannot turn every
+  # router assertion into a silent hook no-op under run_hook's fail-open shim.
+  mkdir -p "${TEST_HOME}/.claude/skills/autowork/scripts/lib"
   ln -sf "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh" \
     "${TEST_HOME}/.claude/skills/autowork/scripts/common.sh"
+  ln -sf "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/lib/quality-constitution-authority.sh" \
+    "${TEST_HOME}/.claude/skills/autowork/scripts/lib/quality-constitution-authority.sh"
+  ln -sf "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/lib/quality-contract.sh" \
+    "${TEST_HOME}/.claude/skills/autowork/scripts/lib/quality-contract.sh"
 }
 
 sim_prompt() {
@@ -1848,11 +1913,13 @@ assert_eq "mcp-v7: method" "mcp_visual_check" "$(read_st "smv7" "last_verify_met
 assert_eq "mcp-v7: outcome passed" "passed" "$(read_st "smv7" "last_verify_outcome")"
 teardown_test
 
-# Test MCP-V8: browser_run_code classified same as evaluate
+# Test MCP-V8: executable browser calls cannot self-certify as verification.
+# The mutation classifier treats run_code as interaction-capable; PostToolUse
+# edit-clock wiring owns it, while record-verification must publish no receipt.
 setup_test
 init_session "smv8"
 sim_mcp_verify "smv8" "mcp__plugin_playwright_playwright__browser_run_code" "42"
-assert_eq "mcp-v8: run_code = eval method" "mcp_browser_eval_check" "$(read_st "smv8" "last_verify_method")"
+assert_empty "mcp-v8: run_code cannot self-verify" "$(read_st "smv8" "last_verify_method")"
 teardown_test
 
 
@@ -1931,9 +1998,13 @@ QUALITY_PACK_DIR="${REPO_ROOT}/bundle/dot-claude/quality-pack/scripts"
 # the symlink pattern established in setup_prompt_router so the test sandbox
 # can execute them without a real install.
 setup_compact_tests() {
-  mkdir -p "${TEST_HOME}/.claude/skills/autowork/scripts"
+  mkdir -p "${TEST_HOME}/.claude/skills/autowork/scripts/lib"
   ln -sf "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh" \
     "${TEST_HOME}/.claude/skills/autowork/scripts/common.sh"
+  ln -sf "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/lib/quality-constitution-authority.sh" \
+    "${TEST_HOME}/.claude/skills/autowork/scripts/lib/quality-constitution-authority.sh"
+  ln -sf "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/lib/quality-contract.sh" \
+    "${TEST_HOME}/.claude/skills/autowork/scripts/lib/quality-contract.sh"
 }
 
 sim_pre_agent_dispatch() {

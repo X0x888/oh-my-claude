@@ -2,7 +2,10 @@
 
 **Ship better real work with Claude Code — with less steering.**
 
-*Quality gates that block Claude from claiming "done" until tests pass, review lands, and the work is verified. So you stop babysitting every session.*
+*A frozen Definition of Excellent—deliberate, distinctive, coherent, visionary,
+and complete—plus quality gates that block Claude from claiming "done" until
+the work proves that bar, tests pass, and independent review clears the remaining
+frontier. So you stop babysitting both correctness and ambition.*
 
 [![Version](https://img.shields.io/badge/Version-1.50.0-blue.svg)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -20,11 +23,12 @@
 
 ## What changes after you install
 
-Three outcomes you'll feel in your first week:
+Four outcomes you'll feel in your first week:
 
 - **Claude can't claim "done" with broken code.** Quality gates intercept the Stop event until tests, review, and verification land. No more "I've made the changes" on work that doesn't compile.
 - **Your prompts get classified before Claude acts.** Execution vs advisory, coding vs writing — and routed to the right specialists automatically. Less steering per turn; more useful first responses.
 - **When Claude is uncertain, it tells you instead of guessing.** Declare-and-proceed openers surface the model's interpretation in one sentence so you can redirect cheaply if it's wrong — instead of finding out 3 commits later.
+- **Claude no longer gets to invent the finish line after seeing what it built.** Serious `/ulw` work freezes a five-axis Definition of Excellent before mutation, records criterion-level artifact proof, and uses a fresh excellence reviewer to search for the strongest remaining move. “Visionary” is a blocking axis, not decorative praise.
 
 The harness is bash hooks + skills + agents installed as an overlay into `~/.claude/`. It sits alongside Claude Code; Claude Code's own surface is unchanged.
 
@@ -38,6 +42,7 @@ The harness is bash hooks + skills + agents installed as an overlay into `~/.cla
 | | Vanilla Claude Code | oh-my-claude |
 |---|---|---|
 | **Quality enforcement** | None | Hard stop gates |
+| **Definition of quality** | Whatever the active model decides late | Frozen before mutation; five task-specific axes + evidence + blind frontier |
 | **Intent classification** | None | 5-category state machine |
 | **Domain coverage** | Code-focused | Coding, writing, research, ops |
 | **Dependencies** | — | bash + jq |
@@ -108,7 +113,7 @@ Escalation order before any of these fires (v1.40.0): ship inline → wave-appen
 
 Both install paths keep Claude Code's permission prompts on; once you trust the harness, [`--bypass-permissions`](#power-user-setup) removes them. Quality gates apply either way.
 
-Reversible: `bash ~/.local/share/oh-my-claude/uninstall.sh` removes everything cleanly (timestamped backups stay under `~/.claude/backups/`).
+Reversible: `bash ~/.local/share/oh-my-claude/uninstall.sh` removes the harness cleanly (timestamped backups and your user-owned Quality Constitution stay preserved). Use `--purge-quality-constitutions` only when you explicitly want that taste data erased.
 
 Already in Claude Code and want to skip the manual steps? See [AI-assisted install](#ai-assisted-install) below.
 
@@ -199,6 +204,19 @@ The result: Claude classifies your intent before acting, routes work to speciali
 ### Hard quality gates
 
 **Missing verification or review blocks completion attempts.** Skip tests, skip the generic reviewer for an edited code/prose surface, defer work to a "future session" without a checkpoint, miss prompt-stated commit/push obligations, or leave a semantically required specialist review uncovered — each initially hard-stops completion. Caps prevent infinite loops: if Claude cannot satisfy a gate, it eventually surfaces the unresolved gap instead of spinning.
+
+### Definition of Excellent: a finish line Claude cannot move
+
+**Serious work now establishes the quality bar before implementation, not after it.** With `definition_of_excellent=adaptive` (default), medium/high-risk, broad, open-mandate, Zero-Steering, and explicitly ambitious prompts arm a causal protocol:
+
+1. `quality-planner` or `prometheus` freezes 5–10 falsifiable criteria for what must feel **deliberate, distinctive, coherent, visionary, and complete**. PreToolUse blocks mutation until the harness validates and binds that contract to the exact objective, review cycle, planner identity, and plan revision.
+2. The implementation and verification produce target-bound, artifact-grounded receipts against those frozen criteria. Each criterion consumes exactly one receipt that uniquely matches it; multiple independent proofs become separately anchored criteria, and a combined receipt matching several criteria proves none. Scope-expanding continuations and replans invalidate stale proof; after mutation, an additive contract revision may strengthen the floor but cannot rewrite the north star/axes or delete or weaken any frozen criterion, standard, or anti-goal.
+3. A fresh `excellence-reviewer` searches alternatives blind-first, assesses every criterion, and publishes the strongest remaining frontier. A material frontier is `FINDINGS`, not a footnote; cost, time, and difficulty alone cannot clear it.
+4. Stop recomputes the whole chain from authoritative sidecars. There is no model-controlled retry cap: release needs a current contract, all mandatory proof, and a strong clear frontier. The explicit user escapes remain `/ulw-skip <reason>` or `definition_of_excellent=off`.
+
+The visionary axis means a coherent, recoverable, evidence-testable step-change in the user's outcome—not novelty theater or unrelated scope. A deliberately restrained design can be visionary when it unlocks the better operating model. The optional user-owned Quality Constitution (`/quality-constitution`) stores explicit standards and annotated exemplars under `~/.claude/omc-user/`; repositories and model prose cannot silently promote preferences into blocking rules. See [`docs/definition-of-excellent.md`](docs/definition-of-excellent.md) for the protocol and falsifiable blind A/B evaluation contract.
+
+**Evidence status:** the enforcement mechanism and blind evaluator are implemented, but the preregistered paid A/B campaign has not run. Measured superiority over the exact pre-feature harness remains pending.
 
 ### Agent-first execution
 
@@ -310,13 +328,13 @@ oh-my-claude/
 ├── install.sh / uninstall.sh / verify.sh   # Install, remove, and verify
 ├── bundle/dot-claude/                       # Installs to ~/.claude/
 │   ├── agents/          (37 agents)         # Specialist agent definitions
-│   ├── skills/          (35 skills)         # Skill definitions + autowork hooks
+│   ├── skills/          (36 skills)         # Skill definitions + autowork hooks
 │   ├── quality-pack/                        # Lifecycle hooks + memory files
 │   ├── output-styles/                       # Two bundled styles: oh-my-claude (default) + executive-brief (see docs/customization.md#output-style)
 │   └── statusline.py                        # Custom statusline widget
 ├── config/settings.patch.json               # Merged into user settings on install
 ├── evals/realwork/                           # Outcome eval scenarios for minimal-prompt shipping across code + design/UI + native artifacts + mixed + quantitative/data-analysis + regulated/high-stakes + writing + research + scholarly + ops + advisory
-├── tests/               (151 bash + 1 py)   # See CLAUDE.md for canonical commands
+├── tests/               (157 bash + 1 py)   # See CLAUDE.md for canonical commands
 ├── tools/                                    # Developer-only tools (not installed)
 └── docs/                                    # Architecture, customization, FAQ, prompts
 ```
@@ -356,10 +374,11 @@ Skills are invoked as slash commands or routed automatically by the intent class
 | gamedev *(game-dev review, model-invoked)* | *(no slash command — auto-fires on Unity/Godot/web game work)* | Engine-idiomatic review + guidance for Unity (C#), Godot (GDScript/C#), and web engines (Phaser/Babylon/PixiJS/Three.js): frame-budget perf, update-loop hygiene, object pooling, and the frame-grounded run→capture→evaluate→fix loop. Per-engine partial-load references; recommends Unity MCP / Godot MCP / [godogen](https://github.com/htdt/godogen). Original (not vendored). |
 | atlas *(repo bootstrap)* | `/atlas [focus]` | Bootstrap or refresh repo instruction files |
 | **Configure** | | |
-| omc-config *(setup walkthrough)* | `/omc-config [setup\|update\|change]` | Multi-choice walkthrough for `oh-my-claude.conf` flags. Auto-detects first-time setup vs upgrade vs ad-hoc change. Picks a profile (Zero Steering / Balanced / Minimal) or fine-tunes individual flags — no typing required. Triggered by phrases like "help me install", "configure oh-my-claude", "update my settings". |
+| omc-config *(setup walkthrough)* | `/omc-config [setup\|update\|change]` | Multi-choice walkthrough for `oh-my-claude.conf` flags. Auto-detects first-time setup vs upgrade vs ad-hoc change. Picks a profile (Zero Steering / Balanced / Minimal) or fine-tunes individual flags—including the Definition arming mode, Constitution, taste learning, and its prompt budget—without typing. Triggered by phrases like "help me install", "configure oh-my-claude", "update my settings". |
+| quality-constitution *(taste authority)* | `/quality-constitution [show\|remember\|must\|must-not\|avoid\|review\|accept\|reject\|reference\|anti-reference\|remove\|audit]` | Inspect and curate explicit project quality principles, signatures, anti-patterns, and annotated exemplars. Mutations use one-use exact-prompt grants; changed repository exemplars are quarantined and invalidate frozen quality contracts. User-owned data survives updates/uninstall; inferred candidates are advisory until you approve them. |
 | **Workflow control** (mid-session) | | |
 | ulw-demo *(onboarding)* | `/ulw-demo` | Guided walkthrough with real quality gates |
-| ulw-status *(diagnostics)* | `/ulw-status` | Show current session state, the persisted done-contract and remaining obligations, Council Phase 8 wave-plan progress, and live timing/token/directive totals. Its compact summary includes token/cache totals and top role/model economics drivers. `summary` / `classifier` arguments swap modes. |
+| ulw-status *(diagnostics)* | `/ulw-status` | Show current session state, the persisted done-contract, live Definition-of-Excellent contract/proof/frontier/weakest axis, remaining obligations, Council Phase 8 wave-plan progress, and timing/token/directive totals. Its compact summary includes token/cache totals and top role/model economics drivers. `summary` / `classifier` arguments swap modes. |
 | ulw-time *(time + token distribution)* | `/ulw-time [current\|last\|last-prompt\|week\|month\|all]` | Polished end-of-turn card — stacked top bar (`█` agents · `▒` tools · `░` idle), per-bucket chart, input/output/cache + agent-token share, and a one-line insight. The same card auto-emits as Stop `systemMessage` above the 5s display floor; blocked and shorter token-bearing turns are still checkpointed. Manual invocations slice a different window or bypass the floor. |
 | ulw-report *(retrospective)* | `/ulw-report [last\|week\|month\|all]` | Markdown digest of cross-session activity — sessions, gate fires, bias-defense fires, router directive footprint, token economics by role/model/native dispatch, stale-review cost, top reviewers, classifier misfires, Serendipity catches, and finding/wave outcomes |
 | memory-audit *(memory hygiene)* | `/memory-audit [--memory-dir <path>]` | Classify MEMORY.md entries (load-bearing, archival, superseded, drifted) and propose rollup moves. Read-only. |

@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "probe_id": "quality-release-proposal",
+  "checks": [
+    {
+      "id": "required_facts",
+      "rules": [
+        {"type": "file_contains_all", "path": "proposal.md", "values": ["$48,000", "two release cycles", "12%"]}
+      ]
+    },
+    {
+      "id": "decision_present",
+      "rules": [
+        {"type": "file_contains_all", "path": "proposal.md", "values": ["Recommend: adopt", "kill criterion"]}
+      ]
+    },
+    {
+      "id": "render_clean",
+      "rules": [
+        {"type": "path_exists", "path": "rendered/page-1.txt"},
+        {"type": "file_excludes_all", "path": "rendered/page-1.txt", "values": ["[CLIPPED]", "[MISSING]"]}
+      ]
+    }
+  ]
+}

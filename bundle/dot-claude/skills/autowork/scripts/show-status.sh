@@ -247,6 +247,146 @@ if [[ ! -f "${state_file}" ]]; then
 fi
 
 SESSION_ID="${latest_session}"
+status_quality_required="$(read_state "quality_contract_required" 2>/dev/null || true)"
+status_quality_json=""
+if [[ "${status_quality_required}" == "1" ]] && _omc_load_quality_contract 2>/dev/null; then
+  status_quality_json="$(quality_contract_gate_status_json 2>/dev/null || true)"
+fi
+if [[ -z "${status_quality_json}" ]] \
+  || ! jq -e '.status | type == "string"' <<<"${status_quality_json}" >/dev/null 2>&1; then
+  status_quality_json="$(jq -cn \
+    --arg status "$(read_state "quality_contract_status" 2>/dev/null || printf 'not-required')" \
+    --arg required "$(read_state "quality_evidence_required_count" 2>/dev/null || printf '0')" \
+    --arg current "$(read_state "quality_evidence_current_count" 2>/dev/null || printf '0')" \
+    --arg frontier "$(read_state "quality_frontier_status" 2>/dev/null || printf 'not-required')" \
+    '{status:$status,required_count:($required|tonumber? // 0),
+      satisfied_count:($current|tonumber? // 0),frontier_status:$frontier,
+      missing_ids:[],stale_ids:[],verification_current:false}')"
+fi
+status_quality_state="$(jq -r '.status' <<<"${status_quality_json}")"
+status_quality_required_count="$(jq -r '.required_count // 0' <<<"${status_quality_json}")"
+status_quality_satisfied_count="$(jq -r '.satisfied_count // 0' <<<"${status_quality_json}")"
+status_quality_frontier="$(jq -r '.frontier_status // "unknown"' <<<"${status_quality_json}")"
+status_quality_weakest="$(read_state "quality_weakest_axis" 2>/dev/null || true)"
+status_quality_weakest="${status_quality_weakest:-unknown}"
+# Derive axis coverage and the first actionable weak criterion only from a
+# currently validated contract plus a gate state that actually completed the
+# criterion assessment. Early engine/receipt failures do not provide enough
+# information and remain explicitly unavailable.
+status_quality_axis_coverage="unavailable"
+status_quality_weakest_criterion="unavailable"
+_status_quality_contract=""
+if [[ "${status_quality_required}" == "1" ]] \
+    && _omc_load_quality_contract 2>/dev/null \
+    && _status_quality_contract="$(quality_contract_validate_current 2>/dev/null)"; then
+  case "${status_quality_state}" in
+    missing_evidence|stale_evidence|missing_frontier|stale_frontier|invalid_frontier|open_frontier|pass)
+      _status_quality_unmet_ids="$(jq -c \
+        '[((.missing_ids // []) + (.stale_ids // []))[]] | unique' \
+        <<<"${status_quality_json}" 2>/dev/null || printf '[]')"
+      status_quality_axis_coverage="$(jq -nr \
+        --argjson contract "${_status_quality_contract}" \
+        --argjson unmet "${_status_quality_unmet_ids}" '
+          ["deliberate","distinctive","coherent","visionary","complete"]
+          | map(. as $axis
+            | ([$contract.definition.criteria[]
+                | select(.class == "must" and .axis == $axis)]) as $required
+            | ([$required[] | . as $criterion
+                | select(($unmet | index($criterion.id)) == null)]) as $met
+            | "\($axis)=\($met|length)/\($required|length)")
+          | join(" · ")
+        ' 2>/dev/null || printf unavailable)"
+
+      _status_quality_weak_id=""
+      _status_quality_weak_reason=""
+      if [[ "${status_quality_state}" == "open_frontier" ]]; then
+        _status_quality_frontier_file="$(session_file "quality_frontier.json")"
+        if [[ -f "${_status_quality_frontier_file}" \
+            && ! -L "${_status_quality_frontier_file}" ]]; then
+          _status_quality_weak_id="$(jq -r \
+            '.criterion_ids[0] // empty' \
+            "${_status_quality_frontier_file}" 2>/dev/null || true)"
+          _status_quality_weak_reason="material frontier"
+        fi
+      elif [[ "$(jq 'length' <<<"${_status_quality_unmet_ids}")" -gt 0 ]]; then
+        _status_quality_weak_id="$(jq -r \
+          --argjson unmet "${_status_quality_unmet_ids}" '
+            [.definition.criteria[] | . as $criterion
+              | select(.class == "must" and
+                  ($unmet | index($criterion.id)) != null)][0].id // empty
+          ' <<<"${_status_quality_contract}" 2>/dev/null || true)"
+        if jq -e --arg id "${_status_quality_weak_id}" \
+            '(.stale_ids // []) | index($id) != null' \
+            <<<"${status_quality_json}" >/dev/null 2>&1; then
+          _status_quality_weak_reason="stale proof"
+        else
+          _status_quality_weak_reason="missing proof"
+        fi
+      fi
+
+      if [[ -n "${_status_quality_weak_id}" ]]; then
+        _status_quality_weak_axis="$(jq -r \
+          --arg id "${_status_quality_weak_id}" '
+            .definition.criteria[] | select(.id == $id) | .axis
+          ' <<<"${_status_quality_contract}" 2>/dev/null || true)"
+        status_quality_weakest_criterion="${_status_quality_weak_id} · ${_status_quality_weak_axis:-unknown axis} · ${_status_quality_weak_reason}"
+      elif [[ "${status_quality_state}" == "pass" ]]; then
+        status_quality_weakest_criterion="none (all mandatory criteria evidenced)"
+      elif [[ "${status_quality_state}" == "missing_frontier" \
+          || "${status_quality_state}" == "stale_frontier" \
+          || "${status_quality_state}" == "invalid_frontier" ]]; then
+        status_quality_weakest_criterion="none unmet; frontier review ${status_quality_frontier}"
+      fi
+      ;;
+  esac
+fi
+# The current compiled snapshot is the only honest source for in-scope active
+# taste claims. Pending learned candidates are not compiled into a task
+# contract, so read their user-owned sibling ledger only when its canonical
+# profile ID and regular-file shape are available. Missing/corrupt source data
+# stays "unavailable" rather than being misreported as zero.
+status_taste_active="unavailable"
+status_taste_candidates="unavailable"
+status_taste_scope="source unavailable"
+_status_constitution_snapshot="$(session_file "quality_constitution_snapshot.json")"
+if [[ -f "${_status_constitution_snapshot}" \
+    && ! -L "${_status_constitution_snapshot}" ]] \
+    && jq -e '
+      (.profile_exists | type) == "boolean" and
+      (.blocking_claims | type) == "array" and
+      (.advisory_claims | type) == "array" and
+      (.tentative_claims | type) == "array"
+    ' "${_status_constitution_snapshot}" >/dev/null 2>&1; then
+  status_taste_active="$(jq -r '
+    [.blocking_claims[],.advisory_claims[],.tentative_claims[]
+      | select((.id | type) == "string") | .id] | unique | length
+  ' "${_status_constitution_snapshot}" 2>/dev/null || printf unavailable)"
+  status_taste_scope="current compiled scope"
+  _status_constitution_exists="$(jq -r '.profile_exists' \
+    "${_status_constitution_snapshot}" 2>/dev/null || true)"
+  if [[ "${_status_constitution_exists}" == "false" ]]; then
+    status_taste_candidates="0"
+  elif [[ "${_status_constitution_exists}" == "true" ]]; then
+    _status_constitution_profile_id="$(jq -r '.profile_id // empty' \
+      "${_status_constitution_snapshot}" 2>/dev/null || true)"
+    if [[ "${_status_constitution_profile_id}" =~ ^qcp_[A-Za-z0-9._-]+$ ]]; then
+      _status_constitution_candidates="${HOME}/.claude/omc-user/quality-constitutions/profiles/${_status_constitution_profile_id}/candidates.json"
+      if [[ -f "${_status_constitution_candidates}" \
+          && ! -L "${_status_constitution_candidates}" ]] \
+          && jq -e '
+            .schema_version == 1 and
+            (.items | type) == "array" and (.items | length) <= 500 and
+            all(.items[]; (.id | type) == "string" and
+              (.id | test("^qk_[A-Za-z0-9._:-]{3,124}$")) and
+              (.status | IN("pending","activated","accepted","rejected")))
+          ' "${_status_constitution_candidates}" >/dev/null 2>&1; then
+        status_taste_candidates="$(jq -r \
+          '[.items[] | select(.status == "pending")] | length' \
+          "${_status_constitution_candidates}")"
+      fi
+    fi
+  fi
+fi
 contract_primary="$(read_state "done_contract_primary" 2>/dev/null || true)"
 if [[ -z "${contract_primary}" ]]; then
   contract_primary="$(jq -r '.current_objective // "none"' "${state_file}" 2>/dev/null || echo "none")"
@@ -313,6 +453,9 @@ if [[ "${SUMMARY_MODE}" -eq 1 ]]; then
   scope_blocks="$(jq -r '.discovered_scope_blocks // "0"' "${state_file}" 2>/dev/null || echo "0")"
   exemplifying_scope_blocks="$(jq -r '.exemplifying_scope_blocks // "0"' "${state_file}" 2>/dev/null || echo "0")"
   wave_shape_blocks="$(jq -r '.wave_shape_blocks // "0"' "${state_file}" 2>/dev/null || echo "0")"
+  quality_contract_blocks="$(jq -r '.quality_contract_blocks // "0"' "${state_file}" 2>/dev/null || echo "0")"
+  quality_evidence_blocks="$(jq -r '.quality_evidence_blocks // "0"' "${state_file}" 2>/dev/null || echo "0")"
+  quality_frontier_blocks="$(jq -r '.quality_frontier_blocks // "0"' "${state_file}" 2>/dev/null || echo "0")"
 
   # Classifier misfires — how many of those blocks the post-classifier
   # heuristic judged as false-positives (prior advisory classification
@@ -395,6 +538,12 @@ if [[ "${SUMMARY_MODE}" -eq 1 ]]; then
   printf 'Verify:     %s\n' "${verify_status}"
   printf 'Contract:   commit=%s · prompt surfaces=%s\n' \
     "${contract_commit_mode}" "${contract_prompt_surfaces}"
+  if [[ "${status_quality_required}" == "1" ]]; then
+    printf 'Excellent:  %s · proof %s/%s · frontier=%s · weakest=%s\n' \
+      "${status_quality_state}" "${status_quality_satisfied_count}" \
+      "${status_quality_required_count}" "${status_quality_frontier}" \
+      "${status_quality_weakest}"
+  fi
   if [[ "${delivery_commit_actions}" != "0" || "${delivery_publish_actions}" != "0" ]]; then
     printf 'Actions:    commits=%s · publish=%s\n' "${delivery_commit_actions}" "${delivery_publish_actions}"
   fi
@@ -414,6 +563,9 @@ if [[ "${SUMMARY_MODE}" -eq 1 ]]; then
   [[ "${scope_blocks}" -ne 0 ]]    && blocks_parts="${blocks_parts:+${blocks_parts} · }scope=${scope_blocks}"
   [[ "${exemplifying_scope_blocks}" -ne 0 ]] && blocks_parts="${blocks_parts:+${blocks_parts} · }example-scope=${exemplifying_scope_blocks}"
   [[ "${wave_shape_blocks}" -ne 0 ]] && blocks_parts="${blocks_parts:+${blocks_parts} · }wave-shape=${wave_shape_blocks}"
+  [[ "${quality_contract_blocks}" -ne 0 ]] && blocks_parts="${blocks_parts:+${blocks_parts} · }excellent-contract=${quality_contract_blocks}"
+  [[ "${quality_evidence_blocks}" -ne 0 ]] && blocks_parts="${blocks_parts:+${blocks_parts} · }excellent-proof=${quality_evidence_blocks}"
+  [[ "${quality_frontier_blocks}" -ne 0 ]] && blocks_parts="${blocks_parts:+${blocks_parts} · }excellent-frontier=${quality_frontier_blocks}"
   if [[ -n "${blocks_parts}" ]]; then
     if [[ "${misfire_count}" -gt 0 ]]; then
       printf 'Blocks:     %s · classifier misfires=%s (see classifier_telemetry.jsonl)\n' "${blocks_parts}" "${misfire_count}"
@@ -679,6 +831,46 @@ jq -r --arg ellipsis "${_ellipsis}" '
     end
   )
 ' "${state_file}" | grep -v '^$' || true
+
+if [[ "${status_quality_required}" == "1" ]]; then
+  printf '\n--- Definition of Excellent ---\n'
+  printf 'Mode / reason:       %s / %s\n' \
+    "$(read_state "quality_contract_tier" 2>/dev/null || printf adaptive)" \
+    "$(read_state "quality_contract_reason" 2>/dev/null || printf unknown)"
+  printf 'Contract:            %s · revision=%s · plan=%s · cycle=%s\n' \
+    "$(read_state "quality_contract_id" 2>/dev/null || printf missing)" \
+    "$(read_state "quality_contract_revision" 2>/dev/null || printf missing)" \
+    "$(read_state "quality_contract_plan_revision" 2>/dev/null || printf missing)" \
+    "$(read_state "quality_contract_cycle_id" 2>/dev/null || printf missing)"
+  printf 'Certification:       %s\n' "${status_quality_state}"
+  printf 'Criterion proof:     %s/%s\n' \
+    "${status_quality_satisfied_count}" "${status_quality_required_count}"
+  printf 'Axis coverage:       %s\n' "${status_quality_axis_coverage}"
+  _status_quality_missing="$(jq -r '(.missing_ids // []) | join(",")' <<<"${status_quality_json}")"
+  _status_quality_stale="$(jq -r '(.stale_ids // []) | join(",")' <<<"${status_quality_json}")"
+  [[ -n "${_status_quality_missing}" ]] && printf 'Missing criteria:    %s\n' "${_status_quality_missing}"
+  [[ -n "${_status_quality_stale}" ]] && printf 'Stale criteria:      %s\n' "${_status_quality_stale}"
+  printf 'Frontier / weakest:  %s / %s\n' \
+    "${status_quality_frontier}" "${status_quality_weakest}"
+  printf 'Weakest criterion:   %s\n' "${status_quality_weakest_criterion}"
+  printf 'Late contract:       %s\n' \
+    "$(read_state "quality_contract_late" 2>/dev/null || printf 0)"
+  printf 'Constitution:        %s · generation=%s · digest=%s\n' \
+    "$(read_state "quality_constitution_status" 2>/dev/null || printf disabled)" \
+    "$(read_state "quality_constitution_generation" 2>/dev/null || printf 0)" \
+    "$(read_state "quality_constitution_digest" 2>/dev/null || printf none)"
+  printf 'Taste entries:       active-in-scope=%s · pending-candidates=%s · %s\n' \
+    "${status_taste_active}" "${status_taste_candidates}" "${status_taste_scope}"
+  _status_blocking_ids="$(read_state "quality_constitution_blocking_ids" 2>/dev/null || true)"
+  printf 'Blocking taste IDs:  %s\n' "${_status_blocking_ids:-none}"
+  printf 'Artifacts:           %s · %s · %s\n' \
+    "$(session_file "quality_contract.json")" \
+    "$(session_file "quality_evidence.jsonl")" \
+    "$(session_file "quality_frontier.json")"
+  printf 'Proof sources:       %s · %s\n' \
+    "$(session_file "quality_contract_floor.json")" \
+    "$(session_file "verification_receipts.jsonl")"
+fi
 
 printf '\n--- Delivery Contract ---\n'
 printf 'Primary deliverable: %s\n' "${contract_primary}"

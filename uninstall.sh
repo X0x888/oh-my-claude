@@ -8,6 +8,7 @@
 # Usage:
 #   bash uninstall.sh           # interactive (asks for confirmation)
 #   bash uninstall.sh --yes     # non-interactive (skip confirmation)
+#   bash uninstall.sh --purge-quality-constitutions  # also remove user-owned taste data
 
 set -euo pipefail
 
@@ -24,19 +25,57 @@ SETTINGS="${CLAUDE_HOME}/settings.json"
 # ---------------------------------------------------------------------------
 
 AUTO_CONFIRM=false
+PURGE_QUALITY_CONSTITUTIONS=false
 
 for arg in "$@"; do
   case "${arg}" in
     --yes|-y)
       AUTO_CONFIRM=true
       ;;
+    --purge-quality-constitutions)
+      PURGE_QUALITY_CONSTITUTIONS=true
+      ;;
     *)
       printf 'Unknown argument: %s\n' "${arg}" >&2
-      printf 'Usage: bash uninstall.sh [--yes]\n' >&2
+      printf 'Usage: bash uninstall.sh [--yes] [--purge-quality-constitutions]\n' >&2
       exit 1
       ;;
   esac
 done
+
+# ---------------------------------------------------------------------------
+# Destructive user-data preflight
+# ---------------------------------------------------------------------------
+
+QUALITY_CONSTITUTIONS_DIR="${CLAUDE_HOME}/omc-user/quality-constitutions"
+
+preflight_quality_constitution_purge() {
+  local component
+  # Validate every managed path component, not just the leaf. `rm -rf` does
+  # not follow a leaf symlink, but it does traverse a symlinked parent.
+  for component in \
+      "${CLAUDE_HOME}" \
+      "${CLAUDE_HOME}/omc-user" \
+      "${QUALITY_CONSTITUTIONS_DIR}"; do
+    if [[ -L "${component}" ]]; then
+      printf 'Refusing to purge Quality Constitutions through symlinked path component: %s\n' \
+        "${component}" >&2
+      return 1
+    fi
+    if [[ -e "${component}" && ! -d "${component}" ]]; then
+      printf 'Refusing to purge Quality Constitutions through non-directory path component: %s\n' \
+        "${component}" >&2
+      return 1
+    fi
+  done
+}
+
+# Refuse an unsafe purge before install detection, preview, git-hook removal,
+# settings cleanup, or any other mutation. A destructive option must be atomic
+# on precondition failure even when the managed harness is also present.
+if [[ "${PURGE_QUALITY_CONSTITUTIONS}" == "true" ]]; then
+  preflight_quality_constitution_purge || exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Git checkout helpers
@@ -105,6 +144,7 @@ SKILL_DIRS=(
   "${CLAUDE_HOME}/skills/data-analysis"
   "${CLAUDE_HOME}/skills/lit-review"
   "${CLAUDE_HOME}/skills/manuscript"
+  "${CLAUDE_HOME}/skills/quality-constitution"
 )
 
 # Quality pack (scripts, memory, state, README).
@@ -197,6 +237,13 @@ for f in "${STANDALONE_FILES[@]}"; do
     break
   fi
 done
+if [[ "${PURGE_QUALITY_CONSTITUTIONS}" == "true" ]] \
+    && [[ -d "${QUALITY_CONSTITUTIONS_DIR}" ]]; then
+  # Explicit purge remains usable after the managed harness was already
+  # removed. User-owned Constitution data deliberately outlives an ordinary
+  # uninstall, so a later purge-only invocation is a valid operation.
+  omc_installed=true
+fi
 
 if [[ "${omc_installed}" != "true" ]]; then
   printf 'oh-my-claude does not appear to be installed under %s.\n' "${CLAUDE_HOME}"
@@ -247,6 +294,15 @@ if [[ -f "${SETTINGS}" ]]; then
   items_to_remove+=("  [edit] ${SETTINGS} (remove oh-my-claude hooks and settings)")
 fi
 
+if [[ "${PURGE_QUALITY_CONSTITUTIONS}" == "true" ]] \
+    && { [[ -e "${CLAUDE_HOME}/omc-user/quality-constitutions" ]] \
+      || [[ -L "${CLAUDE_HOME}/omc-user/quality-constitutions" ]]; }; then
+  # Besides making the destructive opt-in visible, this keeps a purge-only
+  # run non-empty on Bash 3.2 with `set -u` (expanding an empty declared array
+  # is treated as an unbound variable by that shell).
+  items_to_remove+=("  [dir]  ${QUALITY_CONSTITUTIONS_DIR} (explicit user purge)")
+fi
+
 for item in "${items_to_remove[@]}"; do
   printf '%s\n' "${item}"
 done
@@ -254,6 +310,11 @@ done
 printf '\nThe following will NOT be removed:\n'
 printf '  - CLAUDE.md (may contain user content)\n'
 printf '  - omc-user/ (user customizations)\n'
+if [[ "${PURGE_QUALITY_CONSTITUTIONS}" == "true" ]]; then
+  printf '    EXCEPT quality-constitutions/ (explicit purge requested)\n'
+else
+  printf '    including quality constitutions, exemplars, and learned taste candidates\n'
+fi
 printf '  - Backup directories under %s/backups/\n' "${CLAUDE_HOME}"
 printf '  - Other hooks or settings not installed by oh-my-claude\n'
 printf '\n'
@@ -280,6 +341,15 @@ fi
 # ---------------------------------------------------------------------------
 
 removed=()
+
+# Purge the already-preflighted user-owned subtree before touching managed
+# harness files. If its preconditions are unsafe, the early preflight above has
+# already refused the entire operation without a partial uninstall.
+if [[ "${PURGE_QUALITY_CONSTITUTIONS}" == "true" ]] \
+    && [[ -d "${QUALITY_CONSTITUTIONS_DIR}" ]]; then
+  rm -rf -- "${QUALITY_CONSTITUTIONS_DIR}"
+  removed+=("Removed user-requested Quality Constitutions: ${QUALITY_CONSTITUTIONS_DIR}")
+fi
 
 # Capture each bundled output-style file's frontmatter `name:` BEFORE we
 # remove the files, so the settings cleanup (below) can value-gate against
@@ -582,6 +652,11 @@ for msg in "${removed[@]}"; do
 done
 printf '\n'
 printf 'Your CLAUDE.md and backup directories were preserved.\n'
+if [[ "${PURGE_QUALITY_CONSTITUTIONS}" == "true" ]]; then
+  printf 'Your user-owned Quality Constitution data was explicitly purged.\n'
+else
+  printf 'Your user-owned Quality Constitution data was preserved.\n'
+fi
 printf '\n'
 printf 'Note: If ~/.claude/CLAUDE.md still contains oh-my-claude references\n'
 printf '(lines starting with @~/.claude/quality-pack/), you may want to\n'

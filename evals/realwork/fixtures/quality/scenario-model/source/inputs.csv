@@ -1,0 +1,4 @@
+scenario,revenue,variable_cost,period,units
+base,120,30,FY2027,USD thousands
+upside,145,34,FY2027,USD thousands
+downside,95,29,FY2027,USD thousands

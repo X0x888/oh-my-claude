@@ -101,6 +101,10 @@ Render this brief only after `OMC INTERNAL CLOSEOUT PREFLIGHT: READY`. Before re
 
 **Objective coverage.** <one concise whole-task attestation; `/goal` may use its stricter `**Goal achieved.**` criteria block instead>
 
+**Definition of Excellent.** <when armed: contract ID, criteria proved/required,
+weakest-tested deliberate/distinctive/coherent/visionary/complete axis, and the
+fresh frontier disposition>
+
 **Risks.**
 - <named risk or open item; if something was deferred, name the WHY>
 
@@ -114,7 +118,7 @@ Use the horizontal rule between Headline and the body when the report has more t
 
 For verified adjacent fixes the Serendipity Rule allows, emit a `Serendipity:` line above `**Next.**` so the audit-log convention in `core.md` is preserved (the colon form is intentional).
 
-Only no-material answers may skip the structure. Once a material ULW turn is sealed, even a one-line change retains `**Shipped.**`, `**Verification.**`, `**Objective coverage.**`, and `**Next.**`; optional Headline, Risks, and Asks still earn their space normally.
+Only no-material answers may skip the structure. Once a material ULW turn is sealed, even a one-line change retains `**Shipped.**`, `**Verification.**`, `**Objective coverage.**`, and `**Next.**`; an armed task also retains `**Definition of Excellent.**`. Optional Headline, Risks, and Asks still earn their space normally.
 
 ### Status update — multi-wave or in-flight work
 

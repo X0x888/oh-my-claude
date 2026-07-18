@@ -1,0 +1,47 @@
+{
+  "schema_version": 2,
+  "id": "quality-config-diagnostics",
+  "domain": "coding",
+  "risk": "medium",
+  "fixture": "fixtures/quality/config-diagnostics",
+  "prompt": "/ulw make configuration errors substantially easier to diagnose without breaking the existing CLI",
+  "candidate_artifacts": [
+    {"kind": "git_diff"},
+    {"kind": "files", "globs": ["src/**", "lib/**", "tests/**", "README.md"]}
+  ],
+  "hard_checks": [
+    {"id": "diagnostic_contract", "description": "The fixture's invalid layered value produces the normalized error/exit contract.", "critical": true},
+    {"id": "layered_source_case", "description": "The layered-source fixture identifies the actual failing source and raw value.", "critical": true},
+    {"id": "cli_compatibility", "description": "Existing CLI inputs and exit-code behavior remain compatible.", "critical": true}
+  ],
+  "rubric": {
+    "version": "ddccv-1",
+    "audience": "Developers diagnosing configuration assembled from defaults, files, and environment overrides.",
+    "constraints": ["Preserve existing CLI compatibility and scriptability."],
+    "non_goals": ["Rewrite the whole configuration subsystem", "Add unrelated product features"],
+    "task_specific_anchors": [
+      "The result identifies which source and value caused the failure.",
+      "The recovery path is actionable rather than merely friendlier prose.",
+      "The solution reduces future diagnosis effort across more than the seeded example."
+    ],
+    "dimensions": [
+      {"id": "deliberate", "weight": 1},
+      {"id": "distinctive", "weight": 1},
+      {"id": "coherent", "weight": 1},
+      {"id": "visionary", "weight": 1},
+      {"id": "complete", "weight": 1}
+    ]
+  },
+  "campaign": {
+    "runs_per_arm": 3,
+    "model_tiers": ["balanced", "economy"],
+    "max_candidate_cost_ratio": 1.75,
+    "max_candidate_wall_ratio": 1.75,
+    "candidate_summary_contract": {
+      "schema_version": 3,
+      "required_top_level": ["probe_id", "provenance", "artifact_dir", "economics"],
+      "required_provenance": ["prompt_hash", "fixture_hash", "source_hash", "model", "model_tier", "harness_role", "harness_hash"],
+      "required_token_economics": ["input", "output", "cache_read", "cache_creation"]
+    }
+  }
+}

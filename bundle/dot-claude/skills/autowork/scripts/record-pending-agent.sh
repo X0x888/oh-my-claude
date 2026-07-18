@@ -1675,6 +1675,8 @@ _append_pending() {
   local _review_batch_id="" _objective_prompt_ts=0 _objective_prompt_revision=0
   local _objective_cycle_id=0 _enforcement_generation="migration"
   local _lifecycle_dispatch_id=""
+  local _quality_contract_bound=0 _quality_contract_id="" _quality_contract_revision=0
+  local _quality_contract_json=""
 
   # Recheck per-session authority inside the lock so a PreToolUse hook that
   # was already waiting cannot recreate a row after /ulw-off or Stop closed
@@ -1749,6 +1751,28 @@ _append_pending() {
     if [[ "${_duplicate_gate_reviewer}" -eq 1 ]]; then
       return 0
     fi
+  fi
+
+  # Excellence evidence is meaningful only for the exact Definition revision
+  # it was asked to judge. Bind that revision at PreToolUse under the same lock
+  # as the dispatch ledger, before paying for the reviewer call.
+  if [[ "${subagent_type##*:}" == "excellence-reviewer" \
+      && "$(read_state "quality_contract_required" 2>/dev/null || true)" == "1" ]]; then
+    if ! _omc_load_quality_contract 2>/dev/null \
+        || ! _quality_contract_json="$(quality_contract_validate_current 2>/dev/null)"; then
+      _quality_contract_dispatch_denied=1
+      return 0
+    fi
+    _quality_contract_id="$(jq -r '.contract_id // empty' \
+      <<<"${_quality_contract_json}" 2>/dev/null || true)"
+    _quality_contract_revision="$(jq -r '.contract_revision // 0' \
+      <<<"${_quality_contract_json}" 2>/dev/null || true)"
+    [[ "${_quality_contract_id}" =~ ^qc-[A-Za-z0-9._:-]{8,80}$ \
+        && "${_quality_contract_revision}" =~ ^[1-9][0-9]*$ ]] || {
+      _quality_contract_dispatch_denied=1
+      return 0
+    }
+    _quality_contract_bound=1
   fi
   _prepare_active_ordinary_identity_rebind_unlocked || return 1
   if [[ "${_dispatch_identity_denied}" -eq 1 ]]; then
@@ -1829,6 +1853,9 @@ _append_pending() {
     --argjson is_stateful "${_is_stateful}" \
     --argjson review_dispatch_causality_version "${REVIEW_DISPATCH_CAUSALITY_VERSION}" \
     --argjson review_revision "${_review_revision}" \
+    --argjson quality_contract_bound "${_quality_contract_bound}" \
+    --arg quality_contract_id "${_quality_contract_id}" \
+    --argjson quality_contract_revision "${_quality_contract_revision}" \
     '{ts:$ts,agent_type:$agent_type,description:$description,
       lifecycle_dispatch_id:$lifecycle_dispatch_id,
       edit_revision:$edit_revision,code_revision:$code_revision,
@@ -1848,6 +1875,10 @@ _append_pending() {
      + if $review_dispatch_id == "" then {} else {
          review_dispatch_id:$review_dispatch_id
        } end
+     + if $quality_contract_bound == 1 then {
+         quality_contract_id:$quality_contract_id,
+         quality_contract_revision:$quality_contract_revision
+       } else {} end
      + if $council_phase == "" then {} else {
          purpose:"council",
          council_phase:$council_phase,
@@ -1932,6 +1963,7 @@ _dispatch_active_exact_duplicate=0
 _council_identity_rebind_ready=0
 _council_current_attempt_rebind_ready=0
 _pending_live_cap_denied=0
+_quality_contract_dispatch_denied=0
 _dispatch_interrupted_journal=0
 council_selection_agent=""
 council_objective_ts=0
@@ -2055,7 +2087,8 @@ _append_pending_transaction_unlocked() {
       || "${_duplicate_frozen_batch_role}" -eq 1 \
       || "${_council_coverage_denied}" -eq 1 \
       || "${_dispatch_identity_denied}" -eq 1 \
-      || "${_pending_live_cap_denied}" -eq 1 ]]; then
+      || "${_pending_live_cap_denied}" -eq 1 \
+      || "${_quality_contract_dispatch_denied}" -eq 1 ]]; then
     denied=1
   fi
   if [[ "${body_rc}" -ne 0 || "${denied}" -eq 1 ]]; then
@@ -2120,6 +2153,19 @@ if [[ "${_pending_live_cap_denied}" -eq 1 ]]; then
     "agent=${subagent_type}" "reason=live-pending-cap-reached" \
     "cap=${PENDING_AGENT_LIVE_CAP}" 2>/dev/null || true
   jq -nc --arg reason "[Dispatch capacity] ${PENDING_AGENT_LIVE_CAP} live specialist calls are already tracked for this session. Wait for at least one return before launching ${subagent_type}; abandoned suppression tombstones do not consume this live cap. This prevents a paid in-flight result from being evicted and discarded." '{
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: $reason
+    }
+  }'
+  exit 0
+fi
+
+if [[ "${_quality_contract_dispatch_denied}" -eq 1 ]]; then
+  record_gate_event "definition-of-excellent/reviewer-dispatch" "block" \
+    "agent=${subagent_type}" "reason=missing-or-stale-contract" 2>/dev/null || true
+  jq -nc --arg reason "[Definition of Excellent · reviewer dispatch] ${subagent_type} cannot be launched until a current frozen quality contract exists for this objective and plan revision. Dispatch quality-planner or prometheus first; after its PLAN_READY contract is recorded, retry this reviewer. This prevents a review launched against one bar from certifying another." '{
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
       permissionDecision: "deny",

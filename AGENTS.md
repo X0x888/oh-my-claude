@@ -170,12 +170,13 @@ oh-my-claude/
     quality-pack/
       memory/                 # Core, skills, and compact memory files
       scripts/                # 16 lifecycle scripts (prompt routing, first-prompt session-init, compaction, session start [9 hooks incl. drift-check + whats-new + watchdog-health + resume-hint + self-audit-nudge + auto-tune], stop-failure, resume-watchdog, self-audit recorder)
-    skills/                   # 35 skill definitions, each in <name>/SKILL.md
-      autowork/scripts/       # 48 autowork hook scripts and utilities
+    skills/                   # 36 skill definitions, each in <name>/SKILL.md
+      autowork/scripts/       # 50 autowork hook scripts and utilities
         common.sh             # Shared functions (JSON, classification, scope)
         lib/state-io.sh       # Extracted state I/O subsystem; sourced by common.sh
         lib/classifier.sh     # Extracted prompt classifier (P0 + P1 + telemetry); common.sh loader
         lib/verification.sh   # Extracted verification subsystem (Bash + MCP scoring); sourced by common.sh
+        lib/quality-contract.sh # Frozen Definition-of-Excellent schema, causality, proof/frontier gate
         lib/timing.sh         # Per-tool/subagent timing capture + aggregation; common.sh loader
         lib/canary.sh         # Model-drift canary; sourced directly by canary-claim-audit.sh
     statusline.py             # Custom statusline with context tracking
@@ -185,7 +186,7 @@ oh-my-claude/
     settings.patch.json       # Settings merged into user's settings.json
 
   evals/realwork/             # Outcome eval scenarios + scorer for minimal-prompt real-work shipping
-  tests/                      # 151 bash + 1 python test scripts; CLAUDE.md "Testing" gives the canonical commands
+  tests/                      # 157 bash + 1 python test scripts; CLAUDE.md "Testing" gives the canonical commands
 
   tools/                      # Developer tools (not installed; keep exhaustive)
     audit-published-release-assets.sh
@@ -246,6 +247,7 @@ oh-my-claude/
 - **lib/state-io.sh** (`autowork/scripts/lib/state-io.sh`): Extracted state I/O module. Sourced by `common.sh` after `validate_session_id` and `log_anomaly` are defined. The lib uses portable readlink resolution so it works whether `common.sh` is installed normally, symlinked into a test HOME, or symlinked to a custom location.
 - **lib/classifier.sh** (`autowork/scripts/lib/classifier.sh`): Extracted prompt classification subsystem (~500 lines). Loaded through `common.sh`'s idempotent `_omc_load_classifier` after every classifier dependency (`project_profile_has`, `is_advisory_request`, `normalize_task_prompt`, etc.) is defined; hot-path callers can request deferred loading. Behavior identical to the prior in-place definitions; this module exists for clearer ownership and to give the regression suite (`test-intent-classification.sh`, `test-classifier-replay.sh`) a single file of truth for future tuning.
 - **lib/verification.sh** (`autowork/scripts/lib/verification.sh`): Extracted verification subsystem (~300 lines). Sourced by `common.sh` immediately after `lib/state-io.sh` (no inter-lib dependencies — pure functions over command text, output, and `OMC_CUSTOM_VERIFY_MCP_TOOLS`). Owns: bash test-command matching (`verification_matches_project_test_command`), framework-keyword detection (`verification_has_framework_keyword`), output-signal heuristics (`verification_output_has_counts`, `verification_output_has_clear_outcome`), the verification-method label and confidence score, plus MCP tool classification, scoring, and outcome detection. Behavior identical to the prior in-place definitions.
+- **Quality Constitution authority** (`quality-constitution.sh`, `quality-constitution-authority-guard.sh`, `lib/quality-constitution-authority.sh`): Durable user taste uses a narrow slash grammar and a one-use exact-operation grant bound to the current session/project/prompt revision. The router issues a digest-only sidecar; the helper consumes it before profile mutation; prompt/compact/resume/accepted-Stop transitions invalidate leftovers. The always-on PreTool guard covers Bash/editor/MCP mutation surfaces, while standalone `direct` curation requires TTY-backed stdin and stderr. Compilation derives JSON and prose from one locked immutable Constitution snapshot and quarantines repository exemplars whose current digest no longer matches; its contract-facing digest composes the raw profile and live reference-integrity identities so exemplar drift stales existing contracts. This is cooperative same-user-process integrity, not an OS sandbox.
 - **Agent definitions** (`agents/*.md`): Markdown files defining specialist agents with role descriptions, capabilities, and `disallowedTools` for permission boundaries.
 - **Skills** (`skills/<name>/SKILL.md`): Self-contained skill definitions invoked by slash commands or automatic routing.
 - **Settings patch** (`config/settings.patch.json`): JSON configuration merged into the user's Claude Code settings during installation.

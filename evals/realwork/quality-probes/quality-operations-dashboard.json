@@ -1,0 +1,47 @@
+{
+  "schema_version": 2,
+  "id": "quality-operations-dashboard",
+  "domain": "design",
+  "risk": "high",
+  "fixture": "fixtures/quality/operations-dashboard",
+  "prompt": "/ulw redesign this incident dashboard so an on-call lead can understand severity and take the right action within thirty seconds",
+  "candidate_artifacts": [
+    {"kind": "files", "globs": ["src/**", "app/**", "tests/**"]},
+    {"kind": "rendered_images", "globs": ["rendered/**"]}
+  ],
+  "hard_checks": [
+    {"id": "data_fidelity", "description": "Every displayed severity, metric, and incident state matches the supplied data.", "critical": true},
+    {"id": "primary_action", "description": "The highest-priority incident and its next safe action are visible without exploration.", "critical": true},
+    {"id": "accessibility", "description": "Keyboard flow, contrast, semantics, and non-color status cues meet the fixture acceptance checks.", "critical": true}
+  ],
+  "rubric": {
+    "version": "ddccv-1",
+    "audience": "An on-call lead making a time-sensitive operational decision under stress.",
+    "constraints": ["Preserve the supplied data/API contract.", "Keep critical actions safe and reversible.", "Meet the fixture's accessibility checks."],
+    "non_goals": ["Invent new telemetry", "Redesign unrelated administration flows", "Hide operational complexity behind decorative minimalism"],
+    "task_specific_anchors": [
+      "Severity, consequence, ownership, and next action form one unmistakable decision hierarchy.",
+      "The design handles degraded, stale, partial, and quiet states deliberately.",
+      "The result advances beyond a prettier dashboard into a coherent incident-response instrument."
+    ],
+    "dimensions": [
+      {"id": "deliberate", "weight": 1},
+      {"id": "distinctive", "weight": 1},
+      {"id": "coherent", "weight": 1},
+      {"id": "visionary", "weight": 1},
+      {"id": "complete", "weight": 1}
+    ]
+  },
+  "campaign": {
+    "runs_per_arm": 3,
+    "model_tiers": ["balanced", "economy"],
+    "max_candidate_cost_ratio": 1.75,
+    "max_candidate_wall_ratio": 1.75,
+    "candidate_summary_contract": {
+      "schema_version": 3,
+      "required_top_level": ["probe_id", "provenance", "artifact_dir", "economics"],
+      "required_provenance": ["prompt_hash", "fixture_hash", "source_hash", "model", "model_tier", "harness_role", "harness_hash"],
+      "required_token_economics": ["input", "output", "cache_read", "cache_creation"]
+    }
+  }
+}
