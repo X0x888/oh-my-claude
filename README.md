@@ -16,7 +16,7 @@ frontier. So you stop babysitting both correctness and ambition.*
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Shell](https://img.shields.io/badge/Shell-bash-green.svg)]()
 [![Dependencies](https://img.shields.io/badge/Dependencies-jq%20%2B%20rsync-brightgreen.svg)]()
-[![Tests](https://img.shields.io/badge/Tests-2200%2B-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-essential%20portfolio-brightgreen.svg)](tests/)
 
 **Jump to:** [What changes after install](#what-changes-after-you-install) · [vs vanilla Claude Code](#how-is-this-different-from-vanilla-claude-code) · [Install](#quick-start) · [Skills](#available-skills) · [FAQ](docs/faq.md) · [ohmyclaude.dev](https://ohmyclaude.dev)
 
@@ -339,7 +339,7 @@ oh-my-claude/
 │   └── statusline.py                        # Custom statusline widget
 ├── config/settings.patch.json               # Merged into user settings on install
 ├── evals/realwork/                           # Outcome eval scenarios for minimal-prompt shipping across code + design/UI + native artifacts + mixed + quantitative/data-analysis + regulated/high-stakes + writing + research + scholarly + ops + advisory
-├── tests/               (159 bash + 1 py)   # See CLAUDE.md for canonical commands
+├── tests/               (7 bash)            # Small essential confidence portfolio
 ├── tools/                                    # Developer-only tools (not installed)
 └── docs/                                    # Architecture, customization, FAQ, prompts
 ```
@@ -470,64 +470,16 @@ Then add to Claude Code's MCP config per `https://xcodebuildmcp.com/docs/clients
 
 ## Testing
 
-The harness includes both a post-install verifier and dedicated test scripts:
+The harness keeps a deliberately small confidence-per-cost portfolio:
 
 ```bash
-bash verify.sh                              # Installation integrity check
-bash tools/run-tests.sh                     # Change-affected tests for fast iteration
-bash tools/run-tests.sh --list              # Explain the selection without running it
-bash tools/run-tests.sh --full              # Exhaustive Bash pass at a release boundary
-bash tests/test-intent-classification.sh    # Intent routing logic
-bash tests/test-quality-gates.sh            # Stop guard enforcement
-bash tests/test-stall-detection.sh          # Loop detection
-bash tests/test-e2e-hook-sequence.sh        # End-to-end hook sequence
-bash tests/test-settings-merge.sh           # Install settings merge logic
-bash tests/test-uninstall-merge.sh          # Uninstall settings cleanup logic
-bash tests/test-common-utilities.sh         # Shared utility functions
-bash tests/test-session-resume.sh           # Session resume cycle
-bash tests/test-concurrency.sh              # Lock primitive stress test
-bash tests/test-install-artifacts.sh        # Installed-file artifact assertions
-bash tests/test-post-merge-hook.sh          # --git-hooks post-merge drift detection
-bash tests/test-repro-redaction.sh          # omc-repro.sh privacy contract regression
-bash tests/test-discovered-scope.sh         # Discovered-scope capture + wave-aware gate
-bash tests/test-exemplifying-scope-gate.sh  # Example-marker scope checklist + stop gate
-bash tests/test-finding-list.sh             # Council Phase 8 findings.json artifact
-bash tests/test-state-io.sh                 # Extracted lib/state-io.sh module
-bash tests/test-classifier.sh               # Extracted lib/classifier.sh module (symbol presence + smoke)
-bash tests/test-classifier-replay.sh        # Classifier regression replay against curated fixtures
-bash tests/test-serendipity-log.sh          # Serendipity Rule analytics logging
-bash tests/test-cross-session-rotation.sh   # Cross-session JSONL aggregate cap helper
-bash tests/test-show-report.sh              # /ulw-report skill backend (cross-session digest)
-bash tests/test-install-remote.sh           # curl-pipe-bash bootstrapper (install-remote.sh)
-bash tests/test-install-handoff.sh          # Fresh-install handoff contract (manual + bootstrap + AI-assisted docs)
-bash tests/test-install-recovery.sh         # First-run recovery contract (missing prereqs + collision + verify failure)
-bash tests/test-install-readiness.sh        # Top-level install/onboarding readiness audit wrapper
-bash tests/test-phase8-integration.sh       # Council Phase 8 wave-cap wiring (record-finding-list ↔ stop-guard)
-bash tests/test-verification-lib.sh         # Extracted lib/verification.sh module (symbol presence + smoke)
-bash tests/test-agent-verdict-contract.sh   # Universal VERDICT contract regression net (all 37 agents)
-bash tests/test-bias-defense-classifier.sh  # Bias-defense prompt-shape classifiers + plan-complexity extraction
-bash tests/test-bias-defense-directives.sh  # prometheus-suggest + intent-verify directive injection
-bash tests/test-ulw-benchmark-suite.sh      # Canonical ULW user-outcome scenarios across core intents + all six routing domains + native spreadsheet/deck/docx contracts
-bash tests/test-zero-steering-policy.sh     # Adaptive zero-steering Stop/advisory/metis policy
-bash tests/test-realwork-eval-suite.sh      # Outcome-oriented real-work eval schema + scorer across code + design/UI + native spreadsheet/presentation/docx artifacts + mixed + quantitative/data-analysis + regulated/high-stakes + writing + research + scholarly + ops + advisory
-bash tests/test-professional-readiness.sh   # Top-level professional-readiness audit wrapper (classification + routing + UI design contracts + benchmark + realwork)
-bash tools/verify-install-readiness.sh      # Canonical install/onboarding audit across bootstrapper + handoff + recovery + onboarding
-bash tests/test-project-readiness.sh        # Top-level maintainer readiness audit wrapper (professional + install + distribution)
-bash tools/verify-professional-readiness.sh # Canonical product-readiness audit across professional user classes
-bash tools/verify-project-readiness.sh      # Canonical maintainer release-candidate audit across product + install + distribution readiness
-bash tests/test-metis-on-plan-gate.sh       # Metis-on-plan stop-guard gate (Check 6, opt-in)
-bash tests/test-gate-events.sh              # Per-event outcome attribution (gate_events.jsonl helper + wiring)
-bash tests/test-discover-session.sh         # Cross-project session-discovery cwd filter (record-finding-list / show-status)
-bash tests/test-design-contract.sh          # 9-section Design Contract regression net (UI agents + skill + router)
-bash tests/test-specialist-routing.sh       # Cross-domain specialist routing contract (coding + writing + research + operations + mixed + general)
-bash tests/test-stop-failure-handler.sh     # StopFailure hook captures rate_limit / auth / billing fatal-stop signals into resume_request.json
-bash tests/test-omc-config.sh               # /omc-config skill backend (mode detection, atomic conf writes, presets, validation)
-bash tests/test-output-style-coherence.sh   # All bundled styles: frontmatter parity, hook-injected opener coherence, label regression net, enum coverage
-bash tests/test-timing.sh                   # Per-prompt time-distribution capture, aggregator, format helpers, /ulw-time empty-states
-python3 -m unittest tests.test_statusline   # Statusline widget
+bash verify.sh                              # Installed-tree integrity
+bash tools/run-tests.sh                     # All 7 essential Bash suites
 ```
 
-The suite is a maintained evidence portfolio, not an append-only score. New behavior needs fresh proof but not necessarily a new file: inspect current owners, extend or merge when possible, and retire only when a contract is gone or stronger retained proof is demonstrated. `/test-audit [scope]` returns an evidence table with `KEEP` / `EXTEND` / `MERGE` / `REPLACE` / `DELETE` / `ADD` decisions; pass `--apply` to implement proven changes. Test age, slowness, or always-green history alone never justifies deletion.
+The default Bash portfolio is expected to finish in roughly two minutes and
+must remain below ten. Extend an existing owner before adding another suite.
+See [tests/README.md](tests/README.md) for the retained coverage map.
 
 ## Customization
 
@@ -563,7 +515,7 @@ When `tmux` is not available the watchdog falls back to an OS notification — y
 
 > Skip this section unless you cut releases. Nothing here is needed to install or use the harness — it is moved out of Quick Start on purpose.
 
-Maintainers changing release/distribution automation can also prove that the remote default branch actually has the required workflow/tooling deployed with `tools/verify-release-automation-deployment.sh`, stage the exact audited deployment surface with `tools/stage-release-automation-surfaces.sh`, prepare a coherent pre-push deployment candidate with `tools/prepare-release-automation-deployment.sh --dry-run` and `tools/prepare-release-automation-deployment.sh --fetch`, inspect the raw staged diff with `tools/verify-release-automation-deployment.sh --local-ref INDEX`, and get the full top-level maintainer picture with `tools/verify-distribution-readiness.sh`. That distribution wrapper now separates the live remote deployment proof from the local deployment-candidate proof, so maintainers can see “candidate ready locally” even while `origin/main` is still behind. For first-run distribution quality, `tools/verify-install-readiness.sh` proves the bootstrapper/update path, fresh-install handoff, recovery-path transcript, and AI-assisted onboarding contract together. For the full release-candidate view, `tools/verify-project-readiness.sh` composes that distribution proof with the cross-domain product proof from `tools/verify-professional-readiness.sh` plus the install/onboarding proof from `tools/verify-install-readiness.sh`, so maintainers can see in one command whether the repo is actually ready for professional users, installable by first-time users, and ready to ship. That wrapper covers classification + routing + UI design contracts + benchmark + realwork + install/onboarding before it even reaches the remote release/distribution audit. The staging helper supports a dry-run preview, fails closed when unrelated files are already staged, and supports `--allow-extra-staged` when that wider staged set is intentional; when you narrow it with `--path`, it also fails closed if other manifest entries are still dirty unless you explicitly pass `--allow-partial-manifest`. The new deployment-candidate helper succeeds when that pending staged candidate is coherent even though the remote is still behind, which closes the old ambiguity where `--local-ref INDEX` necessarily failed before push. The staged-index deployment verifier now applies the same fail-closed posture to unrelated non-manifest staged paths unless you explicitly pass `--allow-extra-staged`, and `tools/verify-distribution-readiness.sh` passes that same override through when you audit the staged index via `--local-ref INDEX`. All three release/distribution audit helpers support `--json` when you need the same proof as a machine-readable artifact.
+Maintainers changing release/distribution automation can prove that the remote default branch has the required workflow/tooling with `tools/verify-release-automation-deployment.sh`, stage the audited surface with `tools/stage-release-automation-surfaces.sh`, prepare a coherent pre-push candidate with `tools/prepare-release-automation-deployment.sh`, and inspect the top-level distribution view with `tools/verify-distribution-readiness.sh`. The distribution wrapper separates live remote deployment from the local candidate, so “candidate ready locally” remains visible while `origin/main` is behind. `tools/verify-install-readiness.sh` now intentionally reports only the retained install-artifact and merge-safe uninstall checks; `tools/verify-professional-readiness.sh` reports retained classification, gate, schema, and scoring checks. `tools/verify-project-readiness.sh` composes those compact signals with the distribution audit—it is a useful maintainer dashboard, not a claim of exhaustive cross-domain proof. Staging and deployment helpers retain their fail-closed handling for unrelated staged paths, partial manifests, and `INDEX` audits. The audit helpers support `--json` for machine-readable use.
 
 ## Contributing
 

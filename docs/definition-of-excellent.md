@@ -300,9 +300,9 @@ reference, symlink substitution, or mirror mismatch therefore forces
 recompilation and additive replanning. This fixes the prior babysitting failure
 where the user could change a pinned exemplar while an old contract continued
 to certify work. The steady-state cost is bounded local hashing (no agent call
-or prompt growth); `tests/test-quality-contract.sh` covers missing snapshots,
-mirror mismatch, live reference drift, wildcard cross-tool proof, policy drift,
-reference-projection/path forgery, and remove/reword/replan recovery.
+or prompt growth). The retired focused suite covering the full adversarial
+matrix remains recoverable from Git history; the lean portfolio retains only
+broad gate integration.
 
 Before the first recognized workspace mutation, PreToolUse recomputes contract
 validity from the sidecar. Missing, malformed, stale, symlinked, wrong-objective,
@@ -576,10 +576,10 @@ model.
 These changes remove the user babysitting failure where a rejected preference
 could silently be learned again or a concurrent writer could report success
 without persisting its mutation. Runtime cost is bounded local JSON/hash/lock
-work with no added agent call or stable prompt growth. The concurrency, signal,
-decay, terminal-decision, crash-recovery, malformed-ledger, parser, and
-read-only-inspection contracts are covered by `tests/test-quality-constitution.sh` and
-`tests/test-quality-constitution-authority.sh`.
+work with no added agent call or stable prompt growth. Detailed concurrency,
+signal, decay, terminal-decision, crash-recovery, malformed-ledger, parser, and
+inspection matrices were intentionally retired and remain recoverable from Git
+history; `tests/test-quality-gates.sh` keeps broad integration confidence.
 
 ## Continuity, status, and closeout
 

@@ -154,7 +154,7 @@ _ensure_valid_state() {
   # hold, false-y otherwise. Decoded NUL is also structural corruption for a
   # Bash-backed state API: command substitution cannot represent it and would
   # silently join the surrounding bytes into different authority. Catches the
-  # full malformation matrix exercised by tests/test-state-fuzz.sh plus the
+  # full malformation matrix exercised by tests/test-state-io.sh plus the
   # JSON-to-shell normalization boundary in tests/test-state-io.sh.
   local needs_recovery=0
   if [[ ! -s "${state_file}" ]]; then
@@ -650,7 +650,7 @@ read_state() {
 #   • REGRESSION NETS:
 #       - tests/test-state-io.sh:T20 (positional-alignment under all
 #         12 adversarial value shapes from tests/lib/value-shapes.sh)
-#       - tests/test-state-fuzz.sh Class 12 (multi-line value Bug B
+#       - the historical state-fuzz matrix (multi-line value Bug B
 #         regression, the original failing case)
 #
 # v1.34.0 — switched from `\n`-delimited to RS-delimited (byte 0x1e)

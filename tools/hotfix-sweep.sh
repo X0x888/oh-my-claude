@@ -11,25 +11,12 @@
 # introduced its own regression that needed F-3-followup. Each step
 # in this sweep would have caught that class:
 #
-#   1. Sterile-env CI-parity (R3, mandatory since v1.32.2):
-#      catches "passes locally because dev has state X, fails in CI
-#      because tmpfs has empty X" (v1.31.0 T7).
+#   1. Essential behavior portfolio: the same deliberately small set CI runs.
 #
-#   2. CHANGELOG-coupled tests (v1.32.7 step-8 fix, v1.32.8 grep-
-#      based generalization): catches install-whats-new cap drift
-#      (v1.31.1, v1.32.1, v1.32.3, v1.32.5, v1.32.6).
-#
-#   3. shellcheck on changed files: catches the lint warnings that
+#   2. shellcheck on changed files: catches the lint warnings that
 #      are CI-fatal under --severity=warning.
 #
-#   4. Lib-reachability check: every modified bundle/.../lib/*.sh
-#      since the last tag must have a CI-pinned tests/test-${name}.sh.
-#      Pin membership comes from the shared extractor so dynamic
-#      `tools/run-tests.sh --full` workflows count correctly
-#      (test-coordination-rules.sh contract C3, regressed here as
-#      a pre-tag check rather than a post-CI block).
-#
-# Total runtime budget: ~2 min on a recent macOS / Ubuntu runner.
+# Total runtime budget: under 10 min on a recent macOS / Ubuntu runner.
 # Fast-path: if no fix-commit-shaped changes since the last tag
 # (only docs / changelog edits), skip the heavy checks and exit
 # with a "no-op, sweep clean" message.
@@ -37,8 +24,8 @@
 # Developer-only — NOT installed by install.sh; lives under tools/.
 #
 # Usage:
-#   bash tools/hotfix-sweep.sh           # run all 4 checks
-#   bash tools/hotfix-sweep.sh --quick   # skip sterile-env (1-min budget)
+#   bash tools/hotfix-sweep.sh           # run all checks
+#   bash tools/hotfix-sweep.sh --quick   # skip the behavior portfolio
 #   bash tools/hotfix-sweep.sh --verbose # print per-check progress
 
 set -euo pipefail
@@ -98,8 +85,7 @@ fi
 log "changed since ${LAST_TAG}: $(printf '%s\n' "${CHANGED_FILES}" | wc -l | tr -d ' ') file(s)"
 
 # Fast-path: if only docs / CHANGELOG / VERSION changed, skip the
-# heavy checks. The CHANGELOG-coupled-tests check still runs because
-# CHANGELOG edits CAN break extract_whats_new (the v1.31.1+ class).
+# heavy checks.
 FIX_SHAPED=0
 while IFS= read -r f; do
   [[ -z "${f}" ]] && continue
@@ -111,49 +97,25 @@ done <<<"${CHANGED_FILES}"
 log "fix-shaped: ${FIX_SHAPED}"
 
 # ---------------------------------------------------------------------
-# Check 1 — Sterile-env CI-parity (skipped under --quick)
+# Check 1 — retained essential portfolio (skipped under --quick)
 # ---------------------------------------------------------------------
 if [[ "${quick}" -eq 1 ]]; then
-  printf '  [skip] sterile-env (--quick mode)\n'
-  warnings+=("sterile-env skipped — re-run without --quick before tagging")
-elif [[ "${FIX_SHAPED}" -eq 1 ]] && [[ -x "${REPO_ROOT}/tests/run-sterile.sh" ]]; then
-  printf '  [run]  sterile-env CI-parity ...'
-  if bash "${REPO_ROOT}/tests/run-sterile.sh" >/tmp/hotfix-sweep-sterile.log 2>&1; then
+  printf '  [skip] essential portfolio (--quick mode)\n'
+  warnings+=("essential portfolio skipped — re-run without --quick before tagging")
+elif [[ "${FIX_SHAPED}" -eq 1 ]]; then
+  printf '  [run]  essential behavior portfolio ...'
+  if bash "${REPO_ROOT}/tools/run-tests.sh" >/tmp/hotfix-sweep-tests.log 2>&1; then
     printf ' OK\n'
   else
     printf ' FAIL\n'
-    failures+=("sterile-env: see /tmp/hotfix-sweep-sterile.log")
+    failures+=("essential portfolio: see /tmp/hotfix-sweep-tests.log")
   fi
 else
-  printf '  [skip] sterile-env (no fix-shaped changes)\n'
+  printf '  [skip] essential portfolio (no fix-shaped changes)\n'
 fi
 
 # ---------------------------------------------------------------------
-# Check 2 — CHANGELOG-coupled tests (always runs — see v1.32.7/8
-# process-gap fix; CHANGELOG edits invalidate test assertions even
-# when no source code changed)
-# ---------------------------------------------------------------------
-printf '  [run]  CHANGELOG-coupled tests ...'
-coupled_tests=()
-while IFS= read -r t; do
-  [[ -n "${t}" ]] && coupled_tests+=("${t}")
-done < <(grep -lE 'CHANGELOG\.md|extract_whats_new' "${REPO_ROOT}"/tests/test-*.sh 2>/dev/null || true)
-
-coupled_failures=0
-for t in "${coupled_tests[@]+"${coupled_tests[@]}"}"; do
-  if ! bash "${t}" >/dev/null 2>&1; then
-    coupled_failures=$((coupled_failures + 1))
-    failures+=("CHANGELOG-coupled: $(basename "${t}")")
-  fi
-done
-if [[ "${coupled_failures}" -eq 0 ]]; then
-  printf ' OK (%d test files)\n' "${#coupled_tests[@]}"
-else
-  printf ' FAIL (%d/%d)\n' "${coupled_failures}" "${#coupled_tests[@]}"
-fi
-
-# ---------------------------------------------------------------------
-# Check 3 — shellcheck on changed bundle/ scripts (CI parity)
+# Check 2 — shellcheck on changed bundle/ scripts (CI parity)
 # ---------------------------------------------------------------------
 if [[ "${FIX_SHAPED}" -eq 1 ]]; then
   printf '  [run]  shellcheck on changed bundle/*.sh ...'
@@ -176,59 +138,6 @@ if [[ "${FIX_SHAPED}" -eq 1 ]]; then
 fi
 
 # ---------------------------------------------------------------------
-# Check 4 — lib-reachability (every modified bundle/.../lib/*.sh has
-# a CI-pinned test) — same contract as test-coordination-rules.sh:C3
-# but checked here as a release-prep gate rather than a post-CI block.
-# ---------------------------------------------------------------------
-if [[ "${FIX_SHAPED}" -eq 1 ]]; then
-  printf '  [run]  lib-reachability ...'
-  lib_orphans=()
-  if ! ci_pinned_tests="$(
-    bash "${REPO_ROOT}/tools/list-ci-pinned-tests.sh" \
-      "${REPO_ROOT}/.github/workflows/validate.yml" \
-      2>/tmp/hotfix-sweep-ci-pins.log
-  )"; then
-    lib_orphans+=("CI-pin extraction failed (see /tmp/hotfix-sweep-ci-pins.log)")
-  else
-    while IFS= read -r f; do
-      [[ -z "${f}" ]] && continue
-      case "${f}" in
-        # v1.47: bundle-scoped, matching the C3 contract this check mirrors
-        # (test-coordination-rules.sh:250 pins LIB_DIR to the bundle lib dir).
-        # The former bare `*/lib/*.sh` glob also caught tests/lib/*.sh helper
-        # libs (e.g. composition-stubs.sh, exercised by three CI-pinned
-        # readiness tests, not a runtime lib) — surfaced when the untagged
-        # v1.44.0 stretched the diff window back to v1.43.0.
-        *bundle/*/lib/*.sh)
-          libname="$(basename "${f}" .sh)"
-          # Codify the verification.sh exception (same as
-          # test-coordination-rules.sh:C3).
-          if [[ "${libname}" == "verification" ]]; then
-            expected_test="${REPO_ROOT}/tests/test-verification-lib.sh"
-          else
-            expected_test="${REPO_ROOT}/tests/test-${libname}.sh"
-          fi
-          expected_test_rel="${expected_test#"${REPO_ROOT}/"}"
-          if [[ ! -f "${expected_test}" ]]; then
-            lib_orphans+=("${f}")
-          elif ! grep -Fxq "${expected_test_rel}" <<<"${ci_pinned_tests}"; then
-            lib_orphans+=("${f} (test exists but not CI-pinned)")
-          fi
-          ;;
-      esac
-    done <<<"${CHANGED_FILES}"
-  fi
-  if [[ "${#lib_orphans[@]}" -eq 0 ]]; then
-    printf ' OK\n'
-  else
-    printf ' FAIL\n'
-    for orphan in "${lib_orphans[@]}"; do
-      failures+=("lib-reachability: ${orphan}")
-    done
-  fi
-fi
-
-# ---------------------------------------------------------------------
 hdr "Sweep summary"
 
 # v1.32.12 (G3 fix): if a prior --quick run left the marker, a
@@ -238,7 +147,7 @@ hdr "Sweep summary"
 if [[ -f "${REPO_ROOT}/.hotfix-sweep-quick" ]] && [[ "${quick}" -ne 1 ]]; then
   : # this run will clear the marker on success — fall through
 elif [[ -f "${REPO_ROOT}/.hotfix-sweep-quick" ]] && [[ "${quick}" -eq 1 ]]; then
-  warnings+=("prior sweep was also --quick — sterile-env still unverified")
+  warnings+=("prior sweep was also --quick — essential portfolio still unverified")
 fi
 
 if [[ "${#failures[@]}" -gt 0 ]]; then

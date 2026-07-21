@@ -59,7 +59,9 @@ If a change improves internal elegance but cannot answer those four items, descr
 
 ## Testing
 
-During implementation, run change-affected proof instead of repeatedly paying for the entire suite. Before submitting a pull request or cutting a release, run one full CI-parity pass. The canonical command list lives in `CLAUDE.md` "Testing" — keep this section pointing at that single source of truth so the lists cannot drift.
+The repository keeps seven broad Bash suites instead of a test-per-feature
+archive. Run the complete portfolio once; do not build a parallel matrix during
+ordinary review work.
 
 ```bash
 # Syntax + lint (CI parity — shellcheck warnings ARE fatal)
@@ -69,33 +71,23 @@ find . -name '*.json' -not -path './.git/*' -print0 | xargs -0 -n1 python3 -m js
 # Installation verification
 bash verify.sh
 
-# Fast feedback while editing; inspect the selection with --list
+# Complete essential Bash portfolio
 bash tools/run-tests.sh
 
-# One exhaustive Bash pass at the PR/release boundary
-bash tools/run-tests.sh --full
-
-# One-shot maintainer release-candidate view after the fresh full receipt
-# above. The professional/install surfaces are exact Bash-suite subsets, so
-# reuse that proof and run only the remaining distribution surface.
-bash tools/verify-project-readiness.sh --skip-professional --skip-install
-
-# Statusline widget (Python)
-python3 -m unittest tests.test_statusline -v
+# Statusline Python syntax (no dedicated suite)
+python3 -c 'import pathlib; p=pathlib.Path("bundle/dot-claude/statusline.py"); compile(p.read_bytes(), str(p), "exec")'
 ```
 
-Without a fresh full-suite receipt, run `tools/verify-project-readiness.sh`
-unqualified so it composes every surface. When diagnosing one surface, run
-`tools/verify-professional-readiness.sh` or
-`tools/verify-install-readiness.sh` directly instead of the composite. Running
-both components and then `verify-project-readiness.sh` repeats the same proof
-without increasing confidence.
-
-All checks must pass cleanly. The pin-discipline contract (`tests/test-coordination-rules.sh:C2`) keeps the CI full-suite surface aligned with the live test tree.
+All checks must pass cleanly. CI discovers the retained Bash suites directly.
 
 ### Test-portfolio stewardship
 
-Tests are production assets with runtime and maintenance costs. Before adding one, name the live behavior or failure it uniquely protects and inspect the current owner. Prefer `EXTEND` or `MERGE` over a parallel file; prefer the cheapest stable layer that catches the real defect. `REPLACE` or `DELETE` requires a retired contract or stronger retained owner plus deliberate mutation/counterfactual, historical-defect replay, or equivalent semantic evidence. Age, slowness, flakiness, and always-green history are investigation signals, not deletion proof; never remove a test simply to make a failing run pass. `/test-audit [scope]` produces the portfolio table read-only, and `--apply` implements only evidenced decisions.
+Tests are production assets with runtime and maintenance costs. Extend a
+retained owner before adding a file. A new suite needs a distinct critical
+surface and must keep the default portfolio below ten minutes. Interactive test
+work is capped at 20 minutes or 30% of task effort unless the user explicitly
+authorizes more. Never rewrite an expectation merely to make a failure green.
+The ownership map lives in `tests/README.md`.
 
 ### Test isolation: `cd` into TEST_HOME (load_conf walk-up safety)
 
@@ -161,18 +153,15 @@ curl -sL "https://raw.githubusercontent.com/<owner>/<repo>/main/<path>" \
 #    line to the new HEAD SHA. The header is the bookkeeping; the body is
 #    the upstream content.
 
-# 5. Run the regression test for that vendored surface.
-bash tests/test-swiftui-pro-skill.sh           # for the swiftui-pro skill
-bash tests/test-design-craft-additions.sh      # for the design-craft references
-
-# 6. Run the full coordination-rules suite to catch count/lockstep drift.
-bash tests/test-coordination-rules.sh
+# 5. Verify installation manifests and run the essential portfolio.
+bash verify.sh
+bash tools/run-tests.sh
 
 # 7. Commit with a clear message naming the refresh:
 #    "Refresh <vendored-name> from <upstream> SHA <new-sha>"
 ```
 
-The version-pin (`Upstream commit: <SHA>`) in each header is what makes refresh deterministic — without it, six months from now we cannot tell whether upstream has drifted. When a vendored file's regression test asserts specific content (e.g., the SwiftUI api.md test asserts `foregroundStyle`, `clipShape`, `tabItem`), upstream evolution may force you to update the test — that's intended, the test exists to surface upstream-content drift.
+The version-pin (`Upstream commit: <SHA>`) in each header is what makes refresh deterministic — without it, six months from now we cannot tell whether upstream has drifted. Review the upstream diff directly and update installation manifests when paths change; do not recreate a dedicated snapshot suite for vendored prose.
 
 **FORBIDDEN: hand-edit a vendored file to "fix" a rule, "improve" wording, or "adapt to oh-my-claude conventions".** If the vendored content is wrong for your use case, either (a) discuss with the upstream maintainer and contribute the change there, then re-pull, or (b) fork the file out of the vendored path into a project-owned file and own it explicitly. Hand-editing a vendored file silently diverges from upstream and breaks the next refresh.
 
@@ -209,7 +198,8 @@ self-improve only when run as scheduled, not on-demand:
    emerges (multiple defects sharing a token/path/bigram), codify
    it as a new classifier category in
    `bundle/dot-claude/skills/autowork/scripts/lib/classifier.sh`
-   with a regression net in `tests/test-classifier.sh`. Without
+   and extend `tests/test-intent-classification.sh` when the category changes
+   routing behavior. Without
    this pass, defects the auto-classifier can't categorize accumulate
    into the unknown bucket and silently fall out of review — the
    "unbinned-signal-loss" anti-pattern from the Bug B post-mortem.
@@ -299,14 +289,14 @@ When in doubt, copy the frontmatter shape from an existing reviewer of the same 
 1. Wire the agent in `config/settings.patch.json` under `SubagentStop` with a reviewer-type argument: `$HOME/.claude/skills/autowork/scripts/record-reviewer.sh <type>` where `<type>` is `standard`, `excellence`, `prose`, `stress_test`, `traceability`, or `design_quality`.
 2. Add the `VERDICT:` contract line to its output-format section in `bundle/dot-claude/agents/<name>.md` (see "Reviewer VERDICT contract" in `AGENTS.md`).
 3. Update the dimension mapping table in `AGENTS.md` "Dimension mapping".
-4. Add a matcher-name assertion in `tests/test-settings-merge.sh`.
-5. Add a simulator function and at least one sequence test in `tests/test-e2e-hook-sequence.sh`.
-6. Update the `SubagentStop` count assertions in `tests/test-settings-merge.sh`.
+4. Verify the matcher and settings shape directly in `config/settings.patch.json`.
+5. Extend `tests/test-quality-gates.sh` only when the new role changes a gate decision.
+6. Run `bash verify.sh` to catch missing managed artifacts.
 
 **FINDINGS_JSON contract (finding-emitting reviewers only — those that surface defects/gaps with severity):**
 
 1. Add the contract instruction to the agent's `.md` file (model emits a single-line `FINDINGS_JSON: [...]` block immediately before the optional dispatch ID and final `VERDICT:`; if another mandatory terminal metadata line applies, such as the Definition-aware excellence review's `QUALITY_REVIEW_JSON`, document that ordering explicitly).
-2. Add the agent to the contract-presence regression net in `tests/test-findings-json.sh`.
+2. Extend `tests/test-quality-gates.sh` if the new result changes gate admission.
 3. If the agent's findings should feed the discovered-scope gate, add it to `discovered_scope_capture_targets` in `bundle/dot-claude/skills/autowork/scripts/common.sh`.
 4. Document the agent in AGENTS.md under "Structured FINDINGS_JSON contract (v1.28.0)".
 
@@ -422,31 +412,27 @@ When bumping the version (changing `VERSION`), follow these steps in order. Repl
 
 ### Pre-flight
 
-1. **CHANGELOG audit.** Run `git log --oneline vPREV..HEAD` and confirm every commit has a matching `[Unreleased]` bullet in `CHANGELOG.md`. Silent drop (a large commit's changes missing from the changelog) is the common failure mode. Also skim `docs/architecture.md` "State keys" table for new keys introduced in the window. Release history is now lockstepped too: every semver git tag must have a matching `## [X.Y.Z]` heading in `CHANGELOG.md`. `tests/test-coordination-rules.sh` enforces this contract, so fetch tags before running it locally from a shallow clone.
+1. **CHANGELOG audit.** Run `git log --oneline vPREV..HEAD` and confirm every commit has a matching `[Unreleased]` bullet in `CHANGELOG.md`. Silent drop (a large commit's changes missing from the changelog) is the common failure mode. Also skim `docs/architecture.md` "State keys" table for new keys introduced in the window. Every semver git tag must have a matching `## [X.Y.Z]` heading in `CHANGELOG.md`; inspect this directly from a tag-aware clone.
 
 2. **CI parity check.** Run locally exactly what `.github/workflows/validate.yml` will run — shellcheck warnings are CI-fatal, so any local warning is a CI red. Do not proceed if any of these exit non-zero or emit any warning:
    - `find bundle/ -name '*.sh' -print0 | xargs -0 shellcheck -x --severity=warning`
    - `find . -name '*.json' -not -path './.git/*' -print0 | xargs -0 -n1 python3 -m json.tool --no-ensure-ascii > /dev/null`
-   - Every test the CI workflow runs. Extract the current list live with `bash tools/list-ci-pinned-tests.sh .github/workflows/validate.yml` so env-prefixed or compound `run:` lines cannot drift from the local checklist. Plus `python3 -m unittest tests.test_statusline -v`.
+   - `bash tools/run-tests.sh --full`
+   - Python syntax validation for `bundle/dot-claude/statusline.py`
 
-   *v1.32.0 expanded the CI-pinned set from 33 → 61 tests (release post-mortem R1); the set has grown substantially since, so treat that figure as historical and extract the current count live via the command above rather than trusting any number in prose. Coordination-rules lockstep test (`tests/test-coordination-rules.sh`) now enforces "every test is CI-pinned OR carries a `# UNPINNED: <reason>` token" — adding a new test without explicit pin-or-justify blocks merge.*
-
-3. **Sterile-env CI-parity run** *(MANDATORY since v1.32.2 R9 closure).* `bash tests/run-sterile.sh` runs the CI-pinned tests under env scrubbed to look like Ubuntu CI's tmpfs (`env -i` + fresh `HOME` + jq-aware PATH including `/sbin` for macOS `md5`). Catches the "passes locally because dev has state X, fails in CI because tmpfs has empty X" class of bug that produced the v1.31.0 → v1.31.0-hotfix cascade (T7 sterile-CI miss). v1.32.0 shipped this advisory; v1.32.2 closed the 7 env-leak susceptibilities (`STATE_ROOT`/`SESSION_ID` collision with the harness's HOME-derived state path, plus `/sbin` PATH miss for macOS md5) and promoted to **strict by default**. The runner is now wired into `.github/workflows/validate.yml` as a CI step — any future env-coupling regression fails CI on push. Override to advisory mode (`--advisory` or `OMC_STERILE_ADVISORY=1`) only when explicitly debugging an env-leak suspect.
+   The essential portfolio is intentionally fixed and small. Do not recreate a second sterile or CI-pinning matrix; use `tools/local-ci.sh` when Linux environment parity matters.
 
 4. **Cumulative-diff `release-reviewer` run** *(advisory, v1.32.0 R2 → forked in v1.32.1).* For releases that span more than one wave commit, dispatch the `release-reviewer` agent against `git diff "$(git describe --tags --abbrev=0)..HEAD"`. Per-wave `quality-reviewer` passes catch per-wave defects; the cumulative `release-reviewer` catches **cross-wave interaction defects** (the v1.31.3 F-1/F-2/F-3/F-5 class). The forked agent is sized for cumulative scope: no top-N finding cap, 3000-4000 word budget, 60 maxTurns, surface-sliced dispatch when the diff exceeds 30 files (one pass per modified script directory: `lib/`, `autowork/scripts/`, `quality-pack/scripts/`, `agents/`, `skills/`, `tests/`, `install*.sh`, `config/`, `.github/`, `docs/`, `tools/`). The pre-1.32.1 fallback was the in-session `quality-reviewer` which was structurally too small (1000-word/top-8 cap) and truncated 3× during the v1.32.0 release-prep cumulative review. Block bump until findings are addressed in new commits OR explicitly deferred with named WHY via `/mark-deferred`.
 
-5. **Install upgrade simulation** *(advisory, v1.32.0 R8).* `bash tools/install-upgrade-sim.sh` runs `install.sh` end-to-end against a 4-case `PRIOR_INSTALLED_VERSION` matrix (empty/first-install, N-1, oldest-CHANGELOG/long-span, no-op-same-version) and inspects the user-visible "What's new" block. Catches the install-summary class of bug that produced the v1.31.1 → v1.31.1-hotfix-round-2 cascade (cap=6 too low for span-7-versions case). The unit-level complement is `tests/test-install-whats-new.sh` T8.
+5. **Install upgrade simulation** *(advisory).* `bash tools/install-upgrade-sim.sh` runs `install.sh` end-to-end against representative prior-version states and inspects the user-visible "What's new" block. Run it when installer or release-summary behavior changed; the essential install suite remains `tests/test-install-artifacts.sh`.
 
-6. **Hotfix-sweep gate** *(MANDATORY since v1.32.11 — R5 closure from the v1.31.x post-mortem).* `bash tools/hotfix-sweep.sh` runs after every fix commit during release prep, before the next bump. Closes the **Compound-Fix Tag-Race** anti-pattern (each hotfix is an opportunity for a new hotfix unless the post-fix regression net is enforced — the v1.31.0→v1.31.3 cascade was 4 patches in one day where F-3's fix introduced its own regression). Four checks, ~2 min budget:
+6. **Hotfix-sweep gate.** `bash tools/hotfix-sweep.sh` runs after fix commits during release prep, before the next bump. It keeps a sub-ten-minute budget with two checks:
 
-   - **Sterile-env CI-parity** (delegates to `tests/run-sterile.sh`) — catches v1.31.0-class T7 sterile-fail.
-   - **CHANGELOG-coupled tests** (grep-based, generalizes step 8 above) — catches install-whats-new cap drift.
+   - **Essential behavior portfolio** — the same seven Bash suites CI runs.
    - **shellcheck on changed `bundle/*.sh`** — catches CI-fatal warnings before tag.
-   - **lib-reachability** — every modified `bundle/.../lib/*.sh` since the last tag must have a CI-pinned `tests/test-${name}.sh` (mirrors `tests/test-coordination-rules.sh:C3` as a pre-tag check).
+   Fast-path: when only docs/CHANGELOG/VERSION changed since the last tag, the behavior portfolio skips. `--quick` also skips it and warns; re-run without `--quick` before tagging.
 
-   Fast-path: when only docs/CHANGELOG/VERSION changed since the last tag, the heavy checks skip with a "no fix-shaped changes" message. `--quick` mode skips sterile-env (saves ~1 min) but warns; re-run without `--quick` before tagging. Regression net: `tests/test-hotfix-sweep.sh` (CI-pinned; use the live suite output if you need the current assertion count).
-
-7. **Local Linux CI parity** *(advisory, v1.33.x post-mortem of v1.33.0/.1/.2 cascade).* `bash tools/local-ci.sh` runs the validate.yml CI parity suite inside an Ubuntu container so BSD-vs-GNU coreutils, `mktemp -d` shape (`/var/folders/...` vs `/tmp/tmp.XXX`), and locale defaults are caught BEFORE the GitHub Actions round-trip. Pairs with the sterile-env TMPDIR fix in `tests/lib/sterile-env.sh` — sterile-env handles env-shape divergence on macOS hosts; local-ci handles BSD-vs-GNU coreutils divergence sterile-env can't fully simulate. Requires Docker or podman; gracefully reports the missing runtime if absent. ~30s after first image pull, ~3+ min on cold pull. Regression net: `tests/test-local-ci.sh` (CI-pinned; use the live suite output if you need the current assertion count). Skip when working on docs-only changes.
+7. **Local Linux CI parity** *(advisory).* `bash tools/local-ci.sh` runs shell/JSON checks and the essential portfolio inside Ubuntu to expose BSD-vs-GNU coreutils, temporary-directory, and locale differences before the GitHub Actions round-trip. It requires Docker or podman and is unnecessary for docs-only changes.
 
 ### Bump and tag
 
@@ -456,7 +442,7 @@ When bumping the version (changing `VERSION`), follow these steps in order. Repl
 bash tools/release.sh X.Y.Z
 ```
 
-This runs steps 7-14 below in order, validating preconditions (clean tree, on `main`, X.Y.Z is above current, tag doesn't exist, no leftover `.hotfix-sweep-quick` marker) before any mutation. `--dry-run` previews; `--no-watch` skips the post-flight CI watch (still tags + pushes). Regression net: `tests/test-release.sh` (CI-pinned; use the live suite output if you need the current assertion count).
+This runs steps 7-14 below in order, validating preconditions (clean tree, on `main`, X.Y.Z is above current, tag doesn't exist, no leftover `.hotfix-sweep-quick` marker) before any mutation. `--dry-run` previews; `--no-watch` skips the post-flight CI watch (still tags + pushes).
 
 `--ci-preflight` *(recommended since v1.34.1)* makes `tools/local-ci.sh` (Pre-flight Step 7) the gating artifact for the release. The script runs local-ci as Step 6.5 BEFORE the version bump; on green, the post-flight `gh run watch` is skipped — reclaiming the 6–13 minutes of remote-CI wall-clock per release that `--tag-on-green` spent watching. Remote CI still runs in parallel as a no-op second opinion. **Requires Docker** (or podman via `OMC_LOCAL_CI_RUNTIME=podman`); on a runtime-missing host the script aborts cleanly at Step 6.5 before any state change. Mutually exclusive with `--tag-on-green` (both gate the tag — pick one). Use `--tag-on-green` as the no-Docker fallback.
 
@@ -468,7 +454,7 @@ This runs steps 7-14 below in order, validating preconditions (clean tree, on `m
 8. Update the README.md badge: `[![Version](https://img.shields.io/badge/Version-X.Y.Z-blue.svg)]`.
 9. Promote the `[Unreleased]` heading in `CHANGELOG.md` to `## [X.Y.Z] - YYYY-MM-DD` (keep `[Unreleased]` above it as an empty placeholder for the next cycle if desired).
 
-   **Re-run all CHANGELOG-coupled tests after promotion** (v1.32.7 process fix, v1.32.8 generalization). Step 2's CI-parity check ran BEFORE step 9 promoted the CHANGELOG, so any test whose assertions depend on `CHANGELOG.md` content evaluates the OLD content. v1.31.1 / v1.32.1 / v1.32.3 / v1.32.5 / v1.32.6 all shipped with this gap. Pre-1.32.8 step 9 named two specific tests (`test-install-whats-new.sh`, `test-install-artifacts.sh`) — but new CHANGELOG-reading tests added later would silently slip through. v1.32.8 generalizes:
+   **Re-run retained CHANGELOG-coupled tests after promotion.** Step 2 ran before the heading changed, so any retained assertion that reads `CHANGELOG.md` saw the old content:
 
    ```bash
    for t in $(grep -lE 'CHANGELOG\.md|extract_whats_new' tests/test-*.sh); do
@@ -506,16 +492,16 @@ This runs steps 7-14 below in order, validating preconditions (clean tree, on `m
     bash tools/verify-distribution-readiness.sh --release-sha "$SHA"
     ```
     That top-level readiness check composes `verify-release-automation-deployment.sh`, `prepare-release-automation-deployment.sh`, `verify-published-release.sh`, and `audit-published-releases.sh`. It defaults to verifying live attestations for the current published release and skipping attestation checks in the history slice for speed; override with `--history-attestations verify|wait` when you want full provenance across the audited window. It also surfaces the local deployment-candidate proof separately from the remote deployment proof, so you can tell whether the only remaining blocker is that `origin/main` is behind. Add `--json` when you want the same audit as a machine-readable artifact for CI, dashboards, or scripted release gates.
-    To audit the first-run install/onboarding experience directly, run:
+    To run the retained install/removal checks directly, use:
     ```bash
     bash tools/verify-install-readiness.sh
     ```
-    That helper proves the bootstrapper/update path, fresh-install handoff, recovery-path transcript, and AI-assisted onboarding/install prompts as one professional-distribution contract.
-    To combine that live distribution proof with the local product and install proofs (classification + routing + UI design contracts + benchmark + realwork + install/onboarding), run:
+    That helper covers isolated managed-artifact installation and merge-safe removal; it no longer claims the retired bootstrapper/onboarding matrix.
+    To combine the live distribution proof with the compact local product and install signals, run:
     ```bash
     bash tools/verify-project-readiness.sh --release-sha "$SHA"
     ```
-    That wrapper composes `tools/verify-professional-readiness.sh`, `tools/verify-install-readiness.sh`, and `tools/verify-distribution-readiness.sh` into one maintainer-facing release-candidate verdict, so you can tell whether the repo is both ready for professional users, safe to hand to first-time installers, and ready to ship.
+    That wrapper composes the retained intent/gate/realwork checks, retained install/uninstall checks, and the distribution audit into one maintainer-facing signal. It is deliberately compact and does not claim exhaustive cross-domain or onboarding proof.
     When the canonical release-body format changes, or when you need to backfill older releases, audit the published history in one pass:
     ```bash
     bash tools/audit-published-releases.sh --limit 100

@@ -1201,7 +1201,7 @@ if is_prompt_persist_enabled; then
   # byte equal to recomputing it — and saves the router's heaviest
   # avoidable per-prompt fork (a multi-pattern `sed -E` plus printf+tr)
   # on every persist-on prompt. Pure latency optimization, zero behavior
-  # change. Regression: tests/test-prompt-router-latency.sh.
+  # change. Regression: tests/test-intent-classification.sh.
   _omc_persisted_prompt_safe="${PROMPT_TEXT_SAFE}"
 else
   _omc_persisted_prompt_safe=""

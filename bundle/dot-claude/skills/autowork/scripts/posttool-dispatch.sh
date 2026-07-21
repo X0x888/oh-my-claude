@@ -23,7 +23,7 @@
 # circuit-breaker is the only handler that emits hook JSON, and it runs last with its stdout
 # passing through unmerged. If a future handler starts emitting, it must
 # either stay last-and-alone or grow a real merge step here (pinned by
-# tests/test-posttool-dispatch.sh).
+# tests/test-quality-gates.sh).
 #
 # Routing: Bash tool calls run the edit-clock writer plus the four folded
 # handlers; every other tool runs

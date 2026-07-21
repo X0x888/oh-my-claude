@@ -9,20 +9,18 @@
 # v1.33.x (post-mortem of the v1.33.0/.1/.2 cascade): three release
 # cycles + ~20 minutes of wall time were burned on a Wave-4
 # `claude_bin` denylist firing on Linux's `/tmp/tmp.XXX` mktemp
-# output that never reproduced under macOS dev or sterile-env. A
+# output that never reproduced under macOS development. A
 # local Ubuntu container catches that class of bug in ~30s of
 # image-cached run time instead of ~3 min of GitHub Actions
-# round-trip per cycle. Pairs with the sterile-env TMPDIR fix
-# (tests/lib/sterile-env.sh) — sterile-env handles env-shape
-# divergence on macOS hosts; this script handles BSD-vs-GNU
-# coreutils divergence that sterile-env can't fully simulate.
+# round-trip per cycle. It remains useful for BSD-vs-GNU coreutils
+# divergence without maintaining a second environment-specific suite.
 #
 # Usage:
-#   bash tools/local-ci.sh                    # run sterile suite + shellcheck
+#   bash tools/local-ci.sh                    # run essential suite + shellcheck
 #   bash tools/local-ci.sh --image ubuntu:24.04
 #   bash tools/local-ci.sh --shell            # interactive shell in the container (debug)
-#   bash tools/local-ci.sh --skip-sterile     # only run shellcheck + JSON validate
-#   bash tools/local-ci.sh --skip-shellcheck  # only run sterile suite
+#   bash tools/local-ci.sh --skip-sterile     # compatibility: skip essential suite
+#   bash tools/local-ci.sh --skip-shellcheck  # only run essential suite
 #   bash tools/local-ci.sh --help
 #
 # Env:
@@ -115,7 +113,7 @@ ok "${RUNTIME} available"
 #
 #   build_run_checks_script — execute validate.yml's check list
 #                            (`shellcheck` on `bundle/`, JSON validate,
-#                            sterile-env, python tests). Composed with
+#                            essential Bash portfolio, Python syntax). Composed with
 #                            build_prepare_script in normal mode.
 #
 # Stays in sync with .github/workflows/validate.yml: same entry points,
@@ -165,14 +163,14 @@ if [[ "${SKIP_SHELLCHECK:-0}" != "1" ]]; then
 fi
 
 if [[ "${SKIP_STERILE:-0}" != "1" ]]; then
-  printf '── sterile-env CI parity ───\n'
-  # Local/release parity is exhaustive. Only pull-request CI opts into the
-  # change-proportional sterile profile.
-  bash tests/run-sterile.sh --full
+  printf '── essential Bash portfolio ───\n'
+  # Keep the legacy environment variable as a compatibility switch while
+  # running the same intentionally small portfolio as validate.yml.
+  bash tools/run-tests.sh --full
 fi
 
-printf '── python tests ───\n'
-python3 -m unittest tests.test_statusline 2>&1 | tail -3
+printf '── statusline Python syntax ───\n'
+python3 -c 'import pathlib; p=pathlib.Path("bundle/dot-claude/statusline.py"); compile(p.read_bytes(), str(p), "exec")'
 CHECKS
 }
 

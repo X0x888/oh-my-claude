@@ -279,7 +279,7 @@ has_closeout_label() {
     # v1.46+ /goal: goal mode reuses this label; "**Goal achieved.**" is an
     # accepted alias (Codex-parity, user-intuitive) alongside the objective
     # forms. KEEP IN SYNC with the inline replica in tests/test-objective-
-    # contract.sh and tests/test-goal.sh.
+    # contract.sh and tests/test-quality-gates.sh.
     coverage)     pattern='\*\*(Objective (coverage|audit)|Goal achieved)(\.)?\*\*' ;;
     *) return 1 ;;
   esac
@@ -1326,7 +1326,7 @@ if [[ "${OMC_DISCOVERED_SCOPE}" == "on" ]] \
       # ladder is for repeat blocks, not first-touch. Keep the
       # record-serendipity.sh reminder inline (Serendipity Rule is
       # invisible if not surfaced at gate-fire — locked by
-      # tests/test-discovered-scope.sh T28).
+      # the retired focused suite (Git history)).
       # v1.44 No-Out-of-Scope: under no_defer_mode, the third recovery
       # path (`/mark-deferred`) is refused at the call site anyway, so
       # leading with it as a recovery option teaches the wrong default.

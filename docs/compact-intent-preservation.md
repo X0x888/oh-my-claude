@@ -80,9 +80,10 @@ Oracle's framing: the model already ignored one directive in this incident. Dire
 
 `pretool_intent_blocks` is cleared by `ulw-deactivate.sh` so `/ulw-off` does not leak counter data into a subsequent session.
 
-## 7. Regression tests
+## 7. Historical regression inventory
 
-`tests/test-e2e-hook-sequence.sh` gaps 8a–8r cover:
+The retired focused suite covered the following cases (recoverable from Git
+history). The current portfolio keeps only broad intent, gate, and resume owners:
 
 - Directive emission for each non-execution intent, with `last_meta_request` inlined.
 - Directive suppression: execution intent still gets the momentum directive, no guard text.
@@ -117,8 +118,9 @@ If you are hardening the guard for a compliance-driven threat model, the correct
 - `bundle/dot-claude/quality-pack/scripts/session-start-compact-handoff.sh` — Layer 1
 - `bundle/dot-claude/skills/autowork/scripts/pretool-intent-guard.sh` — Layer 2
 - `bundle/dot-claude/skills/autowork/scripts/common.sh` — `OMC_PRETOOL_INTENT_GUARD` and `OMC_WAVE_OVERRIDE_TTL_SECONDS` conf loaders
-- `tests/test-e2e-hook-sequence.sh` — regression coverage (gaps 8a–8r)
-- `tests/test-pretool-intent-guard.sh` — focused regression suite for the gate, including wave-active override coverage (v1.21.0)
+- `tests/test-intent-classification.sh` — retained intent owner
+- `tests/test-quality-gates.sh` — retained gate-decision owner
+- `tests/test-session-resume.sh` — retained continuity owner
 - `feedback_advisory_means_no_edits` memory — originating user preference the fix encodes
 
 ---
@@ -158,9 +160,9 @@ Three coordinated changes in `pretool-intent-guard.sh`:
 - **Detecting "system-injected vs user-typed" UserPromptSubmit frames at the classifier level.** Considered, deferred. The classifier would need a reliable signal (markers in the injected text, frame metadata) and the wave-active heuristic gives us most of the benefit at zero classifier complexity. Revisit if the override misses cases that a frame-shape detector would catch.
 - **Allowing the override regardless of `findings.json` age.** Would protect more legitimate Phase 8 commits but at the cost of stale plans leaking authorization. The 2-hour window covers complex per-wave cycles (plan + impl + review + verify + commit) while still disqualifying abandoned plans.
 
-### 10.5 Regression tests
+### 10.5 Historical regression inventory
 
-`tests/test-pretool-intent-guard.sh` locks in:
+The retired focused suite locked in:
 
 - The deny paths for advisory and session_management intents.
 - The wave-active override (positive: T5, T15) and its non-application (T6 completed plan, T7 empty waves, T13 non-commit destructive ops, T14 compound `commit && force-push`, T16 stale plan, T18 commit-substring false-match).
@@ -168,4 +170,5 @@ Three coordinated changes in `pretool-intent-guard.sh`:
 - Kill-switch bypass (T11), non-execution edit-tool pass-through (T8), agent-first execution mutation blocking, and the verbose-vs-terse first/second block coaching (T9, T10, T12).
 - Text contract: deny reason MUST NOT contain `say yes`, `single yes`, `reauthorize`, `confirm with yes`; MUST include `concrete imperative`, `reply with:`, `FORBIDDEN`.
 
-`tests/test-show-report.sh` Test 18 verifies the new "Overrides" column and `wave-override allow(s)` totals suffix. The e2e Gap 8s assertions in `test-e2e-hook-sequence.sh` were updated to match the rewritten verbose reason text (`What to do:` / `What NOT to do` / `concrete imperative` markers).
+Those detailed assertions remain recoverable from Git history. New changes
+should extend a retained owner only when they alter a consequential decision.

@@ -8355,7 +8355,7 @@ if [[ -n "${PRIOR_INSTALLED_VERSION}" ]] \
         # previous cap into truncation on full-history spans. 60 gives
         # ~17 minor-release headroom at current cadence (~1-2 years).
         # Bump in lockstep with install.sh:1901 (collapsed cap) and
-        # tests/test-install-whats-new.sh Test 6 synthesizer (>60 needed).
+        # the historical long-span synthesizer (>60 needed).
         if (kept > 60) { truncated = 1; exit }
         if (ver == "Unreleased") {
           printf "                   - %s\n", ver

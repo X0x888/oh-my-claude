@@ -561,7 +561,7 @@ EOF
 # contract before it ever fires. The `minimal` preset legitimately ships
 # `no_defer_mode=off` because that preset's stance is "lightest footprint
 # while keeping core gates working" — power-user opt-out by design.
-# Flipping any of the three values triggers tests/test-no-defer-contract.sh.
+# Flipping any of the three values triggers tests/test-quality-gates.sh.
 emit_preset() {
   local profile="$1"
   case "${profile}" in
@@ -1043,7 +1043,7 @@ flag_is_model_user_only() {
 # names. Shipped definitions can be reconstructed by switch-tier.sh; custom
 # definitions are user-owned and must never be rewritten as a side effect of
 # saving a pin. Keep these rosters lockstep with the bundle, install.sh, and
-# switch-tier.sh; tests/test-omc-config.sh regression-locks their union.
+# switch-tier.sh; tests/test-install-artifacts.sh regression-locks their union.
 OMC_CONFIG_SHIPPED_INHERIT_AGENTS='abstraction-critic chief-of-staff divergent-framer draft-writer editor-critic excellence-reviewer metis oracle prometheus quality-planner quality-reviewer release-reviewer rigor-reviewer writing-architect'
 OMC_CONFIG_SHIPPED_FIXED_AGENTS='atlas backend-api-developer briefing-analyst data-lens design-lens design-reviewer devops-infrastructure-engineer frontend-developer fullstack-feature-builder growth-lens ios-core-engineer ios-deployment-specialist ios-ecosystem-integrator ios-ui-developer librarian literature-scout product-lens quality-researcher research-data-analyst security-lens sre-lens test-automation-engineer visual-craft-lens'
 

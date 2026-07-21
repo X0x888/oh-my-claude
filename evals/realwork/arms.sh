@@ -32,8 +32,8 @@
 #   ANTHROPIC_API_KEY         (direct API billing)
 # `arms.sh doctor` reports which is available.
 #
-# Mock mode: set OMC_ARMS_CLAUDE_BIN to a stub binary to exercise the whole
-# pipeline without network or spend — tests/test-realwork-arms.sh does this.
+# Mock mode: set OMC_ARMS_CLAUDE_BIN to a stub binary for an explicitly scoped
+# zero-spend exercise. The retained eval suite covers schema/scoring, not arms.
 
 set -euo pipefail
 

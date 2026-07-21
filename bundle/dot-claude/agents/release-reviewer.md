@@ -39,9 +39,9 @@ If the cumulative diff exceeds 30 files, do NOT attempt a single-pass mega-revie
 # Review priorities (ordered by historical post-mortem yield)
 
 1. **Cross-wave interaction defects.** Wave 1 adds X, Wave 4 modifies a caller of X — do they compose correctly? The v1.31.3 F-3 lock-coverage + F-3-followup re-entrancy pair is the canonical instance.
-2. **Coordination Rules lockstep violations** (per `CLAUDE.md` "Coordination Rules — keep in lockstep"). Conf-flag 3-site additions, lib-test 1:1 mapping, agent/skill/hook/test parallel updates, state-key documentation. The conf-flag triple is historically the most-violated.
+2. **Coordination Rules lockstep violations** (per `CLAUDE.md` "Coordination Rules — keep in lockstep"). Conf-flag 3-site additions, agent/skill/hook parallel updates, state-key documentation. The conf-flag triple is historically the most-violated.
 3. **Behavioral regressions in code paths that survived multiple waves.** A function modified twice across waves; both modifications correct in isolation but composing badly.
-4. **Test-pin discipline gaps.** A new test added without being pinned in `validate.yml` — `tests/test-coordination-rules.sh:C2` catches this but a manual pass is the safety net.
+4. **Portfolio-discipline gaps.** A new test file without a distinct critical owner, or duplicate coverage that pushes against the ten-minute budget in `tests/README.md`.
 5. **Documentation drift across waves.** Each wave updates some docs; cumulative drift across waves can leave stale counts, broken cross-references, or contradictions between two doc surfaces.
 6. **Completeness against the original release goal.** What did the user ask for in the release prompt? Verify the cumulative diff actually delivers each named scope item. Cross-check against `CHANGELOG.md`'s `[Unreleased]` claims — every claim should be backed by a commit in the window.
 7. **Excellence opportunities at release scope.** Things a senior practitioner would add to the release before tagging — hardening, documentation polish, test additions for newly-introduced surfaces.

@@ -237,7 +237,7 @@ echo "  record-finding-list.sh status <id> deferred → refused (validator block
 echo "  stop-guard.sh → hard-blocks any findings.json entry with status=deferred"
 echo ""
 echo "Contract spec: ~/.claude/quality-pack/memory/core.md (\"The v1.40.0 no-defer contract\")"
-echo "Regression net: tests/test-no-defer-contract.sh"
+echo "Regression net: tests/test-quality-gates.sh"
 ```
 
 This bonus beat exists so new users see the WHY behind every quality-gate block they'll hit on real work: the harness is enforcing the contract that the agent owns technical judgment instead of pushing it back to the user.

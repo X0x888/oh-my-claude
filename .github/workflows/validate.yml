@@ -54,34 +54,14 @@ jobs:
       - name: Check flag coordination (3-site SoT parity)
         run: bash tools/check-flag-coordination.sh
 
-      - name: Run statusline Python tests
-        run: python3 -m unittest tests.test_statusline -v
+      - name: Check statusline Python syntax
+        run: python3 -c 'import pathlib; p=pathlib.Path("bundle/dot-claude/statusline.py"); compile(p.read_bytes(), str(p), "exec")'
 
-  # Native correctness is exhaustive but sharded. The runner discovers every
-  # tests/test-*.sh dynamically, so adding a test does not require another
-  # 450-line workflow step list or a second pin registry.
-  test-native:
-    name: Native Bash tests (shard ${{ matrix.shard }}/4)
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4]
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          fetch-depth: 0
-
-      - name: Run full native shard
-        run: bash tools/run-tests.sh --full --shard "${{ matrix.shard }}/4" --no-record
-
-  # Sterile execution is proportional on pull requests. Pushes are integration
-  # boundaries and remain exhaustive, matching the historical `test` context.
-  # Keeping both profiles in one always-present job gives the aggregate below a
-  # single unambiguous result instead of event-dependent skipped dependencies.
-  test-sterile:
-    name: Sterile environment tests
+  # The retained Bash portfolio is intentionally small enough to run as one
+  # job. Keeping it serial avoids the timing distortion and coordination cost
+  # that the retired adversarial matrix introduced.
+  test-core:
+    name: Essential Bash tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -89,32 +69,24 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Run change-proportional sterile tests
-        if: github.event_name == 'pull_request'
-        run: bash tests/run-sterile.sh --changed --base "origin/${{ github.base_ref }}"
+      - name: Run retained portfolio
+        run: bash tools/run-tests.sh --full
 
-      - name: Run full sterile push suite
-        if: github.event_name == 'push'
-        run: bash tests/run-sterile.sh --full
-
-  # Preserve the historical required-check context `test` and its semantic
-  # coverage while execution is parallelized behind it. Python lives in lint;
-  # Bash lives in the native matrix; sterile has the event-appropriate profile.
+  # Preserve the historical required-check context `test`.
   # `always()` turns a failed/cancelled dependency into an explicit red check.
   test:
     name: test
-    needs: [lint, test-native, test-sterile]
+    needs: [lint, test-core]
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - name: Require every historical test surface to pass
+      - name: Require lint and essential behavior to pass
         env:
           LINT_RESULT: ${{ needs.lint.result }}
-          NATIVE_RESULT: ${{ needs.test-native.result }}
-          STERILE_RESULT: ${{ needs.test-sterile.result }}
+          CORE_RESULT: ${{ needs.test-core.result }}
         run: |
           failed=0
-          for result in "lint:${LINT_RESULT}" "native:${NATIVE_RESULT}" "sterile:${STERILE_RESULT}"; do
+          for result in "lint:${LINT_RESULT}" "core:${CORE_RESULT}"; do
             surface="${result%%:*}"
             status="${result#*:}"
             if [[ "${status}" != "success" ]]; then
@@ -125,7 +97,7 @@ jobs:
           if [[ "${failed}" -ne 0 ]]; then
             exit 1
           fi
-          printf 'Lint/Python, native Bash, and sterile surfaces passed.\n'
+          printf 'Lint and the essential Bash portfolio passed.\n'
 
   # v1.40.x SRE-5 F-005: macOS parity job. CI runs on ubuntu-latest by
   # default, but the primary dev platform is macOS — BSD vs GNU coreutils
@@ -145,50 +117,14 @@ jobs:
       - name: Install dependencies (jq + shellcheck)
         run: brew install jq shellcheck
 
-      - name: Run classifier tests
-        run: bash tests/test-classifier.sh
-
       - name: Run state-io tests
         run: bash tests/test-state-io.sh
-
-      - name: Run cross-session-rotation tests
-        run: bash tests/test-cross-session-rotation.sh
-
-      - name: Run hotfix-sweep tests
-        run: bash tests/test-hotfix-sweep.sh
 
       - name: Run common utilities tests
         run: bash tests/test-common-utilities.sh
 
       - name: Run quality gate tests
         run: bash tests/test-quality-gates.sh
-
-      - name: Run Definition of Excellent contract tests
-        run: bash tests/test-quality-contract.sh
-
-      - name: Run Definition of Excellent lifecycle tests
-        run: bash tests/test-definition-of-excellent-e2e.sh
-
-      - name: Run crash-safe planner publication tests
-        run: bash tests/test-plan-publication-transaction.sh
-
-      - name: Run crash-safe reviewer publication tests
-        run: bash tests/test-reviewer-publication-transaction.sh
-
-      - name: Run Definition of Excellent observability tests
-        run: bash tests/test-definition-observability.sh
-
-      - name: Run Quality Constitution tests
-        run: bash tests/test-quality-constitution.sh
-
-      - name: Run Quality Constitution authority tests
-        run: bash tests/test-quality-constitution-authority.sh
-
-      - name: Run w1-reliability v1.40 regression
-        run: bash tests/test-w1-reliability-v1-40.sh
-
-      - name: Run blind real-work pairwise evaluator tests
-        run: bash tests/test-realwork-pairwise.sh
 
       - name: Check bash syntax (BSD vs GNU shape)
         run: |

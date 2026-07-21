@@ -1909,7 +1909,7 @@ if [[ "${block_count}" -le 1 ]]; then
   # instead of a list of forbidden behaviors. The two canonical FORBIDDEN
   # snippets ('Should I proceed', 'Would you like me to') are still
   # cited inline so the cross-script drift net in
-  # tests/test-pretool-intent-guard.sh T19 stays intact (the same drift
+  # the retired focused suite stays intact (the same drift
   # net guards session-start-compact-handoff.sh).
   reason="[PreTool gate · ${intent_label} · block 1] The active prompt is classified as '${intent_label}', not execution. Destructive git/gh ops (commit/push/reset --hard/rebase/cherry-pick/tag/merge/branch -D/clean -f/update-ref/filter-branch + gh pr|release|issue create/merge/edit/close) need explicit execution authorization.
 Recovery options:

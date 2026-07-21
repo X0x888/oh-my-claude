@@ -222,7 +222,7 @@ printf '%s' "${corpus}" \
 printf '\n'
 
 # Section: file/path mentions. When an example references a specific
-# path (e.g. `lib/state-io.sh`, `tests/test-state-fuzz.sh`), the
+# path (e.g. `lib/state-io.sh`, `tests/test-state-io.sh`), the
 # referenced module may itself be a missing classifier category.
 printf '## File / path mentions (sampled)\n\n'
 printf '_Concrete paths cited inside the example texts. Recurring path mentions suggest a per-module classifier category may be missing._\n\n'
@@ -256,5 +256,5 @@ jq -r --argjson n "${sample_n}" '.[0:$n][]' <<<"${examples_json}" | while IFS= r
 done
 
 printf '%s\n' '---'
-printf '_To act on a cluster: pick the recurring bigram or path, draft a new classifier category in `bundle/dot-claude/skills/autowork/scripts/lib/classifier.sh`, add a regression net in `tests/test-classifier.sh`, and update `AGENTS.md` "Defect categories"._\n'
+printf '_To act on a cluster: pick the recurring bigram or path, draft a new classifier category in `bundle/dot-claude/skills/autowork/scripts/lib/classifier.sh`, add a regression net in `tests/test-intent-classification.sh`, and update `AGENTS.md` "Defect categories"._\n'
 printf '_To re-run with a wider sample: `cluster-unknown-defects.sh --sample 20`. To inspect another bucket: `cluster-unknown-defects.sh --bucket missing_test`._\n'

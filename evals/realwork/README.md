@@ -56,8 +56,9 @@ Arms are sandboxed installs (`TARGET_HOME` + `CLAUDE_CONFIG_DIR` + `HOME`
 isolation — nothing touches your live `~/.claude` or its ledgers).
 Sandboxes never inherit interactive login; real campaigns need a one-time
 `claude setup-token` (then `export CLAUDE_CODE_OAUTH_TOKEN=...`) or an
-`ANTHROPIC_API_KEY`. `tests/test-realwork-arms.sh` exercises the whole
-pipeline with a mock binary — zero spend. Probe fixtures under
+`ANTHROPIC_API_KEY`. `bash evals/realwork/arms.sh validate` performs zero-spend
+protocol validation; live arms still require explicit credentials and spend.
+Probe fixtures under
 `fixtures/probes/` are bundled (tiny, purpose-built); the 20 realistic
 scenarios' fixtures remain user-provided as documented above.
 
@@ -371,9 +372,8 @@ distinctions that cannot be reduced to mechanical checks.
 The exact campaign flow is:
 
 ```bash
-# Zero-spend protocol validation and adversarial regression net.
+# Zero-spend protocol and deterministic scoring validation.
 bash evals/realwork/pairwise.sh validate
-bash tests/test-realwork-pairwise.sh
 
 # The baseline path must be a clean checkout at the manifest-pinned commit;
 # the challenger path must be the clean release-candidate checkout.

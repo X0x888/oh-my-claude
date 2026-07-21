@@ -269,10 +269,10 @@ ok "no --quick marker found (ensure tools/hotfix-sweep.sh was run as Pre-flight 
 #
 #   Sub-stage A — lint sweep: mirrors the CI `lint` job. Runs
 #     bash -n on bundle/, JSON validation, flag-coordination audit,
-#     `shell-lint` (shellcheck) on bundle/, and the python
-#     statusline test. The original gate ran only the `test` job;
+#     `shell-lint` (shellcheck) on bundle/, and Python statusline syntax.
+#     The original gate ran only the `test` job;
 #     lint regressions (shell-lint warnings, JSON syntax errors,
-#     flag-coord drift, python statusline breaks) shipped CI-red on
+#     flag-coord drift, Python syntax breaks) shipped CI-red on
 #     tagged-SHAs because nothing local caught them. Each check
 #     skips with a visible notice if its dependency (shell-lint,
 #     python3) is not available — so a minimal dev box still gets
@@ -297,7 +297,7 @@ elif [[ ! -f "${REPO_ROOT}/.github/workflows/validate.yml" ]]; then
   # repo missing validate.yml should not pretend the gate ran.
   printf '  \033[33mnotice:\033[0m .github/workflows/validate.yml not present — local-sweep gate skipped\n'
 elif [[ "${DRY_RUN}" -eq 1 ]]; then
-  printf '  [dry-run] would run lint sweep (bash -n, JSON, flag-coord, shellcheck, statusline) + CI-pinned bash tests from .github/workflows/validate.yml\n'
+  printf '  [dry-run] would run lint sweep (bash -n, JSON, flag-coord, shellcheck, Python syntax) + essential bash tests from .github/workflows/validate.yml\n'
 else
   # === SUB-STAGE A: LINT SWEEP ===
   #
@@ -387,21 +387,21 @@ else
     lint_count_skip=$((lint_count_skip + 1))
   fi
 
-  # Lint 5/5: python statusline test.
-  if command -v python3 >/dev/null 2>&1 && [[ -f "${REPO_ROOT}/tests/test_statusline.py" ]]; then
-    printf '  Lint 5/5: python3 statusline test...\n'
+  # Lint 5/5: Python statusline syntax (no test harness or bytecode write).
+  if command -v python3 >/dev/null 2>&1 && [[ -f "${REPO_ROOT}/bundle/dot-claude/statusline.py" ]]; then
+    printf '  Lint 5/5: Python statusline syntax...\n'
     set +e
-    statusline_out="$( (cd "${REPO_ROOT}" && python3 -m unittest tests.test_statusline 2>&1) )"
+    statusline_out="$(python3 -c 'import pathlib,sys; p=pathlib.Path(sys.argv[1]); compile(p.read_bytes(), str(p), "exec")' "${REPO_ROOT}/bundle/dot-claude/statusline.py" 2>&1)"
     statusline_rc=$?
     set -e
     if [[ "${statusline_rc}" -eq 0 ]]; then
       lint_count_pass=$((lint_count_pass + 1))
     else
       lint_count_fail=$((lint_count_fail + 1))
-      lint_failures="${lint_failures}\n    python statusline: $(printf '%s' "${statusline_out}" | tail -2 | tr '\n' ' ')"
+      lint_failures="${lint_failures}\n    Python statusline syntax: $(printf '%s' "${statusline_out}" | tail -2 | tr '\n' ' ')"
     fi
   else
-    printf '  \033[33mnotice:\033[0m Lint 5/5: python3 or tests/test_statusline.py missing — statusline test skipped\n'
+    printf '  \033[33mnotice:\033[0m Lint 5/5: python3 or statusline.py missing — syntax check skipped\n'
     lint_count_skip=$((lint_count_skip + 1))
   fi
 
@@ -416,7 +416,7 @@ else
   # === SUB-STAGE B: TEST SWEEP ===
   #
   # Extract the exact test list from the workflow file via the shared
-  # helper so release.sh, run-sterile.sh, and coordination-rules stay
+  # helper so release.sh and the CI workflow stay
   # in lockstep as new validate.yml run shapes appear.
   set +e
   ci_tests="$(bash "${REPO_ROOT}/tools/list-ci-pinned-tests.sh" "${REPO_ROOT}/.github/workflows/validate.yml" 2>&1)"

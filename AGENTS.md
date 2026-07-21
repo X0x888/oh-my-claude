@@ -187,7 +187,7 @@ oh-my-claude/
     settings.patch.json       # Settings merged into user's settings.json
 
   evals/realwork/             # Outcome eval scenarios + scorer for minimal-prompt real-work shipping
-  tests/                      # 159 bash + 1 python test scripts; CLAUDE.md "Testing" gives the canonical commands
+  tests/                      # 7 essential bash suites; tests/README.md documents ownership
 
   tools/                      # Developer tools (not installed; keep exhaustive)
     audit-published-release-assets.sh
@@ -217,10 +217,10 @@ oh-my-claude/
     render-release-notes.sh
     render-release-title.sh
     replay-classifier-telemetry.sh
-    run-tests.sh                         # change-aware execution, sharding, timing receipts, and portfolio audit
+    run-tests.sh                         # essential portfolio runner, listing, audit, and optional sharding
     verify-distribution-readiness.sh         # top-level release/distribution readiness (`--json` available)
-    verify-install-readiness.sh              # top-level install/onboarding readiness (`--json` available)
-    verify-professional-readiness.sh         # top-level cross-domain product-readiness audit (`--json` available)
+    verify-install-readiness.sh              # retained install/uninstall readiness (`--json` available)
+    verify-professional-readiness.sh         # retained intent/gate/realwork readiness (`--json` available)
     verify-project-readiness.sh              # top-level maintainer release-candidate audit (`--json` available)
     verify-published-release-assets.sh
     verify-published-release-attestations.sh
@@ -246,7 +246,7 @@ oh-my-claude/
 - **record-scope-checklist.sh** (`autowork/scripts/record-scope-checklist.sh`): State-backed checklist for example-marker prompts. `prompt-intent-router.sh` arms `exemplifying_scope_required=1` when an execution prompt uses `for instance` / `e.g.` / `such as` / `as needed`; the model records sibling class items in `exemplifying_scope.json`, then marks each `shipped` or `declined` with a concrete WHY. `stop-guard.sh` blocks silent drops while pending items remain.
 - **record-delivery-action.sh** (`autowork/scripts/record-delivery-action.sh`): PostToolUse Bash recorder for successful delivery actions (`git commit`, `git push`, `git tag`, and `gh pr/release/issue` publish-class commands). Feeds the delivery-contract gate so prompts that explicitly require commit or publish actions cannot be satisfied by prose alone.
 - **lib/state-io.sh** (`autowork/scripts/lib/state-io.sh`): Extracted state I/O module. Sourced by `common.sh` after `validate_session_id` and `log_anomaly` are defined. The lib uses portable readlink resolution so it works whether `common.sh` is installed normally, symlinked into a test HOME, or symlinked to a custom location.
-- **lib/classifier.sh** (`autowork/scripts/lib/classifier.sh`): Extracted prompt classification subsystem (~500 lines). Loaded through `common.sh`'s idempotent `_omc_load_classifier` after every classifier dependency (`project_profile_has`, `is_advisory_request`, `normalize_task_prompt`, etc.) is defined; hot-path callers can request deferred loading. Behavior identical to the prior in-place definitions; this module exists for clearer ownership and to give the regression suite (`test-intent-classification.sh`, `test-classifier-replay.sh`) a single file of truth for future tuning.
+- **lib/classifier.sh** (`autowork/scripts/lib/classifier.sh`): Extracted prompt classification subsystem (~500 lines). Loaded through `common.sh`'s idempotent `_omc_load_classifier` after every classifier dependency (`project_profile_has`, `is_advisory_request`, `normalize_task_prompt`, etc.) is defined; hot-path callers can request deferred loading. Behavior identical to the prior in-place definitions; `test-intent-classification.sh` is its retained behavioral owner.
 - **lib/verification.sh** (`autowork/scripts/lib/verification.sh`): Verification and proof-authority subsystem, eagerly sourced by `common.sh` immediately after `lib/state-io.sh`. It owns Bash project-command/framework matching; count, outcome, zero-execution, and kind-specific observation detection; verification method/scope and confidence-factor scoring; MCP classification, mutation dominance, scoring, and outcome detection; requested/observed evidence-kind derivation; non-evaluating shell argv admission; and canonical semantic targets for runners, selectors, custom scripts, launch aliases, and source paths. Public entry points include `verification_matches_project_test_command`, `verification_has_framework_keyword`, `verification_output_has_counts`, `verification_output_has_clear_outcome`, `verification_output_reports_zero_execution`, `verification_output_reports_kind_observation`, `detect_verification_method`, `classify_verification_scope`, `score_verification_confidence`, `score_verification_confidence_factors`, `classify_mcp_verification_tool`, `score_mcp_verification_confidence`, `detect_mcp_verification_outcome`, `mcp_tool_attempts_artifact_mutation`, `verification_command_requested_evidence_kind`, `verification_receipt_evidence_kind`, `verification_command_is_authoritative_execution`, and `verification_command_semantic_target`. These helpers do not read or write session state, but semantic path normalization intentionally observes the current filesystem and executable aliases.
 - **lib/plan-publication-transaction.sh** (`autowork/scripts/lib/plan-publication-transaction.sh`): Fixed-name rollback WAL for `record-plan.sh`. It snapshots every covered plan/state/causal/Definition artifact plus the immutable lifecycle/native/digest owner before publication, restores the exact old generation idempotently after pre-commit death, and cold-retires an interrupted native planner into exact tombstones plus a deterministic `plan_cold_recovery_handoff.json` before compaction/resume.
 - **Quality Constitution authority** (`quality-constitution.sh`, `quality-constitution-authority-guard.sh`, `lib/quality-constitution-authority.sh`): Durable user taste uses a narrow slash grammar and a one-use exact-operation grant bound to the current session/project/prompt revision. The router issues a digest-only sidecar; the helper consumes it before profile mutation; prompt/compact/resume/accepted-Stop transitions invalidate leftovers. The always-on PreTool guard admits only whole-command-validated helper reads/proposals or the exact managed mutation, denies raw Bash access to protected storage, and physically normalizes editor/connector path fields so traversal and symlink aliases cannot bypass the boundary. Standalone `direct` curation requires TTY-backed stdin and stderr. Profile writers atomically publish a populated owner claim before the compatibility lock directory exists; exact dead-owner/reaper claims make interrupted recovery deterministic. Compilation derives JSON and prose from one locked immutable Constitution snapshot and quarantines repository exemplars whose current digest no longer matches; its contract-facing digest composes the raw profile and live reference-integrity identities so exemplar drift stales existing contracts. This is cooperative same-user-process integrity, not an OS sandbox.
@@ -308,7 +308,7 @@ When multiple reviewers cover the same dimension and their verdicts disagree, th
 
 **Edit-aware override.** When the user addresses findings on the dimension's relevant surface and re-runs that reviewer, the new CLEAN verdict lands after the matching freshness clock and the storage helper detects the prior FINDINGS is stale — the new CLEAN wins outright. The gate self-clears on the fix-and-re-review path without requiring an explicit reset surface; an unrelated edit cannot manufacture that transition.
 
-**Why this matters.** Before v1.44-pre, the implicit semantics was "last-reviewer-wins" — whichever reviewer wrote last set the dimension's verdict, and stop-guard only consumed the ts. A quality-reviewer reporting CLEAN AFTER a sibling excellence-reviewer's FINDINGS silently dropped the findings (the dimension's ts was already valid from the CLEAN, and the FINDINGS verdict was stored but never read by any gate). The stricter-wins invariant closes that gap; `tests/test-stricter-verdict-wins.sh` is the regression net.
+**Why this matters.** Before v1.44-pre, the implicit semantics was "last-reviewer-wins" — whichever reviewer wrote last set the dimension's verdict, and stop-guard only consumed the ts. A quality-reviewer reporting CLEAN AFTER a sibling excellence-reviewer's FINDINGS silently dropped the findings (the dimension's ts was already valid from the CLEAN, and the FINDINGS verdict was stored but never read by any gate). The stricter-wins invariant closes that gap. The lean portfolio retains broad gate/state coverage rather than a dedicated exhaustive matrix.
 
 #### Universal VERDICT contract (v1.14.0)
 
@@ -326,7 +326,7 @@ In v1.14.0 the VERDICT contract was extended beyond the reviewer agents to all a
 | Writer | `draft-writer`, `writing-architect` | `DELIVERED` / `NEEDS_INPUT` / `NEEDS_RESEARCH` | Draft/structure is ready, awaiting decision, or needs factual research. | None — informational. |
 | Implementer | `backend-api-developer`, `devops-infrastructure-engineer`, `frontend-developer`, `fullstack-feature-builder`, `ios-core-engineer`, `ios-deployment-specialist`, `ios-ecosystem-integrator`, `ios-ui-developer`, `test-automation-engineer`, `research-data-analyst` | `SHIP` / `INCOMPLETE` / `BLOCKED` | Implementation is complete and verified, partial, or blocked on a hard prerequisite. | None — informational. |
 
-Total: 9 reviewer-class + 7 lens + 2 planner + 3 researcher + 1 debugger + 1 framer + 2 operations + 2 writer + 10 implementer = **37 agents** (as of v1.49-pre; the research pack added `rigor-reviewer`, `literature-scout`, `research-data-analyst`). The contract-presence regression net is `tests/test-agent-verdict-contract.sh` — when adding a new agent or role, extend that test's `role_of_agent()` and `allowed_tokens_of_role()` cases in lockstep with this table.
+Total: 9 reviewer-class + 7 lens + 2 planner + 3 researcher + 1 debugger + 1 framer + 2 operations + 2 writer + 10 implementer = **37 agents** (as of v1.49-pre; the research pack added `rigor-reviewer`, `literature-scout`, `research-data-analyst`). Agent-role changes require a direct static review of this table and the affected definitions; the retired per-agent contract matrix remains available in Git history.
 
 When wiring a new VERDICT vocabulary into a hook consumer, extend the parser regex in `record-reviewer.sh` (or add a new parser as `record-plan.sh` did for `plan_verdict`). Until then, the informational rows above emit the verdict for human readability and forward compatibility — the gate's behavior is unchanged for those agents.
 
@@ -336,7 +336,7 @@ Nine finding-emitting agents — `quality-reviewer`, `excellence-reviewer`, `rel
 
 The `extract_findings_json` helper in `common.sh` parses the line preferentially over the legacy prose heuristic and rejects the whole array when any object omits an actionable contract field, so `[{}]` cannot become a synthetic empty finding. `normalize_finding_object` retains severity aliases (`critical`/`p0`/`p1`/`p2`/`blocker` → `high`/`medium`/`low`) and unknown categories → `other`. The discovered-scope pipeline (`extract_discovered_findings`) takes the JSON path when present and emits rows with a `.structured` field carrying the full payload. Any installed/custom non-dimension specialist may opt into this deterministic structured path. Every selected Council primary/gap return whose final universal VERDICT is unsuccessful must provide a valid non-empty payload; missing, empty, or structurally invalid JSON creates a contract-violation row regardless of role vocabulary. Dedicated verifier/reviewer findings still feed their dimensions rather than being duplicated into generic structured scope. Legacy prose heuristics remain allowlisted to advisory specialists only. Single-line array form remains preferred for robust grep/debug workflows; the parser also accepts pretty-printed JSON arrays that start on the `FINDINGS_JSON:` line and close before `VERDICT:`.
 
-`editor-critic` is intentionally excluded from the contract — its findings are prose-quality observations, not severity-anchored structured items. The contract-presence regression net is `tests/test-findings-json.sh`.
+`editor-critic` is intentionally excluded from the contract — its findings are prose-quality observations, not severity-anchored structured items.
 
 #### Adaptive dimension mapping
 
@@ -389,7 +389,7 @@ Current contents: `art-taste-doctrine.md` (the anchor — Rothko, Albers, Rams, 
 
 **Consumed by 6 design-side surfaces** (5 agents + 1 skill) — `visual-craft-lens`, `design-reviewer`, `frontend-developer`, `ios-ui-developer`, `design-lens` (UX-trimmed 3-principle variant), and the `frontend-design` SKILL (the other 5 receive the visual-craft 8-principle variant). Each agent inlines the load-bearing principles and references the canonical `~/.claude/quality-pack/design-craft/<file>.md` path so the deep doctrine is one tool-call away. **Intentionally NOT in the global `@`-include chain** — loading several thousand words of design doctrine on every non-UI session is the wrong tax shape; on-demand grounding scoped to design agents is the right shape.
 
-**4-site coordination lockstep** (mirrors the memory-file lockstep): (1) the doctrine file itself, (2) `verify.sh` `required_paths`, (3) inline reference + Art-Taste Calibration section in each consuming agent, (4) `tests/test-art-taste-doctrine.sh` regression net. Adding/removing a design-craft reference requires updating all four; missing any one is a silent failure. Full lockstep is documented at the project root in `CLAUDE.md` Coordination Rules → "Adding or removing a design-craft reference."
+**3-site coordination lockstep** (mirrors the memory-file lockstep): (1) the doctrine file itself, (2) `verify.sh` `required_paths`, and (3) inline reference + Art-Taste Calibration section in each consuming agent. Adding/removing a design-craft reference requires updating all three; missing any one is a silent failure. Full lockstep is documented at the project root in `CLAUDE.md` Coordination Rules → "Adding or removing a design-craft reference."
 
 #### Bypass-surface taxonomy (v1.42.x-newer, lifted to `docs/bypass-taxonomy.md` in v1.43)
 
@@ -398,8 +398,8 @@ The four-category framework for stop-guard bypass defenses
 **classifier-misroute**) is documented at full length in
 **[`docs/bypass-taxonomy.md`](docs/bypass-taxonomy.md)** — a standalone,
 project-independent reference. The v1.42.x bypass-closure work added
-seven mechanical defenses + one umbrella regression net
-(`tests/test-stop-guard-bypass-surface.sh`).
+seven mechanical defenses; focused gate coverage now belongs in
+`tests/test-quality-gates.sh` or `tests/test-common-utilities.sh`.
 
 **Application rule (short form — full version in the standalone doc):**
 
@@ -408,8 +408,8 @@ seven mechanical defenses + one umbrella regression net
    ≥3, the proposal MUST first attempt a state-predicate alternative.
    If none exists, the justification goes in CHANGELOG so the next
    reviewer can challenge it.
-3. The umbrella regression net must add coverage in the same commit
-   per the existing coordination rule.
+3. Add one focused assertion to the nearest retained owner when the
+   consequential decision changes; do not duplicate umbrella coverage.
 4. FP-audit notes go in a comment block at the call site so future
    cleanup waves know what to keep.
 
@@ -423,7 +423,8 @@ the single source of truth for the live defense counts.
 
 ## Testing
 
-Run these before submitting changes:
+The default portfolio is deliberately small. Run these before submitting
+changes:
 
 ```bash
 # Syntax validation
@@ -435,12 +436,26 @@ shellcheck bundle/dot-claude/**/*.sh
 # Integration verification
 bash verify.sh
 
-# Unit / integration tests — run the full suite using the canonical
-# command list in CLAUDE.md → "Testing". CLAUDE.md is the single source
-# of truth so this file does not have to track every test addition; the
-# tally above (`tests/  # NN bash + 1 python …`) and CLAUDE.md must
-# agree on the count.
+# Essential behavior portfolio (7 Bash suites)
+bash tools/run-tests.sh
 ```
+
+### Verification economics
+
+- During reviews, prioritize production defects over test-harness expansion.
+- Interactive test work is capped at 20 minutes or 30% of task effort unless
+  the user explicitly authorizes more.
+- Run static checks and the essential portfolio locally. Put any exceptional
+  long-running or adversarial experiment in CI or a separate explicitly
+  authorized task.
+- Add or modify tests only for a confirmed production defect, an intentional
+  contract change, or an incorrect retained assertion. Extend an existing
+  owner before creating a new file.
+- Do not change expectations merely to make a failure pass.
+- Before exceeding the budget, report completed evidence, remaining risk, and
+  estimated cost, then request authorization.
+- Keep the default local portfolio below ten minutes. `tests/README.md` is the
+  canonical ownership list.
 
 ## Protected Design Decisions
 
@@ -456,7 +471,7 @@ Do not change these without discussion in a GitHub issue:
 
 5. **Agent-first gate is opt-in as of v1.43+** (`agent_first_gate=off` default). The mandate was firing ~2.2×/session without paying for itself. Live routing is risk-adaptive and inherited specialists ride the user's temporary/current session model, so no stable categorical smartness ordering justifies an unconditional first dispatch; `core.md` Thinking Quality + `model-robustness.md` Mechanism 2 carry the actual concern under default-off. **Observed-mutation telemetry is unconditional**: `first_mutation_ts`, `first_mutation_tool`, and `agent_first_gate_state` record regardless of the flag, so `/ulw-report` can compare opt-in vs opt-out outcomes per row. Exact editor tools are stamped at PreTool attempt time and again by `mark-edit.sh`; with the gate off, Bash is stamped by `mark-edit.sh` only after the snapshot/fallback observes a mutation (avoiding a mutation-classifier tax on every test/build call). With the gate on, recognized Bash mutation attempts are also stamped PreTool. `agent_first_gate_blocks` increments only when the enabled gate actually blocks. The Stop backstop reads `agent_first_gate_state` from session state (not the live env var), so off→on / on→off toggle mid-session does not produce flag-flip footguns. **Do not re-mandate** without evidence that an independent fresh-context checkpoint reliably repays its latency; users can opt in deliberately for workflow training or drift-prone work regardless of model ordering. Per-conf-source restrictions (security-load-bearing flags refused from project-level conf to defeat malicious-repo flip attempts) apply to this flag too.
 
-6. **Security/model/quality/user-global authority flags refuse project-conf overrides** (`pretool_intent_guard`, `bg_spawn_gate`, `agent_first_gate`, `no_defer_mode`, `quality_policy`, `definition_of_excellent`, `quality_constitution`, `taste_learning`, `quality_constitution_max_context_chars`, `model_tier`, `model_overrides`, `council_deep_default`, `workflow_substrate`, `repo_lessons`, `auto_tune`, `output_style`, `resume_watchdog`, `resume_watchdog_cooldown_secs`, `resume_session_ttl_secs`, `resume_request_ttl_days`, `resume_scan_max_sessions`, `claude_bin`, `state_ttl_days`, `time_tracking_xs_retain_days`, `custom_verify_mcp_tools`, `custom_verify_patterns`). A malicious or unfamiliar repo's `.claude/oh-my-claude.conf` cannot disable defensive gates or frozen quality policy, choose model strength/cost, arm or suppress background heavy fan-out, broaden verification proof admission, arm prompt-derived persistence, split hook/daemon views of shared resume artifacts, mutate user-global output/scheduler state, choose a daemon executable, delete cross-project state or telemetry, or trigger other user-global mutation that the user did not opt into at user scope (`${HOME}/.claude/oh-my-claude.conf`). Env vars still provide explicit top-level user authority. When adding a sensitive flag, add it to the `case` deny-list in `common.sh` `_parse_conf_file` and pin a behavioral regression in `tests/test-stop-guard-bypass-surface.sh` F-013.
+6. **Security/model/quality/user-global authority flags refuse project-conf overrides** (`pretool_intent_guard`, `bg_spawn_gate`, `agent_first_gate`, `no_defer_mode`, `quality_policy`, `definition_of_excellent`, `quality_constitution`, `taste_learning`, `quality_constitution_max_context_chars`, `model_tier`, `model_overrides`, `council_deep_default`, `workflow_substrate`, `repo_lessons`, `auto_tune`, `output_style`, `resume_watchdog`, `resume_watchdog_cooldown_secs`, `resume_session_ttl_secs`, `resume_request_ttl_days`, `resume_scan_max_sessions`, `claude_bin`, `state_ttl_days`, `time_tracking_xs_retain_days`, `custom_verify_mcp_tools`, `custom_verify_patterns`). A malicious or unfamiliar repo's `.claude/oh-my-claude.conf` cannot disable defensive gates or frozen quality policy, choose model strength/cost, arm or suppress background heavy fan-out, broaden verification proof admission, arm prompt-derived persistence, split hook/daemon views of shared resume artifacts, mutate user-global output/scheduler state, choose a daemon executable, delete cross-project state or telemetry, or trigger other user-global mutation that the user did not opt into at user scope (`${HOME}/.claude/oh-my-claude.conf`). Env vars still provide explicit top-level user authority. When adding a sensitive flag, add it to the `case` deny-list in `common.sh` `_parse_conf_file` and extend the nearest retained gate/config owner.
 
 ## Documentation Maintenance
 

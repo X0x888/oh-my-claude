@@ -148,10 +148,10 @@ When proposing a change to `core.md`:
      hard cap of 3 active defenses).
 3. If the proposal must remain behavior-only, **say so explicitly** in
    the diff message. Don't let the rule pass for binding by default.
-4. If the proposal IS adding mechanical enforcement, run the relevant
-   regression net — for PreTool boundary defenses, this is
-   `tests/test-pretool-intent-guard.sh` plus the umbrella
-   `tests/test-stop-guard-bypass-surface.sh` where applicable.
+4. If the proposal adds consequential mechanical enforcement, extend the
+   nearest retained owner once. PreTool gate decisions normally belong in
+   `tests/test-quality-gates.sh`; helper-only behavior belongs in
+   `tests/test-common-utilities.sh`.
 
 ## See also
 
@@ -161,6 +161,5 @@ When proposing a change to `core.md`:
   enforce or fail to enforce
 - `bundle/dot-claude/skills/autowork/scripts/pretool-intent-guard.sh` —
   current home of PreTool boundary defenses
-- `tests/test-pretool-intent-guard.sh` — regression net for PreTool
-  boundary defenses (T48-T62 cover bg-spawn hygiene, including reviewer-driven FP regressions)
+- `tests/test-quality-gates.sh` — broad retained gate-decision coverage
 - `CHANGELOG.md` — v1.43.x entries for the bg-spawn gate and this doc

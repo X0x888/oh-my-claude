@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # tools/verify-project-readiness.sh — top-level maintainer audit that
-# composes product-readiness, install/onboarding readiness, and
+# composes retained product checks, install/removal readiness, and
 # distribution-readiness into one canonical release-candidate view.
 
 set -euo pipefail
@@ -57,11 +57,9 @@ Usage: bash tools/verify-project-readiness.sh [options]
 
 Runs the canonical top-level maintainer audit for oh-my-claude by
 combining:
-  1. product readiness for professional users across coding, writing,
-     research, scholarly, operations, mixed, advisory, and general
-     workflows
-  2. install/onboarding readiness across the bootstrapper, first-run
-     handoff, recovery, and AI-assisted onboarding surfaces
+  1. retained intent classification, quality-gate, and real-work scoring
+     checks
+  2. retained install-artifact and merge-safe uninstall checks
   3. distribution readiness of the published release surface, the
      local deployment candidate, and the deployed
      release/distribution automation stack

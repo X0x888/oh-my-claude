@@ -6031,7 +6031,7 @@ is_no_defer_active() {
 # and surfaces the ratio as a calibration cue).
 #
 # The pre-v1.43 no-defer contract was asserted-correct: the regression
-# net at tests/test-no-defer-contract.sh prevents loosening, but no
+# net at tests/test-quality-gates.sh prevents loosening, but no
 # counter measures whether the contract over-fires in practice. This
 # function closes that gap WITHOUT changing contract behavior — the
 # block still fires the same way; only the observability is new.

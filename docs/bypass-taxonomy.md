@@ -51,9 +51,9 @@ When proposing a new defense:
    ≥3, the proposal MUST first attempt a state-predicate
    alternative. If none exists, that justification goes in the
    CHANGELOG so the next reviewer can challenge it.
-3. The umbrella regression net
-   (`tests/test-stop-guard-bypass-surface.sh`) must add coverage in
-   the same commit per the existing coordination rule.
+3. When the consequential decision changes, add one focused assertion to
+   `tests/test-quality-gates.sh` or `tests/test-common-utilities.sh`. Do not
+   duplicate it in a per-surface and umbrella suite.
 4. FP-audit notes (which ambient harness text the new
    regex/validator might match) go in a comment block at the call
    site so future cleanup waves know what to keep.
@@ -62,8 +62,7 @@ When proposing a new defense:
 
 The abstraction-critic Wave 0 lens (v1.42.x-newer council) flagged
 the seven-defense framing as **scalable through ~12-15 defenses then
-collapsing under FP-audit burden** — not because the umbrella test
-fails to scale (it does, mechanically) but because each prose-pattern
+collapsing under FP-audit burden** because each prose-pattern
 defense expands the cognitive surface the next session must reason
 about when choosing recovery paths. The taxonomy converts the
 shape of growth from compounding regex into a portfolio: the project
@@ -91,8 +90,8 @@ harness:
 
 ## Defense inventory (original v1.42.x set + later producer closure)
 
-For reference. The umbrella regression net at
-`tests/test-stop-guard-bypass-surface.sh` is authoritative.
+For reference. The implementation and this inventory are authoritative;
+`tests/test-quality-gates.sh` retains only high-value decision coverage.
 
 | Defense | Category | Closure target |
 |---|---|---|
@@ -131,6 +130,6 @@ see `docs/enforcement-classes.md`.
 - `docs/enforcement-classes.md` — broader enforcement taxonomy (six
   classes including PreTool boundary + behavior-only)
 - `AGENTS.md` — current taxonomy reference (cross-links here)
-- `tests/test-stop-guard-bypass-surface.sh` — umbrella regression net
+- `tests/test-quality-gates.sh` — retained gate-decision coverage
 - `~/.claude/quality-pack/memory/core.md` — the contract this enforces
 - `CHANGELOG.md` — per-release entries for each closure

@@ -1249,7 +1249,7 @@ assert_shell_test_nomatch() {
 }
 
 assert_shell_test_match "bash tests/test-install-artifacts.sh"
-assert_shell_test_match "bash tests/test-e2e-hook-sequence.sh"
+assert_shell_test_match "bash tests/test-session-resume.sh"
 assert_shell_test_match "bash test-helper.sh"
 assert_shell_test_match "bash test_runner.sh"
 assert_shell_test_match "./tests/runner.sh"

@@ -361,7 +361,7 @@ context merely because the user entered its directory. Canonical Constitution
 data is never read from a repository automatically; team sharing is an explicit
 export/import and local acceptance flow.
 
-`quality_policy` joined in v1.47 (oracle-verified): a hostile repo's `quality_policy=balanced` would silently strip the zero-steering block-escalation from a user whose `zero_steering` came from user-level conf — the dominant path, since `/omc-config` writes user scope. The sibling `guard_exhaustion_mode` deliberately remains project-settable: its downgrade is backstopped by `no_defer_mode` (deny-listed) forcing block-mode on serious-missing ULW stops, and it has broad legitimate per-project tuning use; an invariant regression in `tests/test-stop-guard-bypass-surface.sh` locks that backstop. **When adding any new enforcement-relevant conf flag, evaluate it for deny-list membership** — the deny-list is fail-open by construction (new flags are project-settable unless listed), so the evaluation is a required step in the flag checklist (see CLAUDE.md Coordination Rules).
+`quality_policy` joined in v1.47 (oracle-verified): a hostile repo's `quality_policy=balanced` would silently strip the zero-steering block-escalation from a user whose `zero_steering` came from user-level conf — the dominant path, since `/omc-config` writes user scope. The sibling `guard_exhaustion_mode` deliberately remains project-settable: its downgrade is backstopped by `no_defer_mode` (deny-listed) forcing block-mode on serious-missing ULW stops, and it has broad legitimate per-project tuning use. **When adding any new enforcement-relevant conf flag, evaluate it for deny-list membership** — the deny-list is fail-open by construction (new flags are project-settable unless listed), so the evaluation is a required step in the flag checklist (see CLAUDE.md Coordination Rules).
 
 `model_tier` and `model_overrides` are user-authority only. A malicious project tier could silently replace the user's quality posture with economy across the roster—or force an unwanted expensive tier—while a pin such as `quality-reviewer:haiku` would weaken the reviewer expected to detect the repository's defects. User-level conf and explicit `OMC_MODEL_TIER` / `OMC_MODEL_OVERRIDES` remain supported; project-level lines are ignored.
 
@@ -528,7 +528,7 @@ The same `/ulw` outcome rendered in both bundled styles. Use this preview to cal
 > - `bundle/dot-claude/output-styles/executive-brief.md` (new file).
 > - `output_style` conf enum extended to `opencode|executive|preserve`.
 >
-> **Verification.** `bash tests/test-settings-merge.sh` → `194 passed, 0 failed`.
+> **Verification.** `bash verify.sh` → `Errors: 0`.
 >
 > **Objective coverage.** Install, uninstall, verify, configuration, and documentation surfaces are covered.
 >
@@ -536,7 +536,7 @@ The same `/ulw` outcome rendered in both bundled styles. Use this preview to cal
 
 **`executive-brief` voice (same outcome):**
 
-> **Headline.** Style shipped. 194 of 194 merge tests pass. No blockers, no asks.
+> **Headline.** Style shipped. Installer verification reports zero errors. No blockers, no asks.
 >
 > ---
 >
@@ -545,7 +545,7 @@ The same `/ulw` outcome rendered in both bundled styles. Use this preview to cal
 > - `output_style` enum extended: `opencode | executive | preserve`.
 >
 > **Verification.**
-> - `bash tests/test-settings-merge.sh` → `194 passed, 0 failed`.
+> - `bash verify.sh` → `Errors: 0`.
 >
 > **Objective coverage.** The complete style-delivery objective and upgrade surfaces are covered.
 >

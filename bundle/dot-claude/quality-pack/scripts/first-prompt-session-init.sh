@@ -30,7 +30,7 @@
 #   - `verify.sh` (required_paths)
 #   - `uninstall.sh` (parallel SessionStart-hook list)
 #   - `config/settings.patch.json` (hook wiring)
-#   - `tests/test-lazy-session-start.sh` (regression net)
+#   - `tests/test-session-resume.sh` (regression net)
 
 set -euo pipefail
 

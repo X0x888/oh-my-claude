@@ -417,7 +417,8 @@ This assessment found and fixed immediate governance debt:
 
 1. restored the missing `v1.16.0` changelog heading
 2. corrected live doc-count drift across `README.md`, `AGENTS.md`, and `CLAUDE.md`
-3. extended `tests/test-coordination-rules.sh` to enforce:
+3. extended the then-current coordination suite (now retired and recoverable
+   from Git history) to enforce:
    - repo-count lockstep
    - release-tag to changelog parity
 4. updated CI checkout depth so tag-aware history checks run in automation

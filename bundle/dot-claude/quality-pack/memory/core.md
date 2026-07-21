@@ -88,7 +88,7 @@ The canonical `/ulw` user is not an expert coder. Routing technical decisions ba
 - "Collapsing the dual-failure-mode framing back to no-defer-only" — v1.40.x rebalance names BOTH stopping-short AND shallow-thinking as equal-weight contracts.
 - "Removing or merging `model-robustness.md` as redundant" — it is the mechanism navigation map for shallow-thinking, complementary not redundant.
 
-Right response when contract feels too strict: sharper agent decisions, not wider escape hatches. Recommended preset MUST ship `no_defer_mode=on` — non-negotiable. If you genuinely believe the contract is wrong, raise it with the user explicitly before changing anything. Regression: `tests/test-no-defer-contract.sh`.
+Right response when contract feels too strict: sharper agent decisions, not wider escape hatches. Recommended preset MUST ship `no_defer_mode=on` — non-negotiable. If you genuinely believe the contract is wrong, raise it with the user explicitly before changing anything. Regression: `tests/test-quality-gates.sh`.
 
 ## The v1.44 No-Out-of-Scope contract (load-bearing — do NOT optimize this away)
 
@@ -107,13 +107,13 @@ Under `no_defer_mode=on`:
 - "Out-of-scope is sometimes legitimate."
 - "Disable `god_scope_on_bare_prompt` by default." → Recommended preset MUST ship `on` — non-negotiable, same reason as `no_defer_mode=on`.
 
-Sharper judgment is the answer, not wider escape hatches. Post-hoc redirect is cheap (`/ulw-correct`); held sessions are expensive. Regression: `tests/test-no-out-of-scope-contract.sh`.
+Sharper judgment is the answer, not wider escape hatches. Post-hoc redirect is cheap (`/ulw-correct`); held sessions are expensive. Retained gate owner: `tests/test-quality-gates.sh`.
 
 ## Anti-Patterns
 
-- FORBIDDEN: Softening the v1.40.0 no-defer contract above. *"Soft-warn instead of hard-block"*, *"flip default to off"*, *"validator too strict"* — same anti-pattern. Sharper decisions, not wider hatches. Regression: `tests/test-no-defer-contract.sh`.
-- FORBIDDEN: Bypassing stop-guard quality gates with substitute paths. v1.42.x closed 7 surfaces (handoff regex, ulw-pause judgment, ulw-correct mid-turn downgrade, advisory-no-findings, rejected-finding subjective tokens, final-closure region match, ulw-skip on unremediated review). Telemetry-observed bypasses are FACTS; closures stay closed unless user explicitly signals otherwise. Loosening requires explicit umbrella-test update. Regression: `tests/test-stop-guard-bypass-surface.sh`.
-- FORBIDDEN: Softening the v1.44 No-Out-of-Scope contract above. Sibling to no-defer. Regression: `tests/test-no-out-of-scope-contract.sh`.
+- FORBIDDEN: Softening the v1.40.0 no-defer contract above. *"Soft-warn instead of hard-block"*, *"flip default to off"*, *"validator too strict"* — same anti-pattern. Sharper decisions, not wider hatches. Retained gate owner: `tests/test-quality-gates.sh`.
+- FORBIDDEN: Bypassing stop-guard quality gates with substitute paths. v1.42.x closed 7 surfaces (handoff regex, ulw-pause judgment, ulw-correct mid-turn downgrade, advisory-no-findings, rejected-finding subjective tokens, final-closure region match, ulw-skip on unremediated review). Telemetry-observed bypasses are FACTS; closures stay closed unless user explicitly signals otherwise. A consequential change gets one focused assertion in the nearest retained owner, not duplicate umbrella coverage.
+- FORBIDDEN: Softening the v1.44 No-Out-of-Scope contract above. Sibling to no-defer. Retained gate owner: `tests/test-quality-gates.sh`.
 - FORBIDDEN: Asking "Should I proceed?" when the user already requested the work. The request IS the permission.
 - FORBIDDEN: Summarizing and stopping without completing the review/verification loop.
 - FORBIDDEN: Asking which file to edit when there is one plausible candidate.

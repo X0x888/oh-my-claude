@@ -245,13 +245,13 @@ The same `/ulw` outcome rendered in both bundled styles. Use the example to cali
 > - `bundle/dot-claude/output-styles/executive-brief.md` (new file).
 > - `output_style` conf enum extended to `opencode|executive|preserve`.
 >
-> **Verification.** `bash tests/test-settings-merge.sh` → `194 passed, 0 failed`.
+> **Verification.** `bash verify.sh` → `Errors: 0`.
 >
 > **Next.** Commit and update docs.
 
 `executive-brief` voice (same outcome):
 
-> **Headline.** Style shipped. 194 of 194 merge tests pass. No blockers, no asks.
+> **Headline.** Style shipped. Installer verification reports zero errors. No blockers, no asks.
 >
 > ---
 >
@@ -260,7 +260,7 @@ The same `/ulw` outcome rendered in both bundled styles. Use the example to cali
 > - `output_style` enum extended: `opencode | executive | preserve`.
 >
 > **Verification.**
-> - `bash tests/test-settings-merge.sh` → `194 passed, 0 failed`.
+> - `bash verify.sh` → `Errors: 0`.
 >
 > **Next.** Commit the wave; update `CHANGELOG.md`.
 
