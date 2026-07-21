@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.51.0] - 2026-07-22
+
 ### Definition of Excellent: frozen ambition, criterion proof, and a blind frontier
 
 **Why.** The existing harness could mechanize conscientiousness—tests, reviewer calls, verification, and Stop discipline—but the same model still decided what counted as “the work” and how high “quality” should be. A narrow implementation could therefore pass every gate because the finish line itself had been manufactured too low. The missing property was a perfectionist spirit with externalized taste: not only correctness, but a deliberate, distinctive, coherent, visionary, and complete outcome.
