@@ -1746,12 +1746,12 @@ _omc_current_process_matches_pid() {
   if [[ -r /proc/self/stat ]] \
       && IFS=' ' read -r current_pid _ </proc/self/stat \
       && [[ "${current_pid}" =~ ^[1-9][0-9]*$ ]]; then
-    [[ "${current_pid}" == "${expected_pid}" ]]
-    return
+    [[ "${current_pid}" == "${expected_pid}" ]] && return 0
+    return 1
   fi
   if [[ "${BASH_SUBSHELL:-0}" -eq 0 && "$$" =~ ^[1-9][0-9]*$ ]]; then
-    [[ "$$" == "${expected_pid}" ]]
-    return
+    [[ "$$" == "${expected_pid}" ]] && return 0
+    return 1
   fi
   # macOS Bash 3 keeps `$$` equal to the parent inside `( ... )`. A direct
   # child observes the real current shell as PPID; do not use command

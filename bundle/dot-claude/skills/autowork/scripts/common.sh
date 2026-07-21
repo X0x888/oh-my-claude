@@ -2797,7 +2797,7 @@ _omc_regular_fd_identity() {
   fi
   for descriptor_path in "/proc/self/fd/${fd}" "/dev/fd/${fd}"; do
     value="$(stat -Lc '%d:%i:%F' "${descriptor_path}" 2>/dev/null || true)"
-    if [[ "${value}" =~ ^([0-9]+:[0-9]+):regular[[:space:]]file$ ]]; then
+    if [[ "${value}" =~ ^([0-9]+:[0-9]+):regular([[:space:]]empty)?[[:space:]]file$ ]]; then
       printf '%s\n' "${BASH_REMATCH[1]}"
       return 0
     fi

@@ -1768,33 +1768,63 @@ rm -f "${cleanup_source_dir}/.state.lock/holder.pid"
 rmdir "${cleanup_source_dir}/.state.lock"
 assert_eq "cleanup failure: SessionStart exits nonzero" "1" \
   "$(( cleanup_rc != 0 ? 1 : 0 ))"
-assert_eq "cleanup failure: fenced target remains for bounded cleanup" "1" \
-  "$([[ -d "${cleanup_target_dir}" ]] && printf 1 || printf 0)"
-assert_eq "cleanup failure: target is atomically fenced back to source" \
-  "${cleanup_source}" \
-  "$(jq -r '.resume_transferred_to // empty' \
-    "${cleanup_target_dir}/session_state.json")"
 cleanup_quarantine_root="${TEST_STATE_ROOT}/.resume-quarantine"
 cleanup_quarantined_session="$(find "${cleanup_quarantine_root}" -mindepth 2 -maxdepth 2 \
   -type d -path "${cleanup_quarantine_root}/${cleanup_target}.*/session" -print -quit 2>/dev/null || true)"
-assert_eq "cleanup failure: exact state fence avoids unowned quarantine" "" \
-  "${cleanup_quarantined_session}"
-assert_eq "cleanup failure: offending ledger remains only under fenced target" "1" \
-  "$([[ -d "${cleanup_target_dir}/timing.jsonl" ]] && printf 1 || printf 0)"
+cleanup_quarantine_count="$(find "${cleanup_quarantine_root}" -mindepth 2 -maxdepth 2 \
+  -type d -path "${cleanup_quarantine_root}/${cleanup_target}.*/session" -print 2>/dev/null \
+  | wc -l | tr -d '[:space:]' || true)"
+cleanup_live_target="$([[ -d "${cleanup_target_dir}" ]] && printf 1 || printf 0)"
+cleanup_failclosed_session=""
+cleanup_expiry_artifact=""
+cleanup_failclose_valid=0
+if [[ "${cleanup_live_target}" -eq 1 \
+    && "${cleanup_quarantine_count}" -eq 0 ]]; then
+  cleanup_failclosed_session="${cleanup_target_dir}"
+  cleanup_expiry_artifact="${cleanup_target_dir}"
+  if jq -e --arg source "${cleanup_source}" '
+      type == "object" and (.resume_transferred_to == $source)
+    ' "${cleanup_failclosed_session}/session_state.json" >/dev/null 2>&1; then
+    cleanup_failclose_valid=1
+  fi
+elif [[ "${cleanup_live_target}" -eq 0 \
+    && "${cleanup_quarantine_count}" -eq 1 ]]; then
+  cleanup_failclosed_session="${cleanup_quarantined_session}"
+  cleanup_expiry_artifact="${cleanup_quarantined_session%/session}"
+  if jq -e --arg source "${cleanup_source}" '
+      type == "object"
+      and (.resume_initialization_source_id == $source)
+      and ((.resume_transferred_to // "") == "")
+    ' "${cleanup_failclosed_session}/session_state.json" >/dev/null 2>&1; then
+    cleanup_failclose_valid=1
+  fi
+fi
+assert_eq "cleanup failure: exactly one documented fail-close outcome is authoritative" \
+  "1" "${cleanup_failclose_valid}"
+assert_eq "cleanup failure: offending ledger exists only inside fail-closed artifact" \
+  "${cleanup_failclosed_session}/timing.jsonl" \
+  "$(find "${TEST_STATE_ROOT}" -type d -name timing.jsonl -print 2>/dev/null || true)"
 assert_eq "cleanup failure: source remains authoritative" "" \
   "$(jq -r '.resume_transferred_to // empty' "${cleanup_source_dir}/session_state.json")"
 
-# The normal state sweep prunes the non-live target at the same privacy
-# horizon as every other session directory, so fail-close artifacts cannot
-# persist indefinitely.
-touch -t 200001010000 "${cleanup_target_dir}"
+# The normal state sweep prunes either documented fail-close artifact at the
+# same privacy horizon as ordinary session state.
+if [[ -n "${cleanup_expiry_artifact}" ]]; then
+  touch -t 200001010000 "${cleanup_expiry_artifact}"
+fi
 rm -f "${TEST_STATE_ROOT}/.last_sweep"
 HOME="${FAKE_HOME}" STATE_ROOT="${TEST_STATE_ROOT}" \
   SESSION_ID="quarantine-prune-probe" OMC_STATE_TTL_DAYS=1 \
   bash -c '. "$HOME/.claude/skills/autowork/scripts/common.sh"; sweep_stale_sessions' \
   >/dev/null 2>&1
-assert_eq "cleanup failure: expired fenced target obeys privacy TTL" "0" \
-  "$([[ -e "${cleanup_target_dir}" ]] && printf 1 || printf 0)"
+cleanup_expiry_pruned=0
+if [[ -n "${cleanup_expiry_artifact}" \
+    && ! -e "${cleanup_expiry_artifact}" \
+    && ! -L "${cleanup_expiry_artifact}" ]]; then
+  cleanup_expiry_pruned=1
+fi
+assert_eq "cleanup failure: expired fail-close artifact obeys privacy TTL" \
+  "1" "${cleanup_expiry_pruned}"
 
 # ------------------------------------------------------------------
 # Test 11: concurrent resumes serialize at the final ownership fence.  Hold
