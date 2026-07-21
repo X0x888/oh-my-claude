@@ -24,5 +24,5 @@ bash tools/run-tests.sh
 
 Extend an existing suite when behavior changes. Add a new test file only when
 the behavior is critical, no retained suite is a coherent owner, and the new
-suite keeps the default local portfolio under ten minutes. Historical tests
+suite keeps the portfolio's under-ten-minute CI target credible. Historical tests
 removed during the 2026 portfolio reset remain recoverable from Git history.

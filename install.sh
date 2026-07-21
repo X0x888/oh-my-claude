@@ -60,11 +60,19 @@ TARGET_HOME="${TARGET_HOME:-$HOME}"
 # an existing real home directory to its physical path once at startup so the
 # later ancestor-generation seals do not mistake those platform aliases for a
 # destination race.
-if [[ "${TARGET_HOME}" != /* || "${TARGET_HOME}" == *[[:cntrl:]]* \
+while [[ "${TARGET_HOME}" != "/" && "${TARGET_HOME}" == */ ]]; do
+  TARGET_HOME="${TARGET_HOME%/}"
+done
+_TARGET_HOME_COMPONENTS="${TARGET_HOME}/"
+if [[ "${TARGET_HOME}" == "/" || "${TARGET_HOME}" != /* \
+    || "${TARGET_HOME}" == *[[:cntrl:]]* \
+    || "${_TARGET_HOME_COMPONENTS}" == */./* \
+    || "${_TARGET_HOME_COMPONENTS}" == */../* \
     || ! -d "${TARGET_HOME}" || -L "${TARGET_HOME}" ]]; then
   builtin printf 'Refusing install: TARGET_HOME must be an existing, non-symlink absolute directory.\n' >&2
   exit 1
 fi
+unset _TARGET_HOME_COMPONENTS
 TARGET_HOME="$(builtin cd -- "${TARGET_HOME}" 2>/dev/null \
   && builtin pwd -P)" || exit 1
 [[ "${TARGET_HOME}" == /* && "${TARGET_HOME}" != *[[:cntrl:]]* ]] \
@@ -374,6 +382,32 @@ function trusted_sha256_file () (
     sha256sum)
       output="$(\builtin command -- "${hasher}" -- "${path}" 2>/dev/null)" \
         || \return 1
+      ;;
+    *) \return 1 ;;
+  esac
+  digest="${output%%[[:space:]]*}"
+  [[ "${digest}" =~ ^[0-9A-Fa-f]{64}$ ]] || \return 1
+  \builtin printf '%s\n' "${digest}"
+)
+
+# Hash an already-open regular-file descriptor without reopening its pathname.
+# `/dev/fd/N` and `/proc/self/fd/N` are symlinks on Linux, so routing them
+# through trusted_sha256_file would correctly reject the path but would also
+# make every descriptor-backed settings render fail. Callers bind the
+# descriptor to a sealed regular-file identity immediately before this read.
+function trusted_sha256_descriptor () (
+  \sanitize_sha256_authority_shell || \return 1
+  \local hasher="${1:-}" fd="${2:-}" output="" digest=""
+  [[ -n "${hasher}" && "${fd}" =~ ^[0-9]{1,3}$ ]] || \return 1
+  ((10#${fd} <= 255)) || \return 1
+  case "${hasher##*/}" in
+    shasum)
+      output="$(\builtin command -- "${hasher}" -a 256 \
+        <&"${fd}" 2>/dev/null)" || \return 1
+      ;;
+    sha256sum)
+      output="$(\builtin command -- "${hasher}" \
+        <&"${fd}" 2>/dev/null)" || \return 1
       ;;
     *) \return 1 ;;
   esac
@@ -2632,12 +2666,12 @@ stage_settings_install_merge() {
   # cannot become the input merely because all descriptors opened the same
   # replacement inode. jq receives two independent patch descriptors because
   # its ownership-map pass consumes one before the render pass begins.
-  if ! render_base_hash="$(\trusted_sha256_file \
-        "${TRUSTED_SHA256_TOOL}" /dev/fd/11)" \
-      || ! render_patch_hash="$(\trusted_sha256_file \
-        "${TRUSTED_SHA256_TOOL}" /dev/fd/12)" \
-      || ! render_patch_hash_second="$(\trusted_sha256_file \
-        "${TRUSTED_SHA256_TOOL}" /dev/fd/13)" \
+  if ! render_base_hash="$(\trusted_sha256_descriptor \
+        "${TRUSTED_SHA256_TOOL}" 11)" \
+      || ! render_patch_hash="$(\trusted_sha256_descriptor \
+        "${TRUSTED_SHA256_TOOL}" 12)" \
+      || ! render_patch_hash_second="$(\trusted_sha256_descriptor \
+        "${TRUSTED_SHA256_TOOL}" 13)" \
       || [[ "${render_base_hash}" != "${base_hash}" \
         || "${render_patch_hash}" != "${SETTINGS_PATCH_SNAPSHOT_HASH}" \
         || "${render_patch_hash_second}" != \
@@ -5162,7 +5196,15 @@ preflight_source_distribution_trees() {
     "${SOURCE_USER_TEMPLATE_FILE_LIST}" \
     "${SOURCE_USER_TEMPLATE_CONTENT_MANIFEST_HASH}" \
     "private user-template snapshot" || return 1
-  chmod -R a-w "${SOURCE_SNAPSHOT_ROOT}" 2>/dev/null || return 1
+  # The auxiliary snapshots above are already sealed at mode 0400 and their
+  # identity includes ctime. GNU chmod updates ctime even when re-applying the
+  # same mode, so recursively chmodding the root invalidates our own seals on
+  # slower preflights. Protect the copied trees recursively, then protect only
+  # the root directory; leave the already-protected auxiliary leaves untouched.
+  chmod -R a-w "${SOURCE_BUNDLE_SNAPSHOT}" \
+    "${SOURCE_GHOSTTY_SNAPSHOT}" \
+    "${SOURCE_USER_TEMPLATE_SNAPSHOT}" 2>/dev/null || return 1
+  chmod a-w "${SOURCE_SNAPSHOT_ROOT}" 2>/dev/null || return 1
   verify_protected_tree_modes "${SOURCE_BUNDLE_SNAPSHOT}" \
     "${SOURCE_BUNDLE_MODE_MANIFEST}" || return 1
   verify_protected_tree_modes "${SOURCE_GHOSTTY_SNAPSHOT}" \

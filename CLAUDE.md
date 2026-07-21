@@ -49,7 +49,7 @@ If a fact appears here AND in one of the above, that doc is authoritative — ke
 find bundle/ -name '*.sh' -print0 | xargs -0 shellcheck -x --severity=warning
 find . -name '*.json' -not -path './.git/*' -print0 | xargs -0 -n1 python3 -m json.tool --no-ensure-ascii > /dev/null
 
-# Complete essential Bash portfolio (normally around two minutes)
+# Complete essential Bash portfolio (target: under ten minutes in CI)
 bash tools/run-tests.sh
 
 # Python statusline syntax (no dedicated suite)
@@ -60,9 +60,9 @@ bash verify.sh
 ```
 
 Tests are maintained evidence, not an append-only archive. Extend a retained
-owner before adding a file. The default portfolio must remain under ten minutes;
-interactive test work is capped at 20 minutes or 30% of task effort unless the
-user explicitly authorizes more. See `tests/README.md` and `AGENTS.md`
+owner before adding a file. Keep the default portfolio's under-ten-minute CI
+target credible. Interactive test work is capped at 20 minutes or 30% of task
+effort unless the user explicitly authorizes more. See `tests/README.md` and `AGENTS.md`
 "Verification economics."
 
 ## Coding Rules

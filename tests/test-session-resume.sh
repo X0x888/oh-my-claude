@@ -362,6 +362,38 @@ context="$(jq -r '.hookSpecificOutput.additionalContext // empty' <<<"${output}"
 assert_contains "context has writing domain" "Preserved task domain: writing" "${context}"
 assert_contains "context has writing advice" "editor-critic" "${context}"
 
+# Digest ceilings are byte-based, while the legacy semantic policy is
+# character-based. A valid 500-character command may exceed 500 UTF-8 bytes;
+# it must still migrate exactly rather than being rejected before validation.
+legacy_utf8_source="legacy-utf8-source-400a"
+legacy_utf8_target="legacy-utf8-target-400b"
+setup_legacy_source_session "${legacy_utf8_source}"
+legacy_utf8_path="${TEST_STATE_ROOT}/${legacy_utf8_source}/last_verify_cmd"
+awk 'BEGIN {
+  for (i=0; i<499; i++) printf "x"
+  printf "\303\251"
+}' >"${legacy_utf8_path}"
+legacy_utf8_locale=""
+for legacy_locale_candidate in C.UTF-8 en_US.UTF-8; do
+  if [[ "$(LC_ALL="${legacy_locale_candidate}" \
+      locale charmap 2>/dev/null || true)" == "UTF-8" ]]; then
+    legacy_utf8_locale="${legacy_locale_candidate}"
+    break
+  fi
+done
+assert_eq "legacy UTF-8 bound: supported locale is available" "1" \
+  "$([[ -n "${legacy_utf8_locale}" ]] && printf 1 || printf 0)"
+assert_eq "legacy UTF-8 bound: fixture exceeds the former byte ceiling" \
+  "501" "$(LC_ALL=C wc -c <"${legacy_utf8_path}" | tr -d '[:space:]')"
+LC_ALL="${legacy_utf8_locale}" run_resume \
+  "{\"session_id\":\"${legacy_utf8_target}\",\"source\":\"resume\",\"transcript_path\":\"/transcripts/${legacy_utf8_source}.jsonl\"}"
+assert_eq "legacy UTF-8 bound: max-length command migrates" "500" \
+  "$(jq -r '.last_verify_cmd | length' \
+    "${TEST_STATE_ROOT}/${legacy_utf8_target}/session_state.json")"
+assert_eq "legacy UTF-8 bound: multibyte suffix remains exact" "true" \
+  "$(jq -r '.last_verify_cmd | endswith("\u00e9")' \
+    "${TEST_STATE_ROOT}/${legacy_utf8_target}/session_state.json")"
+
 # Legacy text files are parsed as persisted authority before Bash can discard
 # NUL bytes. A poisoned enum must leave the source byte-exact and unfenced.
 legacy_nul_source="legacy-nul-source-401"
@@ -1256,8 +1288,9 @@ done
 assert_eq "resume-init owner death: no delegated body writes after kill" \
   "no" \
   "$([[ -e "${owner_kill_continued}" ]] && printf yes || printf no)"
-assert_eq "resume-init owner death: killed pre-copy owner leaves target fresh" \
-  "no" "$([[ -e "${owner_kill_target_dir}" ]] && printf yes || printf no)"
+assert_eq "resume-init owner death: killed pre-copy owner imports no objective" \
+  "" "$(jq -r '.current_objective // empty' \
+    "${owner_kill_target_dir}/session_state.json" 2>/dev/null || true)"
 
 owner_win_ready="${TEST_TMP}/owner-win.ready"
 owner_win_release="${TEST_TMP}/owner-win.release"
@@ -1289,8 +1322,9 @@ printf '%s' "{\"session_id\":\"${owner_kill_target}\",\"source\":\"resume\",\"tr
   || owner_lose_rc=$?
 assert_eq "resume-init owner death: second live contender is excluded" \
   "1" "${owner_lose_rc}"
-assert_eq "resume-init owner death: excluded contender cannot copy target" \
-  "no" "$([[ -e "${owner_kill_target_dir}" ]] && printf yes || printf no)"
+assert_eq "resume-init owner death: excluded contender cannot copy objective" \
+  "" "$(jq -r '.current_objective // empty' \
+    "${owner_kill_target_dir}/session_state.json" 2>/dev/null || true)"
 : >"${owner_win_release}"
 owner_win_rc=0
 wait "${owner_win_launcher_pid}" || owner_win_rc=$?
@@ -1446,18 +1480,24 @@ jq '.resume_transferred_to=("phantom-owner-927" + "\u0000")' \
   >"${TEST_STATE_ROOT}/${nul_owner_source}/session_state.json.tmp"
 mv "${TEST_STATE_ROOT}/${nul_owner_source}/session_state.json.tmp" \
   "${TEST_STATE_ROOT}/${nul_owner_source}/session_state.json"
+nul_owner_source_before="$(shasum -a 256 \
+  "${TEST_STATE_ROOT}/${nul_owner_source}/session_state.json" | awk '{print $1}')"
 run_resume \
   "{\"session_id\":\"${nul_owner_target}\",\"source\":\"resume\",\"transcript_path\":\"/transcripts/${nul_owner_source}.jsonl\"}"
-assert_eq "NUL owner: invalid marker does not block the legitimate handoff" \
+nul_owner_context="$(jq -r '.hookSpecificOutput.additionalContext // empty' \
+  <<<"$(resume_output)")"
+assert_eq "NUL owner: invalid marker fails closed without crashing" \
   "0" "${_resume_exit}"
-assert_eq "NUL owner: target receives the source objective" \
-  "Implement the auth refactor" \
+assert_contains "NUL owner: invalid source is reported explicitly" \
+  "Resume source state is invalid" "${nul_owner_context}"
+assert_eq "NUL owner: target receives no source objective" \
+  "" \
   "$(jq -r '.current_objective // empty' \
     "${TEST_STATE_ROOT}/${nul_owner_target}/session_state.json")"
-assert_eq "NUL owner: source is fenced only by the new valid target" \
-  "${nul_owner_target}" \
-  "$(jq -r '.resume_transferred_to // empty' \
-    "${TEST_STATE_ROOT}/${nul_owner_source}/session_state.json")"
+assert_eq "NUL owner: invalid source remains byte-stable and unfenced" \
+  "${nul_owner_source_before}" \
+  "$(shasum -a 256 \
+    "${TEST_STATE_ROOT}/${nul_owner_source}/session_state.json" | awk '{print $1}')"
 
 # Replaying S into T after T already transferred onward to U must never reopen
 # S or resurrect T.  The hook emits only a dormant-owner conflict and leaves
@@ -1551,7 +1591,7 @@ adj_tu_err="${TEST_TMP}/adj-tu.err"
         bash "${RESUME_SCRIPT}" >"${adj_tu_out}" 2>"${adj_tu_err}"
 ) &
 adj_tu_pid=$!
-for _adj_wait in $(seq 1 500); do
+for _adj_wait in $(seq 1 2000); do
   [[ -e "${adj_tu_ready}" ]] && break
   kill -0 "${adj_tu_pid}" 2>/dev/null || break
   sleep 0.01
@@ -1572,7 +1612,7 @@ adj_st_err="${TEST_TMP}/adj-st.err"
         bash "${RESUME_SCRIPT}" >"${adj_st_out}" 2>"${adj_st_err}"
 ) &
 adj_st_pid=$!
-for _adj_wait in $(seq 1 500); do
+for _adj_wait in $(seq 1 2000); do
   [[ -e "${adj_st_ready}" ]] && break
   kill -0 "${adj_st_pid}" 2>/dev/null || break
   sleep 0.01
@@ -1667,11 +1707,11 @@ assert_not_contains "marker failure: no contradictory continuation instruction" 
 
 # ------------------------------------------------------------------
 # Test 10b: if verified reset cannot delete an inherited ledger, SessionStart
-# exits nonzero and quarantines the entire target outside the live namespace. Replace
+# exits nonzero and atomically fences the target as non-live. Replace
 # timing.jsonl with a directory while the hook waits on the source fence so
-# `rm -f` deterministically fails.
+# `rm -f` deterministically fails; the ordinary privacy sweep owns cleanup.
 # ------------------------------------------------------------------
-printf '\nResume cleanup-failure quarantine:\n'
+printf '\nResume cleanup-failure non-live fence:\n'
 
 cleanup_source="cleanup-source-960"
 cleanup_target="cleanup-target-961"
@@ -1689,16 +1729,22 @@ printf '{"kind":"token_checkpoint","ts":1,"prompt_seq":1,"main_out":96}\n' \
   > "${cleanup_source_dir}/timing.jsonl"
 printf '%s\n' "$$" > "${cleanup_source_dir}/.state.lock/holder.pid"
 cleanup_out="${TEST_TMP}/cleanup-failure.out"
+cleanup_ready="${TEST_TMP}/cleanup-failure.ready"
+cleanup_release="${TEST_TMP}/cleanup-failure.release"
 (
   printf '%s' "{\"session_id\":\"${cleanup_target}\",\"source\":\"resume\",\"transcript_path\":\"/transcripts/${cleanup_source}.jsonl\"}" \
     | HOME="${FAKE_HOME}" STATE_ROOT="${TEST_STATE_ROOT}" \
-        OMC_STATE_LOCK_MAX_ATTEMPTS=40 bash "${RESUME_SCRIPT}" \
+        OMC_STATE_LOCK_MAX_ATTEMPTS=40 \
+        OMC_TEST_RESUME_TRANSFER_READY_FILE="${cleanup_ready}" \
+        OMC_TEST_RESUME_TRANSFER_RELEASE_FILE="${cleanup_release}" \
+        bash "${RESUME_SCRIPT}" \
         > "${cleanup_out}" 2>/dev/null
 ) &
 cleanup_pid=$!
 cleanup_copy_seen=0
-for _cleanup_wait in $(seq 1 100); do
-  if [[ -f "${cleanup_target_dir}/timing.jsonl" ]] \
+for _cleanup_wait in $(seq 1 2000); do
+  if [[ -f "${cleanup_ready}" \
+      && -f "${cleanup_target_dir}/timing.jsonl" ]] \
       && jq -e --arg source "${cleanup_source}" '
         (.resume_source_session_id == $source)
         and (.directive_context_force_full == "1")
@@ -1706,45 +1752,49 @@ for _cleanup_wait in $(seq 1 100); do
     cleanup_copy_seen=1
     break
   fi
-  sleep 0.02
+  kill -0 "${cleanup_pid}" 2>/dev/null || break
+  sleep 0.01
 done
 assert_eq "cleanup failure: target initialization completed before sabotage" \
   "1" "${cleanup_copy_seen}"
 if [[ "${cleanup_copy_seen}" -eq 1 ]]; then
   rm -f "${cleanup_target_dir}/timing.jsonl"
   mkdir "${cleanup_target_dir}/timing.jsonl"
-  rm -f "${cleanup_target_dir}/session_state.json"
-  mkdir "${cleanup_target_dir}/session_state.json"
 fi
+: >"${cleanup_release}"
 cleanup_rc=0
 wait "${cleanup_pid}" || cleanup_rc=$?
 rm -f "${cleanup_source_dir}/.state.lock/holder.pid"
 rmdir "${cleanup_source_dir}/.state.lock"
 assert_eq "cleanup failure: SessionStart exits nonzero" "1" \
   "$(( cleanup_rc != 0 ? 1 : 0 ))"
-assert_eq "cleanup failure: live target directory is absent" "0" \
-  "$([[ -e "${cleanup_target_dir}" ]] && printf 1 || printf 0)"
+assert_eq "cleanup failure: fenced target remains for bounded cleanup" "1" \
+  "$([[ -d "${cleanup_target_dir}" ]] && printf 1 || printf 0)"
+assert_eq "cleanup failure: target is atomically fenced back to source" \
+  "${cleanup_source}" \
+  "$(jq -r '.resume_transferred_to // empty' \
+    "${cleanup_target_dir}/session_state.json")"
 cleanup_quarantine_root="${TEST_STATE_ROOT}/.resume-quarantine"
 cleanup_quarantined_session="$(find "${cleanup_quarantine_root}" -mindepth 2 -maxdepth 2 \
   -type d -path "${cleanup_quarantine_root}/${cleanup_target}.*/session" -print -quit 2>/dev/null || true)"
-assert_eq "cleanup failure: target moved to non-live quarantine" "1" \
-  "$([[ -n "${cleanup_quarantined_session}" ]] && printf 1 || printf 0)"
-assert_eq "cleanup failure: offending ledger retained only in quarantine" "1" \
-  "$([[ -d "${cleanup_quarantined_session}/timing.jsonl" ]] && printf 1 || printf 0)"
+assert_eq "cleanup failure: exact state fence avoids unowned quarantine" "" \
+  "${cleanup_quarantined_session}"
+assert_eq "cleanup failure: offending ledger remains only under fenced target" "1" \
+  "$([[ -d "${cleanup_target_dir}/timing.jsonl" ]] && printf 1 || printf 0)"
 assert_eq "cleanup failure: source remains authoritative" "" \
   "$(jq -r '.resume_transferred_to // empty' "${cleanup_source_dir}/session_state.json")"
 
-# Quarantine follows the same privacy horizon as ordinary session state.  The
-# normal sweep prunes expired slots even if its daily session-sweep marker is
-# fresh, so fail-close artifacts cannot persist indefinitely.
-cleanup_quarantine_slot="$(dirname "${cleanup_quarantined_session}")"
-touch -t 200001010000 "${cleanup_quarantine_slot}"
+# The normal state sweep prunes the non-live target at the same privacy
+# horizon as every other session directory, so fail-close artifacts cannot
+# persist indefinitely.
+touch -t 200001010000 "${cleanup_target_dir}"
+rm -f "${TEST_STATE_ROOT}/.last_sweep"
 HOME="${FAKE_HOME}" STATE_ROOT="${TEST_STATE_ROOT}" \
   SESSION_ID="quarantine-prune-probe" OMC_STATE_TTL_DAYS=1 \
   bash -c '. "$HOME/.claude/skills/autowork/scripts/common.sh"; sweep_stale_sessions' \
   >/dev/null 2>&1
-assert_eq "cleanup failure: expired quarantine obeys privacy TTL" "0" \
-  "$([[ -e "${cleanup_quarantine_slot}" ]] && printf 1 || printf 0)"
+assert_eq "cleanup failure: expired fenced target obeys privacy TTL" "0" \
+  "$([[ -e "${cleanup_target_dir}" ]] && printf 1 || printf 0)"
 
 # ------------------------------------------------------------------
 # Test 11: concurrent resumes serialize at the final ownership fence.  Hold
@@ -1779,33 +1829,50 @@ printf '%s\n' "$$" > "${race_source_dir}/.state.lock/holder.pid"
 
 race_out_a="${TEST_TMP}/race-a.out"
 race_out_b="${TEST_TMP}/race-b.out"
+race_ready_a="${TEST_TMP}/race-a.ready"
+race_ready_b="${TEST_TMP}/race-b.ready"
+race_release_a="${TEST_TMP}/race-a.release"
+race_release_b="${TEST_TMP}/race-b.release"
 (
   printf '%s' "{\"session_id\":\"${race_target_a}\",\"source\":\"resume\",\"transcript_path\":\"/transcripts/${race_source}.jsonl\"}" \
     | HOME="${FAKE_HOME}" STATE_ROOT="${TEST_STATE_ROOT}" \
-        OMC_STATE_LOCK_MAX_ATTEMPTS=200 bash "${RESUME_SCRIPT}" \
+        OMC_STATE_LOCK_MAX_ATTEMPTS=200 \
+        OMC_TEST_RESUME_TRANSFER_READY_FILE="${race_ready_a}" \
+        OMC_TEST_RESUME_TRANSFER_RELEASE_FILE="${race_release_a}" \
+        bash "${RESUME_SCRIPT}" \
         > "${race_out_a}" 2>/dev/null
 ) &
 race_pid_a=$!
 (
   printf '%s' "{\"session_id\":\"${race_target_b}\",\"source\":\"resume\",\"transcript_path\":\"/transcripts/${race_source}.jsonl\"}" \
     | HOME="${FAKE_HOME}" STATE_ROOT="${TEST_STATE_ROOT}" \
-        OMC_STATE_LOCK_MAX_ATTEMPTS=200 bash "${RESUME_SCRIPT}" \
+        OMC_STATE_LOCK_MAX_ATTEMPTS=200 \
+        OMC_TEST_RESUME_TRANSFER_READY_FILE="${race_ready_b}" \
+        OMC_TEST_RESUME_TRANSFER_RELEASE_FILE="${race_release_b}" \
+        bash "${RESUME_SCRIPT}" \
         > "${race_out_b}" 2>/dev/null
 ) &
 race_pid_b=$!
 
 race_both_copied=0
-for _race_wait in $(seq 1 100); do
-  if [[ -f "${TEST_STATE_ROOT}/${race_target_a}/timing.jsonl" ]] \
+for _race_wait in $(seq 1 2000); do
+  if [[ -f "${race_ready_a}" && -f "${race_ready_b}" \
+      && -f "${TEST_STATE_ROOT}/${race_target_a}/timing.jsonl" ]] \
       && [[ -f "${TEST_STATE_ROOT}/${race_target_b}/timing.jsonl" ]]; then
     race_both_copied=1
     break
   fi
-  sleep 0.02
+  if ! kill -0 "${race_pid_a}" 2>/dev/null \
+      || ! kill -0 "${race_pid_b}" 2>/dev/null; then
+    break
+  fi
+  sleep 0.01
 done
 assert_eq "concurrency: both contenders reached post-copy fence" "1" "${race_both_copied}"
 rm -f "${race_source_dir}/.state.lock/holder.pid"
 rmdir "${race_source_dir}/.state.lock"
+: >"${race_release_a}"
+: >"${race_release_b}"
 
 race_rc_a=0; wait "${race_pid_a}" || race_rc_a=$?
 race_rc_b=0; wait "${race_pid_b}" || race_rc_b=$?

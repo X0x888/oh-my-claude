@@ -18,6 +18,32 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TARGET_HOME="${TARGET_HOME:-$HOME}"
+# Bind the managed root to one physical, non-symlink directory before any
+# removal path is derived. macOS exposes safe temporary roots through system
+# aliases such as /var -> /private/var; keeping the lexical alias here makes
+# the later exact-generation seal disagree with the anchored path preflight.
+# Strip trailing separators first: Bash follows `link/` for `-d` and reports
+# false for `-L`, which would otherwise let a symlinked home evade the lexical
+# leaf check immediately before physical canonicalization.
+while [[ "${TARGET_HOME}" != "/" && "${TARGET_HOME}" == */ ]]; do
+  TARGET_HOME="${TARGET_HOME%/}"
+done
+case "/${TARGET_HOME#/}/" in
+  */./*|*/../*)
+    printf 'Refusing uninstall: TARGET_HOME must not contain . or .. path components.\n' >&2
+    exit 1
+    ;;
+esac
+if [[ "${TARGET_HOME}" != /* || "${TARGET_HOME}" == "/" \
+    || "${TARGET_HOME}" == *[[:cntrl:]]* \
+    || ! -d "${TARGET_HOME}" || -L "${TARGET_HOME}" ]]; then
+  printf 'Refusing uninstall: TARGET_HOME must be an existing, non-symlink absolute directory.\n' >&2
+  exit 1
+fi
+TARGET_HOME="$(builtin cd -- "${TARGET_HOME}" 2>/dev/null \
+  && builtin pwd -P)" || exit 1
+[[ "${TARGET_HOME}" == /* && "${TARGET_HOME}" != *[[:cntrl:]]* ]] \
+  || exit 1
 CLAUDE_HOME="${TARGET_HOME}/.claude"
 SETTINGS="${CLAUDE_HOME}/settings.json"
 SETTINGS_PATCH="${SCRIPT_DIR}/config/settings.patch.json"

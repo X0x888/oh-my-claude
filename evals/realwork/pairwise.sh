@@ -2239,7 +2239,7 @@ calibration_manifest_is_valid() {
 }
 
 calibration_manifest_hash() {
-  local file="${1:-${CALIBRATION_MANIFEST}}"
+  local file="${CALIBRATION_MANIFEST}"
   calibration_manifest_is_valid "${file}" || return 1
   canonical_json_hash "${file}"
 }

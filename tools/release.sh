@@ -174,7 +174,11 @@ preview_release_title() {
     return 0
   fi
   tmp="$(mktemp -t omc-release-title-XXXXXX)"
-  perl -0pe "s|^(## \\[Unreleased\\])\$|\$1\n\n## [${VERSION_ARG}] - ${TODAY}|" CHANGELOG.md > "${tmp}"
+  # Match the real Step 9 line-by-line promotion. Whole-file mode (`-0`)
+  # makes the anchored heading regex inspect only the start/end of the entire
+  # changelog, so a normal mid-file [Unreleased] heading never matches and the
+  # dry-run preview renders a blank title.
+  perl -pe "s|^(## \\[Unreleased\\])\$|\$1\n\n## [${VERSION_ARG}] - ${TODAY}|" CHANGELOG.md > "${tmp}"
   out="$(OMC_RELEASE_CHANGELOG_PATH="${tmp}" bash "${RELEASE_TITLE_HELPER}" "${VERSION_ARG}")"
   rm -f "${tmp}"
   printf '%s' "${out}"

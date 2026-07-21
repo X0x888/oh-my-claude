@@ -477,8 +477,9 @@ bash verify.sh                              # Installed-tree integrity
 bash tools/run-tests.sh                     # All 7 essential Bash suites
 ```
 
-The default Bash portfolio is expected to finish in roughly two minutes and
-must remain below ten. Extend an existing owner before adding another suite.
+The Bash portfolio targets under ten minutes in CI, and the runner reports each
+suite's elapsed time so regressions stay visible. Extend an existing owner
+before adding another suite.
 See [tests/README.md](tests/README.md) for the retained coverage map.
 
 ## Customization

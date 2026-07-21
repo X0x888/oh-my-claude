@@ -742,6 +742,14 @@ begin_resume_target_initialization_unlocked() {
 _resume_copy_max_bytes() {
   case "${1:-}" in
     "${STATE_JSON}") printf '16777216' ;;
+    # Legacy text semantics are validated after the existing bounded reader
+    # emits a NUL-free value. Keep this transport ceiling aligned with that
+    # reader: the semantic limits below are character counts, while this
+    # snapshot helper counts UTF-8 bytes (and sees trailing newlines that Bash
+    # command substitution removes before semantic validation).
+    workflow_mode|task_domain|task_intent|last_verify_cmd|current_objective|last_meta_request|last_assistant_message)
+      printf '1048576'
+      ;;
     subagent_summaries.jsonl|pending_agents.jsonl|agent_dispatch_starts.jsonl|native_agent_bindings.jsonl)
       printf '33554432'
       ;;

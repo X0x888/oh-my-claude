@@ -3948,9 +3948,10 @@ for malformed_claim_kind in nonstring empty missing-id missing-effects \
       malformed_claim_row='{"agent_type":"general-purpose","completion_claim_id":"claim-empty-message","completion_claim_ts":1,"completion_claim_effects_complete":false,"completion_claim_digest":"aaaaaaaaaaaaaaaa","completion_claim_message":""}'
       ;;
     oversized-message)
-      malformed_claim_row="$(jq -nc --arg message "$(awk 'BEGIN {
-          for (i=0; i<131073; i++) printf "x"
-        }')" '
+      oversized_message_path="${TEST_STATE_ROOT}/oversized-completion-claim-message"
+      awk 'BEGIN { for (i=0; i<131073; i++) printf "x" }' \
+        >"${oversized_message_path}"
+      malformed_claim_row="$(jq -nc --rawfile message "${oversized_message_path}" '
         {agent_type:"general-purpose",
          completion_claim_id:"claim-oversized-message",completion_claim_ts:1,
          completion_claim_effects_complete:false,
